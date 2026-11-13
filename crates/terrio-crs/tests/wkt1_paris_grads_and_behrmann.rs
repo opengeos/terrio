@@ -2,11 +2,13 @@
 //! Behrmann projection. The WKTs are PROJ 9.8.1's (pyproj 3.8.0, `CRS.to_wkt("WKT1_ESRI")` and
 //! `"WKT1_GDAL"` without `AUTHORITY`) with their CRS and datum names replaced, so that terrio
 //! reads them rather than identifying their codes. Reference values are PROJ's
-//! `Transformer.from_crs(source, crs, always_xy=True)`, network off, no grids.
+//! `Transformer.from_crs(source, crs, always_xy=True)`, network off, no grids; GDAL 3.10.3's
+//! `gdaltransform -s_srs <source> -t_srs <wkt>` (on PROJ 9.6.0) gives the same, to its 15
+//! printed digits.
 
 use terrio_crs::{SpatialRef, Transformer};
 
-/// The coordinates of a point in a WKT's CRS, from a PROJ string's CRS.
+/// Transforms `(x, y)` from the CRS of the PROJ string `source` to the CRS of the WKT `wkt`.
 fn transform(source: &str, wkt: &str, (x, y): (f64, f64)) -> (f64, f64) {
     let crs = SpatialRef::from_wkt(wkt);
     assert_eq!((crs.epsg, crs.esri), (None, None), "identified: {wkt}");
@@ -54,6 +56,12 @@ fn esri_behrmann_is_cylindrical_equal_area() {
         let (x, y) = transform("+proj=longlat +ellps=WGS84", wkt, (10.0, 45.0));
         assert!((x - 964862.802508965).abs() < 1e-6 && (y - 5180102.328839251).abs() < 1e-6, "({x}, {y}) {wkt}");
     }
+    // The central meridian and false easting apply: PROJ's `+lon_0=10 +x_0=500`.
+    let shifted = behrmann
+        .replace(r#"PARAMETER["False_Easting",0.0]"#, r#"PARAMETER["False_Easting",500.0]"#)
+        .replace(r#"PARAMETER["Central_Meridian",0.0]"#, r#"PARAMETER["Central_Meridian",10.0]"#);
+    let (x, y) = transform("+proj=longlat +ellps=WGS84", &shifted, (20.0, 45.0));
+    assert!((x - 965362.802508965).abs() < 1e-6 && (y - 5180102.328839251).abs() < 1e-6, "({x}, {y})");
     // Another standard parallel is kept: PROJ's `+proj=cea +lat_ts=45`.
     let at_45 = behrmann.replace(r#"UNIT["Meter""#, r#"PARAMETER["Standard_Parallel_1",45.0],UNIT["Meter""#);
     let (x, y) = transform("+proj=longlat +ellps=WGS84", &at_45, (10.0, 45.0));
