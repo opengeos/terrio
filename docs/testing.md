@@ -1223,6 +1223,8 @@ of the exact definition, grid, type and pixels. Engineering CRSs must still
 refuse a warp to EPSG:4326. Registered EPSG:32615 controls retain their existing
 behavior, including identifier fallback when Zarr or GeoPackage lacks a usable
 definition. These are metadata-preservation checks, not a numerical GDAL claim.
+Stored-definition fields containing a local filename are not resolved; tests
+check both absence of a CRS and fallback to a separate valid EPSG identifier.
 
 ## Standalone CRS feature coverage
 
