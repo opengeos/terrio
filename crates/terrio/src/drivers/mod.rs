@@ -15,7 +15,6 @@ mod ehdr;
 mod envi;
 mod ers;
 pub(crate) mod gdal_overview;
-pub(crate) mod geokeys;
 #[cfg(feature = "sqlite")]
 pub(crate) mod gpkg;
 #[cfg(feature = "grib")]

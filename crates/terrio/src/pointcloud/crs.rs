@@ -196,7 +196,7 @@ fn geokey_vlrs(crs: &SpatialRef) -> Option<Vec<Vlr>> {
         }
         None => (crs.clone(), None),
     };
-    let mut v = crate::drivers::geokeys::GeoKeyValues::default();
+    let mut v = crate::crs::geokeys::GeoKeyValues::default();
     let geographic = horizontal.is_geographic();
     v.shorts.push((1025, 1));
     match horizontal.epsg.and_then(|c| u16::try_from(c).ok()) {
@@ -206,7 +206,7 @@ fn geokey_vlrs(crs: &SpatialRef) -> Option<Vec<Vlr>> {
         }
         None => {
             let name = horizontal.name().unwrap_or_else(|| "unnamed".into());
-            let user = crate::drivers::geokeys::user_keys(&horizontal, &name)?;
+            let user = horizontal.user_defined_geokeys(&name)?;
             v.shorts.extend(user.shorts);
             v.doubles.extend(user.doubles);
             v.ascii.extend(user.ascii);
@@ -215,25 +215,12 @@ fn geokey_vlrs(crs: &SpatialRef) -> Option<Vec<Vlr>> {
     if let Some(code) = vertical {
         v.shorts.push((4096, code));
     }
-    let mut keys: Vec<[u16; 4]> = v.shorts.iter().map(|(id, val)| [*id, 0, 1, *val]).collect();
-    keys.extend(v.double_keys());
-    let mut ascii = String::new();
-    for (id, text) in &v.ascii {
-        let text = format!("{text}|");
-        keys.push([*id, 34737, text.len() as u16, ascii.len() as u16]);
-        ascii.push_str(&text);
-    }
-    keys.sort_by_key(|k| k[0]);
-    let mut dir = vec![1u16, 1, 0, keys.len() as u16];
-    dir.extend(keys.iter().flatten());
+    // KeyRevision 1.0 whatever the keys, as terrio has always written LAS GeoKeys: GeoTIFF 1.1's
+    // minor revision for a vertical CRS is GDAL's choice for GeoTIFFs.
+    let crate::crs::geokeys::GeoKeyTags { directory: dir, doubles, ascii, .. } = v.encode_with_minor_revision(0).ok()?;
     let mut out = vec![Vlr::new(LASF_PROJECTION, 34735, "GeoTIFF GeoKeyDirectoryTag", dir.iter().flat_map(|k| k.to_le_bytes()).collect())];
-    if !v.doubles.is_empty() {
-        out.push(Vlr::new(
-            LASF_PROJECTION,
-            34736,
-            "GeoTIFF GeoDoubleParamsTag",
-            v.doubles.iter().flat_map(|d| d.1.to_le_bytes()).collect(),
-        ));
+    if !doubles.is_empty() {
+        out.push(Vlr::new(LASF_PROJECTION, 34736, "GeoTIFF GeoDoubleParamsTag", doubles.iter().flat_map(|d| d.to_le_bytes()).collect()));
     }
     if !ascii.is_empty() {
         let mut data = ascii.into_bytes();

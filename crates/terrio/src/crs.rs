@@ -49,10 +49,7 @@ use crate::Error;
 use crate::Result;
 use serde::Serialize;
 
-pub(crate) use terrio_crs::{
-    compound_code, describe, epsg_ellipsoid, epsg_wkt, from_proj_on, geographic_datum, geographic_on_datum, identify_epsg, is_esri_code,
-    semi_major_axis, wkt_proj,
-};
+pub(crate) use terrio_crs::{epsg_wkt, identify_epsg, is_esri_code, semi_major_axis, wkt_proj};
 
 /// Starts loading the EPSG table in the background, on terrio's pool (see [`initialize`]), for
 /// work that will need it once it has read its input.
@@ -186,6 +183,54 @@ impl SpatialRef {
         self.as_core().to_wkt1_strict()
     }
 
+    /// The CRS of a GeoTIFF GeoKey directory and its double and ASCII parameters, as GDAL reads
+    /// them (see the standalone engine's `geokeys::read`). Fails when they give no CRS terrio
+    /// reads.
+    ///
+    /// ```
+    /// use terrio::crs::SpatialRef;
+    ///
+    /// let crs = SpatialRef::from_geokeys(&[1, 1, 0, 2, 1024, 0, 1, 1, 3072, 0, 1, 32633], &[], b"")?;
+    /// assert_eq!(crs.epsg, Some(32633));
+    /// # Ok::<(), terrio::Error>(())
+    /// ```
+    pub fn from_geokeys(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> Result<Self> {
+        initialize();
+        terrio_crs::SpatialRef::from_geokeys(directory, doubles, ascii).map(Into::into).map_err(Into::into)
+    }
+
+    /// The GeoTIFF GeoKeys that define the CRS, as GDAL writes them (see the standalone engine's
+    /// `SpatialRef::to_geokeys`), without the raster type (GTRasterTypeGeoKey, 1025, which a
+    /// writer adds). Fails for an unknown CRS, and for one that needs an ESRI PE citation and has
+    /// no WKT.
+    ///
+    /// ```
+    /// use terrio::crs::SpatialRef;
+    ///
+    /// let tags = SpatialRef::from_epsg(32633)?.to_geokeys()?.encode()?;
+    /// // GeoTIFF 1.0 (no vertical CRS), then GTModelTypeGeoKey 1 and ProjectedCSTypeGeoKey 32633.
+    /// assert_eq!(tags.directory, [1, 1, 0, 2, 1024, 0, 1, 1, 3072, 0, 1, 32633]);
+    /// assert!(tags.doubles.is_empty() && tags.ascii.is_empty());
+    /// # Ok::<(), terrio::Error>(())
+    /// ```
+    pub fn to_geokeys(&self) -> Result<geokeys::GeoKeyValues> {
+        initialize();
+        self.as_core().to_geokeys().map_err(Into::into)
+    }
+
+    /// The GeoKeys of the CRS without its EPSG code: its projection method and parameters, named
+    /// `name` (see the standalone engine's `geokeys::user_defined_keys`).
+    pub(crate) fn user_defined_geokeys(&self, name: &str) -> Option<geokeys::GeoKeyValues> {
+        initialize();
+        geokeys::user_defined_keys(&self.as_core(), name)
+    }
+
+    /// The CRS of GeoKeys and the projection method left unread (see `geokeys::read`).
+    pub(crate) fn read_geokeys(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> geokeys::GeoKeysCrs {
+        initialize();
+        geokeys::read(directory, doubles, ascii)
+    }
+
     /// The CRS as PROJJSON v0.7 (see the standalone engine's `SpatialRef::to_projjson`).
     pub fn to_projjson(&self) -> Result<String> {
         initialize();
@@ -292,10 +337,6 @@ impl SpatialRef {
     /// Whether coordinates are in degrees: a geographic CRS or a rotated-pole grid.
     pub(crate) fn is_angular(&self) -> bool {
         self.as_core().is_angular()
-    }
-    /// See the standalone CRS engine's `geographic_code` method.
-    pub(crate) fn geographic_code(&self) -> Option<u32> {
-        self.as_core().geographic_code()
     }
     /// See the standalone CRS engine's `rotated_pole_parameters` method.
     pub(crate) fn rotated_pole_parameters(&self) -> Option<([f64; 3], f64, f64)> {
@@ -430,6 +471,9 @@ impl TransformOptions {
 }
 
 pub use terrio_crs::CoordinateOperation;
+/// GeoTIFF GeoKeys, the standalone engine's module (its `read`, `GeoKeyValues` and `GeoKeyTags`):
+/// see [`SpatialRef::from_geokeys`] and [`SpatialRef::to_geokeys`].
+pub use terrio_crs::geokeys;
 pub use terrio_crs::{AUTHORITIES, CrsEntry, CrsKind, CrsQuery, EPSG_VERSION, check_authorities};
 
 /// Recognized boolean PROJ parameters, normalized by the shared CRS parser.

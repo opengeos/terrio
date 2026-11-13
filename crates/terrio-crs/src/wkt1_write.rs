@@ -416,7 +416,8 @@ fn is_3d(root: &super::wkt1::Node) -> bool {
 }
 
 /// The description of a PROJ string whose WKT 1 describes it whole (without the PROJ4
-/// extension), with east-north axes. `None` otherwise.
+/// extension), with east-north axes (or south-orientated Transverse Mercator's, `+axis=wsu`).
+/// `None` otherwise.
 pub fn describe(s: &str) -> Option<Described> {
     let wkt = from_proj(s)?;
     if wkt.contains("EXTENSION[") {
@@ -426,7 +427,11 @@ pub fn describe(s: &str) -> Option<Described> {
     let p = Params::parse(s);
     let method = match own.is_geographic() {
         true => None,
-        false => Some(method(&p, own.to_meter()).filter(|m| m.axis_described && p.str("axis").is_none_or(|a| a.starts_with("en")))?),
+        // East-north axes, or south-orientated Transverse Mercator's own (`+axis=wsu`).
+        false => Some(method(&p, own.to_meter()).filter(|m| {
+            let south_orientated = m.name == "Transverse_Mercator_South_Orientated";
+            m.axis_described && p.str("axis").is_none_or(|a| a.starts_with("en") || (south_orientated && a == "wsu"))
+        })?),
     };
     let ell = own.ell;
     let named = p.str("ellps").or_else(|| p.str("datum").and_then(super::def::datum_ellps));

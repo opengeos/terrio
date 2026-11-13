@@ -857,6 +857,62 @@ not carry (named in the error), unless it has the value used when it is absent (
 CRS, or to its geocentric CRS for a geocentric CRS, as PROJ writes them.
 
 
+### GeoTIFF GeoKeys
+
+The GeoKeys of a GeoTIFF (and of a LAS `LASF_Projection` record) are read and written by
+terrio-crs, so that other programs can use them without the `terrio` crate:
+`SpatialRef::from_geokeys(directory, doubles, ascii)` reads the CRS of the GeoKeyDirectoryTag
+(34735), GeoDoubleParamsTag (34736) and GeoAsciiParamsTag (34737), as GDAL reads them
+(`GTIFGetOGISDefnAsOSR`); `geokeys::read` gives the same CRS and the projection method left
+unread, for a warning. `SpatialRef::to_geokeys()` gives the CRS's GeoKeys, as GDAL 3.12.1 writes
+them (`GTIFSetFromOGISDefnEx`), without the raster type (GTRasterTypeGeoKey), and
+`GeoKeyValues::encode()` the three tags. `terrio`'s GeoTIFF and LAS readers and writers use them.
+They are Rust API only: the Python and JavaScript CRS objects read and write GeoTIFFs through the
+drivers, and the GeoKey arrays serve programs with their own TIFF code.
+
+They read and write:
+
+- registered geographic and projected CRSs by their EPSG codes, and a compound CRS of EPSG CRSs by
+  its horizontal and vertical codes (GeoTIFF 1.1), read as the registry's compound CRS of the two
+  when there is one; a geographic 3D CRS by its geographic 2D CRS's code with its own as the
+  vertical CRS, as GDAL writes and reads it (EPSG:4979 as 4326 and 4979). Unlike GDAL, terrio
+  also reads VerticalCSTypeGeoKey in a GeoTIFF 1.0 directory, where LAS records hold it;
+- user-defined geographic and projected CRSs: the projection methods GeoTIFF names
+  (ProjCoordTransGeoKey 1, 3, 7 to 28, and 9815 for Hotine oblique Mercator variant B and Swiss
+  oblique Mercator), a UTM zone by its ProjectionGeoKey, linear units by EPSG code or by size
+  (ProjLinearUnitSizeGeoKey), angular units, and EPSG datums, ellipsoids, prime meridians and
+  `TOWGS84` shifts. A user-defined projected CRS can be read by a registered code (see below);
+- ESRI PE citations (`ESRI PE String = <WKT>`), which GDAL writes for a CRS GeoKeys cannot hold
+  (an engineering CRS, a method GeoTIFF has no code for, a definition only its PROJ string
+  describes): terrio writes them for the same CRSs.
+
+A user-defined projected CRS gets a registered code more often than in GDAL, which names only an
+equivalent registered CRS of the citation's exact name (or an ESRI CRS, as terrio does too). terrio
+also names a UTM zone by its ProjectionGeoKey or a `UTM zone 33N` citation, on WGS 84, NAD83 or
+NAD27, in the GeoKeys' unit, and, with the `wbprojection-fallback` feature (which `terrio` enables),
+the projected CRS a citation names (an `EPSG:` reference or a CRS name), on the GeoKeys' datum when
+they give its code. The code's definition then replaces the keys': where the keys give a datum of
+their own or none, a citation naming a CRS on another ellipsoid (`EPSG:32633` on keys of Clarke
+1866, `NAD27 / UTM zone 15N` on keys without a datum, which GDAL reads on WGS 84) gives other
+coordinates than GDAL. The GeoKeys of a CRS terrio reads only through wbprojection need that feature
+too.
+
+`tests/geokeys_gdal.rs` compares both directions with GDAL 3.12.1 (rasterio 1.5.0), frozen by
+`scripts/gen_geokeys_gdal.py`: the GeoKeys GDAL writes for 376 CRSs (every 20th EPSG projected and
+geographic 2D code, the codes of each rule, PROJ strings of every method GeoTIFF names in other
+units and on other datums, ESRI codes, compound and geographic 3D CRSs) are read as the CRS GDAL
+reads from them (by its EPSG code when GDAL's has one, else at two points), all 376. terrio's
+GeoKeys of the 374 of them it reads from its tables hold GDAL's model type, EPSG codes, projection
+method, linear unit and projection parameters, and read back as the CRS. Known differences:
+
+- GDAL also writes keys the codes imply (citations, the angular unit, the ellipsoid's axes), and
+  a UTM zone by its ProjectionGeoKey where terrio writes its method and parameters; both read the
+  same;
+- World Robinson (ESRI:54030) is written on a user-defined geographic CRS of WGS 84's ellipsoid,
+  where GDAL names EPSG:4326 (the ESRI WKT's `GCS_WGS_1984` has no EPSG code terrio identifies);
+- Miller on the authalic sphere (`+R_A`) is written as an ESRI PE citation, where GDAL writes the
+  method.
+
 ## IAU planetary coordinate systems
 
 The shared pure-Rust engine includes the **IAU_2015** registry from PROJ 9.8.1,

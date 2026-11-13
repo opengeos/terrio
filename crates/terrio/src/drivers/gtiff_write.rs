@@ -1732,7 +1732,7 @@ fn geo_tags(r: &Raster, opts: &TiffOptions, image_structure: &[(String, String)]
         (33922, Value::Doubles(vec![0.0, 0.0, 0.0, r.x_min, r.y_max(), 0.0])),
     ];
     let crs = super::common::spatial_ref(&r.crs);
-    let mut v = crate::drivers::geokeys::GeoKeyValues::default();
+    let mut v = crate::crs::geokeys::GeoKeyValues::default();
     v.shorts.push((1025, if pixel_is_point(r) { 2 } else { 1 }));
     if crs.is_unknown() && pixel_is_point(r) {
         return Err(Error::Unsupported(
@@ -1740,61 +1740,13 @@ fn geo_tags(r: &Raster, opts: &TiffOptions, image_structure: &[(String, String)]
         ));
     }
     if !crs.is_unknown() {
-        let engineering = crs.wkt.as_deref().is_some_and(engineering_cs);
-        let registered = crs.epsg.filter(|_| !engineering).and_then(horizontal_geokey);
-        // A compound CRS of EPSG CRSs: its horizontal CRS's keys, its vertical CRS's and its name,
-        // in GeoTIFF 1.1 as GDAL 3.12.1 writes them (`GTIFSetFromOGISDefnEx`); a compound code in
-        // a horizontal key reads as another CRS.
-        let compound = (!engineering).then(|| crs.compound_parts()).flatten().and_then(|(h, v)| {
-            let (h, geographic) = horizontal_geokey(h)?;
-            Some((h, u16::try_from(v).ok()?, geographic))
-        });
-        match (compound, registered) {
-            (Some((h, vertical, geographic)), _) => {
-                v.shorts.push((1024, if geographic { 2 } else { 1 }));
-                v.shorts.push((if geographic { 2048 } else { 3072 }, h));
-                v.shorts.push((4096, vertical));
-                v.ascii.push((1026, crs.name().unwrap_or_else(|| "unnamed".into())));
-            }
-            (None, Some((code, geographic))) => {
-                v.shorts.push((1024, if geographic { 2 } else { 1 }));
-                v.shorts.push((if geographic { 2048 } else { 3072 }, code));
-            }
-            (None, None) => {
-                let name = crs.name().unwrap_or_else(|| "unnamed".into());
-                // Keep engineering and unrepresentable coded definitions as WKT. In particular,
-                // an engineering identifier must never be written as a projected EPSG code.
-                let user = if engineering || crs.epsg.is_some() { None } else { crate::drivers::geokeys::user_keys(&crs, &name) };
-                match user {
-                    Some(keys) => v = merge(v, keys),
-                    None => {
-                        // GDAL's fallback for methods GeoTIFF cannot describe: the WKT in an ESRI PE
-                        // citation, with a user-defined model type.
-                        let wkt = crs.to_wkt().ok_or_else(|| Error::Crs("the raster's CRS has no WKT definition".into()))?;
-                        v.shorts.push((1024, 32767));
-                        // GeoTIFF 1.1 requirement 8.10 requires a general citation for this model.
-                        v.ascii.push((1026, name));
-                        v.ascii.push((3073, format!("ESRI PE String = {wkt}")));
-                    }
-                }
-            }
-        }
+        // As GDAL 3.12.1 writes them (`GTIFSetFromOGISDefnEx`): see `SpatialRef::to_geokeys`.
+        let keys = crs.to_geokeys()?;
+        v.shorts.extend(keys.shorts);
+        v.doubles.extend(keys.doubles);
+        v.ascii.extend(keys.ascii);
     }
-    v.shorts.sort_by_key(|k| k.0);
-    let mut keys: Vec<[u16; 4]> = v.shorts.iter().map(|(id, val)| [*id, 0, 1, *val]).collect();
-    let doubles: Vec<f64> = v.doubles.iter().map(|d| d.1).collect();
-    keys.extend(v.double_keys());
-    let mut ascii = String::new();
-    for (id, text) in &v.ascii {
-        let text = format!("{text}|");
-        keys.push([*id, 34737, text.len() as u16, ascii.len() as u16]);
-        ascii.push_str(&text);
-    }
-    keys.sort_by_key(|k| k[0]);
-    // GeoTIFF 1.1 (minor revision 1) for a vertical CRS, which GDAL strips from 1.0 files.
-    let minor = u16::from(keys.iter().any(|k| k[0] == 4096));
-    let mut dir = vec![1u16, 1, minor, keys.len() as u16];
-    dir.extend(keys.iter().flatten());
+    let crate::crs::geokeys::GeoKeyTags { directory: dir, doubles, ascii, .. } = v.encode()?;
     // Without a CRS, no GeoKeys: GDAL reads a lone raster-type key as a local CRS.
     if !crs.is_unknown() {
         tags.push((34735, Value::Shorts(dir)));
@@ -1910,29 +1862,6 @@ fn gdal_metadata_xml(
     }
     xml.push_str("</GDALMetadata>");
     any.then_some(xml)
-}
-
-/// Whether the retained WKT describes an engineering grid, independently of its root ID.
-fn engineering_cs(wkt: &str) -> bool {
-    let root = wkt.split(['[', '(']).next().unwrap_or_default().trim().to_ascii_uppercase();
-    matches!(root.as_str(), "LOCAL_CS" | "ENGCRS" | "ENGINEERINGCRS")
-}
-
-/// A registered horizontal code usable by GeoTIFF 1.1 (requirements 12.4 and 13.4), and
-/// whether it is geographic. Engineering, vertical, geocentric and unknown codes need WKT.
-fn horizontal_geokey(code: u32) -> Option<(u16, bool)> {
-    let short = u16::try_from(code).ok().filter(|code| (1024..32767).contains(code))?;
-    let wkt = terrio_crs::epsg_wkt(code)?;
-    let geographic = crate::crs::SpatialRef::from_epsg(code).is_ok_and(|s| s.is_geographic());
-    // The table holds GDAL's canonical WKT; projected roots use PROJCS or PROJCRS.
-    (geographic || wkt.starts_with("PROJ")).then_some((short, geographic))
-}
-
-fn merge(mut a: crate::drivers::geokeys::GeoKeyValues, b: crate::drivers::geokeys::GeoKeyValues) -> crate::drivers::geokeys::GeoKeyValues {
-    a.shorts.extend(b.shorts);
-    a.doubles.extend(b.doubles);
-    a.ascii.extend(b.ascii);
-    a
 }
 
 /// Whether overview images carry the `GDAL_NODATA` tag: GDAL 3.12.1 writes it on the overviews it
@@ -3294,16 +3223,6 @@ fn directories(mut images: Vec<Directory>, big: bool, cog: bool) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn compact_geo_keys_only_name_registered_horizontal_crss() {
-        assert_eq!(horizontal_geokey(32615), Some((32615, false)));
-        assert_eq!(horizontal_geokey(4326), Some((4326, true)));
-        assert_eq!(horizontal_geokey(4979), Some((4979, true)));
-        for code in [5800, 4978, 5773, 9707, 32767, 999999] {
-            assert_eq!(horizontal_geokey(code), None, "{code}");
-        }
-    }
 
     #[test]
     fn engineering_geo_tags_retain_wkt_even_with_a_projected_identifier() {
