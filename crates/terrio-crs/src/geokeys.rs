@@ -117,18 +117,21 @@ pub struct GeoKeysCrs {
 /// (GeoDoubleParamsTag, 34736) and ASCII (GeoAsciiParamsTag, 34737) parameters, as stored in a
 /// GeoTIFF or a LAS `LASF_Projection` record, as GDAL reads them (`GTIFGetOGISDefnAsOSR`):
 /// - EPSG codes of a projected or geographic CRS (ProjectedCSTypeGeoKey,
-///   GeographicTypeGeoKey); a user-defined projected CRS that is a registered one in the
-///   GeoKeys' linear unit (a UTM zone by its ProjectionGeoKey, or named by its citation) gets its
-///   code;
+///   GeographicTypeGeoKey). A user-defined projected CRS that is a registered one in the GeoKeys'
+///   linear unit gets its code: a UTM zone by its ProjectionGeoKey or its citation, on WGS 84,
+///   NAD83 or NAD27, and (with the `wbprojection-fallback` feature) the projected CRS its
+///   citation names, on the GeoKeys' datum when they give its code. GDAL names only an
+///   equivalent CRS of the citation's exact name: on keys with a datum of their own or none, the
+///   code's definition can differ from theirs (see the CRS documentation);
 /// - user-defined geographic and projected CRSs, for the coordinate transformation codes 1, 3,
-///   7-28 and Swiss oblique Mercator (9815), in any linear unit and on an EPSG datum, an
-///   EPSG ellipsoid or the GeoKeys' own;
+///   7-28 and Hotine oblique Mercator variant B (9815, Swiss oblique Mercator among them), in
+///   any linear unit and on an EPSG datum, an EPSG ellipsoid or the GeoKeys' own;
 /// - ESRI PE citations (`ESRI PE String = <WKT>`), as GDAL writes a CRS GeoKeys cannot hold;
 /// - a vertical CRS (VerticalCSTypeGeoKey) on an EPSG horizontal CRS, as the compound CRS (the
 ///   registry's compound CRS of the two codes when there is one), and a geographic 3D CRS as its
 ///   geographic 2D CRS with its own code as the vertical CRS (EPSG:4979 as 4326 and 4979).
 ///
-/// ```no_run
+/// ```
 /// // GeoKeys of a UTM zone, as a GeoTIFF's three tags hold them.
 /// let directory = [1, 1, 0, 2, 1024, 0, 1, 1, 3072, 0, 1, 32633];
 /// let read = terrio_crs::geokeys::read(&directory, &[], "");
@@ -209,22 +212,21 @@ pub fn read(directory: &[u16], doubles: &[f64], ascii: &str) -> GeoKeysCrs {
     GeoKeysCrs { crs, unsupported_method }
 }
 
-/// The geographic 2D CRS of an EPSG geographic 3D CRS: the one on its datum of the same name (else
-/// the first), as GDAL pairs them in GeoKeys (EPSG:4979 and 4326, 4937 and 4258).
+/// The geographic 2D CRS of an EPSG geographic 3D CRS: the one on its datum of the same name, as
+/// GDAL pairs them in GeoKeys (EPSG:4979 and 4326, 4937 and 4258). `None` when there is none.
 fn geographic_2d_of(code: u32) -> Option<u32> {
     use crate::epsg::GeodeticKind::{Geographic2D, Geographic3D};
     let r = crate::epsg::registry();
     let g = r.geodetic.get(&code).filter(|g| g.kind == Geographic3D)?;
-    let mut twins: Vec<u32> =
-        r.by_datum.get(&g.datum)?.iter().copied().filter(|c| r.geodetic.get(c).is_some_and(|t| t.kind == Geographic2D)).collect();
-    twins.sort_unstable();
-    twins.iter().copied().find(|c| r.geodetic.get(c).is_some_and(|t| t.name == g.name)).or(twins.first().copied())
+    // The datum's CRSs, by code (sorted when the registry is read).
+    r.by_datum.get(&g.datum)?.iter().copied().find(|c| r.geodetic.get(c).is_some_and(|t| t.kind == Geographic2D && t.name == g.name))
 }
 
 /// The EPSG code of a user-defined projected CRS, from its projection code (UTM zones) or its
 /// citation (such as `WGS 84 / UTM zone 10N`). The datum is the geographic CRS's, else the
 /// GeogGeodeticDatumGeoKey's `datum`: a UTM zone on another datum than WGS 84, NAD83 or NAD27
-/// (NAD83(HARN), ETRS89...) is no WGS 84 UTM zone, and is left to the citation's name.
+/// (NAD83(HARN), ETRS89, a datum of the GeoKeys' own) is no WGS 84 UTM zone, and is left to the
+/// citation's name (a projected CRS, on that datum when the GeoKeys give its code).
 fn user_defined_projected(projection: Option<u16>, geographic: Option<u16>, datum: Option<u16>, citation: Option<String>) -> Option<u32> {
     let citation = citation.unwrap_or_default();
     let defined = |c: &u16| *c != 0 && *c != USER_DEFINED;
@@ -252,20 +254,23 @@ fn user_defined_projected(projection: Option<u16>, geographic: Option<u16>, datu
         return match (nad83, nad27, north) {
             (true, _, true) if (1..=23).contains(&zone) => Some(26900 + zone),
             (_, true, true) if (1..=22).contains(&zone) => Some(26700 + zone),
-            (false, false, true) => Some(32600 + zone),
-            (false, false, false) => Some(32700 + zone),
+            (false, false, true) if (1..=60).contains(&zone) => Some(32600 + zone),
+            (false, false, false) if (1..=60).contains(&zone) => Some(32700 + zone),
             _ => None,
         };
     }
     let name = citation.split('|').next().unwrap_or_default().trim();
-    // The CRS a citation names, on the GeoKeys' datum when they give one (a citation of
-    // `EPSG:32610` on NAD83(HARN) is no WGS 84 UTM zone).
+    // The projected CRS a citation names, on the GeoKeys' datum when they give one (a citation of
+    // `EPSG:32610` on NAD83(HARN) is no WGS 84 UTM zone). A datum of the GeoKeys' own is left to
+    // the name: GDAL reads `NAD83 / UTM zone 15N` on a datum cited as
+    // `North_American_Datum_1983` as EPSG:26915.
     let on_datum = |code: &u32| {
         datum.is_none_or(|d| {
             SpatialRef::from_epsg(*code).ok().and_then(|s| s.geographic_code()).and_then(crate::geographic_datum) == Some(d)
         })
     };
-    if name.is_empty() { None } else { code_of_name(name).filter(on_datum) }
+    let projected = |code: &u32| horizontal_geokey(*code).is_some_and(|(_, geographic)| !geographic);
+    if name.is_empty() { None } else { code_of_name(name).filter(projected).filter(on_datum) }
 }
 
 /// Parses `UTM zone 10N` (or `UTM Zone 10, Northern Hemisphere`) from a citation.
@@ -280,8 +285,9 @@ fn parse_utm_citation(c: &str) -> Option<(u32, bool)> {
     Some((zone, north))
 }
 
-/// The EPSG code a citation names: an EPSG reference in it (`EPSG:32633`, `EPSG::32633`), else,
-/// when terrio is built with wbprojection, the code of wbprojection's CRS of that name.
+/// The EPSG code a citation names, when terrio is built with wbprojection: an EPSG reference in
+/// it (`EPSG:32633`), else the code of wbprojection's CRS of that name, as terrio has read
+/// citations.
 #[cfg(feature = "wbprojection-fallback")]
 fn code_of_name(name: &str) -> Option<u32> {
     wbprojection::epsg_from_srs_reference(name).or_else(|| {
@@ -291,17 +297,12 @@ fn code_of_name(name: &str) -> Option<u32> {
     })
 }
 
+/// None without wbprojection: GDAL takes a citation's CRS only when it is the registered CRS of
+/// that exact name and equivalent to the GeoKeys' (never for an `EPSG:` reference), which terrio
+/// does not check yet.
 #[cfg(not(feature = "wbprojection-fallback"))]
-fn code_of_name(name: &str) -> Option<u32> {
-    // An explicit reference (`EPSG:32633`, `EPSG::32633`), not a code within a WKT (an ESRI PE
-    // string's datum or unit).
-    if name.contains('[') {
-        return None;
-    }
-    let upper = name.to_ascii_uppercase();
-    let rest = upper[upper.find("EPSG:")? + 5..].trim_start_matches(':');
-    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-    digits.parse().ok().filter(|c| *c != 0)
+fn code_of_name(_: &str) -> Option<u32> {
+    None
 }
 
 /// A user-defined projected CRS of GeoKeys as GDAL reads it, where that is not the WKT of its
@@ -1063,10 +1064,10 @@ impl GeoKeyValues {
     /// from 1.0 files. Fails when a count or offset does not fit the directory's 16 bits (an ASCII
     /// key past 65,535 bytes, such as a very long ESRI PE citation).
     ///
-    /// ```no_run
+    /// ```
     /// let keys = terrio_crs::SpatialRef::from_epsg(4326)?.to_geokeys()?;
     /// let tags = keys.encode()?;
-    /// // Version 1.1.0 and two keys: GTModelTypeGeoKey 2 and GeographicTypeGeoKey 4326.
+    /// // GeoTIFF 1.0 (1, 1, 0) and two keys: GTModelTypeGeoKey 2 and GeographicTypeGeoKey 4326.
     /// assert_eq!(&tags.directory[..4], &[1, 1, 0, 2]);
     /// # Ok::<(), terrio_crs::Error>(())
     /// ```
@@ -1130,7 +1131,7 @@ impl SpatialRef {
     /// see [`read`], whose CRS this is. Fails when the GeoKeys give no CRS terrio reads, naming an
     /// unsupported projection method.
     ///
-    /// ```no_run
+    /// ```
     /// use terrio_crs::SpatialRef;
     ///
     /// // A geographic CRS by its code (GTModelTypeGeoKey 2, GeographicTypeGeoKey 4326).
@@ -1163,7 +1164,7 @@ impl SpatialRef {
     /// CRS, as GDAL writes it (EPSG:4979 as `2048=4326`, `4096=4979`). Fails for an unknown CRS,
     /// and for a CRS that needs the fallback and has no WKT.
     ///
-    /// ```no_run
+    /// ```
     /// use terrio_crs::SpatialRef;
     ///
     /// let keys = SpatialRef::from_proj4("+proj=lcc +lat_1=33 +lat_2=45 +lat_0=39 +lon_0=-96 +datum=WGS84")?.to_geokeys()?;
@@ -1280,6 +1281,12 @@ mod tests {
         assert_eq!(user_defined_projected(Some(16010), None, None, Some("WGS 84 / UTM zone 10N".into())), Some(32610));
         assert_eq!(user_defined_projected(None, Some(4269), None, Some("NAD83 / UTM zone 15N".into())), Some(26915));
         assert_eq!(user_defined_projected(Some(16133), None, None, None), Some(32733));
+        // A citation names only a projected CRS: a vertical one is no projected raster's (with
+        // wbprojection; without it, citations name no code but a UTM zone).
+        assert_eq!(user_defined_projected(None, None, None, Some("EPSG:5773".into())), None);
+        // A zone out of range, from a citation, names no code (and does not overflow).
+        assert_eq!(user_defined_projected(None, None, None, Some("WGS 84 / UTM zone 4294961611N".into())), None);
+        assert_eq!(user_defined_projected(None, None, None, Some("WGS 84 / UTM zone 61N".into())), None);
         assert_eq!(user_defined_projected(Some(16015), Some(32767), Some(6269), None), Some(26915));
         // The geographic CRS's datum wins over the citation, as its code does for GDAL.
         assert_eq!(user_defined_projected(Some(16015), Some(4326), None, Some("NAD83 / UTM zone 15N".into())), Some(32615));

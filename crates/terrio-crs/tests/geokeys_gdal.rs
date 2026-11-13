@@ -2,17 +2,17 @@
 //! frozen in `data/geokeys_gdal.tsv` by `scripts/gen_geokeys_gdal.py`: the GeoKeys GDAL writes
 //! for a CRS (`GTIFSetFromOGISDefnEx`) and the CRS GDAL reads from them (`GTIFGetOGISDefnAsOSR`),
 //! for every 20th EPSG projected and geographic 2D code, the codes behind each rule, PROJ strings
-//! of every projection method GeoTIFF names in other units and on other datums, ESRI codes and
-//! compound CRSs.
+//! of every projection method GeoTIFF names in other units and on other datums, ESRI codes,
+//! compound and geographic 3D CRSs.
 //!
 //! - Reading: terrio reads GDAL's GeoKeys as the CRS GDAL reads, by its EPSG code when GDAL's
 //!   has one, else as the same CRS or one whose coordinates are its own (two points near the
 //!   origin, within 1e-9° or a millionth of their distance from it).
 //! - Writing: terrio's GeoKeys of the CRS hold GDAL's model type, EPSG codes (projected,
 //!   geographic, vertical), projection method and linear unit, and GDAL's projection parameters
-//!   (GeoDoubleParams 3078-3096) within 1e-9. GDAL also writes keys the codes imply (citations,
-//!   the angular unit, the ellipsoid's axes), which terrio leaves out, as GeoTIFF 1.1 allows.
-//!   And terrio reads its own GeoKeys back as the CRS.
+//!   (GeoDoubleParams 3078-3096) and a user-defined unit's size within 1e-9. GDAL also writes keys
+//!   the codes imply (citations, the angular unit, the ellipsoid's axes), which terrio leaves out,
+//!   as GeoTIFF 1.1 allows. And terrio reads its own GeoKeys back as the CRS.
 //!
 //! Known differences, listed in [`READ_OTHERWISE`] and [`WRITTEN_OTHERWISE`].
 
@@ -133,12 +133,13 @@ fn defining_shorts(directory: &[u16]) -> Vec<(u16, u16)> {
     out
 }
 
-/// The projection parameters (GeoDoubleParams 3078-3096) of GeoKeys, by key id: an angle or
+/// The linear unit's size (ProjLinearUnitSizeGeoKey, 3077) and projection parameters
+/// (GeoDoubleParams 3078-3096) of GeoKeys, by key id: an angle or
 /// offset not given is 0 (and a scale 1), as GeoTIFF readers take it.
 fn parameters(directory: &[u16], doubles: &[f64]) -> Vec<(u16, f64)> {
     let mut out: Vec<(u16, f64)> = entries(directory)
         .iter()
-        .filter(|k| k[1] == 34736 && (3078..=3096).contains(&k[0]))
+        .filter(|k| k[1] == 34736 && (3077..=3096).contains(&k[0]))
         .filter_map(|k| Some((k[0], *doubles.get(k[3] as usize)?)))
         .filter(|&(id, v)| v != if matches!(id, 3092 | 3093) { 1.0 } else { 0.0 })
         .collect();
@@ -146,7 +147,7 @@ fn parameters(directory: &[u16], doubles: &[f64]) -> Vec<(u16, f64)> {
     out
 }
 
-/// Defining SHORT keys and projection parameters, by key id.
+/// Defining SHORT keys, and the unit size and projection parameters, by key id.
 type Defining = (Vec<(u16, u16)>, Vec<(u16, f64)>);
 
 /// The defining SHORT keys and projection parameters of GeoKeys, a UTM zone by its

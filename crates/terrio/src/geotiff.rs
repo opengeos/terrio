@@ -28,10 +28,11 @@ const RPC_COEFFICIENTS: u16 = 50844;
 pub(crate) struct GeoTags {
     /// GDAL-style geotransform: `[x_origin, pixel_width, row_rotation, y_origin, col_rotation, pixel_height]`.
     pub geo_transform: Option<[f64; 6]>,
-    /// The EPSG code of the CRS, from the GeoKeys.
+    /// The EPSG code of the CRS, from the GeoKeys or a sidecar.
     pub epsg: Option<u32>,
-    /// The full CRS from user-defined GeoKeys, a PE citation or a sidecar. It can retain
-    /// an EPSG identifier that does not resolve to the same full definition in the registry.
+    /// The full CRS from the GeoKeys (an EPSG code with the registry's WKT, a user-defined CRS by
+    /// its WKT or PROJ string, a PE citation) or a sidecar. It can retain an EPSG identifier that
+    /// does not resolve to the same full definition in the registry.
     pub crs: Option<wbraster::CrsInfo>,
     /// Dataset metadata items from the `GDAL_METADATA` tag.
     pub metadata: Vec<(String, String)>,

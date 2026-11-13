@@ -880,15 +880,21 @@ They read and write:
   (ProjCoordTransGeoKey 1, 3, 7 to 28, and 9815 for Hotine oblique Mercator variant B and Swiss
   oblique Mercator), a UTM zone by its ProjectionGeoKey, linear units by EPSG code or by size
   (ProjLinearUnitSizeGeoKey), angular units, and EPSG datums, ellipsoids, prime meridians and
-  `TOWGS84` shifts. A user-defined projected CRS that is a registered one in its unit (a UTM zone,
-  or a CRS named by its citation) is read by its code, as GDAL reads it;
+  `TOWGS84` shifts. A user-defined projected CRS can be read by a registered code (see below);
 - ESRI PE citations (`ESRI PE String = <WKT>`), which GDAL writes for a CRS GeoKeys cannot hold
   (an engineering CRS, a method GeoTIFF has no code for, a definition only its PROJ string
   describes): terrio writes them for the same CRSs.
 
-The reading of a citation's CRS name, and the GeoKeys of a CRS terrio reads only through
-wbprojection, need the `wbprojection-fallback` feature (which `terrio` enables); without it, a
-citation is read only for an EPSG reference (`EPSG:32633`).
+A user-defined projected CRS gets a registered code more often than in GDAL, which names only an
+equivalent registered CRS of the citation's exact name (or an ESRI CRS, as terrio does too). terrio
+also names a UTM zone by its ProjectionGeoKey or a `UTM zone 33N` citation, on WGS 84, NAD83 or
+NAD27, in the GeoKeys' unit, and, with the `wbprojection-fallback` feature (which `terrio` enables),
+the projected CRS a citation names (an `EPSG:` reference or a CRS name), on the GeoKeys' datum when
+they give its code. The code's definition then replaces the keys': where the keys give a datum of
+their own or none, a citation naming a CRS on another ellipsoid (`EPSG:32633` on keys of Clarke
+1866, `NAD27 / UTM zone 15N` on keys without a datum, which GDAL reads on WGS 84) gives other
+coordinates than GDAL. The GeoKeys of a CRS terrio reads only through wbprojection need that feature
+too.
 
 `tests/geokeys_gdal.rs` compares both directions with GDAL 3.12.1 (rasterio 1.5.0), frozen by
 `scripts/gen_geokeys_gdal.py`: the GeoKeys GDAL writes for 376 CRSs (every 20th EPSG projected and

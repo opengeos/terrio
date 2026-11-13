@@ -187,7 +187,7 @@ impl SpatialRef {
     /// them (see the standalone engine's `geokeys::read`). Fails when they give no CRS terrio
     /// reads.
     ///
-    /// ```no_run
+    /// ```
     /// use terrio::crs::SpatialRef;
     ///
     /// let crs = SpatialRef::from_geokeys(&[1, 1, 0, 2, 1024, 0, 1, 1, 3072, 0, 1, 32633], &[], "")?;
@@ -202,7 +202,7 @@ impl SpatialRef {
     /// The GeoTIFF GeoKeys of the CRS, as GDAL writes them (see the standalone engine's
     /// `SpatialRef::to_geokeys`), without the raster type. Fails for an unknown CRS.
     ///
-    /// ```no_run
+    /// ```
     /// use terrio::crs::SpatialRef;
     ///
     /// let tags = SpatialRef::from_epsg(32633)?.to_geokeys()?.encode()?;
