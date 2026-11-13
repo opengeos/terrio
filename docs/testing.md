@@ -381,6 +381,25 @@ authority codes without stored WKT warn once at export and use the same schema
 on every batch, including empty streams. Without optional pyproj validation,
 native metadata is retained. GeoParquet's native stream schema is unchanged.
 
+### GeoJSON write CRS policy
+
+`python/tests/test_geojson_write_crs.py` checks Layer, bytes, streamed convert,
+CLI and pyogrio exports for EPSG, ESRI, custom WKT/PROJ and engineering CRSs.
+Registered authorities are named without changing coordinates; unnamed retained
+definitions are refused before the default writer creates or truncates a file.
+This refusal is Terrio policy, not GDAL write equivalence. Rust also checks ESRI
+aliases, IAU_2015 names and preservation of existing whole/streamed output files;
+Node checks the filesystem-free byte writer and reader. Explicit RFC 7946 output
+is compared with pyproj coordinates within 1e-6 degrees and refuses the local grid.
+
+`python scripts/conformance.py DATA --only geojson-crs --strict` requires eight
+real-data comparisons on US boundaries from `countries.gpkg`, projected by GDAL
+to EPSG:32615 and ESRI:102003. GDAL reads all four export surfaces: CRS authority
+and code, counts and scalar attributes are exact; coordinates allow 1e-7 metres.
+Local GDAL 3.12.1 validation measures zero coordinate difference in all eight
+cases. Missing input data is a suite error, and the runner requires all eight
+JUnit cases to pass before declaring agreement.
+
 ## The conformance suite
 
 Complex TIFF writes are checked with

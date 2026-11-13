@@ -634,6 +634,16 @@ terrio convert 'STACTA:"https://example.com/pyramid/stacta.json":bands' preview.
 | MBTiles | MBTiles vector tiles (MVT) | ✓ | ✓ | mbtiles |
 | MVT | Mapbox Vector Tiles: a tile, or a directory of tiles | ✓ | ✓ | mvt, z/x/y.pbf |
 
+GeoJSON writing keeps coordinates in the layer's CRS by default and names a
+registered CRS in a GeoJSON 2008 `crs` member (EPSG, ESRI and IAU_2015). WGS 84
+needs no member. A retained definition without a usable authority code, such as
+a custom projection or engineering grid, is refused instead of silently writing
+it as WGS 84. Reproject with `Layer.to_crs("EPSG:4326")` or CLI
+`--lco RFC7946=YES` when a transformation exists, or choose a format that stores
+CRS definitions, such as GeoPackage. RFC 7946 output reprojects to WGS 84 and
+omits the `crs` member. The pyogrio facade uses the same naming/refusal policy
+and retains its explicit OGC CRS84 spelling for WGS 84.
+
 A local vector file whose name points to no driver (`data`, `data.txt`, `data.xml`) is identified
 by its first 16 KiB. A JSON root `type` of `FeatureCollection`, `Feature` or a geometry type is
 read as GeoJSON, and an XML root element `FeatureCollection` as GML, as a remote response under

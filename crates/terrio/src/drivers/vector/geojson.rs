@@ -13,7 +13,8 @@
 //! geometry type has heights, as GDAL infers the type (see [`LayerGeom`]).
 //!
 //! Writing keeps the layer's coordinates and names its CRS in a `crs` member when it is not
-//! WGS 84, as GDAL does by default; [`GeoJsonOptions::rfc7946`] reprojects to WGS 84 instead and
+//! WGS 84. A retained CRS that cannot be named is refused rather than silently omitted;
+//! [`GeoJsonOptions::rfc7946`] reprojects to WGS 84 instead and
 //! orients polygon rings counter-clockwise, like GDAL's `RFC7946=YES`.
 
 use crate::crs::SpatialRef;
@@ -45,6 +46,27 @@ pub enum GeoJsonIdType {
 }
 
 impl GeoJsonOptions {
+    /// The GeoJSON 2008 name of the layer's CRS, or no member for WGS 84, unknown CRS or
+    /// RFC 7946 output. Refuses a retained definition that cannot be named, so writing it
+    /// cannot silently label unchanged coordinates as WGS 84.
+    pub fn crs_name(&self, layer: &Layer) -> Result<Option<String>> {
+        let srs = SpatialRef::from_layer(layer);
+        if self.rfc7946 || srs.is_unknown() || srs.epsg == Some(4326) {
+            return Ok(None);
+        }
+        let (authority, code) = srs
+            .authority()
+            .filter(|(authority, _)| *authority != "EPSG")
+            .or_else(|| super::naming_epsg(layer).map(|code| ("EPSG", code)))
+            .ok_or_else(|| {
+                Error::Unsupported(
+                    "GeoJSON cannot name this layer's CRS: reproject to EPSG:4326 (RFC7946=YES), or use a format that stores CRS definitions"
+                        .into(),
+                )
+            })?;
+        Ok(Some(format!("urn:ogc:def:crs:{authority}::{code}")))
+    }
+
     /// Sets an option by its GDAL name: `RFC7946` (YES/NO), `ID_FIELD` (a field name) or
     /// `ID_TYPE` (`AUTO`, `String` or `Integer`). Returns `false` for other names.
     pub fn set(&mut self, key: &str, value: &str) -> Result<bool> {
@@ -1033,12 +1055,8 @@ impl CollectionEncoder {
         let mut doc = Map::new();
         doc.insert("type".into(), json!("FeatureCollection"));
         doc.insert("name".into(), json!(layer.name));
-        if !options.rfc7946
-            && !srs.is_unknown()
-            && srs.epsg != Some(4326)
-            && let Some(code) = super::naming_epsg(layer)
-        {
-            doc.insert("crs".into(), json!({"type": "name", "properties": {"name": format!("urn:ogc:def:crs:EPSG::{code}")}}));
+        if let Some(name) = options.crs_name(layer)? {
+            doc.insert("crs".into(), json!({"type": "name", "properties": {"name": name}}));
         }
         doc.insert("features".into(), Value::Array(Vec::new()));
         let text = Value::Object(doc).to_string();
@@ -1334,6 +1352,38 @@ mod tests {
         assert!(!out.contains("\"crs\""));
         let Some(Geometry::Point(c)) = &back.features[0].geometry else { panic!("no point") };
         assert!((c.x - 15.0).abs() < 1e-6, "{}", c.x);
+    }
+
+    #[test]
+    fn named_authorities_survive_geojson_without_reprojection() {
+        let mut layer =
+            parse(br#"{"type":"Feature","properties":{"id":1},"geometry":{"type":"Point","coordinates":[12,34]}}"#, "points").unwrap();
+        for (authority, code) in [("EPSG", 32615), ("ESRI", 102003), ("ESRI", 102100), ("IAU_2015", 49900)] {
+            SpatialRef::parse(&format!("{authority}:{code}")).unwrap().apply_to_layer(&mut layer);
+            let text = to_string(&layer, &Default::default()).unwrap();
+            let doc: Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(doc["crs"]["properties"]["name"], format!("urn:ogc:def:crs:{authority}::{code}"));
+            let back = parse(text.as_bytes(), "back").unwrap();
+            assert_eq!(SpatialRef::from_layer(&back).authority(), Some((authority, code)));
+            assert_eq!(back.features[0].geometry, layer.features[0].geometry);
+            assert_eq!(back.features[0].attributes, layer.features[0].attributes);
+        }
+    }
+
+    #[test]
+    fn unnamed_crs_refusal_preserves_existing_files() {
+        let mut layer = Layer::new("points");
+        SpatialRef::parse(r#"LOCAL_CS["site grid",UNIT["metre",1]]"#).unwrap().apply_to_layer(&mut layer);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("points.geojson");
+        std::fs::write(&path, b"existing contents").unwrap();
+        assert!(matches!(write(&layer, path.to_str().unwrap(), &Default::default()), Err(Error::Unsupported(_))));
+        assert_eq!(std::fs::read(&path).unwrap(), b"existing contents");
+        assert!(matches!(
+            crate::stream::FeatureWriter::create(path.to_str().unwrap(), &layer, None, &Default::default()),
+            Err(Error::Unsupported(_))
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), b"existing contents");
     }
 
     /// GDAL 3.12.4 (pyogrio 0.13.0 `read_info`) on documents without a `crs` member: EPSG:4979
