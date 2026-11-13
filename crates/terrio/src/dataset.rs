@@ -1414,9 +1414,7 @@ fn read_raster_local(path: &str) -> Result<RasterDataset> {
             (fmt.read(path)?, RasterDriver::from_wb(fmt))
         }
         None => {
-            return Err(Error::Unsupported(format!(
-                "'{path}': format not recognized by terrio's drivers (TERRIO_WBRASTER_FALLBACK=YES lets wbraster detect it)"
-            )));
+            return Err(Error::Unsupported(format!("'{path}': format not recognized by terrio's drivers")));
         }
     };
     let mut ds = crate::drivers::nodata::finish(path, driver, raster);

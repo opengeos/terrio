@@ -1,0 +1,61 @@
+"""Raster signatures select readers when a filename supplies no raster format."""
+
+import numpy as np
+import pytest
+from test_remote_reads import Server
+
+import terrio
+import terrio.rio as rio
+from terrio.rio import Env
+
+
+@pytest.mark.parametrize("extension,driver", [("png", "PNG"), ("jpg", "JPEG"), ("tif", "GTiff")])
+@pytest.mark.parametrize("remote", [False, True])
+@pytest.mark.parametrize("fallback", ["NO", "YES"])
+def test_extensionless_rasters_use_content(tmp_path, extension, driver, remote, fallback):
+    """Read the same encoded pixels through whole and lazy public entry points.
+
+    Args:
+        tmp_path: Temporary image directory.
+        extension: Original filename extension.
+        driver: Expected raster driver.
+        remote: Whether to serve the extensionless image over HTTP.
+        fallback: Legacy fallback option, which must not affect native detection.
+    """
+    values = np.arange(3 * 8 * 8, dtype="uint8").reshape(3, 8, 8)
+    original = tmp_path / f"image.{extension}"
+    with rio.open(original, "w", driver=driver, width=8, height=8, count=3, dtype="uint8") as dst:
+        dst.write(values)
+    with rio.open(original) as src:
+        expected = src.read()
+    path = tmp_path / "image"
+    path.write_bytes(original.read_bytes())
+    server = Server(tmp_path) if remote else None
+    location = server.url + "/image" if server else str(path)
+    try:
+        with Env(TERRIO_WBRASTER_FALLBACK=fallback):
+            np.testing.assert_array_equal(terrio.open_raster(location).read(), expected)
+            for options in ({}, {"driver": driver}):
+                with rio.open(location, **options) as src:
+                    np.testing.assert_array_equal(src.read(), expected)
+            with pytest.raises(rio.errors.RasterioIOError, match="not allowed"):
+                rio.open(location, driver="WEBP")
+        with Env(TERRIO_ALLOWED_DRIVERS="WEBP"):
+            with pytest.raises(terrio.errors.UnsupportedError, match="not allowed"):
+                terrio.open_raster(location)
+    finally:
+        if server:
+            server.close()
+
+
+def test_unknown_content_has_no_unusable_fallback_hint(tmp_path):
+    """Refuse unknown local content without promising a reader that cannot detect it.
+
+    Args:
+        tmp_path: Temporary file directory.
+    """
+    path = tmp_path / "unknown"
+    path.write_bytes(b"not an image")
+    with pytest.raises(terrio.errors.UnsupportedError) as error:
+        terrio.open_raster(str(path))
+    assert "TERRIO_WBRASTER_FALLBACK" not in str(error.value)
