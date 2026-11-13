@@ -3448,3 +3448,16 @@ There is no fixed RSS bound.
 Serial DBF decoding trades parallel parsing throughput for allocation ownership.
 RSS thresholds are deliberately not CI assertions; the calling-thread regression
 and GDAL comparisons provide deterministic checks.
+
+## Empty warp regions
+
+`python/tests/test_region_warp_empty.py` checks zero-width, zero-height and
+fully empty `RegionWarp` destinations across seven resamplers, both grid policies,
+and one or two bands. Source planning returns an empty window. Warping returns
+typed empty data and validity before source-window validation or row kernels,
+even when a caller supplies a nonempty source window. The raster-backed private
+`_warp_from` path skips source borrowing and reading for empty regions too.
+Python preserves the
+configured band axis in `(bands, height, width)` output arrays. The Rust regression
+`empty_regions_return_typed_empty_outputs_even_with_nonempty_source_windows`
+checks the public API directly. These are API invariants, not GDAL comparisons.
