@@ -769,8 +769,9 @@ Web Mercator (EPSG:3857) keeps GDAL's extension, as PROJ does: its `AUTHORITY` i
 A WKT 1 given is returned as it is when it needs no extension (or its root code is the CRS's
 own), else `None`. A WKT 2 that terrio identifies as a code, without a datum
 shift of its own, is written as the code's WKT 1; with the code's two horizontal axes swapped
-(ETRS89 in longitude and latitude, CRS84), as the code's WKT 1 with its axes swapped and without
-the codes that give their order. Another WKT 2 is written as the WKT 1 of its PROJ string, when
+(ETRS89 in longitude and latitude, or the WKT 2 text of `OGC:CRS84`, identified as EPSG:4326),
+as the code's WKT 1 with its axes swapped and without the codes that give their order. Another
+WKT 2 is written as the WKT 1 of its PROJ string, when
 that reads back as the same conversion and the WKT 2's axes are east-north (or north-east, for a
 geographic CRS); on a datum terrio identifies (a custom projection on OSGB36), on that EPSG
 geographic CRS, which keeps the datum's name, code and transformations. A planetocentric CRS

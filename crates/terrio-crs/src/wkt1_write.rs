@@ -575,7 +575,7 @@ fn inverse_flattening(p: &Params, ell: &Ell, defining: Option<f64>) -> f64 {
         return 0.0;
     }
     let same = |rf: &f64| Ell::from_a_rf(ell.a, *rf) == *ell;
-    defining.or_else(|| p.f64("rf")).filter(same).unwrap_or_else(|| 1.0 / (1.0 - ell.one_es.sqrt()))
+    defining.filter(same).or_else(|| p.f64("rf").filter(same)).unwrap_or_else(|| 1.0 / (1.0 - ell.one_es.sqrt()))
 }
 
 /// The EPSG geographic CRS of a PROJ string's `+datum=`, on Greenwich and without another

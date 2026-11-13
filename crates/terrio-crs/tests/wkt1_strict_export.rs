@@ -300,6 +300,20 @@ fn a_wkt2_of_other_axes_than_its_code_is_not_the_codes_wkt1() {
 }
 
 #[test]
+fn a_polar_wkt2_under_its_code_is_the_codes_wkt1() {
+    // Polar CRSs' WKT 2 axes run along meridians (south/south, north/north, ...); identified,
+    // they give the code's WKT 1, character for character.
+    for code in [5041, 3031, 6931] {
+        let id = format!(",ID[\"EPSG\",{code}]]");
+        let row = rows().into_iter().find(|r| r.kind == "wkt" && r.input.starts_with("PROJCRS[") && r.input.ends_with(&id));
+        let row = row.unwrap_or_else(|| panic!("no WKT 2 row of EPSG:{code}"));
+        let registry = SpatialRef::from_epsg(code).unwrap().to_wkt1_strict();
+        assert!(registry.is_some(), "EPSG:{code}");
+        assert_eq!(SpatialRef::from_wkt(&row.input).to_wkt1_strict(), registry, "EPSG:{code}");
+    }
+}
+
+#[test]
 fn the_default_wkt_keeps_the_extension() {
     // `to_wkt` is unchanged: the extension where WKT 1 needs it.
     let grid = SpatialRef::from_proj4("+proj=longlat +ellps=clrk66 +nadgrids=conus +no_defs").unwrap();

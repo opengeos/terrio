@@ -85,7 +85,8 @@ def points(crs):
 
 def compare(definition, ours):
     """The largest difference (metres or degrees) between the original and terrio's WKT 1, on
-    points both transform; None when no point is compared."""
+    points the original transforms (infinite when terrio's fails on one); None when no point is
+    compared."""
     original = CRS(definition)
     written = CRS(ours)
     base = original.geodetic_crs
@@ -101,8 +102,12 @@ def compare(definition, ours):
     for lon, lat in points(original):
         a = to_original.transform(lon, lat)
         b = to_written.transform(lon, lat)
-        if not all(math.isfinite(v) for v in (*a, *b)):
+        # A point only the original transforms is not compared; one only terrio's WKT 1 fails
+        # on differs.
+        if not all(math.isfinite(v) for v in a):
             continue
+        if not all(math.isfinite(v) for v in b):
+            return math.inf
         d = max(abs(a[0] - b[0]), abs(a[1] - b[1]))
         worst = d if worst is None else max(worst, d)
     return worst
