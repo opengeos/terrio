@@ -1110,6 +1110,9 @@ transformation takes one past the points the window is sampled from: such a foot
 and its pixel can then differ with the chunks the warp splits the output grid into.
 With chunk-dependent sampling, the sampled source window can also omit one side of an
 antimeridian-crossing footprint; default stable sampling avoids that window-selection gap.
+With chunk-dependent sampling, the source window of a kernel other than `sum` also reaches a pole
+of the source's CRS that lies inside or beside its chunk, which the points sampled along the
+chunk's edges do not bound.
 For a source wider than one longitude turn, repeated longitudes are read at the single placement
 with the greatest overlap. If no single placement covers the footprint, the part beyond the
 other edge is omitted. Covering that remainder without counting repeated longitudes twice is
@@ -1267,6 +1270,9 @@ GDAL 3.13 changed warp kernel scales and the bilinear/cubic downsampling thresho
 `TERRIO_GDAL_COMPAT` (`3.12` or `3.13`), else `3.12`. To reproduce the corresponding
 GDAL chunk-dependent sampling, also pass `--grid-invariant false`, or set
 `TERRIO_WARP_GRID=GDAL`. An explicit `--grid-invariant true` overrides that setting.
+Terrio's chunk-dependent source windows of kernels other than `sum` also reach a pole of the
+source's CRS inside or beside their chunk, which the points sampled along the chunk's edges do not
+bound, so that a grid holding a pole is written up to it.
 Both policies retain lazy window/overview reads. Python's `warp` and `WarpedVRT`
 accept `grid_invariant=True|False`; JavaScript's `warp` accepts `gridInvariant`.
 

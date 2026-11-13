@@ -27,7 +27,9 @@
 //! The output grid, the coordinate transformation and the resampling kernels follow GDAL's warper
 //! closely. Default sampling anchors approximation spans to the output lattice and uses local
 //! kernel footprints, so aligned tiles and memory chunks retain values. Explicit
-//! `grid_invariant: false` selects GDAL's chunk-dependent reference sampling. `sum` deliberately uses exact
+//! `grid_invariant: false` selects GDAL's chunk-dependent reference sampling. With it, the source
+//! window of a kernel other than `sum` also reaches a pole of the source's CRS inside or beside its
+//! chunk, which the points sampled along the chunk's edges do not bound. `sum` deliberately uses exact
 //! corner footprints rather than GDAL 3.13.3's area-kernel approximation; reprojected sums can
 //! therefore differ even with an exact transformer (`-et 0`). See the sum conformance notes.
 //! Other kernels follow these rules:
@@ -390,7 +392,7 @@ enum SourcePoles {
     /// None looked for: a source georeferenced by GCPs, RPCs or geolocation arrays, or one
     /// whose geographic CRS is not known.
     None,
-    /// Longitude and latitude, or a rotated pole's: each pole is the row of latitude plus or
+    /// Longitude and latitude, or a rotated pole's: each pole is the line of latitude plus or
     /// minus this, in the CRS's angular unit, at every longitude.
     Angular(f64),
     /// Projected: points on the north and the south pole of the CRS's geographic CRS, every 15°
@@ -402,10 +404,12 @@ enum SourcePoles {
 impl SourcePoles {
     fn of(srs: &SpatialRef) -> Self {
         if srs.is_angular() {
+            // Only a rotated-pole grid, whose coordinates are degrees, has no longitude period here.
             return Self::Angular(srs.longitude_period().unwrap_or(360.0) / 4.0);
         }
         let Some(geographic) = srs.geographic_wkt().map(|wkt| SpatialRef::from_wkt(&wkt)) else { return Self::None };
         let Ok(t) = Transformer::new(&geographic, srs) else { return Self::None };
+        // A geographic CRS has a longitude period unless its angular unit is zero or not finite.
         let quarter = geographic.longitude_period().unwrap_or(360.0) / 4.0;
         let finite = |p: crate::Result<(f64, f64)>| p.ok().filter(|(x, y)| x.is_finite() && y.is_finite());
         let pole = |sign: f64| -> Vec<(f64, f64)> {
@@ -434,8 +438,11 @@ struct GenImgProj {
     dst_inv: [f64; 6],
     /// Source CRS to destination CRS, and back; `None` when both are the same.
     ct: Option<(Transformer, Transformer)>,
-    /// The poles of the source's CRS.
-    src_poles: SourcePoles,
+    /// The CRS whose poles a window may need ([`GenImgProj::src_poles`]): the source's, when it
+    /// differs from the destination's and the source is georeferenced by its geotransform.
+    src_poles_srs: Option<SpatialRef>,
+    /// The poles of `src_poles_srs`, found when a window first needs them.
+    src_poles: std::sync::OnceLock<SourcePoles>,
     /// Exact RPC corner batches shared by neighbouring chunks and regions, bounded to 64 entries.
     sum_batches: std::sync::Mutex<std::collections::VecDeque<(usize, usize, CornerRow)>>,
 }
@@ -465,7 +472,8 @@ impl GenImgProj {
             src_scale: (1.0, 1.0),
             dst_gt: IDENTITY,
             dst_inv: IDENTITY,
-            src_poles: if ct.is_some() { SourcePoles::of(src_srs) } else { SourcePoles::None },
+            src_poles_srs: ct.is_some().then(|| src_srs.clone()),
+            src_poles: std::sync::OnceLock::new(),
             ct,
             sum_batches: Default::default(),
         })
@@ -475,13 +483,19 @@ impl GenImgProj {
     fn with_georef(src_srs: &SpatialRef, dst_srs: &SpatialRef, g: Georef) -> Result<Self> {
         let mut t = Self::new(IDENTITY, src_srs, dst_srs)?;
         t.src_gcp = Some(g);
-        t.src_poles = SourcePoles::None;
+        t.src_poles_srs = None;
         Ok(t)
     }
 
     /// A transformer whose source is georeferenced by GCPs.
     fn with_gcps(src_srs: &SpatialRef, dst_srs: &SpatialRef, gcps: super::gcp::GcpTransformer) -> Result<Self> {
         Self::with_georef(src_srs, dst_srs, Georef::Gcp(gcps))
+    }
+
+    /// The poles of the source's CRS, found on first use: only the chunk-dependent sampling's
+    /// windows look for them ([`WarpContext::poles`]).
+    fn src_poles(&self) -> &SourcePoles {
+        self.src_poles.get_or_init(|| self.src_poles_srs.as_ref().map_or(SourcePoles::None, SourcePoles::of))
     }
 
     /// Source pixel/line to source georeferenced coordinates.
@@ -1084,7 +1098,7 @@ impl Source<'_> {
         )?;
         t.src_gcp = self.gcp.clone();
         if t.src_gcp.is_some() {
-            t.src_poles = SourcePoles::None;
+            t.src_poles_srs = None;
         }
         t.src_scale = self.pixel_scale;
         Ok(t)
@@ -3181,21 +3195,36 @@ impl WarpContext<'_> {
 
     /// Points on the north and the south pole of the source's CRS, each `[sx, sy, dx, dy]`: its
     /// source pixel and the output pixel it lands on (those that land). A longitude and latitude
-    /// source's poles are sampled at every 24th of its width, so that they span its columns,
-    /// whatever longitudes they hold; a projected source's, every 15° of longitude.
+    /// source's poles are sampled at 25 longitudes evenly spaced from the least to the greatest
+    /// that its corners hold, so that they span its longitudes whichever way its geotransform
+    /// turns them (along its rows when it is north up: at every 24th of its width); a projected
+    /// source's, every 15° of longitude.
     fn poles(&self) -> &[Vec<[f64; 4]>; 2] {
         self.poles.get_or_init(|| {
             let t = self.t;
-            let source: [Vec<(f64, f64)>; 2] = match &t.src_poles {
+            let source: [Vec<(f64, f64)>; 2] = match t.src_poles() {
                 SourcePoles::None => Default::default(),
-                SourcePoles::Angular(latitude) => [1.0, -1.0].map(|sign| {
-                    (0..=24)
-                        .filter_map(|k| {
-                            let (longitude, _) = t.src_to_geo(k as f64 * self.src_w as f64 / 24.0, 0.0)?;
-                            t.geo_to_src(longitude, sign * latitude)
-                        })
-                        .collect()
-                }),
+                SourcePoles::Angular(latitude) => {
+                    // The first corner (in this order) of least longitude and the first of
+                    // greatest, between which the longitudes vary evenly.
+                    let (w, h) = (self.src_w as f64, self.src_h as f64);
+                    let corners =
+                        [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)].map(|(c, r)| (c, r, t.src_to_geo(c, r).map_or(f64::NAN, |(x, _)| x)));
+                    let least = corners.into_iter().reduce(|a, b| if b.2 < a.2 { b } else { a });
+                    let greatest = corners.into_iter().reduce(|a, b| if b.2 > a.2 { b } else { a });
+                    match (least, greatest) {
+                        (Some((c0, r0, _)), Some((c1, r1, _))) => [1.0, -1.0].map(|sign| {
+                            (0..=24)
+                                .filter_map(|k| {
+                                    let (c, r) = (c0 + k as f64 * (c1 - c0) / 24.0, r0 + k as f64 * (r1 - r0) / 24.0);
+                                    let (longitude, _) = t.src_to_geo(c, r)?;
+                                    t.geo_to_src(longitude, sign * latitude)
+                                })
+                                .collect()
+                        }),
+                        _ => Default::default(),
+                    }
+                }
                 SourcePoles::Projected(points) => points.clone().map(|p| p.into_iter().filter_map(|(x, y)| t.geo_to_src(x, y)).collect()),
             };
             source.map(|pole| {
@@ -3367,14 +3396,16 @@ impl WarpContext<'_> {
         // the source's coordinates turn too fast for the points sampled along the window's edges
         // to bound them. A pole inside the window lies on none of its edges, which may all pass
         // far from it (no closer than 57° N in a polar grid holding the North Pole): the window is
-        // extended to every point of the pole (every column of a longitude and latitude source),
-        // up to the source's edges. Next to a pole on the window's edge or outside it, the
+        // extended to every point of the pole (every column of a north-up longitude and latitude
+        // grid), up to the source's edges. Next to a pole on the window's edge or outside it, the
         // window's pixel centres nearest to the pole may lie between two of those points, closer
         // to the pole than either: the window is extended to the source position of the pole
         // moved into the box through its outermost pixel centres, which is no farther from the
         // pole than any of them (and which the edges' points bound wherever their spacing is small
-        // beside their distance to the pole). A pole the output has as a line, as a cylindrical
-        // projection has, lies on the edge of its domain, where the window's edges reach it.
+        // beside their distance to the pole). That point bounds the window's rows or columns
+        // where they follow latitude, not on a rotated longitude and latitude grid, whose axes
+        // follow neither. A pole the output has as a line, as a cylindrical projection has, lies
+        // on the edge of its domain, where the window's edges reach it.
         // The stable sampling bounds each pixel's own kernel or footprint instead
         // ([`WarpContext::source_window`]), and a `sum` every corner of its footprints (above):
         // only the chunk-dependent sampling's other kernels need the poles.
@@ -7289,6 +7320,142 @@ mod tests {
                 assert_written_up_to_the_pole(&format!("{sampling}, {unit}"), &rows, &out, true);
             }
         }
+    }
+
+    /// A rotated-pole source (`+proj=ob_tran`, whose coordinates are degrees and which has no
+    /// longitude period), its grid's north pole at 60° N 0° E, of 1° pixels from rotated latitude
+    /// 90° to 30°, at every rotated longitude, warped into a Lambert azimuthal equal-area grid
+    /// centred on that pole (200 x 200 pixels of 25 km). In both samplings (`SAMPLINGS`), each
+    /// pixel the source covers is written, by nearest neighbour with its centre's row or the next.
+    #[test]
+    fn a_grid_holding_the_pole_of_a_rotated_pole_source_is_written_up_to_it() {
+        let rotated = SpatialRef::parse("+proj=ob_tran +o_proj=longlat +o_lon_p=0 +o_lat_p=60 +lon_0=180 +datum=WGS84 +no_defs").unwrap();
+        assert!(rotated.is_rotated_pole() && rotated.longitude_period().is_none());
+        let laea = SpatialRef::parse("+proj=laea +lat_0=60 +lon_0=0 +datum=WGS84 +units=m +no_defs").unwrap();
+        let (origin, size, px) = ((-2_500_000.0, 2_500_000.0), (200, 200), 25_000.0);
+        let back = Transformer::new(&laea, &rotated).unwrap();
+        let rows: Vec<Option<f64>> = (0..size.0 * size.1)
+            .map(|k| {
+                let (x, y) = (origin.0 + ((k % size.0) as f64 + 0.5) * px, origin.1 - ((k / size.0) as f64 + 0.5) * px);
+                let (_, latitude) = back.transform(x, y).ok()?;
+                let row = (90.0 - latitude).floor();
+                (0.0..60.0).contains(&row).then_some(row)
+            })
+            .collect();
+        let mut source = typed_raster(DataType::F32, 360, 60, [-180.0, 1.0, 0.0, 90.0, 0.0, -1.0], 4326, |_, r| (r + 1) as f64);
+        source.raster.crs = rotated.to_crs_info();
+        for (grid_invariant, sampling) in SAMPLINGS {
+            let o = WarpOptions {
+                dst_srs: Some(laea.clone()),
+                dst_transform: Some([origin.0, px, 0.0, origin.1, 0.0, -px]),
+                size: Some(size),
+                resampling: Resampling::Nearest,
+                dst_nodata: Nodata::Values(vec![0.0]),
+                grid_invariant,
+                ..Default::default()
+            };
+            let out = warp(&[&source], &o).unwrap().raster.data.to_f64_vec();
+            assert_written_up_to_the_pole(&format!("{sampling}, rotated pole"), &rows, &out, true);
+        }
+    }
+
+    /// NSIDC's north grid (EPSG:3413, 304 x 448 pixels of 25 km), warped whole from longitude and
+    /// latitude sources of 1° pixels holding every longitude and latitude, whose geotransforms
+    /// turn their axes: one transposed (`[-180, 0, 1, 90, -1, 0]`, longitude down its rows) and
+    /// one rotated by 30° (402 x 336 pixels about 0° E 0° N). In both samplings (`SAMPLINGS`),
+    /// every pixel whose centre lies in the source is written: the window of the chunk holding the
+    /// pole reaches it at every longitude the source's corners span.
+    #[test]
+    fn a_polar_grid_from_a_transposed_or_rotated_source_is_written_up_to_the_pole() {
+        let back = Transformer::new(&SpatialRef::from_epsg(3413).unwrap(), &SpatialRef::from_epsg(4326).unwrap()).unwrap();
+        let (origin, size, px) = ((-3_850_000.0, 5_850_000.0), (304, 448), 25_000.0);
+        // The rotated grid's half widths along its axes: the world's corners lie within them.
+        let ((sin, cos), (u, v)) = (30f64.to_radians().sin_cos(), (201.0, 168.0));
+        for (label, (w, h), gt) in [
+            ("transposed", (180, 360), [-180.0, 0.0, 1.0, 90.0, -1.0, 0.0]),
+            ("rotated by 30°", (402, 336), [-u * cos - v * sin, cos, sin, -u * sin + v * cos, sin, -cos]),
+        ] {
+            let inv = invert_gt(&gt).unwrap();
+            let covered: Vec<bool> = (0..size.0 * size.1)
+                .map(|k| {
+                    let (x, y) = (origin.0 + ((k % size.0) as f64 + 0.5) * px, origin.1 - ((k / size.0) as f64 + 0.5) * px);
+                    back.transform(x, y).is_ok_and(|(lon, lat)| {
+                        let (c, r) = apply_gt(&inv, lon, lat);
+                        (0.0..w as f64).contains(&c) && (0.0..h as f64).contains(&r)
+                    })
+                })
+                .collect();
+            let mut source = typed_raster(DataType::F32, w, h, [-180.0, 1.0, 0.0, 90.0, 0.0, -1.0], 4326, |_, _| 1.0);
+            source.set_geo_transform(gt);
+            for (grid_invariant, sampling) in SAMPLINGS {
+                let o = WarpOptions {
+                    dst_srs: Some(SpatialRef::from_epsg(3413).unwrap()),
+                    dst_transform: Some([origin.0, px, 0.0, origin.1, 0.0, -px]),
+                    size: Some(size),
+                    resampling: Resampling::Nearest,
+                    dst_nodata: Nodata::Values(vec![0.0]),
+                    grid_invariant,
+                    ..Default::default()
+                };
+                let out = warp(&[&source], &o).unwrap().raster.data.to_f64_vec();
+                let n = covered.iter().filter(|c| **c).count();
+                let unwritten = covered.iter().zip(&out).filter(|(c, v)| **c && **v == 0.0).count();
+                assert!(n > 0 && unwritten == 0, "{sampling}, {label}: {unwritten} of the {n} pixels the source covers unwritten");
+            }
+        }
+    }
+
+    /// The poles of a source's CRS are looked for only when a window of the chunk-dependent
+    /// sampling first needs them: neither when the transformer is made nor for the stable
+    /// sampling's windows. They are never looked for in a source georeferenced by GCPs, whether
+    /// given to `RegionWarp::with_gcps` or in a warp's options.
+    #[test]
+    fn a_sources_poles_are_looked_for_only_when_a_chunk_dependent_window_needs_them() {
+        let (geographic, polar) = (SpatialRef::from_epsg(4326).unwrap(), SpatialRef::from_epsg(3413).unwrap());
+        let dst_gt = [-3_850_000.0, 25_000.0, 0.0, 5_850_000.0, 0.0, -25_000.0];
+        let (size, src_gt, region) = ((360, 60), [-180.0, 1.0, 0.0, 90.0, 0.0, -1.0], (0, 0, 304, 448));
+        let new = |grid_invariant: bool| {
+            RegionWarp::new(size, src_gt, &geographic, &polar, dst_gt, Resampling::Nearest, 0.125, DataType::F32, vec![None], Some(0.0))
+                .unwrap()
+                .with_grid_invariance(grid_invariant)
+        };
+        let stable = new(true);
+        assert!(stable.t.src_poles.get().is_none(), "looked for when the transformer was made");
+        assert!(stable.source_window(region).is_some());
+        assert!(stable.t.src_poles.get().is_none(), "looked for by a window of the stable sampling");
+        let chunk_dependent = new(false);
+        assert!(chunk_dependent.source_window(region).is_some());
+        assert!(matches!(chunk_dependent.t.src_poles.get(), Some(SourcePoles::Angular(q)) if *q == 90.0));
+        let gcp = |pixel: f64, line: f64| crate::Gcp { pixel, line, x: -180.0 + pixel, y: 90.0 - line, ..Default::default() };
+        let gcps = [gcp(0.0, 0.0), gcp(360.0, 0.0), gcp(0.0, 60.0), gcp(360.0, 60.0), gcp(180.0, 30.0)];
+        let transformer = super::super::gcp::GcpTransformer::new(&gcps, super::super::gcp::GcpMethod::Auto, 0).unwrap();
+        let with_gcps = RegionWarp::with_gcps(
+            size,
+            transformer,
+            &geographic,
+            &polar,
+            dst_gt,
+            Resampling::Nearest,
+            0.125,
+            DataType::F32,
+            vec![None],
+            Some(0.0),
+        )
+        .unwrap()
+        .with_grid_invariance(false);
+        assert!(with_gcps.source_window(region).is_some());
+        assert!(matches!(with_gcps.t.src_poles(), SourcePoles::None), "looked for in a source with GCPs (RegionWarp)");
+        let source = typed_raster(DataType::F32, size.0, size.1, src_gt, 4326, |_, _| 1.0);
+        let o = WarpOptions {
+            gcps: gcps.to_vec(),
+            dst_srs: Some(polar.clone()),
+            dst_transform: Some(dst_gt),
+            size: Some((304, 448)),
+            grid_invariant: false,
+            ..Default::default()
+        };
+        let plan = Plan::new(&[&source], &o).unwrap();
+        assert!(matches!(plan.transformer(0).unwrap().src_poles(), SourcePoles::None), "looked for in a source with GCPs (warp)");
     }
 
     /// A region of an NSIDC north grid (EPSG:3413, 25 km pixels) in the chunk-dependent sampling
