@@ -5369,3 +5369,26 @@ test("TSV byte output uses tabs and preserves polygon commas", () => {
     }
   } finally { source.free(); }
 });
+
+test("CSV column collisions preserve attributes and geometry", () => {
+  for (const [extension, separator] of [["csv", ","], ["tsv", "\t"]]) {
+    const bytes = new TextEncoder().encode(`a${separator}a${separator}b\n1${separator}2${separator}3\n`);
+    const input = terrio.open(bytes, `repeated.${extension}`);
+    assert.deepEqual(input.toGeoJSON().features[0].properties, {a: 1, a_2: 2, b: 3});
+    input.free();
+    const source = terrio.fromGeoJSON({type: "FeatureCollection", features: [{
+      type: "Feature", properties: {WKT: "attribute", WKT_2: "reserved", id: 7},
+      geometry: {type: "Point", coordinates: [10, 46]},
+    }]});
+    const output = source.toBytes(`points.${extension}`);
+    const header = new TextDecoder().decode(output).split("\n")[0].split(separator);
+    assert.equal(new Set(header).size, header.length);
+    const restored = terrio.open(output, `points.${extension}`);
+    const feature = restored.toGeoJSON().features[0];
+    assert.equal(feature.properties.WKT, "attribute");
+    assert.equal(feature.properties.WKT_2, "reserved");
+    assert.equal(feature.properties.id, 7);
+    assert.deepEqual(feature.geometry.coordinates, [10, 46]);
+    restored.free(); source.free();
+  }
+});
