@@ -2035,16 +2035,18 @@ def suite_compound_crs(ctx):
 
 def suite_wkt_keywords(ctx):
     """Engineering and vertical WKT roots through native bindings and CLI."""
-    suite = Suite("wkt-keywords", "Engineering and vertical WKT keywords", "GDAL 3.13.3",
+    suite = Suite("wkt-keywords", "Engineering and vertical WKT keywords", "GDAL/OGR",
                   "Engineering/vertical definitions: exact root authority and CRS kind, "
-                  "CLI WKT retention and unchanged real USGS elevation pixels, nodata and affine. "
-                  "This checks metadata parsing, not engineering-to-Earth transformations.")
+                  "CLI and GTiff/COG WKT retention and unchanged real USGS elevation pixels, type, nodata and affine. "
+                  "GDAL reads equivalent output CRSs; engineering-to-Earth warps are refused.")
     if missing_modules("terrio", "osgeo", "numpy"):
         suite.skipped = "needs current Python bindings, GDAL and NumPy"
         return suite
     if not (Path(ctx.data) / "usgs_dem.tif").exists():
         suite.skipped = "usgs_dem.tif is missing (scripts/fetch_test_data.sh)"
         return suite
+    from osgeo import gdal
+    suite.reference = f"GDAL {gdal.VersionInfo('RELEASE_NAME')}"
     code, out, err = run([sys.executable, str(SCRIPTS / "compare_wkt_keywords_with_gdal.py"),
                           ctx.data, "--terrio", ctx.terrio, "--json"])
     try:
@@ -2056,7 +2058,8 @@ def suite_wkt_keywords(ctx):
         status = IDENTICAL if result["status"] == "identical" else DIFFERS
         suite.cases.append(Case("WKT keywords", result["name"], status, result["detail"]))
     fixture = SCRIPTS.parent / "crates/terrio-crs/tests/data/wkt_keywords_reference.json"
-    expected_names = [case["name"] for case in json.loads(fixture.read_text())["cases"]]
+    cases = json.loads(fixture.read_text())["cases"]
+    expected_names = [case["name"] for case in cases] + [case["name"] + "-root-id" for case in cases if case["local"]]
     if sorted(result["name"] for result in results) != sorted(expected_names) or (code and not any(c.status == DIFFERS for c in suite.cases)):
         suite.error = tail(err or out) or "incomplete WKT keyword comparisons"
     return suite

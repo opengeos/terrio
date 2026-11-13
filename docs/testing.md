@@ -1031,7 +1031,24 @@ pixels with unchanged nodata and affine:
 python scripts/conformance.py ../data --only wkt-keywords --strict
 ```
 
-Engineering-to-Earth transforms are outside this metadata-parsing comparison.
+The registered comparison also writes each definition to GeoTIFF and COG, and
+adds three engineering definitions with root EPSG:5800 identifiers. Across 14
+definitions and both formats, native reads retain the exact input WKT and GDAL
+reads equivalent CRS identities/kinds; USGS pixels, sample type, nodata and affine
+are exact. Engineering-to-Earth transforms are unsupported and their refusal is
+checked after each engineering round trip. Local validation uses GDAL 3.12.1;
+the original eleven metadata references were authored by GDAL 3.13.3.
+
+`python/tests/test_gtiff_engineering_crs.py` checks engineering roots, unit IDs,
+root IDs and compact EPSG controls across whole, byte, lazy-streamed and rio
+writes, with pyproj available and unavailable. GeoKeys must include user-defined
+model type 32767 and a general citation, without a projected or geographic CRS
+code for engineering definitions. The original writer failed all 48 initial
+GeoKey cases; the expanded matrix has 138 cases. Node covers engineering WKT
+through GeoTIFF/COG byte writing and reading in WebAssembly.
+Engineering roots are refused before the legacy projection fallback, including
+in unoptimized WebAssembly warps, where the fallback's large frame could exhaust
+the stack. Node also checks that the dataset remains readable after this refusal.
 
 ## Standalone CRS feature coverage
 

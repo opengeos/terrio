@@ -597,6 +597,12 @@ impl Def {
         // Text the WKT reader refuses (not WKT, nested deeper or longer than GDAL reads) is not
         // handed to wbprojection's parser either, whose recursion has no bound.
         let root = wkt1::parse(w).ok_or_else(|| Error::Crs("not a WKT definition GDAL reads".into()))?;
+        // Engineering roots carry metadata, not an Earth projection. Do not send their IDs
+        // through wbprojection's EPSG builder; its large frame can exhaust a WASM warp stack.
+        if ["LOCAL_CS", "ENGCRS", "ENGINEERINGCRS"].iter().any(|key| root.key.eq_ignore_ascii_case(key)) {
+            let kind = root.key.to_ascii_lowercase().replace('_', "");
+            return Err(Error::Crs(format!("unsupported projection: unsupported WKT root '{kind}'")));
+        }
         let converted = if wkt2::handles(&root) { Some(wkt2::to_proj(&root)?) } else { wkt1::to_proj(&root) };
         if let Some(c) = converted {
             let mut d = Self::from_proj(&c.proj)?;

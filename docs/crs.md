@@ -56,6 +56,12 @@ identifier reader recognizes a root identifier only as the final child; a traili
 `REMARK` retains the WKT but can leave the EPSG identity unset. These forms
 work in Rust, CLI/MCP, Python and JavaScript. Parsing engineering metadata does not
 add transformations between arbitrary local grids and Earth-based CRSs.
+GeoTIFF and COG writers retain engineering definitions, including root identifiers,
+as full WKT in an ESRI PE citation with user-defined model type 32767 and a general
+citation. Readers keep that definition even when its identifier is absent from
+Terrio's EPSG table. Compact geographic/projected GeoKeys are reserved for registered
+horizontal CRSs; other coded definitions retain their WKT. This follows the model
+type and citation requirements in [GeoTIFF 1.1](https://docs.ogc.org/is/19-008r4/19-008r4.html).
 This change adds these four root spellings. Other definition-shaped metadata,
 including `FITTED_CS`, `DERIVEDPROJCRS`, `PARAMETRICCRS`, `TIMECRS` and `IMAGECRS`,
 can be preserved by format adapters without being supported by the shared parser.
