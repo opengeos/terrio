@@ -644,6 +644,12 @@ class CRS(Mapping[str, Any]):
             if value is not False
         )
 
+    def _construction_definition(self) -> str:
+        """The definition captured at construction: a file's WKT, not the file read again."""
+        if self._from_file and isinstance(self._info.get("wkt"), str):
+            return self._info["wkt"]
+        return self._input
+
     def to_projjson(self) -> str:
         """The CRS as PROJJSON v0.7.
 
@@ -653,14 +659,32 @@ class CRS(Mapping[str, Any]):
         Raises:
             CRSError: If terrio would describe the CRS wrongly in PROJJSON.
         """
-        # The definition captured at construction: a file's WKT, not the file read again.
-        definition = self._input
-        if self._from_file and isinstance(self._info.get("wkt"), str):
-            definition = self._info["wkt"]
+        definition = self._construction_definition()
         try:
             return _terrio.crs_to_projjson(definition)
         except Exception as err:
             raise CRSError(f"No PROJJSON for '{self._input}': {err}") from err
+
+    def to_wkt1_strict(self) -> str | None:
+        """The CRS in WKT 1 without GDAL's ``EXTENSION["PROJ4", ...]``.
+
+        As PROJ 9.8.1 exports ``WKT1_GDAL``, for formats whose readers ignore the extension
+        (a ``.prj`` file).
+
+        Returns:
+            str | None: The WKT 1, or None where WKT 1 needs the extension (a datum grid, an
+                axis order or parameter it has no node for) or PROJ writes no WKT 1 (a
+                geographic 3D CRS, Equal Earth). Web Mercator keeps GDAL's extension under
+                its code.
+
+        Raises:
+            CRSError: If the CRS cannot be parsed.
+        """
+        definition = self._construction_definition()
+        try:
+            return _terrio.crs_to_wkt1_strict(definition)
+        except Exception as err:
+            raise CRSError(f"No WKT 1 for '{self._input}': {err}") from err
 
     def to_dict(self, projjson: bool = False) -> dict[str, Any]:
         """The CRS as PROJ parameters, or as PROJJSON.

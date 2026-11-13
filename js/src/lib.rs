@@ -1242,6 +1242,14 @@ pub fn crs_to_proj4(crs: &str) -> Result<Option<String>, JsError> {
     SpatialRef::parse(crs).map(|s| s.to_proj4()).map_err(js_err)
 }
 
+/// The WKT 1 of a CRS without GDAL's `EXTENSION["PROJ4", ...]`, for formats whose readers ignore
+/// it (a `.prj` file), as PROJ 9.8.1 exports `WKT1_GDAL`; `undefined` where WKT 1 needs the
+/// extension (a datum grid) or PROJ writes no WKT 1 (a geographic 3D CRS).
+#[wasm_bindgen(js_name = crsToWkt1Strict)]
+pub fn crs_to_wkt1_strict(crs: &str) -> Result<Option<String>, JsError> {
+    SpatialRef::parse(crs).map(|s| s.to_wkt1_strict()).map_err(js_err)
+}
+
 /// The formats terrio reads and writes: `[{ name, long_name, kind, extensions, read, write }]`.
 /// In WebAssembly, only the formats with in-memory codecs can be used (see the README).
 #[wasm_bindgen]

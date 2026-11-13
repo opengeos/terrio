@@ -573,6 +573,11 @@ test("CRS transforms", () => {
   assert.throws(() => terrio.crsToProjjson("+proj=longlat +lon_0=10 +datum=WGS84"), /lon_0/);
   // PROJ 9.8.1's projinfo -o PROJ.
   assert.equal(terrio.crsToProj4("EPSG:32633"), "+proj=utm +zone=33 +datum=WGS84 +units=m +no_defs +type=crs");
+  // PROJ 9.8.1's WKT1_GDAL with GDAL's axes; none where it needs the PROJ4 extension, or PROJ
+  // writes no WKT 1 (geographic 3D).
+  assert.match(terrio.crsToWkt1Strict("EPSG:32633"), /^PROJCS\["WGS 84 \/ UTM zone 33N",.*AUTHORITY\["EPSG","32633"\]\]$/);
+  assert.equal(terrio.crsToWkt1Strict("+proj=longlat +ellps=clrk66 +nadgrids=conus +no_defs"), undefined);
+  assert.equal(terrio.crsToWkt1Strict("EPSG:4979"), undefined);
   assert.match(crs.name, /UTM zone 33N/);
   assert.equal(crs.geographic, false);
   // PROJ 9.8.1 resolves the authority version separately from the EPSG code.

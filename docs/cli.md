@@ -295,7 +295,7 @@ terrio formats [--json]
 ## crs
 
 ```sh
-terrio crs CRS [--wkt] [--projjson | --proj4]
+terrio crs CRS [--wkt] [--projjson | --proj4 | --wkt1-strict]
 terrio crs SRC --to DST [--s_coord_epoch YEAR] [--t_coord_epoch YEAR] X Y [X Y ...]
 echo "X Y [Z [T]]" | terrio crs SRC --to DST [--s_coord_epoch YEAR] [--t_coord_epoch YEAR]
 ```
@@ -308,6 +308,9 @@ year) use it for time-dependent transformations, and a point that cannot be tran
 [Writing PROJJSON](crs.md#writing-projjson)); it cannot be combined with `--to` or `--wkt`.
 `--proj4` prints only the PROJ string, as `projinfo -o PROJ` writes it, which leaves out the
 datum transformation of an EPSG CRS (see [Writing PROJ strings](crs.md#writing-proj-strings)).
+`--wkt1-strict` prints only the WKT 1 without GDAL's PROJ4 extension, for a `.prj` file whose
+readers ignore it, and fails where WKT 1 needs the extension or PROJ writes none (see
+[Writing strict WKT 1](crs.md#writing-strict-wkt-1)).
 
 ## list-crs
 
@@ -4142,7 +4145,7 @@ for one command and its descendants. Required dataset arguments may be omitted;
 metadata requests open no datasets or output files. The Python package supports
 identical requests with `python -m terrio`.
 
-The payload has `schema_version: "0.1.5"`, `unstable: true`, the program/version,
+The payload has `schema_version: "0.1.6"`, `unstable: true`, the program/version,
 and a recursive `command` object. Each command records its canonical name/path,
 aliases, description, arguments and subcommands. Arguments include flags and
 aliases, positional index, type, raw default tokens, choices, required status,

@@ -68,6 +68,7 @@ Suites:
                       the EPSG, ESRI and IAU_2015 CRSs (compare_crs_list_with_gdal.py)
     transform-bounds  polar and regional bounding boxes vs GDAL via rasterio
     geojson-crs       named GeoJSON CRS and real projected boundaries read by GDAL
+    wkt1-strict-export  ``terrio crs --wkt1-strict`` of custom CRSs read by PROJ (compare_wkt1_strict_with_proj.py)
     transform-batches  mixed-validity Python batches and Natural Earth points vs GDAL
 
 Usage:
@@ -130,6 +131,7 @@ GDAL_FREE_SUITES = frozenset(
         "pyogrio-buffers",
         "vsi",
         "webp-writer",
+        "wkt1-strict-export",
         "xlsx-workbook",
     )
 )
@@ -2341,6 +2343,34 @@ def suite_projjson_export(ctx):
     return suite
 
 
+def suite_wkt1_strict_export(ctx):
+    """terrio's strict WKT 1 (`--wkt1-strict`) of custom definitions, read by live PROJ."""
+    suite = Suite("wkt1-strict-export", "Strict WKT 1 export", "PROJ",
+                  "`SpatialRef::to_wkt1_strict` of every custom definition of "
+                  "`tests/data/wkt1_strict_export.tsv` (PROJ strings, WKT 1 and 2, references, IAU_2015 "
+                  "CRSs), read by PROJ (as GDAL reads a `.prj`): points around each CRS's origin "
+                  "transform as from the original, within 1 mm or 1e-8 degrees; none written where "
+                  "PROJ has no WKT 1 without extension. Not compared: the known differences (terrio "
+                  "writes none), Halley's and Eros's projected CRSs, and CRSs PROJ transforms no "
+                  "point to.")
+    if missing_modules("pyproj"):
+        suite.skipped = "needs pyproj"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_wkt1_strict_with_proj.py"), "--terrio", ctx.terrio, "--json"])
+    try:
+        cases = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    statuses = {"identical": IDENTICAL, "within tolerance": TOLERANCE, "expected rejection": EXPECTED_REJECTION,
+                "not compared": NOT_COMPARED}
+    for case in cases:
+        suite.cases.append(Case(case["group"], case["name"], statuses.get(case["status"], DIFFERS), case["detail"]))
+    if code and not any(c.status == DIFFERS for c in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
 def suite_tiff_block_tags(ctx):
     """Compare TIFF block addresses with file tables and GDAL.
 
@@ -4134,6 +4164,7 @@ SUITES = OrderedDict(
         ("isea", suite_isea),
         ("projjson", suite_projjson),
         ("projjson-export", suite_projjson_export),
+        ("wkt1-strict-export", suite_wkt1_strict_export),
         ("iau", suite_iau),
         ("compound-crs", suite_compound_crs),
         ("wkt-keywords", suite_wkt_keywords),

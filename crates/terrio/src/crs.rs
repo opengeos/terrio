@@ -167,6 +167,25 @@ impl SpatialRef {
         self.as_core().to_proj4()
     }
 
+    /// The CRS in WKT 1 without GDAL's `EXTENSION["PROJ4", ...]`, for formats whose readers
+    /// ignore it, as PROJ 9.8.1 exports `WKT1_GDAL`; `None` where WKT 1 needs the extension or
+    /// PROJ writes no WKT 1 (see the standalone engine's `SpatialRef::to_wkt1_strict`).
+    ///
+    /// ```no_run
+    /// use terrio::crs::SpatialRef;
+    ///
+    /// let crs = SpatialRef::parse("+proj=longlat +ellps=clrk66 +nadgrids=conus")?;
+    /// match crs.to_wkt1_strict() {
+    ///     Some(wkt) => std::fs::write("layer.prj", wkt)?,
+    ///     None => println!("no WKT 1 without the PROJ4 extension: keep the CRS another way"),
+    /// }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn to_wkt1_strict(&self) -> Option<String> {
+        initialize();
+        self.as_core().to_wkt1_strict()
+    }
+
     /// The CRS as PROJJSON v0.7 (see the standalone engine's `SpatialRef::to_projjson`).
     pub fn to_projjson(&self) -> Result<String> {
         initialize();

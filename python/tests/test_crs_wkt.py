@@ -255,6 +255,24 @@ def test_crs_to_proj4_writes_proj_string():
     assert terrio._terrio.crs_to_proj4(local) is None
 
 
+def test_crs_to_wkt1_strict_writes_wkt1_without_the_extension():
+    # PROJ 9.8.1's WKT1_GDAL of EPSG:4326, with GDAL's axes (pyproj 3.8.0,
+    # to_wkt("WKT1_GDAL", output_axis_rule=True)).
+    assert terrio._terrio.crs_to_wkt1_strict("EPSG:4326") == (
+        'GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563,'
+        'AUTHORITY["EPSG","7030"]],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0,'
+        'AUTHORITY["EPSG","8901"]],UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]],'
+        'AXIS["Latitude",NORTH],AXIS["Longitude",EAST],AUTHORITY["EPSG","4326"]]'
+    )
+    # A datum grid needs the PROJ4 extension; PROJ writes no WKT 1 of a geographic 3D CRS.
+    grid = "+proj=longlat +ellps=clrk66 +nadgrids=conus +no_defs"
+    assert terrio._terrio.crs_to_wkt1_strict(grid) is None
+    assert terrio._terrio.crs_to_wkt1_strict("EPSG:4979") is None
+    # The same through rio.CRS.
+    assert trio.CRS.from_epsg(4326).to_wkt1_strict().endswith('AUTHORITY["EPSG","4326"]]')
+    assert trio.CRS.from_user_input(grid).to_wkt1_strict() is None
+
+
 def test_crs_to_projjson_exports_the_file_read_at_construction(tmp_path):
     prj = tmp_path / "crs.prj"
     prj.write_text(trio.CRS.from_epsg(32632).to_wkt())
