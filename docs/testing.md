@@ -363,6 +363,11 @@ pytest and rasterio are required. Default/explicit lossless samples are exact;
 requested lossy output changes with quality, keeps alpha exactly, and is decoded
 independently with GDAL (validated locally with GDAL 3.13.3). Path and memory
 outputs agree. Lossy byte streams, size and PSNR are not claimed to match libwebp.
+Malformed `QUALITY` values, including empty strings and trailing text, must raise
+an argument error through native, rio path and memory writes, even when lossless
+output is selected. This is intentionally stricter than GDAL's numeric-prefix
+parser. Complete numbers from 0 to 100, decimals and surrounding whitespace are
+accepted; NaN retains the historical quality 75 default.
 The shared lossy encoder is also checked through WebAssembly GeoTIFF tiles in
 `js/tests/node.test.mjs`. General `toBytes` and `open` do not support WebP in that
 build; `rasterTiles` can emit standalone WebP bytes through its callback.
