@@ -1060,12 +1060,14 @@ fn list_layers_native(path: &str) -> Result<Vec<String>> {
     Ok(dataset.layers.into_iter().map(|l| l.name).collect())
 }
 
+const NO_ARCHIVE_DATASET: &str = "no dataset found in ";
+
 /// Refuses an archive whose selected document provides no dataset layers.
 fn check_archive_layers(path: &str, layers: &[Layer]) -> Result<()> {
     let location = vfs::Location::parse(path);
     if layers.is_empty() && (matches!(location, vfs::Location::Zip { .. }) || VectorDriver::for_extension(path) == Some(VectorDriver::KMZ))
     {
-        return Err(Error::Unsupported(format!("no dataset found in '{}'", location.file_name())));
+        return Err(Error::Unsupported(format!("{NO_ARCHIVE_DATASET}'{}'", location.file_name())));
     }
     Ok(())
 }
@@ -1090,6 +1092,7 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
         e if e.is_resource_refusal() => false,
         // A missing file, unless the path is one of GDAL's dataset names (`HDF5:"f.h5"://x`).
         Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound => vfs::is_gdal_name(path),
+        Error::Unsupported(message) if message.starts_with(NO_ARCHIVE_DATASET) => false,
         _ => true,
     };
     if !retry {
@@ -1105,6 +1108,13 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
 #[cfg(all(test, feature = "gdal"))]
 mod fallback_tests {
     use super::*;
+
+    #[test]
+    fn archives_without_layers_are_not_retried() {
+        let error = check_archive_layers("empty.kmz", &[]).unwrap_err();
+        let result: Result<()> = gdal_fallback("empty.kmz", Err(error), |_| panic!("empty archive retried through GDAL"));
+        assert!(matches!(result, Err(Error::Unsupported(message)) if message.starts_with(NO_ARCHIVE_DATASET)));
+    }
 
     #[test]
     fn missing_windows_files_are_not_retried() {

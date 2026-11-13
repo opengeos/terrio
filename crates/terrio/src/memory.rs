@@ -86,7 +86,7 @@ pub fn suggest_vector_extension_checked(bytes: &[u8]) -> Result<Option<&'static 
 fn vector_extension_hint(bytes: &[u8]) -> Option<&'static str> {
     // SQLite's signature alone cannot distinguish GeoPackage from MBTiles (whose optional
     // application id is usually zero). Anonymous ambiguous databases need a filename.
-    if bytes.starts_with(b"SQLite format 3\0") && !matches!(bytes.get(68..72), Some(b"GPKG" | b"GP10")) {
+    if bytes.starts_with(b"SQLite format 3\0") && !crate::inspection::is_geopackage_header(bytes) {
         return None;
     }
     // DXF group codes and SECTION are ASCII, but comments and entity strings may use
@@ -1101,7 +1101,7 @@ mod tests {
 
     #[test]
     fn vector_byte_hints_share_signatures_and_xml_probes() {
-        for application_id in [b"GPKG", b"GP10"] {
+        for application_id in [b"GPKG", b"GP10", b"GP11"] {
             let mut header = [0; 100];
             header[..16].copy_from_slice(b"SQLite format 3\0");
             header[68..72].copy_from_slice(application_id);
