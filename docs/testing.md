@@ -580,6 +580,16 @@ The shared lossy encoder is also checked through WebAssembly GeoTIFF tiles in
 `js/tests/node.test.mjs`. General `toBytes` and `open` do not support WebP in that
 build; `rasterTiles` can emit standalone WebP bytes through its callback.
 
+`python/tests/test_webp_lossy_damage.py` checks the 30 seeded RGB tiles from #973
+at 11 qualities, plus default lossy GeoTIFF WebP tiles and the reported quality
+70/75 failures. Pillow/libwebp independently decodes standalone output, and GDAL
+3.12.1 via rasterio decodes the TIFF tiles. Every control requires at least 30 dB
+PSNR versus its input and no 16 by 16 macroblock with mean absolute error above
+20 levels. These are corruption thresholds, not a claim of equal libwebp encoder
+quality. The corrected shared fast encoder always signals skipped macroblocks
+whose coefficient tokens are omitted, including a single skipped block. This
+preserves token alignment without switching encoder methods or quality levels.
+
 CityJSON uses its published schemas and specifications as the reference because
 GDAL 3.13.3 has no CityJSON driver. Prepare the real CityJSON 1.1 Den Haag and 2.0
 Delft/Rotterdam fixtures and versioned schemas outside the repository, then run:
