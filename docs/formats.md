@@ -790,6 +790,8 @@ refused before creating the GML or its schema file. This includes unregistered c
 CRSs such as `EPSG:6341+5773`; compound URNs are read but not written. Reproject to a named CRS or use
 a format that stores the definition, such as GeoPackage. WFS 1.1/2.0
 bounding boxes follow the advertised authority order; WFS 1.0 bounding boxes use XY.
+CityGML currently applies authority-axis normalization only to EPSG identifiers;
+its ESRI and IAU identifiers do not share the simple-feature GML axis handling.
 Standalone layers with conflicting coordinate-axis declarations, including nested geometry
 members, are refused. Unknown EPSG identifiers are written with short `EPSG:` names and XY
 coordinates, preserving coordinate values on a local round trip; their custom CRS definition
