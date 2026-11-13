@@ -11,6 +11,76 @@ import terrio
 import terrio.pyogrio as tpg
 
 
+@pytest.mark.parametrize("context", ["del", "atexit", "finalize"])
+@pytest.mark.parametrize("warning_filter", ["default", "ignore"])
+def test_warning_during_python_shutdown_keeps_dataset(
+    malformed_crs_shapefile, context, warning_filter
+):
+    """Return a successfully opened dataset even after Python disables imports.
+
+    Args:
+        malformed_crs_shapefile: Readable dataset with an invalid projection sidecar.
+        context: Callback phase used during interpreter shutdown.
+        warning_filter: Ordinary warning emission or ignored warnings.
+    """
+    script = '''
+import atexit
+import sys
+import warnings
+import weakref
+import terrio
+
+warnings.simplefilter(sys.argv[3])
+
+def read(call=terrio.open_vector, path=sys.argv[1], out=sys.stdout):
+    """Keep the binding and output stream alive through module teardown.
+
+    Args:
+        call: Retained native binding.
+        path: Input dataset filename.
+        out: Retained output stream.
+    """
+    try:
+        result = call(path)
+        out.write(f"returned {len(result)} layers and {len(result[0])} features\\n")
+    except BaseException as error:
+        out.write(f"failed {type(error).__name__}: {error}\\n")
+
+class Holder:
+    def __del__(self, callback=read):
+        """Invoke the retained binding after the import machinery is cleared.
+
+        Args:
+            callback: Retained read callback.
+        """
+        callback()
+
+if sys.argv[2] == "del":
+    holder = Holder()
+elif sys.argv[2] == "atexit":
+    atexit.register(read)
+else:
+    class Finalized:
+        pass
+    holder = Finalized()
+    weakref.finalize(holder, read)
+'''
+    result = subprocess.run(
+        [sys.executable, "-c", script, malformed_crs_shapefile, context, warning_filter],
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "returned 1 layers and 1 features"
+    assert "ImportError" not in result.stderr
+    assert "Exception ignored" not in result.stderr
+    if warning_filter == "ignore":
+        assert "holds no CRS definition" not in result.stderr
+    elif context != "del":
+        assert "holds no CRS definition" in result.stderr
+
+
 @pytest.mark.parametrize("callback", ["native", "helper"])
 @pytest.mark.parametrize("context", ["atexit", "thread"])
 def test_warning_without_python_caller(malformed_crs_shapefile, callback, context):
