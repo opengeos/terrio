@@ -3,7 +3,8 @@
 //     frmts/gtiff/gt_wkt_srs.cpp
 //   libgeotiff newest:
 //     libgeotiff/geo_normalize.c
-// No code is translated from these sources.
+// No code is translated from these sources. Compared with GDAL 3.12.1's output (rasterio 1.5.0)
+// in tests/geokeys_gdal.rs.
 
 //! Coordinate reference systems in GeoTIFF GeoKeys (GeoTIFF 1.1, OGC 19-008r4), as GDAL reads and
 //! writes them: EPSG codes, user-defined geographic and projected CRSs (the projection method
@@ -292,9 +293,6 @@ fn code_of_name(name: &str) -> Option<u32> {
 
 #[cfg(not(feature = "wbprojection-fallback"))]
 fn code_of_name(name: &str) -> Option<u32> {
-    if let Ok(code) = name.parse() {
-        return Some(code);
-    }
     // An explicit reference (`EPSG:32633`, `EPSG::32633`), not a code within a WKT (an ESRI PE
     // string's datum or unit).
     if name.contains('[') {
@@ -854,10 +852,17 @@ pub fn user_defined_keys(crs: &SpatialRef, name: &str) -> Option<GeoKeyValues> {
         let geog = crs.geographic_code();
         return keys_for_proj(&p, name, geog);
     }
-    // Else wbprojection's model of it, when built with it.
-    #[cfg(feature = "wbprojection-fallback")]
-    return crs.to_wbp().ok().and_then(|c| keys_for_crs(&c, name));
-    #[cfg(not(feature = "wbprojection-fallback"))]
+    wbprojection_keys(crs, name)
+}
+
+/// GeoKeys from wbprojection's model of a CRS, when terrio is built with it.
+#[cfg(feature = "wbprojection-fallback")]
+fn wbprojection_keys(crs: &SpatialRef, name: &str) -> Option<GeoKeyValues> {
+    crs.to_wbp().ok().and_then(|c| keys_for_crs(&c, name))
+}
+
+#[cfg(not(feature = "wbprojection-fallback"))]
+fn wbprojection_keys(_: &SpatialRef, _: &str) -> Option<GeoKeyValues> {
     None
 }
 
@@ -1040,6 +1045,7 @@ fn keys_for_crs(crs: &wbprojection::Crs, name: &str) -> Option<GeoKeyValues> {
 /// GeoKey values by key id, as [`SpatialRef::to_geokeys`] gives them: [`encode`](Self::encode)
 /// writes them in the three TIFF tags.
 #[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
 pub struct GeoKeyValues {
     /// SHORT keys.
     pub shorts: Vec<(u16, u16)>,
@@ -1065,6 +1071,12 @@ impl GeoKeyValues {
     /// # Ok::<(), terrio_crs::Error>(())
     /// ```
     pub fn encode(&self) -> Result<GeoKeyTags> {
+        self.encode_with_minor_revision(u16::from(self.shorts.iter().any(|k| k.0 == 4096)))
+    }
+
+    /// The tags of [`encode`](Self::encode) with the directory's minor revision given: 0 for
+    /// GeoTIFF 1.0 (KeyRevision 1.0, as LAS records hold them), 1 for GeoTIFF 1.1.
+    pub fn encode_with_minor_revision(&self, minor: u16) -> Result<GeoKeyTags> {
         let too_long = |what: &str| Error::Crs(format!("GeoKeys: {what} does not fit a GeoKey directory's 16 bits"));
         if self.doubles.len() > usize::from(u16::MAX) {
             return Err(too_long("GeoDoubleParamsTag"));
@@ -1082,7 +1094,6 @@ impl GeoKeyValues {
             ascii.push_str(&text);
         }
         keys.sort_by_key(|k| k[0]);
-        let minor = u16::from(keys.iter().any(|k| k[0] == 4096));
         let count = u16::try_from(keys.len()).map_err(|_| too_long("the number of keys"))?;
         let mut directory = vec![1u16, 1, minor, count];
         directory.extend(keys.iter().flatten());
@@ -1090,7 +1101,7 @@ impl GeoKeyValues {
     }
 
     /// The directory entries of the DOUBLE keys: `[id, GeoDoubleParamsTag, count, offset]`.
-    pub fn double_keys(&self) -> Vec<[u16; 4]> {
+    fn double_keys(&self) -> Vec<[u16; 4]> {
         let mut out: Vec<[u16; 4]> = Vec::new();
         for (i, (id, _)) in self.doubles.iter().enumerate() {
             match out.last_mut() {

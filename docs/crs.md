@@ -867,6 +867,8 @@ terrio-crs, so that other programs can use them without the `terrio` crate:
 unread, for a warning. `SpatialRef::to_geokeys()` gives the CRS's GeoKeys, as GDAL 3.12.1 writes
 them (`GTIFSetFromOGISDefnEx`), without the raster type (GTRasterTypeGeoKey), and
 `GeoKeyValues::encode()` the three tags. `terrio`'s GeoTIFF and LAS readers and writers use them.
+They are Rust API only: the Python and JavaScript CRS objects read and write GeoTIFFs through the
+drivers, and the GeoKey arrays serve programs with their own TIFF code.
 
 They read and write:
 

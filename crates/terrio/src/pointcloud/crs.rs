@@ -215,10 +215,9 @@ fn geokey_vlrs(crs: &SpatialRef) -> Option<Vec<Vlr>> {
     if let Some(code) = vertical {
         v.shorts.push((4096, code));
     }
-    let crate::crs::geokeys::GeoKeyTags { directory: mut dir, ascii, .. } = v.encode().ok()?;
     // KeyRevision 1.0 whatever the keys, as terrio has always written LAS GeoKeys: GeoTIFF 1.1's
     // minor revision for a vertical CRS is GDAL's choice for GeoTIFFs.
-    dir[2] = 0;
+    let crate::crs::geokeys::GeoKeyTags { directory: dir, ascii, .. } = v.encode_with_minor_revision(0).ok()?;
     let mut out = vec![Vlr::new(LASF_PROJECTION, 34735, "GeoTIFF GeoKeyDirectoryTag", dir.iter().flat_map(|k| k.to_le_bytes()).collect())];
     if !v.doubles.is_empty() {
         out.push(Vlr::new(
