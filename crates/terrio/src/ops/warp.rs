@@ -3573,7 +3573,17 @@ impl WarpContext<'_> {
                 if !ok[i..i + 4].iter().all(|v| *v) {
                     return None;
                 }
-                square_scales(std::array::from_fn(|k| (xs[i + k], ys[i + k])))
+                let mut corners = std::array::from_fn(|k| (xs[i + k], ys[i + k]));
+                if let Some(turn) = self.longitude_turn() {
+                    let pixel = i / 4;
+                    let centre = (position(pixel % nx, nx, c.dw, c.dx) + 0.5, position(pixel / nx, ny, c.dh, c.dy) + 0.5);
+                    let mut columns = corners.map(|p| p.0);
+                    self.unwrap_longitudes(&mut columns, turn, centre);
+                    for (corner, column) in corners.iter_mut().zip(columns) {
+                        corner.0 = column;
+                    }
+                }
+                square_scales(corners)
             })
             .collect();
         values.sort_by(|a, b| (a.0 * a.1).total_cmp(&(b.0 * b.1)));
@@ -3889,16 +3899,17 @@ impl WarpContext<'_> {
     /// Moves the source columns `xs` of an output pixel's footprint corners by whole turns of
     /// longitude (`turn` columns each), so that the footprint does not cross the source's
     /// longitude cut, and returns whether any moved. A large span alone is ambiguous: a coarse
-    /// pixel can span up to a whole turn too. Its exact centre (`centre`, in output pixels) lies
-    /// between its corners; at a cut, it lies outside their span, over half a turn from some of
-    /// them, which are moved toward it.
+    /// pixel can span up to a whole turn too. Only corners over half a turn from its exact
+    /// centre (`centre`, in output pixels) are moved toward it. A corner exactly on the meridian
+    /// can put the centre inside the original long-way-round span, so containment alone does
+    /// not establish continuity. Coarse corners within half a turn of the centre stay put.
     fn unwrap_longitudes(&self, xs: &mut [f64], turn: f64, (dx, dy): (f64, f64)) -> bool {
         let (low, high) = xs.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), x| (lo.min(*x), hi.max(*x)));
         let mut moved = false;
         if high - low > turn / 2.0
             && high - low <= turn * (1.0 + 1e-10)
             && let Some((middle, _)) = self.t.point(true, dx, dy)
-            && (middle < low - 1e-7 || middle > high + 1e-7)
+            && middle.is_finite()
         {
             for x in xs {
                 let delta = *x - middle;
