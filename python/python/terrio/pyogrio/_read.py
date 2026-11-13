@@ -202,12 +202,8 @@ class _Source:
                     raise DataSourceError(f"{self.path}: No such file or directory") from e
                 except _terrio_errors.TerrioError as e:
                     raise DataSourceError(str(e)) from e
-            if (
-                not self._names
-                and self._tmp is not None
-                and self.path.lower().endswith((".zip", ".kmz"))
-            ):
-                raise DataSourceError(f"{self.path}: No vector layers found")
+            if not self._names and self.path.lower().endswith((".zip", ".kmz", ".xlsx")):
+                raise DataSourceError(f"no dataset found in '{self.path}'")
         return self._names
 
     def name(self) -> str:

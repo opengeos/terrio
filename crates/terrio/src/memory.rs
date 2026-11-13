@@ -84,18 +84,23 @@ pub fn suggest_vector_extension_checked(bytes: &[u8]) -> Result<Option<&'static 
 
 /// Non-archive byte hints shared by the checked and compatibility probes.
 fn vector_extension_hint(bytes: &[u8]) -> Option<&'static str> {
-    let text = std::str::from_utf8(bytes).ok().map(|text| text.trim_start_matches('\u{feff}').trim_start());
-    if let Some(text) = text {
-        let mut lines = text.lines().map(str::trim);
+    // DXF group codes and SECTION are ASCII, but comments and entity strings may use
+    // a legacy codepage. Inspect only the leading pairs without decoding the body.
+    let prefix = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes).trim_ascii_start();
+    if prefix.starts_with(b"0") || prefix.starts_with(b"999") {
+        let mut lines = prefix.split(|byte| *byte == b'\n').map(<[u8]>::trim_ascii);
         while let (Some(code), Some(value)) = (lines.next(), lines.next()) {
-            if code == "999" {
+            if code == b"999" {
                 continue;
             }
-            if code == "0" && value.eq_ignore_ascii_case("SECTION") {
+            if code == b"0" && value.eq_ignore_ascii_case(b"SECTION") {
                 return Some("dxf");
             }
             break;
         }
+    }
+    let text = std::str::from_utf8(bytes).ok().map(|text| text.trim_start_matches('\u{feff}').trim_start());
+    if let Some(text) = text {
         if text.starts_with('{') && crate::inspection::root_json_type(text).as_deref() == Some("Feature") {
             let mut values = serde_json::Deserializer::from_str(text).into_iter::<serde::de::IgnoredAny>();
             if values.next().is_some_and(|value| value.is_ok()) {
@@ -1085,6 +1090,8 @@ mod tests {
             (b"  0\r\nSECTION\r\n  2\r\nENTITIES\r\n".as_slice(), Some("dxf")),
             (b"0\nsection\n2\nENTITIES\n".as_slice(), Some("dxf")),
             (b"999\nexporter comment\n999\nsecond comment\n0\nSECTION\n2\nENTITIES\n".as_slice(), Some("dxf")),
+            (b"999\ncaf\xe9\n0\nSECTION\n2\nENTITIES\n".as_slice(), Some("dxf")),
+            (b"0\nSECTION\n2\nENTITIES\n0\nTEXT\n1\ncaf\xe9\n".as_slice(), Some("dxf")),
             (b"PK\x03\x04broken".as_slice(), Some("zip")),
             (b"0,SECTION\n1,survey\n".as_slice(), None),
             (

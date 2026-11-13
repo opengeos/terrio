@@ -192,15 +192,17 @@ def test_generic_named_uploads_use_content_hints(tmp_path, sources, extension):
     assert actual["features"] == expected["features"] == 4
 
 
-def test_dxf_with_leading_comments_matches_path(tmp_path, sources):
+@pytest.mark.parametrize("comment", [b"exported by a surveyor", b"caf\xe9"])
+def test_dxf_with_leading_comments_matches_path(tmp_path, sources, comment):
     """DXF's optional leading group-999 comments do not hide its section header.
 
     Args:
         tmp_path: Temporary directory.
         sources: Dataset paths.
+        comment: ASCII or legacy single-byte comment text.
     """
     path = tmp_path / "comments.dxf"
-    data = b"999\r\nexported by a surveyor\r\n" + sources["dxf"].read_bytes()
+    data = b"999\r\n" + comment + b"\r\n" + sources["dxf"].read_bytes()
     path.write_bytes(data)
     assert tpg.read_info(data)["features"] == tpg.read_info(path)["features"] == 4
 
@@ -263,13 +265,20 @@ def test_multilayer_kmz_buffers_preserve_layers(tmp_path, sources):
     assert [tpg.read_info(data, layer=index)["features"] for index in range(4)] == [0, 4, 0, 4]
 
 
-def test_empty_archive_buffer_has_a_clear_refusal():
-    """An empty archive cannot silently advertise a successful layer listing."""
+def test_empty_archive_buffer_has_a_clear_refusal(tmp_path):
+    """An empty archive cannot silently advertise a successful layer listing.
+
+    Args:
+        tmp_path: Temporary directory.
+    """
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, "w"):
         pass
-    with pytest.raises(DataSourceError):
-        tpg.list_layers(stream.getvalue())
+    path = tmp_path / "empty.zip"
+    path.write_bytes(stream.getvalue())
+    for source in [path, stream.getvalue()]:
+        with pytest.raises(DataSourceError, match="no dataset found"):
+            tpg.list_layers(source)
 
 
 @pytest.mark.parametrize("extension", ["geojson", "gpkg", "fgb", "parquet", "kml", "gml"])
