@@ -1061,13 +1061,14 @@ fn list_layers_native(path: &str) -> Result<Vec<String>> {
 }
 
 const NO_ARCHIVE_DATASET: &str = "no dataset found in ";
+const NO_ARCHIVE_LAYERS: &str = ": selected document has no layers";
 
 /// Refuses an archive whose selected document provides no dataset layers.
 fn check_archive_layers(path: &str, layers: &[Layer]) -> Result<()> {
     let location = vfs::Location::parse(path);
     if layers.is_empty() && (matches!(location, vfs::Location::Zip { .. }) || VectorDriver::for_extension(path) == Some(VectorDriver::KMZ))
     {
-        return Err(Error::Unsupported(format!("{NO_ARCHIVE_DATASET}'{}'", location.file_name())));
+        return Err(Error::Unsupported(format!("{NO_ARCHIVE_DATASET}'{}'{NO_ARCHIVE_LAYERS}", location.file_name())));
     }
     Ok(())
 }
@@ -1092,7 +1093,9 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
         e if e.is_resource_refusal() => false,
         // A missing file, unless the path is one of GDAL's dataset names (`HDF5:"f.h5"://x`).
         Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound => vfs::is_gdal_name(path),
-        Error::Unsupported(message) if message.starts_with(NO_ARCHIVE_DATASET) => false,
+        // VFS uses the same leading words for archives containing only unsupported formats.
+        // Those remain eligible for GDAL (for example a zipped File Geodatabase).
+        Error::Unsupported(message) if message.starts_with(NO_ARCHIVE_DATASET) && message.ends_with(NO_ARCHIVE_LAYERS) => false,
         _ => true,
     };
     if !retry {
@@ -1114,6 +1117,12 @@ mod fallback_tests {
         let error = check_archive_layers("empty.kmz", &[]).unwrap_err();
         let result: Result<()> = gdal_fallback("empty.kmz", Err(error), |_| panic!("empty archive retried through GDAL"));
         assert!(matches!(result, Err(Error::Unsupported(message)) if message.starts_with(NO_ARCHIVE_DATASET)));
+    }
+
+    #[test]
+    fn unrecognized_archive_contents_remain_eligible_for_gdal() {
+        let result = gdal_fallback("parcels.gdb.zip", Err(Error::Unsupported("no dataset found in 'parcels.gdb.zip'".into())), |_| Ok(()));
+        assert!(result.is_ok());
     }
 
     #[test]
