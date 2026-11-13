@@ -67,6 +67,7 @@ Suites:
     crs-list          ``terrio list-crs`` vs GDAL's GetCRSInfoListFromDatabase, field by field, for
                       the EPSG, ESRI and IAU_2015 CRSs (compare_crs_list_with_gdal.py)
     transform-bounds  polar and regional bounding boxes vs GDAL via rasterio
+    geojson-crs       named GeoJSON CRS and real projected boundaries read by GDAL
     transform-batches  mixed-validity Python batches and Natural Earth points vs GDAL
 
 Usage:
@@ -2331,6 +2332,35 @@ def suite_projjson_export(ctx):
     return suite
 
 
+def suite_geojson_crs(ctx):
+    """Compare GeoJSON CRS names and projected boundary coordinates with GDAL.
+
+    Args:
+        ctx: Conformance execution context.
+
+    Returns:
+        Suite: Eight real-data comparisons, or a prerequisite skip.
+    """
+    suite = Suite("geojson-crs", "GeoJSON CRS names", "GDAL/OGR",
+                  "Real US boundaries projected by GDAL to EPSG:32615 and ESRI:102003, "
+                  "written through Layer, bytes, convert and pyogrio. CRS authority/code, "
+                  "feature count and scalar attributes exact; coordinates within 1e-7 metres. "
+                  "Unnamed-CRS refusal is Terrio policy, not a GDAL equivalence claim.")
+    missing = missing_modules("terrio", "pytest", "osgeo", "shapely", "numpy", "geopandas")
+    if missing:
+        suite.skipped = "needs " + ", ".join(missing)
+        return suite
+    if not (Path(ctx.data) / "countries.gpkg").exists():
+        suite.error = "needs countries.gpkg from scripts/fetch_test_data.sh"
+        return suite
+    from osgeo import gdal
+    suite.reference = f"GDAL {gdal.VersionInfo('RELEASE_NAME')}"
+    complete, detail = _pytest_module_conformance(
+        ctx, "test_geojson_write_crs.py", selection="matches_gdal", expected_count=8)
+    suite.cases.append(Case("GeoJSON", "projected US boundaries", TOLERANCE if complete else DIFFERS, detail))
+    return suite
+
+
 def suite_transform_batches(ctx):
     """Check single-call point failures and successful real coordinates against GDAL.
 
@@ -4048,6 +4078,7 @@ SUITES = OrderedDict(
         ("crs-parameters", suite_crs_parameters),
         ("transform-batches", suite_transform_batches),
         ("transform-bounds", suite_transform_bounds),
+        ("geojson-crs", suite_geojson_crs),
         ("geocentric", suite_geocentric),
         ("perspective", suite_perspective),
         ("omerc-two-point", suite_omerc_two_point),

@@ -234,6 +234,7 @@ fn _terrio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<raster::PyGeoTiffWriter>()?;
     m.add_class::<cog_writer::PyCogWriter>()?;
     m.add_class::<vector::PyLayer>()?;
+    m.add_function(wrap_pyfunction!(vector::geojson_crs_name, m)?)?;
     m.add_class::<vector::PyVectorDataset>()?;
     m.add_class::<arrow::PyArrowTable>()?;
     m.add_function(wrap_pyfunction!(arrow::from_arrow, m)?)?;

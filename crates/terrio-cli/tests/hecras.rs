@@ -42,7 +42,9 @@ fn info_and_convert_take_open_options() {
     assert!(out.contains("maximum_water_surface_time") && out.contains("minimum_elevation"), "{out}");
 
     let dir = tempfile::tempdir().unwrap();
-    let dst = dir.path().join("cells.geojson");
+    // A retained custom CRS cannot be named in GeoJSON; use a definition-preserving
+    // format for this open-options test.
+    let dst = dir.path().join("cells.gpkg");
     let dst = dst.to_string_lossy();
     let (ok, _, err) = terrio(&["convert", &plan(), &dst, "-l", "mesh_cells", "--oo", "CELL_SERIES=Water Surface", "--oo", "TIME_STEP=1"]);
     assert!(ok, "{err}");
