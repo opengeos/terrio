@@ -494,7 +494,8 @@ pub(crate) fn read_prj(path: &Path) -> Option<CrsInfo> {
     crs_from_text(&text)
 }
 
-/// A CRS from WKT, a PROJ string or an EPSG reference.
+/// A literal CRS from stored metadata: WKT, a PROJ string or an authority reference.
+/// Dataset text must not name a local file to read for a definition.
 pub(crate) fn crs_from_text(text: &str) -> Option<CrsInfo> {
     let text = text.trim();
     // A WKT whose outermost node carries an EPSG identifier (WKT2 `ID`, WKT1 `AUTHORITY`).
@@ -504,7 +505,7 @@ pub(crate) fn crs_from_text(text: &str) -> Option<CrsInfo> {
         let stored = CrsInfo { epsg: Some(code), wkt: Some(text.to_string()), proj4: None };
         return Some(CrsInfo { epsg: Some(code), wkt: crate::crs::raster_crs_wkt(&stored), proj4: None });
     }
-    let mut s = SpatialRef::parse(text).ok()?;
+    let mut s = SpatialRef::parse_literal(text).ok()?;
     if s.is_unknown() {
         return None;
     }

@@ -2314,9 +2314,12 @@ pub(crate) fn open_named(name: &str) -> Option<Result<RasterDataset>> {
     )
 }
 
-/// The CRS of a GDAL `_CRS` attribute: its URL, PROJJSON identifier or WKT. Without the CRS
-/// engine (`ENGINE` false), only the EPSG code of its URL or identifier.
+/// The CRS of a GDAL `_CRS` attribute: its stored WKT, then its URL or PROJJSON identifier.
+/// Without the CRS engine (`ENGINE` false), only the EPSG code of its URL or identifier.
 fn crs_attribute<const ENGINE: bool>(v: &Value) -> Option<CrsInfo> {
+    if ENGINE && let Some(crs) = v["wkt"].as_str().and_then(common::crs_from_text) {
+        return Some(crs);
+    }
     let info = |code: u32| if ENGINE { crate::crs::epsg_crs_info(code) } else { epsg_only(code) };
     if let Some(code) = v["url"].as_str().and_then(epsg_code) {
         return Some(info(code));
@@ -2326,10 +2329,7 @@ fn crs_attribute<const ENGINE: bool>(v: &Value) -> Option<CrsInfo> {
     {
         return Some(info(u32::try_from(code).ok()?));
     }
-    if !ENGINE {
-        return None;
-    }
-    v["wkt"].as_str().and_then(common::crs_from_text)
+    None
 }
 
 /// A CRS known by its EPSG code alone, without its WKT.
