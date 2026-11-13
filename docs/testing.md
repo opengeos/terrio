@@ -63,6 +63,28 @@ forces the full longitude range. Sampling counts above 65,536 per edge are
 refused. The conformance runner clears inherited pytest options and requires
 all 48 comparison results in its JUnit report before declaring agreement.
 
+## Periodic geographic storage
+
+`python/tests/test_warp_longitude_period.py` checks all 14 resamplers, both grid
+policies, four destination CRSs, nodata, polar meridian pixels and the excluded
+south latitude edge. Rust regressions also compare whole and small-memory
+chunks, reversed source columns, and a 400-grad longitude period. Regional and
+multi-turn source placement rules remain separate.
+
+`python scripts/conformance.py DATA --only longitude-period --strict` requires
+four real Natural Earth country-coverage comparisons. The same values stored
+from 0° and from 180° W agree within 1e-8. Nearest, average and chunk-dependent
+bilinear match GDAL 3.12.1 within 1e-6. Stable bilinear uses per-pixel scales and
+differs from GDAL's chunk sampling by up to 0.411959 on this binary land field.
+Exact `sum` differs by up to 0.010157 per Mercator pixel, while both retain the
+same 15,276 source-pixel area total within 1e-6. These policy differences are
+reported explicitly rather than treated as pixel-identical agreement.
+
+The lazy HTTP test measures 212,992 bytes in two requests for a footprint
+crossing 0° in a 2,089,218-byte COG. Both stored edges contribute without a
+whole-file download. A contiguous source window crossing the cut can include
+all columns, while retaining a narrow range of source rows.
+
 ## Vector source ranges
 
 `cargo test -p terrio --test vector_stream_ranges` checks eager/streamed ranges,

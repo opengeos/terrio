@@ -1016,6 +1016,29 @@ test("neighbors, collar cleaning and LUT enhancement", () => {
   assert.deepEqual([...precise.readBand(1)], [nodata, 1]);
 });
 
+test("global longitude warps fill the seam and count both sides of zero", () => {
+  const field = new Float64Array(360 * 20).map((_, i) => i % 360 === 0 ? 4 : i % 360 === 359 ? 2 : 1);
+  const source = terrio.rasterFromArray(field, 360, 20, [0, 1, 0, 10, 0, -1], "EPSG:4326");
+  const world = terrio.rasterFromArray(new Float64Array(360 * 180).fill(1), 360, 180,
+    [-180, 1, 0, 90, 0, -1], "EPSG:4326");
+  try {
+    for (const gridInvariant of [true, false]) {
+      for (const resampling of ["near", "bilinear", "cubic"]) {
+        const out = terrio.warp(world, { tSrs: "EPSG:3995", te: [-262500, 1200000, 262500, 1250000],
+          ts: [21, 2], resampling, dstNodata: -999, ot: "Float64", gridInvariant });
+        try { assert.ok([...out.readBand(1)].every((value) => Math.abs(value - 1) < 1e-10)); }
+        finally { out.free(); }
+      }
+      for (const [resampling, expected] of [["sum", 1.8], ["average", 3.6]]) {
+        const out = terrio.warp(source, { tSrs: "EPSG:4326", te: [-0.1, 0, 0.4, 1], ts: [1, 1],
+          resampling, dstNodata: -999, ot: "Float64", gridInvariant });
+        try { assert.ok(Math.abs(out.readBand(1)[0] - expected) < 1e-10); }
+        finally { out.free(); }
+      }
+    }
+  } finally { source.free(); world.free(); }
+});
+
 test("operations on in-memory rasters and layers", () => {
   const data = new Float32Array(20 * 10).map((_, i) => (i % 20) * 10 + Math.floor(i / 20));
   const dem = terrio.rasterFromArray(data, 20, 10, [500000, 30, 0, 4100000, 0, -30], "EPSG:32610", -9999);

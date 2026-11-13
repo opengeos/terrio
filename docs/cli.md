@@ -1105,6 +1105,14 @@ more than half a turn of longitude apart on the source grid and the source posit
 lies outside them. Any other footprint keeps its corners: a coarse pixel's, whose centre lies
 between them, and that of a pixel more than half a turn wide, whose corners lie less than half a
 turn apart, which takes the source between them.
+
+For an unrotated geographic source covering exactly one longitude turn, the stored grid's
+edges are periodic wherever its origin lies. Sources stored from 0° to 360° and from 180° W to
+180° E therefore sample the same geographic field, including warps within the source CRS.
+Point samples and interpolation neighbors wrap by the source's longitude period. Area methods
+and `sum` include both stored edges when a footprint crosses that cut, including a cut at 0°.
+This does not wrap latitude or extend a regional source beyond its right edge.
+
 The window holds the footprints of its chunk unless a strongly curved
 transformation takes one past the points the window is sampled from: such a footprint is shortened,
 and its pixel can then differ with the chunks the warp splits the output grid into.
