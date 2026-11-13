@@ -1,6 +1,7 @@
 """Polar pixels with a corner on the meridian use their local geographic footprint."""
 
 import json
+import math
 
 import numpy as np
 import pytest
@@ -12,6 +13,35 @@ from terrio.rio.warp import transform
 SOURCE_GRID = (-180.0, 1.0, 0.0, 90.0, 0.0, -1.0)
 # NSIDC pixels (row 180, columns 99..101), centered west of, on and east of the cut.
 DESTINATION_GRID = (-1_375_000.0, 25_000.0, 0.0, 1_350_000.0, 0.0, -25_000.0)
+
+
+@pytest.mark.parametrize("compatibility", ["3.12", "3.13"])
+@pytest.mark.parametrize("invariant", [True, False])
+@pytest.mark.parametrize("method,expected", [("min", -171.5), ("max", 15.5)])
+def test_curved_coarse_footprint_keeps_its_center(compatibility, invariant, method, expected):
+    """Keep a genuinely broad sinusoidal pixel rather than moving a corner past its center.
+
+    Args:
+        compatibility: Public kernel selector.
+        invariant: Grid sampling policy.
+        method: Area minimum or maximum.
+        expected: Extreme source-column center inside the original footprint.
+    """
+    values = np.repeat((-179.5 + np.arange(360))[None, :], 180, axis=0)
+    source = terrio.Raster.from_array(values, SOURCE_GRID, crs="EPSG:4326")
+    degree = 6371000 * math.pi / 180
+    with Env(TERRIO_GDAL_COMPAT=compatibility):
+        result = terrio.warp(
+            source,
+            t_srs="+proj=sinu +lon_0=0 +R=6371000 +units=m +no_defs",
+            te=(-3 * degree, 0, 16 * degree, 89 * degree),
+            ts=(1, 1),
+            resampling=method,
+            grid_invariant=invariant,
+            ot="Float64",
+            dstnodata=-999,
+        ).read(1)
+    assert result[0, 0] == expected
 
 
 def footprint_area(column):

@@ -112,7 +112,10 @@ same 15,276 source-pixel area total within 1e-6. These policy differences are
 reported explicitly rather than treated as pixel-identical agreement.
 
 `python/tests/test_warp_meridian_footprints.py` adds 16 analytic checks across
-both compatibility selectors and grid policies. Three NSIDC pixels west of,
+both compatibility selectors and grid policies. Eight further curved-coarse
+checks preserve sinusoidal min/max footprints whose corners extend beyond half
+a turn from the center; proposed wraps must narrow the span and retain that
+center. Three NSIDC pixels west of,
 on and east of the cut keep bilinear/cubic sampling local; `sum` agrees with
 their transformed quadrilateral areas within relative 1e-6 and absolute 1e-8.
 Two UPS pixels with a corner at the pole and on the meridian retain mirrored

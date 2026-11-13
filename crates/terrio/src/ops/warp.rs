@@ -3902,7 +3902,8 @@ impl WarpContext<'_> {
     /// pixel can span up to a whole turn too. Only corners over half a turn from its exact
     /// centre (`centre`, in output pixels) are moved toward it. A corner exactly on the meridian
     /// can put the centre inside the original long-way-round span, so containment alone does
-    /// not establish continuity. Coarse corners within half a turn of the centre stay put.
+    /// not establish continuity. A proposed wrap must narrow the span and still contain the
+    /// centre, or the original coarse footprint is retained.
     fn unwrap_longitudes(&self, xs: &mut [f64], turn: f64, (dx, dy): (f64, f64)) -> bool {
         let (low, high) = xs.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), x| (lo.min(*x), hi.max(*x)));
         let mut moved = false;
@@ -3911,11 +3912,17 @@ impl WarpContext<'_> {
             && let Some((middle, _)) = self.t.point(true, dx, dy)
             && middle.is_finite()
         {
-            for x in xs {
-                let delta = *x - middle;
-                if delta.abs() > turn / 2.0 + 1e-7 {
-                    *x -= (delta / turn).round() * turn;
-                    moved = true;
+            let shift = |x: f64| {
+                let delta = x - middle;
+                if delta.abs() > turn / 2.0 + 1e-7 { x - (delta / turn).round() * turn } else { x }
+            };
+            let (new_low, new_high) =
+                xs.iter().map(|x| shift(*x)).fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), x| (lo.min(x), hi.max(x)));
+            if new_high - new_low < high - low && middle >= new_low - 1e-7 && middle <= new_high + 1e-7 {
+                for x in xs {
+                    let candidate = shift(*x);
+                    moved |= candidate != *x;
+                    *x = candidate;
                 }
             }
         }

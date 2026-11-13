@@ -5327,6 +5327,24 @@ test("GeoJSON byte exports name ESRI CRSs and refuse unnamed CRS loss", () => {
     } finally { source.free(); }
   }
 });
+test("curved coarse footprints retain their centers", () => {
+  const values = Float64Array.from({length: 360 * 180}, (_, i) => i % 360 + 0.5 - 180);
+  const source = terrio.rasterFromArray(values, 360, 180, [-180, 1, 0, 90, 0, -1], "EPSG:4326");
+  const degree = 6371000 * Math.PI / 180;
+  try {
+    for (const kernelVersion of ["3.12", "3.13"]) for (const gridInvariant of [true, false]) {
+      for (const [resampling, expected] of [["min", -171.5], ["max", 15.5]]) {
+        const output = terrio.warp(source, {
+          tSrs: "+proj=sinu +lon_0=0 +R=6371000 +units=m +no_defs", te: [-3 * degree, 0, 16 * degree, 89 * degree],
+          ts: [1, 1], resampling, gridInvariant, kernelVersion, ot: "Float64",
+        });
+        try { assert.equal(output.readBand(1)[0], expected); }
+        finally { output.free(); }
+      }
+    }
+  } finally { source.free(); }
+});
+
 test("polar meridian corners keep kernels and sums local", () => {
   const wave = new Float64Array(180 * 360).map((_, i) => 100 * Math.cos((-179.5 + i % 360) * Math.PI / 180));
   const ones = new Float64Array(180 * 360).fill(1);
