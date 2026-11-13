@@ -5347,6 +5347,23 @@ test("GeoJSON byte exports name ESRI CRSs and refuse unnamed CRS loss", () => {
     } finally { source.free(); }
   }
 });
+test("chunk windows retain polar meridian edge pixels", () => {
+  const values = Uint8Array.from({length: 3600 * 200}, (_, i) => (Math.floor(i / 3600) * 7 + i % 3600) % 250 + 1);
+  const source = terrio.rasterFromArray(values, 3600, 200, [-180, 0.1, 0, 90, 0, -0.1], "EPSG:4326");
+  try {
+    for (const kernelVersion of ["3.12", "3.13"]) {
+      for (const resampling of ["near", "average"]) {
+        const output = terrio.warp(source, {
+          tSrs: "EPSG:3413", te: [-800000, -775000, 0, 25000], ts: [32, 32],
+          resampling, gridInvariant: false, kernelVersion, dstNodata: 0,
+        });
+        try { assert.ok([...output.readBand(1)].every(value => value !== 0)); }
+        finally { output.free(); }
+      }
+    }
+  } finally { source.free(); }
+});
+
 test("curved coarse footprints retain their centers", () => {
   const values = Float64Array.from({length: 360 * 180}, (_, i) => i % 360 + 0.5 - 180);
   const source = terrio.rasterFromArray(values, 360, 180, [-180, 1, 0, 90, 0, -1], "EPSG:4326");
