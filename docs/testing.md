@@ -189,6 +189,27 @@ unzoned values and nulls. The native unit test
 GDAL-authored in-memory fields with unknown, local and explicit UTC flags.
 These tests use GDAL itself as the typed-field reference; validation uses GDAL 3.13.3.
 
+## CSV and TSV column collisions
+
+`python/tests/test_csv_duplicate_headers.py` checks repeated and blank headers,
+case-distinct names, pre-existing numeric suffixes, and mixed field types through
+whole, streamed, paged and converted reads. Every source column retains its value
+under a distinct name. CSV/TSV names are case-sensitive; generated suffixes skip
+existing original names.
+
+Writer checks cover ordinary self-conversion, append, bytes and CLI output.
+Generated geometry columns normally use `WKT`, `X`, `Y`, `Z`. When attributes
+collide, WKT uses `__terrio_wkt`, and a complete coordinate block uses
+`__terrio_xy2_x`/`__terrio_xy2_y` or the corresponding `xy3` X/Y/Z block.
+Occupied marker names get a common numeric suffix before the axis, for example
+`__terrio_xy2_2_x`/`__terrio_xy2_2_y`. Native inference recognizes these reserved
+headers only at the start of a file, with all possible-name options at their
+defaults. Explicit possible-name options retain their existing matching rules.
+Ordinary `X_2`, `Y_2`, `Z_2` and `WKT_2` attributes do not become geometry.
+Other CSV consumers may need an explicit geometry-column hint for reserved names.
+Original colliding attributes keep their names and values. This is Terrio's
+lossless naming policy, not a claim to reproduce GDAL's duplicate-name spelling.
+
 ## CSV and TSV writing
 
 `cargo test -p terrio --test merged csv_writing::` checks whole-file, byte and
