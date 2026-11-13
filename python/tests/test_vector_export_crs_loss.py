@@ -176,9 +176,11 @@ def test_declared_esri_parameters_are_checked_before_naming(tmp_path, altered):
     """
     definition = points("ESRI:102003").crs_wkt
     if altered:
-        changed = definition.replace(
-            'PARAMETER["central_meridian",-96]', 'PARAMETER["central_meridian",-95]'
-        )
+        changed = definition
+        for parameter in ("central_meridian", "longitude_of_center"):
+            changed = changed.replace(
+                f'PARAMETER["{parameter}",-96]', f'PARAMETER["{parameter}",-95]'
+            )
         assert changed != definition
         definition = changed
     layer = points(definition)
@@ -191,3 +193,24 @@ def test_declared_esri_parameters_are_checked_before_naming(tmp_path, altered):
     else:
         layer.write(str(path))
         assert "urn:ogc:def:crs:ESRI::102003" in path.read_text()
+
+
+def test_declared_esri_datum_must_match_the_registry(tmp_path):
+    """Refuse WGS 84 Albers parameters mislabeled as the NAD83 ESRI definition.
+
+    Args:
+        tmp_path: Temporary dataset directory.
+    """
+    geographic = points("EPSG:4326").crs_wkt
+    definition = (
+        f'PROJCS["Albers on WGS 84",{geographic},PROJECTION["Albers_Conic_Equal_Area"],'
+        'PARAMETER["latitude_of_center",37.5],PARAMETER["longitude_of_center",-96],'
+        'PARAMETER["standard_parallel_1",29.5],PARAMETER["standard_parallel_2",45.5],'
+        'PARAMETER["false_easting",0],PARAMETER["false_northing",0],'
+        'UNIT["metre",1],AUTHORITY["ESRI","102003"]]'
+    )
+    path = tmp_path / "wrong_datum.gml"
+    with pytest.raises(terrio.UnsupportedError, match="GML cannot name"):
+        points(definition).write(str(path))
+    assert not path.exists()
+    assert not path.with_suffix(".xsd").exists()

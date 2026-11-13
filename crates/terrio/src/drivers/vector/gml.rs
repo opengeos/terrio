@@ -396,13 +396,11 @@ pub(crate) fn parse_srs_name(name: &str) -> Result<SpatialRef> {
     SpatialRef::parse_literal(name)
 }
 
-/// Whether a srsName form declares authority axis order: URNs and modern `/def/crs/` URLs,
-/// but not short `EPSG:` names or the old `epsg.xml#` URLs. The CRS determines whether to swap.
+/// EPSG, ESRI and IAU URNs and modern URLs declare authority axis order.
+/// Short identifiers, legacy EPSG URLs and OGC CRS84/CRS27/CRS83 retain XY.
 pub(crate) fn authority_axis_order(srs_name: &str) -> bool {
     let s = srs_name.to_ascii_lowercase();
-    // OGC CRS84/CRS27/CRS83 declare longitude-latitude order even when the
-    // equivalent EPSG definition used internally has latitude first.
-    !(s.contains(":crs:ogc:") || s.contains("/ogc/")) && (s.starts_with("urn:") || s.contains("/def/crs/"))
+    (s.starts_with("urn:") || s.contains("/def/crs/")) && ["epsg", "esri", "iau_2015"].iter().any(|authority| s.contains(authority))
 }
 
 fn swap_xy(g: Geometry) -> Geometry {
@@ -623,20 +621,18 @@ fn xsd(layer: &Layer) -> String {
 pub fn to_string(layer: &Layer, schema: &str) -> Result<String> {
     let name = element_name(&layer.name);
     let reference = SpatialRef::from_layer(layer);
-    let authority = reference
-        .authority()
-        .filter(|(authority, code)| match *authority {
-            "EPSG" => false,
-            "ESRI" => reference.trusted_esri() == Some(*code),
-            _ => true,
+    let authority = match reference.authority() {
+        // A refused ESRI claim must not fall back to a nested geographic EPSG identifier.
+        Some(("ESRI", _)) => reference.trusted_esri().map(|code| ("ESRI", code)),
+        Some((authority, code)) if authority != "EPSG" => Some((authority, code)),
+        _ => super::naming_epsg(layer).map(|code| ("EPSG", code)),
+    }
+    // A horizontal code alone cannot name a retained compound definition.
+    .filter(|(authority, code)| {
+        reference.compound_parts().is_none_or(|parts| {
+            SpatialRef::parse_literal(&format!("{authority}:{code}")).ok().and_then(|s| s.compound_parts()) == Some(parts)
         })
-        .or_else(|| super::naming_epsg(layer).map(|code| ("EPSG", code)))
-        // A horizontal code alone cannot name a retained compound definition.
-        .filter(|(authority, code)| {
-            reference.compound_parts().is_none_or(|parts| {
-                SpatialRef::parse_literal(&format!("{authority}:{code}")).ok().and_then(|s| s.compound_parts()) == Some(parts)
-            })
-        });
+    });
     if authority.is_none() && !reference.is_unknown() {
         return Err(Error::Unsupported(
             "GML cannot name this layer's CRS: reproject to a named CRS or use a format that stores CRS definitions".into(),
