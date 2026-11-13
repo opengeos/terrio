@@ -135,8 +135,6 @@ def _spill_name(data: bytes) -> str:
     Raises:
         DataSourceError: Content cannot be identified without a filename.
     """
-    if data[:4] == b"PK\x03\x04":
-        return "data.zip"
     extension = _terrio.vector_byte_extension(data)
     if extension is not None:
         return f"data.{extension}"
@@ -155,9 +153,13 @@ class _Source:
     def __init__(self, path_or_buffer):
         self._tmp = None
         self._names = None
+        filename = None
         if isinstance(path_or_buffer, Path):
             path_or_buffer = str(path_or_buffer)
         if hasattr(path_or_buffer, "read") and not isinstance(path_or_buffer, (str, bytes)):
+            source_name = getattr(path_or_buffer, "name", None)
+            if isinstance(source_name, (str, os.PathLike)):
+                filename = Path(source_name).name
             data = path_or_buffer.read()
             if hasattr(path_or_buffer, "seekable") and path_or_buffer.seekable():
                 path_or_buffer.seek(0)
@@ -166,7 +168,7 @@ class _Source:
             path_or_buffer = data
         if isinstance(path_or_buffer, (bytes, bytearray, memoryview)):
             data = bytes(path_or_buffer)
-            name = _spill_name(data)
+            name = filename if filename and Path(filename).suffix else _spill_name(data)
             self._tmp = tempfile.TemporaryDirectory(prefix="terrio-pyogrio-")
             spilled = os.path.join(self._tmp.name, name)
             with open(spilled, "wb") as f:
@@ -193,6 +195,12 @@ class _Source:
                     raise DataSourceError(f"{self.path}: No such file or directory") from e
                 except _terrio_errors.TerrioError as e:
                     raise DataSourceError(str(e)) from e
+            if (
+                not self._names
+                and self._tmp is not None
+                and self.path.lower().endswith((".zip", ".kmz"))
+            ):
+                raise DataSourceError(f"{self.path}: No vector layers found")
         return self._names
 
     def name(self) -> str:
