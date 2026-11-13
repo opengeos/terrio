@@ -760,10 +760,10 @@ need `SpatialRef::to_wkt1_strict`, as PROJ 9.8.1 exports `WKT1_GDAL`: `terrio cr
   Conformal 1SP variant B and 2SP Michigan, the Guam projection...), rotated poles
   (`+proj=ob_tran`); and for an EPSG code terrio reads only through the wbprojection fallback,
   whose WKT is not the registry's;
-- where the WKT 1 needs its extension: a datum grid (`+nadgrids`, a geoid model), an axis
-  order or parameter its nodes do not describe (`+axis=neu` on a projected CRS, `+approx`,
-  geostationary's `+sweep=x`), GDAL's `custom_proj4` method for a projection WKT 1 has no
-  name for.
+- where the WKT 1 needs its extension: a datum grid (`+nadgrids`, a geoid model, a WKT 2
+  bound CRS's `PARAMETERFILE`), an axis order or parameter its nodes do not describe
+  (`+axis=neu` on a projected CRS, `+approx`, geostationary's `+sweep=x`), GDAL's
+  `custom_proj4` method for a projection WKT 1 has no name for.
 
 Web Mercator (EPSG:3857) keeps GDAL's extension, as PROJ does: its `AUTHORITY` identifies it.
 A WKT 1 given is returned as it is when it needs no extension (or its root code is the CRS's

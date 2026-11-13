@@ -117,6 +117,25 @@ def compound_with_axes(code, order):
     return CRS.from_json_dict(d).to_wkt("WKT2_2019")
 
 
+def named(wkt, name):
+    """A WKT 2 with its root renamed ``name``."""
+    return re.sub(r'^([A-Z]+\[)"[^"]*"', lambda m: f'{m.group(1)}"{name}"', wkt)
+
+
+def offsets_bound():
+    """A WKT 2 bound CRS of NAD27 by geographic offsets (EPSG method 9619), not a Helmert."""
+    wkt = CRS("+proj=longlat +datum=NAD27 +towgs84=1,2,3 +type=crs").to_wkt("WKT2_2019")
+    start = wkt.index("METHOD[")
+    end = wkt.index("]]]", start)
+    arcsec = 'ANGLEUNIT["arc-second",4.84813681109536E-06]'
+    method = (
+        'METHOD["Geographic2D offsets",ID["EPSG",9619]],'
+        f'PARAMETER["Latitude offset",1,{arcsec},ID["EPSG",8601]],'
+        f'PARAMETER["Longitude offset",2,{arcsec},ID["EPSG",8602]'
+    )
+    return wkt[:start] + method + wkt[end:]
+
+
 def strict_wkts():
     web = CRS.from_epsg(3857).to_wkt("WKT1_GDAL", output_axis_rule=True)
     return [
@@ -146,6 +165,16 @@ def strict_wkts():
         CRS.from_epsg(5041).to_wkt("WKT2_2019"),
         CRS.from_epsg(3031).to_wkt("WKT2_2019"),
         CRS.from_epsg(6931).to_wkt("WKT2_2019"),
+        # Bound CRSs: a geocentric source with a Helmert shift (a GEOCCS with TOWGS84); a grid
+        # shift, which WKT 1 keeps only in an extension (none).
+        CRS("+proj=geocent +ellps=bessel +towgs84=598.1,73.7,418.2 +units=m").to_wkt("WKT2_2019"),
+        CRS("+proj=longlat +ellps=clrk66 +nadgrids=conus +type=crs").to_wkt("WKT2_2019"),
+        CRS("+proj=utm +zone=32 +ellps=bessel +nadgrids=BETA2007.gsb +units=m").to_wkt("WKT2_2019"),
+        # Names holding the keywords of a shift or grid, without one.
+        named(CRS("+proj=utm +zone=32 +ellps=intl +units=m").to_wkt("WKT2_2019"), "no TOWGS84 or PARAMETERFILE"),
+        named(CRS("+proj=longlat +ellps=intl").to_wkt("WKT2_2019"), "no BOUNDCRS here"),
+        # A bound CRS of another shift than a Helmert, which PROJ writes no WKT 1 for.
+        offsets_bound(),
         # A WKT 2 geocentric CRS without a code.
         renamed(CRS("+proj=geocent +ellps=bessel +units=m").to_wkt("WKT2_2019")),
         # Known difference: an unidentified WKT 2 compound CRS, which terrio does not write in

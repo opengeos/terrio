@@ -695,8 +695,9 @@ impl SpatialRef {
     ///   the wbprojection fallback, whose WKT is not the registry's;
     /// - a planetocentric CRS on an ellipsoid, which PROJ writes as a `GEOGCS` that its readers
     ///   take for planetographic latitudes;
-    /// - a WKT 1 that keeps part of its CRS in the extension: a datum grid (`+nadgrids`), an axis
-    ///   order or parameter its nodes do not describe, GDAL's `custom_proj4` method.
+    /// - a WKT 1 that keeps part of its CRS in the extension: a datum grid (`+nadgrids`, a WKT 2
+    ///   bound CRS's `PARAMETERFILE`), an axis order or parameter its nodes do not describe,
+    ///   GDAL's `custom_proj4` method.
     ///
     /// A WKT 1 with an extension is kept when an EPSG or ESRI `AUTHORITY` of its root identifies
     /// the CRS, as GDAL's Web Mercator (EPSG:3857). A stored WKT 1 is returned as it is when it

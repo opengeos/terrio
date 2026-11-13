@@ -169,16 +169,28 @@ pub(crate) fn strict(sr: &SpatialRef) -> Option<String> {
     if let Some(root) = root.as_ref().filter(|r| WKT1_ROOTS.iter().any(|k| r.key.eq_ignore_ascii_case(k))) {
         return plain(root, sr.authority()).then_some(wkt);
     }
-    // A registry CRS whose table WKT is WKT 2 is one PROJ writes no WKT 1 for.
-    if sr.wkt.is_none() || root.as_ref().is_some_and(is_3d) {
+    // A registry CRS whose table WKT is WKT 2 is one PROJ writes no WKT 1 for; nor is a 3D CRS
+    // (a bound CRS's source or a compound CRS's horizontal CRS).
+    let horizontal = root.as_ref().and_then(wkt2_horizontal);
+    if sr.wkt.is_none() || horizontal.is_some_and(is_3d) {
+        return None;
+    }
+    // A datum shift by a grid (a bound CRS's `PARAMETERFILE`): WKT 1 keeps it only in an
+    // extension, and the PROJ string terrio reads leaves it out.
+    // By its nodes, not its text (a name may hold the words); by its text only when it does not
+    // parse (PROJJSON is stored converted to WKT 2).
+    let has = |key: &str| match &root {
+        Some(r) => has_node(r, key),
+        None => wkt.to_ascii_uppercase().contains(&key.to_ascii_uppercase()),
+    };
+    if has("PARAMETERFILE") {
         return None;
     }
     // A stored WKT 2 of a registry CRS, without a datum shift of its own and with its axes, is its
     // WKT 1 (`OGC:CRS84`, identified as EPSG:4326, is not: its axes are east-north).
-    let upper = wkt.to_ascii_uppercase();
-    let bound = upper.contains("BOUNDCRS") || upper.contains("TOWGS84");
+    let bound = has("BOUNDCRS") || has("TOWGS84");
     let axes = root.as_ref().and_then(horizontal_axes);
-    let geocentric = root.as_ref().is_some_and(is_geocentric);
+    let geocentric = horizontal.is_some_and(is_geocentric);
     if !bound && (sr.epsg.is_some() || sr.esri.is_some()) {
         let registry = strict(&SpatialRef { epsg: sr.epsg, esri: sr.esri, wkt: None, proj4: None });
         let registry_axes = registry.as_deref().and_then(wkt1_axes);
@@ -202,7 +214,13 @@ pub(crate) fn strict(sr: &SpatialRef) -> Option<String> {
     // Else the WKT 1 of its PROJ string, which has no axis order: of the WKT 2's axes, east-north
     // ones, or a geographic CRS's north-east ones, as WKT 1 writes them. A registry geographic
     // CRS's WKT 1 (`+datum=WGS84`) loses its code when its axes are swapped.
-    let mut w = from_proj(&sr.to_proj4()?)?;
+    // A bound CRS's shift reaches the PROJ string only as `+towgs84` (a Helmert): another
+    // (Molodensky, geographic offsets) would be lost.
+    let proj = sr.to_proj4()?;
+    if bound && !proj.split_whitespace().any(|t| t.starts_with("+towgs84=")) {
+        return None;
+    }
+    let mut w = from_proj(&proj)?;
     if !geocentric {
         const LON_LAT: &str = ",AXIS[\"Longitude\",EAST],AXIS[\"Latitude\",NORTH]";
         const LAT_LON: &str = ",AXIS[\"Latitude\",NORTH],AXIS[\"Longitude\",EAST]";
@@ -236,6 +254,11 @@ fn wkt1_axes(wkt: &str) -> Option<Vec<String>> {
     }
     let axes = directions(&root)?;
     Some(if axes.is_empty() { vec!["east".into(), "north".into()] } else { axes })
+}
+
+/// Whether a node or one of its descendants has a keyword.
+fn has_node(n: &super::wkt1::Node, key: &str) -> bool {
+    n.key.eq_ignore_ascii_case(key) || n.args.iter().any(|a| matches!(a, super::wkt1::Arg::Node(c) if has_node(c, key)))
 }
 
 /// The first child node of a node.

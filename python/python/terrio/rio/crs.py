@@ -684,7 +684,7 @@ class CRS(Mapping[str, Any]):
         try:
             return _terrio.crs_to_wkt1_strict(definition)
         except Exception as err:
-            raise CRSError(f"Cannot read '{self._input}': {err}") from err
+            raise CRSError(f"No WKT 1 for '{self._input}': {err}") from err
 
     def to_dict(self, projjson: bool = False) -> dict[str, Any]:
         """The CRS as PROJ parameters, or as PROJJSON.
