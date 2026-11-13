@@ -49,9 +49,51 @@ pub(crate) fn output_path(path: &str) -> PathBuf {
     }
 }
 
-/// Finds a sidecar file (`dbf`, `prj`, `cpg`) next to the `.shp`, in either letter case.
+/// Component spellings, preferring lowercase then uppercase before mixed-case extensions.
+fn component_variants(path: &Path, ext: &str) -> impl Iterator<Item = PathBuf> {
+    let upper = (1usize << ext.len()) - 1;
+    [0, upper].into_iter().chain(1..upper).map(move |mask| {
+        let extension: String =
+            ext.bytes().enumerate().map(|(i, c)| if mask & (1 << i) != 0 { c.to_ascii_uppercase() } else { c } as char).collect();
+        path.with_extension(extension)
+    })
+}
+
+/// Finds a sidecar file (`dbf`, `prj`, `cpg`) next to the `.shp`, including mixed case.
 pub(crate) fn sidecar(path: &Path, ext: &str) -> Option<PathBuf> {
-    [ext.to_string(), ext.to_ascii_uppercase()].into_iter().map(|e| path.with_extension(e)).find(|p| p.exists())
+    component_variants(path, ext).find(|p| p.exists())
+}
+
+/// Removes superseded spellings after creating all replacement files. `path` is the SHP path.
+pub(crate) fn remove_stale_components(path: &Path, has_prj: bool) -> Result<()> {
+    for ext in ["shp", "shx", "dbf", "cpg", "prj"] {
+        let keep = (ext != "prj" || has_prj).then(|| if ext == "shp" { path.to_path_buf() } else { path.with_extension(ext) });
+        #[cfg(unix)]
+        let identity = keep.as_ref().map(std::fs::metadata).transpose()?.map(|metadata| {
+            use std::os::unix::fs::MetadataExt;
+            (metadata.dev(), metadata.ino())
+        });
+        #[cfg(not(unix))]
+        let canonical = keep.as_ref().map(std::fs::canonicalize).transpose()?;
+        for candidate in component_variants(path, ext) {
+            if !candidate.exists() || keep.as_ref() == Some(&candidate) {
+                continue;
+            }
+            // Different spellings can name the replacement itself on a case-insensitive filesystem.
+            #[cfg(unix)]
+            let same_file = identity.is_some_and(|kept| {
+                use std::os::unix::fs::MetadataExt;
+                std::fs::metadata(&candidate).is_ok_and(|actual| (actual.dev(), actual.ino()) == kept)
+            });
+            #[cfg(not(unix))]
+            let same_file = canonical.as_ref().is_some_and(|kept| std::fs::canonicalize(&candidate).is_ok_and(|actual| &actual == kept));
+            if same_file {
+                continue;
+            }
+            std::fs::remove_file(candidate)?;
+        }
+    }
+    Ok(())
 }
 
 /// Decode a present `.prj` without silently treating unreadable text as a missing CRS.
@@ -1026,13 +1068,14 @@ pub fn write(layer: &Layer, path: &str) -> Result<()> {
     std::fs::write(base.with_extension("cpg"), "UTF-8")?;
     // The source definition when there is one; GDAL reads OGC WKT in `.prj` files too.
     let prj = super::output_wkt(layer);
+    let has_prj = prj.is_some();
     let prj_path = base.with_extension("prj");
     match prj {
         Some(wkt) => std::fs::write(prj_path, wkt)?,
         None if prj_path.exists() => std::fs::remove_file(prj_path)?,
         None => {}
     }
-    Ok(())
+    remove_stale_components(base, has_prj)
 }
 
 /// Writes one layer to a ZIP containing `.shp`, `.shx`, `.dbf`, `.cpg` and,
@@ -1514,6 +1557,30 @@ fn encode_dbf(layer: &Layer) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
     use wbvector::{Feature, FieldDef};
+
+    #[cfg(unix)]
+    #[test]
+    fn replacement_aliases_are_identified_by_file_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("roads.SHP");
+        for ext in ["shp", "shx", "dbf", "cpg", "prj"] {
+            let lower = path.with_extension(ext);
+            let upper = path.with_extension(ext.to_ascii_uppercase());
+            std::fs::write(&lower, "replacement").unwrap();
+            if !upper.exists() {
+                std::fs::hard_link(&lower, &upper).unwrap();
+            }
+        }
+        remove_stale_components(&path, true).unwrap();
+        for ext in ["shp", "shx", "dbf", "cpg", "prj"] {
+            assert!(path.with_extension(ext).exists());
+            assert!(path.with_extension(ext.to_ascii_uppercase()).exists());
+        }
+        remove_stale_components(&path, false).unwrap();
+        assert!(!path.with_extension("prj").exists());
+        assert!(!path.with_extension("PRJ").exists());
+        assert!(path.exists());
+    }
 
     /// glibc record storage is built on the calling thread; deleted slots are skipped.
     #[cfg(all(target_os = "linux", target_env = "gnu"))]

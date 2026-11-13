@@ -1569,6 +1569,12 @@ malformed XML/TAB document. KMZ and XLSX retain their intrinsic ZIP packaging.
 
 ## Shapefile ZIP output in memory
 
+Filesystem Shapefile readers find lowercase, uppercase and mixed-case component
+extensions. Replacing a dataset removes superseded case spellings of its SHP,
+SHX, DBF, CPG and PRJ components after creating the replacement files. A layer
+without a CRS removes every matching PRJ spelling, so an old definition cannot
+be attached to the new geometry. Dotted basenames remain intact.
+
 Rust, Python and JavaScript/WASM use the same pure-Rust archive writer, including
 builds with default features disabled. Request **`places.shp.zip`**, save that
 filename, and use MIME type **`application/zip`**. The ZIP contains `places.shp`,
