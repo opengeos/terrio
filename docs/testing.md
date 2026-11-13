@@ -65,6 +65,15 @@ all 48 comparison results in its JUnit report before declaring agreement.
 
 ## Vector source ranges
 
+`python/tests/test_pyogrio_buffer_sources.py` compares named files with bytes,
+bytearrays, memoryviews and streams, including KMZ, XLSX, newline-delimited
+GeoJSON and DXF. It checks dataframes, layer listings and metadata, preserves
+named file-object extensions for CSV, and verifies multi-layer KMZ containers.
+These are Terrio path/buffer consistency checks, separate from the GDAL
+comparisons below. Shared Rust byte-probe tests distinguish ZIP containers by
+their directory entries without decompressing their contents; ordinary readers
+still validate the selected dataset and enforce driver policy.
+
 `cargo test -p terrio --test vector_stream_ranges` checks eager/streamed ranges,
 STAC asset forwarding and MVT directories/tiles. The memory range tests exercise
 filesystem-free codecs, including multi-layer and archive readers. Ranges count
@@ -3433,7 +3442,9 @@ and GDAL comparisons provide deterministic checks.
 fully empty `RegionWarp` destinations across seven resamplers, both grid policies,
 and one or two bands. Source planning returns an empty window. Warping returns
 typed empty data and validity before source-window validation or row kernels,
-even when a caller supplies a nonempty source window. Python preserves the
+even when a caller supplies a nonempty source window. The raster-backed private
+`_warp_from` path skips source borrowing and reading for empty regions too.
+Python preserves the
 configured band axis in `(bands, height, width)` output arrays. The Rust regression
 `empty_regions_return_typed_empty_outputs_even_with_nonempty_source_windows`
 checks the public API directly. These are API invariants, not GDAL comparisons.

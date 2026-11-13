@@ -2100,6 +2100,11 @@ impl PyRegionWarp {
         if alpha.is_some_and(|a| a == 0 || a > bands.len()) {
             return Err(invalid(format!("alpha must be one of the {} bands read", bands.len())));
         }
+        if region.2 == 0 || region.3 == 0 {
+            let empty = RasterData::U8(Vec::new());
+            let (out, written) = py.detach_result(|| self.inner.warp(region, window, &empty, None, init, padded_scale)).py()?;
+            return region_arrays(py, region, self.bands, out, written);
+        }
         let (x, y, w, h) = window;
         let win = Window::new(x, y, w, h);
         // The window and the per-dataset mask, read with the `Raster` borrowed.
