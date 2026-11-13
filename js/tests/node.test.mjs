@@ -4854,6 +4854,24 @@ test("MapInfo MIF archives read in WebAssembly", () => {
   dataset.free();
 });
 
+test("MIF requires a header and retains valid empty layers", () => {
+  const encode = (text) => new TextEncoder().encode(text);
+  for (const text of ["", "hello\n", JSON.stringify({type: "FeatureCollection", features: [{type: "Feature", properties: {}, geometry: {type: "Point", coordinates: [10, 46]}}]}),
+    "Data\n", "Version 300\nData\n", "Columns 0\nData\n", "Version 300\nColumns 0\n"]) {
+    for (const open of [terrio.open, terrio.openVector]) {
+      assert.throws(() => open(encode(text), "x.mif", {}), /MIF:/);
+    }
+  }
+  for (const text of ['Version 300\nColumns 1\nN Integer\nData\n',
+    '\ufeffvErSiOn 300\r\ncOlUmNs 1\r\nN Integer\r\ndAtA\r\n']) {
+    const dataset = terrio.open(encode(text), "x.mif");
+    try {
+      assert.deepEqual(dataset.toGeoJSON().features, []);
+      assert.equal(dataset.info().layers[0].fields[0].name, "N");
+    } finally { dataset.free(); }
+  }
+});
+
 test("ZIP layer selection uses the member name rather than the archive name", () => {
   const source = terrio.fromGeoJSON({type: "FeatureCollection", features: [{
     type: "Feature", properties: {}, geometry: {type: "Point", coordinates: [1, 2]},

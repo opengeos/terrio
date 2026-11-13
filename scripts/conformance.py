@@ -636,10 +636,11 @@ def suite_vector_byte_packaging(ctx):
         ctx: Conformance run context.
 
     Returns:
-        Suite: Three document/archive comparisons.
+        Suite: Document/archive and MIF header comparisons.
     """
     suite = Suite("vector-byte-packaging", "Vector byte packaging", "GDAL/OGR",
-                  "16 Natural Earth populated places; feature count, scalar attributes, archive members and CRS exact; coordinates within 1e-6 degrees for MapInfo's grid.")
+                  "16 Natural Earth populated places; feature count, scalar attributes, archive members and CRS exact; coordinates within 1e-6 degrees for MapInfo's grid. "
+                  "Explicit MIF driver identification refuses wrong-format bytes and retains valid empty schemas.")
     missing = missing_modules("terrio", "osgeo")
     if missing:
         suite.skipped = "needs the Python modules " + ", ".join(missing)
@@ -657,7 +658,10 @@ def suite_vector_byte_packaging(ctx):
         status = {"identical": IDENTICAL, "within tolerance": TOLERANCE,
                   "not compared": NOT_COMPARED}.get(result["status"], DIFFERS)
         suite.cases.append(Case("Vector bytes", result["name"], status, result["detail"]))
-    if code and not any(case.status == DIFFERS for case in suite.cases):
+    expected = ["places.gml", "places.mif.zip", "places.tab.zip", "MIF header recognition"]
+    if sorted(result["name"] for result in results) != sorted(expected):
+        suite.error = "incomplete vector byte packaging comparisons"
+    elif code and not any(case.status == DIFFERS for case in suite.cases):
         suite.error = tail(err or out) or f"exit {code}"
     return suite
 
