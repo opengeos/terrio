@@ -59,3 +59,43 @@ def test_unknown_content_has_no_unusable_fallback_hint(tmp_path):
     with pytest.raises(terrio.errors.UnsupportedError) as error:
         terrio.open_raster(str(path))
     assert "TERRIO_WBRASTER_FALLBACK" not in str(error.value)
+
+
+@pytest.mark.parametrize("extension,driver", [("png", "PNG"), ("jpg", "JPEG"), ("tif", "GTiff")])
+@pytest.mark.parametrize("surface", ["whole", "generic"])
+def test_extensionless_remote_images_measure_whole_reads(
+    tmp_path, record_property, extension, driver, surface
+):
+    """Measure the whole-image download for direct and generic raster opens.
+
+    Args:
+        tmp_path: Temporary image directory.
+        record_property: Record observed transfer sizes in the test report.
+        extension: Image encoding to write before dropping its extension.
+        driver: Expected native image driver.
+        surface: Whole-raster or generic dataset entry point.
+    """
+    values = np.random.default_rng(19).integers(0, 256, (3, 512, 512), dtype="uint8")
+    original = tmp_path / f"image.{extension}"
+    with rio.open(
+        original, "w", driver=driver, width=512, height=512, count=3, dtype="uint8"
+    ) as dst:
+        dst.write(values)
+    with rio.open(original) as src:
+        expected = src.read()
+    path = tmp_path / "image"
+    path.write_bytes(original.read_bytes())
+    server = Server(tmp_path)
+    terrio.clear_http_cache()
+    try:
+        opener = terrio.open_raster if surface == "whole" else terrio.open
+        result = opener(server.url + "/image")
+        np.testing.assert_array_equal(result.read(), expected)
+        transferred = server.bytes_sent()
+        size = path.stat().st_size
+        record_property("source_bytes", size)
+        record_property("transferred_bytes", transferred)
+        assert size <= transferred <= size + 65536
+        assert all(row[2] == 206 for row in server.log if row[0] == "GET" and row[3])
+    finally:
+        server.close()
