@@ -49,9 +49,38 @@ pub(crate) fn output_path(path: &str) -> PathBuf {
     }
 }
 
-/// Finds a sidecar file (`dbf`, `prj`, `cpg`) next to the `.shp`, in either letter case.
+/// Component spellings, preferring lowercase then uppercase before mixed-case extensions.
+fn component_variants(path: &Path, ext: &str) -> impl Iterator<Item = PathBuf> {
+    let upper = (1usize << ext.len()) - 1;
+    [0, upper].into_iter().chain(1..upper).map(move |mask| {
+        let extension: String =
+            ext.bytes().enumerate().map(|(i, c)| if mask & (1 << i) != 0 { c.to_ascii_uppercase() } else { c } as char).collect();
+        path.with_extension(extension)
+    })
+}
+
+/// Finds a sidecar file (`dbf`, `prj`, `cpg`) next to the `.shp`, including mixed case.
 pub(crate) fn sidecar(path: &Path, ext: &str) -> Option<PathBuf> {
-    [ext.to_string(), ext.to_ascii_uppercase()].into_iter().map(|e| path.with_extension(e)).find(|p| p.exists())
+    component_variants(path, ext).find(|p| p.exists())
+}
+
+/// Removes superseded component spellings after all replacement files have been created.
+pub(crate) fn remove_stale_components(path: &Path, has_prj: bool) -> Result<()> {
+    for ext in ["shp", "shx", "dbf", "cpg", "prj"] {
+        let keep = (ext != "prj" || has_prj).then(|| if ext == "shp" { path.to_path_buf() } else { path.with_extension(ext) });
+        let canonical = keep.as_ref().map(std::fs::canonicalize).transpose()?;
+        for candidate in component_variants(path, ext) {
+            if !candidate.exists() || keep.as_ref() == Some(&candidate) {
+                continue;
+            }
+            // Different spellings can name the replacement itself on a case-insensitive filesystem.
+            if canonical.as_ref().is_some_and(|kept| std::fs::canonicalize(&candidate).is_ok_and(|actual| &actual == kept)) {
+                continue;
+            }
+            std::fs::remove_file(candidate)?;
+        }
+    }
+    Ok(())
 }
 
 /// Decode a present `.prj` without silently treating unreadable text as a missing CRS.
@@ -1026,13 +1055,14 @@ pub fn write(layer: &Layer, path: &str) -> Result<()> {
     std::fs::write(base.with_extension("cpg"), "UTF-8")?;
     // The source definition when there is one; GDAL reads OGC WKT in `.prj` files too.
     let prj = super::output_wkt(layer);
+    let has_prj = prj.is_some();
     let prj_path = base.with_extension("prj");
     match prj {
         Some(wkt) => std::fs::write(prj_path, wkt)?,
         None if prj_path.exists() => std::fs::remove_file(prj_path)?,
         None => {}
     }
-    Ok(())
+    remove_stale_components(base, has_prj)
 }
 
 /// Writes one layer to a ZIP containing `.shp`, `.shx`, `.dbf`, `.cpg` and,

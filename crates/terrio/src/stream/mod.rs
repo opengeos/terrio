@@ -1501,11 +1501,14 @@ impl ShpSink {
         dbf.write_all(&enc.dbf_header(0))?;
         std::fs::write(base.with_extension("cpg"), "UTF-8")?;
         let prj_path = base.with_extension("prj");
-        match crate::drivers::vector::output_wkt(layer) {
+        let prj = crate::drivers::vector::output_wkt(layer);
+        let has_prj = prj.is_some();
+        match prj {
             Some(wkt) => std::fs::write(prj_path, wkt)?,
             None if prj_path.exists() => std::fs::remove_file(prj_path)?,
             None => {}
         }
+        shapefile::remove_stale_components(base, has_prj)?;
         Ok(Self { shp, shx, dbf, enc, total: shapefile::Bounds::empty(), count: 0, shp_len: 100, shx_len: 100 })
     }
 }
