@@ -485,6 +485,8 @@ pub(crate) fn open_native(path: &str) -> Result<Dataset> {
     let ds = open_native_unchecked(path)?;
     if let Dataset::Raster(r) = &ds {
         crate::declared::check_dataset(r)?;
+    } else if let Dataset::Vector(v) = &ds {
+        check_archive_layers(path, &v.layers)?;
     }
     Ok(ds)
 }
@@ -993,7 +995,10 @@ pub(crate) fn open_vector_native(path: &str, options: &VectorOpenOptions) -> Res
     }
     let local = vfs::resolve(path)?;
     match open_local(local.as_str(), options)? {
-        Dataset::Vector(v) => Ok(v),
+        Dataset::Vector(v) => {
+            check_archive_layers(path, &v.layers)?;
+            Ok(v)
+        }
         Dataset::Raster(_) => Err(Error::Unsupported(format!("'{path}' is a raster, not a vector dataset"))),
     }
 }
@@ -1050,7 +1055,19 @@ fn list_layers_native(path: &str) -> Result<Vec<String>> {
         #[cfg(not(feature = "sqlite"))]
         return Err(Error::disabled("sqlite"));
     }
-    Ok(open_vector_native(local.as_str(), &VectorOpenOptions::default())?.layers.into_iter().map(|l| l.name).collect())
+    let dataset = open_vector_native(local.as_str(), &VectorOpenOptions::default())?;
+    check_archive_layers(path, &dataset.layers)?;
+    Ok(dataset.layers.into_iter().map(|l| l.name).collect())
+}
+
+/// Refuses an archive whose selected document provides no dataset layers.
+fn check_archive_layers(path: &str, layers: &[Layer]) -> Result<()> {
+    let location = vfs::Location::parse(path);
+    if layers.is_empty() && (matches!(location, vfs::Location::Zip { .. }) || VectorDriver::for_extension(path) == Some(VectorDriver::KMZ))
+    {
+        return Err(Error::Unsupported(format!("no dataset found in '{}'", location.file_name())));
+    }
+    Ok(())
 }
 
 /// When terrio's own drivers could not open `path`, tries GDAL; if GDAL cannot either, terrio's

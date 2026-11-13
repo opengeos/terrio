@@ -84,6 +84,11 @@ pub fn suggest_vector_extension_checked(bytes: &[u8]) -> Result<Option<&'static 
 
 /// Non-archive byte hints shared by the checked and compatibility probes.
 fn vector_extension_hint(bytes: &[u8]) -> Option<&'static str> {
+    // SQLite's signature alone cannot distinguish GeoPackage from MBTiles (whose optional
+    // application id is usually zero). Anonymous ambiguous databases need a filename.
+    if bytes.starts_with(b"SQLite format 3\0") && !matches!(bytes.get(68..72), Some(b"GPKG" | b"GP10")) {
+        return None;
+    }
     // DXF group codes and SECTION are ASCII, but comments and entity strings may use
     // a legacy codepage. Inspect only the leading pairs without decoding the body.
     let prefix = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes).trim_ascii_start();
@@ -100,16 +105,20 @@ fn vector_extension_hint(bytes: &[u8]) -> Option<&'static str> {
         }
     }
     let text = std::str::from_utf8(bytes).ok().map(|text| text.trim_start_matches('\u{feff}').trim_start());
+    let record = |text: &str| {
+        matches!(
+            crate::inspection::root_json_type(text).as_deref(),
+            Some("Feature" | "Point" | "MultiPoint" | "LineString" | "MultiLineString" | "Polygon" | "MultiPolygon" | "GeometryCollection")
+        )
+    };
     if let Some(text) = text
         && text.starts_with('{')
-        && crate::inspection::root_json_type(text).as_deref() == Some("Feature")
+        && record(text)
     {
         let mut values = serde_json::Deserializer::from_str(text).into_iter::<serde::de::IgnoredAny>();
         if values.next().is_some_and(|value| value.is_ok()) {
             let remaining = text[values.byte_offset()..].trim_start_matches([' ', '\t']);
-            if remaining.starts_with(['\r', '\n'])
-                && crate::inspection::root_json_type(remaining.trim_start()).as_deref() == Some("Feature")
-            {
+            if remaining.starts_with(['\r', '\n']) && record(remaining.trim_start()) {
                 return Some("geojsonl");
             }
         }
@@ -1092,8 +1101,14 @@ mod tests {
 
     #[test]
     fn vector_byte_hints_share_signatures_and_xml_probes() {
+        for application_id in [b"GPKG", b"GP10"] {
+            let mut header = [0; 100];
+            header[..16].copy_from_slice(b"SQLite format 3\0");
+            header[68..72].copy_from_slice(application_id);
+            assert_eq!(suggest_vector_extension(&header), Some("gpkg"));
+        }
         for (bytes, extension) in [
-            (b"SQLite format 3\0".as_slice(), Some("gpkg")),
+            (b"SQLite format 3\0".as_slice(), None),
             (b"fgb\x03fgb\0".as_slice(), Some("fgb")),
             (b"fgb\x02fgb\0".as_slice(), Some("fgb")),
             (b"PAR1\0\0\0\0PAR1".as_slice(), Some("parquet")),
