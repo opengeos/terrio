@@ -104,10 +104,13 @@ fn terminal_open_error(error: &Error, name: &str) -> bool {
         || matches!(error, Error::Io(e) if e.kind() == std::io::ErrorKind::NotFound && !crate::vfs::is_gdal_name(name))
 }
 
-/// A missing plain local path reads as `info` reports it, not as the bare OS error.
+/// A missing plain local input reads as `info` reports it, not as the bare OS error. An input that
+/// exists keeps its error: the `NotFound` then came from a file it needs, such as a sidecar.
 fn missing_local_file(error: Error, path: &str) -> Error {
     match error {
-        Error::Io(e) if e.kind() == std::io::ErrorKind::NotFound && !crate::vfs::is_gdal_name(path) => {
+        Error::Io(e)
+            if e.kind() == std::io::ErrorKind::NotFound && !crate::vfs::is_gdal_name(path) && !std::path::Path::new(path).exists() =>
+        {
             Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, format!("'{path}' does not exist")))
         }
         other => other,
@@ -1211,7 +1214,8 @@ mod tests {
 
     #[test]
     fn missing_local_input_reads_does_not_exist() {
-        let missing = tempfile::tempdir().unwrap().path().join("missing.tif");
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.tif");
         let Err(error) = translate_path(missing.to_str().unwrap(), &TranslateOptions::default(), OverviewSelection::Auto) else {
             panic!("a missing input translated");
         };

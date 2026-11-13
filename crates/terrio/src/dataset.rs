@@ -1329,7 +1329,15 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
                     Err(e) => Err(reader_error.unwrap_or_else(|| e.into())),
                 }
             }
-            Err(_) => Err(reader_error.unwrap_or_else(|| Error::Unsupported(format!("'{path}': format not recognized ({raster_err})")))),
+            Err(_) => Err(reader_error.unwrap_or_else(|| {
+                // As above: a raster message that already names the path is kept as it is.
+                let message = raster_err.to_string();
+                Error::Unsupported(if message.contains("format not recognized") {
+                    message
+                } else {
+                    format!("'{path}': format not recognized ({message})")
+                })
+            })),
         },
     }
 }
