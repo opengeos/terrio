@@ -149,6 +149,24 @@ impl SpatialRef {
         terrio_crs::SpatialRef::from_projjson(text).map(Into::into).map_err(Into::into)
     }
 
+    /// The PROJ string of the CRS as PROJ 9.8.1 writes it, `None` for a CRS PROJ has none for
+    /// (see the standalone engine's `SpatialRef::to_proj4`, which lists what it leaves out).
+    ///
+    /// ```no_run
+    /// use terrio::crs::SpatialRef;
+    ///
+    /// let crs = SpatialRef::from_epsg(2056)?;
+    /// match crs.to_proj4() {
+    ///     Some(proj) => println!("{proj}"),
+    ///     None => println!("no PROJ string"),
+    /// }
+    /// # Ok::<(), terrio::Error>(())
+    /// ```
+    pub fn to_proj4(&self) -> Option<String> {
+        initialize();
+        self.as_core().to_proj4()
+    }
+
     /// The CRS as PROJJSON v0.7 (see the standalone engine's `SpatialRef::to_projjson`).
     pub fn to_projjson(&self) -> Result<String> {
         initialize();

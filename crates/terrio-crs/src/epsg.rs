@@ -367,6 +367,11 @@ const VARIANT_C: [(u32, &str, u32, [f64; 4]); 2] = [
     (2986, "Perroud 1950 / Terre Adelie Polar Stereographic", 4637, [-67.0, 140.0, 300_000.0, 200_000.0]),
 ];
 
+/// Whether a code is one of [`VARIANT_C`], whose method no PROJ string names.
+pub(crate) fn is_variant_c_code(code: u32) -> bool {
+    VARIANT_C.iter().any(|(c, ..)| *c == code)
+}
+
 /// The entry of a CRS of [`VARIANT_C`]: its geographic CRS's datum, transformations and area of
 /// use, with the WKT 1 of its definition and the PROJ string the WKT 1 reader gives it.
 fn variant_c(code: u32) -> Option<&'static Entry> {

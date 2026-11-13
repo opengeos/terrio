@@ -21,8 +21,13 @@ pub struct Args {
     wkt: bool,
     /// Print only the PROJJSON definition, so that the output is a PROJJSON file (refused for a CRS
     /// it would describe wrongly).
-    #[arg(long, conflicts_with_all = ["to", "wkt", "coords", "dimension", "transform_options", "s_coord_epoch", "t_coord_epoch"])]
+    #[arg(long, conflicts_with_all = ["to", "wkt", "proj4", "coords", "dimension", "transform_options", "s_coord_epoch", "t_coord_epoch"])]
     projjson: bool,
+    /// Print only the PROJ string, as `projinfo -o PROJ` writes it (an error for a CRS PROJ has
+    /// none for, such as an engineering CRS). It leaves out what a PROJ string cannot hold, such as
+    /// the datum transformation of an EPSG CRS: keep the code or WKT to keep the CRS.
+    #[arg(long, conflicts_with_all = ["to", "wkt", "coords", "dimension", "transform_options", "s_coord_epoch", "t_coord_epoch"])]
+    proj4: bool,
     /// Transform coordinates into this CRS. Reads `x y` pairs from the arguments, or lines of
     /// `x y`, `x y z` or `x y z t` (t: a decimal year) from standard input when none are given,
     /// as `gdaltransform` does (printing `transformation failed.` for a point that fails).
@@ -53,6 +58,11 @@ pub fn run(a: Args) -> terrio::Result<()> {
     let src = SpatialRef::parse(&a.crs)?;
     if a.projjson {
         println!("{}", src.to_projjson()?);
+        return Ok(());
+    }
+    if a.proj4 {
+        let proj = src.to_proj4().ok_or_else(|| terrio::Error::InvalidArgument(format!("{} has no PROJ string", src.label())))?;
+        println!("{proj}");
         return Ok(());
     }
     let Some(to) = a.to else {

@@ -1493,6 +1493,13 @@ the original JSON definitions. Rust regressions also
 check file loading, malformed/unsupported definitions, wrong units/dimensions,
 and that a root authority ID cannot overwrite a caller's false easting.
 
+PROJ-string export (`SpatialRef::to_proj4`) is compared with PROJ 9.8.1's strings of every 20th
+EPSG, ESRI and IAU_2015 code, the codes behind each rule, custom definitions (bound CRSs among
+them) and compound references, character for character, and reads back as the same conversion
+(`cargo test -p terrio-crs --test proj_string_export`; regenerate with
+`scripts/gen_proj_string_export.py`, pyproj 3.8.0; `--all PATH` and the ignored
+`every_code_matches_proj` compare every code).
+
 PROJJSON export (`SpatialRef::to_projjson`) has unit tests of each kind of CRS and refusal
 (`cargo test -p terrio-crs --test projjson_export`); `--only projjson-export` compares it with
 live PROJ's PROJJSON of 52 CRSs by meaning and has GDAL read those and every IAU_2015 CRS, whose
