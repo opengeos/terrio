@@ -11,6 +11,33 @@ import pytest
 
 import terrio
 
+
+def test_pyogrio_keeps_pyproj_epsg_identification(monkeypatch):
+    """Keep known EPSG names independent of the shared WKT parser.
+
+    Args:
+        monkeypatch: Scoped replacement of the separate CRS naming bridge.
+    """
+    from terrio.pyogrio import _write
+
+    pyproj = pytest.importorskip("pyproj")
+
+    def unavailable_parser(definition):
+        """Represent a WKT dialect unavailable to the native metadata parser.
+
+        Args:
+            definition: WKT input that must not be needed for known EPSG codes.
+
+        Raises:
+            AssertionError: The bridge was used instead of pyproj's EPSG identity.
+        """
+        raise AssertionError(definition)
+
+    monkeypatch.setattr(_write._terrio, "_geojson_crs_name", unavailable_parser, raising=False)
+    assert "EPSG::32615" in _write._crs_member(pyproj.CRS.from_epsg(32615))
+    assert "CRS84" in _write._crs_member(pyproj.CRS.from_epsg(4326))
+
+
 CUSTOM = (
     'PROJCS["custom TM",GEOGCS["WGS 84",DATUM["WGS_1984",'
     'SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],'

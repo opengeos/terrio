@@ -31,7 +31,7 @@ pub(crate) type StyleTable = std::sync::Arc<Vec<(String, String)>>;
 #[pyfunction(name = "_geojson_crs_name")]
 pub(crate) fn geojson_crs_name(crs: &str) -> PyResult<Option<String>> {
     let mut layer = Layer::new("crs");
-    SpatialRef::parse(crs).py()?.apply_to_layer(&mut layer);
+    SpatialRef::parse_literal(crs).py()?.apply_to_layer(&mut layer);
     terrio::GeoJsonOptions::default().crs_name(&layer).py()
 }
 

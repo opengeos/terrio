@@ -282,7 +282,7 @@ def _is_null(v) -> bool:
 
 
 def _crs_member(crs) -> str | None:
-    """Format a CRS name accepted by the shared GeoJSON writer.
+    """Format a CRS member accepted by the shared GeoJSON writer.
 
     Args:
         crs: The dataframe's pyproj CRS, or None.
@@ -295,10 +295,16 @@ def _crs_member(crs) -> str | None:
     """
     if crs is None:
         return None
-    name = _terrio._geojson_crs_name(crs.to_wkt())
-    if name is None and crs.to_epsg() == 4326:
+    code = crs.to_epsg()
+    if code == 4326:
         # Retain pyogrio's existing spelling for WGS 84.
         name = "urn:ogc:def:crs:OGC:1.3:CRS84"
+    elif code is not None:
+        # Preserve pyproj's established EPSG identification without requiring its
+        # WKT dialect to be supported by Terrio's separate metadata parser.
+        name = f"urn:ogc:def:crs:EPSG::{code}"
+    else:
+        name = _terrio._geojson_crs_name(crs.to_wkt())
     if name is None:
         return None
     return '{ "type": "name", "properties": { "name": ' + _escape(name) + " } }"
