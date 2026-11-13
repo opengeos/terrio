@@ -1,6 +1,5 @@
 """Shapefile replacement and discovery preserve attributes and CRS across extension case."""
 
-import os
 import shutil
 import subprocess
 import sys
@@ -56,8 +55,6 @@ def test_replacement_removes_stale_component_cases(
         case: Existing component extension case.
         duplicates: Whether both uppercase and lowercase old components exist.
     """
-    if duplicates and os.path.normcase("a") == os.path.normcase("A"):
-        pytest.skip("duplicate case spellings need a case-sensitive filesystem")
     source = tmp_path / "replacement.shp"
     point(2, new_crs or "EPSG:4326").write(str(source))
     if new_crs is None:
@@ -79,7 +76,10 @@ def test_replacement_removes_stale_component_cases(
         existing = target.with_suffix("." + spelling)
         old.with_suffix("." + extension).rename(existing)
         if duplicates:
-            shutil.copyfile(existing, target.with_suffix("." + extension))
+            try:
+                shutil.copyfile(existing, target.with_suffix("." + extension))
+            except shutil.SameFileError:
+                pytest.skip("duplicate case spellings need a case-sensitive filesystem")
     if surface == "layer":
         replacement.write(str(target))
     elif surface == "convert":
