@@ -4,6 +4,7 @@ use crate::Detach;
 use crate::vector::PyLayer;
 use crate::{PyResultExt, crs_string, invalid};
 use arrow_array::ffi_stream::FFI_ArrowArrayStream;
+use arrow_array::{RecordBatch, RecordBatchIterator};
 use pyo3::prelude::*;
 use pyo3::types::{PyCapsule, PyDict};
 use std::sync::Mutex;
@@ -229,7 +230,14 @@ impl PyFeatureStream {
                 ArrowStream::new(reader, profile.as_ref(), &arrow)
             })
             .py()?;
-        let ffi = FFI_ArrowArrayStream::new(Box::new(stream));
+        let schema = crate::arrow::validated_schema(py, &self.layer, &stream.schema())?;
+        let batch_schema = schema.clone();
+        let batches = stream.map(move |batch| {
+            let batch = batch?;
+            RecordBatch::try_new(batch_schema.clone(), batch.columns().to_vec())
+        });
+        let reader = RecordBatchIterator::new(batches, schema);
+        let ffi = FFI_ArrowArrayStream::new(Box::new(reader));
         PyCapsule::new_with_value(py, ffi, c"arrow_array_stream")
     }
 }

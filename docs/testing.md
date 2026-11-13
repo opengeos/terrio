@@ -307,7 +307,7 @@ Transverse Mercator, engineering and WKT2-only temporal definitions retain equiv
 CRS and values across those exports and pyogrio. Custom dynamic definitions also
 retain their frame reference epoch instead of losing it through WKT1 conversion.
 Unknown FlatGeobuf authority codes paired with usable projected or engineering WKT
-export without warnings through all four Python surfaces while retaining the
+export without warnings through all five Python surfaces while retaining the
 layer's declared code. Rewriting a layer whose prose definition was ignored does
 not carry that text into another format. The JavaScript regression checks the
 native FlatGeobuf byte-read path, including retained incomplete and engineering
@@ -317,6 +317,11 @@ fixtures. GDAL's CRS lookup/export can itself fail on incomplete Shapefile WKT o
 an invalid FlatGeobuf CRS object; Terrio deliberately keeps dataframe export usable
 with a warning and no consumer CRS. The registered Arrow suite also matches all
 12 available comparisons on `countries.gpkg`, including CRS and native encodings.
+The stream coverage includes `terrio.open_stream`, both directly into GeoPandas
+and through `pyarrow.RecordBatchReader.from_stream`. Invalid WKT and unknown
+authority codes without stored WKT warn once at export and use the same schema
+on every batch, including empty streams. Without optional pyproj validation,
+native metadata is retained. GeoParquet's native stream schema is unchanged.
 
 ## The conformance suite
 
