@@ -42,7 +42,7 @@ pub(crate) struct Readers {
     /// The options of the thread that opened the raster (an `Env`, which is thread-local), so
     /// that a reader opened on another thread sees the dataset as the raster does: its sidecars,
     /// such as a `.msk` mask, ignored under `EMPTY_DIR` as they were at the open.
-    options: std::collections::HashMap<String, Option<String>>,
+    options: terrio::config::ThreadOptions,
     spare: std::sync::Mutex<Vec<LazyRaster>>,
 }
 
@@ -63,7 +63,7 @@ impl Readers {
             _ => None,
         };
         let path = absolute.as_deref().and_then(std::path::Path::to_str).unwrap_or(path);
-        let mut options = terrio::config::thread_options();
+        let mut options = terrio::config::ThreadOptions::capture();
         // Freeze the resolved limit, including an unset value, for readers opened later.
         let limit = "TERRIO_TIFF_MAX_CHUNK_BYTES";
         options.insert(limit.to_owned(), terrio::config::get(limit));
@@ -72,14 +72,7 @@ impl Readers {
 
     /// Opens another reader with the options the raster was opened with, on whatever thread.
     fn open(&self) -> terrio::Result<LazyRaster> {
-        struct Scope;
-        impl Drop for Scope {
-            fn drop(&mut self) {
-                terrio::config::pop_scope();
-            }
-        }
-        terrio::config::push_scope(self.options.clone());
-        let _scope = Scope;
+        let _scope = self.options.enter();
         terrio::open_raster_lazy(&self.path)
     }
 }

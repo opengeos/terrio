@@ -3712,7 +3712,7 @@ mod tests {
         let missing = dir.path().join("missing").to_str().unwrap().to_string();
         for key in ["TERRIO_TMPDIR", "CPL_TMPDIR"] {
             // The option is read: a directory that does not exist fails the write before it starts.
-            let mut scope = unset();
+            let mut scope = HashMap::new();
             scope.insert(key.into(), Some(missing.clone()));
             crate::config::push_scope(scope);
             let refused = CogWriter::create(path.to_str().unwrap(), &raster, &opts);

@@ -2174,7 +2174,7 @@ fn band_dim_metadata(array: &Array, bds: &[usize], coord: impl Fn(usize) -> Opti
     // Each dimension's coordinates at once, retaining its own shape check even when names
     // repeat. Scope only the blocking metadata lookup; decoding can yield to unrelated pool
     // work, so its chunk policy is passed explicitly instead of holding thread-local options.
-    let options = crate::config::thread_options();
+    let options = crate::config::ThreadOptions::capture();
     let allow_big = big_chunks_allowed();
     let (values, units): (Vec<Option<Vec<f64>>>, Vec<Option<String>>) = crate::par::map_range(bds.len(), |k| {
         let a = crate::config::with_thread_options(options.clone(), || coord(bds[k]).filter(|a| a.shape == [array.shape[bds[k]]]));

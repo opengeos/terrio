@@ -9,6 +9,19 @@ terrio reproduces the GDAL they compare with (see [warp](cli.md#warp)). Pull req
 compare the point cloud filters with PDAL's on `autzen_trim.las` only; pushes to `main` on the
 Madison lidar (4 million points) too (`scripts/compare_pointclouds.py --quick` skips it).
 
+## Configuration alias precedence
+
+`cargo test -p terrio --lib config::tests::` checks scope ordering, alias priority,
+explicit unsets and thread isolation. `python/tests/test_config_alias_precedence.py`
+adds 24 real-I/O checks: TIFF sidecar metadata and file discovery across both
+aliases and nested scopes, restoration on exit, and HTTP User-Agent/retry
+settings applied to a loopback server. Spare-reader tests hold the primary reader
+on another thread and verify nested aliases and explicit unsets survive reopening.
+Ordered worker snapshots retain the same scope boundaries; flattened
+`thread_options()` remains an introspection API. Every scoped alias wins over process
+environment values or outer scopes. This alias policy is specific to Terrio;
+it is not a claim that GDAL understands the `TERRIO_` option names.
+
 ## Remote-read locks across fork
 
 `cargo test -p terrio --lib each_remote_read_lock_is_handed_off_across_a_fork`
