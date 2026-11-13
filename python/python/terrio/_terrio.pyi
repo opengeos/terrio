@@ -47,6 +47,7 @@ __all__ = [
     "write_raster",
     "write_netcdf_groups",
     "write_vector",
+    "_geojson_crs_name",
     "convert",
     "sql",
     "clip_vector",
