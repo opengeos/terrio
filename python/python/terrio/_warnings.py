@@ -7,7 +7,7 @@ from types import FrameType
 
 def warn_user(message: str) -> None:
     """Attribute a UserWarning to the first Python frame outside Terrio."""
-    # Native callbacks (for example atexit) may have no Python caller frame.
+    # Rust can call this from an atexit handler or a new thread with no Python caller frame.
     frame: FrameType | None = sys._getframe(0).f_back
     stacklevel = 2
     while frame is not None:

@@ -67,7 +67,8 @@ else:
     assert "ValueError" not in result.stderr
     assert "Exception ignored" not in result.stderr
     message = "holds no CRS definition" if callback == "native" else "no caller warning"
-    assert "sys:1: UserWarning:" in result.stderr
+    # CPython 3.13 changed the fallback location used when no caller frame exists.
+    assert any(f"{location}: UserWarning:" in result.stderr for location in ("sys:1", "<sys>:0"))
     assert message in result.stderr
 
 
