@@ -143,24 +143,15 @@ fn slice_between_identical_geocentric_crs_still_transforms() {
 }
 
 #[test]
-fn slice_or_nan_returns_refusals_under_the_strict_options() {
-    // With ONLY_BEST=YES, WGS 84 to the British National Grid needs the OSTN15 grid, which the
-    // tests run without: a refusal, not a point outside the domain, so the error is returned.
-    let opts = TransformOptions { only_best: true, ..Default::default() };
-    let t = Transformer::with_options(&epsg(4326), &epsg(27700), &opts).unwrap();
-    let mut xy = vec![(-1.5, 52.5)];
-    assert!(matches!(t.transform_slice_or_nan(&mut xy), Err(terrio_crs::Error::MissingGrid(_))));
-}
-
-#[test]
-fn slice_or_nan_returns_a_missing_velocity_grid() {
+fn slice_or_nan_marks_a_missing_velocity_grid() {
     // NAD83(CSRS)v6 between two coordinate epochs moves points with the Canada velocity grid,
-    // which is not there: a missing grid, not points outside it.
+    // which is not there: `transform` fails with a missing grid, and the slice marks the point.
     let opts = TransformOptions { source_coordinate_epoch: Some(2010.0), target_coordinate_epoch: Some(2020.0), ..Default::default() };
     let t = Transformer::with_options(&epsg(8252), &epsg(8252), &opts).unwrap();
     assert!(matches!(t.transform(-75.0, 45.0), Err(terrio_crs::Error::MissingGrid(_))));
     let mut xy = vec![(-75.0, 45.0)];
-    assert!(matches!(t.transform_slice_or_nan(&mut xy), Err(terrio_crs::Error::MissingGrid(_))));
+    assert_eq!(t.transform_slice_or_nan(&mut xy).unwrap(), 1);
+    assert!(xy[0].0.is_nan() && xy[0].1.is_nan());
 }
 
 /// WGS 84 to an orthographic view centred on (0, 0): the far side of the Earth (170°E on the
@@ -264,4 +255,34 @@ fn inverse_with_coordinate_epochs_matches_proj() {
     let (x, y, z) = forward.inverse().unwrap().transform_3d(135.0, -25.0, 10.0).unwrap();
     assert_close(&[(x, y)], &[(134.999996938209, -25.000005301131)], DEGREES);
     assert!((z - 10.001507529989).abs() <= METRES, "height {z}");
+}
+
+#[test]
+fn slice_or_nan_marks_points_refused_under_only_best_as_proj_does() {
+    // ONLY_BEST=YES, WGS 84 to the British National Grid: in Great Britain the best operation
+    // needs the OSTN15 grid, which is missing, so PROJ fails the point (`inf` from
+    // `proj_trans_generic`) and goes on; elsewhere it transforms. pyproj's
+    // `T.from_crs("EPSG:4326", "EPSG:27700", always_xy=True, only_best=True)`.
+    let opts = TransformOptions { only_best: true, ..Default::default() };
+    let t = Transformer::with_options(&epsg(4326), &epsg(27700), &opts).unwrap();
+    let mut xy = vec![(7.4386, 46.9511), (-1.5, 52.5), (-100.0, 40.0)];
+    assert_eq!(t.transform_slice_or_nan(&mut xy).unwrap(), 1);
+    assert!(xy[1].0.is_nan() && xy[1].1.is_nan());
+    // Points 1,100 km and more outside the grid's area: terrio's and PROJ's arithmetic part by
+    // about 50 µm there, within the 1 mm forward tolerance of `crs_benchmark.rs`.
+    assert_close(&[xy[0], xy[2]], &[(1117930.9188496224, -284302.41639739263), (-5932518.398155878, 5516653.986729132)], 1e-3);
+    // Afterwards the transformer reports the refusal, as raster workers check it.
+    assert!(matches!(t.check_policy(), Err(terrio_crs::Error::MissingGrid(_))));
+}
+
+#[test]
+fn slice_or_nan_with_allow_ballpark_off_matches_proj() {
+    // ALLOW_BALLPARK=NO, WGS 84 to CH1903+ / LV95: PROJ uses "CH1903+ to WGS 84 (1)" for a point
+    // outside its area of use too, and so does terrio. pyproj's
+    // `T.from_crs("EPSG:4326", "EPSG:2056", always_xy=True, allow_ballpark=False)`.
+    let opts = TransformOptions { allow_ballpark: Some(false), ..Default::default() };
+    let t = Transformer::with_options(&epsg(4326), &epsg(2056), &opts).unwrap();
+    let mut xy = vec![(7.4386, 46.9511), (-100.0, 40.0)];
+    assert_eq!(t.transform_slice_or_nan(&mut xy).unwrap(), 0);
+    assert_close(&xy, &[(2599997.532515652, 1200001.9164401442), (-4850557.98309055, 5695404.623188236)], METRES);
 }

@@ -1,6 +1,7 @@
 //! A velocity grid that counts as available (the network is on) but cannot be downloaded: the
-//! point motion fails as a missing grid, which `transform_slice_or_nan` returns rather than marking
-//! the point NaN. Its own test binary: the grid transport and network setting are process-wide.
+//! point motion fails as a missing grid, not as a point outside the grid, and
+//! `transform_slice_or_nan` marks the point as it marks every point that fails. Its own test binary:
+//! the grid transport and network setting are process-wide.
 #![cfg(all(feature = "grid-transport", not(target_family = "wasm")))]
 
 use std::sync::{
@@ -30,9 +31,10 @@ fn a_velocity_grid_that_fails_to_download_is_a_missing_grid() {
     let csrs = SpatialRef::from_epsg(8252).unwrap();
     let opts = TransformOptions { source_coordinate_epoch: Some(2010.0), target_coordinate_epoch: Some(2020.0), ..Default::default() };
     let t = Transformer::with_options(&csrs, &csrs, &opts).unwrap();
-    let mut xy = vec![(-75.0, 45.0)];
-    assert!(matches!(t.transform_slice_or_nan(&mut xy), Err(Error::MissingGrid(_))), "{xy:?}");
+    assert!(matches!(t.transform(-75.0, 45.0), Err(Error::MissingGrid(_))));
     // The download was attempted and failed, rather than skipped before reaching the transport.
     assert!(attempts.load(Ordering::SeqCst) > 0);
-    assert_eq!(xy, vec![(-75.0, 45.0)]);
+    let mut xy = vec![(-75.0, 45.0)];
+    assert_eq!(t.transform_slice_or_nan(&mut xy).unwrap(), 1);
+    assert!(xy[0].0.is_nan() && xy[0].1.is_nan());
 }

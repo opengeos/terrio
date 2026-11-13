@@ -8,6 +8,9 @@ use std::time::Instant;
 use terrio_crs::{SpatialRef, Transformer};
 
 fn main() {
+    // Without grids or the network, so that the timings do not depend on the local grid set.
+    terrio_crs::set_grid_search_paths(Some(Vec::new()));
+    terrio_crs::set_network_enabled(Some(false));
     const N: usize = 100_000;
     let pairs = [
         ("EPSG:32632 -> EPSG:4326", 32632, 4326, (300_000.0, 5_000_000.0), (400_000.0, 400_000.0)),

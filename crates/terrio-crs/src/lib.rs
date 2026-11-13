@@ -1695,23 +1695,21 @@ impl Transformer {
     }
 
     /// Transforms points in place, each as [`transform`](Self::transform) does, setting the
-    /// points that cannot be transformed (outside a projection's domain, outside a velocity grid)
-    /// to `(NaN, NaN)`, and returns how many there were. For renderers, which draw what transforms
-    /// and skip the rest, such as a grid of pixels reaching beyond a projection's domain. PROJ's
-    /// `proj_trans_generic` marks such points `HUGE_VAL` (infinity); NaN is terrio's choice, so
-    /// that a marked point is never taken for a coordinate.
+    /// points it fails for to `(NaN, NaN)` and going on, and returns how many there were. For
+    /// renderers, which draw what transforms and skip the rest, such as a grid of pixels reaching
+    /// beyond a projection's domain.
     ///
-    /// Only those failures ([`Error::Crs`]) are marked. A refusal under the strict options
-    /// ([`Error::MissingGrid`] with [`TransformOptions::only_best`], [`Error::NoOperation`] with
-    /// [`TransformOptions::allow_ballpark`] off), a velocity grid that is missing or failed to
-    /// download ([`Error::MissingGrid`]) or an I/O error is returned at once instead, so that it is
-    /// not mistaken for points outside the domain. As with
+    /// As PROJ 9.8.1's `proj_trans_generic` does, every point that fails is marked, whatever the
+    /// reason: outside a projection's domain or a velocity grid ([`Error::Crs`]), and refused under
+    /// the strict options, such as a missing grid with [`TransformOptions::only_best`]
+    /// ([`Error::MissingGrid`]) or no allowed operation with
+    /// [`TransformOptions::allow_ballpark`] off ([`Error::NoOperation`]). PROJ marks them
+    /// `HUGE_VAL` (infinity); NaN is terrio's choice, so that a marked point is never taken for a
+    /// coordinate. After the batch, [`check_policy`](Self::check_policy) reports a missing grid
+    /// refused under `only_best`, as raster workers use it. Only errors that are not about a point
+    /// (I/O, an invalid argument) are returned, at once: as with
     /// [`transform_slice`](Self::transform_slice), the points before it are then transformed (or
     /// marked), and it and those after it are left as they were.
-    ///
-    /// Deliberately, a grid file that is present but cannot be read (corrupt, truncated) is not
-    /// told apart: terrio's grid readers report no more than that the point could not be
-    /// transformed, as [`transform`](Self::transform) reports it, so such points are marked NaN.
     ///
     /// ```no_run
     /// use terrio_crs::{SpatialRef, Transformer};
@@ -1731,11 +1729,11 @@ impl Transformer {
         for p in xy.iter_mut() {
             *p = match self.transform(p.0, p.1) {
                 Ok(q) => q,
-                Err(Error::Crs(_)) => {
+                Err(e @ (Error::Io(_) | Error::InvalidArgument(_))) => return Err(e),
+                Err(_) => {
                     failed += 1;
                     (f64::NAN, f64::NAN)
                 }
-                Err(e) => return Err(e),
             };
         }
         Ok(failed)
@@ -1750,12 +1748,13 @@ impl Transformer {
     /// with the same options, the coordinate epochs swapped, and the same warning handler.
     ///
     /// It is built as [`with_options`](Self::with_options) builds one, so it picks its datum
-    /// operations for the other direction as GDAL does when asked for that pair. Between two
-    /// dynamic CRSs with both coordinate epochs given, each direction runs at its own source
-    /// epoch, as GDAL's do, so a time-dependent transformation is not evaluated at the same time
-    /// both ways and a round trip does not come back to the point. GDAL 3.13.3's
-    /// `OGRProjCT::GetInverse()` instead inverts this transformer's pipeline, which rounds
-    /// degrees as [`with_reverse_degree_division`](Self::with_reverse_degree_division) does; the
+    /// operations for the other direction as `with_options` picks them for that pair (the tests
+    /// compare both directions with PROJ 9.8.1). Between two dynamic CRSs with both coordinate
+    /// epochs given, each direction runs at its own source epoch, by `with_options`'s rule, so a
+    /// time-dependent transformation is not evaluated at the same time both ways and a round trip
+    /// does not come back to the point. This is not GDAL's `OGRProjCT::GetInverse()`, which
+    /// inverts the forward pipeline; its rounding of degrees is what
+    /// [`with_reverse_degree_division`](Self::with_reverse_degree_division) reproduces, and the
     /// inverse keeps that rounding when this transformer has it.
     ///
     /// ```no_run

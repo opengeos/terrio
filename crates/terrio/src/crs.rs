@@ -441,8 +441,8 @@ impl Transformer {
     pub fn transform_slice(&self, xy: &mut [(f64, f64)]) -> Result<()> {
         self.0.transform_slice(xy).map_err(Into::into)
     }
-    /// Transform points in place, setting those that cannot be transformed to `(NaN, NaN)`;
-    /// returns how many there were, or the error of a refusal under the strict options (see
+    /// Transform points in place, setting those that fail to `(NaN, NaN)` as PROJ's
+    /// `proj_trans_generic` marks them, and return how many there were (see
     /// [`terrio_crs::Transformer::transform_slice_or_nan`]).
     pub fn transform_slice_or_nan(&self, xy: &mut [(f64, f64)]) -> Result<usize> {
         self.0.transform_slice_or_nan(xy).map_err(Into::into)
