@@ -603,8 +603,16 @@ fn run_until_client_leaves(stream: &TcpStream, session: &Session, name: &str, ar
 /// The entries of the directory named in the request (`{"path": …}`; the working directory when
 /// empty), directories first. Names that are not valid Unicode are left out, since the page could
 /// not send them back, and so are names with line breaks, which its lists of paths separate by.
+///
+/// Windows has one tree per drive, so a directory without a parent there (`C:\`, or the root of a
+/// network share) reports `"drives": true`, and `{"drives": true}` in the request lists the drives
+/// in place of a directory: an empty `path`, and each drive's root as an entry.
 fn list_directory(body: &[u8]) -> Result<Value, String> {
     let params: Value = serde_json::from_slice(body).map_err(|e| e.to_string())?;
+    if params.get("drives").and_then(Value::as_bool) == Some(true) {
+        let entries: Vec<Value> = drives().into_iter().map(|name| json!({"name": name, "dir": true, "size": null})).collect();
+        return Ok(json!({"path": "", "parent": null, "drives": false, "entries": entries}));
+    }
     let path = match params.get("path").and_then(Value::as_str) {
         Some(p) if !p.is_empty() => PathBuf::from(p),
         _ => std::env::current_dir().map_err(|e| e.to_string())?,
@@ -623,7 +631,22 @@ fn list_directory(body: &[u8]) -> Result<Value, String> {
         .collect();
     entries.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase())));
     let entries: Vec<Value> = entries.into_iter().map(|(dir, name, size)| json!({"name": name, "dir": dir, "size": size})).collect();
-    Ok(json!({"path": display(&path), "parent": path.parent().map(display), "entries": entries}))
+    let parent = path.parent();
+    Ok(json!({"path": display(&path), "parent": parent.map(display), "drives": parent.is_none() && !drives().is_empty(), "entries": entries}))
+}
+
+/// The root of each drive (`C:\`), in letter order; none where the file system is a single tree.
+#[cfg(windows)]
+fn drives() -> Vec<String> {
+    // SAFETY: the call takes no arguments and returns a bit per drive letter, bit 0 for `A:`.
+    let letters = unsafe { windows_sys::Win32::Storage::FileSystem::GetLogicalDrives() };
+    (0..26u8).filter(|bit| letters & (1 << bit) != 0).map(|bit| format!("{}:\\", char::from(b'A' + bit))).collect()
+}
+
+/// The root of each drive (`C:\`), in letter order; none where the file system is a single tree.
+#[cfg(not(windows))]
+fn drives() -> Vec<String> {
+    Vec::new()
 }
 
 fn display(path: &Path) -> String {
@@ -784,6 +807,34 @@ mod tests {
 
         let missing = json!({"path": dir.path().join("missing").to_str().unwrap()}).to_string();
         assert!(list_directory(missing.as_bytes()).unwrap_err().contains("missing"));
+    }
+
+    /// A drive's root has no parent, so the page goes up from it to the list of drives.
+    #[test]
+    #[cfg(windows)]
+    fn lists_the_drives_above_a_drive_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().ancestors().last().unwrap().to_str().unwrap();
+        let listing = list_directory(json!({"path": root}).to_string().as_bytes()).unwrap();
+        assert_eq!((&listing["parent"], &listing["drives"]), (&Value::Null, &json!(true)));
+        let below = list_directory(json!({"path": dir.path().to_str().unwrap()}).to_string().as_bytes()).unwrap();
+        assert_eq!(below["drives"], json!(false));
+
+        let drives = list_directory(br#"{"drives": true}"#).unwrap();
+        assert_eq!((&drives["path"], &drives["parent"], &drives["drives"]), (&json!(""), &Value::Null, &json!(false)));
+        let names: Vec<&str> = drives["entries"].as_array().unwrap().iter().map(|entry| entry["name"].as_str().unwrap()).collect();
+        assert!(names.contains(&root), "{root} is among {names:?}");
+        assert!(names.iter().all(|name| name.len() == 3 && name.ends_with(":\\")), "{names:?}");
+        assert!(drives["entries"].as_array().unwrap().iter().all(|entry| entry["dir"] == json!(true) && entry["size"].is_null()));
+    }
+
+    /// A single tree has nothing above its root.
+    #[test]
+    #[cfg(not(windows))]
+    fn a_single_tree_has_no_drives() {
+        let listing = list_directory(br#"{"path": "/"}"#).unwrap();
+        assert_eq!((&listing["parent"], &listing["drives"]), (&Value::Null, &json!(false)));
+        assert_eq!(list_directory(br#"{"drives": true}"#).unwrap()["entries"], json!([]));
     }
 
     #[test]

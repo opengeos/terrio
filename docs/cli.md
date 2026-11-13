@@ -3964,7 +3964,8 @@ terrio ui --port 8080 --no-open
 Serves a page with a form for every command, generated from the
 [command catalog](#machine-readable-command-catalog), so it always matches this binary. Pick files
 with the built-in file browser, which lists the disk of the computer running terrio: type the start of
-a name to jump to it, and repeat a letter to step through the names that start with it. For the
+a name to jump to it, and repeat a letter to step through the names that start with it. On Windows,
+**Up** from the root of a drive lists the drives. For the
 inputs that take `@FILE` lists and wildcards (those of `mosaic`, `warp`, `concat`, `raster-index` and
 others; see [Commands](#commands)), **Add matching files** adds every file of the listed folder that matches a pattern, such as `*.tif`, as one
 `folder/*.tif` line that the command expands when it runs; the browser shows how many files match.

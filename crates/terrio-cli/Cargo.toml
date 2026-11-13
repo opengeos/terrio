@@ -55,5 +55,9 @@ gag.workspace = true
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
+# The drives the file browser of `terrio ui` lists above a drive's root.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 sha2.workspace = true
