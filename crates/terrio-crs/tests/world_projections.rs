@@ -1,7 +1,8 @@
 //! The world projections terrio ports from PROJ's spherical ones (Robinson, the three Winkels,
 //! Gall, Gauss-Schreiber transverse Mercator, Foucaut sinusoidal, McBryde-Thomas flat-polar
-//! sinusoidal, Putniņš P4′, Murdoch II and Tissot) against PROJ, on a sphere and on WGS 84. The
-//! reference points are pyproj's (PROJ 9.7.1), from `scripts/gen_world_projection_points.py`,
+//! sinusoidal, Putniņš P4′, Eckert IV, Natural Earth, Murdoch II and Tissot) against PROJ, on a
+//! sphere and on WGS 84. The
+//! reference points are pyproj's (PROJ 9.8.1), from `scripts/gen_world_projection_points.py`,
 //! from the geographic CRS on the same figure, so that no datum transformation is involved:
 //! forward within 1 mm, and the inverse of PROJ's projected points within 1e-9°.
 
@@ -153,6 +154,100 @@ fn mcbryde_thomas_flat_polar_sinusoidal_matches_proj() {
 #[test]
 fn putnins_p4p_matches_proj() {
     check_all("putp4p");
+}
+
+#[test]
+fn eckert_iv_matches_proj() {
+    check_all("eck4");
+}
+
+#[test]
+fn natural_earth_matches_proj() {
+    check_all("natearth");
+}
+
+/// PROJ 9.8.1's own test values for a method on a sphere of radius 6,400 km
+/// (`test/gie/builtins.gie`): forward within 0.1 mm, as there, and inverse within 1e-9°; `None`
+/// where PROJ refuses the point (outside the projection domain).
+/// An inverse case: x, y and PROJ's longitude and latitude, `None` where PROJ refuses the point.
+type InverseCase = (f64, f64, Option<(f64, f64)>);
+
+fn check_gie(name: &str, fwd: &[[f64; 4]], inv: &[InverseCase]) {
+    let proj = SpatialRef::from_proj4(&format!("+proj={name} +a=6400000")).unwrap();
+    let geog = SpatialRef::from_proj4("+proj=longlat +a=6400000").unwrap();
+    let to_proj = Transformer::new(&geog, &proj).unwrap();
+    let to_geog = Transformer::new(&proj, &geog).unwrap();
+    for &[lon, lat, x, y] in fwd {
+        let (tx, ty) = to_proj.transform(lon, lat).unwrap();
+        assert!((tx - x).abs() < 1e-4 && (ty - y).abs() < 1e-4, "{name}: forward ({lon}, {lat}): ({tx}, {ty}), PROJ ({x}, {y})");
+    }
+    for &(x, y, expect) in inv {
+        let got = to_geog.transform(x, y).ok().filter(|(lon, lat)| lon.is_finite() && lat.is_finite());
+        match (got, expect) {
+            (Some((lon, lat)), Some((elon, elat))) => {
+                assert!(
+                    (lon - elon).abs() < 1e-9 && (lat - elat).abs() < 1e-9,
+                    "{name}: inverse ({x}, {y}): ({lon}, {lat}), PROJ ({elon}, {elat})"
+                )
+            }
+            (None, None) => {}
+            _ => panic!("{name}: inverse ({x}, {y}): {got:?}, PROJ {expect:?}"),
+        }
+    }
+}
+
+#[test]
+fn eckert_iv_matches_proj_gie() {
+    let (x, y) = (188646.389356416, 132268.540174065);
+    let (pole, edge) = (8489602.74033281, 16979205.4807);
+    let fwd = [
+        [2.0, 1.0, x, y],
+        [2.0, -1.0, x, -y],
+        [-2.0, 1.0, -x, y],
+        [-2.0, -1.0, -x, -y],
+        [-180.0, 90.0, -8489602.7403, 8489602.7403],
+        [180.0, 90.0, 8489602.7403, 8489602.7403],
+        [-180.0, 0.0, -edge, 0.0],
+        [180.0, 0.0, edge, 0.0],
+        [-180.0, -90.0, -8489602.7403, -8489602.7403],
+        [180.0, -90.0, 8489602.7403, -8489602.7403],
+    ];
+    let (lon, lat) = (0.002120241, 0.000756015);
+    let inv = [
+        (200.0, 100.0, Some((lon, lat))),
+        (200.0, -100.0, Some((lon, -lat))),
+        (-200.0, 100.0, Some((-lon, lat))),
+        (-200.0, -100.0, Some((-lon, -lat))),
+        (-pole, pole, Some((-180.0, 90.0))),
+        (-8489602.75, pole, None),
+        (pole, pole, Some((180.0, 90.0))),
+        (8489602.75, pole, None),
+        (0.0, 8489602.75, None),
+        (-edge, 0.0, Some((-180.0, 0.0))),
+        (-16979205.49, 0.0, None),
+        (edge, 0.0, Some((180.0, 0.0))),
+        (16979205.49, 0.0, None),
+        (-pole, -pole, Some((-180.0, -90.0))),
+        (-8489602.75, -pole, None),
+        (pole, -pole, Some((180.0, -90.0))),
+        (8489602.75, -pole, None),
+        (0.0, -8489602.75, None),
+    ];
+    check_gie("eck4", &fwd, &inv);
+}
+
+#[test]
+fn natural_earth_matches_proj_gie() {
+    let (x, y) = (194507.265257889, 112508.737358295);
+    let fwd = [[2.0, 1.0, x, y], [2.0, -1.0, x, -y], [-2.0, 1.0, -x, y], [-2.0, -1.0, -x, -y]];
+    let (lon, lat) = (0.002056383, 0.000888824);
+    let inv = [
+        (200.0, 100.0, Some((lon, lat))),
+        (200.0, -100.0, Some((lon, -lat))),
+        (-200.0, 100.0, Some((-lon, lat))),
+        (-200.0, -100.0, Some((-lon, -lat))),
+    ];
+    check_gie("natearth", &fwd, &inv);
 }
 
 #[test]

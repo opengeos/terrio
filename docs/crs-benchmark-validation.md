@@ -20,7 +20,9 @@ less than 1 mm; it does not assert bitwise equality.
 
 The fallback configuration retains the reported Terrio 0.5.0 score of 74 exact
 fixtures. The native configuration refuses `method-eck4`, `method-natearth` and
-`method-hammer`, with an error naming `wbprojection-fallback`. Both configurations
+`method-hammer`, with an error naming `wbprojection-fallback`. Since then, the native
+configuration computes Eckert IV and Natural Earth as PROJ 9.8.1 does
+(`crates/terrio-crs/tests/world_projections.rs`); the study has not been rerun. Both configurations
 retain the existing approximately 0.815 m forward difference for
 `form-2264-proj-bound` and refusal at the Mercator pole (`edge-merc-pole`).
 Geocentric, PROJJSON, IAU and additional projection capabilities are tracked in

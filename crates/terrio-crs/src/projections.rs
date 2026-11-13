@@ -45,6 +45,8 @@
 //     src/projections/ortho.cpp
 //     src/projections/geos.cpp
 //     src/projections/robin.cpp
+//     src/projections/eck4.cpp
+//     src/projections/natearth.cpp
 //     src/projections/healpix.cpp
 //     src/projections/igh.cpp
 //     src/projections/qsc.cpp
@@ -180,6 +182,8 @@ pub(crate) fn build(name: &str, s: &mut Setup<'_>) -> Result<Option<Box<dyn Proj
         "ortho" => Box::new(Ortho::new(s)),
         "geos" => Box::new(Geos::new(s)?),
         "robin" => Box::new(Robin),
+        "eck4" => Box::new(Eck4),
+        "natearth" => Box::new(Natearth),
         "moll" | "wag4" | "wag5" => Box::new(Moll::new(name)),
         "healpix" => Box::new(Healpix::new(s, false)?),
         "rhealpix" => Box::new(Healpix::new(s, true)?),
@@ -3344,6 +3348,137 @@ impl Proj for Robin {
             return None;
         }
         Some((lam, if y < 0.0 { -phi } else { phi }))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Eckert IV, ported from PROJ's eck4.cpp: pseudocylindrical and equal-area, with the poles as
+// lines half the equator's length. Keep PROJ's Newton iteration (six steps from its polynomial
+// guess) and its pole and antimeridian tolerances.
+
+#[derive(Debug)]
+struct Eck4;
+
+/// 2 / sqrt(4π + π²).
+const ECK4_CX: f64 = 0.42223820031577120149;
+/// 2 sqrt(π / (4 + π)).
+const ECK4_CY: f64 = 1.32650042817700232218;
+/// 1 / ECK4_CY.
+const ECK4_RCY: f64 = 0.75386330736002178205;
+/// 2 + π/2.
+const ECK4_CP: f64 = 3.57079632679489661922;
+/// 1 / ECK4_CP.
+const ECK4_RCP: f64 = 0.28004957675577868795;
+
+impl Proj for Eck4 {
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        if !lam.is_finite() || !phi.is_finite() {
+            return None;
+        }
+        // θ such that θ + sin θ cos θ + 2 sin θ = C_p sin φ, by Newton's method.
+        let p = ECK4_CP * phi.sin();
+        let v = phi * phi;
+        let mut theta = phi * (0.895168 + v * (0.0218849 + v * 0.00826809));
+        let mut converged = false;
+        for _ in 0..6 {
+            let c = theta.cos();
+            let s = theta.sin();
+            let step = (theta + s * (c + 2.0) - p) / (1.0 + c * (c + 2.0) - s * s);
+            theta -= step;
+            if step.abs() < 1e-7 {
+                converged = true;
+                break;
+            }
+        }
+        if !converged {
+            // At a pole, where the derivative vanishes: PROJ's pole line.
+            return Some((ECK4_CX * lam, if theta < 0.0 { -ECK4_CY } else { ECK4_CY }));
+        }
+        Some((ECK4_CX * lam * (1.0 + theta.cos()), ECK4_CY * theta.sin()))
+    }
+
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        let sin_theta = y * ECK4_RCY;
+        let one_minus = 1.0 - sin_theta.abs();
+        let (mut lam, phi) = if (0.0..=1e-12).contains(&one_minus) {
+            (x / ECK4_CX, if sin_theta > 0.0 { HALFPI } else { -HALFPI })
+        } else {
+            let theta = aasin_checked(sin_theta)?;
+            let cos_theta = theta.cos();
+            let lam = x / (ECK4_CX * (1.0 + cos_theta));
+            (lam, aasin_checked((theta + sin_theta * (cos_theta + 2.0)) * ECK4_RCP)?)
+        };
+        if !lam.is_finite() || !phi.is_finite() {
+            return None;
+        }
+        // Past the antimeridian: refused, unless by rounding (PROJ without +over).
+        let past = lam.abs() - PI;
+        if past > 0.0 {
+            if past > 1e-10 {
+                return None;
+            }
+            lam = PI.copysign(lam);
+        }
+        Some((lam, phi))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Natural Earth, ported from PROJ's natearth.cpp: Tom Patterson's projection in Bojan Šavrič's
+// polynomial form (with Patterson and Bernhard Jenny), ported to PROJ by Bernhard Jenny. Keep
+// PROJ's clamp of the northing to the pole line and its Newton iteration for the inverse.
+
+#[derive(Debug)]
+struct Natearth;
+
+const NATEARTH_A: [f64; 5] = [0.8707, -0.131979, -0.013791, 0.003971, -0.001529];
+const NATEARTH_B: [f64; 5] = [1.007226, 0.015085, -0.044475, 0.028874, -0.005916];
+/// The northing of the pole line.
+const NATEARTH_MAX_Y: f64 = 0.8707 * 0.52 * PI;
+
+/// The east-west scale of Natural Earth at latitude φ, from φ².
+fn natearth_x(phi2: f64) -> f64 {
+    let [a0, a1, a2, a3, a4] = NATEARTH_A;
+    a0 + phi2 * (a1 + phi2 * (a2 + phi2 * phi2 * phi2 * (a3 + phi2 * a4)))
+}
+
+impl Proj for Natearth {
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        if !lam.is_finite() || !phi.is_finite() {
+            return None;
+        }
+        let [b0, b1, b2, b3, b4] = NATEARTH_B;
+        let phi2 = phi * phi;
+        let phi4 = phi2 * phi2;
+        Some((lam * natearth_x(phi2), phi * (b0 + phi2 * (b1 + phi4 * (b2 + b3 * phi2 + b4 * phi4)))))
+    }
+
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        let [b0, b1, b2, b3, b4] = NATEARTH_B;
+        let (c0, c1, c2, c3, c4) = (b0, 3.0 * b1, 7.0 * b2, 9.0 * b3, 11.0 * b4);
+        // A northing past the pole line is read on it, as in PROJ.
+        let y = y.clamp(-NATEARTH_MAX_Y, NATEARTH_MAX_Y);
+        let mut yc = y;
+        let mut converged = false;
+        for _ in 0..100 {
+            let y2 = yc * yc;
+            let y4 = y2 * y2;
+            let f = yc * (b0 + y2 * (b1 + y4 * (b2 + b3 * y2 + b4 * y4))) - y;
+            let fder = c0 + y2 * (c1 + y4 * (c2 + c3 * y2 + c4 * y4));
+            let step = f / fder;
+            yc -= step;
+            if step.abs() < 1e-11 {
+                converged = true;
+                break;
+            }
+        }
+        if !converged {
+            return None;
+        }
+        Some((x / natearth_x(yc * yc), yc))
     }
 }
 
