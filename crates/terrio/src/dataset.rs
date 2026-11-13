@@ -1051,12 +1051,17 @@ fn list_layers_native(path: &str) -> Result<Vec<String>> {
     let local = vfs::resolve(path)?;
     if VectorDriver::for_extension(local.as_str()) == Some(VectorDriver::GPKG) {
         #[cfg(feature = "sqlite")]
-        return crate::drivers::vector::gpkg_read::list_layers(local.as_str());
+        {
+            let names = crate::drivers::vector::gpkg_read::list_layers(local.as_str())?;
+            if names.is_empty() {
+                check_archive_layers(path, &[])?;
+            }
+            return Ok(names);
+        }
         #[cfg(not(feature = "sqlite"))]
         return Err(Error::disabled("sqlite"));
     }
     let dataset = open_vector_native(local.as_str(), &VectorOpenOptions::default())?;
-    check_archive_layers(path, &dataset.layers)?;
     Ok(dataset.layers.into_iter().map(|l| l.name).collect())
 }
 

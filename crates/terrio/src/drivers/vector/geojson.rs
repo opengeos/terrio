@@ -223,6 +223,7 @@ pub(crate) struct SchemaScan {
 /// as json-c (GDAL's parser) and `serde_json::Value` keep it.
 #[derive(Default)]
 struct Probe {
+    record_type: Value,
     id: Value,
     properties: Value,
     stac_version: bool,
@@ -309,6 +310,7 @@ impl<'de> serde::Deserialize<'de> for Probe {
                 let mut p = Probe::default();
                 while let Some(key) = map.next_key::<Key>()? {
                     match key {
+                        Key::Type => p.record_type = map.next_value()?,
                         Key::Id => p.id = map.next_value()?,
                         Key::Properties => p.properties = map.next_value()?,
                         Key::StacVersion => {
@@ -678,10 +680,21 @@ impl SchemaScan {
         let err = |e: serde_json::Error| Error::InvalidData(format!("GeoJSON: {e}"));
         if self.stac.is_none() || self.stac == Some(true) {
             let v: Value = serde_json::from_slice(raw).map_err(err)?;
+            if v["type"].as_str() != Some("Feature") {
+                self.geom = self.geom.merge(LayerGeom::of_read_geometry(&v));
+            }
             self.observe(&v);
             return Ok(());
         }
         let p: Probe = serde_json::from_slice(raw).map_err(err)?;
+        if p.record_type.as_str() != Some("Feature") {
+            // Bare geometries also contribute their type and first-position dimensions.
+            // Probe only those members rather than allocating the coordinate arrays.
+            let root: GeomField = serde_json::from_slice(raw).map_err(err)?;
+            if let Some(geometry) = root.0 {
+                self.geom = self.geom.add(geometry.geom_type(false));
+            }
+        }
         let _ = p.stac_version;
         self.string_ids |= p.id.is_string();
         if let Some(t) = p.geometry {

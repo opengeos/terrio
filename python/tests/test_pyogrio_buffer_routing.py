@@ -1,6 +1,8 @@
 """Ambiguous SQLite, geometry sequences and no-layer ZIPs retain caller intent."""
 
 import io
+import json
+import sqlite3
 import zipfile
 
 import pytest
@@ -10,6 +12,73 @@ import terrio.pyogrio as tpg
 from terrio.pyogrio.errors import DataSourceError
 
 pytest_plugins = ["test_pyogrio_buffer_sources"]
+
+
+@pytest.mark.parametrize(
+    "records,expected",
+    [
+        ([{"type": "Point", "coordinates": [10, 46]}], "Point"),
+        ([{"type": "Point", "coordinates": [10, 46, 7]}], "Point Z"),
+        (
+            [
+                {"type": "Point", "coordinates": [10, 46]},
+                {"type": "Point", "coordinates": [11, 46, 7]},
+            ],
+            "Point Z",
+        ),
+        (
+            [
+                {
+                    "type": "Feature",
+                    "properties": {},
+                    "geometry": {"type": "Point", "coordinates": [10, 46]},
+                },
+                {"type": "LineString", "coordinates": [[10, 46], [11, 47]]},
+            ],
+            "Unknown",
+        ),
+    ],
+)
+def test_sequence_geometry_types_include_bare_records(tmp_path, records, expected):
+    """Include root geometries and later-record dimensions in declared layer types.
+
+    Args:
+        tmp_path: Temporary dataset directory.
+        records: Feature and bare-geometry sequence records.
+        expected: Declared geometry type exposed by the compatibility API.
+    """
+    data = b"".join(json.dumps(record).encode() + b"\n" for record in records)
+    path = tmp_path / "geometry.geojsonl"
+    path.write_bytes(data)
+    stream = io.BytesIO(data)
+    stream.name = path.name
+    for source in (path, stream, data):
+        info = tpg.read_info(source)
+        assert info["features"] == len(records)
+        assert info["geometry_type"] == expected
+
+
+def test_geopackage_archive_without_vector_layers_is_refused(tmp_path):
+    """Apply the no-layer rule to the fast GeoPackage layer-listing path.
+
+    Args:
+        tmp_path: Temporary dataset directory.
+    """
+    gpkg = tmp_path / "no_features.gpkg"
+    with sqlite3.connect(gpkg) as database:
+        database.executescript(
+            "PRAGMA application_id=0x47504b47; "
+            "CREATE TABLE gpkg_contents(table_name TEXT,data_type TEXT,description TEXT); "
+            "INSERT INTO gpkg_contents VALUES('tiles','tiles','');"
+        )
+    assert terrio.list_layers(str(gpkg)) == []
+    archive = tmp_path / "no_features.zip"
+    with zipfile.ZipFile(archive, "w") as output:
+        output.write(gpkg, gpkg.name)
+    with pytest.raises(terrio.UnsupportedError, match="no dataset found"):
+        terrio.list_layers(str(archive))
+    with pytest.raises(DataSourceError, match="no dataset found"):
+        tpg.list_layers(archive)
 
 
 @pytest.mark.parametrize("extension", ["mbtiles", "gpkg", "geojsonl"])
