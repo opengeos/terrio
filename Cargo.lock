@@ -2570,6 +2570,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "terrio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

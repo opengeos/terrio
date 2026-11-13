@@ -3986,11 +3986,12 @@ terrio ui --port 8080 --no-open
 Serves a page with a form for every command, generated from the
 [command catalog](#machine-readable-command-catalog), so it always matches this binary. Pick files
 with the built-in file browser, which lists the disk of the computer running terrio: type the start of
-a name to jump to it, and repeat a letter to step through the names that start with it. For the
-inputs that take `@FILE` lists and wildcards (those of `mosaic`, `warp`, `concat`, `raster-index` and
-others; see [Commands](#commands)), **Add matching files** adds every file of the listed folder that matches a pattern, such as `*.tif`, as one
-`folder/*.tif` line that the command expands when it runs; the browser shows how many files match.
-The page shows
+a name to jump to it, and repeat a letter to step through the names that start with it. On Windows,
+**Up** from the root of a drive or of a network share lists the drives. For the inputs that take
+`@FILE` lists and wildcards (those of `mosaic`, `warp`, `concat`, `raster-index` and others; see
+[Commands](#commands)), **Add matching files** adds every file of the listed folder that matches a
+pattern, such as `*.tif`, as one `folder/*.tif` line that the command expands when it runs; the
+browser shows how many files match. The page shows
 the equivalent command line, quoted for a POSIX shell, to copy into a script. Relative paths are
 taken from the directory `terrio ui` started in. **Cancel**, or closing the tab, stops a running command, which can leave a
 partial output file; Ctrl-C stops the server. This works through both the `terrio` binary and the
