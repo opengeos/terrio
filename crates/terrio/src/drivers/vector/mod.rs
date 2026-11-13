@@ -301,7 +301,7 @@ pub(crate) fn write_bytes(layers: &[Layer], driver: VectorDriver, options: &Vect
         #[cfg(feature = "parquet")]
         VectorDriver::Parquet => geoparquet::to_bytes(first)?,
         // Without its schema file: readers infer the field types.
-        VectorDriver::GML => gml::to_string(first, "").into_bytes(),
+        VectorDriver::GML => gml::to_string(first, "")?.into_bytes(),
         _ => return Ok(None),
     }))
 }

@@ -779,12 +779,15 @@ Schemas define conformance. GDAL 3.13.3 has no CityJSON driver.
 
 ### GML axis order
 
-The simple-feature GML reader normalizes authority-order EPSG identifiers (URNs and
+The simple-feature GML reader normalizes authority-order identifiers (URNs and
 modern `/def/crs/` URLs) to GIS XY using the CRS's declared horizontal axes. This
 includes latitude-first geographic CRSs and northing-first projected CRSs such as
 EPSG:6708. Short `EPSG:` names and legacy `epsg.xml#` URLs retain XY order; easting-first
 projected CRSs retain XY for every identifier form. Heights are preserved. The GML
-writer emits authority-order coordinates and envelopes for its EPSG URNs. WFS 1.1/2.0
+writer names EPSG, ESRI and IAU_2015 authorities and emits authority-order coordinates
+and envelopes for their URNs. A retained definition with no nameable authority is
+refused before creating the GML or its schema file; reproject to a named CRS or use
+a format that stores the definition, such as GeoPackage. WFS 1.1/2.0
 bounding boxes follow the advertised authority order; WFS 1.0 bounding boxes use XY.
 Standalone layers with conflicting coordinate-axis declarations, including nested geometry
 members, are refused. Unknown EPSG identifiers are written with short `EPSG:` names and XY
@@ -1094,6 +1097,12 @@ layers, and shapefile field names are truncated and made unique as `ogr2ogr` doe
 files are written with a `crs` member naming their CRS, which GDAL reads (it assumes none
 otherwise), and a CSV file's CRS is read from a `.prj` file next to it, as GDAL's CSV driver
 reads it.
+
+CSV/TSV exports do not write a `.prj` sidecar. When geometry is exported from a
+layer with a known CRS, writers warn once that the CRS is not stored. This also
+applies to byte exports and streamed conversions. Supply a matching `.prj` or
+use a format that stores CRS definitions. Without one, the reader can infer
+WGS 84 for longitude/latitude-shaped coordinates, including a local grid near its origin.
 
 CSV/TSV writers write each geometry as WKT in a leading `WKT` column by default.
 A `.tsv` filename selects tab separators, including byte exports; `.csv` defaults
