@@ -317,11 +317,12 @@ document, it is refused after them rather than fetched whole to be read as GeoJS
 opened as a raster whose name points to no raster driver (`x`, `x.bin`, `dir.json/x`, a vector
 file's name) or to a labelled raw raster, read with a `.hdr` a remote file comes without (ENVI's
 `.dat`, `.bsq`, `.bip`; EHdr's `.bil`, `.flt`), is judged by its first 16,384 bytes too: it is
-downloaded whole only when they show a format the whole read takes under that name (an HDF5,
-netCDF or GRIB file named for no raster driver, a Surfer 6 binary grid under either), and is
-otherwise refused after them (GDAL refuses a document after 49,152): a document, and also a PNG,
-a JPEG or a STAC item so named, which terrio reads under their own names, and a TIFF for the whole
-read (a lazy open, as `rio.open`'s, reads a TIFF of any name by range). `info` judges the names it
+downloaded whole only when they show a format the whole read takes under that name (PNG, JPEG,
+TIFF, HDF5, netCDF or GRIB named for no raster driver, or a Surfer 6 binary grid under either).
+Other documents and STAC items are refused after that probe (GDAL refuses a document after
+49,152 bytes). Whole-raster and generic dataset opens intentionally download the complete
+extensionless image, including TIFF. For large remote TIFFs, use `open_raster(..., lazy=True)`
+or `rio.open`: their window and overview reads work by range under any name. `info` judges the names it
 reads by content alone the same way. The refusal, and the errors of a whole read that follows,
 name the dataset as it was given, not its local copy. With `TERRIO_WBRASTER_FALLBACK=YES` (for
 `info`, also `TERRIO_WBVECTOR_FALLBACK=YES`), a file named for no driver is still downloaded whole,

@@ -75,10 +75,11 @@ def test_extensionless_remote_images_measure_whole_reads(
         driver: Expected native image driver.
         surface: Whole-raster or generic dataset entry point.
     """
-    values = np.random.default_rng(19).integers(0, 256, (3, 512, 512), dtype="uint8")
+    dimension = 1024 if extension == "tif" else 512
+    values = np.random.default_rng(19).integers(0, 256, (3, dimension, dimension), dtype="uint8")
     original = tmp_path / f"image.{extension}"
     with rio.open(
-        original, "w", driver=driver, width=512, height=512, count=3, dtype="uint8"
+        original, "w", driver=driver, width=dimension, height=dimension, count=3, dtype="uint8"
     ) as dst:
         dst.write(values)
     with rio.open(original) as src:
@@ -97,5 +98,13 @@ def test_extensionless_remote_images_measure_whole_reads(
         record_property("transferred_bytes", transferred)
         assert size <= transferred <= size + 65536
         assert all(row[2] == 206 for row in server.log if row[0] == "GET" and row[3])
+        if extension == "tif":
+            before = server.bytes_sent()
+            with rio.open(server.url + "/image?lazy=1") as lazy:
+                sample = lazy.read(window=rio.windows.Window(0, 0, 1, 1))
+            np.testing.assert_array_equal(sample, expected[:, :1, :1])
+            lazy_bytes = server.bytes_sent() - before
+            record_property("lazy_window_bytes", lazy_bytes)
+            assert 0 < lazy_bytes < size / 2
     finally:
         server.close()

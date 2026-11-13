@@ -2452,7 +2452,8 @@ mod tests {
         std::fs::write(&path, "ncols 2\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\nNODATA_value -9999\n1 2\n3 4\n").unwrap();
         let path = path.to_str().unwrap();
         let err = crate::open_raster(path).unwrap_err().to_string();
-        assert!(err.contains("TERRIO_WBRASTER_FALLBACK"), "{err}");
+        assert!(err.contains("format not recognized by terrio's drivers"), "{err}");
+        assert!(!err.contains("TERRIO_WBRASTER_FALLBACK"), "{err}");
         crate::config::push_scope([("TERRIO_WBRASTER_FALLBACK".to_string(), Some("YES".to_string()))].into());
         let opened = crate::open_raster(path);
         crate::config::pop_scope();
