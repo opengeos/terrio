@@ -7,7 +7,8 @@ from types import FrameType
 
 def warn_user(message: str) -> None:
     """Attribute a UserWarning to the first Python frame outside Terrio."""
-    frame: FrameType | None = sys._getframe(1)
+    # Native callbacks (for example atexit) may have no Python caller frame.
+    frame: FrameType | None = sys._getframe(0).f_back
     stacklevel = 2
     while frame is not None:
         module = frame.f_globals.get("__name__", "")

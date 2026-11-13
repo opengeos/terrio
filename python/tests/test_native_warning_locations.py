@@ -1,12 +1,74 @@
 """Warnings originating in Rust identify public callers and honor their module filters."""
 
 import inspect
+import subprocess
+import sys
 import warnings
 
 import pytest
 
 import terrio
 import terrio.pyogrio as tpg
+
+
+@pytest.mark.parametrize("callback", ["native", "helper"])
+@pytest.mark.parametrize("context", ["atexit", "thread"])
+def test_warning_without_python_caller(malformed_crs_shapefile, callback, context):
+    """Keep warning emission working when C invokes a callback with no Python frame.
+
+    Args:
+        malformed_crs_shapefile: A readable layer that emits a native CRS warning.
+        callback: Whether to invoke the native binding or warning helper directly.
+        context: Whether C calls the callback during shutdown or in a new thread.
+    """
+    script = '''
+import _thread
+import atexit
+import sys
+import threading
+import warnings
+
+import terrio
+from terrio._warnings import warn_user
+
+warnings.simplefilter("always")
+if sys.argv[2] == "native":
+    callback, args = terrio.open_vector, (sys.argv[1],)
+else:
+    callback, args = warn_user, ("no caller warning",)
+if sys.argv[3] == "atexit":
+    atexit.register(callback, *args)
+else:
+    done = threading.Event()
+    original_showwarning = warnings.showwarning
+
+    def showwarning(*args, **kwargs):
+        """Display the warning and signal that the native callback reached it."""
+        original_showwarning(*args, **kwargs)
+        done.set()
+
+    def unraisablehook(args):
+        """Report callback failures and wake the waiting main thread."""
+        sys.__unraisablehook__(args)
+        done.set()
+
+    warnings.showwarning = showwarning
+    sys.unraisablehook = unraisablehook
+    _thread.start_new_thread(callback, args)
+    assert done.wait(10), "warning callback did not finish"
+'''
+    result = subprocess.run(
+        [sys.executable, "-c", script, malformed_crs_shapefile, callback, context],
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "ValueError" not in result.stderr
+    assert "Exception ignored" not in result.stderr
+    message = "holds no CRS definition" if callback == "native" else "no caller warning"
+    assert "sys:1: UserWarning:" in result.stderr
+    assert message in result.stderr
 
 
 @pytest.fixture
