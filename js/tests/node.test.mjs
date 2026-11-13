@@ -5263,3 +5263,25 @@ test("FlatGeobuf stored CRS validation discards prose and retains definition for
     }
   } finally { source.free(); }
 });
+test("GeoJSON byte exports name ESRI CRSs and refuse unnamed CRS loss", () => {
+  for (const definition of ["EPSG:32615", "ESRI:102003", "ESRI:102100", "IAU_2015:49900"]) {
+    const source = terrio.fromGeoJSON(SQUARES, "squares", definition);
+    try {
+      const bytes = source.toBytes("squares.geojson");
+      const document = JSON.parse(new TextDecoder().decode(bytes));
+      const [authority, code] = definition.split(":");
+      assert.equal(document.crs.properties.name, `urn:ogc:def:crs:${authority}::${code}`);
+      const back = terrio.open(bytes, "squares.geojson");
+      try {
+        assert.equal(back.crs, definition);
+        assert.deepEqual(back.toGeoJSON().features, source.toGeoJSON().features);
+      } finally { back.free(); }
+    } finally { source.free(); }
+  }
+  for (const definition of ['LOCAL_CS["site grid",UNIT["metre",1]]', "+proj=tmerc +datum=WGS84 +lon_0=-93.5 +k=1 +units=m"]) {
+    const source = terrio.fromGeoJSON(SQUARES, "squares", definition);
+    try {
+      assert.throws(() => source.toBytes("squares.geojson"), /GeoJSON cannot name.*RFC7946=YES/);
+    } finally { source.free(); }
+  }
+});

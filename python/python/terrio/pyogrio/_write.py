@@ -282,12 +282,25 @@ def _is_null(v) -> bool:
 
 
 def _crs_member(crs) -> str | None:
+    """Format a CRS name accepted by the shared GeoJSON writer.
+
+    Args:
+        crs: The dataframe's pyproj CRS, or None.
+
+    Returns:
+        str | None: A json-c-style CRS member, omitted for an unknown CRS.
+
+    Raises:
+        UnsupportedError: GeoJSON cannot name the retained definition.
+    """
     if crs is None:
         return None
-    epsg = crs.to_epsg()
-    if epsg is None:
+    name = _terrio._geojson_crs_name(crs.to_wkt())
+    if name is None and crs.to_epsg() == 4326:
+        # Retain pyogrio's existing spelling for WGS 84.
+        name = "urn:ogc:def:crs:OGC:1.3:CRS84"
+    if name is None:
         return None
-    name = "urn:ogc:def:crs:OGC:1.3:CRS84" if epsg == 4326 else f"urn:ogc:def:crs:EPSG::{epsg}"
     return '{ "type": "name", "properties": { "name": ' + _escape(name) + " } }"
 
 
