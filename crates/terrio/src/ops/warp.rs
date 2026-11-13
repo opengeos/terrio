@@ -5453,9 +5453,12 @@ impl RegionWarp {
     /// The source window `(x, y, width, height)` that a region `(x, y, width, height)` of the
     /// grid reads (GDAL's `ComputeSourceWindow()`, with room for the kernel). `None` when the
     /// region cannot be transformed (GDAL then leaves it at its initial value); an empty window
-    /// when it falls outside the source.
+    /// when it falls outside the source or either region dimension is zero.
     pub fn source_window(&self, region: (usize, usize, usize, usize)) -> Option<(usize, usize, usize, usize)> {
         let (dx, dy, dw, dh) = region;
+        if dw == 0 || dh == 0 {
+            return Some((0, 0, 0, 0));
+        }
         self.context().source_window(dx, dy, dw, dh).map(|(sx, sy, sw, sh, ..)| (sx, sy, sw, sh))
     }
 
@@ -5477,6 +5480,7 @@ impl RegionWarp {
     /// ([`RasterDataRef`]), without a copy: the window is held once.
     ///
     /// Returns the region's bands in the output type, and which of its pixels were warped.
+    /// An empty region returns typed empty data and validity without inspecting source pixels.
     pub fn warp<'a>(
         &self,
         region: (usize, usize, usize, usize),
@@ -5491,6 +5495,9 @@ impl RegionWarp {
             return Err(Error::InvalidArgument(format!("the sum scale must be a positive number, not {}", self.sum_scale)));
         }
         let (dx, dy, dw, dh) = region;
+        if dw == 0 || dh == 0 {
+            return Ok((RasterData::new_filled(self.out_type, 0, 0.0), Vec::new()));
+        }
         let bands = self.src_nodata.len();
         let n = dw * dh;
         let mut ctx = self.context();
@@ -8452,5 +8459,37 @@ mod overview_tests {
         let many = warp_paths(&paths, &options).unwrap();
         let single = warp_lazy(&mut lazy, &options).unwrap();
         assert_eq!(super::super::band_f64(&many.raster, 0), super::super::band_f64(&single.raster, 0));
+    }
+
+    #[test]
+    fn empty_regions_return_typed_empty_outputs_even_with_nonempty_source_windows() {
+        let src = SpatialRef::from_epsg(4326).unwrap();
+        let dst = SpatialRef::from_epsg(3413).unwrap();
+        let src_gt = [-180., 1., 0., 90., 0., -1.];
+        let dst_gt = [-3_850_000., 25_000., 0., 5_850_000., 0., -25_000.];
+        for invariant in [false, true] {
+            for method in [
+                Resampling::Nearest,
+                Resampling::Bilinear,
+                Resampling::Cubic,
+                Resampling::Lanczos,
+                Resampling::Average,
+                Resampling::Mode,
+                Resampling::Sum,
+            ] {
+                let warp = RegionWarp::new((360, 60), src_gt, &src, &dst, dst_gt, method, 0.125, DataType::F32, vec![None; 2], None)
+                    .unwrap()
+                    .with_grid_invariance(invariant);
+                for region in [(154, 200, 0, 50), (100, 234, 50, 0), (0, 0, 0, 0)] {
+                    assert_eq!(warp.source_window(region), Some((0, 0, 0, 0)));
+                    // Include an explicitly nonempty window, independent of empty-region planning.
+                    let data = RasterData::F32(vec![1.; 360 * 60 * 2]);
+                    let (out, written) = warp.warp(region, (0, 0, 360, 60), &data, None, 0., false).unwrap();
+                    assert_eq!(out.data_type(), DataType::F32);
+                    assert_eq!(out.len(), 0);
+                    assert!(written.is_empty());
+                }
+            }
+        }
     }
 }

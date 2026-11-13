@@ -1896,6 +1896,7 @@ fn _window_converts(src: &str, work: &str) -> bool {
 #[pyclass(module = "terrio", name = "RegionWarp", frozen)]
 pub struct PyRegionWarp {
     inner: RegionWarp,
+    bands: usize,
 }
 
 #[pymethods]
@@ -1927,6 +1928,7 @@ impl PyRegionWarp {
         if !(sum_scale.is_finite() && sum_scale > 0.0) {
             return Err(invalid(format!("sum_scale must be a positive number, not {sum_scale}")));
         }
+        let bands = src_nodata.len();
         let kernel_version = terrio::ops::warp::KernelVersion::parse_or_configured(kernel_version).py()?;
         let grid_invariant = grid_invariant.unwrap_or_else(|| WarpOptions::default().grid_invariant);
         let (src_srs, dst_srs) = (SpatialRef::parse(src_crs).py()?, SpatialRef::parse(dst_crs).py()?);
@@ -1950,6 +1952,7 @@ impl PyRegionWarp {
             )
             .py()?;
             return Ok(Self {
+                bands,
                 inner: inner.with_kernel_version(kernel_version).with_grid_invariance(grid_invariant).with_sum_scale(sum_scale),
             });
         }
@@ -1986,7 +1989,7 @@ impl PyRegionWarp {
             ),
         }
         .py()?;
-        Ok(Self { inner: inner.with_kernel_version(kernel_version).with_grid_invariance(grid_invariant).with_sum_scale(sum_scale) })
+        Ok(Self { bands, inner: inner.with_kernel_version(kernel_version).with_grid_invariance(grid_invariant).with_sum_scale(sum_scale) })
     }
 
     /// The source window `(x, y, width, height)` a region `(x, y, width, height)` of the grid
@@ -2047,7 +2050,7 @@ impl PyRegionWarp {
         crate::pass_on_http_retries(py);
         crate::pass_on_nodata_warnings(py);
         let (out, written) = result?.py()?;
-        region_arrays(py, region, out, written)
+        region_arrays(py, region, self.bands, out, written)
     }
 
     /// Reads a region's source window from a `Raster` and warps the region from it, the GIL
@@ -2133,7 +2136,7 @@ impl PyRegionWarp {
                 inner.warp(region, window, &data, mask.as_deref(), init, padded_scale)
             })
             .py()?;
-        region_arrays(py, region, out, written)
+        region_arrays(py, region, self.bands, out, written)
     }
 }
 
@@ -2142,11 +2145,11 @@ impl PyRegionWarp {
 fn region_arrays<'py>(
     py: Python<'py>,
     region: (usize, usize, usize, usize),
+    bands: usize,
     out: RasterData,
     written: Vec<bool>,
 ) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
     let (w, h) = (region.2, region.3);
-    let bands = out.len() / (w * h).max(1);
     let arr = crate::raster::to_numpy(py, out, &[bands, h, w])?;
     let written = PyArray1::from_vec(py, written).reshape([h, w])?.into_any();
     Ok((arr, written))
