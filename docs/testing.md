@@ -9,6 +9,19 @@ terrio reproduces the GDAL they compare with (see [warp](cli.md#warp)). Pull req
 compare the point cloud filters with PDAL's on `autzen_trim.las` only; pushes to `main` on the
 Madison lidar (4 million points) too (`scripts/compare_pointclouds.py --quick` skips it).
 
+## Configuration alias precedence
+
+`cargo test -p terrio --lib config::tests::` checks scope ordering, alias priority,
+explicit unsets and thread isolation. `python/tests/test_config_alias_precedence.py`
+adds 24 real-I/O checks: TIFF sidecar metadata and file discovery across both
+aliases and nested scopes, restoration on exit, and HTTP User-Agent/retry
+settings applied to a loopback server. Spare-reader tests hold the primary reader
+on another thread and verify nested aliases and explicit unsets survive reopening.
+Ordered worker snapshots retain the same scope boundaries; flattened
+`thread_options()` remains an introspection API. Every scoped alias wins over process
+environment values or outer scopes. This alias policy is specific to Terrio;
+it is not a claim that GDAL understands the `TERRIO_` option names.
+
 ## Remote-read locks across fork
 
 `cargo test -p terrio --lib each_remote_read_lock_is_handed_off_across_a_fork`
@@ -81,7 +94,52 @@ the file; repeated queries send no additional requests. The implementation
 reuses the lazy reader's chunk tables and does not decode pixels for metadata.
 Local validation uses GDAL 3.12.1 through rasterio.
 
+## Periodic geographic storage
+
+`python/tests/test_warp_longitude_period.py` checks all 14 resamplers, both grid
+policies, four destination CRSs, nodata, polar meridian pixels and the excluded
+south latitude edge. Rust regressions also compare whole and small-memory
+chunks, reversed source columns, and a 400-grad longitude period. Regional and
+multi-turn source placement rules remain separate.
+
+`python scripts/conformance.py DATA --only longitude-period --strict` requires
+four real Natural Earth country-coverage comparisons. The same values stored
+from 0° and from 180° W agree within 1e-8. Nearest, average and chunk-dependent
+bilinear match GDAL 3.12.1 within 1e-6. Stable bilinear uses per-pixel scales and
+differs from GDAL's chunk sampling by up to 0.411959 on this binary land field.
+Exact `sum` differs by up to 0.010157 per Mercator pixel, while both retain the
+same 15,276 source-pixel area total within 1e-6. These policy differences are
+reported explicitly rather than treated as pixel-identical agreement.
+
+The lazy HTTP test measures 212,992 bytes in two requests for a footprint
+crossing 0° in a 2,089,218-byte COG. Both stored edges contribute without a
+whole-file download. A contiguous source window crossing the cut can include
+all columns, while retaining a narrow range of source rows.
+
+A separate 129,600-column by 512-row COG measurement exposes that cost at a
+larger width. The old one-sided result was 4.0 after 131,072 bytes in three
+requests; the corrected result is 3.6 after 16,711,680 bytes in ten requests,
+from an 84,831,353-byte file. The current rectangular source-window interface
+reads the intervening columns of the selected tile-row band. Reading two
+disjoint edge segments would require a separate source-window interface change;
+this fix does not claim that boundary I/O is proportional to the output width.
+
+The coarse bilinear regressions use an independent periodized triangular
+filter, compare a rotated storage layout, and retain finite-clipping controls
+for regional sources. A full-world filter on constant rows gives the global
+mean. These replace finite-edge expectations that conflict with periodic
+source extension, across both kernel versions and exact/approximate transforms.
+
 ## Vector source ranges
+
+`python/tests/test_pyogrio_buffer_sources.py` compares named files with bytes,
+bytearrays, memoryviews and streams, including KMZ, XLSX, newline-delimited
+GeoJSON and DXF. It checks dataframes, layer listings and metadata, preserves
+named file-object extensions for CSV, and verifies multi-layer KMZ containers.
+These are Terrio path/buffer consistency checks, separate from the GDAL
+comparisons below. Shared Rust byte-probe tests distinguish ZIP containers by
+their directory entries without decompressing their contents; ordinary readers
+still validate the selected dataset and enforce driver policy.
 
 `cargo test -p terrio --test vector_stream_ranges` checks eager/streamed ranges,
 STAC asset forwarding and MVT directories/tiles. The memory range tests exercise
@@ -3444,3 +3502,16 @@ There is no fixed RSS bound.
 Serial DBF decoding trades parallel parsing throughput for allocation ownership.
 RSS thresholds are deliberately not CI assertions; the calling-thread regression
 and GDAL comparisons provide deterministic checks.
+
+## Empty warp regions
+
+`python/tests/test_region_warp_empty.py` checks zero-width, zero-height and
+fully empty `RegionWarp` destinations across seven resamplers, both grid policies,
+and one or two bands. Source planning returns an empty window. Warping returns
+typed empty data and validity before source-window validation or row kernels,
+even when a caller supplies a nonempty source window. The raster-backed private
+`_warp_from` path skips source borrowing and reading for empty regions too.
+Python preserves the
+configured band axis in `(bands, height, width)` output arrays. The Rust regression
+`empty_regions_return_typed_empty_outputs_even_with_nonempty_source_windows`
+checks the public API directly. These are API invariants, not GDAL comparisons.

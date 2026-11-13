@@ -123,23 +123,27 @@ def _local_path(path: str) -> _Located:
     return path, None
 
 
-def _spill_name(data: bytes) -> str:
+def _spill_name(data: bytes, filename: str | None = None) -> str:
     """A file name telling terrio the format of bytes, from their content.
 
     Args:
         data: Uploaded bytes, identified without opening a file or decoding a dataset.
+        filename: Optional file-object basename, used for unsigned formats and layer names.
 
     Returns:
         str: A filename derived from the core's shared vector identifiers.
 
     Raises:
-        DataSourceError: Content cannot be identified without a filename.
+        DataSourceError: Content needs a filename or exceeds archive resource limits.
     """
-    if data[:4] == b"PK\x03\x04":
-        return "data.zip"
-    extension = _terrio.vector_byte_extension(data)
+    try:
+        extension = _terrio.vector_byte_extension(data)
+    except _terrio_errors.TerrioError as error:
+        raise DataSourceError(str(error)) from error
     if extension is not None:
-        return f"data.{extension}"
+        return str(Path(filename).with_suffix(f".{extension}")) if filename else f"data.{extension}"
+    if filename and Path(filename).suffix:
+        return filename
     raise DataSourceError(_NOT_RECOGNIZED.format("/vsimem/pyogrio"))
 
 
@@ -155,9 +159,14 @@ class _Source:
     def __init__(self, path_or_buffer):
         self._tmp = None
         self._names = None
+        filename = None
         if isinstance(path_or_buffer, Path):
             path_or_buffer = str(path_or_buffer)
         if hasattr(path_or_buffer, "read") and not isinstance(path_or_buffer, (str, bytes)):
+            source_name = getattr(path_or_buffer, "name", None)
+            if isinstance(source_name, (str, os.PathLike)):
+                # Uploaded basenames are literal names, not the archive/member path syntax.
+                filename = Path(source_name).name.replace("!", "_")
             data = path_or_buffer.read()
             if hasattr(path_or_buffer, "seekable") and path_or_buffer.seekable():
                 path_or_buffer.seek(0)
@@ -166,7 +175,7 @@ class _Source:
             path_or_buffer = data
         if isinstance(path_or_buffer, (bytes, bytearray, memoryview)):
             data = bytes(path_or_buffer)
-            name = _spill_name(data)
+            name = _spill_name(data, filename)
             self._tmp = tempfile.TemporaryDirectory(prefix="terrio-pyogrio-")
             spilled = os.path.join(self._tmp.name, name)
             with open(spilled, "wb") as f:
@@ -193,6 +202,8 @@ class _Source:
                     raise DataSourceError(f"{self.path}: No such file or directory") from e
                 except _terrio_errors.TerrioError as e:
                     raise DataSourceError(str(e)) from e
+            if not self._names and self.path.lower().endswith((".zip", ".kmz", ".xlsx")):
+                raise DataSourceError(f"no dataset found in '{self.path}'")
         return self._names
 
     def name(self) -> str:

@@ -125,6 +125,7 @@ GDAL_FREE_SUITES = frozenset(
         "grib",
         "hecras",
         "jp2-writer",
+        "longitude-period",
         "pointclouds",
         "pyogrio-buffers",
         "vsi",
@@ -1069,6 +1070,33 @@ def suite_benchmark_compat(ctx):
         "WebP lossless pixels/masks and JPEG XL Byte/UInt16 layouts roundtrip exactly; "
         "lossy WebP quality must change valid decoded output, with no cross-encoder pixel equality claim.", 1,
     )
+
+
+def suite_longitude_period(ctx):
+    """Compare real global country coverage across stored longitude ranges.
+
+    Args:
+        ctx: Conformance execution context.
+
+    Returns:
+        Suite: Four required real-data comparisons with explicit GDAL policy scope.
+    """
+    suite = Suite("longitude-period", "Periodic geographic storage", "GDAL via rasterio",
+                  "Natural Earth country coverage stored from zero and minus 180 degrees: "
+                  "each grid policy's two storage layouts agree within 1e-8 for nearest, bilinear, average and sum. "
+                  "Nearest, average and chunk-dependent bilinear also match GDAL within 1e-6. "
+                  "Stable bilinear uses local scales; exact sum preserves the source-area "
+                  "total but can distribute it differently from GDAL among output rows.")
+    missing = missing_modules("terrio", "pytest", "numpy", "rasterio")
+    if missing:
+        suite.skipped = "needs " + ", ".join(missing)
+        return suite
+    import rasterio
+    suite.reference = f"GDAL {rasterio.__gdal_version__} via rasterio {rasterio.__version__}"
+    complete, detail = _pytest_module_conformance(
+        ctx, "test_warp_longitude_period.py", selection="real_world_field_storage_equivalence", expected_count=4)
+    suite.cases.append(Case("Global rasters", "Natural Earth countries", TOLERANCE if complete else DIFFERS, detail))
+    return suite
 
 
 def suite_warp_policy(ctx):
@@ -4006,6 +4034,7 @@ SUITES = OrderedDict(
         ("overviews", suite_overviews),
         ("packed-tiff", suite_packed_tiff),
         ("warp-grid", suite_warp_grid),
+        ("longitude-period", suite_longitude_period),
         ("sum-overviews", suite_sum_overviews),
         ("translate-overviews", suite_translate_overviews),
         ("raster-manage", suite_raster_manage),
