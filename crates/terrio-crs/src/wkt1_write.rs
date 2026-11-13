@@ -200,7 +200,7 @@ pub(crate) fn strict(sr: &SpatialRef) -> Option<String> {
     let axes = root.as_ref().and_then(horizontal_axes);
     let geocentric = horizontal.is_some_and(is_geocentric);
     if !bound && (sr.epsg.is_some() || sr.esri.is_some()) {
-        let registry = strict(&SpatialRef { epsg: sr.epsg, esri: sr.esri, wkt: None, proj4: None });
+        let registry = strict(&SpatialRef { epsg: sr.epsg, esri: sr.esri, ..Default::default() });
         let registry_axes = registry.as_deref().and_then(wkt1_axes);
         let own_axes = root.as_ref().and_then(wkt2_horizontal).and_then(directions);
         if geocentric || own_axes.is_none() || registry_axes.is_none() || registry_axes == own_axes {

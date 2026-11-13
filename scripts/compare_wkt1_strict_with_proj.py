@@ -43,7 +43,10 @@ def rows():
 def strict(terrio, definition):
     """terrio's strict WKT 1 of a definition, None when it writes none. Any other failure (a
     crash, an unread definition) raises."""
-    run = subprocess.run([terrio, "crs", definition, "--wkt1-strict"], capture_output=True, text=True, timeout=60)
+    try:
+        run = subprocess.run([terrio, "crs", definition, "--wkt1-strict"], capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired as err:
+        raise RuntimeError("terrio did not finish within 60 s") from err
     if run.returncode == 0:
         return run.stdout.strip()
     if "has no WKT 1 without the PROJ4 extension" in run.stderr:
