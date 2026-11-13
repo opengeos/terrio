@@ -7570,52 +7570,65 @@ mod tests {
         assert!(sy <= row(229.5) && sy > row(230.0), "4 pixels past the edge: rows from {sy}, the centres' line's is {}", row(229.5));
     }
 
-    /// A region of a sheared grid in NSIDC's north CRS (EPSG:3413), whose rows step 25 km east as
-    /// they step 25 km south, with the North Pole a row above the region (0, 0, 100, 20), at
-    /// (49, -1). The point nearest the pole of the box through the region's pixel centres is the
-    /// centre of pixel (47, 0), 37.5 km from the pole; the pole clamped per axis, (49, 0.5), is 53
-    /// km from it, in a source row farther from the pole. From longitude and latitude sources
-    /// from 90° N to 70° N, in both samplings, the window reaches the source row of that centre
-    /// (0.01° and 0.05° pixels), and by nearest neighbour every pixel of the region is written
-    /// (0.05° pixels).
+    /// Regions of sheared grids in NSIDC's north CRS (EPSG:3413), with the North Pole beside each
+    /// of their four edges. Each grid steps 25 km east from column to column and 25 km south from
+    /// row to row, and one of its axes is sheared by 25 km: its rows step east as they step south
+    /// (the pole above or below a region of 100 x 20 pixels), or its columns step south as they
+    /// step east (the pole left or right of a region of 20 x 100). The pixel centre nearest the
+    /// pole is 37.5 km from it, or 39.5 km beside the bottom and right edges, where the point
+    /// nearest the pole of the box through the centres lies between two of them. The pole clamped
+    /// per axis is 53 km from it, in a source row farther from the pole. From longitude and
+    /// latitude sources from 90° N to 70° N, in both samplings, the window reaches the source row
+    /// of the nearest centre (0.01° and 0.05° pixels), and by nearest neighbour every pixel of the
+    /// region is written (0.05° pixels).
     #[test]
     fn a_source_window_reaches_the_pixel_centre_nearest_a_pole_beside_a_sheared_grid() {
         let geographic = SpatialRef::from_epsg(4326).unwrap();
         let polar = SpatialRef::from_epsg(3413).unwrap();
-        let dst_gt = [-1_200_000.0, 25_000.0, 25_000.0, -25_000.0, 0.0, -25_000.0];
         let back = Transformer::new(&polar, &geographic).unwrap();
-        // The source row, in pixels of `res` degrees, of the point (u, v) of the grid.
-        let row = |u: f64, v: f64, res: f64| {
-            let (x, y) = (dst_gt[0] + u * dst_gt[1] + v * dst_gt[2], dst_gt[3] + u * dst_gt[4] + v * dst_gt[5]);
-            ((90.0 - back.transform(x, y).unwrap().1) / res).floor() as usize
-        };
-        let region = (0, 0, 100, 20);
-        for (grid_invariant, sampling) in SAMPLINGS {
-            for res in [0.01, 0.05] {
-                let nearest = row(47.5, 0.5, res);
-                assert!(row(49.0, 0.5, res) > nearest, "{res}° pixels: the pole clamped per axis lies in row {}", row(49.0, 0.5, res));
-                let rw = RegionWarp::new(
-                    ((360.0 / res).round() as usize, (20.0 / res).round() as usize),
-                    [-180.0, res, 0.0, 90.0, 0.0, -res],
-                    &geographic,
-                    &polar,
-                    dst_gt,
-                    Resampling::Nearest,
-                    0.125,
-                    DataType::F32,
-                    vec![None],
-                    Some(0.0),
-                )
-                .unwrap()
-                .with_grid_invariance(grid_invariant);
-                let (sx, sy, sw, sh) = rw.source_window(region).unwrap();
-                assert!(sy <= nearest, "{sampling}, {res}° pixels: rows from {sy}, the nearest centre's is {nearest}");
-                if res == 0.05 {
-                    // Each source pixel holds its row plus one.
-                    let data: Vec<f32> = (0..sw * sh).map(|k| (sy + k / sw + 1) as f32).collect();
-                    let (_, written) = rw.warp(region, (sx, sy, sw, sh), &RasterData::F32(data), None, 0.0, false).unwrap();
-                    let unwritten = written.iter().filter(|w| !**w).count();
-                    assert_eq!(unwritten, 0, "{sampling}, {res}° pixels: {unwritten} of the region's 2000 pixels unwritten");
+        // A geotransform's steps (its terms 1, 2, 4 and 5): rows sheared east, or columns south.
+        let (rows_sheared, columns_sheared) = ([25_000.0, 25_000.0, 0.0, -25_000.0], [25_000.0, 0.0, -25_000.0, -25_000.0]);
+        // The edge, the steps, the pole's pixel position, the region, the pixel centre nearest the
+        // pole, and the pole clamped per axis.
+        for (edge, [g1, g2, g4, g5], (u0, v0), region, nearest, clamped) in [
+            ("top", rows_sheared, (49.0, -1.0), (0, 0, 100, 20), (47.5, 0.5), (49.0, 0.5)),
+            ("left", columns_sheared, (-1.0, 49.0), (0, 0, 20, 100), (0.5, 47.5), (0.5, 49.0)),
+            ("bottom", rows_sheared, (47.5, 21.0), (0, 0, 100, 20), (48.5, 19.5), (47.5, 19.5)),
+            ("right", columns_sheared, (21.0, 47.5), (0, 0, 20, 100), (19.5, 48.5), (19.5, 47.5)),
+        ] {
+            let dst_gt = [-(u0 * g1 + v0 * g2), g1, g2, -(u0 * g4 + v0 * g5), g4, g5];
+            // The source row, in pixels of `res` degrees, of the point (u, v) of the grid.
+            let row = |(u, v): (f64, f64), res: f64| {
+                let (x, y) = (dst_gt[0] + u * g1 + v * g2, dst_gt[3] + u * g4 + v * g5);
+                ((90.0 - back.transform(x, y).unwrap().1) / res).floor() as usize
+            };
+            for (grid_invariant, sampling) in SAMPLINGS {
+                for res in [0.01, 0.05] {
+                    let near = row(nearest, res);
+                    assert!(row(clamped, res) > near, "{edge}, {res}° pixels: the pole clamped per axis lies in row {}", row(clamped, res));
+                    let rw = RegionWarp::new(
+                        ((360.0 / res).round() as usize, (20.0 / res).round() as usize),
+                        [-180.0, res, 0.0, 90.0, 0.0, -res],
+                        &geographic,
+                        &polar,
+                        dst_gt,
+                        Resampling::Nearest,
+                        0.125,
+                        DataType::F32,
+                        vec![None],
+                        Some(0.0),
+                    )
+                    .unwrap()
+                    .with_grid_invariance(grid_invariant);
+                    let (sx, sy, sw, sh) = rw.source_window(region).unwrap();
+                    assert!(sy <= near, "{edge}, {sampling}, {res}° pixels: rows from {sy}, the nearest centre's is {near}");
+                    if res == 0.05 {
+                        // Each source pixel holds its row plus one.
+                        let data: Vec<f32> = (0..sw * sh).map(|k| (sy + k / sw + 1) as f32).collect();
+                        let (_, written) = rw.warp(region, (sx, sy, sw, sh), &RasterData::F32(data), None, 0.0, false).unwrap();
+                        let unwritten = written.iter().filter(|w| !**w).count();
+                        assert_eq!(unwritten, 0, "{edge}, {sampling}, {res}° pixels: {unwritten} of the region's 2000 pixels unwritten");
+                    }
                 }
             }
         }
