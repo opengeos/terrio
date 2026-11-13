@@ -422,7 +422,6 @@ impl CsvScan {
             && options.geom_possible_names.is_empty();
         if options.geom_possible_names.is_empty() && header.first().is_some_and(|h| geometry_marker(h, "__terrio_wkt")) {
             self.wkt = vec![WktCandidate { column: 0, is_wkt: None, any: false, lonlat: true }];
-            return;
         }
         if default_names && let Some(has_z) = marked_coordinates(header) {
             (self.x_col, self.y_col, self.z_col) = (Some(0), Some(1), has_z.then_some(2));
@@ -447,7 +446,7 @@ impl CsvScan {
         }
         self.z_col = x_col.and_then(|_| find(&options.z_possible_names, Z_NAMES));
         (self.x_col, self.y_col) = (x_col, y_col);
-        if x_col.is_none() {
+        if x_col.is_none() && self.wkt.is_empty() {
             self.wkt = wkt_candidates();
         }
     }
@@ -891,6 +890,8 @@ mod tests {
         ] {
             let marked = text.replacen("shape", "__terrio_wkt", 1);
             assert_eq!(parse(&marked, "marker", &options).unwrap().features[0].geometry, line);
+            let non_wkt = "__terrio_wkt,lon,lat\nnote,12,34\n";
+            assert_eq!(parse(non_wkt, "fallback", &options).unwrap().features[0].geometry, Some(Geometry::point(12., 34.)));
         }
     }
 
