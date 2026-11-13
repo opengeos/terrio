@@ -686,9 +686,9 @@ impl SpatialRef {
     }
 
     /// The CRS in WKT 1 that needs no PROJ4 extension, for formats whose readers ignore
-    /// `EXTENSION["PROJ4", ...]` (shapefile `.prj`, GeoPackage, GeoTIFF citations), as PROJ
-    /// exports `WKT1_GDAL`. `None` where [`to_wkt`](Self::to_wkt) would give another CRS to such
-    /// a reader, or is no WKT 1:
+    /// `EXTENSION["PROJ4", ...]` (shapefile `.prj`, GeoPackage, GeoTIFF citations), as PROJ 9.8.1
+    /// exports `WKT1_GDAL` (with the AXIS nodes GDAL's `exportToWkt` writes). `None` where
+    /// [`to_wkt`](Self::to_wkt) would give another CRS to such a reader, or is no WKT 1:
     /// - a CRS PROJ cannot write in WKT 1: geographic 3D CRSs (EPSG:4979), Equal Earth
     ///   (EPSG:8857), the registry CRSs whose method has no WKT 1 name (Colombia Urban, Modified
     ///   Krovak...), rotated poles (`+proj=ob_tran`), and EPSG codes terrio reads only through

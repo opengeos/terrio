@@ -144,14 +144,22 @@ fn geotiff_of_a_proj_string_reads_as_the_proj_string() {
 }
 
 #[test]
-fn geotiff_of_a_geographic_proj_string_keeps_only_the_code_terrio_confirms() {
-    // A user-defined geographic GeoTIFF CRS keeps the EPSG code wbprojection identifies its PROJ
+fn geotiff_of_a_proj_string_keeps_only_the_code_terrio_confirms() {
+    // A user-defined GeoTIFF CRS keeps the EPSG code wbprojection identifies its PROJ
     // string as only when terrio identifies the same: wbprojection's identification ignores the
     // prime meridian, the datum and even the ellipsoid (it reads Bessel on Paris as EPSG:4162,
     // 2.3° off, and GRS 80 alone as EPSG:4185, Madeira 1936 on International 1924).
     let dir = tempfile::tempdir().unwrap();
-    let cases =
-        [("+proj=longlat +datum=WGS84", Some(4326)), ("+proj=longlat +ellps=bessel +pm=paris", None), ("+proj=longlat +ellps=GRS80", None)];
+    // A projected one too: UTM on WGS 84 with its code; OSGB36's string on Airy alone without,
+    // as wbprojection names it EPSG:27700, whose datum the string does not give.
+    let osgb = "+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 +ellps=airy +units=m";
+    let cases = [
+        ("+proj=longlat +datum=WGS84", Some(4326)),
+        ("+proj=longlat +ellps=bessel +pm=paris", None),
+        ("+proj=longlat +ellps=GRS80", None),
+        ("+proj=utm +zone=32 +datum=WGS84 +units=m", Some(32632)),
+        (osgb, None),
+    ];
     for (i, (p, code)) in cases.into_iter().enumerate() {
         let crs = SpatialRef::parse(p).unwrap();
         let cfg = RasterConfig { cols: 2, rows: 2, bands: 1, data_type: DataType::F32, crs: crs.to_crs_info(), ..Default::default() };
