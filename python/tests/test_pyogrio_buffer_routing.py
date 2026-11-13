@@ -14,6 +14,35 @@ from terrio.pyogrio.errors import DataSourceError
 pytest_plugins = ["test_pyogrio_buffer_sources"]
 
 
+@pytest.mark.parametrize("before", [0, 1, 2])
+def test_collection_dimensions_do_not_depend_on_sequence_position(tmp_path, before):
+    """Infer a collection's declared dimensions from its first member at any position.
+
+    Args:
+        tmp_path: Temporary dataset directory.
+        before: Number of null-geometry features before the collection.
+    """
+    collection = {
+        "type": "GeometryCollection",
+        "geometries": [
+            {"type": "Point", "coordinates": [10, 46]},
+            {"type": "Point", "coordinates": [10, 46, 7]},
+        ],
+    }
+    records = [{"type": "Feature", "properties": {}, "geometry": None}] * before + [collection]
+    data = b"".join(json.dumps(record).encode() + b"\n" for record in records)
+    path = tmp_path / "collection.geojsonl"
+    path.write_bytes(data)
+    stream = io.BytesIO(data)
+    stream.name = path.name
+    # A single anonymous geometry is standalone GeoJSON, whose collection-Z rule differs.
+    sources = (path, stream, data) if before else (path, stream)
+    for source in sources:
+        info = tpg.read_info(source)
+        assert info["geometry_type"] == "GeometryCollection"
+        assert info["features"] == len(records)
+
+
 @pytest.mark.parametrize(
     "records,expected",
     [

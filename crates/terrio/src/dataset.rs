@@ -1120,6 +1120,7 @@ mod fallback_tests {
     #[test]
     fn archives_without_layers_are_not_retried() {
         let error = check_archive_layers("empty.kmz", &[]).unwrap_err();
+        assert_eq!(error.to_string(), "no dataset found in 'empty.kmz': selected document has no layers");
         let result: Result<()> = gdal_fallback("empty.kmz", Err(error), |_| panic!("empty archive retried through GDAL"));
         assert!(matches!(result, Err(Error::Unsupported(message)) if message.starts_with(NO_ARCHIVE_DATASET)));
     }
