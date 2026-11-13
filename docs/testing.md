@@ -36,7 +36,7 @@ array lengths still raise in the native API. The rio helper retains its existing
 all-infinity result for batch setup failures without retrying every point.
 
 `python scripts/conformance.py DATA --only transform-batches --strict` requires
-all 21 tests, including two 1,000-point Natural Earth populated-place batches
+all 22 tests, including two 1,000-point Natural Earth populated-place batches
 transformed to EPSG:3857 and EPSG:3395. Successful coordinates after inserting a
 NaN agree with GDAL via rasterio within 1e-7 metres. Failed-point output follows
 Terrio's existing policy; rasterio raises on these mixed-invalid batches. The

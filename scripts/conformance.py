@@ -2306,7 +2306,7 @@ def suite_transform_batches(ctx):
         Suite: Batch policy regressions and real point comparisons within 1e-7 metres.
     """
     suite = Suite("transform-batches", "Mixed-validity coordinate batches", "GDAL via rasterio",
-                  "21 Python checks: one native call for mixed-validity coordinate/geometry batches, "
+                  "22 Python checks: one native call for mixed-validity coordinate/geometry batches, "
                   "strict native defaults, optional infinite failed ordinates and empty/setup controls. "
                   "Two sets of 1,000 Natural Earth populated places retain successful Mercator "
                   "coordinates within 1e-7 metres of GDAL after inserting one NaN. "
@@ -2320,8 +2320,8 @@ def suite_transform_batches(ctx):
         suite.skipped = "needs Natural Earth populated places"
         return suite
     import rasterio
-    suite.reference = f"GDAL {rasterio.__gdal_version__} via rasterio {rasterio.__version__}"
-    complete, detail = _pytest_module_conformance(ctx, "test_rio_transform_batch.py", expected_count=21)
+    suite.reference = f"GDAL {rasterio.__gdal_version__} / PROJ {rasterio.__proj_version__} via rasterio {rasterio.__version__}"
+    complete, detail = _pytest_module_conformance(ctx, "test_rio_transform_batch.py", expected_count=22)
     suite.cases.append(Case("Coordinate batches", "failure policy and real places", TOLERANCE if complete else DIFFERS, detail))
     return suite
 

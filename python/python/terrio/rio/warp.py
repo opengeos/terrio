@@ -111,7 +111,7 @@ def _transform_arrays(
     """
     try:
         return _terrio.transform_points(xs, ys, src, dst, errcheck=False)
-    except Exception:
+    except TerrioCRSError:
         # A batch setup failure affects every point. Preserve the existing infinite
         # result without rebuilding the same failed operation once per coordinate.
         return np.full(len(xs), np.inf), np.full(len(ys), np.inf)

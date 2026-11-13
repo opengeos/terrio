@@ -95,6 +95,13 @@ def test_batch_setup_failure_is_not_retried_per_point():
     assert all(np.isposinf(axis).all() for axis in result)
 
 
+def test_unrelated_batch_errors_are_not_hidden():
+    """Propagate programming errors rather than silently returning infinity."""
+    with patch.object(warp._terrio, "transform_points", side_effect=TypeError("unexpected error")):
+        with pytest.raises(TypeError, match="unexpected error"):
+            warp._transform_arrays("EPSG:4326", "EPSG:3857", np.zeros(10), np.zeros(10))
+
+
 @pytest.mark.parametrize("with_z", [False, True])
 def test_empty_permissive_batch(with_z):
     """Empty batches retain float64 arrays with the requested dimension.
