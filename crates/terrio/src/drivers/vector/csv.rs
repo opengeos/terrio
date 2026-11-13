@@ -43,7 +43,7 @@ pub struct CsvOptions {
     /// Column names that may hold Z coordinates. Empty means the default, `z`.
     pub z_possible_names: Vec<String>,
     /// Column names that may hold WKT geometries. Empty means the defaults: `wkt`, `geometry`,
-    /// `geom`, `the_geom`.
+    /// `geom`, `the_geom`. Explicit matching names take precedence over X/Y inference.
     pub geom_possible_names: Vec<String>,
     /// Infer integer, real, date and date-time fields from the values (otherwise every field is a
     /// string, as GDAL does by default).
@@ -430,6 +430,21 @@ impl CsvScan {
                 return;
             }
         }
+        let wkt_candidates = || {
+            header
+                .iter()
+                .enumerate()
+                .filter(|(_, h)| matches_name(h, &options.geom_possible_names, GEOM_NAMES))
+                .map(|(column, _)| WktCandidate { column, is_wkt: None, any: false, lonlat: true })
+                .collect::<Vec<_>>()
+        };
+        if !options.geom_possible_names.is_empty() {
+            let selected = wkt_candidates();
+            if !selected.is_empty() {
+                self.wkt = selected;
+                return;
+            }
+        }
         let find = |patterns: &[String], defaults: &[&str]| header.iter().position(|h| matches_name(h, patterns, defaults));
         let mut x_col = find(&options.x_possible_names, X_NAMES);
         let mut y_col = find(&options.y_possible_names, Y_NAMES);
@@ -439,12 +454,7 @@ impl CsvScan {
         self.z_col = x_col.and_then(|_| find(&options.z_possible_names, Z_NAMES));
         (self.x_col, self.y_col) = (x_col, y_col);
         if x_col.is_none() {
-            self.wkt = header
-                .iter()
-                .enumerate()
-                .filter(|(_, h)| matches_name(h, &options.geom_possible_names, GEOM_NAMES))
-                .map(|(column, _)| WktCandidate { column, is_wkt: None, any: false, lonlat: true })
-                .collect();
+            self.wkt = wkt_candidates();
         }
     }
 
@@ -729,7 +739,10 @@ impl CsvEncoder {
         // Geometry inference is case-insensitive, whereas distinct attribute names are not.
         let occupied: HashSet<String> = layer.schema.fields().iter().map(|f| f.name.trim().to_ascii_lowercase()).collect();
         match mode {
-            CsvGeometry::AsWkt if occupied.contains("wkt") => {
+            CsvGeometry::AsWkt
+                if occupied.contains("wkt")
+                    || (X_NAMES.iter().any(|name| occupied.contains(*name)) && Y_NAMES.iter().any(|name| occupied.contains(*name))) =>
+            {
                 header = vec![available_column_name("__terrio_wkt", |s| occupied.contains(s))];
             }
             CsvGeometry::AsXy if ["x", "y", "z"].iter().any(|s| occupied.contains(*s)) => {

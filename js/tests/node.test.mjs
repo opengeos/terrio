@@ -5471,6 +5471,40 @@ test("TSV byte output uses tabs and preserves polygon commas", () => {
   } finally { source.free(); }
 });
 
+test("CSV WKT geometry precedes coordinate-named attributes", () => {
+  const geometries = [
+    {type: "Point", coordinates: [10, 46]},
+    {type: "LineString", coordinates: [[10, 46], [11, 47]]},
+    {type: "Polygon", coordinates: [[[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]]]},
+  ];
+  const source = terrio.fromGeoJSON({type: "FeatureCollection", features: geometries.map(geometry => ({
+    type: "Feature", properties: {lon: 650000.5, lat: 5100000.25, __terrio_wkt: "attribute"}, geometry,
+  }))});
+  try {
+    for (const extension of ["csv", "tsv"]) {
+      const bytes = source.toBytes(`features.${extension}`);
+      const restored = terrio.open(bytes, `features.${extension}`);
+      try {
+        const features = restored.toGeoJSON().features;
+        assert.deepEqual(features.map(feature => feature.geometry), geometries);
+        for (const feature of features) {
+          assert.equal(feature.properties.lon, 650000.5);
+          assert.equal(feature.properties.lat, 5100000.25);
+          assert.equal(feature.properties.__terrio_wkt, "attribute");
+        }
+      } finally { restored.free(); }
+    }
+  } finally { source.free(); }
+});
+
+test("CSV explicit WKT selection overrides inferred coordinate pairs", () => {
+  const bytes = new TextEncoder().encode('shape,lon,lat\n"LINESTRING (10 46,11 47)",650000.5,5100000.25\n');
+  const source = terrio.openVector(bytes, "selected.csv", {openOptions: {GEOM_POSSIBLE_NAMES: "shape"}});
+  try {
+    assert.deepEqual(source.toGeoJSON().features[0].geometry, {type: "LineString", coordinates: [[10, 46], [11, 47]]});
+  } finally { source.free(); }
+});
+
 test("CSV column collisions preserve attributes and geometry", () => {
   for (const [text, coordinates] of [
     ["X_2,Y_2\n10,46\n", null],

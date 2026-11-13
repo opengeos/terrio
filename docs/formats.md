@@ -1100,6 +1100,13 @@ A `.tsv` filename selects tab separators, including byte exports; `.csv` default
 to commas. An explicit CSV `SEPARATOR` option overrides the filename on Rust and
 CLI writes (`--lco SEPARATOR=COMMA|SEMICOLON|TAB|PIPE`).
 
+When attribute names also form a recognized coordinate pair, such as `lon`/`lat`
+or `easting`/`northing`, the writer uses a distinct `__terrio_wkt` geometry column
+(with a suffix if needed). Readers recognize it before inferring coordinates, so
+the geometry and coordinate-named attributes both survive a round trip. An explicit
+`GEOM_POSSIBLE_NAMES` selection also takes precedence over automatic X/Y inference.
+Ordinary external CSV files without that selection retain their default X/Y precedence.
+
 - **XLSX** workbooks are read and written without GDAL, in WebAssembly too, as GDAL's XLSX driver
   does: a layer per worksheet, feature ids that are row numbers, and the open options `HEADERS`
   (`AUTO`, `FORCE`, `DISABLE`) and `FIELD_TYPES` (`AUTO`, `STRING`). Formulas are not evaluated: a
