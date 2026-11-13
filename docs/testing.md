@@ -156,7 +156,8 @@ Counts, original scalar attributes, archive members and EPSG:4326 agree exactly;
 GML also exposes its generated `gml_id` field, which the Python regression checks.
 Coordinates allow 1e-6 degrees for MapInfo's storage grid. The script reports
 the measured maximum and distinguishes exact coordinates from agreement within
-that tolerance. The reference is GDAL 3.13.3 for local validation.
+that tolerance. The original comparisons were validated with GDAL 3.13.3;
+the current suite, including the MIF header cases, was validated with GDAL 3.12.1.
 The suite also compares three wrong-format payloads and two valid empty MIF
 schemas with GDAL's explicitly selected MapInfo driver (locally GDAL 3.12.1).
 Driver selection prevents a mislabeled GeoJSON file from being opened by GDAL's

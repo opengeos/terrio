@@ -123,6 +123,7 @@ const STYLES: &[&str] = &["pen", "brush", "symbol", "center", "smooth", "font", 
 
 /// Parses MIF and MID contents.
 pub fn parse(mif: &[u8], mid: Option<&[u8]>, name: &str) -> Result<Layer> {
+    let mif = mif.strip_prefix(b"\xef\xbb\xbf").unwrap_or(mif);
     let head = String::from_utf8_lossy(&mif[..mif.len().min(4096)]).to_ascii_lowercase();
     let utf8 = head.contains("charset \"utf-8\"") || head.contains("charset \"utf8\"");
     let text = decode(mif, utf8);
@@ -159,6 +160,9 @@ pub fn parse(mif: &[u8], mid: Option<&[u8]>, name: &str) -> Result<Layer> {
                 let col = lines.get(i).ok_or_else(|| Error::InvalidData("MIF: incomplete Columns declaration".into()))?;
                 i += 1;
                 let col = col.trim();
+                if col.eq_ignore_ascii_case("data") {
+                    return Err(Error::InvalidData("MIF: incomplete Columns declaration".into()));
+                }
                 let (fname, ftype) = col.split_once(char::is_whitespace).unwrap_or((col, "char"));
                 let t = ftype.trim().to_ascii_lowercase();
                 let t = if t.starts_with("char") {
@@ -711,6 +715,12 @@ mod tests {
             assert_eq!(layer.schema.fields()[0].field_type, FieldType::Integer);
         }
         assert!(parse(b"Version 300\nColumns 0\nData\n", None, "t").unwrap().schema.fields().is_empty());
+        // Strip the BOM before fallback Latin-1 decoding, independently of Charset.
+        let latin = parse(b"\xef\xbb\xbfVersion 300\nColumns 1\nN\xe9 Integer\nData\n", None, "t").unwrap();
+        assert_eq!(latin.schema.fields()[0].name, "Né");
+        for text in [b"Version 300\nColumns 2\nN Integer\nData\n".as_slice(), b"Version 300\nColumns 1\n"] {
+            assert!(matches!(parse(text, None, "t"), Err(Error::InvalidData(message)) if message.contains("incomplete Columns")));
+        }
     }
 
     #[test]
