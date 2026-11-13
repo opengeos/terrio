@@ -3456,9 +3456,13 @@ impl WarpContext<'_> {
             }
             // Regional longitude images can put the continuous footprint outside the
             // raw sampled span. Include the same shifted quadrilaterals the sum kernel
-            // integrates. Keep only two bounded corner rows, without reading pixels.
+            // integrates. Recompute rows y and y + 1 for each output row, retaining
+            // two bounded corner rows without reading pixels.
             let images = self.global_longitude_turn().is_none()
-                && self.longitude_turn().is_some_and(|turn| sw <= turn && (x1 - x0 > turn / 2.0 || x1 < 0.0 || x0 > sw));
+                && self.longitude_turn().is_some_and(|turn| {
+                    let overlaps = (-x1 / turn).floor() + 1.0 <= ((sw - x0) / turn).ceil() - 1.0;
+                    sw <= turn && overlaps && (x1 - x0 > turn / 2.0 || x1 < 0.0 || x0 > sw)
+                });
             if images {
                 let batch = SUM_CORNER_BATCH - 1;
                 for y in dy..dy + dh {
@@ -3974,7 +3978,8 @@ impl WarpContext<'_> {
 
     /// Geographic footprints may use equivalent longitude numberings even without a CRS change.
     fn longitude_turn(&self) -> Option<f64> {
-        self.source_longitude_turn().filter(|turn| turn.is_finite() && *turn > 0.0)
+        self.source_longitude_turn()
+            .filter(|turn| turn.is_finite() && *turn > 0.0 && (self.t.ct.is_some() || self.src_w as f64 <= turn * (1.0 + 1e-10)))
     }
 
     /// Bounds equivalent longitude images, retaining a single image's off-source margins
@@ -3990,8 +3995,11 @@ impl WarpContext<'_> {
             return if span >= width || start + span > width { (0.0, width) } else { (start, start + span) };
         }
         let Some(turn) = self.longitude_turn().filter(|turn| width <= *turn) else { return (left, right) };
-        let first = (-right / turn).ceil();
-        let last = ((width - left) / turn).floor();
+        let (first, last) = if span > 0.0 {
+            ((-right / turn).floor() + 1.0, ((width - left) / turn).ceil() - 1.0)
+        } else {
+            ((-left / turn).ceil(), ((width - left) / turn).ceil() - 1.0)
+        };
         if !first.is_finite() || !last.is_finite() || first > last {
             return (left, right);
         }
@@ -9652,6 +9660,24 @@ mod overview_tests {
         let many = warp_paths(&paths, &options).unwrap();
         let single = warp_lazy(&mut lazy, &options).unwrap();
         assert_eq!(super::super::band_f64(&many.raster, 0), super::super::band_f64(&single.raster, 0));
+    }
+
+    #[test]
+    fn longitude_image_bounds_require_positive_overlap_and_preserve_wide_sources() {
+        let crs = SpatialRef::from_epsg(4326).unwrap();
+        let gt = [0., 1., 0., 6., 0., -1.];
+        let regional = RegionWarp::new((359, 6), gt, &crs, &crs, gt, Resampling::Bilinear, 0.125, DataType::F64, vec![None], None).unwrap();
+        assert_eq!(regional.context().wrap_source_bounds(-1., 3.), (-1., 3.));
+        assert_eq!(regional.context().wrap_source_bounds(356., 360.), (356., 360.));
+        assert_eq!(regional.context().wrap_source_bounds(359., 363.), (-1., 3.));
+        assert_eq!(regional.context().wrap_source_bounds(-2., 3.), (0., 359.));
+        assert_eq!(regional.context().wrap_source_bounds(360., 360.), (0., 0.));
+        assert_eq!(regional.context().wrap_source_bounds(359., 359.), (359., 359.));
+        let wide = RegionWarp::new((720, 6), gt, &crs, &crs, gt, Resampling::Average, 0.125, DataType::F64, vec![None], None).unwrap();
+        assert_eq!(wide.context().longitude_turn(), None);
+        let mut xs = [0., 300., 300., 0.];
+        assert_eq!(wide.context().footprint_moves(&mut xs, (150., 0.5)), [Some(0.), None]);
+        assert_eq!(xs, [0., 300., 300., 0.]);
     }
 
     #[test]

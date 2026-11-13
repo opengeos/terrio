@@ -278,7 +278,7 @@ def test_shifted_regional_remote_footprint_uses_bounded_reads(tmp_path, record_p
 
 @pytest.mark.parametrize("invariant", [True, False])
 def test_real_country_regional_coverage_matches_gdal(data_dir, invariant):
-    """Compare a Pacific country mask against GDAL reading its canonical world layout.
+    """Compare a Pacific country mask against GDAL 3.12.1's canonical world layout.
 
     Args:
         data_dir: Real public country boundaries from the test-data collection.
