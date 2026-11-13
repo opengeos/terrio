@@ -200,6 +200,15 @@ impl Def {
     /// The definition of a CRS: from the EPSG (or ESRI) table when it has a code there, else
     /// from its PROJ string or WKT.
     pub fn new(s: &SpatialRef) -> Result<Self> {
+        // A retained engineering definition must not become an Earth CRS just because
+        // its root carries a registered identifier. Keep explicit PROJ extensions handled
+        // by the WKT path, before considering the authority registry.
+        if let Some(wkt) = &s.wkt {
+            let root = wkt.split(['[', '(']).next().unwrap_or_default().trim();
+            if ["LOCAL_CS", "ENGCRS", "ENGINEERINGCRS"].iter().any(|key| root.eq_ignore_ascii_case(key)) {
+                return Self::from_wkt(wkt);
+            }
+        }
         if let Some(code) = s.epsg
             && let Some(c) = epsg::compound(code)
         {
