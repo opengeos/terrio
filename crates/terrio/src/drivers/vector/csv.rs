@@ -488,8 +488,10 @@ impl CsvScan {
     /// The layer the rows make (without features), and their decoder.
     fn finish(mut self, header: Vec<String>, name: &str, options: &CsvOptions, utf8: bool) -> RowDecoder {
         let header = unique_column_names(header);
-        // A WKT column must hold geometries: a "geometry" column of other values is an attribute.
-        let wkt = self.wkt.iter().find(|c| c.is_wkt == Some(true));
+        // An entirely blank writer-owned marker denotes null geometry. Ordinary WKT
+        // candidates must contain geometries; other values remain attributes.
+        let marked = options.geom_possible_names.is_empty() && header.first().is_some_and(|h| geometry_marker(h, "__terrio_wkt"));
+        let wkt = self.wkt.iter().find(|c| c.is_wkt == Some(true) || (marked && c.column == 0 && c.is_wkt.is_none()));
         let wkt_col = wkt.map(|c| c.column);
         if wkt_col.is_some() {
             (self.x_col, self.y_col, self.z_col) = (None, None, None);
@@ -884,6 +886,7 @@ mod tests {
         let line = super::super::wkt::parse("LINESTRING (1 2,3 4)");
         assert_eq!(parse(text, "selected", &selected).unwrap().features[0].geometry, line);
         for options in [
+            CsvOptions::default(),
             CsvOptions { x_possible_names: vec!["lon".into()], ..Default::default() },
             CsvOptions { y_possible_names: vec!["lat".into()], ..Default::default() },
             CsvOptions { z_possible_names: vec!["height".into()], ..Default::default() },
@@ -892,7 +895,12 @@ mod tests {
             assert_eq!(parse(&marked, "marker", &options).unwrap().features[0].geometry, line);
             let non_wkt = "__terrio_wkt,lon,lat\nnote,12,34\n";
             assert_eq!(parse(non_wkt, "fallback", &options).unwrap().features[0].geometry, Some(Geometry::point(12., 34.)));
+            let null_geometry = "__terrio_wkt,lon,lat\n,12,34\n";
+            assert!(parse(null_geometry, "null", &options).unwrap().features[0].geometry.is_none());
         }
+        let selected = CsvOptions { keep_geom_columns: false, ..selected };
+        let layer = parse(text, "selected", &selected).unwrap();
+        assert_eq!(layer.schema.fields().iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["lon", "lat"]);
     }
 
     #[test]

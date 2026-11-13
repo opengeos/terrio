@@ -1107,6 +1107,8 @@ recognize it before inferring coordinates, even when X/Y/Z name options are set,
 the geometry and coordinate-named attributes both survive a round trip. An explicit
 `GEOM_POSSIBLE_NAMES` selection takes precedence when the selected column holds WKT;
 non-WKT selections retain X/Y fallback.
+An entirely blank reserved WKT marker retains null geometry rather than turning
+coordinate-named attributes into points.
 Ordinary external CSV files without that selection retain their default X/Y precedence.
 The reserved marker is a Terrio convention. Other CSV readers may require explicit
 geometry-column options to distinguish it from coordinate-like attributes.
