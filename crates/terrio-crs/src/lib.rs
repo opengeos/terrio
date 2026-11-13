@@ -1703,12 +1703,15 @@ impl Transformer {
     ///
     /// Only those failures ([`Error::Crs`]) are marked. A refusal under the strict options
     /// ([`Error::MissingGrid`] with [`TransformOptions::only_best`], [`Error::NoOperation`] with
-    /// [`TransformOptions::allow_ballpark`] off), a missing velocity grid ([`Error::MissingGrid`])
-    /// or an I/O error is returned at once instead, so that it is not mistaken for points outside
-    /// the domain. As with [`transform_slice`](Self::transform_slice), the points before it are
-    /// then transformed (or marked), and it and those after it are left as they were. A grid file
-    /// that is present but cannot be read counts as the point failing ([`Error::Crs`]), as
-    /// terrio's grid readers report no more.
+    /// [`TransformOptions::allow_ballpark`] off), a velocity grid that is missing or failed to
+    /// download ([`Error::MissingGrid`]) or an I/O error is returned at once instead, so that it is
+    /// not mistaken for points outside the domain. As with
+    /// [`transform_slice`](Self::transform_slice), the points before it are then transformed (or
+    /// marked), and it and those after it are left as they were.
+    ///
+    /// Deliberately, a grid file that is present but cannot be read (corrupt, truncated) is not
+    /// told apart: terrio's grid readers report no more than that the point could not be
+    /// transformed, as [`transform`](Self::transform) reports it, so such points are marked NaN.
     ///
     /// ```no_run
     /// use terrio_crs::{SpatialRef, Transformer};
@@ -1932,8 +1935,10 @@ impl Transformer {
             Some(steps) => datum::run(steps, p, false, true).ok_or_else(|| {
                 let grids: Vec<(String, bool)> = steps.iter().flat_map(|s| s.grid_names()).collect();
                 let names = grids.iter().map(|(g, _)| g.as_str()).collect::<Vec<_>>().join(", ");
-                // A velocity grid that is not there is a missing grid, not a point outside it.
-                if grids.iter().any(|(g, optional)| !optional && !grid::available(g)) {
+                // A velocity grid that is not there, or whose download failed (with the network
+                // on, a grid counts as available until it is fetched), is a missing grid, not a
+                // point outside it.
+                if grids.iter().any(|(g, optional)| !optional && (!grid::available(g) || grid::fetch_failed(g))) {
                     return Error::MissingGrid(format!(
                         "cannot move ({x}, {y}) between coordinate epochs: the velocity grid ({names}) is not available; set TERRIO_NETWORK=ON or TERRIO_GRID_DIR"
                     ));
