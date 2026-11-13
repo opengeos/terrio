@@ -632,7 +632,8 @@ fn list_directory(body: &[u8]) -> Result<Value, String> {
     entries.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase())));
     let entries: Vec<Value> = entries.into_iter().map(|(dir, name, size)| json!({"name": name, "dir": dir, "size": size})).collect();
     let parent = path.parent();
-    Ok(json!({"path": display(&path), "parent": parent.map(display), "drives": parent.is_none() && !drives().is_empty(), "entries": entries}))
+    let drives = parent.is_none() && !drives().is_empty();
+    Ok(json!({"path": display(&path), "parent": parent.map(display), "drives": drives, "entries": entries}))
 }
 
 /// The root of each drive (`C:\`), in letter order; none where the file system is a single tree.
