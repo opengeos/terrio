@@ -50,7 +50,9 @@ quantized at the `QUALITY` creation option (1 to 100, default 75) as libjpeg sca
 with optimized Huffman tables. JPEG `QUALITY` accepts a complete finite number, allowing
 surrounding whitespace and scientific notation. Values outside 1 to 100 and malformed text
 are refused; valid fractional values are truncated for the integer encoder. The same validation
-applies to MBTiles/PMTiles `QUALITY`. Other data types are rounded and saturated to Byte; GDAL's 4-band
+applies to MBTiles/PMTiles `QUALITY`. GeoTIFF/COG JPEG `QUALITY` and `JPEG_QUALITY`
+retain their integer-only syntax: decimal and exponent spellings are refused there.
+Other data types are rounded and saturated to Byte; GDAL's 4-band
 (CMYK) and 12-bit JPEGs are not written. WebP files hold 3 (RGB) or 4 (RGBA) Byte bands of at most
 16383 x 16383 pixels, as GDAL's WEBP driver requires. With no lossy options, files are
 lossless, every sample kept, including RGB under fully transparent pixels. `LOSSLESS=NO`

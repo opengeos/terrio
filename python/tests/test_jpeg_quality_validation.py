@@ -2,6 +2,7 @@
 
 import re
 import sqlite3
+from contextlib import closing
 
 import numpy as np
 import pytest
@@ -80,7 +81,7 @@ def encoded_quality(image, path, driver, quality):
         options["TILE_FORMAT"] = "JPEG"
     image.write(str(path), driver=driver, options=options)
     if driver == "MBTiles":
-        with sqlite3.connect(path) as db:
+        with closing(sqlite3.connect(path)) as db:
             tiles = db.execute(
                 "SELECT tile_data FROM tiles ORDER BY zoom_level, tile_column, tile_row"
             ).fetchall()
