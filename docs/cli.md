@@ -1112,6 +1112,10 @@ edges are periodic wherever its origin lies. Sources stored from 0° to 360° an
 Point samples and interpolation neighbors wrap by the source's longitude period. Area methods
 and `sum` include both stored edges when a footprint crosses that cut, including a cut at 0°.
 This does not wrap latitude or extend a regional source beyond its right edge.
+Interpolation halos are periodic too. A coarse bilinear filter accumulates the weights of
+every periodic image inside its support; it does not clip the filter at the stored cut.
+This source-extension rule applies under both grid policies and can differ from GDAL's
+finite-edge clipping for coarse global filters.
 
 The window holds the footprints of its chunk unless a strongly curved
 transformation takes one past the points the window is sampled from: such a footprint is shortened,

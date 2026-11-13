@@ -5118,7 +5118,8 @@ test("coarse geographic warp footprints survive exact and approximate transforms
         const width = right + 180;
         let total = 0, weight = 0;
         for (let x = 0; x < 360; x++) {
-          const w = Math.max(0, 1 - Math.abs(x + 0.5 - width / 2) / width);
+          const w = [-360, 0, 360].reduce((sum, shift) =>
+            sum + Math.max(0, 1 - Math.abs(x + 0.5 + shift - width / 2) / width), 0);
           total += values[x] * w; weight += w;
         }
         const result = terrio.warp(source, { tSrs: "EPSG:4326", te: [-180, -2, right, 2], ts: [1, 2],
@@ -5128,7 +5129,7 @@ test("coarse geographic warp footprints survive exact and approximate transforms
       }
       const projected = terrio.warp(source, { tSrs: "EPSG:3857", te: [-20037508.342789244, -200000, 20037508.342789244, 200000],
         ts: [1, 2], resampling: "bilinear", ot: "Float64", kernelVersion, et, gridInvariant: true });
-      for (const v of projected.readBand(1)) assert.ok(Math.abs(v - 259.2592592592594) < 1e-9, `${crs} projected et=${et}: ${v}`);
+      for (const v of projected.readBand(1)) assert.ok(Math.abs(v - 1000 / 3) < 1e-9, `${crs} projected et=${et}: ${v}`);
       projected.free();
     }
     source.free();

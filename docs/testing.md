@@ -85,6 +85,20 @@ crossing 0° in a 2,089,218-byte COG. Both stored edges contribute without a
 whole-file download. A contiguous source window crossing the cut can include
 all columns, while retaining a narrow range of source rows.
 
+A separate 129,600-column by 512-row COG measurement exposes that cost at a
+larger width. The old one-sided result was 4.0 after 131,072 bytes in three
+requests; the corrected result is 3.6 after 16,711,680 bytes in ten requests,
+from an 84,831,353-byte file. The current rectangular source-window interface
+reads the intervening columns of the selected tile-row band. Reading two
+disjoint edge segments would require a separate source-window interface change;
+this fix does not claim that boundary I/O is proportional to the output width.
+
+The coarse bilinear regressions use an independent periodized triangular
+filter, compare a rotated storage layout, and retain finite-clipping controls
+for regional sources. A full-world filter on constant rows gives the global
+mean. These replace finite-edge expectations that conflict with periodic
+source extension, across both kernel versions and exact/approximate transforms.
+
 ## Vector source ranges
 
 `cargo test -p terrio --test vector_stream_ranges` checks eager/streamed ranges,

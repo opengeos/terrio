@@ -2331,7 +2331,6 @@ def suite_projjson_export(ctx):
     return suite
 
 
-
 def suite_transform_batches(ctx):
     """Check single-call point failures and successful real coordinates against GDAL.
 
