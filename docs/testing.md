@@ -3339,6 +3339,12 @@ global batch boundary and spans several batches; RPC batch membership stays glob
 
 ## Shapefile projection decoding warnings
 
+`python/tests/test_native_warning_locations.py` runs late `__del__`, `atexit` and
+`weakref.finalize` callbacks in child interpreters. A successful native read that
+records a warning must still return its dataset when shutdown disables imports,
+with default or ignored warnings. Existing caller-location, module-filter and
+warnings-as-errors checks retain the normal warning policy outside teardown.
+
 `python/tests/test_pyogrio_prj.py` checks invalid Latin-1 and UTF-16 sidecars through
 whole, range, stream, ZIP path and ZIP byte reads. Reads retain their geometries
 and attributes, leave the CRS absent, and issue one warning naming the sidecar
