@@ -1018,6 +1018,36 @@ test("neighbors, collar cleaning and LUT enhancement", () => {
   assert.deepEqual([...precise.readBand(1)], [nodata, 1]);
 });
 
+test("regional longitude warps read equivalent stored columns", () => {
+  const field = Float64Array.from({ length: 40 * 4 }, (_, i) => i % 40 < 20 ? 1 : 2);
+  const source = terrio.rasterFromArray(field, 40, 4, [160, 1, 0, 2, 0, -1], "EPSG:4326");
+  const resolution = 0.0833333333;
+  const rounded = terrio.rasterFromArray(new Float64Array(4320 * 4).fill(1), 4320, 4,
+    [0, resolution, 0, 2 * resolution, 0, -resolution], "EPSG:4326");
+  try {
+    for (const gridInvariant of [true, false]) {
+      for (const resampling of ["near", "bilinear", "average", "sum"]) {
+        const out = terrio.warp(source, { tSrs: "EPSG:4326", te: [-180, -2, 180, 2], ts: [360, 4],
+          resampling, dstNodata: -999, ot: "Float64", gridInvariant });
+        try {
+          const values = [...out.readBand(1)];
+          for (let row = 0; row < 4; row++) {
+            assert.ok(values.slice(row * 360, row * 360 + 20).every(value => Math.abs(value - 2) < 1e-9));
+            assert.ok(values.slice(row * 360 + 340, (row + 1) * 360).every(value => Math.abs(value - 1) < 1e-9));
+            assert.ok(values.slice(row * 360 + 20, row * 360 + 340).every(value => value === -999));
+          }
+        } finally { out.free(); }
+      }
+      const radius = 6378137;
+      const top = radius * Math.log(Math.tan(Math.PI / 4 + resolution * Math.PI / 180));
+      const out = terrio.warp(rounded, { tSrs: "EPSG:3857", te: [-Math.PI * radius, -top, Math.PI * radius, top],
+        ts: [360, 2], resampling: "near", dstNodata: -999, ot: "Float64", gridInvariant });
+      try { assert.ok([...out.readBand(1)].every(value => value === 1)); }
+      finally { out.free(); }
+    }
+  } finally { source.free(); rounded.free(); }
+});
+
 test("global longitude warps fill the seam and count both sides of zero", () => {
   const field = new Float64Array(360 * 20).map((_, i) => i % 360 === 0 ? 4 : i % 360 === 359 ? 2 : 1);
   const source = terrio.rasterFromArray(field, 360, 20, [0, 1, 0, 10, 0, -1], "EPSG:4326");

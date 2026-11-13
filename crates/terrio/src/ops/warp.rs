@@ -3071,6 +3071,18 @@ impl WarpContext<'_> {
                 if x + 1e-10 > self.src_w as f64 {
                     x = 0.0;
                 }
+            } else if (x < 0.0 || x >= self.src_w as f64)
+                && let Some(turn) = self.source_longitude_turn()
+                && turn.is_finite()
+                && turn > 0.0
+                && self.src_w as f64 <= turn
+            {
+                // A regional source is not periodic in its stored width. Move only by
+                // the actual angular turn, and only when that reaches a stored column.
+                let shifted = x.rem_euclid(turn);
+                if shifted < self.src_w as f64 {
+                    x = shifted;
+                }
             }
             if x < sx {
                 if attempt == 0 && x > sx - 1.0 {
@@ -3929,21 +3941,35 @@ impl WarpContext<'_> {
         self.source_longitude_turn().filter(|turn| turn.is_finite() && *turn > 0.0 && (self.src_w as f64 - turn).abs() <= turn * 1e-10)
     }
 
-    /// Full-turn sources are periodic even without a CRS change. Regional sources retain
-    /// their existing transformed-antimeridian footprint handling.
+    /// Geographic footprints may use equivalent longitude numberings even without a CRS change.
     fn longitude_turn(&self) -> Option<f64> {
-        (self.t.ct.is_some() || self.global_longitude_turn().is_some()).then(|| self.source_longitude_turn()).flatten()
+        self.source_longitude_turn().filter(|turn| turn.is_finite() && *turn > 0.0)
     }
 
     /// Bound periodic source columns without losing a part on the opposite stored edge.
     fn wrap_source_bounds(&self, left: f64, right: f64) -> (f64, f64) {
-        if self.global_longitude_turn().is_none() || !left.is_finite() || !right.is_finite() || right < left {
+        if !left.is_finite() || !right.is_finite() || right < left {
             return (left, right);
         }
         let width = self.src_w as f64;
         let span = right - left;
-        let start = left.rem_euclid(width);
-        if span >= width || start + span > width { (0.0, width) } else { (start, start + span) }
+        if self.global_longitude_turn().is_some() {
+            let start = left.rem_euclid(width);
+            return if span >= width || start + span > width { (0.0, width) } else { (start, start + span) };
+        }
+        let Some(turn) = self.longitude_turn().filter(|turn| width <= *turn) else { return (left, right) };
+        if span >= turn {
+            return (0.0, width);
+        }
+        let start = left.rem_euclid(turn);
+        let mut bounds: Option<(f64, f64)> = None;
+        for shift in [0.0, -turn] {
+            let (lo, hi) = ((start + shift).max(0.0), (start + span + shift).min(width));
+            if lo <= hi {
+                bounds = Some(bounds.map_or((lo, hi), |(left, right)| (left.min(lo), right.max(hi))));
+            }
+        }
+        bounds.unwrap_or((0.0, 0.0))
     }
 
     /// Moves the source columns `xs` of an output pixel's footprint corners by whole turns of
@@ -3990,13 +4016,13 @@ impl WarpContext<'_> {
     /// side, and none when it lies beside it. A source wider than a turn holds some longitudes
     /// twice: there, the footprint is moved once, by the turns that put the most of it on the
     /// source. Full-turn sources also move continuous footprints across their stored edge,
-    /// including a cut at zero longitude and warps within the source CRS. Other continuous
-    /// footprints retain their positions on regional or wider sources.
+    /// including a cut at zero longitude and warps within the source CRS. Regional sources
+    /// also take equivalent continuous footprints; wider sources retain their existing rules.
     fn footprint_moves(&self, xs: &mut [f64], centre: (f64, f64)) -> [Option<f64>; 2] {
         let Some(turn) = self.longitude_turn() else {
             return [Some(0.0), None];
         };
-        if !self.unwrap_longitudes(xs, turn, centre) && self.global_longitude_turn().is_none() {
+        if !self.unwrap_longitudes(xs, turn, centre) && self.src_w as f64 > turn * (1.0 + 1e-10) {
             return [Some(0.0), None];
         }
         let w = self.src_w as f64;
