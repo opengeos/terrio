@@ -3391,7 +3391,8 @@ impl Proj for Eck4 {
             }
         }
         if !converged {
-            // At a pole, where the derivative vanishes: PROJ's pole line.
+            // Within about 0.005° of a pole, where Newton's method stalls: PROJ's pole line, which
+            // leaves out the (1 + cos θ) factor of x (about 200 m at 89.999° on the antimeridian).
             return Some((ECK4_CX * lam, if theta < 0.0 { -ECK4_CY } else { ECK4_CY }));
         }
         Some((ECK4_CX * lam * (1.0 + theta.cos()), ECK4_CY * theta.sin()))
@@ -3454,9 +3455,6 @@ impl Proj for Natearth {
     }
 
     fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
-        if !x.is_finite() || !y.is_finite() {
-            return None;
-        }
         let [b0, b1, b2, b3, b4] = NATEARTH_B;
         let (c0, c1, c2, c3, c4) = (b0, 3.0 * b1, 7.0 * b2, 9.0 * b3, 11.0 * b4);
         // A northing past the pole line is read on it, as in PROJ.

@@ -1,10 +1,10 @@
 //! The world projections terrio ports from PROJ's spherical ones (Robinson, the three Winkels,
 //! Gall, Gauss-Schreiber transverse Mercator, Foucaut sinusoidal, McBryde-Thomas flat-polar
 //! sinusoidal, Putniņš P4′, Eckert IV, Natural Earth, Murdoch II and Tissot) against PROJ, on a
-//! sphere and on WGS 84. The
-//! reference points are pyproj's (PROJ 9.8.1), from `scripts/gen_world_projection_points.py`,
-//! from the geographic CRS on the same figure, so that no datum transformation is involved:
-//! forward within 1 mm, and the inverse of PROJ's projected points within 1e-9°.
+//! sphere and on WGS 84. The reference points are pyproj's (PROJ 9.8.1), from
+//! `scripts/gen_world_projection_points.py`, from the geographic CRS on the same figure, so that
+//! no datum transformation is involved: forward within 1 mm, and the inverse of PROJ's projected
+//! points within 1e-9°.
 
 use std::path::Path;
 
@@ -166,12 +166,12 @@ fn natural_earth_matches_proj() {
     check_all("natearth");
 }
 
-/// PROJ 9.8.1's own test values for a method on a sphere of radius 6,400 km
-/// (`test/gie/builtins.gie`): forward within 0.1 mm, as there, and inverse within 1e-9°; `None`
-/// where PROJ refuses the point (outside the projection domain).
-/// An inverse case: x, y and PROJ's longitude and latitude, `None` where PROJ refuses the point.
+/// An inverse case: x, y and PROJ's longitude and latitude, `None` where PROJ refuses the point
+/// (outside the projection domain).
 type InverseCase = (f64, f64, Option<(f64, f64)>);
 
+/// A method on a sphere of radius 6,400 km, as in PROJ 9.8.1's own tests
+/// (`test/gie/builtins.gie`): forward within 0.1 mm, as there, and inverse within 1e-9°.
 fn check_gie(name: &str, fwd: &[[f64; 4]], inv: &[InverseCase]) {
     let proj = SpatialRef::from_proj4(&format!("+proj={name} +a=6400000")).unwrap();
     let geog = SpatialRef::from_proj4("+proj=longlat +a=6400000").unwrap();
@@ -248,6 +248,22 @@ fn natural_earth_matches_proj_gie() {
         (-200.0, -100.0, Some((-lon, -lat))),
     ];
     check_gie("natearth", &fwd, &inv);
+}
+
+/// Past Natural Earth's outline, PROJ 9.8.1 (pyproj 3.8.0, `+proj=natearth +a=6400000`) reads a
+/// northing beyond the pole line on it, which its polynomial puts at 90.0045°, and wraps an
+/// easting beyond the antimeridian.
+#[test]
+fn natural_earth_inverse_past_its_outline_matches_proj() {
+    let pole = 90.00446955581562;
+    let inv = [
+        (0.0, 10013696.395717902, Some((0.0, pole))),
+        (0.0, -10013696.395717902, Some((0.0, -pole))),
+        (1000000.0, 13655040.53961532, Some((18.683698179163176, pole))),
+        (18381785.341789857, 0.0, Some((-170.99999999999994, 0.0))),
+        (-18381785.341789857, 0.0, Some((170.99999999999994, 0.0))),
+    ];
+    check_gie("natearth", &[], &inv);
 }
 
 #[test]
