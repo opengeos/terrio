@@ -76,6 +76,23 @@ forces the full longitude range. Sampling counts above 65,536 per edge are
 refused. The conformance runner clears inherited pytest options and requires
 all 48 comparison results in its JUnit report before declaring agreement.
 
+## Polar-edge source windows
+
+`python/tests/test_warp_polar_edge_windows.py` checks 15 tiles beside either pole,
+including north-up and sheared grids. Its 60 parameterized checks cover nearest
+and average, both compatibility selectors, ordinary/dense edge sampling and the
+default policy as a control. Every covered center must be written, and the
+chunk-dependent planner must include both stored longitude edges when adjacent
+samples cross the cut. An orthographic control exercises invalid corners and
+the interior-grid fallback without writing outside the projection's domain.
+
+The lazy HTTP regression reads 802,816 bytes in two requests from a
+12,978,366-byte global COG. The rectangular source window includes all longitude
+columns but only the necessary latitude rows. More columns are read in the
+affected chunks to retain their meridian side. These are coverage and I/O checks,
+not a numerical GDAL parity claim; regional and multi-turn placement rules remain
+separate.
+
 ## TIFF block metadata
 
 `python scripts/conformance.py DATA --only tiff-block-tags --strict` requires

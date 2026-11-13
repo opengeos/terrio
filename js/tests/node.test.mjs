@@ -5327,6 +5327,23 @@ test("GeoJSON byte exports name ESRI CRSs and refuse unnamed CRS loss", () => {
     } finally { source.free(); }
   }
 });
+test("chunk windows retain polar meridian edge pixels", () => {
+  const values = Uint8Array.from({length: 3600 * 200}, (_, i) => Math.floor(i / 3600) % 250 + 1);
+  const source = terrio.rasterFromArray(values, 3600, 200, [-180, 0.1, 0, 90, 0, -0.1], "EPSG:4326");
+  try {
+    for (const kernelVersion of ["3.12", "3.13"]) {
+      for (const resampling of ["near", "average"]) {
+        const output = terrio.warp(source, {
+          tSrs: "EPSG:3413", te: [-800000, -775000, 0, 25000], ts: [32, 32],
+          resampling, gridInvariant: false, kernelVersion, dstNodata: 0,
+        });
+        try { assert.ok([...output.readBand(1)].every(value => value !== 0)); }
+        finally { output.free(); }
+      }
+    }
+  } finally { source.free(); }
+});
+
 test("engineering GeoTIFF and COG bytes retain local CRS definitions", () => {
   const local = 'LOCAL_CS["site grid",LOCAL_DATUM["site",32767],UNIT["metre",1],AXIS["Easting",EAST],AXIS["Northing",NORTH]]';
   const engineering = 'ENGINEERINGCRS["Astra Minas Grid",ENGINEERINGDATUM["Astra Minas"],CS[Cartesian,2],AXIS["northing (X)",north,ORDER[1]],AXIS["westing (Y)",west,ORDER[2]],LENGTHUNIT["metre",1],ID["EPSG",5800]]';
