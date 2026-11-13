@@ -321,6 +321,16 @@ types and independent GDAL decoding (reference: GDAL 3.13.3). Encoder byte ident
 with GDAL is not claimed. The corresponding JavaScript/WASM regression is in
 `js/tests/node.test.mjs`.
 
+`python/tests/test_jp2_decode_reference.py` separately pins the four irreversible
+9/7 cases whose live GDAL comparison permits sparse one-step differences on macOS
+arm64. Frozen JP2 payloads and Linux reference arrays in
+`python/tests/data/jp2_decode` require exact dtype, shape and samples through path
+and memory reads on every platform, without importing rasterio. The reference
+arrays agree exactly with GDAL 3.12.1 on Linux x86_64. Only the live GDAL comparison
+retains its platform limits; Terrio's frozen-reference check has no tolerance.
+The fixture README records inputs and regeneration instructions. These are
+decoder references, not assertions of encoder byte stability.
+
 Standalone WebP creation options are checked with
 `python scripts/conformance.py DATA --only webp-writer --strict`, using the
 `landsat7.tif` downloaded by `scripts/fetch_test_data.sh`. Current Python bindings,
