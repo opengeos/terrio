@@ -86,6 +86,8 @@ const STRICTER: &[&str] = &[
     "+proj=longlat +datum=WGS84 +pm=paris",
     "+proj=longlat +ellps=intl +datum=WGS84 +pm=paris",
     "+proj=longlat +datum=carthage +towgs84=-263,6,431",
+    "+proj=longlat +datum=WGS84 +towgs84=1,2,3",
+    "+proj=longlat +datum=WGS84 +ellps=WGS84 +towgs84=0,0,0",
     // A flattening changing a named ellipsoid, which PROJ's WKT drops and its projection keeps.
     "+proj=ortho +f=0 ",
     "+proj=ortho +f=0.003 ",
@@ -334,6 +336,17 @@ fn to_wkt_describes_without_the_extension() {
     // Beside `+b`, whose order of precedence differs from PROJ's, `+es` keeps the extension.
     let w = SpatialRef::from_proj4("+proj=longlat +a=6378137 +b=6356752.314245179 +es=0.006").unwrap().to_wkt().unwrap();
     assert!(w.contains("EXTENSION[\"PROJ4\""), "{w}");
+}
+
+#[test]
+fn a_prime_meridian_in_degrees_minutes_and_seconds_is_read_and_written() {
+    // `+pm=2d20'14.025"E` is Paris, as PROJ 9.8.1 reads it: pyproj 3.8.0's
+    // `Transformer.from_crs("EPSG:4326", crs, always_xy=True)` gives 7.662770833333334 at 10°E.
+    let crs = SpatialRef::from_proj4("+proj=longlat +ellps=GRS80 +pm=2d20'14.025\"E").unwrap();
+    let (lon, lat) = Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &crs).unwrap().transform(10.0, 45.0).unwrap();
+    assert!((lon - 7.662770833333334).abs() < 1e-9 && (lat - 45.0).abs() < 1e-9, "({lon}, {lat})");
+    let w = crs.to_wkt1_strict().unwrap();
+    assert!(w.contains("PRIMEM[\"unknown\",2.33722916666667]"), "{w}");
 }
 
 #[test]

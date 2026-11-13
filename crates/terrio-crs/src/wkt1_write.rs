@@ -157,6 +157,14 @@ const WKT1_ROOTS: [&str; 6] = ["GEOGCS", "PROJCS", "GEOCCS", "COMPD_CS", "VERT_C
 /// method has no WKT 1 name), and for a WKT 1 that needs an extension, unless its root's EPSG or
 /// ESRI `AUTHORITY` is the CRS's own code (GDAL's Web Mercator, EPSG:3857).
 pub(crate) fn strict(sr: &SpatialRef) -> Option<String> {
+    // A PROJ string's `+datum=` changed by its own shift (`+datum=WGS84 +towgs84=1,2,3`): PROJ
+    // reads it as the datum, and WKT 1 cannot say which wins.
+    if let Some(p) = sr.proj4.as_deref().map(Params::parse)
+        && p.has("datum")
+        && (p.has("towgs84") || p.has("nadgrids"))
+    {
+        return None;
+    }
     // An EPSG code outside terrio's tables is read through the wbprojection fallback, whose WKT
     // is not the registry's.
     let outside = |c: u32| epsg::get(c).is_none() && epsg::compound(c).is_none() && epsg::vertical(c).is_none();
@@ -511,7 +519,11 @@ fn geogcs(p: &Params, own: &Def) -> (String, bool) {
                 name[..1].make_ascii_uppercase();
                 format!("PRIMEM[\"{name}\",{}]", num(deg))
             }
-            _ => "PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]]".to_string(),
+            // In degrees, minutes and seconds (`2d20'14.025"E`).
+            _ => match p.angle("pm").map(f64::to_degrees) {
+                Some(deg) => format!("PRIMEM[\"unknown\",{}]", num(deg)),
+                None => "PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]]".to_string(),
+            },
         },
     };
     const DEGREE: &str = "UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]]";

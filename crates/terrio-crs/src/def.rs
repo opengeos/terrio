@@ -392,7 +392,8 @@ impl Def {
             v.parse::<f64>()
                 .ok()
                 .or_else(|| prime_meridian(v))
-                .or_else(|| if name == "geocent" { p.angle("pm").map(f64::to_degrees) } else { None })
+                // In degrees, minutes and seconds (`2d20'14.025"E`), as PROJ reads it.
+                .or_else(|| p.angle("pm").map(f64::to_degrees))
         });
         if name == "geocent" && p.has("pm") && explicit_pm.is_none_or(|v| !v.is_finite()) {
             return Err(Error::Crs("invalid geocentric prime meridian".into()));

@@ -1505,7 +1505,10 @@ Strict WKT 1 export (`SpatialRef::to_wkt1_strict`) is compared with PROJ 9.8.1's
 character, and of custom definitions and every 20th IAU_2015 CRS by whether PROJ has a WKT 1
 without extension and by reading it back (`cargo test -p terrio-crs --test wkt1_strict_export`;
 regenerate with `scripts/gen_wkt1_strict_export.py`, pyproj 3.8.0; `--all PATH` and the ignored
-`every_code_matches_proj` compare every code).
+`every_code_matches_proj` compare every code). `--only wkt1-strict-export` has live PROJ (which
+GDAL reads WKT with) read terrio's strict WKT 1 of every custom definition of that data, whose
+points must transform as from the original within 1 mm or 1e-8 degrees
+(`scripts/compare_wkt1_strict_with_proj.py`, needs pyproj).
 
 PROJJSON export (`SpatialRef::to_projjson`) has unit tests of each kind of CRS and refusal
 (`cargo test -p terrio-crs --test projjson_export`); `--only projjson-export` compares it with

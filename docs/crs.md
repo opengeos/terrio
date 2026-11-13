@@ -803,7 +803,9 @@ returns `None` where PROJ writes WKT 1):
 - a compound CRS on Web Mercator (`EPSG:3857+3855`), or a WKT 2 of Web Mercator with its axes
   swapped, whose extension is not under the CRS's code;
 - a few other combinations PROJ writes: `+R_A` on a sphere, `+es` beside `+e`, a WKT 2 in grads
-  without a code, a WKT 2 of south and west axes.
+  without a code, a WKT 2 of south and west axes;
+- a PROJ string's `+datum=` changed by its own `+towgs84` or `+nadgrids`
+  (`+datum=WGS84 +towgs84=1,2,3`), which PROJ writes as the datum with that shift.
 
 UPS (`+proj=ups`), which PROJ keeps in its extension, is written as Polar Stereographic. The
 code `OGC:CRS84`, which terrio reads as EPSG:4326, gets EPSG:4326's WKT 1 (latitude first),
@@ -811,7 +813,13 @@ where PROJ writes CRS84's; its WKT 2 text gets its own axes.
 
 `to_wkt` itself writes the defining inverse flattening of a named ellipsoid (298.257223563 for
 WGS 84, as PROJ does) and describes a geocentric CRS, a sphere's `+R_C` and an ellipsoid given by
-`+a` with `+es` or `+e` without the extension.
+`+a` with `+es` or `+e` without the extension. A prime meridian in degrees, minutes and seconds
+(`+pm=2d20'14.025"E`) is read and written for every CRS, as PROJ reads it; it was read for
+geocentric CRSs only (and Greenwich taken for others).
+
+`--only wkt1-strict-export` (`scripts/compare_wkt1_strict_with_proj.py`) has live PROJ read the
+strict WKT 1 of every custom definition of the frozen data: 203 read as the original, 3 within
+tolerance, 45 none where PROJ has none, the rest not compared (the known differences above).
 
 ### Writing PROJJSON
 
