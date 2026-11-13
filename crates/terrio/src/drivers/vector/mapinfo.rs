@@ -197,8 +197,8 @@ pub fn parse(mif: &[u8], mid: Option<&[u8]>, name: &str) -> Result<Layer> {
             return Err(invalid_header(&format!("missing {keyword} declaration; not a complete MapInfo Interchange File")));
         }
     }
-    for (n, t) in &fields {
-        layer.add_field(FieldDef::new(n, *t));
+    for field in super::unique_field_defs(fields.iter().map(|(name, kind)| FieldDef::new(name, *kind)).collect()) {
+        layer.add_field(field);
     }
 
     // Geometries.

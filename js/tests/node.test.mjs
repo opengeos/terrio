@@ -4884,6 +4884,28 @@ test("MVT byte ranges preserve each selected layer", () => {
   }
 });
 
+test("FlatGeobuf duplicate declarations preserve column values", { skip: needs("flatgeobuf") }, () => {
+  const source = terrio.fromGeoJSON({type: "Feature", properties: {count: 1, counX: 2, count_2: 3, total: 4},
+    geometry: {type: "Point", coordinates: [10, 46]}});
+  const bytes = source.toBytes("duplicate.fgb");
+  const before = new TextEncoder().encode("counX");
+  const after = new TextEncoder().encode("count");
+  let edits = 0;
+  for (let i = 0; i <= bytes.length - before.length; i++) {
+    if (before.every((value, offset) => bytes[i + offset] === value)) {
+      bytes.set(after, i);
+      edits++;
+    }
+  }
+  assert.equal(edits, 1);
+  for (const options of [{}, {skipFeatures: 0, maxFeatures: 1}]) {
+    const restored = terrio.openVector(bytes, "duplicate.fgb", options);
+    assert.deepEqual(restored.toGeoJSON().features[0].properties, {count: 1, count_3: 2, count_2: 3, total: 4});
+    restored.free();
+  }
+  source.free();
+});
+
 test("MapInfo MIF archives read in WebAssembly", () => {
   // Native Terrio fixture: points.mif and points.mid, one EPSG:4326 point with label=site.
   const bytes = new Uint8Array(Buffer.from(

@@ -929,7 +929,7 @@ pub(crate) fn dbf_layout(d: &[u8], cpg: Option<&str>) -> Result<DbfLayout> {
         offset += width;
         pos += 32;
     }
-    Ok(DbfLayout { fields, layout, encoding, count, header_len, record_len })
+    Ok(DbfLayout { fields: super::unique_field_defs(fields).collect(), layout, encoding, count, header_len, record_len })
 }
 
 impl DbfLayout {

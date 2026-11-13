@@ -127,6 +127,7 @@ pub(crate) fn parse_header(buf: &[u8]) -> Result<(Layer, FgbHeader)> {
         }
     }
     let columns: Vec<Column> = header.columns().map(|c| c.iter().collect()).unwrap_or_default();
+    let mut fields = Vec::with_capacity(columns.len());
     for c in &columns {
         let mut def = FieldDef::new(c.name(), field_type(c.type_()));
         if c.width() > 0 {
@@ -138,7 +139,10 @@ pub(crate) fn parse_header(buf: &[u8]) -> Result<(Layer, FgbHeader)> {
         if c.precision() > 0 {
             def = def.precision(c.precision() as usize);
         }
-        layer.add_field(def);
+        fields.push(def);
+    }
+    for field in super::unique_field_defs(fields) {
+        layer.add_field(field);
     }
     let count = header.features_count();
     // More features than any file can hold: the index's size would overflow.
