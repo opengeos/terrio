@@ -5281,6 +5281,27 @@ test("FlatGeobuf stored CRS validation discards prose and retains definition for
     }
   } finally { source.free(); }
 });
+test("engineering GeoTIFF and COG bytes retain local CRS definitions", () => {
+  const local = 'LOCAL_CS["site grid",LOCAL_DATUM["site",32767],UNIT["metre",1],AXIS["Easting",EAST],AXIS["Northing",NORTH]]';
+  const engineering = 'ENGINEERINGCRS["Astra Minas Grid",ENGINEERINGDATUM["Astra Minas"],CS[Cartesian,2],AXIS["northing (X)",north,ORDER[1]],AXIS["westing (Y)",west,ORDER[2]],LENGTHUNIT["metre",1],ID["EPSG",5800]]';
+  const values = new Float32Array([1, 2, 3, 4]);
+  const transform = [1000, 10, 0, 2000, 0, -10];
+  for (const definition of [local, engineering]) {
+    const source = terrio.rasterFromArray(values, 2, 2, transform, definition);
+    try {
+      for (const format of ["GTiff", "COG"]) {
+        const back = terrio.open(source.toBytes("site.tif", {format}), "site.tif");
+        try {
+          assert.equal(back.info().crs?.wkt, definition);
+          assert.deepEqual([...back.transform], transform);
+          assert.deepEqual([...back.readBand(1)], [...values]);
+          assert.throws(() => back.toBytes("warped.tif", {tSrs: "EPSG:4326"}), /coordinate reference system/);
+          assert.deepEqual([...back.readBand(1)], [...values]);
+        } finally { back.free(); }
+      }
+    } finally { source.free(); }
+  }
+});
 test("TSV byte output uses tabs and preserves polygon commas", () => {
   const source = terrio.fromGeoJSON(SQUARES, "squares", "EPSG:4326");
   try {
