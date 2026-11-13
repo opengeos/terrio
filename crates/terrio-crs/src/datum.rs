@@ -623,6 +623,13 @@ impl Op {
     }
 }
 
+/// Whether steps cannot run for want of a grid they require: one that is not available, or whose
+/// download failed ([`Op::available`] and [`Op::network_failed`] together), as opposed to a point
+/// outside grids that are there.
+pub(crate) fn grids_missing(steps: &[Step]) -> bool {
+    steps.iter().flat_map(Step::grid_names).any(|(name, optional)| !optional && (!grid::available(&name) || grid::fetch_failed(&name)))
+}
+
 /// A point being transformed: longitude and latitude in radians, height in metres, and time
 /// (decimal year, `None` for none).
 #[derive(Debug, Clone, Copy, PartialEq)]

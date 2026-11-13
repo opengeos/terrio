@@ -149,6 +149,24 @@ impl SpatialRef {
         terrio_crs::SpatialRef::from_projjson(text).map(Into::into).map_err(Into::into)
     }
 
+    /// The PROJ string of the CRS as PROJ 9.8.1 writes it, `None` for a CRS PROJ has none for
+    /// (see the standalone engine's `SpatialRef::to_proj4`, which lists what it leaves out).
+    ///
+    /// ```no_run
+    /// use terrio::crs::SpatialRef;
+    ///
+    /// let crs = SpatialRef::from_epsg(2056)?;
+    /// match crs.to_proj4() {
+    ///     Some(proj) => println!("{proj}"),
+    ///     None => println!("no PROJ string"),
+    /// }
+    /// # Ok::<(), terrio::Error>(())
+    /// ```
+    pub fn to_proj4(&self) -> Option<String> {
+        initialize();
+        self.as_core().to_proj4()
+    }
+
     /// The CRS as PROJJSON v0.7 (see the standalone engine's `SpatialRef::to_projjson`).
     pub fn to_projjson(&self) -> Result<String> {
         initialize();
@@ -436,6 +454,22 @@ impl Transformer {
     pub fn transform(&self, x: f64, y: f64) -> Result<(f64, f64)> {
         self.0.transform(x, y).map_err(Into::into)
     }
+    /// Transform points in place, stopping at the first that fails (see
+    /// [`terrio_crs::Transformer::transform_slice`]).
+    pub fn transform_slice(&self, xy: &mut [(f64, f64)]) -> Result<()> {
+        self.0.transform_slice(xy).map_err(Into::into)
+    }
+    /// Transform points in place, setting those that fail to `(NaN, NaN)` as PROJ's
+    /// `proj_trans_generic` marks them, and return how many there were (see
+    /// [`terrio_crs::Transformer::transform_slice_or_nan`]).
+    pub fn transform_slice_or_nan(&self, xy: &mut [(f64, f64)]) -> Result<usize> {
+        self.0.transform_slice_or_nan(xy).map_err(Into::into)
+    }
+    /// The transformer of the other direction, with the same options, the coordinate epochs
+    /// swapped and Terrio's warning sink (see [`terrio_crs::Transformer::inverse`]).
+    pub fn inverse(&self) -> Result<Self> {
+        self.0.inverse().map(Self).map_err(Into::into)
+    }
     /// Transform an x/y/z coordinate.
     pub fn transform_3d(&self, x: f64, y: f64, z: f64) -> Result<(f64, f64, f64)> {
         self.0.transform_3d(x, y, z).map_err(Into::into)
@@ -452,6 +486,10 @@ impl Transformer {
     /// Transform a bounding box, densifying its edges.
     pub fn transform_bounds(&self, bounds: (f64, f64, f64, f64)) -> Result<(f64, f64, f64, f64)> {
         self.0.transform_bounds(bounds).map_err(Into::into)
+    }
+    /// Transform bounds with `densify` interior points per edge, including interior poles.
+    pub fn transform_bounds_densified(&self, bounds: (f64, f64, f64, f64), densify: usize) -> Result<(f64, f64, f64, f64)> {
+        self.0.transform_bounds_densified(bounds, densify).map_err(Into::into)
     }
     /// Emit new diagnostics on this thread through Terrio's warning sink.
     pub fn flush_warnings(&self) {

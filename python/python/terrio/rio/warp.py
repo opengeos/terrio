@@ -25,6 +25,7 @@ import numpy as np
 from affine import Affine
 
 from terrio import _terrio
+from terrio.errors import CRSError as TerrioCRSError
 from terrio.rio.crs import CRS
 from terrio.rio.dtypes import _gdal_typename
 from terrio.rio.enums import Resampling
@@ -109,17 +110,11 @@ def _transform_arrays(
         tuple: The transformed coordinates.
     """
     try:
-        return _terrio.transform_points(xs, ys, src, dst)
-    except Exception:
-        ox = np.full(len(xs), np.inf)
-        oy = np.full(len(ys), np.inf)
-        for i, (x, y) in enumerate(zip(xs, ys, strict=False)):
-            try:
-                a, b = _terrio.transform_points([x], [y], src, dst)
-                ox[i], oy[i] = a[0], b[0]
-            except Exception:
-                pass
-        return ox, oy
+        return _terrio.transform_points(xs, ys, src, dst, errcheck=False)
+    except TerrioCRSError:
+        # A batch setup failure affects every point. Preserve the existing infinite
+        # result without rebuilding the same failed operation once per coordinate.
+        return np.full(len(xs), np.inf), np.full(len(ys), np.inf)
 
 
 def transform(src_crs: Any, dst_crs: Any, xs: Any, ys: Any, zs: Any = None) -> Any:
@@ -357,7 +352,7 @@ def transform_bounds(
         bottom: The bottom bound.
         right: The right bound.
         top: The top bound.
-        densify_pts: Points added along each edge.
+        densify_pts: Points added along each edge, at most 65,536.
 
     Returns:
         tuple: `(left, bottom, right, top)` in the target CRS.
@@ -366,17 +361,10 @@ def transform_bounds(
         CRSError: If no point can be transformed.
     """
     src, dst = _crs_text(src_crs), _crs_text(dst_crs)
-    n = max(densify_pts, 0) + 2
-    t = np.linspace(0.0, 1.0, n)
-    xs_h = left + (right - left) * t
-    ys_v = bottom + (top - bottom) * t
-    xs = np.concatenate([xs_h, xs_h, np.full(n, left), np.full(n, right)])
-    ys = np.concatenate([np.full(n, bottom), np.full(n, top), ys_v, ys_v])
-    ox, oy = _transform_arrays(src, dst, xs, ys)
-    ok = np.isfinite(ox) & np.isfinite(oy)
-    if not ok.any():
-        raise CRSError("Unable to transform bounds")
-    return float(ox[ok].min()), float(oy[ok].min()), float(ox[ok].max()), float(oy[ok].max())
+    try:
+        return _terrio.transform_bounds(src, dst, (left, bottom, right, top), max(densify_pts, 0))
+    except TerrioCRSError as exc:
+        raise CRSError(str(exc)) from exc
 
 
 def _gcp_args(gcps: Any, kwargs: dict[str, Any]) -> dict[str, Any]:

@@ -295,7 +295,7 @@ terrio formats [--json]
 ## crs
 
 ```sh
-terrio crs CRS [--wkt] [--projjson]
+terrio crs CRS [--wkt] [--projjson | --proj4]
 terrio crs SRC --to DST [--s_coord_epoch YEAR] [--t_coord_epoch YEAR] X Y [X Y ...]
 echo "X Y [Z [T]]" | terrio crs SRC --to DST [--s_coord_epoch YEAR] [--t_coord_epoch YEAR]
 ```
@@ -306,6 +306,8 @@ year) use it for time-dependent transformations, and a point that cannot be tran
 [Coordinate Systems](crs.md#datum-shift-grids)). `--projjson` prints only the CRS as PROJJSON, so that
 `terrio crs CRS --projjson > crs.json` writes a PROJJSON file (see
 [Writing PROJJSON](crs.md#writing-projjson)); it cannot be combined with `--to` or `--wkt`.
+`--proj4` prints only the PROJ string, as `projinfo -o PROJ` writes it, which leaves out the
+datum transformation of an EPSG CRS (see [Writing PROJ strings](crs.md#writing-proj-strings)).
 
 ## list-crs
 
@@ -1105,11 +1107,26 @@ more than half a turn of longitude apart on the source grid and the source posit
 lies outside them. Any other footprint keeps its corners: a coarse pixel's, whose centre lies
 between them, and that of a pixel more than half a turn wide, whose corners lie less than half a
 turn apart, which takes the source between them.
+
+For an unrotated geographic source covering exactly one longitude turn, the stored grid's
+edges are periodic wherever its origin lies. Sources stored from 0° to 360° and from 180° W to
+180° E therefore sample the same geographic field, including warps within the source CRS.
+Point samples and interpolation neighbors wrap by the source's longitude period. Area methods
+and `sum` include both stored edges when a footprint crosses that cut, including a cut at 0°.
+This does not wrap latitude or extend a regional source beyond its right edge.
+Interpolation halos are periodic too. A coarse bilinear filter accumulates the weights of
+every periodic image inside its support; it does not clip the filter at the stored cut.
+This source-extension rule applies under both grid policies and can differ from GDAL's
+finite-edge clipping for coarse global filters.
+
 The window holds the footprints of its chunk unless a strongly curved
 transformation takes one past the points the window is sampled from: such a footprint is shortened,
 and its pixel can then differ with the chunks the warp splits the output grid into.
 With chunk-dependent sampling, the sampled source window can also omit one side of an
 antimeridian-crossing footprint; default stable sampling avoids that window-selection gap.
+With chunk-dependent sampling, the source window of a kernel other than `sum` also reaches a pole
+of the source's CRS that lies inside or beside its chunk, which the points sampled along the
+chunk's edges do not bound.
 For a source wider than one longitude turn, repeated longitudes are read at the single placement
 with the greatest overlap. If no single placement covers the footprint, the part beyond the
 other edge is omitted. Covering that remainder without counting repeated longitudes twice is
@@ -1267,6 +1284,13 @@ GDAL 3.13 changed warp kernel scales and the bilinear/cubic downsampling thresho
 `TERRIO_GDAL_COMPAT` (`3.12` or `3.13`), else `3.12`. To reproduce the corresponding
 GDAL chunk-dependent sampling, also pass `--grid-invariant false`, or set
 `TERRIO_WARP_GRID=GDAL`. An explicit `--grid-invariant true` overrides that setting.
+Terrio's chunk-dependent source windows of kernels other than `sum` also reach a pole of the
+source's CRS inside or beside their chunk, which the points sampled along the chunk's edges do not
+bound, so that a grid holding a pole is written up to it. Values in such a chunk can therefore
+differ from those of a window bounded by those points alone.
+Both kernel-version selectors apply Terrio's periodic global-source boundaries and the
+pole-window extension described above; these policies can differ from GDAL's finite-edge
+or edge-only window planning even with chunk-dependent sampling selected.
 Both policies retain lazy window/overview reads. Python's `warp` and `WarpedVRT`
 accept `grid_invariant=True|False`; JavaScript's `warp` accepts `gridInvariant`.
 
@@ -3964,11 +3988,12 @@ terrio ui --port 8080 --no-open
 Serves a page with a form for every command, generated from the
 [command catalog](#machine-readable-command-catalog), so it always matches this binary. Pick files
 with the built-in file browser, which lists the disk of the computer running terrio: type the start of
-a name to jump to it, and repeat a letter to step through the names that start with it. For the
-inputs that take `@FILE` lists and wildcards (those of `mosaic`, `warp`, `concat`, `raster-index` and
-others; see [Commands](#commands)), **Add matching files** adds every file of the listed folder that matches a pattern, such as `*.tif`, as one
-`folder/*.tif` line that the command expands when it runs; the browser shows how many files match.
-The page shows
+a name to jump to it, and repeat a letter to step through the names that start with it. On Windows,
+**Up** from the root of a drive or of a network share lists the drives. For the inputs that take
+`@FILE` lists and wildcards (those of `mosaic`, `warp`, `concat`, `raster-index` and others; see
+[Commands](#commands)), **Add matching files** adds every file of the listed folder that matches a
+pattern, such as `*.tif`, as one `folder/*.tif` line that the command expands when it runs; the
+browser shows how many files match. The page shows
 the equivalent command line, quoted for a POSIX shell, to copy into a script. Relative paths are
 taken from the directory `terrio ui` started in. **Cancel**, or closing the tab, stops a running command, which can leave a
 partial output file; Ctrl-C stops the server. This works through both the `terrio` binary and the
@@ -4109,7 +4134,7 @@ for one command and its descendants. Required dataset arguments may be omitted;
 metadata requests open no datasets or output files. The Python package supports
 identical requests with `python -m terrio`.
 
-The payload has `schema_version: "0.1.4"`, `unstable: true`, the program/version,
+The payload has `schema_version: "0.1.5"`, `unstable: true`, the program/version,
 and a recursive `command` object. Each command records its canonical name/path,
 aliases, description, arguments and subcommands. Arguments include flags and
 aliases, positional index, type, raw default tokens, choices, required status,

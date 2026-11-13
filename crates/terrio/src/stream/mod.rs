@@ -491,7 +491,7 @@ fn open_geojson(path: &str, stem: &str, batch: usize) -> Result<(Layer, Box<dyn 
         return Ok((l, Box::new(MemorySource { features: features.into_iter(), batch })));
     }
     let name = c.members.get("name").and_then(|n| n.as_str()).unwrap_or(stem).to_string();
-    let crs = c.members.get("crs").and_then(|c| c["properties"]["name"].as_str()).and_then(|n| crate::crs::SpatialRef::parse(n).ok());
+    let crs = geojson::read_crs_member(c.members.get("crs"), "GeoJSON")?;
     let layer = scan.geojson_layer(&name, crs);
     let decoder = geojson::FeatureDecoder::new(&layer, &scan);
     let collection = json::Collection::new(File::open(path)?)?;
@@ -673,9 +673,9 @@ impl FeatureSource for ShpSource {
 }
 
 fn open_shapefile(path: &str, options: &crate::VectorOpenOptions) -> Result<(Layer, Box<dyn FeatureSource>)> {
-    let base = std::path::Path::new(path).with_extension("");
-    let sidecar = |ext: &str| [ext.to_string(), ext.to_ascii_uppercase()].into_iter().map(|e| base.with_extension(e)).find(|p| p.exists());
-    let name = base.file_name().and_then(|s| s.to_str()).unwrap_or("layer");
+    let base = std::path::Path::new(path);
+    let sidecar = |ext: &str| shapefile::sidecar(base, ext);
+    let name = base.file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
     let mut shp = BufReader::with_capacity(1 << 20, File::open(path)?);
     let mut head = [0u8; 100];
     let n = read_full(&mut shp, &mut head)?;
@@ -1032,7 +1032,7 @@ impl FeatureWriter {
                 enc: geojson::SeqEncoder::new(&schema, &options.geojson)?,
             }),
             (true, VectorDriver::CSV, Some(p)) => {
-                let enc = csv::CsvEncoder::new(&schema, p, &options.csv)?;
+                let enc = csv::CsvEncoder::new(&schema, p, &csv::file_options(path, &options.csv))?;
                 let mut out = BufWriter::with_capacity(1 << 20, File::create(path)?);
                 out.write_all(enc.header().as_bytes())?;
                 Box::new(CsvSink { out, enc })
@@ -1489,9 +1489,12 @@ struct ShpSink {
 impl ShpSink {
     fn create(path: &str, layer: &Layer, profile: &LayerProfile) -> Result<Self> {
         let enc = shapefile::ShpEncoder::new(layer, profile)?;
-        let base = std::path::Path::new(path).with_extension("");
-        let open =
-            |ext: &str| -> Result<BufWriter<File>> { Ok(BufWriter::with_capacity(1 << 20, File::create(base.with_extension(ext))?)) };
+        let geometry_path = shapefile::output_path(path);
+        let base = geometry_path.as_path();
+        let open = |ext: &str| -> Result<BufWriter<File>> {
+            let component = if ext == "shp" { base.to_path_buf() } else { base.with_extension(ext) };
+            Ok(BufWriter::with_capacity(1 << 20, File::create(component)?))
+        };
         let (mut shp, mut shx, mut dbf) = (open("shp")?, open("shx")?, open("dbf")?);
         shp.write_all(&[0u8; 100])?;
         shx.write_all(&[0u8; 100])?;
@@ -1929,7 +1932,7 @@ pub fn can_convert_stream(src: &str, dst: &str, options: &ConvertOptions) -> boo
         && out.is_some_and(can_write_stream)
         && (input.is_some_and(can_read_stream) || pbf())
         && crate::vfs::Location::parse(src).is_local()
-        && !same_dataset(src, dst)
+        && !same_dataset(src, dst, output_driver(dst, options))
 }
 
 /// Whether `src` is an OpenStreetMap PBF file sorted by type then id.
@@ -1945,7 +1948,9 @@ fn osm_sorted(src: &str) -> bool {
 
 /// Whether writing `dst` would overwrite `src` (the same file, or the same shapefile through
 /// another of its files): such conversions read the input whole before writing.
-fn same_dataset(src: &str, dst: &str) -> bool {
+fn same_dataset(src: &str, dst: &str, output: VectorDriver) -> bool {
+    let path = if output == VectorDriver::Shapefile { shapefile::output_path(dst) } else { dst.into() };
+    let dst = path.to_string_lossy();
     let key = |p: &str| {
         let p = std::path::Path::new(p);
         let dir = p.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
@@ -1954,12 +1959,12 @@ fn same_dataset(src: &str, dst: &str) -> bool {
         Some((std::fs::canonicalize(dir).ok()?, name?.to_os_string(), shp))
     };
     // The same file under another name (a symbolic link, say).
-    if let (Ok(a), Ok(b)) = (std::fs::canonicalize(src), std::fs::canonicalize(dst))
+    if let (Ok(a), Ok(b)) = (std::fs::canonicalize(src), std::fs::canonicalize(dst.as_ref()))
         && a == b
     {
         return true;
     }
-    match (key(src), key(dst)) {
+    match (key(src), key(&dst)) {
         (Some((a, x, s)), Some((b, y, t))) => a == b && x == y && s == t,
         _ => false,
     }
@@ -2109,10 +2114,10 @@ fn one_layer_only(driver: VectorDriver) -> Error {
 /// output is created leaves what was there).
 fn remove_on_error(dst: &str, driver: VectorDriver, written: Result<()>) -> Result<()> {
     if written.is_err() {
-        let path = std::path::Path::new(dst);
-        let _ = std::fs::remove_file(path);
+        let path = if driver == VectorDriver::Shapefile { shapefile::output_path(dst) } else { dst.into() };
+        let _ = std::fs::remove_file(&path);
         if driver == VectorDriver::Shapefile {
-            for ext in ["shp", "shx", "dbf", "prj", "cpg"] {
+            for ext in ["shx", "dbf", "prj", "cpg"] {
                 let _ = std::fs::remove_file(path.with_extension(ext));
             }
         }
@@ -2136,7 +2141,7 @@ fn convert_osm(src: &str, dst: &str, options: &ConvertOptions) -> Option<Result<
             || VectorDriver::for_extension(src) != Some(VectorDriver::OSM)
             || !local
             || !can_write_stream(output_driver(dst, options))
-            || same_dataset(src, dst)
+            || same_dataset(src, dst, output_driver(dst, options))
         {
             return None;
         }

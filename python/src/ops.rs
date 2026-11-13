@@ -43,6 +43,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rasterize, m)?)?;
     m.add_function(wrap_pyfunction!(polygonize, m)?)?;
     m.add_function(wrap_pyfunction!(transform_points, m)?)?;
+    m.add_function(wrap_pyfunction!(transform_bounds, m)?)?;
     m.add_function(wrap_pyfunction!(set_grid_search_paths, m)?)?;
     m.add_function(wrap_pyfunction!(set_network_enabled, m)?)?;
     m.add_function(wrap_pyfunction!(list_crs, m)?)?;
@@ -977,6 +978,33 @@ fn polygonize(
     Ok(PyLayer::from(layer))
 }
 
+/// Transform bounds through the shared CRS implementation, including interior poles.
+///
+/// Args:
+///     src_crs: Source CRS definition.
+///     dst_crs: Target CRS definition.
+///     bounds: Source (left, bottom, right, top).
+///     densify_pts: Interior points per edge.
+///
+/// Returns:
+///     tuple: Target (left, bottom, right, top).
+///
+/// Raises:
+///     CRSError: If the CRSs or bounds cannot be transformed.
+#[pyfunction]
+#[pyo3(signature = (src_crs, dst_crs, bounds, densify_pts=21))]
+fn transform_bounds(
+    py: Python<'_>,
+    src_crs: &str,
+    dst_crs: &str,
+    bounds: (f64, f64, f64, f64),
+    densify_pts: usize,
+) -> PyResult<(f64, f64, f64, f64)> {
+    let src = SpatialRef::parse(src_crs).py()?;
+    let dst = SpatialRef::parse(dst_crs).py()?;
+    crate::with_warnings(py, || Transformer::new(&src, &dst)?.transform_bounds_densified(bounds, densify_pts))
+}
+
 /// Transforms coordinates from one CRS to another.
 ///
 /// Coordinates are in GIS order whatever the CRS's axis order: x (easting, longitude) first.
@@ -999,6 +1027,9 @@ fn polygonize(
 ///         (GDAL's ``-t_coord_epoch``).
 ///     promote_to_3d: Take the heights of 2D CRSs as ellipsoidal heights, so that datum
 ///         transformations change them, as GDAL does after ``PromoteTo3D``.
+///     errcheck: Raise on a failed point (default True). If False, set every output
+///         ordinate of that point to positive infinity and continue with the same
+///         transformer. Invalid CRS definitions and array lengths still raise.
 ///
 /// Returns:
 ///     tuple[numpy.ndarray, ...]: The transformed x and y coordinates, and heights when ``zs`` is
@@ -1007,7 +1038,7 @@ fn polygonize(
 /// Raises:
 ///     CRSError: If a CRS cannot be parsed or a point cannot be transformed.
 #[pyfunction]
-#[pyo3(signature = (xs, ys, src_crs, dst_crs, zs=None, *, s_coord_epoch=None, t_coord_epoch=None, allow_ballpark=None, only_best=false, promote_to_3d=false))]
+#[pyo3(signature = (xs, ys, src_crs, dst_crs, zs=None, *, s_coord_epoch=None, t_coord_epoch=None, allow_ballpark=None, only_best=false, promote_to_3d=false, errcheck=true))]
 #[allow(clippy::too_many_arguments)]
 fn transform_points<'py>(
     py: Python<'py>,
@@ -1021,6 +1052,7 @@ fn transform_points<'py>(
     allow_ballpark: Option<bool>,
     only_best: bool,
     promote_to_3d: bool,
+    errcheck: bool,
 ) -> PyResult<Bound<'py, PyTuple>> {
     let np = py.import("numpy")?;
     let coords = |v: &Bound<'py, PyAny>| -> PyResult<Vec<f64>> {
@@ -1052,18 +1084,19 @@ fn transform_points<'py>(
         let mut oy = Vec::with_capacity(ys.len());
         let mut oz = Vec::with_capacity(zs.as_ref().map_or(0, Vec::len));
         for (i, (x, y)) in xs.iter().zip(&ys).enumerate() {
-            match &zs {
-                Some(z) => {
-                    let (a, b, c) = t.transform_3d(*x, *y, z[i])?;
-                    ox.push(a);
-                    oy.push(b);
-                    oz.push(c);
-                }
-                None => {
-                    let (a, b) = t.transform(*x, *y)?;
-                    ox.push(a);
-                    oy.push(b);
-                }
+            let result = match &zs {
+                Some(z) => t.transform_3d(*x, *y, z[i]),
+                None => t.transform(*x, *y).map(|(a, b)| (a, b, 0.0)),
+            };
+            let (a, b, c) = match result {
+                Ok(point) => point,
+                Err(error) if errcheck => return Err(error),
+                Err(_) => (f64::INFINITY, f64::INFINITY, f64::INFINITY),
+            };
+            ox.push(a);
+            oy.push(b);
+            if zs.is_some() {
+                oz.push(c);
             }
         }
         Ok((ox, oy, oz))
@@ -1863,6 +1896,7 @@ fn _window_converts(src: &str, work: &str) -> bool {
 #[pyclass(module = "terrio", name = "RegionWarp", frozen)]
 pub struct PyRegionWarp {
     inner: RegionWarp,
+    bands: usize,
 }
 
 #[pymethods]
@@ -1894,6 +1928,7 @@ impl PyRegionWarp {
         if !(sum_scale.is_finite() && sum_scale > 0.0) {
             return Err(invalid(format!("sum_scale must be a positive number, not {sum_scale}")));
         }
+        let bands = src_nodata.len();
         let kernel_version = terrio::ops::warp::KernelVersion::parse_or_configured(kernel_version).py()?;
         let grid_invariant = grid_invariant.unwrap_or_else(|| WarpOptions::default().grid_invariant);
         let (src_srs, dst_srs) = (SpatialRef::parse(src_crs).py()?, SpatialRef::parse(dst_crs).py()?);
@@ -1917,6 +1952,7 @@ impl PyRegionWarp {
             )
             .py()?;
             return Ok(Self {
+                bands,
                 inner: inner.with_kernel_version(kernel_version).with_grid_invariance(grid_invariant).with_sum_scale(sum_scale),
             });
         }
@@ -1953,7 +1989,7 @@ impl PyRegionWarp {
             ),
         }
         .py()?;
-        Ok(Self { inner: inner.with_kernel_version(kernel_version).with_grid_invariance(grid_invariant).with_sum_scale(sum_scale) })
+        Ok(Self { bands, inner: inner.with_kernel_version(kernel_version).with_grid_invariance(grid_invariant).with_sum_scale(sum_scale) })
     }
 
     /// The source window `(x, y, width, height)` a region `(x, y, width, height)` of the grid
@@ -2014,7 +2050,7 @@ impl PyRegionWarp {
         crate::pass_on_http_retries(py);
         crate::pass_on_nodata_warnings(py);
         let (out, written) = result?.py()?;
-        region_arrays(py, region, out, written)
+        region_arrays(py, region, self.bands, out, written)
     }
 
     /// Reads a region's source window from a `Raster` and warps the region from it, the GIL
@@ -2064,6 +2100,11 @@ impl PyRegionWarp {
         if alpha.is_some_and(|a| a == 0 || a > bands.len()) {
             return Err(invalid(format!("alpha must be one of the {} bands read", bands.len())));
         }
+        if region.2 == 0 || region.3 == 0 {
+            let empty = RasterData::U8(Vec::new());
+            let (out, written) = py.detach_result(|| self.inner.warp(region, window, &empty, None, init, padded_scale)).py()?;
+            return region_arrays(py, region, self.bands, out, written);
+        }
         let (x, y, w, h) = window;
         let win = Window::new(x, y, w, h);
         // The window and the per-dataset mask, read with the `Raster` borrowed.
@@ -2100,7 +2141,7 @@ impl PyRegionWarp {
                 inner.warp(region, window, &data, mask.as_deref(), init, padded_scale)
             })
             .py()?;
-        region_arrays(py, region, out, written)
+        region_arrays(py, region, self.bands, out, written)
     }
 }
 
@@ -2109,11 +2150,11 @@ impl PyRegionWarp {
 fn region_arrays<'py>(
     py: Python<'py>,
     region: (usize, usize, usize, usize),
+    bands: usize,
     out: RasterData,
     written: Vec<bool>,
 ) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
     let (w, h) = (region.2, region.3);
-    let bands = out.len() / (w * h).max(1);
     let arr = crate::raster::to_numpy(py, out, &[bands, h, w])?;
     let written = PyArray1::from_vec(py, written).reshape([h, w])?.into_any();
     Ok((arr, written))

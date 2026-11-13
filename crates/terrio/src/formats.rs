@@ -1672,7 +1672,7 @@ mod allow_list_tests {
     fn a_narrowed_option_follows_work_handed_to_another_thread() {
         let (here, there) = crate::config::with_options(&[(ALLOWED_DRIVERS_OPTION, "GTiff,PNG")], || {
             crate::config::with_options(&[(ALLOWED_DRIVERS_OPTION, "PNG,AAIGrid")], || {
-                let options = crate::config::thread_options();
+                let options = crate::config::ThreadOptions::capture();
                 let there = std::thread::spawn(move || crate::config::with_thread_options(options, || allowed_drivers(None)));
                 (allowed_drivers(None), there.join().unwrap())
             })

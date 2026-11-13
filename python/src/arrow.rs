@@ -201,27 +201,69 @@ pub(crate) fn write_options(
     })
 }
 
-/// Converts a layer to an `ArrowTable`, validating retained definitions for Python consumers.
-pub(crate) fn layer_to_table(py: Python<'_>, layer: &terrio::Layer, options: &ArrowWriteOptions) -> PyResult<PyArrowTable> {
+/// Validates a layer's CRS for Python consumers, retaining the original schema when usable.
+pub(crate) fn validated_schema(py: Python<'_>, layer: &terrio::Layer, schema: &Arc<Schema>) -> PyResult<Arc<Schema>> {
     let crs = crate::crs_string(&SpatialRef::from_layer(layer));
     let accepted = if crs.is_some() { crate::vector::dataframe_crs(py, crs.as_deref(), layer.crs_wkt(), false)? } else { None };
-    let mut table = py.detach_result(|| terrio::arrow::layer_to_arrow(layer, options)).py()?;
-    if accepted != crs {
-        // Change only schema metadata: retain the buffers and the original layer's definition.
-        let replacement = accepted.map(|value| serde_json::json!({"crs": value}).to_string()).unwrap_or_else(|| "{}".into());
-        let fields: Vec<_> = table
-            .schema
-            .fields()
-            .iter()
-            .map(|field| {
-                let mut metadata = field.metadata().clone();
-                if metadata.get("ARROW:extension:name").is_some_and(|name| name.starts_with("geoarrow.")) {
-                    metadata.insert("ARROW:extension:metadata".into(), replacement.clone());
+    if accepted == crs {
+        return Ok(schema.clone());
+    }
+    // Change only schema metadata: retain the buffers and the original layer's definition.
+    let replacement = accepted.map(|value| serde_json::json!({"crs": value}).to_string()).unwrap_or_else(|| "{}".into());
+    let fields: Vec<_> = schema
+        .fields()
+        .iter()
+        .map(|field| {
+            let mut metadata = field.metadata().clone();
+            if metadata.get("ARROW:extension:name").is_some_and(|name| name.starts_with("geoarrow.")) {
+                metadata.insert("ARROW:extension:metadata".into(), replacement.clone());
+            }
+            Arc::new(field.as_ref().clone().with_metadata(metadata))
+        })
+        .collect();
+    Ok(Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone())))
+}
+
+/// Validates every GeoParquet geometry field's stored CRS without changing array buffers.
+pub(crate) fn validated_geoparquet_schema(py: Python<'_>, schema: &Arc<Schema>) -> PyResult<Arc<Schema>> {
+    let mut changed = false;
+    let mut fields = Vec::with_capacity(schema.fields().len());
+    for field in schema.fields() {
+        let metadata = field.metadata();
+        let replacement = if metadata.get("ARROW:extension:name").is_some_and(|name| name.starts_with("geoarrow.")) {
+            let mut value: serde_json::Value =
+                metadata.get("ARROW:extension:metadata").and_then(|text| serde_json::from_str(text).ok()).unwrap_or_default();
+            if let Some(crs) = value.get("crs").filter(|crs| !crs.is_null()) {
+                let text = crs.as_str().map(str::to_owned).unwrap_or_else(|| crs.to_string());
+                if crate::vector::dataframe_crs(py, Some(&text), None, false)?.is_none() {
+                    value.as_object_mut().unwrap().remove("crs");
+                    Some(value.to_string())
+                } else {
+                    None
                 }
-                Arc::new(field.as_ref().clone().with_metadata(metadata))
-            })
-            .collect();
-        let schema = Arc::new(Schema::new_with_metadata(fields, table.schema.metadata().clone()));
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some(replacement) = replacement {
+            changed = true;
+            let mut metadata = metadata.clone();
+            metadata.insert("ARROW:extension:metadata".into(), replacement);
+            fields.push(Arc::new(field.as_ref().clone().with_metadata(metadata)));
+        } else {
+            fields.push(field.clone());
+        }
+    }
+    Ok(if changed { Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone())) } else { schema.clone() })
+}
+
+/// Converts a layer to an `ArrowTable`, validating retained definitions for Python consumers.
+pub(crate) fn layer_to_table(py: Python<'_>, layer: &terrio::Layer, options: &ArrowWriteOptions) -> PyResult<PyArrowTable> {
+    let mut table = py.detach_result(|| terrio::arrow::layer_to_arrow(layer, options)).py()?;
+    let schema = validated_schema(py, layer, &table.schema)?;
+    if !Arc::ptr_eq(&schema, &table.schema) {
         table.batches = table
             .batches
             .iter()

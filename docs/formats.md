@@ -47,7 +47,12 @@ PNG, JPEG and WebP files are written with a world file (`.wld`) and the CRS in a
 sidecar. JPEG files are written as GDAL's JPEG driver writes them: one band as grayscale, three as
 YCbCr with 4:2:0 chroma subsampling (each 2 x 2 block's chroma averaged, as libjpeg averages it),
 quantized at the `QUALITY` creation option (1 to 100, default 75) as libjpeg scales its tables,
-with optimized Huffman tables. Other data types are rounded and saturated to Byte; GDAL's 4-band
+with optimized Huffman tables. JPEG `QUALITY` accepts a complete finite number, allowing
+surrounding whitespace and scientific notation. Values outside 1 to 100 and malformed text
+are refused; valid fractional values are truncated for the integer encoder. The same validation
+applies to MBTiles/PMTiles `QUALITY`. GeoTIFF/COG JPEG `QUALITY` and `JPEG_QUALITY`
+retain their integer-only syntax: decimal and exponent spellings are refused there.
+Other data types are rounded and saturated to Byte; GDAL's 4-band
 (CMYK) and 12-bit JPEGs are not written. WebP files hold 3 (RGB) or 4 (RGBA) Byte bands of at most
 16383 x 16383 pixels, as GDAL's WEBP driver requires. With no lossy options, files are
 lossless, every sample kept, including RGB under fully transparent pixels. `LOSSLESS=NO`
@@ -634,6 +639,16 @@ terrio convert 'STACTA:"https://example.com/pyramid/stacta.json":bands' preview.
 | MBTiles | MBTiles vector tiles (MVT) | ✓ | ✓ | mbtiles |
 | MVT | Mapbox Vector Tiles: a tile, or a directory of tiles | ✓ | ✓ | mvt, z/x/y.pbf |
 
+GeoJSON writing keeps coordinates in the layer's CRS by default and names a
+registered CRS in a GeoJSON 2008 `crs` member (EPSG, ESRI and IAU_2015). WGS 84
+needs no member. A retained definition without a usable authority code, such as
+a custom projection or engineering grid, is refused instead of silently writing
+it as WGS 84. Reproject with `Layer.to_crs("EPSG:4326")` or CLI
+`--lco RFC7946=YES` when a transformation exists, or choose a format that stores
+CRS definitions, such as GeoPackage. RFC 7946 output reprojects to WGS 84 and
+omits the `crs` member. The pyogrio facade uses the same naming/refusal policy
+and retains its explicit OGC CRS84 spelling for WGS 84.
+
 A local vector file whose name points to no driver (`data`, `data.txt`, `data.xml`) is identified
 by its first 16 KiB. A JSON root `type` of `FeatureCollection`, `Feature` or a geometry type is
 read as GeoJSON, and an XML root element `FeatureCollection` as GML, as a remote response under
@@ -1079,6 +1094,11 @@ layers, and shapefile field names are truncated and made unique as `ogr2ogr` doe
 files are written with a `crs` member naming their CRS, which GDAL reads (it assumes none
 otherwise), and a CSV file's CRS is read from a `.prj` file next to it, as GDAL's CSV driver
 reads it.
+
+CSV/TSV writers write each geometry as WKT in a leading `WKT` column by default.
+A `.tsv` filename selects tab separators, including byte exports; `.csv` defaults
+to commas. An explicit CSV `SEPARATOR` option overrides the filename on Rust and
+CLI writes (`--lco SEPARATOR=COMMA|SEMICOLON|TAB|PIPE`).
 
 - **XLSX** workbooks are read and written without GDAL, in WebAssembly too, as GDAL's XLSX driver
   does: a layer per worksheet, feature ids that are row numbers, and the open options `HEADERS`

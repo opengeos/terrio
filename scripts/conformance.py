@@ -66,6 +66,9 @@ Suites:
     compound-crs      compound EPSG URNs and GML XYZ against GDAL/OGR
     crs-list          ``terrio list-crs`` vs GDAL's GetCRSInfoListFromDatabase, field by field, for
                       the EPSG, ESRI and IAU_2015 CRSs (compare_crs_list_with_gdal.py)
+    transform-bounds  polar and regional bounding boxes vs GDAL via rasterio
+    geojson-crs       named GeoJSON CRS and real projected boundaries read by GDAL
+    transform-batches  mixed-validity Python batches and Natural Earth points vs GDAL
 
 Usage:
     python scripts/conformance.py ../terrio-data [--output docs/conformance.md] [--json FILE]
@@ -122,6 +125,7 @@ GDAL_FREE_SUITES = frozenset(
         "grib",
         "hecras",
         "jp2-writer",
+        "longitude-period",
         "pointclouds",
         "pyogrio-buffers",
         "vsi",
@@ -634,10 +638,11 @@ def suite_vector_byte_packaging(ctx):
         ctx: Conformance run context.
 
     Returns:
-        Suite: Three document/archive comparisons.
+        Suite: Document/archive and MIF header comparisons.
     """
     suite = Suite("vector-byte-packaging", "Vector byte packaging", "GDAL/OGR",
-                  "16 Natural Earth populated places; feature count, scalar attributes, archive members and CRS exact; coordinates within 1e-6 degrees for MapInfo's grid.")
+                  "16 Natural Earth populated places; feature count, scalar attributes, archive members and CRS exact; coordinates within 1e-6 degrees for MapInfo's grid. "
+                  "Explicit MIF driver identification refuses wrong-format bytes and retains valid empty schemas.")
     missing = missing_modules("terrio", "osgeo")
     if missing:
         suite.skipped = "needs the Python modules " + ", ".join(missing)
@@ -655,7 +660,10 @@ def suite_vector_byte_packaging(ctx):
         status = {"identical": IDENTICAL, "within tolerance": TOLERANCE,
                   "not compared": NOT_COMPARED}.get(result["status"], DIFFERS)
         suite.cases.append(Case("Vector bytes", result["name"], status, result["detail"]))
-    if code and not any(case.status == DIFFERS for case in suite.cases):
+    expected = ["places.gml", "places.mif.zip", "places.tab.zip", "MIF header recognition"]
+    if sorted(result["name"] for result in results) != sorted(expected):
+        suite.error = "incomplete vector byte packaging comparisons"
+    elif code and not any(case.status == DIFFERS for case in suite.cases):
         suite.error = tail(err or out) or f"exit {code}"
     return suite
 
@@ -1062,6 +1070,38 @@ def suite_benchmark_compat(ctx):
         "WebP lossless pixels/masks and JPEG XL Byte/UInt16 layouts roundtrip exactly; "
         "lossy WebP quality must change valid decoded output, with no cross-encoder pixel equality claim.", 1,
     )
+
+
+def suite_longitude_period(ctx):
+    """Compare real global country coverage across stored longitude ranges.
+
+    Args:
+        ctx: Conformance execution context.
+
+    Returns:
+        Suite: Six required real-data comparisons with explicit GDAL policy scope.
+    """
+    suite = Suite("longitude-period", "Periodic geographic storage", "GDAL via rasterio",
+                  "Natural Earth country coverage stored from zero and minus 180 degrees: "
+                  "each grid policy's two storage layouts agree within 1e-8 for nearest, bilinear, average and sum. "
+                  "Nearest, average and chunk-dependent bilinear also match GDAL within 1e-6. "
+                  "Stable bilinear uses local scales; exact sum preserves the source-area "
+                  "total but can distribute it differently from GDAL among output rows. "
+                  "Three polar meridian samples of real country coverage match GDAL within 1e-8 "
+                  "for bilinear and sum under both policies and storage layouts.")
+    missing = missing_modules("terrio", "pytest", "numpy", "rasterio")
+    if missing:
+        suite.skipped = "needs " + ", ".join(missing)
+        return suite
+    import rasterio
+    suite.reference = f"GDAL {rasterio.__gdal_version__} via rasterio {rasterio.__version__}"
+    complete, detail = _pytest_module_conformance(
+        ctx, "test_warp_longitude_period.py", selection="real_world_field_storage_equivalence", expected_count=4)
+    suite.cases.append(Case("Global rasters", "Natural Earth countries", TOLERANCE if complete else DIFFERS, detail))
+    complete, detail = _pytest_module_conformance(
+        ctx, "test_warp_meridian_footprints.py", selection="real_country_coverage", expected_count=2)
+    suite.cases.append(Case("Polar meridian footprints", "Natural Earth countries", TOLERANCE if complete else DIFFERS, detail))
+    return suite
 
 
 def suite_warp_policy(ctx):
@@ -2034,16 +2074,18 @@ def suite_compound_crs(ctx):
 
 def suite_wkt_keywords(ctx):
     """Engineering and vertical WKT roots through native bindings and CLI."""
-    suite = Suite("wkt-keywords", "Engineering and vertical WKT keywords", "GDAL 3.13.3",
+    suite = Suite("wkt-keywords", "Engineering and vertical WKT keywords", "GDAL/OGR",
                   "Engineering/vertical definitions: exact root authority and CRS kind, "
-                  "CLI WKT retention and unchanged real USGS elevation pixels, nodata and affine. "
-                  "This checks metadata parsing, not engineering-to-Earth transformations.")
+                  "CLI and GTiff/COG WKT retention and unchanged real USGS elevation pixels, type, nodata and affine. "
+                  "GDAL reads equivalent output CRSs; engineering-to-Earth warps are refused.")
     if missing_modules("terrio", "osgeo", "numpy"):
         suite.skipped = "needs current Python bindings, GDAL and NumPy"
         return suite
     if not (Path(ctx.data) / "usgs_dem.tif").exists():
         suite.skipped = "usgs_dem.tif is missing (scripts/fetch_test_data.sh)"
         return suite
+    from osgeo import gdal
+    suite.reference = f"GDAL {gdal.VersionInfo('RELEASE_NAME')}"
     code, out, err = run([sys.executable, str(SCRIPTS / "compare_wkt_keywords_with_gdal.py"),
                           ctx.data, "--terrio", ctx.terrio, "--json"])
     try:
@@ -2055,7 +2097,8 @@ def suite_wkt_keywords(ctx):
         status = IDENTICAL if result["status"] == "identical" else DIFFERS
         suite.cases.append(Case("WKT keywords", result["name"], status, result["detail"]))
     fixture = SCRIPTS.parent / "crates/terrio-crs/tests/data/wkt_keywords_reference.json"
-    expected_names = [case["name"] for case in json.loads(fixture.read_text())["cases"]]
+    cases = json.loads(fixture.read_text())["cases"]
+    expected_names = [case["name"] for case in cases] + [case["name"] + "-root-id" for case in cases if case["local"]]
     if sorted(result["name"] for result in results) != sorted(expected_names) or (code and not any(c.status == DIFFERS for c in suite.cases)):
         suite.error = tail(err or out) or "incomplete WKT keyword comparisons"
     return suite
@@ -2291,6 +2334,117 @@ def suite_projjson_export(ctx):
         suite.cases.append(Case(case["group"], case["name"], case["status"], case["detail"]))
     if code and not any(c.status == DIFFERS for c in suite.cases):
         suite.error = tail(err or out)
+    return suite
+
+
+def suite_tiff_block_tags(ctx):
+    """Compare TIFF block addresses with file tables and GDAL.
+
+    Args:
+        ctx: Conformance execution context.
+
+    Returns:
+        Suite: Exact block offsets and sizes, with measured remote-read bounds.
+    """
+    suite = Suite("tiff-block-tags", "TIFF block metadata", "GDAL via rasterio",
+                  "Classic TIFF and BigTIFF tiles/strips, planar/interleaved bands, "
+                  "complex samples, internal/external overviews and real Landsat storage: "
+                  "offsets and sizes match exactly. HTTP COG queries transfer less than "
+                  "one quarter of the file and repeated queries send no requests.")
+    missing = missing_modules("terrio", "pytest", "numpy", "rasterio", "osgeo")
+    if missing:
+        suite.skipped = "needs " + ", ".join(missing)
+        return suite
+    import rasterio
+    suite.reference = f"GDAL {rasterio.__gdal_version__} via rasterio {rasterio.__version__}"
+    complete, detail = _pytest_module_conformance(ctx, "test_rio_block_tags.py", expected_count=15)
+    suite.cases.append(Case("TIFF", "stored block addresses", IDENTICAL if complete else DIFFERS, detail))
+    return suite
+
+
+def suite_geojson_crs(ctx):
+    """Compare GeoJSON CRS names and projected boundary coordinates with GDAL.
+
+    Args:
+        ctx: Conformance execution context.
+
+    Returns:
+        Suite: Eight real-data comparisons, or a prerequisite skip.
+    """
+    suite = Suite("geojson-crs", "GeoJSON CRS names", "GDAL/OGR",
+                  "Real US boundaries projected by GDAL to EPSG:32615 and ESRI:102003, "
+                  "written through Layer, bytes, convert and pyogrio. CRS authority/code, "
+                  "feature count and scalar attributes exact; coordinates within 1e-7 metres. "
+                  "Unnamed-CRS refusal is Terrio policy, not a GDAL equivalence claim.")
+    missing = missing_modules("terrio", "pytest", "osgeo", "shapely", "numpy", "geopandas")
+    if missing:
+        suite.skipped = "needs " + ", ".join(missing)
+        return suite
+    if not (Path(ctx.data) / "countries.gpkg").exists():
+        suite.error = "needs countries.gpkg from scripts/fetch_test_data.sh"
+        return suite
+    from osgeo import gdal
+    suite.reference = f"GDAL {gdal.VersionInfo('RELEASE_NAME')}"
+    complete, detail = _pytest_module_conformance(
+        ctx, "test_geojson_write_crs.py", selection="matches_gdal", expected_count=8)
+    suite.cases.append(Case("GeoJSON", "projected US boundaries", TOLERANCE if complete else DIFFERS, detail))
+    return suite
+
+
+def suite_transform_batches(ctx):
+    """Check single-call point failures and successful real coordinates against GDAL.
+
+    Args:
+        ctx: Conformance execution context.
+
+    Returns:
+        Suite: Batch policy regressions and real point comparisons within 1e-7 metres.
+    """
+    suite = Suite("transform-batches", "Mixed-validity coordinate batches", "GDAL via rasterio",
+                  "22 Python checks: one native call for mixed-validity coordinate/geometry batches, "
+                  "strict native defaults, optional infinite failed ordinates and empty/setup controls. "
+                  "Two sets of 1,000 Natural Earth populated places retain successful Mercator "
+                  "coordinates within 1e-7 metres of GDAL after inserting one NaN. "
+                  "Failed points follow Terrio's existing infinity policy; rasterio raises on these batches. "
+                  "Timing is measured separately, not asserted in conformance.")
+    missing = missing_modules("terrio", "pytest", "numpy", "rasterio", "osgeo")
+    if missing:
+        suite.skipped = "needs " + ", ".join(missing)
+        return suite
+    if not (Path(ctx.data) / "ne_places/ne_10m_populated_places_simple.shp").exists():
+        suite.skipped = "needs Natural Earth populated places"
+        return suite
+    import rasterio
+    suite.reference = f"GDAL {rasterio.__gdal_version__} / PROJ {rasterio.__proj_version__} via rasterio {rasterio.__version__}"
+    complete, detail = _pytest_module_conformance(ctx, "test_rio_transform_batch.py", expected_count=22)
+    suite.cases.append(Case("Coordinate batches", "failure policy and real places", TOLERANCE if complete else DIFFERS, detail))
+    return suite
+
+
+def suite_transform_bounds(ctx):
+    """Compare polar and regional transformed bounds with live GDAL.
+
+    Args:
+        ctx: Conformance execution context.
+
+    Returns:
+        Suite: Bounds comparisons within 1e-8 target units, or a prerequisite skip.
+    """
+    suite = Suite("transform-bounds", "Transformed bounds", "GDAL via rasterio",
+                  "Four polar stereographic CRSs and the northern/southern NSIDC 25 km grid "
+                  "extents, EPSG:4326 and OGC:CRS84 targets, and four regional controls. "
+                  "48 comparisons at 2, 21 and 40 interior edge points: pole and full longitude "
+                  "limits exact, remaining bounds within 1e-8 target units. "
+                  "Wrapped antimeridian bounds are outside this suite's scope.")
+    missing = missing_modules("terrio", "pytest", "numpy", "rasterio")
+    if missing:
+        suite.skipped = "needs " + ", ".join(missing)
+        return suite
+    import rasterio
+    suite.reference = f"GDAL {rasterio.__gdal_version__} via rasterio {rasterio.__version__}"
+    complete, detail = _pytest_module_conformance(
+        ctx, "test_transform_bounds_poles.py", selection="match_gdal", expected_count=48)
+    suite.cases.append(Case("Bounds", "polar and regional bounds", TOLERANCE if complete else DIFFERS, detail))
     return suite
 
 
@@ -3773,15 +3927,28 @@ def suite_complex_writes(ctx):
     return suite
 
 
-def _pytest_module_conformance(ctx, filename):
-    """Require the complete, unfiltered test module and its successful JUnit report."""
+def _pytest_module_conformance(ctx, filename, *, selection=None, expected_count=None):
+    """Require every intended comparison and its successful JUnit report.
+
+    Args:
+        ctx: Conformance context with a data directory.
+        filename: Test module under python/tests.
+        selection: Optional explicit pytest keyword expression.
+        expected_count: Required number of comparisons, when known.
+
+    Returns:
+        tuple: Whether all comparisons passed, and a report detail string.
+    """
     command = [sys.executable, "-m", "pytest", "-o", "addopts=", "-q",
                str(ROOT / "python/tests" / filename)]
+    if selection is not None:
+        command += ["-k", selection]
     env = {"TERRIO_TEST_DATA": os.path.abspath(ctx.data), "PYTEST_ADDOPTS": ""}
     code, collected, err = run(command + ["--collect-only"], env)
     expected = sum("::" in line and Path(line.split("::", 1)[0]).name == filename
                    for line in collected.splitlines())
-    if code or not expected or "deselected" in collected:
+    if (code or not expected or (selection is None and "deselected" in collected)
+            or (expected_count is not None and expected != expected_count)):
         return False, "Could not collect the complete test module. " + tail(err or collected)
     with tempfile.TemporaryDirectory(prefix="terrio-pytest-conformance-") as directory:
         report = Path(directory) / "results.xml"
@@ -3795,7 +3962,7 @@ def _pytest_module_conformance(ctx, filename):
         except (OSError, ET.ParseError) as error:
             complete = False
             detail = f"Pytest report unavailable: {error}. "
-    return code == 0 and complete and "deselected" not in out, detail + tail(err or out)
+    return code == 0 and complete and (selection is not None or "deselected" not in out), detail + tail(err or out)
 
 
 def suite_jp2_writer(ctx):
@@ -3824,6 +3991,7 @@ def suite_webp_writer(ctx):
     s = Suite("webp-writer", "WebP creation options", reference,
               "Default/explicit lossless pixels are exact; lossy quality changes bytes and pixels, "
               "with exact alpha and independent GDAL decoding, including real Landsat RGB. "
+              "Malformed QUALITY is refused rather than parsed as zero, a deliberate difference from GDAL. "
               "Lossy encoder bytes, size and PSNR are not compared with libwebp.")
     missing = missing_modules("rasterio", "pytest", "terrio", "numpy")
     if missing:
@@ -3871,6 +4039,7 @@ SUITES = OrderedDict(
         ("overviews", suite_overviews),
         ("packed-tiff", suite_packed_tiff),
         ("warp-grid", suite_warp_grid),
+        ("longitude-period", suite_longitude_period),
         ("sum-overviews", suite_sum_overviews),
         ("translate-overviews", suite_translate_overviews),
         ("raster-manage", suite_raster_manage),
@@ -3937,6 +4106,10 @@ SUITES = OrderedDict(
         ("hecras", suite_hecras),
         ("crs", suite_crs),
         ("crs-parameters", suite_crs_parameters),
+        ("transform-batches", suite_transform_batches),
+        ("transform-bounds", suite_transform_bounds),
+        ("tiff-block-tags", suite_tiff_block_tags),
+        ("geojson-crs", suite_geojson_crs),
         ("geocentric", suite_geocentric),
         ("perspective", suite_perspective),
         ("omerc-two-point", suite_omerc_two_point),

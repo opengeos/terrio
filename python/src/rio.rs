@@ -21,6 +21,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(proj_boolean_parameters, m)?)?;
     m.add_function(wrap_pyfunction!(crs_projjson, m)?)?;
     m.add_function(wrap_pyfunction!(crs_to_projjson, m)?)?;
+    m.add_function(wrap_pyfunction!(crs_to_proj4, m)?)?;
     m.add_function(wrap_pyfunction!(suggested_grid, m)?)?;
     m.add_function(wrap_pyfunction!(warped_vrt_type, m)?)?;
     m.add_function(wrap_pyfunction!(gcp_transform, m)?)?;
@@ -356,6 +357,20 @@ fn crs_projjson(crs: &str, database: bool) -> PyResult<String> {
 #[pyfunction]
 fn crs_to_projjson(crs: &str) -> PyResult<String> {
     SpatialRef::parse(crs).and_then(|s| s.to_projjson()).py()
+}
+
+/// The PROJ string of a CRS as PROJ 9.8.1 writes it (`projinfo -o PROJ`, pyproj's
+/// `CRS.to_proj4()`). Like PROJ's, it leaves out the datum transformation of an EPSG CRS, the
+/// angular unit of a geographic CRS and most axis orders: keep the code or WKT to keep the CRS.
+///
+/// Returns:
+///     str | None: The PROJ string, or None for a CRS PROJ has none for (an engineering CRS).
+///
+/// Raises:
+///     CRSError: If the CRS cannot be parsed.
+#[pyfunction]
+fn crs_to_proj4(crs: &str) -> PyResult<Option<String>> {
+    SpatialRef::parse(crs).map(|s| s.to_proj4()).py()
 }
 
 /// The output grid GDAL suggests for a raster reprojected to another CRS

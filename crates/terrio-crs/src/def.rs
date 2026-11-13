@@ -200,6 +200,20 @@ impl Def {
     /// The definition of a CRS: from the EPSG (or ESRI) table when it has a code there, else
     /// from its PROJ string or WKT.
     pub fn new(s: &SpatialRef) -> Result<Self> {
+        // A retained engineering definition must not become an Earth CRS just because
+        // its root carries a registered identifier. Keep explicit PROJ extensions handled
+        // by the WKT path, before considering the authority registry.
+        if let Some(wkt) = &s.wkt {
+            let root = wkt.split(['[', '(']).next().unwrap_or_default().trim();
+            if ["LOCAL_CS", "ENGCRS", "ENGINEERINGCRS"].iter().any(|key| root.eq_ignore_ascii_case(key)) {
+                if let Some(proj) = &s.proj4 {
+                    let mut definition = Self::from_proj(proj)?;
+                    definition.tag_iau(s)?;
+                    return Ok(definition);
+                }
+                return Self::from_wkt(wkt);
+            }
+        }
         if let Some(code) = s.epsg
             && let Some(c) = epsg::compound(code)
         {
@@ -341,6 +355,28 @@ impl Def {
         }
 
         let mut ell = datum::ellipsoid(&p).or_else(|| datum_name.and_then(datum_ellps).and_then(Ell::named)).unwrap_or_else(Ell::wgs84);
+        // A shape without `+a` (or `+R`) changes the shape of the named ellipsoid or the datum's,
+        // as PROJ's `pj_ell_set` applies it: `+f=0 +datum=WGS84` is the sphere of WGS 84's
+        // semi-major axis (ESRI's orthographic CRSs).
+        if !p.has("a") && !p.has("R") {
+            // In PROJ's order of precedence: `+rf`, `+f`, `+es`, `+e`, then `+b`.
+            if let Some(rf) = p.f64("rf") {
+                ell = Ell::from_a_rf(ell.a, rf);
+            } else if let Some(f) = p.f64("f") {
+                ell = Ell::from_a_rf(ell.a, if f == 0.0 { 0.0 } else { 1.0 / f });
+            } else if let Some(es) = p.f64("es") {
+                ell = Ell::from_a_es(ell.a, es);
+            } else if let Some(e) = p.f64("e") {
+                ell = Ell::from_a_es(ell.a, e * e);
+            } else if let Some(b) = p.f64("b") {
+                ell = Ell::from_a_b(ell.a, b);
+            }
+        }
+        // An ellipsoid PROJ refuses (`+b` above `+a`, `+es` of 1 or more) would give NaN
+        // coordinates.
+        if !(ell.a.is_finite() && ell.a > 0.0 && (0.0..1.0).contains(&ell.es)) {
+            return Err(Error::Crs(format!("invalid ellipsoid in '{s}': semi-major axis {}, eccentricity squared {}", ell.a, ell.es)));
+        }
         // `+R_A`: a sphere of the ellipsoid's area.
         if p.has("R_A") && ell.es != 0.0 {
             let e = ell.e;
@@ -597,6 +633,12 @@ impl Def {
         // Text the WKT reader refuses (not WKT, nested deeper or longer than GDAL reads) is not
         // handed to wbprojection's parser either, whose recursion has no bound.
         let root = wkt1::parse(w).ok_or_else(|| Error::Crs("not a WKT definition GDAL reads".into()))?;
+        // Engineering roots carry metadata, not an Earth projection. Do not send their IDs
+        // through wbprojection's EPSG builder; its large frame can exhaust a WASM warp stack.
+        if ["LOCAL_CS", "ENGCRS", "ENGINEERINGCRS"].iter().any(|key| root.key.eq_ignore_ascii_case(key)) {
+            let kind = root.key.to_ascii_lowercase().replace('_', "");
+            return Err(Error::Crs(format!("unsupported projection: unsupported WKT root '{kind}'")));
+        }
         let converted = if wkt2::handles(&root) { Some(wkt2::to_proj(&root)?) } else { wkt1::to_proj(&root) };
         if let Some(c) = converted {
             let mut d = Self::from_proj(&c.proj)?;
@@ -682,10 +724,22 @@ impl Def {
         self.is_geographic().then_some(360.0 / self.to_deg.abs()).filter(|v| v.is_finite() && *v > 0.0)
     }
 
+    /// Endpoints of the full longitude range at a pole, in this CRS's units and axis order.
+    pub fn pole_bounds(&self, latitude: f64) -> [(f64, f64); 2] {
+        let half = 180.0 / self.to_deg;
+        let y = latitude.to_degrees() / self.to_deg;
+        [self.axis(-half, y), self.axis(half, y)]
+    }
+
     /// Whether this is a geographic CRS. A rotated-pole grid is not: its coordinates are in
     /// degrees, but are not longitudes and latitudes.
     pub fn is_geographic(&self) -> bool {
         self.proj.is_none() && self.rot.is_none() && !self.geocentric
+    }
+
+    /// Whether this definition has a map projection.
+    pub fn is_projected(&self) -> bool {
+        self.proj.is_some()
     }
 
     pub fn is_geocentric(&self) -> bool {

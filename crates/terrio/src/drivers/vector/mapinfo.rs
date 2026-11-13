@@ -121,32 +121,53 @@ impl Tokens {
 
 const STYLES: &[&str] = &["pen", "brush", "symbol", "center", "smooth", "font", "spacing", "justify", "angle", "label", "linespacing"];
 
+/// Header recognition refusals are terminal, including with the optional GDAL backend.
+pub(crate) const INVALID_HEADER: &str = "MIF: invalid header: ";
+
+/// Distinguishes format recognition from geometry errors GDAL may be able to recover.
+fn invalid_header(message: &str) -> Error {
+    Error::InvalidData(format!("{INVALID_HEADER}{message}"))
+}
+
 /// Parses MIF and MID contents.
 pub fn parse(mif: &[u8], mid: Option<&[u8]>, name: &str) -> Result<Layer> {
+    let mif = mif.strip_prefix(b"\xef\xbb\xbf").unwrap_or(mif);
     let head = String::from_utf8_lossy(&mif[..mif.len().min(4096)]).to_ascii_lowercase();
     let utf8 = head.contains("charset \"utf-8\"") || head.contains("charset \"utf8\"");
     let text = decode(mif, utf8);
-    let lines: Vec<&str> = text.lines().collect();
+    let lines: Vec<&str> = text.trim_start_matches('\u{feff}').lines().collect();
     let mut layer = Layer::new(name);
     let mut delimiter = ',';
     let mut i = 0;
     let mut fields: Vec<(String, FieldType)> = Vec::new();
+    let (mut version, mut columns, mut data) = (false, false, false);
     while i < lines.len() {
         let line = lines[i].trim();
         let lower = line.to_ascii_lowercase();
+        let keyword = lower.split_whitespace().next().unwrap_or_default();
         i += 1;
-        if lower.starts_with("delimiter") {
+        if keyword == "version" {
+            version = line.split_whitespace().nth(1).is_some_and(|v| v.parse::<u32>().is_ok_and(|v| v > 0));
+            if !version {
+                return Err(invalid_header("invalid Version declaration"));
+            }
+        } else if lower.starts_with("delimiter") {
             delimiter = line.split('"').nth(1).and_then(|d| d.chars().next()).unwrap_or(',');
         } else if lower.starts_with("coordsys") {
             if let Some(srs) = coordsys_to_srs(line) {
                 srs.apply_to_layer(&mut layer);
             }
-        } else if lower.starts_with("columns") {
-            let n: usize = line.split_whitespace().nth(1).and_then(|n| n.parse().ok()).unwrap_or(0);
+        } else if keyword == "columns" {
+            let n: usize =
+                line.split_whitespace().nth(1).and_then(|n| n.parse().ok()).ok_or_else(|| invalid_header("invalid Columns declaration"))?;
+            columns = true;
             for _ in 0..n {
-                let Some(col) = lines.get(i) else { break };
+                let col = lines.get(i).ok_or_else(|| invalid_header("incomplete Columns declaration"))?;
                 i += 1;
                 let col = col.trim();
+                if col.eq_ignore_ascii_case("data") {
+                    return Err(invalid_header("incomplete Columns declaration"));
+                }
                 let (fname, ftype) = col.split_once(char::is_whitespace).unwrap_or((col, "char"));
                 let t = ftype.trim().to_ascii_lowercase();
                 let t = if t.starts_with("char") {
@@ -167,7 +188,13 @@ pub fn parse(mif: &[u8], mid: Option<&[u8]>, name: &str) -> Result<Layer> {
                 fields.push((fname.to_string(), t));
             }
         } else if lower == "data" {
+            data = true;
             break;
+        }
+    }
+    for (present, keyword) in [(version, "Version"), (columns, "Columns"), (data, "Data")] {
+        if !present {
+            return Err(invalid_header(&format!("missing {keyword} declaration; not a complete MapInfo Interchange File")));
         }
     }
     for (n, t) in &fields {
@@ -669,6 +696,39 @@ fn write_geometry(s: &mut String, g: &Geometry) {
 mod tests {
     use super::*;
 
+    /// Wrong-format payloads are refused as in GDAL 3.12.1's explicit MapInfo driver.
+    /// Incomplete-header refusals are Terrio policy, not a GDAL comparison. Valid empty
+    /// Data sections retain their declared schema.
+    #[test]
+    fn requires_mif_header_but_allows_empty_data() {
+        for mif in [
+            "",
+            "hello",
+            r#"{"type":"FeatureCollection","features":[]}"#,
+            "Data\n",
+            "Version 300\nData\n",
+            "Columns 0\nData\n",
+            "Version 300\nColumns 0\n",
+            "Version 300\nColumns invalid\nData\n",
+        ] {
+            assert!(matches!(parse(mif.as_bytes(), None, "t"), Err(Error::InvalidData(message)) if message.starts_with("MIF:")), "{mif}");
+        }
+        for mif in ["Version 300\nColumns 1\nN Integer\nData\n", "\u{feff}vErSiOn 300\r\ncOlUmNs 1\r\nN Integer\r\ndAtA\r\n"] {
+            let layer = parse(mif.as_bytes(), None, "t").unwrap();
+            assert_eq!(layer.len(), 0);
+            assert_eq!(layer.schema.fields().len(), 1);
+            assert_eq!(layer.schema.fields()[0].name, "N");
+            assert_eq!(layer.schema.fields()[0].field_type, FieldType::Integer);
+        }
+        assert!(parse(b"Version 300\nColumns 0\nData\n", None, "t").unwrap().schema.fields().is_empty());
+        // Strip the BOM before fallback Latin-1 decoding, independently of Charset.
+        let latin = parse(b"\xef\xbb\xbfVersion 300\nColumns 1\nN\xe9 Integer\nData\n", None, "t").unwrap();
+        assert_eq!(latin.schema.fields()[0].name, "Né");
+        for text in [b"Version 300\nColumns 2\nN Integer\nData\n".as_slice(), b"Version 300\nColumns 1\n"] {
+            assert!(matches!(parse(text, None, "t"), Err(Error::InvalidData(message)) if message.contains("incomplete Columns")));
+        }
+    }
+
     #[test]
     fn reads_styles_regions_and_crs() {
         let mif = b"Version 300\nCharset \"WindowsLatin1\"\nDelimiter \",\"\nCoordSys Earth Projection 8, 104, \"m\", -75, 0, 0.9996, 500000, 0\nColumns 3\n  NAME Char (50)\n  N Integer\n  D Date\nData\n\nRegion 2\n5\n0 0\n10 0\n10 10\n0 10\n0 0\n4\n2 2\n4 2\n4 4\n2 2\n    Pen (1,2,0)\n    Brush (1,0,16777215)\nPoint 1 2\n    Symbol (35,0,12)\nPline Multiple 2\n2\n0 0\n1 1\n2\n2 2\n3 3\nnone\n";
@@ -692,6 +752,10 @@ mod tests {
             assert_eq!(a.geometry, b.geometry);
             assert_eq!(a.attributes, b.attributes);
         }
+        // Preserve the existing optional-clause grammar while requiring the header.
+        let compact = b"Version 300\nDelimiter\";\"\nColumns 2\nN Integer\nName Char(10)\nData\nPoint 1 2\n";
+        let compact = parse(compact, Some(b"7;site\n"), "t").unwrap();
+        assert_eq!(compact.features[0].attributes, vec![FieldValue::Integer(7), FieldValue::Text("site".into())]);
     }
 
     /// Date and DateTime values that are not all ASCII digits are text, never cut at fixed bytes

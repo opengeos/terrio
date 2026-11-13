@@ -156,7 +156,7 @@ fn tokens(s: &str) -> (Vec<String>, bool) {
 }
 
 /// Parses decimal degrees or PROJ's DMS notation into degrees.
-fn parse_dms(s: &str) -> Option<f64> {
+pub(crate) fn parse_dms(s: &str) -> Option<f64> {
     let s = s.trim();
     if let Ok(v) = s.parse() {
         return Some(v);
@@ -182,14 +182,30 @@ fn parse_dms(s: &str) -> Option<f64> {
         } else {
             1.0
         };
-        deg += rest.trim().parse::<f64>().ok()? / div;
+        deg += rest.trim().parse::<f64>().ok()?.abs() / div;
     }
-    let negative = body.trim_start().starts_with('-');
+    // A hemisphere letter gives the sign, a minus sign only without one, as PROJ reads them
+    // (`-52d30'10"S` is south, `-52d30'10"N` north).
+    let lettered = body.len() < s.len();
+    let negative = !lettered && body.trim_start().starts_with('-');
     Some(sign * if negative { -deg } else { deg })
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_hemisphere_letter_gives_the_sign_over_a_minus() {
+        // As PROJ 9.8.1 reads them (`+lat_0=-52.5S` is -52.5, `-52.5N` 52.5).
+        let near = |s: &str, v: f64| (super::parse_dms(s).unwrap() - v).abs() < 1e-12;
+        let dms = 52.0 + 30.0 / 60.0 + 10.0 / 3600.0;
+        for (s, v) in [("-52.5S", -52.5), ("-52.5N", 52.5), ("52.5S", -52.5), ("-52.5", -52.5), ("-5W", -5.0), ("-5E", 5.0)] {
+            assert!(near(s, v), "{s}");
+        }
+        for (s, v) in [("-52d30'10\"S", -dms), ("-52d30'10\"N", dms), ("52d30'10\"S", -dms), ("-52d30'10\"", -dms)] {
+            assert!(near(s, v), "{s}");
+        }
+    }
+
     use super::*;
 
     #[test]

@@ -627,7 +627,9 @@ class CRS(Mapping[str, Any]):
         its shift and ellipsoid instead of a datum name. Other datum identities and
         area-dependent operations cannot be represented by an ellipsoid alone;
         use WKT, PROJJSON or an authority code to preserve them. Unsupported projections
-        return an empty string.
+        return an empty string. This is rasterio's parameter string;
+        ``terrio._terrio.crs_to_proj4`` writes the string PROJ 9.8.1 writes
+        (``pyproj.CRS.to_proj4()``), ``None`` when PROJ has none.
 
         Returns:
             str: The PROJ string.

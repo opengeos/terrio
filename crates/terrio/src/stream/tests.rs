@@ -3,6 +3,33 @@ use crate::ops::vector_filter::VectorTranslateOptions;
 use wbvector::{Coord, FieldDef, FieldType, FieldValue, Geometry};
 
 #[test]
+fn failed_shapefile_conversion_removes_only_normalized_components() {
+    for name in ["roads.v2.geojson", "roads.v2.SHP", "roads.v2"] {
+        let directory = tempfile::tempdir().unwrap();
+        let requested = directory.path().join(name);
+        let geometry = shapefile::output_path(requested.to_str().unwrap());
+        let unrelated = directory.path().join("roads.shp");
+        std::fs::write(&unrelated, b"neighbor").unwrap();
+        if requested != geometry {
+            std::fs::write(&requested, b"unrelated source").unwrap();
+        }
+        for path in std::iter::once(geometry.clone()).chain(["shx", "dbf", "prj", "cpg"].map(|ext| geometry.with_extension(ext))) {
+            std::fs::write(path, b"partial output").unwrap();
+        }
+        let result = remove_on_error(requested.to_str().unwrap(), VectorDriver::Shapefile, Err(Error::InvalidData("write failed".into())));
+        assert!(result.is_err());
+        assert!(!geometry.exists());
+        for ext in ["shx", "dbf", "prj", "cpg"] {
+            assert!(!geometry.with_extension(ext).exists());
+        }
+        assert_eq!(std::fs::read(unrelated).unwrap(), b"neighbor");
+        if requested != geometry {
+            assert_eq!(std::fs::read(requested).unwrap(), b"unrelated source");
+        }
+    }
+}
+
+#[test]
 fn range_source_stops_decoding_batches_at_its_limit() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};

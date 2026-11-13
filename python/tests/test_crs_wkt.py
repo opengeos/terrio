@@ -238,6 +238,23 @@ def test_crs_to_projjson():
         trio.CRS.from_user_input("+proj=longlat +lon_0=10 +datum=WGS84").to_projjson()
 
 
+def test_crs_to_proj4_writes_proj_string():
+    # PROJ 9.8.1's projinfo -o PROJ for the same CRSs.
+    assert (
+        terrio._terrio.crs_to_proj4("EPSG:32632")
+        == "+proj=utm +zone=32 +datum=WGS84 +units=m +no_defs +type=crs"
+    )
+    assert (
+        terrio._terrio.crs_to_proj4("EPSG:4807")
+        == "+proj=longlat +ellps=clrk80ign +pm=paris +no_defs +type=crs"
+    )
+    local = (
+        'LOCAL_CS["Engineering",LOCAL_DATUM["site",0],UNIT["metre",1],'
+        'AXIS["X",EAST],AXIS["Y",NORTH]]'
+    )
+    assert terrio._terrio.crs_to_proj4(local) is None
+
+
 def test_crs_to_projjson_exports_the_file_read_at_construction(tmp_path):
     prj = tmp_path / "crs.prj"
     prj.write_text(trio.CRS.from_epsg(32632).to_wkt())

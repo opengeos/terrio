@@ -209,13 +209,25 @@ pub(crate) fn invalid(message: impl Into<String>) -> PyErr {
 /// Runs `f` without the GIL and issues the warnings it records (see `terrio::warnings`) as Python
 /// `UserWarning`s, whether it succeeds or fails. Warnings left by earlier calls are dropped first,
 /// so none is attributed to this call; `f`'s own error is preferred to a warning turned into one.
+/// If shutdown has disabled imports, best-effort C warning emission must not discard the result.
 pub(crate) fn with_warnings<T: Send>(py: Python<'_>, f: impl FnOnce() -> terrio::Result<T> + Send) -> PyResult<T> {
     let _ = terrio::warnings::take();
     let result = py.detach_result(f).py();
     let mut warned = Ok(());
     for w in terrio::warnings::take() {
-        warned = warned
-            .and(py.import("terrio._warnings").and_then(|module| module.call_method1("warn_user", (w.replace('\0', " "),))).map(|_| ()));
+        let message = w.replace('\0', " ");
+        let emitted = match py.import("terrio._warnings") {
+            Ok(module) => module.call_method1("warn_user", (message,)).map(|_| ()),
+            Err(_) => {
+                // Late finalizers can still call bindings after Python clears sys.meta_path.
+                // The C warning machinery may remain usable, but even it can fail at teardown.
+                if let Ok(message) = std::ffi::CString::new(message) {
+                    let _ = PyErr::warn(py, &py.get_type::<pyo3::exceptions::PyUserWarning>(), &message, 1);
+                }
+                Ok(())
+            }
+        };
+        warned = warned.and(emitted);
     }
     let value = result?;
     warned.map(|()| value)
@@ -234,6 +246,7 @@ fn _terrio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<raster::PyGeoTiffWriter>()?;
     m.add_class::<cog_writer::PyCogWriter>()?;
     m.add_class::<vector::PyLayer>()?;
+    m.add_function(wrap_pyfunction!(vector::geojson_crs_name, m)?)?;
     m.add_class::<vector::PyVectorDataset>()?;
     m.add_class::<arrow::PyArrowTable>()?;
     m.add_function(wrap_pyfunction!(arrow::from_arrow, m)?)?;

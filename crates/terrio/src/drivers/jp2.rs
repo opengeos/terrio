@@ -634,7 +634,8 @@ fn georeferencing(b: &[u8]) -> (Option<[f64; 6]>, Option<CrsInfo>) {
     if let Some((_, payload)) = top.iter().find(|(t, p)| t == b"uuid" && p.starts_with(&GEOJP2_UUID))
         && let Some(tags) = crate::geotiff::read_geo_tags_from(std::io::Cursor::new(&payload[16..]))
     {
-        let crs = tags.epsg.map(crate::crs::epsg_crs_info).or(tags.crs);
+        let crs = tags.crs_info();
+        let crs = (crs.epsg.is_some() || crs.wkt.is_some() || crs.proj4.is_some()).then_some(crs);
         let gt = tags
             .geo_transform
             .map(|gt| if tags.pixel_is_point { [gt[0] - gt[1] / 2.0, gt[1], gt[2], gt[3] - gt[5] / 2.0, gt[4], gt[5]] } else { gt });

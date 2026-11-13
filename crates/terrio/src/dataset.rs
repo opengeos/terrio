@@ -1055,7 +1055,8 @@ fn list_layers_native(path: &str) -> Result<Vec<String>> {
 
 /// When terrio's own drivers could not open `path`, tries GDAL; if GDAL cannot either, terrio's
 /// error is kept, except for GDAL's resource refusals. Missing local files and invalid arguments
-/// are not retried, nor are network errors or resource-limit refusals.
+/// are not retried, nor are network errors, resource-limit refusals or native MIF header
+/// recognition failures. MIF geometry errors remain eligible for fallback.
 #[cfg(feature = "gdal")]
 pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(&str) -> Result<T>) -> Result<T> {
     let Err(e) = result else { return result };
@@ -1066,8 +1067,10 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
     }
     let retry = match &e {
         Error::InvalidArgument(_) | Error::Http(_) => false,
+        error if crate::drivers::vector::geojson::is_crs_refusal(error) => false,
         Error::InvalidData(message) if message.ends_with(crate::drivers::vector::kml::AMBIGUOUS_KMZ) => false,
         Error::InvalidData(message) if message.ends_with(vfs::AMBIGUOUS_ZIP) => false,
+        Error::InvalidData(message) if message.starts_with(crate::drivers::vector::mapinfo::INVALID_HEADER) => false,
         e if e.is_resource_refusal() => false,
         // A missing file, unless the path is one of GDAL's dataset names (`HDF5:"f.h5"://x`).
         Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound => vfs::is_gdal_name(path),
@@ -1256,7 +1259,7 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
             // that is allowed.
             let to_fallback = matches!(found, Some("GeoJSON" | "GML"))
                 && wbvector_fallback_allowed()
-                && result.as_ref().is_err_and(|e| !e.is_resource_refusal());
+                && result.as_ref().is_err_and(|e| !e.is_resource_refusal() && !crate::drivers::vector::geojson::is_crs_refusal(e));
             match result {
                 Err(e) if to_fallback => reader_error = Some(e),
                 result => return result.map(Dataset::Vector),
@@ -1345,7 +1348,12 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
 /// The dataset of a layer read by the `wbvector` fallback: the range of features `options` asks
 /// for (`skip_features`, `max_features`), as a driver's read keeps it, and the driver of the format
 /// the fallback found.
-fn wbvector_dataset(layer: Layer, path: &str, options: &VectorOpenOptions, driver: VectorDriver) -> Result<Dataset> {
+fn wbvector_dataset(mut layer: Layer, path: &str, options: &VectorOpenOptions, driver: VectorDriver) -> Result<Dataset> {
+    // The optional reader does not assign GeoJSON's default. Keep its established behavior
+    // here, without overwriting an explicit null CRS returned by the native JSON readers.
+    if driver == VectorDriver::GeoJSON && layer.crs_epsg().is_none() && layer.crs_wkt().is_none() {
+        layer.set_crs_epsg(Some(4326));
+    }
     let mut layers = select_layers(vec![layer], path, options)?;
     layers.iter_mut().for_each(|l| options.keep_range(l));
     Ok(Dataset::Vector(finish_vector(layers, path, driver)))
@@ -1424,9 +1432,7 @@ fn read_raster_local(path: &str) -> Result<RasterDataset> {
             (fmt.read(path)?, RasterDriver::from_wb(fmt))
         }
         None => {
-            return Err(Error::Unsupported(format!(
-                "'{path}': format not recognized by terrio's drivers (TERRIO_WBRASTER_FALLBACK=YES lets wbraster detect it)"
-            )));
+            return Err(Error::Unsupported(format!("'{path}': format not recognized by terrio's drivers")));
         }
     };
     let mut ds = crate::drivers::nodata::finish(path, driver, raster);
@@ -1548,8 +1554,7 @@ pub(crate) fn fix_layer(mut layer: Layer, path: &str, driver: VectorDriver) -> L
     {
         layer.set_crs_epsg(Some(code));
     }
-    let wgs84_by_definition =
-        matches!(driver, VectorDriver::GeoJSON | VectorDriver::TopoJSON | VectorDriver::KML | VectorDriver::KMZ | VectorDriver::GPX);
+    let wgs84_by_definition = matches!(driver, VectorDriver::KML | VectorDriver::KMZ | VectorDriver::GPX);
     if wgs84_by_definition && layer.crs_epsg().is_none() && layer.crs_wkt().is_none() {
         layer.set_crs_epsg(Some(4326));
     }
@@ -2342,6 +2347,18 @@ mod tests {
         assert!(message.contains("TERRIO_WBVECTOR_FALLBACK=YES"), "{message}");
     }
 
+    #[test]
+    fn optional_geojson_reader_retains_its_default_crs() {
+        use super::{Dataset, VectorDriver, wbvector_dataset};
+        let layer = wbvector::geojson::parse_str(r#"{"type":"FeatureCollection","features":[]}"#).unwrap();
+        assert!(layer.crs_epsg().is_none());
+        let Dataset::Vector(dataset) = wbvector_dataset(layer, "points.geojson", &Default::default(), VectorDriver::GeoJSON).unwrap()
+        else {
+            panic!("not a vector")
+        };
+        assert_eq!(dataset.layers[0].crs_epsg(), Some(4326));
+    }
+
     /// GDAL 3.13.3's NBITS item remains visible beside other IMAGE_STRUCTURE items.
     #[test]
     fn inherited_width_is_found_after_other_image_structure_domains() {
@@ -2483,7 +2500,8 @@ mod tests {
         std::fs::write(&path, "ncols 2\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\nNODATA_value -9999\n1 2\n3 4\n").unwrap();
         let path = path.to_str().unwrap();
         let err = crate::open_raster(path).unwrap_err().to_string();
-        assert!(err.contains("TERRIO_WBRASTER_FALLBACK"), "{err}");
+        assert!(err.contains("format not recognized by terrio's drivers"), "{err}");
+        assert!(!err.contains("TERRIO_WBRASTER_FALLBACK"), "{err}");
         crate::config::push_scope([("TERRIO_WBRASTER_FALLBACK".to_string(), Some("YES".to_string()))].into());
         let opened = crate::open_raster(path);
         crate::config::pop_scope();

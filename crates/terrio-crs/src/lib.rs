@@ -79,6 +79,7 @@ mod grid;
 mod iau;
 mod math;
 mod params;
+mod proj_write;
 mod projections;
 mod projjson;
 mod projjson_gdal;
@@ -627,6 +628,44 @@ impl SpatialRef {
         self.authority().map(|(a, code)| format!("{a}:{code}"))
     }
 
+    /// The PROJ string of the CRS as PROJ 9.8.1 writes it (`proj_as_proj_string` with
+    /// `PJ_PROJ_4`, pyproj's `CRS.to_proj4()`, `projinfo -o PROJ`), or `None` for a CRS PROJ has
+    /// none for (an engineering CRS, Polar Stereographic variant C, an EPSG code terrio reads only
+    /// through the wbprojection fallback).
+    ///
+    /// Like PROJ's, the string leaves out what a PROJ string cannot hold, so it is no substitute
+    /// for the code or WKT to keep a CRS:
+    /// - the datum transformation of a registry CRS (`+datum=` names only WGS 84, NAD83 and NAD27;
+    ///   `+towgs84` comes only from a definition that gives it, a WKT's `TOWGS84` or `BOUNDCRS`,
+    ///   which PROJ writes with the ellipsoid in place of the datum, even for a registry CRS);
+    /// - the angular unit of a geographic CRS (EPSG:4807 is in grads, its string in degrees);
+    /// - the axis order, but for south-orientated Transverse Mercator and Krovak (`+axis=wsu`,
+    ///   `+axis=swu`);
+    /// - a PROJ string's vertical unit (`+vunits`) without a geoid model (`+geoidgrids`).
+    ///
+    /// A compound CRS (`EPSG:4326+5773`) is its horizontal CRS's string with the vertical unit
+    /// (and a WKT's geoid model, `+geoidgrids`). A CRS given by a PROJ string or a WKT without
+    /// a code comes back as PROJ writes it: `+datum=` for WGS84, NAD83 and NAD27 when nothing
+    /// changes them (`+ellps` beside `+datum` is ignored), else the datum's ellipsoid; the
+    /// ellipsoid by name, else a sphere as `+R`, else as given (`+rf` or `+b`); `+towgs84` with
+    /// seven values, or `+nadgrids` in its place; units by PROJ's names; UTM zones as
+    /// `+proj=utm`; GDAL's Web Mercator string as PROJ's. Its parameters stay in their order,
+    /// which PROJ rewrites in its own, adding the defaults. A WKT's PROJ4 extension is written as
+    /// it is, as PROJ writes it. A planetocentric CRS on an ellipsoid (`+geoc`) has none. A WKT's
+    /// grid shift (`PROJ4_GRIDS` in its datum, a `BOUNDCRS` with a grid) is not read, so not
+    /// written.
+    ///
+    /// ```
+    /// use terrio_crs::SpatialRef;
+    ///
+    /// let utm = SpatialRef::from_epsg(32632)?;
+    /// assert_eq!(utm.to_proj4().as_deref(), Some("+proj=utm +zone=32 +datum=WGS84 +units=m +no_defs +type=crs"));
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
+    pub fn to_proj4(&self) -> Option<String> {
+        proj_write::write(self)
+    }
+
     /// The WKT definition, built from the EPSG (or ESRI) code or PROJ string when no WKT is
     /// stored.
     pub fn to_wkt(&self) -> Option<String> {
@@ -829,13 +868,13 @@ impl SpatialRef {
 }
 
 /// The WKT 1 of a PROJ string, as GDAL writes it (see [`wkt1_write`]).
-fn proj_to_wkt(p: &str) -> Option<String> {
+pub(crate) fn proj_to_wkt(p: &str) -> Option<String> {
     wkt1_write::from_proj(p)
 }
 
 /// Whether a WKT 1 or WKT 2 names Polar Stereographic (variant C), EPSG method 9830, as a
 /// projection or conversion method, at any depth (in a bound or compound CRS too).
-fn is_variant_c(wkt: &str) -> bool {
+pub(crate) fn is_variant_c(wkt: &str) -> bool {
     fn names(n: &wkt1::Node) -> bool {
         (["PROJECTION", "METHOD"].iter().any(|k| n.key.eq_ignore_ascii_case(k))
             && (n.epsg() == Some(9830) || n.name().is_some_and(|m| wkt1::norm(m) == "polarstereographicvariantc")))
@@ -857,7 +896,7 @@ pub fn wkt_proj(wkt: &str) -> Option<String> {
 }
 
 /// The PROJ string of a WKT 1's root `EXTENSION["PROJ4", ...]`.
-fn proj4_extension(wkt: &str) -> Option<String> {
+pub(crate) fn proj4_extension(wkt: &str) -> Option<String> {
     let root = wkt1::parse(wkt)?;
     let ext = root.children("EXTENSION").find(|n| n.name().is_some_and(|k| k.eq_ignore_ascii_case("PROJ4")))?;
     match ext.args.get(1)? {
@@ -1270,7 +1309,15 @@ impl TransformOptions {
 /// through an intermediate datum such as WGS 84. Datum shift grids are used when they can be
 /// found, as GDAL uses them; heights of geographic 3D and compound CRSs go through geoid
 /// models; time-dependent transformations use the coordinate epoch (see [`TransformOptions`]).
+///
+/// A transformer is `Send + Sync` and caches what it looks up on first use (routes, grids, geoid
+/// models), so build it once per pair of CRSs and share it, between threads too, through an
+/// [`Arc`](std::sync::Arc) rather than building it again. [`inverse`](Self::inverse) builds the
+/// transformer of the other direction.
 pub struct Transformer {
+    /// The CRSs and options it was built from, for [`inverse`](Self::inverse).
+    src_ref: SpatialRef,
+    dst_ref: SpatialRef,
     src: Def,
     dst: Def,
     cartesian_src: Option<Def>,
@@ -1278,6 +1325,7 @@ pub struct Transformer {
     identity: bool,
     route: route::Route,
     best_route: std::sync::OnceLock<route::Route>,
+    bounds_reverse_route: std::sync::OnceLock<route::Route>,
     policy: TransformOptions,
     missing_grid_checked: std::sync::OnceLock<()>,
     /// The geoid models with grids of the source and target vertical CRSs, found on first use.
@@ -1608,6 +1656,8 @@ impl Transformer {
         let web_mercator_to_wgs84 = web_mercator_to_wgs84(src, dst);
         Ok(Self {
             identity,
+            src_ref: src.clone(),
+            dst_ref: dst.clone(),
             src: s,
             dst: d,
             cartesian_src,
@@ -1622,6 +1672,7 @@ impl Transformer {
             web_mercator_to_wgs84,
             wgs84_to_web_mercator,
             best_route: std::sync::OnceLock::new(),
+            bounds_reverse_route: std::sync::OnceLock::new(),
             policy: opts.clone(),
             missing_grid_checked: std::sync::OnceLock::new(),
             src_geoid_grids: std::sync::OnceLock::new(),
@@ -1651,6 +1702,122 @@ impl Transformer {
         }
         let (x, y, _) = self.transform_2d(x, y, 0.0, self.time)?;
         Ok((x, y))
+    }
+
+    /// Transforms points in place, each as [`transform`](Self::transform) does. Stops at the
+    /// first point that fails and returns its error: the points before it are transformed, it and
+    /// those after it are left as they were. Where failures are expected, as at the edges of a
+    /// projection's domain, [`transform_slice_or_nan`](Self::transform_slice_or_nan) goes on.
+    ///
+    /// The datum operation is still chosen for each point (by its area of use), as `transform`
+    /// chooses it, so the results are those of `transform`, bit for bit. Where `transform` returns
+    /// every point as it is (identical CRSs, neither geocentric, without a point motion between
+    /// coordinate epochs), the points are left as they are without visiting them.
+    ///
+    /// ```no_run
+    /// use terrio_crs::{SpatialRef, Transformer};
+    ///
+    /// let utm = SpatialRef::from_epsg(32632)?;
+    /// let t = Transformer::new(&SpatialRef::from_epsg(4326)?, &utm)?;
+    /// let mut points = vec![(9.0, 47.0), (7.5, 45.9)];
+    /// t.transform_slice(&mut points)?;
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
+    pub fn transform_slice(&self, xy: &mut [(f64, f64)]) -> Result<()> {
+        if self.is_identity_2d() {
+            return Ok(());
+        }
+        for p in xy.iter_mut() {
+            *p = self.transform(p.0, p.1)?;
+        }
+        Ok(())
+    }
+
+    /// Transforms points in place, each as [`transform`](Self::transform) does, setting the
+    /// points it fails for to `(NaN, NaN)` and going on, and returns how many there were. For
+    /// renderers, which draw what transforms and skip the rest, such as a grid of pixels reaching
+    /// beyond a projection's domain.
+    ///
+    /// As PROJ 9.8.1's `proj_trans_generic` does, every point that fails is marked, whatever the
+    /// reason: outside a projection's domain or a velocity grid ([`Error::Crs`]), and refused under
+    /// the strict options, such as a missing grid with [`TransformOptions::only_best`]
+    /// ([`Error::MissingGrid`]) or no allowed operation with
+    /// [`TransformOptions::allow_ballpark`] off ([`Error::NoOperation`]). PROJ marks them
+    /// `HUGE_VAL` (infinity); NaN is terrio's choice, so that a marked point is never taken for a
+    /// coordinate. To learn whether a missing grid refused points under `only_best`, call
+    /// [`check_policy`](Self::check_policy) after the batch, as raster workers do; it is not called
+    /// for you. Only errors that are not about a point (I/O, an invalid argument, and any other
+    /// kind) are returned, at once: as with
+    /// [`transform_slice`](Self::transform_slice), the points before it are then transformed (or
+    /// marked), and it and those after it are left as they were.
+    ///
+    /// ```no_run
+    /// use terrio_crs::{SpatialRef, Transformer};
+    ///
+    /// let ortho = SpatialRef::from_proj4("+proj=ortho +lat_0=0 +lon_0=0 +datum=WGS84")?;
+    /// let t = Transformer::new(&SpatialRef::from_epsg(4326)?, &ortho)?;
+    /// let mut points = vec![(10.0, 10.0), (170.0, 0.0)];
+    /// assert_eq!(t.transform_slice_or_nan(&mut points)?, 1); // 170°E is on the far side
+    /// assert!(points[1].0.is_nan());
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
+    pub fn transform_slice_or_nan(&self, xy: &mut [(f64, f64)]) -> Result<usize> {
+        if self.is_identity_2d() {
+            return Ok(0);
+        }
+        let mut failed = 0;
+        for p in xy.iter_mut() {
+            *p = match self.transform(p.0, p.1) {
+                Ok(q) => q,
+                Err(Error::Crs(_) | Error::MissingGrid(_) | Error::NoOperation(_)) => {
+                    failed += 1;
+                    (f64::NAN, f64::NAN)
+                }
+                Err(e) => return Err(e),
+            };
+        }
+        Ok(failed)
+    }
+
+    /// Whether [`transform`](Self::transform) returns every point as it is.
+    fn is_identity_2d(&self) -> bool {
+        self.identity && self.cartesian_src.is_none() && self.cartesian_dst.is_none()
+    }
+
+    /// The transformer of the other direction, from this one's target CRS to its source CRS,
+    /// with the same options, the coordinate epochs swapped, and the same warning handler.
+    ///
+    /// It is built as [`with_options`](Self::with_options) builds one, so it picks its datum
+    /// operations for the other direction as `with_options` picks them for that pair (the tests
+    /// compare both directions with PROJ 9.8.1). Between two dynamic CRSs with both coordinate
+    /// epochs given, each direction runs at its own source epoch, by `with_options`'s rule, so a
+    /// time-dependent transformation is not evaluated at the same time both ways and a round trip
+    /// does not come back to the point. This is not GDAL's `OGRProjCT::GetInverse()`, which
+    /// inverts the forward pipeline; its rounding of degrees is what
+    /// [`with_reverse_degree_division`](Self::with_reverse_degree_division) reproduces, and the
+    /// inverse keeps that rounding when this transformer has it.
+    ///
+    /// ```no_run
+    /// use terrio_crs::{SpatialRef, Transformer};
+    ///
+    /// let lv95 = SpatialRef::from_epsg(2056)?;
+    /// let to_wgs84 = Transformer::new(&lv95, &SpatialRef::from_epsg(4326)?)?;
+    /// let back = to_wgs84.inverse()?;
+    /// let (lon, lat) = to_wgs84.transform(2_600_000.0, 1_200_000.0)?;
+    /// let (e, n) = back.transform(lon, lat)?;
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
+    pub fn inverse(&self) -> Result<Transformer> {
+        let opts = TransformOptions {
+            source_coordinate_epoch: self.policy.target_coordinate_epoch,
+            target_coordinate_epoch: self.policy.source_coordinate_epoch,
+            ..self.policy.clone()
+        };
+        let mut t = Self::with_options(&self.dst_ref, &self.src_ref, &opts)?.with_warning_handler(self.warning_handler);
+        if self.src.inverted_degrees {
+            t = t.with_reverse_degree_division();
+        }
+        Ok(t)
     }
 
     fn best_route(&self) -> &route::Route {
@@ -1805,11 +1972,16 @@ impl Transformer {
 
         let p = match &self.motion {
             Some(steps) => datum::run(steps, p, false, true).ok_or_else(|| {
-                let grids: Vec<String> = steps.iter().flat_map(|s| s.grid_names()).map(|(g, _)| g).collect();
-                Error::Crs(format!(
-                    "cannot move ({x}, {y}) between coordinate epochs: outside the velocity grid, or the grid ({}) is not available",
-                    grids.join(", ")
-                ))
+                let names = steps.iter().flat_map(|s| s.grid_names()).map(|(g, _)| g).collect::<Vec<_>>().join(", ");
+                // A velocity grid that is not there, or whose download failed (with the network
+                // on, a grid counts as available until it is fetched), is a missing grid, not a
+                // point outside it.
+                if datum::grids_missing(steps) {
+                    return Error::MissingGrid(format!(
+                        "cannot move ({x}, {y}) between coordinate epochs: the velocity grid ({names}) is not available; set TERRIO_NETWORK=ON or TERRIO_GRID_DIR"
+                    ));
+                }
+                Error::Crs(format!("cannot move ({x}, {y}) between coordinate epochs: outside the velocity grid ({names})"))
             })?,
             None => p,
         };
@@ -2043,11 +2215,24 @@ impl Transformer {
 
     /// Transforms a bounding box `(min_x, min_y, max_x, max_y)`, densifying its edges so that
     /// curved edges in the target CRS are covered. Points that fail to transform are skipped.
+    /// Uses 21 interior points per edge, as GDAL 3.12.1 does by default.
     pub fn transform_bounds(&self, b: (f64, f64, f64, f64)) -> Result<(f64, f64, f64, f64)> {
-        const STEPS: usize = 20;
+        self.transform_bounds_densified(b, 21)
+    }
+
+    /// Transforms bounds with `densify` interior points per edge. Projected boxes containing
+    /// a pole include that pole and the full longitude range in a geographic target CRS.
+    /// Geographic antimeridian crossings retain scalar longitude minima and maxima; wrapped
+    /// bounds with `min_x > max_x` are not produced.
+    /// Counts above 65,536 interior points per edge are refused to bound computation time.
+    pub fn transform_bounds_densified(&self, b: (f64, f64, f64, f64), densify: usize) -> Result<(f64, f64, f64, f64)> {
+        let steps = densify.checked_add(1).ok_or_else(|| Error::Crs("densify count is too large".into()))?;
+        if densify > 65_536 {
+            return Err(Error::Crs("densify count must not exceed 65536 interior points per edge".into()));
+        }
         let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
-        for i in 0..=STEPS {
-            let t = i as f64 / STEPS as f64;
+        for i in 0..=steps {
+            let t = i as f64 / steps as f64;
             let x = b.0 + (b.2 - b.0) * t;
             let y = b.1 + (b.3 - b.1) * t;
             for (px, py) in [(x, b.1), (x, b.3), (b.0, y), (b.2, y)] {
@@ -2065,13 +2250,133 @@ impl Transformer {
         if !x0.is_finite() {
             return Err(Error::Crs("no point of the bounds could be transformed".into()));
         }
+        if self.src.is_projected() && self.dst.is_geographic() {
+            // Synthetic probes must not record diagnostics or change operation reporting for
+            // actual edge coordinates. In particular, UTM's projected pole is usually outside
+            // the box and outside the datum operation's area of use.
+            route::recording(|| {
+                let reverse = self.bounds_reverse_route.get_or_init(|| route::Route::new(&self.dst, &self.src));
+                for lat in [std::f64::consts::FRAC_PI_2, -std::f64::consts::FRAC_PI_2] {
+                    let probe = || -> Option<()> {
+                        let (px, py) = self.dst.project(0.0, lat)?;
+                        let p = datum::Point { lon: 0.0, lat, h: 0.0, t: self.time };
+                        let mut q = reverse.apply(&self.dst, px, py, p, false)?;
+                        if let Some(steps) = &self.motion {
+                            q = datum::run(steps, q, true, true)?;
+                        }
+                        let (sx, sy) = self.src.project(q.lon, q.lat)?;
+                        if !(b.0 < sx && sx < b.2 && b.1 < sy && sy < b.3) {
+                            return None;
+                        }
+                        let (lon, phi) = self.src.unproject(sx, sy)?;
+                        let mut p = datum::Point { lon, lat: phi, h: 0.0, t: self.time };
+                        if let Some(steps) = &self.motion {
+                            p = datum::run(steps, p, false, true)?;
+                        }
+                        let q = self.bounds_probe_forward(sx, sy, p)?;
+                        if !q.lat.is_finite() || (q.lat - lat).abs() > 1e-10 {
+                            return None;
+                        }
+                        Some(())
+                    };
+                    if probe().is_some() {
+                        for (x, y) in self.dst.pole_bounds(lat) {
+                            x0 = x0.min(x);
+                            y0 = y0.min(y);
+                            x1 = x1.max(x);
+                            y1 = y1.max(y);
+                        }
+                    }
+                }
+            });
+        }
         Ok((x0, y0, x1, y1))
+    }
+
+    /// Apply the forward policy to a synthetic bounds probe without recording diagnostics.
+    fn bounds_probe_forward(&self, x: f64, y: f64, p: datum::Point) -> Option<datum::Point> {
+        if self.policy.only_best && !self.route.same_datum() {
+            let route = self.best_route();
+            let (selected, _) = route.selected(&self.src, x, y, p);
+            if selected.is_some_and(|op| !op.available())
+                || (self.policy.allow_ballpark == Some(false) && selected.is_none_or(|op| op.ballpark))
+            {
+                return None;
+            }
+            route.apply_selected(&self.src, x, y, p, false, selected)
+        } else {
+            let refused_ballpark = std::cell::Cell::new(false);
+            let q = self.route.apply_reporting(&self.src, x, y, p, false, &|op, _| {
+                if self.policy.allow_ballpark == Some(false) && op.is_none_or(|op| op.ballpark) {
+                    refused_ballpark.set(true);
+                }
+            })?;
+            (!refused_ballpark.get()).then_some(q)
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Polar bounds from GDAL 3.12.1 include an interior pole and every longitude.
+    #[test]
+    fn transform_bounds_contains_interior_poles() {
+        for (code, pole) in [(3413, 90.0), (3995, 90.0), (3031, -90.0), (3976, -90.0)] {
+            let t = Transformer::new(&SpatialRef::from_epsg(code).unwrap(), &SpatialRef::from_epsg(4326).unwrap()).unwrap();
+            let b = t.transform_bounds((-1e6, -1e6, 1e6, 1e6)).unwrap();
+            assert_eq!((b.0, b.2), (-180.0, 180.0), "EPSG:{code}: {b:?}");
+            assert_eq!(if pole > 0.0 { b.3 } else { b.1 }, pole, "EPSG:{code}: {b:?}");
+        }
+    }
+
+    #[test]
+    fn transform_bounds_probes_do_not_record_diagnostics() {
+        let t = Transformer::new(&SpatialRef::from_epsg(25830).unwrap(), &SpatialRef::from_epsg(4326).unwrap()).unwrap();
+        let b = t.transform_bounds((500_000.0, 4_000_000.0, 600_000.0, 4_100_000.0)).unwrap();
+        assert!(b.0 > -4.0 && b.2 < -1.0 && b.1 > 35.0 && b.3 < 38.0, "{b:?}");
+        assert_eq!(t.diagnostics.load(std::sync::atomic::Ordering::Relaxed), 0);
+        // Real out-of-area coordinates must still record a warning.
+        t.transform(500_000.0, -4_000_000.0).unwrap();
+        assert_ne!(t.diagnostics.load(std::sync::atomic::Ordering::Relaxed) & 4, 0);
+    }
+
+    #[test]
+    fn transform_bounds_probe_refuses_an_unavailable_best_operation() {
+        let source = SpatialRef::parse("+proj=stere +lat_0=90 +datum=NAD27").unwrap();
+        let target = SpatialRef::from_epsg(4326).unwrap();
+        let mut t = Transformer::with_options(&source, &target, &TransformOptions { only_best: true, ..Default::default() }).unwrap();
+        // A world-covering required grid whose file cannot exist, independent of installed
+        // PROJ data. The ordinary NAD27 route remains available as a fallback.
+        let directory = tempfile::tempdir().unwrap();
+        let grid = directory.path().join("missing.gsb");
+        let ideal = Def::from_proj(&format!("+proj=stere +lat_0=90 +ellps=clrk66 +nadgrids={}", grid.display())).unwrap();
+        assert!(t.best_route.set(route::Route::all(&ideal, &t.dst)).is_ok());
+        let p = datum::Point { lon: 0.0, lat: std::f64::consts::FRAC_PI_2, h: 0.0, t: None };
+        assert!(t.bounds_probe_forward(0.0, 0.0, p).is_none());
+        assert_eq!(t.diagnostics.load(std::sync::atomic::Ordering::Relaxed), 0);
+        t.policy.only_best = false;
+        assert!(t.bounds_probe_forward(0.0, 0.0, p).is_some());
+        t.policy.only_best = true;
+        assert!(matches!(t.transform(0.0, 0.0), Err(Error::MissingGrid(_))));
+        assert_ne!(t.diagnostics.load(std::sync::atomic::Ordering::Relaxed) & 2, 0);
+    }
+
+    #[test]
+    fn transform_bounds_uses_requested_densification() {
+        let t = Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &SpatialRef::from_epsg(5070).unwrap()).unwrap();
+        let b = (-100.0, 30.0, -90.0, 40.0);
+        let corners = t.transform_bounds_densified(b, 0).unwrap();
+        let dense = t.transform_bounds_densified(b, 21).unwrap();
+        assert!(dense.1 < corners.1, "{dense:?} {corners:?}");
+        assert_eq!(dense, t.transform_bounds(b).unwrap());
+        assert!(t.transform_bounds_densified(b, usize::MAX).is_err());
+        assert!(t.transform_bounds_densified(b, 65_537).is_err());
+        let identity = Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &SpatialRef::from_epsg(4326).unwrap()).unwrap();
+        assert_eq!(identity.transform_bounds_densified(b, 65_536).unwrap(), b);
+        assert!(t.transform_bounds((f64::NAN, f64::NAN, f64::NAN, f64::NAN)).is_err());
+    }
 
     /// GDAL 3.12.1 axis predicates: projected, geographic, 3D and non-NE controls.
     #[test]

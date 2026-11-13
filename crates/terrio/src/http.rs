@@ -487,7 +487,7 @@ struct Client {
     azure: bool,
     /// The options the creating thread had set for itself (see [`crate::config`]): requests may be
     /// sent from other threads, which do not have them.
-    config: HashMap<String, Option<String>>,
+    config: crate::config::ThreadOptions,
     /// The headers every request for the file carries ([`Client::resolve_headers`]), resolved
     /// once, when the client is created, as GDAL's `/vsicurl/` handle reads its options when it is
     /// created: an option changed later (a path-specific header, a token) does not change what an
@@ -575,7 +575,7 @@ impl Client {
     /// A client sending its requests through `agent` (whose connections it shares).
     fn with_agent(remote: &Remote, options: HttpOptions, agent: ureq::Agent) -> Self {
         let auth = matches!(remote, Remote::S3(_)).then(|| (Credentials::from_env(), s3::region_from_env()));
-        Self::with_auth(remote, options, agent, auth, crate::config::thread_options())
+        Self::with_auth(remote, options, agent, auth, crate::config::ThreadOptions::capture())
     }
 
     /// A client with S3 credentials and region already resolved (`auth`, for S3 objects), under
@@ -586,7 +586,7 @@ impl Client {
         options: HttpOptions,
         agent: ureq::Agent,
         auth: Option<(Option<Credentials>, Option<String>)>,
-        config: HashMap<String, Option<String>>,
+        config: crate::config::ThreadOptions,
     ) -> Self {
         let (url, s3, azure) = match remote {
             Remote::Url(u) => match u.strip_prefix(azure_bearer_prefix()) {
@@ -657,10 +657,7 @@ impl Client {
     /// the process's options or the environment. Read only while the client is created (by the
     /// creating thread), see [`Client::headers`].
     fn option(&self, keys: &[&str]) -> Option<String> {
-        keys.iter().find_map(|k| match self.config.get(*k) {
-            Some(v) => v.clone().filter(|v| !v.trim().is_empty()),
-            None => crate::config::get(k),
-        })
+        self.config.get_any(keys)
     }
 
     /// The names of the file for path-specific options: its URL, and its GDAL virtual file system
@@ -1401,7 +1398,7 @@ pub(crate) struct ObjectFetcher {
     /// S3 credentials and region from the environment, read once rather than for every object.
     auth: (Option<Credentials>, Option<String>),
     /// The creating thread's options (see [`crate::config`]): objects are fetched from any thread.
-    config: HashMap<String, Option<String>>,
+    config: crate::config::ThreadOptions,
 }
 
 impl ObjectFetcher {
@@ -1415,7 +1412,7 @@ impl ObjectFetcher {
             options,
             region: Mutex::new(None),
             auth,
-            config: crate::config::thread_options(),
+            config: crate::config::ThreadOptions::capture(),
         }
     }
 
@@ -3736,8 +3733,8 @@ mod tests {
     ///
     /// Not on macOS: there a child forked while another thread was in the middle of a remote
     /// read died of SIGTRAP (exit by signal 5), as forked children of multi-threaded test
-    /// processes do in `par`'s tests. The cause is unconfirmed; #696 tracks a macOS-safe check
-    /// of the same locks.
+    /// processes do in `par`'s tests. The cause is unconfirmed; the lock-only regression below
+    /// checks the hand-off on macOS without calling system networking libraries in the child.
     #[test]
     #[cfg(all(unix, not(target_os = "macos")))]
     fn a_child_forked_during_remote_reads_reads_remote_files() {
@@ -3787,6 +3784,92 @@ mod tests {
             stop.store(true, Ordering::Release);
             for t in threads {
                 t.join().unwrap();
+            }
+            true
+        });
+    }
+
+    /// Each HTTP lock independently delays a fork until its holder releases it, and is available
+    /// in both processes afterwards. Unlike a remote read in the child, this also runs on macOS:
+    /// no HTTP agent, resolver or proxy settings are initialized. Independent probes of the actual
+    /// locks catch any omitted guard, even if the holder's sleep ends before the fork is scheduled.
+    #[test]
+    #[cfg(unix)]
+    fn each_remote_read_lock_is_handed_off_across_a_fork() {
+        use std::any::Any;
+
+        struct Case {
+            name: &'static str,
+            hold: fn() -> Box<dyn Any>,
+            available: fn() -> bool,
+        }
+
+        crate::par::alone(60, || {
+            crate::par::fork_safe();
+            let cases = [
+                Case { name: "file cache", hold: || Box::new(FILE_CACHE.lock().unwrap()), available: || FILE_CACHE.try_lock().is_ok() },
+                Case {
+                    name: "host statistics",
+                    hold: || Box::new(HOST_STATS.lock().unwrap()),
+                    available: || HOST_STATS.try_lock().is_ok(),
+                },
+                Case {
+                    name: "file statistics",
+                    hold: || Box::new(FILE_STATS.lock().unwrap()),
+                    available: || FILE_STATS.try_lock().is_ok(),
+                },
+                Case {
+                    name: "path options reader",
+                    hold: || Box::new(PATH_OPTIONS.read().unwrap()),
+                    available: || PATH_OPTIONS.try_write().is_ok(),
+                },
+                Case {
+                    name: "path options writer",
+                    hold: || Box::new(PATH_OPTIONS.write().unwrap()),
+                    available: || PATH_OPTIONS.try_read().is_ok(),
+                },
+                Case {
+                    name: "retry warnings",
+                    hold: || Box::new(RETRY_WARNINGS.lock().unwrap()),
+                    available: || RETRY_WARNINGS.try_lock().is_ok(),
+                },
+                Case {
+                    name: "process agent",
+                    hold: || Box::new(PROCESS_AGENT.lock().unwrap()),
+                    available: || PROCESS_AGENT.try_lock().is_ok(),
+                },
+            ];
+            // Check each guard independently of thread scheduling. A fork that is delayed until
+            // after the holder's sleep below must not hide an omitted lock in `hold_for_fork`.
+            let mut held = Vec::new();
+            hold_for_fork(&mut held);
+            for case in &cases {
+                assert!(!(case.available)(), "{}: hold_for_fork omitted the lock", case.name);
+            }
+            drop(held);
+            for Case { name, hold, available } in cases {
+                assert!(available(), "{name}: dropping the guards did not release the lock");
+                let (holding, released) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+                let (h, r) = (holding.clone(), released.clone());
+                let holder = std::thread::spawn(move || {
+                    // Only this lock is held: another lock cannot accidentally serialize the fork.
+                    let guard = hold();
+                    h.store(true, Ordering::Release);
+                    std::thread::sleep(Duration::from_millis(300));
+                    r.store(true, Ordering::Release);
+                    drop(guard);
+                });
+                while !holding.load(Ordering::Acquire) {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                let exit = crate::par::in_child(10, || {
+                    // Check the child's snapshot, before trying the lock: the parent's later
+                    // release cannot make a fork that skipped this lock look successful.
+                    released.load(Ordering::Acquire) && available()
+                });
+                holder.join().unwrap();
+                assert_eq!(exit, Some(0), "{name}: the fork skipped the lock, the child failed or timed out");
+                assert!(available(), "{name}: the parent did not release the fork's guard");
             }
             true
         });
@@ -4685,7 +4768,7 @@ mod tests {
     /// proxy `agent`), without credentials or a configured region.
     fn amazon_client(agent: ureq::Agent) -> Client {
         let remote = Remote::S3(S3Object { bucket: "bucket".to_string(), key: "key.tif".to_string() });
-        Client::with_auth(&remote, options(), agent, Some((None, None)), crate::config::thread_options())
+        Client::with_auth(&remote, options(), agent, Some((None, None)), crate::config::ThreadOptions::capture())
     }
 
     /// The options of [`amazon_client`]'s requests: Amazon's endpoints over plain HTTP, whatever
@@ -5342,8 +5425,7 @@ mod tests {
 
     /// A remote file named for no raster driver, or for ENVI (`x.dat`), whose first bytes show a
     /// format that the whole read of a raster does not take under that name was downloaded whole
-    /// before that read refused it: 30,000,000 bytes of a TIFF (the whole read's; a lazy open reads
-    /// a TIFF by range whatever its name) or of a PNG named `x`, and so for a JPEG, a JPEG 2000, a
+    /// before that read refused it: TIFF, PNG and JPEG named for ENVI, and a JPEG 2000, a
     /// WebP, a GeoPackage, a PMTiles archive, a VRT, a STAC item and, named for ENVI, a GRIB,
     /// netCDF or HDF5 file. Each is refused after its first 16,384 bytes, the same failure, the
     /// error naming the dataset and what its first bytes hold.
@@ -5363,9 +5445,9 @@ mod tests {
         stac.truncate(1_000_000);
         let both: &[&str] = &["x", "x.dat"];
         let cases: Vec<(&str, Vec<u8>, &[&str])> = vec![
-            ("GTIFF", file(b"II*\0", 30_000_000), both),
-            ("PNG", file(b"\x89PNG\r\n\x1a\n", 30_000_000), both),
-            ("JPEG", file(&[0xFF, 0xD8, 0xFF, 0xE0], 1_000_000), both),
+            ("GTIFF", file(b"II*\0", 30_000_000), &["x.dat"]),
+            ("PNG", file(b"\x89PNG\r\n\x1a\n", 30_000_000), &["x.dat"]),
+            ("JPEG", file(&[0xFF, 0xD8, 0xFF, 0xE0], 1_000_000), &["x.dat"]),
             ("JP2", file(b"\0\0\0\x0cjP  \r\n\x87\n", 1_000_000), both),
             ("WEBP", file(b"RIFF\0\0\0\0WEBP", 1_000_000), both),
             ("GPKG", file(b"SQLite format 3\0", 1_000_000), both),
@@ -5402,8 +5484,8 @@ mod tests {
     }
 
     /// The generic open of a remote file (`info`, `open`) named for no driver, or for ENVI, read
-    /// it whole the same way: a 1,000,000-byte GeoJSON, random, CSV, XML or PNG document named `x`,
-    /// `x.dat` or `dir.json/x` was downloaded whole and refused, naming the local copy. It is
+    /// it whole the same way: a 1,000,000-byte GeoJSON, random, CSV or XML document named `x`,
+    /// `x.dat` or `dir.json/x`, or PNG named `x.dat`, was downloaded whole and refused, naming the local copy. It is
     /// refused after its first 16,384 bytes, naming the dataset; a netCDF file named `x` is still
     /// read whole, and a CSV document named `x.csv` too (as a vector, by its name).
     // Without the GDAL backend: with it, what terrio refuses goes on to GDAL (gdal_fallback).
@@ -5424,6 +5506,11 @@ mod tests {
             };
             let (base, seen) = serve_recording(bytes, None);
             for name in ["x", "x.dat", "dir.json/x"] {
+                // Native image signatures select readers under names of no raster driver.
+                // ENVI's name still requires its header and is refused before downloading.
+                if format == Some("PNG") && name != "x.dat" {
+                    continue;
+                }
                 let url = format!("{base}/{name}");
                 let asked = asked_bytes(&seen);
                 if format == Some("GEOJSON") {

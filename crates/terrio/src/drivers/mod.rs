@@ -90,7 +90,17 @@ fn read_own(path: &str) -> Option<Result<RasterDataset>> {
     if by_extension.is_none() && grib::is_grib(p) {
         return Some(check_recognised(RasterDriver::GRIB, path).and_then(|()| grib::read(p)));
     }
-    let driver = by_extension?;
+    let driver = by_extension.or_else(|| {
+        use std::io::Read;
+        let mut head = [0; 16];
+        let n = std::fs::File::open(p).ok()?.read(&mut head).ok()?;
+        image_content_driver(&head[..n])
+    })?;
+    if by_extension.is_none()
+        && let Err(error) = check_recognised(driver, path)
+    {
+        return Some(Err(error));
+    }
     if let Err(e) = driver.ensure_built() {
         return Some(Err(e));
     }
@@ -99,6 +109,7 @@ fn read_own(path: &str) -> Option<Result<RasterDataset>> {
         RasterDriver::XYZ => xyz::read(p),
         RasterDriver::PNG => png::read(p),
         RasterDriver::JPEG => png::read_jpeg(p),
+        RasterDriver::GTiff if by_extension.is_none() => crate::geotiff::read_geotiff(p),
         RasterDriver::WEBP => webp::read(p),
         #[cfg(feature = "jp2")]
         RasterDriver::JP2 => jp2::read(p),
@@ -119,6 +130,16 @@ fn read_own(path: &str) -> Option<Result<RasterDataset>> {
         RasterDriver::Zarr => zarr::read(p),
         _ => return None,
     })
+}
+
+/// Native image formats whose signatures also select a whole-file reader without an extension.
+fn image_content_driver(head: &[u8]) -> Option<RasterDriver> {
+    match crate::formats::sniff(head)? {
+        "PNG" => Some(RasterDriver::PNG),
+        "JPEG" => Some(RasterDriver::JPEG),
+        "GTIFF" => Some(RasterDriver::GTiff),
+        _ => None,
+    }
 }
 
 /// Whether [`read`] takes a lone file named `name` (in a directory of its own, as a remote file's
@@ -163,7 +184,7 @@ pub(crate) fn lone_file_driver(name: &str, head: &[u8], len: u64) -> Option<Rast
     if grib::is_grib_bytes(head) {
         return Some(RasterDriver::GRIB);
     }
-    None
+    image_content_driver(head)
 }
 
 /// Refuses `path`, which one of terrio's drivers recognised by its content or by a file beside it

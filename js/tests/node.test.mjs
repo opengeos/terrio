@@ -101,6 +101,17 @@ test("the block cache's size is set, read back and cleared", () => {
   }
 });
 
+test("raster info includes the interior pole in geographic bounds", () => {
+  for (const [crs, pole] of [["EPSG:3413", 90], ["EPSG:3995", 90], ["EPSG:3031", -90], ["EPSG:3976", -90]]) {
+    const ds = terrio.rasterFromArray(new Uint8Array(4), 2, 2, [-1e6, 1e6, 0, 1e6, 0, -1e6], crs, 255);
+    const bounds = ds.info().wgs84_extent;
+    assert.equal(bounds[0], -180);
+    assert.equal(bounds[2], 180);
+    assert.equal(bounds[pole > 0 ? 3 : 1], pole);
+    ds.free();
+  }
+});
+
 test("raster from array, to GeoTIFF bytes and back", () => {
   const data = new Int16Array(2 * 3 * 4).map((_, i) => i - 5);
   const ds = terrio.rasterFromArray(data, 4, 3, [500000, 30, 0, 4100000, 0, -30], "EPSG:32610", -9999);
@@ -497,6 +508,8 @@ test("CRS transforms", () => {
   assert.equal(crs.epsg, 32633);
   assert.equal(JSON.parse(terrio.crsToProjjson("EPSG:32633")).conversion.name, "UTM zone 33N");
   assert.throws(() => terrio.crsToProjjson("+proj=longlat +lon_0=10 +datum=WGS84"), /lon_0/);
+  // PROJ 9.8.1's projinfo -o PROJ.
+  assert.equal(terrio.crsToProj4("EPSG:32633"), "+proj=utm +zone=33 +datum=WGS84 +units=m +no_defs +type=crs");
   assert.match(crs.name, /UTM zone 33N/);
   assert.equal(crs.geographic, false);
   // PROJ 9.8.1 resolves the authority version separately from the EPSG code.
@@ -1003,6 +1016,29 @@ test("neighbors, collar cleaning and LUT enhancement", () => {
   const precise = terrio.enhance(source, { srcScale: [0, 256], ot: "Float64" });
   assert.equal(precise.nodata, nodata);
   assert.deepEqual([...precise.readBand(1)], [nodata, 1]);
+});
+
+test("global longitude warps fill the seam and count both sides of zero", () => {
+  const field = new Float64Array(360 * 20).map((_, i) => i % 360 === 0 ? 4 : i % 360 === 359 ? 2 : 1);
+  const source = terrio.rasterFromArray(field, 360, 20, [0, 1, 0, 10, 0, -1], "EPSG:4326");
+  const world = terrio.rasterFromArray(new Float64Array(360 * 180).fill(1), 360, 180,
+    [-180, 1, 0, 90, 0, -1], "EPSG:4326");
+  try {
+    for (const gridInvariant of [true, false]) {
+      for (const resampling of ["near", "bilinear", "cubic"]) {
+        const out = terrio.warp(world, { tSrs: "EPSG:3995", te: [-262500, 1200000, 262500, 1250000],
+          ts: [21, 2], resampling, dstNodata: -999, ot: "Float64", gridInvariant });
+        try { assert.ok([...out.readBand(1)].every((value) => Math.abs(value - 1) < 1e-10)); }
+        finally { out.free(); }
+      }
+      for (const [resampling, expected] of [["sum", 1.8], ["average", 3.6]]) {
+        const out = terrio.warp(source, { tSrs: "EPSG:4326", te: [-0.1, 0, 0.4, 1], ts: [1, 1],
+          resampling, dstNodata: -999, ot: "Float64", gridInvariant });
+        try { assert.ok(Math.abs(out.readBand(1)[0] - expected) < 1e-10); }
+        finally { out.free(); }
+      }
+    }
+  } finally { source.free(); world.free(); }
 });
 
 test("operations on in-memory rasters and layers", () => {
@@ -2632,6 +2668,26 @@ test("complex TIFF memory copies retain exact Int32 components and sample tags",
     assert.deepEqual([...copy.readBand(2)],[-16777221,16777223]);
   }
 });
+
+for (const extension of ["mbtiles", "pmtiles"]) {
+  test(`${extension}: JPEG quality parses complete numbers`, { skip: needs("tiles") }, () => {
+    const side = 256;
+    const values = new Uint8Array(3 * side * side).map((_, i) => (i * 37 + Math.floor(i / side)) % 251);
+    const halfWorld = 20037508.342789244;
+    const resolution = 2 * halfWorld / side / 2048;
+    const transform = [-halfWorld + 1000 * side * resolution, resolution, 0, halfWorld - 700 * side * resolution, 0, -resolution];
+    const image = terrio.rasterFromArray(values, side, side, transform, "EPSG:3857");
+    const encode = quality => image.toBytes(`image.${extension}`, {creationOptions: {TILE_FORMAT: "JPEG", QUALITY: quality}});
+    try {
+      for (const quality of ["50abc", "nan", "0", "500"]) {
+        assert.throws(() => encode(quality), /QUALITY=.*not a legal value in the range 1-100/);
+      }
+      for (const [quality, canonical] of [["1e2", "100"], ["7.5e1", "75"], ["80.9", "80"]]) {
+        assert.deepEqual(encode(quality), encode(canonical));
+      }
+    } finally { image.free(); }
+  });
+}
 
 test("JPEG 2000 quality and reversible options reach the WASM encoder", { skip: needs("jp2") }, () => {
   const n = 64 * 64;
@@ -4843,6 +4899,24 @@ test("MapInfo MIF archives read in WebAssembly", () => {
   dataset.free();
 });
 
+test("MIF requires a header and retains valid empty layers", () => {
+  const encode = (text) => new TextEncoder().encode(text);
+  for (const text of ["", "hello\n", JSON.stringify({type: "FeatureCollection", features: [{type: "Feature", properties: {}, geometry: {type: "Point", coordinates: [10, 46]}}]}),
+    "Data\n", "Version 300\nData\n", "Columns 0\nData\n", "Version 300\nColumns 0\n"]) {
+    for (const open of [terrio.open, terrio.openVector]) {
+      assert.throws(() => open(encode(text), "x.mif", {}), /MIF:/);
+    }
+  }
+  for (const text of ['Version 300\nColumns 1\nN Integer\nData\n',
+    '\ufeffvErSiOn 300\r\ncOlUmNs 1\r\nN Integer\r\ndAtA\r\n']) {
+    const dataset = terrio.open(encode(text), "x.mif");
+    try {
+      assert.deepEqual(dataset.toGeoJSON().features, []);
+      assert.equal(dataset.info().layers[0].fields[0].name, "N");
+    } finally { dataset.free(); }
+  }
+});
+
 test("ZIP layer selection uses the member name rather than the archive name", () => {
   const source = terrio.fromGeoJSON({type: "FeatureCollection", features: [{
     type: "Feature", properties: {}, geometry: {type: "Point", coordinates: [1, 2]},
@@ -5066,7 +5140,8 @@ test("coarse geographic warp footprints survive exact and approximate transforms
         const width = right + 180;
         let total = 0, weight = 0;
         for (let x = 0; x < 360; x++) {
-          const w = Math.max(0, 1 - Math.abs(x + 0.5 - width / 2) / width);
+          const w = [-360, 0, 360].reduce((sum, shift) =>
+            sum + Math.max(0, 1 - Math.abs(x + 0.5 + shift - width / 2) / width), 0);
           total += values[x] * w; weight += w;
         }
         const result = terrio.warp(source, { tSrs: "EPSG:4326", te: [-180, -2, right, 2], ts: [1, 2],
@@ -5076,7 +5151,7 @@ test("coarse geographic warp footprints survive exact and approximate transforms
       }
       const projected = terrio.warp(source, { tSrs: "EPSG:3857", te: [-20037508.342789244, -200000, 20037508.342789244, 200000],
         ts: [1, 2], resampling: "bilinear", ot: "Float64", kernelVersion, et, gridInvariant: true });
-      for (const v of projected.readBand(1)) assert.ok(Math.abs(v - 259.2592592592594) < 1e-9, `${crs} projected et=${et}: ${v}`);
+      for (const v of projected.readBand(1)) assert.ok(Math.abs(v - 1000 / 3) < 1e-9, `${crs} projected et=${et}: ${v}`);
       projected.free();
     }
     source.free();
@@ -5251,4 +5326,212 @@ test("FlatGeobuf stored CRS validation discards prose and retains definition for
       } finally { result.free(); }
     }
   } finally { source.free(); }
+});
+test("GeoJSON byte exports name ESRI CRSs and refuse unnamed CRS loss", () => {
+  for (const definition of ["EPSG:32615", "ESRI:102003", "ESRI:102100", "IAU_2015:49900"]) {
+    const source = terrio.fromGeoJSON(SQUARES, "squares", definition);
+    try {
+      const bytes = source.toBytes("squares.geojson");
+      const document = JSON.parse(new TextDecoder().decode(bytes));
+      const [authority, code] = definition.split(":");
+      assert.equal(document.crs.properties.name, `urn:ogc:def:crs:${authority}::${code}`);
+      const back = terrio.open(bytes, "squares.geojson");
+      try {
+        assert.equal(back.crs, definition);
+        assert.deepEqual(back.toGeoJSON().features, source.toGeoJSON().features);
+      } finally { back.free(); }
+    } finally { source.free(); }
+  }
+  for (const definition of ['LOCAL_CS["site grid",UNIT["metre",1]]', "+proj=tmerc +datum=WGS84 +lon_0=-93.5 +k=1 +units=m"]) {
+    const source = terrio.fromGeoJSON(SQUARES, "squares", definition);
+    try {
+      assert.throws(() => source.toBytes("squares.geojson"), /GeoJSON cannot name.*RFC7946=YES/);
+    } finally { source.free(); }
+  }
+});
+test("chunk windows retain polar meridian edge pixels", () => {
+  const values = Uint8Array.from({length: 3600 * 200}, (_, i) => (Math.floor(i / 3600) * 7 + i % 3600) % 250 + 1);
+  const source = terrio.rasterFromArray(values, 3600, 200, [-180, 0.1, 0, 90, 0, -0.1], "EPSG:4326");
+  try {
+    for (const kernelVersion of ["3.12", "3.13"]) {
+      for (const resampling of ["near", "average"]) {
+        const output = terrio.warp(source, {
+          tSrs: "EPSG:3413", te: [-800000, -775000, 0, 25000], ts: [32, 32],
+          resampling, gridInvariant: false, kernelVersion, dstNodata: 0,
+        });
+        try { assert.ok([...output.readBand(1)].every(value => value !== 0)); }
+        finally { output.free(); }
+      }
+    }
+  } finally { source.free(); }
+});
+
+test("curved coarse footprints retain their centers", () => {
+  const values = Float64Array.from({length: 360 * 180}, (_, i) => i % 360 + 0.5 - 180);
+  const source = terrio.rasterFromArray(values, 360, 180, [-180, 1, 0, 90, 0, -1], "EPSG:4326");
+  const degree = 6371000 * Math.PI / 180;
+  try {
+    for (const kernelVersion of ["3.12", "3.13"]) for (const gridInvariant of [true, false]) {
+      for (const [resampling, expected] of [["min", -171.5], ["max", 15.5]]) {
+        const output = terrio.warp(source, {
+          tSrs: "+proj=sinu +lon_0=0 +R=6371000 +units=m +no_defs", te: [-3 * degree, 0, 16 * degree, 89 * degree],
+          ts: [1, 1], resampling, gridInvariant, kernelVersion, ot: "Float64",
+        });
+        try { assert.equal(output.readBand(1)[0], expected); }
+        finally { output.free(); }
+      }
+    }
+  } finally { source.free(); }
+});
+
+test("polar meridian corners keep kernels and sums local", () => {
+  const wave = new Float64Array(180 * 360).map((_, i) => 100 * Math.cos((-179.5 + i % 360) * Math.PI / 180));
+  const ones = new Float64Array(180 * 360).fill(1);
+  const grid = [-180, 1, 0, 90, 0, -1];
+  const field = terrio.rasterFromArray(wave, 360, 180, grid, "EPSG:4326");
+  const constant = terrio.rasterFromArray(ones, 360, 180, grid, "EPSG:4326");
+  try {
+    for (const kernelVersion of ["3.12", "3.13"]) {
+      for (const gridInvariant of [true, false]) {
+        for (const resampling of ["bilinear", "cubic", "sum"]) {
+          const output = terrio.warp(resampling === "sum" ? constant : field, {
+            tSrs: "EPSG:3413", te: [-1375000, 1325000, -1300000, 1350000], ts: [3, 1],
+            resampling, ot: "Float64", dstNodata: -999, et: 0, gridInvariant, kernelVersion,
+          });
+          try {
+            for (const value of output.readBand(1)) {
+              assert.ok(resampling === "sum" ? value > 0.1 && value < 0.2 : value < -99.9 && value >= -100.1,
+                `${kernelVersion}/${gridInvariant}/${resampling}: ${value}`);
+            }
+          } finally { output.free(); }
+        }
+      }
+    }
+  } finally { field.free(); constant.free(); }
+});
+
+test("engineering GeoTIFF and COG bytes retain local CRS definitions", () => {
+  const local = 'LOCAL_CS["site grid",LOCAL_DATUM["site",32767],UNIT["metre",1],AXIS["Easting",EAST],AXIS["Northing",NORTH]]';
+  const engineering = 'ENGINEERINGCRS["Astra Minas Grid",ENGINEERINGDATUM["Astra Minas"],CS[Cartesian,2],AXIS["northing (X)",north,ORDER[1]],AXIS["westing (Y)",west,ORDER[2]],LENGTHUNIT["metre",1],ID["EPSG",5800]]';
+  const values = new Float32Array([1, 2, 3, 4]);
+  const transform = [1000, 10, 0, 2000, 0, -10];
+  for (const definition of [local, engineering]) {
+    const source = terrio.rasterFromArray(values, 2, 2, transform, definition);
+    try {
+      for (const format of ["GTiff", "COG"]) {
+        const back = terrio.open(source.toBytes("site.tif", {format}), "site.tif");
+        try {
+          assert.equal(back.info().crs?.wkt, definition);
+          assert.deepEqual([...back.transform], transform);
+          assert.deepEqual([...back.readBand(1)], [...values]);
+          assert.throws(() => back.toBytes("warped.tif", {tSrs: "EPSG:4326"}), /coordinate reference system/);
+          assert.deepEqual([...back.readBand(1)], [...values]);
+        } finally { back.free(); }
+      }
+    } finally { source.free(); }
+  }
+});
+for (const [extension, feature] of [["jp2", "jp2"], ["gpkg", "sqlite"]]) {
+  test(`${extension} bytes retain engineering WKT with an unknown EPSG identifier`, { skip: needs(feature) }, () => {
+    const definition = 'ENGINEERINGCRS["site",ENGINEERINGDATUM["site"],CS[Cartesian,2],AXIS["northing",north,ORDER[1]],AXIS["westing",west,ORDER[2]],LENGTHUNIT["metre",1],ID["EPSG",5800]]';
+    const values = new Uint8Array([1, 2, 3, 4]);
+    const transform = [1000, 10, 0, 2000, 0, -10];
+    const source = terrio.rasterFromArray(values, 2, 2, transform, definition);
+    try {
+      const back = terrio.open(source.toBytes(`site.${extension}`), `site.${extension}`);
+      try {
+        assert.equal(back.info().crs?.wkt, definition);
+        assert.deepEqual([...back.transform], transform);
+        assert.deepEqual([...back.readBand(1)], [...values]);
+        assert.throws(() => back.toBytes("warped.tif", {tSrs: "EPSG:4326"}), /coordinate reference system/);
+      } finally { back.free(); }
+    } finally { source.free(); }
+  });
+}
+
+test("TSV byte output uses tabs and preserves polygon commas", () => {
+  const source = terrio.fromGeoJSON(SQUARES, "squares", "EPSG:4326");
+  try {
+    for (const extension of ["csv", "tsv", "TSV"]) {
+      const filename = `squares.${extension}`;
+      const bytes = source.toBytes(filename);
+      const separator = extension === "csv" ? "," : "\t";
+      assert.ok(new TextDecoder().decode(bytes).startsWith(`WKT${separator}name${separator}value\n`));
+      const back = terrio.open(bytes, filename);
+      try {
+        const features = back.toGeoJSON().features;
+        assert.equal(features.length, SQUARES.features.length);
+        features.forEach((feature, i) => {
+          assert.deepEqual(feature.geometry, SQUARES.features[i].geometry);
+          assert.equal(feature.properties.name, SQUARES.features[i].properties.name);
+          assert.equal(feature.properties.value, SQUARES.features[i].properties.value);
+        });
+      } finally { back.free(); }
+    }
+  } finally { source.free(); }
+});
+
+test("CSV column collisions preserve attributes and geometry", () => {
+  for (const [text, coordinates] of [
+    ["X_2,Y_2\n10,46\n", null],
+    ["x_2,y_2,x,y\n80,81,10,46\n", [10, 46]],
+    ["X,Y,Z_2\n10,46,99\n", [10, 46]],
+    ["WKT,X_2,Y_2\nPOINT (10 46),tag,other\n", [10, 46]],
+  ]) {
+    const input = terrio.open(new TextEncoder().encode(text), "measurements.csv");
+    try {
+      const geometry = input.toGeoJSON().features[0].geometry;
+      assert.deepEqual(geometry?.coordinates ?? null, coordinates);
+    } finally { input.free(); }
+  }
+  for (const [extension, separator] of [["csv", ","], ["tsv", "\t"]]) {
+    const bytes = new TextEncoder().encode(`a${separator}a${separator}b\n1${separator}2${separator}3\n`);
+    const input = terrio.open(bytes, `repeated.${extension}`);
+    assert.deepEqual(input.toGeoJSON().features[0].properties, {a: 1, a_2: 2, b: 3});
+    input.free();
+    const source = terrio.fromGeoJSON({type: "FeatureCollection", features: [{
+      type: "Feature", properties: {WKT: "attribute", WKT_2: "reserved", id: 7},
+      geometry: {type: "Point", coordinates: [10, 46]},
+    }]});
+    const output = source.toBytes(`points.${extension}`);
+    const header = new TextDecoder().decode(output).split("\n")[0].split(separator);
+    assert.equal(new Set(header).size, header.length);
+    assert.equal(header[0], "__terrio_wkt");
+    const restored = terrio.open(output, `points.${extension}`);
+    const feature = restored.toGeoJSON().features[0];
+    assert.equal(feature.properties.WKT, "attribute");
+    assert.equal(feature.properties.WKT_2, "reserved");
+    assert.equal(feature.properties.id, 7);
+    assert.deepEqual(feature.geometry.coordinates, [10, 46]);
+    restored.free(); source.free();
+  }
+});
+
+test("TopoJSON CRS names and JSON reader defaults preserve coordinate meaning", () => {
+  for (const definition of ["EPSG:32615", "ESRI:102003", "IAU_2015:49900"]) {
+    const source = terrio.fromGeoJSON(SQUARES, "squares", definition);
+    try {
+      const bytes = source.toBytes("squares.topojson");
+      const [authority, code] = definition.split(":");
+      assert.equal(JSON.parse(new TextDecoder().decode(bytes)).crs.properties.name, `urn:ogc:def:crs:${authority}::${code}`);
+      const back = terrio.open(bytes, "squares.topojson");
+      try {
+        assert.equal(back.crs, definition);
+        assert.deepEqual(back.toGeoJSON().features.map(f => f.geometry), source.toGeoJSON().features.map(f => f.geometry));
+      } finally { back.free(); }
+    } finally { source.free(); }
+  }
+  const source = terrio.fromGeoJSON(SQUARES, "squares", 'LOCAL_CS["site grid",UNIT["metre",1]]');
+  try { assert.throws(() => source.toBytes("squares.topojson"), /TopoJSON cannot name/); }
+  finally { source.free(); }
+  const topology = {type: "Topology", arcs: [], objects: {points: {type: "Point", coordinates: [5000, 5000]}}};
+  const encode = document => new TextEncoder().encode(JSON.stringify(document));
+  const unknown = terrio.open(encode(topology), "points.topojson");
+  try { assert.equal(unknown.crs, undefined); }
+  finally { unknown.free(); }
+  for (const [extension, document] of [["topojson", topology], ["geojson", SQUARES]]) {
+    for (const name of ["urn:ogc:def:crs:EPSG::5800", "urn:ogc:def:crs:FOO::1", "not a crs"]) {
+      assert.throws(() => terrio.open(encode({...document, crs: {type: "name", properties: {name}}}), `points.${extension}`), /cannot resolve crs member/);
+    }
+  }
 });
