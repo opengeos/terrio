@@ -84,6 +84,7 @@ const CASES: &[(&str, (f64, f64))] = &[
     ("+proj=tmerc +lon_0=10 +R=6371000 +to_meter=2.5", (12.0, 48.0)),
     ("+proj=tmerc +lon_0=10 +ellps=bessel +towgs84=598.1,73.7,418.2,0.202,0.045,-2.455,6.7 +units=m", (12.0, 48.0)),
     ("+proj=tmerc +lon_0=10 +pm=3.5 +a=6378000 +rf=300 +units=m", (16.0, 48.0)),
+    ("+proj=longlat +ellps=bessel +pm=paris", (8.0, 48.0)),
     ("+proj=longlat +ellps=bessel +pm=paris +towgs84=1,2,3", (8.0, 48.0)),
 ];
 

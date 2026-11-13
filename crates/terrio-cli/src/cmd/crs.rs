@@ -21,13 +21,18 @@ pub struct Args {
     wkt: bool,
     /// Print only the PROJJSON definition, so that the output is a PROJJSON file (refused for a CRS
     /// it would describe wrongly).
-    #[arg(long, conflicts_with_all = ["to", "wkt", "proj4", "coords", "dimension", "transform_options", "s_coord_epoch", "t_coord_epoch"])]
+    #[arg(long, conflicts_with_all = ["to", "wkt", "proj4", "wkt1_strict", "coords", "dimension", "transform_options", "s_coord_epoch", "t_coord_epoch"])]
     projjson: bool,
     /// Print only the PROJ string, as `projinfo -o PROJ` writes it (an error for a CRS PROJ has
     /// none for, such as an engineering CRS). It leaves out what a PROJ string cannot hold, such as
     /// the datum transformation of an EPSG CRS: keep the code or WKT to keep the CRS.
-    #[arg(long, conflicts_with_all = ["to", "wkt", "coords", "dimension", "transform_options", "s_coord_epoch", "t_coord_epoch"])]
+    #[arg(long, conflicts_with_all = ["to", "wkt", "wkt1_strict", "coords", "dimension", "transform_options", "s_coord_epoch", "t_coord_epoch"])]
     proj4: bool,
+    /// Print only the WKT 1 without GDAL's PROJ4 extension, for formats whose readers ignore it
+    /// (a `.prj` file), as PROJ's `WKT1_GDAL` (an error where WKT 1 needs the extension, such as a
+    /// datum grid, or PROJ writes no WKT 1, such as a geographic 3D CRS).
+    #[arg(long, conflicts_with_all = ["to", "wkt", "coords", "dimension", "transform_options", "s_coord_epoch", "t_coord_epoch"])]
+    wkt1_strict: bool,
     /// Transform coordinates into this CRS. Reads `x y` pairs from the arguments, or lines of
     /// `x y`, `x y z` or `x y z t` (t: a decimal year) from standard input when none are given,
     /// as `gdaltransform` does (printing `transformation failed.` for a point that fails).
@@ -58,6 +63,13 @@ pub fn run(a: Args) -> terrio::Result<()> {
     let src = SpatialRef::parse(&a.crs)?;
     if a.projjson {
         println!("{}", src.to_projjson()?);
+        return Ok(());
+    }
+    if a.wkt1_strict {
+        let wkt = src
+            .to_wkt1_strict()
+            .ok_or_else(|| terrio::Error::InvalidArgument(format!("{} has no WKT 1 without the PROJ4 extension", src.label())))?;
+        println!("{wkt}");
         return Ok(());
     }
     if a.proj4 {

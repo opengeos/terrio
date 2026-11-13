@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Terrio CLI usage catalog v0.1.5 (unstable)",
+  "title": "Terrio CLI usage catalog v0.1.6 (unstable)",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -12,7 +12,7 @@
   ],
   "properties": {
     "schema_version": {
-      "const": "0.1.5"
+      "const": "0.1.6"
     },
     "unstable": {
       "const": true

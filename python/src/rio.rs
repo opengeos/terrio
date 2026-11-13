@@ -22,6 +22,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(crs_projjson, m)?)?;
     m.add_function(wrap_pyfunction!(crs_to_projjson, m)?)?;
     m.add_function(wrap_pyfunction!(crs_to_proj4, m)?)?;
+    m.add_function(wrap_pyfunction!(crs_to_wkt1_strict, m)?)?;
     m.add_function(wrap_pyfunction!(suggested_grid, m)?)?;
     m.add_function(wrap_pyfunction!(warped_vrt_type, m)?)?;
     m.add_function(wrap_pyfunction!(gcp_transform, m)?)?;
@@ -371,6 +372,22 @@ fn crs_to_projjson(crs: &str) -> PyResult<String> {
 #[pyfunction]
 fn crs_to_proj4(crs: &str) -> PyResult<Option<String>> {
     SpatialRef::parse(crs).map(|s| s.to_proj4()).py()
+}
+
+/// The WKT 1 of a CRS without GDAL's ``EXTENSION["PROJ4", ...]``, for formats whose readers
+/// ignore it (a ``.prj`` file), as PROJ 9.8.1 exports ``WKT1_GDAL``. Web Mercator (EPSG:3857)
+/// keeps GDAL's extension under its code.
+///
+/// Returns:
+///     str | None: The WKT 1, or None where WKT 1 needs the extension (a datum grid, an axis
+///     order or parameter it has no node for) or PROJ writes no WKT 1 (a geographic 3D CRS,
+///     Equal Earth).
+///
+/// Raises:
+///     CRSError: If the CRS cannot be parsed.
+#[pyfunction]
+fn crs_to_wkt1_strict(crs: &str) -> PyResult<Option<String>> {
+    SpatialRef::parse(crs).map(|s| s.to_wkt1_strict()).py()
 }
 
 /// The output grid GDAL suggests for a raster reprojected to another CRS

@@ -685,6 +685,42 @@ impl SpatialRef {
         self.proj4.as_deref().and_then(proj_to_wkt)
     }
 
+    /// The CRS in WKT 1 that needs no PROJ4 extension, for formats whose readers ignore
+    /// `EXTENSION["PROJ4", ...]` (shapefile `.prj`, GeoPackage, GeoTIFF citations), as PROJ
+    /// exports `WKT1_GDAL`. `None` where [`to_wkt`](Self::to_wkt) would give another CRS to such
+    /// a reader, or is no WKT 1:
+    /// - a CRS PROJ cannot write in WKT 1: geographic 3D CRSs (EPSG:4979), Equal Earth
+    ///   (EPSG:8857), the registry CRSs whose method has no WKT 1 name (Colombia Urban, Modified
+    ///   Krovak...), rotated poles (`+proj=ob_tran`), and EPSG codes terrio reads only through
+    ///   the wbprojection fallback, whose WKT is not the registry's;
+    /// - a planetocentric CRS on an ellipsoid, which PROJ writes as a `GEOGCS` that its readers
+    ///   take for planetographic latitudes;
+    /// - a WKT 1 that keeps part of its CRS in the extension: a datum grid (`+nadgrids`), an axis
+    ///   order or parameter its nodes do not describe, GDAL's `custom_proj4` method.
+    ///
+    /// A WKT 1 with an extension is kept when an EPSG or ESRI `AUTHORITY` of its root identifies
+    /// the CRS, as GDAL's Web Mercator (EPSG:3857). A stored WKT 1 is returned as it is. A stored
+    /// WKT 2 that terrio identifies as a code, without a datum shift of its own, is the code's
+    /// WKT 1; with the code's two horizontal axes swapped (ETRS89 in longitude and latitude), the
+    /// code's WKT 1 with its axes swapped and without the codes that give their order. Another
+    /// WKT 2 is the WKT 1 of its PROJ string ([`to_proj4`](Self::to_proj4)) when that reads back
+    /// as the same conversion with the WKT 2's axes (east-north, or north-east for a geographic
+    /// CRS).
+    ///
+    /// ```
+    /// use terrio_crs::SpatialRef;
+    ///
+    /// assert!(SpatialRef::from_epsg(32632)?.to_wkt1_strict().is_some());
+    /// assert!(SpatialRef::from_epsg(4979)?.to_wkt1_strict().is_none());
+    /// let grid = SpatialRef::from_proj4("+proj=longlat +ellps=clrk66 +nadgrids=conus +no_defs")?;
+    /// assert!(grid.to_wkt().is_some_and(|w| w.contains("EXTENSION[\"PROJ4\"")));
+    /// assert_eq!(grid.to_wkt1_strict(), None);
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
+    pub fn to_wkt1_strict(&self) -> Option<String> {
+        wkt1_write::strict(self)
+    }
+
     /// The CRS's name, such as `WGS 84 / UTM zone 33N`.
     pub fn name(&self) -> Option<String> {
         // The registry's name first: a stored WKT may carry another vendor's name (ESRI `.prj`).

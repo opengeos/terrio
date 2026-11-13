@@ -210,9 +210,14 @@ pub(crate) fn user_defined_crs(k: &GeoKeys) -> Option<wbraster::CrsInfo> {
     }
     let crs = wbraster::CrsInfo::from_proj4(proj.trim());
     // The WKT GDAL writes for the PROJ string, which describes it whole.
-    let wkt = crate::crs::SpatialRef::from_proj4(proj.trim()).ok().and_then(|s| s.wkt).or(crs.wkt);
+    let own = crate::crs::SpatialRef::from_proj4(proj.trim()).ok().and_then(|s| s.wkt);
+    // wbprojection's code only when terrio identifies the CRS as it: wbprojection's
+    // identification ignores the prime meridian and datum shift (`+proj=longlat +ellps=bessel
+    // +pm=paris` is not EPSG:4162).
+    let epsg = crs.epsg.filter(|code| own.as_deref().and_then(crate::crs::identify_epsg) == Some(*code));
+    let wkt = own.or_else(|| crs.wkt.filter(|_| epsg.is_some()));
     let wkt = wkt.or_else(|| wbprojection::from_proj_string(&proj).ok().map(|c| wbprojection::crs_to_wkt(&c)));
-    Some(wbraster::CrsInfo { wkt, ..crs })
+    Some(wbraster::CrsInfo { epsg, wkt, proj4: crs.proj4 })
 }
 
 /// A user-defined projected CRS on an EPSG geographic CRS a PROJ string does not name exactly

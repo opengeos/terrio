@@ -24,23 +24,25 @@ const DESCRIBED: &[&str] = &[
     "axis", "no_defs", "wktext", "type", "nadgrids",
 ];
 
-/// `(PROJ name, EPSG name, EPSG code)` of the ellipsoids GDAL names.
-const ELLIPSOIDS: &[(&str, &str, u32)] = &[
-    ("WGS84", "WGS 84", 7030),
-    ("GRS80", "GRS 1980", 7019),
-    ("WGS72", "WGS 72", 7043),
-    ("bessel", "Bessel 1841", 7004),
-    ("intl", "International 1924", 7022),
-    ("clrk66", "Clarke 1866", 7008),
-    ("clrk80", "Clarke 1880 (RGS)", 7012),
-    ("clrk80ign", "Clarke 1880 (IGN)", 7011),
-    ("airy", "Airy 1830", 7001),
-    ("mod_airy", "Airy Modified 1849", 7002),
-    ("krass", "Krassowsky 1940", 7024),
-    ("aust_SA", "Australian National Spheroid", 7003),
-    ("helmert", "Helmert 1906", 7020),
-    ("GRS67", "GRS 1967", 7036),
-    ("evrst30", "Everest 1830 (1937 Adjustment)", 7015),
+/// `(PROJ name, EPSG name, EPSG code, inverse flattening)` of the ellipsoids GDAL names. The
+/// inverse flattening is the defining one, as PROJ writes it; `None` for an ellipsoid defined by
+/// its semi-minor axis, whose inverse flattening PROJ computes.
+const ELLIPSOIDS: &[(&str, &str, u32, Option<f64>)] = &[
+    ("WGS84", "WGS 84", 7030, Some(298.257223563)),
+    ("GRS80", "GRS 1980", 7019, Some(298.257222101)),
+    ("WGS72", "WGS 72", 7043, Some(298.26)),
+    ("bessel", "Bessel 1841", 7004, Some(299.1528128)),
+    ("intl", "International 1924", 7022, Some(297.0)),
+    ("clrk66", "Clarke 1866", 7008, None),
+    ("clrk80", "Clarke 1880 (RGS)", 7012, Some(293.4663)),
+    ("clrk80ign", "Clarke 1880 (IGN)", 7011, Some(293.4660212936269)),
+    ("airy", "Airy 1830", 7001, Some(299.3249646)),
+    ("mod_airy", "Airy Modified 1849", 7002, None),
+    ("krass", "Krassowsky 1940", 7024, Some(298.3)),
+    ("aust_SA", "Australian National Spheroid", 7003, Some(298.25)),
+    ("helmert", "Helmert 1906", 7020, Some(298.3)),
+    ("GRS67", "GRS 1967", 7036, Some(298.247167427)),
+    ("evrst30", "Everest 1830 (1937 Adjustment)", 7015, Some(300.8017)),
 ];
 
 /// The axes of an east-north projected CS.
@@ -62,7 +64,16 @@ pub(crate) fn from_proj(s: &str) -> Option<String> {
     let p = Params::parse(s);
     let extension = format!("EXTENSION[\"PROJ4\",\"{}\"]", s.trim().replace('"', ""));
     let (geogcs, datum_described) = geogcs(&p, &own);
-    let described = datum_described && p.keys().all(|k| DESCRIBED.contains(&k));
+    // Also described: `+R_C` (the conformal sphere of the ellipsoid) on a sphere, which changes
+    // nothing; `+es` or `+e` beside `+a` alone, which gives the ellipsoid's shape (with another
+    // shape parameter, terrio's order of precedence is not PROJ's).
+    let shape = p.has("a") && ["ellps", "datum", "R", "b", "f", "rf"].iter().all(|k| !p.has(k)) && !(p.has("es") && p.has("e"));
+    let described =
+        datum_described && p.keys().all(|k| DESCRIBED.contains(&k) || (k == "R_C" && p.has("R")) || (matches!(k, "es" | "e") && shape));
+    // Faithful when terrio reads it back as the PROJ string: the same conversion on the same
+    // datum (its EPSG code identified, its geographic CRS).
+    let faithful =
+        |wkt: &str| described && Def::new(&SpatialRef::from_wkt(wkt)).is_ok_and(|read| read.same_conversion(&own) && read.same_datum(&own));
     if own.is_geocentric() {
         let root = super::wkt1::parse(&geogcs)?;
         let datum = root.child("DATUM")?.to_wkt();
@@ -71,7 +82,7 @@ pub(crate) fn from_proj(s: &str) -> Option<String> {
         let w = format!(
             "GEOCCS[\"unknown\",{datum},{pm},{unit},AXIS[\"Geocentric X\",OTHER],AXIS[\"Geocentric Y\",OTHER],AXIS[\"Geocentric Z\",NORTH]]"
         );
-        return Some(extended(&w, &extension));
+        return Some(if faithful(&w) { w } else { extended(&w, &extension) });
     }
     if own.is_rotated_pole() {
         // Its base geographic CRS extended with the PROJ string, as GDAL 2 wrote it. Unnamed and
@@ -113,10 +124,7 @@ pub(crate) fn from_proj(s: &str) -> Option<String> {
             }
         }
     };
-    // Faithful when terrio reads it back as the PROJ string: the same conversion on the same
-    // datum (its EPSG code identified, its geographic CRS).
-    let faithful = described && Def::new(&SpatialRef::from_wkt(&wkt)).is_ok_and(|read| read.same_conversion(&own) && read.same_datum(&own));
-    Some(if faithful { wkt } else { extended(&wkt, &extension) })
+    Some(if faithful(&wkt) { wkt } else { extended(&wkt, &extension) })
 }
 
 /// A PROJ string as its WKT 1 describes it, for formats that describe CRSs by parameters
@@ -137,6 +145,249 @@ pub struct Described {
     pub rf: f64,
     pub pm: f64,
     pub towgs84: Option<Vec<f64>>,
+}
+
+/// The root keywords of WKT 1.
+const WKT1_ROOTS: [&str; 6] = ["GEOGCS", "PROJCS", "GEOCCS", "COMPD_CS", "VERT_CS", "LOCAL_CS"];
+
+/// The WKT 1 of a CRS that a reader ignoring `EXTENSION["PROJ4", ...]` reads as the CRS, as
+/// PROJ's `WKT1_GDAL` export: [`SpatialRef::to_wkt`] when it is such a WKT 1, a stored WKT 2
+/// (or PROJJSON) as its registry CRS's WKT 1 or as the WKT 1 of its PROJ string. `None` for
+/// what PROJ cannot write in WKT 1 (geographic 3D CRSs, Equal Earth, the registry CRSs whose
+/// method has no WKT 1 name), and for a WKT 1 that needs an extension, unless its root's EPSG or
+/// ESRI `AUTHORITY` is the CRS's own code (GDAL's Web Mercator, EPSG:3857).
+pub(crate) fn strict(sr: &SpatialRef) -> Option<String> {
+    // An EPSG code outside terrio's tables is read through the wbprojection fallback, whose WKT
+    // is not the registry's.
+    let outside = |c: u32| epsg::get(c).is_none() && epsg::compound(c).is_none() && epsg::vertical(c).is_none();
+    let fallback = |c: u32| sr.wkt.is_none() || sr.wkt == super::registry_wkt(c);
+    if sr.esri.is_none() && sr.epsg.is_some_and(|c| outside(c) && fallback(c)) {
+        return None;
+    }
+    let wkt = sr.to_wkt()?;
+    let root = super::wkt1::parse(&wkt);
+    if let Some(root) = root.as_ref().filter(|r| WKT1_ROOTS.iter().any(|k| r.key.eq_ignore_ascii_case(k))) {
+        return plain(root, sr.authority()).then_some(wkt);
+    }
+    // A registry CRS whose table WKT is WKT 2 is one PROJ writes no WKT 1 for.
+    if sr.wkt.is_none() || root.as_ref().is_some_and(is_3d) {
+        return None;
+    }
+    // A stored WKT 2 of a registry CRS, without a datum shift of its own and with its axes, is its
+    // WKT 1 (`OGC:CRS84`, identified as EPSG:4326, is not: its axes are east-north).
+    let upper = wkt.to_ascii_uppercase();
+    let bound = upper.contains("BOUNDCRS") || upper.contains("TOWGS84");
+    let axes = root.as_ref().and_then(horizontal_axes);
+    let geocentric = root.as_ref().is_some_and(is_geocentric);
+    if !bound && (sr.epsg.is_some() || sr.esri.is_some()) {
+        let registry = strict(&SpatialRef { epsg: sr.epsg, esri: sr.esri, wkt: None, proj4: None });
+        let registry_axes = registry.as_deref().and_then(wkt1_axes);
+        let own_axes = root.as_ref().and_then(wkt2_horizontal).and_then(directions);
+        if geocentric || own_axes.is_none() || registry_axes.is_none() || registry_axes == own_axes {
+            return registry;
+        }
+        // Its axes swapped (EPSG:4258 in longitude and latitude): the registry's WKT 1, with its
+        // datum, the axes swapped and without the codes that give their order.
+        if let (Some(r), Some(o)) = (&registry_axes, &own_axes)
+            && r.len() == 2
+            && o.len() == 2
+            && r[0] == o[1]
+            && r[1] == o[0]
+        {
+            // Without the code, an extension (Web Mercator's) is no longer the CRS's own.
+            let swapped = registry.as_deref().and_then(swap_axes)?;
+            return super::wkt1::parse(&swapped).is_some_and(|root| plain(&root, None)).then_some(swapped);
+        }
+    }
+    // Else the WKT 1 of its PROJ string, which has no axis order: of the WKT 2's axes, east-north
+    // ones, or a geographic CRS's north-east ones, as WKT 1 writes them. A registry geographic
+    // CRS's WKT 1 (`+datum=WGS84`) loses its code when its axes are swapped.
+    let mut w = from_proj(&sr.to_proj4()?)?;
+    if !geocentric {
+        const LON_LAT: &str = ",AXIS[\"Longitude\",EAST],AXIS[\"Latitude\",NORTH]";
+        const LAT_LON: &str = ",AXIS[\"Latitude\",NORTH],AXIS[\"Longitude\",EAST]";
+        let geographic = w.starts_with("GEOGCS[");
+        let (from, to) = match axes?.as_slice() {
+            [e, n] if e == "east" && n == "north" => (LAT_LON, LON_LAT),
+            [n, e] if n == "north" && e == "east" && geographic => (LON_LAT, LAT_LON),
+            _ => return None,
+        };
+        if geographic && w.contains(from) {
+            w = without_root_authority(&w.replacen(from, to, 1));
+        }
+    }
+    // A PROJ string can lose a conversion (EPSG's ellipsoidal Equidistant Cylindrical becomes
+    // `+proj=eqc`, which WKT 1's Equirectangular is read as): the WKT 1 must read back as the CRS.
+    let own = Def::from_wkt(&wkt).ok()?;
+    let same = Def::new(&SpatialRef::from_wkt(&w)).is_ok_and(|read| read.same_conversion(&own));
+    (same && super::wkt1::parse(&w).is_some_and(|root| plain(&root, None))).then_some(w)
+}
+
+/// The directions of the axes of a WKT 1 CRS's horizontal CRS (a compound CRS's first),
+/// lowercase; east and north when it gives none.
+fn wkt1_axes(wkt: &str) -> Option<Vec<String>> {
+    let root = super::wkt1::parse(wkt)?;
+    let root = match root.key.eq_ignore_ascii_case("COMPD_CS") {
+        true => first_node(&root)?.clone(),
+        false => root,
+    };
+    if !["GEOGCS", "PROJCS"].iter().any(|k| root.key.eq_ignore_ascii_case(k)) {
+        return None;
+    }
+    let axes: Vec<String> = root
+        .children("AXIS")
+        .filter_map(|a| match a.args.get(1) {
+            Some(super::wkt1::Arg::Ident(d)) => Some(d.to_ascii_lowercase()),
+            _ => None,
+        })
+        .collect();
+    Some(if axes.is_empty() { vec!["east".into(), "north".into()] } else { axes })
+}
+
+/// The first child node of a node.
+fn first_node(n: &super::wkt1::Node) -> Option<&super::wkt1::Node> {
+    n.args.iter().find_map(|a| match a {
+        super::wkt1::Arg::Node(c) => Some(c),
+        _ => None,
+    })
+}
+
+/// The horizontal CRS of a WKT 2 CRS: itself, a bound CRS's source CRS or a compound CRS's first.
+fn wkt2_horizontal(root: &super::wkt1::Node) -> Option<&super::wkt1::Node> {
+    match root.key.to_ascii_uppercase().as_str() {
+        "BOUNDCRS" => first_node(root.child("SOURCECRS")?),
+        "COMPOUNDCRS" => first_node(root),
+        _ => Some(root),
+    }
+}
+
+/// The directions of a WKT 2 CRS's axes, lowercase.
+fn directions(crs: &super::wkt1::Node) -> Option<Vec<String>> {
+    crs.children("AXIS")
+        .map(|a| match a.args.get(1) {
+            Some(super::wkt1::Arg::Ident(d)) => Some(d.to_ascii_lowercase()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A registry CRS's WKT 1 with the two axes of its horizontal CRS swapped, and without the codes
+/// of its horizontal CRS and root, which give their order. `None` when it has no two axes.
+fn swap_axes(wkt: &str) -> Option<String> {
+    // The horizontal CRS's text: the root, or a compound CRS's first node.
+    let (start, end) = if wkt.starts_with("COMPD_CS[") {
+        let start = ["PROJCS[", "GEOGCS["].iter().filter_map(|k| wkt.find(k)).min()?;
+        let mut depth = 0;
+        let len = wkt[start..].char_indices().find_map(|(i, c)| {
+            depth += match c {
+                '[' => 1,
+                ']' => -1,
+                _ => 0,
+            };
+            (c == ']' && depth == 0).then_some(i + 1)
+        })?;
+        (start, start + len)
+    } else {
+        (0, wkt.len())
+    };
+    let horizontal = &wkt[start..end];
+    // Its own axes: its last two `AXIS` nodes (a base GEOGCS's come first).
+    let at: Vec<usize> = horizontal.match_indices(",AXIS[").map(|(i, _)| i).collect();
+    let [.., a, b] = at[..] else { return None };
+    let a_end = a + horizontal[a..].find(']')? + 1;
+    let b_end = b + horizontal[b..].find(']')? + 1;
+    if a_end != b {
+        return None;
+    }
+    let swapped = format!("{}{}{}{}", &horizontal[..a], &horizontal[b..b_end], &horizontal[a..a_end], &horizontal[b_end..]);
+    let swapped = without_root_authority(&swapped);
+    let out = format!("{}{swapped}{}", &wkt[..start], &wkt[end..]);
+    Some(if start > 0 { without_root_authority(&out) } else { out })
+}
+
+/// A WKT 1 without the `AUTHORITY` of its root (its last node).
+fn without_root_authority(wkt: &str) -> String {
+    match wkt.rfind(",AUTHORITY[") {
+        Some(i) if wkt[i..].matches(']').count() == 2 => format!("{}]", &wkt[..i]),
+        _ => wkt.to_string(),
+    }
+}
+
+/// Whether a WKT 2 CRS is geocentric: a geodetic CRS of a Cartesian CS.
+fn is_geocentric(root: &super::wkt1::Node) -> bool {
+    let cartesian =
+        root.child("CS").is_some_and(|c| matches!(c.args.first(), Some(super::wkt1::Arg::Ident(t)) if t.eq_ignore_ascii_case("Cartesian")));
+    ["GEODCRS", "GEODETICCRS"].iter().any(|k| root.key.eq_ignore_ascii_case(k)) && cartesian
+}
+
+/// The directions of the axes of a WKT 2 CRS's horizontal CRS (a bound CRS's source CRS),
+/// lowercase. `None` for a compound or other CRS.
+fn horizontal_axes(root: &super::wkt1::Node) -> Option<Vec<String>> {
+    let crs = match root.key.to_ascii_uppercase().as_str() {
+        "BOUNDCRS" => root.child("SOURCECRS")?.args.iter().find_map(|a| match a {
+            super::wkt1::Arg::Node(n) => Some(n),
+            _ => None,
+        })?,
+        _ => root,
+    };
+    let horizontal = ["GEOGCRS", "GEOGRAPHICCRS", "GEODCRS", "GEODETICCRS", "PROJCRS", "PROJECTEDCRS"];
+    if !horizontal.iter().any(|k| crs.key.eq_ignore_ascii_case(k)) {
+        return None;
+    }
+    let axes: Option<Vec<String>> = crs
+        .children("AXIS")
+        .map(|a| match a.args.get(1) {
+            Some(super::wkt1::Arg::Ident(d)) => Some(d.to_ascii_lowercase()),
+            _ => None,
+        })
+        .collect();
+    // A polar CRS's axes along meridians (south along 90°E and 180°E at the north pole, north
+    // along 90°E and 0°E at the south pole), the easting and northing of its projection.
+    let along = |a: &super::wkt1::Node, lon: f64| a.child("MERIDIAN").and_then(|m| m.num(0)) == Some(lon);
+    let meridians: Vec<&super::wkt1::Node> = crs.children("AXIS").collect();
+    let polar = match (axes.as_deref(), meridians.as_slice()) {
+        (Some([x, y]), [ax, ay]) if x == "south" && y == "south" => along(ax, 90.0) && along(ay, 180.0),
+        (Some([x, y]), [ax, ay]) if x == "north" && y == "north" => along(ax, 90.0) && along(ay, 0.0),
+        _ => false,
+    };
+    if polar { Some(vec!["east".into(), "north".into()]) } else { axes }
+}
+
+/// Whether a WKT 1 describes its CRS without an extension (`PROJ4`, or the `PROJ4_GRIDS` of a
+/// datum), or with one under the CRS's own EPSG or ESRI code (`code`), in a method PROJ writes
+/// in WKT 1.
+fn plain(root: &super::wkt1::Node, code: Option<(&str, u32)>) -> bool {
+    fn any(n: &super::wkt1::Node, f: &dyn Fn(&super::wkt1::Node) -> bool) -> bool {
+        f(n) || n.args.iter().any(|a| matches!(a, super::wkt1::Arg::Node(c) if any(c, f)))
+    }
+    let is = |n: &super::wkt1::Node, key: &str, name: &str| {
+        n.key.eq_ignore_ascii_case(key) && n.name().is_some_and(|v| v.eq_ignore_ascii_case(name))
+    };
+    // PROJ has no WKT 1 name for Equal Earth (EPSG:8857 has no WKT 1).
+    if any(root, &|n| is(n, "PROJECTION", "Equal_Earth")) {
+        return false;
+    }
+    let coded = root.child("AUTHORITY").is_some_and(|a| {
+        let value = match a.args.get(1) {
+            Some(super::wkt1::Arg::Str(v)) => v.trim().parse().ok(),
+            Some(super::wkt1::Arg::Num(v)) => Some(*v as u32),
+            _ => None,
+        };
+        code.is_some_and(|(name, c)| {
+            (name == "EPSG" || name == "ESRI") && a.name().is_some_and(|n| n.eq_ignore_ascii_case(name)) && value == Some(c)
+        })
+    });
+    coded || !any(root, &|n| n.key.eq_ignore_ascii_case("EXTENSION"))
+}
+
+/// Whether a WKT 2 CRS is three-dimensional and not geocentric: WKT 1 has no 3D geographic or
+/// projected CRS.
+fn is_3d(root: &super::wkt1::Node) -> bool {
+    let cs = root.child("CS");
+    let dims = cs.and_then(|c| c.num(1));
+    let cartesian = cs.is_some_and(|c| matches!(c.args.first(), Some(super::wkt1::Arg::Ident(t)) if t.eq_ignore_ascii_case("Cartesian")));
+    let geodetic = ["GEODCRS", "GEODETICCRS"].iter().any(|k| root.key.eq_ignore_ascii_case(k));
+    dims == Some(3.0) && !(geodetic && cartesian)
 }
 
 /// The description of a PROJ string whose WKT 1 describes it whole (without the PROJ4
@@ -167,7 +418,7 @@ pub fn describe(s: &str) -> Option<Described> {
         geog: epsg_geographic(&p).and(p.str("datum")).and_then(datum_geog),
         ellipsoid: ellipsoid.map(|e| e.2),
         a: ell.a,
-        rf: if ell.es == 0.0 { 0.0 } else { num(1.0 / (1.0 - ell.one_es.sqrt())).parse().unwrap_or(0.0) },
+        rf: num(inverse_flattening(&p, &ell, ellipsoid.and_then(|e| e.3))).parse().unwrap_or(0.0),
         pm: p.str("pm").map(|v| v.parse().ok().or_else(|| prime_meridian(v)).unwrap_or(0.0)).unwrap_or(0.0),
         towgs84: p.list("towgs84").filter(|v| v.len() == 3 || v.len() == 7),
     })
@@ -264,11 +515,11 @@ fn geogcs(p: &Params, own: &Def) -> (String, bool) {
     } else {
         own.ell
     };
-    let rf = if ell.es == 0.0 { 0.0 } else { 1.0 / (1.0 - ell.one_es.sqrt()) };
     let named = p.str("ellps").or_else(|| p.str("datum").and_then(super::def::datum_ellps));
     let known = named.and_then(|n| ELLIPSOIDS.iter().find(|e| e.0 == n)).filter(|e| Ell::named(e.0).is_some_and(|n| n == ell));
+    let rf = inverse_flattening(p, &ell, known.and_then(|e| e.3));
     let (spheroid, datum) = match known {
-        Some((_, name, code)) => (
+        Some((_, name, code, _)) => (
             format!("SPHEROID[\"{name}\",{},{},AUTHORITY[\"EPSG\",\"{code}\"]]", num(ell.a), num(rf)),
             format!("Unknown based on {name} ellipsoid"),
         ),
@@ -284,6 +535,18 @@ fn geogcs(p: &Params, own: &Def) -> (String, bool) {
         None => (datum, String::new()),
     };
     (format!("GEOGCS[\"unknown\",DATUM[\"{datum}\",{spheroid}{shift}],{pm},{DEGREE}]"), !grids)
+}
+
+/// The inverse flattening of an ellipsoid as PROJ writes it (0 for a sphere): the defining one of
+/// a named ellipsoid, else the string's `+rf` when it gives this ellipsoid, else computed from its
+/// eccentricity. Computing the defining value back (298.257223563002 for WGS 84) would make
+/// another ellipsoid of it.
+fn inverse_flattening(p: &Params, ell: &Ell, defining: Option<f64>) -> f64 {
+    if ell.es == 0.0 {
+        return 0.0;
+    }
+    let same = |rf: &f64| Ell::from_a_rf(ell.a, *rf) == *ell;
+    defining.or_else(|| p.f64("rf")).filter(same).unwrap_or_else(|| 1.0 / (1.0 - ell.one_es.sqrt()))
 }
 
 /// The EPSG geographic CRS of a PROJ string's `+datum=`, on Greenwich and without another
