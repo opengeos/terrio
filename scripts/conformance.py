@@ -67,6 +67,7 @@ Suites:
     crs-list          ``terrio list-crs`` vs GDAL's GetCRSInfoListFromDatabase, field by field, for
                       the EPSG, ESRI and IAU_2015 CRSs (compare_crs_list_with_gdal.py)
     transform-bounds  polar and regional bounding boxes vs GDAL via rasterio
+    transform-batches  mixed-validity Python batches and Natural Earth points vs GDAL
 
 Usage:
     python scripts/conformance.py ../terrio-data [--output docs/conformance.md] [--json FILE]
@@ -2295,6 +2296,36 @@ def suite_projjson_export(ctx):
     return suite
 
 
+def suite_transform_batches(ctx):
+    """Check single-call point failures and successful real coordinates against GDAL.
+
+    Args:
+        ctx: Conformance execution context.
+
+    Returns:
+        Suite: Batch policy regressions and real point comparisons within 1e-7 metres.
+    """
+    suite = Suite("transform-batches", "Mixed-validity coordinate batches", "GDAL via rasterio",
+                  "22 Python checks: one native call for mixed-validity coordinate/geometry batches, "
+                  "strict native defaults, optional infinite failed ordinates and empty/setup controls. "
+                  "Two sets of 1,000 Natural Earth populated places retain successful Mercator "
+                  "coordinates within 1e-7 metres of GDAL after inserting one NaN. "
+                  "Failed points follow Terrio's existing infinity policy; rasterio raises on these batches. "
+                  "Timing is measured separately, not asserted in conformance.")
+    missing = missing_modules("terrio", "pytest", "numpy", "rasterio", "osgeo")
+    if missing:
+        suite.skipped = "needs " + ", ".join(missing)
+        return suite
+    if not (Path(ctx.data) / "ne_places/ne_10m_populated_places_simple.shp").exists():
+        suite.skipped = "needs Natural Earth populated places"
+        return suite
+    import rasterio
+    suite.reference = f"GDAL {rasterio.__gdal_version__} / PROJ {rasterio.__proj_version__} via rasterio {rasterio.__version__}"
+    complete, detail = _pytest_module_conformance(ctx, "test_rio_transform_batch.py", expected_count=22)
+    suite.cases.append(Case("Coordinate batches", "failure policy and real places", TOLERANCE if complete else DIFFERS, detail))
+    return suite
+
+
 def suite_transform_bounds(ctx):
     """Compare polar and regional transformed bounds with live GDAL.
 
@@ -3979,6 +4010,7 @@ SUITES = OrderedDict(
         ("hecras", suite_hecras),
         ("crs", suite_crs),
         ("crs-parameters", suite_crs_parameters),
+        ("transform-batches", suite_transform_batches),
         ("transform-bounds", suite_transform_bounds),
         ("geocentric", suite_geocentric),
         ("perspective", suite_perspective),
