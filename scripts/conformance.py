@@ -3999,8 +3999,10 @@ def suite_webp_writer(ctx):
               "Default/explicit lossless pixels are exact; lossy quality changes bytes and pixels, "
               "with exact alpha and independent GDAL decoding, including real Landsat RGB. "
               "Malformed QUALITY is refused rather than parsed as zero, a deliberate difference from GDAL. "
-              "Lossy encoder bytes, size and PSNR are not compared with libwebp.")
-    missing = missing_modules("rasterio", "pytest", "terrio", "numpy")
+              "Lossy encoder bytes, size and PSNR are not compared with libwebp. "
+              "Synthetic tile controls require at least 30 dB PSNR and no damaged macroblocks, "
+              "using independent libwebp/GDAL decoding.")
+    missing = missing_modules("rasterio", "pytest", "terrio", "numpy", "PIL")
     if missing:
         s.skipped = "needs the Python modules " + ", ".join(missing)
         return s
@@ -4009,6 +4011,11 @@ def suite_webp_writer(ctx):
                         IDENTICAL if complete else DIFFERS,
                         "Exact decoding/alpha comparisons and creation-option assertions; "
                         "GDAL encoder parity is not asserted. " + detail))
+    complete, detail = _pytest_module_conformance(ctx, "test_webp_lossy_damage.py", expected_count=17)
+    s.cases.append(Case("Lossy VP8", "30 tiles at 11 qualities and default GeoTIFF WebP",
+                        TOLERANCE if complete else DIFFERS,
+                        "At least 30 dB PSNR versus input; no 16x16 macroblock with mean error above 20. "
+                        "Independent libwebp/GDAL decoding, not encoder parity. " + detail))
     return s
 
 

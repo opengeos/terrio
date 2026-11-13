@@ -2,6 +2,14 @@
 
 terrio stands on the work of many projects and their authors. Thank you to all of them.
 
+The lossy WebP regression fixture adapts the seeded image reproduction supplied by
+[gmoralessanchez in issue #973](https://github.com/opengeos/terrio/issues/973), under
+Terrio's MIT license.
+
+The corrected private VP8 encoder adapts the MIT-licensed lossy encoder from
+[webp-rust 0.3.2](https://github.com/mith-mmk/webp-rust) by MITH@mmk. The existing
+dependency supplies its decoder tables; see `NOTICE` for the adapted files.
+
 terrio is released under the MIT License, except its point cloud eigensolver
 (`pointcloud/filters/selfadjoint.rs`), a port of Eigen under MPL-2.0, and its
 coverage-weighted median (`ops/zonal_weighted_median.rs`), adapted from exactextract

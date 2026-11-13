@@ -42,6 +42,8 @@ use std::path::Path;
 use wbraster::Raster;
 use wbraster::raster::RasterData;
 
+mod vp8;
+
 /// The largest width and height GDAL's WEBP driver writes.
 const MAX_SIZE: usize = 16383;
 
@@ -151,9 +153,7 @@ pub(crate) fn encode_lossy(mut rgba: Vec<u8>, width: usize, height: usize, quali
             .collect::<Vec<_>>()
     });
     let image = webp_rust::ImageBuffer { width, height, rgba };
-    let encoded =
-        webp_rust::encode_lossy_with_config(&image, &webp_rust::LossyEncodingConfig { quality, method: 0, ..Default::default() }, None)
-            .map_err(|error| Error::InvalidData(format!("WebP: {error}")))?;
+    let encoded = vp8::encode(&image, quality).map_err(|error| Error::InvalidData(format!("WebP: {error}")))?;
     drop(image);
 
     let Some(alpha) = alpha else { return Ok(encoded) };
