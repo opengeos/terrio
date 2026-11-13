@@ -7,7 +7,8 @@ from types import FrameType
 
 def warn_user(message: str) -> None:
     """Attribute a UserWarning to the first Python frame outside Terrio."""
-    frame: FrameType | None = sys._getframe(1)
+    # Rust can call this from an atexit handler or a new thread with no Python caller frame.
+    frame: FrameType | None = sys._getframe(0).f_back
     stacklevel = 2
     while frame is not None:
         module = frame.f_globals.get("__name__", "")
