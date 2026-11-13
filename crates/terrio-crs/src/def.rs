@@ -372,6 +372,11 @@ impl Def {
                 ell = Ell::from_a_b(ell.a, b);
             }
         }
+        // An ellipsoid PROJ refuses (`+b` above `+a`, `+es` of 1 or more) would give NaN
+        // coordinates.
+        if !(ell.a.is_finite() && ell.a > 0.0 && (0.0..1.0).contains(&ell.es)) {
+            return Err(Error::Crs(format!("invalid ellipsoid in '{s}': semi-major axis {}, eccentricity squared {}", ell.a, ell.es)));
+        }
         // `+R_A`: a sphere of the ellipsoid's area.
         if p.has("R_A") && ell.es != 0.0 {
             let e = ell.e;

@@ -238,7 +238,7 @@ def test_crs_to_projjson():
         trio.CRS.from_user_input("+proj=longlat +lon_0=10 +datum=WGS84").to_projjson()
 
 
-def test_crs_to_proj4_writes_proj_s_string():
+def test_crs_to_proj4_writes_proj_string():
     # PROJ 9.8.1's projinfo -o PROJ for the same CRSs.
     assert (
         terrio._terrio.crs_to_proj4("EPSG:32632")

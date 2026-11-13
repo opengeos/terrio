@@ -688,8 +688,9 @@ This prevents silent loss of datum, axis, unit or operation information.
 ### Writing PROJ strings
 
 `SpatialRef::to_proj4` writes the PROJ string PROJ 9.8.1 writes (`projinfo -o PROJ`, pyproj's
-`CRS.to_proj4()`): `terrio crs CRS --proj4`, Python `crs_to_proj4(crs)`, JavaScript
-`crsToProj4(crs)`. It is `None` for a CRS PROJ has none for (an engineering CRS, Polar
+`CRS.to_proj4()`): `terrio crs CRS --proj4`, Python `terrio._terrio.crs_to_proj4(crs)`,
+JavaScript `crsToProj4(crs)`. (Python's `rio.CRS.to_proj4()` keeps writing rasterio's parameter
+string.) It is `None` for a CRS PROJ has none for (an engineering CRS, Polar
 Stereographic variant C, an EPSG code read only through the wbprojection fallback). Like PROJ's,
 the string leaves out what a PROJ string cannot hold, so keep the code or WKT to keep a CRS:
 

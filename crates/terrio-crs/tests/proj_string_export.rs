@@ -46,7 +46,7 @@ fn crs(row: &Row) -> Option<SpatialRef> {
 }
 
 #[test]
-fn proj_strings_are_proj_s() {
+fn proj_strings_match_proj() {
     let rows = rows();
     let mut read = 0;
     let mut failures = Vec::new();
@@ -76,7 +76,7 @@ fn rule_codes_are_all_read() {
 }
 
 #[test]
-fn engineering_crs_and_proj_s_refusals_have_no_proj_string() {
+fn engineering_crs_and_proj_refusals_have_no_proj_string() {
     // Polar Stereographic (variant C) has no PROJ method; an engineering CRS no PROJ string.
     assert_eq!(SpatialRef::from_epsg(2985).unwrap().to_proj4(), None);
     let local = SpatialRef::from_wkt(r#"LOCAL_CS["Engineering",LOCAL_DATUM["site",0],UNIT["metre",1],AXIS["X",EAST],AXIS["Y",NORTH]]"#);
@@ -145,4 +145,21 @@ fn shape_parameters_without_a_change_the_named_ellipsoid_as_proj() {
         let (x, y) = Transformer::new(&geographic, &crs).unwrap().transform(lon, lat).unwrap();
         assert!((x - expected.0).abs() < 1e-6 && (y - expected.1).abs() < 1e-6, "{definition}: ({x}, {y}), PROJ {expected:?}");
     }
+}
+
+#[test]
+fn ellipsoids_proj_refuses_are_refused() {
+    // PROJ refuses these (`Invalid value for an argument`): a semi-minor axis above the
+    // semi-major one, an eccentricity of 1 or more. Read, they would give NaN coordinates.
+    for definition in ["+proj=longlat +ellps=GRS80 +b=6400000", "+proj=longlat +ellps=GRS80 +es=1.2", "+proj=longlat +a=6378137 +b=6400000"]
+    {
+        assert!(SpatialRef::from_proj4(definition).is_err(), "{definition}");
+    }
+}
+
+#[test]
+fn a_unit_given_as_a_fraction_is_written_by_its_name() {
+    // terrio reads `+to_meter=1/1000` (PROJ refuses it): its string names the unit it reads.
+    let crs = SpatialRef::from_proj4("+proj=merc +lon_0=0 +k=1 +x_0=0 +y_0=0 +ellps=WGS84 +to_meter=1/1000").unwrap();
+    assert_eq!(crs.to_proj4().as_deref(), Some("+proj=merc +lon_0=0 +k=1 +x_0=0 +y_0=0 +ellps=WGS84 +units=mm +no_defs +type=crs"));
 }

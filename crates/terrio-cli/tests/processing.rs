@@ -179,7 +179,7 @@ fn crs_prints_projjson() {
 }
 
 #[test]
-fn crs_prints_proj_s_proj_string() {
+fn crs_prints_proj_string() {
     let dir = tempfile::tempdir().unwrap();
     // PROJ 9.8.1's `projinfo -o PROJ EPSG:2056`: without its datum shift, as PROJ writes it.
     let output = run(&["crs", "EPSG:2056", "--proj4"], dir.path());

@@ -117,6 +117,11 @@ PROJ_STRINGS = [
     "+proj=merc +a=6378137 +b=6378137 +lat_ts=0 +lon_0=0 +x_0=0 +y_0=0 +k=1 +units=m +nadgrids=@null +wktext +no_defs",
     "+proj=merc +a=6378137 +b=6378137 +lon_0=0 +x_0=0 +y_0=0 +k=1 +units=m +nadgrids=@null",
     "+proj=webmerc +datum=WGS84",
+    "+proj=webmerc +datum=WGS84 +lon_0=10 +x_0=500 +units=ft",
+    # A prime meridian by its longitude, as PROJ writes numbers; a quoted grid name.
+    "+proj=longlat +ellps=WGS84 +pm=2.5000000000000000",
+    "+proj=longlat +ellps=WGS84 +pm=2.33720833333333333",
+    '+proj=longlat +datum=WGS84 +geoidgrids="@my grid.gtx"',
     "+proj=merc +lon_0=10 +k=1 +x_0=5 +y_0=7 +a=6378137 +b=6378137 +nadgrids=@null +units=ft",
     "+proj=merc +lon_0=10 +k=1 +x_0=0 +y_0=0 +a=6378137 +b=6378137 +nadgrids=@null +wktext",
     "+proj=merc +lon_0=0 +k=1 +x_0=0 +y_0=0 +a=6378137 +b=6378137",

@@ -124,7 +124,7 @@ fn extension(s: &SpatialRef) -> Option<Vec<String>> {
     let given = |p: &String| crate::proj_to_wkt(p) == s.wkt;
     let text = s.wkt.as_deref().and_then(crate::proj4_extension).filter(|_| !s.proj4.as_ref().is_some_and(given))?;
     let text = gdal_web_mercator(&text).unwrap_or(text);
-    Some(text.split_whitespace().filter(|t| *t != "+type=crs").map(str::to_string).collect())
+    Some(tokens(&text).into_iter().filter(|t| t != "+type=crs").collect())
 }
 
 /// Whether a WKT is of an engineering CRS, which has no PROJ string.
@@ -432,9 +432,34 @@ fn ellipsoid_of(proj: &str) -> Option<Vec<String>> {
     Some(ellipsoid_tokens(a, shape))
 }
 
-/// Web Mercator as PROJ writes it, from `+proj=webmerc`.
-const WEB_MERCATOR: &str =
-    "+proj=merc +a=6378137 +b=6378137 +lat_ts=0 +lon_0=0 +x_0=0 +y_0=0 +k=1 +units=m +nadgrids=@null +wktext +no_defs +type=crs";
+/// Web Mercator as PROJ writes it: Mercator on the sphere of WGS 84's semi-major axis with a
+/// scale factor of 1 and a null grid, with its origin and unit.
+fn web_mercator(lon_0: f64, x_0: f64, y_0: f64, units: &str) -> String {
+    format!(
+        "+proj=merc +a=6378137 +b=6378137 +lat_ts=0 +lon_0={} +x_0={} +y_0={} +k=1 +units={units} +nadgrids=@null +wktext +no_defs +type=crs",
+        number(lon_0),
+        number(x_0),
+        number(y_0)
+    )
+}
+
+/// `+proj=webmerc` as PROJ writes it: Web Mercator, keeping `+lon_0`, `+x_0`, `+y_0` and
+/// `+units` (its ellipsoid and scale factor are fixed).
+fn webmerc(proj: &str) -> Option<String> {
+    let (mut lon_0, mut x_0, mut y_0, mut units) = (0.0, 0.0, 0.0, "m".to_string());
+    for t in strip_suffix(proj) {
+        let (key, v) = t.split_once('=').unwrap_or((&t, ""));
+        let n = || v.parse::<f64>().ok().filter(|n| n.is_finite());
+        match key {
+            "+lon_0" => lon_0 = n()?,
+            "+x_0" => x_0 = n()?,
+            "+y_0" => y_0 = n()?,
+            "+units" => units = v.to_string(),
+            _ => {}
+        }
+    }
+    Some(web_mercator(lon_0, x_0, y_0, &units))
+}
 
 /// A PROJ string in the form of GDAL's of Web Mercator, as PROJ writes it: Mercator on the
 /// sphere of WGS 84's semi-major axis (given as `+a` and `+b`) with a null grid and a scale
@@ -460,14 +485,7 @@ fn gdal_web_mercator(proj: &str) -> Option<String> {
             _ => return None,
         }
     }
-    (a && b && k && null).then(|| {
-        format!(
-            "+proj=merc +a=6378137 +b=6378137 +lat_ts=0 +lon_0={} +x_0={} +y_0={} +k=1 +units={units} +nadgrids=@null +wktext +no_defs +type=crs",
-            number(lon_0),
-            number(x_0),
-            number(y_0)
-        )
-    })
+    (a && b && k && null).then(|| web_mercator(lon_0, x_0, y_0, &units))
 }
 
 /// PROJ's datums (`proj_list_datums`) and their ellipsoids: PROJ writes the three it names
@@ -517,7 +535,7 @@ fn custom(proj: &str, wkt_datum: Option<&str>) -> Option<String> {
     let value = |t: &str| t.split_once('=').map(|(_, v)| v.to_string()).unwrap_or_default();
     let method = proj.split_whitespace().find_map(|t| t.strip_prefix("+proj=")).unwrap_or_default().to_string();
     if method == "webmerc" {
-        return Some(WEB_MERCATOR.into());
+        return webmerc(proj);
     }
     if let Some(web_mercator) = gdal_web_mercator(proj) {
         return Some(web_mercator);
@@ -534,7 +552,14 @@ fn custom(proj: &str, wkt_datum: Option<&str>) -> Option<String> {
             "+nadgrids" => nadgrids = Some(t),
             "+pm" => pm = Some(v),
             "+units" => units = Some(v),
-            "+to_meter" => to_meter = v.parse::<f64>().ok(),
+            // A factor as terrio reads it, also as a fraction (`1/1000`).
+            "+to_meter" => {
+                to_meter = match v.split_once('/') {
+                    Some((n, d)) => n.parse::<f64>().ok().zip(d.parse::<f64>().ok()).map(|(n, d)| n / d),
+                    None => v.parse::<f64>().ok(),
+                }
+                .filter(|m| m.is_finite() && *m > 0.0)
+            }
             "+axis" => axis = Some(v),
             "+geoc" => geoc = true,
             "+geoidgrids" => geoidgrids = Some(t),
@@ -611,7 +636,7 @@ fn custom(proj: &str, wkt_datum: Option<&str>) -> Option<String> {
     if let Some(pm) = pm {
         let name =
             pm.parse::<f64>().ok().and_then(|v| PRIME_MERIDIANS.iter().find(|(_, m)| (m - v).abs() < 5e-8)).map(|(n, _)| n.to_string());
-        tokens.push(format!("+pm={}", name.unwrap_or(pm)));
+        tokens.push(format!("+pm={}", name.unwrap_or_else(|| pm.parse::<f64>().ok().filter(|v| v.is_finite()).map_or(pm, number))));
     }
     // A grid shift wins over `+towgs84`.
     match (nadgrids, towgs) {
@@ -643,7 +668,31 @@ fn custom(proj: &str, wkt_datum: Option<&str>) -> Option<String> {
 
 /// The tokens of a PROJ string without `+no_defs` and `+type=crs`.
 fn strip_suffix(proj: &str) -> Vec<String> {
-    proj.split_whitespace().filter(|t| *t != "+no_defs" && *t != "+type=crs").map(str::to_string).collect()
+    tokens(proj).into_iter().filter(|t| t != "+no_defs" && t != "+type=crs").collect()
+}
+
+/// The tokens of a PROJ string, split at whitespace but in double quotes (`+geoidgrids="@my
+/// grid.gtx"`), which stay as they are.
+fn tokens(proj: &str) -> Vec<String> {
+    let (mut tokens, mut token, mut quoted) = (Vec::new(), String::new(), false);
+    for c in proj.chars() {
+        match c {
+            '"' => {
+                quoted = !quoted;
+                token.push(c);
+            }
+            c if c.is_whitespace() && !quoted => {
+                if !token.is_empty() {
+                    tokens.push(std::mem::take(&mut token));
+                }
+            }
+            c => token.push(c),
+        }
+    }
+    if !token.is_empty() {
+        tokens.push(token);
+    }
+    tokens
 }
 
 /// A PROJ string from its tokens, ended as PROJ ends a CRS's.
