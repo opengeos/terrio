@@ -752,8 +752,8 @@ Known differences, all of WKTs and PROJ strings without a code:
 `SpatialRef::to_wkt` writes GDAL's WKT 1, which keeps what WKT 1 cannot describe in an
 `EXTENSION["PROJ4", ...]`. Formats whose readers ignore that extension (a shapefile `.prj`)
 need `SpatialRef::to_wkt1_strict`, as PROJ 9.8.1 exports `WKT1_GDAL`: `terrio crs CRS
---wkt1-strict`, Python `rio.CRS.to_wkt1_strict()` and `terrio._terrio.crs_to_wkt1_strict(crs)`, JavaScript
-`crsToWkt1Strict(crs)`. It is the WKT 1 of `to_wkt`, or `None`:
+--wkt1-strict`, Python `rio.CRS.to_wkt1_strict()` and `terrio._terrio.crs_to_wkt1_strict(crs)`,
+JavaScript `crsToWkt1Strict(crs)`. It is the WKT 1 of `to_wkt`, or `None`:
 
 - where PROJ writes no WKT 1: geographic 3D CRSs (EPSG:4979), Equal Earth (EPSG:8857), the
   registry CRSs whose method has no WKT 1 name (Colombia Urban, Modified Krovak, Lambert Conic
@@ -773,8 +773,9 @@ shift of its own, is written as the code's WKT 1; with the code's two horizontal
 the codes that give their order. Another WKT 2 is written as the WKT 1 of its PROJ string, when
 that reads back as the same conversion and the WKT 2's axes are east-north (or north-east, for a
 geographic CRS); on a datum terrio identifies (a custom projection on OSGB36), on that EPSG
-geographic CRS, which keeps the datum's name, code and transformations. A planetocentric CRS on an ellipsoid has none: PROJ writes a
-`GEOGCS` that its readers take for planetographic latitudes.
+geographic CRS, which keeps the datum's name, code and transformations. A planetocentric CRS
+on an ellipsoid has none: PROJ writes a `GEOGCS` that its readers take for planetographic
+latitudes.
 
 For every EPSG and ESRI code terrio reads, the WKT 1 is PROJ's character for character, with
 GDAL's axes (pyproj 3.8.0's `CRS.to_wkt("WKT1_GDAL", output_axis_rule=True)`), and `None`

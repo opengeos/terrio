@@ -144,6 +144,26 @@ fn geotiff_of_a_proj_string_reads_as_the_proj_string() {
 }
 
 #[test]
+fn geotiff_of_a_geographic_proj_string_keeps_only_the_code_terrio_confirms() {
+    // A user-defined geographic GeoTIFF CRS keeps the EPSG code wbprojection identifies its PROJ
+    // string as only when terrio identifies the same: wbprojection's identification ignores the
+    // prime meridian, the datum and even the ellipsoid (it reads Bessel on Paris as EPSG:4162,
+    // 2.3° off, and GRS 80 alone as EPSG:4185, Madeira 1936 on International 1924).
+    let dir = tempfile::tempdir().unwrap();
+    let cases =
+        [("+proj=longlat +datum=WGS84", Some(4326)), ("+proj=longlat +ellps=bessel +pm=paris", None), ("+proj=longlat +ellps=GRS80", None)];
+    for (i, (p, code)) in cases.into_iter().enumerate() {
+        let crs = SpatialRef::parse(p).unwrap();
+        let cfg = RasterConfig { cols: 2, rows: 2, bands: 1, data_type: DataType::F32, crs: crs.to_crs_info(), ..Default::default() };
+        let mut ds = RasterDataset::new(terrio::Raster::from_data_native(cfg, RasterData::F32(vec![0.0; 4])).unwrap(), false);
+        ds.set_geo_transform([0.0, 1.0, 0.0, 0.0, 0.0, -1.0]);
+        let path = dir.path().join(format!("{i}.tif")).to_string_lossy().into_owned();
+        terrio::write_raster_dataset(&ds, &path, &Default::default()).unwrap();
+        assert_eq!(terrio::open_raster(&path).unwrap().crs().epsg, code, "{p}");
+    }
+}
+
+#[test]
 fn geotiff_of_a_wkt_on_an_epsg_datum_keeps_its_datum() {
     // A transverse Mercator without EPSG code on ED50, whose datum terrio identifies: GeoKeys on
     // EPSG:4230, read back with ED50's transformations.

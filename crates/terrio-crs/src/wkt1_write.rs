@@ -370,9 +370,9 @@ fn horizontal_axes(root: &super::wkt1::Node) -> Option<Vec<String>> {
     if polar { Some(vec!["east".into(), "north".into()]) } else { axes }
 }
 
-/// Whether a WKT 1 describes its CRS without an extension (`PROJ4`, or the `PROJ4_GRIDS` of a
-/// datum), or with one under the CRS's own EPSG or ESRI code (`code`), in a method PROJ writes
-/// in WKT 1.
+/// Whether a WKT 1 describes its CRS without any `EXTENSION` node (GDAL's `PROJ4`, a datum's
+/// `PROJ4_GRIDS`, or another), or with one under the CRS's own EPSG or ESRI code (`code`), in a
+/// method PROJ writes in WKT 1.
 fn plain(root: &super::wkt1::Node, code: Option<(&str, u32)>) -> bool {
     fn any(n: &super::wkt1::Node, f: &dyn Fn(&super::wkt1::Node) -> bool) -> bool {
         f(n) || n.args.iter().any(|a| matches!(a, super::wkt1::Arg::Node(c) if any(c, f)))
