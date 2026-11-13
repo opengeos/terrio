@@ -206,6 +206,11 @@ impl Def {
         if let Some(wkt) = &s.wkt {
             let root = wkt.split(['[', '(']).next().unwrap_or_default().trim();
             if ["LOCAL_CS", "ENGCRS", "ENGINEERINGCRS"].iter().any(|key| root.eq_ignore_ascii_case(key)) {
+                if let Some(proj) = &s.proj4 {
+                    let mut definition = Self::from_proj(proj)?;
+                    definition.tag_iau(s)?;
+                    return Ok(definition);
+                }
                 return Self::from_wkt(wkt);
             }
         }

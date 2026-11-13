@@ -10,6 +10,10 @@ fn engineering_authority_does_not_enable_an_earth_transform() {
         let local = SpatialRef::parse_literal(&text).unwrap();
         assert!(terrio_crs::Transformer::new(&local, &earth).is_err(), "{root}");
         assert!(terrio_crs::Transformer::new(&earth, &local).is_err(), "{root}");
+        let mut explicit = local.clone();
+        explicit.epsg = None;
+        explicit.proj4 = Some("+proj=longlat +datum=WGS84".into());
+        assert!(terrio_crs::Transformer::new(&explicit, &earth).is_ok(), "explicit PROJ override of {root}");
     }
 }
 
