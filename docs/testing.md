@@ -111,6 +111,10 @@ ISO forms. Standard ISO strings with a uniform offset pass directly to pandas af
 value syntax scan. Other pandas 2 inputs inspect every distinct value so invalid strings retain
 their original diagnostic; pandas 3 uses its parser directly. Reduced `YYYY`/`YYYY-MM` values
 are parsed in a timezone-free batch, retaining valid results when one value is invalid.
+Mixed UTC conversion on pandas 2 parses naive and aware strings in separate batches,
+so a naive row cannot inherit an earlier row's offset. The regressions cover GeoJSON
+reads in both row orders, signed and fractional-hour offsets, missing and repeated
+values, duplicate indices, string storage types and millisecond output precision.
 Python datetime output normalizes timestamp fractions to six digits before stdlib parsing
 and attributes any precision warning to the caller. Other pandas-only ISO forms can still
 require one pandas fallback per distinct value on older Python versions.
