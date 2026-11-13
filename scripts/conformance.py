@@ -1079,14 +1079,16 @@ def suite_longitude_period(ctx):
         ctx: Conformance execution context.
 
     Returns:
-        Suite: Four required real-data comparisons with explicit GDAL policy scope.
+        Suite: Six required real-data comparisons with explicit GDAL policy scope.
     """
     suite = Suite("longitude-period", "Periodic geographic storage", "GDAL via rasterio",
                   "Natural Earth country coverage stored from zero and minus 180 degrees: "
                   "each grid policy's two storage layouts agree within 1e-8 for nearest, bilinear, average and sum. "
                   "Nearest, average and chunk-dependent bilinear also match GDAL within 1e-6. "
                   "Stable bilinear uses local scales; exact sum preserves the source-area "
-                  "total but can distribute it differently from GDAL among output rows.")
+                  "total but can distribute it differently from GDAL among output rows. "
+                  "Three polar meridian samples of real country coverage match GDAL within 1e-8 "
+                  "for bilinear and sum under both policies and storage layouts.")
     missing = missing_modules("terrio", "pytest", "numpy", "rasterio")
     if missing:
         suite.skipped = "needs " + ", ".join(missing)
@@ -1096,6 +1098,9 @@ def suite_longitude_period(ctx):
     complete, detail = _pytest_module_conformance(
         ctx, "test_warp_longitude_period.py", selection="real_world_field_storage_equivalence", expected_count=4)
     suite.cases.append(Case("Global rasters", "Natural Earth countries", TOLERANCE if complete else DIFFERS, detail))
+    complete, detail = _pytest_module_conformance(
+        ctx, "test_warp_meridian_footprints.py", selection="real_country_coverage", expected_count=2)
+    suite.cases.append(Case("Polar meridian footprints", "Natural Earth countries", TOLERANCE if complete else DIFFERS, detail))
     return suite
 
 

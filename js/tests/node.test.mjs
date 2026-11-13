@@ -5347,6 +5347,50 @@ test("GeoJSON byte exports name ESRI CRSs and refuse unnamed CRS loss", () => {
     } finally { source.free(); }
   }
 });
+test("curved coarse footprints retain their centers", () => {
+  const values = Float64Array.from({length: 360 * 180}, (_, i) => i % 360 + 0.5 - 180);
+  const source = terrio.rasterFromArray(values, 360, 180, [-180, 1, 0, 90, 0, -1], "EPSG:4326");
+  const degree = 6371000 * Math.PI / 180;
+  try {
+    for (const kernelVersion of ["3.12", "3.13"]) for (const gridInvariant of [true, false]) {
+      for (const [resampling, expected] of [["min", -171.5], ["max", 15.5]]) {
+        const output = terrio.warp(source, {
+          tSrs: "+proj=sinu +lon_0=0 +R=6371000 +units=m +no_defs", te: [-3 * degree, 0, 16 * degree, 89 * degree],
+          ts: [1, 1], resampling, gridInvariant, kernelVersion, ot: "Float64",
+        });
+        try { assert.equal(output.readBand(1)[0], expected); }
+        finally { output.free(); }
+      }
+    }
+  } finally { source.free(); }
+});
+
+test("polar meridian corners keep kernels and sums local", () => {
+  const wave = new Float64Array(180 * 360).map((_, i) => 100 * Math.cos((-179.5 + i % 360) * Math.PI / 180));
+  const ones = new Float64Array(180 * 360).fill(1);
+  const grid = [-180, 1, 0, 90, 0, -1];
+  const field = terrio.rasterFromArray(wave, 360, 180, grid, "EPSG:4326");
+  const constant = terrio.rasterFromArray(ones, 360, 180, grid, "EPSG:4326");
+  try {
+    for (const kernelVersion of ["3.12", "3.13"]) {
+      for (const gridInvariant of [true, false]) {
+        for (const resampling of ["bilinear", "cubic", "sum"]) {
+          const output = terrio.warp(resampling === "sum" ? constant : field, {
+            tSrs: "EPSG:3413", te: [-1375000, 1325000, -1300000, 1350000], ts: [3, 1],
+            resampling, ot: "Float64", dstNodata: -999, et: 0, gridInvariant, kernelVersion,
+          });
+          try {
+            for (const value of output.readBand(1)) {
+              assert.ok(resampling === "sum" ? value > 0.1 && value < 0.2 : value < -99.9 && value >= -100.1,
+                `${kernelVersion}/${gridInvariant}/${resampling}: ${value}`);
+            }
+          } finally { output.free(); }
+        }
+      }
+    }
+  } finally { field.free(); constant.free(); }
+});
+
 test("engineering GeoTIFF and COG bytes retain local CRS definitions", () => {
   const local = 'LOCAL_CS["site grid",LOCAL_DATUM["site",32767],UNIT["metre",1],AXIS["Easting",EAST],AXIS["Northing",NORTH]]';
   const engineering = 'ENGINEERINGCRS["Astra Minas Grid",ENGINEERINGDATUM["Astra Minas"],CS[Cartesian,2],AXIS["northing (X)",north,ORDER[1]],AXIS["westing (Y)",west,ORDER[2]],LENGTHUNIT["metre",1],ID["EPSG",5800]]';
