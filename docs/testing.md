@@ -148,6 +148,9 @@ paths and ZIP members. MIF requires Version, Columns and Data declarations;
 case-insensitive keywords, CRLF and UTF-8 BOMs remain supported. Zero-column
 and declared-column headers followed by no objects retain their empty schema.
 Node exercises the same header checks in the filesystem-free MIF reader.
+Header recognition is a native policy in GDAL-enabled builds too: missing or
+incomplete required declarations are terminal, while geometry errors can still
+use the optional backend. This does not claim GDAL rejects every incomplete header.
 
 `scripts/compare_vector_byte_packaging.py DATA --json`, registered as the
 `vector-byte-packaging` conformance suite, compares GML documents and explicit

@@ -1055,7 +1055,8 @@ fn list_layers_native(path: &str) -> Result<Vec<String>> {
 
 /// When terrio's own drivers could not open `path`, tries GDAL; if GDAL cannot either, terrio's
 /// error is kept, except for GDAL's resource refusals. Missing local files and invalid arguments
-/// are not retried, nor are network errors or resource-limit refusals.
+/// are not retried, nor are network errors, resource-limit refusals or native MIF header
+/// recognition failures. MIF geometry errors remain eligible for fallback.
 #[cfg(feature = "gdal")]
 pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(&str) -> Result<T>) -> Result<T> {
     let Err(e) = result else { return result };

@@ -151,9 +151,9 @@ pub fn parse(mif: &[u8], mid: Option<&[u8]>, name: &str) -> Result<Layer> {
             if !version {
                 return Err(invalid_header("invalid Version declaration"));
             }
-        } else if keyword == "delimiter" {
+        } else if lower.starts_with("delimiter") {
             delimiter = line.split('"').nth(1).and_then(|d| d.chars().next()).unwrap_or(',');
-        } else if keyword == "coordsys" {
+        } else if lower.starts_with("coordsys") {
             if let Some(srs) = coordsys_to_srs(line) {
                 srs.apply_to_layer(&mut layer);
             }
@@ -752,6 +752,10 @@ mod tests {
             assert_eq!(a.geometry, b.geometry);
             assert_eq!(a.attributes, b.attributes);
         }
+        // Preserve the existing optional-clause grammar while requiring the header.
+        let compact = b"Version 300\nDelimiter\";\"\nColumns 2\nN Integer\nName Char(10)\nData\nPoint 1 2\n";
+        let compact = parse(compact, Some(b"7;site\n"), "t").unwrap();
+        assert_eq!(compact.features[0].attributes, vec![FieldValue::Integer(7), FieldValue::Text("site".into())]);
     }
 
     /// Date and DateTime values that are not all ASCII digits are text, never cut at fixed bytes
