@@ -1296,7 +1296,7 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
     match raster {
         Ok(r) => Ok(Dataset::Raster(r)),
         // The raster reader's message names the path already when no format matched: append the hint only.
-        Err(raster_err) if !wbvector_fallback_allowed() && raster_err.to_string().contains("format not recognized") => {
+        Err(raster_err) if !wbvector_fallback_allowed() && raster_err.to_string().contains(&format!("'{path}': format not recognized")) => {
             Err(Error::Unsupported(format!("{raster_err}; TERRIO_WBVECTOR_FALLBACK=YES lets wbvector detect it")))
         }
         Err(raster_err) if !wbvector_fallback_allowed() => Err(Error::Unsupported(format!(
@@ -1332,7 +1332,7 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
             Err(_) => Err(reader_error.unwrap_or_else(|| {
                 // As above: a raster message that already names the path is kept as it is.
                 let message = raster_err.to_string();
-                Error::Unsupported(if message.contains("format not recognized") {
+                Error::Unsupported(if message.contains(&format!("'{path}': format not recognized")) {
                     message
                 } else {
                     format!("'{path}': format not recognized ({message})")
@@ -2329,7 +2329,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("notes.txt");
         std::fs::write(&path, "not geospatial\n").unwrap();
-        let Err(error) = super::open_local(path.to_str().unwrap(), &crate::VectorOpenOptions::default()) else {
+        // The hint is shown only while the wbvector fallback is off: pin that, whatever the environment.
+        crate::config::push_scope([("TERRIO_WBVECTOR_FALLBACK".to_string(), None)].into());
+        let opened = super::open_local(path.to_str().unwrap(), &crate::VectorOpenOptions::default());
+        crate::config::pop_scope();
+        let Err(error) = opened else {
             panic!("a text file opened as a dataset");
         };
         let message = error.to_string();
