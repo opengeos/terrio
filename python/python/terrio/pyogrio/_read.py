@@ -141,11 +141,7 @@ def _spill_name(data: bytes, filename: str | None = None) -> str:
     except _terrio_errors.TerrioError as error:
         raise DataSourceError(str(error)) from error
     if extension is not None:
-        if (
-            extension in {"zip", "kmz", "xlsx"}
-            and filename
-            and Path(filename).suffix.lower() == ".zip"
-        ):
+        if extension in {"zip", "kmz"} and filename and Path(filename).suffix.lower() == ".zip":
             return filename
         if (
             extension == "geojson"
@@ -157,6 +153,11 @@ def _spill_name(data: bytes, filename: str | None = None) -> str:
     if data.startswith(b"SQLite format 3\0"):
         if filename and Path(filename).suffix.lower() in {".mbtiles", ".gpkg"}:
             return filename
+        if filename:
+            raise DataSourceError(
+                f"SQLite buffer '{filename}' needs a .mbtiles or .gpkg filename "
+                "to identify its format"
+            )
         raise DataSourceError(
             "SQLite buffer needs a filename to distinguish MBTiles from GeoPackage"
         )

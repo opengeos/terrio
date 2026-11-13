@@ -21,6 +21,7 @@ def test_named_buffers_match_their_paths(tmp_path, sources, extension):
         sources: Encoded datasets produced by the format writers.
         extension: SQLite container or geometry sequence extension.
     """
+    pytest.importorskip("geopandas")
     path = sources[extension]
     data = path.read_bytes()
     if extension == "geojsonl":
@@ -39,15 +40,41 @@ def test_named_buffers_match_their_paths(tmp_path, sources, extension):
         assert len(tpg.read_dataframe(data)) == 4
 
 
-def test_anonymous_mbtiles_requests_a_filename(sources):
+@pytest.mark.parametrize("reader", [tpg.read_dataframe, tpg.read_info, tpg.list_layers])
+def test_anonymous_mbtiles_requests_a_filename(sources, reader):
     """Ambiguous SQLite bytes ask for a filename rather than reporting a GeoPackage error.
 
     Args:
         sources: Encoded MBTiles dataset.
+        reader: Public compatibility entry point.
     """
-    for read in (tpg.read_dataframe, tpg.read_info, tpg.list_layers):
-        with pytest.raises(DataSourceError, match="SQLite buffer needs a filename"):
-            read(sources["mbtiles"].read_bytes())
+    if reader is tpg.read_dataframe:
+        pytest.importorskip("geopandas")
+    with pytest.raises(DataSourceError, match="SQLite buffer needs a filename"):
+        reader(sources["mbtiles"].read_bytes())
+
+
+def test_workbook_named_zip_is_identified_by_its_content(sources):
+    """Use the workbook reader when an uploaded XLSX has a generic ZIP filename.
+
+    Args:
+        sources: Encoded XLSX dataset.
+    """
+    stream = io.BytesIO(sources["xlsx"].read_bytes())
+    stream.name = "workbook.zip"
+    assert tpg.read_info(stream)["features"] == 4
+
+
+def test_named_sqlite_refusal_requests_an_identifying_suffix(sources):
+    """Name the ambiguous upload and identify the suffixes that disambiguate it.
+
+    Args:
+        sources: Encoded MBTiles dataset.
+    """
+    stream = io.BytesIO(sources["mbtiles"].read_bytes())
+    stream.name = "points.db"
+    with pytest.raises(DataSourceError, match="SQLite buffer.*points.db.*mbtiles.*gpkg"):
+        tpg.read_info(stream)
 
 
 @pytest.mark.parametrize("nested", [False, True])
