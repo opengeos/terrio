@@ -964,6 +964,18 @@ mod tests {
         }
     }
 
+    /// Wrong-format MIF content remains refused with the optional GDAL backend enabled
+    /// (reference: GDAL 3.12.1 with its MapInfo driver explicitly selected).
+    #[test]
+    fn mif_header_refusal_is_not_retried_as_another_format() {
+        for bytes in [b"hello\n".to_vec(), br#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[10,46]}}]}"#.to_vec()] {
+            let result = open_vector_bytes(bytes.clone(), "points.mif", &Default::default());
+            assert!(matches!(result, Err(Error::InvalidData(message)) if message.starts_with("MIF:")));
+            let result = codec::open(bytes, "points.mif", &Default::default());
+            assert!(matches!(result, Err(Error::InvalidData(message)) if message.starts_with("MIF:")));
+        }
+    }
+
     #[test]
     fn mislabeled_vector_archives_are_refused_instead_of_decoded_as_documents() {
         use std::io::Write;

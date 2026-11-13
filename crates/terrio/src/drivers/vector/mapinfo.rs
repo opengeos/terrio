@@ -121,6 +121,14 @@ impl Tokens {
 
 const STYLES: &[&str] = &["pen", "brush", "symbol", "center", "smooth", "font", "spacing", "justify", "angle", "label", "linespacing"];
 
+/// Header recognition refusals are terminal, including with the optional GDAL backend.
+pub(crate) const INVALID_HEADER: &str = "MIF: invalid header: ";
+
+/// Distinguishes format recognition from geometry errors GDAL may be able to recover.
+fn invalid_header(message: &str) -> Error {
+    Error::InvalidData(format!("{INVALID_HEADER}{message}"))
+}
+
 /// Parses MIF and MID contents.
 pub fn parse(mif: &[u8], mid: Option<&[u8]>, name: &str) -> Result<Layer> {
     let mif = mif.strip_prefix(b"\xef\xbb\xbf").unwrap_or(mif);
@@ -141,7 +149,7 @@ pub fn parse(mif: &[u8], mid: Option<&[u8]>, name: &str) -> Result<Layer> {
         if keyword == "version" {
             version = line.split_whitespace().nth(1).is_some_and(|v| v.parse::<u32>().is_ok_and(|v| v > 0));
             if !version {
-                return Err(Error::InvalidData("MIF: invalid Version declaration".into()));
+                return Err(invalid_header("invalid Version declaration"));
             }
         } else if keyword == "delimiter" {
             delimiter = line.split('"').nth(1).and_then(|d| d.chars().next()).unwrap_or(',');
@@ -150,18 +158,15 @@ pub fn parse(mif: &[u8], mid: Option<&[u8]>, name: &str) -> Result<Layer> {
                 srs.apply_to_layer(&mut layer);
             }
         } else if keyword == "columns" {
-            let n: usize = line
-                .split_whitespace()
-                .nth(1)
-                .and_then(|n| n.parse().ok())
-                .ok_or_else(|| Error::InvalidData("MIF: invalid Columns declaration".into()))?;
+            let n: usize =
+                line.split_whitespace().nth(1).and_then(|n| n.parse().ok()).ok_or_else(|| invalid_header("invalid Columns declaration"))?;
             columns = true;
             for _ in 0..n {
-                let col = lines.get(i).ok_or_else(|| Error::InvalidData("MIF: incomplete Columns declaration".into()))?;
+                let col = lines.get(i).ok_or_else(|| invalid_header("incomplete Columns declaration"))?;
                 i += 1;
                 let col = col.trim();
                 if col.eq_ignore_ascii_case("data") {
-                    return Err(Error::InvalidData("MIF: incomplete Columns declaration".into()));
+                    return Err(invalid_header("incomplete Columns declaration"));
                 }
                 let (fname, ftype) = col.split_once(char::is_whitespace).unwrap_or((col, "char"));
                 let t = ftype.trim().to_ascii_lowercase();
@@ -189,7 +194,7 @@ pub fn parse(mif: &[u8], mid: Option<&[u8]>, name: &str) -> Result<Layer> {
     }
     for (present, keyword) in [(version, "Version"), (columns, "Columns"), (data, "Data")] {
         if !present {
-            return Err(Error::InvalidData(format!("MIF: missing {keyword} declaration; not a complete MapInfo Interchange File")));
+            return Err(invalid_header(&format!("missing {keyword} declaration; not a complete MapInfo Interchange File")));
         }
     }
     for (n, t) in &fields {
@@ -691,8 +696,9 @@ fn write_geometry(s: &mut String, g: &Geometry) {
 mod tests {
     use super::*;
 
-    /// Header recognition agrees with GDAL 3.12.1 for wrong-format content; an empty
-    /// Data section is valid and must retain its declared schema.
+    /// Wrong-format payloads are refused as in GDAL 3.12.1's explicit MapInfo driver.
+    /// Incomplete-header refusals are Terrio policy, not a GDAL comparison. Valid empty
+    /// Data sections retain their declared schema.
     #[test]
     fn requires_mif_header_but_allows_empty_data() {
         for mif in [
