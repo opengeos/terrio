@@ -34,8 +34,8 @@ def centre_rows(crs, origin, size, north, south):
     cols, rows = np.meshgrid(np.arange(w) + 0.5, np.arange(h) + 0.5)
     xs, ys = (origin[0] + cols * 25_000).ravel(), (origin[1] - rows * 25_000).ravel()
     _, lats = transform(crs, "EPSG:4326", xs.tolist(), ys.tolist())
-    lats = np.asarray(lats).reshape(h, w)
-    return np.where((lats <= north) & (lats >= south), np.floor(north - lats) + 1, 0)
+    row = np.floor(north - np.asarray(lats).reshape(h, w))
+    return np.where((row >= 0) & (row < north - south), row + 1, 0)
 
 
 def assert_written_up_to_the_pole(out, expected, label):

@@ -1272,7 +1272,8 @@ GDAL chunk-dependent sampling, also pass `--grid-invariant false`, or set
 `TERRIO_WARP_GRID=GDAL`. An explicit `--grid-invariant true` overrides that setting.
 Terrio's chunk-dependent source windows of kernels other than `sum` also reach a pole of the
 source's CRS inside or beside their chunk, which the points sampled along the chunk's edges do not
-bound, so that a grid holding a pole is written up to it.
+bound, so that a grid holding a pole is written up to it. Values in such a chunk can therefore
+differ from those of a window bounded by those points alone.
 Both policies retain lazy window/overview reads. Python's `warp` and `WarpedVRT`
 accept `grid_invariant=True|False`; JavaScript's `warp` accepts `gridInvariant`.
 
