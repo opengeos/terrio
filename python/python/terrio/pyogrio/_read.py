@@ -141,7 +141,26 @@ def _spill_name(data: bytes, filename: str | None = None) -> str:
     except _terrio_errors.TerrioError as error:
         raise DataSourceError(str(error)) from error
     if extension is not None:
+        if extension in {"zip", "kmz"} and filename and Path(filename).suffix.lower() == ".zip":
+            return filename
+        if (
+            extension == "geojson"
+            and filename
+            and Path(filename).suffix.lower() in (".geojsonl", ".geojsons", ".geojsonseq")
+        ):
+            return filename
         return str(Path(filename).with_suffix(f".{extension}")) if filename else f"data.{extension}"
+    if data.startswith(b"SQLite format 3\0"):
+        if filename and Path(filename).suffix.lower() in {".mbtiles", ".gpkg"}:
+            return filename
+        if filename:
+            raise DataSourceError(
+                f"SQLite buffer '{filename}' needs a .mbtiles or .gpkg filename "
+                "to identify its format"
+            )
+        raise DataSourceError(
+            "SQLite buffer needs a filename to distinguish MBTiles from GeoPackage"
+        )
     if filename and Path(filename).suffix:
         return filename
     raise DataSourceError(_NOT_RECOGNIZED.format("/vsimem/pyogrio"))
@@ -174,6 +193,7 @@ class _Source:
                 data = data.encode("utf-8")
             path_or_buffer = data
         if isinstance(path_or_buffer, (bytes, bytearray, memoryview)):
+            self._input_name = filename or "buffer"
             data = bytes(path_or_buffer)
             name = _spill_name(data, filename)
             self._tmp = tempfile.TemporaryDirectory(prefix="terrio-pyogrio-")
@@ -184,6 +204,7 @@ class _Source:
             return
         if not isinstance(path_or_buffer, str):
             path_or_buffer = str(path_or_buffer)
+        self._input_name = path_or_buffer
         self.path, self.shapefiles = _local_path(path_or_buffer)
 
     def layer_names(self) -> list[str]:
@@ -201,9 +222,11 @@ class _Source:
                 except _terrio_errors.NotFoundError as e:
                     raise DataSourceError(f"{self.path}: No such file or directory") from e
                 except _terrio_errors.TerrioError as e:
+                    if str(e).startswith("no dataset found in "):
+                        raise DataSourceError(f"no dataset found in '{self._input_name}'") from e
                     raise DataSourceError(str(e)) from e
             if not self._names and self.path.lower().endswith((".zip", ".kmz", ".xlsx")):
-                raise DataSourceError(f"no dataset found in '{self.path}'")
+                raise DataSourceError(f"no dataset found in '{self._input_name}'")
         return self._names
 
     def name(self) -> str:

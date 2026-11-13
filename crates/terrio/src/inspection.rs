@@ -9,6 +9,11 @@ use crate::Result;
 use crate::formats::{Kind, RasterDriver, VectorDriver};
 use serde::Serialize;
 
+/// Whether a SQLite header declares a standard or legacy GeoPackage application id.
+pub(crate) fn is_geopackage_header(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"SQLite format 3\0") && matches!(bytes.get(68..72), Some(b"GPKG" | b"GP10" | b"GP11"))
+}
+
 /// Bytes inspected by the header-only identifier.
 pub const IDENTIFICATION_HEADER_BYTES: usize = 16 * 1024;
 
@@ -133,7 +138,7 @@ fn identify_header(bytes: &[u8], name: &str, length: Option<u64>) -> Option<Iden
         return raster(RasterDriver::PMTiles);
     }
     if bytes.starts_with(b"SQLite format 3\0") {
-        if ext == "gpkg" || matches!(bytes.get(68..72), Some(b"GPKG" | b"GP10")) {
+        if ext == "gpkg" || is_geopackage_header(bytes) {
             return raster(RasterDriver::GPKG);
         }
         if ext == "mbtiles" {

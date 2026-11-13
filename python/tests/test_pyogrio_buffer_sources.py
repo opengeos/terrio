@@ -41,7 +41,18 @@ def sources(tmp_path_factory):
         crs="EPSG:4326",
     )
     paths = {}
-    for extension in ["geojson", "gpkg", "fgb", "parquet", "kml", "kmz", "xlsx", "geojsonl", "dxf"]:
+    for extension in [
+        "geojson",
+        "gpkg",
+        "fgb",
+        "parquet",
+        "kml",
+        "kmz",
+        "xlsx",
+        "geojsonl",
+        "dxf",
+        "mbtiles",
+    ]:
         path = directory / f"points.{extension}"
         path.write_bytes(layer.to_bytes(path.name))
         paths[extension] = path
@@ -143,7 +154,7 @@ def test_vector_buffers_match_named_files(sources, extension, mode):
         np.testing.assert_array_equal(info[key], reference[key])
 
 
-@pytest.mark.parametrize("extension", ["kmz", "xlsx", "geojsonl", "dxf"])
+@pytest.mark.parametrize("extension", ["kmz", "xlsx", "geojsonl", "dxf", "mbtiles"])
 def test_named_file_objects_match_paths(sources, extension):
     """Use the filename supplied by an open file object.
 

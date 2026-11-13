@@ -485,6 +485,8 @@ pub(crate) fn open_native(path: &str) -> Result<Dataset> {
     let ds = open_native_unchecked(path)?;
     if let Dataset::Raster(r) = &ds {
         crate::declared::check_dataset(r)?;
+    } else if let Dataset::Vector(v) = &ds {
+        check_archive_layers(path, &v.layers)?;
     }
     Ok(ds)
 }
@@ -993,7 +995,10 @@ pub(crate) fn open_vector_native(path: &str, options: &VectorOpenOptions) -> Res
     }
     let local = vfs::resolve(path)?;
     match open_local(local.as_str(), options)? {
-        Dataset::Vector(v) => Ok(v),
+        Dataset::Vector(v) => {
+            check_archive_layers(path, &v.layers)?;
+            Ok(v)
+        }
         Dataset::Raster(_) => Err(Error::Unsupported(format!("'{path}' is a raster, not a vector dataset"))),
     }
 }
@@ -1046,11 +1051,31 @@ fn list_layers_native(path: &str) -> Result<Vec<String>> {
     let local = vfs::resolve(path)?;
     if VectorDriver::for_extension(local.as_str()) == Some(VectorDriver::GPKG) {
         #[cfg(feature = "sqlite")]
-        return crate::drivers::vector::gpkg_read::list_layers(local.as_str());
+        {
+            let names = crate::drivers::vector::gpkg_read::list_layers(local.as_str())?;
+            if names.is_empty() {
+                check_archive_layers(path, &[])?;
+            }
+            return Ok(names);
+        }
         #[cfg(not(feature = "sqlite"))]
         return Err(Error::disabled("sqlite"));
     }
-    Ok(open_vector_native(local.as_str(), &VectorOpenOptions::default())?.layers.into_iter().map(|l| l.name).collect())
+    let dataset = open_vector_native(local.as_str(), &VectorOpenOptions::default())?;
+    Ok(dataset.layers.into_iter().map(|l| l.name).collect())
+}
+
+const NO_ARCHIVE_DATASET: &str = "no dataset found in ";
+const NO_ARCHIVE_LAYERS: &str = ": selected document has no layers";
+
+/// Refuses an archive whose selected document provides no dataset layers.
+fn check_archive_layers(path: &str, layers: &[Layer]) -> Result<()> {
+    let location = vfs::Location::parse(path);
+    if layers.is_empty() && (matches!(location, vfs::Location::Zip { .. }) || VectorDriver::for_extension(path) == Some(VectorDriver::KMZ))
+    {
+        return Err(Error::Unsupported(format!("{NO_ARCHIVE_DATASET}'{}'{NO_ARCHIVE_LAYERS}", location.file_name())));
+    }
+    Ok(())
 }
 
 /// When terrio's own drivers could not open `path`, tries GDAL; if GDAL cannot either, terrio's
@@ -1074,6 +1099,9 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
         e if e.is_resource_refusal() => false,
         // A missing file, unless the path is one of GDAL's dataset names (`HDF5:"f.h5"://x`).
         Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound => vfs::is_gdal_name(path),
+        // VFS uses the same leading words for archives containing only unsupported formats.
+        // Those remain eligible for GDAL (for example a zipped File Geodatabase).
+        Error::Unsupported(message) if message.starts_with(NO_ARCHIVE_DATASET) && message.ends_with(NO_ARCHIVE_LAYERS) => false,
         _ => true,
     };
     if !retry {
@@ -1089,6 +1117,20 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
 #[cfg(all(test, feature = "gdal"))]
 mod fallback_tests {
     use super::*;
+
+    #[test]
+    fn archives_without_layers_are_not_retried() {
+        let error = check_archive_layers("empty.kmz", &[]).unwrap_err();
+        assert_eq!(error.to_string(), "no dataset found in 'empty.kmz': selected document has no layers");
+        let result: Result<()> = gdal_fallback("empty.kmz", Err(error), |_| panic!("empty archive retried through GDAL"));
+        assert!(matches!(result, Err(Error::Unsupported(message)) if message.starts_with(NO_ARCHIVE_DATASET)));
+    }
+
+    #[test]
+    fn unrecognized_archive_contents_remain_eligible_for_gdal() {
+        let result = gdal_fallback("parcels.gdb.zip", Err(Error::Unsupported("no dataset found in 'parcels.gdb.zip'".into())), |_| Ok(()));
+        assert!(result.is_ok());
+    }
 
     #[test]
     fn missing_windows_files_are_not_retried() {
