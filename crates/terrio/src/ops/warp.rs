@@ -396,7 +396,7 @@ enum SourcePoles {
     /// minus this, in the CRS's angular unit, at every longitude.
     Angular(f64),
     /// Projected: points on the north and the south pole of the CRS's geographic CRS, every 15°
-    /// of longitude, in the CRS's coordinates. Where a pole has no coordinates (as in Eckert IV),
+    /// of longitude, in the CRS's coordinates. Where a pole has no coordinates (as in Mercator),
     /// the points are a hundred-millionth of a quarter turn from it.
     Projected([Vec<(f64, f64)>; 2]),
 }
@@ -8112,8 +8112,7 @@ mod tests {
 
     /// Worlds in projected CRSs warped into NSIDC's north grid, whose interior holds the North
     /// Pole: in Mercator (EPSG:3857, to 85.05° N and S), which takes the pole beyond its edge,
-    /// and in Eckert IV (ESRI:54012), which takes it to its first row but cannot transform the
-    /// pole itself. In both samplings (`SAMPLINGS`), every pixel the source covers is written
+    /// and in Eckert IV (ESRI:54012), which takes it to a line, its first row. In both samplings (`SAMPLINGS`), every pixel the source covers is written
     /// (for Eckert IV, north of 50° N: by the 180° meridian, where it splits the world, 52 pixels
     /// at the grid's left edge, at 43° N, are not, whatever the poles); in the chunk-dependent
     /// one, the source window of the grid starts at the source's first row and, for Mercator, is

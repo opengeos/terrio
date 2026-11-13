@@ -392,15 +392,19 @@ EPSG	32727	+proj=utm +zone=27 +south +datum=WGS84 +units=m +no_defs +type=crs
 EPSG	32747	+proj=utm +zone=47 +south +datum=WGS84 +units=m +no_defs +type=crs
 ESRI	26788	+proj=lcc +lat_0=44.7833333333333 +lon_0=-87 +lat_1=45.4833333333333 +lat_2=47.0833333333333 +x_0=609601.219202438 +y_0=0 +datum=NAD27 +units=us-ft +no_defs +type=crs
 ESRI	37240	+proj=longlat +a=6378249.145 +rf=293.465 +no_defs +type=crs
+ESRI	53012	+proj=eck4 +lon_0=0 +x_0=0 +y_0=0 +R=6371000 +units=m +no_defs +type=crs
 ESRI	53017	+proj=cea +lat_ts=30 +lon_0=0 +x_0=0 +y_0=0 +R=6371000 +units=m +no_defs +type=crs
 ESRI	53030	+proj=robin +lon_0=0 +x_0=0 +y_0=0 +R=6371000 +units=m +no_defs +type=crs
 ESRI	53043	+proj=aitoff +lon_0=0 +x_0=0 +y_0=0 +R=6371000 +units=m +no_defs +type=crs
 ESRI	53049	+proj=nsper +lat_0=0 +lon_0=0 +h=35800000 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs
+ESRI	53077	+proj=natearth +lon_0=0 +x_0=0 +y_0=0 +R=6371008.7714 +units=m +no_defs +type=crs
 ESRI	54008	+proj=sinu +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs
 ESRI	54011	+proj=eck5 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs
+ESRI	54012	+proj=eck4 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs
 ESRI	54030	+proj=robin +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs
 ESRI	54032	+proj=aeqd +lat_0=0 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs
 ESRI	54049	+proj=nsper +lat_0=0 +lon_0=0 +h=35800000 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs
+ESRI	54077	+proj=natearth +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs
 ESRI	54090	+proj=peirce_q +shape=square +lat_0=90 +lon_0=0 +k_0=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs
 ESRI	102008	+proj=aea +lat_0=40 +lon_0=-96 +lat_1=20 +lat_2=60 +x_0=0 +y_0=0 +datum=NAD83 +units=m +no_defs +type=crs
 ESRI	102028	+proj=aea +lat_0=-15 +lon_0=125 +lat_1=7 +lat_2=-32 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs

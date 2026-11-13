@@ -170,9 +170,9 @@ fn natural_earth_matches_proj() {
 /// (outside the projection domain).
 type InverseCase = (f64, f64, Option<(f64, f64)>);
 
-/// A method on a sphere of radius 6,400 km, as in PROJ 9.8.1's own tests
-/// (`test/gie/builtins.gie`): forward within 0.1 mm, as there, and inverse within 1e-9°.
-fn check_gie(name: &str, fwd: &[[f64; 4]], inv: &[InverseCase]) {
+/// `+proj={name} +a=6400000`, the sphere of PROJ's own tests, against PROJ's points: forward
+/// within 0.1 mm, as there, and inverse within 1e-9°.
+fn check_on_sphere(name: &str, fwd: &[[f64; 4]], inv: &[InverseCase]) {
     let proj = SpatialRef::from_proj4(&format!("+proj={name} +a=6400000")).unwrap();
     let geog = SpatialRef::from_proj4("+proj=longlat +a=6400000").unwrap();
     let to_proj = Transformer::new(&geog, &proj).unwrap();
@@ -196,6 +196,7 @@ fn check_gie(name: &str, fwd: &[[f64; 4]], inv: &[InverseCase]) {
     }
 }
 
+/// PROJ 9.8.1's own test values (`test/gie/builtins.gie`).
 #[test]
 fn eckert_iv_matches_proj_gie() {
     let (x, y) = (188646.389356416, 132268.540174065);
@@ -233,9 +234,10 @@ fn eckert_iv_matches_proj_gie() {
         (8489602.75, -pole, None),
         (0.0, -8489602.75, None),
     ];
-    check_gie("eck4", &fwd, &inv);
+    check_on_sphere("eck4", &fwd, &inv);
 }
 
+/// PROJ 9.8.1's own test values (`test/gie/builtins.gie`).
 #[test]
 fn natural_earth_matches_proj_gie() {
     let (x, y) = (194507.265257889, 112508.737358295);
@@ -247,7 +249,28 @@ fn natural_earth_matches_proj_gie() {
         (-200.0, 100.0, Some((-lon, lat))),
         (-200.0, -100.0, Some((-lon, -lat))),
     ];
-    check_gie("natearth", &fwd, &inv);
+    check_on_sphere("natearth", &fwd, &inv);
+}
+
+/// Within about 0.005° of a pole, where Newton's method stalls, PROJ 9.8.1 (pyproj 3.8.0,
+/// `+proj=eck4 +a=6400000`) puts Eckert IV's points on the pole line, without the (1 + cos θ)
+/// factor of x; 89.99° still converges.
+#[test]
+fn eckert_iv_puts_points_near_a_pole_on_its_pole_line_as_proj_does() {
+    let pole = 8489602.740332814;
+    let fwd = [
+        [180.0, 89.999, pole, pole],
+        [-180.0, -89.998, -pole, -pole],
+        [45.0, 89.997, 2122400.6850832035, pole],
+        [180.0, 89.99, 8491582.436392464, 8489602.509509496],
+    ];
+    let inv = [
+        (pole, pole, Some((180.0, 90.0))),
+        (-pole, -pole, Some((-180.0, -90.0))),
+        (2122400.6850832035, pole, Some((45.0, 90.0))),
+        (8491582.436392464, 8489602.509509496, Some((180.0, 89.99000000001735))),
+    ];
+    check_on_sphere("eck4", &fwd, &inv);
 }
 
 /// Past Natural Earth's outline, PROJ 9.8.1 (pyproj 3.8.0, `+proj=natearth +a=6400000`) reads a
@@ -263,7 +286,7 @@ fn natural_earth_inverse_past_its_outline_matches_proj() {
         (18381785.341789857, 0.0, Some((-170.99999999999994, 0.0))),
         (-18381785.341789857, 0.0, Some((170.99999999999994, 0.0))),
     ];
-    check_gie("natearth", &[], &inv);
+    check_on_sphere("natearth", &[], &inv);
 }
 
 #[test]

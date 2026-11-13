@@ -64,7 +64,7 @@ fn proj_strings_match_proj() {
     }
     assert!(failures.is_empty(), "{} of {read} differ from PROJ:\n{}", failures.len(), failures.join("\n"));
     // The codes terrio does not read are methods it does not compute without the wbprojection
-    // fallback (Eckert, Aitoff...) and ESRI codes it does not have.
+    // fallback (Aitoff, the other Eckerts...) and ESRI codes it does not have.
     assert!(read * 100 >= rows.len() * 90, "terrio reads only {read} of {} rows", rows.len());
 }
 

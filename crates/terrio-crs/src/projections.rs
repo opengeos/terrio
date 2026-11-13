@@ -3409,9 +3409,6 @@ impl Proj for Eck4 {
             let lam = x / (ECK4_CX * (1.0 + cos_theta));
             (lam, aasin_checked((theta + sin_theta * (cos_theta + 2.0)) * ECK4_RCP)?)
         };
-        if !lam.is_finite() || !phi.is_finite() {
-            return None;
-        }
         // Past the antimeridian: refused, unless by rounding (PROJ without +over).
         let past = lam.abs() - PI;
         if past > 0.0 {
@@ -3443,15 +3440,20 @@ fn natearth_x(phi2: f64) -> f64 {
     a0 + phi2 * (a1 + phi2 * (a2 + phi2 * phi2 * phi2 * (a3 + phi2 * a4)))
 }
 
+/// Natural Earth's northing at latitude φ, on the unit sphere.
+fn natearth_y(phi: f64) -> f64 {
+    let [b0, b1, b2, b3, b4] = NATEARTH_B;
+    let phi2 = phi * phi;
+    let phi4 = phi2 * phi2;
+    phi * (b0 + phi2 * (b1 + phi4 * (b2 + b3 * phi2 + b4 * phi4)))
+}
+
 impl Proj for Natearth {
     fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
         if !lam.is_finite() || !phi.is_finite() {
             return None;
         }
-        let [b0, b1, b2, b3, b4] = NATEARTH_B;
-        let phi2 = phi * phi;
-        let phi4 = phi2 * phi2;
-        Some((lam * natearth_x(phi2), phi * (b0 + phi2 * (b1 + phi4 * (b2 + b3 * phi2 + b4 * phi4)))))
+        Some((lam * natearth_x(phi * phi), natearth_y(phi)))
     }
 
     fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
@@ -3464,7 +3466,7 @@ impl Proj for Natearth {
         for _ in 0..100 {
             let y2 = yc * yc;
             let y4 = y2 * y2;
-            let f = yc * (b0 + y2 * (b1 + y4 * (b2 + b3 * y2 + b4 * y4))) - y;
+            let f = natearth_y(yc) - y;
             let fder = c0 + y2 * (c1 + y4 * (c2 + c3 * y2 + c4 * y4));
             let step = f / fder;
             yc -= step;
