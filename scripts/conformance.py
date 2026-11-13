@@ -1079,7 +1079,7 @@ def suite_longitude_period(ctx):
         ctx: Conformance execution context.
 
     Returns:
-        Suite: Eight required real-data comparisons with explicit GDAL policy scope.
+        Suite: Twelve required real-data comparisons with explicit GDAL policy scope.
     """
     suite = Suite("longitude-period", "Periodic geographic storage", "GDAL via rasterio",
                   "Natural Earth country coverage stored from zero and minus 180 degrees: "
@@ -1089,7 +1089,10 @@ def suite_longitude_period(ctx):
                   "total but can distribute it differently from GDAL among output rows. "
                   "Three polar meridian samples of real country coverage match GDAL within 1e-8 "
                   "for bilinear and sum under both policies and storage layouts. "
-                  "Regional Pacific country coverage matches GDAL exactly with nearest under both policies.")
+                  "Regional Pacific country coverage matches GDAL exactly with nearest under both policies. "
+                  "Wider-source average and sum include both nonduplicated placements and match "
+                  "independent source-area integrals within 1e-9; average matches GDAL within 1e-9, "
+                  "while GDAL's approximate sum weights differ by at most 0.03.")
     missing = missing_modules("terrio", "pytest", "numpy", "rasterio")
     if missing:
         suite.skipped = "needs " + ", ".join(missing)
@@ -1105,6 +1108,9 @@ def suite_longitude_period(ctx):
     complete, detail = _pytest_module_conformance(
         ctx, "test_warp_regional_longitudes.py", selection="real_country_regional_coverage", expected_count=2)
     suite.cases.append(Case("Regional longitude numbering", "Natural Earth Pacific countries", IDENTICAL if complete else DIFFERS, detail))
+    complete, detail = _pytest_module_conformance(
+        ctx, "test_warp_wider_source_placements.py", selection="real_country_coverage", expected_count=4)
+    suite.cases.append(Case("Wider-source footprint placements", "Natural Earth countries", TOLERANCE if complete else DIFFERS, detail))
     return suite
 
 

@@ -52,6 +52,20 @@ const SQUARES = {
   ],
 };
 
+test("wider-source area footprints use two nonduplicated placements", () => {
+  const values = Float64Array.from({length: 3610}, (_, i) => ({0: 2, 1: 4, 359: 8, 360: 1000})[i % 361] ?? 1);
+  const source = terrio.rasterFromArray(values, 361, 10, [-180.5, 1, 0, 10, 0, -1], "EPSG:4326");
+  const ones = terrio.rasterFromArray(new Float64Array(3610).fill(1), 361, 10, [-180.5, 1, 0, 10, 0, -1], "EPSG:4326");
+  for (const gridInvariant of [true, false]) {
+    const options = {tSrs: "+proj=longlat +datum=WGS84 +lon_0=180", ts: [1, 1], ot: "Float64", gridInvariant};
+    assert.ok(Math.abs(terrio.warp(ones, {...options, te: [-1, 0, 1, 10], resampling: "sum"}).readBand(1)[0] - 20) < 1e-9);
+    for (const [resampling, expected] of [["sum", 100], ["average", 4], ["rms", Math.sqrt(20.8)], ["min", 2], ["max", 8], ["mode", 2], ["med", 4], ["q1", 2], ["q3", 8]]) {
+      const value = terrio.warp(source, {...options, te: [-1, 0, 1.5, 10], resampling}).readBand(1)[0];
+      assert.ok(Math.abs(value - expected) < 1e-9, `${gridInvariant}, ${resampling}: ${value} != ${expected}`);
+    }
+  }
+});
+
 test("version", () => {
   assert.match(terrio.version(), /^\d+\.\d+\.\d+/);
 });
