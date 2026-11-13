@@ -2667,6 +2667,26 @@ test("complex TIFF memory copies retain exact Int32 components and sample tags",
   }
 });
 
+for (const extension of ["mbtiles", "pmtiles"]) {
+  test(`${extension}: JPEG quality parses complete numbers`, { skip: needs("tiles") }, () => {
+    const side = 256;
+    const values = new Uint8Array(3 * side * side).map((_, i) => (i * 37 + Math.floor(i / side)) % 251);
+    const halfWorld = 20037508.342789244;
+    const resolution = 2 * halfWorld / side / 2048;
+    const transform = [-halfWorld + 1000 * side * resolution, resolution, 0, halfWorld - 700 * side * resolution, 0, -resolution];
+    const image = terrio.rasterFromArray(values, side, side, transform, "EPSG:3857");
+    const encode = quality => image.toBytes(`image.${extension}`, {creationOptions: {TILE_FORMAT: "JPEG", QUALITY: quality}});
+    try {
+      for (const quality of ["50abc", "nan", "0", "500"]) {
+        assert.throws(() => encode(quality), /QUALITY=.*not a legal value in the range 1-100/);
+      }
+      for (const [quality, canonical] of [["1e2", "100"], ["7.5e1", "75"], ["80.9", "80"]]) {
+        assert.deepEqual(encode(quality), encode(canonical));
+      }
+    } finally { image.free(); }
+  });
+}
+
 test("JPEG 2000 quality and reversible options reach the WASM encoder", { skip: needs("jp2") }, () => {
   const n = 64 * 64;
   const values = new Uint8Array(3 * n).map((_, i) => (i * 37 + Math.floor(i / 64)) % 251);
@@ -5342,6 +5362,50 @@ test("chunk windows retain polar meridian edge pixels", () => {
       }
     }
   } finally { source.free(); }
+});
+
+test("curved coarse footprints retain their centers", () => {
+  const values = Float64Array.from({length: 360 * 180}, (_, i) => i % 360 + 0.5 - 180);
+  const source = terrio.rasterFromArray(values, 360, 180, [-180, 1, 0, 90, 0, -1], "EPSG:4326");
+  const degree = 6371000 * Math.PI / 180;
+  try {
+    for (const kernelVersion of ["3.12", "3.13"]) for (const gridInvariant of [true, false]) {
+      for (const [resampling, expected] of [["min", -171.5], ["max", 15.5]]) {
+        const output = terrio.warp(source, {
+          tSrs: "+proj=sinu +lon_0=0 +R=6371000 +units=m +no_defs", te: [-3 * degree, 0, 16 * degree, 89 * degree],
+          ts: [1, 1], resampling, gridInvariant, kernelVersion, ot: "Float64",
+        });
+        try { assert.equal(output.readBand(1)[0], expected); }
+        finally { output.free(); }
+      }
+    }
+  } finally { source.free(); }
+});
+
+test("polar meridian corners keep kernels and sums local", () => {
+  const wave = new Float64Array(180 * 360).map((_, i) => 100 * Math.cos((-179.5 + i % 360) * Math.PI / 180));
+  const ones = new Float64Array(180 * 360).fill(1);
+  const grid = [-180, 1, 0, 90, 0, -1];
+  const field = terrio.rasterFromArray(wave, 360, 180, grid, "EPSG:4326");
+  const constant = terrio.rasterFromArray(ones, 360, 180, grid, "EPSG:4326");
+  try {
+    for (const kernelVersion of ["3.12", "3.13"]) {
+      for (const gridInvariant of [true, false]) {
+        for (const resampling of ["bilinear", "cubic", "sum"]) {
+          const output = terrio.warp(resampling === "sum" ? constant : field, {
+            tSrs: "EPSG:3413", te: [-1375000, 1325000, -1300000, 1350000], ts: [3, 1],
+            resampling, ot: "Float64", dstNodata: -999, et: 0, gridInvariant, kernelVersion,
+          });
+          try {
+            for (const value of output.readBand(1)) {
+              assert.ok(resampling === "sum" ? value > 0.1 && value < 0.2 : value < -99.9 && value >= -100.1,
+                `${kernelVersion}/${gridInvariant}/${resampling}: ${value}`);
+            }
+          } finally { output.free(); }
+        }
+      }
+    }
+  } finally { field.free(); constant.free(); }
 });
 
 test("engineering GeoTIFF and COG bytes retain local CRS definitions", () => {

@@ -227,7 +227,12 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
     let ang = if key == "GEOCCS" { 1.0 } else { geogcs.child("UNIT").and_then(|u| u.num(1)).map(|r| r.to_degrees()).unwrap_or(1.0) };
     // WKT rounds the size of a degree (0.0174532925199433) and of a grad.
     let ang = [1.0, 0.9].into_iter().find(|u| (ang - u).abs() < 1e-9).unwrap_or(ang);
-    let pm = geogcs.child("PRIMEM").and_then(|p| p.num(1)).unwrap_or(0.0) * ang;
+    // The prime meridian is in the angular unit, but for Paris in a CRS in grads, whose longitude
+    // GDAL and ESRI write in degrees (2.33722917): PROJ 9.8.1 reads it so, too.
+    let primem = geogcs.child("PRIMEM");
+    let pm = primem.and_then(|p| p.num(1)).unwrap_or(0.0);
+    let paris_in_degrees = ang == 0.9 && primem.and_then(Node::name) == Some("Paris") && (pm - 2.33722917).abs() < 1e-8;
+    let pm = if paris_in_degrees { pm } else { pm * ang };
     let mut out = Vec::new();
     let mut tail = vec![format!("+a={a}"), format!("+rf={rf}")];
     if rf == 0.0 {
@@ -551,6 +556,13 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
         "cylindricalequalarea" | "lambertcylindricalequalarea" => {
             out.push("+proj=cea".into());
             push(&mut out, "lat_ts", sp1);
+            push(&mut out, "lon_0", lon_0);
+        }
+        // ESRI's Behrmann: cylindrical equal area true at 30°, or at the standard parallel it
+        // gives (EASE-Grid 2.0, EPSG:6933, as ESRI writes it), as PROJ reads it.
+        "behrmann" => {
+            out.push("+proj=cea".into());
+            push(&mut out, "lat_ts", sp1.or(Some(30.0)));
             push(&mut out, "lon_0", lon_0);
         }
         "azimuthalequidistant" | "modifiedazimuthalequidistant" => {

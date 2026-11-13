@@ -229,6 +229,11 @@ A datum terrio does not know by name and without `TOWGS84` (`Unknown based on Be
 ellipsoid`, as GDAL and PROJ write a PROJ string's `+ellps=bessel`) gets no EPSG code and no datum
 shift, as in GDAL: the CRS is used as it is.
 
+A WKT 1 in grads with a `PRIMEM["Paris",2.33722917]` (NTF (Paris) as GDAL and ESRI write it)
+has Paris's longitude in degrees, as PROJ reads it; another prime meridian is in the CRS's
+angular unit. ESRI's `Behrmann` projection is cylindrical equal area true at 30 degrees, or at
+the `Standard_Parallel_1` it gives (EASE-Grid 2.0), PROJ's `+proj=cea +lat_ts=30`.
+
 A CRS of PROJ's ESRI authority is reported under it, as GDAL reports it: a GeoTIFF GDAL writes in
 `ESRI:54009` is `ESRI:54009` (from the ESRI code the WKT declares or, for GDAL's ESRI PE strings,
 the ESRI CRS of the same name and definition), never an EPSG code.
