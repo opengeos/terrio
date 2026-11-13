@@ -5425,8 +5425,7 @@ mod tests {
 
     /// A remote file named for no raster driver, or for ENVI (`x.dat`), whose first bytes show a
     /// format that the whole read of a raster does not take under that name was downloaded whole
-    /// before that read refused it: 30,000,000 bytes of a TIFF (the whole read's; a lazy open reads
-    /// a TIFF by range whatever its name) or of a PNG named `x`, and so for a JPEG, a JPEG 2000, a
+    /// before that read refused it: TIFF, PNG and JPEG named for ENVI, and a JPEG 2000, a
     /// WebP, a GeoPackage, a PMTiles archive, a VRT, a STAC item and, named for ENVI, a GRIB,
     /// netCDF or HDF5 file. Each is refused after its first 16,384 bytes, the same failure, the
     /// error naming the dataset and what its first bytes hold.
@@ -5446,9 +5445,9 @@ mod tests {
         stac.truncate(1_000_000);
         let both: &[&str] = &["x", "x.dat"];
         let cases: Vec<(&str, Vec<u8>, &[&str])> = vec![
-            ("GTIFF", file(b"II*\0", 30_000_000), both),
-            ("PNG", file(b"\x89PNG\r\n\x1a\n", 30_000_000), both),
-            ("JPEG", file(&[0xFF, 0xD8, 0xFF, 0xE0], 1_000_000), both),
+            ("GTIFF", file(b"II*\0", 30_000_000), &["x.dat"]),
+            ("PNG", file(b"\x89PNG\r\n\x1a\n", 30_000_000), &["x.dat"]),
+            ("JPEG", file(&[0xFF, 0xD8, 0xFF, 0xE0], 1_000_000), &["x.dat"]),
             ("JP2", file(b"\0\0\0\x0cjP  \r\n\x87\n", 1_000_000), both),
             ("WEBP", file(b"RIFF\0\0\0\0WEBP", 1_000_000), both),
             ("GPKG", file(b"SQLite format 3\0", 1_000_000), both),
@@ -5485,8 +5484,8 @@ mod tests {
     }
 
     /// The generic open of a remote file (`info`, `open`) named for no driver, or for ENVI, read
-    /// it whole the same way: a 1,000,000-byte GeoJSON, random, CSV, XML or PNG document named `x`,
-    /// `x.dat` or `dir.json/x` was downloaded whole and refused, naming the local copy. It is
+    /// it whole the same way: a 1,000,000-byte GeoJSON, random, CSV or XML document named `x`,
+    /// `x.dat` or `dir.json/x`, or PNG named `x.dat`, was downloaded whole and refused, naming the local copy. It is
     /// refused after its first 16,384 bytes, naming the dataset; a netCDF file named `x` is still
     /// read whole, and a CSV document named `x.csv` too (as a vector, by its name).
     // Without the GDAL backend: with it, what terrio refuses goes on to GDAL (gdal_fallback).
@@ -5507,6 +5506,11 @@ mod tests {
             };
             let (base, seen) = serve_recording(bytes, None);
             for name in ["x", "x.dat", "dir.json/x"] {
+                // Native image signatures select readers under names of no raster driver.
+                // ENVI's name still requires its header and is refused before downloading.
+                if format == Some("PNG") && name != "x.dat" {
+                    continue;
+                }
                 let url = format!("{base}/{name}");
                 let asked = asked_bytes(&seen);
                 if format == Some("GEOJSON") {
