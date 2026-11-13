@@ -190,24 +190,27 @@ impl SpatialRef {
     /// ```
     /// use terrio::crs::SpatialRef;
     ///
-    /// let crs = SpatialRef::from_geokeys(&[1, 1, 0, 2, 1024, 0, 1, 1, 3072, 0, 1, 32633], &[], "")?;
+    /// let crs = SpatialRef::from_geokeys(&[1, 1, 0, 2, 1024, 0, 1, 1, 3072, 0, 1, 32633], &[], b"")?;
     /// assert_eq!(crs.epsg, Some(32633));
     /// # Ok::<(), terrio::Error>(())
     /// ```
-    pub fn from_geokeys(directory: &[u16], doubles: &[f64], ascii: &str) -> Result<Self> {
+    pub fn from_geokeys(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> Result<Self> {
         initialize();
         terrio_crs::SpatialRef::from_geokeys(directory, doubles, ascii).map(Into::into).map_err(Into::into)
     }
 
-    /// The GeoTIFF GeoKeys of the CRS, as GDAL writes them (see the standalone engine's
-    /// `SpatialRef::to_geokeys`), without the raster type. Fails for an unknown CRS.
+    /// The GeoTIFF GeoKeys that define the CRS, as GDAL writes them (see the standalone engine's
+    /// `SpatialRef::to_geokeys`), without the raster type (GTRasterTypeGeoKey, 1025, which a
+    /// writer adds). Fails for an unknown CRS, and for one that needs an ESRI PE citation and has
+    /// no WKT.
     ///
     /// ```
     /// use terrio::crs::SpatialRef;
     ///
     /// let tags = SpatialRef::from_epsg(32633)?.to_geokeys()?.encode()?;
-    /// // GeoKeyDirectoryTag, GeoDoubleParamsTag and GeoAsciiParamsTag.
-    /// println!("{:?} {:?} {:?}", tags.directory, tags.doubles, tags.ascii);
+    /// // GeoTIFF 1.0 (no vertical CRS), then GTModelTypeGeoKey 1 and ProjectedCSTypeGeoKey 32633.
+    /// assert_eq!(tags.directory, [1, 1, 0, 2, 1024, 0, 1, 1, 3072, 0, 1, 32633]);
+    /// assert!(tags.doubles.is_empty() && tags.ascii.is_empty());
     /// # Ok::<(), terrio::Error>(())
     /// ```
     pub fn to_geokeys(&self) -> Result<geokeys::GeoKeyValues> {
@@ -223,7 +226,7 @@ impl SpatialRef {
     }
 
     /// The CRS of GeoKeys and the projection method left unread (see `geokeys::read`).
-    pub(crate) fn read_geokeys(directory: &[u16], doubles: &[f64], ascii: &str) -> geokeys::GeoKeysCrs {
+    pub(crate) fn read_geokeys(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> geokeys::GeoKeysCrs {
         initialize();
         geokeys::read(directory, doubles, ascii)
     }

@@ -19,7 +19,7 @@
 //!
 //! let keys = SpatialRef::from_epsg(32633)?.to_geokeys()?;
 //! let tags = keys.encode()?;
-//! let read = SpatialRef::from_geokeys(&tags.directory, &tags.doubles, &tags.ascii)?;
+//! let read = SpatialRef::from_geokeys(&tags.directory, &tags.doubles, tags.ascii.as_bytes())?;
 //! assert_eq!(read.epsg, Some(32633));
 //! # Ok::<(), terrio_crs::Error>(())
 //! ```
@@ -29,11 +29,11 @@ use crate::{Error, Result, SpatialRef};
 /// GeoKey directory access: `(location, count, value_or_offset)` by key id.
 struct GeoKeys<'a> {
     /// The GeoKeyDirectoryTag values.
-    pub keys: &'a [u16],
+    keys: &'a [u16],
     /// The GeoDoubleParamsTag values.
-    pub doubles: &'a [f64],
+    doubles: &'a [f64],
     /// The GeoAsciiParamsTag value.
-    pub ascii: &'a str,
+    ascii: &'a [u8],
 }
 
 const GEO_DOUBLE_PARAMS: u16 = 34736;
@@ -68,7 +68,8 @@ impl GeoKeys<'_> {
         }
         let start = (off as usize).min(self.ascii.len());
         let end = (start + n as usize).min(self.ascii.len());
-        self.ascii.get(start..end).map(|s| s.trim_end_matches(['|', '\0']))
+        // Text that is not UTF-8 in that span reads as none (see `ascii_lossy`).
+        std::str::from_utf8(&self.ascii[start..end]).ok().map(|s| s.trim_end_matches(['|', '\0']))
     }
 
     /// An ASCII key's text, its bytes sliced: offsets count bytes, and the text may hold
@@ -78,7 +79,7 @@ impl GeoKeys<'_> {
         if loc != GEO_ASCII_PARAMS {
             return None;
         }
-        let b = self.ascii.as_bytes();
+        let b = self.ascii;
         let start = (off as usize).min(b.len());
         let end = (start + n as usize).min(b.len());
         Some(String::from_utf8_lossy(&b[start..end]).trim_end_matches('|').to_string())
@@ -129,16 +130,21 @@ pub struct GeoKeysCrs {
 /// - ESRI PE citations (`ESRI PE String = <WKT>`), as GDAL writes a CRS GeoKeys cannot hold;
 /// - a vertical CRS (VerticalCSTypeGeoKey) on an EPSG horizontal CRS, as the compound CRS (the
 ///   registry's compound CRS of the two codes when there is one), and a geographic 3D CRS as its
-///   geographic 2D CRS with its own code as the vertical CRS (EPSG:4979 as 4326 and 4979).
+///   geographic 2D CRS with its own code as the vertical CRS (EPSG:4979 as 4326 and 4979). Unlike
+///   GDAL, which ignores VerticalCSTypeGeoKey in a GeoTIFF 1.0 directory (minor revision 0), terrio
+///   reads it whatever the revision, as LAS records hold it in 1.0 directories.
+///
+/// An EPSG code terrio does not know is kept as the code alone (`epsg` without `wkt`), as the
+/// file gives it. `ascii` is the GeoAsciiParamsTag's bytes, whose offsets the directory counts.
 ///
 /// ```
 /// // GeoKeys of a UTM zone, as a GeoTIFF's three tags hold them.
 /// let directory = [1, 1, 0, 2, 1024, 0, 1, 1, 3072, 0, 1, 32633];
-/// let read = terrio_crs::geokeys::read(&directory, &[], "");
+/// let read = terrio_crs::geokeys::read(&directory, &[], b"");
 /// assert_eq!(read.crs.and_then(|c| c.epsg), Some(32633));
 /// assert_eq!(read.unsupported_method, None);
 /// ```
-pub fn read(directory: &[u16], doubles: &[f64], ascii: &str) -> GeoKeysCrs {
+pub fn read(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> GeoKeysCrs {
     let k = GeoKeys { keys: directory, doubles, ascii };
     let mut epsg = match (k.short(1024), k.short(3072), k.short(2048)) {
         (_, Some(code), _) if code != 0 && code != USER_DEFINED => Some(code as u32),
@@ -197,7 +203,7 @@ pub fn read(directory: &[u16], doubles: &[f64], ascii: &str) -> GeoKeysCrs {
     }
     if let Some(h) = epsg
         && let Some(v) = k.short(4096).filter(|c| *c != 0 && *c != USER_DEFINED)
-        && let Ok(c) = SpatialRef::compound(h, u32::from(v))
+        && let Ok(c) = SpatialRef::compound_reference(h, u32::from(v))
     {
         let registered = crate::compound_code(h, u32::from(v), c.name().as_deref()).and_then(|code| SpatialRef::from_epsg(code).ok());
         let c = registered.unwrap_or(c);
@@ -280,8 +286,11 @@ fn parse_utm_citation(c: &str) -> Option<(u32, bool)> {
     let rest = rest.trim_start();
     let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
     let zone: u32 = digits.parse().ok()?;
-    let after = &rest[digits.len()..];
-    let north = !(after.starts_with('s') || after.contains("south"));
+    // The hemisphere: a lone letter after any space (`56S`, `56 S`), or the word (`56, Southern
+    // Hemisphere`); not another word (`15 survey feet`).
+    let after = rest[digits.len()..].trim_start();
+    let letter: String = after.chars().take_while(char::is_ascii_alphabetic).collect();
+    let north = !(letter == "s" || after.contains("south"));
     Some((zone, north))
 }
 
@@ -1058,11 +1067,13 @@ pub struct GeoKeyValues {
 }
 
 impl GeoKeyValues {
-    /// The GeoKeyDirectoryTag, GeoDoubleParamsTag and GeoAsciiParamsTag holding the keys, as
-    /// GDAL writes them: the keys sorted by id, each ASCII key ended by `|`, and GeoTIFF 1.1
-    /// (minor revision 1) when they hold a vertical CRS (VerticalCSTypeGeoKey), which GDAL strips
-    /// from 1.0 files. Fails when a count or offset does not fit the directory's 16 bits (an ASCII
-    /// key past 65,535 bytes, such as a very long ESRI PE citation).
+    /// The GeoKeyDirectoryTag, GeoDoubleParamsTag and GeoAsciiParamsTag holding the keys (with
+    /// the raster's GTRasterTypeGeoKey added by the caller), as GDAL writes them: the keys sorted
+    /// by id, each ASCII key ended by `|`, and GeoTIFF 1.1 (minor revision 1) when they hold a
+    /// vertical CRS (VerticalCSTypeGeoKey), which GDAL strips from 1.0 files. Fails when a count or
+    /// offset does not fit the directory's 16 bits (an ASCII key past 65,535 bytes, such as a very
+    /// long ESRI PE citation). The keys are written as given: one entry per key id, and ASCII
+    /// values without `|`, which ends a value.
     ///
     /// ```
     /// let keys = terrio_crs::SpatialRef::from_epsg(4326)?.to_geokeys()?;
@@ -1135,11 +1146,12 @@ impl SpatialRef {
     /// use terrio_crs::SpatialRef;
     ///
     /// // A geographic CRS by its code (GTModelTypeGeoKey 2, GeographicTypeGeoKey 4326).
-    /// let crs = SpatialRef::from_geokeys(&[1, 1, 0, 2, 1024, 0, 1, 2, 2048, 0, 1, 4326], &[], "")?;
+    /// let keys = [1, 1, 0, 2, 1024, 0, 1, 2, 2048, 0, 1, 4326];
+    /// let crs = SpatialRef::from_geokeys(&keys, &[], b"")?;
     /// assert_eq!(crs.epsg, Some(4326));
     /// # Ok::<(), terrio_crs::Error>(())
     /// ```
-    pub fn from_geokeys(directory: &[u16], doubles: &[f64], ascii: &str) -> Result<SpatialRef> {
+    pub fn from_geokeys(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> Result<SpatialRef> {
         let read = read(directory, doubles, ascii);
         read.crs.ok_or_else(|| match read.unsupported_method {
             Some(m) => Error::Crs(format!(
@@ -1149,7 +1161,8 @@ impl SpatialRef {
         })
     }
 
-    /// The GeoKeys of the CRS, as GDAL 3.12.1 writes them (`GTIFSetFromOGISDefnEx`), without the
+    /// The GeoKeys that define the CRS, as GDAL 3.12.1 writes them (`GTIFSetFromOGISDefnEx`; GDAL
+    /// also writes keys they imply, such as citations and the angular unit), without the
     /// raster type (GTRasterTypeGeoKey), which is the raster's:
     /// - a registered geographic or projected CRS by its EPSG code, a geographic 3D CRS by its
     ///   geographic 2D CRS's and its own as the vertical CRS;
@@ -1167,7 +1180,8 @@ impl SpatialRef {
     /// ```
     /// use terrio_crs::SpatialRef;
     ///
-    /// let keys = SpatialRef::from_proj4("+proj=lcc +lat_1=33 +lat_2=45 +lat_0=39 +lon_0=-96 +datum=WGS84")?.to_geokeys()?;
+    /// let lcc = "+proj=lcc +lat_1=33 +lat_2=45 +lat_0=39 +lon_0=-96 +datum=WGS84";
+    /// let keys = SpatialRef::from_proj4(lcc)?.to_geokeys()?;
     /// // A user-defined projected CRS (ProjectedCSTypeGeoKey 32767), Lambert conformal conic 2SP.
     /// assert!(keys.shorts.contains(&(3072, 32767)) && keys.shorts.contains(&(3075, 8)));
     /// # Ok::<(), terrio_crs::Error>(())
@@ -1255,7 +1269,7 @@ mod tests {
             34736, 1, 0, 3081, 34736, 1, 1, 3082, 34736, 1, 2, 3083, 34736, 1, 3, 3092, 34736, 1, 4,
         ];
         let doubles = [-100.0, 0.0, 500000.0, 0.0, 0.9996];
-        let crs = user_defined_crs(&GeoKeys { keys: &keys, doubles: &doubles, ascii: "" }).unwrap();
+        let crs = user_defined_crs(&GeoKeys { keys: &keys, doubles: &doubles, ascii: b"" }).unwrap();
         let wkt = crs.wkt.unwrap();
         assert!(crs.proj4.is_none() && wkt.contains("AUTHORITY[\"EPSG\",\"4152\"]"), "{wkt}");
         assert!(wkt.contains("PARAMETER[\"central_meridian\",-100]"), "{wkt}");
@@ -1270,7 +1284,7 @@ mod tests {
             34736, 1, 4,
         ];
         let doubles = [33.0, 45.0, -96.0, 39.0, 0.0];
-        let crs = user_defined_crs(&GeoKeys { keys: &keys, doubles: &doubles, ascii: "" }).unwrap();
+        let crs = user_defined_crs(&GeoKeys { keys: &keys, doubles: &doubles, ascii: b"" }).unwrap();
         let p = crs.proj4.unwrap();
         assert!(p.starts_with("+proj=lcc +lat_1=33 +lat_2=45 +lat_0=39 +lon_0=-96 +x_0=0 +y_0=0 +datum=WGS84"), "{p}");
         assert!(crs.wkt.is_some());
@@ -1281,6 +1295,9 @@ mod tests {
         assert_eq!(user_defined_projected(Some(16010), None, None, Some("WGS 84 / UTM zone 10N".into())), Some(32610));
         assert_eq!(user_defined_projected(None, Some(4269), None, Some("NAD83 / UTM zone 15N".into())), Some(26915));
         assert_eq!(user_defined_projected(Some(16133), None, None, None), Some(32733));
+        assert_eq!(user_defined_projected(None, None, None, Some("WGS 84 / UTM zone 56 S".into())), Some(32756));
+        assert_eq!(user_defined_projected(None, None, None, Some("UTM Zone 56, Southern Hemisphere".into())), Some(32756));
+        assert_eq!(user_defined_projected(None, None, None, Some("NAD83 / UTM zone 15 survey feet".into())), Some(26915));
         // A citation names only a projected CRS: a vertical one is no projected raster's (with
         // wbprojection; without it, citations name no code but a UTM zone).
         assert_eq!(user_defined_projected(None, None, None, Some("EPSG:5773".into())), None);
@@ -1300,10 +1317,10 @@ mod tests {
             3074, 0, 1, 16010, 3076, 0, 1, 9001,
         ];
         let ascii = "WGS 84 / UTM zone 10N|GCS Name = WGS 84|Datum = World Geodetic System 1984|Ellipsoid = WGS 84|Primem = Greenwich||";
-        assert_eq!(read(&keys, &[], ascii).crs.and_then(|c| c.epsg), Some(32610));
+        assert_eq!(read(&keys, &[], ascii.as_bytes()).crs.and_then(|c| c.epsg), Some(32610));
         // The same keys with another datum named keep it: not WGS 84's zone.
         let ascii = ascii.replace("World Geodetic System 1984", "Some Local Datum        ");
-        assert_eq!(read(&keys, &[], &ascii).crs.and_then(|c| c.epsg), None);
+        assert_eq!(read(&keys, &[], ascii.as_bytes()).crs.and_then(|c| c.epsg), None);
         assert_eq!(user_defined_projected(Some(16010), Some(4152), None, Some("NAD83 / UTM zone 10N".into())), None);
     }
 

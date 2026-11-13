@@ -875,7 +875,8 @@ They read and write:
 - registered geographic and projected CRSs by their EPSG codes, and a compound CRS of EPSG CRSs by
   its horizontal and vertical codes (GeoTIFF 1.1), read as the registry's compound CRS of the two
   when there is one; a geographic 3D CRS by its geographic 2D CRS's code with its own as the
-  vertical CRS, as GDAL writes and reads it (EPSG:4979 as 4326 and 4979);
+  vertical CRS, as GDAL writes and reads it (EPSG:4979 as 4326 and 4979). Unlike GDAL, terrio
+  also reads VerticalCSTypeGeoKey in a GeoTIFF 1.0 directory, where LAS records hold it;
 - user-defined geographic and projected CRSs: the projection methods GeoTIFF names
   (ProjCoordTransGeoKey 1, 3, 7 to 28, and 9815 for Hotine oblique Mercator variant B and Swiss
   oblique Mercator), a UTM zone by its ProjectionGeoKey, linear units by EPSG code or by size

@@ -664,7 +664,7 @@ pub(crate) fn crs_from_geokeys(keys: &[u16], doubles: Option<&[f64]>, ascii: Opt
 fn apply_geokeys(out: &mut GeoTags, keys: &[u16], doubles: Option<&[f64]>, ascii: Option<&str>) {
     let raster_type = keys.get(4..).and_then(|k| k.chunks(4).find(|k| k.len() == 4 && k[0] == 1025 && k[1] == 0)).map(|k| k[3]);
     out.pixel_is_point = raster_type == Some(2);
-    let read = crate::crs::SpatialRef::read_geokeys(keys, doubles.unwrap_or_default(), ascii.unwrap_or_default());
+    let read = crate::crs::SpatialRef::read_geokeys(keys, doubles.unwrap_or_default(), ascii.unwrap_or_default().as_bytes());
     out.unreadable_method = read.unsupported_method;
     if let Some(crs) = read.crs {
         out.epsg = crs.epsg;

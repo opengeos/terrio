@@ -191,7 +191,7 @@ fn crs(definition: &str) -> Result<Option<SpatialRef>, String> {
 
 fn read_check(row: &Row) -> Option<String> {
     let gdal = SpatialRef::from_wkt(&row.gdal);
-    let ours = match SpatialRef::from_geokeys(&row.directory, &row.doubles, &row.ascii) {
+    let ours = match SpatialRef::from_geokeys(&row.directory, &row.doubles, row.ascii.as_bytes()) {
         Ok(s) => s,
         Err(e) => return Some(format!("unread: {e}")),
     };
@@ -222,7 +222,7 @@ fn write_check(row: &Row) -> Option<String> {
     if ours.0 != gdal.0 || !same_parameters {
         return Some(format!("terrio {ours:?}\n    GDAL   {gdal:?}"));
     }
-    let back = match SpatialRef::from_geokeys(&tags.directory, &tags.doubles, &tags.ascii) {
+    let back = match SpatialRef::from_geokeys(&tags.directory, &tags.doubles, tags.ascii.as_bytes()) {
         Ok(b) => b,
         Err(e) => return Some(format!("terrio does not read its GeoKeys back: {e}")),
     };
