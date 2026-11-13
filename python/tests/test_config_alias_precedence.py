@@ -194,3 +194,35 @@ def test_http_aliases_control_real_headers_and_retries(retry_server, monkeypatch
                 np.testing.assert_array_equal(dataset.read(1), np.zeros((4, 4), dtype="uint8"))
     assert [status for _, status in requests] == [503, 206]
     assert all(agent == "from-inner" for agent, _ in requests)
+
+
+@pytest.mark.parametrize("value", ["NO", None, "   "])
+def test_spare_readers_replay_nested_alias_scopes(sidecar_source, value):
+    """A later reader retains the inner alias, including an explicit unset.
+
+    Args:
+        sidecar_source: TIFF and auxiliary metadata.
+        value: Inner alias override.
+    """
+    from test_concurrent_reads import own_reader_held
+
+    with rio.open(
+        str(sidecar_source) + ".msk",
+        "w",
+        driver="GTiff",
+        width=4,
+        height=4,
+        count=1,
+        dtype="uint8",
+    ) as destination:
+        destination.write(np.zeros((4, 4), dtype="uint8"), 1)
+    with rio.Env(**{PRIMARY: "EMPTY_DIR"}):
+        with rio.Env(**{ALTERNATE: value}):
+            raster = terrio.open_raster(str(sidecar_source), lazy=True)
+    expected = raster.read_mask()
+    assert expected is not None
+    assert not np.any(expected)
+    with own_reader_held(raster):
+        actual = raster.read_mask()
+    assert len(raster._readers) == 1
+    np.testing.assert_array_equal(actual, expected)

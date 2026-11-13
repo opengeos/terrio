@@ -92,20 +92,66 @@ pub fn thread_options() -> HashMap<String, Option<String>> {
     })
 }
 
+/// An ordered snapshot of thread scopes, retaining alias precedence and explicit unsets.
+#[derive(Clone, Default)]
+pub struct ThreadOptions(Vec<HashMap<String, Option<String>>>);
+
+impl ThreadOptions {
+    /// Captures the calling thread's scopes, excluding process environment variables.
+    pub fn capture() -> Self {
+        SCOPES.with(|s| Self(s.borrow().clone()))
+    }
+
+    /// Adds an innermost override to the snapshot.
+    pub fn insert(&mut self, key: String, value: Option<String>) {
+        self.0.push(HashMap::from([(key, value)]));
+    }
+
+    /// Resolves aliases in the captured scopes, then in the current process environment.
+    pub fn get_any(&self, keys: &[&str]) -> Option<String> {
+        let scoped = self.0.iter().rev().find_map(|scope| keys.iter().find_map(|key| scope.get(*key).cloned()));
+        scoped
+            .unwrap_or_else(|| keys.iter().find_map(|key| std::env::var(key).ok().filter(|v| !v.trim().is_empty())))
+            .filter(|v| !v.trim().is_empty())
+    }
+
+    /// Pushes captured scopes onto this thread. The returned guard pops them on drop.
+    pub fn enter(&self) -> ThreadOptionsScope {
+        for scope in &self.0 {
+            push_scope(scope.clone());
+        }
+        ThreadOptionsScope { depth: self.0.len(), _thread: std::marker::PhantomData }
+    }
+}
+
+/// A lexical guard for scopes installed from a snapshot.
+pub struct ThreadOptionsScope {
+    depth: usize,
+    _thread: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+impl Drop for ThreadOptionsScope {
+    fn drop(&mut self) {
+        for _ in 0..self.depth {
+            pop_scope();
+        }
+    }
+}
+
 /// Runs `f` with the captured thread options, replacing any worker scopes for its duration.
 /// Nested pool work can suspend another task on this worker; its options must not leak into
 /// this snapshot. The previous stack is restored even when `f` panics.
 /// Use only around blocking leaf operations: `f` must not yield into nested pool work,
 /// which could run unrelated tasks before the temporary thread-local scope is restored.
 #[cfg(any(test, remote, feature = "zarr", all(feature = "pointcloud", not(target_family = "wasm"))))]
-pub(crate) fn with_thread_options<T>(options: HashMap<String, Option<String>>, f: impl FnOnce() -> T) -> T {
+pub(crate) fn with_thread_options<T>(options: ThreadOptions, f: impl FnOnce() -> T) -> T {
     struct Restore(Vec<HashMap<String, Option<String>>>);
     impl Drop for Restore {
         fn drop(&mut self) {
             SCOPES.with(|s| *s.borrow_mut() = std::mem::take(&mut self.0));
         }
     }
-    let previous = SCOPES.with(|s| std::mem::replace(&mut *s.borrow_mut(), vec![options]));
+    let previous = SCOPES.with(|s| std::mem::replace(&mut *s.borrow_mut(), options.0));
     let _restore = Restore(previous);
     f()
 }
@@ -162,10 +208,25 @@ mod tests {
     }
 
     #[test]
+    fn captured_alias_scopes_keep_precedence_and_unsets_on_workers() {
+        let keys = ["TERRIO_CAPTURE_ALIAS", "GDAL_CAPTURE_ALIAS"];
+        with_options(&[(keys[0], "outer")], || {
+            for value in [Some("inner".to_string()), None, Some("  ".to_string())] {
+                push_scope(HashMap::from([(keys[1].into(), value.clone())]));
+                let snapshot = ThreadOptions::capture();
+                assert!(pop_scope());
+                let expected = value.filter(|v| !v.trim().is_empty());
+                let actual = std::thread::spawn(move || with_thread_options(snapshot, || get_any(&keys))).join().unwrap();
+                assert_eq!(actual, expected);
+            }
+        });
+    }
+
+    #[test]
     fn options_handed_to_another_thread_apply_there() {
         let key = "TERRIO_CONFIG_TEST_HANDED";
         let seen = with_options(&[(key, "set")], || {
-            let options = thread_options();
+            let options = ThreadOptions::capture();
             std::thread::spawn(move || (get(key), with_thread_options(options, || get(key)), get(key))).join().unwrap()
         });
         assert_eq!(seen, (None, Some("set".to_string()), None));
@@ -175,16 +236,16 @@ mod tests {
     fn captured_options_isolate_worker_scopes_and_restore_after_nested_work_and_panics() {
         let key = "TERRIO_CONFIG_TEST_WORKER";
         with_options(&[(key, "worker")], || {
-            with_thread_options(HashMap::new(), || {
+            with_thread_options(ThreadOptions::default(), || {
                 assert_eq!(get(key), None);
-                with_thread_options(HashMap::from([(key.into(), Some("nested".into()))]), || {
+                with_thread_options(ThreadOptions(vec![HashMap::from([(key.into(), Some("nested".into()))])]), || {
                     assert_eq!(get(key).as_deref(), Some("nested"));
                 });
                 assert_eq!(get(key), None);
             });
             assert_eq!(get(key).as_deref(), Some("worker"));
             let result = std::panic::catch_unwind(|| {
-                with_thread_options(HashMap::from([(key.into(), None)]), || {
+                with_thread_options(ThreadOptions(vec![HashMap::from([(key.into(), None)])]), || {
                     assert_eq!(get(key), None);
                     assert_eq!(thread_options().get(key), Some(&None));
                     panic!("restore the worker snapshot");

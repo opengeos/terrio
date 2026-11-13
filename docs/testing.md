@@ -13,9 +13,12 @@ Madison lidar (4 million points) too (`scripts/compare_pointclouds.py --quick` s
 
 `cargo test -p terrio --lib config::tests::` checks scope ordering, alias priority,
 explicit unsets and thread isolation. `python/tests/test_config_alias_precedence.py`
-adds 21 real-I/O checks: TIFF sidecar metadata and file discovery across both
+adds 24 real-I/O checks: TIFF sidecar metadata and file discovery across both
 aliases and nested scopes, restoration on exit, and HTTP User-Agent/retry
-settings applied to a loopback server. Every scoped alias wins over process
+settings applied to a loopback server. Spare-reader tests hold the primary reader
+on another thread and verify nested aliases and explicit unsets survive reopening.
+Ordered worker snapshots retain the same scope boundaries; flattened
+`thread_options()` remains an introspection API. Every scoped alias wins over process
 environment values or outer scopes. This alias policy is specific to Terrio;
 it is not a claim that GDAL understands the `TERRIO_` option names.
 

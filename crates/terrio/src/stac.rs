@@ -514,22 +514,17 @@ impl AssetReadPolicy {
 /// travel together; the lexical scope itself stays on the thread that enters it.
 pub(crate) struct AssetReadContext {
     policy: Option<AssetReadPolicy>,
-    options: std::collections::HashMap<String, Option<String>>,
+    options: crate::config::ThreadOptions,
 }
 
 pub(crate) struct AssetReadContextScope {
     _policy: Option<AssetReadScope>,
-}
-
-impl Drop for AssetReadContextScope {
-    fn drop(&mut self) {
-        crate::config::pop_scope();
-    }
+    _options: crate::config::ThreadOptionsScope,
 }
 
 impl AssetReadContext {
     pub(crate) fn capture(policy: Option<AssetReadPolicy>) -> Self {
-        Self { policy, options: crate::config::thread_options() }
+        Self { policy, options: crate::config::ThreadOptions::capture() }
     }
 
     pub(crate) fn check(&self) -> Result<()> {
@@ -538,8 +533,8 @@ impl AssetReadContext {
     }
 
     pub(crate) fn enter(&self) -> Result<AssetReadContextScope> {
-        crate::config::push_scope(self.options.clone());
-        let mut scope = AssetReadContextScope { _policy: None };
+        let options = self.options.enter();
+        let mut scope = AssetReadContextScope { _policy: None, _options: options };
         scope._policy = Some(match &self.policy {
             Some(policy) => policy.enter()?,
             // A snapshot without provenance must clear a suspended worker task's policy too.

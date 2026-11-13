@@ -530,7 +530,7 @@ impl FormatReader for EptReader {
         let base = &self.base;
         #[cfg(not(target_family = "wasm"))]
         let parts: Vec<Result<Vec<Dimension>>> = {
-            let options = crate::config::thread_options();
+            let options = crate::config::ThreadOptions::capture();
             let context = crate::stac::AssetReadContext::capture(crate::stac::AssetReadPolicy::current());
             crate::par::map_range(keys.len(), |i| {
                 crate::config::with_thread_options(options.clone(), || {

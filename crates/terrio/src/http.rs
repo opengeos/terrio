@@ -487,7 +487,7 @@ struct Client {
     azure: bool,
     /// The options the creating thread had set for itself (see [`crate::config`]): requests may be
     /// sent from other threads, which do not have them.
-    config: HashMap<String, Option<String>>,
+    config: crate::config::ThreadOptions,
     /// The headers every request for the file carries ([`Client::resolve_headers`]), resolved
     /// once, when the client is created, as GDAL's `/vsicurl/` handle reads its options when it is
     /// created: an option changed later (a path-specific header, a token) does not change what an
@@ -575,7 +575,7 @@ impl Client {
     /// A client sending its requests through `agent` (whose connections it shares).
     fn with_agent(remote: &Remote, options: HttpOptions, agent: ureq::Agent) -> Self {
         let auth = matches!(remote, Remote::S3(_)).then(|| (Credentials::from_env(), s3::region_from_env()));
-        Self::with_auth(remote, options, agent, auth, crate::config::thread_options())
+        Self::with_auth(remote, options, agent, auth, crate::config::ThreadOptions::capture())
     }
 
     /// A client with S3 credentials and region already resolved (`auth`, for S3 objects), under
@@ -586,7 +586,7 @@ impl Client {
         options: HttpOptions,
         agent: ureq::Agent,
         auth: Option<(Option<Credentials>, Option<String>)>,
-        config: HashMap<String, Option<String>>,
+        config: crate::config::ThreadOptions,
     ) -> Self {
         let (url, s3, azure) = match remote {
             Remote::Url(u) => match u.strip_prefix(azure_bearer_prefix()) {
@@ -657,10 +657,7 @@ impl Client {
     /// the process's options or the environment. Read only while the client is created (by the
     /// creating thread), see [`Client::headers`].
     fn option(&self, keys: &[&str]) -> Option<String> {
-        keys.iter().find_map(|k| match self.config.get(*k) {
-            Some(v) => v.clone().filter(|v| !v.trim().is_empty()),
-            None => crate::config::get(k),
-        })
+        self.config.get_any(keys)
     }
 
     /// The names of the file for path-specific options: its URL, and its GDAL virtual file system
@@ -1401,7 +1398,7 @@ pub(crate) struct ObjectFetcher {
     /// S3 credentials and region from the environment, read once rather than for every object.
     auth: (Option<Credentials>, Option<String>),
     /// The creating thread's options (see [`crate::config`]): objects are fetched from any thread.
-    config: HashMap<String, Option<String>>,
+    config: crate::config::ThreadOptions,
 }
 
 impl ObjectFetcher {
@@ -1415,7 +1412,7 @@ impl ObjectFetcher {
             options,
             region: Mutex::new(None),
             auth,
-            config: crate::config::thread_options(),
+            config: crate::config::ThreadOptions::capture(),
         }
     }
 
@@ -4771,7 +4768,7 @@ mod tests {
     /// proxy `agent`), without credentials or a configured region.
     fn amazon_client(agent: ureq::Agent) -> Client {
         let remote = Remote::S3(S3Object { bucket: "bucket".to_string(), key: "key.tif".to_string() });
-        Client::with_auth(&remote, options(), agent, Some((None, None)), crate::config::thread_options())
+        Client::with_auth(&remote, options(), agent, Some((None, None)), crate::config::ThreadOptions::capture())
     }
 
     /// The options of [`amazon_client`]'s requests: Amazon's endpoints over plain HTTP, whatever
