@@ -1,6 +1,7 @@
 """Stored CRS robustness across vector readers and dataframe/Arrow exports (#784)."""
 
 import sqlite3
+import sys
 import warnings
 
 import pytest
@@ -36,17 +37,17 @@ TEMPORAL = (
 def geopandas_for_surface(surface):
     """Load GeoPandas or skip when the requested export surface is unavailable."""
     gpd = pytest.importorskip("geopandas")
-    if surface in ("arrow", "stream"):
+    if surface in ("arrow", "stream", "feature_stream"):
         pytest.importorskip("pyarrow")
         if not hasattr(gpd.GeoDataFrame, "from_arrow"):
             pytest.skip("GeoDataFrame.from_arrow requires GeoPandas 1.0 or later")
     return gpd
 
 
-def stored_crs(tmp_path, driver, text, container_definition=CUSTOM):
+def stored_crs(tmp_path, driver, text, container_definition=CUSTOM, points=POINTS):
     """Write a point fixture and replace its stored CRS with the supplied text."""
     path = tmp_path / f"points.{driver}"
-    layer = terrio.Layer.from_geojson(POINTS, name="points", crs=container_definition)
+    layer = terrio.Layer.from_geojson(points, name="points", crs=container_definition)
     layer.write(str(path))
     if driver == "gpkg":
         with sqlite3.connect(path) as db:
@@ -82,19 +83,22 @@ def test_non_crs_stored_text_is_warned_and_discarded(tmp_path, driver):
 
 
 @pytest.mark.parametrize("driver", ["gpkg", "fgb", "shp"])
-@pytest.mark.parametrize("surface", ["geopandas", "arrow", "stream"])
-def test_unparseable_stored_definition_exports_without_crs(tmp_path, driver, surface):
+@pytest.mark.parametrize("surface", ["geopandas", "arrow", "stream", "feature_stream"])
+@pytest.mark.parametrize("definition", ['PROJCS["x"]', 'ENGCRS["x"]', "EPSG:999999"])
+def test_unparseable_stored_definition_exports_without_crs(tmp_path, driver, surface, definition):
     """Export feature values without a CRS when its retained definition is invalid."""
     gpd = geopandas_for_surface(surface)
-    path = stored_crs(tmp_path, driver, 'PROJCS["x"]')
+    path = stored_crs(tmp_path, driver, definition)
     layer = terrio.open_vector(str(path))[0]
-    assert layer.crs == 'PROJCS["x"]'
+    assert layer.crs == definition
     with pytest.warns(UserWarning, match="CRS definition cannot be parsed"):
         if surface == "geopandas":
             result = layer.to_geopandas()
+        elif surface == "feature_stream":
+            result = gpd.GeoDataFrame.from_arrow(terrio.open_stream(str(path)))
         else:
             result = gpd.GeoDataFrame.from_arrow(layer.to_arrow() if surface == "arrow" else layer)
-    assert layer.crs == 'PROJCS["x"]'
+    assert layer.crs == definition
     assert result.crs is None
     assert list(result["id"]) == [1]
     assert list(result.geometry.x) == [10]
@@ -102,7 +106,7 @@ def test_unparseable_stored_definition_exports_without_crs(tmp_path, driver, sur
 
 @pytest.mark.parametrize("driver", ["gpkg", "fgb", "shp"])
 @pytest.mark.parametrize("definition", [CUSTOM, 'LOCAL_CS["site grid",UNIT["metre",1]]', TEMPORAL])
-@pytest.mark.parametrize("surface", ["geopandas", "arrow", "stream", "pyogrio"])
+@pytest.mark.parametrize("surface", ["geopandas", "arrow", "stream", "pyogrio", "feature_stream"])
 def test_valid_custom_stored_definitions_survive_exports(tmp_path, driver, definition, surface):
     """Preserve valid custom and WKT2-only definitions through each export surface."""
     gpd = geopandas_for_surface(surface)
@@ -117,6 +121,8 @@ def test_valid_custom_stored_definitions_survive_exports(tmp_path, driver, defin
         result = tpg.read_dataframe(path)
     elif surface == "geopandas":
         result = layer.to_geopandas()
+    elif surface == "feature_stream":
+        result = gpd.GeoDataFrame.from_arrow(terrio.open_stream(str(path)))
     else:
         result = gpd.GeoDataFrame.from_arrow(layer.to_arrow() if surface == "arrow" else layer)
     assert result.crs.equals(CRS.from_user_input(definition))
@@ -136,7 +142,7 @@ def test_discarded_non_crs_text_is_not_written_into_other_formats(tmp_path, driv
 
 
 @pytest.mark.parametrize("driver", ["gpkg", "fgb", "shp"])
-@pytest.mark.parametrize("surface", ["geopandas", "arrow", "stream", "pyogrio"])
+@pytest.mark.parametrize("surface", ["geopandas", "arrow", "stream", "pyogrio", "feature_stream"])
 def test_custom_dynamic_crs_keeps_frame_reference_epoch(tmp_path, driver, surface):
     """Retain the dynamic datum and its frame reference epoch during export."""
     gpd = geopandas_for_surface(surface)
@@ -160,6 +166,8 @@ def test_custom_dynamic_crs_keeps_frame_reference_epoch(tmp_path, driver, surfac
         result = tpg.read_dataframe(path)
     elif surface == "geopandas":
         result = layer.to_geopandas()
+    elif surface == "feature_stream":
+        result = gpd.GeoDataFrame.from_arrow(terrio.open_stream(str(path)))
     else:
         result = gpd.GeoDataFrame.from_arrow(layer.to_arrow() if surface == "arrow" else layer)
     assert result.crs.equals(reference)
@@ -168,7 +176,7 @@ def test_custom_dynamic_crs_keeps_frame_reference_epoch(tmp_path, driver, surfac
 
 
 @pytest.mark.parametrize("definition", [CUSTOM, 'LOCAL_CS["site grid",UNIT["metre",1]]'])
-@pytest.mark.parametrize("surface", ["geopandas", "arrow", "stream", "pyogrio"])
+@pytest.mark.parametrize("surface", ["geopandas", "arrow", "stream", "pyogrio", "feature_stream"])
 def test_unknown_authority_uses_usable_stored_wkt_without_warning(tmp_path, definition, surface):
     """Use valid stored WKT when a declared authority code cannot be resolved."""
     gpd = geopandas_for_surface(surface)
@@ -198,8 +206,95 @@ def test_unknown_authority_uses_usable_stored_wkt_without_warning(tmp_path, defi
             result = tpg.read_dataframe(path)
         elif surface == "geopandas":
             result = layer.to_geopandas()
+        elif surface == "feature_stream":
+            result = gpd.GeoDataFrame.from_arrow(terrio.open_stream(str(path)))
         else:
             result = gpd.GeoDataFrame.from_arrow(layer.to_arrow() if surface == "arrow" else layer)
     assert result.crs.equals(CRS.from_user_input(definition))
     assert list(result["id"]) == [1]
     assert layer.crs == "EPSG:999999"
+
+
+@pytest.mark.parametrize("count", [0, 5])
+def test_feature_stream_crs_metadata_matches_batches(tmp_path, count):
+    """Validate one stream schema and retain it in every lazily exported batch.
+
+    Args:
+        tmp_path: The directory for the stored-CRS fixture.
+        count: The number of features, including the empty stream case.
+    """
+    pa = pytest.importorskip("pyarrow")
+    pytest.importorskip("pyproj")
+    points = {
+        "type": "FeatureCollection",
+        "features": [
+            {**POINTS["features"][0], "properties": {"id": fid}} for fid in range(1, count + 1)
+        ],
+    }
+    path = stored_crs(tmp_path, "gpkg", 'PROJCS["x"]', points=points)
+    stream = terrio.open_stream(str(path), batch_size=2)
+    with pytest.warns(UserWarning, match="CRS definition cannot be parsed") as caught:
+        reader = pa.RecordBatchReader.from_stream(stream)
+    assert len(caught) == 1
+    assert stream.crs == 'PROJCS["x"]'
+    geometry = reader.schema.field("geometry")
+    assert geometry.metadata[b"ARROW:extension:metadata"] == b"{}"
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        batches = list(reader)
+    assert sum(batch.num_rows for batch in batches) == count
+    assert all(batch.num_rows <= 2 for batch in batches)
+    assert all(batch.schema.equals(reader.schema, check_metadata=True) for batch in batches)
+    if count:
+        assert sorted(pa.Table.from_batches(batches)["id"].to_pylist()) == list(range(1, count + 1))
+
+
+def test_feature_stream_unknown_authority_without_wkt(tmp_path):
+    """Omit an unresolved header code from both layer and stream Arrow metadata.
+
+    Args:
+        tmp_path: The directory for the FlatGeobuf fixture.
+    """
+    pa = pytest.importorskip("pyarrow")
+    gpd = geopandas_for_surface("feature_stream")
+    path = tmp_path / "code.fgb"
+    terrio.Layer.from_geojson(POINTS, crs="EPSG:4326").write(str(path))
+    raw = bytearray(path.read_bytes())
+    header_end = 12 + int.from_bytes(raw[8:12], "little")
+    code = (4326).to_bytes(4, "little")
+    slots = [at for at in range(8, header_end - 3) if raw[at : at + 4] == code]
+    assert len(slots) == 1
+    raw[slots[0] : slots[0] + 4] = (999999).to_bytes(4, "little")
+    start = raw.index(b'GEOGCS["WGS 84"')
+    raw[start - 4 : start] = (1).to_bytes(4, "little")
+    raw[start : start + 2] = b" \0"
+    path.write_bytes(raw)
+    layer = terrio.open_vector(str(path))[0]
+    assert layer.crs == "EPSG:999999"
+    with pytest.warns(UserWarning, match="CRS definition cannot be parsed"):
+        expected = pa.table(layer.to_arrow())
+    with pytest.warns(UserWarning, match="CRS definition cannot be parsed"):
+        reader = pa.RecordBatchReader.from_stream(terrio.open_stream(str(path)))
+    assert reader.schema.equals(expected.schema, check_metadata=True)
+    result = gpd.GeoDataFrame.from_arrow(reader)
+    assert result.crs is None
+    assert list(result["id"]) == [1]
+    assert list(result.geometry.x) == [10]
+
+
+def test_feature_stream_without_pyproj_keeps_native_metadata(tmp_path, monkeypatch):
+    """Retain portable CRS metadata when optional Python validation is unavailable.
+
+    Args:
+        tmp_path: The directory for the GeoPackage fixture.
+        monkeypatch: The fixture used to simulate an unavailable pyproj import.
+    """
+    pa = pytest.importorskip("pyarrow")
+    path = stored_crs(tmp_path, "gpkg", 'PROJCS["x"]')
+    monkeypatch.setitem(sys.modules, "pyproj", None)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        expected = pa.table(terrio.open_vector(str(path))[0].to_arrow())
+        result = pa.table(terrio.open_stream(str(path)))
+    assert result.schema.equals(expected.schema, check_metadata=True)
+    assert result["id"].to_pylist() == [1]
