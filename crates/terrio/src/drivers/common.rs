@@ -240,14 +240,20 @@ impl RawWindow {
         let stride = if l.interleave == Interleave::Bip { l.bands } else { 1 };
         let span = if window.width == 0 { 0 } else { ((window.width - 1) * stride + 1) * size };
         // Each row of each band read: its offset in the file and in the window, in file order.
-        let mut rows = Vec::with_capacity(window.height * bands.len());
-        for (i, &b) in bands.iter().enumerate() {
-            let stored = self.stored_bands.as_ref().and_then(|s| s.get(b - 1).copied()).unwrap_or(b - 1);
-            for r in 0..window.height {
-                let row = window.y + r;
-                let file_row = if l.bottom_up { l.rows - 1 - row } else { row };
-                let sample = l.interleave.index(stored, file_row, window.x, l.cols, l.rows, l.bands);
-                rows.push((l.offset as u64 + (sample * size) as u64, (i * window.height + r) * window.width));
+        // A window with no samples (zero width, or no bands) reads nothing, whatever its height: its
+        // rows are not listed, so a huge height cannot size the list. Otherwise every row is at
+        // most `n` (the width is at least 1), so `height * bands` is within the checked sample count.
+        let mut rows = Vec::new();
+        if n > 0 {
+            rows.reserve_exact(window.height * bands.len());
+            for (i, &b) in bands.iter().enumerate() {
+                let stored = self.stored_bands.as_ref().and_then(|s| s.get(b - 1).copied()).unwrap_or(b - 1);
+                for r in 0..window.height {
+                    let row = window.y + r;
+                    let file_row = if l.bottom_up { l.rows - 1 - row } else { row };
+                    let sample = l.interleave.index(stored, file_row, window.x, l.cols, l.rows, l.bands);
+                    rows.push((l.offset as u64 + (sample * size) as u64, (i * window.height + r) * window.width));
+                }
             }
         }
         rows.sort_unstable();
@@ -1123,6 +1129,32 @@ pub(crate) fn write_replacing(path: impl AsRef<std::path::Path>, bytes: impl AsR
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A window with no samples reads nothing, however tall it is: a huge height does not size its
+    /// row list (the fuzzer's `raster_headers` target found this as a capacity overflow).
+    #[test]
+    fn a_window_without_samples_reads_nothing_however_tall() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("raw.bin");
+        std::fs::write(&path, [0u8; 4]).unwrap();
+        let window = RawWindow {
+            source: RawSource::File(path),
+            layout: Layout {
+                cols: 2,
+                rows: 2,
+                bands: 1,
+                data_type: DataType::U8,
+                little_endian: true,
+                interleave: Interleave::Bsq,
+                offset: 0,
+                bottom_up: false,
+            },
+            stored_bands: None,
+            inputs: Vec::new(),
+        };
+        let data = window.read_window(crate::Window { x: 0, y: 0, width: 0, height: usize::MAX / 2 }, &[1]).unwrap();
+        assert!(matches!(&data, RasterData::U8(samples) if samples.is_empty()));
+    }
 
     /// A WKT whose root names an EPSG code is kept as stored, not replaced by the registry's text,
     /// unless the stored text is the registry's or wbraster's generated WKT.
