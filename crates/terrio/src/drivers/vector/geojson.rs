@@ -717,12 +717,18 @@ impl SchemaScan {
             if sequence {
                 validate_seq_type(&v["type"])?;
             }
+            if v["type"].as_str() != Some("Feature") {
+                self.observe_root_geometry(raw)?;
+            }
             self.observe(&v);
             return Ok(());
         }
         let p: Probe = serde_json::from_slice(raw).map_err(err)?;
         if sequence {
             validate_seq_type(&p.record_type)?;
+        }
+        if p.record_type.as_str() != Some("Feature") {
+            self.observe_root_geometry(raw)?;
         }
         let _ = p.stac_version;
         self.string_ids |= p.id.is_string();
@@ -733,6 +739,15 @@ impl SchemaScan {
             for (k, v) in props {
                 self.add_kind(k, v);
             }
+        }
+        Ok(())
+    }
+
+    /// Infers a root geometry by the same declared-type rules at every record position.
+    fn observe_root_geometry(&mut self, raw: &[u8]) -> Result<()> {
+        let root: GeomField = serde_json::from_slice(raw).map_err(|error| Error::InvalidData(format!("GeoJSON: {error}")))?;
+        if let Some(geometry) = root.0 {
+            self.geom = self.geom.add(geometry.geom_type(false));
         }
         Ok(())
     }
@@ -1292,6 +1307,30 @@ fn encode(g: &Geometry, ccw: bool) -> Value {
 
 #[cfg(test)]
 mod tests {
+    /// GDAL's declared geometry type depends on the object, not its sequence position.
+    #[test]
+    fn root_geometry_type_is_independent_of_record_position() {
+        let empty = br#"{"type":"Feature","properties":{},"geometry":null}"#;
+        for (raw, expected) in [
+            (
+                r#"{"type":"GeometryCollection","geometries":[{"type":"Point","coordinates":[1,2]},{"type":"Point","coordinates":[1,2,3]}]}"#,
+                "GeometryCollection",
+            ),
+            (r#"{"coordinates":[1,2]}"#, "Unknown"),
+            (r#"{"type":"other","coordinates":[1,2]}"#, "Unknown"),
+            (r#"{"type":"Point","coordinates":[]}"#, "Point"),
+        ] {
+            for before in 0..3 {
+                let mut scan = SchemaScan::default();
+                for _ in 0..before {
+                    scan.observe_raw(empty).unwrap();
+                }
+                scan.observe_raw(raw.as_bytes()).unwrap();
+                assert_eq!(scan.geom.name(), expected, "record {before}: {raw}");
+            }
+        }
+    }
+
     use super::*;
 
     #[test]
