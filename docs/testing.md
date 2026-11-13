@@ -9,6 +9,22 @@ terrio reproduces the GDAL they compare with (see [warp](cli.md#warp)). Pull req
 compare the point cloud filters with PDAL's on `autzen_trim.las` only; pushes to `main` on the
 Madison lidar (4 million points) too (`scripts/compare_pointclouds.py --quick` skips it).
 
+## Remote-read locks across fork
+
+`cargo test -p terrio --lib each_remote_read_lock_is_handed_off_across_a_fork`
+runs on Unix, including macOS. It independently checks the file-cache, host/file
+statistics, path-options (reader and writer), retry-warning and process-agent
+locks. Direct probes verify that `http::hold_for_fork` holds every lock. Each
+lock is then held alone by another thread while the process forks: the child's
+snapshot must show that the holder began releasing it, and both child and parent
+must be able to acquire it afterwards. The scenario runs in its own test process
+with bounded timeouts.
+
+This regression sends no remote requests and initializes no HTTP agents in the child. The
+read-in-child test remains disabled on macOS because of an intermittent SIGTRAP
+whose cause is unconfirmed (#696). Lock hand-off coverage does not establish that
+system networking libraries are safe to call after a multithreaded fork.
+
 ## Transformed polar bounds
 
 `cargo test -p terrio-crs --lib transform_bounds` checks pole inclusion, explicit
