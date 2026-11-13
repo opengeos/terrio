@@ -644,6 +644,12 @@ class CRS(Mapping[str, Any]):
             if value is not False
         )
 
+    def _construction_definition(self) -> str:
+        """The definition captured at construction: a file's WKT, not the file read again."""
+        if self._from_file and isinstance(self._info.get("wkt"), str):
+            return self._info["wkt"]
+        return self._input
+
     def to_projjson(self) -> str:
         """The CRS as PROJJSON v0.7.
 
@@ -653,10 +659,7 @@ class CRS(Mapping[str, Any]):
         Raises:
             CRSError: If terrio would describe the CRS wrongly in PROJJSON.
         """
-        # The definition captured at construction: a file's WKT, not the file read again.
-        definition = self._input
-        if self._from_file and isinstance(self._info.get("wkt"), str):
-            definition = self._info["wkt"]
+        definition = self._construction_definition()
         try:
             return _terrio.crs_to_projjson(definition)
         except Exception as err:
@@ -677,10 +680,7 @@ class CRS(Mapping[str, Any]):
         Raises:
             CRSError: If the CRS cannot be parsed.
         """
-        # The definition captured at construction: a file's WKT, not the file read again.
-        definition = self._input
-        if self._from_file and isinstance(self._info.get("wkt"), str):
-            definition = self._info["wkt"]
+        definition = self._construction_definition()
         try:
             return _terrio.crs_to_wkt1_strict(definition)
         except Exception as err:

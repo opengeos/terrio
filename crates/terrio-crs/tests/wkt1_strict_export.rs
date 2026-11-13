@@ -333,6 +333,22 @@ fn to_wkt_describes_without_the_extension() {
         let w = SpatialRef::from_proj4(proj).unwrap().to_wkt().unwrap();
         assert!(w.contains(node) && !w.contains("EXTENSION"), "{proj}: {w}");
     }
+    // Read back, each converts as the PROJ string (without its extension, from the nodes alone).
+    for proj in [
+        "+proj=merc +R_C +lon_0=0 +x_0=0 +y_0=0 +R=3396190 +units=m",
+        "+proj=longlat +a=6378000 +es=0.006",
+        "+proj=longlat +a=6378137 +e=0.08",
+    ] {
+        let crs = SpatialRef::from_proj4(proj).unwrap();
+        let back = SpatialRef::from_wkt(&crs.to_wkt().unwrap());
+        let t = Transformer::new(&crs, &back).unwrap();
+        let p = if crs.is_geographic() { (10.0, 20.0) } else { (100_000.0, -200_000.0) };
+        let q = t.transform(p.0, p.1).unwrap();
+        assert!((q.0 - p.0).abs() < 1e-6 && (q.1 - p.1).abs() < 1e-6, "{proj}: {q:?}");
+    }
+    let geocentric = SpatialRef::from_proj4("+proj=geocent +ellps=GRS80 +units=m").unwrap();
+    let back = SpatialRef::from_wkt(&geocentric.to_wkt().unwrap());
+    assert_eq!(back.to_proj4(), geocentric.to_proj4());
     // Beside `+b`, whose order of precedence differs from PROJ's, `+es` keeps the extension.
     let w = SpatialRef::from_proj4("+proj=longlat +a=6378137 +b=6356752.314245179 +es=0.006").unwrap().to_wkt().unwrap();
     assert!(w.contains("EXTENSION[\"PROJ4\""), "{w}");
