@@ -66,6 +66,30 @@ test("wider-source area footprints use two nonduplicated placements", () => {
   }
 });
 
+test("wider-source mode ties retain source-column order", () => {
+  const values = new Float64Array(361).fill(-999);
+  values[358] = 8;
+  values[1] = 2;
+  const source = terrio.rasterFromArray(values, 361, 1, [-180.5, 1, 0, 1, 0, -1], "EPSG:4326", -999);
+  for (const gridInvariant of [true, false]) {
+    const output = terrio.warp(source, {tSrs: "+proj=longlat +datum=WGS84 +lon_0=180",
+      te: [-2, 0, 1, 1], ts: [1, 1], resampling: "mode", gridInvariant, ot: "Float64", dstNodata: -999});
+    assert.equal(output.readBand(1)[0], 2);
+  }
+});
+
+test("multi-turn source area windows include the complete preferred placement", () => {
+  for (const width of [721, 1081]) {
+    const source = terrio.rasterFromArray(Float64Array.from({length: width * 10}, (_, i) => i % width),
+      width, 10, [-180.5, 1, 0, 10, 0, -1], "EPSG:4326");
+    for (const gridInvariant of [true, false]) for (const [resampling, expected] of [["sum", 7200], ["average", 360]]) {
+      const output = terrio.warp(source, {tSrs: "+proj=longlat +datum=WGS84 +lon_0=180",
+        te: [-1, 0, 1, 10], ts: [1, 1], resampling, gridInvariant, ot: "Float64"});
+      assert.ok(Math.abs(output.readBand(1)[0] - expected) < 1e-9);
+    }
+  }
+});
+
 test("version", () => {
   assert.match(terrio.version(), /^\d+\.\d+\.\d+/);
 });

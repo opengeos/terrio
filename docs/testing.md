@@ -149,6 +149,19 @@ under both grid policies: 1,916,928 bytes in two requests from a 9,749,624-byte
 COG. Source windows remain rectangular and can span the
 source's full longitude width, while retaining a bounded latitude window.
 
+Nodata mode-tie regressions require source-column order after ownership clipping,
+even when the preferred placement is at the high-column edge. Sources of 721 and
+1081 columns exercise complete preferred placements under every area method and
+both sampling policies. Chunk-dependent area windows include the final fractional
+column of that placement, as stable windows do.
+
+A 10,801 by 512 UInt16, three-turn local source uses one lazy reader and requests
+749,632 decoded pixel bytes under either sampling policy. At a 262,144-byte planning
+budget it makes 12 strip reads, versus one read at 64 MB. Measured local debug
+warps, including opening that reader, took about 9 to 11 ms with the tight budget;
+timings are observations, not test thresholds. These counts measure decoded read
+requests, not filesystem traffic or a total-process memory ceiling.
+
 `python/tests/test_warp_regional_longitudes.py` checks all 14 resamplers under both
 grid policies for a Pacific source stored past 180 degrees and a rounded near-full world.
 It separately checks meridian ownership and the rounded world's actual tiny gap. The two

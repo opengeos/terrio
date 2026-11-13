@@ -65,7 +65,7 @@ def test_wider_source_placements_clip_duplicate_longitudes(invariant, reverse, m
     if reverse:
         values = values[:, ::-1].copy()
         grid = (180.5, -1, 0, 10, 0, -1)
-        # Equal mode weights retain the first value in source-column order.
+        # Weights 1, 1, 0.5 tie 2 and 4; reversal puts 4 first in source-column order.
         if method == "mode":
             expected = 4
     source = terrio.Raster.from_array(values, grid, crs="EPSG:4326")
@@ -79,6 +79,74 @@ def test_wider_source_placements_clip_duplicate_longitudes(invariant, reverse, m
         grid_invariant=invariant,
     )
     assert result.read(1)[0, 0] == pytest.approx(expected, abs=1e-9)
+
+
+@pytest.mark.parametrize("invariant", [True, False])
+@pytest.mark.parametrize("reverse", [True, False])
+def test_mode_ties_follow_source_columns_across_placements(invariant, reverse):
+    """Visit a low-column extra part before a high-column preferred part for mode ties.
+
+    Args:
+        invariant: Stable or chunk-dependent sampling.
+        reverse: Reverse source-column storage and therefore its tie-breaking order.
+    """
+    values = np.full((1, 361), -999.0)
+    values[0, 358], values[0, 1] = 8, 2
+    grid = (-180.5, 1, 0, 1, 0, -1)
+    if reverse:
+        values = values[:, ::-1].copy()
+        grid = (180.5, -1, 0, 1, 0, -1)
+    source = terrio.Raster.from_array(values, grid, crs="EPSG:4326", nodata=-999)
+    actual = terrio.warp(
+        source,
+        t_srs=CRS,
+        dst_transform=(-2, 3, 0, 1, 0, -1),
+        ts=(1, 1),
+        resampling="mode",
+        grid_invariant=invariant,
+        ot="Float64",
+        dstnodata=-999,
+    ).read(1)[0, 0]
+    assert actual == (8 if reverse else 2)
+
+
+@pytest.mark.parametrize("invariant", [True, False])
+@pytest.mark.parametrize("width", [721, 1081])
+@pytest.mark.parametrize(
+    "method,expected",
+    [
+        ("sum", 7200),
+        ("average", 360),
+        ("rms", np.sqrt(129600.5)),
+        ("min", 359),
+        ("max", 361),
+        ("mode", 360),
+        ("med", 360),
+        ("q1", 359),
+        ("q3", 361),
+    ],
+)
+def test_multiple_turns_use_one_complete_preferred_placement(invariant, width, method, expected):
+    """Prefer a fully covered footprint on two- and three-turn sources without duplicates.
+
+    Args:
+        invariant: Stable or chunk-dependent sampling.
+        width: Source columns, each spanning one degree.
+        method: Exact sum or weighted average.
+        expected: Analytic result of columns 359, 360 and 361 with weights 0.5, 1, 0.5.
+    """
+    values = np.tile(np.arange(width, dtype="float64"), (10, 1))
+    source = terrio.Raster.from_array(values, (-180.5, 1, 0, 10, 0, -1), crs="EPSG:4326")
+    actual = terrio.warp(
+        source,
+        t_srs=CRS,
+        dst_transform=(-1, 2, 0, 10, 0, -10),
+        ts=(1, 1),
+        resampling=method,
+        grid_invariant=invariant,
+        ot="Float64",
+    ).read(1)[0, 0]
+    assert actual == pytest.approx(expected, abs=1e-9)
 
 
 @pytest.mark.parametrize("invariant", [True, False])

@@ -3434,7 +3434,11 @@ impl WarpContext<'_> {
                 }
             }
         }
-        if self.resampling == Resampling::Sum && !self.translation {
+        // A wider geographic source can choose a complete placement beyond the raw
+        // sampled span, even when no second placement is needed. Area methods must
+        // include that placement too, rather than clipping away its final column.
+        let wide_area = self.resampling.is_area_based() && self.longitude_turn().is_some_and(|turn| sw > turn && x1 - x0 > turn / 2.0);
+        if (self.resampling == Resampling::Sum || wide_area) && !self.translation {
             // Sampled edges do not bound a strongly curved or folded transformation. Include
             // every exact footprint corner, in the same batches as the kernel (RPCs depend on
             // their batch). Planning precedes memory-limit splitting, so retain only a fixed
@@ -3455,8 +3459,8 @@ impl WarpContext<'_> {
                 }
             }
             // Regional longitude images can put the continuous footprint outside the
-            // raw sampled span. Include the same shifted quadrilaterals the sum kernel
-            // integrates. Recompute rows y and y + 1 for each output row, retaining
+            // raw sampled span. Include the same shifted quadrilaterals the kernels
+            // use. Recompute rows y and y + 1 for each output row, retaining
             // two bounded corner rows without reading pixels.
             let images = self.global_longitude_turn().is_none()
                 && self.longitude_turn().is_some_and(|turn| {
@@ -4056,11 +4060,12 @@ impl WarpContext<'_> {
     /// most two do on a source no wider than a turn: two when it meets the source on both sides
     /// of the cut, as near both edges of a source of every longitude, one when it meets it on one
     /// side, and none when it lies beside it. A source wider than a turn holds some longitudes
-    /// twice: there, first use the placement covering the most of the footprint, then another
+    /// twice: the placement covering the most of the footprint comes first, then another
     /// placement if needed. Consumers clip the second with [`Self::footprint_clip`] so no
-    /// longitude is counted twice. Full-turn sources also move continuous footprints across their stored edge,
-    /// including a cut at zero longitude and warps within the source CRS. Regional sources
-    /// also take equivalent continuous footprints; wider sources retain their existing rules.
+    /// longitude is counted twice. Full-turn sources also move continuous footprints across
+    /// their stored edge, including a cut at zero longitude and warps within the source CRS.
+    /// Regional sources also take equivalent continuous footprints; wider sources retain their
+    /// existing rules for continuous footprints.
     fn footprint_moves(&self, xs: &mut [f64], centre: (f64, f64)) -> [Option<f64>; 2] {
         let Some(turn) = self.longitude_turn() else {
             return [Some(0.0), None];
@@ -4179,6 +4184,8 @@ impl WarpContext<'_> {
                     parts[count] = (ix0, ix1, xmin, xmax);
                     count += 1;
                 }
+                // Ownership is decided in placement order; mode ties use source-column order.
+                parts[..count].sort_unstable_by_key(|part| part.0);
                 let parts = &parts[..count];
                 if parts.is_empty() {
                     continue;
@@ -6384,6 +6391,49 @@ mod tests {
                 if memory_limit < 1e6 {
                     assert!(counted.reads.len() > 1, "must exercise strips");
                 }
+            }
+        }
+    }
+
+    /// A three-turn file retains bounded strip reads under a 256 KiB planning budget.
+    #[test]
+    fn multi_turn_sum_planning_keeps_bounded_strips() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = typed_raster(DataType::U16, 10_801, 512, [-180.05, 0.1, 0., 25.6, 0., -0.1], 4326, |col, row| {
+            if (3599..=3601).contains(&col) { 1.0 } else { (1 + (col * 37 + row * 19) % 60000) as f64 }
+        });
+        let path = dir.path().join("three-turns.tif").to_str().unwrap().to_string();
+        crate::write_raster_dataset(&source, &path, &Default::default()).unwrap();
+        for grid_invariant in [true, false] {
+            for memory_limit in [64e6, 262_144.] {
+                let options = WarpOptions {
+                    dst_srs: Some(SpatialRef::parse("+proj=longlat +datum=WGS84 +lon_0=180").unwrap()),
+                    dst_transform: Some([-0.1, 0.2, 0., 5., 0., -10.]),
+                    size: Some((1, 1)),
+                    output_type: Some(DataType::F64),
+                    resampling: Resampling::Sum,
+                    grid_invariant,
+                    memory_limit,
+                    ..Default::default()
+                };
+                let start = std::time::Instant::now();
+                let mut reader = crate::open_raster_lazy(&path).unwrap();
+                let mut counted = Counted { raster: &mut reader, reads: Vec::new() };
+                let result = warp_sources(&mut [&mut counted], &options).unwrap();
+                let value = result.raster.data.to_f64_vec()[0];
+                assert!((value - 200.0).abs() < 1e-8, "{grid_invariant}: {value}");
+                let bytes: usize = counted.reads.iter().map(|(_, pixels)| pixels * 2).sum();
+                assert!(bytes < 10_801 * 512, "read less than half of the source's UInt16 pixel bytes");
+                if memory_limit < 1e6 {
+                    assert!(counted.reads.len() > 1, "must read in strips");
+                } else {
+                    assert_eq!(counted.reads.len(), 1);
+                }
+                eprintln!(
+                    "multi-turn reads: invariant={grid_invariant}, budget={memory_limit}, reads={}, decoded_bytes={bytes}, elapsed={:?}",
+                    counted.reads.len(),
+                    start.elapsed()
+                );
             }
         }
     }
