@@ -802,6 +802,20 @@ def open_arrow(
         or getattr(f.type, "extension_name", "").startswith("geoarrow.")
     ]
     meta["geometry_name"] = geometry[0] if geometry else ""
+    if geometry:
+        from terrio._crs import dataframe_crs
+
+        field = reader.schema.field(geometry[0])
+        encoded = (field.metadata or {}).get(b"ARROW:extension:metadata")
+        if encoded is None and hasattr(field.type, "__arrow_ext_serialize__"):
+            encoded = field.type.__arrow_ext_serialize__()
+        definition = json.loads(encoded or b"{}").get("crs")
+        stored = definition if isinstance(definition, str) else json.dumps(definition)
+        # Native Arrow export already warned for rejected definitions. Reuse that decision,
+        # then normalize accepted metadata as the ordinary dataframe reader does.
+        meta["crs"] = (
+            dataframe_crs(stream.crs or stored, fallback=stored) if definition is not None else None
+        )
     if not read_geometry and geometry:
         schema = pa.schema(
             [f for f in reader.schema if f.name not in geometry], reader.schema.metadata

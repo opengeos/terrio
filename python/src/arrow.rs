@@ -224,6 +224,41 @@ pub(crate) fn validated_schema(py: Python<'_>, layer: &terrio::Layer, schema: &A
     Ok(Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone())))
 }
 
+/// Validates every GeoParquet geometry field's stored CRS without changing array buffers.
+pub(crate) fn validated_geoparquet_schema(py: Python<'_>, schema: &Arc<Schema>) -> PyResult<Arc<Schema>> {
+    let mut changed = false;
+    let mut fields = Vec::with_capacity(schema.fields().len());
+    for field in schema.fields() {
+        let metadata = field.metadata();
+        let replacement = if metadata.get("ARROW:extension:name").is_some_and(|name| name.starts_with("geoarrow.")) {
+            let mut value: serde_json::Value =
+                metadata.get("ARROW:extension:metadata").and_then(|text| serde_json::from_str(text).ok()).unwrap_or_default();
+            if let Some(crs) = value.get("crs").filter(|crs| !crs.is_null()) {
+                let text = crs.as_str().map(str::to_owned).unwrap_or_else(|| crs.to_string());
+                if crate::vector::dataframe_crs(py, Some(&text), None, false)?.is_none() {
+                    value.as_object_mut().unwrap().remove("crs");
+                    Some(value.to_string())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some(replacement) = replacement {
+            changed = true;
+            let mut metadata = metadata.clone();
+            metadata.insert("ARROW:extension:metadata".into(), replacement);
+            fields.push(Arc::new(field.as_ref().clone().with_metadata(metadata)));
+        } else {
+            fields.push(field.clone());
+        }
+    }
+    Ok(if changed { Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone())) } else { schema.clone() })
+}
+
 /// Converts a layer to an `ArrowTable`, validating retained definitions for Python consumers.
 pub(crate) fn layer_to_table(py: Python<'_>, layer: &terrio::Layer, options: &ArrowWriteOptions) -> PyResult<PyArrowTable> {
     let mut table = py.detach_result(|| terrio::arrow::layer_to_arrow(layer, options)).py()?;
