@@ -1105,6 +1105,18 @@ more than half a turn of longitude apart on the source grid and the source posit
 lies outside them. Any other footprint keeps its corners: a coarse pixel's, whose centre lies
 between them, and that of a pixel more than half a turn wide, whose corners lie less than half a
 turn apart, which takes the source between them.
+
+For an unrotated geographic source covering exactly one longitude turn, the stored grid's
+edges are periodic wherever its origin lies. Sources stored from 0° to 360° and from 180° W to
+180° E therefore sample the same geographic field, including warps within the source CRS.
+Point samples and interpolation neighbors wrap by the source's longitude period. Area methods
+and `sum` include both stored edges when a footprint crosses that cut, including a cut at 0°.
+This does not wrap latitude or extend a regional source beyond its right edge.
+Interpolation halos are periodic too. A coarse bilinear filter accumulates the weights of
+every periodic image inside its support; it does not clip the filter at the stored cut.
+This source-extension rule applies under both grid policies and can differ from GDAL's
+finite-edge clipping for coarse global filters.
+
 The window holds the footprints of its chunk unless a strongly curved
 transformation takes one past the points the window is sampled from: such a footprint is shortened,
 and its pixel can then differ with the chunks the warp splits the output grid into.
@@ -1274,6 +1286,9 @@ Terrio's chunk-dependent source windows of kernels other than `sum` also reach a
 source's CRS inside or beside their chunk, which the points sampled along the chunk's edges do not
 bound, so that a grid holding a pole is written up to it. Values in such a chunk can therefore
 differ from those of a window bounded by those points alone.
+Both kernel-version selectors apply Terrio's periodic global-source boundaries and the
+pole-window extension described above; these policies can differ from GDAL's finite-edge
+or edge-only window planning even with chunk-dependent sampling selected.
 Both policies retain lazy window/overview reads. Python's `warp` and `WarpedVRT`
 accept `grid_invariant=True|False`; JavaScript's `warp` accepts `gridInvariant`.
 

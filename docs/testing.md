@@ -76,6 +76,42 @@ forces the full longitude range. Sampling counts above 65,536 per edge are
 refused. The conformance runner clears inherited pytest options and requires
 all 48 comparison results in its JUnit report before declaring agreement.
 
+## Periodic geographic storage
+
+`python/tests/test_warp_longitude_period.py` checks all 14 resamplers, both grid
+policies, four destination CRSs, nodata, polar meridian pixels and the excluded
+south latitude edge. Rust regressions also compare whole and small-memory
+chunks, reversed source columns, and a 400-grad longitude period. Regional and
+multi-turn source placement rules remain separate.
+
+`python scripts/conformance.py DATA --only longitude-period --strict` requires
+four real Natural Earth country-coverage comparisons. The same values stored
+from 0° and from 180° W agree within 1e-8. Nearest, average and chunk-dependent
+bilinear match GDAL 3.12.1 within 1e-6. Stable bilinear uses per-pixel scales and
+differs from GDAL's chunk sampling by up to 0.411959 on this binary land field.
+Exact `sum` differs by up to 0.010157 per Mercator pixel, while both retain the
+same 15,276 source-pixel area total within 1e-6. These policy differences are
+reported explicitly rather than treated as pixel-identical agreement.
+
+The lazy HTTP test measures 212,992 bytes in two requests for a footprint
+crossing 0° in a 2,089,218-byte COG. Both stored edges contribute without a
+whole-file download. A contiguous source window crossing the cut can include
+all columns, while retaining a narrow range of source rows.
+
+A separate 129,600-column by 512-row COG measurement exposes that cost at a
+larger width. The old one-sided result was 4.0 after 131,072 bytes in three
+requests; the corrected result is 3.6 after 16,711,680 bytes in ten requests,
+from an 84,831,353-byte file. The current rectangular source-window interface
+reads the intervening columns of the selected tile-row band. Reading two
+disjoint edge segments would require a separate source-window interface change;
+this fix does not claim that boundary I/O is proportional to the output width.
+
+The coarse bilinear regressions use an independent periodized triangular
+filter, compare a rotated storage layout, and retain finite-clipping controls
+for regional sources. A full-world filter on constant rows gives the global
+mean. These replace finite-edge expectations that conflict with periodic
+source extension, across both kernel versions and exact/approximate transforms.
+
 ## Vector source ranges
 
 `python/tests/test_pyogrio_buffer_sources.py` compares named files with bytes,

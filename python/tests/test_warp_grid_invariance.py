@@ -265,11 +265,31 @@ def test_global_pixel_keeps_full_longitude_footprint(
         t_srs="EPSG:4326", ts=(1, 2), resampling="bilinear", ot="Float64", et=error_threshold
     )
     stable = terrio.warp(raster, te=(-180, -2, right, 2), grid_invariant=True, **options).read(1)
-    # Exact bilinear downsampling weights for this continuous, axis-aligned footprint.
+    # Periodize the exact bilinear filter, including every wrapped image in its support.
+    # A coarse filter can visit a longitude twice; those weights add rather than clip at
+    # an arbitrary stored grid edge. This preserves the same field after rotating storage.
     width = right + 180
-    weights = np.maximum(0, 1 - np.abs(np.arange(360) + 0.5 - width / 2) / width)
+    weights = sum(
+        np.maximum(0, 1 - np.abs(np.arange(360) + 0.5 + shift - width / 2) / width)
+        for shift in [-360, 0, 360]
+    )
     expected = np.dot(values[0], weights) / weights.sum()
     np.testing.assert_allclose(stable, expected, rtol=0, atol=1e-9)
+    rotated = terrio.Raster.from_array(
+        np.roll(values, -180, axis=1), (0, 1, 0, 2, 0, -1), crs=source_crs
+    )
+    rotated_output = terrio.warp(
+        rotated, te=(-180, -2, right, 2), grid_invariant=True, **options
+    ).read(1)
+    np.testing.assert_allclose(rotated_output, expected, rtol=0, atol=1e-9)
+    # A regional source still clips the filter at its finite boundary.
+    regional = terrio.Raster.from_array(values[:, :359], (-180, 1, 0, 2, 0, -1), crs=source_crs)
+    finite_weights = np.maximum(0, 1 - np.abs(np.arange(359) + 0.5 - width / 2) / width)
+    finite_expected = np.dot(values[0, :359], finite_weights) / finite_weights.sum()
+    finite_output = terrio.warp(
+        regional, te=(-180, -2, right, 2), grid_invariant=True, **options
+    ).read(1)
+    np.testing.assert_allclose(finite_output, finite_expected, rtol=0, atol=1e-9)
     if right == 180:
         reference = terrio.warp(raster, grid_invariant=False, **options).read(1)
         np.testing.assert_allclose(stable, reference, rtol=0, atol=1e-9)
