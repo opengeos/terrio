@@ -22,21 +22,30 @@ def test_writer_conformance_requires_every_collected_case(monkeypatch, outcome, 
         """Return pytest collection and report outcomes, including a false-success case."""
         if "-c" in args:
             return 0, "3.13.3", ""
+        filename = next(Path(arg).name for arg in args if arg.endswith(".py"))
+        expected = 17 if filename == "test_webp_lossy_damage.py" else 2
         if "--collect-only" in args:
-            return 0, f"python/tests/test_{writer}_writer.py::test_lossless\npython/tests/test_{writer}_writer.py::test_lossy\n\n2 tests collected", ""
+            collected = "\n".join(f"python/tests/{filename}::test_case_{i}" for i in range(expected))
+            return 0, f"{collected}\n\n{expected} tests collected", ""
         reports = [arg.removeprefix("--junitxml=") for arg in args if arg.startswith("--junitxml=")]
+        reported = expected - 1 if outcome == "partial" else expected
         if reports and outcome != "missing-report":
             element = {"skip": "<skipped/>", "failure": "<failure/>"}.get(outcome, "")
-            cases = f'<testcase name="lossless">{element}</testcase>'
-            if outcome != "partial":
-                cases += '<testcase name="lossy"/>'
+            cases = "".join(
+                f'<testcase name="case_{i}">{element if i == 0 else ""}</testcase>'
+                for i in range(reported)
+            )
             Path(reports[0]).write_text(f"<testsuite>{cases}</testsuite>")
-        return 0, "1 passed" if outcome == "partial" else "2 passed", ""
+        return 0, f"{reported} passed", ""
 
     monkeypatch.setattr(conformance, "run", run)
     suite = getattr(conformance, f"suite_{writer}_writer")(SimpleNamespace(data="data"))
-    assert len(suite.cases) == 1
-    assert suite.cases[0].status == (conformance.IDENTICAL if outcome == "complete" else conformance.DIFFERS)
+    expected = [conformance.IDENTICAL]
+    if writer == "webp":
+        expected.append(conformance.TOLERANCE)
+    assert [case.status for case in suite.cases] == (
+        expected if outcome == "complete" else [conformance.DIFFERS] * len(expected)
+    )
 
 
 @pytest.mark.parametrize("writer", ["webp", "jp2"])
