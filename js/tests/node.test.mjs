@@ -2667,6 +2667,26 @@ test("complex TIFF memory copies retain exact Int32 components and sample tags",
   }
 });
 
+for (const extension of ["mbtiles", "pmtiles"]) {
+  test(`${extension}: JPEG quality parses complete numbers`, { skip: needs("tiles") }, () => {
+    const side = 256;
+    const values = new Uint8Array(3 * side * side).map((_, i) => (i * 37 + Math.floor(i / side)) % 251);
+    const halfWorld = 20037508.342789244;
+    const resolution = 2 * halfWorld / side / 2048;
+    const transform = [-halfWorld + 1000 * side * resolution, resolution, 0, halfWorld - 700 * side * resolution, 0, -resolution];
+    const image = terrio.rasterFromArray(values, side, side, transform, "EPSG:3857");
+    const encode = quality => image.toBytes(`image.${extension}`, {creationOptions: {TILE_FORMAT: "JPEG", QUALITY: quality}});
+    try {
+      for (const quality of ["50abc", "nan", "0", "500"]) {
+        assert.throws(() => encode(quality), /QUALITY=.*not a legal value in the range 1-100/);
+      }
+      for (const [quality, canonical] of [["1e2", "100"], ["7.5e1", "75"], ["80.9", "80"]]) {
+        assert.deepEqual(encode(quality), encode(canonical));
+      }
+    } finally { image.free(); }
+  });
+}
+
 test("JPEG 2000 quality and reversible options reach the WASM encoder", { skip: needs("jp2") }, () => {
   const n = 64 * 64;
   const values = new Uint8Array(3 * n).map((_, i) => (i * 37 + Math.floor(i / 64)) % 251);
