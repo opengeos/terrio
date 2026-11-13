@@ -1119,6 +1119,14 @@ every periodic image inside its support; it does not clip the filter at the stor
 This source-extension rule applies under both grid policies and can differ from GDAL's
 finite-edge clipping for coarse global filters.
 
+Regional geographic sources also accept a longitude a whole turn away when it falls inside
+their stored columns. A source from 160° E to 200° E therefore covers 180° to 160° W.
+The shift uses the CRS's angular period, rather than the regional raster's width. A source
+ending at 180° E keeps its excluded right edge; a source starting at 180° W owns that meridian.
+A nearly full world keeps its actual uncovered gap, including when cell sizes are rounded.
+These rules apply to point samples and area footprints under both grid policies. They do not
+make regional interpolation halos periodic or change placement of sources wider than a turn.
+
 The window holds the footprints of its chunk unless a strongly curved
 transformation takes one past the points the window is sampled from: such a footprint is shortened,
 and its pixel can then differ with the chunks the warp splits the output grid into.

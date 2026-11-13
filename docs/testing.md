@@ -120,13 +120,20 @@ chunks, reversed source columns, and a 400-grad longitude period. Regional and
 multi-turn source placement rules remain separate.
 
 `python scripts/conformance.py DATA --only longitude-period --strict` requires
-six real Natural Earth country-coverage comparisons. The same values stored
+eight real Natural Earth country-coverage comparisons. The same values stored
 from 0° and from 180° W agree within 1e-8. Nearest, average and chunk-dependent
 bilinear match GDAL 3.12.1 within 1e-6. Stable bilinear uses per-pixel scales and
 differs from GDAL's chunk sampling by up to 0.411959 on this binary land field.
 Exact `sum` differs by up to 0.010157 per Mercator pixel, while both retain the
 same 15,276 source-pixel area total within 1e-6. These policy differences are
 reported explicitly rather than treated as pixel-identical agreement.
+
+`python/tests/test_warp_regional_longitudes.py` checks all 14 resamplers under both
+grid policies for a Pacific source stored past 180 degrees and a rounded near-full world.
+It separately checks meridian ownership and the rounded world's actual tiny gap. The two
+regional Natural Earth nearest-neighbor comparisons match GDAL 3.12.1 exactly. A small
+regional COG footprint a turn from its stored numbering transfers 147,456 of 13,107,613 bytes
+under each policy in local validation, using range requests.
 
 `python/tests/test_warp_meridian_footprints.py` adds 16 analytic checks across
 both compatibility selectors and grid policies. Eight further curved-coarse
