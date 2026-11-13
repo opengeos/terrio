@@ -66,8 +66,9 @@ all 48 comparison results in its JUnit report before declaring agreement.
 ## TIFF block metadata
 
 `python scripts/conformance.py DATA --only tiff-block-tags --strict` requires
-all 14 checks in `python/tests/test_rio_block_tags.py`, including corrupt-table
-open-time refusal. TIFF-domain
+all 15 checks in `python/tests/test_rio_block_tags.py`, including corrupt-table
+open-time refusal and propagation of a native corruption exception at the facade
+query boundary. TIFF-domain
 `BLOCK_OFFSET_x_y` and `BLOCK_SIZE_x_y` items match the file's chunk arrays and
 GDAL exactly for tiles, strips, classic TIFF, BigTIFF, planar/interleaved bands,
 complex samples, MemoryFile, overviews and real Landsat data. External overview

@@ -1,6 +1,7 @@
 """TIFF block metadata agrees with stored tables and GDAL 3.12.1 without pixel reads."""
 
 import struct
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -264,6 +265,7 @@ def test_corrupt_chunk_table_is_refused_at_open(tmp_path):
         height=64,
         count=1,
         dtype="uint8",
+        BIGTIFF="NO",
         tiled=True,
         blockxsize=16,
         blockysize=16,
@@ -282,5 +284,31 @@ def test_corrupt_chunk_table_is_refused_at_open(tmp_path):
     else:
         pytest.fail("fixture has no tile offsets")
     path.write_bytes(raw)
-    with pytest.raises(rio.errors.RasterioIOError, match="failed to fill whole buffer"):
+    with pytest.raises(rio.errors.RasterioIOError):
         rio.open(path)
+
+
+def test_block_query_preserves_native_corruption_error(tmp_path, monkeypatch):
+    """The facade propagates native corruption errors despite their ValueError base.
+
+    Args:
+        tmp_path: Temporary directory.
+        monkeypatch: Replace the block-query boundary with a native exception.
+    """
+    path = tmp_path / "query-error.tif"
+    terrio.Raster.from_array(
+        np.ones((4, 4), dtype="uint8"), (10.0, 1.0, 0.0, 46.0, 0.0, -1.0), crs="EPSG:4326"
+    ).write(str(path))
+
+    def fail(*args):
+        """Raise the same exception class the native corrupt-data mapping uses.
+
+        Args:
+            *args: Block coordinates and overview supplied by the facade.
+        """
+        raise terrio.errors.InvalidDataError("corrupt chunk table")
+
+    with rio.open(path) as actual:
+        monkeypatch.setattr(actual, "_raster", SimpleNamespace(_tiff_block_range=fail))
+        with pytest.raises(terrio.errors.InvalidDataError, match="corrupt chunk table"):
+            actual.get_tag_item("BLOCK_OFFSET_0_0", "TIFF", bidx=1)

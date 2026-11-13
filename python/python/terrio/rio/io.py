@@ -41,7 +41,7 @@ import numpy as np
 from affine import Affine
 
 from terrio import _terrio
-from terrio.errors import ResourceLimitError
+from terrio.errors import ResourceLimitError, TerrioError
 from terrio.rio import _tiff
 from terrio.rio._resample import gdal_cast, is_nodata, raster_io
 from terrio.rio.coords import BoundingBox
@@ -1132,6 +1132,7 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
 
         Returns:
             str | None: The value, or None for an absent block or overview.
+                Stored zero offsets and byte counts are returned as "0".
 
         Raises:
             terrio.TerrioError: If loading TIFF chunk tables fails due to corrupt
@@ -1147,6 +1148,8 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
                 return None
             try:
                 block = raster._tiff_block_range(bidx, int(match[2]), int(match[3]), ovr)
+            except TerrioError:
+                raise
             except (OverflowError, ValueError):
                 return None
             return None if block is None else str(block[0 if match[1] == "OFFSET" else 1])

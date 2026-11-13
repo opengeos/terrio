@@ -2324,7 +2324,7 @@ def suite_tiff_block_tags(ctx):
         return suite
     import rasterio
     suite.reference = f"GDAL {rasterio.__gdal_version__} via rasterio {rasterio.__version__}"
-    complete, detail = _pytest_module_conformance(ctx, "test_rio_block_tags.py", expected_count=14)
+    complete, detail = _pytest_module_conformance(ctx, "test_rio_block_tags.py", expected_count=15)
     suite.cases.append(Case("TIFF", "stored block addresses", IDENTICAL if complete else DIFFERS, detail))
     return suite
 
