@@ -1101,6 +1101,7 @@ def transform_points(
     allow_ballpark: bool | None = None,
     only_best: bool = False,
     promote_to_3d: bool = False,
+    errcheck: bool = True,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]: ...
 @overload
 def transform_points(
@@ -1115,6 +1116,7 @@ def transform_points(
     allow_ballpark: bool | None = None,
     only_best: bool = False,
     promote_to_3d: bool = False,
+    errcheck: bool = True,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]: ...
 def _geojson_crs_name(crs: str) -> str | None: ...
 def config_push(options: dict[str, str | None]) -> None: ...
