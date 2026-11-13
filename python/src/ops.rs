@@ -442,7 +442,7 @@ fn write_vector(
     options.citygml_version = parse_citygml_version(citygml_version)?;
     options.citygml_lod0_surface = parse_citygml_lod0_surface(citygml_lod0_surface)?;
     let mode = write_mode(append, overwrite)?;
-    py.detach_result(|| terrio::ops::vector_filter::write_vector_with_mode(&layers, path, &options, mode)).py()
+    crate::with_warnings(py, || terrio::ops::vector_filter::write_vector_with_mode(&layers, path, &options, mode))
 }
 
 /// Converts a dataset to another format, optionally reprojecting, subsetting and filtering it,

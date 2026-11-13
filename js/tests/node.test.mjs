@@ -311,6 +311,31 @@ test("CityGML writer selects both native versions and retains flat XYZ metadata"
   source.free();
 });
 
+test("GML names retained CRSs and CSV reports missing CRS metadata", () => {
+  const point = {type: "Feature", properties: {id: 1}, geometry: {type: "Point", coordinates: [12, 34]}};
+  for (const definition of ["EPSG:32615", "ESRI:102003", "IAU_2015:49900", 'LOCAL_CS["site grid",UNIT["metre",1]]']) {
+    const source = terrio.fromGeoJSON({type: "FeatureCollection", features: [point]}, "points", definition);
+    try {
+      if (definition.startsWith("LOCAL_CS")) {
+        assert.throws(() => source.toBytes("points.gml"), /GML cannot name/);
+      } else {
+        const bytes = source.toBytes("points.gml");
+        const [authority, code] = definition.split(":");
+        assert.ok(new TextDecoder().decode(bytes).includes(`srsName="urn:ogc:def:crs:${authority}::${code}"`));
+        const back = terrio.open(bytes, "points.gml");
+        try {
+          assert.equal(back.crs, definition);
+          assert.deepEqual(back.toGeoJSON().features[0].geometry.coordinates, [12, 34]);
+        } finally { back.free(); }
+      }
+      terrio.takeWarnings();
+      source.toBytes("points.csv");
+      const warnings = Array.from(terrio.takeWarnings());
+      assert.equal(warnings.filter(message => message.includes("CSV does not store this layer's CRS")).length, 1);
+    } finally { source.free(); }
+  }
+});
+
 test("GML projected authority axes keep GIS XY through byte reads and writes", () => {
   // GDAL 3.12.1: authority identifiers use N-E for EPSG:6708 and latitude-longitude for EPSG:4326.
   for (const [code, authority, xy] of [

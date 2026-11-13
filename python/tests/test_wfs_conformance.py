@@ -85,6 +85,9 @@ def test_report_keeps_failed_comparisons_visible(monkeypatch):
     monkeypatch.setitem(sys.modules, spec.name, report)
     spec.loader.exec_module(report)
     monkeypatch.setattr(report, "missing_modules", lambda _: False)
+    monkeypatch.setattr(
+        report, "_pytest_module_conformance", lambda *_args, **_kwargs: (True, "3 controls passed")
+    )
     row = dict(name="service features", status="differs", detail="attribute mismatch")
     monkeypatch.setattr(report, "run", lambda _: (1, json.dumps([row]), ""))
     context = SimpleNamespace(terrio="terrio", remote=True, data=Path("data"), max_details=10)

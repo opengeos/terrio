@@ -720,6 +720,9 @@ impl CsvEncoder {
         if mode == CsvGeometry::AsXy && profile.geometry.non_point {
             return Err(Error::InvalidArgument("CSV: writing geometries as X/Y columns needs a point layer".into()));
         }
+        if mode != CsvGeometry::None && !SpatialRef::from_layer(layer).is_unknown() {
+            crate::warnings::warn("CSV does not store this layer's CRS or write a .prj sidecar: supply a matching .prj or use a format that stores CRS definitions".into());
+        }
         let mut header: Vec<String> = match mode {
             CsvGeometry::AsWkt => vec!["WKT".into()],
             CsvGeometry::AsXy if has_z => vec!["X".into(), "Y".into(), "Z".into()],
@@ -808,6 +811,18 @@ fn push_row<'a>(out: &mut String, cells: impl Iterator<Item = &'a str>, sep: cha
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn geometry_exports_warn_once_when_crs_is_not_stored() {
+        let layer = super::super::geojson::parse(br#"{"type":"Point","coordinates":[12,34]}"#, "points").unwrap();
+        crate::warnings::take();
+        to_string(&layer, &Default::default()).unwrap();
+        let warnings = crate::warnings::take();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("CSV does not store this layer's CRS"));
+        to_string(&layer, &CsvOptions { geometry: CsvGeometry::None, ..Default::default() }).unwrap();
+        assert!(crate::warnings::take().is_empty());
+    }
 
     #[test]
     fn reads_long_multibyte_text() {

@@ -407,6 +407,24 @@ impl SpatialRef {
         self
     }
 
+    /// The ESRI code only when its registered conversion, datum and ellipsoid match.
+    /// Used by name-only writers, which cannot preserve conflicting stored definitions.
+    #[doc(hidden)]
+    pub fn trusted_esri(&self) -> Option<u32> {
+        let code = self.esri?;
+        let own = match (self.proj4.as_deref(), self.wkt.as_deref()) {
+            (Some(proj), _) => Def::from_proj(proj).ok()?,
+            (None, Some(wkt)) => Def::from_wkt(wkt).ok()?,
+            (None, None) => return epsg::esri(code).map(|_| code),
+        };
+        let registered = Def::new(&SpatialRef { esri: Some(code), ..Default::default() }).ok()?;
+        (own.same_conversion(&registered)
+            && own.same_datum(&registered)
+            && (own.ell.a - registered.ell.a).abs() < 1e-3
+            && (own.ell.es - registered.ell.es).abs() < 1e-9)
+            .then_some(code)
+    }
+
     /// A compound CRS from the EPSG codes of a horizontal and a vertical CRS, as GDAL builds
     /// `EPSG:4326+5773`.
     pub fn compound(horizontal: u32, vertical: u32) -> Result<Self> {
