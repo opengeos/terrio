@@ -33,7 +33,7 @@ fn main() {
             one = points.clone();
             let start = Instant::now();
             for p in one.iter_mut() {
-                *p = t.transform(p.0, p.1).unwrap_or((f64::NAN, f64::NAN));
+                *p = t.transform(p.0, p.1).unwrap();
             }
             per_point = per_point.min(start.elapsed().as_secs_f64());
 

@@ -1703,9 +1703,12 @@ impl Transformer {
     ///
     /// Only those failures ([`Error::Crs`]) are marked. A refusal under the strict options
     /// ([`Error::MissingGrid`] with [`TransformOptions::only_best`], [`Error::NoOperation`] with
-    /// [`TransformOptions::allow_ballpark`] off) or an I/O error is returned at once instead, as
-    /// [`transform_slice`](Self::transform_slice) returns it, so that it is not mistaken for points
-    /// outside the domain.
+    /// [`TransformOptions::allow_ballpark`] off), a missing velocity grid ([`Error::MissingGrid`])
+    /// or an I/O error is returned at once instead, so that it is not mistaken for points outside
+    /// the domain. As with [`transform_slice`](Self::transform_slice), the points before it are
+    /// then transformed (or marked), and it and those after it are left as they were. A grid file
+    /// that is present but cannot be read counts as the point failing ([`Error::Crs`]), as
+    /// terrio's grid readers report no more.
     ///
     /// ```no_run
     /// use terrio_crs::{SpatialRef, Transformer};
@@ -1927,11 +1930,15 @@ impl Transformer {
 
         let p = match &self.motion {
             Some(steps) => datum::run(steps, p, false, true).ok_or_else(|| {
-                let grids: Vec<String> = steps.iter().flat_map(|s| s.grid_names()).map(|(g, _)| g).collect();
-                Error::Crs(format!(
-                    "cannot move ({x}, {y}) between coordinate epochs: outside the velocity grid, or the grid ({}) is not available",
-                    grids.join(", ")
-                ))
+                let grids: Vec<(String, bool)> = steps.iter().flat_map(|s| s.grid_names()).collect();
+                let names = grids.iter().map(|(g, _)| g.as_str()).collect::<Vec<_>>().join(", ");
+                // A velocity grid that is not there is a missing grid, not a point outside it.
+                if grids.iter().any(|(g, optional)| !optional && !grid::available(g)) {
+                    return Error::MissingGrid(format!(
+                        "cannot move ({x}, {y}) between coordinate epochs: the velocity grid ({names}) is not available; set TERRIO_NETWORK=ON or TERRIO_GRID_DIR"
+                    ));
+                }
+                Error::Crs(format!("cannot move ({x}, {y}) between coordinate epochs: outside the velocity grid ({names})"))
             })?,
             None => p,
         };

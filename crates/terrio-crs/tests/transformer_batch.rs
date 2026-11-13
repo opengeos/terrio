@@ -3,8 +3,16 @@
 use std::sync::Arc;
 use terrio_crs::{SpatialRef, TransformOptions, Transformer};
 
+/// A CRS by its EPSG code. Every test builds its CRSs with it, so it also turns off the grids and
+/// the network, which the PROJ references and the missing-grid tests are without.
 fn epsg(code: u32) -> SpatialRef {
+    no_grids();
     SpatialRef::from_epsg(code).unwrap()
+}
+
+fn no_grids() {
+    terrio_crs::set_grid_search_paths(Some(Vec::new()));
+    terrio_crs::set_network_enabled(Some(false));
 }
 
 #[test]
@@ -141,6 +149,17 @@ fn slice_or_nan_returns_refusals_under_the_strict_options() {
     let opts = TransformOptions { only_best: true, ..Default::default() };
     let t = Transformer::with_options(&epsg(4326), &epsg(27700), &opts).unwrap();
     let mut xy = vec![(-1.5, 52.5)];
+    assert!(matches!(t.transform_slice_or_nan(&mut xy), Err(terrio_crs::Error::MissingGrid(_))));
+}
+
+#[test]
+fn slice_or_nan_returns_a_missing_velocity_grid() {
+    // NAD83(CSRS)v6 between two coordinate epochs moves points with the Canada velocity grid,
+    // which is not there: a missing grid, not points outside it.
+    let opts = TransformOptions { source_coordinate_epoch: Some(2010.0), target_coordinate_epoch: Some(2020.0), ..Default::default() };
+    let t = Transformer::with_options(&epsg(8252), &epsg(8252), &opts).unwrap();
+    assert!(matches!(t.transform(-75.0, 45.0), Err(terrio_crs::Error::MissingGrid(_))));
+    let mut xy = vec![(-75.0, 45.0)];
     assert!(matches!(t.transform_slice_or_nan(&mut xy), Err(terrio_crs::Error::MissingGrid(_))));
 }
 
