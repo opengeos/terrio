@@ -971,21 +971,23 @@ pub fn layer_from_arrow(schema: &Schema, batches: &[RecordBatch], name: &str) ->
     let hidden: &[usize] = geometry.as_ref().map_or(&[], |g| &g.hidden);
     let mut layer = Layer::new(name);
     let mut columns: Vec<gp::Column> = Vec::new();
+    let mut definitions: Vec<FieldDef> = Vec::new();
     for (i, f) in schema.fields().iter().enumerate() {
         if hidden.contains(&i) {
             continue;
         }
-        let start = layer.schema.fields().len();
-        gp::add_columns(&mut layer, &mut columns, vec![i], f.name().clone(), f.data_type());
+        let start = definitions.len();
+        gp::add_columns(&mut definitions, &mut columns, vec![i], f.name().clone(), f.data_type());
         // JSON text, as GDAL marks it.
         if f.metadata().get(EXTENSION_NAME).is_some_and(|e| e == "arrow.json") && matches!(columns.last(), Some(c) if c.path == [i]) {
-            let mut def = layer.schema.fields()[start].clone();
-            def.field_type = FieldType::Json;
-            rebuild_field(&mut layer, start, def);
+            definitions[start].field_type = FieldType::Json;
             if let Some(c) = columns.last_mut() {
                 c.field_type = FieldType::Json;
             }
         }
+    }
+    for field in crate::drivers::vector::unique_field_defs(definitions) {
+        layer.add_field(field);
     }
     let mut fid = 0u64;
     let mut types: Vec<GeometryType> = Vec::new();
@@ -1019,16 +1021,6 @@ pub fn layer_from_arrow(schema: &Schema, batches: &[RecordBatch], name: &str) ->
         };
     }
     Ok(layer)
-}
-
-/// Replaces a field definition, keeping its position.
-fn rebuild_field(layer: &mut Layer, index: usize, def: FieldDef) {
-    let mut fields: Vec<FieldDef> = layer.schema.fields().to_vec();
-    fields[index] = def;
-    layer.schema = wbvector::Schema::new();
-    for f in fields {
-        layer.schema.add_field(f);
-    }
 }
 
 #[cfg(test)]

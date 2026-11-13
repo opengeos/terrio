@@ -13,6 +13,7 @@
 //! as a leading geometry block under default inference. Ordinary suffixed attributes keep their
 //! existing meaning. This naming policy is Terrio's.
 
+use super::unique_column_names;
 use crate::crs::SpatialRef;
 use crate::{Error, Result};
 use std::collections::HashSet;
@@ -144,27 +145,6 @@ fn available_column_name(base: &str, occupied: impl Fn(&str) -> bool) -> String 
         }
     }
     unreachable!("a CSV cannot hold every possible column name")
-}
-
-/// Gives every column a distinct name without taking another original column's name.
-/// Case remains significant; blank headers retain the `field_N` convention.
-fn unique_column_names(header: Vec<String>) -> Vec<String> {
-    let reserved: HashSet<&str> = header.iter().filter(|h| !h.is_empty()).map(String::as_str).collect();
-    let mut emitted = HashSet::new();
-    header
-        .iter()
-        .enumerate()
-        .map(|(index, original)| {
-            let base = if original.is_empty() { format!("field_{}", index + 1) } else { original.clone() };
-            let name = if !original.is_empty() && !emitted.contains(&base) {
-                base
-            } else {
-                available_column_name(&base, |name| emitted.contains(name) || reserved.contains(name))
-            };
-            emitted.insert(name.clone());
-            name
-        })
-        .collect()
 }
 
 /// A writer-owned marker, optionally followed by a canonical collision suffix.

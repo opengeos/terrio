@@ -639,6 +639,12 @@ terrio convert 'STACTA:"https://example.com/pyramid/stacta.json":bands' preview.
 | MBTiles | MBTiles vector tiles (MVT) | ✓ | ✓ | mbtiles |
 | MVT | Mapbox Vector Tiles: a tile, or a directory of tiles | ✓ | ✓ | mvt, z/x/y.pbf |
 
+CSV/TSV, MapInfo MIF/MID, Shapefile DBF, FlatGeobuf, Parquet and Arrow imports
+preserve every declared attribute column when names repeat. Repeated names gain
+`_2`, `_3`, ... suffixes without taking another original column's name. Names
+remain case-sensitive, and field order, types and values stay aligned. This is
+Terrio's naming policy rather than a claim of identical naming in other readers.
+
 GeoJSON writing keeps coordinates in the layer's CRS by default and names a
 registered CRS in a GeoJSON 2008 `crs` member (EPSG, ESRI and IAU_2015). WGS 84
 needs no member. A retained definition without a usable authority code, such as

@@ -356,10 +356,15 @@ impl ParquetStream {
 
         let mut layer = Layer::new(name);
         let mut fields = Vec::new();
+        let mut definitions = Vec::new();
         for (i, f) in schema.fields().iter().enumerate() {
             if !hidden.contains(f.name()) {
-                add_columns(&mut layer, &mut fields, vec![i], f.name().clone(), f.data_type());
+                add_columns(&mut definitions, &mut fields, vec![i], f.name().clone(), f.data_type());
             }
+        }
+
+        for field in super::unique_field_defs(definitions) {
+            layer.add_field(field);
         }
 
         // The covering column's members, by top-level column and member index.
@@ -675,12 +680,12 @@ fn select_rows<T: parquet::file::reader::ChunkReader + 'static>(
 }
 
 /// Adds the fields of a column, flattening structs as GDAL does.
-pub(crate) fn add_columns(layer: &mut Layer, columns: &mut Vec<Column>, path: Vec<usize>, name: String, t: &DataType) {
+pub(crate) fn add_columns(definitions: &mut Vec<FieldDef>, columns: &mut Vec<Column>, path: Vec<usize>, name: String, t: &DataType) {
     if let DataType::Struct(fields) = t {
         for (i, f) in fields.iter().enumerate() {
             let mut p = path.clone();
             p.push(i);
-            add_columns(layer, columns, p, format!("{name}.{}", f.name()), f.data_type());
+            add_columns(definitions, columns, p, format!("{name}.{}", f.name()), f.data_type());
         }
         return;
     }
@@ -691,7 +696,7 @@ pub(crate) fn add_columns(layer: &mut Layer, columns: &mut Vec<Column>, path: Ve
     if matches!(t, DataType::Int64 | DataType::UInt32 | DataType::UInt64) {
         def.width = crate::ops::vector_schema::INTEGER64_WIDTH;
     }
-    layer.add_field(def);
+    definitions.push(def);
     columns.push(Column { path, field_type });
 }
 

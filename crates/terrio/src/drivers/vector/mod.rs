@@ -65,6 +65,40 @@ use crate::dataset::{VectorOpenOptions, VectorWriteOptions};
 use crate::formats::VectorDriver;
 use wbvector::{GeometryType, Layer};
 
+/// Gives declared columns distinct names without taking another original column's name.
+/// Case remains significant; blank names use the `field_N` convention.
+pub(crate) fn unique_column_names(header: Vec<String>) -> Vec<String> {
+    use std::collections::HashSet;
+    let reserved: HashSet<&str> = header.iter().filter(|name| !name.is_empty()).map(String::as_str).collect();
+    let mut emitted = HashSet::new();
+    header
+        .iter()
+        .enumerate()
+        .map(|(index, original)| {
+            let base = if original.is_empty() { format!("field_{}", index + 1) } else { original.clone() };
+            let name = if !emitted.contains(&base) && (!original.is_empty() || !reserved.contains(base.as_str())) {
+                base
+            } else {
+                (2usize..)
+                    .map(|suffix| format!("{base}_{suffix}"))
+                    .find(|name| !emitted.contains(name) && !reserved.contains(name.as_str()))
+                    .expect("column names cannot exhaust every suffix")
+            };
+            emitted.insert(name.clone());
+            name
+        })
+        .collect()
+}
+
+/// Preserves declared field order and metadata while making every name distinct.
+pub(crate) fn unique_field_defs(fields: Vec<wbvector::FieldDef>) -> impl Iterator<Item = wbvector::FieldDef> {
+    let names = unique_column_names(fields.iter().map(|field| field.name.clone()).collect());
+    fields.into_iter().zip(names).map(|(mut field, name)| {
+        field.name = name;
+        field
+    })
+}
+
 /// A layer in WGS 84, reprojected when its CRS is another one.
 pub(crate) fn in_wgs84(layer: &Layer) -> Result<std::borrow::Cow<'_, Layer>> {
     let srs = crate::crs::SpatialRef::from_layer(layer);
@@ -411,6 +445,23 @@ fn on_boundary(r: &wbvector::Ring, x: f64, y: f64) -> bool {
 #[cfg(test)]
 mod byte_writer_layer_tests {
     use super::*;
+    #[test]
+    fn duplicate_declared_fields_keep_positions_and_reserved_names() {
+        let names = ["count", "count", "count_2", "total", "", "field_5", "Count"];
+        let names = unique_column_names(names.into_iter().map(str::to_string).collect());
+        assert_eq!(names, ["count", "count_3", "count_2", "total", "field_5_2", "field_5", "Count"]);
+        let fields = vec![
+            wbvector::FieldDef::new("value", wbvector::FieldType::Integer).width(12),
+            wbvector::FieldDef::new("value", wbvector::FieldType::Float).width(24).precision(5),
+        ];
+        let fields: Vec<_> = unique_field_defs(fields).collect();
+        assert_eq!(fields[0].name, "value");
+        assert_eq!(fields[1].name, "value_2");
+        assert_eq!(fields[0].field_type, wbvector::FieldType::Integer);
+        assert_eq!(fields[1].field_type, wbvector::FieldType::Float);
+        assert_eq!((fields[0].width, fields[1].width, fields[1].precision), (12, 24, 5));
+    }
+
     #[test]
     fn single_layer_byte_formats_refuse_to_drop_other_layers() {
         let layers = [Layer::new("first"), Layer::new("second")];
