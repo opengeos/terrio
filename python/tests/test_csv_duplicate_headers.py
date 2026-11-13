@@ -44,6 +44,7 @@ def test_duplicate_input_columns_retain_their_values(
         writer.writerow(values)
     expected = dict(zip(names, values, strict=True))
     if reader == "range":
+        pytest.importorskip("geopandas")
         frame = tpg.read_dataframe(str(source), max_features=1)
         if "geometry" in frame.columns:
             assert frame.geometry.isna().all()
@@ -240,7 +241,11 @@ def test_explicit_geometry_names_override_generated_alias_inference(
         explicit: Restrict inference to the unsuffixed canonical names.
     """
     path = tmp_path / "aliases.csv"
-    path.write_text("X_2,Y_2\n10,46\n" if coordinate_columns else "WKT_2\nPOINT (10 46)\n")
+    path.write_text(
+        "__terrio_xy2_x,__terrio_xy2_y\n10,46\n"
+        if coordinate_columns
+        else "__terrio_wkt\nPOINT (10 46)\n"
+    )
     options = (
         {"X_POSSIBLE_NAMES": "X", "Y_POSSIBLE_NAMES": "Y", "GEOM_POSSIBLE_NAMES": "WKT"}
         if explicit
@@ -249,3 +254,129 @@ def test_explicit_geometry_names_override_generated_alias_inference(
     feature = terrio.open_vector(str(path), options=options)[0].to_geojson()["features"][0]
     expected = None if explicit else {"type": "Point", "coordinates": [10, 46]}
     assert feature["geometry"] == expected
+
+
+@pytest.mark.parametrize(
+    "text,coordinates",
+    [
+        ("X_2,Y_2\n10,46\n", None),
+        ("X_02,Y_+2\n10,46\n", None),
+        ("x_2,y_2,x,y\n80,81,10,46\n", [10, 46]),
+        ("x,y_2\n10,46\n", None),
+        ("X,Y,Z_2\n10,46,99\n", [10, 46]),
+        ("WKT,X_2,Y_2\nPOINT (10 46),tag,other\n", [10, 46]),
+        ("__terrio_xy3_x,__terrio_xy3_y\n10,46\n", None),
+        ("id,__terrio_wkt\n1,POINT (10 46)\n", None),
+    ],
+)
+@pytest.mark.parametrize("streamed", [False, True])
+def test_ordinary_suffixed_attributes_do_not_change_geometry(tmp_path, text, coordinates, streamed):
+    """Numeric attribute suffixes retain the established CSV inference rules.
+
+    Args:
+        tmp_path: Temporary directory.
+        text: Input CSV text.
+        coordinates: Expected point coordinates, or no geometry.
+        streamed: Exercise the streaming reader.
+    """
+    path = tmp_path / "measurements.csv"
+    path.write_text(text)
+    layer = (
+        terrio.open_stream(str(path), batch_size=1).read_all()
+        if streamed
+        else terrio.open_vector(str(path))[0]
+    )
+    feature = layer.to_geojson()["features"][0]
+    expected = None if coordinates is None else {"type": "Point", "coordinates": coordinates}
+    assert feature["geometry"] == expected
+    if coordinates is None:
+        assert layer.crs is None
+    header = next(csv.reader([text.splitlines()[0]]))
+    assert list(feature["properties"]) == header
+
+
+@pytest.mark.parametrize(
+    "mode,coordinates,properties,marker",
+    [
+        ("AS_WKT", [10, 46], {"wkt": "attribute"}, "__terrio_wkt"),
+        ("AS_WKT", [10, 46], {"WKT": "upper", "wkt": "lower"}, "__terrio_wkt"),
+        ("AS_WKT", [10, 46], {"X_2": "tag", "Y_2": "other"}, "WKT"),
+        ("AS_WKT", [10, 46], {"WKT": "attribute", "__terrio_wkt": "taken"}, "__terrio_wkt_2"),
+        ("AS_XY", [10, 46], {"x": 900, "y": 901}, "__terrio_xy2_x"),
+        ("AS_XY", [10, 46], {"Z": 99}, "__terrio_xy2_x"),
+        ("AS_XY", [10, 46], {"Z_2": 99}, "X"),
+        ("AS_XY", [10, 46, 5], {"x": 900, "y": 901, "z": 902}, "__terrio_xy3_x"),
+        (
+            "AS_XY",
+            [10, 46],
+            {"X": 900, "__terrio_xy2_x": "taken", "__terrio_xy2_2_y": "taken too"},
+            "__terrio_xy2_3_x",
+        ),
+        (
+            "AS_XY",
+            [10, 46, 5],
+            {"X": 900, "__terrio_xy3_z": "taken"},
+            "__terrio_xy3_2_x",
+        ),
+    ],
+)
+def test_collision_markers_preserve_dimensions_and_attributes(
+    tmp_path, mode, coordinates, properties, marker
+):
+    """Writer-owned geometry blocks preserve case-distinct attributes and dimensionality.
+
+    Args:
+        tmp_path: Temporary directory.
+        mode: Requested geometry output mode.
+        coordinates: Source point coordinates.
+        properties: Attributes that may conflict with geometry names.
+        marker: Expected first output header.
+    """
+    layer = terrio.Layer.from_geojson(
+        {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": properties,
+                    "geometry": {"type": "Point", "coordinates": coordinates},
+                }
+            ],
+        },
+        crs="EPSG:4326",
+    )
+    source = tmp_path / "input.geojson"
+    layer.write(str(source))
+    # A second conversion must skip marker names retained as ordinary attributes.
+    for index in range(2):
+        output = tmp_path / f"round{index}.csv"
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "terrio",
+                "convert",
+                str(source),
+                str(output),
+                "--lco",
+                "GEOMETRY=" + mode,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        with output.open(newline="", encoding="utf-8") as stream:
+            header = next(csv.reader(stream))
+        assert len(header) == len(set(header))
+        if index == 0:
+            assert header[0] == marker
+        for actual in [
+            terrio.open_vector(str(output))[0],
+            terrio.open_stream(str(output), batch_size=1).read_all(),
+        ]:
+            feature = actual.to_geojson()["features"][0]
+            assert feature["geometry"] == {"type": "Point", "coordinates": coordinates}
+            for key, value in properties.items():
+                assert feature["properties"][key] == value
+        source = output

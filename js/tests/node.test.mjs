@@ -5371,6 +5371,18 @@ test("TSV byte output uses tabs and preserves polygon commas", () => {
 });
 
 test("CSV column collisions preserve attributes and geometry", () => {
+  for (const [text, coordinates] of [
+    ["X_2,Y_2\n10,46\n", null],
+    ["x_2,y_2,x,y\n80,81,10,46\n", [10, 46]],
+    ["X,Y,Z_2\n10,46,99\n", [10, 46]],
+    ["WKT,X_2,Y_2\nPOINT (10 46),tag,other\n", [10, 46]],
+  ]) {
+    const input = terrio.open(new TextEncoder().encode(text), "measurements.csv");
+    try {
+      const geometry = input.toGeoJSON().features[0].geometry;
+      assert.deepEqual(geometry?.coordinates ?? null, coordinates);
+    } finally { input.free(); }
+  }
   for (const [extension, separator] of [["csv", ","], ["tsv", "\t"]]) {
     const bytes = new TextEncoder().encode(`a${separator}a${separator}b\n1${separator}2${separator}3\n`);
     const input = terrio.open(bytes, `repeated.${extension}`);
@@ -5383,6 +5395,7 @@ test("CSV column collisions preserve attributes and geometry", () => {
     const output = source.toBytes(`points.${extension}`);
     const header = new TextDecoder().decode(output).split("\n")[0].split(separator);
     assert.equal(new Set(header).size, header.length);
+    assert.equal(header[0], "__terrio_wkt");
     const restored = terrio.open(output, `points.${extension}`);
     const feature = restored.toGeoJSON().features[0];
     assert.equal(feature.properties.WKT, "attribute");

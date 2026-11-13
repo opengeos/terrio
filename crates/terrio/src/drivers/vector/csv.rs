@@ -9,8 +9,9 @@
 //! `X_POSSIBLE_NAMES` / `Y_POSSIBLE_NAMES` / `GEOM_POSSIBLE_NAMES` open options set to common
 //! names. Writing follows GDAL's `GEOMETRY=AS_WKT` (the default) or `GEOMETRY=AS_XY`.
 //! Repeated headers are given distinct case-sensitive names with `_2`, `_3`, ... suffixes.
-//! Generated geometry columns use free names too; default inference recognizes their numeric
-//! suffixes so original attributes survive conversion and append. This naming policy is Terrio's.
+//! On collision, generated geometry columns use reserved `__terrio_*` headers, recognized only
+//! as a leading geometry block under default inference. Ordinary suffixed attributes keep their
+//! existing meaning. This naming policy is Terrio's.
 
 use crate::crs::SpatialRef;
 use crate::{Error, Result};
@@ -166,19 +167,29 @@ fn unique_column_names(header: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-/// Recognizes generated geometry-column aliases under the default inference policy.
-/// Explicit possible-name options keep their existing exact/prefix matching behavior.
-fn matches_geometry_name(column: &str, patterns: &[String], defaults: &[&str]) -> bool {
-    if matches_name(column, patterns, defaults) {
-        return true;
+/// A writer-owned marker, optionally followed by a canonical collision suffix.
+fn geometry_marker(name: &str, base: &str) -> bool {
+    name == base
+        || name
+            .strip_prefix(base)
+            .and_then(|s| s.strip_prefix('_'))
+            .is_some_and(|s| s.parse::<usize>().is_ok_and(|n| n >= 2 && n.to_string() == s))
+}
+
+/// The dimensionality of a complete, leading coordinate marker block.
+fn marked_coordinates(header: &[String]) -> Option<bool> {
+    let stem = header.first()?.strip_suffix("_x")?;
+    let has_z = if geometry_marker(stem, "__terrio_xy2") {
+        false
+    } else if geometry_marker(stem, "__terrio_xy3") {
+        true
+    } else {
+        return None;
+    };
+    if header.get(1)? != &format!("{stem}_y") || (has_z && header.get(2)? != &format!("{stem}_z")) {
+        return None;
     }
-    if !patterns.is_empty() {
-        return false;
-    }
-    let Some((base, suffix)) = column.trim().rsplit_once('_') else { return false };
-    matches!(base.to_ascii_lowercase().as_str(), "x" | "y" | "z" | "wkt")
-        && suffix.parse::<usize>().is_ok_and(|n| n >= 2)
-        && defaults.iter().any(|name| name.eq_ignore_ascii_case(base))
+    Some(has_z)
 }
 
 /// Reads a CSV file.
@@ -403,7 +414,23 @@ fn cell(r: &[Vec<u8>], i: usize, utf8: bool) -> Option<String> {
 
 impl CsvScan {
     fn start(&mut self, header: &[String], options: &CsvOptions) {
-        let find = |patterns: &[String], defaults: &[&str]| header.iter().position(|h| matches_geometry_name(h, patterns, defaults));
+        self.types = vec![TypeInference::default(); header.len()];
+        self.lonlat_xy = true;
+        let default_names = options.x_possible_names.is_empty()
+            && options.y_possible_names.is_empty()
+            && options.z_possible_names.is_empty()
+            && options.geom_possible_names.is_empty();
+        if default_names {
+            if header.first().is_some_and(|h| geometry_marker(h, "__terrio_wkt")) {
+                self.wkt = vec![WktCandidate { column: 0, is_wkt: None, any: false, lonlat: true }];
+                return;
+            }
+            if let Some(has_z) = marked_coordinates(header) {
+                (self.x_col, self.y_col, self.z_col) = (Some(0), Some(1), has_z.then_some(2));
+                return;
+            }
+        }
+        let find = |patterns: &[String], defaults: &[&str]| header.iter().position(|h| matches_name(h, patterns, defaults));
         let mut x_col = find(&options.x_possible_names, X_NAMES);
         let mut y_col = find(&options.y_possible_names, Y_NAMES);
         if x_col.is_none() || y_col.is_none() {
@@ -415,12 +442,10 @@ impl CsvScan {
             self.wkt = header
                 .iter()
                 .enumerate()
-                .filter(|(_, h)| matches_geometry_name(h, &options.geom_possible_names, GEOM_NAMES))
+                .filter(|(_, h)| matches_name(h, &options.geom_possible_names, GEOM_NAMES))
                 .map(|(column, _)| WktCandidate { column, is_wkt: None, any: false, lonlat: true })
                 .collect();
         }
-        self.types = vec![TypeInference::default(); header.len()];
-        self.lonlat_xy = true;
     }
 
     /// Adds a record (empty lines are skipped).
@@ -701,10 +726,19 @@ impl CsvEncoder {
             CsvGeometry::AsXy => vec!["X".into(), "Y".into()],
             CsvGeometry::None => vec![],
         };
-        let mut occupied: HashSet<String> = layer.schema.fields().iter().map(|f| f.name.clone()).collect();
-        for name in &mut header {
-            *name = available_column_name(name, |candidate| occupied.contains(candidate));
-            occupied.insert(name.clone());
+        // Geometry inference is case-insensitive, whereas distinct attribute names are not.
+        let occupied: HashSet<String> = layer.schema.fields().iter().map(|f| f.name.trim().to_ascii_lowercase()).collect();
+        match mode {
+            CsvGeometry::AsWkt if occupied.contains("wkt") => {
+                header = vec![available_column_name("__terrio_wkt", |s| occupied.contains(s))];
+            }
+            CsvGeometry::AsXy if ["x", "y", "z"].iter().any(|s| occupied.contains(*s)) => {
+                let base = if has_z { "__terrio_xy3" } else { "__terrio_xy2" };
+                let axes = if has_z { &["x", "y", "z"][..] } else { &["x", "y"][..] };
+                let stem = available_column_name(base, |s| axes.iter().any(|axis| occupied.contains(&format!("{s}_{axis}"))));
+                header = axes.iter().map(|axis| format!("{stem}_{axis}")).collect();
+            }
+            _ => {}
         }
         header.extend(layer.schema.fields().iter().map(|f| f.name.clone()));
         let header = unique_column_names(header);

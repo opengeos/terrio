@@ -198,10 +198,15 @@ under a distinct name. CSV/TSV names are case-sensitive; generated suffixes skip
 existing original names.
 
 Writer checks cover ordinary self-conversion, append, bytes and CLI output.
-Generated geometry columns use unoccupied `WKT`, `X`, `Y`, `Z` names or numeric
-suffixes such as `WKT_2`. Native default geometry inference recognizes those
-suffixes; explicit possible-name options retain their existing matching rules.
-Other CSV consumers may need an explicit geometry-column hint for aliased names.
+Generated geometry columns normally use `WKT`, `X`, `Y`, `Z`. When attributes
+collide, WKT uses `__terrio_wkt`, and a complete coordinate block uses
+`__terrio_xy2_x`/`__terrio_xy2_y` or the corresponding `xy3` X/Y/Z block.
+Occupied marker names get a common numeric suffix before the axis, for example
+`__terrio_xy2_2_x`/`__terrio_xy2_2_y`. Native inference recognizes these reserved
+headers only at the start of a file, with all possible-name options at their
+defaults. Explicit possible-name options retain their existing matching rules.
+Ordinary `X_2`, `Y_2`, `Z_2` and `WKT_2` attributes do not become geometry.
+Other CSV consumers may need an explicit geometry-column hint for reserved names.
 Original colliding attributes keep their names and values. This is Terrio's
 lossless naming policy, not a claim to reproduce GDAL's duplicate-name spelling.
 
