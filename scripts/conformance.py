@@ -3895,6 +3895,7 @@ def suite_webp_writer(ctx):
     s = Suite("webp-writer", "WebP creation options", reference,
               "Default/explicit lossless pixels are exact; lossy quality changes bytes and pixels, "
               "with exact alpha and independent GDAL decoding, including real Landsat RGB. "
+              "Malformed QUALITY is refused rather than parsed as zero, a deliberate difference from GDAL. "
               "Lossy encoder bytes, size and PSNR are not compared with libwebp.")
     missing = missing_modules("rasterio", "pytest", "terrio", "numpy")
     if missing:

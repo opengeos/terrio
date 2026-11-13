@@ -389,6 +389,7 @@ pub fn write_vector_bytes(layers: &[Layer], name: &str, options: &VectorWriteOpt
     {
         let mut options = options.clone();
         options.xlsx = options.xlsx.for_name(name);
+        options.csv = crate::drivers::vector::csv::file_options(name, &options.csv);
         codec::write_vector(layers, driver, &options)
     }
 }

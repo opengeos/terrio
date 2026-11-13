@@ -5285,3 +5285,24 @@ test("GeoJSON byte exports name ESRI CRSs and refuse unnamed CRS loss", () => {
     } finally { source.free(); }
   }
 });
+test("TSV byte output uses tabs and preserves polygon commas", () => {
+  const source = terrio.fromGeoJSON(SQUARES, "squares", "EPSG:4326");
+  try {
+    for (const extension of ["csv", "tsv", "TSV"]) {
+      const filename = `squares.${extension}`;
+      const bytes = source.toBytes(filename);
+      const separator = extension === "csv" ? "," : "\t";
+      assert.ok(new TextDecoder().decode(bytes).startsWith(`WKT${separator}name${separator}value\n`));
+      const back = terrio.open(bytes, filename);
+      try {
+        const features = back.toGeoJSON().features;
+        assert.equal(features.length, SQUARES.features.length);
+        features.forEach((feature, i) => {
+          assert.deepEqual(feature.geometry, SQUARES.features[i].geometry);
+          assert.equal(feature.properties.name, SQUARES.features[i].properties.name);
+          assert.equal(feature.properties.value, SQUARES.features[i].properties.value);
+        });
+      } finally { back.free(); }
+    }
+  } finally { source.free(); }
+});
