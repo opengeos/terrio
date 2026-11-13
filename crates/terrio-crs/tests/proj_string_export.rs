@@ -21,8 +21,12 @@ struct Row {
 }
 
 fn rows() -> Vec<Row> {
-    include_str!("data/proj_string_export.tsv")
-        .lines()
+    parse(include_str!("data/proj_string_export.tsv"))
+}
+
+/// The rows of the data's format.
+fn parse(text: &str) -> Vec<Row> {
+    text.lines()
         .filter(|l| !l.starts_with('#'))
         .map(|l| {
             let mut f = l.splitn(3, '\t');
@@ -62,6 +66,25 @@ fn proj_strings_match_proj() {
     // The codes terrio does not read are methods it does not compute without the wbprojection
     // fallback (Eckert, Aitoff...) and ESRI codes it does not have.
     assert!(read * 100 >= rows.len() * 90, "terrio reads only {read} of {} rows", rows.len());
+}
+
+#[test]
+#[ignore = "needs every code's PROJ string: scripts/gen_proj_string_export.py --all PATH, then TERRIO_PROJ_STRINGS_ALL=PATH"]
+fn every_code_matches_proj() {
+    // The whole EPSG, ESRI and IAU_2015 tables, of which the frozen data keeps every 20th code.
+    let path = std::env::var("TERRIO_PROJ_STRINGS_ALL").expect("TERRIO_PROJ_STRINGS_ALL");
+    let rows = parse(&std::fs::read_to_string(&path).unwrap());
+    let (mut read, mut failures) = (0, Vec::new());
+    for row in &rows {
+        let Some(s) = crs(row) else { continue };
+        read += 1;
+        let ours = s.to_proj4();
+        if ours != row.proj {
+            failures.push(format!("{} {}:\n  terrio {ours:?}\n  PROJ   {:?}", row.kind, row.input, row.proj));
+        }
+    }
+    println!("{read} of {} codes read, {} differ from PROJ", rows.len(), failures.len());
+    assert!(failures.is_empty(), "{} of {read} differ from PROJ:\n{}", failures.len(), failures.join("\n"));
 }
 
 #[test]
@@ -162,4 +185,12 @@ fn a_unit_given_as_a_fraction_is_written_by_its_name() {
     // terrio reads `+to_meter=1/1000` (PROJ refuses it): its string names the unit it reads.
     let crs = SpatialRef::from_proj4("+proj=merc +lon_0=0 +k=1 +x_0=0 +y_0=0 +ellps=WGS84 +to_meter=1/1000").unwrap();
     assert_eq!(crs.to_proj4().as_deref(), Some("+proj=merc +lon_0=0 +k=1 +x_0=0 +y_0=0 +ellps=WGS84 +units=mm +no_defs +type=crs"));
+}
+
+#[test]
+fn a_shift_proj_refuses_is_not_written() {
+    // PROJ refuses `+towgs84` with other than 3 or 7 values, and terrio reads it as no shift: the
+    // string has none.
+    let crs = SpatialRef::from_proj4("+proj=longlat +ellps=GRS80 +towgs84=1,2,3,4,5,6").unwrap();
+    assert_eq!(crs.to_proj4().as_deref(), Some("+proj=longlat +ellps=GRS80 +no_defs +type=crs"));
 }

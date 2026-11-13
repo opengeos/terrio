@@ -368,7 +368,7 @@ const VARIANT_C: [(u32, &str, u32, [f64; 4]); 2] = [
 ];
 
 /// Whether a code is one of [`VARIANT_C`], whose method no PROJ string names.
-pub(crate) fn is_variant_c(code: u32) -> bool {
+pub(crate) fn is_variant_c_code(code: u32) -> bool {
     VARIANT_C.iter().any(|(c, ..)| *c == code)
 }
 

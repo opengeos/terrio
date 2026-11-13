@@ -640,7 +640,8 @@ impl SpatialRef {
     ///   which PROJ writes with the ellipsoid in place of the datum, even for a registry CRS);
     /// - the angular unit of a geographic CRS (EPSG:4807 is in grads, its string in degrees);
     /// - the axis order, but for south-orientated Transverse Mercator and Krovak (`+axis=wsu`,
-    ///   `+axis=swu`).
+    ///   `+axis=swu`);
+    /// - a PROJ string's vertical unit (`+vunits`) without a geoid model (`+geoidgrids`).
     ///
     /// A compound CRS (`EPSG:4326+5773`) is its horizontal CRS's string with the vertical unit
     /// (and a WKT's geoid model, `+geoidgrids`). A CRS given by a PROJ string or a WKT without

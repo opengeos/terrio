@@ -51,7 +51,15 @@ pub(crate) fn write(s: &SpatialRef) -> Option<String> {
         let to_meter = def::vertical_from_wkt(&vertical)?.to_meter;
         // A geoid model (GDAL's `PROJ4_GRIDS` extension) comes with the CRS of its heights.
         if let Some(grids) = wkt_geoid_grids(&vertical) {
-            tokens.extend([format!("+geoidgrids={grids}"), "+geoid_crs=WGS84".into()]);
+            // Quoted when it has a space, as PROJ does (`+geoidgrids="egm96 15.gtx"`): by
+            // `finish`, or here after an extension.
+            let grids = format!("+geoidgrids={grids}");
+            // Its heights are of WGS 84 when the horizontal CRS's datum is WGS 84 by its name
+            // (with a PROJ4 extension or a shift too), else of the horizontal CRS, as PROJ writes
+            // them (`+geoid_crs=horizontal_crs`).
+            let wgs84 = horizontal.wkt.as_deref().and_then(wkt_datum).and_then(named_datum) == Some("WGS84");
+            let geoid_crs = if wgs84 { "+geoid_crs=WGS84" } else { "+geoid_crs=horizontal_crs" };
+            tokens.extend([if extended { quoted(&grids) } else { grids }, geoid_crs.into()]);
         }
         tokens.push(vertical_unit(to_meter));
         if extended {
@@ -87,7 +95,7 @@ pub(crate) fn write(s: &SpatialRef) -> Option<String> {
             return Some(finish(vec![vertical_unit(v.to_meter)]));
         }
         // Polar Stereographic (variant C) has no PROJ method.
-        if epsg::is_variant_c(code) {
+        if epsg::is_variant_c_code(code) {
             return None;
         }
         if let Some(e) = epsg::get(code) {
@@ -105,12 +113,17 @@ pub(crate) fn write(s: &SpatialRef) -> Option<String> {
 fn wkt_shift(s: &SpatialRef) -> Option<String> {
     let w = s.wkt.as_deref().filter(|w| ["TOWGS84", "ABRIDGEDTRANSFORMATION", "nadgrids"].iter().any(|k| w.contains(k)))?;
     let proj = crate::wkt_proj(w)?;
-    let tokens: Vec<&str> = proj.split_whitespace().collect();
+    let tokens = tokens(&proj, false);
     tokens
         .iter()
         .find(|t| t.starts_with("+nadgrids="))
-        .map(|t| t.to_string())
-        .or_else(|| tokens.iter().find_map(|t| t.strip_prefix("+towgs84=")).map(towgs84))
+        .cloned()
+        .or_else(|| tokens.iter().find_map(|t| t.strip_prefix("+towgs84=")).and_then(towgs84))
+}
+
+/// Whether a PROJ parameter is an angle, which may be given in degrees, minutes and seconds.
+fn is_angle(key: &str) -> bool {
+    ["+lat_", "+lon_", "+o_lat_", "+o_lon_"].iter().any(|p| key.starts_with(p)) || matches!(key, "+lonc" | "+alpha" | "+gamma" | "+lat_ts")
 }
 
 /// The geoid grids of a vertical CRS's WKT (GDAL's `EXTENSION["PROJ4_GRIDS", ...]`).
@@ -120,13 +133,17 @@ fn wkt_geoid_grids(wkt: &str) -> Option<&str> {
     Some(&rest[..rest.find('"')?])
 }
 
-/// `+towgs84` values as PROJ writes them: seven of them.
-fn towgs84(values: &str) -> String {
-    let mut values: Vec<String> = values.split(',').map(|v| v.parse::<f64>().map_or_else(|_| v.to_string(), number)).collect();
-    if values.len() == 3 {
-        values.extend(std::iter::repeat_n("0".to_string(), 4));
+/// `+towgs84` values as PROJ writes them: seven of them. `None` for other than 3 or 7 finite
+/// values, which PROJ refuses and terrio's reader ignores.
+fn towgs84(values: &str) -> Option<String> {
+    let mut values: Vec<String> =
+        values.split(',').map(|v| v.trim().parse::<f64>().ok().filter(|v| v.is_finite()).map(number)).collect::<Option<_>>()?;
+    match values.len() {
+        3 => values.extend(std::iter::repeat_n("0".to_string(), 4)),
+        7 => {}
+        _ => return None,
     }
-    format!("+towgs84={}", values.join(","))
+    Some(format!("+towgs84={}", values.join(",")))
 }
 
 /// The axis order PROJ writes: that of the methods defining one (south-orientated Transverse
@@ -143,7 +160,7 @@ fn extension(s: &SpatialRef) -> Option<Vec<String>> {
     let given = |p: &String| crate::proj_to_wkt(p) == s.wkt;
     let text = s.wkt.as_deref().and_then(crate::proj4_extension).filter(|_| !s.proj4.as_ref().is_some_and(given))?;
     let text = gdal_web_mercator(&text).unwrap_or(text);
-    Some(tokens(&text).into_iter().filter(|t| t != "+type=crs").collect())
+    Some(tokens(&text, true).into_iter().filter(|t| t != "+type=crs").collect())
 }
 
 /// Whether a WKT is of an engineering CRS, which has no PROJ string.
@@ -416,7 +433,7 @@ fn ellipsoid_tokens(a: f64, shape: Shape) -> Vec<String> {
 /// reading of them): `None` for a datum, or a named ellipsoid outside PROJ's list.
 fn ellipsoid_of(proj: &str) -> Option<Vec<String>> {
     let get = |k: &str| proj.split_whitespace().find_map(|t| t.strip_prefix(k)?.strip_prefix('=')).map(str::to_string);
-    let num = |k: &str| get(k).and_then(|v| v.parse::<f64>().ok());
+    let num = |k: &str| get(k).and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite());
     if get("+datum").is_some() {
         return None;
     }
@@ -490,7 +507,7 @@ fn gdal_web_mercator(proj: &str) -> Option<String> {
     let (mut lon_0, mut x_0, mut y_0, mut units) = (0.0, 0.0, 0.0, "m".to_string());
     for t in strip_suffix(proj) {
         let (key, v) = t.split_once('=').unwrap_or((&t, ""));
-        let n = v.parse::<f64>().ok();
+        let n = v.parse::<f64>().ok().filter(|n| n.is_finite());
         match (key, n) {
             ("+proj", _) if v == "merc" => {}
             ("+a", Some(6378137.0)) => a = true,
@@ -598,6 +615,13 @@ fn custom(proj: &str, wkt_datum: Option<&str>) -> Option<String> {
             Some((k, v)) if k != "+proj" && v.parse::<f64>().is_ok_and(f64::is_finite) => {
                 format!("{k}={}", number(v.parse().unwrap_or_default()))
             }
+            // An angle in degrees, minutes and seconds (`52d30'10"N`), in decimal degrees.
+            Some((k, v))
+                if is_angle(k)
+                    && let Some(d) = crate::params::parse_dms(v).filter(|d| d.is_finite()) =>
+            {
+                format!("{k}={}", number(d))
+            }
             // PROJ's name of geographic coordinates, of all their aliases.
             Some(("+proj", "latlong" | "lonlat" | "latlon")) => "+proj=longlat".into(),
             _ => t,
@@ -667,14 +691,15 @@ fn custom(proj: &str, wkt_datum: Option<&str>) -> Option<String> {
     }
     tokens.extend(ellipsoid);
     if let Some(pm) = pm {
-        let name =
-            pm.parse::<f64>().ok().and_then(|v| PRIME_MERIDIANS.iter().find(|(_, m)| (m - v).abs() < 5e-8)).map(|(n, _)| n.to_string());
-        tokens.push(format!("+pm={}", name.unwrap_or_else(|| pm.parse::<f64>().ok().filter(|v| v.is_finite()).map_or(pm, number))));
+        // In degrees, also in degrees, minutes and seconds (`2d20'14.025"E` is Paris).
+        let degrees = crate::params::parse_dms(&pm).filter(|v| v.is_finite());
+        let name = degrees.and_then(|v| PRIME_MERIDIANS.iter().find(|(_, m)| (m - v).abs() < 5e-8)).map(|(n, _)| n.to_string());
+        tokens.push(format!("+pm={}", name.unwrap_or_else(|| degrees.map_or(pm, number))));
     }
     // A grid shift wins over `+towgs84`.
     match (nadgrids, towgs) {
         (Some(grids), _) => tokens.push(grids),
-        (None, Some(t)) => tokens.push(towgs84(&t)),
+        (None, Some(t)) => tokens.extend(towgs84(&t)),
         (None, None) => {}
     }
     // A projected (or geocentric) CRS's unit is always written; a geographic CRS has none.
@@ -699,20 +724,30 @@ fn custom(proj: &str, wkt_datum: Option<&str>) -> Option<String> {
     Some(finish(tokens))
 }
 
-/// The tokens of a PROJ string without `+no_defs` and `+type=crs`.
+/// The parameters of a PROJ string without `+no_defs` and `+type=crs`, their values unquoted.
+/// Words that are no parameters (no `+`) are dropped, as PROJ drops them.
 fn strip_suffix(proj: &str) -> Vec<String> {
-    tokens(proj).into_iter().filter(|t| t != "+no_defs" && t != "+type=crs").collect()
+    tokens(proj, false).into_iter().filter(|t| t.starts_with('+') && t != "+no_defs" && t != "+type=crs").collect()
 }
 
-/// The tokens of a PROJ string, split at whitespace but in double quotes (`+geoidgrids="@my
-/// grid.gtx"`), which stay as they are.
-fn tokens(proj: &str) -> Vec<String> {
+/// The tokens of a PROJ string, split at whitespace but in quoted values (`+geoidgrids="@my
+/// grid.gtx"`), as the reader splits them: a quote opens a value right after `=` and closes it,
+/// `""` in it is a quote, and elsewhere a quote is a character (DMS seconds, `52d30'10"N`).
+/// Quoted values are unquoted, or `keep` as they are written.
+fn tokens(proj: &str, keep: bool) -> Vec<String> {
     let (mut tokens, mut token, mut quoted) = (Vec::new(), String::new(), false);
-    for c in proj.chars() {
+    let mut chars = proj.chars().peekable();
+    while let Some(c) = chars.next() {
         match c {
-            '"' => {
+            '"' if quoted && chars.peek() == Some(&'"') => {
+                token.push_str(if keep { "\"\"" } else { "\"" });
+                chars.next();
+            }
+            '"' if quoted || token.ends_with('=') => {
                 quoted = !quoted;
-                token.push(c);
+                if keep {
+                    token.push(c);
+                }
             }
             c if c.is_whitespace() && !quoted => {
                 if !token.is_empty() {
@@ -732,5 +767,38 @@ fn tokens(proj: &str) -> Vec<String> {
 fn finish(mut tokens: Vec<String>) -> String {
     tokens.push("+no_defs".into());
     tokens.push("+type=crs".into());
-    tokens.join(" ")
+    tokens.iter().map(|t| quoted(t)).collect::<Vec<_>>().join(" ")
+}
+
+/// A parameter as PROJ writes it: its value quoted when it has a space (`+geoidgrids="egm96
+/// 15.gtx"`), a quote in it doubled.
+fn quoted(token: &str) -> String {
+    match token.split_once('=') {
+        Some((k, v)) if v.contains(char::is_whitespace) => format!("{k}=\"{}\"", v.replace('"', "\"\"")),
+        _ => token.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::math::{Ell, prime_meridian, unit_to_meter};
+
+    #[test]
+    fn writer_tables_agree_with_the_readers() {
+        // The writer's copies of PROJ's tables name what the reader reads, by the same values.
+        for (name, a, x) in ELLIPSOIDS {
+            let ours = if x > 0.0 { Ell::from_a_rf(a, x) } else { Ell::from_a_b(a, -x) };
+            let read = Ell::named(name).unwrap_or_else(|| panic!("+ellps={name} is not read"));
+            assert!((read.a - ours.a).abs() < 1e-6 && (read.es - ours.es).abs() < 1e-12, "{name}: {read:?} {ours:?}");
+        }
+        for (name, to_meter) in UNITS {
+            let read = unit_to_meter(name).unwrap_or_else(|| panic!("+units={name} is not read"));
+            assert!((read - to_meter).abs() <= 1e-12 * to_meter, "{name}: {read} {to_meter}");
+        }
+        for (name, longitude) in PRIME_MERIDIANS {
+            let read = prime_meridian(name).unwrap_or_else(|| panic!("+pm={name} is not read"));
+            assert!((read - longitude).abs() < 5e-8, "{name}: {read} {longitude}");
+        }
+    }
 }

@@ -8,8 +8,13 @@ orders, vertical and compound CRSs, Web Mercator, CRSs PROJ cannot write), custo
 ``NONE`` marks a CRS PROJ has no PROJ string for.
 
 Usage: python scripts/gen_proj_string_export.py (needs pyproj 3.8.0)
+
+``--all PATH`` writes every EPSG, ESRI and IAU_2015 code instead, to PATH (not committed), for the
+whole-table comparison: ``TERRIO_PROJ_STRINGS_ALL=PATH cargo test -p terrio-crs --test
+proj_string_export -- --ignored``.
 """
 
+import argparse
 import re
 import warnings
 from pathlib import Path
@@ -122,6 +127,18 @@ PROJ_STRINGS = [
     "+proj=longlat +ellps=WGS84 +pm=2.5000000000000000",
     "+proj=longlat +ellps=WGS84 +pm=2.33720833333333333",
     '+proj=longlat +datum=WGS84 +geoidgrids="@my grid.gtx"',
+    # Angles in degrees, minutes and seconds, whose second marks are no quotes, in decimal degrees.
+    "+proj=tmerc +lat_0=52d30'10\"N +lon_0=5d +k=1 +x_0=0 +y_0=0 +units=ft +ellps=GRS80",
+    "+proj=longlat +ellps=GRS80 +pm=2d20'14.025\"E",
+    # A hemisphere letter gives the sign, over a minus sign.
+    "+proj=tmerc +lat_0=-52d30'10\"S +lon_0=-5d10'20\"W +k=1 +x_0=0 +y_0=0 +ellps=GRS80 +units=m",
+    "+proj=tmerc +lat_0=-52d30'10\"N +lon_0=5 +k=1 +x_0=0 +y_0=0 +ellps=GRS80 +units=m",
+    # Quoted values, unquoted as PROJ reads them; words that are no parameters dropped.
+    '+proj=longlat +ellps=GRS80 +towgs84="1,2,3"',
+    '+proj=tmerc +lat_0="10" +lon_0=5 +k=1 +x_0="500" +y_0=0 +ellps=GRS80 +units=m',
+    '+proj=longlat +ellps=GRS80 +pm="2.337229166667"',
+    '+proj=longlat +datum=WGS84 +geoidgrids="a ""b"" c"',
+    "+proj=longlat +ellps=GRS80 foo",
     "+proj=merc +lon_0=10 +k=1 +x_0=5 +y_0=7 +a=6378137 +b=6378137 +nadgrids=@null +units=ft",
     "+proj=merc +lon_0=10 +k=1 +x_0=0 +y_0=0 +a=6378137 +b=6378137 +nadgrids=@null +wktext",
     "+proj=merc +lon_0=0 +k=1 +x_0=0 +y_0=0 +a=6378137 +b=6378137",
@@ -231,6 +248,11 @@ WKTS = [
         '2005,EXTENSION["PROJ4_GRIDS","egm96_15.gtx"]],UNIT["metre",1],AXIS["Up",UP]]]'
     ),
     (
+        'COMPD_CS["WGS 84 + EGM96",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],'
+        'PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],VERT_CS["EGM96 height",VERT_DATUM["EGM96",'
+        '2005,EXTENSION["PROJ4_GRIDS","egm96 15.gtx"]],UNIT["metre",1],AXIS["Up",UP]]]'
+    ),
+    (
         'COMPD_CS["WGS 84 + depth",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],'
         'PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],VERT_CS["height",VERT_DATUM["local",2005],'
         'UNIT["fathom",1.8288],AXIS["Up",UP]]]'
@@ -268,6 +290,27 @@ WKTS = [
     (
         'GEOGCS["x",DATUM["WGS_1984",SPHEROID["Clarke 1866",6378206.4,294.978698213898]],PRIMEM["Greenwich",0],'
         'UNIT["degree",0.0174532925199433]]'
+    ),
+    # A geoid model's heights are of the horizontal CRS but on WGS 84, also after an extension.
+    (
+        'COMPD_CS["c",GEOGCS["x",DATUM["d",SPHEROID["GRS 1980",6378137,298.257222101]],PRIMEM["Greenwich",0],'
+        'UNIT["degree",0.0174532925199433]],VERT_CS["v",VERT_DATUM["vd",2005,EXTENSION["PROJ4_GRIDS","g.gtx"]],'
+        'UNIT["metre",1]]]'
+    ),
+    (
+        'COMPD_CS["c",GEOGCS["x",DATUM["d",SPHEROID["GRS 1980",6378137,298.257222101]],PRIMEM["Greenwich",0],'
+        'UNIT["degree",0.0174532925199433],EXTENSION["PROJ4","+proj=longlat +datum=WGS84"]],VERT_CS["v",VERT_DATUM['
+        '"vd",2005,EXTENSION["PROJ4_GRIDS","my grid.gtx"]],UNIT["metre",1]]]'
+    ),
+    (
+        'COMPD_CS["c",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563],TOWGS84[0,0,0,0,0,0,'
+        '0]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],VERT_CS["v",VERT_DATUM["vd",2005,EXTENSION['
+        '"PROJ4_GRIDS","g.gtx"]],UNIT["metre",1]]]'
+    ),
+    (
+        'COMPD_CS["c",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",'
+        '0],UNIT["degree",0.0174532925199433],EXTENSION["PROJ4","+proj=longlat +datum=WGS84 +no_defs"]],VERT_CS["v",'
+        'VERT_DATUM["vd",2005,EXTENSION["PROJ4_GRIDS","g.gtx"]],UNIT["metre",1]]]'
     ),
     # A sphere in WKT 1: an inverse flattening of 0.
     (
@@ -323,10 +366,28 @@ def proj4(crs):
         return "NONE"
 
 
+def write_all(path):
+    """Every EPSG, ESRI and IAU_2015 code's PROJ string, in the frozen data's format."""
+    lines = [f"# Every code's PROJ string as PROJ {pyproj.proj_version_str} writes it (pyproj {pyproj.__version__})."]
+    for auth in ("EPSG", "ESRI"):
+        for info in query_crs_info(auth_name=auth):
+            lines.append(f"{auth}\t{info.code}\t{proj4(CRS.from_authority(auth, info.code))}")
+    for info in query_crs_info(auth_name="IAU_2015"):
+        lines.append(f"ref\tIAU_2015:{info.code}\t{proj4(CRS(f'IAU_2015:{info.code}'))}")
+    Path(path).write_text("\n".join(lines) + "\n")
+    print(f"{len(lines) - 1} rows written to {path}")
+
+
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--all", metavar="PATH", help="write every code to PATH instead")
+    args = parser.parse_args()
     warnings.simplefilter("ignore")
     pyproj.network.set_network_enabled(False)
     assert pyproj.proj_version_str == "9.8.1", pyproj.proj_version_str
+    if args.all:
+        write_all(args.all)
+        return
     rows = []
     for auth in ("EPSG", "ESRI"):
         for i, info in enumerate(query_crs_info(auth_name=auth)):

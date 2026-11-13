@@ -156,7 +156,7 @@ fn tokens(s: &str) -> (Vec<String>, bool) {
 }
 
 /// Parses decimal degrees or PROJ's DMS notation into degrees.
-fn parse_dms(s: &str) -> Option<f64> {
+pub(crate) fn parse_dms(s: &str) -> Option<f64> {
     let s = s.trim();
     if let Ok(v) = s.parse() {
         return Some(v);
@@ -184,7 +184,10 @@ fn parse_dms(s: &str) -> Option<f64> {
         };
         deg += rest.trim().parse::<f64>().ok()? / div;
     }
-    let negative = body.trim_start().starts_with('-');
+    // A hemisphere letter gives the sign, a minus sign only without one, as PROJ reads them
+    // (`-52d30'10"S` is south, `-52d30'10"N` north).
+    let lettered = body.len() < s.len();
+    let negative = !lettered && body.trim_start().starts_with('-');
     Some(sign * if negative { -deg } else { deg })
 }
 
