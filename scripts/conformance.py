@@ -2318,7 +2318,7 @@ def suite_tiff_block_tags(ctx):
                   "complex samples, internal/external overviews and real Landsat storage: "
                   "offsets and sizes match exactly. HTTP COG queries transfer less than "
                   "one quarter of the file and repeated queries send no requests.")
-    missing = missing_modules("terrio", "pytest", "numpy", "rasterio")
+    missing = missing_modules("terrio", "pytest", "numpy", "rasterio", "osgeo")
     if missing:
         suite.skipped = "needs " + ", ".join(missing)
         return suite

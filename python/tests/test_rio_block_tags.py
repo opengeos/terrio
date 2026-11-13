@@ -249,8 +249,8 @@ def test_real_tiff_block_items_match_gdal(data_dir):
                     assert actual.get_tag_item(key, "TIFF", bidx=band) == expected
 
 
-def test_corrupt_chunk_table_raises(tmp_path):
-    """A truncated TIFF offset array raises rather than appearing absent.
+def test_corrupt_chunk_table_is_refused_at_open(tmp_path):
+    """Opening a TIFF with a truncated offset array fails before block queries.
 
     Args:
         tmp_path: Temporary directory.
