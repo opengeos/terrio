@@ -113,6 +113,27 @@ fn root_code(wkt: &str) -> Option<u32> {
     code.parse().ok()
 }
 
+/// The EPSG code of a WKT 1's (first) datum: the `AUTHORITY` that closes its `DATUM` node.
+fn datum_code(wkt: &str) -> Option<u32> {
+    let start = wkt.find("DATUM[\"")?;
+    let mut depth = 0;
+    let len = wkt[start..].char_indices().find_map(|(i, c)| {
+        depth += match c {
+            '[' => 1,
+            ']' => -1,
+            _ => 0,
+        };
+        (c == ']' && depth == 0).then_some(i + 1)
+    })?;
+    root_code(&wkt[start..start + len])
+}
+
+/// The EPSG datum terrio identifies a CRS's datum as: its geographic CRS's.
+fn identified_datum(s: &SpatialRef) -> Option<u32> {
+    let geog = SpatialRef::from_epsg(s.geographic_code()?).ok()?.to_wkt()?;
+    datum_code(&geog)
+}
+
 /// The directions of a WKT 1's AXIS nodes, in order.
 fn axis_directions(wkt: &str) -> Vec<&str> {
     wkt.split(",AXIS[").skip(1).filter_map(|a| a.split(']').next()?.rsplit(',').next()).collect()
@@ -189,6 +210,17 @@ fn check(row: &Row, s: &SpatialRef) -> Option<String> {
     };
     match (&ours, expected) {
         (None, false) => None,
+        // On a datum terrio identifies (OSGB36): its WKT 1 keeps the datum's code (its identity and
+        // transformations). Not for a WKT 1 given, returned as it is (an ESRI `.prj`'s
+        // `D_WGS_1984`), nor for an explicit shift (`+datum=WGS84 +towgs84=...`), whose
+        // `TOWGS84` gives the transformation.
+        (Some(w), true)
+            if !["GEOGCS[", "PROJCS[", "GEOCCS[", "COMPD_CS["].iter().any(|k| row.input.starts_with(k))
+                && !w.contains("TOWGS84[")
+                && identified_datum(s).is_some_and(|d| datum_code(w) != Some(d)) =>
+        {
+            Some(format!("\n  terrio lost the datum: {w}\n  PROJ   {:?}", row.wkt))
+        }
         // PROJ's WKT 1 under a root EPSG code: terrio's too, unless its axes are not the code's.
         (Some(w), true) if row.wkt.as_deref().and_then(root_code).is_some_and(|c| keeps_code(w, c)) => {
             Some(format!("\n  terrio lost the code: {w}\n  PROJ   {:?}", row.wkt))

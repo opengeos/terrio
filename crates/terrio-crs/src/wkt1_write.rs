@@ -211,16 +211,26 @@ pub(crate) fn strict(sr: &SpatialRef) -> Option<String> {
             return super::wkt1::parse(&swapped).is_some_and(|root| plain(&root, None)).then_some(swapped);
         }
     }
-    // Else the WKT 1 of its PROJ string, which has no axis order: of the WKT 2's axes, east-north
-    // ones, or a geographic CRS's north-east ones, as WKT 1 writes them. A registry geographic
-    // CRS's WKT 1 (`+datum=WGS84`) loses its code when its axes are swapped.
     // A bound CRS's shift reaches the PROJ string only as `+towgs84` (a Helmert): another
     // (Molodensky, geographic offsets) would be lost.
     let proj = sr.to_proj4()?;
     if bound && !proj.split_whitespace().any(|t| t.starts_with("+towgs84=")) {
         return None;
     }
-    let mut w = from_proj(&proj)?;
+    // Else the WKT 1 of its PROJ string, which names only WGS 84, NAD83 and NAD27: on a datum
+    // terrio identifies (OSGB36), on that EPSG geographic CRS, which keeps the datum's name and
+    // transformations.
+    let own = Def::from_wkt(&wkt).ok()?;
+    let geog = own.geog().filter(|_| !bound && !geocentric);
+    let mut w = match geog {
+        // Without the code it was not identified as.
+        Some(g) if own.is_geographic() => without_root_authority(&strict(&SpatialRef { epsg: Some(g), ..Default::default() })?),
+        Some(g) => from_proj_on(&proj, g)?,
+        None => from_proj(&proj)?,
+    };
+    // The WKT 2's axes, east-north ones, or a geographic CRS's north-east ones, as WKT 1 writes
+    // them. A registry geographic CRS's WKT 1 (`+datum=WGS84`) loses its code when its axes are
+    // swapped.
     if !geocentric {
         const LON_LAT: &str = ",AXIS[\"Longitude\",EAST],AXIS[\"Latitude\",NORTH]";
         const LAT_LON: &str = ",AXIS[\"Latitude\",NORTH],AXIS[\"Longitude\",EAST]";
@@ -236,7 +246,6 @@ pub(crate) fn strict(sr: &SpatialRef) -> Option<String> {
     }
     // A PROJ string can lose a conversion (EPSG's ellipsoidal Equidistant Cylindrical becomes
     // `+proj=eqc`, which WKT 1's Equirectangular is read as): the WKT 1 must read back as the CRS.
-    let own = Def::from_wkt(&wkt).ok()?;
     let same = Def::new(&SpatialRef::from_wkt(&w)).is_ok_and(|read| read.same_conversion(&own));
     (same && super::wkt1::parse(&w).is_some_and(|root| plain(&root, None))).then_some(w)
 }

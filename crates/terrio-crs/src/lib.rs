@@ -707,7 +707,8 @@ impl SpatialRef {
     /// code's WKT 1 with its axes swapped and without the codes that give their order. Another
     /// WKT 2 is the WKT 1 of its PROJ string ([`to_proj4`](Self::to_proj4)) when that reads back
     /// as the same conversion with the WKT 2's axes (east-north, or north-east for a geographic
-    /// CRS).
+    /// CRS), on the EPSG geographic CRS of a datum terrio identifies (OSGB36), which keeps the
+    /// datum's name, code and transformations.
     ///
     /// ```
     /// use terrio_crs::SpatialRef;

@@ -109,6 +109,19 @@ def with_axes(code, name, order):
     return CRS.from_json_dict(d).to_wkt("WKT2_2019")
 
 
+def with_false_easting(code, name, value):
+    """The WKT 2 of a registry projected CRS without its code, named ``name``, with another false
+    easting, so that it is a custom CRS on the code's datum."""
+    d = CRS.from_epsg(code).to_json_dict()
+    for key in ("id", "usage", "usages", "scope", "area", "bbox"):
+        d.pop(key, None)
+    d["name"] = name
+    for p in d["conversion"]["parameters"]:
+        if p["name"] == "False easting":
+            p["value"] = value
+    return CRS.from_json_dict(d).to_wkt("WKT2_2019")
+
+
 def compound_with_axes(code, order):
     """The WKT 2 of a registry compound CRS, with its code, its horizontal axes in ``order``."""
     d = CRS.from_epsg(code).to_json_dict()
@@ -175,6 +188,9 @@ def strict_wkts():
         named(CRS("+proj=longlat +ellps=intl").to_wkt("WKT2_2019"), "no BOUNDCRS here"),
         # A bound CRS of another shift than a Helmert, which PROJ writes no WKT 1 for.
         offsets_bound(),
+        # Custom CRSs on an EPSG datum PROJ strings do not name (OSGB36): their WKT 1 keeps it.
+        with_false_easting(27700, "custom_osgb", 400001),
+        with_axes(4277, "custom_en", (1, 0)),
         # A WKT 2 geocentric CRS without a code.
         renamed(CRS("+proj=geocent +ellps=bessel +units=m").to_wkt("WKT2_2019")),
         # Known difference: an unidentified WKT 2 compound CRS, which terrio does not write in

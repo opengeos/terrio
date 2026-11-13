@@ -772,7 +772,8 @@ shift of its own, is written as the code's WKT 1; with the code's two horizontal
 (ETRS89 in longitude and latitude, CRS84), as the code's WKT 1 with its axes swapped and without
 the codes that give their order. Another WKT 2 is written as the WKT 1 of its PROJ string, when
 that reads back as the same conversion and the WKT 2's axes are east-north (or north-east, for a
-geographic CRS). A planetocentric CRS on an ellipsoid has none: PROJ writes a
+geographic CRS); on a datum terrio identifies (a custom projection on OSGB36), on that EPSG
+geographic CRS, which keeps the datum's name, code and transformations. A planetocentric CRS on an ellipsoid has none: PROJ writes a
 `GEOGCS` that its readers take for planetographic latitudes.
 
 For every EPSG and ESRI code terrio reads, the WKT 1 is PROJ's character for character, with
