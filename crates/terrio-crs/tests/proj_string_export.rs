@@ -194,3 +194,18 @@ fn a_shift_proj_refuses_is_not_written() {
     let crs = SpatialRef::from_proj4("+proj=longlat +ellps=GRS80 +towgs84=1,2,3,4,5,6").unwrap();
     assert_eq!(crs.to_proj4().as_deref(), Some("+proj=longlat +ellps=GRS80 +no_defs +type=crs"));
 }
+
+#[test]
+fn airy_and_copenhagen_are_read_as_proj_defines_them() {
+    // PROJ 9.8.1's `airy` is a = 6377563.396, rf = 299.3249646 (b = 6356256.909237285), and its
+    // Copenhagen meridian 12°34'40.35"E = 12.577875°: pyproj 3.8.0's
+    // `Transformer.from_crs(..., always_xy=True)` values.
+    let airy = SpatialRef::from_proj4("+proj=longlat +ellps=airy").unwrap();
+    let grid = SpatialRef::from_proj4("+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 +ellps=airy").unwrap();
+    let (x, y) = Transformer::new(&airy, &grid).unwrap().transform(-1.0, 60.0).unwrap();
+    assert!((x - 455770.8204770909).abs() < 1e-6 && (y - 1124268.6754824587).abs() < 1e-6, "({x}, {y})");
+    let intl = SpatialRef::from_proj4("+proj=longlat +ellps=intl").unwrap();
+    let copenhagen = SpatialRef::from_proj4("+proj=longlat +ellps=intl +pm=copenhagen").unwrap();
+    let (lon, lat) = Transformer::new(&intl, &copenhagen).unwrap().transform(13.0, 55.0).unwrap();
+    assert!((lon - 0.42212500000000014).abs() < 1e-12 && (lat - 55.0).abs() < 1e-12, "({lon}, {lat})");
+}

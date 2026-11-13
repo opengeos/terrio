@@ -133,6 +133,8 @@ PROJ_STRINGS = [
     # A hemisphere letter gives the sign, over a minus sign.
     "+proj=tmerc +lat_0=-52d30'10\"S +lon_0=-5d10'20\"W +k=1 +x_0=0 +y_0=0 +ellps=GRS80 +units=m",
     "+proj=tmerc +lat_0=-52d30'10\"N +lon_0=5 +k=1 +x_0=0 +y_0=0 +ellps=GRS80 +units=m",
+    "+proj=tmerc +lat_0=-52.5S +lon_0=-5W +k=1 +x_0=0 +y_0=0 +ellps=GRS80 +units=m",
+    "+proj=webmerc +datum=WGS84 +lon_0=10d",
     # Quoted values, unquoted as PROJ reads them; words that are no parameters dropped.
     '+proj=longlat +ellps=GRS80 +towgs84="1,2,3"',
     '+proj=tmerc +lat_0="10" +lon_0=5 +k=1 +x_0="500" +y_0=0 +ellps=GRS80 +units=m',

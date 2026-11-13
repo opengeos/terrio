@@ -724,7 +724,8 @@ ellipsoid (`+geoc`) has none, as in PROJ.
 For every EPSG and ESRI code terrio reads (8,329 in the default build) and every IAU_2015 CRS
 (2,201), the string is PROJ 9.8.1's character for character. `tests/proj_string_export.rs`
 checks every 20th of these codes, the codes behind each rule, custom definitions and compound
-references, frozen by `scripts/gen_proj_string_export.py`; the whole tables are compared with
+references, frozen by `scripts/gen_proj_string_export.py`; the whole tables are compared, as a
+manual check that CI does not run, with
 `scripts/gen_proj_string_export.py --all PATH` (pyproj 3.8.0), then
 `TERRIO_PROJ_STRINGS_ALL=PATH cargo test -p terrio-crs --test proj_string_export -- --ignored`. Reading a string back gives the CRS's conversion: `+f`,
 `+rf` and `+b` without `+a` change the shape of `+ellps`' or `+datum`'s ellipsoid, as PROJ's

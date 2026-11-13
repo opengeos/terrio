@@ -527,6 +527,8 @@ proj	+proj=tmerc +lat_0=52d30'10"N +lon_0=5d +k=1 +x_0=0 +y_0=0 +units=ft +ellps
 proj	+proj=longlat +ellps=GRS80 +pm=2d20'14.025"E	+proj=longlat +ellps=GRS80 +pm=paris +no_defs +type=crs
 proj	+proj=tmerc +lat_0=-52d30'10"S +lon_0=-5d10'20"W +k=1 +x_0=0 +y_0=0 +ellps=GRS80 +units=m	+proj=tmerc +lat_0=-52.5027777777778 +lon_0=-5.17222222222222 +k=1 +x_0=0 +y_0=0 +ellps=GRS80 +units=m +no_defs +type=crs
 proj	+proj=tmerc +lat_0=-52d30'10"N +lon_0=5 +k=1 +x_0=0 +y_0=0 +ellps=GRS80 +units=m	+proj=tmerc +lat_0=52.5027777777778 +lon_0=5 +k=1 +x_0=0 +y_0=0 +ellps=GRS80 +units=m +no_defs +type=crs
+proj	+proj=tmerc +lat_0=-52.5S +lon_0=-5W +k=1 +x_0=0 +y_0=0 +ellps=GRS80 +units=m	+proj=tmerc +lat_0=-52.5 +lon_0=-5 +k=1 +x_0=0 +y_0=0 +ellps=GRS80 +units=m +no_defs +type=crs
+proj	+proj=webmerc +datum=WGS84 +lon_0=10d	+proj=merc +a=6378137 +b=6378137 +lat_ts=0 +lon_0=10 +x_0=0 +y_0=0 +k=1 +units=m +nadgrids=@null +wktext +no_defs +type=crs
 proj	+proj=longlat +ellps=GRS80 +towgs84="1,2,3"	+proj=longlat +ellps=GRS80 +towgs84=1,2,3,0,0,0,0 +no_defs +type=crs
 proj	+proj=tmerc +lat_0="10" +lon_0=5 +k=1 +x_0="500" +y_0=0 +ellps=GRS80 +units=m	+proj=tmerc +lat_0=10 +lon_0=5 +k=1 +x_0=500 +y_0=0 +ellps=GRS80 +units=m +no_defs +type=crs
 proj	+proj=longlat +ellps=GRS80 +pm="2.337229166667"	+proj=longlat +ellps=GRS80 +pm=paris +no_defs +type=crs

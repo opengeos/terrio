@@ -128,6 +128,7 @@ fn is_angle(key: &str) -> bool {
 
 /// The geoid grids of a vertical CRS's WKT (GDAL's `EXTENSION["PROJ4_GRIDS", ...]`).
 fn wkt_geoid_grids(wkt: &str) -> Option<&str> {
+    // After the key and its quotes (13 bytes): at most the end of the string.
     let rest = &wkt[wkt.find("\"PROJ4_GRIDS\"")? + 13..];
     let rest = &rest[rest.find('"')? + 1..];
     Some(&rest[..rest.find('"')?])
@@ -489,7 +490,8 @@ fn webmerc(proj: &str) -> Option<String> {
         let (key, v) = t.split_once('=').unwrap_or((&t, ""));
         let n = || v.parse::<f64>().ok().filter(|n| n.is_finite());
         match key {
-            "+lon_0" => lon_0 = n()?,
+            // An angle, also in degrees, minutes and seconds (`10d`).
+            "+lon_0" => lon_0 = crate::params::parse_dms(v).filter(|n| n.is_finite())?,
             "+x_0" => x_0 = n()?,
             "+y_0" => y_0 = n()?,
             "+units" => units = v.to_string(),
@@ -616,11 +618,8 @@ fn custom(proj: &str, wkt_datum: Option<&str>) -> Option<String> {
                 format!("{k}={}", number(v.parse().unwrap_or_default()))
             }
             // An angle in degrees, minutes and seconds (`52d30'10"N`), in decimal degrees.
-            Some((k, v))
-                if is_angle(k)
-                    && let Some(d) = crate::params::parse_dms(v).filter(|d| d.is_finite()) =>
-            {
-                format!("{k}={}", number(d))
+            Some((k, v)) if is_angle(k) && crate::params::parse_dms(v).is_some_and(f64::is_finite) => {
+                format!("{k}={}", number(crate::params::parse_dms(v).unwrap_or_default()))
             }
             // PROJ's name of geographic coordinates, of all their aliases.
             Some(("+proj", "latlong" | "lonlat" | "latlon")) => "+proj=longlat".into(),
