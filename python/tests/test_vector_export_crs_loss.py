@@ -141,10 +141,51 @@ def test_named_gml_coordinates_agree_with_gdal(tmp_path, definition):
         definition: CRS with projected or geographic authority axes.
     """
     ogr = pytest.importorskip("osgeo.ogr")
-    ogr.UseExceptions()
     path = tmp_path / "points.gml"
     points(definition).write(str(path))
-    dataset = ogr.Open(str(path))
-    feature = dataset.GetLayer(0).GetNextFeature()
-    geometry = feature.GetGeometryRef()
-    assert (geometry.GetX(), geometry.GetY()) == (12, 34)
+    with ogr.ExceptionMgr():
+        dataset = ogr.Open(str(path))
+        try:
+            feature = dataset.GetLayer(0).GetNextFeature()
+            geometry = feature.GetGeometryRef()
+            assert (geometry.GetX(), geometry.GetY()) == (12, 34)
+        finally:
+            dataset = None
+
+
+def test_unnamed_compound_gml_is_refused(tmp_path):
+    """Refuse unnamed compound definitions before creating either output file.
+
+    Args:
+        tmp_path: Temporary dataset directory.
+    """
+    path = tmp_path / "compound.gml"
+    with pytest.raises(terrio.UnsupportedError, match="GML cannot name"):
+        points("EPSG:6341+5773").write(str(path))
+    assert not path.exists()
+    assert not path.with_suffix(".xsd").exists()
+
+
+@pytest.mark.parametrize("altered", [False, True])
+def test_declared_esri_parameters_are_checked_before_naming(tmp_path, altered):
+    """Use an ESRI name only when retained projection parameters agree with it.
+
+    Args:
+        tmp_path: Temporary dataset directory.
+        altered: Whether the stored central meridian contradicts its authority.
+    """
+    definition = points("ESRI:102003").crs_wkt
+    if altered:
+        changed = definition.replace("-96", "-95")
+        assert changed != definition
+        definition = changed
+    layer = points(definition)
+    path = tmp_path / "declared.gml"
+    if altered:
+        with pytest.raises(terrio.UnsupportedError, match="GML cannot name"):
+            layer.write(str(path))
+        assert not path.exists()
+        assert not path.with_suffix(".xsd").exists()
+    else:
+        layer.write(str(path))
+        assert "urn:ogc:def:crs:ESRI::102003" in path.read_text()

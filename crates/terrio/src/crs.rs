@@ -268,6 +268,10 @@ impl SpatialRef {
     pub fn same_as(&self, other: &Self) -> bool {
         self.as_core().same_as(&other.as_core())
     }
+    /// The ESRI authority only when retained parameters agree with its registry definition.
+    pub(crate) fn trusted_esri(&self) -> Option<u32> {
+        self.as_core().trusted_esri()
+    }
     pub(crate) fn with_esri(self) -> Self {
         let core: terrio_crs::SpatialRef = self.into();
         core.with_esri().into()

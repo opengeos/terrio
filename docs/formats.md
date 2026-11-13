@@ -786,7 +786,8 @@ EPSG:6708. Short `EPSG:` names and legacy `epsg.xml#` URLs retain XY order; east
 projected CRSs retain XY for every identifier form. Heights are preserved. The GML
 writer names EPSG, ESRI and IAU_2015 authorities and emits authority-order coordinates
 and envelopes for their URNs. A retained definition with no nameable authority is
-refused before creating the GML or its schema file; reproject to a named CRS or use
+refused before creating the GML or its schema file. This includes unregistered compound
+CRSs such as `EPSG:6341+5773`; compound URNs are read but not written. Reproject to a named CRS or use
 a format that stores the definition, such as GeoPackage. WFS 1.1/2.0
 bounding boxes follow the advertised authority order; WFS 1.0 bounding boxes use XY.
 Standalone layers with conflicting coordinate-axis declarations, including nested geometry

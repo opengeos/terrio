@@ -400,7 +400,9 @@ pub(crate) fn parse_srs_name(name: &str) -> Result<SpatialRef> {
 /// but not short `EPSG:` names or the old `epsg.xml#` URLs. The CRS determines whether to swap.
 pub(crate) fn authority_axis_order(srs_name: &str) -> bool {
     let s = srs_name.to_ascii_lowercase();
-    s.starts_with("urn:") || s.contains("/def/crs/")
+    // OGC CRS84/CRS27/CRS83 declare longitude-latitude order even when the
+    // equivalent EPSG definition used internally has latitude first.
+    !(s.contains(":crs:ogc:") || s.contains("/ogc/")) && (s.starts_with("urn:") || s.contains("/def/crs/"))
 }
 
 fn swap_xy(g: Geometry) -> Geometry {
@@ -623,8 +625,18 @@ pub fn to_string(layer: &Layer, schema: &str) -> Result<String> {
     let reference = SpatialRef::from_layer(layer);
     let authority = reference
         .authority()
-        .filter(|(authority, _)| *authority != "EPSG")
-        .or_else(|| super::naming_epsg(layer).map(|code| ("EPSG", code)));
+        .filter(|(authority, code)| match *authority {
+            "EPSG" => false,
+            "ESRI" => reference.trusted_esri() == Some(*code),
+            _ => true,
+        })
+        .or_else(|| super::naming_epsg(layer).map(|code| ("EPSG", code)))
+        // A horizontal code alone cannot name a retained compound definition.
+        .filter(|(authority, code)| {
+            reference.compound_parts().is_none_or(|parts| {
+                SpatialRef::parse_literal(&format!("{authority}:{code}")).ok().and_then(|s| s.compound_parts()) == Some(parts)
+            })
+        });
     if authority.is_none() && !reference.is_unknown() {
         return Err(Error::Unsupported(
             "GML cannot name this layer's CRS: reproject to a named CRS or use a format that stores CRS definitions".into(),
@@ -976,6 +988,20 @@ mod tests {
         assert!(text.contains(">43.56 12.24<"), "{text}");
         let restored = &parse(&xml::parse(&text).unwrap(), None).unwrap()[0];
         assert_eq!(restored.features[0].geometry, layer.features[0].geometry);
+    }
+
+    #[test]
+    fn gml_refuses_an_esri_code_that_conflicts_with_stored_parameters() {
+        let canonical = SpatialRef::parse_literal("ESRI:102003").unwrap().to_wkt().unwrap();
+        // The registry WKT can omit its ID; this regression exercises an explicit claim.
+        let canonical = format!(r#"{},AUTHORITY["ESRI","102003"]]"#, canonical.strip_suffix(']').unwrap());
+        let changed = canonical.replace("-96", "-95");
+        assert_ne!(changed, canonical);
+        let mut layer = Layer::new("places");
+        layer.set_crs_wkt(Some(changed));
+        assert!(matches!(to_string(&layer, ""), Err(Error::Unsupported(message)) if message.contains("cannot name")));
+        layer.set_crs_wkt(Some(canonical));
+        assert!(to_string(&layer, "").unwrap().contains("urn:ogc:def:crs:ESRI::102003"));
     }
 
     #[test]

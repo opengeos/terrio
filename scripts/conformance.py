@@ -3861,6 +3861,9 @@ def suite_wfs(ctx):
         suite.error = f"{error}: {tail(err or out)}"
     if code and not suite.error and not any(case.status == DIFFERS for case in suite.cases):
         suite.error = tail(err or "WFS comparison failed")
+    complete, detail = _pytest_module_conformance(
+        ctx, "test_vector_export_crs_loss.py", selection="named_gml_coordinates_agree_with_gdal", expected_count=3)
+    suite.cases.append(Case("GML", "EPSG, ESRI and IAU authority-order exports", IDENTICAL if complete else DIFFERS, detail))
     return suite
 
 

@@ -406,6 +406,18 @@ impl SpatialRef {
         self
     }
 
+    /// The ESRI code only when its registered conversion and ellipsoid match the retained WKT.
+    /// Used by name-only writers, which cannot preserve conflicting stored parameters.
+    #[doc(hidden)]
+    pub fn trusted_esri(&self) -> Option<u32> {
+        let code = self.esri?;
+        let Some(wkt) = self.wkt.as_deref() else { return Some(code) };
+        let own = if let Some(proj) = self.proj4.as_deref() { Def::from_proj(proj).ok()? } else { Def::wkt_conversion(wkt)? };
+        let registered = Def::from_proj(&epsg::esri(code)?.proj).ok()?;
+        (own.same_conversion(&registered) && (own.ell.a - registered.ell.a).abs() < 1e-3 && (own.ell.es - registered.ell.es).abs() < 1e-9)
+            .then_some(code)
+    }
+
     /// A compound CRS from the EPSG codes of a horizontal and a vertical CRS, as GDAL builds
     /// `EPSG:4326+5773`.
     pub fn compound(horizontal: u32, vertical: u32) -> Result<Self> {
