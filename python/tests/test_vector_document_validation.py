@@ -258,3 +258,42 @@ def test_empty_sequence_stream_is_valid(tmp_path):
     """
     layers = read_document(tmp_path / "empty.geojsonl", b"", "stream")
     assert len(layers[0]) == 0
+
+
+@pytest.mark.parametrize("surface", ["path", "bytes", "generic", "stream"])
+@pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-16-le", "utf-16-be"])
+@pytest.mark.parametrize("extension", ["kml", "gpx", "osm"])
+def test_prefixed_xml_features_survive_bom_decoding(tmp_path, surface, encoding, extension):
+    """Preserve prefixed elements and Unicode values through BOM-marked XML inputs.
+
+    Args:
+        tmp_path: Temporary dataset directory.
+        surface: Public open entry point.
+        encoding: UTF-8 or UTF-16 byte order.
+        extension: KML, GPX or OSM XML format.
+    """
+    name = "café 🌍"
+    documents = {
+        "kml": (
+            '<x:kml xmlns:x="http://www.opengis.net/kml/2.2"><x:Document>'
+            f"<x:Placemark><x:name>{name}</x:name><x:Point>"
+            "<x:coordinates>10,46</x:coordinates></x:Point></x:Placemark></x:Document></x:kml>"
+        ),
+        "gpx": (
+            '<x:gpx xmlns:x="http://www.topografix.com/GPX/1/1" version="1.1" creator="test">'
+            f'<x:wpt lon="10" lat="46"><x:name>{name}</x:name></x:wpt></x:gpx>'
+        ),
+        "osm": (
+            '<x:osm xmlns:x="urn:test" version="0.6"><x:node id="1" lon="10" lat="46">'
+            f'<x:tag k="name" v="{name}"/></x:node></x:osm>'
+        ),
+    }
+    data = documents[extension].encode(encoding)
+    if encoding.startswith("utf-16"):
+        data = (b"\xff\xfe" if encoding.endswith("le") else b"\xfe\xff") + data
+    layers = read_document(tmp_path / f"prefixed.{extension}", data, surface)
+    features = [feature for layer in layers for feature in layer.to_geojson()["features"]]
+    assert len(features) == 1
+    assert features[0]["geometry"]["coordinates"] == pytest.approx([10, 46], abs=1e-12)
+    field = "Name" if extension == "kml" else "name"
+    assert features[0]["properties"][field] == name

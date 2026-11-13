@@ -1081,7 +1081,7 @@ fn check_archive_layers(path: &str, layers: &[Layer]) -> Result<()> {
 /// When terrio's own drivers could not open `path`, tries GDAL; if GDAL cannot either, terrio's
 /// error is kept, except for GDAL's resource refusals. Missing local files and invalid arguments
 /// are not retried, nor are network errors, resource-limit refusals or native MIF header
-/// recognition failures. MIF geometry errors remain eligible for fallback.
+/// recognition failures or native document-kind/syntax refusals. MIF geometry errors remain eligible for fallback.
 #[cfg(feature = "gdal")]
 pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(&str) -> Result<T>) -> Result<T> {
     let Err(e) = result else { return result };

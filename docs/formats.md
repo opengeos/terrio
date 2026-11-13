@@ -1273,11 +1273,13 @@ CLI writes (`--lco SEPARATOR=COMMA|SEMICOLON|TAB|PIPE`).
 - **Document recognition**: KML, GPX and OSM XML require a `kml`, `gpx` or `osm` root
   element, respectively. Namespace prefixes are allowed. HTML error pages and other
   document kinds are refused with `InvalidData` rather than read as empty layers. KMZ
-  main and linked layer documents require KML roots too. Zero bytes are not an OSM XML
+  main and linked layer documents require KML roots too. Zero bytes are not KML, GPX, OSM XML
   or PBF document. PBF requires an `OSMHeader` block; a header-only file is valid
   empty data. XML and GeoJSON-sequence syntax errors are terminal native document
   refusals and are not retried through the optional GDAL backend. Valid empty KML,
-  GPX and OSM documents retain their existing layer counts.
+  GPX and OSM documents retain their existing layer counts. XML bytes may use UTF-8 or
+  BOM-marked UTF-16. Input that exceeds an OSM PBF framing budget returns `ResourceLimit`,
+  including non-PBF content whose leading bytes describe an excessive header length.
 - **KML layer names** use the same ASCII case-insensitive collision rule as KMZ.
   Within one document, `Roads` followed by `roads` becomes `Roads` and `roads (2)`,
   preserving feature order and the original spelling before the suffix.

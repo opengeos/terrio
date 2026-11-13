@@ -559,6 +559,16 @@ pub(crate) fn is_unsorted(e: &Error) -> bool {
 pub(crate) fn is_xml(bytes: &[u8]) -> bool {
     let head = &bytes[..bytes.len().min(512)];
     let head = head.strip_prefix(b"\xef\xbb\xbf").unwrap_or(head);
+    if head.starts_with(b"\xff\xfe") || head.starts_with(b"\xfe\xff") {
+        let little_endian = head.starts_with(b"\xff\xfe");
+        return head[2..]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| if little_endian { u16::from_le_bytes([pair[0], pair[1]]) } else { u16::from_be_bytes([pair[0], pair[1]]) })
+            .find(|unit| !matches!(unit, 9 | 10 | 13 | 32))
+            == Some(60);
+    }
     head.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'<')
 }
 
@@ -630,8 +640,9 @@ pub fn parse_xml(bytes: &[u8]) -> Result<Vec<Layer>> {
         if let Some(e) = start {
             let qname = e.name();
             let name: &str = qname.as_ref();
+            let name = name.rsplit(':').next().unwrap_or(name);
             if !root_seen {
-                if name.rsplit(':').next() != Some("osm") {
+                if name != "osm" {
                     return Err(super::document_error("OSM XML", format!("expected <osm> root element, found <{name}>")));
                 }
                 root_seen = true;
@@ -672,7 +683,12 @@ pub fn parse_xml(bytes: &[u8]) -> Result<Vec<Layer>> {
             }
         }
         match ev {
-            Event::End(e) if matches!(<_ as AsRef<str>>::as_ref(&e.name()), "node" | "way" | "relation") => {
+            Event::End(e)
+                if <_ as AsRef<str>>::as_ref(&e.name())
+                    .rsplit(':')
+                    .next()
+                    .is_some_and(|name| matches!(name, "node" | "way" | "relation")) =>
+            {
                 finish_element(&mut b, &mut kind, id, &lat, &lon, &mut refs, &mut members, &mut tags);
             }
             Event::Eof => break,
