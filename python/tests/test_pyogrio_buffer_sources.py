@@ -41,7 +41,7 @@ def sources(tmp_path_factory):
         crs="EPSG:4326",
     )
     paths = {}
-    for extension in ["geojson", "gpkg", "fgb", "parquet", "kml"]:
+    for extension in ["geojson", "gpkg", "fgb", "parquet", "kml", "kmz", "xlsx", "geojsonl", "dxf"]:
         path = directory / f"points.{extension}"
         path.write_bytes(layer.to_bytes(path.name))
         paths[extension] = path
@@ -95,7 +95,21 @@ def buffer(data, mode):
 
 
 @pytest.mark.parametrize(
-    "extension", ["geojson", "gpkg", "fgb", "parquet", "kml", "gpx", "osm", "gml"]
+    "extension",
+    [
+        "geojson",
+        "gpkg",
+        "fgb",
+        "parquet",
+        "kml",
+        "gpx",
+        "osm",
+        "gml",
+        "kmz",
+        "xlsx",
+        "geojsonl",
+        "dxf",
+    ],
 )
 @pytest.mark.parametrize("mode", ["bytes", "bytearray", "memoryview", "stream"])
 def test_vector_buffers_match_named_files(sources, extension, mode):
@@ -116,8 +130,8 @@ def test_vector_buffers_match_named_files(sources, extension, mode):
     assert_geodataframe_equal(actual, expected)
     assert len(actual) == 4
     expected_layers = tpg.list_layers(path).tolist()
-    if extension == "parquet":
-        # Parquet has no stored layer name: anonymous bytes use the temporary file's data stem.
+    if extension in {"parquet", "geojsonl"}:
+        # These formats have no stored layer name: anonymous bytes use the temporary data stem.
         expected_layers[0][0] = "data"
     assert tpg.list_layers(buffer(data, mode)).tolist() == expected_layers
     info = tpg.read_info(buffer(data, mode), layer=0)
@@ -127,6 +141,144 @@ def test_vector_buffers_match_named_files(sources, extension, mode):
     assert info["geometry_type"] == reference["geometry_type"]
     for key in ["fields", "dtypes"]:
         np.testing.assert_array_equal(info[key], reference[key])
+
+
+@pytest.mark.parametrize("extension", ["kmz", "xlsx", "geojsonl", "dxf"])
+def test_named_file_objects_match_paths(sources, extension):
+    """Use the filename supplied by an open file object.
+
+    Args:
+        sources: Dataset paths.
+        extension: Vector format.
+    """
+    pytest.importorskip("geopandas")
+    from geopandas.testing import assert_geodataframe_equal
+
+    path = sources[extension]
+    with path.open("rb") as stream:
+        assert_geodataframe_equal(
+            tpg.read_dataframe(stream, layer=0), tpg.read_dataframe(path, layer=0)
+        )
+        assert tpg.list_layers(stream).tolist() == tpg.list_layers(path).tolist()
+
+
+def test_named_csv_stream_retains_its_extension(tmp_path):
+    """A filename identifies CSV without treating arbitrary raw bytes as CSV.
+
+    Args:
+        tmp_path: Temporary directory.
+    """
+    path = tmp_path / "points.csv"
+    path.write_text("WKT,id\nPOINT (10 46),1\n")
+    with path.open("rb") as stream:
+        assert tpg.read_info(stream)["features"] == 1
+
+
+@pytest.mark.parametrize("extension", ["geojson", "kmz", "xlsx"])
+def test_generic_named_uploads_use_content_hints(tmp_path, sources, extension):
+    """A generic upload suffix does not hide a signed format.
+
+    Args:
+        tmp_path: Temporary directory.
+        sources: Dataset paths.
+        extension: Underlying format.
+    """
+    path = tmp_path / "upload.bin"
+    path.write_bytes(sources[extension].read_bytes())
+    with path.open("rb") as stream:
+        actual = tpg.read_info(stream, layer=0)
+    expected = tpg.read_info(sources[extension], layer=0)
+    assert actual["driver"] == expected["driver"]
+    assert actual["features"] == expected["features"] == 4
+
+
+@pytest.mark.parametrize("comment", [b"exported by a surveyor", b"caf\xe9"])
+def test_dxf_with_leading_comments_matches_path(tmp_path, sources, comment):
+    """DXF's optional leading group-999 comments do not hide its section header.
+
+    Args:
+        tmp_path: Temporary directory.
+        sources: Dataset paths.
+        comment: ASCII or legacy single-byte comment text.
+    """
+    path = tmp_path / "comments.dxf"
+    data = b"999\r\n" + comment + b"\r\n" + sources["dxf"].read_bytes()
+    path.write_bytes(data)
+    assert tpg.read_info(data)["features"] == tpg.read_info(path)["features"] == 4
+
+
+def test_archive_limit_diagnostic_is_preserved(sources, monkeypatch):
+    """Resource refusal keeps its diagnostic instead of becoming an unknown-format error.
+
+    Args:
+        sources: Dataset paths.
+        monkeypatch: Scoped environment overrides.
+    """
+    monkeypatch.setenv("TERRIO_ZIP_MAX_ENTRIES", "0")
+    with pytest.raises(DataSourceError, match="TERRIO_ZIP_MAX_ENTRIES"):
+        tpg.list_layers(sources["kmz"].read_bytes())
+
+
+def test_named_upload_basename_is_not_archive_path_syntax(sources):
+    """A literal exclamation mark in an upload name does not select a ZIP member.
+
+    Args:
+        sources: Dataset paths.
+    """
+    stream = io.BytesIO(sources["kml"].read_bytes())
+    stream.name = "a.zip!b.kml"
+    assert tpg.read_info(stream, layer=0)["features"] == 4
+
+
+def test_multilayer_kmz_buffers_preserve_layers(tmp_path, sources):
+    """KMZ containers keep both linked layers rather than opening doc.kml alone.
+
+    Args:
+        tmp_path: Temporary directory.
+        sources: Dataset paths.
+    """
+    pytest.importorskip("geopandas")
+    from geopandas.testing import assert_geodataframe_equal
+
+    path = tmp_path / "two.kmz"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(
+            "doc.kml",
+            '<kml xmlns="http://www.opengis.net/kml/2.2"><Document>'
+            "<NetworkLink><Link><href>layers/points.kml</href></Link></NetworkLink>"
+            "<NetworkLink><Link><href>layers/other.kml</href></Link></NetworkLink>"
+            "</Document></kml>",
+        )
+        archive.writestr("layers/points.kml", sources["kml"].read_bytes())
+        archive.writestr(
+            "layers/other.kml", sources["kml"].read_bytes().replace(b"points", b"other")
+        )
+    data = path.read_bytes()
+    expected = tpg.list_layers(path).tolist()
+    # KML can advertise both document containers and their feature folders.
+    assert [row[0] for row in expected] == ["points", "points (2)", "other", "other (2)"]
+    assert tpg.list_layers(data).tolist() == expected
+    for index in range(len(expected)):
+        assert_geodataframe_equal(
+            tpg.read_dataframe(data, layer=index), tpg.read_dataframe(path, layer=index)
+        )
+    assert [tpg.read_info(data, layer=index)["features"] for index in range(4)] == [0, 4, 0, 4]
+
+
+def test_empty_archive_buffer_has_a_clear_refusal(tmp_path):
+    """An empty archive cannot silently advertise a successful layer listing.
+
+    Args:
+        tmp_path: Temporary directory.
+    """
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w"):
+        pass
+    path = tmp_path / "empty.zip"
+    path.write_bytes(stream.getvalue())
+    for source in [path, stream.getvalue()]:
+        with pytest.raises(DataSourceError, match="no dataset found"):
+            tpg.list_layers(source)
 
 
 @pytest.mark.parametrize("extension", ["geojson", "gpkg", "fgb", "parquet", "kml", "gml"])

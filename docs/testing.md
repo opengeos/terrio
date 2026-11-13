@@ -65,6 +65,15 @@ all 48 comparison results in its JUnit report before declaring agreement.
 
 ## Vector source ranges
 
+`python/tests/test_pyogrio_buffer_sources.py` compares named files with bytes,
+bytearrays, memoryviews and streams, including KMZ, XLSX, newline-delimited
+GeoJSON and DXF. It checks dataframes, layer listings and metadata, preserves
+named file-object extensions for CSV, and verifies multi-layer KMZ containers.
+These are Terrio path/buffer consistency checks, separate from the GDAL
+comparisons below. Shared Rust byte-probe tests distinguish ZIP containers by
+their directory entries without decompressing their contents; ordinary readers
+still validate the selected dataset and enforce driver policy.
+
 `cargo test -p terrio --test vector_stream_ranges` checks eager/streamed ranges,
 STAC asset forwarding and MVT directories/tiles. The memory range tests exercise
 filesystem-free codecs, including multi-layer and archive readers. Ranges count
