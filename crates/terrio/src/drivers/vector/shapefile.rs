@@ -30,9 +30,28 @@ use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, Geomet
 
 const NULL_SHAPE: i32 = 0;
 
+/// The geometry output path: replace a recognized vector or companion extension with `.shp`,
+/// or append `.shp` to other names. An existing `.shp` retains its case.
+/// Derive sidecars from this full path so unknown dotted suffixes remain part of the basename.
+pub(crate) fn output_path(path: &str) -> PathBuf {
+    let path = Path::new(path);
+    let extension = path.extension().and_then(|e| e.to_str()).unwrap_or_default();
+    if extension.eq_ignore_ascii_case("shp") {
+        path.to_path_buf()
+    } else if crate::formats::VectorDriver::for_extension(&path.to_string_lossy()).is_some()
+        || ["shx", "dbf", "prj", "cpg"].iter().any(|e| extension.eq_ignore_ascii_case(e))
+    {
+        path.with_extension("shp")
+    } else {
+        let mut name = path.as_os_str().to_os_string();
+        name.push(".shp");
+        name.into()
+    }
+}
+
 /// Finds a sidecar file (`dbf`, `prj`, `cpg`) next to the `.shp`, in either letter case.
-fn sidecar(base: &Path, ext: &str) -> Option<PathBuf> {
-    [ext.to_string(), ext.to_ascii_uppercase()].into_iter().map(|e| base.with_extension(e)).find(|p| p.exists())
+pub(crate) fn sidecar(path: &Path, ext: &str) -> Option<PathBuf> {
+    [ext.to_string(), ext.to_ascii_uppercase()].into_iter().map(|e| path.with_extension(e)).find(|p| p.exists())
 }
 
 /// Decode a present `.prj` without silently treating unreadable text as a missing CRS.
@@ -134,15 +153,15 @@ fn method_from_env(get: impl Fn(&str) -> Option<String>) -> Option<OrganizePolyg
 
 /// Reads a shapefile. `path` names the `.shp` file.
 pub fn read(path: &str, options: &ShapefileOptions) -> Result<Layer> {
-    let base = Path::new(path).with_extension("");
+    let base = Path::new(path);
     let shp = std::fs::read(path)?;
-    let dbf = sidecar(&base, "dbf").map(std::fs::read).transpose()?;
-    let prj = sidecar(&base, "prj").as_deref().and_then(read_prj);
+    let dbf = sidecar(base, "dbf").map(std::fs::read).transpose()?;
+    let prj = sidecar(base, "prj").as_deref().and_then(read_prj);
     if prj.is_some() {
         crate::crs::prefetch();
     }
-    let cpg = sidecar(&base, "cpg").and_then(|p| std::fs::read_to_string(p).ok());
-    let name = base.file_name().and_then(|s| s.to_str()).unwrap_or("layer");
+    let cpg = sidecar(base, "cpg").and_then(|p| std::fs::read_to_string(p).ok());
+    let name = base.file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
     parse(&shp, dbf.as_deref(), prj.as_deref(), cpg.as_deref(), name, options).map_err(|e| match e {
         Error::InvalidData(m) if m == "not a shapefile" => Error::InvalidData(format!("'{path}' is not a shapefile")),
         e => e,
@@ -161,22 +180,22 @@ pub fn read_range(path: &str, skip: usize, max: Option<usize>, options: &Shapefi
     use std::io::{Read, Seek, SeekFrom};
     let method = options.method();
     let not_a_shapefile = || Error::InvalidData(format!("'{path}' is not a shapefile"));
-    let base = Path::new(path).with_extension("");
-    let name = base.file_name().and_then(|s| s.to_str()).unwrap_or("layer");
+    let base = Path::new(path);
+    let name = base.file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
     let mut shp = std::io::BufReader::new(std::fs::File::open(path)?);
     let shp_len = shp.get_ref().metadata()?.len();
     let mut head = [0u8; 100];
     shp.read_exact(&mut head).map_err(|_| not_a_shapefile())?;
     let mut layer = header_layer(&head, name).map_err(|_| not_a_shapefile())?;
-    let prj = sidecar(&base, "prj").as_deref().and_then(read_prj);
+    let prj = sidecar(base, "prj").as_deref().and_then(read_prj);
     if prj.is_some() {
         crate::crs::prefetch();
     }
-    let cpg = sidecar(&base, "cpg").and_then(|p| std::fs::read_to_string(p).ok());
+    let cpg = sidecar(base, "cpg").and_then(|p| std::fs::read_to_string(p).ok());
 
     // Where each record of the .shp starts: from the .shx when it indexes the file, else a scan
     // of the record headers.
-    let shx = sidecar(&base, "shx").map(std::fs::read).transpose()?.filter(|x| x.len() >= 100 && (x.len() - 100) % 8 == 0);
+    let shx = sidecar(base, "shx").map(std::fs::read).transpose()?.filter(|x| x.len() >= 100 && (x.len() - 100) % 8 == 0);
     let offsets: Vec<u64> = match &shx {
         Some(x) => x[100..].as_chunks::<8>().0.iter().map(|e| 2 * u64::from(u32::from_be_bytes([e[0], e[1], e[2], e[3]]))).collect(),
         None => {
@@ -193,7 +212,7 @@ pub fn read_range(path: &str, skip: usize, max: Option<usize>, options: &Shapefi
         }
     };
 
-    let (fields, dbf_total, mut dbf) = match sidecar(&base, "dbf") {
+    let (fields, dbf_total, mut dbf) = match sidecar(base, "dbf") {
         Some(p) => {
             let mut f = std::fs::File::open(p)?;
             let len = f.metadata()?.len();
@@ -995,12 +1014,13 @@ fn read_dbf_records(d: &[u8], l: &DbfLayout, make_record: impl Fn(&[u8]) -> Vec<
     Ok(records)
 }
 
-/// Writes a layer as a shapefile. `path` names the `.shp` file; the other files are written next
-/// to it.
+/// Writes a layer as a shapefile. Recognized vector or companion extensions become `.shp`;
+/// other names get `.shp` appended. Companion files are written next to that geometry file.
 pub fn write(layer: &Layer, path: &str) -> Result<()> {
-    let base = Path::new(path).with_extension("");
+    let geometry_path = output_path(path);
+    let base = geometry_path.as_path();
     let (shp, shx) = encode_shapes(layer)?;
-    std::fs::write(base.with_extension("shp"), shp)?;
+    std::fs::write(&geometry_path, shp)?;
     std::fs::write(base.with_extension("shx"), shx)?;
     std::fs::write(base.with_extension("dbf"), encode_dbf(layer)?)?;
     std::fs::write(base.with_extension("cpg"), "UTF-8")?;

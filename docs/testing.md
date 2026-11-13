@@ -1284,6 +1284,22 @@ and height; 1e-8 degrees geographic), never as identical. The Rust tests also
 check malformed definitions, nonfinite inputs, round trips, coordinate metadata,
 vector Z and measure retention, and an actual MCP XYZ call through `--dim 3`.
 
+## Shapefile dataset names
+
+`python/tests/test_shapefile_dotted_names.py` verifies dotted stems through eager,
+streamed, paged and metadata reads, plus Layer, conversion and CLI writes.
+It checks matching SHP/SHX/DBF/PRJ/CPG components, uppercase sidecars and geometry
+extensions, UTF-8 attributes, CRS and geometry. Neighboring datasets use different
+attributes and CRS, and every neighbor component must remain byte-for-byte
+unchanged. Dots in directory names and multiple dots in stems are included.
+Explicit-driver controls cover extensionless and mismatched names, including
+companion extensions: the geometry file is normalized to `.shp` and remains
+distinct from SHX/DBF/PRJ/CPG outputs. Unknown dotted suffixes remain part of the
+basename: `roads.v2` becomes `roads.v2.shp`, preserving neighboring `roads.*`.
+Converting to an alias of the source reads the input whole before writing.
+Error cleanup removes only normalized output components. These are dataset-identity
+and file-preservation checks, not numerical GDAL parity.
+
 ## Shapefile archives (#278)
 
 The public archive regression runs without optional Terrio features. It checks
