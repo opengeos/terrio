@@ -1270,7 +1270,15 @@ impl TransformOptions {
 /// through an intermediate datum such as WGS 84. Datum shift grids are used when they can be
 /// found, as GDAL uses them; heights of geographic 3D and compound CRSs go through geoid
 /// models; time-dependent transformations use the coordinate epoch (see [`TransformOptions`]).
+///
+/// A transformer is `Send + Sync` and caches what it looks up on first use (routes, grids, geoid
+/// models), so build it once per pair of CRSs and share it, between threads too, through an
+/// [`Arc`](std::sync::Arc) rather than building it again. [`inverse`](Self::inverse) builds the
+/// transformer of the other direction.
 pub struct Transformer {
+    /// The CRSs and options it was built from, for [`inverse`](Self::inverse).
+    src_ref: SpatialRef,
+    dst_ref: SpatialRef,
     src: Def,
     dst: Def,
     cartesian_src: Option<Def>,
@@ -1609,6 +1617,8 @@ impl Transformer {
         let web_mercator_to_wgs84 = web_mercator_to_wgs84(src, dst);
         Ok(Self {
             identity,
+            src_ref: src.clone(),
+            dst_ref: dst.clone(),
             src: s,
             dst: d,
             cartesian_src,
@@ -1653,6 +1663,74 @@ impl Transformer {
         }
         let (x, y, _) = self.transform_2d(x, y, 0.0, self.time)?;
         Ok((x, y))
+    }
+
+    /// Transforms points in place, each as [`transform`](Self::transform) does. Stops at the
+    /// first point that fails and returns its error: the points before it are transformed, it and
+    /// those after it are left as they were. Where failures are expected, as at the edges of a
+    /// projection's domain, [`transform_slice_or_nan`](Self::transform_slice_or_nan) goes on.
+    ///
+    /// The datum operation is still chosen for each point (by its area of use), as `transform`
+    /// chooses it, so the results are those of `transform`, bit for bit. Where `transform` returns
+    /// every point as it is (identical CRSs, neither geocentric, without a point motion between
+    /// coordinate epochs), the points are left as they are without visiting them.
+    pub fn transform_slice(&self, xy: &mut [(f64, f64)]) -> Result<()> {
+        if self.is_identity_2d() {
+            return Ok(());
+        }
+        for p in xy.iter_mut() {
+            *p = self.transform(p.0, p.1)?;
+        }
+        Ok(())
+    }
+
+    /// Transforms points in place, each as [`transform`](Self::transform) does, setting the
+    /// points that fail to `(NaN, NaN)`, as PROJ's `proj_trans_generic` marks them with
+    /// `HUGE_VAL`. Returns the number of points that failed. For renderers, which draw what
+    /// transforms and skip the rest, such as a grid of pixels reaching beyond a projection's
+    /// domain.
+    pub fn transform_slice_or_nan(&self, xy: &mut [(f64, f64)]) -> usize {
+        if self.is_identity_2d() {
+            return 0;
+        }
+        let mut failed = 0;
+        for p in xy.iter_mut() {
+            *p = self.transform(p.0, p.1).unwrap_or_else(|_| {
+                failed += 1;
+                (f64::NAN, f64::NAN)
+            });
+        }
+        failed
+    }
+
+    /// Whether [`transform`](Self::transform) returns every point as it is.
+    fn is_identity_2d(&self) -> bool {
+        self.identity && self.cartesian_src.is_none() && self.cartesian_dst.is_none()
+    }
+
+    /// The transformer of the other direction, from this one's target CRS to its source CRS,
+    /// with the same options, the coordinate epochs swapped, and the same warning handler.
+    ///
+    /// It is built as [`with_options`](Self::with_options) builds one, so it picks its datum
+    /// operations for the other direction as GDAL does when asked for that pair. Between two
+    /// dynamic CRSs with both coordinate epochs given, each direction runs at its own source
+    /// epoch, as GDAL's do, so a time-dependent transformation is not evaluated at the same time
+    /// both ways and a round trip does not come back to the point. GDAL's
+    /// `OGRProjCT::GetInverse()` instead inverts this transformer's
+    /// pipeline, which rounds degrees as
+    /// [`with_reverse_degree_division`](Self::with_reverse_degree_division) does; the inverse
+    /// keeps that rounding when this transformer has it.
+    pub fn inverse(&self) -> Result<Transformer> {
+        let opts = TransformOptions {
+            source_coordinate_epoch: self.policy.target_coordinate_epoch,
+            target_coordinate_epoch: self.policy.source_coordinate_epoch,
+            ..self.policy.clone()
+        };
+        let mut t = Self::with_options(&self.dst_ref, &self.src_ref, &opts)?.with_warning_handler(self.warning_handler);
+        if self.src.inverted_degrees {
+            t = t.with_reverse_degree_division();
+        }
+        Ok(t)
     }
 
     fn best_route(&self) -> &route::Route {

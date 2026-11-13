@@ -436,6 +436,21 @@ impl Transformer {
     pub fn transform(&self, x: f64, y: f64) -> Result<(f64, f64)> {
         self.0.transform(x, y).map_err(Into::into)
     }
+    /// Transform points in place, stopping at the first that fails (see
+    /// [`terrio_crs::Transformer::transform_slice`]).
+    pub fn transform_slice(&self, xy: &mut [(f64, f64)]) -> Result<()> {
+        self.0.transform_slice(xy).map_err(Into::into)
+    }
+    /// Transform points in place, setting those that fail to `(NaN, NaN)`; returns how many
+    /// failed (see [`terrio_crs::Transformer::transform_slice_or_nan`]).
+    pub fn transform_slice_or_nan(&self, xy: &mut [(f64, f64)]) -> usize {
+        self.0.transform_slice_or_nan(xy)
+    }
+    /// The transformer of the other direction, with the same options, the coordinate epochs
+    /// swapped and Terrio's warning sink (see [`terrio_crs::Transformer::inverse`]).
+    pub fn inverse(&self) -> Result<Self> {
+        self.0.inverse().map(Self).map_err(Into::into)
+    }
     /// Transform an x/y/z coordinate.
     pub fn transform_3d(&self, x: f64, y: f64, z: f64) -> Result<(f64, f64, f64)> {
         self.0.transform_3d(x, y, z).map_err(Into::into)
