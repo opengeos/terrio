@@ -126,25 +126,37 @@ pub fn parse(mif: &[u8], mid: Option<&[u8]>, name: &str) -> Result<Layer> {
     let head = String::from_utf8_lossy(&mif[..mif.len().min(4096)]).to_ascii_lowercase();
     let utf8 = head.contains("charset \"utf-8\"") || head.contains("charset \"utf8\"");
     let text = decode(mif, utf8);
-    let lines: Vec<&str> = text.lines().collect();
+    let lines: Vec<&str> = text.trim_start_matches('\u{feff}').lines().collect();
     let mut layer = Layer::new(name);
     let mut delimiter = ',';
     let mut i = 0;
     let mut fields: Vec<(String, FieldType)> = Vec::new();
+    let (mut version, mut columns, mut data) = (false, false, false);
     while i < lines.len() {
         let line = lines[i].trim();
         let lower = line.to_ascii_lowercase();
+        let keyword = lower.split_whitespace().next().unwrap_or_default();
         i += 1;
-        if lower.starts_with("delimiter") {
+        if keyword == "version" {
+            version = line.split_whitespace().nth(1).is_some_and(|v| v.parse::<u32>().is_ok_and(|v| v > 0));
+            if !version {
+                return Err(Error::InvalidData("MIF: invalid Version declaration".into()));
+            }
+        } else if keyword == "delimiter" {
             delimiter = line.split('"').nth(1).and_then(|d| d.chars().next()).unwrap_or(',');
-        } else if lower.starts_with("coordsys") {
+        } else if keyword == "coordsys" {
             if let Some(srs) = coordsys_to_srs(line) {
                 srs.apply_to_layer(&mut layer);
             }
-        } else if lower.starts_with("columns") {
-            let n: usize = line.split_whitespace().nth(1).and_then(|n| n.parse().ok()).unwrap_or(0);
+        } else if keyword == "columns" {
+            let n: usize = line
+                .split_whitespace()
+                .nth(1)
+                .and_then(|n| n.parse().ok())
+                .ok_or_else(|| Error::InvalidData("MIF: invalid Columns declaration".into()))?;
+            columns = true;
             for _ in 0..n {
-                let Some(col) = lines.get(i) else { break };
+                let col = lines.get(i).ok_or_else(|| Error::InvalidData("MIF: incomplete Columns declaration".into()))?;
                 i += 1;
                 let col = col.trim();
                 let (fname, ftype) = col.split_once(char::is_whitespace).unwrap_or((col, "char"));
@@ -167,7 +179,13 @@ pub fn parse(mif: &[u8], mid: Option<&[u8]>, name: &str) -> Result<Layer> {
                 fields.push((fname.to_string(), t));
             }
         } else if lower == "data" {
+            data = true;
             break;
+        }
+    }
+    for (present, keyword) in [(version, "Version"), (columns, "Columns"), (data, "Data")] {
+        if !present {
+            return Err(Error::InvalidData(format!("MIF: missing {keyword} declaration; not a complete MapInfo Interchange File")));
         }
     }
     for (n, t) in &fields {
@@ -668,6 +686,32 @@ fn write_geometry(s: &mut String, g: &Geometry) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Header recognition agrees with GDAL 3.12.1 for wrong-format content; an empty
+    /// Data section is valid and must retain its declared schema.
+    #[test]
+    fn requires_mif_header_but_allows_empty_data() {
+        for mif in [
+            "",
+            "hello",
+            r#"{"type":"FeatureCollection","features":[]}"#,
+            "Data\n",
+            "Version 300\nData\n",
+            "Columns 0\nData\n",
+            "Version 300\nColumns 0\n",
+            "Version 300\nColumns invalid\nData\n",
+        ] {
+            assert!(matches!(parse(mif.as_bytes(), None, "t"), Err(Error::InvalidData(message)) if message.starts_with("MIF:")), "{mif}");
+        }
+        for mif in ["Version 300\nColumns 1\nN Integer\nData\n", "\u{feff}vErSiOn 300\r\ncOlUmNs 1\r\nN Integer\r\ndAtA\r\n"] {
+            let layer = parse(mif.as_bytes(), None, "t").unwrap();
+            assert_eq!(layer.len(), 0);
+            assert_eq!(layer.schema.fields().len(), 1);
+            assert_eq!(layer.schema.fields()[0].name, "N");
+            assert_eq!(layer.schema.fields()[0].field_type, FieldType::Integer);
+        }
+        assert!(parse(b"Version 300\nColumns 0\nData\n", None, "t").unwrap().schema.fields().is_empty());
+    }
 
     #[test]
     fn reads_styles_regions_and_crs() {

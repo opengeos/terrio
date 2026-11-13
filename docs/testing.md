@@ -142,6 +142,13 @@ refuses ZIP input mislabeled as a standalone GML/MIF/TAB document. The Rust
 memory tests also exercise the filesystem-free readers directly, and Node
 checks GML documents, archive refusals and unsupported MapInfo byte writing.
 
+`python/tests/test_mif_header.py` checks 51 combinations of wrong-format or
+incomplete MIF content and legitimate empty layers through standalone bytes,
+paths and ZIP members. MIF requires Version, Columns and Data declarations;
+case-insensitive keywords, CRLF and UTF-8 BOMs remain supported. Zero-column
+and declared-column headers followed by no objects retain their empty schema.
+Node exercises the same header checks in the filesystem-free MIF reader.
+
 `scripts/compare_vector_byte_packaging.py DATA --json`, registered as the
 `vector-byte-packaging` conformance suite, compares GML documents and explicit
 MIF/TAB ZIP archives with GDAL/OGR on 16 real Natural Earth populated places.
@@ -150,6 +157,10 @@ GML also exposes its generated `gml_id` field, which the Python regression check
 Coordinates allow 1e-6 degrees for MapInfo's storage grid. The script reports
 the measured maximum and distinguishes exact coordinates from agreement within
 that tolerance. The reference is GDAL 3.13.3 for local validation.
+The suite also compares three wrong-format payloads and two valid empty MIF
+schemas with GDAL's explicitly selected MapInfo driver (locally GDAL 3.12.1).
+Driver selection prevents a mislabeled GeoJSON file from being opened by GDAL's
+separate GeoJSON driver.
 
 Run `python scripts/conformance.py DATA --only vector-byte-packaging --strict`
 to execute this suite and fail on differences or suite errors. Check its report
