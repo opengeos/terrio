@@ -105,7 +105,7 @@ including quoted tabs, commas, quotes and newlines. CSV's inferred WKT column an
 its existing CRS limitations are unchanged.
 
 `python/tests/test_tsv_writing.py` checks Layer, VectorDataset, byte, convert and
-CLI exports against CSV controls. The Node test `TSV byte output uses tabs`
+CLI exports against CSV controls. The Node test `TSV byte output uses tabs and preserves polygon commas`
 exercises the filesystem-free WebAssembly writer and reader with polygon WKT.
 TSV is also an output of the registered `streams` conformance suite. On the real
 country boundaries, whole and streamed TSV files are byte-identical and GDAL

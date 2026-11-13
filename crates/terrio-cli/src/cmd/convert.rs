@@ -62,8 +62,7 @@ pub struct Args {
     /// METADATA_MAX_BYTES, MAX_BYTES).
     #[arg(long = "oo", value_name = "KEY=VALUE")]
     open_options: Vec<String>,
-    /// A vector layer creation option, as GDAL names it: `KEY=VALUE` (CSV: GEOMETRY=AS_WKT|AS_XY,
-    /// SEPARATOR=COMMA|SEMICOLON|TAB|PIPE;
+    /// A vector layer creation option, as GDAL names it: `KEY=VALUE` (CSV: GEOMETRY=AS_WKT|AS_XY;
     /// XLSX: GEOMETRY=AS_XY|AS_WKT|NONE, HEADER_STYLE=BOLD, FREEZE_HEADER=YES, AUTOFILTER=YES,
     /// COLUMN_WIDTH=AUTO|<n>, DATE_FORMAT, DATETIME_FORMAT, CREATION_TIME; GeoJSON: RFC7946=YES,
     /// ID_FIELD, ID_TYPE; GeoJSONSeq:
