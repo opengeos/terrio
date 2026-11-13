@@ -179,7 +179,7 @@ pub fn parse(bytes: &[u8], default_name: &str) -> Result<Layer> {
         // (`OGRGeoJSONLayer::DetectGeometryType()`), 3-D when a position has a height.
         schema.geom = LayerGeom::of_read_geometry(&doc);
     }
-    let crs = doc["crs"]["properties"]["name"].as_str().and_then(|n| SpatialRef::parse(n).ok());
+    let crs = read_crs_member(doc.get("crs"), "GeoJSON")?;
     let mut layer = schema.geojson_layer(doc["name"].as_str().unwrap_or(default_name), crs);
     let reader = FeatureDecoder::new(&layer, &schema);
     for (n, f) in features.iter().enumerate() {
@@ -187,6 +187,29 @@ pub fn parse(bytes: &[u8], default_name: &str) -> Result<Layer> {
     }
     declare(schema.geom);
     Ok(layer)
+}
+
+/// Reads a GeoJSON 2008 CRS member, distinguishing absent, explicitly unknown and invalid CRS.
+pub(crate) fn read_crs_member(member: Option<&Value>, format: &str) -> Result<Option<SpatialRef>> {
+    let Some(member) = member else { return Ok(None) };
+    if member.is_null() {
+        return Ok(Some(SpatialRef::default()));
+    }
+    let name = member["properties"]["name"]
+        .as_str()
+        .filter(|_| member["type"] == "name")
+        .ok_or_else(|| Error::InvalidData(format!("{format}: invalid crs member {member}")))?;
+    SpatialRef::parse_literal(name)
+        .map(Some)
+        .map_err(|error| Error::InvalidData(format!("{format}: cannot resolve crs member {name:?}: {error}")))
+}
+
+/// A rejected explicit CRS must not become a fallback reader's implicit WGS 84.
+pub(crate) fn is_crs_refusal(error: &Error) -> bool {
+    matches!(error, Error::InvalidData(message) if [
+        "GeoJSON: invalid crs member", "GeoJSON: cannot resolve crs member",
+        "TopoJSON: invalid crs member", "TopoJSON: cannot resolve crs member",
+    ].iter().any(|prefix| message.starts_with(prefix)))
 }
 
 /// The memory parsing GeoJSON takes per byte of input, at most for common files: the document's
@@ -1368,6 +1391,19 @@ mod tests {
             assert_eq!(back.features[0].geometry, layer.features[0].geometry);
             assert_eq!(back.features[0].attributes, layer.features[0].attributes);
         }
+    }
+
+    #[test]
+    fn a_rejected_crs_member_is_terminal_for_optional_readers() {
+        let bytes = br#"{"type":"FeatureCollection","crs":{"type":"name","properties":{"name":"urn:ogc:def:crs:FOO::1"}},"features":[]}"#;
+        assert!(crate::memory::open_bytes(bytes.to_vec(), "points.geojson").is_err());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("points");
+        std::fs::write(&path, bytes).unwrap();
+        crate::config::push_scope(std::collections::HashMap::from([("TERRIO_WBVECTOR_FALLBACK".into(), Some("YES".into()))]));
+        let result = crate::open_vector(path.to_str().unwrap(), &Default::default());
+        crate::config::pop_scope();
+        assert!(result.is_err());
     }
 
     #[test]
