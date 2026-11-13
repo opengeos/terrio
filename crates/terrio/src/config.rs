@@ -53,9 +53,14 @@ pub fn sidecars_disabled() -> bool {
     get_any(&["TERRIO_DISABLE_READDIR_ON_OPEN", "GDAL_DISABLE_READDIR_ON_OPEN"]).is_some_and(|v| v.trim().eq_ignore_ascii_case("EMPTY_DIR"))
 }
 
-/// The first of `keys` that is set (see [`get`]).
+/// Resolves aliases by scope first, then key order within that scope, then the environment.
+/// The innermost scope mentioning any alias wins. An explicit `None` or blank value unsets
+/// the logical option; it does not fall through to an outer alias or the environment.
 pub fn get_any(keys: &[&str]) -> Option<String> {
-    keys.iter().find_map(|k| get(k))
+    let scoped = SCOPES.with(|scopes| scopes.borrow().iter().rev().find_map(|scope| keys.iter().find_map(|key| scope.get(*key).cloned())));
+    scoped
+        .unwrap_or_else(|| keys.iter().find_map(|key| std::env::var(key).ok().filter(|value| !value.trim().is_empty())))
+        .filter(|value| !value.trim().is_empty())
 }
 
 /// Pushes a scope of options for the calling thread; `None` unsets an option in it. The driver
@@ -123,6 +128,38 @@ pub(crate) fn with_options<T>(options: &[(&str, &str)], f: impl FnOnce() -> T) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aliases_resolve_the_innermost_scope_before_key_priority() {
+        let primary = "TERRIO_CONFIG_ALIAS_TEST";
+        let alternate = "GDAL_CONFIG_ALIAS_TEST";
+        with_options(&[(primary, "outer")], || {
+            with_options(&[(alternate, "inner")], || {
+                assert_eq!(get_any(&[primary, alternate]).as_deref(), Some("inner"));
+                assert_eq!(get(primary).as_deref(), Some("outer"));
+            });
+        });
+        with_options(&[(alternate, "outer")], || {
+            with_options(&[(primary, "inner")], || {
+                assert_eq!(get_any(&[primary, alternate]).as_deref(), Some("inner"));
+            });
+        });
+        with_options(&[(primary, "first"), (alternate, "second")], || {
+            assert_eq!(get_any(&[primary, alternate]).as_deref(), Some("first"));
+        });
+    }
+
+    #[test]
+    fn an_inner_alias_can_explicitly_unset_the_option() {
+        let keys = ["TERRIO_CONFIG_ALIAS_UNSET", "GDAL_CONFIG_ALIAS_UNSET"];
+        with_options(&[(keys[0], "outer")], || {
+            with_options(&[(keys[1], "   ")], || assert_eq!(get_any(&keys), None));
+            push_scope(HashMap::from([(keys[1].to_string(), None)]));
+            let value = get_any(&keys);
+            assert!(pop_scope());
+            assert_eq!(value, None);
+        });
+    }
 
     #[test]
     fn options_handed_to_another_thread_apply_there() {
