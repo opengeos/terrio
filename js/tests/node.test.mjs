@@ -5348,6 +5348,24 @@ test("engineering GeoTIFF and COG bytes retain local CRS definitions", () => {
     } finally { source.free(); }
   }
 });
+for (const [extension, feature] of [["jp2", "jp2"], ["gpkg", "sqlite"]]) {
+  test(`${extension} bytes retain engineering WKT with an unknown EPSG identifier`, { skip: needs(feature) }, () => {
+    const definition = 'ENGINEERINGCRS["site",ENGINEERINGDATUM["site"],CS[Cartesian,2],AXIS["northing",north,ORDER[1]],AXIS["westing",west,ORDER[2]],LENGTHUNIT["metre",1],ID["EPSG",5800]]';
+    const values = new Uint8Array([1, 2, 3, 4]);
+    const transform = [1000, 10, 0, 2000, 0, -10];
+    const source = terrio.rasterFromArray(values, 2, 2, transform, definition);
+    try {
+      const back = terrio.open(source.toBytes(`site.${extension}`), `site.${extension}`);
+      try {
+        assert.equal(back.info().crs?.wkt, definition);
+        assert.deepEqual([...back.transform], transform);
+        assert.deepEqual([...back.readBand(1)], [...values]);
+        assert.throws(() => back.toBytes("warped.tif", {tSrs: "EPSG:4326"}), /coordinate reference system/);
+      } finally { back.free(); }
+    } finally { source.free(); }
+  });
+}
+
 test("TSV byte output uses tabs and preserves polygon commas", () => {
   const source = terrio.fromGeoJSON(SQUARES, "squares", "EPSG:4326");
   try {

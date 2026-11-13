@@ -1213,6 +1213,17 @@ Engineering roots are refused before the legacy projection fallback, including
 in unoptimized WebAssembly warps, where the fallback's large frame could exhaust
 the stack. Node also checks that the dataset remains readable after this refusal.
 
+## Stored raster CRS definitions
+
+`python/tests/test_raster_stored_crs.py` checks JPEG 2000, Zarr and GeoPackage
+rasters with LOCAL_CS, ENGCRS and ENGINEERINGCRS definitions. Each is tested
+without an identifier, with unknown EPSG identifiers and with another authority.
+Tests independently inspect the stored WKT, then check eager and lazy read-back
+of the exact definition, grid, type and pixels. Engineering CRSs must still
+refuse a warp to EPSG:4326. Registered EPSG:32615 controls retain their existing
+behavior, including identifier fallback when Zarr or GeoPackage lacks a usable
+definition. These are metadata-preservation checks, not a numerical GDAL claim.
+
 ## Standalone CRS feature coverage
 
 Run the standalone suite separately from the workspace to avoid Cargo feature
