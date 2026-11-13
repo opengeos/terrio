@@ -30,7 +30,7 @@ SOUTH = [
     (-1, 64, 63, 64, 32),
 ]
 CASES = [("EPSG:3413", case) for case in NORTH] + [("EPSG:3031", case) for case in SOUTH]
-SOURCE = np.repeat((np.arange(200) % 250 + 1).astype("uint8")[:, None], 3600, axis=1)
+SOURCE = ((np.arange(200)[:, None] * 7 + np.arange(3600)[None, :]) % 250 + 1).astype("uint8")
 
 
 def tile_grid(case):
@@ -63,13 +63,16 @@ def test_polar_edge_cut_keeps_every_covered_center(crs, case, method, compatibil
     north = 90 if crs == "EPSG:3413" else -70
     source_grid = Affine(0.1, 0, -180, 0, -0.1, north)
     columns, rows = np.meshgrid(np.arange(32) + 0.5, np.arange(32) + 0.5)
-    _, latitudes = transform(
+    longitudes, latitudes = transform(
         crs,
         "EPSG:4326",
         (grid.c + columns * grid.a + rows * grid.b).ravel().tolist(),
         (grid.f + columns * grid.d + rows * grid.e).ravel().tolist(),
     )
     source_rows = np.floor((north - np.asarray(latitudes).reshape(32, 32)) / 0.1)
+    source_columns = (
+        np.floor((np.asarray(longitudes).reshape(32, 32) + 180) / 0.1).astype(int) % 3600
+    )
     covered = (source_rows >= 0) & (source_rows < 200)
     assert covered.any()
     with Env(TERRIO_GDAL_COMPAT=compatibility):
@@ -80,7 +83,7 @@ def test_polar_edge_cut_keeps_every_covered_center(crs, case, method, compatibil
             crs,
             grid.to_gdal(),
             "near" if method == "nearest" else method,
-            0.125,
+            0,
             "uint8",
             [None],
             0,
@@ -88,6 +91,7 @@ def test_polar_edge_cut_keeps_every_covered_center(crs, case, method, compatibil
         )
         sx, _, width, _ = planner.source_window((0, 0, 32, 32))
         assert (sx, width) == (0, 3600)
+        ordinary = None
         for invariant, steps in ((False, None), (False, "ALL"), (True, None)):
             output = np.zeros((32, 32), dtype="uint8")
             options = {} if steps is None else {"SAMPLE_STEPS": steps}
@@ -100,10 +104,21 @@ def test_polar_edge_cut_keeps_every_covered_center(crs, case, method, compatibil
                 dst_crs=crs,
                 resampling=Resampling[method],
                 dst_nodata=0,
+                tolerance=0,
                 grid_invariant=invariant,
                 **options,
             )
             assert np.all(output[covered] != 0)
+            if not invariant:
+                if ordinary is None:
+                    ordinary = output.copy()
+                else:
+                    np.testing.assert_array_equal(output, ordinary)
+            if method == "nearest":
+                np.testing.assert_array_equal(
+                    output[covered],
+                    SOURCE[source_rows[covered].astype(int), source_columns[covered]],
+                )
 
 
 def test_cut_detection_with_invalid_orthographic_corners():

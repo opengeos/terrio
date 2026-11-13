@@ -5328,7 +5328,7 @@ test("GeoJSON byte exports name ESRI CRSs and refuse unnamed CRS loss", () => {
   }
 });
 test("chunk windows retain polar meridian edge pixels", () => {
-  const values = Uint8Array.from({length: 3600 * 200}, (_, i) => Math.floor(i / 3600) % 250 + 1);
+  const values = Uint8Array.from({length: 3600 * 200}, (_, i) => (Math.floor(i / 3600) * 7 + i % 3600) % 250 + 1);
   const source = terrio.rasterFromArray(values, 3600, 200, [-180, 0.1, 0, 90, 0, -0.1], "EPSG:4326");
   try {
     for (const kernelVersion of ["3.12", "3.13"]) {

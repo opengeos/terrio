@@ -3305,37 +3305,58 @@ impl WarpContext<'_> {
         };
         let run = |grid: bool| {
             let (mut xs, mut ys) = sample(grid);
+            let turn = (!self.grid_invariant && self.resampling != Resampling::Sum && dw > 0 && dh > 0)
+                .then(|| self.global_longitude_turn())
+                .flatten();
+            // Longitude at a point pole is undefined. Use the same pixel tolerance as the
+            // pole-inside test below, so an almost coincident sample cannot invent a cut.
+            let singularities: Vec<(f64, f64)> = if turn.is_some() {
+                self.poles()
+                    .iter()
+                    .filter_map(|pole| {
+                        let &[_, _, x, y] = pole.first()?;
+                        pole.iter().all(|p| (p[2] - x).hypot(p[3] - y) <= 0.5).then_some((x, y))
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let regular = (!singularities.is_empty()).then(|| {
+                xs.iter()
+                    .zip(&ys)
+                    .map(|(x, y)| singularities.iter().all(|(px, py)| (x - px).abs() > 1e-6 || (y - py).abs() > 1e-6))
+                    .collect::<Vec<_>>()
+            });
             let mut ok = vec![false; xs.len()];
             self.approx.transform(true, &mut xs, &mut ys, &mut ok);
             // Adjacent samples can straddle the longitude cut without either reaching a stored
             // edge. Their min/max then bounds the long way around, omitting the meridian side.
             // The chunk-dependent non-sum planner needs both stored edges in that case.
-            let cut = !self.grid_invariant
-                && self.resampling != Resampling::Sum
-                && dw > 0
-                && dh > 0
-                && self.global_longitude_turn().is_some_and(|turn| {
-                    let crosses = |a: usize, b: usize| {
-                        ok[a] && ok[b] && [xs[a], ys[a], xs[b], ys[b]].iter().all(|v| v.is_finite()) && (xs[a] - xs[b]).abs() > turn / 2.0
-                    };
-                    let jumps =
-                        |begin: usize, end: usize, stride: usize| (begin..end.saturating_sub(stride)).any(|i| crosses(i, i + stride));
-                    if grid {
-                        const SIDE: usize = 23;
-                        (0..xs.len()).any(|i| (i % SIDE + 1 < SIDE && crosses(i, i + 1)) || (i + SIDE < xs.len() && crosses(i, i + SIDE)))
-                    } else if all {
-                        let end = 2 * (dw + 1);
-                        jumps(0, end, 2)
-                            || jumps(end, xs.len(), 2)
-                            || if dh > 1 {
-                                crosses(0, end) || crosses(1, xs.len() - 2) || crosses(2 * dw, end + 1) || crosses(2 * dw + 1, xs.len() - 1)
-                            } else {
-                                crosses(0, 1) || crosses(2 * dw, 2 * dw + 1)
-                            }
-                    } else {
-                        jumps(0, xs.len(), 4)
-                    }
-                });
+            let cut = turn.is_some_and(|turn| {
+                let crosses = |a: usize, b: usize| {
+                    ok[a]
+                        && ok[b]
+                        && regular.as_ref().is_none_or(|points| points[a] && points[b])
+                        && [xs[a], ys[a], xs[b], ys[b]].iter().all(|v| v.is_finite())
+                        && (xs[a] - xs[b]).abs() > turn / 2.0 + 1e-7
+                };
+                let jumps = |begin: usize, end: usize, stride: usize| (begin..end.saturating_sub(stride)).any(|i| crosses(i, i + stride));
+                if grid {
+                    const SIDE: usize = 23;
+                    (0..xs.len()).any(|i| (i % SIDE + 1 < SIDE && crosses(i, i + 1)) || (i + SIDE < xs.len() && crosses(i, i + SIDE)))
+                } else if all {
+                    let end = 2 * (dw + 1);
+                    jumps(0, end, 2)
+                        || jumps(end, xs.len(), 2)
+                        || if dh > 1 {
+                            crosses(0, end) || crosses(1, xs.len() - 2) || crosses(2 * dw, end + 1) || crosses(2 * dw + 1, xs.len() - 1)
+                        } else {
+                            crosses(0, 1) || crosses(2 * dw, 2 * dw + 1)
+                        }
+                } else {
+                    jumps(0, xs.len(), 4)
+                }
+            });
             let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
             let mut failed = 0;
             for i in 0..xs.len() {
