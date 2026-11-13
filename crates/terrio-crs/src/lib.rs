@@ -873,7 +873,7 @@ pub(crate) fn proj_to_wkt(p: &str) -> Option<String> {
 
 /// Whether a WKT 1 or WKT 2 names Polar Stereographic (variant C), EPSG method 9830, as a
 /// projection or conversion method, at any depth (in a bound or compound CRS too).
-fn is_variant_c(wkt: &str) -> bool {
+pub(crate) fn is_variant_c(wkt: &str) -> bool {
     fn names(n: &wkt1::Node) -> bool {
         (["PROJECTION", "METHOD"].iter().any(|k| n.key.eq_ignore_ascii_case(k))
             && (n.epsg() == Some(9830) || n.name().is_some_and(|m| wkt1::norm(m) == "polarstereographicvariantc")))

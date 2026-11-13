@@ -720,14 +720,23 @@ dropping some, such as polar stereographic's `+k=1`). A WKT's PROJ4 extension (G
 ellipsoid (`+geoc`) has none, as in PROJ.
 
 For every EPSG and ESRI code terrio reads (8,329 in the default build) and every IAU_2015 CRS
-(2,201), the string is PROJ 9.8.1's character for character; `tests/proj_string_export.rs`
-checks every 20th of these codes, the codes behind each rule, custom definitions and compound
-references (`scripts/gen_proj_string_export.py`). Reading a string back gives the CRS's conversion: `+f`,
+(2,201), the string was PROJ 9.8.1's character for character in a one-off comparison of the
+whole tables (pyproj 3.8.0). `tests/proj_string_export.rs` keeps checking every 20th of these
+codes, the codes behind each rule, custom definitions and compound references, frozen by
+`scripts/gen_proj_string_export.py`. Reading a string back gives the CRS's conversion: `+f`,
 `+rf` and `+b` without `+a` change the shape of `+ellps`' or `+datum`'s ellipsoid, as PROJ's
-`pj_ell_set` does (ESRI:102035's `+proj=ortho +f=0 +datum=WGS84` is a sphere). Known
-differences: an ESRI WKT of Miller's projection, which PROJ reads on the authalic sphere
-(`+R_A`), is read and written without it; a WKT's grid shift (GDAL's `PROJ4_GRIDS` in a datum,
-a `BOUNDCRS` with a grid) is not read, so its string has no `+nadgrids`.
+`pj_ell_set` does (ESRI:102035's `+proj=ortho +f=0 +datum=WGS84` is a sphere).
+
+Known differences, all of WKTs and PROJ strings without a code:
+
+- an ESRI WKT of Miller's projection, which PROJ reads on the authalic sphere (`+R_A`), is read
+  and written without it;
+- a WKT's grid shift (GDAL's `PROJ4_GRIDS` in a datum, a `BOUNDCRS` with a grid) is not read,
+  so its string has no `+nadgrids`;
+- a WKT 2 ellipsoid in other units than metres is written `+a +b` where PROJ writes `+a +rf`
+  (the same ellipsoid);
+- an ESRI `.prj` that terrio identifies as a code gets the code's order of standard parallels,
+  where PROJ keeps the WKT's.
 
 ### Writing PROJJSON
 

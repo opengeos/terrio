@@ -159,6 +159,9 @@ PROJ_STRINGS = [
     "+proj=longlat +ellps=GRS80 +es=0.006",
     "+proj=longlat +datum=WGS84 +rf=300",
     "+proj=longlat +a=6378137 +b=6356752 +datum=WGS84",
+    # +proj written first, wherever it is given.
+    "+lat_0=0 +proj=tmerc +lon_0=9 +k=0.9996 +x_0=500000 +y_0=0 +ellps=GRS80 +units=m",
+    "+lat_0=10 +proj=tmerc +lon_0=9 +k=1 +x_0=0 +y_0=0 +ellps=GRS80 +units=m",
     # +ellps beside +datum is ignored (GDAL 2 and R wrote both).
     "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs",
     "+proj=utm +zone=17 +datum=NAD27 +ellps=clrk66 +units=m",
@@ -261,6 +264,11 @@ WKTS = [
         '"+proj=tmerc +lon_0=9 +k=0.9996 +x_0=500000 +ellps=WGS84 +no_defs"]],VERT_CS["h",VERT_DATUM["x",2005],'
         'UNIT["metre",1],AXIS["Up",UP]]]'
     ),
+    # A datum PROJ names, on another ellipsoid: the ellipsoid, not the datum.
+    (
+        'GEOGCS["x",DATUM["WGS_1984",SPHEROID["Clarke 1866",6378206.4,294.978698213898]],PRIMEM["Greenwich",0],'
+        'UNIT["degree",0.0174532925199433]]'
+    ),
     # A sphere in WKT 1: an inverse flattening of 0.
     (
         'GEOGCS["sphere",DATUM["sphere",SPHEROID["sphere",6371000,0]],PRIMEM["Greenwich",0],'
@@ -288,10 +296,23 @@ SHIFTED = [
 REFERENCES = ["EPSG:4326+5773", "EPSG:2056+5728", "EPSG:32632+5773", "EPSG:4269+5703"]
 
 
+# GDAL's WKT 1 of registry CRSs without their codes and names, which terrio reads rather than
+# identifies: Polar Stereographic (variant C), which PROJ cannot write.
+UNIDENTIFIED = [2985]
+
+
+def unidentified_wkt(code):
+    """GDAL's WKT 1 of an EPSG code without its AUTHORITY nodes and with its names replaced."""
+    wkt = re.sub(r',AUTHORITY\["EPSG","\d+"\]', "", CRS.from_epsg(code).to_wkt("WKT1_GDAL"))
+    return re.sub(r'(PROJCS|GEOGCS|DATUM)\["[^"]*"', r'\1["custom"', wkt)
+
+
 def shifted_wkt(code, towgs84):
     """GDAL's WKT 1 of an EPSG code with a TOWGS84 node in its datum."""
     wkt = CRS.from_epsg(code).to_wkt("WKT1_GDAL")
-    return re.sub(r"(SPHEROID\[[^\]]*\]\])", rf"\1,TOWGS84[{towgs84}]", wkt, count=1)
+    wkt, n = re.subn(r"(SPHEROID\[[^\]]*\]\])", rf"\1,TOWGS84[{towgs84}]", wkt, count=1)
+    assert n == 1, f"no SPHEROID node in EPSG:{code}'s WKT"
+    return wkt
 
 
 def proj4(crs):
@@ -324,7 +345,7 @@ def main():
         lines.append(f"{auth}\t{code}\t{proj4(CRS.from_authority(auth, code))}")
     for p in PROJ_STRINGS:
         lines.append(f"proj\t{p}\t{proj4(CRS(p))}")
-    for w in WKTS + [shifted_wkt(c, t) for c, t in SHIFTED]:
+    for w in WKTS + [shifted_wkt(c, t) for c, t in SHIFTED] + [unidentified_wkt(c) for c in UNIDENTIFIED]:
         lines.append(f"wkt\t{w}\t{proj4(CRS(w))}")
     iau = [f"IAU_2015:{i.code}" for i in query_crs_info(auth_name="IAU_2015")][::20]
     for r in REFERENCES + iau:

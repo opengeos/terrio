@@ -1,3 +1,18 @@
+// SPDX-FileCopyrightText: Copyright (c) 2000, Frank Warmerdam
+// SPDX-FileCopyrightText: PROJ contributors
+// SPDX-FileCopyrightText: Copyright (c) 2018, Even Rouault <even dot rouault at spatialys dot com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (its tables copied, its behavior matched):
+//   PROJ 9.8.1:
+//     src/ellps.cpp (the ellipsoids)
+//     src/units.cpp (the linear units)
+//     src/datums.cpp (the datums and prime meridians)
+//     src/ell_set.cpp (the precedence of ellipsoid parameters)
+//     src/iso19111/io.cpp (PROJStringFormatter, the PROJ string parser)
+//     src/iso19111/datum.cpp (Ellipsoid and PrimeMeridian::_exportToPROJString)
+
 //! PROJ strings of CRSs as PROJ 9.8.1 writes them (`proj_as_proj_string` with `PJ_PROJ_4`, which
 //! pyproj's `CRS.to_proj4()` and `projinfo -o PROJ` call).
 //!
@@ -50,6 +65,10 @@ pub(crate) fn write(s: &SpatialRef) -> Option<String> {
     // terrio's own reading of the WKT does not reproduce; but for the order of parameters the
     // WKT gives in another order (standard parallels), which PROJ keeps.
     if s.epsg.is_none() && s.esri.is_none() {
+        // Polar Stereographic (variant C) has no PROJ method.
+        if s.wkt.as_deref().is_some_and(crate::is_variant_c) {
+            return None;
+        }
         return s.wkt.as_deref().and_then(|w| crate::wkt_proj(w).and_then(|p| custom(&p, wkt_datum(w))));
     }
     // A WKT's shift to WGS 84 (`TOWGS84`, a WKT 2 `BOUNDCRS`) makes it a bound CRS, which PROJ
@@ -261,7 +280,7 @@ fn registry(proj: &str, datum: u32, wkt: &str, web_mercator: bool, shift: Option
             // PROJ writes the axis order of the methods that define it (south-orientated
             // Transverse Mercator, Krovak), not of other CRSs whose axes point south or west.
             "+axis" => axis = Some(t.to_string()),
-            "+pm" => pm = t[4..].parse::<f64>().ok(),
+            "+pm" => pm = t.strip_prefix("+pm=").and_then(|v| v.parse::<f64>().ok()),
             "+units" | "+to_meter" => units.push(t.to_string()),
             k if is_ellipsoid(k) => ellipsoid.push(t.to_string()),
             _ => params.push(t.to_string()),
@@ -280,7 +299,9 @@ fn registry(proj: &str, datum: u32, wkt: &str, web_mercator: bool, shift: Option
         ellipsoid = vec![format!("+datum={name}")];
     }
     let mut tokens = Vec::new();
-    tokens.push(params.remove(0));
+    if !params.is_empty() {
+        tokens.push(params.remove(0));
+    }
     // Web Mercator's sphere comes first, as PROJ writes it.
     if web_mercator {
         tokens.append(&mut ellipsoid);
@@ -582,6 +603,11 @@ fn custom(proj: &str, wkt_datum: Option<&str>) -> Option<String> {
             _ => t,
         })
         .collect();
+    // PROJ writes `+proj` first, wherever it is given.
+    if let Some(i) = tokens.iter().position(|t| t.starts_with("+proj=")) {
+        let proj = tokens.remove(i);
+        tokens.insert(0, proj);
+    }
     let unit_m = units.as_deref().is_none_or(|u| u == "m") && to_meter.is_none_or(|m| m == 1.0);
     if method == "tmerc"
         && let Some((zone, south)) = utm_zone(&tokens, unit_m)
@@ -602,8 +628,15 @@ fn custom(proj: &str, wkt_datum: Option<&str>) -> Option<String> {
     // it: no shift (a shift makes it a bound CRS), no other shape of its ellipsoid, no other
     // prime meridian; else it writes the datum's ellipsoid. (A WKT's PROJ string gives its
     // datum's ellipsoid, too.)
-    let unchanged = towgs.is_none() && nadgrids.is_none() && pm.is_none() && (ellipsoid.is_empty() || datum.is_none());
+    let given = datum.is_some();
     let datum = datum.as_deref().map(value).or_else(|| wkt_datum.and_then(named_datum).map(str::to_string));
+    // A WKT's datum is the one PROJ names only on that datum's ellipsoid (`WGS_1984` on Clarke
+    // 1866 is written as Clarke 1866).
+    let on_its_ellipsoid = || {
+        let axes = datum.as_deref().and_then(|d| DATUMS.iter().find(|(n, _)| *n == d)).map(|(_, axes)| *axes);
+        axes.is_some_and(|axes| ellipsoid_of(axes) == ellipsoid_of(&ellipsoid.join(" ")))
+    };
+    let unchanged = towgs.is_none() && nadgrids.is_none() && pm.is_none() && (ellipsoid.is_empty() || (!given && on_its_ellipsoid()));
     // On a named ellipsoid or a datum's, PROJ's string drops a flattening given as `+f`, `+es`
     // or `+e` (keeping orthographic's `+f=0`, ESRI's sphere, as a parameter of its own).
     if datum.is_some() || ellipsoid.iter().any(|t| t.starts_with("+ellps=")) {
