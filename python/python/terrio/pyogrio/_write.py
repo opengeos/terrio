@@ -295,6 +295,7 @@ def _crs_member(crs) -> str | None:
     """
     if crs is None:
         return None
+    name: str | None
     code = crs.to_epsg()
     if code == 4326:
         # Retain pyogrio's existing spelling for WGS 84.
