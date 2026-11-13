@@ -13,6 +13,61 @@ from terrio.rio.warp import transform
 RADIUS = 6378137.0
 
 
+@pytest.mark.parametrize("invariant", [True, False])
+@pytest.mark.parametrize("method,expected", [("average", 349.0), ("sum", 279200.0)])
+def test_regional_cut_window_contains_the_continuous_footprint(invariant, method, expected):
+    """Include early source columns when sampled bounds take the long way around a cut.
+
+    Args:
+        invariant: Stable or chunk-dependent grid policy.
+        method: Normalized or extensive area resampling method.
+        expected: Independent result for the 40 by 20 intersected source pixels.
+    """
+    rows, cols = np.indices((200, 40))
+    source = terrio.Raster.from_array(
+        (1 + cols + 3 * rows).astype(float), (180, 0.05, 0, 10, 0, -0.05), crs="EPSG:4326"
+    )
+    xs, ys = transform("EPSG:4326", "EPSG:3832", [179.625, 219.625], [5, 4])
+    grid = (xs[0], xs[1] - xs[0], 0, ys[0], 0, ys[1] - ys[0])
+    actual = warped(source, "EPSG:3832", grid, (1, 1), method, invariant)
+    assert actual[0, 0] == pytest.approx(expected, abs=1e-5 if method == "sum" else 1e-9)
+
+
+@pytest.mark.parametrize("invariant", [True, False])
+@pytest.mark.parametrize("kernel", ["3.12", "3.13"])
+@pytest.mark.parametrize("method", ["bilinear", "cubic", "cubicspline", "lanczos"])
+@pytest.mark.parametrize("extent", [(-2, 0, 6, 6), (6, 0, 14, 6), (-2, 0, 14, 6)])
+def test_unshifted_regional_filter_scales_keep_off_source_margins(
+    invariant, kernel, method, extent
+):
+    """Keep ordinary affine sampling unchanged when no longitude shift is needed.
+
+    Args:
+        invariant: Stable or chunk-dependent grid policy.
+        kernel: Reference GDAL kernel version.
+        method: Interpolating point resampling method.
+        extent: Output bounds overlapping a source edge.
+    """
+    values = np.resize([0.0, 100.0, 4.0, 80.0, 0.0, 15.0, 3.0], (6, 12))
+    outputs = []
+    for crs in ("EPSG:4326", "EPSG:3857"):
+        source = terrio.Raster.from_array(values, (0, 1, 0, 6, 0, -1), crs=crs)
+        outputs.append(
+            terrio.warp(
+                source,
+                t_srs=crs,
+                te=extent,
+                ts=(4, 3),
+                resampling=method,
+                kernel_version=kernel,
+                grid_invariant=invariant,
+                ot="Float64",
+                dstnodata=-999,
+            ).read(1)
+        )
+    np.testing.assert_allclose(outputs[0], outputs[1], rtol=0, atol=1e-10)
+
+
 def warped(source, crs, grid, size, method, invariant):
     """Warp a source onto a prescribed grid with an explicit missing-data value.
 

@@ -1018,6 +1018,23 @@ test("neighbors, collar cleaning and LUT enhancement", () => {
   assert.deepEqual([...precise.readBand(1)], [nodata, 1]);
 });
 
+test("unshifted regional warps keep ordinary affine filter scales", () => {
+  const data = Float64Array.from({ length: 12 * 6 }, (_, i) => [0, 100, 4, 80, 0, 15, 3][i % 7]);
+  for (const kernelVersion of ["3.12", "3.13"]) for (const gridInvariant of [true, false]) {
+    for (const resampling of ["bilinear", "cubic", "cubicspline", "lanczos"]) {
+      const outputs = [];
+      for (const crs of ["EPSG:4326", "EPSG:3857"]) {
+        const source = terrio.rasterFromArray(data, 12, 6, [0, 1, 0, 6, 0, -1], crs);
+        const out = terrio.warp(source, { tSrs: crs, te: [-2, 0, 6, 6], ts: [4, 3],
+          resampling, kernelVersion, gridInvariant, ot: "Float64", dstNodata: -999 });
+        try { outputs.push([...out.readBand(1)]); }
+        finally { out.free(); source.free(); }
+      }
+      outputs[0].forEach((value, i) => assert.ok(Math.abs(value - outputs[1][i]) < 1e-10));
+    }
+  }
+});
+
 test("regional longitude warps read equivalent stored columns", () => {
   const field = Float64Array.from({ length: 40 * 4 }, (_, i) => i % 40 < 20 ? 1 : 2);
   const source = terrio.rasterFromArray(field, 40, 4, [160, 1, 0, 2, 0, -1], "EPSG:4326");
@@ -1046,6 +1063,20 @@ test("regional longitude warps read equivalent stored columns", () => {
       finally { out.free(); }
     }
   } finally { source.free(); rounded.free(); }
+});
+
+test("regional cut windows retain early columns of continuous footprints", () => {
+  const field = Float64Array.from({ length: 40 * 200 }, (_, i) => 1 + i % 40 + 3 * Math.floor(i / 40));
+  const source = terrio.rasterFromArray(field, 40, 200, [180, 0.05, 0, 10, 0, -0.05], "EPSG:4326");
+  try {
+    for (const gridInvariant of [true, false]) for (const [resampling, expected] of [["average", 349], ["sum", 279200]]) {
+      const [xs, ys] = terrio.transformPoints([179.625, 219.625], [5, 4], "EPSG:4326", "EPSG:3832");
+      const out = terrio.warp(source, { tSrs: "EPSG:3832", te: [xs[0], ys[1], xs[1], ys[0]],
+        ts: [1, 1], resampling, gridInvariant, ot: "Float64", dstNodata: -999 });
+      try { assert.ok(Math.abs(out.readBand(1)[0] - expected) < (resampling === "sum" ? 1e-5 : 1e-9)); }
+      finally { out.free(); }
+    }
+  } finally { source.free(); }
 });
 
 test("global longitude warps fill the seam and count both sides of zero", () => {

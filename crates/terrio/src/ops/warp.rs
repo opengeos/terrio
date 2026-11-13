@@ -3072,10 +3072,7 @@ impl WarpContext<'_> {
                     x = 0.0;
                 }
             } else if (x < 0.0 || x >= self.src_w as f64)
-                && let Some(turn) = self.source_longitude_turn()
-                && turn.is_finite()
-                && turn > 0.0
-                && self.src_w as f64 <= turn
+                && let Some(turn) = self.longitude_turn().filter(|turn| self.src_w as f64 <= *turn)
             {
                 // A regional source is not periodic in its stored width. Move only by
                 // the actual angular turn, and only when that reaches a stored column.
@@ -3318,7 +3315,7 @@ impl WarpContext<'_> {
         let run = |grid: bool| {
             let (mut xs, mut ys) = sample(grid);
             let turn = (!self.grid_invariant && self.resampling != Resampling::Sum && dw > 0 && dh > 0)
-                .then(|| self.global_longitude_turn())
+                .then(|| self.global_longitude_turn().or_else(|| self.longitude_turn().filter(|turn| self.src_w as f64 <= *turn)))
                 .flatten();
             // Longitude at a point pole is undefined. Use the same pixel tolerance as the
             // pole-inside test below, so an almost coincident sample cannot invent a cut.
@@ -3453,6 +3450,40 @@ impl WarpContext<'_> {
                             y0 = y0.min(*y);
                             x1 = x1.max(*x);
                             y1 = y1.max(*y);
+                        }
+                    }
+                }
+            }
+            // Regional longitude images can put the continuous footprint outside the
+            // raw sampled span. Include the same shifted quadrilaterals the sum kernel
+            // integrates. Keep only two bounded corner rows, without reading pixels.
+            let images = self.global_longitude_turn().is_none()
+                && self.longitude_turn().is_some_and(|turn| sw <= turn && (x1 - x0 > turn / 2.0 || x1 < 0.0 || x0 > sw));
+            if images {
+                let batch = SUM_CORNER_BATCH - 1;
+                for y in dy..dy + dh {
+                    for offset in (0..dw).step_by(batch) {
+                        let n = (dw - offset).min(batch);
+                        let top = self.sum_corner_row(dx + offset, y, n, &mut scratch);
+                        let bottom = self.sum_corner_row(dx + offset, y + 1, n, &mut scratch);
+                        for i in 0..n {
+                            if !(top.ok[i] && top.ok[i + 1] && bottom.ok[i] && bottom.ok[i + 1]) {
+                                continue;
+                            }
+                            let mut xs = [top.x[i], top.x[i + 1], bottom.x[i + 1], bottom.x[i]];
+                            let ys = [top.y[i], top.y[i + 1], bottom.y[i + 1], bottom.y[i]];
+                            if !xs.iter().chain(&ys).all(|v| v.is_finite()) {
+                                continue;
+                            }
+                            let moves = self.footprint_moves(&mut xs, ((dx + offset + i) as f64 + 0.5, y as f64 + 0.5));
+                            for shift in moves.into_iter().flatten() {
+                                for (&x, &y) in xs.iter().zip(&ys) {
+                                    x0 = x0.min(x + shift);
+                                    x1 = x1.max(x + shift);
+                                    y0 = y0.min(y);
+                                    y1 = y1.max(y);
+                                }
+                            }
                         }
                     }
                 }
@@ -3946,7 +3977,8 @@ impl WarpContext<'_> {
         self.source_longitude_turn().filter(|turn| turn.is_finite() && *turn > 0.0)
     }
 
-    /// Bound periodic source columns without losing a part on the opposite stored edge.
+    /// Bounds equivalent longitude images, retaining a single image's off-source margins
+    /// for filter scales and covering both stored edges when multiple images intersect.
     fn wrap_source_bounds(&self, left: f64, right: f64) -> (f64, f64) {
         if !left.is_finite() || !right.is_finite() || right < left {
             return (left, right);
@@ -3958,18 +3990,20 @@ impl WarpContext<'_> {
             return if span >= width || start + span > width { (0.0, width) } else { (start, start + span) };
         }
         let Some(turn) = self.longitude_turn().filter(|turn| width <= *turn) else { return (left, right) };
-        if span >= turn {
-            return (0.0, width);
+        let first = (-right / turn).ceil();
+        let last = ((width - left) / turn).floor();
+        if !first.is_finite() || !last.is_finite() || first > last {
+            return (left, right);
         }
-        let start = left.rem_euclid(turn);
-        let mut bounds: Option<(f64, f64)> = None;
-        for shift in [0.0, -turn] {
-            let (lo, hi) = ((start + shift).max(0.0), (start + span + shift).min(width));
-            if lo <= hi {
-                bounds = Some(bounds.map_or((lo, hi), |(left, right)| (left.min(lo), right.max(hi))));
-            }
+        if first == last {
+            // Keep the entire translated interval, including its off-source margins:
+            // those margins determine chunk-dependent filter scales.
+            let shift = first * turn;
+            (left + shift, right + shift)
+        } else {
+            // Images intersect both stored edges; a contiguous read must cover both.
+            (0.0, width)
         }
-        bounds.unwrap_or((0.0, 0.0))
     }
 
     /// Moves the source columns `xs` of an output pixel's footprint corners by whole turns of
