@@ -673,9 +673,9 @@ impl FeatureSource for ShpSource {
 }
 
 fn open_shapefile(path: &str, options: &crate::VectorOpenOptions) -> Result<(Layer, Box<dyn FeatureSource>)> {
-    let base = std::path::Path::new(path).with_extension("");
-    let sidecar = |ext: &str| [ext.to_string(), ext.to_ascii_uppercase()].into_iter().map(|e| base.with_extension(e)).find(|p| p.exists());
-    let name = base.file_name().and_then(|s| s.to_str()).unwrap_or("layer");
+    let base = std::path::Path::new(path);
+    let sidecar = |ext: &str| shapefile::sidecar(base, ext);
+    let name = base.file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
     let mut shp = BufReader::with_capacity(1 << 20, File::open(path)?);
     let mut head = [0u8; 100];
     let n = read_full(&mut shp, &mut head)?;
@@ -1489,9 +1489,11 @@ struct ShpSink {
 impl ShpSink {
     fn create(path: &str, layer: &Layer, profile: &LayerProfile) -> Result<Self> {
         let enc = shapefile::ShpEncoder::new(layer, profile)?;
-        let base = std::path::Path::new(path).with_extension("");
-        let open =
-            |ext: &str| -> Result<BufWriter<File>> { Ok(BufWriter::with_capacity(1 << 20, File::create(base.with_extension(ext))?)) };
+        let base = std::path::Path::new(path);
+        let open = |ext: &str| -> Result<BufWriter<File>> {
+            let component = if ext == "shp" { base.to_path_buf() } else { base.with_extension(ext) };
+            Ok(BufWriter::with_capacity(1 << 20, File::create(component)?))
+        };
         let (mut shp, mut shx, mut dbf) = (open("shp")?, open("shx")?, open("dbf")?);
         shp.write_all(&[0u8; 100])?;
         shx.write_all(&[0u8; 100])?;
