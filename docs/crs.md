@@ -511,7 +511,9 @@ JavaScript, `--s_coord_epoch` and `--t_coord_epoch` on `terrio crs`):
   v6, v7 and v8 of NAD83(CSRS), the NKG_RF17vel land uplift model of the Nordic ETRF2014
   realization), the coordinates move with its velocity grid over the time between the epochs,
   as PROJ moves them (`projinfo -s EPSG:8254@2010 -t EPSG:8254@2020`): geographic 2D and 3D
-  CRSs, not projected ones (which PROJ does not move);
+  CRSs, not projected ones (which PROJ does not move). When the velocity grid is missing, or its
+  download failed, the transformation fails with a missing-grid error (`Error::MissingGrid` in
+  Rust); a point outside a grid that is there fails as one outside the domain;
 - otherwise the transformations' parameters at their reference epoch are used, as PROJ does
   without an epoch.
 

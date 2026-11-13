@@ -849,6 +849,8 @@ pub fn register_grid(name: &str, bytes: Vec<u8>) {
         let mut a = availability().lock().unwrap_or_else(PoisonError::into_inner);
         a.clear();
     }
+    // A download of it that failed before no longer counts: the grid is there now.
+    fetch_failures().lock().unwrap_or_else(PoisonError::into_inner).remove(name);
 }
 
 /// Old names of PROJ-data grids (before PROJ 7), by current name, from the EPSG table.

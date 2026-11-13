@@ -1270,7 +1270,15 @@ impl TransformOptions {
 /// through an intermediate datum such as WGS 84. Datum shift grids are used when they can be
 /// found, as GDAL uses them; heights of geographic 3D and compound CRSs go through geoid
 /// models; time-dependent transformations use the coordinate epoch (see [`TransformOptions`]).
+///
+/// A transformer is `Send + Sync` and caches what it looks up on first use (routes, grids, geoid
+/// models), so build it once per pair of CRSs and share it, between threads too, through an
+/// [`Arc`](std::sync::Arc) rather than building it again. [`inverse`](Self::inverse) builds the
+/// transformer of the other direction.
 pub struct Transformer {
+    /// The CRSs and options it was built from, for [`inverse`](Self::inverse).
+    src_ref: SpatialRef,
+    dst_ref: SpatialRef,
     src: Def,
     dst: Def,
     cartesian_src: Option<Def>,
@@ -1609,6 +1617,8 @@ impl Transformer {
         let web_mercator_to_wgs84 = web_mercator_to_wgs84(src, dst);
         Ok(Self {
             identity,
+            src_ref: src.clone(),
+            dst_ref: dst.clone(),
             src: s,
             dst: d,
             cartesian_src,
@@ -1653,6 +1663,122 @@ impl Transformer {
         }
         let (x, y, _) = self.transform_2d(x, y, 0.0, self.time)?;
         Ok((x, y))
+    }
+
+    /// Transforms points in place, each as [`transform`](Self::transform) does. Stops at the
+    /// first point that fails and returns its error: the points before it are transformed, it and
+    /// those after it are left as they were. Where failures are expected, as at the edges of a
+    /// projection's domain, [`transform_slice_or_nan`](Self::transform_slice_or_nan) goes on.
+    ///
+    /// The datum operation is still chosen for each point (by its area of use), as `transform`
+    /// chooses it, so the results are those of `transform`, bit for bit. Where `transform` returns
+    /// every point as it is (identical CRSs, neither geocentric, without a point motion between
+    /// coordinate epochs), the points are left as they are without visiting them.
+    ///
+    /// ```no_run
+    /// use terrio_crs::{SpatialRef, Transformer};
+    ///
+    /// let utm = SpatialRef::from_epsg(32632)?;
+    /// let t = Transformer::new(&SpatialRef::from_epsg(4326)?, &utm)?;
+    /// let mut points = vec![(9.0, 47.0), (7.5, 45.9)];
+    /// t.transform_slice(&mut points)?;
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
+    pub fn transform_slice(&self, xy: &mut [(f64, f64)]) -> Result<()> {
+        if self.is_identity_2d() {
+            return Ok(());
+        }
+        for p in xy.iter_mut() {
+            *p = self.transform(p.0, p.1)?;
+        }
+        Ok(())
+    }
+
+    /// Transforms points in place, each as [`transform`](Self::transform) does, setting the
+    /// points it fails for to `(NaN, NaN)` and going on, and returns how many there were. For
+    /// renderers, which draw what transforms and skip the rest, such as a grid of pixels reaching
+    /// beyond a projection's domain.
+    ///
+    /// As PROJ 9.8.1's `proj_trans_generic` does, every point that fails is marked, whatever the
+    /// reason: outside a projection's domain or a velocity grid ([`Error::Crs`]), and refused under
+    /// the strict options, such as a missing grid with [`TransformOptions::only_best`]
+    /// ([`Error::MissingGrid`]) or no allowed operation with
+    /// [`TransformOptions::allow_ballpark`] off ([`Error::NoOperation`]). PROJ marks them
+    /// `HUGE_VAL` (infinity); NaN is terrio's choice, so that a marked point is never taken for a
+    /// coordinate. To learn whether a missing grid refused points under `only_best`, call
+    /// [`check_policy`](Self::check_policy) after the batch, as raster workers do; it is not called
+    /// for you. Only errors that are not about a point (I/O, an invalid argument, and any other
+    /// kind) are returned, at once: as with
+    /// [`transform_slice`](Self::transform_slice), the points before it are then transformed (or
+    /// marked), and it and those after it are left as they were.
+    ///
+    /// ```no_run
+    /// use terrio_crs::{SpatialRef, Transformer};
+    ///
+    /// let ortho = SpatialRef::from_proj4("+proj=ortho +lat_0=0 +lon_0=0 +datum=WGS84")?;
+    /// let t = Transformer::new(&SpatialRef::from_epsg(4326)?, &ortho)?;
+    /// let mut points = vec![(10.0, 10.0), (170.0, 0.0)];
+    /// assert_eq!(t.transform_slice_or_nan(&mut points)?, 1); // 170°E is on the far side
+    /// assert!(points[1].0.is_nan());
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
+    pub fn transform_slice_or_nan(&self, xy: &mut [(f64, f64)]) -> Result<usize> {
+        if self.is_identity_2d() {
+            return Ok(0);
+        }
+        let mut failed = 0;
+        for p in xy.iter_mut() {
+            *p = match self.transform(p.0, p.1) {
+                Ok(q) => q,
+                Err(Error::Crs(_) | Error::MissingGrid(_) | Error::NoOperation(_)) => {
+                    failed += 1;
+                    (f64::NAN, f64::NAN)
+                }
+                Err(e) => return Err(e),
+            };
+        }
+        Ok(failed)
+    }
+
+    /// Whether [`transform`](Self::transform) returns every point as it is.
+    fn is_identity_2d(&self) -> bool {
+        self.identity && self.cartesian_src.is_none() && self.cartesian_dst.is_none()
+    }
+
+    /// The transformer of the other direction, from this one's target CRS to its source CRS,
+    /// with the same options, the coordinate epochs swapped, and the same warning handler.
+    ///
+    /// It is built as [`with_options`](Self::with_options) builds one, so it picks its datum
+    /// operations for the other direction as `with_options` picks them for that pair (the tests
+    /// compare both directions with PROJ 9.8.1). Between two dynamic CRSs with both coordinate
+    /// epochs given, each direction runs at its own source epoch, by `with_options`'s rule, so a
+    /// time-dependent transformation is not evaluated at the same time both ways and a round trip
+    /// does not come back to the point. This is not GDAL's `OGRProjCT::GetInverse()`, which
+    /// inverts the forward pipeline; its rounding of degrees is what
+    /// [`with_reverse_degree_division`](Self::with_reverse_degree_division) reproduces, and the
+    /// inverse keeps that rounding when this transformer has it.
+    ///
+    /// ```no_run
+    /// use terrio_crs::{SpatialRef, Transformer};
+    ///
+    /// let lv95 = SpatialRef::from_epsg(2056)?;
+    /// let to_wgs84 = Transformer::new(&lv95, &SpatialRef::from_epsg(4326)?)?;
+    /// let back = to_wgs84.inverse()?;
+    /// let (lon, lat) = to_wgs84.transform(2_600_000.0, 1_200_000.0)?;
+    /// let (e, n) = back.transform(lon, lat)?;
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
+    pub fn inverse(&self) -> Result<Transformer> {
+        let opts = TransformOptions {
+            source_coordinate_epoch: self.policy.target_coordinate_epoch,
+            target_coordinate_epoch: self.policy.source_coordinate_epoch,
+            ..self.policy.clone()
+        };
+        let mut t = Self::with_options(&self.dst_ref, &self.src_ref, &opts)?.with_warning_handler(self.warning_handler);
+        if self.src.inverted_degrees {
+            t = t.with_reverse_degree_division();
+        }
+        Ok(t)
     }
 
     fn best_route(&self) -> &route::Route {
@@ -1807,11 +1933,16 @@ impl Transformer {
 
         let p = match &self.motion {
             Some(steps) => datum::run(steps, p, false, true).ok_or_else(|| {
-                let grids: Vec<String> = steps.iter().flat_map(|s| s.grid_names()).map(|(g, _)| g).collect();
-                Error::Crs(format!(
-                    "cannot move ({x}, {y}) between coordinate epochs: outside the velocity grid, or the grid ({}) is not available",
-                    grids.join(", ")
-                ))
+                let names = steps.iter().flat_map(|s| s.grid_names()).map(|(g, _)| g).collect::<Vec<_>>().join(", ");
+                // A velocity grid that is not there, or whose download failed (with the network
+                // on, a grid counts as available until it is fetched), is a missing grid, not a
+                // point outside it.
+                if datum::grids_missing(steps) {
+                    return Error::MissingGrid(format!(
+                        "cannot move ({x}, {y}) between coordinate epochs: the velocity grid ({names}) is not available; set TERRIO_NETWORK=ON or TERRIO_GRID_DIR"
+                    ));
+                }
+                Error::Crs(format!("cannot move ({x}, {y}) between coordinate epochs: outside the velocity grid ({names})"))
             })?,
             None => p,
         };
