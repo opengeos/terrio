@@ -134,6 +134,8 @@ terrio-crs = "0.2.3"
 The [published crate](https://crates.io/crates/terrio-crs/0.2.3) works offline by
 default. Enable `wbprojection-fallback` when Terrio's wider projection coverage
 is required; the feature matrix below describes the supported configurations.
+Version 0.2.3 provides Eckert IV and Natural Earth only through that feature. The
+native method counts in the matrix below describe the unreleased source.
 
 ```rust
 use terrio_crs::{SpatialRef, Transformer};

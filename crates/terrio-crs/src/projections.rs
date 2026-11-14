@@ -3399,6 +3399,9 @@ impl Proj for Eck4 {
     }
 
     fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
         let sin_theta = y * ECK4_RCY;
         let one_minus = 1.0 - sin_theta.abs();
         let (mut lam, phi) = if (0.0..=1e-12).contains(&one_minus) {
@@ -3457,6 +3460,9 @@ impl Proj for Natearth {
     }
 
     fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
         let [b0, b1, b2, b3, b4] = NATEARTH_B;
         let (c0, c1, c2, c3, c4) = (b0, 3.0 * b1, 7.0 * b2, 9.0 * b3, 11.0 * b4);
         // A northing past the pole line is read on it, as in PROJ.
@@ -5084,6 +5090,16 @@ mod benchmark_regressions {
                 assert!(projection.inv(value, 0.0).is_none(), "{name}: x {value}");
                 assert!(projection.inv(0.0, value).is_none(), "{name}: y {value}");
             }
+        }
+    }
+
+    #[test]
+    fn eckert_iv_and_natural_earth_refuse_non_finite_inverse_inputs() {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(Eck4.inv(value, 0.0).is_none(), "eck4: x {value}");
+            assert!(Eck4.inv(0.0, value).is_none(), "eck4: y {value}");
+            assert!(Natearth.inv(value, 0.0).is_none(), "natearth: x {value}");
+            assert!(Natearth.inv(0.0, value).is_none(), "natearth: y {value}");
         }
     }
 }
