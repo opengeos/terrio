@@ -117,6 +117,25 @@ fn a_wkt_s_proj4_extension_is_read_as_proj_reads_it() {
     let t = terrio_crs::Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &SpatialRef::parse(wkt).unwrap()).unwrap();
     let (x, y) = t.transform(10.0, 10.0).unwrap();
     assert!((x - 1113194.9079327357).abs() < 1e-6 && (y - 1105854.833234372).abs() < 1e-6, "{x} {y}");
+    // The lenient extension also decides whether a declared authority matches: EPSG:4087
+    // has this conversion; EPSG:3857 does not and must not replace it.
+    for code in [4087, 3857] {
+        let declared = format!(r#"{},AUTHORITY["EPSG","{code}"]]"#, &wkt[..wkt.len() - 1]);
+        let crs = SpatialRef::parse(&declared).unwrap();
+        assert_eq!(crs.epsg, (code == 4087).then_some(code));
+        let t = terrio_crs::Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &crs).unwrap();
+        let (x, y) = t.transform(10.0, 10.0).unwrap();
+        assert!((x - 1113194.9079327357).abs() < 1e-6 && (y - 1105854.833234372).abs() < 1e-6, "{code}: {x} {y}");
+    }
+    // A refused extension with an unsupported method and unusable WKT nodes must not be
+    // silently repaired from a declared authority either.
+    let unsupported = wkt
+        .replace("+proj=eqc +lat_ts=abc +ellps=WGS84 +units=m", "+proj=not_real +k_0=0 +ellps=WGS84")
+        .replace("Equirectangular", "not_real");
+    let declared = format!(r#"{},AUTHORITY["EPSG","4087"]]"#, &unsupported[..unsupported.len() - 1]);
+    let crs = SpatialRef::parse(&declared).unwrap();
+    assert_eq!(crs.epsg, None);
+    assert!(terrio_crs::Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &crs).is_err());
     // PROJ 9.8.1 cannot construct a transformation from any of these extensions; the WKT
     // nodes must not silently replace the refused conversion.
     for extension in

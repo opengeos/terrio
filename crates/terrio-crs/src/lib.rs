@@ -385,7 +385,7 @@ impl SpatialRef {
         // A WKT 1 extended with its PROJ string (`EXTENSION["PROJ4", ...]`, as GDAL writes CRSs
         // WKT 1 cannot describe) is that PROJ string, as GDAL reads it.
         if let Some(proj4) = proj4_extension(wkt)
-            && let Ok(own) = Def::from_proj(&proj4)
+            && let Ok(own) = Def::from_proj_extension(&proj4)
         {
             // Its EPSG (or ESRI) code, declared or identified, when its definition converts as
             // the PROJ string does, on its ellipsoid and datum: the extension wins over a code
@@ -402,7 +402,10 @@ impl SpatialRef {
             let epsg = declared_epsg(wkt)
                 .or_else(|| identify_epsg(wkt))
                 .filter(|code| fits(SpatialRef { epsg: Some(*code), ..Default::default() }));
-            let mut s = Self { epsg, wkt: Some(wkt.to_string()), proj4: Some(proj4), esri: None }.with_esri();
+            // Retain a lenient extension through its WKT: re-reading it as a literal PROJ
+            // string would apply stricter validation than the extension permits.
+            let proj4 = Def::from_proj(&proj4).is_ok().then_some(proj4);
+            let mut s = Self { epsg, wkt: Some(wkt.to_string()), proj4, esri: None }.with_esri();
             if let Some(code) = s.esri
                 && !fits(SpatialRef { esri: Some(code), ..Default::default() })
             {
