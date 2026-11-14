@@ -91,9 +91,10 @@ def test_size_refusal_is_warned(tmp_path):
     with grid.open("r+b") as stream:
         stream.truncate((2 << 30) + 1)
     terrio.set_grid_search_paths([tmp_path])
-    with pytest.warns(UserWarning, match="larger than"):
-        with pytest.raises(terrio.CRSError):
-            height("huge.gtx")
+    for _ in range(2):
+        with pytest.warns(UserWarning, match="larger than"):
+            with pytest.raises(terrio.CRSError):
+                height("huge.gtx")
 
 
 def test_refusal_warns_when_failed_points_are_returned(tmp_path):
