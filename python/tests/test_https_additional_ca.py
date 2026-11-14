@@ -1,13 +1,19 @@
 """Additional native HTTPS roots preserve verification, scoped trust and range reads."""
 
+import http.server
 import os
+import select
 import shutil
+import socket
 import ssl
 import subprocess
+import threading
+import time
+from contextlib import contextmanager
 
 import numpy as np
 import pytest
-from test_remote_reads import Server, write_cog
+from test_remote_reads import HttpTestServer, Server, write_cog
 
 import terrio
 import terrio.rio as rio
@@ -136,20 +142,22 @@ def isolated_http_options(monkeypatch):
     terrio.clear_http_cache()
 
 
-def read_window(source, *, hostname="localhost", plain=False):
+def read_window(source, *, hostname="localhost", plain=False, clear_cache=True):
     """Read actual raster pixels through a new native remote reader.
 
     Args:
         source: HTTPS fixture.
         hostname: Certificate hostname or a deliberately mismatched IP address.
         plain: Whether to use the non-TLS endpoint.
+        clear_cache: Whether to force a new fetch instead of exercising cached responses.
 
     Returns:
         ndarray: A small window from the served TIFF.
     """
     server = source["plain" if plain else "secure"]
     url = server.url.replace("127.0.0.1", hostname) + "/source.tif"
-    terrio.clear_http_cache()
+    if clear_cache:
+        terrio.clear_http_cache()
     with rio.open(url) as dataset:
         return dataset.read(1, window=Window(300, 400, 16, 16))
 
@@ -178,15 +186,15 @@ def test_ca_scopes_do_not_reuse_another_scopes_trust(https_source):
     Args:
         https_source: Local HTTPS server and certificate fixture.
     """
-    with pytest.raises(RasterioIOError, match="certificate|UnknownIssuer"):
+    with pytest.raises(RasterioIOError, match="UnknownIssuer"):
         read_window(https_source)
     with rio.Env(TERRIO_HTTP_CAINFO=str(https_source["root"] / "ca.pem")):
         read_window(https_source)
         with rio.Env(GDAL_HTTP_CAINFO=str(https_source["root"] / "wrong.pem")):
-            with pytest.raises(RasterioIOError, match="certificate|UnknownIssuer"):
+            with pytest.raises(RasterioIOError, match="UnknownIssuer"):
                 read_window(https_source)
         read_window(https_source)
-    with pytest.raises(RasterioIOError, match="certificate|UnknownIssuer"):
+    with pytest.raises(RasterioIOError, match="UnknownIssuer"):
         read_window(https_source)
 
 
@@ -212,7 +220,7 @@ def test_additional_ca_preserves_hostname_validation(https_source):
         https_source: Local HTTPS server and certificate fixture.
     """
     with rio.Env(TERRIO_HTTP_CAINFO=str(https_source["root"] / "ca.pem")):
-        with pytest.raises(RasterioIOError, match="certificate|valid.*name"):
+        with pytest.raises(RasterioIOError, match="not valid for name|NotValidForName"):
             read_window(https_source, hostname="127.0.0.1")
 
 
@@ -236,3 +244,145 @@ def test_invalid_ca_bundle_refuses_https_but_not_plain_http(https_source, tmp_pa
             read_window(https_source)
         result = read_window(https_source, plain=True)
     np.testing.assert_array_equal(result, https_source["pixels"][0, 400:416, 300:316])
+
+
+@pytest.mark.parametrize("rejected", [None, "wrong.pem", "missing.pem"])
+def test_cached_responses_do_not_cross_trust_scopes(https_source, rejected):
+    """A warm response cache must not bypass another scope's certificate policy.
+
+    Args:
+        https_source: Local HTTPS server and certificate fixture.
+        rejected: Default trust, another CA, or a nonexistent bundle.
+    """
+    with rio.Env(TERRIO_HTTP_CACHE_SIZE=2 << 20):
+        with rio.Env(TERRIO_HTTP_CAINFO=str(https_source["root"] / "ca.pem")):
+            expected = read_window(https_source, clear_cache=False)
+            requests = len(https_source["secure"].log)
+            np.testing.assert_array_equal(read_window(https_source, clear_cache=False), expected)
+            assert len(https_source["secure"].log) == requests
+        path = str(https_source["root"] / rejected) if rejected else None
+        with rio.Env(TERRIO_HTTP_CAINFO=path):
+            reason = "TERRIO_HTTP_CAINFO" if rejected == "missing.pem" else "UnknownIssuer"
+            with pytest.raises(RasterioIOError, match=reason):
+                read_window(https_source, clear_cache=False)
+
+
+@contextmanager
+def connect_proxy(source, secure):
+    """Relay CONNECT tunnels through a loopback HTTP or HTTPS proxy.
+
+    Args:
+        source: Certificate fixture for the optional proxy TLS listener.
+        secure: Whether to encrypt the connection to the proxy itself.
+
+    Yields:
+        tuple: Proxy URL and observed CONNECT targets.
+    """
+    targets = []
+    stopped = threading.Event()
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        """Forward an opaque TLS stream after establishing a CONNECT tunnel."""
+
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *args):
+            """Suppress request logging.
+
+            Args:
+                *args: Standard handler log arguments.
+            """
+
+        def do_CONNECT(self):
+            """Connect to the requested loopback endpoint and relay both directions."""
+            targets.append(self.path)
+            host, port = self.path.rsplit(":", 1)
+            with socket.create_connection((host, int(port)), timeout=3) as upstream:
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.flush()
+                peers = [self.connection, upstream]
+                while not stopped.is_set():
+                    ready = (
+                        [self.connection]
+                        if secure and self.connection.pending()
+                        else select.select(peers, [], [], 0.1)[0]
+                    )
+                    for peer in ready:
+                        try:
+                            data = peer.recv(65536)
+                            if not data:
+                                return
+                            other = upstream if peer is self.connection else self.connection
+                            other.sendall(data)
+                        except OSError:
+                            return
+
+    context = None
+    if secure:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(source["root"] / "server.pem", source["root"] / "server.key")
+    server = HttpTestServer(("127.0.0.1", 0), Handler, context)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        scheme = "https" if secure else "http"
+        yield f"{scheme}://localhost:{server.server_port}", targets
+    finally:
+        stopped.set()
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.parametrize("secure", [False, True])
+def test_additional_ca_through_connect_proxy(https_source, monkeypatch, secure):
+    """Verify both proxy and endpoint TLS while retaining CONNECT routing.
+
+    Args:
+        https_source: Local HTTPS server and certificates.
+        monkeypatch: Scoped proxy environment configuration.
+        secure: Whether the proxy itself uses TLS.
+    """
+    with connect_proxy(https_source, secure) as (url, targets):
+        for name in ["HTTPS_PROXY", "https_proxy"]:
+            monkeypatch.setenv(name, url)
+        for name in ["NO_PROXY", "no_proxy"]:
+            monkeypatch.setenv(name, "")
+        with rio.Env(TERRIO_HTTP_CAINFO=str(https_source["root"] / "ca.pem")):
+            result = read_window(https_source)
+        assert targets
+        np.testing.assert_array_equal(result, https_source["pixels"][0, 400:416, 300:316])
+
+
+def test_additional_ca_handshake_obeys_timeout(https_source):
+    """Bound a TLS handshake even when the TCP peer never answers.
+
+    Args:
+        https_source: Certificate fixture for a valid explicit trust setting.
+    """
+    stopped = threading.Event()
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+
+        def stall():
+            """Accept one connection and leave its TLS handshake unanswered."""
+            connection, _ = listener.accept()
+            with connection:
+                stopped.wait(4)
+
+        worker = threading.Thread(target=stall, daemon=True)
+        worker.start()
+        started = time.monotonic()
+        try:
+            with rio.Env(
+                TERRIO_HTTP_CAINFO=str(https_source["root"] / "ca.pem"),
+                TERRIO_HTTP_TIMEOUT=1,
+                TERRIO_HTTP_CONNECTTIMEOUT=1,
+            ):
+                with pytest.raises(RasterioIOError, match="[Tt]imeout|timed out"):
+                    rio.open(f"https://localhost:{listener.getsockname()[1]}/source.tif")
+            assert time.monotonic() - started < 2.5
+        finally:
+            stopped.set()
+            worker.join(timeout=5)

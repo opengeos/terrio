@@ -206,6 +206,11 @@ runs it in parallel, [ureq](https://crates.io/crates/ureq) fetches remote data,
 [wasm-bindgen](https://github.com/rustwasm/wasm-bindgen) builds the JavaScript one. The optional
 `gdal` feature uses the [`gdal`](https://crates.io/crates/gdal) crate.
 
+The additional-CA TLS transport adapts the MIT-licensed rustls connector and
+transport adapter from [ureq 3.5.1](https://github.com/algesten/ureq) by
+Martin Algesten. Its custom verifier retains Mozilla-applied trust-anchor
+constraints while adding private roots; see `NOTICE` for the source files.
+
 JPEG writing (through `jpeg-encoder`) is based in part on the work of the Independent JPEG
 Group.
 

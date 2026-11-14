@@ -52,6 +52,7 @@ use ureq::unversioned::resolver::DefaultResolver;
 use ureq::unversioned::transport::{Buffers, ConnectionDetails, Connector, DefaultConnector, NextTimeout, Transport};
 
 pub(crate) mod store;
+mod tls;
 
 /// Redirects followed before giving up.
 const MAX_REDIRECTS: u32 = 10;
@@ -739,7 +740,7 @@ impl Client {
     fn cache_key(&self) -> String {
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
-        h.update(format!("{:?}\n{}\n{:?}\n", self.remote, self.azure, self.redirects).as_bytes());
+        h.update(format!("{:?}\n{}\n{:?}\n{:?}\n", self.remote, self.azure, self.redirects, self.options.ca_bundle).as_bytes());
         for (k, v) in &self.headers {
             h.update(format!("{}: {v}\n", k.to_ascii_lowercase()).as_bytes());
         }
@@ -1234,9 +1235,7 @@ fn agent(options: &HttpOptions) -> ureq::Agent {
 /// HTTPS without a C compiler (`ureq` uses `ring` on the other architectures).
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn tls_config() -> ureq::tls::TlsConfigBuilder {
-    ureq::tls::TlsConfig::builder()
-        .provider(ureq::tls::TlsProvider::Rustls)
-        .unversioned_rustls_crypto_provider(Arc::new(rustls_graviola::default_provider()))
+    ureq::tls::TlsConfig::builder().provider(ureq::tls::TlsProvider::Rustls).unversioned_rustls_crypto_provider(tls::crypto_provider())
 }
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
@@ -1245,14 +1244,8 @@ fn tls_config() -> ureq::tls::TlsConfigBuilder {
 }
 
 fn new_agent(options: &HttpOptions) -> ureq::Agent {
-    let roots = options.ca_bundle.as_deref().map(additional_ca_roots).transpose();
-    let (tls, error) = match roots {
-        Ok(Some(roots)) => (tls_config().root_certs(roots).build(), None),
-        Ok(None) => (tls_config().build(), None),
-        Err(error) => (tls_config().build(), Some(error)),
-    };
     let config = ureq::Agent::config_builder()
-        .tls_config(tls)
+        .tls_config(tls_config().build())
         .http_status_as_error(false)
         .max_redirects(0)
         .accept_encoding("identity")
@@ -1264,56 +1257,11 @@ fn new_agent(options: &HttpOptions) -> ureq::Agent {
         .max_idle_connections(64)
         .max_idle_connections_per_host(64)
         .build();
-    let connector = CaBundleGuard(error).chain(DefaultConnector::new()).chain(Http10CloseConnector);
+    if let Some(path) = &options.ca_bundle {
+        return tls::with_bundle(config, path);
+    }
+    let connector = DefaultConnector::new().chain(Http10CloseConnector);
     ureq::Agent::with_parts(config, connector, DefaultResolver::default())
-}
-
-/// Adds a PEM bundle to the Mozilla roots rather than replacing the default trust store.
-fn additional_ca_roots(path: &std::path::Path) -> std::result::Result<ureq::tls::RootCerts, String> {
-    // Keep configuration failures distinct from a missing remote dataset in adapters
-    // that recognize the operating system's "No such file" diagnostic text.
-    let pem = std::fs::read(path).map_err(|error| format!("TERRIO_HTTP_CAINFO: cannot read PEM CA bundle ({:?})", error.kind()))?;
-    let mut additional = Vec::new();
-    let mut validation = rustls::RootCertStore::empty();
-    for item in ureq::tls::parse_pem(&pem) {
-        match item {
-            Ok(ureq::tls::PemItem::Certificate(cert)) => {
-                validation
-                    .add(rustls::pki_types::CertificateDer::from(cert.der().to_vec()))
-                    .map_err(|_| "TERRIO_HTTP_CAINFO: invalid CA certificate in PEM bundle".to_string())?;
-                additional.push(cert);
-            }
-            Ok(_) => {}
-            Err(_) => return Err("TERRIO_HTTP_CAINFO: invalid PEM CA bundle".into()),
-        }
-    }
-    if additional.is_empty() {
-        return Err("TERRIO_HTTP_CAINFO: PEM CA bundle contains no certificates".into());
-    }
-    Ok(ureq::tls::RootCerts::from(
-        webpki_root_certs::TLS_SERVER_ROOT_CERTS
-            .iter()
-            .map(|cert| ureq::tls::Certificate::from_der(cert.as_ref()).to_owned())
-            .chain(additional),
-    ))
-}
-
-/// An invalid explicit trust bundle refuses HTTPS before opening a connection. Keeping this
-/// error in the connector preserves the infallible pool API and does not fall back to defaults.
-#[derive(Debug)]
-struct CaBundleGuard(Option<String>);
-
-impl Connector<()> for CaBundleGuard {
-    type Out = ();
-
-    fn connect(&self, details: &ConnectionDetails, chained: Option<()>) -> std::result::Result<Option<Self::Out>, ureq::Error> {
-        if details.uri.scheme_str() == Some("https")
-            && let Some(error) = &self.0
-        {
-            return Err(ureq::Error::Other(Box::new(io::Error::new(io::ErrorKind::InvalidInput, error.clone()))));
-        }
-        Ok(chained)
-    }
 }
 
 /// Wraps each connection in [`Http10Close`], after TLS, where it sees the responses in plain text.

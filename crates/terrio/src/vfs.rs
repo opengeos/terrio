@@ -129,6 +129,14 @@ impl LocalPath {
         self.path.to_str().unwrap_or_default()
     }
 
+    /// The private directory containing a downloaded or extracted dataset and sidecars.
+    pub(crate) fn temporary_directory(&self) -> Option<&Path> {
+        #[cfg(not(target_family = "wasm"))]
+        return self._temp.as_ref().map(|directory| directory.path());
+        #[cfg(target_family = "wasm")]
+        None
+    }
+
     fn local(path: PathBuf) -> Self {
         Self {
             path,

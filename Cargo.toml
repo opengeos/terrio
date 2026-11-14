@@ -113,8 +113,9 @@ zip = { version = "9.1", default-features = false, features = ["deflate-flate2-z
 ureq = { version = "3", default-features = false, features = ["gzip", "rustls-no-provider", "rustls-webpki-roots"] }
 rustls-graviola = "0.4"
 rustls = { version = "0.23", default-features = false, features = ["std"] }
-# DER certificates matching ureq's locked webpki-roots trust anchors.
+# Test-only original DER snapshot for constrained-anchor regressions; update with webpki-roots.
 webpki-root-certs = "=1.0.11"
+webpki-roots = "1"
 hmac = "0.13"
 sha2 = "0.11"
 clap = { version = "4", features = ["derive"] }

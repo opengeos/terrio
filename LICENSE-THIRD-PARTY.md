@@ -17,10 +17,10 @@ LICENSE-THIRD-PARTY.md`, from `about.toml`.
 - BSD 2-Clause "Simplified" License (8)
 - Mozilla Public License 2.0 (4)
 - Creative Commons Zero v1.0 Universal (2)
-- Community Data License Agreement Permissive 2.0 (2)
 - Independent JPEG Group License (2)
 - zlib License (2)
 - BSD Zero Clause License (1)
+- Community Data License Agreement Permissive 2.0 (1)
 - Unicode License v3 (1)
 
 ## BSD Zero Clause License
@@ -7789,7 +7789,6 @@ express Statement of Purpose.
 
 Used by:
 
-- [webpki-root-certs 1.0.11](https://github.com/rustls/webpki-roots)
 - [webpki-roots 1.0.11](https://github.com/rustls/webpki-roots)
 
 ```text

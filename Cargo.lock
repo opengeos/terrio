@@ -2551,6 +2551,7 @@ dependencies = [
  "wbvector",
  "webp-rust 0.3.2",
  "webpki-root-certs",
+ "webpki-roots",
  "weezl 0.2.1",
  "windows-sys 0.61.2",
  "zip 9.5.0",

@@ -287,8 +287,9 @@ Signatures and SAS tokens are hidden in logs and error messages.
 
 Native HTTPS reads trust the compiled Mozilla roots by default. To add a private
 or organization CA, set `TERRIO_HTTP_CAINFO` to a PEM certificate bundle. Its
-certificates supplement the compiled roots; certificate-chain and hostname
-verification remain enabled. The CLI and MCP use the same native HTTP client.
+certificates supplement the compiled roots, retaining Mozilla-applied name
+constraints even when a public root is duplicated in the bundle. Certificate-chain
+and hostname verification remain enabled. The CLI and MCP use the same native HTTP client.
 Python can scope the setting to a read:
 
 ```python
@@ -304,7 +305,9 @@ callers can set `http::HttpOptions::ca_bundle` for an explicit client. Missing,
 empty or malformed explicit bundle files refuse HTTPS rather than falling back to
 default trust; plain HTTP is unaffected. Blank option values are treated as unset,
 while an existing empty file is an error. Use absolute paths. Bundles are read
-when a connection pool is built, and different bundle paths use separate pools.
+when a connection pool is built, and different bundle paths isolate connections
+and cached responses. HTTP and HTTPS CONNECT proxies are supported; SOCKS support
+is not enabled for this connector.
 To rotate a bundle in a running process, configure a new path; editing a file
 does not reload existing pools, including a pool retaining a failed bundle load.
 This option does not read `SSL_CERT_FILE`,
