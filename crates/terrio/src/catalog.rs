@@ -187,7 +187,11 @@ impl CatalogInput {
 // Both opening and overwrite inventory must resolve them against the same filename.
 fn virtual_bytes(bytes: &[u8], name: &str) -> Result<Option<LazyRaster>> {
     let text = std::str::from_utf8(bytes);
-    let vrt = crate::formats::extension(name).as_deref() == Some("vrt") || text.is_ok_and(|s| s.trim_start().starts_with("<VRTDataset"));
+    // By name or content, as the format sniffer reads it (an XML declaration may come first):
+    // VRT bytes that fell through would be opened as a file, with host resolution.
+    let vrt = crate::formats::extension(name).as_deref() == Some("vrt")
+        || text.is_ok_and(|s| s.trim_start().starts_with("<VRTDataset"))
+        || crate::formats::identify_bytes(name, bytes).by_content.as_deref() == Some("VRT");
     if !vrt {
         return Ok(None);
     }
