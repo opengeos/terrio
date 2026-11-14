@@ -16,11 +16,46 @@ import pytest
 import terrio
 import terrio.pyogrio as pg
 import terrio.rio as rio
+from terrio._terrio import _redact_diagnostic_location
 from terrio.rio import shutil
 from terrio.rio.merge import merge
 from terrio.rio.stack import stack
 
 SECRET = "PRIVATE-DIAGNOSTIC-TEST-SECRET"
+
+
+@pytest.mark.parametrize(
+    "location,expected",
+    [
+        ("/data/what?.tif", "/data/what?.tif"),
+        ("/data/a?signal=1&monkey=2", "/data/a?signal=1&monkey=2"),
+        (
+            "/data/a?b.tif: unexpected token, missing key",
+            "/data/a?b.tif: unexpected token, missing key",
+        ),
+        (r"\\?\C:\token-cache\a.tif", r"\\?\C:\token-cache\a.tif"),
+        (f"/data/a?token%3D{SECRET}", "/data/a?<redacted>"),
+        (f"/data/a?%74oken%3d{SECRET}", "/data/a?<redacted>"),
+        (f"/data/a?x=1%26token={SECRET}", "/data/a?<redacted>"),
+        (f"/data/a?client_secret%26label={SECRET}", "/data/a?<redacted>"),
+        (f"/data/a#client_secret%26label={SECRET}", "/data/a#<redacted>"),
+        (f"/data/a#sig={SECRET}", "/data/a#<redacted>"),
+        (f"/data/a#x=1%26token%3D{SECRET}", "/data/a#<redacted>"),
+        ("/data/file#notes.txt", "/data/file#notes.txt"),
+        ("/vsiaz/c/b.tif?BARE_VALUE", "/vsiaz/c/b.tif?BARE_VALUE"),
+        (f"/vsimem/a.zip?sig={SECRET}", "/vsimem/a.zip?<redacted>"),
+        (f"/data/a?next=https://host/x&sig={SECRET}", "/data/a?<redacted>"),
+    ],
+)
+def test_schemeless_credential_parameters_and_literal_paths(location, expected):
+    """Redact real credential parameters while preserving legal filenames and prose.
+
+    Args:
+        location: A literal filename or location containing a fake credential.
+        expected: Its diagnostic representation.
+    """
+    assert _redact_diagnostic_location(location) == expected
+    assert _redact_diagnostic_location(expected) == expected
 
 
 @pytest.fixture

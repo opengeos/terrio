@@ -21,12 +21,21 @@ and escaping Zarr keys, normalized key collisions, and closed VRT source maps.
 The VRT checks include unmapped local and remote sources, uploaded source bytes,
 and explicit file-based opens. Core regressions cover archive extraction aliases,
 portable remote download basenames, mask sources, and RPC DEM references.
+The catalog tests keep VRT bytes in the closed-source-map opener for both reading
+and overwrite inventory, including XML declarations and `GDAL:`/`NETCDF:` name
+prefixes. Direct paths and already-open native handles retain file-based lookup.
 
 `python/tests/test_diagnostic_url_safety.py` uses a loopback range server and fake
 credentials to check exceptions, multilayer warnings, notebook display logs, and
 CLI stderr. It checks custom authentication parameter names as well as signed URL
 parameters and userinfo. A successful raster read verifies that the network still
 receives the original query. Diagnostic redaction never rewrites request URLs.
+Standalone schemeless signed locations and percent-encoded credential separators
+are redacted too. Literal `?` filenames, Windows verbatim prefixes and bare words
+such as "unexpected token" remain intact when no credential parameter is present.
+The same policy applies to schemeless `#` fragments. Bare schemeless suffixes
+without a `name=value` credential parameter remain literal filenames or keys;
+queries and fragments of locations with a URL scheme are always redacted.
 
 ## Configuration alias precedence
 
@@ -1562,6 +1571,18 @@ Terrio-exported WKT with GDAL, then compares its transformed coordinates with
 the original JSON definitions. Rust regressions also
 check file loading, malformed/unsupported definitions, wrong units/dimensions,
 and that a root authority ID cannot overwrite a caller's false easting.
+The live suite also repeats projected definitions with the geographic base's
+optional `type` omitted. Rust, Python and Node regressions check code identification
+from the definition with absent or false root IDs, while modified parameters
+continue to control coordinates. Local validation uses GDAL 3.12.1.
+`TERRIO_TEST_DATA="$PWD/../terrio-data" cargo test -p terrio-crs --test crs_grids projjson_identity`
+adds the real NADCON `us_noaa_conus.tif` grid. Both an identified NAD27 UTM CRS and
+a custom false easting agree with the WKT-only path and GDAL 3.12.1 within 1e-10
+degrees. The test returns early without assertions unless the grid and legacy-grid directories are populated by
+`scripts/fetch_test_data.sh`; no network access occurs during transformation.
+The complete installed grid set is checked against WKT behavior. A child process isolates
+`us_noaa_conus.tif` for the frozen GDAL coordinates, so additional NADCON5 grids cannot change
+the operation behind that independent oracle.
 
 PROJ-string export (`SpatialRef::to_proj4`) is compared with PROJ 9.8.1's strings of every 20th
 EPSG, ESRI and IAU_2015 code, the codes behind each rule, custom definitions (bound CRSs among
