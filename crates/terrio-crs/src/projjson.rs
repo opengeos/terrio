@@ -339,7 +339,9 @@ fn crs(value: &Value, base: bool, depth: usize) -> Result<String> {
         value,
         &["name", "datum", "datum_ensemble", "coordinate_system", "base_crs", "conversion", "source_crs", "target_crs", "transformation"],
     )?;
-    let kind = string(o, "type")?;
+    // PROJJSON v0.7 makes the geodetic base's type optional. Its position in a
+    // ProjectedCRS already supplies that context; a root object still needs it.
+    let kind = if base && !o.contains_key("type") { "GeographicCRS" } else { string(o, "type")? };
     let mut args;
     let key = match kind {
         "GeographicCRS" | "GeodeticCRS" => {
@@ -464,7 +466,9 @@ pub(crate) fn parse(text: &str) -> Result<SpatialRef> {
     let value: Value = serde_json::from_str(text).map_err(|e| bad(format!("invalid JSON: {e}")))?;
     let wkt = crs(&value, false, 0)?;
     // Parse the complete supplied definition before considering any authority IDs.
-    // Keep WKT as the transformation source so an ID cannot replace caller parameters.
+    // Root IDs were stripped during translation so they cannot replace caller parameters.
     Def::from_wkt(&wkt)?;
-    Ok(SpatialRef { wkt: Some(wkt), ..Default::default() })
+    // The translated WKT has no root identifier, so this identifies the supplied
+    // definition, never the JSON object's claimed authority code.
+    Ok(SpatialRef::from_wkt(&wkt))
 }

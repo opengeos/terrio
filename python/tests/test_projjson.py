@@ -20,8 +20,8 @@ REFERENCE = json.loads(
 def test_projjson_coordinate_oracles(case):
     for definition in (case["src"], case["dst"]):
         crs = CRS.from_string(json.dumps(definition))
-        assert crs.to_epsg() is None
-        assert crs.to_authority() is None
+        # Identify the complete definition as WKT does, independently of its JSON ID.
+        assert crs.to_authority() == CRS.from_wkt(crs.to_wkt()).to_authority()
     points = np.array(case["points"])
     terrio.set_grid_search_paths([])
     terrio.set_network_enabled(False)
@@ -42,3 +42,27 @@ def test_unsupported_projjson_is_an_error():
         terrio.transform_points(
             [0], [0], "EPSG:4326", '{"type":"VerticalCRS","name":"unsupported"}'
         )
+
+
+@pytest.mark.parametrize("code", [4326, 32633, 2154])
+@pytest.mark.parametrize("identifier", [None, 3857])
+def test_projjson_reports_identity_from_definition(code, identifier):
+    """Identify a round trip even when the root ID is absent or wrong."""
+    original = CRS.from_epsg(code)
+    document = json.loads(original.to_projjson())
+    document.pop("id", None)
+    if identifier is not None:
+        document["id"] = {"authority": "EPSG", "code": identifier}
+    read = CRS.from_user_input(json.dumps(document))
+    assert read.to_epsg() == code
+    assert read.to_authority() == ("EPSG", str(code))
+    assert read.to_string() == f"EPSG:{code}"
+    assert read == original
+
+
+def test_projected_base_accepts_omitted_type():
+    """Read PROJJSON's unambiguous geographic base without an explicit type."""
+    original = CRS.from_epsg(32633)
+    document = json.loads(original.to_projjson())
+    del document["base_crs"]["type"]
+    assert CRS.from_user_input(json.dumps(document)) == original

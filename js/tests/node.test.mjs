@@ -3023,14 +3023,23 @@ test("Shapefile ZIP writes point, line and polygon with scalar attributes and nu
 test("PROJJSON CRS definitions match GDAL in traditional GIS order", () => {
   const reference = JSON.parse(readFileSync(new URL("../../crates/terrio-crs/tests/data/projjson_reference.json", import.meta.url)));
   for (const c of reference.cases) {
-    assert.equal(terrio.describeCrs(JSON.stringify(c.src)).epsg, null);
-    assert.equal(terrio.describeCrs(JSON.stringify(c.dst)).epsg, null);
     const actual = terrio.transformPoints(c.points.map(p => p[0]), c.points.map(p => p[1]), JSON.stringify(c.src), JSON.stringify(c.dst));
     for (let i = 0; i < c.points.length; i++) {
       for (let axis = 0; axis < 2; axis++) assert.ok(Math.abs(actual[axis][i] - c.expected[i][axis]) <= c.tolerance[axis], `${c.name}, point ${i}, axis ${axis}`);
     }
   }
   assert.throws(() => terrio.describeCrs('{"type":"VerticalCRS","name":"unsupported"}'), /PROJJSON/);
+});
+
+test("PROJJSON identity comes from the definition and base type is optional", () => {
+  for (const code of [4326, 32633, 2154]) {
+    const definition = JSON.parse(terrio.crsToProjjson(`EPSG:${code}`));
+    definition.id = {authority: "EPSG", code: 3857};
+    if (definition.base_crs) delete definition.base_crs.type;
+    assert.equal(terrio.describeCrs(JSON.stringify(definition)).epsg, code);
+    delete definition.id;
+    assert.equal(terrio.describeCrs(JSON.stringify(definition)).epsg, code);
+  }
 });
 
 test("IAU_2015 planetary coordinates match the full GDAL registry oracle", () => {

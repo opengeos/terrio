@@ -8,6 +8,7 @@ import argparse
 import json
 import os
 import subprocess
+from copy import deepcopy
 from pathlib import Path
 
 from projjson_reference_env import no_grid_proj
@@ -27,7 +28,19 @@ def main():
     osr.UseExceptions()
     osr.SetPROJEnableNetwork(False)
     results = []
-    for case in reference['cases']:
+    cases = list(reference['cases'])
+    for original in reference['cases']:
+        case = deepcopy(original)
+        changed = False
+        for key in ('src', 'dst'):
+            base = case[key].get('base_crs')
+            if base is not None and 'type' in base:
+                del base['type']
+                changed = True
+        if changed:
+            case['name'] += ', base type omitted'
+            cases.append(case)
+    for case in cases:
         try:
             definitions = []
             texts = [json.dumps(case[key]) for key in ['src', 'dst']]

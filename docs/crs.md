@@ -674,7 +674,7 @@ serialize a language object with `json.dumps` or `JSON.stringify`.
 | Object | Supported subset |
 |---|---|
 | `GeographicCRS`, `GeodeticCRS` | Two-dimensional ellipsoidal coordinates on a static geodetic reference frame or datum ensemble; longitude/latitude in GIS order |
-| `ProjectedCRS` | A supported geographic base and WKT2 projection conversion, two Cartesian axes, including north-first and west/south orientations |
+| `ProjectedCRS` | A supported geographic base (whose `type` is optional) and WKT2 projection conversion, two Cartesian axes, including north-first and west/south orientations |
 | `BoundCRS` | A geographic/projected source, a Greenwich WGS 84 geographic target, and a complete three- or seven-parameter Helmert transformation, identified by EPSG codes or standard names |
 
 Geographic axes must span east and north; projected axes may use west and south.
@@ -705,7 +705,8 @@ const [x, y] = terrio.transformPoints(lons, lats, "EPSG:4326", JSON.stringify(de
 The supplied conversion parameters are retained even when the root object has
 an authority ID. IDs identify component methods, parameters and datums; they do
 not replace the complete definition with a registry lookup. The resulting CRS
-stores WKT2 and does not assign a root EPSG/ESRI code merely from an ID. The
+stores WKT2 and identifies an EPSG/ESRI code from that definition as the WKT reader
+does; it does not assign a root code merely from an ID. The
 exported WKT omits root CRS identifiers so that reopening it also preserves
 caller-supplied conversion parameters; component identifiers remain. Descriptive
 usage fields (`scope`, `area`, `bbox`, `usages`, `remarks`) are accepted without

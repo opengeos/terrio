@@ -1562,6 +1562,10 @@ Terrio-exported WKT with GDAL, then compares its transformed coordinates with
 the original JSON definitions. Rust regressions also
 check file loading, malformed/unsupported definitions, wrong units/dimensions,
 and that a root authority ID cannot overwrite a caller's false easting.
+The live suite also repeats projected definitions with the geographic base's
+optional `type` omitted. Rust, Python and Node regressions check code identification
+from the definition with absent or false root IDs, while modified parameters
+continue to control coordinates. Local validation uses GDAL 3.12.1.
 
 PROJ-string export (`SpatialRef::to_proj4`) is compared with PROJ 9.8.1's strings of every 20th
 EPSG, ESRI and IAU_2015 code, the codes behind each rule, custom definitions (bound CRSs among
