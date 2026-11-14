@@ -123,12 +123,12 @@ CASES = {
     "putp4p": (f"+proj=putp4p +lon_0=20 {W}", (25.0, 40.0)),
     "murd2": (f"+proj=murd2 +lat_1=30 +lat_2=50 +lon_0=20 {W}", (25.0, 40.0)),
     "tissot": (f"+proj=tissot +lat_1=30 +lat_2=50 +lon_0=20 {W}", (25.0, 40.0)),
-    # Projections terrio computes with wbprojection.
     "moll": (f"+proj=moll +lon_0=20 +x_0=1000 {W}", (25.0, 40.0)),
     "eck4": (f"+proj=eck4 +lon_0=20 {W}", (25.0, 40.0)),
+    "natearth": (f"+proj=natearth +lon_0=20 {W}", (25.0, 40.0)),
+    # Projections terrio computes with wbprojection.
     "eck6": (f"+proj=eck6 +lon_0=20 {W}", (25.0, 40.0)),
     "aitoff": (f"+proj=aitoff +lon_0=20 {W}", (25.0, 40.0)),
-    "natearth": (f"+proj=natearth +lon_0=20 {W}", (25.0, 40.0)),
     "wag3": (f"+proj=wag3 +lon_0=20 {W}", (25.0, 40.0)),
     "kav7": (f"+proj=kav7 +lon_0=20 {W}", (25.0, 40.0)),
     # Units, datum shifts and prime meridians.

@@ -434,8 +434,8 @@ mod tests {
         assert_eq!(count("EPSG", None, Some(true)), 520);
         // 2528 in the catalog, less those on projections terrio does not compute: Wagner VII,
         // Compact Miller, Goode Homolosine Ocean, Peirce quincuncial and Spilhaus; and without
-        // wbprojection, the 32 on Eckert, Aitoff, Natural Earth and other projections.
-        let refused = if cfg!(feature = "wbprojection-fallback") { 9 } else { 41 };
+        // wbprojection, the 28 on Aitoff, the other Eckerts and other projections.
+        let refused = if cfg!(feature = "wbprojection-fallback") { 9 } else { 37 };
         assert_eq!(count("ESRI", None, None), 2528 - refused);
         assert_eq!(count("IAU_2015", None, None), 2201);
         assert_eq!(count("IAU_2015", Some(CrsKind::Other), None), 12);

@@ -134,6 +134,8 @@ terrio-crs = "0.2.3"
 The [published crate](https://crates.io/crates/terrio-crs/0.2.3) works offline by
 default. Enable `wbprojection-fallback` when Terrio's wider projection coverage
 is required; the feature matrix below describes the supported configurations.
+Version 0.2.3 provides Eckert IV and Natural Earth only through that feature. The
+native method counts in the matrix below describe the unreleased source.
 
 ```rust
 use terrio_crs::{SpatialRef, Transformer};
@@ -147,8 +149,8 @@ let (easting, northing) = transform.transform(-105.0, 40.0)?;
 
 | Configuration | Behavior |
 |---|---|
-| Default | EPSG/ESRI tables, WKT and PROJ strings, 43 native methods from the 117-method test corpus, datum operations, epochs, and local or registered grids; offline |
-| `wbprojection-fallback` | 46 additional projection methods and legacy WKT/identification fallback; enabled by Terrio |
+| Default | EPSG/ESRI tables, WKT and PROJ strings, 45 native methods from the 117-method test corpus, datum operations, epochs, and local or registered grids; offline |
+| `wbprojection-fallback` | 44 additional projection methods and legacy WKT/identification fallback; enabled by Terrio |
 | `grid-transport` (native) | An application supplies `network::GridTransport` with seekable readers; the engine retains lazy TIFF block decoding |
 | Terrio's `remote` feature | Supplies Terrio's existing HTTP range reader, request controls and cache to the shared engine |
 | WebAssembly | Register grid bytes with `register_grid`; the host handles network access |
@@ -294,7 +296,7 @@ The list is a snapshot of PROJ 9.8.1's database: EPSG v12.029 (2025-10-02,
 | Authority | Listed | Of which deprecated | Not listed (GDAL lists them) |
 |---|---:|---:|---|
 | EPSG | 7,681: 689 geographic 2D, 273 geographic 3D, 269 geocentric, 5,680 projected, 299 vertical, 471 compound | 520 | 15 engineering and other CRSs, 28 projected CRSs GDAL does not import (UTM grid systems, Qornoq 1927 Greenland zones...) |
-| ESRI | 2,519: 317 geographic 2D, 11 geographic 3D, 2,191 projected | 1,338 | 272 vertical CRSs; 191 geographic and projected CRSs terrio's ESRI table leaves out (119 of other bodies than the Earth, and those PROJ does not transform from WGS 84); 41 on projections terrio does not compute without the `wbprojection-fallback` feature of `terrio-crs` (9 of them with it, Wagner VII, Compact Miller, Peirce quincuncial...) |
+| ESRI | 2,519: 317 geographic 2D, 11 geographic 3D, 2,191 projected | 1,338 | 272 vertical CRSs; 191 geographic and projected CRSs terrio's ESRI table leaves out (119 of other bodies than the Earth, and those PROJ does not transform from WGS 84); 37 on projections terrio does not compute without the `wbprojection-fallback` feature of `terrio-crs` (9 of them with it, Wagner VII, Compact Miller, Peirce quincuncial...) |
 | IAU_2015 | 2,201: 115 geographic 2D, 2,074 projected, 12 other | 0 | none |
 
 The conformance suite `crs-list` (`scripts/compare_crs_list_with_gdal.py`) compares every listed

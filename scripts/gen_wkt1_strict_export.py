@@ -45,7 +45,7 @@ OUT = (
 # Web Mercator, the only registry CRS PROJ writes with its PROJ4 extension; geographic 3D,
 # geocentric, Equal Earth, south-orientated and compound CRSs.
 RULES = [("EPSG", c) for c in (3857, 4979, 4978, 8857, 2046, 5514, 7405, 9707)] + [
-    ("ESRI", c) for c in (102100, 54030, 53035)
+    ("ESRI", c) for c in (102100, 54030, 53035, 53012, 53077, 54012, 54077)
 ]
 
 # Polar Stereographic (variant C): terrio's table WKT is GDAL's, without the AXIS nodes PROJ
