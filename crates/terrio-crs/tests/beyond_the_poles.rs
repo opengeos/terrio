@@ -12,9 +12,11 @@ use terrio_crs::{SpatialRef, Transformer};
 
 const BESSEL_TOWGS84: &str = "+proj=longlat +ellps=bessel +towgs84=598.1,73.7,418.2,0.202,0.045,-2.455,6.7";
 
-/// (source, target, point, PROJ's result).
+/// A source, a target, a point and PROJ's result.
+type Case = (&'static str, &'static str, (f64, f64), Option<(f64, f64)>);
+
 #[rustfmt::skip]
-const CASES: &[(&str, &str, (f64, f64), Option<(f64, f64)>)] = &[
+const CASES: &[Case] = &[
     // Helmert transformations whose areas exclude the point, then the ballpark: no shift.
     ("+proj=longlat +datum=OSGB36", "EPSG:4326", (10.0, 95.0), Some((10.0, 95.0))),
     ("+proj=longlat +datum=OSGB36", "EPSG:4326", (10.0, -90.5), Some((10.0, -90.5))),
@@ -27,7 +29,16 @@ const CASES: &[(&str, &str, (f64, f64), Option<(f64, f64)>)] = &[
     ("EPSG:4267", "EPSG:4326", (10.0, -90.5), Some((10.0, -90.5))),
     ("EPSG:4258", "EPSG:4326", (10.0, 95.0), Some((10.0, 95.0))),
     ("EPSG:4326", "EPSG:4258", (451219.33, 5411550.2), Some((451219.33, 5411550.2))),
+    // The other way, through the same transformations.
+    ("EPSG:4326", "EPSG:4277", (10.0, 95.0), Some((10.0, 95.0))),
+    ("EPSG:4326", "EPSG:4277", (-1.0, 52.0), Some((-0.9984736030557578, 51.99956034698155))),
+    // A longitude beyond the antimeridian, wrapped to pick the transformation.
+    ("EPSG:4277", "EPSG:4326", (359.0, 52.0), Some((-1.0015262257827398, 52.00043957445139))),
     // A `+towgs84` Helmert is the only operation: refused beyond the poles.
+    ("EPSG:4326", BESSEL_TOWGS84, (10.0, 95.0), None),
+    (BESSEL_TOWGS84, "EPSG:4326", (359.0, 52.0), Some((-0.9995279771188769, 51.9986535183326))),
+    // Within PROJ's tolerance (1e-12 rad) of the pole: at the pole.
+    (BESSEL_TOWGS84, "EPSG:4326", (10.0, 90.00000000002865), Some((6.421905717473288, 89.9945987051041))),
     (BESSEL_TOWGS84, "EPSG:4326", (10.0, 95.0), None),
     (BESSEL_TOWGS84, "EPSG:4326", (10.0, -90.5), None),
     (BESSEL_TOWGS84, "EPSG:4326", (451219.33, 5411550.2), None),

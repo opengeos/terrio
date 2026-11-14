@@ -444,7 +444,9 @@ impl Step {
                     // it back across the pole; the next operation is tried, then the ballpark.
                     None
                 } else {
-                    Some(to_cart(ell, v[0], v[1], v[2]))
+                    // Within the tolerance, at the pole, as PROJ clamps it.
+                    let lat = v[1].clamp(-crate::math::HALFPI, crate::math::HALFPI);
+                    Some(to_cart(ell, v[0], lat, v[2]))
                 }
             }
             Step::Helmert { t: tr, r, scale, pivot, inv, rates } => {
