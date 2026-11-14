@@ -156,6 +156,21 @@ fn a_wkt_s_proj4_extension_is_read_as_proj_reads_it() {
     let crs = SpatialRef::parse(&declared).unwrap();
     assert_eq!(crs.epsg, None);
     assert!(terrio_crs::Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &crs).is_err());
+    // Unsupported extension methods retain the WKT-node fallback with either feature set.
+    let fallback = wkt
+        .replace("+proj=eqc +lat_ts=abc +ellps=WGS84 +units=m", "+proj=not_real +ellps=WGS84")
+        .replace(r#"PARAMETER["standard_parallel_1",10]"#, r#"PARAMETER["standard_parallel_1",0]"#);
+    let crs = SpatialRef::parse(&fallback).unwrap();
+    let t = terrio_crs::Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &crs).unwrap();
+    let (x, y) = t.transform(10.0, 10.0).unwrap();
+    assert!((x - 1113194.9079327357).abs() < 1e-6 && (y - 1105854.833234372).abs() < 1e-6);
+    // Legacy limitation: an unreadable list in an extension is ignored as a whole. PROJ
+    // 9.8.1 accepts it too, but treats abc as zero and applies the remaining datum shift.
+    let ignored = wkt.replace("+proj=eqc +lat_ts=abc +ellps=WGS84 +units=m", "+proj=eqc +ellps=WGS84 +towgs84=1,abc,3");
+    let crs = SpatialRef::parse(&ignored).unwrap();
+    let t = terrio_crs::Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &crs).unwrap();
+    let (x, y) = t.transform(10.0, 10.0).unwrap();
+    assert!((x - 1113194.9079327357).abs() < 1e-6 && (y - 1105854.833234372).abs() < 1e-6);
     // PROJ 9.8.1 cannot construct a transformation from any of these extensions; the WKT
     // nodes must not silently replace the refused conversion.
     for extension in [

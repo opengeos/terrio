@@ -329,6 +329,8 @@ PROJ checks them only for some methods, and an unreadable one is read as absent.
 extension is read as PROJ reads it, without refusing the values PROJ's CRS parser would (an
 unreadable `+lat_ts` is read as 0); the scale-factor, `+to_meter` and `towgs84`-length refusals
 still apply.
+Unreadable `towgs84` lists inside extensions retain the legacy behavior of ignoring the
+shift. This differs from PROJ, which can interpret unreadable elements as zero.
 
 PROJ parameter exports preserve projection-specific standard parallels, the
 validated PROJ4 extension of a WKT definition (including Web Mercator), named

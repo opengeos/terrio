@@ -346,7 +346,8 @@ impl Def {
 
     /// The definition of a WKT's `PROJ4` extension. PROJ takes the extension as it is, without
     /// refusing the values it cannot read (`+lat_ts=abc` is read as 0), so this does not either.
-    /// Numeric scale/unit checks and the three-or-seven-element datum-list requirement still apply.
+    /// Numeric scale/unit checks still apply. Fully numeric datum lists require three or seven
+    /// elements; unreadable lists retain the legacy behavior of ignoring the shift.
     pub fn from_proj_extension(s: &str) -> Result<Self> {
         Self::from_params(s, &Params::parse(s))
     }
@@ -635,7 +636,7 @@ impl Def {
             // `+vunits` first, then a positive `+vto_meter`, as PROJ reads them.
             let vunits = p.str("vunits").and_then(unit_to_meter);
             let vto_meter = p.str("vto_meter").map(|v| v.parse::<f64>().ok().filter(|v| v.is_finite() && *v > 0.0));
-            if vunits.is_none() && matches!(vto_meter, Some(None)) {
+            if vunits.is_none() && p.has("vto_meter") && vto_meter.flatten().is_none() {
                 return Err(Error::Crs(format!("invalid value for vto_meter in '{s}'")));
             }
             let to_meter = vunits.or(vto_meter.flatten()).unwrap_or(1.0);

@@ -1,9 +1,13 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT
+
 """Generate crates/terrio-crs/tests/data/proj_param_values.tsv: whether PROJ 9.8.1 accepts a CRS
 given by a PROJ string with a parameter value it may not read.
 
 Each method in the frozen METHODS list gets, in turn, each common parameter
 set to `abc` (no number) and to `0.5r` (radians), and the scale factor set to values PROJ may
-refuse (0, -1, `abc` and 2). A few strings test `+to_meter`, `+units`, `+vto_meter`, `+towgs84`,
+refuse (0, -1 and `abc`), plus 2 as a valid control. A few strings test `+to_meter`, `+units`,
+`+vto_meter`, `+towgs84`,
 `+pm`, the ellipsoid with `+a`, and geocentric units. Each row is the PROJ string and `OK` or
 `ERR`: PROJ's `proj_create` of it with `+type=crs`, on WGS 84 (`+ellps=WGS84`) unless it gives
 `+a`, `+rf` or `+R`.
@@ -150,6 +154,8 @@ EXTRA = [
     "+proj=ortho +alpha=abc +towgs84=1,abc,3",
     "+proj=longlat +to_meter=0",
     "+proj=eqc +geoidgrids=x.gtx +vto_meter=0",
+    "+proj=eqc +geoidgrids=@null +vto_meter",
+    "+proj=eqc +geoidgrids=@null +vunits=m +vto_meter",
     "+proj=eqc +vunits=m +vto_meter=0",
     "+proj=longlat +towgs84=1,abc,3",
     "+proj=longlat +towgs84=1,2,3,",

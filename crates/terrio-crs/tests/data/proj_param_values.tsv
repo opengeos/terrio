@@ -3329,6 +3329,8 @@
 +proj=ortho +alpha=abc +towgs84=1,abc,3	ERR
 +proj=longlat +to_meter=0	ERR
 +proj=eqc +geoidgrids=x.gtx +vto_meter=0	ERR
++proj=eqc +geoidgrids=@null +vto_meter	ERR
++proj=eqc +geoidgrids=@null +vunits=m +vto_meter	OK
 +proj=eqc +vunits=m +vto_meter=0	OK
 +proj=longlat +towgs84=1,abc,3	ERR
 +proj=longlat +towgs84=1,2,3,	ERR

@@ -1553,7 +1553,7 @@ them) and compound references, character for character, and reads back as the sa
 
 PROJ-string parameter values are refused where PROJ 9.8.1 refuses them: each method with each
 common parameter unreadable (`abc`) or in radians (`0.5r`), scale factors PROJ may refuse, and
-`+to_meter`, `+units`, `+vto_meter`, `+towgs84`, `+pm` and rotated-pole cases, 3,348 unique strings
+`+to_meter`, `+units`, `+vto_meter`, `+towgs84`, `+pm` and rotated-pole cases, 3,350 unique strings
 in all, against whether PROJ accepts them (`cargo test -p terrio-crs --test proj_param_values`; regenerate with
 `scripts/gen_proj_param_values.py`, pyproj 3.8.0). The strings that still differ are listed by
 kind in the test, counted, and pinned as sorted rows in `proj_param_value_differences.tsv`.
@@ -1562,8 +1562,13 @@ strict rotated-pole `o_lat_p` validation where PROJ's CRS parser leaves the valu
 The matrix does not verify `fouc_s`'s `n`, `rot_xy`, or the other `o_*` rotation parameters.
 For scale factors with an `r` suffix, Terrio retains its numeric-alias/default policy, which
 can differ from PROJ's numeric-prefix interpretation even when both accept the definition.
-`towgs84` requires three or seven numeric elements. A refused WKT `PROJ4` extension fails
-transformation setup rather than silently substituting the WKT nodes' conversion.
+Literal PROJ `towgs84` lists require three or seven numeric elements. A refused WKT `PROJ4`
+extension fails transformation setup rather than silently substituting the WKT nodes' conversion.
+The acceptance generator intentionally does not overwrite the known-difference baseline.
+When an intended behavior change changes that set, review the focused test's actual/expected
+rows, edit only the approved rows in `proj_param_value_differences.tsv` (definition, tab,
+PROJ's `OK`/`ERR` outcome), keep them sorted, and update the count in the test. Rerun the focused
+test with default features and `--all-features`; unexpected changes require investigation.
 
 Strict WKT 1 export (`SpatialRef::to_wkt1_strict`) is compared with PROJ 9.8.1's `WKT1_GDAL`
 (with GDAL's axes) of every 20th EPSG and ESRI code and every one PROJ refuses, character for
