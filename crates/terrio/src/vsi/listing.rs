@@ -51,9 +51,11 @@ pub(crate) fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
     // credential, since `?` is legal in a file name; one that names a credential is private.
     // Checked first, so a URL later in the same message cannot end redaction early. A `?`
     // after a URL's scheme is left to the URL rule below, which redacts the whole suffix.
+    // A Windows verbatim prefix (`\\?\C:\…`) is part of the path, not a query.
+    let start = if out.starts_with(r"\\?\") || out.starts_with("//?/") { 4 } else { 0 };
     let scheme = out.find("://").unwrap_or(out.len());
-    if let Some(question) = out[..scheme].find('?')
-        && names_credential(&out[question + 1..scheme])
+    if let Some(question) = out[start..].find('?').map(|q| start + q).filter(|&q| q < scheme)
+        && names_credential(&out[question + 1..])
     {
         return format!("{}?<redacted>", &out[..question]).into();
     }
@@ -76,14 +78,28 @@ pub(crate) fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
     out
 }
 
-/// Whether a schemeless query (and any text after it, up to a URL) names a credential parameter. Names are
+/// Whether a schemeless query (and any text after it, URL-valued parameters included) names a
+/// credential parameter. Names are
 /// compared whole, percent-decoded as a server reads them (`%73ig` is `sig`), so a file name
 /// such as `what?design.tif` is not one. Parameters split at `&`, `;`, `?`, `#` and whitespace,
 /// so a later location in the same message is checked too.
 fn names_credential(query: &str) -> bool {
-    const NAMES: [&str; 12] =
-        ["sig", "key", "apikey", "api_key", "access_key", "auth", "password", "passwd", "pwd", "secret", "token", "credential"];
-    const PARTS: [&str; 5] = ["signature", "token", "secret", "password", "credential"];
+    const NAMES: [&str; 13] = [
+        "sig",
+        "key",
+        "access_key",
+        "auth",
+        "authorization",
+        "password",
+        "passwd",
+        "pwd",
+        "secret",
+        "token",
+        "credential",
+        "code",
+        "session",
+    ];
+    const PARTS: [&str; 8] = ["signature", "token", "secret", "password", "credential", "apikey", "api_key", "api-key"];
     query.split(|c: char| matches!(c, '&' | ';' | '?' | '#') || c.is_whitespace()).any(|parameter| {
         let name = percent_decoded(parameter.split('=').next().unwrap_or_default()).to_ascii_lowercase();
         NAMES.contains(&name.as_str()) || PARTS.iter().any(|part| name.contains(part))
@@ -863,8 +879,18 @@ mod tests {
         // A credential before a URL in the same message is not exposed by the URL rule.
         assert_eq!(super::redact_url("/vsiaz/c/b.tif?sig=PRIVATE then https://h/x?y"), "/vsiaz/c/b.tif?<redacted>");
         assert_eq!(super::redact_url("/vsiaz/c/b.tif?sig=PRIVATE&next=https://host/a?x=1"), "/vsiaz/c/b.tif?<redacted>");
-        // A benign schemeless query before a URL keeps both rules: the URL's query is redacted.
-        assert_eq!(super::redact_url("/data/a?x then https://h/f?sig=PRIVATE"), "/data/a?x then https://h/f?<redacted>");
+        // The schemeless check reads past URL-valued parameters, so a credential after one is
+        // found; a later URL's credential then redacts from the schemeless query on.
+        assert_eq!(super::redact_url("/vsiaz/c/b.tif?next=https://host/a&sig=PRIVATE"), "/vsiaz/c/b.tif?<redacted>");
+        assert_eq!(super::redact_url("/data/a?x=1://b&sig=PRIVATE"), "/data/a?<redacted>");
+        assert_eq!(super::redact_url("/data/a?x then https://h/f?sig=PRIVATE"), "/data/a?<redacted>");
+        assert_eq!(super::redact_url("/data/a?x then https://h/f?y=1"), "/data/a?x then https://h/f?<redacted>");
+        for name in ["api-key", "x-api-key", "authorization", "apiKey"] {
+            assert_eq!(super::redact_url(&format!("/vsicurl/x.tif?{name}=PRIVATE")), "/vsicurl/x.tif?<redacted>");
+        }
+        // A Windows verbatim prefix is not a query.
+        assert_eq!(super::redact_url(r"\\?\C:\token-cache\a.tif"), r"\\?\C:\token-cache\a.tif");
+        assert_eq!(super::redact_url(r"\\?\C:\data\a.tif?sig=PRIVATE"), r"\\?\C:\data\a.tif?<redacted>");
         // A `?` inside a URL fragment never shortens the URL rule's redaction.
         assert_eq!(super::redact_url("https://h/a#frag?sig=PRIVATE"), "https://h/a#<redacted>");
     }
