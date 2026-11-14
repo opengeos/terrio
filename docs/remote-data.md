@@ -304,7 +304,8 @@ with rio.Env(TERRIO_HTTP_CAINFO="/absolute/path/to/organization-ca.pem"):
 callers can set `http::HttpOptions::ca_bundle` for an explicit client. Missing,
 empty or malformed explicit bundle files refuse HTTPS rather than falling back to
 default trust; plain HTTP is unaffected. Blank option values are treated as unset,
-while an existing empty file is an error. Use absolute paths. Bundles are read
+while an existing empty file is an error. Bundle paths must be absolute; a relative
+path refuses HTTPS rather than depending on a mutable working directory. Bundles are read
 when a connection pool is built, and different bundle paths isolate connections
 and cached responses. HTTP and HTTPS CONNECT proxies are supported; SOCKS support
 is not enabled for this connector.

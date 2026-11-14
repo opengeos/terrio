@@ -184,6 +184,7 @@ rustls-graviola = { workspace = true, optional = true }
 # Elsewhere (no release is built for these), HTTPS with `ring`, which needs a C compiler.
 [target.'cfg(all(not(target_family = "wasm"), not(any(target_arch = "x86_64", target_arch = "aarch64"))))'.dependencies]
 ureq = { workspace = true, optional = true, features = ["rustls"] }
+rustls = { workspace = true, optional = true, features = ["ring"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

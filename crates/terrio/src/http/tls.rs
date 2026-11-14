@@ -51,6 +51,9 @@ fn augmented_roots(certificates: impl IntoIterator<Item = CertificateDer<'static
 }
 
 fn read_bundle(path: &Path) -> Result<RootCertStore, String> {
+    if !path.is_absolute() {
+        return Err("TERRIO_HTTP_CAINFO: PEM CA bundle path must be absolute".into());
+    }
     // Avoid the adapter's dataset-not-found mapping for a missing configuration file.
     let pem = std::fs::read(path).map_err(|error| format!("TERRIO_HTTP_CAINFO: cannot read PEM CA bundle ({:?})", error.kind()))?;
     let mut certificates = Vec::new();
@@ -109,7 +112,10 @@ impl Connector<()> for BundleGuard {
             && !proxy.is_no_proxy(details.uri)
             && !matches!(proxy.protocol(), ureq::ProxyProtocol::Http | ureq::ProxyProtocol::Https)
         {
-            return Err(ureq::Error::Tls("SOCKS proxies are not enabled for the additional-CA connector"));
+            return Err(ureq::Error::Other(Box::new(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "TERRIO_HTTP_CAINFO: SOCKS proxies are not supported with an additional CA bundle",
+            ))));
         }
         Ok(chained)
     }
@@ -190,6 +196,11 @@ impl fmt::Debug for AdditionalRootsTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relative_ca_paths_are_refused_before_reading_a_file() {
+        assert_eq!(read_bundle(Path::new("ca.pem")).unwrap_err(), "TERRIO_HTTP_CAINFO: PEM CA bundle path must be absolute");
+    }
 
     #[test]
     fn extra_roots_preserve_mozilla_constraints_even_for_duplicate_public_der() {

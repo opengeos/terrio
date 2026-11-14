@@ -224,6 +224,21 @@ def test_additional_ca_preserves_hostname_validation(https_source):
             read_window(https_source, hostname="127.0.0.1")
 
 
+def test_relative_bundle_cannot_reuse_working_directory_trust(https_source, monkeypatch):
+    """Refuse ambiguous relative bundle identities, even when the file is valid.
+
+    Args:
+        https_source: HTTPS server with a valid private CA bundle.
+        monkeypatch: Scoped working-directory change.
+    """
+    with rio.Env(TERRIO_HTTP_CAINFO=str(https_source["root"] / "ca.pem")):
+        read_window(https_source, clear_cache=False)
+    monkeypatch.chdir(https_source["root"])
+    with rio.Env(TERRIO_HTTP_CAINFO="ca.pem"):
+        with pytest.raises(RasterioIOError, match="CAINFO.*path must be absolute"):
+            read_window(https_source, clear_cache=False)
+
+
 @pytest.mark.parametrize(
     "contents",
     [None, "", "not PEM", "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n"],
