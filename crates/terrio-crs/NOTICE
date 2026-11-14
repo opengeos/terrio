@@ -137,7 +137,8 @@ The EPSG rows of the test data crates/terrio-crs/tests/data/proj_string_export.t
 wkt1_strict_export.tsv (PROJ 9.8.1's PROJ strings and WKT 1 of EPSG CRSs, by
 scripts/gen_proj_string_export.py and scripts/gen_wkt1_strict_export.py) and geokeys_gdal.tsv
 (GDAL 3.12.1's GeoKeys and WKT 1 of EPSG CRSs, by scripts/gen_geokeys_gdal.py) are derived from
-the same dataset, under the same terms.
+the same dataset, under the same terms, as are the EPSG rows of crs_accessors.tsv (PROJ 9.8.1's
+axis orders, ellipsoids and conversion parameters of EPSG CRSs, by scripts/gen_crs_accessors.py).
 
 -------------------------------------------------------------------------------
 Esri projection engine data
@@ -150,7 +151,10 @@ The ESRI names, areas of use and projection method names in
 crates/terrio-crs/data/crs_catalog.tsv.zst are derived from the same documentation (ArcGIS Pro
 3.6), through PROJ 9.8.1's database, as are the ESRI rows of the test data
 crates/terrio-crs/tests/data/proj_string_export.tsv and wkt1_strict_export.tsv (PROJ 9.8.1's
-PROJ strings and WKT 1 of ESRI CRSs) and geokeys_gdal.tsv (GDAL 3.12.1's GeoKeys of ESRI CRSs).
+PROJ strings and WKT 1 of ESRI CRSs), geokeys_gdal.tsv (GDAL 3.12.1's GeoKeys of ESRI CRSs) and
+crs_accessors.tsv (PROJ 9.8.1's axis orders, ellipsoids and conversion parameters of ESRI CRSs).
+The ESRI celestial bodies and their semi-major axes in crates/terrio-crs/src/bodies.rs are derived
+from the same documentation, through PROJ 9.8.1's database (scripts/gen_celestial_bodies.py).
 
   Copyright © 2010-2025 Esri
 
@@ -165,8 +169,9 @@ data/sql/iau.sql, Git blob 900564ccf2e1f77fb708ddc2c8544843b29bc24a, generated b
 scripts/build_db_from_iau.py (Copyright (c) 2021, Hobu Inc; author Even Rouault), under PROJ's
 license (see the PROJ section). The source planetary reference is the IAU Working Group report
 at https://doi.org/10.1007/s10569-017-9805-5 .
-The IAU_2015 names in crates/terrio-crs/data/crs_catalog.tsv.zst come from the same source,
-through PROJ 9.8.1's database.
+The IAU_2015 names in crates/terrio-crs/data/crs_catalog.tsv.zst, and the IAU_2015 celestial
+bodies, their NAIF codes and semi-major axes in crates/terrio-crs/src/bodies.rs, come from the same
+source, through PROJ 9.8.1's database.
 
 -------------------------------------------------------------------------------
 CRS benchmark reference data

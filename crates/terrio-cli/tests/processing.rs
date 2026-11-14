@@ -179,6 +179,20 @@ fn crs_prints_projjson() {
 }
 
 #[test]
+fn crs_prints_axis_order_body_and_conversion_parameters() {
+    // As PROJ 9.8.1 reads EPSG:2056 (see terrio-crs's tests/crs_accessors.rs).
+    let dir = tempfile::tempdir().unwrap();
+    let output = run(&["crs", "EPSG:2056"], dir.path());
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("Axis order: east, north\nBody: Earth\nMethod: somerc (lon_0=7.43958333333333 "), "{text}");
+    assert!(text.contains(" x_0=2600000 y_0=1200000 prime meridian=0 a=6377397.155 "), "{text}");
+    let output = run(&["crs", "EPSG:4326"], dir.path());
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(String::from_utf8(output.stdout).unwrap().contains("Axis order: north, east\n"));
+}
+
+#[test]
 fn crs_prints_proj_string() {
     let dir = tempfile::tempdir().unwrap();
     // PROJ 9.8.1's `projinfo -o PROJ EPSG:2056`: without its datum shift, as PROJ writes it.

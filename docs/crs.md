@@ -915,6 +915,56 @@ method, linear unit and projection parameters, and read back as the CRS. Known d
 - Miller on the authalic sphere (`+R_A`) is written as an ESRI PE citation, where GDAL writes the
   method.
 
+### Axis order, conversion parameters and body
+
+Four accessors describe a CRS as PROJ 9.8.1 reads it, for programs that show CRS details or
+choose map behaviour from them: `terrio_crs::SpatialRef` and `terrio::crs::SpatialRef` in Rust,
+and the `Axis order`, `Body` and `Method` lines of `terrio crs CRS` (and its MCP tool).
+
+- `axis_order()` gives `AxisOrder::EastNorth`, `NorthEast`, `Other` or `Unknown` (a CRS terrio
+  can't read, or an EPSG code it reads only through wbprojection, whose WKT has no axes), the
+  order of the first two axes as PROJ reads the CRS:
+  - an EPSG or ESRI code is in the registry's order (EPSG:4326 north then east);
+  - a PROJ string is in its `+axis` order, east then north by default
+    (`+proj=longlat +datum=WGS84` is east then north, though its WKT names EPSG:4326's axes);
+  - otherwise the WKT's `AXIS` nodes give the order. Without them, a WKT 1 geographic CRS with an
+    EPSG code is in that code's order, and any other CRS east then north.
+
+  Geocentric and vertical CRSs, Polar Stereographic (whose axes point along meridians, unless a
+  WKT states others) and axes other than north and east (`northEast`, `south`) are `Other`.
+  `has_north_east_axis_order()` is unchanged: it goes by the CRS's WKT, for GML's authority
+  order.
+- `projection_params()` gives the method (the `+proj` name PROJ writes: `etmerc` is `tmerc`,
+  `webmerc` `merc`, `latlong` `longlat`), `lon_0`, `lat_0`, `k_0`, `x_0`, `y_0`, the prime
+  meridian, the ellipsoid's `a` and `b` and metres per unit. They are those of
+  the CRS's PROJ string (the registry's, the one given, or the one converted from its WKT), with
+  PROJ's defaults. A UTM or UPS zone has its own. The values are those of the definition:
+  Mercator's `+lat_ts` is not a scale factor here, nor Oblique Mercator's `+lonc` a central
+  meridian. The ellipsoid is the one PROJ reports:
+  - for a code, the registry's (Web Mercator is on WGS 84, though it computes on a sphere);
+  - for a PROJ string, its named ellipsoid under `+f`, `+es` and `+e`, and before `+R_A` and
+    `+R_C`.
+
+  A WKT that declares an EPSG code terrio has gives that code's values, as terrio transforms it
+  (PROJ reads the WKT's own nodes, which may differ). `None` for a CRS terrio can't read, or
+  reads only through wbprojection's WKT parser. Where
+  PROJ writes no PROJ string (Polar Stereographic variant C, planetocentric IAU_2015 projected
+  CRSs on an ellipsoid), terrio gives those of the string it reads the CRS by.
+- `body()` names the celestial body as PROJ does: `Earth` for an EPSG or ESRI code, the body of
+  an IAU_2015 CRS (`Mars`), and for another ellipsoid, `Earth` within 0.7% of the Earth's mean
+  radius, else the body of PROJ's table whose semi-major axis is within 0.7% of the ellipsoid's
+  (`+R=3396190` is on Mars). It gives `None` for an ellipsoid that matches no body, or bodies of
+  several names (PROJ's `Non-Earth body`). `is_earth()` is `body() == Some("Earth")`.
+
+`tests/crs_accessors.rs` compares them with PROJ 9.8.1 (pyproj 3.8.0) on 777 CRSs, frozen by
+`scripts/gen_crs_accessors.py`:
+- every 20th EPSG and ESRI code and the codes behind each rule;
+- 46 PROJ strings and 49 WKTs (WKT 1, WKT 2 and ESRI's);
+- compound references, every 20th IAU_2015 CRS and a CRS of every IAU_2015 body.
+
+The body table (`src/bodies.rs`) is generated from PROJ's database by
+`scripts/gen_celestial_bodies.py`.
+
 ## IAU planetary coordinate systems
 
 The shared pure-Rust engine includes the **IAU_2015** registry from PROJ 9.8.1,
