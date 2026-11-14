@@ -1467,6 +1467,78 @@ async function serve(dir) {
   return { url: `http://127.0.0.1:${server.address().port}/`, stats, close: () => server.close() };
 }
 
+test("long adjacent tile runs use parallel pieces only in server runtimes", { timeout: 30000 }, async () => {
+  const { createServer } = await import("node:http");
+  const data = Uint8Array.from({ length: 2048 * 2048 }, (_, i) => i % 251);
+  const raster = terrio.rasterFromArray(data, 2048, 2048, [0, 1, 0, 2048, 0, -1], "EPSG:4326");
+  const bytes = raster.toBytes("tiles.tif", { format: "COG", compress: "NONE", tileSize: 256 });
+  let reading = false;
+  let active = 0;
+  let peak = 0;
+  let ranges = [];
+  const pending = new Set();
+  const server = createServer((req, res) => {
+    const match = /^bytes=(\d+)-(\d+)$/.exec(req.headers.range ?? "");
+    assert.ok(match, "a range request is required");
+    const first = Number(match[1]);
+    const last = Math.min(Number(match[2]), bytes.length - 1);
+    const body = bytes.subarray(first, last + 1);
+    let sent = false;
+    let timer;
+    const send = () => {
+      if (sent) return;
+      sent = true;
+      clearTimeout(timer);
+      pending.delete(send);
+      res.writeHead(206, { "Content-Length": body.length, "Content-Range": `bytes ${first}-${last}/${bytes.length}` });
+      res.end(body);
+    };
+    if (!reading) return send();
+    ranges.push([first, body.length]);
+    peak = Math.max(peak, ++active);
+    res.once("finish", () => active--);
+    // A single request is eventually released, so the unfixed code fails the concurrency
+    // assertion. Parallel pieces release one another, without a wall-clock performance test.
+    timer = setTimeout(send, 250);
+    pending.add(send);
+    if (pending.size >= 2) for (const finish of [...pending]) finish();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const url = `http://127.0.0.1:${server.address().port}/tiles.tif`;
+  const document = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const totals = [];
+  try {
+    for (const browser of [false, true]) {
+      const ds = await terrio.openUrl(url, { blockSize: 16384 });
+      ranges = [];
+      peak = 0;
+      reading = true;
+      if (browser) Object.defineProperty(globalThis, "document", { configurable: true, value: {} });
+      const values = await ds.readBand(1);
+      if (document) Object.defineProperty(globalThis, "document", document);
+      else delete globalThis.document;
+      reading = false;
+      assert.deepEqual(values, data);
+      assert.ok(ranges.length > 0);
+      if (browser) assert.equal(peak, 1, "browser connection policy keeps the merged run whole");
+      else assert.ok(peak >= 2 && peak <= 12, `expected parallel pieces, saw ${peak}: ${JSON.stringify(ranges)}`);
+      totals.push(ranges.reduce((sum, [, length]) => sum + length, 0));
+      const requests = ds.stats().requests;
+      assert.deepEqual(await ds.readBand(1), data);
+      assert.equal(ds.stats().requests, requests, "warm reads reuse all fetched pieces");
+      ds.free();
+    }
+    assert.equal(totals[0], totals[1], "splitting changes requests, not bytes fetched");
+  } finally {
+    if (document) Object.defineProperty(globalThis, "document", document);
+    else delete globalThis.document;
+    for (const finish of [...pending]) finish();
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+    raster.free();
+  }
+});
+
 test("remote reads send at most 12 range requests at once", async () => {
   const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
