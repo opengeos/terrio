@@ -82,7 +82,7 @@ pub(crate) fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
 /// credential parameter. Names are
 /// compared whole, percent-decoded as a server reads them (`%73ig` is `sig`), so a file name
 /// such as `what?design.tif` is not one. Parameters split at `&`, `;`, `?`, `#` and whitespace,
-/// so a later location in the same message is checked too.
+/// so a later location in the same message is checked too. Only `name=value` parameters count.
 fn names_credential(query: &str) -> bool {
     const NAMES: [&str; 13] = [
         "sig",
@@ -101,7 +101,9 @@ fn names_credential(query: &str) -> bool {
     ];
     const PARTS: [&str; 8] = ["signature", "token", "secret", "password", "credential", "apikey", "api_key", "api-key"];
     query.split(|c: char| matches!(c, '&' | ';' | '?' | '#') || c.is_whitespace()).any(|parameter| {
-        let name = percent_decoded(parameter.split('=').next().unwrap_or_default()).to_ascii_lowercase();
+        // A parameter carries a value; a bare word of the message ("unexpected token") is not one.
+        let Some((name, _)) = parameter.split_once('=') else { return false };
+        let name = percent_decoded(name).to_ascii_lowercase();
         NAMES.contains(&name.as_str()) || PARTS.iter().any(|part| name.contains(part))
     })
 }
@@ -888,6 +890,9 @@ mod tests {
         for name in ["api-key", "x-api-key", "authorization", "apiKey"] {
             assert_eq!(super::redact_url(&format!("/vsicurl/x.tif?{name}=PRIVATE")), "/vsicurl/x.tif?<redacted>");
         }
+        // Words of the message after a path's `?` are not parameters.
+        assert_eq!(super::redact_url("/data/a?b.tif: unsupported code"), "/data/a?b.tif: unsupported code");
+        assert_eq!(super::redact_url("/data/a?b.tif: unexpected token, missing key"), "/data/a?b.tif: unexpected token, missing key");
         // A Windows verbatim prefix is not a query.
         assert_eq!(super::redact_url(r"\\?\C:\token-cache\a.tif"), r"\\?\C:\token-cache\a.tif");
         assert_eq!(super::redact_url(r"\\?\C:\data\a.tif?sig=PRIVATE"), r"\\?\C:\data\a.tif?<redacted>");

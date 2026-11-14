@@ -188,10 +188,11 @@ impl CatalogInput {
 fn virtual_bytes(bytes: &[u8], name: &str) -> Result<Option<LazyRaster>> {
     let text = std::str::from_utf8(bytes);
     // By name or content, as the format sniffer reads it (an XML declaration may come first):
-    // VRT bytes that fell through would be opened as a file, with host resolution.
+    // VRT bytes that fell through would be opened as a file, with host resolution. The sniff
+    // uses a neutral name, since a prefixed name (`GDAL:…`) skips content identification.
     let vrt = crate::formats::extension(name).as_deref() == Some("vrt")
         || text.is_ok_and(|s| s.trim_start().starts_with("<VRTDataset"))
-        || crate::formats::identify_bytes(name, bytes).by_content.as_deref() == Some("VRT");
+        || crate::formats::identify_bytes("source", bytes).by_content.as_deref() == Some("VRT");
     if !vrt {
         return Ok(None);
     }
