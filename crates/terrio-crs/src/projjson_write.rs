@@ -18,7 +18,7 @@
 //! sphere of an ellipsoid (`+R_C`), and any parameter of the PROJ string the PROJJSON would not
 //! carry, unless it has the value used when it is absent (see [`refuse_unwritten`]).
 
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
 use crate::params::Params;
 use crate::wkt1::{self, Node};
@@ -35,13 +35,9 @@ fn unsupported(what: impl std::fmt::Display) -> Error {
 pub(crate) fn write(s: &SpatialRef) -> Result<String> {
     let mut v = crs(s)?;
     if let Value::Object(o) = &mut v {
-        // `$schema` first, as PROJ writes it.
-        let mut out = Map::new();
-        out.insert("$schema".into(), SCHEMA.into());
-        out.append(o);
-        v = Value::Object(out);
+        o.insert("$schema".into(), SCHEMA.into());
     }
-    serde_json::to_string(&v).map_err(|e| Error::Crs(e.to_string()))
+    Ok(crate::projjson_order::to_string(&v))
 }
 
 fn id(code: u32) -> Value {

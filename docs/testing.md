@@ -1589,6 +1589,12 @@ coordinates must match the originals' (`scripts/compare_projjson_export_with_gda
 with no point the original CRS transforms is reported as `not compared`, and a point only the
 original transforms as `differs`.
 
+Its keys are in PROJ's order without serde_json's `preserve_order` feature, which terrio-crs leaves
+off (`cargo test -p terrio-crs --test projjson_key_order`). The key order of every kind of object
+PROJ 9.8.1 writes for its registry CRSs is frozen in
+`crates/terrio-crs/tests/data/projjson_key_order.txt`; regenerate it with
+`scripts/gen_projjson_key_order.py` (pyproj 3.8.0, `PROJ_NETWORK=OFF`).
+
 ## IAU_2015 authority support (#271)
 
 `iau-source.json` records the registry version, PROJ source revision and
