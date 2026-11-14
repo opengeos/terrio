@@ -138,6 +138,8 @@ mod stacta;
 mod tiff_limits;
 #[path = "../topology.rs"]
 mod topology;
+#[path = "../transformer_thread_exit.rs"]
+mod transformer_thread_exit;
 #[path = "../unreferenced_writes.rs"]
 mod unreferenced_writes;
 #[path = "../user_crs.rs"]
