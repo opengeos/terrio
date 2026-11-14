@@ -1127,8 +1127,15 @@ fn load(name: &str) -> Option<Arc<GridFile>> {
         return Some(NULL.get_or_init(|| Arc::new(null_file())).clone());
     }
     let generation = cache_generation();
-    if let Some((_, f)) = files().lock().unwrap_or_else(PoisonError::into_inner).get(name).filter(|(g, _)| *g == generation) {
-        return f.clone();
+    let cached = files().lock().unwrap_or_else(PoisonError::into_inner).get(name).filter(|(g, _)| *g == generation).map(|(_, f)| f.clone());
+    if let Some(file) = cached {
+        // Repeated refused lookups still explain the missing grid to each caller, including
+        // another thread. Do not repeat file I/O for ordinary cached misses.
+        #[cfg(not(target_family = "wasm"))]
+        if file.is_none() {
+            let _ = grid_location(name);
+        }
+        return file;
     }
     let bytes = find_local(name);
     if bytes.is_none() {
@@ -2148,6 +2155,19 @@ pub(crate) fn gridshift_apply(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn cached_path_refusals_warn_each_caller() {
+        let name = "refused-test/../cached-refusal.gtx";
+        for _ in 0..2 {
+            crate::warnings::take();
+            assert!(super::load(name).is_none());
+            let warnings = crate::warnings::take();
+            assert_eq!(warnings.len(), 1);
+            assert!(warnings[0].contains("ordinary path components"));
+        }
+    }
+
     /// Resolution-orientation and empty-dimension safety checks, as in PROJ 9.8.1's
     /// GTiffDataset::nextGrid; this does not claim its complete extent/admission parity.
     #[test]

@@ -72,11 +72,12 @@ def test_refusal_warns_without_leaking_to_later_calls(tmp_path, name):
     grid.write_bytes(tiny_grid())
     terrio.set_grid_search_paths([tmp_path])
     name = str(grid) if name == "absolute" else name
-    with pytest.warns(UserWarning) as caught:
-        with pytest.raises(terrio.CRSError):
-            height(name)
-    assert len(caught) == 1
-    assert "is not read" in str(caught[0].message)
+    for _ in range(2):
+        with pytest.warns(UserWarning) as caught:
+            with pytest.raises(terrio.CRSError):
+                height(name)
+        assert len(caught) == 1
+        assert "is not read" in str(caught[0].message)
     with warnings.catch_warnings(record=True) as later:
         warnings.simplefilter("always")
         assert height("tiny.gtx") == pytest.approx(122.5)
