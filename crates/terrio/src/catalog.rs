@@ -204,7 +204,9 @@ fn virtual_bytes(bytes: &[u8], name: &str) -> Result<Option<LazyRaster>> {
                             return Err(bad("multiple XML roots in supplied bytes"));
                         }
                         root_seen = true;
-                        vrt = root.name().as_ref() == "VRTDataset";
+                        // GDAL's fallback accepts case variants; our strict closed-map
+                        // parser must either accept or refuse them before file fallback.
+                        vrt = root.name().as_ref().eq_ignore_ascii_case("VRTDataset");
                     }
                     if matches!(event, quick_xml::events::Event::Start(_)) {
                         depth += 1;

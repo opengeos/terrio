@@ -46,7 +46,7 @@ portable remote download basenames, mask sources, and RPC DEM references.
 The catalog tests keep VRT bytes in the closed-source-map opener for both reading
 and overwrite inventory, including XML declarations and `GDAL:`/`NETCDF:` name
 prefixes, prolog comments beyond the identification header, and rejected extra
-document roots. Direct paths and
+document roots and GDAL-accepted case variants. Direct paths and
 already-open native handles retain file-based lookup. Archive diagnostic tests
 check formatted Python exception chains and native sidecar/directory failures
 for private extraction paths. Named malformed CRS and MIF-header refusals remain
