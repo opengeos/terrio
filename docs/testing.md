@@ -111,9 +111,12 @@ Cancellation is process-wide: a libc fork from any application thread cancels
 all active parallel range batches, including reads whose own callers never
 fork. Those concurrent readers receive an I/O cancellation error and may retry
 after the fork, as the recovery test does. Existing serial-read and Zarr fork
-behavior is unchanged. Cancellation covers response waits and retry delays; connection
-establishment and DNS keep their existing behavior. These are lifecycle and
-I/O checks, not GDAL numerical comparisons.
+behavior is unchanged. Cancellation covers response waits and retry delays.
+Because range workers are now counted, a fork also waits for their DNS and
+connection setup phases, which cancellation cannot interrupt. The default
+connection timeout is 30 seconds; DNS has no Terrio-configured timeout and can
+hold the fork until the resolver returns. These are lifecycle and I/O checks,
+not GDAL numerical comparisons.
 
 ## Remote-read locks across fork
 
