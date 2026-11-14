@@ -1699,7 +1699,7 @@ fn proj_crs<const ENGINE: bool>(a: &Value) -> Option<CrsInfo> {
         return Some(epsg_only(code));
     }
     let s = if let Some(code) = a["proj:code"].as_str() {
-        SpatialRef::parse(code).ok()?
+        SpatialRef::parse_literal(code).ok()?
     } else if let Some(code) = a["proj:epsg"].as_u64() {
         SpatialRef::from_epsg(u32::try_from(code).ok()?).ok()?
     } else if let Some(w) = a["proj:wkt2"].as_str() {
@@ -2050,7 +2050,7 @@ fn open_node_with<const ENGINE: bool>(node: &Node, list_subdatasets: bool) -> Re
             };
             crs = super::cf::cf_crs(|k| gm.attrs[k].as_str().map(str::to_string), numbers).map(|c| match &c.proj4 {
                 // CF parameters: a PROJ string, parsed by terrio (not matched to an EPSG code).
-                Some(p) => crate::crs::SpatialRef::parse(p).map(|s| s.to_crs_info()).unwrap_or(c),
+                Some(p) => crate::crs::SpatialRef::parse_literal(p).map(|s| s.to_crs_info()).unwrap_or(c),
                 None => c,
             });
         }

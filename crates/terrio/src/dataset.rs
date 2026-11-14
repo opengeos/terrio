@@ -876,7 +876,7 @@ fn open_query(url: &str, named: Option<VectorDriver>, options: &VectorOpenOption
             return Err(if crate::drivers::vector::wfs::is_exception(&bytes) {
                 crate::drivers::vector::wfs::feature_exception(&bytes)
             } else {
-                Error::Http(format!("{}: status {status}", url.split(['?', '#']).next().unwrap_or(url)))
+                Error::Http(format!("{}: status {status}", crate::vsi::redact_diagnostic_location(url)))
             });
         }
         // Asked for the protocol buffer, a service answers a query it refuses with nothing, or with

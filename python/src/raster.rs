@@ -1079,7 +1079,7 @@ impl PyRaster {
         if g[1] * g[5] - g[2] * g[4] == 0.0 || g.iter().any(|v| !v.is_finite()) {
             return Err(invalid("the transform is not invertible"));
         }
-        let crs = crs.map(SpatialRef::parse).transpose().py()?.unwrap_or_default();
+        let crs = crs.map(SpatialRef::parse_literal).transpose().py()?.unwrap_or_default();
         let target = complex_dtype
             .map(|name| self::complex_dtype(name).ok_or_else(|| invalid(format!("unsupported complex sample type {name}"))))
             .transpose()?;
@@ -1401,7 +1401,7 @@ impl PyGeoTiffWriter {
             return Err(invalid("the raster is empty"));
         }
         let (data_type, complex) = storage_type(dtype)?;
-        let crs = crs.map(SpatialRef::parse).transpose().py()?.unwrap_or_default();
+        let crs = crs.map(SpatialRef::parse_literal).transpose().py()?.unwrap_or_default();
         let cfg = terrio::RasterConfig {
             cols: 1,
             rows: 1,

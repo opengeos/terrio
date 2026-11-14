@@ -184,14 +184,16 @@ def test_vrt_subdataset_inventory_protects_physical_container(tmp_path):
     source.GetRasterBand(1).Fill(10)
     path = tmp_path / "source.nc"
     gdal.Translate(str(path), source, format="netCDF")
+    subdataset = f'NETCDF:"{path}":Band1'
     xml = (
         '<VRTDataset rasterXSize="4" rasterYSize="4"><SRS>EPSG:4326</SRS>'
         "<GeoTransform>0,1,0,4,0,-1</GeoTransform>"
         '<VRTRasterBand dataType="Float32"><SimpleSource>'
-        f'<SourceFilename>NETCDF:"{path}":Band1</SourceFilename><SourceBand>1</SourceBand>'
+        f"<SourceFilename>{subdataset}</SourceFilename><SourceBand>1</SourceBand>"
         "</SimpleSource></VRTRasterBand></VRTDataset>"
     )
-    vrt = terrio.open_vrt(xml, {})
+    # The source map authorizes the physical container explicitly.
+    vrt = terrio.open_vrt(xml, {subdataset: subdataset})
     footprints = index()
     footprints["features"] = footprints["features"][:1]
     catalog = terrio.open_catalog(

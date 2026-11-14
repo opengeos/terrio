@@ -2570,6 +2570,50 @@ test("openCatalog: selected data band retains the required source alpha", () => 
   catalog.free(); untagged.free();
 });
 
+test("openVrt refuses every source missing from its supplied map", () => {
+  const source = terrio.rasterFromArray(new Uint8Array([7, 7, 7, 7]), 2, 2, [0, 1, 0, 2, 0, -1]);
+  const bytes = source.toBytes("source.tif");
+  for (const name of ["/private/source.tif", "../source.tif", "C:\\private\\source.tif", "https://example.invalid/source.tif"]) {
+    const xml = `<VRTDataset rasterXSize="2" rasterYSize="2"><VRTRasterBand dataType="Byte"><SimpleSource><SourceFilename>${name}</SourceFilename><SourceBand>1</SourceBand></SimpleSource></VRTRasterBand></VRTDataset>`;
+    assert.throws(() => terrio.openVrt(xml, {}), /supplied.*source map/);
+    assert.throws(() => terrio.openVrt(xml, { "unrelated.tif": bytes }), /supplied.*source map/);
+    const mapped = terrio.openVrt(xml, { [name]: bytes });
+    assert.deepEqual([...mapped.readBand(1)], [7, 7, 7, 7]);
+    mapped.free();
+  }
+  source.free();
+});
+
+test("openVrt opens a supplied VRT against the same map only", () => {
+  const source = terrio.rasterFromArray(new Uint8Array([7, 7, 7, 7]), 2, 2, [0, 1, 0, 2, 0, -1]);
+  const bytes = source.toBytes("source.tif");
+  const vrt = (name) => `<VRTDataset rasterXSize="2" rasterYSize="2"><VRTRasterBand dataType="Byte"><SimpleSource><SourceFilename>${name}</SourceFilename><SourceBand>1</SourceBand></SimpleSource></VRTRasterBand></VRTDataset>`;
+  const text = (xml) => new TextEncoder().encode(xml);
+  assert.throws(() => terrio.openVrt(vrt("inner.vrt"), { "inner.vrt": text(vrt("https://example.invalid/x.tif")) }), /supplied.*source map/);
+  assert.throws(() => terrio.openVrt(vrt("a.vrt"), { "a.vrt": text(vrt("a.vrt")) }), /references itself/);
+  const nested = terrio.openVrt(vrt("inner.vrt"), { "inner.vrt": text(vrt("source.tif")), "source.tif": bytes });
+  assert.deepEqual([...nested.readBand(1)], [7, 7, 7, 7]);
+  nested.free();
+  source.free();
+});
+
+test("openZarr refuses rooted keys, traversal, and normalized aliases", { skip: !BUILT.includes("zarr") }, () => {
+  const files = {
+    ".zgroup": JSON.stringify({ zarr_format: 2 }),
+    "b/.zarray": JSON.stringify({ zarr_format: 2, shape: [2, 2], chunks: [2, 2], dtype: "|u1", compressor: null, fill_value: 0, order: "C", filters: null }),
+    "b/.zattrs": JSON.stringify({ _ARRAY_DIMENSIONS: ["y", "x"] }),
+    "b/0.0": new Uint8Array([3, 3, 3, 3]),
+  };
+  const safe = terrio.openZarr(files);
+  assert.deepEqual([...safe.readBand(1)], [3, 3, 3, 3]);
+  safe.free();
+  for (const prefix of ["/", "\\", "C:/", "C:\\", "./C:/", "../", "s/../../"]) {
+    const rooted = Object.fromEntries(Object.entries(files).map(([key, value]) => [prefix + key, value]));
+    assert.throws(() => terrio.openZarr(rooted), /relative/);
+  }
+  assert.throws(() => terrio.openZarr({ ...files, "b/./0.0": new Uint8Array([9, 9, 9, 9]) }), /unique/);
+});
+
 test("openVrt resolves uploaded sources and reads derived windows lazily", () => {
   const src = terrio.open(new TextEncoder().encode("ncols 3\nnrows 3\nxllcorner 0\nyllcorner 0\ncellsize 1\n0 1 2\n3 4 5\n6 7 8\n"), "source.asc");
   const bytes = src.toBytes("upload.tif");

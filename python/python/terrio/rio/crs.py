@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import re
 import warnings
 from collections.abc import Mapping
@@ -190,7 +189,7 @@ class CRS(Mapping[str, Any]):
         crs._input = definition
         if _AUTHORITY_CODE.match(definition):
             crs._database = definition.strip()
-        crs._from_file = os.path.isfile(definition) and bool(info.get("wkt"))
+        crs._from_file = False
         return crs
 
     @classmethod

@@ -84,7 +84,7 @@ fn dataset_to_py(py: Python<'_>, ds: Dataset) -> PyResult<Py<PyAny>> {
 }
 
 pub(crate) fn srs(s: Option<&str>) -> PyResult<Option<SpatialRef>> {
-    s.map(SpatialRef::parse).transpose().py()
+    s.map(SpatialRef::parse_literal).transpose().py()
 }
 
 pub(crate) fn write_mode(append: bool, overwrite: bool) -> PyResult<WriteMode> {
@@ -123,25 +123,27 @@ fn open(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
 }
 
 /// Opens a serialized VRT with source names mapped to file bytes or paths.
-/// Sources are opened once; pixel windows remain lazy. This also supports VRTs
-/// referring to uploaded GeoTIFFs without writing those files beside the XML.
+/// Every referenced source, including masks and RPC DEMs, must be supplied.
+/// Missing map entries never fall back to filesystem or network access. A source
+/// given as bytes that is itself a VRT is opened against the same map; bytes of a
+/// STAC, STACTA or STACIT document are refused. Only referenced entries are opened;
+/// pixel windows remain lazy. This also supports VRTs referring to uploaded
+/// GeoTIFFs without writing those files beside the XML.
 #[pyfunction]
 fn open_vrt(py: Python<'_>, xml: &str, sources: &Bound<'_, PyDict>) -> PyResult<PyRaster> {
-    let description = terrio::ops::vrt::VirtualRaster::from_xml(xml).py()?;
-    let mut resolved = std::collections::HashMap::new();
+    use terrio::ops::vrt::SuppliedSource;
+    let mut supplied = std::collections::HashMap::new();
     for (name, value) in sources.iter() {
         let name = name.extract::<String>()?;
-        let reader = if let Ok(bytes) = value.cast::<PyBytes>() {
-            let bytes = bytes.as_bytes().to_vec();
-            py.detach_result(|| terrio::memory::open_raster_lazy_bytes(bytes, &name)).py()?
+        let source = if let Ok(bytes) = value.cast::<PyBytes>() {
+            SuppliedSource::Bytes(bytes.as_bytes().to_vec())
         } else {
             let path = value.extract::<std::path::PathBuf>()?;
-            let path = path.to_str().ok_or_else(|| invalid("source paths must be UTF-8"))?;
-            py.detach_result(|| terrio::open_raster_lazy(path)).py()?
+            SuppliedSource::Path(path.to_str().ok_or_else(|| invalid("source paths must be UTF-8"))?.to_string())
         };
-        resolved.insert(name, reader);
+        supplied.insert(name, source);
     }
-    let inner = py.detach_result(|| description.into_lazy(std::path::Path::new(""), resolved)).py()?;
+    let inner = py.detach_result(|| terrio::ops::vrt::VirtualRaster::open_supplied(xml, &supplied)).py()?;
     Ok(PyRaster { inner })
 }
 
@@ -1000,8 +1002,8 @@ fn transform_bounds(
     bounds: (f64, f64, f64, f64),
     densify_pts: usize,
 ) -> PyResult<(f64, f64, f64, f64)> {
-    let src = SpatialRef::parse(src_crs).py()?;
-    let dst = SpatialRef::parse(dst_crs).py()?;
+    let src = SpatialRef::parse_literal(src_crs).py()?;
+    let dst = SpatialRef::parse_literal(dst_crs).py()?;
     crate::with_warnings(py, || Transformer::new(&src, &dst)?.transform_bounds_densified(bounds, densify_pts))
 }
 
@@ -1069,8 +1071,8 @@ fn transform_points<'py>(
     {
         return Err(invalid(format!("xs and zs differ in length ({} and {})", xs.len(), z.len())));
     }
-    let src = SpatialRef::parse(src_crs).py()?;
-    let dst = SpatialRef::parse(dst_crs).py()?;
+    let src = SpatialRef::parse_literal(src_crs).py()?;
+    let dst = SpatialRef::parse_literal(dst_crs).py()?;
     let opts = TransformOptions {
         source_coordinate_epoch: s_coord_epoch,
         target_coordinate_epoch: t_coord_epoch,
@@ -1931,7 +1933,7 @@ impl PyRegionWarp {
         let bands = src_nodata.len();
         let kernel_version = terrio::ops::warp::KernelVersion::parse_or_configured(kernel_version).py()?;
         let grid_invariant = grid_invariant.unwrap_or_else(|| WarpOptions::default().grid_invariant);
-        let (src_srs, dst_srs) = (SpatialRef::parse(src_crs).py()?, SpatialRef::parse(dst_crs).py()?);
+        let (src_srs, dst_srs) = (SpatialRef::parse_literal(src_crs).py()?, SpatialRef::parse_literal(dst_crs).py()?);
         let (resampling, dtype) = (Resampling::parse(resampling).py()?, terrio::ops::parse_data_type(dtype).py()?);
         if let (None, Some(rpc)) = (&gcps, rpc) {
             // RPCs georeference the source instead of `src_transform` (a DEM is read here).
@@ -2212,7 +2214,7 @@ fn open_catalog(
         sort_descending,
         resolution: tr,
         extent: te,
-        srs: srs.map(SpatialRef::parse).transpose().py()?,
+        srs: srs.map(SpatialRef::parse_literal).transpose().py()?,
         bands,
         data_type: ot.map(terrio::ops::parse_data_type).transpose().py()?,
         nodata,

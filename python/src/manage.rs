@@ -115,7 +115,7 @@ fn create_raster(
         size,
         band_count,
         data_type: ot.map(terrio::ops::parse_data_type).transpose().py()?,
-        crs: crs.map(terrio::crs::SpatialRef::parse).transpose().py()?,
+        crs: crs.map(terrio::crs::SpatialRef::parse_literal).transpose().py()?,
         bbox,
         nodata,
         unset_nodata,
@@ -241,7 +241,7 @@ fn update_raster(
     if geometry.is_none() && geometry_crs.is_some() {
         return Err(invalid("geometry_crs requires geometry"));
     }
-    let crs = geometry_crs.map(terrio::crs::SpatialRef::parse).transpose().py()?;
+    let crs = geometry_crs.map(terrio::crs::SpatialRef::parse_literal).transpose().py()?;
     let options = update::UpdateOptions {
         resampling: Resampling::parse(resampling).py()?,
         geometry: geometry.map(|g| update::parse_geometry(g, crs)).transpose().py()?,
@@ -277,7 +277,7 @@ fn edit_raster(
     ignore_cog_layout_break: bool,
 ) -> PyResult<()> {
     let options = edit::EditOptions {
-        crs: crs.map(terrio::crs::SpatialRef::parse).transpose().py()?,
+        crs: crs.map(terrio::crs::SpatialRef::parse_literal).transpose().py()?,
         unset_crs,
         geo_transform: geotransform,
         bbox,
@@ -308,8 +308,8 @@ fn move_raster(
     ignore_cog_layout_break: bool,
 ) -> PyResult<Py<PyAny>> {
     let options = edit::MoveOptions {
-        t_srs: terrio::crs::SpatialRef::parse(t_srs).py()?,
-        s_srs: s_srs.map(terrio::crs::SpatialRef::parse).transpose().py()?,
+        t_srs: terrio::crs::SpatialRef::parse_literal(t_srs).py()?,
+        s_srs: s_srs.map(terrio::crs::SpatialRef::parse_literal).transpose().py()?,
         error_threshold,
         ignore_cog_layout_break,
     };

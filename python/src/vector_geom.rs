@@ -270,7 +270,7 @@ fn clip_vector(
     if like.is_some() && crs.is_some() {
         return Err(invalid("crs applies only to bbox/geometry"));
     }
-    let crs = crs.as_deref().map(terrio::crs::SpatialRef::parse).transpose().py()?;
+    let crs = crs.as_deref().map(terrio::crs::SpatialRef::parse_literal).transpose().py()?;
     let template = ClipTemplateOptions { layer: like_layer, where_clause: like_where, sql: like_sql };
     let region = if let Some(bbox) = bbox {
         ClipRegion::bbox(bbox, crs).py()?

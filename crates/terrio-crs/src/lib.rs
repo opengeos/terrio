@@ -622,7 +622,7 @@ impl SpatialRef {
                 && (bytes.len() as u64) < MAX
                 && let Ok(text) = String::from_utf8(bytes)
             {
-                return Self::parse_definition(&text, false);
+                return Self::parse_definition(&text, false).map_err(|_| Error::Crs(format!("cannot parse CRS definition file '{s}'")));
             }
         }
         Err(Error::Crs(format!("cannot parse '{s}'")))

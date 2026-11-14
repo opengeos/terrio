@@ -897,7 +897,7 @@ fn apply_metadata(metadata: &[(String, String)], options: &mut CatalogOptions) -
             get("NODATA").and_then(|v| v.split(',').next()).map(|v| v.parse::<f64>().map_err(|_| bad("invalid NODATA"))).transpose()?;
     }
     if options.srs.is_none() {
-        options.srs = get("SRS").map(SpatialRef::parse).transpose()?;
+        options.srs = get("SRS").map(SpatialRef::parse_literal).transpose()?;
     }
     if options.alpha_band.is_none() {
         options.alpha_band =

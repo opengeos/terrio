@@ -18,7 +18,7 @@ use std::collections::HashMap;
 type EntryIndex = HashMap<(String, bool), usize>;
 
 /// Removes credentials from diagnostics and public names: userinfo in every URL authority
-/// and credential-bearing query strings. Raw whitespace in malformed userinfo is retained
+/// and all URL query strings and fragments. Raw whitespace in malformed userinfo is retained
 /// through the `@` for conservative redaction, avoiding password fragments. An unencoded
 /// `/`, `?` or `#` ends the authority; percent-encode those characters in passwords. An `@`
 /// in a path is not userinfo.
@@ -46,35 +46,15 @@ pub(crate) fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
         redacted.push_str(&url[copied..]);
         std::borrow::Cow::Owned(redacted)
     };
-    if let Some((base, query)) = out.split_once('?') {
-        // Parameter names as a server reads them too: `%6Bey=` is `key=`.
-        let lower = format!("{query}&{}", percent_decoded(query)).to_ascii_lowercase();
-        const KEYS: [&str; 9] = ["sig", "token=", "credential=", "api_key=", "apikey=", "access_key=", "key=", "password=", "passwd="];
-        if KEYS.iter().any(|key| lower.contains(key)) {
-            return format!("{base}?<redacted>").into();
-        }
+    if let Some(scheme) = out.find("://")
+        && let Some(end) = out[scheme + 3..].find(['?', '#'])
+    {
+        // Treat the entire suffix as private, including malformed or nested URLs. An
+        // allowlist of credential parameter names cannot cover custom authentication.
+        let end = scheme + 3 + end;
+        return format!("{}{}<redacted>", &out[..end], &out[end..end + 1]).into();
     }
     out
-}
-
-/// `text` with its `%XX` escapes decoded (invalid escapes and non-UTF-8 bytes kept as they are).
-fn percent_decoded(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let hex = |b: u8| (b as char).to_digit(16);
-        if bytes[i] == b'%'
-            && let (Some(h), Some(l)) = (bytes.get(i + 1).copied().and_then(hex), bytes.get(i + 2).copied().and_then(hex))
-        {
-            out.push((h * 16 + l) as u8);
-            i += 3;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// An entry of a remote listing.
@@ -799,10 +779,7 @@ mod tests {
     fn url_passwords_and_key_parameters_are_redacted() {
         let redacted = super::redact_url("https://user:secret@example.com/f.tif?key=AIza123");
         assert_eq!(redacted, "https://example.com/f.tif?<redacted>");
-        assert_eq!(
-            super::redact_url("https://a.example/x?harmless=1 then https://u:secret@b.example/y"),
-            "https://a.example/x?harmless=1 then https://b.example/y"
-        );
+        assert_eq!(super::redact_url("https://a.example/x?harmless=1 then https://u:secret@b.example/y"), "https://a.example/x?<redacted>");
         assert_eq!(super::redact_url("https://u:p@example.com"), "https://example.com");
         assert_eq!(super::redact_url("https://user:my pass@host/x"), "https://host/x");
         assert_eq!(
@@ -815,6 +792,14 @@ mod tests {
         assert_eq!(super::redact_url("/vsizip/local@archive.zip/x.tif"), "/vsizip/local@archive.zip/x.tif");
         assert!(super::redact_url("https://example.com/f.tif?password=hunter2").ends_with("?<redacted>"));
         assert!(super::redact_url("https://example.com/f.tif?%6Bey=AIza123").ends_with("?<redacted>"));
+        for key in ["code", "auth", "jwt", "secret", "client_secret", "session", "X-Amz-Signature", "X-Goog-Signature"] {
+            let url = format!("https://user:private@example.com/f.tif?{key}=PRIVATE");
+            let shown = super::redact_url(&url);
+            assert_eq!(shown, "https://example.com/f.tif?<redacted>");
+            assert_eq!(super::redact_url(&shown), shown);
+        }
+        assert_eq!(super::redact_url("https://host/a?<redacted>&token=PRIVATE"), "https://host/a?<redacted>");
+        assert_eq!(super::redact_url("https://host/a#PRIVATE"), "https://host/a#<redacted>");
     }
 
     #[test]

@@ -39,8 +39,14 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
 - PROJJSON v0.7 definitions in the [supported object subset](#projjson-definitions);
 - PROJ strings: `+proj=utm +zone=13 +datum=WGS84`, with `+nadgrids=` and `+geoidgrids=` for
   datum shift and geoid grids;
-- the path of a regular file holding one of these (`SpatialRef::parse_literal` in Rust parses the same
-  definitions without reading file paths).
+- the CLI and Rust's `SpatialRef::parse` also accept the path of a trusted regular file
+  holding one of these. Python and JavaScript CRS strings, and CRS metadata stored in
+  datasets, are parsed literally and never interpreted as local filenames.
+
+When a Python caller deliberately wants a CRS from a trusted local file, read the text
+explicitly, for example `CRS.from_user_input(Path("zone.prj").read_text())`. Rust callers
+handling untrusted strings should use `SpatialRef::parse_literal`. Errors from the trusted
+file-parsing form name the file without quoting its contents.
 
 Definition-file paths may be symlinks to regular files. Pipes (including shell process
 substitution) and devices are refused without reading them. Callers that intentionally

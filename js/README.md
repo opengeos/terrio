@@ -285,7 +285,8 @@ const virtual = openVrt(xml, { "dem.tif": imageBytes });
 const crop = virtual.readBand(1, [32, 48, 128, 128]);
 ```
 
-`openVrt` resolves source names to `Uint8Array` bytes, retaining lazy GeoTIFF and
+`openVrt` resolves source names to `Uint8Array` bytes and never opens a name the
+map lacks; a mapped VRT document is resolved against the same map. It retains lazy GeoTIFF and
 VRT window reads in the browser and Node.js. It supports scalar built-in derived
 bands, full/separable kernel filters, mask sources and serialized warped VRTs
 (affine/reprojection, GCP/TPS/homography/RPC). External pixel functions, complex

@@ -1471,14 +1471,22 @@ alone converts to its native integer type. Python GDAL's default `ReadAsArray`
 chooses Float32 for any mixed dataset; use its explicit `buf_type` argument to
 compare a promoted Float64 buffer.
 
-VRT references use the caller’s normal file and network access. Supplied source maps
-override matching names; unresolved names are opened by the usual drivers.
+VRT files opened by path use the caller’s normal file and network access.
+Python `open_vrt(xml, sources)`, JavaScript `openVrt`, and Rust `into_lazy`
+require every source reference, including masks and RPC DEMs, in the supplied map.
+Missing entries are refused before source reads. Map keys match stored references
+exactly; Python map values may explicitly authorize paths or supply bytes.
+A supplied VRT document is resolved against the same map (Rust
+`VirtualRaster::open_supplied`); supplied STAC, STACTA and STACIT documents are
+refused, because they name further datasets.
 For heterogeneous plain/derived bands, a shared buffer uses the common numeric
 type needed by its requested bands. Each band's declared rounding is retained;
 a leading Byte band does not truncate later floating-point bands.
 
 The Rust `VirtualRaster` API parses and serializes these descriptions. Its
-`into_lazy` source map also permits filesystem-free reads in WebAssembly.
+`into_lazy` source map supports filesystem-free reads in WebAssembly. Rust callers
+that deliberately trust an XML description can opt into `into_lazy_with_files`
+to resolve missing map entries against the filesystem or network.
 
 Warped VRT block evaluation is limited to 8,388,608 samples across all bands per
 declared block. Larger blocks return an unsupported error, including for small

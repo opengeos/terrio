@@ -1141,7 +1141,10 @@ fn load_items_from(doc: Value, request: &Request, max_items: usize) -> Result<It
             }
         }
         None => {
-            return Err(bad(format!("'{loc}' is not a STAC item, item collection, collection or catalog")));
+            return Err(bad(format!(
+                "'{}' is not a STAC item, item collection, collection or catalog",
+                crate::vsi::redact_diagnostic_location(loc)
+            )));
         }
     }
     Ok(out)
@@ -1568,7 +1571,7 @@ fn crs_of(s: &str) -> SpatialRef {
             return SpatialRef::from_wkt(&w);
         }
     }
-    SpatialRef::parse(s).unwrap_or_default()
+    SpatialRef::parse_literal(s).unwrap_or_default()
 }
 
 /// A mosaic of the files of a STACIT subdataset, read by window.
@@ -1625,7 +1628,12 @@ impl WindowSource for Mosaic {
             let r = raster.as_mut().ok_or_else(|| bad("unreachable"))?;
             let (sw, sh) = (sx1 - sx0, sy1 - sy0);
             if sx1 > r.width() || sy1 > r.height() {
-                return Err(bad(format!("{} is {}x{}, smaller than its STAC metadata says", item.href, r.width(), r.height())));
+                return Err(bad(format!(
+                    "{} is {}x{}, smaller than its STAC metadata says",
+                    crate::vsi::redact_diagnostic_location(&item.href),
+                    r.width(),
+                    r.height()
+                )));
             }
             let source_bytes = [sw, sh, bands.len(), r.data_type().size_bytes()].iter().try_fold(1usize, |n, &size| n.checked_mul(size));
             let validity_bytes = if self.nodata.is_some() { sw.checked_mul(sh) } else { Some(0) };

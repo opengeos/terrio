@@ -19,6 +19,18 @@ fn regular_definition_files_remain_supported() {
     }
 }
 
+#[test]
+fn invalid_definition_file_errors_do_not_echo_file_contents() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("definition.prj");
+    for text in ["CONTROLLED_PRIVATE_CRS_MARKER", "+proj=CONTROLLED_PRIVATE_CRS_MARKER", "GEOGCS[\"CONTROLLED_PRIVATE_CRS_MARKER\""] {
+        std::fs::write(&path, text).unwrap();
+        let error = SpatialRef::parse(path.to_str().unwrap()).unwrap_err().to_string();
+        assert!(!error.contains("CONTROLLED_PRIVATE_CRS_MARKER"), "{error}");
+        assert!(error.contains("definition.prj"), "{error}");
+    }
+}
+
 /// A subprocess makes the pre-fix blocking open a bounded, deterministic failure.
 #[cfg(unix)]
 #[test]

@@ -701,6 +701,7 @@ impl GeoTags {
     /// names the file in the warning.
     pub(crate) fn warn_unreadable(&self, source: &str) {
         if let Some(method) = self.unreadable_method {
+            let source = crate::vsi::redact_diagnostic_location(source);
             crate::warnings::warn(format!(
                 "{source}: GeoTIFF projection method {method} (ProjCoordTransGeoKey) is not supported, or its parameters are incomplete: the raster has no CRS"
             ));

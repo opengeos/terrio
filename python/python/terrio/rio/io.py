@@ -41,6 +41,7 @@ import numpy as np
 from affine import Affine
 
 from terrio import _terrio
+from terrio._terrio import _redact_diagnostic_location as _redact
 from terrio.errors import ResourceLimitError, TerrioError
 from terrio.rio import _tiff
 from terrio.rio._resample import gdal_cast, is_nodata, raster_io
@@ -244,8 +245,8 @@ def _to_error(err: Exception, path: str) -> RasterioIOError:
         RasterioIOError: The error to raise.
     """
     if isinstance(err, FileNotFoundError) or "No such file" in str(err):
-        return RasterioIOError(f"{path}: No such file or directory")
-    return RasterioIOError(f"{path}: {err}")
+        return RasterioIOError(f"{_redact(path)}: No such file or directory")
+    return RasterioIOError(f"{_redact(path)}: {err}")
 
 
 def _terrio_path(path: str) -> str:
@@ -326,7 +327,7 @@ def _check_driver(path: str, name: str, driver: Any) -> None:
         _terrio.check_drivers(path, drivers)
     except Exception as err:
         raise RasterioIOError(
-            f"'{name}' not recognized as being in a supported file format: {err}"
+            f"'{_redact(name)}' not recognized as being in a supported file format: {err}"
         ) from err
 
 
@@ -386,7 +387,7 @@ class _OverviewRaster:
         except (TypeError, ValueError):
             n = -1
         if not 0 <= n < len(raster.overviews):
-            raise RasterioIOError(f"Cannot open overview level {level} of {name}")
+            raise RasterioIOError(f"Cannot open overview level {level} of {_redact(name)}")
         return cls(raster, n)
 
     @property
@@ -543,7 +544,7 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
             str: `<open DatasetReader name='...' mode='r'>`.
         """
         state = "closed" if self._closed else "open"
-        return f"<{state} {type(self).__name__} name='{self.name}' mode='{self.mode}'>"
+        return f"<{state} {type(self).__name__} name='{_redact(self.name)}' mode='{self.mode}'>"
 
     # Shape.
 
@@ -1390,7 +1391,7 @@ class DatasetReader(DatasetBase):
             return _terrio.render(raster, max_size=512)
         except Exception:
             # A notebook shows the text form instead; the reason is kept for whoever looks.
-            logging.getLogger(__name__).debug("cannot draw %s", self.name, exc_info=True)
+            logging.getLogger(__name__).debug("cannot draw %s", _redact(self.name), exc_info=True)
             return None
 
     def _load(self, raster: Any) -> None:

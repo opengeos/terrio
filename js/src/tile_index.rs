@@ -63,7 +63,7 @@ impl Args {
         Ok(ti::IndexOptions {
             layer_name: self.output_layer.clone(),
             location_field: self.location_name.clone().unwrap_or_else(|| "location".into()),
-            output_crs: self.output_crs.as_deref().map(SpatialRef::parse).transpose()?,
+            output_crs: self.output_crs.as_deref().map(SpatialRef::parse_literal).transpose()?,
             source_crs_field: self.source_crs_field_name.clone(),
             source_crs_format: ti::SourceCrsFormat::parse(self.source_crs_format.as_deref().unwrap_or("auto"))?,
             metadata: self

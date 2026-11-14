@@ -263,7 +263,7 @@ impl CsvStream {
         // CREATE_CSVT=YES), for a layer with geometries.
         if options.crs.is_none() && decoder.has_geometry {
             let prj = std::path::Path::new(path).with_extension("prj");
-            if let Some(crs) = std::fs::read(&prj).ok().and_then(|b| SpatialRef::parse(String::from_utf8_lossy(&b).trim()).ok()) {
+            if let Some(crs) = std::fs::read(&prj).ok().and_then(|b| SpatialRef::parse_literal(String::from_utf8_lossy(&b).trim()).ok()) {
                 crs.apply_to_layer(&mut layer);
             }
         }
