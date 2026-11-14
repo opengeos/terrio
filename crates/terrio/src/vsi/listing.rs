@@ -67,14 +67,9 @@ pub(crate) fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
         let end = scheme + 3 + end;
         return format!("{}{}<redacted>", &out[..end], &out[end..end + 1]).into();
     }
-    // A scheme-less location (a `/vsimem/` key, a path given with a signature) has no authority to
-    // strip, but its query is as private. Only a single token is treated so, never prose.
-    if !out.contains("://")
-        && !out.contains(char::is_whitespace)
-        && let Some(query) = out.find(['?', '#'])
-    {
-        return format!("{}{}<redacted>", &out[..query], &out[query..=query]).into();
-    }
+    // Schemeless inputs without a credential parameter can be literal filenames,
+    // including Windows verbatim paths. The credential check above already covers
+    // standalone signed paths as well as paths embedded in diagnostics.
     out
 }
 
@@ -102,8 +97,11 @@ fn names_credential(query: &str) -> bool {
     const PARTS: [&str; 8] = ["signature", "token", "secret", "password", "credential", "apikey", "api_key", "api-key"];
     query.split(|c: char| matches!(c, '&' | ';' | '?' | '#') || c.is_whitespace()).any(|parameter| {
         // A parameter carries a value; a bare word of the message ("unexpected token") is not one.
-        let Some((name, _)) = parameter.split_once('=') else { return false };
-        let name = percent_decoded(name).to_ascii_lowercase();
+        // Conservatively recognize an encoded '=' too, without treating a bare
+        // word of an error message ("unexpected token") as a parameter.
+        let decoded = percent_decoded(parameter);
+        let Some((name, _)) = decoded.split_once('=') else { return false };
+        let name = name.to_ascii_lowercase();
         NAMES.contains(&name.as_str()) || PARTS.iter().any(|part| name.contains(part))
     })
 }
@@ -873,6 +871,8 @@ mod tests {
         assert_eq!(super::redact_url("https://host/a#PRIVATE"), "https://host/a#<redacted>");
         assert_eq!(super::redact_url("/no/such/file.zip?sig=PRIVATE"), "/no/such/file.zip?<redacted>");
         assert_eq!(super::redact_url("/vsiaz/c/b.tif?%73ig=PRIVATE"), "/vsiaz/c/b.tif?<redacted>");
+        assert_eq!(super::redact_url("/data/a?token%3DPRIVATE"), "/data/a?<redacted>");
+        assert_eq!(super::redact_url("/data/a?%74oken%3dPRIVATE"), "/data/a?<redacted>");
         assert_eq!(super::redact_url("/data/what?.tif"), "/data/what?.tif");
         assert_eq!(super::redact_url("/data/what?design.tif"), "/data/what?design.tif");
         assert_eq!(super::redact_url("/data/a?signal=1&monkey=2"), "/data/a?signal=1&monkey=2");
