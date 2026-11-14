@@ -545,6 +545,13 @@ PROJ's default path lookup; it does not change interpolation or coordinate math.
 
 ### Stored vector CRS definitions
 
+`python/tests/test_unresolvable_vector_crs.py` checks that retained EPSG:5800 engineering
+definitions cannot produce unreadable GeoJSON or TopoJSON through file, byte,
+conversion and CLI writes. GML file, byte and stream reads warn once for an unresolved
+name while retaining coordinates and attributes; short-code writes warn about the missing
+definition. Known CRS names remain quiet and diagnostic URLs redact credentials.
+Rust and Node regressions exercise the shared naming and GML warning behavior.
+
 `python/tests/test_vector_stored_crs.py` checks actual GeoPackage SRS rows,
 FlatGeobuf WKT headers and Shapefile projection sidecars. Prose warns and gives
 no layer CRS; balanced but unparseable WKT remains on the layer while GeoPandas,

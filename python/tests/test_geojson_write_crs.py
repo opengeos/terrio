@@ -22,18 +22,21 @@ def test_pyogrio_keeps_pyproj_epsg_identification(monkeypatch):
 
     pyproj = pytest.importorskip("pyproj")
 
-    def unavailable_parser(definition):
-        """Represent a WKT dialect unavailable to the native metadata parser.
+    native_name = _write._terrio._geojson_crs_name
+
+    def code_only_parser(definition):
+        """Require the code rather than a potentially unsupported WKT dialect.
 
         Args:
-            definition: WKT input that must not be needed for known EPSG codes.
+            definition: CRS text, expected to be the EPSG code rather than WKT.
 
-        Raises:
-            AssertionError: The bridge was used instead of pyproj's EPSG identity.
+        Returns:
+            str: The native reader's resolvable name for the EPSG identity.
         """
-        raise AssertionError(definition)
+        assert definition == "EPSG:32615"
+        return native_name(definition)
 
-    monkeypatch.setattr(_write._terrio, "_geojson_crs_name", unavailable_parser, raising=False)
+    monkeypatch.setattr(_write._terrio, "_geojson_crs_name", code_only_parser)
     assert "EPSG::32615" in _write._crs_member(pyproj.CRS.from_epsg(32615))
     assert "CRS84" in _write._crs_member(pyproj.CRS.from_epsg(4326))
 

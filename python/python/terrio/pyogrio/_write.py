@@ -29,6 +29,7 @@ import re
 import numpy as np
 
 from terrio import _terrio
+from terrio.errors import CRSError, UnsupportedError
 
 
 def _escape(s: str) -> str:
@@ -302,8 +303,13 @@ def _crs_member(crs) -> str | None:
         name = "urn:ogc:def:crs:OGC:1.3:CRS84"
     elif code is not None:
         # Preserve pyproj's established EPSG identification without requiring its
-        # WKT dialect to be supported by Terrio's separate metadata parser.
-        name = f"urn:ogc:def:crs:EPSG::{code}"
+        # WKT dialect to be supported, but require the reader to resolve the code.
+        try:
+            name = _terrio._geojson_crs_name(f"EPSG:{code}")
+        except CRSError as exc:
+            raise UnsupportedError(
+                "GeoJSON cannot name this layer's CRS: use a format that stores CRS definitions"
+            ) from exc
     else:
         name = _terrio._geojson_crs_name(crs.to_wkt())
     if name is None:

@@ -801,7 +801,10 @@ its ESRI and IAU identifiers do not share the simple-feature GML axis handling.
 Standalone layers with conflicting coordinate-axis declarations, including nested geometry
 members, are refused. Unknown EPSG identifiers are written with short `EPSG:` names and XY
 coordinates, preserving coordinate values on a local round trip; their custom CRS definition
-cannot be reconstructed from the code alone.
+cannot be reconstructed from the code alone. Writing such a name warns that Terrio will read
+it without a CRS. Reading an unresolved simple `srsName` also warns, while retaining features
+and coordinates. GeoJSON and TopoJSON refuse an unresolved CRS name before
+creating output because their name-only metadata cannot preserve the definition.
 
 Older Terrio versions wrote XY coordinates under northing-first projected EPSG URNs. Such
 files need their `srsName` changed to the short `EPSG:` form before reading; the current reader
