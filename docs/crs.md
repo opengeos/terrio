@@ -176,8 +176,12 @@ or configuration call through `terrio::crs`; linking Terrio or calling only
 configure their own transport, or first call a Terrio CRS entry point such as
 `terrio::crs::set_network_enabled(None)`. Network access remains controlled
 by the settings described below. Direct callers retrieve diagnostics with
-`terrio_crs::take_warnings()`, while Terrio continues to use
-`terrio::warnings::take()`. A custom transformer warning handler is also available.
+`terrio_crs::take_warnings()`. Terrio's `terrio::warnings::take()` drains both
+Terrio's queue and the standalone queue on the current thread, combining duplicate
+messages. Thus a Terrio drain also consumes any pending direct-caller diagnostics;
+callers mixing the APIs should use one drain or take standalone diagnostics first.
+Each queue retains its own order, but the combined order is not chronological
+across queues. A custom transformer warning handler is also available.
 
 The standalone default omits `wbprojection`; Terrio enables the fallback to retain
 its existing coverage. Bundled tables use portable `ruzstd` decompression on all

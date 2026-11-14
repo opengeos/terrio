@@ -1,5 +1,6 @@
 //! Existing Terrio callers and standalone callers share one engine without changing errors,
-//! public CRS fields, format conversion behavior, registered grids or warning sinks.
+//! public CRS fields, format conversion behavior or registered grids. Terrio drains both
+//! per-thread warning queues; standalone callers can still drain their own queue first.
 
 use terrio::crs::{SpatialRef, TransformOptions, Transformer};
 
@@ -65,7 +66,7 @@ fn registered_grids_are_shared_in_both_directions() {
 }
 
 #[test]
-fn direct_and_terrio_warning_sinks_remain_independent() {
+fn terrio_drains_both_warning_queues_and_standalone_can_drain_first() {
     let _ = terrio::warnings::take();
     let _ = terrio_crs::take_warnings();
     let source = "EPSG:4610";
@@ -84,5 +85,14 @@ fn direct_and_terrio_warning_sinks_remain_independent() {
         transform.transform(110.0, 35.0).unwrap();
     }
     assert!(terrio_crs::take_warnings().iter().any(|w| w.contains("ballpark")));
+    assert!(terrio::warnings::take().is_empty());
+    {
+        let transform =
+            terrio_crs::Transformer::new(&terrio_crs::SpatialRef::parse(source).unwrap(), &terrio_crs::SpatialRef::parse(target).unwrap())
+                .unwrap();
+        transform.transform(110.0, 35.0).unwrap();
+    }
+    assert!(terrio::warnings::take().iter().any(|w| w.contains("ballpark")));
+    assert!(terrio_crs::take_warnings().is_empty());
     assert!(terrio::warnings::take().is_empty());
 }

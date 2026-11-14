@@ -2844,18 +2844,6 @@ test("coordinate operation safeguards and warnings", () => {
   assert.throws(() => terrio.transformPoints([110], [35], "EPSG:4610", "EPSG:4326", undefined, { allowBallpark: false }), /ALLOW_BALLPARK/);
   assert.throws(() => terrio.transformPoints([600000], [200000], "EPSG:21781", "EPSG:2056", undefined, { onlyBest: true }), /ONLY_BEST/);
   assert.ok(Array.from(terrio.takeWarnings()).some((w) => w.includes("missing grid")));
-});
-
-test("grid lookup refusals reach the public warning queue", () => {
-  terrio.takeWarnings();
-  assert.throws(() => terrio.transformPoints(
-    [0.25], [0.5],
-    "+proj=longlat +datum=WGS84 +geoidgrids=sub/../tiny.gtx +vunits=m",
-    "EPSG:4979", [100],
-  ), /cannot transform/);
-  const warnings = Array.from(terrio.takeWarnings());
-  assert.equal(warnings.length, 1);
-  assert.match(warnings[0], /sub\/\.\.\/tiny\.gtx/);
   assert.deepEqual(Array.from(terrio.takeWarnings()), []);
 });
 

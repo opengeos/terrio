@@ -76,8 +76,7 @@ def test_refusal_warns_without_leaking_to_later_calls(tmp_path, name):
         with pytest.raises(terrio.CRSError):
             height(name)
     assert len(caught) == 1
-    assert "grid" in str(caught[0].message)
-    assert "not read" in str(caught[0].message) or ".." in str(caught[0].message)
+    assert "is not read" in str(caught[0].message)
     with warnings.catch_warnings(record=True) as later:
         warnings.simplefilter("always")
         assert height("tiny.gtx") == pytest.approx(122.5)
@@ -101,6 +100,17 @@ def test_refusal_warns_when_failed_points_are_returned(tmp_path):
     terrio.set_grid_search_paths([])
     with pytest.warns(UserWarning, match="named by a path is not read"):
         assert height(str(tmp_path / "missing.gtx"), errcheck=False) == float("inf")
+
+
+def test_grid_refusal_escapes_terminal_controls(tmp_path):
+    """Keep terminal controls in untrusted grid names out of emitted warnings."""
+    terrio.set_grid_search_paths([])
+    with pytest.warns(UserWarning, match="named by a path is not read") as caught:
+        with pytest.raises(terrio.CRSError):
+            height(str(tmp_path / "\x1b[31m.gtx"))
+    assert len(caught) == 1
+    assert "\x1b" not in str(caught[0].message)
+    assert r"\u{1b}" in str(caught[0].message)
 
 
 def test_cli_reports_grid_lookup_refusal():

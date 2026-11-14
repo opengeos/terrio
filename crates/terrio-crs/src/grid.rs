@@ -953,6 +953,12 @@ fn is_grid_file(p: &std::path::Path) -> bool {
     std::fs::metadata(p).is_ok_and(|m| readable_grid(&m))
 }
 
+/// Keep untrusted grid names bounded and escape controls before displaying diagnostics.
+#[cfg(not(target_family = "wasm"))]
+fn diagnostic_grid_name(name: &str) -> String {
+    name.chars().take(120).flat_map(char::escape_debug).collect()
+}
+
 /// The bytes of a regular file of at most [`MAX_GRID_BYTES`]: devices, FIFOs and directories are
 /// never read, and a file growing while it is read is cut off rather than read without bound.
 #[cfg(not(target_family = "wasm"))]
@@ -960,7 +966,10 @@ fn read_grid_file(p: &std::path::Path) -> Option<Arc<[u8]>> {
     use std::io::Read;
     let meta = std::fs::metadata(p).ok()?;
     if meta.is_file() && meta.len() > MAX_GRID_BYTES {
-        crate::warnings::warn(format!("grid file {} is not read: larger than {MAX_GRID_BYTES} bytes", p.display()));
+        crate::warnings::warn(format!(
+            "grid file {} is not read: larger than {MAX_GRID_BYTES} bytes",
+            diagnostic_grid_name(&p.to_string_lossy())
+        ));
         return None;
     }
     if !readable_grid(&meta) {
@@ -1006,7 +1015,7 @@ fn grid_location(name: &str) -> GridLocation<'_> {
         // from code: those then bound what is read, so a CRS definition from untrusted input
         // cannot name any file the process can see.
         if config().lock().unwrap_or_else(PoisonError::into_inner).paths.is_some() {
-            let shown: String = name.chars().take(120).collect();
+            let shown = diagnostic_grid_name(name);
             crate::warnings::warn(format!(
                 "grid {shown} named by a path is not read: grid search paths are set, so grids are read only from them"
             ));
@@ -1017,7 +1026,7 @@ fn grid_location(name: &str) -> GridLocation<'_> {
     if first.is_some() && p.components().all(|c| matches!(c, Component::Normal(_))) {
         GridLocation::InSearchDirs
     } else {
-        let shown: String = name.chars().take(120).collect();
+        let shown = diagnostic_grid_name(name);
         crate::warnings::warn(format!("grid {shown} is not read: relative grid names must contain only ordinary path components"));
         GridLocation::Refused
     }
