@@ -190,14 +190,30 @@ def _check_registered_type(directory):
         assert table["id"].to_pylist() == [0, 1, 2, 3]
         assert [p.x for p in result.geometry] == [10, 11, 12, 13]
         assert table.schema.field("geometry").type.__arrow_ext_serialize__() == b"{}"
+        retained = json.loads(table.schema.field("geometry").metadata[b"terrio:geoarrow:metadata"])
+        assert retained.get("crs") != "EPSG:3857"
         if definition in INVALID or definition is None:
+            assert retained.get("crs") is None
             assert meta["crs"] is None
             assert result.crs is None
         else:
+            assert pyproj.CRS(retained["crs"]) == pyproj.CRS(4326)
             assert pyproj.CRS(meta["crs"]) == pyproj.CRS(4326)
             assert result.crs == pyproj.CRS(4326)
         if definition in INVALID:
             assert sum("CRS definition cannot be parsed" in str(w.message) for w in caught) == 2
+
+    layer = terrio.Layer.from_geojson(
+        {
+            "type": "Feature",
+            "properties": {},
+            "geometry": {"type": "Point", "coordinates": [10, 46]},
+        },
+        crs="EPSG:4326",
+    )
+    for table in [pa.table(layer), pa.table(layer.to_arrow())]:
+        for field in table.schema:
+            assert b"terrio:geoarrow:metadata" not in (field.metadata or {})
 
 
 if __name__ == "__main__":

@@ -811,6 +811,9 @@ def open_arrow(
         field = reader.schema.field(geometry[0])
         encoded = (field.metadata or {}).get(b"ARROW:extension:metadata")
         if encoded is None:
+            # GeoParquet C-stream export reconstructs geometry metadata and writes this
+            # validated decision itself. Other native sources build fresh fields without
+            # this key. Prefer that decision to a registered type's lossy serializer.
             encoded = (field.metadata or {}).get(b"terrio:geoarrow:metadata")
         if encoded is None and hasattr(field.type, "__arrow_ext_serialize__"):
             encoded = field.type.__arrow_ext_serialize__()

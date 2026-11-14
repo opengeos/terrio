@@ -250,6 +250,15 @@ the file's native encoding) with their CRS, and the bounding-box covering column
 unless `columns` names it. Iterating the stream instead gives `Layer` chunks, whose struct
 columns are flattened into `name.member` fields, as GDAL's features have them.
 
+Python GeoParquet C-stream geometry fields also carry `terrio:geoarrow:metadata`, a
+JSON copy of the validated GeoArrow extension metadata. It preserves the accepted,
+null or rejected CRS decision when a registered PyArrow type consumes the standard
+extension keys without exposing that metadata again. Terrio constructs this key
+from its validated output schema; uploaded field metadata cannot supply the decision.
+The pyogrio adapter prefers standard metadata, then this key, then the registered
+type's serializer. Consumers that save the stream schema may retain the key in their
+output. Ordinary `Layer` and `Layer.to_arrow()` exports do not add it.
+
 ### Arrow
 
 Layers convert to and from [Apache Arrow](https://arrow.apache.org) through the
