@@ -2530,6 +2530,7 @@ dependencies = [
  "rayon",
  "rstar 0.14.0",
  "rust-aec",
+ "rustls",
  "rustls-graviola",
  "rusty_av1d",
  "ruzstd 0.9.1",
@@ -2549,6 +2550,8 @@ dependencies = [
  "wbraster",
  "wbvector",
  "webp-rust 0.3.2",
+ "webpki-root-certs",
+ "webpki-roots",
  "weezl 0.2.1",
  "windows-sys 0.61.2",
  "zip 9.5.0",
@@ -3044,6 +3047,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "50c858a3ae7a705e41370c569e3317b5e85b167700dc77b3c14e71a9ed077f71"
 dependencies = [
  "bin-rs",
+]
+
+[[package]]
+name = "webpki-root-certs"
+version = "1.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e49d0e65abc00c142e8f9428da991da9f1a250c39be97459901eb12b9b49f62a"
+dependencies = [
+ "rustls-pki-types",
 ]
 
 [[package]]

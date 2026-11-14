@@ -277,12 +277,43 @@ The GDAL variable is read when the terrio one is not set.
 | `TERRIO_HTTP_BLOCK_SIZE` (bytes) | `CPL_VSIL_CURL_CHUNK_SIZE` | 65536 |
 | `TERRIO_HTTP_CACHE_SIZE` (bytes): the block cache of each open file, and the process-wide cache | `CPL_VSIL_CURL_CACHE_SIZE` | 67108864 |
 | `TERRIO_HTTP_USERAGENT` | `GDAL_HTTP_USERAGENT` | `terrio/VERSION` |
+| `TERRIO_HTTP_CAINFO` (additional PEM CA bundle) | `GDAL_HTTP_CAINFO` | none |
 | `TERRIO_HTTP_MULTIRANGE`: `PARALLEL` requests the byte runs of one read up to 8 at once; `SERIAL` one after another; `SINGLE_GET` (one multipart request in GDAL, not supported) as `SERIAL`; any other value is `PARALLEL` | `GDAL_HTTP_MULTIRANGE` | `PARALLEL` |
 | `TERRIO_HTTP_LOG=YES` (log each request) | `CPL_CURL_VERBOSE` | off |
 | `TERRIO_JSON_MAX_SIZE` (bytes; `K`, `M`, `G` suffixes): the largest JSON document fetched whole | `CPL_JSON_MAX_SIZE` | 100 MB |
 
 Transient errors (connection failures, HTTP 429, 500, 502, 503, 504) are retried with backoff.
 Signatures and SAS tokens are hidden in logs and error messages.
+
+Native HTTPS reads trust the compiled Mozilla roots by default. To add a private
+or organization CA, set `TERRIO_HTTP_CAINFO` to a PEM certificate bundle. Its
+certificates supplement the compiled roots, retaining Mozilla-applied name
+constraints even when a public root is duplicated in the bundle. Certificate-chain
+and hostname verification remain enabled. The CLI and MCP use the same native HTTP client.
+Python can scope the setting to a read:
+
+```python
+import terrio.rio as rio
+
+with rio.Env(TERRIO_HTTP_CAINFO="/absolute/path/to/organization-ca.pem"):
+    with rio.open("https://data.example.org/elevation.tif") as dataset:
+        values = dataset.read(1, window=((0, 128), (0, 128)))
+```
+
+`GDAL_HTTP_CAINFO` is an alias with the usual scoped-option precedence. Rust
+callers can set `http::HttpOptions::ca_bundle` for an explicit client. Missing,
+empty or malformed explicit bundle files refuse HTTPS rather than falling back to
+default trust; plain HTTP is unaffected. Blank option values are treated as unset,
+while an existing empty file is an error. Bundle paths must be absolute; a relative
+path refuses HTTPS rather than depending on a mutable working directory. Bundles are read
+when a connection pool is built, and different bundle paths isolate connections
+and cached responses. HTTP and HTTPS CONNECT proxies are supported; SOCKS support
+is not enabled for this connector.
+To rotate a bundle in a running process, configure a new path; editing a file
+does not reload existing pools, including a pool retaining a failed bundle load.
+This option does not read `SSL_CERT_FILE`,
+`SSL_CERT_DIR` or the system trust store. Browser/WebAssembly reads continue to
+use the browser's TLS and trust configuration.
 
 Redirects are followed, up to 10 of them. `TERRIO_HTTP_FOLLOW_CROSS_ORIGIN=NO` keeps the
 requests of a read on the origin of its URL (scheme, host and port): a redirect to another origin

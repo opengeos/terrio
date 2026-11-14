@@ -31,6 +31,7 @@
 //! | `TERRIO_HTTP_BLOCK_SIZE` (bytes) | `CPL_VSIL_CURL_CHUNK_SIZE` | 65536 |
 //! | `TERRIO_HTTP_CACHE_SIZE` (bytes): the block cache of each open file, and the process-wide cache | `CPL_VSIL_CURL_CACHE_SIZE` | 67108864 |
 //! | `TERRIO_HTTP_USERAGENT` | `GDAL_HTTP_USERAGENT` | `terrio/VERSION` |
+//! | `TERRIO_HTTP_CAINFO` (PEM bundle added to Mozilla roots) | `GDAL_HTTP_CAINFO` | none |
 //! | `TERRIO_HTTP_MULTIRANGE`: `PARALLEL` requests the byte runs of one read up to 8 at once; `SERIAL` one after another; `SINGLE_GET` (one multipart request in GDAL, not supported) as `SERIAL`; any other value is `PARALLEL` | `GDAL_HTTP_MULTIRANGE` | `PARALLEL` |
 //! | `TERRIO_HTTP_LOG=YES`: print each request, and each new process-wide connection pool, to standard error | `CPL_CURL_VERBOSE` | off |
 //! | `TERRIO_JSON_MAX_SIZE` (bytes, `K`, `M` or `G` suffixes): the largest JSON document fetched whole | `CPL_JSON_MAX_SIZE` | 100 MB |
@@ -51,6 +52,7 @@ use ureq::unversioned::resolver::DefaultResolver;
 use ureq::unversioned::transport::{Buffers, ConnectionDetails, Connector, DefaultConnector, NextTimeout, Transport};
 
 pub(crate) mod store;
+mod tls;
 
 /// Redirects followed before giving up.
 const MAX_REDIRECTS: u32 = 10;
@@ -128,6 +130,9 @@ pub struct HttpOptions {
     pub cache_size: u64,
     /// The `User-Agent` header.
     pub user_agent: String,
+    /// An additional PEM CA bundle, supplementing the compiled Mozilla roots.
+    /// Loaded when a connection pool is built; a changed path creates a new pool.
+    pub ca_bundle: Option<std::path::PathBuf>,
     /// Print each request to standard error.
     pub log: bool,
     /// The bytes a remote file's first request fetches (`GDAL_INGESTED_BYTES_AT_OPEN`), when more
@@ -149,6 +154,7 @@ impl Default for HttpOptions {
             block_size: 64 * 1024,
             cache_size: 64 * 1024 * 1024,
             user_agent: format!("terrio/{}", crate::VERSION),
+            ca_bundle: None,
             log: false,
             ingested_bytes_at_open: None,
             parallel_ranges: true,
@@ -173,6 +179,7 @@ impl HttpOptions {
                 .unwrap_or(d.block_size),
             cache_size: var("TERRIO_HTTP_CACHE_SIZE", "CPL_VSIL_CURL_CACHE_SIZE").and_then(|v| v.parse().ok()).unwrap_or(d.cache_size),
             user_agent: var("TERRIO_HTTP_USERAGENT", "GDAL_HTTP_USERAGENT").unwrap_or(d.user_agent),
+            ca_bundle: crate::config::get_any(&["TERRIO_HTTP_CAINFO", "GDAL_HTTP_CAINFO"]).map(Into::into),
             log: var("TERRIO_HTTP_LOG", "CPL_CURL_VERBOSE")
                 .is_some_and(|v| matches!(v.to_ascii_uppercase().as_str(), "YES" | "ON" | "TRUE" | "1")),
             // At most 64 MiB: a header, not a download.
@@ -733,7 +740,7 @@ impl Client {
     fn cache_key(&self) -> String {
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
-        h.update(format!("{:?}\n{}\n{:?}\n", self.remote, self.azure, self.redirects).as_bytes());
+        h.update(format!("{:?}\n{}\n{:?}\n{:?}\n", self.remote, self.azure, self.redirects, self.options.ca_bundle).as_bytes());
         for (k, v) in &self.headers {
             h.update(format!("{}: {v}\n", k.to_ascii_lowercase()).as_bytes());
         }
@@ -1094,7 +1101,11 @@ thread_local! {
 }
 
 /// The settings an agent is built with.
-type AgentSettings = (Option<Duration>, Duration, String);
+type AgentSettings = (Option<Duration>, Duration, String, Option<std::path::PathBuf>);
+
+fn agent_settings(options: &HttpOptions) -> AgentSettings {
+    (options.timeout, options.connect_timeout, options.user_agent.clone(), options.ca_bundle.clone())
+}
 
 /// An [`AgentScope`]'s agent, its settings and the id of the process it was built in.
 type ScopeAgent = (AgentSettings, ureq::Agent, u32);
@@ -1195,7 +1206,7 @@ fn agent_in(pid: u32, agent: &ureq::Agent, here: impl FnOnce() -> ureq::Agent) -
 /// The process's agent for `options`, whatever [`AgentScope`] the thread is in: the agent a client
 /// made before a fork sends its requests with in the child.
 fn own_agent(options: &HttpOptions) -> ureq::Agent {
-    process_agent((options.timeout, options.connect_timeout, options.user_agent.clone()), options)
+    process_agent(agent_settings(options), options)
 }
 
 /// The agent requests are sent with: no automatic redirects (followed by [`Client`], which
@@ -1204,7 +1215,7 @@ fn own_agent(options: &HttpOptions) -> ureq::Agent {
 /// forked inside a scope, the parent's agent is leaked: see [`release`]); outside any scope, the
 /// process's ([`process_agent`]).
 fn agent(options: &HttpOptions) -> ureq::Agent {
-    let settings: AgentSettings = (options.timeout, options.connect_timeout, options.user_agent.clone());
+    let settings = agent_settings(options);
     SHARED_AGENT.with(|shared| {
         let mut shared = shared.borrow_mut();
         if shared.0 == 0 {
@@ -1225,21 +1236,18 @@ fn agent(options: &HttpOptions) -> ureq::Agent {
 
 /// HTTPS without a C compiler (`ureq` uses `ring` on the other architectures).
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-fn tls_config() -> ureq::tls::TlsConfig {
-    ureq::tls::TlsConfig::builder()
-        .provider(ureq::tls::TlsProvider::Rustls)
-        .unversioned_rustls_crypto_provider(Arc::new(rustls_graviola::default_provider()))
-        .build()
+fn tls_config() -> ureq::tls::TlsConfigBuilder {
+    ureq::tls::TlsConfig::builder().provider(ureq::tls::TlsProvider::Rustls).unversioned_rustls_crypto_provider(tls::crypto_provider())
 }
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-fn tls_config() -> ureq::tls::TlsConfig {
-    ureq::tls::TlsConfig::default()
+fn tls_config() -> ureq::tls::TlsConfigBuilder {
+    ureq::tls::TlsConfig::builder()
 }
 
 fn new_agent(options: &HttpOptions) -> ureq::Agent {
     let config = ureq::Agent::config_builder()
-        .tls_config(tls_config())
+        .tls_config(tls_config().build())
         .http_status_as_error(false)
         .max_redirects(0)
         .accept_encoding("identity")
@@ -1251,6 +1259,9 @@ fn new_agent(options: &HttpOptions) -> ureq::Agent {
         .max_idle_connections(64)
         .max_idle_connections_per_host(64)
         .build();
+    if let Some(path) = &options.ca_bundle {
+        return tls::with_bundle(config, path);
+    }
     let connector = DefaultConnector::new().chain(Http10CloseConnector);
     ureq::Agent::with_parts(config, connector, DefaultResolver::default())
 }
@@ -4035,7 +4046,7 @@ mod tests {
             }
             let exit = crate::par::in_child(10, move || {
                 let options = HttpOptions::default();
-                process_agent((options.timeout, options.connect_timeout, options.user_agent.clone()), &options);
+                process_agent(agent_settings(&options), &options);
                 released.load(Ordering::Acquire)
             });
             holder.join().is_ok() && exit == Some(0)
@@ -4809,7 +4820,8 @@ mod tests {
         let slot = std::sync::Mutex::new(None);
         let builds = std::cell::Cell::new(0);
         let options = HttpOptions::default();
-        let settings = |timeout: Option<Duration>| -> AgentSettings { (timeout, options.connect_timeout, options.user_agent.clone()) };
+        let settings =
+            |timeout: Option<Duration>| -> AgentSettings { (timeout, options.connect_timeout, options.user_agent.clone(), None) };
         let get = |pid: u32, proxy: Option<&str>, timeout: Option<Duration>| {
             let proxy = vec![proxy.map(std::ffi::OsString::from)];
             cached_agent(&slot, pid, proxy, settings(timeout), || {

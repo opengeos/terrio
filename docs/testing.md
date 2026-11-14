@@ -87,6 +87,22 @@ Ordered worker snapshots retain the same scope boundaries; flattened
 environment values or outer scopes. This alias policy is specific to Terrio;
 it is not a claim that GDAL understands the `TERRIO_` option names.
 
+## Additional HTTPS trust
+
+`python -m pytest python/tests/test_https_additional_ca.py` generates an ephemeral
+CA and localhost certificate with OpenSSL, then reads real TIFF windows through
+loopback HTTP and HTTPS range servers. It checks both CA option aliases, nested
+scope isolation, untrusted issuers, hostname mismatches and malformed/missing
+bundles. Warm-cache tests retain cached responses between trusted and untrusted
+opens. The native constrained-anchor regression includes an unconstrained DER
+copy of a public root and verifies that every compiled Mozilla anchor, including
+its applied name constraints, remains unchanged. HTTP and HTTPS CONNECT proxy
+tests verify tunneled reads, and a stalled TLS peer checks the handshake timeout.
+The successful reads use partial byte ranges and transfer less than the source
+file. These are native TLS trust-policy tests, not a GDAL
+conformance claim. OpenSSL is only a test fixture generator, not a runtime
+dependency.
+
 ## Failed native Zarr reads
 
 `cargo test -p terrio --lib a_failed_waiting_read_cancels_a_stalled_response`
