@@ -105,8 +105,13 @@ requests are observed: two abandoned requests, then two successful retries.
 checks the worker lifetime, cancellation, serial fallback while a fork is already
 in progress, and a cancellation flag published after a fork inspects the
 registry. The registry mutex joins the locks held across fork, including when
-two threads fork concurrently. Existing serial-read and Zarr fork behavior is
-unchanged. Cancellation covers response waits and retry delays; connection
+two threads fork concurrently.
+
+Cancellation is process-wide: a libc fork from any application thread cancels
+all active parallel range batches, including reads whose own callers never
+fork. Those concurrent readers receive an I/O cancellation error and may retry
+after the fork, as the recovery test does. Existing serial-read and Zarr fork
+behavior is unchanged. Cancellation covers response waits and retry delays; connection
 establishment and DNS keep their existing behavior. These are lifecycle and
 I/O checks, not GDAL numerical comparisons.
 
