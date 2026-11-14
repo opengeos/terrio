@@ -54,10 +54,10 @@ pub(crate) fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
     // A Windows verbatim prefix (`\\?\C:\…`) is part of the path, not a query.
     let start = if out.starts_with(r"\\?\") || out.starts_with("//?/") { 4 } else { 0 };
     let scheme = out.find("://").unwrap_or(out.len());
-    if let Some(question) = out[start..].find('?').map(|q| start + q).filter(|&q| q < scheme)
-        && names_credential(&out[question + 1..])
+    if let Some(separator) = out[start..].find(['?', '#']).map(|q| start + q).filter(|&q| q < scheme)
+        && names_credential(&out[separator + 1..])
     {
-        return format!("{}?<redacted>", &out[..question]).into();
+        return format!("{}{}<redacted>", &out[..separator], &out[separator..=separator]).into();
     }
     if let Some(scheme) = out.find("://")
         && let Some(end) = out[scheme + 3..].find(['?', '#'])
@@ -67,14 +67,9 @@ pub(crate) fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
         let end = scheme + 3 + end;
         return format!("{}{}<redacted>", &out[..end], &out[end..end + 1]).into();
     }
-    // A scheme-less location (a `/vsimem/` key, a path given with a signature) has no authority to
-    // strip, but its query is as private. Only a single token is treated so, never prose.
-    if !out.contains("://")
-        && !out.contains(char::is_whitespace)
-        && let Some(query) = out.find(['?', '#'])
-    {
-        return format!("{}{}<redacted>", &out[..query], &out[query..=query]).into();
-    }
+    // Schemeless inputs without a credential parameter can be literal filenames,
+    // including Windows verbatim paths. The credential check above already covers
+    // standalone signed paths as well as paths embedded in diagnostics.
     out
 }
 
@@ -82,7 +77,7 @@ pub(crate) fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
 /// credential parameter. Names are
 /// compared whole, percent-decoded as a server reads them (`%73ig` is `sig`), so a file name
 /// such as `what?design.tif` is not one. Parameters split at `&`, `;`, `?`, `#` and whitespace,
-/// so a later location in the same message is checked too.
+/// so a later location in the same message is checked too. Only `name=value` parameters count.
 fn names_credential(query: &str) -> bool {
     const NAMES: [&str; 13] = [
         "sig",
@@ -100,8 +95,12 @@ fn names_credential(query: &str) -> bool {
         "session",
     ];
     const PARTS: [&str; 8] = ["signature", "token", "secret", "password", "credential", "apikey", "api_key", "api-key"];
-    query.split(|c: char| matches!(c, '&' | ';' | '?' | '#') || c.is_whitespace()).any(|parameter| {
-        let name = percent_decoded(parameter.split('=').next().unwrap_or_default()).to_ascii_lowercase();
+    // Decode before splitting, so an encoded separator or a nested encoded URL
+    // cannot hide a subsequent credential parameter. Bare prose still needs '='.
+    let decoded = percent_decoded(query);
+    decoded.split(|c: char| matches!(c, '&' | ';' | '?' | '#') || c.is_whitespace()).any(|parameter| {
+        let Some((name, _)) = parameter.split_once('=') else { return false };
+        let name = name.to_ascii_lowercase();
         NAMES.contains(&name.as_str()) || PARTS.iter().any(|part| name.contains(part))
     })
 }
@@ -871,6 +870,13 @@ mod tests {
         assert_eq!(super::redact_url("https://host/a#PRIVATE"), "https://host/a#<redacted>");
         assert_eq!(super::redact_url("/no/such/file.zip?sig=PRIVATE"), "/no/such/file.zip?<redacted>");
         assert_eq!(super::redact_url("/vsiaz/c/b.tif?%73ig=PRIVATE"), "/vsiaz/c/b.tif?<redacted>");
+        assert_eq!(super::redact_url("/data/a?token%3DPRIVATE"), "/data/a?<redacted>");
+        assert_eq!(super::redact_url("/data/a?%74oken%3dPRIVATE"), "/data/a?<redacted>");
+        assert_eq!(super::redact_url("/data/a?x=1%26token=PRIVATE"), "/data/a?<redacted>");
+        assert_eq!(super::redact_url("/data/a#sig=PRIVATE"), "/data/a#<redacted>");
+        assert_eq!(super::redact_url("/data/a#x=1%26token%3DPRIVATE"), "/data/a#<redacted>");
+        assert_eq!(super::redact_url("/data/file#notes.txt"), "/data/file#notes.txt");
+        assert_eq!(super::redact_url("/vsiaz/c/b.tif?BARE_VALUE"), "/vsiaz/c/b.tif?BARE_VALUE");
         assert_eq!(super::redact_url("/data/what?.tif"), "/data/what?.tif");
         assert_eq!(super::redact_url("/data/what?design.tif"), "/data/what?design.tif");
         assert_eq!(super::redact_url("/data/a?signal=1&monkey=2"), "/data/a?signal=1&monkey=2");
@@ -888,11 +894,21 @@ mod tests {
         for name in ["api-key", "x-api-key", "authorization", "apiKey"] {
             assert_eq!(super::redact_url(&format!("/vsicurl/x.tif?{name}=PRIVATE")), "/vsicurl/x.tif?<redacted>");
         }
+        // Words of the message after a path's `?` are not parameters.
+        assert_eq!(super::redact_url("/data/a?b.tif: unsupported code"), "/data/a?b.tif: unsupported code");
+        assert_eq!(super::redact_url("/data/a?b.tif: unexpected token, missing key"), "/data/a?b.tif: unexpected token, missing key");
         // A Windows verbatim prefix is not a query.
         assert_eq!(super::redact_url(r"\\?\C:\token-cache\a.tif"), r"\\?\C:\token-cache\a.tif");
         assert_eq!(super::redact_url(r"\\?\C:\data\a.tif?sig=PRIVATE"), r"\\?\C:\data\a.tif?<redacted>");
         // A `?` inside a URL fragment never shortens the URL rule's redaction.
         assert_eq!(super::redact_url("https://h/a#frag?sig=PRIVATE"), "https://h/a#<redacted>");
+    }
+
+    #[test]
+    fn scheme_less_file_names_keep_a_query_that_names_no_credential() {
+        assert_eq!(super::redact_url("/data/what?.tif"), "/data/what?.tif");
+        assert_eq!(super::redact_url("/vsimem/a?x=1"), "/vsimem/a?x=1");
+        assert_eq!(super::redact_url(r"\\?\C:\token-cache\a.tif"), r"\\?\C:\token-cache\a.tif");
     }
 
     #[test]
