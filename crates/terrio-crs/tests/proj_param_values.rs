@@ -77,7 +77,9 @@ fn unreadable_parameter_values_are_refused_as_proj_refuses_them() {
     // A change in the strings that still differ shows here.
     assert_eq!(differing, 320, "strings that still differ from PROJ");
     differences.sort_unstable();
-    assert_eq!(differences.join("\n"), include_str!("data/proj_param_value_differences.tsv").trim_end());
+    // Compare lines, not text: a Windows checkout may give the fixture CRLF line endings.
+    let expected: Vec<&str> = include_str!("data/proj_param_value_differences.tsv").lines().collect();
+    assert_eq!(differences, expected);
 }
 
 #[test]
