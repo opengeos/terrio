@@ -1101,8 +1101,15 @@ valid source pixels inside its footprint on the source grid: where the footprint
 source's edges, only its part inside the source counts, and `average`, `rms` and `mode` weigh each
 source pixel by its area inside that part. A footprint counts within the source window that its
 chunk of the output reads, and an output pixel is left empty only when no valid source pixel of
-that window lies inside it or one of the two corners that bound its footprint (top left and bottom
-right) cannot be transformed. On a geographic source with an unrotated grid, warped into another
+that window lies inside it or a required footprint corner cannot be transformed.
+An unrotated geographic source warped into another CRS uses a polygonal footprint
+through all four exactly transformed corners. A corner on a projected point pole
+has separate longitude limits along its two incident edges, so the pole's arbitrary
+inverse longitude cannot select another sector. Source-cell overlap areas provide
+the weights, and both grid policies plan reads from the same polygons. Other source
+grids retain their diagonal-corner rectangular footprints. These polygonal
+approximations can differ from GDAL's diagonal rectangles, especially near poles.
+On a geographic source with an unrotated grid, warped into another
 CRS, a footprint across the antimeridian takes the source on both sides of it, as one across any
 other meridian does: near both edges of a source of every longitude, and its part on the source's
 side of one that ends at the antimeridian. A footprint counts as across it when its corners lie
@@ -1130,7 +1137,9 @@ A nearly full world keeps its actual uncovered gap, including when cell sizes ar
 These rules apply to point samples and area footprints under both grid policies. They do not
 make regional interpolation halos periodic or change placement of sources wider than a turn.
 
-The window holds the footprints of its chunk unless a strongly curved
+The geographic area kernels described above bound all their polygonal footprints
+before reading source data. For other kernels, the window holds the footprints
+of its chunk unless a strongly curved
 transformation takes one past the points the window is sampled from: such a footprint is shortened,
 and its pixel can then differ with the chunks the warp splits the output grid into.
 With chunk-dependent sampling, the sampled source window can also omit one side of an
