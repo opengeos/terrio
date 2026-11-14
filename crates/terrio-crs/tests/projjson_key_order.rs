@@ -100,5 +100,8 @@ fn keys_are_in_proj_s_order() {
             }
         }
     }
-    assert!(written > 1000, "{written}");
+    // Every definition that reads and writes is checked; a new refusal changes the count. The
+    // fallback reads some EPSG codes the default build refuses.
+    let expected = if cfg!(feature = "wbprojection-fallback") { 1055 } else { 1038 };
+    assert_eq!(written, expected, "CRSs written");
 }

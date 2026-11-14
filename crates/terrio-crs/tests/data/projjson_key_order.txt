@@ -1,11 +1,13 @@
 $schema,type,name,base_crs,conversion,coordinate_system,id
 $schema,type,name,base_crs,conversion,coordinate_system,scope,area,bbox,id
+$schema,type,name,base_crs,conversion,coordinate_system,scope,area,id
 $schema,type,name,base_crs,conversion,coordinate_system,usages,id
 $schema,type,name,components,scope,area,bbox,id
 $schema,type,name,datum,coordinate_system
 $schema,type,name,datum,coordinate_system,id,remarks
 $schema,type,name,datum,coordinate_system,scope,area,bbox,id
 $schema,type,name,datum,coordinate_system,scope,area,bbox,id,remarks
+$schema,type,name,datum,coordinate_system,scope,area,id
 $schema,type,name,datum_ensemble,coordinate_system,scope,area,bbox,id
 $schema,type,name,datum_ensemble,coordinate_system,scope,area,bbox,id,remarks
 $schema,type,source_crs,target_crs,transformation

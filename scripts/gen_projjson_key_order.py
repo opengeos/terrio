@@ -1,9 +1,10 @@
 """Generate crates/terrio-crs/tests/data/projjson_key_order.txt: the key order of every kind of
 object PROJ 9.8.1 writes in PROJJSON, one comma-separated list of keys per line.
 
-The objects are those of the PROJJSON of every EPSG, ESRI and IAU_2015 CRS in PROJ's database,
-and of a few CRSs given by PROJ strings (bound and planetary). terrio-crs writes PROJJSON's keys
-in one fixed order (``src/projjson_order.rs``); its tests check that order against these lists.
+The objects are those of the PROJJSON of every EPSG, ESRI and IAU_2015 CRS in PROJ's database
+(deprecated ones included), and of a few CRSs given by PROJ strings (bound and planetary).
+terrio-crs writes PROJJSON's keys in one fixed order (``src/projjson_order.rs``); its tests check
+that order against these lists.
 
 Usage: PROJ_NETWORK=OFF python scripts/gen_projjson_key_order.py (needs pyproj 3.8.0)
 """
@@ -39,7 +40,7 @@ def main():
                 walk(v)
 
     for authority in ("EPSG", "ESRI", "IAU_2015"):
-        for code in database.get_codes(authority, "CRS"):
+        for code in database.get_codes(authority, "CRS", allow_deprecated=True):
             try:
                 crs = CRS.from_authority(authority, code)
             except pyproj.exceptions.CRSError:

@@ -129,7 +129,7 @@ mod tests {
     #[test]
     fn the_order_is_proj_s() {
         let objects = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/projjson_key_order.txt"));
-        assert_eq!(objects.lines().count(), 50);
+        assert_eq!(objects.lines().count(), 52);
         for keys in objects.lines() {
             let ranks: Vec<usize> = keys.split(',').map(rank).collect();
             assert!(ranks.iter().all(|r| *r < KEY_ORDER.len()) && ranks.is_sorted_by(|a, b| a < b), "{keys}");
