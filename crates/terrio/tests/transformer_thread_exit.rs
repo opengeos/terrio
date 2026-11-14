@@ -19,7 +19,8 @@ fn a_transformer_in_a_thread_local_cache_is_dropped_at_thread_exit() {
         let t = Transformer::new(&src, &dst).unwrap();
         t.transform(10.0, 50.0).unwrap();
         CACHE.with(|c| *c.borrow_mut() = Some(t));
-        // The warning list is set up after the cache, so it is destroyed first.
+        // terrio's warning list is set up here, after the cache, so it is destroyed
+        // first. Nothing before this line may record a warning.
         let _ = terrio::warnings::take();
     })
     .join()

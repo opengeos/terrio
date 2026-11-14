@@ -1972,7 +1972,10 @@ impl Transformer {
     }
 
     /// Route this transformer's diagnostics to a caller-provided warning sink.
-    /// The sink runs on the thread calling `flush_warnings` (or dropping the transformer).
+    /// The sink runs on the thread calling `flush_warnings` (or dropping the transformer). A
+    /// transformer kept in a `thread_local!` is dropped while the thread's locals are destroyed,
+    /// so a sink that records into a thread-local should use `LocalKey::try_with`, and must not
+    /// panic.
     pub fn with_warning_handler(mut self, handler: fn(String)) -> Self {
         self.warning_handler = handler;
         self
