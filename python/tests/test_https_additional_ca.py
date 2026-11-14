@@ -128,7 +128,18 @@ def isolated_http_options(monkeypatch):
     Yields:
         None: An isolated test scope.
     """
-    for name in ["TERRIO_HTTP_CAINFO", "GDAL_HTTP_CAINFO"]:
+    for name in [
+        "TERRIO_HTTP_CAINFO",
+        "GDAL_HTTP_CAINFO",
+        "ALL_PROXY",
+        "all_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "NO_PROXY",
+        "no_proxy",
+    ]:
         monkeypatch.delenv(name, raising=False)
     terrio.clear_http_cache()
     with rio.Env(
@@ -349,21 +360,29 @@ def connect_proxy(source, secure):
         server.server_close()
 
 
-@pytest.mark.parametrize("secure", [False, True])
-def test_additional_ca_through_connect_proxy(https_source, monkeypatch, secure):
+@pytest.mark.parametrize(
+    "secure,proxy_host", [(False, "localhost"), (True, "localhost"), (True, "127.0.0.1")]
+)
+def test_additional_ca_through_connect_proxy(https_source, monkeypatch, secure, proxy_host):
     """Verify both proxy and endpoint TLS while retaining CONNECT routing.
 
     Args:
         https_source: Local HTTPS server and certificates.
         monkeypatch: Scoped proxy environment configuration.
         secure: Whether the proxy itself uses TLS.
+        proxy_host: Valid proxy certificate hostname or a deliberately mismatched IP.
     """
     with connect_proxy(https_source, secure) as (url, targets):
         for name in ["HTTPS_PROXY", "https_proxy"]:
-            monkeypatch.setenv(name, url)
+            monkeypatch.setenv(name, url.replace("localhost", proxy_host))
         for name in ["NO_PROXY", "no_proxy"]:
             monkeypatch.setenv(name, "")
         with rio.Env(TERRIO_HTTP_CAINFO=str(https_source["root"] / "ca.pem")):
+            if proxy_host == "127.0.0.1":
+                with pytest.raises(RasterioIOError, match="not valid for name|NotValidForName"):
+                    read_window(https_source)
+                assert not targets
+                return
             result = read_window(https_source)
         assert targets
         np.testing.assert_array_equal(result, https_source["pixels"][0, 400:416, 300:316])
