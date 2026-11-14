@@ -5267,6 +5267,8 @@ pub(crate) fn area_value(method: Resampling, values: &mut [(f64, f64)], small_in
         Resampling::Mode => {
             // The value with the largest total weight; ties keep the first one met.
             // A newly seen value can already lead when its first overlap is larger.
+            // This intentionally differs from GDAL 3.12.1's float-mode insertion
+            // rule, which retains the first value for unequal single-cell overlaps.
             let mut counts: Vec<(f64, f32)> = Vec::new();
             let mut best: Option<usize> = None;
             for &(v, w) in values.iter() {
