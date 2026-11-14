@@ -132,7 +132,6 @@ def test_remote_zarr_failure_cancels_stalled_body(tmp_path, failed_chunk):
     import functools
     import http.server
     import threading
-    import time
 
     store = tmp_path / "stall.zarr"
     store.mkdir()
@@ -154,6 +153,7 @@ def test_remote_zarr_failure_cancels_stalled_body(tmp_path, failed_chunk):
     (store / "1.0").write_bytes(bytes([3, 4]))
     stalled = threading.Event()
     coordination_failed = threading.Event()
+    stall_expired = threading.Event()
     release = threading.Event()
     failing = threading.Event()
     failing.set()
@@ -176,7 +176,8 @@ def test_remote_zarr_failure_cancels_stalled_body(tmp_path, failed_chunk):
                     self.wfile.write(b"\x01")
                     self.wfile.flush()
                     stalled.set()
-                    release.wait(20)
+                    if not release.wait(20):
+                        stall_expired.set()
                     self.close_connection = True
                 return
             super().do_GET()
@@ -190,12 +191,11 @@ def test_remote_zarr_failure_cancels_stalled_body(tmp_path, failed_chunk):
     try:
         url = f"http://127.0.0.1:{server.server_address[1]}/stall.zarr"
         back = terrio.open_raster(url, lazy=True)
-        started = time.monotonic()
         with pytest.raises(terrio.InvalidDataError, match=r"Zarr: chunk .*status 400"):
             back.read(1)
         assert not coordination_failed.is_set(), "the other chunk was never requested"
-        assert time.monotonic() - started < 10, "read waited for the stalled chunk"
         assert stalled.is_set()
+        assert not stall_expired.is_set(), "read waited for the stalled body's watchdog"
         failing.clear()
         release.set()
         np.testing.assert_array_equal(back.read(1), [[1, 2], [3, 4]])
