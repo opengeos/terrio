@@ -177,6 +177,7 @@ __all__ = [
     "_redact_diagnostic_location",
     "usable_memory",
     "_set_http_retry_logger",
+    "_redact_diagnostic_location",
     "_set_warp_nodata_logger",
     "RegionWarp",
     "_check_sum_window",
