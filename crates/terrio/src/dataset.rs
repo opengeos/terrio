@@ -664,14 +664,16 @@ fn judged_by_content(name: &str, generic: bool) -> bool {
 /// downloaded, an archive member extracted, to a temporary directory), naming the dataset as the
 /// caller gave it rather than the copy, whose path means nothing to the caller and would show a
 /// server's directories to the clients of a service that passes the message on. The copy's path
-/// is replaced with the dataset's name (without its query, which may hold a signature); a message
+/// is replaced with the dataset's name (remote queries omitted, literal local archive punctuation
+/// retained); a message
 /// that names neither starts with it. The variant is kept, but for the format libraries' errors,
 /// which become [`Error::InvalidData`] (the Python class they already map to).
 fn naming_dataset(e: Error, path: &str, local: &str) -> Error {
     if vfs::Location::parse(path).is_local() {
         return e;
     }
-    let shown = path.trim().split(['?', '#']).next().unwrap_or(path);
+    let local_archive = matches!(vfs::Location::parse(path), vfs::Location::Zip { archive, .. } if archive.is_local());
+    let shown = if local_archive { path.trim() } else { path.trim().split(['?', '#']).next().unwrap_or(path) };
     let named = |m: String| if m.contains(local) { m.replace(local, shown) } else { format!("'{shown}': {m}") };
     match e {
         Error::Unsupported(m) => Error::Unsupported(named(m)),
@@ -2488,14 +2490,15 @@ mod tests {
     fn vector_archive_member_refusals_name_the_requested_location() {
         use std::io::Write;
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("input.zip");
+        let path = directory.path().join("input #2.zip");
+        let members: &[&str] = if cfg!(feature = "sqlite") { &["README.txt", "broken.gpkg"] } else { &["README.txt"] };
         let mut writer = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
-        for member in ["README.txt", "broken.gpkg"] {
-            writer.start_file(member, zip::write::SimpleFileOptions::default()).unwrap();
+        for member in members {
+            writer.start_file(*member, zip::write::SimpleFileOptions::default()).unwrap();
             writer.write_all(b"not a dataset").unwrap();
         }
         writer.finish().unwrap();
-        for member in ["README.txt", "broken.gpkg"] {
+        for member in members {
             let requested = format!("/vsizip/{}/{member}", path.display());
             let open_error = super::open_vector_native(&requested, &Default::default()).unwrap_err().to_string();
             let list_error = super::list_layers_native(&requested).unwrap_err().to_string();
@@ -2503,6 +2506,15 @@ mod tests {
                 assert!(error.contains(&requested), "{error}");
                 assert!(!error.contains("terrio-"), "an extraction path leaked: {error}");
             }
+        }
+    }
+
+    #[test]
+    fn local_archive_diagnostic_names_keep_literal_punctuation() {
+        for suffix in [" #2", "?notes"] {
+            let requested = format!("/vsizip/input{suffix}.zip/roads.gpkg");
+            let error = super::naming_dataset(crate::Error::Unsupported("bad format in /private/copy".into()), &requested, "/private/copy");
+            assert_eq!(error.to_string(), format!("bad format in {requested}"));
         }
     }
 

@@ -63,28 +63,58 @@ def test_explicit_zip_member_errors_keep_the_virtual_path(tmp_path, monkeypatch,
         member: Unsupported text or a malformed GeoPackage to inspect.
     """
     monkeypatch.chdir(tmp_path)
-    with zipfile.ZipFile("readme.zip", "w") as archive:
+    with zipfile.ZipFile("readme #2.zip", "w") as archive:
         archive.writestr(member, "not a dataset")
-    path = f"/vsizip/readme.zip/{member}"
+    path = f"/vsizip/readme #2.zip/{member}"
     with pytest.raises(terrio.TerrioError) as caught:
         read(path)
     assert path in str(caught.value)
     assert "terrio-" not in str(caught.value)
 
 
+@pytest.mark.parametrize("read", [tpg.read_dataframe, tpg.read_info, tpg.list_layers])
+@pytest.mark.parametrize("named", [False, True])
+def test_malformed_zip_buffer_resolution_names_the_input(read, named):
+    """Name constructor-time archive failures without disclosing the spill path.
+
+    Args:
+        read: Public pyogrio entry point.
+        named: Whether the corrupt upload has a caller-provided filename.
+    """
+    source = b"PK\x03\x04broken"
+    if named:
+        source = io.BytesIO(source)
+        source.name = "broken.zip"
+    with pytest.raises(DataSourceError) as caught:
+        read(source)
+    message = str(caught.value)
+    assert ("broken.zip" if named else "buffer") in message
+    assert "not a zip file" in message.lower()
+    assert "terrio-pyogrio-" not in message
+
+
 @pytest.mark.parametrize("read", [tpg.read_dataframe, tpg.list_layers])
-def test_bad_dataset_buffer_keeps_its_reason_without_spill_paths(read):
+@pytest.mark.parametrize(
+    "suffix,data",
+    [
+        ("geojson", b'{"type":"FeatureCollection","features": [invalid]}'),
+        ("gpkg", b"SQLite format 3\0broken"),
+    ],
+)
+def test_bad_dataset_buffer_keeps_its_reason_without_spill_paths(read, suffix, data):
     """Retain malformed dataset diagnostics while hiding the buffer's storage path.
 
     Args:
         read: Pyogrio entry point under test.
+        suffix: The malformed dataset's declared format.
+        data: Invalid document or database bytes.
     """
-    source = io.BytesIO(b'{"type":"FeatureCollection","features": [invalid]}')
-    source.name = "bad.geojson"
+    source = io.BytesIO(data)
+    source.name = f"bad.{suffix}"
     with pytest.raises(DataSourceError) as caught:
         read(source)
     message = str(caught.value)
-    assert "bad.geojson" in message
+    assert source.name in message
     assert "no dataset found" not in message
     assert "terrio-pyogrio-" not in message
 

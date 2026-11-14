@@ -203,7 +203,12 @@ class _Source:
             with open(spilled, "wb") as f:
                 f.write(data)
             self._archive_input = spilled.lower().endswith(".zip")
-            self.path, self.shapefiles = _local_path(spilled)
+            try:
+                self.path, self.shapefiles = _local_path(spilled)
+            except DataSourceError as error:
+                refusal = self.refusal(error, spilled)
+                self.close()
+                raise refusal from None
             return
         if not isinstance(path_or_buffer, str):
             path_or_buffer = str(path_or_buffer)
@@ -211,12 +216,12 @@ class _Source:
         self._archive_input = path_or_buffer.lower().endswith((".zip", ".zip!", ".zip/"))
         self.path, self.shapefiles = _local_path(path_or_buffer)
 
-    def error(self, error: _terrio_errors.TerrioError, path: str | None = None) -> DataSourceError:
+    def refusal(self, error: Exception, path: str | None = None) -> DataSourceError:
         """Name a native refusal after the caller's input rather than its temporary copy.
 
         Args:
-            error: The native read or layer-inspection error.
-            path: The selected layer's resolved path, when different from the dataset path.
+            error: The archive-resolution, native read or layer-inspection error.
+            path: The selected layer or spilled input's resolved path, if available.
 
         Returns:
             DataSourceError: A refusal retaining its reason and caller-visible location.
@@ -225,6 +230,8 @@ class _Source:
         if isinstance(error, _terrio_errors.NotFoundError):
             return DataSourceError(f"{shown}: No such file or directory")
         message = str(error)
+        # Match the native refusal category narrowly: other UnsupportedError values can
+        # contain useful malformed-member diagnostics. Buffer routing tests pin this bridge.
         if message.startswith("no dataset found in ") or (
             self._archive_input
             and isinstance(error, _terrio_errors.UnsupportedError)
@@ -233,6 +240,7 @@ class _Source:
             return DataSourceError(f"no dataset found in '{shown}'")
         if self._tmp is not None:
             message = message.replace(_redact(path or self.path), shown)
+            message = message.replace(_redact(self._tmp.name), shown)
             if shown not in message:
                 message = f"'{shown}': {message}"
         return DataSourceError(message)
@@ -250,7 +258,7 @@ class _Source:
                 try:
                     self._names = _terrio.list_layers(self.path)
                 except _terrio_errors.TerrioError as e:
-                    raise self.error(e) from e
+                    raise self.refusal(e) from e
             if not self._names and self.path.lower().endswith((".zip", ".kmz", ".xlsx")):
                 raise DataSourceError(f"no dataset found in '{_redact(self._input_name)}'")
         return self._names
@@ -323,7 +331,7 @@ def _open(
     try:
         return _terrio.pyogrio_read(path, skip_features, max_features, read_geometry, layer)
     except _terrio_errors.TerrioError as e:
-        raise source.error(e, path) from e
+        raise source.refusal(e, path) from e
 
 
 # ----------------------------------------------------------------------------------------------
