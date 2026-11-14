@@ -37,6 +37,8 @@ SECRET = "PRIVATE-DIAGNOSTIC-TEST-SECRET"
         (f"/data/a?token%3D{SECRET}", "/data/a?<redacted>"),
         (f"/data/a?%74oken%3d{SECRET}", "/data/a?<redacted>"),
         (f"/data/a?x=1%26token={SECRET}", "/data/a?<redacted>"),
+        (f"/data/a?client_secret%26label={SECRET}", "/data/a?<redacted>"),
+        (f"/data/a#client_secret%26label={SECRET}", "/data/a#<redacted>"),
         (f"/data/a#sig={SECRET}", "/data/a#<redacted>"),
         (f"/data/a#x=1%26token%3D{SECRET}", "/data/a#<redacted>"),
         ("/data/file#notes.txt", "/data/file#notes.txt"),
