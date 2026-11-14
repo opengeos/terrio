@@ -31,7 +31,10 @@ and explicit file-based opens. Core regressions cover archive extraction aliases
 portable remote download basenames, mask sources, and RPC DEM references.
 The catalog tests keep VRT bytes in the closed-source-map opener for both reading
 and overwrite inventory, including XML declarations and `GDAL:`/`NETCDF:` name
-prefixes. Direct paths and already-open native handles retain file-based lookup.
+prefixes, and prolog comments beyond the identification header. Direct paths and
+already-open native handles retain file-based lookup. Archive diagnostic tests
+check formatted Python exception chains and native sidecar/directory failures
+for private extraction paths.
 
 `python/tests/test_diagnostic_url_safety.py` uses a loopback range server and fake
 credentials to check exceptions, multilayer warnings, notebook display logs, and

@@ -188,12 +188,22 @@ impl CatalogInput {
 // opener; using the file-enabled opener here would read the host's files.
 fn virtual_bytes(bytes: &[u8], name: &str) -> Result<Option<LazyRaster>> {
     let text = std::str::from_utf8(bytes);
-    // By name or content, as the format sniffer reads it (an XML declaration may come first):
-    // VRT bytes that fell through would be opened as a file, with host resolution. The sniff
-    // uses a neutral name, since a prefixed name (`GDAL:…`) skips content identification.
-    let vrt = crate::formats::extension(name).as_deref() == Some("vrt")
-        || text.is_ok_and(|s| s.trim_start().starts_with("<VRTDataset"))
-        || crate::formats::identify_bytes("source", bytes).by_content.as_deref() == Some("VRT");
+    // Inspect the full XML prolog: a bounded format sniff can miss a VRT root behind
+    // a long comment. Inconclusive XML must not reach the file-enabled fallback.
+    let mut vrt = crate::formats::extension(name).as_deref() == Some("vrt");
+    if !vrt && crate::drivers::vector::citygml::is_xml_prefix(bytes) {
+        let mut reader = quick_xml::Reader::from_reader(bytes);
+        loop {
+            match reader.read_event() {
+                Ok(quick_xml::events::Event::Start(root) | quick_xml::events::Event::Empty(root)) => {
+                    vrt = root.name().as_ref() == "VRTDataset";
+                    break;
+                }
+                Ok(quick_xml::events::Event::Eof) | Err(_) => return Err(bad("invalid XML root in supplied bytes")),
+                _ => {}
+            }
+        }
+    }
     if !vrt {
         return Ok(None);
     }
@@ -1136,6 +1146,12 @@ mod lazy_source_tests {
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
+
+    #[test]
+    fn byte_xml_roots_keep_other_formats_and_refuse_inconclusive_prologs() {
+        assert!(virtual_bytes(b"<?xml version=\"1.0\"?><!--comment--><kml/>", "upload.bin").unwrap().is_none());
+        assert!(virtual_bytes(b"<?xml version=\"1.0\"?><!--unfinished", "upload.bin").is_err());
+    }
 
     #[test]
     fn deferred_byte_refusals_keep_the_resource_error_on_repeated_access() {

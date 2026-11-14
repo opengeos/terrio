@@ -259,7 +259,7 @@ class _Source:
                 try:
                     self._names = _terrio.list_layers(self.path)
                 except _terrio_errors.TerrioError as e:
-                    raise self.refusal(e) from e
+                    raise self.refusal(e) from None
             if not self._names and self.path.lower().endswith((".zip", ".kmz", ".xlsx")):
                 raise DataSourceError(f"no dataset found in '{_redact(self._input_name)}'")
         return self._names
@@ -332,7 +332,7 @@ def _open(
     try:
         return _terrio.pyogrio_read(path, skip_features, max_features, read_geometry, layer)
     except _terrio_errors.TerrioError as e:
-        raise source.refusal(e, path) from e
+        raise source.refusal(e, path) from None
 
 
 # ----------------------------------------------------------------------------------------------

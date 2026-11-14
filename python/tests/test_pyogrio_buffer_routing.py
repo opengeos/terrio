@@ -3,6 +3,7 @@
 import io
 import json
 import sqlite3
+import traceback
 import zipfile
 
 import pytest
@@ -57,6 +58,9 @@ def test_non_dataset_zip_errors_name_the_input(tmp_path, monkeypatch, count, mod
             read(source)
         shown = "buffer" if mode == "bytes" else path.name
         assert str(caught.value) == f"no dataset found in '{shown}'"
+        chain = "".join(traceback.format_exception(caught.value))
+        assert "terrio-pyogrio-" not in chain
+        assert "terrio-" not in chain
     finally:
         if hasattr(source, "close"):
             source.close()

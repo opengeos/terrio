@@ -495,7 +495,7 @@ fn declared_vrt_bytes_under_another_name_resolve_no_host_files() {
     let dir = tempfile::tempdir().unwrap();
     let host = dir.path().join("host.tif");
     terrio::write_raster_dataset(&tile(0., 10.), host.to_str().unwrap(), &Default::default()).unwrap();
-    let xml = format!("<?xml version=\"1.0\"?>\n{}", reference_vrt(host.to_str().unwrap(), None));
+    let xml = format!("<?xml version=\"1.0\"?>\n<!--{}-->\n{}", "padding".repeat(5000), reference_vrt(host.to_str().unwrap(), None));
     for name in ["upload.bin", "GDAL:upload", "NETCDF:upload"] {
         let mut footprints = index();
         footprints.features.truncate(1);
@@ -505,8 +505,9 @@ fn declared_vrt_bytes_under_another_name_resolve_no_host_files() {
             CatalogOptions { extent: Some((0., 0., 4., 4.)), ..options() },
         )
         .unwrap();
-        let error = catalog.into_lazy().read().unwrap_err().to_string();
+        let error = catalog.into_lazy().write(host.to_str().unwrap(), &Default::default()).unwrap_err().to_string();
         assert!(error.contains("supplied in the source map"), "{name}: {error}");
+        assert_eq!(terrio::open_raster(host.to_str().unwrap()).unwrap().raster.data.to_f64_vec(), vec![10.; 16]);
     }
 }
 

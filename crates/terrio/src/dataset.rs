@@ -511,7 +511,7 @@ fn open_native_unchecked(path: &str) -> Result<Dataset> {
     #[cfg(remote)]
     check_remote_copy(path, true)?;
     let local = vfs::resolve(path)?;
-    open_local(local.as_str(), &VectorOpenOptions::default()).map_err(|e| naming_dataset(e, path, local.as_str()))
+    open_local(local.as_str(), &VectorOpenOptions::default()).map_err(|e| naming_resolved_dataset(e, path, &local))
 }
 
 /// Opens a raster dataset, reading it into memory.
@@ -596,7 +596,7 @@ fn read_raster_native(path: &str) -> Result<RasterDataset> {
     #[cfg(remote)]
     check_remote_copy(path, false)?;
     let local = vfs::resolve(path)?;
-    read_raster_local(local.as_str()).map_err(|e| naming_dataset(e, path, local.as_str()))
+    read_raster_local(local.as_str()).map_err(|e| naming_resolved_dataset(e, path, &local))
 }
 
 /// Refuses a remote file that [`vfs::resolve`] would download whole for the whole read of a raster
@@ -668,7 +668,16 @@ fn judged_by_content(name: &str, generic: bool) -> bool {
 /// retained); a message
 /// that names neither starts with it. The variant is kept, but for the format libraries' errors,
 /// which become [`Error::InvalidData`] (the Python class they already map to).
+#[cfg(test)]
 fn naming_dataset(e: Error, path: &str, local: &str) -> Error {
+    naming_dataset_copy(e, path, local, None)
+}
+
+fn naming_resolved_dataset(e: Error, path: &str, local: &vfs::LocalPath) -> Error {
+    naming_dataset_copy(e, path, local.as_str(), local.temporary_directory().and_then(Path::to_str))
+}
+
+fn naming_dataset_copy(e: Error, path: &str, local: &str, directory: Option<&str>) -> Error {
     if vfs::Location::parse(path).is_local() {
         return e;
     }
@@ -678,13 +687,20 @@ fn naming_dataset(e: Error, path: &str, local: &str) -> Error {
     } else {
         path.trim().split(['?', '#']).next().unwrap_or(path).into()
     };
-    let named = |m: String| if m.contains(local) { m.replace(local, &shown) } else { format!("'{shown}': {m}") };
+    let replace = |m: String| {
+        let m = m.replace(local, &shown);
+        if let Some(directory) = directory { m.replace(directory, &shown) } else { m }
+    };
+    let named = |m: String| {
+        let m = replace(m);
+        if m.contains(shown.as_ref()) { m } else { format!("'{shown}': {m}") }
+    };
     match e {
         Error::Unsupported(m) => Error::Unsupported(named(m)),
         Error::ResourceLimit(m) => Error::ResourceLimit(named(m)),
         Error::InvalidData(m) => Error::InvalidData(named(m)),
         // Option/layer-selection errors need no source prefix, but must not retain a copy's path.
-        Error::InvalidArgument(m) => Error::InvalidArgument(m.replace(local, &shown)),
+        Error::InvalidArgument(m) => Error::InvalidArgument(replace(m)),
         Error::Raster(e) => Error::InvalidData(named(e.to_string())),
         Error::Vector(e) => Error::InvalidData(named(e.to_string())),
         Error::Io(e) => Error::Io(std::io::Error::new(e.kind(), named(e.to_string()))),
@@ -1001,7 +1017,7 @@ pub(crate) fn open_vector_native(path: &str, options: &VectorOpenOptions) -> Res
         return Ok(finish_vector(layers, path, VectorDriver::Parquet));
     }
     let local = vfs::resolve(path)?;
-    match open_local(local.as_str(), options).map_err(|e| naming_dataset(e, path, local.as_str()))? {
+    match open_local(local.as_str(), options).map_err(|e| naming_resolved_dataset(e, path, &local))? {
         Dataset::Vector(v) => {
             check_archive_layers(path, &v.layers)?;
             Ok(v)
@@ -1060,7 +1076,7 @@ fn list_layers_native(path: &str) -> Result<Vec<String>> {
         #[cfg(feature = "sqlite")]
         {
             let names =
-                crate::drivers::vector::gpkg_read::list_layers(local.as_str()).map_err(|e| naming_dataset(e, path, local.as_str()))?;
+                crate::drivers::vector::gpkg_read::list_layers(local.as_str()).map_err(|e| naming_resolved_dataset(e, path, &local))?;
             if names.is_empty() {
                 check_archive_layers(path, &[])?;
             }
@@ -1069,7 +1085,8 @@ fn list_layers_native(path: &str) -> Result<Vec<String>> {
         #[cfg(not(feature = "sqlite"))]
         return Err(Error::disabled("sqlite"));
     }
-    let dataset = open_vector_native(local.as_str(), &VectorOpenOptions::default()).map_err(|e| naming_dataset(e, path, local.as_str()))?;
+    let dataset =
+        open_vector_native(local.as_str(), &VectorOpenOptions::default()).map_err(|e| naming_resolved_dataset(e, path, &local))?;
     Ok(dataset.layers.into_iter().map(|l| l.name).collect())
 }
 
@@ -2489,6 +2506,20 @@ mod tests {
         );
         assert!(matches!(&error, crate::Error::ResourceLimit(_)));
         assert_eq!(error.to_string(), "budget exceeded at https://example.com/input.hdf");
+    }
+
+    #[test]
+    fn extracted_sidecar_and_directory_errors_hide_the_private_root() {
+        for copy in ["/private/extracted/roads.dbf", "/private/extracted"] {
+            let error = super::naming_dataset_copy(
+                crate::Error::InvalidData(format!("invalid data at {copy}")),
+                "/vsizip/input.zip/roads.shp",
+                "/private/extracted/roads.shp",
+                Some("/private/extracted"),
+            );
+            assert!(error.to_string().contains("/vsizip/input.zip/roads.shp"));
+            assert!(!error.to_string().contains("/private/extracted"));
+        }
     }
 
     #[test]
