@@ -1578,7 +1578,7 @@ continue to control coordinates. Local validation uses GDAL 3.12.1.
 `TERRIO_TEST_DATA=../terrio-data cargo test -p terrio-crs --test crs_grids projjson_identity`
 adds the real NADCON `us_noaa_conus.tif` grid. Both an identified NAD27 UTM CRS and
 a custom false easting agree with the WKT-only path and GDAL 3.12.1 within 1e-10
-degrees. The test requires the grid and legacy-grid directories populated by
+degrees. The test returns early without assertions unless the grid and legacy-grid directories are populated by
 `scripts/fetch_test_data.sh`; no network access occurs during transformation.
 
 PROJ-string export (`SpatialRef::to_proj4`) is compared with PROJ 9.8.1's strings of every 20th
