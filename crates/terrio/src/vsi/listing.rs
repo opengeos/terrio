@@ -54,6 +54,14 @@ pub(crate) fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
         let end = scheme + 3 + end;
         return format!("{}{}<redacted>", &out[..end], &out[end..end + 1]).into();
     }
+    // A scheme-less location (a `/vsimem/` key, a path given with a signature) has no authority to
+    // strip, but its query is as private. Only a single token is treated so, never prose.
+    if !out.contains("://")
+        && !out.contains(char::is_whitespace)
+        && let Some(query) = out.find(['?', '#'])
+    {
+        return format!("{}{}<redacted>", &out[..query], &out[query..=query]).into();
+    }
     out
 }
 
@@ -800,6 +808,14 @@ mod tests {
         }
         assert_eq!(super::redact_url("https://host/a?<redacted>&token=PRIVATE"), "https://host/a?<redacted>");
         assert_eq!(super::redact_url("https://host/a#PRIVATE"), "https://host/a#<redacted>");
+    }
+
+    #[test]
+    fn scheme_less_locations_redact_their_query_but_prose_is_kept() {
+        assert_eq!(super::redact_url("/no/such/file.zip?sig=PRIVATE"), "/no/such/file.zip?<redacted>");
+        assert_eq!(super::redact_url("/vsimem/a.tif?sig=PRIVATE"), "/vsimem/a.tif?<redacted>");
+        assert_eq!(super::redact_url("/no/such/file.zip?<redacted>"), "/no/such/file.zip?<redacted>");
+        assert_eq!(super::redact_url("did you mean a.tif? yes"), "did you mean a.tif? yes");
     }
 
     #[test]
