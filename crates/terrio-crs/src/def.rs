@@ -453,15 +453,18 @@ impl Def {
             x0: p.f64("x_0").unwrap_or(0.0),
             y0: p.f64("y_0").unwrap_or(0.0),
         };
-        // The scale factor, refused as PROJ's `pj_init` refuses it: when the number its value
-        // starts with (`atof`) is not above 0 ("Invalid value for k"); NaN passes that test. The
-        // value used is the first of `+k_0` and `+k` that is a number, as the writers read it (so
-        // `+k_0=0.5r` is 1, where PROJ takes 0.5 or refuses it).
+        // Check the first present scale key as PROJ's `pj_init` does: its numeric prefix (`atof`)
+        // must be above 0 ("Invalid value for k"); NaN passes that test. The value used is the
+        // first of `+k_0` and `+k` that is a number, as the writers read it, and must also pass
+        // that check. Without a numeric `+k`, `+k_0=0.5r` is 1, where PROJ takes 0.5 or refuses it.
         let k = p.str("k_0").or_else(|| p.str("k"));
         if k.is_some_and(|k| !leading_number(k).is_some_and(|k| k > 0.0 || k.is_nan())) {
             return Err(Error::Crs(format!("invalid value for k_0 in '{s}'")));
         }
         setup.k0 = p.f64("k_0").or_else(|| p.f64("k")).unwrap_or(1.0);
+        if setup.k0 <= 0.0 {
+            return Err(Error::Crs(format!("invalid value for k_0 in '{s}'")));
+        }
         // As PROJ refuses it ("Invalid value for lat_0: |lat_0| should be <= 90°").
         if setup.phi0.abs() > HALFPI + 1e-12 || !setup.phi0.is_finite() {
             return Err(Error::Crs(format!("invalid lat_0: {} degrees", setup.phi0.to_degrees())));
@@ -472,9 +475,6 @@ impl Def {
         let o_proj = p.str("o_proj").filter(|_| ob_tran.is_some());
         let rot = ob_tran.filter(|_| o_proj.is_some_and(is_longlat));
         let geocentric = name == "geocent";
-        if geocentric && units.is_none() && p.has("to_meter") && explicit_to_meter.is_none() {
-            return Err(Error::Crs("invalid geocentric to_meter".into()));
-        }
         if geocentric && p.has("axis") {
             let b = p.str("axis").unwrap_or("").as_bytes();
             let valid = b.len() == 3
@@ -1267,12 +1267,57 @@ fn unchecked(p: &Params, key: &str) -> bool {
 /// The number a value starts with, as C's `atof` reads it (`0.5r` is 0.5); `None` without one.
 fn leading_number(v: &str) -> Option<f64> {
     let v = v.trim_start();
-    (1..=v.len()).rev().filter(|&n| v.is_char_boundary(n)).find_map(|n| v[..n].parse::<f64>().ok())
+    let b = v.as_bytes();
+    let mut end = usize::from(matches!(b.first(), Some(b'+' | b'-')));
+    for word in ["infinity", "inf", "nan"] {
+        if v.get(end..end + word.len()).is_some_and(|s| s.eq_ignore_ascii_case(word)) {
+            return v[..end + word.len()].parse().ok();
+        }
+    }
+    while b.get(end).is_some_and(u8::is_ascii_digit) {
+        end += 1;
+    }
+    if b.get(end) == Some(&b'.') {
+        end += 1;
+        while b.get(end).is_some_and(u8::is_ascii_digit) {
+            end += 1;
+        }
+    }
+    if matches!(b.get(end), Some(b'e' | b'E')) {
+        let exponent = end;
+        end += 1;
+        if matches!(b.get(end), Some(b'+' | b'-')) {
+            end += 1;
+        }
+        let digits = end;
+        while b.get(end).is_some_and(u8::is_ascii_digit) {
+            end += 1;
+        }
+        if end == digits {
+            end = exponent;
+        }
+    }
+    v[..end].parse().ok()
 }
 
 #[cfg(test)]
 mod inverse_input_tests {
     use super::*;
+
+    #[test]
+    fn leading_numbers_allow_suffixes_and_special_values() {
+        for (value, expected) in [("0.5r", 0.5), (" -2.5e+2suffix", -250.0), ("1e+suffix", 1.0), (".5°", 0.5), ("2.3.4", 2.3)] {
+            assert_eq!(leading_number(value), Some(expected), "{value}");
+        }
+        for value in ["", "abc", "+", ".", "-e2", "é"] {
+            assert_eq!(leading_number(value), None, "{value}");
+        }
+        assert!(leading_number("-NaNtail").unwrap().is_nan());
+        assert_eq!(leading_number("+INFtail"), Some(f64::INFINITY));
+        assert_eq!(leading_number("-Infinitytail"), Some(f64::NEG_INFINITY));
+        assert_eq!(leading_number(&format!("0.5{}", "x".repeat(100_000))), Some(0.5));
+        assert_eq!(leading_number(&format!("{}x", "1".repeat(100_000))), Some(f64::INFINITY));
+    }
 
     #[test]
     fn inverse_refuses_nonfinite_coordinates_across_projection_kinds() {

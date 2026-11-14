@@ -1,7 +1,7 @@
 """Generate crates/terrio-crs/tests/data/proj_param_values.tsv: whether PROJ 9.8.1 accepts a CRS
 given by a PROJ string with a parameter value it may not read.
 
-Each method terrio-crs has without the wbprojection fallback gets, in turn, each common parameter
+Each method in the frozen METHODS list gets, in turn, each common parameter
 set to `abc` (no number) and to `0.5r` (radians), and the scale factor set to values PROJ may
 refuse (0, -1, `abc` and 2). A few strings test `+to_meter`, `+units`, `+vto_meter`, `+towgs84`,
 `+pm`, the ellipsoid with `+a`, and geocentric units. Each row is the PROJ string and `OK` or
@@ -110,6 +110,9 @@ PARAMS = [
     "gamma",
     "lonc",
     "h",
+    "h_0",
+    "t_epoch",
+    "dh",
     "zone",
     "azi",
     "b",
@@ -132,6 +135,11 @@ EXTRA = [
     "+proj=eqc +to_meter=nan",
     "+proj=tmerc +k_0=nan",
     "+proj=tmerc +k_0=0.5r +k=0.9996",
+    "+proj=tmerc +k_0=0.5r +k=0",
+    "+proj=tmerc +k_0=0.5r +k=-1",
+    "+proj=tmerc +k_0=0.5r +k=nan",
+    "+proj=ob_tran +o_proj=longlat +o_lat_p=abc +o_lon_p=0",
+    "+proj=ob_tran +o_proj=longlat +o_lat_p=0.5r +o_lon_p=0",
     "+proj=geocent +units=m +to_meter=abc",
     "+proj=geocent +to_meter=abc",
     "+proj=eqc +a=6378137 +b=abc",
@@ -161,12 +169,27 @@ EXTRA = [
 
 
 def with_ellipsoid(definition):
-    """The definition on WGS 84, unless it gives its own ellipsoid (`+a`, `+rf`, `+R`)."""
+    """Add WGS 84 unless the definition supplies its own ellipsoid.
+
+    Args:
+        definition: PROJ string to complete.
+
+    Returns:
+        A PROJ string with an explicit ellipsoid.
+    """
     own = any(f" +{k}=" in definition for k in ("a", "rf", "R"))
     return definition if own else definition + " +ellps=WGS84"
 
 
 def accepted(definition):
+    """Check whether the reference PROJ accepts a definition.
+
+    Args:
+        definition: Complete PROJ string to check as a CRS.
+
+    Returns:
+        ``OK`` if PROJ accepts the string, otherwise ``ERR``.
+    """
     try:
         CRS(definition + " +type=crs")
     except pyproj.exceptions.CRSError:
@@ -175,6 +198,7 @@ def accepted(definition):
 
 
 def main():
+    """Regenerate the frozen acceptance fixture using PROJ 9.8.1."""
     assert pyproj.proj_version_str == "9.8.1", pyproj.proj_version_str
     rows = []
     for method, key, value in itertools.product(METHODS, PARAMS, ["abc", "0.5r"]):

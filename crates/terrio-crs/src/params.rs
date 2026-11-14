@@ -139,6 +139,7 @@ impl Params {
     /// The parameters read as a number or an angle without being one, in reading order: PROJ
     /// refuses a CRS with such a value ("invalid value for lat_ts"). Only parameters read count,
     /// as PROJ only checks those its method uses, and not those of [`LENIENT`].
+    /// Call after all numeric and angular reads: this is a snapshot of failures recorded so far.
     pub fn invalid(&self) -> Vec<String> {
         self.invalid.borrow().clone()
     }

@@ -1553,10 +1553,12 @@ them) and compound references, character for character, and reads back as the sa
 
 PROJ-string parameter values are refused where PROJ 9.8.1 refuses them: each method with each
 common parameter unreadable (`abc`) or in radians (`0.5r`), scale factors PROJ may refuse, and
-`+to_meter`, `+units`, `+vto_meter`, `+towgs84` and `+pm` cases, 3,051 strings in all, against
+`+to_meter`, `+units`, `+vto_meter`, `+towgs84`, `+pm` and rotated-pole cases, 3,404 strings in all, against
 whether PROJ accepts them (`cargo test -p terrio-crs --test proj_param_values`; regenerate with
 `scripts/gen_proj_param_values.py`, pyproj 3.8.0). The strings that still differ are listed by
 kind in the test, and counted.
+This includes `h_0`, `t_epoch` and `dh`, plus a nonpositive `+k` fallback. Terrio retains its
+strict rotated-pole `o_lat_p` validation where PROJ's CRS parser leaves the value unchecked.
 
 Strict WKT 1 export (`SpatialRef::to_wkt1_strict`) is compared with PROJ 9.8.1's `WKT1_GDAL`
 (with GDAL's axes) of every 20th EPSG and ESRI code and every one PROJ refuses, character for
