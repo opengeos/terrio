@@ -34,16 +34,17 @@ const CASES: &[Case] = &[
     ("EPSG:4326", "EPSG:4277", (-1.0, 52.0), Some((-0.9984736030557578, 51.99956034698155))),
     // A longitude beyond the antimeridian, wrapped to pick the transformation.
     ("EPSG:4277", "EPSG:4326", (359.0, 52.0), Some((-1.0015262257827398, 52.00043957445139))),
-    // A `+towgs84` Helmert is the only operation: refused beyond the poles.
+    // A `+towgs84` Helmert is the only operation: refused beyond the poles, either way.
     ("EPSG:4326", BESSEL_TOWGS84, (10.0, 95.0), None),
-    (BESSEL_TOWGS84, "EPSG:4326", (359.0, 52.0), Some((-0.9995279771188769, 51.9986535183326))),
-    // Within PROJ's tolerance (1e-12 rad) of the pole: at the pole.
+    // Within PROJ's tolerance (1e-12 rad) of the pole: accepted (the clamp to the pole it gets
+    // moves the result by less than the tolerance here).
     (BESSEL_TOWGS84, "EPSG:4326", (10.0, 90.00000000002865), Some((6.421905717473288, 89.9945987051041))),
     (BESSEL_TOWGS84, "EPSG:4326", (10.0, 95.0), None),
     (BESSEL_TOWGS84, "EPSG:4326", (10.0, -90.5), None),
     (BESSEL_TOWGS84, "EPSG:4326", (451219.33, 5411550.2), None),
     (BESSEL_TOWGS84, "EPSG:4326", (10.0, 90.0), Some((6.421905717473288, 89.9945987051041))),
     (BESSEL_TOWGS84, "EPSG:4326", (-1.0, 52.0), Some((-0.999527977118939, 51.9986535183326))),
+    (BESSEL_TOWGS84, "EPSG:4326", (359.0, 52.0), Some((-0.9995279771188769, 51.9986535183326))),
     // Geocentric and projected targets refuse them too.
     ("EPSG:4326", "EPSG:4978", (10.0, 95.0), None),
     ("EPSG:4326", "EPSG:4978", (10.0, -90.5), None),
