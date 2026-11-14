@@ -308,7 +308,8 @@ def _crs_member(crs) -> str | None:
             name = _terrio._geojson_crs_name(f"EPSG:{code}")
         except CRSError as exc:
             raise UnsupportedError(
-                "GeoJSON cannot name this layer's CRS: use a format that stores CRS definitions"
+                "GeoJSON cannot name this layer's CRS: reproject to EPSG:4326 (RFC7946=YES), "
+                "or use a format that stores CRS definitions"
             ) from exc
     else:
         name = _terrio._geojson_crs_name(crs.to_wkt())

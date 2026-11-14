@@ -114,7 +114,7 @@ def test_pyogrio_refuses_unresolvable_authorities(tmp_path):
     assert not path.exists()
 
 
-def test_gml_refusal_warning_redacts_credentials_and_known_crs_is_quiet(tmp_path):
+def test_gml_read_warning_redacts_credentials_and_known_crs_is_quiet(tmp_path):
     """Keep diagnostics private and valid GML reads free of new warnings.
 
     Args:
