@@ -188,11 +188,10 @@ fn a_unit_given_as_a_fraction_is_written_by_its_name() {
 }
 
 #[test]
-fn a_shift_proj_refuses_is_not_written() {
-    // PROJ refuses `+towgs84` with other than 3 or 7 values, and terrio reads it as no shift: the
-    // string has none.
-    let crs = SpatialRef::from_proj4("+proj=longlat +ellps=GRS80 +towgs84=1,2,3,4,5,6").unwrap();
-    assert_eq!(crs.to_proj4().as_deref(), Some("+proj=longlat +ellps=GRS80 +no_defs +type=crs"));
+fn a_shift_with_the_wrong_number_of_parameters_is_refused() {
+    // PROJ 9.8.1 refuses `+towgs84` with other than 3 or 7 values. Do not silently drop it
+    // while exporting an apparently valid definition with no datum shift.
+    assert!(SpatialRef::from_proj4("+proj=longlat +ellps=GRS80 +towgs84=1,2,3,4,5,6").is_err());
 }
 
 #[test]

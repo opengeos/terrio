@@ -410,10 +410,11 @@ impl SpatialRef {
             }
             return s;
         }
-        // Do not let a declared registry code repair an incomplete variant C definition.
+        // Do not let a registry code repair an incomplete variant C definition or a refused
+        // PROJ4 extension, including codes identified by the optional projection fallback.
         // Keep it as WKT so the transformer reports the parsing error. Valid PROJ4
         // extensions have already taken precedence above.
-        if is_variant_c(wkt) && Def::from_wkt(wkt).is_err() {
+        if (is_variant_c(wkt) || proj4_extension(wkt).is_some()) && Def::from_wkt(wkt).is_err() {
             return Self { wkt: Some(wkt.to_string()), ..Default::default() };
         }
         let epsg = identify_epsg(wkt);

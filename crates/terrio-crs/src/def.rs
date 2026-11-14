@@ -605,7 +605,10 @@ impl Def {
             params: Some(Arc::new(params)),
         };
         // The datum transformation.
-        let towgs84 = p.list("towgs84").filter(|v| v.len() == 3 || v.len() == 7);
+        let towgs84 = p.list("towgs84");
+        if towgs84.as_ref().is_some_and(|v| v.len() != 3 && v.len() != 7) {
+            return Err(Error::Crs(format!("towgs84 needs 3 or 7 values in '{s}'")));
+        }
         let nadgrids = p.str("nadgrids").filter(|g| !g.split(',').all(|n| n.trim_start_matches('@') == "null"));
         if let Some(g) = nadgrids {
             d.ops = vec![Arc::new(Op::world(datum::nadgrids_steps(g)))];
@@ -643,8 +646,12 @@ impl Def {
     /// The coordinate conversion of a WKT definition (without its datum), when terrio reads it: that
     /// of its `PROJ4` extension when it has one.
     pub fn wkt_conversion(w: &str) -> Option<Self> {
-        if let Some(d) = super::proj4_extension(w).and_then(|p| Self::from_proj_extension(&p).ok()) {
-            return Some(d);
+        if let Some(p) = super::proj4_extension(w) {
+            match Self::from_proj_extension(&p) {
+                Ok(d) => return Some(d),
+                Err(Error::Crs(message)) if message.starts_with("unsupported projection:") => {}
+                Err(_) => return None,
+            }
         }
         let root = wkt1::parse(w)?;
         let c = if wkt2::handles(&root) { wkt2::to_proj(&root).ok()? } else { wkt1::to_proj(&root)? };
@@ -715,9 +722,14 @@ impl Def {
             return Ok(d);
         }
         // A WKT 1 extended with its PROJ string (`EXTENSION["PROJ4", ...]`) is that PROJ string,
-        // whatever its nodes say, as GDAL and PROJ read it.
-        if let Some(d) = super::proj4_extension(w).and_then(|p| Self::from_proj_extension(&p).ok()) {
-            return Ok(d);
+        // whatever its nodes say, as GDAL and PROJ read it. Unsupported methods retain the
+        // WKT-node fallback, but invalid values in a supported conversion must not fall through.
+        if let Some(p) = super::proj4_extension(w) {
+            match Self::from_proj_extension(&p) {
+                Ok(d) => return Ok(d),
+                Err(Error::Crs(message)) if message.starts_with("unsupported projection:") => {}
+                Err(error) => return Err(error),
+            }
         }
         // Text the WKT reader refuses (not WKT, nested deeper or longer than GDAL reads) is not
         // handed to wbprojection's parser either, whose recursion has no bound.

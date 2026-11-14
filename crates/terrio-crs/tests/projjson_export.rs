@@ -147,7 +147,7 @@ fn what_would_be_written_wrongly_is_refused() {
     }
     // On a sphere, the auxiliary sphere is the sphere: written.
     assert!(SpatialRef::parse("+proj=merc +R_C +R=696000000").unwrap().to_projjson().is_ok());
-    assert!(refusal("+proj=longlat +ellps=bessel +towgs84=1,2,3,4,5,6").contains("+towgs84 of 6 values"));
+    assert!(SpatialRef::parse("+proj=longlat +ellps=bessel +towgs84=1,2,3,4,5,6").unwrap_err().to_string().contains("3 or 7"));
     // A prime meridian it cannot read is refused when read, as PROJ refuses it, rather than
     // written as Greenwich.
     assert!(SpatialRef::parse("+proj=longlat +datum=WGS84 +pm=foo").unwrap_err().to_string().contains("invalid value for pm"));

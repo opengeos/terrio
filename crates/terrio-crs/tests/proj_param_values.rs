@@ -60,6 +60,7 @@ fn known(definition: &str, proj_accepts: bool) -> bool {
 #[test]
 fn unreadable_parameter_values_are_refused_as_proj_refuses_them() {
     let mut differing = 0;
+    let mut differences = Vec::new();
     let mut definitions = std::collections::HashSet::new();
     for line in include_str!("data/proj_param_values.tsv").lines() {
         let (definition, proj) = line.split_once('\t').unwrap();
@@ -69,11 +70,14 @@ fn unreadable_parameter_values_are_refused_as_proj_refuses_them() {
         let proj_accepts = proj == "OK";
         if accepted.is_ok() != proj_accepts {
             assert!(known(definition, proj_accepts), "{full}: PROJ {proj}, terrio {:?}", accepted.err());
+            differences.push(line);
             differing += 1;
         }
     }
     // A change in the strings that still differ shows here.
     assert_eq!(differing, 320, "strings that still differ from PROJ");
+    differences.sort_unstable();
+    assert_eq!(differences.join("\n"), include_str!("data/proj_param_value_differences.tsv").trim_end());
 }
 
 #[test]
@@ -113,4 +117,13 @@ fn a_wkt_s_proj4_extension_is_read_as_proj_reads_it() {
     let t = terrio_crs::Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &SpatialRef::parse(wkt).unwrap()).unwrap();
     let (x, y) = t.transform(10.0, 10.0).unwrap();
     assert!((x - 1113194.9079327357).abs() < 1e-6 && (y - 1105854.833234372).abs() < 1e-6, "{x} {y}");
+    // PROJ 9.8.1 cannot construct a transformation from any of these extensions; the WKT
+    // nodes must not silently replace the refused conversion.
+    for extension in
+        ["+proj=eqc +k_0=0 +ellps=WGS84", "+proj=eqc +to_meter=-1 +ellps=WGS84", "+proj=eqc +geoidgrids=@null +vto_meter=0 +ellps=WGS84"]
+    {
+        let refused = wkt.replace("+proj=eqc +lat_ts=abc +ellps=WGS84 +units=m", extension);
+        let crs = SpatialRef::parse(&refused).unwrap();
+        assert!(terrio_crs::Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &crs).is_err(), "{extension}");
+    }
 }
