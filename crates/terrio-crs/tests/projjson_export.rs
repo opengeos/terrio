@@ -211,6 +211,42 @@ fn projjson_reads_back_as_the_same_crs() {
     }
 }
 
+#[test]
+fn projjson_identifies_definitions_without_trusting_root_ids() {
+    // PROJJSON v0.7 / PROJ 9.8.1: identity follows the complete definition.
+    for code in [4326, 32633, 2154] {
+        let original = SpatialRef::from_epsg(code).unwrap();
+        let mut json: Value = serde_json::from_str(&original.to_projjson().unwrap()).unwrap();
+        for id in [Some(json!({"authority": "EPSG", "code": 3857})), None] {
+            json.as_object_mut().unwrap().remove("id");
+            if let Some(id) = id {
+                json["id"] = id;
+            }
+            let back = SpatialRef::from_projjson(&json.to_string()).unwrap();
+            assert_eq!(back.epsg, Some(code));
+            assert_eq!(back.authority(), Some(("EPSG", code)));
+        }
+    }
+}
+
+#[test]
+fn projected_base_type_is_optional_but_not_arbitrary() {
+    // PROJJSON v0.7 permits omitted type only in this geographic-base context.
+    let mut json: Value = serde_json::from_str(&SpatialRef::from_epsg(32633).unwrap().to_projjson().unwrap()).unwrap();
+    json["base_crs"].as_object_mut().unwrap().remove("type");
+    let back = SpatialRef::from_projjson(&json.to_string()).unwrap();
+    assert_eq!(back.epsg, Some(32633));
+    let (x, y) = Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &back).unwrap().transform(15.0, 0.0).unwrap();
+    assert!((x - 500000.0).abs() < 1e-8 && y.abs() < 1e-8);
+    for kind in [json!(null), json!("ProjectedCRS"), json!(false)] {
+        json["base_crs"]["type"] = kind;
+        assert!(SpatialRef::from_projjson(&json.to_string()).is_err());
+    }
+    json["base_crs"].as_object_mut().unwrap().remove("type");
+    json.as_object_mut().unwrap().remove("type");
+    assert!(SpatialRef::from_projjson(&json.to_string()).is_err());
+}
+
 /// For `scripts/conformance.py` (`projjson-export`): writes the PROJJSON of each definition of
 /// `TERRIO_PROJJSON_EXPORT_CASES` (one per line) to `TERRIO_PROJJSON_EXPORT_REPORT`, as JSON
 /// lines of `{definition, projjson}` or `{definition, error}`. Does nothing without them.
