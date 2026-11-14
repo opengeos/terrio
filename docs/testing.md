@@ -351,6 +351,11 @@ not an end-to-end read benchmark or a timing gate.
 Each live buffer-reference comparison owns its GDAL and Arrow state in a child process. The
 GeoParquet case checks both ordinary buffers and Arrow dataframe reads with registered WKB
 extension types, keeping the reference driver's registrations out of other tests.
+`python/tests/test_geoparquet_arrow_crs.py` also isolates a registered WKB type
+that discards its incoming extension metadata. Valid CRS metadata must survive;
+null and rejected definitions stay absent, with the existing warnings. An uploaded
+field's forged fallback value must not override native validation. The retained
+metadata does not rebuild geometry or attribute buffers.
 An explicit child assertion is a comparison difference; skipped references stay skipped.
 Other exit codes, signals and the 60-second timeout are fixture setup errors, which the
 conformance reporter records as suite errors instead of data differences.

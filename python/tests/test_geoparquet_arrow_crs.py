@@ -1,8 +1,10 @@
 """GeoParquet Arrow consumers share optional validation of stored CRS metadata."""
 
 import json
+import subprocess
 import sys
 import warnings
+from pathlib import Path
 
 import pytest
 
@@ -121,3 +123,82 @@ def test_optional_parser_unavailable_retains_metadata(tmp_path, monkeypatch):
     table = pa.table(terrio.open_stream(str(path)))
     metadata = json.loads(table.schema.field("geometry").metadata[b"ARROW:extension:metadata"])
     assert metadata["crs"] == INVALID[0]
+
+
+def test_registered_type_keeps_validated_crs_decisions(tmp_path):
+    """Isolate an opaque registered type and retain valid, null and rejected CRSs.
+
+    Args:
+        tmp_path: Directory for child-process GeoParquet fixtures.
+    """
+    result = subprocess.run(
+        [sys.executable, str(Path(__file__).resolve()), str(tmp_path)],
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def _check_registered_type(directory):
+    """Exercise imports whose registered extension type discards serialized metadata.
+
+    Args:
+        directory: Directory for the child process's datasets.
+    """
+
+    class OpaqueWkb(pa.ExtensionType):
+        """A valid WKB storage type that does not retain the incoming CRS metadata."""
+
+        def __init__(self):
+            """Register the standard WKB extension name over binary storage."""
+            super().__init__(pa.binary(), "geoarrow.wkb")
+
+        def __arrow_ext_serialize__(self):
+            """Return metadata without a recoverable CRS."""
+            return b"{}"
+
+        @classmethod
+        def __arrow_ext_deserialize__(cls, storage_type, serialized):
+            """Discard incoming metadata, as opaque registered types may do.
+
+            Args:
+                storage_type: The imported binary storage type.
+                serialized: The incoming extension metadata.
+
+            Returns:
+                OpaqueWkb: A type with no retained CRS payload.
+            """
+            assert storage_type == pa.binary()
+            return cls()
+
+    pa.register_extension_type(OpaqueWkb())
+    for index, definition in enumerate(INVALID + [None, pyproj.CRS(4326).to_json_dict()]):
+        path = directory / f"points-{index}.parquet"
+        write_points(path, definition)
+        # An uploaded field cannot supply its own trusted fallback decision.
+        source = pq.read_table(path)
+        geometry = source.schema.get_field_index("geometry")
+        field = source.schema.field(geometry).with_metadata(
+            {b"terrio:geoarrow:metadata": b'{"crs":"EPSG:3857"}'}
+        )
+        pq.write_table(source.set_column(geometry, field, source.column(geometry)), path)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            meta, table = tpg.read_arrow(path)
+            result = tpg.read_dataframe(path, use_arrow=True)
+        assert table["id"].to_pylist() == [0, 1, 2, 3]
+        assert [p.x for p in result.geometry] == [10, 11, 12, 13]
+        assert table.schema.field("geometry").type.__arrow_ext_serialize__() == b"{}"
+        if definition in INVALID or definition is None:
+            assert meta["crs"] is None
+            assert result.crs is None
+        else:
+            assert pyproj.CRS(meta["crs"]) == pyproj.CRS(4326)
+            assert result.crs == pyproj.CRS(4326)
+        if definition in INVALID:
+            assert sum("CRS definition cannot be parsed" in str(w.message) for w in caught) == 2
+
+
+if __name__ == "__main__":
+    _check_registered_type(Path(sys.argv[1]))

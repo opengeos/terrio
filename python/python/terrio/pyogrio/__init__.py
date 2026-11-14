@@ -810,6 +810,8 @@ def open_arrow(
 
         field = reader.schema.field(geometry[0])
         encoded = (field.metadata or {}).get(b"ARROW:extension:metadata")
+        if encoded is None:
+            encoded = (field.metadata or {}).get(b"terrio:geoarrow:metadata")
         if encoded is None and hasattr(field.type, "__arrow_ext_serialize__"):
             encoded = field.type.__arrow_ext_serialize__()
         definition = json.loads(encoded or b"{}").get("crs")
