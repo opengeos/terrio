@@ -210,11 +210,12 @@ impl GeoParquetBatches {
         // column whether it is read alone or with all the other attributes.
         let names = super::unique_column_names(file_schema.fields().iter().map(|f| f.name().clone()).collect());
         let named_fields: Vec<Field> = file_schema.fields().iter().zip(names).map(|(f, name)| f.as_ref().clone().with_name(name)).collect();
+        let exact_names: std::collections::HashSet<&str> = named_fields.iter().map(|f| f.name().as_str()).collect();
 
         // The output columns, in the file's order: the geometry columns, and the attributes asked
         // for (by default all but the covering column).
-        // A name matches a column without case, and `name.member` names the struct column `name`
-        // when it has that member (see `names_field`).
+        // Exact resolved names win; otherwise names match without case, and `name.member`
+        // names the struct column `name` when it has that member (see `names_field`).
         if let Some(columns) = &options.columns
             && let Some(missing) = columns.iter().find(|c| !named_fields.iter().any(|f| names_field(f, c)))
         {
@@ -225,7 +226,9 @@ impl GeoParquetBatches {
                 let field = file_schema.field(i);
                 geo_columns.contains_key(field.name())
                     || match &options.columns {
-                        Some(columns) => columns.iter().any(|c| names_field(&named_fields[i], c)),
+                        Some(columns) => columns.iter().any(|c| {
+                            if exact_names.contains(c.as_str()) { named_fields[i].name() == c } else { names_field(&named_fields[i], c) }
+                        }),
                         None => covering.as_ref().is_none_or(|(c, _)| c != field.name()),
                     }
             })
@@ -565,6 +568,7 @@ mod tests {
 
     #[test]
     fn repeated_columns_retain_positions_types_and_generated_selection_names() {
+        // Python's test_vector_duplicate_columns.py also covers both bbox-filter paths.
         use super::{GeoParquetBatches, GeoParquetReadOptions};
         use arrow_array::{Int32Array, Int64Array, RecordBatch, RecordBatchReader, StringArray};
         use arrow_schema::{DataType, Field, Schema};
@@ -572,7 +576,7 @@ mod tests {
         let schema = Arc::new(Schema::new(vec![
             Field::new("count", DataType::Int64, true),
             Field::new("count", DataType::Int32, true),
-            Field::new("total", DataType::Utf8, true),
+            Field::new("COUNT_2", DataType::Utf8, true),
         ]));
         let batch = RecordBatch::try_new(
             schema.clone(),
@@ -587,13 +591,21 @@ mod tests {
         let mut writer = parquet::arrow::ArrowWriter::try_new(&mut bytes, schema, None).unwrap();
         writer.write(&batch).unwrap();
         writer.close().unwrap();
-        for columns in [None, Some(vec!["count_2".into()])] {
+        for columns in [None, Some(vec!["count_2".to_string()]), Some(vec!["COUNT_2".to_string()])] {
             let selected = columns.is_some();
+            let selected_name = columns.as_ref().map(|names| names[0].clone());
             let options = GeoParquetReadOptions { columns, ..Default::default() };
             let mut reader = GeoParquetBatches::open(bytes::Bytes::from(bytes.clone()), &options, None).unwrap();
             let names: Vec<_> = reader.schema().fields().iter().map(|f| f.name().clone()).collect();
-            assert_eq!(names, if selected { vec!["count_2"] } else { vec!["count", "count_2", "total"] });
+            assert_eq!(
+                names,
+                selected_name.clone().map_or_else(|| vec!["count".into(), "count_2".into(), "COUNT_2".into()], |name| vec![name])
+            );
             let result = reader.next().unwrap().unwrap();
+            if selected_name.as_deref() == Some("COUNT_2") {
+                assert_eq!(result.column(0).as_any().downcast_ref::<StringArray>().unwrap().value(0), "a");
+                continue;
+            }
             let column = result.column_by_name("count_2").unwrap().as_any().downcast_ref::<Int32Array>().unwrap();
             assert_eq!(column.values().as_ref(), &[2, 5]);
             if !selected {

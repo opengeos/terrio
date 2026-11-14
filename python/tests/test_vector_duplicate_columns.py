@@ -78,6 +78,67 @@ def test_geoparquet_arrow_exports_keep_each_physical_column(
     ]
 
 
+@pytest.mark.parametrize(
+    "names,expected",
+    [
+        (["count", "count", "COUNT_2"], ["count", "count_2", "COUNT_2"]),
+        (["", "field_1", ""], ["field_1_2", "field_1", "field_3"]),
+    ],
+)
+def test_geoparquet_resolved_names_select_exact_physical_columns(tmp_path, names, expected):
+    """Select case-distinct generated names and collision-safe empty-name fallbacks.
+
+    Args:
+        tmp_path: Directory for the positional Parquet fixture.
+        names: Declared source names.
+        expected: Stable resolved names.
+    """
+    pa = pytest.importorskip("pyarrow")
+    path, _ = duplicate_file(tmp_path, "parquet", names)
+    assert pa.table(terrio.open_stream(str(path))).column_names == [*expected, "geometry"]
+    for column, name in enumerate(expected):
+        _, table = tpg.read_arrow(path, columns=[name])
+        assert table.column_names == [name, "geometry"]
+        assert table[name].to_pylist() == [11 + column, 21 + column, 31 + column]
+
+
+def test_geoparquet_covering_filters_nonzero_polygon_extents(tmp_path):
+    """Check both sides of covering boxes using actual non-degenerate polygons.
+
+    Args:
+        tmp_path: Directory for the GeoParquet fixture.
+    """
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    path, _ = duplicate_file(tmp_path, "parquet", ["count", "count"])
+    table = pq.ParquetFile(path).read()
+    polygons = []
+    for row in range(3):
+        x, y = 10.0 + row, 46.0 + row
+        ring = [(x, y), (x + 0.25, y), (x + 0.25, y + 0.25), (x, y + 0.25), (x, y)]
+        polygons.append(
+            struct.pack("<BIII", 1, 3, 1, 5) + b"".join(struct.pack("<dd", *p) for p in ring)
+        )
+    table = table.set_column(2, "geometry", pa.array(polygons, pa.binary()))
+    bounds = pa.StructArray.from_arrays(
+        [pa.array([base + row for row in range(3)]) for base in [10.0, 46.0, 10.25, 46.25]],
+        names=["xmin", "ymin", "xmax", "ymax"],
+    )
+    table = table.add_column(0, "bbox", bounds)
+    geo = json.loads(table.schema.metadata[b"geo"])
+    geo["columns"]["geometry"].update(
+        geometry_types=["Polygon"],
+        covering={"bbox": {key: ["bbox", key] for key in ["xmin", "ymin", "xmax", "ymax"]}},
+    )
+    table = table.replace_schema_metadata({b"geo": json.dumps(geo).encode()})
+    pq.write_table(table, path, compression="zstd", row_group_size=2)
+    for bbox, row in [((10.2, 46.2, 10.3, 46.3), 0), ((10.9, 46.9, 11.1, 47.1), 1)]:
+        _, selected = tpg.read_arrow(path, columns=["count_2"], bbox=bbox)
+        assert selected.column_names == ["count_2", "geometry"]
+        assert selected["count_2"].to_pylist() == [12 + 10 * row]
+        assert selected["geometry"].to_pylist() == [polygons[row]]
+
+
 def test_geoparquet_arrow_duplicate_types_and_metadata(tmp_path):
     """Keep each repeated column's nested Arrow type, nulls and field metadata."""
     pa = pytest.importorskip("pyarrow")
