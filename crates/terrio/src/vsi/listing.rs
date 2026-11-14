@@ -18,7 +18,8 @@ use std::collections::HashMap;
 type EntryIndex = HashMap<(String, bool), usize>;
 
 /// Removes credentials from diagnostics and public names: userinfo in every URL authority
-/// and all URL query strings and fragments. Raw whitespace in malformed userinfo is retained
+/// and all URL query strings and fragments, plus credential-bearing query strings in
+/// schemeless locations such as `/vsiaz/…?sig=`. Raw whitespace in malformed userinfo is retained
 /// through the `@` for conservative redaction, avoiding password fragments. An unencoded
 /// `/`, `?` or `#` ends the authority; percent-encode those characters in passwords. An `@`
 /// in a path is not userinfo.
@@ -54,7 +55,37 @@ pub(crate) fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
         let end = scheme + 3 + end;
         return format!("{}{}<redacted>", &out[..end], &out[end..end + 1]).into();
     }
+    // Schemeless locations (`/vsiaz/c/b?sig=…`, a mistyped path) keep a query that names no
+    // credential, since `?` is legal in a file name; one that names a credential is private.
+    if let Some((base, query)) = out.split_once('?') {
+        // Parameter names as a server reads them too: `%6Bey=` is `key=`.
+        let lower = format!("{query}&{}", percent_decoded(query)).to_ascii_lowercase();
+        const KEYS: [&str; 9] = ["sig", "token=", "credential=", "api_key=", "apikey=", "access_key=", "key=", "password=", "passwd="];
+        if KEYS.iter().any(|key| lower.contains(key)) {
+            return format!("{base}?<redacted>").into();
+        }
+    }
     out
+}
+
+/// `text` with its `%XX` escapes decoded (invalid escapes and non-UTF-8 bytes kept as they are).
+fn percent_decoded(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16);
+        if bytes[i] == b'%'
+            && let (Some(h), Some(l)) = (bytes.get(i + 1).copied().and_then(hex), bytes.get(i + 2).copied().and_then(hex))
+        {
+            out.push((h * 16 + l) as u8);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// An entry of a remote listing.
@@ -800,6 +831,9 @@ mod tests {
         }
         assert_eq!(super::redact_url("https://host/a?<redacted>&token=PRIVATE"), "https://host/a?<redacted>");
         assert_eq!(super::redact_url("https://host/a#PRIVATE"), "https://host/a#<redacted>");
+        assert_eq!(super::redact_url("/no/such/file.zip?sig=PRIVATE"), "/no/such/file.zip?<redacted>");
+        assert_eq!(super::redact_url("/vsiaz/c/b.tif?%73ig=PRIVATE"), "/vsiaz/c/b.tif?<redacted>");
+        assert_eq!(super::redact_url("/data/what?.tif"), "/data/what?.tif");
     }
 
     #[test]

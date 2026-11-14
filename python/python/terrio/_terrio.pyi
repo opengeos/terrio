@@ -174,6 +174,7 @@ __all__ = [
     "cli_main",
     "CogWriter",
     "_panic_for_tests",
+    "_redact_diagnostic_location",
     "usable_memory",
     "_set_http_retry_logger",
     "_set_warp_nodata_logger",
