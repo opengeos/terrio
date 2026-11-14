@@ -476,7 +476,15 @@ fn mapped_vrt_inputs_protect_actual_nested_files_for_handles_paths_and_bytes() {
             CatalogOptions { extent: Some((0., 0., 4., 4.)), ..options() },
         )
         .unwrap();
-        catalog.into_lazy().write(data.to_str().unwrap(), &Default::default()).unwrap();
+        let written = catalog.into_lazy().write(data.to_str().unwrap(), &Default::default());
+        if mode == 2 {
+            // Supplied VRT bytes resolve no host files, so the nested reference is refused
+            // before the destination it names is touched.
+            let error = written.unwrap_err().to_string();
+            assert!(error.contains("supplied in the source map"), "{error}");
+        } else {
+            written.unwrap();
+        }
         assert_eq!(terrio::open_raster(data.to_str().unwrap()).unwrap().raster.data.to_f64_vec(), vec![10.; 16]);
     }
 }
