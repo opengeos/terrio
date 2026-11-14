@@ -176,8 +176,12 @@ or configuration call through `terrio::crs`; linking Terrio or calling only
 configure their own transport, or first call a Terrio CRS entry point such as
 `terrio::crs::set_network_enabled(None)`. Network access remains controlled
 by the settings described below. Direct callers retrieve diagnostics with
-`terrio_crs::take_warnings()`, while Terrio continues to use
-`terrio::warnings::take()`. A custom transformer warning handler is also available.
+`terrio_crs::take_warnings()`. Terrio's `terrio::warnings::take()` drains both
+Terrio's queue and the standalone queue on the current thread, combining duplicate
+messages. Thus a Terrio drain also consumes any pending direct-caller diagnostics;
+callers mixing the APIs should use one drain or take standalone diagnostics first.
+Each queue retains its own order, but the combined order is not chronological
+across queues. A custom transformer warning handler is also available.
 
 The standalone default omits `wbprojection`; Terrio enables the fallback to retain
 its existing coverage. Bundled tables use portable `ruzstd` decompression on all
@@ -473,8 +477,15 @@ commands. A grid named by an absolute or dot-relative path in a client-supplied 
 therefore treated as missing. Put trusted grids in `TERRIO_GRID_DIR`, `PROJ_DATA` or
 `PROJ_LIB` and refer to them by name; the normal user/cache directories remain available.
 Direct CLI calls and library calls retain PROJ-compatible path-named grids by default.
-Rust hosts can use `confine_grid_search_paths()` to apply the MCP policy to their current
+Rust and Python hosts can use `confine_grid_search_paths()` to apply the MCP policy to their current
 directories, or set an explicit directory list with `set_grid_search_paths`.
+Python hosts can also register encoded grid bytes with `terrio.register_grid(name, data)`;
+registered grids remain available with confined search paths and networking disabled.
+Warning names are bounded and control characters are escaped. URL-shaped grid names are
+omitted before truncation, and credential-bearing locations are redacted by the shared drain.
+JavaScript already exposes in-memory registration as `registerGrid(name, bytes)`.
+The browser/WebAssembly binding has no host filesystem grid search, so native search-path
+configuration and confinement do not apply there.
 
 A local entry refused for its type or size is treated as missing. With network access enabled, a
 plain grid name can therefore use its CDN copy instead; path-named grids never use the CDN. The
