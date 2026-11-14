@@ -9,6 +9,20 @@ terrio reproduces the GDAL they compare with (see [warp](cli.md#warp)). Pull req
 compare the point cloud filters with PDAL's on `autzen_trim.las` only; pushes to `main` on the
 Madison lidar (4 million points) too (`scripts/compare_pointclouds.py --quick` skips it).
 
+## Repeated GeoParquet columns through Arrow
+
+`python -m pytest python/tests/test_vector_duplicate_columns.py python/tests/test_pyogrio_arrow.py`
+checks repeated attributes through Arrow stream export, `read_arrow` and Arrow-backed
+dataframes. Generated suffixes reserve existing declared names and remain stable
+when selecting a single column or filtering by bbox. Covering-struct and geometry
+filters, multiple row groups, Snappy/Zstandard, nested types, nulls and field
+metadata are covered. Native regressions run with
+`cargo test -p terrio --lib drivers::vector::geoparquet_arrow::tests`.
+This is Terrio's naming policy, checked against independently written positional
+PyArrow columns, rather than a GDAL naming-conformance claim.
+The Arrow filter uses geometry bounding boxes; this does not claim identical row selection to an exact
+geometry-intersection filter.
+
 ## Input isolation and diagnostic privacy
 
 `python/tests/test_crs_input_safety.py` checks that Python CRS strings and dataset
@@ -21,12 +35,21 @@ and escaping Zarr keys, normalized key collisions, and closed VRT source maps.
 The VRT checks include unmapped local and remote sources, uploaded source bytes,
 and explicit file-based opens. Core regressions cover archive extraction aliases,
 portable remote download basenames, mask sources, and RPC DEM references.
+The catalog tests keep VRT bytes in the closed-source-map opener for both reading
+and overwrite inventory, including XML declarations and `GDAL:`/`NETCDF:` name
+prefixes. Direct paths and already-open native handles retain file-based lookup.
 
 `python/tests/test_diagnostic_url_safety.py` uses a loopback range server and fake
 credentials to check exceptions, multilayer warnings, notebook display logs, and
 CLI stderr. It checks custom authentication parameter names as well as signed URL
 parameters and userinfo. A successful raster read verifies that the network still
 receives the original query. Diagnostic redaction never rewrites request URLs.
+Standalone schemeless signed locations and percent-encoded credential separators
+are redacted too. Literal `?` filenames, Windows verbatim prefixes and bare words
+such as "unexpected token" remain intact when no credential parameter is present.
+The same policy applies to schemeless `#` fragments. Bare schemeless suffixes
+without a `name=value` credential parameter remain literal filenames or keys;
+queries and fragments of locations with a URL scheme are always redacted.
 
 ## Configuration alias precedence
 

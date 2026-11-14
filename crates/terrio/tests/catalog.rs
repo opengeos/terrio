@@ -496,16 +496,18 @@ fn declared_vrt_bytes_under_another_name_resolve_no_host_files() {
     let host = dir.path().join("host.tif");
     terrio::write_raster_dataset(&tile(0., 10.), host.to_str().unwrap(), &Default::default()).unwrap();
     let xml = format!("<?xml version=\"1.0\"?>\n{}", reference_vrt(host.to_str().unwrap(), None));
-    let mut footprints = index();
-    footprints.features.truncate(1);
-    let catalog = RasterCatalog::from_sources(
-        footprints,
-        HashMap::from([("left.tif".into(), CatalogInput::bytes(xml.into_bytes(), "upload.bin"))]),
-        CatalogOptions { extent: Some((0., 0., 4., 4.)), ..options() },
-    )
-    .unwrap();
-    let error = catalog.into_lazy().read().unwrap_err().to_string();
-    assert!(error.contains("supplied in the source map"), "{error}");
+    for name in ["upload.bin", "GDAL:upload", "NETCDF:upload"] {
+        let mut footprints = index();
+        footprints.features.truncate(1);
+        let catalog = RasterCatalog::from_sources(
+            footprints,
+            HashMap::from([("left.tif".into(), CatalogInput::bytes(xml.clone().into_bytes(), name))]),
+            CatalogOptions { extent: Some((0., 0., 4., 4.)), ..options() },
+        )
+        .unwrap();
+        let error = catalog.into_lazy().read().unwrap_err().to_string();
+        assert!(error.contains("supplied in the source map"), "{name}: {error}");
+    }
 }
 
 #[test]

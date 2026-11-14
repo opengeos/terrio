@@ -644,6 +644,12 @@ preserve every declared attribute column when names repeat. Repeated names gain
 `_2`, `_3`, ... suffixes without taking another original column's name. Names
 remain case-sensitive, and field order, types and values stay aligned. This is
 Terrio's naming policy rather than a claim of identical naming in other readers.
+GeoParquet Arrow exports also retain each physical column's own values and type.
+Names are assigned before projection and bbox filtering, so `columns=["count_2"]`
+selects the renamed second column consistently when the file declares `count` twice.
+Empty GeoParquet attribute names receive `field_N` names, with collisions resolved by
+the same suffix policy. Column selection prefers an exact resolved name before falling
+back to case-insensitive matching, so `count_2` and `COUNT_2` remain independently selectable.
 
 GeoJSON writing keeps coordinates in the layer's CRS by default and names a
 registered CRS in a GeoJSON 2008 `crs` member (EPSG, ESRI and IAU_2015). WGS 84
