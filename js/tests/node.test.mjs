@@ -5774,6 +5774,25 @@ test("CSV column collisions preserve attributes and geometry", () => {
   }
 });
 
+test("unresolvable vector CRS names refuse JSON writes and warn for GML", () => {
+  const definition = 'LOCAL_CS["Astra Minas Grid",LOCAL_DATUM["Astra Minas",32767],UNIT["metre",1],AXIS["X",NORTH],AXIS["Y",WEST],AUTHORITY["EPSG","5800"]]';
+  const source = terrio.fromGeoJSON(SQUARES, "squares", definition);
+  try {
+    for (const extension of ["geojson", "topojson"]) {
+      assert.throws(() => source.toBytes(`squares.${extension}`), /cannot name this layer's CRS/);
+    }
+    terrio.takeWarnings();
+    const bytes = source.toBytes("squares.gml");
+    assert.ok(Array.from(terrio.takeWarnings()).some(w => w.includes("writes unresolved srsName 'EPSG:5800'")));
+    const back = terrio.open(bytes, "squares.gml");
+    try {
+      assert.equal(back.crs, undefined);
+      assert.deepEqual(back.toGeoJSON().features.map(f => f.geometry), source.toGeoJSON().features.map(f => f.geometry));
+      assert.ok(Array.from(terrio.takeWarnings()).some(w => w.includes("cannot be resolved")));
+    } finally { back.free(); }
+  } finally { source.free(); }
+});
+
 test("TopoJSON CRS names and JSON reader defaults preserve coordinate meaning", () => {
   for (const definition of ["EPSG:32615", "ESRI:102003", "IAU_2015:49900"]) {
     const source = terrio.fromGeoJSON(SQUARES, "squares", definition);

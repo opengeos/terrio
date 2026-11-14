@@ -47,24 +47,26 @@ pub enum GeoJsonIdType {
 
 impl GeoJsonOptions {
     /// The GeoJSON 2008 name of the layer's CRS, or no member for WGS 84, unknown CRS or
-    /// RFC 7946 output. Refuses a retained definition that cannot be named, so writing it
-    /// cannot silently label unchanged coordinates as WGS 84.
+    /// RFC 7946 output. Refuses a retained definition without a name the reader can resolve,
+    /// so writing cannot silently label unchanged coordinates as WGS 84 or create unreadable output.
     pub fn crs_name(&self, layer: &Layer) -> Result<Option<String>> {
         let srs = SpatialRef::from_layer(layer);
         if self.rfc7946 || srs.is_unknown() || srs.epsg == Some(4326) {
             return Ok(None);
         }
-        let (authority, code) = srs
+        let name = srs
             .authority()
             .filter(|(authority, _)| *authority != "EPSG")
             .or_else(|| super::naming_epsg(layer).map(|code| ("EPSG", code)))
+            .map(|(authority, code)| format!("urn:ogc:def:crs:{authority}::{code}"))
+            .filter(|name| SpatialRef::parse_literal(name).is_ok())
             .ok_or_else(|| {
                 Error::Unsupported(
                     "GeoJSON cannot name this layer's CRS: reproject to EPSG:4326 (RFC7946=YES), or use a format that stores CRS definitions"
                         .into(),
                 )
             })?;
-        Ok(Some(format!("urn:ogc:def:crs:{authority}::{code}")))
+        Ok(Some(name))
     }
 
     /// Sets an option by its GDAL name: `RFC7946` (YES/NO), `ID_FIELD` (a field name) or
@@ -1307,6 +1309,17 @@ fn encode(g: &Geometry, ccw: bool) -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn retained_unresolvable_authority_is_not_a_writable_crs_name() {
+        let mut layer = Layer::new("points");
+        SpatialRef::from_wkt(
+            r#"LOCAL_CS["Astra Minas Grid",LOCAL_DATUM["Astra Minas",32767],UNIT["metre",1],AXIS["X",NORTH],AXIS["Y",WEST],AUTHORITY["EPSG","5800"]]"#,
+        )
+        .apply_to_layer(&mut layer);
+        assert_eq!(SpatialRef::from_layer(&layer).epsg, Some(5800));
+        assert!(matches!(GeoJsonOptions::default().crs_name(&layer), Err(Error::Unsupported(message)) if message.contains("cannot name")));
+    }
+
     /// GDAL's declared geometry type depends on the object, not its sequence position.
     #[test]
     fn root_geometry_type_is_independent_of_record_position() {
