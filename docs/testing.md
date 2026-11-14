@@ -9,6 +9,20 @@ terrio reproduces the GDAL they compare with (see [warp](cli.md#warp)). Pull req
 compare the point cloud filters with PDAL's on `autzen_trim.las` only; pushes to `main` on the
 Madison lidar (4 million points) too (`scripts/compare_pointclouds.py --quick` skips it).
 
+## Repeated GeoParquet columns through Arrow
+
+`python -m pytest python/tests/test_vector_duplicate_columns.py python/tests/test_pyogrio_arrow.py`
+checks repeated attributes through Arrow stream export, `read_arrow` and Arrow-backed
+dataframes. Generated suffixes reserve existing declared names and remain stable
+when selecting a single column or filtering by bbox. Covering-struct and geometry
+filters, multiple row groups, Snappy/Zstandard, nested types, nulls and field
+metadata are covered. Native regressions run with
+`cargo test -p terrio --lib drivers::vector::geoparquet_arrow::tests`.
+This is Terrio's naming policy, checked against independently written positional
+PyArrow columns, rather than a GDAL naming-conformance claim.
+The Arrow filter uses geometry bounding boxes; this does not claim identical row selection to an exact
+geometry-intersection filter.
+
 ## Input isolation and diagnostic privacy
 
 `python/tests/test_pyogrio_buffer_routing.py` checks unsupported single-file and
@@ -569,6 +583,13 @@ exactly matching the direct CLI. The confinement policy deliberately differs fro
 PROJ's default path lookup; it does not change interpolation or coordinate math.
 
 ### Stored vector CRS definitions
+
+`python/tests/test_unresolvable_vector_crs.py` checks that retained EPSG:5800 engineering
+definitions cannot produce unreadable GeoJSON or TopoJSON through file, byte,
+conversion and CLI writes. GML file, byte and stream reads warn once for an unresolved
+name while retaining coordinates and attributes; short-code writes warn about the missing
+definition. Known CRS names remain quiet and diagnostic URLs redact credentials.
+Rust and Node regressions exercise the shared naming and GML warning behavior.
 
 `python/tests/test_vector_stored_crs.py` checks actual GeoPackage SRS rows,
 FlatGeobuf WKT headers and Shapefile projection sidecars. Prose warns and gives
@@ -1587,6 +1608,18 @@ Terrio-exported WKT with GDAL, then compares its transformed coordinates with
 the original JSON definitions. Rust regressions also
 check file loading, malformed/unsupported definitions, wrong units/dimensions,
 and that a root authority ID cannot overwrite a caller's false easting.
+The live suite also repeats projected definitions with the geographic base's
+optional `type` omitted. Rust, Python and Node regressions check code identification
+from the definition with absent or false root IDs, while modified parameters
+continue to control coordinates. Local validation uses GDAL 3.12.1.
+`TERRIO_TEST_DATA="$PWD/../terrio-data" cargo test -p terrio-crs --test crs_grids projjson_identity`
+adds the real NADCON `us_noaa_conus.tif` grid. Both an identified NAD27 UTM CRS and
+a custom false easting agree with the WKT-only path and GDAL 3.12.1 within 1e-10
+degrees. The test returns early without assertions unless the grid and legacy-grid directories are populated by
+`scripts/fetch_test_data.sh`; no network access occurs during transformation.
+The complete installed grid set is checked against WKT behavior. A child process isolates
+`us_noaa_conus.tif` for the frozen GDAL coordinates, so additional NADCON5 grids cannot change
+the operation behind that independent oracle.
 
 PROJ-string export (`SpatialRef::to_proj4`) is compared with PROJ 9.8.1's strings of every 20th
 EPSG, ESRI and IAU_2015 code, the codes behind each rule, custom definitions (bound CRSs among

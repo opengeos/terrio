@@ -3023,14 +3023,23 @@ test("Shapefile ZIP writes point, line and polygon with scalar attributes and nu
 test("PROJJSON CRS definitions match GDAL in traditional GIS order", () => {
   const reference = JSON.parse(readFileSync(new URL("../../crates/terrio-crs/tests/data/projjson_reference.json", import.meta.url)));
   for (const c of reference.cases) {
-    assert.equal(terrio.describeCrs(JSON.stringify(c.src)).epsg, null);
-    assert.equal(terrio.describeCrs(JSON.stringify(c.dst)).epsg, null);
     const actual = terrio.transformPoints(c.points.map(p => p[0]), c.points.map(p => p[1]), JSON.stringify(c.src), JSON.stringify(c.dst));
     for (let i = 0; i < c.points.length; i++) {
       for (let axis = 0; axis < 2; axis++) assert.ok(Math.abs(actual[axis][i] - c.expected[i][axis]) <= c.tolerance[axis], `${c.name}, point ${i}, axis ${axis}`);
     }
   }
   assert.throws(() => terrio.describeCrs('{"type":"VerticalCRS","name":"unsupported"}'), /PROJJSON/);
+});
+
+test("PROJJSON identity comes from the definition and base type is optional", () => {
+  for (const code of [4326, 32633, 2154]) {
+    const definition = JSON.parse(terrio.crsToProjjson(`EPSG:${code}`));
+    definition.id = {authority: "EPSG", code: 3857};
+    if (definition.base_crs) delete definition.base_crs.type;
+    assert.equal(terrio.describeCrs(JSON.stringify(definition)).epsg, code);
+    delete definition.id;
+    assert.equal(terrio.describeCrs(JSON.stringify(definition)).epsg, code);
+  }
 });
 
 test("IAU_2015 planetary coordinates match the full GDAL registry oracle", () => {
@@ -5772,6 +5781,25 @@ test("CSV column collisions preserve attributes and geometry", () => {
     assert.deepEqual(feature.geometry.coordinates, [10, 46]);
     restored.free(); source.free();
   }
+});
+
+test("unresolvable vector CRS names refuse JSON writes and warn for GML", () => {
+  const definition = 'LOCAL_CS["Astra Minas Grid",LOCAL_DATUM["Astra Minas",32767],UNIT["metre",1],AXIS["X",NORTH],AXIS["Y",WEST],AUTHORITY["EPSG","5800"]]';
+  const source = terrio.fromGeoJSON(SQUARES, "squares", definition);
+  try {
+    for (const extension of ["geojson", "topojson"]) {
+      assert.throws(() => source.toBytes(`squares.${extension}`), /cannot name this layer's CRS/);
+    }
+    terrio.takeWarnings();
+    const bytes = source.toBytes("squares.gml");
+    assert.ok(Array.from(terrio.takeWarnings()).some(w => w.includes("writes unresolved srsName 'EPSG:5800'")));
+    const back = terrio.open(bytes, "squares.gml");
+    try {
+      assert.equal(back.crs, undefined);
+      assert.deepEqual(back.toGeoJSON().features.map(f => f.geometry), source.toGeoJSON().features.map(f => f.geometry));
+      assert.ok(Array.from(terrio.takeWarnings()).some(w => w.includes("cannot be resolved")));
+    } finally { back.free(); }
+  } finally { source.free(); }
 });
 
 test("TopoJSON CRS names and JSON reader defaults preserve coordinate meaning", () => {
