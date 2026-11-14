@@ -13,9 +13,11 @@ thread_local! {
     static WARNINGS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Records a warning on this thread (once: a repeated one is not recorded again).
+/// Records a warning on this thread (once: a repeated one is not recorded again). A warning
+/// raised while the thread's locals are destroyed (by a `Transformer` dropped from a caller's
+/// `thread_local!`) is dropped: there is no list left to keep it, nor anyone to take it.
 pub(crate) fn warn(message: String) {
-    WARNINGS.with(|w| {
+    let _ = WARNINGS.try_with(|w| {
         let mut w = w.borrow_mut();
         if !w.contains(&message) {
             if w.len() == MAX {
@@ -33,5 +35,5 @@ pub(crate) fn warn(message: String) {
 /// assert!(terrio_crs::take_warnings().is_empty());
 /// ```
 pub fn take() -> Vec<String> {
-    WARNINGS.with(|w| std::mem::take(&mut *w.borrow_mut()))
+    WARNINGS.try_with(|w| std::mem::take(&mut *w.borrow_mut())).unwrap_or_default()
 }
