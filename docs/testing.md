@@ -3560,6 +3560,25 @@ outputs because `gdal_rasterize` cannot create COGs directly. ENVI cases are lab
 This checks Terrio's consistent background policy rather than GDAL's driver-dependent
 ENVI initialization.
 
+## Polar area footprints
+
+`python -m pytest python/tests/test_warp_polar_area_footprints.py` checks all eight
+non-sum area methods around EPSG:3031 and EPSG:3413 pole corners under both grid
+policies. An analytic longitude-only field bounds the possible values and tests
+mirror symmetry to absolute tolerance 1e-9. Off the singular corner, averages must agree with independently
+computed `sum(field) / sum(valid)` to absolute tolerance 1e-10, including nodata.
+The native `angular_pole_polygon_shares_match_independent_clipping` test compares
+polygon-cell overlap against a separate clipping implementation to 1e-12, including
+fractional ownership clips and reversed orientation. A loopback TIFF test verifies
+partial range requests transfer less than the file while preserving pixel values.
+
+The reference comparison used GDAL 3.12.1. On the issue's one-degree cosine field,
+GDAL's EPSG:3031 southeast pole pixel averages +30.01092478 and its maximum is
++99.99619231, although that sector contains negative values. Its EPSG:3413
+northwest pole pixel similarly includes positive field values. Terrio's
+polygonal area policy intentionally differs here; these checks do not claim
+pixel-identical GDAL output or exact curved-edge integration.
+
 ## Exact sum footprints
 
 A reprojected `sum` uses quadrilaterals of exactly transformed output-pixel corners,

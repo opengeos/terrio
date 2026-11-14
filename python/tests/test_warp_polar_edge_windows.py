@@ -89,8 +89,14 @@ def test_polar_edge_cut_keeps_every_covered_center(crs, case, method, compatibil
             0,
             grid_invariant=False,
         )
-        sx, _, width, _ = planner.source_window((0, 0, 32, 32))
-        assert (sx, width) == (0, 3600)
+        window = planner.source_window((0, 0, 32, 32))
+        sx, _, width, _ = window
+        if method == "nearest":
+            assert (sx, width) == (0, 3600)
+        else:
+            # Polygon planning needs only the covered sectors, even when an
+            # edge-sampled rectangle would conservatively span every longitude.
+            assert 0 <= sx < sx + width <= 3600
         ordinary = None
         for invariant, steps in ((False, None), (False, "ALL"), (True, None)):
             output = np.zeros((32, 32), dtype="uint8")
@@ -109,7 +115,7 @@ def test_polar_edge_cut_keeps_every_covered_center(crs, case, method, compatibil
                 **options,
             )
             assert np.all(output[covered] != 0)
-            if not invariant:
+            if not invariant or method == "average":
                 if ordinary is None:
                     ordinary = output.copy()
                 else:
