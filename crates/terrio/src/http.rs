@@ -894,17 +894,16 @@ impl Client {
     /// when the client's requests are cancelled (see [`Client::cancel`]).
     fn backoff(&self, attempt: &mut u32) -> Result<()> {
         let delay = self.options.retry_delay.saturating_mul(1 << (*attempt).min(16));
-        match &self.cancel {
-            None => std::thread::sleep(delay),
-            Some(cancel) => {
-                let until = Instant::now() + delay;
-                while let Some(left) = until.checked_duration_since(Instant::now()).filter(|left| !left.is_zero()) {
-                    if cancel.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    std::thread::sleep(left.min(Duration::from_millis(20)));
+        if self.cancel.is_some() || CANCEL_READS.with_borrow(|flags| !flags.is_empty()) {
+            let until = Instant::now() + delay;
+            while let Some(left) = until.checked_duration_since(Instant::now()).filter(|left| !left.is_zero()) {
+                if self.check_cancelled().is_err() {
+                    break;
                 }
+                std::thread::sleep(left.min(Duration::from_millis(20)));
             }
+        } else {
+            std::thread::sleep(delay);
         }
         self.check_cancelled()?;
         *attempt += 1;
@@ -913,9 +912,12 @@ impl Client {
 
     /// An error once the client's requests are cancelled (see [`Client::cancel`]).
     fn check_cancelled(&self) -> Result<()> {
-        match &self.cancel {
-            Some(cancel) if cancel.load(Ordering::SeqCst) => Err(Error::Http(format!("{}: request cancelled", redact(&self.url)))),
-            _ => Ok(()),
+        if self.cancel.as_ref().is_some_and(|flag| flag.load(Ordering::SeqCst))
+            || CANCEL_READS.with_borrow(|flags| flags.iter().any(|flag| flag.load(Ordering::SeqCst)))
+        {
+            Err(Error::Http(format!("{}: request cancelled", redact(&self.url))))
+        } else {
+            Ok(())
         }
     }
 
@@ -1290,10 +1292,8 @@ impl Transport for Http10Close {
     }
 
     fn await_input(&mut self, timeout: NextTimeout) -> std::result::Result<bool, ureq::Error> {
-        let progress = match CANCEL_READS.with_borrow(Clone::clone) {
-            None => self.inner.await_input(timeout)?,
-            Some(cancel) => self.await_input_unless(&cancel, timeout)?,
-        };
+        let flags = CANCEL_READS.with_borrow(Clone::clone);
+        let progress = if flags.is_empty() { self.inner.await_input(timeout)? } else { self.await_input_unless(&flags, timeout)? };
         // ureq consumes a response's head only once it is whole, so the input holds it from its
         // start until then.
         if self.response_head
@@ -1315,9 +1315,39 @@ impl Transport for Http10Close {
 }
 
 thread_local! {
-    /// Set on a thread whose requests a parallel prefetch cancels ([`Shared::fetch_runs_in_parallel`]):
-    /// once it is, a response the thread waits for is abandoned.
-    static CANCEL_READS: std::cell::RefCell<Option<Arc<AtomicBool>>> = const { std::cell::RefCell::new(None) };
+    /// A response is abandoned when any enclosing parallel read fails.
+    static CANCEL_READS: std::cell::RefCell<Vec<Arc<AtomicBool>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Cancellation inherited by nested waiting work and range requests. Flags stay on the stack
+/// only for the operation's scope, including on the calling thread and during unwinding.
+#[derive(Clone)]
+pub(crate) struct ReadCancellation(Vec<Arc<AtomicBool>>);
+
+impl ReadCancellation {
+    pub(crate) fn capture_with(flag: Arc<AtomicBool>) -> Self {
+        let mut flags = CANCEL_READS.with_borrow(Clone::clone);
+        flags.push(flag);
+        Self(flags)
+    }
+
+    pub(crate) fn enter(&self) -> ReadCancellationScope {
+        ReadCancellationScope { previous: CANCEL_READS.replace(self.0.clone()), stop: self.0.last().unwrap().clone() }
+    }
+}
+
+pub(crate) struct ReadCancellationScope {
+    previous: Vec<Arc<AtomicBool>>,
+    stop: Arc<AtomicBool>,
+}
+
+impl Drop for ReadCancellationScope {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.stop.store(true, Ordering::SeqCst);
+        }
+        CANCEL_READS.set(std::mem::take(&mut self.previous));
+    }
 }
 
 /// How soon a wait for a response notices that its request was cancelled.
@@ -1327,12 +1357,12 @@ impl Http10Close {
     /// Waits for input as [`Transport::await_input`] does, in slices of [`CANCEL_POLL`], and
     /// fails once `cancel` is set: a stalled response does not hold a cancelled request. The
     /// connection is then not reused.
-    fn await_input_unless(&mut self, cancel: &AtomicBool, timeout: NextTimeout) -> std::result::Result<bool, ureq::Error> {
+    fn await_input_unless(&mut self, cancel: &[Arc<AtomicBool>], timeout: NextTimeout) -> std::result::Result<bool, ureq::Error> {
         let started = Instant::now();
         // the whole wait's budget, the per-read timeout included, which each slice would restart
         let whole = timeout.for_read();
         loop {
-            if cancel.load(Ordering::SeqCst) {
+            if cancel.iter().any(|flag| flag.load(Ordering::SeqCst)) {
                 self.closing = true;
                 return Err(ureq::Error::Io(io::Error::other("request cancelled")));
             }
@@ -2617,18 +2647,19 @@ impl Shared {
             runs.iter().enumerate().filter(|(_, run)| run.requests()).map(|(i, run)| (i, run.from, run.last)).collect();
         let context = crate::stac::AssetReadContext::capture(crate::stac::AssetReadPolicy::current());
         let window = RequestWindow::new(PARALLEL_RUNS);
+        let cancellation = ReadCancellation::capture_with(window.cancel.clone());
         let (sender, responses) = std::sync::mpsc::channel::<(usize, Client, Result<Fetched>)>();
         std::thread::scope(|scope| {
             let mut threads = 0;
             for _ in 0..PARALLEL_RUNS.min(requests.len()) {
-                let (sender, window, context, requests) = (sender.clone(), &window, &context, &requests);
+                let (sender, window, context, requests, cancellation) = (sender.clone(), &window, &context, &requests, &cancellation);
                 let mut client = self.client.clone();
                 client.cancel = Some(window.cancel.clone());
                 let spawned = std::thread::Builder::new().name("terrio-range".into()).spawn_scoped(scope, move || {
                     // A panicking request stops the others, so that the fetch ends.
                     let _stop = window.stop_on_panic();
                     // A response in flight is abandoned too when the fetch stops.
-                    CANCEL_READS.set(Some(window.cancel.clone()));
+                    let _cancellation = cancellation.enter();
                     while let Some((run, from, last)) = window.take(requests) {
                         let fetched = context.enter().and_then(|_scope| client.fetch(Some((from, last))));
                         // A copy of the client for the storing thread to take back (its URLs and
@@ -3516,6 +3547,71 @@ mod tests {
         assert!(r.prefetch(&runs).is_err());
         assert!(started.elapsed() < Duration::from_secs(10), "waited {:?} for the stalled request", started.elapsed());
         assert_eq!(gate.most(), 2, "the stalled request was in flight when the run failed");
+    }
+
+    #[test]
+    fn nested_read_cancellation_restores_the_caller_after_unwinding() {
+        let client = Client::new(&Remote::Url("http://127.0.0.1/unused".into()), options());
+        let outer = Arc::new(AtomicBool::new(false));
+        let inner = Arc::new(AtomicBool::new(false));
+        let outer_scope = ReadCancellation::capture_with(outer.clone()).enter();
+        let cancellation = ReadCancellation::capture_with(inner.clone());
+        let panic = std::panic::catch_unwind(|| {
+            let _scope = cancellation.enter();
+            panic!("a worker failed");
+        });
+        assert!(panic.is_err());
+        assert!(inner.load(Ordering::SeqCst), "a panic cancels siblings");
+        assert!(!outer.load(Ordering::SeqCst));
+        assert!(client.check_cancelled().is_ok(), "the inner cancellation must be gone");
+        outer.store(true, Ordering::SeqCst);
+        assert!(client.check_cancelled().is_err(), "the enclosing cancellation must remain");
+        drop(outer_scope);
+        assert!(client.check_cancelled().is_ok(), "the caller's state must be restored");
+    }
+
+    #[test]
+    fn a_failed_waiting_read_cancels_a_stalled_response() {
+        // Remote Zarr uses nested map_waiting calls for chunks and shard runs. Test either
+        // request failing, including a higher-index failure cancelling a lower-index wait.
+        for (failed_index, nested, retrying) in [(0, false, false), (1, true, false), (1, true, true)] {
+            let runs = separate_runs(2);
+            let (failed, stalled) = (runs[failed_index].0 as usize, runs[1 - failed_index].0 as usize);
+            let (url, gate) = serve_gated(test_data(), move |first, gate| {
+                if first == stalled {
+                    if retrying {
+                        return 503;
+                    }
+                    std::thread::sleep(Duration::from_secs(20));
+                } else if first == failed {
+                    gate.wait_until(|seen| seen.firsts.contains(&stalled), Duration::from_secs(10));
+                    return 416;
+                }
+                206
+            });
+            let opts = HttpOptions { max_retry: 5, retry_delay: Duration::from_secs(20), ..options() };
+            let readers: Vec<_> = (0..2).map(|_| RangeReader::open_with(&Remote::Url(url.clone()), opts.clone()).unwrap()).collect();
+            let started = Instant::now();
+            let result = crate::par::map_waiting(2, 2, |i| {
+                let read = |j| {
+                    if j != 0 {
+                        return Ok(());
+                    }
+                    let mut reader = readers[i].clone();
+                    reader.seek(SeekFrom::Start(runs[i].0)).unwrap();
+                    let mut buf = [0; 100];
+                    reader.read_exact(&mut buf).map_err(Error::Io)
+                };
+                if nested { crate::par::map_waiting(2, 2, read).map(drop) } else { read(0) }
+            });
+            assert!(result.unwrap_err().to_string().contains("416"), "the initiating error must survive cancellation");
+            assert!(started.elapsed() < Duration::from_secs(10), "waited {:?} for the stalled response or retry", started.elapsed());
+            let asked = gate.ranges_asked();
+            assert!(asked.contains(&stalled), "the stalled request was in flight");
+            assert_eq!(asked.len(), 2, "no retry after cancellation");
+            // A failed batch must not leave the caller's subsequent requests cancelled.
+            RangeReader::open_with(&Remote::Url(url), options()).unwrap();
+        }
     }
 
     #[test]

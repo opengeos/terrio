@@ -506,8 +506,10 @@ pub(crate) fn map_range_coarse<R: Send>(n: usize, f: impl Fn(usize) -> R + Sync 
 
 /// Maps `f` over `0..n`, keeping the order, with up to `at_once` calls at a time on the calling
 /// thread and threads of their own (native builds), for work that mostly waits on a server: on
-/// the pool, as many requests would be in flight as the machine has cores. The first error (by
-/// index) is returned, and once a call has failed, no worker starts another.
+/// the pool, as many requests would be in flight as the machine has cores. The first observed
+/// error is returned, and once a call has failed, no worker starts another. Native HTTP reads
+/// already in flight and their retry waits are cancelled; nested waiting work inherits this
+/// cancellation. An HTTP cancellation error never replaces the error that stopped the batch.
 ///
 /// The threads see the caller's scoped options and STAC asset read policy
 /// ([`crate::stac::AssetReadContext`]), which a new thread would not have. They count as
@@ -529,21 +531,26 @@ pub(crate) fn map_waiting<R: Send>(n: usize, at_once: usize, f: impl Fn(usize) -
     {
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         let context = crate::stac::AssetReadContext::capture(crate::stac::AssetReadPolicy::current());
-        let (next, failed) = (AtomicUsize::new(0), AtomicBool::new(false));
+        let (next, failed) = (AtomicUsize::new(0), std::sync::Arc::new(AtomicBool::new(false)));
+        #[cfg(remote)]
+        let cancellation = crate::http::ReadCancellation::capture_with(failed.clone());
         // A worker that cannot enter the context (consent revoked since the read began) claims no
-        // item; its error is the call's, unless an item failed.
-        let refused = std::sync::Mutex::new(None);
+        // item. Publish any initiating error before cancelling the other workers.
+        let failure = std::sync::Mutex::new(None);
+        let fail = |error| {
+            failure.lock().unwrap().get_or_insert(error);
+            failed.store(true, Ordering::SeqCst);
+        };
         // A worker's loop: items claimed until none is left or one has failed. The calling thread
         // runs one too, already in its own context.
         let work = |enter: bool| {
+            #[cfg(remote)]
+            let _cancellation = cancellation.enter();
             let mut mine = Vec::new();
             let _scope = match enter.then(|| context.enter()).transpose() {
                 Ok(scope) => scope,
                 Err(e) => {
-                    failed.store(true, Ordering::Relaxed);
-                    if let Ok(mut r) = refused.lock() {
-                        r.get_or_insert(e);
-                    }
+                    fail(e);
                     return mine;
                 }
             };
@@ -552,17 +559,19 @@ pub(crate) fn map_waiting<R: Send>(n: usize, at_once: usize, f: impl Fn(usize) -
                 if i >= n {
                     break;
                 }
-                let r = f(i);
-                if r.is_err() {
-                    failed.store(true, Ordering::Relaxed);
+                match f(i) {
+                    Ok(value) => mine.push((i, value)),
+                    Err(error) => {
+                        fail(error);
+                        break;
+                    }
                 }
-                mine.push((i, r));
             }
             mine
         };
         // Joined when the scope ends, before `_running` lets a fork go on. A thread the OS
         // refuses leaves its share to the others and the calling thread.
-        let mut done: Vec<(usize, crate::Result<R>)> = std::thread::scope(|s| {
+        let mut done: Vec<(usize, R)> = std::thread::scope(|s| {
             let workers: Vec<_> = (1..at_once.min(n))
                 .map_while(|_| std::thread::Builder::new().name("terrio-wait".into()).spawn_scoped(s, || work(true)).ok())
                 .collect();
@@ -573,11 +582,11 @@ pub(crate) fn map_waiting<R: Send>(n: usize, at_once: usize, f: impl Fn(usize) -
             done
         });
         done.sort_by_key(|(i, _)| *i);
-        // After a failure some indices are missing, but an error is among the results or refused.
-        let results = done.into_iter().map(|(_, r)| r).collect::<crate::Result<Vec<R>>>()?;
-        return match refused.into_inner().ok().flatten() {
+        // Record an error before publishing cancellation, so that a lower-index cancelled
+        // request cannot hide the actual failure.
+        return match failure.into_inner().unwrap() {
             Some(e) => Err(e),
-            None => Ok(results),
+            None => Ok(done.into_iter().map(|(_, value)| value).collect()),
         };
     }
     #[cfg(target_family = "wasm")]
@@ -923,7 +932,7 @@ mod tests {
     }
 
     /// The calls of a `map_waiting` run at once on threads of their own, results in order; once a
-    /// call fails, no worker starts another and the first error (by index) is returned. The
+    /// call fails, no worker starts another and an initiating error is returned. The
     /// calls on the calling thread (one at a time) stop at the first error as well.
     #[test]
     fn map_waiting_runs_at_once_and_stops_after_a_failure() {
@@ -947,7 +956,11 @@ mod tests {
                 calls.fetch_add(1, Ordering::SeqCst);
                 if i < 3 { Ok(i) } else { Err(crate::Error::InvalidArgument(format!("call {i}"))) }
             });
-            assert!(matches!(&r, Err(crate::Error::InvalidArgument(m)) if m == "call 3"), "{:?}", r.err());
+            assert!(
+                matches!(&r, Err(crate::Error::InvalidArgument(m)) if m.strip_prefix("call ").and_then(|s| s.parse::<usize>().ok()).is_some_and(|i| (3..3 + at_once).contains(&i))),
+                "{:?}",
+                r.err()
+            );
             // The 3 that succeed, and at most one failing call a worker.
             let calls = calls.load(Ordering::SeqCst);
             assert!(calls <= 3 + at_once, "{calls} calls, {at_once} at once");
@@ -1104,25 +1117,28 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn parallel_work_runs_while_a_fork_holds_background_jobs_back() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::time::Duration;
-        // A fork in progress, as `prepare` counts one, with more jobs held back than threads.
-        native::begin_fork();
-        let ran = Arc::new(AtomicUsize::new(0));
-        let jobs = 2 * threads() + 2;
-        count_jobs(jobs, &ran);
-        std::thread::sleep(Duration::from_millis(100));
-        let (mapped, result) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = mapped.send(map_range(64, |i| i * 2));
+        alone(30, || {
+            use std::sync::Arc;
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            use std::time::Duration;
+            // A fork in progress, as `prepare` counts one, with more jobs held back than threads.
+            native::begin_fork();
+            let ran = Arc::new(AtomicUsize::new(0));
+            let jobs = 2 * threads() + 2;
+            count_jobs(jobs, &ran);
+            std::thread::sleep(Duration::from_millis(100));
+            let (mapped, result) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = mapped.send(map_range(64, |i| i * 2));
+            });
+            let result = result.recv_timeout(Duration::from_secs(10));
+            let ran_during_fork = ran.load(Ordering::Acquire);
+            native::end_fork();
+            assert_eq!(result, Ok((0..64).map(|i| i * 2).collect::<Vec<_>>()), "the parallel work waited for the fork");
+            assert_eq!(ran_during_fork, 0, "a job held back ran during the fork");
+            assert_eq!(wait_for_jobs(jobs, &ran), jobs, "the jobs held back did not all run after the fork");
+            true
         });
-        let result = result.recv_timeout(Duration::from_secs(10));
-        let ran_during_fork = ran.load(Ordering::Acquire);
-        native::end_fork();
-        assert_eq!(result, Ok((0..64).map(|i| i * 2).collect::<Vec<_>>()), "the parallel work waited for the fork");
-        assert_eq!(ran_during_fork, 0, "a job held back ran during the fork");
-        assert_eq!(wait_for_jobs(jobs, &ran), jobs, "the jobs held back did not all run after the fork");
     }
 
     /// Two threads fork at once, while a background job runs that takes the process-wide locks as
