@@ -106,6 +106,7 @@ fn authority_id_does_not_replace_supplied_conversion_parameters() {
     let original = SpatialRef::parse(&definition.to_string()).unwrap();
     definition["conversion"]["parameters"][3]["value"] = 400100.0.into();
     let modified = SpatialRef::parse(&definition.to_string()).unwrap();
+    assert_ne!(modified.epsg, Some(27700), "a modified definition must not retain its claimed code");
     let a = Transformer::new(&source, &original).unwrap().transform(-1.5, 52.5).unwrap();
     let b = Transformer::new(&source, &modified).unwrap().transform(-1.5, 52.5).unwrap();
     assert!((b.0 - a.0 - 100.0).abs() < 1e-8);

@@ -220,7 +220,16 @@ fn parse_impl(root: &Element, xsd: Option<&Element>, compiled: Option<&Applicati
             {
                 Some(parse_srs_name(name)?)
             }
-            _ => srs_name.and_then(|srs| parse_srs_name(srs).ok()),
+            Some(name) => match parse_srs_name(name) {
+                Ok(srs) => Some(srs),
+                Err(_) => {
+                    let shown = crate::vsi::redact_diagnostic_location(name);
+                    let shown: String = shown.chars().take(120).flat_map(char::escape_debug).collect();
+                    crate::warnings::warn(format!("GML srsName '{shown}' cannot be resolved; reading features without a CRS"));
+                    None
+                }
+            },
+            None => None,
         };
         let swap = srs_name.is_some_and(authority_axis_order) && srs.as_ref().is_some_and(SpatialRef::has_north_east_axis_order);
         let dimension = if srs.as_ref().is_some_and(|srs| srs.compound_parts().is_some()) { 3 } else { 2 };
@@ -644,7 +653,13 @@ pub fn to_string(layer: &Layer, schema: &str) -> Result<String> {
     let swap = canonical.as_ref().is_some_and(SpatialRef::has_north_east_axis_order);
     let srs = authority
         .map(|(authority, code)| {
-            let name = if canonical.is_some() { format!("urn:ogc:def:crs:{authority}::{code}") } else { format!("{authority}:{code}") };
+            let name = if canonical.is_some() {
+                format!("urn:ogc:def:crs:{authority}::{code}")
+            } else {
+                let name = format!("{authority}:{code}");
+                crate::warnings::warn(format!("GML writes unresolved srsName '{name}'; Terrio will read it without a CRS"));
+                name
+            };
             format!(r#" srsName="{name}""#)
         })
         .unwrap_or_default();
@@ -792,6 +807,23 @@ fn write_geometry(s: &mut String, g: &Geometry, srs: &str, swap: bool, id: &str,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unresolved_gml_names_warn_and_preserve_coordinates() {
+        for name in ["EPSG:5800", "urn:ogc:def:crs:EPSG::5800", "urn:ogc:def:crs:FOO::1"] {
+            crate::warnings::take();
+            let text = format!(
+                "<FeatureCollection><featureMember><p><geom><Point srsName=\"{name}\"><pos>12000 34000</pos></Point></geom></p></featureMember></FeatureCollection>"
+            );
+            let layers = parse(&xml::parse(&text).unwrap(), None).unwrap();
+            assert!(SpatialRef::from_layer(&layers[0]).is_unknown());
+            assert_eq!(layers[0].features[0].geometry, Some(Geometry::point(12000., 34000.)));
+            let warnings = crate::warnings::take();
+            assert_eq!(warnings.len(), 1);
+            assert!(warnings[0].contains(name));
+            assert!(warnings[0].contains("cannot be resolved"));
+        }
+    }
 
     /// GDAL 3.12.1 reads the IAU URN's latitude-first coordinates back in GIS XY order.
     #[test]
