@@ -1,0 +1,389 @@
+{
+ "proj": "9.8.1",
+ "cases": [
+  {
+   "wkt": "PROJCS[\"Transverse_Mercator none\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",19],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1]]",
+   "geographic": "+proj=longlat +datum=WGS84",
+   "point": [
+    18.5,
+    -33.9
+   ],
+   "proj": [
+    -46246.67499191615,
+    -3752681.842487887
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Transverse_Mercator east north\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",19],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "geographic": "+proj=longlat +datum=WGS84",
+   "point": [
+    18.5,
+    -33.9
+   ],
+   "proj": [
+    -46246.67499191615,
+    -3752681.842487887
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Transverse_Mercator north east\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",19],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Northing\",NORTH],AXIS[\"Easting\",EAST]]",
+   "geographic": "+proj=longlat +datum=WGS84",
+   "point": [
+    18.5,
+    -33.9
+   ],
+   "proj": [
+    -46246.67499191615,
+    -3752681.842487887
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Transverse_Mercator west south\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",19],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Y\",WEST],AXIS[\"X\",SOUTH]]",
+   "geographic": "+proj=longlat +datum=WGS84",
+   "point": [
+    18.5,
+    -33.9
+   ],
+   "proj": [
+    46246.67499191615,
+    3752681.842487887
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Transverse_Mercator south west\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",19],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"X\",SOUTH],AXIS[\"Y\",WEST]]",
+   "geographic": "+proj=longlat +datum=WGS84",
+   "point": [
+    18.5,
+    -33.9
+   ],
+   "proj": [
+    3752681.842487887,
+    46246.67499191615
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Transverse_Mercator west north\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",19],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"W\",WEST],AXIS[\"N\",NORTH]]",
+   "geographic": "+proj=longlat +datum=WGS84",
+   "point": [
+    18.5,
+    -33.9
+   ],
+   "proj": [
+    46246.67499191615,
+    -3752681.842487887
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Transverse_Mercator east south\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",19],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"E\",EAST],AXIS[\"S\",SOUTH]]",
+   "geographic": "+proj=longlat +datum=WGS84",
+   "point": [
+    18.5,
+    -33.9
+   ],
+   "proj": [
+    -46246.67499191615,
+    3752681.842487887
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Transverse_Mercator north west\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",19],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"N\",NORTH],AXIS[\"W\",WEST]]",
+   "geographic": "+proj=longlat +datum=WGS84",
+   "point": [
+    18.5,
+    -33.9
+   ],
+   "proj": [
+    -3752681.842487887,
+    46246.67499191615
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Transverse_Mercator_South_Orientated none\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator_South_Orientated\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",19],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1]]",
+   "geographic": "+proj=longlat +datum=WGS84",
+   "point": [
+    18.5,
+    -33.9
+   ],
+   "proj": [
+    46246.67499191615,
+    3752681.842487887
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Transverse_Mercator_South_Orientated east north\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator_South_Orientated\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",19],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "geographic": "+proj=longlat +datum=WGS84",
+   "point": [
+    18.5,
+    -33.9
+   ],
+   "proj": [
+    46246.67499191615,
+    3752681.842487887
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Transverse_Mercator_South_Orientated north east\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator_South_Orientated\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",19],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Northing\",NORTH],AXIS[\"Easting\",EAST]]",
+   "geographic": "+proj=longlat +datum=WGS84",
+   "point": [
+    18.5,
+    -33.9
+   ],
+   "proj": [
+    3752681.842487887,
+    46246.67499191615
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Transverse_Mercator_South_Orientated west south\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator_South_Orientated\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",19],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Y\",WEST],AXIS[\"X\",SOUTH]]",
+   "geographic": "+proj=longlat +datum=WGS84",
+   "point": [
+    18.5,
+    -33.9
+   ],
+   "proj": [
+    46246.67499191615,
+    3752681.842487887
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Transverse_Mercator_South_Orientated south west\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator_South_Orientated\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",19],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"X\",SOUTH],AXIS[\"Y\",WEST]]",
+   "geographic": "+proj=longlat +datum=WGS84",
+   "point": [
+    18.5,
+    -33.9
+   ],
+   "proj": [
+    46246.67499191615,
+    3752681.842487887
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Transverse_Mercator_South_Orientated west north\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator_South_Orientated\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",19],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"W\",WEST],AXIS[\"N\",NORTH]]",
+   "geographic": "+proj=longlat +datum=WGS84",
+   "point": [
+    18.5,
+    -33.9
+   ],
+   "proj": [
+    46246.67499191615,
+    3752681.842487887
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Transverse_Mercator_South_Orientated east south\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator_South_Orientated\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",19],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"E\",EAST],AXIS[\"S\",SOUTH]]",
+   "geographic": "+proj=longlat +datum=WGS84",
+   "point": [
+    18.5,
+    -33.9
+   ],
+   "proj": [
+    46246.67499191615,
+    3752681.842487887
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Transverse_Mercator_South_Orientated north west\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator_South_Orientated\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",19],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"N\",NORTH],AXIS[\"W\",WEST]]",
+   "geographic": "+proj=longlat +datum=WGS84",
+   "point": [
+    18.5,
+    -33.9
+   ],
+   "proj": [
+    46246.67499191615,
+    3752681.842487887
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Lambert_Conformal_Conic_2SP none\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Lambert_Conformal_Conic_2SP\"],PARAMETER[\"standard_parallel_1\",-30],PARAMETER[\"standard_parallel_2\",-36],PARAMETER[\"latitude_of_origin\",-33],PARAMETER[\"central_meridian\",19],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1]]",
+   "geographic": "+proj=longlat +datum=WGS84",
+   "point": [
+    18.5,
+    -33.9
+   ],
+   "proj": [
+    -46188.662182780055,
+    -99798.7509708435
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Lambert_Conformal_Conic_2SP east north\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Lambert_Conformal_Conic_2SP\"],PARAMETER[\"standard_parallel_1\",-30],PARAMETER[\"standard_parallel_2\",-36],PARAMETER[\"latitude_of_origin\",-33],PARAMETER[\"central_meridian\",19],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "geographic": "+proj=longlat +datum=WGS84",
+   "point": [
+    18.5,
+    -33.9
+   ],
+   "proj": [
+    -46188.662182780055,
+    -99798.7509708435
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Lambert_Conformal_Conic_2SP north east\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Lambert_Conformal_Conic_2SP\"],PARAMETER[\"standard_parallel_1\",-30],PARAMETER[\"standard_parallel_2\",-36],PARAMETER[\"latitude_of_origin\",-33],PARAMETER[\"central_meridian\",19],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Northing\",NORTH],AXIS[\"Easting\",EAST]]",
+   "geographic": "+proj=longlat +datum=WGS84",
+   "point": [
+    18.5,
+    -33.9
+   ],
+   "proj": [
+    -46188.662182780055,
+    -99798.7509708435
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Lambert_Conformal_Conic_2SP west south\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Lambert_Conformal_Conic_2SP\"],PARAMETER[\"standard_parallel_1\",-30],PARAMETER[\"standard_parallel_2\",-36],PARAMETER[\"latitude_of_origin\",-33],PARAMETER[\"central_meridian\",19],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Y\",WEST],AXIS[\"X\",SOUTH]]",
+   "geographic": "+proj=longlat +datum=WGS84",
+   "point": [
+    18.5,
+    -33.9
+   ],
+   "proj": [
+    46188.662182780055,
+    99798.7509708435
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Lambert_Conformal_Conic_2SP south west\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Lambert_Conformal_Conic_2SP\"],PARAMETER[\"standard_parallel_1\",-30],PARAMETER[\"standard_parallel_2\",-36],PARAMETER[\"latitude_of_origin\",-33],PARAMETER[\"central_meridian\",19],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"X\",SOUTH],AXIS[\"Y\",WEST]]",
+   "geographic": "+proj=longlat +datum=WGS84",
+   "point": [
+    18.5,
+    -33.9
+   ],
+   "proj": [
+    99798.7509708435,
+    46188.662182780055
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Lambert_Conformal_Conic_2SP west north\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Lambert_Conformal_Conic_2SP\"],PARAMETER[\"standard_parallel_1\",-30],PARAMETER[\"standard_parallel_2\",-36],PARAMETER[\"latitude_of_origin\",-33],PARAMETER[\"central_meridian\",19],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"W\",WEST],AXIS[\"N\",NORTH]]",
+   "geographic": "+proj=longlat +datum=WGS84",
+   "point": [
+    18.5,
+    -33.9
+   ],
+   "proj": [
+    46188.662182780055,
+    -99798.7509708435
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Lambert_Conformal_Conic_2SP east south\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Lambert_Conformal_Conic_2SP\"],PARAMETER[\"standard_parallel_1\",-30],PARAMETER[\"standard_parallel_2\",-36],PARAMETER[\"latitude_of_origin\",-33],PARAMETER[\"central_meridian\",19],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"E\",EAST],AXIS[\"S\",SOUTH]]",
+   "geographic": "+proj=longlat +datum=WGS84",
+   "point": [
+    18.5,
+    -33.9
+   ],
+   "proj": [
+    -46188.662182780055,
+    99798.7509708435
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Lambert_Conformal_Conic_2SP north west\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Lambert_Conformal_Conic_2SP\"],PARAMETER[\"standard_parallel_1\",-30],PARAMETER[\"standard_parallel_2\",-36],PARAMETER[\"latitude_of_origin\",-33],PARAMETER[\"central_meridian\",19],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"N\",NORTH],AXIS[\"W\",WEST]]",
+   "geographic": "+proj=longlat +datum=WGS84",
+   "point": [
+    18.5,
+    -33.9
+   ],
+   "proj": [
+    -99798.7509708435,
+    46188.662182780055
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak none\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1]]",
+   "geographic": "+proj=longlat +ellps=bessel",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak east north\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "geographic": "+proj=longlat +ellps=bessel",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -744215.0965425548,
+    -1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak north east\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Northing\",NORTH],AXIS[\"Easting\",EAST]]",
+   "geographic": "+proj=longlat +ellps=bessel",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -744215.0965425548,
+    -1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak west south\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Y\",WEST],AXIS[\"X\",SOUTH]]",
+   "geographic": "+proj=longlat +ellps=bessel",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    744215.0965425548,
+    1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak south west\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"X\",SOUTH],AXIS[\"Y\",WEST]]",
+   "geographic": "+proj=longlat +ellps=bessel",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak west north\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"W\",WEST],AXIS[\"N\",NORTH]]",
+   "geographic": "+proj=longlat +ellps=bessel",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    744215.0965425548,
+    -1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak east south\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"E\",EAST],AXIS[\"S\",SOUTH]]",
+   "geographic": "+proj=longlat +ellps=bessel",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -744215.0965425548,
+    1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak north west\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"N\",NORTH],AXIS[\"W\",WEST]]",
+   "geographic": "+proj=longlat +ellps=bessel",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -1041500.0768568564,
+    744215.0965425548
+   ]
+  }
+ ]
+}

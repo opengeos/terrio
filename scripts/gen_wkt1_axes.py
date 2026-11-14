@@ -1,0 +1,97 @@
+"""Generate crates/terrio-crs/tests/data/wkt1_axes.json: where PROJ 9.8.1 places a point in
+projected CRSs given by WKT 1 whose `AXIS` nodes point in each direction and order.
+
+Each case is a WKT 1 (Transverse Mercator, south-orientated Transverse Mercator, Lambert
+Conformal Conic and Krovak, without `AXIS` and with east/north, north/east, west/south,
+south/west, west/north, east/south and north/west axes), a geographic point, and its
+coordinates by `Transformer.from_crs(geographic, wkt, always_xy=True)`, as GDAL's
+`gdaltransform` (traditional GIS order) gives them too.
+
+Usage: PROJ_NETWORK=OFF python scripts/gen_wkt1_axes.py (needs pyproj 3.8.0)
+"""
+
+import json
+from pathlib import Path
+
+import pyproj
+from pyproj import CRS, Transformer
+
+OUT = (
+    Path(__file__).resolve().parents[1] / "crates/terrio-crs/tests/data/wkt1_axes.json"
+)
+WGS84 = (
+    'GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],'
+    'PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]'
+)
+SJTSK = (
+    'GEOGCS["S-JTSK",DATUM["System_Jednotne_Trigonometricke_Site_Katastralni",'
+    'SPHEROID["Bessel 1841",6377397.155,299.1528128]],PRIMEM["Greenwich",0],'
+    'UNIT["degree",0.0174532925199433]]'
+)
+ORIGIN = 'PARAMETER["false_easting",0],PARAMETER["false_northing",0]'
+METHODS = {
+    "Transverse_Mercator": (
+        WGS84,
+        "+proj=longlat +datum=WGS84",
+        (18.5, -33.9),
+        'PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",19],PARAMETER["scale_factor",1]',
+    ),
+    "Transverse_Mercator_South_Orientated": (
+        WGS84,
+        "+proj=longlat +datum=WGS84",
+        (18.5, -33.9),
+        'PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",19],PARAMETER["scale_factor",1]',
+    ),
+    "Lambert_Conformal_Conic_2SP": (
+        WGS84,
+        "+proj=longlat +datum=WGS84",
+        (18.5, -33.9),
+        (
+            'PARAMETER["standard_parallel_1",-30],PARAMETER["standard_parallel_2",-36],'
+            'PARAMETER["latitude_of_origin",-33],PARAMETER["central_meridian",19]'
+        ),
+    ),
+    "Krovak": (
+        SJTSK,
+        "+proj=longlat +ellps=bessel",
+        (14.4, 50.1),
+        (
+            'PARAMETER["latitude_of_center",49.5],PARAMETER["longitude_of_center",24.83333333333333],'
+            'PARAMETER["azimuth",30.28813972222222],PARAMETER["pseudo_standard_parallel_1",78.5],'
+            'PARAMETER["scale_factor",0.9999]'
+        ),
+    ),
+}
+AXES = {
+    "none": [],
+    "east north": [("Easting", "EAST"), ("Northing", "NORTH")],
+    "north east": [("Northing", "NORTH"), ("Easting", "EAST")],
+    "west south": [("Y", "WEST"), ("X", "SOUTH")],
+    "south west": [("X", "SOUTH"), ("Y", "WEST")],
+    "west north": [("W", "WEST"), ("N", "NORTH")],
+    "east south": [("E", "EAST"), ("S", "SOUTH")],
+    "north west": [("N", "NORTH"), ("W", "WEST")],
+}
+
+
+def main():
+    assert pyproj.proj_version_str == "9.8.1", pyproj.proj_version_str
+    cases = []
+    for method, (geogcs, geographic, point, params) in METHODS.items():
+        for name, axes in AXES.items():
+            nodes = "".join(f',AXIS["{n}",{d}]' for n, d in axes)
+            wkt = f'PROJCS["{method} {name}",{geogcs},PROJECTION["{method}"],{params},{ORIGIN},UNIT["metre",1]{nodes}]'
+            t = Transformer.from_crs(
+                CRS(geographic + " +type=crs"), CRS(wkt), always_xy=True
+            )
+            x, y = t.transform(*point, errcheck=True)
+            cases.append(
+                {"wkt": wkt, "geographic": geographic, "point": point, "proj": [x, y]}
+            )
+    OUT.write_text(
+        json.dumps({"proj": pyproj.proj_version_str, "cases": cases}, indent=1) + "\n"
+    )
+
+
+if __name__ == "__main__":
+    main()

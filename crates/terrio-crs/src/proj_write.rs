@@ -77,7 +77,7 @@ pub(crate) fn write(s: &SpatialRef) -> Option<String> {
         if s.wkt.as_deref().is_some_and(crate::is_variant_c) {
             return None;
         }
-        return s.wkt.as_deref().and_then(|w| crate::wkt_proj(w).and_then(|p| custom(&p, wkt_datum(w))));
+        return s.wkt.as_deref().and_then(|w| crate::wkt_proj(w).and_then(|p| custom(&wkt_axes(w, &p), wkt_datum(w))));
     }
     // A WKT's shift to WGS 84 (`TOWGS84`, a WKT 2 `BOUNDCRS`) makes it a bound CRS, which PROJ
     // writes with the ellipsoid and `+towgs84` in place of the datum, even for a code.
@@ -145,6 +145,36 @@ fn towgs84(values: &str) -> Option<String> {
         _ => return None,
     }
     Some(format!("+towgs84={}", values.join(",")))
+}
+
+/// A WKT's PROJ string without the axes of its coordinate system, which PROJ does not write
+/// (`AXIS["Y",WEST],AXIS["X",SOUTH]` on Transverse Mercator): only those of a method defining
+/// them (south-orientated Transverse Mercator, Krovak), and a PROJ4 extension's as given.
+fn wkt_axes(wkt: &str, proj: &str) -> String {
+    /// The normalized name of the WKT's projection method, at any depth.
+    fn method(n: &crate::wkt1::Node) -> Option<String> {
+        if ["PROJECTION", "METHOD"].iter().any(|k| n.key.eq_ignore_ascii_case(k)) {
+            return n.name().map(crate::wkt1::norm);
+        }
+        n.args.iter().find_map(|a| match a {
+            crate::wkt1::Arg::Node(c) => method(c),
+            _ => None,
+        })
+    }
+    if crate::proj4_extension(wkt).is_some() {
+        return proj.to_string();
+    }
+    let method = crate::wkt1::parse(wkt).and_then(|root| method(&root)).unwrap_or_default();
+    let axis = |t: &str| t.starts_with("+axis=");
+    let tokens = proj.split_whitespace();
+    if method.contains("southorientated") {
+        // The method's axes, west and south, whatever the coordinate system's order.
+        tokens.map(|t| if axis(t) { "+axis=wsu" } else { t }).collect::<Vec<_>>().join(" ")
+    } else if method.starts_with("krovak") {
+        proj.to_string()
+    } else {
+        tokens.filter(|t| !axis(t)).collect::<Vec<_>>().join(" ")
+    }
 }
 
 /// The axis order PROJ writes: that of the methods defining one (south-orientated Transverse
