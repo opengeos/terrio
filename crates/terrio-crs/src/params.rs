@@ -128,6 +128,11 @@ impl Params {
         self.str(key).and_then(parse_dms).map(f64::to_radians)
     }
 
+    /// The parameter as an angle in degrees, as [`Self::angle`] reads it.
+    pub fn degrees(&self, key: &str) -> Option<f64> {
+        self.str(key).and_then(parse_dms)
+    }
+
     /// The parameter as a comma-separated list of numbers.
     pub fn list(&self, key: &str) -> Option<Vec<f64>> {
         self.str(key).map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect())

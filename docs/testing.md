@@ -1569,6 +1569,19 @@ model type, codes, method, linear unit and projection parameters and read back a
 test -p terrio-crs --test geokeys_gdal`; regenerate with `scripts/gen_geokeys_gdal.py`, rasterio
 1.5.0, pyproj 3.8.0, numpy and tifffile).
 
+Axis orders, conversion parameters and celestial bodies (`SpatialRef::axis_order`,
+`projection_params`, `body`, `is_earth`) are compared with PROJ 9.8.1 on 777 CRSs:
+- every 20th EPSG and ESRI code, and the codes behind each rule;
+- custom PROJ strings and WKTs;
+- compound references, every 20th IAU_2015 CRS and a CRS of every IAU_2015 body.
+
+PROJ's values are the directions of `CRS.axis_info`, `proj_get_celestial_body_name`, and the
+parameters of `CRS.to_proj4()` with the ellipsoid and prime meridian PROJ reports. The tolerances
+are 1e-9° for angles (1e-8° for the prime meridian), 1 µm for lengths and 1e-12 for scale
+factors and units. Run `cargo test -p terrio-crs --test crs_accessors`; regenerate with
+`scripts/gen_crs_accessors.py` (pyproj 3.8.0). `--all PATH` and the ignored
+`every_code_matches_proj` compare every code.
+
 PROJJSON export (`SpatialRef::to_projjson`) has unit tests of each kind of CRS and refusal
 (`cargo test -p terrio-crs --test projjson_export`); `--only projjson-export` compares it with
 live PROJ's PROJJSON of 52 CRSs by meaning and has GDAL read those and every IAU_2015 CRS, whose

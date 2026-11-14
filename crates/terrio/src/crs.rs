@@ -311,6 +311,42 @@ impl SpatialRef {
     pub fn is_geocentric(&self) -> bool {
         self.as_core().is_geocentric()
     }
+    /// The order of the first two axes, as PROJ 9.8.1 reads the CRS (see the standalone engine's
+    /// `SpatialRef::axis_order`).
+    ///
+    /// ```
+    /// use terrio::crs::{AxisOrder, SpatialRef};
+    ///
+    /// assert_eq!(SpatialRef::from_epsg(4326)?.axis_order(), AxisOrder::NorthEast);
+    /// assert_eq!(SpatialRef::from_epsg(32633)?.axis_order(), AxisOrder::EastNorth);
+    /// # Ok::<(), terrio::Error>(())
+    /// ```
+    pub fn axis_order(&self) -> AxisOrder {
+        self.as_core().axis_order()
+    }
+    /// The parameters of the CRS's conversion, as its PROJ string has them, with PROJ's defaults
+    /// (see the standalone engine's `SpatialRef::projection_params`). `None` for a CRS terrio
+    /// can't read, or reads only through wbprojection's WKT parser.
+    ///
+    /// ```
+    /// use terrio::crs::SpatialRef;
+    ///
+    /// let p = SpatialRef::from_epsg(2056)?.projection_params().unwrap();
+    /// assert_eq!((p.method.as_str(), p.x_0, p.y_0), ("somerc", 2600000.0, 1200000.0));
+    /// # Ok::<(), terrio::Error>(())
+    /// ```
+    pub fn projection_params(&self) -> Option<ProjParams> {
+        self.as_core().projection_params()
+    }
+    /// The celestial body the CRS is on, as PROJ 9.8.1 names it (`Earth`, `Mars`; see the
+    /// standalone engine's `SpatialRef::body`).
+    pub fn body(&self) -> Option<&'static str> {
+        self.as_core().body()
+    }
+    /// Whether the CRS is on the Earth.
+    pub fn is_earth(&self) -> bool {
+        self.as_core().is_earth()
+    }
     /// Whether coordinates have a height that transformations change: a compound CRS (with a
     /// vertical CRS), a geographic 3D or a geocentric CRS.
     pub fn has_height(&self) -> bool {
@@ -475,6 +511,9 @@ pub use terrio_crs::CoordinateOperation;
 /// see [`SpatialRef::from_geokeys`] and [`SpatialRef::to_geokeys`].
 pub use terrio_crs::geokeys;
 pub use terrio_crs::{AUTHORITIES, CrsEntry, CrsKind, CrsQuery, EPSG_VERSION, check_authorities};
+/// The order of a CRS's first two axes and the parameters of its conversion: see
+/// [`SpatialRef::axis_order`] and [`SpatialRef::projection_params`].
+pub use terrio_crs::{AxisOrder, ProjParams};
 
 /// Recognized boolean PROJ parameters, normalized by the shared CRS parser.
 pub fn proj_boolean_parameters(definition: &str) -> Result<Vec<(String, bool)>> {

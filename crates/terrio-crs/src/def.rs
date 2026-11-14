@@ -75,6 +75,9 @@ pub(crate) struct Def {
     vertical: Option<Arc<Vertical>>,
     /// The area of use (west, south, east, north in degrees), when known.
     area: Option<[f64; 4]>,
+    /// The parameters of the PROJ string the definition was read from; `None` for a WKT only
+    /// wbprojection reads.
+    params: Option<Arc<crate::ProjParams>>,
 }
 
 /// The vertical part of a compound CRS: its unit and direction, and its geoid models.
@@ -296,6 +299,14 @@ impl Def {
         Ok(())
     }
 
+    /// The NAIF code of the body the definition declares: the Earth for an EPSG or ESRI code,
+    /// that of an IAU_2015 CRS. (`Def::new` declares every table entry on the Earth: the ESRI table
+    /// has no CRS of another body, as `scripts/gen_esri_table.py` leaves out those PROJ can't
+    /// transform from WGS 84.)
+    pub fn declared_body(&self) -> Option<u32> {
+        self.body
+    }
+
     /// A declared body, or PROJ's Earth-radius heuristic for custom ellipsoids.
     pub fn celestial_body(&self) -> Option<u32> {
         self.body.or_else(|| ((self.ell.a - 6_375_000.0).abs() < 0.007 * 6_375_000.0).then_some(399))
@@ -355,6 +366,7 @@ impl Def {
         }
 
         let mut ell = datum::ellipsoid(&p).or_else(|| datum_name.and_then(datum_ellps).and_then(Ell::named)).unwrap_or_else(Ell::wgs84);
+        let named = ell;
         // A shape without `+a` (or `+R`) changes the shape of the named ellipsoid or the datum's,
         // as PROJ's `pj_ell_set` applies it: `+f=0 +datum=WGS84` is the sphere of WGS 84's
         // semi-major axis (ESRI's orthographic CRSs).
@@ -377,6 +389,11 @@ impl Def {
         if !(ell.a.is_finite() && ell.a > 0.0 && (0.0..1.0).contains(&ell.es)) {
             return Err(Error::Crs(format!("invalid ellipsoid in '{s}': semi-major axis {}, eccentricity squared {}", ell.a, ell.es)));
         }
+        // The ellipsoid PROJ 9.8.1 reports for the CRS, before `+R_A` and `+R_C` turn it into a
+        // sphere. A named ellipsoid or datum keeps its shape under `+f`, `+es` and `+e`, which
+        // change only the figure computed on; `+rf` and `+b` give another ellipsoid.
+        let reshaped = ["f", "es", "e"].iter().any(|k| p.has(k)) && !["a", "R", "rf", "b"].iter().any(|k| p.has(k));
+        let defined = if reshaped && (p.has("ellps") || p.has("datum")) { named } else { ell };
         // `+R_A`: a sphere of the ellipsoid's area.
         if p.has("R_A") && ell.es != 0.0 {
             let e = ell.e;
@@ -491,6 +508,32 @@ impl Def {
                 }
             }
         };
+        // As the PROJ string gives them, with PROJ's defaults. UTM and UPS have theirs from the
+        // zone and the hemisphere, as PROJ's conversion does.
+        let zoned = matches!(name, "utm" | "ups");
+        let degrees = |key: &str, set: f64| if zoned { set.to_degrees() } else { p.degrees(key).unwrap_or(0.0) };
+        // A UTM zone's central meridian in whole degrees, which its radians don't convert back to.
+        let zone_index = ((setup.lam0 + std::f64::consts::PI) * 30.0 / std::f64::consts::PI - 0.5).round();
+        let params = crate::ProjParams {
+            // PROJ's name of the aliases it writes under another (`latlong`, `lonlat` and `latlon`
+            // are `longlat`, `etmerc` is `tmerc` and `webmerc` is `merc`).
+            method: match name {
+                n if is_longlat(n) => "longlat",
+                "etmerc" => "tmerc",
+                "webmerc" => "merc",
+                n => n,
+            }
+            .to_string(),
+            lon_0: if name == "utm" { zone_index * 6.0 - 177.0 } else { degrees("lon_0", setup.lam0) },
+            lat_0: degrees("lat_0", setup.phi0),
+            k_0: if zoned { setup.k0 } else { p.f64("k_0").or_else(|| p.f64("k")).unwrap_or(1.0) },
+            x_0: if zoned { setup.x0 } else { p.f64("x_0").unwrap_or(0.0) },
+            y_0: if zoned { setup.y0 } else { p.f64("y_0").unwrap_or(0.0) },
+            prime_meridian: pm,
+            a: defined.a,
+            b: defined.a * defined.one_es.sqrt(),
+            to_meter,
+        };
         let projection_a = setup.ell.a;
         let ell = if proj.is_some() { conformal_ellipsoid.unwrap_or(setup.ell) } else { setup.ell };
         let (lam0, phi0, x0, y0) = (setup.lam0, setup.phi0, setup.x0, setup.y0);
@@ -520,6 +563,7 @@ impl Def {
             dynamic: false,
             vertical: None,
             area: None,
+            params: Some(Arc::new(params)),
         };
         // The datum transformation.
         let towgs84 = p.list("towgs84").filter(|v| v.len() == 3 || v.len() == 7);
@@ -705,6 +749,7 @@ impl Def {
                 dynamic: false,
                 vertical: None,
                 area: None,
+                params: None,
             };
             if !geographic {
                 d.proj = Some(Arc::new(WbProj { crs, a: ell.a }));
@@ -955,6 +1000,16 @@ impl Def {
             out.ops = e.grid_ops.clone();
         }
         out
+    }
+
+    /// The parameters of the PROJ string the definition was read from.
+    pub fn params(&self) -> Option<&crate::ProjParams> {
+        self.params.as_deref()
+    }
+
+    /// The first two axes' directions (`e`, `n`, `w`, `s`), as `+axis` gives them.
+    pub fn axis_directions(&self) -> [u8; 2] {
+        self.axis
     }
 
     /// The area of use, when known.

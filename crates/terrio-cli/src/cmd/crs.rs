@@ -9,7 +9,7 @@
 
 use clap::builder::TypedValueParser;
 use std::io::Write;
-use terrio::crs::{AUTHORITIES, CrsKind, CrsQuery, SpatialRef, TransformOptions, Transformer, list_crs};
+use terrio::crs::{AUTHORITIES, AxisOrder, CrsKind, CrsQuery, SpatialRef, TransformOptions, Transformer, list_crs};
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -85,6 +85,22 @@ pub fn run(a: Args) -> terrio::Result<()> {
         println!("Geographic: {}", src.is_geographic());
         if src.is_geocentric() {
             println!("Geocentric: true");
+        }
+        let axes = match src.axis_order() {
+            AxisOrder::EastNorth => "east, north",
+            AxisOrder::NorthEast => "north, east",
+            AxisOrder::Other => "other",
+            _ => "unknown",
+        };
+        println!("Axis order: {axes}");
+        if let Some(body) = src.body() {
+            println!("Body: {body}");
+        }
+        if let Some(p) = src.projection_params() {
+            println!(
+                "Method: {} (lon_0={} lat_0={} k_0={} x_0={} y_0={} prime meridian={} a={} b={} metres per unit={})",
+                p.method, p.lon_0, p.lat_0, p.k_0, p.x_0, p.y_0, p.prime_meridian, p.a, p.b, p.to_meter
+            );
         }
         if a.wkt
             && let Some(w) = src.to_wkt()

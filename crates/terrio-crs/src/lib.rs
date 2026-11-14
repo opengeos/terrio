@@ -71,6 +71,7 @@ use serde::Serialize;
 #[cfg(feature = "wbprojection-fallback")]
 use wbprojection as wbp;
 
+mod bodies;
 mod catalog;
 mod datum;
 mod def;
@@ -276,6 +277,47 @@ fn canonical_epsg_reference(s: &str) -> Option<u32> {
         }
     }
     None
+}
+
+/// The parameters of a CRS's conversion, as its PROJ string gives them (see
+/// [`SpatialRef::projection_params`]).
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct ProjParams {
+    /// PROJ's name of the method (`+proj=`): `tmerc`, `utm`, `longlat`, `geocent`...
+    pub method: String,
+    /// The central meridian (`+lon_0`), in degrees from the prime meridian.
+    pub lon_0: f64,
+    /// The latitude of origin (`+lat_0`), in degrees.
+    pub lat_0: f64,
+    /// The scale factor (`+k_0` or `+k`).
+    pub k_0: f64,
+    /// The false easting (`+x_0`), in metres.
+    pub x_0: f64,
+    /// The false northing (`+y_0`), in metres.
+    pub y_0: f64,
+    /// The prime meridian (`+pm`), in degrees east of Greenwich.
+    pub prime_meridian: f64,
+    /// The semi-major axis of the ellipsoid, in metres.
+    pub a: f64,
+    /// The semi-minor axis of the ellipsoid, in metres.
+    pub b: f64,
+    /// Metres per linear unit of the coordinates (`+to_meter` or `+units`); 1 for a geographic CRS.
+    pub to_meter: f64,
+}
+
+/// The order of a CRS's first two axes (see [`SpatialRef::axis_order`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum AxisOrder {
+    /// East then north: longitude/latitude, easting/northing.
+    EastNorth,
+    /// North then east: latitude/longitude, northing/easting.
+    NorthEast,
+    /// Other axes, such as west/south or geocentric X/Y/Z, or the single axis of a vertical CRS.
+    Other,
+    /// A CRS terrio can't read, or an EPSG code it reads only through wbprojection.
+    Unknown,
 }
 
 /// A coordinate reference system, known by an EPSG (or ESRI) code, a WKT definition, a PROJ
@@ -852,6 +894,162 @@ impl SpatialRef {
         points(axes.next(), "north") && points(axes.next(), "east")
     }
 
+    /// The order of the first two axes, as PROJ 9.8.1 reads the CRS: the registry's axes for an
+    /// EPSG or ESRI code, `+axis` for a CRS given as a PROJ string (east then north by default),
+    /// and otherwise its WKT's `AXIS` nodes. Without them, a WKT 1 geographic CRS with an EPSG
+    /// code is in that code's order, and other CRSs east then north. Geocentric and vertical CRSs,
+    /// and Polar Stereographic, whose axes point along meridians (unless a WKT states others), are
+    /// [`AxisOrder::Other`], as are axes other than north and east (`northEast`, `south`).
+    ///
+    /// Unlike [`Self::has_north_east_axis_order`], which goes by the CRS's WKT, a PROJ string
+    /// such as `+proj=longlat +datum=WGS84` is east then north.
+    /// ```
+    /// use terrio_crs::{AxisOrder, SpatialRef};
+    /// assert_eq!(SpatialRef::from_epsg(4326)?.axis_order(), AxisOrder::NorthEast);
+    /// assert_eq!(SpatialRef::from_proj4("+proj=longlat +datum=WGS84")?.axis_order(), AxisOrder::EastNorth);
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
+    pub fn axis_order(&self) -> AxisOrder {
+        // A vertical CRS, by its code or its WKT (`VERT_CS`, ESRI's `VERTCS`, `VERTCRS`), has a
+        // single axis.
+        let vertical_wkt = self.wkt.as_deref().is_some_and(|w| {
+            let root = w.trim_start().split(['[', '(']).next().unwrap_or_default().trim();
+            ["VERT_CS", "VERTCS", "VERTCRS", "VERTICALCRS"].iter().any(|k| root.eq_ignore_ascii_case(k))
+        });
+        if self.epsg.and_then(epsg::vertical).is_some() || vertical_wkt {
+            return AxisOrder::Other;
+        }
+        // An EPSG code terrio reads only through wbprojection, whose WKT has no axes (it drops
+        // the west-orientated ones of EPSG:3053 and others).
+        if self.epsg.is_some_and(|c| epsg::get(c).is_none() && epsg::compound(c).is_none() && self.wkt == registry_wkt(c)) {
+            return AxisOrder::Unknown;
+        }
+        let Ok(def) = Def::new(self) else { return AxisOrder::Unknown };
+        if def.is_geocentric() {
+            return AxisOrder::Other;
+        }
+        let order = |first: u8, second: u8| match (first.to_ascii_lowercase(), second.to_ascii_lowercase()) {
+            (b'e', b'n') => AxisOrder::EastNorth,
+            (b'n', b'e') => AxisOrder::NorthEast,
+            _ => AxisOrder::Other,
+        };
+        // PROJ's Polar Stereographic has both axes pointing south (or north) along meridians,
+        // unless a WKT states others.
+        let polar = def.params().is_some_and(|p| p.method == "stere" && p.lat_0.abs() == 90.0);
+        // A PROJ string's axes (one from the WKT of an IAU_2015 CRS goes by the WKT, as PROJ
+        // reads it).
+        let iau = self.wkt.as_deref().and_then(iau::declared).is_some();
+        if !self.registry_entry() && !iau && self.proj4.is_some() {
+            let [first, second] = def.axis_directions();
+            return if polar { AxisOrder::Other } else { order(first, second) };
+        }
+        let Some(wkt) = self.to_wkt() else { return AxisOrder::Unknown };
+        let horizontal = def::split_compound(&wkt).map(|(horizontal, _)| horizontal);
+        let Some(root) = wkt1::parse(horizontal.as_deref().unwrap_or(&wkt)) else { return AxisOrder::Unknown };
+        // Only the four directions count: `northEast` is another one.
+        let direction = |axis: &wkt1::Node| match axis.args.get(1) {
+            Some(wkt1::Arg::Ident(d)) if d.eq_ignore_ascii_case("north") => b'n',
+            Some(wkt1::Arg::Ident(d)) if d.eq_ignore_ascii_case("east") => b'e',
+            _ => 0,
+        };
+        let mut axes = root.children("AXIS");
+        match (axes.next(), axes.next()) {
+            // Axes the stored WKT states, a registry code's included (from_epsg stores the
+            // registry's WKT, whose polar CRSs state their axes, but EPSG:2985 and 2986's do not).
+            (Some(first), Some(second)) if self.wkt.is_some() => order(direction(first), direction(second)),
+            _ if polar => AxisOrder::Other,
+            // Those of the WKT built from a code alone.
+            (Some(first), Some(second)) => order(direction(first), direction(second)),
+            // A WKT 1 geographic CRS without axes is in its EPSG code's order, as PROJ reads it,
+            // else (or for a code terrio doesn't have) in longitude/latitude order, as any other
+            // CRS.
+            _ => match declared_epsg(&wkt).filter(|_| root.key.eq_ignore_ascii_case("GEOGCS") && self.wkt.is_some()) {
+                Some(code) => match (SpatialRef { epsg: Some(code), ..Default::default() }).axis_order() {
+                    AxisOrder::Unknown => AxisOrder::EastNorth,
+                    known => known,
+                },
+                None => AxisOrder::EastNorth,
+            },
+        }
+    }
+
+    /// The parameters of the CRS's conversion, as its PROJ string (from the registry, as given,
+    /// or converted from its WKT) has them, with PROJ's defaults: a central meridian of 0, a scale
+    /// factor of 1... A UTM or UPS zone gives its own, as in PROJ's conversion. A compound CRS
+    /// gives those of its horizontal CRS. `None` for a CRS terrio can't read, or reads only
+    /// through wbprojection's WKT parser.
+    ///
+    /// The values are those of the definition, not derived ones: Mercator's `+lat_ts` is not
+    /// turned into a scale factor, nor Oblique Mercator's `+lonc` into a central meridian.
+    /// ```
+    /// use terrio_crs::SpatialRef;
+    /// let p = SpatialRef::from_epsg(32633)?.projection_params().unwrap();
+    /// assert_eq!((p.method.as_str(), p.lon_0, p.k_0, p.x_0), ("utm", 15.0, 0.9996, 500000.0));
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
+    pub fn projection_params(&self) -> Option<ProjParams> {
+        let def = Def::new(self).ok()?;
+        let mut params = def.params()?.clone();
+        // A registry CRS is on the registry's ellipsoid, as PROJ reports it: the one its PROJ
+        // string names may be rounded (Bessel Namibia's `bess_nam`, 0.28 m) or a sphere computed on
+        // (Web Mercator). The WKT's is taken in metres only (EPSG:3139's is in feet).
+        if let Some((a, b)) = self.registry_horizontal_wkt().as_deref().and_then(wkt_ellipsoid).filter(|(a, _)| (a - params.a).abs() < 1.0)
+        {
+            (params.a, params.b) = (a, b);
+        }
+        Some(params)
+    }
+
+    /// The WKT of the registry entry `Def::new` reads the CRS from (that of the horizontal CRS
+    /// of a compound one).
+    fn registry_horizontal_wkt(&self) -> Option<String> {
+        match self.epsg {
+            Some(code) => epsg::get(code).or_else(|| epsg::compound(code).and_then(|c| epsg::get(c.horizontal))).map(|e| e.wkt.clone()),
+            None => self.esri.filter(|c| !ESRI_UNLIKE_PROJ.contains(c)).and_then(epsg::esri).map(|e| e.wkt.clone()),
+        }
+    }
+
+    /// Whether `Def::new` reads the CRS from the EPSG or ESRI table.
+    fn registry_entry(&self) -> bool {
+        match self.epsg {
+            Some(code) => epsg::get(code).is_some() || epsg::compound(code).is_some(),
+            None => self.esri.is_some_and(|c| !ESRI_UNLIKE_PROJ.contains(&c) && epsg::esri(c).is_some()),
+        }
+    }
+
+    /// The celestial body the CRS is on, as PROJ 9.8.1 names it: `Earth` for an EPSG or ESRI
+    /// code, the body of an IAU_2015 CRS (`Mars`), and for another CRS, `Earth` for an ellipsoid
+    /// within 0.7% of the Earth's size, else the body of PROJ's table whose semi-major axis is
+    /// within 0.7% of the ellipsoid's (`+R=3396190` is on Mars). `None` for another ellipsoid,
+    /// which PROJ calls `Non-Earth body`, for one near the size of several bodies, and for a CRS
+    /// terrio can't read.
+    /// ```
+    /// use terrio_crs::SpatialRef;
+    /// assert_eq!(SpatialRef::from_iau(49900)?.body(), Some("Mars"));
+    /// assert_eq!(SpatialRef::from_epsg(4326)?.body(), Some("Earth"));
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
+    pub fn body(&self) -> Option<&'static str> {
+        let def = Def::new(self).ok()?;
+        if let Some(code) = def.declared_body() {
+            return bodies::NAIF.binary_search_by_key(&code, |(c, _)| *c).ok().map(|i| bodies::NAIF[i].1);
+        }
+        // PROJ's `Ellipsoid::guessBodyName`: the Earth within 0.7% of its mean radius, else the
+        // one body whose semi-major axis is within 0.7% of the ellipsoid's.
+        let a = def.params().map_or(def.ell.a, |p| p.a);
+        if (a - 6_375_000.0).abs() < 0.007 * 6_375_000.0 {
+            return Some("Earth");
+        }
+        let mut near = bodies::RADII.iter().filter(|(_, r)| (r - a).abs() / r <= 0.007).map(|(name, _)| *name);
+        let first = near.next()?;
+        near.all(|name| name == first).then_some(first)
+    }
+
+    /// Whether the CRS is on the Earth (see [`Self::body`]).
+    pub fn is_earth(&self) -> bool {
+        self.body() == Some("Earth")
+    }
+
     /// Whether this is a rotated-pole grid (PROJ's `+proj=ob_tran`, CF's
     /// `rotated_latitude_longitude`): its coordinates are in degrees but are not longitudes and
     /// latitudes, so it is not geographic.
@@ -998,6 +1196,24 @@ pub fn semi_major_axis(wkt: &str) -> Option<f64> {
     // Skip the quoted name, then read the number after it.
     let after_name = rest.strip_prefix('"').and_then(|r| r.find('"').map(|i| &r[i + 1..]))?;
     after_name.trim_start_matches([',', ' ']).split([',', ']']).next()?.trim().parse().ok()
+}
+
+/// The semi-major and semi-minor axes of the first `SPHEROID` or `ELLIPSOID` of a WKT
+/// definition, from its axis and inverse flattening (0 for a sphere), in the WKT's unit.
+fn wkt_ellipsoid(wkt: &str) -> Option<(f64, f64)> {
+    fn find(n: &wkt1::Node) -> Option<&wkt1::Node> {
+        if n.key.eq_ignore_ascii_case("SPHEROID") || n.key.eq_ignore_ascii_case("ELLIPSOID") {
+            return Some(n);
+        }
+        n.args.iter().find_map(|a| match a {
+            wkt1::Arg::Node(c) => find(c),
+            _ => None,
+        })
+    }
+    let root = wkt1::parse(wkt)?;
+    let node = find(&root)?;
+    let (a, rf) = (node.num(1)?, node.num(2)?);
+    Some((a, if rf == 0.0 { a } else { a * (1.0 - 1.0 / rf) }))
 }
 
 /// The EPSG datums the geodetic datum of a WKT definition is: the one its `AUTHORITY` (WKT 1) or
