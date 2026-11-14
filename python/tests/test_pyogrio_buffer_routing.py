@@ -14,6 +14,81 @@ from terrio.pyogrio.errors import DataSourceError
 pytest_plugins = ["test_pyogrio_buffer_sources"]
 
 
+@pytest.mark.parametrize("count", [1, 2])
+@pytest.mark.parametrize("mode", ["path", "bytes", "named", "file"])
+@pytest.mark.parametrize("read", [tpg.read_dataframe, tpg.read_info, tpg.list_layers])
+def test_non_dataset_zip_errors_name_the_input(tmp_path, monkeypatch, count, mode, read):
+    """Name unsupported archives consistently without exposing extracted copies.
+
+    Args:
+        tmp_path: Directory for the archive.
+        monkeypatch: Run relative-path reads from the fixture directory.
+        count: Number of non-dataset members.
+        mode: Path, anonymous bytes, named bytes or an open file.
+        read: Pyogrio entry point under test.
+    """
+    monkeypatch.chdir(tmp_path)
+    encoded = io.BytesIO()
+    with zipfile.ZipFile(encoded, "w") as archive:
+        for index in range(count):
+            archive.writestr(f"README{index}.txt", "not a dataset")
+    data = encoded.getvalue()
+    path = tmp_path / "readme.zip"
+    path.write_bytes(data)
+    source = path.name if mode == "path" else data
+    if mode == "named":
+        source = io.BytesIO(data)
+        source.name = path.name
+    if mode == "file":
+        source = path.open("rb")
+    try:
+        with pytest.raises(DataSourceError) as caught:
+            read(source)
+        shown = "buffer" if mode == "bytes" else path.name
+        assert str(caught.value) == f"no dataset found in '{shown}'"
+    finally:
+        if hasattr(source, "close"):
+            source.close()
+
+
+@pytest.mark.parametrize("read", [terrio.open, terrio.info, terrio.open_vector, terrio.list_layers])
+@pytest.mark.parametrize("member", ["README.txt", "broken.gpkg"])
+def test_explicit_zip_member_errors_keep_the_virtual_path(tmp_path, monkeypatch, read, member):
+    """Keep original member names through general, vector and metadata opens.
+
+    Args:
+        tmp_path: Directory for the archive.
+        monkeypatch: Run relative-path reads from the fixture directory.
+        read: Native open or inspection entry point.
+        member: Unsupported text or a malformed GeoPackage to inspect.
+    """
+    monkeypatch.chdir(tmp_path)
+    with zipfile.ZipFile("readme.zip", "w") as archive:
+        archive.writestr(member, "not a dataset")
+    path = f"/vsizip/readme.zip/{member}"
+    with pytest.raises(terrio.TerrioError) as caught:
+        read(path)
+    assert path in str(caught.value)
+    assert "terrio-" not in str(caught.value)
+
+
+@pytest.mark.parametrize("read", [tpg.read_dataframe, tpg.list_layers])
+def test_bad_dataset_buffer_keeps_its_reason_without_spill_paths(read):
+    """Retain malformed dataset diagnostics while hiding the buffer's storage path.
+
+    Args:
+        read: Pyogrio entry point under test.
+    """
+    source = io.BytesIO(b'{"type":"FeatureCollection","features": [invalid]}')
+    source.name = "bad.geojson"
+    with pytest.raises(DataSourceError) as caught:
+        read(source)
+    message = str(caught.value)
+    assert "bad.geojson" in message
+    assert "no dataset found" not in message
+    assert "terrio-pyogrio-" not in message
+
+
 @pytest.mark.parametrize("before", [0, 1, 2])
 def test_collection_dimensions_do_not_depend_on_sequence_position(tmp_path, before):
     """Infer a collection's declared dimensions from its first member at any position.

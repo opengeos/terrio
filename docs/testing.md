@@ -11,6 +11,14 @@ Madison lidar (4 million points) too (`scripts/compare_pointclouds.py --quick` s
 
 ## Input isolation and diagnostic privacy
 
+`python/tests/test_pyogrio_buffer_routing.py` checks unsupported single-file and
+multi-file ZIPs through paths, bytes, named buffers and open files. Reads and
+layer inspection must name the archive (or `buffer`) rather than extracted or
+spilled files. Explicit `/vsizip/.../member` refusals retain that virtual path,
+including the GeoPackage layer-list shortcut. A malformed GeoJSON buffer retains
+its parsing reason and caller-visible name. The native regression is
+`cargo test -p terrio --lib vector_archive_member_refusals_name_the_requested_location`.
+
 `python/tests/test_crs_input_safety.py` checks that Python CRS strings and dataset
 metadata cannot implicitly read a host file. Literal EPSG/WKT/PROJ definitions
 remain supported; trusted Rust and CLI file parsing has separate coverage in

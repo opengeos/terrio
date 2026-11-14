@@ -994,7 +994,7 @@ pub(crate) fn open_vector_native(path: &str, options: &VectorOpenOptions) -> Res
         return Ok(finish_vector(layers, path, VectorDriver::Parquet));
     }
     let local = vfs::resolve(path)?;
-    match open_local(local.as_str(), options)? {
+    match open_local(local.as_str(), options).map_err(|e| naming_dataset(e, path, local.as_str()))? {
         Dataset::Vector(v) => {
             check_archive_layers(path, &v.layers)?;
             Ok(v)
@@ -1052,7 +1052,8 @@ fn list_layers_native(path: &str) -> Result<Vec<String>> {
     if VectorDriver::for_extension(local.as_str()) == Some(VectorDriver::GPKG) {
         #[cfg(feature = "sqlite")]
         {
-            let names = crate::drivers::vector::gpkg_read::list_layers(local.as_str())?;
+            let names =
+                crate::drivers::vector::gpkg_read::list_layers(local.as_str()).map_err(|e| naming_dataset(e, path, local.as_str()))?;
             if names.is_empty() {
                 check_archive_layers(path, &[])?;
             }
@@ -1061,7 +1062,7 @@ fn list_layers_native(path: &str) -> Result<Vec<String>> {
         #[cfg(not(feature = "sqlite"))]
         return Err(Error::disabled("sqlite"));
     }
-    let dataset = open_vector_native(local.as_str(), &VectorOpenOptions::default())?;
+    let dataset = open_vector_native(local.as_str(), &VectorOpenOptions::default()).map_err(|e| naming_dataset(e, path, local.as_str()))?;
     Ok(dataset.layers.into_iter().map(|l| l.name).collect())
 }
 
@@ -2481,6 +2482,28 @@ mod tests {
         );
         assert!(matches!(&error, crate::Error::ResourceLimit(_)));
         assert_eq!(error.to_string(), "budget exceeded at https://example.com/input.hdf");
+    }
+
+    #[test]
+    fn vector_archive_member_refusals_name_the_requested_location() {
+        use std::io::Write;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("input.zip");
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        for member in ["README.txt", "broken.gpkg"] {
+            writer.start_file(member, zip::write::SimpleFileOptions::default()).unwrap();
+            writer.write_all(b"not a dataset").unwrap();
+        }
+        writer.finish().unwrap();
+        for member in ["README.txt", "broken.gpkg"] {
+            let requested = format!("/vsizip/{}/{member}", path.display());
+            let open_error = super::open_vector_native(&requested, &Default::default()).unwrap_err().to_string();
+            let list_error = super::list_layers_native(&requested).unwrap_err().to_string();
+            for error in [open_error, list_error] {
+                assert!(error.contains(&requested), "{error}");
+                assert!(!error.contains("terrio-"), "an extraction path leaked: {error}");
+            }
+        }
     }
 
     #[cfg(feature = "grib")]
