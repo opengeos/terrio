@@ -965,12 +965,14 @@ impl SpatialRef {
             // Axes the stored WKT states, a registry code's included (from_epsg stores the
             // registry's WKT, whose polar CRSs state their axes, but EPSG:2985 and 2986's do not).
             (Some(first), Some(second)) if self.wkt.is_some() => order(direction(first), direction(second)),
+            // Polar Stereographic without a stored WKT, or with one that states no axes.
             _ if polar => AxisOrder::Other,
-            // Those of the WKT built from a code alone.
+            // Otherwise, those of the WKT built from a code alone.
             (Some(first), Some(second)) => order(direction(first), direction(second)),
             // A WKT 1 geographic CRS without axes is in its EPSG code's order, as PROJ reads it,
             // else (or for a code terrio doesn't have) in longitude/latitude order, as any other
-            // CRS.
+            // CRS. (Every geographic EPSG code of PROJ 9.8.1 is in terrio's table, so none is
+            // read only through wbprojection here.)
             _ => match root.epsg().filter(|_| root.key.eq_ignore_ascii_case("GEOGCS") && self.wkt.is_some()) {
                 Some(code) => match (SpatialRef { epsg: Some(code), ..Default::default() }).axis_order() {
                     AxisOrder::Unknown => AxisOrder::EastNorth,
