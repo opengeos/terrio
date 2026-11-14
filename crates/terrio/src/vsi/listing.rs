@@ -67,14 +67,6 @@ pub(crate) fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
         let end = scheme + 3 + end;
         return format!("{}{}<redacted>", &out[..end], &out[end..end + 1]).into();
     }
-    // A scheme-less location (a `/vsimem/` key, a path given with a signature) has no authority to
-    // strip, but its query is as private. Only a single token is treated so, never prose.
-    if !out.contains("://")
-        && !out.contains(char::is_whitespace)
-        && let Some(query) = out.find(['?', '#'])
-    {
-        return format!("{}{}<redacted>", &out[..query], &out[query..=query]).into();
-    }
     out
 }
 
@@ -893,6 +885,13 @@ mod tests {
         assert_eq!(super::redact_url(r"\\?\C:\data\a.tif?sig=PRIVATE"), r"\\?\C:\data\a.tif?<redacted>");
         // A `?` inside a URL fragment never shortens the URL rule's redaction.
         assert_eq!(super::redact_url("https://h/a#frag?sig=PRIVATE"), "https://h/a#<redacted>");
+    }
+
+    #[test]
+    fn scheme_less_file_names_keep_a_query_that_names_no_credential() {
+        assert_eq!(super::redact_url("/data/what?.tif"), "/data/what?.tif");
+        assert_eq!(super::redact_url("/vsimem/a?x=1"), "/vsimem/a?x=1");
+        assert_eq!(super::redact_url(r"\\?\C:\token-cache\a.tif"), r"\\?\C:\token-cache\a.tif");
     }
 
     #[test]
