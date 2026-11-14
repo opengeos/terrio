@@ -1180,10 +1180,15 @@ impl SpatialRef {
     /// ```
     /// use terrio_crs::SpatialRef;
     ///
+    /// // Run on a thread with Linux's 8 MiB stack: Windows gives a doctest's main thread 1 MiB,
+    /// // which the projection description overflows.
+    /// # std::thread::Builder::new().stack_size(8 << 20).spawn(|| -> Result<(), terrio_crs::Error> {
     /// let lcc = "+proj=lcc +lat_1=33 +lat_2=45 +lat_0=39 +lon_0=-96 +datum=WGS84";
     /// let keys = SpatialRef::from_proj4(lcc)?.to_geokeys()?;
     /// // A user-defined projected CRS (ProjectedCSTypeGeoKey 32767), Lambert conformal conic 2SP.
     /// assert!(keys.shorts.contains(&(3072, 32767)) && keys.shorts.contains(&(3075, 8)));
+    /// # Ok(())
+    /// # }).unwrap().join().unwrap()?;
     /// # Ok::<(), terrio_crs::Error>(())
     /// ```
     pub fn to_geokeys(&self) -> Result<GeoKeyValues> {
