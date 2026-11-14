@@ -673,8 +673,12 @@ fn naming_dataset(e: Error, path: &str, local: &str) -> Error {
         return e;
     }
     let local_archive = matches!(vfs::Location::parse(path), vfs::Location::Zip { archive, .. } if archive.is_local());
-    let shown = if local_archive { path.trim() } else { path.trim().split(['?', '#']).next().unwrap_or(path) };
-    let named = |m: String| if m.contains(local) { m.replace(local, shown) } else { format!("'{shown}': {m}") };
+    let shown = if local_archive {
+        crate::vsi::redact_diagnostic_location(path.trim())
+    } else {
+        path.trim().split(['?', '#']).next().unwrap_or(path).into()
+    };
+    let named = |m: String| if m.contains(local) { m.replace(local, &shown) } else { format!("'{shown}': {m}") };
     match e {
         Error::Unsupported(m) => Error::Unsupported(named(m)),
         Error::ResourceLimit(m) => Error::ResourceLimit(named(m)),
@@ -2516,6 +2520,12 @@ mod tests {
             let error = super::naming_dataset(crate::Error::Unsupported("bad format in /private/copy".into()), &requested, "/private/copy");
             assert_eq!(error.to_string(), format!("bad format in {requested}"));
         }
+        let error = super::naming_dataset(
+            crate::Error::Unsupported("bad format in /private/copy".into()),
+            "/vsizip/input.zip?sig=PRIVATE/roads.gpkg",
+            "/private/copy",
+        );
+        assert_eq!(error.to_string(), "bad format in /vsizip/input.zip?<redacted>");
     }
 
     #[cfg(feature = "grib")]

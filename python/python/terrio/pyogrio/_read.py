@@ -239,11 +239,12 @@ class _Source:
         ):
             return DataSourceError(f"no dataset found in '{shown}'")
         if self._tmp is not None:
-            message = message.replace(_redact(path or self.path), shown)
-            message = message.replace(_redact(self._tmp.name), shown)
+            resolved = path or self.path
+            message = message.replace(resolved, shown).replace(_redact(resolved), shown)
+            message = message.replace(self._tmp.name, shown)
             if shown not in message:
                 message = f"'{shown}': {message}"
-        return DataSourceError(message)
+        return DataSourceError(_redact(message))
 
     def layer_names(self) -> list[str]:
         """The dataset's layers, in its order.

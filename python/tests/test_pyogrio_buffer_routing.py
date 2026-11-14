@@ -93,6 +93,23 @@ def test_malformed_zip_buffer_resolution_names_the_input(read, named):
     assert "terrio-pyogrio-" not in message
 
 
+@pytest.mark.parametrize("read", [tpg.read_dataframe, tpg.read_info, tpg.list_layers])
+def test_malformed_zip_upload_redacts_credential_like_filename(read):
+    """Redact the final constructor error after replacing raw temporary paths.
+
+    Args:
+        read: Public pyogrio entry point.
+    """
+    source = io.BytesIO(b"PK\x03\x04broken")
+    source.name = "broken#sig=PRIVATE.zip"
+    with pytest.raises(DataSourceError) as caught:
+        read(source)
+    message = str(caught.value)
+    assert "broken#<redacted>" in message
+    assert "PRIVATE" not in message
+    assert "terrio-pyogrio-" not in message
+
+
 @pytest.mark.parametrize("read", [tpg.read_dataframe, tpg.list_layers])
 @pytest.mark.parametrize(
     "suffix,data",
