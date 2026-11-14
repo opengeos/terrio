@@ -120,13 +120,47 @@ chunks, reversed source columns, and a 400-grad longitude period. Regional and
 multi-turn source placement rules remain separate.
 
 `python scripts/conformance.py DATA --only longitude-period --strict` requires
-eight real Natural Earth country-coverage comparisons. The same values stored
+twelve real Natural Earth country-coverage comparisons. The same values stored
 from 0° and from 180° W agree within 1e-8. Nearest, average and chunk-dependent
 bilinear match GDAL 3.12.1 within 1e-6. Stable bilinear uses per-pixel scales and
 differs from GDAL's chunk sampling by up to 0.411959 on this binary land field.
 Exact `sum` differs by up to 0.010157 per Mercator pixel, while both retain the
 same 15,276 source-pixel area total within 1e-6. These policy differences are
 reported explicitly rather than treated as pixel-identical agreement.
+
+`python/tests/test_warp_wider_source_placements.py` checks the 361-column source
+from #884: its crossing 2-degree pixel sums to 20. Distinguishable edge values
+check every area method under both sampling policies, with increasing and
+decreasing source longitudes. The preferred placement keeps its existing
+greatest-overlap rule; only the uncovered part uses another placement, clipped
+to exclude duplicate longitudes. Quantiles retain their existing sample-count
+policy, while average, RMS and mode retain coverage weights.
+
+Four Natural Earth comparisons match independent column-area integrals and
+Terrio's single-turn control within absolute 1e-9. Against GDAL 3.12.1, average
+agrees within 1e-9; GDAL's approximate sum weights differ by up to 0.02785515
+(a 0.03 absolute bound), rather than providing pixel-identical agreement.
+The extra stored column duplicates the first column, so either preferred copy
+represents the same field. These are
+included in `longitude-period`. Rust tests independently check fractional clips
+of tilted quadrilaterals within 1e-12 and require bit-for-bit equality between
+whole-window and two strip-based sums. Loopback HTTP tests measure range traffic
+under both grid policies: 1,916,928 bytes in two requests from a 9,749,624-byte
+COG. Source windows remain rectangular and can span the
+source's full longitude width, while retaining a bounded latitude window.
+
+Nodata mode-tie regressions require source-column order after ownership clipping,
+even when the preferred placement is at the high-column edge. Sources of 721 and
+1081 columns exercise complete preferred placements under every area method and
+both sampling policies. Chunk-dependent area windows include the final fractional
+column of that placement, as stable windows do.
+
+A 10,801 by 512 UInt16, three-turn local source uses one lazy reader and requests
+749,632 decoded pixel bytes under either sampling policy. At a 262,144-byte planning
+budget it makes 12 strip reads, versus one read at 64 MB. Measured local debug
+warps, including opening that reader, took about 9 to 11 ms with the tight budget;
+timings are observations, not test thresholds. These counts measure decoded read
+requests, not filesystem traffic or a total-process memory ceiling.
 
 `python/tests/test_warp_regional_longitudes.py` checks all 14 resamplers under both
 grid policies for a Pacific source stored past 180 degrees and a rounded near-full world.

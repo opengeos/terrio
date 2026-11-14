@@ -3434,7 +3434,11 @@ impl WarpContext<'_> {
                 }
             }
         }
-        if self.resampling == Resampling::Sum && !self.translation {
+        // A wider geographic source can choose a complete placement beyond the raw
+        // sampled span, even when no second placement is needed. Area methods must
+        // include that placement too, rather than clipping away its final column.
+        let wide_area = self.resampling.is_area_based() && self.longitude_turn().is_some_and(|turn| sw > turn && x1 - x0 > turn / 2.0);
+        if (self.resampling == Resampling::Sum || wide_area) && !self.translation {
             // Sampled edges do not bound a strongly curved or folded transformation. Include
             // every exact footprint corner, in the same batches as the kernel (RPCs depend on
             // their batch). Planning precedes memory-limit splitting, so retain only a fixed
@@ -3455,13 +3459,13 @@ impl WarpContext<'_> {
                 }
             }
             // Regional longitude images can put the continuous footprint outside the
-            // raw sampled span. Include the same shifted quadrilaterals the sum kernel
-            // integrates. Recompute rows y and y + 1 for each output row, retaining
+            // raw sampled span. Include the same shifted quadrilaterals the kernels
+            // use. Recompute rows y and y + 1 for each output row, retaining
             // two bounded corner rows without reading pixels.
             let images = self.global_longitude_turn().is_none()
                 && self.longitude_turn().is_some_and(|turn| {
                     let overlaps = (-x1 / turn).floor() + 1.0 <= ((sw - x0) / turn).ceil() - 1.0;
-                    sw <= turn && overlaps && (x1 - x0 > turn / 2.0 || x1 < 0.0 || x0 > sw)
+                    overlaps && (x1 - x0 > turn / 2.0 || x1 < 0.0 || x0 > sw)
                 });
             if images {
                 let batch = SUM_CORNER_BATCH - 1;
@@ -4056,10 +4060,12 @@ impl WarpContext<'_> {
     /// most two do on a source no wider than a turn: two when it meets the source on both sides
     /// of the cut, as near both edges of a source of every longitude, one when it meets it on one
     /// side, and none when it lies beside it. A source wider than a turn holds some longitudes
-    /// twice: there, the footprint is moved once, by the turns that put the most of it on the
-    /// source. Full-turn sources also move continuous footprints across their stored edge,
-    /// including a cut at zero longitude and warps within the source CRS. Regional sources
-    /// also take equivalent continuous footprints; wider sources retain their existing rules.
+    /// twice: the placement covering the most of the footprint comes first, then another
+    /// placement if needed. Consumers clip the second with [`Self::footprint_clip`] so no
+    /// longitude is counted twice. Full-turn sources also move continuous footprints across
+    /// their stored edge, including a cut at zero longitude and warps within the source CRS.
+    /// Regional sources also take equivalent continuous footprints; wider sources retain their
+    /// existing rules for continuous footprints.
     fn footprint_moves(&self, xs: &mut [f64], centre: (f64, f64)) -> [Option<f64>; 2] {
         let Some(turn) = self.longitude_turn() else {
             return [Some(0.0), None];
@@ -4078,8 +4084,17 @@ impl WarpContext<'_> {
         let meeting = (first..first.saturating_add(3)).map(|k| k as f64 * turn).filter(|s| meets(*s));
         if w > turn * (1.0 + 1e-10) {
             let on = |s: f64| (x1 + s).min(w) - (x0 + s).max(0.0);
-            let best = meeting.reduce(|b, s| if on(s) > on(b) || (on(s) == on(b) && s.abs() < b.abs()) { s } else { b });
-            return [Some(best.unwrap_or(0.0)), None];
+            let best = meeting.clone().reduce(|b, s| if on(s) > on(b) || (on(s) == on(b) && s.abs() < b.abs()) { s } else { b });
+            let best = best.unwrap_or(0.0);
+            let extra = (on(best) < x1 - x0)
+                .then(|| {
+                    meeting.clone().find(|s| {
+                        let (left, right) = self.footprint_clip(*s, best);
+                        *s != best && (x1 + s).min(right) > (x0 + s).max(left)
+                    })
+                })
+                .flatten();
+            return [Some(best), extra];
         }
         debug_assert!(meeting.clone().count() <= 2, "a footprint across the cut meets a source no wider than a turn at most twice");
         let mut moves = [None; 2];
@@ -4090,6 +4105,19 @@ impl WarpContext<'_> {
             moves[0] = Some(0.0);
         }
         moves
+    }
+
+    /// Source columns owned by a placement, excluding longitudes held by the first placement.
+    /// On a source no wider than a turn the placements already have disjoint coverage.
+    fn footprint_clip(&self, shift: f64, first: f64) -> (f64, f64) {
+        let width = self.src_w as f64;
+        if shift > first {
+            (0.0, width.min(shift - first))
+        } else if shift < first {
+            ((width + shift - first).max(0.0), width)
+        } else {
+            (f64::NEG_INFINITY, f64::INFINITY)
+        }
     }
 
     /// The area-based methods other than `sum` (average, mode, min, max, quantiles, RMS): each
@@ -4139,7 +4167,11 @@ impl WarpContext<'_> {
                 // Each part's columns, and its bounds along x.
                 let (mut parts, mut count) = ([(0, 0, 0.0, 0.0); 2], 0);
                 for s in moves.into_iter().flatten() {
-                    let (fx0, fx1) = (ax + s - sxo, bx + s - sxo);
+                    let (left, right) = self.footprint_clip(s, moves[0].unwrap());
+                    let (fx0, fx1) = ((ax + s).max(left) - sxo, (bx + s).min(right) - sxo);
+                    if fx0 > fx1 {
+                        continue;
+                    }
                     if !meets(fx0, fx1, sw) {
                         continue;
                     }
@@ -4152,6 +4184,8 @@ impl WarpContext<'_> {
                     parts[count] = (ix0, ix1, xmin, xmax);
                     count += 1;
                 }
+                // Ownership is decided in placement order; mode ties use source-column order.
+                parts[..count].sort_unstable_by_key(|part| part.0);
                 let parts = &parts[..count];
                 if parts.is_empty() {
                     continue;
@@ -4346,10 +4380,10 @@ impl WarpContext<'_> {
         }
         let moves = self.footprint_moves(&mut xs, ((c.dx + i) as f64 + 0.5, (c.dy + row) as f64 + 0.5));
         // In the pixels of the chunk's source window.
-        let mut parts = moves
-            .into_iter()
-            .flatten()
-            .filter_map(|s| SumFootprint::new(std::array::from_fn(|j| (xs[j] + s - sxo, ys[j] - syo)), c.sw, c.sh));
+        let mut parts = moves.into_iter().flatten().filter_map(|s| {
+            let (left, right) = self.footprint_clip(s, moves[0].unwrap());
+            SumFootprint::new_clipped(std::array::from_fn(|j| (xs[j] + s - sxo, ys[j] - syo)), c.sw, c.sh, (left - sxo, right - sxo))
+        });
         let mut footprint = parts.next()?;
         footprint.next = parts.next().map(Box::new);
         Some(footprint)
@@ -4539,8 +4573,19 @@ enum Shares {
 impl SumFootprint {
     /// The footprint of the quadrilateral `q`, whose corners are finite, on a window of `sw` x `sh`
     /// pixels; None when its bounds hold none of the window's pixels.
+    #[cfg(test)]
     fn new(q: [(f64, f64); 4], sw: usize, sh: usize) -> Option<Self> {
+        Self::new_clipped(q, sw, sh, (0.0, sw as f64))
+    }
+
+    /// Clips the quadrilateral to the placement's owned columns before computing pixel shares.
+    fn new_clipped(q: [(f64, f64); 4], sw: usize, sh: usize, clip: (f64, f64)) -> Option<Self> {
         let (x0, x1) = q.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| (lo.min(p.0), hi.max(p.0)));
+        let unclipped = x0 >= clip.0 && x1 <= clip.1;
+        let (x0, x1) = (x0.max(clip.0), x1.min(clip.1));
+        if x0 >= x1 {
+            return None;
+        }
         let (y0, y1) = q.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| (lo.min(p.1), hi.max(p.1)));
         let (swf, shf) = (sw as f64, sh as f64);
         // The window's pixels within the quadrilateral's bounds.
@@ -4554,7 +4599,7 @@ impl SumFootprint {
             || (q[0].0 == q[1].0 && q[2].0 == q[3].0 && q[0].1 == q[3].1 && q[1].1 == q[2].1);
         // The paths of a quadrilateral inside the window: a pixel turned by a few degrees, as a
         // change of CRS turns it, and one within 2 x 2 source pixels.
-        let inside = x0 >= 0.0 && y0 >= 0.0 && x1 <= swf && y1 <= shf;
+        let inside = unclipped && x0 >= 0.0 && y0 >= 0.0 && x1 <= swf && y1 <= shf;
         let shares = if rectangle {
             Shares::Rectangle
         } else if let Some(clean) = inside.then(|| CleanBlock::new(&q, cols, rows)).flatten() {
@@ -4564,7 +4609,14 @@ impl SumFootprint {
         } else {
             // In the block's own coordinates, as the other paths compute: the same in every
             // chunk, whichever source pixel the chunk's window starts at.
-            Shares::General(QuadEdges::new(&q.map(|(x, y)| (x - cols.0 as f64, y - rows.0 as f64)), nx, ny))
+            let mut edges = QuadEdges::new(&q.map(|(x, y)| (x - cols.0 as f64, y - rows.0 as f64)), nx, ny);
+            // Vertical clipping edges contribute no signed area to the x-integral. Restrict
+            // the original edges instead, including a fractional first or last column.
+            for edge in edges.edges.iter_mut().flatten() {
+                edge.lo = edge.lo.max(x0 - cols.0 as f64);
+                edge.hi = edge.hi.min(x1 - cols.0 as f64);
+            }
+            Shares::General(edges)
         };
         Some(Self { x: (x0, x1), y: (y0, y1), cols, rows, shares, next: None })
     }
@@ -6295,6 +6347,131 @@ mod tests {
                 let label = format!("grid_invariant {grid_invariant}, {memory_limit} bytes");
                 assert!(reads > 1, "{label}: {reads} reads");
                 assert_eq!(strips.to_bits(), whole.to_bits(), "{label}: {strips}, not {whole}");
+            }
+        }
+    }
+
+    /// A wider-than-turn source supplies both parts once, in memory and from bounded strips.
+    /// The expected areas are analytic; GDAL 3.12.1 is the comparison reference.
+    #[test]
+    fn wider_source_placements_cover_the_missing_area_without_duplicates() {
+        let dir = tempfile::tempdir().unwrap();
+        let value = |c: usize, r: usize| {
+            let edge = match c {
+                0 => 2.0,
+                1 => 4.0,
+                359 => 8.0,
+                360 => 1000.0,
+                _ => 1.0,
+            };
+            edge + r as f64 * 0.01
+        };
+        let source = typed_raster(DataType::F64, 361, 200, [-180.5, 1., 0., 10., 0., -0.05], 4326, value);
+        let path = dir.path().join("wide.tif").to_str().unwrap().to_string();
+        crate::write_raster_dataset(&source, &path, &Default::default()).unwrap();
+        let expected = (0..200).fold(0.0, |s, r| s + value(0, r) + value(1, r) + 0.5 * value(359, r));
+        for grid_invariant in [true, false] {
+            let options = WarpOptions {
+                dst_srs: Some(SpatialRef::parse("+proj=longlat +datum=WGS84 +lon_0=180").unwrap()),
+                dst_transform: Some([-1., 2.5, 0., 10., 0., -10.]),
+                size: Some((1, 1)),
+                output_type: Some(DataType::F64),
+                resampling: Resampling::Sum,
+                grid_invariant,
+                ..Default::default()
+            };
+            let whole = warp(&[&source], &options).unwrap().raster.data.to_f64_vec()[0];
+            assert!((whole - expected).abs() < 1e-9, "{grid_invariant}: {whole} != {expected}");
+            for memory_limit in [64e6, 100_000., 20_000.] {
+                let mut lazy = crate::open_raster_lazy(&path).unwrap();
+                let mut counted = Counted { raster: &mut lazy, reads: Vec::new() };
+                let out = warp_sources(&mut [&mut counted], &WarpOptions { memory_limit, ..options.clone() }).unwrap();
+                let got = out.raster.data.to_f64_vec()[0];
+                assert_eq!(got.to_bits(), whole.to_bits(), "{grid_invariant}, {memory_limit}: {got} != {whole}");
+                if memory_limit < 1e6 {
+                    assert!(counted.reads.len() > 1, "must exercise strips");
+                }
+            }
+        }
+    }
+
+    /// A three-turn file retains bounded strip reads under a 256 KiB planning budget.
+    #[test]
+    fn multi_turn_sum_planning_keeps_bounded_strips() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = typed_raster(DataType::U16, 10_801, 512, [-180.05, 0.1, 0., 25.6, 0., -0.1], 4326, |col, row| {
+            if (3599..=3601).contains(&col) { 1.0 } else { (1 + (col * 37 + row * 19) % 60000) as f64 }
+        });
+        let path = dir.path().join("three-turns.tif").to_str().unwrap().to_string();
+        crate::write_raster_dataset(&source, &path, &Default::default()).unwrap();
+        for grid_invariant in [true, false] {
+            for memory_limit in [64e6, 262_144.] {
+                let options = WarpOptions {
+                    dst_srs: Some(SpatialRef::parse("+proj=longlat +datum=WGS84 +lon_0=180").unwrap()),
+                    dst_transform: Some([-0.1, 0.2, 0., 5., 0., -10.]),
+                    size: Some((1, 1)),
+                    output_type: Some(DataType::F64),
+                    resampling: Resampling::Sum,
+                    grid_invariant,
+                    memory_limit,
+                    ..Default::default()
+                };
+                let start = std::time::Instant::now();
+                let mut reader = crate::open_raster_lazy(&path).unwrap();
+                let mut counted = Counted { raster: &mut reader, reads: Vec::new() };
+                let result = warp_sources(&mut [&mut counted], &options).unwrap();
+                let value = result.raster.data.to_f64_vec()[0];
+                assert!((value - 200.0).abs() < 1e-8, "{grid_invariant}: {value}");
+                let bytes: usize = counted.reads.iter().map(|(_, pixels)| pixels * 2).sum();
+                assert!(bytes < 10_801 * 512, "read less than half of the source's UInt16 pixel bytes");
+                if memory_limit < 1e6 {
+                    assert!(counted.reads.len() > 1, "must read in strips");
+                } else {
+                    assert_eq!(counted.reads.len(), 1);
+                }
+                eprintln!(
+                    "multi-turn reads: invariant={grid_invariant}, budget={memory_limit}, reads={}, decoded_bytes={bytes}, elapsed={:?}",
+                    counted.reads.len(),
+                    start.elapsed()
+                );
+            }
+        }
+    }
+
+    /// Vertical placement clips retain the exact area of tilted quadrilaterals in every row.
+    #[test]
+    fn clipped_sum_footprints_keep_fractional_column_areas() {
+        let q = [(0.1, 0.2), (3.8, 0.6), (3.3, 4.7), (0.6, 4.1)];
+        for clip in [(0.0, 2.25), (1.75, 4.0)] {
+            let footprint = SumFootprint::new_clipped(q, 4, 5, clip).unwrap();
+            let mut areas = Vec::new();
+            footprint.shares(footprint.rows, &mut areas);
+            // Independently clip the polygon at each vertical boundary, then use the
+            // pixel-clipping oracle shared by the other exact-area tests.
+            let mut polygon = q.to_vec();
+            for (boundary, sign) in [(clip.0, 1.0), (clip.1, -1.0)] {
+                let mut clipped = Vec::new();
+                for i in 0..polygon.len() {
+                    let (a, b) = (polygon[i], polygon[(i + 1) % polygon.len()]);
+                    let (da, db) = ((a.0 - boundary) * sign, (b.0 - boundary) * sign);
+                    if da >= 0.0 {
+                        clipped.push(a);
+                    }
+                    if (da >= 0.0) != (db >= 0.0) {
+                        let t = da / (da - db);
+                        clipped.push((boundary, a.1 + t * (b.1 - a.1)));
+                    }
+                }
+                polygon = clipped;
+            }
+            let nx = footprint.cols.1 - footprint.cols.0;
+            for row in footprint.rows.0..footprint.rows.1 {
+                let mut strip = Vec::new();
+                footprint.shares((row, row + 1), &mut strip);
+                assert_eq!(strip, areas[(row - footprint.rows.0) * nx..(row + 1 - footprint.rows.0) * nx]);
+                for (i, col) in (footprint.cols.0..footprint.cols.1).enumerate() {
+                    assert!((strip[i] - clipped_area(&polygon, col as f64, row as f64)).abs() < 1e-12);
+                }
             }
         }
     }

@@ -52,6 +52,44 @@ const SQUARES = {
   ],
 };
 
+test("wider-source area footprints use two nonduplicated placements", () => {
+  const values = Float64Array.from({length: 3610}, (_, i) => ({0: 2, 1: 4, 359: 8, 360: 1000})[i % 361] ?? 1);
+  const source = terrio.rasterFromArray(values, 361, 10, [-180.5, 1, 0, 10, 0, -1], "EPSG:4326");
+  const ones = terrio.rasterFromArray(new Float64Array(3610).fill(1), 361, 10, [-180.5, 1, 0, 10, 0, -1], "EPSG:4326");
+  for (const gridInvariant of [true, false]) {
+    const options = {tSrs: "+proj=longlat +datum=WGS84 +lon_0=180", ts: [1, 1], ot: "Float64", gridInvariant};
+    assert.ok(Math.abs(terrio.warp(ones, {...options, te: [-1, 0, 1, 10], resampling: "sum"}).readBand(1)[0] - 20) < 1e-9);
+    for (const [resampling, expected] of [["sum", 100], ["average", 4], ["rms", Math.sqrt(20.8)], ["min", 2], ["max", 8], ["mode", 2], ["med", 4], ["q1", 2], ["q3", 8]]) {
+      const value = terrio.warp(source, {...options, te: [-1, 0, 1.5, 10], resampling}).readBand(1)[0];
+      assert.ok(Math.abs(value - expected) < 1e-9, `${gridInvariant}, ${resampling}: ${value} != ${expected}`);
+    }
+  }
+});
+
+test("wider-source mode ties retain source-column order", () => {
+  const values = new Float64Array(361).fill(-999);
+  values[358] = 8;
+  values[1] = 2;
+  const source = terrio.rasterFromArray(values, 361, 1, [-180.5, 1, 0, 1, 0, -1], "EPSG:4326", -999);
+  for (const gridInvariant of [true, false]) {
+    const output = terrio.warp(source, {tSrs: "+proj=longlat +datum=WGS84 +lon_0=180",
+      te: [-2, 0, 1, 1], ts: [1, 1], resampling: "mode", gridInvariant, ot: "Float64", dstNodata: -999});
+    assert.equal(output.readBand(1)[0], 2);
+  }
+});
+
+test("multi-turn source area windows include the complete preferred placement", () => {
+  for (const width of [721, 1081]) {
+    const source = terrio.rasterFromArray(Float64Array.from({length: width * 10}, (_, i) => i % width),
+      width, 10, [-180.5, 1, 0, 10, 0, -1], "EPSG:4326");
+    for (const gridInvariant of [true, false]) for (const [resampling, expected] of [["sum", 7200], ["average", 360]]) {
+      const output = terrio.warp(source, {tSrs: "+proj=longlat +datum=WGS84 +lon_0=180",
+        te: [-1, 0, 1, 10], ts: [1, 1], resampling, gridInvariant, ot: "Float64"});
+      assert.ok(Math.abs(output.readBand(1)[0] - expected) < 1e-9);
+    }
+  }
+});
+
 test("version", () => {
   assert.match(terrio.version(), /^\d+\.\d+\.\d+/);
 });
