@@ -141,7 +141,9 @@ impl CatalogInput {
         Self(Input::Raster(raster))
     }
     /// Defers decoding/opening an encoded file until spatial selection. Bytes holding a VRT
-    /// resolve none of its references from the file system or network, as with an upload.
+    /// resolve references only from the source map: an unmapped reference is refused with
+    /// `VRT source must be supplied in the source map`, never read from the file system or
+    /// network, as with an upload.
     pub fn bytes(bytes: Vec<u8>, name: impl Into<String>) -> Self {
         Self(Input::Bytes(bytes, name.into()))
     }

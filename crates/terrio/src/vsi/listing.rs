@@ -47,6 +47,16 @@ pub(crate) fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
         redacted.push_str(&url[copied..]);
         std::borrow::Cow::Owned(redacted)
     };
+    // Schemeless locations (`/vsiaz/c/b?sig=…`, a mistyped path) keep a query that names no
+    // credential, since `?` is legal in a file name; one that names a credential is private.
+    // Checked first, so a URL later in the same message cannot end redaction early. A `?`
+    // after a URL's scheme is left to the URL rule below, which redacts the whole suffix.
+    let scheme = out.find("://").unwrap_or(out.len());
+    if let Some(question) = out[..scheme].find('?')
+        && names_credential(&out[question + 1..scheme])
+    {
+        return format!("{}?<redacted>", &out[..question]).into();
+    }
     if let Some(scheme) = out.find("://")
         && let Some(end) = out[scheme + 3..].find(['?', '#'])
     {
@@ -55,20 +65,24 @@ pub(crate) fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
         let end = scheme + 3 + end;
         return format!("{}{}<redacted>", &out[..end], &out[end..end + 1]).into();
     }
-    // Schemeless locations (`/vsiaz/c/b?sig=…`, a mistyped path) keep a query that names no
-    // credential, since `?` is legal in a file name; one that names a credential is private.
-    if let Some((base, query)) = out.split_once('?') {
-        // Parameter names as a server reads them too: `%6Bey=` is `key=`.
-        let lower = format!("{query}&{}", percent_decoded(query)).to_ascii_lowercase();
-        const KEYS: [&str; 9] = ["sig", "token=", "credential=", "api_key=", "apikey=", "access_key=", "key=", "password=", "passwd="];
-        if KEYS.iter().any(|key| lower.contains(key)) {
-            return format!("{base}?<redacted>").into();
-        }
-    }
     out
 }
 
-/// `text` with its `%XX` escapes decoded (invalid escapes and non-UTF-8 bytes kept as they are).
+/// Whether a schemeless query (and any text after it, up to a URL) names a credential parameter. Names are
+/// compared whole, percent-decoded as a server reads them (`%73ig` is `sig`), so a file name
+/// such as `what?design.tif` is not one. Parameters split at `&`, `;`, `?`, `#` and whitespace,
+/// so a later location in the same message is checked too.
+fn names_credential(query: &str) -> bool {
+    const NAMES: [&str; 12] =
+        ["sig", "key", "apikey", "api_key", "access_key", "auth", "password", "passwd", "pwd", "secret", "token", "credential"];
+    const PARTS: [&str; 5] = ["signature", "token", "secret", "password", "credential"];
+    query.split(|c: char| matches!(c, '&' | ';' | '?' | '#') || c.is_whitespace()).any(|parameter| {
+        let name = percent_decoded(parameter.split('=').next().unwrap_or_default()).to_ascii_lowercase();
+        NAMES.contains(&name.as_str()) || PARTS.iter().any(|part| name.contains(part))
+    })
+}
+
+/// `text` with its `%XX` escapes decoded. Invalid escapes are kept; decoded bytes that are not UTF-8 become U+FFFD.
 fn percent_decoded(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -834,6 +848,17 @@ mod tests {
         assert_eq!(super::redact_url("/no/such/file.zip?sig=PRIVATE"), "/no/such/file.zip?<redacted>");
         assert_eq!(super::redact_url("/vsiaz/c/b.tif?%73ig=PRIVATE"), "/vsiaz/c/b.tif?<redacted>");
         assert_eq!(super::redact_url("/data/what?.tif"), "/data/what?.tif");
+        assert_eq!(super::redact_url("/data/what?design.tif"), "/data/what?design.tif");
+        assert_eq!(super::redact_url("/data/a?signal=1&monkey=2"), "/data/a?signal=1&monkey=2");
+        assert_eq!(super::redact_url("/vsiaz/c/b.tif?client_secret=PRIVATE"), "/vsiaz/c/b.tif?<redacted>");
+        assert_eq!(super::redact_url("/vsiaz/c/b.tif?X-Amz-Signature=PRIVATE"), "/vsiaz/c/b.tif?<redacted>");
+        // A credential before a URL in the same message is not exposed by the URL rule.
+        assert_eq!(super::redact_url("/vsiaz/c/b.tif?sig=PRIVATE then https://h/x?y"), "/vsiaz/c/b.tif?<redacted>");
+        assert_eq!(super::redact_url("/vsiaz/c/b.tif?sig=PRIVATE&next=https://host/a?x=1"), "/vsiaz/c/b.tif?<redacted>");
+        // A benign schemeless query before a URL keeps both rules: the URL's query is redacted.
+        assert_eq!(super::redact_url("/data/a?x then https://h/f?sig=PRIVATE"), "/data/a?x then https://h/f?<redacted>");
+        // A `?` inside a URL fragment never shortens the URL rule's redaction.
+        assert_eq!(super::redact_url("https://h/a#frag?sig=PRIVATE"), "https://h/a#<redacted>");
     }
 
     #[test]
