@@ -1,5 +1,6 @@
 """Additional native HTTPS roots preserve verification, scoped trust and range reads."""
 
+import os
 import shutil
 import ssl
 import subprocess
@@ -38,6 +39,8 @@ def https_source(tmp_path_factory):
         dict: Certificate paths, servers and source pixels.
     """
     if shutil.which("openssl") is None:
+        if os.environ.get("CI") == "true":
+            pytest.fail("OpenSSL is required for the HTTPS trust checks in CI")
         pytest.skip("OpenSSL is required to generate test certificates")
     root = tmp_path_factory.mktemp("additional-ca")
     for name in ["ca", "wrong"]:

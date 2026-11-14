@@ -301,11 +301,13 @@ with rio.Env(TERRIO_HTTP_CAINFO="/absolute/path/to/organization-ca.pem"):
 
 `GDAL_HTTP_CAINFO` is an alias with the usual scoped-option precedence. Rust
 callers can set `http::HttpOptions::ca_bundle` for an explicit client. Missing,
-empty or malformed explicit bundles refuse HTTPS rather than falling back to
-default trust; plain HTTP is unaffected. Use absolute paths. Bundles are read
+empty or malformed explicit bundle files refuse HTTPS rather than falling back to
+default trust; plain HTTP is unaffected. Blank option values are treated as unset,
+while an existing empty file is an error. Use absolute paths. Bundles are read
 when a connection pool is built, and different bundle paths use separate pools.
 To rotate a bundle in a running process, configure a new path; editing a file
-does not reload existing pools. This option does not read `SSL_CERT_FILE`,
+does not reload existing pools, including a pool retaining a failed bundle load.
+This option does not read `SSL_CERT_FILE`,
 `SSL_CERT_DIR` or the system trust store. Browser/WebAssembly reads continue to
 use the browser's TLS and trust configuration.
 
