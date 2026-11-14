@@ -179,6 +179,7 @@ class _Source:
     def __init__(self, path_or_buffer):
         self._tmp = None
         self._names = None
+        self._archive_input = False
         filename = None
         if isinstance(path_or_buffer, Path):
             path_or_buffer = str(path_or_buffer)
@@ -201,12 +202,49 @@ class _Source:
             spilled = os.path.join(self._tmp.name, name)
             with open(spilled, "wb") as f:
                 f.write(data)
-            self.path, self.shapefiles = _local_path(spilled)
+            self._archive_input = spilled.lower().endswith(".zip")
+            try:
+                self.path, self.shapefiles = _local_path(spilled)
+            except DataSourceError as error:
+                refusal = self.refusal(error, spilled)
+                self.close()
+                raise refusal from None
             return
         if not isinstance(path_or_buffer, str):
             path_or_buffer = str(path_or_buffer)
         self._input_name = path_or_buffer
+        self._archive_input = path_or_buffer.lower().endswith((".zip", ".zip!", ".zip/"))
         self.path, self.shapefiles = _local_path(path_or_buffer)
+
+    def refusal(self, error: Exception, path: str | None = None) -> DataSourceError:
+        """Name a native refusal after the caller's input rather than its temporary copy.
+
+        Args:
+            error: The archive-resolution, native read or layer-inspection error.
+            path: The selected layer or spilled input's resolved path, if available.
+
+        Returns:
+            DataSourceError: A refusal retaining its reason and caller-visible location.
+        """
+        shown = _redact(self._input_name)
+        if isinstance(error, _terrio_errors.NotFoundError):
+            return DataSourceError(f"{shown}: No such file or directory")
+        message = str(error)
+        # Match the native refusal category narrowly: other UnsupportedError values can
+        # contain useful malformed-member diagnostics. Buffer routing tests pin this bridge.
+        if message.startswith("no dataset found in ") or (
+            self._archive_input
+            and isinstance(error, _terrio_errors.UnsupportedError)
+            and "format not recognized by terrio's drivers" in message
+        ):
+            return DataSourceError(f"no dataset found in '{shown}'")
+        if self._tmp is not None:
+            resolved = path or self.path
+            message = message.replace(resolved, shown).replace(_redact(resolved), shown)
+            message = message.replace(self._tmp.name, shown)
+            if shown not in message:
+                message = f"'{shown}': {message}"
+        return DataSourceError(_redact(message))
 
     def layer_names(self) -> list[str]:
         """The dataset's layers, in its order.
@@ -220,14 +258,8 @@ class _Source:
             else:
                 try:
                     self._names = _terrio.list_layers(self.path)
-                except _terrio_errors.NotFoundError as e:
-                    raise DataSourceError(f"{_redact(self.path)}: No such file or directory") from e
                 except _terrio_errors.TerrioError as e:
-                    if str(e).startswith("no dataset found in "):
-                        raise DataSourceError(
-                            f"no dataset found in '{_redact(self._input_name)}'"
-                        ) from e
-                    raise DataSourceError(str(e)) from e
+                    raise self.refusal(e) from e
             if not self._names and self.path.lower().endswith((".zip", ".kmz", ".xlsx")):
                 raise DataSourceError(f"no dataset found in '{_redact(self._input_name)}'")
         return self._names
@@ -294,13 +326,13 @@ def _open(
     max_features: int | None,
     read_geometry: bool,
     layer: str | None = None,
+    *,
+    source: _Source,
 ) -> dict:
     try:
         return _terrio.pyogrio_read(path, skip_features, max_features, read_geometry, layer)
-    except _terrio_errors.NotFoundError as e:
-        raise DataSourceError(f"{_redact(path)}: No such file or directory") from e
     except _terrio_errors.TerrioError as e:
-        raise DataSourceError(str(e)) from e
+        raise source.refusal(e, path) from e
 
 
 # ----------------------------------------------------------------------------------------------
@@ -562,7 +594,7 @@ def read_source(
         if source.shapefiles is not None:
             # The shapefile is that layer alone.
             path, layer_name = dict(source.shapefiles[1])[layer_name], None
-    raw = _open(path, skip_features, max_features or None, read_geometry, layer_name)
+    raw = _open(path, skip_features, max_features or None, read_geometry, layer_name, source=source)
     if layer is None:
         names = source.layer_names() if source.shapefiles is not None else raw["layers"]
         if len(names) > 1:

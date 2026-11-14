@@ -664,20 +664,27 @@ fn judged_by_content(name: &str, generic: bool) -> bool {
 /// downloaded, an archive member extracted, to a temporary directory), naming the dataset as the
 /// caller gave it rather than the copy, whose path means nothing to the caller and would show a
 /// server's directories to the clients of a service that passes the message on. The copy's path
-/// is replaced with the dataset's name (without its query, which may hold a signature); a message
+/// is replaced with the dataset's name (remote queries omitted, literal local archive punctuation
+/// retained); a message
 /// that names neither starts with it. The variant is kept, but for the format libraries' errors,
 /// which become [`Error::InvalidData`] (the Python class they already map to).
 fn naming_dataset(e: Error, path: &str, local: &str) -> Error {
     if vfs::Location::parse(path).is_local() {
         return e;
     }
-    let shown = path.trim().split(['?', '#']).next().unwrap_or(path);
-    let named = |m: String| if m.contains(local) { m.replace(local, shown) } else { format!("'{shown}': {m}") };
+    let local_archive = matches!(vfs::Location::parse(path), vfs::Location::Zip { archive, .. } if archive.is_local());
+    let shown = if local_archive {
+        crate::vsi::redact_diagnostic_location(path.trim())
+    } else {
+        path.trim().split(['?', '#']).next().unwrap_or(path).into()
+    };
+    let named = |m: String| if m.contains(local) { m.replace(local, &shown) } else { format!("'{shown}': {m}") };
     match e {
         Error::Unsupported(m) => Error::Unsupported(named(m)),
         Error::ResourceLimit(m) => Error::ResourceLimit(named(m)),
         Error::InvalidData(m) => Error::InvalidData(named(m)),
-        Error::InvalidArgument(m) => Error::InvalidArgument(named(m)),
+        // Option/layer-selection errors need no source prefix, but must not retain a copy's path.
+        Error::InvalidArgument(m) => Error::InvalidArgument(m.replace(local, &shown)),
         Error::Raster(e) => Error::InvalidData(named(e.to_string())),
         Error::Vector(e) => Error::InvalidData(named(e.to_string())),
         Error::Io(e) => Error::Io(std::io::Error::new(e.kind(), named(e.to_string()))),
@@ -994,7 +1001,7 @@ pub(crate) fn open_vector_native(path: &str, options: &VectorOpenOptions) -> Res
         return Ok(finish_vector(layers, path, VectorDriver::Parquet));
     }
     let local = vfs::resolve(path)?;
-    match open_local(local.as_str(), options)? {
+    match open_local(local.as_str(), options).map_err(|e| naming_dataset(e, path, local.as_str()))? {
         Dataset::Vector(v) => {
             check_archive_layers(path, &v.layers)?;
             Ok(v)
@@ -1052,7 +1059,8 @@ fn list_layers_native(path: &str) -> Result<Vec<String>> {
     if VectorDriver::for_extension(local.as_str()) == Some(VectorDriver::GPKG) {
         #[cfg(feature = "sqlite")]
         {
-            let names = crate::drivers::vector::gpkg_read::list_layers(local.as_str())?;
+            let names =
+                crate::drivers::vector::gpkg_read::list_layers(local.as_str()).map_err(|e| naming_dataset(e, path, local.as_str()))?;
             if names.is_empty() {
                 check_archive_layers(path, &[])?;
             }
@@ -1061,7 +1069,7 @@ fn list_layers_native(path: &str) -> Result<Vec<String>> {
         #[cfg(not(feature = "sqlite"))]
         return Err(Error::disabled("sqlite"));
     }
-    let dataset = open_vector_native(local.as_str(), &VectorOpenOptions::default())?;
+    let dataset = open_vector_native(local.as_str(), &VectorOpenOptions::default()).map_err(|e| naming_dataset(e, path, local.as_str()))?;
     Ok(dataset.layers.into_iter().map(|l| l.name).collect())
 }
 
@@ -2481,6 +2489,44 @@ mod tests {
         );
         assert!(matches!(&error, crate::Error::ResourceLimit(_)));
         assert_eq!(error.to_string(), "budget exceeded at https://example.com/input.hdf");
+    }
+
+    #[test]
+    fn vector_archive_member_refusals_name_the_requested_location() {
+        use std::io::Write;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("input #2.zip");
+        let members: &[&str] = if cfg!(feature = "sqlite") { &["README.txt", "broken.gpkg"] } else { &["README.txt"] };
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        for member in members {
+            writer.start_file(*member, zip::write::SimpleFileOptions::default()).unwrap();
+            writer.write_all(b"not a dataset").unwrap();
+        }
+        writer.finish().unwrap();
+        for member in members {
+            let requested = format!("/vsizip/{}/{member}", path.display());
+            let open_error = super::open_vector_native(&requested, &Default::default()).unwrap_err().to_string();
+            let list_error = super::list_layers_native(&requested).unwrap_err().to_string();
+            for error in [open_error, list_error] {
+                assert!(error.contains(&requested), "{error}");
+                assert!(!error.contains("terrio-"), "an extraction path leaked: {error}");
+            }
+        }
+    }
+
+    #[test]
+    fn local_archive_diagnostic_names_keep_literal_punctuation() {
+        for suffix in [" #2", "?notes"] {
+            let requested = format!("/vsizip/input{suffix}.zip/roads.gpkg");
+            let error = super::naming_dataset(crate::Error::Unsupported("bad format in /private/copy".into()), &requested, "/private/copy");
+            assert_eq!(error.to_string(), format!("bad format in {requested}"));
+        }
+        let error = super::naming_dataset(
+            crate::Error::Unsupported("bad format in /private/copy".into()),
+            "/vsizip/input.zip?sig=PRIVATE/roads.gpkg",
+            "/private/copy",
+        );
+        assert_eq!(error.to_string(), "bad format in /vsizip/input.zip?<redacted>");
     }
 
     #[cfg(feature = "grib")]
