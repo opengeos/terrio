@@ -437,7 +437,15 @@ impl Step {
     fn apply(&self, v: [f64; 3], t: Option<f64>, reverse: bool) -> Option<[f64; 3]> {
         match self {
             Step::Cart { ell, inv } => {
-                Some(if *inv != reverse { from_cart(ell, v[0], v[1], v[2]) } else { to_cart(ell, v[0], v[1], v[2]) })
+                if *inv != reverse {
+                    Some(from_cart(ell, v[0], v[1], v[2]))
+                } else if v[1].abs() > crate::math::HALFPI + 1e-12 {
+                    // PROJ refuses a latitude beyond a pole (`fwd_prepare`), rather than folding
+                    // it back across the pole; the next operation is tried, then the ballpark.
+                    None
+                } else {
+                    Some(to_cart(ell, v[0], v[1], v[2]))
+                }
             }
             Step::Helmert { t: tr, r, scale, pivot, inv, rates } => {
                 let inverse = *inv != reverse;
@@ -593,9 +601,14 @@ impl Op {
         (e - w) * (n.to_radians().sin() - s.to_radians().sin())
     }
 
-    /// Whether the op's area holds a point in degrees.
+    /// Whether the op's area holds a point in degrees. A world-wide area holds every point, even
+    /// one beyond a pole or the antimeridian, as PROJ's `proj_create_crs_to_crs` leaves such an
+    /// operation's source bounds unbounded.
     pub fn contains(&self, lon: f64, lat: f64) -> bool {
         let [w, s, e, n] = self.bounds;
+        if w <= -180.0 && e >= 180.0 && s <= -90.0 && n >= 90.0 {
+            return true;
+        }
         if lat < s || lat > n {
             return false;
         }
