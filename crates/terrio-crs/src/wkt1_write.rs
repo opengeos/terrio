@@ -449,7 +449,10 @@ pub fn describe(s: &str) -> Option<Described> {
         ellipsoid: ellipsoid.map(|e| e.2),
         a: ell.a,
         rf: num(inverse_flattening(&p, &ell, ellipsoid.and_then(|e| e.3))).parse().unwrap_or(0.0),
-        pm: p.str("pm").map(|v| v.parse().ok().or_else(|| prime_meridian(v)).unwrap_or(0.0)).unwrap_or(0.0),
+        pm: p
+            .str("pm")
+            .and_then(|v| v.parse().ok().or_else(|| prime_meridian(v)).or_else(|| p.angle("pm").map(f64::to_degrees)))
+            .unwrap_or(0.0),
         towgs84: p.list("towgs84").filter(|v| v.len() == 3 || v.len() == 7),
     })
 }

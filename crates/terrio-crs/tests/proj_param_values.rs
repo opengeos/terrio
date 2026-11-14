@@ -108,6 +108,26 @@ fn scale_factors_retain_the_documented_numeric_alias_policy() {
     }
 }
 
+/// GeoKey prime meridians follow GDAL 3.12.1 and PROJ 9.8.1's angular parsing.
+#[test]
+fn angular_prime_meridians_survive_geokey_round_trips() {
+    // PROJ 9.8.1 reads these angular values in degrees; GeoKey 2061 stores degrees too.
+    for (value, degrees) in
+        [("0.5r", 0.5f64.to_degrees()), ("0.5R", 0.5f64.to_degrees()), ("2d20'14.025\"E", 2.0 + 20.0 / 60.0 + 14.025 / 3600.0)]
+    {
+        let crs = SpatialRef::parse(&format!("+proj=longlat +ellps=WGS84 +pm={value}")).unwrap();
+        let keys = crs.to_geokeys().unwrap();
+        let pm = keys.doubles.iter().find(|(key, _)| *key == 2061).unwrap().1;
+        assert!((pm - degrees).abs() < 1e-12, "{value}: {pm}");
+        let tags = keys.encode().unwrap();
+        let back = SpatialRef::from_geokeys(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).unwrap();
+        let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+        let expected = terrio_crs::Transformer::new(&wgs84, &crs).unwrap().transform(10.0, 10.0).unwrap();
+        let actual = terrio_crs::Transformer::new(&wgs84, &back).unwrap().transform(10.0, 10.0).unwrap();
+        assert!((actual.0 - expected.0).abs() < 1e-12 && (actual.1 - expected.1).abs() < 1e-12, "{value}: {actual:?} != {expected:?}");
+    }
+}
+
 /// A WKT's `PROJ4` extension is taken as PROJ takes it, its unreadable values as their defaults:
 /// PROJ 9.8.1 (pyproj 3.8.0) transforms (10°E, 10°N) to (1113194.9079327357, 1105854.833234372)
 /// with `+lat_ts=abc` read as 0, not the WKT's standard parallel of 10°.
@@ -138,9 +158,13 @@ fn a_wkt_s_proj4_extension_is_read_as_proj_reads_it() {
     assert!(terrio_crs::Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &crs).is_err());
     // PROJ 9.8.1 cannot construct a transformation from any of these extensions; the WKT
     // nodes must not silently replace the refused conversion.
-    for extension in
-        ["+proj=eqc +k_0=0 +ellps=WGS84", "+proj=eqc +to_meter=-1 +ellps=WGS84", "+proj=eqc +geoidgrids=@null +vto_meter=0 +ellps=WGS84"]
-    {
+    for extension in [
+        "+proj=eqc +k_0=0 +ellps=WGS84",
+        "+proj=eqc +to_meter=-1 +ellps=WGS84",
+        "+proj=eqc +geoidgrids=@null +vto_meter=0 +ellps=WGS84",
+        "+proj=eqc +ellps=WGS84 +towgs84=1,2,3,4,5,6",
+        "+proj=eqc +ellps=WGS84 +towgs84=1,2",
+    ] {
         let refused = wkt.replace("+proj=eqc +lat_ts=abc +ellps=WGS84 +units=m", extension);
         let crs = SpatialRef::parse(&refused).unwrap();
         assert!(terrio_crs::Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &crs).is_err(), "{extension}");

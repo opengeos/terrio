@@ -346,6 +346,7 @@ impl Def {
 
     /// The definition of a WKT's `PROJ4` extension. PROJ takes the extension as it is, without
     /// refusing the values it cannot read (`+lat_ts=abc` is read as 0), so this does not either.
+    /// Numeric scale/unit checks and the three-or-seven-element datum-list requirement still apply.
     pub fn from_proj_extension(s: &str) -> Result<Self> {
         Self::from_params(s, &Params::parse(s))
     }
