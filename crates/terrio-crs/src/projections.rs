@@ -3435,7 +3435,7 @@ struct Natearth;
 const NATEARTH_A: [f64; 5] = [0.8707, -0.131979, -0.013791, 0.003971, -0.001529];
 const NATEARTH_B: [f64; 5] = [1.007226, 0.015085, -0.044475, 0.028874, -0.005916];
 /// The northing of the pole line.
-const NATEARTH_MAX_Y: f64 = 0.8707 * 0.52 * PI;
+const NATEARTH_MAX_Y: f64 = NATEARTH_A[0] * 0.52 * PI;
 
 /// The east-west scale of Natural Earth at latitude φ, from φ².
 fn natearth_x(phi2: f64) -> f64 {
@@ -3465,7 +3465,8 @@ impl Proj for Natearth {
         }
         let [b0, b1, b2, b3, b4] = NATEARTH_B;
         let (c0, c1, c2, c3, c4) = (b0, 3.0 * b1, 7.0 * b2, 9.0 * b3, 11.0 * b4);
-        // A northing past the pole line is read on it, as in PROJ.
+        // A northing past the pole line is read on it, as in PROJ. The latitude found there is
+        // about 90.0045°, past the pole, which PROJ returns too; a later projection refuses it.
         let y = y.clamp(-NATEARTH_MAX_Y, NATEARTH_MAX_Y);
         let mut yc = y;
         let mut converged = false;
