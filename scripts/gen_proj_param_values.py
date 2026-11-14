@@ -1,12 +1,12 @@
 """Generate crates/terrio-crs/tests/data/proj_param_values.tsv: whether PROJ 9.8.1 accepts a CRS
 given by a PROJ string with a parameter value it may not read.
 
-Each method terrio-crs has without the wbprojection fallback gets, in turn, each common
-parameter set to `abc` (no number) and to `0.5r` (radians), and the scale factor set to values
-PROJ may refuse (0, -1, `abc` and 2). A few strings test `+to_meter`, `+units`,
-`+vto_meter`, `+towgs84` and `+pm`. Each row is the PROJ string and `OK` or `ERR`: PROJ's
-`proj_create` of it with `+type=crs`, on WGS 84 (`+ellps=WGS84`) unless it gives `+a`, `+rf` or
-`+R`.
+Each method terrio-crs has without the wbprojection fallback gets, in turn, each common parameter
+set to `abc` (no number) and to `0.5r` (radians), and the scale factor set to values PROJ may
+refuse (0, -1, `abc` and 2). A few strings test `+to_meter`, `+units`, `+vto_meter`, `+towgs84`,
+`+pm`, the ellipsoid with `+a`, and geocentric units. Each row is the PROJ string and `OK` or
+`ERR`: PROJ's `proj_create` of it with `+type=crs`, on WGS 84 (`+ellps=WGS84`) unless it gives
+`+a`, `+rf` or `+R`.
 
 Usage: PROJ_NETWORK=OFF python scripts/gen_proj_param_values.py (needs pyproj 3.8.0)
 """
@@ -112,6 +112,10 @@ PARAMS = [
     "h",
     "zone",
     "azi",
+    "b",
+    "f",
+    "es",
+    "e",
     "pm",
     "a",
     "rf",
@@ -125,6 +129,16 @@ EXTRA = [
     "+proj=eqc +units=m +to_meter=0",
     "+proj=eqc +units=ft +to_meter=abc",
     "+proj=tmerc +units=ft +to_meter=abc",
+    "+proj=eqc +to_meter=nan",
+    "+proj=tmerc +k_0=nan",
+    "+proj=tmerc +k_0=0.5r +k=0.9996",
+    "+proj=geocent +units=m +to_meter=abc",
+    "+proj=geocent +to_meter=abc",
+    "+proj=eqc +a=6378137 +b=abc",
+    "+proj=eqc +a=6378137 +f=abc",
+    "+proj=eqc +a=6378137 +es=abc",
+    "+proj=eqc +a=6378137 +e=abc",
+    "+proj=eqc +a=6378137 +rf=abc",
     "+proj=ortho +alpha=abc +towgs84=1,abc,3",
     "+proj=longlat +to_meter=0",
     "+proj=eqc +geoidgrids=x.gtx +vto_meter=0",

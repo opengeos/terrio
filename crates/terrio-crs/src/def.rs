@@ -344,6 +344,12 @@ impl Def {
         }
     }
 
+    /// The definition of a WKT's `PROJ4` extension. PROJ takes the extension as it is, without
+    /// refusing the values it cannot read (`+lat_ts=abc` is read as 0), so this does not either.
+    fn from_proj_extension(s: &str) -> Result<Self> {
+        Self::from_params(s, &Params::parse(s))
+    }
+
     /// [`Self::from_proj`] of parsed parameters.
     fn from_params(s: &str, p: &Params) -> Result<Self> {
         p.validate_quoting()?;
@@ -381,14 +387,16 @@ impl Def {
         // as PROJ's `pj_ell_set` applies it: `+f=0 +datum=WGS84` is the sphere of WGS 84's
         // semi-major axis (ESRI's orthographic CRSs).
         if !p.has("a") && !p.has("R") {
-            // In PROJ's order of precedence: `+rf`, `+f`, `+es`, `+e`, then `+b`.
+            // In PROJ's order of precedence: `+rf`, `+f`, `+es`, `+e`, then `+b`. PROJ ignores an
+            // unreadable `+f`, `+es` or `+e` here, without `+a`.
+            let shape = |key: &str| p.str(key).and_then(|v| v.trim().parse::<f64>().ok());
             if let Some(rf) = p.f64("rf") {
                 ell = Ell::from_a_rf(ell.a, rf);
-            } else if let Some(f) = p.f64("f") {
+            } else if let Some(f) = shape("f") {
                 ell = Ell::from_a_rf(ell.a, if f == 0.0 { 0.0 } else { 1.0 / f });
-            } else if let Some(es) = p.f64("es") {
+            } else if let Some(es) = shape("es") {
                 ell = Ell::from_a_es(ell.a, es);
-            } else if let Some(e) = p.f64("e") {
+            } else if let Some(e) = shape("e") {
                 ell = Ell::from_a_es(ell.a, e * e);
             } else if let Some(b) = p.f64("b") {
                 ell = Ell::from_a_b(ell.a, b);
@@ -447,13 +455,13 @@ impl Def {
         };
         // The scale factor, refused as PROJ's `pj_init` refuses it: when the number its value
         // starts with (`atof`) is not above 0 ("Invalid value for k"); NaN passes that test. The
-        // value used is the whole value's number, as the writers read it (1 for `0.5r`, where
-        // PROJ takes 0.5 or refuses it).
+        // value used is the first of `+k_0` and `+k` that is a number, as the writers read it (so
+        // `+k_0=0.5r` is 1, where PROJ takes 0.5 or refuses it).
         let k = p.str("k_0").or_else(|| p.str("k"));
         if k.is_some_and(|k| !leading_number(k).is_some_and(|k| k > 0.0 || k.is_nan())) {
             return Err(Error::Crs(format!("invalid value for k_0 in '{s}'")));
         }
-        setup.k0 = k.and_then(|k| k.trim().parse().ok()).unwrap_or(1.0);
+        setup.k0 = p.f64("k_0").or_else(|| p.f64("k")).unwrap_or(1.0);
         // As PROJ refuses it ("Invalid value for lat_0: |lat_0| should be <= 90°").
         if setup.phi0.abs() > HALFPI + 1e-12 || !setup.phi0.is_finite() {
             return Err(Error::Crs(format!("invalid lat_0: {} degrees", setup.phi0.to_degrees())));
@@ -464,7 +472,7 @@ impl Def {
         let o_proj = p.str("o_proj").filter(|_| ob_tran.is_some());
         let rot = ob_tran.filter(|_| o_proj.is_some_and(is_longlat));
         let geocentric = name == "geocent";
-        if geocentric && p.has("to_meter") && explicit_to_meter.is_none() {
+        if geocentric && units.is_none() && p.has("to_meter") && explicit_to_meter.is_none() {
             return Err(Error::Crs("invalid geocentric to_meter".into()));
         }
         if geocentric && p.has("axis") {
@@ -635,7 +643,7 @@ impl Def {
     /// The coordinate conversion of a WKT definition (without its datum), when terrio reads it: that
     /// of its `PROJ4` extension when it has one.
     pub fn wkt_conversion(w: &str) -> Option<Self> {
-        if let Some(d) = super::proj4_extension(w).and_then(|p| Self::from_proj(&p).ok()) {
+        if let Some(d) = super::proj4_extension(w).and_then(|p| Self::from_proj_extension(&p).ok()) {
             return Some(d);
         }
         let root = wkt1::parse(w)?;
@@ -708,7 +716,7 @@ impl Def {
         }
         // A WKT 1 extended with its PROJ string (`EXTENSION["PROJ4", ...]`) is that PROJ string,
         // whatever its nodes say, as GDAL and PROJ read it.
-        if let Some(d) = super::proj4_extension(w).and_then(|p| Self::from_proj(&p).ok()) {
+        if let Some(d) = super::proj4_extension(w).and_then(|p| Self::from_proj_extension(&p).ok()) {
             return Ok(d);
         }
         // Text the WKT reader refuses (not WKT, nested deeper or longer than GDAL reads) is not

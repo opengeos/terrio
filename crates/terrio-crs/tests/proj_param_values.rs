@@ -12,17 +12,20 @@ use terrio_crs::SpatialRef;
 /// - the parameters every method reads (`lat_0`, `lon_0`, `x_0`, `y_0`, and a scale factor that
 ///   starts with a positive number, such as `0.5r`): PROJ checks them only for the methods its CRS
 ///   parser maps them for, and terrio reads an unreadable one as absent (a scale factor of 1), as
-///   before, so it accepts some strings PROJ refuses;
+///   before, so it accepts some strings PROJ refuses; likewise `+f`, `+es` and `+e` without `+a`,
+///   which PROJ ignores when unreadable but for `etmerc`, `utm` and `ups`;
 /// - checks of terrio's own for methods PROJ keeps as PROJ strings (`isea`, `murd2`, `tissot`,
-///   `tpers`), which refuse an unreadable value PROJ ignores;
+///   `tpers`), and of a geocentric CRS's ellipsoid, which refuse an unreadable value PROJ ignores;
 /// - Krovak's azimuth, which terrio does not read.
 fn known(definition: &str, proj_accepts: bool) -> bool {
     let key = definition.rsplit(" +").next().and_then(|p| p.split_once('=')).map_or("", |(k, _)| k);
     let method = definition.split_whitespace().next().unwrap_or("").trim_start_matches("+proj=");
-    let lenient = matches!(key, "lat_0" | "lon_0" | "x_0" | "y_0" | "k_0" | "k");
+    let own_ellipsoid = definition.contains(" +a=");
+    let lenient = matches!(key, "lat_0" | "lon_0" | "x_0" | "y_0" | "k_0" | "k") || (matches!(key, "f" | "es" | "e") && !own_ellipsoid);
     let own = match method {
         "isea" | "tpers" => matches!(key, "azi" | "lat_0" | "lon_0"),
         "murd2" | "tissot" => matches!(key, "lat_1" | "lat_2"),
+        "geocent" => matches!(key, "f" | "es" | "e"),
         _ => false,
     };
     let krovak_azimuth = matches!(method, "krovak" | "mod_krovak") && key == "alpha";
@@ -44,7 +47,7 @@ fn unreadable_parameter_values_are_refused_as_proj_refuses_them() {
         }
     }
     // A change in the strings that still differ shows here.
-    assert_eq!(differing, 301, "strings that still differ from PROJ");
+    assert_eq!(differing, 318, "strings that still differ from PROJ");
 }
 
 #[test]
@@ -59,4 +62,18 @@ fn radians_and_units_are_read_as_proj_reads_them() {
     // `+units` before `+to_meter`, as PROJ reads them: feet.
     assert!((params("+proj=eqc +units=ft +to_meter=0.5 +ellps=WGS84").to_meter - 0.3048).abs() < 1e-15);
     assert!((params("+proj=eqc +to_meter=0.5 +ellps=WGS84").to_meter - 0.5).abs() < 1e-15);
+    // A scale factor `+k_0` that is not a number gives way to `+k`, in the projection as in the
+    // parameters written for it.
+    assert_eq!(params("+proj=tmerc +k_0=0.5r +k=0.9996 +ellps=WGS84").k_0, 0.9996);
+}
+
+/// A WKT's `PROJ4` extension is taken as PROJ takes it, its unreadable values as their defaults:
+/// PROJ 9.8.1 (pyproj 3.8.0) transforms (10°E, 10°N) to (1113194.9079327357, 1105854.833234372)
+/// with `+lat_ts=abc` read as 0, not the WKT's standard parallel of 10°.
+#[test]
+fn a_wkt_s_proj4_extension_is_read_as_proj_reads_it() {
+    let wkt = r#"PROJCS["x",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Equirectangular"],PARAMETER["standard_parallel_1",10],PARAMETER["central_meridian",0],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1],EXTENSION["PROJ4","+proj=eqc +lat_ts=abc +ellps=WGS84 +units=m"]]"#;
+    let t = terrio_crs::Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &SpatialRef::parse(wkt).unwrap()).unwrap();
+    let (x, y) = t.transform(10.0, 10.0).unwrap();
+    assert!((x - 1113194.9079327357).abs() < 1e-6 && (y - 1105854.833234372).abs() < 1e-6, "{x} {y}");
 }
