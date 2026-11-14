@@ -954,12 +954,19 @@ mod tests {
         assert_eq!(map_waiting(100, 8, |i| Ok(i * 2)).unwrap(), (0..100).map(|i| i * 2).collect::<Vec<_>>());
         for at_once in [1, 4] {
             let calls = AtomicUsize::new(0);
+            let observed = std::sync::Mutex::new(Vec::new());
             let r: crate::Result<Vec<usize>> = map_waiting(1000, at_once, |i| {
                 calls.fetch_add(1, Ordering::SeqCst);
-                if i < 3 { Ok(i) } else { Err(crate::Error::InvalidArgument(format!("call {i}"))) }
+                if i < 3 {
+                    Ok(i)
+                } else {
+                    observed.lock().unwrap().push(i);
+                    Err(crate::Error::InvalidArgument(format!("call {i}")))
+                }
             });
+            let observed = observed.into_inner().unwrap();
             assert!(
-                matches!(&r, Err(crate::Error::InvalidArgument(m)) if m.strip_prefix("call ").and_then(|s| s.parse::<usize>().ok()).is_some_and(|i| (3..3 + at_once).contains(&i))),
+                matches!(&r, Err(crate::Error::InvalidArgument(m)) if m.strip_prefix("call ").and_then(|s| s.parse::<usize>().ok()).is_some_and(|i| observed.contains(&i))),
                 "{:?}",
                 r.err()
             );
