@@ -320,6 +320,24 @@ Flags combined with `+init=epsg:N`, except the metadata switches `no_defs` and
 `wktext`, are refused because that path cannot apply overrides to the registry
 definition. Use an expanded `+proj` definition when changing these flags.
 
+A value PROJ 9.8.1 cannot read is refused when the method reads the parameter, as PROJ refuses it
+("invalid value for lat_ts"), rather than taken as the parameter's default: `+proj=eqc +lat_ts=abc`,
+an unreadable `+towgs84` or `+pm`. A `towgs84` list must contain three or seven numeric values.
+An angular value ending in `r` is in radians (`0.5r`, as PROJ's `dmstor` reads it).
+Scale factors retain their existing numeric-alias policy: `+k_0=0.5r` uses a fully
+numeric `+k`, or defaults to 1 without one. This is a known difference from PROJ, which can use
+the numeric prefix 0.5 or reject the CRS, depending on the method.
+A known `+units` comes before `+to_meter`, as in PROJ, and `+to_meter` is otherwise
+refused unless it is a positive number (likewise `+vunits` and `+vto_meter` with `+geoidgrids`); a
+scale factor is refused unless the number it starts with is positive (NaN passes, as in PROJ).
+`lat_0`, `lon_0`, `x_0` and `y_0`, and `+f`, `+es` and `+e` without `+a`, stay as lenient as before:
+PROJ checks them only for some methods, and an unreadable one is read as absent. A WKT's `PROJ4`
+extension is read as PROJ reads it, without refusing the values PROJ's CRS parser would (an
+unreadable `+lat_ts` is read as 0); the scale-factor, `+to_meter` and `towgs84`-length refusals
+still apply.
+Unreadable `towgs84` lists inside extensions retain the legacy behavior of ignoring the
+shift. This differs from PROJ, which can interpret unreadable elements as zero.
+
 PROJ parameter exports preserve projection-specific standard parallels, the
 validated PROJ4 extension of a WKT definition (including Web Mercator), named
 PROJ datums and explicit WKT `TOWGS84` operations. A datum with neither a PROJ

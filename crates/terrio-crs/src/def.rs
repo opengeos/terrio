@@ -19,7 +19,7 @@
 
 use super::datum::{self, Op};
 use super::math::*;
-use super::params::Params;
+use super::params::{Params, parse_dms};
 use super::projections::{self, Proj, Setup};
 use super::rotation::{ObTran, Rotation};
 use super::{SpatialRef, epsg, wkt1, wkt2};
@@ -336,6 +336,24 @@ impl Def {
     /// transformation.
     pub fn from_proj(s: &str) -> Result<Self> {
         let p = Params::parse(s);
+        let d = Self::from_params(s, &p);
+        // As PROJ refuses a value it cannot read, where terrio would take the parameter's default.
+        match p.invalid().into_iter().find(|key| !unchecked(&p, key)) {
+            Some(key) => Err(Error::Crs(format!("invalid value for {key} in '{s}'"))),
+            None => d,
+        }
+    }
+
+    /// The definition of a WKT's `PROJ4` extension. PROJ takes the extension as it is, without
+    /// refusing the values it cannot read (`+lat_ts=abc` is read as 0), so this does not either.
+    /// Numeric scale/unit checks still apply. Fully numeric datum lists require three or seven
+    /// elements; unreadable lists retain the legacy behavior of ignoring the shift.
+    pub fn from_proj_extension(s: &str) -> Result<Self> {
+        Self::from_params(s, &Params::parse(s))
+    }
+
+    /// [`Self::from_proj`] of parsed parameters.
+    fn from_params(s: &str, p: &Params) -> Result<Self> {
         p.validate_quoting()?;
         p.validate_flags()?;
         if let Some(init) = p.str("init") {
@@ -365,20 +383,22 @@ impl Def {
             }
         }
 
-        let mut ell = datum::ellipsoid(&p).or_else(|| datum_name.and_then(datum_ellps).and_then(Ell::named)).unwrap_or_else(Ell::wgs84);
+        let mut ell = datum::ellipsoid(p).or_else(|| datum_name.and_then(datum_ellps).and_then(Ell::named)).unwrap_or_else(Ell::wgs84);
         let named = ell;
         // A shape without `+a` (or `+R`) changes the shape of the named ellipsoid or the datum's,
         // as PROJ's `pj_ell_set` applies it: `+f=0 +datum=WGS84` is the sphere of WGS 84's
         // semi-major axis (ESRI's orthographic CRSs).
         if !p.has("a") && !p.has("R") {
-            // In PROJ's order of precedence: `+rf`, `+f`, `+es`, `+e`, then `+b`.
+            // In PROJ's order of precedence: `+rf`, `+f`, `+es`, `+e`, then `+b`. PROJ ignores an
+            // unreadable `+f`, `+es` or `+e` here, without `+a`.
+            let shape = |key: &str| p.str(key).and_then(|v| v.trim().parse::<f64>().ok());
             if let Some(rf) = p.f64("rf") {
                 ell = Ell::from_a_rf(ell.a, rf);
-            } else if let Some(f) = p.f64("f") {
+            } else if let Some(f) = shape("f") {
                 ell = Ell::from_a_rf(ell.a, if f == 0.0 { 0.0 } else { 1.0 / f });
-            } else if let Some(es) = p.f64("es") {
+            } else if let Some(es) = shape("es") {
                 ell = Ell::from_a_es(ell.a, es);
-            } else if let Some(e) = p.f64("e") {
+            } else if let Some(e) = shape("e") {
                 ell = Ell::from_a_es(ell.a, e * e);
             } else if let Some(b) = p.f64("b") {
                 ell = Ell::from_a_b(ell.a, b);
@@ -404,7 +424,13 @@ impl Def {
             Some((n, d)) => Some(n.parse::<f64>().ok()? / d.parse::<f64>().ok()?),
             None => v.parse().ok(),
         });
-        let to_meter = explicit_to_meter.or_else(|| p.str("units").and_then(unit_to_meter)).unwrap_or(1.0);
+        // A unit terrio knows (`+units`) first, as PROJ reads them: `+to_meter` only without it,
+        // and then a positive number ("Invalid value for to_meter").
+        let units = p.str("units").and_then(unit_to_meter);
+        if units.is_none() && p.has("to_meter") && explicit_to_meter.is_none_or(|v| !v.is_finite() || v <= 0.0) {
+            return Err(Error::Crs(format!("invalid value for to_meter in '{s}'")));
+        }
+        let to_meter = units.or(explicit_to_meter).unwrap_or(1.0);
         let explicit_pm = p.str("pm").and_then(|v| {
             v.parse::<f64>()
                 .ok()
@@ -421,27 +447,36 @@ impl Def {
             _ => *b"en",
         };
         let mut setup = Setup {
-            p: &p,
+            p,
             ell,
             phi0: p.angle("lat_0").unwrap_or(0.0),
             lam0: p.angle("lon_0").unwrap_or(0.0),
-            k0: p.f64("k_0").or_else(|| p.f64("k")).unwrap_or(1.0),
+            k0: 1.0,
             x0: p.f64("x_0").unwrap_or(0.0),
             y0: p.f64("y_0").unwrap_or(0.0),
         };
+        // Check the first present scale key as PROJ's `pj_init` does: its numeric prefix (`atof`)
+        // must be above 0 ("Invalid value for k"); NaN passes that test. The value used is the
+        // first of `+k_0` and `+k` that is a number, as the writers read it, and must also pass
+        // that check. Without a numeric `+k`, `+k_0=0.5r` is 1, where PROJ takes 0.5 or refuses it.
+        let k = p.str("k_0").or_else(|| p.str("k"));
+        if k.is_some_and(|k| !leading_number(k).is_some_and(|k| k > 0.0 || k.is_nan())) {
+            return Err(Error::Crs(format!("invalid value for k_0 in '{s}'")));
+        }
+        setup.k0 = p.f64("k_0").or_else(|| p.f64("k")).unwrap_or(1.0);
+        if setup.k0 <= 0.0 {
+            return Err(Error::Crs(format!("invalid value for k_0 in '{s}'")));
+        }
         // As PROJ refuses it ("Invalid value for lat_0: |lat_0| should be <= 90°").
         if setup.phi0.abs() > HALFPI + 1e-12 || !setup.phi0.is_finite() {
             return Err(Error::Crs(format!("invalid lat_0: {} degrees", setup.phi0.to_degrees())));
         }
         let is_longlat = |n: &str| matches!(n, "longlat" | "latlong" | "lonlat" | "latlon");
         // `ob_tran`'s rotation, of a rotated-pole grid (`+o_proj=longlat`) or of a projection.
-        let ob_tran = if name == "ob_tran" { Some(Rotation::from_params(&p)?) } else { None };
+        let ob_tran = if name == "ob_tran" { Some(Rotation::from_params(p)?) } else { None };
         let o_proj = p.str("o_proj").filter(|_| ob_tran.is_some());
         let rot = ob_tran.filter(|_| o_proj.is_some_and(is_longlat));
         let geocentric = name == "geocent";
-        if geocentric && p.has("to_meter") && explicit_to_meter.is_none() {
-            return Err(Error::Crs("invalid geocentric to_meter".into()));
-        }
         if geocentric && p.has("axis") {
             let b = p.str("axis").unwrap_or("").as_bytes();
             let valid = b.len() == 3
@@ -572,7 +607,10 @@ impl Def {
             params: Some(Arc::new(params)),
         };
         // The datum transformation.
-        let towgs84 = p.list("towgs84").filter(|v| v.len() == 3 || v.len() == 7);
+        let towgs84 = p.list("towgs84");
+        if towgs84.as_ref().is_some_and(|v| v.len() != 3 && v.len() != 7) {
+            return Err(Error::Crs(format!("towgs84 needs 3 or 7 values in '{s}'")));
+        }
         let nadgrids = p.str("nadgrids").filter(|g| !g.split(',').all(|n| n.trim_start_matches('@') == "null"));
         if let Some(g) = nadgrids {
             d.ops = vec![Arc::new(Op::world(datum::nadgrids_steps(g)))];
@@ -595,8 +633,13 @@ impl Def {
             d.dynamic = e.dynamic;
         }
         if let Some(g) = p.str("geoidgrids") {
-            let to_meter =
-                p.str("vto_meter").and_then(|v| v.parse().ok()).or_else(|| p.str("vunits").and_then(unit_to_meter)).unwrap_or(1.0);
+            // `+vunits` first, then a positive `+vto_meter`, as PROJ reads them.
+            let vunits = p.str("vunits").and_then(unit_to_meter);
+            let vto_meter = p.str("vto_meter").map(|v| v.parse::<f64>().ok().filter(|v| v.is_finite() && *v > 0.0));
+            if vunits.is_none() && p.has("vto_meter") && vto_meter.flatten().is_none() {
+                return Err(Error::Crs(format!("invalid value for vto_meter in '{s}'")));
+            }
+            let to_meter = vunits.or(vto_meter.flatten()).unwrap_or(1.0);
             d.vertical = Some(Arc::new(Vertical::from_geoid_grids(g, to_meter)));
         }
         Ok(d)
@@ -605,8 +648,12 @@ impl Def {
     /// The coordinate conversion of a WKT definition (without its datum), when terrio reads it: that
     /// of its `PROJ4` extension when it has one.
     pub fn wkt_conversion(w: &str) -> Option<Self> {
-        if let Some(d) = super::proj4_extension(w).and_then(|p| Self::from_proj(&p).ok()) {
-            return Some(d);
+        if let Some(p) = super::proj4_extension(w) {
+            match Self::from_proj_extension(&p) {
+                Ok(d) => return Some(d),
+                Err(Error::Crs(message)) if message.starts_with("unsupported projection:") => {}
+                Err(_) => return None,
+            }
         }
         let root = wkt1::parse(w)?;
         let c = if wkt2::handles(&root) { wkt2::to_proj(&root).ok()? } else { wkt1::to_proj(&root)? };
@@ -677,9 +724,14 @@ impl Def {
             return Ok(d);
         }
         // A WKT 1 extended with its PROJ string (`EXTENSION["PROJ4", ...]`) is that PROJ string,
-        // whatever its nodes say, as GDAL and PROJ read it.
-        if let Some(d) = super::proj4_extension(w).and_then(|p| Self::from_proj(&p).ok()) {
-            return Ok(d);
+        // whatever its nodes say, as GDAL and PROJ read it. Unsupported methods retain the
+        // WKT-node fallback, but invalid values in a supported conversion must not fall through.
+        if let Some(p) = super::proj4_extension(w) {
+            match Self::from_proj_extension(&p) {
+                Ok(d) => return Ok(d),
+                Err(Error::Crs(message)) if message.starts_with("unsupported projection:") => {}
+                Err(error) => return Err(error),
+            }
         }
         // Text the WKT reader refuses (not WKT, nested deeper or longer than GDAL reads) is not
         // handed to wbprojection's parser either, whose recursion has no bound.
@@ -1210,9 +1262,76 @@ pub(crate) fn wkt_linear_unit(w: &str) -> Option<f64> {
     root.children("AXIS").find_map(|a| a.child("LENGTHUNIT")).and_then(|u| u.num(1))
 }
 
+/// Whether PROJ 9.8.1 leaves a parameter's value unchecked for a CRS's method, though terrio
+/// reads it: the methods its CRS parser keeps as PROJ strings (`murd2`, `tissot`, `isea`; terrio
+/// checks `tpers`'s itself), parameters outside the method's EPSG definition (`ortho`'s `alpha`, `ups`'s
+/// `lat_ts`), and `stere`'s `lat_ts` unless polar.
+fn unchecked(p: &Params, key: &str) -> bool {
+    let polar = || p.str("lat_0").and_then(parse_dms).is_some_and(|l| l.abs() == 90.0);
+    match p.str("proj").unwrap_or("") {
+        "murd2" | "tissot" => matches!(key, "lat_1" | "lat_2"),
+        "isea" => key == "azi",
+        "ortho" => key == "alpha",
+        "ups" => key == "lat_ts",
+        "stere" => key == "lat_ts" && !polar(),
+        _ => false,
+    }
+}
+
+/// The number a value starts with, as C's `atof` reads it (`0.5r` is 0.5); `None` without one.
+fn leading_number(v: &str) -> Option<f64> {
+    let v = v.trim_start();
+    let b = v.as_bytes();
+    let mut end = usize::from(matches!(b.first(), Some(b'+' | b'-')));
+    for word in ["infinity", "inf", "nan"] {
+        if v.get(end..end + word.len()).is_some_and(|s| s.eq_ignore_ascii_case(word)) {
+            return v[..end + word.len()].parse().ok();
+        }
+    }
+    while b.get(end).is_some_and(u8::is_ascii_digit) {
+        end += 1;
+    }
+    if b.get(end) == Some(&b'.') {
+        end += 1;
+        while b.get(end).is_some_and(u8::is_ascii_digit) {
+            end += 1;
+        }
+    }
+    if matches!(b.get(end), Some(b'e' | b'E')) {
+        let exponent = end;
+        end += 1;
+        if matches!(b.get(end), Some(b'+' | b'-')) {
+            end += 1;
+        }
+        let digits = end;
+        while b.get(end).is_some_and(u8::is_ascii_digit) {
+            end += 1;
+        }
+        if end == digits {
+            end = exponent;
+        }
+    }
+    v[..end].parse().ok()
+}
+
 #[cfg(test)]
 mod inverse_input_tests {
     use super::*;
+
+    #[test]
+    fn leading_numbers_allow_suffixes_and_special_values() {
+        for (value, expected) in [("0.5r", 0.5), (" -2.5e+2suffix", -250.0), ("1e+suffix", 1.0), (".5°", 0.5), ("2.3.4", 2.3)] {
+            assert_eq!(leading_number(value), Some(expected), "{value}");
+        }
+        for value in ["", "abc", "+", ".", "-e2", "é"] {
+            assert_eq!(leading_number(value), None, "{value}");
+        }
+        assert!(leading_number("-NaNtail").unwrap().is_nan());
+        assert_eq!(leading_number("+INFtail"), Some(f64::INFINITY));
+        assert_eq!(leading_number("-Infinitytail"), Some(f64::NEG_INFINITY));
+        assert_eq!(leading_number(&format!("0.5{}", "x".repeat(100_000))), Some(0.5));
+        assert_eq!(leading_number(&format!("{}x", "1".repeat(100_000))), Some(f64::INFINITY));
+    }
 
     #[test]
     fn inverse_refuses_nonfinite_coordinates_across_projection_kinds() {

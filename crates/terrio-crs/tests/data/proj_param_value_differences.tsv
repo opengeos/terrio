@@ -1,0 +1,320 @@
++proj=aea +lat_1=30 +lat_2=50 +lat_0=abc	ERR
++proj=aea +lat_1=30 +lat_2=50 +lon_0=abc	ERR
++proj=aea +lat_1=30 +lat_2=50 +x_0=0.5r	ERR
++proj=aea +lat_1=30 +lat_2=50 +x_0=abc	ERR
++proj=aea +lat_1=30 +lat_2=50 +y_0=0.5r	ERR
++proj=aea +lat_1=30 +lat_2=50 +y_0=abc	ERR
++proj=aeqd +lat_0=abc	ERR
++proj=aeqd +lon_0=abc	ERR
++proj=aeqd +x_0=0.5r	ERR
++proj=aeqd +x_0=abc	ERR
++proj=aeqd +y_0=0.5r	ERR
++proj=aeqd +y_0=abc	ERR
++proj=bonne +lat_1=40 +lon_0=abc	ERR
++proj=bonne +lat_1=40 +x_0=0.5r	ERR
++proj=bonne +lat_1=40 +x_0=abc	ERR
++proj=bonne +lat_1=40 +y_0=0.5r	ERR
++proj=bonne +lat_1=40 +y_0=abc	ERR
++proj=cass +lat_0=abc	ERR
++proj=cass +lon_0=abc	ERR
++proj=cass +x_0=0.5r	ERR
++proj=cass +x_0=abc	ERR
++proj=cass +y_0=0.5r	ERR
++proj=cass +y_0=abc	ERR
++proj=cea +k=2	ERR
++proj=cea +k_0=0.5r	ERR
++proj=cea +k_0=2	ERR
++proj=cea +lon_0=abc	ERR
++proj=cea +x_0=0.5r	ERR
++proj=cea +x_0=abc	ERR
++proj=cea +y_0=0.5r	ERR
++proj=cea +y_0=abc	ERR
++proj=col_urban +h=200 +lat_0=4.68 +lon_0=-74.14 +x_0=0.5r	ERR
++proj=col_urban +h=200 +lat_0=4.68 +lon_0=-74.14 +x_0=abc	ERR
++proj=col_urban +h=200 +lat_0=4.68 +lon_0=-74.14 +y_0=0.5r	ERR
++proj=col_urban +h=200 +lat_0=4.68 +lon_0=-74.14 +y_0=abc	ERR
++proj=col_urban +h=200 +lat_0=4.68 +lon_0=abc	ERR
++proj=col_urban +h=200 +lon_0=-74.14 +lat_0=abc	ERR
++proj=eck4 +lon_0=abc	ERR
++proj=eck4 +x_0=0.5r	ERR
++proj=eck4 +x_0=abc	ERR
++proj=eck4 +y_0=0.5r	ERR
++proj=eck4 +y_0=abc	ERR
++proj=eqc +lat_0=abc	ERR
++proj=eqc +lon_0=abc	ERR
++proj=eqc +x_0=0.5r	ERR
++proj=eqc +x_0=abc	ERR
++proj=eqc +y_0=0.5r	ERR
++proj=eqc +y_0=abc	ERR
++proj=eqdc +lat_1=30 +lat_2=50 +lat_0=abc	ERR
++proj=eqdc +lat_1=30 +lat_2=50 +lon_0=abc	ERR
++proj=eqdc +lat_1=30 +lat_2=50 +x_0=0.5r	ERR
++proj=eqdc +lat_1=30 +lat_2=50 +x_0=abc	ERR
++proj=eqdc +lat_1=30 +lat_2=50 +y_0=0.5r	ERR
++proj=eqdc +lat_1=30 +lat_2=50 +y_0=abc	ERR
++proj=eqearth +lon_0=abc	ERR
++proj=eqearth +x_0=0.5r	ERR
++proj=eqearth +x_0=abc	ERR
++proj=eqearth +y_0=0.5r	ERR
++proj=eqearth +y_0=abc	ERR
++proj=etmerc +e=abc	ERR
++proj=etmerc +es=abc	ERR
++proj=etmerc +f=abc	ERR
++proj=etmerc +k_0=0.5r	ERR
++proj=etmerc +lat_0=abc	ERR
++proj=etmerc +lon_0=abc	ERR
++proj=etmerc +x_0=0.5r	ERR
++proj=etmerc +x_0=abc	ERR
++proj=etmerc +y_0=0.5r	ERR
++proj=etmerc +y_0=abc	ERR
++proj=fouc_s +k_0=0.5r	ERR
++proj=fouc_s +x_0=0.5r	ERR
++proj=fouc_s +y_0=0.5r	ERR
++proj=gall +lon_0=abc	ERR
++proj=gall +x_0=0.5r	ERR
++proj=gall +x_0=abc	ERR
++proj=gall +y_0=0.5r	ERR
++proj=gall +y_0=abc	ERR
++proj=geocent +e=0.5r	OK
++proj=geocent +e=abc	OK
++proj=geocent +es=0.5r	OK
++proj=geocent +es=abc	OK
++proj=geocent +f=0.5r	OK
++proj=geocent +f=abc	OK
++proj=geos +h=35785831 +lon_0=abc	ERR
++proj=geos +h=35785831 +x_0=0.5r	ERR
++proj=geos +h=35785831 +x_0=abc	ERR
++proj=geos +h=35785831 +y_0=0.5r	ERR
++proj=geos +h=35785831 +y_0=abc	ERR
++proj=gnom +lat_0=abc	ERR
++proj=gnom +lon_0=abc	ERR
++proj=gnom +x_0=0.5r	ERR
++proj=gnom +x_0=abc	ERR
++proj=gnom +y_0=0.5r	ERR
++proj=gnom +y_0=abc	ERR
++proj=gstmerc +k_0=0.5r	ERR
++proj=gstmerc +lat_0=abc	ERR
++proj=gstmerc +lon_0=abc	ERR
++proj=gstmerc +x_0=0.5r	ERR
++proj=gstmerc +x_0=abc	ERR
++proj=gstmerc +y_0=0.5r	ERR
++proj=gstmerc +y_0=abc	ERR
++proj=healpix +k_0=0.5r	ERR
++proj=healpix +x_0=0.5r	ERR
++proj=healpix +y_0=0.5r	ERR
++proj=igh +lon_0=abc	ERR
++proj=igh +x_0=0.5r	ERR
++proj=igh +x_0=abc	ERR
++proj=igh +y_0=0.5r	ERR
++proj=igh +y_0=abc	ERR
++proj=isea +azi=abc	OK
++proj=isea +k_0=0.5r	ERR
++proj=isea +x_0=0.5r	ERR
++proj=isea +y_0=0.5r	ERR
++proj=krovak +alpha=abc	ERR
++proj=krovak +k_0=0.5r	ERR
++proj=krovak +lat_0=abc	ERR
++proj=krovak +lon_0=abc	ERR
++proj=krovak +x_0=0.5r	ERR
++proj=krovak +x_0=abc	ERR
++proj=krovak +y_0=0.5r	ERR
++proj=krovak +y_0=abc	ERR
++proj=labrd +lat_0=-18.9 +azi=18.9 +lon_0=abc	ERR
++proj=labrd +lat_0=-18.9 +lon_0=46.4 +azi=18.9 +k_0=0.5r	ERR
++proj=labrd +lat_0=-18.9 +lon_0=46.4 +azi=18.9 +x_0=0.5r	ERR
++proj=labrd +lat_0=-18.9 +lon_0=46.4 +azi=18.9 +x_0=abc	ERR
++proj=labrd +lat_0=-18.9 +lon_0=46.4 +azi=18.9 +y_0=0.5r	ERR
++proj=labrd +lat_0=-18.9 +lon_0=46.4 +azi=18.9 +y_0=abc	ERR
++proj=labrd +lon_0=46.4 +azi=18.9 +lat_0=abc	ERR
++proj=laea +lat_0=abc	ERR
++proj=laea +lon_0=abc	ERR
++proj=laea +x_0=0.5r	ERR
++proj=laea +x_0=abc	ERR
++proj=laea +y_0=0.5r	ERR
++proj=laea +y_0=abc	ERR
++proj=lcc +lat_1=30 +lat_2=50 +k_0=0.5r	ERR
++proj=lcc +lat_1=30 +lat_2=50 +lat_0=abc	ERR
++proj=lcc +lat_1=30 +lat_2=50 +lon_0=abc	ERR
++proj=lcc +lat_1=30 +lat_2=50 +x_0=0.5r	ERR
++proj=lcc +lat_1=30 +lat_2=50 +x_0=abc	ERR
++proj=lcc +lat_1=30 +lat_2=50 +y_0=0.5r	ERR
++proj=lcc +lat_1=30 +lat_2=50 +y_0=abc	ERR
++proj=mbtfps +k_0=0.5r	ERR
++proj=mbtfps +x_0=0.5r	ERR
++proj=mbtfps +y_0=0.5r	ERR
++proj=merc +k_0=0.5r	ERR
++proj=merc +lon_0=abc	ERR
++proj=merc +x_0=0.5r	ERR
++proj=merc +x_0=abc	ERR
++proj=merc +y_0=0.5r	ERR
++proj=merc +y_0=abc	ERR
++proj=mill +lon_0=abc	ERR
++proj=mill +x_0=0.5r	ERR
++proj=mill +x_0=abc	ERR
++proj=mill +y_0=0.5r	ERR
++proj=mill +y_0=abc	ERR
++proj=mod_krovak +alpha=abc	ERR
++proj=mod_krovak +k_0=0.5r	ERR
++proj=mod_krovak +lat_0=abc	ERR
++proj=mod_krovak +lon_0=abc	ERR
++proj=mod_krovak +x_0=0.5r	ERR
++proj=mod_krovak +x_0=abc	ERR
++proj=mod_krovak +y_0=0.5r	ERR
++proj=mod_krovak +y_0=abc	ERR
++proj=moll +lon_0=abc	ERR
++proj=moll +x_0=0.5r	ERR
++proj=moll +x_0=abc	ERR
++proj=moll +y_0=0.5r	ERR
++proj=moll +y_0=abc	ERR
++proj=murd2 +lat_1=30 +lat_2=50 +k_0=0.5r	ERR
++proj=murd2 +lat_1=30 +lat_2=50 +x_0=0.5r	ERR
++proj=murd2 +lat_1=30 +lat_2=50 +y_0=0.5r	ERR
++proj=murd2 +lat_1=30 +lat_2=abc	OK
++proj=murd2 +lat_2=50 +lat_1=abc	OK
++proj=natearth +lon_0=abc	ERR
++proj=natearth +x_0=0.5r	ERR
++proj=natearth +x_0=abc	ERR
++proj=natearth +y_0=0.5r	ERR
++proj=natearth +y_0=abc	ERR
++proj=nsper +h=3000000 +x_0=0.5r	ERR
++proj=nsper +h=3000000 +x_0=abc	ERR
++proj=nsper +h=3000000 +y_0=0.5r	ERR
++proj=nsper +h=3000000 +y_0=abc	ERR
++proj=nzmg +lat_0=abc	ERR
++proj=nzmg +lon_0=abc	ERR
++proj=nzmg +x_0=0.5r	ERR
++proj=nzmg +x_0=abc	ERR
++proj=nzmg +y_0=0.5r	ERR
++proj=nzmg +y_0=abc	ERR
++proj=ob_tran +o_proj=longlat +o_lat_p=abc +o_lon_p=0	OK
++proj=omerc +lat_0=40 +lonc=10 +alpha=30 +k_0=0.5r	ERR
++proj=omerc +lat_0=40 +lonc=10 +alpha=30 +x_0=0.5r	ERR
++proj=omerc +lat_0=40 +lonc=10 +alpha=30 +x_0=abc	ERR
++proj=omerc +lat_0=40 +lonc=10 +alpha=30 +y_0=0.5r	ERR
++proj=omerc +lat_0=40 +lonc=10 +alpha=30 +y_0=abc	ERR
++proj=omerc +lonc=10 +alpha=30 +lat_0=abc	ERR
++proj=ortho +k_0=0.5r	ERR
++proj=ortho +lat_0=abc	ERR
++proj=ortho +lon_0=abc	ERR
++proj=ortho +x_0=0.5r	ERR
++proj=ortho +x_0=abc	ERR
++proj=ortho +y_0=0.5r	ERR
++proj=ortho +y_0=abc	ERR
++proj=poly +lat_0=abc	ERR
++proj=poly +lon_0=abc	ERR
++proj=poly +x_0=0.5r	ERR
++proj=poly +x_0=abc	ERR
++proj=poly +y_0=0.5r	ERR
++proj=poly +y_0=abc	ERR
++proj=putp4p +k_0=0.5r	ERR
++proj=putp4p +x_0=0.5r	ERR
++proj=putp4p +y_0=0.5r	ERR
++proj=qsc +lat_0=abc	ERR
++proj=qsc +lon_0=abc	ERR
++proj=qsc +x_0=0.5r	ERR
++proj=qsc +x_0=abc	ERR
++proj=qsc +y_0=0.5r	ERR
++proj=qsc +y_0=abc	ERR
++proj=rhealpix +k_0=0.5r	ERR
++proj=rhealpix +x_0=0.5r	ERR
++proj=rhealpix +y_0=0.5r	ERR
++proj=robin +lon_0=abc	ERR
++proj=robin +x_0=0.5r	ERR
++proj=robin +x_0=abc	ERR
++proj=robin +y_0=0.5r	ERR
++proj=robin +y_0=abc	ERR
++proj=sinu +lon_0=abc	ERR
++proj=sinu +x_0=0.5r	ERR
++proj=sinu +x_0=abc	ERR
++proj=sinu +y_0=0.5r	ERR
++proj=sinu +y_0=abc	ERR
++proj=somerc +k_0=0.5r	ERR
++proj=somerc +lat_0=abc	ERR
++proj=somerc +lon_0=abc	ERR
++proj=somerc +x_0=0.5r	ERR
++proj=somerc +x_0=abc	ERR
++proj=somerc +y_0=0.5r	ERR
++proj=somerc +y_0=abc	ERR
++proj=stere +k_0=0.5r	ERR
++proj=stere +lat_0=abc	ERR
++proj=stere +lon_0=abc	ERR
++proj=stere +x_0=0.5r	ERR
++proj=stere +x_0=abc	ERR
++proj=stere +y_0=0.5r	ERR
++proj=stere +y_0=abc	ERR
++proj=sterea +k_0=0.5r	ERR
++proj=sterea +lat_0=abc	ERR
++proj=sterea +lon_0=abc	ERR
++proj=sterea +x_0=0.5r	ERR
++proj=sterea +x_0=abc	ERR
++proj=sterea +y_0=0.5r	ERR
++proj=sterea +y_0=abc	ERR
++proj=tissot +lat_1=30 +lat_2=50 +k_0=0.5r	ERR
++proj=tissot +lat_1=30 +lat_2=50 +x_0=0.5r	ERR
++proj=tissot +lat_1=30 +lat_2=50 +y_0=0.5r	ERR
++proj=tissot +lat_1=30 +lat_2=abc	OK
++proj=tissot +lat_2=50 +lat_1=abc	OK
++proj=tmerc +k_0=0.5r	ERR
++proj=tmerc +k_0=0.5r +k=0.9996	ERR
++proj=tmerc +k_0=0.5r +k=nan	ERR
++proj=tmerc +k_0=nan	ERR
++proj=tmerc +lat_0=abc	ERR
++proj=tmerc +lon_0=abc	ERR
++proj=tmerc +x_0=0.5r	ERR
++proj=tmerc +x_0=abc	ERR
++proj=tmerc +y_0=0.5r	ERR
++proj=tmerc +y_0=abc	ERR
++proj=tpers +h=3000000 +azi=abc	OK
++proj=tpers +h=3000000 +k_0=0.5r	ERR
++proj=tpers +h=3000000 +lat_0=abc	OK
++proj=tpers +h=3000000 +lon_0=abc	OK
++proj=tpers +h=3000000 +x_0=0.5r	ERR
++proj=tpers +h=3000000 +y_0=0.5r	ERR
++proj=ups +e=abc	ERR
++proj=ups +es=abc	ERR
++proj=ups +f=abc	ERR
++proj=ups +k_0=0.5r	ERR
++proj=ups +x_0=0.5r	ERR
++proj=ups +y_0=0.5r	ERR
++proj=utm +zone=32 +e=abc	ERR
++proj=utm +zone=32 +es=abc	ERR
++proj=utm +zone=32 +f=abc	ERR
++proj=vandg +lon_0=abc	ERR
++proj=vandg +x_0=0.5r	ERR
++proj=vandg +x_0=abc	ERR
++proj=vandg +y_0=0.5r	ERR
++proj=vandg +y_0=abc	ERR
++proj=wag4 +lon_0=abc	ERR
++proj=wag4 +x_0=0.5r	ERR
++proj=wag4 +x_0=abc	ERR
++proj=wag4 +y_0=0.5r	ERR
++proj=wag4 +y_0=abc	ERR
++proj=wag5 +lon_0=abc	ERR
++proj=wag5 +x_0=0.5r	ERR
++proj=wag5 +x_0=abc	ERR
++proj=wag5 +y_0=0.5r	ERR
++proj=wag5 +y_0=abc	ERR
++proj=webmerc +lat_0=abc	ERR
++proj=webmerc +lon_0=abc	ERR
++proj=webmerc +x_0=0.5r	ERR
++proj=webmerc +x_0=abc	ERR
++proj=webmerc +y_0=0.5r	ERR
++proj=webmerc +y_0=abc	ERR
++proj=weren +k_0=0.5r	ERR
++proj=weren +x_0=0.5r	ERR
++proj=weren +y_0=0.5r	ERR
++proj=wink1 +lon_0=abc	ERR
++proj=wink1 +x_0=0.5r	ERR
++proj=wink1 +x_0=abc	ERR
++proj=wink1 +y_0=0.5r	ERR
++proj=wink1 +y_0=abc	ERR
++proj=wink2 +lon_0=abc	ERR
++proj=wink2 +x_0=0.5r	ERR
++proj=wink2 +x_0=abc	ERR
++proj=wink2 +y_0=0.5r	ERR
++proj=wink2 +y_0=abc	ERR
++proj=wintri +lon_0=abc	ERR
++proj=wintri +x_0=0.5r	ERR
++proj=wintri +x_0=abc	ERR
++proj=wintri +y_0=0.5r	ERR
++proj=wintri +y_0=abc	ERR

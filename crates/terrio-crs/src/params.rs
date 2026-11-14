@@ -41,11 +41,18 @@ fn flag_value(value: Option<&str>) -> Option<bool> {
     }
 }
 
+/// Parameters every method reads, which PROJ checks only for the methods its CRS parser maps them
+/// for (`+lat_0=abc` is refused for `tmerc` and ignored for `robin`): an unreadable value is
+/// still read as absent. The scale factor's own check is in `Def::from_params`.
+const LENIENT: [&str; 6] = ["lat_0", "lon_0", "x_0", "y_0", "k_0", "k"];
+
 /// The parameters of a PROJ string, in order.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Params {
     items: Vec<(String, Option<String>)>,
     unterminated_quote: bool,
+    /// The parameters read as a number or an angle whose values are neither, in reading order.
+    invalid: std::cell::RefCell<Vec<String>>,
 }
 
 impl Params {
@@ -63,7 +70,7 @@ impl Params {
                 })
             })
             .collect();
-        Self { items, unterminated_quote }
+        Self { items, unterminated_quote, invalid: Default::default() }
     }
 
     /// Refuses a quoted value that would swallow the rest of a definition.
@@ -118,24 +125,44 @@ impl Params {
         self.items.iter().find(|(k, _)| k == key).and_then(|(_, v)| v.as_deref())
     }
 
-    /// The parameter's numeric value.
-    pub fn f64(&self, key: &str) -> Option<f64> {
-        self.str(key).and_then(|v| v.trim().parse().ok())
+    /// Reads a parameter's value. A value present but not read (`abc`, or an empty `+key=`) is
+    /// remembered for [`Self::invalid`] and read as absent.
+    fn read<T>(&self, key: &str, parse: impl FnOnce(&str) -> Option<T>) -> Option<T> {
+        let value = self.str(key)?;
+        let v = parse(value);
+        if v.is_none() && !LENIENT.contains(&key) && !self.invalid.borrow().iter().any(|k| k == key) {
+            self.invalid.borrow_mut().push(key.to_string());
+        }
+        v
     }
 
-    /// The parameter as an angle, in radians: decimal degrees or PROJ's DMS (`40d30'15"N`).
+    /// The parameters read as a number or an angle without being one, in reading order: PROJ
+    /// refuses a CRS with such a value ("invalid value for lat_ts"). Only parameters read count,
+    /// as PROJ only checks those its method uses, and not those of [`LENIENT`].
+    /// Call after all numeric and angular reads: this is a snapshot of failures recorded so far.
+    pub fn invalid(&self) -> Vec<String> {
+        self.invalid.borrow().clone()
+    }
+
+    /// The parameter's numeric value.
+    pub fn f64(&self, key: &str) -> Option<f64> {
+        self.read(key, |v| v.trim().parse().ok())
+    }
+
+    /// The parameter as an angle, in radians: decimal degrees, PROJ's DMS (`40d30'15"N`), or
+    /// radians (`0.5r`).
     pub fn angle(&self, key: &str) -> Option<f64> {
-        self.str(key).and_then(parse_dms).map(f64::to_radians)
+        self.read(key, parse_dms).map(f64::to_radians)
     }
 
     /// The parameter as an angle in degrees, as [`Self::angle`] reads it.
     pub fn degrees(&self, key: &str) -> Option<f64> {
-        self.str(key).and_then(parse_dms)
+        self.read(key, parse_dms)
     }
 
     /// The parameter as a comma-separated list of numbers.
     pub fn list(&self, key: &str) -> Option<Vec<f64>> {
-        self.str(key).map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+        self.read(key, |v| v.split(',').map(|x| x.trim().parse().ok()).collect())
     }
 }
 
@@ -160,11 +187,16 @@ fn tokens(s: &str) -> (Vec<String>, bool) {
     (out, quoted)
 }
 
-/// Parses decimal degrees or PROJ's DMS notation into degrees.
+/// Parses decimal degrees, PROJ's DMS notation or radians (`0.5r`, as PROJ's `dmstor`) into
+/// degrees.
 pub(crate) fn parse_dms(s: &str) -> Option<f64> {
     let s = s.trim();
     if let Ok(v) = s.parse() {
         return Some(v);
+    }
+    // Radians, as PROJ's `dmstor` reads a number ending in `r` or `R`.
+    if let Some(v) = s.strip_suffix(['r', 'R']).and_then(|v| v.parse::<f64>().ok()) {
+        return Some(v.to_degrees());
     }
     let (body, sign) = match s.chars().last()? {
         'N' | 'n' | 'E' | 'e' => (&s[..s.len() - 1], 1.0),
