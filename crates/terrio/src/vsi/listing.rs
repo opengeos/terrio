@@ -95,14 +95,15 @@ fn names_credential(query: &str) -> bool {
         "session",
     ];
     const PARTS: [&str; 8] = ["signature", "token", "secret", "password", "credential", "apikey", "api_key", "api-key"];
-    // Decode before splitting, so an encoded separator or a nested encoded URL
-    // cannot hide a subsequent credential parameter. Bare prose still needs '='.
-    let decoded = percent_decoded(query);
-    decoded.split(|c: char| matches!(c, '&' | ';' | '?' | '#') || c.is_whitespace()).any(|parameter| {
+    let separator = |c: char| matches!(c, '&' | ';' | '?' | '#') || c.is_whitespace();
+    let credential = |parameter: &str| {
         let Some((name, _)) = parameter.split_once('=') else { return false };
-        let name = name.to_ascii_lowercase();
+        let name = percent_decoded(name).to_ascii_lowercase();
         NAMES.contains(&name.as_str()) || PARTS.iter().any(|part| name.contains(part))
-    })
+    };
+    // Check original parameter names too: decoding a name's encoded '&' must not
+    // split its credential-bearing portion away from its '=' and value.
+    query.split(separator).any(credential) || percent_decoded(query).split(separator).any(credential)
 }
 
 /// `text` with its `%XX` escapes decoded. Invalid escapes are kept; decoded bytes that are not UTF-8 become U+FFFD.
@@ -873,6 +874,8 @@ mod tests {
         assert_eq!(super::redact_url("/data/a?token%3DPRIVATE"), "/data/a?<redacted>");
         assert_eq!(super::redact_url("/data/a?%74oken%3dPRIVATE"), "/data/a?<redacted>");
         assert_eq!(super::redact_url("/data/a?x=1%26token=PRIVATE"), "/data/a?<redacted>");
+        assert_eq!(super::redact_url("/data/a?client_secret%26label=PRIVATE"), "/data/a?<redacted>");
+        assert_eq!(super::redact_url("/data/a#client_secret%26label=PRIVATE"), "/data/a#<redacted>");
         assert_eq!(super::redact_url("/data/a#sig=PRIVATE"), "/data/a#<redacted>");
         assert_eq!(super::redact_url("/data/a#x=1%26token%3DPRIVATE"), "/data/a#<redacted>");
         assert_eq!(super::redact_url("/data/file#notes.txt"), "/data/file#notes.txt");
