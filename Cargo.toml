@@ -112,6 +112,9 @@ zip = { version = "9.1", default-features = false, features = ["deflate-flate2-z
 # No TLS provider of its own: terrio supplies `rustls-graviola`, which needs no C compiler.
 ureq = { version = "3", default-features = false, features = ["gzip", "rustls-no-provider", "rustls-webpki-roots"] }
 rustls-graviola = "0.4"
+rustls = { version = "0.23", default-features = false, features = ["std"] }
+# DER certificates matching ureq's locked webpki-roots trust anchors.
+webpki-root-certs = "=1.0.11"
 hmac = "0.13"
 sha2 = "0.11"
 clap = { version = "4", features = ["derive"] }

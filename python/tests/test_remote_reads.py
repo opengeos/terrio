@@ -25,7 +25,7 @@ from terrio.rio.windows import Window
 class Server:
     """A loopback server of the files in a directory, logging every request."""
 
-    def __init__(self, root, ranges=True, failures=0):
+    def __init__(self, root, ranges=True, failures=0, tls_context=None):
         self.root, self.ranges, self.failures = root, ranges, failures
         self.log = []
         server = self
@@ -85,8 +85,11 @@ class Server:
 
         self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.httpd.daemon_threads = True
+        if tls_context is not None:
+            self.httpd.socket = tls_context.wrap_socket(self.httpd.socket, server_side=True)
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
-        self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        scheme = "https" if tls_context is not None else "http"
+        self.url = f"{scheme}://127.0.0.1:{self.httpd.server_address[1]}"
 
     def bytes_sent(self):
         return sum(row[3] for row in self.log)

@@ -74,6 +74,17 @@ Ordered worker snapshots retain the same scope boundaries; flattened
 environment values or outer scopes. This alias policy is specific to Terrio;
 it is not a claim that GDAL understands the `TERRIO_` option names.
 
+## Additional HTTPS trust
+
+`python -m pytest python/tests/test_https_additional_ca.py` generates an ephemeral
+CA and localhost certificate with OpenSSL, then reads real TIFF windows through
+loopback HTTP and HTTPS range servers. It checks both CA option aliases, nested
+scope isolation, untrusted issuers, hostname mismatches and malformed/missing
+bundles. The successful reads must use partial byte ranges and transfer less
+than the source file. These are native TLS trust-policy tests, not a GDAL
+conformance claim. OpenSSL is only a test fixture generator, not a runtime
+dependency.
+
 ## Remote-read locks across fork
 
 `cargo test -p terrio --lib each_remote_read_lock_is_handed_off_across_a_fork`
