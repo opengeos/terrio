@@ -322,7 +322,8 @@ refused unless it is a positive number (likewise `+vunits` and `+vto_meter` with
 scale factor is refused unless the number it starts with is positive (NaN passes, as in PROJ).
 `lat_0`, `lon_0`, `x_0` and `y_0`, and `+f`, `+es` and `+e` without `+a`, stay as lenient as before:
 PROJ checks them only for some methods, and an unreadable one is read as absent. A WKT's `PROJ4`
-extension is read as PROJ reads it, without these refusals.
+extension is read as PROJ reads it, without refusing the values PROJ's CRS parser would (an
+unreadable `+lat_ts` is read as 0); the scale-factor and `+to_meter` refusals still apply.
 
 PROJ parameter exports preserve projection-specific standard parallels, the
 validated PROJ4 extension of a WKT definition (including Web Mercator), named
