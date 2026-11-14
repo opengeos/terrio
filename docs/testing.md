@@ -33,6 +33,9 @@ receives the original query. Diagnostic redaction never rewrites request URLs.
 Standalone schemeless signed locations and percent-encoded credential separators
 are redacted too. Literal `?` filenames, Windows verbatim prefixes and bare words
 such as "unexpected token" remain intact when no credential parameter is present.
+The same policy applies to schemeless `#` fragments. Bare schemeless suffixes
+without a `name=value` credential parameter remain literal filenames or keys;
+queries and fragments of locations with a URL scheme are always redacted.
 
 ## Configuration alias precedence
 

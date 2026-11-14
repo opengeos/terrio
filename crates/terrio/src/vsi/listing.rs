@@ -54,10 +54,10 @@ pub(crate) fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
     // A Windows verbatim prefix (`\\?\C:\…`) is part of the path, not a query.
     let start = if out.starts_with(r"\\?\") || out.starts_with("//?/") { 4 } else { 0 };
     let scheme = out.find("://").unwrap_or(out.len());
-    if let Some(question) = out[start..].find('?').map(|q| start + q).filter(|&q| q < scheme)
-        && names_credential(&out[question + 1..])
+    if let Some(separator) = out[start..].find(['?', '#']).map(|q| start + q).filter(|&q| q < scheme)
+        && names_credential(&out[separator + 1..])
     {
-        return format!("{}?<redacted>", &out[..question]).into();
+        return format!("{}{}<redacted>", &out[..separator], &out[separator..=separator]).into();
     }
     if let Some(scheme) = out.find("://")
         && let Some(end) = out[scheme + 3..].find(['?', '#'])
@@ -95,12 +95,11 @@ fn names_credential(query: &str) -> bool {
         "session",
     ];
     const PARTS: [&str; 8] = ["signature", "token", "secret", "password", "credential", "apikey", "api_key", "api-key"];
-    query.split(|c: char| matches!(c, '&' | ';' | '?' | '#') || c.is_whitespace()).any(|parameter| {
-        // A parameter carries a value; a bare word of the message ("unexpected token") is not one.
-        // Conservatively recognize an encoded '=' too, without treating a bare
-        // word of an error message ("unexpected token") as a parameter.
-        let decoded = percent_decoded(parameter);
-        let Some((name, _)) = decoded.split_once('=') else { return false };
+    // Decode before splitting, so an encoded separator or a nested encoded URL
+    // cannot hide a subsequent credential parameter. Bare prose still needs '='.
+    let decoded = percent_decoded(query);
+    decoded.split(|c: char| matches!(c, '&' | ';' | '?' | '#') || c.is_whitespace()).any(|parameter| {
+        let Some((name, _)) = parameter.split_once('=') else { return false };
         let name = name.to_ascii_lowercase();
         NAMES.contains(&name.as_str()) || PARTS.iter().any(|part| name.contains(part))
     })
@@ -873,6 +872,11 @@ mod tests {
         assert_eq!(super::redact_url("/vsiaz/c/b.tif?%73ig=PRIVATE"), "/vsiaz/c/b.tif?<redacted>");
         assert_eq!(super::redact_url("/data/a?token%3DPRIVATE"), "/data/a?<redacted>");
         assert_eq!(super::redact_url("/data/a?%74oken%3dPRIVATE"), "/data/a?<redacted>");
+        assert_eq!(super::redact_url("/data/a?x=1%26token=PRIVATE"), "/data/a?<redacted>");
+        assert_eq!(super::redact_url("/data/a#sig=PRIVATE"), "/data/a#<redacted>");
+        assert_eq!(super::redact_url("/data/a#x=1%26token%3DPRIVATE"), "/data/a#<redacted>");
+        assert_eq!(super::redact_url("/data/file#notes.txt"), "/data/file#notes.txt");
+        assert_eq!(super::redact_url("/vsiaz/c/b.tif?BARE_VALUE"), "/vsiaz/c/b.tif?BARE_VALUE");
         assert_eq!(super::redact_url("/data/what?.tif"), "/data/what?.tif");
         assert_eq!(super::redact_url("/data/what?design.tif"), "/data/what?design.tif");
         assert_eq!(super::redact_url("/data/a?signal=1&monkey=2"), "/data/a?signal=1&monkey=2");
