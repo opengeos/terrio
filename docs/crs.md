@@ -315,13 +315,13 @@ Flags combined with `+init=epsg:N`, except the metadata switches `no_defs` and
 definition. Use an expanded `+proj` definition when changing these flags.
 
 A value PROJ 9.8.1 cannot read is refused when the method reads the parameter, as PROJ refuses it
-("invalid value for lat_ts"), rather than taken as the parameter's default: `+proj=eqc
-+lat_ts=abc`, an unreadable `+towgs84` or `+pm`. A value ending in `r` is in radians (`0.5r`, as
-PROJ's `dmstor` reads it). A known `+units` comes before `+to_meter`, as in PROJ, and `+to_meter`
-is otherwise refused unless it is a positive number (likewise `+vunits` and `+vto_meter` with
-`+geoidgrids`); a scale factor is refused unless it starts with a positive number. `lat_0`,
-`lon_0`, `x_0` and `y_0` stay as lenient as before: PROJ checks them only for some methods, and an
-unreadable one is read as absent.
+("invalid value for lat_ts"), rather than taken as the parameter's default: `+proj=eqc +lat_ts=abc`,
+an unreadable `+towgs84` or `+pm`. A value ending in `r` is in radians (`0.5r`, as PROJ's `dmstor`
+reads it). A known `+units` comes before `+to_meter`, as in PROJ, and `+to_meter` is otherwise
+refused unless it is a positive number (likewise `+vunits` and `+vto_meter` with `+geoidgrids`); a
+scale factor is refused unless the number it starts with is positive (NaN passes, as in PROJ).
+`lat_0`, `lon_0`, `x_0` and `y_0` stay as lenient as before: PROJ checks them only for some methods,
+and an unreadable one is read as absent.
 
 PROJ parameter exports preserve projection-specific standard parallels, the
 validated PROJ4 extension of a WKT definition (including Web Mercator), named
