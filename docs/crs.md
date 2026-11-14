@@ -38,8 +38,8 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
   or parameter is an error rather than ignored. A projected CRS's `AXIS` nodes give its axes in
   WKT 1 as in WKT 2, as GDAL and PROJ read them in GIS order: `AXIS["Y",WEST],AXIS["X",SOUTH]`
   counts coordinates west and south, and northing then easting is read as easting then
-  northing; south-orientated Transverse Mercator is west and south whatever its axes, and Krovak
-  without them south and west. The axes are not written in its PROJ string, as PROJ does not
+  northing; south-orientated Transverse Mercator is west and south but for north-east axes (south and
+  west), and Krovak without them south and west. The axes are not written in its PROJ string, as PROJ does not
   write them;
 - PROJJSON v0.7 definitions in the [supported object subset](#projjson-definitions);
 - PROJ strings: `+proj=utm +zone=13 +datum=WGS84`, with `+nadgrids=` and `+geoidgrids=` for

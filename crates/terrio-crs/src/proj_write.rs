@@ -149,7 +149,8 @@ fn towgs84(values: &str) -> Option<String> {
 
 /// A WKT's PROJ string without the axes of its coordinate system, which PROJ does not write
 /// (`AXIS["Y",WEST],AXIS["X",SOUTH]` on Transverse Mercator): only those of a method defining
-/// them (south-orientated Transverse Mercator, Krovak), and a PROJ4 extension's as given.
+/// them (south-orientated Transverse Mercator, Krovak's south and west), as PROJ 9.8.1 writes
+/// them, and a PROJ4 extension's as given.
 fn wkt_axes(wkt: &str, proj: &str) -> String {
     /// The normalized name of the WKT's projection method, at any depth.
     fn method(n: &crate::wkt1::Node) -> Option<String> {
@@ -171,7 +172,8 @@ fn wkt_axes(wkt: &str, proj: &str) -> String {
         // The method's axes, west and south, whatever the coordinate system's order.
         tokens.map(|t| if axis(t) { "+axis=wsu" } else { t }).collect::<Vec<_>>().join(" ")
     } else if method.starts_with("krovak") {
-        proj.to_string()
+        // Krovak's south and west (EPSG's), which PROJ writes; not other axes.
+        tokens.filter(|t| !axis(t) || *t == "+axis=swu").collect::<Vec<_>>().join(" ")
     } else {
         tokens.filter(|t| !axis(t)).collect::<Vec<_>>().join(" ")
     }

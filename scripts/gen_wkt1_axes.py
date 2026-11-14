@@ -2,10 +2,10 @@
 projected CRSs given by WKT 1 whose `AXIS` nodes point in each direction and order.
 
 Each case is a WKT 1 (Transverse Mercator, south-orientated Transverse Mercator, Lambert
-Conformal Conic and Krovak, without `AXIS` and with east/north, north/east, west/south,
-south/west, west/north, east/south and north/west axes), a geographic point, and its
-coordinates by `Transformer.from_crs(geographic, wkt, always_xy=True)`, as GDAL's
-`gdaltransform` (traditional GIS order) gives them too.
+Conformal Conic and Krovak, without `AXIS` and with each order of an east-west and a north-south
+axis), its WKT 2 as PROJ writes it, a geographic point, the point's coordinates in both by
+`Transformer.from_crs(geographic, wkt, always_xy=True)` (as GDAL 3.10's `gdaltransform`, in
+traditional GIS order, gives them too), and the `+axis` of the WKT 1's `to_proj4()`.
 
 Usage: PROJ_NETWORK=OFF python scripts/gen_wkt1_axes.py (needs pyproj 3.8.0)
 """
@@ -71,6 +71,7 @@ AXES = {
     "west north": [("W", "WEST"), ("N", "NORTH")],
     "east south": [("E", "EAST"), ("S", "SOUTH")],
     "north west": [("N", "NORTH"), ("W", "WEST")],
+    "south east": [("S", "SOUTH"), ("E", "EAST")],
 }
 
 
@@ -81,12 +82,28 @@ def main():
         for name, axes in AXES.items():
             nodes = "".join(f',AXIS["{n}",{d}]' for n, d in axes)
             wkt = f'PROJCS["{method} {name}",{geogcs},PROJECTION["{method}"],{params},{ORIGIN},UNIT["metre",1]{nodes}]'
-            t = Transformer.from_crs(
-                CRS(geographic + " +type=crs"), CRS(wkt), always_xy=True
+            crs = CRS(wkt)
+            wkt2 = crs.to_wkt("WKT2_2019")
+            source = CRS(geographic + " +type=crs")
+            x, y = Transformer.from_crs(source, crs, always_xy=True).transform(
+                *point, errcheck=True
             )
-            x, y = t.transform(*point, errcheck=True)
+            x2, y2 = Transformer.from_crs(source, CRS(wkt2), always_xy=True).transform(
+                *point, errcheck=True
+            )
+            axis = next(
+                (t for t in crs.to_proj4().split() if t.startswith("+axis=")), None
+            )
             cases.append(
-                {"wkt": wkt, "geographic": geographic, "point": point, "proj": [x, y]}
+                {
+                    "wkt": wkt,
+                    "wkt2": wkt2,
+                    "geographic": geographic,
+                    "point": point,
+                    "proj": [x, y],
+                    "proj_wkt2": [x2, y2],
+                    "proj4_axis": axis,
+                }
             )
     OUT.write_text(
         json.dumps({"proj": pyproj.proj_version_str, "cases": cases}, indent=1) + "\n"

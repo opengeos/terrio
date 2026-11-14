@@ -374,8 +374,9 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         push("h", Some(p.get(SAT_HEIGHT).ok_or_else(|| bad("Geostationary Satellite without its Satellite Height"))?));
         sweep = Some(if name == "geostationarysatellitesweepx" { "x" } else { "y" });
         "geos"
-    } else if is(&["krovaknorthorientated"], &[1041]) {
-        // As PROJ, whose Krovak fixes the pseudo standard parallel and writes none.
+    } else if is(&["krovaknorthorientated", "krovak"], &[1041, 9819]) {
+        // As PROJ, whose Krovak fixes the pseudo standard parallel and writes none. Krovak
+        // (EPSG 9819) and its north-orientated form differ in their axes, which the CS gives.
         p.get(LAT_PSEUDO_SP);
         push("lat_0", p.get(LAT_CENTRE).or_else(lat_0));
         push("lon_0", lon_0());
@@ -448,8 +449,11 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         proj_str.push(format!("+sweep={s}"));
     }
     proj_str.append(&mut out);
+    // South-orientated Transverse Mercator is west and south but for a north-east CS, which GDAL
+    // and PROJ read south then west (as for its WKT 1).
     if south_orientated {
-        proj_str.push("+axis=wsu".into());
+        let north_east = directions.len() >= 2 && directions[0] == "north" && directions[1] == "east";
+        proj_str.push(if north_east { "+axis=swu" } else { "+axis=wsu" }.into());
     } else if let Some(axis) = axis(&directions) {
         proj_str.push(format!("+axis={axis}"));
     }
@@ -646,6 +650,21 @@ const WORLD: [(&str, &str); 27] = [
 /// traditional GIS order, a north-east CS is read east-north: only west and south change the
 /// coordinates.
 fn axis(directions: &[String]) -> Option<String> {
+    let letter = |d: &str| match d {
+        "east" => Some('e'),
+        "west" => Some('w'),
+        "north" => Some('n'),
+        "south" => Some('s'),
+        _ => None,
+    };
+    // Two axes along east-west and north-south: in their order, as GDAL 3.10 and PROJ 9.8.1
+    // (`always_xy`) read them, but for northing then easting, read as easting then northing.
+    if let [a, b] = directions.get(..2).unwrap_or_default()
+        && let (Some(a), Some(b)) = (letter(a), letter(b))
+        && matches!(a, 'e' | 'w') != matches!(b, 'e' | 'w')
+    {
+        return (!matches!((a, b), ('e', 'n') | ('n', 'e'))).then(|| format!("{a}{b}u"));
+    }
     let has = |d: &str| directions.iter().any(|x| x == d);
     let (e, n) = (if has("west") { 'w' } else { 'e' }, if has("south") { 's' } else { 'n' });
     (e != 'e' || n != 'n').then(|| format!("{e}{n}u"))
