@@ -946,6 +946,14 @@ impl SpatialRef {
         let Some(wkt) = self.to_wkt() else { return AxisOrder::Unknown };
         let horizontal = def::split_compound(&wkt).map(|(horizontal, _)| horizontal);
         let Some(root) = wkt1::parse(horizontal.as_deref().unwrap_or(&wkt)) else { return AxisOrder::Unknown };
+        // A bound CRS has the axes of its source CRS, as PROJ reads it.
+        let source = root.key.eq_ignore_ascii_case("BOUNDCRS").then(|| root.child("SOURCECRS")).flatten().and_then(|s| {
+            s.args.iter().find_map(|a| match a {
+                wkt1::Arg::Node(n) => Some(n.clone()),
+                _ => None,
+            })
+        });
+        let root = source.unwrap_or(root);
         // Only the four directions count: `northEast` is another one.
         let direction = |axis: &wkt1::Node| match axis.args.get(1) {
             Some(wkt1::Arg::Ident(d)) if d.eq_ignore_ascii_case("north") => b'n',
@@ -963,7 +971,7 @@ impl SpatialRef {
             // A WKT 1 geographic CRS without axes is in its EPSG code's order, as PROJ reads it,
             // else (or for a code terrio doesn't have) in longitude/latitude order, as any other
             // CRS.
-            _ => match declared_epsg(&wkt).filter(|_| root.key.eq_ignore_ascii_case("GEOGCS") && self.wkt.is_some()) {
+            _ => match root.epsg().filter(|_| root.key.eq_ignore_ascii_case("GEOGCS") && self.wkt.is_some()) {
                 Some(code) => match (SpatialRef { epsg: Some(code), ..Default::default() }).axis_order() {
                     AxisOrder::Unknown => AxisOrder::EastNorth,
                     known => known,
@@ -974,13 +982,15 @@ impl SpatialRef {
     }
 
     /// The parameters of the CRS's conversion, as its PROJ string (from the registry, as given,
-    /// or converted from its WKT) has them, with PROJ's defaults: a central meridian of 0, a scale
-    /// factor of 1... A UTM or UPS zone gives its own, as in PROJ's conversion. A compound CRS
+    /// or converted from its WKT) has them, with PROJ's defaults (a central meridian of 0, a scale
+    /// factor of 1, no false easting or northing). A UTM or UPS zone gives its own, as in PROJ's conversion. A compound CRS
     /// gives those of its horizontal CRS. `None` for a CRS terrio can't read, or reads only
     /// through wbprojection's WKT parser.
     ///
     /// The values are those of the definition, not derived ones: Mercator's `+lat_ts` is not
-    /// turned into a scale factor, nor Oblique Mercator's `+lonc` into a central meridian.
+    /// turned into a scale factor, nor Oblique Mercator's `+lonc` into a central meridian. A WKT
+    /// that declares an EPSG code terrio has gives that code's, as terrio transforms it (PROJ
+    /// reads the WKT's own nodes, which may differ).
     /// ```
     /// use terrio_crs::SpatialRef;
     /// let p = SpatialRef::from_epsg(32633)?.projection_params().unwrap();
@@ -993,8 +1003,7 @@ impl SpatialRef {
         // A registry CRS is on the registry's ellipsoid, as PROJ reports it: the one its PROJ
         // string names may be rounded (Bessel Namibia's `bess_nam`, 0.28 m) or a sphere computed on
         // (Web Mercator). The WKT's is taken in metres only (EPSG:3139's is in feet).
-        if let Some((a, b)) = self.registry_horizontal_wkt().as_deref().and_then(wkt_ellipsoid).filter(|(a, _)| (a - params.a).abs() < 1.0)
-        {
+        if let Some((a, b)) = self.registry_horizontal_wkt().and_then(wkt_ellipsoid).filter(|(a, _)| (a - params.a).abs() < 1.0) {
             (params.a, params.b) = (a, b);
         }
         Some(params)
@@ -1002,11 +1011,14 @@ impl SpatialRef {
 
     /// The WKT of the registry entry `Def::new` reads the CRS from (that of the horizontal CRS
     /// of a compound one).
-    fn registry_horizontal_wkt(&self) -> Option<String> {
-        match self.epsg {
-            Some(code) => epsg::get(code).or_else(|| epsg::compound(code).and_then(|c| epsg::get(c.horizontal))).map(|e| e.wkt.clone()),
-            None => self.esri.filter(|c| !ESRI_UNLIKE_PROJ.contains(c)).and_then(epsg::esri).map(|e| e.wkt.clone()),
-        }
+    fn registry_horizontal_wkt(&self) -> Option<&'static str> {
+        let entry = match (self.epsg, self.esri) {
+            (Some(code), _) => epsg::get(code).or_else(|| epsg::compound(code).and_then(|c| epsg::get(c.horizontal))),
+            (None, Some(code)) => Some(code).filter(|c| !ESRI_UNLIKE_PROJ.contains(c)).and_then(epsg::esri),
+            // A compound CRS without a code of its own (`EPSG:3857+5773`), by its horizontal one.
+            (None, None) => self.compound_parts().and_then(|(horizontal, _)| epsg::get(horizontal)),
+        };
+        entry.map(|e| e.wkt.as_str())
     }
 
     /// Whether `Def::new` reads the CRS from the EPSG or ESRI table.
@@ -1037,7 +1049,7 @@ impl SpatialRef {
         // PROJ's `Ellipsoid::guessBodyName`: the Earth within 0.7% of its mean radius, else the
         // one body whose semi-major axis is within 0.7% of the ellipsoid's.
         let a = def.params().map_or(def.ell.a, |p| p.a);
-        if (a - 6_375_000.0).abs() < 0.007 * 6_375_000.0 {
+        if def::earth_sized(a) {
             return Some("Earth");
         }
         let mut near = bodies::RADII.iter().filter(|(_, r)| (r - a).abs() / r <= 0.007).map(|(name, _)| *name);

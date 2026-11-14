@@ -309,7 +309,7 @@ impl Def {
 
     /// A declared body, or PROJ's Earth-radius heuristic for custom ellipsoids.
     pub fn celestial_body(&self) -> Option<u32> {
-        self.body.or_else(|| ((self.ell.a - 6_375_000.0).abs() < 0.007 * 6_375_000.0).then_some(399))
+        self.body.or_else(|| earth_sized(self.ell.a).then_some(399))
     }
 
     /// PROJ 9.8.1's compatibility rule: known body names take precedence over radius;
@@ -512,8 +512,6 @@ impl Def {
         // zone and the hemisphere, as PROJ's conversion does.
         let zoned = matches!(name, "utm" | "ups");
         let degrees = |key: &str, set: f64| if zoned { set.to_degrees() } else { p.degrees(key).unwrap_or(0.0) };
-        // A UTM zone's central meridian in whole degrees, which its radians don't convert back to.
-        let zone_index = ((setup.lam0 + std::f64::consts::PI) * 30.0 / std::f64::consts::PI - 0.5).round();
         let params = crate::ProjParams {
             // PROJ's name of the aliases it writes under another (`latlong`, `lonlat` and `latlon`
             // are `longlat`, `etmerc` is `tmerc` and `webmerc` is `merc`).
@@ -524,7 +522,14 @@ impl Def {
                 n => n,
             }
             .to_string(),
-            lon_0: if name == "utm" { zone_index * 6.0 - 177.0 } else { degrees("lon_0", setup.lam0) },
+            lon_0: if name == "utm" {
+                // The zone's central meridian in whole degrees, which its radians don't convert
+                // back to exactly: zone z (from 1) is at 6z - 183°.
+                let zone = ((setup.lam0 + std::f64::consts::PI) * 30.0 / std::f64::consts::PI + 0.5).round();
+                zone * 6.0 - 183.0
+            } else {
+                degrees("lon_0", setup.lam0)
+            },
             lat_0: degrees("lat_0", setup.phi0),
             k_0: if zoned { setup.k0 } else { p.f64("k_0").or_else(|| p.f64("k")).unwrap_or(1.0) },
             x_0: if zoned { setup.x0 } else { p.f64("x_0").unwrap_or(0.0) },
@@ -532,7 +537,8 @@ impl Def {
             prime_meridian: pm,
             a: defined.a,
             b: defined.a * defined.one_es.sqrt(),
-            to_meter,
+            // The coordinates of a geographic CRS are angles, whatever `+units` says.
+            to_meter: if geographic { 1.0 } else { to_meter },
         };
         let projection_a = setup.ell.a;
         let ell = if proj.is_some() { conformal_ellipsoid.unwrap_or(setup.ell) } else { setup.ell };
@@ -1089,6 +1095,12 @@ impl Def {
             })
             .collect()
     }
+}
+
+/// PROJ's rule for an ellipsoid of the Earth: a semi-major axis within 0.7% of its mean radius
+/// (`Ellipsoid::guessBodyName`).
+pub(crate) fn earth_sized(a: f64) -> bool {
+    (a - 6_375_000.0).abs() < 0.007 * 6_375_000.0
 }
 
 /// The horizontal and vertical parts of a compound CRS's WKT (`COMPD_CS` or `COMPOUNDCRS`).

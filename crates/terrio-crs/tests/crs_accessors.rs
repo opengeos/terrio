@@ -93,11 +93,16 @@ fn differences(row: &Row, s: &SpatialRef) -> Vec<String> {
     let tolerances = [1e-9, 1e-9, 1e-12, 1e-6, 1e-6, 1e-8, 1e-6, 1e-6, 1e-12];
     for (((ours, theirs), name), tolerance) in ours.iter().zip(&expected[1..]).zip(names).zip(tolerances) {
         let theirs: f64 = theirs.parse().unwrap();
-        if (ours - theirs).abs() > tolerance {
+        if !within(*ours, theirs, tolerance) {
             out.push(format!("{name} {ours}, PROJ {theirs}"));
         }
     }
     out
+}
+
+/// Whether a value is within a tolerance of PROJ's: never for NaN.
+fn within(ours: f64, theirs: f64, tolerance: f64) -> bool {
+    (ours - theirs).abs() <= tolerance
 }
 
 fn compare(rows: &[Row]) -> (usize, Vec<String>) {
@@ -188,6 +193,34 @@ fn an_epsg_code_read_only_through_wbprojection_has_unknown_axes() {
     assert_eq!(s.axis_order(), AxisOrder::Unknown);
     assert!(s.is_earth());
 }
+
+#[test]
+fn nan_is_never_within_a_tolerance() {
+    assert!(within(1.0, 1.0 + 1e-10, 1e-9));
+    assert!(!within(f64::NAN, 1.0, 1e-9));
+    assert!(!within(1.0, f64::NAN, 1e-9));
+}
+
+#[test]
+fn bound_compound_and_angular_crss_read_as_proj_reads_them() {
+    // PROJ 9.8.1 (pyproj 3.8.0): a BOUNDCRS has its source CRS's axes; a COMPD_CS's geographic
+    // part with EPSG:4326's authority and no axes is north then east; a compound CRS of Web
+    // Mercator is on WGS 84; `+units=km` doesn't make longitudes and latitudes linear.
+    let bound = format!(
+        r#"BOUNDCRS[SOURCECRS[{}],TARGETCRS[{}],ABRIDGEDTRANSFORMATION["t",METHOD["Geocentric translations (geog2D domain)",ID["EPSG",9603]],PARAMETER["X-axis translation",1,ID["EPSG",8605]],PARAMETER["Y-axis translation",2,ID["EPSG",8606]],PARAMETER["Z-axis translation",3,ID["EPSG",8607]]]]"#,
+        WGS84_WKT2, WGS84_WKT2
+    );
+    assert_eq!(SpatialRef::from_wkt(&bound).axis_order(), AxisOrder::NorthEast, "{bound}");
+    let compound = r#"COMPD_CS["x",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],AUTHORITY["EPSG","4326"]],VERT_CS["EGM96 height",VERT_DATUM["EGM96 geoid",2005],UNIT["metre",1],AXIS["Up",UP]]]"#;
+    assert_eq!(SpatialRef::from_wkt(compound).axis_order(), AxisOrder::NorthEast);
+    let web = SpatialRef::compound(3857, 5773).unwrap().projection_params().unwrap();
+    assert_eq!((web.a, web.b), (6378137.0, 6356752.314245179));
+    let km = SpatialRef::from_proj4("+proj=longlat +datum=WGS84 +units=km").unwrap().projection_params().unwrap();
+    assert_eq!(km.to_meter, 1.0);
+}
+
+/// PROJ 9.8.1's WKT 2 of EPSG:4326 (pyproj 3.8.0 `CRS("EPSG:4326").to_wkt("WKT2_2019")`).
+const WGS84_WKT2: &str = r#"GEOGCRS["WGS 84",ENSEMBLE["World Geodetic System 1984 ensemble",MEMBER["World Geodetic System 1984 (Transit)"],MEMBER["World Geodetic System 1984 (G730)"],MEMBER["World Geodetic System 1984 (G873)"],MEMBER["World Geodetic System 1984 (G1150)"],MEMBER["World Geodetic System 1984 (G1674)"],MEMBER["World Geodetic System 1984 (G1762)"],MEMBER["World Geodetic System 1984 (G2139)"],MEMBER["World Geodetic System 1984 (G2296)"],ELLIPSOID["WGS 84",6378137,298.257223563,LENGTHUNIT["metre",1]],ENSEMBLEACCURACY[2.0]],PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.0174532925199433]],CS[ellipsoidal,2],AXIS["geodetic latitude (Lat)",north,ORDER[1],ANGLEUNIT["degree",0.0174532925199433]],AXIS["geodetic longitude (Lon)",east,ORDER[2],ANGLEUNIT["degree",0.0174532925199433]],USAGE[SCOPE["Horizontal component of 3D system."],AREA["World."],BBOX[-90,-180,90,180]],ID["EPSG",4326]]"#;
 
 #[test]
 fn a_crs_terrio_cannot_read_has_no_accessor_values() {

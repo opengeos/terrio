@@ -199,7 +199,7 @@ class Proj:
         lib.proj_context_set_enable_network(self.ctx, 0)
         lib.proj_log_level(self.ctx, 0)
         lib.proj_context_set_search_paths(
-            self.ctx, 1, (s * 1)(pyproj.datadir.get_data_dir().encode())
+            self.ctx, 1, (ctypes.c_char_p * 1)(pyproj.datadir.get_data_dir().encode())
         )
 
     def body(self, text):

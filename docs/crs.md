@@ -945,7 +945,9 @@ and the `Axis order`, `Body` and `Method` lines of `terrio crs CRS` (and its MCP
   - for a PROJ string, its named ellipsoid under `+f`, `+es` and `+e`, and before `+R_A` and
     `+R_C`.
 
-  `None` for a CRS terrio can't read, or reads only through wbprojection's WKT parser. Where
+  A WKT that declares an EPSG code terrio has gives that code's values, as terrio transforms it
+  (PROJ reads the WKT's own nodes, which may differ). `None` for a CRS terrio can't read, or
+  reads only through wbprojection's WKT parser. Where
   PROJ writes no PROJ string (Polar Stereographic variant C, planetocentric IAU_2015 projected
   CRSs on an ellipsoid), terrio gives those of the string it reads the CRS by.
 - `body()` names the celestial body as PROJ does: `Earth` for an EPSG or ESRI code, the body of
