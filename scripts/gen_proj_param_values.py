@@ -152,6 +152,7 @@ EXTRA = [
     "+proj=eqc +geoidgrids=x.gtx +vto_meter=0",
     "+proj=eqc +vunits=m +vto_meter=0",
     "+proj=longlat +towgs84=1,abc,3",
+    "+proj=longlat +towgs84=1,2,3,",
     "+proj=longlat +pm=abc",
     "+proj=longlat +pm=paris",
     "+proj=eqc +lat_ts=0.5r",
@@ -219,6 +220,7 @@ def main():
             )
         )
     rows += EXTRA
+    rows = list(dict.fromkeys(rows))
     OUT.write_text("".join(f"{d}\t{accepted(with_ellipsoid(d))}\n" for d in rows))
 
 

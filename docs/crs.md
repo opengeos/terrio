@@ -316,8 +316,11 @@ definition. Use an expanded `+proj` definition when changing these flags.
 
 A value PROJ 9.8.1 cannot read is refused when the method reads the parameter, as PROJ refuses it
 ("invalid value for lat_ts"), rather than taken as the parameter's default: `+proj=eqc +lat_ts=abc`,
-an unreadable `+towgs84` or `+pm`. A value ending in `r` is in radians (`0.5r`, as PROJ's `dmstor`
-reads it). A known `+units` comes before `+to_meter`, as in PROJ, and `+to_meter` is otherwise
+an unreadable `+towgs84` or `+pm`. An angular value ending in `r` is in radians (`0.5r`, as PROJ's `dmstor`
+reads it). Scale factors retain their existing numeric-alias policy: `+k_0=0.5r` uses a fully
+numeric `+k`, or defaults to 1 without one. This is a known difference from PROJ, which can use
+the numeric prefix 0.5 or reject the CRS, depending on the method.
+A known `+units` comes before `+to_meter`, as in PROJ, and `+to_meter` is otherwise
 refused unless it is a positive number (likewise `+vunits` and `+vto_meter` with `+geoidgrids`); a
 scale factor is refused unless the number it starts with is positive (NaN passes, as in PROJ).
 `lat_0`, `lon_0`, `x_0` and `y_0`, and `+f`, `+es` and `+e` without `+a`, stay as lenient as before:

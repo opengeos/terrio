@@ -60,8 +60,10 @@ fn known(definition: &str, proj_accepts: bool) -> bool {
 #[test]
 fn unreadable_parameter_values_are_refused_as_proj_refuses_them() {
     let mut differing = 0;
+    let mut definitions = std::collections::HashSet::new();
     for line in include_str!("data/proj_param_values.tsv").lines() {
         let (definition, proj) = line.split_once('\t').unwrap();
+        assert!(definitions.insert(definition), "duplicate definition: {definition}");
         let full = if own_ellipsoid(definition) { definition.to_string() } else { format!("{definition} +ellps=WGS84") };
         let accepted = SpatialRef::parse(&full);
         let proj_accepts = proj == "OK";
@@ -86,8 +88,15 @@ fn radians_and_units_are_read_as_proj_reads_them() {
     // `+units` before `+to_meter`, as PROJ reads them: feet.
     assert!((params("+proj=eqc +units=ft +to_meter=0.5 +ellps=WGS84").to_meter - 0.3048).abs() < 1e-15);
     assert!((params("+proj=eqc +to_meter=0.5 +ellps=WGS84").to_meter - 0.5).abs() < 1e-15);
-    // A scale factor `+k_0` that is not a number gives way to `+k`, in the projection as in the
-    // parameters written for it.
+}
+
+#[test]
+fn scale_factors_retain_the_documented_numeric_alias_policy() {
+    let params = |d: &str| SpatialRef::parse(d).unwrap().projection_params().unwrap();
+    // Known difference from PROJ 9.8.1: Terrio does not parse a scale's `r` suffix.
+    // It retains the first fully numeric alias, or 1 without one; PROJ may use the numeric
+    // prefix or reject the CRS, depending on the method.
+    assert_eq!(params("+proj=tmerc +k_0=0.5r +ellps=WGS84").k_0, 1.0);
     assert_eq!(params("+proj=tmerc +k_0=0.5r +k=0.9996 +ellps=WGS84").k_0, 0.9996);
     // PROJ 9.8.1 refuses a nonpositive fallback too, while NaN still passes.
     for k in ["0", "-1"] {
