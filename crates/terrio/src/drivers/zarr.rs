@@ -1228,7 +1228,8 @@ fn read_plan(a: &Array, total: usize, requests: usize) -> (usize, usize, bool) {
 }
 
 /// [`at_most`], or on threads waiting on a server ([`read_plan`]), `at_once` at a time; no chunk
-/// is requested once one has failed.
+/// is requested once one has failed. The first observed error is returned; when independent
+/// chunks fail concurrently, completion timing determines which error reaches the caller.
 fn each(waiting: bool, n: usize, at_once: usize, f: impl Fn(usize) -> Result<()> + Sync + Send) -> Result<()> {
     if waiting {
         return crate::par::map_waiting(n, at_once, f).map(drop);

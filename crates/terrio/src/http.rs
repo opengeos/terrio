@@ -1314,30 +1314,34 @@ impl Transport for Http10Close {
     }
 }
 
+type ReadCancelFlags = Arc<[Arc<AtomicBool>]>;
+
 thread_local! {
-    /// A response is abandoned when any enclosing parallel read fails.
-    static CANCEL_READS: std::cell::RefCell<Vec<Arc<AtomicBool>>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// A response is abandoned when any enclosing parallel read fails. Cloning the shared
+    /// slice on each transport wait does not allocate or clone each flag separately.
+    static CANCEL_READS: std::cell::RefCell<ReadCancelFlags> = std::cell::RefCell::new(Arc::from([]));
 }
 
 /// Cancellation inherited by nested waiting work and range requests. Flags stay on the stack
 /// only for the operation's scope, including on the calling thread and during unwinding.
 #[derive(Clone)]
-pub(crate) struct ReadCancellation(Vec<Arc<AtomicBool>>);
+pub(crate) struct ReadCancellation(ReadCancelFlags);
 
 impl ReadCancellation {
     pub(crate) fn capture_with(flag: Arc<AtomicBool>) -> Self {
-        let mut flags = CANCEL_READS.with_borrow(Clone::clone);
+        let mut flags = CANCEL_READS.with_borrow(|flags| flags.to_vec());
         flags.push(flag);
-        Self(flags)
+        Self(flags.into())
     }
 
     pub(crate) fn enter(&self) -> ReadCancellationScope {
-        ReadCancellationScope { previous: CANCEL_READS.replace(self.0.clone()), stop: self.0.last().unwrap().clone() }
+        let stop = self.0.last().expect("capture_with pushes a flag").clone();
+        ReadCancellationScope { previous: Some(CANCEL_READS.replace(self.0.clone())), stop }
     }
 }
 
 pub(crate) struct ReadCancellationScope {
-    previous: Vec<Arc<AtomicBool>>,
+    previous: Option<ReadCancelFlags>,
     stop: Arc<AtomicBool>,
 }
 
@@ -1346,7 +1350,9 @@ impl Drop for ReadCancellationScope {
         if std::thread::panicking() {
             self.stop.store(true, Ordering::SeqCst);
         }
-        CANCEL_READS.set(std::mem::take(&mut self.previous));
+        if let Some(previous) = self.previous.take() {
+            CANCEL_READS.set(previous);
+        }
     }
 }
 

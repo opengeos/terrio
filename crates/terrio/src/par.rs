@@ -510,6 +510,8 @@ pub(crate) fn map_range_coarse<R: Send>(n: usize, f: impl Fn(usize) -> R + Sync 
 /// error is returned, and once a call has failed, no worker starts another. Native HTTP reads
 /// already in flight and their retry waits are cancelled; nested waiting work inherits this
 /// cancellation. An HTTP cancellation error never replaces the error that stopped the batch.
+/// When independent calls fail concurrently, completion timing determines which error is
+/// observed first; error selection is therefore not deterministic across runs.
 ///
 /// The threads see the caller's scoped options and STAC asset read policy
 /// ([`crate::stac::AssetReadContext`]), which a new thread would not have. They count as

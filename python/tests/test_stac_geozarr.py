@@ -153,6 +153,7 @@ def test_remote_zarr_failure_cancels_stalled_body(tmp_path, failed_chunk):
     (store / "0.0").write_bytes(bytes([1, 2]))
     (store / "1.0").write_bytes(bytes([3, 4]))
     stalled = threading.Event()
+    coordination_failed = threading.Event()
     release = threading.Event()
     failing = threading.Event()
     failing.set()
@@ -165,7 +166,8 @@ def test_remote_zarr_failure_cancels_stalled_body(tmp_path, failed_chunk):
             chunk = self.path.rsplit("/", 1)[-1]
             if failing.is_set() and chunk in ("0.0", "1.0"):
                 if chunk == failed_chunk:
-                    assert stalled.wait(10), "the other chunk was never requested"
+                    if not stalled.wait(10):
+                        coordination_failed.set()
                     self.send_error(400)
                 else:
                     self.send_response(200)
@@ -189,8 +191,9 @@ def test_remote_zarr_failure_cancels_stalled_body(tmp_path, failed_chunk):
         url = f"http://127.0.0.1:{server.server_address[1]}/stall.zarr"
         back = terrio.open_raster(url, lazy=True)
         started = time.monotonic()
-        with pytest.raises(Exception, match="400"):
+        with pytest.raises(terrio.InvalidDataError, match=r"Zarr: chunk .*status 400"):
             back.read(1)
+        assert not coordination_failed.is_set(), "the other chunk was never requested"
         assert time.monotonic() - started < 10, "read waited for the stalled chunk"
         assert stalled.is_set()
         failing.clear()
