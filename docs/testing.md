@@ -9,6 +9,25 @@ terrio reproduces the GDAL they compare with (see [warp](cli.md#warp)). Pull req
 compare the point cloud filters with PDAL's on `autzen_trim.las` only; pushes to `main` on the
 Madison lidar (4 million points) too (`scripts/compare_pointclouds.py --quick` skips it).
 
+## Repeated GeoParquet columns through Arrow
+
+`python -m pytest python/tests/test_vector_duplicate_columns.py python/tests/test_pyogrio_arrow.py`
+checks repeated attributes through Arrow stream export, `read_arrow` and Arrow-backed
+dataframes. Generated suffixes reserve existing declared names and remain stable
+when selecting a single column or filtering by bbox. Covering-struct and geometry
+filters, multiple row groups, Snappy/Zstandard, nested types, nulls and field
+metadata are covered. Native regressions run with
+`cargo test -p terrio --lib drivers::vector::geoparquet_arrow::tests`.
+This is Terrio's naming policy, checked against independently written positional
+PyArrow columns, rather than a GDAL naming-conformance claim.
+A local Natural Earth check wrote the 176 country names and population estimates
+as two columns both named `value`, with Zstandard and 32-row groups. Arrow stream,
+table and dataframe reads retained exact values and WKB for all countries and for
+the six geometry-bbox matches to (-130, 20, -60, 55), including selection of only
+`value_2`. Full ordinary and Arrow dataframes agreed. The Arrow filter uses
+geometry bounding boxes; this does not claim identical row selection to an exact
+geometry-intersection filter.
+
 ## Input isolation and diagnostic privacy
 
 `python/tests/test_crs_input_safety.py` checks that Python CRS strings and dataset

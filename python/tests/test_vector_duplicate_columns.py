@@ -15,6 +15,94 @@ CASES = [
 ]
 
 
+@pytest.mark.parametrize("names,expected", CASES)
+@pytest.mark.parametrize("surface", ["stream", "arrow", "frame"])
+@pytest.mark.parametrize("select_second", [False, True])
+@pytest.mark.parametrize("filtered", [False, True])
+@pytest.mark.parametrize("covering", [False, True])
+def test_geoparquet_arrow_exports_keep_each_physical_column(
+    tmp_path, names, expected, surface, select_second, filtered, covering
+):
+    """Preserve positional values through Arrow selection and both bbox filter paths.
+
+    Args:
+        tmp_path: Temporary dataset directory.
+        names: Repeated physical column names.
+        expected: Distinct public attribute names.
+        surface: Arrow stream, pyogrio Arrow read or dataframe read.
+        select_second: Whether to request only the renamed second column.
+        filtered: Whether to keep only the middle feature by bounding box.
+        covering: Whether a Zstandard file supplies a bounding-box covering struct.
+    """
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    path, _ = duplicate_file(tmp_path, "parquet", names)
+    table = pq.ParquetFile(path).read()
+    if covering:
+        bounds = pa.StructArray.from_arrays(
+            [pa.array([10.0, 11.0, 12.0]), pa.array([46.0, 47.0, 48.0])] * 2,
+            names=["xmin", "ymin", "xmax", "ymax"],
+        )
+        table = table.add_column(0, "bbox", bounds)
+        geo = json.loads(table.schema.metadata[b"geo"])
+        geo["columns"]["geometry"]["covering"] = {
+            "bbox": {key: ["bbox", key] for key in ["xmin", "ymin", "xmax", "ymax"]}
+        }
+        table = table.replace_schema_metadata({b"geo": json.dumps(geo).encode()})
+    pq.write_table(table, path, compression="zstd" if covering else "snappy", row_group_size=2)
+    selected = [expected[1]] if select_second else expected
+    columns = selected if select_second else None
+    bbox = (10.5, 46.5, 11.5, 47.5) if filtered else None
+    rows = [1] if filtered else [0, 1, 2]
+    if surface == "frame":
+        pytest.importorskip("geopandas")
+        frame = tpg.read_dataframe(path, use_arrow=True, columns=columns, bbox=bbox)
+        assert list(frame.columns) == [*selected, "geometry"]
+        actual = frame.drop(columns="geometry").to_dict("records")
+        assert [(g.x, g.y) for g in frame.geometry] == [(10 + r, 46 + r) for r in rows]
+    else:
+        if surface == "stream":
+            stream = terrio.open_stream(str(path), columns=columns, bbox=bbox, batch_size=1)
+            assert list(stream.fields) == selected
+            table = pa.table(stream)
+        else:
+            meta, table = tpg.read_arrow(path, columns=columns, bbox=bbox)
+            assert list(meta["fields"]) == selected
+        assert table.column_names == [*selected, "geometry"]
+        assert table["geometry"].to_pylist() == [
+            struct.pack("<BIdd", 1, 1, 10.0 + r, 46.0 + r) for r in rows
+        ]
+        actual = table.drop(["geometry"]).to_pylist()
+    assert actual == [
+        {name: 10 * (row + 1) + expected.index(name) + 1 for name in selected} for row in rows
+    ]
+
+
+def test_geoparquet_arrow_duplicate_types_and_metadata(tmp_path):
+    """Keep each repeated column's nested Arrow type, nulls and field metadata."""
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    schema = pa.schema(
+        [
+            pa.field("count", pa.int64()),
+            pa.field("count", pa.list_(pa.int32()), metadata={b"source": b"second"}),
+            pa.field("total", pa.string()),
+        ]
+    )
+    source = pa.Table.from_arrays(
+        [pa.array([1, None]), pa.array([[2, 3], None], pa.list_(pa.int32())), pa.array(["a", "b"])],
+        schema=schema,
+    )
+    path = tmp_path / "typed.parquet"
+    pq.write_table(source, path, compression="zstd")
+    table = pa.table(terrio.open_stream(str(path)))
+    assert table.column_names == ["count", "count_2", "total"]
+    assert table["count"].to_pylist() == [1, None]
+    assert table["count_2"].to_pylist() == [[2, 3], None]
+    assert table.schema.field("count_2").type == pa.list_(pa.int32())
+    assert table.schema.field("count_2").metadata == {b"source": b"second"}
+
+
 def duplicate_file(folder, extension, names):
     """Write a valid positional dataset with deliberately repeated field declarations.
 

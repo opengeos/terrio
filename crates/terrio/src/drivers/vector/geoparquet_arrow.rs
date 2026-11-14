@@ -206,13 +206,17 @@ impl GeoParquetBatches {
             m.iter().all(|(c, _)| *c == m[0].0).then(|| (m[0].0.clone(), m.map(|(_, n)| n)))
         });
         let index = |name: &str| file_schema.fields().iter().position(|f| f.name() == name);
+        // Resolve names before projecting so a generated name selects the same physical
+        // column whether it is read alone or with all the other attributes.
+        let names = super::unique_column_names(file_schema.fields().iter().map(|f| f.name().clone()).collect());
+        let named_fields: Vec<Field> = file_schema.fields().iter().zip(names).map(|(f, name)| f.as_ref().clone().with_name(name)).collect();
 
         // The output columns, in the file's order: the geometry columns, and the attributes asked
         // for (by default all but the covering column).
         // A name matches a column without case, and `name.member` names the struct column `name`
         // when it has that member (see `names_field`).
         if let Some(columns) = &options.columns
-            && let Some(missing) = columns.iter().find(|c| !file_schema.fields().iter().any(|f| names_field(f, c)))
+            && let Some(missing) = columns.iter().find(|c| !named_fields.iter().any(|f| names_field(f, c)))
         {
             return Err(Error::InvalidArgument(format!("no column named {missing:?} in the file")));
         }
@@ -221,7 +225,7 @@ impl GeoParquetBatches {
                 let field = file_schema.field(i);
                 geo_columns.contains_key(field.name())
                     || match &options.columns {
-                        Some(columns) => columns.iter().any(|c| names_field(field, c)),
+                        Some(columns) => columns.iter().any(|c| names_field(&named_fields[i], c)),
                         None => covering.as_ref().is_none_or(|(c, _)| c != field.name()),
                     }
             })
@@ -247,6 +251,10 @@ impl GeoParquetBatches {
             }
             _ => (None, mask.clone()),
         };
+        // A projected batch is in source-root order, even when names repeat. The covering
+        // pass reads only the wanted roots; otherwise filtering can add another root.
+        let main_roots = if cover_mask.is_some() { &wanted } else { &read };
+        let output_indices: Vec<usize> = wanted.iter().map(|i| main_roots.binary_search(i).expect("wanted root is read")).collect();
 
         // The output schema: the file's fields, the geometry columns tagged as GeoArrow.
         let fields: Vec<Field> = wanted
@@ -254,8 +262,8 @@ impl GeoParquetBatches {
             .map(|&i| {
                 let f = file_schema.field(i);
                 match geo_columns.get(f.name()) {
-                    Some(col) => geoarrow_field(f, col),
-                    None => f.clone(),
+                    Some(col) => geoarrow_field(f, col).with_name(named_fields[i].name()),
+                    None => named_fields[i].clone(),
                 }
             })
             .collect();
@@ -326,10 +334,9 @@ impl GeoParquetBatches {
                     Some((rect, f)) if !selected => Some(f.rows(&batch, *rect, &encoding)?),
                     _ => None,
                 };
-                let columns: Vec<ArrayRef> = out
-                    .fields()
+                let columns: Vec<ArrayRef> = output_indices
                     .iter()
-                    .map(|f| batch.column_by_name(f.name()).cloned().ok_or_else(|| err(&"a column not read")))
+                    .map(|&i| batch.columns().get(i).cloned().ok_or_else(|| err(&"a column not read")))
                     .collect::<Result<_>>()?;
                 let projected = RecordBatch::try_new(out.clone(), columns).map_err(|e| err(&e))?;
                 let projected = match keep {
@@ -555,6 +562,46 @@ fn wkb_extend(b: &[u8], at: &mut usize, bb: &mut [f64; 4], depth: u32) -> Option
 mod tests {
     use super::wkb_bbox;
     use wbvector::{Coord, Geometry, Ring};
+
+    #[test]
+    fn repeated_columns_retain_positions_types_and_generated_selection_names() {
+        use super::{GeoParquetBatches, GeoParquetReadOptions};
+        use arrow_array::{Int32Array, Int64Array, RecordBatch, RecordBatchReader, StringArray};
+        use arrow_schema::{DataType, Field, Schema};
+        use std::sync::Arc;
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("count", DataType::Int64, true),
+            Field::new("count", DataType::Int32, true),
+            Field::new("total", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![1, 4])),
+                Arc::new(Int32Array::from(vec![2, 5])),
+                Arc::new(StringArray::from(vec!["a", "b"])),
+            ],
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        let mut writer = parquet::arrow::ArrowWriter::try_new(&mut bytes, schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        for columns in [None, Some(vec!["count_2".into()])] {
+            let selected = columns.is_some();
+            let options = GeoParquetReadOptions { columns, ..Default::default() };
+            let mut reader = GeoParquetBatches::open(bytes::Bytes::from(bytes.clone()), &options, None).unwrap();
+            let names: Vec<_> = reader.schema().fields().iter().map(|f| f.name().clone()).collect();
+            assert_eq!(names, if selected { vec!["count_2"] } else { vec!["count", "count_2", "total"] });
+            let result = reader.next().unwrap().unwrap();
+            let column = result.column_by_name("count_2").unwrap().as_any().downcast_ref::<Int32Array>().unwrap();
+            assert_eq!(column.values().as_ref(), &[2, 5]);
+            if !selected {
+                assert_eq!(result.column(0).as_any().downcast_ref::<Int64Array>().unwrap().values().as_ref(), &[1, 4]);
+                assert_eq!(result.column(2).as_any().downcast_ref::<StringArray>().unwrap().value(0), "a");
+            }
+        }
+    }
 
     /// A remote file is read by range requests: its footer, then the column chunks asked for of
     /// the row groups whose statistics overlap the rectangle, not the whole file.
