@@ -39,8 +39,14 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
 - PROJJSON v0.7 definitions in the [supported object subset](#projjson-definitions);
 - PROJ strings: `+proj=utm +zone=13 +datum=WGS84`, with `+nadgrids=` and `+geoidgrids=` for
   datum shift and geoid grids;
-- the path of a regular file holding one of these (`SpatialRef::parse_literal` in Rust parses the same
-  definitions without reading file paths).
+- the CLI and Rust's `SpatialRef::parse` also accept the path of a trusted regular file
+  holding one of these. Python and JavaScript CRS strings, and CRS metadata stored in
+  datasets, are parsed literally and never interpreted as local filenames.
+
+When a Python caller deliberately wants a CRS from a trusted local file, read the text
+explicitly, for example `CRS.from_user_input(Path("zone.prj").read_text())`. Rust callers
+handling untrusted strings should use `SpatialRef::parse_literal`. Errors from the trusted
+file-parsing form name the file without quoting its contents.
 
 Definition-file paths may be symlinks to regular files. Pipes (including shell process
 substitution) and devices are refused without reading them. Callers that intentionally
@@ -396,11 +402,14 @@ and datums, found and sorted as PROJ's `proj_create_operations` does (through an
 first, between the geographic and geocentric CRSs of the datums, then through an intermediate datum,
 whatever its CRSs; without the transformations replaced by another it finds); when none applies, no
 shift (PROJ's "ballpark" transformation, of 0 m accuracy between CRSs that differ only by their
-prime meridian). NAD27 to ITRF92, for instance, goes through NAD83(2011) (PROJ's concatenation of
-the NADCON5 grids), ITRF2008 and ITRF2014. NAD83 and WGS 84 are treated as equivalent, as GDAL's
-default operations do. Bounds are transformed with densified edges, so curved edges in the target
-CRS are covered. `scripts/gen_epsg_points.py` writes GDAL's results for every EPSG CRS, which
-`crates/terrio-crs/tests/epsg_accuracy.rs` checks terrio against (see the
+prime meridian). A transformation whose area of use is the whole world, as the ballpark's, holds
+every point, even one beyond a pole, as in PROJ; a datum shift refuses a latitude beyond a pole
+rather than folding it back, so such a point is kept as it is by the ballpark, or refused where
+there is none (`+towgs84`). NAD27 to ITRF92, for instance, goes through NAD83(2011) (PROJ's
+concatenation of the NADCON5 grids), ITRF2008 and ITRF2014. NAD83 and WGS 84 are treated as
+equivalent, as GDAL's default operations do. Bounds are transformed with densified edges, so curved
+edges in the target CRS are covered. `scripts/gen_epsg_points.py` writes GDAL's results for every
+EPSG CRS, which `crates/terrio-crs/tests/epsg_accuracy.rs` checks terrio against (see the
 [conformance report](conformance.md)).
 
 `Transformer::operation_at(x, y, z)` returns the transformations `transform_3d` runs for a point,

@@ -1069,12 +1069,12 @@ fn shows_ascii_grid(head: &[u8]) -> bool {
 /// allow-list of SRTMHGT and GTiff and opened as GSBG.
 #[cfg(remote)]
 pub(crate) fn check_remote_head(name: &str, shown: &str, head: &[u8], len: u64) -> crate::Result<()> {
-    let shown = shown.split(['?', '#']).next().unwrap_or(shown);
+    let shown = crate::vsi::redact_diagnostic_location(shown);
     if sniff(head) == Some("GSBG") && read_as_raster(name) {
-        check_driver_allowed("GSBG", shown, Kind::Raster)?;
+        check_driver_allowed("GSBG", &shown, Kind::Raster)?;
     }
     if crate::drivers::hgt::is_tile(name, len, head) {
-        return check_driver_allowed("SRTMHGT", shown, Kind::Raster);
+        return check_driver_allowed("SRTMHGT", &shown, Kind::Raster);
     }
     let Named::Name(_, by_name) = named_drivers(name) else { return Ok(()) };
     let signed = |driver: &String| SIGNED_DRIVERS.iter().find(|(d, _)| d == driver).map(|(_, signature)| *signature);
@@ -1302,7 +1302,7 @@ pub(crate) fn allowed_text(allowed: &[String]) -> String {
 /// [`check_drivers`] on what [`identify`] or [`identify_bytes`] found for `path`.
 fn check_identified(path: &str, id: &Identified, allowed: &[String]) -> crate::Result<()> {
     let allowed: Vec<String> = allowed.iter().map(|n| canonical_driver_name(n)).collect();
-    let shown = path.split(['?', '#']).next().unwrap_or(path);
+    let shown = crate::vsi::redact_diagnostic_location(path);
     if !id.by_name.is_empty() && !id.by_name.iter().any(|d| allowed.contains(d)) {
         return Err(crate::Error::Unsupported(format!(
             "'{shown}': the {} driver is not allowed (allowed: {})",
@@ -1354,7 +1354,7 @@ pub(crate) fn check_allowed(path: &str, kind: Option<Kind>) -> crate::Result<()>
 pub fn check_driver_allowed(driver: &str, path: &str, kind: Kind) -> crate::Result<()> {
     match allowed_drivers(Some(kind)) {
         Some(list) if !list.contains(&canonical_driver_name(driver)) => {
-            let shown = path.split(['?', '#']).next().unwrap_or(path);
+            let shown = crate::vsi::redact_diagnostic_location(path);
             Err(crate::Error::Unsupported(format!(
                 "'{shown}' holds {driver} data, and the {driver} driver is not allowed (allowed: {})",
                 allowed_text(&list)
@@ -1407,7 +1407,7 @@ fn check_query_readable(path: &str, kind: Option<Kind>, allowed: &[String]) -> c
     if raster || readers.iter().any(|name| lists(allowed, name)) {
         return Ok(());
     }
-    let shown = url.split(['?', '#']).next().unwrap_or(url);
+    let shown = crate::vsi::redact_diagnostic_location(url);
     let or_raster = if kind.is_none() { ", or any raster driver" } else { "" };
     Err(crate::Error::Unsupported(format!(
         "'{shown}': the drivers that read its answer ({}{or_raster}) are not allowed (allowed: {})",

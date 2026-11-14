@@ -155,7 +155,7 @@ fn layer_from_geojson_text(text: &str, name: Option<&str>, crs: Option<&str>) ->
     let mut layer = terrio::memory::parse_geojson_layer(text.as_bytes(), "layer").py()?;
     layer.name = name.unwrap_or("layer").to_string();
     let crs = match crs {
-        Some(c) => SpatialRef::parse(c).py()?,
+        Some(c) => SpatialRef::parse_literal(c).py()?,
         None => SpatialRef::from_epsg(4326).py()?,
     };
     layer.set_crs_epsg(crs.epsg);
@@ -423,7 +423,7 @@ impl PyLayer {
     /// Raises:
     ///     CRSError: If a CRS is unknown or cannot be parsed.
     fn to_crs(&self, py: Python<'_>, crs: &str) -> PyResult<Self> {
-        let dst = SpatialRef::parse(crs).py()?;
+        let dst = SpatialRef::parse_literal(crs).py()?;
         let inner = &self.inner;
         Ok(Self { inner: py.detach_result(|| terrio::vector::reproject_layer(inner, &dst)).py()?, style_table: self.style_table.clone() })
     }

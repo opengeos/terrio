@@ -231,7 +231,7 @@ fn prepare(sources: &mut [RetileSource<'_>], o: &RetileOptions) -> Result<(Retil
     if o.tile_index_field.is_empty() || o.tile_index_field.contains('\0') {
         return Err(invalid("tile index field must be nonempty"));
     }
-    let assigned = o.source_srs.as_ref().map(|s| SpatialRef::parse(s)).transpose()?;
+    let assigned = o.source_srs.as_ref().map(|s| SpatialRef::parse_literal(s)).transpose()?;
     let mut headers = Vec::new();
     for input in sources.iter_mut() {
         let mut h = input.source.info()?.raster;
@@ -554,7 +554,7 @@ fn manifests(
     if let Some(name) = &o.tile_index {
         let mut layer = crate::Layer::new(std::path::Path::new(name).file_stem().and_then(|v| v.to_str()).unwrap_or("tiles"));
         if let Some(crs) = &plan.crs {
-            SpatialRef::parse(crs)?.apply_to_layer(&mut layer);
+            SpatialRef::parse_literal(crs)?.apply_to_layer(&mut layer);
         }
         let mut field = crate::FieldDef::new(&o.tile_index_field, crate::FieldType::Text);
         field.width = 254;

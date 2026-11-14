@@ -773,7 +773,13 @@ uploaded = terrio.open_vrt(xml, {"dem.tif": image_bytes})
 ```
 
 `open_vrt` accepts source names mapped to file bytes, paths or `PathLike` objects;
-source windows remain lazy. `open_raster(path, lazy=True)` also opens VRT files
+every referenced name, including masks and RPC DEMs, must appear in the map.
+Missing entries raise an error without resolving host files or URLs. Supplied
+path values explicitly authorize those paths; source windows remain lazy.
+Only referenced entries are opened. A source supplied as bytes that is itself
+a VRT is opened against the same map (up to 8 levels, without cycles), and bytes
+of a STAC, STACTA or STACIT document are refused.
+`open_raster(path, lazy=True)` also opens VRT files
 lazily. The [serialized VRT support](cli.md#serialized-virtual-rasters) lists the
 supported transformers, built-in functions, kernels and masks.
 

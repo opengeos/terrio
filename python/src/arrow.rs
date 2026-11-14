@@ -180,7 +180,7 @@ pub(crate) fn layer_from_object(obj: &Bound<'_, PyAny>, name: Option<&str>, crs:
     };
     let mut layer = obj.py().detach_result(|| layer_from_arrow(&schema, &batches, name.unwrap_or("layer"))).py()?;
     if let Some(c) = crs {
-        SpatialRef::parse(c).py()?.apply_to_layer(&mut layer);
+        SpatialRef::parse_literal(c).py()?.apply_to_layer(&mut layer);
     }
     Ok(layer)
 }

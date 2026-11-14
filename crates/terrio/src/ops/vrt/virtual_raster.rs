@@ -18,6 +18,89 @@ use std::path::Path;
 use wbraster::DataType;
 use wbraster::raster::RasterData;
 
+/// How deep supplied VRT documents may nest in [`VirtualRaster::open_supplied`].
+pub const SUPPLIED_VRT_DEPTH: usize = 8;
+
+/// A source given to [`VirtualRaster::open_supplied`].
+#[derive(Debug, Clone)]
+pub enum SuppliedSource {
+    /// The source's bytes, such as an upload. Never resolves other files or URLs.
+    Bytes(Vec<u8>),
+    /// A path or URL the caller chose, opened as [`crate::open_raster_lazy`] opens it.
+    Path(String),
+}
+
+/// Drivers whose documents name further datasets, refused as supplied bytes.
+const REFERENCING_DRIVERS: [&str; 3] = ["STAC", "STACTA", "STACIT"];
+
+/// The source names a VRT element tree references, as [`super::validate_supplied_sources`] reads them.
+fn referenced_names(root: &xml::Element, names: &mut std::collections::BTreeSet<String>) {
+    match root.name.as_str() {
+        "SourceFilename" | "SourceDataset" => {
+            names.insert(root.text.clone());
+        }
+        "DEMPath" => {
+            names.insert(root.text.trim().to_string());
+        }
+        _ => {}
+    }
+    for child in &root.children {
+        referenced_names(child, names);
+    }
+}
+
+fn open_supplied_document(xml: &str, sources: &HashMap<String, SuppliedSource>, stack: &mut Vec<String>) -> Result<LazyRaster> {
+    let description = VirtualRaster::from_xml(xml)?;
+    let mut names = std::collections::BTreeSet::new();
+    referenced_names(&description.root, &mut names);
+    let mut opened = HashMap::with_capacity(names.len());
+    for name in names {
+        let source = sources.get(&name).ok_or_else(|| super::missing_supplied_source(&name))?;
+        let raster = open_supplied_source(&name, source, sources, stack)?;
+        opened.insert(name, raster);
+    }
+    description.into_lazy(Path::new(""), opened)
+}
+
+fn open_supplied_source(
+    name: &str,
+    source: &SuppliedSource,
+    sources: &HashMap<String, SuppliedSource>,
+    stack: &mut Vec<String>,
+) -> Result<LazyRaster> {
+    let bytes = match source {
+        SuppliedSource::Path(path) => return crate::open_raster_lazy(path),
+        SuppliedSource::Bytes(bytes) => bytes,
+    };
+    let shown = || crate::vsi::redact_diagnostic_location(name).into_owned();
+    let identified = crate::formats::identify_bytes(name, bytes);
+    if identified.by_content.as_deref() == Some("VRT") {
+        if stack.iter().any(|open| open == name) {
+            return Err(Error::InvalidArgument(format!("supplied VRT '{}' references itself", shown())));
+        }
+        if stack.len() >= SUPPLIED_VRT_DEPTH {
+            return Err(Error::ResourceLimit(format!("supplied VRTs nest more than {SUPPLIED_VRT_DEPTH} levels deep at '{}'", shown())));
+        }
+        crate::formats::check_driver_allowed("VRT", name, crate::formats::Kind::Raster)?;
+        let text = std::str::from_utf8(bytes).map_err(|e| Error::InvalidData(format!("supplied VRT '{}': {e}", shown())))?;
+        stack.push(name.to_string());
+        let result = open_supplied_document(text, sources, stack);
+        stack.pop();
+        return result;
+    }
+    let drivers = match &identified.by_content {
+        Some(driver) => std::slice::from_ref(driver),
+        None => identified.by_name.as_slice(),
+    };
+    if let Some(driver) = drivers.iter().find(|d| d.as_str() == "VRT" || REFERENCING_DRIVERS.contains(&d.as_str())) {
+        return Err(Error::Unsupported(format!(
+            "supplied source '{}' is a {driver} document, which names other datasets; supply its data instead",
+            shown()
+        )));
+    }
+    crate::memory::open_raster_lazy_bytes(bytes.clone(), name)
+}
+
 /// A serialized virtual raster. Source files are opened only when their pixels are requested.
 /// Built-in derived bands, kernel sources and affine/reprojected warped VRTs are supported.
 #[derive(Debug, Clone)]
@@ -288,18 +371,42 @@ impl VirtualRaster {
         self.root.to_xml()
     }
 
-    /// Open with an explicit source map. Keys match SourceFilename/SourceDataset exactly.
+    /// Open using only supplied sources. Keys match SourceFilename/SourceDataset exactly.
     /// This supports uploaded sources in WebAssembly without a filesystem. Refused when the VRT
     /// declares more than `TERRIO_MAX_DECLARED_BYTES` or `TERRIO_MAX_BANDS` allow.
     pub fn into_lazy(self, base: &Path, sources: HashMap<String, LazyRaster>) -> Result<LazyRaster> {
-        let r = self.into_lazy_reference(&base.join("__vrt__.vrt").to_string_lossy(), sources)?;
+        super::validate_supplied_sources(&self.root, &sources)?;
+        let r = self.into_lazy_reference(&base.join("__vrt__.vrt").to_string_lossy(), sources, false)?;
         crate::declared::check_lazy(&r)?;
         Ok(r)
     }
 
-    fn into_lazy_reference(self, base: &str, sources: HashMap<String, LazyRaster>) -> Result<LazyRaster> {
+    /// Opens a serialized VRT whose every source is supplied by the caller, as an upload does.
+    ///
+    /// Only the entries the VRT references are opened, and nothing outside `sources` is read:
+    /// a supplied VRT document is opened against the same map (to [`SUPPLIED_VRT_DEPTH`] levels,
+    /// without cycles), and supplied bytes in a format that names further datasets (STAC,
+    /// STACTA, STACIT) are refused. A [`SuppliedSource::Path`] is opened as the caller named it.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the VRT is invalid, references a name missing from `sources`, nests too deep or
+    /// in a cycle, or when a source cannot be opened.
+    pub fn open_supplied(xml: &str, sources: &HashMap<String, SuppliedSource>) -> Result<LazyRaster> {
+        open_supplied_document(xml, sources, &mut Vec::new())
+    }
+
+    /// Open a trusted description with filesystem and network source resolution enabled.
+    /// Supplied sources override references exactly; missing entries resolve relative to `base`.
+    pub fn into_lazy_with_files(self, base: &Path, sources: HashMap<String, LazyRaster>) -> Result<LazyRaster> {
+        let r = self.into_lazy_reference(&base.join("__vrt__.vrt").to_string_lossy(), sources, true)?;
+        crate::declared::check_lazy(&r)?;
+        Ok(r)
+    }
+
+    fn into_lazy_reference(self, base: &str, sources: HashMap<String, LazyRaster>, allow_unmapped: bool) -> Result<LazyRaster> {
         if let Some(description) = self.pansharpen {
-            return description.into_lazy_reference(base, sources);
+            return description.into_lazy_reference(base, sources, allow_unmapped);
         }
         let grid = Grid {
             width: self.layout.width,
@@ -341,6 +448,7 @@ impl VirtualRaster {
         Ok(LazyRaster::from_source(
             header,
             Box::new(Reader {
+                allow_unmapped,
                 description: std::sync::Arc::new(self),
                 mask,
                 base: base.into(),
@@ -363,7 +471,7 @@ pub fn open_virtual_raster(path: &str) -> Result<LazyRaster> {
     crate::formats::check_driver_allowed("VRT", path, crate::formats::Kind::Raster)?;
     let local = crate::vfs::resolve(path)?;
     let text = String::from_utf8(crate::memfs::read(local.path())?).map_err(|e| invalid(&format!("invalid XML encoding: {e}")))?;
-    let r = VirtualRaster::from_xml(&text)?.into_lazy_reference(path, HashMap::new())?;
+    let r = VirtualRaster::from_xml(&text)?.into_lazy_reference(path, HashMap::new(), true)?;
     crate::declared::check_lazy(&r)?;
     Ok(r)
 }
@@ -533,6 +641,7 @@ struct ParsedWarp {
 }
 
 struct Reader {
+    allow_unmapped: bool,
     description: std::sync::Arc<VirtualRaster>,
     mask: Option<std::sync::Arc<VirtualRaster>>,
     base: String,
@@ -569,6 +678,9 @@ impl Reader {
         let Some(first) = description.layout.bands.iter().flat_map(|b| &b.sources).next() else {
             return Vec::new();
         };
+        if !self.allow_unmapped && !self.sources.contains_key(&first.filename) {
+            return Vec::new();
+        }
         let path = resolve_reference(&self.base, &first.filename, first.relative_to_vrt);
         let opened;
         let source = match self.sources.get(&first.filename).or_else(|| self.cached.get(&path)) {
@@ -615,6 +727,9 @@ impl Reader {
         // resolved paths so relativeToVRT=0/1 cannot alias different files.
         if self.sources.contains_key(name) {
             return Ok(self.sources.get_mut(name).expect("supplied source exists"));
+        }
+        if !self.allow_unmapped {
+            return Err(super::missing_supplied_source(name));
         }
         let path = resolve_reference(&self.base, name, relative);
         if !self.cached.contains_key(&path) {
@@ -860,6 +975,19 @@ impl Reader {
             .and_then(|w| w.children.iter().find(|o| o.name == "Option" && o.attr("name") == Some("UNIFIED_SRC_NODATA")))
             .is_some_and(|o| matches!(o.text.trim().to_ascii_uppercase().as_str(), "YES" | "PARTIAL"));
         let mut options = parsed.options;
+        // RPC transformers otherwise open their DEM independently of the VRT source reader.
+        // Pass only the caller-supplied DEM to a prepared transformer, without file I/O.
+        let supplied_rpc = if !self.allow_unmapped {
+            if let Some(name) = options.rpc_options.dem.clone() {
+                let dem = self.source(&name, false)?.read()?;
+                let rpc = options.rpc.as_ref().ok_or_else(|| invalid("DEM requires an RPC transformer"))?;
+                Some(std::sync::Arc::new(crate::ops::rpc::RpcTransformer::with_dem_dataset(rpc, &options.rpc_options, &dem)?))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let declared = options.output_type;
         let mut inferred = super::common_type(self.description.layout.bands.iter().map(|b| b.data_type));
         let count = self.description.layout.bands.len();
@@ -908,6 +1036,7 @@ impl Reader {
                     Some(working),
                     unified_sink,
                     parsed.source_overview,
+                    supplied_rpc.clone(),
                 )?;
                 let values = crate::cog::cut(&result.raster, Window::full(area.width, area.height), bands).to_f64_vec();
                 let (left, top, right, bottom) = (
@@ -976,7 +1105,7 @@ impl Reader {
             options.error_threshold = super::parse_number(&v.text)?;
         }
         if let Some(v) = descendant(warp, "SourceSRS").filter(|v| !v.text.trim().is_empty()) {
-            options.src_srs = Some(crate::crs::SpatialRef::parse(v.text.trim())?);
+            options.src_srs = Some(crate::crs::SpatialRef::parse_literal(v.text.trim())?);
         }
         if let Some(geo) = descendant(warp, "SrcGeoTransform") {
             let values = geo.text.split(',').map(super::parse_number).collect::<Result<Vec<_>>>()?;
@@ -1129,6 +1258,9 @@ impl WindowSource for Reader {
                 // Supplied names can alias unrelated files: ask the actual reader.
                 paths.extend(source.input_paths()?);
             } else {
+                if !self.allow_unmapped {
+                    return Err(super::missing_supplied_source(name));
+                }
                 let path = resolve_reference(&self.base, name, relative);
                 if resolved.insert(path.clone()) {
                     paths.extend(source_input_paths(&path)?);
@@ -1696,6 +1828,87 @@ mod tests {
     fn sources() -> HashMap<String, LazyRaster> {
         HashMap::from([("source.tif".into(), LazyRaster::from(raster()))])
     }
+
+    #[test]
+    fn supplied_vrt_documents_resolve_only_within_the_map() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = dir.path().join("host.tif");
+        crate::write_raster_dataset(&raster(), host.to_str().unwrap(), &Default::default()).unwrap();
+        let tif = crate::memory::write_raster_bytes(&raster(), "source.tif", &Default::default()).unwrap();
+        let simple = |name: &str| {
+            document(&format!(
+                "<VRTRasterBand dataType=\"Float64\"><SimpleSource><SourceFilename>{}</SourceFilename><SourceBand>1</SourceBand></SimpleSource></VRTRasterBand>",
+                xml::escape_filename(name)
+            ))
+        };
+        let expected = raster().raster.data.to_f64_vec();
+        let bytes = |text: String| SuppliedSource::Bytes(text.into_bytes());
+
+        // A nested VRT naming a host file is refused, as the outer document would be.
+        let map = HashMap::from([("inner.vrt".to_string(), bytes(simple(host.to_str().unwrap())))]);
+        let error = VirtualRaster::open_supplied(&simple("inner.vrt"), &map).unwrap_err().to_string();
+        assert!(error.contains("supplied"), "{error}");
+
+        // A nested VRT naming a mapped source reads that source.
+        let map = HashMap::from([
+            ("inner.vrt".to_string(), bytes(simple("source.tif"))),
+            ("source.tif".to_string(), SuppliedSource::Bytes(tif.clone())),
+            ("unreferenced.tif".to_string(), SuppliedSource::Bytes(b"not a raster".to_vec())),
+        ]);
+        let mut opened = VirtualRaster::open_supplied(&simple("inner.vrt"), &map).unwrap();
+        assert_eq!(opened.read().unwrap().raster.data.to_f64_vec(), expected);
+
+        // Cycles and deep nesting stop.
+        let map = HashMap::from([("a.vrt".to_string(), bytes(simple("b.vrt"))), ("b.vrt".to_string(), bytes(simple("a.vrt")))]);
+        assert!(VirtualRaster::open_supplied(&simple("a.vrt"), &map).unwrap_err().to_string().contains("references itself"));
+        let mut map: HashMap<_, _> =
+            (0..=SUPPLIED_VRT_DEPTH).map(|i| (format!("{i}.vrt"), bytes(simple(&format!("{}.vrt", i + 1))))).collect();
+        map.insert(format!("{}.vrt", SUPPLIED_VRT_DEPTH + 1), SuppliedSource::Bytes(tif.clone()));
+        assert!(matches!(VirtualRaster::open_supplied(&simple("0.vrt"), &map), Err(Error::ResourceLimit(_))));
+
+        // Documents of formats that name other datasets are not opened from supplied bytes.
+        let item = format!(
+            r#"{{"type":"Feature","stac_version":"1.0.0","id":"x","geometry":null,"properties":{{"datetime":null}},"links":[],"assets":{{"data":{{"href":"{}"}}}}}}"#,
+            host.to_str().unwrap()
+        );
+        let map = HashMap::from([("item.json".to_string(), bytes(item))]);
+        let error = VirtualRaster::open_supplied(&simple("item.json"), &map).unwrap_err().to_string();
+        assert!(error.contains("STAC"), "{error}");
+        let map = HashMap::from([("x.vrt".to_string(), SuppliedSource::Bytes(b"<not a VRT".to_vec()))]);
+        assert!(VirtualRaster::open_supplied(&simple("x.vrt"), &map).unwrap_err().to_string().contains("VRT document"));
+    }
+
+    #[test]
+    fn source_maps_are_a_closed_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = dir.path().join("host.tif");
+        crate::write_raster_dataset(&raster(), host.to_str().unwrap(), &Default::default()).unwrap();
+        for name in [host.to_str().unwrap(), "host.tif", "../host.tif", "https://127.0.0.1:1/private.tif", "s3://bucket/private.tif"] {
+            let text = document(&format!(
+                "<VRTRasterBand dataType=\"Float64\"><SimpleSource><SourceFilename>{}</SourceFilename><SourceBand>1</SourceBand></SimpleSource></VRTRasterBand>",
+                xml::escape_filename(name)
+            ));
+            let parsed = VirtualRaster::from_xml(&text).unwrap();
+            assert!(parsed.clone().into_lazy(dir.path(), HashMap::new()).unwrap_err().to_string().contains("supplied"));
+            let mut mapped = parsed.into_lazy(dir.path(), HashMap::from([(name.into(), LazyRaster::from(raster()))])).unwrap();
+            assert_eq!(mapped.read().unwrap().raster.data.to_f64_vec(), raster().raster.data.to_f64_vec());
+        }
+        let mask = document(&format!(
+            "<VRTRasterBand dataType=\"Float64\">{}</VRTRasterBand><MaskBand><VRTRasterBand dataType=\"Byte\"><SimpleSource><SourceFilename>unmapped-mask.tif</SourceFilename><SourceBand>1</SourceBand></SimpleSource></VRTRasterBand></MaskBand>",
+            source("SimpleSource", "")
+        ));
+        assert!(
+            VirtualRaster::from_xml(&mask).unwrap().into_lazy(dir.path(), sources()).unwrap_err().to_string().contains("unmapped-mask")
+        );
+    }
+
+    #[test]
+    fn independent_dem_references_require_supplied_sources() {
+        let root = xml::parse("<VRTDataset><GDALWarpOptions><Transformer><RPCTransformer><DEMPath>private-dem.tif</DEMPath></RPCTransformer></Transformer></GDALWarpOptions></VRTDataset>").unwrap();
+        assert!(super::super::validate_supplied_sources(&root, &sources()).unwrap_err().to_string().contains("private-dem"));
+        let supplied = HashMap::from([("private-dem.tif".into(), LazyRaster::from(raster()))]);
+        super::super::validate_supplied_sources(&root, &supplied).unwrap();
+    }
     fn source(tag: &str, extra: &str) -> String {
         format!("<{tag}><SourceFilename>source.tif</SourceFilename><SourceBand>1</SourceBand>{extra}</{tag}>")
     }
@@ -1703,7 +1916,7 @@ mod tests {
     #[test]
     fn oversized_declared_blocks_fail_before_opening_sources() {
         let xml = r#"<VRTDataset rasterXSize="1000000" rasterYSize="1000000" subClass="VRTWarpedDataset"><GeoTransform>0,1,0,1,0,-1</GeoTransform><VRTRasterBand dataType="Float64"/><BlockXSize>1000000</BlockXSize><BlockYSize>1000000</BlockYSize><GDALWarpOptions><SourceDataset>must-not-be-opened.tif</SourceDataset><BandList><BandMapping src="1" dst="1"/></BandList></GDALWarpOptions></VRTDataset>"#;
-        let mut raster = VirtualRaster::from_xml(xml).unwrap().into_lazy(Path::new(""), HashMap::new()).unwrap();
+        let mut raster = VirtualRaster::from_xml(xml).unwrap().into_lazy_with_files(Path::new(""), HashMap::new()).unwrap();
         let error = raster.read_window(Window::new(0, 0, 1, 1), &Default::default()).unwrap_err();
         assert!(matches!(error, Error::Unsupported(_)));
         assert!(error.to_string().contains("8 million samples"));
@@ -1795,6 +2008,7 @@ mod tests {
             VirtualRaster::from_xml("<VRTDataset rasterXSize=\"1\" rasterYSize=\"1\"><VRTRasterBand dataType=\"Byte\"/></VRTDataset>")
                 .unwrap();
         let mut reader = Reader {
+            allow_unmapped: true,
             description: std::sync::Arc::new(document),
             mask: None,
             base: base.clone(),
@@ -2042,7 +2256,7 @@ mod tests {
 
     #[test]
     fn sidecar_updates_preserve_metadata_in_memory() {
-        let files = crate::memfs::Mount::new([("bands.tif.aux.xml".into(), b"<PAMDataset><SRS>EPSG:4326</SRS><Metadata><MDI key=\"STATISTICS_MEAN\">12.5</MDI></Metadata><PAMRasterBand band=\"1\"><Description>first</Description><NoDataValue>-1</NoDataValue></PAMRasterBand></PAMDataset>".to_vec())]);
+        let files = crate::memfs::Mount::new([("bands.tif.aux.xml".into(), b"<PAMDataset><SRS>EPSG:4326</SRS><Metadata><MDI key=\"STATISTICS_MEAN\">12.5</MDI></Metadata><PAMRasterBand band=\"1\"><Description>first</Description><NoDataValue>-1</NoDataValue></PAMRasterBand></PAMDataset>".to_vec())]).unwrap();
         let path = files.path().join("bands.tif");
         crate::drivers::common::write_band_nodata_pam(&path, &[Some(-101.), None]).unwrap();
         let xml = String::from_utf8(crate::memfs::read(&files.path().join("bands.tif.aux.xml")).unwrap()).unwrap();
@@ -2071,7 +2285,7 @@ mod tests {
     }
 
     fn open(xml: &str) -> LazyRaster {
-        VirtualRaster::from_xml(xml).unwrap().into_lazy(Path::new(""), HashMap::new()).unwrap()
+        VirtualRaster::from_xml(xml).unwrap().into_lazy_with_files(Path::new(""), HashMap::new()).unwrap()
     }
 
     fn level(raster: &mut LazyRaster, overview: Option<usize>, window: Window) -> Vec<f64> {
@@ -2657,6 +2871,7 @@ mod tests {
             let options = WarpOptions { size: Some((8, 8)), overview, error_threshold: 0., ..Default::default() };
             let document = VirtualRaster::warped(path.to_str().unwrap(), &options).unwrap();
             let reader = Reader {
+                allow_unmapped: true,
                 description: std::sync::Arc::new(document.clone()),
                 mask: None,
                 base: String::new(),
@@ -2672,7 +2887,7 @@ mod tests {
             assert_eq!(parsed.options.src_transform.unwrap(), [0., scale, 0., 32., 0., -scale]);
             let mut original = crate::open_raster_lazy(path.to_str().unwrap()).unwrap();
             let expected = crate::ops::warp::warp_lazy(&mut original, &options).unwrap();
-            let mut lazy = document.clone().into_lazy(directory.path(), HashMap::new()).unwrap();
+            let mut lazy = document.clone().into_lazy_with_files(directory.path(), HashMap::new()).unwrap();
             assert_eq!(lazy.read().unwrap().raster.data.to_f64_vec(), expected.raster.data.to_f64_vec());
             let window = Window::new(2, 1, 3, 2);
             assert_eq!(
@@ -2682,11 +2897,12 @@ mod tests {
             if expected_level == Some(1) {
                 let token = if matches!(overview, OverviewSelection::Level(_)) { "1 only</OOI>" } else { "1</OOI>" };
                 let plain = document.to_xml().replace(token, "1</OOI>");
-                let mut lazy = VirtualRaster::from_xml(&plain).unwrap().into_lazy(directory.path(), HashMap::new()).unwrap();
+                let mut lazy = VirtualRaster::from_xml(&plain).unwrap().into_lazy_with_files(directory.path(), HashMap::new()).unwrap();
                 assert_eq!(lazy.read().unwrap().raster.data.to_f64_vec(), expected.raster.data.to_f64_vec());
                 for invalid_level in ["", "-1", "one", "1 extra", "1 only extra"] {
                     let text = document.to_xml().replace(token, &format!("{invalid_level}</OOI>"));
                     let reader = Reader {
+                        allow_unmapped: true,
                         description: std::sync::Arc::new(VirtualRaster::from_xml(&text).unwrap()),
                         mask: None,
                         base: String::new(),
@@ -2716,6 +2932,7 @@ mod tests {
         ] {
             let document = VirtualRaster::warped(path.to_str().unwrap(), &options).unwrap();
             let reader = Reader {
+                allow_unmapped: true,
                 description: std::sync::Arc::new(document),
                 mask: None,
                 base: String::new(),
@@ -2766,6 +2983,7 @@ mod tests {
         };
         let document = VirtualRaster::warped(path.to_str().unwrap(), &options).unwrap();
         let reader = Reader {
+            allow_unmapped: true,
             description: std::sync::Arc::new(document),
             mask: None,
             base: String::new(),
@@ -2794,6 +3012,7 @@ mod tests {
         assert!(warp.children.iter().any(|e| e.attr("name") == Some("SAMPLE_STEPS") && e.text == "ALL"));
         assert!(descendant(warp, "ApproxTransformer").is_none());
         let reader = Reader {
+            allow_unmapped: true,
             description: std::sync::Arc::new(document),
             mask: None,
             base: String::new(),
@@ -2811,7 +3030,7 @@ mod tests {
         let write = crate::RasterWriteOptions { compression: Some("DEFLATE".into()), ..Default::default() };
         assert!(crate::ops::warp::warp_to_path(&paths, &options, out.to_str().unwrap(), &write).is_err());
         assert!(!out.exists());
-        let mount = crate::memfs::Mount::new([]);
+        let mount = crate::memfs::Mount::new([]).unwrap();
         let virtual_path = mount.path().join("warped.vrt");
         crate::ops::warp::warp_to_path(&paths, &options, virtual_path.to_str().unwrap(), &Default::default()).unwrap();
         assert!(crate::memfs::exists(&virtual_path));
@@ -2827,7 +3046,7 @@ mod tests {
         let options = WarpOptions { dst_srs: Some(crate::crs::SpatialRef::from_epsg(4326).unwrap()), ..Default::default() };
         let document = VirtualRaster::warped(path.to_str().unwrap(), &options).unwrap();
         assert!(!document.to_xml().contains("<SourceSRS></SourceSRS>"));
-        let mut lazy = document.into_lazy(dir.path(), HashMap::new()).unwrap();
+        let mut lazy = document.into_lazy_with_files(dir.path(), HashMap::new()).unwrap();
         assert_eq!(lazy.read().unwrap().raster.data.to_f64_vec(), raster().raster.data.to_f64_vec());
     }
 
@@ -2868,7 +3087,7 @@ mod tests {
                  <VRTRasterBand dataType=\"Float64\"><NoDataValue>-1</NoDataValue>{}{missing}</VRTRasterBand></VRTDataset>",
                 source("SimpleSource", &rects(at)),
             );
-            let mut lazy = VirtualRaster::from_xml(&text).unwrap().into_lazy(dir.path(), sources()).unwrap();
+            let mut lazy = VirtualRaster::from_xml(&text).unwrap().into_lazy_with_files(dir.path(), sources()).unwrap();
             let (x, y) = at;
             assert_eq!(read(&mut lazy, Window::new(x, y, 5, 5)).unwrap(), (0..25).map(f64::from).collect::<Vec<_>>(), "{at:?}");
             assert_eq!(read(&mut lazy, Window::new(x + 1, y + 2, 3, 2)).unwrap(), vec![11., 12., 13., 16., 17., 18.], "{at:?}");
@@ -3244,7 +3463,7 @@ mod inventory_tests {
             let xml = format!(
                 "<VRTDataset rasterXSize=\"1\" rasterYSize=\"1\"><VRTRasterBand dataType=\"Byte\"><SimpleSource><SourceFilename relativeToVRT=\"1\">{selector}</SourceFilename></SimpleSource></VRTRasterBand><MaskBand><VRTRasterBand dataType=\"Byte\"><SimpleSource><SourceFilename relativeToVRT=\"1\">mask.tif</SourceFilename></SimpleSource></VRTRasterBand></MaskBand></VRTDataset>"
             );
-            let reader = VirtualRaster::from_xml(&xml).unwrap().into_lazy(dir.path(), HashMap::new()).unwrap();
+            let reader = VirtualRaster::from_xml(&xml).unwrap().into_lazy_with_files(dir.path(), HashMap::new()).unwrap();
             let paths = reader.input_paths().unwrap();
             // Resolved references can use forward slashes even on Windows.
             assert!(paths.iter().any(|path| Path::new(path) == mask));

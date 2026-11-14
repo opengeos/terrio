@@ -4339,7 +4339,7 @@ mod tests {
         assert_eq!(content_range_total("bytes */1234"), Some(1234));
         assert_eq!(no_total_length(Some("bytes 0-99/many")), "Content-Range gives no readable total length");
         assert_eq!(redact("https://a.org/b.tif?sv=1&sig=abc"), "https://a.org/b.tif?<redacted>");
-        assert_eq!(redact("https://a.org/b.tif?x=1"), "https://a.org/b.tif?x=1");
+        assert_eq!(redact("https://a.org/b.tif?x=1"), "https://a.org/b.tif?<redacted>");
         assert_eq!(resolve_redirect("https://a.org/x/y.tif?q=1", "/z.tif"), "https://a.org/z.tif");
         assert_eq!(resolve_redirect("https://a.org/x/y.tif", "z.tif"), "https://a.org/x/z.tif");
         assert_eq!(resolve_redirect("https://a.org/x/y.tif", "https://b.org/c"), "https://b.org/c");

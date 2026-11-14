@@ -38,6 +38,7 @@ import numpy as np
 from terrio import _terrio
 from terrio import errors as _terrio_errors
 from terrio._crs import dataframe_crs as _crs
+from terrio._terrio import _redact_diagnostic_location as _redact
 from terrio.pyogrio.errors import DataLayerError, DataSourceError
 
 _INT32 = (-(2**31), 2**31 - 1)
@@ -77,7 +78,7 @@ def _vsizip(archive: str, member: str | None) -> _Located:
             with zipfile.ZipFile(archive) as z:
                 names = [n for n in z.namelist() if not n.endswith("/")]
         except (OSError, zipfile.BadZipFile) as e:
-            raise DataSourceError(f"{archive}: {e}") from None
+            raise DataSourceError(f"{_redact(archive)}: {_redact(str(e))}") from None
         if len(names) == 1:
             member = names[0]
         else:
@@ -97,7 +98,7 @@ def _directory(directory: str) -> _Located:
     """
     names = sorted(n for n in os.listdir(directory) if n.lower().endswith(".shp"))
     if not names:
-        raise DataSourceError(_NOT_RECOGNIZED.format(directory))
+        raise DataSourceError(_NOT_RECOGNIZED.format(_redact(directory)))
     return _shapefiles(directory, names, lambda n: os.path.join(directory, n))
 
 
@@ -220,19 +221,21 @@ class _Source:
                 try:
                     self._names = _terrio.list_layers(self.path)
                 except _terrio_errors.NotFoundError as e:
-                    raise DataSourceError(f"{self.path}: No such file or directory") from e
+                    raise DataSourceError(f"{_redact(self.path)}: No such file or directory") from e
                 except _terrio_errors.TerrioError as e:
                     if str(e).startswith("no dataset found in "):
-                        raise DataSourceError(f"no dataset found in '{self._input_name}'") from e
+                        raise DataSourceError(
+                            f"no dataset found in '{_redact(self._input_name)}'"
+                        ) from e
                     raise DataSourceError(str(e)) from e
             if not self._names and self.path.lower().endswith((".zip", ".kmz", ".xlsx")):
-                raise DataSourceError(f"no dataset found in '{self._input_name}'")
+                raise DataSourceError(f"no dataset found in '{_redact(self._input_name)}'")
         return self._names
 
     def name(self) -> str:
         """The dataset's file name, as the warnings quote it."""
         container = self.shapefiles[0] if self.shapefiles is not None else self.path
-        return os.path.basename(os.path.normpath(container))
+        return os.path.basename(os.path.normpath(_redact(container)))
 
     def close(self):
         if self._tmp is not None:
@@ -295,7 +298,7 @@ def _open(
     try:
         return _terrio.pyogrio_read(path, skip_features, max_features, read_geometry, layer)
     except _terrio_errors.NotFoundError as e:
-        raise DataSourceError(f"{path}: No such file or directory") from e
+        raise DataSourceError(f"{_redact(path)}: No such file or directory") from e
     except _terrio_errors.TerrioError as e:
         raise DataSourceError(str(e)) from e
 

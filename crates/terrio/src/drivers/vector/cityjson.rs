@@ -271,7 +271,7 @@ fn parse_with_limit(bytes: &[u8], limit: usize) -> Result<Vec<Layer>> {
     }
     if let Some(value) = doc.get("metadata").and_then(|m| m.get("referenceSystem")) {
         let crs = value.as_str().ok_or_else(|| invalid("referenceSystem must be a CRS string"))?;
-        SpatialRef::parse(crs).map_err(|e| invalid(format!("referenceSystem: {e}")))?.apply_to_layer(&mut layer);
+        SpatialRef::parse_literal(crs).map_err(|e| invalid(format!("referenceSystem: {e}")))?.apply_to_layer(&mut layer);
     }
     for (id, object) in objects {
         let kind = object["type"].as_str().ok_or_else(|| invalid(format!("object {id}: missing type")))?;

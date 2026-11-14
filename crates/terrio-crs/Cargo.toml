@@ -15,8 +15,9 @@ categories = ["science::geo"]
 wbprojection = { workspace = true, optional = true }
 geographiclib-rs.workspace = true
 serde.workspace = true
-# PROJJSON: written with PROJ's key order (`preserve_order`), and read.
-serde_json = { workspace = true, features = ["preserve_order", "float_roundtrip"] }
+# PROJJSON, read and written. Not `preserve_order`: Cargo would enable it for every crate of a
+# dependent's build, reordering their JSON; the writer orders PROJJSON's keys itself.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 thiserror.workspace = true
 tiff.workspace = true
 ruzstd.workspace = true

@@ -78,7 +78,7 @@ impl PyCogWriter {
             return Err(invalid("the raster is empty"));
         }
         let (data_type, complex) = crate::raster::storage_type(dtype)?;
-        let crs = crs.map(SpatialRef::parse).transpose().py()?.unwrap_or_default();
+        let crs = crs.map(SpatialRef::parse_literal).transpose().py()?.unwrap_or_default();
         let cfg = terrio::RasterConfig {
             cols: 1,
             rows: 1,

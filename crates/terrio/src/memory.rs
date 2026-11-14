@@ -806,8 +806,8 @@ pub(crate) mod codec {
     /// directory among them), as GDAL reads a store directory.
     #[cfg(feature = "zarr")]
     pub(crate) fn open_zarr_store(files: Vec<(String, Vec<u8>)>, root: &str) -> Result<RasterDataset> {
-        let mount = crate::memfs::Mount::new(files.into_iter().map(|(n, b)| (n.trim_start_matches("./").to_string(), b)));
-        let dir = if root.is_empty() { mount.path().to_path_buf() } else { mount.path().join(root) };
+        let mount = crate::memfs::Mount::new(files)?;
+        let dir = mount.join(root)?;
         crate::drivers::zarr::read(&dir)
     }
 
@@ -820,8 +820,8 @@ pub(crate) mod codec {
     /// named `<name>.zarr`).
     #[cfg(feature = "zarr")]
     fn write_zarr(ds: &RasterDataset, options: &RasterWriteOptions, name: &str) -> Result<Vec<u8>> {
-        let mount = crate::memfs::Mount::new(std::iter::empty());
-        let dir = mount.path().join(format!("{name}.zarr"));
+        let mount = crate::memfs::Mount::new(std::iter::empty())?;
+        let dir = mount.join(&format!("{name}.zarr"))?;
         crate::drivers::zarr::write_with(
             &ds.raster,
             ds.nodata(),

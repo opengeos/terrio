@@ -87,7 +87,7 @@ pub fn vector_grid(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
         size: a.size.map(|[w, h]| (w, h)),
         resolution: a.resolution.map(|[x, y]| (x, y)),
         data_type: a.ot.as_deref().map(terrio::ops::parse_data_type).transpose().map_err(js_err)?.unwrap_or(terrio::DataType::F64),
-        crs: a.crs.as_deref().map(SpatialRef::parse).transpose().map_err(js_err)?,
+        crs: a.crs.as_deref().map(SpatialRef::parse_literal).transpose().map_err(js_err)?,
     };
     Ok(Dataset::from_raster(terrio::ops::vector_grid::vector_grid_from_layers(&all, a.sql.as_deref(), named, &o).map_err(js_err)?))
 }

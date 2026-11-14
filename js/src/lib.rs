@@ -457,14 +457,15 @@ pub fn pop_config() -> bool {
 }
 
 /// Opens serialized VRT XML with a map of source file names to Uint8Array bytes.
-/// Source GeoTIFFs and VRT pixel windows are read lazily, including in WebAssembly.
+/// Every reference must be mapped; missing entries never open files or URLs. A
+/// mapped source that is itself a VRT is opened against the same map; STAC, STACTA
+/// and STACIT documents are refused. Source GeoTIFFs and VRT pixel windows are read lazily, including in WebAssembly.
 #[wasm_bindgen(js_name = openVrt)]
 pub fn open_vrt(xml: &str, sources: JsValue) -> Result<Dataset, JsError> {
-    let description = terrio::ops::vrt::VirtualRaster::from_xml(xml).map_err(js_err)?;
     if !sources.is_object() || sources.is_null() {
         return Err(JsError::new("sources must map filenames to Uint8Array bytes"));
     }
-    let mut resolved = std::collections::HashMap::new();
+    let mut supplied = std::collections::HashMap::new();
     let object = js_sys::Object::from(sources);
     for name in js_sys::Object::keys(&object).iter() {
         let key = name.as_string().ok_or_else(|| JsError::new("invalid source name"))?;
@@ -472,10 +473,9 @@ pub fn open_vrt(xml: &str, sources: JsValue) -> Result<Dataset, JsError> {
             .map_err(|_| JsError::new("cannot read VRT source map"))?
             .dyn_into::<js_sys::Uint8Array>()
             .map_err(|_| JsError::new("source values must be Uint8Array bytes"))?;
-        let reader = terrio::memory::open_raster_lazy_bytes(bytes.to_vec(), &key).map_err(js_err)?;
-        resolved.insert(key, reader);
+        supplied.insert(key, terrio::ops::vrt::SuppliedSource::Bytes(bytes.to_vec()));
     }
-    Ok(Dataset::from_lazy(description.into_lazy(std::path::Path::new(""), resolved).map_err(js_err)?))
+    Ok(Dataset::from_lazy(terrio::ops::vrt::VirtualRaster::open_supplied(xml, &supplied).map_err(js_err)?))
 }
 
 /// Opens a dataset from its bytes. `filename`'s extension tells the format (`dem.tif`,
@@ -607,7 +607,7 @@ pub fn raster_from_array(
     if g.len() != 6 || g[2] != 0.0 || g[4] != 0.0 || g[1] <= 0.0 || g[5] >= 0.0 {
         return Err(JsError::new("transform must be a north-up GDAL geotransform of 6 numbers"));
     }
-    let crs = crs.as_deref().map(SpatialRef::parse).transpose().map_err(js_err)?.unwrap_or_default();
+    let crs = crs.as_deref().map(SpatialRef::parse_literal).transpose().map_err(js_err)?.unwrap_or_default();
     let cfg = terrio::RasterConfig {
         cols: width,
         rows: height,
@@ -635,7 +635,7 @@ pub fn from_geojson(geojson: JsValue, name: Option<String>, crs: Option<String>)
     };
     let mut layer = terrio::memory::parse_geojson_layer(text.as_bytes(), "layer").map_err(js_err)?;
     layer.name = name.unwrap_or_else(|| "layer".into());
-    let crs = SpatialRef::parse(crs.as_deref().unwrap_or("EPSG:4326")).map_err(js_err)?;
+    let crs = SpatialRef::parse_literal(crs.as_deref().unwrap_or("EPSG:4326")).map_err(js_err)?;
     crs.apply_to_layer(&mut layer);
     Ok(Dataset::from_layers(vec![layer], VectorDriver::GeoJSON))
 }
@@ -919,7 +919,7 @@ impl Dataset {
             promote_to_3d: o.promote_to_3d,
             ..Default::default()
         };
-        let t_srs = o.t_srs.as_deref().map(SpatialRef::parse).transpose().map_err(js_err)?;
+        let t_srs = o.t_srs.as_deref().map(SpatialRef::parse_literal).transpose().map_err(js_err)?;
         match &mut *self.inner.borrow_mut() {
             Inner::Raster(r) => {
                 if o.layers.is_some()
@@ -1118,8 +1118,8 @@ pub fn transform_points(
         return Err(JsError::new("xs, ys and zs differ in length"));
     }
     let o: TransformPointsOptions = parse_options(&options)?;
-    let src = SpatialRef::parse(src_crs).map_err(js_err)?;
-    let dst = SpatialRef::parse(dst_crs).map_err(js_err)?;
+    let src = SpatialRef::parse_literal(src_crs).map_err(js_err)?;
+    let dst = SpatialRef::parse_literal(dst_crs).map_err(js_err)?;
     let opts = TransformOptions {
         source_coordinate_epoch: o.s_coord_epoch,
         target_coordinate_epoch: o.t_coord_epoch,
@@ -1165,7 +1165,7 @@ pub fn register_grid(name: &str, bytes: Vec<u8>) {
 /// without EPSG code).
 #[wasm_bindgen(js_name = describeCrs)]
 pub fn describe_crs(crs: &str) -> Result<JsValue, JsError> {
-    let s = SpatialRef::parse(crs).map_err(js_err)?;
+    let s = SpatialRef::parse_literal(crs).map_err(js_err)?;
     to_js(&serde_json::json!({
         "epsg": s.epsg,
         "esri": s.esri,
@@ -1231,7 +1231,7 @@ pub fn list_crs(text: Option<String>, options: JsValue) -> Result<JsValue, JsErr
 /// The PROJJSON v0.7 of a CRS; throws for a CRS it would describe wrongly.
 #[wasm_bindgen(js_name = crsToProjjson)]
 pub fn crs_to_projjson(crs: &str) -> Result<String, JsError> {
-    SpatialRef::parse(crs).and_then(|s| s.to_projjson()).map_err(js_err)
+    SpatialRef::parse_literal(crs).and_then(|s| s.to_projjson()).map_err(js_err)
 }
 
 /// The PROJ string of a CRS as PROJ 9.8.1 writes it (`projinfo -o PROJ`), `undefined` for a CRS
@@ -1239,7 +1239,7 @@ pub fn crs_to_projjson(crs: &str) -> Result<String, JsError> {
 /// an EPSG CRS: keep the code or WKT to keep the CRS.
 #[wasm_bindgen(js_name = crsToProj4)]
 pub fn crs_to_proj4(crs: &str) -> Result<Option<String>, JsError> {
-    SpatialRef::parse(crs).map(|s| s.to_proj4()).map_err(js_err)
+    SpatialRef::parse_literal(crs).map(|s| s.to_proj4()).map_err(js_err)
 }
 
 /// The WKT 1 of a CRS without GDAL's `EXTENSION["PROJ4", ...]`, for formats whose readers ignore
@@ -1247,7 +1247,7 @@ pub fn crs_to_proj4(crs: &str) -> Result<Option<String>, JsError> {
 /// extension (a datum grid) or PROJ writes no WKT 1 (a geographic 3D CRS).
 #[wasm_bindgen(js_name = crsToWkt1Strict)]
 pub fn crs_to_wkt1_strict(crs: &str) -> Result<Option<String>, JsError> {
-    SpatialRef::parse(crs).map(|s| s.to_wkt1_strict()).map_err(js_err)
+    SpatialRef::parse_literal(crs).map(|s| s.to_wkt1_strict()).map_err(js_err)
 }
 
 /// The formats terrio reads and writes: `[{ name, long_name, kind, extensions, read, write }]`.

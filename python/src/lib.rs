@@ -40,6 +40,12 @@ mod vsi;
 use pyo3::prelude::*;
 use pyo3::types::PyType;
 
+/// Remove URL credentials from user-facing diagnostics without changing I/O locations.
+#[pyfunction]
+fn _redact_diagnostic_location(location: &str) -> String {
+    terrio::vsi::redact_diagnostic_location(location).into_owned()
+}
+
 /// Converts a terrio error into the matching exception of `terrio.errors`.
 pub(crate) fn to_py(e: terrio::Error) -> PyErr {
     let class = match &e {
@@ -242,6 +248,7 @@ pub(crate) fn crs_string(crs: &terrio::crs::SpatialRef) -> Option<String> {
 #[pymodule]
 fn _terrio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", terrio::VERSION)?;
+    m.add_function(wrap_pyfunction!(_redact_diagnostic_location, m)?)?;
     m.add_class::<raster::PyRaster>()?;
     m.add_class::<raster::PyGeoTiffWriter>()?;
     m.add_class::<cog_writer::PyCogWriter>()?;

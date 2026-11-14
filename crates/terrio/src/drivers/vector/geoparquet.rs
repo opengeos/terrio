@@ -530,7 +530,7 @@ pub(crate) fn apply_crs(layer: &mut Layer, crs: &Value) {
     match crs {
         Value::Null => {}
         Value::String(s) => {
-            if let Ok(s) = SpatialRef::parse(s) {
+            if let Ok(s) = SpatialRef::parse_literal(s) {
                 s.apply_to_layer(layer);
             }
         }

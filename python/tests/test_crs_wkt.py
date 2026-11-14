@@ -273,10 +273,15 @@ def test_crs_to_wkt1_strict_writes_wkt1_without_the_extension():
     assert trio.CRS.from_user_input(grid).to_wkt1_strict() is None
 
 
-def test_crs_to_projjson_exports_the_file_read_at_construction(tmp_path):
+def test_crs_to_projjson_exports_explicitly_read_file_text(tmp_path):
+    """Export a definition that the caller deliberately reads from a file.
+
+    Args:
+        tmp_path: Temporary directory containing the trusted CRS file.
+    """
     prj = tmp_path / "crs.prj"
     prj.write_text(trio.CRS.from_epsg(32632).to_wkt())
-    crs = trio.CRS.from_user_input(str(prj))
+    crs = trio.CRS.from_user_input(prj.read_text())
     prj.unlink()
     assert json.loads(crs.to_projjson())["conversion"]["name"] == "UTM zone 32N"
 

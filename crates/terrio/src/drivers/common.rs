@@ -1341,7 +1341,7 @@ mod tests {
             "<PAMDataset>{metadata}<PAMRasterBand band=\"1\"><Description>band</Description><NoDataValue>-1</NoDataValue></PAMRasterBand><PAMRasterBand band=\"2\"/></PAMDataset>"
         );
         let dir = tempfile::tempdir().unwrap();
-        let mount = crate::memfs::Mount::new(Vec::new());
+        let mount = crate::memfs::Mount::new(Vec::new()).unwrap();
         for root in [dir.path(), mount.path()] {
             let path = root.join("output.tif");
             let aux = root.join("output.tif.aux.xml");
@@ -1610,7 +1610,7 @@ mod band_pam_tests {
     #[test]
     fn updates_disk_and_virtual_pam_without_reordering_mixed_content() {
         let dir = tempfile::tempdir().unwrap();
-        let mount = crate::memfs::Mount::new([]);
+        let mount = crate::memfs::Mount::new([]).unwrap();
         for root in [dir.path(), mount.path()] {
             let path = root.join("raster.tif");
             let aux = root.join("raster.tif.aux.xml");

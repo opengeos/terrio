@@ -54,7 +54,7 @@ fn pyogrio_read<'py>(
     };
     let named = layer.map(|n| format!(" named {n}")).unwrap_or_default();
     let Some(layer) = index.and_then(|i| ds.layers.into_iter().nth(i)) else {
-        return Err(crate::invalid(format!("'{path}' has no layer{named}")));
+        return Err(crate::invalid(format!("'{}' has no layer{named}", terrio::vsi::redact_diagnostic_location(path))));
     };
     let total = layer.features.len();
 

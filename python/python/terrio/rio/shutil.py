@@ -20,6 +20,7 @@ import shutil as _shutil
 from collections.abc import Iterator
 from typing import Any
 
+from terrio._terrio import _redact_diagnostic_location as _redact
 from terrio.rio.errors import DriverRegistrationError, RasterioIOError
 
 
@@ -116,12 +117,16 @@ def copy(
         raise DriverRegistrationError(f"Unrecognized driver: {driver}") from err
     if isinstance(src, DatasetReader):
         if _same(src.name, dst_path):
-            raise RasterioIOError(f"{src.name} and {dst_path} identify the same dataset.")
+            raise RasterioIOError(
+                f"{_redact(src.name)} and {_redact(dst_path)} identify the same dataset."
+            )
         _copy_dataset(src, dst_path, driver, creation_options)
         return
     src_path = _fspath(src)
     if _same(src_path, dst_path):
-        raise RasterioIOError(f"{src_path} and {dst_path} identify the same dataset.")
+        raise RasterioIOError(
+            f"{_redact(src_path)} and {_redact(dst_path)} identify the same dataset."
+        )
     with rio_open(src_path) as ds:
         _copy_dataset(ds, dst_path, driver, creation_options)
 
@@ -325,7 +330,9 @@ def copyfiles(src: Any, dst: Any) -> None:
 
     src_path, dst_path = _fspath(src), _fspath(dst)
     if _same(src_path, dst_path):
-        raise RasterioIOError(f"{src_path} and {dst_path} identify the same dataset.")
+        raise RasterioIOError(
+            f"{_redact(src_path)} and {_redact(dst_path)} identify the same dataset."
+        )
     try:
         with rio_open(src_path) as ds:
             files = ds.files
@@ -366,7 +373,7 @@ def delete(path: Any, driver: str | None = None) -> None:
         with rio_open(p) as ds:
             files = ds.files
     except Exception as err:
-        raise RasterioIOError(f"Invalid dataset: {p}") from err
+        raise RasterioIOError(f"Invalid dataset: {_redact(p)}") from err
     for f in files:
         if os.path.isdir(f):
             _shutil.rmtree(f)

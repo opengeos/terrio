@@ -305,7 +305,7 @@ fn gdal_compat() -> &'static str {
 ///     CRSError: If the CRS cannot be parsed.
 #[pyfunction]
 fn crs_info<'py>(py: Python<'py>, crs: &str) -> PyResult<Bound<'py, PyDict>> {
-    let s = SpatialRef::parse(crs).py()?;
+    let s = SpatialRef::parse_literal(crs).py()?;
     let d = PyDict::new(py);
     d.set_item("epsg", s.epsg)?;
     d.set_item("esri", s.esri)?;
@@ -347,7 +347,7 @@ fn proj_boolean_parameters(definition: &str) -> PyResult<Vec<(String, bool)>> {
 ///     CRSError: If the CRS cannot be parsed, or terrio cannot write it as PROJJSON.
 #[pyfunction]
 fn crs_projjson(crs: &str, database: bool) -> PyResult<String> {
-    let s = SpatialRef::parse(crs).py()?;
+    let s = SpatialRef::parse_literal(crs).py()?;
     Ok(s.to_gdal_projjson(database).py()?.to_string())
 }
 
@@ -357,7 +357,7 @@ fn crs_projjson(crs: &str, database: bool) -> PyResult<String> {
 ///     CRSError: If the CRS cannot be parsed, or would be described wrongly.
 #[pyfunction]
 fn crs_to_projjson(crs: &str) -> PyResult<String> {
-    SpatialRef::parse(crs).and_then(|s| s.to_projjson()).py()
+    SpatialRef::parse_literal(crs).and_then(|s| s.to_projjson()).py()
 }
 
 /// The PROJ string of a CRS as PROJ 9.8.1 writes it (`projinfo -o PROJ`, pyproj's
@@ -371,7 +371,7 @@ fn crs_to_projjson(crs: &str) -> PyResult<String> {
 ///     CRSError: If the CRS cannot be parsed.
 #[pyfunction]
 fn crs_to_proj4(crs: &str) -> PyResult<Option<String>> {
-    SpatialRef::parse(crs).map(|s| s.to_proj4()).py()
+    SpatialRef::parse_literal(crs).map(|s| s.to_proj4()).py()
 }
 
 /// The WKT 1 of a CRS without GDAL's ``EXTENSION["PROJ4", ...]``, for formats whose readers
@@ -387,7 +387,7 @@ fn crs_to_proj4(crs: &str) -> PyResult<Option<String>> {
 ///     CRSError: If the CRS cannot be parsed.
 #[pyfunction]
 fn crs_to_wkt1_strict(crs: &str) -> PyResult<Option<String>> {
-    SpatialRef::parse(crs).map(|s| s.to_wkt1_strict()).py()
+    SpatialRef::parse_literal(crs).map(|s| s.to_wkt1_strict()).py()
 }
 
 /// The output grid GDAL suggests for a raster reprojected to another CRS
@@ -427,14 +427,14 @@ fn suggested_grid(
     rpc: Option<std::collections::HashMap<String, String>>,
     rpc_options: Option<std::collections::HashMap<String, String>>,
 ) -> PyResult<((f64, f64, f64, f64, f64, f64), usize, usize)> {
-    let dst = SpatialRef::parse(dst_crs).py()?;
+    let dst = SpatialRef::parse_literal(dst_crs).py()?;
     if let Some(items) = rpc {
         let rpc = parse_rpc(items)?;
         let opts = parse_rpc_options(rpc_options)?;
         let (g, w, h) = py.detach_result(|| terrio::ops::warp::suggested_grid_rpc(width, height, &rpc, &opts, &dst)).py()?;
         return Ok(((g[0], g[1], g[2], g[3], g[4], g[5]), w, h));
     }
-    let src = SpatialRef::parse(src_crs).py()?;
+    let src = SpatialRef::parse_literal(src_crs).py()?;
     let gcps = crate::raster::parse_gcps(gcps);
     let method = terrio::ops::gcp::GcpMethod::parse(gcp_method).py()?;
     if gcps.is_empty() && transform[1] * transform[5] - transform[2] * transform[4] == 0.0 {

@@ -85,6 +85,7 @@ mod proj_write;
 mod projections;
 mod projjson;
 mod projjson_gdal;
+mod projjson_order;
 mod projjson_write;
 mod rotation;
 mod route;
@@ -625,7 +626,7 @@ impl SpatialRef {
                 && (bytes.len() as u64) < MAX
                 && let Ok(text) = String::from_utf8(bytes)
             {
-                return Self::parse_definition(&text, false);
+                return Self::parse_definition(&text, false).map_err(|_| Error::Crs(format!("cannot parse CRS definition file '{s}'")));
             }
         }
         Err(Error::Crs(format!("cannot parse '{s}'")))
@@ -1976,7 +1977,10 @@ impl Transformer {
     }
 
     /// Route this transformer's diagnostics to a caller-provided warning sink.
-    /// The sink runs on the thread calling `flush_warnings` (or dropping the transformer).
+    /// The sink runs on the thread calling `flush_warnings` (or dropping the transformer). A
+    /// transformer kept in a `thread_local!` is dropped while the thread's locals are destroyed,
+    /// so a sink that records into a thread-local should use `LocalKey::try_with`, and must not
+    /// panic.
     pub fn with_warning_handler(mut self, handler: fn(String)) -> Self {
         self.warning_handler = handler;
         self

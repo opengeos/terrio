@@ -470,11 +470,31 @@ impl Location {
 }
 
 #[cfg(remote)]
+fn download_file_name(name: &str) -> String {
+    // URI paths and object keys use '/', but their last component may still contain
+    // Windows roots, drive-relative paths, separators, devices, or alternate streams.
+    let name = name.rsplit(['/', '\\']).next().unwrap_or_default();
+    let name = name.rsplit(':').next().unwrap_or_default().trim_end_matches(['.', ' ']);
+    let name: String = name.chars().map(|c| if c.is_ascii_control() || "<>\"|?*".contains(c) { '_' } else { c }).collect();
+    if name.is_empty() {
+        return "download".into();
+    }
+    let stem = name.split('.').next().unwrap_or_default().trim_end_matches(' ').to_ascii_uppercase();
+    let numbered_device = ["COM", "LPT"].iter().any(|prefix| {
+        stem.strip_prefix(prefix).is_some_and(|n| matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"))
+    });
+    if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") || numbered_device {
+        format!("download-{name}")
+    } else {
+        name
+    }
+}
+
+#[cfg(remote)]
 fn download(loc: &Location) -> Result<LocalPath> {
     let remote = loc.remote().ok_or_else(|| Error::InvalidArgument("not a remote location".into()))?;
     let temp = tempfile::Builder::new().prefix("terrio-").tempdir()?;
-    let name = loc.file_name();
-    let name = if name.is_empty() { "download".to_string() } else { name };
+    let name = download_file_name(&loc.file_name());
     let path = temp.path().join(&name);
     // By range, and refused after its first bytes when they, or its size, are not what its name
     // says (see `formats::check_remote_head`).
@@ -910,7 +930,7 @@ fn extract_from<R: Read + Seek>(
     }
     let names = entry_names(&zip);
     let member = match inner {
-        Some(inner) => inner.trim_matches('/').to_string(),
+        Some(inner) => inner.trim_end_matches('/').to_string(),
         None => main_member(&names).ok_or_else(|| Error::Unsupported(format!("no dataset found in '{}'", archive.file_name())))?,
     };
     let selected = select_entries(&names, &member)
@@ -918,15 +938,35 @@ fn extract_from<R: Read + Seek>(
     // Every entry is checked before any is read.
     let mut total = 0u64;
     let mut ranges = Vec::with_capacity(selected.len());
+    let mut paths = std::collections::HashMap::new();
+    let mut destinations = std::collections::HashSet::new();
+    let mut main_path = None;
     for &i in &selected {
         let e = zip.by_index_data(i)?;
         let name = &names[i];
         if e.is_symlink() {
             return Err(Error::Unsupported(format!("zip: '{name}' is a symbolic link")));
         }
-        if e.enclosed_name().is_none() {
-            return Err(zip_error(format!("'{name}' is not a relative path within the archive")));
+        let relative = e.enclosed_name().ok_or_else(|| zip_error(format!("'{name}' is not a relative path within the archive")))?;
+        if relative.is_absolute() || !destinations.insert(relative.clone()) {
+            return Err(zip_error("multiple members resolve to the same extracted path, or an extracted path is not relative"));
         }
+        if name == &member {
+            main_path = Some(relative.clone());
+        } else if let Some(tail) = name.strip_prefix(&format!("{member}/")) {
+            let tail = crate::memfs::relative_name(tail)?;
+            let mut root = relative.clone();
+            for _ in Path::new(&tail).components() {
+                if !root.pop() {
+                    return Err(zip_error("member is outside the selected store root"));
+                }
+            }
+            if main_path.as_ref().is_some_and(|old| *old != root) {
+                return Err(zip_error("members do not share one extracted store root"));
+            }
+            main_path = Some(root);
+        }
+        paths.insert(i, relative);
         let (size, packed) = (e.size(), e.compressed_size());
         limits.check_ratio("zip", name, size, packed)?;
         total = total.saturating_add(size);
@@ -939,12 +979,12 @@ fn extract_from<R: Read + Seek>(
     let temp = tempfile::Builder::new().prefix("terrio-").tempdir()?;
     for &i in &selected {
         let mut e = zip.by_index(i)?;
-        let path = temp.path().join(e.enclosed_name().ok_or_else(|| zip_error("unsafe member path"))?);
+        let path = temp.path().join(&paths[&i]);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let declared = e.size();
-        let mut out = std::fs::File::create(&path)?;
+        let mut out = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)?;
         // A member is cut at the size it declares, which the limits were checked against.
         let past_declared = || Error::ResourceLimit(format!("zip: '{}' holds more than the {declared} bytes it declares", names[i]));
         // The zip crate fails a read past the declared size itself, as in `LimitedZip::read_index`.
@@ -954,7 +994,12 @@ fn extract_from<R: Read + Seek>(
             return Err(past_declared());
         }
     }
-    Ok(LocalPath { path: temp.path().join(&member), _temp: Some(temp) })
+    let path = temp.path().join(main_path.ok_or_else(|| zip_error("selected member has no extracted path"))?);
+    let path = path.canonicalize()?;
+    if !path.starts_with(temp.path().canonicalize()?) {
+        return Err(zip_error("extracted dataset is outside its temporary directory"));
+    }
+    Ok(LocalPath { path, _temp: Some(temp) })
 }
 
 /// The Blob Storage endpoint `az://` and `/vsiaz/` paths resolve to, without a trailing slash, as
@@ -1080,6 +1125,64 @@ impl Seek for RemoteArchive {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(remote)]
+    #[test]
+    fn remote_download_names_are_portable_single_components() {
+        for (input, expected) in [
+            (r"C:\Users\Public\map.gpkg", "map.gpkg"),
+            (r"..\..\map.gpkg", "map.gpkg"),
+            (r"\server\share\map.gpkg", "map.gpkg"),
+            ("C:map.gpkg", "map.gpkg"),
+            ("map:stream.gpkg", "stream.gpkg"),
+            ("..", "download"),
+            (".", "download"),
+            ("", "download"),
+            ("NUL.gpkg", "download-NUL.gpkg"),
+            ("COM1.tif", "download-COM1.tif"),
+            ("COM¹.tif", "download-COM¹.tif"),
+            ("CONIN$", "download-CONIN$"),
+            ("normal.gpkg", "normal.gpkg"),
+        ] {
+            let name = download_file_name(input);
+            assert_eq!(name, expected, "{input}");
+            assert_eq!(Path::new(&name).components().count(), 1);
+            assert!(!Path::new(&name).is_absolute());
+        }
+        for input in [r"https://example.test/..\..\map.gpkg", r"s3://bucket/C:\Users\map.gpkg"] {
+            let location = Location::parse(input);
+            assert_eq!(download_file_name(&location.file_name()), "map.gpkg");
+        }
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn remote_downloads_stay_in_their_owned_directory() {
+        use std::io::{BufRead, BufReader};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let worker = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            loop {
+                line.clear();
+                if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            let data = br#"{"type":"FeatureCollection","features":[]}"#;
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", data.len()).unwrap();
+            stream.write_all(data).unwrap();
+        });
+        let location = Location::Url(format!(r"http://{address}/C:\Users\Public\outside.geojson"));
+        let local = download(&location).unwrap();
+        let root = local._temp.as_ref().unwrap().path().canonicalize().unwrap();
+        assert!(local.path().canonicalize().unwrap().starts_with(root));
+        assert_eq!(local.path().file_name().unwrap(), "outside.geojson");
+        assert!(std::fs::read(local.path()).unwrap().starts_with(b"{\"type\""));
+        worker.join().unwrap();
+    }
+
     #[test]
     fn local_paths_are_not_gdal_names() {
         for name in [
@@ -1214,6 +1317,29 @@ mod tests {
         let out = f();
         crate::config::pop_scope();
         out
+    }
+
+    #[test]
+    fn rooted_members_resolve_to_their_extracted_copy() {
+        let host = tempfile::tempdir().unwrap();
+        let outside = host.path().join("outside.tif");
+        std::fs::write(&outside, b"host").unwrap();
+        for name in [outside.to_str().unwrap(), r"C:\Users\Public\outside.tif", r"\server\share\outside.tif"] {
+            let (_dir, zip) = archive(&[(name, b"archive", false)]);
+            let local = resolve(&zip).unwrap();
+            assert_eq!(std::fs::read(local.path()).unwrap(), b"archive");
+            assert_ne!(local.path(), outside);
+            assert_eq!(std::fs::read(&outside).unwrap(), b"host");
+        }
+    }
+
+    #[test]
+    fn extracted_store_members_cannot_alias_one_another() {
+        let (_dir, zip) = archive(&[("s.zarr/.zgroup", b"{}", false), ("s.zarr/a", b"first", false), ("s.zarr/./a", b"second", false)]);
+        assert!(resolve(&zip).unwrap_err().to_string().contains("same extracted path"));
+        let (_dir, zip) = archive(&[("/s.zarr/.zgroup", b"{}", false), ("/s.zarr/a/0", b"chunk", false)]);
+        let local = resolve(&zip).unwrap();
+        assert_eq!(std::fs::read(local.path().join("a/0")).unwrap(), b"chunk");
     }
 
     fn files_under(dir: &Path) -> Vec<String> {

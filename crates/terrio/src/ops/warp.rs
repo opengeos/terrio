@@ -1400,6 +1400,14 @@ struct Plan<'a> {
 impl<'a> Plan<'a> {
     /// Reads only the sources' metadata.
     fn new(sources: &[&'a RasterDataset], o: &WarpOptions) -> Result<Self> {
+        Self::with_rpc_transformer(sources, o, None)
+    }
+
+    fn with_rpc_transformer(
+        sources: &[&'a RasterDataset],
+        o: &WarpOptions,
+        supplied_rpc: Option<std::sync::Arc<super::rpc::RpcTransformer>>,
+    ) -> Result<Self> {
         let first = sources.first().ok_or_else(|| Error::InvalidArgument("no source rasters".into()))?;
         if !(o.sum_scale.is_finite() && o.sum_scale > 0.0) {
             return Err(Error::InvalidArgument(format!("the sum scale must be a positive number, not {}", o.sum_scale)));
@@ -1435,7 +1443,7 @@ impl<'a> Plan<'a> {
                     }
                     source.gcp = Some(Georef::Geolocation(std::sync::Arc::new(g.clone())));
                     if o.src_srs.is_none() {
-                        source.srs = SpatialRef::parse(if g.srs().is_empty() { "EPSG:4326" } else { g.srs() })?;
+                        source.srs = SpatialRef::parse_literal(if g.srs().is_empty() { "EPSG:4326" } else { g.srs() })?;
                     }
                     continue;
                 }
@@ -1455,7 +1463,7 @@ impl<'a> Plan<'a> {
                         source.grid.height,
                     )?)));
                     if o.src_srs.is_none() {
-                        source.srs = SpatialRef::parse(if g.srs.is_empty() { "EPSG:4326" } else { &g.srs })?;
+                        source.srs = SpatialRef::parse_literal(if g.srs.is_empty() { "EPSG:4326" } else { &g.srs })?;
                     }
                 } else if o.geoloc {
                     return Err(Error::InvalidArgument("source has no geolocation arrays".into()));
@@ -1478,7 +1486,11 @@ impl<'a> Plan<'a> {
             if o.cutline.is_some() {
                 return Err(Error::Unsupported("cutlines are not supported with RPCs".into()));
             }
-            srcs[0].gcp = Some(Georef::Rpc(std::sync::Arc::new(super::rpc::RpcTransformer::new(rpc, &o.rpc_options)?)));
+            let transformer = match supplied_rpc {
+                Some(transformer) => transformer,
+                None => std::sync::Arc::new(super::rpc::RpcTransformer::new(rpc, &o.rpc_options)?),
+            };
+            srcs[0].gcp = Some(Georef::Rpc(transformer));
             // RPCs give WGS 84 longitudes and latitudes.
             if o.src_srs.is_none() {
                 srcs[0].srs = SpatialRef::from_epsg(4326)?;
@@ -1944,7 +1956,7 @@ pub fn warp_lazy(src: &mut crate::LazyRaster, o: &WarpOptions) -> Result<RasterD
 
 /// Windowed renderer for one source; reads its dataset mask when it carries one.
 pub(crate) fn warp_reader(src: &mut dyn WarpSource, o: &WarpOptions) -> Result<RasterDataset> {
-    warp_reader_selected(src, o, None, None, false, None)
+    warp_reader_selected(src, o, None, None, false, None, None)
 }
 
 /// Serialized VRT working type: source conversion happens before validity and resampling.
@@ -1955,11 +1967,12 @@ pub(crate) fn warp_lazy_bands_working(
     working: Option<DataType>,
     unified_sink: bool,
     source_overview: Option<usize>,
+    supplied_rpc: Option<std::sync::Arc<super::rpc::RpcTransformer>>,
 ) -> Result<RasterDataset> {
     if bands.is_empty() || bands.iter().any(|b| *b == 0 || *b > src.band_count()) {
         return Err(Error::InvalidArgument("invalid source band selection".into()));
     }
-    warp_reader_selected(src, o, Some(bands), working, unified_sink, source_overview)
+    warp_reader_selected(src, o, Some(bands), working, unified_sink, source_overview, supplied_rpc)
 }
 
 fn warp_reader_selected(
@@ -1969,6 +1982,7 @@ fn warp_reader_selected(
     working: Option<DataType>,
     unified_sink: bool,
     source_overview: Option<usize>,
+    supplied_rpc: Option<std::sync::Arc<super::rpc::RpcTransformer>>,
 ) -> Result<RasterDataset> {
     if o.cutline.is_some() {
         if selection.is_some() || working.is_some() {
@@ -2008,7 +2022,7 @@ fn warp_reader_selected(
         header.raster.data_type = dtype;
         header.raster.data = RasterData::new_filled(dtype, 0, 0.);
     }
-    let mut p = Plan::new(&[&header], o)?;
+    let mut p = Plan::with_rpc_transformer(&[&header], o, supplied_rpc)?;
     p.srcs[0].sum_scale *= level_scale;
     // A serialized VRT's source view is already selected in OpenOptions and its
     // transformer. Selecting again would double-scale its source coordinates.
@@ -8727,7 +8741,7 @@ mod tests {
                 memory_limit: 2000.0,
                 ..Default::default()
             };
-            let result = warp_reader_selected(&mut counted, &options, None, Some(working), false, None).unwrap();
+            let result = warp_reader_selected(&mut counted, &options, None, Some(working), false, None, None).unwrap();
             assert_eq!(result.raster.data.to_f64_vec(), [1024.0]);
             assert!(counted.reads.len() > 1);
             assert_eq!(counted.reads.iter().map(|(_, pixels)| *pixels).sum::<usize>(), 1024);

@@ -9,6 +9,25 @@ terrio reproduces the GDAL they compare with (see [warp](cli.md#warp)). Pull req
 compare the point cloud filters with PDAL's on `autzen_trim.las` only; pushes to `main` on the
 Madison lidar (4 million points) too (`scripts/compare_pointclouds.py --quick` skips it).
 
+## Input isolation and diagnostic privacy
+
+`python/tests/test_crs_input_safety.py` checks that Python CRS strings and dataset
+metadata cannot implicitly read a host file. Literal EPSG/WKT/PROJ definitions
+remain supported; trusted Rust and CLI file parsing has separate coverage in
+`crates/terrio-crs/tests/definition_files.rs`.
+
+`python/tests/test_input_container_safety.py` checks archive provenance, rooted
+and escaping Zarr keys, normalized key collisions, and closed VRT source maps.
+The VRT checks include unmapped local and remote sources, uploaded source bytes,
+and explicit file-based opens. Core regressions cover archive extraction aliases,
+portable remote download basenames, mask sources, and RPC DEM references.
+
+`python/tests/test_diagnostic_url_safety.py` uses a loopback range server and fake
+credentials to check exceptions, multilayer warnings, notebook display logs, and
+CLI stderr. It checks custom authentication parameter names as well as signed URL
+parameters and userinfo. A successful raster read verifies that the network still
+receives the original query. Diagnostic redaction never rewrites request URLs.
+
 ## Configuration alias precedence
 
 `cargo test -p terrio --lib config::tests::` checks scope ordering, alias priority,
@@ -1607,6 +1626,12 @@ live PROJ's PROJJSON of 52 CRSs by meaning and has GDAL read those and every IAU
 coordinates must match the originals' (`scripts/compare_projjson_export_with_gdal.py`); a case
 with no point the original CRS transforms is reported as `not compared`, and a point only the
 original transforms as `differs`.
+
+Its keys are in PROJ's order without serde_json's `preserve_order` feature, which terrio-crs leaves
+off (`cargo test -p terrio-crs --test projjson_key_order`). The key order of every kind of object
+PROJ 9.8.1 writes for its registry CRSs is frozen in
+`crates/terrio-crs/tests/data/projjson_key_order.txt`; regenerate it with
+`scripts/gen_projjson_key_order.py` (pyproj 3.8.0, `PROJ_NETWORK=OFF`).
 
 ## IAU_2015 authority support (#271)
 

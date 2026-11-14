@@ -155,7 +155,7 @@ fn zonal_stats(
         weights: weights.map(|raster| ZonalWeight::new(raster, weight_band)),
         stats,
         all_touched,
-        dst_srs: t_srs.as_deref().map(terrio::crs::SpatialRef::parse).transpose().py()?,
+        dst_srs: t_srs.as_deref().map(terrio::crs::SpatialRef::parse_literal).transpose().py()?,
         decimal_places,
     };
     let zones = crate::vector_geom::one_layer(py, zones, layer)?;
@@ -328,7 +328,7 @@ impl PyZonalReducer {
             cols: width,
             rows: height,
             geo_transform: transform,
-            crs: crs.map(terrio::crs::SpatialRef::parse).transpose().py()?.unwrap_or_default(),
+            crs: crs.map(terrio::crs::SpatialRef::parse_literal).transpose().py()?.unwrap_or_default(),
         };
         let inner = crate::with_warnings(py, || ZonalReducer::new(&zones, grid, &options, strip_rows))?;
         Ok(Self { inner, stats })

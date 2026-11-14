@@ -687,7 +687,7 @@ fn pansharpen(
                 .detach_result(|| {
                     let description = terrio::ops::pansharpen::vrt::PansharpenVrt::from_paths(&pan_path, &sources, &o)?;
                     description.write(dst)?;
-                    description.into_lazy(std::path::Path::new(""), Default::default())
+                    description.into_lazy_with_files(std::path::Path::new(""), Default::default())
                 })
                 .py()?;
             return Ok(PyRaster { inner });
@@ -700,7 +700,7 @@ fn pansharpen(
         let out = py
             .detach_result(|| {
                 let description = terrio::ops::pansharpen::vrt::PansharpenVrt::from_paths(&pan_path, &sources, &o)?;
-                description.into_lazy(std::path::Path::new(""), Default::default())?.read()
+                description.into_lazy_with_files(std::path::Path::new(""), Default::default())?.read()
             })
             .py()?;
         return Ok(PyRaster::from_dataset(out));

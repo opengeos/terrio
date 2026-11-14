@@ -27,8 +27,8 @@
 //! lazy warped VRTs, built-in scalar derived bands, kernel sources and validity masks.
 
 mod virtual_raster;
+pub use virtual_raster::{SUPPLIED_VRT_DEPTH, SuppliedSource, VirtualRaster, open_virtual_raster};
 pub(crate) use virtual_raster::{SourceInventoryScope, resolve_reference, source_input_paths, subdataset_parts};
-pub use virtual_raster::{VirtualRaster, open_virtual_raster};
 
 use super::{Grid, Resampling, common_type, convert_value, data_type_name, parse_data_type};
 use crate::crs::SpatialRef;
@@ -154,7 +154,7 @@ impl VrtDataset {
             }
             None => None,
         };
-        let srs = root.child("SRS").filter(|s| !s.text.trim().is_empty()).map(|s| SpatialRef::parse(s.text.trim())).transpose()?;
+        let srs = root.child("SRS").filter(|s| !s.text.trim().is_empty()).map(|s| SpatialRef::parse_literal(s.text.trim())).transpose()?;
         let mut bands = Vec::new();
         for b in root.children.iter().filter(|c| c.name == "VRTRasterBand") {
             if let Some(sub) = b.attr("subClass") {
@@ -1527,6 +1527,24 @@ fn resample_window(s: &SourceRead, win: (f64, f64, f64, f64), out: (usize, usize
 }
 
 // ─── A small XML reader ─────────────────────────────────────────────────────────────────────────
+
+/// Refuse undeclared capabilities before inspecting source headers or pixels.
+pub(crate) fn validate_supplied_sources(root: &xml::Element, sources: &std::collections::HashMap<String, crate::LazyRaster>) -> Result<()> {
+    if matches!(root.name.as_str(), "SourceFilename" | "SourceDataset" | "DEMPath") {
+        let name = if root.name == "DEMPath" { root.text.trim() } else { root.text.as_str() };
+        if !sources.contains_key(name) {
+            return Err(missing_supplied_source(name));
+        }
+    }
+    for child in &root.children {
+        validate_supplied_sources(child, sources)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn missing_supplied_source(name: &str) -> Error {
+    Error::InvalidArgument(format!("VRT source must be supplied in the source map: {}", crate::vsi::redact_diagnostic_location(name)))
+}
 
 pub(crate) mod xml {
     use crate::{Error, Result};

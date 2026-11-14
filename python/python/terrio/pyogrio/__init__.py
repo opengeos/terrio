@@ -53,6 +53,7 @@ from typing import Any
 import numpy as np
 
 from terrio import _terrio
+from terrio._terrio import _redact_diagnostic_location as _redact
 from terrio._warnings import warn_user
 from terrio.pyogrio import errors
 from terrio.pyogrio._read import _Source
@@ -157,7 +158,9 @@ def detect_write_driver(path) -> str:
     ext = os.path.splitext(str(path))[1].lower()
     if ext in _EXTENSIONS:
         return _EXTENSIONS[ext]
-    raise ValueError(f"Could not infer driver from path: {path}; please specify driver explicitly")
+    raise ValueError(
+        f"Could not infer driver from path: {_redact(str(path))}; please specify driver explicitly"
+    )
 
 
 def _unsupported(**kwargs):
