@@ -250,7 +250,16 @@ pub(crate) fn validated_geoparquet_schema(py: Python<'_>, schema: &Arc<Schema>) 
         if let Some(replacement) = replacement {
             changed = true;
             let mut metadata = metadata.clone();
-            metadata.insert("ARROW:extension:metadata".into(), replacement);
+            metadata.insert("ARROW:extension:metadata".into(), replacement.clone());
+            // Registered Arrow types can consume the standard extension keys without
+            // exposing serialized metadata. Retain the validated CRS decision too.
+            metadata.insert("terrio:geoarrow:metadata".into(), replacement);
+            fields.push(Arc::new(field.as_ref().clone().with_metadata(metadata)));
+        } else if metadata.get("ARROW:extension:name").is_some_and(|name| name.starts_with("geoarrow.")) {
+            changed = true;
+            let mut metadata = metadata.clone();
+            let encoded = metadata.get("ARROW:extension:metadata").cloned().unwrap_or_else(|| "{}".into());
+            metadata.insert("terrio:geoarrow:metadata".into(), encoded);
             fields.push(Arc::new(field.as_ref().clone().with_metadata(metadata)));
         } else {
             fields.push(field.clone());

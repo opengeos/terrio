@@ -21,12 +21,21 @@ and escaping Zarr keys, normalized key collisions, and closed VRT source maps.
 The VRT checks include unmapped local and remote sources, uploaded source bytes,
 and explicit file-based opens. Core regressions cover archive extraction aliases,
 portable remote download basenames, mask sources, and RPC DEM references.
+The catalog tests keep VRT bytes in the closed-source-map opener for both reading
+and overwrite inventory, including XML declarations and `GDAL:`/`NETCDF:` name
+prefixes. Direct paths and already-open native handles retain file-based lookup.
 
 `python/tests/test_diagnostic_url_safety.py` uses a loopback range server and fake
 credentials to check exceptions, multilayer warnings, notebook display logs, and
 CLI stderr. It checks custom authentication parameter names as well as signed URL
 parameters and userinfo. A successful raster read verifies that the network still
 receives the original query. Diagnostic redaction never rewrites request URLs.
+Standalone schemeless signed locations and percent-encoded credential separators
+are redacted too. Literal `?` filenames, Windows verbatim prefixes and bare words
+such as "unexpected token" remain intact when no credential parameter is present.
+The same policy applies to schemeless `#` fragments. Bare schemeless suffixes
+without a `name=value` credential parameter remain literal filenames or keys;
+queries and fragments of locations with a URL scheme are always redacted.
 
 ## Configuration alias precedence
 
@@ -351,6 +360,11 @@ not an end-to-end read benchmark or a timing gate.
 Each live buffer-reference comparison owns its GDAL and Arrow state in a child process. The
 GeoParquet case checks both ordinary buffers and Arrow dataframe reads with registered WKB
 extension types, keeping the reference driver's registrations out of other tests.
+`python/tests/test_geoparquet_arrow_crs.py` also isolates a registered WKB type
+that discards its incoming extension metadata. Valid CRS metadata must survive;
+null and rejected definitions stay absent, with the existing warnings. An uploaded
+field's forged fallback value must not override native validation. The retained
+metadata does not rebuild geometry or attribute buffers.
 An explicit child assertion is a comparison difference; skipped references stay skipped.
 Other exit codes, signals and the 60-second timeout are fixture setup errors, which the
 conformance reporter records as suite errors instead of data differences.
