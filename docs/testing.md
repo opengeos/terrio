@@ -35,6 +35,14 @@ geometry-intersection filter.
 
 ## Input isolation and diagnostic privacy
 
+`python/tests/test_pyogrio_buffer_routing.py` checks unsupported single-file and
+multi-file ZIPs through paths, bytes, named buffers and open files. Reads and
+layer inspection must name the archive (or `buffer`) rather than extracted or
+spilled files. Explicit `/vsizip/.../member` refusals retain that virtual path,
+including the GeoPackage layer-list shortcut. A malformed GeoJSON buffer retains
+its parsing reason and caller-visible name. The native regression is
+`cargo test -p terrio --lib vector_archive_member_refusals_name_the_requested_location`.
+
 `python/tests/test_crs_input_safety.py` checks that Python CRS strings and dataset
 metadata cannot implicitly read a host file. Literal EPSG/WKT/PROJ definitions
 remain supported; trusted Rust and CLI file parsing has separate coverage in
@@ -47,7 +55,12 @@ and explicit file-based opens. Core regressions cover archive extraction aliases
 portable remote download basenames, mask sources, and RPC DEM references.
 The catalog tests keep VRT bytes in the closed-source-map opener for both reading
 and overwrite inventory, including XML declarations and `GDAL:`/`NETCDF:` name
-prefixes. Direct paths and already-open native handles retain file-based lookup.
+prefixes, prolog comments beyond the identification header, and rejected extra
+document roots and GDAL-accepted case variants. Direct paths and
+already-open native handles retain file-based lookup. Archive diagnostic tests
+check formatted Python exception chains and native sidecar/directory failures
+for private extraction paths. Named malformed CRS and MIF-header refusals remain
+terminal under the optional GDAL fallback.
 
 `python/tests/test_diagnostic_url_safety.py` uses a loopback range server and fake
 credentials to check exceptions, multilayer warnings, notebook display logs, and

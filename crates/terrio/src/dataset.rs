@@ -511,7 +511,7 @@ fn open_native_unchecked(path: &str) -> Result<Dataset> {
     #[cfg(remote)]
     check_remote_copy(path, true)?;
     let local = vfs::resolve(path)?;
-    open_local(local.as_str(), &VectorOpenOptions::default()).map_err(|e| naming_dataset(e, path, local.as_str()))
+    open_local(local.as_str(), &VectorOpenOptions::default()).map_err(|e| naming_resolved_dataset(e, path, &local))
 }
 
 /// Opens a raster dataset, reading it into memory.
@@ -596,7 +596,7 @@ fn read_raster_native(path: &str) -> Result<RasterDataset> {
     #[cfg(remote)]
     check_remote_copy(path, false)?;
     let local = vfs::resolve(path)?;
-    read_raster_local(local.as_str()).map_err(|e| naming_dataset(e, path, local.as_str()))
+    read_raster_local(local.as_str()).map_err(|e| naming_resolved_dataset(e, path, &local))
 }
 
 /// Refuses a remote file that [`vfs::resolve`] would download whole for the whole read of a raster
@@ -664,20 +664,43 @@ fn judged_by_content(name: &str, generic: bool) -> bool {
 /// downloaded, an archive member extracted, to a temporary directory), naming the dataset as the
 /// caller gave it rather than the copy, whose path means nothing to the caller and would show a
 /// server's directories to the clients of a service that passes the message on. The copy's path
-/// is replaced with the dataset's name (without its query, which may hold a signature); a message
+/// is replaced with the dataset's name (remote queries omitted, literal local archive punctuation
+/// retained); a message
 /// that names neither starts with it. The variant is kept, but for the format libraries' errors,
 /// which become [`Error::InvalidData`] (the Python class they already map to).
+#[cfg(test)]
 fn naming_dataset(e: Error, path: &str, local: &str) -> Error {
+    naming_dataset_copy(e, path, local, None)
+}
+
+fn naming_resolved_dataset(e: Error, path: &str, local: &vfs::LocalPath) -> Error {
+    naming_dataset_copy(e, path, local.as_str(), local.temporary_directory().and_then(Path::to_str))
+}
+
+fn naming_dataset_copy(e: Error, path: &str, local: &str, directory: Option<&str>) -> Error {
     if vfs::Location::parse(path).is_local() {
         return e;
     }
-    let shown = path.trim().split(['?', '#']).next().unwrap_or(path);
-    let named = |m: String| if m.contains(local) { m.replace(local, shown) } else { format!("'{shown}': {m}") };
+    let local_archive = matches!(vfs::Location::parse(path), vfs::Location::Zip { archive, .. } if archive.is_local());
+    let shown = if local_archive {
+        crate::vsi::redact_diagnostic_location(path.trim())
+    } else {
+        crate::vsi::redact_diagnostic_location(path.trim().split(['?', '#']).next().unwrap_or(path))
+    };
+    let replace = |m: String| {
+        let m = m.replace(local, &shown);
+        if let Some(directory) = directory { m.replace(directory, &shown) } else { m }
+    };
+    let named = |m: String| {
+        let m = replace(m);
+        if m.contains(shown.as_ref()) { m } else { format!("'{shown}': {m}") }
+    };
     match e {
         Error::Unsupported(m) => Error::Unsupported(named(m)),
         Error::ResourceLimit(m) => Error::ResourceLimit(named(m)),
         Error::InvalidData(m) => Error::InvalidData(named(m)),
-        Error::InvalidArgument(m) => Error::InvalidArgument(named(m)),
+        // Option/layer-selection errors need no source prefix, but must not retain a copy's path.
+        Error::InvalidArgument(m) => Error::InvalidArgument(replace(m)),
         Error::Raster(e) => Error::InvalidData(named(e.to_string())),
         Error::Vector(e) => Error::InvalidData(named(e.to_string())),
         Error::Io(e) => Error::Io(std::io::Error::new(e.kind(), named(e.to_string()))),
@@ -994,7 +1017,7 @@ pub(crate) fn open_vector_native(path: &str, options: &VectorOpenOptions) -> Res
         return Ok(finish_vector(layers, path, VectorDriver::Parquet));
     }
     let local = vfs::resolve(path)?;
-    match open_local(local.as_str(), options)? {
+    match open_local(local.as_str(), options).map_err(|e| naming_resolved_dataset(e, path, &local))? {
         Dataset::Vector(v) => {
             check_archive_layers(path, &v.layers)?;
             Ok(v)
@@ -1052,7 +1075,8 @@ fn list_layers_native(path: &str) -> Result<Vec<String>> {
     if VectorDriver::for_extension(local.as_str()) == Some(VectorDriver::GPKG) {
         #[cfg(feature = "sqlite")]
         {
-            let names = crate::drivers::vector::gpkg_read::list_layers(local.as_str())?;
+            let names =
+                crate::drivers::vector::gpkg_read::list_layers(local.as_str()).map_err(|e| naming_resolved_dataset(e, path, &local))?;
             if names.is_empty() {
                 check_archive_layers(path, &[])?;
             }
@@ -1061,7 +1085,8 @@ fn list_layers_native(path: &str) -> Result<Vec<String>> {
         #[cfg(not(feature = "sqlite"))]
         return Err(Error::disabled("sqlite"));
     }
-    let dataset = open_vector_native(local.as_str(), &VectorOpenOptions::default())?;
+    let dataset =
+        open_vector_native(local.as_str(), &VectorOpenOptions::default()).map_err(|e| naming_resolved_dataset(e, path, &local))?;
     Ok(dataset.layers.into_iter().map(|l| l.name).collect())
 }
 
@@ -1095,7 +1120,7 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
         error if crate::drivers::vector::geojson::is_crs_refusal(error) => false,
         Error::InvalidData(message) if message.ends_with(crate::drivers::vector::kml::AMBIGUOUS_KMZ) => false,
         Error::InvalidData(message) if message.ends_with(vfs::AMBIGUOUS_ZIP) => false,
-        Error::InvalidData(message) if message.starts_with(crate::drivers::vector::mapinfo::INVALID_HEADER) => false,
+        Error::InvalidData(message) if message.contains(crate::drivers::vector::mapinfo::INVALID_HEADER) => false,
         e if e.is_resource_refusal() => false,
         // A missing file, unless the path is one of GDAL's dataset names (`HDF5:"f.h5"://x`).
         Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound => vfs::is_gdal_name(path),
@@ -1118,6 +1143,16 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
 #[cfg(all(test, feature = "gdal"))]
 mod fallback_tests {
     use super::*;
+
+    #[test]
+    fn named_terminal_parser_refusals_are_not_retried() {
+        let path = "/vsizip/input.zip/data";
+        for message in ["GeoJSON: invalid crs member {}", crate::drivers::vector::mapinfo::INVALID_HEADER] {
+            let error = naming_dataset(Error::InvalidData(message.into()), path, "/private/copy");
+            let result: Result<()> = gdal_fallback(path, Err(error), |_| panic!("terminal parser refusal retried through GDAL"));
+            assert!(matches!(result, Err(Error::InvalidData(_))));
+        }
+    }
 
     #[test]
     fn wrong_document_refusals_are_not_retried() {
@@ -2481,6 +2516,84 @@ mod tests {
         );
         assert!(matches!(&error, crate::Error::ResourceLimit(_)));
         assert_eq!(error.to_string(), "budget exceeded at https://example.com/input.hdf");
+        for path in [
+            "https://user:PRIVATE@example.com/input.hdf?signature=secret",
+            "/vsizip/https://user:PRIVATE@example.com/input.zip/roads.gpkg?signature=secret",
+        ] {
+            let error = super::naming_dataset(crate::Error::InvalidData(format!("invalid data at {local}")), path, local).to_string();
+            assert!(error.contains("example.com/input"), "{error}");
+            assert!(!error.contains("PRIVATE"), "{error}");
+            assert!(!error.contains("user:"), "{error}");
+            assert!(!error.contains("secret"), "{error}");
+            assert!(!error.contains(local), "{error}");
+        }
+    }
+
+    #[test]
+    fn extracted_sidecar_and_directory_errors_hide_the_private_root() {
+        for copy in ["/private/extracted/roads.dbf", "/private/extracted"] {
+            let error = super::naming_dataset_copy(
+                crate::Error::InvalidData(format!("invalid data at {copy}")),
+                "/vsizip/input.zip/roads.shp",
+                "/private/extracted/roads.shp",
+                Some("/private/extracted"),
+            );
+            assert!(error.to_string().contains("/vsizip/input.zip/roads.shp"));
+            assert!(!error.to_string().contains("/private/extracted"));
+        }
+    }
+
+    #[test]
+    fn vector_archive_member_refusals_name_the_requested_location() {
+        use std::io::Write;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("input #2.zip");
+        let members: &[&str] = if cfg!(feature = "sqlite") { &["README.txt", "broken.gpkg"] } else { &["README.txt"] };
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        for member in members {
+            writer.start_file(*member, zip::write::SimpleFileOptions::default()).unwrap();
+            writer.write_all(b"not a dataset").unwrap();
+        }
+        writer.finish().unwrap();
+        for member in members {
+            let requested = format!("/vsizip/{}/{member}", path.display());
+            let open_error = super::open_vector_native(&requested, &Default::default()).unwrap_err().to_string();
+            let list_error = super::list_layers_native(&requested).unwrap_err().to_string();
+            for error in [open_error, list_error] {
+                assert!(error.contains(&requested), "{error}");
+                assert!(!error.contains("terrio-"), "an extraction path leaked: {error}");
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_archive_geojson_crs_is_not_replaced_by_fallback() {
+        use std::io::Write;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("input.zip");
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        writer.start_file("data.geojson", zip::write::SimpleFileOptions::default()).unwrap();
+        writer.write_all(br#"{"type":"FeatureCollection","crs":{},"features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[0,0]}}]}"#).unwrap();
+        writer.finish().unwrap();
+        let requested = format!("/vsizip/{}/data.geojson", path.display());
+        let error = super::open_vector(&requested, &Default::default()).unwrap_err();
+        assert!(crate::drivers::vector::geojson::is_crs_refusal(&error), "{error}");
+        assert!(error.to_string().contains(&requested), "{error}");
+    }
+
+    #[test]
+    fn local_archive_diagnostic_names_keep_literal_punctuation() {
+        for suffix in [" #2", "?notes"] {
+            let requested = format!("/vsizip/input{suffix}.zip/roads.gpkg");
+            let error = super::naming_dataset(crate::Error::Unsupported("bad format in /private/copy".into()), &requested, "/private/copy");
+            assert_eq!(error.to_string(), format!("bad format in {requested}"));
+        }
+        let error = super::naming_dataset(
+            crate::Error::Unsupported("bad format in /private/copy".into()),
+            "/vsizip/input.zip?sig=PRIVATE/roads.gpkg",
+            "/private/copy",
+        );
+        assert_eq!(error.to_string(), "bad format in /vsizip/input.zip?<redacted>");
     }
 
     #[cfg(feature = "grib")]
