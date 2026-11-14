@@ -2655,39 +2655,46 @@ impl Shared {
         let window = RequestWindow::new(PARALLEL_RUNS);
         let cancellation = ReadCancellation::capture_with(window.cancel.clone());
         let (sender, responses) = std::sync::mpsc::channel::<(usize, Client, Result<Fetched>)>();
-        std::thread::scope(|scope| {
-            let mut threads = 0;
-            for _ in 0..PARALLEL_RUNS.min(requests.len()) {
-                let (sender, window, context, requests, cancellation) = (sender.clone(), &window, &context, &requests, &cancellation);
-                let mut client = self.client.clone();
-                client.cancel = Some(window.cancel.clone());
-                let spawned = std::thread::Builder::new().name("terrio-range".into()).spawn_scoped(scope, move || {
-                    // A panicking request stops the others, so that the fetch ends.
-                    let _stop = window.stop_on_panic();
-                    // A response in flight is abandoned too when the fetch stops.
-                    let _cancellation = cancellation.enter();
-                    while let Some((run, from, last)) = window.take(requests) {
-                        let fetched = context.enter().and_then(|_scope| client.fetch(Some((from, last))));
-                        // A copy of the client for the storing thread to take back (its URLs and
-                        // S3 state): a small cost next to the request's.
-                        if sender.send((run, client.clone(), fetched)).is_err() {
-                            break;
-                        }
-                    }
-                });
-                // A thread that cannot be had: the others send the requests.
-                threads += usize::from(spawned.is_ok());
-            }
-            drop(sender);
-            if threads == 0 {
+        crate::par::with_waiting_workers(window.cancel.clone(), |parallel| {
+            if !parallel {
                 return self.fetch_runs_serially(runs);
             }
-            // A panic here stops the threads too, which would otherwise wait for a place.
-            let _stop = window.stop_on_panic();
-            let result = self.store_runs_in_order(runs, &responses, &window);
-            // Threads still sending a request take no other and end with it, joined here.
-            window.stop();
-            result
+            // Also cover the caller if the OS refuses every worker and we fall back to serial.
+            let _cancellation = cancellation.enter();
+            std::thread::scope(|scope| {
+                let mut threads = 0;
+                for _ in 0..PARALLEL_RUNS.min(requests.len()) {
+                    let (sender, window, context, requests, cancellation) = (sender.clone(), &window, &context, &requests, &cancellation);
+                    let mut client = self.client.clone();
+                    client.cancel = Some(window.cancel.clone());
+                    let spawned = std::thread::Builder::new().name("terrio-range".into()).spawn_scoped(scope, move || {
+                        // A panicking request stops the others, so that the fetch ends.
+                        let _stop = window.stop_on_panic();
+                        // A response in flight is abandoned too when the fetch stops.
+                        let _cancellation = cancellation.enter();
+                        while let Some((run, from, last)) = window.take(requests) {
+                            let fetched = context.enter().and_then(|_scope| client.fetch(Some((from, last))));
+                            // A copy of the client for the storing thread to take back (its URLs and
+                            // S3 state): a small cost next to the request's.
+                            if sender.send((run, client.clone(), fetched)).is_err() {
+                                break;
+                            }
+                        }
+                    });
+                    // A thread that cannot be had: the others send the requests.
+                    threads += usize::from(spawned.is_ok());
+                }
+                drop(sender);
+                if threads == 0 {
+                    return self.fetch_runs_serially(runs);
+                }
+                // A panic here stops the threads too, which would otherwise wait for a place.
+                let _stop = window.stop_on_panic();
+                let result = self.store_runs_in_order(runs, &responses, &window);
+                // Threads still sending a request take no other and end with it, joined here.
+                window.stop();
+                result
+            })
         })
     }
 
@@ -2706,8 +2713,10 @@ impl Shared {
                     if let Some(response) = arrived.remove(&i) {
                         break response;
                     }
-                    let (at, client, fetched) =
-                        responses.recv().map_err(|_| io::Error::other(format!("{}: a request thread ended", redact(&self.client.url))))?;
+                    let (at, client, fetched) = responses.recv().map_err(|_| {
+                        let reason = if window.cancel.load(Ordering::SeqCst) { "request cancelled" } else { "a request thread ended" };
+                        io::Error::other(format!("{}: {reason}", redact(&self.client.url)))
+                    })?;
                     arrived.insert(at, (client, fetched));
                 };
                 // the client of the last run in order is kept, as serially (its response URL)
@@ -3618,6 +3627,56 @@ mod tests {
             // A failed batch must not leave the caller's subsequent requests cancelled.
             RangeReader::open_with(&Remote::Url(url), options()).unwrap();
         }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_fork_cancels_and_joins_parallel_range_requests() {
+        crate::par::alone(45, || {
+            // Register the existing fork protocol before the read; range workers must join it
+            // even when they do not run on the rayon pool or map_waiting workers (#698).
+            crate::par::map_waiting(2, 2, Ok).unwrap();
+            let release = Arc::new(AtomicBool::new(false));
+            let server_release = release.clone();
+            let (url, gate) = serve_gated(test_data(), move |first, _| {
+                if first > 0 {
+                    let deadline = Instant::now() + Duration::from_secs(30);
+                    while !server_release.load(Ordering::SeqCst) && Instant::now() < deadline {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                }
+                206
+            });
+            let reader = RangeReader::open_with(&Remote::Url(url), options()).unwrap();
+            let (sent, result) = std::sync::mpsc::channel();
+            let reading = std::thread::spawn(move || {
+                let read = reader.prefetch(&separate_runs(2));
+                sent.send((reader, read)).unwrap();
+            });
+            gate.wait_until(|seen| seen.most >= 2, Duration::from_secs(10));
+            assert_eq!(gate.most(), 2, "the range requests must be in flight");
+            let started = Instant::now();
+            let exit = crate::par::in_child(10, || crate::par::map_waiting(2, 2, Ok).is_ok_and(|v| v == [0, 1]));
+            let cancelled = result.recv_timeout(Duration::from_secs(2));
+            let promptly = started.elapsed() < Duration::from_secs(10);
+            // Always release the server and join the caller, including on the unfixed code.
+            release.store(true, Ordering::SeqCst);
+            reading.join().unwrap();
+            assert!(promptly, "the fork waited for the stalled server");
+            assert!(
+                cancelled.as_ref().is_ok_and(|(_, read)| read.as_ref().is_err_and(|error| error.to_string().contains("cancelled"))),
+                "the fork must cancel the in-flight requests: {:?}",
+                cancelled.as_ref().map(|(_, read)| read)
+            );
+            let (mut reader, _) = cancelled.unwrap();
+            let data = test_data();
+            reader.prefetch(&separate_runs(2)).unwrap();
+            for (offset, len) in separate_runs(2) {
+                assert_eq!(read_range(&mut reader, offset, len as usize), data[offset as usize..(offset + len) as usize]);
+            }
+            assert_eq!(gate.ranges_asked().len(), 4, "two abandoned requests and two recovered requests");
+            exit == Some(0)
+        });
     }
 
     #[test]

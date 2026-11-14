@@ -16,6 +16,7 @@
 //!
 //! - the `map_*`, `for_each_owned*` and `chunks_mut*` functions, for data parallelism;
 //! - `spawn`, for work in the background (native builds);
+//! - `with_waiting_workers`, for scoped native I/O workers, cancelled and joined before a fork;
 //! - [`install`], around rayon code that cannot be written with the functions above, and around
 //!   a call into a dependency that parallelizes with rayon by itself (`jpeg-decoder`,
 //!   `jxl-oxide`): rayon's free functions and parallel iterators run on the pool of the thread
@@ -75,6 +76,46 @@ mod native {
     /// How long a fork sleeps between checks for the background jobs running.
     #[cfg(unix)]
     const NAP: std::time::Duration = std::time::Duration::from_micros(50);
+    /// Active I/O batches whose reads must stop before a fork can copy thread state. Entries
+    /// are added after Running::enter and removed before its guard drops. The registry itself
+    /// is held across fork too, because another forking thread may inspect it without a job.
+    #[cfg(all(unix, remote))]
+    static CANCELLATIONS: std::sync::Mutex<Vec<std::sync::Arc<std::sync::atomic::AtomicBool>>> = std::sync::Mutex::new(Vec::new());
+
+    #[cfg(all(unix, remote))]
+    fn cancellations() -> std::sync::MutexGuard<'static, Vec<std::sync::Arc<std::sync::atomic::AtomicBool>>> {
+        CANCELLATIONS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[cfg(all(unix, remote))]
+    pub(super) struct CancelOnFork(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+    #[cfg(all(unix, remote))]
+    pub(super) fn cancel_on_fork(flag: std::sync::Arc<std::sync::atomic::AtomicBool>) -> CancelOnFork {
+        cancellations().push(flag.clone());
+        // A fork may have inspected the registry after this job was counted but before its
+        // flag was published. In that case this registering thread publishes cancellation.
+        if GATE.load(Ordering::SeqCst) >= FORK {
+            flag.store(true, Ordering::SeqCst);
+        }
+        CancelOnFork(flag)
+    }
+
+    #[cfg(all(unix, remote))]
+    impl Drop for CancelOnFork {
+        fn drop(&mut self) {
+            let mut active = cancellations();
+            if let Some(index) = active.iter().position(|flag| std::sync::Arc::ptr_eq(flag, &self.0)) {
+                active.swap_remove(index);
+            }
+        }
+    }
+
+    #[cfg(all(unix, remote))]
+    pub(super) fn hold_for_fork(held: &mut Vec<Box<dyn std::any::Any>>) {
+        held.push(Box::new(cancellations()));
+    }
+
     /// The background jobs held back by the forks in progress, newest first (see [`submit`]).
     static HELD_BACK: AtomicPtr<HeldBack> = AtomicPtr::new(std::ptr::null_mut());
 
@@ -257,6 +298,10 @@ mod native {
     #[cfg(unix)]
     pub(super) fn begin_fork() {
         GATE.fetch_add(FORK, Ordering::SeqCst);
+        #[cfg(remote)]
+        for flag in cancellations().iter() {
+            flag.store(true, Ordering::SeqCst);
+        }
         while GATE.load(Ordering::SeqCst) & JOBS != 0 {
             std::thread::sleep(NAP);
         }
@@ -350,6 +395,7 @@ fn hold_locks(held: &mut Vec<Box<dyn std::any::Any>>) {
     crate::ops::warp::hold_for_fork(held);
     #[cfg(remote)]
     {
+        native::hold_for_fork(held);
         crate::stac::hold_for_fork(held);
         crate::http::hold_for_fork(held);
     }
@@ -362,6 +408,23 @@ fn hold_locks(held: &mut Vec<Box<dyn std::any::Any>>) {
 pub(crate) fn fork_safe() {
     #[cfg(all(unix, not(target_family = "wasm")))]
     native::register();
+}
+
+/// Runs a native I/O batch with its worker threads counted until they have joined. A fork
+/// cancels the batch before waiting for its threads. When a fork already holds background
+/// work back, `work(false)` runs without worker threads instead, as map_waiting's fallback does.
+#[cfg(remote)]
+pub(crate) fn with_waiting_workers<R>(cancel: std::sync::Arc<std::sync::atomic::AtomicBool>, work: impl FnOnce(bool) -> R) -> R {
+    fork_safe();
+    if let Some(_running) = native::Running::enter() {
+        #[cfg(unix)]
+        let _cancel = native::cancel_on_fork(cancel);
+        #[cfg(not(unix))]
+        let _ = cancel;
+        work(true)
+    } else {
+        work(false)
+    }
 }
 
 /// A thread pool parallel work runs on: [`native::pool`], or the one the host started in
@@ -1028,6 +1091,50 @@ mod tests {
             let exit = fork_result.recv_timeout(Duration::from_secs(60));
             let read = reader.join().unwrap();
             waited && exit == Ok(Some(0)) && read.is_ok_and(|v| v == [0, 1, 2, 3])
+        });
+    }
+
+    #[test]
+    #[cfg(all(unix, remote))]
+    fn waiting_workers_are_counted_cancelled_and_fall_back_during_a_fork() {
+        alone(30, || {
+            use std::sync::Arc;
+            use std::sync::atomic::{AtomicBool, Ordering};
+            use std::time::{Duration, Instant};
+            let cancel = Arc::new(AtomicBool::new(false));
+            let (sent, result) = std::sync::mpsc::channel();
+            let mut forking = None;
+            with_waiting_workers(cancel.clone(), |parallel| {
+                assert!(parallel);
+                // A nested scope may share the cancellation flag. Dropping it removes one
+                // registry entry, while the enclosing batch remains cancellable and counted.
+                assert!(with_waiting_workers(cancel.clone(), |nested| nested));
+                forking = Some(std::thread::spawn(move || {
+                    native::begin_fork();
+                    sent.send(()).unwrap();
+                    native::end_fork();
+                }));
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !native::fork_in_progress() {
+                    assert!(Instant::now() < deadline);
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                assert!(wait_for(&cancel, 10), "the fork must cancel the active batch");
+                assert!(result.try_recv().is_err(), "the fork must wait for this scope to end");
+                let serial = with_waiting_workers(Arc::new(AtomicBool::new(false)), |parallel| !parallel);
+                assert!(serial, "nested work during a fork must fall back without waiting");
+            });
+            result.recv_timeout(Duration::from_secs(10)).unwrap();
+            forking.unwrap().join().unwrap();
+            // Model a fork inspecting the registry between counting a batch and publishing its
+            // flag. The publishing side must notice the fork and set its own cancellation.
+            native::begin_fork();
+            let late = Arc::new(AtomicBool::new(false));
+            let registration = native::cancel_on_fork(late.clone());
+            assert!(late.load(Ordering::SeqCst));
+            drop(registration);
+            native::end_fork();
+            with_waiting_workers(Arc::new(AtomicBool::new(false)), |parallel| parallel)
         });
     }
 
