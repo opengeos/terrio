@@ -183,22 +183,23 @@ impl CatalogInput {
         }
     }
 }
-// Unlike ordinary encoded tiles, a VRT may still read physical references after open.
-// Both opening and overwrite inventory must resolve them against the same filename.
+// Unlike ordinary encoded tiles, a VRT can refer to more inputs after open.
+// Both opening and overwrite inventory must keep supplied bytes in the closed-map
+// opener; using the file-enabled opener here would read the host's files.
 fn virtual_bytes(bytes: &[u8], name: &str) -> Result<Option<LazyRaster>> {
     let text = std::str::from_utf8(bytes);
     // By name or content, as the format sniffer reads it (an XML declaration may come first):
-    // VRT bytes that fell through would be opened as a file, with host resolution.
+    // VRT bytes that fell through would be opened as a file, with host resolution. The sniff
+    // uses a neutral name, since a prefixed name (`GDAL:…`) skips content identification.
     let vrt = crate::formats::extension(name).as_deref() == Some("vrt")
         || text.is_ok_and(|s| s.trim_start().starts_with("<VRTDataset"))
-        || crate::formats::identify_bytes(name, bytes).by_content.as_deref() == Some("VRT");
+        || crate::formats::identify_bytes("source", bytes).by_content.as_deref() == Some("VRT");
     if !vrt {
         return Ok(None);
     }
     let text = text.map_err(|_| bad("invalid VRT XML encoding"))?;
-    crate::ops::vrt::VirtualRaster::from_xml(text)?
-        .into_lazy_with_files(Path::new(name).parent().unwrap_or(Path::new(".")), HashMap::new())
-        .map(Some)
+    // `into_lazy` refuses every reference: nothing is mapped, and none is read from the host.
+    crate::ops::vrt::VirtualRaster::from_xml(text)?.into_lazy(Path::new(name).parent().unwrap_or(Path::new(".")), HashMap::new()).map(Some)
 }
 /// A catalog whose pixels are assembled on demand. Local catalogs use the index's on-disk
 /// spatial index. [`RasterCatalog::from_layer`] supports in-memory indexes and sources in WASM.
