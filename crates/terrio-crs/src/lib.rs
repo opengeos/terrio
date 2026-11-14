@@ -85,6 +85,7 @@ mod proj_write;
 mod projections;
 mod projjson;
 mod projjson_gdal;
+mod projjson_order;
 mod projjson_write;
 mod rotation;
 mod route;
