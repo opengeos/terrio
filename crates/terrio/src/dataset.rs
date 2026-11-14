@@ -683,7 +683,8 @@ fn naming_dataset(e: Error, path: &str, local: &str) -> Error {
         Error::Unsupported(m) => Error::Unsupported(named(m)),
         Error::ResourceLimit(m) => Error::ResourceLimit(named(m)),
         Error::InvalidData(m) => Error::InvalidData(named(m)),
-        Error::InvalidArgument(m) => Error::InvalidArgument(named(m)),
+        // Option/layer-selection errors need no source prefix, but must not retain a copy's path.
+        Error::InvalidArgument(m) => Error::InvalidArgument(m.replace(local, &shown)),
         Error::Raster(e) => Error::InvalidData(named(e.to_string())),
         Error::Vector(e) => Error::InvalidData(named(e.to_string())),
         Error::Io(e) => Error::Io(std::io::Error::new(e.kind(), named(e.to_string()))),

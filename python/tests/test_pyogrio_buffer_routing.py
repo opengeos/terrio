@@ -14,6 +14,16 @@ from terrio.pyogrio.errors import DataSourceError
 pytest_plugins = ["test_pyogrio_buffer_sources"]
 
 
+def require_reader_dependencies(read):
+    """Skip dataframe-only cases when its optional dependency is absent.
+
+    Args:
+        read: Public compatibility reader under test.
+    """
+    if read is tpg.read_dataframe:
+        pytest.importorskip("geopandas")
+
+
 @pytest.mark.parametrize("count", [1, 2])
 @pytest.mark.parametrize("mode", ["path", "bytes", "named", "file"])
 @pytest.mark.parametrize("read", [tpg.read_dataframe, tpg.read_info, tpg.list_layers])
@@ -27,6 +37,7 @@ def test_non_dataset_zip_errors_name_the_input(tmp_path, monkeypatch, count, mod
         mode: Path, anonymous bytes, named bytes or an open file.
         read: Pyogrio entry point under test.
     """
+    require_reader_dependencies(read)
     monkeypatch.chdir(tmp_path)
     encoded = io.BytesIO()
     with zipfile.ZipFile(encoded, "w") as archive:
@@ -81,6 +92,7 @@ def test_malformed_zip_buffer_resolution_names_the_input(read, named):
         read: Public pyogrio entry point.
         named: Whether the corrupt upload has a caller-provided filename.
     """
+    require_reader_dependencies(read)
     source = b"PK\x03\x04broken"
     if named:
         source = io.BytesIO(source)
@@ -100,6 +112,7 @@ def test_malformed_zip_upload_redacts_credential_like_filename(read):
     Args:
         read: Public pyogrio entry point.
     """
+    require_reader_dependencies(read)
     source = io.BytesIO(b"PK\x03\x04broken")
     source.name = "broken#sig=PRIVATE.zip"
     with pytest.raises(DataSourceError) as caught:
@@ -126,6 +139,7 @@ def test_bad_dataset_buffer_keeps_its_reason_without_spill_paths(read, suffix, d
         suffix: The malformed dataset's declared format.
         data: Invalid document or database bytes.
     """
+    require_reader_dependencies(read)
     source = io.BytesIO(data)
     source.name = f"bad.{suffix}"
     with pytest.raises(DataSourceError) as caught:
