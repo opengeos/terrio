@@ -712,6 +712,13 @@ caller-supplied conversion parameters; component identifiers remain. Descriptive
 usage fields (`scope`, `area`, `bbox`, `usages`, `remarks`) are accepted without
 affecting coordinates.
 
+Identification also follows the WKT reader's transformation policy: an identified
+code uses the registry's datum operations and available grids. Retained WKT is
+not a separate WKT-only transformation mode. Definitions that do not meet the
+WKT reader's registry-identification criteria remain custom; a supplied bound Helmert
+operation remains explicit. The no-grid conformance comparisons do not establish
+equivalence for every possible grid installation.
+
 This is a reader for the documented subset, rather than a general JSON Schema
 validator; [Writing PROJJSON](#writing-projjson) describes the writer. Unsupported semantic members and object types
 are errors: dynamic/derived/compound/vertical CRSs, Cartesian geocentric or 3D

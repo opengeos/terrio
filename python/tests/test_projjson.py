@@ -15,13 +15,27 @@ REFERENCE = json.loads(
     ).read_text()
 )
 
+IDENTITIES = {
+    "British National Grid": (4326, 27700),
+    "Web Mercator": (4326, 3857),
+    "North-first projected axes": (3044, 4258),
+    "West and south projected axes": (2046, 4148),
+    "US survey feet": (2227, 4269),
+    "Paris prime meridian and grads": (4807, 4275),
+    "Bound zero translation": (None, 4326),
+    "Bound geographic translation": (None, 4326),
+    "Bound projected seven parameters": (None, 4326),
+}
+
 
 @pytest.mark.parametrize("case", REFERENCE["cases"], ids=lambda c: c["name"])
 def test_projjson_coordinate_oracles(case):
-    for definition in (case["src"], case["dst"]):
+    name = case["name"].removesuffix(" with IDs").removesuffix(" without IDs")
+    identities = IDENTITIES[name]
+    for definition, code in zip((case["src"], case["dst"]), identities, strict=True):
         crs = CRS.from_string(json.dumps(definition))
-        # Identify the complete definition as WKT does, independently of its JSON ID.
-        assert crs.to_authority() == CRS.from_wkt(crs.to_wkt()).to_authority()
+        assert crs.to_epsg() == code
+        assert crs.to_authority() == (None if code is None else ("EPSG", str(code)))
     points = np.array(case["points"])
     terrio.set_grid_search_paths([])
     terrio.set_network_enabled(False)
