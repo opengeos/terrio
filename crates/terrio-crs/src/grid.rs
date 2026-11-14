@@ -956,6 +956,10 @@ fn is_grid_file(p: &std::path::Path) -> bool {
 /// Keep untrusted grid names bounded and escape controls before displaying diagnostics.
 #[cfg(not(target_family = "wasm"))]
 fn diagnostic_grid_name(name: &str) -> String {
+    // Omit URL-shaped input before truncation, which could leave private userinfo visible.
+    if name.contains("://") {
+        return "<URL-shaped grid name omitted>".into();
+    }
     name.chars().take(120).flat_map(char::escape_debug).collect()
 }
 
@@ -967,7 +971,7 @@ fn read_grid_file(p: &std::path::Path) -> Option<Arc<[u8]>> {
     let meta = std::fs::metadata(p).ok()?;
     if meta.is_file() && meta.len() > MAX_GRID_BYTES {
         crate::warnings::warn(format!(
-            "grid file {} is not read: larger than {MAX_GRID_BYTES} bytes",
+            "grid file is not read: larger than {MAX_GRID_BYTES} bytes ({})",
             diagnostic_grid_name(&p.to_string_lossy())
         ));
         return None;
@@ -1017,7 +1021,7 @@ fn grid_location(name: &str) -> GridLocation<'_> {
         if config().lock().unwrap_or_else(PoisonError::into_inner).paths.is_some() {
             let shown = diagnostic_grid_name(name);
             crate::warnings::warn(format!(
-                "grid {shown} named by a path is not read: grid search paths are set, so grids are read only from them"
+                "grid named by a path is not read: grid search paths are set, so grids are read only from them ({shown})"
             ));
             return GridLocation::Refused;
         }
@@ -1027,7 +1031,7 @@ fn grid_location(name: &str) -> GridLocation<'_> {
         GridLocation::InSearchDirs
     } else {
         let shown = diagnostic_grid_name(name);
-        crate::warnings::warn(format!("grid {shown} is not read: relative grid names must contain only ordinary path components"));
+        crate::warnings::warn(format!("grid is not read: relative grid names must contain only ordinary path components ({shown})"));
         GridLocation::Refused
     }
 }

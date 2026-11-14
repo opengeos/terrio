@@ -66,6 +66,24 @@ fn registered_grids_are_shared_in_both_directions() {
 }
 
 #[test]
+fn refused_grid_diagnostics_keep_reasons_and_hide_credentials() {
+    for name in [
+        "blocked/../https://user:PRIVATE@host/grid.gtx?sig=PRIVATE".to_string(),
+        format!("blocked/../https://user:{}@host/grid.gtx", "PRIVATE".repeat(30)),
+        "blocked/../grid.gtx?sig=PRIVATE".to_string(),
+    ] {
+        let _ = terrio::warnings::take();
+        let source = SpatialRef::parse(&format!("+proj=longlat +datum=WGS84 +geoidgrids={name} +vunits=m")).unwrap();
+        let result =
+            Transformer::new(&source, &SpatialRef::from_epsg(4979).unwrap()).and_then(|transform| transform.transform_3d(0.25, 0.5, 100.0));
+        assert!(result.is_err());
+        let warnings = terrio::warnings::take();
+        assert!(!warnings.is_empty());
+        assert!(warnings.iter().all(|warning| warning.contains("is not read") && !warning.contains("PRIVATE")), "{warnings:?}");
+    }
+}
+
+#[test]
 fn terrio_drains_both_warning_queues_and_standalone_can_drain_first() {
     let _ = terrio::warnings::take();
     let _ = terrio_crs::take_warnings();

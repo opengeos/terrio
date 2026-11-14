@@ -481,6 +481,8 @@ Rust and Python hosts can use `confine_grid_search_paths()` to apply the MCP pol
 directories, or set an explicit directory list with `set_grid_search_paths`.
 Python hosts can also register encoded grid bytes with `terrio.register_grid(name, data)`;
 registered grids remain available with confined search paths and networking disabled.
+Warning names are bounded and control characters are escaped. URL-shaped grid names are
+omitted before truncation, and credential-bearing locations are redacted by the shared drain.
 JavaScript already exposes in-memory registration as `registerGrid(name, bytes)`.
 The browser/WebAssembly binding has no host filesystem grid search, so native search-path
 configuration and confinement do not apply there.

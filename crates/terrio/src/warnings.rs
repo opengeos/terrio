@@ -30,6 +30,7 @@ pub(crate) fn warn(message: String) {
 
 /// Takes the warnings recorded on this thread since the last call, including standalone CRS
 /// grid diagnostics. Each queue retains its recording order; duplicate messages are combined.
+/// Credential-bearing locations are redacted before delivering standalone CRS diagnostics.
 ///
 /// ```
 /// let _ = terrio::warnings::take(); // Nothing to report yet.
@@ -39,7 +40,7 @@ pub fn take() -> Vec<String> {
     // Grid discovery records diagnostics directly in the standalone CRS engine.
     // Drain both queues so every public surface reports those refusals too.
     for message in terrio_crs::take_warnings() {
-        warn(message);
+        warn(crate::vsi::redact_diagnostic_location(&message).into_owned());
     }
     WARNINGS.try_with(|w| std::mem::take(&mut *w.borrow_mut())).unwrap_or_default()
 }
