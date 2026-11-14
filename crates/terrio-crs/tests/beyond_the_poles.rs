@@ -58,14 +58,14 @@ fn latitudes_beyond_the_poles_are_not_folded_back() {
     terrio_crs::set_grid_search_paths(Some(vec![]));
     terrio_crs::set_network_enabled(Some(false));
     for &(src, dst, (x, y), expected) in CASES {
-        let t = Transformer::new(&SpatialRef::parse(src).unwrap(), &SpatialRef::parse(dst).unwrap()).unwrap();
+        let target = SpatialRef::parse(dst).unwrap();
+        let t = Transformer::new(&SpatialRef::parse(src).unwrap(), &target).unwrap();
         let got = t.transform(x, y).ok().filter(|(u, v)| u.is_finite() && v.is_finite());
         let case = format!("{src} -> {dst} ({x}, {y}): {got:?}, PROJ {expected:?}");
         match (got, expected) {
             (None, None) => {}
             (Some((u, v)), Some((eu, ev))) => {
-                let geographic = dst != "EPSG:4978" && dst != "EPSG:32632";
-                if geographic {
+                if target.is_geographic() {
                     let du = (u - eu).rem_euclid(360.0);
                     assert!(du.min(360.0 - du) < 1e-9 && (v - ev).abs() < 1e-9, "{case}");
                 } else {
