@@ -905,6 +905,13 @@ mod tests {
     }
 
     #[test]
+    fn scheme_less_file_names_keep_a_query_that_names_no_credential() {
+        assert_eq!(super::redact_url("/data/what?.tif"), "/data/what?.tif");
+        assert_eq!(super::redact_url("/vsimem/a?x=1"), "/vsimem/a?x=1");
+        assert_eq!(super::redact_url(r"\\?\C:\token-cache\a.tif"), r"\\?\C:\token-cache\a.tif");
+    }
+
+    #[test]
     fn scheme_less_locations_redact_their_query_but_prose_is_kept() {
         assert_eq!(super::redact_url("/no/such/file.zip?sig=PRIVATE"), "/no/such/file.zip?<redacted>");
         assert_eq!(super::redact_url("/vsimem/a.tif?sig=PRIVATE"), "/vsimem/a.tif?<redacted>");

@@ -198,6 +198,7 @@ fn virtual_bytes(bytes: &[u8], name: &str) -> Result<Option<LazyRaster>> {
         return Ok(None);
     }
     let text = text.map_err(|_| bad("invalid VRT XML encoding"))?;
+    // `into_lazy` refuses every reference: nothing is mapped, and none is read from the host.
     crate::ops::vrt::VirtualRaster::from_xml(text)?.into_lazy(Path::new(name).parent().unwrap_or(Path::new(".")), HashMap::new()).map(Some)
 }
 /// A catalog whose pixels are assembled on demand. Local catalogs use the index's on-disk
