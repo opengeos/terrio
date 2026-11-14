@@ -2556,6 +2556,8 @@
 +proj=eqc +to_meter=0.5	OK
 +proj=eqc +units=m +to_meter=0	OK
 +proj=eqc +units=ft +to_meter=abc	OK
++proj=tmerc +units=ft +to_meter=abc	OK
++proj=ortho +alpha=abc +towgs84=1,abc,3	ERR
 +proj=longlat +to_meter=0	ERR
 +proj=eqc +geoidgrids=x.gtx +vto_meter=0	ERR
 +proj=eqc +vunits=m +vto_meter=0	OK

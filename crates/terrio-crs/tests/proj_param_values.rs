@@ -4,17 +4,18 @@
 //!
 //! `data/proj_param_values.tsv` (`scripts/gen_proj_param_values.py`) holds whether PROJ 9.8.1
 //! (pyproj 3.8.0, `PROJ_NETWORK=OFF`) accepts each string, with `+type=crs`, on WGS 84 unless
-//! the string gives its own ellipsoid. Two kinds of string still differ, listed in [`known`].
+//! the string gives its own ellipsoid. Three kinds of string still differ, listed in [`known`].
 
 use terrio_crs::SpatialRef;
 
 /// Where terrio and PROJ still differ:
-/// - the parameters every method reads (`lat_0`, `lon_0`, `x_0`, `y_0`, and the scale factor's
-///   number): PROJ checks them only for the methods its CRS parser maps them for, and terrio reads
-///   an unreadable one as absent, as before, so it accepts some strings PROJ refuses;
+/// - the parameters every method reads (`lat_0`, `lon_0`, `x_0`, `y_0`, and a scale factor that
+///   starts with a positive number, such as `0.5r`): PROJ checks them only for the methods its CRS
+///   parser maps them for, and terrio reads an unreadable one as absent (a scale factor of 1), as
+///   before, so it accepts some strings PROJ refuses;
 /// - checks of terrio's own for methods PROJ keeps as PROJ strings (`isea`, `murd2`, `tissot`,
-///   `tpers`), which refuse an unreadable value PROJ ignores, and Krovak's azimuth, which terrio
-///   does not read.
+///   `tpers`), which refuse an unreadable value PROJ ignores;
+/// - Krovak's azimuth, which terrio does not read.
 fn known(definition: &str, proj_accepts: bool) -> bool {
     let key = definition.rsplit(" +").next().and_then(|p| p.split_once('=')).map_or("", |(k, _)| k);
     let method = definition.split_whitespace().next().unwrap_or("").trim_start_matches("+proj=");

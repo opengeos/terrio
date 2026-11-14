@@ -43,7 +43,7 @@ fn flag_value(value: Option<&str>) -> Option<bool> {
 
 /// Parameters every method reads, which PROJ checks only for the methods its CRS parser maps them
 /// for (`+lat_0=abc` is refused for `tmerc` and ignored for `robin`): an unreadable value is
-/// still read as absent. The scale factor's own check is in `Def::from_proj`.
+/// still read as absent. The scale factor's own check is in `Def::from_params`.
 const LENIENT: [&str; 6] = ["lat_0", "lon_0", "x_0", "y_0", "k_0", "k"];
 
 /// The parameters of a PROJ string, in order.
@@ -51,8 +51,8 @@ const LENIENT: [&str; 6] = ["lat_0", "lon_0", "x_0", "y_0", "k_0", "k"];
 pub(crate) struct Params {
     items: Vec<(String, Option<String>)>,
     unterminated_quote: bool,
-    /// The first parameter read as a number or an angle whose value is neither.
-    invalid: std::sync::OnceLock<String>,
+    /// The parameters read as a number or an angle whose values are neither, in reading order.
+    invalid: std::cell::RefCell<Vec<String>>,
 }
 
 impl Params {
@@ -70,7 +70,7 @@ impl Params {
                 })
             })
             .collect();
-        Self { items, unterminated_quote, invalid: std::sync::OnceLock::new() }
+        Self { items, unterminated_quote, invalid: Default::default() }
     }
 
     /// Refuses a quoted value that would swallow the rest of a definition.
@@ -125,22 +125,22 @@ impl Params {
         self.items.iter().find(|(k, _)| k == key).and_then(|(_, v)| v.as_deref())
     }
 
-    /// Reads a parameter's value. A value present but not read (`abc`, or `+key` without one) is
+    /// Reads a parameter's value. A value present but not read (`abc`, or an empty `+key=`) is
     /// remembered for [`Self::invalid`] and read as absent.
     fn read<T>(&self, key: &str, parse: impl FnOnce(&str) -> Option<T>) -> Option<T> {
         let value = self.str(key)?;
         let v = parse(value);
-        if v.is_none() && !LENIENT.contains(&key) {
-            let _ = self.invalid.set(key.to_string());
+        if v.is_none() && !LENIENT.contains(&key) && !self.invalid.borrow().iter().any(|k| k == key) {
+            self.invalid.borrow_mut().push(key.to_string());
         }
         v
     }
 
-    /// The first parameter read as a number or an angle without being one: PROJ refuses a CRS
-    /// with such a value ("invalid value for lat_ts"). Only parameters read count, as PROJ only
-    /// checks those its method uses, and not those of [`LENIENT`].
-    pub fn invalid(&self) -> Option<&str> {
-        self.invalid.get().map(String::as_str)
+    /// The parameters read as a number or an angle without being one, in reading order: PROJ
+    /// refuses a CRS with such a value ("invalid value for lat_ts"). Only parameters read count,
+    /// as PROJ only checks those its method uses, and not those of [`LENIENT`].
+    pub fn invalid(&self) -> Vec<String> {
+        self.invalid.borrow().clone()
     }
 
     /// The parameter's numeric value.
@@ -186,7 +186,8 @@ fn tokens(s: &str) -> (Vec<String>, bool) {
     (out, quoted)
 }
 
-/// Parses decimal degrees or PROJ's DMS notation into degrees.
+/// Parses decimal degrees, PROJ's DMS notation or radians (`0.5r`, as PROJ's `dmstor`) into
+/// degrees.
 pub(crate) fn parse_dms(s: &str) -> Option<f64> {
     let s = s.trim();
     if let Ok(v) = s.parse() {

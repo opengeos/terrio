@@ -148,8 +148,9 @@ fn what_would_be_written_wrongly_is_refused() {
     // On a sphere, the auxiliary sphere is the sphere: written.
     assert!(SpatialRef::parse("+proj=merc +R_C +R=696000000").unwrap().to_projjson().is_ok());
     assert!(refusal("+proj=longlat +ellps=bessel +towgs84=1,2,3,4,5,6").contains("+towgs84 of 6 values"));
-    // A prime meridian it cannot read is not written as Greenwich.
-    assert!(refusal("+proj=longlat +datum=WGS84 +pm=foo").contains("+pm=foo"));
+    // A prime meridian it cannot read is refused when read, as PROJ refuses it, rather than
+    // written as Greenwich.
+    assert!(SpatialRef::parse("+proj=longlat +datum=WGS84 +pm=foo").unwrap_err().to_string().contains("invalid value for pm"));
     // JSON has no NaN: a non-finite parameter is refused rather than written as null.
     assert!(refusal("+proj=tmerc +k_0=nan +ellps=WGS84").contains("non-finite"));
     // A WKT 2 dynamic CRS without code (its frame epoch would be lost).

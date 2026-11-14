@@ -338,7 +338,7 @@ impl Def {
         let p = Params::parse(s);
         let d = Self::from_params(s, &p);
         // As PROJ refuses a value it cannot read, where terrio would take the parameter's default.
-        match p.invalid().filter(|key| !unchecked(&p, key)) {
+        match p.invalid().into_iter().find(|key| !unchecked(&p, key)) {
             Some(key) => Err(Error::Crs(format!("invalid value for {key} in '{s}'"))),
             None => d,
         }
@@ -375,7 +375,7 @@ impl Def {
             }
         }
 
-        let mut ell = datum::ellipsoid(&p).or_else(|| datum_name.and_then(datum_ellps).and_then(Ell::named)).unwrap_or_else(Ell::wgs84);
+        let mut ell = datum::ellipsoid(p).or_else(|| datum_name.and_then(datum_ellps).and_then(Ell::named)).unwrap_or_else(Ell::wgs84);
         let named = ell;
         // A shape without `+a` (or `+R`) changes the shape of the named ellipsoid or the datum's,
         // as PROJ's `pj_ell_set` applies it: `+f=0 +datum=WGS84` is the sphere of WGS 84's
@@ -414,8 +414,8 @@ impl Def {
             Some((n, d)) => Some(n.parse::<f64>().ok()? / d.parse::<f64>().ok()?),
             None => v.parse().ok(),
         });
-        // `+units` first, as PROJ reads them: `+to_meter` only without it, and then a positive
-        // number ("Invalid value for to_meter").
+        // A unit terrio knows (`+units`) first, as PROJ reads them: `+to_meter` only without it,
+        // and then a positive number ("Invalid value for to_meter").
         let units = p.str("units").and_then(unit_to_meter);
         if units.is_none() && p.has("to_meter") && explicit_to_meter.is_none_or(|v| !v.is_finite() || v <= 0.0) {
             return Err(Error::Crs(format!("invalid value for to_meter in '{s}'")));
@@ -437,7 +437,7 @@ impl Def {
             _ => *b"en",
         };
         let mut setup = Setup {
-            p: &p,
+            p,
             ell,
             phi0: p.angle("lat_0").unwrap_or(0.0),
             lam0: p.angle("lon_0").unwrap_or(0.0),
@@ -445,18 +445,22 @@ impl Def {
             x0: p.f64("x_0").unwrap_or(0.0),
             y0: p.f64("y_0").unwrap_or(0.0),
         };
-        // The scale factor as PROJ's `pj_init` reads it: the number its value starts with
-        // (`atof`), refused unless positive ("Invalid value for k").
-        if let Some(k) = p.str("k_0").or_else(|| p.str("k")) {
-            setup.k0 = leading_number(k).filter(|k| *k > 0.0).ok_or_else(|| Error::Crs(format!("invalid value for k_0 in '{s}'")))?;
+        // The scale factor, refused as PROJ's `pj_init` refuses it: when the number its value
+        // starts with (`atof`) is not above 0 ("Invalid value for k"); NaN passes that test. The
+        // value used is the whole value's number, as the writers read it (1 for `0.5r`, where
+        // PROJ takes 0.5 or refuses it).
+        let k = p.str("k_0").or_else(|| p.str("k"));
+        if k.is_some_and(|k| !leading_number(k).is_some_and(|k| k > 0.0 || k.is_nan())) {
+            return Err(Error::Crs(format!("invalid value for k_0 in '{s}'")));
         }
+        setup.k0 = k.and_then(|k| k.trim().parse().ok()).unwrap_or(1.0);
         // As PROJ refuses it ("Invalid value for lat_0: |lat_0| should be <= 90°").
         if setup.phi0.abs() > HALFPI + 1e-12 || !setup.phi0.is_finite() {
             return Err(Error::Crs(format!("invalid lat_0: {} degrees", setup.phi0.to_degrees())));
         }
         let is_longlat = |n: &str| matches!(n, "longlat" | "latlong" | "lonlat" | "latlon");
         // `ob_tran`'s rotation, of a rotated-pole grid (`+o_proj=longlat`) or of a projection.
-        let ob_tran = if name == "ob_tran" { Some(Rotation::from_params(&p)?) } else { None };
+        let ob_tran = if name == "ob_tran" { Some(Rotation::from_params(p)?) } else { None };
         let o_proj = p.str("o_proj").filter(|_| ob_tran.is_some());
         let rot = ob_tran.filter(|_| o_proj.is_some_and(is_longlat));
         let geocentric = name == "geocent";
@@ -1237,14 +1241,14 @@ pub(crate) fn wkt_linear_unit(w: &str) -> Option<f64> {
 }
 
 /// Whether PROJ 9.8.1 leaves a parameter's value unchecked for a CRS's method, though terrio
-/// reads it: the methods its CRS parser keeps as PROJ strings (`murd2`, `tissot`, `isea`,
-/// `tpers`), parameters outside the method's EPSG definition (`ortho`'s `alpha`, `ups`'s
+/// reads it: the methods its CRS parser keeps as PROJ strings (`murd2`, `tissot`, `isea`; terrio
+/// checks `tpers`'s itself), parameters outside the method's EPSG definition (`ortho`'s `alpha`, `ups`'s
 /// `lat_ts`), and `stere`'s `lat_ts` unless polar.
 fn unchecked(p: &Params, key: &str) -> bool {
     let polar = || p.str("lat_0").and_then(parse_dms).is_some_and(|l| l.abs() == 90.0);
     match p.str("proj").unwrap_or("") {
         "murd2" | "tissot" => matches!(key, "lat_1" | "lat_2"),
-        "isea" | "tpers" => matches!(key, "azi" | "tilt" | "h" | "orient" | "mode" | "aperture" | "resolution"),
+        "isea" => key == "azi",
         "ortho" => key == "alpha",
         "ups" => key == "lat_ts",
         "stere" => key == "lat_ts" && !polar(),

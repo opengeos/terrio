@@ -542,7 +542,9 @@ fn utm_lam0(zone: u32) -> f64 {
 /// The UTM zone of a transverse Mercator in metres with UTM's origin, scale and false easting and
 /// northing, which PROJ writes as `+proj=utm` (`Conversion::isUTM()`), whatever its definition.
 fn utm_zone(s: &Setup<'_>) -> Option<u32> {
-    let metres = s.p.f64("to_meter").is_none_or(|v| v == 1.0) && s.p.str("units").is_none_or(|u| u == "m");
+    // Read without checking it: `Def::from_params` checks `+to_meter` where PROJ reads it.
+    let to_meter = s.p.str("to_meter").and_then(|v| v.trim().parse::<f64>().ok());
+    let metres = to_meter.is_none_or(|v| v == 1.0) && s.p.str("units").is_none_or(|u| u == "m");
     let zone = (s.lam0.to_degrees() + 183.0) / 6.0;
     let utm = metres
         && s.ell.es != 0.0
