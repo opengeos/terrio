@@ -3053,8 +3053,12 @@ impl WarpContext<'_> {
             split(out);
             return;
         }
-        // Sum already uses its exact polygon planner in the estimate; reuse that result.
-        let win = if self.grid_invariant && self.resampling != Resampling::Sum { self.source_window(dx, dy, dw, dh) } else { estimated };
+        // Polygon kernels already bound every footprint in the estimate under both policies.
+        let win = if self.grid_invariant && self.resampling != Resampling::Sum && !self.uses_angular_area() {
+            self.source_window(dx, dy, dw, dh)
+        } else {
+            estimated
+        };
         if let Some((x, y, w, h, _, rw, rh)) = win {
             (sx, sy, sw, sh, raw_w, raw_h) = (x, y, w, h, rw, rh);
         }
@@ -3124,12 +3128,20 @@ impl WarpContext<'_> {
         None
     }
 
+    /// Geographic area kernels use local polygons under either grid policy.
+    fn uses_angular_area(&self) -> bool {
+        self.resampling.is_area_based() && self.resampling != Resampling::Sum && self.longitude_turn().is_some() && self.t.ct.is_some()
+    }
+
     /// Bounds the actual point kernels or area footprints. Geometry buffers are one row wide;
     /// no source pixels are read while planning. `sum` retains its exact polygon planner.
     /// Scales are recomputed after the source read rather than retaining a chunk-sized matrix.
     #[allow(clippy::type_complexity)]
     fn source_window(&self, dx: usize, dy: usize, dw: usize, dh: usize) -> Option<(usize, usize, usize, usize, f64, f64, f64)> {
-        if self.resampling.is_area_based() && self.resampling != Resampling::Sum && self.longitude_turn().is_some() && self.t.ct.is_some() {
+        if (dw == 0 || dh == 0) && self.grid_invariant && self.resampling != Resampling::Sum {
+            return None;
+        }
+        if self.uses_angular_area() && dw > 0 && dh > 0 {
             return self.angular_area_source_window(dx, dy, dw, dh);
         }
         if !self.grid_invariant || self.resampling == Resampling::Sum {
@@ -3320,6 +3332,9 @@ impl WarpContext<'_> {
     /// its edges cannot bound ([`WarpContext::poles`]).
     #[allow(clippy::type_complexity)]
     fn estimate_source_window(&self, dx: usize, dy: usize, dw: usize, dh: usize) -> Option<(usize, usize, usize, usize, f64, f64, f64)> {
+        if self.uses_angular_area() && dw > 0 && dh > 0 {
+            return self.angular_area_source_window(dx, dy, dw, dh);
+        }
         let (dxf, dyf, dwf, dhf) = (dx as f64, dy as f64, dw as f64, dh as f64);
         let all = self.sample_all || {
             let mut cx = [dxf, dxf + dwf, dxf, dxf + dwf];
@@ -4334,7 +4349,7 @@ impl WarpContext<'_> {
 
     /// Angular source footprints use every corner and actual source-cell overlap. At a
     /// projected point pole, the incoming and outgoing edges have separate longitude limits.
-    /// Validation reference: GDAL 3.12.1; pole-sector correctness is checked independently.
+    /// Reference: GDAL 3.12.1, whose pole sectors differ here by design (see docs/testing.md).
     fn warp_angular_area_row<T: crate::pixel::Pixel>(&self, c: &Chunk, k: &Kernel<T>, sink: &Sink, row: usize, out: &mut [&mut [f64]]) {
         let mut scratch = CornerBatch::default();
         let top = self.sum_corners(c, row, &mut scratch);

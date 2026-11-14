@@ -10,6 +10,23 @@ from terrio.rio import Env
 METHODS = ["average", "min", "max", "mode", "rms", "med", "q1", "q3"]
 
 
+def test_nonpolar_float_mode_selects_the_greatest_overlap():
+    """A first-seen float value may lead when its source cell has greater overlap."""
+    source = terrio.Raster.from_array(
+        np.array([[1.25, 2.5, 3.75]]), (0, 1, 0, 1, 0, -1), crs="EPSG:3857"
+    )
+    result = terrio.warp(
+        source,
+        t_srs="EPSG:3857",
+        dst_transform=(0.9, 1.2, 0, 1, 0, -1),
+        ts=(1, 1),
+        resampling="mode",
+        ot="Float64",
+    ).read(1)
+    # Cell overlaps are 0.1, 1.0 and 0.1 source pixels.
+    np.testing.assert_array_equal(result, [[2.5]])
+
+
 @pytest.fixture(scope="module")
 def wave():
     """Create a longitude-only field with known meridian symmetry.
@@ -62,7 +79,7 @@ def test_pole_corner_stays_in_longitude_sector(wave, method, invariant, epsg):
 
 @pytest.mark.parametrize("method", METHODS)
 @pytest.mark.parametrize("invariant", [False, True])
-@pytest.mark.parametrize("offset", [1, 2, 5, 20])
+@pytest.mark.parametrize("offset", [0, 1, 2, 5, 20])
 def test_meridian_mirrors_have_equal_area_statistics(wave, method, invariant, offset):
     """Require equal statistics on mirror pixels below the South Pole.
 
@@ -82,7 +99,14 @@ def test_meridian_mirrors_have_equal_area_statistics(wave, method, invariant, of
         ot="Float64",
         dstnodata=-999,
     ).read(1)
-    np.testing.assert_allclose(result[:, 0], result[:, 1], rtol=0, atol=1e-9)
+    if method == "mode" and offset == 0:
+        # Both sectors have two equally weighted central longitude columns.
+        # The first column in stored source order differs across the mirror;
+        # a tied mode need not be reflection invariant.
+        expected = 100 * np.cos(np.radians([[-135.5, 134.5]]))
+        np.testing.assert_allclose(result, expected, rtol=0, atol=1e-9)
+    else:
+        np.testing.assert_allclose(result[:, 0], result[:, 1], rtol=0, atol=1e-9)
 
 
 @pytest.mark.parametrize("invariant", [False, True])
@@ -147,7 +171,7 @@ def test_remote_polar_area_reads_only_its_source_strip(wave, tmp_path):
         np.testing.assert_allclose(result, expected, rtol=1e-12, atol=1e-10)
         transfers = [row for row in server.log if row[0] == "GET" and row[2] < 300]
         assert transfers and all(row[1] and row[2] == 206 for row in transfers)
-        assert server.bytes_sent() < path.stat().st_size
+        assert server.bytes_sent() < path.stat().st_size / 4
     finally:
         server.close()
         terrio.clear_http_cache()

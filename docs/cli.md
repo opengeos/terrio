@@ -1109,6 +1109,9 @@ inverse longitude cannot select another sector. Source-cell overlap areas provid
 the weights, and both grid policies plan reads from the same polygons. Other source
 grids retain their diagonal-corner rectangular footprints. These polygonal
 approximations can differ from GDAL's diagonal rectangles, especially near poles.
+For floating-point `mode`, a newly encountered value can become the leader when
+its overlap exceeds the current leader's accumulated overlap. Equal weights keep
+the first value in source traversal order. This rule also applies to nonpolar warps.
 On a geographic source with an unrotated grid, warped into another
 CRS, a footprint across the antimeridian takes the source on both sides of it, as one across any
 other meridian does: near both edges of a source of every longitude, and its part on the source's
