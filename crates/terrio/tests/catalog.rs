@@ -496,24 +496,28 @@ fn declared_vrt_bytes_under_another_name_resolve_no_host_files() {
     let host = dir.path().join("host.tif");
     terrio::write_raster_dataset(&tile(0., 10.), host.to_str().unwrap(), &Default::default()).unwrap();
     let xml = format!("<?xml version=\"1.0\"?>\n<!--{}-->\n{}", "padding".repeat(5000), reference_vrt(host.to_str().unwrap(), None));
-    for name in ["upload.bin", "GDAL:upload", "NETCDF:upload"] {
-        for overwrite in [false, true] {
-            let mut footprints = index();
-            footprints.features.truncate(1);
-            let catalog = RasterCatalog::from_sources(
-                footprints,
-                HashMap::from([("left.tif".into(), CatalogInput::bytes(xml.clone().into_bytes(), name))]),
-                CatalogOptions { extent: Some((0., 0., 4., 4.)), ..options() },
-            )
-            .unwrap();
-            let mut lazy = catalog.into_lazy();
-            let error = if overwrite {
-                lazy.write(host.to_str().unwrap(), &Default::default()).unwrap_err().to_string()
-            } else {
-                lazy.read().unwrap_err().to_string()
-            };
-            assert!(error.contains("supplied in the source map"), "{name}: {error}");
-            assert_eq!(terrio::open_raster(host.to_str().unwrap()).unwrap().raster.data.to_f64_vec(), vec![10.; 16]);
+    for (xml, reason) in
+        [(xml, "supplied in the source map"), (format!("<ignored/>{}", reference_vrt(host.to_str().unwrap(), None)), "multiple XML roots")]
+    {
+        for name in ["upload.bin", "GDAL:upload", "NETCDF:upload"] {
+            for overwrite in [false, true] {
+                let mut footprints = index();
+                footprints.features.truncate(1);
+                let catalog = RasterCatalog::from_sources(
+                    footprints,
+                    HashMap::from([("left.tif".into(), CatalogInput::bytes(xml.clone().into_bytes(), name))]),
+                    CatalogOptions { extent: Some((0., 0., 4., 4.)), ..options() },
+                )
+                .unwrap();
+                let mut lazy = catalog.into_lazy();
+                let error = if overwrite {
+                    lazy.write(host.to_str().unwrap(), &Default::default()).unwrap_err().to_string()
+                } else {
+                    lazy.read().unwrap_err().to_string()
+                };
+                assert!(error.contains(reason), "{name}: {error}");
+                assert_eq!(terrio::open_raster(host.to_str().unwrap()).unwrap().raster.data.to_f64_vec(), vec![10.; 16]);
+            }
         }
     }
 }

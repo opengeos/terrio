@@ -211,7 +211,7 @@ pub(crate) fn is_crs_refusal(error: &Error) -> bool {
     matches!(error, Error::InvalidData(message) if [
         "GeoJSON: invalid crs member", "GeoJSON: cannot resolve crs member",
         "TopoJSON: invalid crs member", "TopoJSON: cannot resolve crs member",
-    ].iter().any(|prefix| message.starts_with(prefix)))
+    ].iter().any(|prefix| message.contains(prefix)))
 }
 
 /// The memory parsing GeoJSON takes per byte of input, at most for common files: the document's

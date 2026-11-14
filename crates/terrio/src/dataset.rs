@@ -1120,7 +1120,7 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
         error if crate::drivers::vector::geojson::is_crs_refusal(error) => false,
         Error::InvalidData(message) if message.ends_with(crate::drivers::vector::kml::AMBIGUOUS_KMZ) => false,
         Error::InvalidData(message) if message.ends_with(vfs::AMBIGUOUS_ZIP) => false,
-        Error::InvalidData(message) if message.starts_with(crate::drivers::vector::mapinfo::INVALID_HEADER) => false,
+        Error::InvalidData(message) if message.contains(crate::drivers::vector::mapinfo::INVALID_HEADER) => false,
         e if e.is_resource_refusal() => false,
         // A missing file, unless the path is one of GDAL's dataset names (`HDF5:"f.h5"://x`).
         Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound => vfs::is_gdal_name(path),
@@ -1143,6 +1143,16 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
 #[cfg(all(test, feature = "gdal"))]
 mod fallback_tests {
     use super::*;
+
+    #[test]
+    fn named_terminal_parser_refusals_are_not_retried() {
+        let path = "/vsizip/input.zip/data";
+        for message in ["GeoJSON: invalid crs member {}", crate::drivers::vector::mapinfo::INVALID_HEADER] {
+            let error = naming_dataset(Error::InvalidData(message.into()), path, "/private/copy");
+            let result: Result<()> = gdal_fallback(path, Err(error), |_| panic!("terminal parser refusal retried through GDAL"));
+            assert!(matches!(result, Err(Error::InvalidData(_))));
+        }
+    }
 
     #[test]
     fn wrong_document_refusals_are_not_retried() {
@@ -2554,6 +2564,21 @@ mod tests {
                 assert!(!error.contains("terrio-"), "an extraction path leaked: {error}");
             }
         }
+    }
+
+    #[test]
+    fn malformed_archive_geojson_crs_is_not_replaced_by_fallback() {
+        use std::io::Write;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("input.zip");
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        writer.start_file("data.geojson", zip::write::SimpleFileOptions::default()).unwrap();
+        writer.write_all(br#"{"type":"FeatureCollection","crs":{},"features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[0,0]}}]}"#).unwrap();
+        writer.finish().unwrap();
+        let requested = format!("/vsizip/{}/data.geojson", path.display());
+        let error = super::open_vector(&requested, &Default::default()).unwrap_err();
+        assert!(crate::drivers::vector::geojson::is_crs_refusal(&error), "{error}");
+        assert!(error.to_string().contains(&requested), "{error}");
     }
 
     #[test]
