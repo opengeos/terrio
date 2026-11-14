@@ -3,6 +3,7 @@
 import json
 
 import numpy as np
+import pytest
 
 import terrio
 
@@ -123,3 +124,83 @@ def test_remote_zarr_read_in_place(tmp_path):
         np.testing.assert_array_equal(gdal_name.read(1), data)
     finally:
         server.shutdown()
+
+
+@pytest.mark.parametrize("failed_chunk", ["0.0", "1.0"])
+def test_remote_zarr_failure_cancels_stalled_body(tmp_path, failed_chunk):
+    """A failed chunk must release a read even when another response body stalls (#699)."""
+    import functools
+    import http.server
+    import threading
+
+    store = tmp_path / "stall.zarr"
+    store.mkdir()
+    (store / ".zarray").write_text(
+        json.dumps(
+            {
+                "zarr_format": 2,
+                "shape": [2, 2],
+                "chunks": [1, 2],
+                "dtype": "|u1",
+                "compressor": None,
+                "fill_value": 0,
+                "order": "C",
+                "filters": None,
+            }
+        )
+    )
+    (store / "0.0").write_bytes(bytes([1, 2]))
+    (store / "1.0").write_bytes(bytes([3, 4]))
+    stalled = threading.Event()
+    coordination_failed = threading.Event()
+    stall_expired = threading.Event()
+    release = threading.Event()
+    failing = threading.Event()
+    failing.set()
+
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            chunk = self.path.rsplit("/", 1)[-1]
+            if failing.is_set() and chunk in ("0.0", "1.0"):
+                if chunk == failed_chunk:
+                    if not stalled.wait(10):
+                        coordination_failed.set()
+                    self.send_error(400)
+                else:
+                    self.send_response(200)
+                    self.send_header("Content-Length", "2")
+                    self.end_headers()
+                    self.wfile.write(b"\x01")
+                    self.wfile.flush()
+                    stalled.set()
+                    if not release.wait(20):
+                        stall_expired.set()
+                    self.close_connection = True
+                return
+            super().do_GET()
+
+    server = http.server.ThreadingHTTPServer(
+        ("127.0.0.1", 0), functools.partial(Handler, directory=str(tmp_path))
+    )
+    server.daemon_threads = True
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_address[1]}/stall.zarr"
+        back = terrio.open_raster(url, lazy=True)
+        with pytest.raises(terrio.InvalidDataError, match=r"Zarr: chunk .*status 400"):
+            back.read(1)
+        assert not coordination_failed.is_set(), "the other chunk was never requested"
+        assert stalled.is_set()
+        assert not stall_expired.is_set(), "read waited for the stalled body's watchdog"
+        failing.clear()
+        release.set()
+        np.testing.assert_array_equal(back.read(1), [[1, 2], [3, 4]])
+    finally:
+        release.set()
+        server.shutdown()
+        server.server_close()
+        worker.join()

@@ -87,6 +87,24 @@ Ordered worker snapshots retain the same scope boundaries; flattened
 environment values or outer scopes. This alias policy is specific to Terrio;
 it is not a claim that GDAL understands the `TERRIO_` option names.
 
+## Failed native Zarr reads
+
+`cargo test -p terrio --lib a_failed_waiting_read_cancels_a_stalled_response`
+checks the shared waiting-worker path used by remote Zarr chunks and shard runs:
+a failed request cancels a stalled response-header wait or a long retry delay,
+including nested waiting workers and either request index failing. The initiating
+HTTP error survives cancellation, and a subsequent request on the calling thread
+still succeeds.
+
+`python -m pytest python/tests/test_stac_geozarr.py` also reads a real two-chunk
+Zarr store over loopback HTTP. One body stalls after its first byte while the
+other chunk returns 400. Both chunk orders must return the 400 before the stalled
+body is released, and rereading the same dataset after recovery must return all
+four values exactly. These are Terrio cancellation and lifecycle checks, rather
+than GDAL numerical conformance comparisons. Response waits use the existing
+50 ms cancellation polling; DNS resolution, connection establishment and
+non-HTTP computation are outside this cancellation mechanism.
+
 ## Remote-read locks across fork
 
 `cargo test -p terrio --lib each_remote_read_lock_is_handed_off_across_a_fork`
