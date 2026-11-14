@@ -473,8 +473,10 @@ commands. A grid named by an absolute or dot-relative path in a client-supplied 
 therefore treated as missing. Put trusted grids in `TERRIO_GRID_DIR`, `PROJ_DATA` or
 `PROJ_LIB` and refer to them by name; the normal user/cache directories remain available.
 Direct CLI calls and library calls retain PROJ-compatible path-named grids by default.
-Rust hosts can use `confine_grid_search_paths()` to apply the MCP policy to their current
+Rust and Python hosts can use `confine_grid_search_paths()` to apply the MCP policy to their current
 directories, or set an explicit directory list with `set_grid_search_paths`.
+Python hosts can also register encoded grid bytes with `terrio.register_grid(name, data)`;
+registered grids remain available with confined search paths and networking disabled.
 
 A local entry refused for its type or size is treated as missing. With network access enabled, a
 plain grid name can therefore use its CDN copy instead; path-named grids never use the CDN. The

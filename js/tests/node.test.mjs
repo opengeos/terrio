@@ -2846,6 +2846,19 @@ test("coordinate operation safeguards and warnings", () => {
   assert.ok(Array.from(terrio.takeWarnings()).some((w) => w.includes("missing grid")));
 });
 
+test("grid lookup refusals reach the public warning queue", () => {
+  terrio.takeWarnings();
+  assert.throws(() => terrio.transformPoints(
+    [0.25], [0.5],
+    "+proj=longlat +datum=WGS84 +geoidgrids=sub/../tiny.gtx +vunits=m",
+    "EPSG:4979", [100],
+  ), /cannot transform/);
+  const warnings = Array.from(terrio.takeWarnings());
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /sub\/\.\.\/tiny\.gtx/);
+  assert.deepEqual(Array.from(terrio.takeWarnings()), []);
+});
+
 test("complex TIFF memory copies retain exact Int32 components and sample tags", () => {
   // Independent baseline TIFF: two CInt32 pixels, one complex sample per pixel.
   const tags = [[256,3,2],[257,3,1],[258,3,64],[259,3,1],[262,3,1],

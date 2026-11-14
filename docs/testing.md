@@ -9,6 +9,16 @@ terrio reproduces the GDAL they compare with (see [warp](cli.md#warp)). Pull req
 compare the point cloud filters with PDAL's on `autzen_trim.las` only; pushes to `main` on the
 Madison lidar (4 million points) too (`scripts/compare_pointclouds.py --quick` skips it).
 
+## Grid confinement and diagnostics
+
+`python -m pytest python/tests/test_grid_policy.py` checks the Python confinement
+binding with host-default and explicit search directories, registered GTX bytes,
+path and parent-component refusals, and oversized sparse grids. Refusals must emit
+one `UserWarning` whether transformation raises or returns infinite coordinates,
+and must not reappear during an unrelated successful call. These check Terrio's
+host policy, rather than GDAL conformance. The shared warning drain includes the
+standalone CRS engine's grid diagnostics for CLI and language-binding callers.
+
 ## Input isolation and diagnostic privacy
 
 `python/tests/test_crs_input_safety.py` checks that Python CRS strings and dataset

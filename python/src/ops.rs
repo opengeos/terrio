@@ -45,6 +45,8 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(transform_points, m)?)?;
     m.add_function(wrap_pyfunction!(transform_bounds, m)?)?;
     m.add_function(wrap_pyfunction!(set_grid_search_paths, m)?)?;
+    m.add_function(wrap_pyfunction!(confine_grid_search_paths, m)?)?;
+    m.add_function(wrap_pyfunction!(register_grid, m)?)?;
     m.add_function(wrap_pyfunction!(set_network_enabled, m)?)?;
     m.add_function(wrap_pyfunction!(list_crs, m)?)?;
     m.add_function(wrap_pyfunction!(translate, m)?)?;
@@ -1122,6 +1124,26 @@ fn transform_points<'py>(
 #[pyo3(signature = (paths))]
 fn set_grid_search_paths(paths: Option<Vec<std::path::PathBuf>>) {
     terrio::crs::set_grid_search_paths(paths);
+}
+
+/// Confines grids to the effective search directories, preserving configured or host defaults.
+///
+/// Call before creating transformers for untrusted CRS definitions. Grids named by a path
+/// are then refused with a warning. Registered grids and the network policy are unchanged.
+/// Use ``set_grid_search_paths(None)`` to restore the environment's search policy.
+#[pyfunction]
+fn confine_grid_search_paths() {
+    terrio::crs::confine_grid_search_paths();
+}
+
+/// Registers a datum shift or geoid grid from memory, available even with confined search paths.
+///
+/// Args:
+///     name: The grid name used in CRS definitions.
+///     data: The encoded grid bytes (GeoTIFF, NTv2 or GTX).
+#[pyfunction]
+fn register_grid(name: &str, data: &[u8]) {
+    terrio::crs::register_grid(name, data.to_vec());
 }
 
 /// Enables or disables downloading grids from the PROJ CDN (https://cdn.proj.org) into terrio's
