@@ -203,6 +203,7 @@ def accepted(definition):
 
 def main():
     """Regenerate the frozen acceptance fixture using PROJ 9.8.1."""
+    pyproj.network.set_network_enabled(False)
     assert pyproj.proj_version_str == "9.8.1", pyproj.proj_version_str
     rows = []
     for method, key, value in itertools.product(METHODS, PARAMS, ["abc", "0.5r"]):

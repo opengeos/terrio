@@ -125,5 +125,9 @@ fn a_wkt_s_proj4_extension_is_read_as_proj_reads_it() {
         let refused = wkt.replace("+proj=eqc +lat_ts=abc +ellps=WGS84 +units=m", extension);
         let crs = SpatialRef::parse(&refused).unwrap();
         assert!(terrio_crs::Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &crs).is_err(), "{extension}");
+        let declared = format!(r#"{},AUTHORITY["EPSG","4087"]]"#, &refused[..refused.len() - 1]);
+        let crs = SpatialRef::parse(&declared).unwrap();
+        assert_eq!(crs.epsg, None, "{extension}");
+        assert!(terrio_crs::Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &crs).is_err(), "{extension}");
     }
 }
