@@ -685,7 +685,7 @@ fn naming_dataset_copy(e: Error, path: &str, local: &str, directory: Option<&str
     let shown = if local_archive {
         crate::vsi::redact_diagnostic_location(path.trim())
     } else {
-        path.trim().split(['?', '#']).next().unwrap_or(path).into()
+        crate::vsi::redact_diagnostic_location(path.trim().split(['?', '#']).next().unwrap_or(path))
     };
     let replace = |m: String| {
         let m = m.replace(local, &shown);
@@ -2506,6 +2506,17 @@ mod tests {
         );
         assert!(matches!(&error, crate::Error::ResourceLimit(_)));
         assert_eq!(error.to_string(), "budget exceeded at https://example.com/input.hdf");
+        for path in [
+            "https://user:PRIVATE@example.com/input.hdf?signature=secret",
+            "/vsizip/https://user:PRIVATE@example.com/input.zip/roads.gpkg?signature=secret",
+        ] {
+            let error = super::naming_dataset(crate::Error::InvalidData(format!("invalid data at {local}")), path, local).to_string();
+            assert!(error.contains("example.com/input"), "{error}");
+            assert!(!error.contains("PRIVATE"), "{error}");
+            assert!(!error.contains("user:"), "{error}");
+            assert!(!error.contains("secret"), "{error}");
+            assert!(!error.contains(local), "{error}");
+        }
     }
 
     #[test]
