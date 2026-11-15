@@ -1083,8 +1083,9 @@ def _geometry_input(geometries: Any) -> Any:
                 return _terrio.Layer.from_arrow(series.to_frame(name="geometry"))
             except ImportError:  # no pyarrow
                 pass
-        crs = series.crs.to_wkt() if series.crs is not None else None
-        return _terrio.Layer.from_geojson(series.__geo_interface__, crs=crs)
+        if series.crs is None:  # plain geometries, in `crs=` or the array's (GeoJSON means 4326)
+            return [f["geometry"] for f in series.__geo_interface__["features"]]
+        return _terrio.Layer.from_geojson(series.__geo_interface__, crs=series.crs.to_wkt())
     gi = getattr(geometries, "__geo_interface__", geometries)
     if isinstance(gi, dict):
         if gi.get("type") == "FeatureCollection":

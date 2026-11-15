@@ -344,11 +344,16 @@ def test_clip_takes_any_geometry_input(files, tmp_path, monkeypatch):
     two = two[["other", "geometry"]]
     assert two.columns[0] == "other"
     xr.testing.assert_identical(da.terrio.clip(two), from_lon_lat)
+    shapely = pytest.importorskip("shapely")
     # GeoPandas before 1.0 (no to_arrow): through GeoJSON, still with its CRS.
     monkeypatch.delattr(gpd.GeoSeries, "to_arrow")
     xr.testing.assert_identical(da.terrio.clip(frame), from_lon_lat)
+    # Without a CRS, the array's, on either path (not GeoJSON's EPSG:4326).
+    bare = gpd.GeoDataFrame(geometry=gpd.GeoSeries([shapely.geometry.shape(p) for p in polys]))
+    assert bare.crs is None
+    xr.testing.assert_identical(da.terrio.clip(bare), expected)
     monkeypatch.undo()
-    shapely = pytest.importorskip("shapely")
+    xr.testing.assert_identical(da.terrio.clip(bare), expected)
     xr.testing.assert_identical(
         da.terrio.clip(shapely.geometry.shape(polys[0])), da.terrio.clip(polys[:1])
     )
