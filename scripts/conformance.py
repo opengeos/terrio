@@ -2763,7 +2763,10 @@ PROJ_CASES = {
             "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm; `+axis` of `to_proj4()` as PROJ's",
         ),
         "geographic_and_bound_exports_match_proj": "WKT 2 export: geographic CS axes omitted, also under a BOUNDCRS, as PROJ 9.8.1",
-        "wkt2_exports_follow_geographic_and_method_axis_rules": "WKT 2 export: method-defined projected axes kept, as PROJ 9.8.1",
+        "wkt2_exports_follow_geographic_and_method_axis_rules": (
+            "WKT 2 export: method-defined projected axes kept, as PROJ 9.8.1", TOLERANCE,
+            "PROJ 9.8.1: a point on a west-counted Mars CRS within 1e-10 degrees",
+        ),
     },
     "wkt2_bound": {
         "bound_crss_place_points_as_proj_does": (
@@ -2794,7 +2797,10 @@ PROJ_CASES = {
         "wkt_read_by_proj_places_points_as_proj_does": (
             "WKT 1/2 PROJ reads: Mercator variant A and nodes of unknown keywords (26 cases)", TOLERANCE, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm, or 1e-9 degrees",
         ),
-        "wkt_read_by_proj_exports_proj_strings_as_proj_does": "WKT 1/2 PROJ reads: the PROJ string is PROJ 9.8.1's",
+        "wkt_read_by_proj_exports_proj_strings_as_proj_does": (
+            "WKT 1/2 PROJ reads: the PROJ string is PROJ 9.8.1's", TOLERANCE,
+            "PROJ 9.8.1: the same parameters, numeric values within a relative 1e-12",
+        ),
         "wkt_read_by_proj_is_identified_as_proj_identifies_it": "WKT 1/2 PROJ reads: identified as the EPSG code PROJ 9.8.1 identifies",
         "wkt_refused_by_proj_is_refused": (
             "WKT keywords with a space, vertical tab, NUL or unclosed quote", EXPECTED_REJECTION, "refused as PROJ 9.8.1 refuses them",
@@ -2821,7 +2827,10 @@ PROJ_CASES = {
         "prime_meridians_within_1e_10_radians_of_paris_are_paris": (
             "Prime meridians within 1e-10 radians of Paris, Copenhagen and Greenwich", TOLERANCE, "PROJ 9.8.1: within 1e-12 degrees",
         ),
-        "paris_is_written_as_proj_writes_it": "NTF (Paris) Lambert II: Paris written as PROJ 9.8.1 writes it (PROJ string, WKT 1, PROJJSON, GeoKeys)",
+        "paris_is_written_as_proj_writes_it": (
+            "NTF (Paris) Lambert II: Paris written as PROJ 9.8.1 writes it (PROJ string, WKT 1, PROJJSON, GeoKeys)", TOLERANCE,
+            "PROJ 9.8.1: within 1e-12 degrees",
+        ),
         "a_prime_meridian_unit_without_its_size_is_refused": (
             "WKT 2 prime meridian unit without its size", EXPECTED_REJECTION, "refused as PROJ 9.8.1 refuses it",
         ),
@@ -2838,7 +2847,9 @@ PROJ_CASES = {
             "WKTs whose datum is known by its EPSG ID or ESRI name, to WGS 84 (180 cases)", TOLERANCE, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
         ),
         "wkts_proj_does_not_resolve_are_placed_through_other_datums_as_proj_does": (
-            "WKTs PROJ places through other datums than their code's", TOLERANCE, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
+            "WKTs PROJ places through other datums than their code's", TOLERANCE,
+            "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm, but for EPSG:7373's ESRI WKT 1 (ONGD14), checked against its code's placement "
+            "until terrio follows PROJ there (opengeos/terrio#1012, item 7 step 2)",
         ),
     },
     "wkt_unresolved": {
