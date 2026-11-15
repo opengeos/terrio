@@ -1795,7 +1795,7 @@ rows, edit only the approved rows in `proj_param_value_differences.tsv` (definit
 PROJ's `OK`/`ERR` outcome), keep them sorted, and update the count in the test. Rerun the focused
 test with default features and `--all-features`; unexpected changes require investigation.
 
-PROJ-string ellipsoids are compared with PROJ 9.8.1 in 481 strings. Each of `laea`, `tmerc`,
+PROJ-string ellipsoids are compared with PROJ 9.8.1 in 484 strings. Each of `laea`, `tmerc`,
 `merc`, `ortho`, `geocent` and `longlat` (with a null `+towgs84`) is combined with `+R`,
 `+ellps`, `+datum`, `+a`, `+b`, `+rf`, `+f`, `+es`, `+e` and the spherification flags, alone
 and together. A few strings cover spherical orthographic (`+f=0`), `mill`, `cea`, the latitude of
@@ -1804,7 +1804,7 @@ its own `+a` or `+rf`, which PROJ drops, and the datum shifts of `+datum=` names
 spherification flag. The test checks where PROJ places a point
 (`Transformer.from_crs("EPSG:4326", CRS(s + " +type=crs"), always_xy=True)`, or from a
 geographic CRS to EPSG:4326), within 1 mm. It also checks the axes of the ellipsoid the CRS
-reports, and that terrio refuses the 37 strings PROJ refuses. 25 WKT 1 CRSs with such a `PROJ4`
+reports, and that terrio refuses the 37 strings PROJ refuses. 27 WKT 1 CRSs with such a `PROJ4`
 extension are checked the same way (`Transformer.from_crs("EPSG:4326", CRS(wkt), always_xy=True)`;
 PROJ computes on the extension as a pipeline step, and refuses to transform 5 of them). The WKT terrio
 writes for every string reads back where PROJ places the string, and 9 normalized extensions it

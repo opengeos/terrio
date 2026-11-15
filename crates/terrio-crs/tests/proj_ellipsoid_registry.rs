@@ -64,7 +64,8 @@ fn registry_proj_strings_keep_their_ellipsoids() {
             },
         };
         checked += 1;
-        if (read.a - expected.0).abs() > tolerance || (read.b - expected.1).abs() > tolerance {
+        let (da, db) = ((read.a - expected.0).abs(), (read.b - expected.1).abs());
+        if !da.is_finite() || !db.is_finite() || da > tolerance || db > tolerance {
             bad.push(format!("(\"{code}\", {:?}, {:?}), // {proj}: expected {expected:?}", read.a, read.b));
         }
     }

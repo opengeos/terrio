@@ -293,7 +293,10 @@ pub(crate) fn proj_ellipsoid(p: &Params, method: &str, extension: bool) -> std::
     // The CRS: a datum's ellipsoid, which PROJ defines by its inverse flattening (that of
     // `clrk66` for NAD27, not its semi-minor axis), else `+ellps`'.
     let rf = |e: Ell| if e.es == 0.0 { 0.0 } else { 1.0 / (1.0 - e.one_es.sqrt()) };
+    // A WKT's extension has no CRS parser's reading (PROJ reports the WKT's own ellipsoid): its
+    // step's is the CRS's (`+ellps=sphere +a=6370000`, which the parser refuses, is a sphere).
     let (crs, by_rf) = match datum.map(|d| (d, true)).or(ellps.map(|e| (e, false))).or(default.map(|d| (d, false))) {
+        _ if extension => (step, false),
         Some(((base_a, v), of_datum)) => {
             let by_axis = v < 0.0 && !of_datum;
             // `+a` of the ellipsoid's own semi-major axis leaves it unchanged.
@@ -815,10 +818,16 @@ impl Def {
         if towgs84.as_ref().is_some_and(|v| v.len() != 3 && v.len() != 7) {
             return Err(Error::Crs(format!("towgs84 needs 3 or 7 values in '{s}'")));
         }
-        let nadgrids = p.str("nadgrids").or(step_nadgrids).filter(|g| !g.split(',').all(|n| n.trim_start_matches('@') == "null"));
+        // `+nadgrids` wins over `+towgs84` and the datum's transformations (`pj_datum_set`, and a
+        // bound CRS of PROJ's CRS parser), `@null` alone being no shift at all.
+        let grids = p.str("nadgrids").or(step_nadgrids);
+        let null_grids = grids.is_some_and(|g| g.split(',').all(|n| n.trim_start_matches('@') == "null"));
+        let nadgrids = grids.filter(|_| !null_grids);
         if step_on_wgs84 {
             d.datum = Some(6326);
             d.geog = Some(4326);
+        } else if null_grids {
+            // No shift.
         } else if let Some(g) = nadgrids {
             d.ops = vec![Arc::new(Op::world(datum::nadgrids_steps(g)))];
         } else if let Some(t) = towgs84 {

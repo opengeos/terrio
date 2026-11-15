@@ -1222,7 +1222,8 @@ fn extension_places_without_grids(s: &str) -> bool {
     // against the step's shift, around the origin (in Greenwich longitudes): on a 3 × 3 grid
     // 5° apart and 4 points 15° away.
     let (lon, lat) = crs.params().map_or((0.0, 0.0), |p| (p.lon_0 + p.prime_meridian, p.lat_0));
-    let scale = if crs.is_geographic() { 111_195.0 } else { 1.0 };
+    // Metres per coordinate unit (`+to_meter`).
+    let scale = if crs.is_geographic() { 111_195.0 } else { crs.to_meter() };
     let offsets = [-5.0, 0.0, 5.0].into_iter().flat_map(|x| [-5.0, 0.0, 5.0].map(|y| (x, y)));
     let mut compared = 0;
     let alike = offsets.chain([(-15.0, 0.0), (15.0, 0.0), (0.0, -15.0), (0.0, 15.0)]).all(|(dx, dy)| {

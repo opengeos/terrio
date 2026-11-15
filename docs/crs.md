@@ -464,7 +464,10 @@ which describe a PROJ string by the CRS rules, refuse one the step places otherw
 figure, beyond the round-off between WGS 84 and GRS 1980, or by its datum, as both place points
 without grids whatever is installed: by the step's grids, or more than 1 mm apart around the
 origin). `+datum=NAD83`, which the step takes as WGS 84, is described. A `+datum=`
-with its grids (NAD27, potsdam) wins over the string's `+towgs84` in a step.
+with its grids (NAD27, potsdam) wins over the string's `+towgs84` in a step, and so does the
+string's own `+nadgrids`: `+nadgrids=@null +towgs84=1000,0,0` is no shift, as in PROJ. PROJJSON is
+also refused for an extension on another ellipsoid than the WKT's `SPHEROID`, and for spherical
+orthographic (`+f=0`), which PROJ writes as its own "Orthographic (Spherical)".
 
 Where WKT 1 cannot describe a CRS given by a PROJ string, terrio writes its PROJ string in the
 extension with the figure the CRS computes on in place of the string's ellipsoid parameters
@@ -478,7 +481,7 @@ The CRS still reports the ellipsoid of the first rules (`projection_params`, WKT
 Earlier versions applied `+f`, `+es` and `+e` to a named ellipsoid, made spheres of
 `+datum=WGS84 +a=...`, took `+b` before `+f`, `+es` and `+e`, read a shape without a size on
 WGS 84, and ignored `+R_V` and the other flags but `+R_A` and `+R_C`. Points in such CRSs can
-move by kilometres. `tests/proj_ellipsoid_shape.rs` checks 481 strings, 25 WKT extensions
+move by kilometres. `tests/proj_ellipsoid_shape.rs` checks 484 strings, 27 WKT extensions
 and 9 extensions terrio writes against PROJ. Not covered: other parameters that PROJ's parser does not take, which also make it
 compute on the string as a step reads it.
 

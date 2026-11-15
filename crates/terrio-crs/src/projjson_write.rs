@@ -142,8 +142,19 @@ fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
     };
     // A WKT's PROJ4 extension is computed on as a pipeline step; it is described by the CRS rules
     // of its PROJ string only where those read it the same way.
-    if s.proj4.is_none() && entry.is_none() && crate::proj4_extension(wkt).is_some() && !crate::extension_places_as_string(&proj) {
+    // Not a registry CRS's own WKT (ESRI:102100's extension is Web Mercator's, written as such).
+    let extension = s.proj4.is_none() && entry.is_none() && s.esri.is_none() && crate::proj4_extension(wkt).is_some();
+    if extension && !crate::extension_places_as_string(&proj) {
         return Err(unsupported("a PROJ4 extension PROJ computes on otherwise than its PROJ string"));
+    }
+    // Nor one on another figure than the WKT's ellipsoid, which this writer writes (PROJ 9.8.1
+    // writes the WKT's, `+R=6400000` beside a WGS 84 `SPHEROID` as WGS 84).
+    let spheroid = base.child("DATUM").and_then(|d| d.child("SPHEROID").or_else(|| d.child("ELLIPSOID")));
+    if extension && let Some((a, rf)) = spheroid.and_then(|e| Some((e.num(1)?, e.num(2)?))) {
+        let f = if rf == 0.0 { 0.0 } else { 1.0 / rf };
+        if (a - def.ell.a).abs() > 1e-3 || (2.0 * f - f * f - def.ell.es).abs() > 1e-10 {
+            return Err(unsupported("a PROJ4 extension on another ellipsoid than its WKT's"));
+        }
     }
     let p = Params::parse(&proj);
     refuse_misdescribed(&root, &p, &def)?;
@@ -220,8 +231,13 @@ fn refuse_misdescribed(root: &Node, p: &Params, def: &Def) -> Result<()> {
     // misdescribed when a flag makes another sphere of it (`+R_C` on an ellipsoid).
     let shape = crate::def::proj_ellipsoid(p, p.str("proj").unwrap_or_default(), false).ok();
     let ellipsoidal = shape.is_some_and(|e| if e.conformal { e.figure.es != 0.0 } else { e.figure != e.crs });
-    if ellipsoidal && let Some(k) = ["R_A", "R_C", "R_V", "R_a", "R_g", "R_h", "R_lat_a", "R_lat_g"].iter().find(|k| p.has(k)) {
-        return Err(unsupported(format!("a projection on an auxiliary sphere (+{k})")));
+    if ellipsoidal {
+        return Err(match ["R_A", "R_C", "R_V", "R_a", "R_g", "R_h", "R_lat_a", "R_lat_g"].iter().find(|k| p.has(k)) {
+            Some(k) => unsupported(format!("a projection on an auxiliary sphere (+{k})")),
+            // Spherical orthographic (`+f=0`), which PROJ writes as its own "Orthographic
+            // (Spherical)", a method terrio's readers do not take.
+            None => unsupported("spherical orthographic on an ellipsoid (+f=0)"),
+        });
     }
     if def.is_geographic() && def.has_height() && (p.has("geoc") || spherical_cs(root)) {
         return Err(unsupported("planetocentric latitudes with heights"));

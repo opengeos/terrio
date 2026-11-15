@@ -160,6 +160,10 @@ EXTRA = [
     # A datum beside `+a`, even of its own semi-major axis, is dropped: no NAD27 shift.
     "+proj=longlat +datum=NAD27 +a=6378206.4",
     "+proj=longlat +datum=NAD27 +rf=294.978698213898",
+    # `+nadgrids=@null` wins over `+towgs84`: no shift.
+    "+proj=longlat +ellps=WGS84 +nadgrids=@null +towgs84=1000,0,0",
+    "+proj=tmerc +lon_0=-75 +ellps=WGS84 +nadgrids=@null +towgs84=1000,0,0",
+    "+proj=eqc +ellps=sphere +a=6370000",
     # A step's `+datum=` is shifted as PROJ's `pj_datum_set` gives it, but under `+R_C`.
     "+proj=merc +datum=carthage +R_V",
     "+proj=merc +datum=NAD27 +R_V",
@@ -209,6 +213,11 @@ EXTENSIONS = [
     "+proj=merc +lat_ts=45 +lon_0=-75 +datum=WGS84 +a=6400000 +R_C",
     "+proj=tmerc +lon_0=-75 +datum=NAD27 +towgs84=-8,160,176",
     "+proj=tmerc +lon_0=-75 +datum=carthage +towgs84=-263,6,431",
+    # `+a` on a named sphere, which the CRS parser refuses (its semi-minor axis above `+a`) and
+    # the step reads as a sphere of that radius.
+    "+proj=eqc +ellps=sphere +a=6370000",
+    # `+nadgrids=@null` wins over `+towgs84`: no shift.
+    "+proj=tmerc +lon_0=-75 +ellps=WGS84 +nadgrids=@null +towgs84=1000,0,0",
 ]
 
 GEOGRAPHIC_EXTENSION_WKT = (

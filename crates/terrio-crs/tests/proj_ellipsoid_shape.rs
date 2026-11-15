@@ -42,7 +42,7 @@ fn ellipsoid_parameters_are_read_as_proj_reads_them() {
     terrio_crs::set_network_enabled(Some(false));
     let data: Value = serde_json::from_str(include_str!("data/proj_ellipsoid_shape.json")).unwrap();
     let cases = data["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 481);
+    assert_eq!(cases.len(), 484);
     let mut bad = vec![];
     for case in cases {
         let s = case["proj_string"].as_str().unwrap();
@@ -67,7 +67,7 @@ fn ellipsoid_parameters_are_read_as_proj_reads_them() {
         } else {
             got.iter().zip(&proj).map(|(g, p)| (g - p) * (g - p)).sum::<f64>().sqrt()
         };
-        if off >= 1e-3 {
+        if !off.is_finite() || off >= 1e-3 {
             bad.push(format!("{s}: PROJ {proj:?}, terrio {got:?}, {off:.3} m"));
         }
         // The ellipsoid the CRS reports, before a spherification flag makes a sphere of it.
@@ -76,7 +76,8 @@ fn ellipsoid_parameters_are_read_as_proj_reads_them() {
             continue;
         };
         let (a, b) = (case["ellipsoid"][0].as_f64().unwrap(), case["ellipsoid"][1].as_f64().unwrap());
-        if (params.a - a).abs() >= 1e-3 || (params.b - b).abs() >= 1e-3 {
+        let (da, db) = ((params.a - a).abs(), (params.b - b).abs());
+        if !da.is_finite() || !db.is_finite() || da >= 1e-3 || db >= 1e-3 {
             bad.push(format!("{s}: PROJ's ellipsoid {a}, {b}, terrio's {}, {}", params.a, params.b));
         }
     }
@@ -152,7 +153,7 @@ fn a_wkt_proj4_extension_is_computed_on_as_a_pipeline_step() {
     terrio_crs::set_network_enabled(Some(false));
     let data: Value = serde_json::from_str(include_str!("data/proj_ellipsoid_shape.json")).unwrap();
     let cases = data["extensions"].as_array().unwrap();
-    assert_eq!(cases.len(), 25);
+    assert_eq!(cases.len(), 27);
     let wgs84 = SpatialRef::from_epsg(4326).unwrap();
     let mut bad = vec![];
     for case in cases {
@@ -162,7 +163,7 @@ fn a_wkt_proj4_extension_is_computed_on_as_a_pipeline_step() {
             (None, Ok(got)) => bad.push(format!("{wkt}: PROJ refuses it, terrio {got:?}")),
             (Some(proj), Ok(got)) => {
                 let off = (got.0 - proj[0].as_f64().unwrap()).hypot(got.1 - proj[1].as_f64().unwrap());
-                if off >= 1e-3 {
+                if !off.is_finite() || off >= 1e-3 {
                     bad.push(format!("{wkt}: PROJ {proj:?}, terrio {got:?}, {off:.3} m"));
                 }
             }
@@ -218,7 +219,7 @@ fn a_written_wkt_reads_back_as_its_proj_string() {
         } else {
             got.iter().zip(&proj).map(|(g, p)| (g - p) * (g - p)).sum::<f64>().sqrt()
         };
-        if off >= 1e-3 {
+        if !off.is_finite() || off >= 1e-3 {
             bad.push(format!("{s}: PROJ {proj:?}, read back {got:?}, {off:.3} m: {wkt}"));
         }
     }
@@ -255,6 +256,8 @@ fn writers_describe_an_extension_only_as_it_is_computed_on() {
         // whether or not grids are installed and wherever the origin is.
         ("+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 +datum=OSGB36 +units=m +no_defs", false),
         ("+proj=tmerc +lon_0=-75 +datum=NAD27 +units=m +no_defs", false),
+        // Compared in metres, not in its units (here of 10⁹ m).
+        ("+proj=tmerc +lat_0=49 +lon_0=-2 +datum=OSGB36 +to_meter=1000000000 +no_defs", false),
     ] {
         let crs = SpatialRef::from_wkt(&wkt(ext));
         assert_eq!(crs.proj4, None, "{ext}");
@@ -264,4 +267,16 @@ fn writers_describe_an_extension_only_as_it_is_computed_on() {
         // The check's own diagnostics (a missing grid, a ballpark) are not the caller's.
         assert_eq!(terrio_crs::take_warnings(), Vec::<String>::new(), "{ext}");
     }
+}
+
+/// PROJJSON is refused where it would describe another figure than the CRS computes on: a WKT
+/// whose `PROJ4` extension is on another ellipsoid than its `SPHEROID` (PROJ 9.8.1 writes the
+/// WKT's, WGS 84 here, where its coordinates are on the 6400 km sphere), and spherical
+/// orthographic (`+f=0`), which PROJ writes as its own "Orthographic (Spherical)" method.
+#[test]
+fn projjson_is_refused_on_another_figure() {
+    let wkt = "PROJCS[\"custom\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"custom_proj4\"],UNIT[\"metre\",1],EXTENSION[\"PROJ4\",\"+proj=tmerc +lon_0=-75 +R=6400000\"]]";
+    assert!(SpatialRef::from_wkt(wkt).to_projjson().is_err());
+    assert!(SpatialRef::parse("+proj=ortho +lat_0=40 +lon_0=-90 +ellps=WGS84 +f=0").unwrap().to_projjson().is_err());
+    assert!(SpatialRef::parse("+proj=ortho +lat_0=40 +lon_0=-90 +ellps=WGS84").unwrap().to_projjson().is_ok());
 }
