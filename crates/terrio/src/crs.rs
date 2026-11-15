@@ -404,7 +404,7 @@ impl SpatialRef {
     pub(crate) fn from_raster_crs(c: &wbraster::CrsInfo) -> Self {
         // A raster's WKT is a file's text, or terrio's (`to_crs_info`, without a NUL): it ends
         // at its first NUL, as GDAL reads it.
-        let wkt = raster_crs_wkt(c).map(|w| terrio_crs::until_nul(&w).to_string());
+        let wkt = raster_crs_wkt(c).as_deref().and_then(file_wkt);
         let mut s = Self { epsg: c.epsg, wkt, proj4: c.proj4.clone(), esri: None };
         // A WKT made from a PROJ string is not identified: it can describe less than the PROJ
         // string (the registry's loose matches took a Robinson on another meridian for ESRI's).
@@ -434,11 +434,11 @@ impl SpatialRef {
 
     /// The CRS a vector layer declares. Its WKT is read up to its first NUL, as GDAL reads a
     /// file's text (a `.prj`, a GeoPackage's definition): a WKT with a NUL inside a name, which
-    /// GDAL refuses, gives no CRS. WKT terrio wrote, by [`SpatialRef::apply_to_layer`] or to any
+    /// GDAL refuses, gives no CRS (no WKT, so none is written back). WKT terrio wrote, by [`SpatialRef::apply_to_layer`] or to any
     /// file, has no NUL (a name with one, from a PROJJSON name, is cut there, as PROJ 9.8.1 gives
     /// the name), so it reads back as the CRS. A raster's CRS is read so too.
     pub fn from_layer(layer: &wbvector::Layer) -> Self {
-        let wkt = layer.crs_wkt().map(|w| terrio_crs::until_nul(w).to_string());
+        let wkt = layer.crs_wkt().and_then(file_wkt);
         let mut s = Self { epsg: layer.crs_epsg(), wkt, ..Default::default() };
         if s.epsg.is_none()
             && let Some(w) = &s.wkt
@@ -456,6 +456,17 @@ impl SpatialRef {
         layer.set_crs_epsg(self.epsg);
         layer.set_crs_wkt(self.to_file_wkt());
     }
+}
+
+/// A CRS definition read from a file, as GDAL reads it: up to its first NUL (a C string). One
+/// that the NUL cuts into text no reader takes (a NUL inside a name, which GDAL refuses with
+/// "missing , or ]") is no CRS, so that it isn't written back as that text either.
+fn file_wkt(text: &str) -> Option<String> {
+    let cut = terrio_crs::until_nul(text);
+    if cut.len() < text.len() && terrio_crs::SpatialRef::parse_literal(cut).is_err() {
+        return None;
+    }
+    Some(cut.to_string())
 }
 
 /// Text for a terminal or a text report: a NUL (in a name a PROJJSON gives) written `\u0000`, as
@@ -482,6 +493,8 @@ pub(crate) fn epsg_crs_info(code: u32) -> wbraster::CrsInfo {
 pub(crate) fn raster_crs_wkt(c: &wbraster::CrsInfo) -> Option<String> {
     let (Some(code), Some(wkt)) = (c.epsg, c.wkt.as_deref()) else { return c.wkt.clone() };
     let Some(registry) = epsg_crs_info(code).wkt else { return c.wkt.clone() };
+    // As a file's text, up to its first NUL (a tag padded with NULs is still the registry's WKT).
+    let wkt = terrio_crs::until_nul(wkt);
     let same = registry == wkt || wbprojection::to_ogc_wkt(code).is_ok_and(|generated| generated == wkt);
     if same { Some(registry) } else { c.wkt.clone() }
 }

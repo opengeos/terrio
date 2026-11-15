@@ -572,7 +572,9 @@ fn horizontal(srs: &SpatialRef) -> Result<SpatialRef> {
             ']' | ')' => {
                 depth -= 1;
                 if depth == 0 {
-                    return Ok(SpatialRef::from_wkt(&rest[..=i]));
+                    // Part of the CRS's stored WKT, whose names may keep a NUL (from a PROJJSON
+                    // name): cut there, so that it reads whole.
+                    return Ok(SpatialRef::from_wkt(&terrio_crs::wkt_for_files(&rest[..=i])));
                 }
             }
             _ => {}
@@ -1064,6 +1066,17 @@ pub fn parse_rpc_file(text: &str, rpb: bool) -> Option<Vec<(String, String)>> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// The horizontal part of a compound CRS whose stored WKT keeps a NUL in a name (one a
+    /// PROJJSON name gives) reads as that CRS: it is cut at the NUL, as files have it.
+    #[test]
+    fn the_horizontal_crs_of_a_compound_crs_with_a_nul_in_a_name_reads() {
+        let utm = SpatialRef::from_epsg(32631).unwrap().to_wkt().unwrap().replacen("WGS 84 / UTM zone 31N", "WGS 84\0 / UTM zone 31N", 1);
+        let vertical = SpatialRef::from_epsg(5703).unwrap().to_wkt().unwrap();
+        let compound = SpatialRef { wkt: Some(format!("COMPD_CS[\"x\",{utm},{vertical}]")), ..Default::default() };
+        let h = horizontal(&compound).unwrap();
+        assert!(h.to_proj4().is_some_and(|p| p.contains("+proj=utm +zone=31")), "{h:?}");
+    }
 
     /// RPCs of a 100 x 100 image over 0.2 degrees, with a parallax along the samples.
     pub(crate) fn rpc() -> Rpc {

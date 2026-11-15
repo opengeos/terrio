@@ -101,3 +101,30 @@ fn a_raster_made_in_a_crs_with_a_nul_in_its_name_has_that_crs() {
     assert_eq!(back.to_proj4(), crs.to_proj4());
     assert!(back.to_wkt().is_some_and(|w| !w.contains('\0') && w.contains("\"Moll\"")), "{:?}", back.to_wkt());
 }
+
+/// A shapefile whose `.prj` is padded with NULs is copied as the same `.prj` without them is:
+/// to a GeoPackage as EPSG:32631, as GDAL 3.10.3's `ogr2ogr` writes it (`srs_id` 32631,
+/// organization EPSG), and to a shapefile with the same `.prj` (terrio writes the EPSG code's
+/// WKT for both; `ogr2ogr` keeps the ESRI WKT, without the NULs). One with a NUL in its name
+/// is copied without a CRS, as by `ogr2ogr`.
+#[test]
+fn a_prj_padded_with_nuls_is_copied_as_without_them() {
+    let copy = |name: &str, prj: &str, ext: &str| {
+        let layers = shapefile_with_prj(name, prj);
+        let tmp = tempfile::Builder::new().prefix("terrio-wkt-file-nul-copy-").tempdir().unwrap();
+        let path = tmp.path().join(format!("c.{ext}"));
+        terrio::write_vector(&layers, path.to_str().unwrap(), &Default::default()).unwrap();
+        let back = terrio::open_vector(path.to_str().unwrap(), &Default::default()).unwrap().layers;
+        let prj = std::fs::read(tmp.path().join("c.prj")).ok();
+        (back[0].crs_epsg(), prj)
+    };
+    assert_eq!(copy("gpkg", PADDED_PRJ, "gpkg").0, Some(32631));
+    let plain = copy("plain", PADDED_PRJ.trim_end_matches('\0'), "shp");
+    let padded = copy("padded-shp", PADDED_PRJ, "shp");
+    assert!(plain.1.as_deref().is_some_and(|p| !p.contains(&0)));
+    assert_eq!(padded, plain);
+    // With a NUL inside the CRS's name, the CRS is none (GDAL: "missing , or ]"), and none is
+    // written: GDAL 3.10.3's `ogr2ogr` writes no `.prj` (and GeoPackage `srs_id` 99999).
+    let named = PADDED_PRJ.trim_end_matches('\0').replace("WGS_1984_UTM_Zone_31N", "WGS_1984_UTM\0_Zone_31N");
+    assert_eq!(copy("named-shp", &named, "shp"), (None, None));
+}

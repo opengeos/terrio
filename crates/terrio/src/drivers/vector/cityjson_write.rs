@@ -493,7 +493,10 @@ fn crs(layers: &[Layer]) -> Result<Option<u32>> {
         // inferred code here when its full definition equals the stored WKT.
         let declared = source.epsg.filter(|code| {
             !crate::crs::is_esri_code(*code)
-                && layer.crs_wkt().is_none_or(|wkt| SpatialRef::from_epsg(*code).ok().and_then(|s| s.to_wkt()).as_deref() == Some(wkt))
+                && layer
+                    .crs_wkt()
+                    .map(terrio_crs::until_nul)
+                    .is_none_or(|wkt| SpatialRef::from_epsg(*code).ok().and_then(|s| s.to_wkt()).as_deref() == Some(wkt))
         });
         let code = declared
             .or_else(|| super::trusted_epsg(layer))
