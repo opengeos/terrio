@@ -1780,6 +1780,24 @@ mod resolution_tests {
     }
 
     #[test]
+    fn a_projected_crs_on_a_geographic_crs_with_its_id_is_resolved() {
+        // A custom Transverse Mercator without code: PROJ takes its geographic CRS by its ID,
+        // without `AXIS` too; without the ID, a WKT 1 `GEOGCS` without `AXIS` (longitude first)
+        // is not resolved.
+        let tm = |geogcs: &str| {
+            format!(
+                r#"PROJCS["Custom TM",{geogcs},PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",10],PARAMETER["scale_factor",0.9996],PARAMETER["false_easting",500000],PARAMETER["false_northing",0],UNIT["metre",1],AXIS["Easting",EAST],AXIS["Northing",NORTH]]"#
+            )
+        };
+        let geogcs = r#"GEOGCS["DHDN",DATUM["Deutsches_Hauptdreiecksnetz",SPHEROID["Bessel 1841",6377397.155,299.1528128]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]"#;
+        let with_id = tm(&format!(r#"{geogcs},AUTHORITY["EPSG","4314"]]"#));
+        let without = tm(&format!("{geogcs}]"));
+        let resolved = |w: &str| proj_resolution(&wkt1::parse(w).unwrap(), None, Some(4314), &|_| false).map(|r| r.resolved);
+        assert_eq!(resolved(&with_id), Some(true));
+        assert_eq!(resolved(&without), Some(false));
+    }
+
+    #[test]
     fn code_less_wkts_found_by_name_are_resolved_when_alike() {
         // Monte Mario (Rome) by an alias, latitude first, on its datum: PROJ resolves it when it
         // matches the CRS it finds (`alike`), else it uses that CRS's area.

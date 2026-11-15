@@ -329,7 +329,10 @@ impl Route {
                         let mut kind = list(&ops, reverse);
                         // GDAL's order is for the two geographic CRSs: between CRSs of another
                         // area of interest, PROJ sorts the transformations for theirs.
-                        resort(&mut kind, a, b, aoi.as_ref());
+                        // The search sorts the list itself, for a CRS PROJ does not resolve.
+                        if !searching {
+                            resort(&mut kind, a, b, aoi.as_ref());
+                        }
                         searched(kind)
                     }
                     _ => chains(a, b, src, dst, aoi.as_ref(), all),
@@ -707,14 +710,13 @@ fn unresolved_search(list: Vec<Leg>, a: u32, b: u32, src: &Def, dst: &Def, aoi: 
     }
     let (Some(ga), Some(gb)) = (reg.geodetic.get(&a), reg.geodetic.get(&b)) else { return Kind::List(list) };
     let direct: Vec<&Leg> = list.iter().filter(|l| !l.op.ballpark).collect();
-    // Whether every transformation has a step of PROJ's database's that `flag` holds.
-    let all_with = |flag: fn(&epsg::Registered) -> bool| {
-        direct.iter().all(|l| step_names(&l.op, false).iter().any(|n| reg.ops.iter().any(|r| flag(r) && r.op.name == *n)))
-    };
+    // Whether every transformation has a step among `names`.
+    let all_with = |names: &HashSet<&str>| direct.iter().all(|l| step_names(&l.op, false).iter().any(|n| names.contains(n.as_str())));
+    let (ensemble, time_dependent) = flagged_names();
     let areas: Vec<Option<[f64; 4]>> = direct.iter().map(|l| Some(l.op.chain_bounds)).collect();
     let search = too_small_areas(&areas, src.area(), dst.area())
-        || all_with(|r| r.ensemble)
-        || (!src.is_dynamic() && !dst.is_dynamic() && all_with(|r| r.time_dependent));
+        || all_with(ensemble)
+        || (!src.is_dynamic() && !dst.is_dynamic() && all_with(time_dependent));
     if !search {
         let mut kind = Kind::List(list);
         resort(&mut kind, a, b, aoi);
@@ -732,10 +734,24 @@ fn unresolved_search(list: Vec<Leg>, a: u32, b: u32, src: &Def, dst: &Def, aoi: 
     finish(out, src, dst, aoi)
 }
 
+/// The names of PROJ's null transformations between the WGS 84 ensemble and its realizations, and
+/// of its time-dependent transformations, among those of its database.
+fn flagged_names() -> &'static (HashSet<&'static str>, HashSet<&'static str>) {
+    static NAMES: OnceLock<(HashSet<&'static str>, HashSet<&'static str>)> = OnceLock::new();
+    NAMES.get_or_init(|| {
+        let reg = epsg::registry();
+        let named = |flag: fn(&epsg::Registered) -> bool| reg.ops.iter().filter(|r| flag(r)).map(|r| r.op.name.as_str()).collect();
+        (named(|r| r.ensemble), named(|r| r.time_dependent))
+    })
+}
+
 /// One of the CRSs' own transformations as a chain of one leg, with what PROJ sorts it by: as
 /// concatenated with the conversion into the CRS of the datum, as PROJ ranks it then. Run as a
 /// chain, it moves heights as [`datum::run_op`] does (kept between 2D CRSs when it keeps them).
 fn direct_chain(l: &Leg, aoi: Option<&[f64; 4]>) -> (SortKey, Chain) {
+    // Ranked by the op as registered even when run in reverse: its accuracy and area, and its
+    // flags, are the same both ways (as in PROJ, whose inverse keeps them); only the name and the
+    // pipeline differ.
     let name = step_names(&l.op, l.reverse).join(" + ");
     let rank = Op { name: name.clone(), ..l.op.as_concatenated() };
     let key = SortKey::new(&rank, name, pipeline_steps(&[(&l.op, l.reverse)]), aoi);
