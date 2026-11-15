@@ -121,6 +121,32 @@ than GDAL numerical conformance comparisons. Response waits use the existing
 50 ms cancellation polling; DNS resolution, connection establishment and
 non-HTTP computation are outside this cancellation mechanism.
 
+## Parallel range reads across fork
+
+`cargo test -p terrio --lib a_fork_cancels_and_joins_parallel_range_requests`
+runs a real Linux fork while two HTTP range responses are held open. The fork
+cancels their response waits and joins the range workers before copying the
+process. The child must run parallel work, and the parent must reread both
+ranges correctly on the same reader after the server recovers. Four range
+requests are observed: two abandoned requests, then two successful retries.
+
+`cargo test -p terrio --lib waiting_workers_are_counted_cancelled_and_fall_back_during_a_fork`
+checks the worker lifetime, cancellation, serial fallback while a fork is already
+in progress, and a cancellation flag published after a fork inspects the
+registry. The registry mutex joins the locks held across fork, including when
+two threads fork concurrently.
+
+Cancellation is process-wide: a libc fork from any application thread cancels
+all active parallel range batches, including reads whose own callers never
+fork. Those concurrent readers receive an I/O cancellation error and may retry
+after the fork, as the recovery test does. Existing serial-read and Zarr fork
+behavior is unchanged. Cancellation covers response waits and retry delays.
+Because range workers are now counted, a fork also waits for their DNS and
+connection setup phases, which cancellation cannot interrupt. The default
+connection timeout is 30 seconds; DNS has no Terrio-configured timeout and can
+hold the fork until the resolver returns. These are lifecycle and I/O checks,
+not GDAL numerical comparisons.
+
 ## Remote-read locks across fork
 
 `cargo test -p terrio --lib each_remote_read_lock_is_handed_off_across_a_fork`
