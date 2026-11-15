@@ -202,6 +202,7 @@ impl Resampling {
 
     /// The interpolation kernel's weight at distance `x` (in pixels), as GDAL computes it. Weights
     /// are normalized by their sum, so the B-spline's constant factor is left out.
+    #[inline]
     pub(crate) fn weight(self, x: f64) -> f64 {
         match self {
             Self::Bilinear => {

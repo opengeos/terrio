@@ -2649,6 +2649,15 @@ fn square_scales(p: [(f64, f64); 4]) -> Option<(f64, f64)> {
     (x > 1e-10 && y > 1e-10).then_some((1.0 / x, 1.0 / y))
 }
 
+/// Longitude facts of a warp's source, constant over the warp (see [`WarpContext::source_wrap`]).
+#[derive(Clone, Copy)]
+struct SourceWrap {
+    /// The source covers exactly one turn of longitude: columns wrap around.
+    global: bool,
+    /// A regional source's columns per turn, to bring points from the next turn back onto it.
+    regional_turn: Option<f64>,
+}
+
 struct WarpContext<'a> {
     kernel_version: KernelVersion,
     grid_invariant: bool,
@@ -3071,10 +3080,27 @@ impl WarpContext<'_> {
         }
     }
 
+    /// [`Self::source_point`]'s longitude rules, the same for every point of a warp: computed
+    /// once per row, not per pixel.
+    fn source_wrap(&self) -> SourceWrap {
+        SourceWrap {
+            global: self.global_longitude_turn().is_some(),
+            regional_turn: self.longitude_turn().filter(|turn| self.src_w as f64 <= *turn),
+        }
+    }
+
     /// Retry/edge rules follow GDAL 3.13.3 `GWKCheckAndComputeSrcOffsets()`.
     /// The sample point is validated against the source, not a requested crop. Near-edge
     /// approximations use the same exact retry in a full warp and in a narrow window.
-    fn source_point(&self, point: Option<(f64, f64)>, dx: f64, dy: f64, bounds: (usize, usize, usize, usize)) -> Option<(f64, f64)> {
+    #[inline(always)]
+    fn source_point(
+        &self,
+        wrap: SourceWrap,
+        point: Option<(f64, f64)>,
+        dx: f64,
+        dy: f64,
+        bounds: (usize, usize, usize, usize),
+    ) -> Option<(f64, f64)> {
         let (mut x, mut y) = point?;
         let (sx, sy, w, h) = (bounds.0 as f64, bounds.1 as f64, bounds.2 as f64, bounds.3 as f64);
         for attempt in 0..2 {
@@ -3084,13 +3110,13 @@ impl WarpContext<'_> {
             if !x.is_finite() || !y.is_finite() {
                 return None;
             }
-            if self.global_longitude_turn().is_some() {
+            if wrap.global {
                 x = x.rem_euclid(self.src_w as f64);
                 if x + 1e-10 > self.src_w as f64 {
                     x = 0.0;
                 }
             } else if (x < 0.0 || x >= self.src_w as f64)
-                && let Some(turn) = self.longitude_turn().filter(|turn| self.src_w as f64 <= *turn)
+                && let Some(turn) = wrap.regional_turn
             {
                 // A regional source is not periodic in its stored width. Move only by
                 // the actual angular turn, and only when that reaches a stored column.
@@ -3157,6 +3183,7 @@ impl WarpContext<'_> {
         let mut bx = vec![0.0; if area { dw } else { 0 }];
         let mut by = bx.clone();
         let mut bok = vec![false; bx.len()];
+        let wrap = self.source_wrap();
         for row in dy..dy + dh {
             for i in 0..dw {
                 xs[i] = (dx + i) as f64 + if area { 0.0 } else { 0.5 };
@@ -3188,7 +3215,8 @@ impl WarpContext<'_> {
                     (left.floor(), ys[i].min(by[i]).floor(), right.ceil() + 1.0, ys[i].max(by[i]).ceil() + 1.0)
                 } else {
                     let point = ok[i].then_some((xs[i], ys[i]));
-                    let Some((x, y)) = self.source_point(point, (dx + i) as f64 + 0.5, row as f64 + 0.5, (0, 0, self.src_w, self.src_h))
+                    let Some((x, y)) =
+                        self.source_point(wrap, point, (dx + i) as f64 + 0.5, row as f64 + 0.5, (0, 0, self.src_w, self.src_h))
                     else {
                         continue;
                     };
@@ -3842,8 +3870,11 @@ impl WarpContext<'_> {
 
     /// Apply GDAL 3.12.1 axis-range or GDAL 3.13.3 transformed-square scale arithmetic
     /// locally. The per-pixel footprint policy is Terrio's rather than GDAL's chunk sampling.
-    fn footprint_scales(&self, mut p: [(f64, f64); 4], output_center: Option<(f64, f64)>) -> (f64, f64) {
-        if let (Some(turn), Some(centre)) = (self.longitude_turn(), output_center) {
+    fn footprint_scales(&self, turn: Option<f64>, mut p: [(f64, f64); 4], output_center: Option<(f64, f64)>) -> (f64, f64) {
+        // `unwrap_longitudes` moves nothing unless the corners span more than half a turn: a
+        // footprint of a few source columns skips the call.
+        let span = p.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), q| (lo.min(q.0), hi.max(q.0)));
+        if let (Some(turn), Some(centre)) = (turn.filter(|turn| span.1 - span.0 > turn / 2.0), output_center) {
             let mut xs = p.map(|point| point.0);
             self.unwrap_longitudes(&mut xs, turn, centre);
             for (point, x) in p.iter_mut().zip(xs) {
@@ -3875,8 +3906,9 @@ impl WarpContext<'_> {
             let inv = self.t.src_inv;
             let a = (inv[1] * g[1] + inv[2] * g[4], inv[4] * g[1] + inv[5] * g[4]);
             let b = (inv[1] * g[2] + inv[2] * g[5], inv[4] * g[2] + inv[5] * g[5]);
-            return vec![self.footprint_scales([(0.0, 0.0), a, b, (a.0 + b.0, a.1 + b.1)], None); width];
+            return vec![self.footprint_scales(None, [(0.0, 0.0), a, b, (a.0 + b.0, a.1 + b.1)], None); width];
         }
+        let turn = self.longitude_turn();
         let mut top_x: Vec<f64> = (dx..=dx + width).map(|i| i as f64).collect();
         let mut top_y = vec![dy as f64; width + 1];
         let mut bottom_x = top_x.clone();
@@ -3894,6 +3926,7 @@ impl WarpContext<'_> {
                     return (1.0, 1.0);
                 }
                 self.footprint_scales(
+                    turn,
                     [(top_x[i], top_y[i]), (top_x[i + 1], top_y[i + 1]), (bottom_x[i], bottom_y[i]), (bottom_x[i + 1], bottom_y[i + 1])],
                     Some(((dx + i) as f64 + 0.5, dy as f64 + 0.5)),
                 )
@@ -3983,6 +4016,8 @@ impl WarpContext<'_> {
         let mut ys = vec![0.0; c.dw];
         let mut ok = vec![false; c.dw];
         let (sxo, syo, sw, sh) = (c.sx as f64, c.sy as f64, c.sw as f64, c.sh as f64);
+        let wrap = self.source_wrap();
+        let bounds = if self.grid_invariant { (0, 0, self.src_w, self.src_h) } else { (c.sx, c.sy, c.sw, c.sh) };
         {
             let y = row as f64 + 0.5 + c.dy as f64;
             for (i, x) in xs.iter_mut().enumerate() {
@@ -3992,12 +4027,7 @@ impl WarpContext<'_> {
             self.transform_row(&mut xs, &mut ys, &mut ok);
             for i in 0..c.dw {
                 let point = ok[i].then_some((xs[i], ys[i]));
-                let Some((px, py)) = self.source_point(
-                    point,
-                    i as f64 + 0.5 + c.dx as f64,
-                    y,
-                    if self.grid_invariant { (0, 0, self.src_w, self.src_h) } else { (c.sx, c.sy, c.sw, c.sh) },
-                ) else {
+                let Some((px, py)) = self.source_point(wrap, point, i as f64 + 0.5 + c.dx as f64, y, bounds) else {
                     continue;
                 };
                 (xs[i], ys[i]) = (px, py);
@@ -4963,6 +4993,7 @@ fn overlap(lo: f64, hi: f64, p: usize) -> f64 {
 /// `x.floor()`, for a finite `x`, without the call to `floor` that targets without SSE4.1 make.
 /// A value beyond ±2^62 is taken as ±2^62, so that neither the cast nor the step to the next
 /// integer leaves the range of `i64`; callers clamp the result to a window far smaller.
+#[inline]
 fn floor_i(x: f64) -> i64 {
     let x = x.clamp(-INTEGER_LIMIT, INTEGER_LIMIT);
     let t = x as i64;
@@ -5387,8 +5418,8 @@ impl<'a, T: crate::pixel::Pixel> Kernel<'a, T> {
     /// weights renormalized.
     fn bilinear(&self, b: usize, sx: f64, sy: f64) -> Option<f64> {
         let (w, h) = (self.win.sw as i64, self.win.sh as i64);
-        let mut ix = (sx - 0.5).floor() as i64;
-        let mut iy = (sy - 0.5).floor() as i64;
+        let mut ix = floor_i(sx - 0.5);
+        let mut iy = floor_i(sy - 0.5);
         let mut rx = 1.5 - (sx - ix as f64);
         let mut ry = 1.5 - (sy - iy as f64);
         if ix == -1 && !self.periodic_x {
@@ -5419,7 +5450,7 @@ impl<'a, T: crate::pixel::Pixel> Kernel<'a, T> {
     /// `GWKCubicResample4Sample()`: falls back to bilinear at the edges and when a neighbour is
     /// invalid.
     fn cubic(&self, b: usize, sx: f64, sy: f64) -> Option<f64> {
-        let ix = (sx - 0.5).floor() as i64;
+        let ix = floor_i(sx - 0.5);
         let iy = (sy - 0.5) as i64;
         if (!self.periodic_x && (ix - 1 < 0 || ix + 2 >= self.win.sw as i64)) || iy - 1 < 0 || iy + 2 >= self.win.sh as i64 {
             return self.bilinear(b, sx, sy);
@@ -5452,8 +5483,8 @@ impl<'a, T: crate::pixel::Pixel> Kernel<'a, T> {
     /// valid pixels.
     fn general(&self, b: usize, sx: f64, sy: f64) -> Option<f64> {
         let ((xr, yr), (init_x, init_y)) = (self.reach, self.init);
-        let ix = (sx - 0.5).floor() as i64;
-        let iy = (sy - 0.5).floor() as i64;
+        let ix = floor_i(sx - 0.5);
+        let iy = floor_i(sy - 0.5);
         let dx = sx - 0.5 - ix as f64;
         let dy = sy - 0.5 - iy as f64;
         let (w, h) = (self.win.sw as i64, self.win.sh as i64);
