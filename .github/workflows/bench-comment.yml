@@ -1,0 +1,67 @@
+name: bench comment
+
+# Posts the results of bench.yml on the pull request as one comment, updated in place, and sets
+# the `perf-regression` label when a benchmark runs 10% or more instructions. It runs from main
+# with a write token, so it never checks out or runs the pull request's code: the artifact it
+# reads was written by that code (a fork can change bench.yml), and is only posted as text.
+
+on:
+  workflow_run:
+    workflows: [bench]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  comment:
+    if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      issues: write
+      pull-requests: write
+    steps:
+      # Absent when bench.yml skipped the benchmarks.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: bench
+          path: bench
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if [ ! -f bench/pr-number.txt ] || [ ! -f bench/bench.md ]; then
+            echo "No benchmark results to post."
+            exit 0
+          fi
+          pr=$(head -c 20 bench/pr-number.txt | tr -d '[:space:]')
+          if ! [[ "$pr" =~ ^[0-9]+$ ]]; then
+            echo "Invalid pull request number."
+            exit 1
+          fi
+          # The artifact names the pull request; the run must have benchmarked its head.
+          if [ "$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" -q .head.sha)" != "$RUN_HEAD_SHA" ]; then
+            echo "Pull request #$pr is not at the benchmarked commit $RUN_HEAD_SHA: nothing posted."
+            exit 0
+          fi
+          marker='<!-- terrio-bench -->'
+          # A comment holds at most 65536 characters; invalid UTF-8 from the cut is dropped.
+          { echo "$marker"; head -c 60000 bench/bench.md | iconv -c -f UTF-8 -t UTF-8; } > body.md
+          id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$pr/comments" \
+            -q ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" | head -n 1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -F body=@body.md > /dev/null
+          else
+            gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$pr/comments" -F body=@body.md > /dev/null
+          fi
+          if grep -q '^<!-- terrio-bench: regression -->$' body.md; then
+            gh label create perf-regression --color D93F0B \
+              --description "A benchmark runs 10% or more CPU instructions than on main" 2>/dev/null || true
+            gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$pr/labels" -f "labels[]=perf-regression" > /dev/null
+          else
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/$pr/labels/perf-regression" > /dev/null 2>&1 || true
+          fi
