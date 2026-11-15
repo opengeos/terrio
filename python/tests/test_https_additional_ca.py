@@ -323,6 +323,11 @@ def connect_proxy(source, secure):
             """Connect to the requested loopback endpoint and relay both directions."""
             targets.append(self.path)
             host, port = self.path.rsplit(":", 1)
+            # The test servers listen on IPv4 loopback only. Windows resolves "localhost" to
+            # ::1 first and a refused loopback connection there takes about two seconds to
+            # fail, which exhausts the client's three-second connect timeout.
+            if host == "localhost":
+                host = "127.0.0.1"
             with socket.create_connection((host, int(port)), timeout=3) as upstream:
                 self.send_response(200)
                 self.end_headers()
