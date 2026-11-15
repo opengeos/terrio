@@ -11,7 +11,7 @@
 //! lists as its replacements (`CRS.get_non_deprecated()`), the centre of its area of use and PROJ's
 //! coordinates of it in the CRS from WGS 84 (`Transformer.from_crs("EPSG:4326", code,
 //! always_xy=True)`), `null` where PROJ cannot transform it. Tolerance: 1 mm (1e-8 degrees for
-//! geographic coordinates).
+//! geographic longitudes and latitudes).
 
 use serde_json::Value;
 use terrio_crs::{SpatialRef, Transformer};
@@ -49,9 +49,6 @@ fn deprecated_codes_are_placed_by_their_own_definition_as_proj_does() {
     for case in &cases {
         let code = case["code"].as_u64().unwrap() as u32;
         let Some(proj) = case["proj"].as_array() else { continue };
-        if PENDING.contains(&code) {
-            continue;
-        }
         compared += 1;
         let (lon, lat) = (case["point"][0].as_f64().unwrap(), case["point"][1].as_f64().unwrap());
         let proj: Vec<f64> = proj.iter().map(|v| v.as_f64().unwrap()).collect();
@@ -68,13 +65,18 @@ fn deprecated_codes_are_placed_by_their_own_definition_as_proj_does() {
             bad.push(format!("EPSG:{code}: {got:?}, PROJ {proj:?}"));
             continue;
         };
-        let tolerance = if crs.is_geographic() { 1e-8 } else { 1e-3 };
-        let off = [x - proj[0], y - proj[1], z - proj[2]];
-        if off.iter().any(|d| !d.is_finite() || d.abs() >= tolerance) {
+        // Degrees for a geographic CRS's horizontal coordinates, metres otherwise.
+        let horizontal = if crs.is_geographic() { 1e-8 } else { 1e-3 };
+        let off = [(x - proj[0], horizontal), (y - proj[1], horizontal), (z - proj[2], 1e-3)];
+        if off.iter().any(|(d, tolerance)| !d.is_finite() || d.abs() >= *tolerance) {
             bad.push(format!("EPSG:{code}: ({x}, {y}, {z}), PROJ {proj:?}"));
         }
     }
-    assert_eq!(compared, 486);
+    assert_eq!(compared, 490);
+    // The pending codes still differ: remove one from `PENDING` once it matches.
+    let pending: Vec<&String> = bad.iter().filter(|b| PENDING.iter().any(|c| b.starts_with(&format!("EPSG:{c}:")))).collect();
+    assert_eq!(pending.len(), PENDING.len(), "pending codes that now match PROJ: {bad:?}");
+    bad.retain(|b| !PENDING.iter().any(|c| b.starts_with(&format!("EPSG:{c}:"))));
     assert!(bad.is_empty(), "{} of {compared} differ:\n{}", bad.len(), bad.join("\n"));
 }
 
@@ -110,10 +112,10 @@ fn replacements_are_those_proj_lists() {
         let code = case["code"].as_u64().unwrap() as u32;
         let replaced_by = codes(&case["replaced_by"]);
         // A code terrio does not carry, as PROJ can neither write it as a PROJ string nor
-        // transform it (EPSG:3752, Mercator (variant A) with a latitude of origin).
+        // transform it (EPSG:3752, Mercator (variant A) with a latitude of origin), still has
+        // its replacements.
         if SpatialRef::from_epsg(code).is_err() {
             assert!(case["proj"].is_null(), "EPSG:{code}");
-            continue;
         }
         assert_eq!(terrio_crs::epsg_replacements(code), &replaced_by[..], "EPSG:{code}");
         // Where the single replacement resolves, GDAL's default gives it.
@@ -125,6 +127,8 @@ fn replacements_are_those_proj_lists() {
     }
     // GDAL substitutes only a single replacement: a code with several (EPSG:2191, replaced by
     // 2942 and 2943) or none (EPSG:2008) keeps its own definition.
+    assert!(SpatialRef::from_epsg(3752).is_err());
+    assert_eq!(SpatialRef::from_epsg_non_deprecated(3752).unwrap().epsg, Some(3994));
     assert_eq!(terrio_crs::epsg_replacements(2191), &[2942, 2943]);
     assert_eq!(SpatialRef::from_epsg_non_deprecated(2191).unwrap().epsg, Some(2191));
     assert!(terrio_crs::epsg_replacements(2008).is_empty());

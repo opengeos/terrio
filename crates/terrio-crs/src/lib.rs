@@ -380,7 +380,7 @@ impl SpatialRef {
         Ok(Self { epsg: Some(code), wkt: Some(wkt), ..Default::default() })
     }
 
-    /// A CRS from an EPSG code as GDAL gives it by default (`OSR_USE_NON_DEPRECATED=YES`): a
+    /// A CRS from an EPSG code as GDAL 3.12 gives it by default (`OSR_USE_NON_DEPRECATED=YES`): a
     /// deprecated code with a single replacement ([`epsg_replacements`]) gives that replacement's
     /// CRS, any other code its own, as [`Self::from_epsg`].
     ///

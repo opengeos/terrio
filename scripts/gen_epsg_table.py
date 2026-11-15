@@ -1199,8 +1199,20 @@ def rows():
     yield from grid_alternatives(names)
 
 
+DEPRECATED_KINDS = (
+    PJType.GEOGRAPHIC_2D_CRS,
+    PJType.GEOGRAPHIC_3D_CRS,
+    PJType.GEOCENTRIC_CRS,
+    PJType.PROJECTED_CRS,
+    PJType.VERTICAL_CRS,
+    PJType.COMPOUND_CRS,
+)
+
+
 def replacement_rows(lines):
-    """List the deprecated CRSs of the table with their replacements.
+    """List the deprecated CRSs with their replacements: those of the table, and the deprecated
+    EPSG geographic, geocentric, projected, vertical and compound CRSs it leaves out (EPSG:3752,
+    which PROJ cannot write as a PROJ string), whose replacements GDAL still substitutes.
 
     Args:
         lines: The table's lines.
@@ -1208,7 +1220,10 @@ def replacement_rows(lines):
     Returns:
         ``("X", code, replacements)`` rows, in order of code.
     """
-    codes = sorted({int(line.split("\t", 2)[1]) for line in lines if line[:2] in ("C\t", "V\t", "K\t")})
+    codes = {int(line.split("\t", 2)[1]) for line in lines if line[:2] in ("C\t", "V\t", "K\t")}
+    for kind in DEPRECATED_KINDS:
+        codes |= {int(c) for c in pyproj.get_codes("EPSG", kind, allow_deprecated=True)}
+    codes = sorted(codes)
     out = []
     for code in codes:
         crs = pyproj.CRS.from_epsg(code)
