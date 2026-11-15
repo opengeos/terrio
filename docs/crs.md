@@ -270,8 +270,8 @@ unit (`PRIMEM["Paris RGS",2.33720833333333]` in ATF (Paris), in grads; `PRIMEM["
 CRS) given as an `ANGLEUNIT`, or as a `UNIT` named `degree` or `grad`, which PROJ takes for an
 angle; else in degrees, never in its axes' unit (`UNIT["radian",1]` or `UNIT["gon",...]` leaves it
 in degrees, as does a geocentric CRS's `LENGTHUNIT`). The same corrections apply:
-`PRIMEM["Ferro",-17.4,ANGLEUNIT["degree",...]]` is 17°40'W. ESRI's Krovak `XY_Plane_Rotation` is in the CRS's unit as well (100 grads
-for 90°, east-north).
+`PRIMEM["Ferro",-17.4,ANGLEUNIT["degree",...]]` is 17°40'W. ESRI's Krovak `XY_Plane_Rotation` is
+in the CRS's unit as well (100 grads for 90°, east-north).
 As PROJ does between CRSs, a prime meridian within 1e-10 radians of one of PROJ's named meridians
 is that meridian: Paris's 2.33722917° (2.5969213 grads) is `+pm=paris`, 2.337229166667°, 0.25 mm
 west. ESRI's `Behrmann` projection is cylindrical equal area true at 30 degrees, or at
