@@ -91,6 +91,6 @@ fn wkts_proj_does_not_resolve_are_placed_by_their_code() {
         assert!(metres(got, by_code) < 1e-3, "{name}: {got:?}, by its code {by_code:?}");
         // The fixture's own consistency: the generator recorded PROJ placing it elsewhere (a
         // regenerated fixture where PROJ now places it by its code moves it to `cases`).
-        assert!(metres(proj, by_code) > 0.1, "{name}: PROJ {proj:?} placed by its code");
+        assert!(metres(proj, by_code) >= 1e-3, "{name}: PROJ {proj:?} placed by its code");
     }
 }

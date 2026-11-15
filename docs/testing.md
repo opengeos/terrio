@@ -1770,7 +1770,8 @@ place a point in WGS 84 where PROJ 9.8.1 does without grids, by the transformati
 transformation needs a grid (OSTN15, BETA2007, CHENyx06, the NZGD2000 grids), so with those grids
 installed PROJ may place these points otherwise; the cases record it. Five WKTs PROJ does not
 resolve to their code and places through other datums or CRSs (the ESRI WKT 1 of EPSG:4806, 5132
-and 7373, and of EPSG:4314 and 31467 renamed) are pinned where their code places them (`cargo test -p terrio-crs --test wkt_datum_shift`; regenerate with
+and 7373, and of EPSG:4314 and 31467 renamed) are pinned where their code places them
+(`cargo test -p terrio-crs --test wkt_datum_shift`; regenerate with
 `scripts/gen_wkt_datum_shift.py`, pyproj 3.8.0).
 
 PROJ-string parameter values are refused where PROJ 9.8.1 refuses them: each method with each

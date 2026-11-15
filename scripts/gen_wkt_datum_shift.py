@@ -27,8 +27,8 @@ otherwise.
 `differences` holds the WKTs PROJ places otherwise than their CRS's EPSG code: the ESRI WKT 1 of
 EPSG:4806, 5132 and 7373, and of EPSG:4314 and 31467 renamed. PROJ does not resolve their
 geographic CRS to the code (ESRI's WKT 1 has no `AXIS`, so longitude first, unlike the EPSG CRS;
-or its name is another), and then also searches transformations through other datums and other CRSs of the
-datum.
+or its name is another), and then also searches transformations through other datums and other
+CRSs of the datum. They are split from `cases` at 1 mm and don't count among its 180.
 
 Usage: PROJ_NETWORK=OFF python scripts/gen_wkt_datum_shift.py (needs pyproj 3.8.0)
 """
@@ -148,6 +148,8 @@ def wkt1(crs, local=False):
 def esri(crs):
     """ESRI's WKT 1: as written, renamed, with the datum's and with the CRS's code."""
     w = crs.to_wkt("WKT1_ESRI")
+    # The CRS's code goes before the closing bracket of its root node.
+    assert w.endswith("]") and not w.endswith("]]]"), w[-20:]
     datum = crs.datum.to_json_dict()["id"]["code"]
     root = "PROJCS" if w.startswith("PROJCS") else "GEOGCS"
     renamed = re.sub(r'GEOGCS\["[^"]*"', 'GEOGCS["GCS_Local"', w)
