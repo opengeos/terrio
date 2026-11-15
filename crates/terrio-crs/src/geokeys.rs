@@ -906,6 +906,8 @@ fn keys_for_proj(proj4: &str, name: &str, geog: Option<u32>) -> Option<GeoKeyVal
     let mut v = GeoKeyValues::default();
     // The geographic CRS it was identified on, unless the PROJ string shifts its datum itself.
     let geog = d.geog.or(geog.filter(|_| d.towgs84.is_none() && d.pm == 0.0));
+    // Not a deprecated code GDAL reads as its single replacement (see `horizontal_geokey`).
+    let geog = geog.filter(|c| crate::epsg_replacements(*c).len() != 1);
     match geog {
         Some(code) => v.shorts.push((2048, u16::try_from(code).ok()?)),
         None => {
@@ -1250,7 +1252,8 @@ impl SpatialRef {
                 let name = self.name().unwrap_or_else(|| "unnamed".into());
                 // Keep engineering and unrepresentable coded definitions as WKT. In particular,
                 // an engineering identifier must never be written as a projected EPSG code.
-                let user = if engineering || self.epsg.is_some() { None } else { user_defined_keys(self, &name) };
+                let coded = self.epsg.is_some_and(|c| crate::epsg_replacements(c).len() != 1);
+                let user = if engineering || coded { None } else { user_defined_keys(self, &name) };
                 match user {
                     Some(keys) => v = keys,
                     None => {
@@ -1293,6 +1296,12 @@ fn engineering_cs(wkt: &str) -> bool {
 /// whether it is geographic. Engineering, vertical, geocentric and unknown codes need WKT.
 fn horizontal_geokey(code: u32) -> Option<(u16, bool)> {
     let short = u16::try_from(code).ok().filter(|code| (1024..USER_DEFINED).contains(code))?;
+    // A deprecated code with a single replacement reads as that replacement in GDAL 3.12 by
+    // default (`OSR_USE_NON_DEPRECATED=YES`): EPSG:4855 as EPSG:5105, 6,431 km away. Written as
+    // a user-defined CRS instead.
+    if crate::epsg_replacements(code).len() == 1 {
+        return None;
+    }
     let wkt = crate::epsg_wkt(code)?;
     let geographic = SpatialRef::from_epsg(code).is_ok_and(|s| s.is_geographic());
     // The table holds GDAL's canonical WKT; projected roots use PROJCS or PROJCRS.

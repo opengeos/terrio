@@ -42,11 +42,12 @@ def main():
     for kind in KINDS:
         every = set(pyproj.get_codes("EPSG", kind, allow_deprecated=True))
         codes |= every - set(pyproj.get_codes("EPSG", kind, allow_deprecated=False))
-    cases = []
+    cases, skipped = [], []
     for code in sorted(codes, key=int):
         crs = CRS.from_epsg(int(code))
         # Without an area of use, or with PROJ's placeholder for none (-1000 degrees: EPSG:4296).
         if crs.area_of_use is None or crs.area_of_use.west < -180.0:
+            skipped.append(int(code))
             continue
         lon, lat = centre(crs)
         try:
@@ -60,6 +61,7 @@ def main():
     data = {"proj_version": pyproj.proj_version_str, "cases": cases}
     OUT.write_text(json.dumps(data, indent=1) + "\n")
     print(f"{len(cases)} deprecated CRSs, {sum(c['proj'] is None for c in cases)} PROJ cannot transform")
+    print(f"{len(skipped)} without an area of use left out: {skipped}")
 
 
 if __name__ == "__main__":

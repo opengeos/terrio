@@ -154,3 +154,38 @@ fn ntm_zone_5_keeps_its_own_false_origin() {
     let (_, y) = Transformer::new(&wgs84, &gdal).unwrap().transform(5.2, 60.48).unwrap();
     assert!((y - 1_276_307.579_3).abs() < 1e-3, "{y}");
 }
+
+/// A deprecated code GDAL 3.12 substitutes by default (a single replacement) is written to
+/// GeoKeys as a user-defined CRS, not by its code, which GDAL would read as the replacement
+/// (EPSG:4855 as 5105, 6,431 km away); its keys read back as its own definition. A code GDAL
+/// keeps (EPSG:2191, two replacements) is written by its code.
+#[test]
+fn geokeys_of_deprecated_codes_read_as_their_own_definition() {
+    offline();
+    let coded = |keys: &terrio_crs::geokeys::GeoKeyValues, code: u32| {
+        keys.shorts.iter().any(|(k, v)| matches!(k, 2048 | 3072) && u32::from(*v) == code)
+    };
+    // No geographic or projected code GDAL would substitute, the CRS's own or its base's.
+    let substituted = |keys: &terrio_crs::geokeys::GeoKeyValues| {
+        keys.shorts.iter().find(|(k, v)| matches!(k, 2048 | 3072) && terrio_crs::epsg_replacements(u32::from(*v)).len() == 1).copied()
+    };
+    let mut written = 0;
+    for case in cases() {
+        let code = case["code"].as_u64().unwrap() as u32;
+        let Ok(crs) = SpatialRef::from_epsg(code) else { continue };
+        let Ok(keys) = crs.to_geokeys() else { continue };
+        written += 1;
+        assert_eq!(substituted(&keys), None, "EPSG:{code}: {keys:?}");
+    }
+    assert!(written > 400, "{written}");
+    assert!(coded(&SpatialRef::from_epsg(2191).unwrap().to_geokeys().unwrap(), 2191));
+    let own = SpatialRef::from_epsg(4855).unwrap();
+    let keys = own.to_geokeys().unwrap();
+    assert!(keys.shorts.contains(&(3072, 32767)), "{keys:?}");
+    let tags = keys.encode().unwrap();
+    let back = SpatialRef::from_geokeys(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).unwrap();
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    let (x, y) = Transformer::new(&wgs84, &back).unwrap().transform(5.2, 60.48).unwrap();
+    // PROJ 9.8.1: (83503.1262, 7707590.2512), as in `ntm_zone_5_keeps_its_own_false_origin`.
+    assert!((x - 83_503.126_2).abs() < 1e-3 && (y - 7_707_590.251_2).abs() < 1e-3, "({x}, {y})");
+}

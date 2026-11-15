@@ -31,9 +31,9 @@ Writes ``crates/terrio-crs/data/epsg.tsv.zst``, a zstd-compressed text table wit
   code of its geographic 2D CRS, its datum transformations to WGS 84 in the order GDAL lists them
   when no grid is installed (PROJ picks among them for each point), the list GDAL uses when the
   grids are available (empty when it is the same), flags (``d``: a dynamic CRS, ``3``: a
-  geographic 3D CRS, ``x``: a deprecated CRS), its area of use (``west,south,east,north`` in degrees, which PROJ intersects
-  with the transformations' areas), the PROJ string of its coordinate conversion and the WKT
-  GDAL writes for it.
+  geographic 3D CRS, ``x``: a deprecated CRS), its area of use (``west,south,east,north`` in
+  degrees, which PROJ intersects with the transformations' areas), the PROJ string of its
+  coordinate conversion and the WKT GDAL writes for it.
 - ``P<TAB>geog1<TAB>geog2<TAB>ops<TAB>grid ops``: the transformations GDAL lists between two
   geographic CRSs whose datums have direct transformations between them in the EPSG dataset,
   without and with grids, in the direction geog1 to geog2.

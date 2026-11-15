@@ -1563,7 +1563,8 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
                 .flatten()
                 .copied()
                 .filter(|c| epsg::registry().geodetic.get(c).is_some_and(|g| g.kind == epsg::GeodeticKind::Geocentric) && same(own, *c))
-                .min_by_key(|c| (!named(*c), epsg::is_deprecated(*c), *c));
+                // `by_datum` holds current CRSs only.
+                .min_by_key(|c| (!named(*c), *c));
         }
         if own.is_geographic() {
             return geogs.filter(|c| same(own, *c)).min_by_key(|c| (!named(*c), epsg::is_deprecated(*c), realization(*c), *c));
