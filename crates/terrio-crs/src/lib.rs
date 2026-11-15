@@ -1213,8 +1213,10 @@ fn extension_places_without_grids(s: &str) -> bool {
     if step.ops().iter().any(real_grids) {
         return false;
     }
-    // Each with a WKT of its own stored, so that comparing them does not write one (from the
-    // PROJ string, which calls this).
+    // Each with a WKT of its own stored. The `Transformer`s below compare their CRSs by WKT
+    // (`same_as`), and the WKT of a CRS given only by a PROJ string is written from that string,
+    // which writes its extension by this check: without the stored placeholder, this recurses
+    // until the stack overflows. `Def::new` reads `proj4` first, so the placeholder is not read.
     let given = SpatialRef { proj4: Some(s.to_string()), wkt: Some("given".into()), ..Default::default() };
     let extension = SpatialRef {
         wkt: Some(format!(
