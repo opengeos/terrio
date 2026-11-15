@@ -295,6 +295,8 @@ impl Route {
             )
         };
         // A CRS PROJ does not resolve to its EPSG CRS: its search beyond the CRSs' own.
+        // A CRS on a renamed datum (even under its code's name) turns the search off for both
+        // sides, the other one too: PROJ's way through its ballpark is step 2's, for pairs too.
         let renamed_datum = [src, dst].iter().any(|d| d.unresolved().is_some_and(|u| u.datum_renamed));
         let searching = !renamed_datum && (src.unresolved().is_some() || dst.unresolved().is_some());
         let searched = |kind: Kind| match (kind, src.geog(), dst.geog()) {
@@ -1351,14 +1353,20 @@ mod tests {
     fn own_transformations_run_as_chains_move_points_and_heights_as_listed() {
         let src = Def::new(&SpatialRef::parse("EPSG:4230").unwrap()).unwrap();
         let p = Point { lon: 10_f64.to_radians(), lat: 50_f64.to_radians(), h: 100.0, t: None };
+        let mut moved = 0;
         for leg in src.ops().iter().filter(|o| !o.ballpark).flat_map(|o| [false, true].map(|reverse| Leg { op: o.clone(), reverse })) {
             let list = route_of(Kind::List(vec![leg.clone()]));
             let chain = route_of(Kind::Chains { chains: vec![direct_chain(&leg, None).1], ballpark: None });
             for three_d in [false, true] {
                 let (a, b) = (list.apply(&src, 10.0, 50.0, p, three_d), chain.apply(&src, 10.0, 50.0, p, three_d));
                 assert_eq!(a, b, "{} reversed {} in 3D {three_d}", leg.op.name, leg.reverse);
+                if a.is_some_and(|q| q.lon != p.lon || q.lat != p.lat) {
+                    moved += 1;
+                }
             }
         }
+        // Some of them shift the point (those needing no grid).
+        assert!(moved >= 4, "{moved} legs moved the point");
         // A missing grid: the list's next transformation that needs none, the chains' ballpark,
         // both no shift here.
         let grid = Leg {

@@ -33,15 +33,19 @@ import json
 import math
 import os
 import re
+import sys
 import warnings
 from pathlib import Path
 
 import pyproj
 import pyproj.datadir
 import pyproj.network
-from gen_wkt_datum_shift import installed_grids
 from pyproj import CRS, Transformer
 from pyproj.database import query_crs_info
+
+# The sibling script's grid check, importable under `python -I` too.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gen_wkt_datum_shift import installed_grids
 
 OUT = (
     Path(__file__).resolve().parents[1]

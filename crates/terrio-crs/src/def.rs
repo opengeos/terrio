@@ -1312,9 +1312,10 @@ impl Def {
     /// to 1 MiB of them), as `Def::new` runs for many accessors.
     fn record_proj_resolution(&mut self, w: &str, code: Option<u32>) {
         // By code, then by WKT (looked up without allocating).
-        type Seen = std::collections::HashMap<Option<u32>, std::collections::HashMap<String, Option<Resolution>>>;
+        // With the bytes of WKT text held.
+        type Seen = (std::collections::HashMap<Option<u32>, std::collections::HashMap<String, Option<Resolution>>>, usize);
         static SEEN: std::sync::Mutex<Option<Seen>> = std::sync::Mutex::new(None);
-        let known = SEEN.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|s| s.get(&code)?.get(w).copied());
+        let known = SEEN.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|s| s.0.get(&code)?.get(w).copied());
         let r = known.unwrap_or_else(|| {
             // A CRS PROJ finds by the name of a WKT terrio reads as no code: the WKT matches it
             // when terrio reads them alike (conversion, ellipsoid, datum).
@@ -1331,10 +1332,12 @@ impl Def {
             let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
             let seen = seen.get_or_insert_with(Default::default);
             // At most 1 MiB of WKT text kept.
-            if seen.values().flat_map(|m| m.keys()).map(String::len).sum::<usize>() + w.len() > 1 << 20 {
-                seen.clear();
+            if seen.1 + w.len() > 1 << 20 {
+                *seen = Default::default();
             }
-            seen.entry(code).or_default().insert(w.to_string(), r);
+            if seen.0.entry(code).or_default().insert(w.to_string(), r).is_none() {
+                seen.1 += w.len();
+            }
             r
         });
         if let Some(r) = r
@@ -1410,14 +1413,14 @@ fn proj_resolution(root: &wkt1::Node, code: Option<u32>, own_geog: Option<u32>, 
     let base = if projected { ["GEOGCS", "BASEGEOGCRS", "BASEGEODCRS"].iter().find_map(|k| root.child(k))? } else { root };
     let datum = ["DATUM", "TRF", "GEODETICDATUM", "ENSEMBLE"].iter().find_map(|k| base.child(k));
     let datum_renamed = datum.is_some_and(|d| d.epsg().is_some_and(|c| d.name().is_none_or(|n| !epsg::datums_named(n).contains(&c))));
-    let id = |n: &wkt1::Node| n.child("AUTHORITY").or_else(|| n.child("ID")).is_some().then_some(());
+    let has_id = |n: &wkt1::Node| n.child("AUTHORITY").or_else(|| n.child("ID")).is_some();
     let gcs = |n: &wkt1::Node| is_wkt1 && n.name().is_some_and(|n| n.starts_with("GCS_"));
     let area = |c: Option<u32>| c.and_then(epsg::get).and_then(|e| e.area);
     // With an ID, resolved. PROJ skips an ID of an authority or code it does not know (looking
     // the CRS up by its name instead), but then searches only among the CRSs of that authority
     // (`findsOpsInRegistryWithIntermediate`), so finds no chain through another datum: the CRS's
     // own transformations, as for a resolved CRS.
-    if id(root).is_some() {
+    if has_id(root) {
         return Some(Resolution { resolved: true, area: area(code), datum_renamed });
     }
     // ESRI's WKT reader maps a `PROJCS` name after a `GCS_` geographic CRS or a `D_` datum.
@@ -1445,7 +1448,7 @@ fn proj_resolution(root: &wkt1::Node, code: Option<u32>, own_geog: Option<u32>, 
         || projected && {
             // The geographic CRS of a projected CRS PROJ does not resolve, which PROJ looks its
             // transformations up for.
-            id(base).is_some()
+            has_id(base)
                 || geog.is_some_and(|g| {
                     let f = base.name().and_then(|n| epsg::crs_named_as_proj(n, false, false, gcs(base)));
                     f == Some(g) && axes(base, !is_wkt1, g)
@@ -1761,6 +1764,19 @@ mod resolution_tests {
         assert_eq!(resolution(&etrs89, Some(4258)), Some((false, None, false)));
         let local = renamed(r#"DATUM["Local datum",ELLIPSOID["International 1924",6378388,297,LENGTHUNIT["metre",1]],ID["EPSG",6806]]"#);
         assert_eq!(resolution(&local, Some(4806)), Some((false, None, true)));
+    }
+
+    #[test]
+    fn a_renamed_datum_under_the_codes_name_is_not_the_code() {
+        // Monte Mario (Rome) under its own name, on a datum of another name with its ID: PROJ
+        // compares datum names, so it does not resolve it (73 m off EPSG:4806 in PROJ 9.8.1).
+        let renamed = renamed(r#"DATUM["Local datum",ELLIPSOID["International 1924",6378388,297,LENGTHUNIT["metre",1]],ID["EPSG",6806]]"#)
+            .replacen(r#"GEOGCRS["Local""#, r#"GEOGCRS["Monte Mario (Rome)""#, 1);
+        let area = epsg::get(4806).unwrap().area;
+        assert_eq!(resolution(&renamed, Some(4806)), Some((false, area, true)));
+        // On its datum's own name, it is the code.
+        let own = renamed.replacen(r#"DATUM["Local datum""#, r#"DATUM["Monte Mario (Rome)""#, 1);
+        assert_eq!(resolution(&own, Some(4806)).map(|r| (r.0, r.2)), Some((true, false)));
     }
 
     #[test]
