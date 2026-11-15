@@ -1056,24 +1056,35 @@ class XRasterBase:
 def _geometry_input(geometries: Any) -> Any:
     """`clip`'s geometries as a terrio `Layer` or a list of GeoJSON-like geometries.
 
-    A vector file path or a GeoDataFrame/GeoSeries becomes a `Layer` (with its CRS); a GeoJSON
+    A vector file path, a one-layer `VectorDataset` or a GeoDataFrame/GeoSeries (its active
+    geometry column) becomes a `Layer` (with its CRS); a GeoJSON
     FeatureCollection, a Feature or a single geometry becomes a list of geometries; other inputs
     are returned as given.
     """
     if isinstance(geometries, _terrio.Layer):
         return geometries
-    if isinstance(geometries, (str, os.PathLike)):
-        dataset = _terrio.open_vector(os.fspath(geometries))
+    if isinstance(geometries, (str, os.PathLike, _terrio.VectorDataset)):
+        dataset = (
+            geometries
+            if isinstance(geometries, _terrio.VectorDataset)
+            else _terrio.open_vector(os.fspath(geometries))
+        )
         if len(dataset) != 1:
             raise ValueError(
-                f"{os.fspath(geometries)} has {len(dataset)} layers; pass one as "
-                "terrio.open_vector(path)[name]"
+                f"the vector dataset has {len(dataset)} layers {dataset.layer_names}; pass one "
+                "as terrio.open_vector(path)[name]"
             )
         return dataset[0]
-    if hasattr(geometries, "__geo_interface__") and hasattr(geometries, "to_arrow"):
-        # GeoPandas: through Arrow, keeping the CRS (a GeoSeries as a one-column frame)
-        frame = geometries if hasattr(geometries, "columns") else geometries.to_frame()
-        return _terrio.Layer.from_arrow(frame)
+    if hasattr(geometries, "__geo_interface__") and hasattr(geometries, "crs"):
+        # GeoPandas: the active geometry column only (a GeoSeries is its own), with its CRS
+        series = geometries.geometry
+        if hasattr(series, "to_arrow"):  # GeoPandas 1.0: through Arrow, without GeoJSON
+            try:
+                return _terrio.Layer.from_arrow(series.to_frame(name="geometry"))
+            except ImportError:  # no pyarrow
+                pass
+        crs = series.crs.to_wkt() if series.crs is not None else None
+        return _terrio.Layer.from_geojson(series.__geo_interface__, crs=crs)
     gi = getattr(geometries, "__geo_interface__", geometries)
     if isinstance(gi, dict):
         if gi.get("type") == "FeatureCollection":

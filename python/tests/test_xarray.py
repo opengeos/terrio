@@ -282,7 +282,7 @@ def test_clip_takes_a_layer(files):
     )
 
 
-def test_clip_takes_any_geometry_input(files, tmp_path):
+def test_clip_takes_any_geometry_input(files, tmp_path, monkeypatch):
     """Files, GeoPandas objects, Features, FeatureCollections and single geometries clip as the
     list of their geometries does, from their own CRS."""
     da = txr.open_rasterio(files["dem"], masked=True)
@@ -333,6 +333,21 @@ def test_clip_takes_any_geometry_input(files, tmp_path):
     xr.testing.assert_identical(da.terrio.clip(frame), from_lon_lat)
     xr.testing.assert_identical(da.terrio.clip(frame.geometry), from_lon_lat)
     xr.testing.assert_identical(ds.terrio.clip(frame), ds.terrio.clip(path))
+    xr.testing.assert_identical(da.terrio.clip(terrio.open_vector(str(path))), from_lon_lat)
+    # Unnamed GeoSeries; the active geometry column when it is not the first.
+    xr.testing.assert_identical(da.terrio.clip(gpd.GeoSeries(frame.geometry.values)), from_lon_lat)
+    two = gpd.GeoDataFrame(
+        {"other": gpd.GeoSeries.from_xy([0.0], [0.0], crs="EPSG:4326").repeat(len(frame)).values},
+        geometry=frame.geometry.values,
+        crs="EPSG:4326",
+    )
+    two = two[["other", "geometry"]]
+    assert two.columns[0] == "other"
+    xr.testing.assert_identical(da.terrio.clip(two), from_lon_lat)
+    # GeoPandas before 1.0 (no to_arrow): through GeoJSON, still with its CRS.
+    monkeypatch.delattr(gpd.GeoSeries, "to_arrow")
+    xr.testing.assert_identical(da.terrio.clip(frame), from_lon_lat)
+    monkeypatch.undo()
     shapely = pytest.importorskip("shapely")
     xr.testing.assert_identical(
         da.terrio.clip(shapely.geometry.shape(polys[0])), da.terrio.clip(polys[:1])
