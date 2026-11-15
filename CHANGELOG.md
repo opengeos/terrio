@@ -84,14 +84,13 @@
   unpacked sources. (#860)
 - The npm package gains `terrio-js/zarr`, a module that reads Zarr arrays over HTTP and nothing
   else: `openZarr(url, { array })`, then `read({ window, bands })` returns one typed array per band.
-  It is 0.53 MB (0.19 MB Brotli), against 2.56 MB Brotli for `terrio-js/core` and 337 KB for zarrita
-  with numcodecs. It reads as fast as `terrio-js` and opens about 40% sooner. Its CRS is the EPSG
-  code the store names. Remote file and object reads reject exposed Content-Range intervals that do
-  not match the requested bytes, including overflowing intervals; hidden CORS headers retain the
-  existing length/HEAD fallback. Oversized PROJJSON EPSG identifiers are rejected instead of
-  truncating. The stricter _CRS URL matching also applies to native Python/CLI and the full JS
-  module: noncanonical numeric-tail URLs no longer supply an EPSG code, while valid stored
-  PROJJSON/WKT fallbacks remain available. (#900)
+  It is 0.53 MB (0.19 MB Brotli), against 2.56 MB Brotli for `terrio-js/core`. It reads as fast as
+  `terrio-js` and opens about 40% sooner. Its CRS is the EPSG code the store names. Remote file and
+  object reads reject exposed Content-Range intervals that do not match the requested bytes,
+  including overflowing intervals; hidden CORS headers retain the existing length/HEAD fallback.
+  Oversized PROJJSON EPSG identifiers are rejected instead of truncating. The stricter _CRS URL
+  matching also applies to native Python/CLI and the full JS module: noncanonical numeric-tail URLs
+  no longer supply an EPSG code, while valid stored PROJJSON/WKT fallbacks remain available. (#900)
 - `terrio_crs::Transformer` (and `terrio::crs::Transformer`) gain `inverse()`, which builds the
   transformer of the other direction with the same options and the coordinate epochs swapped. They
   also gain `transform_slice` and `transform_slice_or_nan`, which transform points in place. The
@@ -157,8 +156,6 @@
   their column chunks from a URL: `open_stream(columns=...)`, `terrio convert --select` (without
   `--where` or `--sql`, which may name other fields), and JavaScript's `openUrl(...).read()`,
   which takes `columns` too.
-  Breaking (Rust): `terrio::vector::read_geoparquet_sparse` takes a fifth argument, `columns`;
-  pass `None` to read every field, as before.
 - GeoParquet reads decode row groups in parallel, a window of as many as there are threads at a
   time, and read remote files in place: `open_vector` and `open_stream` on a URL fetch the footer,
   then only the column chunks of the row groups the filter keeps, by range requests, instead of
