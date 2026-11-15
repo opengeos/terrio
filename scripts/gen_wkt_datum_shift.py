@@ -113,7 +113,10 @@ USAGE = re.compile(r",USAGE\[SCOPE\[[^\]]*\],AREA\[[^\]]*\],BBOX\[[^\]]*\]\]")
 
 def wkt2(crs, datum_id=False, local=False):
     """The CRS's WKT 2 without IDs: with the datum's alone, and under other names."""
-    w = IDS.sub("", USAGE.sub("", crs.to_wkt("WKT2_2019")))
+    w, n = USAGE.subn("", crs.to_wkt("WKT2_2019"))
+    check(n == 1, crs)
+    w, n = IDS.subn("", w)
+    check(n, crs)
     if datum_id:
         code = crs.datum.to_json_dict()["id"]["code"]
         # The ellipsoid with its LENGTHUNIT, then the DATUM's closing bracket.
@@ -136,10 +139,11 @@ def wkt2(crs, datum_id=False, local=False):
 def wkt1(crs, local=False):
     """GDAL's WKT 1 with only the datum's `AUTHORITY`, and under other names."""
     w = crs.to_wkt("WKT1_GDAL")
-    code = re.search(r'AUTHORITY\["EPSG","(\d+)"\]\],PRIMEM', w).group(1)
-    w, n = re.subn(
-        r"\]\],PRIMEM", f'],AUTHORITY["EPSG","{code}"]],PRIMEM', IDS.sub("", w)
-    )
+    found = re.search(r'AUTHORITY\["EPSG","(\d+)"\]\],PRIMEM', w)
+    check(found, crs)
+    w, n = IDS.subn("", w)
+    check(n, crs)
+    w, n = re.subn(r"\]\],PRIMEM", f'],AUTHORITY["EPSG","{found.group(1)}"]],PRIMEM', w)
     check(n == 1, crs)
     if local:
         w, n = re.subn(r'(GEOGCS|PROJCS)\["[^"]*"', r'\1["Local"', w)
@@ -155,15 +159,19 @@ def esri(crs):
     check(w.endswith("]") and not w.endswith("]]]"), w[-20:])
     datum = crs.datum.to_json_dict()["id"]["code"]
     root = "PROJCS" if w.startswith("PROJCS") else "GEOGCS"
-    renamed = re.sub(r'GEOGCS\["[^"]*"', 'GEOGCS["GCS_Local"', w)
+    renamed, n = re.subn(r'GEOGCS\["[^"]*"', 'GEOGCS["GCS_Local"', w)
+    check(n == 1, crs)
     if root == "PROJCS":
-        renamed = re.sub(r'^PROJCS\["[^"]*"', 'PROJCS["Local grid"', renamed)
+        renamed, n = re.subn(r'^PROJCS\["[^"]*"', 'PROJCS["Local grid"', renamed)
+        check(n == 1, crs)
+    with_datum, n = re.subn(
+        r"\]\],PRIMEM", f'],AUTHORITY["EPSG","{datum}"]],PRIMEM', w, count=1
+    )
+    check(n == 1, crs)
     return {
         "ESRI WKT 1": w,
         "ESRI WKT 1, renamed": renamed,
-        "ESRI WKT 1 with the datum's code": re.sub(
-            r"\]\],PRIMEM", f'],AUTHORITY["EPSG","{datum}"]],PRIMEM', w, count=1
-        ),
+        "ESRI WKT 1 with the datum's code": with_datum,
         "ESRI WKT 1 with the CRS's code": w[:-1]
         + f',AUTHORITY["EPSG","{crs.to_epsg()}"]]',
     }
@@ -263,7 +271,11 @@ def installed_grids():
     (`grid_alternatives`, with its pre-PROJ 7 name), and every file of a grid format."""
     dirs = pyproj.datadir.get_data_dir().split(os.pathsep)
     dirs.append(pyproj.datadir.get_user_data_dir())
-    db = sqlite3.connect(os.path.join(dirs[0], "proj.db"))
+    # PROJ's database, in whichever search path holds it, opened read-only (connecting to a
+    # missing path would create an empty one).
+    found = [Path(d, "proj.db") for d in dirs if Path(d, "proj.db").is_file()]
+    check(found, f"no proj.db in {dirs}")
+    db = sqlite3.connect(found[0].as_uri() + "?mode=ro", uri=True)
     rows = db.execute(
         "SELECT proj_grid_name, old_proj_grid_name FROM grid_alternatives"
     )
