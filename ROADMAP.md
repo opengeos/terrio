@@ -634,6 +634,9 @@ WebAssembly (the `terrio-js` npm package):
 
 ## Later
 
+- [ ] Derive Parquet filtered FIDs from group offsets and row selectors while decoding,
+      replacing the per-match FID vectors shared by spatial and attribute reads (#1031).
+
 - [ ] Pipeline writer options as GDAL has them, such as retaining source feature IDs in a
       write step rather than assigning sequential ones (see the pipeline section of
       [docs/cli.md](docs/cli.md#pipelines)). Not part of GDAL parity round 2 (#288).

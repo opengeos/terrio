@@ -64,6 +64,7 @@ impl ParquetStream {
         let mask = ProjectionMask::roots(self.meta.file_metadata().schema_descr(), roots.iter().copied());
         let mut groups = Vec::new();
         let mut fids = Vec::new();
+        let mut feature = Feature { fid: 0, geometry: None, attributes: vec![FieldValue::Null; self.columns.len()] };
         let first: Vec<u64> = self
             .meta
             .row_groups()
@@ -92,8 +93,7 @@ impl ParquetStream {
                     })
                     .collect();
                 for r in 0..batch.num_rows() {
-                    let mut feature =
-                        Feature { fid: first[g] + row, geometry: None, attributes: vec![FieldValue::Null; self.columns.len()] };
+                    feature.fid = first[g] + row;
                     for (&i, array) in indices.iter().zip(&arrays) {
                         feature.attributes[i] = value(array.as_ref(), r, self.columns[i].field_type);
                     }

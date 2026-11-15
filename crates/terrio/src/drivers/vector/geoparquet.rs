@@ -219,6 +219,7 @@ pub(super) fn group_bboxes(meta: &parquet::file::metadata::ParquetMetaData, leav
     let primary = geo["primary_column"].as_str().unwrap_or("geometry");
     let descr = meta.file_metadata().schema_descr();
     let geometry = (0..descr.num_columns()).find(|&i| descr.column(i).path().parts() == [primary]);
+    let usable = |b: &[f64; 4]| b.iter().all(|v| v.is_finite()) && b[0] <= b[2] && b[1] <= b[3];
     meta.row_groups()
         .iter()
         .map(|rg| {
@@ -231,11 +232,12 @@ pub(super) fn group_bboxes(meta: &parquet::file::metadata::ParquetMetaData, leav
             };
             let covering = leaves.and_then(|l| Some([stat(l[0], false)?, stat(l[1], false)?, stat(l[2], true)?, stat(l[3], true)?]));
             covering
+                .filter(usable)
                 .or_else(|| {
                     let bbox = rg.column(geometry?).geo_statistics()?.bounding_box()?;
                     Some([bbox.get_xmin(), bbox.get_ymin(), bbox.get_xmax(), bbox.get_ymax()])
                 })
-                .filter(|b| b.iter().all(|v| v.is_finite()) && b[0] <= b[2] && b[1] <= b[3])
+                .filter(usable)
         })
         .collect()
 }
@@ -1549,6 +1551,8 @@ mod tests {
         let mut writer = ArrowWriter::try_new(&mut bytes, schema, Some(props)).unwrap();
         writer.write(&batch).unwrap();
         writer.close().unwrap();
+        let meta = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(bytes.clone())).unwrap().metadata().clone();
+        let predicate_ranges: Vec<_> = meta.row_groups().iter().map(|g| g.column(0).byte_range()).collect();
         let size = bytes.len();
         let (base, seen) = crate::http::test_server(bytes);
         let dir = tempfile::tempdir().unwrap();
@@ -1598,6 +1602,103 @@ mod tests {
             })
             .sum();
         assert!(fetched * 20 < size, "empty selection fetched {fetched} of {size} bytes: {:?}", &requests[before..]);
+        drop(requests);
+
+        let before = seen.lock().unwrap().len();
+        let output = dir.path().join("limited.csv");
+        options.translate.where_clause = Some("foglio LIKE '%'".into());
+        options.translate.limit = Some(1);
+        crate::config::with_options(&[("TERRIO_HTTP_BLOCK_SIZE", "4096")], || {
+            crate::stream::convert(&format!("{base}/limited.parquet"), output.to_str().unwrap(), &options).unwrap();
+        });
+        assert_eq!(std::fs::read_to_string(output).unwrap().lines().count(), 2);
+        let requests = seen.lock().unwrap();
+        let ranges: Vec<(u64, u64)> = requests[before..]
+            .iter()
+            .map(|r| {
+                let (a, b) = r.as_deref().unwrap().strip_prefix("bytes=").unwrap().split_once('-').unwrap();
+                (a.parse().unwrap(), b.parse().unwrap())
+            })
+            .collect();
+        let received: u64 = ranges.iter().map(|&(a, b)| b.min(size as u64 - 1) - a + 1).sum();
+        for (offset, _) in predicate_ranges {
+            assert!(
+                ranges.iter().any(|&(a, b)| a <= offset && offset <= b),
+                "all candidate predicate chunks are read before LIMIT: {ranges:?}"
+            );
+        }
+        assert!(received > meta.row_groups().iter().map(|g| g.column(0).compressed_size() as u64).sum::<u64>());
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn remote_conversion_enforces_asset_policy_and_removes_failed_output() {
+        let mut layer = Layer::new("t");
+        layer.add_field(FieldDef::new("value", FieldType::Integer));
+        layer.push(Feature { fid: 0, geometry: None, attributes: vec![FieldValue::Integer(42)] });
+        let file = tempfile::NamedTempFile::new().unwrap();
+        write(&layer, file.path().to_str().unwrap()).unwrap();
+        let bytes = std::fs::read(file.path()).unwrap();
+        let (base, seen) = crate::http::test_server(bytes.clone());
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("refused.csv");
+        let policy = crate::stac::AssetReadPolicy::for_tests(&base, false);
+        let _scope = policy.enter().unwrap();
+        crate::config::with_options(
+            &[("GDAL_HTTP_HEADERS", "Authorization: synthetic"), ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")],
+            || {
+                let error =
+                    crate::stream::convert(&format!("{base}/refused.parquet"), output.to_str().unwrap(), &Default::default()).unwrap_err();
+                assert!(error.to_string().contains("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS"), "{error}");
+                assert!(seen.lock().unwrap().is_empty(), "refuse before sending requests");
+                assert!(!output.exists());
+            },
+        );
+        drop(_scope);
+
+        let meta = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(bytes.clone())).unwrap().metadata().clone();
+        let offset = meta.row_group(0).column(0).data_page_offset() as usize;
+        let mut corrupt = bytes;
+        corrupt[offset..offset + 16].fill(0xff);
+        let (base, _) = crate::http::test_server(corrupt);
+        let output = dir.path().join("failed.csv");
+        let url = format!("{base}/corrupt.parquet");
+        assert!(crate::stream::can_convert_stream(&url, output.to_str().unwrap(), &Default::default()));
+        let error = crate::stream::convert(&url, output.to_str().unwrap(), &Default::default()).unwrap_err();
+        assert!(error.to_string().contains("Parquet"), "{error}");
+        assert!(!output.exists(), "remove partial output after decode failure");
+    }
+
+    #[test]
+    fn invalid_covering_bounds_fall_back_to_native_statistics() {
+        use parquet::geospatial::{bounding_box::BoundingBox, statistics::GeospatialStatistics};
+        let mut layer = Layer::new("t");
+        layer.push(Feature { fid: 0, geometry: Some(Geometry::point(12.0, 44.0)), attributes: vec![] });
+        let file = tempfile::NamedTempFile::new().unwrap();
+        write(&layer, file.path().to_str().unwrap()).unwrap();
+        let meta = ParquetRecordBatchReaderBuilder::try_new(open_file(file.path().to_str().unwrap()).unwrap())
+            .unwrap()
+            .metadata()
+            .as_ref()
+            .clone();
+        let leaves = covering_leaves(&meta, &file_geo(&meta)).unwrap();
+        let mut columns = meta.row_group(0).columns().to_vec();
+        columns[leaves[0]] = columns[leaves[0]]
+            .clone()
+            .into_builder()
+            .set_statistics(parquet::file::statistics::Statistics::double(Some(f64::NAN), Some(f64::NAN), None, Some(0), false))
+            .build()
+            .unwrap();
+        let geometry = columns.iter().position(|c| c.column_descr().path().parts() == ["geometry"]).unwrap();
+        columns[geometry] = columns[geometry]
+            .clone()
+            .into_builder()
+            .set_geo_statistics(Box::new(GeospatialStatistics::new(Some(BoundingBox::new(12.0, 13.0, 44.0, 45.0)), None)))
+            .build()
+            .unwrap();
+        let group = meta.row_group(0).clone().into_builder().set_column_metadata(columns).build().unwrap();
+        let meta = meta.into_builder().set_row_groups(vec![group]).build();
+        assert_eq!(group_bboxes(&meta, Some(leaves)), vec![Some([12.0, 44.0, 13.0, 45.0])]);
     }
 
     #[test]

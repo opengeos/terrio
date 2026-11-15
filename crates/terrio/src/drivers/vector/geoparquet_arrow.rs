@@ -94,8 +94,10 @@ impl GroupWindows {
 
     /// Replaces the unread queue after predicate pushdown, before decoding starts.
     pub(crate) fn select_groups(&mut self, groups: Vec<(usize, Option<RowSelection>)>) {
+        debug_assert!(self.ready.is_empty(), "select groups before decoding batches");
         self.groups = groups.into();
     }
+
     /// Decodes `groups` with `decode`; `ranges` are the byte ranges each row group of the file
     /// reads, announced to `prefetch` a window at a time. The caller's options and asset policy
     /// are those of the thread that calls this.
