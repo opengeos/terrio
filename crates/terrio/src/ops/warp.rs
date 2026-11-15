@@ -3053,8 +3053,12 @@ impl WarpContext<'_> {
             split(out);
             return;
         }
-        // Sum already uses its exact polygon planner in the estimate; reuse that result.
-        let win = if self.grid_invariant && self.resampling != Resampling::Sum { self.source_window(dx, dy, dw, dh) } else { estimated };
+        // Polygon kernels already bound every footprint in the estimate under both policies.
+        let win = if self.grid_invariant && self.resampling != Resampling::Sum && !self.uses_angular_area() {
+            self.source_window(dx, dy, dw, dh)
+        } else {
+            estimated
+        };
         if let Some((x, y, w, h, _, rw, rh)) = win {
             (sx, sy, sw, sh, raw_w, raw_h) = (x, y, w, h, rw, rh);
         }
@@ -3124,11 +3128,22 @@ impl WarpContext<'_> {
         None
     }
 
+    /// Geographic area kernels use local polygons under either grid policy.
+    fn uses_angular_area(&self) -> bool {
+        self.resampling.is_area_based() && self.resampling != Resampling::Sum && self.longitude_turn().is_some() && self.t.ct.is_some()
+    }
+
     /// Bounds the actual point kernels or area footprints. Geometry buffers are one row wide;
     /// no source pixels are read while planning. `sum` retains its exact polygon planner.
     /// Scales are recomputed after the source read rather than retaining a chunk-sized matrix.
     #[allow(clippy::type_complexity)]
     fn source_window(&self, dx: usize, dy: usize, dw: usize, dh: usize) -> Option<(usize, usize, usize, usize, f64, f64, f64)> {
+        if (dw == 0 || dh == 0) && self.grid_invariant && self.resampling != Resampling::Sum {
+            return None;
+        }
+        if self.uses_angular_area() && dw > 0 && dh > 0 {
+            return self.angular_area_source_window(dx, dy, dw, dh);
+        }
         if !self.grid_invariant || self.resampling == Resampling::Sum {
             return self.estimate_source_window(dx, dy, dw, dh);
         }
@@ -3223,6 +3238,50 @@ impl WarpContext<'_> {
         Some((sx, sy, ex.saturating_sub(sx), ey.saturating_sub(sy), 1.0, raw.0, raw.1))
     }
 
+    /// Plan from the same angular polygons the sampler uses, retaining only two rows
+    /// of corners and no source pixels. Both grid policies need all four corners.
+    #[allow(clippy::type_complexity)]
+    fn angular_area_source_window(
+        &self,
+        dx: usize,
+        dy: usize,
+        dw: usize,
+        dh: usize,
+    ) -> Option<(usize, usize, usize, usize, f64, f64, f64)> {
+        let c = Chunk { dx, dy, dw, dh, sx: 0, sy: 0, sw: self.src_w, sh: self.src_h, raw_w: self.src_w as f64, raw_h: self.src_h as f64 };
+        let (mut left, mut top, mut right, mut bottom) = (self.src_w, self.src_h, 0, 0);
+        let mut scratch = CornerBatch::default();
+        let mut previous = self.sum_corners(&c, 0, &mut scratch);
+        let mut transformed = previous.ok.iter().any(|ok| *ok);
+        for row in 0..dh {
+            let next = self.sum_corners(&c, row + 1, &mut scratch);
+            transformed |= next.ok.iter().any(|ok| *ok);
+            for i in 0..dw {
+                let Some(footprint) = self.angular_area_footprint(&c, (&previous, &next), i, row) else { continue };
+                for part in [Some(&footprint), footprint.next.as_deref()].into_iter().flatten() {
+                    left = left.min(part.cols.0);
+                    right = right.max(part.cols.1);
+                    top = top.min(part.rows.0);
+                    bottom = bottom.max(part.rows.1);
+                }
+            }
+            previous = next;
+        }
+        if !transformed {
+            return None;
+        }
+        if left >= right || top >= bottom {
+            return Some((0, 0, 0, 0, 1.0, 0.0, 0.0));
+        }
+        let raw = ((right - left) as f64, (bottom - top) as f64);
+        let extra = self.source_extra.unwrap_or(0);
+        left = left.saturating_sub(extra);
+        top = top.saturating_sub(extra);
+        right = right.saturating_add(extra).min(self.src_w);
+        bottom = bottom.saturating_add(extra).min(self.src_h);
+        Some((left, top, right - left, bottom - top, 1.0, raw.0, raw.1))
+    }
+
     /// Points on the north and the south pole of the source's CRS, each `[sx, sy, dx, dy]`: its
     /// source pixel and the output pixel it lands on (those that land). A longitude and latitude
     /// source's poles are sampled at 25 longitudes evenly spaced from the least to the greatest
@@ -3273,6 +3332,9 @@ impl WarpContext<'_> {
     /// its edges cannot bound ([`WarpContext::poles`]).
     #[allow(clippy::type_complexity)]
     fn estimate_source_window(&self, dx: usize, dy: usize, dw: usize, dh: usize) -> Option<(usize, usize, usize, usize, f64, f64, f64)> {
+        if self.uses_angular_area() && dw > 0 && dh > 0 {
+            return self.angular_area_source_window(dx, dy, dw, dh);
+        }
         let (dxf, dyf, dwf, dhf) = (dx as f64, dy as f64, dw as f64, dh as f64);
         let all = self.sample_all || {
             let mut cx = [dxf, dxf + dwf, dxf, dxf + dwf];
@@ -4138,6 +4200,9 @@ impl WarpContext<'_> {
     /// output pixel summarizes the source inside both its footprint and the chunk's source window,
     /// each source pixel weighed by its part inside them.
     fn warp_area_row<T: crate::pixel::Pixel>(&self, c: &Chunk, k: &Kernel<T>, sink: &Sink, row: usize, out: &mut [&mut [f64]]) {
+        if self.longitude_turn().is_some() && self.t.ct.is_some() {
+            return self.warp_angular_area_row(c, k, sink, row, out);
+        }
         let n = c.dw;
         let (mut x1, mut y1, mut o1) = (vec![0.0; n], vec![0.0; n], vec![false; n]);
         let (mut x2, mut y2, mut o2) = (vec![0.0; n], vec![0.0; n], vec![false; n]);
@@ -4280,6 +4345,106 @@ impl WarpContext<'_> {
                 }
             }
         }
+    }
+
+    /// Angular source footprints use every corner and actual source-cell overlap. At a
+    /// projected point pole, the incoming and outgoing edges have separate longitude limits.
+    /// Reference: GDAL 3.12.1, whose pole sectors differ here by design (see docs/testing.md).
+    fn warp_angular_area_row<T: crate::pixel::Pixel>(&self, c: &Chunk, k: &Kernel<T>, sink: &Sink, row: usize, out: &mut [&mut [f64]]) {
+        let mut scratch = CornerBatch::default();
+        let top = self.sum_corners(c, row, &mut scratch);
+        let bottom = self.sum_corners(c, row + 1, &mut scratch);
+        let (mut areas, mut values) = (Vec::new(), Vec::new());
+        for i in 0..c.dw {
+            let Some(footprint) = self.angular_area_footprint(c, (&top, &bottom), i, row) else { continue };
+            let mut found = false;
+            for (b, o) in out.iter_mut().enumerate() {
+                let value = if self.resampling == Resampling::Average {
+                    // Keep average streaming, as the existing rectangle fast path is:
+                    // a coarse footprint must not allocate one pair per source cell.
+                    let (mut total, mut mean) = (0.0, 0.0);
+                    footprint.visit_area_values(k, b, &mut areas, |v, w| {
+                        total += w;
+                        mean += (w / total) * (v - mean);
+                    });
+                    (total > 0.0).then_some(mean)
+                } else {
+                    values.clear();
+                    footprint.visit_area_values(k, b, &mut areas, |v, w| values.push((v, w)));
+                    area_value(
+                        self.resampling,
+                        &mut values,
+                        matches!(sink.out_type, DataType::U8 | DataType::I8 | DataType::U16 | DataType::I16),
+                    )
+                };
+                if let Some(value) = value {
+                    o[i] = sink.value(value, b);
+                    found = true;
+                }
+            }
+            if found {
+                sink.avoid_all(out, i);
+            }
+        }
+    }
+
+    /// A point pole is a latitude line in angular source coordinates. Replace its
+    /// arbitrary inverse longitude by both incident edges' longitude limits.
+    fn angular_area_footprint(&self, c: &Chunk, (top, bottom): (&CornerRow, &CornerRow), i: usize, row: usize) -> Option<SumFootprint> {
+        if !(top.ok[i] && top.ok[i + 1] && bottom.ok[i + 1] && bottom.ok[i]) {
+            return None;
+        }
+        let q = [(top.x[i], top.y[i]), (top.x[i + 1], top.y[i + 1]), (bottom.x[i + 1], bottom.y[i + 1]), (bottom.x[i], bottom.y[i])];
+        if !q.iter().all(|&(x, y)| x.is_finite() && y.is_finite()) {
+            return None;
+        }
+        let x = (c.dx + i) as f64;
+        let y = (c.dy + row) as f64;
+        let corners = [(x, y), (x + 1.0, y), (x + 1.0, y + 1.0), (x, y + 1.0)];
+        let mut polygon = std::array::from_fn::<_, 8, _>(|j| q[j / 2]);
+        let mut split_pole = false;
+        for j in 0..4 {
+            let Some(pole) = self.point_pole_corner(corners[j]) else { continue };
+            split_pole = true;
+            let latitude = self.t.src_to_geo(pole[0], pole[1])?.1;
+            for (side, neighbor) in [(0, (j + 3) % 4), (1, (j + 1) % 4)] {
+                let middle = ((corners[j].0 + corners[neighbor].0) / 2.0, (corners[j].1 + corners[neighbor].1) / 2.0);
+                let (sx, sy) = self.t.point(true, middle.0, middle.1)?;
+                let longitude = self.t.src_to_geo(sx, sy)?.0;
+                polygon[2 * j + side] = self.t.geo_to_src(longitude, latitude)?;
+            }
+        }
+        if !polygon.iter().all(|&(x, y)| x.is_finite() && y.is_finite()) {
+            return None;
+        }
+        let mut xs = polygon.map(|p| p.0);
+        let moves = self.footprint_moves(&mut xs, (x + 0.5, y + 0.5));
+        // Match the existing area-kernel boundary tolerance. Equivalent longitude
+        // numberings must not create vanishing overlaps in a neighboring source cell.
+        let snap = |v: f64| if (v - v.round()).abs() <= 1e-10 { v.round() } else { v };
+        let mut parts = moves.into_iter().flatten().filter_map(|shift| {
+            let (left, right) = self.footprint_clip(shift, moves[0].unwrap());
+            let points = std::array::from_fn(|j| (snap(xs[j] + shift - c.sx as f64), snap(polygon[j].1 - c.sy as f64)));
+            let clip = (left - c.sx as f64, right - c.sx as f64);
+            if split_pole {
+                SumFootprint::new_angular_clipped(points, c.sw, c.sh, clip)
+            } else {
+                SumFootprint::new_clipped(std::array::from_fn(|j| points[2 * j]), c.sw, c.sh, clip)
+            }
+        });
+        let mut footprint = parts.next()?;
+        footprint.next = parts.next().map(Box::new);
+        Some(footprint)
+    }
+
+    /// Source pole samples must collapse to the same output point, not a geographic line.
+    fn point_pole_corner(&self, (x, y): (f64, f64)) -> Option<[f64; 4]> {
+        const EPS: f64 = 1e-7;
+        self.poles().iter().find_map(|pole| {
+            let first = *pole.first()?;
+            ((x - first[2]).hypot(y - first[3]) <= EPS && pole.iter().all(|p| (p[2] - first[2]).hypot(p[3] - first[3]) <= EPS))
+                .then_some(first)
+        })
     }
 
     /// The corners of a chunk's output pixels along its row `y` of corners (from its top edge), on
@@ -4582,9 +4747,48 @@ enum Shares {
     Block([f64; 4]),
     /// Any other quadrilateral.
     General(QuadEdges),
+    /// An angular footprint with separate limits at a projected point pole.
+    Angular(Box<QuadEdges<8>>),
 }
 
 impl SumFootprint {
+    /// Pole-limit vertices form a polygon with up to eight corners; repeated corners
+    /// contribute no edge. Reuse the quadrilateral's bounds and ownership clipping.
+    fn new_angular_clipped(q: [(f64, f64); 8], sw: usize, sh: usize, clip: (f64, f64)) -> Option<Self> {
+        let (x0, x1, y0, y1) =
+            q.iter().fold((f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY), |(x0, x1, y0, y1), &(x, y)| {
+                (x0.min(x), x1.max(x), y0.min(y), y1.max(y))
+            });
+        let mut footprint = Self::new_clipped([(x0, y0), (x1, y0), (x1, y1), (x0, y1)], sw, sh, clip)?;
+        let (cols, rows) = (footprint.cols, footprint.rows);
+        let mut edges = QuadEdges::new(&q.map(|(x, y)| (x - cols.0 as f64, y - rows.0 as f64)), cols.1 - cols.0, rows.1 - rows.0);
+        for edge in edges.edges.iter_mut().flatten() {
+            edge.lo = edge.lo.max(footprint.x.0 - cols.0 as f64);
+            edge.hi = edge.hi.min(footprint.x.1 - cols.0 as f64);
+        }
+        footprint.shares = Shares::Angular(Box::new(edges));
+        Some(footprint)
+    }
+
+    /// Visit positive-overlap valid pixels in source-row and source-column order,
+    /// preserving the existing mode tie rule across longitude-cut placements.
+    fn visit_area_values<T: crate::pixel::Pixel>(&self, k: &Kernel<T>, band: usize, areas: &mut Vec<f64>, mut visit: impl FnMut(f64, f64)) {
+        let mut parts = [Some(self), self.next.as_deref()];
+        if parts[1].is_some_and(|next| next.cols.0 < self.cols.0) {
+            parts.swap(0, 1);
+        }
+        for y in self.rows.0..self.rows.1 {
+            for part in parts.into_iter().flatten() {
+                part.shares((y, y + 1), areas);
+                for (x, &weight) in (part.cols.0..part.cols.1).zip(areas.iter()) {
+                    if weight > 0.0 && k.valid(band, x, y) {
+                        visit(k.value(band, x, y), weight);
+                    }
+                }
+            }
+        }
+    }
+
     /// The footprint of the quadrilateral `q`, whose corners are finite, on a window of `sw` x `sh`
     /// pixels; None when its bounds hold none of the window's pixels.
     #[cfg(test)]
@@ -4653,6 +4857,7 @@ impl SumFootprint {
             Shares::Clean(clean) => clean.areas(block, areas),
             Shares::Block(shares) => areas.extend_from_slice(&shares[block.0 * nx..block.1 * nx]),
             Shares::General(edges) => edges.areas(block, areas),
+            Shares::Angular(edges) => edges.areas(block, areas),
         }
     }
 
@@ -4916,11 +5121,11 @@ impl CleanBlock {
 /// the pixel's top, `clamp(y - top, 0, 1)`, signed by the direction the edge runs in `x`. A piece
 /// of an edge counts whole in the rows above it, in part in those it crosses and not at all in
 /// those below it: the whole counts are carried up each column once its pieces are summed.
-struct QuadEdges {
+struct QuadEdges<const N: usize = 4> {
     nx: usize,
     ny: usize,
     /// The edges that run in `x` over the block's columns.
-    edges: [Option<Edge>; 4],
+    edges: [Option<Edge>; N],
     /// The sign of the sums: that of the quadrilateral's area.
     sign: f64,
 }
@@ -4937,14 +5142,14 @@ struct Edge {
     hi: f64,
 }
 
-impl QuadEdges {
+impl<const N: usize> QuadEdges<N> {
     /// The edges of the quadrilateral `q` over a block of `nx` × `ny` pixels.
-    fn new(q: &[(f64, f64); 4], nx: usize, ny: usize) -> Self {
-        let mut edges = [None; 4];
+    fn new(q: &[(f64, f64); N], nx: usize, ny: usize) -> Self {
+        let mut edges = [None; N];
         // Twice the signed area: its sign is the sign of the sums.
         let mut orientation = 0.0;
         for (e, edge) in edges.iter_mut().enumerate() {
-            let ((ax, ay), (bx, by)) = (q[e], q[(e + 1) % 4]);
+            let ((ax, ay), (bx, by)) = (q[e], q[(e + 1) % N]);
             orientation += (bx - ax) * (ay + by);
             if ax == bx {
                 continue;
@@ -4973,7 +5178,7 @@ impl QuadEdges {
         for col in 0..nx {
             // The whole counts of the column's pieces, by the row each starts in: they count in the
             // rows above it.
-            let (mut counts, mut n) = ([(0, 0.0); 4], 0);
+            let (mut counts, mut n) = ([(0, 0.0); N], 0);
             for edge in self.edges.iter().flatten() {
                 if col < edge.lo as usize || col as f64 >= edge.hi {
                     continue;
@@ -5060,26 +5265,27 @@ pub(crate) fn area_value(method: Resampling, values: &mut [(f64, f64)], small_in
         Resampling::Min => values.iter().map(|v| v.0).reduce(f64::min),
         Resampling::Max => values.iter().map(|v| v.0).reduce(f64::max),
         Resampling::Mode => {
-            // The value with the largest total weight; ties keep the first one met. For 8- and
-            // 16-bit types GDAL counts in bins and any value can take the lead; for the other
-            // types a value only takes the lead when its count grows past the leader's.
+            // The value with the largest total weight; ties keep the first one met.
+            // A newly seen value can already lead when its first overlap is larger.
+            // This intentionally differs from GDAL 3.12.1's float-mode insertion
+            // rule, which retains the first value for unequal single-cell overlaps.
             let mut counts: Vec<(f64, f32)> = Vec::new();
             let mut best: Option<usize> = None;
             for &(v, w) in values.iter() {
                 let v = if small_int { v.trunc() } else { v };
-                let (i, inserted) = match counts.iter().position(|(c, _)| *c == v || (c.is_nan() && v.is_nan())) {
+                let i = match counts.iter().position(|(c, _)| *c == v || (c.is_nan() && v.is_nan())) {
                     Some(i) => {
                         counts[i].1 += w as f32;
-                        (i, false)
+                        i
                     }
                     None => {
                         counts.push((v, w as f32));
-                        (counts.len() - 1, true)
+                        counts.len() - 1
                     }
                 };
                 match best {
                     None => best = Some(i),
-                    Some(b) if (small_int || !inserted) && counts[i].1 > counts[b].1 => best = Some(i),
+                    Some(b) if counts[i].1 > counts[b].1 => best = Some(i),
                     _ => {}
                 }
             }
@@ -7057,6 +7263,53 @@ mod tests {
         0.5 * (0..p.len()).map(|i| p[i].0 * p[(i + 1) % p.len()].1 - p[(i + 1) % p.len()].0 * p[i].1).sum::<f64>().abs()
     }
 
+    #[test]
+    fn floating_mode_uses_overlap_weights_and_keeps_equal_weight_ties() {
+        let mut values = [(1.25, 0.1), (2.5, 0.7), (3.75, 0.2)];
+        assert_eq!(area_value(Resampling::Mode, &mut values, false), Some(2.5));
+        let mut ties = [(2.5, 0.5), (1.25, 0.5)];
+        assert_eq!(area_value(Resampling::Mode, &mut ties, false), Some(2.5));
+        let mut repeated = [(1.25, 0.4), (2.5, 0.7), (1.25, 0.4)];
+        assert_eq!(area_value(Resampling::Mode, &mut repeated, false), Some(1.25));
+    }
+
+    #[test]
+    fn angular_pole_polygon_shares_match_independent_clipping() {
+        let polygon = [(0.3, 0.1), (3.7, 0.1), (3.7, 1.2), (1.6, 3.8), (0.3, 2.1)];
+        let q = [polygon[0], polygon[1], polygon[2], polygon[3], polygon[4], polygon[4], polygon[4], polygon[4]];
+        for clip in [(0.0, 5.0), (0.6, 3.4)] {
+            let mut reference = polygon.to_vec();
+            for (bound, sign) in [(clip.0, 1.0), (clip.1, -1.0)] {
+                let mut clipped = Vec::new();
+                for j in 0..reference.len() {
+                    let (a, b) = (reference[j], reference[(j + 1) % reference.len()]);
+                    let (da, db) = (sign * (a.0 - bound), sign * (b.0 - bound));
+                    if da >= 0.0 {
+                        clipped.push(a);
+                    }
+                    if (da >= 0.0) != (db >= 0.0) {
+                        let t = da / (da - db);
+                        clipped.push((bound, a.1 + t * (b.1 - a.1)));
+                    }
+                }
+                reference = clipped;
+            }
+            for q in [q, std::array::from_fn(|i| q[7 - i])] {
+                let footprint = SumFootprint::new_angular_clipped(q, 5, 5, clip).unwrap();
+                let mut shares = Vec::new();
+                footprint.shares(footprint.rows, &mut shares);
+                let mut index = 0;
+                for y in footprint.rows.0..footprint.rows.1 {
+                    for x in footprint.cols.0..footprint.cols.1 {
+                        let expected = clipped_area(&reference, x as f64, y as f64);
+                        assert!((shares[index] - expected).abs() < 1e-12, "({x}, {y}): {} != {expected}", shares[index]);
+                        index += 1;
+                    }
+                }
+            }
+        }
+    }
+
     /// Output pixels turned on the source grid (by 10 degrees, and by 45) are quadrilaterals: the
     /// `sum` takes each source pixel times the area of it inside the output pixel's quadrilateral.
     #[test]
@@ -8555,6 +8808,7 @@ mod tests {
                 Shares::Clean(_) => 1,
                 Shares::Block(_) => 2,
                 Shares::General(_) => 3,
+                Shares::Angular(_) => unreachable!("sum footprints keep their quadrilateral geometry"),
             }] += 1;
             let nx = f.cols.1 - f.cols.0;
             let (mut whole, mut part) = (Vec::new(), Vec::new());

@@ -87,6 +87,22 @@ Ordered worker snapshots retain the same scope boundaries; flattened
 environment values or outer scopes. This alias policy is specific to Terrio;
 it is not a claim that GDAL understands the `TERRIO_` option names.
 
+## Additional HTTPS trust
+
+`python -m pytest python/tests/test_https_additional_ca.py` generates an ephemeral
+CA and localhost certificate with OpenSSL, then reads real TIFF windows through
+loopback HTTP and HTTPS range servers. It checks both CA option aliases, nested
+scope isolation, untrusted issuers, hostname mismatches and malformed/missing
+bundles. Warm-cache tests retain cached responses between trusted and untrusted
+opens. The native constrained-anchor regression includes an unconstrained DER
+copy of a public root and verifies that every compiled Mozilla anchor, including
+its applied name constraints, remains unchanged. HTTP and HTTPS CONNECT proxy
+tests verify tunneled reads, and a stalled TLS peer checks the handshake timeout.
+The successful reads use partial byte ranges and transfer less than the source
+file. These are native TLS trust-policy tests, not a GDAL
+conformance claim. OpenSSL is only a test fixture generator, not a runtime
+dependency.
+
 ## Failed native Zarr reads
 
 `cargo test -p terrio --lib a_failed_waiting_read_cancels_a_stalled_response`
@@ -149,6 +165,31 @@ nodata samples. The Float32 type, nodata value, all six geotransform coefficient
 and EPSG:4269 also matched exactly across both Terrio builds and geotiff.js.
 These measurements cover this local-server fixture and the selected pacing
 conditions; endpoint and network behavior determine the benefit elsewhere.
+## Parallel range reads across fork
+
+`cargo test -p terrio --lib a_fork_cancels_and_joins_parallel_range_requests`
+runs a real Linux fork while two HTTP range responses are held open. The fork
+cancels their response waits and joins the range workers before copying the
+process. The child must run parallel work, and the parent must reread both
+ranges correctly on the same reader after the server recovers. Four range
+requests are observed: two abandoned requests, then two successful retries.
+
+`cargo test -p terrio --lib waiting_workers_are_counted_cancelled_and_fall_back_during_a_fork`
+checks the worker lifetime, cancellation, serial fallback while a fork is already
+in progress, and a cancellation flag published after a fork inspects the
+registry. The registry mutex joins the locks held across fork, including when
+two threads fork concurrently.
+
+Cancellation is process-wide: a libc fork from any application thread cancels
+all active parallel range batches, including reads whose own callers never
+fork. Those concurrent readers receive an I/O cancellation error and may retry
+after the fork, as the recovery test does. Existing serial-read and Zarr fork
+behavior is unchanged. Cancellation covers response waits and retry delays.
+Because range workers are now counted, a fork also waits for their DNS and
+connection setup phases, which cancellation cannot interrupt. The default
+connection timeout is 30 seconds; DNS has no Terrio-configured timeout and can
+hold the fork until the resolver returns. These are lifecycle and I/O checks,
+not GDAL numerical comparisons.
 
 ## Remote-read locks across fork
 
@@ -3604,6 +3645,25 @@ outputs because `gdal_rasterize` cannot create COGs directly. ENVI cases are lab
 `GTiff oracle`: GDAL converts the GeoTIFF rasterization to ENVI before comparison.
 This checks Terrio's consistent background policy rather than GDAL's driver-dependent
 ENVI initialization.
+
+## Polar area footprints
+
+`python -m pytest python/tests/test_warp_polar_area_footprints.py` checks all eight
+non-sum area methods around EPSG:3031 and EPSG:3413 pole corners under both grid
+policies. An analytic longitude-only field bounds the possible values and tests
+mirror symmetry to absolute tolerance 1e-9. Off the singular corner, averages must agree with independently
+computed `sum(field) / sum(valid)` to absolute tolerance 1e-10, including nodata.
+The native `angular_pole_polygon_shares_match_independent_clipping` test compares
+polygon-cell overlap against a separate clipping implementation to 1e-12, including
+fractional ownership clips and reversed orientation. A loopback TIFF test verifies
+partial range requests transfer less than the file while preserving pixel values.
+
+The reference comparison used GDAL 3.12.1. On the issue's one-degree cosine field,
+GDAL's EPSG:3031 southeast pole pixel averages +30.01092478 and its maximum is
++99.99619231, although that sector contains negative values. Its EPSG:3413
+northwest pole pixel similarly includes positive field values. Terrio's
+polygonal area policy intentionally differs here; these checks do not claim
+pixel-identical GDAL output or exact curved-edge integration.
 
 ## Exact sum footprints
 
