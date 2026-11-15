@@ -271,7 +271,8 @@ pub(crate) fn proj_ellipsoid(p: &Params, method: &str) -> std::result::Result<Pr
     let (crs, by_rf) = match datum.map(|d| (d, true)).or(ellps.map(|e| (e, false))).or(default.map(|d| (d, false))) {
         Some(((base_a, v), of_datum)) => {
             let by_axis = v < 0.0 && !of_datum;
-            match (shape, a) {
+            // `+a` of the ellipsoid's own semi-major axis leaves it unchanged.
+            match (shape, a.filter(|a| *a != base_a)) {
                 (Some("b"), _) => (Ell::from_a_b(a.unwrap_or(base_a), number("b")), false),
                 (Some("rf"), a) if !by_axis => (Ell::from_a_rf(a.unwrap_or(base_a), number("rf")), true),
                 // Unchanged, the named ellipsoid itself, bit for bit.

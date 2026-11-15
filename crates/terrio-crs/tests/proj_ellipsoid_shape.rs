@@ -88,9 +88,20 @@ fn ellipsoid_parameters_are_read_as_proj_reads_them() {
 fn an_unchanged_datum_keeps_its_named_ellipsoid() {
     let params = |s: &str| SpatialRef::parse(s).unwrap().projection_params().unwrap();
     for (datum, ellps) in [("NAD27", "clrk66"), ("ire65", "mod_airy"), ("WGS84", "WGS84"), ("OSGB36", "airy")] {
-        let (d, e) = (params(&format!("+proj=tmerc +datum={datum}")), params(&format!("+proj=tmerc +ellps={ellps}")));
-        assert_eq!((d.a.to_bits(), d.b.to_bits()), (e.a.to_bits(), e.b.to_bits()), "{datum}, {ellps}");
+        let e = params(&format!("+proj=tmerc +ellps={ellps}"));
+        // Also under `+a` of its own semi-major axis, which PROJ 9.8.1 reports as the named
+        // ellipsoid (Clarke 1866, b = 6356583.8).
+        for s in [
+            format!("+proj=tmerc +datum={datum}"),
+            format!("+proj=tmerc +datum={datum} +a={}", e.a),
+            format!("+proj=tmerc +ellps={ellps} +a={}", e.a),
+        ] {
+            let d = params(&s);
+            assert_eq!((d.a.to_bits(), d.b.to_bits()), (e.a.to_bits(), e.b.to_bits()), "{s}");
+        }
     }
+    let wkt = SpatialRef::parse("+proj=longlat +datum=NAD27 +a=6378206.4").unwrap().to_wkt().unwrap();
+    assert!(wkt.contains(r#"SPHEROID["Clarke 1866",6378206.4,294.9786982139"#), "{wkt}");
     let wkt = SpatialRef::parse("+proj=longlat +datum=NAD27 +towgs84=-8,160,176").unwrap().to_wkt().unwrap();
     // Its name and code; terrio computes the inverse flattening from the eccentricity
     // (294.978698213901), PROJ from the axes.
