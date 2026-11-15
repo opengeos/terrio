@@ -140,6 +140,11 @@ fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
         (Some(e), None) => e.proj.clone(),
         (None, None) => crate::wkt_proj(wkt).ok_or_else(|| unsupported("a WKT terrio reads otherwise"))?,
     };
+    // A WKT's PROJ4 extension is computed on as a pipeline step; it is described by the CRS rules
+    // of its PROJ string only where those read it the same way.
+    if s.proj4.is_none() && entry.is_none() && crate::proj4_extension(wkt).is_some() && !Def::extension_reads_as_string(&proj) {
+        return Err(unsupported("a PROJ4 extension PROJ computes on otherwise than its PROJ string"));
+    }
     let p = Params::parse(&proj);
     refuse_misdescribed(&root, &p, &def)?;
     let name = root.name().unwrap_or("unknown").to_string();

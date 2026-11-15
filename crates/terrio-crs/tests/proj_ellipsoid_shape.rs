@@ -5,7 +5,7 @@
 //! (`clrk66`, `sphere`) keeps that axis under `+a`, `+rf`, `+f`, `+es` and `+e`; a datum's is
 //! defined by its inverse flattening (NAD27's Clarke 1866 too), which `+a` keeps. `+f=0` makes
 //! orthographic spherical. A spherification flag PROJ's CRS parser does not take as part of the
-//! method (all but `+R_A` for `laea`, `cea`, `mill` and `vandg`) keeps the string as PROJ reads
+//! method (all but `+R_A` for `laea` and `cea`) keeps the string as PROJ reads
 //! it in a pipeline: the shape parameter then changes the named ellipsoid's shape, `+a` keeps
 //! its eccentricity, and the first flag of `+R_A`, `+R_V`, `+R_a`, `+R_g`, `+R_h`, `+R_lat_a`,
 //! `+R_lat_g` and `+R_C` makes a sphere of it. A shape without a size is refused.
@@ -42,7 +42,7 @@ fn ellipsoid_parameters_are_read_as_proj_reads_them() {
     terrio_crs::set_network_enabled(Some(false));
     let data: Value = serde_json::from_str(include_str!("data/proj_ellipsoid_shape.json")).unwrap();
     let cases = data["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 475);
+    assert_eq!(cases.len(), 481);
     let mut bad = vec![];
     for case in cases {
         let s = case["proj_string"].as_str().unwrap();
@@ -171,4 +171,80 @@ fn a_wkt_proj4_extension_is_computed_on_as_a_pipeline_step() {
         }
     }
     assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
+/// The WKT terrio writes for a PROJ string reads back as the string, as PROJ 9.8.1 reads the
+/// string: where WKT 1 cannot describe the CRS, its `PROJ4` extension, which PROJ and terrio
+/// compute on as a pipeline step, gives the CRS's figure and datum rather than the string's own
+/// ellipsoid parameters (which the step reads otherwise). `data/proj_ellipsoid_shape.json`'s
+/// `written` holds such strings, the extension terrio writes, and PROJ's coordinates of that WKT
+/// (`Transformer.from_crs("EPSG:4326", CRS(wkt), always_xy=True)`, the same as of the string).
+/// Every string of `cases` is read back from its WKT where PROJ places it. Tolerance: 1 mm.
+#[test]
+fn a_written_wkt_reads_back_as_its_proj_string() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let data: Value = serde_json::from_str(include_str!("data/proj_ellipsoid_shape.json")).unwrap();
+    let written = data["written"].as_array().unwrap();
+    assert_eq!(written.len(), 9);
+    for case in written {
+        let s = case["proj_string"].as_str().unwrap();
+        let wkt = SpatialRef::parse(s).unwrap().to_wkt().unwrap();
+        let extension = format!("EXTENSION[\"PROJ4\",\"{}\"]", case["extension"].as_str().unwrap());
+        assert!(wkt.contains(&extension), "{s}: {wkt}");
+    }
+    let mut bad = vec![];
+    for case in data["cases"].as_array().unwrap() {
+        let s = case["proj_string"].as_str().unwrap();
+        let Some(proj) = case["proj"].as_array() else { continue };
+        let proj = proj.iter().map(|v| v.as_f64().unwrap()).collect::<Vec<_>>();
+        let Some(wkt) = SpatialRef::parse(s).ok().and_then(|c| c.to_wkt()) else { continue };
+        let point = (case["point"][0].as_f64().unwrap(), case["point"][1].as_f64().unwrap());
+        let back = SpatialRef::from_wkt(&wkt);
+        let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+        let got = if back.is_geographic() {
+            Transformer::new(&back, &wgs84).and_then(|t| t.transform(point.0, point.1)).map(|p| vec![p.0, p.1])
+        } else if back.is_geocentric() {
+            Transformer::new(&wgs84, &back).and_then(|t| t.transform_3d(point.0, point.1, 0.0)).map(|p| vec![p.0, p.1, p.2])
+        } else {
+            Transformer::new(&wgs84, &back).and_then(|t| t.transform(point.0, point.1)).map(|p| vec![p.0, p.1])
+        };
+        let Ok(got) = got else {
+            bad.push(format!("{s}: its WKT is refused: {wkt}"));
+            continue;
+        };
+        let off = if back.is_geographic() {
+            ((got[0] - proj[0]) * proj[1].to_radians().cos()).hypot(got[1] - proj[1]) * 111_195.0
+        } else {
+            got.iter().zip(&proj).map(|(g, p)| (g - p) * (g - p)).sum::<f64>().sqrt()
+        };
+        if off >= 1e-3 {
+            bad.push(format!("{s}: PROJ {proj:?}, read back {got:?}, {off:.3} m: {wkt}"));
+        }
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
+/// A WKT's `PROJ4` extension is kept through the WKT (not as the CRS's PROJ string), and the
+/// writers that describe a PROJ string by PROJ's CRS rules (PROJJSON, GeoKeys) refuse one the
+/// pipeline step computes on otherwise: `+ellps=WGS84 +f=0` is a sphere there. One read alike
+/// both ways is described as before.
+#[test]
+fn writers_describe_an_extension_only_as_it_is_computed_on() {
+    let wkt = |ext: &str| {
+        format!(
+            "PROJCS[\"custom\",GEOGCS[\"custom\",DATUM[\"custom\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-75],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],EXTENSION[\"PROJ4\",\"{ext}\"]]"
+        )
+    };
+    for (ext, alike) in [
+        ("+proj=tmerc +lon_0=-75 +ellps=WGS84 +f=0", false),
+        ("+proj=tmerc +lon_0=-75 +ellps=clrk66 +a=6400000", false),
+        ("+proj=tmerc +lon_0=-75 +datum=WGS84 +a=6400000", false),
+        ("+proj=tmerc +lon_0=-75 +ellps=WGS84", true),
+    ] {
+        let crs = SpatialRef::from_wkt(&wkt(ext));
+        assert_eq!(crs.proj4, None, "{ext}");
+        assert_eq!(crs.to_projjson().is_ok(), alike, "{ext}: {:?}", crs.to_projjson());
+        assert_eq!(terrio_crs::geokeys::user_defined_keys(&crs, "custom").is_some(), alike, "{ext}");
+    }
 }

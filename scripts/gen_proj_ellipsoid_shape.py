@@ -15,7 +15,9 @@ a geographic CRS, given a null `+towgs84` so that its ellipsoid matters, is tran
 EPSG:4326. Points are at a height of 0; a geocentric CRS's coordinates have three values.
 `extensions` holds WKT 1 CRSs whose `PROJ4` extension has such parameters, with PROJ's
 coordinates (`Transformer.from_crs("EPSG:4326", CRS(wkt), always_xy=True)`), or null where PROJ
-refuses to transform.
+refuses to transform. `written` holds PROJ strings whose WKT terrio writes with a normalized
+`PROJ4` extension, the extension, and PROJ's coordinates of that WKT, which the script checks
+against PROJ's coordinates of the string.
 
 Usage: PROJ_NETWORK=OFF python scripts/gen_proj_ellipsoid_shape.py (needs pyproj 3.8.0)
 """
@@ -135,12 +137,19 @@ EXTRA = [
     "+proj=ortho +lat_0=40 +lon_0=-90 +a=6378137 +rf=298.257223563 +f=0",
     "+proj=ortho +lat_0=40 +lon_0=-90 +datum=NAD27 +a=6400000 +f=0",
     "+proj=ortho +lat_0=40 +lon_0=-90 +ellps=WGS84 +f=0 +R_V",
-    # Miller is on the authalic sphere, with or without `+R_A`.
+    # Miller is on the authalic sphere.
     "+proj=mill +ellps=WGS84",
     "+proj=mill +ellps=WGS84 +f=0",
     "+proj=mill +ellps=clrk66 +a=6400000",
     "+proj=cea +ellps=WGS84 +f=0 +R_A",
     "+proj=cea +ellps=WGS84 +f=0",
+    # `+R_A` given for Miller or van der Grinten, which PROJ's parser does not take: a step.
+    "+proj=mill +datum=WGS84 +R_A",
+    "+proj=mill +ellps=WGS84 +f=0 +R_A",
+    "+proj=vandg +datum=WGS84 +R_A",
+    "+proj=vandg +ellps=WGS84 +f=0 +R_A",
+    "+proj=cea +datum=WGS84 +R_A",
+    "+proj=laea +lat_0=45 +lon_0=-100 +datum=WGS84 +R_A",
     # The latitude of `+R_lat_a` and `+R_lat_g` as PROJ's `dmstor` reads it: an unreadable one
     # is the equator, beyond 90 degrees it is refused.
     "+proj=tmerc +lon_0=-75 +ellps=WGS84 +R_lat_a=foo",
@@ -196,6 +205,70 @@ EXTENSIONS = [
     "+proj=laea +lat_0=45 +lon_0=-100 +ellps=WGS84 +R_a",
 ]
 
+GEOGRAPHIC_EXTENSION_WKT = (
+    'GEOGCS["custom",DATUM["custom",SPHEROID["WGS 84",6378137,298.257223563]],'
+    'PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],EXTENSION["PROJ4","{}"]]'
+)
+# PROJ strings whose WKT 1 terrio writes with a `PROJ4` extension that a pipeline step reads
+# otherwise than PROJ's CRS parser reads the string, and the extension terrio writes in its place:
+# the CRS's figure and datum, so that PROJ (as terrio) reads the WKT as the string.
+WRITTEN = [
+    (
+        "+proj=laea +lat_0=45 +lon_0=-100 +ellps=WGS84 +f=0 +R_A",
+        "+proj=laea +lat_0=45 +lon_0=-100 +R=6371007.181082429",
+    ),
+    (
+        "+proj=laea +lat_0=45 +lon_0=-100 +datum=WGS84 +a=6400000 +R_A",
+        "+proj=laea +lat_0=45 +lon_0=-100 +R=6392845.741464561",
+    ),
+    (
+        "+proj=laea +lat_0=45 +lon_0=-100 +ellps=WGS84 +R_a",
+        "+proj=laea +lat_0=45 +lon_0=-100 +R=6371007.181082429",
+    ),
+    ("+proj=cea +ellps=WGS84 +f=0 +R_A", "+proj=cea +R=6371007.181082429"),
+    (
+        "+proj=ortho +lat_0=40 +lon_0=-90 +datum=WGS84 +f=0",
+        "+proj=ortho +lat_0=40 +lon_0=-90 +R=6378137",
+    ),
+    (
+        "+proj=longlat +towgs84=0,0,0 +ellps=clrk66 +a=6400000",
+        "+proj=longlat +towgs84=0,0,0 +a=6400000 +rf=147.41041362440728",
+    ),
+    (
+        "+proj=longlat +towgs84=0,0,0 +datum=WGS84 +ellps=clrk66",
+        "+proj=longlat +towgs84=0,0,0 +datum=WGS84",
+    ),
+    (
+        "+proj=merc +datum=NAD83 +R_C",
+        "+proj=merc +a=6378137 +rf=298.2572221010002 +R_C",
+    ),
+    (
+        "+proj=merc +datum=WGS84 +a=6400000 +R_C",
+        "+proj=merc +a=6400000 +rf=298.25722356300156 +R_C",
+    ),
+]
+
+
+def written_case(definition, extension):
+    template = (
+        GEOGRAPHIC_EXTENSION_WKT if "+proj=longlat" in definition else EXTENSION_WKT
+    )
+    wkt = template.format(extension)
+    original = case(definition)["proj"]
+    crs = CRS(wkt)
+    if crs.is_geographic:
+        t = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+    else:
+        t = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+    proj = list(t.transform(*POINT, errcheck=True))
+    # PROJ reads the WKT as it reads the string.
+    assert all(abs(a - b) < 1e-3 for a, b in zip(proj, original)), (
+        definition,
+        proj,
+        original,
+    )
+    return {"proj_string": definition, "extension": extension, "wkt": wkt, "proj": proj}
+
 
 def extension_case(definition):
     wkt = EXTENSION_WKT.format(definition)
@@ -243,12 +316,14 @@ def main():
     definitions = [f"{m} {s}" for m in METHODS for s in SHAPES] + EXTRA
     cases = [case(d) for d in definitions]
     extensions = [extension_case(s) for s in EXTENSIONS]
+    written = [written_case(d, e) for d, e in WRITTEN]
     OUT.write_text(
         json.dumps(
             {
                 "proj_version": pyproj.proj_version_str,
                 "cases": cases,
                 "extensions": extensions,
+                "written": written,
             },
             indent=1,
         )

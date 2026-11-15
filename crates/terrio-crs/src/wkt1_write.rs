@@ -62,7 +62,7 @@ struct Method {
 pub(crate) fn from_proj(s: &str) -> Option<String> {
     let own = Def::from_proj(s).ok()?;
     let p = Params::parse(s);
-    let extension = format!("EXTENSION[\"PROJ4\",\"{}\"]", s.trim().replace('"', ""));
+    let extension = format!("EXTENSION[\"PROJ4\",\"{}\"]", step_string(s).replace('"', ""));
     let (geogcs, datum_described) = geogcs(&p, &own);
     // Also described: `+R_C` (the conformal sphere of the ellipsoid) on a sphere, which changes
     // nothing.
@@ -496,10 +496,59 @@ fn extended(wkt: &str, extension: &str) -> String {
     format!("{},{extension}]", &wkt[..wkt.len() - 1])
 }
 
+/// A PROJ string that a pipeline step, as PROJ and terrio compute on a WKT's `PROJ4` extension,
+/// reads as PROJ 9.8.1's CRS parser reads `s`: its ellipsoid parameters replaced by the figure
+/// the CRS computes on (`+ellps=` for its named ellipsoid unchanged, a sphere's `+R=`, else `+a=`
+/// and `+rf=`), and without the `+datum=` the parser drops, nor the `+ellps=` beside a `+datum=`
+/// it keeps (which stays unless the step would convert onto another figure than its own). Ellipsoid parameters read otherwise by the step (`+f`, `+es` and `+e` on a named
+/// ellipsoid, `+a` on one of a semi-minor axis, `+R_a` for `+R_A`) would move points. A string
+/// PROJ already computes on as a step (with a spherification flag) is kept as it is, but under
+/// `+R_C`, which keeps the datum's transformations, and so its `+datum=WGS84` or `NAD83` (null
+/// ones) is dropped with its figure written. No extension carries other datums' transformations
+/// (`+datum=NAD27`), which PROJ, as terrio, reads in an extension as the step's shift.
+fn step_string(s: &str) -> String {
+    let p = Params::parse(s);
+    let Ok(e) = super::def::proj_ellipsoid(&p, p.str("proj").unwrap_or_default(), false) else {
+        return s.trim().to_string();
+    };
+    let null_datum = e.reshaped || p.str("datum").is_none_or(|d| matches!(d, "WGS84" | "NAD83"));
+    if (e.as_step && !(e.conformal && null_datum)) || Def::extension_reads_as_string(s) {
+        return s.trim().to_string();
+    }
+    let figure = e.figure;
+    let same = |n: Ell| (n.a - figure.a).abs() < 1e-9 * n.a && (n.es - figure.es).abs() < 1e-15;
+    let datum = p.str("datum").filter(|_| !e.reshaped).and_then(super::def::datum_ellps).and_then(Ell::named);
+    // A datum the parser keeps stays on the figure it defines, or as a grid shift, which a step
+    // applies to geographic coordinates whatever its figure; a Helmert shift would convert them
+    // onto another figure (a sphere), where the parser converts none.
+    let grid = p.str("datum").and_then(super::def::step_datum_shift).is_some_and(|d| matches!(d, super::def::StepShift::Nadgrids(_)));
+    let keep_datum = !e.conformal && datum.is_some() && (datum.is_some_and(same) || grid);
+    const ELLIPSOID: [&str; 8] = ["ellps", "a", "b", "rf", "f", "es", "e", "R"];
+    let tokens: Vec<&str> = s.split_whitespace().collect();
+    let kept = |t: &str| {
+        let key = t.trim_start_matches('+').split('=').next().unwrap_or_default();
+        let flag = key.starts_with("R_") && key != "R_C";
+        !ELLIPSOID.contains(&key) && !flag && (key != "datum" || keep_datum)
+    };
+    // The figure goes where the first parameter it replaces was.
+    let at = tokens.iter().take_while(|t| kept(t)).count();
+    let mut out: Vec<String> = tokens.iter().filter(|t| kept(t)).map(|t| t.to_string()).collect();
+    if !(keep_datum && datum.is_some_and(same)) {
+        let named = p.str("ellps").filter(|n| Ell::named(n).is_some_and(same));
+        let ellipsoid = match named {
+            Some(n) => vec![format!("+ellps={n}")],
+            None if figure.es == 0.0 => vec![format!("+R={}", figure.a)],
+            None => vec![format!("+a={}", figure.a), format!("+rf={}", 1.0 / (1.0 - figure.one_es.sqrt()))],
+        };
+        out.splice(at.min(out.len())..at.min(out.len()), ellipsoid);
+    }
+    out.join(" ")
+}
+
 /// The PROJ string of a `custom_proj4` extension, with `+wktext` and `+no_defs` as GDAL writes
 /// it.
 fn custom(s: &str) -> String {
-    let mut out = s.trim().replace('"', "");
+    let mut out = step_string(s).replace('"', "");
     for flag in ["+wktext", "+no_defs"] {
         if !out.split_whitespace().any(|t| t == flag) {
             out.push(' ');

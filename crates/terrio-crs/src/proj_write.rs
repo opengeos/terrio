@@ -197,11 +197,9 @@ fn kept_axis(method: &str, axis: &str) -> bool {
 
 /// The tokens (without `+type=crs`) of a WKT's PROJ4 extension (GDAL's, for CRSs WKT 1 cannot
 /// describe), which is the CRS's PROJ string: PROJ writes it as it is, but GDAL's Web Mercator,
-/// which it writes as its own; not the WKT terrio builds for a PROJ string it is given, which
-/// carries the string so.
+/// which it writes as its own; not for a CRS given by a PROJ string, whose WKT terrio builds.
 fn extension(s: &SpatialRef) -> Option<Vec<String>> {
-    let given = |p: &String| crate::proj_to_wkt(p) == s.wkt;
-    let text = s.wkt.as_deref().and_then(crate::proj4_extension).filter(|_| !s.proj4.as_ref().is_some_and(given))?;
+    let text = s.wkt.as_deref().and_then(crate::proj4_extension).filter(|_| s.proj4.is_none())?;
     let text = gdal_web_mercator(&text).unwrap_or(text);
     Some(tokens(&text, true).into_iter().filter(|t| t != "+type=crs").collect())
 }

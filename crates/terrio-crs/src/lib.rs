@@ -403,12 +403,10 @@ impl SpatialRef {
             let epsg = declared_epsg(wkt)
                 .or_else(|| identify_epsg(wkt))
                 .filter(|code| fits(SpatialRef { epsg: Some(*code), ..Default::default() }));
-            // The extension is the CRS's PROJ string only where PROJ's CRS parser accepts it;
-            // one only a pipeline step reads (an unreadable `+lat_ts`) is kept through its WKT.
-            // Either way `Def::new` computes on it by the step's ellipsoid rules, which differ
-            // from the parser's.
-            let proj4 = Def::from_proj(&proj4).is_ok().then_some(proj4);
-            let mut s = Self { epsg, wkt: Some(wkt.to_string()), proj4, esri: None }.with_esri();
+            // The extension is kept through the WKT, not as the CRS's PROJ string: PROJ computes
+            // on it as a pipeline step reads it, whose ellipsoid rules and leniency differ from
+            // those of its CRS parser, which reads a PROJ string given.
+            let mut s = Self { epsg, wkt: Some(wkt.to_string()), proj4: None, esri: None }.with_esri();
             if let Some(code) = s.esri
                 && !fits(SpatialRef { esri: Some(code), ..Default::default() })
             {
@@ -950,7 +948,9 @@ impl SpatialRef {
         // A PROJ string's axes (one from the WKT of an IAU_2015 CRS goes by the WKT, as PROJ
         // reads it).
         let iau = self.wkt.as_deref().and_then(iau::declared).is_some();
-        if !self.registry_entry() && !iau && self.proj4.is_some() {
+        // A WKT's PROJ4 extension is its PROJ string too.
+        let extension = self.wkt.as_deref().and_then(proj4_extension).is_some();
+        if !self.registry_entry() && !iau && (self.proj4.is_some() || extension) {
             let [first, second] = def.axis_directions();
             return if polar { AxisOrder::Other } else { order(first, second) };
         }
@@ -1131,9 +1131,10 @@ impl SpatialRef {
         if self.is_rotated_pole() {
             return Err(Error::Crs("a rotated-pole CRS has no wbprojection equivalent".into()));
         }
-        // The PROJ string over its WKT, which wbprojection reads with fewer parameters.
-        if let Some(p) = &self.proj4
-            && let Ok(c) = wbp::from_proj_string(&mercator_lat_ts_as_k(p))
+        // The PROJ string (or a WKT's PROJ4 extension) over its WKT, which wbprojection reads
+        // with fewer parameters.
+        if let Some(p) = self.proj4.clone().or_else(|| self.wkt.as_deref().and_then(proj4_extension))
+            && let Ok(c) = wbp::from_proj_string(&mercator_lat_ts_as_k(&p))
         {
             return Ok(c);
         }

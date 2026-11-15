@@ -189,13 +189,13 @@ pub(crate) fn datum_ellps(name: &str) -> Option<&'static str> {
 
 /// The datum shift PROJ's `pj_datum_set` gives a pipeline step's `+datum=` (`datums.cpp`).
 #[derive(Debug, Clone, Copy)]
-enum StepShift {
+pub(crate) enum StepShift {
     Towgs84(&'static [f64]),
     Nadgrids(&'static str),
 }
 
 /// The shift of PROJ's `+datum=` names in a pipeline step.
-fn step_datum_shift(name: &str) -> Option<StepShift> {
+pub(crate) fn step_datum_shift(name: &str) -> Option<StepShift> {
     Some(match name {
         "WGS84" | "NAD83" => StepShift::Towgs84(&[0.0, 0.0, 0.0]),
         "GGRS87" => StepShift::Towgs84(&[-199.87, 74.79, 246.62]),
@@ -245,7 +245,7 @@ const SPHERIFICATIONS: [&str; 8] = ["R_A", "R_V", "R_a", "R_g", "R_h", "R_lat_a"
 /// inverse flattening, changes its shape. Without a named ellipsoid, `+a` and the shape
 /// parameter give the ellipsoid. That is the CRS's ellipsoid, on which the method's
 /// coordinates are computed, but where a spherification flag that the parser does not take as
-/// part of the method (all but `+R_A` for `laea`, `cea`, `mill` and `vandg`) keeps the string as
+/// part of the method (all but `+R_A` for `laea` and `cea`) keeps the string as
 /// the step reads it. `+f=0` as written makes orthographic spherical on the CRS's named
 /// ellipsoid or its axes, not on one PROJ writes by its inverse flattening.
 ///
@@ -314,9 +314,10 @@ pub(crate) fn proj_ellipsoid(p: &Params, method: &str, extension: bool) -> std::
         },
     };
     let flag = SPHERIFICATIONS.into_iter().find(|k| p.has(k));
-    // The parser takes `+R_A` for these methods' spherical variants, and reads parameter names
-    // regardless of case: `+R_a` is `+R_A` to it.
-    let in_method = !extension && matches!(flag, Some("R_A" | "R_a")) && matches!(method, "laea" | "cea" | "mill" | "vandg");
+    // The parser takes `+R_A` for the spherical variants of `laea` and `cea` (methods of two
+    // variants), and reads parameter names regardless of case: `+R_a` is `+R_A` to it. Miller
+    // and van der Grinten are spherical whatever, and a `+R_A` given makes it keep the extension.
+    let in_method = !extension && matches!(flag, Some("R_A" | "R_a")) && matches!(method, "laea" | "cea");
     let flag = if in_method { Some("R_A") } else { flag };
     let as_step = extension || (flag.is_some() && !in_method);
     let mut figure = if as_step { step } else { crs };
@@ -424,7 +425,7 @@ impl Def {
             // A WKT identified as this code but with its own TOWGS84: GDAL uses that shift (not
             // over a PROJ4 extension, which describes the whole CRS).
             if s.proj4.is_none()
-                && let Some(w) = s.wkt.as_deref().filter(|w| *w != e.wkt)
+                && let Some(w) = s.wkt.as_deref().filter(|w| *w != e.wkt && super::proj4_extension(w).is_none())
                 && let Some(t) = wkt_towgs84(w)
             {
                 d.ops = vec![Arc::new(Op::world(datum::towgs84_steps(d.ell, &t)))];
@@ -451,10 +452,9 @@ impl Def {
             return Ok(d);
         }
         if let Some(p) = &s.proj4 {
-            // The PROJ4 extension of a WKT given (not the WKT terrio builds for a PROJ string
-            // given, which carries the string so) is computed on as PROJ computes on it.
-            let extension = s.wkt.as_deref().and_then(super::proj4_extension).is_some_and(|e| e == *p) && super::proj_to_wkt(p) != s.wkt;
-            let mut d = if extension { Self::from_proj_extension(p)? } else { Self::from_proj(p)? };
+            // A PROJ string given is read by PROJ's CRS rules; a WKT's PROJ4 extension, kept
+            // through the WKT, by a pipeline step's (`Self::from_wkt`).
+            let mut d = Self::from_proj(p)?;
             d.tag_iau(s)?;
             return Ok(d);
         }
@@ -557,6 +557,21 @@ impl Def {
     /// shape without a size) is refused, as PROJ refuses to transform with it.
     pub fn from_proj_extension(s: &str) -> Result<Self> {
         Self::from_params(s, &Params::parse(s), true)
+    }
+
+    /// Whether PROJ string `s`, as a WKT's PROJ4 extension (computed on as a pipeline step), is
+    /// the CRS its CRS rules read: the same conversion, ellipsoid and datum. The writers that
+    /// describe a PROJ string by those rules (PROJJSON, GeoKeys) describe such an extension only.
+    pub(crate) fn extension_reads_as_string(s: &str) -> bool {
+        match (Self::from_proj(s), Self::from_proj_extension(s)) {
+            (Ok(crs), Ok(step)) => {
+                crs.same_conversion(&step)
+                    && crs.same_datum(&step)
+                    && (crs.ell.a - step.ell.a).abs() < 1e-6
+                    && (crs.ell.es - step.ell.es).abs() < 1e-15
+            }
+            _ => false,
+        }
     }
 
     /// [`Self::from_proj`] of parsed parameters.
