@@ -19,8 +19,9 @@
 - **Breaking (Rust API):** `FlatGeobufInfo` gains the public fields `has_z` and `has_m` (#880);
   `transform_bounds` samples 23 points per edge, endpoints included, instead of 21 (#908); a missing
   or failed velocity grid gives `MissingGrid` instead of `Crs` (#937).
-- Krovak WKT 1 without `AXIS` or Esri `XScale`/`XYPlaneRotation` parameters now defaults to
-  south-west axes rather than east-north, and WKT projected CRSs follow their `AXIS` nodes (#1015).
+- **Breaking:** Krovak WKT 1 without `AXIS` or Esri `XScale`/`XYPlaneRotation` parameters now
+  defaults to south-west axes rather than east-north, and WKT projected CRSs follow their `AXIS`
+  nodes (#1015).
 
 ### Features
 
@@ -118,23 +119,18 @@
   two at the natural origin. (#981)
 - Added Eckert IV (`+proj=eck4`) and Natural Earth (`+proj=natearth`) to terrio-crs's default build,
   ported from PROJ 9.8.1's `eck4.cpp` and `natearth.cpp`. They no longer need the
-  `wbprojection-fallback` feature, a feature that grows the optimized wasm build from 1.5 MB to 3.9
-  MB (0.91 MB to 1.25 MB gzipped, `docs/crs-footprint.md`). ESRI:53012, 53077, 54012 and 54077
-  (Sphere and World Eckert IV and Natural Earth) are now listed and computed in the default build.
-  In `terrio`, which enables the fallback, both methods now use the native port instead of
-  wbprojection's. (#988)
+  `wbprojection-fallback` feature, a feature that grew the optimized wasm build from 1.5 MB to 3.9
+  MB (0.91 MB to 1.25 MB gzipped) when `docs/crs-footprint.md` measured it, before this release.
+  ESRI:53012, 53077, 54012 and 54077 (Sphere and World Eckert IV and Natural Earth) are now listed
+  and computed in the default build. In `terrio`, which enables the fallback, both methods now use
+  the native port instead of wbprojection's. (#988)
 - `SpatialRef::axis_order()`, `projection_params()`, `body()` and `is_earth()` (in `terrio-crs`, and
   forwarded on `terrio::crs::SpatialRef`) describe a CRS as PROJ 9.8.1 reads it: the order of its
   first two axes (`AxisOrder::EastNorth`, `NorthEast`, `Other`, `Unknown`), the method and
   parameters of its PROJ string (`ProjParams`), and the celestial body it is on. `terrio crs CRS`,
   and so its MCP tool, prints them as `Axis order`, `Body` and `Method` lines. (#993)
-- `terrio-crs` 0.2.4 adds GeoTIFF GeoKeys (`from_geokeys`, `to_geokeys`), PROJ-string and strict WKT
-  1 export (`to_proj4`, `to_wkt1_strict`), `Transformer::inverse` and slice transforms, axis order,
-  projection parameter and celestial body accessors, `confine_grid_search_paths`, and Eckert IV and
-  Natural Earth in its default build. It fixes polar stereographic poles and variant C, the axes of
-  WKT projected CRSs, PROJ-string parameter values PROJ refuses, datum shifts of latitudes beyond
-  the poles, and grid reads from untrusted CRS definitions, and no longer turns on serde_json's
-  `preserve_order` for dependents' builds.
+- `terrio-crs` 0.2.4, on crates.io, carries the CRS features and fixes above; it removes nothing
+  from 0.2.3's API, and no longer turns on serde_json's `preserve_order` for dependents' builds.
 
 ### Performance
 
