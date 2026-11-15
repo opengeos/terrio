@@ -1141,7 +1141,10 @@ impl SpatialRef {
         }
         // The PROJ string (or a WKT's PROJ4 extension) over its WKT, which wbprojection reads
         // with fewer parameters.
-        if let Some(p) = self.proj4.clone().or_else(|| self.wkt.as_deref().and_then(proj4_extension))
+        // An extension only as terrio reads it: one it refuses (`+rf=0`) goes by its WKT, as
+        // before terrio read extensions as pipeline steps.
+        let extension = || self.wkt.as_deref().and_then(proj4_extension).filter(|p| Def::from_proj_extension(p).is_ok());
+        if let Some(p) = self.proj4.clone().or_else(extension)
             && let Ok(c) = wbp::from_proj_string(&mercator_lat_ts_as_k(&p))
         {
             return Ok(c);

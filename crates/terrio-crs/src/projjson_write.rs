@@ -164,6 +164,19 @@ fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
     }
     let p = Params::parse(&proj);
     refuse_misdescribed(&root, &p, &def)?;
+    // `+nadgrids=@null` beside a datum whose transformations to WGS 84 shift points (OSGB36):
+    // PROJ writes a bound CRS with the null grid, which terrio's reader does not take; written
+    // as the datum alone, it would be read back with them.
+    if p.has("nadgrids") && def.ops().iter().all(|op| op.is_null_shift()) && !def.ops().is_empty() {
+        let shifting = def
+            .datum_code()
+            .and_then(|d| p.str("datum").and_then(crate::def::datum_geog).filter(|_| d != 6326))
+            .and_then(epsg::get)
+            .is_some_and(|e| !e.ops.iter().all(|op| op.is_null_shift()));
+        if shifting {
+            return Err(unsupported("a datum given no shift by +nadgrids=@null (PROJ's bound CRS with the null grid)"));
+        }
+    }
     let name = root.name().unwrap_or("unknown").to_string();
     let code = s.epsg.or_else(|| crate::declared_epsg(wkt));
     // A datum shift the definition gives (`+towgs84`, WKT's TOWGS84) makes a bound CRS, as PROJ
@@ -493,7 +506,9 @@ fn on_sphere(p: &Params) -> bool {
 /// with a null standard parallel and a scale of 1.
 fn pseudo_mercator(p: &Params) -> bool {
     let k0 = p.f64("k_0").or_else(|| p.f64("k")).unwrap_or(1.0);
+    // `+R` wins over `+a`: a sphere of another radius is not Web Mercator's.
     p.str("proj") == Some("merc")
+        && !p.has("R")
         && on_sphere(p)
         && p.f64("a") == Some(6378137.0)
         && p.angle("lat_ts").map(f64::to_degrees).unwrap_or(0.0) == 0.0

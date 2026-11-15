@@ -487,12 +487,9 @@ step's own definition (no shift without NAD27's grids).
 
 The CRS still reports the ellipsoid of the first rules (`projection_params`, WKT); a WKT with
 an extension, its `SPHEROID`, as PROJ reports it, whatever the extension computes on.
-Earlier versions applied `+f`, `+es` and `+e` to a named ellipsoid, made spheres of
-`+datum=WGS84 +a=...`, took `+b` before `+f`, `+es` and `+e`, read a shape without a size on
-WGS 84, and ignored `+R_V` and the other flags but `+R_A` and `+R_C`. Points in such CRSs can
-move by kilometres. `tests/proj_ellipsoid_shape.rs` checks 484 strings, 27 WKT extensions
-and 9 extensions terrio writes against PROJ. Not covered: other parameters that PROJ's parser
-does not take, which also make it compute on the string as a step reads it.
+`tests/proj_ellipsoid_shape.rs` checks these rules against PROJ 9.8.1 on 484 strings, 27 WKT
+extensions and 9 extensions terrio writes. Not covered: other parameters that PROJ's parser does
+not take, which also make it compute on the string as a step reads it.
 
 ## Transformations
 

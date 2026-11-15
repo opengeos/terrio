@@ -385,3 +385,42 @@ fn an_extension_wkt_reports_and_writes_its_spheroid() {
     let params = SpatialRef::from_wkt(wkt).projection_params().unwrap();
     assert!((params.a - 6_378_137.0).abs() < 1e-6 && (params.b - 6_356_752.314_245_179).abs() < 1e-6, "{params:?}");
 }
+
+/// PROJJSON of a datum given no shift by `+nadgrids=@null`: refused where the datum's own
+/// transformations shift points (OSGB36), as PROJ writes a bound CRS with the null grid, which
+/// terrio's reader does not take, and the datum alone would be read back with them; written on
+/// WGS 84, whose own are null, and read back with no shift. GeoKeys do not describe either.
+#[test]
+fn projjson_of_a_null_grid_beside_a_datum_round_trips_or_is_refused() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let osgb = SpatialRef::parse("+proj=longlat +datum=OSGB36 +nadgrids=@null").unwrap();
+    assert!(osgb.to_projjson().is_err());
+    assert!(terrio_crs::geokeys::user_defined_keys(&osgb, "custom").is_none());
+    let wgs84 = SpatialRef::parse("+proj=longlat +datum=WGS84 +nadgrids=@null").unwrap();
+    let back = SpatialRef::from_projjson(&wgs84.to_projjson().unwrap()).unwrap();
+    let q = Transformer::new(&back, &SpatialRef::from_epsg(4326).unwrap()).unwrap().transform(-2.0, 52.0).unwrap();
+    assert!((q.0 + 2.0).abs() < 1e-9 && (q.1 - 52.0).abs() < 1e-9, "{q:?}");
+}
+
+/// `+R` wins over `+a`: Mercator on a 6400 km sphere is not Web Mercator, and beside a WGS 84
+/// `SPHEROID` its PROJJSON is refused, as PROJ 9.8.1 writes it as Mercator (variant A) on the
+/// sphere of `+R` for the PROJ string and on WGS 84 for the WKT.
+#[test]
+fn a_mercator_sphere_of_another_radius_is_not_web_mercator() {
+    let wkt = r#"PROJCS["x",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Mercator_1SP"],PARAMETER["central_meridian",0],PARAMETER["scale_factor",1],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1],EXTENSION["PROJ4","+proj=merc +R=6400000 +a=6378137 +units=m"]]"#;
+    assert!(SpatialRef::from_wkt(wkt).to_projjson().is_err());
+    let json = SpatialRef::parse("+proj=merc +R=6400000 +a=6378137").unwrap().to_projjson().unwrap();
+    assert!(!json.contains("Pseudo Mercator"), "{json}");
+}
+
+/// The projection engine's CRS of a WKT whose `PROJ4` extension terrio refuses (`+rf=0`) is
+/// that of its nodes, as before extensions were read as pipeline steps: not a CRS terrio cannot
+/// transform.
+#[cfg(feature = "wbprojection-fallback")]
+#[test]
+fn a_refused_extension_is_not_handed_to_the_projection_engine() {
+    let wkt = r#"PROJCS["x",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",-75],PARAMETER["scale_factor",1],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1],EXTENSION["PROJ4","+proj=tmerc +lon_0=10 +ellps=WGS84 +rf=0"]]"#;
+    let crs = SpatialRef::from_wkt(wkt).to_wbp().unwrap();
+    assert!((crs.projection.params().lon0 + 75.0).abs() < 1e-9, "{}", crs.projection.params().lon0);
+}
