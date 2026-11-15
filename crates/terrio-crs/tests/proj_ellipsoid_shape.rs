@@ -227,8 +227,9 @@ fn a_written_wkt_reads_back_as_its_proj_string() {
 
 /// A WKT's `PROJ4` extension is kept through the WKT (not as the CRS's PROJ string), and the
 /// writers that describe a PROJ string by PROJ's CRS rules (PROJJSON, GeoKeys) refuse one the
-/// pipeline step computes on otherwise: `+ellps=WGS84 +f=0` is a sphere there. One that places
-/// points alike both ways is described as before, as PROJ 9.8.1 writes PROJJSON for all of them
+/// pipeline step computes on otherwise: `+ellps=WGS84 +f=0` is a sphere there, and a datum
+/// shifted otherwise (by grids on either side, installed or not). One that places points alike
+/// both ways is described as before, as PROJ 9.8.1 writes PROJJSON for all of them
 /// (losing the sphere of the first).
 #[test]
 fn writers_describe_an_extension_only_as_it_is_computed_on() {
@@ -242,10 +243,17 @@ fn writers_describe_an_extension_only_as_it_is_computed_on() {
         ("+proj=tmerc +lon_0=-75 +ellps=clrk66 +a=6400000", false),
         ("+proj=tmerc +lon_0=-75 +datum=WGS84 +a=6400000", false),
         ("+proj=tmerc +lon_0=-75 +ellps=WGS84", true),
-        // NAD83, which the step takes as WGS 84 (a null shift on GRS 1980), and GRS 1980, the
-        // step's ellipsoid without one, which places points as the CRS rules' WGS 84 does.
-        ("+proj=tmerc +lon_0=-75 +datum=NAD83 +units=m +no_defs", true),
+        // GRS 1980, the step's ellipsoid without one, which places points as the CRS rules'
+        // WGS 84 does.
         ("+proj=tmerc +lon_0=-75 +units=m +no_defs", true),
+        // NAD83, which the step takes as WGS 84 (a null shift on GRS 1980), where PROJ's CRS rules
+        // have NAD83's transformations to WGS 84, by grids in places when they are installed.
+        ("+proj=tmerc +lon_0=-75 +datum=NAD83 +units=m +no_defs", false),
+        // A datum the CRS rules shift by its EPSG transformations (OSGB36's grid, OSTN15, or
+        // Helmert ones by area) and the step by `pj_datum_set`'s, or NAD27's grids: refused,
+        // whether or not the grids are installed and wherever the origin is.
+        ("+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 +datum=OSGB36 +units=m +no_defs", false),
+        ("+proj=tmerc +lon_0=-75 +datum=NAD27 +units=m +no_defs", false),
     ] {
         let crs = SpatialRef::from_wkt(&wkt(ext));
         assert_eq!(crs.proj4, None, "{ext}");

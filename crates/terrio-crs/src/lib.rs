@@ -1179,9 +1179,9 @@ pub fn wkt_proj(wkt: &str) -> Option<String> {
 
 /// Whether PROJ string `s`, as a WKT's PROJ4 extension (which PROJ computes on as a pipeline
 /// step), places points where PROJ's CRS rules for the string place them: the same conversion
-/// and figure (but for the round-off between WGS 84 and GRS 1980), and the same datum, or one
-/// that places a point near the projection's origin within 1 mm (`+datum=NAD83`, which the step
-/// takes as WGS 84). The writers that describe a PROJ string by those rules (PROJJSON, GeoKeys)
+/// and figure (but for the round-off between WGS 84 and GRS 1980), and the same datum, or
+/// Helmert shifts on both sides that place points around the projection's origin within 1 mm
+/// (`+datum=NAD83`, which the step takes as WGS 84). Not a grid shift on either side. The writers that describe a PROJ string by those rules (PROJJSON, GeoKeys)
 /// describe such an extension only, and the WKT writer writes the string itself so.
 pub(crate) fn extension_places_as_string(s: &str) -> bool {
     let (Ok(crs), Ok(step)) = (Def::from_proj(s), Def::from_proj_extension(s)) else { return false };
@@ -1190,6 +1190,14 @@ pub(crate) fn extension_places_as_string(s: &str) -> bool {
     }
     if crs.same_datum(&step) {
         return true;
+    }
+    // A grid shift on either side places points by grids that cover some places and may not be
+    // installed: not as the other, whatever a sample would give. Also where the datum has
+    // transformations by grids not installed, whose Helmert ones then stand in.
+    let registered_grids =
+        |d: &Def| d.geog().and_then(epsg::get).is_some_and(|e| e.grid_ops.iter().any(|op| op.needs_grids() && !op.ballpark));
+    if crs.ops().iter().chain(step.ops()).any(|op| op.needs_grids()) || registered_grids(&crs) || registered_grids(&step) {
+        return false;
     }
     // Each with a WKT of its own stored, so that comparing them does not write one (from the
     // PROJ string, which calls this).
@@ -1202,16 +1210,23 @@ pub(crate) fn extension_places_as_string(s: &str) -> bool {
         ..Default::default()
     };
     let Ok(wgs84) = SpatialRef::from_epsg(4326) else { return false };
-    let (lon, lat) = crs.params().map_or((0.0, 0.0), |p| (p.lon_0, p.lat_0));
-    let point = ((lon + 0.5 + 180.0).rem_euclid(360.0) - 180.0, (lat + 0.5).clamp(-89.0, 89.0));
-    let place = |to: &SpatialRef| Transformer::new(&wgs84, to).and_then(|t| t.transform(point.0, point.1)).ok();
-    match (place(&given), place(&extension)) {
-        (Some(a), Some(b)) => {
-            let scale = if crs.is_geographic() { 111_195.0 } else { 1.0 };
-            ((a.0 - b.0) * scale).hypot((a.1 - b.1) * scale) < 1e-3
+    let (Ok(to_given), Ok(to_extension)) = (Transformer::new(&wgs84, &given), Transformer::new(&wgs84, &extension)) else {
+        return false;
+    };
+    // Helmert shifts on both sides, compared around the origin (in Greenwich longitudes): on a
+    // 3 × 3 grid 5° apart and 4 points 15° away.
+    let (lon, lat) = crs.params().map_or((0.0, 0.0), |p| (p.lon_0 + p.prime_meridian, p.lat_0));
+    let scale = if crs.is_geographic() { 111_195.0 } else { 1.0 };
+    let offsets = [-5.0, 0.0, 5.0].into_iter().flat_map(|x| [-5.0, 0.0, 5.0].map(|y| (x, y)));
+    offsets.chain([(-15.0, 0.0), (15.0, 0.0), (0.0, -15.0), (0.0, 15.0)]).all(|(dx, dy)| {
+        let point = ((lon + dx + 180.0).rem_euclid(360.0) - 180.0, (lat + dy).clamp(-89.0, 89.0));
+        match (to_given.transform(point.0, point.1), to_extension.transform(point.0, point.1)) {
+            (Ok(a), Ok(b)) => ((a.0 - b.0) * scale).hypot((a.1 - b.1) * scale) < 1e-3,
+            // Outside the projection's domain on both sides.
+            (Err(_), Err(_)) => true,
+            _ => false,
         }
-        _ => false,
-    }
+    })
 }
 
 /// Whether a WKT 1 has a root `EXTENSION["PROJ4", ...]`, which PROJ and terrio compute on in place
