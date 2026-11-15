@@ -258,8 +258,9 @@ pub(super) fn reduce_medoid(
     by_row.sort_by_key(|&z| zones[z].row_start);
     let (mut next, mut open) = (0, Vec::new());
     let mut cursor = vec![0usize; zones.len()];
-    // Each zone's valid pixels: n values per pixel, row-major.
+    // Each zone's valid pixels: n values per pixel, row-major. Released once the zone is summarized.
     let mut pixels: Vec<Vec<f64>> = vec![Vec::new(); zones.len()];
+    let mut out = vec![vec![vec![FieldValue::Null; features]; n]; metrics.len()];
     for window in strip_windows(index, strip_rows.max(1)) {
         let (r0, r1, c0) = (window.y, window.y + window.height, window.x);
         let strip = Strip::read(raster, window, &read)?;
@@ -288,23 +289,30 @@ pub(super) fn reduce_medoid(
                 cursor[z] += 1;
             }
         }
-        open.retain(|&z| zones[z].row_end > r1);
+        // Zones whose last row is in this strip are summarized: all their pixels have been read.
+        let (closed, still_open): (Vec<usize>, Vec<usize>) = std::mem::take(&mut open).into_iter().partition(|&z| zones[z].row_end <= r1);
+        open = still_open;
+        for z in closed {
+            summarize_medoid(&zones[z], &mut pixels[z], n, metrics, &mut out);
+        }
     }
-    Ok(metrics
-        .iter()
-        .map(|&metric| {
-            let mut per_band = vec![vec![FieldValue::Null; features]; n];
-            for (z, zone) in zones.iter().enumerate() {
-                let values = &pixels[z];
-                if let Some(at) = medoid(values, n, metric) {
-                    for (b, band) in per_band.iter_mut().enumerate() {
-                        band[zone.feature] = FieldValue::Float(values[at * n + b]);
-                    }
-                }
+    for z in std::mem::take(&mut open) {
+        summarize_medoid(&zones[z], &mut pixels[z], n, metrics, &mut out);
+    }
+    Ok(out)
+}
+
+/// Writes the medoid of a zone's `pixels` (`n` values each) under each metric into `out`
+/// (`[metric][band][feature]`), then releases the pixels.
+fn summarize_medoid(zone: &Zone, pixels: &mut Vec<f64>, n: usize, metrics: &[MedoidMetric], out: &mut [Vec<Vec<FieldValue>>]) {
+    for (m, &metric) in metrics.iter().enumerate() {
+        if let Some(at) = medoid(pixels, n, metric) {
+            for (b, band) in out[m].iter_mut().enumerate() {
+                band[zone.feature] = FieldValue::Float(pixels[at * n + b]);
             }
-            per_band
-        })
-        .collect())
+        }
+    }
+    *pixels = Vec::new();
 }
 
 /// A reduction fed strip by strip in increasing rows: a zone opens at the strip holding its first

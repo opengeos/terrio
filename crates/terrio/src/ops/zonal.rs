@@ -59,7 +59,7 @@ pub enum Statistic {
     Minority,
     /// Number of distinct values, an Integer; 0 when no valid pixels contribute.
     Variety,
-    /// Each band's value at the medoid pixel: the valid pixel, valid in every band of its source,
+    /// Each band's value at the medoid pixel: the valid pixel, valid in every selected band of its source,
     /// whose band vector is most central under the metric (smallest sum of distances to the other
     /// valid pixels of the zone; ties take the first in row-major order). Needs [`zonal_stats`],
     /// and binary coverage. Holds every valid pixel of a zone until it is summarized.
@@ -72,7 +72,8 @@ pub enum MedoidMetric {
     /// Euclidean distance over the band values, unscaled: bands with larger values weigh more.
     Euclidean,
     /// Spectral angle in radians (the arccos of the cosine between the vectors), which ignores
-    /// brightness. Pixels whose vector is all zeros have no angle, so they are never the medoid.
+    /// brightness. Pixels whose vector is all zeros have no angle: they are left out of the sums
+    /// and are never the medoid.
     SpectralAngle,
 }
 

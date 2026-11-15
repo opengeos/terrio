@@ -5,19 +5,38 @@ use super::MedoidMetric;
 
 /// Index of the medoid among the pixels of `values`, which holds `dim` band values per pixel, in
 /// row-major order. `None` when no pixel can be the medoid (none, or only zero vectors under the
-/// spectral angle). Ties take the earlier pixel. Costs O(n² · dim) for n pixels.
+/// spectral angle). Zero vectors under the spectral angle are left out of the sums too, since
+/// their angle is undefined. Ties take the earlier pixel. Costs O(n² · dim) for n pixels.
 pub(crate) fn medoid(values: &[f64], dim: usize, metric: MedoidMetric) -> Option<usize> {
     let n = values.len().checked_div(dim).unwrap_or(0);
-    let pixel = |i: usize| &values[i * dim..(i + 1) * dim];
+    let max_abs = |xs: &[f64]| xs.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+    // Rescaled copies, so squares and norms neither overflow nor underflow. Euclidean distances
+    // share one factor for the zone, which leaves the medoid unchanged; spectral angles ignore a
+    // pixel's length, so each pixel is scaled alone.
+    let (rows, usable): (Vec<f64>, Vec<bool>) = match metric {
+        MedoidMetric::Euclidean => {
+            let zone = max_abs(values);
+            let scale = if zone > 0.0 { zone } else { 1.0 };
+            (values.iter().map(|x| x / scale).collect(), vec![true; n])
+        }
+        MedoidMetric::SpectralAngle => {
+            let mut rows = Vec::with_capacity(values.len());
+            let mut usable = Vec::with_capacity(n);
+            for pixel in values.chunks_exact(dim) {
+                let m = max_abs(pixel);
+                usable.push(m > 0.0);
+                rows.extend(pixel.iter().map(|x| if m > 0.0 { x / m } else { 0.0 }));
+            }
+            (rows, usable)
+        }
+    };
+    let pixel = |i: usize| &rows[i * dim..(i + 1) * dim];
     let dot = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
     let norms: Vec<f64> = match metric {
         MedoidMetric::Euclidean => Vec::new(),
         MedoidMetric::SpectralAngle => (0..n).map(|i| dot(pixel(i), pixel(i)).sqrt()).collect(),
     };
-    let candidates: Vec<usize> = match metric {
-        MedoidMetric::Euclidean => (0..n).collect(),
-        MedoidMetric::SpectralAngle => (0..n).filter(|&i| norms[i] > 0.0).collect(),
-    };
+    let candidates: Vec<usize> = (0..n).filter(|&i| usable[i]).collect();
     let mut sums = vec![0.0f64; n];
     for (k, &i) in candidates.iter().enumerate() {
         for &j in &candidates[k + 1..] {
@@ -52,5 +71,20 @@ mod tests {
         // is far from both. The zero vector has no angle and is never the medoid.
         assert_eq!(medoid(&[1.0, 1.0, 0.0, 0.0, 2.0, 2.0, 0.0, 5.0], 2, SpectralAngle), Some(0));
         assert_eq!(medoid(&[0.0, 0.0], 2, SpectralAngle), None);
+    }
+
+    #[test]
+    fn euclidean_is_range_safe() {
+        // Squaring 1e200 overflows, and 1e-200 underflows: the middle value is the medoid at both.
+        assert_eq!(medoid(&[0., 1e200, 2e200], 1, Euclidean), Some(1));
+        assert_eq!(medoid(&[0., 1e-200, 2e-200], 1, Euclidean), Some(1));
+    }
+
+    #[test]
+    fn spectral_angle_is_range_safe() {
+        // (1e200, 0) and (2e200, 0) point the same way, so the first pixel, orthogonal to both,
+        // has the largest sum and the medoid is the first of the parallel pair.
+        assert_eq!(medoid(&[0., 1e200, 1e200, 0., 2e200, 0.], 2, SpectralAngle), Some(1));
+        assert_eq!(medoid(&[0., 1e-200, 1e-200, 0., 2e-200, 0.], 2, SpectralAngle), Some(1));
     }
 }

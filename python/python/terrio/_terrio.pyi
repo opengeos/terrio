@@ -2718,8 +2718,9 @@ class ZonalReducer:
 
     Results equal ``zonal_stats`` over a raster holding the same values. The zones are
     computed once for the grid; each ``stream()`` then reduces one band, fed the
-    ``windows()`` in order. ``stats`` are those of ``zonal_stats`` except the weighted ones;
-    ``t_srs`` and ``decimal_places`` are not supported (the results are unrounded arrays).
+    ``windows()`` in order. ``stats`` are those of ``zonal_stats`` except the weighted and the
+    medoid ones, which need ``zonal_stats`` (they read every band at once); ``t_srs`` and
+    ``decimal_places`` are not supported (the results are unrounded arrays).
     """
 
     def __new__(
