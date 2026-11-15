@@ -331,3 +331,12 @@ def test_serialized_vrt_requires_the_configured_grid_policy(
         terrio.open_raster(str(materialized)).read(1),
         terrio.warp(str(source), grid_invariant=not policy, **options).read(1),
     )
+
+
+def test_unknown_warp_grid_value_warns_and_uses_stable(monkeypatch):
+    """An unrecognized TERRIO_WARP_GRID value reaches the caller as a warning (#1037)."""
+    raster = terrio.Raster.from_array(np.zeros((8, 8)), (0, 1, 0, 8, 0, -1), crs="EPSG:32633")
+    options = dict(t_srs="EPSG:3857", tr=(38.0, 38.0))
+    monkeypatch.setenv("TERRIO_WARP_GRID", "GDA")
+    with pytest.warns(UserWarning, match="TERRIO_WARP_GRID=GDA is not GDAL or STABLE"):
+        terrio.warp(raster, **options)

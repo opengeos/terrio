@@ -213,11 +213,11 @@ pub(crate) fn invalid(message: impl Into<String>) -> PyErr {
 }
 
 /// Runs `f` without the GIL and issues the warnings it records (see `terrio::warnings`) as Python
-/// `UserWarning`s, whether it succeeds or fails. Warnings left by earlier calls are dropped first,
-/// so none is attributed to this call; `f`'s own error is preferred to a warning turned into one.
+/// `UserWarning`s, whether it succeeds or fails. Warnings recorded before the call, while its
+/// arguments were prepared (such as the options' `TERRIO_WARP_GRID` check), are issued with it
+/// rather than dropped. `f`'s own error is preferred to a warning turned into one.
 /// If shutdown has disabled imports, best-effort C warning emission must not discard the result.
 pub(crate) fn with_warnings<T: Send>(py: Python<'_>, f: impl FnOnce() -> terrio::Result<T> + Send) -> PyResult<T> {
-    let _ = terrio::warnings::take();
     let result = py.detach_result(f).py();
     let mut warned = Ok(());
     for w in terrio::warnings::take() {

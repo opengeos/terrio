@@ -1699,7 +1699,7 @@ fn warp(
             _ => return Err(invalid("serialized warped VRT output needs a single source path")),
         };
         let options = crate::raster::write_options_with_creation(format, compress, tile_size, bigtiff, creation_options)?;
-        py.detach_result(|| terrio::ops::warp::warp_to_path(&[source], &o, path, &options)).py()?;
+        crate::with_warnings(py, || terrio::ops::warp::warp_to_path(&[source], &o, path, &options))?;
         return Ok(PyRaster { inner: py.detach_result(|| terrio::open_raster_lazy(path)).py()? });
     }
     let first_path = match &args[0] {
