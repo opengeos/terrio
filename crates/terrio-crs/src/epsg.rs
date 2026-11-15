@@ -522,10 +522,16 @@ pub(crate) fn crs_named_as_proj(name: &str, projected: bool, three_d: bool, esri
     };
     match found {
         Some(&code) => (code != 0).then_some(code),
-        None => match officially_named().get(&(kind_of(projected, three_d), name.to_ascii_lowercase())).map(Vec::as_slice) {
-            Some(&[code]) => Some(code),
-            _ => None,
-        },
+        // PROJ drops the deprecated CRSs after current ones (RRAF 1991: EPSG:4557, not 4973).
+        None => {
+            let codes = officially_named().get(&(kind_of(projected, three_d), name.to_ascii_lowercase()))?;
+            let current: Vec<u32> = codes.iter().filter(|c| c.1).map(|c| c.0).collect();
+            match (&current[..], &codes[..]) {
+                ([code], _) => Some(*code),
+                ([], [(code, _)]) => Some(*code),
+                _ => None,
+            }
+        }
     }
 }
 
@@ -538,16 +544,20 @@ fn kind_of(projected: bool, three_d: bool) -> u8 {
     }
 }
 
+/// EPSG codes by kind and name, with whether each is current.
+type NameIndex = HashMap<(u8, String), Vec<(u32, bool)>>;
+
 /// The EPSG geographic and projected CRSs of the table by kind ([`kind_of`]) and official name,
-/// its ASCII letters in lowercase.
-fn officially_named() -> &'static HashMap<(u8, String), Vec<u32>> {
-    static INDEX: OnceLock<HashMap<(u8, String), Vec<u32>>> = OnceLock::new();
+/// its ASCII letters in lowercase, with whether each is current (a deprecated code has its
+/// replacement's WKT).
+fn officially_named() -> &'static NameIndex {
+    static INDEX: OnceLock<NameIndex> = OnceLock::new();
     INDEX.get_or_init(|| {
         let t = table();
-        let mut index = HashMap::<(u8, String), Vec<u32>>::new();
+        let mut index = NameIndex::new();
         for (code, l) in &t.crs {
             let f: Vec<&str> = t.text[l.line.0 as usize..l.line.1 as usize].splitn(9, '\t').collect();
-            let [name, _, _, _, _, flags, _, proj, ..] = f[..] else { continue };
+            let [name, _, _, _, _, flags, _, proj, wkt] = f[..] else { continue };
             let kind = if proj.starts_with("+proj=longlat") {
                 kind_of(false, flags.contains('3'))
             } else if proj.starts_with("+proj=geocent") {
@@ -555,7 +565,9 @@ fn officially_named() -> &'static HashMap<(u8, String), Vec<u32>> {
             } else {
                 b'p'
             };
-            index.entry((kind, name.to_ascii_lowercase())).or_default().push(*code);
+            // Its own ID in its WKT (one of WKT 2 ends with its usage and remarks).
+            let current = wkt.contains(&format!("ID[\"EPSG\",{code}]")) || wkt.contains(&format!("AUTHORITY[\"EPSG\",\"{code}\"]"));
+            index.entry((kind, name.to_ascii_lowercase())).or_default().push((*code, current));
         }
         index
     })

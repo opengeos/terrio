@@ -1782,6 +1782,10 @@ mod resolution_tests {
         // A name PROJ finds among several CRSs.
         assert_eq!(named("DHDN", false, false), Some(4314));
         assert_eq!(named("ETRF2000", false, false), Some(9067));
+        // Geographic 3D CRSs of one name, one of them deprecated: the current one.
+        for (name, current) in [("RRAF 1991", 4557), ("IGD05", 7135), ("IGD05/12", 7138)] {
+            assert_eq!(named(name, false, true), Some(current), "{name}");
+        }
         // A geographic 3D WKT of its official name and axes is resolved; renamed, it is not.
         let deg = r#"ANGLEUNIT["degree",0.0174532925199433]"#;
         let wgs84_3d = format!(
