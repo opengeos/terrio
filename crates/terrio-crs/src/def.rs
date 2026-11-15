@@ -1308,11 +1308,11 @@ impl Def {
     /// Records whether PROJ resolves the CRS of WKT `w` (read as EPSG `code`, if any) and the area
     /// it then uses: that of the CRS it finds by the WKT's name, even one that differs, else none.
     /// A CRS whose datum is renamed keeps the code's area, as PROJ's way through its ballpark is
-    /// not followed yet: routes with it are those of the code. Remembered for the last WKTs seen (up
-    /// to 1 MiB of them), as `Def::new` runs for many accessors.
+    /// not followed yet: routes with it are those of the code. Remembered by WKT, as `Def::new`
+    /// runs for many accessors, up to 1 MiB of WKT text: then all is forgotten, and the cache fills
+    /// again.
     fn record_proj_resolution(&mut self, w: &str, code: Option<u32>) {
-        // By code, then by WKT (looked up without allocating).
-        // With the bytes of WKT text held.
+        // By code, then by WKT (looked up without allocating), with the bytes of WKT text held.
         type Seen = (std::collections::HashMap<Option<u32>, std::collections::HashMap<String, Option<Resolution>>>, usize);
         static SEEN: std::sync::Mutex<Option<Seen>> = std::sync::Mutex::new(None);
         let known = SEEN.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|s| s.0.get(&code)?.get(w).copied());
