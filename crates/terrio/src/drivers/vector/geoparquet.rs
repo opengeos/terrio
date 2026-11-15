@@ -41,6 +41,11 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer, Ring};
 
+#[path = "geoparquet_predicate.rs"]
+mod predicate;
+
+type ReadColumns = Box<dyn Fn(usize, ProjectionMask) -> Result<Vec<RecordBatch>> + Send>;
+
 /// An attribute column: the path from a top-level column through struct members.
 #[derive(Clone)]
 pub(crate) struct Column {
@@ -50,8 +55,8 @@ pub(crate) struct Column {
 
 /// Reads a GeoParquet file, skipping the features whose bounding box is outside `bbox`
 /// `(min_x, min_y, max_x, max_y)`: whole row groups by the statistics of the bounding-box
-/// covering column, then rows by its values (or by their geometries without one). Feature ids
-/// stay the row numbers in the file, as in GDAL.
+/// covering column or native geometry bounds, then rows by covering values (or by their
+/// geometries without one). Feature ids stay the row numbers in the file, as in GDAL.
 pub fn read_filtered(path: &str, bbox: Option<(f64, f64, f64, f64)>) -> Result<Layer> {
     let name = std::path::Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
     parse_source(|| open_file(path), name, None, bbox, None)
@@ -161,7 +166,7 @@ pub struct RowGroupInfo {
     /// The row number (feature id) of its first row.
     pub first_row: u64,
     /// The bounding box `[min_x, min_y, max_x, max_y]` of its geometries, from the statistics of
-    /// the bounding-box covering column, when the file has them.
+    /// the bounding-box covering column or native geometry bounds, when the file has them.
     pub bbox: Option<[f64; 4]>,
     /// The size in bytes of its column chunks.
     pub bytes: u64,
@@ -206,9 +211,14 @@ pub(super) fn covering_leaves(meta: &parquet::file::metadata::ParquetMetaData, g
 }
 
 /// The bounding box `[min_x, min_y, max_x, max_y]` of each row group, from the statistics of the
-/// covering column's `leaves`, when it has them.
+/// covering column's `leaves`, or native geospatial statistics on the primary geometry column.
+/// Missing, non-finite and wrapped bounds cannot justify pruning and return `None`.
 pub(super) fn group_bboxes(meta: &parquet::file::metadata::ParquetMetaData, leaves: Option<[usize; 4]>) -> Vec<Option<[f64; 4]>> {
     use parquet::file::statistics::Statistics as S;
+    let geo = file_geo(meta);
+    let primary = geo["primary_column"].as_str().unwrap_or("geometry");
+    let descr = meta.file_metadata().schema_descr();
+    let geometry = (0..descr.num_columns()).find(|&i| descr.column(i).path().parts() == [primary]);
     meta.row_groups()
         .iter()
         .map(|rg| {
@@ -219,7 +229,13 @@ pub(super) fn group_bboxes(meta: &parquet::file::metadata::ParquetMetaData, leav
                     _ => None,
                 }
             };
-            leaves.and_then(|l| Some([stat(l[0], false)?, stat(l[1], false)?, stat(l[2], true)?, stat(l[3], true)?]))
+            let covering = leaves.and_then(|l| Some([stat(l[0], false)?, stat(l[1], false)?, stat(l[2], true)?, stat(l[3], true)?]));
+            covering
+                .or_else(|| {
+                    let bbox = rg.column(geometry?).geo_statistics()?.bounding_box()?;
+                    Some([bbox.get_xmin(), bbox.get_ymin(), bbox.get_xmax(), bbox.get_ymax()])
+                })
+                .filter(|b| b.iter().all(|v| v.is_finite()) && b[0] <= b[2] && b[1] <= b[3])
         })
         .collect()
 }
@@ -311,6 +327,8 @@ pub(crate) struct ParquetStream {
     /// top-level columns a decoded batch holds, in order, when not all.
     mask: Arc<std::sync::Mutex<ProjectionMask>>,
     roots: Option<Vec<usize>>,
+    file_schema: Arc<Schema>,
+    read_columns: ReadColumns,
 }
 
 impl ParquetStream {
@@ -417,6 +435,13 @@ impl ParquetStream {
         let (file_schema, batch_size) = (schema.clone(), batch_size.max(1));
         let (window_meta, mask) = (meta.clone(), Arc::new(std::sync::Mutex::new(ProjectionMask::all())));
         let decode_mask = mask.clone();
+        let (filter_input, filter_meta, filter_schema) = (input.clone(), meta.clone(), file_schema.clone());
+        let read_columns: ReadColumns = Box::new(move |g, mask| {
+            geoparquet_zstd::reader(filter_input.clone(), &filter_meta, &filter_schema, mask, vec![g], None, batch_size)
+                .map_err(|e| perr(&e))?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| perr(&e))
+        });
         let decode: DecodeGroup = Box::new(move |g, selection| {
             let mask = decode_mask.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
             let reader = if geoparquet_zstd::has_zstd(&meta, &[g], &mask) {
@@ -446,7 +471,20 @@ impl ParquetStream {
                 types.iter().filter_map(Value::as_str).map(|t| t.trim_end_matches(" Z").trim_end_matches(" M")).collect();
             layer.geom_type = declared_type(&types);
         }
-        let mut stream = Self { layer, windows, columns: fields, geom_index, encoding, fids, fid: 0, meta: window_meta, mask, roots: None };
+        let mut stream = Self {
+            layer,
+            windows,
+            columns: fields,
+            geom_index,
+            encoding,
+            fids,
+            fid: 0,
+            meta: window_meta,
+            mask,
+            roots: None,
+            file_schema: schema,
+            read_columns,
+        };
         if let Some(names) = columns {
             stream.select_columns(&crate::stream::field_indices(&stream.layer.schema, names)?)?;
         }
@@ -565,7 +603,6 @@ fn select_rows<T: parquet::file::reader::ChunkReader + 'static>(
     prefetch: Prefetch<'_>,
 ) -> Result<(Vec<usize>, parquet::arrow::arrow_reader::RowSelection, Vec<u64>)> {
     use parquet::arrow::arrow_reader::{RowSelection, RowSelector};
-    use parquet::file::statistics::Statistics as S;
     let err = |e: &dyn std::fmt::Display| Error::InvalidData(format!("Parquet: {e}"));
     let meta = builder.metadata().clone();
     let descr = meta.file_metadata().schema_descr();
@@ -577,25 +614,14 @@ fn select_rows<T: parquet::file::reader::ChunkReader + 'static>(
         (0..descr.num_columns()).find(|&i| descr.column(i).path().parts() == path)
     };
     let leaves: Option<[usize; 4]> = covering.and_then(|cov| Some([leaf(cov[0])?, leaf(cov[1])?, leaf(cov[2])?, leaf(cov[3])?]));
-    let stat = |rg: usize, leaf: usize, max: bool| -> Option<f64> {
-        match meta.row_group(rg).column(leaf).statistics()? {
-            S::Double(s) => if max { s.max_opt() } else { s.min_opt() }.copied(),
-            S::Float(s) => if max { s.max_opt() } else { s.min_opt() }.map(|v| *v as f64),
-            _ => None,
-        }
-    };
+    let bboxes = group_bboxes(&meta, leaves);
     let (fxmin, fymin, fxmax, fymax) = rect;
     let mut groups = Vec::new();
     let mut first_rows = Vec::new();
     let mut start = 0u64;
-    for rg in 0..meta.num_row_groups() {
+    for (rg, bbox) in bboxes.iter().enumerate() {
         let n = meta.row_group(rg).num_rows() as u64;
-        let outside = leaves.is_some_and(|l| {
-            stat(rg, l[0], false).is_some_and(|v| v > fxmax)
-                || stat(rg, l[1], false).is_some_and(|v| v > fymax)
-                || stat(rg, l[2], true).is_some_and(|v| v < fxmin)
-                || stat(rg, l[3], true).is_some_and(|v| v < fymin)
-        });
+        let outside = bbox.is_some_and(|b| b[0] > fxmax || b[1] > fymax || b[2] < fxmin || b[3] < fymin);
         if !outside && allowed.binary_search(&rg).is_ok() {
             groups.push(rg);
             first_rows.push(start);
@@ -1313,6 +1339,266 @@ impl Kind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attribute_selection_preserves_fids_spatial_selection_and_sql_semantics() {
+        use crate::ops::sql::Expression;
+        let mut layer = Layer::new("t");
+        layer.add_field(FieldDef::new("number", FieldType::Integer));
+        layer.add_field(FieldDef::new("text", FieldType::Text));
+        for i in 0..30 {
+            layer.push(Feature {
+                fid: i,
+                geometry: Some(Geometry::point(i as f64, 0.0)),
+                attributes: vec![
+                    FieldValue::Integer(i as i64),
+                    if i % 7 == 0 { FieldValue::Null } else { FieldValue::Text(if i % 2 == 0 { "Hello" } else { "WORLD" }.into()) },
+                ],
+            });
+        }
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let path = file.path().to_str().unwrap();
+        write(&layer, path).unwrap();
+        for bbox in [None, Some((5.0, -1.0, 25.0, 1.0))] {
+            let base = read_filtered(path, bbox).unwrap();
+            for text in [
+                "number = 13",
+                "10 < number AND number <= 20",
+                "number BETWEEN 10 AND 20",
+                "number > 50",
+                "text = 'hello'",
+                "text IS NULL",
+                "text LIKE 'W%' OR number % 3 = 0",
+                "NOT (number > 12)",
+                "FID BETWEEN 10 AND 20",
+                "number = '13'",
+                "number >= -2",
+            ] {
+                let expression = Expression::parse(text).unwrap();
+                let predicate = expression.bind(&base.schema).unwrap();
+                let expected = base.features.iter().filter(|f| predicate.matches(f)).collect::<Vec<_>>();
+                let mut stream = ParquetStream::open(|| open_file(path), "t", None, bbox, 4, None, None).unwrap();
+                stream.filter_attributes(&expression).unwrap();
+                stream.select_columns(&[0]).unwrap();
+                let got = stream.read_all().unwrap();
+                assert_eq!(
+                    got.features.iter().map(|f| f.fid).collect::<Vec<_>>(),
+                    expected.iter().map(|f| f.fid).collect::<Vec<_>>(),
+                    "{text}, {bbox:?}"
+                );
+                for (a, b) in got.features.iter().zip(expected) {
+                    assert_eq!(a.geometry, b.geometry);
+                    assert_eq!(a.attributes, b.attributes[..1]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn native_geometry_statistics_supply_group_bounds() {
+        use parquet::geospatial::{bounding_box::BoundingBox, statistics::GeospatialStatistics};
+        let schema = Arc::new(Schema::new(vec![Field::new("geometry", DataType::Binary, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(arrow_array::BinaryArray::from_iter_values([Geometry::point(12.0, 44.0).to_wkb()]))],
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        let mut writer = ArrowWriter::try_new(&mut bytes, schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        let builder = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(bytes)).unwrap();
+        let meta = builder.metadata().as_ref().clone();
+        let column = meta
+            .row_group(0)
+            .column(0)
+            .clone()
+            .into_builder()
+            .set_geo_statistics(Box::new(GeospatialStatistics::new(Some(BoundingBox::new(12.0, 13.0, 44.0, 45.0)), None)))
+            .build()
+            .unwrap();
+        let group = meta.row_group(0).clone().into_builder().set_column_metadata(vec![column]).build().unwrap();
+        let meta = meta.into_builder().set_row_groups(vec![group]).build();
+        assert_eq!(group_bboxes(&meta, None), vec![Some([12.0, 44.0, 13.0, 45.0])]);
+        for bbox in [BoundingBox::new(170.0, -170.0, -10.0, 10.0), BoundingBox::new(f64::NAN, 13.0, 44.0, 45.0)] {
+            let column = meta
+                .row_group(0)
+                .column(0)
+                .clone()
+                .into_builder()
+                .set_geo_statistics(Box::new(GeospatialStatistics::new(Some(bbox), None)))
+                .build()
+                .unwrap();
+            let group = meta.row_group(0).clone().into_builder().set_column_metadata(vec![column]).build().unwrap();
+            let invalid = meta.clone().into_builder().set_row_groups(vec![group]).build();
+            assert_eq!(group_bboxes(&invalid, None), vec![None], "unusable bounds cannot exclude rows");
+        }
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn native_spatial_statistics_prune_remote_feature_and_arrow_reads() {
+        use arrow_array::{BinaryArray, StringArray};
+        use parquet::arrow::arrow_writer::ArrowWriterOptions;
+        use parquet::file::metadata::ParquetMetaDataWriter;
+        use parquet::geospatial::{bounding_box::BoundingBox, statistics::GeospatialStatistics};
+        use parquet::schema::{parser::parse_message_type, types::SchemaDescriptor};
+        for logical in ["GEOMETRY", "GEOGRAPHY"] {
+            let schema =
+                Arc::new(Schema::new(vec![Field::new("payload", DataType::Utf8, false), Field::new("geometry", DataType::Binary, false)]));
+            let parquet_schema = SchemaDescriptor::new(Arc::new(
+                parse_message_type(&format!(
+                    "message schema {{ REQUIRED BINARY payload (STRING); REQUIRED BINARY geometry ({logical}); }}"
+                ))
+                .unwrap(),
+            ));
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(StringArray::from_iter_values((0..6000).map(|i| format!("{i:0>300}")))),
+                    Arc::new(BinaryArray::from_iter_values((0..6000).map(|i| Geometry::point(i as f64 / 100.0, 0.0).to_wkb()))),
+                ],
+            )
+            .unwrap();
+            let geo = json!({"version":"2.0.0", "primary_column":"geometry", "columns":{"geometry":{"encoding":"WKB", "geometry_types":["Point"]}}});
+            let props = WriterProperties::builder()
+                .set_dictionary_enabled(false)
+                .set_max_row_group_row_count(Some(500))
+                .set_key_value_metadata(Some(vec![parquet::file::metadata::KeyValue::new("geo".into(), geo.to_string())]))
+                .build();
+            let options = ArrowWriterOptions::new().with_properties(props).with_parquet_schema(parquet_schema);
+            let mut bytes = Vec::new();
+            let mut writer = ArrowWriter::try_new_with_options(&mut bytes, schema, options).unwrap();
+            writer.write(&batch).unwrap();
+            writer.close().unwrap();
+            let meta = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(bytes.clone())).unwrap().metadata().as_ref().clone();
+            let groups = meta
+                .row_groups()
+                .iter()
+                .enumerate()
+                .map(|(g, group)| {
+                    let mut columns = group.columns().to_vec();
+                    columns[1] = columns[1]
+                        .clone()
+                        .into_builder()
+                        .set_geo_statistics(Box::new(GeospatialStatistics::new(
+                            Some(BoundingBox::new(g as f64 * 5.0, g as f64 * 5.0 + 4.99, 0.0, 0.0)),
+                            None,
+                        )))
+                        .build()
+                        .unwrap();
+                    group.clone().into_builder().set_column_metadata(columns).build().unwrap()
+                })
+                .collect();
+            let meta = meta.into_builder().set_row_groups(groups).build();
+            // Append an independently supplied statistics footer. Data offsets remain unchanged.
+            ParquetMetaDataWriter::new(&mut bytes, &meta).finish().unwrap();
+            let size = bytes.len();
+            let (base, seen) = crate::http::test_server(bytes);
+            crate::config::with_options(&[("TERRIO_HTTP_BLOCK_SIZE", "4096")], || {
+                let bbox = Some((12.00, -1.0, 12.02, 1.0));
+                let layer = crate::open_vector(
+                    &format!("{base}/features.parquet"),
+                    &crate::VectorOpenOptions { spatial_filter: bbox, ..Default::default() },
+                )
+                .unwrap()
+                .layers
+                .remove(0);
+                assert_eq!(layer.features.iter().map(|f| f.fid).collect::<Vec<_>>(), [1200, 1201, 1202]);
+                assert_eq!(layer.features[0].geometry, Some(Geometry::point(12.0, 0.0)));
+                let options = crate::arrow::GeoParquetReadOptions { bbox, columns: Some(vec!["payload".into()]), ..Default::default() };
+                let batches = crate::arrow::open_geoparquet(&format!("{base}/arrow.parquet"), &options)
+                    .unwrap()
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .unwrap();
+                assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 3);
+                assert_eq!(batches[0].column(0).as_any().downcast_ref::<StringArray>().unwrap().value(0), format!("{:0>300}", 1200));
+            });
+            let seen = seen.lock().unwrap();
+            let fetched: usize = seen
+                .iter()
+                .map(|r| {
+                    let (a, b) = r.as_deref().unwrap().strip_prefix("bytes=").unwrap().split_once('-').unwrap();
+                    b.parse::<usize>().unwrap().min(size - 1) - a.parse::<usize>().unwrap() + 1
+                })
+                .sum();
+            assert!(fetched * 3 < size, "{logical}: fetched {fetched} of {size}: {seen:?}");
+        }
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn attribute_conversion_prunes_remote_groups_and_payloads() {
+        use arrow_array::StringArray;
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("foglio", DataType::Utf8, false),
+            Field::new("particella", DataType::Utf8, false),
+            Field::new("payload", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from_iter_values((0..8000).map(|i| format!("{:04}", i / 500)))),
+                Arc::new(StringArray::from_iter_values((0..8000).map(|i| format!("{:04}", i % 500)))),
+                Arc::new(StringArray::from_iter_values((0..8000).map(|i| format!("{i:0>300}")))),
+            ],
+        )
+        .unwrap();
+        let props = WriterProperties::builder().set_dictionary_enabled(false).set_max_row_group_row_count(Some(500)).build();
+        let mut bytes = Vec::new();
+        let mut writer = ArrowWriter::try_new(&mut bytes, schema, Some(props)).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        let size = bytes.len();
+        let (base, seen) = crate::http::test_server(bytes);
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("result.csv");
+        let options = crate::stream::ConvertOptions {
+            translate: crate::ops::vector_filter::VectorTranslateOptions {
+                where_clause: Some("foglio = '0007' AND particella BETWEEN '0010' AND '0012'".into()),
+                select: Some(vec!["payload".into()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        crate::config::with_options(&[("TERRIO_HTTP_BLOCK_SIZE", "4096")], || {
+            crate::stream::convert(&format!("{base}/index.parquet"), output.to_str().unwrap(), &options).unwrap();
+        });
+        let output = std::fs::read_to_string(output).unwrap();
+        for i in 3510..=3512 {
+            assert!(output.contains(&format!("{i:0>300}")));
+        }
+        assert_eq!(output.lines().count(), 4);
+        let requests = seen.lock().unwrap();
+        let fetched: usize = requests
+            .iter()
+            .map(|r| {
+                let (a, b) = r.as_deref().unwrap().strip_prefix("bytes=").unwrap().split_once('-').unwrap();
+                b.parse::<usize>().unwrap().min(size - 1) - a.parse::<usize>().unwrap() + 1
+            })
+            .sum();
+        assert!(fetched * 4 < size, "fetched {fetched} of {size} bytes: {requests:?}");
+        drop(requests);
+        let before = seen.lock().unwrap().len();
+        let output = dir.path().join("empty.csv");
+        let mut options = options;
+        // Both independent bounds overlap the group, but no row matches. Reading the filter
+        // columns must discover this before fetching the large payload column.
+        options.translate.where_clause = Some("foglio = '0007' AND particella > '0000' AND particella < '0001'".into());
+        crate::config::with_options(&[("TERRIO_HTTP_BLOCK_SIZE", "4096")], || {
+            crate::stream::convert(&format!("{base}/empty.parquet"), output.to_str().unwrap(), &options).unwrap();
+        });
+        assert_eq!(std::fs::read_to_string(output).unwrap().lines().count(), 1);
+        let requests = seen.lock().unwrap();
+        let fetched: usize = requests[before..]
+            .iter()
+            .map(|r| {
+                let (a, b) = r.as_deref().unwrap().strip_prefix("bytes=").unwrap().split_once('-').unwrap();
+                b.parse::<usize>().unwrap().min(size - 1) - a.parse::<usize>().unwrap() + 1
+            })
+            .sum();
+        assert!(fetched * 20 < size, "empty selection fetched {fetched} of {size} bytes: {:?}", &requests[before..]);
+    }
 
     #[test]
     fn identifies_projjson() {

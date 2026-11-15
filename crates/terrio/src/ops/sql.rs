@@ -242,6 +242,68 @@ impl BoundExpression {
     pub fn matches(&self, feature: &Feature) -> bool {
         truth(&self.0, feature).value
     }
+
+    /// Conservatively checks column ranges. Unknown expressions and coercions keep the group.
+    #[cfg(feature = "parquet")]
+    pub(crate) fn may_match_ranges(&self, range: impl Fn(usize) -> Option<(FieldValue, FieldValue)>) -> bool {
+        fn comparison(op: BinOp, a: &Expr, b: &Expr, range: &impl Fn(usize) -> Option<(FieldValue, FieldValue)>) -> bool {
+            let (Expr::Index(i), Expr::Literal(literal)) = (a, b) else { return true };
+            let Some((min, max)) = range(*i) else { return true };
+            let (min, max) = (Value::from_field(&min), Value::from_field(&max));
+            let (lo, hi) = match (&min, &max, literal) {
+                (Value::Text(min), Value::Text(max), Value::Text(v)) => {
+                    // Parquet strings use byte ordering, OGR predicates ASCII case folding.
+                    // Equality can bound all case variants. Ordered comparisons are safe for
+                    // digit-only literals; other strings may reorder across ASCII punctuation.
+                    if op == BinOp::Eq {
+                        return min <= &v.to_ascii_lowercase() && max >= &v.to_ascii_uppercase();
+                    }
+                    if v.is_empty() || !v.bytes().all(|c| c.is_ascii_digit()) {
+                        return true;
+                    }
+                    (min.cmp(v), max.cmp(v))
+                }
+                (Value::Int(_) | Value::Float(_), Value::Int(_) | Value::Float(_), Value::Int(_) | Value::Float(_)) => {
+                    let (Some(lo), Some(hi)) = (compare_predicate(&min, literal), compare_predicate(&max, literal)) else { return true };
+                    (lo, hi)
+                }
+                _ => return true,
+            };
+            match op {
+                BinOp::Eq => lo != Ordering::Greater && hi != Ordering::Less,
+                BinOp::Lt => lo == Ordering::Less,
+                BinOp::Le => lo != Ordering::Greater,
+                BinOp::Gt => hi == Ordering::Greater,
+                BinOp::Ge => hi != Ordering::Less,
+                _ => true,
+            }
+        }
+        fn visit(e: &Expr, range: &impl Fn(usize) -> Option<(FieldValue, FieldValue)>) -> bool {
+            match e {
+                Expr::Binary(BinOp::And, a, b) => visit(a, range) && visit(b, range),
+                Expr::Binary(BinOp::Or, a, b) => visit(a, range) || visit(b, range),
+                Expr::Binary(op, a, b) => {
+                    if matches!(a.as_ref(), Expr::Literal(_)) {
+                        let reversed = match op {
+                            BinOp::Lt => BinOp::Gt,
+                            BinOp::Le => BinOp::Ge,
+                            BinOp::Gt => BinOp::Lt,
+                            BinOp::Ge => BinOp::Le,
+                            x => *x,
+                        };
+                        comparison(reversed, b, a, range)
+                    } else {
+                        comparison(*op, a, b, range)
+                    }
+                }
+                Expr::Between { expr, low, high, negated: false } => {
+                    comparison(BinOp::Ge, expr, low, range) && comparison(BinOp::Le, expr, high, range)
+                }
+                _ => true,
+            }
+        }
+        visit(&self.0, &range)
+    }
 }
 
 impl Select {

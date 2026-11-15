@@ -28,7 +28,7 @@ pub struct GeoParquetReadOptions {
     /// all of them, without the bounding-box covering column.
     pub columns: Option<Vec<String>>,
     /// Only the rows whose bounding box intersects `(min_x, min_y, max_x, max_y)`, in the file's
-    /// CRS: whole row groups are skipped by the statistics of the covering column, and rows by its
+    /// CRS: whole row groups are skipped by covering or native geometry statistics, and rows by covering
     /// values (or by their geometries' bounding boxes without one).
     pub bbox: Option<(f64, f64, f64, f64)>,
     /// The most rows in a batch.
@@ -87,6 +87,15 @@ pub(crate) struct GroupWindows {
 }
 
 impl GroupWindows {
+    /// The pending groups and selections before any batches are requested.
+    pub(crate) fn pending(&self) -> Vec<(usize, Option<RowSelection>)> {
+        self.groups.iter().cloned().collect()
+    }
+
+    /// Replaces the unread queue after predicate pushdown, before decoding starts.
+    pub(crate) fn select_groups(&mut self, groups: Vec<(usize, Option<RowSelection>)>) {
+        self.groups = groups.into();
+    }
     /// Decodes `groups` with `decode`; `ranges` are the byte ranges each row group of the file
     /// reads, announced to `prefetch` a window at a time. The caller's options and asset policy
     /// are those of the thread that calls this.
