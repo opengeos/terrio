@@ -28,6 +28,9 @@ static VERTICAL_DATA: &[u8] = include_bytes!("../data/epsg_vertical.tsv.zst");
 /// The names and aliases of EPSG datums, generated from PROJ by `scripts/gen_datum_names.py`:
 /// `code<TAB>rank<TAB>name` lines.
 static DATUM_NAMES: &[u8] = include_bytes!("../data/datums.tsv.zst");
+/// The CRSs PROJ finds by the names of CRSs without ID, generated from PROJ by
+/// `scripts/gen_crs_names.py`.
+static CRS_NAMES: &[u8] = include_bytes!("../data/crs_names.tsv.zst");
 
 /// An EPSG (or ESRI) CRS of the table.
 #[derive(Debug)]
@@ -490,6 +493,84 @@ fn datum_names() -> &'static DatumNames {
 /// or a former name of, in order of code.
 pub(crate) fn datums_named(name: &str) -> Vec<u32> {
     datum_names().0.get(&datum_key(name)).map(|(_, c)| c.clone()).unwrap_or_default()
+}
+
+/// The EPSG CRS PROJ 9.8.1 finds by the name of a geographic 2D or projected CRS without ID, when
+/// it finds a single CRS (`createObjectsFromName`, among the names and aliases of its database's
+/// CRSs, whatever the case of their ASCII letters); first, for an ESRI WKT 1 (`esri`), the CRS the
+/// name is an ESRI alias of. A name absent from the table stands for the single EPSG CRS of that
+/// official name and kind, if any. PROJ looks a geographic 3D CRS (`three_d`) up among those,
+/// which the table leaves out: by official name alone.
+pub(crate) fn crs_named_as_proj(name: &str, projected: bool, three_d: bool, esri: bool) -> Option<u32> {
+    static NAMES: OnceLock<HashMap<(u8, String), u32>> = OnceLock::new();
+    let names = NAMES.get_or_init(|| {
+        decompress(CRS_NAMES)
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .filter_map(|l| {
+                let mut f = l.splitn(3, '\t');
+                let (kind, name, code) = (f.next()?, f.next()?, f.next()?.parse().ok()?);
+                Some(((*kind.as_bytes().first()?, name.to_string()), code))
+            })
+            .collect()
+    });
+    let (exact, folded) = if projected { (b'P', b'p') } else { (b'G', b'g') };
+    let found = if three_d && !projected {
+        None
+    } else {
+        (esri.then(|| names.get(&(exact, name.to_string()))).flatten()).or_else(|| names.get(&(folded, name.to_ascii_lowercase())))
+    };
+    match found {
+        Some(&code) => (code != 0).then_some(code),
+        // PROJ drops the deprecated CRSs after current ones (RRAF 1991: EPSG:4557, not 4973).
+        None => {
+            let codes = officially_named().get(&(kind_of(projected, three_d), name.to_ascii_lowercase()))?;
+            let current: Vec<u32> = codes.iter().filter(|c| c.1).map(|c| c.0).collect();
+            match (&current[..], &codes[..]) {
+                ([code], _) => Some(*code),
+                ([], [(code, _)]) => Some(*code),
+                _ => None,
+            }
+        }
+    }
+}
+
+/// The kind of CRS PROJ looks a name up among: `p` projected, `g` geographic 2D, `G` 3D.
+fn kind_of(projected: bool, three_d: bool) -> u8 {
+    match (projected, three_d) {
+        (true, _) => b'p',
+        (false, false) => b'g',
+        (false, true) => b'G',
+    }
+}
+
+/// EPSG codes by kind and name, with whether each is current.
+type NameIndex = HashMap<(u8, String), Vec<(u32, bool)>>;
+
+/// The EPSG geographic and projected CRSs of the table by kind ([`kind_of`]) and official name,
+/// its ASCII letters in lowercase, with whether each is current (a deprecated code has its
+/// replacement's WKT).
+fn officially_named() -> &'static NameIndex {
+    static INDEX: OnceLock<NameIndex> = OnceLock::new();
+    INDEX.get_or_init(|| {
+        let t = table();
+        let mut index = NameIndex::new();
+        for (code, l) in &t.crs {
+            let f: Vec<&str> = t.text[l.line.0 as usize..l.line.1 as usize].splitn(9, '\t').collect();
+            let [name, _, _, _, _, flags, _, proj, wkt] = f[..] else { continue };
+            let kind = if proj.starts_with("+proj=longlat") {
+                kind_of(false, flags.contains('3'))
+            } else if proj.starts_with("+proj=geocent") {
+                continue;
+            } else {
+                b'p'
+            };
+            // Its own ID in its WKT (one of WKT 2 ends with its usage and remarks).
+            let current = wkt.contains(&format!("ID[\"EPSG\",{code}]")) || wkt.contains(&format!("AUTHORITY[\"EPSG\",\"{code}\"]"));
+            index.entry((kind, name.to_ascii_lowercase())).or_default().push((*code, current));
+        }
+        index
+    })
 }
 
 /// The official name of an EPSG datum; of the WGS 84 and ETRS89 ensembles, without `ensemble`
