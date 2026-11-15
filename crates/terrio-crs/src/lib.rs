@@ -381,8 +381,14 @@ impl SpatialRef {
     }
 
     /// A CRS from a WKT definition (WKT1 or WKT2). The EPSG code (or else the ESRI code) is
-    /// identified when possible.
+    /// identified when possible. The WKT ends at its first NUL, as in PROJ and GDAL.
     pub fn from_wkt(wkt: &str) -> Self {
+        Self::from_wkt_text(until_nul(wkt))
+    }
+
+    /// [`Self::from_wkt`] of the whole text, uncut at a NUL: for stored WKT and WKT terrio
+    /// built, whose names (a PROJJSON's) may keep one (see [`until_nul`]).
+    pub(crate) fn from_wkt_text(wkt: &str) -> Self {
         // A WKT 1 extended with its PROJ string (`EXTENSION["PROJ4", ...]`, as GDAL writes CRSs
         // WKT 1 cannot describe) is that PROJ string, as GDAL reads it.
         if let Some(proj4) = proj4_extension(wkt)
@@ -537,7 +543,9 @@ impl SpatialRef {
     /// Parses the supported PROJJSON v0.7 geographic, projected or bound CRS subset.
     /// Unsupported coordinate systems, datum models and operations return errors.
     pub fn from_projjson(text: &str) -> Result<Self> {
-        projjson::parse(text)
+        // The text ends at its first NUL, as PROJ's `proj_create` reads it; a NUL a JSON string
+        // gives (`\u0000`) is part of its name.
+        projjson::parse(until_nul(text))
     }
 
     /// Parses a user-supplied CRS: `EPSG:4326`, `4326`, `urn:ogc:def:crs:EPSG::4326`, an OGC URL,
@@ -558,7 +566,8 @@ impl SpatialRef {
     /// [`Self::parse`], reading a file only when `files` (not for a file's own text).
     #[cfg_attr(target_family = "wasm", allow(unused_variables))]
     fn parse_definition(s: &str, files: bool) -> Result<Self> {
-        let s = s.trim();
+        // The definition ends at its first NUL, as PROJ's `proj_create` reads it.
+        let s = until_nul(s).trim();
         if s.is_empty() {
             return Err(Error::Crs("empty definition".into()));
         }
@@ -642,7 +651,8 @@ impl SpatialRef {
 
     /// The WKT of the geographic CRS this CRS is based on (its own when geographic): from the
     /// EPSG table for an EPSG CRS, else the `GEOGCS` node of its WKT 1. `None` when neither is
-    /// known.
+    /// known. Taken from the CRS's WKT, it has its names cut at a NUL ([`wkt_for_files`]), so
+    /// that it reads as a whole WKT with [`SpatialRef::from_wkt`], which ends text at a NUL.
     #[doc(hidden)]
     pub fn geographic_wkt(&self) -> Option<String> {
         if let Some(entry) = self.wkt.as_deref().and_then(|wkt| iau::identify(wkt, self.proj4.as_deref())).and_then(iau::get) {
@@ -662,7 +672,7 @@ impl SpatialRef {
                 ']' => {
                     depth -= 1;
                     if depth == 0 {
-                        return Some(wkt[start..=start + i].to_string());
+                        return Some(wkt_for_files(&wkt[start..=start + i]).into_owned());
                     }
                 }
                 _ => {}
@@ -1175,8 +1185,67 @@ pub(crate) fn is_variant_c(wkt: &str) -> bool {
     wkt1::parse(wkt).is_some_and(|root| names(&root))
 }
 
+/// A CRS's stored WKT as it is written where its readers end text at its first NUL (a `.prj`,
+/// a raster's or layer's WKT, which GDAL reads as a C string): each quoted name cut at its first
+/// NUL, as PROJ 9.8.1 gives such a name (`CRS.name` of a PROJJSON name `"WGS\u0000 84"` is
+/// `WGS`), so that the text stays a whole WKT. PROJ's own WKT export of such a CRS ends at the
+/// NUL (`PROJCRS["WGS`), which no reader takes back. Text without a NUL is returned as it is.
+#[doc(hidden)]
+pub fn wkt_for_files(wkt: &str) -> std::borrow::Cow<'_, str> {
+    if !wkt.contains('\0') {
+        return wkt.into();
+    }
+    let mut out = String::with_capacity(wkt.len());
+    let (mut quoted, mut cut) = (false, false);
+    let mut chars = wkt.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            // A doubled quote inside a name is a quote of the name.
+            '"' if quoted && chars.peek() == Some(&'"') => {
+                chars.next();
+                if !cut {
+                    out.push_str("\"\"");
+                }
+            }
+            '"' => {
+                quoted = !quoted;
+                cut = false;
+                out.push(c);
+            }
+            '\0' if quoted => cut = true,
+            // A NUL outside quotes is dropped: the parser refuses one, so a CRS read by terrio
+            // has none there, and text with one set by hand (`SpatialRef::wkt`) is written as
+            // the WKT the reader would see without it, rather than one its readers cut short.
+            '\0' => {}
+            _ if cut => {}
+            _ => out.push(c),
+        }
+    }
+    out.into()
+}
+
+/// Text up to its first NUL: a definition given as text, as PROJ 9.8.1 and GDAL take it (a C
+/// string, which ends there; text after a complete WKT was ignored before as well). Who cuts:
+/// - the entry points for a definition given as text cut it themselves ([`SpatialRef::from_wkt`],
+///   `parse`, `parse_literal`, `from_projjson`, and `geokeys::read` its GeoAsciiParamsTag);
+/// - [`wkt_proj`] and [`identify_epsg`] read their text whole: a caller with text from a file (a
+///   `.prj`, a raster's or layer's WKT) cuts it first with this;
+/// - a CRS's own stored WKT ([`SpatialRef::to_wkt`], the WKT of a PROJJSON, whose names keep a
+///   NUL (`\u0000`) as PROJ 9.8.1 reads them) is not cut: inside terrio-crs it goes through
+///   `SpatialRef::from_wkt_text`, whose call sites say `uncut`; WKT built from it to be parsed
+///   again or written goes through [`wkt_for_files`].
+///
+/// The WKT parser refuses a NUL outside quotes.
+#[doc(hidden)]
+pub fn until_nul(text: &str) -> &str {
+    text.split('\0').next().unwrap_or_default()
+}
+
 /// The PROJ string of a WKT definition as terrio reads it: its PROJ4 extension, else its WKT 1
-/// or WKT 2 conversion. `None` for a WKT terrio reads otherwise (through wbprojection).
+/// or WKT 2 conversion. `None` for a WKT terrio reads otherwise (through wbprojection). The WKT
+/// is read whole, a NUL in a name included, as a CRS's stored WKT ([`SpatialRef::to_wkt`]) may
+/// keep one from a PROJJSON name. Text read from a file must be cut at its first NUL by the
+/// caller ([`until_nul`]), as GDAL reads it.
 #[doc(hidden)]
 pub fn wkt_proj(wkt: &str) -> Option<String> {
     if let Some(p) = proj4_extension(wkt) {
@@ -1380,6 +1449,9 @@ pub fn compound_code(horizontal: u32, vertical: u32, name: Option<&str>) -> Opti
 /// lowest code; for other CRSs, wbprojection's registry, where among equally good matches the
 /// base datum is preferred over its later realizations (NAD83 over NAD83(HARN) and NAD83(2011))
 /// unless the WKT names one, then the lowest code.
+///
+/// The WKT is read whole, a NUL in a name included, as [`wkt_proj`] reads it: text read from a
+/// file must be cut at its first NUL by the caller ([`until_nul`]).
 #[doc(hidden)]
 pub fn identify_epsg(wkt: &str) -> Option<u32> {
     if let Some(code) = declared_epsg(wkt) {

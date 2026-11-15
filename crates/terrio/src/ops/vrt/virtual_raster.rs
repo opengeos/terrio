@@ -248,7 +248,7 @@ impl VirtualRaster {
             if options.rpc.is_some() { crate::crs::SpatialRef::from_epsg(4326).unwrap_or_default() } else { header.crs() }
         });
         let dst_srs = target.crs();
-        let srs = |s: &crate::crs::SpatialRef| s.to_wkt().or_else(|| s.authority_code()).unwrap_or_default();
+        let srs = |s: &crate::crs::SpatialRef| s.to_file_wkt().or_else(|| s.authority_code()).unwrap_or_default();
         let gt = |v: [f64; 6]| v.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",");
         let original_gt = options.src_transform.unwrap_or_else(|| header.geo_transform());
         let srcgt = [

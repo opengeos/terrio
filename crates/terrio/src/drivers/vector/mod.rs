@@ -360,7 +360,9 @@ pub(crate) fn write_bytes(layers: &[Layer], driver: VectorDriver, options: &Vect
 /// its metre twin), so a writer keeps the source WKT instead. ESRI codes the registry holds as
 /// EPSG codes (54009) are not EPSG codes.
 pub(crate) fn trusted_epsg(layer: &Layer) -> Option<u32> {
-    let code = match (layer.crs_epsg(), layer.crs_wkt()) {
+    // The layer's WKT as a file's text, up to its first NUL, as GDAL reads it (and identified it
+    // in `fix_layer`): a `.prj` padded with NULs is its registry WKT.
+    let code = match (layer.crs_epsg(), layer.crs_wkt().map(terrio_crs::until_nul)) {
         (code, None) => code,
         (Some(code), Some(wkt)) if wbprojection::to_ogc_wkt(code).is_ok_and(|w| w == wkt) => Some(code),
         // Only CRS codes: the registry can return a datum's or prime meridian's.
@@ -374,7 +376,7 @@ pub(crate) fn trusted_epsg(layer: &Layer) -> Option<u32> {
 pub(crate) fn output_wkt(layer: &Layer) -> Option<String> {
     match trusted_epsg(layer).and_then(|c| crate::crs::SpatialRef::from_epsg(c).ok()) {
         Some(s) => super::wkt::gdal_wkt(&s),
-        None => crate::crs::SpatialRef::from_layer(layer).to_wkt(),
+        None => crate::crs::SpatialRef::from_layer(layer).to_file_wkt(),
     }
 }
 

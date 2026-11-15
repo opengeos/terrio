@@ -3238,7 +3238,7 @@ mod tests {
         assert!(entries.contains(&[1024, 0, 1, 32767]));
         assert!(entries.iter().any(|key| key[0] == 1026));
         assert!(!entries.iter().any(|key| matches!(key[0], 2048 | 3072)));
-        let crs = crate::geotiff::crs_from_geokeys(keys, None, Some(ascii));
+        let crs = crate::geotiff::crs_from_geokeys(keys, None, Some(ascii.as_bytes()));
         assert_eq!(crs.wkt.as_deref(), Some(wkt));
     }
 

@@ -41,8 +41,8 @@ impl SourceCrsFormat {
     }
     fn value(self, crs: &SpatialRef) -> String {
         match self {
-            Self::Auto => crs.authority_code().or_else(|| crs.to_wkt()),
-            Self::Wkt => crs.to_wkt(),
+            Self::Auto => crs.authority_code().or_else(|| crs.to_file_wkt()),
+            Self::Wkt => crs.to_file_wkt(),
             Self::Epsg => crs.authority_code(),
             Self::Proj => crs.proj4.clone().or_else(|| crs.to_wkt().and_then(|w| crate::crs::wkt_proj(&w))),
         }

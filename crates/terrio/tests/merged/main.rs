@@ -152,6 +152,8 @@ mod vector_sql;
 mod white_is_zero;
 #[path = "../wkt2.rs"]
 mod wkt2;
+#[path = "../wkt_file_nul.rs"]
+mod wkt_file_nul;
 #[path = "../zip_duplicate_names.rs"]
 mod zip_duplicate_names;
 #[path = "../zonal_remote.rs"]

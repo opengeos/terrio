@@ -31,8 +31,10 @@ pub(crate) fn header_crs(h: &LasHeader) -> LasCrs {
         Some(keys) => {
             let doubles: Option<Vec<f64>> =
                 h.find_vlr(LASF_PROJECTION, 34736).map(|v| v.data.as_chunks::<8>().0.iter().map(|c| f64::from_le_bytes(*c)).collect());
-            let ascii = h.find_vlr(LASF_PROJECTION, 34737).map(|v| String::from_utf8_lossy(&v.data).replace('\0', ""));
-            let info = crate::geotiff::crs_from_geokeys(&keys, doubles.as_deref(), ascii.as_deref());
+            // The ASCII parameters as bytes, which end at their first NUL as libgeotiff (GDAL's and
+            // PDAL's) reads them: a citation that starts after it leaves the keys without a CRS.
+            let ascii = h.find_vlr(LASF_PROJECTION, 34737).map(|v| v.data.as_slice());
+            let info = crate::geotiff::crs_from_geokeys(&keys, doubles.as_deref(), ascii);
             // A user-defined CRS is kept as its PROJ string: the WKT made from it loses a foot
             // unit, and the EPSG code identified from that WKT would be the metre one.
             let horizontal = match (&info.epsg, &info.proj4) {
@@ -68,9 +70,12 @@ impl LasCrs {
             return c;
         }
         let vertical = SpatialRef::from_epsg(v).ok().and_then(|v| v.to_wkt()).filter(|w| w.starts_with("VERT_CS["));
-        match (crs.proj4.is_none().then(|| crs.to_wkt()).flatten(), vertical) {
+        match (crs.proj4.is_none().then(|| crs.to_file_wkt()).flatten(), vertical) {
             (Some(h), Some(v)) => {
-                let name = format!("{} + {}", crs.name().unwrap_or_default(), quoted_name(&v).unwrap_or_default());
+                // The CRS's own name may keep a NUL (from a PROJJSON name): cut there, as `h`'s
+                // names are, so that the WKT reads whole.
+                let own = crs.name().unwrap_or_default();
+                let name = format!("{} + {}", terrio_crs::until_nul(&own), quoted_name(&v).unwrap_or_default());
                 SpatialRef::from_wkt(&format!("COMPD_CS[\"{name}\",{h},{v}]"))
             }
             _ => crs.clone(),
@@ -167,7 +172,7 @@ pub(crate) fn crs_vlrs(crs: &SpatialRef, wkt: bool) -> (Vec<Vlr>, bool) {
     if !wkt && let Some(v) = geokey_vlrs(crs) {
         return (v, false);
     }
-    match crs.to_wkt() {
+    match crs.to_file_wkt() {
         Some(w) => {
             let mut data = w.into_bytes();
             data.push(0);
@@ -182,7 +187,8 @@ fn geokey_vlrs(crs: &SpatialRef) -> Option<Vec<Vlr>> {
     // VerticalCSTypeGeoKey, as GDAL writes them in GeoTIFF (GDAL 3.13 writes 3072 = 6588 and
     // 4096 = 6360 for EPSG:6588+6360). A vertical CRS without one is left out (with a warning), so
     // that the GeoKeys still describe the horizontal CRS rather than falling back to WKT.
-    let (horizontal, vertical) = match crs.to_wkt().filter(|w| w.trim_start().starts_with("COMPD_CS[")) {
+    // The WKT as written to files (names cut at a NUL), so the horizontal CRS's citations are.
+    let (horizontal, vertical) = match crs.to_file_wkt().filter(|w| w.trim_start().starts_with("COMPD_CS[")) {
         Some(w) => {
             let c = wkt_crs(&w);
             let vertical = c.vertical_epsg.and_then(|v| u16::try_from(v).ok());
@@ -239,6 +245,20 @@ pub(crate) fn is_crs_vlr(v: &Vlr) -> bool {
 mod tests {
     use super::*;
 
+    /// A CRS without an EPSG code whose name holds a NUL (Mollweide's PROJ 9.8.1 PROJJSON, from
+    /// terrio-crs's `wkt1_proj_reads` data), in a file declaring a vertical EPSG CRS, stands for
+    /// the compound CRS: its WKT is built with the name cut at the NUL, so it reads whole.
+    #[test]
+    fn a_crs_with_a_nul_in_its_name_gets_the_files_vertical_crs() {
+        let data: serde_json::Value = serde_json::from_str(include_str!("../../../terrio-crs/tests/data/wkt1_proj_reads.json")).unwrap();
+        let h = SpatialRef::from_projjson(data["mollweide_projjson"]["projjson"].as_str().unwrap()).unwrap();
+        assert!(h.epsg.is_none() && h.wkt.as_deref().is_some_and(|w| w.contains('\0')));
+        let las = LasCrs { horizontal: h.clone(), vertical_epsg: Some(5703), vertical_name: None };
+        let c = las.with_vertical(&h);
+        assert!(c.has_height(), "{c:?}");
+        assert!(c.to_wkt().is_some_and(|w| w.starts_with("COMPD_CS[\"Moll + ") && !w.contains('\0')), "{:?}", c.to_wkt());
+    }
+
     #[test]
     fn splits_compound_wkt() {
         let w = r#"COMPD_CS["NAD83 / Oregon + NAVD88",PROJCS["NAD83 / Oregon LCC (m)",GEOGCS["NAD83",DATUM["North_American_Datum_1983",SPHEROID["GRS 1980",6378137,298.257222101]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Lambert_Conformal_Conic_2SP"],PARAMETER["latitude_of_origin",41.75],PARAMETER["central_meridian",-120.5],PARAMETER["standard_parallel_1",43],PARAMETER["standard_parallel_2",45.5],PARAMETER["false_easting",400000],PARAMETER["false_northing",0],UNIT["metre",1]],VERT_CS["NAVD88 height (ftUS)",VERT_DATUM["North American Vertical Datum 1988",2005,AUTHORITY["EPSG","5103"]],UNIT["US survey foot",0.304800609601219,AUTHORITY["EPSG","9003"]],AXIS["Gravity-related height",UP],AUTHORITY["EPSG","6360"]]]"#;
@@ -262,6 +282,23 @@ mod tests {
         let c = wkt_crs(w);
         assert_eq!(c.vertical_epsg, Some(5714));
         assert_eq!(c.vertical_name.as_deref(), Some("Mean Sea Level [ft"));
+    }
+
+    /// A LAS record's GeoAsciiParams end at their first NUL, as libgeotiff reads them: with
+    /// EPSG:32613 in ProjectedCSTypeGeoKey, citations `"A|B|"` and `"A|B|\0"` give the code, and
+    /// `"A|\0B|\0"` with a citation after the NUL gives no CRS, as GDAL 3.12.1 reads the same
+    /// keys in a GeoTIFF (libgeotiff's `ReadKey`; PDAL reads LAS GeoKeys with it).
+    #[test]
+    fn geoascii_params_end_at_their_first_nul() {
+        let header = |ascii: &[u8], second: u16| {
+            let keys: [u16; 16] = [1, 1, 0, 3, 1024, 0, 1, 1, 1026, 34737, 2, second, 3072, 0, 1, 32613];
+            let keys: Vec<u8> = keys.iter().flat_map(|k| k.to_le_bytes()).collect();
+            let vlrs = vec![Vlr::new("LASF_Projection", 34735, "", keys), Vlr::new("LASF_Projection", 34737, "", ascii.to_vec())];
+            LasHeader { vlrs, version: (1, 2), ..Default::default() }
+        };
+        assert_eq!(header_crs(&header(b"A|B|", 2)).horizontal.epsg, Some(32613));
+        assert_eq!(header_crs(&header(b"A|B|\0", 2)).horizontal.epsg, Some(32613));
+        assert!(header_crs(&header(b"A|\0B|\0", 3)).horizontal.is_unknown());
     }
 
     #[test]

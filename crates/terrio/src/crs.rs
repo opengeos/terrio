@@ -281,6 +281,14 @@ impl SpatialRef {
     pub fn to_wkt(&self) -> Option<String> {
         self.as_core().to_wkt()
     }
+    /// The WKT written to a file or its metadata (a layer's or raster's CRS, a `.prj`, GeoPackage,
+    /// GeoParquet, netCDF, VRT, EPT, a LAS WKT record...), whose readers end text at its first
+    /// NUL, as GDAL does: [`to_wkt`](Self::to_wkt) with each name cut at a NUL (one a PROJJSON
+    /// name gives), as PROJ 9.8.1 gives such a name, so that it reads back as this CRS. A cut
+    /// name can change what the CRS is identified as by name, as in PROJ.
+    pub(crate) fn to_file_wkt(&self) -> Option<String> {
+        self.to_wkt().map(|w| terrio_crs::wkt_for_files(&w).into_owned())
+    }
     /// The CRS as PROJJSON, as GDAL (3.12.1, with PROJ 9.7.1) writes it: with `database`, for the
     /// CRS GDAL builds from the CRS's EPSG code (`CRS.from_epsg`), else for the one it reads from
     /// the CRS's WKT (a dataset's CRS, `CRS.from_wkt`). Fails for a CRS this writer does not model.
@@ -403,7 +411,11 @@ impl SpatialRef {
         self.as_core().to_wbp().map_err(Into::into)
     }
     pub(crate) fn from_raster_crs(c: &wbraster::CrsInfo) -> Self {
-        let mut s = Self { epsg: c.epsg, wkt: raster_crs_wkt(c), proj4: c.proj4.clone(), esri: None };
+        // A raster's WKT is a file's text, or terrio's (`to_crs_info`, without a NUL): it ends
+        // at its first NUL, as GDAL reads it, and one the NUL cuts inside a name or a node is no
+        // CRS (`file_wkt`).
+        let wkt = raster_crs_wkt(c).as_deref().and_then(file_wkt);
+        let mut s = Self { epsg: c.epsg, wkt, proj4: c.proj4.clone(), esri: None };
         // A WKT with a PROJ4 extension is identified only as a code it converts as (the extension
         // wins over a loose match of its nodes), as `terrio_crs::SpatialRef::from_wkt` does.
         if s.epsg.is_none()
@@ -428,14 +440,25 @@ impl SpatialRef {
         s
     }
 
-    /// The CRS as the raster model stores it.
+    /// The CRS as the raster model stores it. Its WKT is the one terrio writes to every file and
+    /// its metadata (raster, layer, `.prj`, GeoPackage, GeoParquet, netCDF, VRT, EPT, LAS...): a
+    /// name with a NUL (from a PROJJSON name) is cut there, as PROJ 9.8.1 gives such a name, so
+    /// that it reads back as this CRS. A cut name can change what the CRS is identified as by
+    /// name, as in PROJ.
     pub fn to_crs_info(&self) -> wbraster::CrsInfo {
-        wbraster::CrsInfo { epsg: self.epsg, wkt: self.to_wkt(), proj4: self.proj4.clone() }
+        let wkt = self.to_file_wkt();
+        wbraster::CrsInfo { epsg: self.epsg, wkt, proj4: self.proj4.clone() }
     }
 
-    /// The CRS a vector layer declares.
+    /// The CRS a vector layer declares. Its WKT is read up to its first NUL, as GDAL reads a
+    /// file's text (a `.prj`, a GeoPackage's definition): a WKT with a NUL inside a name, which
+    /// GDAL refuses, gives no CRS (no WKT, so none is written back); a definition only padded with
+    /// NULs is the text before them. WKT terrio wrote, by [`SpatialRef::apply_to_layer`] or to
+    /// any file, has no NUL (a name with one, from a PROJJSON name, is cut there, as PROJ 9.8.1
+    /// gives the name), so it reads back as the CRS. A raster's CRS is read so too.
     pub fn from_layer(layer: &wbvector::Layer) -> Self {
-        let mut s = Self { epsg: layer.crs_epsg(), wkt: layer.crs_wkt().map(str::to_string), ..Default::default() };
+        let wkt = layer.crs_wkt().and_then(file_wkt);
+        let mut s = Self { epsg: layer.crs_epsg(), wkt, ..Default::default() };
         if s.epsg.is_none()
             && let Some(w) = &s.wkt
         {
@@ -444,11 +467,49 @@ impl SpatialRef {
         s.with_esri()
     }
 
-    /// Sets a vector layer's CRS to this one.
+    /// Sets a vector layer's CRS to this one. Its WKT is the one terrio writes to every file
+    /// (see [`SpatialRef::to_crs_info`]): a name with a NUL (from a PROJJSON name) is cut there,
+    /// as PROJ 9.8.1 gives the name, so that [`SpatialRef::from_layer`] and a file written from
+    /// the layer read back as this CRS.
     pub fn apply_to_layer(&self, layer: &mut wbvector::Layer) {
         layer.set_crs_epsg(self.epsg);
-        layer.set_crs_wkt(self.to_wkt());
+        layer.set_crs_wkt(self.to_file_wkt());
     }
+}
+
+/// A CRS definition read from a file, as GDAL reads it: up to its first NUL (a C string). A WKT
+/// that the NUL cuts inside a quoted name or a node (an open quote or bracket left, which GDAL
+/// refuses with "missing , or ]") is no CRS, so that it isn't written back as that text either.
+/// Only the syntax decides: a definition padded with NULs is kept as the text before them,
+/// whatever terrio reads of it (a `DERIVEDPROJCRS`, a PROJ string).
+fn file_wkt(text: &str) -> Option<String> {
+    let cut = terrio_crs::until_nul(text);
+    if cut.len() < text.len() && cut_inside_wkt(cut) {
+        return None;
+    }
+    Some(cut.to_string())
+}
+
+/// Whether WKT text ends inside a quoted string or a node: an open quote, or more `[`/`(` than
+/// `]`/`)` outside quotes. A doubled quote inside a string is a quote of it.
+fn cut_inside_wkt(text: &str) -> bool {
+    let (mut quoted, mut depth) = (false, 0i64);
+    for c in text.chars() {
+        match c {
+            '"' => quoted = !quoted,
+            '[' | '(' if !quoted => depth += 1,
+            ']' | ')' if !quoted => depth -= 1,
+            _ => {}
+        }
+    }
+    quoted || depth > 0
+}
+
+/// Text for a terminal or a text report: a NUL (in a name a PROJJSON gives) written `\u0000`, as
+/// JSON escapes it, rather than sent as it is.
+#[doc(hidden)]
+pub fn escape_nul(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.contains('\0') { text.replace('\0', "\\u0000").into() } else { text.into() }
 }
 
 /// A raster CRS known only by its EPSG code, as the raster model stores it: the code and the WKT
@@ -468,6 +529,8 @@ pub(crate) fn epsg_crs_info(code: u32) -> wbraster::CrsInfo {
 pub(crate) fn raster_crs_wkt(c: &wbraster::CrsInfo) -> Option<String> {
     let (Some(code), Some(wkt)) = (c.epsg, c.wkt.as_deref()) else { return c.wkt.clone() };
     let Some(registry) = epsg_crs_info(code).wkt else { return c.wkt.clone() };
+    // As a file's text, up to its first NUL (a tag padded with NULs is still the registry's WKT).
+    let wkt = terrio_crs::until_nul(wkt);
     let same = registry == wkt || wbprojection::to_ogc_wkt(code).is_ok_and(|generated| generated == wkt);
     if same { Some(registry) } else { c.wkt.clone() }
 }
@@ -783,5 +846,69 @@ mod fork_tests {
             });
             holder.join().is_ok() && exit == Some(0)
         });
+    }
+}
+
+#[cfg(test)]
+mod nul_tests {
+    /// A raster's WKT ends at its first NUL, as GDAL reads a file's text (a C string): one
+    /// padded with NULs is identified as without them (EPSG:32631, as GDAL 3.10.3 identifies
+    /// this ESRI WKT).
+    #[test]
+    fn a_raster_wkt_padded_with_nuls_is_identified() {
+        let wkt = "PROJCS[\"WGS_1984_UTM_Zone_31N\",GEOGCS[\"GCS_WGS_1984\",DATUM[\"D_WGS_1984\",SPHEROID[\"WGS_1984\",6378137.0,298.257223563]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",3.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]\0\0";
+        let info = wbraster::CrsInfo { epsg: None, wkt: Some(wkt.to_string()), proj4: None };
+        assert_eq!(super::SpatialRef::from_raster_crs(&info).epsg, Some(32631));
+    }
+
+    /// A CRS read from PROJJSON with a NUL in its name (PROJ 9.8.1's PROJJSON of Mollweide, from
+    /// terrio-crs's `wkt1_proj_reads` data) stores it in its WKT; its raster CRS (`to_crs_info`)
+    /// has the name cut at the NUL, as PROJ 9.8.1 gives the name, so it reads back as the CRS.
+    #[test]
+    fn a_crs_with_a_nul_in_its_name_round_trips_through_a_raster() {
+        let data: serde_json::Value = serde_json::from_str(include_str!("../../terrio-crs/tests/data/wkt1_proj_reads.json")).unwrap();
+        let crs = super::SpatialRef::from_projjson(data["mollweide_projjson"]["projjson"].as_str().unwrap()).unwrap();
+        assert!(crs.wkt.as_deref().is_some_and(|w| w.contains('\0')));
+        let info = crs.to_crs_info();
+        assert!(info.wkt.as_deref().is_some_and(|w| !w.contains('\0') && w.contains("\"Moll\"")), "{info:?}");
+        let back = super::SpatialRef::from_raster_crs(&info);
+        assert_eq!(back.to_proj4(), crs.to_proj4());
+        let wgs84 = super::SpatialRef::from_epsg(4326).unwrap();
+        assert!(super::Transformer::new(&back, &wgs84).is_ok());
+    }
+
+    /// A CRS's geographic CRS, taken from its stored WKT with a NUL in a name, reads as a whole
+    /// geographic CRS (as warp's poles and the GRIB writer take it): its name is cut at the NUL, as
+    /// PROJ 9.8.1 gives such a name.
+    #[test]
+    fn the_geographic_crs_of_a_stored_wkt_with_a_nul_in_a_name_reads() {
+        use super::{SpatialRef, Transformer};
+        let wkt = "PROJCS[\"WGS_1984_UTM_Zone_31N\",GEOGCS[\"GCS_WGS_1984\",DATUM[\"D_WGS_1984\",SPHEROID[\"WGS_1984\",6378137.0,298.257223563]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",3.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]".replace("GCS_WGS_1984", "GCS_WGS\0_1984");
+        let crs = SpatialRef { wkt: Some(wkt), ..Default::default() };
+        let geographic = crs.geographic_wkt().unwrap();
+        assert!(!geographic.contains('\0') && geographic.starts_with("GEOGCS[\"GCS_WGS\","), "{geographic}");
+        let geographic = SpatialRef::from_wkt(&geographic);
+        assert!(geographic.is_geographic());
+        let (x, y) = Transformer::new(&geographic, &crs).unwrap().transform(3.0, 45.0).unwrap();
+        assert!((x - 500_000.0).abs() < 1e-6 && y > 4_900_000.0, "{x} {y}");
+    }
+
+    /// A definition padded with NULs is the text before them, whatever terrio reads of it (a
+    /// WKT 2 `DERIVEDPROJCRS`, a PROJ string); one the NUL cuts inside a name is no CRS.
+    #[test]
+    fn a_padded_definition_is_kept_and_one_cut_inside_a_name_is_dropped() {
+        let derived = "DERIVEDPROJCRS[\"d\",BASEPROJCRS[\"b\",BASEGEOGCRS[\"g\",DATUM[\"x\",ELLIPSOID[\"e\",6378137,298.257223563]]],CONVERSION[\"c\",METHOD[\"m\"]]],DERIVINGCONVERSION[\"dc\",METHOD[\"m\"]],CS[Cartesian,2],AXIS[\"x\",east],AXIS[\"y\",north],LENGTHUNIT[\"metre\",1]]";
+        assert_eq!(super::file_wkt(&format!("{derived}\0\0")).as_deref(), Some(derived));
+        assert_eq!(super::file_wkt("+proj=utm +zone=31 +datum=WGS84\0").as_deref(), Some("+proj=utm +zone=31 +datum=WGS84"));
+        assert_eq!(
+            super::file_wkt(
+                "PROJCS[\"WGS_1984_UTM\0_Zone_31N\",GEOGCS[\"GCS_WGS_1984\",DATUM[\"D_WGS_1984\",SPHEROID[\"WGS_1984\",6378137.0,298.257223563]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",3.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]"
+            ),
+            None
+        );
+        assert_eq!(super::file_wkt("A[\"a\"\"b\0c\"]"), None);
+        let mut layer = wbvector::Layer::new("p");
+        layer.set_crs_wkt(Some(format!("{derived}\0\0")));
+        assert_eq!(super::SpatialRef::from_layer(&layer).wkt.as_deref(), Some(derived));
     }
 }

@@ -67,7 +67,8 @@ fn crs(s: &SpatialRef) -> Result<Value> {
     }
     let wkt = s.to_wkt().ok_or_else(|| unsupported("a CRS without definition"))?;
     if let Some((h, v)) = crate::def::split_compound(&wkt) {
-        let horizontal = crs(&SpatialRef::from_wkt(&h))?;
+        // uncut: stored or built WKT
+        let horizontal = crs(&SpatialRef::from_wkt_text(&h))?;
         let code = wkt1::parse(&v).and_then(|n| n.epsg()).ok_or_else(|| unsupported("a vertical CRS without EPSG code"))?;
         let name = wkt1::parse(&wkt).and_then(|n| n.name().map(str::to_string)).unwrap_or_else(|| "unknown".into());
         return Ok(with_id(

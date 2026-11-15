@@ -61,20 +61,10 @@ impl GeoKeys<'_> {
         self.doubles.get(off as usize..off as usize + n as usize)
     }
 
-    fn text(&self, id: u16) -> Option<&str> {
-        let (loc, n, off) = self.key(id)?;
-        if loc != GEO_ASCII_PARAMS {
-            return None;
-        }
-        let start = (off as usize).min(self.ascii.len());
-        let end = (start + n as usize).min(self.ascii.len());
-        // Text that is not UTF-8 in that span reads as none (see `ascii_lossy`).
-        std::str::from_utf8(&self.ascii[start..end]).ok().map(|s| s.trim_end_matches(['|', '\0']))
-    }
-
-    /// An ASCII key's text, its bytes sliced: offsets count bytes, and the text may hold
-    /// multi-byte characters (invalid bytes are decoded to U+FFFD).
-    fn ascii_lossy(&self, id: u16) -> Option<String> {
+    /// An ASCII key's text, its bytes sliced: offsets count bytes (`read` has cut the tag at its
+    /// first NUL), and bytes that aren't UTF-8 (a Windows-1252 `Bogot\xe1`) are decoded to
+    /// U+FFFD in that key alone, which GDAL 3.12.1 reads too (it keeps the byte).
+    fn text(&self, id: u16) -> Option<String> {
         let (loc, n, off) = self.key(id)?;
         if loc != GEO_ASCII_PARAMS {
             return None;
@@ -94,7 +84,9 @@ impl GeoKeys<'_> {
 /// user-defined CRS more completely than the GeoKeys. Its EPSG code is the root node's: codes on
 /// inner nodes (a unit's, a datum's) are not the CRS's.
 fn esri_pe_crs(k: &GeoKeys) -> Option<SpatialRef> {
-    let wkt = [3073, 1026, 2049].iter().find_map(|id| k.text(*id).and_then(|c| c.strip_prefix("ESRI PE String = ")))?.trim();
+    // Cut at a NUL already, with the rest of GeoAsciiParamsTag (`read`).
+    let wkt = [3073, 1026, 2049].iter().find_map(|id| k.text(*id).and_then(|c| c.strip_prefix("ESRI PE String = ").map(str::to_string)))?;
+    let wkt = wkt.trim();
     // Read as any WKT: the code identified, and its PROJ4 extension (GDAL writes the sweep axis
     // of a geostationary CRS there) taken as the CRS.
     let s = SpatialRef::from_wkt(wkt);
@@ -116,7 +108,8 @@ pub struct GeoKeysCrs {
 
 /// Reads the CRS of a GeoKey directory (GeoKeyDirectoryTag, 34735) with its double
 /// (GeoDoubleParamsTag, 34736) and ASCII (GeoAsciiParamsTag, 34737) parameters, as stored in a
-/// GeoTIFF or a LAS `LASF_Projection` record, as GDAL reads them (`GTIFGetOGISDefnAsOSR`):
+/// GeoTIFF or a LAS `LASF_Projection` record, as GDAL reads them (`GTIFGetOGISDefnAsOSR`). `ascii`
+/// is the tag's bytes, as stored (byte offsets), and empty when the tag is missing:
 /// - EPSG codes of a projected or geographic CRS (ProjectedCSTypeGeoKey,
 ///   GeographicTypeGeoKey). A user-defined projected CRS that is a registered one in the GeoKeys'
 ///   linear unit gets its code: a UTM zone by its ProjectionGeoKey or its citation, on WGS 84,
@@ -145,6 +138,26 @@ pub struct GeoKeysCrs {
 /// assert_eq!(read.unsupported_method, None);
 /// ```
 pub fn read(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> GeoKeysCrs {
+    // GeoAsciiParamsTag ends at its first NUL, as GDAL 3.12.1 reads it: libgeotiff's `ReadKey`
+    // takes the tag's C string, of length `len`, and for each ASCII key at `offset` with `count`
+    // bytes reads one ending at `len + 1` (its NUL) without it, cuts one that starts before
+    // `len` and ends after it, and fails on any other key that ends after `len`, which leaves the
+    // GeoKeys without a CRS (`GTIFNew` fails), even a code they give (a key at offset 22 of
+    // `"NAD27 / UTM zone 13N|\0..."` with 21 bytes).
+    // An empty `ascii` is a missing GeoAsciiParamsTag, which fails every ASCII key, of any count
+    // (libgeotiff has no text for it), as GDAL 3.12.1 gives no CRS for one.
+    let missing = ascii.is_empty();
+    let ascii = &ascii[..ascii.iter().position(|b| *b == 0).unwrap_or(ascii.len())];
+    let len = ascii.len();
+    let past_the_text = directory.get(4..).unwrap_or_default().chunks(4).any(|k| {
+        let (offset, count) = (usize::from(k.get(3).copied().unwrap_or(0)), usize::from(k.get(2).copied().unwrap_or(0)));
+        k.len() == 4
+            && k[1] == GEO_ASCII_PARAMS
+            && (missing || (offset + count > len && !(count > 0 && offset + count == len + 1) && offset >= len))
+    });
+    if past_the_text {
+        return GeoKeysCrs::default();
+    }
     let k = GeoKeys { keys: directory, doubles, ascii };
     let mut epsg = match (k.short(1024), k.short(3072), k.short(2048)) {
         (_, Some(code), _) if code != 0 && code != USER_DEFINED => Some(code as u32),
@@ -157,12 +170,12 @@ pub fn read(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> GeoKeysCrs {
             // EPSG:32633.
             let size = linear_unit_size(&k);
             // A user-defined datum whose citation names WGS 84 is WGS 84's, as GDAL identifies it.
-            let cites_wgs84 = k.ascii_lossy(2049).is_some_and(|c| {
+            let cites_wgs84 = k.text(2049).is_some_and(|c| {
                 c.split('|')
                     .any(|p| p.strip_prefix("Datum = ").is_some_and(|d| matches!(d.trim(), "World Geodetic System 1984" | "WGS_1984")))
             });
             let datum = if cites_wgs84 && k.short(2050) == Some(USER_DEFINED) { Some(6326) } else { k.short(2050) };
-            let citation = k.ascii_lossy(1026).or_else(|| k.ascii_lossy(3073));
+            let citation = k.text(1026).or_else(|| k.text(3073));
             user_defined_projected(k.short(3074), k.short(2048), datum, citation)
                 .filter(|code| SpatialRef::from_epsg(*code).is_ok_and(|s| (s.metres_per_unit() / size - 1.0).abs() < 1e-9))
         }
@@ -327,10 +340,11 @@ fn code_of_name(_: &str) -> Option<u32> {
 ///   on a geographic CRS without code.
 fn user_defined_projected_crs(k: &GeoKeys, proj4: &str) -> Option<SpatialRef> {
     let wkt = SpatialRef::from_proj4(proj4).ok()?.to_wkt()?;
-    let name = [3073, 1026].iter().find_map(|id| k.text(*id)).map(str::trim).filter(|n| !n.is_empty() && !n.contains(" = "));
-    if let Some(name) = name
+    let name = [3073, 1026].iter().find_map(|id| k.text(*id)).map(|n| n.trim().to_string()).filter(|n| !n.is_empty() && !n.contains(" = "));
+    if let Some(name) = name.as_deref()
         && let Some(named) = renamed(&wkt, name)
-        && let Some(code) = SpatialRef::from_wkt(&named).with_esri().esri
+        // uncut: stored or built WKT
+        && let Some(code) = SpatialRef::from_wkt_text(&named).with_esri().esri
         && let Some(esri) = SpatialRef::from_esri(code).ok().and_then(|s| s.to_wkt())
     {
         // With its code, as GDAL's `SetFromUserInput("ESRI:<code>")` gives it.
@@ -427,14 +441,15 @@ fn user_defined_crs(k: &GeoKeys) -> Option<SpatialRef> {
             // GDAL reads, without code (GDAL identifies none: its unit is not the registry's).
             if let Some((_, unit)) = angular_unit(k) {
                 let wkt = SpatialRef::from_proj4(&format!("+proj=longlat {}", geographic_proj(k)?)).ok()?.to_wkt()?;
-                let cited = |key: &str| k.text(2049).and_then(|c| c.split('|').find_map(|p| p.trim().strip_prefix(key)));
-                let mut wkt = renamed(&without_code(&with_unit(&wkt, &unit)?), cited("GCS Name = ").unwrap_or("unknown"))?;
+                let cited =
+                    |key: &str| k.text(2049).and_then(|c| c.split('|').find_map(|p| p.trim().strip_prefix(key).map(str::to_string)));
+                let mut wkt = renamed(&without_code(&with_unit(&wkt, &unit)?), cited("GCS Name = ").as_deref().unwrap_or("unknown"))?;
                 // The datum and ellipsoid named by the citation, as GDAL names them
                 // (`GetGeogCSFromCitation`), and its axes in the registry's order, as GDAL builds
                 // a geographic CRS from GeoKeys.
                 for (node, key) in [("DATUM[", "Datum = "), ("SPHEROID[", "Ellipsoid = ")] {
                     if let (Some(name), Some(i)) = (cited(key), wkt.find(node)) {
-                        wkt = format!("{}{}", &wkt[..i], renamed(&wkt[i..], name)?);
+                        wkt = format!("{}{}", &wkt[..i], renamed(&wkt[i..], &name)?);
                     }
                 }
                 let wkt =
@@ -790,8 +805,10 @@ fn linear_unit_wkt(k: &GeoKeys) -> Option<String> {
     match k.short(3076) {
         None | Some(9001 | 9002 | 9003 | 9036) => None,
         Some(USER_DEFINED) => {
-            let name = [3073, 1026].iter().find_map(|id| k.text(*id)?.split('|').find_map(|p| p.trim().strip_prefix("LUnits = ")));
-            Some(format!("UNIT[{},{}]", wkt_quoted(name.unwrap_or("unknown").trim()), wkt_number(size)))
+            let name = [3073, 1026]
+                .iter()
+                .find_map(|id| k.text(*id)?.split('|').find_map(|p| p.trim().strip_prefix("LUnits = ").map(str::to_string)));
+            Some(format!("UNIT[{},{}]", wkt_quoted(name.as_deref().unwrap_or("unknown").trim()), wkt_number(size)))
         }
         Some(code) => {
             let (_, name, m) = LENGTH_UNITS.iter().find(|u| u.0 == code)?;
@@ -837,8 +854,8 @@ fn angular_unit(k: &GeoKeys) -> Option<(f64, String)> {
         9109 => ("microradian".into(), RAD / 1e6),
         USER_DEFINED => {
             let radians = k.double(2055).filter(|r| *r > 0.0)?;
-            let name = k.text(2049).and_then(|c| c.split('|').find_map(|p| p.trim().strip_prefix("AUnits = ")));
-            (name.unwrap_or("unknown").trim().to_string(), radians * RAD)
+            let name = k.text(2049).and_then(|c| c.split('|').find_map(|p| p.trim().strip_prefix("AUnits = ").map(str::to_string)));
+            (name.as_deref().unwrap_or("unknown").trim().to_string(), radians * RAD)
         }
         _ => return None,
     };
@@ -1180,7 +1197,9 @@ impl SpatialRef {
     ///
     /// A geographic 3D CRS is written as its geographic 2D CRS with its own code as the vertical
     /// CRS, as GDAL writes it (EPSG:4979 as `2048=4326`, `4096=4979`). Fails for an unknown CRS,
-    /// and for a CRS that needs the fallback and has no WKT.
+    /// and for a CRS that needs the fallback and has no WKT, or whose WKT holds a NUL (from a
+    /// PROJJSON name): GeoAsciiParamsTag ends at its first NUL for its readers, and GDAL 3.12.1
+    /// refuses to write such a CRS too. Citation names are written up to a NUL.
     ///
     /// ```
     /// use terrio_crs::SpatialRef;
@@ -1238,12 +1257,26 @@ impl SpatialRef {
                         // GDAL's fallback for methods GeoTIFF cannot describe: the WKT in an ESRI PE
                         // citation, with a user-defined model type.
                         let wkt = self.to_wkt().ok_or_else(|| Error::Crs("the CRS has no WKT definition".into()))?;
+                        // A NUL (from a PROJJSON name) would end GeoAsciiParamsTag there for its
+                        // readers, and the WKT with it; GDAL 3.12.1 refuses to write such a CRS too.
+                        if wkt.contains('\0') {
+                            return Err(Error::Crs(
+                                "a WKT with a NUL in it cannot be written to a GeoTIFF citation, which ends at the NUL".into(),
+                            ));
+                        }
                         v.shorts.push((1024, USER_DEFINED));
                         // GeoTIFF 1.1 requirement 8.10 requires a general citation for this model.
                         v.ascii.push((1026, name));
                         v.ascii.push((3073, format!("ESRI PE String = {wkt}")));
                     }
                 }
+            }
+        }
+        // A name with a NUL (from a PROJJSON name) is written up to it: GDAL 3.12.1 reads
+        // GeoAsciiParamsTag up to its first NUL, which would hide the keys after it.
+        for (_, text) in &mut v.ascii {
+            if let Some(end) = text.find('\0') {
+                text.truncate(end);
             }
         }
         Ok(v)

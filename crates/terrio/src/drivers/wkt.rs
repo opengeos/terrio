@@ -38,13 +38,13 @@ pub(crate) fn gdal_wkt(crs: &SpatialRef) -> Option<String> {
     }
     // A PROJ string: GDAL's WKT 1 of it, which terrio stores; or a WKT with its PROJ4 extension.
     if crs.epsg.is_none() && (crs.proj4.is_some() || crs.wkt.as_deref().is_some_and(terrio_crs::has_proj4_extension)) {
-        return crs.to_wkt();
+        return crs.to_file_wkt();
     }
     let built = match crs.epsg {
         Some(code) => wbprojection::Crs::from_epsg(code).ok().and_then(|c| build(&c, Some(code))),
         None => crs.to_wbp().ok().and_then(|c| build(&c, None)),
     };
-    built.or_else(|| crs.to_wkt())
+    built.or_else(|| crs.to_file_wkt())
 }
 
 /// Builds the WKT of a CRS from its parameters, with its EPSG code when it has one.

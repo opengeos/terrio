@@ -390,7 +390,8 @@ fn references(layers: &[Layer]) -> Result<Reference> {
     let mut source: Option<SpatialRef> = None;
     let mut unknown = false;
     for layer in layers {
-        let crs = (layer.crs_epsg().is_some() || layer.crs_wkt().is_some()).then(|| SpatialRef::from_layer(layer));
+        // As `from_layer` reads it: a WKT cut at a NUL inside a name is no CRS either.
+        let crs = Some(SpatialRef::from_layer(layer)).filter(|c| !c.is_unknown());
         if let Some(crs) = crs {
             if unknown || source.as_ref().is_some_and(|old| !old.same_as(&crs)) {
                 return Err(invalid("layers have inconsistent CRSs"));
@@ -829,6 +830,15 @@ fn encode(layers: &[Layer], version: CityGmlVersion, lod0_surface: Option<CityGm
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A layer whose WKT has a NUL inside a name (no CRS, as GDAL and `from_layer` read it) has no
+    /// `srsName`, as a layer without a CRS.
+    #[test]
+    fn a_wkt_with_a_nul_in_a_name_is_no_crs() {
+        let mut layer = Layer::new("p");
+        layer.set_crs_wkt(Some("PROJCS[\"WGS_1984_UTM\0_Zone_31N\",GEOGCS[\"GCS_WGS_1984\",DATUM[\"D_WGS_1984\",SPHEROID[\"WGS_1984\",6378137.0,298.257223563]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",3.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]".to_string()));
+        assert_eq!(references(&[layer]).unwrap().name, None);
+    }
     use wbvector::{Feature, Geometry, Ring};
     #[test]
     fn geographic_authority_axes_and_extreme_finite_positions_are_explicit() {

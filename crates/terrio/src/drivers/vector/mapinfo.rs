@@ -518,7 +518,7 @@ pub(super) fn srs_to_coordsys(srs: &SpatialRef, extent: Option<(f64, f64, f64, f
     if let Some(d) = DATUMS.iter().find(|d| d.5 == Some(code) && d.0 != 157) {
         return format!("Earth Projection 1, {}", d.0);
     }
-    let Some(wkt) = srs.to_wkt() else { return nonearth() };
+    let Some(wkt) = srs.to_file_wkt() else { return nonearth() };
     let lower = wkt.to_ascii_lowercase().replace(['_', ' '], "");
     let datum = DATUMS.iter().filter(|d| d.0 != 157).find(|d| {
         let n = d.1.to_ascii_lowercase().replace('_', "");
