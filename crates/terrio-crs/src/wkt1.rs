@@ -103,14 +103,37 @@ pub(crate) fn parse(s: &str) -> Option<Node> {
     if s.len() > MAX_LEN {
         return None;
     }
-    let b = s.as_bytes();
+    // PROJ and GDAL take the WKT as a C string, which ends at its first NUL.
+    let b = s.split('\0').next().unwrap_or_default().as_bytes();
     let mut i = 0;
     node(b, &mut i, 0)
 }
 
+/// Whether `c` is a space as C's `isspace` reads it, which PROJ's parser skips: ASCII
+/// whitespace and the vertical tab.
+fn space(c: u8) -> bool {
+    c.is_ascii_whitespace() || c == 0x0b
+}
+
 fn skip_ws(b: &[u8], i: &mut usize) {
-    while *i < b.len() && b[*i].is_ascii_whitespace() {
+    while *i < b.len() && space(b[*i]) {
         *i += 1;
+    }
+}
+
+/// Moves `*i` past the quoted run that opens at `b[*i]`, a doubled quote inside it a quote.
+/// `None` when the quote is not closed.
+fn skip_quoted(b: &[u8], i: &mut usize) -> Option<()> {
+    *i += 1;
+    loop {
+        match *b.get(*i)? {
+            b'"' if b.get(*i + 1) == Some(&b'"') => *i += 2,
+            b'"' => {
+                *i += 1;
+                return Some(());
+            }
+            _ => *i += 1,
+        }
     }
 }
 
@@ -120,11 +143,16 @@ fn node(b: &[u8], i: &mut usize, level: usize) -> Option<Node> {
         return None;
     }
     skip_ws(b, i);
-    // A keyword is any run of characters up to a space, a quote or a delimiter, as PROJ reads
-    // it: an unknown node is skipped whatever its keyword (`vendor:mark[...]`, `a-b[...]`).
+    // A keyword is any run of characters up to a space or a delimiter, a quoted run in it
+    // included, as PROJ reads it: an unknown node is skipped whatever its keyword
+    // (`vendor:mark[...]`, `a-b[...]`, `a"b c"[...]`).
     let start = *i;
-    while *i < b.len() && !b[*i].is_ascii_whitespace() && !matches!(b[*i], b'"' | b',' | b'[' | b'(' | b']' | b')') {
-        *i += 1;
+    while *i < b.len() && !space(b[*i]) && !matches!(b[*i], b',' | b'[' | b'(' | b']' | b')') {
+        if b[*i] == b'"' {
+            skip_quoted(b, i)?;
+        } else {
+            *i += 1;
+        }
     }
     let key = std::str::from_utf8(&b[start..*i]).ok()?.to_string();
     skip_ws(b, i);
@@ -173,11 +201,16 @@ fn node(b: &[u8], i: &mut usize, level: usize) -> Option<Node> {
             }
             args.push(Arg::Str(String::from_utf8_lossy(&s).into_owned()));
         } else {
-            // A number, a word or a nested node: the scan stops at a delimiter, which is not
-            // the first byte (handled above) unless it opens a nested node.
+            // A number, a word or a nested node: the scan stops at a delimiter outside quotes
+            // (`a"b,c"[...]` is one keyword for PROJ), which is not the first byte (handled
+            // above) unless it opens a nested node.
             let start = *i;
             while *i < b.len() && !matches!(b[*i], b',' | b'[' | b'(' | b']' | b')') {
-                *i += 1;
+                if b[*i] == b'"' {
+                    skip_quoted(b, i)?;
+                } else {
+                    *i += 1;
+                }
             }
             let tok = std::str::from_utf8(&b[start..*i]).ok()?.trim();
             if *i < b.len() && (b[*i] == b'[' || b[*i] == b'(') {
@@ -385,8 +418,15 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             push(&mut out, "lat_1", sp1);
             push(&mut out, "lat_2", sp2);
         }
-        // ESRI's `Mercator_Variant_A` (EPSG's name) is Mercator (1SP), as PROJ reads it.
+        // ESRI's `Mercator_Variant_A` and EPSG's `Mercator (variant A)` are Mercator (1SP), as
+        // PROJ reads them. PROJ leaves a latitude of origin out of ESRI's, and refuses EPSG's
+        // with one other than 0, which `+proj=merc` has no parameter for.
         "mercator1sp" | "mercatorvarianta" => {
+            let origin = get(&["latitudeoforigin", "latitudeofnaturalorigin"]);
+            let esri = projection.name().is_some_and(|n| n.eq_ignore_ascii_case("Mercator_Variant_A"));
+            if method == "mercatorvarianta" && !esri && origin.is_some_and(|v| v != 0.0) {
+                return None;
+            }
             out.push("+proj=merc".into());
             push(&mut out, "lon_0", lon_0);
             push(&mut out, "k", k.or(Some(1.0)));

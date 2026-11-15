@@ -12,7 +12,8 @@
     5009726.583278828,
     569150.8186138709
    ],
-   "proj4": "+proj=merc +lon_0=110 +k=0.997 +x_0=3900000 +y_0=900000 +ellps=bessel +units=m +no_defs +type=crs"
+   "proj4": "+proj=merc +lon_0=110 +k=0.997 +x_0=3900000 +y_0=900000 +ellps=bessel +units=m +no_defs +type=crs",
+   "epsg": 3002
   },
   {
    "name": "Mercator_Variant_A in US survey feet",
@@ -25,7 +26,8 @@
     7540827.9653073065,
     -185461.02259765964
    ],
-   "proj4": "+proj=merc +lon_0=110 +k=0.997 +x_0=1188722.37744476 +y_0=274320.548641097 +ellps=bessel +units=us-ft +no_defs +type=crs"
+   "proj4": "+proj=merc +lon_0=110 +k=0.997 +x_0=1188722.37744476 +y_0=274320.548641097 +ellps=bessel +units=us-ft +no_defs +type=crs",
+   "epsg": null
   },
   {
    "name": "Mercator_Variant_A with a latitude of origin and a standard parallel",
@@ -38,7 +40,8 @@
     5009726.583278828,
     569150.8186138709
    ],
-   "proj4": "+proj=merc +lon_0=110 +k=0.997 +x_0=3900000 +y_0=900000 +ellps=bessel +units=m +no_defs +type=crs"
+   "proj4": "+proj=merc +lon_0=110 +k=0.997 +x_0=3900000 +y_0=900000 +ellps=bessel +units=m +no_defs +type=crs",
+   "epsg": 3002
   },
   {
    "name": "Mercator_Variant_A without a scale factor",
@@ -51,7 +54,8 @@
     5013065.78062069,
     568155.2844672727
    ],
-   "proj4": "+proj=merc +lon_0=110 +k=1 +x_0=3900000 +y_0=900000 +ellps=bessel +units=m +no_defs +type=crs"
+   "proj4": "+proj=merc +lon_0=110 +k=1 +x_0=3900000 +y_0=900000 +ellps=bessel +units=m +no_defs +type=crs",
+   "epsg": null
   },
   {
    "name": "a marked datum",
@@ -64,7 +68,8 @@
     -79.0,
     43.0
    ],
-   "proj4": "+proj=longlat +datum=NAD27 +no_defs +type=crs"
+   "proj4": "+proj=longlat +datum=NAD27 +no_defs +type=crs",
+   "epsg": 4267
   },
   {
    "name": "a mark at the root",
@@ -77,7 +82,8 @@
     -79.0,
     43.0
    ],
-   "proj4": "+proj=longlat +datum=NAD27 +no_defs +type=crs"
+   "proj4": "+proj=longlat +datum=NAD27 +no_defs +type=crs",
+   "epsg": 4267
   },
   {
    "name": "a projected CRS with a marked datum",
@@ -90,7 +96,8 @@
     663023.669508077,
     4762540.7180291675
    ],
-   "proj4": "+proj=utm +zone=17 +datum=NAD27 +units=m +no_defs +type=crs"
+   "proj4": "+proj=utm +zone=17 +datum=NAD27 +units=m +no_defs +type=crs",
+   "epsg": 26717
   },
   {
    "name": "a projected CRS with a mark at its root",
@@ -103,7 +110,8 @@
     663023.669508077,
     4762540.7180291675
    ],
-   "proj4": "+proj=utm +zone=17 +datum=NAD27 +units=m +no_defs +type=crs"
+   "proj4": "+proj=utm +zone=17 +datum=NAD27 +units=m +no_defs +type=crs",
+   "epsg": 26717
   },
   {
    "name": "a keyword with a hyphen",
@@ -116,7 +124,8 @@
     -79.0,
     43.0
    ],
-   "proj4": "+proj=longlat +datum=NAD27 +no_defs +type=crs"
+   "proj4": "+proj=longlat +datum=NAD27 +no_defs +type=crs",
+   "epsg": 4267
   },
   {
    "name": "a keyword with a dot",
@@ -129,7 +138,8 @@
     -79.0,
     43.0
    ],
-   "proj4": "+proj=longlat +datum=NAD27 +no_defs +type=crs"
+   "proj4": "+proj=longlat +datum=NAD27 +no_defs +type=crs",
+   "epsg": 4267
   },
   {
    "name": "a keyword starting with a digit",
@@ -142,7 +152,8 @@
     -79.0,
     43.0
    ],
-   "proj4": "+proj=longlat +datum=NAD27 +no_defs +type=crs"
+   "proj4": "+proj=longlat +datum=NAD27 +no_defs +type=crs",
+   "epsg": 4267
   },
   {
    "name": "an empty keyword",
@@ -155,7 +166,8 @@
     -79.0,
     43.0
    ],
-   "proj4": "+proj=longlat +datum=NAD27 +no_defs +type=crs"
+   "proj4": "+proj=longlat +datum=NAD27 +no_defs +type=crs",
+   "epsg": 4267
   },
   {
    "name": "a keyword of other letters",
@@ -168,7 +180,162 @@
     -79.0,
     43.0
    ],
-   "proj4": "+proj=longlat +datum=NAD27 +no_defs +type=crs"
+   "proj4": "+proj=longlat +datum=NAD27 +no_defs +type=crs",
+   "epsg": 4267
+  },
+  {
+   "name": "a keyword with a quoted run",
+   "wkt": "GEOGCS[\"unknown\",DATUM[\"North American Datum 1927\",SPHEROID[\"Clarke 1866\",6378206.4,294.978698213898],a\"b\"[\"x\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+   "point": [
+    -79.0,
+    43.0
+   ],
+   "proj": [
+    -79.0,
+    43.0
+   ],
+   "proj4": "+proj=longlat +datum=NAD27 +no_defs +type=crs",
+   "epsg": 4267
+  },
+  {
+   "name": "a keyword with a quoted space",
+   "wkt": "GEOGCS[\"unknown\",DATUM[\"North American Datum 1927\",SPHEROID[\"Clarke 1866\",6378206.4,294.978698213898],a\"b c\"[\"x\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+   "point": [
+    -79.0,
+    43.0
+   ],
+   "proj": [
+    -79.0,
+    43.0
+   ],
+   "proj4": "+proj=longlat +datum=NAD27 +no_defs +type=crs",
+   "epsg": 4267
+  },
+  {
+   "name": "a keyword with a quoted comma",
+   "wkt": "GEOGCS[\"unknown\",DATUM[\"North American Datum 1927\",SPHEROID[\"Clarke 1866\",6378206.4,294.978698213898],a\"b,c\"[\"x\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+   "point": [
+    -79.0,
+    43.0
+   ],
+   "proj": [
+    -79.0,
+    43.0
+   ],
+   "proj4": "+proj=longlat +datum=NAD27 +no_defs +type=crs",
+   "epsg": 4267
+  },
+  {
+   "name": "a quoted keyword",
+   "wkt": "GEOGCS[\"unknown\",DATUM[\"North American Datum 1927\",SPHEROID[\"Clarke 1866\",6378206.4,294.978698213898],\"q\"[\"x\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+   "point": [
+    -79.0,
+    43.0
+   ],
+   "proj": [
+    -79.0,
+    43.0
+   ],
+   "proj4": "+proj=longlat +datum=NAD27 +no_defs +type=crs",
+   "epsg": 4267
+  },
+  {
+   "name": "a vertical tab before a keyword",
+   "wkt": "GEOGCS[\"unknown\",DATUM[\"North American Datum 1927\",SPHEROID[\"Clarke 1866\",6378206.4,294.978698213898],\u000bq[\"x\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+   "point": [
+    -79.0,
+    43.0
+   ],
+   "proj": [
+    -79.0,
+    43.0
+   ],
+   "proj4": "+proj=longlat +datum=NAD27 +no_defs +type=crs",
+   "epsg": 4267
+  },
+  {
+   "name": "text after a NUL",
+   "wkt": "GEOGCS[\"unknown\",DATUM[\"North American Datum 1927\",SPHEROID[\"Clarke 1866\",6378206.4,294.978698213898]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]\u0000garbage",
+   "point": [
+    -79.0,
+    43.0
+   ],
+   "proj": [
+    -79.0,
+    43.0
+   ],
+   "proj4": "+proj=longlat +datum=NAD27 +no_defs +type=crs",
+   "epsg": 4267
+  },
+  {
+   "name": "NAD27 / UTM zone 17N with a keyword with a hyphen",
+   "wkt": "PROJCS[\"NAD27 / UTM zone 17N\",GEOGCS[\"unknown\",DATUM[\"North American Datum 1927\",SPHEROID[\"Clarke 1866\",6378206.4,294.978698213898],a-b[\"x\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"Latitude_Of_Origin\",0],PARAMETER[\"Central_Meridian\",-81],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"False_Easting\",500000],PARAMETER[\"False_Northing\",0],UNIT[\"metre\",1]]",
+   "point": [
+    -79.0,
+    43.0
+   ],
+   "proj": [
+    663023.669508077,
+    4762540.7180291675
+   ],
+   "proj4": "+proj=utm +zone=17 +datum=NAD27 +units=m +no_defs +type=crs",
+   "epsg": 26717
+  },
+  {
+   "name": "a WKT 2 CRS with a node of an unknown keyword",
+   "wkt": "PROJCRS[\"NAD27 / UTM zone 17N\",BASEGEOGCRS[\"NAD27\",DATUM[\"North American Datum 1927\",ELLIPSOID[\"Clarke 1866\",6378206.4,294.978698213898,LENGTHUNIT[\"metre\",1]],vendor:note[\"x\"]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4267]],CONVERSION[\"UTM zone 17N\",METHOD[\"Transverse Mercator\",ID[\"EPSG\",9807]],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8801]],PARAMETER[\"Longitude of natural origin\",-81,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8802]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8805]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8806]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8807]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Engineering survey, topographic mapping.\"],AREA[\"North America - between 84°W and 78°W. Bahamas. Canada - Nunavut; Ontario; Quebec. Costa Rica. Cuba. Honduras. Nicaragua. United States (USA) - Florida; Georgia; Kentucky; Maryland; Michigan; New York; North Carolina; Ohio; Pennsylvania; South Carolina; Tennessee; Virginia; West Virginia. Onshore for Canadian Arctic. onshore and offshore for US east coast and Cuba, with usage in Bahamas onshore plus offshore over internal continental shelf only.\"],BBOX[7.98,-84,83.03,-78]],ID[\"EPSG\",26717]]",
+   "point": [
+    -79.0,
+    43.0
+   ],
+   "proj": [
+    663023.669508077,
+    4762540.7180291675
+   ],
+   "proj4": "+proj=utm +zone=17 +datum=NAD27 +units=m +no_defs +type=crs",
+   "epsg": 26717
+  },
+  {
+   "name": "Mercator (variant A), EPSG's name, with a latitude of origin of 0",
+   "wkt": "PROJCS[\"Makassar_NEIEZ\",GEOGCS[\"GCS_Makassar\",DATUM[\"D_Makassar\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Mercator (variant A)\"],PARAMETER[\"False_Easting\",3900000.0],PARAMETER[\"False_Northing\",900000.0],PARAMETER[\"Central_Meridian\",110.0],PARAMETER[\"Scale_Factor\",0.997],PARAMETER[\"Latitude_Of_Origin\",0],UNIT[\"Meter\",1.0]]",
+   "point": [
+    120.0,
+    -3.0
+   ],
+   "proj": [
+    5009726.583278828,
+    569150.8186138709
+   ],
+   "proj4": "+proj=merc +lon_0=110 +k=0.997 +x_0=3900000 +y_0=900000 +ellps=bessel +units=m +no_defs +type=crs",
+   "epsg": null
+  },
+  {
+   "name": "Mercator (variant A) with a standard parallel and a latitude of center",
+   "wkt": "PROJCS[\"Makassar_NEIEZ\",GEOGCS[\"GCS_Makassar\",DATUM[\"D_Makassar\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Mercator (variant A)\"],PARAMETER[\"False_Easting\",3900000.0],PARAMETER[\"False_Northing\",900000.0],PARAMETER[\"Central_Meridian\",110.0],PARAMETER[\"Scale_Factor\",0.997],PARAMETER[\"Standard_Parallel_1\",10],PARAMETER[\"Latitude_Of_Center\",5],UNIT[\"Meter\",1.0]]",
+   "point": [
+    120.0,
+    -3.0
+   ],
+   "proj": [
+    5009726.583278828,
+    569150.8186138709
+   ],
+   "proj4": "+proj=merc +lon_0=110 +k=0.997 +x_0=3900000 +y_0=900000 +ellps=bessel +units=m +no_defs +type=crs",
+   "epsg": null
+  },
+  {
+   "name": "MERCATOR_VARIANT_A, ESRI's name in capitals, with a latitude of origin",
+   "wkt": "PROJCS[\"Makassar_NEIEZ\",GEOGCS[\"GCS_Makassar\",DATUM[\"D_Makassar\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"MERCATOR_VARIANT_A\"],PARAMETER[\"False_Easting\",3900000.0],PARAMETER[\"False_Northing\",900000.0],PARAMETER[\"Central_Meridian\",110.0],PARAMETER[\"Scale_Factor\",0.997],PARAMETER[\"Latitude_Of_Origin\",5],UNIT[\"Meter\",1.0]]",
+   "point": [
+    120.0,
+    -3.0
+   ],
+   "proj": [
+    5009726.583278828,
+    569150.8186138709
+   ],
+   "proj4": "+proj=merc +lon_0=110 +k=0.997 +x_0=3900000 +y_0=900000 +ellps=bessel +units=m +no_defs +type=crs",
+   "epsg": 3002
   }
  ],
  "to_wgs84": {
@@ -189,8 +356,30 @@
    "wkt": "GEOGCS[\"unknown\",DATUM[\"North American Datum 1927\",SPHEROID[\"Clarke 1866\",6378206.4,294.978698213898],a b[\"x\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]"
   },
   {
-   "name": "a keyword with a quote",
+   "name": "a keyword with an unclosed quote",
    "wkt": "GEOGCS[\"unknown\",DATUM[\"North American Datum 1927\",SPHEROID[\"Clarke 1866\",6378206.4,294.978698213898],a\"b[\"x\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]"
+  },
+  {
+   "name": "a keyword with a vertical tab",
+   "wkt": "GEOGCS[\"unknown\",DATUM[\"North American Datum 1927\",SPHEROID[\"Clarke 1866\",6378206.4,294.978698213898],a\u000bb[\"x\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]"
+  },
+  {
+   "name": "a keyword with a NUL",
+   "wkt": "GEOGCS[\"unknown\",DATUM[\"North American Datum 1927\",SPHEROID[\"Clarke 1866\",6378206.4,294.978698213898],a\u0000b[\"x\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]"
+  }
+ ],
+ "untransformed": [
+  {
+   "name": "Mercator (variant A), EPSG's name, with a latitude of origin",
+   "wkt": "PROJCS[\"Makassar_NEIEZ\",GEOGCS[\"GCS_Makassar\",DATUM[\"D_Makassar\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Mercator (variant A)\"],PARAMETER[\"False_Easting\",3900000.0],PARAMETER[\"False_Northing\",900000.0],PARAMETER[\"Central_Meridian\",110.0],PARAMETER[\"Scale_Factor\",0.997],PARAMETER[\"Latitude_Of_Origin\",5],UNIT[\"Meter\",1.0]]"
+  },
+  {
+   "name": "Mercator (variant A) with a latitude of natural origin",
+   "wkt": "PROJCS[\"Makassar_NEIEZ\",GEOGCS[\"GCS_Makassar\",DATUM[\"D_Makassar\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Mercator (variant A)\"],PARAMETER[\"False_Easting\",3900000.0],PARAMETER[\"False_Northing\",900000.0],PARAMETER[\"Central_Meridian\",110.0],PARAMETER[\"Scale_Factor\",0.997],PARAMETER[\"Latitude_of_natural_origin\",-5],UNIT[\"Meter\",1.0]]"
+  },
+  {
+   "name": "Mercator_(variant_A) with a latitude of origin",
+   "wkt": "PROJCS[\"Makassar_NEIEZ\",GEOGCS[\"GCS_Makassar\",DATUM[\"D_Makassar\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Mercator_(variant_A)\"],PARAMETER[\"False_Easting\",3900000.0],PARAMETER[\"False_Northing\",900000.0],PARAMETER[\"Central_Meridian\",110.0],PARAMETER[\"Scale_Factor\",0.997],PARAMETER[\"Latitude_Of_Origin\",1e-10],UNIT[\"Meter\",1.0]]"
   }
  ]
 }

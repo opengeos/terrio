@@ -100,11 +100,81 @@ READ = [
     ("a keyword starting with a digit", nad27(',1x["x"]'), (-79.0, 43.0)),
     ("an empty keyword", nad27(',["x"]'), (-79.0, 43.0)),
     ("a keyword of other letters", nad27(',été["x"]'), (-79.0, 43.0)),
+    ("a keyword with a quoted run", nad27(',a"b"["x"]'), (-79.0, 43.0)),
+    ("a keyword with a quoted space", nad27(',a"b c"["x"]'), (-79.0, 43.0)),
+    ("a keyword with a quoted comma", nad27(',a"b,c"["x"]'), (-79.0, 43.0)),
+    ("a quoted keyword", nad27(',"q"["x"]'), (-79.0, 43.0)),
+    ("a vertical tab before a keyword", nad27(',\vq["x"]'), (-79.0, 43.0)),
+    ("text after a NUL", nad27() + "\0garbage", (-79.0, 43.0)),
+    (
+        "NAD27 / UTM zone 17N with a keyword with a hyphen",
+        utm17(',a-b["x"]').replace('PROJCS["unknown"', 'PROJCS["NAD27 / UTM zone 17N"'),
+        (-79.0, 43.0),
+    ),
+    (
+        "a WKT 2 CRS with a node of an unknown keyword",
+        # On the datum.
+        CRS("EPSG:26717")
+        .to_wkt()
+        .replace(
+            'LENGTHUNIT["metre",1]]]', 'LENGTHUNIT["metre",1]],vendor:note["x"]]', 1
+        ),
+        (-79.0, 43.0),
+    ),
+    (
+        "Mercator (variant A), EPSG's name, with a latitude of origin of 0",
+        makassar(
+            "Mercator (variant A)", VARIANT_A + ',PARAMETER["Latitude_Of_Origin",0]'
+        ),
+        (120.0, -3.0),
+    ),
+    (
+        "Mercator (variant A) with a standard parallel and a latitude of center",
+        makassar(
+            "Mercator (variant A)",
+            VARIANT_A
+            + ',PARAMETER["Standard_Parallel_1",10],PARAMETER["Latitude_Of_Center",5]',
+        ),
+        (120.0, -3.0),
+    ),
+    (
+        "MERCATOR_VARIANT_A, ESRI's name in capitals, with a latitude of origin",
+        makassar(
+            "MERCATOR_VARIANT_A", VARIANT_A + ',PARAMETER["Latitude_Of_Origin",5]'
+        ),
+        (120.0, -3.0),
+    ),
 ]
 
+# Refused by `CRS.from_wkt`.
 REFUSED = [
     ("a keyword with a space", nad27(',a b["x"]')),
-    ("a keyword with a quote", nad27(',a"b["x"]')),
+    ("a keyword with an unclosed quote", nad27(',a"b["x"]')),
+    ("a keyword with a vertical tab", nad27(',a\vb["x"]')),
+    ("a keyword with a NUL", nad27(',a\0b["x"]')),
+]
+
+# Read by `CRS.from_wkt`, but neither transformed nor written as a PROJ string.
+NOT_TRANSFORMED = [
+    (
+        "Mercator (variant A), EPSG's name, with a latitude of origin",
+        makassar(
+            "Mercator (variant A)", VARIANT_A + ',PARAMETER["Latitude_Of_Origin",5]'
+        ),
+    ),
+    (
+        "Mercator (variant A) with a latitude of natural origin",
+        makassar(
+            "Mercator (variant A)",
+            VARIANT_A + ',PARAMETER["Latitude_of_natural_origin",-5]',
+        ),
+    ),
+    (
+        "Mercator_(variant_A) with a latitude of origin",
+        makassar(
+            "Mercator_(variant_A)", VARIANT_A + ',PARAMETER["Latitude_Of_Origin",1e-10]'
+        ),
+    ),
 ]
 
 
@@ -124,6 +194,7 @@ def main():
     warnings.simplefilter("ignore")
     read = []
     for name, wkt, point in READ:
+        assert "vendor:note" in wkt or "WKT 2" not in name, name
         crs = CRS.from_wkt(wkt)
         t = Transformer.from_crs(crs.geodetic_crs, crs, always_xy=True)
         x, y = t.transform(*point, errcheck=True)
@@ -134,6 +205,7 @@ def main():
                 "point": point,
                 "proj": [x, y],
                 "proj4": crs.to_proj4(),
+                "epsg": crs.to_epsg(),
             }
         )
     # Makassar / NEIEZ to WGS 84: PROJ knows the CRS as EPSG:3002 and takes Makassar's
@@ -155,6 +227,22 @@ def main():
             refused.append({"name": name, "wkt": wkt})
         else:
             raise AssertionError(f"PROJ reads {name}")
+    untransformed = []
+    for name, wkt in NOT_TRANSFORMED:
+        crs = CRS.from_wkt(wkt)
+        try:
+            Transformer.from_crs(crs.geodetic_crs, crs, always_xy=True)
+        except pyproj.exceptions.ProjError:
+            pass
+        else:
+            raise AssertionError(f"PROJ transforms {name}")
+        try:
+            crs.to_proj4()
+        except CRSError:
+            pass
+        else:
+            raise AssertionError(f"PROJ writes {name} as a PROJ string")
+        untransformed.append({"name": name, "wkt": wkt})
     OUT.write_text(
         json.dumps(
             {
@@ -162,6 +250,7 @@ def main():
                 "read": read,
                 "to_wgs84": to_wgs84,
                 "refused": refused,
+                "untransformed": untransformed,
             },
             indent=1,
             ensure_ascii=False,

@@ -1,14 +1,19 @@
-//! WKT 1 that PROJ 9.8.1 reads is read, and places points where PROJ does: ESRI's
+//! WKT that PROJ 9.8.1 reads is read, and places points where PROJ does: ESRI's
 //! `Mercator_Variant_A` (EPSG Guidance Note 7-2's Makassar / NEIEZ example, EPSG:3002, as an
-//! ESRI `.prj` names its method), as PROJ's Mercator (1SP), and WKT 1 with a node of an unknown
-//! keyword (`rustgis:unapplied`, `a-b`, an empty one), which PROJ skips whatever its keyword. A
-//! keyword with a space or a quote in it is refused, as PROJ refuses it.
+//! ESRI `.prj` names its method) and EPSG's `Mercator (variant A)` in WKT 1, as PROJ's Mercator
+//! (1SP), and WKT 1 and WKT 2 with a node of an unknown keyword (`rustgis:unapplied`, `a-b`,
+//! `a"b c"`, an empty one), which PROJ skips whatever its keyword. A keyword with a space, a
+//! vertical tab, a NUL or an unclosed quote in it is refused, as PROJ refuses it, and so is
+//! EPSG's `Mercator (variant A)` with a latitude of origin other than 0, which PROJ reads but
+//! neither transforms nor writes as a PROJ string.
 //!
 //! `data/wkt1_proj_reads.json` (`scripts/gen_wkt1_proj_reads.py`, pyproj 3.8.0, no grids,
 //! `PROJ_NETWORK=OFF`) holds, for each WKT, a point in its geographic CRS, the point in the
 //! WKT's CRS by `Transformer.from_crs(crs.geodetic_crs, crs, always_xy=True)`, and
-//! `CRS.from_wkt(wkt).to_proj4()`; Makassar / NEIEZ in WGS 84 by `Transformer.from_crs(crs,
-//! "EPSG:4326", always_xy=True)` and its `CRS.to_epsg()`; and the WKT `CRS.from_wkt` refuses.
+//! `CRS.from_wkt(wkt).to_proj4()` and `CRS.to_epsg()`; Makassar / NEIEZ in WGS 84 by
+//! `Transformer.from_crs(crs, "EPSG:4326", always_xy=True)` and its `CRS.to_epsg()`; the WKT
+//! `CRS.from_wkt` refuses; and the WKT `Transformer.from_crs(crs.geodetic_crs, crs)` and
+//! `CRS.to_proj4()` refuse.
 //! Tolerance: 1 mm (in the CRS's unit for projected coordinates, 1e-9 degrees for geographic ones,
 //! 1e-8 degrees in WGS 84); PROJ strings have PROJ's parameters, their values within a relative
 //! 1e-12.
@@ -30,7 +35,7 @@ fn wkt_proj_reads_is_read_and_places_points_as_proj_does() {
     offline();
     let data = data();
     let cases = data["read"].as_array().unwrap();
-    assert_eq!(cases.len(), 13);
+    assert_eq!(cases.len(), 24);
     let mut bad = vec![];
     for case in cases {
         let name = case["name"].as_str().unwrap();
@@ -92,7 +97,7 @@ fn a_keyword_proj_refuses_is_refused() {
     offline();
     let data = data();
     let cases = data["refused"].as_array().unwrap();
-    assert_eq!(cases.len(), 2);
+    assert_eq!(cases.len(), 4);
     let wgs84 = SpatialRef::from_epsg(4326).unwrap();
     for case in cases {
         let wkt = case["wkt"].as_str().unwrap();
@@ -117,4 +122,39 @@ fn makassar_neiez_goes_to_wgs84_as_in_proj() {
     let proj = (num(&case["proj"], 0), num(&case["proj"], 1));
     // 1e-8 degrees is about a millimetre.
     assert!((got.0 - proj.0).abs() < 1e-8 && (got.1 - proj.1).abs() < 1e-8, "{got:?}, PROJ {proj:?}");
+}
+
+/// The EPSG code PROJ identifies is terrio's (NAD27 / UTM zone 17N with a node of a hyphenated
+/// keyword is EPSG:26717). A CRS PROJ identifies as none may still be identified by terrio.
+#[test]
+fn wkt_proj_reads_is_identified_as_proj_identifies_it() {
+    offline();
+    let data = data();
+    let mut bad = vec![];
+    for case in data["read"].as_array().unwrap().iter().filter(|c| !c["epsg"].is_null()) {
+        let got = SpatialRef::from_wkt(case["wkt"].as_str().unwrap()).epsg;
+        if got.map(u64::from) != case["epsg"].as_u64() {
+            bad.push(format!("{}: {got:?}, PROJ {}", case["name"], case["epsg"]));
+        }
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
+/// EPSG's `Mercator (variant A)` with a latitude of origin other than 0 is refused: PROJ reads
+/// it, but neither transforms it ("Input is not a transformation") nor writes it as a PROJ
+/// string, as `+proj=merc` has no latitude of origin.
+#[test]
+fn mercator_variant_a_with_a_latitude_of_origin_is_refused_as_in_proj() {
+    offline();
+    let data = data();
+    let cases = data["untransformed"].as_array().unwrap();
+    assert_eq!(cases.len(), 3);
+    for case in cases {
+        let wkt = case["wkt"].as_str().unwrap();
+        let crs = SpatialRef::from_wkt(wkt);
+        assert_eq!(terrio_crs::wkt_proj(wkt), None, "{}", case["name"]);
+        assert_eq!(crs.to_proj4(), None, "{}", case["name"]);
+        let geog = SpatialRef::from_wkt(&crs.geographic_wkt().unwrap());
+        assert!(Transformer::new(&geog, &crs).is_err(), "{}", case["name"]);
+    }
 }

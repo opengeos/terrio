@@ -260,18 +260,23 @@ A datum terrio does not know by name and without `TOWGS84` (`Unknown based on Be
 ellipsoid`, as GDAL and PROJ write a PROJ string's `+ellps=bessel`) gets no EPSG code and no datum
 shift, as in GDAL: the CRS is used as it is.
 
-A WKT 1 in grads with a `PRIMEM["Paris",2.33722917]` (NTF (Paris) as GDAL and ESRI write it)
-has Paris's longitude in degrees, as PROJ reads it; another prime meridian is in the CRS's
-angular unit. ESRI's `Behrmann` projection is cylindrical equal area true at 30 degrees, or at
-the `Standard_Parallel_1` it gives (EASE-Grid 2.0), PROJ's `+proj=cea +lat_ts=30`. ESRI's
+A WKT 1 in grads with a `PRIMEM["Paris",2.33722917]` (NTF (Paris) as GDAL and ESRI write it) has
+Paris's longitude in degrees, as PROJ reads it; another prime meridian is in the CRS's angular unit.
+ESRI's `Behrmann` projection is cylindrical equal area true at 30 degrees, or at the
+`Standard_Parallel_1` it gives (EASE-Grid 2.0), PROJ's `+proj=cea +lat_ts=30`. ESRI's
 `Mercator_Variant_A` (EPSG:3002, Makassar / NEIEZ, in an ESRI `.prj`) is Mercator (1SP), its
 `Scale_Factor` 1 when not given; as in PROJ, a `Latitude_Of_Origin` or `Standard_Parallel_1` it
-gives is left out.
+gives is left out. EPSG's name in WKT 1, `Mercator (variant A)` (or `Mercator_(variant_A)`), is read
+the same way, but with a `Latitude_Of_Origin` (or `Latitude_of_natural_origin`) other than 0 it is
+refused, as PROJ reads it but neither transforms it nor writes it as a PROJ string.
 
 A node of a keyword terrio does not know is skipped, whatever its keyword, as PROJ skips it:
-`vendor:mark["x"]`, `a-b["x"]` and an empty keyword (`["x"]`) are read past. A keyword ends at a
-space, a quote or a delimiter, and a keyword with a space or a quote in it (`a b["x"]`) makes the
-WKT one terrio refuses, as PROJ does.
+`vendor:mark["x"]`, `a-b["x"]`, `a"b c"["x"]` and an empty keyword (`["x"]`) are read past. A
+keyword ends at a space (C's `isspace`, the vertical tab included) or a delimiter, outside a quoted
+run, and a keyword with a space, a NUL or an unclosed quote in it (`a b["x"]`, `a"b["x"]`) makes the
+WKT one terrio refuses, as PROJ does. WKT ends at its first NUL, as PROJ and GDAL read it. WKT 1 and
+WKT 2 share this parser, as do the readers of PROJJSON and of IAU definitions, which go through WKT,
+so an unknown node is skipped in each.
 
 A CRS of PROJ's ESRI authority is reported under it, as GDAL reports it: a GeoTIFF GDAL writes in
 `ESRI:54009` is `ESRI:54009` (from the ESRI code the WKT declares or, for GDAL's ESRI PE strings,
