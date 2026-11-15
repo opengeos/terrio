@@ -971,7 +971,10 @@ They read and write:
   `TOWGS84` shifts. A user-defined projected CRS can be read by a registered code (see below);
 - ESRI PE citations (`ESRI PE String = <WKT>`), which GDAL writes for a CRS GeoKeys cannot hold
   (an engineering CRS, a method GeoTIFF has no code for, a definition only its PROJ string
-  describes): terrio writes them for the same CRSs.
+  describes): terrio writes them for the same CRSs. A CRS whose WKT holds a NUL (from a PROJJSON
+  name) can't be written so, as GeoAsciiParamsTag ends at its first NUL: writing its GeoKeys, and
+  so a GeoTIFF or COG in it, fails, where terrio used to write a file whose CRS GDAL couldn't
+  read. GDAL 3.12.1 refuses to write such a CRS too. Citation names are written up to a NUL.
 
 A user-defined projected CRS gets a registered code more often than in GDAL, which names only an
 equivalent registered CRS of the citation's exact name (or an ESRI CRS, as terrio does too). terrio

@@ -68,8 +68,9 @@ impl GeoKeys<'_> {
         }
         let start = (off as usize).min(self.ascii.len());
         let end = (start + n as usize).min(self.ascii.len());
-        // Text that is not UTF-8 in that span reads as none (see `ascii_lossy`).
-        std::str::from_utf8(&self.ascii[start..end]).ok().map(|s| s.trim_end_matches(['|', '\0']))
+        // Text that is not UTF-8 in that span reads as none (see `ascii_lossy`). `read` has cut
+        // the tag at its first NUL already.
+        std::str::from_utf8(&self.ascii[start..end]).ok().map(|s| s.trim_end_matches('|'))
     }
 
     /// An ASCII key's text, its bytes sliced: offsets count bytes, and the text may hold
@@ -1182,7 +1183,9 @@ impl SpatialRef {
     ///
     /// A geographic 3D CRS is written as its geographic 2D CRS with its own code as the vertical
     /// CRS, as GDAL writes it (EPSG:4979 as `2048=4326`, `4096=4979`). Fails for an unknown CRS,
-    /// and for a CRS that needs the fallback and has no WKT.
+    /// and for a CRS that needs the fallback and has no WKT, or whose WKT holds a NUL (from a
+    /// PROJJSON name): GeoAsciiParamsTag ends at its first NUL for its readers, and GDAL 3.12.1
+    /// refuses to write such a CRS too. Citation names are written up to a NUL.
     ///
     /// ```
     /// use terrio_crs::SpatialRef;
