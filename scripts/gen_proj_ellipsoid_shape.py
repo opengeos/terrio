@@ -23,6 +23,7 @@ Usage: PROJ_NETWORK=OFF python scripts/gen_proj_ellipsoid_shape.py (needs pyproj
 """
 
 import json
+import math
 import os
 from pathlib import Path
 
@@ -276,12 +277,14 @@ def written_case(definition, extension):
     else:
         t = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
     proj = list(t.transform(*POINT, errcheck=True))
-    # PROJ reads the WKT as it reads the string.
-    assert all(abs(a - b) < 1e-3 for a, b in zip(proj, original)), (
-        definition,
-        proj,
-        original,
-    )
+    # PROJ reads the WKT as it reads the string, within 1 mm (degrees in metres for a
+    # geographic CRS, as tests/proj_ellipsoid_shape.rs measures them).
+    if crs.is_geographic:
+        dx = (proj[0] - original[0]) * math.cos(math.radians(original[1])) * 111_195.0
+        dy = (proj[1] - original[1]) * 111_195.0
+    else:
+        dx, dy = proj[0] - original[0], proj[1] - original[1]
+    assert math.hypot(dx, dy) < 1e-3, (definition, proj, original)
     return {"proj_string": definition, "extension": extension, "wkt": wkt, "proj": proj}
 
 
