@@ -475,8 +475,7 @@ fn user_defined_crs(k: &GeoKeys) -> Option<SpatialRef> {
     // (`+proj=longlat +ellps=bessel +pm=paris` is not EPSG:4162). When terrio cannot read it,
     // wbprojection's code and WKT stay the fallback.
     let epsg = match own.as_deref() {
-        // uncut: stored or built WKT
-        Some(w) => guess.filter(|code| crate::identify_epsg_text(w) == Some(*code)),
+        Some(w) => guess.filter(|code| crate::identify_epsg(w) == Some(*code)),
         None => guess,
     };
     let wkt = own.or(guess_wkt);
@@ -865,8 +864,7 @@ pub fn user_defined_keys(crs: &SpatialRef, name: &str) -> Option<GeoKeyValues> {
         return keys_for_proj(p, name, None);
     }
     // A WKT: its PROJ string as terrio reads it, on the EPSG geographic CRS it is identified on.
-    // uncut: stored or built WKT
-    if let Some(p) = crs.wkt.as_deref().and_then(crate::wkt_proj_text) {
+    if let Some(p) = crs.wkt.as_deref().and_then(crate::wkt_proj) {
         let geog = crs.geographic_code();
         return keys_for_proj(&p, name, geog);
     }

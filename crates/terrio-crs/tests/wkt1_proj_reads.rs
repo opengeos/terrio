@@ -308,3 +308,19 @@ fn a_stored_wkt_with_a_nul_in_its_name_is_written_with_its_shift() {
     let proj: Vec<f64> = case["parameters"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
     assert_eq!(got, proj);
 }
+
+/// `wkt_proj` and `identify_epsg` read a CRS's stored WKT whole, as `to_wkt` gives it: a NUL in a
+/// name (from PROJJSON) stays part of it. EPSG:32631's PROJJSON with one gives the PROJ string
+/// of PROJ's UTM zone 31N and is identified as EPSG:32631, as PROJ identifies it.
+#[test]
+fn stored_wkt_with_a_nul_in_a_name_is_read_whole() {
+    offline();
+    let data = data();
+    let case = &data["projjson"];
+    let wkt = SpatialRef::from_projjson(case["projjson"].as_str().unwrap()).unwrap().to_wkt().unwrap();
+    assert!(wkt.contains('\0'));
+    let proj = terrio_crs::wkt_proj(&wkt).unwrap();
+    let utm = SpatialRef::from_epsg(32631).unwrap();
+    assert!(terrio_crs::wkt_proj(&utm.to_wkt().unwrap()).is_some_and(|p| same_proj(&p, &proj)), "{proj}");
+    assert_eq!(terrio_crs::identify_epsg(&wkt).map(u64::from), case["epsg"].as_u64());
+}

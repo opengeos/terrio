@@ -139,8 +139,7 @@ fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
     let proj = match (entry, s.proj4.as_deref()) {
         (_, Some(p)) => p.to_string(),
         (Some(e), None) => e.proj.clone(),
-        // uncut: stored or built WKT
-        (None, None) => crate::wkt_proj_text(wkt).ok_or_else(|| unsupported("a WKT terrio reads otherwise"))?,
+        (None, None) => crate::wkt_proj(wkt).ok_or_else(|| unsupported("a WKT terrio reads otherwise"))?,
     };
     let p = Params::parse(&proj);
     refuse_misdescribed(&root, &p, &def)?;
@@ -150,8 +149,7 @@ fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
     // reads it; a CRS made from an EPSG code (its table WKT) is written as such, whatever that
     // WKT holds: its datum shift is EPSG's.
     let from_table = s.proj4.is_none() && entry.is_some_and(|e| s.wkt.as_deref() == Some(e.wkt.as_str()));
-    // uncut: stored or built WKT
-    let given = if from_table { None } else { s.proj4.clone().or_else(|| s.wkt.as_deref().and_then(crate::wkt_proj_text)) };
+    let given = if from_table { None } else { s.proj4.clone().or_else(|| s.wkt.as_deref().and_then(crate::wkt_proj)) };
     let towgs84 = match given.and_then(|g| Params::parse(&g).list("towgs84")) {
         Some(t) if !matches!(t.len(), 3 | 7) => return Err(unsupported(format!("a +towgs84 of {} values", t.len()))),
         Some(t) if t.iter().any(|v| !v.is_finite()) => return Err(unsupported("a +towgs84 with a non-finite value")),

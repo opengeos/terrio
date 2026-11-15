@@ -260,11 +260,12 @@ A datum terrio does not know by name and without `TOWGS84` (`Unknown based on Be
 ellipsoid`, as GDAL and PROJ write a PROJ string's `+ellps=bessel`) gets no EPSG code and no datum
 shift, as in GDAL: the CRS is used as it is.
 
-A WKT 1 in grads with a `PRIMEM["Paris",2.33722917]` (NTF (Paris) as GDAL and ESRI write it) has
-Paris's longitude in degrees, as PROJ reads it; another prime meridian is in the CRS's angular unit.
-ESRI's `Behrmann` projection is cylindrical equal area true at 30 degrees, or at the
-`Standard_Parallel_1` it gives (EASE-Grid 2.0), PROJ's `+proj=cea +lat_ts=30`. ESRI's
-`Mercator_Variant_A` (EPSG:3002, Makassar / NEIEZ, in an ESRI `.prj`) is Mercator (1SP), its
+A WKT 1 in grads with a `PRIMEM["Paris",2.33722917]` (NTF (Paris) as GDAL and ESRI write it)
+has Paris's longitude in degrees, as PROJ reads it; another prime meridian is in the CRS's
+angular unit. ESRI's `Behrmann` projection is cylindrical equal area true at 30 degrees, or at
+the `Standard_Parallel_1` it gives (EASE-Grid 2.0), PROJ's `+proj=cea +lat_ts=30`.
+
+ESRI's `Mercator_Variant_A` (EPSG:3002, Makassar / NEIEZ, in an ESRI `.prj`) is Mercator (1SP), its
 `Scale_Factor` 1 when not given; as in PROJ, a `Latitude_Of_Origin` or `Standard_Parallel_1` it
 gives is left out. EPSG's name in WKT 1, `Mercator (variant A)` (or `Mercator_(variant_A)`), is read
 the same way, but with a `Latitude_Of_Origin` (or `Latitude_of_natural_origin`) other than 0 it is

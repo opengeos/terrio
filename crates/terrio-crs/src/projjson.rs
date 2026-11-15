@@ -409,8 +409,7 @@ fn crs(value: &Value, base: bool, depth: usize) -> Result<String> {
                 || !target_def.is_wgs84()
                 || (target_def.ell.a - wgs84.a).abs() > 1e-6
                 || (target_def.ell.es - wgs84.es).abs() > 1e-14
-                // uncut: stored or built WKT
-                || !crate::wkt_proj_text(&target).is_some_and(|p| !p.contains("+pm="))
+                || !crate::wkt_proj(&target).is_some_and(|p| !p.contains("+pm="))
             {
                 return Err(bad("bound target must be a WGS 84 geographic CRS at Greenwich"));
             }

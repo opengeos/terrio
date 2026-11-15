@@ -78,8 +78,7 @@ pub(crate) fn write(s: &SpatialRef) -> Option<String> {
         if s.wkt.as_deref().is_some_and(crate::is_variant_c) {
             return None;
         }
-        // uncut: stored or built WKT
-        return s.wkt.as_deref().and_then(|w| crate::wkt_proj_text(w).and_then(|p| custom(&wkt_axes(w, &p), wkt_datum(w))));
+        return s.wkt.as_deref().and_then(|w| crate::wkt_proj(w).and_then(|p| custom(&wkt_axes(w, &p), wkt_datum(w))));
     }
     // A WKT's shift to WGS 84 (`TOWGS84`, a WKT 2 `BOUNDCRS`) makes it a bound CRS, which PROJ
     // writes with the ellipsoid and `+towgs84` in place of the datum, even for a code.
@@ -114,8 +113,7 @@ pub(crate) fn write(s: &SpatialRef) -> Option<String> {
 /// The shift to WGS 84 of a CRS's WKT, when it has one: `+nadgrids`, else `+towgs84`.
 fn wkt_shift(s: &SpatialRef) -> Option<String> {
     let w = s.wkt.as_deref().filter(|w| ["TOWGS84", "ABRIDGEDTRANSFORMATION", "nadgrids"].iter().any(|k| w.contains(k)))?;
-    // uncut: stored or built WKT
-    let proj = crate::wkt_proj_text(w)?;
+    let proj = crate::wkt_proj(w)?;
     let tokens = tokens(&proj, false);
     tokens
         .iter()

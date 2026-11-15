@@ -95,12 +95,13 @@ pub(crate) const MAX_LEVELS: usize = 16;
 pub(crate) const MAX_LEN: usize = 100_000;
 
 /// A definition given as text, as PROJ 9.8.1 and GDAL take it: a C string, which ends at its
-/// first NUL (text after a complete WKT was ignored before as well). The public entry points cut
-/// the text they are given (and `geokeys::read` its GeoAsciiParamsTag). Text that is stored or
-/// that terrio built (the WKT of a PROJJSON, whose names keep a NUL (`\u0000`) as PROJ 9.8.1
-/// reads them) goes uncut to the parser through the `*_text` functions (`from_wkt_text`,
-/// `wkt_proj_text`, `identify_epsg_text`), whose call sites say `uncut`. The parser refuses a
-/// NUL outside quotes.
+/// first NUL (text after a complete WKT was ignored before as well). The entry points for a
+/// definition given as text cut it (`SpatialRef::from_wkt`, `parse`, `parse_literal`,
+/// `from_projjson`, and `geokeys::read` its GeoAsciiParamsTag). Text that is stored or that
+/// terrio built (the WKT of a PROJJSON, whose names keep a NUL (`\u0000`) as PROJ 9.8.1 reads
+/// them) goes uncut to the parser: through `SpatialRef::from_wkt_text`, whose call sites say
+/// `uncut`, and through `wkt_proj` and `identify_epsg`, which read a CRS's stored WKT whole. The
+/// parser refuses a NUL outside quotes.
 pub(crate) fn until_nul(s: &str) -> &str {
     s.split('\0').next().unwrap_or_default()
 }

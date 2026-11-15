@@ -407,8 +407,7 @@ impl SpatialRef {
                 })
             };
             let epsg = declared_epsg(wkt)
-                // uncut: stored or built WKT
-                .or_else(|| identify_epsg_text(wkt))
+                .or_else(|| identify_epsg(wkt))
                 .filter(|code| fits(SpatialRef { epsg: Some(*code), ..Default::default() }));
             // Retain a lenient extension through its WKT: re-reading it as a literal PROJ
             // string would apply stricter validation than the extension permits.
@@ -428,8 +427,7 @@ impl SpatialRef {
         if (is_variant_c(wkt) || proj4_extension(wkt).is_some()) && Def::from_wkt(wkt).is_err() {
             return Self { wkt: Some(wkt.to_string()), ..Default::default() };
         }
-        // uncut: stored or built WKT
-        let epsg = identify_epsg_text(wkt);
+        let epsg = identify_epsg(wkt);
         Self { epsg, wkt: Some(wkt.to_string()), ..Default::default() }.with_esri()
     }
 
@@ -616,8 +614,7 @@ impl SpatialRef {
                 let head: String = s.chars().take(80).collect();
                 return Err(Error::Crs(format!("not a WKT definition GDAL reads: '{head}'")));
             }
-            // uncut: stored or built WKT
-            return Ok(Self::from_wkt_text(s));
+            return Ok(Self::from_wkt(s));
         }
         if let Some(code) = esri_reference(&upper) {
             return Self::from_esri(code);
@@ -878,8 +875,7 @@ impl SpatialRef {
         }
         let (horizontal, vertical) = def::split_compound(self.wkt.as_deref()?)?;
         let vertical = declared_epsg(&vertical).filter(|v| epsg::vertical(*v).is_some())?;
-        // uncut: stored or built WKT
-        Some((identify_epsg_text(&horizontal)?, vertical))
+        Some((identify_epsg(&horizontal)?, vertical))
     }
 
     /// Whether coordinates have a height that transformations change: a compound CRS (with a
@@ -1130,8 +1126,7 @@ impl SpatialRef {
         if let Some(w) = self.epsg.and_then(epsg::get).map(|e| e.wkt.as_str()).or(self.wkt.as_deref())
             && is_variant_c(w)
         {
-            // uncut: stored or built WKT
-            let p = wkt_proj_text(w).ok_or_else(|| Error::Crs("a Polar Stereographic (variant C) CRS terrio cannot convert".into()))?;
+            let p = wkt_proj(w).ok_or_else(|| Error::Crs("a Polar Stereographic (variant C) CRS terrio cannot convert".into()))?;
             return Ok(wbp::from_proj_string(&p)?);
         }
         if let Some(code) = self.epsg
@@ -1177,15 +1172,11 @@ pub(crate) fn is_variant_c(wkt: &str) -> bool {
 }
 
 /// The PROJ string of a WKT definition as terrio reads it: its PROJ4 extension, else its WKT 1
-/// or WKT 2 conversion. `None` for a WKT terrio reads otherwise (through wbprojection).
+/// or WKT 2 conversion. `None` for a WKT terrio reads otherwise (through wbprojection). The WKT
+/// is read whole, a NUL in a name included: it is a CRS's stored WKT (`to_wkt`), whose names (a
+/// PROJJSON's) may keep one (see `wkt1::until_nul`).
 #[doc(hidden)]
 pub fn wkt_proj(wkt: &str) -> Option<String> {
-    wkt_proj_text(wkt1::until_nul(wkt))
-}
-
-/// [`wkt_proj`] of the whole text, uncut at a NUL: for stored WKT and WKT terrio built,
-/// whose names (a PROJJSON's) may keep one (see `wkt1::until_nul`).
-pub(crate) fn wkt_proj_text(wkt: &str) -> Option<String> {
     if let Some(p) = proj4_extension(wkt) {
         return Some(p);
     }
@@ -1303,14 +1294,10 @@ pub fn compound_code(horizontal: u32, vertical: u32, name: Option<&str>) -> Opti
 /// lowest code; for other CRSs, wbprojection's registry, where among equally good matches the
 /// base datum is preferred over its later realizations (NAD83 over NAD83(HARN) and NAD83(2011))
 /// unless the WKT names one, then the lowest code.
+///
+/// The WKT is read whole, a NUL in a name included, as [`wkt_proj`] reads it.
 #[doc(hidden)]
 pub fn identify_epsg(wkt: &str) -> Option<u32> {
-    identify_epsg_text(wkt1::until_nul(wkt))
-}
-
-/// [`identify_epsg`] of the whole text, uncut at a NUL: for stored WKT and WKT terrio built,
-/// whose names (a PROJJSON's) may keep one (see `wkt1::until_nul`).
-pub(crate) fn identify_epsg_text(wkt: &str) -> Option<u32> {
     if let Some(code) = declared_epsg(wkt) {
         return Some(code);
     }
@@ -1411,8 +1398,7 @@ pub(crate) fn identify_epsg_text(wkt: &str) -> Option<u32> {
         // by its parameters alone.
         if report.used_embedded_epsg && !report.resolved_code.is_some_and(|c| wbp::to_ogc_wkt(c).is_ok()) {
             let stripped = strip_authorities(wkt);
-            // uncut: stored or built WKT
-            return if stripped != wkt { identify_epsg_text(&stripped) } else { None };
+            return if stripped != wkt { identify_epsg(&stripped) } else { None };
         }
         if report.used_embedded_epsg || !report.ambiguous {
             return report.resolved_code.filter(|c| fits(*c));

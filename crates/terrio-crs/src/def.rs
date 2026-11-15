@@ -684,9 +684,8 @@ impl Def {
         }
         let geog = c.geog.or_else(|| c.geogcs.epsg()).or_else(|| match &c.geogcs_wkt1 {
             // WKT 2: identified loosely, so on the same ellipsoid only.
-            // uncut: stored or built WKT
-            Some(text) => super::identify_epsg_text(text).filter(|g| wkt2::same_ellipsoid(*g, self.ell.a, self.ell.es)),
-            None => super::identify_epsg_text(geogcs_text?),
+            Some(text) => super::identify_epsg(text).filter(|g| wkt2::same_ellipsoid(*g, self.ell.a, self.ell.es)),
+            None => super::identify_epsg(geogcs_text?),
         });
         let geog = geog.map(|g| epsg::get(g).filter(|e| e.proj.starts_with("+proj=geocent")).map_or(g, |e| e.geog));
         if let Some(e) = geog.and_then(epsg::get)
