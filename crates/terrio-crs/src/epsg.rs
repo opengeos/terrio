@@ -499,8 +499,10 @@ pub(crate) fn datums_named(name: &str) -> Vec<u32> {
 /// it finds a single CRS (`createObjectsFromName`, among the names and aliases of its database's
 /// CRSs, whatever the case of their ASCII letters); first, for an ESRI WKT 1 (`esri`), the CRS the
 /// name is an ESRI alias of. `fallback` is the code terrio reads the CRS as, which a name absent
-/// from the table stands for when it is its official name.
-pub(crate) fn crs_named_as_proj(name: &str, projected: bool, esri: bool, fallback: Option<u32>) -> Option<u32> {
+/// from the table stands for when it is its official name and the CRS of the kind PROJ looks up.
+/// PROJ looks a geographic 3D CRS (`three_d`) up among those, which the table leaves out: by the
+/// official name of `fallback` alone.
+pub(crate) fn crs_named_as_proj(name: &str, projected: bool, three_d: bool, esri: bool, fallback: Option<u32>) -> Option<u32> {
     static NAMES: OnceLock<HashMap<(u8, String), u32>> = OnceLock::new();
     let names = NAMES.get_or_init(|| {
         decompress(CRS_NAMES)
@@ -514,10 +516,21 @@ pub(crate) fn crs_named_as_proj(name: &str, projected: bool, esri: bool, fallbac
             .collect()
     });
     let (exact, folded) = if projected { (b'P', b'p') } else { (b'G', b'g') };
-    let found = (esri.then(|| names.get(&(exact, name.to_string()))).flatten()).or_else(|| names.get(&(folded, name.to_ascii_lowercase())));
+    let found = if three_d && !projected {
+        None
+    } else {
+        (esri.then(|| names.get(&(exact, name.to_string()))).flatten()).or_else(|| names.get(&(folded, name.to_ascii_lowercase())))
+    };
     match found {
         Some(&code) => (code != 0).then_some(code),
-        None => fallback.filter(|c| get(*c).is_some_and(|e| e.name.eq_ignore_ascii_case(name))),
+        // Only a CRS of the kind PROJ looks up: geographic 2D or 3D, or projected.
+        None => fallback.filter(|c| {
+            get(*c).is_some_and(|e| {
+                let geographic = e.proj.starts_with("+proj=longlat");
+                let other = geographic || e.proj.starts_with("+proj=geocent");
+                e.name.eq_ignore_ascii_case(name) && if projected { !other } else { geographic && e.three_d == three_d }
+            })
+        }),
     }
 }
 

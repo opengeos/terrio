@@ -1360,6 +1360,8 @@ fn proj_resolution(w: &str, code: Option<u32>) -> Option<(bool, Option<[f64; 4]>
         "PROJCS" | "PROJCRS" | "PROJECTEDCRS" => true,
         _ => return None,
     };
+    // A geographic 3D CRS, which PROJ looks up among those.
+    let three_d = !projected && root.child("CS").and_then(|cs| cs.num(1)).is_some_and(|n| n == 3.0);
     let base = if projected { ["GEOGCS", "BASEGEOGCRS", "BASEGEODCRS"].iter().find_map(|k| root.child(k))? } else { &root };
     let datum = ["DATUM", "TRF", "GEODETICDATUM", "ENSEMBLE"].iter().find_map(|k| base.child(k));
     let datum_renamed = datum.is_some_and(|d| d.epsg().is_some_and(|c| d.name().is_none_or(|n| !epsg::datums_named(n).contains(&c))));
@@ -1372,7 +1374,7 @@ fn proj_resolution(w: &str, code: Option<u32>) -> Option<(bool, Option<[f64; 4]>
     // ESRI's WKT reader maps a `PROJCS` name after a `GCS_` geographic CRS or a `D_` datum.
     let esri =
         if projected { gcs(base) || (wkt1 && datum.and_then(|d| d.name()).is_some_and(|n| n.starts_with("D_"))) } else { gcs(&root) };
-    let found = root.name().and_then(|n| epsg::crs_named_as_proj(n, projected, esri, code));
+    let found = root.name().and_then(|n| epsg::crs_named_as_proj(n, projected, three_d, esri, code));
     let axes = |n: &wkt1::Node, implicit: bool, c: u32| registered_north_first(c) == Some(north_first(n, implicit));
     let geog = code.and_then(epsg::get).map(|e| e.geog);
     let equivalent = match (found, code) {
@@ -1389,7 +1391,7 @@ fn proj_resolution(w: &str, code: Option<u32>) -> Option<(bool, Option<[f64; 4]>
             // transformations up for.
             has_id(base)
                 || geog.is_some_and(|g| {
-                    let f = base.name().and_then(|n| epsg::crs_named_as_proj(n, false, gcs(base), Some(g)));
+                    let f = base.name().and_then(|n| epsg::crs_named_as_proj(n, false, false, gcs(base), Some(g)));
                     f == Some(g) && axes(base, !wkt1, g)
                 })
         };
@@ -1686,5 +1688,27 @@ mod resolution_tests {
         assert_eq!(proj_resolution(&etrs89, Some(4258)), Some((false, None, false)));
         let local = renamed(r#"DATUM["Local datum",ELLIPSOID["International 1924",6378388,297,LENGTHUNIT["metre",1]],ID["EPSG",6806]]"#);
         assert_eq!(proj_resolution(&local, Some(4806)), Some((false, None, true)));
+    }
+
+    #[test]
+    fn names_stand_for_crss_of_the_kind_proj_looks_up() {
+        // The name of a geographic 3D or projected CRS does not stand for it among geographic 2D
+        // CRSs, nor that of a geographic CRS among projected ones.
+        let named = |name, projected, three_d, code| epsg::crs_named_as_proj(name, projected, three_d, false, Some(code));
+        assert_eq!(named("WGS 84", false, false, 4326), Some(4326));
+        assert_eq!(named("WGS 84", false, false, 4979), None);
+        assert_eq!(named("WGS 84", false, true, 4979), Some(4979));
+        assert_eq!(named("WGS 84", false, true, 4326), None);
+        assert_eq!(named("WGS 84", true, false, 4326), None);
+        assert_eq!(named("WGS 84 / UTM zone 33N", true, false, 32633), Some(32633));
+        assert_eq!(named("WGS 84 / UTM zone 33N", false, false, 32633), None);
+        // A geographic 3D WKT of its official name and axes is resolved; renamed, it is not.
+        let deg = r#"ANGLEUNIT["degree",0.0174532925199433]"#;
+        let wgs84_3d = format!(
+            r#"GEOGCRS["WGS 84",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563,LENGTHUNIT["metre",1]]],PRIMEM["Greenwich",0,{deg}],CS[ellipsoidal,3],AXIS["latitude",north,ORDER[1],{deg}],AXIS["longitude",east,ORDER[2],{deg}],AXIS["height",up,ORDER[3],LENGTHUNIT["metre",1]]]"#
+        );
+        assert_eq!(proj_resolution(&wgs84_3d, Some(4979)).map(|r| r.0), Some(true));
+        let renamed_3d = wgs84_3d.replacen(r#"GEOGCRS["WGS 84""#, r#"GEOGCRS["Local""#, 1);
+        assert_eq!(proj_resolution(&renamed_3d, Some(4979)), Some((false, None, false)));
     }
 }
