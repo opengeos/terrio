@@ -10,7 +10,8 @@ The WKTs are variants of EPSG geographic 2D CRSs (``variants``): ESRI's WKT 1, t
 ``GEOGCS`` renamed, WKT 2 without IDs, the same with the datum's ID, the same renamed (CRS and
 datum), WKT 1 with the datum's ``AUTHORITY`` alone, a renamed WKT 2 on a datum ensemble with its
 ID (WGS 84, ETRS89); for the CRSs PROJ places otherwise, also a renamed WKT 2 ``GEODCRS`` with an
-ellipsoidal CS and an ESRI compound CRS with the ``GEOGCS`` renamed; and ESRI WKT 1 of some
+ellipsoidal CS and an ESRI compound CRS with the ``GEOGCS`` renamed; WKT 2 named by an alias of
+the CRS (``ALIASED``); and ESRI WKT 1 of some
 projected CRSs, also with the ``GEOGCS`` renamed. Each case is a WKT, a point and the point in the other CRS by
 ``Transformer.from_crs(src, dst, always_xy=True).transform``: to WGS 84, from WGS 84 (the point in
 WGS 84), and, for a sample, to ETRS89, NAD83 and ETRS89 / UTM zone 32N. ``by_code`` is the same
@@ -64,6 +65,9 @@ SEARCHED = [
 PENDING_CODES = [7373, 9309, 10831]
 # CRSs on datum ensembles.
 ENSEMBLES = [4326, 4258]
+# WKTs named by an alias of their CRS (which PROJ finds by it): lon-first, and on a renamed datum
+# (NAD83(2011), which terrio then reads as no code).
+ALIASED = {4806: ("Rome 1940 (Rome)", "lon first"), 6318: ("415", "renamed datum")}
 SAMPLE_EVERY = 25
 TARGETS = [4258, 4269, 25832]
 TARGET_VARIANTS = [
@@ -158,6 +162,40 @@ def variants(c, more):
     return v
 
 
+def aliased(c, code):
+    """The WKT of a CRS named by an alias of it (``ALIASED``), by variant name."""
+    if code not in ALIASED:
+        return {}
+    alias, how = ALIASED[code]
+    w2 = c.to_wkt("WKT2_2019")
+    w2 = strip_ids(
+        re.sub(r",USAGE\[SCOPE\[[^\]]*\],AREA\[[^\]]*\],BBOX\[[^\]]*\]\]", "", w2)
+    )
+    datum = c.datum.to_json_dict()["id"]["code"]
+    w2 = re.sub(
+        r"(ELLIPSOID\[[^\[]*\[[^\]]*\]\])\]",
+        lambda m: m.group(1) + f',ID["EPSG",{datum}]]',
+        w2,
+        count=1,
+    )
+    w2 = re.sub(r'^GEOGCRS\["[^"]*"', f'GEOGCRS["{alias}"', w2)
+    if how == "lon first":
+        axes = re.findall(
+            r'AXIS\["[^"]*",[a-z]+,ORDER\[\d\],ANGLEUNIT\["degree",0\.0174532925199433\]\]',
+            w2,
+        )
+        assert len(axes) == 2, w2
+        swapped = (
+            axes[1].replace("ORDER[2]", "ORDER[1]")
+            + ","
+            + axes[0].replace("ORDER[1]", "ORDER[2]")
+        )
+        w2 = w2.replace(axes[0] + "," + axes[1], swapped)
+    else:
+        w2 = re.sub(r'DATUM\["[^"]*"', 'DATUM["Local datum"', w2)
+    return {f"wkt2 alias name, {how}": w2}
+
+
 def centre(c):
     """The centre of a CRS's area of use, in WGS 84 longitude and latitude."""
     w, s, e, n = c.area_of_use.bounds
@@ -210,6 +248,7 @@ def main():
         | set(SEARCHED)
         | set(PENDING_CODES)
         | set(ENSEMBLES)
+        | set(ALIASED)
     )
     wkts, cases = {}, []
 
@@ -244,7 +283,9 @@ def main():
         point = place(wgs84, c, lonlat)
         if point is None:
             continue
-        for kind, wkt in variants(c, code in SEARCHED or code in PENDING_CODES).items():
+        for kind, wkt in (
+            variants(c, code in SEARCHED or code in PENDING_CODES) | aliased(c, code)
+        ).items():
             key = f"{code} {kind}"
             w = CRS.from_wkt(wkt)
             wkts[key] = wkt

@@ -78,8 +78,9 @@ def equivalent_name(a, b):
 def lookup(db, name, kind):
     """The CRS PROJ's ``createObjectsFromName(name, {kind}, false, 2)`` finds alone.
 
-    PROJ keeps the first two rows of its query, without repeats, nor deprecated CRSs after
-    current ones; then, of those, the ones whose official name is the searched one, if any.
+    PROJ's query keeps its first two rows (``LIMIT 2``, in SQL). Of those, PROJ then drops the
+    repeats of a CRS and the deprecated CRSs after current ones, and keeps the ones whose
+    official name is the searched one, if any.
 
     Args:
         db: A connection to PROJ's database.

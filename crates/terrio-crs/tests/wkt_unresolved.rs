@@ -8,10 +8,11 @@
 //! `data/wkt_unresolved.json` (`scripts/gen_wkt_unresolved.py`, pyproj 3.8.0, no grids,
 //! `PROJ_NETWORK=OFF`) holds variants of EPSG geographic 2D CRSs and of some projected CRSs: ESRI
 //! WKT 1, renamed, WKT 2 without IDs, a WKT 2 `GEODCRS` with an ellipsoidal CS, an ESRI compound
-//! CRS, renamed CRSs on the WGS 84 and ETRS89 ensembles with their IDs, and others. Each case is a point and where PROJ places it,
-//! with `Transformer.from_crs(src, dst, always_xy=True).transform`: to WGS 84, from WGS 84, and,
-//! for a sample, to ETRS89, NAD83 and ETRS89 / UTM zone 32N. `by_code` is the same with the EPSG
-//! code in place of the WKT. Tolerance: 1 mm.
+//! CRS, renamed CRSs on the WGS 84 and ETRS89 ensembles with their IDs, CRSs named by an alias, and
+//! others. Each case is a point and where PROJ places it, with `Transformer.from_crs(src, dst,
+//! always_xy=True).transform`: to WGS 84, from WGS 84, and, for a sample, to ETRS89, NAD83 and
+//! ETRS89 / UTM zone 32N. `by_code` is the same with the EPSG code in place of the WKT. Tolerance:
+//! 1 mm.
 //!
 //! `pending` cases are those PROJ places by two steps of its search that terrio does not follow
 //! yet, so it places them by the code. The first is PROJ's datum pivot through the datum's CRSs in
@@ -51,8 +52,14 @@ fn place(data: &Value, case: &Value) -> Option<(f64, f64)> {
     Transformer::new(&src, &dst).ok()?.transform(x, y).ok()
 }
 
-/// The cases, with how far terrio places each from PROJ and from the code's placement.
-fn offsets() -> Vec<(Value, f64, f64)> {
+/// The cases, with how far terrio places each from PROJ and from the code's placement, computed
+/// once for both tests.
+fn offsets() -> &'static [(Value, f64, f64)] {
+    static OFFSETS: std::sync::OnceLock<Vec<(Value, f64, f64)>> = std::sync::OnceLock::new();
+    OFFSETS.get_or_init(compute_offsets)
+}
+
+fn compute_offsets() -> Vec<(Value, f64, f64)> {
     offline();
     let data = data();
     let cases = data["cases"].as_array().unwrap();
@@ -76,7 +83,7 @@ fn wkts_proj_does_not_resolve_are_placed_as_proj_does() {
     assert!(all.len() > 900, "{} cases", all.len());
     let mut bad = vec![];
     let mut searched = 0;
-    for (case, proj, by_code) in &all {
+    for (case, proj, by_code) in all {
         if case["pending"].as_bool().unwrap() {
             continue;
         }
@@ -97,11 +104,11 @@ fn wkts_proj_does_not_resolve_are_placed_as_proj_does() {
 /// does: until terrio follows those two steps too.
 #[test]
 fn datum_pivot_and_renamed_datums_are_placed_by_the_code() {
-    let pending: Vec<_> = offsets().into_iter().filter(|(case, ..)| case["pending"].as_bool().unwrap()).collect();
+    let pending: Vec<_> = offsets().iter().filter(|(case, ..)| case["pending"].as_bool().unwrap()).collect();
     assert_eq!(pending.len(), 18);
     for (case, proj, by_code) in pending {
         let name = case["name"].as_str().unwrap();
-        assert!(by_code < 1e-3, "{name}: {by_code:.3} m from the code's placement");
-        assert!(proj > 0.1, "{name}: placed as PROJ does, {proj:.3} m");
+        assert!(*by_code < 1e-3, "{name}: {by_code:.3} m from the code's placement");
+        assert!(*proj > 0.1, "{name}: placed as PROJ does, {proj:.3} m");
     }
 }

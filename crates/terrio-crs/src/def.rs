@@ -301,7 +301,7 @@ impl Def {
                 && d.geog.is_some()
                 && let Some(w) = s.wkt.as_deref().filter(|w| *w != e.wkt && super::declared_epsg(w).is_none())
             {
-                d.resolve_as_proj(w, s.epsg);
+                d.record_proj_resolution(w, s.epsg);
             }
             return Ok(d);
         }
@@ -315,7 +315,7 @@ impl Def {
             d.tag_iau(s)?;
             // A WKT without EPSG code on the datum of one, which PROJ resolves by its name only.
             if d.geog.is_some() && d.bound.is_none() && super::declared_epsg(w).is_none() {
-                d.resolve_as_proj(w, None);
+                d.record_proj_resolution(w, None);
             }
             return Ok(d);
         }
@@ -1302,14 +1302,40 @@ impl Def {
     /// Records whether PROJ resolves the CRS of WKT `w` (read as EPSG `code`, if any) and the area
     /// it then uses: that of the CRS it finds by the WKT's name, even one that differs, else none.
     /// A CRS whose datum is renamed keeps the code's area, as PROJ's way through its ballpark is
-    /// not followed yet: routes with it are those of the code.
-    fn resolve_as_proj(&mut self, w: &str, code: Option<u32>) {
-        if let Some((resolved, area, datum_renamed)) = proj_resolution(w, code)
-            && !resolved
+    /// not followed yet: routes with it are those of the code. Remembered for the last WKTs seen,
+    /// as `Def::new` runs for many accessors.
+    fn record_proj_resolution(&mut self, w: &str, code: Option<u32>) {
+        type Seen = std::collections::HashMap<(String, Option<u32>), Option<Resolution>>;
+        static SEEN: std::sync::Mutex<Option<Seen>> = std::sync::Mutex::new(None);
+        let key = (w.to_string(), code);
+        let known = SEEN.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Default::default).get(&key).copied();
+        let r = known.unwrap_or_else(|| {
+            // A CRS PROJ finds by the name of a WKT terrio reads as no code: the WKT matches it
+            // when terrio reads them alike (conversion, ellipsoid, datum).
+            let alike = |found: u32| {
+                Def::new(&SpatialRef { epsg: Some(found), ..Default::default() }).is_ok_and(|f| {
+                    self.same_conversion(&f)
+                        && (self.ell.a - f.ell.a).abs() < 1e-3
+                        && (self.ell.es - f.ell.es).abs() < 1e-9
+                        && self.datum.is_some()
+                        && self.datum == f.datum
+                })
+            };
+            let r = wkt1::parse(w).and_then(|root| proj_resolution(&root, code, &alike));
+            let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+            let seen = seen.get_or_insert_with(Default::default);
+            if seen.len() >= 256 {
+                seen.clear();
+            }
+            seen.insert(key, r);
+            r
+        });
+        if let Some(r) = r
+            && !r.resolved
         {
-            self.unresolved = Some(Unresolved { datum_renamed });
-            if !datum_renamed {
-                self.area = area;
+            self.unresolved = Some(Unresolved { datum_renamed: r.datum_renamed });
+            if !r.datum_renamed {
+                self.area = r.area;
             }
         }
     }
@@ -1335,8 +1361,9 @@ fn registered_north_first(code: u32) -> Option<bool> {
         .or_insert_with(|| epsg::get(code).and_then(|e| wkt1::parse(&e.wkt)).map(|r| north_first(&r, false)))
 }
 
-/// How PROJ 9.8.1 resolves the geographic or projected CRS of WKT `w`, which terrio reads as EPSG
-/// `code`: whether it resolves it (for a projected CRS, the CRS or else its geographic CRS), the
+/// How PROJ 9.8.1 resolves the geographic or projected CRS of WKT `root`, which terrio reads as EPSG
+/// `code` (`alike`: whether the WKT matches an EPSG CRS but for its name and axis order, for a
+/// WKT terrio reads as no code): whether it resolves it (for a projected CRS, the CRS or else its geographic CRS), the
 /// area it uses for it, and whether the datum is renamed (see [`Unresolved`]). `None` for other
 /// kinds of CRS (the horizontal CRS of a compound CRS is resolved on its own, as PROJ does).
 ///
@@ -1344,8 +1371,7 @@ fn registered_north_first(code: u32) -> Option<bool> {
 /// PROJ looks its name up (`createObjectsFromName`, with `data/crs_names.tsv.zst`), and resolves
 /// it when it finds the CRS alone and the WKT is equivalent to it, axis order included (but that
 /// of an implicit geographic CRS of a projected one).
-fn proj_resolution(w: &str, code: Option<u32>) -> Option<(bool, Option<[f64; 4]>, bool)> {
-    let root = wkt1::parse(w)?;
+fn proj_resolution(root: &wkt1::Node, code: Option<u32>, alike: &dyn Fn(u32) -> bool) -> Option<Resolution> {
     let key = root.key.to_ascii_uppercase();
     let wkt1 = key == "GEOGCS" || key == "PROJCS";
     // A WKT 2 geodetic CRS with an ellipsoidal CS is a geographic CRS to PROJ.
@@ -1362,27 +1388,27 @@ fn proj_resolution(w: &str, code: Option<u32>) -> Option<(bool, Option<[f64; 4]>
     };
     // A geographic 3D CRS, which PROJ looks up among those.
     let three_d = !projected && root.child("CS").and_then(|cs| cs.num(1)).is_some_and(|n| n == 3.0);
-    let base = if projected { ["GEOGCS", "BASEGEOGCRS", "BASEGEODCRS"].iter().find_map(|k| root.child(k))? } else { &root };
+    let base = if projected { ["GEOGCS", "BASEGEOGCRS", "BASEGEODCRS"].iter().find_map(|k| root.child(k))? } else { root };
     let datum = ["DATUM", "TRF", "GEODETICDATUM", "ENSEMBLE"].iter().find_map(|k| base.child(k));
     let datum_renamed = datum.is_some_and(|d| d.epsg().is_some_and(|c| d.name().is_none_or(|n| !epsg::datums_named(n).contains(&c))));
     let has_id = |n: &wkt1::Node| n.child("AUTHORITY").or_else(|| n.child("ID")).is_some();
     let gcs = |n: &wkt1::Node| wkt1 && n.name().is_some_and(|n| n.starts_with("GCS_"));
     let area = |c: Option<u32>| c.and_then(epsg::get).and_then(|e| e.area);
-    if has_id(&root) {
-        return Some((true, area(code), datum_renamed));
+    if has_id(root) {
+        return Some(Resolution { resolved: true, area: area(code), datum_renamed });
     }
     // ESRI's WKT reader maps a `PROJCS` name after a `GCS_` geographic CRS or a `D_` datum.
-    let esri =
-        if projected { gcs(base) || (wkt1 && datum.and_then(|d| d.name()).is_some_and(|n| n.starts_with("D_"))) } else { gcs(&root) };
+    let esri = if projected { gcs(base) || (wkt1 && datum.and_then(|d| d.name()).is_some_and(|n| n.starts_with("D_"))) } else { gcs(root) };
     let found = root.name().and_then(|n| epsg::crs_named_as_proj(n, projected, three_d, esri, code));
     let axes = |n: &wkt1::Node, implicit: bool, c: u32| registered_north_first(c) == Some(north_first(n, implicit));
-    let geog = code.and_then(epsg::get).map(|e| e.geog);
+    let geog = code.and_then(epsg::get).map(|e| e.geog).filter(|&g| g != 0);
     let equivalent = match (found, code) {
         (Some(f), Some(c)) => {
-            f == c && axes(&root, false, c) && (!projected || base.child("AXIS").is_none() || geog.is_some_and(|g| axes(base, !wkt1, g)))
+            f == c && axes(root, false, c) && (!projected || base.child("AXIS").is_none() || geog.is_some_and(|g| axes(base, !wkt1, g)))
         }
-        // PROJ resolves it to a CRS terrio has not read it as: left as it is.
-        (Some(_), None) => true,
+        // PROJ finds a CRS terrio has not read the WKT as: resolved when the WKT matches it, its
+        // datum name and axis order too.
+        (Some(f), None) => !datum_renamed && axes(root, false, f) && alike(f),
         _ => false,
     };
     let resolved = equivalent
@@ -1395,7 +1421,18 @@ fn proj_resolution(w: &str, code: Option<u32>) -> Option<(bool, Option<[f64; 4]>
                     f == Some(g) && axes(base, !wkt1, g)
                 })
         };
-    Some((resolved, area(found), datum_renamed))
+    Some(Resolution { resolved, area: area(found), datum_renamed })
+}
+
+/// What [`proj_resolution`] tells of a WKT.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Resolution {
+    /// Whether PROJ resolves the CRS (for a projected CRS, the CRS or else its geographic CRS).
+    resolved: bool,
+    /// The area PROJ uses for it: that of the CRS it finds by the WKT's name, if any.
+    area: Option<[f64; 4]>,
+    /// Whether the datum is renamed (see [`Unresolved`]).
+    datum_renamed: bool,
 }
 
 /// PROJ's rule for an ellipsoid of the Earth: a semi-major axis within 0.7% of its mean radius
@@ -1667,6 +1704,12 @@ mod inverted_degrees_tests {
 mod resolution_tests {
     use super::*;
 
+    /// [`proj_resolution`] of a WKT, as a tuple.
+    fn resolution(w: &str, code: Option<u32>) -> Option<(bool, Option<[f64; 4]>, bool)> {
+        let r = proj_resolution(&wkt1::parse(w).unwrap(), code, &|_| false)?;
+        Some((r.resolved, r.area, r.datum_renamed))
+    }
+
     /// A renamed geographic CRS on a datum or ensemble with an ID, as WKT 2.
     fn renamed(datum: &str) -> String {
         let deg = r#"ANGLEUNIT["degree",0.0174532925199433]"#;
@@ -1684,10 +1727,10 @@ mod resolution_tests {
             r#"ENSEMBLE["European Terrestrial Reference System 1989 ensemble",MEMBER["European Terrestrial Reference Frame 1989"],ELLIPSOID["GRS 1980",6378137,298.257222101,LENGTHUNIT["metre",1]],ENSEMBLEACCURACY[0.1],ID["EPSG",6258]]"#,
         );
         // Renamed, so not resolved, but on the ensemble the ID names.
-        assert_eq!(proj_resolution(&wgs84, Some(4326)), Some((false, None, false)));
-        assert_eq!(proj_resolution(&etrs89, Some(4258)), Some((false, None, false)));
+        assert_eq!(resolution(&wgs84, Some(4326)), Some((false, None, false)));
+        assert_eq!(resolution(&etrs89, Some(4258)), Some((false, None, false)));
         let local = renamed(r#"DATUM["Local datum",ELLIPSOID["International 1924",6378388,297,LENGTHUNIT["metre",1]],ID["EPSG",6806]]"#);
-        assert_eq!(proj_resolution(&local, Some(4806)), Some((false, None, true)));
+        assert_eq!(resolution(&local, Some(4806)), Some((false, None, true)));
     }
 
     #[test]
@@ -1707,8 +1750,8 @@ mod resolution_tests {
         let wgs84_3d = format!(
             r#"GEOGCRS["WGS 84",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563,LENGTHUNIT["metre",1]]],PRIMEM["Greenwich",0,{deg}],CS[ellipsoidal,3],AXIS["latitude",north,ORDER[1],{deg}],AXIS["longitude",east,ORDER[2],{deg}],AXIS["height",up,ORDER[3],LENGTHUNIT["metre",1]]]"#
         );
-        assert_eq!(proj_resolution(&wgs84_3d, Some(4979)).map(|r| r.0), Some(true));
+        assert_eq!(resolution(&wgs84_3d, Some(4979)).map(|r| r.0), Some(true));
         let renamed_3d = wgs84_3d.replacen(r#"GEOGCRS["WGS 84""#, r#"GEOGCRS["Local""#, 1);
-        assert_eq!(proj_resolution(&renamed_3d, Some(4979)), Some((false, None, false)));
+        assert_eq!(resolution(&renamed_3d, Some(4979)), Some((false, None, false)));
     }
 }

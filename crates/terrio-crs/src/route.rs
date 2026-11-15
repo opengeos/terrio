@@ -295,8 +295,8 @@ impl Route {
             )
         };
         // A CRS PROJ does not resolve to its EPSG CRS: its search beyond the CRSs' own.
-        let pending = [src, dst].iter().any(|d| d.unresolved().is_some_and(|u| u.datum_renamed));
-        let searching = !pending && (src.unresolved().is_some() || dst.unresolved().is_some());
+        let renamed_datum = [src, dst].iter().any(|d| d.unresolved().is_some_and(|u| u.datum_renamed));
+        let searching = !renamed_datum && (src.unresolved().is_some() || dst.unresolved().is_some());
         let searched = |kind: Kind| match (kind, src.geog(), dst.geog()) {
             (Kind::List(l), Some(a), Some(b)) if searching => unresolved_search(l, a, b, src, dst, aoi.as_ref(), all),
             (kind, ..) => kind,
@@ -687,8 +687,10 @@ fn crs_extents(src: &Def, dst: &Def) -> Vec<[f64; 4]> {
 /// no area of a CRS PROJ finds by its name, that is the other CRS's), or go only through PROJ's
 /// null transformations between the WGS 84 ensemble and its realizations, or are only
 /// time-dependent between static CRSs; all sorted together as PROJ sorts them, for its area of
-/// interest. With none of the CRSs' own, PROJ's search through intermediate CRSs and datums
-/// ([`chains`]).
+/// interest. Without those chains too, PROJ sorts the CRSs' own for its area of interest, which
+/// is not the codes' when it has no area for the CRS (or another's): GDAL's list for the codes
+/// is sorted again ([`resort`]). With none of the CRSs' own, PROJ's search through intermediate
+/// CRSs and datums ([`chains`]).
 ///
 /// PROJ's datum pivot tries the CRSs of the datum in order of code, the geocentric and 3D ones
 /// too, and frames each transformation with the operation from the CRS into that CRS: a
