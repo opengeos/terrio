@@ -121,6 +121,50 @@ than GDAL numerical conformance comparisons. Response waits use the existing
 50 ms cancellation polling; DNS resolution, connection establishment and
 non-HTTP computation are outside this cancellation mechanism.
 
+## Server-runtime parallel range pieces (#865)
+
+`cargo test -p terrio --lib sparse::tests::parallel_pieces` checks request-slot
+allocation, exact range coverage, block alignment, partial final blocks, small
+and already saturated rounds, large block sizes and overflow boundaries. The
+shared `sparse::parallel_ranges` planner fills up to twelve slots, with pieces
+of at least 256 KiB or one larger block. Existing short ranges stay intact.
+
+After rebuilding the Node package, run:
+
+```sh
+node --test --test-name-pattern='long adjacent tile runs' js/tests/node.test.mjs
+```
+
+The test serves an uncompressed tiled COG over real HTTP and gates responses
+until another request starts, with a watchdog for the unfixed single request.
+It checks concurrent pieces in a server runtime, the unchanged merged request
+with a browser document present, exact UInt8 values, identical fetched bytes,
+and no new requests on a warm read. Opening/header probes keep their existing
+request growth policy.
+
+A local comparison used the existing `usgs_dem.tif` fixture (3612 by 3612,
+Float32, 51,486,544 bytes), Node.js 26.13.1 and geotiff.js 3.0.5. Baseline and
+candidate used matching single-threaded core WASM release builds with
+`--no-default-features` and no wasm-opt. The loopback server served a preloaded
+file buffer. Each number is the median open-plus-first-read time from three
+fresh processes, with libraries interleaved in rotating order:
+
+| Per-connection response pacing | Baseline | Parallel pieces | geotiff.js |
+| --- | ---: | ---: | ---: |
+| Unrestricted loopback | 830 ms | 849 ms | 5022 ms |
+| 64 KiB every 4 ms | 3194 ms | 955 ms | 5014 ms |
+
+The unrestricted case has about 2.3% overhead in this run; the paced case
+isolates a per-connection throughput bottleneck. Both Terrio builds made one
+64 KiB opening request and fetched 38,182,736 response-body bytes for the read.
+The candidate used twelve data requests in place of one. geotiff.js used two
+opening requests (2048 bytes) and 192 data requests (38,162,102 bytes).
+
+All 13,046,544 Float32 values were byte-identical to live GDAL 3.13.3, including
+nodata samples. The Float32 type, nodata value, all six geotransform coefficients
+and EPSG:4269 also matched exactly across both Terrio builds and geotiff.js.
+These measurements cover this local-server fixture and the selected pacing
+conditions; endpoint and network behavior determine the benefit elsewhere.
 ## Parallel range reads across fork
 
 `cargo test -p terrio --lib a_fork_cancels_and_joins_parallel_range_requests`
