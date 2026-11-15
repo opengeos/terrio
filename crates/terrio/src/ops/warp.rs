@@ -1659,6 +1659,7 @@ impl<'a> Plan<'a> {
             resampling: o.resampling,
             translation,
             memory_limit: o.memory_limit,
+            resident: source_bytes.is_none(),
             bands: self.bands,
             out_bits: self.out_type.size_bytes() * 8,
             source_bits: source_bytes.map_or(self.out_type.size_bytes() * self.bands * 8, |bytes| bytes * 8),
@@ -2668,6 +2669,9 @@ struct WarpContext<'a> {
     resampling: Resampling,
     translation: bool,
     memory_limit: f64,
+    /// The source is in memory, whole (`warp`, not a reader): with stable sampling, a chunk
+    /// takes the whole source as its window instead of bounding its kernels pixel by pixel.
+    resident: bool,
     bands: usize,
     out_bits: usize,
     /// Source data held per pixel during a read, including simultaneous conversion buffers.
@@ -3062,12 +3066,17 @@ impl WarpContext<'_> {
             split(out);
             return;
         }
+        let stable_window = self.grid_invariant && self.resampling != Resampling::Sum && !self.uses_angular_area();
+        if stable_window && self.resident {
+            // The whole source is in memory and stable kernels are clipped only at its edges: its
+            // whole extent bounds every kernel, as `source_window` would find pixel by pixel, and
+            // a pixel that maps outside it is skipped as there. The values are the same.
+            let (w, h) = (self.src_w as f64, self.src_h as f64);
+            out.push(Chunk { dx, dy, dw, dh, sx: 0, sy: 0, sw: self.src_w, sh: self.src_h, raw_w: w, raw_h: h });
+            return;
+        }
         // Polygon kernels already bound every footprint in the estimate under both policies.
-        let win = if self.grid_invariant && self.resampling != Resampling::Sum && !self.uses_angular_area() {
-            self.source_window(dx, dy, dw, dh)
-        } else {
-            estimated
-        };
+        let win = if stable_window { self.source_window(dx, dy, dw, dh) } else { estimated };
         if let Some((x, y, w, h, _, rw, rh)) = win {
             (sx, sy, sw, sh, raw_w, raw_h) = (x, y, w, h, rw, rh);
         }
@@ -5482,6 +5491,17 @@ impl<'a, T: crate::pixel::Pixel> Kernel<'a, T> {
     /// `GWKResample()`: a separable kernel, stretched when downsampling, renormalized over the
     /// valid pixels.
     fn general(&self, b: usize, sx: f64, sy: f64) -> Option<f64> {
+        // The kernel's weight function, chosen once per sample rather than per tap: each arm
+        // compiles a loop with its weights inlined (the same arithmetic, so the same values).
+        match self.method {
+            Resampling::Bilinear => self.general_with(b, sx, sy, |x| Resampling::Bilinear.weight(x)),
+            Resampling::Cubic => self.general_with(b, sx, sy, |x| Resampling::Cubic.weight(x)),
+            method => self.general_with(b, sx, sy, move |x| method.weight(x)),
+        }
+    }
+
+    #[inline(always)]
+    fn general_with(&self, b: usize, sx: f64, sy: f64, weight: impl Fn(f64) -> f64) -> Option<f64> {
         let ((xr, yr), (init_x, init_y)) = (self.reach, self.init);
         let ix = floor_i(sx - 0.5);
         let iy = floor_i(sy - 0.5);
@@ -5533,7 +5553,7 @@ impl<'a, T: crate::pixel::Pixel> Kernel<'a, T> {
                 }
             }
         }
-        let wfn = |d: f64, s: f64| if s < 1.0 { self.method.weight(d * s) } else { self.method.weight(d) };
+        let wfn = |d: f64, s: f64| if s < 1.0 { weight(d * s) } else { weight(d) };
         // The column weights are the same on every row: computed once (the same values, summed
         // in the same order, so the same result).
         let mut wxs = [0.0f64; 64];
@@ -6067,6 +6087,7 @@ impl RegionWarp {
             resampling: self.resampling,
             translation: self.translation,
             memory_limit: f64::INFINITY,
+            resident: false,
             bands: self.src_nodata.len(),
             out_bits: self.out_type.size_bytes() * 8,
             source_bits: self.out_type.size_bytes() * self.src_nodata.len() * 8,
