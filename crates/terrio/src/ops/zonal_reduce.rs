@@ -241,6 +241,9 @@ pub(super) fn reduce_source(
 // ponytail: exact pairwise scan under a cap; sample, or parallelize zones, when bigger zones matter.
 pub(super) const MEDOID_MAX_PIXELS: usize = 20_000;
 
+/// Medoid values `[metric][band][feature]`.
+pub(super) type MedoidColumns = Vec<Vec<Vec<FieldValue>>>;
+
 /// The medoid of each zone's pixels, valid in every one of `bands`, under each of `metrics`: the
 /// values `[metric][band][feature]` of each band at the medoid pixel, for the features of `fids`,
 /// and the feature IDs of zones over [`MEDOID_MAX_PIXELS`]. Zones without a medoid (none valid, or
@@ -253,7 +256,7 @@ pub(super) fn reduce_medoid(
     strip_rows: usize,
     fids: &[u64],
     metrics: &[MedoidMetric],
-) -> Result<(Vec<Vec<Vec<FieldValue>>>, Vec<u64>)> {
+) -> Result<(MedoidColumns, Vec<u64>)> {
     let n = bands.len();
     let zones = &index.zones;
     let read = WindowOptions { bands: bands.iter().map(|b| b.band).collect(), overview: None };
