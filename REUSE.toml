@@ -137,10 +137,12 @@ precedence = "override"
 SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright © 2010-2025 Esri", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
 SPDX-License-Identifier = "LicenseRef-EPSG AND Apache-2.0 AND MIT"
 
-# PROJ 9.8.1's readings of WKTs and PROJ strings, with EPSG CRSs, datums and transformations
-# (scripts/gen_wkt1_axes.py, gen_proj_ellipsoid_shape.py).
+# PROJ 9.8.1's readings of WKTs and PROJ strings, with EPSG CRSs, datums and transformations, and
+# its placements in deprecated EPSG CRSs (scripts/gen_wkt1_axes.py, gen_proj_ellipsoid_shape.py,
+# gen_epsg_deprecated.py).
 [[annotations]]
 path = [
+    "crates/terrio-crs/tests/data/epsg_deprecated.json",
     "crates/terrio-crs/tests/data/proj_ellipsoid_shape.json",
     "crates/terrio-crs/tests/data/wkt1_axes.json",
 ]

@@ -2626,7 +2626,8 @@ def suite_crs(ctx):
         "(wkt1_proj_reads.rs), grads and prime meridians (grads_and_prime_meridians.rs), datums "
         "known by ID or name (wkt_datum_shift.rs), WKTs PROJ does not resolve to their EPSG CRS "
         "(wkt_unresolved.rs), and PROJ-string ellipsoid parameters and PROJ4 extensions "
-        "(proj_ellipsoid_shape.rs, proj_ellipsoid_registry.rs); not compared there: the known "
+        "(proj_ellipsoid_shape.rs, proj_ellipsoid_registry.rs), and deprecated EPSG codes by their own "
+        "definition (epsg_deprecated.rs); not compared there: the known "
         "differences each row names (a scale in parts per million, ESRI ATF (Paris), PROJ's datum "
         "pivot and renamed datums, #1012). "
         "Identical: within 1 mm. Within tolerance: within 1 cm (forward, inverse) or 1 m (CRS to "
@@ -2890,6 +2891,17 @@ PROJ_CASES = {
     "proj_ellipsoid_registry": {
         "registry_proj_strings_keep_their_ellipsoids": (
             "EPSG and ESRI registry PROJ strings keep their WKT's ellipsoid", IDENTICAL, "within 1e-6 m",
+        ),
+    },
+    "epsg_deprecated": {
+        "deprecated_codes_are_placed_by_their_own_definition_as_proj_does": (
+            "Deprecated EPSG CRSs by their own definition (486 cases)", IDENTICAL,
+            "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm (1e-8 degrees geographic); 4 geographic 3D and geocentric CRSs pending "
+            "(opengeos/terrio#1012, item 8)",
+        ),
+        "replacements_are_those_proj_lists": "Deprecated EPSG CRSs: their replacements are PROJ 9.8.1's, GDAL's substitution of a single one",
+        "ntm_zone_5_keeps_its_own_false_origin": (
+            "EPSG:4855 (deprecated ETRS89 / NTM zone 5) keeps its own false origin", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
         ),
     },
 }
