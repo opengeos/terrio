@@ -28,7 +28,9 @@ otherwise.
 EPSG:4806, 5132 and 7373, and of EPSG:4314 and 31467 renamed. PROJ does not resolve their
 geographic CRS to the code (ESRI's WKT 1 has no `AXIS`, so longitude first, unlike the EPSG CRS;
 or its name is another), and then also searches transformations through other datums and other
-CRSs of the datum. They are split from `cases` at 1 mm and don't count among its 180.
+CRSs of the datum. They are split from `cases` at 1 mm and don't count among its 180. terrio
+follows PROJ's search, but its datum pivot through the datum's geocentric CRS (ONGD14, EPSG:7373):
+that case is marked `pending`.
 
 Usage: PROJ_NETWORK=OFF python scripts/gen_wkt_datum_shift.py (needs pyproj 3.8.0)
 """
@@ -104,8 +106,9 @@ CODES = [
     4202,  # AGD66
     4272,  # NZGD49
 ]
-# EPSG geographic CRSs whose ESRI WKT 1, as written, PROJ places otherwise than their EPSG code
-# (with two renamed variants of `CODES`, they are `DIFFERENT`).
+# EPSG geographic CRSs whose ESRI WKT 1, as written, PROJ places otherwise than their EPSG code.
+# With the renamed ESRI WKT 1 of two CRSs of `CODES`, the geographic EPSG:4314 and the projected
+# EPSG:31467, they are `DIFFERENT`.
 DIFFERENCES = [4806, 5132, 7373]
 # Every case PROJ places otherwise than by its EPSG code: a PROJ change that moves a case in or out
 # stops the script.
@@ -114,6 +117,8 @@ DIFFERENT = [
     "EPSG:31467, ESRI WKT 1, renamed",
     *(f"EPSG:{code}, ESRI WKT 1" for code in DIFFERENCES),
 ]
+# Those PROJ places by its datum pivot, which terrio does not follow yet.
+PENDING = ["EPSG:7373, ESRI WKT 1"]
 IDS = re.compile(r',(AUTHORITY|ID)\["(EPSG|ESRI)","?\d+"?\]')
 USAGE = re.compile(r",USAGE\[SCOPE\[[^\]]*\],AREA\[[^\]]*\],BBOX\[[^\]]*\]\]")
 
@@ -321,6 +326,8 @@ def main():
     for c in cases:
         placed[metres(c["proj"], c["by_code"]) >= 1e-3].append(c)
     cases, differences = placed[False], placed[True]
+    for c in differences:
+        c["pending"] = c["name"] in PENDING
     names = sorted(c["name"] for c in differences)
     check(names == sorted(DIFFERENT), names)
     OUT.write_text(

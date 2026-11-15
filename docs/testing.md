@@ -1774,9 +1774,10 @@ projected CRSs (three with northing first). The points go to and from WGS 84 and
 ETRS89, NAD83 and ETRS89 / UTM zone 32N: 994 cases, 125 of them away from the code's placement, all
 within 1 mm. On main, 107 of these cases differ, by 0.12 m to 390 m. Eighteen cases are pinned at
 the code's placement: those PROJ places by its datum pivot (ESRI's ONGD14) or through its ballpark
-into a CRS of a renamed datum, which terrio does not follow yet. ATF (Paris) is left out (`cargo
-test -p terrio-crs --test wkt_unresolved`; regenerate with `scripts/gen_wkt_unresolved.py`, pyproj
-3.8.0; the names PROJ looks CRSs up by come from `scripts/gen_crs_names.py`).
+into a CRS of a renamed datum, which terrio does not follow yet. ATF (Paris) is left out (its ESRI
+WKT is checked in `grads_and_prime_meridians`) (`cargo test -p terrio-crs --test wkt_unresolved`;
+regenerate with `scripts/gen_wkt_unresolved.py`, pyproj 3.8.0; the names PROJ looks CRSs up by come
+from `scripts/gen_crs_names.py`).
 
 WKTs whose geographic CRS has no EPSG code of its own, with the datum known by its ID alone (WKT 2
 `ID`, WKT 1 `AUTHORITY` on the `DATUM`, also under other CRS and datum names), by its name in a

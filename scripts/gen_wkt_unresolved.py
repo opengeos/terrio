@@ -19,8 +19,9 @@ with the EPSG code in place of the WKT.
 
 ``pending`` cases are those PROJ places by its datum pivot through the datum's CRSs in order of
 code (ONGD14) or through its ballpark into a CRS of a renamed datum, which terrio does not follow
-yet. EPSG:4901 (ATF (Paris)) is left out: its ESRI WKT needs the reading of grads, and PROJ's
-placement of it applies the Paris prime meridian twice.
+yet. EPSG:4901 (ATF (Paris)) is left out: PROJ's placement of its ESRI WKT applies the Paris
+prime meridian twice, which terrio does not copy (``tests/grads_and_prime_meridians.rs`` checks it
+is placed as PROJ places EPSG:4901).
 
 Usage: PROJ_NETWORK=OFF python scripts/gen_wkt_unresolved.py (needs pyproj 3.8.0, no grids)
 """

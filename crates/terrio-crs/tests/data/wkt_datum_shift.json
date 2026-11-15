@@ -3440,7 +3440,8 @@
    "by_code": [
     9.85000000310771,
     51.18000000516607
-   ]
+   ],
+   "pending": false
   },
   {
    "name": "EPSG:31467, ESRI WKT 1, renamed",
@@ -3459,7 +3460,8 @@
    "by_code": [
     9.005000002211203,
     51.180000005231854
-   ]
+   ],
+   "pending": false
   },
   {
    "name": "EPSG:4806, ESRI WKT 1",
@@ -3478,7 +3480,8 @@
    "by_code": [
     12.459999999999999,
     40.93
-   ]
+   ],
+   "pending": false
   },
   {
    "name": "EPSG:5132, ESRI WKT 1",
@@ -3497,7 +3500,8 @@
    "by_code": [
     138.44,
     32.955
-   ]
+   ],
+   "pending": false
   },
   {
    "name": "EPSG:7373, ESRI WKT 1",
@@ -3516,7 +3520,8 @@
    "by_code": [
     57.685,
     20.535
-   ]
+   ],
+   "pending": true
   }
  ]
 }

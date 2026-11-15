@@ -18,11 +18,12 @@
 //! with those grids installed, PROJ may place these points otherwise, which this test doesn't
 //! cover.
 //!
-//! PROJ places a few WKTs otherwise than their EPSG code (`differences`), which terrio does not
-//! follow: it does not resolve their geographic CRS to the code (an ESRI WKT 1 has no `AXIS`, so
-//! longitude first, unlike the EPSG CRS; a renamed CRS), and then also searches transformations
-//! through other datums and other CRSs of the datum, and may pick one of those (Monte Mario (Rome)
-//! through Monte Mario, 72 m from EPSG:4806's own).
+//! PROJ places a few WKTs otherwise than their EPSG code (`differences`): it does not resolve
+//! their geographic CRS to the code (an ESRI WKT 1 has no `AXIS`, so longitude first, unlike the
+//! EPSG CRS; a renamed CRS), and then also searches transformations through other datums and other
+//! CRSs of the datum, and may pick one of those (Monte Mario (Rome) through Monte Mario, 72 m from
+//! EPSG:4806's own). terrio follows that search (see `wkt_unresolved.rs`), but PROJ's datum pivot
+//! through the datum's geocentric CRS: ONGD14 (EPSG:7373, `pending`) is still placed by its code.
 
 use serde_json::Value;
 use terrio_crs::{SpatialRef, Transformer};
@@ -82,10 +83,10 @@ fn datums_known_by_id_or_esri_name_are_shifted_as_proj_does() {
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
 
-/// The WKTs PROJ places otherwise than their EPSG code are placed by the code, as they are
-/// identified as.
+/// The WKTs PROJ places otherwise than their EPSG code, through other datums, are placed as PROJ
+/// places them; the one PROJ places by its datum pivot, by its code.
 #[test]
-fn wkts_proj_does_not_resolve_are_placed_by_their_code() {
+fn wkts_proj_does_not_resolve_are_placed_through_other_datums_as_proj_does() {
     offline();
     let data = data();
     let differences = data["differences"].as_array().unwrap();
@@ -94,7 +95,11 @@ fn wkts_proj_does_not_resolve_are_placed_by_their_code() {
         let (got, _) = place(case);
         let (proj, by_code) = (pair(&case["proj"]), pair(&case["by_code"]));
         let name = case["name"].as_str().unwrap();
-        assert!(metres(got, by_code) < 1e-3, "{name}: {got:?}, by its code {by_code:?}");
+        if case["pending"].as_bool().unwrap() {
+            assert!(metres(got, by_code) < 1e-3, "{name}: {got:?}, by its code {by_code:?}");
+        } else {
+            assert!(metres(got, proj) < 1e-3, "{name}: {got:?}, PROJ {proj:?}");
+        }
         // The fixture's own consistency: the generator recorded PROJ placing it elsewhere (a
         // regenerated fixture where PROJ now places it by its code moves it to `cases`).
         assert!(metres(proj, by_code) >= 1e-3, "{name}: PROJ {proj:?} placed by its code");

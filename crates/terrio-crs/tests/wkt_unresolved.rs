@@ -20,7 +20,7 @@
 //! The second is its ballpark into a CRS of a renamed datum (`DATUM["Local datum",...,
 //! ID["EPSG",6806]]`), of unknown accuracy. ESRI's ATF (Paris) (EPSG:4901) is left out: PROJ
 //! applies the Paris prime meridian twice to it, 178 km from its own placement of EPSG:4901, and
-//! terrio does not follow that.
+//! terrio does not follow that (`grads_and_prime_meridians.rs` checks it is placed as EPSG:4901).
 use serde_json::Value;
 use terrio_crs::{SpatialRef, Transformer};
 

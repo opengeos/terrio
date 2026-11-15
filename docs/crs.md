@@ -494,7 +494,8 @@ search at all, for either side, and that CRS keeps its code's area. The transfor
 one between the codes.
 terrio also does not follow PROJ for an ESRI ATF (Paris) (EPSG:4901) WKT without a code. PROJ takes
 IGNF's ATIG geocentric chain, which applies the Paris prime meridian twice and lands 178 km from
-PROJ's own placement of EPSG:4901 (opengeos/terrio#1012).
+PROJ's own placement of EPSG:4901. terrio, which has no IGNF transformations, identifies the WKT as
+EPSG:4901 and places it as PROJ places EPSG:4901 (opengeos/terrio#1012).
 
 `Transformer::operation_at(x, y, z)` returns the transformations `transform_3d` runs for a point,
 as PROJ's `proj_trans_get_last_used_operation`: their names, summed accuracy, grids and whether one
