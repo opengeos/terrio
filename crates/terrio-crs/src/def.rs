@@ -625,7 +625,7 @@ impl Def {
             y0,
             to_meter,
             to_deg: p.f64("to_deg").unwrap_or(1.0),
-            pm: pm.to_radians(),
+            pm: proj_prime_meridian(pm).to_radians(),
             axis,
             ops: Vec::new(),
             datum: None,

@@ -251,6 +251,48 @@ pub(crate) fn norm(s: &str) -> String {
     s.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase()
 }
 
+/// The prime meridians PROJ 9.8.1 reads in degrees by name whatever the WKT's unit
+/// (`primeMeridiansDMS`), by degrees, minutes and seconds. Not its `+pm=` names
+/// (`math::PRIME_MERIDIANS`): it has no Paris or Copenhagen (which stay in the CRS's unit), adds
+/// Paris RGS, and its Madrid is at 3°41'14.55"W.
+const PRIME_MERIDIANS_DMS: [(&str, f64, f64, f64); 13] = [
+    ("Lisbon", -9.0, 7.0, 54.862),
+    ("Bogota", -74.0, 4.0, 51.3),
+    ("Madrid", -3.0, 41.0, 14.55),
+    ("Rome", 12.0, 27.0, 8.4),
+    ("Bern", 7.0, 26.0, 22.5),
+    ("Jakarta", 106.0, 48.0, 27.79),
+    ("Ferro", -17.0, 40.0, 0.0),
+    ("Brussels", 4.0, 22.0, 4.71),
+    ("Stockholm", 18.0, 3.0, 29.8),
+    ("Athens", 23.0, 42.0, 58.815),
+    ("Oslo", 10.0, 43.0, 22.5),
+    ("Paris RGS", 2.0, 20.0, 13.95),
+    ("Paris_RGS", 2.0, 20.0, 13.95),
+];
+
+/// The longitude in degrees of a WKT `PRIMEM` named `name` with the value `value`, in a CRS
+/// whose angular unit is `ang` degrees, as PROJ 9.8.1 reads it (`buildPrimeMeridian`): in that
+/// unit, but for Paris in a CRS in grads, which GDAL and ESRI write in degrees (2.33722917,
+/// Paris's 2.5969213 grads, to within 1e-8), and for the meridians PROJ knows by name and value
+/// in degrees (`Paris RGS`, 2.33720833, in ATF (Paris), also in grads) or in EPSG's sexagesimal
+/// degrees (`Ferro` at -17.40, 17°40'W), whatever the unit.
+pub(crate) fn prime_meridian_degrees(name: &str, value: f64, ang: f64) -> f64 {
+    // Within 1e-8 of it, Paris is 2.5969213 grads exactly, as PROJ replaces it.
+    if name == "Paris" && (ang - 0.9).abs() < 1e-9 && (value - 2.33722917).abs() < 1e-8 {
+        return 2.5969213 * 0.9;
+    }
+    if let Some(&(_, d, m, s)) = PRIME_MERIDIANS_DMS.iter().find(|(n, ..)| *n == name) {
+        let sign = d.signum();
+        let sexagesimal = sign * (d.abs() + m / 100.0 + s / 10000.0);
+        let decimal = sign * (d.abs() + m / 60.0 + s / 3600.0);
+        if (value - sexagesimal).abs() < 1e-8 || (value - decimal).abs() < 1e-8 {
+            return decimal;
+        }
+    }
+    value * ang
+}
+
 /// A WKT 1 CRS as a PROJ string, with the code of its geographic CRS when it declares one.
 pub(crate) struct Converted {
     pub proj: String,
@@ -290,12 +332,9 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
     let ang = if key == "GEOCCS" { 1.0 } else { geogcs.child("UNIT").and_then(|u| u.num(1)).map(|r| r.to_degrees()).unwrap_or(1.0) };
     // WKT rounds the size of a degree (0.0174532925199433) and of a grad.
     let ang = [1.0, 0.9].into_iter().find(|u| (ang - u).abs() < 1e-9).unwrap_or(ang);
-    // The prime meridian is in the angular unit, but for Paris in a CRS in grads, whose longitude
-    // GDAL and ESRI write in degrees (2.33722917): PROJ 9.8.1 reads it so, too.
     let primem = geogcs.child("PRIMEM");
     let pm = primem.and_then(|p| p.num(1)).unwrap_or(0.0);
-    let paris_in_degrees = ang == 0.9 && primem.and_then(Node::name) == Some("Paris") && (pm - 2.33722917).abs() < 1e-8;
-    let pm = if paris_in_degrees { pm } else { pm * ang };
+    let pm = prime_meridian_degrees(primem.and_then(Node::name).unwrap_or(""), pm, ang);
     let mut out = Vec::new();
     let mut tail = vec![format!("+a={a}"), format!("+rf={rf}")];
     if rf == 0.0 {
@@ -553,9 +592,10 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
         }
         "krovak" => {
             // Its axes: ESRI's scale and rotation of the plane (-1 and 90° for east-north, else
-            // south-west), else the WKT's, south-west without them, as GDAL 3.10 and PROJ 9.8.1
-            // read them (northing then easting read as easting then northing).
-            let axes = match (get(&["xscale"]), get(&["xyplanerotation"])) {
+            // south-west; the rotation in the CRS's angular unit, 100 grads for 90°), else the
+            // WKT's, south-west without them, as GDAL 3.10 and PROJ 9.8.1 read them (northing then
+            // easting read as easting then northing).
+            let axes = match (get(&["xscale"]), angle(&["xyplanerotation"])) {
                 (Some(sx), Some(rot)) => {
                     if sx < 0.0 && (rot - 90.0).abs() < 1e-10 {
                         *b"en"
@@ -815,6 +855,25 @@ mod tests {
     use super::*;
     use crate::{SpatialRef, Transformer};
     use std::time::Duration;
+
+    /// PROJ's two tables of named meridians agree on every name they share but Madrid, which
+    /// `primeMeridiansDMS` has at 3°41'14.55"W and `proj_list_prime_meridians` at 16.58". Paris
+    /// RGS is only in the first; Paris and Copenhagen only in the second.
+    #[test]
+    fn the_two_tables_of_named_prime_meridians_agree_but_where_proj_differs() {
+        let mut shared = Vec::new();
+        for (name, d, m, s) in PRIME_MERIDIANS_DMS {
+            let decimal = d.signum() * (d.abs() + m / 60.0 + s / 3600.0);
+            match crate::math::prime_meridian(&name.to_ascii_lowercase()) {
+                Some(v) if name == "Madrid" => assert!((v - decimal + (16.58 - 14.55) / 3600.0).abs() < 1e-12, "{name}: {v} {decimal}"),
+                Some(v) => assert!((v - decimal).abs() < 1e-12, "{name}: {v} {decimal}"),
+                None => assert!(matches!(name, "Paris RGS" | "Paris_RGS"), "{name}"),
+            }
+            shared.push(name.to_ascii_lowercase());
+        }
+        let only_pm: Vec<&str> = crate::math::PRIME_MERIDIANS.iter().map(|(n, _)| *n).filter(|n| !shared.iter().any(|s| s == n)).collect();
+        assert_eq!(only_pm, ["paris", "copenhagen"]);
+    }
 
     /// GDAL's WKT of WGS 84 as a GeoJSON `crs` member or a PAM `<SRS>` carries it, and the same
     /// with the spheroid's `]` replaced by `)` (reproducers from a fuzzing campaign).
