@@ -583,8 +583,8 @@ quantiles, mode, minority, variety) hold each open zone's values in each stream,
 (16 with `fractional`): feed streams one at a time to bound them. In a stream fed arrays of one 8-
 or 16-bit integer type, a zone of at least 256 or 65,536 pixels counts them in a histogram of 2 or
 512 KiB instead. It also takes `allTouched`, `fractional`, `layer` and `stripRows`; weighted
-statistics need `zonalStats`, and `tSrs` and `decimalPlaces` are not supported: the results are
-unrounded arrays, without geometries.
+and medoid statistics need `zonalStats`, and `tSrs` and `decimalPlaces` are not supported: the
+results are unrounded arrays, without geometries.
 
 ## Native multidimensional arrays
 

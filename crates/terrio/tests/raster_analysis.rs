@@ -1040,3 +1040,13 @@ fn zonal_medoid_nodata_in_one_band_excludes_the_pixel_from_every_band() {
     assert_eq!(field(&out, 0, "b1_medoid_euclidean"), &V::Float(1.));
     assert_eq!(field(&out, 0, "b2_medoid_euclidean"), &V::Float(0.));
 }
+
+#[test]
+fn zonal_medoid_rejects_a_zone_over_the_pixel_cap_naming_it() {
+    // 50 x 50 = 2,500 valid pixels, over the 2,000 a medoid compares; the error names the zone.
+    let r = raster(50, 50, 1, &(1..=2500).map(f64::from).collect::<Vec<_>>(), None);
+    let l = zones(vec![Some(rectangle(0., 0., 50., 50.))]);
+    let o = ZonalOptions { stats: vec![S::Medoid(MedoidMetric::Euclidean)], ..Default::default() };
+    let error = zonal_stats(&l, &mut [src("v", &r, 1)], &o).unwrap_err().to_string();
+    assert!(error.contains("zone 100 has more than 2000 pixels"), "{error}");
+}

@@ -240,14 +240,15 @@ pub(super) fn reduce_source(
 pub(super) const MEDOID_MAX_PIXELS: usize = 2_000;
 
 /// The medoid of each zone's pixels, valid in every one of `bands`, under each of `metrics`: the
-/// values `[metric][band][feature]` of each band at the medoid pixel. Zones without one, and
-/// features without a zone, are null. Strips are read in turn, as in [`reduce_source`].
+/// values `[metric][band][feature]` of each band at the medoid pixel, for the features of `fids`.
+/// Zones without one, and features without a zone, are null. Strips are read in turn, as in
+/// [`reduce_source`].
 pub(super) fn reduce_medoid(
     index: &ZoneIndex,
     raster: &mut LazyRaster,
     bands: &[BandSpec],
     strip_rows: usize,
-    features: usize,
+    fids: &[u64],
     metrics: &[MedoidMetric],
 ) -> Result<Vec<Vec<Vec<FieldValue>>>> {
     let n = bands.len();
@@ -260,7 +261,7 @@ pub(super) fn reduce_medoid(
     let mut cursor = vec![0usize; zones.len()];
     // Each zone's valid pixels: n values per pixel, row-major. Released once the zone is summarized.
     let mut pixels: Vec<Vec<f64>> = vec![Vec::new(); zones.len()];
-    let mut out = vec![vec![vec![FieldValue::Null; features]; n]; metrics.len()];
+    let mut out = vec![vec![vec![FieldValue::Null; fids.len()]; n]; metrics.len()];
     for window in strip_windows(index, strip_rows.max(1)) {
         let (r0, r1, c0) = (window.y, window.y + window.height, window.x);
         let strip = Strip::read(raster, window, &read)?;
@@ -281,7 +282,8 @@ pub(super) fn reduce_medoid(
                         pixels[z].extend((0..n).map(|b| strip.value(b, at)));
                         if pixels[z].len() / n > MEDOID_MAX_PIXELS {
                             return Err(Error::InvalidArgument(format!(
-                                "a zone has more than {MEDOID_MAX_PIXELS} pixels valid in every band, too many for a medoid statistic"
+                                "zone {} has more than {MEDOID_MAX_PIXELS} pixels valid in every band, too many for a medoid statistic",
+                                fids[zones[z].feature]
                             )));
                         }
                     }
@@ -1327,10 +1329,10 @@ mod tests {
         let mut raster = LazyRaster::from(ds);
         let index = build(&layer, &GridKey::of(&raster), false, false).unwrap();
         let plan_bands = || vec![BandSpec { band: 1, nodata: None }, BandSpec { band: 2, nodata: None }];
-        let whole = reduce_medoid(&index, &mut raster, &plan_bands(), rows, fids.len(), &metrics).unwrap();
+        let whole = reduce_medoid(&index, &mut raster, &plan_bands(), rows, &fids, &metrics).unwrap();
         assert!(whole.iter().flatten().flatten().any(|v| !v.is_null()));
         for strip in [1, 7, 64] {
-            assert_eq!(reduce_medoid(&index, &mut raster, &plan_bands(), strip, fids.len(), &metrics).unwrap(), whole, "strip {strip}");
+            assert_eq!(reduce_medoid(&index, &mut raster, &plan_bands(), strip, &fids, &metrics).unwrap(), whole, "strip {strip}");
         }
     }
 }

@@ -80,8 +80,9 @@ pub enum MedoidMetric {
 impl Statistic {
     /// Parses count/min/max/mean/sum/stddev/median/variance/cv/mode/minority/variety,
     /// `quantile_P` (P a percentage from 0 to 100, such as `quantile_25` or `quantile_2.5`) or
-    /// weighted_mean/weighted_sum/weighted_stddev. Aliases: `majority` (mode), `var`,
-    /// `coefficient_of_variation`.
+    /// weighted_mean/weighted_sum/weighted_stddev, or medoid_euclidean/medoid_sam. Aliases:
+    /// `majority` (mode), `var`, `coefficient_of_variation`, `medoid` (medoid_euclidean),
+    /// `medoid_spectral_angle` (medoid_sam).
     pub fn parse(name: &str) -> Result<Self> {
         let lower = name.to_ascii_lowercase();
         if let Some(p) = lower.strip_prefix("quantile_") {
@@ -666,7 +667,7 @@ pub fn zonal_stats_with(
             Vec::new()
         } else {
             let strip = strip_rows(raster, bands.len());
-            reduce::reduce_medoid(grids[grid].1.as_ref().expect("built above"), raster, &bands, strip, fids.len(), &medoid_metrics)?
+            reduce::reduce_medoid(grids[grid].1.as_ref().expect("built above"), raster, &bands, strip, &fids, &medoid_metrics)?
         };
         if reduced_stats.is_empty() {
             // Only medoids: no per-band statistic reads the raster again.
@@ -888,11 +889,12 @@ impl ZonalReducer {
     /// terrio's strip size for one f64 band of this width; give a tiled source's block height to
     /// read each block once) that hold zone pixels, each over the rows and columns of those
     /// pixels. Zones in another CRS than the grid's are reprojected, as `zonal_stats` does.
-    /// Weighted statistics are not supported, nor are `dst_srs` and `decimal_places` used.
+    /// Weighted and medoid statistics are not supported, nor are `dst_srs` and `decimal_places`
+    /// used.
     ///
     /// # Errors
     ///
-    /// - [`Error::InvalidArgument`] for no statistics, a duplicate or weighted statistic, a
+    /// - [`Error::InvalidArgument`] for no statistics, a duplicate, weighted or medoid statistic, a
     ///   quantile outside 0-100, `fractional` with `all_touched`, `strip_rows` of 0, a grid
     ///   without pixels, over `u32::MAX` rows or columns, or with a non-finite or non-invertible
     ///   geotransform, or a zone that is not a polygon, has non-finite coordinates, or cannot be
