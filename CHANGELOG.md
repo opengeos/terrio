@@ -14,6 +14,8 @@
   `MemoryError` subclass, instead of `RasterioIOError` (#862).
 - **Breaking (Python):** anonymous SQLite buffers without a GeoPackage application id need a `.gpkg`
   or `.mbtiles` filename in `terrio.pyogrio` (#966).
+- **Breaking (Rust API):** `terrio::vector::read_geoparquet_sparse` takes a fifth argument,
+  `columns`; pass `None` to read every field, as before (#745).
 - **Breaking (Rust API):** `FlatGeobufInfo` gains the public fields `has_z` and `has_m` (#880);
   `transform_bounds` samples 23 points per edge, endpoints included, instead of 21 (#908); a missing
   or failed velocity grid gives `MissingGrid` instead of `Crs` (#937).
@@ -488,7 +490,7 @@
   now transform with the false origin on the standard parallel and preserve their datums.
   Previously, northings were approximately 2,499 km too large and the EPSG definitions lost their
   datum transformations. Both configurations of `terrio-crs` support the correction. (#803)
-- EPT point-cloud reads now apply the calling thread’s scoped options to every node, including HTTP
+- EPT point-cloud reads now apply the calling thread's scoped options to every node, including HTTP
   headers, user agent, driver restrictions and redirect policy. Previously, reads spanning several
   nodes lost options set through `terrio.rio.Env` or Rust configuration scopes. (#804)
 - `terrio.rio.shutil.copy` no longer replaces its destination with a raster of zeros when a read of
