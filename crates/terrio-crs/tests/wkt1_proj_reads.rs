@@ -240,6 +240,35 @@ fn geoascii_params_end_at_their_first_nul() {
     let short = b"NAD27 / UTM zone 13N|\0abc|";
     assert_eq!(utm(short, &[[3073, 34737, 21, 0], [1026, 34737, 4, 21]]), None);
     assert!(utm(short, &[[3073, 34737, 26, 0]]).is_some_and(|c| c.name().as_deref() == Some("NAD27 / UTM zone 13N")));
+    // libgeotiff's `ReadKey` boundary, with EPSG:32613 in ProjectedCSTypeGeoKey: the whole CRS,
+    // code included, is dropped for a key past the text, as GDAL 3.12.1 drops it. The text is
+    // `"NAD27|\0abc|"`, 6 bytes before the NUL, with a 3073 citation of `"NAD27|"` at 0.
+    let code = |citations: &[[u16; 4]]| {
+        let mut keys = vec![[1024u16, 0, 1, 1], [3072, 0, 1, 32613], [3073, 34737, 6, 0]];
+        keys.extend_from_slice(citations);
+        keys.sort();
+        let mut directory = vec![1u16, 1, 0, keys.len() as u16];
+        directory.extend(keys.iter().flatten());
+        terrio_crs::geokeys::read(&directory, &[], b"NAD27|\0abc|").crs.and_then(|c| c.epsg)
+    };
+    // GDAL: 32613, as without the key.
+    assert_eq!(code(&[]), Some(32613));
+    // A key at the NUL of 1 byte (ending at the NUL), of none at it or inside: read, empty.
+    for key in [[1026, 34737, 1, 6], [1026, 34737, 0, 6], [1026, 34737, 0, 2]] {
+        assert_eq!(code(&[key]), Some(32613), "{key:?}");
+    }
+    // A key spanning the NUL (3073 of 10 bytes), or ending one past it (7): cut there.
+    for count in [10, 7] {
+        let mut keys = [[1024u16, 0, 1, 1], [3072, 0, 1, 32613], [3073, 34737, count, 0]];
+        keys.sort();
+        let mut directory = vec![1u16, 1, 0, keys.len() as u16];
+        directory.extend(keys.iter().flatten());
+        assert_eq!(terrio_crs::geokeys::read(&directory, &[], b"NAD27|\0abc|").crs.and_then(|c| c.epsg), Some(32613), "{count}");
+    }
+    // GDAL: no CRS. A key at the NUL of 2 bytes, after it, or of none past the text.
+    for key in [[1026, 34737, 2, 6], [1026, 34737, 4, 7], [1026, 34737, 0, 9]] {
+        assert_eq!(code(&[key]), None, "{key:?}");
+    }
 }
 
 /// A citation's name ends at its first NUL too: ESRI:102003's GeoKeys with text after a NUL in

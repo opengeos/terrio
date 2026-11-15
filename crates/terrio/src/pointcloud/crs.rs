@@ -31,8 +31,10 @@ pub(crate) fn header_crs(h: &LasHeader) -> LasCrs {
         Some(keys) => {
             let doubles: Option<Vec<f64>> =
                 h.find_vlr(LASF_PROJECTION, 34736).map(|v| v.data.as_chunks::<8>().0.iter().map(|c| f64::from_le_bytes(*c)).collect());
-            let ascii = h.find_vlr(LASF_PROJECTION, 34737).map(|v| String::from_utf8_lossy(&v.data).replace('\0', ""));
-            let info = crate::geotiff::crs_from_geokeys(&keys, doubles.as_deref(), ascii.as_deref());
+            // The ASCII parameters as bytes, which end at their first NUL as libgeotiff (GDAL's and
+            // PDAL's) reads them: a citation that starts after it leaves the keys without a CRS.
+            let ascii = h.find_vlr(LASF_PROJECTION, 34737).map(|v| v.data.as_slice());
+            let info = crate::geotiff::crs_from_geokeys(&keys, doubles.as_deref(), ascii);
             // A user-defined CRS is kept as its PROJ string: the WKT made from it loses a foot
             // unit, and the EPSG code identified from that WKT would be the metre one.
             let horizontal = match (&info.epsg, &info.proj4) {
@@ -280,6 +282,23 @@ mod tests {
         let c = wkt_crs(w);
         assert_eq!(c.vertical_epsg, Some(5714));
         assert_eq!(c.vertical_name.as_deref(), Some("Mean Sea Level [ft"));
+    }
+
+    /// A LAS record's GeoAsciiParams end at their first NUL, as libgeotiff reads them: with
+    /// EPSG:32613 in ProjectedCSTypeGeoKey, citations `"A|B|"` and `"A|B|\0"` give the code, and
+    /// `"A|\0B|\0"` with a citation after the NUL gives no CRS, as GDAL 3.12.1 reads the same
+    /// keys in a GeoTIFF (libgeotiff's `ReadKey`; PDAL reads LAS GeoKeys with it).
+    #[test]
+    fn geoascii_params_end_at_their_first_nul() {
+        let header = |ascii: &[u8], second: u16| {
+            let keys: [u16; 16] = [1, 1, 0, 3, 1024, 0, 1, 1, 1026, 34737, 2, second, 3072, 0, 1, 32613];
+            let keys: Vec<u8> = keys.iter().flat_map(|k| k.to_le_bytes()).collect();
+            let vlrs = vec![Vlr::new("LASF_Projection", 34735, "", keys), Vlr::new("LASF_Projection", 34737, "", ascii.to_vec())];
+            LasHeader { vlrs, version: (1, 2), ..Default::default() }
+        };
+        assert_eq!(header_crs(&header(b"A|B|", 2)).horizontal.epsg, Some(32613));
+        assert_eq!(header_crs(&header(b"A|B|\0", 2)).horizontal.epsg, Some(32613));
+        assert!(header_crs(&header(b"A|\0B|\0", 3)).horizontal.is_unknown());
     }
 
     #[test]

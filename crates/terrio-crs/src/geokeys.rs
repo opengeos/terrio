@@ -147,15 +147,18 @@ pub struct GeoKeysCrs {
 /// assert_eq!(read.unsupported_method, None);
 /// ```
 pub fn read(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> GeoKeysCrs {
-    // GeoAsciiParamsTag ends at its first NUL, as GDAL 3.12.1 (libgeotiff) reads it, a C string:
-    // a key that spans the NUL is cut there, and one that starts at or after it leaves the GeoKeys
-    // without a CRS, as GDAL reads them (a key at offset 22 of `"NAD27 / UTM zone 13N|\0..."`).
+    // GeoAsciiParamsTag ends at its first NUL, as GDAL 3.12.1 reads it: libgeotiff's `ReadKey`
+    // takes the tag's C string, of length `len`, and for each ASCII key at `offset` with `count`
+    // bytes reads one ending at `len + 1` (its NUL) without it, cuts one that starts before
+    // `len` and ends after it, and fails on any other key that ends after `len`, which leaves the
+    // GeoKeys without a CRS (`GTIFNew` fails), even a code they give (a key at offset 22 of
+    // `"NAD27 / UTM zone 13N|\0..."` with 21 bytes).
     let ascii = &ascii[..ascii.iter().position(|b| *b == 0).unwrap_or(ascii.len())];
-    let past_the_text = directory
-        .get(4..)
-        .unwrap_or_default()
-        .chunks(4)
-        .any(|k| k.len() == 4 && k[1] == GEO_ASCII_PARAMS && k[2] > 0 && usize::from(k[3]) >= ascii.len());
+    let len = ascii.len();
+    let past_the_text = directory.get(4..).unwrap_or_default().chunks(4).any(|k| {
+        let (offset, count) = (usize::from(k.get(3).copied().unwrap_or(0)), usize::from(k.get(2).copied().unwrap_or(0)));
+        k.len() == 4 && k[1] == GEO_ASCII_PARAMS && offset + count > len && !(count > 0 && offset + count == len + 1) && offset >= len
+    });
     if past_the_text {
         return GeoKeysCrs::default();
     }
