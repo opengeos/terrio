@@ -37,6 +37,7 @@ import json
 import math
 import os
 import re
+import sqlite3
 import warnings
 from pathlib import Path
 
@@ -120,13 +121,15 @@ def wkt2(crs, datum_id=False, local=False):
         w, n = re.subn(
             pattern, lambda m: f'{m.group(1)},ID["EPSG",{code}]]', w, count=1
         )
-        assert n == 1 and f'LENGTHUNIT["metre",1]],ID["EPSG",{code}]]' in w.replace(
-            " ", ""
-        ), crs
+        check(
+            n == 1
+            and f'LENGTHUNIT["metre",1]],ID["EPSG",{code}]]' in w.replace(" ", ""),
+            crs,
+        )
     if local:
         w, n = re.subn(r'(GEOGCRS|BASEGEOGCRS|PROJCRS)\["[^"]*"', r'\1["Local"', w)
         w, m = re.subn(r'DATUM\["[^"]*"', 'DATUM["Local datum"', w)
-        assert n and m, crs
+        check(n and m, crs)
     return w
 
 
@@ -137,11 +140,11 @@ def wkt1(crs, local=False):
     w, n = re.subn(
         r"\]\],PRIMEM", f'],AUTHORITY["EPSG","{code}"]],PRIMEM', IDS.sub("", w)
     )
-    assert n == 1, crs
+    check(n == 1, crs)
     if local:
         w, n = re.subn(r'(GEOGCS|PROJCS)\["[^"]*"', r'\1["Local"', w)
         w, m = re.subn(r'DATUM\["[^"]*"', 'DATUM["Local datum"', w)
-        assert n and m, crs
+        check(n and m, crs)
     return w
 
 
@@ -149,7 +152,7 @@ def esri(crs):
     """ESRI's WKT 1: as written, renamed, with the datum's and with the CRS's code."""
     w = crs.to_wkt("WKT1_ESRI")
     # The CRS's code goes before the closing bracket of its root node.
-    assert w.endswith("]") and not w.endswith("]]]"), w[-20:]
+    check(w.endswith("]") and not w.endswith("]]]"), w[-20:])
     datum = crs.datum.to_json_dict()["id"]["code"]
     root = "PROJCS" if w.startswith("PROJCS") else "GEOGCS"
     renamed = re.sub(r'GEOGCS\["[^"]*"', 'GEOGCS["GCS_Local"', w)
@@ -201,7 +204,7 @@ def case(name, code, wkt, point):
     proj, operation, missing = place(CRS.from_wkt(wkt), point)
     by_code, _, _ = place(CRS.from_epsg(code), point)
     # A datum shift, not PROJ's no-shift fallback.
-    assert "Ballpark" not in operation, (name, operation)
+    check("Ballpark" not in operation, (name, operation))
     return {
         "name": name,
         "code": f"EPSG:{code}",
@@ -229,20 +232,60 @@ def variants(code):
     return crs, out
 
 
+def check(ok, what):
+    """Stops the script when `ok` is false (an `assert` that `python -O` keeps)."""
+    if not ok:
+        raise RuntimeError(f"check failed: {what!r}")
+
+
+# The files of the grid formats PROJ reads, by extension.
+GRID_EXTENSIONS = (
+    ".tif",
+    ".tiff",
+    ".gsb",
+    ".gtx",
+    ".byn",
+    ".lvz",
+    ".kgd",
+    ".gvb",
+    ".ntv1",
+    ".ntv2",
+    ".ctable",
+    ".ctable2",
+    ".las",
+    ".los",
+    ".grd",
+)
+
+
+def installed_grids():
+    """The grid files in PROJ's search paths: every file PROJ's database names as a grid
+    (`grid_alternatives`, with its pre-PROJ 7 name), and every file of a grid format."""
+    dirs = pyproj.datadir.get_data_dir().split(os.pathsep)
+    dirs.append(pyproj.datadir.get_user_data_dir())
+    db = sqlite3.connect(os.path.join(dirs[0], "proj.db"))
+    rows = db.execute(
+        "SELECT proj_grid_name, old_proj_grid_name FROM grid_alternatives"
+    )
+    names = {n for row in rows for n in row if n}
+    db.close()
+    check(names, "no grid names in proj.db")
+    return [
+        os.path.join(root, f)
+        for d in dirs
+        if os.path.isdir(d)
+        for root, _, files in os.walk(d)
+        for f in files
+        if f in names or f.lower().endswith(GRID_EXTENSIONS)
+    ]
+
+
 def main():
-    assert pyproj.proj_version_str == "9.8.1", pyproj.proj_version_str
+    check(pyproj.proj_version_str == "9.8.1", pyproj.proj_version_str)
     pyproj.network.set_network_enabled(False)
     # No grids, so the values don't depend on what is installed.
-    for d in pyproj.datadir.get_data_dir().split(os.pathsep) + [
-        pyproj.datadir.get_user_data_dir()
-    ]:
-        grids = [
-            f
-            for _, _, files in (os.walk(d) if os.path.isdir(d) else [])
-            for f in files
-            if f.endswith((".tif", ".gsb", ".gtx"))
-        ]
-        assert not grids, (d, grids)
+    found = installed_grids()
+    check(not found, found)
     cases = [case(n, c, w, list(p)) for n, (c, w, p) in RUSTGIS.items()]
     for code in CODES:
         crs, wkts = variants(code)
@@ -258,7 +301,7 @@ def main():
         placed[metres(c["proj"], c["by_code"]) >= 1e-3].append(c)
     cases, differences = placed[False], placed[True]
     for code in DIFFERENCES:
-        assert any(c["name"] == f"EPSG:{code}, ESRI WKT 1" for c in differences), code
+        check(any(c["name"] == f"EPSG:{code}, ESRI WKT 1" for c in differences), code)
     OUT.write_text(
         json.dumps(
             {

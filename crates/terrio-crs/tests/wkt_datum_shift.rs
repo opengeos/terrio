@@ -68,7 +68,8 @@ fn datums_known_by_id_or_esri_name_are_shifted_as_proj_does() {
         let off = metres(got, proj);
         // PROJ's name for the transformation holds terrio's (PROJ adds the conversions).
         let named = !operation.is_empty() && case["operation"].as_str().unwrap().contains(&operation);
-        if off >= 1e-3 || !named {
+        // A NaN distance fails too.
+        if !off.is_finite() || off >= 1e-3 || !named {
             let (name, proj_operation) = (case["name"].as_str().unwrap(), case["operation"].as_str().unwrap());
             bad.push(format!("{name}: {got:?} by {operation:?}, PROJ {proj:?} by {proj_operation:?}, {off:.3} m"));
         }
