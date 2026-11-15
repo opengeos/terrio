@@ -106,15 +106,17 @@ def wkt2(crs, datum_id=False, local=False):
     w = IDS.sub("", USAGE.sub("", crs.to_wkt("WKT2_2019")))
     if datum_id:
         code = crs.datum.to_json_dict()["id"]["code"]
-        w = re.sub(
+        w, n = re.subn(
             r"(ELLIPSOID\[[^\[]*\[[^\]]*\]\])\]",
             lambda m: f'{m.group(1)},ID["EPSG",{code}]]',
             w,
             count=1,
         )
+        assert n == 1, crs
     if local:
-        w = re.sub(r'(GEOGCRS|BASEGEOGCRS|PROJCRS)\["[^"]*"', r'\1["Local"', w)
-        w = re.sub(r'DATUM\["[^"]*"', 'DATUM["Local datum"', w)
+        w, n = re.subn(r'(GEOGCRS|BASEGEOGCRS|PROJCRS)\["[^"]*"', r'\1["Local"', w)
+        w, m = re.subn(r'DATUM\["[^"]*"', 'DATUM["Local datum"', w)
+        assert n and m, crs
     return w
 
 
@@ -122,10 +124,14 @@ def wkt1(crs, local=False):
     """GDAL's WKT 1 with only the datum's `AUTHORITY`, and under other names."""
     w = crs.to_wkt("WKT1_GDAL")
     code = re.search(r'AUTHORITY\["EPSG","(\d+)"\]\],PRIMEM', w).group(1)
-    w = re.sub(r"\]\],PRIMEM", f'],AUTHORITY["EPSG","{code}"]],PRIMEM', IDS.sub("", w))
+    w, n = re.subn(
+        r"\]\],PRIMEM", f'],AUTHORITY["EPSG","{code}"]],PRIMEM', IDS.sub("", w)
+    )
+    assert n == 1, crs
     if local:
-        w = re.sub(r'(GEOGCS|PROJCS)\["[^"]*"', r'\1["Local"', w)
-        w = re.sub(r'DATUM\["[^"]*"', 'DATUM["Local datum"', w)
+        w, n = re.subn(r'(GEOGCS|PROJCS)\["[^"]*"', r'\1["Local"', w)
+        w, m = re.subn(r'DATUM\["[^"]*"', 'DATUM["Local datum"', w)
+        assert n and m, crs
     return w
 
 
