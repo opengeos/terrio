@@ -313,15 +313,16 @@ files alike (a key that spans the NUL is cut there, one that ends at it is read 
 other that ends after it leaves the GeoKeys without a CRS, their EPSG code included; offsets count
 bytes, also after bytes that aren't UTF-8, which become U+FFFD in their own key; without the tag,
 any ASCII key leaves no CRS); text after a complete WKT was already ignored. A layer's or raster's
-WKT that the NUL leaves unreadable (a NUL inside a name) is no CRS, as GDAL reads it, and none is
-written from it. A NUL a PROJJSON name gives (`\u0000`) is part of the name, as in PROJ. Written to
-any file or its metadata (a layer's or raster's WKT, a `.prj`, GeoPackage, GeoParquet, netCDF, VRT,
-EPT, a LAS WKT record) or to GeoKeys, such a name is cut at the NUL, as PROJ 9.8.1 gives the name
-(its own WKT of the CRS ends at the NUL), so the CRS reads back; the cut name can change what the
-CRS is identified as by name, as in PROJ, and a CRS with one that GeoKeys can't describe, whose WKT
-would go in an ESRI PE citation, is refused, as GDAL 3.12.1 refuses to write it. WKT 1 and WKT 2
-share this parser, as do the readers of PROJJSON and of IAU definitions, which go through WKT, so an
-unknown node is skipped in each.
+WKT that the NUL cuts inside a quoted name or a node (an open quote or bracket left) is no CRS, as
+GDAL reads it, and none is written from it; one only padded with NULs is the text before them,
+whatever terrio reads of it. A NUL a PROJJSON name gives (`\u0000`) is part of the name, as in PROJ.
+Written to any file or its metadata (a layer's or raster's WKT, a `.prj`, GeoPackage, GeoParquet,
+netCDF, VRT, EPT, a LAS WKT record) or to GeoKeys, such a name is cut at the NUL, as PROJ 9.8.1
+gives the name (its own WKT of the CRS ends at the NUL), so the CRS reads back; the cut name can
+change what the CRS is identified as by name, as in PROJ, and a CRS with one that GeoKeys can't
+describe, whose WKT would go in an ESRI PE citation, is refused, as GDAL 3.12.1 refuses to write it.
+WKT 1 and WKT 2 share this parser, as do the readers of PROJJSON and of IAU definitions, which go
+through WKT, so an unknown node is skipped in each.
 
 A CRS of PROJ's ESRI authority is reported under it, as GDAL reports it: a GeoTIFF GDAL writes in
 `ESRI:54009` is `ESRI:54009` (from the ESRI code the WKT declares or, for GDAL's ESRI PE strings,

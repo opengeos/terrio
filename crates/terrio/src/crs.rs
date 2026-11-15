@@ -403,7 +403,8 @@ impl SpatialRef {
     }
     pub(crate) fn from_raster_crs(c: &wbraster::CrsInfo) -> Self {
         // A raster's WKT is a file's text, or terrio's (`to_crs_info`, without a NUL): it ends
-        // at its first NUL, as GDAL reads it.
+        // at its first NUL, as GDAL reads it, and one the NUL cuts inside a name or a node is no
+        // CRS (`file_wkt`).
         let wkt = raster_crs_wkt(c).as_deref().and_then(file_wkt);
         let mut s = Self { epsg: c.epsg, wkt, proj4: c.proj4.clone(), esri: None };
         // A WKT made from a PROJ string is not identified: it can describe less than the PROJ
@@ -434,9 +435,10 @@ impl SpatialRef {
 
     /// The CRS a vector layer declares. Its WKT is read up to its first NUL, as GDAL reads a
     /// file's text (a `.prj`, a GeoPackage's definition): a WKT with a NUL inside a name, which
-    /// GDAL refuses, gives no CRS (no WKT, so none is written back). WKT terrio wrote, by [`SpatialRef::apply_to_layer`] or to any
-    /// file, has no NUL (a name with one, from a PROJJSON name, is cut there, as PROJ 9.8.1 gives
-    /// the name), so it reads back as the CRS. A raster's CRS is read so too.
+    /// GDAL refuses, gives no CRS (no WKT, so none is written back); a definition only padded with
+    /// NULs is the text before them. WKT terrio wrote, by [`SpatialRef::apply_to_layer`] or to
+    /// any file, has no NUL (a name with one, from a PROJJSON name, is cut there, as PROJ 9.8.1
+    /// gives the name), so it reads back as the CRS. A raster's CRS is read so too.
     pub fn from_layer(layer: &wbvector::Layer) -> Self {
         let wkt = layer.crs_wkt().and_then(file_wkt);
         let mut s = Self { epsg: layer.crs_epsg(), wkt, ..Default::default() };
@@ -458,15 +460,32 @@ impl SpatialRef {
     }
 }
 
-/// A CRS definition read from a file, as GDAL reads it: up to its first NUL (a C string). One
-/// that the NUL cuts into text no reader takes (a NUL inside a name, which GDAL refuses with
-/// "missing , or ]") is no CRS, so that it isn't written back as that text either.
+/// A CRS definition read from a file, as GDAL reads it: up to its first NUL (a C string). A WKT
+/// that the NUL cuts inside a quoted name or a node (an open quote or bracket left, which GDAL
+/// refuses with "missing , or ]") is no CRS, so that it isn't written back as that text either.
+/// Only the syntax decides: a definition padded with NULs is kept as the text before them,
+/// whatever terrio reads of it (a `DERIVEDPROJCRS`, a PROJ string).
 fn file_wkt(text: &str) -> Option<String> {
     let cut = terrio_crs::until_nul(text);
-    if cut.len() < text.len() && terrio_crs::SpatialRef::parse_literal(cut).is_err() {
+    if cut.len() < text.len() && cut_inside_wkt(cut) {
         return None;
     }
     Some(cut.to_string())
+}
+
+/// Whether WKT text ends inside a quoted string or a node: an open quote, or more `[`/`(` than
+/// `]`/`)` outside quotes. A doubled quote inside a string is a quote of it.
+fn cut_inside_wkt(text: &str) -> bool {
+    let (mut quoted, mut depth) = (false, 0i64);
+    for c in text.chars() {
+        match c {
+            '"' => quoted = !quoted,
+            '[' | '(' if !quoted => depth += 1,
+            ']' | ')' if !quoted => depth -= 1,
+            _ => {}
+        }
+    }
+    quoted || depth > 0
 }
 
 /// Text for a terminal or a text report: a NUL (in a name a PROJJSON gives) written `\u0000`, as
@@ -855,5 +874,24 @@ mod nul_tests {
         assert!(geographic.is_geographic());
         let (x, y) = Transformer::new(&geographic, &crs).unwrap().transform(3.0, 45.0).unwrap();
         assert!((x - 500_000.0).abs() < 1e-6 && y > 4_900_000.0, "{x} {y}");
+    }
+
+    /// A definition padded with NULs is the text before them, whatever terrio reads of it (a
+    /// WKT 2 `DERIVEDPROJCRS`, a PROJ string); one the NUL cuts inside a name is no CRS.
+    #[test]
+    fn a_padded_definition_is_kept_and_one_cut_inside_a_name_is_dropped() {
+        let derived = "DERIVEDPROJCRS[\"d\",BASEPROJCRS[\"b\",BASEGEOGCRS[\"g\",DATUM[\"x\",ELLIPSOID[\"e\",6378137,298.257223563]]],CONVERSION[\"c\",METHOD[\"m\"]]],DERIVINGCONVERSION[\"dc\",METHOD[\"m\"]],CS[Cartesian,2],AXIS[\"x\",east],AXIS[\"y\",north],LENGTHUNIT[\"metre\",1]]";
+        assert_eq!(super::file_wkt(&format!("{derived}\0\0")).as_deref(), Some(derived));
+        assert_eq!(super::file_wkt("+proj=utm +zone=31 +datum=WGS84\0").as_deref(), Some("+proj=utm +zone=31 +datum=WGS84"));
+        assert_eq!(
+            super::file_wkt(
+                "PROJCS[\"WGS_1984_UTM\0_Zone_31N\",GEOGCS[\"GCS_WGS_1984\",DATUM[\"D_WGS_1984\",SPHEROID[\"WGS_1984\",6378137.0,298.257223563]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",3.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]"
+            ),
+            None
+        );
+        assert_eq!(super::file_wkt("A[\"a\"\"b\0c\"]"), None);
+        let mut layer = wbvector::Layer::new("p");
+        layer.set_crs_wkt(Some(format!("{derived}\0\0")));
+        assert_eq!(super::SpatialRef::from_layer(&layer).wkt.as_deref(), Some(derived));
     }
 }
