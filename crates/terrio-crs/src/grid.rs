@@ -1228,11 +1228,33 @@ pub(crate) fn hold_for_fork(held: &mut Vec<Box<dyn std::any::Any>>) {
     held.push(Box::new(sets_cache().lock().unwrap_or_else(PoisonError::into_inner)));
 }
 
+thread_local! {
+    /// Whether grids count as missing on this thread, while [`without_grids`] runs.
+    static WITHOUT_GRIDS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `f` on this thread as if no grid were installed nor could be fetched (PROJ's default
+/// here: no grid directory, the network off), whatever the process's grid settings; other threads
+/// are not affected, and the availability cache is neither read nor written meanwhile.
+pub(crate) fn without_grids<T>(f: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            WITHOUT_GRIDS.with(|w| w.set(self.0));
+        }
+    }
+    let _restore = Restore(WITHOUT_GRIDS.with(|w| w.replace(true)));
+    f()
+}
+
 /// Whether a grid can be used: present locally, or (with network access enabled) on the PROJ
 /// CDN. This is what makes PROJ consider an operation needing it.
 pub(crate) fn available(name: &str) -> bool {
     if name == "null" {
         return true;
+    }
+    if WITHOUT_GRIDS.with(std::cell::Cell::get) {
+        return false;
     }
     let generation = cache_generation();
     if let Some((_, a)) = availability().lock().unwrap_or_else(PoisonError::into_inner).get(name).copied().filter(|(g, _)| *g == generation)

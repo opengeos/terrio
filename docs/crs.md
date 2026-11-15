@@ -461,10 +461,9 @@ size) is refused, as PROJ refuses to transform with it. Its `+datum=` is shifted
 under `+R_C` too, and without an ellipsoid it is on GRS 1980. The extension stays in the WKT
 (`SpatialRef::from_wkt` does not take it as the CRS's PROJ string), and PROJJSON and GeoKeys,
 which describe a PROJ string by the CRS rules, refuse one the step places otherwise (by its
-figure, beyond the round-off between WGS 84 and GRS 1980, or by its datum: by grids on either
-side, installed or not, or Helmert shifts more than 1 mm apart around the origin). So
-`+datum=NAD83`, which the step takes as WGS 84 and PROJ's CRS rules shift by NAD83's
-transformations, by grids in places, is refused. A `+datum=`
+figure, beyond the round-off between WGS 84 and GRS 1980, or by its datum, as both place points
+without grids whatever is installed: by the step's grids, or more than 1 mm apart around the
+origin). `+datum=NAD83`, which the step takes as WGS 84, is described. A `+datum=`
 with its grids (NAD27, potsdam) wins over the string's `+towgs84` in a step.
 
 Where WKT 1 cannot describe a CRS given by a PROJ string, terrio writes its PROJ string in the
