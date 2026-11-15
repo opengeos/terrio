@@ -94,6 +94,14 @@ pub(crate) const MAX_LEVELS: usize = 16;
 /// bytes unless `OSR_IMPORT_FROM_WKT_LIMIT=NO`).
 pub(crate) const MAX_LEN: usize = 100_000;
 
+/// A definition given as text, as PROJ and GDAL take it: a C string, which ends at its first NUL
+/// (text after a complete WKT was ignored before as well). The public entry points cut the text
+/// they are given; the parser does not, as the WKT terrio builds from PROJJSON keeps its names
+/// whole, a NUL (`\u0000`) in them included, as PROJ reads them.
+pub(crate) fn c_text(s: &str) -> &str {
+    s.split('\0').next().unwrap_or_default()
+}
+
 /// Parses WKT into its tree, as PROJ's WKT parser (and so GDAL) accepts it: `[` and `(` open a
 /// node, and either `]` or `)` closes it whichever opened it (`SPHEROID["WGS 84",6378137,
 /// 298.257223563)` is WGS 84's spheroid for GDAL). `None` for text that is not WKT, WKT nested
@@ -103,8 +111,7 @@ pub(crate) fn parse(s: &str) -> Option<Node> {
     if s.len() > MAX_LEN {
         return None;
     }
-    // PROJ and GDAL take the WKT as a C string, which ends at its first NUL.
-    let b = s.split('\0').next().unwrap_or_default().as_bytes();
+    let b = s.as_bytes();
     let mut i = 0;
     node(b, &mut i, 0)
 }

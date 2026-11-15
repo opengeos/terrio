@@ -684,8 +684,8 @@ impl Def {
         }
         let geog = c.geog.or_else(|| c.geogcs.epsg()).or_else(|| match &c.geogcs_wkt1 {
             // WKT 2: identified loosely, so on the same ellipsoid only.
-            Some(text) => super::identify_epsg(text).filter(|g| wkt2::same_ellipsoid(*g, self.ell.a, self.ell.es)),
-            None => super::identify_epsg(geogcs_text?),
+            Some(text) => super::identify_epsg_text(text).filter(|g| wkt2::same_ellipsoid(*g, self.ell.a, self.ell.es)),
+            None => super::identify_epsg_text(geogcs_text?),
         });
         let geog = geog.map(|g| epsg::get(g).filter(|e| e.proj.starts_with("+proj=geocent")).map_or(g, |e| e.geog));
         if let Some(e) = geog.and_then(epsg::get)
@@ -773,7 +773,7 @@ impl Def {
     /// `GEOGCS` is identified as.
     pub fn from_wkt(w: &str) -> Result<Self> {
         if let Some((horizontal, vertical)) = split_compound(w) {
-            let h = SpatialRef::from_wkt(&horizontal);
+            let h = SpatialRef::from_wkt_text(&horizontal);
             let mut d = Self::new(&h)?;
             d.vertical = vertical_from_wkt(&vertical).map(Arc::new);
             return Ok(d);

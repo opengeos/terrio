@@ -97,7 +97,7 @@ fn esri_pe_crs(k: &GeoKeys) -> Option<SpatialRef> {
     let wkt = [3073, 1026, 2049].iter().find_map(|id| k.text(*id).and_then(|c| c.strip_prefix("ESRI PE String = ")))?.trim();
     // Read as any WKT: the code identified, and its PROJ4 extension (GDAL writes the sweep axis
     // of a geostationary CRS there) taken as the CRS.
-    let s = SpatialRef::from_wkt(wkt);
+    let s = SpatialRef::from_wkt_text(wkt);
     Some(SpatialRef { epsg: s.epsg, wkt: Some(wkt.to_string()), proj4: s.proj4, esri: s.esri })
 }
 
@@ -330,7 +330,7 @@ fn user_defined_projected_crs(k: &GeoKeys, proj4: &str) -> Option<SpatialRef> {
     let name = [3073, 1026].iter().find_map(|id| k.text(*id)).map(str::trim).filter(|n| !n.is_empty() && !n.contains(" = "));
     if let Some(name) = name
         && let Some(named) = renamed(&wkt, name)
-        && let Some(code) = SpatialRef::from_wkt(&named).with_esri().esri
+        && let Some(code) = SpatialRef::from_wkt_text(&named).with_esri().esri
         && let Some(esri) = SpatialRef::from_esri(code).ok().and_then(|s| s.to_wkt())
     {
         // With its code, as GDAL's `SetFromUserInput("ESRI:<code>")` gives it.
@@ -469,7 +469,7 @@ fn user_defined_crs(k: &GeoKeys) -> Option<SpatialRef> {
     // (`+proj=longlat +ellps=bessel +pm=paris` is not EPSG:4162). When terrio cannot read it,
     // wbprojection's code and WKT stay the fallback.
     let epsg = match own.as_deref() {
-        Some(w) => guess.filter(|code| crate::identify_epsg(w) == Some(*code)),
+        Some(w) => guess.filter(|code| crate::identify_epsg_text(w) == Some(*code)),
         None => guess,
     };
     let wkt = own.or(guess_wkt);

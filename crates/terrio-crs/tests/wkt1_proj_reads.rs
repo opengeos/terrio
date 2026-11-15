@@ -5,7 +5,10 @@
 //! `a"b c"`, an empty one), which PROJ skips whatever its keyword. A keyword with a space, a
 //! vertical tab, a NUL or an unclosed quote in it is refused, as PROJ refuses it, and so is
 //! EPSG's `Mercator (variant A)` with a latitude of origin other than 0, which PROJ reads but
-//! neither transforms nor writes as a PROJ string.
+//! neither transforms nor writes as a PROJ string. A definition ends at its first NUL, as PROJ
+//! takes it as a C string, so a NUL in a keyword is refused; text after a complete WKT, NUL or
+//! not, was already ignored. A NUL a PROJJSON name gives (`\u0000`) is part of the name, as in
+//! PROJ: EPSG:32631's PROJJSON with one is still read.
 //!
 //! `data/wkt1_proj_reads.json` (`scripts/gen_wkt1_proj_reads.py`, pyproj 3.8.0, no grids,
 //! `PROJ_NETWORK=OFF`) holds, for each WKT, a point in its geographic CRS, the point in the
@@ -13,7 +16,8 @@
 //! `CRS.from_wkt(wkt).to_proj4()` and `CRS.to_epsg()`; Makassar / NEIEZ in WGS 84 by
 //! `Transformer.from_crs(crs, "EPSG:4326", always_xy=True)` and its `CRS.to_epsg()`; the WKT
 //! `CRS.from_wkt` refuses; and the WKT `Transformer.from_crs(crs.geodetic_crs, crs)` and
-//! `CRS.to_proj4()` refuse.
+//! `CRS.to_proj4()` refuse; and EPSG:32631's PROJJSON with a `\u0000` in a name, with its
+//! `CRS.to_epsg()` and a point by `Transformer.from_crs("EPSG:4326", crs, always_xy=True)`.
 //! Tolerance: 1 mm (in the CRS's unit for projected coordinates, 1e-9 degrees for geographic ones,
 //! 1e-8 degrees in WGS 84); PROJ strings have PROJ's parameters, their values within a relative
 //! 1e-12.
@@ -157,4 +161,29 @@ fn mercator_variant_a_with_a_latitude_of_origin_is_refused_as_in_proj() {
         let geog = SpatialRef::from_wkt(&crs.geographic_wkt().unwrap());
         assert!(Transformer::new(&geog, &crs).is_err(), "{}", case["name"]);
     }
+}
+
+/// A NUL (`\u0000`) in a PROJJSON name is part of the name: EPSG:32631's PROJJSON with one is
+/// read as EPSG:32631 and places a point as PROJ does. A raw NUL ends the text, as PROJ 9.8.1's
+/// `proj_create` reads it (checked through its C API: text after the NUL is ignored, and a NUL
+/// inside the JSON leaves it unclosed and refused).
+#[test]
+fn a_nul_in_a_projjson_name_is_read_as_in_proj() {
+    offline();
+    let data = data();
+    let case = &data["projjson"];
+    let text = case["projjson"].as_str().unwrap();
+    assert!(text.contains(r"Latitude of\u0000 natural origin"));
+    let num = |v: &Value, i: usize| v[i].as_f64().unwrap();
+    let proj = (num(&case["proj"], 0), num(&case["proj"], 1));
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    for crs in [SpatialRef::from_projjson(text).unwrap(), SpatialRef::parse_literal(text).unwrap()] {
+        assert_eq!(crs.epsg.map(u64::from), case["epsg"].as_u64());
+        let got = Transformer::new(&wgs84, &crs).unwrap().transform(num(&case["point"], 0), num(&case["point"], 1)).unwrap();
+        assert!((got.0 - proj.0).abs() < 1e-3 && (got.1 - proj.1).abs() < 1e-3, "{got:?}, PROJ {proj:?}");
+    }
+    let trailing = format!("{text}\0garbage");
+    assert_eq!(SpatialRef::from_projjson(&trailing).unwrap().epsg, SpatialRef::from_projjson(text).unwrap().epsg);
+    let inside = format!("{}\0{}", &text[..50], &text[50..]);
+    assert!(SpatialRef::from_projjson(&inside).is_err());
 }

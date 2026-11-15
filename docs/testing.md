@@ -1768,11 +1768,13 @@ and with a latitude of origin and a standard parallel PROJ leaves out), EPSG's `
 A)` with a latitude of origin of 0, and geographic and projected WKT 1 and a WKT 2 with a node of an
 unknown keyword (`rustgis:unapplied` as RustGIS marks the WKT 1 it converts a WKT 2 `BOUNDCRS` to,
 on a datum and at the root, a hyphen, a dot, a leading digit, other letters, quoted runs, an empty
-keyword, a vertical tab before it, text after a NUL). Makassar / NEIEZ is EPSG:3002 and goes to WGS
-84 as in PROJ, within 1e-8 degrees. A keyword with a space, a vertical tab, a NUL or an unclosed
-quote is refused, as PROJ refuses it, and EPSG's `Mercator (variant A)` with a latitude of origin
-other than 0, which PROJ neither transforms nor writes as a PROJ string, is refused (`cargo test -p
-terrio-crs --test wkt1_proj_reads`; regenerate with `scripts/gen_wkt1_proj_reads.py`, pyproj 3.8.0).
+keyword, a vertical tab before it, text after a NUL, which was already ignored). EPSG:32631's
+PROJJSON with a `\u0000` in a parameter's name is EPSG:32631 and places a point as PROJ does, within
+1 mm. Makassar / NEIEZ is EPSG:3002 and goes to WGS 84 as in PROJ, within 1e-8 degrees. A keyword
+with a space, a vertical tab, a NUL or an unclosed quote is refused, as PROJ refuses it, and EPSG's
+`Mercator (variant A)` with a latitude of origin other than 0, which PROJ neither transforms nor
+writes as a PROJ string, is refused (`cargo test -p terrio-crs --test wkt1_proj_reads`; regenerate
+with `scripts/gen_wkt1_proj_reads.py`, pyproj 3.8.0).
 
 PROJ-string parameter values are refused where PROJ 9.8.1 refuses them: each method with each
 common parameter unreadable (`abc`) or in radians (`0.5r`), scale factors PROJ may refuse, and

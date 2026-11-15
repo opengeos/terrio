@@ -7,7 +7,12 @@ where it places points in them.
 - WKT 1 with a node of an unknown keyword (`rustgis:unapplied`, as RustGIS marks a WKT 2
   `BOUNDCRS` it converts to WKT 1, `a-b`, `a.b`, `1x`, an empty one), on a datum and at the root
   of a `GEOGCS` and a `PROJCS`, which PROJ skips whatever its keyword;
-- WKT 1 whose keyword PROJ refuses: one with a space or a quote in it.
+- WKT 1 whose keyword PROJ refuses: one with a space, a vertical tab, a NUL or an unclosed quote
+  in it.
+
+EPSG:32631's PROJJSON (`CRS.to_json()`) with a NUL (`\\u0000`) in a parameter's name is read
+by `CRS.from_json`, with its `to_epsg()` and a point by `Transformer.from_crs("EPSG:4326", crs,
+always_xy=True)`.
 
 Makassar / NEIEZ is also taken to WGS 84 by `Transformer.from_crs(crs, "EPSG:4326",
 always_xy=True)`, with the code `CRS.to_epsg()` identifies.
@@ -227,6 +232,21 @@ def main():
             refused.append({"name": name, "wkt": wkt})
         else:
             raise AssertionError(f"PROJ reads {name}")
+    # EPSG:32631's PROJJSON with a NUL (`\u0000`) in a parameter's name, which PROJ keeps in the
+    # name and reads as EPSG:32631.
+    plain = CRS("EPSG:32631").to_json()
+    text = plain.replace(
+        '"Latitude of natural origin"', '"Latitude of\\u0000 natural origin"', 1
+    )
+    assert text != plain
+    crs = CRS.from_json(text)
+    t = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+    projjson = {
+        "projjson": text,
+        "point": (3.0, 45.0),
+        "proj": list(t.transform(3.0, 45.0, errcheck=True)),
+        "epsg": crs.to_epsg(),
+    }
     untransformed = []
     for name, wkt in NOT_TRANSFORMED:
         crs = CRS.from_wkt(wkt)
@@ -249,6 +269,7 @@ def main():
                 "proj_version": pyproj.proj_version_str,
                 "read": read,
                 "to_wgs84": to_wgs84,
+                "projjson": projjson,
                 "refused": refused,
                 "untransformed": untransformed,
             },

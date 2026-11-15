@@ -381,8 +381,13 @@ impl SpatialRef {
     }
 
     /// A CRS from a WKT definition (WKT1 or WKT2). The EPSG code (or else the ESRI code) is
-    /// identified when possible.
+    /// identified when possible. The WKT ends at its first NUL, as in PROJ and GDAL.
     pub fn from_wkt(wkt: &str) -> Self {
+        Self::from_wkt_text(wkt1::c_text(wkt))
+    }
+
+    /// [`Self::from_wkt`] of the whole text, a NUL in a name included (the WKT of a PROJJSON).
+    pub(crate) fn from_wkt_text(wkt: &str) -> Self {
         // A WKT 1 extended with its PROJ string (`EXTENSION["PROJ4", ...]`, as GDAL writes CRSs
         // WKT 1 cannot describe) is that PROJ string, as GDAL reads it.
         if let Some(proj4) = proj4_extension(wkt)
@@ -401,7 +406,7 @@ impl SpatialRef {
                 })
             };
             let epsg = declared_epsg(wkt)
-                .or_else(|| identify_epsg(wkt))
+                .or_else(|| identify_epsg_text(wkt))
                 .filter(|code| fits(SpatialRef { epsg: Some(*code), ..Default::default() }));
             // Retain a lenient extension through its WKT: re-reading it as a literal PROJ
             // string would apply stricter validation than the extension permits.
@@ -421,7 +426,7 @@ impl SpatialRef {
         if (is_variant_c(wkt) || proj4_extension(wkt).is_some()) && Def::from_wkt(wkt).is_err() {
             return Self { wkt: Some(wkt.to_string()), ..Default::default() };
         }
-        let epsg = identify_epsg(wkt);
+        let epsg = identify_epsg_text(wkt);
         Self { epsg, wkt: Some(wkt.to_string()), ..Default::default() }.with_esri()
     }
 
@@ -529,7 +534,9 @@ impl SpatialRef {
     /// Parses the supported PROJJSON v0.7 geographic, projected or bound CRS subset.
     /// Unsupported coordinate systems, datum models and operations return errors.
     pub fn from_projjson(text: &str) -> Result<Self> {
-        projjson::parse(text)
+        // The text ends at its first NUL, as PROJ's `proj_create` reads it; a NUL a JSON string
+        // gives (`\u0000`) is part of its name.
+        projjson::parse(wkt1::c_text(text))
     }
 
     /// Parses a user-supplied CRS: `EPSG:4326`, `4326`, `urn:ogc:def:crs:EPSG::4326`, an OGC URL,
@@ -550,7 +557,8 @@ impl SpatialRef {
     /// [`Self::parse`], reading a file only when `files` (not for a file's own text).
     #[cfg_attr(target_family = "wasm", allow(unused_variables))]
     fn parse_definition(s: &str, files: bool) -> Result<Self> {
-        let s = s.trim();
+        // The definition ends at its first NUL, as PROJ's `proj_create` reads it.
+        let s = wkt1::c_text(s).trim();
         if s.is_empty() {
             return Err(Error::Crs("empty definition".into()));
         }
@@ -605,7 +613,7 @@ impl SpatialRef {
                 let head: String = s.chars().take(80).collect();
                 return Err(Error::Crs(format!("not a WKT definition GDAL reads: '{head}'")));
             }
-            return Ok(Self::from_wkt(s));
+            return Ok(Self::from_wkt_text(s));
         }
         if let Some(code) = esri_reference(&upper) {
             return Self::from_esri(code);
@@ -866,7 +874,7 @@ impl SpatialRef {
         }
         let (horizontal, vertical) = def::split_compound(self.wkt.as_deref()?)?;
         let vertical = declared_epsg(&vertical).filter(|v| epsg::vertical(*v).is_some())?;
-        Some((identify_epsg(&horizontal)?, vertical))
+        Some((identify_epsg_text(&horizontal)?, vertical))
     }
 
     /// Whether coordinates have a height that transformations change: a compound CRS (with a
@@ -1166,6 +1174,11 @@ pub(crate) fn is_variant_c(wkt: &str) -> bool {
 /// or WKT 2 conversion. `None` for a WKT terrio reads otherwise (through wbprojection).
 #[doc(hidden)]
 pub fn wkt_proj(wkt: &str) -> Option<String> {
+    wkt_proj_text(wkt1::c_text(wkt))
+}
+
+/// [`wkt_proj`] of the whole text, a NUL in a name included (the WKT of a PROJJSON).
+pub(crate) fn wkt_proj_text(wkt: &str) -> Option<String> {
     if let Some(p) = proj4_extension(wkt) {
         return Some(p);
     }
@@ -1285,6 +1298,11 @@ pub fn compound_code(horizontal: u32, vertical: u32, name: Option<&str>) -> Opti
 /// unless the WKT names one, then the lowest code.
 #[doc(hidden)]
 pub fn identify_epsg(wkt: &str) -> Option<u32> {
+    identify_epsg_text(wkt1::c_text(wkt))
+}
+
+/// [`identify_epsg`] of the whole text, a NUL in a name included (the WKT of a PROJJSON).
+pub(crate) fn identify_epsg_text(wkt: &str) -> Option<u32> {
     if let Some(code) = declared_epsg(wkt) {
         return Some(code);
     }
@@ -1385,7 +1403,7 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
         // by its parameters alone.
         if report.used_embedded_epsg && !report.resolved_code.is_some_and(|c| wbp::to_ogc_wkt(c).is_ok()) {
             let stripped = strip_authorities(wkt);
-            return if stripped != wkt { identify_epsg(&stripped) } else { None };
+            return if stripped != wkt { identify_epsg_text(&stripped) } else { None };
         }
         if report.used_embedded_epsg || !report.ambiguous {
             return report.resolved_code.filter(|c| fits(*c));
