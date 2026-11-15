@@ -331,7 +331,9 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             push(&mut out, "k", k.or(Some(1.0)));
         }
         "transversemercatorsouthorientated" => {
-            out.push("+proj=tmerc +axis=wsu".into());
+            // West and south, but for a north-east CS, which PROJ reads south then west.
+            let north_east = projected_axes(root) == Some(*b"ne");
+            out.push(if north_east { "+proj=tmerc +axis=swu" } else { "+proj=tmerc +axis=wsu" }.into());
             push(&mut out, "lat_0", lat_0.or(Some(0.0)));
             push(&mut out, "lon_0", lon_0);
             push(&mut out, "k", k.or(Some(1.0)));
@@ -479,22 +481,23 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             push(&mut out, "k_0", k.or(Some(1.0)));
         }
         "krovak" => {
-            // Its axes: ESRI's scale and rotation of the plane (-1 and 90° for east-north), else
-            // the WKT's, east-north unless south and west, as PROJ reads them.
-            let east_north = match (get(&["xscale"]), get(&["xyplanerotation"])) {
-                (Some(sx), Some(rot)) => sx < 0.0 && (rot - 90.0).abs() < 1e-10,
-                _ => {
-                    let dirs: Vec<String> = root
-                        .children("AXIS")
-                        .filter_map(|a| match a.args.get(1) {
-                            Some(Arg::Ident(d)) => Some(d.to_ascii_lowercase()),
-                            _ => None,
-                        })
-                        .collect();
-                    !(dirs.iter().any(|d| d == "south") && dirs.iter().any(|d| d == "west"))
+            // Its axes: ESRI's scale and rotation of the plane (-1 and 90° for east-north, else
+            // south-west), else the WKT's, south-west without them, as GDAL 3.10 and PROJ 9.8.1
+            // read them (northing then easting read as easting then northing).
+            let axes = match (get(&["xscale"]), get(&["xyplanerotation"])) {
+                (Some(sx), Some(rot)) => {
+                    if sx < 0.0 && (rot - 90.0).abs() < 1e-10 {
+                        *b"en"
+                    } else {
+                        *b"sw"
+                    }
                 }
+                _ => projected_axes(root).unwrap_or(*b"sw"),
             };
-            out.push(if east_north { "+proj=krovak" } else { "+proj=krovak +axis=swu" }.into());
+            out.push(match axes {
+                [b'e', b'n'] | [b'n', b'e'] => "+proj=krovak".into(),
+                [a, b] => format!("+proj=krovak +axis={}{}u", a as char, b as char),
+            });
             push(&mut out, "lat_0", lat_0);
             push(&mut out, "lon_0", lon_0);
             push(&mut out, "alpha", azimuth);
@@ -686,11 +689,40 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             push(&mut out, "lon_0", lon_0);
         }
     }
+    // The CRS's axes, as GDAL 3.10 and PROJ 9.8.1 (`always_xy`) read them: the directions of its
+    // `AXIS` nodes, in their order but for northing then easting, which is read as easting then
+    // northing. South-orientated Transverse Mercator and Krovak have their own axes.
+    match (method.as_str(), projected_axes(root)) {
+        ("transversemercatorsouthorientated" | "krovak", _) => {}
+        (_, Some([a, b])) if [a, b] != *b"ne" && [a, b] != *b"en" => out.push(format!("+axis={}{}u", a as char, b as char)),
+        _ => {}
+    }
     out.push(format!("+x_0={fe}"));
     out.push(format!("+y_0={fn_}"));
     out.push(format!("+to_meter={to_meter}"));
     out.extend(tail);
     Some(Converted { proj: out.join(" "), geogcs: geogcs.clone(), geog: None, geogcs_wkt1: None })
+}
+
+/// The directions of a projected CRS's two `AXIS` nodes as PROJ's `+axis` letters (`e`, `w`,
+/// `n`, `s`), when it has two along east-west and north-south.
+fn projected_axes(root: &Node) -> Option<[u8; 2]> {
+    let letters: Vec<u8> = root
+        .children("AXIS")
+        .map(|a| match a.args.get(1) {
+            Some(Arg::Ident(d)) => match d.to_ascii_lowercase().as_str() {
+                "east" => Some(b'e'),
+                "west" => Some(b'w'),
+                "north" => Some(b'n'),
+                "south" => Some(b's'),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
+    let [a, b] = letters[..] else { return None };
+    let east_west = |c: u8| matches!(c, b'e' | b'w');
+    (east_west(a) != east_west(b)).then_some([a, b])
 }
 
 /// The northing of the pole in Polar Stereographic (variant C), EPSG method 9830, whose false

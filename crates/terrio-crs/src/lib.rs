@@ -720,6 +720,10 @@ impl SpatialRef {
     /// it is, as PROJ writes it. A planetocentric CRS on an ellipsoid (`+geoc`) has none. A WKT's
     /// grid shift (`PROJ4_GRIDS` in its datum, a `BOUNDCRS` with a grid) is not read, so not
     /// written.
+    /// As in PROJ 9.8.1, export need not preserve a WKT's coordinate mapping: south-orientated
+    /// Transverse Mercator with north-east axes transforms south-west but exports west-south;
+    /// Krovak with west-south axes exports without that axis order. Keep the WKT when the
+    /// declared coordinate-system axes must survive a round trip.
     ///
     /// ```
     /// use terrio_crs::SpatialRef;

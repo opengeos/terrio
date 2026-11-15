@@ -33,9 +33,19 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
 - ESRI codes, the geographic and projected CRSs of PROJ's ESRI authority: `ESRI:54009` (World
   Mollweide), `esri:102003`, `urn:ogc:def:crs:ESRI::102003`. The few whose projection terrio
   does not compute (Goode homolosine of the oceans, Peirce quincuncial and others) are refused;
-- WKT1 and WKT2 (2015 and 2019) definitions, including ESRI `.prj` WKT and WKT2 `BOUNDCRS`s
-  (a CRS with its transformation to WGS 84, as `+towgs84`); an unknown WKT2 projection method
-  or parameter is an error rather than ignored;
+- WKT1 and WKT2 (2015 and 2019) definitions, including ESRI `.prj` WKT and WKT2 `BOUNDCRS`s (a CRS
+  with its transformation to WGS 84, as `+towgs84`); an unknown WKT2 projection method or parameter
+  is an error rather than ignored. A projected CRS's `AXIS` nodes give its axes in WKT 1 as in WKT
+  2, as GDAL and PROJ read them in GIS order: `AXIS["Y",WEST],AXIS["X",SOUTH]` counts coordinates
+  west and south, and northing then easting is read as easting then northing; south-orientated
+  Transverse Mercator is west and south but for north-east axes (south and west), and Krovak without
+  them south and west. Its PROJ string carries only the axes PROJ writes: south-orientated
+  Transverse Mercator's `+axis=wsu` and Krovak's `+axis=swu`, not a coordinate system's.
+  Export follows PROJ 9.8.1 and can lose the WKT's coordinate mapping: north-east
+  south-orientated Transverse Mercator transforms south-west but exports west-south;
+  west-south Krovak exports without that axis order. Geographic and geographic
+  BOUNDCRS exports also omit CS axes, while transforms retain them. Keep WKT for
+  a round trip that preserves the declared axes;
 - PROJJSON v0.7 definitions in the [supported object subset](#projjson-definitions);
 - PROJ strings: `+proj=utm +zone=13 +datum=WGS84`, with `+nadgrids=` and `+geoidgrids=` for
   datum shift and geoid grids;

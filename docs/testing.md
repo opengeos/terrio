@@ -1744,6 +1744,14 @@ them) and compound references, character for character, and reads back as the sa
 `scripts/gen_proj_string_export.py`, pyproj 3.8.0; `--all PATH` and the ignored
 `every_code_matches_proj` compare every code).
 
+Projected CRSs given by WKT 1 and by PROJ's WKT 2 of them, with each order of an east-west and a
+north-south `AXIS` (Transverse Mercator, south-orientated Transverse Mercator, Lambert Conformal
+Conic, Krovak, Mercator and Polar Stereographic, 54 CRSs), place a point where PROJ 9.8.1 does with `always_xy`, as GDAL 3.10's
+`gdaltransform` also does, within 1 mm. Both WKT versions write the `+axis` PROJ writes. Eighteen
+geographic and geographic BOUNDCRS exports also match PROJ, including omission of their CS axes
+and preservation of the bound datum shift (`cargo test -p
+terrio-crs --test wkt1_axes`; regenerate with `scripts/gen_wkt1_axes.py`, pyproj 3.8.0).
+
 PROJ-string parameter values are refused where PROJ 9.8.1 refuses them: each method with each
 common parameter unreadable (`abc`) or in radians (`0.5r`), scale factors PROJ may refuse, and
 `+to_meter`, `+units`, `+vto_meter`, `+towgs84`, `+pm` and rotated-pole cases, 3,350 unique strings
