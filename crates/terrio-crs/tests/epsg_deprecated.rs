@@ -74,8 +74,8 @@ fn deprecated_codes_are_placed_by_their_own_definition_as_proj_does() {
     }
     assert_eq!(compared, 490);
     // The pending codes still differ: remove one from `PENDING` once it matches.
-    let pending: Vec<&String> = bad.iter().filter(|b| PENDING.iter().any(|c| b.starts_with(&format!("EPSG:{c}:")))).collect();
-    assert_eq!(pending.len(), PENDING.len(), "pending codes that now match PROJ: {bad:?}");
+    let matching: Vec<u32> = PENDING.iter().copied().filter(|c| !bad.iter().any(|b| b.starts_with(&format!("EPSG:{c}:")))).collect();
+    assert!(matching.is_empty(), "pending codes that now match PROJ: {matching:?}");
     bad.retain(|b| !PENDING.iter().any(|c| b.starts_with(&format!("EPSG:{c}:"))));
     assert!(bad.is_empty(), "{} of {compared} differ:\n{}", bad.len(), bad.join("\n"));
 }

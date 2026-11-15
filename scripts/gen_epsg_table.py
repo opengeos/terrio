@@ -1199,7 +1199,7 @@ def rows():
     yield from grid_alternatives(names)
 
 
-DEPRECATED_KINDS = (
+REPLACEMENT_KINDS = (
     PJType.GEOGRAPHIC_2D_CRS,
     PJType.GEOGRAPHIC_3D_CRS,
     PJType.GEOCENTRIC_CRS,
@@ -1221,7 +1221,7 @@ def replacement_rows(lines):
         ``("X", code, replacements)`` rows, in order of code.
     """
     codes = {int(line.split("\t", 2)[1]) for line in lines if line[:2] in ("C\t", "V\t", "K\t")}
-    for kind in DEPRECATED_KINDS:
+    for kind in REPLACEMENT_KINDS:
         codes |= {int(c) for c in pyproj.get_codes("EPSG", kind, allow_deprecated=True)}
     codes = sorted(codes)
     out = []
