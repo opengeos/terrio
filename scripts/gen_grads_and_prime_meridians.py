@@ -138,7 +138,14 @@ def krovak_in_grads(wkt):
     def grads(m):
         return f'PARAMETER["{m[1]}",{float(m[2]) / 0.9!r}]'
 
-    return re.sub(rf'PARAMETER\["({names})",([-0-9.]+)\]', grads, out)
+    out, n = re.subn(rf'PARAMETER\["({names})",([-0-9.]+)\]', grads, out)
+    # Every angle is rewritten: a value in another form (an exponent) would be skipped.
+    assert (
+        n
+        == len(re.findall(rf'PARAMETER\["({names})",', out))
+        == (5 if "XY_" in out else 4)
+    )
+    return out
 
 
 def cases():
@@ -194,6 +201,17 @@ def cases():
             "Lisbon in degrees, CRS in grads",
             "grad",
             'PRIMEM["Lisbon",-9.13190611111111]',
+        ),
+        # Copenhagen is one of PROJ's `+pm=` names but not in this table: in the CRS's unit.
+        (
+            "Copenhagen in degrees, CRS in grads",
+            "grad",
+            'PRIMEM["Copenhagen",12.577875]',
+        ),
+        (
+            "Copenhagen sexagesimal, CRS in degrees",
+            "degree",
+            'PRIMEM["Copenhagen",12.344035]',
         ),
     ]:
         size = 0.0174532925199433 if unit == "degree" else 0.0157079632679489
@@ -334,6 +352,8 @@ def cases():
 
 # Paris is `+pm=paris`, 2.337229166666667, within 1e-10 radians (5.73e-9 degrees): 2.3372291721 is
 # 0.95e-10 above it, 2.3372291612 0.95e-10 below, 2.3372291730 and 2.3372291603 1.1e-10 off.
+# 12.5778750001 is `+pm=copenhagen`, 12.577875. Greenwich is one of them: +-5e-9 (0.87e-10
+# radians) is 0, +-6.5e-9 (1.13e-10 radians) is kept.
 PM_CASES = ["EPSG:4807"] + [
     f"+proj=longlat +ellps=clrk80ign +pm={pm} +type=crs"
     for pm in [
@@ -342,6 +362,11 @@ PM_CASES = ["EPSG:4807"] + [
         "2.3372291612",
         "2.3372291730",
         "2.3372291603",
+        "12.5778750001",
+        "0.000000005",
+        "-0.000000005",
+        "0.0000000065",
+        "-0.0000000065",
     ]
 ]
 
@@ -379,7 +404,31 @@ def main():
     for crs in PM_CASES:
         t = Transformer.from_crs(crs, "EPSG:4275", always_xy=True)
         pm_rows.append({"crs": crs, "lon": t.transform(0.0, 0.0, errcheck=True)[0]})
-    data = {"proj_version": pyproj.proj_version_str, "cases": rows, "pm_cases": pm_rows}
+    # What PROJ writes for Paris: the `+pm=` of `to_proj4()`, the `PRIMEM` of
+    # `to_wkt("WKT1_GDAL")`, and the prime meridian of `to_json()` in degrees.
+    exports = []
+    lambert = strip(CRS.from_epsg(27572).to_wkt("WKT1_GDAL"))
+    lcc = (
+        "+proj=lcc +lat_1=46.8 +lat_0=46.8 +lon_0=0 +k_0=0.99987742 +x_0=600000 "
+        "+y_0=2200000 +ellps=clrk80ign +pm=2.33722917 +units=m +type=crs"
+    )
+    for crs in [lambert, lcc]:
+        c = CRS(crs)
+        pm = re.search(r"\+pm=(\S+)", c.to_proj4())[1]
+        wkt1 = float(re.search(r'PRIMEM\["[^"]*",([^,\]]+)', c.to_wkt("WKT1_GDAL"))[1])
+        json_pm = json.loads(c.to_json())["base_crs"]["datum"]["prime_meridian"]
+        lon = json_pm["longitude"]
+        if isinstance(lon, dict):
+            lon = lon["value"] * math.degrees(lon["unit"]["conversion_factor"])
+        exports.append(
+            {"crs": crs, "proj4_pm": pm, "wkt1_pm": wkt1, "projjson_pm": lon}
+        )
+    data = {
+        "proj_version": pyproj.proj_version_str,
+        "cases": rows,
+        "pm_cases": pm_rows,
+        "exports": exports,
+    }
     OUT.write_text(json.dumps(data, indent=1) + "\n")
 
 

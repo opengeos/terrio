@@ -147,47 +147,42 @@ pub(crate) fn unit_to_meter(name: &str) -> Option<f64> {
     })
 }
 
+/// PROJ's named prime meridians (`proj_list_prime_meridians`), by longitude in degrees from their
+/// degrees, minutes and seconds, as PROJ reads `+pm=` and writes them by name. One table for
+/// reading `+pm=`, writing it, and transforming as PROJ does.
+pub(crate) const PRIME_MERIDIANS: [(&str, f64); 13] = [
+    ("lisbon", -(9.0 + 7.0 / 60.0 + 54.862 / 3600.0)),
+    ("paris", 2.0 + 20.0 / 60.0 + 14.025 / 3600.0),
+    ("bogota", -(74.0 + 4.0 / 60.0 + 51.3 / 3600.0)),
+    ("madrid", -(3.0 + 41.0 / 60.0 + 16.58 / 3600.0)),
+    ("rome", 12.0 + 27.0 / 60.0 + 8.4 / 3600.0),
+    ("bern", 7.0 + 26.0 / 60.0 + 22.5 / 3600.0),
+    ("jakarta", 106.0 + 48.0 / 60.0 + 27.79 / 3600.0),
+    ("ferro", -(17.0 + 40.0 / 60.0)),
+    ("brussels", 4.0 + 22.0 / 60.0 + 4.71 / 3600.0),
+    ("stockholm", 18.0 + 3.0 / 60.0 + 29.8 / 3600.0),
+    ("athens", 23.0 + 42.0 / 60.0 + 58.815 / 3600.0),
+    ("oslo", 10.0 + 43.0 / 60.0 + 22.5 / 3600.0),
+    ("copenhagen", 12.0 + 34.0 / 60.0 + 40.35 / 3600.0),
+];
+
 /// The longitude of one of PROJ's named prime meridians (`+pm=`), in degrees.
 pub(crate) fn prime_meridian(name: &str) -> Option<f64> {
-    Some(match name {
-        "greenwich" => 0.0,
-        "lisbon" => -9.131906111111,
-        "paris" => 2.337229166667,
-        "bogota" => -74.080916666667,
-        "madrid" => -3.687938888889,
-        "rome" => 12.452333333333,
-        "bern" => 7.439583333333,
-        "jakarta" => 106.807719444444,
-        "ferro" => -17.666666666667,
-        "brussels" => 4.367975,
-        "stockholm" => 18.058277777778,
-        "athens" => 23.7163375,
-        "oslo" => 10.722916666667,
-        "copenhagen" => 12.577875,
-        _ => return None,
-    })
+    if name == "greenwich" {
+        return Some(0.0);
+    }
+    PRIME_MERIDIANS.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
 }
 
 /// A prime meridian in degrees as PROJ 9.8.1 transforms with it between CRSs: one of its named
 /// meridians when within 1e-10 radians of it (`PrimeMeridian::getPROJStringWellKnownName`), so
-/// Paris's 2.33722917° (2.5969213 grads) is `+pm=paris`, 2.337229166667°.
+/// Paris's 2.33722917° (2.5969213 grads) is `+pm=paris`, 2.337229166667°. Greenwich is one of
+/// them: 5e-9° is 0.
 pub(crate) fn proj_prime_meridian(degrees: f64) -> f64 {
-    const NAMES: [&str; 13] = [
-        "lisbon",
-        "paris",
-        "bogota",
-        "madrid",
-        "rome",
-        "bern",
-        "jakarta",
-        "ferro",
-        "brussels",
-        "stockholm",
-        "athens",
-        "oslo",
-        "copenhagen",
-    ];
-    NAMES.iter().filter_map(|n| prime_meridian(n)).find(|v| (v - degrees).to_radians().abs() < 1e-10).unwrap_or(degrees)
+    std::iter::once(0.0)
+        .chain(PRIME_MERIDIANS.iter().map(|(_, v)| *v))
+        .find(|v| (v - degrees).to_radians().abs() < 1e-10)
+        .unwrap_or(degrees)
 }
 
 /// Wraps a longitude in radians into [-π, π].

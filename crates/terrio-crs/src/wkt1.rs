@@ -206,6 +206,9 @@ pub(crate) fn norm(s: &str) -> String {
 /// 2.33720833, in ATF (Paris), also in grads) or in EPSG's sexagesimal degrees (`Ferro` at
 /// -17.40, 17°40'W), whatever the unit.
 pub(crate) fn prime_meridian_degrees(name: &str, value: f64, ang: f64) -> f64 {
+    // PROJ's own table for this (`primeMeridiansDMS`), not its `+pm=` names
+    // (`math::PRIME_MERIDIANS`): it has no Copenhagen, which stays in the CRS's unit, and its
+    // Madrid is at 3°41'14.55"W.
     const DMS: [(&str, f64, f64, f64); 13] = [
         ("Lisbon", -9.0, 7.0, 54.862),
         ("Bogota", -74.0, 4.0, 51.3),

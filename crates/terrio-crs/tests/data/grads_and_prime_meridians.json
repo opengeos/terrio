@@ -223,6 +223,40 @@
    ]
   },
   {
+   "name": "Copenhagen in degrees, CRS in grads",
+   "wkt": "GEOGCS[\"custom\",DATUM[\"custom\",SPHEROID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627]],PRIMEM[\"Copenhagen\",12.577875],UNIT[\"grad\",0.0157079632679489]]",
+   "src": "+proj=longlat +ellps=clrk80ign +type=crs",
+   "point": [
+    2.35,
+    48.85
+   ],
+   "proj": [
+    -9.966763888888888,
+    54.27777777777778
+   ],
+   "proj_back": [
+    2.35,
+    48.85
+   ]
+  },
+  {
+   "name": "Copenhagen sexagesimal, CRS in degrees",
+   "wkt": "GEOGCS[\"custom\",DATUM[\"custom\",SPHEROID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627]],PRIMEM[\"Copenhagen\",12.344035],UNIT[\"degree\",0.0174532925199433]]",
+   "src": "+proj=longlat +ellps=clrk80ign +type=crs",
+   "point": [
+    2.35,
+    48.85
+   ],
+   "proj": [
+    -9.994035,
+    48.85
+   ],
+   "proj_back": [
+    2.3499999999999988,
+    48.85
+   ]
+  },
+  {
    "name": "EPSG:27561 WKT1_GDAL",
    "wkt": "PROJCS[\"NTF (Paris) / Lambert Nord France\",GEOGCS[\"NTF (Paris)\",DATUM[\"Nouvelle_Triangulation_Francaise_Paris\",SPHEROID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627,AUTHORITY[\"EPSG\",\"7011\"]],AUTHORITY[\"EPSG\",\"6807\"]],PRIMEM[\"Paris\",2.33722917,AUTHORITY[\"EPSG\",\"8903\"]],UNIT[\"grad\",0.0157079632679489,AUTHORITY[\"EPSG\",\"9105\"]],AUTHORITY[\"EPSG\",\"4807\"]],PROJECTION[\"Lambert_Conformal_Conic_1SP\"],PARAMETER[\"latitude_of_origin\",55],PARAMETER[\"central_meridian\",0],PARAMETER[\"scale_factor\",0.999877341],PARAMETER[\"false_easting\",600000],PARAMETER[\"false_northing\",200000],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"27561\"]]",
    "src": "EPSG:4275",
@@ -1896,6 +1930,40 @@
   {
    "crs": "+proj=longlat +ellps=clrk80ign +pm=2.3372291603 +type=crs",
    "lon": 2.3372291603
+  },
+  {
+   "crs": "+proj=longlat +ellps=clrk80ign +pm=12.5778750001 +type=crs",
+   "lon": 12.577875
+  },
+  {
+   "crs": "+proj=longlat +ellps=clrk80ign +pm=0.000000005 +type=crs",
+   "lon": 0.0
+  },
+  {
+   "crs": "+proj=longlat +ellps=clrk80ign +pm=-0.000000005 +type=crs",
+   "lon": 0.0
+  },
+  {
+   "crs": "+proj=longlat +ellps=clrk80ign +pm=0.0000000065 +type=crs",
+   "lon": 6.5e-09
+  },
+  {
+   "crs": "+proj=longlat +ellps=clrk80ign +pm=-0.0000000065 +type=crs",
+   "lon": -6.5e-09
+  }
+ ],
+ "exports": [
+  {
+   "crs": "PROJCS[\"custom\",GEOGCS[\"custom\",DATUM[\"custom\",SPHEROID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627]],PRIMEM[\"Paris\",2.33722917],UNIT[\"grad\",0.0157079632679489]],PROJECTION[\"Lambert_Conformal_Conic_1SP\"],PARAMETER[\"latitude_of_origin\",52],PARAMETER[\"central_meridian\",0],PARAMETER[\"scale_factor\",0.99987742],PARAMETER[\"false_easting\",600000],PARAMETER[\"false_northing\",2200000],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "proj4_pm": "paris",
+   "wkt1_pm": 2.33722916999999,
+   "projjson_pm": 2.3372291699999903
+  },
+  {
+   "crs": "+proj=lcc +lat_1=46.8 +lat_0=46.8 +lon_0=0 +k_0=0.99987742 +x_0=600000 +y_0=2200000 +ellps=clrk80ign +pm=2.33722917 +units=m +type=crs",
+   "proj4_pm": "paris",
+   "wkt1_pm": 2.33722917,
+   "projjson_pm": 2.33722917
   }
  ]
 }

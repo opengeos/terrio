@@ -740,7 +740,12 @@ impl Geodetic {
                             .filter(|u| u.name().is_some_and(|s| s.eq_ignore_ascii_case("degree") || s.eq_ignore_ascii_case("grad")))
                     })
                 };
-                let unit = p.child("ANGLEUNIT").or_else(|| p.child("UNIT")).or(crs_unit).and_then(|u| u.num(1)).map_or(1.0, degrees);
+                // PROJ refuses a unit without its size ("not enough children").
+                let unit = match p.child("ANGLEUNIT").or_else(|| p.child("UNIT")) {
+                    Some(u) => Some(u.num(1).ok_or_else(|| bad("a prime meridian's unit without its size"))?),
+                    None => crs_unit.and_then(|u| u.num(1)),
+                };
+                let unit = unit.map_or(1.0, degrees);
                 super::wkt1::prime_meridian_degrees(p.name().unwrap_or(""), p.num(1).unwrap_or(0.0), unit)
             }
             None => 0.0,
