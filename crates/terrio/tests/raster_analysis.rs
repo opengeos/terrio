@@ -1026,3 +1026,17 @@ fn zonal_medoid_overlapping_zones_can_both_take_a_shared_pixel() {
     assert_eq!(field(&out, 0, "v_medoid_euclidean"), &V::Float(4.));
     assert_eq!(field(&out, 1, "v_medoid_euclidean"), &V::Float(4.));
 }
+
+#[test]
+fn zonal_medoid_nodata_in_one_band_excludes_the_pixel_from_every_band() {
+    // Pixels (band 1, band 2): (1,0), (2,0), (3,0), (0,9). Nodata only in band 2 at the second
+    // pixel, which would otherwise be the medoid: it must drop out of every band, so the first
+    // pixel (1,0) becomes the medoid (sums 2 + sqrt(82) against 2 + sqrt(90) for the third).
+    let r = raster(2, 2, 2, &[1., 2., 3., 0., 0., -9999., 0., 9.], Some(-9999.));
+    let l = zones(vec![Some(rectangle(0., 0., 2., 2.))]);
+    let source = ZonalSource { raster: LazyRaster::from(r).into(), bands: vec![ZonalBand::new(1, "b1"), ZonalBand::new(2, "b2")] };
+    let o = ZonalOptions { stats: vec![S::Medoid(MedoidMetric::Euclidean)], ..Default::default() };
+    let out = zonal_stats(&l, &mut [source], &o).unwrap();
+    assert_eq!(field(&out, 0, "b1_medoid_euclidean"), &V::Float(1.));
+    assert_eq!(field(&out, 0, "b2_medoid_euclidean"), &V::Float(0.));
+}

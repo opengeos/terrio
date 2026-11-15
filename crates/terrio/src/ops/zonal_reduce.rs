@@ -843,8 +843,9 @@ fn quantile(bins: &[(f64, f64)], ranks: &[f64], q: f64, fractional: bool) -> f64
 
 #[cfg(test)]
 mod tests {
+    use super::super::MedoidMetric;
     use super::super::index::{GridKey, Span, Zone, ZoneIndex, build};
-    use super::{BandSpec, Plan, open_pixels_peak, reduce_source};
+    use super::{BandSpec, Plan, open_pixels_peak, reduce_medoid, reduce_source};
 
     #[test]
     fn open_pixels_peak_counts_zones_open_in_the_same_strip() {
@@ -1300,6 +1301,36 @@ mod tests {
                     "strip {strip}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn zonal_medoid_strip_height_does_not_change_results() {
+        // Zones of at most 2,000 pixels, spread over the rows, so they open and close in different
+        // strips of every height tried.
+        let (cols, rows) = (40, 300);
+        let values: Vec<f64> = (0..2 * cols * rows).map(|i| ((i * 7919) % 97) as f64 / 3.).collect();
+        let cfg = RasterConfig { cols, rows, bands: 2, data_type: DataType::F64, ..Default::default() };
+        let mut ds = RasterDataset::new(Raster::from_data(cfg, values).unwrap(), false);
+        ds.set_geo_transform([0.0, 1.0, 0.0, rows as f64, 0.0, -1.0]);
+        let mut layer = Layer::new("zones");
+        let geometries = [
+            Geometry::polygon(ring(2.3, 5.1, 9.7, 60.4), vec![]),
+            Geometry::polygon(ring(10., 10., 35., 40.), vec![ring(15., 20., 30., 30.)]),
+            Geometry::multi_polygon(vec![(ring(0., 0., 4.5, 3.5), vec![]), (ring(20.2, 250., 39.9, 262.), vec![])]),
+        ];
+        for (i, g) in geometries.into_iter().enumerate() {
+            layer.features.push(Feature { fid: i as u64, geometry: Some(g), attributes: vec![] });
+        }
+        let metrics = [MedoidMetric::Euclidean, MedoidMetric::SpectralAngle];
+        let fids = [0, 1, 2];
+        let mut raster = LazyRaster::from(ds);
+        let index = build(&layer, &GridKey::of(&raster), false, false).unwrap();
+        let plan_bands = || vec![BandSpec { band: 1, nodata: None }, BandSpec { band: 2, nodata: None }];
+        let whole = reduce_medoid(&index, &mut raster, &plan_bands(), rows, fids.len(), &metrics).unwrap();
+        assert!(whole.iter().flatten().flatten().any(|v| !v.is_null()));
+        for strip in [1, 7, 64] {
+            assert_eq!(reduce_medoid(&index, &mut raster, &plan_bands(), strip, fids.len(), &metrics).unwrap(), whole, "strip {strip}");
         }
     }
 }

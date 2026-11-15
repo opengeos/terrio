@@ -3,6 +3,16 @@
 
 use super::MedoidMetric;
 
+/// The largest power of two not above `x` (for `x` in the normal range), or 1 for zero.
+fn power_of_two_at_most(x: f64) -> f64 {
+    if x > 0.0 {
+        let exponent = (x.log2().floor() as i64).clamp(-1022, 1023);
+        f64::from_bits(((exponent + 1023) as u64) << 52)
+    } else {
+        1.0
+    }
+}
+
 /// Index of the medoid among the pixels of `values`, which holds `dim` band values per pixel, in
 /// row-major order. `None` when no pixel can be the medoid (none, or only zero vectors under the
 /// spectral angle). Zero vectors under the spectral angle are left out of the sums too, since
@@ -12,11 +22,11 @@ pub(crate) fn medoid(values: &[f64], dim: usize, metric: MedoidMetric) -> Option
     let max_abs = |xs: &[f64]| xs.iter().fold(0.0f64, |m, x| m.max(x.abs()));
     // Rescaled copies, so squares and norms neither overflow nor underflow. Euclidean distances
     // share one factor for the zone, which leaves the medoid unchanged; spectral angles ignore a
-    // pixel's length, so each pixel is scaled alone.
+    // pixel's length, so each pixel is scaled alone. The factors are powers of two, so scaling
+    // rounds nothing and exact ties stay ties.
     let (rows, usable): (Vec<f64>, Vec<bool>) = match metric {
         MedoidMetric::Euclidean => {
-            let zone = max_abs(values);
-            let scale = if zone > 0.0 { zone } else { 1.0 };
+            let scale = power_of_two_at_most(max_abs(values));
             (values.iter().map(|x| x / scale).collect(), vec![true; n])
         }
         MedoidMetric::SpectralAngle => {
@@ -25,7 +35,8 @@ pub(crate) fn medoid(values: &[f64], dim: usize, metric: MedoidMetric) -> Option
             for pixel in values.chunks_exact(dim) {
                 let m = max_abs(pixel);
                 usable.push(m > 0.0);
-                rows.extend(pixel.iter().map(|x| if m > 0.0 { x / m } else { 0.0 }));
+                let scale = power_of_two_at_most(m);
+                rows.extend(pixel.iter().map(|x| x / scale));
             }
             (rows, usable)
         }
@@ -68,7 +79,8 @@ mod tests {
     #[test]
     fn spectral_angle_ignores_brightness_and_skips_zero_vectors() {
         // (1,1) and (2,2) have the same direction, so each is at angle 0 from the other; (0,5)
-        // is far from both. The zero vector has no angle and is never the medoid.
+        // is far from both. The zero vector has no angle and is never the medoid. The first two
+        // tie, so the first wins.
         assert_eq!(medoid(&[1.0, 1.0, 0.0, 0.0, 2.0, 2.0, 0.0, 5.0], 2, SpectralAngle), Some(0));
         assert_eq!(medoid(&[0.0, 0.0], 2, SpectralAngle), None);
     }
@@ -78,6 +90,15 @@ mod tests {
         // Squaring 1e200 overflows, and 1e-200 underflows: the middle value is the medoid at both.
         assert_eq!(medoid(&[0., 1e200, 2e200], 1, Euclidean), Some(1));
         assert_eq!(medoid(&[0., 1e-200, 2e-200], 1, Euclidean), Some(1));
+    }
+
+    #[test]
+    fn spectral_angle_and_euclidean_can_pick_different_pixels() {
+        // (1,0), (0,1), (4,1). Euclidean sums are 4.58, 5.41, 7.16: the first. Spectral angle sums
+        // (radians) are 1.82, 2.90, 1.57: the third, which is closest to the others in direction.
+        let values = [1., 0., 0., 1., 4., 1.];
+        assert_eq!(medoid(&values, 2, Euclidean), Some(0));
+        assert_eq!(medoid(&values, 2, SpectralAngle), Some(2));
     }
 
     #[test]
