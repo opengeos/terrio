@@ -144,14 +144,15 @@ than Terrio's raster/vector library:
 
 ```toml
 [dependencies]
-terrio-crs = "0.2.3"
+terrio-crs = "0.2.4"
 ```
 
-The [published crate](https://crates.io/crates/terrio-crs/0.2.3) works offline by
+The [published crate](https://crates.io/crates/terrio-crs/0.2.4) works offline by
 default. Enable `wbprojection-fallback` when Terrio's wider projection coverage
 is required; the feature matrix below describes the supported configurations.
-Version 0.2.3 provides Eckert IV and Natural Earth only through that feature. The
-native method counts in the matrix below describe the unreleased source.
+Since 0.2.4, Eckert IV and Natural Earth are in the default build; 0.2.3 and earlier
+provide them only through that feature. The native method counts in the matrix below
+describe 0.2.4.
 
 ```rust
 use terrio_crs::{SpatialRef, Transformer};
