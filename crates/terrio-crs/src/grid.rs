@@ -1130,6 +1130,10 @@ fn load(name: &str) -> Option<Arc<GridFile>> {
         static NULL: OnceLock<Arc<GridFile>> = OnceLock::new();
         return Some(NULL.get_or_init(|| Arc::new(null_file())).clone());
     }
+    // Under `without_grids`, no grid is read nor fetched (an optional one is skipped).
+    if WITHOUT_GRIDS.with(std::cell::Cell::get) {
+        return None;
+    }
     let generation = cache_generation();
     let cached = files()
         .lock()
@@ -1234,8 +1238,9 @@ thread_local! {
 }
 
 /// Runs `f` on this thread as if no grid were installed nor could be fetched (PROJ's default
-/// here: no grid directory, the network off), whatever the process's grid settings; other threads
-/// are not affected, and the availability cache is neither read nor written meanwhile.
+/// here: no grid directory, the network off), whatever the process's grid settings: no grid, not
+/// even an optional one, is read or fetched. Other threads are not affected, and the availability
+/// and file caches are neither read nor written meanwhile.
 pub(crate) fn without_grids<T>(f: impl FnOnce() -> T) -> T {
     struct Restore(bool);
     impl Drop for Restore {

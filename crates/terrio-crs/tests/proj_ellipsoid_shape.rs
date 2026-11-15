@@ -258,7 +258,10 @@ fn writers_describe_an_extension_only_as_it_is_computed_on() {
     ] {
         let crs = SpatialRef::from_wkt(&wkt(ext));
         assert_eq!(crs.proj4, None, "{ext}");
+        terrio_crs::take_warnings();
         assert_eq!(crs.to_projjson().is_ok(), alike, "{ext}: {:?}", crs.to_projjson());
         assert_eq!(terrio_crs::geokeys::user_defined_keys(&crs, "custom").is_some(), alike, "{ext}");
+        // The check's own diagnostics (a missing grid, a ballpark) are not the caller's.
+        assert_eq!(terrio_crs::take_warnings(), Vec::<String>::new(), "{ext}");
     }
 }

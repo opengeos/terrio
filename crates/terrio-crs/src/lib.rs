@@ -1186,49 +1186,59 @@ pub fn wkt_proj(wkt: &str) -> Option<String> {
 /// (NAD27's) does not, nor OSGB36's Helmert shift against `pj_datum_set`'s. The writers that describe a PROJ string by those rules (PROJJSON, GeoKeys)
 /// describe such an extension only, and the WKT writer writes the string itself so.
 pub(crate) fn extension_places_as_string(s: &str) -> bool {
-    // Both as they place points without grids, whatever is installed: PROJ's default here.
-    grid::without_grids(|| {
-        let (Ok(crs), Ok(step)) = (Def::from_proj(s), Def::from_proj_extension(s)) else { return false };
-        if !crs.same_conversion(&step) || (crs.ell.a - step.ell.a).abs() > 1e-6 || (crs.ell.es - step.ell.es).abs() > 1e-10 {
-            return false;
-        }
-        if crs.same_datum(&step) {
-            return true;
-        }
-        // The step's grid shift (NAD27's, potsdam's `+nadgrids`) is no datum the CRS rules have.
-        if step.ops().iter().any(|op| op.needs_grids()) {
-            return false;
-        }
-        // Each with a WKT of its own stored, so that comparing them does not write one (from the
-        // PROJ string, which calls this).
-        let given = SpatialRef { proj4: Some(s.to_string()), wkt: Some("given".into()), ..Default::default() };
-        let extension = SpatialRef {
-            wkt: Some(format!(
-                "GEOGCS[\"step\",DATUM[\"step\",SPHEROID[\"step\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433],EXTENSION[\"PROJ4\",\"{}\"]]",
-                s.replace('"', "")
-            )),
-            ..Default::default()
-        };
-        let Ok(wgs84) = SpatialRef::from_epsg(4326) else { return false };
-        let (Ok(to_given), Ok(to_extension)) = (Transformer::new(&wgs84, &given), Transformer::new(&wgs84, &extension)) else {
-            return false;
-        };
-        // The datum's transformations without grids (NAD83's null one, OSGB36's Helmert ones)
-        // against the step's shift, around the origin (in Greenwich longitudes): on a 3 × 3 grid
-        // 5° apart and 4 points 15° away.
-        let (lon, lat) = crs.params().map_or((0.0, 0.0), |p| (p.lon_0 + p.prime_meridian, p.lat_0));
-        let scale = if crs.is_geographic() { 111_195.0 } else { 1.0 };
-        let offsets = [-5.0, 0.0, 5.0].into_iter().flat_map(|x| [-5.0, 0.0, 5.0].map(|y| (x, y)));
-        offsets.chain([(-15.0, 0.0), (15.0, 0.0), (0.0, -15.0), (0.0, 15.0)]).all(|(dx, dy)| {
-            let point = ((lon + dx + 180.0).rem_euclid(360.0) - 180.0, (lat + dy).clamp(-89.0, 89.0));
-            match (to_given.transform(point.0, point.1), to_extension.transform(point.0, point.1)) {
-                (Ok(a), Ok(b)) => ((a.0 - b.0) * scale).hypot((a.1 - b.1) * scale) < 1e-3,
-                // Outside the projection's domain on both sides.
-                (Err(_), Err(_)) => true,
-                _ => false,
+    // Both as they place points without grids, whatever is installed: PROJ's default here. Their
+    // diagnostics (a missing grid, a ballpark) are this check's, not the caller's.
+    warnings::silenced(|| grid::without_grids(|| extension_places_without_grids(s)))
+}
+
+/// [`extension_places_as_string`], under [`grid::without_grids`].
+fn extension_places_without_grids(s: &str) -> bool {
+    let (Ok(crs), Ok(step)) = (Def::from_proj(s), Def::from_proj_extension(s)) else { return false };
+    if !crs.same_conversion(&step) || (crs.ell.a - step.ell.a).abs() > 1e-6 || (crs.ell.es - step.ell.es).abs() > 1e-10 {
+        return false;
+    }
+    if crs.same_datum(&step) {
+        return true;
+    }
+    // The step's grid shift (NAD27's, potsdam's `+nadgrids`) is no datum the CRS rules have.
+    if step.ops().iter().any(|op| op.needs_grids()) {
+        return false;
+    }
+    // Each with a WKT of its own stored, so that comparing them does not write one (from the
+    // PROJ string, which calls this).
+    let given = SpatialRef { proj4: Some(s.to_string()), wkt: Some("given".into()), ..Default::default() };
+    let extension = SpatialRef {
+        wkt: Some(format!(
+            "GEOGCS[\"step\",DATUM[\"step\",SPHEROID[\"step\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433],EXTENSION[\"PROJ4\",\"{}\"]]",
+            s.replace('"', "")
+        )),
+        ..Default::default()
+    };
+    let Ok(wgs84) = SpatialRef::from_epsg(4326) else { return false };
+    let (Ok(to_given), Ok(to_extension)) = (Transformer::new(&wgs84, &given), Transformer::new(&wgs84, &extension)) else {
+        return false;
+    };
+    // The datum's transformations without grids (NAD83's null one, OSGB36's Helmert ones)
+    // against the step's shift, around the origin (in Greenwich longitudes): on a 3 × 3 grid
+    // 5° apart and 4 points 15° away.
+    let (lon, lat) = crs.params().map_or((0.0, 0.0), |p| (p.lon_0 + p.prime_meridian, p.lat_0));
+    let scale = if crs.is_geographic() { 111_195.0 } else { 1.0 };
+    let offsets = [-5.0, 0.0, 5.0].into_iter().flat_map(|x| [-5.0, 0.0, 5.0].map(|y| (x, y)));
+    let mut compared = 0;
+    let alike = offsets.chain([(-15.0, 0.0), (15.0, 0.0), (0.0, -15.0), (0.0, 15.0)]).all(|(dx, dy)| {
+        let point = ((lon + dx + 180.0).rem_euclid(360.0) - 180.0, (lat + dy).clamp(-89.0, 89.0));
+        match (to_given.transform(point.0, point.1), to_extension.transform(point.0, point.1)) {
+            (Ok(a), Ok(b)) => {
+                compared += 1;
+                ((a.0 - b.0) * scale).hypot((a.1 - b.1) * scale) < 1e-3
             }
-        })
-    })
+            // Outside the projection's domain on both sides.
+            (Err(_), Err(_)) => true,
+            _ => false,
+        }
+    });
+    // Not alike when no point could be compared.
+    alike && compared > 0
 }
 
 /// Whether a WKT 1 has a root `EXTENSION["PROJ4", ...]`, which PROJ and terrio compute on in place
