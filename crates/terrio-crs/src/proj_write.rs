@@ -43,7 +43,8 @@ pub(crate) fn write(s: &SpatialRef) -> Option<String> {
     if s.epsg.and_then(epsg::compound).is_none()
         && let Some((horizontal, vertical)) = s.wkt.as_deref().and_then(def::split_compound)
     {
-        let horizontal = SpatialRef::from_wkt(&horizontal);
+        // uncut: stored or built WKT
+        let horizontal = SpatialRef::from_wkt_text(&horizontal);
         // A PROJ4 extension is kept whole, `+no_defs` and all, the vertical CRS after it.
         let (mut tokens, extended) = match extension(&horizontal) {
             Some(tokens) => (tokens, true),

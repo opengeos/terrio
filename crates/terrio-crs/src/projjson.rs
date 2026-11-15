@@ -470,5 +470,6 @@ pub(crate) fn parse(text: &str) -> Result<SpatialRef> {
     Def::from_wkt(&wkt)?;
     // The translated WKT has no root identifier, so this identifies the supplied
     // definition, never the JSON object's claimed authority code.
-    Ok(SpatialRef::from_wkt(&wkt))
+    // uncut: stored or built WKT
+    Ok(SpatialRef::from_wkt_text(&wkt))
 }

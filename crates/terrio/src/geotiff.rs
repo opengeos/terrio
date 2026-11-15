@@ -167,6 +167,9 @@ enum Values {
     Shorts(Vec<u16>),
     Doubles(Vec<f64>),
     Ascii(String),
+    /// GeoAsciiParamsTag, kept as bytes: its keys' offsets count bytes, which decoding invalid
+    /// UTF-8 to U+FFFD would shift.
+    Bytes(Vec<u8>),
 }
 
 /// The ASCII baseline tags GDAL reports as `TIFFTAG_*` metadata, in its order.
@@ -375,6 +378,7 @@ fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool, images: 
             d
         };
         let values = match typ {
+            2 if tag == GEO_ASCII_PARAMS => Values::Bytes(data),
             2 => Values::Ascii(String::from_utf8_lossy(&data).trim_end_matches('\0').to_string()),
             3 => Values::Shorts(data.chunks(2).map(u16_at).collect()),
             // A zero denominator gives a non-finite value, which is not reported.
@@ -415,6 +419,10 @@ fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool, images: 
             _ => None,
         })
     };
+    let geo_ascii = tags.iter().find_map(|(k, v)| match v {
+        Values::Bytes(b) if *k == GEO_ASCII_PARAMS => Some(b.as_slice()),
+        _ => None,
+    });
     let keys = tags.iter().find_map(|(k, v)| match v {
         Values::Shorts(s) if *k == GEO_KEY_DIRECTORY => Some(s.as_slice()),
         _ => None,
@@ -586,7 +594,7 @@ fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool, images: 
     }
 
     if let Some(keys) = keys {
-        apply_geokeys(&mut out, keys, doubles(GEO_DOUBLE_PARAMS), ascii(GEO_ASCII_PARAMS));
+        apply_geokeys(&mut out, keys, doubles(GEO_DOUBLE_PARAMS), geo_ascii);
     }
     // Raster type is a GeoKey, exposed as dataset metadata by GDAL.
     out.metadata.retain(|(k, _)| k != "AREA_OR_POINT");
@@ -652,7 +660,7 @@ pub(crate) fn color_interpretation(value: &str) -> &'static str {
 
 /// The CRS of a GeoKey directory and its double and ASCII parameters (as stored in GeoTIFF tags
 /// or LAS `LASF_Projection` records).
-pub(crate) fn crs_from_geokeys(keys: &[u16], doubles: Option<&[f64]>, ascii: Option<&str>) -> wbraster::CrsInfo {
+pub(crate) fn crs_from_geokeys(keys: &[u16], doubles: Option<&[f64]>, ascii: Option<&[u8]>) -> wbraster::CrsInfo {
     let mut out = GeoTags::default();
     apply_geokeys(&mut out, keys, doubles, ascii);
     out.warn_unreadable("GeoKeys");
@@ -661,10 +669,10 @@ pub(crate) fn crs_from_geokeys(keys: &[u16], doubles: Option<&[f64]>, ascii: Opt
 
 /// Sets the CRS (and the raster type) of `out` from a GeoKey directory, as GDAL reads it (see
 /// `terrio_crs::geokeys::read`).
-fn apply_geokeys(out: &mut GeoTags, keys: &[u16], doubles: Option<&[f64]>, ascii: Option<&str>) {
+fn apply_geokeys(out: &mut GeoTags, keys: &[u16], doubles: Option<&[f64]>, ascii: Option<&[u8]>) {
     let raster_type = keys.get(4..).and_then(|k| k.chunks(4).find(|k| k.len() == 4 && k[0] == 1025 && k[1] == 0)).map(|k| k[3]);
     out.pixel_is_point = raster_type == Some(2);
-    let read = crate::crs::SpatialRef::read_geokeys(keys, doubles.unwrap_or_default(), ascii.unwrap_or_default().as_bytes());
+    let read = crate::crs::SpatialRef::read_geokeys(keys, doubles.unwrap_or_default(), ascii.unwrap_or_default());
     out.unreadable_method = read.unsupported_method;
     if let Some(crs) = read.crs {
         out.epsg = crs.epsg;
@@ -2171,7 +2179,7 @@ mod tests {
     fn a_citation_inside_a_multibyte_character_is_read() {
         let mut out = GeoTags::default();
         let keys = [1, 1, 0, 2, 1024, 0, 1, 1, 1026, GEO_ASCII_PARAMS, 3, 1];
-        apply_geokeys(&mut out, &keys, None, Some("\u{fffd}abc|"));
+        apply_geokeys(&mut out, &keys, None, Some("\u{fffd}abc|".as_bytes()));
     }
 
     #[test]
@@ -2314,7 +2322,7 @@ mod tests {
         // autzen_trim.las: NAD83(HARN) / Oregon GIC Lambert (ft), as GDAL and PDAL read it, not
         // the same projection on plain NAD83 (#209).
         let (keys, doubles, ascii) = autzen_keys();
-        let crs = crate::crs::SpatialRef::from_raster_crs(&crs_from_geokeys(&keys, Some(&doubles), Some(ascii)));
+        let crs = crate::crs::SpatialRef::from_raster_crs(&crs_from_geokeys(&keys, Some(&doubles), Some(ascii.as_bytes())));
         assert_eq!(crs.epsg, Some(2994), "{crs:?}");
         let harn = crate::crs::SpatialRef::parse("EPSG:2994").unwrap();
         let (x, y) = crate::crs::Transformer::new(&crs, &harn).unwrap().transform(636001.76, 848935.2).unwrap();
@@ -2338,8 +2346,17 @@ mod tests {
         // And by the geographic CRS's code, whatever the citation says.
         let mut on_4152 = utm;
         on_4152[8..16].copy_from_slice(&[2048, 0, 1, 4152, 3073, 34737, 21, 0]);
-        let info = crs_from_geokeys(&on_4152, Some(&[6378137.0, 298.257222101]), Some("NAD83 / UTM zone 10N|"));
+        let info = crs_from_geokeys(&on_4152, Some(&[6378137.0, 298.257222101]), Some(b"NAD83 / UTM zone 10N|"));
         assert_eq!(crate::crs::SpatialRef::from_raster_crs(&info).epsg, Some(3740), "{info:?}");
+    }
+
+    /// GeoAsciiParamsTag's offsets count bytes, also after bytes that aren't UTF-8: a citation at
+    /// byte 2 after `0xFF |` is `NAD27 / UTM zone 13N`, as GDAL 3.12.1 names the CRS of these keys.
+    #[test]
+    fn citations_after_bytes_that_are_not_utf8_are_read_at_their_offsets() {
+        let keys = [1, 1, 0, 4, 1024, 0, 1, 1, 3072, 0, 1, 32767, 3073, GEO_ASCII_PARAMS, 21, 2, 3074, 0, 1, 16013];
+        let info = crs_from_geokeys(&keys, None, Some(b"\xff|NAD27 / UTM zone 13N|"));
+        assert_eq!(crate::crs::SpatialRef::from_raster_crs(&info).name().as_deref(), Some("NAD27 / UTM zone 13N"), "{info:?}");
     }
 
     /// A UTM zone as GDAL 3.12.1 writes it for a CRS without EPSG code (ProjectionGeoKey 16033
@@ -2364,7 +2381,7 @@ mod tests {
 
     /// The coordinates of (16°E, 48°N) in the CRS read from GeoKeys.
     fn utm_point(keys: &[u16], doubles: &[f64], ascii: Option<&str>) -> (crate::crs::SpatialRef, (f64, f64)) {
-        let crs = crate::crs::SpatialRef::from_raster_crs(&crs_from_geokeys(keys, Some(doubles), ascii));
+        let crs = crate::crs::SpatialRef::from_raster_crs(&crs_from_geokeys(keys, Some(doubles), ascii.map(str::as_bytes)));
         let wgs84 = crate::crs::SpatialRef::from_epsg(4326).unwrap();
         let xy = crate::crs::Transformer::new(&wgs84, &crs).unwrap().transform(16.0, 48.0).unwrap();
         (crs, xy)
@@ -2425,7 +2442,7 @@ mod tests {
             34736, 1, 0, 2059, 34736, 1, 1,
         ];
         let ascii = "GCS Name = unknown|Ellipsoid = WGS 84|Primem = Greenwich|AUnits = grad||";
-        let info = crs_from_geokeys(&keys, Some(&[6378137.0, 298.257223563]), Some(ascii));
+        let info = crs_from_geokeys(&keys, Some(&[6378137.0, 298.257223563]), Some(ascii.as_bytes()));
         let crs = crate::crs::SpatialRef::from_raster_crs(&info);
         assert_eq!(crs.epsg, None, "{info:?}");
         assert!(info.wkt.as_deref().unwrap().contains("UNIT[\"grad\",0.015707963267949"), "{info:?}");
@@ -2456,7 +2473,7 @@ mod tests {
         ];
         let ascii = "unknown|GCS Name = unknown|Datum = Unknown based on GRS 1980 ellipsoid|Primem = Greenwich||";
         let doubles = [6378137.0, 298.257222101, 4321000.0, 3210000.0, 10.0, 50.0];
-        let wkt = crs_from_geokeys(&keys, Some(&doubles), Some(ascii)).wkt.unwrap();
+        let wkt = crs_from_geokeys(&keys, Some(&doubles), Some(ascii.as_bytes())).wkt.unwrap();
         assert!(wkt.contains("SPHEROID[\"GRS 1980\",6378137,298.257222101004,"), "{wkt}");
         // The citation names an ESRI CRS the keys define: GDAL takes ESRI:102003.
         let keys = [
@@ -2465,7 +2482,7 @@ mod tests {
             34736, 1, 4, 3083, 34736, 1, 5,
         ];
         let doubles = [29.5, 45.5, -96.0, 37.5, 0.0, 0.0];
-        let info = crs_from_geokeys(&keys, Some(&doubles), Some("USA_Contiguous_Albers_Equal_Area_Conic|"));
+        let info = crs_from_geokeys(&keys, Some(&doubles), Some(b"USA_Contiguous_Albers_Equal_Area_Conic|"));
         let crs = crate::crs::SpatialRef::from_raster_crs(&info);
         assert_eq!((crs.esri, crs.name().as_deref()), (Some(102003), Some("USA_Contiguous_Albers_Equal_Area_Conic")), "{info:?}");
     }

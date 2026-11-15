@@ -735,7 +735,7 @@ impl EptAppender {
             srs.insert("authority".into(), json!("EPSG"));
             srs.insert("horizontal".into(), json!(code.to_string()));
         }
-        if let Some(wkt) = template.crs.to_wkt() {
+        if let Some(wkt) = template.crs.to_file_wkt() {
             srs.insert("wkt".into(), json!(wkt));
         }
         self.legacy = template.header.point_format < 6;

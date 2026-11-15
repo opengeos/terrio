@@ -808,7 +808,8 @@ impl Def {
     /// `GEOGCS` is identified as.
     pub fn from_wkt(w: &str) -> Result<Self> {
         if let Some((horizontal, vertical)) = split_compound(w) {
-            let h = SpatialRef::from_wkt(&horizontal);
+            // uncut: stored or built WKT
+            let h = SpatialRef::from_wkt_text(&horizontal);
             let mut d = Self::new(&h)?;
             d.vertical = vertical_from_wkt(&vertical).map(Arc::new);
             return Ok(d);

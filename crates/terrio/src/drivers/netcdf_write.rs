@@ -393,7 +393,7 @@ fn grid_mapping(s: &crate::crs::SpatialRef) -> (String, Vec<(String, Attr)>) {
     } else {
         attrs.push(("long_name".into(), Attr::Text("CRS definition".into())));
     }
-    if let Some(wkt) = super::wkt::gdal_wkt(s).or_else(|| s.to_wkt()) {
+    if let Some(wkt) = super::wkt::gdal_wkt(s).or_else(|| s.to_file_wkt()) {
         attrs.push(("crs_wkt".into(), Attr::Text(wkt.clone())));
         attrs.push(("spatial_ref".into(), Attr::Text(wkt)));
     }

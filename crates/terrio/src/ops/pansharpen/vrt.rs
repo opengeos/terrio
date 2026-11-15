@@ -256,7 +256,7 @@ impl PansharpenVrt {
             PansharpenExtent::None => "None",
         };
         let gt = layout.pan.grid.geo_transform.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",");
-        let srs = pan.crs().to_wkt().map(|v| format!("<SRS>{}</SRS>", xml::escape(&v))).unwrap_or_default();
+        let srs = pan.crs().to_file_wkt().map(|v| format!("<SRS>{}</SRS>", xml::escape(&v))).unwrap_or_default();
         let text = format!(
             "<VRTDataset subClass=\"VRTPansharpenedDataset\" rasterXSize=\"{}\" rasterYSize=\"{}\">{srs}<GeoTransform>{gt}</GeoTransform>{bands}<BlockXSize>512</BlockXSize><BlockYSize>512</BlockYSize><PansharpeningOptions><Algorithm>WeightedBrovey</Algorithm><AlgorithmOptions><Weights>{}</Weights></AlgorithmOptions><Resampling>{}</Resampling>{bits}{nd}<SpatialExtentAdjustment>{extent}</SpatialExtentAdjustment><PanchroBand><SourceFilename relativeToVRT=\"0\">{}</SourceFilename><SourceBand>{}</SourceBand></PanchroBand>{sources}</PansharpeningOptions></VRTDataset>",
             layout.pan.grid.width,

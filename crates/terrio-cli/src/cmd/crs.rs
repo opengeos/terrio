@@ -69,7 +69,7 @@ pub fn run(a: Args) -> terrio::Result<()> {
         let wkt = src
             .to_wkt1_strict()
             .ok_or_else(|| terrio::Error::InvalidArgument(format!("{} has no WKT 1 without the PROJ4 extension", src.label())))?;
-        println!("{wkt}");
+        println!("{}", terrio::crs::escape_nul(&wkt));
         return Ok(());
     }
     if a.proj4 {
@@ -78,9 +78,9 @@ pub fn run(a: Args) -> terrio::Result<()> {
         return Ok(());
     }
     let Some(to) = a.to else {
-        println!("{}", src.label());
+        println!("{}", terrio::crs::escape_nul(&src.label()));
         if let Some(name) = src.name() {
-            println!("Name: {name}");
+            println!("Name: {}", terrio::crs::escape_nul(&name));
         }
         println!("Geographic: {}", src.is_geographic());
         if src.is_geocentric() {
@@ -105,7 +105,7 @@ pub fn run(a: Args) -> terrio::Result<()> {
         if a.wkt
             && let Some(w) = src.to_wkt()
         {
-            println!("{w}");
+            println!("{}", terrio::crs::escape_nul(&w));
         }
         return Ok(());
     };

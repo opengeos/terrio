@@ -294,6 +294,36 @@ between CRSs, a prime meridian within 1e-10 radians of Greenwich or one of PROJ'
 ESRI's `Behrmann` projection is cylindrical equal area true at 30 degrees, or at the
 `Standard_Parallel_1` it gives (EASE-Grid 2.0), PROJ's `+proj=cea +lat_ts=30`.
 
+ESRI's `Mercator_Variant_A` (EPSG:3002, Makassar / NEIEZ, in an ESRI `.prj`) is Mercator (1SP), its
+`Scale_Factor` 1 when not given; as in PROJ, a `Latitude_Of_Origin` or `Standard_Parallel_1` it
+gives is left out. EPSG's name in WKT 1, `Mercator (variant A)` (or `Mercator_(variant_A)`), is read
+the same way, but with a `Latitude_Of_Origin` (or `Latitude_of_natural_origin`) other than 0 it is
+refused, as PROJ reads it but neither transforms it nor writes it as a PROJ string.
+
+A node of a keyword terrio does not know is skipped, whatever its keyword, as PROJ skips it:
+`vendor:mark["x"]`, `a-b["x"]`, `a"b c"["x"]` and an empty keyword (`["x"]`) are read past. A
+keyword ends at a space (C's `isspace`, the vertical tab included) or a delimiter, outside a quoted
+run, and a keyword with a space, a NUL or an unclosed quote in it (`a b["x"]`, `a"b["x"]`) makes the
+WKT one terrio refuses, as PROJ does. A quote in a value runs to the next quote, delimiters
+included, as in PROJ 9.8.1: `x["a",b"c,d"e]` is a node of two values, and a quote left unclosed
+makes the WKT one terrio refuses. A definition given as text (WKT, PROJJSON, any text
+`SpatialRef::parse` takes) ends at its first NUL, as PROJ and GDAL take it as a C string, and so
+does a GeoTIFF's GeoAsciiParamsTag, as GDAL 3.12.1 reads it with libgeotiff, in GeoTIFFs and LAS
+files alike (a key that spans the NUL is cut there, one that ends at it is read without it, and any
+other that ends after it leaves the GeoKeys without a CRS, their EPSG code included; offsets count
+bytes, also after bytes that aren't UTF-8, which become U+FFFD in their own key; without the tag,
+any ASCII key leaves no CRS); text after a complete WKT was already ignored. A layer's or raster's
+WKT that the NUL cuts inside a quoted name or a node (an open quote or bracket left) is no CRS, as
+GDAL reads it, and none is written from it; one only padded with NULs is the text before them,
+whatever terrio reads of it. A NUL a PROJJSON name gives (`\u0000`) is part of the name, as in PROJ.
+Written to any file or its metadata (a layer's or raster's WKT, a `.prj`, GeoPackage, GeoParquet,
+netCDF, VRT, EPT, a LAS WKT record) or to GeoKeys, such a name is cut at the NUL, as PROJ 9.8.1
+gives the name (its own WKT of the CRS ends at the NUL), so the CRS reads back; the cut name can
+change what the CRS is identified as by name, as in PROJ, and a CRS with one that GeoKeys can't
+describe, whose WKT would go in an ESRI PE citation, is refused, as GDAL 3.12.1 refuses to write it.
+WKT 1 and WKT 2 share this parser, as do the readers of PROJJSON and of IAU definitions, which go
+through WKT, so an unknown node is skipped in each.
+
 A CRS of PROJ's ESRI authority is reported under it, as GDAL reports it: a GeoTIFF GDAL writes in
 `ESRI:54009` is `ESRI:54009` (from the ESRI code the WKT declares or, for GDAL's ESRI PE strings,
 the ESRI CRS of the same name and definition), never an EPSG code.
@@ -1013,7 +1043,10 @@ They read and write:
   `TOWGS84` shifts. A user-defined projected CRS can be read by a registered code (see below);
 - ESRI PE citations (`ESRI PE String = <WKT>`), which GDAL writes for a CRS GeoKeys cannot hold
   (an engineering CRS, a method GeoTIFF has no code for, a definition only its PROJ string
-  describes): terrio writes them for the same CRSs.
+  describes): terrio writes them for the same CRSs. A CRS whose WKT holds a NUL (from a PROJJSON
+  name) can't be written so, as GeoAsciiParamsTag ends at its first NUL: writing its GeoKeys, and
+  so a GeoTIFF or COG in it, fails, where terrio used to write a file whose CRS GDAL couldn't
+  read. GDAL 3.12.1 refuses to write such a CRS too. Citation names are written up to a NUL.
 
 A user-defined projected CRS gets a registered code more often than in GDAL, which names only an
 equivalent registered CRS of the citation's exact name (or an ESRI CRS, as terrio does too). terrio
