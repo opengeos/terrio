@@ -564,6 +564,11 @@ Python:
       synthetic and real files (257 checks, none differing); subdatasets (`group=`,
       `variable=`), GCPs and RPCs as rioxarray opens, stores, writes and (GCPs) reprojects them,
       identical to rioxarray on an ESA CCI soil moisture netCDF and ICEYE GCP and RPC images.
+- [x] terrio's raster operations on the `.terrio` accessor: `dem`, `sieve`, `proximity`,
+      `fill_nodata`, `reclassify`, `viewshed` (DataArrays and Datasets, band by band),
+      `polygonize`, `contour`, `footprint` and `zonal_stats` (a `terrio.Layer`), and
+      `terrio.xarray.rasterize` on an array's grid; the same pixels as the terrio functions on
+      the array written to a file.
 - [x] Wheels with the GDAL backend as an optional extra, for the formats terrio doesn't read itself.
       Done: the Python package's `gdal` feature, built from source against an installed GDAL
       (`maturin build --features gdal`).

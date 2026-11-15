@@ -40,6 +40,7 @@ from terrio.rio.crs import CRS
 from terrio.rio.enums import Resampling
 from terrio.rio.errors import WindowError
 from terrio.rio.io import MemoryFile, driver_from_extension
+from terrio.xarray import _ops
 from terrio.xarray._crs import crs_from_cf, crs_from_user_input, crs_to_cf
 from terrio.xarray._options import EXPORT_GRID_MAPPING, SKIP_MISSING_SPATIAL_DIMS, get_option
 from terrio.xarray._spatial import (
@@ -1777,6 +1778,129 @@ class TerrioArray(XRasterBase):
 
     # Writing.
 
+    # terrio's raster operations: the array goes to terrio in memory, band by band (dask arrays
+    # are computed). Keyword arguments are those of the terrio function of the same name.
+
+    def dem(self, processing: str, **kwargs: Any) -> xarray.DataArray:
+        """Terrain analysis with `terrio.dem` (`gdaldem`): slope, aspect, hillshade...
+
+        Args:
+            processing: `hillshade`, `slope`, `aspect`, `color-relief`, `TRI`, `TPI` or
+                `roughness`.
+            **kwargs: Options of `terrio.dem` (`z`, `scale`, `azimuth`, `alg`, ...).
+
+        Returns:
+            xarray.DataArray: The result, on the array's grid (`color-relief` along a `band`
+            dimension).
+        """
+        return _ops.raster_op(self._obj, _terrio.dem, processing, **kwargs)
+
+    def sieve(self, **kwargs: Any) -> xarray.DataArray:
+        """Removes regions smaller than `threshold` pixels with `terrio.sieve`.
+
+        Args:
+            **kwargs: Options of `terrio.sieve` (`threshold`, `connectedness`, `mask`).
+
+        Returns:
+            xarray.DataArray: The sieved array.
+        """
+        return _ops.raster_op(self._obj, _terrio.sieve, **kwargs)
+
+    def proximity(self, **kwargs: Any) -> xarray.DataArray:
+        """The distance to the nearest target pixel with `terrio.proximity`.
+
+        Args:
+            **kwargs: Options of `terrio.proximity` (`values`, `distunits`, `maxdist`, ...).
+
+        Returns:
+            xarray.DataArray: The distances.
+        """
+        return _ops.raster_op(self._obj, _terrio.proximity, **kwargs)
+
+    def fill_nodata(self, **kwargs: Any) -> xarray.DataArray:
+        """Fills nodata pixels from their neighbours with `terrio.fill_nodata`.
+
+        Args:
+            **kwargs: Options of `terrio.fill_nodata` (`max_distance`, `interpolation`,
+                `smoothing_iterations`, `mask`).
+
+        Returns:
+            xarray.DataArray: The filled array.
+        """
+        return _ops.raster_op(self._obj, _terrio.fill_nodata, **kwargs)
+
+    def reclassify(self, mapping: str, **kwargs: Any) -> xarray.DataArray:
+        """Maps values or ranges to new values with `terrio.reclassify`.
+
+        Args:
+            mapping: The mapping, as `terrio.reclassify` reads it (`"[1,10]=1; 11=2; NO_DATA=0"`).
+            **kwargs: Options of `terrio.reclassify` (`ot`).
+
+        Returns:
+            xarray.DataArray: The reclassified array.
+        """
+        return _ops.raster_op(self._obj, _terrio.reclassify, mapping, **kwargs)
+
+    def viewshed(self, ox: float, oy: float, **kwargs: Any) -> xarray.DataArray:
+        """The area visible from an observer with `terrio.viewshed`.
+
+        Args:
+            ox: The observer's x, in the array's CRS.
+            oy: The observer's y.
+            **kwargs: Options of `terrio.viewshed` (`oz`, `tz`, `md`, `cc`, `om`, ...).
+
+        Returns:
+            xarray.DataArray: The viewshed.
+        """
+        return _ops.raster_op(self._obj, _terrio.viewshed, ox, oy, **kwargs)
+
+    def polygonize(self, **kwargs: Any) -> _terrio.Layer:
+        """The array's regions of equal value as polygons, with `terrio.polygonize`.
+
+        Args:
+            **kwargs: Options of `terrio.polygonize` (`band`, `field`, `connectedness`, ...).
+
+        Returns:
+            terrio.Layer: The polygons.
+        """
+        return _terrio.polygonize(_ops.to_raster(self._obj), **kwargs)
+
+    def contour(self, **kwargs: Any) -> _terrio.Layer:
+        """Contour lines with `terrio.contour`.
+
+        Args:
+            **kwargs: Options of `terrio.contour` (`interval`, `levels`, `offset`, ...).
+
+        Returns:
+            terrio.Layer: The contour lines.
+        """
+        return _terrio.contour(_ops.to_raster(self._obj), **kwargs)
+
+    def footprint(self, **kwargs: Any) -> _terrio.Layer:
+        """The outline of the valid pixels with `terrio.footprint`.
+
+        Args:
+            **kwargs: Options of `terrio.footprint` (`bands`, `intersection`, ...).
+
+        Returns:
+            terrio.Layer: The footprint.
+        """
+        return _terrio.footprint(_ops.to_raster(self._obj), **kwargs)
+
+    def zonal_stats(self, zones: Any, **kwargs: Any) -> _terrio.Layer:
+        """Statistics of the pixels in each zone with `terrio.zonal_stats`.
+
+        Args:
+            zones: The zones, as `terrio.zonal_stats` takes them (a vector path or a `Layer`).
+            **kwargs: Options of `terrio.zonal_stats` (`stats`, `all_touched`, `fractional`,
+                `weights`, `bands`, ...).
+
+        Returns:
+            terrio.Layer: The zones with a column per band and statistic.
+        """
+        prefixes = kwargs.pop("prefixes", None)
+        return _ops.zonal_stats([self._obj], zones, prefixes, **kwargs)
+
     def to_raster(
         self,
         raster_path: str | os.PathLike[str],
@@ -2119,6 +2243,53 @@ class TerrioDataset(XRasterBase):
         """
         out = self._per_var(lambda da: da.terrio.interpolate_na(method=method))
         return out.terrio.set_spatial_dims(x_dim=self.x_dim, y_dim=self.y_dim, inplace=True)  # type: ignore[no-any-return]
+
+    # terrio's raster operations, on each spatial variable (see `TerrioArray`).
+
+    def dem(self, processing: str, **kwargs: Any) -> xarray.Dataset:
+        """`TerrioArray.dem` on each spatial variable."""
+        return self._per_var(lambda da: da.terrio.dem(processing, **kwargs))
+
+    def sieve(self, **kwargs: Any) -> xarray.Dataset:
+        """`TerrioArray.sieve` on each spatial variable."""
+        return self._per_var(lambda da: da.terrio.sieve(**kwargs))
+
+    def proximity(self, **kwargs: Any) -> xarray.Dataset:
+        """`TerrioArray.proximity` on each spatial variable."""
+        return self._per_var(lambda da: da.terrio.proximity(**kwargs))
+
+    def fill_nodata(self, **kwargs: Any) -> xarray.Dataset:
+        """`TerrioArray.fill_nodata` on each spatial variable."""
+        return self._per_var(lambda da: da.terrio.fill_nodata(**kwargs))
+
+    def reclassify(self, mapping: str, **kwargs: Any) -> xarray.Dataset:
+        """`TerrioArray.reclassify` on each spatial variable."""
+        return self._per_var(lambda da: da.terrio.reclassify(mapping, **kwargs))
+
+    def viewshed(self, ox: float, oy: float, **kwargs: Any) -> xarray.Dataset:
+        """`TerrioArray.viewshed` on each spatial variable."""
+        return self._per_var(lambda da: da.terrio.viewshed(ox, oy, **kwargs))
+
+    def zonal_stats(self, zones: Any, **kwargs: Any) -> _terrio.Layer:
+        """Statistics of each spatial variable in each zone, with `terrio.zonal_stats`.
+
+        Args:
+            zones: The zones, as `terrio.zonal_stats` takes them (a vector path or a `Layer`).
+            **kwargs: Options of `terrio.zonal_stats`; `prefixes` defaults to the variables'
+                names.
+
+        Returns:
+            terrio.Layer: The zones with a column per variable, band and statistic.
+        """
+        names = [v for v in self.vars if has_spatial_dims(self._obj, var=v)]
+        arrays = []
+        for name in names:
+            x_dim, y_dim = get_spatial_dims(self._obj, var=name)
+            da = self._obj[name]
+            da.terrio.set_spatial_dims(x_dim=x_dim, y_dim=y_dim, inplace=True)
+            arrays.append(da)
+        prefixes = kwargs.pop("prefixes", None) or [str(n) for n in names]
+        return _ops.zonal_stats(arrays, zones, prefixes, **kwargs)
 
     def to_raster(
         self,

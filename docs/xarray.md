@@ -102,6 +102,31 @@ work too); errors have rioxarray's names (`terrio.xarray.exceptions`: `MissingCR
 | DataArray `.terrio` only | `nodata`, `encoded_nodata`, `write_nodata` (`encoded`), `set_nodata`, `pad_xy`, `to_rasterio_dataset` |
 | `terrio.xarray` | `merge_arrays`, `merge_datasets` (`bounds`, `res`, `nodata`, `method`, `crs`), `register_rio_accessor`, `set_options` (`export_grid_mapping`, `skip_missing_spatial_dims`), `crs_to_cf`, `exceptions` |
 
+## terrio operations
+
+Beyond rioxarray's API, the accessor runs terrio's raster operations on the array in memory.
+Each takes the keyword arguments of the terrio function of the same name and gives what that
+function gives on the array written to a file: a DataArray on the same grid, or a
+`terrio.Layer` for vector results.
+
+```python
+slope = dem.terrio.dem("slope")  # hillshade, aspect, TRI, TPI, roughness...
+fields = dem.terrio.zonal_stats("fields.gpkg", stats=["mean", "max"])  # a terrio.Layer
+fields.to_geopandas()
+classes = txr.rasterize("fields.gpkg", like=dem, attribute="crop_id")
+```
+
+| | Methods |
+|---|---|
+| DataArray and Dataset `.terrio`, band by band | `dem`, `sieve`, `proximity`, `fill_nodata`, `reclassify`, `viewshed` |
+| DataArray `.terrio`, a `terrio.Layer` | `polygonize`, `contour`, `footprint`, `zonal_stats` |
+| Dataset `.terrio`, a `terrio.Layer` | `zonal_stats` (columns prefixed with the variables' names) |
+| `terrio.xarray` | `rasterize(src, like)`: vectors burnt on the grid of a DataArray or Dataset |
+
+Arrays of two or three dimensions are supported; dask arrays are computed first. Pixels masked
+on read (`masked=True`) go back to terrio with the file's nodata value. Floating-point results
+come back masked, with the nodata value in the encoding.
+
 ## Agreement with rioxarray
 
 `scripts/compare_xarray_with_rioxarray.py` runs every check twice, with rioxarray 0.23 (rasterio

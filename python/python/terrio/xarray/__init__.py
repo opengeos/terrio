@@ -48,6 +48,7 @@ from terrio.xarray import exceptions  # noqa: E402
 from terrio.xarray._crs import crs_from_user_input, crs_to_cf  # noqa: E402
 from terrio.xarray._io import TerrioArrayWrapper, open_rasterio  # noqa: E402
 from terrio.xarray._merge import merge_arrays, merge_datasets  # noqa: E402
+from terrio.xarray._ops import rasterize  # noqa: E402
 from terrio.xarray._options import set_options  # noqa: E402
 
 
@@ -81,6 +82,7 @@ __all__ = [
     "merge_arrays",
     "merge_datasets",
     "open_rasterio",
+    "rasterize",
     "register_rio_accessor",
     "set_options",
 ]
