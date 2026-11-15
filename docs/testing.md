@@ -1804,7 +1804,7 @@ its own `+a` or `+rf`, which PROJ drops, and the datum shifts of `+datum=` names
 spherification flag. The test checks where PROJ places a point
 (`Transformer.from_crs("EPSG:4326", CRS(s + " +type=crs"), always_xy=True)`, or from a
 geographic CRS to EPSG:4326), within 1 mm. It also checks the axes of the ellipsoid the CRS
-reports, and that terrio refuses the 37 strings PROJ refuses. 20 WKT 1 CRSs with such a `PROJ4`
+reports, and that terrio refuses the 37 strings PROJ refuses. 25 WKT 1 CRSs with such a `PROJ4`
 extension are checked the same way (`Transformer.from_crs("EPSG:4326", CRS(wkt), always_xy=True)`;
 PROJ computes on the extension as a pipeline step, and refuses to transform 5 of them). The WKT terrio
 writes for every string reads back where PROJ places the string, and 9 normalized extensions it

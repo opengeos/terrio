@@ -395,6 +395,14 @@ impl SpatialRef {
     }
     pub(crate) fn from_raster_crs(c: &wbraster::CrsInfo) -> Self {
         let mut s = Self { epsg: c.epsg, wkt: raster_crs_wkt(c), proj4: c.proj4.clone(), esri: None };
+        // A WKT with a PROJ4 extension is identified only as a code it converts as (the extension
+        // wins over a loose match of its nodes), as `terrio_crs::SpatialRef::from_wkt` does.
+        if s.epsg.is_none()
+            && s.proj4.is_none()
+            && let Some(w) = s.wkt.as_deref().filter(|w| terrio_crs::has_proj4_extension(w))
+        {
+            return terrio_crs::SpatialRef::from_wkt(w).into();
+        }
         // A WKT made from a PROJ string is not identified: it can describe less than the PROJ
         // string (the registry's loose matches took a Robinson on another meridian for ESRI's).
         if s.epsg.is_none()

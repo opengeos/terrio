@@ -203,6 +203,12 @@ EXTENSIONS = [
     "+proj=tmerc +lon_0=-75 +datum=WGS84 +a=6400000 +R_C",
     "+proj=laea +lat_0=45 +lon_0=-100 +datum=WGS84 +R_A",
     "+proj=laea +lat_0=45 +lon_0=-100 +ellps=WGS84 +R_a",
+    # `+R_C` beside a latitude of origin, and the datum's grids over the string's `+towgs84`.
+    "+proj=tmerc +lat_0=45 +lon_0=-75 +datum=WGS84 +a=6400000 +R_C",
+    "+proj=lcc +lat_1=30 +lat_2=60 +lat_0=45 +lon_0=-75 +datum=WGS84 +a=6400000 +R_C",
+    "+proj=merc +lat_ts=45 +lon_0=-75 +datum=WGS84 +a=6400000 +R_C",
+    "+proj=tmerc +lon_0=-75 +datum=NAD27 +towgs84=-8,160,176",
+    "+proj=tmerc +lon_0=-75 +datum=carthage +towgs84=-263,6,431",
 ]
 
 GEOGRAPHIC_EXTENSION_WKT = (
@@ -236,11 +242,11 @@ WRITTEN = [
     ),
     (
         "+proj=longlat +towgs84=0,0,0 +datum=WGS84 +ellps=clrk66",
-        "+proj=longlat +towgs84=0,0,0 +datum=WGS84",
+        "+proj=longlat +towgs84=0,0,0 +ellps=WGS84",
     ),
     (
         "+proj=merc +datum=NAD83 +R_C",
-        "+proj=merc +a=6378137 +rf=298.2572221010002 +R_C",
+        "+proj=merc +ellps=GRS80 +R_C",
     ),
     (
         "+proj=merc +datum=WGS84 +a=6400000 +R_C",

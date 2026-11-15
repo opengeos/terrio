@@ -559,21 +559,6 @@ impl Def {
         Self::from_params(s, &Params::parse(s), true)
     }
 
-    /// Whether PROJ string `s`, as a WKT's PROJ4 extension (computed on as a pipeline step), is
-    /// the CRS its CRS rules read: the same conversion, ellipsoid and datum. The writers that
-    /// describe a PROJ string by those rules (PROJJSON, GeoKeys) describe such an extension only.
-    pub(crate) fn extension_reads_as_string(s: &str) -> bool {
-        match (Self::from_proj(s), Self::from_proj_extension(s)) {
-            (Ok(crs), Ok(step)) => {
-                crs.same_conversion(&step)
-                    && crs.same_datum(&step)
-                    && (crs.ell.a - step.ell.a).abs() < 1e-6
-                    && (crs.ell.es - step.ell.es).abs() < 1e-15
-            }
-            _ => false,
-        }
-    }
-
     /// [`Self::from_proj`] of parsed parameters.
     fn from_params(s: &str, p: &Params, extension: bool) -> Result<Self> {
         p.validate_quoting()?;
@@ -808,10 +793,13 @@ impl Def {
         // the step's figure, unless the string gives its own; none for a geocentric step, nor
         // under `+R_C` in a PROJ string (PROJ 9.8.1 then keeps the datum's transformations, but
         // not in a WKT's extension).
-        let own_shift = p.has("towgs84") || p.has("nadgrids");
+        // `pj_datum_set` takes the first `+nadgrids` of the string with the datum's appended,
+        // else the first `+towgs84`: the string's own `+nadgrids` wins, its `+towgs84` only over a
+        // datum defined by one (NAD27's grids win over `+towgs84=0,0,0`).
         let step_shift = datum_name
-            .filter(|_| shape.as_step && (extension || !shape.conformal) && !own_shift && name != "geocent")
-            .and_then(step_datum_shift);
+            .filter(|_| shape.as_step && (extension || !shape.conformal) && !p.has("nadgrids") && name != "geocent")
+            .and_then(step_datum_shift)
+            .filter(|d| matches!(d, StepShift::Nadgrids(_)) || !p.has("towgs84"));
         // A step's `+R_C` makes its figure the conformal sphere at the equator, onto which it is
         // shifted.
         let shift_figure = if extension && shape.conformal { Ell::from_a_rf(ell.a * ell.one_es.sqrt(), 0.0) } else { ell };

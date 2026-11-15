@@ -859,7 +859,7 @@ pub fn user_defined_keys(crs: &SpatialRef, name: &str) -> Option<GeoKeyValues> {
     }
     // A WKT: its PROJ string as terrio reads it, on the EPSG geographic CRS it is identified on;
     // not a PROJ4 extension computed on otherwise than its PROJ string's CRS rules read it.
-    let step_only = |w: &str| crate::proj4_extension(w).is_some_and(|p| !crate::Def::extension_reads_as_string(&p));
+    let step_only = |w: &str| crate::proj4_extension(w).is_some_and(|p| !crate::extension_places_as_string(&p));
     if crs.wkt.as_deref().is_some_and(step_only) {
         return None;
     }

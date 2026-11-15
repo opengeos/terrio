@@ -152,7 +152,7 @@ fn a_wkt_proj4_extension_is_computed_on_as_a_pipeline_step() {
     terrio_crs::set_network_enabled(Some(false));
     let data: Value = serde_json::from_str(include_str!("data/proj_ellipsoid_shape.json")).unwrap();
     let cases = data["extensions"].as_array().unwrap();
-    assert_eq!(cases.len(), 20);
+    assert_eq!(cases.len(), 25);
     let wgs84 = SpatialRef::from_epsg(4326).unwrap();
     let mut bad = vec![];
     for case in cases {
@@ -227,8 +227,9 @@ fn a_written_wkt_reads_back_as_its_proj_string() {
 
 /// A WKT's `PROJ4` extension is kept through the WKT (not as the CRS's PROJ string), and the
 /// writers that describe a PROJ string by PROJ's CRS rules (PROJJSON, GeoKeys) refuse one the
-/// pipeline step computes on otherwise: `+ellps=WGS84 +f=0` is a sphere there. One read alike
-/// both ways is described as before.
+/// pipeline step computes on otherwise: `+ellps=WGS84 +f=0` is a sphere there. One that places
+/// points alike both ways is described as before, as PROJ 9.8.1 writes PROJJSON for all of them
+/// (losing the sphere of the first).
 #[test]
 fn writers_describe_an_extension_only_as_it_is_computed_on() {
     let wkt = |ext: &str| {
@@ -241,6 +242,10 @@ fn writers_describe_an_extension_only_as_it_is_computed_on() {
         ("+proj=tmerc +lon_0=-75 +ellps=clrk66 +a=6400000", false),
         ("+proj=tmerc +lon_0=-75 +datum=WGS84 +a=6400000", false),
         ("+proj=tmerc +lon_0=-75 +ellps=WGS84", true),
+        // NAD83, which the step takes as WGS 84 (a null shift on GRS 1980), and GRS 1980, the
+        // step's ellipsoid without one, which places points as the CRS rules' WGS 84 does.
+        ("+proj=tmerc +lon_0=-75 +datum=NAD83 +units=m +no_defs", true),
+        ("+proj=tmerc +lon_0=-75 +units=m +no_defs", true),
     ] {
         let crs = SpatialRef::from_wkt(&wkt(ext));
         assert_eq!(crs.proj4, None, "{ext}");

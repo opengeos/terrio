@@ -142,7 +142,7 @@ fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
     };
     // A WKT's PROJ4 extension is computed on as a pipeline step; it is described by the CRS rules
     // of its PROJ string only where those read it the same way.
-    if s.proj4.is_none() && entry.is_none() && crate::proj4_extension(wkt).is_some() && !Def::extension_reads_as_string(&proj) {
+    if s.proj4.is_none() && entry.is_none() && crate::proj4_extension(wkt).is_some() && !crate::extension_places_as_string(&proj) {
         return Err(unsupported("a PROJ4 extension PROJ computes on otherwise than its PROJ string"));
     }
     let p = Params::parse(&proj);

@@ -62,7 +62,8 @@ struct Method {
 pub(crate) fn from_proj(s: &str) -> Option<String> {
     let own = Def::from_proj(s).ok()?;
     let p = Params::parse(s);
-    let extension = format!("EXTENSION[\"PROJ4\",\"{}\"]", step_string(s).replace('"', ""));
+    // Built only when written, as it reads the string again.
+    let extension = || format!("EXTENSION[\"PROJ4\",\"{}\"]", step_string(s).replace('"', ""));
     let (geogcs, datum_described) = geogcs(&p, &own);
     // Also described: `+R_C` (the conformal sphere of the ellipsoid) on a sphere, which changes
     // nothing.
@@ -79,7 +80,7 @@ pub(crate) fn from_proj(s: &str) -> Option<String> {
         let w = format!(
             "GEOCCS[\"unknown\",{datum},{pm},{unit},AXIS[\"Geocentric X\",OTHER],AXIS[\"Geocentric Y\",OTHER],AXIS[\"Geocentric Z\",NORTH]]"
         );
-        return Some(if faithful(&w) { w } else { extended(&w, &extension) });
+        return Some(if faithful(&w) { w } else { extended(&w, &extension()) });
     }
     if own.is_rotated_pole() {
         // Its base geographic CRS extended with the PROJ string, as GDAL 2 wrote it. Unnamed and
@@ -91,7 +92,7 @@ pub(crate) fn from_proj(s: &str) -> Option<String> {
             Some(i) if body[i..].matches(']').count() == 1 => &body[..i],
             _ => body,
         };
-        return Some(format!("GEOGCS[\"unnamed\"{body},{extension}]"));
+        return Some(format!("GEOGCS[\"unnamed\"{body},{}]", extension()));
     }
     let wkt = if own.is_geographic() {
         match epsg_geographic(&p) {
@@ -110,7 +111,7 @@ pub(crate) fn from_proj(s: &str) -> Option<String> {
                 w.push_str(m.axes);
                 w.push(']');
                 if !m.axis_described {
-                    return Some(extended(&w, &extension));
+                    return Some(extended(&w, &extension()));
                 }
                 w
             }
@@ -121,7 +122,7 @@ pub(crate) fn from_proj(s: &str) -> Option<String> {
             }
         }
     };
-    Some(if faithful(&wkt) { wkt } else { extended(&wkt, &extension) })
+    Some(if faithful(&wkt) { wkt } else { extended(&wkt, &extension()) })
 }
 
 /// A PROJ string as its WKT 1 describes it, for formats that describe CRSs by parameters
@@ -512,7 +513,7 @@ fn step_string(s: &str) -> String {
         return s.trim().to_string();
     };
     let null_datum = e.reshaped || p.str("datum").is_none_or(|d| matches!(d, "WGS84" | "NAD83"));
-    if (e.as_step && !(e.conformal && null_datum)) || Def::extension_reads_as_string(s) {
+    if (e.as_step && !(e.conformal && null_datum)) || super::extension_places_as_string(s) {
         return s.trim().to_string();
     }
     let figure = e.figure;
@@ -522,7 +523,9 @@ fn step_string(s: &str) -> String {
     // applies to geographic coordinates whatever its figure; a Helmert shift would convert them
     // onto another figure (a sphere), where the parser converts none.
     let grid = p.str("datum").and_then(super::def::step_datum_shift).is_some_and(|d| matches!(d, super::def::StepShift::Nadgrids(_)));
-    let keep_datum = !e.conformal && datum.is_some() && (datum.is_some_and(same) || grid);
+    // With its own `+towgs84`, the shift the CRS has, a datum is dropped: a step would take the
+    // datum's grids over it.
+    let keep_datum = !e.conformal && !p.has("towgs84") && datum.is_some() && (datum.is_some_and(same) || grid);
     const ELLIPSOID: [&str; 8] = ["ellps", "a", "b", "rf", "f", "es", "e", "R"];
     let tokens: Vec<&str> = s.split_whitespace().collect();
     let kept = |t: &str| {
@@ -534,7 +537,10 @@ fn step_string(s: &str) -> String {
     let at = tokens.iter().take_while(|t| kept(t)).count();
     let mut out: Vec<String> = tokens.iter().filter(|t| kept(t)).map(|t| t.to_string()).collect();
     if !(keep_datum && datum.is_some_and(same)) {
-        let named = p.str("ellps").filter(|n| Ell::named(n).is_some_and(same));
+        let named = [p.str("ellps"), p.str("datum").and_then(super::def::datum_ellps)]
+            .into_iter()
+            .flatten()
+            .find(|n| Ell::named(n).is_some_and(same));
         let ellipsoid = match named {
             Some(n) => vec![format!("+ellps={n}")],
             None if figure.es == 0.0 => vec![format!("+R={}", figure.a)],

@@ -1177,6 +1177,50 @@ pub fn wkt_proj(wkt: &str) -> Option<String> {
     Some(c.proj)
 }
 
+/// Whether PROJ string `s`, as a WKT's PROJ4 extension (which PROJ computes on as a pipeline
+/// step), places points where PROJ's CRS rules for the string place them: the same conversion
+/// and figure (but for the round-off between WGS 84 and GRS 1980), and the same datum, or one
+/// that places a point near the projection's origin within 1 mm (`+datum=NAD83`, which the step
+/// takes as WGS 84). The writers that describe a PROJ string by those rules (PROJJSON, GeoKeys)
+/// describe such an extension only, and the WKT writer writes the string itself so.
+pub(crate) fn extension_places_as_string(s: &str) -> bool {
+    let (Ok(crs), Ok(step)) = (Def::from_proj(s), Def::from_proj_extension(s)) else { return false };
+    if !crs.same_conversion(&step) || (crs.ell.a - step.ell.a).abs() > 1e-6 || (crs.ell.es - step.ell.es).abs() > 1e-10 {
+        return false;
+    }
+    if crs.same_datum(&step) {
+        return true;
+    }
+    // Each with a WKT of its own stored, so that comparing them does not write one (from the
+    // PROJ string, which calls this).
+    let given = SpatialRef { proj4: Some(s.to_string()), wkt: Some("given".into()), ..Default::default() };
+    let extension = SpatialRef {
+        wkt: Some(format!(
+            "GEOGCS[\"step\",DATUM[\"step\",SPHEROID[\"step\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433],EXTENSION[\"PROJ4\",\"{}\"]]",
+            s.replace('"', "")
+        )),
+        ..Default::default()
+    };
+    let Ok(wgs84) = SpatialRef::from_epsg(4326) else { return false };
+    let (lon, lat) = crs.params().map_or((0.0, 0.0), |p| (p.lon_0, p.lat_0));
+    let point = ((lon + 0.5 + 180.0).rem_euclid(360.0) - 180.0, (lat + 0.5).clamp(-89.0, 89.0));
+    let place = |to: &SpatialRef| Transformer::new(&wgs84, to).and_then(|t| t.transform(point.0, point.1)).ok();
+    match (place(&given), place(&extension)) {
+        (Some(a), Some(b)) => {
+            let scale = if crs.is_geographic() { 111_195.0 } else { 1.0 };
+            ((a.0 - b.0) * scale).hypot((a.1 - b.1) * scale) < 1e-3
+        }
+        _ => false,
+    }
+}
+
+/// Whether a WKT 1 has a root `EXTENSION["PROJ4", ...]`, which PROJ and terrio compute on in place
+/// of its nodes.
+#[doc(hidden)]
+pub fn has_proj4_extension(wkt: &str) -> bool {
+    proj4_extension(wkt).is_some()
+}
+
 /// The PROJ string of a WKT 1's root `EXTENSION["PROJ4", ...]`.
 pub(crate) fn proj4_extension(wkt: &str) -> Option<String> {
     let root = wkt1::parse(wkt)?;
