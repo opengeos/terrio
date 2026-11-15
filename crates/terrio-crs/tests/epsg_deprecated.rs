@@ -79,7 +79,7 @@ fn deprecated_codes_are_placed_by_their_own_definition_as_proj_does() {
 }
 
 /// The deprecated codes PROJ cannot transform: terrio refuses those PROJ cannot write as a PROJ
-/// string (the Qornoq 1927 Greenland zones, EPSG:3752 and 7082), and transforms the RRAF 1991
+/// string (the four Qornoq 1927 Greenland zones, EPSG:3752 and EPSG:7082), and transforms the RRAF 1991
 /// geocentric CRSs (4384, 4972) by their datum's ballpark, where PROJ finds no operation.
 #[test]
 fn codes_proj_cannot_transform() {
