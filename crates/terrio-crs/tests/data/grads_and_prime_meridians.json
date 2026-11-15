@@ -87,6 +87,40 @@
    ]
   },
   {
+   "name": "Paris at 2.337229179",
+   "wkt": "GEOGCS[\"custom\",DATUM[\"custom\",SPHEROID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627]],PRIMEM[\"Paris\",2.337229179],UNIT[\"grad\",0.0157079632679489]]",
+   "src": "+proj=longlat +ellps=clrk80ign +type=crs",
+   "point": [
+    2.35,
+    48.85
+   ],
+   "proj": [
+    0.014189814814814933,
+    54.27777777777778
+   ],
+   "proj_back": [
+    2.35,
+    48.85
+   ]
+  },
+  {
+   "name": "Paris at 2.33722916",
+   "wkt": "GEOGCS[\"custom\",DATUM[\"custom\",SPHEROID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627]],PRIMEM[\"Paris\",2.33722916],UNIT[\"grad\",0.0157079632679489]]",
+   "src": "+proj=longlat +ellps=clrk80ign +type=crs",
+   "point": [
+    2.35,
+    48.85
+   ],
+   "proj": [
+    0.014189814814814933,
+    54.27777777777778
+   ],
+   "proj_back": [
+    2.35,
+    48.85
+   ]
+  },
+  {
    "name": "another meridian at 2.33722917",
    "wkt": "GEOGCS[\"custom\",DATUM[\"custom\",SPHEROID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627]],PRIMEM[\"custom\",2.33722917],UNIT[\"grad\",0.0157079632679489]]",
    "src": "+proj=longlat +ellps=clrk80ign +type=crs",
@@ -1653,6 +1687,40 @@
   {
    "name": "WKT 2, Paris in grads",
    "wkt": "GEOGCRS[\"custom\",DATUM[\"custom\",ELLIPSOID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Paris\",2.5969213,ANGLEUNIT[\"grad\",0.0157079632679489]],CS[ellipsoidal,2],AXIS[\"lon\",east,ORDER[1],ANGLEUNIT[\"grad\",0.0157079632679489]],AXIS[\"lat\",north,ORDER[2],ANGLEUNIT[\"grad\",0.0157079632679489]]]",
+   "src": "+proj=longlat +ellps=clrk80ign +type=crs",
+   "point": [
+    2.35,
+    48.85
+   ],
+   "proj": [
+    0.014189814814814933,
+    54.27777777777778
+   ],
+   "proj_back": [
+    2.35,
+    48.85
+   ]
+  },
+  {
+   "name": "WKT 2, Paris at 2.337229179 as grads",
+   "wkt": "GEOGCRS[\"custom\",DATUM[\"custom\",ELLIPSOID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Paris\",2.337229179,ANGLEUNIT[\"grad\",0.0157079632679489]],CS[ellipsoidal,2],AXIS[\"lon\",east,ORDER[1],ANGLEUNIT[\"grad\",0.0157079632679489]],AXIS[\"lat\",north,ORDER[2],ANGLEUNIT[\"grad\",0.0157079632679489]]]",
+   "src": "+proj=longlat +ellps=clrk80ign +type=crs",
+   "point": [
+    2.35,
+    48.85
+   ],
+   "proj": [
+    0.014189814814814933,
+    54.27777777777778
+   ],
+   "proj_back": [
+    2.35,
+    48.85
+   ]
+  },
+  {
+   "name": "WKT 2, Paris at 2.33722916 as grads",
+   "wkt": "GEOGCRS[\"custom\",DATUM[\"custom\",ELLIPSOID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Paris\",2.33722916,ANGLEUNIT[\"grad\",0.0157079632679489]],CS[ellipsoidal,2],AXIS[\"lon\",east,ORDER[1],ANGLEUNIT[\"grad\",0.0157079632679489]],AXIS[\"lat\",north,ORDER[2],ANGLEUNIT[\"grad\",0.0157079632679489]]]",
    "src": "+proj=longlat +ellps=clrk80ign +type=crs",
    "point": [
     2.35,

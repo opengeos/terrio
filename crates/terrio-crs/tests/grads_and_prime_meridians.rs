@@ -68,7 +68,7 @@ fn off(crs: &SpatialRef, got: (f64, f64), want: (f64, f64)) -> f64 {
 fn crss_in_grads_place_points_as_proj_does() {
     offline();
     let cases = cases();
-    assert_eq!(cases.len(), 112);
+    assert_eq!(cases.len(), 116);
     let mut bad = vec![];
     for case in &cases {
         let name = case["name"].as_str().unwrap();

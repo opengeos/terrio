@@ -221,13 +221,14 @@ const PRIME_MERIDIANS_DMS: [(&str, f64, f64, f64); 13] = [
 
 /// The longitude in degrees of a WKT `PRIMEM` named `name` with the value `value`, in a CRS
 /// whose angular unit is `ang` degrees, as PROJ 9.8.1 reads it (`buildPrimeMeridian`): in that
-/// unit, but for Paris in a CRS in grads, which GDAL and ESRI write in degrees (2.33722917, Paris's
-/// 2.5969213 grads), and for the meridians PROJ knows by name and value in degrees (`Paris RGS`,
-/// 2.33720833, in ATF (Paris), also in grads) or in EPSG's sexagesimal degrees (`Ferro` at
-/// -17.40, 17°40'W), whatever the unit.
+/// unit, but for Paris in a CRS in grads, which GDAL and ESRI write in degrees (2.33722917,
+/// Paris's 2.5969213 grads, to within 1e-8), and for the meridians PROJ knows by name and value
+/// in degrees (`Paris RGS`, 2.33720833, in ATF (Paris), also in grads) or in EPSG's sexagesimal
+/// degrees (`Ferro` at -17.40, 17°40'W), whatever the unit.
 pub(crate) fn prime_meridian_degrees(name: &str, value: f64, ang: f64) -> f64 {
+    // Within 1e-8 of it, Paris is 2.5969213 grads exactly, as PROJ replaces it.
     if name == "Paris" && (ang - 0.9).abs() < 1e-9 && (value - 2.33722917).abs() < 1e-8 {
-        return value;
+        return 2.5969213 * 0.9;
     }
     if let Some(&(_, d, m, s)) = PRIME_MERIDIANS_DMS.iter().find(|(n, ..)| *n == name) {
         let sign = d.signum();

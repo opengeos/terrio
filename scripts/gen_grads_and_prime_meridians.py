@@ -174,6 +174,16 @@ def cases():
             FRANCE,
         )
     )
+    # Paris within 1e-8 of 2.33722917 in degrees is PROJ's 2.5969213 grads exactly.
+    for near in ["2.337229179", "2.33722916"]:
+        out.append(
+            (
+                f"Paris at {near}",
+                gdal.replace(paris, f'PRIMEM["Paris",{near}]'),
+                CLARKE,
+                FRANCE,
+            )
+        )
     # Another meridian at the same value is in grads.
     out.append(
         (
@@ -294,6 +304,14 @@ def cases():
             geogcrs(f'PRIMEM["Paris",2.33722917,{DEG2}]', GRAD2),
         ),
         ("WKT 2, Paris in grads", geogcrs(f'PRIMEM["Paris",2.5969213,{GRAD2}]', GRAD2)),
+        (
+            "WKT 2, Paris at 2.337229179 as grads",
+            geogcrs(f'PRIMEM["Paris",2.337229179,{GRAD2}]', GRAD2),
+        ),
+        (
+            "WKT 2, Paris at 2.33722916 as grads",
+            geogcrs(f'PRIMEM["Paris",2.33722916,{GRAD2}]', GRAD2),
+        ),
         # No unit of its own: the CRS's, not its axes', else degrees.
         ("WKT 2, no unit, axes in grads", geogcrs('PRIMEM["custom",2.5]', GRAD2)),
         (
