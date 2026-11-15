@@ -47,3 +47,34 @@ fn a_layer_wkt_padded_with_nuls_is_identified() {
     layer.set_crs_wkt(Some(PADDED_PRJ.to_string()));
     assert_eq!(terrio::crs::SpatialRef::from_layer(&layer).epsg, Some(32631));
 }
+
+/// PROJ 9.8.1's PROJJSON (pyproj 3.8.0, `scripts/gen_wkt1_proj_reads.py`) of
+/// EPSG:32631 with a NUL (`\u0000`) in a parameter's name, and of Mollweide with one in its name.
+fn projjson_with_a_nul() -> [(String, Option<u32>, &'static str); 2] {
+    let data: serde_json::Value = serde_json::from_str(include_str!("../../terrio-crs/tests/data/wkt1_proj_reads.json")).unwrap();
+    let text = |key: &str| data[key]["projjson"].as_str().unwrap().to_string();
+    [(text("projjson"), Some(32631), "\"Latitude of\""), (text("mollweide_projjson"), None, "\"Moll\"")]
+}
+
+/// A CRS read from PROJJSON with a NUL in a name, as PROJ 9.8.1 reads it, keeps it in its stored
+/// WKT. Set on a layer, its WKT is written with the name cut at the NUL, as PROJ gives such a
+/// name (`CRS.name` of `"WGS\u0000 84 / UTM zone 31N"` is `WGS`; PROJ's own WKT of it ends at
+/// the NUL), so the layer reads back as the CRS: with its EPSG code, and without one.
+#[test]
+fn a_crs_with_a_nul_in_its_name_round_trips_through_a_layer() {
+    use terrio::crs::{SpatialRef, Transformer};
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    for (json, epsg, cut) in projjson_with_a_nul() {
+        let crs = SpatialRef::from_projjson(&json).unwrap();
+        assert!(crs.to_wkt().is_some_and(|w| w.contains('\0')));
+        assert_eq!(crs.epsg, epsg);
+        let mut layer = terrio::Layer::new("p");
+        crs.apply_to_layer(&mut layer);
+        assert!(layer.crs_wkt().is_some_and(|w| !w.contains('\0') && w.contains(cut)), "{:?}", layer.crs_wkt());
+        let back = SpatialRef::from_layer(&layer);
+        assert_eq!(back.epsg, epsg);
+        assert_eq!(back.to_proj4(), crs.to_proj4());
+        let (a, b) = (Transformer::new(&crs, &wgs84).unwrap(), Transformer::new(&back, &wgs84).unwrap());
+        assert_eq!(b.transform(500_000.0, 5_000_000.0).unwrap(), a.transform(500_000.0, 5_000_000.0).unwrap());
+    }
+}

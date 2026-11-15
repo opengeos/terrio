@@ -324,3 +324,23 @@ fn stored_wkt_with_a_nul_in_a_name_is_read_whole() {
     assert!(terrio_crs::wkt_proj(&utm.to_wkt().unwrap()).is_some_and(|p| same_proj(&p, &proj)), "{proj}");
     assert_eq!(terrio_crs::identify_epsg(&wkt).map(u64::from), case["epsg"].as_u64());
 }
+
+/// A stored WKT with a NUL in a name is written for files with the name cut at the NUL, as PROJ
+/// 9.8.1 gives such a name (`CRS.name` of PROJJSON's `"WGS\u0000 84 / UTM zone 31N"` is `WGS`):
+/// a whole WKT that reads as the CRS. A doubled quote and a NUL outside quotes are handled; WKT
+/// without a NUL is returned as it is.
+#[test]
+fn a_stored_wkt_is_written_for_files_with_names_cut_at_a_nul() {
+    offline();
+    let data = data();
+    let crs = SpatialRef::from_projjson(data["projjson"]["projjson"].as_str().unwrap()).unwrap();
+    let stored = crs.to_wkt().unwrap();
+    let written = terrio_crs::wkt_for_files(&stored);
+    assert!(!written.contains('\0') && written.contains(r#""Latitude of""#), "{written}");
+    let back = SpatialRef::from_wkt(&written);
+    assert_eq!(back.epsg, Some(32631));
+    assert!(same_proj(&back.to_proj4().unwrap(), &crs.to_proj4().unwrap()));
+    assert_eq!(terrio_crs::wkt_for_files("A[\"a\"\"b\0c\"\"d\",x]"), r#"A["a""b",x]"#);
+    assert_eq!(terrio_crs::wkt_for_files("A[\"a\",\0x]"), "A[\"a\",x]");
+    assert!(matches!(terrio_crs::wkt_for_files("A[\"a\"]"), std::borrow::Cow::Borrowed(_)));
+}

@@ -1171,6 +1171,43 @@ pub(crate) fn is_variant_c(wkt: &str) -> bool {
     wkt1::parse(wkt).is_some_and(|root| names(&root))
 }
 
+/// A CRS's stored WKT as it is written where its readers end text at its first NUL (a `.prj`,
+/// a raster's or layer's WKT, which GDAL reads as a C string): each quoted name cut at its first
+/// NUL, as PROJ 9.8.1 gives such a name (`CRS.name` of a PROJJSON name `"WGS\u0000 84"` is
+/// `WGS`), so that the text stays a whole WKT. PROJ's own WKT export of such a CRS ends at the
+/// NUL (`PROJCRS["WGS`), which no reader takes back. Text without a NUL is returned as it is.
+#[doc(hidden)]
+pub fn wkt_for_files(wkt: &str) -> std::borrow::Cow<'_, str> {
+    if !wkt.contains('\0') {
+        return wkt.into();
+    }
+    let mut out = String::with_capacity(wkt.len());
+    let (mut quoted, mut cut) = (false, false);
+    let mut chars = wkt.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            // A doubled quote inside a name is a quote of the name.
+            '"' if quoted && chars.peek() == Some(&'"') => {
+                chars.next();
+                if !cut {
+                    out.push_str("\"\"");
+                }
+            }
+            '"' => {
+                quoted = !quoted;
+                cut = false;
+                out.push(c);
+            }
+            '\0' if quoted => cut = true,
+            // A NUL outside quotes is no part of a WKT terrio reads.
+            '\0' => {}
+            _ if cut => {}
+            _ => out.push(c),
+        }
+    }
+    out.into()
+}
+
 /// Text read from a file up to its first NUL, as GDAL reads it (a C string). A caller that hands
 /// [`wkt_proj`] or [`identify_epsg`] a definition read from a file (a `.prj`, a raster's or layer's
 /// stored WKT) cuts it with this first; a CRS's own stored WKT ([`SpatialRef::to_wkt`]) is not

@@ -281,10 +281,12 @@ makes the WKT one terrio refuses. A definition given as text (WKT, PROJJSON, any
 `SpatialRef::parse` takes) ends at its first NUL, as PROJ and GDAL take it as a C string, and so
 does a GeoTIFF's GeoAsciiParamsTag, as GDAL 3.12.1 reads it (a citation after the NUL is lost); text
 after a complete WKT was already ignored. A NUL a PROJJSON name gives (`\u0000`) is part of the
-name, as in PROJ. Written to GeoKeys, such a name is cut at the NUL, and a CRS with one that GeoKeys
-can't describe, whose WKT would go in an ESRI PE citation, is refused, as GDAL 3.12.1 refuses to
-write it. WKT 1 and WKT 2 share this parser, as do the readers of PROJJSON and of IAU definitions,
-which go through WKT, so an unknown node is skipped in each.
+name, as in PROJ. Written to a layer's or raster's WKT (and so to a `.prj` or GeoPackage) or to
+GeoKeys, such a name is cut at the NUL, as PROJ 9.8.1 gives the name (its own WKT of the CRS ends at
+the NUL), so the CRS reads back, and a CRS with one that GeoKeys can't describe, whose WKT would go
+in an ESRI PE citation, is refused, as GDAL 3.12.1 refuses to write it. WKT 1 and WKT 2 share this
+parser, as do the readers of PROJJSON and of IAU definitions, which go through WKT, so an unknown
+node is skipped in each.
 
 A CRS of PROJ's ESRI authority is reported under it, as GDAL reports it: a GeoTIFF GDAL writes in
 `ESRI:54009` is `ESRI:54009` (from the ESRI code the WKT declares or, for GDAL's ESRI PE strings,
