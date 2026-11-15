@@ -112,3 +112,22 @@ fn a_wgs84_target_is_known_by_any_datum_keyword() {
         assert!(SpatialRef::from_wkt(&w).to_proj4().unwrap().contains("+towgs84="), "{keyword}");
     }
 }
+
+/// A Helmert transformation terrio cannot read is refused whatever its target (ED50 as WGS 84),
+/// rather than left out, which would place points as if unshifted.
+#[test]
+fn an_unreadable_shift_to_another_crs_is_refused() {
+    offline();
+    let data: Value = serde_json::from_str(include_str!("data/wkt2_bound.json")).unwrap();
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    for name in ["to ED50", "to WGS 84"] {
+        let case = data["cases"].as_array().unwrap().iter().find(|c| c["name"] == name).unwrap();
+        let wkt = case["wkt"].as_str().unwrap();
+        let unknown = wkt.replace(r#"PARAMETER["X-axis translation",598.1,ID["EPSG",8605]]"#, r#"PARAMETER["Unknown parameter",598.1]"#);
+        let unitless = wkt.replace(r#"1.0000067,SCALEUNIT["unity",1]"#, "6.7");
+        for w in [unknown, unitless] {
+            assert_ne!(w, wkt, "{name}");
+            assert!(Transformer::new(&SpatialRef::from_wkt(&w), &wgs84).is_err(), "{name}: {w}");
+        }
+    }
+}

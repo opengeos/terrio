@@ -41,13 +41,9 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
     if key == "BOUNDCRS" {
         let source = root.child("SOURCECRS").and_then(first_node).ok_or_else(|| bad("a BOUNDCRS without its SOURCECRS"))?;
         let mut c = to_proj(source)?;
-        // A transformation to another CRS it cannot read, or to a CRS it cannot convert, is left
-        // out, as terrio did before it read those; one to WGS 84 fails.
-        let shift = match helmert_shift(root) {
-            Err(_) if !bound_to_wgs84(root) => None,
-            r => r?,
-        };
-        match shift {
+        // A Helmert transformation terrio cannot read fails, whatever its target; one to a CRS
+        // terrio cannot convert is left out, as terrio did before it read those.
+        match helmert_shift(root)? {
             Some((t, true)) => {
                 c.proj = format!("{} +towgs84={}", c.proj, t.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","));
             }

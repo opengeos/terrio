@@ -269,8 +269,9 @@ impl Def {
                 && let Ok(bound) = Self::from_wkt(w)
                 && bound.datum.is_none()
             {
-                // Bound to a CRS without transformations to WGS 84, the code's own stay (the
-                // source's, with its geographic CRS), as in PROJ.
+                // The bound's transformations replace the code's, unless its target has none to
+                // WGS 84: the bound CRS then has the source's own, with its geographic CRS (so
+                // `geog` is set), and the code's stay, as in PROJ.
                 if !bound.ops.is_empty() && bound.geog.is_none() {
                     d.ops = bound.ops;
                     d.datum = None;
