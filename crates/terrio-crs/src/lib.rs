@@ -1138,7 +1138,12 @@ impl SpatialRef {
             && is_variant_c(w)
         {
             let p = wkt_proj(w).ok_or_else(|| Error::Crs("a Polar Stereographic (variant C) CRS terrio cannot convert".into()))?;
-            return Ok(wbp::from_proj_string(&p)?);
+            let c = wbp::from_proj_string(&p)?;
+            // `wkt_proj` gives a WKT's PROJ4 extension when it has one.
+            if self.proj4.is_none() && proj4_extension(w).is_some() {
+                same_figure_as_step(&c, &p)?;
+            }
+            return Ok(c);
         }
         if let Some(code) = self.epsg
             && let Ok(c) = wbp::Crs::from_epsg(code)
@@ -1159,14 +1164,8 @@ impl SpatialRef {
             // An extension is computed as a pipeline step, whose figure wbprojection may read
             // otherwise (`+ellps=WGS84 +f=0` is a sphere to the step, WGS 84 to wbprojection):
             // refused then, rather than describe another figure.
-            if self.proj4.is_none()
-                && let Ok(step) = Def::from_proj_extension(&p)
-            {
-                let e = &c.projection.params().ellipsoid;
-                let es = e.f * (2.0 - e.f);
-                if (e.a - step.ell.a).abs() > 1e-3 || (es - step.ell.es).abs() > 1e-10 {
-                    return Err(Error::Crs(format!("wbprojection reads another ellipsoid than terrio's for {p}")));
-                }
+            if self.proj4.is_none() {
+                same_figure_as_step(&c, &p)?;
             }
             return Ok(c);
         }
@@ -1334,6 +1333,20 @@ fn extension_places_without_grids(s: &str) -> bool {
     });
     // Not alike when no point could be compared.
     alike && compared > 0
+}
+
+/// Fails when wbprojection reads the PROJ string `p` of a WKT's PROJ4 extension on another figure
+/// than terrio's pipeline step does (`+ellps=WGS84 +f=0` is a sphere to the step, WGS 84 to
+/// wbprojection, which takes `+ellps` before `+f`), rather than describe another figure.
+#[cfg(feature = "wbprojection-fallback")]
+fn same_figure_as_step(c: &wbp::Crs, p: &str) -> Result<()> {
+    let Ok(step) = Def::from_proj_extension(p) else { return Ok(()) };
+    let e = &c.projection.params().ellipsoid;
+    let es = e.f * (2.0 - e.f);
+    if (e.a - step.ell.a).abs() > 1e-3 || (es - step.ell.es).abs() > 1e-10 {
+        return Err(Error::Crs(format!("wbprojection reads another ellipsoid than terrio's for {p}")));
+    }
+    Ok(())
 }
 
 /// The CRS's PROJ string, or else its WKT 1's `EXTENSION["PROJ4", ...]` as terrio reads it (one it

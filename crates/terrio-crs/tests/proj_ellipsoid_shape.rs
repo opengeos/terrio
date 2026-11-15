@@ -441,3 +441,20 @@ fn an_extension_the_projection_engine_reads_on_another_figure_is_refused() {
     let crs = SpatialRef::from_wkt(&wkt("+proj=tmerc +lon_0=10 +x_0=1000 +ellps=WGS84 +units=m")).to_wbp().unwrap();
     assert!((crs.projection.params().ellipsoid.a - 6378137.0).abs() < 1e-6);
 }
+
+/// The same holds for a WKT on Polar Stereographic (variant C) with a `PROJ4` extension, which
+/// goes to the projection engine by its own path: refused on another figure, given on its own.
+#[cfg(feature = "wbprojection-fallback")]
+#[test]
+fn a_variant_c_extension_the_projection_engine_reads_on_another_figure_is_refused() {
+    let wkt = |ext: &str| {
+        format!(
+            r#"PROJCS["unknown",GEOGCS["unknown",DATUM["unknown",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Polar_Stereographic_(variant_C)"],PARAMETER["Latitude of standard parallel",-67],PARAMETER["Longitude of origin",140],PARAMETER["Easting at false origin",300000],PARAMETER["Northing at false origin",200000],UNIT["metre",1],EXTENSION["PROJ4","{ext}"]]"#
+        )
+    };
+    let refused = wkt("+proj=stere +lat_0=-90 +lat_ts=-67 +lon_0=140 +x_0=300000 +y_0=200000 +ellps=WGS84 +f=0 +units=m");
+    assert!(SpatialRef::from_wkt(&refused).to_wbp().is_err());
+    let given = wkt("+proj=stere +lat_0=-90 +lat_ts=-67 +lon_0=140 +x_0=300000 +y_0=200000 +ellps=WGS84 +units=m");
+    let crs = SpatialRef::from_wkt(&given).to_wbp().unwrap();
+    assert!((crs.projection.params().ellipsoid.a - 6378137.0).abs() < 1e-6);
+}
