@@ -15,8 +15,9 @@ CRS's, and in none.
 
 Each of these cases is a point, its coordinates in the WKT's CRS by
 `Transformer.from_crs(source, wkt, always_xy=True)`, and those coordinates taken back to the
-source by `Transformer.from_crs(wkt, source, always_xy=True)`. The source is EPSG:4275 (NTF on
-Greenwich) or EPSG:4156 (S-JTSK) for a WKT that declares its codes, and a PROJ string on the same
+source by `Transformer.from_crs(wkt, source, always_xy=True)`. Coordinates of a CRS whose axes
+are in radians, which pyproj gives in degrees, are written in radians. The source is EPSG:4275 (NTF
+on Greenwich) or EPSG:4156 (S-JTSK) for a WKT that declares its codes, and a PROJ string on the same
 ellipsoid for one without (PROJ's ballpark: no datum shift).
 
 Prime meridians near Paris's (`pm_cases`): EPSG:4807 and PROJ strings with `+pm=` on both sides of
@@ -27,6 +28,7 @@ Usage: PROJ_NETWORK=OFF python scripts/gen_grads_and_prime_meridians.py (needs p
 """
 
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -69,15 +71,43 @@ DEG2 = 'ANGLEUNIT["degree",0.0174532925199433]'
 GRAD2 = 'ANGLEUNIT["grad",0.0157079632679489]'
 
 
-def geogcrs(primem, axis_unit="", cs_unit=""):
-    """A WKT 2 geographic CRS on the Clarke 1880 (IGN) ellipsoid, its axes in `axis_unit` or its
-    CS in `cs_unit`."""
+DATUM2 = (
+    'DATUM["custom",ELLIPSOID["Clarke 1880 (IGN)",6378249.2,293.466021293627,'
+    'LENGTHUNIT["metre",1]]]'
+)
+
+
+def geogcrs(primem, axis_unit="", cs_unit="", keyword="GEOGCRS"):
+    """A WKT 2 geographic CRS on the Clarke 1880 (IGN) ellipsoid, its axes in `axis_unit` or the
+    CRS in `cs_unit` (a unit node after its axes)."""
     axis = f",{axis_unit}" if axis_unit else ""
     cs = f",{cs_unit}" if cs_unit else ""
     return (
-        'GEOGCRS["custom",DATUM["custom",ELLIPSOID["Clarke 1880 (IGN)",6378249.2,'
-        f'293.466021293627,LENGTHUNIT["metre",1]]],{primem},CS[ellipsoidal,2],'
+        f'{keyword}["custom",{DATUM2},{primem},CS[ellipsoidal,2],'
         f'AXIS["lon",east,ORDER[1]{axis}],AXIS["lat",north,ORDER[2]{axis}]{cs}]'
+    )
+
+
+GEOCENTRIC = (
+    f'GEODCRS["custom",{DATUM2},PRIMEM["custom",2],CS[Cartesian,3],'
+    'AXIS["X",geocentricX],AXIS["Y",geocentricY],AXIS["Z",geocentricZ],'
+    'LENGTHUNIT["metre",1]]'
+)
+
+
+def lambert_ii(base, base_unit=""):
+    """Lambert zone II's conversion (in grads) on a WKT 2 base CRS `base` (`BASEGEOGCRS` or
+    `BASEGEODCRS`) with a prime meridian without unit, at 2, and `base_unit` after it."""
+    unit = f",{base_unit}" if base_unit else ""
+    return (
+        f'PROJCRS["custom",{base}["custom",{DATUM2},PRIMEM["custom",2]{unit}],'
+        'CONVERSION["custom",METHOD["Lambert Conic Conformal (1SP)"],'
+        f'PARAMETER["Latitude of natural origin",52,{GRAD2}],'
+        f'PARAMETER["Longitude of natural origin",0,{GRAD2}],'
+        'PARAMETER["Scale factor at natural origin",0.99987742,SCALEUNIT["unity",1]],'
+        'PARAMETER["False easting",600000,LENGTHUNIT["metre",1]],'
+        'PARAMETER["False northing",2200000,LENGTHUNIT["metre",1]]],'
+        'CS[Cartesian,2],AXIS["e",east],AXIS["n",north],LENGTHUNIT["metre",1]]'
     )
 
 
@@ -88,6 +118,11 @@ def strip2(wkt):
     wkt = re.sub(r'(PROJCRS|BASEGEOGCRS|GEOGCRS|DATUM)\["[^"]*"', r'\1["custom"', wkt)
     assert ",ID[" not in wkt and "USAGE[" not in wkt, wkt
     return wkt
+
+
+def in_radians(wkt):
+    """Whether the axes of the CRS of `wkt` are in radians."""
+    return all(a.unit_name == "radian" for a in CRS(wkt).axis_info)
 
 
 def krovak_in_grads(wkt):
@@ -236,10 +271,61 @@ def cases():
         ("WKT 2, Paris in grads", geogcrs(f'PRIMEM["Paris",2.5969213,{GRAD2}]', GRAD2)),
         # No unit of its own: the CRS's, not its axes', else degrees.
         ("WKT 2, no unit, axes in grads", geogcrs('PRIMEM["custom",2.5]', GRAD2)),
-        ("WKT 2, no unit, CS in grads", geogcrs('PRIMEM["custom",2.5]', cs_unit=GRAD2)),
         (
-            "WKT 2, Paris without unit, CS in grads",
+            "WKT 2, no unit, CRS in grads",
+            geogcrs('PRIMEM["custom",2.5]', cs_unit=GRAD2),
+        ),
+        (
+            "WKT 2, Paris without unit, CRS in grads",
             geogcrs('PRIMEM["Paris",2.33722917]', cs_unit=GRAD2),
+        ),
+        # A `UNIT` of the CRS is angular only named degree or grad, as PROJ reads it: else the
+        # meridian is in degrees.
+        (
+            "WKT 2, no unit, CRS UNIT grad",
+            geogcrs('PRIMEM["custom",2]', cs_unit='UNIT["grad",0.0157079632679489]'),
+        ),
+        (
+            "WKT 2, no unit, GEODCRS UNIT grad",
+            geogcrs(
+                'PRIMEM["custom",2]',
+                cs_unit='UNIT["grad",0.0157079632679489]',
+                keyword="GEODCRS",
+            ),
+        ),
+        (
+            "WKT 2, no unit, GEODCRS UNIT radian",
+            geogcrs(
+                'PRIMEM["custom",2]', cs_unit='UNIT["radian",1]', keyword="GEODCRS"
+            ),
+        ),
+        (
+            "WKT 2, no unit, CRS UNIT radian",
+            geogcrs('PRIMEM["custom",0.03]', cs_unit='UNIT["radian",1]'),
+        ),
+        (
+            "WKT 2, no unit, CRS UNIT gon",
+            geogcrs('PRIMEM["custom",2]', cs_unit='UNIT["gon",0.0157079632679489]'),
+        ),
+        (
+            "WKT 2, no unit, CRS ANGLEUNIT radian",
+            geogcrs('PRIMEM["custom",0.03]', cs_unit='ANGLEUNIT["radian",1]'),
+        ),
+        # Base CRSs: the base CRS's unit, else degrees.
+        ("WKT 2, base, no unit", lambert_ii("BASEGEOGCRS")),
+        ("WKT 2, base, ANGLEUNIT grad", lambert_ii("BASEGEOGCRS", GRAD2)),
+        (
+            "WKT 2, BASEGEODCRS, UNIT grad",
+            lambert_ii("BASEGEODCRS", 'UNIT["grad",0.0157079632679489]'),
+        ),
+        (
+            "WKT 2, BASEGEODCRS, UNIT radian",
+            lambert_ii("BASEGEODCRS", 'UNIT["radian",1]'),
+        ),
+        # A geocentric CRS: its unit is a length, the meridian in degrees.
+        (
+            "WKT 2, geocentric",
+            GEOCENTRIC,
         ),
     ]:
         out.append((name, wkt, CLARKE, FRANCE))
@@ -284,7 +370,8 @@ def main():
                 "wkt": wkt,
                 "src": src,
                 "point": point,
-                "proj": list(xy),
+                # pyproj gives (and takes) a CRS's coordinates in radians in degrees.
+                "proj": [math.radians(v) for v in xy] if in_radians(wkt) else list(xy),
                 "proj_back": list(back.transform(*xy, errcheck=True)),
             }
         )

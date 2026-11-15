@@ -1651,7 +1651,7 @@
    ]
   },
   {
-   "name": "WKT 2, no unit, CS in grads",
+   "name": "WKT 2, no unit, CRS in grads",
    "wkt": "GEOGCRS[\"custom\",DATUM[\"custom\",ELLIPSOID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"custom\",2.5],CS[ellipsoidal,2],AXIS[\"lon\",east,ORDER[1]],AXIS[\"lat\",north,ORDER[2]],ANGLEUNIT[\"grad\",0.0157079632679489]]",
    "src": "+proj=longlat +ellps=clrk80ign +type=crs",
    "point": [
@@ -1668,7 +1668,7 @@
    ]
   },
   {
-   "name": "WKT 2, Paris without unit, CS in grads",
+   "name": "WKT 2, Paris without unit, CRS in grads",
    "wkt": "GEOGCRS[\"custom\",DATUM[\"custom\",ELLIPSOID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Paris\",2.33722917],CS[ellipsoidal,2],AXIS[\"lon\",east,ORDER[1]],AXIS[\"lat\",north,ORDER[2]],ANGLEUNIT[\"grad\",0.0157079632679489]]",
    "src": "+proj=longlat +ellps=clrk80ign +type=crs",
    "point": [
@@ -1682,6 +1682,193 @@
    "proj_back": [
     2.35,
     48.85
+   ]
+  },
+  {
+   "name": "WKT 2, no unit, CRS UNIT grad",
+   "wkt": "GEOGCRS[\"custom\",DATUM[\"custom\",ELLIPSOID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"custom\",2],CS[ellipsoidal,2],AXIS[\"lon\",east,ORDER[1]],AXIS[\"lat\",north,ORDER[2]],UNIT[\"grad\",0.0157079632679489]]",
+   "src": "+proj=longlat +ellps=clrk80ign +type=crs",
+   "point": [
+    2.35,
+    48.85
+   ],
+   "proj": [
+    0.611111111111111,
+    54.27777777777778
+   ],
+   "proj_back": [
+    2.35,
+    48.85
+   ]
+  },
+  {
+   "name": "WKT 2, no unit, GEODCRS UNIT grad",
+   "wkt": "GEODCRS[\"custom\",DATUM[\"custom\",ELLIPSOID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"custom\",2],CS[ellipsoidal,2],AXIS[\"lon\",east,ORDER[1]],AXIS[\"lat\",north,ORDER[2]],UNIT[\"grad\",0.0157079632679489]]",
+   "src": "+proj=longlat +ellps=clrk80ign +type=crs",
+   "point": [
+    2.35,
+    48.85
+   ],
+   "proj": [
+    0.611111111111111,
+    54.27777777777778
+   ],
+   "proj_back": [
+    2.35,
+    48.85
+   ]
+  },
+  {
+   "name": "WKT 2, no unit, GEODCRS UNIT radian",
+   "wkt": "GEODCRS[\"custom\",DATUM[\"custom\",ELLIPSOID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"custom\",2],CS[ellipsoidal,2],AXIS[\"lon\",east,ORDER[1]],AXIS[\"lat\",north,ORDER[2]],UNIT[\"radian\",1]]",
+   "src": "+proj=longlat +ellps=clrk80ign +type=crs",
+   "point": [
+    2.35,
+    48.85
+   ],
+   "proj": [
+    0.006108652381980155,
+    0.85259333959923
+   ],
+   "proj_back": [
+    2.35,
+    48.85
+   ]
+  },
+  {
+   "name": "WKT 2, no unit, CRS UNIT radian",
+   "wkt": "GEOGCRS[\"custom\",DATUM[\"custom\",ELLIPSOID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"custom\",0.03],CS[ellipsoidal,2],AXIS[\"lon\",east,ORDER[1]],AXIS[\"lat\",north,ORDER[2]],UNIT[\"radian\",1]]",
+   "src": "+proj=longlat +ellps=clrk80ign +type=crs",
+   "point": [
+    2.35,
+    48.85
+   ],
+   "proj": [
+    0.040491638646268445,
+    0.85259333959923
+   ],
+   "proj_back": [
+    2.35,
+    48.85
+   ]
+  },
+  {
+   "name": "WKT 2, no unit, CRS UNIT gon",
+   "wkt": "GEOGCRS[\"custom\",DATUM[\"custom\",ELLIPSOID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"custom\",2],CS[ellipsoidal,2],AXIS[\"lon\",east,ORDER[1]],AXIS[\"lat\",north,ORDER[2]],UNIT[\"gon\",0.0157079632679489]]",
+   "src": "+proj=longlat +ellps=clrk80ign +type=crs",
+   "point": [
+    2.35,
+    48.85
+   ],
+   "proj": [
+    0.38888888888888895,
+    54.27777777777778
+   ],
+   "proj_back": [
+    2.35,
+    48.85
+   ]
+  },
+  {
+   "name": "WKT 2, no unit, CRS ANGLEUNIT radian",
+   "wkt": "GEOGCRS[\"custom\",DATUM[\"custom\",ELLIPSOID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"custom\",0.03],CS[ellipsoidal,2],AXIS[\"lon\",east,ORDER[1]],AXIS[\"lat\",north,ORDER[2]],ANGLEUNIT[\"radian\",1]]",
+   "src": "+proj=longlat +ellps=clrk80ign +type=crs",
+   "point": [
+    2.35,
+    48.85
+   ],
+   "proj": [
+    0.01101523742186674,
+    0.85259333959923
+   ],
+   "proj_back": [
+    2.35,
+    48.85
+   ]
+  },
+  {
+   "name": "WKT 2, base, no unit",
+   "wkt": "PROJCRS[\"custom\",BASEGEOGCRS[\"custom\",DATUM[\"custom\",ELLIPSOID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"custom\",2]],CONVERSION[\"custom\",METHOD[\"Lambert Conic Conformal (1SP)\"],PARAMETER[\"Latitude of natural origin\",52,ANGLEUNIT[\"grad\",0.0157079632679489]],PARAMETER[\"Longitude of natural origin\",0,ANGLEUNIT[\"grad\",0.0157079632679489]],PARAMETER[\"Scale factor at natural origin\",0.99987742,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",600000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",2200000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"e\",east],AXIS[\"n\",north],LENGTHUNIT[\"metre\",1]]",
+   "src": "+proj=longlat +ellps=clrk80ign +type=crs",
+   "point": [
+    2.35,
+    48.85
+   ],
+   "proj": [
+    625701.5743994805,
+    2428010.947980357
+   ],
+   "proj_back": [
+    2.35,
+    48.85
+   ]
+  },
+  {
+   "name": "WKT 2, base, ANGLEUNIT grad",
+   "wkt": "PROJCRS[\"custom\",BASEGEOGCRS[\"custom\",DATUM[\"custom\",ELLIPSOID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"custom\",2],ANGLEUNIT[\"grad\",0.0157079632679489]],CONVERSION[\"custom\",METHOD[\"Lambert Conic Conformal (1SP)\"],PARAMETER[\"Latitude of natural origin\",52,ANGLEUNIT[\"grad\",0.0157079632679489]],PARAMETER[\"Longitude of natural origin\",0,ANGLEUNIT[\"grad\",0.0157079632679489]],PARAMETER[\"Scale factor at natural origin\",0.99987742,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",600000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",2200000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"e\",east],AXIS[\"n\",north],LENGTHUNIT[\"metre\",1]]",
+   "src": "+proj=longlat +ellps=clrk80ign +type=crs",
+   "point": [
+    2.35,
+    48.85
+   ],
+   "proj": [
+    640387.992210256,
+    2428095.0331382216
+   ],
+   "proj_back": [
+    2.35,
+    48.85
+   ]
+  },
+  {
+   "name": "WKT 2, BASEGEODCRS, UNIT grad",
+   "wkt": "PROJCRS[\"custom\",BASEGEODCRS[\"custom\",DATUM[\"custom\",ELLIPSOID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"custom\",2],UNIT[\"grad\",0.0157079632679489]],CONVERSION[\"custom\",METHOD[\"Lambert Conic Conformal (1SP)\"],PARAMETER[\"Latitude of natural origin\",52,ANGLEUNIT[\"grad\",0.0157079632679489]],PARAMETER[\"Longitude of natural origin\",0,ANGLEUNIT[\"grad\",0.0157079632679489]],PARAMETER[\"Scale factor at natural origin\",0.99987742,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",600000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",2200000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"e\",east],AXIS[\"n\",north],LENGTHUNIT[\"metre\",1]]",
+   "src": "+proj=longlat +ellps=clrk80ign +type=crs",
+   "point": [
+    2.35,
+    48.85
+   ],
+   "proj": [
+    640387.992210256,
+    2428095.0331382216
+   ],
+   "proj_back": [
+    2.35,
+    48.85
+   ]
+  },
+  {
+   "name": "WKT 2, BASEGEODCRS, UNIT radian",
+   "wkt": "PROJCRS[\"custom\",BASEGEODCRS[\"custom\",DATUM[\"custom\",ELLIPSOID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"custom\",2],UNIT[\"radian\",1]],CONVERSION[\"custom\",METHOD[\"Lambert Conic Conformal (1SP)\"],PARAMETER[\"Latitude of natural origin\",52,ANGLEUNIT[\"grad\",0.0157079632679489]],PARAMETER[\"Longitude of natural origin\",0,ANGLEUNIT[\"grad\",0.0157079632679489]],PARAMETER[\"Scale factor at natural origin\",0.99987742,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",600000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",2200000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"e\",east],AXIS[\"n\",north],LENGTHUNIT[\"metre\",1]]",
+   "src": "+proj=longlat +ellps=clrk80ign +type=crs",
+   "point": [
+    2.35,
+    48.85
+   ],
+   "proj": [
+    625701.5743994805,
+    2428010.947980357
+   ],
+   "proj_back": [
+    2.35,
+    48.85
+   ]
+  },
+  {
+   "name": "WKT 2, geocentric",
+   "wkt": "GEODCRS[\"custom\",DATUM[\"custom\",ELLIPSOID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"custom\",2],CS[Cartesian,3],AXIS[\"X\",geocentricX],AXIS[\"Y\",geocentricY],AXIS[\"Z\",geocentricZ],LENGTHUNIT[\"metre\",1]]",
+   "src": "+proj=longlat +ellps=clrk80ign +type=crs",
+   "point": [
+    2.35,
+    48.85
+   ],
+   "proj": [
+    4205136.176042238,
+    25688.03464089185
+   ],
+   "proj_back": [
+    2.35,
+    0.0
    ]
   }
  ],

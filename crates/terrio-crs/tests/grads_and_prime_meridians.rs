@@ -7,7 +7,9 @@
 //! (Paris) (EPSG:27500), whose "Paris RGS" GDAL and ESRI also write in degrees; and Krovak East
 //! North (EPSG:5514) with its angles in grads. WKT 2: PROJ's WKT 2 of EPSG:4807, 27572 and 27500,
 //! and prime meridians in their own unit (named meridians in sexagesimal degrees or in degrees
-//! beside grads), in the CRS's and in none (degrees, whatever the axes' unit). Coordinates in a
+//! beside grads), in their CRS's or base CRS's (an `ANGLEUNIT`, or a `UNIT` only when named grad)
+//! and in none (degrees, whatever the axes' unit), under geographic, geodetic, projected and
+//! geocentric CRSs. Coordinates in a
 //! geographic CRS in grads are in grads, both ways.
 //!
 //! Paris is PROJ's `+pm=paris` (2.337229166667°), as PROJ transforms with it, not the WKT's
@@ -19,9 +21,10 @@
 //! with `"WKT1_GDAL"`, `"WKT1_ESRI"` and `"WKT2_2019"`, those with their names replaced and
 //! `AUTHORITY` or `ID` removed, and WKTs written by hand) and PROJ's coordinates by
 //! `Transformer.from_crs(source, wkt, always_xy=True)` and back by
-//! `Transformer.from_crs(wkt, source, always_xy=True)`, and the longitude of (0, 0) of the prime
+//! `Transformer.from_crs(wkt, source, always_xy=True)` (in radians for axes in radians, which
+//! pyproj gives in degrees), and the longitude of (0, 0) of the prime
 //! meridian cases in EPSG:4275 by `Transformer.from_crs(crs, "EPSG:4275", always_xy=True)`.
-//! Tolerance: 1 mm in metres, 1e-9 in grads and degrees (0.1 mm); 1e-12 degrees for the prime
+//! Tolerance: 1 mm in metres, 1e-9 of an angular unit (0.1 mm in grads and degrees); 1e-12 degrees for the prime
 //! meridians.
 
 use serde_json::Value;
@@ -57,7 +60,7 @@ fn off(crs: &SpatialRef, got: (f64, f64), want: (f64, f64)) -> f64 {
 fn crss_in_grads_place_points_as_proj_does() {
     offline();
     let cases = cases();
-    assert_eq!(cases.len(), 99);
+    assert_eq!(cases.len(), 110);
     let mut bad = vec![];
     for case in &cases {
         let name = case["name"].as_str().unwrap();
