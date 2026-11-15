@@ -160,6 +160,8 @@ fn ntm_zone_5_keeps_its_own_false_origin() {
 /// away): by the replacement's code where it is the same CRS (EPSG:4329, WGS 84 (3D), as 4979),
 /// else as its WKT in a citation, as GDAL writes CRSs GeoKeys cannot hold. Its keys read back as
 /// its own definition. A code GDAL keeps (EPSG:2191, two replacements) is written by its code.
+/// (Keys giving such a code, which terrio does not write, read as GDAL reads them: see
+/// `geokeys_of_deprecated_codes_read_as_gdal_reads_them`.)
 #[test]
 fn geokeys_of_deprecated_codes_read_as_their_own_definition() {
     offline();

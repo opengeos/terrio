@@ -164,7 +164,7 @@ pub fn read(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> GeoKeysCrs {
         // (`OSR_USE_NON_DEPRECATED=YES`): EPSG:4855 as 5105, 3752 (which terrio does not carry)
         // as 3994. A geographic one GDAL keeps (EPSG:4140).
         (_, Some(code), _) if code != 0 && code != USER_DEFINED => match crate::epsg_replacements(u32::from(code)) {
-            [replacement] => Some(*replacement),
+            [replacement] if SpatialRef::from_epsg(*replacement).is_ok() => Some(*replacement),
             _ => Some(u32::from(code)),
         },
         (Some(2), _, Some(code)) if code != 0 && code != USER_DEFINED => Some(code as u32),
