@@ -2620,6 +2620,15 @@ def suite_crs(ctx):
         "1e-7 degrees with longitude weighted by cos(latitude) (1e-6 degrees at exact "
         "input poles for platform asin rounding); PROJ-refused inverse "
         "boundary points may be refused or recover the original input). "
+        "Then the WKT and PROJ-string readings of opengeos/terrio#1012, against PROJ 9.8.1 "
+        "(pyproj 3.8.0, no grids) in JSON fixtures: WKT 1 `AXIS` nodes (wkt1_axes.rs), WKT 2 "
+        "`BOUNDCRS` (wkt2_bound.rs), Mercator variant A, unknown node keywords and NULs "
+        "(wkt1_proj_reads.rs), grads and prime meridians (grads_and_prime_meridians.rs), datums "
+        "known by ID or name (wkt_datum_shift.rs), WKTs PROJ does not resolve to their EPSG CRS "
+        "(wkt_unresolved.rs), and PROJ-string ellipsoid parameters and PROJ4 extensions "
+        "(proj_ellipsoid_shape.rs, proj_ellipsoid_registry.rs); not compared there: the known "
+        "differences each row names (a scale in parts per million, ESRI ATF (Paris), PROJ's datum "
+        "pivot and renamed datums, #1012). "
         "Identical: within 1 mm. Within tolerance: within 1 cm (forward, inverse) or 1 m (CRS to "
         "CRS, where the datum transformations GDAL picks can differ by area of use). Known "
         "differences: deprecated CRSs whose own datum PROJ uses, where terrio uses their "
@@ -2748,6 +2757,139 @@ PROJ_CASES = {
         "pyproj_wkt_matches_proj": "The same CRSs as pyproj's WKT1_GDAL and WKT2_2019 (known differences: #119, #156)",
         "own_wkt_reads_back_as_the_same_crs": "The same CRSs through the WKT terrio writes, read back by terrio",
         "longlat_longitudes_are_relative_to_lon_0": "Geographic PROJ strings with `+lon_0` (`longlat`, `latlong`, `+pm`, `+towgs84`): seven GDAL 3.13.3 points",
+    },
+    # The WKT and PROJ-string readings of opengeos/terrio#1012, against PROJ 9.8.1 (pyproj 3.8.0, no grids).
+    "wkt1_axes": {
+        "projected_axes_are_read_and_written_as_proj_does": (
+            "WKT 1 projected CRSs with `AXIS` nodes in every direction and order (54 cases)", IDENTICAL,
+            "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm; `+axis` of `to_proj4()` as PROJ's",
+        ),
+        "geographic_and_bound_exports_match_proj": "WKT 2 export: geographic CS axes omitted, also under a BOUNDCRS, as PROJ 9.8.1",
+        "wkt2_exports_follow_geographic_and_method_axis_rules": (
+            "WKT 2 export: method-defined projected axes kept, as PROJ 9.8.1", IDENTICAL,
+            "PROJ 9.8.1: a point on a west-counted Mars CRS within 1e-10 degrees",
+        ),
+    },
+    "wkt2_bound": {
+        "bound_crss_place_points_as_proj_does": (
+            "WKT 2 BOUNDCRS to WGS 84 and to another CRS (ED50, OSGB36)", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
+        ),
+        "the_bound_transformation_is_undone_the_other_way": (
+            "WKT 2 BOUNDCRS: the shift undone from a CRS on the target's datum", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
+        ),
+        "only_best_transforms_a_bound_crs_as_proj_does": (
+            "WKT 2 BOUNDCRS under ONLY_BEST", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
+        ),
+        "a_wgs84_target_is_known_by_any_datum_keyword": (
+            "WKT 2 BOUNDCRS: WGS 84 target by `DATUM`, `GEODETICDATUM` or `TRF`", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
+        ),
+        "a_scale_difference_in_parts_per_million_is_read_in_that_unit": (
+            "WKT 2 BOUNDCRS: scale difference in parts per million", NOT_COMPARED,
+            (
+                "known difference: PROJ 9.8.1 reads an abridged transformation's scale as a ratio whatever its unit; "
+                "terrio reads it in its unit"
+            ),
+        ),
+        "an_unreadable_shift_to_another_crs_is_refused": (
+            "WKT 2 BOUNDCRS: a Helmert transformation terrio cannot read", EXPECTED_REJECTION,
+            "refused rather than left out, which would place points unshifted",
+        ),
+    },
+    "wkt1_proj_reads": {
+        "wkt_read_by_proj_places_points_as_proj_does": (
+            "WKT 1/2 PROJ reads: Mercator variant A and nodes of unknown keywords (26 cases)", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm, or 1e-9 degrees",
+        ),
+        "wkt_read_by_proj_exports_proj_strings_as_proj_does": (
+            "WKT 1/2 PROJ reads: the PROJ string is PROJ 9.8.1's", IDENTICAL,
+            "PROJ 9.8.1: the same parameters, numeric values within a relative 1e-12",
+        ),
+        "wkt_read_by_proj_is_identified_as_proj_identifies_it": "WKT 1/2 PROJ reads: identified as the EPSG code PROJ 9.8.1 identifies",
+        "wkt_refused_by_proj_is_refused": (
+            "WKT keywords with a space, vertical tab, NUL or unclosed quote", EXPECTED_REJECTION, "refused as PROJ 9.8.1 refuses them",
+        ),
+        "makassar_neiez_goes_to_wgs84_as_in_proj": (
+            "ESRI `.prj` Makassar / NEIEZ (EPSG:3002, Mercator variant A) to WGS 84", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1e-8 degrees",
+        ),
+        "mercator_variant_a_with_a_latitude_of_origin_is_refused_as_in_proj": (
+            "EPSG Mercator (variant A) with a latitude of origin", EXPECTED_REJECTION,
+            "PROJ 9.8.1 reads it but neither transforms it nor writes a PROJ string",
+        ),
+        "a_nul_in_a_projjson_name_is_read_as_in_proj": (
+            "PROJJSON with a NUL in a name; raw NUL ends the text", IDENTICAL, "PROJ 9.8.1 C API: within 1e-3 m",
+        ),
+        "geoascii_params_end_at_their_first_nul": "GeoAsciiParamsTag ends at its first NUL, as GDAL 3.12.1 reads it",
+        "geoascii_params_are_read_per_key_and_need_the_tag": "GeoAsciiParamsTag keys read per key, non-UTF-8 bytes as U+FFFD, as GDAL 3.12.1",
+        "a_stored_wkt_is_written_for_files_with_names_cut_at_a_nul": "Stored WKT written for files with names cut at a NUL, as PROJ 9.8.1 gives such a name",
+    },
+    "grads_and_prime_meridians": {
+        "crss_in_grads_place_points_as_proj_does": (
+            "WKT 1/2 in grads and with prime meridians: NTF (Paris), ATF (Paris), Krovak, Ferro, Lisbon (116 cases)", IDENTICAL,
+            "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm, or 1e-9 of an angular unit",
+        ),
+        "prime_meridians_within_1e_10_radians_of_paris_are_paris": (
+            "Prime meridians within 1e-10 radians of Paris, Copenhagen and Greenwich", IDENTICAL, "PROJ 9.8.1: within 1e-12 degrees",
+        ),
+        "paris_is_written_as_proj_writes_it": (
+            "NTF (Paris) Lambert II: Paris written as PROJ 9.8.1 writes it (PROJ string, WKT 1, PROJJSON, GeoKeys)", IDENTICAL,
+            "PROJ 9.8.1: within 1e-12 degrees",
+        ),
+        "a_prime_meridian_unit_without_its_size_is_refused": (
+            "WKT 2 prime meridian unit without its size", EXPECTED_REJECTION, "refused as PROJ 9.8.1 refuses it",
+        ),
+        "esri_atf_paris_is_identified_as_its_code": (
+            "ESRI ATF (Paris) and Nord de Guerre identified as EPSG:4901 and 27500", NOT_COMPARED,
+            (
+                "known difference: PROJ's transformation of the bare ESRI WKT applies the Paris meridian twice (IGNF chain); "
+                "terrio places it as PROJ places the code, within 1 mm"
+            ),
+        ),
+    },
+    "wkt_datum_shift": {
+        "datums_known_by_id_or_esri_name_are_shifted_as_proj_does": (
+            "WKTs whose datum is known by its EPSG ID or ESRI name, to WGS 84 (180 cases)", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
+        ),
+        "wkts_proj_does_not_resolve_are_placed_through_other_datums_as_proj_does": (
+            "WKTs PROJ places through other datums than their code's", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
+        ),
+        "a_wkt_proj_places_by_its_datum_pivot_is_placed_by_its_code": (
+            "EPSG:7373's ESRI WKT 1 (ONGD14), which PROJ places by its datum pivot", NOT_COMPARED,
+            "known difference, placed by the code until terrio follows that step (opengeos/terrio#1012, item 7 step 2)",
+        ),
+    },
+    "wkt_unresolved": {
+        "wkts_proj_does_not_resolve_are_placed_as_proj_does": (
+            "WKTs PROJ does not resolve to their EPSG CRS: ESRI, renamed, WKT 2 without IDs (1,100 cases)", IDENTICAL,
+            "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
+        ),
+        "datum_pivot_and_renamed_datums_are_placed_by_the_code": (
+            "WKTs PROJ places by its datum pivot or a renamed datum", NOT_COMPARED,
+            "known difference, placed by the code until terrio follows those steps (opengeos/terrio#1012, item 7 step 2)",
+        ),
+    },
+    "proj_ellipsoid_shape": {
+        "ellipsoid_parameters_are_read_as_proj_reads_them": (
+            "PROJ strings with `+R`, `+ellps`, `+datum`, `+a`, `+b`, `+rf`, `+f`, `+es`, `+e` and spherification flags (484 cases)",
+            IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm and the ellipsoid's axes within 1e-3 m",
+        ),
+        "a_wkt_proj4_extension_is_computed_on_as_a_pipeline_step": (
+            "WKT `EXTENSION[\"PROJ4\", ...]` computed on as a PROJ pipeline step (27 cases)", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
+        ),
+        "a_written_wkt_reads_back_as_its_proj_string": (
+            "terrio's WKT of a PROJ string read back by PROJ", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
+        ),
+        "wkt_writes_the_crs_ellipsoid_under_a_spherification_flag": "WKT 1 of a PROJ string with a spherification flag: the CRS's ellipsoid, as PROJ 9.8.1 writes it",
+        "a_null_grid_is_no_shift_and_keeps_the_datum": (
+            "`+nadgrids=@null` beside `+datum` and `+towgs84`", IDENTICAL, "PROJ 9.8.1: within 1e-9 degrees",
+        ),
+        "projjson_is_refused_on_another_figure": (
+            "PROJJSON of a CRS that would describe another figure", EXPECTED_REJECTION,
+            "refused where PROJ 9.8.1 writes another ellipsoid than the CRS computes on",
+        ),
+    },
+    "proj_ellipsoid_registry": {
+        "registry_proj_strings_keep_their_ellipsoids": (
+            "EPSG and ESRI registry PROJ strings keep their WKT's ellipsoid", IDENTICAL, "within 1e-6 m",
+        ),
     },
 }
 

@@ -83,25 +83,45 @@ fn datums_known_by_id_or_esri_name_are_shifted_as_proj_does() {
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
 
+/// Each of the WKTs PROJ places otherwise than their EPSG code, through other datums, with
+/// `pending` set or not.
+fn differences(pending: bool) -> Vec<Value> {
+    let data = data();
+    let all = data["differences"].as_array().unwrap();
+    assert_eq!(all.len(), 5);
+    all.iter().filter(|case| case["pending"].as_bool().unwrap() == pending).cloned().collect()
+}
+
 /// The WKTs PROJ places otherwise than their EPSG code, through other datums, are placed as PROJ
-/// places them; the one PROJ places by its datum pivot, by its code.
+/// places them.
 #[test]
 fn wkts_proj_does_not_resolve_are_placed_through_other_datums_as_proj_does() {
     offline();
-    let data = data();
-    let differences = data["differences"].as_array().unwrap();
-    assert_eq!(differences.len(), 5);
-    for case in differences {
+    let cases = differences(false);
+    assert_eq!(cases.len(), 4);
+    for case in &cases {
         let (got, _) = place(case);
         let (proj, by_code) = (pair(&case["proj"]), pair(&case["by_code"]));
         let name = case["name"].as_str().unwrap();
-        if case["pending"].as_bool().unwrap() {
-            assert!(metres(got, by_code) < 1e-3, "{name}: {got:?}, by its code {by_code:?}");
-        } else {
-            assert!(metres(got, proj) < 1e-3, "{name}: {got:?}, PROJ {proj:?}");
-        }
+        assert!(metres(got, proj) < 1e-3, "{name}: {got:?}, PROJ {proj:?}");
         // The fixture's own consistency: the generator recorded PROJ placing it elsewhere (a
         // regenerated fixture where PROJ now places it by its code moves it to `cases`).
+        assert!(metres(proj, by_code) >= 1e-3, "{name}: PROJ {proj:?} placed by its code");
+    }
+}
+
+/// The one PROJ places by its datum pivot (EPSG:7373's ESRI WKT 1, ONGD14) is placed by its code,
+/// not as PROJ places it, until terrio follows that step (opengeos/terrio#1012, item 7 step 2).
+#[test]
+fn a_wkt_proj_places_by_its_datum_pivot_is_placed_by_its_code() {
+    offline();
+    let cases = differences(true);
+    assert_eq!(cases.len(), 1);
+    for case in &cases {
+        let (got, _) = place(case);
+        let (proj, by_code) = (pair(&case["proj"]), pair(&case["by_code"]));
+        let name = case["name"].as_str().unwrap();
+        assert!(metres(got, by_code) < 1e-3, "{name}: {got:?}, by its code {by_code:?}");
         assert!(metres(proj, by_code) >= 1e-3, "{name}: PROJ {proj:?} placed by its code");
     }
 }
