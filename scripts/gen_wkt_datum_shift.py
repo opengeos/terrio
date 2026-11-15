@@ -10,16 +10,23 @@ The WKTs are pyproj's of EPSG CRSs, rewritten:
 - ESRI WKT 1 (`to_wkt("WKT1_ESRI")`) as ESRI writes it, without codes, with the geographic CRS
   (and projected CRS) renamed, with the datum's `AUTHORITY`, and with the CRS's `AUTHORITY`;
 - the two cases of opengeos/terrio#1012 from RustGIS's corpora: EPSG:3003 as ESRI WKT 1 and
-  EPSG:4277 as WKT 2 without IDs, at their points.
+  EPSG:4277 as WKT 2 without its CRS and datum IDs, at their points.
 
 Each case holds a point in the CRS (from the centre of its area of use in WGS 84, or RustGIS's),
 PROJ's coordinates of it in WGS 84 by `Transformer.from_crs(CRS(wkt), "EPSG:4326",
 always_xy=True)`, the transformation PROJ used (`get_last_used_operation().description`), and
 where the CRS's EPSG code places the point.
 
+No grids are installed, so PROJ uses the best transformation it has without one, a datum
+transformation for every case (none is PROJ's no-shift ballpark, which the script asserts). Where a
+better one needs a grid (OSTN15 for OSGB36, BETA2007 for DHDN, the NZGD2000 grids for NZGD49,
+CHENyx06 for some CH1903 cases), the case records it (`best_grid_missing`, from
+`TransformerGroup(...).best_available`): with those grids installed, PROJ places such points
+otherwise.
+
 `differences` holds the WKTs PROJ places otherwise than their CRS's EPSG code: the ESRI WKT 1 of
-EPSG:4806, 5132 and 7373, and of EPSG:4314 and 31467 renamed. PROJ does not resolve their geographic CRS
-to the code (ESRI's WKT 1 has no `AXIS`, so longitude first, unlike the EPSG CRS; or its name is
+EPSG:4806, 5132 and 7373, and of EPSG:4314 and 31467 renamed. PROJ does not resolve their
+geographic CRS to the code (ESRI's WKT 1 has no `AXIS`, so longitude first, unlike the EPSG CRS; or its name is
 another), and then also searches transformations through other datums and other CRSs of the
 datum.
 
@@ -38,6 +45,7 @@ import pyproj.datadir
 import pyproj.exceptions
 import pyproj.network
 from pyproj import CRS, Transformer
+from pyproj.transformer import TransformerGroup
 
 OUT = (
     Path(__file__).resolve().parents[1]
@@ -57,8 +65,9 @@ RUSTGIS = {
         ),
         (1514881.490594152, 5034556.812441661),
     ),
-    # EPSG:4277 as PROJ 9.7.1 writes it in WKT 2 without its ID, at RustGIS's point.
-    "EPSG:4277 as WKT 2 without IDs (opengeos/terrio#1012)": (
+    # EPSG:4277 in WKT 2 without its CRS and datum IDs (its units and prime meridian keep theirs),
+    # from RustGIS's `wkt2_corpus.tsv`, at RustGIS's point.
+    "EPSG:4277 as WKT 2 without its CRS and datum IDs (opengeos/terrio#1012)": (
         4277,
         (
             'GEOGCRS["OSGB36",DATUM["Ordnance Survey of Great Britain 1936",ELLIPSOID["Airy 1830",'
@@ -71,8 +80,7 @@ RUSTGIS = {
         (-3.4986390218735695, 55.37999381533582),
     ),
 }
-# EPSG CRSs on datums with transformations to WGS 84 (Helmert, and a grid for NAD27), geographic
-# and projected.
+# EPSG CRSs, geographic and projected, on datums with Helmert transformations to WGS 84.
 CODES = [
     4277,  # OSGB36
     27700,  # OSGB36 / British National Grid
@@ -90,12 +98,13 @@ CODES = [
     4149,  # CH1903
     21781,  # CH1903 / LV03
     4301,  # Tokyo
-    4267,  # NAD27
-    26717,  # NAD27 / UTM zone 17N
+    4237,  # HD72
+    23700,  # HD72 / EOV
     4202,  # AGD66
     4272,  # NZGD49
 ]
-# Geographic CRSs whose ESRI WKT 1 PROJ places otherwise than their EPSG code.
+# EPSG geographic CRSs whose ESRI WKT 1, as written, PROJ places otherwise than their EPSG code
+# (renamed variants of `CODES` may join them in `differences`).
 DIFFERENCES = [4806, 5132, 7373]
 IDS = re.compile(r',(AUTHORITY|ID)\["(EPSG|ESRI)","?\d+"?\]')
 USAGE = re.compile(r",USAGE\[SCOPE\[[^\]]*\],AREA\[[^\]]*\],BBOX\[[^\]]*\]\]")
@@ -162,15 +171,21 @@ def centre(crs):
 
 
 def place(crs, point):
-    """PROJ's WGS 84 coordinates of a point and the transformation it used."""
+    """PROJ's WGS 84 coordinates of a point, the transformation it used, and whether the best
+    transformation PROJ knows needs a grid that is missing (`TransformerGroup.best_available`)."""
     t = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
     lon, lat = t.transform(*point, errcheck=True)
+    with warnings.catch_warnings():
+        # TransformerGroup warns when the best is missing, which is what is recorded.
+        warnings.simplefilter("ignore")
+        group = TransformerGroup(crs, "EPSG:4326", always_xy=True)
+    missing = not group.best_available
     try:
         operation = t.get_last_used_operation().description
     except pyproj.exceptions.ProjError:
         # A transformer of a single operation keeps no last used one.
         operation = t.description
-    return [lon, lat], operation
+    return [lon, lat], operation, missing
 
 
 def metres(a, b):
@@ -180,8 +195,10 @@ def metres(a, b):
 
 
 def case(name, code, wkt, point):
-    proj, operation = place(CRS.from_wkt(wkt), point)
-    by_code, _ = place(CRS.from_epsg(code), point)
+    proj, operation, missing = place(CRS.from_wkt(wkt), point)
+    by_code, _, _ = place(CRS.from_epsg(code), point)
+    # A datum shift, not PROJ's no-shift fallback.
+    assert "Ballpark" not in operation, (name, operation)
     return {
         "name": name,
         "code": f"EPSG:{code}",
@@ -189,6 +206,7 @@ def case(name, code, wkt, point):
         "point": point,
         "proj": proj,
         "operation": operation,
+        "best_grid_missing": missing,
         "by_code": by_code,
     }
 
@@ -221,8 +239,6 @@ def main():
             if f.endswith((".tif", ".gsb", ".gtx"))
         ]
         assert not grids, (d, grids)
-    # PROJ warns that the best transformation's grid is missing.
-    warnings.filterwarnings("ignore", message="Best transformation is not available")
     cases = [case(n, c, w, list(p)) for n, (c, w, p) in RUSTGIS.items()]
     for code in CODES:
         crs, wkts = variants(code)
@@ -233,8 +249,10 @@ def main():
         w = crs.to_wkt("WKT1_ESRI")
         cases.append(case(f"EPSG:{code}, ESRI WKT 1", code, w, centre(crs)))
     # Those PROJ places otherwise than by their EPSG code, apart.
-    differences = [c for c in cases if metres(c["proj"], c["by_code"]) >= 1e-3]
-    cases = [c for c in cases if c not in differences]
+    placed = {False: [], True: []}
+    for c in cases:
+        placed[metres(c["proj"], c["by_code"]) >= 1e-3].append(c)
+    cases, differences = placed[False], placed[True]
     for code in DIFFERENCES:
         assert any(c["name"] == f"EPSG:{code}, ESRI WKT 1" for c in differences), code
     OUT.write_text(

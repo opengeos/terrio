@@ -14,13 +14,14 @@
     45.464200001031124
    ],
    "operation": "Inverse of Italy zone 1 + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     9.19000000788174,
     45.464200001031124
    ]
   },
   {
-   "name": "EPSG:4277 as WKT 2 without IDs (opengeos/terrio#1012)",
+   "name": "EPSG:4277 as WKT 2 without its CRS and datum IDs (opengeos/terrio#1012)",
    "code": "EPSG:4277",
    "wkt": "GEOGCRS[\"OSGB36\",DATUM[\"Ordnance Survey of Great Britain 1936\",ELLIPSOID[\"Airy 1830\",6377563.396,299.3249646,LENGTHUNIT[\"metre\",1,ID[\"EPSG\",9001]]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8901]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433,ID[\"EPSG\",9122]]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433,ID[\"EPSG\",9122]]]]",
    "point": [
@@ -32,6 +33,7 @@
     55.380000002292874
    ],
    "operation": "OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     -3.4999999358118803,
     55.380000002292874
@@ -50,6 +52,7 @@
     55.37999999898204
    ],
    "operation": "OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     -3.499999987813721,
     55.37999999898204
@@ -68,6 +71,7 @@
     55.37999999898204
    ],
    "operation": "OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     -3.499999987813721,
     55.37999999898204
@@ -86,6 +90,7 @@
     55.37999999898204
    ],
    "operation": "OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     -3.499999987813721,
     55.37999999898204
@@ -104,6 +109,7 @@
     55.37999999898204
    ],
    "operation": "axis order change (2D) + OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     -3.499999987813721,
     55.37999999898204
@@ -122,6 +128,7 @@
     55.37999999898204
    ],
    "operation": "OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     -3.499999987813721,
     55.37999999898204
@@ -140,6 +147,7 @@
     55.37999999898204
    ],
    "operation": "axis order change (2D) + OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     -3.499999987813721,
     55.37999999898204
@@ -158,6 +166,7 @@
     55.37999999898204
    ],
    "operation": "axis order change (2D) + OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     -3.499999987813721,
     55.37999999898204
@@ -176,6 +185,7 @@
     55.37999999898204
    ],
    "operation": "axis order change (2D) + OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     -3.499999987813721,
     55.37999999898204
@@ -194,6 +204,7 @@
     55.37999999898204
    ],
    "operation": "OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     -3.499999987813721,
     55.37999999898204
@@ -212,6 +223,7 @@
     55.37999999898204
    ],
    "operation": "Inverse of British National Grid + OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     -3.499999987813721,
     55.37999999898204
@@ -230,6 +242,7 @@
     55.37999999898204
    ],
    "operation": "Inverse of British National Grid + OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     -3.499999987813721,
     55.37999999898204
@@ -248,6 +261,7 @@
     55.37999999898204
    ],
    "operation": "Inverse of British National Grid + OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     -3.499999987813721,
     55.37999999898204
@@ -266,6 +280,7 @@
     55.37999999898204
    ],
    "operation": "Inverse of British National Grid + OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     -3.499999987813721,
     55.37999999898204
@@ -284,6 +299,7 @@
     55.37999999898204
    ],
    "operation": "Inverse of unnamed + OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     -3.499999987813721,
     55.37999999898204
@@ -302,6 +318,7 @@
     55.37999999898204
    ],
    "operation": "Inverse of British National Grid + OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     -3.499999987813721,
     55.37999999898204
@@ -320,6 +337,7 @@
     55.37999999898204
    ],
    "operation": "Inverse of unnamed + axis order change (2D) + OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     -3.499999987813721,
     55.37999999898204
@@ -338,6 +356,7 @@
     55.37999999898204
    ],
    "operation": "Inverse of British National Grid + OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     -3.499999987813721,
     55.37999999898204
@@ -356,6 +375,7 @@
     55.37999999898204
    ],
    "operation": "Inverse of British National Grid + OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     -3.499999987813721,
     55.37999999898204
@@ -374,6 +394,7 @@
     40.93000000121986
    ],
    "operation": "Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     12.460000006043874,
     40.93000000121986
@@ -392,6 +413,7 @@
     40.93000000121986
    ],
    "operation": "Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     12.460000006043874,
     40.93000000121986
@@ -410,6 +432,7 @@
     40.93000000121986
    ],
    "operation": "Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     12.460000006043874,
     40.93000000121986
@@ -428,6 +451,7 @@
     40.93000000121986
    ],
    "operation": "axis order change (2D) + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     12.460000006043874,
     40.93000000121986
@@ -446,6 +470,7 @@
     40.93000000121986
    ],
    "operation": "Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     12.460000006043874,
     40.93000000121986
@@ -464,6 +489,7 @@
     40.93000000121986
    ],
    "operation": "axis order change (2D) + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     12.460000006043874,
     40.93000000121986
@@ -482,6 +508,7 @@
     40.93000000121986
    ],
    "operation": "axis order change (2D) + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     12.460000006043874,
     40.93000000121986
@@ -500,6 +527,7 @@
     40.93000000121986
    ],
    "operation": "axis order change (2D) + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     12.460000006043874,
     40.93000000121986
@@ -518,6 +546,7 @@
     40.93000000121986
    ],
    "operation": "Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     12.460000006043874,
     40.93000000121986
@@ -536,6 +565,7 @@
     41.785000001354966
    ],
    "operation": "Inverse of Italy zone 1 + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.965000007527676,
     41.785000001354966
@@ -554,6 +584,7 @@
     41.785000001354966
    ],
    "operation": "Inverse of Italy zone 1 + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.965000007527676,
     41.785000001354966
@@ -572,6 +603,7 @@
     41.785000001354966
    ],
    "operation": "Inverse of Italy zone 1 + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.965000007527676,
     41.785000001354966
@@ -590,6 +622,7 @@
     41.785000001354966
    ],
    "operation": "Inverse of Italy zone 1 + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.965000007527676,
     41.785000001354966
@@ -608,6 +641,7 @@
     41.785000001354966
    ],
    "operation": "Inverse of unnamed + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.965000007527676,
     41.785000001354966
@@ -626,6 +660,7 @@
     41.785000001354966
    ],
    "operation": "Inverse of Italy zone 1 + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.965000007527676,
     41.785000001354966
@@ -644,6 +679,7 @@
     41.785000001354966
    ],
    "operation": "Inverse of unnamed + axis order change (2D) + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.965000007527676,
     41.785000001354966
@@ -662,6 +698,7 @@
     41.785000001354966
    ],
    "operation": "Inverse of Italy zone 1 + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.965000007527676,
     41.785000001354966
@@ -680,6 +717,7 @@
     41.785000001354966
    ],
    "operation": "Inverse of Italy zone 1 + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.965000007527676,
     41.785000001354966
@@ -698,6 +736,7 @@
     40.93000000110988
    ],
    "operation": "Inverse of Italy zone 2 + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     15.49500000484105,
     40.93000000110988
@@ -716,6 +755,7 @@
     40.93000000110988
    ],
    "operation": "Inverse of Italy zone 2 + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     15.49500000484105,
     40.93000000110988
@@ -734,6 +774,7 @@
     40.93000000110988
    ],
    "operation": "Inverse of Italy zone 2 + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     15.49500000484105,
     40.93000000110988
@@ -752,6 +793,7 @@
     40.93000000110988
    ],
    "operation": "Inverse of Italy zone 2 + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     15.49500000484105,
     40.93000000110988
@@ -770,6 +812,7 @@
     40.93000000110988
    ],
    "operation": "Inverse of unnamed + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     15.49500000484105,
     40.93000000110988
@@ -788,6 +831,7 @@
     40.93000000110988
    ],
    "operation": "Inverse of Italy zone 2 + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     15.49500000484105,
     40.93000000110988
@@ -806,6 +850,7 @@
     40.93000000110988
    ],
    "operation": "Inverse of unnamed + axis order change (2D) + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     15.49500000484105,
     40.93000000110988
@@ -824,6 +869,7 @@
     40.93000000110988
    ],
    "operation": "Inverse of Italy zone 2 + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     15.49500000484105,
     40.93000000110988
@@ -842,6 +888,7 @@
     40.93000000110988
    ],
    "operation": "Inverse of Italy zone 2 + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     15.49500000484105,
     40.93000000110988
@@ -860,6 +907,7 @@
     55.220000002494146
    ],
    "operation": "ED50 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     16.255000004649105,
     55.220000002494146
@@ -878,6 +926,7 @@
     55.220000002494146
    ],
    "operation": "ED50 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     16.255000004649105,
     55.220000002494146
@@ -896,6 +945,7 @@
     55.220000002494146
    ],
    "operation": "ED50 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     16.255000004649105,
     55.220000002494146
@@ -914,6 +964,7 @@
     55.220000002494146
    ],
    "operation": "axis order change (2D) + ED50 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     16.255000004649105,
     55.220000002494146
@@ -932,6 +983,7 @@
     55.220000002494146
    ],
    "operation": "ED50 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     16.255000004649105,
     55.220000002494146
@@ -950,6 +1002,7 @@
     55.220000002494146
    ],
    "operation": "axis order change (2D) + ED50 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     16.255000004649105,
     55.220000002494146
@@ -968,6 +1021,7 @@
     55.220000002494146
    ],
    "operation": "axis order change (2D) + ED50 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     16.255000004649105,
     55.220000002494146
@@ -986,6 +1040,7 @@
     55.220000002494146
    ],
    "operation": "axis order change (2D) + ED50 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     16.255000004649105,
     55.220000002494146
@@ -1004,6 +1059,7 @@
     55.220000002494146
    ],
    "operation": "ED50 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     16.255000004649105,
     55.220000002494146
@@ -1022,6 +1078,7 @@
     60.4300000019615
    ],
    "operation": "Inverse of UTM zone 32N + ED50 to WGS 84 (7) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.99500000634053,
     60.4300000019615
@@ -1040,6 +1097,7 @@
     60.4300000019615
    ],
    "operation": "Inverse of UTM zone 32N + ED50 to WGS 84 (7) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.99500000634053,
     60.4300000019615
@@ -1058,6 +1116,7 @@
     60.4300000019615
    ],
    "operation": "Inverse of UTM zone 32N + ED50 to WGS 84 (7) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.99500000634053,
     60.4300000019615
@@ -1076,6 +1135,7 @@
     60.4300000019615
    ],
    "operation": "Inverse of UTM zone 32N + ED50 to WGS 84 (7) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.99500000634053,
     60.4300000019615
@@ -1094,6 +1154,7 @@
     60.4300000019615
    ],
    "operation": "Inverse of UTM zone 32N + ED50 to WGS 84 (7) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.99500000634053,
     60.4300000019615
@@ -1112,6 +1173,7 @@
     60.4300000019615
    ],
    "operation": "Inverse of UTM zone 32N + ED50 to WGS 84 (7) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.99500000634053,
     60.4300000019615
@@ -1130,6 +1192,7 @@
     60.4300000019615
    ],
    "operation": "Inverse of UTM zone 32N + axis order change (2D) + ED50 to WGS 84 (7) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.99500000634053,
     60.4300000019615
@@ -1148,6 +1211,7 @@
     60.4300000019615
    ],
    "operation": "Inverse of UTM zone 32N + ED50 to WGS 84 (7) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.99500000634053,
     60.4300000019615
@@ -1166,6 +1230,7 @@
     60.4300000019615
    ],
    "operation": "Inverse of UTM zone 32N + ED50 to WGS 84 (7) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.99500000634053,
     60.4300000019615
@@ -1184,6 +1249,7 @@
     51.18000000516607
    ],
    "operation": "DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     9.85000000310771,
     51.18000000516607
@@ -1202,6 +1268,7 @@
     51.18000000516607
    ],
    "operation": "DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     9.85000000310771,
     51.18000000516607
@@ -1220,6 +1287,7 @@
     51.18000000516607
    ],
    "operation": "DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     9.85000000310771,
     51.18000000516607
@@ -1238,6 +1306,7 @@
     51.18000000516607
    ],
    "operation": "axis order change (2D) + DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     9.85000000310771,
     51.18000000516607
@@ -1256,6 +1325,7 @@
     51.18000000516607
    ],
    "operation": "DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     9.85000000310771,
     51.18000000516607
@@ -1274,6 +1344,7 @@
     51.18000000516607
    ],
    "operation": "axis order change (2D) + DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     9.85000000310771,
     51.18000000516607
@@ -1292,6 +1363,7 @@
     51.18000000516607
    ],
    "operation": "axis order change (2D) + DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     9.85000000310771,
     51.18000000516607
@@ -1310,6 +1382,7 @@
     51.18000000516607
    ],
    "operation": "DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     9.85000000310771,
     51.18000000516607
@@ -1328,6 +1401,7 @@
     51.180000005231854
    ],
    "operation": "Inverse of 3-degree Gauss-Kruger zone 3 + DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     9.005000002211203,
     51.180000005231854
@@ -1346,6 +1420,7 @@
     51.180000005231854
    ],
    "operation": "Inverse of 3-degree Gauss-Kruger zone 3 + DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     9.005000002211203,
     51.180000005231854
@@ -1364,6 +1439,7 @@
     51.180000005231854
    ],
    "operation": "Inverse of 3-degree Gauss-Kruger zone 3 + DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     9.005000002211203,
     51.180000005231854
@@ -1382,6 +1458,7 @@
     51.180000005231854
    ],
    "operation": "Inverse of unnamed + axis order change (2D) + DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     9.005000002211203,
     51.180000005231854
@@ -1400,6 +1477,7 @@
     51.180000005231854
    ],
    "operation": "Inverse of unnamed + DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     9.005000002211203,
     51.180000005231854
@@ -1418,6 +1496,7 @@
     51.180000005231854
    ],
    "operation": "Inverse of unnnamed (Gauss Kruger) + axis order change (2D) + DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     9.005000002211203,
     51.180000005231854
@@ -1436,6 +1515,7 @@
     51.180000005231854
    ],
    "operation": "Inverse of unnnamed (Gauss Kruger) + axis order change (2D) + DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     9.005000002211203,
     51.180000005231854
@@ -1454,6 +1534,7 @@
     51.180000005231854
    ],
    "operation": "Inverse of unnnamed (Gauss Kruger) + axis order change (2D) + DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     9.005000002211203,
     51.180000005231854
@@ -1472,6 +1553,7 @@
     52.22500000405172
    ],
    "operation": "Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     5.210000001540763,
     52.22500000405172
@@ -1490,6 +1572,7 @@
     52.22500000405172
    ],
    "operation": "Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     5.210000001540763,
     52.22500000405172
@@ -1508,6 +1591,7 @@
     52.22500000405172
    ],
    "operation": "Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     5.210000001540763,
     52.22500000405172
@@ -1526,6 +1610,7 @@
     52.22500000405172
    ],
    "operation": "axis order change (2D) + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     5.210000001540763,
     52.22500000405172
@@ -1544,6 +1629,7 @@
     52.22500000405172
    ],
    "operation": "Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     5.210000001540763,
     52.22500000405172
@@ -1562,6 +1648,7 @@
     52.22500000405172
    ],
    "operation": "axis order change (2D) + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     5.210000001540763,
     52.22500000405172
@@ -1580,6 +1667,7 @@
     52.22500000405172
    ],
    "operation": "axis order change (2D) + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     5.210000001540763,
     52.22500000405172
@@ -1598,6 +1686,7 @@
     52.22500000405172
    ],
    "operation": "axis order change (2D) + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     5.210000001540763,
     52.22500000405172
@@ -1616,6 +1705,7 @@
     52.22500000405172
    ],
    "operation": "Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     5.210000001540763,
     52.22500000405172
@@ -1634,6 +1724,7 @@
     52.22500000405172
    ],
    "operation": "Inverse of RD New + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     5.210000001540762,
     52.22500000405172
@@ -1652,6 +1743,7 @@
     52.22500000405172
    ],
    "operation": "Inverse of RD New + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     5.210000001540762,
     52.22500000405172
@@ -1670,6 +1762,7 @@
     52.22500000405172
    ],
    "operation": "Inverse of RD New + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     5.210000001540762,
     52.22500000405172
@@ -1688,6 +1781,7 @@
     52.22500000405172
    ],
    "operation": "Inverse of RD New + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     5.210000001540762,
     52.22500000405172
@@ -1706,6 +1800,7 @@
     52.22500000405172
    ],
    "operation": "Inverse of unnamed + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     5.210000001540762,
     52.22500000405172
@@ -1724,6 +1819,7 @@
     52.22500000405172
    ],
    "operation": "Inverse of RD New + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     5.210000001540762,
     52.22500000405172
@@ -1742,6 +1838,7 @@
     52.22500000405172
    ],
    "operation": "Inverse of unnamed + axis order change (2D) + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     5.210000001540762,
     52.22500000405172
@@ -1760,6 +1857,7 @@
     52.22500000405172
    ],
    "operation": "Inverse of RD New + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     5.210000001540762,
     52.22500000405172
@@ -1778,6 +1876,7 @@
     52.22500000405172
    ],
    "operation": "Inverse of RD New + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     5.210000001540762,
     52.22500000405172
@@ -1796,6 +1895,7 @@
     38.31499998639156
    ],
    "operation": "GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     23.934999991072655,
     38.31499998639156
@@ -1814,6 +1914,7 @@
     38.31499998639156
    ],
    "operation": "GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     23.934999991072655,
     38.31499998639156
@@ -1832,6 +1933,7 @@
     38.31499998639156
    ],
    "operation": "GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     23.934999991072655,
     38.31499998639156
@@ -1850,6 +1952,7 @@
     38.31499998639156
    ],
    "operation": "axis order change (2D) + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     23.934999991072655,
     38.31499998639156
@@ -1868,6 +1971,7 @@
     38.31499998639156
    ],
    "operation": "GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     23.934999991072655,
     38.31499998639156
@@ -1886,6 +1990,7 @@
     38.31499998639156
    ],
    "operation": "axis order change (2D) + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     23.934999991072655,
     38.31499998639156
@@ -1904,6 +2009,7 @@
     38.31499998639156
    ],
    "operation": "axis order change (2D) + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     23.934999991072655,
     38.31499998639156
@@ -1922,6 +2028,7 @@
     38.31499998639156
    ],
    "operation": "axis order change (2D) + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     23.934999991072655,
     38.31499998639156
@@ -1940,6 +2047,7 @@
     38.31499998639156
    ],
    "operation": "GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     23.934999991072655,
     38.31499998639156
@@ -1958,6 +2066,7 @@
     38.31499998639156
    ],
    "operation": "Inverse of Greek Grid + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     23.934999991072655,
     38.31499998639156
@@ -1976,6 +2085,7 @@
     38.31499998639156
    ],
    "operation": "Inverse of Greek Grid + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     23.934999991072655,
     38.31499998639156
@@ -1994,6 +2104,7 @@
     38.31499998639156
    ],
    "operation": "Inverse of Greek Grid + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     23.934999991072655,
     38.31499998639156
@@ -2012,6 +2123,7 @@
     38.31499998639156
    ],
    "operation": "Inverse of Greek Grid + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     23.934999991072655,
     38.31499998639156
@@ -2030,6 +2142,7 @@
     38.31499998639156
    ],
    "operation": "Inverse of unnamed + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     23.934999991072655,
     38.31499998639156
@@ -2048,6 +2161,7 @@
     38.31499998639156
    ],
    "operation": "Inverse of Greek Grid + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     23.934999991072655,
     38.31499998639156
@@ -2066,6 +2180,7 @@
     38.31499998639156
    ],
    "operation": "Inverse of unnamed + axis order change (2D) + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     23.934999991072655,
     38.31499998639156
@@ -2084,6 +2199,7 @@
     38.31499998639156
    ],
    "operation": "Inverse of Greek Grid + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     23.934999991072655,
     38.31499998639156
@@ -2102,6 +2218,7 @@
     38.31499998639156
    ],
    "operation": "Inverse of Greek Grid + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     23.934999991072655,
     38.31499998639156
@@ -2120,6 +2237,7 @@
     46.81000001004599
    ],
    "operation": "CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.225000008240604,
     46.81000001004599
@@ -2138,6 +2256,7 @@
     46.81000001004599
    ],
    "operation": "CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.225000008240604,
     46.81000001004599
@@ -2156,6 +2275,7 @@
     46.81000001004599
    ],
    "operation": "CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.225000008240604,
     46.81000001004599
@@ -2174,6 +2294,7 @@
     46.81000001004599
    ],
    "operation": "axis order change (2D) + CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.225000008240604,
     46.81000001004599
@@ -2192,6 +2313,7 @@
     46.81000001004599
    ],
    "operation": "CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.225000008240604,
     46.81000001004599
@@ -2210,6 +2332,7 @@
     46.81000001004599
    ],
    "operation": "axis order change (2D) + CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.225000008240604,
     46.81000001004599
@@ -2228,6 +2351,7 @@
     46.81000001004599
    ],
    "operation": "axis order change (2D) + CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     8.225000008240604,
     46.81000001004599
@@ -2246,6 +2370,7 @@
     46.81000001004599
    ],
    "operation": "axis order change (2D) + CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.225000008240604,
     46.81000001004599
@@ -2264,6 +2389,7 @@
     46.81000001004599
    ],
    "operation": "CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.225000008240604,
     46.81000001004599
@@ -2282,6 +2408,7 @@
     46.810000010046
    ],
    "operation": "Inverse of Swiss Oblique Mercator 1903M + CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.2250000082406,
     46.810000010046
@@ -2300,6 +2427,7 @@
     46.810000010046
    ],
    "operation": "Inverse of Swiss Oblique Mercator 1903M + CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.2250000082406,
     46.810000010046
@@ -2318,6 +2446,7 @@
     46.810000010046
    ],
    "operation": "Inverse of Swiss Oblique Mercator 1903M + CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.2250000082406,
     46.810000010046
@@ -2336,6 +2465,7 @@
     46.810000010046
    ],
    "operation": "Inverse of Swiss Oblique Mercator 1903M + CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.2250000082406,
     46.810000010046
@@ -2354,6 +2484,7 @@
     46.810000010046
    ],
    "operation": "Inverse of unnamed + CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.2250000082406,
     46.810000010046
@@ -2372,6 +2503,7 @@
     46.810000010046
    ],
    "operation": "Inverse of Swiss Oblique Mercator 1903M + CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.2250000082406,
     46.810000010046
@@ -2390,6 +2522,7 @@
     46.810000010046
    ],
    "operation": "Inverse of unnamed + axis order change (2D) + CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     8.2250000082406,
     46.810000010046
@@ -2408,6 +2541,7 @@
     46.810000010046
    ],
    "operation": "Inverse of Swiss Oblique Mercator 1903M + CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.2250000082406,
     46.810000010046
@@ -2426,6 +2560,7 @@
     46.810000010046
    ],
    "operation": "Inverse of Swiss Oblique Mercator 1903M + CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     8.2250000082406,
     46.810000010046
@@ -2444,6 +2579,7 @@
     32.95499998659077
    ],
    "operation": "Tokyo to WGS 84 (108) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     138.44000001149723,
     32.95499998659077
@@ -2462,6 +2598,7 @@
     32.95499998659077
    ],
    "operation": "Tokyo to WGS 84 (108) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     138.44000001149723,
     32.95499998659077
@@ -2480,6 +2617,7 @@
     32.95499998659077
    ],
    "operation": "Tokyo to WGS 84 (108) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     138.44000001149723,
     32.95499998659077
@@ -2498,6 +2636,7 @@
     32.95499998659077
    ],
    "operation": "axis order change (2D) + Tokyo to WGS 84 (108) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     138.44000001149723,
     32.95499998659077
@@ -2516,6 +2655,7 @@
     32.95499998659077
    ],
    "operation": "Tokyo to WGS 84 (108) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     138.44000001149723,
     32.95499998659077
@@ -2534,6 +2674,7 @@
     32.95499998659077
    ],
    "operation": "axis order change (2D) + Tokyo to WGS 84 (108) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     138.44000001149723,
     32.95499998659077
@@ -2552,6 +2693,7 @@
     32.95499998659077
    ],
    "operation": "axis order change (2D) + Tokyo to WGS 84 (108) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     138.44000001149723,
     32.95499998659077
@@ -2570,6 +2712,7 @@
     32.95499998659077
    ],
    "operation": "axis order change (2D) + Tokyo to WGS 84 (108) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     138.44000001149723,
     32.95499998659077
@@ -2588,333 +2731,352 @@
     32.95499998659077
    ],
    "operation": "Tokyo to WGS 84 (108) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     138.44000001149723,
     32.95499998659077
    ]
   },
   {
-   "name": "EPSG:4267, WKT 2 without IDs",
-   "code": "EPSG:4267",
-   "wkt": "GEOGCRS[\"NAD27\",DATUM[\"North American Datum 1927\",ELLIPSOID[\"Clarke 1866\",6378206.4,294.978698213898,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Note: this CRS includes longitudes which are POSITIVE EAST. Replaced by NAD27(76) (code 4608) in Ontario, CGQ77 (code 4609) in Quebec, Mexican Datum of 1993 (code 4483) in Mexico, NAD83 (code 4269) in Canada (excl. Ontario & Quebec) & USA.\"]]",
+   "name": "EPSG:4237, WKT 2 without IDs",
+   "code": "EPSG:4237",
+   "wkt": "GEOGCRS[\"HD72\",DATUM[\"Hungarian Datum 1972\",ELLIPSOID[\"GRS 1967\",6378160,298.247167427,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaced HD1909 (EPSG CRS code 3819).\"]]",
    "point": [
-    59.955,
-    45.160000000000004
+    19.50612250323989,
+    47.160264468611786
    ],
    "proj": [
-    59.955,
-    45.160000000000004
+    19.505000005055468,
+    47.16000000119484
    ],
-   "operation": "Ballpark geographic offset from NAD27 to WGS 84 (with axis order normalized for visualization)",
+   "operation": "HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
-    59.955,
-    45.160000000000004
+    19.505000005055468,
+    47.16000000119484
    ]
   },
   {
-   "name": "EPSG:4267, WKT 2 with the datum's ID alone",
-   "code": "EPSG:4267",
-   "wkt": "GEOGCRS[\"NAD27\",DATUM[\"North American Datum 1927\",ELLIPSOID[\"Clarke 1866\",6378206.4,294.978698213898,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6267]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Note: this CRS includes longitudes which are POSITIVE EAST. Replaced by NAD27(76) (code 4608) in Ontario, CGQ77 (code 4609) in Quebec, Mexican Datum of 1993 (code 4483) in Mexico, NAD83 (code 4269) in Canada (excl. Ontario & Quebec) & USA.\"]]",
+   "name": "EPSG:4237, WKT 2 with the datum's ID alone",
+   "code": "EPSG:4237",
+   "wkt": "GEOGCRS[\"HD72\",DATUM[\"Hungarian Datum 1972\",ELLIPSOID[\"GRS 1967\",6378160,298.247167427,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6237]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaced HD1909 (EPSG CRS code 3819).\"]]",
    "point": [
-    59.955,
-    45.160000000000004
+    19.50612250323989,
+    47.160264468611786
    ],
    "proj": [
-    59.955,
-    45.160000000000004
+    19.505000005055468,
+    47.16000000119484
    ],
-   "operation": "Ballpark geographic offset from NAD27 to WGS 84 (with axis order normalized for visualization)",
+   "operation": "HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
-    59.955,
-    45.160000000000004
+    19.505000005055468,
+    47.16000000119484
    ]
   },
   {
-   "name": "EPSG:4267, WKT 2 with the datum's ID alone, renamed",
-   "code": "EPSG:4267",
-   "wkt": "GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"Clarke 1866\",6378206.4,294.978698213898,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6267]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Note: this CRS includes longitudes which are POSITIVE EAST. Replaced by NAD27(76) (code 4608) in Ontario, CGQ77 (code 4609) in Quebec, Mexican Datum of 1993 (code 4483) in Mexico, NAD83 (code 4269) in Canada (excl. Ontario & Quebec) & USA.\"]]",
+   "name": "EPSG:4237, WKT 2 with the datum's ID alone, renamed",
+   "code": "EPSG:4237",
+   "wkt": "GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"GRS 1967\",6378160,298.247167427,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6237]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaced HD1909 (EPSG CRS code 3819).\"]]",
    "point": [
-    59.955,
-    45.160000000000004
+    19.50612250323989,
+    47.160264468611786
    ],
    "proj": [
-    59.955,
-    45.160000000000004
+    19.505000005055468,
+    47.16000000119484
    ],
-   "operation": "Ballpark geographic offset from Local to WGS 84 (with axis order normalized for visualization)",
+   "operation": "HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
-    59.955,
-    45.160000000000004
+    19.505000005055468,
+    47.16000000119484
    ]
   },
   {
-   "name": "EPSG:4267, WKT 1 with the datum's AUTHORITY alone",
-   "code": "EPSG:4267",
-   "wkt": "GEOGCS[\"NAD27\",DATUM[\"North_American_Datum_1927\",SPHEROID[\"Clarke 1866\",6378206.4,294.978698213898],AUTHORITY[\"EPSG\",\"6267\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+   "name": "EPSG:4237, WKT 1 with the datum's AUTHORITY alone",
+   "code": "EPSG:4237",
+   "wkt": "GEOGCS[\"HD72\",DATUM[\"Hungarian_Datum_1972\",SPHEROID[\"GRS 1967\",6378160,298.247167427],AUTHORITY[\"EPSG\",\"6237\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
    "point": [
-    59.955,
-    45.160000000000004
+    19.50612250323989,
+    47.160264468611786
    ],
    "proj": [
-    59.955,
-    45.160000000000004
+    19.505000005055468,
+    47.16000000119484
    ],
-   "operation": "Ballpark geographic offset from NAD27 to WGS 84 (with axis order normalized for visualization)",
+   "operation": "axis order change (2D) + HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
-    59.955,
-    45.160000000000004
+    19.505000005055468,
+    47.16000000119484
    ]
   },
   {
-   "name": "EPSG:4267, WKT 1 with the datum's AUTHORITY alone, renamed",
-   "code": "EPSG:4267",
-   "wkt": "GEOGCS[\"Local\",DATUM[\"Local datum\",SPHEROID[\"Clarke 1866\",6378206.4,294.978698213898],AUTHORITY[\"EPSG\",\"6267\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+   "name": "EPSG:4237, WKT 1 with the datum's AUTHORITY alone, renamed",
+   "code": "EPSG:4237",
+   "wkt": "GEOGCS[\"Local\",DATUM[\"Local datum\",SPHEROID[\"GRS 1967\",6378160,298.247167427],AUTHORITY[\"EPSG\",\"6237\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
    "point": [
-    59.955,
-    45.160000000000004
+    19.50612250323989,
+    47.160264468611786
    ],
    "proj": [
-    59.955,
-    45.160000000000004
+    19.505000005055468,
+    47.16000000119484
    ],
-   "operation": "Ballpark geographic offset from Local to WGS 84 (with axis order normalized for visualization)",
+   "operation": "HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
-    59.955,
-    45.160000000000004
+    19.505000005055468,
+    47.16000000119484
    ]
   },
   {
-   "name": "EPSG:4267, ESRI WKT 1",
-   "code": "EPSG:4267",
-   "wkt": "GEOGCS[\"GCS_North_American_1927\",DATUM[\"D_North_American_1927\",SPHEROID[\"Clarke_1866\",6378206.4,294.978698213898]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "name": "EPSG:4237, ESRI WKT 1",
+   "code": "EPSG:4237",
+   "wkt": "GEOGCS[\"GCS_Hungarian_1972\",DATUM[\"D_Hungarian_1972\",SPHEROID[\"GRS_1967\",6378160.0,298.247167427]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
    "point": [
-    59.955,
-    45.160000000000004
+    19.50612250323989,
+    47.160264468611786
    ],
    "proj": [
-    59.955,
-    45.160000000000004
+    19.505000005055468,
+    47.16000000119484
    ],
-   "operation": "Ballpark geographic offset from NAD27 to WGS 84 (with axis order normalized for visualization)",
+   "operation": "axis order change (2D) + HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
-    59.955,
-    45.160000000000004
+    19.505000005055468,
+    47.16000000119484
    ]
   },
   {
-   "name": "EPSG:4267, ESRI WKT 1, renamed",
-   "code": "EPSG:4267",
-   "wkt": "GEOGCS[\"GCS_Local\",DATUM[\"D_North_American_1927\",SPHEROID[\"Clarke_1866\",6378206.4,294.978698213898]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "name": "EPSG:4237, ESRI WKT 1, renamed",
+   "code": "EPSG:4237",
+   "wkt": "GEOGCS[\"GCS_Local\",DATUM[\"D_Hungarian_1972\",SPHEROID[\"GRS_1967\",6378160.0,298.247167427]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
    "point": [
-    59.955,
-    45.160000000000004
+    19.50612250323989,
+    47.160264468611786
    ],
    "proj": [
-    59.955,
-    45.160000000000004
+    19.505000005055468,
+    47.16000000119484
    ],
-   "operation": "Ballpark geographic offset from GCS_Local to WGS 84 (with axis order normalized for visualization)",
+   "operation": "axis order change (2D) + HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
-    59.955,
-    45.160000000000004
+    19.505000005055468,
+    47.16000000119484
    ]
   },
   {
-   "name": "EPSG:4267, ESRI WKT 1 with the datum's code",
-   "code": "EPSG:4267",
-   "wkt": "GEOGCS[\"GCS_North_American_1927\",DATUM[\"D_North_American_1927\",SPHEROID[\"Clarke_1866\",6378206.4,294.978698213898],AUTHORITY[\"EPSG\",\"6267\"]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "name": "EPSG:4237, ESRI WKT 1 with the datum's code",
+   "code": "EPSG:4237",
+   "wkt": "GEOGCS[\"GCS_Hungarian_1972\",DATUM[\"D_Hungarian_1972\",SPHEROID[\"GRS_1967\",6378160.0,298.247167427],AUTHORITY[\"EPSG\",\"6237\"]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
    "point": [
-    59.955,
-    45.160000000000004
+    19.50612250323989,
+    47.160264468611786
    ],
    "proj": [
-    59.955,
-    45.160000000000004
+    19.505000005055468,
+    47.16000000119484
    ],
-   "operation": "Ballpark geographic offset from NAD27 to WGS 84 (with axis order normalized for visualization)",
+   "operation": "axis order change (2D) + HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
-    59.955,
-    45.160000000000004
+    19.505000005055468,
+    47.16000000119484
    ]
   },
   {
-   "name": "EPSG:4267, ESRI WKT 1 with the CRS's code",
-   "code": "EPSG:4267",
-   "wkt": "GEOGCS[\"GCS_North_American_1927\",DATUM[\"D_North_American_1927\",SPHEROID[\"Clarke_1866\",6378206.4,294.978698213898]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433],AUTHORITY[\"EPSG\",\"4267\"]]",
+   "name": "EPSG:4237, ESRI WKT 1 with the CRS's code",
+   "code": "EPSG:4237",
+   "wkt": "GEOGCS[\"GCS_Hungarian_1972\",DATUM[\"D_Hungarian_1972\",SPHEROID[\"GRS_1967\",6378160.0,298.247167427]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433],AUTHORITY[\"EPSG\",\"4237\"]]",
    "point": [
-    59.955,
-    45.160000000000004
+    19.50612250323989,
+    47.160264468611786
    ],
    "proj": [
-    59.955,
-    45.160000000000004
+    19.505000005055468,
+    47.16000000119484
    ],
-   "operation": "Ballpark geographic offset from NAD27 to WGS 84 (with axis order normalized for visualization)",
+   "operation": "HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
-    59.955,
-    45.160000000000004
+    19.505000005055468,
+    47.16000000119484
    ]
   },
   {
-   "name": "EPSG:26717, WKT 2 without IDs",
-   "code": "EPSG:26717",
-   "wkt": "PROJCRS[\"NAD27 / UTM zone 17N\",BASEGEOGCRS[\"NAD27\",DATUM[\"North American Datum 1927\",ELLIPSOID[\"Clarke 1866\",6378206.4,294.978698213898,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"UTM zone 17N\",METHOD[\"Transverse Mercator\"],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",-81,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "name": "EPSG:23700, WKT 2 without IDs",
+   "code": "EPSG:23700",
+   "wkt": "PROJCRS[\"HD72 / EOV\",BASEGEOGCRS[\"HD72\",DATUM[\"Hungarian Datum 1972\",ELLIPSOID[\"GRS 1967\",6378160,298.247167427,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Egyseges Orszagos Vetuleti\",METHOD[\"Hotine Oblique Mercator (variant B)\"],PARAMETER[\"Latitude of projection centre\",47.1443937222222,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of projection centre\",19.0485717777778,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Azimuth at projection centre\",90,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Angle from Rectified to Skew Grid\",90,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at projection centre\",0.99993,SCALEUNIT[\"unity\",1]],PARAMETER[\"Easting at projection centre\",650000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"Northing at projection centre\",200000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"easting (Y)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing (X)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
    "point": [
-    499982.878944123,
-    5038835.301394063
+    684692.7847029,
+    201865.84220322352
    ],
    "proj": [
-    -80.99999999871221,
-    45.50499999995099
+    19.505000005055464,
+    47.16000000119482
    ],
-   "operation": "Inverse of UTM zone 17N + NAD27 to WGS 84 (4) (with axis order normalized for visualization)",
+   "operation": "Inverse of Egyseges Orszagos Vetuleti + HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
-    -80.99999999871221,
-    45.50499999995099
+    19.505000005055464,
+    47.16000000119482
    ]
   },
   {
-   "name": "EPSG:26717, WKT 2 with the datum's ID alone",
-   "code": "EPSG:26717",
-   "wkt": "PROJCRS[\"NAD27 / UTM zone 17N\",BASEGEOGCRS[\"NAD27\",DATUM[\"North American Datum 1927\",ELLIPSOID[\"Clarke 1866\",6378206.4,294.978698213898,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6267]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"UTM zone 17N\",METHOD[\"Transverse Mercator\"],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",-81,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "name": "EPSG:23700, WKT 2 with the datum's ID alone",
+   "code": "EPSG:23700",
+   "wkt": "PROJCRS[\"HD72 / EOV\",BASEGEOGCRS[\"HD72\",DATUM[\"Hungarian Datum 1972\",ELLIPSOID[\"GRS 1967\",6378160,298.247167427,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6237]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Egyseges Orszagos Vetuleti\",METHOD[\"Hotine Oblique Mercator (variant B)\"],PARAMETER[\"Latitude of projection centre\",47.1443937222222,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of projection centre\",19.0485717777778,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Azimuth at projection centre\",90,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Angle from Rectified to Skew Grid\",90,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at projection centre\",0.99993,SCALEUNIT[\"unity\",1]],PARAMETER[\"Easting at projection centre\",650000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"Northing at projection centre\",200000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"easting (Y)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing (X)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
    "point": [
-    499982.878944123,
-    5038835.301394063
+    684692.7847029,
+    201865.84220322352
    ],
    "proj": [
-    -80.99999999871221,
-    45.50499999995099
+    19.505000005055464,
+    47.16000000119482
    ],
-   "operation": "Inverse of UTM zone 17N + NAD27 to WGS 84 (4) (with axis order normalized for visualization)",
+   "operation": "Inverse of Egyseges Orszagos Vetuleti + HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
-    -80.99999999871221,
-    45.50499999995099
+    19.505000005055464,
+    47.16000000119482
    ]
   },
   {
-   "name": "EPSG:26717, WKT 2 with the datum's ID alone, renamed",
-   "code": "EPSG:26717",
-   "wkt": "PROJCRS[\"Local\",BASEGEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"Clarke 1866\",6378206.4,294.978698213898,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6267]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"UTM zone 17N\",METHOD[\"Transverse Mercator\"],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",-81,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "name": "EPSG:23700, WKT 2 with the datum's ID alone, renamed",
+   "code": "EPSG:23700",
+   "wkt": "PROJCRS[\"Local\",BASEGEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"GRS 1967\",6378160,298.247167427,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6237]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Egyseges Orszagos Vetuleti\",METHOD[\"Hotine Oblique Mercator (variant B)\"],PARAMETER[\"Latitude of projection centre\",47.1443937222222,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of projection centre\",19.0485717777778,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Azimuth at projection centre\",90,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Angle from Rectified to Skew Grid\",90,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at projection centre\",0.99993,SCALEUNIT[\"unity\",1]],PARAMETER[\"Easting at projection centre\",650000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"Northing at projection centre\",200000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"easting (Y)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing (X)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
    "point": [
-    499982.878944123,
-    5038835.301394063
+    684692.7847029,
+    201865.84220322352
    ],
    "proj": [
-    -80.99999999871221,
-    45.50499999995099
+    19.505000005055464,
+    47.16000000119482
    ],
-   "operation": "Inverse of UTM zone 17N + NAD27 to WGS 84 (4) (with axis order normalized for visualization)",
+   "operation": "Inverse of Egyseges Orszagos Vetuleti + HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
-    -80.99999999871221,
-    45.50499999995099
+    19.505000005055464,
+    47.16000000119482
    ]
   },
   {
-   "name": "EPSG:26717, WKT 1 with the datum's AUTHORITY alone",
-   "code": "EPSG:26717",
-   "wkt": "PROJCS[\"NAD27 / UTM zone 17N\",GEOGCS[\"NAD27\",DATUM[\"North_American_Datum_1927\",SPHEROID[\"Clarke 1866\",6378206.4,294.978698213898],AUTHORITY[\"EPSG\",\"6267\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-81],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "name": "EPSG:23700, WKT 1 with the datum's AUTHORITY alone",
+   "code": "EPSG:23700",
+   "wkt": "PROJCS[\"HD72 / EOV\",GEOGCS[\"HD72\",DATUM[\"Hungarian_Datum_1972\",SPHEROID[\"GRS 1967\",6378160,298.247167427],AUTHORITY[\"EPSG\",\"6237\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Hotine_Oblique_Mercator_Azimuth_Center\"],PARAMETER[\"latitude_of_center\",47.1443937222222],PARAMETER[\"longitude_of_center\",19.0485717777778],PARAMETER[\"azimuth\",90],PARAMETER[\"rectified_grid_angle\",90],PARAMETER[\"scale_factor\",0.99993],PARAMETER[\"false_easting\",650000],PARAMETER[\"false_northing\",200000],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
    "point": [
-    499982.878944123,
-    5038835.301394063
+    684692.7847029,
+    201865.84220322352
    ],
    "proj": [
-    -80.99999999871221,
-    45.50499999995099
+    19.505000005055464,
+    47.16000000119482
    ],
-   "operation": "Inverse of UTM zone 17N + NAD27 to WGS 84 (4) (with axis order normalized for visualization)",
+   "operation": "Inverse of Egyseges Orszagos Vetuleti + HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
-    -80.99999999871221,
-    45.50499999995099
+    19.505000005055464,
+    47.16000000119482
    ]
   },
   {
-   "name": "EPSG:26717, WKT 1 with the datum's AUTHORITY alone, renamed",
-   "code": "EPSG:26717",
-   "wkt": "PROJCS[\"Local\",GEOGCS[\"Local\",DATUM[\"Local datum\",SPHEROID[\"Clarke 1866\",6378206.4,294.978698213898],AUTHORITY[\"EPSG\",\"6267\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-81],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "name": "EPSG:23700, WKT 1 with the datum's AUTHORITY alone, renamed",
+   "code": "EPSG:23700",
+   "wkt": "PROJCS[\"Local\",GEOGCS[\"Local\",DATUM[\"Local datum\",SPHEROID[\"GRS 1967\",6378160,298.247167427],AUTHORITY[\"EPSG\",\"6237\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Hotine_Oblique_Mercator_Azimuth_Center\"],PARAMETER[\"latitude_of_center\",47.1443937222222],PARAMETER[\"longitude_of_center\",19.0485717777778],PARAMETER[\"azimuth\",90],PARAMETER[\"rectified_grid_angle\",90],PARAMETER[\"scale_factor\",0.99993],PARAMETER[\"false_easting\",650000],PARAMETER[\"false_northing\",200000],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
    "point": [
-    499982.878944123,
-    5038835.301394063
+    684692.7847029,
+    201865.84220322352
    ],
    "proj": [
-    -80.99999999871221,
-    45.50499999995099
+    19.505000005055464,
+    47.16000000119482
    ],
-   "operation": "Inverse of UTM zone 17N + NAD27 to WGS 84 (4) (with axis order normalized for visualization)",
+   "operation": "Inverse of unnamed + HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
-    -80.99999999871221,
-    45.50499999995099
+    19.505000005055464,
+    47.16000000119482
    ]
   },
   {
-   "name": "EPSG:26717, ESRI WKT 1",
-   "code": "EPSG:26717",
-   "wkt": "PROJCS[\"NAD_1927_UTM_Zone_17N\",GEOGCS[\"GCS_North_American_1927\",DATUM[\"D_North_American_1927\",SPHEROID[\"Clarke_1866\",6378206.4,294.978698213898]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",-81.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]",
+   "name": "EPSG:23700, ESRI WKT 1",
+   "code": "EPSG:23700",
+   "wkt": "PROJCS[\"Hungarian_1972_Egyseges_Orszagos_Vetuleti\",GEOGCS[\"GCS_Hungarian_1972\",DATUM[\"D_Hungarian_1972\",SPHEROID[\"GRS_1967\",6378160.0,298.247167427]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Hotine_Oblique_Mercator_Azimuth_Center\"],PARAMETER[\"False_Easting\",650000.0],PARAMETER[\"False_Northing\",200000.0],PARAMETER[\"Scale_Factor\",0.99993],PARAMETER[\"Azimuth\",90.0],PARAMETER[\"Longitude_Of_Center\",19.0485717777778],PARAMETER[\"Latitude_Of_Center\",47.1443937222222],UNIT[\"Meter\",1.0]]",
    "point": [
-    499982.878944123,
-    5038835.301394063
+    684692.7847029,
+    201865.84220322352
    ],
    "proj": [
-    -80.99999999871221,
-    45.50499999995099
+    19.505000005055464,
+    47.16000000119482
    ],
-   "operation": "Inverse of UTM zone 17N + NAD27 to WGS 84 (4) (with axis order normalized for visualization)",
+   "operation": "Inverse of Egyseges Orszagos Vetuleti + HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
-    -80.99999999871221,
-    45.50499999995099
+    19.505000005055464,
+    47.16000000119482
    ]
   },
   {
-   "name": "EPSG:26717, ESRI WKT 1, renamed",
-   "code": "EPSG:26717",
-   "wkt": "PROJCS[\"Local grid\",GEOGCS[\"GCS_Local\",DATUM[\"D_North_American_1927\",SPHEROID[\"Clarke_1866\",6378206.4,294.978698213898]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",-81.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]",
+   "name": "EPSG:23700, ESRI WKT 1, renamed",
+   "code": "EPSG:23700",
+   "wkt": "PROJCS[\"Local grid\",GEOGCS[\"GCS_Local\",DATUM[\"D_Hungarian_1972\",SPHEROID[\"GRS_1967\",6378160.0,298.247167427]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Hotine_Oblique_Mercator_Azimuth_Center\"],PARAMETER[\"False_Easting\",650000.0],PARAMETER[\"False_Northing\",200000.0],PARAMETER[\"Scale_Factor\",0.99993],PARAMETER[\"Azimuth\",90.0],PARAMETER[\"Longitude_Of_Center\",19.0485717777778],PARAMETER[\"Latitude_Of_Center\",47.1443937222222],UNIT[\"Meter\",1.0]]",
    "point": [
-    499982.878944123,
-    5038835.301394063
+    684692.7847029,
+    201865.84220322352
    ],
    "proj": [
-    -80.99999999871221,
-    45.50499999995099
+    19.505000005055464,
+    47.16000000119482
    ],
-   "operation": "Inverse of UTM zone 17N + axis order change (2D) + NAD27 to WGS 84 (4) (with axis order normalized for visualization)",
+   "operation": "Inverse of unnamed + axis order change (2D) + HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
-    -80.99999999871221,
-    45.50499999995099
+    19.505000005055464,
+    47.16000000119482
    ]
   },
   {
-   "name": "EPSG:26717, ESRI WKT 1 with the datum's code",
-   "code": "EPSG:26717",
-   "wkt": "PROJCS[\"NAD_1927_UTM_Zone_17N\",GEOGCS[\"GCS_North_American_1927\",DATUM[\"D_North_American_1927\",SPHEROID[\"Clarke_1866\",6378206.4,294.978698213898],AUTHORITY[\"EPSG\",\"6267\"]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",-81.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]",
+   "name": "EPSG:23700, ESRI WKT 1 with the datum's code",
+   "code": "EPSG:23700",
+   "wkt": "PROJCS[\"Hungarian_1972_Egyseges_Orszagos_Vetuleti\",GEOGCS[\"GCS_Hungarian_1972\",DATUM[\"D_Hungarian_1972\",SPHEROID[\"GRS_1967\",6378160.0,298.247167427],AUTHORITY[\"EPSG\",\"6237\"]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Hotine_Oblique_Mercator_Azimuth_Center\"],PARAMETER[\"False_Easting\",650000.0],PARAMETER[\"False_Northing\",200000.0],PARAMETER[\"Scale_Factor\",0.99993],PARAMETER[\"Azimuth\",90.0],PARAMETER[\"Longitude_Of_Center\",19.0485717777778],PARAMETER[\"Latitude_Of_Center\",47.1443937222222],UNIT[\"Meter\",1.0]]",
    "point": [
-    499982.878944123,
-    5038835.301394063
+    684692.7847029,
+    201865.84220322352
    ],
    "proj": [
-    -80.99999999871221,
-    45.50499999995099
+    19.505000005055464,
+    47.16000000119482
    ],
-   "operation": "Inverse of UTM zone 17N + NAD27 to WGS 84 (4) (with axis order normalized for visualization)",
+   "operation": "Inverse of Egyseges Orszagos Vetuleti + HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
-    -80.99999999871221,
-    45.50499999995099
+    19.505000005055464,
+    47.16000000119482
    ]
   },
   {
-   "name": "EPSG:26717, ESRI WKT 1 with the CRS's code",
-   "code": "EPSG:26717",
-   "wkt": "PROJCS[\"NAD_1927_UTM_Zone_17N\",GEOGCS[\"GCS_North_American_1927\",DATUM[\"D_North_American_1927\",SPHEROID[\"Clarke_1866\",6378206.4,294.978698213898]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",-81.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0],AUTHORITY[\"EPSG\",\"26717\"]]",
+   "name": "EPSG:23700, ESRI WKT 1 with the CRS's code",
+   "code": "EPSG:23700",
+   "wkt": "PROJCS[\"Hungarian_1972_Egyseges_Orszagos_Vetuleti\",GEOGCS[\"GCS_Hungarian_1972\",DATUM[\"D_Hungarian_1972\",SPHEROID[\"GRS_1967\",6378160.0,298.247167427]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Hotine_Oblique_Mercator_Azimuth_Center\"],PARAMETER[\"False_Easting\",650000.0],PARAMETER[\"False_Northing\",200000.0],PARAMETER[\"Scale_Factor\",0.99993],PARAMETER[\"Azimuth\",90.0],PARAMETER[\"Longitude_Of_Center\",19.0485717777778],PARAMETER[\"Latitude_Of_Center\",47.1443937222222],UNIT[\"Meter\",1.0],AUTHORITY[\"EPSG\",\"23700\"]]",
    "point": [
-    499982.878944123,
-    5038835.301394063
+    684692.7847029,
+    201865.84220322352
    ],
    "proj": [
-    -80.99999999871221,
-    45.50499999995099
+    19.505000005055464,
+    47.16000000119482
    ],
-   "operation": "Inverse of UTM zone 17N + NAD27 to WGS 84 (4) (with axis order normalized for visualization)",
+   "operation": "Inverse of Egyseges Orszagos Vetuleti + HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
-    -80.99999999871221,
-    45.50499999995099
+    19.505000005055464,
+    47.16000000119482
    ]
   },
   {
@@ -2930,6 +3092,7 @@
     -24.25000000222823
    ],
    "operation": "AGD66 to WGS 84 (15) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     136.21499999840512,
     -24.25000000222823
@@ -2948,6 +3111,7 @@
     -24.25000000222823
    ],
    "operation": "AGD66 to WGS 84 (15) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     136.21499999840512,
     -24.25000000222823
@@ -2966,6 +3130,7 @@
     -24.25000000222823
    ],
    "operation": "AGD66 to WGS 84 (15) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     136.21499999840512,
     -24.25000000222823
@@ -2984,6 +3149,7 @@
     -24.25000000222823
    ],
    "operation": "axis order change (2D) + AGD66 to WGS 84 (15) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     136.21499999840512,
     -24.25000000222823
@@ -3002,6 +3168,7 @@
     -24.25000000222823
    ],
    "operation": "AGD66 to WGS 84 (15) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     136.21499999840512,
     -24.25000000222823
@@ -3020,6 +3187,7 @@
     -24.25000000222823
    ],
    "operation": "axis order change (2D) + AGD66 to WGS 84 (15) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     136.21499999840512,
     -24.25000000222823
@@ -3038,6 +3206,7 @@
     -24.25000000222823
    ],
    "operation": "axis order change (2D) + AGD66 to WGS 84 (15) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     136.21499999840512,
     -24.25000000222823
@@ -3056,6 +3225,7 @@
     -24.25000000222823
    ],
    "operation": "axis order change (2D) + AGD66 to WGS 84 (15) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     136.21499999840512,
     -24.25000000222823
@@ -3074,6 +3244,7 @@
     -24.25000000222823
    ],
    "operation": "AGD66 to WGS 84 (15) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     136.21499999840512,
     -24.25000000222823
@@ -3092,6 +3263,7 @@
     -40.77000000352588
    ],
    "operation": "NZGD49 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     172.5700000001445,
     -40.77000000352588
@@ -3110,6 +3282,7 @@
     -40.77000000352588
    ],
    "operation": "NZGD49 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     172.5700000001445,
     -40.77000000352588
@@ -3128,6 +3301,7 @@
     -40.77000000352588
    ],
    "operation": "NZGD49 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     172.5700000001445,
     -40.77000000352588
@@ -3146,6 +3320,7 @@
     -40.77000000352588
    ],
    "operation": "axis order change (2D) + NZGD49 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     172.5700000001445,
     -40.77000000352588
@@ -3164,6 +3339,7 @@
     -40.77000000352588
    ],
    "operation": "NZGD49 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     172.5700000001445,
     -40.77000000352588
@@ -3182,6 +3358,7 @@
     -40.77000000352588
    ],
    "operation": "axis order change (2D) + NZGD49 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     172.5700000001445,
     -40.77000000352588
@@ -3200,6 +3377,7 @@
     -40.77000000352588
    ],
    "operation": "axis order change (2D) + NZGD49 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     172.5700000001445,
     -40.77000000352588
@@ -3218,6 +3396,7 @@
     -40.77000000352588
    ],
    "operation": "axis order change (2D) + NZGD49 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     172.5700000001445,
     -40.77000000352588
@@ -3236,6 +3415,7 @@
     -40.77000000352588
    ],
    "operation": "NZGD49 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     172.5700000001445,
     -40.77000000352588
@@ -3256,6 +3436,7 @@
     51.18000241411849
    ],
    "operation": "axis order change (2D) + DHDN to ETRS89 (4) + ETRS89 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     9.85000000310771,
     51.18000000516607
@@ -3274,6 +3455,7 @@
     51.1800023694017
    ],
    "operation": "Inverse of unnnamed (Gauss Kruger) + axis order change (2D) + DHDN to ETRS89 (4) + ETRS89 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
    "by_code": [
     9.005000002211203,
     51.180000005231854
@@ -3292,6 +3474,7 @@
     40.930633187872075
    ],
    "operation": "axis order change (2D) + Monte Mario (Rome) to Monte Mario (1) + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     12.459999999999999,
     40.93
@@ -3310,6 +3493,7 @@
     32.958507111447425
    ],
    "operation": "axis order change (2D) + Tokyo 1892 to Tokyo (1) + Tokyo to WGS 84 (108) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     138.44,
     32.955
@@ -3328,6 +3512,7 @@
     20.534990293968672
    ],
    "operation": "Conversion from ONGD14 (geog2D) to ONGD14 (geocentric) + ONGD14 to WGS 84 (1) + Conversion from WGS 84 (geocentric) to WGS 84 (geog2D) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
    "by_code": [
     57.685,
     20.535

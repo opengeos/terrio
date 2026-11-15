@@ -3,14 +3,19 @@
 //! (WKT 2 `DATUM[...,ID["EPSG",6277]]`, WKT 1 `AUTHORITY["EPSG","6277"]` on the `DATUM`), under
 //! another CRS and datum name too, by its name in a WKT 2 without IDs, or by ESRI's name
 //! (`D_Monte_Mario`, `D_OSGB_1936`), with or without the datum's or the CRS's code. The two cases
-//! of opengeos/terrio#1012 (EPSG:3003 as ESRI WKT 1, EPSG:4277 as WKT 2 without IDs) are among
-//! them.
+//! of opengeos/terrio#1012 (EPSG:3003 as ESRI WKT 1, EPSG:4277 as WKT 2 without its CRS and
+//! datum IDs) are among them.
 //!
 //! `data/wkt_datum_shift.json` (`scripts/gen_wkt_datum_shift.py`, pyproj 3.8.0, no grids,
 //! `PROJ_NETWORK=OFF`) holds each WKT, a point in it and PROJ's coordinates of the point in WGS 84
 //! by `Transformer.from_crs(CRS(wkt), "EPSG:4326", always_xy=True)`, the transformation PROJ used
 //! (`get_last_used_operation().description`), and where the CRS's EPSG code places the point.
 //! Tolerance: 1 mm.
+//!
+//! Without grids, PROJ uses its best transformation that needs none, a datum transformation in
+//! every case (none is its no-shift ballpark). For OSGB36, DHDN, NZGD49 and some CH1903 cases a
+//! better one needs a grid (OSTN15, BETA2007, CHENyx06, the NZGD2000 grids; `best_grid_missing`): with those
+//! grids installed, PROJ places these points otherwise, and this test does not cover that.
 //!
 //! PROJ places a few WKTs otherwise than their EPSG code (`differences`), which terrio does not
 //! follow: it does not resolve their geographic CRS to the code (an ESRI WKT 1 has no `AXIS`, so
@@ -63,7 +68,8 @@ fn datums_known_by_id_or_esri_name_are_shifted_as_proj_does() {
         // PROJ's name for the transformation holds terrio's (PROJ adds the conversions).
         let named = !operation.is_empty() && case["operation"].as_str().unwrap().contains(&operation);
         if off >= 1e-3 || !named {
-            bad.push(format!("{}: {got:?} by {operation:?}, PROJ {proj:?} by {}, {off:.3} m", case["name"], case["operation"]));
+            let (name, proj_operation) = (case["name"].as_str().unwrap(), case["operation"].as_str().unwrap());
+            bad.push(format!("{name}: {got:?} by {operation:?}, PROJ {proj:?} by {proj_operation:?}, {off:.3} m"));
         }
     }
     assert!(bad.is_empty(), "{}", bad.join("\n"));
@@ -80,7 +86,8 @@ fn wkts_proj_does_not_resolve_are_placed_by_their_code() {
     for case in differences {
         let (got, _) = place(case);
         let (proj, by_code) = (pair(&case["proj"]), pair(&case["by_code"]));
-        assert!(metres(got, by_code) < 1e-3, "{}: {got:?}, by its code {by_code:?}", case["name"]);
-        assert!(metres(proj, by_code) > 0.1, "{}: PROJ {proj:?} now places it by its code", case["name"]);
+        let name = case["name"].as_str().unwrap();
+        assert!(metres(got, by_code) < 1e-3, "{name}: {got:?}, by its code {by_code:?}");
+        assert!(metres(proj, by_code) > 0.1, "{name}: PROJ {proj:?} now places it by its code");
     }
 }
