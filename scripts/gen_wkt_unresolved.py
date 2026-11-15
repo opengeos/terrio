@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT
+
 """Generate crates/terrio-crs/tests/data/wkt_unresolved.json: where PROJ 9.8.1 places points of WKTs
 it does not resolve to their EPSG CRS, and of WKTs it does, as a guard.
 
@@ -8,14 +11,14 @@ place points otherwise than the EPSG code.
 
 The WKTs are variants of EPSG geographic 2D CRSs (``variants``): ESRI's WKT 1, the same with the
 ``GEOGCS`` renamed, WKT 2 without IDs, the same with the datum's ID, the same renamed (CRS and
-datum), WKT 1 with the datum's ``AUTHORITY`` alone, a renamed WKT 2 on a datum ensemble with its
-ID (WGS 84, ETRS89); for the CRSs PROJ places otherwise, also a renamed WKT 2 ``GEODCRS`` with an
-ellipsoidal CS and an ESRI compound CRS with the ``GEOGCS`` renamed; WKT 2 named by an alias of
-the CRS (``ALIASED``); and ESRI WKT 1 of some
-projected CRSs, also with the ``GEOGCS`` renamed. Each case is a WKT, a point and the point in the other CRS by
-``Transformer.from_crs(src, dst, always_xy=True).transform``: to WGS 84, from WGS 84 (the point in
-WGS 84), and, for a sample, to ETRS89, NAD83 and ETRS89 / UTM zone 32N. ``by_code`` is the same
-with the EPSG code in place of the WKT.
+datum), WKT 1 with the datum's ``AUTHORITY`` alone, a renamed WKT 2 on a datum ensemble with its ID
+(WGS 84, ETRS89); for the CRSs PROJ places otherwise, also a renamed WKT 2 ``GEODCRS`` with an
+ellipsoidal CS and an ESRI compound CRS with the ``GEOGCS`` renamed; WKT 2 named by an alias of the
+CRS (``ALIASED``); and ESRI WKT 1 of some projected CRSs, also with the ``GEOGCS`` renamed. Each
+case is a WKT, a point and the point in the other CRS by ``Transformer.from_crs(src, dst,
+always_xy=True).transform``: to WGS 84, from WGS 84 (the point in WGS 84), and, for a sample, to
+ETRS89, NAD83 and ETRS89 / UTM zone 32N. ``by_code`` is the same with the EPSG code in place of the
+WKT.
 
 ``pending`` cases are those PROJ places by its datum pivot through the datum's CRSs in order of
 code (ONGD14) or through its ballpark into a CRS of a renamed datum, which terrio does not follow
@@ -36,6 +39,7 @@ from pathlib import Path
 import pyproj
 import pyproj.datadir
 import pyproj.network
+from gen_wkt_datum_shift import installed_grids
 from pyproj import CRS, Transformer
 from pyproj.database import query_crs_info
 
@@ -64,6 +68,10 @@ SEARCHED = [
     5132,
 ]
 PENDING_CODES = [7373, 9309, 10831]
+# Searched variants also placed to and from other targets than WGS 84.
+SEARCHED_TO_TARGETS = {
+    (code, kind) for code in (4806, 5132, 4314) for kind in ("esri", "esri gcs renamed")
+}
 # CRSs on datum ensembles.
 ENSEMBLES = [4326, 4258]
 # WKTs named by an alias of their CRS (which PROJ finds by it): lon-first, and on a renamed datum
@@ -96,6 +104,11 @@ PENDING = {
     "7373 wkt2 geodcrs renamed",
     "7373 esri compound renamed",
     "7373 wkt1 datum authority",
+    "7373 esri gcs renamed, local id",
+    "7373 wkt2 datum id, datum renamed",
+    "4806 wkt2 datum id, datum renamed",
+    "5132 wkt2 datum id, datum renamed",
+    "9309 wkt2 datum id, datum renamed",
 }
 
 
@@ -111,7 +124,15 @@ def strip_ids(w):
 
 
 def variants(c, more):
-    """The WKT variants of a geographic CRS, by name (``more``: also as a geodetic and a compound CRS)."""
+    """The WKT variants of a geographic CRS, by name.
+
+    Args:
+        c: The CRS.
+        more: Whether to add its variants as a geodetic and as a compound CRS.
+
+    Returns:
+        A dict from variant name to WKT.
+    """
     v = {}
     esri = c.to_wkt("WKT1_ESRI")
     if esri:
@@ -126,6 +147,12 @@ def variants(c, more):
         # A WKT 2 geodetic CRS with an ellipsoidal CS, which PROJ reads as a geographic CRS.
         v["wkt2 geodcrs renamed"] = re.sub(r'^GEOGCRS\["[^"]*"', 'GEODCRS["Local"', w2)
     if esri and more:
+        # The same with an ID of an authority PROJ does not know: it skips it, but searches
+        # only among that authority's CRSs, so through no other datum.
+        v["esri gcs renamed, local id"] = (
+            v["esri gcs renamed"][:-1] + ',AUTHORITY["LOCAL","1"]]'
+        )
+
         # A compound CRS whose horizontal CRS is ESRI's, renamed.
         v["esri compound renamed"] = (
             f'COMPD_CS["Local + height",{v["esri gcs renamed"]},{VERT_CS}]'
@@ -144,16 +171,16 @@ def variants(c, more):
         )
     datum = (c.datum.to_json_dict().get("id") or {}).get("code")
     if datum:
-        with_id = re.sub(
-            r"(ELLIPSOID\[[^\[]*\[[^\]]*\]\])\]",
-            lambda m: m.group(1) + f',ID["EPSG",{datum}]]',
-            w2,
-            count=1,
-        )
+        with_id = datum_id(w2, datum)
         v["wkt2 datum id"] = with_id
         renamed = re.sub(
             r'(GEOGCRS|BASEGEOGCRS|PROJCRS)\["[^"]*"', r'\1["Local"', with_id
         )
+        if more:
+            # Under the CRS's own name: PROJ compares the datum's name too.
+            v["wkt2 datum id, datum renamed"] = re.sub(
+                r'DATUM\["[^"]*"', 'DATUM["Local datum"', with_id
+            )
         v["wkt2 datum id, renamed"] = re.sub(
             r'DATUM\["[^"]*"', 'DATUM["Local datum"', renamed
         )
@@ -179,12 +206,7 @@ def aliased(c, code):
         re.sub(r",USAGE\[SCOPE\[[^\]]*\],AREA\[[^\]]*\],BBOX\[[^\]]*\]\]", "", w2)
     )
     datum = c.datum.to_json_dict()["id"]["code"]
-    w2 = re.sub(
-        r"(ELLIPSOID\[[^\[]*\[[^\]]*\]\])\]",
-        lambda m: m.group(1) + f',ID["EPSG",{datum}]]',
-        w2,
-        count=1,
-    )
+    w2 = datum_id(w2, datum)
     w2 = re.sub(r'^GEOGCRS\["[^"]*"', f'GEOGCRS["{alias}"', w2)
     if how == "lon first":
         axes = re.findall(
@@ -247,6 +269,14 @@ def bases(code):
     return w1, w2, with_ids
 
 
+def datum_id(w2, datum):
+    """A WKT 2 with its datum's (or datum ensemble's) EPSG ID, at the end of the ``DATUM`` or
+    ``ENSEMBLE`` node, before ``PRIMEM`` (after an ``ANCHOREPOCH`` or ``ENSEMBLEACCURACY`` too)."""
+    out, n = re.subn(r"\],PRIMEM\[", f',ID["EPSG",{datum}]],PRIMEM[', w2, count=1)
+    assert n == 1, w2
+    return out
+
+
 def centre(c):
     """The centre of a CRS's area of use, in WGS 84 longitude and latitude."""
     w, s, e, n = c.area_of_use.bounds
@@ -277,16 +307,10 @@ def main():
     assert pyproj.proj_version_str == "9.8.1", pyproj.proj_version_str
     pyproj.network.set_network_enabled(False)
     assert os.environ.get("PROJ_NETWORK") == "OFF"
-    # No grids, so the values don't depend on what is installed.
-    for d in pyproj.datadir.get_data_dir().split(os.pathsep) + [
-        pyproj.datadir.get_user_data_dir()
-    ]:
-        grids = [
-            f
-            for f in (os.listdir(d) if os.path.isdir(d) else [])
-            if f.endswith((".tif", ".gsb", ".gtx"))
-        ]
-        assert not grids, (d, grids)
+    # No grids, so the values don't depend on what is installed: no file PROJ's database names
+    # as a grid, nor of a grid format (`gen_wkt_datum_shift.installed_grids`).
+    found = installed_grids()
+    assert not found, found
     warnings.filterwarnings("ignore")
     wgs84 = CRS(4326)
     infos = [
@@ -304,6 +328,9 @@ def main():
     wkts, cases = {}, []
 
     def add(name, key, code_crs, wkt_crs, other, point, reverse, geographic):
+        # A point PROJ could not place (not finite) gives no case.
+        if point is None:
+            return
         src, dst = (other, wkt_crs) if reverse else (wkt_crs, other)
         proj = place(src, dst, point)
         by_code = place(*((other, code_crs) if reverse else (code_crs, other)), point)
@@ -346,6 +373,14 @@ def main():
                 for t in TARGETS:
                     tc = CRS(t)
                     add(f"{key} -> {t}", key, c, w, tc, point, False, tc.is_geographic)
+            # Some searched CRSs to other targets, both ways.
+            if (code, kind) in SEARCHED_TO_TARGETS:
+                for t in TARGETS:
+                    tc = CRS(t)
+                    add(f"{key} -> {t}", key, c, w, tc, point, False, tc.is_geographic)
+                    if tc.is_geographic:
+                        back = place(c, tc, point)
+                        add(f"{key} <- {t}", key, c, w, tc, back, True, True)
     for code in PROJECTED:
         c = CRS.from_epsg(code)
         lonlat = centre(c)
@@ -401,15 +436,15 @@ def main():
         wkts[key] = wkt
         add(f"{key} -> 4326", key, ref, w, wgs84, point, False, True)
         add(f"{key} <- 4326", key, ref, w, wgs84, (lon, lat), True, False)
-    assert {c["wkt"] for c in cases if c["pending"]} == PENDING
-    OUT.write_text(
-        json.dumps({"wkts": wkts, "cases": cases}, separators=(",", ":")) + "\n"
-    )
+    pending = {c["wkt"] for c in cases if c["pending"]}
+    assert pending == PENDING, (pending - PENDING, PENDING - pending)
+    OUT.write_text(json.dumps({"wkts": wkts, "cases": cases}, indent=1) + "\n")
     searched = sum(
         1 for c in cases if metres(c["proj"], c["by_code"], c["geographic"]) > 0.01
     )
     print(
-        f"{len(cases)} cases, {searched} placed otherwise than by the code, {OUT.stat().st_size} bytes"
+        f"{len(cases)} cases, {searched} placed otherwise than by the code, "
+        f"{OUT.stat().st_size} bytes"
     )
 
 

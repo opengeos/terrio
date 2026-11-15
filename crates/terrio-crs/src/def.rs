@@ -1308,8 +1308,8 @@ impl Def {
     /// Records whether PROJ resolves the CRS of WKT `w` (read as EPSG `code`, if any) and the area
     /// it then uses: that of the CRS it finds by the WKT's name, even one that differs, else none.
     /// A CRS whose datum is renamed keeps the code's area, as PROJ's way through its ballpark is
-    /// not followed yet: routes with it are those of the code. Remembered for the last WKTs seen,
-    /// as `Def::new` runs for many accessors.
+    /// not followed yet: routes with it are those of the code. Remembered for the last WKTs seen (up
+    /// to 1 MiB of them), as `Def::new` runs for many accessors.
     fn record_proj_resolution(&mut self, w: &str, code: Option<u32>) {
         // By code, then by WKT (looked up without allocating).
         type Seen = std::collections::HashMap<Option<u32>, std::collections::HashMap<String, Option<Resolution>>>;
@@ -1330,7 +1330,8 @@ impl Def {
             let r = wkt1::parse(w).and_then(|root| proj_resolution(&root, code, self.geog, &alike));
             let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
             let seen = seen.get_or_insert_with(Default::default);
-            if seen.values().map(|m| m.len()).sum::<usize>() >= 256 {
+            // At most 1 MiB of WKT text kept.
+            if seen.values().flat_map(|m| m.keys()).map(String::len).sum::<usize>() + w.len() > 1 << 20 {
                 seen.clear();
             }
             seen.entry(code).or_default().insert(w.to_string(), r);
@@ -1383,14 +1384,15 @@ fn registered_axes(code: u32) -> Option<Vec<String>> {
 /// code. `None` for other kinds of CRS (the horizontal CRS of a compound CRS is resolved on its
 /// own, as PROJ does).
 ///
-/// A CRS with an ID is resolved (PROJ's `buildCRSIds` takes it whatever its axis order). Without,
-/// PROJ looks its name up (`createObjectsFromName`, with `data/crs_names.tsv.zst`), and resolves
-/// it when it finds the CRS alone and the WKT is equivalent to it, axes included (but those of an
-/// implicit geographic CRS of a projected one). A geographic CRS of WKT 1 without `AXIS` is
-/// longitude first; one of WKT 2 without `CS`, latitude first.
+/// A CRS with an ID is resolved (PROJ's `buildCRSIds` takes it whatever its axis order; one PROJ
+/// does not know leads to the same transformations, see below). Without, PROJ looks its name up
+/// (`createObjectsFromName`, with `data/crs_names.tsv.zst`), and resolves it when it finds the CRS
+/// alone and the WKT is equivalent to it, axes included (but those of an implicit geographic CRS of
+/// a projected one). A geographic CRS of WKT 1 without `AXIS` is longitude first; one of WKT 2
+/// without `CS`, latitude first.
 fn proj_resolution(root: &wkt1::Node, code: Option<u32>, own_geog: Option<u32>, alike: &dyn Fn(u32) -> bool) -> Option<Resolution> {
     let key = root.key.to_ascii_uppercase();
-    let wkt1 = key == "GEOGCS" || key == "PROJCS";
+    let is_wkt1 = key == "GEOGCS" || key == "PROJCS";
     // A WKT 2 geodetic CRS with an ellipsoidal CS is a geographic CRS to PROJ.
     let ellipsoidal = || {
         root.child("CS")
@@ -1408,14 +1410,19 @@ fn proj_resolution(root: &wkt1::Node, code: Option<u32>, own_geog: Option<u32>, 
     let base = if projected { ["GEOGCS", "BASEGEOGCRS", "BASEGEODCRS"].iter().find_map(|k| root.child(k))? } else { root };
     let datum = ["DATUM", "TRF", "GEODETICDATUM", "ENSEMBLE"].iter().find_map(|k| base.child(k));
     let datum_renamed = datum.is_some_and(|d| d.epsg().is_some_and(|c| d.name().is_none_or(|n| !epsg::datums_named(n).contains(&c))));
-    let has_id = |n: &wkt1::Node| n.child("AUTHORITY").or_else(|| n.child("ID")).is_some();
-    let gcs = |n: &wkt1::Node| wkt1 && n.name().is_some_and(|n| n.starts_with("GCS_"));
+    let id = |n: &wkt1::Node| n.child("AUTHORITY").or_else(|| n.child("ID")).is_some().then_some(());
+    let gcs = |n: &wkt1::Node| is_wkt1 && n.name().is_some_and(|n| n.starts_with("GCS_"));
     let area = |c: Option<u32>| c.and_then(epsg::get).and_then(|e| e.area);
-    if has_id(root) {
+    // With an ID, resolved. PROJ skips an ID of an authority or code it does not know (looking
+    // the CRS up by its name instead), but then searches only among the CRSs of that authority
+    // (`findsOpsInRegistryWithIntermediate`), so finds no chain through another datum: the CRS's
+    // own transformations, as for a resolved CRS.
+    if id(root).is_some() {
         return Some(Resolution { resolved: true, area: area(code), datum_renamed });
     }
     // ESRI's WKT reader maps a `PROJCS` name after a `GCS_` geographic CRS or a `D_` datum.
-    let esri = if projected { gcs(base) || (wkt1 && datum.and_then(|d| d.name()).is_some_and(|n| n.starts_with("D_"))) } else { gcs(root) };
+    let esri =
+        if projected { gcs(base) || (is_wkt1 && datum.and_then(|d| d.name()).is_some_and(|n| n.starts_with("D_"))) } else { gcs(root) };
     let found = root.name().and_then(|n| epsg::crs_named_as_proj(n, projected, three_d, esri));
     let axes = |n: &wkt1::Node, implicit: bool, c: u32| registered_axes(c) == Some(axis_directions(n, implicit));
     let geog = code.and_then(epsg::get).map(|e| e.geog).filter(|&g| g != 0).or(own_geog);
@@ -1424,10 +1431,11 @@ fn proj_resolution(root: &wkt1::Node, code: Option<u32>, own_geog: Option<u32>, 
         axes(root, false, c)
             && (!projected
                 || base.child("AXIS").is_none()
-                || epsg::get(c).map(|e| e.geog).filter(|&g| g != 0).is_some_and(|g| axes(base, !wkt1, g)))
+                || epsg::get(c).map(|e| e.geog).filter(|&g| g != 0).is_some_and(|g| axes(base, !is_wkt1, g)))
     };
     let equivalent = match (found, code) {
-        (Some(f), Some(c)) => f == c && same_axes(c),
+        // A renamed datum is not the code's, as PROJ compares datum names.
+        (Some(f), Some(c)) => !datum_renamed && f == c && same_axes(c),
         // PROJ finds a CRS terrio has not read the WKT as: resolved when the WKT matches it, its
         // datum name and axis order too.
         (Some(f), None) => !datum_renamed && same_axes(f) && alike(f),
@@ -1437,10 +1445,10 @@ fn proj_resolution(root: &wkt1::Node, code: Option<u32>, own_geog: Option<u32>, 
         || projected && {
             // The geographic CRS of a projected CRS PROJ does not resolve, which PROJ looks its
             // transformations up for.
-            has_id(base)
+            id(base).is_some()
                 || geog.is_some_and(|g| {
                     let f = base.name().and_then(|n| epsg::crs_named_as_proj(n, false, false, gcs(base)));
-                    f == Some(g) && axes(base, !wkt1, g)
+                    f == Some(g) && axes(base, !is_wkt1, g)
                 })
         };
     Some(Resolution { resolved, area: area(found), datum_renamed })

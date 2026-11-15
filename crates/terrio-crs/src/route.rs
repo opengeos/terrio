@@ -726,14 +726,18 @@ fn unresolved_search(list: Vec<Leg>, a: u32, b: u32, src: &Def, dst: &Def, aoi: 
         found = found.into_iter().map(Found::reversed).collect();
     }
     let mut out = ranked(reg, found, aoi);
-    for l in direct {
-        // Concatenated with the conversion into the CRS of the datum, as PROJ ranks them then.
-        let name = step_names(&l.op, l.reverse).join(" + ");
-        let rank = Op { name: name.clone(), ..l.op.as_concatenated() };
-        let key = SortKey::new(&rank, name, pipeline_steps(&[(&l.op, l.reverse)]), aoi);
-        out.push((key, Chain { legs: vec![l.clone()], rank }));
-    }
+    out.extend(direct.into_iter().map(|l| direct_chain(l, aoi)));
     finish(out, src, dst, aoi)
+}
+
+/// One of the CRSs' own transformations as a chain of one leg, with what PROJ sorts it by: as
+/// concatenated with the conversion into the CRS of the datum, as PROJ ranks it then. Run as a
+/// chain, it moves heights as [`datum::run_op`] does (kept between 2D CRSs when it keeps them).
+fn direct_chain(l: &Leg, aoi: Option<&[f64; 4]>) -> (SortKey, Chain) {
+    let name = step_names(&l.op, l.reverse).join(" + ");
+    let rank = Op { name: name.clone(), ..l.op.as_concatenated() };
+    let key = SortKey::new(&rank, name, pipeline_steps(&[(&l.op, l.reverse)]), aoi);
+    (key, Chain { legs: vec![l.clone()], rank })
 }
 
 /// Sorts GDAL's list of transformations between two geographic CRSs again when the area of
@@ -1336,6 +1340,36 @@ mod tests {
         let used_ballpark = std::cell::Cell::new(false);
         assert!(route.apply_reporting(&src, 110.0, 35.0, p, false, &|op, _| used_ballpark.set(op.is_none_or(|op| op.ballpark))).is_some());
         assert!(used_ballpark.get());
+    }
+
+    /// A route of one kind, for tests.
+    fn route_of(kind: Kind) -> Route {
+        Route { kind, boxes: OnceLock::new(), hub_boxes: OnceLock::new(), src_ops: Vec::new(), dst_ops: Vec::new() }
+    }
+
+    #[test]
+    fn own_transformations_run_as_chains_move_points_and_heights_as_listed() {
+        let src = Def::new(&SpatialRef::parse("EPSG:4230").unwrap()).unwrap();
+        let p = Point { lon: 10_f64.to_radians(), lat: 50_f64.to_radians(), h: 100.0, t: None };
+        for leg in src.ops().iter().filter(|o| !o.ballpark).flat_map(|o| [false, true].map(|reverse| Leg { op: o.clone(), reverse })) {
+            let list = route_of(Kind::List(vec![leg.clone()]));
+            let chain = route_of(Kind::Chains { chains: vec![direct_chain(&leg, None).1], ballpark: None });
+            for three_d in [false, true] {
+                let (a, b) = (list.apply(&src, 10.0, 50.0, p, three_d), chain.apply(&src, 10.0, 50.0, p, three_d));
+                assert_eq!(a, b, "{} reversed {} in 3D {three_d}", leg.op.name, leg.reverse);
+            }
+        }
+        // A missing grid: the list's next transformation that needs none, the chains' ballpark,
+        // both no shift here.
+        let grid = Leg {
+            op: Arc::new(Op { accuracy: 1.0, steps: datum::nadgrids_steps("/nonexistent/terrio-grid.tif"), ..Op::world(Vec::new()) }),
+            reverse: false,
+        };
+        let ballpark = Op { ballpark: true, accuracy: -1.0, ..Op::world(Vec::new()) };
+        let list = route_of(Kind::List(vec![grid.clone(), Leg { op: Arc::new(ballpark.clone()), reverse: false }]));
+        let chain = route_of(Kind::Chains { chains: vec![direct_chain(&grid, None).1], ballpark: Some(ballpark) });
+        assert_eq!(list.apply(&src, 10.0, 50.0, p, false), Some(p));
+        assert_eq!(chain.apply(&src, 10.0, 50.0, p, false), Some(p));
     }
 
     /// A point moved from one EPSG CRS to another.

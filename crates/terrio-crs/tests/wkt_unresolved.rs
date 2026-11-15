@@ -80,7 +80,7 @@ fn compute_offsets() -> Vec<(Value, f64, f64)> {
 #[test]
 fn wkts_proj_does_not_resolve_are_placed_as_proj_does() {
     let all = offsets();
-    assert!(all.len() > 900, "{} cases", all.len());
+    assert!(all.len() > 1000, "{} cases", all.len());
     let mut bad = vec![];
     let mut searched = 0;
     for (case, proj, by_code) in all {
@@ -105,7 +105,7 @@ fn wkts_proj_does_not_resolve_are_placed_as_proj_does() {
 #[test]
 fn datum_pivot_and_renamed_datums_are_placed_by_the_code() {
     let pending: Vec<_> = offsets().iter().filter(|(case, ..)| case["pending"].as_bool().unwrap()).collect();
-    assert_eq!(pending.len(), 18);
+    assert_eq!(pending.len(), 26);
     for (case, proj, by_code) in pending {
         let name = case["name"].as_str().unwrap();
         assert!(*by_code < 1e-3, "{name}: {by_code:.3} m from the code's placement");

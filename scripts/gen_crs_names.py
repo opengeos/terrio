@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT
+
 """Generate the CRS names PROJ looks geographic 2D and projected CRSs up by.
 
 Writes ``crates/terrio-crs/data/crs_names.tsv.zst``, a zstd-compressed text table with lines
@@ -15,8 +18,8 @@ single CRS (several, or one of another authority). The kinds are:
   WKT 1).
 
 A ``g`` or ``p`` name absent from the table stands for the EPSG CRS whose official name it is
-(whatever the case of its ASCII letters) when PROJ finds that CRS alone, and for none otherwise. The table lists only
-the names that are not, together with the ESRI names (``G``, ``P``).
+(whatever the case of its ASCII letters) when PROJ finds that CRS alone, and for none otherwise.
+The table lists only the names that are not, together with the ESRI names (``G``, ``P``).
 
 Usage: python scripts/gen_crs_names.py
 
@@ -176,7 +179,8 @@ def rows():
             n for (n,) in db.execute(f"SELECT name FROM {table} WHERE 1 = 1 {own_type}")
         }
         aliases = db.execute(
-            f"SELECT a.alt_name, a.source FROM {table} ov JOIN alias_name a ON ov.auth_name = a.auth_name "
+            f"SELECT a.alt_name, a.source FROM {table} ov JOIN alias_name a "
+            "ON ov.auth_name = a.auth_name "
             f"AND ov.code = a.code WHERE a.table_name = '{table}' {alias_type}"
         ).fetchall()
         names |= {n for n, source in aliases if source != "EPSG_OLD"}
