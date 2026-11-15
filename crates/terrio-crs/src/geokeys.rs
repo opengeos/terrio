@@ -1256,8 +1256,9 @@ impl SpatialRef {
                 let name = self.name().unwrap_or_else(|| "unnamed".into());
                 // Keep engineering and unrepresentable coded definitions as WKT. In particular,
                 // an engineering identifier must never be written as a projected EPSG code.
-                // A code GDAL would read as another CRS (`gdal_code`) is written as WKT too, which
-                // keeps its datum transformations and height.
+                // Every coded CRS not written by its code, a code GDAL would read as another CRS
+                // (`gdal_code`) among them, is written as WKT, which keeps its datum
+                // transformations and height.
                 let user = if engineering || self.epsg.is_some() { None } else { user_defined_keys(self, &name) };
                 match user {
                     Some(keys) => v = keys,
@@ -1297,13 +1298,12 @@ fn engineering_cs(wkt: &str) -> bool {
     matches!(root.as_str(), "LOCAL_CS" | "ENGCRS" | "ENGINEERINGCRS")
 }
 
-/// A registered horizontal code usable by GeoTIFF 1.1 (requirements 12.4 and 13.4), and
-/// whether it is geographic. Engineering, vertical, geocentric and unknown codes need WKT.
-/// The EPSG code to write for an EPSG CRS, so that GDAL 3.12 reads it as that CRS: a deprecated
+/// The EPSG code to write for an EPSG CRS, so that GDAL 3.12 reads it as that CRS. A deprecated
 /// code with a single replacement reads as the replacement by default
-/// (`OSR_USE_NON_DEPRECATED=YES`), so the replacement where it is the same CRS (EPSG:4329, WGS 84
-/// (3D), as 4979) on the same datum, else `None` (EPSG:4855, ETRS89 / NTM zone 5, would read as EPSG:5105, 6,431 km
-/// away, written as WKT); the code itself otherwise.
+/// (`OSR_USE_NON_DEPRECATED=YES`): the replacement where it is the same CRS (EPSG:4329, WGS 84
+/// (3D), as 4979: current, with the same definition, datum, datum transformations and area of
+/// use), else `None`, for WKT (EPSG:4855, ETRS89 / NTM zone 5, would read as EPSG:5105, 6,431 km
+/// away). The code itself otherwise.
 fn gdal_code(code: u32) -> Option<u32> {
     match crate::epsg_replacements(code) {
         [replacement] => {
@@ -1322,6 +1322,8 @@ fn gdal_code(code: u32) -> Option<u32> {
     }
 }
 
+/// A registered horizontal code usable by GeoTIFF 1.1 (requirements 12.4 and 13.4), and
+/// whether it is geographic. Engineering, vertical, geocentric and unknown codes need WKT.
 fn horizontal_geokey(code: u32) -> Option<(u16, bool)> {
     let code = gdal_code(code)?;
     let short = u16::try_from(code).ok().filter(|code| (1024..USER_DEFINED).contains(code))?;

@@ -174,7 +174,7 @@ fn geokeys_of_deprecated_codes_read_as_their_own_definition() {
             .copied()
     };
     let wgs84 = SpatialRef::from_epsg(4326).unwrap();
-    let mut written = 0;
+    let (mut written, mut round_tripped) = (0, 0);
     for case in cases() {
         let code = case["code"].as_u64().unwrap() as u32;
         let Ok(crs) = SpatialRef::from_epsg(code) else { continue };
@@ -192,6 +192,7 @@ fn geokeys_of_deprecated_codes_read_as_their_own_definition() {
         let (lon, lat) = (case["point"][0].as_f64().unwrap(), case["point"][1].as_f64().unwrap());
         let place = |c: &SpatialRef| Transformer::new(&wgs84, c).and_then(|t| t.transform(lon, lat)).ok();
         if let (Some(a), Some(b)) = (place(&crs), place(&back)) {
+            round_tripped += 1;
             let tolerance = if crs.is_geographic() { 1e-8 } else { 1e-3 };
             let same = (a.0 - b.0).abs() < tolerance && (a.1 - b.1).abs() < tolerance;
             // EPSG:6986 (IGD05/12, 3D), written as WKT: terrio reads that WKT with a datum shift
@@ -200,7 +201,7 @@ fn geokeys_of_deprecated_codes_read_as_their_own_definition() {
             assert_eq!(same, code != 6986, "EPSG:{code}: {a:?} read back as {b:?}");
         }
     }
-    assert!(written > 400, "{written}");
+    assert!(written > 400 && round_tripped > 400, "{written} written, {round_tripped} round-tripped");
     // WGS 84 (3D), deprecated, is written as its replacement, the same CRS: EPSG:4979.
     let keys = SpatialRef::from_epsg(4329).unwrap().to_geokeys().unwrap();
     assert!(keys.shorts.contains(&(4096, 4979)), "{keys:?}");
