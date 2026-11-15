@@ -415,9 +415,10 @@ A PROJ string's ellipsoid is read as PROJ 9.8.1 reads it with `+type=crs`:
 - Otherwise the ellipsoid is `+datum`'s, else `+ellps`' (`+ellps` beside `+datum` is ignored),
   else WGS 84. `+a` changes its size. Of `+rf`, `+f`, `+es`, `+e` and `+b`, only the first
   given counts. On a named ellipsoid or datum, only `+b` changes the shape, or `+rf` on an
-  ellipsoid PROJ defines by its inverse flattening. `+f`, `+es` and `+e` are ignored, and
-  `clrk66`, `sphere` and other ellipsoids PROJ defines by their semi-minor axis keep that
-  axis under `+a`. So `+datum=WGS84 +a=6400000` keeps WGS 84's flattening, and
+  ellipsoid PROJ defines by its inverse flattening. `+f`, `+es` and `+e` are ignored.
+  `+ellps=clrk66`, `+ellps=sphere` and other ellipsoids PROJ defines by their semi-minor
+  axis keep that axis under `+a`. A datum's ellipsoid is defined by its inverse flattening,
+  NAD27's Clarke 1866 too, so `+a` and `+rf` change it as they change `+ellps=WGS84`. So `+datum=WGS84 +a=6400000` keeps WGS 84's flattening, and
   `+ellps=WGS84 +f=0` is WGS 84. Without a named ellipsoid, `+a` and the first shape
   parameter give the ellipsoid, and a shape parameter without `+a` is refused.
 - Ellipsoid parameters beside `+datum` make PROJ drop the datum for an unnamed one on its

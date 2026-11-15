@@ -265,21 +265,25 @@ pub(crate) fn proj_ellipsoid(p: &Params, method: &str) -> std::result::Result<Pr
         Some(key) => Ell::from_a_es(size, eccentricity(key, atof(key), size)?),
         None => Ell::from_a_es(size, step_base.map_or(0.0, |e| e.es)),
     };
-    // The CRS: a datum's ellipsoid, which PROJ defines by its inverse flattening, else `+ellps`'.
+    // The CRS: a datum's ellipsoid, which PROJ defines by its inverse flattening (that of
+    // `clrk66` for NAD27, not its semi-minor axis), else `+ellps`'.
     let rf = |e: Ell| if e.es == 0.0 { 0.0 } else { 1.0 / (1.0 - e.one_es.sqrt()) };
-    let datum = datum.map(|d| (d.0, if d.1 < 0.0 { rf(named(d)) } else { d.1 }));
-    let (crs, by_rf) = match datum.or(ellps).or(default) {
-        Some((base_a, v)) => {
-            let a = a.unwrap_or(base_a);
-            match (shape, v < 0.0) {
-                (Some("b"), _) => (Ell::from_a_b(a, number("b")), false),
-                (_, true) => (Ell::from_a_b(a, -v), false),
-                (Some("rf"), _) => (Ell::from_a_rf(a, number("rf")), true),
-                _ => (Ell::from_a_rf(a, v), true),
+    let (crs, by_rf) = match datum.map(|d| (d, true)).or(ellps.map(|e| (e, false))).or(default.map(|d| (d, false))) {
+        Some(((base_a, v), of_datum)) => {
+            let by_axis = v < 0.0 && !of_datum;
+            match (shape, a) {
+                (Some("b"), _) => (Ell::from_a_b(a.unwrap_or(base_a), number("b")), false),
+                (Some("rf"), a) if !by_axis => (Ell::from_a_rf(a.unwrap_or(base_a), number("rf")), true),
+                // Unchanged, the named ellipsoid itself, bit for bit.
+                (_, None) => (named((base_a, v)), v > 0.0),
+                (_, Some(a)) if by_axis => (Ell::from_a_b(a, -v), false),
+                (_, Some(a)) => (Ell::from_a_rf(a, if v < 0.0 { rf(named((base_a, v))) } else { v }), true),
             }
         }
         None => match shape {
-            Some(key) => (Ell::from_a_es(size, eccentricity(key, number(key), size)?), key != "b"),
+            // Its axes as PROJ's `createTwoAxis` keeps them.
+            Some("b") => (eccentricity("b", number("b"), size).map(|_| Ell::from_a_b(size, number("b")))?, false),
+            Some(key) => (Ell::from_a_es(size, eccentricity(key, number(key), size)?), true),
             None => (Ell::from_a_rf(size, 0.0), false),
         },
     };

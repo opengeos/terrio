@@ -1,8 +1,9 @@
 //! A PROJ string's ellipsoid is read as PROJ 9.8.1 reads it, with `+type=crs`: `+R` first, then
 //! `+datum`'s ellipsoid or else `+ellps`', with `+a` for its size, and the first of `+rf`, `+f`,
 //! `+es`, `+e` and `+b` for its shape (PROJ drops the others). A named ellipsoid or datum keeps
-//! its shape under `+f`, `+es` and `+e`, and one PROJ defines by its semi-minor axis (`clrk66`,
-//! `sphere`, NAD27's) keeps that axis under `+a`, `+rf`, `+f`, `+es` and `+e`. `+f=0` makes
+//! its shape under `+f`, `+es` and `+e`. An ellipsoid PROJ defines by its semi-minor axis
+//! (`clrk66`, `sphere`) keeps that axis under `+a`, `+rf`, `+f`, `+es` and `+e`; a datum's is
+//! defined by its inverse flattening (NAD27's Clarke 1866 too), which `+a` keeps. `+f=0` makes
 //! orthographic spherical. A spherification flag PROJ's CRS parser does not take as part of the
 //! method (all but `+R_A` for `laea`, `cea`, `mill` and `vandg`) keeps the string as PROJ reads
 //! it in a pipeline: the shape parameter then changes the named ellipsoid's shape, `+a` keeps
@@ -78,4 +79,23 @@ fn ellipsoid_parameters_are_read_as_proj_reads_them() {
         }
     }
     assert!(bad.is_empty(), "{} differences from PROJ in {} cases:\n{}", bad.len(), cases.len(), bad.join("\n"));
+}
+
+/// An unchanged datum's ellipsoid is its named ellipsoid, bit for bit, so that WKT 1 names it:
+/// PROJ 9.8.1 writes `SPHEROID["Clarke 1866",6378206.4,294.978698213898,AUTHORITY["EPSG","7008"]]`
+/// for `+proj=longlat +datum=NAD27 +towgs84=-8,160,176`.
+#[test]
+fn an_unchanged_datum_keeps_its_named_ellipsoid() {
+    let params = |s: &str| SpatialRef::parse(s).unwrap().projection_params().unwrap();
+    for (datum, ellps) in [("NAD27", "clrk66"), ("ire65", "mod_airy"), ("WGS84", "WGS84"), ("OSGB36", "airy")] {
+        let (d, e) = (params(&format!("+proj=tmerc +datum={datum}")), params(&format!("+proj=tmerc +ellps={ellps}")));
+        assert_eq!((d.a.to_bits(), d.b.to_bits()), (e.a.to_bits(), e.b.to_bits()), "{datum}, {ellps}");
+    }
+    let wkt = SpatialRef::parse("+proj=longlat +datum=NAD27 +towgs84=-8,160,176").unwrap().to_wkt().unwrap();
+    // Its name and code; terrio computes the inverse flattening from the eccentricity
+    // (294.978698213901), PROJ from the axes.
+    assert!(wkt.contains(r#"SPHEROID["Clarke 1866",6378206.4,294.9786982139"#) && wkt.contains(r#"AUTHORITY["EPSG","7008"]]"#), "{wkt}");
+    // Under `+a`, PROJ keeps the datum's inverse flattening (b = 6378303.518 for 6400 km).
+    let reshaped = params("+proj=tmerc +datum=NAD27 +a=6400000");
+    assert!((reshaped.b - 6_378_303.518_054_856).abs() < 1e-6, "{}", reshaped.b);
 }

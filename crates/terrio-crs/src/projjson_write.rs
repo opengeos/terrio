@@ -211,12 +211,10 @@ fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
 /// latitudes with heights. A projected CRS's coordinates do not depend on how its base CRS's
 /// latitudes are given, so a planetocentric base is written.
 fn refuse_misdescribed(root: &Node, p: &Params, def: &Def) -> Result<()> {
-    // The ellipsoid the PROJ string names, before an auxiliary sphere replaces it: its own
-    // parameters, its datum's, else WGS 84 (as `Def::from_proj` defaults).
-    let named = crate::datum::ellipsoid(p)
-        .or_else(|| p.str("datum").and_then(crate::def::datum_ellps).and_then(crate::math::Ell::named))
-        .unwrap_or_else(crate::math::Ell::wgs84);
-    let ellipsoidal = named.es != 0.0;
+    // The figure computed on, as PROJ reads the string, against the CRS's ellipsoid written:
+    // misdescribed when a flag makes another sphere of it (`+R_C` on an ellipsoid).
+    let shape = crate::def::proj_ellipsoid(p, p.str("proj").unwrap_or_default()).ok();
+    let ellipsoidal = shape.is_some_and(|e| if e.conformal { e.figure.es != 0.0 } else { e.figure != e.crs });
     if ellipsoidal && let Some(k) = ["R_A", "R_C", "R_V", "R_a", "R_g", "R_h", "R_lat_a", "R_lat_g"].iter().find(|k| p.has(k)) {
         return Err(unsupported(format!("a projection on an auxiliary sphere (+{k})")));
     }
