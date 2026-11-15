@@ -1129,7 +1129,8 @@ impl SpatialRef {
         if let Some(w) = self.epsg.and_then(epsg::get).map(|e| e.wkt.as_str()).or(self.wkt.as_deref())
             && is_variant_c(w)
         {
-            let p = wkt_proj(w).ok_or_else(|| Error::Crs("a Polar Stereographic (variant C) CRS terrio cannot convert".into()))?;
+            // Uncut: stored WKT, whose names (a PROJJSON's) may keep a NUL.
+            let p = wkt_proj_text(w).ok_or_else(|| Error::Crs("a Polar Stereographic (variant C) CRS terrio cannot convert".into()))?;
             return Ok(wbp::from_proj_string(&p)?);
         }
         if let Some(code) = self.epsg

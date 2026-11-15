@@ -862,7 +862,8 @@ pub fn user_defined_keys(crs: &SpatialRef, name: &str) -> Option<GeoKeyValues> {
         return keys_for_proj(p, name, None);
     }
     // A WKT: its PROJ string as terrio reads it, on the EPSG geographic CRS it is identified on.
-    if let Some(p) = crs.wkt.as_deref().and_then(crate::wkt_proj) {
+    // Uncut: stored WKT, whose names (a PROJJSON's) may keep a NUL.
+    if let Some(p) = crs.wkt.as_deref().and_then(crate::wkt_proj_text) {
         let geog = crs.geographic_code();
         return keys_for_proj(&p, name, geog);
     }

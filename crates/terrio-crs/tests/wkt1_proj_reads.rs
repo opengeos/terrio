@@ -212,3 +212,42 @@ fn an_esri_pe_citation_ends_at_its_first_nul() {
     assert!(read(&without).is_some());
     assert!(read(with_nul).is_none());
 }
+
+/// A bound CRS read from PROJJSON with a NUL (`\u0000`) in its name keeps its shift wherever
+/// terrio reads its stored WKT: its PROJ string is PROJ's (`+towgs84` included), it places a
+/// point in WGS 84 as PROJ does, and its GeoTIFF keys are written.
+#[test]
+fn a_bound_projjson_with_a_nul_in_its_name_keeps_its_shift() {
+    offline();
+    let data = data();
+    let case = &data["bound_projjson"];
+    let crs = SpatialRef::from_projjson(case["projjson"].as_str().unwrap()).unwrap();
+    assert!(crs.wkt.as_deref().is_some_and(|w| w.contains("un\0known")));
+    let proj4 = case["proj4"].as_str().unwrap();
+    let got = crs.to_proj4().unwrap();
+    assert!(same_proj(&got, proj4), "{got}, PROJ {proj4}");
+    let num = |v: &Value, i: usize| v[i].as_f64().unwrap();
+    let t = Transformer::new(&crs, &SpatialRef::from_epsg(4326).unwrap()).unwrap();
+    let at = t.transform(num(&case["point"], 0), num(&case["point"], 1)).unwrap();
+    let proj = (num(&case["proj"], 0), num(&case["proj"], 1));
+    // 1e-8 degrees is about a millimetre.
+    assert!((at.0 - proj.0).abs() < 1e-8 && (at.1 - proj.1).abs() < 1e-8, "{at:?}, PROJ {proj:?}");
+    assert!(terrio_crs::geokeys::user_defined_keys(&crs, "bound").is_some());
+}
+
+/// A stored WKT 1 with `TOWGS84` and a NUL in its quoted name (as a PROJJSON name gives one) is
+/// written to PROJJSON as the `BoundCRS` PROJ 9.8.1 writes for it, with the same shift.
+#[test]
+fn a_stored_wkt_with_a_nul_in_its_name_is_written_with_its_shift() {
+    offline();
+    let data = data();
+    let case = &data["towgs84_projjson"];
+    let wkt = case["wkt"].as_str().unwrap().replace(r#"GEOGCS["unknown""#, "GEOGCS[\"un\0known\"");
+    assert!(wkt.contains('\0'));
+    let crs = SpatialRef { wkt: Some(wkt), ..Default::default() };
+    let written: Value = serde_json::from_str(&crs.to_projjson().unwrap()).unwrap();
+    assert_eq!(written["type"], case["type"], "{written}");
+    let got: Vec<f64> = written["transformation"]["parameters"].as_array().unwrap().iter().map(|p| p["value"].as_f64().unwrap()).collect();
+    let proj: Vec<f64> = case["parameters"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+    assert_eq!(got, proj);
+}

@@ -12,7 +12,10 @@ where it places points in them.
 
 EPSG:32631's PROJJSON (`CRS.to_json()`) with a NUL (`\\u0000`) in a parameter's name is read
 by `CRS.from_json`, with its `to_epsg()` and a point by `Transformer.from_crs("EPSG:4326", crs,
-always_xy=True)`.
+always_xy=True)`. So is a bound CRS's PROJJSON (UTM 32N with `+towgs84`) with a NUL in its
+name, with `to_proj4()` and a point by `Transformer.from_crs(crs, "EPSG:4326", always_xy=True)`.
+A WKT 1 with `TOWGS84` is written by `CRS.to_json_dict()`: its type and its transformation's
+parameters.
 
 Makassar / NEIEZ is also taken to WGS 84 by `Transformer.from_crs(crs, "EPSG:4326",
 always_xy=True)`, with the code `CRS.to_epsg()` identifies.
@@ -257,6 +260,36 @@ def main():
         "proj": list(t.transform(3.0, 45.0, errcheck=True)),
         "epsg": crs.to_epsg(),
     }
+    # A bound CRS (UTM 32N on International 1924 with `+towgs84`) in PROJJSON with a NUL in its
+    # name, which PROJ keeps, still bound by its shift.
+    plain = CRS(
+        "+proj=utm +zone=32 +ellps=intl +towgs84=-87,-98,-121 +units=m +type=crs"
+    ).to_json()
+    text = plain.replace('"name":"unknown"', '"name":"un\\u0000known"', 1)
+    assert text != plain
+    crs = CRS.from_json(text)
+    assert json.loads(text)["source_crs"]["name"] == "un\0known"
+    assert crs.to_json_dict()["type"] == "BoundCRS"
+    t = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+    bound = {
+        "projjson": text,
+        "point": (500000.0, 5000000.0),
+        "proj": list(t.transform(500000.0, 5000000.0, errcheck=True)),
+        "proj4": crs.to_proj4(),
+    }
+    # A WKT 1 with TOWGS84, which PROJ writes as a PROJJSON `BoundCRS`; terrio stores it with a
+    # NUL in its quoted name, as a PROJJSON name can give one.
+    wkt = (
+        'GEOGCS["unknown",DATUM["Local",SPHEROID["International 1924",6378388,297],'
+        'TOWGS84[-87,-98,-121,0,0,0,0]],PRIMEM["Greenwich",0],'
+        'UNIT["degree",0.0174532925199433]]'
+    )
+    exported = CRS.from_wkt(wkt).to_json_dict()
+    towgs84 = {
+        "wkt": wkt,
+        "type": exported["type"],
+        "parameters": [p["value"] for p in exported["transformation"]["parameters"]],
+    }
     untransformed = []
     for name, wkt in NOT_TRANSFORMED:
         crs = CRS.from_wkt(wkt)
@@ -280,6 +313,8 @@ def main():
                 "read": read,
                 "to_wgs84": to_wgs84,
                 "projjson": projjson,
+                "bound_projjson": bound,
+                "towgs84_projjson": towgs84,
                 "refused": refused,
                 "untransformed": untransformed,
             },

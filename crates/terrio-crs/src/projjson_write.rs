@@ -150,7 +150,8 @@ fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
     // reads it; a CRS made from an EPSG code (its table WKT) is written as such, whatever that
     // WKT holds: its datum shift is EPSG's.
     let from_table = s.proj4.is_none() && entry.is_some_and(|e| s.wkt.as_deref() == Some(e.wkt.as_str()));
-    let given = if from_table { None } else { s.proj4.clone().or_else(|| s.wkt.as_deref().and_then(crate::wkt_proj)) };
+    // Uncut: stored WKT, whose names (a PROJJSON's) may keep a NUL.
+    let given = if from_table { None } else { s.proj4.clone().or_else(|| s.wkt.as_deref().and_then(crate::wkt_proj_text)) };
     let towgs84 = match given.and_then(|g| Params::parse(&g).list("towgs84")) {
         Some(t) if !matches!(t.len(), 3 | 7) => return Err(unsupported(format!("a +towgs84 of {} values", t.len()))),
         Some(t) if t.iter().any(|v| !v.is_finite()) => return Err(unsupported("a +towgs84 with a non-finite value")),
