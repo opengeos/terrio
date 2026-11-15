@@ -1769,10 +1769,11 @@ in grads; in WKT 2, PROJ's WKT of EPSG:4807, 27572 and 27500, and geographic, ge
 and geocentric CRSs with prime meridians in their own unit, in their CRS's or base CRS's
 (`ANGLEUNIT`, `UNIT` in grads, radians and gons) and in none, 112 WKTs. EPSG:4807 and PROJ strings
 with `+pm=` within and just beyond 1e-10 radians of Paris and Greenwich, on both sides, and near
-Copenhagen transform with PROJ's prime meridian, within 1e-12 degrees, and Paris is written as PROJ writes it
-in PROJ strings, WKT 1, PROJJSON and GeoKeys. A WKT 2 prime meridian unit without its size is
-refused, as in PROJ (`cargo test -p terrio-crs --test grads_and_prime_meridians`; regenerate with
-`scripts/gen_grads_and_prime_meridians.py`, pyproj 3.8.0).
+Copenhagen transform with PROJ's prime meridian, within 1e-12 degrees, and Paris is written as PROJ
+writes it in PROJ strings, WKT 1, PROJJSON and GeoKeys. ESRI's WKT 1 of EPSG:4901 and 27500 is
+identified as its code and placed where PROJ places the code. A WKT 2 prime meridian unit without
+its size is refused, as in PROJ (`cargo test -p terrio-crs --test grads_and_prime_meridians`;
+regenerate with `scripts/gen_grads_and_prime_meridians.py`, pyproj 3.8.0).
 
 PROJ-string parameter values are refused where PROJ 9.8.1 refuses them: each method with each
 common parameter unreadable (`abc`) or in radians (`0.5r`), scale factors PROJ may refuse, and

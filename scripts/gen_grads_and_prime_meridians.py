@@ -22,7 +22,14 @@ ellipsoid for one without (PROJ's ballpark: no datum shift).
 
 Prime meridians near Paris's (`pm_cases`): EPSG:4807 and PROJ strings with `+pm=` on both sides of
 the 1e-10 radians within which PROJ transforms with its `+pm=paris`, each with the longitude of
-(0, 0) in EPSG:4275 by `Transformer.from_crs(crs, "EPSG:4275", always_xy=True)`.
+(0, 0) in EPSG:4275 by `Transformer.from_crs(crs, "EPSG:4275", always_xy=True)`; also near
+Copenhagen and Greenwich.
+
+Exports (`exports`): the prime meridian PROJ writes for Paris in `to_proj4()`,
+`to_wkt("WKT1_GDAL")` and `to_json()`.
+
+Identified (`identified`): ESRI's WKT 1 of EPSG:4901 and 27500 as PROJ writes it, unstripped, and a
+point in WGS 84 by `Transformer.from_crs(CRS.from_epsg(code), "EPSG:4326", always_xy=True)`.
 
 Usage: PROJ_NETWORK=OFF python scripts/gen_grads_and_prime_meridians.py (needs pyproj 3.8.0)
 """
@@ -423,11 +430,28 @@ def main():
         exports.append(
             {"crs": crs, "proj4_pm": pm, "wkt1_pm": wkt1, "projjson_pm": lon}
         )
+    # ESRI's WKT of ATF (Paris) and Nord de Guerre as PROJ writes it, unstripped: identified as
+    # their codes, and placed in WGS 84 as PROJ places the codes. (PROJ's own transformation of
+    # the bare ESRI WKT of EPSG:4901 goes through IGNF's chain with the prime meridian applied
+    # twice, 178 km west; terrio does not follow it.)
+    idents = []
+    for code, point in [(4901, (0.5, 54.5)), (27500, (500000.0, 300000.0))]:
+        crs = CRS.from_epsg(code)
+        t = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+        idents.append(
+            {
+                "code": code,
+                "wkt": crs.to_wkt("WKT1_ESRI"),
+                "point": point,
+                "proj": list(t.transform(*point, errcheck=True)),
+            }
+        )
     data = {
         "proj_version": pyproj.proj_version_str,
         "cases": rows,
         "pm_cases": pm_rows,
         "exports": exports,
+        "identified": idents,
     }
     OUT.write_text(json.dumps(data, indent=1) + "\n")
 

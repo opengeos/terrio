@@ -1965,5 +1965,31 @@
    "wkt1_pm": 2.33722917,
    "projjson_pm": 2.33722917
   }
+ ],
+ "identified": [
+  {
+   "code": 4901,
+   "wkt": "GEOGCS[\"GCS_ATF_Paris\",DATUM[\"D_ATF\",SPHEROID[\"Plessis_1817\",6376523.0,308.64]],PRIMEM[\"Paris_RGS\",2.33720833333333],UNIT[\"Grad\",0.0157079632679489]]",
+   "point": [
+    0.5,
+    54.5
+   ],
+   "proj": [
+    2.78720833333333,
+    49.050000000000004
+   ]
+  },
+  {
+   "code": 27500,
+   "wkt": "PROJCS[\"Nord_de_Guerre\",GEOGCS[\"GCS_ATF_Paris\",DATUM[\"D_ATF\",SPHEROID[\"Plessis_1817\",6376523.0,308.64]],PRIMEM[\"Paris_RGS\",2.33720833333333],UNIT[\"Grad\",0.0157079632679489]],PROJECTION[\"Lambert_Conformal_Conic\"],PARAMETER[\"False_Easting\",500000.0],PARAMETER[\"False_Northing\",300000.0],PARAMETER[\"Central_Meridian\",6.0],PARAMETER[\"Standard_Parallel_1\",55.0],PARAMETER[\"Scale_Factor\",0.99950908],PARAMETER[\"Latitude_Of_Origin\",55.0],UNIT[\"Meter\",1.0]]",
+   "point": [
+    500000.0,
+    300000.0
+   ],
+   "proj": [
+    7.73720833333333,
+    49.5
+   ]
+  }
  ]
 }

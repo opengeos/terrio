@@ -28,7 +28,9 @@
 //! - the longitude of (0, 0) of the prime meridian cases in EPSG:4275 by
 //!   `Transformer.from_crs(crs, "EPSG:4275", always_xy=True)`;
 //! - the prime meridian PROJ writes for Paris in `CRS.to_proj4()`, `to_wkt("WKT1_GDAL")` and
-//!   `to_json()`.
+//!   `to_json()`;
+//! - ESRI's WKT 1 of EPSG:4901 and 27500 (`CRS.from_epsg(code).to_wkt("WKT1_ESRI")`) and a point
+//!   in WGS 84 by `Transformer.from_crs(CRS.from_epsg(code), "EPSG:4326", always_xy=True)`.
 //!
 //! Tolerance: 1 mm in metres, 1e-9 of an angular unit (0.1 mm in grads and degrees); 1e-12
 //! degrees for prime meridians.
@@ -144,4 +146,24 @@ fn a_prime_meridian_unit_without_its_size_is_refused() {
     let src = SpatialRef::from_proj4("+proj=longlat +ellps=clrk80ign").unwrap();
     assert!(Transformer::new(&src, &SpatialRef::from_wkt(wkt)).and_then(|t| t.transform(2.35, 48.85)).is_err());
     assert!(terrio_crs::wkt_proj(wkt).is_none());
+}
+
+/// ESRI's WKT of ATF (Paris) and Nord de Guerre, whose Paris RGS is in degrees beside grads, is
+/// identified as EPSG:4901 and 27500, and places a point in WGS 84 where PROJ places the code.
+/// PROJ's own transformation of the bare ESRI WKT of EPSG:4901 goes through IGNF's chain with
+/// the prime meridian applied twice, 178 km west, which terrio does not follow.
+#[test]
+fn esri_atf_paris_is_identified_as_its_code() {
+    offline();
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    let cases = data()["identified"].as_array().unwrap().clone();
+    assert_eq!(cases.len(), 2);
+    for case in cases {
+        let code = case["code"].as_u64().unwrap() as u32;
+        let crs = SpatialRef::from_wkt(case["wkt"].as_str().unwrap());
+        assert_eq!(crs.epsg, Some(code));
+        let (x, y) = pair(&case["point"]);
+        let got = Transformer::new(&crs, &wgs84).unwrap().transform(x, y).unwrap();
+        assert!(off(&wgs84, got, pair(&case["proj"])) <= 1.0, "EPSG:{code}: {got:?}, PROJ {:?}", case["proj"]);
+    }
 }
