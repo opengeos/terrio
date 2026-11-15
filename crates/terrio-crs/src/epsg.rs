@@ -28,6 +28,9 @@ static VERTICAL_DATA: &[u8] = include_bytes!("../data/epsg_vertical.tsv.zst");
 /// The names and aliases of EPSG datums, generated from PROJ by `scripts/gen_datum_names.py`:
 /// `code<TAB>rank<TAB>name` lines.
 static DATUM_NAMES: &[u8] = include_bytes!("../data/datums.tsv.zst");
+/// The CRSs PROJ finds by the names of CRSs without ID, generated from PROJ by
+/// `scripts/gen_crs_names.py`.
+static CRS_NAMES: &[u8] = include_bytes!("../data/crs_names.tsv.zst");
 
 /// An EPSG (or ESRI) CRS of the table.
 #[derive(Debug)]
@@ -490,6 +493,32 @@ fn datum_names() -> &'static DatumNames {
 /// or a former name of, in order of code.
 pub(crate) fn datums_named(name: &str) -> Vec<u32> {
     datum_names().0.get(&datum_key(name)).map(|(_, c)| c.clone()).unwrap_or_default()
+}
+
+/// The EPSG CRS PROJ 9.8.1 finds by the name of a geographic 2D or projected CRS without ID, when
+/// it finds a single CRS (`createObjectsFromName`, among the names and aliases of its database's
+/// CRSs, whatever the case of their ASCII letters); first, for an ESRI WKT 1 (`esri`), the CRS the
+/// name is an ESRI alias of. `fallback` is the code terrio reads the CRS as, which a name absent
+/// from the table stands for when it is its official name.
+pub(crate) fn crs_named_as_proj(name: &str, projected: bool, esri: bool, fallback: Option<u32>) -> Option<u32> {
+    static NAMES: OnceLock<HashMap<(u8, String), u32>> = OnceLock::new();
+    let names = NAMES.get_or_init(|| {
+        decompress(CRS_NAMES)
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .filter_map(|l| {
+                let mut f = l.splitn(3, '\t');
+                let (kind, name, code) = (f.next()?, f.next()?, f.next()?.parse().ok()?);
+                Some(((*kind.as_bytes().first()?, name.to_string()), code))
+            })
+            .collect()
+    });
+    let (exact, folded) = if projected { (b'P', b'p') } else { (b'G', b'g') };
+    let found = (esri.then(|| names.get(&(exact, name.to_string()))).flatten()).or_else(|| names.get(&(folded, name.to_ascii_lowercase())));
+    match found {
+        Some(&code) => (code != 0).then_some(code),
+        None => fallback.filter(|c| get(*c).is_some_and(|e| e.name.eq_ignore_ascii_case(name))),
+    }
 }
 
 /// The official name of an EPSG datum; of the WGS 84 and ETRS89 ensembles, without `ensemble`

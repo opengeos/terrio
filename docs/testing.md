@@ -1760,6 +1760,20 @@ the target's datum (and without the shift in CRSs on the source's datum and in o
 target's ellipsoid), within 1 mm (`cargo test -p terrio-crs --test wkt2_bound`;
 regenerate with `scripts/gen_wkt2_bound.py`, pyproj 3.8.0).
 
+WKTs that PROJ 9.8.1 does not resolve to their EPSG CRS (ESRI WKT 1, renamed CRSs) and WKTs that
+it does resolve (WKT 2 without IDs, with the datum's ID, WKT 1 with the datum's `AUTHORITY`) place
+points where PROJ does. The WKTs are variants of the 16 geographic CRSs whose ESRI or renamed WKT
+PROJ places through an intermediate datum (Monte Mario (Rome), Tokyo 1892, DHDN, ...), of every
+20th EPSG geographic 2D CRS, and ESRI WKTs of eight projected CRSs (three with northing first). The
+points go to and from WGS 84 and, for a sample, to ETRS89, NAD83 and ETRS89 / UTM zone 32N: 909
+cases, 48 of them away from the code's placement, all within 1 mm. On main, 35 of these cases
+differ, by 0.12 m to 390 m. Thirteen cases are pinned at the code's placement. They are the cases
+PROJ places by its datum pivot (ESRI's ONGD14) or through its ballpark into a CRS of a renamed
+datum, which terrio does not follow yet. ATF (Paris) is left out
+(`cargo test -p terrio-crs --test wkt_unresolved`; regenerate with
+`scripts/gen_wkt_unresolved.py`, pyproj 3.8.0; the names PROJ looks CRSs up by come from
+`scripts/gen_crs_names.py`).
+
 PROJ-string parameter values are refused where PROJ 9.8.1 refuses them: each method with each
 common parameter unreadable (`abc`) or in radians (`0.5r`), scale factors PROJ may refuse, and
 `+to_meter`, `+units`, `+vto_meter`, `+towgs84`, `+pm` and rotated-pole cases, 3,350 unique strings

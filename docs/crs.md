@@ -435,6 +435,32 @@ edges in the target CRS are covered. `scripts/gen_epsg_points.py` writes GDAL's 
 EPSG CRS, which `crates/terrio-crs/tests/epsg_accuracy.rs` checks terrio against (see the
 [conformance report](conformance.md)).
 
+A WKT that PROJ does not resolve to its EPSG CRS is transformed as PROJ transforms it, even though
+terrio reads it as that code. PROJ resolves a CRS by its ID. Without one, it looks the CRS up by its
+name among its database's names and aliases (an ESRI `GCS_` name first stands for the CRS it is an
+ESRI alias of), and the WKT must match the CRS it finds, axis order included. So an ESRI WKT 1
+geographic CRS, which has no `AXIS` and is therefore longitude first, is never resolved. Neither is
+a renamed CRS, nor a projected CRS whose axis order differs (ESRI's Gauss-Krüger zones), together
+with its geographic CRS. PROJ takes such a CRS's area from the CRS it finds by name, even when the
+WKT does not match it, and it has none for a name it does not find. Because the direct lookup in its
+database finds nothing, PROJ also searches chains through an intermediate datum. It does so when
+the CRSs' own transformations cover at most half the CRSs' common area (with no area for the CRS,
+that is the other CRS's area), or go only through the WGS 84 ensemble, or are only time-dependent
+between static CRSs. It then sorts all of them together. ESRI's `GCS_Monte_Mario_Rome` (EPSG:4806)
+goes through Monte Mario, 72 m from EPSG:4806's own transformation, which covers only Sardinia.
+`Tokyo_1892` (EPSG:5132) goes through Tokyo, and a renamed DHDN goes through ETRS89. This works in
+both directions and to every CRS. The names PROJ finds come from
+`crates/terrio-crs/data/crs_names.tsv.zst` (`scripts/gen_crs_names.py`).
+
+Two of PROJ's steps are not followed yet. The first is its datum pivot, which tries the datum's CRSs
+in order of code, the geocentric ones too. That is why ESRI's ONGD14 (EPSG:7373) gets "ONGD14 to
+WGS 84 (1)" between the geocentric CRSs, while terrio keeps EPSG:7373's "(2)". The second is the
+ballpark PROJ goes through, of unknown accuracy, when the datum's name is not its ID's
+(`DATUM["Local datum",...,ID["EPSG",6806]]`). For such a CRS terrio keeps the code's placement.
+terrio also does not follow PROJ for an ESRI ATF (Paris) (EPSG:4901) WKT without a code. PROJ takes
+IGNF's ATIG geocentric chain, which applies the Paris prime meridian twice and lands 178 km from
+PROJ's own placement of EPSG:4901 (opengeos/terrio#1012).
+
 `Transformer::operation_at(x, y, z)` returns the transformations `transform_3d` runs for a point,
 as PROJ's `proj_trans_get_last_used_operation`: their names, summed accuracy, grids and whether one
 is a ballpark, or `None` between CRSs of one datum. Conversions (projections, units) are not

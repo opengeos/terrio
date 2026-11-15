@@ -80,6 +80,21 @@ pub(crate) struct Def {
     params: Option<Arc<crate::ProjParams>>,
     /// What a WKT 2 `BOUNDCRS` with a Helmert transformation is bound to.
     bound: Option<Arc<Bound>>,
+    /// Set for a WKT whose CRS PROJ does not resolve to the EPSG CRS terrio reads it as.
+    unresolved: Option<Unresolved>,
+}
+
+/// A WKT whose CRS PROJ 9.8.1 does not resolve to an EPSG CRS (`CRS::getResolvedCRS`,
+/// `buildCRSIds`): without the CRS's ID, its name (ESRI's `GCS_` names standing for the CRS they
+/// are an ESRI alias of) is not that of a single CRS of PROJ's database, or that CRS differs, its
+/// axis order too (an ESRI WKT 1 has no `AXIS`, so longitude first). For a projected CRS, its
+/// geographic CRS (once the projected CRS is not resolved). PROJ then searches transformations
+/// through other datums, as [`route`] follows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Unresolved {
+    /// Whether the datum has an ID its name is not a name of (`DATUM["Local datum",...,
+    /// ID["EPSG",6806]]`), which PROJ then reaches by its ballpark, of unknown accuracy.
+    pub datum_renamed: bool,
 }
 
 /// A WKT 2 `BOUNDCRS` with a Helmert transformation.
@@ -279,6 +294,13 @@ impl Def {
                 }
                 d.bound = bound.bound;
             }
+            if s.proj4.is_none()
+                && s.epsg.is_some()
+                && d.geog.is_some()
+                && let Some(w) = s.wkt.as_deref()
+            {
+                d.resolve_as_proj(w, s.epsg);
+            }
             return Ok(d);
         }
         if let Some(p) = &s.proj4 {
@@ -289,6 +311,10 @@ impl Def {
         if let Some(w) = &s.wkt {
             let mut d = Self::from_wkt(w)?;
             d.tag_iau(s)?;
+            // A WKT without EPSG code on the datum of one, which PROJ resolves by its name only.
+            if d.geog.is_some() && d.bound.is_none() {
+                d.resolve_as_proj(w, None);
+            }
             return Ok(d);
         }
         if let Some(code) = s.epsg {
@@ -636,6 +662,7 @@ impl Def {
             area: None,
             params: Some(Arc::new(params)),
             bound: None,
+            unresolved: None,
         };
         // The datum transformation.
         let towgs84 = p.list("towgs84");
@@ -898,6 +925,7 @@ impl Def {
                 area: None,
                 params: None,
                 bound: None,
+                unresolved: None,
             };
             if !geographic {
                 d.proj = Some(Arc::new(WbProj { crs, a: ell.a }));
@@ -1190,6 +1218,11 @@ impl Def {
     }
 
     /// The EPSG code of the datum.
+    /// Whether PROJ does not resolve the WKT the CRS was read from to its EPSG CRS.
+    pub fn unresolved(&self) -> Option<Unresolved> {
+        self.unresolved
+    }
+
     pub fn datum_code(&self) -> Option<u32> {
         self.datum
     }
@@ -1265,6 +1298,89 @@ impl Def {
 
 /// PROJ's rule for an ellipsoid of the Earth: a semi-major axis within 0.7% of its mean radius
 /// (`Ellipsoid::guessBodyName`).
+impl Def {
+    /// Records whether PROJ resolves the CRS of WKT `w` (read as EPSG `code`, if any) and the area
+    /// it then uses: that of the CRS it finds by the WKT's name, even one that differs, else none.
+    fn resolve_as_proj(&mut self, w: &str, code: Option<u32>) {
+        if let Some((resolved, area, datum_renamed)) = proj_resolution(w, code)
+            && !resolved
+        {
+            self.unresolved = Some(Unresolved { datum_renamed });
+            self.area = area;
+        }
+    }
+}
+
+/// Whether a CRS node's first axis points north or south: when it has none, whether its implicit
+/// axes do (latitude first).
+fn north_first(n: &wkt1::Node, implicit: bool) -> bool {
+    match n.child("AXIS").and_then(|a| a.args.get(1)) {
+        Some(wkt1::Arg::Ident(d)) => ["north", "south"].iter().any(|x| d.eq_ignore_ascii_case(x)),
+        Some(_) => false,
+        None => implicit,
+    }
+}
+
+/// Whether the first axis of an EPSG CRS points north or south.
+fn registered_north_first(code: u32) -> Option<bool> {
+    let e = epsg::get(code)?;
+    wkt1::parse(&e.wkt).map(|r| north_first(&r, false))
+}
+
+/// How PROJ 9.8.1 resolves the geographic or projected CRS of WKT `w`, which terrio reads as EPSG
+/// `code`: whether it resolves it (for a projected CRS, the CRS or else its geographic CRS), the
+/// area it uses for it, and whether the datum is renamed (see [`Unresolved`]). `None` for other
+/// kinds of CRS.
+///
+/// A CRS with an ID is resolved (PROJ's `buildCRSIds` takes it whatever its axis order). Without,
+/// PROJ looks its name up (`createObjectsFromName`, with `data/crs_names.tsv.zst`), and resolves
+/// it when it finds the CRS alone and the WKT is equivalent to it, axis order included (but that
+/// of an implicit geographic CRS of a projected one).
+fn proj_resolution(w: &str, code: Option<u32>) -> Option<(bool, Option<[f64; 4]>, bool)> {
+    let root = wkt1::parse(w)?;
+    let key = root.key.to_ascii_uppercase();
+    let wkt1 = key == "GEOGCS" || key == "PROJCS";
+    let projected = match key.as_str() {
+        "GEOGCS" | "GEOGCRS" | "GEOGRAPHICCRS" => false,
+        "PROJCS" | "PROJCRS" | "PROJECTEDCRS" => true,
+        _ => return None,
+    };
+    let base = if projected { ["GEOGCS", "BASEGEOGCRS", "BASEGEODCRS"].iter().find_map(|k| root.child(k))? } else { &root };
+    let datum = ["DATUM", "TRF", "GEODETICDATUM", "ENSEMBLE"].iter().find_map(|k| base.child(k));
+    let datum_renamed = datum.is_some_and(|d| d.epsg().is_some_and(|c| d.name().is_none_or(|n| !epsg::datums_named(n).contains(&c))));
+    let has_id = |n: &wkt1::Node| n.child("AUTHORITY").or_else(|| n.child("ID")).is_some();
+    let gcs = |n: &wkt1::Node| wkt1 && n.name().is_some_and(|n| n.starts_with("GCS_"));
+    let area = |c: Option<u32>| c.and_then(epsg::get).and_then(|e| e.area);
+    if has_id(&root) {
+        return Some((true, area(code), datum_renamed));
+    }
+    // ESRI's WKT reader maps a `PROJCS` name after a `GCS_` geographic CRS or a `D_` datum.
+    let esri =
+        if projected { gcs(base) || (wkt1 && datum.and_then(|d| d.name()).is_some_and(|n| n.starts_with("D_"))) } else { gcs(&root) };
+    let found = root.name().and_then(|n| epsg::crs_named_as_proj(n, projected, esri, code));
+    let axes = |n: &wkt1::Node, implicit: bool, c: u32| registered_north_first(c) == Some(north_first(n, implicit));
+    let geog = code.and_then(epsg::get).map(|e| e.geog);
+    let equivalent = match (found, code) {
+        (Some(f), Some(c)) => {
+            f == c && axes(&root, false, c) && (!projected || base.child("AXIS").is_none() || geog.is_some_and(|g| axes(base, !wkt1, g)))
+        }
+        // PROJ resolves it to a CRS terrio has not read it as: left as it is.
+        (Some(_), None) => true,
+        _ => false,
+    };
+    let resolved = equivalent
+        || projected && {
+            // The geographic CRS of a projected CRS PROJ does not resolve, which PROJ looks its
+            // transformations up for.
+            has_id(base)
+                || geog.is_some_and(|g| {
+                    let f = base.name().and_then(|n| epsg::crs_named_as_proj(n, false, gcs(base), Some(g)));
+                    f == Some(g) && axes(base, !wkt1, g)
+                })
+        };
+    Some((resolved, area(found), datum_renamed))
+}
+
 pub(crate) fn earth_sized(a: f64) -> bool {
     (a - 6_375_000.0).abs() < 0.007 * 6_375_000.0
 }
