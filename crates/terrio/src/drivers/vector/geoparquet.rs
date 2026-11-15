@@ -32,7 +32,7 @@ use arrow_array::{
     Array, ArrayRef, BooleanArray, Date32Array, Float64Array, Int32Array, Int64Array, RecordBatch, StructArray, TimestampMillisecondArray,
 };
 use arrow_schema::{DataType, Field, Fields, Schema, TimeUnit};
-use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ParquetRecordBatchReaderBuilder};
+use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder};
 use parquet::arrow::arrow_writer::{ArrowLeafColumn, ArrowRowGroupWriterFactory, compute_leaves};
 use parquet::arrow::{ArrowWriter, ProjectionMask};
 use parquet::file::properties::WriterProperties;
@@ -44,7 +44,7 @@ use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, Geomet
 #[path = "geoparquet_predicate.rs"]
 mod predicate;
 
-type ReadColumns = Box<dyn Fn(usize, ProjectionMask) -> Result<Vec<RecordBatch>> + Send>;
+type ReadColumns = Box<dyn Fn(usize, ProjectionMask) -> Result<ParquetRecordBatchReader> + Send>;
 
 /// An attribute column: the path from a top-level column through struct members.
 #[derive(Clone)]
@@ -440,8 +440,6 @@ impl ParquetStream {
         let (filter_input, filter_meta, filter_schema) = (input.clone(), meta.clone(), file_schema.clone());
         let read_columns: ReadColumns = Box::new(move |g, mask| {
             geoparquet_zstd::reader(filter_input.clone(), &filter_meta, &filter_schema, mask, vec![g], None, batch_size)
-                .map_err(|e| perr(&e))?
-                .collect::<std::result::Result<Vec<_>, _>>()
                 .map_err(|e| perr(&e))
         });
         let decode: DecodeGroup = Box::new(move |g, selection| {

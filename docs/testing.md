@@ -47,7 +47,8 @@ rather than numerical GDAL conformance claims.
 The predicate pass evaluates all candidate groups before returning a batch and
 holds their selected file row IDs. On unselective data, it reads all predicate
 columns even with a conversion limit of one. Only payload decoding and prefetch
-use the bounded row group windows. Selected file row IDs require eight bytes
+use the bounded row group windows. Predicate arrays are evaluated one record
+batch at a time. Selected file row IDs require eight bytes
 per matching row, in addition to the row selections. An unselective LIKE regression records this
 behavior with HTTP ranges and a one-row conversion limit. Remote conversion
 regressions also check credentialed STAC policy refusal before any request and

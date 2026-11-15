@@ -53,6 +53,9 @@ fn bounds(group: &RowGroupMetaData, schema: &Schema, column: &Column) -> Option<
 impl ParquetStream {
     /// Applies a predicate before decoding payload columns, preserving original file row IDs.
     pub(crate) fn filter_attributes(&mut self, expression: &Expression) -> Result<()> {
+        if self.fid != 0 {
+            return Err(perr(&"attribute filters must precede the first batch"));
+        }
         let predicate = expression.bind(&self.layer.schema)?;
         let mut indices: Vec<_> =
             expression.fields().into_iter().filter_map(|name| crate::ops::sql::field_index(&self.layer.schema, name)).collect();
@@ -84,6 +87,7 @@ impl ParquetStream {
             // Read just this group's predicate columns. The regular decoder later reads the
             // selected output columns, and no payload from groups with zero matching rows.
             for batch in (self.read_columns)(g, mask.clone())? {
+                let batch = batch.map_err(|e| perr(&e))?;
                 let arrays: Vec<_> = indices
                     .iter()
                     .map(|&i| {
@@ -128,6 +132,23 @@ impl ParquetStream {
 mod tests {
     use super::*;
     use wbvector::{FieldDef, FieldType, Layer};
+
+    #[test]
+    fn late_attribute_filters_leave_unread_fids_unchanged() {
+        let mut layer = Layer::new("t");
+        layer.add_field(FieldDef::new("v", FieldType::Integer));
+        for i in 0..20 {
+            layer.push(Feature { fid: i, geometry: None, attributes: vec![FieldValue::Integer(i as i64)] });
+        }
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let path = file.path().to_str().unwrap();
+        super::super::write(&layer, path).unwrap();
+        let mut stream = ParquetStream::open(|| super::super::open_file(path), "t", None, None, 4, None, None).unwrap();
+        assert_eq!(stream.next_batch().unwrap().unwrap().len(), 4);
+        assert!(stream.filter_attributes(&Expression::parse("v > 10").unwrap()).unwrap_err().to_string().contains("first batch"));
+        let remaining = stream.read_all().unwrap();
+        assert_eq!(remaining.features.iter().map(|f| f.fid).collect::<Vec<_>>(), (4..20).collect::<Vec<_>>());
+    }
 
     #[test]
     fn duplicate_physical_paths_cannot_prune_the_wrong_column() {

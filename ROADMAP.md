@@ -634,6 +634,9 @@ WebAssembly (the `terrio-js` npm package):
 
 ## Later
 
+- [ ] Evaluate Parquet attribute predicates by row group window so unselective limited
+      conversions can stop the predicate scan early and fetch predicate chunks in parallel (#1031).
+
 - [ ] Derive Parquet filtered FIDs from group offsets and row selectors while decoding,
       replacing the per-match FID vectors shared by spatial and attribute reads (#1031).
 
