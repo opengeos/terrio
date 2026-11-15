@@ -10,7 +10,8 @@
 //! not, was already ignored. A NUL a PROJJSON name gives (`\u0000`) is part of the name, as in
 //! PROJ: EPSG:32631's PROJJSON with one is still read. A quote in a value runs to the next quote,
 //! delimiters included, as in PROJ (`b"c,d"e` is one value), and a quote left unclosed refuses
-//! the WKT. An ESRI PE string in a GeoTIFF citation ends at its first NUL too.
+//! the WKT. GeoTIFF's GeoAsciiParamsTag ends at its first NUL, as GDAL 3.12.1 reads it, and a CRS
+//! with a NUL in a name is written to GeoKeys that read back as it, or refused where GDAL refuses it.
 //!
 //! `data/wkt1_proj_reads.json` (`scripts/gen_wkt1_proj_reads.py`, pyproj 3.8.0, no grids,
 //! `PROJ_NETWORK=OFF`) holds, for each WKT, a point in its geographic CRS, the point in the
@@ -38,7 +39,7 @@ fn data() -> Value {
 }
 
 #[test]
-fn wkt_proj_reads_is_read_and_places_points_as_proj_does() {
+fn wkt_read_by_proj_places_points_as_proj_does() {
     offline();
     let data = data();
     let cases = data["read"].as_array().unwrap();
@@ -86,7 +87,7 @@ fn same_proj(a: &str, b: &str) -> bool {
 
 /// The PROJ string is PROJ's.
 #[test]
-fn wkt_proj_reads_exports_proj_strings_as_proj_does() {
+fn wkt_read_by_proj_exports_proj_strings_as_proj_does() {
     offline();
     let data = data();
     let mut bad = vec![];
@@ -100,7 +101,7 @@ fn wkt_proj_reads_exports_proj_strings_as_proj_does() {
 }
 
 #[test]
-fn a_keyword_proj_refuses_is_refused() {
+fn wkt_refused_by_proj_is_refused() {
     offline();
     let data = data();
     let cases = data["refused"].as_array().unwrap();
@@ -134,7 +135,7 @@ fn makassar_neiez_goes_to_wgs84_as_in_proj() {
 /// The EPSG code PROJ identifies is terrio's (NAD27 / UTM zone 17N with a node of a hyphenated
 /// keyword is EPSG:26717). A CRS PROJ identifies as none may still be identified by terrio.
 #[test]
-fn wkt_proj_reads_is_identified_as_proj_identifies_it() {
+fn wkt_read_by_proj_is_identified_as_proj_identifies_it() {
     offline();
     let data = data();
     let mut bad = vec![];
@@ -191,26 +192,82 @@ fn a_nul_in_a_projjson_name_is_read_as_in_proj() {
     assert!(SpatialRef::from_projjson(&inside).is_err());
 }
 
-/// An ESRI PE string in a GeoTIFF citation ends at its first NUL, as PROJ 9.8.1 and GDAL take text
-/// as a C string: a NUL in a keyword leaves the WKT unclosed, and the CRS is refused, where the
-/// same citation without the NUL is NAD 27.
+/// GeoAsciiParamsTag ends at its first NUL, as GDAL 3.12.1 reads it (rasterio 1.5.0 on GeoTIFFs
+/// tifffile wrote with these keys): an ESRI PE citation with a NUL in it, or after a citation
+/// with a NUL, is lost and the CRS refused; a NUL after the citation leaves it whole.
 #[test]
-fn an_esri_pe_citation_ends_at_its_first_nul() {
+fn geoascii_params_end_at_their_first_nul() {
+    offline();
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    let pe = r#"ESRI PE String = GEOGCS["NAD27",DATUM["North_American_Datum_1927",SPHEROID["Clarke 1866",6378206.4,294.978698213898]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#;
+    // GTModelTypeGeoKey user-defined, and the citations in GeoAsciiParamsTag in this order.
+    let read = |parts: &[(u16, String)]| {
+        let (mut ascii, mut keys) = (String::new(), vec![[1024u16, 0, 1, 32767]]);
+        for (id, text) in parts {
+            let text = format!("{text}|");
+            keys.push([*id, 34737, text.len() as u16, ascii.len() as u16]);
+            ascii.push_str(&text);
+        }
+        keys.sort();
+        let mut directory = vec![1u16, 1, 0, keys.len() as u16];
+        directory.extend(keys.iter().flatten());
+        let crs = terrio_crs::geokeys::read(&directory, &[], ascii.as_bytes()).crs;
+        crs.is_some_and(|crs| Transformer::new(&crs, &wgs84).is_ok())
+    };
+    let name = |n: &str| (1026u16, n.to_string());
+    let citation = |c: &str| (3073u16, c.to_string());
+    assert!(read(&[name("NAD27"), citation(pe)]));
+    assert!(!read(&[name("NAD27"), citation(&pe.replace(r#""NAD27""#, "\"NA\0D27\""))]));
+    assert!(!read(&[name("NAD27"), citation(&pe.replace(",PRIMEM", ",a\0b[\"x\"],PRIMEM"))]));
+    assert!(!read(&[name("NA\0D27"), citation(pe)]));
+    assert!(read(&[citation(pe), name("NA\0D27")]));
+}
+
+/// A citation's name ends at its first NUL too: ESRI:102003's GeoKeys with text after a NUL in
+/// its citation read as without it.
+#[test]
+fn a_citation_name_ends_at_its_first_nul() {
+    offline();
+    let keys = SpatialRef::from_esri(102003).unwrap().to_geokeys().unwrap();
+    let read = |junk: &str| {
+        let mut keys = keys.clone();
+        for (_, text) in &mut keys.ascii {
+            text.push_str(junk);
+        }
+        let tags = keys.encode_with_minor_revision(1).unwrap();
+        let crs = terrio_crs::geokeys::read(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).crs.unwrap();
+        (crs.name(), crs.wkt)
+    };
+    let plain = read("");
+    assert_eq!(plain.0.as_deref(), Some("USA_Contiguous_Albers_Equal_Area_Conic"));
+    assert_eq!(read("\0junk"), plain);
+}
+
+/// A CRS with a NUL in a name (from PROJJSON) is written to GeoKeys that read back as it, its
+/// names cut at the NUL: by its code (EPSG:32631), or as a user-defined CRS (UTM 32N with
+/// `+towgs84`). One GeoKeys can't describe (Mollweide) would need its WKT in an ESRI PE citation,
+/// which would end at the NUL: it is refused, as GDAL 3.12.1 refuses to write such a CRS
+/// (rasterio 1.5.0: "missing , or ]"), PROJ's WKT of it ending at the NUL.
+#[test]
+fn a_crs_with_a_nul_in_a_name_round_trips_through_geokeys() {
     offline();
     let data = data();
-    let refused = data["refused"].as_array().unwrap().iter().find(|c| c["name"] == "a keyword with a NUL").unwrap();
-    let with_nul = refused["wkt"].as_str().unwrap();
-    let without = with_nul.replace(",a\0b[\"x\"]", "");
-    assert_ne!(without, with_nul);
-    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
-    let read = |wkt: &str| {
-        // A user-defined geographic CRS, its GeogCitationGeoKey (2049) in GeoAsciiParams.
-        let ascii = format!("ESRI PE String = {wkt}|");
-        let directory = [1, 1, 0, 3, 1024, 0, 1, 2, 2048, 0, 1, 32767, 2049, 34737, ascii.len() as u16, 0];
-        terrio_crs::geokeys::read(&directory, &[], ascii.as_bytes()).crs.and_then(|crs| Transformer::new(&crs, &wgs84).ok())
+    let round_trip = |crs: &SpatialRef| {
+        let keys = crs.to_geokeys().unwrap();
+        assert!(keys.ascii.iter().all(|(_, text)| !text.contains('\0')), "{:?}", keys.ascii);
+        let tags = keys.encode_with_minor_revision(1).unwrap();
+        terrio_crs::geokeys::read(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).crs.unwrap()
     };
-    assert!(read(&without).is_some());
-    assert!(read(with_nul).is_none());
+    let utm31 = SpatialRef::from_projjson(data["projjson"]["projjson"].as_str().unwrap()).unwrap();
+    assert_eq!(round_trip(&utm31).epsg, Some(32631));
+    let bound = SpatialRef::from_projjson(data["bound_projjson"]["projjson"].as_str().unwrap()).unwrap();
+    assert!(bound.wkt.as_deref().is_some_and(|w| w.contains('\0')));
+    let back = round_trip(&bound).to_proj4().unwrap();
+    let proj4 = data["bound_projjson"]["proj4"].as_str().unwrap();
+    assert!(same_proj(&back, proj4), "{back}, PROJ {proj4}");
+    let mollweide = SpatialRef::from_projjson(data["mollweide_projjson"]["projjson"].as_str().unwrap()).unwrap();
+    assert!(same_proj(&mollweide.to_proj4().unwrap(), data["mollweide_projjson"]["proj4"].as_str().unwrap()));
+    assert!(mollweide.to_geokeys().is_err());
 }
 
 /// A bound CRS read from PROJJSON with a NUL (`\u0000`) in its name keeps its shift wherever

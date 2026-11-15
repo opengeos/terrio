@@ -277,11 +277,13 @@ run, and a keyword with a space, a NUL or an unclosed quote in it (`a b["x"]`, `
 WKT one terrio refuses, as PROJ does. A quote in a value runs to the next quote, delimiters
 included, as in PROJ 9.8.1: `x["a",b"c,d"e]` is a node of two values, and a quote left unclosed
 makes the WKT one terrio refuses. A definition given as text (WKT, PROJJSON, any text
-`SpatialRef::parse` takes, an ESRI PE string in a GeoTIFF citation) ends at its first NUL, as PROJ
-and GDAL take it as a C string; text after a complete WKT was already ignored. A NUL a PROJJSON name
-gives (`\u0000`) is part of the name, as in PROJ. WKT 1 and WKT 2 share this parser, as do the
-readers of PROJJSON and of IAU definitions, which go through WKT, so an unknown node is skipped in
-each.
+`SpatialRef::parse` takes) ends at its first NUL, as PROJ and GDAL take it as a C string, and so
+does a GeoTIFF's GeoAsciiParamsTag, as GDAL 3.12.1 reads it (a citation after the NUL is lost); text
+after a complete WKT was already ignored. A NUL a PROJJSON name gives (`\u0000`) is part of the
+name, as in PROJ. Written to GeoKeys, such a name is cut at the NUL, and a CRS with one that GeoKeys
+can't describe, whose WKT would go in an ESRI PE citation, is refused, as GDAL 3.12.1 refuses to
+write it. WKT 1 and WKT 2 share this parser, as do the readers of PROJJSON and of IAU definitions,
+which go through WKT, so an unknown node is skipped in each.
 
 A CRS of PROJ's ESRI authority is reported under it, as GDAL reports it: a GeoTIFF GDAL writes in
 `ESRI:54009` is `ESRI:54009` (from the ESRI code the WKT declares or, for GDAL's ESRI PE strings,

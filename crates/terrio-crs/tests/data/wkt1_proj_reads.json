@@ -415,6 +415,10 @@
    0
   ]
  },
+ "mollweide_projjson": {
+  "projjson": "{\"$schema\":\"https://proj.org/schemas/v0.7/projjson.schema.json\",\"type\":\"ProjectedCRS\",\"name\":\"Moll\\u0000weide\",\"base_crs\":{\"type\":\"GeographicCRS\",\"name\":\"unknown\",\"datum\":{\"type\":\"GeodeticReferenceFrame\",\"name\":\"World Geodetic System 1984\",\"ellipsoid\":{\"name\":\"WGS 84\",\"semi_major_axis\":6378137,\"inverse_flattening\":298.257223563},\"id\":{\"authority\":\"EPSG\",\"code\":6326}},\"coordinate_system\":{\"subtype\":\"ellipsoidal\",\"axis\":[{\"name\":\"Longitude\",\"abbreviation\":\"lon\",\"direction\":\"east\",\"unit\":\"degree\"},{\"name\":\"Latitude\",\"abbreviation\":\"lat\",\"direction\":\"north\",\"unit\":\"degree\"}]}},\"conversion\":{\"name\":\"unknown\",\"method\":{\"name\":\"Mollweide\"},\"parameters\":[{\"name\":\"Longitude of natural origin\",\"value\":0,\"unit\":\"degree\",\"id\":{\"authority\":\"EPSG\",\"code\":8802}},{\"name\":\"False easting\",\"value\":0,\"unit\":\"metre\",\"id\":{\"authority\":\"EPSG\",\"code\":8806}},{\"name\":\"False northing\",\"value\":0,\"unit\":\"metre\",\"id\":{\"authority\":\"EPSG\",\"code\":8807}}]},\"coordinate_system\":{\"subtype\":\"Cartesian\",\"axis\":[{\"name\":\"Easting\",\"abbreviation\":\"E\",\"direction\":\"east\",\"unit\":\"metre\"},{\"name\":\"Northing\",\"abbreviation\":\"N\",\"direction\":\"north\",\"unit\":\"metre\"}]}}",
+  "proj4": "+proj=moll +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs"
+ },
  "refused": [
   {
    "name": "a keyword with a space",

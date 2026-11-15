@@ -94,9 +94,8 @@ impl GeoKeys<'_> {
 /// user-defined CRS more completely than the GeoKeys. Its EPSG code is the root node's: codes on
 /// inner nodes (a unit's, a datum's) are not the CRS's.
 fn esri_pe_crs(k: &GeoKeys) -> Option<SpatialRef> {
-    let wkt = [3073, 1026, 2049].iter().find_map(|id| k.text(*id).and_then(|c| c.strip_prefix("ESRI PE String = ")))?;
-    // Text from the file, which ends at its first NUL, as GDAL and PROJ 9.8.1 read it.
-    let wkt = crate::wkt1::until_nul(wkt).trim();
+    // Cut at a NUL already, with the rest of GeoAsciiParamsTag (`read`).
+    let wkt = [3073, 1026, 2049].iter().find_map(|id| k.text(*id).and_then(|c| c.strip_prefix("ESRI PE String = ")))?.trim();
     // Read as any WKT: the code identified, and its PROJ4 extension (GDAL writes the sweep axis
     // of a geostationary CRS there) taken as the CRS.
     let s = SpatialRef::from_wkt(wkt);
@@ -147,6 +146,9 @@ pub struct GeoKeysCrs {
 /// assert_eq!(read.unsupported_method, None);
 /// ```
 pub fn read(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> GeoKeysCrs {
+    // GeoAsciiParamsTag ends at its first NUL, as GDAL 3.12.1 reads it (a C string): a key after
+    // a NUL in an earlier one reads as none, and one with a NUL in it is cut there.
+    let ascii = &ascii[..ascii.iter().position(|b| *b == 0).unwrap_or(ascii.len())];
     let k = GeoKeys { keys: directory, doubles, ascii };
     let mut epsg = match (k.short(1024), k.short(3072), k.short(2048)) {
         (_, Some(code), _) if code != 0 && code != USER_DEFINED => Some(code as u32),
@@ -332,7 +334,7 @@ fn user_defined_projected_crs(k: &GeoKeys, proj4: &str) -> Option<SpatialRef> {
     let name = [3073, 1026].iter().find_map(|id| k.text(*id)).map(str::trim).filter(|n| !n.is_empty() && !n.contains(" = "));
     if let Some(name) = name
         && let Some(named) = renamed(&wkt, name)
-        // Uncut: terrio's WKT, with the citation's name in quotes.
+        // uncut: stored or built WKT
         && let Some(code) = SpatialRef::from_wkt_text(&named).with_esri().esri
         && let Some(esri) = SpatialRef::from_esri(code).ok().and_then(|s| s.to_wkt())
     {
@@ -472,7 +474,7 @@ fn user_defined_crs(k: &GeoKeys) -> Option<SpatialRef> {
     // (`+proj=longlat +ellps=bessel +pm=paris` is not EPSG:4162). When terrio cannot read it,
     // wbprojection's code and WKT stay the fallback.
     let epsg = match own.as_deref() {
-        // Uncut: terrio's WKT of a PROJ string.
+        // uncut: stored or built WKT
         Some(w) => guess.filter(|code| crate::identify_epsg_text(w) == Some(*code)),
         None => guess,
     };
@@ -862,7 +864,7 @@ pub fn user_defined_keys(crs: &SpatialRef, name: &str) -> Option<GeoKeyValues> {
         return keys_for_proj(p, name, None);
     }
     // A WKT: its PROJ string as terrio reads it, on the EPSG geographic CRS it is identified on.
-    // Uncut: stored WKT, whose names (a PROJJSON's) may keep a NUL.
+    // uncut: stored or built WKT
     if let Some(p) = crs.wkt.as_deref().and_then(crate::wkt_proj_text) {
         let geog = crs.geographic_code();
         return keys_for_proj(&p, name, geog);
@@ -1238,12 +1240,26 @@ impl SpatialRef {
                         // GDAL's fallback for methods GeoTIFF cannot describe: the WKT in an ESRI PE
                         // citation, with a user-defined model type.
                         let wkt = self.to_wkt().ok_or_else(|| Error::Crs("the CRS has no WKT definition".into()))?;
+                        // A NUL (from a PROJJSON name) would end GeoAsciiParamsTag there for its
+                        // readers, and the WKT with it; GDAL 3.12.1 refuses to write such a CRS too.
+                        if wkt.contains('\0') {
+                            return Err(Error::Crs(
+                                "a WKT with a NUL in it cannot be written to a GeoTIFF citation, which ends at the NUL".into(),
+                            ));
+                        }
                         v.shorts.push((1024, USER_DEFINED));
                         // GeoTIFF 1.1 requirement 8.10 requires a general citation for this model.
                         v.ascii.push((1026, name));
                         v.ascii.push((3073, format!("ESRI PE String = {wkt}")));
                     }
                 }
+            }
+        }
+        // A name with a NUL (from a PROJJSON name) is written up to it: GDAL 3.12.1 reads
+        // GeoAsciiParamsTag up to its first NUL, which would hide the keys after it.
+        for (_, text) in &mut v.ascii {
+            if let Some(end) = text.find('\0') {
+                text.truncate(end);
             }
         }
         Ok(v)

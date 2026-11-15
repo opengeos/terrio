@@ -14,7 +14,8 @@ EPSG:32631's PROJJSON (`CRS.to_json()`) with a NUL (`\\u0000`) in a parameter's 
 by `CRS.from_json`, with its `to_epsg()` and a point by `Transformer.from_crs("EPSG:4326", crs,
 always_xy=True)`. So is a bound CRS's PROJJSON (UTM 32N with `+towgs84`) with a NUL in its
 name, with `to_proj4()` and a point by `Transformer.from_crs(crs, "EPSG:4326", always_xy=True)`.
-A WKT 1 with `TOWGS84` is written by `CRS.to_json_dict()`: its type and its transformation's
+Mollweide's PROJJSON with a NUL in its name is read, with `to_proj4()`; PROJ's `to_wkt()` of it
+ends at the NUL. A WKT 1 with `TOWGS84` is written by `CRS.to_json_dict()`: its type and its transformation's
 parameters.
 
 Makassar / NEIEZ is also taken to WGS 84 by `Transformer.from_crs(crs, "EPSG:4326",
@@ -277,6 +278,15 @@ def main():
         "proj": list(t.transform(500000.0, 5000000.0, errcheck=True)),
         "proj4": crs.to_proj4(),
     }
+    # Mollweide, which GeoTIFF keys can't describe, in PROJJSON with a NUL in its name: PROJ's
+    # WKT of it, a C string, ends at the NUL.
+    plain = CRS("+proj=moll +lon_0=0 +datum=WGS84 +units=m +type=crs").to_json()
+    text = plain.replace('"name":"unknown"', '"name":"Moll\\u0000weide"', 1)
+    assert text != plain
+    crs = CRS.from_json(text)
+    assert json.loads(text)["name"] == "Moll\0weide"
+    assert crs.to_wkt().startswith('PROJCRS["Moll') and len(crs.to_wkt()) < 20
+    mollweide = {"projjson": text, "proj4": crs.to_proj4()}
     # A WKT 1 with TOWGS84, which PROJ writes as a PROJJSON `BoundCRS`; terrio stores it with a
     # NUL in its quoted name, as a PROJJSON name can give one.
     wkt = (
@@ -315,6 +325,7 @@ def main():
                 "projjson": projjson,
                 "bound_projjson": bound,
                 "towgs84_projjson": towgs84,
+                "mollweide_projjson": mollweide,
                 "refused": refused,
                 "untransformed": untransformed,
             },

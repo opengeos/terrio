@@ -67,7 +67,7 @@ fn crs(s: &SpatialRef) -> Result<Value> {
     }
     let wkt = s.to_wkt().ok_or_else(|| unsupported("a CRS without definition"))?;
     if let Some((h, v)) = crate::def::split_compound(&wkt) {
-        // Uncut: text cut where it was given, or WKT terrio built (a PROJJSON's names keep a NUL).
+        // uncut: stored or built WKT
         let horizontal = crs(&SpatialRef::from_wkt_text(&h))?;
         let code = wkt1::parse(&v).and_then(|n| n.epsg()).ok_or_else(|| unsupported("a vertical CRS without EPSG code"))?;
         let name = wkt1::parse(&wkt).and_then(|n| n.name().map(str::to_string)).unwrap_or_else(|| "unknown".into());
@@ -139,7 +139,7 @@ fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
     let proj = match (entry, s.proj4.as_deref()) {
         (_, Some(p)) => p.to_string(),
         (Some(e), None) => e.proj.clone(),
-        // Uncut: text cut where it was given, or WKT terrio built (a PROJJSON's names keep a NUL).
+        // uncut: stored or built WKT
         (None, None) => crate::wkt_proj_text(wkt).ok_or_else(|| unsupported("a WKT terrio reads otherwise"))?,
     };
     let p = Params::parse(&proj);
@@ -150,7 +150,7 @@ fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
     // reads it; a CRS made from an EPSG code (its table WKT) is written as such, whatever that
     // WKT holds: its datum shift is EPSG's.
     let from_table = s.proj4.is_none() && entry.is_some_and(|e| s.wkt.as_deref() == Some(e.wkt.as_str()));
-    // Uncut: stored WKT, whose names (a PROJJSON's) may keep a NUL.
+    // uncut: stored or built WKT
     let given = if from_table { None } else { s.proj4.clone().or_else(|| s.wkt.as_deref().and_then(crate::wkt_proj_text)) };
     let towgs84 = match given.and_then(|g| Params::parse(&g).list("towgs84")) {
         Some(t) if !matches!(t.len(), 3 | 7) => return Err(unsupported(format!("a +towgs84 of {} values", t.len()))),
