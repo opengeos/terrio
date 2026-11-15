@@ -105,8 +105,15 @@ CODES = [
     4272,  # NZGD49
 ]
 # EPSG geographic CRSs whose ESRI WKT 1, as written, PROJ places otherwise than their EPSG code
-# (renamed variants of `CODES` may join them in `differences`).
+# (with two renamed variants of `CODES`, they are `DIFFERENT`).
 DIFFERENCES = [4806, 5132, 7373]
+# Every case PROJ places otherwise than by its EPSG code: a PROJ change that moves a case in or out
+# stops the script.
+DIFFERENT = [
+    "EPSG:4314, ESRI WKT 1, renamed",
+    "EPSG:31467, ESRI WKT 1, renamed",
+    *(f"EPSG:{code}, ESRI WKT 1" for code in DIFFERENCES),
+]
 IDS = re.compile(r',(AUTHORITY|ID)\["(EPSG|ESRI)","?\d+"?\]')
 USAGE = re.compile(r",USAGE\[SCOPE\[[^\]]*\],AREA\[[^\]]*\],BBOX\[[^\]]*\]\]")
 
@@ -269,8 +276,10 @@ GRID_EXTENSIONS = (
 def installed_grids():
     """The grid files in PROJ's search paths: every file PROJ's database names as a grid
     (`grid_alternatives`, with its pre-PROJ 7 name), and every file of a grid format."""
-    dirs = pyproj.datadir.get_data_dir().split(os.pathsep)
-    dirs.append(pyproj.datadir.get_user_data_dir())
+    # Absolute, without empty entries (which would be the working directory).
+    paths = pyproj.datadir.get_data_dir().split(os.pathsep)
+    paths.append(pyproj.datadir.get_user_data_dir())
+    dirs = [os.path.abspath(d) for d in paths if d]
     # PROJ's database, in whichever search path holds it, opened read-only (connecting to a
     # missing path would create an empty one).
     found = [Path(d, "proj.db") for d in dirs if Path(d, "proj.db").is_file()]
@@ -312,8 +321,8 @@ def main():
     for c in cases:
         placed[metres(c["proj"], c["by_code"]) >= 1e-3].append(c)
     cases, differences = placed[False], placed[True]
-    for code in DIFFERENCES:
-        check(any(c["name"] == f"EPSG:{code}, ESRI WKT 1" for c in differences), code)
+    names = sorted(c["name"] for c in differences)
+    check(names == sorted(DIFFERENT), names)
     OUT.write_text(
         json.dumps(
             {

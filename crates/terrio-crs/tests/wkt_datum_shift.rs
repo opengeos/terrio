@@ -45,13 +45,18 @@ fn pair(v: &Value) -> (f64, f64) {
     (v[0].as_f64().unwrap(), v[1].as_f64().unwrap())
 }
 
-/// Where terrio places a case's point in WGS 84, and the transformation it uses.
+/// Where terrio places a case's point in WGS 84, and the transformation it uses. Both come from
+/// `transform_3d`'s path, which `operation_at` reports on (no API returns the point with its
+/// operation); `transform`'s 2D path must place the point there too.
 fn place(case: &Value) -> ((f64, f64), String) {
     let src = SpatialRef::from_wkt(case["wkt"].as_str().unwrap());
     let t = Transformer::new(&src, &SpatialRef::from_epsg(4326).unwrap()).unwrap();
     let (x, y) = pair(&case["point"]);
-    let (lon, lat) = t.transform(x, y).unwrap();
+    let (lon, lat, _) = t.transform_3d(x, y, 0.0).unwrap();
     let operation = t.operation_at(x, y, 0.0).unwrap().map(|o| o.name).unwrap_or_default();
+    let flat = t.transform(x, y).unwrap();
+    let name = case["name"].as_str().unwrap();
+    assert!(metres(flat, (lon, lat)) < 1e-6, "{name}: transform {flat:?}, transform_3d {:?}", (lon, lat));
     ((lon, lat), operation)
 }
 
