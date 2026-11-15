@@ -63,12 +63,16 @@ impl Grids {
 
     /// The grids, loaded with `load` (`None` when a required one is missing, which is not
     /// remembered so that a grid installed later is found).
-    fn get(&self, load: fn(&str) -> Option<Vec<Arc<GridSet>>>) -> Option<&[Arc<GridSet>]> {
+    /// Under `grid::without_grids`, they are loaded anew (as missing) and not kept.
+    fn get(&self, load: fn(&str) -> Option<Vec<Arc<GridSet>>>) -> Option<std::borrow::Cow<'_, [Arc<GridSet>]>> {
+        if grid::without_grids_active() {
+            return load(&self.spec).map(std::borrow::Cow::Owned);
+        }
         if let Some(s) = self.sets.get() {
-            return Some(s);
+            return Some(std::borrow::Cow::Borrowed(s));
         }
         let s = load(&self.spec)?;
-        Some(self.sets.get_or_init(|| s))
+        Some(std::borrow::Cow::Borrowed(self.sets.get_or_init(|| s)))
     }
 }
 
@@ -486,7 +490,7 @@ impl Step {
                 if sets.is_empty() {
                     return Some(v);
                 }
-                let (lon, lat) = grid::hgrid_apply(sets, v[0], v[1], *inv != reverse)?;
+                let (lon, lat) = grid::hgrid_apply(&sets, v[0], v[1], *inv != reverse)?;
                 Some([lon, lat, v[2]])
             }
             Step::VGridShift { grids, multiplier, inv, epoch, final_epoch } => {
@@ -497,13 +501,20 @@ impl Step {
                 if sets.is_empty() {
                     return Some(v);
                 }
-                let d = grid::vgrid_value(sets, v[0], v[1], *multiplier)?;
+                let d = grid::vgrid_value(&sets, v[0], v[1], *multiplier)?;
                 Some([v[0], v[1], if *inv != reverse { v[2] - d } else { v[2] + d }])
             }
             Step::GridShift { grids, interpolation, no_z, inv } => {
                 let sets = grids.get(grid::generic_grids)?;
-                let kinds = grids.kinds.get_or_init(|| grid::gridshift_kinds(sets)).as_ref()?;
-                grid::gridshift_apply(sets, kinds, v, *inv != reverse, interpolation.as_deref(), *no_z)
+                // Not kept for grids loaded under `grid::without_grids`.
+                let local;
+                let kinds = if grid::without_grids_active() {
+                    local = grid::gridshift_kinds(&sets);
+                    local.as_ref()?
+                } else {
+                    grids.kinds.get_or_init(|| grid::gridshift_kinds(&sets)).as_ref()?
+                };
+                grid::gridshift_apply(&sets, kinds, v, *inv != reverse, interpolation.as_deref(), *no_z)
             }
             Step::XyzGridShift { grids, ell, input_ref, multiplier, inv } => {
                 let sets = grids.get(grid::generic_grids)?;
@@ -512,12 +523,12 @@ impl Step {
                 // The grid is referenced to the input CRS: forward applies it directly, the
                 // inverse iterates (and the other way round for the output CRS).
                 if forward == *input_ref {
-                    let d = xyz_values(sets, ell, v, *multiplier)?;
+                    let d = xyz_values(&sets, ell, v, *multiplier)?;
                     Some([v[0] + factor * d[0], v[1] + factor * d[1], v[2] + factor * d[2]])
                 } else {
                     let mut p = v;
                     for _ in 0..10 {
-                        let d = xyz_values(sets, ell, p, *multiplier)?;
+                        let d = xyz_values(&sets, ell, p, *multiplier)?;
                         let d = [d[0] * factor, d[1] * factor, d[2] * factor];
                         let err = ((p[0] - v[0]) - d[0]).powi(2) + ((p[1] - v[1]) - d[1]).powi(2) + ((p[2] - v[2]) - d[2]).powi(2);
                         p = [v[0] + d[0], v[1] + d[1], v[2] + d[2]];
@@ -535,15 +546,15 @@ impl Step {
                     None => t? - epoch,
                 };
                 if *inv == reverse {
-                    let s = deformation_shift(sets, ell, v)?;
+                    let s = deformation_shift(&sets, ell, v)?;
                     Some([v[0] + dt * s[0], v[1] + dt * s[1], v[2] + dt * s[2]])
                 } else {
                     // PROJ's pj_deformation_reverse_shift.
-                    let d0 = deformation_shift(sets, ell, v)?;
+                    let d0 = deformation_shift(&sets, ell, v)?;
                     let z0 = d0[2];
                     let mut out = [v[0] - dt * d0[0], v[1] - dt * d0[1], v[2] + dt * d0[2]];
                     for _ in 0..10 {
-                        let Some(d) = deformation_shift(sets, ell, out) else { break };
+                        let Some(d) = deformation_shift(&sets, ell, out) else { break };
                         let dif = [out[0] + dt * d[0] - v[0], out[1] + dt * d[1] - v[1], out[2] - dt * d[2] - v[2]];
                         out = [out[0] + dif[0], out[1] + dif[1], out[2] + dif[2]];
                         if dif[0].hypot(dif[1]) <= 1e-8 {
@@ -755,6 +766,41 @@ impl AsRef<Op> for Op {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Grids loaded before `grid::without_grids` are not used under it, nor are the grids it
+    /// leaves out (an optional one) kept for later: either order gives the same grids.
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn grids_under_without_grids_are_neither_reused_nor_kept() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("without-grids-test.gtx");
+        // A geoid grid of 5 m over 0..10°N, 0..10°E (GTX: big-endian header and values).
+        let mut bytes = Vec::new();
+        for v in [0.0f64, 0.0, 1.0, 1.0] {
+            bytes.extend(v.to_be_bytes());
+        }
+        bytes.extend(11i32.to_be_bytes());
+        bytes.extend(11i32.to_be_bytes());
+        for _ in 0..121 {
+            bytes.extend(5.0f32.to_be_bytes());
+        }
+        std::fs::write(&path, bytes).unwrap();
+        let spec = format!("@{}", path.to_str().unwrap());
+        let count = |g: &Grids| g.get(grid::vgrids).map(|s| s.len());
+        // Loaded first, then not used under the override.
+        let loaded = Grids::new(&spec);
+        assert_eq!(count(&loaded), Some(1));
+        assert_eq!(grid::without_grids(|| count(&loaded)), Some(0));
+        assert_eq!(count(&loaded), Some(1));
+        // Asked for under the override first, then still loaded.
+        let later = Grids::new(&spec);
+        assert_eq!(grid::without_grids(|| count(&later)), Some(0));
+        assert_eq!(count(&later), Some(1));
+        // A required grid is missing under the override.
+        let required = Grids::new(path.to_str().unwrap());
+        assert_eq!(count(&required), Some(1));
+        assert_eq!(grid::without_grids(|| count(&required)), None);
+    }
 
     #[test]
     fn cart_round_trips() {
