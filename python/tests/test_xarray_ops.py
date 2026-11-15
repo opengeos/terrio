@@ -207,6 +207,7 @@ def test_viewshed_cropped_to_its_distance(files):
     assert got.shape == (expected.height, expected.width) != dem.shape
     np.testing.assert_array_equal(got.values, expected.read(1))
     assert got.terrio.transform() == Affine.from_gdal(*expected.transform)
+    assert got.terrio.transform(recalc=False) == Affine.from_gdal(*expected.transform)
     assert got.terrio.crs == dem.terrio.crs
 
 

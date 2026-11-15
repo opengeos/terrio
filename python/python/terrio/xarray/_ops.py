@@ -96,7 +96,12 @@ def from_raster(raster: _terrio.Raster, like: xarray.DataArray, g: _Grid) -> xar
     coords = dict(like.coords)
     if (raster.height, raster.width) != (like.sizes[g.y], like.sizes[g.x]):
         t = Affine.from_gdal(*raster.transform)
-        coords = {k: v for k, v in coords.items() if not {g.y, g.x} & set(v.dims)}
+        # not the grid mapping either: its GeoTransform is the input's (write_crs adds it back)
+        coords = {
+            k: v
+            for k, v in coords.items()
+            if not {g.y, g.x} & set(v.dims) and not {"crs_wkt", "spatial_ref"} & set(v.attrs)
+        }
         coords[g.x] = t.c + t.a * (np.arange(raster.width) + 0.5)
         coords[g.y] = t.f + t.e * (np.arange(raster.height) + 0.5)
         if g.ascending:
