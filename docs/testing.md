@@ -1857,8 +1857,9 @@ Deprecated EPSG codes keep their own definition, as PROJ 9.8.1 gives it (`CRS.fr
 their replacement's, which GDAL substitutes by default: every deprecated EPSG geographic, geocentric
 and projected CRS with an area of use (498) places the centre of its area of use from WGS 84 where
 PROJ does without grids, within 1 mm (1e-8 degrees for geographic coordinates), 486 of them; PROJ
-cannot transform 8 (EPSG:3752's Mercator (variant A) with a latitude of origin among them, which
-terrio refuses too), and 4 geographic 3D and geocentric CRSs (NAD83(CSRS) and RGNC 1991) are pinned
+cannot transform 8: terrio refuses the 6 PROJ cannot write as PROJ strings (EPSG:3752's Mercator
+(variant A) with a latitude of origin among them) and transforms the RRAF 1991 geocentric CRSs
+(EPSG:4384, 4972) by their datum's ballpark, and 4 geographic 3D and geocentric CRSs (NAD83(CSRS) and RGNC 1991) are pinned
 for the geocentric CRSs of opengeos/terrio#1012, item 8. Their replacements are those PROJ lists
 (`CRS.get_non_deprecated()`), and `SpatialRef::from_epsg_non_deprecated` gives a single
 replacement, as GDAL does (`cargo test -p terrio-crs --test epsg_deprecated`; regenerate with

@@ -1210,7 +1210,9 @@ struct ListCrsOptions {
 /// v12.029): `[{ authority, code, name, kind, deprecated, replaced_by, area_name, bounds,
 /// projection_method, celestial_body }]`, in order of authority and code, `bounds` being `[west,
 /// south, east, north]` in degrees and `replaced_by` the codes of the CRSs that replace a
-/// deprecated EPSG CRS (`[5105]` for EPSG:4855). `` `${authority}:${code}` `` is a CRS the other functions take.
+/// deprecated EPSG CRS (`[5105]` for EPSG:4855). `` `${authority}:${code}` `` is a CRS the
+/// other functions take. A deprecated code gives its own CRS, as PROJ does; for GDAL's default
+/// (`OSR_USE_NON_DEPRECATED=YES`), pass the code of a single replacement instead.
 ///
 /// `text`: words each CRS must match, whatever their case: in the name, or beginning the code or
 /// `AUTHORITY:CODE` (`"Albers"`, `"3577"`, `"EPSG:3577"`); every CRS when `undefined`. Options:

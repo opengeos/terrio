@@ -124,11 +124,12 @@ pub fn prefetch() {
 pub fn geographic_on_datum(datum: u32, ellipsoid: &str) -> Option<u32> {
     let own = Def::from_proj(&format!("+proj=longlat {ellipsoid} +no_defs")).ok()?;
     epsg::geographic_on(datum).iter().copied().find(|code| {
-        epsg::get(*code).is_some_and(|e| {
-            !e.three_d
-                && !e.proj.contains("+pm=")
-                && Def::from_proj(&e.proj).is_ok_and(|d| (own.ell.a - d.ell.a).abs() < 1e-3 && (own.ell.es - d.ell.es).abs() < 1e-9)
-        })
+        !epsg::is_deprecated(*code)
+            && epsg::get(*code).is_some_and(|e| {
+                !e.three_d
+                    && !e.proj.contains("+pm=")
+                    && Def::from_proj(&e.proj).is_ok_and(|d| (own.ell.a - d.ell.a).abs() < 1e-3 && (own.ell.es - d.ell.es).abs() < 1e-9)
+            })
     })
 }
 
@@ -145,8 +146,13 @@ pub fn epsg_wkt(code: u32) -> Option<&'static str> {
 }
 
 /// The EPSG codes of the CRSs that replace a deprecated EPSG CRS, those PROJ lists
-/// (`proj_get_non_deprecated`), in order of code: `[5105]` for EPSG:4855. Empty for a current CRS, a deprecated
-/// one without replacement, and a code terrio does not know.
+/// (`proj_get_non_deprecated`), in order of code: `[5105]` for EPSG:4855. Empty for a current
+/// CRS, a deprecated one without replacement, and a code terrio does not know.
+///
+/// ```no_run
+/// assert_eq!(terrio_crs::epsg_replacements(4855), &[5105]);
+/// assert!(terrio_crs::epsg_replacements(5105).is_empty());
+/// ```
 pub fn epsg_replacements(code: u32) -> &'static [u32] {
     epsg::replacements(code)
 }
@@ -377,6 +383,15 @@ impl SpatialRef {
     /// A CRS from an EPSG code as GDAL gives it by default (`OSR_USE_NON_DEPRECATED=YES`): a
     /// deprecated code with a single replacement ([`epsg_replacements`]) gives that replacement's
     /// CRS, any other code its own, as [`Self::from_epsg`].
+    ///
+    /// ```no_run
+    /// use terrio_crs::SpatialRef;
+    /// // The deprecated ETRS89 / NTM zone 5 by its own definition, as PROJ gives it ...
+    /// assert_eq!(SpatialRef::from_epsg(4855)?.epsg, Some(4855));
+    /// // ... and as GDAL gives it by default, its replacement's.
+    /// assert_eq!(SpatialRef::from_epsg_non_deprecated(4855)?.epsg, Some(5105));
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
     pub fn from_epsg_non_deprecated(code: u32) -> Result<Self> {
         match epsg_replacements(code) {
             [replacement] => Self::from_epsg(*replacement),

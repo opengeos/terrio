@@ -338,7 +338,7 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
         let unit = root.child("UNIT").and_then(|u| u.num(1)).unwrap_or(1.0);
         out.push(format!("+proj=geocent +to_meter={unit}"));
         out.extend(tail);
-        let geog = datum.epsg().and_then(|d| super::epsg::geographic_on(d).first().copied());
+        let geog = datum.epsg().and_then(|d| super::epsg::geographic_on(d).iter().copied().find(|c| !super::epsg::is_deprecated(*c)));
         return Some(Converted { proj: out.join(" "), geogcs: root.clone(), geog, geogcs_wkt1: None, bound: None });
     }
     if key == "GEOGCS" {

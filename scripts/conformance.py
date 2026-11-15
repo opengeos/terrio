@@ -2900,6 +2900,11 @@ PROJ_CASES = {
             "(opengeos/terrio#1012, item 8)",
         ),
         "replacements_are_those_proj_lists": "Deprecated EPSG CRSs: their replacements are PROJ 9.8.1's, GDAL's substitution of a single one",
+        "codes_proj_cannot_transform": (
+            "Deprecated EPSG CRSs PROJ cannot transform (8 cases)", NOT_COMPARED,
+            "PROJ 9.8.1 refuses them; terrio refuses the 6 it cannot write as PROJ strings and transforms the RRAF 1991 "
+            "geocentric CRSs (EPSG:4384, 4972) by their datum's ballpark",
+        ),
         "ntm_zone_5_keeps_its_own_false_origin": (
             "EPSG:4855 (deprecated ETRS89 / NTM zone 5) keeps its own false origin", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
         ),

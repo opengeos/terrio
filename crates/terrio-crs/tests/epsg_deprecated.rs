@@ -78,6 +78,30 @@ fn deprecated_codes_are_placed_by_their_own_definition_as_proj_does() {
     assert!(bad.is_empty(), "{} of {compared} differ:\n{}", bad.len(), bad.join("\n"));
 }
 
+/// The deprecated codes PROJ cannot transform: terrio refuses those PROJ cannot write as a PROJ
+/// string (the Qornoq 1927 Greenland zones, EPSG:3752 and 7082), and transforms the RRAF 1991
+/// geocentric CRSs (4384, 4972) by their datum's ballpark, where PROJ finds no operation.
+#[test]
+fn codes_proj_cannot_transform() {
+    offline();
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    let (mut refused, mut transformed) = (Vec::new(), Vec::new());
+    for case in cases().iter().filter(|c| c["proj"].is_null()) {
+        let code = case["code"].as_u64().unwrap() as u32;
+        let (lon, lat) = (case["point"][0].as_f64().unwrap(), case["point"][1].as_f64().unwrap());
+        match SpatialRef::from_epsg(code) {
+            Err(_) => refused.push(code),
+            Ok(crs) => {
+                let (x, y, z) = Transformer::new(&wgs84, &crs).and_then(|t| t.transform_3d(lon, lat, 0.0)).unwrap();
+                assert!(crs.is_geocentric() && x.is_finite() && y.is_finite() && z.is_finite(), "EPSG:{code}");
+                transformed.push(code);
+            }
+        }
+    }
+    assert_eq!(refused, [2297, 2298, 2300, 2302, 3752, 7082]);
+    assert_eq!(transformed, [4384, 4972]);
+}
+
 /// The replacements of each deprecated code are PROJ's, and the CRS GDAL gives by default is
 /// that of a single replacement.
 #[test]
@@ -92,10 +116,11 @@ fn replacements_are_those_proj_lists() {
             continue;
         }
         assert_eq!(terrio_crs::epsg_replacements(code), &replaced_by[..], "EPSG:{code}");
+        // Where the single replacement resolves, GDAL's default gives it.
         if let [single] = replaced_by[..]
-            && let Ok(gdal) = SpatialRef::from_epsg_non_deprecated(code)
+            && SpatialRef::from_epsg(single).is_ok()
         {
-            assert_eq!(gdal.epsg, Some(single), "EPSG:{code}");
+            assert_eq!(SpatialRef::from_epsg_non_deprecated(code).unwrap().epsg, Some(single), "EPSG:{code}");
         }
     }
     // GDAL substitutes only a single replacement: a code with several (EPSG:2191, replaced by
