@@ -82,6 +82,10 @@ fn feature_size(f: &Feature) -> usize {
 
 /// A source of features, read a batch at a time.
 trait FeatureSource: Send {
+    /// Pushes an attribute predicate into a source before its first batch, when supported.
+    fn filter_attributes(&mut self, _expression: &crate::ops::sql::Expression) -> Result<()> {
+        Ok(())
+    }
     /// The next batch of features; `None` at the end.
     fn next_batch(&mut self) -> Result<Option<Vec<Feature>>>;
     /// Sets the raw bytes a batch holds, at most about (see [`source_bytes`]), for sources that
@@ -818,6 +822,9 @@ struct ParquetSource(geoparquet::ParquetStream);
 
 #[cfg(feature = "parquet")]
 impl FeatureSource for ParquetSource {
+    fn filter_attributes(&mut self, expression: &crate::ops::sql::Expression) -> Result<()> {
+        self.0.filter_attributes(expression)
+    }
     fn next_batch(&mut self) -> Result<Option<Vec<Feature>>> {
         self.0.next_batch()
     }
@@ -970,12 +977,22 @@ pub fn can_write_stream(driver: VectorDriver) -> bool {
 }
 
 /// Narrows `reader` to the fields `-select` keeps when its source then reads only those (a
-/// GeoParquet file decodes only their columns), before the translator selects them. Not with
-/// `-where` or `-sql`, which may name other fields; names the reader does not know are left to
-/// the translator to report.
+/// GeoParquet file decodes only their columns), before the translator selects them. Attribute
+/// predicates include their referenced fields. SQL queries keep their full schema; names the
+/// reader does not know are left to the translator to report.
 fn select_early(reader: &mut FeatureReader, o: &VectorTranslateOptions) -> Result<()> {
-    if let (Some(names), None, None) = (&o.select, &o.where_clause, &o.sql) {
-        let names: Vec<String> = names.iter().map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).collect();
+    if o.sql.is_some() {
+        return Ok(());
+    }
+    let expression = o.where_clause.as_deref().map(crate::ops::sql::Expression::parse).transpose()?;
+    if let Some(expression) = &expression {
+        reader.source.filter_attributes(expression)?;
+    }
+    if let Some(names) = &o.select {
+        let mut names: Vec<String> = names.iter().map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).collect();
+        if let Some(expression) = &expression {
+            names.extend(expression.fields().into_iter().map(str::to_owned));
+        }
         if let Ok(keep) = reader.field_indices(&names) {
             reader.narrow(&keep)?;
         }
@@ -1936,7 +1953,16 @@ pub fn can_convert_stream(src: &str, dst: &str, options: &ConvertOptions) -> boo
     options.translate.sql.is_none()
         && out.is_some_and(can_write_stream)
         && (input.is_some_and(can_read_stream) || pbf())
-        && crate::vfs::Location::parse(src).is_local()
+        && (crate::vfs::Location::parse(src).is_local() || {
+            #[cfg(all(remote, feature = "parquet"))]
+            {
+                input == Some(VectorDriver::Parquet) && crate::vfs::Location::parse(src).remote().is_some()
+            }
+            #[cfg(not(all(remote, feature = "parquet")))]
+            {
+                false
+            }
+        })
         && !same_dataset(src, dst, output_driver(dst, options))
 }
 

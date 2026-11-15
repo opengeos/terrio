@@ -19,6 +19,41 @@ and must not reappear during an unrelated successful call. These check Terrio's
 host policy, rather than GDAL conformance. The shared warning drain includes the
 standalone CRS engine's grid diagnostics for CLI and language-binding callers.
 
+## Parquet row group pruning
+
+`cargo test -p terrio --lib drivers::vector::geoparquet` covers native GEOMETRY
+and GEOGRAPHY statistics through feature and Arrow reads, including real HTTP
+range requests, original feature IDs and exact selected values. Missing,
+non-finite or wrapped bounds remain conservative. The fixtures supply geospatial
+statistics independently of Terrio's writer and omit covering columns.
+Invalid covering bounds fall back to usable native statistics. GEOGRAPHY reads
+retain the existing WKB vertex bounds and planar geometry predicates; this
+optimization does not add geodesic edge intersection semantics.
+
+The sorted attribute conversion regression checks a plain remote Parquet file,
+an AND predicate with equality and BETWEEN, output projection and transferred
+bytes. Conversion uses statistics before reading predicate columns, then fetches
+payload only for groups containing matching rows. Remote Parquet conversions can
+use the streaming conversion path. Additional tests cover combined spatial and
+attribute selections, FID, nulls, coercions and unsupported expressions.
+
+Statistics pruning supports signed integers, floating-point values and string
+equality. Ordered string pruning is restricted to digit-only literals because
+OGR SQL's ASCII case folding and Parquet's byte ordering differ. Unsupported
+types, inexact string statistics and expressions remain candidates and use the
+ordinary SQL evaluator. These are Terrio I/O and predicate-semantics checks,
+rather than numerical GDAL conformance claims.
+
+The predicate pass evaluates all candidate groups before returning a batch and
+holds their selected file row IDs. On unselective data, it reads all predicate
+columns even with a conversion limit of one. Only payload decoding and prefetch
+use the bounded row group windows. Predicate arrays are evaluated one record
+batch at a time. Selected file row IDs require eight bytes
+per matching row, in addition to the row selections. An unselective LIKE regression records this
+behavior with HTTP ranges and a one-row conversion limit. Remote conversion
+regressions also check credentialed STAC policy refusal before any request and
+removal of a partial output after a corrupt Parquet page fails decoding.
+
 ## Repeated GeoParquet columns through Arrow
 
 `python -m pytest python/tests/test_vector_duplicate_columns.py python/tests/test_pyogrio_arrow.py`
