@@ -15,6 +15,15 @@ The sections below gather, project by project, the derived files, the copyright
 notices of their sources and the license terms.
 
 -------------------------------------------------------------------------------
+ureq 3.5.1 (https://github.com/algesten/ureq)
+-------------------------------------------------------------------------------
+
+crates/terrio/src/http/tls.rs adapts src/tls/rustls.rs, including the connector
+and transport adapter, from commit 33ca9d35e97b6a10e767fb0fa3139f01d315e89c.
+Copyright (c) 2019 Martin Algesten
+Licensed under the MIT License (see LICENSES/MIT.txt).
+
+-------------------------------------------------------------------------------
 webp-rust 0.3.2 (https://github.com/mith-mmk/webp-rust)
 -------------------------------------------------------------------------------
 

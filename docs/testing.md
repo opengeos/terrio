@@ -87,6 +87,110 @@ Ordered worker snapshots retain the same scope boundaries; flattened
 environment values or outer scopes. This alias policy is specific to Terrio;
 it is not a claim that GDAL understands the `TERRIO_` option names.
 
+## Additional HTTPS trust
+
+`python -m pytest python/tests/test_https_additional_ca.py` generates an ephemeral
+CA and localhost certificate with OpenSSL, then reads real TIFF windows through
+loopback HTTP and HTTPS range servers. It checks both CA option aliases, nested
+scope isolation, untrusted issuers, hostname mismatches and malformed/missing
+bundles. Warm-cache tests retain cached responses between trusted and untrusted
+opens. The native constrained-anchor regression includes an unconstrained DER
+copy of a public root and verifies that every compiled Mozilla anchor, including
+its applied name constraints, remains unchanged. HTTP and HTTPS CONNECT proxy
+tests verify tunneled reads, and a stalled TLS peer checks the handshake timeout.
+The successful reads use partial byte ranges and transfer less than the source
+file. These are native TLS trust-policy tests, not a GDAL
+conformance claim. OpenSSL is only a test fixture generator, not a runtime
+dependency.
+
+## Failed native Zarr reads
+
+`cargo test -p terrio --lib a_failed_waiting_read_cancels_a_stalled_response`
+checks the shared waiting-worker path used by remote Zarr chunks and shard runs:
+a failed request cancels a stalled response-header wait or a long retry delay,
+including nested waiting workers and either request index failing. The initiating
+HTTP error survives cancellation, and a subsequent request on the calling thread
+still succeeds.
+
+`python -m pytest python/tests/test_stac_geozarr.py` also reads a real two-chunk
+Zarr store over loopback HTTP. One body stalls after its first byte while the
+other chunk returns 400. Both chunk orders must return the 400 before the stalled
+body is released, and rereading the same dataset after recovery must return all
+four values exactly. These are Terrio cancellation and lifecycle checks, rather
+than GDAL numerical conformance comparisons. Response waits use the existing
+50 ms cancellation polling; DNS resolution, connection establishment and
+non-HTTP computation are outside this cancellation mechanism.
+
+## Server-runtime parallel range pieces (#865)
+
+`cargo test -p terrio --lib sparse::tests::parallel_pieces` checks request-slot
+allocation, exact range coverage, block alignment, partial final blocks, small
+and already saturated rounds, large block sizes and overflow boundaries. The
+shared `sparse::parallel_ranges` planner fills up to twelve slots, with pieces
+of at least 256 KiB or one larger block. Existing short ranges stay intact.
+
+After rebuilding the Node package, run:
+
+```sh
+node --test --test-name-pattern='long adjacent tile runs' js/tests/node.test.mjs
+```
+
+The test serves an uncompressed tiled COG over real HTTP and gates responses
+until another request starts, with a watchdog for the unfixed single request.
+It checks concurrent pieces in a server runtime, the unchanged merged request
+with a browser document present, exact UInt8 values, identical fetched bytes,
+and no new requests on a warm read. Opening/header probes keep their existing
+request growth policy.
+
+A local comparison used the existing `usgs_dem.tif` fixture (3612 by 3612,
+Float32, 51,486,544 bytes), Node.js 26.13.1 and geotiff.js 3.0.5. Baseline and
+candidate used matching single-threaded core WASM release builds with
+`--no-default-features` and no wasm-opt. The loopback server served a preloaded
+file buffer. Each number is the median open-plus-first-read time from three
+fresh processes, with libraries interleaved in rotating order:
+
+| Per-connection response pacing | Baseline | Parallel pieces | geotiff.js |
+| --- | ---: | ---: | ---: |
+| Unrestricted loopback | 830 ms | 849 ms | 5022 ms |
+| 64 KiB every 4 ms | 3194 ms | 955 ms | 5014 ms |
+
+The unrestricted case has about 2.3% overhead in this run; the paced case
+isolates a per-connection throughput bottleneck. Both Terrio builds made one
+64 KiB opening request and fetched 38,182,736 response-body bytes for the read.
+The candidate used twelve data requests in place of one. geotiff.js used two
+opening requests (2048 bytes) and 192 data requests (38,162,102 bytes).
+
+All 13,046,544 Float32 values were byte-identical to live GDAL 3.13.3, including
+nodata samples. The Float32 type, nodata value, all six geotransform coefficients
+and EPSG:4269 also matched exactly across both Terrio builds and geotiff.js.
+These measurements cover this local-server fixture and the selected pacing
+conditions; endpoint and network behavior determine the benefit elsewhere.
+## Parallel range reads across fork
+
+`cargo test -p terrio --lib a_fork_cancels_and_joins_parallel_range_requests`
+runs a real Linux fork while two HTTP range responses are held open. The fork
+cancels their response waits and joins the range workers before copying the
+process. The child must run parallel work, and the parent must reread both
+ranges correctly on the same reader after the server recovers. Four range
+requests are observed: two abandoned requests, then two successful retries.
+
+`cargo test -p terrio --lib waiting_workers_are_counted_cancelled_and_fall_back_during_a_fork`
+checks the worker lifetime, cancellation, serial fallback while a fork is already
+in progress, and a cancellation flag published after a fork inspects the
+registry. The registry mutex joins the locks held across fork, including when
+two threads fork concurrently.
+
+Cancellation is process-wide: a libc fork from any application thread cancels
+all active parallel range batches, including reads whose own callers never
+fork. Those concurrent readers receive an I/O cancellation error and may retry
+after the fork, as the recovery test does. Existing serial-read and Zarr fork
+behavior is unchanged. Cancellation covers response waits and retry delays.
+Because range workers are now counted, a fork also waits for their DNS and
+connection setup phases, which cancellation cannot interrupt. The default
+connection timeout is 30 seconds; DNS has no Terrio-configured timeout and can
+hold the fork until the resolver returns. These are lifecycle and I/O checks,
+not GDAL numerical comparisons.
+
 ## Remote-read locks across fork
 
 `cargo test -p terrio --lib each_remote_read_lock_is_handed_off_across_a_fork`
@@ -3547,6 +3651,25 @@ outputs because `gdal_rasterize` cannot create COGs directly. ENVI cases are lab
 `GTiff oracle`: GDAL converts the GeoTIFF rasterization to ENVI before comparison.
 This checks Terrio's consistent background policy rather than GDAL's driver-dependent
 ENVI initialization.
+
+## Polar area footprints
+
+`python -m pytest python/tests/test_warp_polar_area_footprints.py` checks all eight
+non-sum area methods around EPSG:3031 and EPSG:3413 pole corners under both grid
+policies. An analytic longitude-only field bounds the possible values and tests
+mirror symmetry to absolute tolerance 1e-9. Off the singular corner, averages must agree with independently
+computed `sum(field) / sum(valid)` to absolute tolerance 1e-10, including nodata.
+The native `angular_pole_polygon_shares_match_independent_clipping` test compares
+polygon-cell overlap against a separate clipping implementation to 1e-12, including
+fractional ownership clips and reversed orientation. A loopback TIFF test verifies
+partial range requests transfer less than the file while preserving pixel values.
+
+The reference comparison used GDAL 3.12.1. On the issue's one-degree cosine field,
+GDAL's EPSG:3031 southeast pole pixel averages +30.01092478 and its maximum is
++99.99619231, although that sector contains negative values. Its EPSG:3413
+northwest pole pixel similarly includes positive field values. Terrio's
+polygonal area policy intentionally differs here; these checks do not claim
+pixel-identical GDAL output or exact curved-edge integration.
 
 ## Exact sum footprints
 
