@@ -332,7 +332,7 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
         }
         "transversemercatorsouthorientated" => {
             // West and south, but for a north-east CS, which PROJ reads south then west.
-            let north_east = projected_axes(root) == Some([b'n', b'e']);
+            let north_east = projected_axes(root) == Some(*b"ne");
             out.push(if north_east { "+proj=tmerc +axis=swu" } else { "+proj=tmerc +axis=wsu" }.into());
             push(&mut out, "lat_0", lat_0.or(Some(0.0)));
             push(&mut out, "lon_0", lon_0);

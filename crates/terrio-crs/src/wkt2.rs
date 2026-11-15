@@ -647,8 +647,8 @@ const WORLD: [(&str, &str); 27] = [
 ];
 
 /// The axis order of a projected CS as PROJ's `+axis`, when not east then north. As GDAL's
-/// traditional GIS order, a north-east CS is read east-north: only west and south change the
-/// coordinates.
+/// traditional GIS order, north-east is read east-north. Other direction pairs retain their
+/// declared order, including north-west and south-east.
 fn axis(directions: &[String]) -> Option<String> {
     let letter = |d: &str| match d {
         "east" => Some('e'),

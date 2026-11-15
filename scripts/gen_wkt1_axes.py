@@ -2,10 +2,10 @@
 projected CRSs given by WKT 1 whose `AXIS` nodes point in each direction and order.
 
 Each case is a WKT 1 (Transverse Mercator, south-orientated Transverse Mercator, Lambert
-Conformal Conic and Krovak, without `AXIS` and with each order of an east-west and a north-south
+Conformal Conic, Krovak, Mercator and Polar Stereographic, without `AXIS` and with each order of an east-west and a north-south
 axis), its WKT 2 as PROJ writes it, a geographic point, the point's coordinates in both by
 `Transformer.from_crs(geographic, wkt, always_xy=True)` (as GDAL 3.10's `gdaltransform`, in
-traditional GIS order, gives them too), and the `+axis` of the WKT 1's `to_proj4()`.
+traditional GIS order, gives them too), and the `+axis` of both WKTs' `to_proj4()`.
 
 Usage: PROJ_NETWORK=OFF python scripts/gen_wkt1_axes.py (needs pyproj 3.8.0)
 """
@@ -61,6 +61,18 @@ METHODS = {
             'PARAMETER["scale_factor",0.9999]'
         ),
     ),
+    "Mercator_1SP": (
+        WGS84,
+        "+proj=longlat +datum=WGS84",
+        (18.5, -33.9),
+        'PARAMETER["central_meridian",19],PARAMETER["scale_factor",1]',
+    ),
+    "Polar_Stereographic": (
+        WGS84,
+        "+proj=longlat +datum=WGS84",
+        (18.5, 80),
+        'PARAMETER["latitude_of_origin",90],PARAMETER["central_meridian",19],PARAMETER["scale_factor",1]',
+    ),
 }
 AXES = {
     "none": [],
@@ -76,6 +88,7 @@ AXES = {
 
 
 def main():
+    """Write coordinate and export-axis references from the pinned PROJ version."""
     assert pyproj.proj_version_str == "9.8.1", pyproj.proj_version_str
     cases = []
     for method, (geogcs, geographic, point, params) in METHODS.items():
@@ -94,6 +107,10 @@ def main():
             axis = next(
                 (t for t in crs.to_proj4().split() if t.startswith("+axis=")), None
             )
+            axis2 = next(
+                (t for t in CRS(wkt2).to_proj4().split() if t.startswith("+axis=")),
+                None,
+            )
             cases.append(
                 {
                     "wkt": wkt,
@@ -103,10 +120,36 @@ def main():
                     "proj": [x, y],
                     "proj_wkt2": [x2, y2],
                     "proj4_axis": axis,
+                    "proj4_axis_wkt2": axis2,
                 }
             )
+    exports = []
+    for axes in AXES.values():
+        axis = (
+            "".join(direction[0].lower() for _, direction in axes) + "u"
+            if axes
+            else "enu"
+        )
+        geographic = CRS(f"+proj=longlat +ellps=GRS80 +axis={axis} +type=crs").to_wkt()
+        bound = (
+            f"BOUNDCRS[SOURCECRS[{geographic}],TARGETCRS[{CRS(4326).to_wkt()}],"
+            'ABRIDGEDTRANSFORMATION["shift",METHOD["Geocentric translations (geog2D domain)",ID["EPSG",9603]],'
+            'PARAMETER["X-axis translation",1,ID["EPSG",8605]],'
+            'PARAMETER["Y-axis translation",2,ID["EPSG",8606]],'
+            'PARAMETER["Z-axis translation",3,ID["EPSG",8607]]]]'
+        )
+        for wkt in (geographic, bound):
+            exports.append({"wkt": wkt, "proj4": CRS(wkt).to_proj4()})
     OUT.write_text(
-        json.dumps({"proj": pyproj.proj_version_str, "cases": cases}, indent=1) + "\n"
+        json.dumps(
+            {
+                "proj_version": pyproj.proj_version_str,
+                "cases": cases,
+                "geographic_exports": exports,
+            },
+            indent=1,
+        )
+        + "\n"
     )
 
 

@@ -152,15 +152,20 @@ fn towgs84(values: &str) -> Option<String> {
 /// them (south-orientated Transverse Mercator, Krovak's south and west), as PROJ 9.8.1 writes
 /// them, and a PROJ4 extension's as given.
 fn wkt_axes(wkt: &str, proj: &str) -> String {
-    /// The normalized name and the EPSG code of the WKT's projection method, at any depth.
+    /// The source CRS's conversion method, excluding a bound datum transformation.
     fn method(n: &crate::wkt1::Node) -> Option<(String, Option<u32>)> {
-        if ["PROJECTION", "METHOD"].iter().any(|k| n.key.eq_ignore_ascii_case(k)) {
-            return n.name().map(|name| (crate::wkt1::norm(name), n.epsg()));
+        if n.key.eq_ignore_ascii_case("BOUNDCRS") {
+            return n.child("SOURCECRS").and_then(|source| {
+                source.args.iter().find_map(|arg| match arg {
+                    crate::wkt1::Arg::Node(crs) => method(crs),
+                    _ => None,
+                })
+            });
         }
-        n.args.iter().find_map(|a| match a {
-            crate::wkt1::Arg::Node(c) => method(c),
-            _ => None,
-        })
+        let projection = n.child("PROJECTION").or_else(|| {
+            n.child("CONVERSION").or_else(|| n.child("DERIVINGCONVERSION")).and_then(|conversion| conversion.child("METHOD"))
+        })?;
+        projection.name().map(|name| (crate::wkt1::norm(name), projection.epsg()))
     }
     if crate::proj4_extension(wkt).is_some() {
         return proj.to_string();
@@ -177,10 +182,8 @@ fn wkt_axes(wkt: &str, proj: &str) -> String {
     } else if krovak {
         // Krovak's south and west (EPSG's), which PROJ writes; not other axes.
         tokens.filter(|t| !axis(t) || *t == "+axis=swu").collect::<Vec<_>>().join(" ")
-    } else if method.is_empty() {
-        // A geographic CRS's own axes (WKT 2's west or south), which PROJ writes.
-        proj.to_string()
     } else {
+        // PROJ 9.8.1 also omits geographic coordinate-system axes on export.
         tokens.filter(|t| !axis(t)).collect::<Vec<_>>().join(" ")
     }
 }
