@@ -313,7 +313,7 @@ fn crs_info<'py>(py: Python<'py>, crs: &str) -> PyResult<Bound<'py, PyDict>> {
     d.set_item("wkt", s.to_wkt())?;
     // A WKT given with a PROJ4 extension: that string, as terrio reads it (the one the CRS
     // computes on), as `proj4`. An authority code keeps none, though its WKT has one.
-    let wkt_given = crs.contains('[');
+    let wkt_given = crs.contains(['[', '(']) && !crs.trim_start().starts_with('+');
     d.set_item("proj4", if wkt_given { s.proj4_or_extension() } else { s.proj4.clone() })?;
     d.set_item("name", s.name())?;
     d.set_item("is_geographic", s.is_geographic())?;

@@ -698,3 +698,23 @@ def test_gdal_written_authority_dataset_keeps_unbound_selection(tmp_path, code):
     dataset = None
     with rio.open(path) as opened:
         assert _crs_text(opened.crs) == f"EPSG:{code}"
+
+
+def test_crs_info_reads_a_proj4_extension_in_either_wkt_delimiter():
+    """A WKT's PROJ4 extension is its PROJ string with brackets or parentheses; a code has none."""
+    from terrio import _terrio
+
+    extension = (
+        "+proj=merc +a=6378137 +b=6378137 +lat_ts=0 +lon_0=0 +x_0=0 +y_0=0 +k=1 +units=m"
+        " +nadgrids=@null +wktext +no_defs"
+    )
+    bracketed = (
+        'PROJCS["x",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],'
+        'PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Mercator_1SP"],'
+        'PARAMETER["central_meridian",0],PARAMETER["scale_factor",1],PARAMETER["false_easting",0],'
+        f'PARAMETER["false_northing",0],UNIT["metre",1],EXTENSION["PROJ4","{extension}"]]'
+    )
+    parenthesized = bracketed.replace("[", "(").replace("]", ")")
+    for wkt in (bracketed, parenthesized):
+        assert _terrio.crs_info(wkt)["proj4"] == extension
+    assert _terrio.crs_info("EPSG:3857")["proj4"] is None

@@ -424,3 +424,20 @@ fn a_refused_extension_is_not_handed_to_the_projection_engine() {
     let crs = SpatialRef::from_wkt(wkt).to_wbp().unwrap();
     assert!((crs.projection.params().lon0 + 75.0).abs() < 1e-9, "{}", crs.projection.params().lon0);
 }
+
+/// A WKT whose `PROJ4` extension the pipeline step reads on another figure than the projection
+/// engine does (`+ellps=WGS84 +f=0` in a Transverse Mercator: a sphere to the step, WGS 84 to
+/// the engine) has no projection-engine CRS, rather than one on another ellipsoid; the same on
+/// its own figure has.
+#[cfg(feature = "wbprojection-fallback")]
+#[test]
+fn an_extension_the_projection_engine_reads_on_another_figure_is_refused() {
+    let wkt = |ext: &str| {
+        format!(
+            r#"PROJCS["x",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",10],PARAMETER["scale_factor",1],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1],EXTENSION["PROJ4","{ext}"]]"#
+        )
+    };
+    assert!(SpatialRef::from_wkt(&wkt("+proj=tmerc +lon_0=10 +x_0=1000 +ellps=WGS84 +f=0 +units=m")).to_wbp().is_err());
+    let crs = SpatialRef::from_wkt(&wkt("+proj=tmerc +lon_0=10 +x_0=1000 +ellps=WGS84 +units=m")).to_wbp().unwrap();
+    assert!((crs.projection.params().ellipsoid.a - 6378137.0).abs() < 1e-6);
+}

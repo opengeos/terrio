@@ -1156,6 +1156,18 @@ impl SpatialRef {
         if let Some(p) = self.proj4_or_extension()
             && let Ok(c) = wbp::from_proj_string(&mercator_lat_ts_as_k(&p))
         {
+            // An extension is computed as a pipeline step, whose figure wbprojection may read
+            // otherwise (`+ellps=WGS84 +f=0` is a sphere to the step, WGS 84 to wbprojection):
+            // refused then, rather than describe another figure.
+            if self.proj4.is_none()
+                && let Ok(step) = Def::from_proj_extension(&p)
+            {
+                let e = &c.projection.params().ellipsoid;
+                let es = e.f * (2.0 - e.f);
+                if (e.a - step.ell.a).abs() > 1e-3 || (es - step.ell.es).abs() > 1e-10 {
+                    return Err(Error::Crs(format!("wbprojection reads another ellipsoid than terrio's for {p}")));
+                }
+            }
             return Ok(c);
         }
         if let Some(w) = &self.wkt {
