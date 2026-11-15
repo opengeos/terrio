@@ -1589,7 +1589,8 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
         // CRSs of the table, on datum ensembles, and those only the registry has).
         let on_datum = |code: u32| {
             let theirs = match epsg::get(code) {
-                Some(_) if epsg::is_deprecated(code) => return false,
+                // Not a deprecated code that has a replacement (one without stays, EPSG:2008).
+                Some(_) if !epsg_replacements(code).is_empty() => return false,
                 Some(e) if e.datum != 0 => vec![e.datum],
                 Some(e) => wkt_datums(&e.wkt),
                 None => wbp::to_ogc_wkt(code).map(|w| wkt_datums(&w)).unwrap_or_default(),

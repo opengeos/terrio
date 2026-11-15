@@ -191,7 +191,8 @@ fn geokeys_of_deprecated_codes_read_as_their_own_definition() {
         let back = SpatialRef::from_geokeys(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).unwrap();
         let (lon, lat) = (case["point"][0].as_f64().unwrap(), case["point"][1].as_f64().unwrap());
         let place = |c: &SpatialRef| Transformer::new(&wgs84, c).and_then(|t| t.transform(lon, lat)).ok();
-        if let (Some(a), Some(b)) = (place(&crs), place(&back)) {
+        if let Some(a) = place(&crs) {
+            let b = place(&back).unwrap_or_else(|| panic!("EPSG:{code}: read back, {back:?} does not transform"));
             round_tripped += 1;
             let tolerance = if crs.is_geographic() { 1e-8 } else { 1e-3 };
             let same = (a.0 - b.0).abs() < tolerance && (a.1 - b.1).abs() < tolerance;
@@ -215,4 +216,20 @@ fn geokeys_of_deprecated_codes_read_as_their_own_definition() {
     let (x, y) = Transformer::new(&wgs84, &back).unwrap().transform(5.2, 60.48).unwrap();
     // PROJ 9.8.1: (83503.1262, 7707590.2512), as in `ntm_zone_5_keeps_its_own_false_origin`.
     assert!((x - 83_503.126_2).abs() < 1e-3 && (y - 7_707_590.251_2).abs() < 1e-3, "({x}, {y})");
+}
+
+/// GeoKeys giving a deprecated projected code read as GDAL 3.12 reads them by default: a single
+/// replacement's CRS (EPSG:4855 as 5105, 3752, which terrio does not carry, as 3994), any other
+/// code its own (EPSG:2191, two replacements). GDAL 3.12.2 reads a GeoTIFF keyed 4855 as EPSG:5105
+/// and one keyed 2036 as 2953.
+#[test]
+fn geokeys_of_deprecated_codes_read_as_gdal_reads_them() {
+    for (key, read) in [(4855u16, 5105u32), (3752, 3994), (2036, 2953), (2191, 2191)] {
+        let mut keys = terrio_crs::geokeys::GeoKeyValues::default();
+        keys.shorts = vec![(1024, 1), (3072, key)];
+        let tags = keys.encode().unwrap();
+        let crs = SpatialRef::from_geokeys(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).unwrap();
+        assert_eq!(crs.epsg, Some(read), "{key}");
+        assert!(crs.to_proj4().is_some(), "{key}");
+    }
 }

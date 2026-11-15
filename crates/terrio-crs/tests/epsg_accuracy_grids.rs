@@ -33,4 +33,7 @@ fn epsg_transformations_with_grids_match_gdal() {
     assert!(inv.count(0.01) >= 6354, "inverse within 1 cm: {}", inv.count(0.01));
     assert!(cross.count(0.01) >= 6287, "CRS to CRS within 1 cm: {}", cross.count(0.01));
     assert!(cross.count(1.0) >= 6290, "CRS to CRS within 1 m: {}", cross.count(1.0));
+    // The pairs beyond 1 cm, so a lower count hides no other: the three of RRAF 1991 (17 m to
+    // 118 m) and three within 1 m (0.31 m to 0.61 m).
+    assert_eq!(cross.beyond(0.01), ["2989>32220", "4640>32220", "5513>5224", "5651>9000", "10744>2989", "11117>3117"]);
 }

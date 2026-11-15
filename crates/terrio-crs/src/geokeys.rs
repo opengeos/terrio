@@ -160,7 +160,13 @@ pub fn read(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> GeoKeysCrs {
     }
     let k = GeoKeys { keys: directory, doubles, ascii };
     let mut epsg = match (k.short(1024), k.short(3072), k.short(2048)) {
-        (_, Some(code), _) if code != 0 && code != USER_DEFINED => Some(code as u32),
+        // A deprecated projected code with a single replacement, as GDAL 3.12 reads it by default
+        // (`OSR_USE_NON_DEPRECATED=YES`): EPSG:4855 as 5105, 3752 (which terrio does not carry)
+        // as 3994. A geographic one GDAL keeps (EPSG:4140).
+        (_, Some(code), _) if code != 0 && code != USER_DEFINED => match crate::epsg_replacements(u32::from(code)) {
+            [replacement] => Some(*replacement),
+            _ => Some(u32::from(code)),
+        },
         (Some(2), _, Some(code)) if code != 0 && code != USER_DEFINED => Some(code as u32),
         (Some(1), _, _) => {
             // A registered CRS only in the GeoKeys' linear unit: GDAL builds the CRS from the

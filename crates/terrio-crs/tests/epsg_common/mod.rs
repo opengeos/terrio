@@ -13,11 +13,20 @@ use terrio_crs::{SpatialRef, Transformer};
 #[derive(Default)]
 pub struct Tally {
     pub errors: Vec<Option<f64>>,
+    /// The codes of each CRS (or pair), as `4640>32220`, in the order of `errors`.
+    pub codes: Vec<String>,
     /// The number of points over all CRSs.
     pub points: usize,
 }
 
 impl Tally {
+    /// The CRSs (or pairs) with a point farther than `max` metres, or one terrio could not
+    /// transform, in the reference's order.
+    #[allow(dead_code)]
+    pub fn beyond(&self, max: f64) -> Vec<&str> {
+        self.errors.iter().zip(&self.codes).filter(|(e, _)| !e.is_some_and(|e| e <= max)).map(|(_, c)| c.as_str()).collect()
+    }
+
     /// The number of CRSs whose every point is within `max` metres.
     pub fn count(&self, max: f64) -> usize {
         self.errors.iter().filter(|e| e.is_some_and(|e| e <= max)).count()
@@ -141,6 +150,7 @@ pub fn check(name: &str) -> Option<(Tally, Tally, Tally)> {
             _ => &mut cross,
         };
         tally.errors.push(w.error);
+        tally.codes.push(g.codes.join(">"));
         tally.points += w.n;
         let error = w.error.map_or("fail".into(), |e| format!("{e:.4}"));
         let _ = writeln!(report, "{}\t{}\t{}\t{}\t{error}\t{}\t{}", g.kind, g.codes.join("\t"), w.n, w.failed, w.at.0, w.at.1);
