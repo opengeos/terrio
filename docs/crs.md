@@ -38,11 +38,11 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
   CRS's own transformations to WGS 84, as PROJ concatenates them (into a CRS on that CRS's datum,
   when terrio identifies it, the shift alone; into one on the source CRS's own datum, no shift,
   whatever the target; to a CRS without transformations, the source CRS's own, else PROJ's
-  ballpark);
-  such a shift wins over the EPSG code of a source CRS terrio identifies. Their PROJ string leaves out
-  a shift to a CRS other than WGS 84, as PROJ's does. Their scale difference is a
+  ballpark); such a shift wins over the EPSG code of a source CRS terrio identifies. Their PROJ
+  string leaves out a shift to a CRS other than WGS 84, as PROJ's does. Their scale difference is a
   ratio in unity (`1.0000067`, as PROJ writes it) or in the unit given (parts per million, where
-  PROJ 9.8.1 misreads 6.7 ppm as the ratio 6.7, which terrio does not follow); an unknown WKT2 projection method or parameter is an error rather than ignored. A projected
+  PROJ 9.8.1 misreads 6.7 ppm as the ratio 6.7, which terrio does not follow); an unknown WKT2
+  projection method or parameter is an error rather than ignored. A projected
   CRS's `AXIS` nodes give its axes in WKT 1 as in WKT 2, as GDAL and PROJ read them in GIS order:
   `AXIS["Y",WEST],AXIS["X",SOUTH]` counts coordinates west and south, and northing then easting is
   read as easting then northing; south-orientated Transverse Mercator is west and south but for

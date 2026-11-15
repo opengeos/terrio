@@ -9,7 +9,7 @@
 //! Tolerance: 1 mm.
 
 use serde_json::Value;
-use terrio_crs::{SpatialRef, Transformer};
+use terrio_crs::{Error, SpatialRef, TransformOptions, Transformer};
 
 fn offline() {
     terrio_crs::set_grid_search_paths(Some(vec![]));
@@ -73,4 +73,23 @@ fn a_scale_difference_in_parts_per_million_is_read_in_that_unit() {
     let at = |w: &str| Transformer::new(&SpatialRef::from_wkt(w), &wgs84).unwrap().transform(10.0, 50.0).unwrap();
     assert!(metres(at(&ppm), at(ratio)) < 1e-6);
     assert!(SpatialRef::from_wkt(&ppm).to_proj4().unwrap().contains("+towgs84=598.1,73.7,418.2,0.202,0.045,-2.455,6.7 "));
+}
+
+/// Under ONLY_BEST, a bound CRS to OSGB36 is transformed, as PROJ 9.8.1 does (it only warns that
+/// OSTN15, its best, is missing), where plain EPSG:4277 is refused.
+#[test]
+fn only_best_transforms_a_bound_crs_as_proj_does() {
+    offline();
+    let data: Value = serde_json::from_str(include_str!("data/wkt2_bound.json")).unwrap();
+    let case = data["cases"].as_array().unwrap().iter().find(|c| c["name"] == "to OSGB36").unwrap();
+    let only_best = TransformOptions { only_best: true, ..Default::default() };
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    let t = Transformer::with_options(&SpatialRef::from_wkt(case["wkt"].as_str().unwrap()), &wgs84, &only_best).unwrap();
+    let num = |v: &Value, i: usize| v[i].as_f64().unwrap();
+    let (x, y) = (num(&case["point"], 0), num(&case["point"], 1));
+    let got = t.transform(x, y).unwrap();
+    let proj = (num(&case["proj"], 0), num(&case["proj"], 1));
+    assert!(metres(got, proj) < 1e-3, "{got:?}, PROJ {proj:?}");
+    let plain = Transformer::with_options(&SpatialRef::from_epsg(4277).unwrap(), &wgs84, &only_best).unwrap();
+    assert!(matches!(plain.transform(x, y), Err(Error::MissingGrid(_))));
 }

@@ -41,8 +41,8 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
     if key == "BOUNDCRS" {
         let source = root.child("SOURCECRS").and_then(first_node).ok_or_else(|| bad("a BOUNDCRS without its SOURCECRS"))?;
         let mut c = to_proj(source)?;
-        // A transformation to another CRS it cannot read is left out, as terrio did before it
-        // read those; one to WGS 84 fails.
+        // A transformation to another CRS it cannot read, or to a CRS it cannot convert, is left
+        // out, as terrio did before it read those; one to WGS 84 fails.
         let shift = match towgs84(root) {
             Err(_) if !bound_to_wgs84(root) => None,
             r => r?,

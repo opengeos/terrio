@@ -826,6 +826,8 @@ impl Def {
                 // (3)" before "(2)").
                 route::sort_as_proj(&mut ops);
                 if ops.is_empty() {
+                    // The datum stays `None`: `Def::new` tells by it that a bound CRS over a code
+                    // has the bound's transformations, and `on_bound_source` covers the source's.
                     (d.ops, d.geog, d.dynamic) = (source.ops.clone(), source.geog, source.dynamic);
                 } else {
                     d.ops = ops;

@@ -115,6 +115,8 @@ fn boundcrs_without_a_helmert_to_wgs84_keeps_its_source() {
     let (frame, vector) =
         (forward(&helmert(&bessel, "1038", 2.0), &points).unwrap(), forward(&helmert(&bessel, "1037", -2.0), &points).unwrap());
     assert!(max_distance(&frame, &vector) < 1e-6 && max_distance(&frame, &plain_bessel) > 1.0);
+    // The rotation is applied: without it, the result differs.
+    assert!(max_distance(&frame, &forward(&helmert(&bessel, "1037", 0.0), &points).unwrap()) > 1.0);
     // On WGS 84 itself, no shift into WGS 84, as PROJ 9.8.1 gives (its null transformation).
     assert!(max_distance(&forward(&helmert(tmerc, "1038", 2.0), &points).unwrap(), &plain) < 1e-6);
     // A BOUNDCRS of a CRS the reader does not convert is not refused by it.
