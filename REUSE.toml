@@ -122,6 +122,28 @@ precedence = "override"
 SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright © 2010-2025 Esri", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
 SPDX-License-Identifier = "LicenseRef-EPSG AND Apache-2.0 AND MIT"
 
+# PROJ 9.8.1's placements of points of EPSG and ESRI WKTs of EPSG CRSs in grads, with prime
+# meridians, and with datums known by ID or name (scripts/gen_grads_and_prime_meridians.py,
+# scripts/gen_wkt_datum_shift.py).
+[[annotations]]
+path = ["crates/terrio-crs/tests/data/grads_and_prime_meridians.json", "crates/terrio-crs/tests/data/wkt_datum_shift.json"]
+precedence = "override"
+SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright © 2010-2025 Esri", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
+SPDX-License-Identifier = "LicenseRef-EPSG AND Apache-2.0 AND MIT"
+
+# PROJ 9.8.1's readings of WKTs and PROJ strings, with EPSG CRSs, datums and transformations
+# (scripts/gen_wkt1_axes.py, gen_wkt2_bound.py, gen_wkt1_proj_reads.py, gen_proj_ellipsoid_shape.py).
+[[annotations]]
+path = [
+    "crates/terrio-crs/tests/data/proj_ellipsoid_shape.json",
+    "crates/terrio-crs/tests/data/wkt1_axes.json",
+    "crates/terrio-crs/tests/data/wkt1_proj_reads.json",
+    "crates/terrio-crs/tests/data/wkt2_bound.json",
+]
+precedence = "override"
+SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
+SPDX-License-Identifier = "LicenseRef-EPSG AND MIT"
+
 # IAU_2015 definitions from PROJ 9.8.1's data/sql/iau.sql (scripts/build_db_from_iau.py).
 [[annotations]]
 path = ["crates/terrio-crs/data/iau.tsv.zst", "crates/terrio-crs/data/iau-source.json"]
