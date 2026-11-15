@@ -187,6 +187,16 @@ pub(crate) fn datum_ellps(name: &str) -> Option<&'static str> {
     })
 }
 
+/// The semi-major axis and inverse flattening of a WKT 1's `SPHEROID` (of its geographic CRS).
+fn wkt_spheroid(w: &str) -> Option<(f64, f64)> {
+    let root = wkt1::parse(w)?;
+    let geodetic = ["GEOGCS", "GEOCCS"].iter().any(|k| root.key.eq_ignore_ascii_case(k));
+    let geog = if geodetic { &root } else { root.child("GEOGCS")? };
+    let spheroid = geog.child("DATUM")?.child("SPHEROID")?;
+    let (a, rf) = (spheroid.num(1)?, spheroid.num(2)?);
+    (a.is_finite() && a > 0.0 && rf.is_finite() && rf >= 0.0).then_some((a, rf))
+}
+
 /// The datum shift PROJ's `pj_datum_set` gives a pipeline step's `+datum=` (`datums.cpp`).
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum StepShift {
@@ -827,7 +837,16 @@ impl Def {
             d.datum = Some(6326);
             d.geog = Some(4326);
         } else if null_grids {
-            // No shift.
+            // No shift to WGS 84, on the datum still: a CRS on it is reached without one (PROJ's
+            // bound CRS over the datum, `+datum=OSGB36 +nadgrids=@null` into EPSG:4277).
+            // Without a datum, no operation is no shift already (EPSG:3857's null grid).
+            if let Some(code) = datum_name.and_then(datum_geog).filter(|_| !shape.reshaped)
+                && let Some(e) = epsg::get(code)
+            {
+                d.ops = vec![Arc::new(Op::world(datum::nadgrids_steps("@null")))];
+                d.datum = (e.datum != 0).then_some(e.datum);
+                d.geog = Some(code);
+            }
         } else if let Some(g) = nadgrids {
             d.ops = vec![Arc::new(Op::world(datum::nadgrids_steps(g)))];
         } else if let Some(t) = towgs84 {
@@ -968,7 +987,16 @@ impl Def {
         // WKT-node fallback, but invalid values in a supported conversion must not fall through.
         if let Some(p) = super::proj4_extension(w) {
             match Self::from_proj_extension(&p) {
-                Ok(d) => return Ok(d),
+                Ok(mut d) => {
+                    // The ellipsoid it reports is the WKT's, as PROJ reports it, whatever its
+                    // extension computes on.
+                    if let (Some(params), Some((a, rf))) = (d.params.as_mut(), wkt_spheroid(w)) {
+                        let params = Arc::make_mut(params);
+                        params.a = a;
+                        params.b = if rf == 0.0 { a } else { a - a / rf };
+                    }
+                    return Ok(d);
+                }
                 Err(Error::Crs(message)) if message.starts_with("unsupported projection:") => {}
                 Err(error) => return Err(error),
             }

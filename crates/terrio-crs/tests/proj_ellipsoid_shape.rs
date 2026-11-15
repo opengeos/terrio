@@ -280,3 +280,48 @@ fn projjson_is_refused_on_another_figure() {
     assert!(SpatialRef::parse("+proj=ortho +lat_0=40 +lon_0=-90 +ellps=WGS84 +f=0").unwrap().to_projjson().is_err());
     assert!(SpatialRef::parse("+proj=ortho +lat_0=40 +lon_0=-90 +ellps=WGS84").unwrap().to_projjson().is_ok());
 }
+
+/// `+nadgrids=@null` is no shift whatever `+towgs84` says, and keeps a `+datum=` as it is, as
+/// PROJ 9.8.1 reads it: `+datum=OSGB36 +nadgrids=@null` into EPSG:4277 and into WGS 84 is the
+/// identity (PROJ's bound CRS over OSGB36 with the null grid), likewise NAD27's into EPSG:4267.
+/// PROJJSON writes no shift either (PROJ writes the null grid), and reads back so.
+#[test]
+fn a_null_grid_is_no_shift_and_keeps_the_datum() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let at = |src: &SpatialRef, dst: &str, p: (f64, f64)| {
+        Transformer::new(src, &SpatialRef::parse(dst).unwrap()).unwrap().transform(p.0, p.1).unwrap()
+    };
+    for (s, code, p) in [
+        ("+proj=longlat +datum=OSGB36 +nadgrids=@null", "EPSG:4277", (-2.0, 52.0)),
+        ("+proj=longlat +datum=NAD27 +nadgrids=@null", "EPSG:4267", (-100.0, 40.0)),
+    ] {
+        let crs = SpatialRef::parse(s).unwrap();
+        for dst in [code, "EPSG:4326"] {
+            let q = at(&crs, dst, p);
+            assert!((q.0 - p.0).abs() < 1e-9 && (q.1 - p.1).abs() < 1e-9, "{s} into {dst}: {q:?}");
+        }
+    }
+    let shifted = SpatialRef::parse("+proj=longlat +ellps=WGS84 +nadgrids=@null +towgs84=1000,0,0").unwrap();
+    let json = shifted.to_projjson().unwrap();
+    assert!(!json.contains("Geocentric translations"), "{json}");
+    let back = SpatialRef::from_projjson(&json).unwrap();
+    for crs in [&shifted, &back] {
+        let q = at(crs, "EPSG:4326", (10.0, 45.0));
+        assert!((q.0 - 10.0).abs() < 1e-9 && (q.1 - 45.0).abs() < 1e-9, "{q:?}");
+    }
+}
+
+/// GeoServer's Web Mercator (EPSG:900913, a sphere in its extension beside a WGS 84
+/// `SPHEROID`) is written as Popular Visualisation Pseudo Mercator on WGS 84, as PROJ 9.8.1
+/// writes it; and a WKT with an extension reports its own `SPHEROID`, as PROJ does, whatever
+/// the extension computes on.
+#[test]
+fn an_extension_wkt_reports_and_writes_its_spheroid() {
+    let google = r#"PROJCS["Google Maps Global Mercator",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563,AUTHORITY["EPSG","7030"]],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Mercator_1SP"],PARAMETER["central_meridian",0],PARAMETER["scale_factor",1],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1],EXTENSION["PROJ4","+proj=merc +a=6378137 +b=6378137 +lat_ts=0.0 +lon_0=0.0 +x_0=0.0 +y_0=0 +k=1.0 +units=m +nadgrids=@null +wktext +no_defs"],AUTHORITY["EPSG","900913"]]"#;
+    let json = SpatialRef::from_wkt(google).to_projjson().unwrap();
+    assert!(json.contains("Popular Visualisation Pseudo Mercator"), "{json}");
+    let wkt = "PROJCS[\"custom\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"custom_proj4\"],UNIT[\"metre\",1],EXTENSION[\"PROJ4\",\"+proj=tmerc +lon_0=-75 +ellps=WGS84 +f=0\"]]";
+    let params = SpatialRef::from_wkt(wkt).projection_params().unwrap();
+    assert!((params.a - 6_378_137.0).abs() < 1e-6 && (params.b - 6_356_752.314_245_179).abs() < 1e-6, "{params:?}");
+}

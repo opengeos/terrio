@@ -150,7 +150,20 @@ fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
     // Nor one on another figure than the WKT's ellipsoid, which this writer writes (PROJ 9.8.1
     // writes the WKT's, `+R=6400000` beside a WGS 84 `SPHEROID` as WGS 84).
     let spheroid = base.child("DATUM").and_then(|d| d.child("SPHEROID").or_else(|| d.child("ELLIPSOID")));
-    if extension && let Some((a, rf)) = spheroid.and_then(|e| Some((e.num(1)?, e.num(2)?))) {
+    // But Web Mercator on its WGS 84 (GDAL's, GeoServer's EPSG:900913), which this writer writes
+    // as Popular Visualisation Pseudo Mercator, as PROJ does.
+    let q = Params::parse(&proj);
+    let zero = |key: &str, default: f64| q.f64(key).is_none_or(|v| v == default);
+    let web_mercator = q.str("proj") == Some("merc")
+        && def.ell.es == 0.0
+        && def.ell.a == 6_378_137.0
+        && zero("lat_ts", 0.0)
+        && zero("k", 1.0)
+        && zero("k_0", 1.0);
+    if extension
+        && !web_mercator
+        && let Some((a, rf)) = spheroid.and_then(|e| Some((e.num(1)?, e.num(2)?)))
+    {
         let f = if rf == 0.0 { 0.0 } else { 1.0 / rf };
         if (a - def.ell.a).abs() > 1e-3 || (2.0 * f - f * f - def.ell.es).abs() > 1e-10 {
             return Err(unsupported("a PROJ4 extension on another ellipsoid than its WKT's"));
@@ -165,7 +178,9 @@ fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
     // WKT holds: its datum shift is EPSG's.
     let from_table = s.proj4.is_none() && entry.is_some_and(|e| s.wkt.as_deref() == Some(e.wkt.as_str()));
     let given = if from_table { None } else { s.proj4.clone().or_else(|| s.wkt.as_deref().and_then(crate::wkt_proj)) };
-    let towgs84 = match given.and_then(|g| Params::parse(&g).list("towgs84")) {
+    // `+nadgrids` wins over `+towgs84` (`@null` alone: no shift, written as none; others refused
+    // as unwritten), as PROJ reads them.
+    let towgs84 = match given.map(|g| Params::parse(&g)).filter(|g| !g.has("nadgrids")).and_then(|g| g.list("towgs84")) {
         Some(t) if !matches!(t.len(), 3 | 7) => return Err(unsupported(format!("a +towgs84 of {} values", t.len()))),
         Some(t) if t.iter().any(|v| !v.is_finite()) => return Err(unsupported("a +towgs84 with a non-finite value")),
         t => t,
