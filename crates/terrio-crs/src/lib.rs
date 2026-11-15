@@ -403,16 +403,24 @@ impl SpatialRef {
                 Def::new(&code).is_ok_and(|r| {
                     let unshifted = own.ops().is_empty() && own.datum_code().is_none() && r.is_wgs84();
                     let ellipsoid = (own.ell.a - r.ell.a).abs() < 1e-3 && (own.ell.es - r.ell.es).abs() < 1e-9;
-                    own.same_conversion(&r) && ellipsoid && (unshifted || own.same_datum(&r))
+                    // On the code's datum by its transformations, not by a shift of its own
+                    // (`+datum=OSGB36 +nadgrids=@null`, no shift to WGS 84); unless the code's
+                    // transformations to WGS 84 are all null shifts too (WGS 84 itself), so that
+                    // its own place the points alike. Not NAD83, shifted in places (Hawaii, by
+                    // NAD83 to WGS 84 (2) and (3)), which PROJ's `to_epsg` takes by its nodes.
+                    let null_shift = own.ops().iter().any(|op| op.grids().iter().any(|(g, _)| g.trim_start_matches('@') == "null"));
+                    let registry_null = r.is_wgs84()
+                        || r.geog().and_then(epsg::get).is_some_and(|e| !e.ops.is_empty() && e.ops.iter().all(|op| op.is_null_shift()));
+                    own.same_conversion(&r) && ellipsoid && (unshifted || (own.same_datum(&r) && (!null_shift || registry_null)))
                 })
             };
             let epsg = declared_epsg(wkt)
                 .or_else(|| identify_epsg(wkt))
                 .filter(|code| fits(SpatialRef { epsg: Some(*code), ..Default::default() }));
-            // Retain a lenient extension through its WKT: re-reading it as a literal PROJ
-            // string would apply stricter validation than the extension permits.
-            let proj4 = Def::from_proj(&proj4).is_ok().then_some(proj4);
-            let mut s = Self { epsg, wkt: Some(wkt.to_string()), proj4, esri: None }.with_esri();
+            // The extension is kept through the WKT, not as the CRS's PROJ string: PROJ computes
+            // on it as a pipeline step reads it, whose ellipsoid rules and leniency differ from
+            // those of its CRS parser, which reads a PROJ string given.
+            let mut s = Self { epsg, wkt: Some(wkt.to_string()), proj4: None, esri: None }.with_esri();
             if let Some(code) = s.esri
                 && !fits(SpatialRef { esri: Some(code), ..Default::default() })
             {
@@ -958,7 +966,9 @@ impl SpatialRef {
         // A PROJ string's axes (one from the WKT of an IAU_2015 CRS goes by the WKT, as PROJ
         // reads it).
         let iau = self.wkt.as_deref().and_then(iau::declared).is_some();
-        if !self.registry_entry() && !iau && self.proj4.is_some() {
+        // A WKT's PROJ4 extension is its PROJ string too.
+        let extension = self.wkt.as_deref().and_then(proj4_extension).is_some();
+        if !self.registry_entry() && !iau && (self.proj4.is_some() || extension) {
             let [first, second] = def.axis_directions();
             return if polar { AxisOrder::Other } else { order(first, second) };
         }
@@ -1128,7 +1138,12 @@ impl SpatialRef {
             && is_variant_c(w)
         {
             let p = wkt_proj(w).ok_or_else(|| Error::Crs("a Polar Stereographic (variant C) CRS terrio cannot convert".into()))?;
-            return Ok(wbp::from_proj_string(&p)?);
+            let c = wbp::from_proj_string(&p)?;
+            // `wkt_proj` gives a WKT's PROJ4 extension when it has one.
+            if self.proj4.is_none() && proj4_extension(w).is_some() {
+                same_figure_as_step(&c, &p)?;
+            }
+            return Ok(c);
         }
         if let Some(code) = self.epsg
             && let Ok(c) = wbp::Crs::from_epsg(code)
@@ -1139,10 +1154,19 @@ impl SpatialRef {
         if self.is_rotated_pole() {
             return Err(Error::Crs("a rotated-pole CRS has no wbprojection equivalent".into()));
         }
-        // The PROJ string over its WKT, which wbprojection reads with fewer parameters.
-        if let Some(p) = &self.proj4
-            && let Ok(c) = wbp::from_proj_string(&mercator_lat_ts_as_k(p))
+        // The PROJ string (or a WKT's PROJ4 extension) over its WKT, which wbprojection reads
+        // with fewer parameters.
+        // An extension only as terrio reads it: one it refuses (`+rf=0`) goes by its WKT, as
+        // before terrio read extensions as pipeline steps.
+        if let Some(p) = self.proj4_or_extension()
+            && let Ok(c) = wbp::from_proj_string(&mercator_lat_ts_as_k(&p))
         {
+            // An extension is computed as a pipeline step, whose figure wbprojection may read
+            // otherwise (`+ellps=WGS84 +f=0` is a sphere to the step, WGS 84 to wbprojection):
+            // refused then, rather than describe another figure.
+            if self.proj4.is_none() {
+                same_figure_as_step(&c, &p)?;
+            }
             return Ok(c);
         }
         if let Some(w) = &self.wkt {
@@ -1241,6 +1265,104 @@ pub fn wkt_proj(wkt: &str) -> Option<String> {
     let root = wkt1::parse(wkt)?;
     let c = if wkt2::handles(&root) { wkt2::to_proj(&root).ok()? } else { wkt1::to_proj(&root)? };
     Some(c.proj)
+}
+
+/// Whether PROJ string `s`, as a WKT's PROJ4 extension (which PROJ computes on as a pipeline
+/// step), places points where PROJ's CRS rules for the string place them: the same conversion
+/// and figure (but for the round-off between WGS 84 and GRS 1980), and the same datum, or one
+/// that places points around the projection's origin within 1 mm, both judged as without grids
+/// (PROJ's default here), whatever is installed: `+datum=NAD83`, which the step takes as WGS 84
+/// and whose transformations are null without grids, places as the string; a step's grid shift
+/// (NAD27's) does not, nor OSGB36's Helmert shift against `pj_datum_set`'s. The writers that describe a PROJ string by those rules (PROJJSON, GeoKeys)
+/// describe such an extension only, and the WKT writer writes the string itself so.
+pub(crate) fn extension_places_as_string(s: &str) -> bool {
+    // Both as they place points without grids, whatever is installed: PROJ's default here. Their
+    // diagnostics (a missing grid, a ballpark) are this check's, not the caller's.
+    warnings::silenced(|| grid::without_grids(|| extension_places_without_grids(s)))
+}
+
+/// [`extension_places_as_string`], under [`grid::without_grids`].
+fn extension_places_without_grids(s: &str) -> bool {
+    let (Ok(crs), Ok(step)) = (Def::from_proj(s), Def::from_proj_extension(s)) else { return false };
+    if !crs.same_conversion(&step) || (crs.ell.a - step.ell.a).abs() > 1e-6 || (crs.ell.es - step.ell.es).abs() > 1e-10 {
+        return false;
+    }
+    if crs.same_datum(&step) {
+        return true;
+    }
+    // The step's grid shift (NAD27's, potsdam's `+nadgrids`) is no datum the CRS rules have.
+    let real_grids = |op: &std::sync::Arc<datum::Op>| op.grids().iter().any(|(g, _)| g.trim_start_matches('@') != "null");
+    if step.ops().iter().any(real_grids) {
+        return false;
+    }
+    // Each with a WKT of its own stored. The `Transformer`s below compare their CRSs by WKT
+    // (`same_as`), and the WKT of a CRS given only by a PROJ string is written from that string,
+    // which writes its extension by this check: without the stored placeholder, this recurses
+    // until the stack overflows. `Def::new` reads `proj4` first, so the placeholder is not read.
+    let given = SpatialRef { proj4: Some(s.to_string()), wkt: Some("given".into()), ..Default::default() };
+    let extension = SpatialRef {
+        wkt: Some(format!(
+            "GEOGCS[\"step\",DATUM[\"step\",SPHEROID[\"step\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433],EXTENSION[\"PROJ4\",\"{}\"]]",
+            s.replace('"', "")
+        )),
+        ..Default::default()
+    };
+    let Ok(wgs84) = SpatialRef::from_epsg(4326) else { return false };
+    let (Ok(to_given), Ok(to_extension)) = (Transformer::new(&wgs84, &given), Transformer::new(&wgs84, &extension)) else {
+        return false;
+    };
+    // The datum's transformations without grids (NAD83's null one, OSGB36's Helmert ones)
+    // against the step's shift, around the origin (in Greenwich longitudes): on a 3 × 3 grid
+    // 5° apart and 4 points 15° away.
+    let (lon, lat) = crs.params().map_or((0.0, 0.0), |p| (p.lon_0 + p.prime_meridian, p.lat_0));
+    // Metres per coordinate unit (`+to_meter`).
+    let scale = if crs.is_geographic() { 111_195.0 } else { crs.to_meter() };
+    let offsets = [-5.0, 0.0, 5.0].into_iter().flat_map(|x| [-5.0, 0.0, 5.0].map(|y| (x, y)));
+    let mut compared = 0;
+    let alike = offsets.chain([(-15.0, 0.0), (15.0, 0.0), (0.0, -15.0), (0.0, 15.0)]).all(|(dx, dy)| {
+        let point = ((lon + dx + 180.0).rem_euclid(360.0) - 180.0, (lat + dy).clamp(-89.0, 89.0));
+        match (to_given.transform(point.0, point.1), to_extension.transform(point.0, point.1)) {
+            (Ok(a), Ok(b)) => {
+                compared += 1;
+                ((a.0 - b.0) * scale).hypot((a.1 - b.1) * scale) < 1e-3
+            }
+            // Outside the projection's domain on both sides.
+            (Err(_), Err(_)) => true,
+            _ => false,
+        }
+    });
+    // Not alike when no point could be compared.
+    alike && compared > 0
+}
+
+/// Fails when wbprojection reads the PROJ string `p` of a WKT's PROJ4 extension on another figure
+/// than terrio's pipeline step does (`+ellps=WGS84 +f=0` is a sphere to the step, WGS 84 to
+/// wbprojection, which takes `+ellps` before `+f`), rather than describe another figure.
+#[cfg(feature = "wbprojection-fallback")]
+fn same_figure_as_step(c: &wbp::Crs, p: &str) -> Result<()> {
+    let Ok(step) = Def::from_proj_extension(p) else { return Ok(()) };
+    let e = &c.projection.params().ellipsoid;
+    let es = e.f * (2.0 - e.f);
+    if (e.a - step.ell.a).abs() > 1e-3 || (es - step.ell.es).abs() > 1e-10 {
+        return Err(Error::Crs(format!("wbprojection reads another ellipsoid than terrio's for {p}")));
+    }
+    Ok(())
+}
+
+impl SpatialRef {
+    /// The CRS's PROJ string, or else its WKT 1's `EXTENSION["PROJ4", ...]` as terrio reads it (one
+    /// it refuses, such as `+rf=0`, is none): the string a CRS from such a WKT computes on.
+    #[doc(hidden)]
+    pub fn proj4_or_extension(&self) -> Option<String> {
+        self.proj4.clone().or_else(|| self.wkt.as_deref().and_then(proj4_extension).filter(|p| Def::from_proj_extension(p).is_ok()))
+    }
+}
+
+/// Whether a WKT 1 has a root `EXTENSION["PROJ4", ...]`, which PROJ and terrio compute on in place
+/// of its nodes.
+#[doc(hidden)]
+pub fn has_proj4_extension(wkt: &str) -> bool {
+    proj4_extension(wkt).is_some()
 }
 
 /// The PROJ string of a WKT 1's root `EXTENSION["PROJ4", ...]`.

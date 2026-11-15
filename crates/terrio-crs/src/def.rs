@@ -9,7 +9,9 @@
 //   PROJ 9.8.1:
 //     src/datums.cpp
 //     src/ell_set.cpp
+//     src/init.cpp
 //     src/iso19111/datum.cpp
+//     src/iso19111/io.cpp
 //     include/proj/internal/datum_internal.hpp
 //     src/iso19111/operation/coordinateoperationfactory.cpp
 
@@ -200,6 +202,187 @@ pub(crate) fn datum_ellps(name: &str) -> Option<&'static str> {
     })
 }
 
+/// The semi-major axis and inverse flattening of a WKT 1's `SPHEROID` (of its geographic CRS).
+fn wkt_spheroid(w: &str) -> Option<(f64, f64)> {
+    let root = wkt1::parse(w)?;
+    let geodetic = ["GEOGCS", "GEOCCS"].iter().any(|k| root.key.eq_ignore_ascii_case(k));
+    let geog = if geodetic { &root } else { root.child("GEOGCS")? };
+    let spheroid = geog.child("DATUM")?.child("SPHEROID")?;
+    let (a, rf) = (spheroid.num(1)?, spheroid.num(2)?);
+    (a.is_finite() && a > 0.0 && rf.is_finite() && rf >= 0.0).then_some((a, rf))
+}
+
+/// The datum shift PROJ's `pj_datum_set` gives a pipeline step's `+datum=` (`datums.cpp`).
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum StepShift {
+    Towgs84(&'static [f64]),
+    Nadgrids(&'static str),
+}
+
+/// The shift of PROJ's `+datum=` names in a pipeline step.
+pub(crate) fn step_datum_shift(name: &str) -> Option<StepShift> {
+    Some(match name {
+        "WGS84" | "NAD83" => StepShift::Towgs84(&[0.0, 0.0, 0.0]),
+        "GGRS87" => StepShift::Towgs84(&[-199.87, 74.79, 246.62]),
+        "NAD27" => StepShift::Nadgrids("@conus,@alaska,@ntv2_0.gsb,@ntv1_can.dat"),
+        "potsdam" => StepShift::Nadgrids("@BETA2007.gsb"),
+        "carthage" => StepShift::Towgs84(&[-263.0, 6.0, 431.0]),
+        "hermannskogel" => StepShift::Towgs84(&[577.326, 90.129, 463.919, 5.137, 1.474, 5.297, 2.4232]),
+        "ire65" => StepShift::Towgs84(&[482.530, -130.596, 564.557, -1.042, -0.214, -0.631, 8.15]),
+        "nzgd49" => StepShift::Towgs84(&[59.47, -5.04, 187.44, 0.47, -0.1, 1.024, -4.5993]),
+        "OSGB36" => StepShift::Towgs84(&[446.448, -125.157, 542.060, 0.1502, 0.2470, 0.8421, -20.4894]),
+        _ => return None,
+    })
+}
+
+/// The ellipsoid of a CRS given by a PROJ string, as PROJ 9.8.1 reads it with `+type=crs`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ProjEllipsoid {
+    /// The CRS's ellipsoid (PROJ's `buildDatum`).
+    pub crs: Ell,
+    /// The figure the CRS's coordinates are computed on, a sphere under a spherification flag
+    /// but `+R_C`.
+    pub figure: Ell,
+    /// Whether `+R_C` is the spherification flag, which the projection applies.
+    pub conformal: bool,
+    /// Whether PROJ computes on the string as a pipeline step reads it: for a spherification
+    /// flag its CRS parser does not take, or for a WKT's `PROJ4` extension.
+    pub as_step: bool,
+    /// Whether `+R`, `+a` or a shape parameter is given. PROJ's CRS parser then drops `+datum`
+    /// and puts the CRS on an unnamed datum of the resulting ellipsoid.
+    pub reshaped: bool,
+}
+
+/// PROJ's spherification flags, in the order `pj_ellipsoid` looks for them: only the first
+/// present applies.
+const SPHERIFICATIONS: [&str; 8] = ["R_A", "R_V", "R_a", "R_g", "R_h", "R_lat_a", "R_lat_g", "R_C"];
+
+/// The ellipsoid of a CRS's PROJ string `p` of method `method`, as PROJ 9.8.1 reads it with
+/// `+type=crs`, or why PROJ refuses it.
+///
+/// PROJ first reads the string as a pipeline step (`pj_ellipsoid`): `+R` alone, else `+ellps`
+/// (or `+datum`'s ellipsoid), whose size `+a` replaces, keeping its eccentricity, and whose shape
+/// the first of `+rf`, `+f`, `+es`, `+e` and `+b` replaces. It drops the parameters it does not
+/// use: the other shape parameters, `+ellps` and `+a` beside `+R`. Its CRS parser then reads what
+/// is left (`buildDatum`): `+R`, else `+datum`'s ellipsoid (not `+ellps`), else `+ellps`', with
+/// `+a`, which keeps the ellipsoid's inverse flattening or, for one PROJ defines by its
+/// semi-minor axis (`clrk66`, `sphere`), that axis; only `+b`, or `+rf` on an ellipsoid of an
+/// inverse flattening, changes its shape. Without a named ellipsoid, `+a` and the shape
+/// parameter give the ellipsoid. That is the CRS's ellipsoid, on which the method's
+/// coordinates are computed, but where a spherification flag that the parser does not take as
+/// part of the method (all but `+R_A` for `laea` and `cea`) keeps the string as
+/// the step reads it. `+f=0` as written makes orthographic spherical on the CRS's named
+/// ellipsoid or its axes, not on one PROJ writes by its inverse flattening.
+///
+/// With `extension`, the string is a WKT's `PROJ4` extension, which PROJ computes on as a pipeline
+/// step whatever its parameters: its figure is the step's.
+pub(crate) fn proj_ellipsoid(p: &Params, method: &str, extension: bool) -> std::result::Result<ProjEllipsoid, String> {
+    let positive = |key: &str| p.f64(key).filter(|v| v.is_finite() && *v > 0.0).ok_or_else(|| format!("invalid value for {key}"));
+    // `+R` overrides everything else.
+    if p.has("R") {
+        let sphere = Ell::from_a_rf(positive("R")?, 0.0);
+        return Ok(ProjEllipsoid { crs: sphere, figure: sphere, conformal: false, as_step: extension, reshaped: true });
+    }
+    let a = if p.has("a") { Some(positive("a")?) } else { None };
+    let shape = ["rf", "f", "es", "e", "b"].into_iter().find(|k| p.has(k));
+    let datum = p.str("datum").and_then(datum_ellps).and_then(Ell::named_definition);
+    let ellps = p.str("ellps").and_then(Ell::named_definition);
+    // PROJ's CRSs are on WGS 84 without ellipsoid parameters.
+    let default = (a.is_none() && shape.is_none()).then_some((6_378_137.0, 298.257_223_563));
+    let named = |(a, v): (f64, f64)| if v < 0.0 { Ell::from_a_b(a, -v) } else { Ell::from_a_rf(a, v) };
+    // The step: `+datum` gives `+ellps` when there is none, and `pj_init` GRS 1980 without either.
+    let step_base = ellps.or(datum).or(default.map(|_| (6_378_137.0, 298.257_222_101))).map(named);
+    let Some(size) = a.or(step_base.map(|e| e.a)) else {
+        return Err(format!("+{} without a semi-major axis", shape.unwrap_or("a")));
+    };
+    // The eccentricity squared of a shape parameter's value on a semi-major axis, as PROJ checks it.
+    let eccentricity = |key: &str, v: f64, a: f64| -> std::result::Result<f64, String> {
+        let flattening = |f: f64| 2.0 * f - f * f;
+        let es = match key {
+            "rf" if v.is_finite() && v > 0.0 => flattening(1.0 / v),
+            "f" if v.is_finite() && v >= 0.0 => flattening(v),
+            "es" if (0.0..1.0).contains(&v) => v,
+            "e" if (0.0..1.0).contains(&v) => v * v,
+            "b" if v.is_finite() && v > 0.0 => flattening((a - v) / a),
+            _ => return Err(format!("invalid value for {key}")),
+        };
+        if es >= 0.0 { Ok(es) } else { Err("invalid eccentricity".into()) }
+    };
+    // The step reads values as C's `atof` does; the CRS parser, values it uses, as numbers.
+    let atof = |key: &str| p.str(key).and_then(leading_number).unwrap_or(0.0);
+    let number = |key: &str| p.f64(key).unwrap_or_else(|| atof(key));
+    let step = match shape {
+        Some(key) => Ell::from_a_es(size, eccentricity(key, atof(key), size)?),
+        None => Ell::from_a_es(size, step_base.map_or(0.0, |e| e.es)),
+    };
+    // The CRS: a datum's ellipsoid, which PROJ defines by its inverse flattening (that of
+    // `clrk66` for NAD27, not its semi-minor axis), else `+ellps`'.
+    let rf = |e: Ell| if e.es == 0.0 { 0.0 } else { 1.0 / (1.0 - e.one_es.sqrt()) };
+    // A WKT's extension has no CRS parser's reading (PROJ reports the WKT's own ellipsoid): its
+    // step's is the CRS's (`+ellps=sphere +a=6370000`, which the parser refuses, is a sphere).
+    let (crs, by_rf) = match datum.map(|d| (d, true)).or(ellps.map(|e| (e, false))).or(default.map(|d| (d, false))) {
+        _ if extension => (step, false),
+        Some(((base_a, v), of_datum)) => {
+            let by_axis = v < 0.0 && !of_datum;
+            // `+a` of the ellipsoid's own semi-major axis leaves it unchanged.
+            match (shape, a.filter(|a| *a != base_a)) {
+                (Some("b"), _) => (Ell::from_a_b(a.unwrap_or(base_a), number("b")), false),
+                (Some("rf"), a) if !by_axis => (Ell::from_a_rf(a.unwrap_or(base_a), number("rf")), true),
+                // Unchanged, the named ellipsoid itself, bit for bit.
+                (_, None) => (named((base_a, v)), v > 0.0),
+                (_, Some(a)) if by_axis => (Ell::from_a_b(a, -v), false),
+                (_, Some(a)) => (Ell::from_a_rf(a, if v < 0.0 { rf(named((base_a, v))) } else { v }), true),
+            }
+        }
+        None => match shape {
+            // Its axes as PROJ's `createTwoAxis` keeps them.
+            Some("b") => (eccentricity("b", number("b"), size).map(|_| Ell::from_a_b(size, number("b")))?, false),
+            Some(key) => (Ell::from_a_es(size, eccentricity(key, number(key), size)?), true),
+            None => (Ell::from_a_rf(size, 0.0), false),
+        },
+    };
+    let flag = SPHERIFICATIONS.into_iter().find(|k| p.has(k));
+    // The parser takes `+R_A` for the spherical variants of `laea` and `cea` (methods of two
+    // variants), and reads parameter names regardless of case: `+R_a` is `+R_A` to it. Miller
+    // and van der Grinten are spherical whatever, and a `+R_A` given makes it keep the extension.
+    let in_method = !extension && matches!(flag, Some("R_A" | "R_a")) && matches!(method, "laea" | "cea");
+    let flag = if in_method { Some("R_A") } else { flag };
+    let as_step = extension || (flag.is_some() && !in_method);
+    let mut figure = if as_step { step } else { crs };
+    // Spherical orthographic (`+f=0`), on whatever ellipsoid its step is written with: by name,
+    // by its axes or as a sphere it is a sphere; by its inverse flattening, which comes first
+    // among shape parameters, it is not.
+    let spherical_ortho =
+        method == "ortho" && !as_step && shape == Some("f") && p.str("f") == Some("0") && !(by_rf && crs.es != 0.0 && !crs.is_proj_named());
+    if spherical_ortho {
+        figure = Ell::from_a_rf(crs.a, 0.0);
+    }
+    let (r, es, b) = (figure.a, figure.es, figure.a * figure.one_es.sqrt());
+    let radius = match flag {
+        // A sphere of the ellipsoid's area (`+R_A`) or volume (`+R_V`), by PROJ's series.
+        Some("R_A") => r * (1.0 - es * (1.0 / 6.0 + es * (17.0 / 360.0 + es * 67.0 / 3024.0))),
+        Some("R_V") => r * (1.0 - es * (1.0 / 6.0 + es * (5.0 / 72.0 + es * 55.0 / 1296.0))),
+        Some("R_a") => (r + b) / 2.0,
+        Some("R_g") => (r * b).sqrt(),
+        Some("R_h") => 2.0 * r * b / (r + b),
+        // The arithmetic or geometric mean of the radii of curvature at a latitude.
+        Some(key @ ("R_lat_a" | "R_lat_g")) => {
+            let lat = p.str(key).and_then(parse_dms).unwrap_or(0.0).to_radians();
+            if lat.abs() > HALFPI {
+                return Err(format!("invalid value for {key}"));
+            }
+            let t = 1.0 - es * lat.sin().powi(2);
+            if key == "R_lat_a" { r * (1.0 - es + t) / (2.0 * t * t.sqrt()) } else { r * (1.0 - es).sqrt() / t }
+        }
+        _ => r,
+    };
+    if radius != r {
+        figure = Ell::from_a_rf(radius, 0.0);
+    }
+    let reshaped = a.is_some() || shape.is_some();
+    Ok(ProjEllipsoid { crs, figure, conformal: flag == Some("R_C"), as_step, reshaped })
+}
+
 /// Wraps a wbprojection projection, for projections terrio does not implement itself.
 #[cfg(feature = "wbprojection-fallback")]
 struct WbProj {
@@ -270,7 +453,7 @@ impl Def {
             // A WKT identified as this code but with its own TOWGS84: GDAL uses that shift (not
             // over a PROJ4 extension, which describes the whole CRS).
             if s.proj4.is_none()
-                && let Some(w) = s.wkt.as_deref().filter(|w| *w != e.wkt)
+                && let Some(w) = s.wkt.as_deref().filter(|w| *w != e.wkt && super::proj4_extension(w).is_none())
                 && let Some(t) = wkt_towgs84(w)
             {
                 d.ops = vec![Arc::new(Op::world(datum::towgs84_steps(d.ell, &t)))];
@@ -295,17 +478,21 @@ impl Def {
                 d.bound = bound.bound;
             }
             // Not the registry's own WKT, nor one with the CRS's ID, which PROJ resolves: checked
-            // without parsing first, as `Def::new` runs often.
+            // without parsing first, as `Def::new` runs often. Nor one with a PROJ4 extension,
+            // which GDAL hands PROJ as its PROJ string, so that no name is resolved.
             if s.proj4.is_none()
                 && s.epsg.is_some()
                 && d.geog.is_some()
-                && let Some(w) = s.wkt.as_deref().filter(|w| *w != e.wkt && super::declared_epsg(w).is_none())
+                && let Some(w) =
+                    s.wkt.as_deref().filter(|w| *w != e.wkt && super::declared_epsg(w).is_none() && super::proj4_extension(w).is_none())
             {
                 d.record_proj_resolution(w, s.epsg);
             }
             return Ok(d);
         }
         if let Some(p) = &s.proj4 {
+            // A PROJ string given is read by PROJ's CRS rules; a WKT's PROJ4 extension, kept
+            // through the WKT, by a pipeline step's (`Self::from_wkt`).
             let mut d = Self::from_proj(p)?;
             d.tag_iau(s)?;
             return Ok(d);
@@ -394,7 +581,7 @@ impl Def {
     /// transformation.
     pub fn from_proj(s: &str) -> Result<Self> {
         let p = Params::parse(s);
-        let d = Self::from_params(s, &p);
+        let d = Self::from_params(s, &p, false);
         // As PROJ refuses a value it cannot read, where terrio would take the parameter's default.
         match p.invalid().into_iter().find(|key| !unchecked(&p, key)) {
             Some(key) => Err(Error::Crs(format!("invalid value for {key} in '{s}'"))),
@@ -406,12 +593,17 @@ impl Def {
     /// refusing the values it cannot read (`+lat_ts=abc` is read as 0), so this does not either.
     /// Numeric scale/unit checks still apply. Fully numeric datum lists require three or seven
     /// elements; unreadable lists retain the legacy behavior of ignoring the shift.
+    ///
+    /// PROJ 9.8.1 computes on the extension as a pipeline step, so its ellipsoid is the step's:
+    /// `+ellps=WGS84 +f=0` is a sphere, `+ellps=clrk66 +a=6400000` keeps Clarke 1866's
+    /// eccentricity. An ellipsoid the step refuses (`+rf=abc` or `+rf=0`, read as 0, `+es=1`, a
+    /// shape without a size) is refused, as PROJ refuses to transform with it.
     pub fn from_proj_extension(s: &str) -> Result<Self> {
-        Self::from_params(s, &Params::parse(s))
+        Self::from_params(s, &Params::parse(s), true)
     }
 
     /// [`Self::from_proj`] of parsed parameters.
-    fn from_params(s: &str, p: &Params) -> Result<Self> {
+    fn from_params(s: &str, p: &Params, extension: bool) -> Result<Self> {
         p.validate_quoting()?;
         p.validate_flags()?;
         if let Some(init) = p.str("init") {
@@ -441,42 +633,14 @@ impl Def {
             }
         }
 
-        let mut ell = datum::ellipsoid(p).or_else(|| datum_name.and_then(datum_ellps).and_then(Ell::named)).unwrap_or_else(Ell::wgs84);
-        let named = ell;
-        // A shape without `+a` (or `+R`) changes the shape of the named ellipsoid or the datum's,
-        // as PROJ's `pj_ell_set` applies it: `+f=0 +datum=WGS84` is the sphere of WGS 84's
-        // semi-major axis (ESRI's orthographic CRSs).
-        if !p.has("a") && !p.has("R") {
-            // In PROJ's order of precedence: `+rf`, `+f`, `+es`, `+e`, then `+b`. PROJ ignores an
-            // unreadable `+f`, `+es` or `+e` here, without `+a`.
-            let shape = |key: &str| p.str(key).and_then(|v| v.trim().parse::<f64>().ok());
-            if let Some(rf) = p.f64("rf") {
-                ell = Ell::from_a_rf(ell.a, rf);
-            } else if let Some(f) = shape("f") {
-                ell = Ell::from_a_rf(ell.a, if f == 0.0 { 0.0 } else { 1.0 / f });
-            } else if let Some(es) = shape("es") {
-                ell = Ell::from_a_es(ell.a, es);
-            } else if let Some(e) = shape("e") {
-                ell = Ell::from_a_es(ell.a, e * e);
-            } else if let Some(b) = p.f64("b") {
-                ell = Ell::from_a_b(ell.a, b);
-            }
-        }
+        let shape = proj_ellipsoid(p, name, extension).map_err(|e| Error::Crs(format!("invalid ellipsoid in '{s}': {e}")))?;
+        let ell = shape.figure;
         // An ellipsoid PROJ refuses (`+b` above `+a`, `+es` of 1 or more) would give NaN
         // coordinates.
-        if !(ell.a.is_finite() && ell.a > 0.0 && (0.0..1.0).contains(&ell.es)) {
-            return Err(Error::Crs(format!("invalid ellipsoid in '{s}': semi-major axis {}, eccentricity squared {}", ell.a, ell.es)));
-        }
-        // The ellipsoid PROJ 9.8.1 reports for the CRS, before `+R_A` and `+R_C` turn it into a
-        // sphere. A named ellipsoid or datum keeps its shape under `+f`, `+es` and `+e`, which
-        // change only the figure computed on; `+rf` and `+b` give another ellipsoid.
-        let reshaped = ["f", "es", "e"].iter().any(|k| p.has(k)) && !["a", "R", "rf", "b"].iter().any(|k| p.has(k));
-        let defined = if reshaped && (p.has("ellps") || p.has("datum")) { named } else { ell };
-        // `+R_A`: a sphere of the ellipsoid's area.
-        if p.has("R_A") && ell.es != 0.0 {
-            let e = ell.e;
-            let r = ell.a * (0.5 * qsfn(1.0, e, ell.one_es)).sqrt();
-            ell = Ell::from_a_rf(r, 0.0);
+        for e in [ell, shape.crs] {
+            if !(e.a.is_finite() && e.a > 0.0 && (0.0..1.0).contains(&e.es)) {
+                return Err(Error::Crs(format!("invalid ellipsoid in '{s}': semi-major axis {}, eccentricity squared {}", e.a, e.es)));
+            }
         }
         let explicit_to_meter = p.str("to_meter").and_then(|v| match v.split_once('/') {
             Some((n, d)) => Some(n.parse::<f64>().ok()? / d.parse::<f64>().ok()?),
@@ -560,7 +724,7 @@ impl Def {
         // Projected endpoints retain their geodetic ellipsoid separately from this
         // projection radius. Geographic/geocentric conversions use the sphere,
         // matching PROJ; their stored CRS metadata still describes the original ellipsoid.
-        let conformal_ellipsoid = (p.has("R_C") && !p.has("R") && !p.has("R_A")).then_some(ell);
+        let conformal_ellipsoid = shape.conformal.then_some(ell);
         if let Some(base) = conformal_ellipsoid {
             let radius = base.a * base.one_es.sqrt();
             if !radius.is_finite() || radius <= 0.0 {
@@ -628,8 +792,10 @@ impl Def {
             x_0: if zoned { setup.x0 } else { p.f64("x_0").unwrap_or(0.0) },
             y_0: if zoned { setup.y0 } else { p.f64("y_0").unwrap_or(0.0) },
             prime_meridian: pm,
-            a: defined.a,
-            b: defined.a * defined.one_es.sqrt(),
+            // The ellipsoid PROJ 9.8.1 reports for the CRS, not the sphere a spherification flag
+            // computes on.
+            a: shape.crs.a,
+            b: shape.crs.a * shape.crs.one_es.sqrt(),
             // The coordinates of a geographic CRS are angles, whatever `+units` says.
             to_meter: if geographic { 1.0 } else { to_meter },
         };
@@ -667,24 +833,65 @@ impl Def {
             unresolved: None,
         };
         // The datum transformation.
-        let towgs84 = p.list("towgs84");
+        // A pipeline step's `+datum=` is the shift PROJ's `pj_datum_set` gives it, from WGS 84 to
+        // the step's figure, unless the string gives its own; none for a geocentric step, nor
+        // under `+R_C` in a PROJ string (PROJ 9.8.1 then keeps the datum's transformations, but
+        // not in a WKT's extension).
+        // `pj_datum_set` takes the first `+nadgrids` of the string with the datum's appended,
+        // else the first `+towgs84`: the string's own `+nadgrids` wins, its `+towgs84` only over a
+        // datum defined by one (NAD27's grids win over `+towgs84=0,0,0`).
+        let step_shift = datum_name
+            .filter(|_| shape.as_step && (extension || !shape.conformal) && !p.has("nadgrids") && name != "geocent")
+            .and_then(step_datum_shift)
+            .filter(|d| matches!(d, StepShift::Nadgrids(_)) || !p.has("towgs84"));
+        // A step's `+R_C` makes its figure the conformal sphere at the equator, onto which it is
+        // shifted.
+        let shift_figure = if extension && shape.conformal { Ell::from_a_rf(ell.a * ell.one_es.sqrt(), 0.0) } else { ell };
+        // `pj_init` takes a null shift on WGS 84 or GRS 1980 (its test of `a` and `es`) as WGS 84.
+        let wgs84_figure = shift_figure.a == 6_378_137.0 && (shift_figure.es - 0.006_694_379_990).abs() < 0.000_000_000_050;
+        let (step_towgs84, step_nadgrids) = match step_shift {
+            Some(StepShift::Towgs84(t)) => (Some(t.to_vec()), None),
+            Some(StepShift::Nadgrids(g)) => (None, Some(g)),
+            None => (None, None),
+        };
+        let step_on_wgs84 = step_towgs84.as_ref().is_some_and(|t| wgs84_figure && t.iter().all(|v| *v == 0.0));
+        let towgs84 = p.list("towgs84").or(step_towgs84);
         if towgs84.as_ref().is_some_and(|v| v.len() != 3 && v.len() != 7) {
             return Err(Error::Crs(format!("towgs84 needs 3 or 7 values in '{s}'")));
         }
-        let nadgrids = p.str("nadgrids").filter(|g| !g.split(',').all(|n| n.trim_start_matches('@') == "null"));
-        if let Some(g) = nadgrids {
+        // `+nadgrids` wins over `+towgs84` and the datum's transformations (`pj_datum_set`, and a
+        // bound CRS of PROJ's CRS parser), `@null` alone being no shift at all.
+        let grids = p.str("nadgrids").or(step_nadgrids);
+        let null_grids = grids.is_some_and(|g| g.split(',').all(|n| n.trim_start_matches('@') == "null"));
+        let nadgrids = grids.filter(|_| !null_grids);
+        if step_on_wgs84 {
+            d.datum = Some(6326);
+            d.geog = Some(4326);
+        } else if null_grids {
+            // No shift to WGS 84, on the datum still: a CRS on it is reached without one (PROJ's
+            // bound CRS over the datum, `+datum=OSGB36 +nadgrids=@null` into EPSG:4277), another
+            // through WGS 84 by the null shift, not by the datum's own transformations (so its
+            // datum's code is kept, not its geographic CRS's, by which routes take those).
+            // Without a datum, no operation is no shift already (EPSG:3857's null grid).
+            if let Some(code) = datum_name.and_then(datum_geog).filter(|_| !shape.reshaped)
+                && let Some(e) = epsg::get(code)
+            {
+                d.ops = vec![Arc::new(Op::world(datum::nadgrids_steps("@null")))];
+                d.datum = (e.datum != 0).then_some(e.datum);
+            }
+        } else if let Some(g) = nadgrids {
             d.ops = vec![Arc::new(Op::world(datum::nadgrids_steps(g)))];
         } else if let Some(t) = towgs84 {
             // Zero translation still converts between different ellipsoids. On
             // WGS 84 itself it is exactly the WGS 84 datum, without a Cartesian round trip.
             let wgs84 = Ell::wgs84();
-            if t.iter().all(|v| *v == 0.0) && ell.a == wgs84.a && ell.es == wgs84.es {
+            if t.iter().all(|v| *v == 0.0) && shift_figure.a == wgs84.a && shift_figure.es == wgs84.es {
                 d.datum = Some(6326);
                 d.geog = Some(4326);
             } else {
-                d.ops = vec![Arc::new(Op::world(datum::towgs84_steps(ell, &t)))];
+                d.ops = vec![Arc::new(Op::world(datum::towgs84_steps(shift_figure, &t)))];
             }
-        } else if let Some(code) = datum_name.and_then(datum_geog)
+        } else if let Some(code) = datum_name.and_then(datum_geog).filter(|_| !shape.reshaped && step_shift.is_none())
             && let Some(e) = epsg::get(code)
         {
             d.ops = epsg::usable(&e.ops, &e.grid_ops);
@@ -819,7 +1026,16 @@ impl Def {
         // WKT-node fallback, but invalid values in a supported conversion must not fall through.
         if let Some(p) = super::proj4_extension(w) {
             match Self::from_proj_extension(&p) {
-                Ok(d) => return Ok(d),
+                Ok(mut d) => {
+                    // The ellipsoid it reports is the WKT's, as PROJ reports it, whatever its
+                    // extension computes on.
+                    if let (Some(params), Some((a, rf))) = (d.params.as_mut(), wkt_spheroid(w)) {
+                        let params = Arc::make_mut(params);
+                        params.a = a;
+                        params.b = if rf == 0.0 { a } else { a - a / rf };
+                    }
+                    return Ok(d);
+                }
                 Err(Error::Crs(message)) if message.starts_with("unsupported projection:") => {}
                 Err(error) => return Err(error),
             }

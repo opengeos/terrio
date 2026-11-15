@@ -1888,6 +1888,30 @@ rows, edit only the approved rows in `proj_param_value_differences.tsv` (definit
 PROJ's `OK`/`ERR` outcome), keep them sorted, and update the count in the test. Rerun the focused
 test with default features and `--all-features`; unexpected changes require investigation.
 
+PROJ-string ellipsoids are compared with PROJ 9.8.1 in 484 strings. Each of `laea`, `tmerc`,
+`merc`, `ortho`, `geocent` and `longlat` (with a null `+towgs84`) is combined with `+R`,
+`+ellps`, `+datum`, `+a`, `+b`, `+rf`, `+f`, `+es`, `+e` and the spherification flags, alone
+and together. A few strings cover spherical orthographic (`+f=0`), `mill`, `cea`, the latitude of
+`+R_lat_a` and `+R_lat_g` (unreadable, in radians, in DMS, beyond 90°) and `+datum=NAD27` beside
+its own `+a` or `+rf`, which PROJ drops, and the datum shifts of `+datum=` names beside a
+spherification flag. The test checks where PROJ places a point
+(`Transformer.from_crs("EPSG:4326", CRS(s + " +type=crs"), always_xy=True)`, or from a
+geographic CRS to EPSG:4326), within 1 mm. It also checks the axes of the ellipsoid the CRS
+reports, and that terrio refuses the 37 strings PROJ refuses. 27 WKT 1 CRSs with such a `PROJ4`
+extension are checked the same way (`Transformer.from_crs("EPSG:4326", CRS(wkt), always_xy=True)`;
+PROJ computes on the extension as a pipeline step, and refuses to transform 5 of them). The WKT terrio
+writes for every string reads back where PROJ places the string, and 9 normalized extensions it
+writes are pinned with PROJ's coordinates of their WKT, which the generator checks against those of
+the string
+(`cargo test -p terrio-crs --test proj_ellipsoid_shape`; regenerate with
+`scripts/gen_proj_ellipsoid_shape.py`, pyproj 3.8.0, no grids, `PROJ_NETWORK=OFF`).
+The PROJ strings of the EPSG and ESRI registries (as `to_proj4` writes them, 9,873 CRSs) keep the
+ellipsoid axes of their WKT, within 1e-6 m, under that reading. 22 CRSs whose string terrio reads
+with other axes than its WKT's are pinned bit for bit to the axes terrio read before: Web Mercator
+(`+a=6378137 +b=6378137 +nadgrids=@null +wktext`, a sphere to terrio, where PROJ reports WGS 84),
+PROJ's `bess_nam`, `walbeck` and `clrk66`, and EPSG:3139 in links (`cargo test -p terrio-crs --test
+proj_ellipsoid_registry`).
+
 Strict WKT 1 export (`SpatialRef::to_wkt1_strict`) is compared with PROJ 9.8.1's `WKT1_GDAL`
 (with GDAL's axes) of every 20th EPSG and ESRI code and every one PROJ refuses, character for
 character, and of custom definitions and every 20th IAU_2015 CRS by whether PROJ has a WKT 1

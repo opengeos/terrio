@@ -12,12 +12,30 @@ const MAX: usize = 100;
 thread_local! {
     static WARNINGS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     static CAPTURES: RefCell<Vec<Vec<String>>> = const { RefCell::new(Vec::new()) };
+    static SILENCED: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Runs `f` with this thread's warnings dropped (neither recorded nor captured): those of a check
+/// terrio makes for itself, which are not the caller's.
+pub(crate) fn silenced<T>(f: impl FnOnce() -> T) -> T {
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = SILENCED.try_with(|s| s.set(s.get() - 1));
+        }
+    }
+    SILENCED.with(|s| s.set(s.get() + 1));
+    let _restore = Restore;
+    f()
 }
 
 /// Records a warning on this thread (once: a repeated one is not recorded again). A warning
 /// raised while the thread's locals are destroyed (by a `Transformer` dropped from a caller's
 /// `thread_local!`) is dropped: there is no list left to keep it, nor anyone to take it.
 pub(crate) fn warn(message: String) {
+    if SILENCED.try_with(std::cell::Cell::get).unwrap_or(0) > 0 {
+        return;
+    }
     let _ = CAPTURES.try_with(|captures| {
         for captured in captures.borrow_mut().iter_mut() {
             if !captured.contains(&message) {

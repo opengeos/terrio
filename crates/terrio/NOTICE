@@ -337,6 +337,11 @@ Terrio files derived from PROJ source files (each file's header names them):
 
 The two-point form of the Hotine oblique Mercator follows src/projections/omerc.cpp in PROJ 9.8.1.
 
+The test data crates/terrio-crs/tests/data/proj_ellipsoid_shape.json is PROJ 9.8.1's output
+(pyproj 3.8.0, scripts/gen_proj_ellipsoid_shape.py): the coordinates and ellipsoids PROJ gives
+PROJ strings and WKTs, by its ellipsoid and datum definitions (src/ellps.cpp, src/datums.cpp)
+and, through its database, EPSG's transformations (EPSG dataset, see below).
+
 The copyright notices of those source files:
   Copyright (c) 2016, Thomas Knudsen / SDFE
   Copyright (c) 2017, Kristian Evers

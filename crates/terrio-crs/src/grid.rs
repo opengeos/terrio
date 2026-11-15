@@ -1130,6 +1130,10 @@ fn load(name: &str) -> Option<Arc<GridFile>> {
         static NULL: OnceLock<Arc<GridFile>> = OnceLock::new();
         return Some(NULL.get_or_init(|| Arc::new(null_file())).clone());
     }
+    // Under `without_grids`, no grid is read nor fetched (an optional one is skipped).
+    if without_grids_active() {
+        return None;
+    }
     let generation = cache_generation();
     let cached = files()
         .lock()
@@ -1228,11 +1232,40 @@ pub(crate) fn hold_for_fork(held: &mut Vec<Box<dyn std::any::Any>>) {
     held.push(Box::new(sets_cache().lock().unwrap_or_else(PoisonError::into_inner)));
 }
 
+thread_local! {
+    /// Whether grids count as missing on this thread, while [`without_grids`] runs.
+    static WITHOUT_GRIDS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether this thread runs as if no grid were installed nor could be fetched (PROJ's default
+/// here: no grid directory, the network off), whatever the process's grid settings, while
+/// [`without_grids`] runs: no grid, not even an optional one, is read or fetched, and no grid
+/// already loaded is used. Other threads are not affected, and the availability, file and
+/// grid-set caches (nor the grids an operation keeps) are neither read nor written meanwhile.
+pub(crate) fn without_grids_active() -> bool {
+    WITHOUT_GRIDS.with(std::cell::Cell::get)
+}
+
+/// Runs `f` on this thread as if no grid were installed: see [`without_grids_active`].
+pub(crate) fn without_grids<T>(f: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            WITHOUT_GRIDS.with(|w| w.set(self.0));
+        }
+    }
+    let _restore = Restore(WITHOUT_GRIDS.with(|w| w.replace(true)));
+    f()
+}
+
 /// Whether a grid can be used: present locally, or (with network access enabled) on the PROJ
 /// CDN. This is what makes PROJ consider an operation needing it.
 pub(crate) fn available(name: &str) -> bool {
     if name == "null" {
         return true;
+    }
+    if without_grids_active() {
+        return false;
     }
     let generation = cache_generation();
     if let Some((_, a)) = availability().lock().unwrap_or_else(PoisonError::into_inner).get(name).copied().filter(|(g, _)| *g == generation)
@@ -1363,6 +1396,14 @@ where
     let cache = sets_cache();
     let mut out = Vec::new();
     for (name, optional) in grid_names(spec) {
+        // Under `without_grids`, a grid is missing whatever was loaded before: not read from the
+        // cache, nor stored into it.
+        if without_grids_active() && name != "null" {
+            if optional {
+                continue;
+            }
+            return None;
+        }
         let generation = cache_generation();
         if let Some((_, s)) =
             cache.lock().unwrap_or_else(PoisonError::into_inner).get(&(name.clone(), kind)).filter(|(g, _)| *g == generation)

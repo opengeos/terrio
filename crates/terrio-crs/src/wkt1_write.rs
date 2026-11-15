@@ -20,8 +20,8 @@ use std::fmt::Write as _;
 /// `+geoidgrids`...) is kept in the PROJ4 extension.
 const DESCRIBED: &[&str] = &[
     "proj", "lat_0", "lon_0", "k", "k_0", "x_0", "y_0", "lat_1", "lat_2", "lon_1", "lon_2", "lat_ts", "lonc", "alpha", "gamma", "no_uoff",
-    "no_off", "zone", "south", "h", "sweep", "azi", "ellps", "datum", "a", "b", "rf", "f", "R", "towgs84", "pm", "units", "to_meter",
-    "axis", "no_defs", "wktext", "type", "nadgrids",
+    "no_off", "zone", "south", "h", "sweep", "azi", "ellps", "datum", "a", "b", "rf", "f", "es", "e", "R", "towgs84", "pm", "units",
+    "to_meter", "axis", "no_defs", "wktext", "type", "nadgrids",
 ];
 
 /// `(PROJ name, EPSG name, EPSG code, inverse flattening)` of the ellipsoids GDAL names. The
@@ -62,14 +62,12 @@ struct Method {
 pub(crate) fn from_proj(s: &str) -> Option<String> {
     let own = Def::from_proj(s).ok()?;
     let p = Params::parse(s);
-    let extension = format!("EXTENSION[\"PROJ4\",\"{}\"]", s.trim().replace('"', ""));
+    // Built only when written, as it reads the string again.
+    let extension = || format!("EXTENSION[\"PROJ4\",\"{}\"]", step_string(s).replace('"', ""));
     let (geogcs, datum_described) = geogcs(&p, &own);
     // Also described: `+R_C` (the conformal sphere of the ellipsoid) on a sphere, which changes
-    // nothing; `+es` or `+e` beside `+a` alone, which gives the ellipsoid's shape (with another
-    // shape parameter, terrio's order of precedence is not PROJ's).
-    let shape = p.has("a") && ["ellps", "datum", "R", "b", "f", "rf"].iter().all(|k| !p.has(k)) && !(p.has("es") && p.has("e"));
-    let described =
-        datum_described && p.keys().all(|k| DESCRIBED.contains(&k) || (k == "R_C" && p.has("R")) || (matches!(k, "es" | "e") && shape));
+    // nothing.
+    let described = datum_described && p.keys().all(|k| DESCRIBED.contains(&k) || (k == "R_C" && p.has("R")));
     // Faithful when terrio reads it back as the PROJ string: the same conversion on the same
     // datum (its EPSG code identified, its geographic CRS).
     let faithful = |wkt: &str| {
@@ -84,7 +82,7 @@ pub(crate) fn from_proj(s: &str) -> Option<String> {
         let w = format!(
             "GEOCCS[\"unknown\",{datum},{pm},{unit},AXIS[\"Geocentric X\",OTHER],AXIS[\"Geocentric Y\",OTHER],AXIS[\"Geocentric Z\",NORTH]]"
         );
-        return Some(if faithful(&w) { w } else { extended(&w, &extension) });
+        return Some(if faithful(&w) { w } else { extended(&w, &extension()) });
     }
     if own.is_rotated_pole() {
         // Its base geographic CRS extended with the PROJ string, as GDAL 2 wrote it. Unnamed and
@@ -96,7 +94,7 @@ pub(crate) fn from_proj(s: &str) -> Option<String> {
             Some(i) if body[i..].matches(']').count() == 1 => &body[..i],
             _ => body,
         };
-        return Some(format!("GEOGCS[\"unnamed\"{body},{extension}]"));
+        return Some(format!("GEOGCS[\"unnamed\"{body},{}]", extension()));
     }
     let wkt = if own.is_geographic() {
         match epsg_geographic(&p) {
@@ -115,7 +113,7 @@ pub(crate) fn from_proj(s: &str) -> Option<String> {
                 w.push_str(m.axes);
                 w.push(']');
                 if !m.axis_described {
-                    return Some(extended(&w, &extension));
+                    return Some(extended(&w, &extension()));
                 }
                 w
             }
@@ -126,7 +124,7 @@ pub(crate) fn from_proj(s: &str) -> Option<String> {
             }
         }
     };
-    Some(if faithful(&wkt) { wkt } else { extended(&wkt, &extension) })
+    Some(if faithful(&wkt) { wkt } else { extended(&wkt, &extension()) })
 }
 
 /// A PROJ string as its WKT 1 describes it, for formats that describe CRSs by parameters
@@ -502,10 +500,64 @@ fn extended(wkt: &str, extension: &str) -> String {
     format!("{},{extension}]", &wkt[..wkt.len() - 1])
 }
 
+/// A PROJ string that a pipeline step, as PROJ and terrio compute on a WKT's `PROJ4` extension,
+/// reads as PROJ 9.8.1's CRS parser reads `s`: its ellipsoid parameters replaced by the figure
+/// the CRS computes on (`+ellps=` for its named ellipsoid unchanged, a sphere's `+R=`, else `+a=`
+/// and `+rf=`), and without the `+datum=` the parser drops, nor the `+ellps=` beside a `+datum=`
+/// it keeps (which stays unless the step would convert onto another figure than its own). Ellipsoid parameters read otherwise by the step (`+f`, `+es` and `+e` on a named
+/// ellipsoid, `+a` on one of a semi-minor axis, `+R_a` for `+R_A`) would move points. A string
+/// PROJ already computes on as a step (with a spherification flag) is kept as it is, but under
+/// `+R_C`, which keeps the datum's transformations, and so its `+datum=WGS84` or `NAD83` (null
+/// ones) is dropped with its figure written. No extension carries other datums' transformations
+/// (`+datum=NAD27`), which PROJ, as terrio, reads in an extension as the step's shift.
+fn step_string(s: &str) -> String {
+    let p = Params::parse(s);
+    let Ok(e) = super::def::proj_ellipsoid(&p, p.str("proj").unwrap_or_default(), false) else {
+        return s.trim().to_string();
+    };
+    let null_datum = e.reshaped || p.str("datum").is_none_or(|d| matches!(d, "WGS84" | "NAD83"));
+    if (e.as_step && !(e.conformal && null_datum)) || super::extension_places_as_string(s) {
+        return s.trim().to_string();
+    }
+    let figure = e.figure;
+    let same = |n: Ell| (n.a - figure.a).abs() < 1e-9 * n.a && (n.es - figure.es).abs() < 1e-15;
+    let datum = p.str("datum").filter(|_| !e.reshaped).and_then(super::def::datum_ellps).and_then(Ell::named);
+    // A datum the parser keeps stays on the figure it defines, or as a grid shift, which a step
+    // applies to geographic coordinates whatever its figure; a Helmert shift would convert them
+    // onto another figure (a sphere), where the parser converts none.
+    let grid = p.str("datum").and_then(super::def::step_datum_shift).is_some_and(|d| matches!(d, super::def::StepShift::Nadgrids(_)));
+    // With its own `+towgs84`, the shift the CRS has, a datum is dropped: a step would take the
+    // datum's grids over it.
+    let keep_datum = !e.conformal && !p.has("towgs84") && datum.is_some() && (datum.is_some_and(same) || grid);
+    const ELLIPSOID: [&str; 8] = ["ellps", "a", "b", "rf", "f", "es", "e", "R"];
+    let tokens: Vec<&str> = s.split_whitespace().collect();
+    let kept = |t: &str| {
+        let key = t.trim_start_matches('+').split('=').next().unwrap_or_default();
+        let flag = key.starts_with("R_") && key != "R_C";
+        !ELLIPSOID.contains(&key) && !flag && (key != "datum" || keep_datum)
+    };
+    // The figure goes where the first parameter it replaces was.
+    let at = tokens.iter().take_while(|t| kept(t)).count();
+    let mut out: Vec<String> = tokens.iter().filter(|t| kept(t)).map(|t| t.to_string()).collect();
+    if !(keep_datum && datum.is_some_and(same)) {
+        let named = [p.str("ellps"), p.str("datum").and_then(super::def::datum_ellps)]
+            .into_iter()
+            .flatten()
+            .find(|n| Ell::named(n).is_some_and(same));
+        let ellipsoid = match named {
+            Some(n) => vec![format!("+ellps={n}")],
+            None if figure.es == 0.0 => vec![format!("+R={}", figure.a)],
+            None => vec![format!("+a={}", figure.a), format!("+rf={}", 1.0 / (1.0 - figure.one_es.sqrt()))],
+        };
+        out.splice(at.min(out.len())..at.min(out.len()), ellipsoid);
+    }
+    out.join(" ")
+}
+
 /// The PROJ string of a `custom_proj4` extension, with `+wktext` and `+no_defs` as GDAL writes
 /// it.
 fn custom(s: &str) -> String {
-    let mut out = s.trim().replace('"', "");
+    let mut out = step_string(s).replace('"', "");
     for flag in ["+wktext", "+no_defs"] {
         if !out.split_whitespace().any(|t| t == flag) {
             out.push(' ');
@@ -546,15 +598,9 @@ fn geogcs(p: &Params, own: &Def) -> (String, bool) {
         }
         return (w, true);
     }
-    // R_C changes the runtime conversion radius, while PROJ's CRS metadata
-    // keeps the original ellipsoid. The PROJ4 extension retains the modifier.
-    let ell = if p.has("R_C") && !p.has("R") && !p.has("R_A") {
-        super::datum::ellipsoid(p)
-            .or_else(|| p.str("datum").and_then(super::def::datum_ellps).and_then(Ell::named))
-            .unwrap_or_else(Ell::wgs84)
-    } else {
-        own.ell
-    };
+    // The CRS's ellipsoid, as PROJ 9.8.1 writes it, not the sphere a spherification flag (`+R_A`,
+    // `+R_C`...) or spherical orthographic (`+f=0`) computes on: the PROJ4 extension keeps those.
+    let ell = super::def::proj_ellipsoid(p, p.str("proj").unwrap_or_default(), false).map_or(own.ell, |shape| shape.crs);
     let named = p.str("ellps").or_else(|| p.str("datum").and_then(super::def::datum_ellps));
     let known = named.and_then(|n| ELLIPSOIDS.iter().find(|e| e.0 == n)).filter(|e| Ell::named(e.0).is_some_and(|n| n == ell));
     let rf = inverse_flattening(p, &ell, known.and_then(|e| e.3));
@@ -589,10 +635,11 @@ fn inverse_flattening(p: &Params, ell: &Ell, defining: Option<f64>) -> f64 {
     defining.filter(same).or_else(|| p.f64("rf").filter(same)).unwrap_or_else(|| 1.0 / (1.0 - ell.one_es.sqrt()))
 }
 
-/// The EPSG geographic CRS of a PROJ string's `+datum=`, on Greenwich and without another
-/// datum shift.
+/// The EPSG geographic CRS of a PROJ string's `+datum=`, on Greenwich, without another datum
+/// shift and without ellipsoid parameters, which make PROJ drop the datum for its ellipsoid.
 fn epsg_geographic(p: &Params) -> Option<&'static epsg::Entry> {
-    let other = p.has("towgs84") || p.has("nadgrids") || p.has("pm");
+    let reshaped = super::def::proj_ellipsoid(p, "", false).is_ok_and(|e| e.reshaped);
+    let other = p.has("towgs84") || p.has("nadgrids") || p.has("pm") || reshaped;
     p.str("datum").and_then(datum_geog).filter(|_| !other).and_then(epsg::get)
 }
 

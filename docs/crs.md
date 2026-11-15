@@ -468,6 +468,73 @@ matching a bare projection operation instead. Supply `+lat_0=X +lat_2=X`
 explicitly to retain that tangent-cone definition. Coordinates from previously
 ambiguous strings can change substantially under these corrected CRS rules.
 
+A PROJ string's ellipsoid is read as PROJ 9.8.1 reads it with `+type=crs`:
+
+- `+R` makes a sphere and overrides every other ellipsoid parameter.
+- Otherwise the ellipsoid is `+datum`'s, else `+ellps`' (`+ellps` beside `+datum` is ignored),
+  else WGS 84. `+a` changes its size. Of `+rf`, `+f`, `+es`, `+e` and `+b`, only the first
+  given counts. On a named ellipsoid or datum, only `+b` changes the shape, or `+rf` on an
+  ellipsoid PROJ defines by its inverse flattening. `+f`, `+es` and `+e` are ignored.
+  `+ellps=clrk66`, `+ellps=sphere` and other ellipsoids PROJ defines by their semi-minor
+  axis keep that axis under `+a`. A datum's ellipsoid is defined by its inverse flattening,
+  NAD27's Clarke 1866 too, so `+a` and `+rf` change it as they change `+ellps=WGS84`. So
+  `+datum=WGS84 +a=6400000` keeps WGS 84's flattening, and `+ellps=WGS84 +f=0` is WGS 84.
+  Without a named ellipsoid, `+a` and the first shape parameter give the ellipsoid, and a
+  shape parameter without `+a` is refused.
+- Ellipsoid parameters beside `+datum` make PROJ drop the datum for an unnamed one on its
+  ellipsoid, so `+datum=NAD27 +rf=300` has no NAD27 transformation.
+- `+f=0`, written so, makes orthographic spherical on the CRS's ellipsoid (ESRI:102035,
+  `+proj=ortho +f=0 +datum=WGS84`). It does not on an ellipsoid PROJ writes by its inverse
+  flattening (`+datum=WGS84 +a=6400000 +f=0`).
+- `+R_A` on `laea` and `cea` is the method's spherical variant on the CRS's ellipsoid.
+  PROJ's parser reads parameter names regardless of case, so `+R_a` is `+R_A` there. Miller
+  and van der Grinten are on the authalic sphere without a flag. Any other spherification
+  flag (`+R_A` elsewhere, `mill` and `vandg` included, `+R_V`, `+R_a`, `+R_g`,
+  `+R_h`, `+R_lat_a`, `+R_lat_g`, `+R_C`) makes PROJ compute on the string as a pipeline
+  step reads it. In that case `+a` keeps the named ellipsoid's eccentricity, the first shape
+  parameter changes its shape, and the first flag in that order makes a sphere of it.
+  A `+datum=` name there shifts points from WGS 84 to that sphere as PROJ's `pj_datum_set`
+  defines it (a null `+towgs84` for WGS84 and NAD83, the `+towgs84` or `+nadgrids` of the
+  others), but under `+R_C`, where PROJ keeps the datum's transformations. Without an
+  ellipsoid, that step is on GRS 1980.
+
+A WKT's `PROJ4` extension (`EXTENSION["PROJ4", ...]`) is computed on as PROJ computes on it, as
+a pipeline step: `+ellps=WGS84 +f=0` there is a sphere, `+ellps=clrk66 +a=6400000` keeps Clarke
+1866's eccentricity, and an ellipsoid the step refuses (`+rf=0`, `+es=1`, a shape without a
+size) is refused, as PROJ refuses to transform with it. Its `+datum=` is shifted as a step's is,
+under `+R_C` too, and without an ellipsoid it is on GRS 1980. The extension stays in the WKT
+(`SpatialRef::from_wkt` does not take it as the CRS's PROJ string), and PROJJSON and GeoKeys,
+which describe a PROJ string by the CRS rules, refuse one the step places otherwise (by its
+figure, beyond the round-off between WGS 84 and GRS 1980, or by its datum, as both place points
+without grids whatever is installed: by the step's grids, or more than 1 mm apart around the
+origin). `+datum=NAD83`, which the step takes as WGS 84, is described. A `+datum=`
+with its grids (NAD27, potsdam) wins over the string's `+towgs84` in a step, and so does the
+string's own `+nadgrids`: `+nadgrids=@null +towgs84=1000,0,0` is no shift, as in PROJ, and
+`+datum=OSGB36 +nadgrids=@null` keeps OSGB36's datum (the identity into EPSG:4277), with no
+shift to WGS 84, and reaches another datum through WGS 84 (`(-2, 52)` in ETRS89, as in PROJ), not
+by OSGB36's transformations. A WKT with that extension is not identified as EPSG:4277, whose
+transformations would place it otherwise (nor NAD83's as EPSG:4269, shifted in places); one on
+WGS 84 is EPSG:4326. PROJJSON
+writes no shift for such a string (PROJ writes the null grid). It is refused for an extension on
+another ellipsoid than the WKT's `SPHEROID` (but Web Mercator's, `+a=6378137 +b=6378137` with a
+null standard parallel and a scale of 1 beside WGS 84, written as Popular Visualisation Pseudo
+Mercator, as PROJ writes it), and for spherical
+orthographic (`+f=0`), which PROJ writes as its own "Orthographic (Spherical)".
+
+Where WKT 1 cannot describe a CRS given by a PROJ string, terrio writes its PROJ string in the
+extension with the figure the CRS computes on in place of the string's ellipsoid parameters
+(`+ellps=`, a sphere's `+R=`, else `+a=` and `+rf=`), without a `+datum=` the CRS parser drops,
+so that PROJ, GDAL and terrio read the WKT as the string. A `+datum=` the parser keeps for its
+EPSG transformations (`+datum=NAD27` beside an otherwise undescribed parameter) cannot be
+carried so: PROJ 9.8.1 ignores the WKT's datum nodes beside an extension and shifts by the
+step's own definition (no shift without NAD27's grids).
+
+The CRS still reports the ellipsoid of the first rules (`projection_params`, WKT); a WKT with
+an extension, its `SPHEROID`, as PROJ reports it, whatever the extension computes on.
+`tests/proj_ellipsoid_shape.rs` checks these rules against PROJ 9.8.1 on 484 strings, 27 WKT
+extensions and 9 extensions terrio writes. Not covered: other parameters that PROJ's parser does
+not take, which also make it compute on the string as a step reads it.
+
 ## Transformations
 
 ```sh
@@ -891,9 +958,10 @@ checks every 20th of these codes, the codes behind each rule, custom definitions
 references, frozen by `scripts/gen_proj_string_export.py`; the whole tables are compared, as a
 manual check that CI does not run, with
 `scripts/gen_proj_string_export.py --all PATH` (pyproj 3.8.0), then
-`TERRIO_PROJ_STRINGS_ALL=PATH cargo test -p terrio-crs --test proj_string_export -- --ignored`. Reading a string back gives the CRS's conversion: `+f`,
-`+rf` and `+b` without `+a` change the shape of `+ellps`' or `+datum`'s ellipsoid, as PROJ's
-`pj_ell_set` does (ESRI:102035's `+proj=ortho +f=0 +datum=WGS84` is a sphere).
+`TERRIO_PROJ_STRINGS_ALL=PATH cargo test -p terrio-crs --test proj_string_export -- --ignored`.
+Reading a string back gives the CRS's conversion, with the ellipsoid rules of
+[PROJ string interpretation changes](#proj-string-interpretation-changes) (ESRI:102035's
+`+proj=ortho +f=0 +datum=WGS84` is spherical orthographic).
 
 Known differences, all of WKTs and PROJ strings without a code:
 
@@ -953,16 +1021,16 @@ returns `None` where PROJ writes WKT 1):
 - a projected CRS of other axes than east-north, unless it is a code's with its axes swapped;
 - a cylindrical equal-area projection given by its scale;
 - a named datum changed by a prime meridian or a shift (`+datum=WGS84 +pm=paris`);
-- a flattening on a named ellipsoid, which PROJ's WKT drops;
-- an ellipsoid given by `+es` or `+e` beside another shape parameter (`+b`, whose order of
-  precedence differs from PROJ's), or with a shift (`+a +es +towgs84`);
+- spherical orthographic (`+f=0`) on a named ellipsoid, which PROJ's WKT writes as orthographic
+  on that ellipsoid;
+- an ellipsoid given by `+es` or `+e` with a shift (`+a +es +towgs84`);
 - planetocentric latitudes on a sphere;
 - a WKT 2 compound CRS, a WKT 2 with a west axis (planetographic IAU_2015 CRSs), a WKT 2 in
   another angular unit than the degree with its axes swapped, a geocentric WKT 2 on another
   prime meridian given in other digits than PROJ's (`PRIMEM["Paris",2.33722917]`);
 - a compound CRS on Web Mercator (`EPSG:3857+3855`), or a WKT 2 of Web Mercator with its axes
   swapped, whose extension is not under the CRS's code;
-- a few other combinations PROJ writes: `+R_A` on a sphere, `+es` beside `+e`, a WKT 2 in grads
+- a few other combinations PROJ writes: `+R_A` on a sphere, a WKT 2 in grads
   without a code, a WKT 2 of south and west axes;
 - a PROJ string's `+datum=` changed by its own `+towgs84` or `+nadgrids`
   (`+datum=WGS84 +towgs84=1,2,3`), which PROJ writes as the datum with that shift.
@@ -1102,8 +1170,9 @@ and the `Axis order`, `Body` and `Method` lines of `terrio crs CRS` (and its MCP
   Mercator's `+lat_ts` is not a scale factor here, nor Oblique Mercator's `+lonc` a central
   meridian. The ellipsoid is the one PROJ reports:
   - for a code, the registry's (Web Mercator is on WGS 84, though it computes on a sphere);
-  - for a PROJ string, its named ellipsoid under `+f`, `+es` and `+e`, and before `+R_A` and
-    `+R_C`.
+  - for a PROJ string, the CRS's ellipsoid as PROJ reads it (its named ellipsoid under `+f`,
+    `+es` and `+e`), before a spherification flag (`+R_A`, `+R_V`, `+R_C`...);
+  - for a WKT with a PROJ4 extension, its `SPHEROID`, whatever the extension computes on.
 
   A WKT that declares an EPSG code terrio has gives that code's values, as terrio transforms it
   (PROJ reads the WKT's own nodes, which may differ). `None` for a CRS terrio can't read, or

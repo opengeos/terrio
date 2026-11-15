@@ -88,6 +88,15 @@ pub struct SpatialRef {
     pub esri: Option<u32>,
 }
 
+impl SpatialRef {
+    /// The PROJ string, or else the WKT 1's `EXTENSION["PROJ4", ...]` as terrio reads it (see the
+    /// standalone engine's `SpatialRef::proj4_or_extension`).
+    #[doc(hidden)]
+    pub fn proj4_or_extension(&self) -> Option<String> {
+        terrio_crs::SpatialRef::from(self.clone()).proj4_or_extension()
+    }
+}
+
 impl From<terrio_crs::SpatialRef> for SpatialRef {
     fn from(value: terrio_crs::SpatialRef) -> Self {
         Self { epsg: value.epsg, wkt: value.wkt, proj4: value.proj4, esri: value.esri }
@@ -407,6 +416,14 @@ impl SpatialRef {
         // CRS (`file_wkt`).
         let wkt = raster_crs_wkt(c).as_deref().and_then(file_wkt);
         let mut s = Self { epsg: c.epsg, wkt, proj4: c.proj4.clone(), esri: None };
+        // A WKT with a PROJ4 extension is identified only as a code it converts as (the extension
+        // wins over a loose match of its nodes), as `terrio_crs::SpatialRef::from_wkt` does.
+        if s.epsg.is_none()
+            && s.proj4.is_none()
+            && let Some(w) = s.wkt.as_deref().filter(|w| terrio_crs::has_proj4_extension(w))
+        {
+            return terrio_crs::SpatialRef::from_wkt(w).into();
+        }
         // A WKT made from a PROJ string is not identified: it can describe less than the PROJ
         // string (the registry's loose matches took a Robinson on another meridian for ESRI's).
         if s.epsg.is_none()
