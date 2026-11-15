@@ -112,3 +112,28 @@ fn an_unchanged_datum_keeps_its_named_ellipsoid() {
     let reshaped = params("+proj=tmerc +datum=NAD27 +a=6400000");
     assert!((reshaped.b - 6_378_303.518_054_856).abs() < 1e-6, "{}", reshaped.b);
 }
+
+/// WKT writes the CRS's ellipsoid, not the sphere a spherification flag or spherical
+/// orthographic computes on, as PROJ 9.8.1's `CRS(s + " +type=crs").to_wkt("WKT1_GDAL")` writes
+/// it (pyproj 3.8.0); the PROJ4 extension keeps the flag. The inverse flattening of Clarke 1866,
+/// which terrio computes from its eccentricity, is compared to 10 decimals.
+#[test]
+fn wkt_writes_the_crs_ellipsoid_under_a_spherification_flag() {
+    let wgs84 = r#"SPHEROID["WGS 84",6378137,298.257223563"#;
+    for (s, spheroid) in [
+        // `+R_A` as the method's spherical variant.
+        ("+proj=laea +lat_0=45 +lon_0=-100 +ellps=WGS84 +R_A", wgs84),
+        ("+proj=cea +ellps=WGS84 +R_A", wgs84),
+        ("+proj=mill +ellps=WGS84 +R_A", wgs84),
+        ("+proj=laea +ellps=WGS84 +R_a", wgs84),
+        ("+proj=laea +ellps=clrk66 +R_A", r#"SPHEROID["Clarke 1866",6378206.4,294.9786982139"#),
+        // Flags PROJ keeps in its extension.
+        ("+proj=tmerc +ellps=WGS84 +R_A", wgs84),
+        ("+proj=tmerc +ellps=WGS84 +R_V", wgs84),
+        ("+proj=tmerc +ellps=WGS84 +R_C", wgs84),
+        ("+proj=ortho +f=0 +datum=WGS84", wgs84),
+    ] {
+        let wkt = SpatialRef::parse(s).unwrap().to_wkt().unwrap();
+        assert!(wkt.contains(spheroid), "{s}: {wkt}");
+    }
+}

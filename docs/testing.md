@@ -1792,7 +1792,7 @@ reports, and that terrio refuses the 37 strings PROJ refuses
 `scripts/gen_proj_ellipsoid_shape.py`, pyproj 3.8.0, no grids, `PROJ_NETWORK=OFF`).
 The PROJ strings of the EPSG and ESRI registries (as `to_proj4` writes them, 9,873 CRSs) keep the
 ellipsoid axes of their WKT, within 1e-6 m, under that reading. 22 CRSs whose string terrio reads
-with other axes than its WKT's are pinned bit for bit to the axes terrio 0.9.0 read: Web Mercator
+with other axes than its WKT's are pinned bit for bit to the axes terrio read before: Web Mercator
 (`+a=6378137 +b=6378137 +nadgrids=@null +wktext`, a sphere to terrio, where PROJ reports WGS 84),
 PROJ's `bess_nam`, `walbeck` and `clrk66`, and EPSG:3139 in links (`cargo test -p terrio-crs --test
 proj_ellipsoid_registry`).

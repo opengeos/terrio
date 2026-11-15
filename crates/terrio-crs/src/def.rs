@@ -199,8 +199,6 @@ pub(crate) struct ProjEllipsoid {
     pub conformal: bool,
     /// Whether PROJ keeps the string as a pipeline step reads it, for a spherification flag.
     pub as_step: bool,
-    /// Whether the method is spherical orthographic (`+f=0`), on a sphere of the CRS's ellipsoid.
-    pub spherical_ortho: bool,
     /// Whether ellipsoid parameters change `+datum`'s ellipsoid, which makes PROJ's CRS parser
     /// drop the datum for one of the ellipsoid.
     pub reshaped: bool,
@@ -231,7 +229,7 @@ pub(crate) fn proj_ellipsoid(p: &Params, method: &str) -> std::result::Result<Pr
     // `+R` overrides everything else.
     if p.has("R") {
         let sphere = Ell::from_a_rf(positive("R")?, 0.0);
-        return Ok(ProjEllipsoid { crs: sphere, figure: sphere, conformal: false, as_step: false, spherical_ortho: false, reshaped: true });
+        return Ok(ProjEllipsoid { crs: sphere, figure: sphere, conformal: false, as_step: false, reshaped: true });
     }
     let a = if p.has("a") { Some(positive("a")?) } else { None };
     let shape = ["rf", "f", "es", "e", "b"].into_iter().find(|k| p.has(k));
@@ -326,7 +324,7 @@ pub(crate) fn proj_ellipsoid(p: &Params, method: &str) -> std::result::Result<Pr
         figure = Ell::from_a_rf(radius, 0.0);
     }
     let reshaped = a.is_some() || shape.is_some();
-    Ok(ProjEllipsoid { crs, figure, conformal: flag == Some("R_C"), as_step, spherical_ortho, reshaped })
+    Ok(ProjEllipsoid { crs, figure, conformal: flag == Some("R_C"), as_step, reshaped })
 }
 
 /// Wraps a wbprojection projection, for projections terrio does not implement itself.

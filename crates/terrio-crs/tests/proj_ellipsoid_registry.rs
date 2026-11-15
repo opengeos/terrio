@@ -2,15 +2,14 @@
 //! reading of ellipsoid parameters (`tests/proj_ellipsoid_shape.rs`). For every registry CRS with
 //! a PROJ string, the semi-major and semi-minor axes terrio reads from that string (as PROJ
 //! writes it, `to_proj4`) are those of the CRS's own WKT `SPHEROID`/`ELLIPSOID` within 1e-6 m (the
-//! rounding of its inverse flattening to 15 digits), but for the CRSs of [`OWN`], whose axes are
-//! those terrio read before, bit for bit.
+//! rounding of its inverse flattening to 15 digits), but for the CRSs of [`KEPT_AXES`], whose
+//! axes are those terrio read before, bit for bit.
 
 use terrio_crs::{CrsQuery, SpatialRef, list_crs};
 
 /// The CRSs whose PROJ string has another ellipsoid than their WKT's, beyond the rounding of
-/// the WKT's inverse flattening, with the axes terrio read from the string before (terrio
-/// 0.9.0), bit for bit.
-const OWN: &[(&str, f64, f64)] = &[
+/// the WKT's inverse flattening, with the axes terrio read from the string before, bit for bit.
+const KEPT_AXES: &[(&str, f64, f64)] = &[
     // In links, as its WKT gives the axes.
     ("EPSG:3139", 6378306.3696, 6356571.996),
     // Web Mercator, on its sphere.
@@ -57,7 +56,7 @@ fn registry_proj_strings_keep_their_ellipsoids() {
         let (Some(proj), Some(wkt)) = (crs.to_proj4(), crs.to_wkt()) else { continue };
         let Some(read) = SpatialRef::from_proj4(&proj).ok().and_then(|s| s.projection_params()) else { continue };
         // Bit for bit those read before, else within the rounding of the WKT's inverse flattening.
-        let (expected, tolerance) = match OWN.iter().find(|o| o.0 == code) {
+        let (expected, tolerance) = match KEPT_AXES.iter().find(|o| o.0 == code) {
             Some(&(_, a, b)) => ((a, b), 0.0),
             None => match spheroid(&wkt) {
                 Some((a, rf)) => ((a, if rf == 0.0 { a } else { a - a / rf }), 1e-6),

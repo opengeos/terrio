@@ -540,15 +540,9 @@ fn geogcs(p: &Params, own: &Def) -> (String, bool) {
         }
         return (w, true);
     }
-    // R_C changes the runtime conversion radius, while PROJ's CRS metadata
-    // keeps the original ellipsoid. The PROJ4 extension retains the modifier.
-    // So do the other spherification flags PROJ keeps in the extension, and spherical
-    // orthographic (`+f=0`), which WKT 1 cannot tell.
-    let shape = super::def::proj_ellipsoid(p, p.str("proj").unwrap_or_default()).ok();
-    let ell = match shape {
-        Some(shape) if shape.conformal || shape.as_step || shape.spherical_ortho => shape.crs,
-        _ => own.ell,
-    };
+    // The CRS's ellipsoid, as PROJ 9.8.1 writes it, not the sphere a spherification flag (`+R_A`,
+    // `+R_C`...) or spherical orthographic (`+f=0`) computes on: the PROJ4 extension keeps those.
+    let ell = super::def::proj_ellipsoid(p, p.str("proj").unwrap_or_default()).map_or(own.ell, |shape| shape.crs);
     let named = p.str("ellps").or_else(|| p.str("datum").and_then(super::def::datum_ellps));
     let known = named.and_then(|n| ELLIPSOIDS.iter().find(|e| e.0 == n)).filter(|e| Ell::named(e.0).is_some_and(|n| n == ell));
     let rf = inverse_flattening(p, &ell, known.and_then(|e| e.3));
