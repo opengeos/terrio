@@ -637,6 +637,19 @@ impl Op {
         self.steps.iter().flat_map(Step::grid_names).collect()
     }
 
+    /// Whether it shifts no point: conversions and a null Helmert transformation or grid alone
+    /// (NAD83 to WGS 84 (1)).
+    pub fn is_null_shift(&self) -> bool {
+        let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        self.steps.iter().all(|s| match s {
+            Step::Cart { .. } => true,
+            Step::Helmert { t, r, scale, rates, .. } => *t == [0.0; 3] && *r == identity && *scale == 1.0 && rates.is_none(),
+            Step::GeogOffset { dlon, dlat, dh, .. } => *dlon == 0.0 && *dlat == 0.0 && *dh == 0.0,
+            Step::HGridShift { .. } | Step::GridShift { .. } => s.grid_names().iter().all(|(g, _)| g.trim_start_matches('@') == "null"),
+            _ => false,
+        })
+    }
+
     /// Whether it needs grids.
     pub fn needs_grids(&self) -> bool {
         self.steps.iter().any(|s| !s.grid_names().is_empty())

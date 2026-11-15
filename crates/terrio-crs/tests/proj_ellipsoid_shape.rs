@@ -332,6 +332,18 @@ fn a_null_grid_is_no_shift_and_keeps_the_datum() {
         let q = at(&crs, "EPSG:4326", (-2.0, 52.0));
         assert!((q.0 + 2.0).abs() < 1e-9 && (q.1 - 52.0).abs() < 1e-9, "{w}: {q:?}");
     }
+    // But one on WGS 84, geographic or projected, is identified as its code, as PROJ 9.8.1
+    // identifies them (`CRS.to_epsg()`): the code places points alike. Not one on NAD83, which
+    // PROJ identifies as EPSG:4269 by its nodes but places by the extension: (-157.8, 21.3)
+    // stays there in WGS 84, where EPSG:4269 moves it by 0.5 m.
+    let wgs84 = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],EXTENSION["PROJ4","+proj=longlat +datum=WGS84 +nadgrids=@null"]]"#;
+    let utm = r#"PROJCS["WGS 84 / UTM zone 18N",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",-75],PARAMETER["scale_factor",0.9996],PARAMETER["false_easting",500000],PARAMETER["false_northing",0],UNIT["metre",1],EXTENSION["PROJ4","+proj=utm +zone=18 +datum=WGS84 +nadgrids=@null +units=m +no_defs"]]"#;
+    let nad83 = r#"GEOGCS["NAD83",DATUM["North_American_Datum_1983",SPHEROID["GRS 1980",6378137,298.257222101,AUTHORITY["EPSG","7019"]],AUTHORITY["EPSG","6269"]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],EXTENSION["PROJ4","+proj=longlat +datum=NAD83 +nadgrids=@null"]]"#;
+    for (w, code) in [(wgs84, Some(4326)), (utm, Some(32618)), (nad83, None)] {
+        assert_eq!(SpatialRef::from_wkt(w).epsg, code, "{w}");
+    }
+    let q = at(&SpatialRef::from_wkt(nad83), "EPSG:4326", (-157.8, 21.3));
+    assert!((q.0 + 157.8).abs() < 1e-9 && (q.1 - 21.3).abs() < 1e-9, "{q:?}");
     let shifted = SpatialRef::parse("+proj=longlat +ellps=WGS84 +nadgrids=@null +towgs84=1000,0,0").unwrap();
     let json = shifted.to_projjson().unwrap();
     assert!(!json.contains("Geocentric translations"), "{json}");

@@ -468,7 +468,9 @@ with its grids (NAD27, potsdam) wins over the string's `+towgs84` in a step, and
 string's own `+nadgrids`: `+nadgrids=@null +towgs84=1000,0,0` is no shift, as in PROJ, and
 `+datum=OSGB36 +nadgrids=@null` keeps OSGB36's datum (the identity into EPSG:4277), with no
 shift to WGS 84, and reaches another datum through WGS 84 (`(-2, 52)` in ETRS89, as in PROJ), not
-by OSGB36's transformations. A WKT with that extension is not identified as EPSG:4277. PROJJSON
+by OSGB36's transformations. A WKT with that extension is not identified as EPSG:4277, whose
+transformations would place it otherwise (nor NAD83's as EPSG:4269, shifted in places); one on
+WGS 84 is EPSG:4326. PROJJSON
 writes no shift for such a string (PROJ writes the null grid). It is refused for an extension on
 another ellipsoid than the WKT's `SPHEROID` (but Web Mercator's, `+a=6378137 +b=6378137` with a
 null standard parallel and a scale of 1 beside WGS 84, written as Popular Visualisation Pseudo

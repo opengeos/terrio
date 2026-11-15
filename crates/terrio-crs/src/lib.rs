@@ -398,9 +398,14 @@ impl SpatialRef {
                     let unshifted = own.ops().is_empty() && own.datum_code().is_none() && r.is_wgs84();
                     let ellipsoid = (own.ell.a - r.ell.a).abs() < 1e-3 && (own.ell.es - r.ell.es).abs() < 1e-9;
                     // On the code's datum by its transformations, not by a shift of its own
-                    // (`+datum=OSGB36 +nadgrids=@null`, no shift to WGS 84).
+                    // (`+datum=OSGB36 +nadgrids=@null`, no shift to WGS 84); unless the code's
+                    // transformations to WGS 84 are all null shifts too (WGS 84 itself), so that
+                    // its own place the points alike. Not NAD83, shifted in places (Hawaii, by
+                    // NAD83 to WGS 84 (2) and (3)), which PROJ's `to_epsg` takes by its nodes.
                     let null_shift = own.ops().iter().any(|op| op.grids().iter().any(|(g, _)| g.trim_start_matches('@') == "null"));
-                    own.same_conversion(&r) && ellipsoid && (unshifted || (own.same_datum(&r) && !null_shift))
+                    let registry_null = r.is_wgs84()
+                        || r.geog().and_then(epsg::get).is_some_and(|e| !e.ops.is_empty() && e.ops.iter().all(|op| op.is_null_shift()));
+                    own.same_conversion(&r) && ellipsoid && (unshifted || (own.same_datum(&r) && (!null_shift || registry_null)))
                 })
             };
             let epsg = declared_epsg(wkt)
