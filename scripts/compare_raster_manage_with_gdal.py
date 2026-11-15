@@ -224,6 +224,49 @@ def main():
                     overviews,
                 )
 
+        # Odd sizes: overview ratios that are not integers (703 / 352), on two pixel-interleaved
+        # bands of the real DEM tiled to 2601 x 703 with nodata. GDAL writes a sidecar of several
+        # bands band-separate and computes it band by band, from chunks of 512 rows whose windows
+        # it clamps (overview row 256 straddles two); internal overviews of pixel-interleaved
+        # bands block by block, from whole windows. Values may be 1 ulp apart where a GDAL build
+        # fuses the average's multiply-adds (arm64), which terrio does not.
+        for external in [True, False]:
+
+            def odd_overviews(external=external):
+                kind = "external" if external else "internal"
+                a, b = work / f"odd-gdal-{kind}.tif", work / f"odd-terrio-{kind}.tif"
+                dem = gdal.Open(str(sample)).ReadAsArray().astype(np.float32)
+                y, x = np.mgrid[:703, :2601]
+                ds = gdal.GetDriverByName("GTiff").Create(
+                    str(a), 2601, 703, 2, gdal.GDT_Float32,
+                    ["TILED=YES", "BLOCKXSIZE=256", "BLOCKYSIZE=256", "COMPRESS=DEFLATE"],
+                )
+                ds.SetGeoTransform([0, 30, 0, 703 * 30, 0, -30])
+                for index, values in enumerate([np.tile(dem, (6, 21)), np.tile(dem[::-1, ::-1].T, (6, 21))], 1):
+                    values = values[:703, :2601].copy()
+                    values[((x // 37 + y // 23) % 11 == 0) | ((x * index + y) % 101 == 0)] = -9999
+                    band = ds.GetRasterBand(index)
+                    band.SetNoDataValue(-9999)
+                    band.WriteArray(values)
+                ds = None
+                shutil.copyfile(a, b)
+                levels = [2, 4, 8, 16]
+                if external:
+                    run(["gdaladdo", "-ro", "--config", "COMPRESS_OVERVIEW", "DEFLATE", "-r", "average", a, *levels])
+                    run([args.terrio, "overviews", b, "--external", "--compress", "DEFLATE", "-r", "average", *levels])
+                else:
+                    run(["gdaladdo", "-r", "average", a, *levels])
+                    run([args.terrio, "overviews", b, "-r", "average", *levels])
+                status, detail = compare(a, b)
+                if external:
+                    layouts = [gdal.Open(f"{p}.ovr").GetMetadata("IMAGE_STRUCTURE") for p in (a, b)]
+                    if layouts[0] != layouts[1]:
+                        raise AssertionError(f".ovr layout differs: GDAL {layouts[0]}, terrio {layouts[1]}")
+                    detail += "; .ovr interleaving and compression"
+                return status, detail
+
+            case(f"{'external' if external else 'internal'} overviews average, odd size, two bands", odd_overviews)
+
         # Real Byte imagery exercises the histogram path and parallel row groups; the
         # existing DEM cases exercise reusable non-Byte counters. Mode must be exact.
         for data_type in ([gdal.GDT_Byte, gdal.GDT_UInt16, gdal.GDT_Float32]
