@@ -2710,7 +2710,11 @@ Default statistics are `count,min,max,mean,sum,stddev`. Also available: `varianc
 (standard deviation over mean, null when the mean is 0), `median`, `quantile_P` for a
 percentage P from 0 to 100 (`quantile_25`, `quantile_2.5`), `mode` (alias `majority`: the value
 covering most of the zone, ties to the larger value), `minority` (ties to the smaller value)
-and `variety` (the number of distinct values). Quantiles interpolate linearly between the
+and `variety` (the number of distinct values). `medoid_euclidean` (alias `medoid`) and
+`medoid_sam` give each band's value at the zone's medoid pixel: the valid pixel, valid in every
+band of the raster, whose band vector is closest to the others by Euclidean distance or by
+spectral angle (`medoid_sam`, which ignores brightness). The medoid compares every pair of the
+zone's pixels, so zones are capped at 2,000 such pixels; binary coverage only. Quantiles interpolate linearly between the
 closest ranks, as numpy's default, so `quantile_50` equals `median`. Standard deviation and
 variance use the population definition. Fields are `FILE_STEM_bN_STATISTIC`,
 `PREFIX_bN_STATISTIC` when one `--prefix` is supplied per raster, or `TIME_LABEL_STATISTIC`

@@ -8,6 +8,8 @@
 mod fractional;
 #[path = "zonal_index.rs"]
 mod index;
+#[path = "zonal_medoid.rs"]
+mod medoid;
 #[path = "zonal_reduce.rs"]
 mod reduce;
 
@@ -57,6 +59,21 @@ pub enum Statistic {
     Minority,
     /// Number of distinct values, an Integer; 0 when no valid pixels contribute.
     Variety,
+    /// Each band's value at the medoid pixel: the valid pixel, valid in every band of its source,
+    /// whose band vector is most central under the metric (smallest sum of distances to the other
+    /// valid pixels of the zone; ties take the first in row-major order). Needs [`zonal_stats`],
+    /// and binary coverage. Holds every valid pixel of a zone until it is summarized.
+    Medoid(MedoidMetric),
+}
+
+/// The distance between two pixels' band vectors, for [`Statistic::Medoid`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MedoidMetric {
+    /// Euclidean distance over the band values, unscaled: bands with larger values weigh more.
+    Euclidean,
+    /// Spectral angle in radians (the arccos of the cosine between the vectors), which ignores
+    /// brightness. Pixels whose vector is all zeros have no angle, so they are never the medoid.
+    SpectralAngle,
 }
 
 impl Statistic {
@@ -88,6 +105,8 @@ impl Statistic {
             "mode" | "majority" => Self::Mode,
             "minority" => Self::Minority,
             "variety" => Self::Variety,
+            "medoid" | "medoid_euclidean" => Self::Medoid(MedoidMetric::Euclidean),
+            "medoid_sam" | "medoid_spectral_angle" => Self::Medoid(MedoidMetric::SpectralAngle),
             _ => return Err(Error::InvalidArgument(format!("unknown zonal statistic '{name}'"))),
         })
     }
@@ -118,6 +137,8 @@ impl Statistic {
             Self::Mode => "mode",
             Self::Minority => "minority",
             Self::Variety => "variety",
+            Self::Medoid(MedoidMetric::Euclidean) => "medoid_euclidean",
+            Self::Medoid(MedoidMetric::SpectralAngle) => "medoid_sam",
             Self::Quantile(_) => unreachable!(),
         }
         .into()
@@ -508,6 +529,9 @@ pub fn zonal_stats_with(
     if options.stats.iter().any(|s| s.uses_weights()) && options.weights.is_none() {
         return Err(Error::InvalidArgument("weighted statistics require a weighting raster".into()));
     }
+    if options.fractional && options.stats.iter().any(|s| matches!(s, Statistic::Medoid(_))) {
+        return Err(Error::InvalidArgument("medoid statistics use binary pixel membership, not fractional coverage".into()));
+    }
     if sources.iter().all(|s| s.bands.is_empty()) || options.stats.is_empty() {
         return Err(Error::InvalidArgument("zonal statistics needs at least one raster band and one statistic".into()));
     }
@@ -586,7 +610,18 @@ pub fn zonal_stats_with(
         *zone_index = Some(index::build(zones, grid, options.all_touched, options.fractional)?);
     }
     let fids: Vec<u64> = zones.features.iter().map(|f| f.fid).collect();
-    let plan = reduce::Plan::new(&options.stats, options.fractional, &fids);
+    // Medoids need every band of a source at once, so they are computed apart from the per-band
+    // statistics, and merged into their columns in `options.stats` order.
+    let reduced_stats: Vec<Statistic> = options.stats.iter().copied().filter(|s| !matches!(s, Statistic::Medoid(_))).collect();
+    let mut medoid_metrics: Vec<MedoidMetric> = Vec::new();
+    for stat in &options.stats {
+        if let Statistic::Medoid(metric) = stat
+            && !medoid_metrics.contains(metric)
+        {
+            medoid_metrics.push(*metric);
+        }
+    }
+    let plan = reduce::Plan::new(&reduced_stats, options.fractional, &fids);
     // Strips read ahead of each source: with sources reduced on several threads, they read in
     // parallel already, and every strip held ahead is memory. Two still overlap a source's reads
     // with its reduction (one was 11% slower on 8 threads): 100 Sentinel-2 bands on 32 threads
@@ -626,6 +661,19 @@ pub fn zonal_stats_with(
             }
         };
         let bands: Vec<_> = source.bands.iter().zip(&nodata[s]).map(|(b, &nodata)| reduce::BandSpec { band: b.band, nodata }).collect();
+        let medoids = if medoid_metrics.is_empty() {
+            Vec::new()
+        } else {
+            let strip = strip_rows(raster, bands.len());
+            reduce::reduce_medoid(grids[grid].1.as_ref().expect("built above"), raster, &bands, strip, fids.len(), &medoid_metrics)?
+        };
+        if reduced_stats.is_empty() {
+            // Only medoids: no per-band statistic reads the raster again.
+            for band in 0..bands.len() {
+                sink(BandStats { source: s, band, values: with_medoids(&options.stats, Vec::new(), &medoids, &medoid_metrics, band) })?;
+            }
+            return Ok(());
+        }
         // Each source reads the weight band again (all share one grid); reduce the
         // sources of a grid together, reading each weight strip once, if weighted runs over many
         // sources are slow. That holds every source's open zones at once, so bound the group.
@@ -680,6 +728,7 @@ pub fn zonal_stats_with(
                 }
             };
             for values in values {
+                let values = with_medoids(&options.stats, values, &medoids, &medoid_metrics, band);
                 sink(BandStats { source: s, band, values })?;
                 band += 1;
             }
@@ -744,6 +793,28 @@ pub fn zonal_stats_with(
         Ok(None) => Ok(()),
         Err(_) => Err(Error::InvalidArgument("zonal error lock poisoned".into())),
     }
+}
+
+/// The columns of one band in `stats` order: medoid columns from `medoids` (`[metric][band]`
+/// values, in `metrics` order), the others from `reduced`, which holds them in their order.
+fn with_medoids(
+    stats: &[Statistic],
+    reduced: Vec<Vec<FieldValue>>,
+    medoids: &[Vec<Vec<FieldValue>>],
+    metrics: &[MedoidMetric],
+    band: usize,
+) -> Vec<Vec<FieldValue>> {
+    let mut reduced = reduced.into_iter();
+    stats
+        .iter()
+        .map(|stat| match stat {
+            Statistic::Medoid(metric) => {
+                let at = metrics.iter().position(|m| m == metric).expect("every medoid metric is collected");
+                medoids[at][band].clone()
+            }
+            _ => reduced.next().expect("a column for each per-band statistic"),
+        })
+        .collect()
 }
 
 /// Hands the memory freed by a reduced source back to the system. glibc keeps freed strips in the
@@ -833,6 +904,9 @@ impl ZonalReducer {
         }
         if options.stats.iter().any(|s| s.uses_weights()) {
             return Err(Error::InvalidArgument("weighted statistics need a weighting raster, which ZonalReducer does not take".into()));
+        }
+        if options.stats.iter().any(|s| matches!(s, Statistic::Medoid(_))) {
+            return Err(Error::InvalidArgument("medoid statistics need every band at once, which ZonalReducer does not take".into()));
         }
         if options.stats.is_empty() {
             return Err(Error::InvalidArgument("zonal statistics needs at least one statistic".into()));

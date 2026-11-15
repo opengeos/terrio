@@ -2707,8 +2707,8 @@ def zonal_stats(
     ``TIME_LABEL_STATISTIC``, or ``TIME_LABEL_bN_STATISTIC`` for a label over several
     ``bands``; dicts naming the path or Raster of an earlier item or dict share its read.
     Statistics: count, min, max, mean, sum, stddev, variance, cv, median, quantile_P (P from 0
-    to 100), mode (majority), minority, variety, and
-    weighted_mean, weighted_sum, weighted_stddev with ``weights``.
+    to 100), mode (majority), minority, variety, medoid_euclidean (alias medoid) and medoid_sam,
+    and weighted_mean, weighted_sum, weighted_stddev with ``weights``.
     Field-name collisions receive _2, _3, etc. suffixes.
     """
     ...

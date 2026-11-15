@@ -353,7 +353,8 @@ pub struct ZonalArgs {
     sources: SampleArgs,
     /// Statistics, comma-separated: count,min,max,mean,sum,stddev,variance,cv,median,
     /// quantile_P (P from 0 to 100, e.g. quantile_25),mode (alias majority),minority,variety,
-    /// weighted_mean,weighted_sum,weighted_stddev. Uses population standard deviation.
+    /// weighted_mean,weighted_sum,weighted_stddev, medoid_euclidean (alias medoid), medoid_sam.
+    /// Uses population standard deviation.
     #[arg(long, value_delimiter = ',', default_value = "count,min,max,mean,sum,stddev")]
     stats: Vec<String>,
     /// Include every pixel touched by each polygon, instead of pixels whose centres are inside.

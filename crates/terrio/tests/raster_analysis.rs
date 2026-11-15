@@ -2,7 +2,7 @@
 
 use terrio::ops::contour::{ContourOptions, contour};
 use terrio::ops::rasterize::Grid;
-use terrio::ops::zonal::{Statistic as S, ZonalBand, ZonalOptions, ZonalSource, zonal_stats};
+use terrio::ops::zonal::{MedoidMetric, Statistic as S, ZonalBand, ZonalOptions, ZonalSource, zonal_stats};
 use terrio::vector::Coord;
 use terrio::{
     DataType, Feature, FieldDef, FieldType, FieldValue as V, Geometry as G, Layer, LazyRaster, Raster, RasterConfig, RasterDataset,
@@ -976,4 +976,53 @@ fn zonal_reducer_rejects_bad_grids_and_empty_stats() {
         let e = ZonalReducer::new(zones, grid, &ZonalOptions::default(), None).err().unwrap();
         assert!(matches!(e, terrio::Error::Crs(_)) && e.to_string().contains("both declare a CRS"), "{e}");
     }
+}
+
+#[test]
+fn zonal_medoid_takes_each_band_at_the_most_central_pixel() {
+    // Pixels (band 1, band 2): (1,0), (2,0), (3,0), (0,9). Distances to the others: the second
+    // pixel sums to 1 + 1 + sqrt(85) and is the smallest, so it is the medoid.
+    let r = raster(2, 2, 2, &[1., 2., 3., 0., 0., 0., 0., 9.], None);
+    let l = zones(vec![Some(rectangle(0., 0., 2., 2.))]);
+    let source =
+        || ZonalSource { raster: LazyRaster::from(r.clone()).into(), bands: vec![ZonalBand::new(1, "b1"), ZonalBand::new(2, "b2")] };
+    let o = ZonalOptions { stats: vec![S::Medoid(MedoidMetric::Euclidean), S::Mean], ..Default::default() };
+    let out = zonal_stats(&l, &mut [source()], &o).unwrap();
+    assert_eq!(field(&out, 0, "b1_medoid_euclidean"), &V::Float(2.));
+    assert_eq!(field(&out, 0, "b2_medoid_euclidean"), &V::Float(0.));
+    assert_eq!(field(&out, 0, "b1_mean"), &V::Float(1.5));
+    // Every band of a pixel must be valid: the nodata pixel (2, 0) drops out, so the medoid is
+    // the first pixel (1, 0) (sums 2 + √82 against 2 + √90 for the third).
+    let r = raster(2, 2, 2, &[1., -9999., 3., 0., 0., 0., 0., 9.], Some(-9999.));
+    let source = ZonalSource { raster: LazyRaster::from(r).into(), bands: vec![ZonalBand::new(1, "b1"), ZonalBand::new(2, "b2")] };
+    let out =
+        zonal_stats(&l, &mut [source], &ZonalOptions { stats: vec![S::Medoid(MedoidMetric::Euclidean)], ..Default::default() }).unwrap();
+    assert_eq!(field(&out, 0, "b1_medoid_euclidean"), &V::Float(1.));
+}
+
+#[test]
+fn zonal_medoid_spectral_angle_skips_zero_vectors_and_rejects_fractional() {
+    // The zero vector (the fourth pixel) has no angle, so it is never the medoid.
+    let r = raster(2, 2, 2, &[1., 2., 0., 0., 0., 0., 1., 0.], None);
+    let l = zones(vec![Some(rectangle(0., 0., 2., 2.))]);
+    let source =
+        || ZonalSource { raster: LazyRaster::from(r.clone()).into(), bands: vec![ZonalBand::new(1, "b1"), ZonalBand::new(2, "b2")] };
+    let o = ZonalOptions { stats: vec![S::Medoid(MedoidMetric::SpectralAngle)], ..Default::default() };
+    let out = zonal_stats(&l, &mut [source()], &o).unwrap();
+    assert_eq!(field(&out, 0, "b1_medoid_sam"), &V::Float(1.));
+    assert_eq!(field(&out, 0, "b2_medoid_sam"), &V::Float(0.));
+    let fractional = ZonalOptions { fractional: true, ..o };
+    assert!(zonal_stats(&l, &mut [source()], &fractional).is_err());
+}
+
+#[test]
+fn zonal_medoid_overlapping_zones_can_both_take_a_shared_pixel() {
+    // One row of four pixels, values 0, 4, 5, 100. Zone A covers all of 0, 4, 5 (its medoid is 4),
+    // zone B covers 4 and 5 (a tie, so the first, 4). Both medoids are the pixel they share.
+    let r = raster(4, 1, 1, &[0., 4., 5., 100.], None);
+    let l = zones(vec![Some(rectangle(0., 0., 3., 1.)), Some(rectangle(1., 0., 3., 1.))]);
+    let o = ZonalOptions { stats: vec![S::Medoid(MedoidMetric::Euclidean)], ..Default::default() };
+    let out = zonal_stats(&l, &mut [src("v", &r, 1)], &o).unwrap();
+    assert_eq!(field(&out, 0, "v_medoid_euclidean"), &V::Float(4.));
+    assert_eq!(field(&out, 1, "v_medoid_euclidean"), &V::Float(4.));
 }

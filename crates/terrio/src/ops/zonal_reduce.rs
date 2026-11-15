@@ -1,8 +1,9 @@
 //! Reduction of raster bands over a zone index, strip by strip. Each zone's pixels are visited in
 //! row-major order whatever the strip height, so results do not depend on it.
 
-use super::Statistic;
 use super::index::{Zone, ZoneIndex};
+use super::medoid::medoid;
+use super::{MedoidMetric, Statistic};
 use crate::raster::RasterData;
 use crate::{DataType, Error, FieldValue, LazyRaster, Result, Window, WindowOptions};
 
@@ -231,6 +232,79 @@ pub(super) fn reduce_source(
         Err(_) if other_type => Ok(None),
         result => result.and_then(|()| state.finish(index)).map(Some),
     }
+}
+
+/// Most valid pixels a zone may hold for a medoid, which compares every pair of them (O(n²) time),
+/// holding n values per pixel until the zone is summarized.
+// ponytail: exact pairwise scan under a cap; raise the cap, or sample, when bigger zones matter.
+pub(super) const MEDOID_MAX_PIXELS: usize = 2_000;
+
+/// The medoid of each zone's pixels, valid in every one of `bands`, under each of `metrics`: the
+/// values `[metric][band][feature]` of each band at the medoid pixel. Zones without one, and
+/// features without a zone, are null. Strips are read in turn, as in [`reduce_source`].
+pub(super) fn reduce_medoid(
+    index: &ZoneIndex,
+    raster: &mut LazyRaster,
+    bands: &[BandSpec],
+    strip_rows: usize,
+    features: usize,
+    metrics: &[MedoidMetric],
+) -> Result<Vec<Vec<Vec<FieldValue>>>> {
+    let n = bands.len();
+    let zones = &index.zones;
+    let read = WindowOptions { bands: bands.iter().map(|b| b.band).collect(), overview: None };
+    // Zones are opened in the strip of their first row, as their spans are reached.
+    let mut by_row: Vec<usize> = (0..zones.len()).collect();
+    by_row.sort_by_key(|&z| zones[z].row_start);
+    let (mut next, mut open) = (0, Vec::new());
+    let mut cursor = vec![0usize; zones.len()];
+    // Each zone's valid pixels: n values per pixel, row-major.
+    let mut pixels: Vec<Vec<f64>> = vec![Vec::new(); zones.len()];
+    for window in strip_windows(index, strip_rows.max(1)) {
+        let (r0, r1, c0) = (window.y, window.y + window.height, window.x);
+        let strip = Strip::read(raster, window, &read)?;
+        while next < by_row.len() && zones[by_row[next]].row_start < r1 {
+            open.push(by_row[next]);
+            next += 1;
+        }
+        for &z in &open {
+            let spans = &zones[z].spans;
+            while let Some(span) = spans.get(cursor[z]).filter(|s| (s.row as usize) < r1) {
+                let start = (span.row as usize - r0) * strip.cols + span.col as usize - c0;
+                for at in start..start + span.len as usize {
+                    let valid = |b: usize| {
+                        let v = strip.value(b, at);
+                        v.is_finite() && crate::histogram::is_valid(v, bands[b].nodata, strip.data_type)
+                    };
+                    if (0..n).all(valid) {
+                        pixels[z].extend((0..n).map(|b| strip.value(b, at)));
+                        if pixels[z].len() / n > MEDOID_MAX_PIXELS {
+                            return Err(Error::InvalidArgument(format!(
+                                "a zone has more than {MEDOID_MAX_PIXELS} pixels valid in every band, too many for a medoid statistic"
+                            )));
+                        }
+                    }
+                }
+                cursor[z] += 1;
+            }
+        }
+        open.retain(|&z| zones[z].row_end > r1);
+    }
+    Ok(metrics
+        .iter()
+        .map(|&metric| {
+            let mut per_band = vec![vec![FieldValue::Null; features]; n];
+            for (z, zone) in zones.iter().enumerate() {
+                let values = &pixels[z];
+                if let Some(at) = medoid(values, n, metric) {
+                    for (b, band) in per_band.iter_mut().enumerate() {
+                        band[zone.feature] = FieldValue::Float(values[at * n + b]);
+                    }
+                }
+            }
+            per_band
+        })
+        .collect())
 }
 
 /// A reduction fed strip by strip in increasing rows: a zone opens at the strip holding its first
@@ -707,7 +781,12 @@ impl Summary {
             // earlier (smaller) value on a minority tie, as exactextract 0.3.0 does.
             Statistic::Mode => merged(bins).fold((f64::NAN, f64::NEG_INFINITY), |b, (v, w)| if w >= b.1 { (v, w) } else { b }).0,
             Statistic::Minority => merged(bins).fold((f64::NAN, f64::INFINITY), |b, (v, w)| if w < b.1 { (v, w) } else { b }).0,
-            Statistic::Count | Statistic::Variety | Statistic::WeightedMean | Statistic::WeightedSum | Statistic::WeightedStdDev => {
+            Statistic::Count
+            | Statistic::Variety
+            | Statistic::WeightedMean
+            | Statistic::WeightedSum
+            | Statistic::WeightedStdDev
+            | Statistic::Medoid(_) => {
                 unreachable!()
             }
         })

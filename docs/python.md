@@ -814,7 +814,7 @@ stats = terrio.zonal_stats(fields, rows, stats=["mean", "quantile_25", "quantile
 # fields named 2024_07_01_red_mean, 2024_07_01_nir_mean, ...
 ```
 
-Statistics include `variance`, `cv`, `quantile_P`, `mode`, `minority` and `variety`; see the
+Statistics include `variance`, `cv`, `quantile_P`, `mode`, `minority`, `variety` and the band medoids `medoid_euclidean` and `medoid_sam`; see the
 [command](cli.md#zonal-stats). For coverage-weighted zonal statistics, use `fractional=True`. A second aligned raster
 can be supplied as `weights=...`, with `weight_band=1`, then select `weighted_mean`,
 `weighted_sum` or `weighted_stddev` in `stats`. See the
