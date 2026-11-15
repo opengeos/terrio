@@ -144,6 +144,9 @@ pub struct CrsSummary {
 }
 
 impl CrsSummary {
+    /// The CRS as reported. Its WKT is `to_wkt`, a NUL in a name (from a PROJJSON name) kept, and
+    /// escaped in JSON output, as PROJ 9.8.1's `to_json` keeps it; unlike files, a report isn't
+    /// read as a C string.
     pub(crate) fn new(s: &SpatialRef) -> Self {
         Self { epsg: s.epsg, name: s.name(), wkt: s.to_wkt(), esri: s.esri }
     }

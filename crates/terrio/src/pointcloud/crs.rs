@@ -182,7 +182,8 @@ fn geokey_vlrs(crs: &SpatialRef) -> Option<Vec<Vlr>> {
     // VerticalCSTypeGeoKey, as GDAL writes them in GeoTIFF (GDAL 3.13 writes 3072 = 6588 and
     // 4096 = 6360 for EPSG:6588+6360). A vertical CRS without one is left out (with a warning), so
     // that the GeoKeys still describe the horizontal CRS rather than falling back to WKT.
-    let (horizontal, vertical) = match crs.to_wkt().filter(|w| w.trim_start().starts_with("COMPD_CS[")) {
+    // The WKT as written to files (names cut at a NUL), so the horizontal CRS's citations are.
+    let (horizontal, vertical) = match crs.to_file_wkt().filter(|w| w.trim_start().starts_with("COMPD_CS[")) {
         Some(w) => {
             let c = wkt_crs(&w);
             let vertical = c.vertical_epsg.and_then(|v| u16::try_from(v).ok());
