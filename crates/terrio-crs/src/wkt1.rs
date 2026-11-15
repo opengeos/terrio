@@ -981,6 +981,8 @@ mod tests {
     #[test]
     fn user_wkt_keyword_without_definition_is_an_error() {
         // #1032: a CRS keyword with only its name was a CRS that no transformation could use.
+        // GDAL 3.10.3 (PROJ 9.6.0) refuses them too: `gdalsrsinfo 'GEOGCS["x"]'` reports "Missing
+        // DATUM or ENSEMBLE node", `PROJCS["x"]` "missing CONVERSION node".
         let keywords = "GEOGCS PROJCS GEOCCS COMPD_CS VERT_CS LOCAL_CS GEOGCRS GEOGRAPHICCRS GEODCRS GEODETICCRS \
                         PROJCRS PROJECTEDCRS COMPOUNDCRS BOUNDCRS VERTCRS VERTICALCRS ENGCRS ENGINEERINGCRS";
         for keyword in keywords.split_whitespace() {
