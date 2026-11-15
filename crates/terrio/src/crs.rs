@@ -394,7 +394,10 @@ impl SpatialRef {
         self.as_core().to_wbp().map_err(Into::into)
     }
     pub(crate) fn from_raster_crs(c: &wbraster::CrsInfo) -> Self {
-        let mut s = Self { epsg: c.epsg, wkt: raster_crs_wkt(c), proj4: c.proj4.clone(), esri: None };
+        // A raster's WKT is a file's text, or what it is written as: it ends at its first NUL,
+        // as GDAL reads it (and reads the file written back).
+        let wkt = raster_crs_wkt(c).map(|w| terrio_crs::until_nul(&w).to_string());
+        let mut s = Self { epsg: c.epsg, wkt, proj4: c.proj4.clone(), esri: None };
         // A WKT made from a PROJ string is not identified: it can describe less than the PROJ
         // string (the registry's loose matches took a Robinson on another meridian for ESRI's).
         if s.epsg.is_none()
@@ -418,7 +421,10 @@ impl SpatialRef {
 
     /// The CRS a vector layer declares.
     pub fn from_layer(layer: &wbvector::Layer) -> Self {
-        let mut s = Self { epsg: layer.crs_epsg(), wkt: layer.crs_wkt().map(str::to_string), ..Default::default() };
+        // A layer's WKT is a file's text (a `.prj`, a GeoPackage's definition), or what it is
+        // written as: it ends at its first NUL, as GDAL reads it (and reads the file written back).
+        let wkt = layer.crs_wkt().map(|w| terrio_crs::until_nul(w).to_string());
+        let mut s = Self { epsg: layer.crs_epsg(), wkt, ..Default::default() };
         if s.epsg.is_none()
             && let Some(w) = &s.wkt
         {
@@ -766,5 +772,18 @@ mod fork_tests {
             });
             holder.join().is_ok() && exit == Some(0)
         });
+    }
+}
+
+#[cfg(test)]
+mod nul_tests {
+    /// A raster's WKT ends at its first NUL, as GDAL reads a file's text (a C string): one
+    /// padded with NULs is identified as without them (EPSG:32631, as GDAL 3.10.3 identifies
+    /// this ESRI WKT).
+    #[test]
+    fn a_raster_wkt_padded_with_nuls_is_identified() {
+        let wkt = "PROJCS[\"WGS_1984_UTM_Zone_31N\",GEOGCS[\"GCS_WGS_1984\",DATUM[\"D_WGS_1984\",SPHEROID[\"WGS_1984\",6378137.0,298.257223563]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",3.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]\0\0";
+        let info = wbraster::CrsInfo { epsg: None, wkt: Some(wkt.to_string()), proj4: None };
+        assert_eq!(super::SpatialRef::from_raster_crs(&info).epsg, Some(32631));
     }
 }

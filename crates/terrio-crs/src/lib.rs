@@ -1171,10 +1171,20 @@ pub(crate) fn is_variant_c(wkt: &str) -> bool {
     wkt1::parse(wkt).is_some_and(|root| names(&root))
 }
 
+/// Text read from a file up to its first NUL, as GDAL reads it (a C string). A caller that hands
+/// [`wkt_proj`] or [`identify_epsg`] a definition read from a file (a `.prj`, a raster's or layer's
+/// stored WKT) cuts it with this first; a CRS's own stored WKT ([`SpatialRef::to_wkt`]) is not
+/// cut.
+#[doc(hidden)]
+pub fn until_nul(text: &str) -> &str {
+    wkt1::until_nul(text)
+}
+
 /// The PROJ string of a WKT definition as terrio reads it: its PROJ4 extension, else its WKT 1
 /// or WKT 2 conversion. `None` for a WKT terrio reads otherwise (through wbprojection). The WKT
-/// is read whole, a NUL in a name included: it is a CRS's stored WKT (`to_wkt`), whose names (a
-/// PROJJSON's) may keep one (see `wkt1::until_nul`).
+/// is read whole, a NUL in a name included, as a CRS's stored WKT ([`SpatialRef::to_wkt`]) may
+/// keep one from a PROJJSON name. Text read from a file must be cut at its first NUL by the
+/// caller ([`until_nul`]), as GDAL reads it.
 #[doc(hidden)]
 pub fn wkt_proj(wkt: &str) -> Option<String> {
     if let Some(p) = proj4_extension(wkt) {
@@ -1295,7 +1305,8 @@ pub fn compound_code(horizontal: u32, vertical: u32, name: Option<&str>) -> Opti
 /// base datum is preferred over its later realizations (NAD83 over NAD83(HARN) and NAD83(2011))
 /// unless the WKT names one, then the lowest code.
 ///
-/// The WKT is read whole, a NUL in a name included, as [`wkt_proj`] reads it.
+/// The WKT is read whole, a NUL in a name included, as [`wkt_proj`] reads it: text read from a
+/// file must be cut at its first NUL by the caller ([`until_nul`]).
 #[doc(hidden)]
 pub fn identify_epsg(wkt: &str) -> Option<u32> {
     if let Some(code) = declared_epsg(wkt) {

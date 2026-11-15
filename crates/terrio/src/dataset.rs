@@ -1636,7 +1636,8 @@ pub(crate) fn fix_layer(mut layer: Layer, path: &str, driver: VectorDriver) -> L
     // HEC-RAS layers keep the stored projection text without an EPSG code: the engine never
     // asserts one, and the CRS of a hydraulic model is not re-identified.
     if driver != VectorDriver::HECRAS
-        && let Some(wkt) = layer.crs_wkt().map(str::to_string)
+        // The file's text, which ends at its first NUL as GDAL reads it.
+        && let Some(wkt) = layer.crs_wkt().map(|w| terrio_crs::until_nul(w).to_string())
         && registry.as_deref() != Some(wkt.as_str())
         && let Some(code) = crate::crs::identify_epsg(&wkt)
     {
