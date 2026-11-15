@@ -1760,6 +1760,22 @@ the target's datum (and without the shift in CRSs on the source's datum and in o
 target's ellipsoid), within 1 mm (`cargo test -p terrio-crs --test wkt2_bound`;
 regenerate with `scripts/gen_wkt2_bound.py`, pyproj 3.8.0).
 
+CRSs in grads, and prime meridians, place points where PROJ 9.8.1 does, both ways, within 1 mm and
+1e-9 of a degree or grad: in WKT 1, NTF (Paris) (EPSG:4807) and its sixteen projected CRSs
+(EPSG:27561-27594) as GDAL and ESRI write them, with their codes and without; geographic CRSs in
+grads written by hand, with Paris, Ferro, Lisbon and Copenhagen meridians in grads, in degrees and
+in sexagesimal degrees; ATF (Paris) (EPSG:27500); and Krovak East North (EPSG:5514) with its angles
+in grads; in WKT 2, PROJ's WKT of EPSG:4807, 27572 and 27500, and geographic, geodetic, projected
+and geocentric CRSs with prime meridians in their own unit, in their CRS's or base CRS's
+(`ANGLEUNIT`, `UNIT` in grads, radians and gons) and in none; Paris near 2.33722917 in both; 116
+WKTs (89 WKT 1, 27 WKT 2). EPSG:4807 and PROJ strings with `+pm=` within and just beyond 1e-10
+radians of Paris and Greenwich, on both sides, and near Copenhagen transform with PROJ's prime
+meridian, within 1e-12 degrees, and Paris is written as PROJ writes it in PROJ strings, WKT 1,
+PROJJSON and GeoKeys. ESRI's WKT 1 of EPSG:4901 and 27500 is identified as its code and placed where
+PROJ places the code. A WKT 2 prime meridian unit without its size is refused, as in PROJ
+(`cargo test -p terrio-crs --test grads_and_prime_meridians`; regenerate with
+`scripts/gen_grads_and_prime_meridians.py`, pyproj 3.8.0).
+
 PROJ-string parameter values are refused where PROJ 9.8.1 refuses them: each method with each
 common parameter unreadable (`abc`) or in radians (`0.5r`), scale factors PROJ may refuse, and
 `+to_meter`, `+units`, `+vto_meter`, `+towgs84`, `+pm` and rotated-pole cases, 3,350 unique strings

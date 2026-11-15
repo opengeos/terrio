@@ -21,6 +21,7 @@
 //! in degrees. This puts back what PROJ writes: `+datum=` for the three datums it names, prime
 //! meridians by name, its order of the parameters, and its ending.
 
+use crate::math::PRIME_MERIDIANS;
 use crate::{SpatialRef, def, epsg};
 
 /// The PROJ string of a CRS, or `None` when it has none.
@@ -237,24 +238,6 @@ fn named_datum(wkt_name: &str) -> Option<&'static str> {
         _ => None,
     }
 }
-
-/// PROJ's prime meridians (`proj_list_prime_meridians`), by longitude in degrees, which it writes
-/// by name.
-const PRIME_MERIDIANS: [(&str, f64); 13] = [
-    ("lisbon", -(9.0 + 7.0 / 60.0 + 54.862 / 3600.0)),
-    ("paris", 2.0 + 20.0 / 60.0 + 14.025 / 3600.0),
-    ("bogota", -(74.0 + 4.0 / 60.0 + 51.3 / 3600.0)),
-    ("madrid", -(3.0 + 41.0 / 60.0 + 16.58 / 3600.0)),
-    ("rome", 12.0 + 27.0 / 60.0 + 8.4 / 3600.0),
-    ("bern", 7.0 + 26.0 / 60.0 + 22.5 / 3600.0),
-    ("jakarta", 106.0 + 48.0 / 60.0 + 27.79 / 3600.0),
-    ("ferro", -(17.0 + 40.0 / 60.0)),
-    ("brussels", 4.0 + 22.0 / 60.0 + 4.71 / 3600.0),
-    ("stockholm", 18.0 + 3.0 / 60.0 + 29.8 / 3600.0),
-    ("athens", 23.0 + 42.0 / 60.0 + 58.815 / 3600.0),
-    ("oslo", 10.0 + 43.0 / 60.0 + 22.5 / 3600.0),
-    ("copenhagen", 12.0 + 34.0 / 60.0 + 40.35 / 3600.0),
-];
 
 /// PROJ's linear units (`proj_list_units`): name and metres.
 const UNITS: [(&str, f64); 21] = [
@@ -822,7 +805,7 @@ fn quoted(token: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::math::{Ell, prime_meridian, unit_to_meter};
+    use crate::math::{Ell, unit_to_meter};
 
     #[test]
     fn writer_tables_agree_with_the_readers() {
@@ -835,10 +818,6 @@ mod tests {
         for (name, to_meter) in UNITS {
             let read = unit_to_meter(name).unwrap_or_else(|| panic!("+units={name} is not read"));
             assert!((read - to_meter).abs() <= 1e-12 * to_meter, "{name}: {read} {to_meter}");
-        }
-        for (name, longitude) in PRIME_MERIDIANS {
-            let read = prime_meridian(name).unwrap_or_else(|| panic!("+pm={name} is not read"));
-            assert!((read - longitude).abs() < 5e-8, "{name}: {read} {longitude}");
         }
     }
 }

@@ -725,13 +725,28 @@ impl Geodetic {
             .or_else(|| if root { n.children("AXIS").find_map(|a| a.child("ANGLEUNIT").or_else(|| a.child("UNIT"))) } else { None })
             .or_else(|| n.child("PRIMEM").and_then(|p| p.child("ANGLEUNIT").or_else(|| p.child("UNIT"))));
         let ang = unit.and_then(|u| u.num(1)).map(degrees).unwrap_or(1.0);
+        // The prime meridian in its own unit, else the CRS's, else degrees, and with PROJ 9.8.1's
+        // corrections (Paris in degrees in grads, meridians it knows by name in degrees or EPSG's
+        // sexagesimal degrees), as it reads WKT 2 too (`buildPrimeMeridian`). The CRS's unit is
+        // its `ANGLEUNIT`, or a `UNIT` named `degree` or `grad`, which PROJ takes for angular,
+        // and none beside a `LENGTHUNIT`; never its axes'.
         let pm = match n.child("PRIMEM") {
             Some(p) => {
-                let v = p.num(1).unwrap_or(0.0);
-                match p.child("ANGLEUNIT").or_else(|| p.child("UNIT")).and_then(|u| u.num(1)) {
-                    Some(r) => v * degrees(r),
-                    None => v * ang,
-                }
+                let crs_unit = if n.child("LENGTHUNIT").is_some() {
+                    None
+                } else {
+                    n.child("ANGLEUNIT").or_else(|| {
+                        n.child("UNIT")
+                            .filter(|u| u.name().is_some_and(|s| s.eq_ignore_ascii_case("degree") || s.eq_ignore_ascii_case("grad")))
+                    })
+                };
+                // PROJ refuses a unit without its size ("not enough children").
+                let unit = match p.child("ANGLEUNIT").or_else(|| p.child("UNIT")) {
+                    Some(u) => Some(u.num(1).ok_or_else(|| bad("a prime meridian's unit without its size"))?),
+                    None => crs_unit.and_then(|u| u.num(1)),
+                };
+                let unit = unit.map_or(1.0, degrees);
+                super::wkt1::prime_meridian_degrees(p.name().unwrap_or(""), p.num(1).unwrap_or(0.0), unit)
             }
             None => 0.0,
         };
