@@ -478,11 +478,13 @@ impl Def {
                 d.bound = bound.bound;
             }
             // Not the registry's own WKT, nor one with the CRS's ID, which PROJ resolves: checked
-            // without parsing first, as `Def::new` runs often.
+            // without parsing first, as `Def::new` runs often. Nor one with a PROJ4 extension,
+            // which GDAL hands PROJ as its PROJ string, so that no name is resolved.
             if s.proj4.is_none()
                 && s.epsg.is_some()
                 && d.geog.is_some()
-                && let Some(w) = s.wkt.as_deref().filter(|w| *w != e.wkt && super::declared_epsg(w).is_none())
+                && let Some(w) =
+                    s.wkt.as_deref().filter(|w| *w != e.wkt && super::declared_epsg(w).is_none() && super::proj4_extension(w).is_none())
             {
                 d.record_proj_resolution(w, s.epsg);
             }

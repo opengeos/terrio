@@ -1349,9 +1349,9 @@ fn same_figure_as_step(c: &wbp::Crs, p: &str) -> Result<()> {
     Ok(())
 }
 
-/// The CRS's PROJ string, or else its WKT 1's `EXTENSION["PROJ4", ...]` as terrio reads it (one it
-/// refuses, such as `+rf=0`, is none): the string a CRS from such a WKT computes on.
 impl SpatialRef {
+    /// The CRS's PROJ string, or else its WKT 1's `EXTENSION["PROJ4", ...]` as terrio reads it (one
+    /// it refuses, such as `+rf=0`, is none): the string a CRS from such a WKT computes on.
     #[doc(hidden)]
     pub fn proj4_or_extension(&self) -> Option<String> {
         self.proj4.clone().or_else(|| self.wkt.as_deref().and_then(proj4_extension).filter(|p| Def::from_proj_extension(p).is_ok()))
