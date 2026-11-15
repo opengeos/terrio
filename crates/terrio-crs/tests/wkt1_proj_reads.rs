@@ -188,13 +188,16 @@ fn a_nul_in_a_projjson_name_is_read_as_in_proj() {
     }
     let trailing = format!("{text}\0garbage");
     assert_eq!(SpatialRef::from_projjson(&trailing).unwrap().epsg, SpatialRef::from_projjson(text).unwrap().epsg);
-    let inside = format!("{}\0{}", &text[..50], &text[50..]);
+    // A NUL after the 50th character, at a character boundary.
+    let at = text.char_indices().nth(50).map_or(text.len(), |(i, _)| i);
+    let inside = format!("{}\0{}", &text[..at], &text[at..]);
     assert!(SpatialRef::from_projjson(&inside).is_err());
 }
 
 /// GeoAsciiParamsTag ends at its first NUL, as GDAL 3.12.1 reads it (rasterio 1.5.0 on GeoTIFFs
 /// tifffile wrote with these keys): an ESRI PE citation with a NUL in it, or after a citation
-/// with a NUL, is lost and the CRS refused; a NUL after the citation leaves it whole.
+/// with a NUL, is lost and the CRS refused; a NUL after the citation leaves it whole. A key that
+/// starts at or after the NUL leaves the GeoKeys without a CRS; one that spans it is cut there.
 #[test]
 fn geoascii_params_end_at_their_first_nul() {
     offline();
@@ -221,6 +224,22 @@ fn geoascii_params_end_at_their_first_nul() {
     assert!(!read(&[name("NAD27"), citation(&pe.replace(",PRIMEM", ",a\0b[\"x\"],PRIMEM"))]));
     assert!(!read(&[name("NA\0D27"), citation(pe)]));
     assert!(read(&[citation(pe), name("NA\0D27")]));
+    // A key that starts at or after the NUL leaves no CRS, where one that spans the NUL is cut
+    // there: GDAL 3.12.1 on a UTM zone 13N ProjectionGeoKey (16013) with these citations.
+    let utm = |ascii: &[u8], citations: &[[u16; 4]]| {
+        let mut keys = vec![[1024u16, 0, 1, 1], [3072, 0, 1, 32767], [3074, 0, 1, 16013]];
+        keys.extend_from_slice(citations);
+        keys.sort();
+        let mut directory = vec![1u16, 1, 0, keys.len() as u16];
+        directory.extend(keys.iter().flatten());
+        terrio_crs::geokeys::read(&directory, &[], ascii).crs
+    };
+    let twice = b"NAD27 / UTM zone 13N|\0NAD27 / UTM zone 13N|";
+    assert_eq!(utm(twice, &[[3073, 34737, 21, 0], [1026, 34737, 21, 22]]), None);
+    assert_eq!(utm(twice, &[[1026, 34737, 21, 22]]), None);
+    let short = b"NAD27 / UTM zone 13N|\0abc|";
+    assert_eq!(utm(short, &[[3073, 34737, 21, 0], [1026, 34737, 4, 21]]), None);
+    assert!(utm(short, &[[3073, 34737, 26, 0]]).is_some_and(|c| c.name().as_deref() == Some("NAD27 / UTM zone 13N")));
 }
 
 /// A citation's name ends at its first NUL too: ESRI:102003's GeoKeys with text after a NUL in

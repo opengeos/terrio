@@ -164,7 +164,7 @@ impl CrsSummary {
     /// The CRS on one line of the text report. A NUL in its name (from a PROJJSON name) is
     /// written `\u0000`, as the JSON report escapes it, rather than sent to the terminal.
     pub(crate) fn line(&self) -> String {
-        let name = self.name.as_deref().map(|n| n.replace('\0', "\\u0000"));
+        let name = self.name.as_deref().map(|n| crate::crs::escape_nul(n).into_owned());
         match (self.code(), name) {
             (Some(code), Some(name)) => format!("{code} ({name})"),
             (Some(code), None) => code,

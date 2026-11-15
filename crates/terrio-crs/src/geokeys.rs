@@ -147,9 +147,18 @@ pub struct GeoKeysCrs {
 /// assert_eq!(read.unsupported_method, None);
 /// ```
 pub fn read(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> GeoKeysCrs {
-    // GeoAsciiParamsTag ends at its first NUL, as GDAL 3.12.1 reads it (a C string): a key after
-    // a NUL in an earlier one reads as none, and one with a NUL in it is cut there.
+    // GeoAsciiParamsTag ends at its first NUL, as GDAL 3.12.1 (libgeotiff) reads it, a C string:
+    // a key that spans the NUL is cut there, and one that starts at or after it leaves the GeoKeys
+    // without a CRS, as GDAL reads them (a key at offset 22 of `"NAD27 / UTM zone 13N|\0..."`).
     let ascii = &ascii[..ascii.iter().position(|b| *b == 0).unwrap_or(ascii.len())];
+    let past_the_text = directory
+        .get(4..)
+        .unwrap_or_default()
+        .chunks(4)
+        .any(|k| k.len() == 4 && k[1] == GEO_ASCII_PARAMS && k[2] > 0 && usize::from(k[3]) >= ascii.len());
+    if past_the_text {
+        return GeoKeysCrs::default();
+    }
     let k = GeoKeys { keys: directory, doubles, ascii };
     let mut epsg = match (k.short(1024), k.short(3072), k.short(2048)) {
         (_, Some(code), _) if code != 0 && code != USER_DEFINED => Some(code as u32),

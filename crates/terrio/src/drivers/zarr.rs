@@ -1709,7 +1709,9 @@ fn proj_crs<const ENGINE: bool>(a: &Value) -> Option<CrsInfo> {
         let v = &a["proj:projjson"];
         match crate::drivers::vector::projjson::epsg(v) {
             Some(code) => SpatialRef::from_epsg(code).ok()?,
-            None => SpatialRef::from_wkt(&crate::drivers::vector::projjson::to_wkt1(v)?),
+            // WKT built from PROJJSON, whose names keep a NUL JSON gives (`\u0000`): its names
+            // cut there (`wkt_for_files`), so the WKT reads whole.
+            None => SpatialRef::from_wkt(&terrio_crs::wkt_for_files(&crate::drivers::vector::projjson::to_wkt1(v)?)),
         }
     } else {
         return None;
@@ -3089,6 +3091,26 @@ pub(crate) fn write_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `proj:projjson` with a NUL (`\u0000`) in its name (EPSG:32631's PROJ 9.8.1 PROJJSON without its code) is
+    /// read as without it: the WKT built from it has the name cut at the NUL.
+    #[test]
+    fn a_projjson_with_a_nul_in_its_name_is_read() {
+        // EPSG:32631's PROJ 9.8.1 PROJJSON without its code, so that it is read through WKT.
+        let data: serde_json::Value = serde_json::from_str(include_str!("../../../terrio-crs/tests/data/wkt1_proj_reads.json")).unwrap();
+        let mut v: serde_json::Value = serde_json::from_str(data["projjson"]["projjson"].as_str().unwrap()).unwrap();
+        v.as_object_mut().unwrap().remove("id");
+        let plain = v.to_string();
+        v["name"] = "WGS\0 84 / UTM zone 31N".into();
+        let text = v.to_string();
+        assert!(text.contains(r"WGS\u0000 84"), "{text}");
+        let crs = |t: &str| {
+            let a = serde_json::json!({ "proj:projjson": serde_json::from_str::<serde_json::Value>(t).unwrap() });
+            proj_crs::<true>(&a).map(|c| crate::crs::SpatialRef::from_raster_crs(&c).to_proj4())
+        };
+        assert!(crs(&plain).flatten().is_some());
+        assert_eq!(crs(&text), crs(&plain));
+    }
 
     /// Authority codes name their EPSG code in either form; other authorities name none.
     #[test]

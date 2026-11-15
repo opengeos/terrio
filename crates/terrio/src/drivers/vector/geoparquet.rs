@@ -541,8 +541,10 @@ pub(crate) fn apply_crs(layer: &mut Layer, crs: &Value) {
             },
             // A CRS without an EPSG code: through WKT.
             None => {
+                // WKT built from PROJJSON, whose names keep a NUL JSON gives (`\u0000`): its
+                // names cut there (`wkt_for_files`), so the WKT reads whole.
                 if let Some(wkt) = super::projjson::to_wkt1(crs) {
-                    SpatialRef::from_wkt(&wkt).apply_to_layer(layer);
+                    SpatialRef::from_wkt(&terrio_crs::wkt_for_files(&wkt)).apply_to_layer(layer);
                 }
             }
         },
@@ -1313,6 +1315,27 @@ impl Kind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A GeoParquet `crs` given as PROJJSON with a NUL (`\u0000`) in its name (EPSG:32631's PROJ
+    /// 9.8.1 PROJJSON without its code) is read as without it: the WKT built from it has the name cut at the NUL.
+    #[test]
+    fn a_projjson_crs_with_a_nul_in_its_name_is_read() {
+        // EPSG:32631's PROJ 9.8.1 PROJJSON without its code, so that it is read through WKT.
+        let data: serde_json::Value = serde_json::from_str(include_str!("../../../../terrio-crs/tests/data/wkt1_proj_reads.json")).unwrap();
+        let mut v: serde_json::Value = serde_json::from_str(data["projjson"]["projjson"].as_str().unwrap()).unwrap();
+        v.as_object_mut().unwrap().remove("id");
+        let plain = v.to_string();
+        v["name"] = "WGS\0 84 / UTM zone 31N".into();
+        let text = v.to_string();
+        assert!(text.contains(r"WGS\u0000 84"), "{text}");
+        let proj4 = |t: &str| {
+            let mut layer = Layer::new("p");
+            apply_crs(&mut layer, &serde_json::from_str::<serde_json::Value>(t).unwrap());
+            crate::crs::SpatialRef::from_layer(&layer).to_proj4()
+        };
+        assert!(proj4(&plain).is_some());
+        assert_eq!(proj4(&text), proj4(&plain));
+    }
 
     #[test]
     fn identifies_projjson() {

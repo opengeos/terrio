@@ -458,6 +458,13 @@ impl SpatialRef {
     }
 }
 
+/// Text for a terminal or a text report: a NUL (in a name a PROJJSON gives) written `\u0000`, as
+/// JSON escapes it, rather than sent as it is.
+#[doc(hidden)]
+pub fn escape_nul(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.contains('\0') { text.replace('\0', "\\u0000").into() } else { text.into() }
+}
+
 /// A raster CRS known only by its EPSG code, as the raster model stores it: the code and the WKT
 /// of terrio's EPSG registry, which GDAL 3.13 writes for the code. Drivers use it in place of
 /// `wbraster::CrsInfo::from_epsg`, whose generated WKT describes some codes otherwise (MGA zones

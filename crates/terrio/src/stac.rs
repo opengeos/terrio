@@ -1568,7 +1568,9 @@ fn crs_of(s: &str) -> SpatialRef {
             return r;
         }
         if let Some(w) = crate::drivers::vector::projjson::to_wkt1(&v) {
-            return SpatialRef::from_wkt(&w);
+            // WKT built from PROJJSON, whose names keep a NUL JSON gives (`\u0000`): its names
+            // cut there (`wkt_for_files`), so the WKT reads whole.
+            return SpatialRef::from_wkt(&terrio_crs::wkt_for_files(&w));
         }
     }
     SpatialRef::parse_literal(s).unwrap_or_default()
@@ -3663,5 +3665,24 @@ mod tests {
     fn sanitizes_crs_like_gdal() {
         assert_eq!(sanitize_crs("EPSG:32613"), "EPSG_32613");
         assert_eq!(sanitize_crs("{\"a\": 1}"), "_a_1");
+    }
+
+    /// A STAC CRS given as PROJJSON with a NUL (`\u0000`) in its name (EPSG:32631's PROJ 9.8.1
+    /// PROJJSON without its code) is read as without it: the WKT built from it has the name cut at the NUL.
+    #[test]
+    fn a_projjson_crs_with_a_nul_in_its_name_is_read() {
+        // EPSG:32631's PROJ 9.8.1 PROJJSON without its code, so that it is read through WKT.
+        let data: serde_json::Value = serde_json::from_str(include_str!("../../terrio-crs/tests/data/wkt1_proj_reads.json")).unwrap();
+        let mut v: serde_json::Value = serde_json::from_str(data["projjson"]["projjson"].as_str().unwrap()).unwrap();
+        v.as_object_mut().unwrap().remove("id");
+        let plain = v.to_string();
+        v["name"] = "WGS\0 84 / UTM zone 31N".into();
+        let text = v.to_string();
+        assert!(text.contains(r"WGS\u0000 84"), "{text}");
+        let (nul, plain) = (super::crs_of(&text), super::crs_of(&plain));
+        assert!(plain.to_proj4().is_some());
+        assert_eq!(nul.to_proj4(), plain.to_proj4());
+        // Read through the WKT 1 built from it, not as PROJJSON text.
+        assert!(nul.wkt.as_deref().is_some_and(|w| w.starts_with("PROJCS[\"WGS\",")), "{:?}", nul.wkt);
     }
 }
