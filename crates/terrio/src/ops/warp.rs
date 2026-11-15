@@ -5570,14 +5570,37 @@ impl<'a, T: crate::pixel::Pixel> Kernel<'a, T> {
             let wy = wfn(j as f64 - dy, self.yscale);
             let line = self.index(0, (iy + j) as usize);
             let (mut la, mut lw) = (0.0, 0.0);
-            for (n, i) in (i0..=i1).enumerate() {
-                let at = line + self.column(ix + i) as usize;
-                if valid.is_some_and(|m| !m[at]) {
-                    continue;
+            if hoisted && !self.periodic_x && nx > 0 {
+                // Columns that do not wrap are contiguous: the row's taps as one slice, without a
+                // bounds check or a wrap per tap (the same taps, summed in the same order).
+                let start = line + (ix + i0) as usize;
+                let (taps, ws) = (&data[start..start + nx], &wxs[..nx]);
+                match valid {
+                    None => {
+                        for (v, wx) in taps.iter().zip(ws) {
+                            la += crate::pixel::Pixel::to_f64(*v) * wx;
+                            lw += wx;
+                        }
+                    }
+                    Some(m) => {
+                        for ((v, wx), ok) in taps.iter().zip(ws).zip(&m[start..start + nx]) {
+                            if *ok {
+                                la += crate::pixel::Pixel::to_f64(*v) * wx;
+                                lw += wx;
+                            }
+                        }
+                    }
                 }
-                let wx = if hoisted { wxs[n] } else { wfn(i as f64 - dx, self.xscale) };
-                la += crate::pixel::Pixel::to_f64(data[at]) * wx;
-                lw += wx;
+            } else {
+                for (n, i) in (i0..=i1).enumerate() {
+                    let at = line + self.column(ix + i) as usize;
+                    if valid.is_some_and(|m| !m[at]) {
+                        continue;
+                    }
+                    let wx = if hoisted { wxs[n] } else { wfn(i as f64 - dx, self.xscale) };
+                    la += crate::pixel::Pixel::to_f64(data[at]) * wx;
+                    lw += wx;
+                }
             }
             acc += la * wy;
             wsum += lw * wy;
