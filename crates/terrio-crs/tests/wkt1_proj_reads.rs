@@ -271,6 +271,51 @@ fn geoascii_params_end_at_their_first_nul() {
     }
 }
 
+/// GeoAsciiParamsTag's keys are read at their byte offsets, each decoded on its own, a byte that
+/// isn't UTF-8 (Windows-1252) becoming U+FFFD in it: GDAL 3.12.1 reads such an ESRI PE citation
+/// and such a GeogCitationGeoKey of WGS 84 in grads (rasterio 1.5.0 opens both, with the raw byte
+/// in the WKT; GDAL 3.10.3's `gdalsrsinfo` shows the PE string's Bogota and the citation's
+/// grads). A missing tag
+/// fails every ASCII key, as GDAL 3.12.1 gives no CRS then.
+#[test]
+fn geoascii_params_are_read_per_key_and_need_the_tag() {
+    offline();
+    let directory = |keys: &[[u16; 4]]| {
+        let mut keys = keys.to_vec();
+        keys.sort();
+        let mut d = vec![1u16, 1, 0, keys.len() as u16];
+        d.extend(keys.iter().flatten());
+        d
+    };
+    let pe = b"ESRI PE String = PROJCS[\"Bogot\xe1 / x\",GEOGCS[\"GCS_Bogota\",DATUM[\"D_Bogota\",SPHEROID[\"International_1924\",6378388.0,297.0]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",1000000.0],PARAMETER[\"False_Northing\",1000000.0],PARAMETER[\"Central_Meridian\",-74.08091666666667],PARAMETER[\"Scale_Factor\",1.0],PARAMETER[\"Latitude_Of_Origin\",4.599047222222222],UNIT[\"Meter\",1.0]]|";
+    let crs = terrio_crs::geokeys::read(&directory(&[[1024, 0, 1, 32767], [3073, 34737, pe.len() as u16, 0]]), &[], pe).crs.unwrap();
+    // The PE string is the CRS (terrio names it by the code it identifies, EPSG's Bogota zone).
+    assert!(crs.wkt.as_deref().is_some_and(|w| w.starts_with("PROJCS[\"Bogot\u{fffd} / x\"")), "{:?}", crs.wkt);
+    assert!(crs.to_proj4().is_some_and(|p| p.contains("+lon_0=-74.0809166666667") && p.contains("+x_0=1000000")), "{:?}", crs.to_proj4());
+    // WGS 84 in grads, as GDAL writes it, its citation's GCS name in Windows-1252.
+    let citation = b"GCS Name = R\xe9seau|Ellipsoid = WGS 84|Primem = Greenwich|AUnits = grad||";
+    let keys = [
+        [1024, 0, 1, 2],
+        [2048, 0, 1, 32767],
+        [2049, 34737, citation.len() as u16, 0],
+        [2050, 0, 1, 6326],
+        [2054, 0, 1, 9105],
+        [2057, 34736, 1, 0],
+        [2059, 34736, 1, 1],
+    ];
+    let crs = terrio_crs::geokeys::read(&directory(&keys), &[6378137.0, 298.257223563], citation).crs.unwrap();
+    let wkt = crs.to_wkt().unwrap();
+    assert!(wkt.contains("UNIT[\"grad\"") && wkt.starts_with("GEOGCS[\"R\u{fffd}seau\""), "{wkt}");
+    // No GeoAsciiParamsTag, with EPSG:32613 in ProjectedCSTypeGeoKey: a key of one byte or of
+    // none in it leaves no CRS; without it, the code.
+    let utm = [[1024u16, 0, 1, 1], [3072, 0, 1, 32613]];
+    assert_eq!(terrio_crs::geokeys::read(&directory(&utm), &[], b"").crs.and_then(|c| c.epsg), Some(32613));
+    for count in [1, 0] {
+        let keys = [utm[0], utm[1], [1026, 34737, count, 0]];
+        assert_eq!(terrio_crs::geokeys::read(&directory(&keys), &[], b"").crs, None, "{count}");
+    }
+}
+
 /// A citation's name ends at its first NUL too: ESRI:102003's GeoKeys with text after a NUL in
 /// its citation read as without it.
 #[test]
