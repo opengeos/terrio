@@ -168,6 +168,28 @@ pub(crate) fn prime_meridian(name: &str) -> Option<f64> {
     })
 }
 
+/// A prime meridian in degrees as PROJ 9.8.1 transforms with it between CRSs: one of its named
+/// meridians when within 1e-10 radians of it (`PrimeMeridian::getPROJStringWellKnownName`), so
+/// Paris's 2.33722917° (2.5969213 grads) is `+pm=paris`, 2.337229166667°.
+pub(crate) fn proj_prime_meridian(degrees: f64) -> f64 {
+    const NAMES: [&str; 13] = [
+        "lisbon",
+        "paris",
+        "bogota",
+        "madrid",
+        "rome",
+        "bern",
+        "jakarta",
+        "ferro",
+        "brussels",
+        "stockholm",
+        "athens",
+        "oslo",
+        "copenhagen",
+    ];
+    NAMES.iter().filter_map(|n| prime_meridian(n)).find(|v| (v - degrees).to_radians().abs() < 1e-10).unwrap_or(degrees)
+}
+
 /// Wraps a longitude in radians into [-π, π].
 pub(crate) fn adjlon(lon: f64) -> f64 {
     if lon.abs() <= PI + 1e-12 {

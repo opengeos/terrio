@@ -260,9 +260,16 @@ A datum terrio does not know by name and without `TOWGS84` (`Unknown based on Be
 ellipsoid`, as GDAL and PROJ write a PROJ string's `+ellps=bessel`) gets no EPSG code and no datum
 shift, as in GDAL: the CRS is used as it is.
 
-A WKT 1 in grads with a `PRIMEM["Paris",2.33722917]` (NTF (Paris) as GDAL and ESRI write it)
-has Paris's longitude in degrees, as PROJ reads it; another prime meridian is in the CRS's
-angular unit. ESRI's `Behrmann` projection is cylindrical equal area true at 30 degrees, or at
+A WKT 1's angles are in its geographic CRS's angular unit: NTF (Paris) (EPSG:4807) and its
+Lambert zones (EPSG:27572) have their parameters in grads, and coordinates in a geographic CRS in
+grads are in grads. Its prime meridian is in that unit too, but where PROJ 9.8.1 reads it in
+degrees: a `PRIMEM["Paris",2.33722917]` in grads (NTF (Paris) as GDAL and ESRI write it), and a
+meridian PROJ knows by name with its value in degrees or EPSG's sexagesimal degrees, whatever the
+unit (`PRIMEM["Paris RGS",2.33720833333333]` in ATF (Paris), in grads; `PRIMEM["Ferro",-17.4]`,
+17°40'W). ESRI's Krovak `XY_Plane_Rotation` is in that unit as well (100 grads for 90°, east-north).
+As PROJ does between CRSs, a prime meridian within 1e-10 radians of one of PROJ's named meridians
+is that meridian: Paris's 2.33722917° (2.5969213 grads) is `+pm=paris`, 2.337229166667°, 0.25 mm
+west. ESRI's `Behrmann` projection is cylindrical equal area true at 30 degrees, or at
 the `Standard_Parallel_1` it gives (EASE-Grid 2.0), PROJ's `+proj=cea +lat_ts=30`.
 
 A CRS of PROJ's ESRI authority is reported under it, as GDAL reports it: a GeoTIFF GDAL writes in
