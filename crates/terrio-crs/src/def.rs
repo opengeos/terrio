@@ -1146,7 +1146,7 @@ impl Def {
             .as_deref()
             .and_then(|b| b.target.as_ref())
             .filter(|(target, _)| {
-                target.datum.is_some() && target.same_datum(other) && other.bound.as_ref().is_none_or(|b| b.target.is_none())
+                target.datum.is_some() && target.datum == other.datum && other.bound.as_ref().is_none_or(|b| b.target.is_none())
             })
             .map(|(_, helmert)| helmert)
     }
