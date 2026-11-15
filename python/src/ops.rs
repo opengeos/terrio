@@ -1552,6 +1552,9 @@ fn warp(
             Some(Cutline::from_vector(&ds).py()?)
         }
     };
+    // Default options warn about an unknown TERRIO_WARP_GRID or TERRIO_GDAL_COMPAT. Drop warnings
+    // left by earlier calls, then issue those now: the `with_warnings` calls below would drop them.
+    let _ = terrio::warnings::take();
     let mut o = WarpOptions {
         src_srs: srs(s_srs)?,
         dst_srs: srs(t_srs)?,
@@ -1582,6 +1585,7 @@ fn warp(
         sum_scale: _sum_scale,
         ..Default::default()
     };
+    crate::issue_warnings(py, terrio::warnings::take())?;
     if let Some(value) = grid_invariant {
         o.grid_invariant = value;
     }
