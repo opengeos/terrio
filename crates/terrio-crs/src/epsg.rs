@@ -498,11 +498,10 @@ pub(crate) fn datums_named(name: &str) -> Vec<u32> {
 /// The EPSG CRS PROJ 9.8.1 finds by the name of a geographic 2D or projected CRS without ID, when
 /// it finds a single CRS (`createObjectsFromName`, among the names and aliases of its database's
 /// CRSs, whatever the case of their ASCII letters); first, for an ESRI WKT 1 (`esri`), the CRS the
-/// name is an ESRI alias of. `fallback` is the code terrio reads the CRS as, which a name absent
-/// from the table stands for when it is its official name and the CRS of the kind PROJ looks up.
-/// PROJ looks a geographic 3D CRS (`three_d`) up among those, which the table leaves out: by the
-/// official name of `fallback` alone.
-pub(crate) fn crs_named_as_proj(name: &str, projected: bool, three_d: bool, esri: bool, fallback: Option<u32>) -> Option<u32> {
+/// name is an ESRI alias of. A name absent from the table stands for the single EPSG CRS of that
+/// official name and kind, if any. PROJ looks a geographic 3D CRS (`three_d`) up among those,
+/// which the table leaves out: by official name alone.
+pub(crate) fn crs_named_as_proj(name: &str, projected: bool, three_d: bool, esri: bool) -> Option<u32> {
     static NAMES: OnceLock<HashMap<(u8, String), u32>> = OnceLock::new();
     let names = NAMES.get_or_init(|| {
         decompress(CRS_NAMES)
@@ -523,15 +522,43 @@ pub(crate) fn crs_named_as_proj(name: &str, projected: bool, three_d: bool, esri
     };
     match found {
         Some(&code) => (code != 0).then_some(code),
-        // Only a CRS of the kind PROJ looks up: geographic 2D or 3D, or projected.
-        None => fallback.filter(|c| {
-            get(*c).is_some_and(|e| {
-                let geographic = e.proj.starts_with("+proj=longlat");
-                let other = geographic || e.proj.starts_with("+proj=geocent");
-                e.name.eq_ignore_ascii_case(name) && if projected { !other } else { geographic && e.three_d == three_d }
-            })
-        }),
+        None => match officially_named().get(&(kind_of(projected, three_d), name.to_ascii_lowercase())).map(Vec::as_slice) {
+            Some(&[code]) => Some(code),
+            _ => None,
+        },
     }
+}
+
+/// The kind of CRS PROJ looks a name up among: `p` projected, `g` geographic 2D, `G` 3D.
+fn kind_of(projected: bool, three_d: bool) -> u8 {
+    match (projected, three_d) {
+        (true, _) => b'p',
+        (false, false) => b'g',
+        (false, true) => b'G',
+    }
+}
+
+/// The EPSG geographic and projected CRSs of the table by kind ([`kind_of`]) and official name,
+/// its ASCII letters in lowercase.
+fn officially_named() -> &'static HashMap<(u8, String), Vec<u32>> {
+    static INDEX: OnceLock<HashMap<(u8, String), Vec<u32>>> = OnceLock::new();
+    INDEX.get_or_init(|| {
+        let t = table();
+        let mut index = HashMap::<(u8, String), Vec<u32>>::new();
+        for (code, l) in &t.crs {
+            let f: Vec<&str> = t.text[l.line.0 as usize..l.line.1 as usize].splitn(9, '\t').collect();
+            let [name, _, _, _, _, flags, _, proj, ..] = f[..] else { continue };
+            let kind = if proj.starts_with("+proj=longlat") {
+                kind_of(false, flags.contains('3'))
+            } else if proj.starts_with("+proj=geocent") {
+                continue;
+            } else {
+                b'p'
+            };
+            index.entry((kind, name.to_ascii_lowercase())).or_default().push(*code);
+        }
+        index
+    })
 }
 
 /// The official name of an EPSG datum; of the WGS 84 and ETRS89 ensembles, without `ensemble`

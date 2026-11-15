@@ -441,14 +441,17 @@ name among its database's names and aliases (an ESRI `GCS_` name first stands fo
 ESRI alias of), and the WKT must match the CRS it finds, axis order included. So an ESRI WKT 1
 geographic CRS, which has no `AXIS` and is therefore longitude first, is never resolved. Neither is
 a renamed CRS, nor a projected CRS whose axis order differs (ESRI's Gauss-Krüger zones), together
-with its geographic CRS. The same holds for a WKT 2 `GEODCRS` with an ellipsoidal CS, which PROJ
-reads as a geographic CRS, and for the horizontal CRS of a compound CRS. PROJ takes such a CRS's
-area from the CRS it finds by name, even when the WKT does not match it, and it has none for a name
-it does not find. Because the direct lookup in its database finds nothing, PROJ also searches chains
-through an intermediate datum. It does so when the CRSs' own transformations cover at most half the
-CRSs' common area (with no area for the CRS, that is the other CRS's area), or go only through the
-WGS 84 ensemble, or are only time-dependent between static CRSs. It then sorts all of them together.
-ESRI's `GCS_Monte_Mario_Rome` (EPSG:4806) goes through Monte Mario, 72 m from EPSG:4806's own
+with its geographic CRS. A projected CRS that PROJ does not find by name, or finds but does not
+match (a custom conversion), is placed by its geographic CRS: one given as WKT 1 `GEOGCS` without
+`AXIS` (longitude first) is not resolved, one given as WKT 2 `BASEGEOGCRS` (latitude first) is, by
+its name. The same holds for a WKT 2 `GEODCRS` with an ellipsoidal CS, which PROJ reads as a
+geographic CRS, and for the horizontal CRS of a compound CRS. PROJ takes such a CRS's area from the
+CRS it finds by name, even when the WKT does not match it, and it has none for a name it does not
+find. Because the direct lookup in its database finds nothing, PROJ also searches chains through an
+intermediate datum. It does so when the CRSs' own transformations cover at most half the CRSs'
+common area (with no area for the CRS, that is the other CRS's area), or go only through the WGS 84
+ensemble, or are only time-dependent between static CRSs. It then sorts all of them together. ESRI's
+`GCS_Monte_Mario_Rome` (EPSG:4806) goes through Monte Mario, 72 m from EPSG:4806's own
 transformation, which covers only Sardinia. `Tokyo_1892` (EPSG:5132) goes through Tokyo, and a
 renamed DHDN goes through ETRS89. This works in both directions and to every CRS. The names PROJ
 finds come from `crates/terrio-crs/data/crs_names.tsv.zst` (`scripts/gen_crs_names.py`).

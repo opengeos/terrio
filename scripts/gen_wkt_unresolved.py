@@ -77,6 +77,12 @@ TARGET_VARIANTS = [
     "wkt2 ensemble id, renamed",
 ]
 PROJECTED = [3003, 31467, 3006, 2193, 27700, 2056, 5514, 32633]
+# Geographic CRSs a custom Transverse Mercator without code is put on, as WKT 1 (a `GEOGCS`
+# without `AXIS`, longitude first) and WKT 2 (a `BASEGEOGCRS` without `CS`, latitude first).
+CUSTOM_BASES = [4269, 4230, 4314, 4277, 4806]
+# A projected CRS PROJ finds by its name, with another false easting.
+CHANGED = 31467
+DEG = 'ANGLEUNIT["degree",0.0174532925199433]'
 # What terrio does not follow yet (see the module's doc comment).
 PENDING = {
     "4806 wkt2 datum id, renamed",
@@ -196,6 +202,50 @@ def aliased(c, code):
     return {f"wkt2 alias name, {how}": w2}
 
 
+def custom_tm(
+    base, lon0, wkt1, false_easting=500000, name="Custom TM", axes=None, scale=0.9996
+):
+    """A Transverse Mercator WKT on a geographic CRS's WKT, without code."""
+    if wkt1:
+        axes = axes or 'AXIS["Easting",EAST],AXIS["Northing",NORTH]'
+        return (
+            f'PROJCS["{name}",{base},PROJECTION["Transverse_Mercator"],'
+            f'PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",{lon0}],'
+            f'PARAMETER["scale_factor",{scale}],'
+            f'PARAMETER["false_easting",{false_easting}],PARAMETER["false_northing",0],'
+            f'UNIT["metre",1],{axes}]'
+        )
+    return (
+        f'PROJCRS["{name}",{base},CONVERSION["custom",METHOD["Transverse Mercator"],'
+        f'PARAMETER["Latitude of natural origin",0,{DEG}],'
+        f'PARAMETER["Longitude of natural origin",{lon0},{DEG}],'
+        f'PARAMETER["Scale factor at natural origin",{scale},SCALEUNIT["unity",1]],'
+        f'PARAMETER["False easting",{false_easting},LENGTHUNIT["metre",1]],'
+        'PARAMETER["False northing",0,LENGTHUNIT["metre",1]]],CS[Cartesian,2],'
+        'AXIS["(E)",east,ORDER[1],LENGTHUNIT["metre",1]],'
+        'AXIS["(N)",north,ORDER[2],LENGTHUNIT["metre",1]]]'
+    )
+
+
+def bases(code):
+    """A geographic CRS's WKT 1 ``GEOGCS`` without IDs or ``AXIS``, its WKT 2 ``BASEGEOGCRS``
+    without IDs or ``CS``, and its WKT 1 ``GEOGCS`` with IDs."""
+    c = CRS.from_epsg(code)
+    with_ids = c.to_wkt("WKT1_GDAL")
+    w1 = re.sub(r',AXIS\["[^"]*",[A-Z]+\]', "", strip_ids(with_ids))
+    w2 = strip_ids(
+        re.sub(
+            r",USAGE\[SCOPE\[[^\]]*\],AREA\[[^\]]*\],BBOX\[[^\]]*\]\]",
+            "",
+            c.to_wkt("WKT2_2019"),
+        )
+    )
+    w2 = re.sub(
+        r",CS\[ellipsoidal,2\].*\]$", "]", w2.replace("GEOGCRS[", "BASEGEOGCRS[", 1)
+    )
+    return w1, w2, with_ids
+
+
 def centre(c):
     """The centre of a CRS's area of use, in WGS 84 longitude and latitude."""
     w, s, e, n = c.area_of_use.bounds
@@ -313,6 +363,43 @@ def main():
             add(f"{key} -> 4326", key, c, w, wgs84, point, False, True)
             add(f"{key} <- 4326", key, c, w, wgs84, lonlat, True, False)
             add(f"{key} -> 4258", key, c, w, CRS(4258), point, False, True)
+    # Custom projected CRSs without code: PROJ resolves a WKT 2 base by its name, not a WKT 1 one
+    # (longitude first).
+    for code in CUSTOM_BASES:
+        g = CRS.from_epsg(code)
+        lon, lat = centre(g)
+        w1, w2, with_ids = bases(code)
+        ref = CRS.from_wkt(custom_tm(with_ids, lon, True))
+        point = place(wgs84, ref, (lon, lat))
+        for kind, wkt in [
+            ("wkt1", custom_tm(w1, lon, True)),
+            ("wkt2", custom_tm(w2, lon, False)),
+        ]:
+            key = f"{code} custom tm, {kind} base without ids"
+            w = CRS.from_wkt(wkt)
+            wkts[key] = wkt
+            add(f"{key} -> 4326", key, ref, w, wgs84, point, False, True)
+            add(f"{key} <- 4326", key, ref, w, wgs84, (lon, lat), True, False)
+            add(f"{key} -> 4258", key, ref, w, CRS(4258), point, False, True)
+    # A projected CRS PROJ finds by its name, with another conversion: not resolved, but its
+    # geographic CRS is when given as WKT 2.
+    c = CRS.from_epsg(CHANGED)
+    lon, lat = centre(c)
+    w1, w2, with_ids = bases(c.geodetic_crs.to_epsg())
+    lon0 = 9
+    axes = 'AXIS["Northing",NORTH],AXIS["Easting",EAST]'
+    ref = CRS.from_wkt(custom_tm(with_ids, lon0, True, 3500001, c.name, axes, 1))
+    point = place(wgs84, ref, (lon, lat))
+    changed = [
+        ("wkt1", custom_tm(w1, lon0, True, 3500001, c.name, axes, 1)),
+        ("wkt2", custom_tm(w2, lon0, False, 3500001, c.name, scale=1)),
+    ]
+    for kind, wkt in changed:
+        key = f"{CHANGED} other false easting, {kind}"
+        w = CRS.from_wkt(wkt)
+        wkts[key] = wkt
+        add(f"{key} -> 4326", key, ref, w, wgs84, point, False, True)
+        add(f"{key} <- 4326", key, ref, w, wgs84, (lon, lat), True, False)
     assert {c["wkt"] for c in cases if c["pending"]} == PENDING
     OUT.write_text(
         json.dumps({"wkts": wkts, "cases": cases}, separators=(",", ":")) + "\n"
