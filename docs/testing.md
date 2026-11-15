@@ -1760,6 +1760,17 @@ the target's datum (and without the shift in CRSs on the source's datum and in o
 target's ellipsoid), within 1 mm (`cargo test -p terrio-crs --test wkt2_bound`;
 regenerate with `scripts/gen_wkt2_bound.py`, pyproj 3.8.0).
 
+WKTs whose geographic CRS has no EPSG code of its own, with the datum known by its ID alone (WKT 2
+`ID`, WKT 1 `AUTHORITY` on the `DATUM`, also under other CRS and datum names), by its name in a
+WKT 2 without IDs, or by ESRI's name (`D_Monte_Mario`, with and without the datum's or the CRS's
+code, and under another `GEOGCS` name), of 20 EPSG CRSs on OSGB36, Monte Mario, ED50, DHDN,
+Amersfoort, GGRS87, CH1903, Tokyo, NAD27, AGD66 and NZGD49, and the two WKTs of opengeos/terrio#1012,
+place a point in WGS 84 where PROJ 9.8.1 does, by the transformation it uses, within 1 mm (180
+cases). Five WKTs PROJ does not resolve to their code and places through other datums or CRSs (the
+ESRI WKT 1 of EPSG:4806, 5132 and 7373, and of EPSG:4314 and 31467 renamed) are pinned where their
+code places them (`cargo test -p terrio-crs --test wkt_datum_shift`; regenerate with
+`scripts/gen_wkt_datum_shift.py`, pyproj 3.8.0).
+
 PROJ-string parameter values are refused where PROJ 9.8.1 refuses them: each method with each
 common parameter unreadable (`abc`) or in radians (`0.5r`), scale factors PROJ may refuse, and
 `+to_meter`, `+units`, `+vto_meter`, `+towgs84`, `+pm` and rotated-pole cases, 3,350 unique strings

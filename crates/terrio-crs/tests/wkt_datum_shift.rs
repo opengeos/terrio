@@ -1,0 +1,86 @@
+//! A WKT whose geographic CRS has no EPSG code of its own gets the datum transformations of the
+//! EPSG datum it names, as PROJ 9.8.1 transforms it to WGS 84: a datum known by its ID alone
+//! (WKT 2 `DATUM[...,ID["EPSG",6277]]`, WKT 1 `AUTHORITY["EPSG","6277"]` on the `DATUM`), under
+//! another CRS and datum name too, by its name in a WKT 2 without IDs, or by ESRI's name
+//! (`D_Monte_Mario`, `D_OSGB_1936`), with or without the datum's or the CRS's code. The two cases
+//! of opengeos/terrio#1012 (EPSG:3003 as ESRI WKT 1, EPSG:4277 as WKT 2 without IDs) are among
+//! them.
+//!
+//! `data/wkt_datum_shift.json` (`scripts/gen_wkt_datum_shift.py`, pyproj 3.8.0, no grids,
+//! `PROJ_NETWORK=OFF`) holds each WKT, a point in it and PROJ's coordinates of the point in WGS 84
+//! by `Transformer.from_crs(CRS(wkt), "EPSG:4326", always_xy=True)`, the transformation PROJ used
+//! (`get_last_used_operation().description`), and where the CRS's EPSG code places the point.
+//! Tolerance: 1 mm.
+//!
+//! PROJ places a few WKTs otherwise than their EPSG code (`differences`), which terrio does not
+//! follow: it does not resolve their geographic CRS to the code (an ESRI WKT 1 has no `AXIS`, so
+//! longitude first, unlike the EPSG CRS; a renamed CRS), and then also searches transformations
+//! through other datums and other CRSs of the datum, and may pick one of those (Monte Mario (Rome)
+//! through Monte Mario, 72 m from EPSG:4806's own).
+
+use serde_json::Value;
+use terrio_crs::{SpatialRef, Transformer};
+
+fn offline() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+}
+
+/// Metres between two longitudes/latitudes, near enough at a millimetre.
+fn metres(a: (f64, f64), b: (f64, f64)) -> f64 {
+    ((a.0 - b.0) * b.1.to_radians().cos()).hypot(a.1 - b.1) * 111_195.0
+}
+
+fn data() -> Value {
+    serde_json::from_str(include_str!("data/wkt_datum_shift.json")).unwrap()
+}
+
+fn pair(v: &Value) -> (f64, f64) {
+    (v[0].as_f64().unwrap(), v[1].as_f64().unwrap())
+}
+
+/// Where terrio places a case's point in WGS 84, and the transformation it uses.
+fn place(case: &Value) -> ((f64, f64), String) {
+    let src = SpatialRef::from_wkt(case["wkt"].as_str().unwrap());
+    let t = Transformer::new(&src, &SpatialRef::from_epsg(4326).unwrap()).unwrap();
+    let (x, y) = pair(&case["point"]);
+    let (lon, lat) = t.transform(x, y).unwrap();
+    let operation = t.operation_at(x, y, 0.0).unwrap().map(|o| o.name).unwrap_or_default();
+    ((lon, lat), operation)
+}
+
+#[test]
+fn datums_known_by_id_or_esri_name_are_shifted_as_proj_does() {
+    offline();
+    let data = data();
+    let cases = data["cases"].as_array().unwrap();
+    assert_eq!(cases.len(), 180);
+    let mut bad = vec![];
+    for case in cases {
+        let (got, operation) = place(case);
+        let proj = pair(&case["proj"]);
+        let off = metres(got, proj);
+        // PROJ's name for the transformation holds terrio's (PROJ adds the conversions).
+        let named = !operation.is_empty() && case["operation"].as_str().unwrap().contains(&operation);
+        if off >= 1e-3 || !named {
+            bad.push(format!("{}: {got:?} by {operation:?}, PROJ {proj:?} by {}, {off:.3} m", case["name"], case["operation"]));
+        }
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
+/// The WKTs PROJ places otherwise than their EPSG code are placed by the code, as they are
+/// identified as.
+#[test]
+fn wkts_proj_does_not_resolve_are_placed_by_their_code() {
+    offline();
+    let data = data();
+    let differences = data["differences"].as_array().unwrap();
+    assert_eq!(differences.len(), 5);
+    for case in differences {
+        let (got, _) = place(case);
+        let (proj, by_code) = (pair(&case["proj"]), pair(&case["by_code"]));
+        assert!(metres(got, by_code) < 1e-3, "{}: {got:?}, by its code {by_code:?}", case["name"]);
+        assert!(metres(proj, by_code) > 0.1, "{}: PROJ {proj:?} now places it by its code", case["name"]);
+    }
+}

@@ -260,6 +260,16 @@ A datum terrio does not know by name and without `TOWGS84` (`Unknown based on Be
 ellipsoid`, as GDAL and PROJ write a PROJ string's `+ellps=bessel`) gets no EPSG code and no datum
 shift, as in GDAL: the CRS is used as it is.
 
+A WKT's datum known only by its EPSG ID (WKT 2 `DATUM[...,ID["EPSG",6277]]`, WKT 1
+`AUTHORITY["EPSG","6277"]` on the `DATUM`), whatever the datum's and the CRS's names, or by its
+name alone (`Ordnance Survey of Great Britain 1936`, ESRI's `D_OSGB_1936` and `D_Monte_Mario`), gets
+the datum transformations of that datum's EPSG geographic CRS, as PROJ transforms it. PROJ differs
+where it does not resolve the WKT's geographic CRS to an EPSG CRS (ESRI's WKT 1 has no `AXIS`, so
+longitude first, unlike the EPSG CRS; or the CRS has another name) and then finds a better
+transformation through another datum or another CRS of the datum: ESRI's `GCS_Monte_Mario_Rome`
+through Monte Mario (72 m from EPSG:4806's own), `Tokyo_1892` through Tokyo (390 m), and ONGD14
+by its geocentric transformation (1.2 m). terrio uses the EPSG CRS's transformations there.
+
 A WKT 1 in grads with a `PRIMEM["Paris",2.33722917]` (NTF (Paris) as GDAL and ESRI write it)
 has Paris's longitude in degrees, as PROJ reads it; another prime meridian is in the CRS's
 angular unit. ESRI's `Behrmann` projection is cylindrical equal area true at 30 degrees, or at
