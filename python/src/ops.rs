@@ -1600,12 +1600,10 @@ fn warp(
         }
         let initial = input_raster(py, init)?;
         let sources = input_rasters(py, src)?;
-        let out = py
-            .detach_result(|| {
-                let refs: Vec<&RasterDataset> = sources.iter().map(|(_, ds)| &**ds).collect();
-                terrio::ops::warp::warp_onto(&refs, &o, &initial.raster.data)
-            })
-            .py()?;
+        let out = crate::with_warnings(py, || {
+            let refs: Vec<&RasterDataset> = sources.iter().map(|(_, ds)| &**ds).collect();
+            terrio::ops::warp::warp_onto(&refs, &o, &initial.raster.data)
+        })?;
         return finish_raster(py, out, dst, format, compress, tile_size, bigtiff, creation_options);
     }
     enum Input {
