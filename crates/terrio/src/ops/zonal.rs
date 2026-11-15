@@ -62,7 +62,8 @@ pub enum Statistic {
     /// Each band's value at the medoid pixel: the valid pixel, valid in every selected band of its source,
     /// whose band vector is most central under the metric (smallest sum of distances to the other
     /// valid pixels of the zone; ties take the first in row-major order). Needs [`zonal_stats`],
-    /// and binary coverage. Holds every valid pixel of a zone until it is summarized.
+    /// and binary coverage. Holds every valid pixel of a zone until it is summarized. A zone with
+    /// more than 20,000 such pixels gets a null medoid, with a warning naming it.
     Medoid(MedoidMetric),
 }
 
@@ -667,7 +668,14 @@ pub fn zonal_stats_with(
             Vec::new()
         } else {
             let strip = strip_rows(raster, bands.len());
-            reduce::reduce_medoid(grids[grid].1.as_ref().expect("built above"), raster, &bands, strip, &fids, &medoid_metrics)?
+            let (medoids, skipped) =
+                reduce::reduce_medoid(grids[grid].1.as_ref().expect("built above"), raster, &bands, strip, &fids, &medoid_metrics)?;
+            if !skipped.is_empty()
+                && let Ok(mut w) = warnings.lock()
+            {
+                w.push(medoid_skipped_warning(&skipped));
+            }
+            medoids
         };
         if reduced_stats.is_empty() {
             // Only medoids: no per-band statistic reads the raster again.
@@ -795,6 +803,18 @@ pub fn zonal_stats_with(
         Ok(None) => Ok(()),
         Err(_) => Err(Error::InvalidArgument("zonal error lock poisoned".into())),
     }
+}
+
+/// The warning for zones whose medoid is null because they hold too many pixels to compare.
+fn medoid_skipped_warning(fids: &[u64]) -> String {
+    let shown: Vec<String> = fids.iter().take(10).map(u64::to_string).collect();
+    let more = if fids.len() > 10 { format!(" and {} more", fids.len() - 10) } else { String::new() };
+    format!(
+        "medoid statistics are null for {} zones with more than {} pixels valid in every band: features {}{more}",
+        fids.len(),
+        reduce::MEDOID_MAX_PIXELS,
+        shown.join(", ")
+    )
 }
 
 /// The columns of one band in `stats` order: medoid columns from `medoids` (`[metric][band]`

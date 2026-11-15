@@ -235,13 +235,16 @@ pub(super) fn reduce_source(
 }
 
 /// Most valid pixels a zone may hold for a medoid, which compares every pair of them (O(n²) time),
-/// holding n values per pixel until the zone is summarized.
-// ponytail: exact pairwise scan under a cap; raise the cap, or sample, when bigger zones matter.
-pub(super) const MEDOID_MAX_PIXELS: usize = 2_000;
+/// holding n values per pixel until the zone is summarized. A larger zone's medoid is null. At
+/// about 2.6 ns a Euclidean pair and 10 ns a spectral-angle pair (4 bands, measured), a zone at
+/// the cap (200 ha at 10 m) takes about 0.5 s and 2 s.
+// ponytail: exact pairwise scan under a cap; sample, or parallelize zones, when bigger zones matter.
+pub(super) const MEDOID_MAX_PIXELS: usize = 20_000;
 
 /// The medoid of each zone's pixels, valid in every one of `bands`, under each of `metrics`: the
-/// values `[metric][band][feature]` of each band at the medoid pixel, for the features of `fids`.
-/// Zones without one, and features without a zone, are null. Strips are read in turn, as in
+/// values `[metric][band][feature]` of each band at the medoid pixel, for the features of `fids`,
+/// and the feature IDs of zones over [`MEDOID_MAX_PIXELS`]. Zones without a medoid (none valid, or
+/// too many), and features without a zone, are null. Strips are read in turn, as in
 /// [`reduce_source`].
 pub(super) fn reduce_medoid(
     index: &ZoneIndex,
@@ -250,7 +253,7 @@ pub(super) fn reduce_medoid(
     strip_rows: usize,
     fids: &[u64],
     metrics: &[MedoidMetric],
-) -> Result<Vec<Vec<Vec<FieldValue>>>> {
+) -> Result<(Vec<Vec<Vec<FieldValue>>>, Vec<u64>)> {
     let n = bands.len();
     let zones = &index.zones;
     let read = WindowOptions { bands: bands.iter().map(|b| b.band).collect(), overview: None };
@@ -262,6 +265,8 @@ pub(super) fn reduce_medoid(
     // Each zone's valid pixels: n values per pixel, row-major. Released once the zone is summarized.
     let mut pixels: Vec<Vec<f64>> = vec![Vec::new(); zones.len()];
     let mut out = vec![vec![vec![FieldValue::Null; fids.len()]; n]; metrics.len()];
+    // Zones past the cap: their pixels are dropped, and their medoid stays null.
+    let mut too_big = vec![false; zones.len()];
     for window in strip_windows(index, strip_rows.max(1)) {
         let (r0, r1, c0) = (window.y, window.y + window.height, window.x);
         let strip = Strip::read(raster, window, &read)?;
@@ -278,13 +283,11 @@ pub(super) fn reduce_medoid(
                         let v = strip.value(b, at);
                         v.is_finite() && crate::histogram::is_valid(v, bands[b].nodata, strip.data_type)
                     };
-                    if (0..n).all(valid) {
+                    if !too_big[z] && (0..n).all(valid) {
                         pixels[z].extend((0..n).map(|b| strip.value(b, at)));
                         if pixels[z].len() / n > MEDOID_MAX_PIXELS {
-                            return Err(Error::InvalidArgument(format!(
-                                "zone {} has more than {MEDOID_MAX_PIXELS} pixels valid in every band, too many for a medoid statistic",
-                                fids[zones[z].feature]
-                            )));
+                            too_big[z] = true;
+                            pixels[z] = Vec::new();
                         }
                     }
                 }
@@ -301,7 +304,8 @@ pub(super) fn reduce_medoid(
     for z in std::mem::take(&mut open) {
         summarize_medoid(&zones[z], &mut pixels[z], n, metrics, &mut out);
     }
-    Ok(out)
+    let skipped = zones.iter().zip(&too_big).filter(|(_, big)| **big).map(|(zone, _)| fids[zone.feature]).collect();
+    Ok((out, skipped))
 }
 
 /// Writes the medoid of a zone's `pixels` (`n` values each) under each metric into `out`
@@ -1329,10 +1333,10 @@ mod tests {
         let mut raster = LazyRaster::from(ds);
         let index = build(&layer, &GridKey::of(&raster), false, false).unwrap();
         let plan_bands = || vec![BandSpec { band: 1, nodata: None }, BandSpec { band: 2, nodata: None }];
-        let whole = reduce_medoid(&index, &mut raster, &plan_bands(), rows, &fids, &metrics).unwrap();
+        let whole = reduce_medoid(&index, &mut raster, &plan_bands(), rows, &fids, &metrics).unwrap().0;
         assert!(whole.iter().flatten().flatten().any(|v| !v.is_null()));
         for strip in [1, 7, 64] {
-            assert_eq!(reduce_medoid(&index, &mut raster, &plan_bands(), strip, &fids, &metrics).unwrap(), whole, "strip {strip}");
+            assert_eq!(reduce_medoid(&index, &mut raster, &plan_bands(), strip, &fids, &metrics).unwrap().0, whole, "strip {strip}");
         }
     }
 }
