@@ -1787,7 +1787,9 @@ and together. A few strings cover spherical orthographic (`+f=0`), `mill`, `cea`
 its own `+a` or `+rf`, which PROJ drops. The test checks where PROJ places a point
 (`Transformer.from_crs("EPSG:4326", CRS(s + " +type=crs"), always_xy=True)`, or from a
 geographic CRS to EPSG:4326), within 1 mm. It also checks the axes of the ellipsoid the CRS
-reports, and that terrio refuses the 37 strings PROJ refuses
+reports, and that terrio refuses the 37 strings PROJ refuses. 15 WKT 1 CRSs with such a `PROJ4`
+extension are checked the same way (`Transformer.from_crs("EPSG:4326", CRS(wkt), always_xy=True)`;
+PROJ computes on the extension as a pipeline step, and refuses to transform 5 of them)
 (`cargo test -p terrio-crs --test proj_ellipsoid_shape`; regenerate with
 `scripts/gen_proj_ellipsoid_shape.py`, pyproj 3.8.0, no grids, `PROJ_NETWORK=OFF`).
 The PROJ strings of the EPSG and ESRI registries (as `to_proj4` writes them, 9,873 CRSs) keep the

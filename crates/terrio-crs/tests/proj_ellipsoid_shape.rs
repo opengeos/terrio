@@ -137,3 +137,36 @@ fn wkt_writes_the_crs_ellipsoid_under_a_spherification_flag() {
         assert!(wkt.contains(spheroid), "{s}: {wkt}");
     }
 }
+
+/// A WKT's `PROJ4` extension is computed on as PROJ 9.8.1 computes on it, as a pipeline step:
+/// `+ellps=WGS84 +f=0` (or an unreadable `+f`, read as 0) is a sphere, and `+ellps=clrk66
+/// +a=6400000` keeps Clarke 1866's eccentricity. Where the step refuses the ellipsoid (`+rf=abc`
+/// or `+rf=0`, `+es=1`, a shape without a size), PROJ creates the CRS but refuses the
+/// transformation, and terrio refuses it. `data/proj_ellipsoid_shape.json`'s `extensions`
+/// (`Transformer.from_crs("EPSG:4326", CRS(wkt), always_xy=True)`). Tolerance: 1 mm.
+#[test]
+fn a_wkt_proj4_extension_is_computed_on_as_a_pipeline_step() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let data: Value = serde_json::from_str(include_str!("data/proj_ellipsoid_shape.json")).unwrap();
+    let cases = data["extensions"].as_array().unwrap();
+    assert_eq!(cases.len(), 15);
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    let mut bad = vec![];
+    for case in cases {
+        let wkt = case["wkt"].as_str().unwrap();
+        let got = Transformer::new(&wgs84, &SpatialRef::from_wkt(wkt)).and_then(|t| t.transform(-80.0, 30.0));
+        match (case["proj"].as_array(), got) {
+            (None, Ok(got)) => bad.push(format!("{wkt}: PROJ refuses it, terrio {got:?}")),
+            (Some(proj), Ok(got)) => {
+                let off = (got.0 - proj[0].as_f64().unwrap()).hypot(got.1 - proj[1].as_f64().unwrap());
+                if off >= 1e-3 {
+                    bad.push(format!("{wkt}: PROJ {proj:?}, terrio {got:?}, {off:.3} m"));
+                }
+            }
+            (Some(proj), Err(e)) => bad.push(format!("{wkt}: PROJ {proj:?}, terrio refuses it: {e}")),
+            (None, Err(_)) => {}
+        }
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}

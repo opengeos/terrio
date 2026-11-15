@@ -436,6 +436,11 @@ A PROJ string's ellipsoid is read as PROJ 9.8.1 reads it with `+type=crs`:
   `+datum=WGS84` and `+datum=NAD83` there shift points from WGS 84 to that sphere with a null
   `+towgs84`.
 
+A WKT's `PROJ4` extension (`EXTENSION["PROJ4", ...]`) is computed on as PROJ computes on it, as
+a pipeline step: `+ellps=WGS84 +f=0` there is a sphere, `+ellps=clrk66 +a=6400000` keeps Clarke
+1866's eccentricity, and an ellipsoid the step refuses (`+rf=0`, `+es=1`, a shape without a
+size) is refused, as PROJ refuses to transform with it.
+
 The CRS still reports the ellipsoid of the first rules (`projection_params`, WKT).
 Earlier versions applied `+f`, `+es` and `+e` to a named ellipsoid, made spheres of
 `+datum=WGS84 +a=...`, took `+b` before `+f`, `+es` and `+e`, read a shape without a size on
@@ -835,9 +840,10 @@ checks every 20th of these codes, the codes behind each rule, custom definitions
 references, frozen by `scripts/gen_proj_string_export.py`; the whole tables are compared, as a
 manual check that CI does not run, with
 `scripts/gen_proj_string_export.py --all PATH` (pyproj 3.8.0), then
-`TERRIO_PROJ_STRINGS_ALL=PATH cargo test -p terrio-crs --test proj_string_export -- --ignored`. Reading a string back gives the CRS's conversion, with the
-ellipsoid rules of [PROJ string interpretation changes](#proj-string-interpretation-changes)
-(ESRI:102035's `+proj=ortho +f=0 +datum=WGS84` is spherical orthographic).
+`TERRIO_PROJ_STRINGS_ALL=PATH cargo test -p terrio-crs --test proj_string_export -- --ignored`.
+Reading a string back gives the CRS's conversion, with the ellipsoid rules of
+[PROJ string interpretation changes](#proj-string-interpretation-changes) (ESRI:102035's
+`+proj=ortho +f=0 +datum=WGS84` is spherical orthographic).
 
 Known differences, all of WKTs and PROJ strings without a code:
 

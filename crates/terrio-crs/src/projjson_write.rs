@@ -213,7 +213,7 @@ fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
 fn refuse_misdescribed(root: &Node, p: &Params, def: &Def) -> Result<()> {
     // The figure computed on, as PROJ reads the string, against the CRS's ellipsoid written:
     // misdescribed when a flag makes another sphere of it (`+R_C` on an ellipsoid).
-    let shape = crate::def::proj_ellipsoid(p, p.str("proj").unwrap_or_default()).ok();
+    let shape = crate::def::proj_ellipsoid(p, p.str("proj").unwrap_or_default(), false).ok();
     let ellipsoidal = shape.is_some_and(|e| if e.conformal { e.figure.es != 0.0 } else { e.figure != e.crs });
     if ellipsoidal && let Some(k) = ["R_A", "R_C", "R_V", "R_a", "R_g", "R_h", "R_lat_a", "R_lat_g"].iter().find(|k| p.has(k)) {
         return Err(unsupported(format!("a projection on an auxiliary sphere (+{k})")));

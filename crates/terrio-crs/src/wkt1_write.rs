@@ -542,7 +542,7 @@ fn geogcs(p: &Params, own: &Def) -> (String, bool) {
     }
     // The CRS's ellipsoid, as PROJ 9.8.1 writes it, not the sphere a spherification flag (`+R_A`,
     // `+R_C`...) or spherical orthographic (`+f=0`) computes on: the PROJ4 extension keeps those.
-    let ell = super::def::proj_ellipsoid(p, p.str("proj").unwrap_or_default()).map_or(own.ell, |shape| shape.crs);
+    let ell = super::def::proj_ellipsoid(p, p.str("proj").unwrap_or_default(), false).map_or(own.ell, |shape| shape.crs);
     let named = p.str("ellps").or_else(|| p.str("datum").and_then(super::def::datum_ellps));
     let known = named.and_then(|n| ELLIPSOIDS.iter().find(|e| e.0 == n)).filter(|e| Ell::named(e.0).is_some_and(|n| n == ell));
     let rf = inverse_flattening(p, &ell, known.and_then(|e| e.3));
@@ -580,7 +580,7 @@ fn inverse_flattening(p: &Params, ell: &Ell, defining: Option<f64>) -> f64 {
 /// The EPSG geographic CRS of a PROJ string's `+datum=`, on Greenwich, without another datum
 /// shift and without ellipsoid parameters, which make PROJ drop the datum for its ellipsoid.
 fn epsg_geographic(p: &Params) -> Option<&'static epsg::Entry> {
-    let reshaped = super::def::proj_ellipsoid(p, "").is_ok_and(|e| e.reshaped);
+    let reshaped = super::def::proj_ellipsoid(p, "", false).is_ok_and(|e| e.reshaped);
     let other = p.has("towgs84") || p.has("nadgrids") || p.has("pm") || reshaped;
     p.str("datum").and_then(datum_geog).filter(|_| !other).and_then(epsg::get)
 }

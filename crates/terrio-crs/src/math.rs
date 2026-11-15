@@ -27,9 +27,10 @@
 
 use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI};
 
-/// PROJ's named ellipsoids (`proj_list_ellps`): name, semi-major axis, and inverse flattening, or
-/// semi-minor axis when negative.
-const ELLIPSOIDS: &[(&str, f64, f64)] = &[
+/// PROJ's named ellipsoids (`proj_list_ellps`), in its order: name, semi-major axis, and inverse
+/// flattening, or semi-minor axis when negative. PROJ writes a custom CRS's ellipsoid by the first
+/// name whose values it has.
+pub(crate) const PROJ_ELLIPSOIDS: &[(&str, f64, f64)] = &[
     ("MERIT", 6378137.0, 298.257),
     ("SGS85", 6378136.0, 298.257),
     ("GRS80", 6378137.0, 298.257222101),
@@ -123,13 +124,13 @@ impl Ell {
     /// The semi-major axis of one of PROJ's named ellipsoids and the parameter PROJ defines its
     /// shape by: its inverse flattening, or its semi-minor axis negated (`clrk66`, `sphere`).
     pub fn named_definition(name: &str) -> Option<(f64, f64)> {
-        ELLIPSOIDS.iter().find(|e| e.0 == name).map(|&(_, a, v)| (a, v))
+        PROJ_ELLIPSOIDS.iter().find(|e| e.0 == name).map(|&(_, a, v)| (a, v))
     }
 
     /// Whether PROJ names this ellipsoid, being one of its list (`lookForProjWellKnownEllps`).
     pub fn is_proj_named(&self) -> bool {
         let (b, rf) = (self.a * self.one_es.sqrt(), 1.0 / (1.0 - self.one_es.sqrt()));
-        ELLIPSOIDS.iter().any(|&(_, a, v)| {
+        PROJ_ELLIPSOIDS.iter().any(|&(_, a, v)| {
             (self.a - a).abs() < 1e-10 * a && if v < 0.0 { (b + v).abs() < -1e-10 * v } else { (rf - v).abs() < 1e-10 * v }
         })
     }

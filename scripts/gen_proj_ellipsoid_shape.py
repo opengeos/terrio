@@ -13,6 +13,9 @@ of the CRS's ellipsoid (`CRS.ellipsoid`). Projected and geocentric CRSs are reac
 EPSG:4326 (`Transformer.from_crs("EPSG:4326", CRS(s + " +type=crs"), always_xy=True)`);
 a geographic CRS, given a null `+towgs84` so that its ellipsoid matters, is transformed to
 EPSG:4326. Points are at a height of 0; a geocentric CRS's coordinates have three values.
+`extensions` holds WKT 1 CRSs whose `PROJ4` extension has such parameters, with PROJ's
+coordinates (`Transformer.from_crs("EPSG:4326", CRS(wkt), always_xy=True)`), or null where PROJ
+refuses to transform.
 
 Usage: PROJ_NETWORK=OFF python scripts/gen_proj_ellipsoid_shape.py (needs pyproj 3.8.0)
 """
@@ -150,6 +153,46 @@ EXTRA = [
     "+proj=longlat +datum=NAD27 +rf=294.978698213898",
 ]
 
+# WKT 1 CRSs with a `PROJ4` extension, which PROJ computes on as a pipeline step reads it: a
+# shape parameter changes a named ellipsoid, `+a` keeps its eccentricity. The extension's
+# ellipsoid is refused where the step refuses it (PROJ creates the CRS, but not the
+# transformation).
+EXTENSION_WKT = (
+    'PROJCS["custom",GEOGCS["custom",DATUM["custom",SPHEROID["WGS 84",6378137,298.257223563]],'
+    'PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],'
+    'PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],'
+    'PARAMETER["central_meridian",-75],PARAMETER["scale_factor",1],'
+    'PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1],'
+    'EXTENSION["PROJ4","{}"]]'
+)
+EXTENSIONS = [
+    "+ellps=WGS84",
+    "+ellps=WGS84 +f=0",
+    "+ellps=WGS84 +f=abc",
+    "+ellps=WGS84 +es=0.01",
+    "+ellps=WGS84 +rf=300",
+    "+ellps=clrk66 +a=6400000",
+    "+ellps=WGS84 +R_V",
+    "+datum=WGS84 +a=6400000",
+    "+datum=NAD27 +rf=300",
+    "+a=6400000 +es=0.01 +b=6300000",
+    "+ellps=WGS84 +rf=abc",
+    "+ellps=WGS84 +rf=0",
+    "+ellps=WGS84 +es=1",
+    "+a=6400000 +rf=abc",
+    "+rf=300",
+]
+
+
+def extension_case(shape):
+    wkt = EXTENSION_WKT.format(f"+proj=tmerc +lon_0=-75 {shape}")
+    try:
+        t = Transformer.from_crs("EPSG:4326", CRS(wkt), always_xy=True)
+        x, y = t.transform(*POINT, errcheck=True)
+    except pyproj.exceptions.ProjError:
+        return {"wkt": wkt, "point": POINT, "proj": None}
+    return {"wkt": wkt, "point": POINT, "proj": [x, y]}
+
 
 def case(definition):
     crs = None
@@ -160,7 +203,7 @@ def case(definition):
         else:
             t = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
         x, y, z = t.transform(*POINT, 0.0, errcheck=True)
-    except pyproj.exceptions.CRSError:
+    except pyproj.exceptions.ProjError:
         return {"proj_string": definition, "point": POINT, "proj": None}
     e = crs.ellipsoid
     return {
@@ -186,8 +229,16 @@ def main():
         assert not grids, (d, grids)
     definitions = [f"{m} {s}" for m in METHODS for s in SHAPES] + EXTRA
     cases = [case(d) for d in definitions]
+    extensions = [extension_case(s) for s in EXTENSIONS]
     OUT.write_text(
-        json.dumps({"proj_version": pyproj.proj_version_str, "cases": cases}, indent=1)
+        json.dumps(
+            {
+                "proj_version": pyproj.proj_version_str,
+                "cases": cases,
+                "extensions": extensions,
+            },
+            indent=1,
+        )
         + "\n"
     )
 
