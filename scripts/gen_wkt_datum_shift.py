@@ -26,8 +26,8 @@ otherwise.
 
 `differences` holds the WKTs PROJ places otherwise than their CRS's EPSG code: the ESRI WKT 1 of
 EPSG:4806, 5132 and 7373, and of EPSG:4314 and 31467 renamed. PROJ does not resolve their
-geographic CRS to the code (ESRI's WKT 1 has no `AXIS`, so longitude first, unlike the EPSG CRS; or its name is
-another), and then also searches transformations through other datums and other CRSs of the
+geographic CRS to the code (ESRI's WKT 1 has no `AXIS`, so longitude first, unlike the EPSG CRS;
+or its name is another), and then also searches transformations through other datums and other CRSs of the
 datum.
 
 Usage: PROJ_NETWORK=OFF python scripts/gen_wkt_datum_shift.py (needs pyproj 3.8.0)
@@ -115,13 +115,14 @@ def wkt2(crs, datum_id=False, local=False):
     w = IDS.sub("", USAGE.sub("", crs.to_wkt("WKT2_2019")))
     if datum_id:
         code = crs.datum.to_json_dict()["id"]["code"]
+        # The ellipsoid with its LENGTHUNIT, then the DATUM's closing bracket.
+        pattern = r'(ELLIPSOID\["[^"]*",[^\[\]]*,LENGTHUNIT\[[^\]]*\]\])\]'
         w, n = re.subn(
-            r"(ELLIPSOID\[[^\[]*\[[^\]]*\]\])\]",
-            lambda m: f'{m.group(1)},ID["EPSG",{code}]]',
-            w,
-            count=1,
+            pattern, lambda m: f'{m.group(1)},ID["EPSG",{code}]]', w, count=1
         )
-        assert n == 1, crs
+        assert n == 1 and f'LENGTHUNIT["metre",1]],ID["EPSG",{code}]]' in w.replace(
+            " ", ""
+        ), crs
     if local:
         w, n = re.subn(r'(GEOGCRS|BASEGEOGCRS|PROJCRS)\["[^"]*"', r'\1["Local"', w)
         w, m = re.subn(r'DATUM\["[^"]*"', 'DATUM["Local datum"', w)
@@ -235,7 +236,8 @@ def main():
     ]:
         grids = [
             f
-            for f in (os.listdir(d) if os.path.isdir(d) else [])
+            for _, _, files in (os.walk(d) if os.path.isdir(d) else [])
+            for f in files
             if f.endswith((".tif", ".gsb", ".gtx"))
         ]
         assert not grids, (d, grids)

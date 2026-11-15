@@ -269,6 +269,9 @@ longitude first, unlike the EPSG CRS; or the CRS has another name) and then find
 transformation through another datum or another CRS of the datum: ESRI's `GCS_Monte_Mario_Rome`
 through Monte Mario (72 m from EPSG:4806's own), `Tokyo_1892` through Tokyo (390 m), and ONGD14
 by its geocentric transformation (1.2 m). terrio uses the EPSG CRS's transformations there.
+Without grids, this is PROJ's own choice; with OSTN15, BETA2007, CHENyx06 or the NZGD2000 grids
+installed, PROJ may place some of these points otherwise (46 of the 180 test cases; see
+`docs/testing.md`).
 
 A WKT 1 in grads with a `PRIMEM["Paris",2.33722917]` (NTF (Paris) as GDAL and ESRI write it)
 has Paris's longitude in degrees, as PROJ reads it; another prime meridian is in the CRS's
