@@ -1760,6 +1760,20 @@ the target's datum (and without the shift in CRSs on the source's datum and in o
 target's ellipsoid), within 1 mm (`cargo test -p terrio-crs --test wkt2_bound`;
 regenerate with `scripts/gen_wkt2_bound.py`, pyproj 3.8.0).
 
+WKTs whose geographic CRS has no EPSG code of its own, with the datum known by its ID alone (WKT 2
+`ID`, WKT 1 `AUTHORITY` on the `DATUM`, also under other CRS and datum names), by its name in a
+WKT 2 without IDs, or by ESRI's name (`D_Monte_Mario`, with and without the datum's or the CRS's
+code, and under another `GEOGCS` name), of 20 EPSG CRSs on OSGB36, Monte Mario, ED50, DHDN,
+Amersfoort, GGRS87, CH1903, Tokyo, HD72, AGD66 and NZGD49, and the two WKTs of opengeos/terrio#1012,
+place a point in WGS 84 where PROJ 9.8.1 does without grids, by the transformation it uses, within
+1 mm (180 cases). For OSGB36, DHDN, NZGD49 and some CH1903 cases (46), PROJ's best
+transformation needs a grid (OSTN15, BETA2007, CHENyx06, the NZGD2000 grids), so with those grids
+installed PROJ may place these points otherwise; the cases record it. Five WKTs PROJ does not
+resolve to their code and places through other datums or CRSs (the ESRI WKT 1 of EPSG:4806, 5132
+and 7373, and of EPSG:4314 and 31467 renamed) are pinned where their code places them
+(`cargo test -p terrio-crs --test wkt_datum_shift`; regenerate with
+`scripts/gen_wkt_datum_shift.py`, pyproj 3.8.0).
+
 CRSs in grads, and prime meridians, place points where PROJ 9.8.1 does, both ways, within 1 mm and
 1e-9 of a degree or grad: in WKT 1, NTF (Paris) (EPSG:4807) and its sixteen projected CRSs
 (EPSG:27561-27594) as GDAL and ESRI write them, with their codes and without; geographic CRSs in
