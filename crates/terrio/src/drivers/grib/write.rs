@@ -834,7 +834,7 @@ fn to_bytes(r: &Raster, nodata: Option<f64>, o: &Options) -> Result<Vec<u8>> {
         return Err(Error::Unsupported("GRIB2 writer: more than 2^32 - 1 points".into()));
     }
     let wkt = crate::crs::SpatialRef::from_raster_crs(&r.crs)
-        .to_wkt()
+        .to_file_wkt()
         .ok_or_else(|| Error::Unsupported("Unsupported or missing spatial reference system".into()))?;
     let crs = Crs::parse(&wkt).ok_or_else(|| Error::Unsupported("Unsupported or missing spatial reference system".into()))?;
     let grid = grid(r, &crs)?;

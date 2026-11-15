@@ -468,7 +468,7 @@ pub(crate) fn crs_info(srs: &SpatialRef) -> CrsInfo {
             c.wkt = crate::crs::raster_crs_wkt(&srs.to_crs_info()).or(c.wkt);
             c
         }
-        None => CrsInfo { epsg: None, wkt: srs.to_wkt(), proj4: srs.proj4.clone() },
+        None => CrsInfo { epsg: None, wkt: srs.to_file_wkt(), proj4: srs.proj4.clone() },
     }
 }
 

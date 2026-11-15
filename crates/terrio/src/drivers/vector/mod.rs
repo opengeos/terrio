@@ -374,7 +374,7 @@ pub(crate) fn trusted_epsg(layer: &Layer) -> Option<u32> {
 pub(crate) fn output_wkt(layer: &Layer) -> Option<String> {
     match trusted_epsg(layer).and_then(|c| crate::crs::SpatialRef::from_epsg(c).ok()) {
         Some(s) => super::wkt::gdal_wkt(&s),
-        None => crate::crs::SpatialRef::from_layer(layer).to_wkt(),
+        None => crate::crs::SpatialRef::from_layer(layer).to_file_wkt(),
     }
 }
 

@@ -208,7 +208,7 @@ impl EptTarget {
             srs.insert("authority".into(), json!("EPSG"));
             srs.insert("horizontal".into(), json!(code.to_string()));
         }
-        if let Some(wkt) = self.crs.to_wkt() {
+        if let Some(wkt) = self.crs.to_file_wkt() {
             srs.insert("wkt".into(), json!(wkt));
         }
         let ept = json!({

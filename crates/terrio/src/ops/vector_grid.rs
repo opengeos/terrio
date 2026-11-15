@@ -1826,7 +1826,7 @@ pub fn vector_grid(layers: &[Layer], options: &VectorGridOptions) -> Result<Rast
         cell_size_y: Some(-gt[5]),
         nodata: band_nodata.unwrap_or(algorithm.nodata),
         data_type: dt,
-        crs: wbraster::CrsInfo { epsg: crs.epsg, wkt: crs.to_wkt(), proj4: crs.proj4.clone() },
+        crs: crs.to_crs_info(),
         metadata: Vec::new(),
     };
     let raster = crate::pixel::raster_from_data(cfg, typed(data, dt))?;

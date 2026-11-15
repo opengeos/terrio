@@ -379,7 +379,7 @@ fn raster(
         cell_size_y: Some(options.resolution),
         nodata: options.nodata,
         data_type: options.data_type,
-        crs: wbraster::CrsInfo { epsg: crs.epsg, wkt: crs.to_wkt(), proj4: crs.proj4.clone() },
+        crs: crs.to_crs_info(),
         metadata: vec![("BANDS".into(), names)],
     };
     Ok(RasterDataset::new(Raster::from_data(cfg, data)?, true))

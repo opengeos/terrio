@@ -337,7 +337,7 @@ fn crs_metadata(layer: &Layer) -> String {
     let epsg = crate::drivers::vector::naming_epsg(layer);
     let wkt = match epsg.and_then(|c| SpatialRef::from_epsg(c).ok()) {
         Some(s) => crate::drivers::wkt::gdal_wkt(&s),
-        None => srs.to_wkt(),
+        None => srs.to_file_wkt(),
     };
     // An ESRI CRS keeps its ESRI code, as PROJ identifies it.
     let esri = srs.esri.filter(|_| epsg.is_none());

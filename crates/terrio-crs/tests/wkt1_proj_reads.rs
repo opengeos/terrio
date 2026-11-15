@@ -343,4 +343,16 @@ fn a_stored_wkt_is_written_for_files_with_names_cut_at_a_nul() {
     assert_eq!(terrio_crs::wkt_for_files("A[\"a\"\"b\0c\"\"d\",x]"), r#"A["a""b",x]"#);
     assert_eq!(terrio_crs::wkt_for_files("A[\"a\",\0x]"), "A[\"a\",x]");
     assert!(matches!(terrio_crs::wkt_for_files("A[\"a\"]"), std::borrow::Cow::Borrowed(_)));
+    // A doubled quote after the cut is part of what is cut.
+    assert_eq!(terrio_crs::wkt_for_files("A[\"ab\0c\"\"d\",x]"), r#"A["ab",x]"#);
+    // A NUL right after the opening quote leaves an empty name, which reads: Mollweide's PROJ
+    // 9.8.1 PROJJSON named `"\u0000weide"` is written `PROJCRS["",...]` and reads as Mollweide.
+    let case = &data["mollweide_projjson"];
+    let empty = case["projjson"].as_str().unwrap().replace(r"Moll\u0000weide", r"\u0000weide");
+    let crs = SpatialRef::from_projjson(&empty).unwrap();
+    let written = terrio_crs::wkt_for_files(crs.wkt.as_deref().unwrap()).into_owned();
+    assert!(written.starts_with(r#"PROJCRS["","#), "{written}");
+    let back = SpatialRef::from_wkt(&written);
+    assert!(same_proj(&back.to_proj4().unwrap(), case["proj4"].as_str().unwrap()));
+    assert!(Transformer::new(&back, &SpatialRef::from_epsg(4326).unwrap()).is_ok());
 }

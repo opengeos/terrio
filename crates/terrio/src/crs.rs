@@ -272,6 +272,14 @@ impl SpatialRef {
     pub fn to_wkt(&self) -> Option<String> {
         self.as_core().to_wkt()
     }
+    /// The WKT written to a file or its metadata (a layer's or raster's CRS, a `.prj`, GeoPackage,
+    /// GeoParquet, netCDF, VRT, EPT, a LAS WKT record...), whose readers end text at its first
+    /// NUL, as GDAL does: [`to_wkt`](Self::to_wkt) with each name cut at a NUL (one a PROJJSON
+    /// name gives), as PROJ 9.8.1 gives such a name, so that it reads back as this CRS. A cut
+    /// name can change what the CRS is identified as by name, as in PROJ.
+    pub(crate) fn to_file_wkt(&self) -> Option<String> {
+        self.to_wkt().map(|w| terrio_crs::wkt_for_files(&w).into_owned())
+    }
     /// The CRS as PROJJSON, as GDAL (3.12.1, with PROJ 9.7.1) writes it: with `database`, for the
     /// CRS GDAL builds from the CRS's EPSG code (`CRS.from_epsg`), else for the one it reads from
     /// the CRS's WKT (a dataset's CRS, `CRS.from_wkt`). Fails for a CRS this writer does not model.
@@ -414,18 +422,21 @@ impl SpatialRef {
         s
     }
 
-    /// The CRS as the raster model stores it. Its WKT is the one written to files, a name with a
-    /// NUL (from a PROJJSON name) cut there (see [`SpatialRef::apply_to_layer`]).
+    /// The CRS as the raster model stores it. Its WKT is the one terrio writes to every file and
+    /// its metadata (raster, layer, `.prj`, GeoPackage, GeoParquet, netCDF, VRT, EPT, LAS...): a
+    /// name with a NUL (from a PROJJSON name) is cut there, as PROJ 9.8.1 gives such a name, so
+    /// that it reads back as this CRS. A cut name can change what the CRS is identified as by
+    /// name, as in PROJ.
     pub fn to_crs_info(&self) -> wbraster::CrsInfo {
-        let wkt = self.to_wkt().map(|w| terrio_crs::wkt_for_files(&w).into_owned());
+        let wkt = self.to_file_wkt();
         wbraster::CrsInfo { epsg: self.epsg, wkt, proj4: self.proj4.clone() }
     }
 
     /// The CRS a vector layer declares. Its WKT is read up to its first NUL, as GDAL reads a
     /// file's text (a `.prj`, a GeoPackage's definition): a WKT with a NUL inside a name, which
-    /// GDAL refuses, gives no CRS. A layer's CRS set by [`SpatialRef::apply_to_layer`] reads back
-    /// as the CRS, as that WKT has no NUL: a name with one (from a PROJJSON name) is cut there,
-    /// as PROJ 9.8.1 gives the name. A raster's CRS is read so too.
+    /// GDAL refuses, gives no CRS. WKT terrio wrote, by [`SpatialRef::apply_to_layer`] or to any
+    /// file, has no NUL (a name with one, from a PROJJSON name, is cut there, as PROJ 9.8.1 gives
+    /// the name), so it reads back as the CRS. A raster's CRS is read so too.
     pub fn from_layer(layer: &wbvector::Layer) -> Self {
         let wkt = layer.crs_wkt().map(|w| terrio_crs::until_nul(w).to_string());
         let mut s = Self { epsg: layer.crs_epsg(), wkt, ..Default::default() };
@@ -437,13 +448,13 @@ impl SpatialRef {
         s.with_esri()
     }
 
-    /// Sets a vector layer's CRS to this one. Its WKT is the one written to files, which their
-    /// readers end at its first NUL, as GDAL does: a name with a NUL (from a PROJJSON name) is
-    /// cut there, as PROJ 9.8.1 gives the name, so that [`SpatialRef::from_layer`] and a file
-    /// written from the layer read back as this CRS.
+    /// Sets a vector layer's CRS to this one. Its WKT is the one terrio writes to every file
+    /// (see [`SpatialRef::to_crs_info`]): a name with a NUL (from a PROJJSON name) is cut there,
+    /// as PROJ 9.8.1 gives the name, so that [`SpatialRef::from_layer`] and a file written from
+    /// the layer read back as this CRS.
     pub fn apply_to_layer(&self, layer: &mut wbvector::Layer) {
         layer.set_crs_epsg(self.epsg);
-        layer.set_crs_wkt(self.to_wkt().map(|w| terrio_crs::wkt_for_files(&w).into_owned()));
+        layer.set_crs_wkt(self.to_file_wkt());
     }
 }
 

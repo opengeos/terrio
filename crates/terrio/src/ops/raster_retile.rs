@@ -318,7 +318,7 @@ fn prepare(sources: &mut [RetileSource<'_>], o: &RetileOptions) -> Result<(Retil
         levels.push(RetileLevel { level, size, columns, rows, geo_transform: g });
     }
     let crs = first.crs();
-    let crs = crs.authority_code().or_else(|| crs.to_wkt()).or(crs.proj4);
+    let crs = crs.authority_code().or_else(|| crs.to_file_wkt()).or(crs.proj4);
     let plan =
         RetilePlan { prefix: name, crs, tile_size: o.tile_size, overlap: o.overlap, row_directories: o.row_directories, levels, planned };
     if o.csv.is_some() {

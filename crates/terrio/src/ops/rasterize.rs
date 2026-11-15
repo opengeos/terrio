@@ -153,7 +153,7 @@ pub fn rasterize(layers: &[Layer], options: &RasterizeOptions) -> Result<RasterD
         cell_size_y: Some(-g5),
         nodata: options.nodata.unwrap_or(0.0),
         data_type: dtype,
-        crs: wbraster::CrsInfo { epsg: crs.epsg, wkt: crs.to_wkt(), proj4: crs.proj4.clone() },
+        crs: crs.to_crs_info(),
         metadata: Vec::new(),
     };
     let raster = crate::pixel::raster_from_data(cfg, data)?;

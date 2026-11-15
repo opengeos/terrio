@@ -78,3 +78,27 @@ fn a_crs_with_a_nul_in_its_name_round_trips_through_a_layer() {
         assert_eq!(b.transform(500_000.0, 5_000_000.0).unwrap(), a.transform(500_000.0, 5_000_000.0).unwrap());
     }
 }
+
+/// A raster rasterized in a CRS with a NUL in its name (Mollweide's PROJ 9.8.1 PROJJSON) has
+/// that CRS: its stored WKT has the name cut at the NUL, so it reads back.
+#[test]
+fn a_raster_made_in_a_crs_with_a_nul_in_its_name_has_that_crs() {
+    use terrio::crs::SpatialRef;
+    use terrio::ops::rasterize::{RasterizeOptions, rasterize};
+    let [_, (json, _, _)] = projjson_with_a_nul();
+    let crs = SpatialRef::from_projjson(&json).unwrap();
+    let mut layer = terrio::Layer::new("p");
+    let point = terrio::Geometry::Point(terrio::vector::Coord::xy(5.0, 5.0));
+    layer.push(terrio::Feature { fid: 0, geometry: Some(point), attributes: vec![] });
+    let options = RasterizeOptions {
+        burn_values: vec![1.0],
+        extent: Some((0.0, 0.0, 10.0, 10.0)),
+        resolution: Some((1.0, 1.0)),
+        assign_srs: Some(crs.clone()),
+        ..Default::default()
+    };
+    let raster = rasterize(&[layer], &options).unwrap();
+    let back = raster.crs();
+    assert_eq!(back.to_proj4(), crs.to_proj4());
+    assert!(back.to_wkt().is_some_and(|w| !w.contains('\0') && w.contains("\"Moll\"")), "{:?}", back.to_wkt());
+}

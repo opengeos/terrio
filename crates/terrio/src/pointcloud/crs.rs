@@ -68,7 +68,7 @@ impl LasCrs {
             return c;
         }
         let vertical = SpatialRef::from_epsg(v).ok().and_then(|v| v.to_wkt()).filter(|w| w.starts_with("VERT_CS["));
-        match (crs.proj4.is_none().then(|| crs.to_wkt()).flatten(), vertical) {
+        match (crs.proj4.is_none().then(|| crs.to_file_wkt()).flatten(), vertical) {
             (Some(h), Some(v)) => {
                 let name = format!("{} + {}", crs.name().unwrap_or_default(), quoted_name(&v).unwrap_or_default());
                 SpatialRef::from_wkt(&format!("COMPD_CS[\"{name}\",{h},{v}]"))
@@ -167,7 +167,7 @@ pub(crate) fn crs_vlrs(crs: &SpatialRef, wkt: bool) -> (Vec<Vlr>, bool) {
     if !wkt && let Some(v) = geokey_vlrs(crs) {
         return (v, false);
     }
-    match crs.to_wkt() {
+    match crs.to_file_wkt() {
         Some(w) => {
             let mut data = w.into_bytes();
             data.push(0);
