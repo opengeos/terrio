@@ -42,7 +42,7 @@ fn ellipsoid_parameters_are_read_as_proj_reads_them() {
     terrio_crs::set_network_enabled(Some(false));
     let data: Value = serde_json::from_str(include_str!("data/proj_ellipsoid_shape.json")).unwrap();
     let cases = data["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 462);
+    assert_eq!(cases.len(), 469);
     let mut bad = vec![];
     for case in cases {
         let s = case["proj_string"].as_str().unwrap();
@@ -71,11 +71,13 @@ fn ellipsoid_parameters_are_read_as_proj_reads_them() {
             bad.push(format!("{s}: PROJ {proj:?}, terrio {got:?}, {off:.3} m"));
         }
         // The ellipsoid the CRS reports, before a spherification flag makes a sphere of it.
-        if let Some(params) = crs.projection_params() {
-            let (a, b) = (case["ellipsoid"][0].as_f64().unwrap(), case["ellipsoid"][1].as_f64().unwrap());
-            if (params.a - a).abs() >= 1e-3 || (params.b - b).abs() >= 1e-3 {
-                bad.push(format!("{s}: PROJ's ellipsoid {a}, {b}, terrio's {}, {}", params.a, params.b));
-            }
+        let Some(params) = crs.projection_params() else {
+            bad.push(format!("{s}: no projection parameters"));
+            continue;
+        };
+        let (a, b) = (case["ellipsoid"][0].as_f64().unwrap(), case["ellipsoid"][1].as_f64().unwrap());
+        if (params.a - a).abs() >= 1e-3 || (params.b - b).abs() >= 1e-3 {
+            bad.push(format!("{s}: PROJ's ellipsoid {a}, {b}, terrio's {}, {}", params.a, params.b));
         }
     }
     assert!(bad.is_empty(), "{} differences from PROJ in {} cases:\n{}", bad.len(), cases.len(), bad.join("\n"));

@@ -586,7 +586,7 @@ fn inverse_flattening(p: &Params, ell: &Ell, defining: Option<f64>) -> f64 {
 /// The EPSG geographic CRS of a PROJ string's `+datum=`, on Greenwich, without another datum
 /// shift and without ellipsoid parameters, which make PROJ drop the datum for its ellipsoid.
 fn epsg_geographic(p: &Params) -> Option<&'static epsg::Entry> {
-    let reshaped = ["R", "a", "b", "rf", "f", "es", "e"].iter().any(|k| p.has(k));
+    let reshaped = super::def::proj_ellipsoid(p, "").is_ok_and(|e| e.reshaped);
     let other = p.has("towgs84") || p.has("nadgrids") || p.has("pm") || reshaped;
     p.str("datum").and_then(datum_geog).filter(|_| !other).and_then(epsg::get)
 }

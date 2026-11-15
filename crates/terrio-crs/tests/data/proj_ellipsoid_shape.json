@@ -6747,6 +6747,104 @@
     6378137.0,
     6356752.314245179
    ]
+  },
+  {
+   "proj_string": "+proj=tmerc +lon_0=-75 +ellps=WGS84 +R_lat_a=foo",
+   "point": [
+    -80.0,
+    30.0
+   ],
+   "proj": [
+    -480718.8597948609,
+    3338910.8287405227
+   ],
+   "ellipsoid": [
+    6378137.0,
+    6356752.314245179
+   ]
+  },
+  {
+   "proj_string": "+proj=tmerc +lon_0=-75 +ellps=WGS84 +R_lat_g=foo",
+   "point": [
+    -80.0,
+    30.0
+   ],
+   "proj": [
+    -480716.14875858906,
+    3338891.998798279
+   ],
+   "ellipsoid": [
+    6378137.0,
+    6356752.314245179
+   ]
+  },
+  {
+   "proj_string": "+proj=tmerc +lon_0=-75 +ellps=WGS84 +R_lat_a=0.5r",
+   "point": [
+    -80.0,
+    30.0
+   ],
+   "proj": [
+    -481458.5774003469,
+    3344048.6573753743
+   ],
+   "ellipsoid": [
+    6378137.0,
+    6356752.314245179
+   ]
+  },
+  {
+   "proj_string": "+proj=tmerc +lon_0=-75 +ellps=WGS84 +R_lat_g=40d30",
+   "point": [
+    -80.0,
+    30.0
+   ],
+   "proj": [
+    -482077.3298303601,
+    3348346.3027595435
+   ],
+   "ellipsoid": [
+    6378137.0,
+    6356752.314245179
+   ]
+  },
+  {
+   "proj_string": "+proj=tmerc +lon_0=-75 +ellps=WGS84 +R_lat_a=91",
+   "point": [
+    -80.0,
+    30.0
+   ],
+   "proj": null
+  },
+  {
+   "proj_string": "+proj=longlat +datum=NAD27 +a=6378206.4",
+   "point": [
+    -80.0,
+    30.0
+   ],
+   "proj": [
+    -80.0,
+    30.0
+   ],
+   "ellipsoid": [
+    6378206.4,
+    6356583.8
+   ]
+  },
+  {
+   "proj_string": "+proj=longlat +datum=NAD27 +rf=294.978698213898",
+   "point": [
+    -80.0,
+    30.0
+   ],
+   "proj": [
+    -80.0,
+    30.0
+   ],
+   "ellipsoid": [
+    6378206.4,
+    6356583.8
+   ]
   }
  ]
 }

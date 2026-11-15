@@ -1779,13 +1779,15 @@ rows, edit only the approved rows in `proj_param_value_differences.tsv` (definit
 PROJ's `OK`/`ERR` outcome), keep them sorted, and update the count in the test. Rerun the focused
 test with default features and `--all-features`; unexpected changes require investigation.
 
-PROJ-string ellipsoids are compared with PROJ 9.8.1 in 462 strings. Each of `laea`, `tmerc`,
+PROJ-string ellipsoids are compared with PROJ 9.8.1 in 469 strings. Each of `laea`, `tmerc`,
 `merc`, `ortho`, `geocent` and `longlat` (with a null `+towgs84`) is combined with `+R`,
 `+ellps`, `+datum`, `+a`, `+b`, `+rf`, `+f`, `+es`, `+e` and the spherification flags, alone
-and together. A few strings cover spherical orthographic (`+f=0`), `mill` and `cea`. The test
-checks where PROJ places a point (`Transformer.from_crs("EPSG:4326", CRS(s + " +type=crs"),
-always_xy=True)`, or from a geographic CRS to EPSG:4326), within 1 mm. It also checks the axes
-of the ellipsoid the CRS reports, and that terrio refuses the 36 strings PROJ refuses
+and together. A few strings cover spherical orthographic (`+f=0`), `mill`, `cea`, the latitude of
+`+R_lat_a` and `+R_lat_g` (unreadable, in radians, in DMS, beyond 90°) and `+datum=NAD27` beside
+its own `+a` or `+rf`, which PROJ drops. The test checks where PROJ places a point
+(`Transformer.from_crs("EPSG:4326", CRS(s + " +type=crs"), always_xy=True)`, or from a
+geographic CRS to EPSG:4326), within 1 mm. It also checks the axes of the ellipsoid the CRS
+reports, and that terrio refuses the 37 strings PROJ refuses
 (`cargo test -p terrio-crs --test proj_ellipsoid_shape`; regenerate with
 `scripts/gen_proj_ellipsoid_shape.py`, pyproj 3.8.0, no grids, `PROJ_NETWORK=OFF`).
 The PROJ strings of the EPSG and ESRI registries (as `to_proj4` writes them, 9,873 CRSs) keep the

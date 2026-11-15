@@ -138,6 +138,16 @@ EXTRA = [
     "+proj=mill +ellps=clrk66 +a=6400000",
     "+proj=cea +ellps=WGS84 +f=0 +R_A",
     "+proj=cea +ellps=WGS84 +f=0",
+    # The latitude of `+R_lat_a` and `+R_lat_g` as PROJ's `dmstor` reads it: an unreadable one
+    # is the equator, beyond 90 degrees it is refused.
+    "+proj=tmerc +lon_0=-75 +ellps=WGS84 +R_lat_a=foo",
+    "+proj=tmerc +lon_0=-75 +ellps=WGS84 +R_lat_g=foo",
+    "+proj=tmerc +lon_0=-75 +ellps=WGS84 +R_lat_a=0.5r",
+    "+proj=tmerc +lon_0=-75 +ellps=WGS84 +R_lat_g=40d30",
+    "+proj=tmerc +lon_0=-75 +ellps=WGS84 +R_lat_a=91",
+    # A datum beside `+a`, even of its own semi-major axis, is dropped: no NAD27 shift.
+    "+proj=longlat +datum=NAD27 +a=6378206.4",
+    "+proj=longlat +datum=NAD27 +rf=294.978698213898",
 ]
 
 
