@@ -708,7 +708,13 @@ fn unresolved_search(list: Vec<Leg>, a: u32, b: u32, src: &Def, dst: &Def, aoi: 
     if !list.iter().any(|l| !l.op.ballpark) {
         return chains(a, b, src, dst, aoi, all);
     }
-    let (Some(ga), Some(gb)) = (reg.geodetic.get(&a), reg.geodetic.get(&b)) else { return Kind::List(list) };
+    // CRSs PROJ's registry of chainable CRSs lacks: their own list, sorted as when no search
+    // follows (every path sorts once; the CRS-pair branch leaves the sorting to this function).
+    let (Some(ga), Some(gb)) = (reg.geodetic.get(&a), reg.geodetic.get(&b)) else {
+        let mut kind = Kind::List(list);
+        resort(&mut kind, a, b, aoi);
+        return kind;
+    };
     let direct: Vec<&Leg> = list.iter().filter(|l| !l.op.ballpark).collect();
     // Whether every transformation has a step among `names`.
     let all_with = |names: &HashSet<&str>| direct.iter().all(|l| step_names(&l.op, false).iter().any(|n| names.contains(n.as_str())));
