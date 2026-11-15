@@ -79,6 +79,9 @@ osr.SetPROJSearchPaths([GRID_DIR, PROJ_DB_DIR])
 osr.SetPROJEnableNetwork(False)
 pyproj.network.set_network_enabled(False)
 gdal.PushErrorHandler("CPLQuietErrorHandler")
+# A deprecated code's own definition, as PROJ gives it and terrio's EPSG table holds it, not the
+# replacement GDAL substitutes by default.
+gdal.SetConfigOption("OSR_USE_NON_DEPRECATED", "NO")
 warnings.simplefilter("ignore")
 
 

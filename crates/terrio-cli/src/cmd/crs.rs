@@ -169,8 +169,9 @@ pub struct ListArgs {
     /// List deprecated CRSs too, marked `[deprecated]`.
     #[arg(long, visible_alias = "allow-deprecated")]
     include_deprecated: bool,
-    /// Print JSON: an array of `{authority, code, name, kind, deprecated, area_name, bounds,
-    /// projection_method, celestial_body}`, bounds being west, south, east and north in degrees.
+    /// Print JSON: an array of `{authority, code, name, kind, deprecated, replaced_by, area_name,
+    /// bounds, projection_method, celestial_body}`, bounds being west, south, east and north in
+    /// degrees, and replaced_by the codes of the CRSs that replace a deprecated EPSG CRS.
     #[arg(long)]
     json: bool,
 }

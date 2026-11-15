@@ -1,0 +1,7811 @@
+{
+ "proj_version": "9.8.1",
+ "cases": [
+  {
+   "code": 2008,
+   "name": "NAD27(CGQ77) / SCoPQ zone 2",
+   "replaced_by": [],
+   "point": [
+    -55.5,
+    50.18
+   ],
+   "proj": [
+    304800.0,
+    5560093.546748306,
+    0.0
+   ]
+  },
+  {
+   "code": 2036,
+   "name": "NAD83(CSRS98) / New Brunswick Stereo",
+   "replaced_by": [
+    2953
+   ],
+   "point": [
+    -66.375,
+    46.315
+   ],
+   "proj": [
+    2509626.9226039588,
+    7479443.875071109,
+    0.0
+   ]
+  },
+  {
+   "code": 2037,
+   "name": "NAD83(CSRS98) / UTM zone 19N",
+   "replaced_by": [
+    2960
+   ],
+   "point": [
+    -69.0,
+    53.05
+   ],
+   "proj": [
+    500000.03022377484,
+    5877831.473961254,
+    0.0
+   ]
+  },
+  {
+   "code": 2038,
+   "name": "NAD83(CSRS98) / UTM zone 20N",
+   "replaced_by": [
+    2961
+   ],
+   "point": [
+    -63.0,
+    51.6
+   ],
+   "proj": [
+    499999.86779066065,
+    5716549.436948884,
+    0.0
+   ]
+  },
+  {
+   "code": 2063,
+   "name": "Dabola 1981 / UTM zone 28N",
+   "replaced_by": [
+    3461
+   ],
+   "point": [
+    -13.565000000000001,
+    10.844999999999999
+   ],
+   "proj": [
+    656617.722226056,
+    1199223.2851417994,
+    0.0
+   ]
+  },
+  {
+   "code": 2064,
+   "name": "Dabola 1981 / UTM zone 29N",
+   "replaced_by": [
+    3462
+   ],
+   "point": [
+    -9.825,
+    9.85
+   ],
+   "proj": [
+    409286.9282373345,
+    1088956.2137586668,
+    0.0
+   ]
+  },
+  {
+   "code": 2085,
+   "name": "NAD27 / Cuba Norte",
+   "replaced_by": [
+    3795
+   ],
+   "point": [
+    -80.96000000000001,
+    22.314999999999998
+   ],
+   "proj": [
+    504104.7095182528,
+    276367.57646182855,
+    0.0
+   ]
+  },
+  {
+   "code": 2086,
+   "name": "NAD27 / Cuba Sur",
+   "replaced_by": [
+    3796
+   ],
+   "point": [
+    -76.38,
+    20.634999999999998
+   ],
+   "proj": [
+    547218.2673267666,
+    220092.19233125387,
+    0.0
+   ]
+  },
+  {
+   "code": 2091,
+   "name": "South Yemen / Gauss Kruger zone 8",
+   "replaced_by": [
+    2395
+   ],
+   "point": [
+    45.69,
+    15.245
+   ],
+   "proj": [
+    8574169.826854954,
+    1686140.4950613813,
+    0.0
+   ]
+  },
+  {
+   "code": 2092,
+   "name": "South Yemen / Gauss Kruger zone 9",
+   "replaced_by": [
+    2396
+   ],
+   "point": [
+    50.57,
+    16.47
+   ],
+   "proj": [
+    9454111.916805146,
+    1821625.658949768,
+    0.0
+   ]
+  },
+  {
+   "code": 2139,
+   "name": "NAD83(CSRS98) / SCoPQ zone 2",
+   "replaced_by": [
+    2944
+   ],
+   "point": [
+    -55.5,
+    50.18
+   ],
+   "proj": [
+    304799.6624487175,
+    5560311.356376559,
+    0.0
+   ]
+  },
+  {
+   "code": 2140,
+   "name": "NAD83(CSRS98) / MTM zone 3",
+   "replaced_by": [
+    2945
+   ],
+   "point": [
+    -58.55,
+    51.05
+   ],
+   "proj": [
+    301293.9880101071,
+    5657082.429844438,
+    0.0
+   ]
+  },
+  {
+   "code": 2141,
+   "name": "NAD83(CSRS98) / MTM zone 4",
+   "replaced_by": [
+    2946
+   ],
+   "point": [
+    -61.5,
+    49.584999999999994
+   ],
+   "proj": [
+    304799.8163111148,
+    5494138.045278377,
+    0.0
+   ]
+  },
+  {
+   "code": 2142,
+   "name": "NAD83(CSRS98) / MTM zone 5",
+   "replaced_by": [
+    2947
+   ],
+   "point": [
+    -64.5,
+    54.185
+   ],
+   "proj": [
+    304799.9216798016,
+    6005905.926312634,
+    0.0
+   ]
+  },
+  {
+   "code": 2143,
+   "name": "NAD83(CSRS98) / MTM zone 6",
+   "replaced_by": [
+    2948
+   ],
+   "point": [
+    -67.5,
+    53.155
+   ],
+   "proj": [
+    304799.992537891,
+    5891279.614793909,
+    0.0
+   ]
+  },
+  {
+   "code": 2144,
+   "name": "NAD83(CSRS98) / MTM zone 7",
+   "replaced_by": [
+    2949
+   ],
+   "point": [
+    -70.5,
+    53.405
+   ],
+   "proj": [
+    304800.07005173765,
+    5919099.722736303,
+    0.0
+   ]
+  },
+  {
+   "code": 2145,
+   "name": "NAD83(CSRS98) / MTM zone 8",
+   "replaced_by": [
+    2950
+   ],
+   "point": [
+    -73.5,
+    53.760000000000005
+   ],
+   "proj": [
+    304800.1470236315,
+    5958606.286979981,
+    0.0
+   ]
+  },
+  {
+   "code": 2146,
+   "name": "NAD83(CSRS98) / MTM zone 9",
+   "replaced_by": [
+    2951
+   ],
+   "point": [
+    -76.5,
+    53.995
+   ],
+   "proj": [
+    304800.2222082768,
+    5984759.822119262,
+    0.0
+   ]
+  },
+  {
+   "code": 2147,
+   "name": "NAD83(CSRS98) / MTM zone 10",
+   "replaced_by": [
+    2952
+   ],
+   "point": [
+    -78.925,
+    54.34
+   ],
+   "proj": [
+    342194.4988048098,
+    6023309.75097892,
+    0.0
+   ]
+  },
+  {
+   "code": 2148,
+   "name": "NAD83(CSRS98) / UTM zone 21N",
+   "replaced_by": [
+    2962
+   ],
+   "point": [
+    -58.55,
+    51.105000000000004
+   ],
+   "proj": [
+    391485.3003514757,
+    5662642.749703592,
+    0.0
+   ]
+  },
+  {
+   "code": 2149,
+   "name": "NAD83(CSRS98) / UTM zone 18N",
+   "replaced_by": [
+    2959
+   ],
+   "point": [
+    -75.0,
+    53.805
+   ],
+   "proj": [
+    500000.1844159608,
+    5961825.0721439645,
+    0.0
+   ]
+  },
+  {
+   "code": 2150,
+   "name": "NAD83(CSRS98) / UTM zone 17N",
+   "replaced_by": [
+    2958
+   ],
+   "point": [
+    -78.925,
+    54.34
+   ],
+   "proj": [
+    634895.4363719005,
+    6023335.171658765,
+    0.0
+   ]
+  },
+  {
+   "code": 2151,
+   "name": "NAD83(CSRS98) / UTM zone 13N",
+   "replaced_by": [
+    2957
+   ],
+   "point": [
+    -105.0,
+    54.5
+   ],
+   "proj": [
+    500000.83979247045,
+    6039153.3295281455,
+    0.0
+   ]
+  },
+  {
+   "code": 2152,
+   "name": "NAD83(CSRS98) / UTM zone 12N",
+   "replaced_by": [
+    2956
+   ],
+   "point": [
+    -111.0,
+    54.5
+   ],
+   "proj": [
+    500000.9410386376,
+    6039153.404658082,
+    0.0
+   ]
+  },
+  {
+   "code": 2153,
+   "name": "NAD83(CSRS98) / UTM zone 11N",
+   "replaced_by": [
+    2955
+   ],
+   "point": [
+    -117.0,
+    54.5
+   ],
+   "proj": [
+    500001.02967648045,
+    6039153.485529733,
+    0.0
+   ]
+  },
+  {
+   "code": 2155,
+   "name": "American Samoa 1962 / American Samoa Lambert",
+   "replaced_by": [
+    2194
+   ],
+   "point": [
+    -169.475,
+    -13.79
+   ],
+   "proj": [
+    7772359.915089107,
+    -148194.06830602864,
+    0.0
+   ]
+  },
+  {
+   "code": 2156,
+   "name": "NAD83(HARN) / UTM zone 59S",
+   "replaced_by": [
+    2195
+   ],
+   "point": [
+    -169.475,
+    -13.79
+   ],
+   "proj": [
+    2647730.1988497865,
+    8385699.528952697,
+    0.0
+   ]
+  },
+  {
+   "code": 2163,
+   "name": "US National Atlas Equal Area",
+   "replaced_by": [
+    9311
+   ],
+   "point": [
+    -129.01999999999998,
+    45.135
+   ],
+   "proj": [
+    -2215235.821120684,
+    420644.41104464413,
+    0.0
+   ]
+  },
+  {
+   "code": 2166,
+   "name": "Pulkovo 1942(83) / Gauss Kruger zone 3",
+   "replaced_by": [
+    2397
+   ],
+   "point": [
+    10.21,
+    50.955
+   ],
+   "proj": [
+    3585147.8674119753,
+    5647928.483317871,
+    0.0
+   ]
+  },
+  {
+   "code": 2167,
+   "name": "Pulkovo 1942(83) / Gauss Kruger zone 4",
+   "replaced_by": [
+    2398
+   ],
+   "point": [
+    12.0,
+    51.855000000000004
+   ],
+   "proj": [
+    4500127.006112608,
+    5747357.052382233,
+    0.0
+   ]
+  },
+  {
+   "code": 2168,
+   "name": "Pulkovo 1942(83) / Gauss Kruger zone 5",
+   "replaced_by": [
+    2399
+   ],
+   "point": [
+    10.21,
+    50.955
+   ],
+   "proj": [
+    5163633.742852688,
+    5658156.466422601,
+    0.0
+   ]
+  },
+  {
+   "code": 2170,
+   "name": "MGI / Slovenia Grid",
+   "replaced_by": [
+    3911
+   ],
+   "point": [
+    14.995000000000001,
+    46.150000000000006
+   ],
+   "proj": [
+    499613.81690065074,
+    5111728.304860258,
+    0.0
+   ]
+  },
+  {
+   "code": 2171,
+   "name": "Pulkovo 1942(58) / Poland zone I",
+   "replaced_by": [
+    3120
+   ],
+   "point": [
+    21.075,
+    50.67
+   ],
+   "proj": [
+    4636534.768747185,
+    5652036.440715287,
+    0.0
+   ]
+  },
+  {
+   "code": 2191,
+   "name": "Madeira 1936 / UTM zone 28N",
+   "replaced_by": [
+    2942,
+    2943
+   ],
+   "point": [
+    -16.77,
+    32.75
+   ],
+   "proj": [
+    334171.00412245234,
+    3625013.5176809514,
+    0.0
+   ]
+  },
+  {
+   "code": 2192,
+   "name": "ED50 / France EuroLambert",
+   "replaced_by": [
+    2154
+   ],
+   "point": [
+    1.6800000000000002,
+    46.735
+   ],
+   "proj": [
+    549866.9127276579,
+    2193092.2242807136,
+    0.0
+   ]
+  },
+  {
+   "code": 2194,
+   "name": "American Samoa 1962 / American Samoa Lambert",
+   "replaced_by": [
+    3102
+   ],
+   "point": [
+    -169.475,
+    -13.79
+   ],
+   "proj": [
+    686258.19250865,
+    172806.97172056473,
+    0.0
+   ]
+  },
+  {
+   "code": 2199,
+   "name": "Albanian 1987 / Gauss Kruger zone 4",
+   "replaced_by": [
+    2462
+   ],
+   "point": [
+    19.759999999999998,
+    41.150000000000006
+   ],
+   "proj": [
+    4396038.822767808,
+    4558103.928809509,
+    0.0
+   ]
+  },
+  {
+   "code": 2214,
+   "name": "Douala 1948 / AOF west",
+   "replaced_by": [
+    3119
+   ],
+   "point": [
+    9.425,
+    3.575
+   ],
+   "proj": [
+    880809.1814312113,
+    1395071.1703361142,
+    0.0
+   ]
+  },
+  {
+   "code": 2244,
+   "name": "NAD83 / Indiana East (ftUS)",
+   "replaced_by": [
+    2965
+   ],
+   "point": [
+    -85.685,
+    39.86
+   ],
+   "proj": [
+    322936.7085062442,
+    1677616.9018060814,
+    0.0
+   ]
+  },
+  {
+   "code": 2245,
+   "name": "NAD83 / Indiana West (ftUS)",
+   "replaced_by": [
+    2966
+   ],
+   "point": [
+    -87.16999999999999,
+    39.77
+   ],
+   "proj": [
+    2928388.7483260697,
+    1644844.5512544184,
+    0.0
+   ]
+  },
+  {
+   "code": 2291,
+   "name": "NAD83(CSRS98) / Prince Edward Isl. Stereographic (NAD83)",
+   "replaced_by": [
+    2292
+   ],
+   "point": [
+    -63.19499999999999,
+    46.495000000000005
+   ],
+   "proj": [
+    385030.6051247244,
+    716092.6869030101,
+    0.0
+   ]
+  },
+  {
+   "code": 2292,
+   "name": "NAD83(CSRS98) / Prince Edward Isl. Stereographic (NAD83)",
+   "replaced_by": [
+    2954
+   ],
+   "point": [
+    -63.19499999999999,
+    46.495000000000005
+   ],
+   "proj": [
+    385030.4409419754,
+    716091.5940034277,
+    0.0
+   ]
+  },
+  {
+   "code": 2297,
+   "name": "Qornoq 1927 / Greenland zone 1 east",
+   "replaced_by": [],
+   "point": [
+    -38.435,
+    82.33500000000001
+   ],
+   "proj": null
+  },
+  {
+   "code": 2298,
+   "name": "Qornoq 1927 / Greenland zone 2 east",
+   "replaced_by": [],
+   "point": [
+    -29.165,
+    79.5
+   ],
+   "proj": null
+  },
+  {
+   "code": 2300,
+   "name": "Qornoq 1927 / Greenland zone 3 east",
+   "replaced_by": [],
+   "point": [
+    -30.560000000000002,
+    76.5
+   ],
+   "proj": null
+  },
+  {
+   "code": 2302,
+   "name": "Qornoq 1927 / Greenland zone 4 east",
+   "replaced_by": [],
+   "point": [
+    -27.605,
+    73.5
+   ],
+   "proj": null
+  },
+  {
+   "code": 2400,
+   "name": "RT90 2.5 gon W",
+   "replaced_by": [
+    3021
+   ],
+   "point": [
+    17.1,
+    62.015
+   ],
+   "proj": [
+    1567816.583288079,
+    6878648.995244184,
+    0.0
+   ]
+  },
+  {
+   "code": 2492,
+   "name": "Pulkovo 1942 / Gauss-Kruger CM 9E",
+   "replaced_by": [],
+   "point": [
+    10.965,
+    52.195
+   ],
+   "proj": [
+    634360.8485799546,
+    5786963.336372795,
+    0.0
+   ]
+  },
+  {
+   "code": 2493,
+   "name": "Pulkovo 1942 / Gauss-Kruger CM 15E",
+   "replaced_by": [],
+   "point": [
+    15.0,
+    50.335
+   ],
+   "proj": [
+    500000.0,
+    5578207.920000927,
+    0.0
+   ]
+  },
+  {
+   "code": 2550,
+   "name": "Samboja / UTM zone 50S",
+   "replaced_by": [
+    2933
+   ],
+   "point": [
+    117.35499999999999,
+    -0.62
+   ],
+   "proj": [
+    539495.9869677778,
+    9931476.589551838,
+    0.0
+   ]
+  },
+  {
+   "code": 2577,
+   "name": "Pulkovo 1942 / 3-degree Gauss-Kruger zone 60",
+   "replaced_by": [
+    3389
+   ],
+   "point": [
+    180.0,
+    66.94500000000001
+   ],
+   "proj": [
+    59999849.45549809,
+    7428346.215343874,
+    0.0
+   ]
+  },
+  {
+   "code": 2600,
+   "name": "Lietuvos Koordinoei Sistema 1994",
+   "replaced_by": [
+    3346
+   ],
+   "point": [
+    22.92,
+    55.17
+   ],
+   "proj": [
+    431194.03974992706,
+    6115464.679789118,
+    0.0
+   ]
+  },
+  {
+   "code": 2694,
+   "name": "Pulkovo 1995 / 3-degree Gauss-Kruger zone 60",
+   "replaced_by": [
+    3390
+   ],
+   "point": [
+    180.0,
+    66.94500000000001
+   ],
+   "proj": [
+    59999867.53073292,
+    7428356.868246932,
+    0.0
+   ]
+  },
+  {
+   "code": 2889,
+   "name": "NAD83(HARN) / Indiana East (ftUS)",
+   "replaced_by": [
+    2967
+   ],
+   "point": [
+    -85.685,
+    39.86
+   ],
+   "proj": [
+    322938.07307829853,
+    1677614.1334616137,
+    0.0
+   ]
+  },
+  {
+   "code": 2890,
+   "name": "NAD83(HARN) / Indiana West (ftUS)",
+   "replaced_by": [
+    2968
+   ],
+   "point": [
+    -87.16999999999999,
+    39.77
+   ],
+   "proj": [
+    2928390.2336027343,
+    1644841.8141595945,
+    0.0
+   ]
+  },
+  {
+   "code": 2934,
+   "name": "Segara (Jakarta) / NEIEZ",
+   "replaced_by": [
+    3000
+   ],
+   "point": [
+    116.805,
+    0.02499999999999991
+   ],
+   "proj": [
+    -7197618.706175368,
+    902715.2093693333,
+    0.0
+   ]
+  },
+  {
+   "code": 2944,
+   "name": "NAD83(CSRS) / SCoPQ zone 2",
+   "replaced_by": [],
+   "point": [
+    -55.5,
+    50.18
+   ],
+   "proj": [
+    304799.6624487175,
+    5560311.356376559,
+    0.0
+   ]
+  },
+  {
+   "code": 2979,
+   "name": "K0 1949 / UTM zone 42S",
+   "replaced_by": [
+    3336
+   ],
+   "point": [
+    69.655,
+    -49.19
+   ],
+   "proj": [
+    547727.9739022221,
+    4551107.55817069,
+    0.0
+   ]
+  },
+  {
+   "code": 2982,
+   "name": "IGN72 Grand Terre / UTM zone 58S",
+   "replaced_by": [
+    3060
+   ],
+   "point": [
+    165.505,
+    -21.240000000000002
+   ],
+   "proj": [
+    552061.0859746514,
+    7650871.912432626,
+    0.0
+   ]
+  },
+  {
+   "code": 2983,
+   "name": "ST87 Ouvea / UTM zone 58S",
+   "replaced_by": [
+    3164
+   ],
+   "point": [
+    166.575,
+    -20.555
+   ],
+   "proj": [
+    664190.5528458136,
+    7726279.221874835,
+    0.0
+   ]
+  },
+  {
+   "code": 2984,
+   "name": "RGNC 1991 / Lambert New Caledonia",
+   "replaced_by": [
+    3163
+   ],
+   "point": [
+    165.265,
+    -20.64
+   ],
+   "proj": [
+    323396.63401866617,
+    395032.46102764487,
+    0.0
+   ]
+  },
+  {
+   "code": 2989,
+   "name": "RRAF 1991 / UTM zone 20N",
+   "replaced_by": [
+    4559
+   ],
+   "point": [
+    -60.59,
+    16.31
+   ],
+   "proj": [
+    757512.764867495,
+    1804747.935154358,
+    0.0
+   ]
+  },
+  {
+   "code": 2990,
+   "name": "Reunion 1947 / TM Reunion",
+   "replaced_by": [
+    3727
+   ],
+   "point": [
+    55.535,
+    -21.115000000000002
+   ],
+   "proj": [
+    50787.14999087145,
+    161562.9423017989,
+    0.0
+   ]
+  },
+  {
+   "code": 3038,
+   "name": "ETRS89 / TM26",
+   "replaced_by": [],
+   "point": [
+    -27.0,
+    45.45
+   ],
+   "proj": [
+    500000.0,
+    5032941.674125001,
+    0.0
+   ]
+  },
+  {
+   "code": 3039,
+   "name": "ETRS89 / TM27",
+   "replaced_by": [],
+   "point": [
+    -21.0,
+    47.05
+   ],
+   "proj": [
+    499999.9999999993,
+    5210720.453061027,
+    0.0
+   ]
+  },
+  {
+   "code": 3050,
+   "name": "ETRS89 / TM38",
+   "replaced_by": [],
+   "point": [
+    45.0,
+    55.975
+   ],
+   "proj": [
+    500000.0,
+    6203297.1605132725,
+    0.0
+   ]
+  },
+  {
+   "code": 3051,
+   "name": "ETRS89 / TM39",
+   "replaced_by": [],
+   "point": [
+    51.0,
+    55.5
+   ],
+   "proj": [
+    500000.0000000012,
+    6150433.21757217,
+    0.0
+   ]
+  },
+  {
+   "code": 3073,
+   "name": "NAD83 / Maine CS2000 Central",
+   "replaced_by": [
+    3463
+   ],
+   "point": [
+    -69.18,
+    45.61
+   ],
+   "proj": [
+    495709.77078438434,
+    290014.1851581552,
+    0.0
+   ]
+  },
+  {
+   "code": 3076,
+   "name": "NAD83(HARN) / Maine CS2000 Central",
+   "replaced_by": [
+    3464
+   ],
+   "point": [
+    -69.18,
+    45.61
+   ],
+   "proj": [
+    495709.7690550293,
+    290013.1509135304,
+    0.0
+   ]
+  },
+  {
+   "code": 3103,
+   "name": "Mauritania 1999 / UTM zone 28N",
+   "replaced_by": [
+    3343,
+    3367
+   ],
+   "point": [
+    -14.54,
+    19.09
+   ],
+   "proj": [
+    548390.4065205671,
+    2110667.050113763,
+    0.0
+   ]
+  },
+  {
+   "code": 3104,
+   "name": "Mauritania 1999 / UTM zone 29N",
+   "replaced_by": [
+    3344,
+    3368
+   ],
+   "point": [
+    -9.0,
+    21.025
+   ],
+   "proj": [
+    500000.0,
+    2324716.5452737296,
+    0.0
+   ]
+  },
+  {
+   "code": 3105,
+   "name": "Mauritania 1999 / UTM zone 30N",
+   "replaced_by": [
+    3345,
+    3369
+   ],
+   "point": [
+    -5.4,
+    20.615
+   ],
+   "proj": [
+    249875.36590474486,
+    2281190.117043464,
+    0.0
+   ]
+  },
+  {
+   "code": 3143,
+   "name": "Fiji 1986 / Fiji Map Grid",
+   "replaced_by": [
+    3460
+   ],
+   "point": [
+    179.32999999999998,
+    -16.615
+   ],
+   "proj": [
+    2061861.6536446009,
+    4042506.752206262,
+    0.0
+   ]
+  },
+  {
+   "code": 3146,
+   "name": "Pulkovo 1942 / 3-degree Gauss-Kruger zone 6",
+   "replaced_by": [],
+   "point": [
+    19.35,
+    54.81
+   ],
+   "proj": [
+    6586798.584397384,
+    6077021.452104382,
+    0.0
+   ]
+  },
+  {
+   "code": 3147,
+   "name": "Pulkovo 1942 / 3-degree Gauss-Kruger CM 18E",
+   "replaced_by": [],
+   "point": [
+    19.35,
+    54.81
+   ],
+   "proj": [
+    586798.5843973835,
+    6077021.452104382,
+    0.0
+   ]
+  },
+  {
+   "code": 3150,
+   "name": "Pulkovo 1995 / 3-degree Gauss-Kruger zone 6",
+   "replaced_by": [],
+   "point": [
+    19.35,
+    54.81
+   ],
+   "proj": [
+    6586927.318586011,
+    6077051.811852264,
+    0.0
+   ]
+  },
+  {
+   "code": 3151,
+   "name": "Pulkovo 1995 / 3-degree Gauss-Kruger CM 18E",
+   "replaced_by": [],
+   "point": [
+    19.35,
+    54.81
+   ],
+   "proj": [
+    586927.3185860113,
+    6077051.811852264,
+    0.0
+   ]
+  },
+  {
+   "code": 3314,
+   "name": "Katanga 1955 / Katanga Lambert",
+   "replaced_by": [
+    3985
+   ],
+   "point": [
+    26.259999999999998,
+    -9.225000000000001
+   ],
+   "proj": [
+    28544.721872387672,
+    -1023182.0434103874,
+    0.0
+   ]
+  },
+  {
+   "code": 3315,
+   "name": "Katanga 1955 / Katanga TM",
+   "replaced_by": [
+    3986,
+    3987,
+    3988,
+    3989
+   ],
+   "point": [
+    26.259999999999998,
+    -9.225000000000001
+   ],
+   "proj": [
+    28565.90518455595,
+    -24889.37298942248,
+    0.0
+   ]
+  },
+  {
+   "code": 3349,
+   "name": "WGS 84 / PDC Mercator",
+   "replaced_by": [
+    3832
+   ],
+   "point": [
+    -164.655,
+    3.335000000000001
+   ],
+   "proj": [
+    -1631387.1375754247,
+    368976.4062133366,
+    0.0
+   ]
+  },
+  {
+   "code": 3356,
+   "name": "Grand Cayman 1959 / UTM zone 17N",
+   "replaced_by": [
+    6128
+   ],
+   "point": [
+    -81.25,
+    19.310000000000002
+   ],
+   "proj": [
+    473653.6253096145,
+    2135006.0893219784,
+    0.0
+   ]
+  },
+  {
+   "code": 3357,
+   "name": "Little Cayman 1961 / UTM zone 17N",
+   "replaced_by": [
+    6129
+   ],
+   "point": [
+    -79.91499999999999,
+    19.705
+   ],
+   "proj": [
+    613651.0710730322,
+    2179043.9862351543,
+    0.0
+   ]
+  },
+  {
+   "code": 3359,
+   "name": "NAD83(HARN) / North Carolina (ftUS)",
+   "replaced_by": [
+    3404
+   ],
+   "point": [
+    -79.85499999999999,
+    35.21
+   ],
+   "proj": [
+    1744622.3058545643,
+    532454.5007095226,
+    0.0
+   ]
+  },
+  {
+   "code": 3366,
+   "name": "Hong Kong 1963 Grid System",
+   "replaced_by": [
+    3407
+   ],
+   "point": [
+    114.135,
+    22.354999999999997
+   ],
+   "proj": [
+    35757.07802331449,
+    23817.190147921327,
+    0.0
+   ]
+  },
+  {
+   "code": 3454,
+   "name": "NAD83 / South Dakota North (ftUS)",
+   "replaced_by": [
+    4457
+   ],
+   "point": [
+    -100.25999999999999,
+    45.045
+   ],
+   "proj": [
+    1987459.3916579774,
+    988468.233921593,
+    0.0
+   ]
+  },
+  {
+   "code": 3752,
+   "name": "WGS 84 / Mercator 41",
+   "replaced_by": [
+    3994
+   ],
+   "point": [
+    172.505,
+    -42.5
+   ],
+   "proj": null
+  },
+  {
+   "code": 3774,
+   "name": "NAD27 / Alberta 3TM ref merid 120 W",
+   "replaced_by": [
+    3800
+   ],
+   "point": [
+    -119.25,
+    56.44
+   ],
+   "proj": [
+    46332.312098526,
+    6256967.484737687,
+    0.0
+   ]
+  },
+  {
+   "code": 3778,
+   "name": "NAD83 / Alberta 3TM ref merid 120 W",
+   "replaced_by": [
+    3801
+   ],
+   "point": [
+    -119.25,
+    56.44
+   ],
+   "proj": [
+    46256.40122584206,
+    6257181.704696059,
+    0.0
+   ]
+  },
+  {
+   "code": 3782,
+   "name": "NAD83(CSRS) / Alberta 3TM ref merid 120 W",
+   "replaced_by": [
+    3802
+   ],
+   "point": [
+    -119.25,
+    56.44
+   ],
+   "proj": [
+    46257.466382489154,
+    6257180.998460622,
+    0.0
+   ]
+  },
+  {
+   "code": 3785,
+   "name": "Popular Visualisation CRS / Mercator",
+   "replaced_by": [
+    3857
+   ],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 3786,
+   "name": "World Equidistant Cylindrical (Sphere)",
+   "replaced_by": [
+    4088
+   ],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 3787,
+   "name": "MGI / Slovene National Grid",
+   "replaced_by": [
+    3912
+   ],
+   "point": [
+    14.995000000000001,
+    46.150000000000006
+   ],
+   "proj": [
+    499613.81690065074,
+    111728.30486025754,
+    0.0
+   ]
+  },
+  {
+   "code": 3842,
+   "name": "Pulkovo 1942(83) / 3-degree Gauss-Kruger zone 7",
+   "replaced_by": [
+    4417
+   ],
+   "point": [
+    21.0,
+    47.845
+   ],
+   "proj": [
+    6724661.085794807,
+    5305687.425129567,
+    0.0
+   ]
+  },
+  {
+   "code": 3843,
+   "name": "Pulkovo 1942(83) / 3-degree Gauss-Kruger zone 8",
+   "replaced_by": [
+    4434
+   ],
+   "point": [
+    22.7,
+    48.43
+   ],
+   "proj": [
+    6847894.257856747,
+    5377058.878728377,
+    0.0
+   ]
+  },
+  {
+   "code": 3907,
+   "name": "MGI 1901 / Balkans zone 5",
+   "replaced_by": [
+    8677
+   ],
+   "point": [
+    14.940000000000001,
+    44.915000000000006
+   ],
+   "proj": [
+    5495635.377843957,
+    4974516.621786915,
+    0.0
+   ]
+  },
+  {
+   "code": 3908,
+   "name": "MGI 1901 / Balkans zone 6",
+   "replaced_by": [
+    8678
+   ],
+   "point": [
+    18.005000000000003,
+    44.17
+   ],
+   "proj": [
+    6500804.428537607,
+    4891725.5912587205,
+    0.0
+   ]
+  },
+  {
+   "code": 3909,
+   "name": "MGI 1901 / Balkans zone 7",
+   "replaced_by": [
+    6316
+   ],
+   "point": [
+    21.005000000000003,
+    44.019999999999996
+   ],
+   "proj": [
+    7500835.117189736,
+    4875050.837943469,
+    0.0
+   ]
+  },
+  {
+   "code": 3910,
+   "name": "MGI 1901 / Balkans zone 8",
+   "replaced_by": [
+    8679
+   ],
+   "point": [
+    22.77,
+    42.905
+   ],
+   "proj": [
+    8400025.8532974,
+    4751906.802998908,
+    0.0
+   ]
+  },
+  {
+   "code": 3911,
+   "name": "MGI 1901 / Slovenia Grid",
+   "replaced_by": [
+    8686
+   ],
+   "point": [
+    14.995000000000001,
+    46.150000000000006
+   ],
+   "proj": [
+    499984.07173016475,
+    5111762.108438109,
+    0.0
+   ]
+  },
+  {
+   "code": 3973,
+   "name": "WGS 84 / NSIDC EASE-Grid North",
+   "replaced_by": [
+    6931
+   ],
+   "point": [
+    0.0,
+    45.0
+   ],
+   "proj": [
+    0.0,
+    -4876157.791358518,
+    0.0
+   ]
+  },
+  {
+   "code": 3974,
+   "name": "WGS 84 / NSIDC EASE-Grid South",
+   "replaced_by": [
+    6932
+   ],
+   "point": [
+    0.0,
+    -45.0
+   ],
+   "proj": [
+    0.0,
+    4876157.791358519,
+    0.0
+   ]
+  },
+  {
+   "code": 3975,
+   "name": "WGS 84 / NSIDC EASE-Grid Global",
+   "replaced_by": [
+    6933
+   ],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 3985,
+   "name": "Katanga 1955 / Katanga Lambert",
+   "replaced_by": [
+    4415
+   ],
+   "point": [
+    26.259999999999998,
+    -9.225000000000001
+   ],
+   "proj": [
+    528544.7218723877,
+    -1546271.2396486474,
+    0.0
+   ]
+  },
+  {
+   "code": 4001,
+   "name": "Unknown datum based upon the Airy 1830 ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4002,
+   "name": "Unknown datum based upon the Airy Modified 1849 ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4003,
+   "name": "Unknown datum based upon the Australian National Spheroid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4004,
+   "name": "Unknown datum based upon the Bessel 1841 ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4005,
+   "name": "Unknown datum based upon the Bessel Modified ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4006,
+   "name": "Unknown datum based upon the Bessel Namibia ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4007,
+   "name": "Unknown datum based upon the Clarke 1858 ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4008,
+   "name": "Unknown datum based upon the Clarke 1866 ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4009,
+   "name": "Unknown datum based upon the Clarke 1866 Michigan ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4010,
+   "name": "Unknown datum based upon the Clarke 1880 (Benoit) ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4011,
+   "name": "Unknown datum based upon the Clarke 1880 (IGN) ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4012,
+   "name": "Unknown datum based upon the Clarke 1880 (RGS) ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4013,
+   "name": "Unknown datum based upon the Clarke 1880 (Arc) ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4014,
+   "name": "Unknown datum based upon the Clarke 1880 (SGA 1922) ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4015,
+   "name": "Unknown datum based upon the Everest 1830 (1937 Adjustment) ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4016,
+   "name": "Unknown datum based upon the Everest 1830 (1967 Definition) ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4018,
+   "name": "Unknown datum based upon the Everest 1830 Modified ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4019,
+   "name": "Unknown datum based upon the GRS 1980 ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4020,
+   "name": "Unknown datum based upon the Helmert 1906 ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4021,
+   "name": "Unknown datum based upon the Indonesian National Spheroid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4022,
+   "name": "Unknown datum based upon the International 1924 ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4024,
+   "name": "Unknown datum based upon the Krassowsky 1940 ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4025,
+   "name": "Unknown datum based upon the NWL 9D ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4027,
+   "name": "Unknown datum based upon the Plessis 1817 ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4028,
+   "name": "Unknown datum based upon the Struve 1860 ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4029,
+   "name": "Unknown datum based upon the War Office ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4030,
+   "name": "Unknown datum based upon the WGS 84 ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4031,
+   "name": "Unknown datum based upon the GEM 10C ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4032,
+   "name": "Unknown datum based upon the OSU86F ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4033,
+   "name": "Unknown datum based upon the OSU91A ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4034,
+   "name": "Unknown datum based upon the Clarke 1880 ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4035,
+   "name": "Unknown datum based upon the Authalic Sphere",
+   "replaced_by": [
+    4047
+   ],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4036,
+   "name": "Unknown datum based upon the GRS 1967 ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4041,
+   "name": "Unknown datum based upon the Average Terrestrial System 1977 ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4042,
+   "name": "Unknown datum based upon the Everest (1830 Definition) ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4043,
+   "name": "Unknown datum based upon the WGS 72 ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4044,
+   "name": "Unknown datum based upon the Everest 1830 (1962 Definition) ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4045,
+   "name": "Unknown datum based upon the Everest 1830 (1975 Definition) ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4047,
+   "name": "Unspecified datum based upon the GRS 1980 Authalic Sphere",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4052,
+   "name": "Unspecified datum based upon the Clarke 1866 Authalic Sphere",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4053,
+   "name": "Unspecified datum based upon the International 1924 Authalic Sphere",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4054,
+   "name": "Unspecified datum based upon the Hughes 1980 ellipsoid",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4055,
+   "name": "Popular Visualisation CRS",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4088,
+   "name": "World Equidistant Cylindrical (Sphere)",
+   "replaced_by": [
+    4087
+   ],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4125,
+   "name": "Samboja",
+   "replaced_by": [
+    4613
+   ],
+   "point": [
+    117.35499999999999,
+    -0.62
+   ],
+   "proj": [
+    117.35499999999999,
+    -0.62,
+    0.0
+   ]
+  },
+  {
+   "code": 4126,
+   "name": "LKS94 (ETRS89)",
+   "replaced_by": [
+    4669
+   ],
+   "point": [
+    22.92,
+    55.17
+   ],
+   "proj": [
+    22.92,
+    55.17,
+    0.0
+   ]
+  },
+  {
+   "code": 4140,
+   "name": "NAD83(CSRS98)",
+   "replaced_by": [
+    4617
+   ],
+   "point": [
+    -88.55,
+    53.585
+   ],
+   "proj": [
+    -88.54999237282172,
+    53.58499051341058,
+    0.0
+   ]
+  },
+  {
+   "code": 4172,
+   "name": "POSGAR",
+   "replaced_by": [
+    4190,
+    4694
+   ],
+   "point": [
+    -63.11,
+    -40.095
+   ],
+   "proj": [
+    -63.11,
+    -40.095,
+    0.0
+   ]
+  },
+  {
+   "code": 4185,
+   "name": "Madeira 1936",
+   "replaced_by": [
+    4615,
+    4616
+   ],
+   "point": [
+    -16.77,
+    32.75
+   ],
+   "proj": [
+    -16.77,
+    32.75,
+    0.0
+   ]
+  },
+  {
+   "code": 4226,
+   "name": "Cote d'Ivoire",
+   "replaced_by": [
+    4142,
+    4143
+   ],
+   "point": [
+    -5.545,
+    5.88
+   ],
+   "proj": [
+    -5.545,
+    5.88,
+    0.0
+   ]
+  },
+  {
+   "code": 4228,
+   "name": "Douala",
+   "replaced_by": [
+    4192
+   ],
+   "point": [
+    12.265,
+    7.37
+   ],
+   "proj": [
+    12.265,
+    7.37,
+    0.0
+   ]
+  },
+  {
+   "code": 4233,
+   "name": "Gandajika 1970",
+   "replaced_by": [
+    4684,
+    4685
+   ],
+   "point": [
+    73.185,
+    2.3149999999999995
+   ],
+   "proj": [
+    73.185,
+    2.3149999999999995,
+    0.0
+   ]
+  },
+  {
+   "code": 4234,
+   "name": "Garoua",
+   "replaced_by": [
+    4197
+   ],
+   "point": [
+    12.265,
+    7.37
+   ],
+   "proj": [
+    12.265,
+    7.37,
+    0.0
+   ]
+  },
+  {
+   "code": 4235,
+   "name": "Guyane Francaise",
+   "replaced_by": [
+    4623
+   ],
+   "point": [
+    -52.03,
+    5.495
+   ],
+   "proj": [
+    -52.03,
+    5.495,
+    0.0
+   ]
+  },
+  {
+   "code": 4260,
+   "name": "Manoca",
+   "replaced_by": [
+    4193
+   ],
+   "point": [
+    12.265,
+    7.37
+   ],
+   "proj": [
+    12.265,
+    7.37,
+    0.0
+   ]
+  },
+  {
+   "code": 4264,
+   "name": "Mhast",
+   "replaced_by": [
+    4704,
+    4705
+   ],
+   "point": [
+    11.815,
+    -5.21
+   ],
+   "proj": [
+    11.815,
+    -5.21,
+    0.0
+   ]
+  },
+  {
+   "code": 4268,
+   "name": "NAD27 Michigan",
+   "replaced_by": [
+    4267
+   ],
+   "point": [
+    -86.275,
+    45.004999999999995
+   ],
+   "proj": [
+    -86.275,
+    45.004999999999995,
+    0.0
+   ]
+  },
+  {
+   "code": 4280,
+   "name": "Padang",
+   "replaced_by": [
+    4211
+   ],
+   "point": [
+    100.645,
+    -0.010000000000000231
+   ],
+   "proj": [
+    100.645,
+    -0.010000000000000231,
+    0.0
+   ]
+  },
+  {
+   "code": 4287,
+   "name": "Qornoq",
+   "replaced_by": [
+    4194
+   ],
+   "point": [
+    -33.505,
+    71.7
+   ],
+   "proj": [
+    -33.505,
+    71.7,
+    0.0
+   ]
+  },
+  {
+   "code": 4291,
+   "name": "SAD69",
+   "replaced_by": [
+    4618
+   ],
+   "point": [
+    -58.5,
+    -21.72
+   ],
+   "proj": [
+    -58.5,
+    -21.72,
+    0.0
+   ]
+  },
+  {
+   "code": 4294,
+   "name": "Segora",
+   "replaced_by": [
+    4613
+   ],
+   "point": [
+    116.27,
+    -2.12
+   ],
+   "proj": [
+    116.27,
+    -2.12,
+    0.0
+   ]
+  },
+  {
+   "code": 4317,
+   "name": "Dealul Piscului 1970",
+   "replaced_by": [
+    4179
+   ],
+   "point": [
+    25.835,
+    45.855000000000004
+   ],
+   "proj": [
+    25.835,
+    45.855000000000004,
+    0.0
+   ]
+  },
+  {
+   "code": 4327,
+   "name": "WGS 84 (geographic 3D)",
+   "replaced_by": [
+    4329
+   ],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4328,
+   "name": "WGS 84 (geocentric)",
+   "replaced_by": [
+    4978
+   ],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    6378137.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4329,
+   "name": "WGS 84 (3D)",
+   "replaced_by": [
+    4979
+   ],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4330,
+   "name": "ITRF88 (geocentric)",
+   "replaced_by": [
+    4910
+   ],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    6378137.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4331,
+   "name": "ITRF89 (geocentric)",
+   "replaced_by": [
+    4911
+   ],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    6378137.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4332,
+   "name": "ITRF90 (geocentric)",
+   "replaced_by": [
+    4912
+   ],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    6378137.010159507,
+    0.3005454321876345,
+    0.21372337566518435
+   ]
+  },
+  {
+   "code": 4333,
+   "name": "ITRF91 (geocentric)",
+   "replaced_by": [
+    4913
+   ],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    6378137.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4334,
+   "name": "ITRF92 (geocentric)",
+   "replaced_by": [
+    4914
+   ],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    6378137.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4335,
+   "name": "ITRF93 (geocentric)",
+   "replaced_by": [
+    4915
+   ],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    6378137.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4336,
+   "name": "ITRF94 (geocentric)",
+   "replaced_by": [
+    4916
+   ],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    6378137.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4337,
+   "name": "ITRF96 (geocentric)",
+   "replaced_by": [
+    4917
+   ],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    6378137.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4338,
+   "name": "ITRF97 (geocentric)",
+   "replaced_by": [
+    4918
+   ],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    6378137.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4339,
+   "name": "Australian Antarctic (3D)",
+   "replaced_by": [
+    4931
+   ],
+   "point": [
+    102.5,
+    -75.0
+   ],
+   "proj": [
+    102.5,
+    -75.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4340,
+   "name": "Australian Antarctic (geocentric)",
+   "replaced_by": [
+    4930
+   ],
+   "point": [
+    102.5,
+    -75.0
+   ],
+   "proj": [
+    -358415.9821110863,
+    1616710.0183568653,
+    -6138765.68225019
+   ]
+  },
+  {
+   "code": 4341,
+   "name": "EST97 (3D)",
+   "replaced_by": [
+    4935
+   ],
+   "point": [
+    24.285,
+    58.760000000000005
+   ],
+   "proj": [
+    24.285,
+    58.760000000000005,
+    0.0
+   ]
+  },
+  {
+   "code": 4342,
+   "name": "EST97 (geocentric)",
+   "replaced_by": [
+    4934
+   ],
+   "point": [
+    24.285,
+    58.760000000000005
+   ],
+   "proj": [
+    3022551.2453005966,
+    1363781.7063741088,
+    5430119.051695312
+   ]
+  },
+  {
+   "code": 4343,
+   "name": "CHTRF95 (3D)",
+   "replaced_by": [
+    4933
+   ],
+   "point": [
+    8.225,
+    46.81
+   ],
+   "proj": [
+    8.225,
+    46.81,
+    0.0
+   ]
+  },
+  {
+   "code": 4344,
+   "name": "CHTRF95 (geocentric)",
+   "replaced_by": [
+    4932
+   ],
+   "point": [
+    8.225,
+    46.81
+   ],
+   "proj": [
+    4328129.279028007,
+    625620.7963762976,
+    4627333.959116049
+   ]
+  },
+  {
+   "code": 4345,
+   "name": "ETRS89 (3D)",
+   "replaced_by": [
+    4937
+   ],
+   "point": [
+    10.954999999999998,
+    58.995000000000005
+   ],
+   "proj": [
+    10.954999999999998,
+    58.995000000000005,
+    0.0
+   ]
+  },
+  {
+   "code": 4346,
+   "name": "ETRS89 (geocentric)",
+   "replaced_by": [
+    4936
+   ],
+   "point": [
+    10.954999999999998,
+    58.995000000000005
+   ],
+   "proj": [
+    3233549.928354258,
+    625903.2558614012,
+    5443649.319654405
+   ]
+  },
+  {
+   "code": 4347,
+   "name": "GDA94 (3D)",
+   "replaced_by": [
+    4939
+   ],
+   "point": [
+    136.215,
+    -28.040000000000003
+   ],
+   "proj": [
+    136.215,
+    -28.040000000000003,
+    0.0
+   ]
+  },
+  {
+   "code": 4348,
+   "name": "GDA94 (geocentric)",
+   "replaced_by": [
+    4938
+   ],
+   "point": [
+    136.215,
+    -28.040000000000003
+   ],
+   "proj": [
+    -4067156.1521582105,
+    3898219.0697482554,
+    -2980418.472577425
+   ]
+  },
+  {
+   "code": 4349,
+   "name": "Hartebeesthoek94 (3D)",
+   "replaced_by": [
+    4941
+   ],
+   "point": [
+    28.09,
+    -36.225
+   ],
+   "proj": [
+    28.09,
+    -36.225,
+    0.0
+   ]
+  },
+  {
+   "code": 4350,
+   "name": "Hartebeesthoek94 (geocentric)",
+   "replaced_by": [
+    4940
+   ],
+   "point": [
+    28.09,
+    -36.225
+   ],
+   "proj": [
+    4544509.736258245,
+    2425523.0101196854,
+    -3748360.926211887
+   ]
+  },
+  {
+   "code": 4351,
+   "name": "IRENET95 (3D)",
+   "replaced_by": [
+    4943
+   ],
+   "point": [
+    -7.95,
+    53.41
+   ],
+   "proj": [
+    -7.95,
+    53.41,
+    0.0
+   ]
+  },
+  {
+   "code": 4352,
+   "name": "IRENET95 (geocentric)",
+   "replaced_by": [
+    4942
+   ],
+   "point": [
+    -7.95,
+    53.41
+   ],
+   "proj": [
+    3773522.169420895,
+    -526976.3042766715,
+    5097873.07333242
+   ]
+  },
+  {
+   "code": 4353,
+   "name": "JGD2000 (3D)",
+   "replaced_by": [
+    4947
+   ],
+   "point": [
+    140.015,
+    31.57
+   ],
+   "proj": [
+    140.015,
+    31.57,
+    0.0
+   ]
+  },
+  {
+   "code": 4354,
+   "name": "JGD2000 (geocentric)",
+   "replaced_by": [
+    4946
+   ],
+   "point": [
+    140.015,
+    31.57
+   ],
+   "proj": [
+    -4167563.155858588,
+    3495141.843488842,
+    3319902.3131385026
+   ]
+  },
+  {
+   "code": 4355,
+   "name": "LKS94 (ETRS89) (3D)",
+   "replaced_by": [
+    4951
+   ],
+   "point": [
+    22.92,
+    55.17
+   ],
+   "proj": [
+    22.92,
+    55.17,
+    0.0
+   ]
+  },
+  {
+   "code": 4356,
+   "name": "LKS94 (ETRS89) (geocentric)",
+   "replaced_by": [
+    4950
+   ],
+   "point": [
+    22.92,
+    55.17
+   ],
+   "proj": [
+    3362820.663602664,
+    1421894.5695559133,
+    5212215.595059456
+   ]
+  },
+  {
+   "code": 4357,
+   "name": "Moznet (3D)",
+   "replaced_by": [
+    4953
+   ],
+   "point": [
+    36.620000000000005,
+    -18.9
+   ],
+   "proj": [
+    36.620000000000005,
+    -18.9,
+    0.0
+   ]
+  },
+  {
+   "code": 4358,
+   "name": "Moznet (geocentric)",
+   "replaced_by": [
+    4952
+   ],
+   "point": [
+    36.620000000000005,
+    -18.9
+   ],
+   "proj": [
+    4844856.644003909,
+    3600732.7082743803,
+    -2052880.2390377852
+   ]
+  },
+  {
+   "code": 4359,
+   "name": "NAD83(CSRS) (3D)",
+   "replaced_by": [
+    4955
+   ],
+   "point": [
+    -95.83500000000001,
+    50.84
+   ],
+   "proj": [
+    -95.83499063088982,
+    50.8399914122211,
+    0.0
+   ]
+  },
+  {
+   "code": 4360,
+   "name": "NAD83(CSRS) (geocentric)",
+   "replaced_by": [
+    4954
+   ],
+   "point": [
+    -95.83500000000001,
+    50.84
+   ],
+   "proj": [
+    -410299.9151448983,
+    -4014938.0320284236,
+    4922323.142100316
+   ]
+  },
+  {
+   "code": 4361,
+   "name": "NAD83(HARN) (3D)",
+   "replaced_by": [
+    4957
+   ],
+   "point": [
+    -139.96499999999997,
+    28.405
+   ],
+   "proj": [
+    -139.96499999999997,
+    28.405,
+    0.0
+   ]
+  },
+  {
+   "code": 4362,
+   "name": "NAD83(HARN) (geocentric)",
+   "replaced_by": [
+    4956
+   ],
+   "point": [
+    -139.96499999999997,
+    28.405
+   ],
+   "proj": [
+    -4298757.756206416,
+    -3611563.213491654,
+    3016059.99150539
+   ]
+  },
+  {
+   "code": 4363,
+   "name": "NZGD2000 (3D)",
+   "replaced_by": [
+    4959
+   ],
+   "point": [
+    174.7,
+    -40.915
+   ],
+   "proj": [
+    174.7,
+    -40.915,
+    0.0
+   ]
+  },
+  {
+   "code": 4364,
+   "name": "NZGD2000 (geocentric)",
+   "replaced_by": [
+    4958
+   ],
+   "point": [
+    174.7,
+    -40.915
+   ],
+   "proj": [
+    -4806142.670933959,
+    445852.37533583865,
+    -4155294.519139602
+   ]
+  },
+  {
+   "code": 4365,
+   "name": "POSGAR 98 (3D)",
+   "replaced_by": [
+    4961
+   ],
+   "point": [
+    -63.11,
+    -40.095
+   ],
+   "proj": [
+    -63.11,
+    -40.095,
+    0.0
+   ]
+  },
+  {
+   "code": 4366,
+   "name": "POSGAR 98 (geocentric)",
+   "replaced_by": [
+    4960
+   ],
+   "point": [
+    -63.11,
+    -40.095
+   ],
+   "proj": [
+    2209799.52086824,
+    -4357637.615008779,
+    -4086060.472695462
+   ]
+  },
+  {
+   "code": 4367,
+   "name": "REGVEN (3D)",
+   "replaced_by": [
+    4963
+   ],
+   "point": [
+    -66.16499999999999,
+    8.695
+   ],
+   "proj": [
+    -66.16499999999999,
+    8.695,
+    0.0
+   ]
+  },
+  {
+   "code": 4368,
+   "name": "REGVEN (geocentric)",
+   "replaced_by": [
+    4962
+   ],
+   "point": [
+    -66.16499999999999,
+    8.695
+   ],
+   "proj": [
+    2548004.2672803123,
+    -5767554.376220919,
+    957830.508459716
+   ]
+  },
+  {
+   "code": 4369,
+   "name": "RGF93 (3D)",
+   "replaced_by": [
+    4965
+   ],
+   "point": [
+    0.2600000000000007,
+    46.355000000000004
+   ],
+   "proj": [
+    0.2600000000000007,
+    46.355000000000004,
+    0.0
+   ]
+  },
+  {
+   "code": 4370,
+   "name": "RGF93 (geocentric)",
+   "replaced_by": [
+    4964
+   ],
+   "point": [
+    0.2600000000000007,
+    46.355000000000004
+   ],
+   "proj": [
+    4409804.852182651,
+    20011.197008624953,
+    4592570.612601057
+   ]
+  },
+  {
+   "code": 4371,
+   "name": "RGFG95 (3D)",
+   "replaced_by": [
+    4967
+   ],
+   "point": [
+    -52.03,
+    5.495
+   ],
+   "proj": [
+    -52.03,
+    5.495,
+    0.0
+   ]
+  },
+  {
+   "code": 4372,
+   "name": "RGFG95 (geocentric)",
+   "replaced_by": [
+    4966
+   ],
+   "point": [
+    -52.03,
+    5.495
+   ],
+   "proj": [
+    3906227.803947463,
+    -5005143.213906432,
+    606693.2429578488
+   ]
+  },
+  {
+   "code": 4373,
+   "name": "RGR92 (3D)",
+   "replaced_by": [
+    4971
+   ],
+   "point": [
+    47.925,
+    -18.26
+   ],
+   "proj": [
+    47.925,
+    -18.26,
+    0.0
+   ]
+  },
+  {
+   "code": 4374,
+   "name": "RGR92 (geocentric)",
+   "replaced_by": [
+    4970
+   ],
+   "point": [
+    47.925,
+    -18.26
+   ],
+   "proj": [
+    4060121.9507364216,
+    4497369.332957972,
+    -1985733.0305863288
+   ]
+  },
+  {
+   "code": 4375,
+   "name": "SIRGAS (3D)",
+   "replaced_by": [
+    4975
+   ],
+   "point": [
+    -58.0,
+    -21.575
+   ],
+   "proj": [
+    -58.0,
+    -21.575,
+    0.0
+   ]
+  },
+  {
+   "code": 4376,
+   "name": "SIRGAS (geocentric)",
+   "replaced_by": [
+    4974
+   ],
+   "point": [
+    -58.0,
+    -21.575
+   ],
+   "proj": [
+    3144515.4923188477,
+    -5032276.71946237,
+    -2330715.427043343
+   ]
+  },
+  {
+   "code": 4377,
+   "name": "SWEREF99 (3D)",
+   "replaced_by": [
+    4977
+   ],
+   "point": [
+    17.1,
+    62.015
+   ],
+   "proj": [
+    17.1,
+    62.015,
+    0.0
+   ]
+  },
+  {
+   "code": 4378,
+   "name": "SWEREF99 (geocentric)",
+   "replaced_by": [
+    4976
+   ],
+   "point": [
+    17.1,
+    62.015
+   ],
+   "proj": [
+    2868069.3072070954,
+    882333.328265538,
+    5609299.845929451
+   ]
+  },
+  {
+   "code": 4379,
+   "name": "Yemen NGN96 (3D)",
+   "replaced_by": [
+    4981
+   ],
+   "point": [
+    49.519999999999996,
+    13.975
+   ],
+   "proj": [
+    49.519999999999996,
+    13.975,
+    0.0
+   ]
+  },
+  {
+   "code": 4380,
+   "name": "Yemen NGN96 (geocentric)",
+   "replaced_by": [
+    4980
+   ],
+   "point": [
+    49.519999999999996,
+    13.975
+   ],
+   "proj": [
+    4018803.9188161367,
+    4708742.131838219,
+    1530297.8655695822
+   ]
+  },
+  {
+   "code": 4381,
+   "name": "RGNC 1991 (3D)",
+   "replaced_by": [
+    4969
+   ],
+   "point": [
+    165.265,
+    -20.64
+   ],
+   "proj": [
+    165.265,
+    -20.64,
+    0.0
+   ]
+  },
+  {
+   "code": 4382,
+   "name": "RGNC 1991 (geocentric)",
+   "replaced_by": [
+    4968
+   ],
+   "point": [
+    165.265,
+    -20.64
+   ],
+   "proj": [
+    -5774853.244540366,
+    1518775.4404996424,
+    -2234140.4038996976
+   ]
+  },
+  {
+   "code": 4383,
+   "name": "RRAF 1991 (3D)",
+   "replaced_by": [
+    4973
+   ],
+   "point": [
+    -60.59,
+    16.31
+   ],
+   "proj": [
+    -60.59,
+    16.31,
+    0.0
+   ]
+  },
+  {
+   "code": 4384,
+   "name": "RRAF 1991 (geocentric)",
+   "replaced_by": [
+    4972
+   ],
+   "point": [
+    -60.59,
+    16.31
+   ],
+   "proj": null
+  },
+  {
+   "code": 4385,
+   "name": "ITRF2000 (geocentric)",
+   "replaced_by": [
+    4919
+   ],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    6378137.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 4386,
+   "name": "ISN93 (3D)",
+   "replaced_by": [
+    4945
+   ],
+   "point": [
+    -18.21,
+    64.775
+   ],
+   "proj": [
+    -18.21,
+    64.775,
+    0.0
+   ]
+  },
+  {
+   "code": 4387,
+   "name": "ISN93 (geocentric)",
+   "replaced_by": [
+    4944
+   ],
+   "point": [
+    -18.21,
+    64.775
+   ],
+   "proj": [
+    2589164.638892025,
+    -851774.7915851765,
+    5747063.656913155
+   ]
+  },
+  {
+   "code": 4388,
+   "name": "LKS92 (3D)",
+   "replaced_by": [
+    4949
+   ],
+   "point": [
+    23.65,
+    56.88
+   ],
+   "proj": [
+    23.65,
+    56.88,
+    0.0
+   ]
+  },
+  {
+   "code": 4389,
+   "name": "LKS92 (geocentric)",
+   "replaced_by": [
+    4948
+   ],
+   "point": [
+    23.65,
+    56.88
+   ],
+   "proj": [
+    3199806.845926976,
+    1401287.8482041964,
+    5318610.326999198
+   ]
+  },
+  {
+   "code": 4474,
+   "name": "Cadastre 1997 / UTM zone 38S",
+   "replaced_by": [
+    5879
+   ],
+   "point": [
+    45.165,
+    -12.83
+   ],
+   "proj": [
+    517676.6450976251,
+    8581926.820309404,
+    0.0
+   ]
+  },
+  {
+   "code": 4631,
+   "name": "K0 1949",
+   "replaced_by": [
+    4698
+   ],
+   "point": [
+    69.655,
+    -49.19
+   ],
+   "proj": [
+    69.655,
+    -49.19,
+    0.0
+   ]
+  },
+  {
+   "code": 4634,
+   "name": "IGN72 Grand Terre",
+   "replaced_by": [
+    4662
+   ],
+   "point": [
+    165.505,
+    -21.240000000000002
+   ],
+   "proj": [
+    165.50172059559438,
+    -21.24276521487679,
+    0.0
+   ]
+  },
+  {
+   "code": 4635,
+   "name": "ST87 Ouvea",
+   "replaced_by": [
+    4750
+   ],
+   "point": [
+    166.575,
+    -20.555
+   ],
+   "proj": [
+    166.575,
+    -20.555,
+    0.0
+   ]
+  },
+  {
+   "code": 4640,
+   "name": "RRAF 1991",
+   "replaced_by": [
+    4558
+   ],
+   "point": [
+    -60.59,
+    16.31
+   ],
+   "proj": [
+    -60.59,
+    16.31,
+    0.0
+   ]
+  },
+  {
+   "code": 4645,
+   "name": "RGNC 1991",
+   "replaced_by": [
+    4749
+   ],
+   "point": [
+    165.265,
+    -20.64
+   ],
+   "proj": [
+    165.265,
+    -20.64,
+    0.0
+   ]
+  },
+  {
+   "code": 4681,
+   "name": "Mauritania 1999",
+   "replaced_by": [
+    4700,
+    4702
+   ],
+   "point": [
+    -12.42,
+    21.01
+   ],
+   "proj": [
+    -12.42,
+    21.01,
+    0.0
+   ]
+  },
+  {
+   "code": 4685,
+   "name": "Gandajika",
+   "replaced_by": [
+    4696
+   ],
+   "point": [
+    21.549999999999997,
+    -4.035
+   ],
+   "proj": [
+    21.549999999999997,
+    -4.035,
+    0.0
+   ]
+  },
+  {
+   "code": 4731,
+   "name": "Viti Levu 1916",
+   "replaced_by": [
+    4752
+   ],
+   "point": [
+    177.97,
+    -17.785
+   ],
+   "proj": [
+    177.97,
+    -17.785,
+    0.0
+   ]
+  },
+  {
+   "code": 4808,
+   "name": "Padang (Jakarta)",
+   "replaced_by": [
+    4813
+   ],
+   "point": [
+    100.645,
+    -0.010000000000000231
+   ],
+   "proj": [
+    -6.162719444444439,
+    -0.010000000000000231,
+    0.0
+   ]
+  },
+  {
+   "code": 4819,
+   "name": "Nord Sahara 1959 (Paris)",
+   "replaced_by": [
+    4307
+   ],
+   "point": [
+    -0.5899999999999999,
+    28.160000000000004
+   ],
+   "proj": [
+    -3.2524768518518514,
+    31.28888888888889,
+    0.0
+   ]
+  },
+  {
+   "code": 4855,
+   "name": "ETRS89 / NTM zone 5",
+   "replaced_by": [
+    5105
+   ],
+   "point": [
+    5.199999999999999,
+    60.480000000000004
+   ],
+   "proj": [
+    83503.1262081567,
+    7707590.25117115,
+    0.0
+   ]
+  },
+  {
+   "code": 4856,
+   "name": "ETRS89 / NTM zone 6",
+   "replaced_by": [
+    5106
+   ],
+   "point": [
+    6.505,
+    60.480000000000004
+   ],
+   "proj": [
+    100274.94854215291,
+    7707552.679365036,
+    0.0
+   ]
+  },
+  {
+   "code": 4857,
+   "name": "ETRS89 / NTM zone 7",
+   "replaced_by": [
+    5107
+   ],
+   "point": [
+    7.5,
+    60.745000000000005
+   ],
+   "proj": [
+    100000.0,
+    7737079.666355601,
+    0.0
+   ]
+  },
+  {
+   "code": 4858,
+   "name": "ETRS89 / NTM zone 8",
+   "replaced_by": [
+    5108
+   ],
+   "point": [
+    8.504999999999999,
+    61.05
+   ],
+   "proj": [
+    100270.11204524066,
+    7771065.033860677,
+    0.0
+   ]
+  },
+  {
+   "code": 4859,
+   "name": "ETRS89 / NTM zone 9",
+   "replaced_by": [
+    5109
+   ],
+   "point": [
+    9.504999999999999,
+    61.345
+   ],
+   "proj": [
+    100267.5982722209,
+    7803937.588713124,
+    0.0
+   ]
+  },
+  {
+   "code": 4860,
+   "name": "ETRS89 / NTM zone 10",
+   "replaced_by": [
+    5110
+   ],
+   "point": [
+    10.504999999999999,
+    62.084999999999994
+   ],
+   "proj": [
+    100261.26103235596,
+    7886403.86270881,
+    0.0
+   ]
+  },
+  {
+   "code": 4861,
+   "name": "ETRS89 / NTM zone 11",
+   "replaced_by": [
+    5111
+   ],
+   "point": [
+    11.504999999999999,
+    63.230000000000004
+   ],
+   "proj": [
+    100251.36871306294,
+    8014021.1794717815,
+    0.0
+   ]
+  },
+  {
+   "code": 4862,
+   "name": "ETRS89 / NTM zone 12",
+   "replaced_by": [
+    5112
+   ],
+   "point": [
+    12.504999999999999,
+    64.02
+   ],
+   "proj": [
+    100244.48382023071,
+    8102083.66367221,
+    0.0
+   ]
+  },
+  {
+   "code": 4863,
+   "name": "ETRS89 / NTM zone 13",
+   "replaced_by": [
+    5113
+   ],
+   "point": [
+    13.504999999999999,
+    66.20500000000001
+   ],
+   "proj": [
+    100225.19981039569,
+    8345698.52048549,
+    0.0
+   ]
+  },
+  {
+   "code": 4864,
+   "name": "ETRS89 / NTM zone 14",
+   "replaced_by": [
+    5114
+   ],
+   "point": [
+    14.504999999999999,
+    66.55
+   ],
+   "proj": [
+    100222.12382786235,
+    8384170.477311586,
+    0.0
+   ]
+  },
+  {
+   "code": 4865,
+   "name": "ETRS89 / NTM zone 15",
+   "replaced_by": [
+    5115
+   ],
+   "point": [
+    15.505,
+    67.75999999999999
+   ],
+   "proj": [
+    100211.27167604417,
+    8519114.481765153,
+    0.0
+   ]
+  },
+  {
+   "code": 4866,
+   "name": "ETRS89 / NTM zone 16",
+   "replaced_by": [
+    5116
+   ],
+   "point": [
+    16.5,
+    68.185
+   ],
+   "proj": [
+    100000.0,
+    8566516.990451913,
+    0.0
+   ]
+  },
+  {
+   "code": 4867,
+   "name": "ETRS89 / NTM zone 17",
+   "replaced_by": [
+    5117
+   ],
+   "point": [
+    17.505000000000003,
+    68.94999999999999
+   ],
+   "proj": [
+    100200.50547413217,
+    8651847.67892564,
+    0.0
+   ]
+  },
+  {
+   "code": 4868,
+   "name": "ETRS89 / NTM zone 18",
+   "replaced_by": [
+    5118
+   ],
+   "point": [
+    18.505000000000003,
+    69.165
+   ],
+   "proj": [
+    100198.55080403379,
+    8675830.90265232,
+    0.0
+   ]
+  },
+  {
+   "code": 4869,
+   "name": "ETRS89 / NTM zone 19",
+   "replaced_by": [
+    5119
+   ],
+   "point": [
+    19.505000000000003,
+    69.34
+   ],
+   "proj": [
+    100196.9576936376,
+    8695352.577656329,
+    0.0
+   ]
+  },
+  {
+   "code": 4870,
+   "name": "ETRS89 / NTM zone 20",
+   "replaced_by": [
+    5120
+   ],
+   "point": [
+    20.505000000000003,
+    69.37
+   ],
+   "proj": [
+    100196.68440098621,
+    8698699.190518316,
+    0.0
+   ]
+  },
+  {
+   "code": 4871,
+   "name": "ETRS89 / NTM zone 21",
+   "replaced_by": [
+    5121
+   ],
+   "point": [
+    21.505000000000003,
+    69.88
+   ],
+   "proj": [
+    100192.03009868936,
+    8755593.383688252,
+    0.0
+   ]
+  },
+  {
+   "code": 4872,
+   "name": "ETRS89 / NTM zone 22",
+   "replaced_by": [
+    5122
+   ],
+   "point": [
+    22.505000000000003,
+    69.81
+   ],
+   "proj": [
+    100192.66984901413,
+    8747784.179573283,
+    0.0
+   ]
+  },
+  {
+   "code": 4873,
+   "name": "ETRS89 / NTM zone 23",
+   "replaced_by": [
+    5123
+   ],
+   "point": [
+    23.505000000000003,
+    69.885
+   ],
+   "proj": [
+    100191.98439107188,
+    8756151.186366547,
+    0.0
+   ]
+  },
+  {
+   "code": 4874,
+   "name": "ETRS89 / NTM zone 24",
+   "replaced_by": [
+    5124
+   ],
+   "point": [
+    24.505000000000003,
+    69.875
+   ],
+   "proj": [
+    100192.07580481983,
+    8755035.581327591,
+    0.0
+   ]
+  },
+  {
+   "code": 4875,
+   "name": "ETRS89 / NTM zone 25",
+   "replaced_by": [
+    5125
+   ],
+   "point": [
+    25.505000000000003,
+    69.91499999999999
+   ],
+   "proj": [
+    100191.71011415363,
+    8759498.009102978,
+    0.0
+   ]
+  },
+  {
+   "code": 4876,
+   "name": "ETRS89 / NTM zone 26",
+   "replaced_by": [
+    5126
+   ],
+   "point": [
+    26.505000000000003,
+    70.455
+   ],
+   "proj": [
+    100186.76406296129,
+    8819742.757181223,
+    0.0
+   ]
+  },
+  {
+   "code": 4877,
+   "name": "ETRS89 / NTM zone 27",
+   "replaced_by": [
+    5127
+   ],
+   "point": [
+    27.505000000000003,
+    70.545
+   ],
+   "proj": [
+    100185.93806851355,
+    8829783.902394291,
+    0.0
+   ]
+  },
+  {
+   "code": 4878,
+   "name": "ETRS89 / NTM zone 28",
+   "replaced_by": [
+    5128
+   ],
+   "point": [
+    28.505000000000003,
+    70.09
+   ],
+   "proj": [
+    100190.10910256648,
+    8779021.368853174,
+    0.0
+   ]
+  },
+  {
+   "code": 4879,
+   "name": "ETRS89 / NTM zone 29",
+   "replaced_by": [
+    5129
+   ],
+   "point": [
+    29.505000000000003,
+    69.97999999999999
+   ],
+   "proj": [
+    100191.11566422686,
+    8766749.497517757,
+    0.0
+   ]
+  },
+  {
+   "code": 4880,
+   "name": "ETRS89 / NTM zone 30",
+   "replaced_by": [
+    5130
+   ],
+   "point": [
+    30.66,
+    70.115
+   ],
+   "proj": [
+    106076.16158554434,
+    8781818.42210239,
+    0.0
+   ]
+  },
+  {
+   "code": 4902,
+   "name": "NDG (Paris)",
+   "replaced_by": [
+    4901
+   ],
+   "point": [
+    7.535,
+    48.245000000000005
+   ],
+   "proj": [
+    5.775300925925926,
+    53.60555555555556,
+    0.0
+   ]
+  },
+  {
+   "code": 4968,
+   "name": "RGNC 1991",
+   "replaced_by": [
+    4906
+   ],
+   "point": [
+    165.265,
+    -20.64
+   ],
+   "proj": [
+    -5774853.244540366,
+    1518775.4404996424,
+    -2234140.4038996976
+   ]
+  },
+  {
+   "code": 4969,
+   "name": "RGNC 1991",
+   "replaced_by": [
+    4907
+   ],
+   "point": [
+    165.265,
+    -20.64
+   ],
+   "proj": [
+    165.265,
+    -20.64,
+    0.0
+   ]
+  },
+  {
+   "code": 4972,
+   "name": "RRAF 1991",
+   "replaced_by": [
+    4556
+   ],
+   "point": [
+    -60.59,
+    16.31
+   ],
+   "proj": null
+  },
+  {
+   "code": 4973,
+   "name": "RRAF 1991",
+   "replaced_by": [
+    4557
+   ],
+   "point": [
+    -60.59,
+    16.31
+   ],
+   "proj": [
+    -60.59,
+    16.31,
+    0.0
+   ]
+  },
+  {
+   "code": 5388,
+   "name": "Peru96 / UTM zone 17S",
+   "replaced_by": [
+    5839
+   ],
+   "point": [
+    -81.0,
+    -10.219999999999999
+   ],
+   "proj": [
+    500000.0,
+    -1129736.627646717,
+    0.0
+   ]
+  },
+  {
+   "code": 5458,
+   "name": "Ocotepeque 1935 / Guatemala Norte",
+   "replaced_by": [
+    5559
+   ],
+   "point": [
+    -90.1,
+    16.84
+   ],
+   "proj": [
+    524866.4163217301,
+    294715.80571345316,
+    0.0
+   ]
+  },
+  {
+   "code": 5466,
+   "name": "Sibun Gorge 1922 / Colony Grid",
+   "replaced_by": [
+    5589
+   ],
+   "point": [
+    -88.47,
+    17.185
+   ],
+   "proj": [
+    83439.06941136229,
+    149482.32047571422,
+    0.0
+   ]
+  },
+  {
+   "code": 5532,
+   "name": "SAD69(96) / UTM zone 22S",
+   "replaced_by": [
+    5858
+   ],
+   "point": [
+    -51.0,
+    -14.335
+   ],
+   "proj": [
+    500049.8789673957,
+    8415266.343880376,
+    0.0
+   ]
+  },
+  {
+   "code": 5570,
+   "name": "UCS-2000 / 3-degree Gauss-Kruger zone 7",
+   "replaced_by": [
+    6381
+   ],
+   "point": [
+    22.325,
+    48.61
+   ],
+   "proj": [
+    7597828.40001298,
+    5387231.594228482,
+    0.0
+   ]
+  },
+  {
+   "code": 5571,
+   "name": "UCS-2000 / 3-degree Gauss-Kruger zone 8",
+   "replaced_by": [
+    6382
+   ],
+   "point": [
+    24.0,
+    49.835
+   ],
+   "proj": [
+    8500120.301317884,
+    5522617.118498901,
+    0.0
+   ]
+  },
+  {
+   "code": 5572,
+   "name": "UCS-2000 / 3-degree Gauss-Kruger zone 9",
+   "replaced_by": [
+    6383
+   ],
+   "point": [
+    27.0,
+    48.599999999999994
+   ],
+   "proj": [
+    9500118.708124736,
+    5385262.466483239,
+    0.0
+   ]
+  },
+  {
+   "code": 5573,
+   "name": "UCS-2000 / 3-degree Gauss-Kruger zone 10",
+   "replaced_by": [
+    6384
+   ],
+   "point": [
+    30.0,
+    47.769999999999996
+   ],
+   "proj": [
+    10500116.789558427,
+    5292966.506606983,
+    0.0
+   ]
+  },
+  {
+   "code": 5574,
+   "name": "UCS-2000 / 3-degree Gauss-Kruger zone 11",
+   "replaced_by": [
+    6385
+   ],
+   "point": [
+    33.0,
+    47.78
+   ],
+   "proj": [
+    11500114.55087781,
+    5294073.884393893,
+    0.0
+   ]
+  },
+  {
+   "code": 5575,
+   "name": "UCS-2000 / 3-degree Gauss-Kruger zone 12",
+   "replaced_by": [
+    6386
+   ],
+   "point": [
+    36.0,
+    47.245000000000005
+   ],
+   "proj": [
+    12500111.998227518,
+    5234587.573346922,
+    0.0
+   ]
+  },
+  {
+   "code": 5576,
+   "name": "UCS-2000 / 3-degree Gauss-Kruger zone 13",
+   "replaced_by": [
+    6387
+   ],
+   "point": [
+    38.84,
+    48.58
+   ],
+   "proj": [
+    13488303.505412983,
+    5383032.82312653,
+    0.0
+   ]
+  },
+  {
+   "code": 5577,
+   "name": "UCS-2000 / 3-degree Gauss-Kruger CM 21E",
+   "replaced_by": [
+    6381
+   ],
+   "point": [
+    22.325,
+    48.61
+   ],
+   "proj": [
+    597828.4000129801,
+    5387231.594228482,
+    0.0
+   ]
+  },
+  {
+   "code": 5578,
+   "name": "UCS-2000 / 3-degree Gauss-Kruger CM 24E",
+   "replaced_by": [
+    6382
+   ],
+   "point": [
+    24.0,
+    49.835
+   ],
+   "proj": [
+    500120.30131788313,
+    5522617.118498901,
+    0.0
+   ]
+  },
+  {
+   "code": 5579,
+   "name": "UCS-2000 / 3-degree Gauss-Kruger CM 27E",
+   "replaced_by": [
+    6383
+   ],
+   "point": [
+    27.0,
+    48.599999999999994
+   ],
+   "proj": [
+    500118.70812473586,
+    5385262.466483239,
+    0.0
+   ]
+  },
+  {
+   "code": 5580,
+   "name": "UCS-2000 / 3-degree Gauss-Kruger CM 30E",
+   "replaced_by": [
+    6384
+   ],
+   "point": [
+    30.0,
+    47.769999999999996
+   ],
+   "proj": [
+    500116.7895584275,
+    5292966.506606983,
+    0.0
+   ]
+  },
+  {
+   "code": 5581,
+   "name": "UCS-2000 / 3-degree Gauss-Kruger CM 33E",
+   "replaced_by": [
+    6385
+   ],
+   "point": [
+    33.0,
+    47.78
+   ],
+   "proj": [
+    500114.5508778088,
+    5294073.884393893,
+    0.0
+   ]
+  },
+  {
+   "code": 5582,
+   "name": "UCS-2000 / 3-degree Gauss-Kruger CM 36E",
+   "replaced_by": [
+    6386
+   ],
+   "point": [
+    36.0,
+    47.245000000000005
+   ],
+   "proj": [
+    500111.99822751735,
+    5234587.573346922,
+    0.0
+   ]
+  },
+  {
+   "code": 5583,
+   "name": "UCS-2000 / 3-degree Gauss-Kruger CM 39E",
+   "replaced_by": [
+    6387
+   ],
+   "point": [
+    38.84,
+    48.58
+   ],
+   "proj": [
+    488303.50541298295,
+    5383032.82312653,
+    0.0
+   ]
+  },
+  {
+   "code": 5890,
+   "name": "JAXA Snow Depth Polar Stereographic North",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    75.0
+   ],
+   "proj": [
+    -1633913.9540985606,
+    -1.0004837469844988e-10,
+    0.0
+   ]
+  },
+  {
+   "code": 6141,
+   "name": "Cayman Islands National Grid 2011",
+   "replaced_by": [
+    6391
+   ],
+   "point": [
+    -81.16,
+    19.13
+   ],
+   "proj": [
+    -44961730.2180038,
+    26254154.04435818,
+    0.0
+   ]
+  },
+  {
+   "code": 6200,
+   "name": "NAD27 / Michigan North",
+   "replaced_by": [
+    6966
+   ],
+   "point": [
+    -86.93,
+    46.7
+   ],
+   "proj": [
+    2017562.4752974855,
+    455833.22836004355,
+    0.0
+   ]
+  },
+  {
+   "code": 6517,
+   "name": "NAD83(2011) / Nebraska (ftUS)",
+   "replaced_by": [
+    6880
+   ],
+   "point": [
+    -99.68,
+    41.5
+   ],
+   "proj": [
+    1728046.3838602335,
+    607254.3110984005,
+    0.0
+   ]
+  },
+  {
+   "code": 6604,
+   "name": "NAD83(2011) / Wisconsin Central",
+   "replaced_by": [
+    6879
+   ],
+   "point": [
+    -89.57,
+    44.89
+   ],
+   "proj": [
+    633966.7768787964,
+    117505.3837196188,
+    0.0
+   ]
+  },
+  {
+   "code": 6732,
+   "name": "GDA94 / MGA zone 41",
+   "replaced_by": [],
+   "point": [
+    64.46000000000001,
+    -55.465
+   ],
+   "proj": [
+    592307.3024344705,
+    3852492.941071052,
+    0.0
+   ]
+  },
+  {
+   "code": 6733,
+   "name": "GDA94 / MGA zone 42",
+   "replaced_by": [],
+   "point": [
+    69.005,
+    -55.07
+   ],
+   "proj": [
+    500319.28558616014,
+    3897418.9925607927,
+    0.0
+   ]
+  },
+  {
+   "code": 6734,
+   "name": "GDA94 / MGA zone 43",
+   "replaced_by": [],
+   "point": [
+    75.005,
+    -54.260000000000005
+   ],
+   "proj": [
+    500325.70201405935,
+    3987549.9725654386,
+    0.0
+   ]
+  },
+  {
+   "code": 6735,
+   "name": "GDA94 / MGA zone 44",
+   "replaced_by": [],
+   "point": [
+    80.785,
+    -54.56
+   ],
+   "proj": [
+    486096.6845720051,
+    3954148.301494264,
+    0.0
+   ]
+  },
+  {
+   "code": 6956,
+   "name": "VN-2000 / TM-3 zone 481",
+   "replaced_by": [
+    5896
+   ],
+   "point": [
+    102.825,
+    16.009999999999998
+   ],
+   "proj": [
+    88096.17379488189,
+    2270855.4576545325,
+    0.0
+   ]
+  },
+  {
+   "code": 6957,
+   "name": "VN-2000 / TM-3 zone 482",
+   "replaced_by": [
+    5897
+   ],
+   "point": [
+    105.005,
+    15.864999999999998
+   ],
+   "proj": [
+    339.6493406920525,
+    2254639.216644817,
+    0.0
+   ]
+  },
+  {
+   "code": 6958,
+   "name": "VN-2000 / TM-3 zone 491",
+   "replaced_by": [
+    5898
+   ],
+   "point": [
+    108.015,
+    15.76
+   ],
+   "proj": [
+    1412.3097225350787,
+    2243024.313448156,
+    0.0
+   ]
+  },
+  {
+   "code": 6959,
+   "name": "VN-2000 / TM-3 Da Nang zone",
+   "replaced_by": [
+    5899
+   ],
+   "point": [
+    107.595,
+    15.120000000000001
+   ],
+   "proj": [
+    -16854.3537696327,
+    2172219.145445615,
+    0.0
+   ]
+  },
+  {
+   "code": 6978,
+   "name": "IGD05",
+   "replaced_by": [
+    7134
+   ],
+   "point": [
+    34.34,
+    31.490000000000002
+   ],
+   "proj": [
+    4494980.477804372,
+    3070868.324705657,
+    3312341.5764592546
+   ]
+  },
+  {
+   "code": 6979,
+   "name": "IGD05",
+   "replaced_by": [
+    7135
+   ],
+   "point": [
+    34.34,
+    31.490000000000002
+   ],
+   "proj": [
+    34.34,
+    31.490000000000002,
+    0.0
+   ]
+  },
+  {
+   "code": 6980,
+   "name": "IGD05",
+   "replaced_by": [
+    7136
+   ],
+   "point": [
+    34.34,
+    31.490000000000002
+   ],
+   "proj": [
+    34.34,
+    31.490000000000002,
+    0.0
+   ]
+  },
+  {
+   "code": 6985,
+   "name": "IGD05/12",
+   "replaced_by": [
+    7137
+   ],
+   "point": [
+    34.34,
+    31.490000000000002
+   ],
+   "proj": [
+    4494980.477804372,
+    3070868.324705657,
+    3312341.5764592546
+   ]
+  },
+  {
+   "code": 6986,
+   "name": "IGD05/12",
+   "replaced_by": [
+    7138
+   ],
+   "point": [
+    34.34,
+    31.490000000000002
+   ],
+   "proj": [
+    34.34,
+    31.490000000000002,
+    0.0
+   ]
+  },
+  {
+   "code": 6987,
+   "name": "IGD05/12",
+   "replaced_by": [
+    7139
+   ],
+   "point": [
+    34.34,
+    31.490000000000002
+   ],
+   "proj": [
+    34.34,
+    31.490000000000002,
+    0.0
+   ]
+  },
+  {
+   "code": 6996,
+   "name": "NAD83(2011) / San Francisco CS13",
+   "replaced_by": [
+    7131
+   ],
+   "point": [
+    -122.38,
+    37.86
+   ],
+   "proj": [
+    48000.006159985736,
+    24000.012211601792,
+    0.0
+   ]
+  },
+  {
+   "code": 6997,
+   "name": "NAD83(2011) / San Francisco CS13 (ftUS)",
+   "replaced_by": [
+    7132
+   ],
+   "point": [
+    -122.38,
+    37.86
+   ],
+   "proj": [
+    157480.02020988654,
+    78740.04006423023,
+    0.0
+   ]
+  },
+  {
+   "code": 7082,
+   "name": "RGTAAF07 / Terre Adelie Polar Stereographic",
+   "replaced_by": [
+    8455,
+    8456
+   ],
+   "point": [
+    139.0,
+    -66.37
+   ],
+   "proj": null
+  },
+  {
+   "code": 7088,
+   "name": "RGTAAF07 (lon-lat)",
+   "replaced_by": [
+    7133
+   ],
+   "point": [
+    89.99,
+    -44.019999999999996
+   ],
+   "proj": [
+    89.99,
+    -44.019999999999996,
+    0.0
+   ]
+  },
+  {
+   "code": 7804,
+   "name": "BGS2005 / UTM zone 35N",
+   "replaced_by": [
+    9391
+   ],
+   "point": [
+    27.005000000000003,
+    42.695
+   ],
+   "proj": [
+    991944.3501348442,
+    4744460.585719306,
+    0.0
+   ]
+  },
+  {
+   "code": 8449,
+   "name": "NAD83(FBN)",
+   "replaced_by": [
+    8860
+   ],
+   "point": [
+    -139.96499999999997,
+    17.395000000000003
+   ],
+   "proj": [
+    -139.96499999999997,
+    17.395000000000003,
+    0.0
+   ]
+  },
+  {
+   "code": 9182,
+   "name": "SIRGAS-Chile",
+   "replaced_by": [],
+   "point": [
+    -89.465,
+    -38.685
+   ],
+   "proj": [
+    46549.238531619005,
+    -4985041.857296065,
+    -3965080.7030649274
+   ]
+  },
+  {
+   "code": 9183,
+   "name": "SIRGAS-Chile",
+   "replaced_by": [],
+   "point": [
+    -89.465,
+    -38.685
+   ],
+   "proj": [
+    -89.465,
+    -38.685,
+    0.0
+   ]
+  },
+  {
+   "code": 9184,
+   "name": "SIRGAS-Chile",
+   "replaced_by": [],
+   "point": [
+    -89.465,
+    -38.685
+   ],
+   "proj": [
+    -89.465,
+    -38.685,
+    0.0
+   ]
+  },
+  {
+   "code": 10480,
+   "name": "NAD83 / TWDB GM",
+   "replaced_by": [
+    10481
+   ],
+   "point": [
+    -100.08,
+    31.165
+   ],
+   "proj": [
+    1492389.0677626291,
+    5990558.440816422,
+    0.0
+   ]
+  },
+  {
+   "code": 10788,
+   "name": "WGS 84 / Agriculture Canada Albers",
+   "replaced_by": [
+    10820
+   ],
+   "point": [
+    -95.78999999999999,
+    50.84
+   ],
+   "proj": [
+    14724.34182638902,
+    1203779.5507536381,
+    0.0
+   ]
+  },
+  {
+   "code": 20064,
+   "name": "Pulkovo 1995 / Gauss-Kruger 4N",
+   "replaced_by": [
+    2463
+   ],
+   "point": [
+    21.22,
+    54.82
+   ],
+   "proj": [
+    514270.362786515,
+    6077345.868229718,
+    0.0
+   ]
+  },
+  {
+   "code": 20065,
+   "name": "Pulkovo 1995 / Gauss-Kruger 5N",
+   "replaced_by": [
+    2464
+   ],
+   "point": [
+    28.305,
+    62.58
+   ],
+   "proj": [
+    567199.0211491644,
+    6942373.160496887,
+    0.0
+   ]
+  },
+  {
+   "code": 20066,
+   "name": "Pulkovo 1995 / Gauss-Kruger 6N",
+   "replaced_by": [
+    2465
+   ],
+   "point": [
+    33.0,
+    60.18
+   ],
+   "proj": [
+    500121.09709760797,
+    6674238.088230088,
+    0.0
+   ]
+  },
+  {
+   "code": 20067,
+   "name": "Pulkovo 1995 / Gauss-Kruger 7N",
+   "replaced_by": [
+    2466
+   ],
+   "point": [
+    39.004999999999995,
+    56.205
+   ],
+   "proj": [
+    500425.1899001001,
+    6231487.834974008,
+    0.0
+   ]
+  },
+  {
+   "code": 20068,
+   "name": "Pulkovo 1995 / Gauss-Kruger 8N",
+   "replaced_by": [
+    2467
+   ],
+   "point": [
+    45.0,
+    61.05
+   ],
+   "proj": [
+    500107.9052914023,
+    6771154.594285312,
+    0.0
+   ]
+  },
+  {
+   "code": 20069,
+   "name": "Pulkovo 1995 / Gauss-Kruger 9N",
+   "replaced_by": [
+    2468
+   ],
+   "point": [
+    51.0,
+    61.395
+   ],
+   "proj": [
+    500099.4588371347,
+    6809589.206163761,
+    0.0
+   ]
+  },
+  {
+   "code": 20070,
+   "name": "Pulkovo 1995 / Gauss-Kruger 10N",
+   "replaced_by": [
+    2469
+   ],
+   "point": [
+    57.0,
+    66.19
+   ],
+   "proj": [
+    500090.1825573848,
+    7344096.368132792,
+    0.0
+   ]
+  },
+  {
+   "code": 20071,
+   "name": "Pulkovo 1995 / Gauss-Kruger 11N",
+   "replaced_by": [
+    2470
+   ],
+   "point": [
+    63.0,
+    66.215
+   ],
+   "proj": [
+    500079.599793588,
+    7346875.828262696,
+    0.0
+   ]
+  },
+  {
+   "code": 20072,
+   "name": "Pulkovo 1995 / Gauss-Kruger 12N",
+   "replaced_by": [
+    2471
+   ],
+   "point": [
+    69.0,
+    65.585
+   ],
+   "proj": [
+    500068.08509104373,
+    7276619.9423578065,
+    0.0
+   ]
+  },
+  {
+   "code": 20073,
+   "name": "Pulkovo 1995 / Gauss-Kruger 13N",
+   "replaced_by": [
+    2472
+   ],
+   "point": [
+    75.0,
+    66.44
+   ],
+   "proj": [
+    500055.90152767824,
+    7371952.679704255,
+    0.0
+   ]
+  },
+  {
+   "code": 20074,
+   "name": "Pulkovo 1995 / Gauss-Kruger 14N",
+   "replaced_by": [
+    2473
+   ],
+   "point": [
+    81.0,
+    65.86
+   ],
+   "proj": [
+    500042.9956591297,
+    7307272.345293457,
+    0.0
+   ]
+  },
+  {
+   "code": 20075,
+   "name": "Pulkovo 1995 / Gauss-Kruger 15N",
+   "replaced_by": [
+    2474
+   ],
+   "point": [
+    87.0,
+    65.17
+   ],
+   "proj": [
+    500029.59382580343,
+    7230333.722660541,
+    0.0
+   ]
+  },
+  {
+   "code": 20076,
+   "name": "Pulkovo 1995 / Gauss-Kruger 16N",
+   "replaced_by": [
+    2475
+   ],
+   "point": [
+    93.0,
+    65.62
+   ],
+   "proj": [
+    500015.9221067189,
+    7280505.583053878,
+    0.0
+   ]
+  },
+  {
+   "code": 20077,
+   "name": "Pulkovo 1995 / Gauss-Kruger 17N",
+   "replaced_by": [
+    2476
+   ],
+   "point": [
+    99.0,
+    65.52499999999999
+   ],
+   "proj": [
+    500002.02288276836,
+    7269911.989166786,
+    0.0
+   ]
+  },
+  {
+   "code": 20078,
+   "name": "Pulkovo 1995 / Gauss-Kruger 18N",
+   "replaced_by": [
+    2477
+   ],
+   "point": [
+    105.0,
+    64.56
+   ],
+   "proj": [
+    499988.02780365327,
+    7162321.663887189,
+    0.0
+   ]
+  },
+  {
+   "code": 20079,
+   "name": "Pulkovo 1995 / Gauss-Kruger 19N",
+   "replaced_by": [
+    2478
+   ],
+   "point": [
+    111.0,
+    62.975
+   ],
+   "proj": [
+    499974.1065220747,
+    6985638.0652172025,
+    0.0
+   ]
+  },
+  {
+   "code": 20080,
+   "name": "Pulkovo 1995 / Gauss-Kruger 20N",
+   "replaced_by": [
+    2479
+   ],
+   "point": [
+    117.0,
+    62.735
+   ],
+   "proj": [
+    499960.53374227235,
+    6958890.78767791,
+    0.0
+   ]
+  },
+  {
+   "code": 20081,
+   "name": "Pulkovo 1995 / Gauss-Kruger 21N",
+   "replaced_by": [
+    2480
+   ],
+   "point": [
+    123.0,
+    62.754999999999995
+   ],
+   "proj": [
+    499947.3893717486,
+    6961124.050434514,
+    0.0
+   ]
+  },
+  {
+   "code": 20082,
+   "name": "Pulkovo 1995 / Gauss-Kruger 22N",
+   "replaced_by": [
+    2481
+   ],
+   "point": [
+    129.0,
+    57.93
+   ],
+   "proj": [
+    499934.505641765,
+    6423540.285719755,
+    0.0
+   ]
+  },
+  {
+   "code": 20083,
+   "name": "Pulkovo 1995 / Gauss-Kruger 23N",
+   "replaced_by": [
+    2482
+   ],
+   "point": [
+    135.0,
+    59.39
+   ],
+   "proj": [
+    499922.6978437314,
+    6586174.231582686,
+    0.0
+   ]
+  },
+  {
+   "code": 20084,
+   "name": "Pulkovo 1995 / Gauss-Kruger 24N",
+   "replaced_by": [
+    2483
+   ],
+   "point": [
+    141.0,
+    61.055
+   ],
+   "proj": [
+    499911.7284123068,
+    6771688.871462693,
+    0.0
+   ]
+  },
+  {
+   "code": 20085,
+   "name": "Pulkovo 1995 / Gauss-Kruger 25N",
+   "replaced_by": [
+    2484
+   ],
+   "point": [
+    147.0,
+    60.209999999999994
+   ],
+   "proj": [
+    499901.55155043735,
+    6677544.943013715,
+    0.0
+   ]
+  },
+  {
+   "code": 20086,
+   "name": "Pulkovo 1995 / Gauss-Kruger 26N",
+   "replaced_by": [
+    2485
+   ],
+   "point": [
+    153.0,
+    61.015
+   ],
+   "proj": [
+    499892.53230324265,
+    6767249.328246993,
+    0.0
+   ]
+  },
+  {
+   "code": 20087,
+   "name": "Pulkovo 1995 / Gauss-Kruger 27N",
+   "replaced_by": [
+    2486
+   ],
+   "point": [
+    159.0,
+    63.735
+   ],
+   "proj": [
+    499884.78907175944,
+    7070407.794887259,
+    0.0
+   ]
+  },
+  {
+   "code": 20088,
+   "name": "Pulkovo 1995 / Gauss-Kruger 28N",
+   "replaced_by": [
+    2487
+   ],
+   "point": [
+    165.0,
+    62.25
+   ],
+   "proj": [
+    499878.02638523176,
+    6904898.143601565,
+    0.0
+   ]
+  },
+  {
+   "code": 20089,
+   "name": "Pulkovo 1995 / Gauss-Kruger 29N",
+   "replaced_by": [
+    2488
+   ],
+   "point": [
+    171.0,
+    62.32
+   ],
+   "proj": [
+    499872.67677129374,
+    6912711.066951008,
+    0.0
+   ]
+  },
+  {
+   "code": 20090,
+   "name": "Pulkovo 1995 / Gauss-Kruger 30N",
+   "replaced_by": [
+    2489
+   ],
+   "point": [
+    177.0,
+    66.62
+   ],
+   "proj": [
+    499868.9698371087,
+    7392106.879749877,
+    0.0
+   ]
+  },
+  {
+   "code": 20091,
+   "name": "Pulkovo 1995 / Gauss-Kruger 31N",
+   "replaced_by": [
+    2490
+   ],
+   "point": [
+    -177.0,
+    68.0
+   ],
+   "proj": [
+    499866.49789943645,
+    7546026.204846669,
+    0.0
+   ]
+  },
+  {
+   "code": 20092,
+   "name": "Pulkovo 1995 / Gauss-Kruger 32N",
+   "replaced_by": [
+    2491
+   ],
+   "point": [
+    -171.485,
+    65.69
+   ],
+   "proj": [
+    477577.01453774876,
+    7288513.631382982,
+    0.0
+   ]
+  },
+  {
+   "code": 20248,
+   "name": "AGD66 / AMG zone 48",
+   "replaced_by": [],
+   "point": [
+    105.0,
+    -33.0
+   ],
+   "proj": [
+    499999.9999999976,
+    6348700.3923375625,
+    0.0
+   ]
+  },
+  {
+   "code": 20348,
+   "name": "AGD84 / AMG zone 48",
+   "replaced_by": [],
+   "point": [
+    105.0,
+    -33.0
+   ],
+   "proj": [
+    499999.9999999976,
+    6348700.3923375625,
+    0.0
+   ]
+  },
+  {
+   "code": 20357,
+   "name": "AGD84 / AMG zone 57",
+   "replaced_by": [],
+   "point": [
+    159.005,
+    -24.605
+   ],
+   "proj": [
+    500506.15147209744,
+    7278779.466011253,
+    0.0
+   ]
+  },
+  {
+   "code": 20358,
+   "name": "AGD84 / AMG zone 58",
+   "replaced_by": [],
+   "point": [
+    162.6,
+    -30.735
+   ],
+   "proj": [
+    270217.1467322924,
+    6597293.890688509,
+    0.0
+   ]
+  },
+  {
+   "code": 21100,
+   "name": "Batavia (Jakarta) / NEIEZ",
+   "replaced_by": [
+    3001
+   ],
+   "point": [
+    105.465,
+    -1.4700000000000002
+   ],
+   "proj": [
+    -8456178.838397518,
+    737974.8396461087,
+    0.0
+   ]
+  },
+  {
+   "code": 21473,
+   "name": "Beijing 1954 / Gauss-Kruger 13N",
+   "replaced_by": [
+    21453
+   ],
+   "point": [
+    75.815,
+    38.245000000000005
+   ],
+   "proj": [
+    571346.4119737085,
+    4235081.811126468,
+    0.0
+   ]
+  },
+  {
+   "code": 21474,
+   "name": "Beijing 1954 / Gauss-Kruger 14N",
+   "replaced_by": [
+    21454
+   ],
+   "point": [
+    80.99000000000001,
+    38.195
+   ],
+   "proj": [
+    499163.77302203426,
+    4229186.891703719,
+    0.0
+   ]
+  },
+  {
+   "code": 21475,
+   "name": "Beijing 1954 / Gauss-Kruger 15N",
+   "replaced_by": [
+    21455
+   ],
+   "point": [
+    87.0,
+    38.25
+   ],
+   "proj": [
+    500023.8587853459,
+    4235289.761024907,
+    0.0
+   ]
+  },
+  {
+   "code": 21476,
+   "name": "Beijing 1954 / Gauss-Kruger 16N",
+   "replaced_by": [
+    21456
+   ],
+   "point": [
+    93.005,
+    37.805
+   ],
+   "proj": [
+    500440.3300027402,
+    4185928.1923137438,
+    0.0
+   ]
+  },
+  {
+   "code": 21477,
+   "name": "Beijing 1954 / Gauss-Kruger 17N",
+   "replaced_by": [
+    21457
+   ],
+   "point": [
+    99.005,
+    32.155
+   ],
+   "proj": [
+    500471.67708286527,
+    3559103.3043840607,
+    0.0
+   ]
+  },
+  {
+   "code": 21478,
+   "name": "Beijing 1954 / Gauss-Kruger 18N",
+   "replaced_by": [
+    21458
+   ],
+   "point": [
+    105.0,
+    32.0
+   ],
+   "proj": [
+    500000.0,
+    3541915.326928574,
+    0.0
+   ]
+  },
+  {
+   "code": 21479,
+   "name": "Beijing 1954 / Gauss-Kruger 19N",
+   "replaced_by": [
+    21459
+   ],
+   "point": [
+    111.0,
+    31.61
+   ],
+   "proj": [
+    500000.0,
+    3498670.0424377522,
+    0.0
+   ]
+  },
+  {
+   "code": 21480,
+   "name": "Beijing 1954 / Gauss-Kruger 20N",
+   "replaced_by": [
+    21460
+   ],
+   "point": [
+    117.0,
+    36.83
+   ],
+   "proj": [
+    500000.0,
+    4077717.2817049567,
+    0.0
+   ]
+  },
+  {
+   "code": 21481,
+   "name": "Beijing 1954 / Gauss-Kruger 21N",
+   "replaced_by": [
+    21461
+   ],
+   "point": [
+    123.0,
+    39.95
+   ],
+   "proj": [
+    500000.0,
+    4424055.564131719,
+    0.0
+   ]
+  },
+  {
+   "code": 21482,
+   "name": "Beijing 1954 / Gauss-Kruger 22N",
+   "replaced_by": [
+    21462
+   ],
+   "point": [
+    129.0,
+    46.84
+   ],
+   "proj": [
+    500000.0,
+    5189551.344625954,
+    0.0
+   ]
+  },
+  {
+   "code": 21483,
+   "name": "Beijing 1954 / Gauss-Kruger 23N",
+   "replaced_by": [
+    21463
+   ],
+   "point": [
+    133.385,
+    46.71
+   ],
+   "proj": [
+    376505.4354151068,
+    5176366.500450324,
+    0.0
+   ]
+  },
+  {
+   "code": 21891,
+   "name": "Bogota 1975 / Colombia West zone",
+   "replaced_by": [
+    21896
+   ],
+   "point": [
+    -77.34,
+    5.12
+   ],
+   "proj": [
+    970905.5329059397,
+    1057920.2739461584,
+    0.0
+   ]
+  },
+  {
+   "code": 21892,
+   "name": "Bogota 1975 / Colombia Bogota zone",
+   "replaced_by": [
+    21897
+   ],
+   "point": [
+    -74.08500000000001,
+    4.655
+   ],
+   "proj": [
+    999168.7415902902,
+    1006502.2122100457,
+    0.0
+   ]
+  },
+  {
+   "code": 21893,
+   "name": "Bogota 1975 / Colombia East Central zone",
+   "replaced_by": [
+    21898
+   ],
+   "point": [
+    -71.08500000000001,
+    4.145
+   ],
+   "proj": [
+    999158.1872641211,
+    950109.0027634073,
+    0.0
+   ]
+  },
+  {
+   "code": 21894,
+   "name": "Bogota 1975 / Colombia East",
+   "replaced_by": [
+    21899
+   ],
+   "point": [
+    -68.23,
+    2.03
+   ],
+   "proj": [
+    983017.6383936476,
+    716239.2641744234,
+    0.0
+   ]
+  },
+  {
+   "code": 22236,
+   "name": "Cape / UTM zone 36S",
+   "replaced_by": [],
+   "point": [
+    24.0,
+    -22.33
+   ],
+   "proj": [
+    -429545.325429079,
+    7503049.194916414,
+    0.0
+   ]
+  },
+  {
+   "code": 22832,
+   "name": "Douala / UTM zone 32N",
+   "replaced_by": [
+    2214
+   ],
+   "point": [
+    12.265,
+    7.37
+   ],
+   "proj": [
+    860527.7827578102,
+    815895.7613313509,
+    0.0
+   ]
+  },
+  {
+   "code": 23433,
+   "name": "Garoua / UTM zone 33N",
+   "replaced_by": [
+    2312
+   ],
+   "point": [
+    12.265,
+    7.37
+   ],
+   "proj": [
+    198043.3831999736,
+    815501.9934204858,
+    0.0
+   ]
+  },
+  {
+   "code": 24571,
+   "name": "Kertau / R.S.O. Malaya (ch)",
+   "replaced_by": [
+    3167,
+    3168
+   ],
+   "point": [
+    102.095,
+    3.965
+   ],
+   "proj": [
+    22658.066426374757,
+    21803.2866769615,
+    0.0
+   ]
+  },
+  {
+   "code": 25700,
+   "name": "Makassar (Jakarta) / NEIEZ",
+   "replaced_by": [
+    3002
+   ],
+   "point": [
+    119.745,
+    -4.21
+   ],
+   "proj": [
+    -6871560.40412144,
+    435309.4635458958,
+    0.0
+   ]
+  },
+  {
+   "code": 25838,
+   "name": "ETRS89 / UTM zone 38N",
+   "replaced_by": [],
+   "point": [
+    45.0,
+    39.325
+   ],
+   "proj": [
+    500000.0,
+    4352843.1906254655,
+    0.0
+   ]
+  },
+  {
+   "code": 26193,
+   "name": "Merchich / Sahara",
+   "replaced_by": [
+    26194
+   ],
+   "point": [
+    -12.835,
+    24.479999999999997
+   ],
+   "proj": [
+    446700.3162347943,
+    242108.4334331611,
+    0.0
+   ]
+  },
+  {
+   "code": 26432,
+   "name": "Mhast / UTM zone 32S",
+   "replaced_by": [
+    3353,
+    3354
+   ],
+   "point": [
+    11.815,
+    -5.21
+   ],
+   "proj": [
+    812090.1632562344,
+    9423419.613904214,
+    0.0
+   ]
+  },
+  {
+   "code": 26591,
+   "name": "Monte Mario (Rome) / Italy zone 1",
+   "replaced_by": [
+    3003
+   ],
+   "point": [
+    8.965,
+    41.785
+   ],
+   "proj": [
+    461424.5390424315,
+    4702041.081358575,
+    0.0
+   ]
+  },
+  {
+   "code": 26592,
+   "name": "Monte Mario (Rome) / Italy zone 2",
+   "replaced_by": [
+    3004
+   ],
+   "point": [
+    15.495,
+    40.93
+   ],
+   "proj": [
+    1512248.755287729,
+    4600428.050793658,
+    0.0
+   ]
+  },
+  {
+   "code": 26747,
+   "name": "NAD27 / California zone VII",
+   "replaced_by": [
+    26799
+   ],
+   "point": [
+    -118.29499999999999,
+    34.245
+   ],
+   "proj": [
+    4198548.440018908,
+    457565.36028479954,
+    0.0
+   ]
+  },
+  {
+   "code": 26801,
+   "name": "NAD Michigan / Michigan East",
+   "replaced_by": [
+    5623
+   ],
+   "point": [
+    -83.5,
+    43.864999999999995
+   ],
+   "proj": [
+    543956.9476311981,
+    861956.8234508497,
+    0.0
+   ]
+  },
+  {
+   "code": 26802,
+   "name": "NAD Michigan / Michigan Old Central",
+   "replaced_by": [
+    5624
+   ],
+   "point": [
+    -86.10499999999999,
+    43.93
+   ],
+   "proj": [
+    406476.6329128084,
+    885777.6585145956,
+    0.0
+   ]
+  },
+  {
+   "code": 26803,
+   "name": "NAD Michigan / Michigan West",
+   "replaced_by": [
+    5625
+   ],
+   "point": [
+    -86.93,
+    46.705
+   ],
+   "proj": [
+    956618.2287110126,
+    1902630.038311507,
+    0.0
+   ]
+  },
+  {
+   "code": 26811,
+   "name": "NAD Michigan / Michigan North",
+   "replaced_by": [
+    6200
+   ],
+   "point": [
+    -86.93,
+    46.7
+   ],
+   "proj": [
+    2017564.3802632454,
+    698942.4528456787,
+    0.0
+   ]
+  },
+  {
+   "code": 26812,
+   "name": "NAD Michigan / Michigan Central",
+   "replaced_by": [
+    6201
+   ],
+   "point": [
+    -84.66499999999999,
+    44.86
+   ],
+   "proj": [
+    1913996.52631655,
+    562838.1772957859,
+    0.0
+   ]
+  },
+  {
+   "code": 26813,
+   "name": "NAD Michigan / Michigan South",
+   "replaced_by": [
+    6202
+   ],
+   "point": [
+    -84.66499999999999,
+    42.955
+   ],
+   "proj": [
+    1911209.5771400605,
+    530429.3024783407,
+    0.0
+   ]
+  },
+  {
+   "code": 26814,
+   "name": "NAD83 / Maine East (ftUS)",
+   "replaced_by": [
+    26847
+   ],
+   "point": [
+    -68.47,
+    45.675
+   ],
+   "proj": [
+    302337.23350621155,
+    223154.85963413733,
+    0.0
+   ]
+  },
+  {
+   "code": 26815,
+   "name": "NAD83 / Maine West (ftUS)",
+   "replaced_by": [
+    26848
+   ],
+   "point": [
+    -70.17500000000001,
+    44.81
+   ],
+   "proj": [
+    899340.7970898099,
+    219617.70745510195,
+    0.0
+   ]
+  },
+  {
+   "code": 26819,
+   "name": "NAD83 / Minnesota North (ftUS)",
+   "replaced_by": [
+    26849
+   ],
+   "point": [
+    -93.35499999999999,
+    48.010000000000005
+   ],
+   "proj": [
+    780976.0080344108,
+    267903.88127402484,
+    0.0
+   ]
+  },
+  {
+   "code": 26820,
+   "name": "NAD83 / Minnesota Central (ftUS)",
+   "replaced_by": [
+    26850
+   ],
+   "point": [
+    -94.575,
+    46.379999999999995
+   ],
+   "proj": [
+    774999.3390553382,
+    253433.09135289802,
+    0.0
+   ]
+  },
+  {
+   "code": 26821,
+   "name": "NAD83 / Minnesota South (ftUS)",
+   "replaced_by": [
+    26851
+   ],
+   "point": [
+    -94.03,
+    44.540000000000006
+   ],
+   "proj": [
+    797615.9303833595,
+    271111.94965157955,
+    0.0
+   ]
+  },
+  {
+   "code": 26822,
+   "name": "NAD83 / Nebraska (ftUS)",
+   "replaced_by": [
+    26852
+   ],
+   "point": [
+    -99.68,
+    41.5
+   ],
+   "proj": [
+    526709.5912197815,
+    185091.48420576085,
+    0.0
+   ]
+  },
+  {
+   "code": 26823,
+   "name": "NAD83 / West Virginia North (ftUS)",
+   "replaced_by": [
+    26853
+   ],
+   "point": [
+    -79.74000000000001,
+    39.7
+   ],
+   "proj": [
+    1947917.2957110633,
+    133248.46017368144,
+    0.0
+   ]
+  },
+  {
+   "code": 26824,
+   "name": "NAD83 / West Virginia South (ftUS)",
+   "replaced_by": [
+    26854
+   ],
+   "point": [
+    -80.85,
+    38.185
+   ],
+   "proj": [
+    1981640.7206280981,
+    131531.86202500196,
+    0.0
+   ]
+  },
+  {
+   "code": 26825,
+   "name": "NAD83(HARN) / Maine East (ftUS)",
+   "replaced_by": [
+    26855
+   ],
+   "point": [
+    -68.47,
+    45.675
+   ],
+   "proj": [
+    302337.2142089475,
+    223153.82197788375,
+    0.0
+   ]
+  },
+  {
+   "code": 26826,
+   "name": "NAD83(HARN) / Maine West (ftUS)",
+   "replaced_by": [
+    26856
+   ],
+   "point": [
+    -70.17500000000001,
+    44.81
+   ],
+   "proj": [
+    899340.8190207044,
+    219616.69239594127,
+    0.0
+   ]
+  },
+  {
+   "code": 26830,
+   "name": "NAD83(HARN) / Minnesota North (ftUS)",
+   "replaced_by": [
+    26857
+   ],
+   "point": [
+    -93.35499999999999,
+    48.010000000000005
+   ],
+   "proj": [
+    780976.6092860634,
+    267902.941539689,
+    0.0
+   ]
+  },
+  {
+   "code": 26831,
+   "name": "NAD83(HARN) / Minnesota Central (ftUS)",
+   "replaced_by": [
+    26858
+   ],
+   "point": [
+    -94.575,
+    46.379999999999995
+   ],
+   "proj": [
+    774999.9660038141,
+    253432.18583513226,
+    0.0
+   ]
+  },
+  {
+   "code": 26832,
+   "name": "NAD83(HARN) / Minnesota South (ftUS)",
+   "replaced_by": [
+    26859
+   ],
+   "point": [
+    -94.03,
+    44.540000000000006
+   ],
+   "proj": [
+    797616.5483483172,
+    271111.07171546237,
+    0.0
+   ]
+  },
+  {
+   "code": 26833,
+   "name": "NAD83(HARN) / Nebraska (ftUS)",
+   "replaced_by": [
+    26860
+   ],
+   "point": [
+    -99.68,
+    41.5
+   ],
+   "proj": [
+    526710.3387273769,
+    185090.70272365017,
+    0.0
+   ]
+  },
+  {
+   "code": 26834,
+   "name": "NAD83(HARN) / West Virginia North (ftUS)",
+   "replaced_by": [
+    26861
+   ],
+   "point": [
+    -79.74000000000001,
+    39.7
+   ],
+   "proj": [
+    1947917.5547260055,
+    133247.59021009176,
+    0.0
+   ]
+  },
+  {
+   "code": 26835,
+   "name": "NAD83(HARN) / West Virginia South (ftUS)",
+   "replaced_by": [
+    26862
+   ],
+   "point": [
+    -80.85,
+    38.185
+   ],
+   "proj": [
+    1981641.0101305894,
+    131531.03176547983,
+    0.0
+   ]
+  },
+  {
+   "code": 26836,
+   "name": "NAD83(NSRS2007) / Maine East (ftUS)",
+   "replaced_by": [
+    26863
+   ],
+   "point": [
+    -68.47,
+    45.675
+   ],
+   "proj": [
+    302337.23350621155,
+    223154.85963413733,
+    0.0
+   ]
+  },
+  {
+   "code": 26837,
+   "name": "NAD83(NSRS2007) / Maine West (ftUS)",
+   "replaced_by": [
+    26864
+   ],
+   "point": [
+    -70.17500000000001,
+    44.81
+   ],
+   "proj": [
+    899340.7970898099,
+    219617.70745510195,
+    0.0
+   ]
+  },
+  {
+   "code": 26841,
+   "name": "NAD83(NSRS2007) / Minnesota North (ftUS)",
+   "replaced_by": [
+    26865
+   ],
+   "point": [
+    -93.35499999999999,
+    48.010000000000005
+   ],
+   "proj": [
+    780976.0080344108,
+    267903.88127402484,
+    0.0
+   ]
+  },
+  {
+   "code": 26842,
+   "name": "NAD83(NSRS2007) / Minnesota Central (ftUS)",
+   "replaced_by": [
+    26866
+   ],
+   "point": [
+    -94.575,
+    46.379999999999995
+   ],
+   "proj": [
+    774999.3390553382,
+    253433.09135289802,
+    0.0
+   ]
+  },
+  {
+   "code": 26843,
+   "name": "NAD83(NSRS2007) / Minnesota South (ftUS)",
+   "replaced_by": [
+    26867
+   ],
+   "point": [
+    -94.03,
+    44.540000000000006
+   ],
+   "proj": [
+    797615.9303833595,
+    271111.94965157955,
+    0.0
+   ]
+  },
+  {
+   "code": 26844,
+   "name": "NAD83(NSRS2007) / Nebraska (ftUS)",
+   "replaced_by": [
+    26868
+   ],
+   "point": [
+    -99.68,
+    41.5
+   ],
+   "proj": [
+    526709.5912197815,
+    185091.48420576085,
+    0.0
+   ]
+  },
+  {
+   "code": 26845,
+   "name": "NAD83(NSRS2007) / West Virginia North (ftUS)",
+   "replaced_by": [
+    26869
+   ],
+   "point": [
+    -79.74000000000001,
+    39.7
+   ],
+   "proj": [
+    1947917.2957110633,
+    133248.46017368144,
+    0.0
+   ]
+  },
+  {
+   "code": 26846,
+   "name": "NAD83(NSRS2007) / West Virginia South (ftUS)",
+   "replaced_by": [
+    26870
+   ],
+   "point": [
+    -80.85,
+    38.185
+   ],
+   "proj": [
+    1981640.7206280981,
+    131531.86202500196,
+    0.0
+   ]
+  },
+  {
+   "code": 26979,
+   "name": "NAD83 / Kentucky North",
+   "replaced_by": [
+    2205
+   ],
+   "point": [
+    -84.215,
+    38.43
+   ],
+   "proj": [
+    503056.19905920903,
+    103227.81590777499,
+    0.0
+   ]
+  },
+  {
+   "code": 27037,
+   "name": "Nahrwan 1967 / UTM zone 37N",
+   "replaced_by": [
+    7005
+   ],
+   "point": [
+    40.394999999999996,
+    33.945
+   ],
+   "proj": [
+    628917.4928982623,
+    3756654.7242055763,
+    0.0
+   ]
+  },
+  {
+   "code": 27038,
+   "name": "Nahrwan 1967 / UTM zone 38N",
+   "replaced_by": [
+    7006
+   ],
+   "point": [
+    45.0,
+    32.96
+   ],
+   "proj": [
+    500000.0,
+    3646577.748156165,
+    0.0
+   ]
+  },
+  {
+   "code": 27492,
+   "name": "Datum 73 / Modified Portuguese Grid",
+   "replaced_by": [
+    27493
+   ],
+   "point": [
+    -7.875,
+    39.555
+   ],
+   "proj": [
+    22183.277884115454,
+    -12543.1758230857,
+    0.0
+   ]
+  },
+  {
+   "code": 27581,
+   "name": "NTF (Paris) / France I",
+   "replaced_by": [
+    27571
+   ],
+   "point": [
+    1.6800000000000002,
+    49.64
+   ],
+   "proj": [
+    552587.5955728081,
+    1215784.1945777533,
+    0.0
+   ]
+  },
+  {
+   "code": 27582,
+   "name": "NTF (Paris) / France II",
+   "replaced_by": [
+    27572
+   ],
+   "point": [
+    1.6800000000000002,
+    46.735
+   ],
+   "proj": [
+    549826.6306522982,
+    2192990.7121902495,
+    0.0
+   ]
+  },
+  {
+   "code": 27583,
+   "name": "NTF (Paris) / France III",
+   "replaced_by": [
+    27573
+   ],
+   "point": [
+    2.96,
+    43.894999999999996
+   ],
+   "proj": [
+    650085.2285449551,
+    3177414.797763161,
+    0.0
+   ]
+  },
+  {
+   "code": 27584,
+   "name": "NTF (Paris) / France IV",
+   "replaced_by": [
+    27574
+   ],
+   "point": [
+    9.065000000000001,
+    42.19
+   ],
+   "proj": [
+    555424.8637251059,
+    4210524.029167573,
+    0.0
+   ]
+  },
+  {
+   "code": 27591,
+   "name": "NTF (Paris) / Nord France",
+   "replaced_by": [
+    27561
+   ],
+   "point": [
+    1.6800000000000002,
+    49.64
+   ],
+   "proj": [
+    552587.5955728081,
+    215784.1945777533,
+    0.0
+   ]
+  },
+  {
+   "code": 27592,
+   "name": "NTF (Paris) / Centre France",
+   "replaced_by": [
+    27562
+   ],
+   "point": [
+    1.415,
+    46.795
+   ],
+   "proj": [
+    529653.9694689036,
+    199862.93923274675,
+    0.0
+   ]
+  },
+  {
+   "code": 27593,
+   "name": "NTF (Paris) / Sud France",
+   "replaced_by": [
+    27563
+   ],
+   "point": [
+    2.96,
+    43.894999999999996
+   ],
+   "proj": [
+    650085.2285449551,
+    177414.79776316072,
+    0.0
+   ]
+  },
+  {
+   "code": 27594,
+   "name": "NTF (Paris) / Corse",
+   "replaced_by": [
+    27564
+   ],
+   "point": [
+    9.065000000000001,
+    42.19
+   ],
+   "proj": [
+    555424.8637251059,
+    210524.0291675729,
+    0.0
+   ]
+  },
+  {
+   "code": 28402,
+   "name": "Pulkovo 1942 / Gauss-Kruger zone 2",
+   "replaced_by": [
+    3833
+   ],
+   "point": [
+    10.965,
+    52.195
+   ],
+   "proj": [
+    2634360.848579955,
+    5786963.336372795,
+    0.0
+   ]
+  },
+  {
+   "code": 28403,
+   "name": "Pulkovo 1942 / Gauss-Kruger zone 3",
+   "replaced_by": [
+    3333
+   ],
+   "point": [
+    15.0,
+    50.335
+   ],
+   "proj": [
+    3500000.0,
+    5578207.920000927,
+    0.0
+   ]
+  },
+  {
+   "code": 28462,
+   "name": "Pulkovo 1942 / Gauss-Kruger 2N",
+   "replaced_by": [
+    2492
+   ],
+   "point": [
+    10.965,
+    52.195
+   ],
+   "proj": [
+    634360.8485799546,
+    5786963.336372795,
+    0.0
+   ]
+  },
+  {
+   "code": 28463,
+   "name": "Pulkovo 1942 / Gauss-Kruger 3N",
+   "replaced_by": [
+    2493
+   ],
+   "point": [
+    15.0,
+    50.335
+   ],
+   "proj": [
+    500000.0,
+    5578207.920000927,
+    0.0
+   ]
+  },
+  {
+   "code": 28464,
+   "name": "Pulkovo 1942 / Gauss-Kruger 4N",
+   "replaced_by": [
+    2494
+   ],
+   "point": [
+    21.785,
+    53.695
+   ],
+   "proj": [
+    551980.9305533771,
+    5952391.140422913,
+    0.0
+   ]
+  },
+  {
+   "code": 28465,
+   "name": "Pulkovo 1942 / Gauss-Kruger 5N",
+   "replaced_by": [
+    2495
+   ],
+   "point": [
+    27.005000000000003,
+    57.325
+   ],
+   "proj": [
+    500428.39460434386,
+    6356232.104000075,
+    0.0
+   ]
+  },
+  {
+   "code": 28466,
+   "name": "Pulkovo 1942 / Gauss-Kruger 6N",
+   "replaced_by": [
+    2496
+   ],
+   "point": [
+    33.0,
+    57.17
+   ],
+   "proj": [
+    500122.7041354104,
+    6338958.236828396,
+    0.0
+   ]
+  },
+  {
+   "code": 28467,
+   "name": "Pulkovo 1942 / Gauss-Kruger 7N",
+   "replaced_by": [
+    2497
+   ],
+   "point": [
+    39.0,
+    55.33
+   ],
+   "proj": [
+    500116.02079508017,
+    6134068.9392143665,
+    0.0
+   ]
+  },
+  {
+   "code": 28468,
+   "name": "Pulkovo 1942 / Gauss-Kruger 8N",
+   "replaced_by": [
+    2498
+   ],
+   "point": [
+    45.004999999999995,
+    59.875
+   ],
+   "proj": [
+    500390.6850036618,
+    6640236.002566322,
+    0.0
+   ]
+  },
+  {
+   "code": 28469,
+   "name": "Pulkovo 1942 / Gauss-Kruger 9N",
+   "replaced_by": [
+    2499
+   ],
+   "point": [
+    51.0,
+    59.370000000000005
+   ],
+   "proj": [
+    500101.7493674774,
+    6583965.137011724,
+    0.0
+   ]
+  },
+  {
+   "code": 28470,
+   "name": "Pulkovo 1942 / Gauss-Kruger 10N",
+   "replaced_by": [
+    2500
+   ],
+   "point": [
+    57.0,
+    59.48
+   ],
+   "proj": [
+    500091.883385937,
+    6596209.290400676,
+    0.0
+   ]
+  },
+  {
+   "code": 28471,
+   "name": "Pulkovo 1942 / Gauss-Kruger 11N",
+   "replaced_by": [
+    2501
+   ],
+   "point": [
+    63.0,
+    58.455
+   ],
+   "proj": [
+    500080.36212754605,
+    6482021.018673937,
+    0.0
+   ]
+  },
+  {
+   "code": 28472,
+   "name": "Pulkovo 1942 / Gauss-Kruger 12N",
+   "replaced_by": [
+    2502
+   ],
+   "point": [
+    69.0,
+    56.87
+   ],
+   "proj": [
+    500067.5577472684,
+    6305489.529598698,
+    0.0
+   ]
+  },
+  {
+   "code": 28473,
+   "name": "Pulkovo 1942 / Gauss-Kruger 13N",
+   "replaced_by": [
+    2503
+   ],
+   "point": [
+    75.0,
+    58.25
+   ],
+   "proj": [
+    500055.2124897988,
+    6459172.397640929,
+    0.0
+   ]
+  },
+  {
+   "code": 28474,
+   "name": "Pulkovo 1942 / Gauss-Kruger 14N",
+   "replaced_by": [
+    2504
+   ],
+   "point": [
+    81.005,
+    61.035
+   ],
+   "proj": [
+    500313.0204579875,
+    6769431.254763524,
+    0.0
+   ]
+  },
+  {
+   "code": 28475,
+   "name": "Pulkovo 1942 / Gauss-Kruger 15N",
+   "replaced_by": [
+    2505
+   ],
+   "point": [
+    87.0,
+    64.045
+   ],
+   "proj": [
+    500029.8723828888,
+    7104902.336489465,
+    0.0
+   ]
+  },
+  {
+   "code": 28476,
+   "name": "Pulkovo 1942 / Gauss-Kruger 16N",
+   "replaced_by": [
+    2506
+   ],
+   "point": [
+    93.0,
+    65.62
+   ],
+   "proj": [
+    500015.85413216613,
+    7280495.1842387095,
+    0.0
+   ]
+  },
+  {
+   "code": 28477,
+   "name": "Pulkovo 1942 / Gauss-Kruger 17N",
+   "replaced_by": [
+    2507
+   ],
+   "point": [
+    99.0,
+    65.52499999999999
+   ],
+   "proj": [
+    500000.7718970245,
+    7269900.656529168,
+    0.0
+   ]
+  },
+  {
+   "code": 28478,
+   "name": "Pulkovo 1942 / Gauss-Kruger 18N",
+   "replaced_by": [
+    2508
+   ],
+   "point": [
+    105.0,
+    64.56
+   ],
+   "proj": [
+    499985.1663802042,
+    7162309.549810033,
+    0.0
+   ]
+  },
+  {
+   "code": 28479,
+   "name": "Pulkovo 1942 / Gauss-Kruger 19N",
+   "replaced_by": [
+    2509
+   ],
+   "point": [
+    111.0,
+    62.975
+   ],
+   "proj": [
+    499969.3270733948,
+    6985625.318412897,
+    0.0
+   ]
+  },
+  {
+   "code": 28480,
+   "name": "Pulkovo 1942 / Gauss-Kruger 20N",
+   "replaced_by": [
+    2510
+   ],
+   "point": [
+    117.0,
+    62.735
+   ],
+   "proj": [
+    499954.32724966644,
+    6958877.476678409,
+    0.0
+   ]
+  },
+  {
+   "code": 28481,
+   "name": "Pulkovo 1942 / Gauss-Kruger 21N",
+   "replaced_by": [
+    2511
+   ],
+   "point": [
+    123.0,
+    62.754999999999995
+   ],
+   "proj": [
+    499939.82442079973,
+    6961110.300794746,
+    0.0
+   ]
+  },
+  {
+   "code": 28482,
+   "name": "Pulkovo 1942 / Gauss-Kruger 22N",
+   "replaced_by": [
+    2512
+   ],
+   "point": [
+    129.0,
+    57.93
+   ],
+   "proj": [
+    499923.70955200604,
+    6423526.411748957,
+    0.0
+   ]
+  },
+  {
+   "code": 28483,
+   "name": "Pulkovo 1942 / Gauss-Kruger 23N",
+   "replaced_by": [
+    2513
+   ],
+   "point": [
+    135.0,
+    59.39
+   ],
+   "proj": [
+    499911.0886074493,
+    6586160.12722821,
+    0.0
+   ]
+  },
+  {
+   "code": 28484,
+   "name": "Pulkovo 1942 / Gauss-Kruger 24N",
+   "replaced_by": [
+    2514
+   ],
+   "point": [
+    141.0,
+    61.055
+   ],
+   "proj": [
+    499899.3766684612,
+    6771674.702548608,
+    0.0
+   ]
+  },
+  {
+   "code": 28485,
+   "name": "Pulkovo 1942 / Gauss-Kruger 25N",
+   "replaced_by": [
+    2515
+   ],
+   "point": [
+    147.0,
+    60.209999999999994
+   ],
+   "proj": [
+    499887.55319294706,
+    6677530.915049793,
+    0.0
+   ]
+  },
+  {
+   "code": 28486,
+   "name": "Pulkovo 1942 / Gauss-Kruger 26N",
+   "replaced_by": [
+    2516
+   ],
+   "point": [
+    153.0,
+    61.015
+   ],
+   "proj": [
+    499877.5251513126,
+    6767235.56356881,
+    0.0
+   ]
+  },
+  {
+   "code": 28487,
+   "name": "Pulkovo 1942 / Gauss-Kruger 27N",
+   "replaced_by": [
+    2517
+   ],
+   "point": [
+    159.0,
+    63.735
+   ],
+   "proj": [
+    499869.48297478235,
+    7070394.460108293,
+    0.0
+   ]
+  },
+  {
+   "code": 28488,
+   "name": "Pulkovo 1942 / Gauss-Kruger 28N",
+   "replaced_by": [
+    2518
+   ],
+   "point": [
+    165.0,
+    62.25
+   ],
+   "proj": [
+    499861.0173437753,
+    6904885.362911832,
+    0.0
+   ]
+  },
+  {
+   "code": 28489,
+   "name": "Pulkovo 1942 / Gauss-Kruger 29N",
+   "replaced_by": [
+    2519
+   ],
+   "point": [
+    171.0,
+    62.32
+   ],
+   "proj": [
+    499854.58737137995,
+    6912698.9817646155,
+    0.0
+   ]
+  },
+  {
+   "code": 28490,
+   "name": "Pulkovo 1942 / Gauss-Kruger 30N",
+   "replaced_by": [
+    2520
+   ],
+   "point": [
+    177.0,
+    66.62
+   ],
+   "proj": [
+    499851.2725984386,
+    7392095.7458939385,
+    0.0
+   ]
+  },
+  {
+   "code": 28491,
+   "name": "Pulkovo 1942 / Gauss-Kruger 31N",
+   "replaced_by": [
+    2521
+   ],
+   "point": [
+    -177.0,
+    68.0
+   ],
+   "proj": [
+    499848.3081531287,
+    7546016.090514231,
+    0.0
+   ]
+  },
+  {
+   "code": 28492,
+   "name": "Pulkovo 1942 / Gauss-Kruger 32N",
+   "replaced_by": [
+    2522
+   ],
+   "point": [
+    -171.485,
+    65.69
+   ],
+   "proj": [
+    477557.2479569799,
+    7288504.554249641,
+    0.0
+   ]
+  },
+  {
+   "code": 29100,
+   "name": "SAD69 / Brazil Polyconic",
+   "replaced_by": [
+    29101
+   ],
+   "point": [
+    -49.645,
+    -14.335
+   ],
+   "proj": [
+    5469772.45932464,
+    8410163.817307489,
+    0.0
+   ]
+  },
+  {
+   "code": 29122,
+   "name": "SAD69 / UTM zone 22N",
+   "replaced_by": [
+    29172
+   ],
+   "point": [
+    -50.325,
+    3.7449999999999997
+   ],
+   "proj": [
+    574953.2821016965,
+    413971.17484391405,
+    0.0
+   ]
+  },
+  {
+   "code": 29181,
+   "name": "SAD69 / UTM zone 21S",
+   "replaced_by": [
+    29191
+   ],
+   "point": [
+    -56.995000000000005,
+    -17.2
+   ],
+   "proj": [
+    500531.6503754741,
+    8098313.2967691785,
+    0.0
+   ]
+  },
+  {
+   "code": 29182,
+   "name": "SAD69 / UTM zone 22S",
+   "replaced_by": [
+    29192
+   ],
+   "point": [
+    -50.995000000000005,
+    -14.335
+   ],
+   "proj": [
+    500539.1644891872,
+    8415218.469546925,
+    0.0
+   ]
+  },
+  {
+   "code": 29183,
+   "name": "SAD69 / UTM zone 23S",
+   "replaced_by": [
+    29193
+   ],
+   "point": [
+    -45.0,
+    -13.15
+   ],
+   "proj": [
+    500000.0,
+    8546271.325807242,
+    0.0
+   ]
+  },
+  {
+   "code": 29184,
+   "name": "SAD69 / UTM zone 24S",
+   "replaced_by": [
+    29194
+   ],
+   "point": [
+    -39.0,
+    -12.82
+   ],
+   "proj": [
+    499999.9999999993,
+    8582764.86580256,
+    0.0
+   ]
+  },
+  {
+   "code": 29185,
+   "name": "SAD69 / UTM zone 25S",
+   "replaced_by": [
+    29195
+   ],
+   "point": [
+    -33.0,
+    -7.6000000000000005
+   ],
+   "proj": [
+    500000.0000000007,
+    9159919.506926358,
+    0.0
+   ]
+  },
+  {
+   "code": 29700,
+   "name": "Tananarive (Paris) / Laborde Grid",
+   "replaced_by": [
+    29701,
+    29702
+   ],
+   "point": [
+    46.870000000000005,
+    -18.765
+   ],
+   "proj": [
+    445630.1438391731,
+    815027.184938479,
+    0.0
+   ]
+  },
+  {
+   "code": 29900,
+   "name": "TM65 / Irish National Grid",
+   "replaced_by": [
+    29902
+   ],
+   "point": [
+    -7.95,
+    53.41
+   ],
+   "proj": [
+    203374.16321622807,
+    239960.74007143913,
+    0.0
+   ]
+  },
+  {
+   "code": 30800,
+   "name": "RT38 2.5 gon W",
+   "replaced_by": [
+    3027
+   ],
+   "point": [
+    17.1,
+    62.015
+   ],
+   "proj": [
+    1567639.1160959047,
+    6878552.546012108,
+    0.0
+   ]
+  },
+  {
+   "code": 31265,
+   "name": "MGI / 3-degree Gauss zone 5",
+   "replaced_by": [
+    31275
+   ],
+   "point": [
+    14.940000000000001,
+    44.915000000000006
+   ],
+   "proj": [
+    5495262.773680741,
+    4974995.933761525,
+    0.0
+   ]
+  },
+  {
+   "code": 31266,
+   "name": "MGI / 3-degree Gauss zone 6",
+   "replaced_by": [
+    31276
+   ],
+   "point": [
+    18.005000000000003,
+    44.17
+   ],
+   "proj": [
+    6500399.835794007,
+    4892216.842130879,
+    0.0
+   ]
+  },
+  {
+   "code": 31267,
+   "name": "MGI / 3-degree Gauss zone 7",
+   "replaced_by": [
+    31277
+   ],
+   "point": [
+    21.005000000000003,
+    44.019999999999996
+   ],
+   "proj": [
+    7500400.847782137,
+    4875551.5681943325,
+    0.0
+   ]
+  },
+  {
+   "code": 31268,
+   "name": "MGI / 3-degree Gauss zone 8",
+   "replaced_by": [
+    31278
+   ],
+   "point": [
+    22.77,
+    42.905
+   ],
+   "proj": [
+    8399561.772738611,
+    4752420.738959869,
+    0.0
+   ]
+  },
+  {
+   "code": 31275,
+   "name": "MGI / Balkans zone 5",
+   "replaced_by": [
+    3907
+   ],
+   "point": [
+    14.940000000000001,
+    44.915000000000006
+   ],
+   "proj": [
+    5495263.247403372,
+    4974498.434168149,
+    0.0
+   ]
+  },
+  {
+   "code": 31276,
+   "name": "MGI / Balkans zone 6",
+   "replaced_by": [
+    3908
+   ],
+   "point": [
+    18.005000000000003,
+    44.17
+   ],
+   "proj": [
+    6500399.7958104275,
+    4891727.620446666,
+    0.0
+   ]
+  },
+  {
+   "code": 31277,
+   "name": "MGI / Balkans zone 7",
+   "replaced_by": [
+    3909
+   ],
+   "point": [
+    21.005000000000003,
+    44.019999999999996
+   ],
+   "proj": [
+    7500400.807697359,
+    4875064.013037513,
+    0.0
+   ]
+  },
+  {
+   "code": 31278,
+   "name": "MGI / Balkans zone 8",
+   "replaced_by": [
+    31279
+   ],
+   "point": [
+    22.77,
+    42.905
+   ],
+   "proj": [
+    7644519.494469307,
+    4752731.5190174235,
+    0.0
+   ]
+  },
+  {
+   "code": 31279,
+   "name": "MGI / Balkans zone 8",
+   "replaced_by": [
+    3910
+   ],
+   "point": [
+    22.77,
+    42.905
+   ],
+   "proj": [
+    8399571.816561338,
+    4751945.496885973,
+    0.0
+   ]
+  },
+  {
+   "code": 31291,
+   "name": "MGI (Ferro) / Austria West Zone",
+   "replaced_by": [
+    31281
+   ],
+   "point": [
+    10.684999999999999,
+    47.19
+   ],
+   "proj": [
+    26674.954644996207,
+    5227959.912575018,
+    0.0
+   ]
+  },
+  {
+   "code": 31292,
+   "name": "MGI (Ferro) / Austria Central Zone",
+   "replaced_by": [
+    31282
+   ],
+   "point": [
+    16.0,
+    47.790000000000006
+   ],
+   "proj": [
+    199858.2624730536,
+    5298037.50528005,
+    0.0
+   ]
+  },
+  {
+   "code": 31293,
+   "name": "MGI (Ferro) / Austria East Zone",
+   "replaced_by": [
+    31283
+   ],
+   "point": [
+    13.335,
+    47.595
+   ],
+   "proj": [
+    -225402.3359247872,
+    5277274.34704113,
+    0.0
+   ]
+  },
+  {
+   "code": 31294,
+   "name": "MGI / M28",
+   "replaced_by": [
+    31284
+   ],
+   "point": [
+    10.684999999999999,
+    47.19
+   ],
+   "proj": [
+    176674.95464499886,
+    5227959.912575018,
+    0.0
+   ]
+  },
+  {
+   "code": 31295,
+   "name": "MGI / M31",
+   "replaced_by": [
+    31285
+   ],
+   "point": [
+    13.335,
+    47.595
+   ],
+   "proj": [
+    450181.4285105366,
+    5272918.618610849,
+    0.0
+   ]
+  },
+  {
+   "code": 31296,
+   "name": "MGI / M34",
+   "replaced_by": [
+    31286
+   ],
+   "point": [
+    16.0,
+    47.790000000000006
+   ],
+   "proj": [
+    725111.9908844805,
+    5294643.835626007,
+    0.0
+   ]
+  },
+  {
+   "code": 31297,
+   "name": "MGI / Austria Lambert",
+   "replaced_by": [
+    31287
+   ],
+   "point": [
+    13.350000000000001,
+    47.71
+   ],
+   "proj": [
+    401306.8256351997,
+    423398.18346883514,
+    0.0
+   ]
+  },
+  {
+   "code": 31462,
+   "name": "DHDN / 3-degree Gauss zone 2",
+   "replaced_by": [
+    31466
+   ],
+   "point": [
+    6.6850000000000005,
+    51.46
+   ],
+   "proj": [
+    2547649.711944682,
+    5703045.701209401,
+    0.0
+   ]
+  },
+  {
+   "code": 31463,
+   "name": "DHDN / 3-degree Gauss zone 3",
+   "replaced_by": [
+    31467
+   ],
+   "point": [
+    9.004999999999999,
+    51.18000000000001
+   ],
+   "proj": [
+    3500423.0305487677,
+    5671670.909857799,
+    0.0
+   ]
+  },
+  {
+   "code": 31464,
+   "name": "DHDN / 3-degree Gauss zone 4",
+   "replaced_by": [
+    31468
+   ],
+   "point": [
+    12.004999999999999,
+    50.99
+   ],
+   "proj": [
+    4500456.637070283,
+    5650531.068171585,
+    0.0
+   ]
+  },
+  {
+   "code": 31465,
+   "name": "DHDN / 3-degree Gauss zone 5",
+   "replaced_by": [
+    31469
+   ],
+   "point": [
+    13.67,
+    48.745
+   ],
+   "proj": [
+    5402325.267489697,
+    5401677.636285636,
+    0.0
+   ]
+  },
+  {
+   "code": 31700,
+   "name": "Dealul Piscului 1970/ Stereo 70",
+   "replaced_by": [
+    3844
+   ],
+   "point": [
+    25.835,
+    45.855000000000004
+   ],
+   "proj": [
+    564834.9495593779,
+    484226.4412308502,
+    0.0
+   ]
+  },
+  {
+   "code": 31900,
+   "name": "KUDAMS / KTM",
+   "replaced_by": [
+    31901
+   ],
+   "point": [
+    47.97,
+    29.310000000000002
+   ],
+   "proj": [
+    497063.77861019317,
+    3242327.3181797457,
+    0.0
+   ]
+  },
+  {
+   "code": 32018,
+   "name": "NAD27 / New York Long Island",
+   "replaced_by": [
+    4456
+   ],
+   "point": [
+    -73.03,
+    40.885
+   ],
+   "proj": [
+    1268089.6296548285,
+    141750.36529361192,
+    0.0
+   ]
+  },
+  {
+   "code": 32029,
+   "name": "NAD27 / Pennsylvania South",
+   "replaced_by": [
+    4455
+   ],
+   "point": [
+    -77.625,
+    40.445
+   ],
+   "proj": [
+    2034705.0901643347,
+    404977.5227977388,
+    0.0
+   ]
+  },
+  {
+   "code": 32036,
+   "name": "NAD27 / Tennessee",
+   "replaced_by": [
+    2204
+   ],
+   "point": [
+    -85.98,
+    35.83
+   ],
+   "proj": [
+    105918.13602476844,
+    423405.6003557127,
+    0.0
+   ]
+  },
+  {
+   "code": 32061,
+   "name": "NAD27 / Guatemala Norte",
+   "replaced_by": [
+    5458
+   ],
+   "point": [
+    -90.1,
+    16.84
+   ],
+   "proj": [
+    524866.4163217301,
+    294715.80571345316,
+    0.0
+   ]
+  },
+  {
+   "code": 32062,
+   "name": "NAD27 / Guatemala Sur",
+   "replaced_by": [
+    5459
+   ],
+   "point": [
+    -90.24000000000001,
+    14.774999999999999
+   ],
+   "proj": [
+    510048.17417662026,
+    312063.60067745636,
+    0.0
+   ]
+  },
+  {
+   "code": 32074,
+   "name": "NAD27 / BLM 14N (feet)",
+   "replaced_by": [
+    32064
+   ],
+   "point": [
+    -96.545,
+    27.2
+   ],
+   "proj": [
+    2438360.8922121264,
+    9877830.411717726,
+    0.0
+   ]
+  },
+  {
+   "code": 32075,
+   "name": "NAD27 / BLM 15N (feet)",
+   "replaced_by": [
+    32065
+   ],
+   "point": [
+    -92.93,
+    27.67
+   ],
+   "proj": [
+    1663119.0209255328,
+    10040813.199818833,
+    0.0
+   ]
+  },
+  {
+   "code": 32076,
+   "name": "NAD27 / BLM 16N (feet)",
+   "replaced_by": [
+    32066
+   ],
+   "point": [
+    -86.96000000000001,
+    27.1
+   ],
+   "proj": [
+    1653421.1938919404,
+    9833679.85969721,
+    0.0
+   ]
+  },
+  {
+   "code": 32077,
+   "name": "NAD27 / BLM 17N (feet)",
+   "replaced_by": [
+    32067
+   ],
+   "point": [
+    -82.63,
+    26.880000000000003
+   ],
+   "proj": [
+    1109166.764407189,
+    9757144.630773557,
+    0.0
+   ]
+  },
+  {
+   "code": 32180,
+   "name": "NAD83 / SCoPQ zone 2",
+   "replaced_by": [],
+   "point": [
+    -55.5,
+    50.18
+   ],
+   "proj": [
+    304800.0,
+    5560312.498338355,
+    0.0
+   ]
+  },
+  {
+   "code": 32662,
+   "name": "WGS 84 / Plate Carree",
+   "replaced_by": [
+    3786,
+    32663
+   ],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 32663,
+   "name": "WGS 84 / World Equidistant Cylindrical",
+   "replaced_by": [
+    4087
+   ],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "code": 900913,
+   "name": "Google Maps Global Mercator",
+   "replaced_by": [],
+   "point": [
+    0.0,
+    0.0
+   ],
+   "proj": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  }
+ ]
+}

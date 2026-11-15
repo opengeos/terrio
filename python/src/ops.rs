@@ -1178,7 +1178,8 @@ fn set_network_enabled(enabled: Option<bool>) {
 ///
 /// Returns:
 ///     list[dict]: One entry per CRS, in order of authority and code: ``authority``, ``code``
-///     (int), ``name``, ``kind``, ``deprecated``, ``area_name`` (str or None), ``bounds``
+///     (int), ``name``, ``kind``, ``deprecated``, ``replaced_by`` (the codes of the CRSs that
+///     replace a deprecated EPSG CRS, ``[5105]`` for EPSG:4855), ``area_name`` (str or None), ``bounds``
 ///     (``[west, south, east, north]`` in degrees, or None), ``projection_method`` (str or None)
 ///     and ``celestial_body`` (str or None).
 ///

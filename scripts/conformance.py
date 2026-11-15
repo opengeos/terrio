@@ -2622,8 +2622,9 @@ def suite_crs(ctx):
         "boundary points may be refused or recover the original input). "
         "Identical: within 1 mm. Within tolerance: within 1 cm (forward, inverse) or 1 m (CRS to "
         "CRS, where the datum transformations GDAL picks can differ by area of use). Known "
-        "differences: deprecated CRSs whose own datum PROJ uses, where terrio uses their "
-        "replacement's (#153).",
+        "differences: RRAF 1991 (EPSG:4640 and 2989), deprecated CRSs whose own datum PROJ chains "
+        "through its RRAFG transformation, where terrio uses its ballpark (#153). Deprecated "
+        "codes have their own definition, as in PROJ (GDAL with OSR_USE_NON_DEPRECATED=NO).",
     )
     if not shutil.which("cargo"):
         s.skipped = "needs cargo"
@@ -2790,8 +2791,9 @@ def suite_crs_grids(ctx):
         "and time-dependent transformations with coordinate epochs "
         "(scripts/compare_crs_grids_with_gdal.py), with the largest difference of each case. "
         "Identical: within 1 mm. Within tolerance: within 1 cm, or 1 m from CRS to CRS. Known "
-        "differences: deprecated CRSs whose own datum PROJ uses, where terrio uses their "
-        "replacement's (#153).",
+        "differences: RRAF 1991 (EPSG:4640 and 2989), deprecated CRSs whose own datum PROJ chains "
+        "through its RRAFG transformation, where terrio uses its ballpark (#153). Deprecated "
+        "codes have their own definition, as in PROJ (GDAL with OSR_USE_NON_DEPRECATED=NO).",
     )
     if not shutil.which("cargo"):
         s.skipped = "needs cargo"
