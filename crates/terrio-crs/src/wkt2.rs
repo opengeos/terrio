@@ -11,7 +11,7 @@
 //! projected CS's unit. Methods and parameters are named as in EPSG, and identified by their
 //! EPSG codes when the WKT gives them.
 
-use super::wkt1::{Arg, Converted, Node, norm};
+use super::wkt1::{Arg, BoundTo, Converted, Node, norm};
 use crate::{Error, Result};
 
 /// The keywords of the WKT 2 CRSs this reader converts.
@@ -34,8 +34,8 @@ pub(crate) fn handles(root: &Node) -> bool {
 
 /// Converts a WKT 2 geographic or projected CRS, or a `BOUNDCRS` of one, into a PROJ string,
 /// with a `BOUNDCRS`'s Helmert transformation as `+towgs84` when it is to WGS 84, else as
-/// [`Converted::bound`]. Fails on what it cannot convert faithfully: an unknown method, or an unknown
-/// parameter.
+/// [`Converted::bound`]. Fails on what it cannot convert faithfully: an unknown method, or an
+/// unknown parameter.
 pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
     let key = root.key.to_ascii_uppercase();
     if key == "BOUNDCRS" {
@@ -43,7 +43,7 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         let mut c = to_proj(source)?;
         // A transformation to another CRS it cannot read, or to a CRS it cannot convert, is left
         // out, as terrio did before it read those; one to WGS 84 fails.
-        let shift = match towgs84(root) {
+        let shift = match helmert_shift(root) {
             Err(_) if !bound_to_wgs84(root) => None,
             r => r?,
         };
@@ -56,7 +56,7 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
             Some((t, false)) => {
                 let target = root.child("TARGETCRS").and_then(first_node).filter(|t| handles(t));
                 if let Some(target) = target.and_then(|t| to_proj(t).ok()) {
-                    c.bound = Some(Box::new((target, t)));
+                    c.bound = Some(Box::new(BoundTo { target, shift: t }));
                 }
             }
             None => {}
@@ -973,8 +973,8 @@ impl Params {
 /// Whether a `BOUNDCRS`'s target is WGS 84.
 fn bound_to_wgs84(root: &Node) -> bool {
     root.child("TARGETCRS").and_then(first_node).is_some_and(|t| {
-        t.epsg() == Some(4326)
-            || ["DATUM", "ENSEMBLE"]
+        matches!(t.epsg(), Some(4326 | 4979))
+            || ["DATUM", "GEODETICDATUM", "TRF", "ENSEMBLE"]
                 .iter()
                 .filter_map(|k| t.child(k))
                 .any(|d| d.epsg() == Some(6326) || norm(d.name().unwrap_or("")).starts_with("worldgeodeticsystem1984"))
@@ -983,7 +983,7 @@ fn bound_to_wgs84(root: &Node) -> bool {
 
 /// The 3 or 7 parameters (as `+towgs84`'s) of a `BOUNDCRS`'s Helmert transformation, and
 /// whether it is to WGS 84: `None` when it is not a supported Helmert operation.
-fn towgs84(root: &Node) -> Result<Option<(Vec<f64>, bool)>> {
+fn helmert_shift(root: &Node) -> Result<Option<(Vec<f64>, bool)>> {
     let to_wgs84 = bound_to_wgs84(root);
     let Some(t) = root.child("ABRIDGEDTRANSFORMATION") else { return Ok(None) };
     let method = t.child("METHOD").map(|m| (norm(m.name().unwrap_or("")), m.epsg())).unwrap_or_default();

@@ -265,8 +265,7 @@ impl Def {
             // Likewise a WKT 2 `BOUNDCRS` over the code with a Helmert transformation, to WGS 84
             // or to another CRS, as PROJ uses it (not a grid's, whose datum stays the code's).
             if s.proj4.is_none()
-                && let Some(w) =
-                    s.wkt.as_deref().filter(|w| *w != e.wkt && w.trim_start().get(..8).is_some_and(|k| k.eq_ignore_ascii_case("BOUNDCRS")))
+                && let Some(w) = s.wkt.as_deref().filter(|w| *w != e.wkt && is_bound_crs(w))
                 && let Ok(bound) = Self::from_wkt(w)
                 && bound.datum.is_none()
             {
@@ -804,10 +803,13 @@ impl Def {
                 // A WKT 2 `BOUNDCRS` to another CRS: its Helmert transformation to that CRS, then
                 // each of that CRS's transformations to WGS 84, as PROJ concatenates them. With
                 // none, the source CRS's own, as PROJ uses them (else its ballpark to WGS 84).
-                let (target, shift) = &**bound;
+                let wkt1::BoundTo { target, shift } = &**bound;
                 let mut source = d.clone();
                 source.registered_datum(&c, geogcs_text(w));
-                let mut t = Self::from_proj(&target.proj)?;
+                // A target terrio cannot read is left out, as one it cannot convert is.
+                let Ok(mut t) = Self::from_proj(&target.proj) else {
+                    return Ok(source);
+                };
                 t.registered_datum(target, None);
                 let to_target = datum::helmert_steps(d.ell, t.ell, shift);
                 let mut ops: Vec<Arc<Op>> = t
@@ -836,7 +838,7 @@ impl Def {
                 d.bound = Some(Arc::new(Bound { source_datum: source.datum, target: Some((t, helmert)) }));
                 return Ok(d);
             }
-            if root.key.eq_ignore_ascii_case("BOUNDCRS") && c.proj.contains("+towgs84=") {
+            if is_bound_crs(w) && c.proj.contains("+towgs84=") {
                 // To WGS 84: the source CRS's own datum, into which PROJ applies no shift.
                 let mut source = d.clone();
                 source.ops.clear();
@@ -1328,6 +1330,11 @@ pub(crate) fn vertical_from_wkt(w: &str) -> Option<Vertical> {
         Some(g) => Vertical::from_geoid_grids(&g, to_meter),
         None => Vertical { code: declared, to_meter, down: false, models: Vec::new(), ballpark: true },
     })
+}
+
+/// Whether a WKT is a WKT 2 `BOUNDCRS`.
+fn is_bound_crs(w: &str) -> bool {
+    w.trim_start().get(..8).is_some_and(|k| k.eq_ignore_ascii_case("BOUNDCRS"))
 }
 
 /// The `TOWGS84` parameters of a WKT 1 definition, when they shift.

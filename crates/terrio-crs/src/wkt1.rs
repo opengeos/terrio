@@ -208,9 +208,17 @@ pub(crate) struct Converted {
     pub geog: Option<u32>,
     /// A WKT 1 `GEOGCS` to identify the datum by, when the WKT has none of its own (WKT 2).
     pub geogcs_wkt1: Option<String>,
-    /// A WKT 2 `BOUNDCRS` to another CRS than WGS 84: that CRS, and the 3 or 7 parameters of
-    /// the Helmert transformation to it (as `+towgs84`'s).
-    pub bound: Option<Box<(Converted, Vec<f64>)>>,
+    /// A WKT 2 `BOUNDCRS` to another CRS than WGS 84: that CRS and the shift to it.
+    pub bound: Option<Box<BoundTo>>,
+}
+
+/// The target CRS of a WKT 2 `BOUNDCRS` to a CRS other than WGS 84, and its Helmert
+/// transformation to it.
+pub(crate) struct BoundTo {
+    /// The target CRS.
+    pub target: Converted,
+    /// The 3 or 7 parameters of the Helmert transformation to it, as `+towgs84`'s.
+    pub shift: Vec<f64>,
 }
 
 /// Converts a WKT 1 `GEOGCS` or `PROJCS` (ESRI or OGC flavour) into a PROJ string. `None` for

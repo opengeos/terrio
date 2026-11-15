@@ -93,3 +93,22 @@ fn only_best_transforms_a_bound_crs_as_proj_does() {
     let plain = Transformer::with_options(&SpatialRef::from_epsg(4277).unwrap(), &wgs84, &only_best).unwrap();
     assert!(matches!(plain.transform(x, y), Err(Error::MissingGrid(_))));
 }
+
+/// A WGS 84 target is WGS 84 whatever its datum keyword (`DATUM`, `GEODETICDATUM`, `TRF`), with
+/// or without its code: PROJ 9.8.1 places the point as for "to WGS 84" in each case.
+#[test]
+fn a_wgs84_target_is_known_by_any_datum_keyword() {
+    offline();
+    let data: Value = serde_json::from_str(include_str!("data/wkt2_bound.json")).unwrap();
+    let case = data["cases"].as_array().unwrap().iter().find(|c| c["name"] == "to WGS 84").unwrap();
+    let wkt = case["wkt"].as_str().unwrap().replace(r#",ID["EPSG",4326]"#, "");
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    let proj = (case["proj"][0].as_f64().unwrap(), case["proj"][1].as_f64().unwrap());
+    for keyword in ["DATUM", "GEODETICDATUM", "TRF"] {
+        let w = wkt.replace(r#"DATUM["World Geodetic System 1984""#, &format!(r#"{keyword}["World Geodetic System 1984""#));
+        assert!(w.contains(&format!("{keyword}[\"World")), "{keyword}");
+        let got = Transformer::new(&SpatialRef::from_wkt(&w), &wgs84).unwrap().transform(10.0, 50.0).unwrap();
+        assert!(metres(got, proj) < 1e-3, "{keyword}: {got:?}, PROJ {proj:?}");
+        assert!(SpatialRef::from_wkt(&w).to_proj4().unwrap().contains("+towgs84="), "{keyword}");
+    }
+}
