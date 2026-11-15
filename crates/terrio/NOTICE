@@ -1408,6 +1408,12 @@ same dataset, through PROJ 9.8.1's database (scripts/gen_crs_names.py), under th
 So are the EPSG WKTs and points of the test data crates/terrio-crs/tests/data/wkt_unresolved.json
 (PROJ 9.8.1's WKTs of EPSG CRSs and its placements of points in them, by
 scripts/gen_wkt_unresolved.py).
+So are the EPSG WKTs, datums and transformations of the test data in
+crates/terrio-crs/tests/data/: grads_and_prime_meridians.json, wkt_datum_shift.json,
+wkt1_axes.json, wkt1_proj_reads.json, wkt2_bound.json and proj_ellipsoid_shape.json (PROJ 9.8.1's
+WKTs and placements of points, by scripts/gen_grads_and_prime_meridians.py,
+gen_wkt_datum_shift.py, gen_wkt1_axes.py, gen_wkt1_proj_reads.py, gen_wkt2_bound.py and
+gen_proj_ellipsoid_shape.py).
 The EPSG rows of the test data crates/terrio-crs/tests/data/proj_string_export.tsv and
 wkt1_strict_export.tsv (PROJ 9.8.1's PROJ strings and WKT 1 of EPSG CRSs, by
 scripts/gen_proj_string_export.py and scripts/gen_wkt1_strict_export.py) and geokeys_gdal.tsv
@@ -1425,13 +1431,17 @@ projection engine documentation (https://github.com/Esri/projection-engine-db-do
 The ESRI names, areas of use and projection method names in
 crates/terrio-crs/data/crs_catalog.tsv.zst, the ESRI aliases in
 crates/terrio-crs/data/crs_names.tsv.zst, and the ESRI WKTs of the test data
-crates/terrio-crs/tests/data/wkt_unresolved.json, are derived from the same documentation (ArcGIS Pro
-3.6), through PROJ 9.8.1's database, as are the ESRI rows of the test data
+crates/terrio-crs/tests/data/wkt_unresolved.json, grads_and_prime_meridians.json and
+wkt_datum_shift.json, are derived from the same documentation (ArcGIS Pro 3.6), through PROJ
+9.8.1's database, as are the ESRI rows of the test data
 crates/terrio-crs/tests/data/proj_string_export.tsv and wkt1_strict_export.tsv (PROJ 9.8.1's
 PROJ strings and WKT 1 of ESRI CRSs), geokeys_gdal.tsv (GDAL 3.12.1's GeoKeys of ESRI CRSs) and
 crs_accessors.tsv (PROJ 9.8.1's axis orders, ellipsoids and conversion parameters of ESRI CRSs).
 The ESRI celestial bodies and their semi-major axes in crates/terrio-crs/src/bodies.rs are derived
 from the same documentation, through PROJ 9.8.1's database (scripts/gen_celestial_bodies.py).
+The ESRI names in the test data crates/terrio-crs/tests/data/wkt1_proj_reads.json (Makassar /
+NEIEZ as an ESRI `.prj` names it, `D_Makassar`) and wkt2_bound.json (`D_OSGB_1936`) follow the
+same documentation.
 
   Copyright © 2010-2025 Esri
 
