@@ -263,7 +263,15 @@ shift, as in GDAL: the CRS is used as it is.
 A WKT 1 in grads with a `PRIMEM["Paris",2.33722917]` (NTF (Paris) as GDAL and ESRI write it)
 has Paris's longitude in degrees, as PROJ reads it; another prime meridian is in the CRS's
 angular unit. ESRI's `Behrmann` projection is cylindrical equal area true at 30 degrees, or at
-the `Standard_Parallel_1` it gives (EASE-Grid 2.0), PROJ's `+proj=cea +lat_ts=30`.
+the `Standard_Parallel_1` it gives (EASE-Grid 2.0), PROJ's `+proj=cea +lat_ts=30`. ESRI's
+`Mercator_Variant_A` (EPSG:3002, Makassar / NEIEZ, in an ESRI `.prj`) is Mercator (1SP), its
+`Scale_Factor` 1 when not given; as in PROJ, a `Latitude_Of_Origin` or `Standard_Parallel_1` it
+gives is left out.
+
+A node of a keyword terrio does not know is skipped, whatever its keyword, as PROJ skips it:
+`vendor:mark["x"]`, `a-b["x"]` and an empty keyword (`["x"]`) are read past. A keyword ends at a
+space, a quote or a delimiter, and a keyword with a space or a quote in it (`a b["x"]`) makes the
+WKT one terrio refuses, as PROJ does.
 
 A CRS of PROJ's ESRI authority is reported under it, as GDAL reports it: a GeoTIFF GDAL writes in
 `ESRI:54009` is `ESRI:54009` (from the ESRI code the WKT declares or, for GDAL's ESRI PE strings,

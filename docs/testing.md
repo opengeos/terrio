@@ -1760,6 +1760,17 @@ the target's datum (and without the shift in CRSs on the source's datum and in o
 target's ellipsoid), within 1 mm (`cargo test -p terrio-crs --test wkt2_bound`;
 regenerate with `scripts/gen_wkt2_bound.py`, pyproj 3.8.0).
 
+WKT 1 that PROJ 9.8.1 reads, 13 CRSs (11 of which terrio refused), is read and places a point where
+PROJ does, within 1 mm (1e-9 degrees for geographic CRSs), with PROJ's PROJ string (values within a
+relative 1e-12): ESRI's `Mercator_Variant_A` (EPSG Guidance Note 7-2's Makassar / NEIEZ example, in
+metres and US survey feet, without a scale factor, and with a latitude of origin and a standard
+parallel PROJ leaves out), and geographic and projected CRSs with a node of an unknown keyword
+(`rustgis:unapplied` as RustGIS marks the WKT 1 it converts a WKT 2 `BOUNDCRS` to, on a datum and at
+the root, a hyphen, a dot, a leading digit, other letters, an empty keyword). Makassar / NEIEZ is
+EPSG:3002 and goes to WGS 84 as in PROJ, within 1e-8 degrees; a keyword with a space or a quote is
+refused, as PROJ refuses it (`cargo test -p terrio-crs --test wkt1_proj_reads`; regenerate with
+`scripts/gen_wkt1_proj_reads.py`, pyproj 3.8.0).
+
 PROJ-string parameter values are refused where PROJ 9.8.1 refuses them: each method with each
 common parameter unreadable (`abc`) or in radians (`0.5r`), scale factors PROJ may refuse, and
 `+to_meter`, `+units`, `+vto_meter`, `+towgs84`, `+pm` and rotated-pole cases, 3,350 unique strings

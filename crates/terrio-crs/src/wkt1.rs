@@ -120,8 +120,10 @@ fn node(b: &[u8], i: &mut usize, level: usize) -> Option<Node> {
         return None;
     }
     skip_ws(b, i);
+    // A keyword is any run of characters up to a space, a quote or a delimiter, as PROJ reads
+    // it: an unknown node is skipped whatever its keyword (`vendor:mark[...]`, `a-b[...]`).
     let start = *i;
-    while *i < b.len() && (b[*i].is_ascii_alphanumeric() || b[*i] == b'_') {
+    while *i < b.len() && !b[*i].is_ascii_whitespace() && !matches!(b[*i], b'"' | b',' | b'[' | b'(' | b']' | b')') {
         *i += 1;
     }
     let key = std::str::from_utf8(&b[start..*i]).ok()?.to_string();
@@ -383,7 +385,8 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             push(&mut out, "lat_1", sp1);
             push(&mut out, "lat_2", sp2);
         }
-        "mercator1sp" => {
+        // ESRI's `Mercator_Variant_A` (EPSG's name) is Mercator (1SP), as PROJ reads it.
+        "mercator1sp" | "mercatorvarianta" => {
             out.push("+proj=merc".into());
             push(&mut out, "lon_0", lon_0);
             push(&mut out, "k", k.or(Some(1.0)));
