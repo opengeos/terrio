@@ -42,7 +42,7 @@ fn ellipsoid_parameters_are_read_as_proj_reads_them() {
     terrio_crs::set_network_enabled(Some(false));
     let data: Value = serde_json::from_str(include_str!("data/proj_ellipsoid_shape.json")).unwrap();
     let cases = data["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 469);
+    assert_eq!(cases.len(), 475);
     let mut bad = vec![];
     for case in cases {
         let s = case["proj_string"].as_str().unwrap();
@@ -139,8 +139,10 @@ fn wkt_writes_the_crs_ellipsoid_under_a_spherification_flag() {
 }
 
 /// A WKT's `PROJ4` extension is computed on as PROJ 9.8.1 computes on it, as a pipeline step:
-/// `+ellps=WGS84 +f=0` (or an unreadable `+f`, read as 0) is a sphere, and `+ellps=clrk66
-/// +a=6400000` keeps Clarke 1866's eccentricity. Where the step refuses the ellipsoid (`+rf=abc`
+/// `+ellps=WGS84 +f=0` (or an unreadable `+f`, read as 0) is a sphere, `+ellps=clrk66
+/// +a=6400000` keeps Clarke 1866's eccentricity, no ellipsoid is GRS 1980, `+R_a` is not `+R_A`
+/// (as it is to PROJ's CRS parser for `laea`), and `+datum=` is `pj_datum_set`'s shift onto the
+/// figure, under `+R_C` too. Where the step refuses the ellipsoid (`+rf=abc`
 /// or `+rf=0`, `+es=1`, a shape without a size), PROJ creates the CRS but refuses the
 /// transformation, and terrio refuses it. `data/proj_ellipsoid_shape.json`'s `extensions`
 /// (`Transformer.from_crs("EPSG:4326", CRS(wkt), always_xy=True)`). Tolerance: 1 mm.
@@ -150,7 +152,7 @@ fn a_wkt_proj4_extension_is_computed_on_as_a_pipeline_step() {
     terrio_crs::set_network_enabled(Some(false));
     let data: Value = serde_json::from_str(include_str!("data/proj_ellipsoid_shape.json")).unwrap();
     let cases = data["extensions"].as_array().unwrap();
-    assert_eq!(cases.len(), 15);
+    assert_eq!(cases.len(), 20);
     let wgs84 = SpatialRef::from_epsg(4326).unwrap();
     let mut bad = vec![];
     for case in cases {

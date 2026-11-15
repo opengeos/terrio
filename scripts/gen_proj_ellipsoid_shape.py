@@ -151,10 +151,18 @@ EXTRA = [
     # A datum beside `+a`, even of its own semi-major axis, is dropped: no NAD27 shift.
     "+proj=longlat +datum=NAD27 +a=6378206.4",
     "+proj=longlat +datum=NAD27 +rf=294.978698213898",
+    # A step's `+datum=` is shifted as PROJ's `pj_datum_set` gives it, but under `+R_C`.
+    "+proj=merc +datum=carthage +R_V",
+    "+proj=merc +datum=NAD27 +R_V",
+    "+proj=merc +datum=potsdam +R_V",
+    "+proj=merc +datum=OSGB36 +R_g",
+    "+proj=merc +datum=WGS84 +a=6400000 +R_C",
+    "+proj=merc +datum=NAD83 +R_C",
 ]
 
-# WKT 1 CRSs with a `PROJ4` extension, which PROJ computes on as a pipeline step reads it: a
-# shape parameter changes a named ellipsoid, `+a` keeps its eccentricity. The extension's
+# WKT 1 CRSs with a `PROJ4` extension, which PROJ computes on as a pipeline step reads it, whatever
+# the nodes say: a shape parameter changes a named ellipsoid, `+a` keeps its eccentricity, GRS
+# 1980 without an ellipsoid, `+R_a` is not `+R_A`, `+datum=` is `pj_datum_set`'s shift. The extension's
 # ellipsoid is refused where the step refuses it (PROJ creates the CRS, but not the
 # transformation).
 EXTENSION_WKT = (
@@ -166,26 +174,31 @@ EXTENSION_WKT = (
     'EXTENSION["PROJ4","{}"]]'
 )
 EXTENSIONS = [
-    "+ellps=WGS84",
-    "+ellps=WGS84 +f=0",
-    "+ellps=WGS84 +f=abc",
-    "+ellps=WGS84 +es=0.01",
-    "+ellps=WGS84 +rf=300",
-    "+ellps=clrk66 +a=6400000",
-    "+ellps=WGS84 +R_V",
-    "+datum=WGS84 +a=6400000",
-    "+datum=NAD27 +rf=300",
-    "+a=6400000 +es=0.01 +b=6300000",
-    "+ellps=WGS84 +rf=abc",
-    "+ellps=WGS84 +rf=0",
-    "+ellps=WGS84 +es=1",
-    "+a=6400000 +rf=abc",
-    "+rf=300",
+    "+proj=tmerc +lon_0=-75 +ellps=WGS84",
+    "+proj=tmerc +lon_0=-75 +ellps=WGS84 +f=0",
+    "+proj=tmerc +lon_0=-75 +ellps=WGS84 +f=abc",
+    "+proj=tmerc +lon_0=-75 +ellps=WGS84 +es=0.01",
+    "+proj=tmerc +lon_0=-75 +ellps=WGS84 +rf=300",
+    "+proj=tmerc +lon_0=-75 +ellps=clrk66 +a=6400000",
+    "+proj=tmerc +lon_0=-75 +ellps=WGS84 +R_V",
+    "+proj=tmerc +lon_0=-75 +datum=WGS84 +a=6400000",
+    "+proj=tmerc +lon_0=-75 +datum=NAD27 +rf=300",
+    "+proj=tmerc +lon_0=-75 +a=6400000 +es=0.01 +b=6300000",
+    "+proj=tmerc +lon_0=-75 +ellps=WGS84 +rf=abc",
+    "+proj=tmerc +lon_0=-75 +ellps=WGS84 +rf=0",
+    "+proj=tmerc +lon_0=-75 +ellps=WGS84 +es=1",
+    "+proj=tmerc +lon_0=-75 +a=6400000 +rf=abc",
+    "+proj=tmerc +lon_0=-75 +rf=300",
+    "+proj=tmerc +lon_0=-75",
+    "+proj=tmerc +lon_0=-75 +datum=carthage",
+    "+proj=tmerc +lon_0=-75 +datum=WGS84 +a=6400000 +R_C",
+    "+proj=laea +lat_0=45 +lon_0=-100 +datum=WGS84 +R_A",
+    "+proj=laea +lat_0=45 +lon_0=-100 +ellps=WGS84 +R_a",
 ]
 
 
-def extension_case(shape):
-    wkt = EXTENSION_WKT.format(f"+proj=tmerc +lon_0=-75 {shape}")
+def extension_case(definition):
+    wkt = EXTENSION_WKT.format(definition)
     try:
         t = Transformer.from_crs("EPSG:4326", CRS(wkt), always_xy=True)
         x, y = t.transform(*POINT, errcheck=True)

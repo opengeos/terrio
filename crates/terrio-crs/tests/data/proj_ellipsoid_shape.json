@@ -6845,6 +6845,96 @@
     6378206.4,
     6356583.8
    ]
+  },
+  {
+   "proj_string": "+proj=merc +datum=carthage +R_V",
+   "point": [
+    -80.0,
+    30.0
+   ],
+   "proj": [
+    -8895291.57307744,
+    3477824.1464359835
+   ],
+   "ellipsoid": [
+    6378249.2,
+    6356515.000000472
+   ]
+  },
+  {
+   "proj_string": "+proj=merc +datum=NAD27 +R_V",
+   "point": [
+    -80.0,
+    30.0
+   ],
+   "proj": [
+    -8895581.156093594,
+    3499624.3408521074
+   ],
+   "ellipsoid": [
+    6378206.4,
+    6356583.8
+   ]
+  },
+  {
+   "proj_string": "+proj=merc +datum=potsdam +R_V",
+   "point": [
+    -80.0,
+    30.0
+   ],
+   "proj": [
+    -8894593.232149897,
+    3499235.680165458
+   ],
+   "ellipsoid": [
+    6377397.155,
+    6356078.962818189
+   ]
+  },
+  {
+   "proj_string": "+proj=merc +datum=OSGB36 +R_g",
+   "point": [
+    -80.0,
+    30.0
+   ],
+   "proj": [
+    -8890382.371202484,
+    3475629.1588257197
+   ],
+   "ellipsoid": [
+    6377563.396,
+    6356256.909237285
+   ]
+  },
+  {
+   "proj_string": "+proj=merc +datum=WGS84 +a=6400000 +R_C",
+   "point": [
+    -80.0,
+    30.0
+   ],
+   "proj": [
+    -8906124.766539505,
+    3503772.3189447694
+   ],
+   "ellipsoid": [
+    6400000.0,
+    6378542.011745616
+   ]
+  },
+  {
+   "proj_string": "+proj=merc +datum=NAD83 +R_C",
+   "point": [
+    -80.0,
+    30.0
+   ],
+   "proj": [
+    -8875700.609241448,
+    3491803.104167019
+   ],
+   "ellipsoid": [
+    6378137.0,
+    6356752.314140356
+   ]
   }
  ],
  "extensions": [
@@ -6997,6 +7087,61 @@
     30.0
    ],
    "proj": null
+  },
+  {
+   "wkt": "PROJCS[\"custom\",GEOGCS[\"custom\",DATUM[\"custom\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-75],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],EXTENSION[\"PROJ4\",\"+proj=tmerc +lon_0=-75\"]]",
+   "point": [
+    -80.0,
+    30.0
+   ],
+   "proj": [
+    -482739.7613762871,
+    3330662.065215617
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"custom\",GEOGCS[\"custom\",DATUM[\"custom\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-75],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],EXTENSION[\"PROJ4\",\"+proj=tmerc +lon_0=-75 +datum=carthage\"]]",
+   "point": [
+    -80.0,
+    30.0
+   ],
+   "proj": [
+    -482500.66774384293,
+    3330294.8201251407
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"custom\",GEOGCS[\"custom\",DATUM[\"custom\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-75],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],EXTENSION[\"PROJ4\",\"+proj=tmerc +lon_0=-75 +datum=WGS84 +a=6400000 +R_C\"]]",
+   "point": [
+    -80.0,
+    30.0
+   ],
+   "proj": [
+    -483173.6341386643,
+    3331780.895192834
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"custom\",GEOGCS[\"custom\",DATUM[\"custom\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-75],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],EXTENSION[\"PROJ4\",\"+proj=laea +lat_0=45 +lon_0=-100 +datum=WGS84 +R_A\"]]",
+   "point": [
+    -80.0,
+    30.0
+   ],
+   "proj": [
+    1925118.500787369,
+    -1457531.153425884
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"custom\",GEOGCS[\"custom\",DATUM[\"custom\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-75],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],EXTENSION[\"PROJ4\",\"+proj=laea +lat_0=45 +lon_0=-100 +ellps=WGS84 +R_a\"]]",
+   "point": [
+    -80.0,
+    30.0
+   ],
+   "proj": [
+    1920423.0681088455,
+    -1438630.7210861
+   ]
   }
  ]
 }

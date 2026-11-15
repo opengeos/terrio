@@ -187,6 +187,29 @@ pub(crate) fn datum_ellps(name: &str) -> Option<&'static str> {
     })
 }
 
+/// The datum shift PROJ's `pj_datum_set` gives a pipeline step's `+datum=` (`datums.cpp`).
+#[derive(Debug, Clone, Copy)]
+enum StepShift {
+    Towgs84(&'static [f64]),
+    Nadgrids(&'static str),
+}
+
+/// The shift of PROJ's `+datum=` names in a pipeline step.
+fn step_datum_shift(name: &str) -> Option<StepShift> {
+    Some(match name {
+        "WGS84" | "NAD83" => StepShift::Towgs84(&[0.0, 0.0, 0.0]),
+        "GGRS87" => StepShift::Towgs84(&[-199.87, 74.79, 246.62]),
+        "NAD27" => StepShift::Nadgrids("@conus,@alaska,@ntv2_0.gsb,@ntv1_can.dat"),
+        "potsdam" => StepShift::Nadgrids("@BETA2007.gsb"),
+        "carthage" => StepShift::Towgs84(&[-263.0, 6.0, 431.0]),
+        "hermannskogel" => StepShift::Towgs84(&[577.326, 90.129, 463.919, 5.137, 1.474, 5.297, 2.4232]),
+        "ire65" => StepShift::Towgs84(&[482.530, -130.596, 564.557, -1.042, -0.214, -0.631, 8.15]),
+        "nzgd49" => StepShift::Towgs84(&[59.47, -5.04, 187.44, 0.47, -0.1, 1.024, -4.5993]),
+        "OSGB36" => StepShift::Towgs84(&[446.448, -125.157, 542.060, 0.1502, 0.2470, 0.8421, -20.4894]),
+        _ => return None,
+    })
+}
+
 /// The ellipsoid of a CRS given by a PROJ string, as PROJ 9.8.1 reads it with `+type=crs`.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ProjEllipsoid {
@@ -242,8 +265,8 @@ pub(crate) fn proj_ellipsoid(p: &Params, method: &str, extension: bool) -> std::
     // PROJ's CRSs are on WGS 84 without ellipsoid parameters.
     let default = (a.is_none() && shape.is_none()).then_some((6_378_137.0, 298.257_223_563));
     let named = |(a, v): (f64, f64)| if v < 0.0 { Ell::from_a_b(a, -v) } else { Ell::from_a_rf(a, v) };
-    // The step: `+datum` gives `+ellps` when there is none.
-    let step_base = ellps.or(datum).or(default).map(named);
+    // The step: `+datum` gives `+ellps` when there is none, and `pj_init` GRS 1980 without either.
+    let step_base = ellps.or(datum).or(default.map(|_| (6_378_137.0, 298.257_222_101))).map(named);
     let Some(size) = a.or(step_base.map(|e| e.a)) else {
         return Err(format!("+{} without a semi-major axis", shape.unwrap_or("a")));
     };
@@ -766,30 +789,46 @@ impl Def {
             bound: None,
         };
         // The datum transformation.
-        // A pipeline step of `+datum=WGS84` or `+datum=NAD83` is shifted by `+towgs84=0,0,0`, from
-        // WGS 84 to its figure (PROJ's `pj_datum_set`), unless that is WGS 84's or GRS 1980's
-        // (`pj_init`'s test of `a` and `es`); a geocentric one is not shifted.
-        let wgs84_figure = ell.a == 6_378_137.0 && (ell.es - 0.006_694_379_990).abs() < 0.000_000_000_050;
-        let step_datum =
-            (shape.as_step && !wgs84_figure && name != "geocent" && matches!(datum_name, Some("WGS84" | "NAD83"))).then(|| vec![0.0; 3]);
-        let towgs84 = p.list("towgs84").or(step_datum);
+        // A pipeline step's `+datum=` is the shift PROJ's `pj_datum_set` gives it, from WGS 84 to
+        // the step's figure, unless the string gives its own; none for a geocentric step, nor
+        // under `+R_C` in a PROJ string (PROJ 9.8.1 then keeps the datum's transformations, but
+        // not in a WKT's extension).
+        let own_shift = p.has("towgs84") || p.has("nadgrids");
+        let step_shift = datum_name
+            .filter(|_| shape.as_step && (extension || !shape.conformal) && !own_shift && name != "geocent")
+            .and_then(step_datum_shift);
+        // A step's `+R_C` makes its figure the conformal sphere at the equator, onto which it is
+        // shifted.
+        let shift_figure = if extension && shape.conformal { Ell::from_a_rf(ell.a * ell.one_es.sqrt(), 0.0) } else { ell };
+        // `pj_init` takes a null shift on WGS 84 or GRS 1980 (its test of `a` and `es`) as WGS 84.
+        let wgs84_figure = shift_figure.a == 6_378_137.0 && (shift_figure.es - 0.006_694_379_990).abs() < 0.000_000_000_050;
+        let (step_towgs84, step_nadgrids) = match step_shift {
+            Some(StepShift::Towgs84(t)) => (Some(t.to_vec()), None),
+            Some(StepShift::Nadgrids(g)) => (None, Some(g)),
+            None => (None, None),
+        };
+        let step_on_wgs84 = step_towgs84.as_ref().is_some_and(|t| wgs84_figure && t.iter().all(|v| *v == 0.0));
+        let towgs84 = p.list("towgs84").or(step_towgs84);
         if towgs84.as_ref().is_some_and(|v| v.len() != 3 && v.len() != 7) {
             return Err(Error::Crs(format!("towgs84 needs 3 or 7 values in '{s}'")));
         }
-        let nadgrids = p.str("nadgrids").filter(|g| !g.split(',').all(|n| n.trim_start_matches('@') == "null"));
-        if let Some(g) = nadgrids {
+        let nadgrids = p.str("nadgrids").or(step_nadgrids).filter(|g| !g.split(',').all(|n| n.trim_start_matches('@') == "null"));
+        if step_on_wgs84 {
+            d.datum = Some(6326);
+            d.geog = Some(4326);
+        } else if let Some(g) = nadgrids {
             d.ops = vec![Arc::new(Op::world(datum::nadgrids_steps(g)))];
         } else if let Some(t) = towgs84 {
             // Zero translation still converts between different ellipsoids. On
             // WGS 84 itself it is exactly the WGS 84 datum, without a Cartesian round trip.
             let wgs84 = Ell::wgs84();
-            if t.iter().all(|v| *v == 0.0) && ell.a == wgs84.a && ell.es == wgs84.es {
+            if t.iter().all(|v| *v == 0.0) && shift_figure.a == wgs84.a && shift_figure.es == wgs84.es {
                 d.datum = Some(6326);
                 d.geog = Some(4326);
             } else {
-                d.ops = vec![Arc::new(Op::world(datum::towgs84_steps(ell, &t)))];
+                d.ops = vec![Arc::new(Op::world(datum::towgs84_steps(shift_figure, &t)))];
             }
-        } else if let Some(code) = datum_name.and_then(datum_geog).filter(|_| !shape.reshaped)
+        } else if let Some(code) = datum_name.and_then(datum_geog).filter(|_| !shape.reshaped && step_shift.is_none())
             && let Some(e) = epsg::get(code)
         {
             d.ops = epsg::usable(&e.ops, &e.grid_ops);

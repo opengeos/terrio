@@ -433,22 +433,24 @@ A PROJ string's ellipsoid is read as PROJ 9.8.1 reads it with `+type=crs`:
   `+R_h`, `+R_lat_a`, `+R_lat_g`, `+R_C`) makes PROJ compute on the string as a pipeline
   step reads it. In that case `+a` keeps the named ellipsoid's eccentricity, the first shape
   parameter changes its shape, and the first flag in that order makes a sphere of it.
-  `+datum=WGS84` and `+datum=NAD83` there shift points from WGS 84 to that sphere with a null
-  `+towgs84`.
+  A `+datum=` name there shifts points from WGS 84 to that sphere as PROJ's `pj_datum_set`
+  defines it (a null `+towgs84` for WGS84 and NAD83, the `+towgs84` or `+nadgrids` of the
+  others), but under `+R_C`, where PROJ keeps the datum's transformations. Without an
+  ellipsoid, that step is on GRS 1980.
 
 A WKT's `PROJ4` extension (`EXTENSION["PROJ4", ...]`) is computed on as PROJ computes on it, as
 a pipeline step: `+ellps=WGS84 +f=0` there is a sphere, `+ellps=clrk66 +a=6400000` keeps Clarke
 1866's eccentricity, and an ellipsoid the step refuses (`+rf=0`, `+es=1`, a shape without a
-size) is refused, as PROJ refuses to transform with it.
+size) is refused, as PROJ refuses to transform with it. Its `+datum=` is shifted as a step's is,
+under `+R_C` too, and without an ellipsoid it is on GRS 1980.
 
 The CRS still reports the ellipsoid of the first rules (`projection_params`, WKT).
 Earlier versions applied `+f`, `+es` and `+e` to a named ellipsoid, made spheres of
 `+datum=WGS84 +a=...`, took `+b` before `+f`, `+es` and `+e`, read a shape without a size on
 WGS 84, and ignored `+R_V` and the other flags but `+R_A` and `+R_C`. Points in such CRSs can
-move by kilometres. `tests/proj_ellipsoid_shape.rs` checks 469 strings against PROJ. Not
-covered: other parameters that PROJ's parser does not take, which also make it compute on the
-string as a step reads it, and the datum shifts of `+datum=` names other than WGS84 and NAD83
-in that case.
+move by kilometres. `tests/proj_ellipsoid_shape.rs` checks 475 strings and 20 WKT extensions
+against PROJ. Not covered: other parameters that PROJ's parser does not take, which also make it
+compute on the string as a step reads it.
 
 ## Transformations
 

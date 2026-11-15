@@ -403,8 +403,10 @@ impl SpatialRef {
             let epsg = declared_epsg(wkt)
                 .or_else(|| identify_epsg(wkt))
                 .filter(|code| fits(SpatialRef { epsg: Some(*code), ..Default::default() }));
-            // Retain a lenient extension through its WKT: re-reading it as a literal PROJ
-            // string would apply stricter validation than the extension permits.
+            // The extension is the CRS's PROJ string only where PROJ's CRS parser accepts it;
+            // one only a pipeline step reads (an unreadable `+lat_ts`) is kept through its WKT.
+            // Either way `Def::new` computes on it by the step's ellipsoid rules, which differ
+            // from the parser's.
             let proj4 = Def::from_proj(&proj4).is_ok().then_some(proj4);
             let mut s = Self { epsg, wkt: Some(wkt.to_string()), proj4, esri: None }.with_esri();
             if let Some(code) = s.esri
