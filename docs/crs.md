@@ -266,7 +266,10 @@ grads are in grads. Its prime meridian is in that unit too, but where PROJ 9.8.1
 degrees: a `PRIMEM["Paris",2.33722917]` in grads (NTF (Paris) as GDAL and ESRI write it), and a
 meridian PROJ knows by name with its value in degrees or EPSG's sexagesimal degrees, whatever the
 unit (`PRIMEM["Paris RGS",2.33720833333333]` in ATF (Paris), in grads; `PRIMEM["Ferro",-17.4]`,
-17°40'W). ESRI's Krovak `XY_Plane_Rotation` is in that unit as well (100 grads for 90°, east-north).
+17°40'W). A WKT 2 prime meridian is in its own unit, else in the CRS's (not its axes'), else in
+degrees, with the same corrections: `PRIMEM["Ferro",-17.4,ANGLEUNIT["degree",...]]`, as epsg.org
+writes it, is 17°40'W. ESRI's Krovak `XY_Plane_Rotation` is in the CRS's unit as well (100 grads
+for 90°, east-north).
 As PROJ does between CRSs, a prime meridian within 1e-10 radians of one of PROJ's named meridians
 is that meridian: Paris's 2.33722917° (2.5969213 grads) is `+pm=paris`, 2.337229166667°, 0.25 mm
 west. ESRI's `Behrmann` projection is cylindrical equal area true at 30 degrees, or at

@@ -199,13 +199,13 @@ pub(crate) fn norm(s: &str) -> String {
     s.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase()
 }
 
-/// The longitude in degrees of a WKT 1 `PRIMEM` named `name` with the value `value`, in a CRS
+/// The longitude in degrees of a WKT `PRIMEM` named `name` with the value `value`, in a CRS
 /// whose angular unit is `ang` degrees, as PROJ 9.8.1 reads it (`buildPrimeMeridian`): in that
 /// unit, but for Paris in a CRS in grads, which GDAL and ESRI write in degrees (2.33722917, Paris's
 /// 2.5969213 grads), and for the meridians PROJ knows by name and value in degrees (`Paris RGS`,
 /// 2.33720833, in ATF (Paris), also in grads) or in EPSG's sexagesimal degrees (`Ferro` at
 /// -17.40, 17°40'W), whatever the unit.
-fn prime_meridian_degrees(name: &str, value: f64, ang: f64) -> f64 {
+pub(crate) fn prime_meridian_degrees(name: &str, value: f64, ang: f64) -> f64 {
     const DMS: [(&str, f64, f64, f64); 13] = [
         ("Lisbon", -9.0, 7.0, 54.862),
         ("Bogota", -74.0, 4.0, 51.3),

@@ -1445,6 +1445,270 @@
     14.399999999999999,
     50.100000000000016
    ]
+  },
+  {
+   "name": "EPSG:4807 WKT 2, read",
+   "wkt": "GEOGCRS[\"custom\",DATUM[\"custom\",ELLIPSOID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Paris\",2.5969213,ANGLEUNIT[\"grad\",0.0157079632679489]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"grad\",0.0157079632679489]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"grad\",0.0157079632679489]]]",
+   "src": "+proj=longlat +ellps=clrk80ign +type=crs",
+   "point": [
+    2.35,
+    48.85
+   ],
+   "proj": [
+    0.014189814814814933,
+    54.27777777777778
+   ],
+   "proj_back": [
+    2.35,
+    48.85
+   ]
+  },
+  {
+   "name": "EPSG:27572 WKT 2, read",
+   "wkt": "PROJCRS[\"custom\",BASEGEOGCRS[\"custom\",DATUM[\"custom\",ELLIPSOID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Paris\",2.5969213,ANGLEUNIT[\"grad\",0.0157079632679489]]],CONVERSION[\"Lambert zone II\",METHOD[\"Lambert Conic Conformal (1SP)\"],PARAMETER[\"Latitude of natural origin\",52,ANGLEUNIT[\"grad\",0.0157079632679489]],PARAMETER[\"Longitude of natural origin\",0,ANGLEUNIT[\"grad\",0.0157079632679489]],PARAMETER[\"Scale factor at natural origin\",0.99987742,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",600000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",2200000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"easting (X)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing (Y)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "src": "+proj=longlat +ellps=clrk80ign +type=crs",
+   "point": [
+    2.35,
+    48.85
+   ],
+   "proj": [
+    600937.8045896705,
+    2427953.79931374
+   ],
+   "proj_back": [
+    2.35,
+    48.85
+   ]
+  },
+  {
+   "name": "EPSG:27500 WKT 2, read",
+   "wkt": "PROJCRS[\"custom\",BASEGEOGCRS[\"custom\",DATUM[\"custom\",ELLIPSOID[\"Plessis 1817\",6376523,308.64,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Paris RGS\",2.33720833333333,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Nord de Guerre\",METHOD[\"Lambert Conic Conformal (1SP)\"],PARAMETER[\"Latitude of natural origin\",55,ANGLEUNIT[\"grad\",0.0157079632679489]],PARAMETER[\"Longitude of natural origin\",6,ANGLEUNIT[\"grad\",0.0157079632679489]],PARAMETER[\"Scale factor at natural origin\",0.99950908,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",300000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"easting (X)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing (Y)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "src": "+proj=longlat +a=6376523 +rf=308.64 +type=crs",
+   "point": [
+    7.0,
+    49.0
+   ],
+   "proj": [
+    446099.5539821752,
+    244695.27358226565
+   ],
+   "proj_back": [
+    7.0,
+    49.00000000000001
+   ]
+  },
+  {
+   "name": "WKT 2, Ferro sexagesimal",
+   "wkt": "GEOGCRS[\"custom\",DATUM[\"custom\",ELLIPSOID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Ferro\",-17.4,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"lon\",east,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"lat\",north,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
+   "src": "+proj=longlat +ellps=clrk80ign +type=crs",
+   "point": [
+    2.35,
+    48.85
+   ],
+   "proj": [
+    20.016666666666666,
+    48.85
+   ],
+   "proj_back": [
+    2.35,
+    48.85
+   ]
+  },
+  {
+   "name": "WKT 2, Lisbon sexagesimal",
+   "wkt": "GEOGCRS[\"custom\",DATUM[\"custom\",ELLIPSOID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Lisbon\",-9.0754862,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"lon\",east,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"lat\",north,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
+   "src": "+proj=longlat +ellps=clrk80ign +type=crs",
+   "point": [
+    2.35,
+    48.85
+   ],
+   "proj": [
+    11.481906111111112,
+    48.85
+   ],
+   "proj_back": [
+    2.35,
+    48.85
+   ]
+  },
+  {
+   "name": "WKT 2, ferro sexagesimal",
+   "wkt": "GEOGCRS[\"custom\",DATUM[\"custom\",ELLIPSOID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"ferro\",-17.4,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"lon\",east,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"lat\",north,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
+   "src": "+proj=longlat +ellps=clrk80ign +type=crs",
+   "point": [
+    2.35,
+    48.85
+   ],
+   "proj": [
+    19.75,
+    48.85
+   ],
+   "proj_back": [
+    2.35,
+    48.85
+   ]
+  },
+  {
+   "name": "WKT 2, Ferro in degrees as grads",
+   "wkt": "GEOGCRS[\"custom\",DATUM[\"custom\",ELLIPSOID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Ferro\",-17.6666666666667,ANGLEUNIT[\"grad\",0.0157079632679489]],CS[ellipsoidal,2],AXIS[\"lon\",east,ORDER[1],ANGLEUNIT[\"grad\",0.0157079632679489]],AXIS[\"lat\",north,ORDER[2],ANGLEUNIT[\"grad\",0.0157079632679489]]]",
+   "src": "+proj=longlat +ellps=clrk80ign +type=crs",
+   "point": [
+    2.35,
+    48.85
+   ],
+   "proj": [
+    22.24074074074074,
+    54.27777777777778
+   ],
+   "proj_back": [
+    2.35,
+    48.85
+   ]
+  },
+  {
+   "name": "WKT 2, Paris RGS in degrees as grads",
+   "wkt": "GEOGCRS[\"custom\",DATUM[\"custom\",ELLIPSOID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Paris RGS\",2.33720833333333,ANGLEUNIT[\"grad\",0.0157079632679489]],CS[ellipsoidal,2],AXIS[\"lon\",east,ORDER[1],ANGLEUNIT[\"grad\",0.0157079632679489]],AXIS[\"lat\",north,ORDER[2],ANGLEUNIT[\"grad\",0.0157079632679489]]]",
+   "src": "+proj=longlat +ellps=clrk80ign +type=crs",
+   "point": [
+    2.35,
+    48.85
+   ],
+   "proj": [
+    0.014212962962966997,
+    54.27777777777778
+   ],
+   "proj_back": [
+    2.35,
+    48.85
+   ]
+  },
+  {
+   "name": "WKT 2, Paris in degrees as grads",
+   "wkt": "GEOGCRS[\"custom\",DATUM[\"custom\",ELLIPSOID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Paris\",2.33722917,ANGLEUNIT[\"grad\",0.0157079632679489]],CS[ellipsoidal,2],AXIS[\"lon\",east,ORDER[1],ANGLEUNIT[\"grad\",0.0157079632679489]],AXIS[\"lat\",north,ORDER[2],ANGLEUNIT[\"grad\",0.0157079632679489]]]",
+   "src": "+proj=longlat +ellps=clrk80ign +type=crs",
+   "point": [
+    2.35,
+    48.85
+   ],
+   "proj": [
+    0.014189814814814933,
+    54.27777777777778
+   ],
+   "proj_back": [
+    2.35,
+    48.85
+   ]
+  },
+  {
+   "name": "WKT 2, Paris in degrees",
+   "wkt": "GEOGCRS[\"custom\",DATUM[\"custom\",ELLIPSOID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Paris\",2.33722917,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"lon\",east,ORDER[1],ANGLEUNIT[\"grad\",0.0157079632679489]],AXIS[\"lat\",north,ORDER[2],ANGLEUNIT[\"grad\",0.0157079632679489]]]",
+   "src": "+proj=longlat +ellps=clrk80ign +type=crs",
+   "point": [
+    2.35,
+    48.85
+   ],
+   "proj": [
+    0.014189814814814933,
+    54.27777777777778
+   ],
+   "proj_back": [
+    2.35,
+    48.85
+   ]
+  },
+  {
+   "name": "WKT 2, Paris in grads",
+   "wkt": "GEOGCRS[\"custom\",DATUM[\"custom\",ELLIPSOID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Paris\",2.5969213,ANGLEUNIT[\"grad\",0.0157079632679489]],CS[ellipsoidal,2],AXIS[\"lon\",east,ORDER[1],ANGLEUNIT[\"grad\",0.0157079632679489]],AXIS[\"lat\",north,ORDER[2],ANGLEUNIT[\"grad\",0.0157079632679489]]]",
+   "src": "+proj=longlat +ellps=clrk80ign +type=crs",
+   "point": [
+    2.35,
+    48.85
+   ],
+   "proj": [
+    0.014189814814814933,
+    54.27777777777778
+   ],
+   "proj_back": [
+    2.35,
+    48.85
+   ]
+  },
+  {
+   "name": "WKT 2, no unit, axes in grads",
+   "wkt": "GEOGCRS[\"custom\",DATUM[\"custom\",ELLIPSOID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"custom\",2.5],CS[ellipsoidal,2],AXIS[\"lon\",east,ORDER[1],ANGLEUNIT[\"grad\",0.0157079632679489]],AXIS[\"lat\",north,ORDER[2],ANGLEUNIT[\"grad\",0.0157079632679489]]]",
+   "src": "+proj=longlat +ellps=clrk80ign +type=crs",
+   "point": [
+    2.35,
+    48.85
+   ],
+   "proj": [
+    -0.16666666666666646,
+    54.27777777777778
+   ],
+   "proj_back": [
+    2.35,
+    48.85
+   ]
+  },
+  {
+   "name": "WKT 2, no unit, CS in grads",
+   "wkt": "GEOGCRS[\"custom\",DATUM[\"custom\",ELLIPSOID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"custom\",2.5],CS[ellipsoidal,2],AXIS[\"lon\",east,ORDER[1]],AXIS[\"lat\",north,ORDER[2]],ANGLEUNIT[\"grad\",0.0157079632679489]]",
+   "src": "+proj=longlat +ellps=clrk80ign +type=crs",
+   "point": [
+    2.35,
+    48.85
+   ],
+   "proj": [
+    0.11111111111111126,
+    54.27777777777778
+   ],
+   "proj_back": [
+    2.35,
+    48.85
+   ]
+  },
+  {
+   "name": "WKT 2, Paris without unit, CS in grads",
+   "wkt": "GEOGCRS[\"custom\",DATUM[\"custom\",ELLIPSOID[\"Clarke 1880 (IGN)\",6378249.2,293.466021293627,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Paris\",2.33722917],CS[ellipsoidal,2],AXIS[\"lon\",east,ORDER[1]],AXIS[\"lat\",north,ORDER[2]],ANGLEUNIT[\"grad\",0.0157079632679489]]",
+   "src": "+proj=longlat +ellps=clrk80ign +type=crs",
+   "point": [
+    2.35,
+    48.85
+   ],
+   "proj": [
+    0.014189814814814933,
+    54.27777777777778
+   ],
+   "proj_back": [
+    2.35,
+    48.85
+   ]
+  }
+ ],
+ "pm_cases": [
+  {
+   "crs": "EPSG:4807",
+   "lon": 2.337229166666667
+  },
+  {
+   "crs": "+proj=longlat +ellps=clrk80ign +pm=2.33722917 +type=crs",
+   "lon": 2.337229166666667
+  },
+  {
+   "crs": "+proj=longlat +ellps=clrk80ign +pm=2.3372291721 +type=crs",
+   "lon": 2.337229166666667
+  },
+  {
+   "crs": "+proj=longlat +ellps=clrk80ign +pm=2.3372291612 +type=crs",
+   "lon": 2.337229166666667
+  },
+  {
+   "crs": "+proj=longlat +ellps=clrk80ign +pm=2.3372291730 +type=crs",
+   "lon": 2.337229173
+  },
+  {
+   "crs": "+proj=longlat +ellps=clrk80ign +pm=2.3372291603 +type=crs",
+   "lon": 2.3372291603
   }
  ]
 }

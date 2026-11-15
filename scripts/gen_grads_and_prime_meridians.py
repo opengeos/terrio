@@ -1,18 +1,29 @@
-"""Generate crates/terrio-crs/tests/data/wkt1_grads.json: where PROJ 9.8.1 places points of WKT 1
-CRSs whose angular unit is the grad: NTF (Paris) (EPSG:4807) and its projected CRSs (EPSG:27561-
-27564, 27571-27574, 27581-27584, 27591-27594), ATF (Paris) (EPSG:27500), and Krovak (EPSG:5514)
-rewritten in grads.
+"""Generate crates/terrio-crs/tests/data/grads_and_prime_meridians.json: where PROJ 9.8.1 places
+points of CRSs whose angular unit is the grad, and of CRSs whose prime meridian PROJ reads otherwise
+than as written.
 
+WKT 1: NTF (Paris) (EPSG:4807) and its projected CRSs (EPSG:27561-27564, 27571-27574,
+27581-27584, 27591-27594), ATF (Paris) (EPSG:27500), and Krovak (EPSG:5514) rewritten in grads.
 Each WKT is PROJ's (`CRS.from_epsg(code).to_wkt("WKT1_GDAL")` and `"WKT1_ESRI"`), or that WKT with
 its CRS and datum names replaced and its `AUTHORITY` nodes removed, so that it is read rather than
-identified, or written by hand (a geographic CRS in grads on Greenwich, a prime meridian in grads,
-Krovak with its angles in grads). Each case is a point, its coordinates in the WKT's CRS by
+identified, or written by hand (a geographic CRS in grads on Greenwich, prime meridians PROJ knows
+by name, Krovak with its angles in grads).
+
+WKT 2: PROJ's `CRS.from_epsg(code).to_wkt("WKT2_2019")` of EPSG:4807, 27572 and 27500 without its
+names and IDs, and geographic CRSs written by hand with prime meridians in their own unit, in the
+CRS's, and in none.
+
+Each of these cases is a point, its coordinates in the WKT's CRS by
 `Transformer.from_crs(source, wkt, always_xy=True)`, and those coordinates taken back to the
 source by `Transformer.from_crs(wkt, source, always_xy=True)`. The source is EPSG:4275 (NTF on
 Greenwich) or EPSG:4156 (S-JTSK) for a WKT that declares its codes, and a PROJ string on the same
 ellipsoid for one without (PROJ's ballpark: no datum shift).
 
-Usage: PROJ_NETWORK=OFF python scripts/gen_wkt1_grads.py (needs pyproj 3.8.0)
+Prime meridians near Paris's (`pm_cases`): EPSG:4807 and PROJ strings with `+pm=` on both sides of
+the 1e-10 radians within which PROJ transforms with its `+pm=paris`, each with the longitude of
+(0, 0) in EPSG:4275 by `Transformer.from_crs(crs, "EPSG:4275", always_xy=True)`.
+
+Usage: PROJ_NETWORK=OFF python scripts/gen_grads_and_prime_meridians.py (needs pyproj 3.8.0)
 """
 
 import json
@@ -26,7 +37,8 @@ import pyproj.network
 from pyproj import CRS, Transformer
 
 OUT = (
-    Path(__file__).resolve().parents[1] / "crates/terrio-crs/tests/data/wkt1_grads.json"
+    Path(__file__).resolve().parents[1]
+    / "crates/terrio-crs/tests/data/grads_and_prime_meridians.json"
 )
 CLARKE = "+proj=longlat +ellps=clrk80ign +type=crs"
 PLESSIS = "+proj=longlat +a=6376523 +rf=308.64 +type=crs"
@@ -51,6 +63,31 @@ def hand(unit, size, primem='PRIMEM["Greenwich",0]'):
         'GEOGCS["custom",DATUM["custom",SPHEROID["Clarke 1880 (IGN)",6378249.2,293.466021293627]],'
         f'{primem},UNIT["{unit}",{size}]]'
     )
+
+
+DEG2 = 'ANGLEUNIT["degree",0.0174532925199433]'
+GRAD2 = 'ANGLEUNIT["grad",0.0157079632679489]'
+
+
+def geogcrs(primem, axis_unit="", cs_unit=""):
+    """A WKT 2 geographic CRS on the Clarke 1880 (IGN) ellipsoid, its axes in `axis_unit` or its
+    CS in `cs_unit`."""
+    axis = f",{axis_unit}" if axis_unit else ""
+    cs = f",{cs_unit}" if cs_unit else ""
+    return (
+        'GEOGCRS["custom",DATUM["custom",ELLIPSOID["Clarke 1880 (IGN)",6378249.2,'
+        f'293.466021293627,LENGTHUNIT["metre",1]]],{primem},CS[ellipsoidal,2],'
+        f'AXIS["lon",east,ORDER[1]{axis}],AXIS["lat",north,ORDER[2]{axis}]{cs}]'
+    )
+
+
+def strip2(wkt):
+    """A WKT 2 without its IDs, usages and remarks, and its CRS and datum names replaced."""
+    wkt = re.sub(r',ID\["EPSG",\d+\]', "", wkt)
+    wkt = re.sub(r',USAGE\[SCOPE\["[^"]*"\],AREA\["[^"]*"\],BBOX\[[^\]]*\]\]', "", wkt)
+    wkt = re.sub(r'(PROJCRS|BASEGEOGCRS|GEOGCRS|DATUM)\["[^"]*"', r'\1["custom"', wkt)
+    assert ",ID[" not in wkt and "USAGE[" not in wkt, wkt
+    return wkt
 
 
 def krovak_in_grads(wkt):
@@ -165,7 +202,62 @@ def cases():
         wkt = krovak_in_grads(krovak.to_wkt(flavour))
         out.append((f"EPSG:5514 {flavour} in grads", wkt, "EPSG:4156", CZECHIA))
         out.append((f"EPSG:5514 {flavour} in grads, read", strip(wkt), BESSEL, CZECHIA))
+    for code in [4807, 27572, 27500]:
+        crs = CRS.from_epsg(code)
+        src = PLESSIS if code == 27500 else CLARKE
+        point = (7.0, 49.0) if code == 27500 else FRANCE
+        out.append(
+            (f"EPSG:{code} WKT 2, read", strip2(crs.to_wkt("WKT2_2019")), src, point)
+        )
+    for name, wkt in [
+        # Its own unit; EPSG's sexagesimal degrees in degrees.
+        ("WKT 2, Ferro sexagesimal", geogcrs(f'PRIMEM["Ferro",-17.4,{DEG2}]', DEG2)),
+        (
+            "WKT 2, Lisbon sexagesimal",
+            geogcrs(f'PRIMEM["Lisbon",-9.0754862,{DEG2}]', DEG2),
+        ),
+        ("WKT 2, ferro sexagesimal", geogcrs(f'PRIMEM["ferro",-17.4,{DEG2}]', DEG2)),
+        (
+            "WKT 2, Ferro in degrees as grads",
+            geogcrs(f'PRIMEM["Ferro",-17.6666666666667,{GRAD2}]', GRAD2),
+        ),
+        (
+            "WKT 2, Paris RGS in degrees as grads",
+            geogcrs(f'PRIMEM["Paris RGS",2.33720833333333,{GRAD2}]', GRAD2),
+        ),
+        (
+            "WKT 2, Paris in degrees as grads",
+            geogcrs(f'PRIMEM["Paris",2.33722917,{GRAD2}]', GRAD2),
+        ),
+        (
+            "WKT 2, Paris in degrees",
+            geogcrs(f'PRIMEM["Paris",2.33722917,{DEG2}]', GRAD2),
+        ),
+        ("WKT 2, Paris in grads", geogcrs(f'PRIMEM["Paris",2.5969213,{GRAD2}]', GRAD2)),
+        # No unit of its own: the CRS's, not its axes', else degrees.
+        ("WKT 2, no unit, axes in grads", geogcrs('PRIMEM["custom",2.5]', GRAD2)),
+        ("WKT 2, no unit, CS in grads", geogcrs('PRIMEM["custom",2.5]', cs_unit=GRAD2)),
+        (
+            "WKT 2, Paris without unit, CS in grads",
+            geogcrs('PRIMEM["Paris",2.33722917]', cs_unit=GRAD2),
+        ),
+    ]:
+        out.append((name, wkt, CLARKE, FRANCE))
     return out
+
+
+# Paris is `+pm=paris`, 2.337229166666667, within 1e-10 radians (5.73e-9 degrees): 2.3372291721 is
+# 0.95e-10 above it, 2.3372291612 0.95e-10 below, 2.3372291730 and 2.3372291603 1.1e-10 off.
+PM_CASES = ["EPSG:4807"] + [
+    f"+proj=longlat +ellps=clrk80ign +pm={pm} +type=crs"
+    for pm in [
+        "2.33722917",
+        "2.3372291721",
+        "2.3372291612",
+        "2.3372291730",
+        "2.3372291603",
+    ]
+]
 
 
 def main():
@@ -196,10 +288,12 @@ def main():
                 "proj_back": list(back.transform(*xy, errcheck=True)),
             }
         )
-    OUT.write_text(
-        json.dumps({"proj_version": pyproj.proj_version_str, "cases": rows}, indent=1)
-        + "\n"
-    )
+    pm_rows = []
+    for crs in PM_CASES:
+        t = Transformer.from_crs(crs, "EPSG:4275", always_xy=True)
+        pm_rows.append({"crs": crs, "lon": t.transform(0.0, 0.0, errcheck=True)[0]})
+    data = {"proj_version": pyproj.proj_version_str, "cases": rows, "pm_cases": pm_rows}
+    OUT.write_text(json.dumps(data, indent=1) + "\n")
 
 
 if __name__ == "__main__":
