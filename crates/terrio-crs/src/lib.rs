@@ -1143,8 +1143,7 @@ impl SpatialRef {
         // with fewer parameters.
         // An extension only as terrio reads it: one it refuses (`+rf=0`) goes by its WKT, as
         // before terrio read extensions as pipeline steps.
-        let extension = || self.wkt.as_deref().and_then(proj4_extension).filter(|p| Def::from_proj_extension(p).is_ok());
-        if let Some(p) = self.proj4.clone().or_else(extension)
+        if let Some(p) = self.proj4_or_extension()
             && let Ok(c) = wbp::from_proj_string(&mercator_lat_ts_as_k(&p))
         {
             return Ok(c);
@@ -1254,6 +1253,15 @@ fn extension_places_without_grids(s: &str) -> bool {
     });
     // Not alike when no point could be compared.
     alike && compared > 0
+}
+
+/// The CRS's PROJ string, or else its WKT 1's `EXTENSION["PROJ4", ...]` as terrio reads it (one it
+/// refuses, such as `+rf=0`, is none): the string a CRS from such a WKT computes on.
+impl SpatialRef {
+    #[doc(hidden)]
+    pub fn proj4_or_extension(&self) -> Option<String> {
+        self.proj4.clone().or_else(|| self.wkt.as_deref().and_then(proj4_extension).filter(|p| Def::from_proj_extension(p).is_ok()))
+    }
 }
 
 /// Whether a WKT 1 has a root `EXTENSION["PROJ4", ...]`, which PROJ and terrio compute on in place

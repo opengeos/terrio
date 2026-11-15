@@ -88,6 +88,15 @@ pub struct SpatialRef {
     pub esri: Option<u32>,
 }
 
+impl SpatialRef {
+    /// The PROJ string, or else the WKT 1's `EXTENSION["PROJ4", ...]` as terrio reads it (see the
+    /// standalone engine's `SpatialRef::proj4_or_extension`).
+    #[doc(hidden)]
+    pub fn proj4_or_extension(&self) -> Option<String> {
+        terrio_crs::SpatialRef::from(self.clone()).proj4_or_extension()
+    }
+}
+
 impl From<terrio_crs::SpatialRef> for SpatialRef {
     fn from(value: terrio_crs::SpatialRef) -> Self {
         Self { epsg: value.epsg, wkt: value.wkt, proj4: value.proj4, esri: value.esri }
