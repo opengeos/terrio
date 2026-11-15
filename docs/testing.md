@@ -1779,6 +1779,16 @@ rows, edit only the approved rows in `proj_param_value_differences.tsv` (definit
 PROJ's `OK`/`ERR` outcome), keep them sorted, and update the count in the test. Rerun the focused
 test with default features and `--all-features`; unexpected changes require investigation.
 
+PROJ-string ellipsoids are compared with PROJ 9.8.1 in 462 strings. Each of `laea`, `tmerc`,
+`merc`, `ortho`, `geocent` and `longlat` (with a null `+towgs84`) is combined with `+R`,
+`+ellps`, `+datum`, `+a`, `+b`, `+rf`, `+f`, `+es`, `+e` and the spherification flags, alone
+and together. A few strings cover spherical orthographic (`+f=0`), `mill` and `cea`. The test
+checks where PROJ places a point (`Transformer.from_crs("EPSG:4326", CRS(s + " +type=crs"),
+always_xy=True)`, or from a geographic CRS to EPSG:4326), within 1 mm. It also checks the axes
+of the ellipsoid the CRS reports, and that terrio refuses the 36 strings PROJ refuses
+(`cargo test -p terrio-crs --test proj_ellipsoid_shape`; regenerate with
+`scripts/gen_proj_ellipsoid_shape.py`, pyproj 3.8.0, no grids, `PROJ_NETWORK=OFF`).
+
 Strict WKT 1 export (`SpatialRef::to_wkt1_strict`) is compared with PROJ 9.8.1's `WKT1_GDAL`
 (with GDAL's axes) of every 20th EPSG and ESRI code and every one PROJ refuses, character for
 character, and of custom definitions and every 20th IAU_2015 CRS by whether PROJ has a WKT 1

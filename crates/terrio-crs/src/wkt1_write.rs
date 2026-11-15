@@ -20,8 +20,8 @@ use std::fmt::Write as _;
 /// `+geoidgrids`...) is kept in the PROJ4 extension.
 const DESCRIBED: &[&str] = &[
     "proj", "lat_0", "lon_0", "k", "k_0", "x_0", "y_0", "lat_1", "lat_2", "lon_1", "lon_2", "lat_ts", "lonc", "alpha", "gamma", "no_uoff",
-    "no_off", "zone", "south", "h", "sweep", "azi", "ellps", "datum", "a", "b", "rf", "f", "R", "towgs84", "pm", "units", "to_meter",
-    "axis", "no_defs", "wktext", "type", "nadgrids",
+    "no_off", "zone", "south", "h", "sweep", "azi", "ellps", "datum", "a", "b", "rf", "f", "es", "e", "R", "towgs84", "pm", "units",
+    "to_meter", "axis", "no_defs", "wktext", "type", "nadgrids",
 ];
 
 /// `(PROJ name, EPSG name, EPSG code, inverse flattening)` of the ellipsoids GDAL names. The
@@ -65,11 +65,8 @@ pub(crate) fn from_proj(s: &str) -> Option<String> {
     let extension = format!("EXTENSION[\"PROJ4\",\"{}\"]", s.trim().replace('"', ""));
     let (geogcs, datum_described) = geogcs(&p, &own);
     // Also described: `+R_C` (the conformal sphere of the ellipsoid) on a sphere, which changes
-    // nothing; `+es` or `+e` beside `+a` alone, which gives the ellipsoid's shape (with another
-    // shape parameter, terrio's order of precedence is not PROJ's).
-    let shape = p.has("a") && ["ellps", "datum", "R", "b", "f", "rf"].iter().all(|k| !p.has(k)) && !(p.has("es") && p.has("e"));
-    let described =
-        datum_described && p.keys().all(|k| DESCRIBED.contains(&k) || (k == "R_C" && p.has("R")) || (matches!(k, "es" | "e") && shape));
+    // nothing.
+    let described = datum_described && p.keys().all(|k| DESCRIBED.contains(&k) || (k == "R_C" && p.has("R")));
     // Faithful when terrio reads it back as the PROJ string: the same conversion on the same
     // datum (its EPSG code identified, its geographic CRS).
     let faithful =
@@ -545,12 +542,12 @@ fn geogcs(p: &Params, own: &Def) -> (String, bool) {
     }
     // R_C changes the runtime conversion radius, while PROJ's CRS metadata
     // keeps the original ellipsoid. The PROJ4 extension retains the modifier.
-    let ell = if p.has("R_C") && !p.has("R") && !p.has("R_A") {
-        super::datum::ellipsoid(p)
-            .or_else(|| p.str("datum").and_then(super::def::datum_ellps).and_then(Ell::named))
-            .unwrap_or_else(Ell::wgs84)
-    } else {
-        own.ell
+    // So do the other spherification flags PROJ keeps in the extension, and spherical
+    // orthographic (`+f=0`), which WKT 1 cannot tell.
+    let shape = super::def::proj_ellipsoid(p, p.str("proj").unwrap_or_default()).ok();
+    let ell = match shape {
+        Some(shape) if shape.conformal || shape.as_step || shape.spherical_ortho => shape.crs,
+        _ => own.ell,
     };
     let named = p.str("ellps").or_else(|| p.str("datum").and_then(super::def::datum_ellps));
     let known = named.and_then(|n| ELLIPSOIDS.iter().find(|e| e.0 == n)).filter(|e| Ell::named(e.0).is_some_and(|n| n == ell));
@@ -586,10 +583,11 @@ fn inverse_flattening(p: &Params, ell: &Ell, defining: Option<f64>) -> f64 {
     defining.filter(same).or_else(|| p.f64("rf").filter(same)).unwrap_or_else(|| 1.0 / (1.0 - ell.one_es.sqrt()))
 }
 
-/// The EPSG geographic CRS of a PROJ string's `+datum=`, on Greenwich and without another
-/// datum shift.
+/// The EPSG geographic CRS of a PROJ string's `+datum=`, on Greenwich, without another datum
+/// shift and without ellipsoid parameters, which make PROJ drop the datum for its ellipsoid.
 fn epsg_geographic(p: &Params) -> Option<&'static epsg::Entry> {
-    let other = p.has("towgs84") || p.has("nadgrids") || p.has("pm");
+    let reshaped = ["R", "a", "b", "rf", "f", "es", "e"].iter().any(|k| p.has(k));
+    let other = p.has("towgs84") || p.has("nadgrids") || p.has("pm") || reshaped;
     p.str("datum").and_then(datum_geog).filter(|_| !other).and_then(epsg::get)
 }
 

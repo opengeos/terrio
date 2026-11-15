@@ -88,11 +88,9 @@ const STRICTER: &[&str] = &[
     "+proj=longlat +datum=carthage +towgs84=-263,6,431",
     "+proj=longlat +datum=WGS84 +towgs84=1,2,3",
     "+proj=longlat +datum=WGS84 +ellps=WGS84 +towgs84=0,0,0",
-    // A flattening changing a named ellipsoid, which PROJ's WKT drops and its projection keeps.
+    // Spherical orthographic (`+f=0`) on a named ellipsoid, which PROJ's WKT writes as
+    // orthographic on that ellipsoid.
     "+proj=ortho +f=0 ",
-    "+proj=ortho +f=0.003 ",
-    "+proj=longlat +ellps=GRS80 +es=0.006",
-    "+proj=longlat +a=6378137 +b=6356752.314245179 +es=0.006",
     // A word without a `+`, which PROJ reads as a parameter (and ignores when it knows none).
     "+proj=longlat +ellps=GRS80 foo",
     // Planetocentric latitudes on a sphere, the same as geodetic ones.
@@ -363,9 +361,9 @@ fn to_wkt_describes_without_the_extension() {
     let geocentric = SpatialRef::from_proj4("+proj=geocent +ellps=GRS80 +units=m").unwrap();
     let back = SpatialRef::from_wkt(&geocentric.to_wkt().unwrap());
     assert_eq!(back.to_proj4(), geocentric.to_proj4());
-    // Beside `+b`, whose order of precedence differs from PROJ's, `+es` keeps the extension.
+    // Beside `+b`, `+es` gives the shape, which comes first in PROJ 9.8.1's order of precedence.
     let w = SpatialRef::from_proj4("+proj=longlat +a=6378137 +b=6356752.314245179 +es=0.006").unwrap().to_wkt().unwrap();
-    assert!(w.contains("EXTENSION[\"PROJ4\""), "{w}");
+    assert!(w.contains("SPHEROID[\"unknown\",6378137,332.832581074854]") && !w.contains("EXTENSION"), "{w}");
 }
 
 #[test]

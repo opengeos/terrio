@@ -1,0 +1,81 @@
+//! A PROJ string's ellipsoid is read as PROJ 9.8.1 reads it, with `+type=crs`: `+R` first, then
+//! `+datum`'s ellipsoid or else `+ellps`', with `+a` for its size, and the first of `+rf`, `+f`,
+//! `+es`, `+e` and `+b` for its shape (PROJ drops the others). A named ellipsoid or datum keeps
+//! its shape under `+f`, `+es` and `+e`, and one PROJ defines by its semi-minor axis (`clrk66`,
+//! `sphere`, NAD27's) keeps that axis under `+a`, `+rf`, `+f`, `+es` and `+e`. `+f=0` makes
+//! orthographic spherical. A spherification flag PROJ's CRS parser does not take as part of the
+//! method (all but `+R_A` for `laea`, `cea`, `mill` and `vandg`) keeps the string as PROJ reads
+//! it in a pipeline: the shape parameter then changes the named ellipsoid's shape, `+a` keeps
+//! its eccentricity, and the first flag of `+R_A`, `+R_V`, `+R_a`, `+R_g`, `+R_h`, `+R_lat_a`,
+//! `+R_lat_g` and `+R_C` makes a sphere of it. A shape without a size is refused.
+//!
+//! `data/proj_ellipsoid_shape.json` (`scripts/gen_proj_ellipsoid_shape.py`, pyproj 3.8.0,
+//! no grids, `PROJ_NETWORK=OFF`) holds, for each string, PROJ's coordinates of a point
+//! (`Transformer.from_crs("EPSG:4326", CRS(s + " +type=crs"), always_xy=True)`, or from a
+//! geographic CRS to EPSG:4326) and the axes of the CRS's ellipsoid (`CRS.ellipsoid`), or null
+//! where PROJ refuses the string. Tolerance: 1 mm.
+
+use serde_json::Value;
+use terrio_crs::{SpatialRef, Transformer};
+
+/// Where terrio places the case's point, or why it refuses the string.
+fn place(s: &str, point: (f64, f64)) -> Result<(SpatialRef, Vec<f64>), String> {
+    let crs = SpatialRef::parse(s).map_err(|e| e.to_string())?;
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    let got = if crs.is_geographic() {
+        let (x, y) = Transformer::new(&crs, &wgs84).and_then(|t| t.transform(point.0, point.1)).map_err(|e| e.to_string())?;
+        vec![x, y]
+    } else if crs.is_geocentric() {
+        let (x, y, z) = Transformer::new(&wgs84, &crs).and_then(|t| t.transform_3d(point.0, point.1, 0.0)).map_err(|e| e.to_string())?;
+        vec![x, y, z]
+    } else {
+        let (x, y) = Transformer::new(&wgs84, &crs).and_then(|t| t.transform(point.0, point.1)).map_err(|e| e.to_string())?;
+        vec![x, y]
+    };
+    Ok((crs, got))
+}
+
+#[test]
+fn ellipsoid_parameters_are_read_as_proj_reads_them() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let data: Value = serde_json::from_str(include_str!("data/proj_ellipsoid_shape.json")).unwrap();
+    let cases = data["cases"].as_array().unwrap();
+    assert_eq!(cases.len(), 462);
+    let mut bad = vec![];
+    for case in cases {
+        let s = case["proj_string"].as_str().unwrap();
+        let point = (case["point"][0].as_f64().unwrap(), case["point"][1].as_f64().unwrap());
+        let got = place(s, point);
+        let Some(proj) = case["proj"].as_array() else {
+            if let Ok((_, got)) = got {
+                bad.push(format!("{s}: PROJ refuses it, terrio {got:?}"));
+            }
+            continue;
+        };
+        let proj = proj.iter().map(|v| v.as_f64().unwrap()).collect::<Vec<_>>();
+        let (crs, got) = match got {
+            Ok(g) => g,
+            Err(e) => {
+                bad.push(format!("{s}: PROJ {proj:?}, terrio refuses it: {e}"));
+                continue;
+            }
+        };
+        let off = if crs.is_geographic() {
+            ((got[0] - proj[0]) * proj[1].to_radians().cos()).hypot(got[1] - proj[1]) * 111_195.0
+        } else {
+            got.iter().zip(&proj).map(|(g, p)| (g - p) * (g - p)).sum::<f64>().sqrt()
+        };
+        if off >= 1e-3 {
+            bad.push(format!("{s}: PROJ {proj:?}, terrio {got:?}, {off:.3} m"));
+        }
+        // The ellipsoid the CRS reports, before a spherification flag makes a sphere of it.
+        if let Some(params) = crs.projection_params() {
+            let (a, b) = (case["ellipsoid"][0].as_f64().unwrap(), case["ellipsoid"][1].as_f64().unwrap());
+            if (params.a - a).abs() >= 1e-3 || (params.b - b).abs() >= 1e-3 {
+                bad.push(format!("{s}: PROJ's ellipsoid {a}, {b}, terrio's {}, {}", params.a, params.b));
+            }
+        }
+    }
+    assert!(bad.is_empty(), "{} differences from PROJ in {} cases:\n{}", bad.len(), cases.len(), bad.join("\n"));
+}
