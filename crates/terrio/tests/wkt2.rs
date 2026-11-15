@@ -98,17 +98,27 @@ fn boundcrs_without_a_helmert_to_wgs84_keeps_its_source() {
     ] {
         assert!(max_distance(&forward(&wkt, &points).unwrap(), &plain) < 1e-6, "{wkt}");
     }
-    // Coordinate frame rotations, by method code only, are position vector ones turned around.
-    let helmert = |method: &str, r: f64| {
-        bound(
-            wgs84,
-            &format!(
-                r#"METHOD["x",ID["EPSG",{method}]],PARAMETER["X-axis translation",100],PARAMETER["Y-axis translation",20],PARAMETER["Z-axis translation",-30],PARAMETER["X-axis rotation",{r},ANGLEUNIT["arc-second",4.84813681109536E-06]],PARAMETER["Y-axis rotation",0],PARAMETER["Z-axis rotation",0],PARAMETER["Scale difference",0,SCALEUNIT["parts per million",1E-06]]"#
-            ),
-        )
+    // Coordinate frame rotations, by method code only, are position vector ones turned around
+    // (on a source CRS not on WGS 84 itself, into which PROJ applies no shift).
+    let wgs84_datum =
+        r#"DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563,LENGTHUNIT["metre",1]],ID["EPSG",6326]]"#;
+    assert!(tmerc.contains(wgs84_datum));
+    let bessel =
+        tmerc.replace(wgs84_datum, r#"DATUM["Local datum",ELLIPSOID["Bessel 1841",6377397.155,299.1528128,LENGTHUNIT["metre",1]]]"#);
+    let helmert = |source: &str, method: &str, r: f64| {
+        let transformation = format!(
+            r#"METHOD["x",ID["EPSG",{method}]],PARAMETER["X-axis translation",100],PARAMETER["Y-axis translation",20],PARAMETER["Z-axis translation",-30],PARAMETER["X-axis rotation",{r},ANGLEUNIT["arc-second",4.84813681109536E-06]],PARAMETER["Y-axis rotation",0],PARAMETER["Z-axis rotation",0],PARAMETER["Scale difference",0,SCALEUNIT["parts per million",1E-06]]"#
+        );
+        format!("BOUNDCRS[SOURCECRS[{source}],TARGETCRS[{wgs84}],ABRIDGEDTRANSFORMATION[\"t\",{transformation}]]")
     };
-    let (frame, vector) = (forward(&helmert("1038", 2.0), &points).unwrap(), forward(&helmert("1037", -2.0), &points).unwrap());
-    assert!(max_distance(&frame, &vector) < 1e-6 && max_distance(&frame, &plain) > 1.0);
+    let plain_bessel = forward(&bessel, &points).unwrap();
+    let (frame, vector) =
+        (forward(&helmert(&bessel, "1038", 2.0), &points).unwrap(), forward(&helmert(&bessel, "1037", -2.0), &points).unwrap());
+    assert!(max_distance(&frame, &vector) < 1e-6 && max_distance(&frame, &plain_bessel) > 1.0);
+    // The rotation is applied: without it, the result differs.
+    assert!(max_distance(&frame, &forward(&helmert(&bessel, "1037", 0.0), &points).unwrap()) > 1.0);
+    // On WGS 84 itself, no shift into WGS 84, as PROJ 9.8.1 gives (its null transformation).
+    assert!(max_distance(&forward(&helmert(tmerc, "1038", 2.0), &points).unwrap(), &plain) < 1e-6);
     // A BOUNDCRS of a CRS the reader does not convert is not refused by it.
     let vertical = r#"BOUNDCRS[SOURCECRS[VERTCRS["EGM96 height",VDATUM["EGM96 geoid"],CS[vertical,1],AXIS["gravity-related height (H)",up,LENGTHUNIT["metre",1]]]],TARGETCRS[GEOGCRS["WGS 84",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],CS[ellipsoidal,2],AXIS["latitude",north],AXIS["longitude",east],ANGLEUNIT["degree",0.0174532925199433]]],ABRIDGEDTRANSFORMATION["t",METHOD["Geographic3D to GravityRelatedHeight (EGM96)"],PARAMETERFILE["Geoid (height correction) model file","egm96_15.gtx"]]]"#;
     if let Err(e) = SpatialRef::parse(vertical).and_then(|s| Transformer::new(&s, &s)) {

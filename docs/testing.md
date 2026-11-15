@@ -1752,6 +1752,14 @@ geographic and geographic BOUNDCRS exports also match PROJ, including omission o
 and preservation of the bound datum shift (`cargo test -p
 terrio-crs --test wkt1_axes`; regenerate with `scripts/gen_wkt1_axes.py`, pyproj 3.8.0).
 
+WKT 2 `BOUNDCRS`s with a Helmert transformation, to WGS 84 and to ED50 and OSGB36 (with and
+without their codes, three and seven parameters, position vector and coordinate frame, a
+geographic and a projected source, over a source terrio identifies as EPSG:4277, and to a datum
+without transformations), place points where PROJ 9.8.1 does, in WGS 84 and, both ways, in CRSs on
+the target's datum (and without the shift in CRSs on the source's datum and in other CRSs of the
+target's ellipsoid), within 1 mm (`cargo test -p terrio-crs --test wkt2_bound`;
+regenerate with `scripts/gen_wkt2_bound.py`, pyproj 3.8.0).
+
 PROJ-string parameter values are refused where PROJ 9.8.1 refuses them: each method with each
 common parameter unreadable (`abc`) or in radians (`0.5r`), scale factors PROJ may refuse, and
 `+to_meter`, `+units`, `+vto_meter`, `+towgs84`, `+pm` and rotated-pole cases, 3,350 unique strings
