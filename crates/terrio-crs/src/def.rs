@@ -22,7 +22,7 @@ use super::math::*;
 use super::params::{Params, parse_dms};
 use super::projections::{self, Proj, Setup};
 use super::rotation::{ObTran, Rotation};
-use super::{SpatialRef, epsg, wkt1, wkt2};
+use super::{SpatialRef, epsg, route, wkt1, wkt2};
 use crate::{Error, Result};
 use std::sync::Arc;
 
@@ -78,6 +78,19 @@ pub(crate) struct Def {
     /// The parameters of the PROJ string the definition was read from; `None` for a WKT only
     /// wbprojection reads.
     params: Option<Arc<crate::ProjParams>>,
+    /// What a WKT 2 `BOUNDCRS` with a Helmert transformation is bound to.
+    bound: Option<Arc<Bound>>,
+}
+
+/// A WKT 2 `BOUNDCRS` with a Helmert transformation.
+#[derive(Debug)]
+struct Bound {
+    /// The EPSG code of the source CRS's own datum, when terrio identifies it: into a CRS on it,
+    /// PROJ's null transformation, no shift.
+    source_datum: Option<u32>,
+    /// For a target other than WGS 84, the target CRS and the Helmert transformation to it, which
+    /// alone takes points into a CRS on the target's datum.
+    target: Option<(Def, Arc<Op>)>,
 }
 
 /// The vertical part of a compound CRS: its unit and direction, and its geoid models.
@@ -248,6 +261,23 @@ impl Def {
                 d.ops = vec![Arc::new(Op::world(datum::towgs84_steps(d.ell, &t)))];
                 d.datum = None;
                 d.geog = None;
+            }
+            // Likewise a WKT 2 `BOUNDCRS` over the code with a Helmert transformation, to WGS 84
+            // or to another CRS, as PROJ uses it (not a grid's, whose datum stays the code's).
+            if s.proj4.is_none()
+                && let Some(w) =
+                    s.wkt.as_deref().filter(|w| *w != e.wkt && w.trim_start().get(..8).is_some_and(|k| k.eq_ignore_ascii_case("BOUNDCRS")))
+                && let Ok(bound) = Self::from_wkt(w)
+                && bound.datum.is_none()
+            {
+                // Bound to a CRS without transformations to WGS 84, the code's own stay (the
+                // source's, with its geographic CRS), as in PROJ.
+                if !bound.ops.is_empty() && bound.geog.is_none() {
+                    d.ops = bound.ops;
+                    d.datum = None;
+                    d.geog = None;
+                }
+                d.bound = bound.bound;
             }
             return Ok(d);
         }
@@ -605,6 +635,7 @@ impl Def {
             vertical: None,
             area: None,
             params: Some(Arc::new(params)),
+            bound: None,
         };
         // The datum transformation.
         let towgs84 = p.list("towgs84");
@@ -643,6 +674,28 @@ impl Def {
             d.vertical = Some(Arc::new(Vertical::from_geoid_grids(g, to_meter)));
         }
         Ok(d)
+    }
+
+    /// The datum transformations of the EPSG geographic CRS a WKT's datum is identified as
+    /// (its code, else its name), for a definition without any of its own.
+    fn registered_datum(&mut self, c: &wkt1::Converted, geogcs_text: Option<&str>) {
+        if !self.ops.is_empty() {
+            return;
+        }
+        let geog = c.geog.or_else(|| c.geogcs.epsg()).or_else(|| match &c.geogcs_wkt1 {
+            // WKT 2: identified loosely, so on the same ellipsoid only.
+            Some(text) => super::identify_epsg(text).filter(|g| wkt2::same_ellipsoid(*g, self.ell.a, self.ell.es)),
+            None => super::identify_epsg(geogcs_text?),
+        });
+        let geog = geog.map(|g| epsg::get(g).filter(|e| e.proj.starts_with("+proj=geocent")).map_or(g, |e| e.geog));
+        if let Some(e) = geog.and_then(epsg::get)
+            && e.proj.starts_with("+proj=longlat")
+        {
+            self.ops = epsg::usable(&e.ops, &e.grid_ops);
+            self.datum = (e.datum != 0).then_some(e.datum);
+            self.geog = if e.three_d { Some(e.geog) } else { geog };
+            self.dynamic = e.dynamic;
+        }
     }
 
     /// The coordinate conversion of a WKT definition (without its datum), when terrio reads it: that
@@ -714,8 +767,10 @@ impl Def {
         }
     }
 
-    /// A definition from WKT. Datum transformations come from `TOWGS84`, else from the EPSG
-    /// geographic CRS the WKT's `GEOGCS` is identified as.
+    /// A definition from WKT. Datum transformations come from `TOWGS84` (or a WKT 2 `BOUNDCRS`'s
+    /// Helmert transformation to WGS 84), from a `BOUNDCRS`'s Helmert transformation to another
+    /// CRS followed by that CRS's transformations, else from the EPSG geographic CRS the WKT's
+    /// `GEOGCS` is identified as.
     pub fn from_wkt(w: &str) -> Result<Self> {
         if let Some((horizontal, vertical)) = split_compound(w) {
             let h = SpatialRef::from_wkt(&horizontal);
@@ -745,21 +800,50 @@ impl Def {
         let converted = if wkt2::handles(&root) { Some(wkt2::to_proj(&root)?) } else { wkt1::to_proj(&root) };
         if let Some(c) = converted {
             let mut d = Self::from_proj(&c.proj)?;
-            if d.ops.is_empty() && !c.proj.contains("+towgs84=") {
-                let geog = c.geog.or_else(|| c.geogcs.epsg()).or_else(|| match &c.geogcs_wkt1 {
-                    // WKT 2: identified loosely, so on the same ellipsoid only.
-                    Some(text) => super::identify_epsg(text).filter(|g| wkt2::same_ellipsoid(*g, d.ell.a, d.ell.es)),
-                    None => super::identify_epsg(geogcs_text(w)?),
-                });
-                let geog = geog.map(|g| epsg::get(g).filter(|e| e.proj.starts_with("+proj=geocent")).map_or(g, |e| e.geog));
-                if let Some(e) = geog.and_then(epsg::get)
-                    && e.proj.starts_with("+proj=longlat")
-                {
-                    d.ops = epsg::usable(&e.ops, &e.grid_ops);
-                    d.datum = (e.datum != 0).then_some(e.datum);
-                    d.geog = if e.three_d { Some(e.geog) } else { geog };
-                    d.dynamic = e.dynamic;
+            if let Some(bound) = &c.bound {
+                // A WKT 2 `BOUNDCRS` to another CRS: its Helmert transformation to that CRS, then
+                // each of that CRS's transformations to WGS 84, as PROJ concatenates them. With
+                // none, the source CRS's own, as PROJ uses them (else its ballpark to WGS 84).
+                let (target, shift) = &**bound;
+                let mut source = d.clone();
+                source.registered_datum(&c, geogcs_text(w));
+                let mut t = Self::from_proj(&target.proj)?;
+                t.registered_datum(target, None);
+                let to_target = datum::helmert_steps(d.ell, t.ell, shift);
+                let mut ops: Vec<Arc<Op>> = t
+                    .ops
+                    .iter()
+                    .map(|op| {
+                        // Of unknown accuracy, as the bound transformation is: PROJ then picks
+                        // the smallest area holding the point.
+                        let mut op = (**op).clone();
+                        op.steps = to_target.iter().cloned().chain(op.steps).collect();
+                        (op.accuracy, op.chain_accuracy) = (-1.0, -1.0);
+                        Arc::new(op)
+                    })
+                    .collect();
+                // In PROJ's order, which decides between those of one area ("OSGB36 to WGS 84
+                // (3)" before "(2)").
+                route::sort_as_proj(&mut ops);
+                if ops.is_empty() {
+                    (d.ops, d.geog, d.dynamic) = (source.ops.clone(), source.geog, source.dynamic);
+                } else {
+                    d.ops = ops;
                 }
+                let helmert = Arc::new(Op { name: "bound transformation".into(), ..Op::world(to_target) });
+                d.bound = Some(Arc::new(Bound { source_datum: source.datum, target: Some((t, helmert)) }));
+                return Ok(d);
+            }
+            if root.key.eq_ignore_ascii_case("BOUNDCRS") && c.proj.contains("+towgs84=") {
+                // To WGS 84: the source CRS's own datum, into which PROJ applies no shift.
+                let mut source = d.clone();
+                source.ops.clear();
+                source.registered_datum(&c, geogcs_text(w));
+                d.bound = Some(Arc::new(Bound { source_datum: source.datum, target: None }));
+                return Ok(d);
+            }
+            if !c.proj.contains("+towgs84=") {
+                d.registered_datum(&c, geogcs_text(w));
             }
             return Ok(d);
         }
@@ -808,6 +892,7 @@ impl Def {
                 vertical: None,
                 area: None,
                 params: None,
+                bound: None,
             };
             if !geographic {
                 d.proj = Some(Arc::new(WbProj { crs, a: ell.a }));
@@ -1042,6 +1127,30 @@ impl Def {
     pub fn rotation_only_to(&self, other: &Def) -> bool {
         let lon_0 = |d: &Def| d.is_geographic() && d.lam0 != 0.0;
         self.ell.a == other.ell.a && self.ell.es == other.ell.es && self.pm != other.pm && !lon_0(self) && !lon_0(other)
+    }
+
+    /// The Helmert transformation of a WKT 2 `BOUNDCRS` to `other`'s datum, when it is bound to
+    /// a CRS on that datum (one with an EPSG code) other than WGS 84.
+    pub fn bound_to(&self, other: &Def) -> Option<&Arc<Op>> {
+        if self.on_bound_source(other) {
+            return None;
+        }
+        // Only a target terrio identifies: PROJ tells datums without codes apart by name, which
+        // terrio does not keep (a bound CRS to one is shifted into it alone in PROJ, and not into
+        // another CRS of that ellipsoid).
+        self.bound
+            .as_deref()
+            .and_then(|b| b.target.as_ref())
+            .filter(|(target, _)| {
+                target.datum.is_some() && target.same_datum(other) && other.bound.as_ref().is_none_or(|b| b.target.is_none())
+            })
+            .map(|(_, helmert)| helmert)
+    }
+
+    /// Whether `other` is on the datum of the source CRS of this WKT 2 `BOUNDCRS`, which PROJ
+    /// transforms into with no shift.
+    pub fn on_bound_source(&self, other: &Def) -> bool {
+        self.bound.as_deref().is_some_and(|b| b.source_datum.is_some() && b.source_datum == other.datum)
     }
 
     /// The datum transformations to WGS 84, in the order they are tried.

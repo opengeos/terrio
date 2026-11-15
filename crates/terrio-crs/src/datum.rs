@@ -221,16 +221,20 @@ pub(crate) fn helmert(t: [f64; 3], rot: [f64; 3], s: f64, position_vector: bool,
 
 /// The steps of a `+towgs84=` shift (position vector convention) from an ellipsoid to WGS 84.
 pub(crate) fn towgs84_steps(ell: Ell, p: &[f64]) -> Vec<Step> {
-    let wgs84 = Ell::wgs84();
-    if p.iter().all(|v| *v == 0.0) && ell.a == wgs84.a && ell.es == wgs84.es {
+    helmert_steps(ell, Ell::wgs84(), p)
+}
+
+/// The steps of a 3 or 7 parameter Helmert transformation (position vector, as `+towgs84`'s)
+/// from geodetic coordinates on `from` to geodetic coordinates on `to`.
+pub(crate) fn helmert_steps(from: Ell, to: Ell, p: &[f64]) -> Vec<Step> {
+    if p.iter().all(|v| *v == 0.0) && from.a == to.a && from.es == to.es {
         return Vec::new();
     }
-
     let g = |i: usize| p.get(i).copied().unwrap_or(0.0);
     vec![
-        Step::Cart { ell, inv: false },
+        Step::Cart { ell: from, inv: false },
         helmert([g(0), g(1), g(2)], [g(3), g(4), g(5)], g(6), true, false, [0.0; 3]),
-        Step::Cart { ell: Ell::wgs84(), inv: true },
+        Step::Cart { ell: to, inv: true },
     ]
 }
 

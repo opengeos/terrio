@@ -208,6 +208,9 @@ pub(crate) struct Converted {
     pub geog: Option<u32>,
     /// A WKT 1 `GEOGCS` to identify the datum by, when the WKT has none of its own (WKT 2).
     pub geogcs_wkt1: Option<String>,
+    /// A WKT 2 `BOUNDCRS` to another CRS than WGS 84: that CRS, and the 3 or 7 parameters of
+    /// the Helmert transformation to it (as `+towgs84`'s).
+    pub bound: Option<Box<(Converted, Vec<f64>)>>,
 }
 
 /// Converts a WKT 1 `GEOGCS` or `PROJCS` (ESRI or OGC flavour) into a PROJ string. `None` for
@@ -252,7 +255,7 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
         out.push(format!("+proj=geocent +to_meter={unit}"));
         out.extend(tail);
         let geog = datum.epsg().and_then(|d| super::epsg::geographic_on(d).first().copied());
-        return Some(Converted { proj: out.join(" "), geogcs: root.clone(), geog, geogcs_wkt1: None });
+        return Some(Converted { proj: out.join(" "), geogcs: root.clone(), geog, geogcs_wkt1: None, bound: None });
     }
     if key == "GEOGCS" {
         out.push("+proj=longlat".to_string());
@@ -260,7 +263,7 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             tail.push(format!("+to_deg={ang}"));
         }
         out.extend(tail);
-        return Some(Converted { proj: out.join(" "), geogcs: geogcs.clone(), geog: None, geogcs_wkt1: None });
+        return Some(Converted { proj: out.join(" "), geogcs: geogcs.clone(), geog: None, geogcs_wkt1: None, bound: None });
     }
 
     let to_meter = root.children("UNIT").last().and_then(|u| u.num(1)).unwrap_or(1.0);
@@ -701,7 +704,7 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
     out.push(format!("+y_0={fn_}"));
     out.push(format!("+to_meter={to_meter}"));
     out.extend(tail);
-    Some(Converted { proj: out.join(" "), geogcs: geogcs.clone(), geog: None, geogcs_wkt1: None })
+    Some(Converted { proj: out.join(" "), geogcs: geogcs.clone(), geog: None, geogcs_wkt1: None, bound: None })
 }
 
 /// The directions of a projected CRS's two `AXIS` nodes as PROJ's `+axis` letters (`e`, `w`,

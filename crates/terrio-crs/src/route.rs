@@ -286,7 +286,16 @@ impl Route {
                     .collect(),
             )
         };
-        let kind = if src.same_datum(dst) {
+        let kind = if src.on_bound_source(dst) || dst.on_bound_source(src) {
+            // A WKT 2 `BOUNDCRS` into a CRS on its source CRS's datum: PROJ's null
+            // transformation.
+            Kind::Same
+        } else if let Some(op) = src.bound_to(dst) {
+            // A WKT 2 `BOUNDCRS` to a CRS on the other's datum: its transformation alone.
+            Kind::List(vec![Leg { op: op.clone(), reverse: false }])
+        } else if let Some(op) = dst.bound_to(src) {
+            Kind::List(vec![Leg { op: op.clone(), reverse: true }])
+        } else if src.same_datum(dst) {
             Kind::Same
         } else if dst.is_wgs84() {
             list(src.ops(), false)
@@ -1076,6 +1085,14 @@ impl SortKey {
             .then(self.name.len().cmp(&other.name.len()))
             .then_with(|| other.name.cmp(&self.name))
     }
+}
+
+/// Sorts transformations to WGS 84 in PROJ's order, with no area of interest.
+pub(crate) fn sort_as_proj(ops: &mut Vec<Arc<Op>>) {
+    let mut keyed: Vec<(SortKey, Arc<Op>)> =
+        ops.drain(..).map(|op| (SortKey::new(&op, op.name.clone(), pipeline_steps(&[(&op, false)]), None), op)).collect();
+    keyed.sort_by(|x, y| x.0.cmp(&y.0));
+    ops.extend(keyed.into_iter().map(|(_, op)| op));
 }
 
 /// About how many steps PROJ's pipeline for transformations run one after the other (each in
