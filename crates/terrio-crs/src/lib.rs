@@ -397,7 +397,10 @@ impl SpatialRef {
                 Def::new(&code).is_ok_and(|r| {
                     let unshifted = own.ops().is_empty() && own.datum_code().is_none() && r.is_wgs84();
                     let ellipsoid = (own.ell.a - r.ell.a).abs() < 1e-3 && (own.ell.es - r.ell.es).abs() < 1e-9;
-                    own.same_conversion(&r) && ellipsoid && (unshifted || own.same_datum(&r))
+                    // On the code's datum by its transformations, not by a shift of its own
+                    // (`+datum=OSGB36 +nadgrids=@null`, no shift to WGS 84).
+                    let null_shift = own.ops().iter().any(|op| op.grids().iter().any(|(g, _)| g.trim_start_matches('@') == "null"));
+                    own.same_conversion(&r) && ellipsoid && (unshifted || (own.same_datum(&r) && !null_shift))
                 })
             };
             let epsg = declared_epsg(wkt)
@@ -1201,7 +1204,8 @@ fn extension_places_without_grids(s: &str) -> bool {
         return true;
     }
     // The step's grid shift (NAD27's, potsdam's `+nadgrids`) is no datum the CRS rules have.
-    if step.ops().iter().any(|op| op.needs_grids()) {
+    let real_grids = |op: &std::sync::Arc<datum::Op>| op.grids().iter().any(|(g, _)| g.trim_start_matches('@') != "null");
+    if step.ops().iter().any(real_grids) {
         return false;
     }
     // Each with a WKT of its own stored, so that comparing them does not write one (from the

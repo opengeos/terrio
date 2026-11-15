@@ -267,6 +267,8 @@ fn writers_describe_an_extension_only_as_it_is_computed_on() {
         // The check's own diagnostics (a missing grid, a ballpark) are not the caller's.
         assert_eq!(terrio_crs::take_warnings(), Vec::<String>::new(), "{ext}");
     }
+    // A null grid on WGS 84, no shift either way, is no grid shift to refuse in PROJJSON.
+    assert!(SpatialRef::from_wkt(&wkt("+proj=tmerc +lon_0=-75 +datum=WGS84 +nadgrids=@null +units=m +no_defs")).to_projjson().is_ok());
 }
 
 /// PROJJSON is refused where it would describe another figure than the CRS computes on: a WKT
@@ -302,6 +304,34 @@ fn a_null_grid_is_no_shift_and_keeps_the_datum() {
             assert!((q.0 - p.0).abs() < 1e-9 && (q.1 - p.1).abs() < 1e-9, "{s} into {dst}: {q:?}");
         }
     }
+    // Into another datum, through WGS 84 by the null shift, not by the datum's own
+    // transformations: (-2, 52) in ETRS89 (PROJ: `unknown to WGS84 + Inverse of ETRS89 to WGS 84
+    // (1)`), where plain OSGB36 is about 100 m off; NAD27's into NAD83 likewise.
+    for (s, dst, p) in [
+        ("+proj=longlat +datum=OSGB36 +nadgrids=@null", "EPSG:4258", (-2.0, 52.0)),
+        ("+proj=longlat +datum=NAD27 +nadgrids=@null", "EPSG:4269", (-100.0, 40.0)),
+    ] {
+        let q = at(&SpatialRef::parse(s).unwrap(), dst, p);
+        assert!((q.0 - p.0).abs() < 1e-9 && (q.1 - p.1).abs() < 1e-9, "{s} into {dst}: {q:?}");
+    }
+    // Its best operation into WGS 84 is the null shift, not OSGB36's grid (OSTN15), which PROJ
+    // never uses for it: no missing grid refused under ONLY_BEST.
+    let options = terrio_crs::TransformOptions { only_best: true, ..Default::default() };
+    let osgb = SpatialRef::parse("+proj=longlat +datum=OSGB36 +nadgrids=@null").unwrap();
+    let t = Transformer::with_options(&osgb, &SpatialRef::from_epsg(4326).unwrap(), &options).unwrap();
+    let q = t.transform(-2.0, 52.0).unwrap();
+    assert!((q.0 + 2.0).abs() < 1e-9 && (q.1 - 52.0).abs() < 1e-9, "{q:?}");
+    let used = t.operation_at(-2.0, 52.0, 0.0).unwrap();
+    assert!(used.as_ref().is_none_or(|op| !op.name.contains("OSGB36 to WGS 84")), "{used:?}");
+    // A WKT with that extension, with or without OSGB36's code, is not EPSG:4277, whose
+    // transformations it does not take: (-2, 52) in WGS 84, as PROJ places it.
+    let wkt = r#"GEOGCS["OSGB 1936",DATUM["OSGB_1936",SPHEROID["Airy 1830",6377563.396,299.3249646,AUTHORITY["EPSG","7001"]],AUTHORITY["EPSG","6277"]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],EXTENSION["PROJ4","+proj=longlat +datum=OSGB36 +nadgrids=@null"],AUTHORITY["EPSG","4277"]]"#;
+    for w in [wkt.to_string(), wkt.replace(r#",AUTHORITY["EPSG","4277"]]"#, "]")] {
+        let crs = SpatialRef::from_wkt(&w);
+        assert_eq!(crs.epsg, None, "{w}");
+        let q = at(&crs, "EPSG:4326", (-2.0, 52.0));
+        assert!((q.0 + 2.0).abs() < 1e-9 && (q.1 - 52.0).abs() < 1e-9, "{w}: {q:?}");
+    }
     let shifted = SpatialRef::parse("+proj=longlat +ellps=WGS84 +nadgrids=@null +towgs84=1000,0,0").unwrap();
     let json = shifted.to_projjson().unwrap();
     assert!(!json.contains("Geocentric translations"), "{json}");
@@ -321,6 +351,24 @@ fn an_extension_wkt_reports_and_writes_its_spheroid() {
     let google = r#"PROJCS["Google Maps Global Mercator",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563,AUTHORITY["EPSG","7030"]],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Mercator_1SP"],PARAMETER["central_meridian",0],PARAMETER["scale_factor",1],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1],EXTENSION["PROJ4","+proj=merc +a=6378137 +b=6378137 +lat_ts=0.0 +lon_0=0.0 +x_0=0.0 +y_0=0 +k=1.0 +units=m +nadgrids=@null +wktext +no_defs"],AUTHORITY["EPSG","900913"]]"#;
     let json = SpatialRef::from_wkt(google).to_projjson().unwrap();
     assert!(json.contains("Popular Visualisation Pseudo Mercator"), "{json}");
+    let with = |ext: &str| {
+        let w = google.replace(
+            "+proj=merc +a=6378137 +b=6378137 +lat_ts=0.0 +lon_0=0.0 +x_0=0.0 +y_0=0 +k=1.0 +units=m +nadgrids=@null +wktext +no_defs",
+            ext,
+        );
+        SpatialRef::from_wkt(&w.replace(r#",AUTHORITY["EPSG","900913"]]"#, "]"))
+    };
+    // The same sphere given otherwise is EPSG:900913, identified as it converts, and written so.
+    for ext in ["+proj=merc +R=6378137 +units=m", "+proj=merc +ellps=WGS84 +f=0 +units=m"] {
+        let crs = with(ext);
+        assert_eq!(crs.epsg, Some(900913), "{ext}");
+        assert!(crs.to_projjson().unwrap().contains("Popular Visualisation Pseudo Mercator"), "{ext}");
+    }
+    // Not another sphere's Mercator, nor another standard parallel, which would be written as
+    // Mercator on the WKT's WGS 84 (33 km off in northing at 50°N), as PROJ writes them.
+    for ext in ["+proj=merc +R=6378137 +x_0=1000 +units=m", "+proj=merc +a=6378137 +b=6378137 +lat_ts=10d +units=m"] {
+        assert!(with(ext).to_projjson().is_err(), "{ext}");
+    }
     let wkt = "PROJCS[\"custom\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"custom_proj4\"],UNIT[\"metre\",1],EXTENSION[\"PROJ4\",\"+proj=tmerc +lon_0=-75 +ellps=WGS84 +f=0\"]]";
     let params = SpatialRef::from_wkt(wkt).projection_params().unwrap();
     assert!((params.a - 6_378_137.0).abs() < 1e-6 && (params.b - 6_356_752.314_245_179).abs() < 1e-6, "{params:?}");

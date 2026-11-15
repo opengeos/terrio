@@ -466,10 +466,13 @@ without grids whatever is installed: by the step's grids, or more than 1 mm apar
 origin). `+datum=NAD83`, which the step takes as WGS 84, is described. A `+datum=`
 with its grids (NAD27, potsdam) wins over the string's `+towgs84` in a step, and so does the
 string's own `+nadgrids`: `+nadgrids=@null +towgs84=1000,0,0` is no shift, as in PROJ, and
-`+datum=OSGB36 +nadgrids=@null` stays on OSGB36 (the identity into EPSG:4277), with no shift to
-WGS 84. PROJJSON writes no shift for such a string (PROJ writes the null grid). It is refused for
-an extension on another ellipsoid than the WKT's `SPHEROID` (but Web Mercator's sphere beside
-WGS 84, written as Popular Visualisation Pseudo Mercator, as PROJ writes it), and for spherical
+`+datum=OSGB36 +nadgrids=@null` keeps OSGB36's datum (the identity into EPSG:4277), with no
+shift to WGS 84, and reaches another datum through WGS 84 (`(-2, 52)` in ETRS89, as in PROJ), not
+by OSGB36's transformations. A WKT with that extension is not identified as EPSG:4277. PROJJSON
+writes no shift for such a string (PROJ writes the null grid). It is refused for an extension on
+another ellipsoid than the WKT's `SPHEROID` (but Web Mercator's, `+a=6378137 +b=6378137` with a
+null standard parallel and a scale of 1 beside WGS 84, written as Popular Visualisation Pseudo
+Mercator, as PROJ writes it), and for spherical
 orthographic (`+f=0`), which PROJ writes as its own "Orthographic (Spherical)".
 
 Where WKT 1 cannot describe a CRS given by a PROJ string, terrio writes its PROJ string in the

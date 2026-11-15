@@ -838,14 +838,15 @@ impl Def {
             d.geog = Some(4326);
         } else if null_grids {
             // No shift to WGS 84, on the datum still: a CRS on it is reached without one (PROJ's
-            // bound CRS over the datum, `+datum=OSGB36 +nadgrids=@null` into EPSG:4277).
+            // bound CRS over the datum, `+datum=OSGB36 +nadgrids=@null` into EPSG:4277), another
+            // through WGS 84 by the null shift, not by the datum's own transformations (so its
+            // datum's code is kept, not its geographic CRS's, by which routes take those).
             // Without a datum, no operation is no shift already (EPSG:3857's null grid).
             if let Some(code) = datum_name.and_then(datum_geog).filter(|_| !shape.reshaped)
                 && let Some(e) = epsg::get(code)
             {
                 d.ops = vec![Arc::new(Op::world(datum::nadgrids_steps("@null")))];
                 d.datum = (e.datum != 0).then_some(e.datum);
-                d.geog = Some(code);
             }
         } else if let Some(g) = nadgrids {
             d.ops = vec![Arc::new(Op::world(datum::nadgrids_steps(g)))];

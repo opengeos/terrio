@@ -152,14 +152,7 @@ fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
     let spheroid = base.child("DATUM").and_then(|d| d.child("SPHEROID").or_else(|| d.child("ELLIPSOID")));
     // But Web Mercator on its WGS 84 (GDAL's, GeoServer's EPSG:900913), which this writer writes
     // as Popular Visualisation Pseudo Mercator, as PROJ does.
-    let q = Params::parse(&proj);
-    let zero = |key: &str, default: f64| q.f64(key).is_none_or(|v| v == default);
-    let web_mercator = q.str("proj") == Some("merc")
-        && def.ell.es == 0.0
-        && def.ell.a == 6_378_137.0
-        && zero("lat_ts", 0.0)
-        && zero("k", 1.0)
-        && zero("k_0", 1.0);
+    let web_mercator = pseudo_mercator(&Params::parse(&proj));
     if extension
         && !web_mercator
         && let Some((a, rf)) = spheroid.and_then(|e| Some((e.num(1)?, e.num(2)?)))
@@ -490,6 +483,23 @@ const LAT_PSEUDO: Param = ("Latitude of pseudo standard parallel", 8818, 'a');
 const K_PSEUDO: Param = ("Scale factor on pseudo standard parallel", 8819, 's');
 const K_ELLIPSOID: Param = ("Ellipsoid scaling factor", 1038, 's');
 
+/// Whether a PROJ string gives a sphere by its own parameters (`+R`, or `+a` and `+b` equal).
+fn on_sphere(p: &Params) -> bool {
+    !p.has("ellps") && !p.has("datum") && (p.has("R") || (p.has("a") && p.f64("a") == p.f64("b")))
+}
+
+/// Whether [`conversion`] writes a PROJ string as Popular Visualisation Pseudo Mercator (EPSG
+/// method 1024): Mercator on the sphere of WGS 84's semi-major axis (`+a=6378137 +b=6378137`),
+/// with a null standard parallel and a scale of 1.
+fn pseudo_mercator(p: &Params) -> bool {
+    let k0 = p.f64("k_0").or_else(|| p.f64("k")).unwrap_or(1.0);
+    p.str("proj") == Some("merc")
+        && on_sphere(p)
+        && p.f64("a") == Some(6378137.0)
+        && p.angle("lat_ts").map(f64::to_degrees).unwrap_or(0.0) == 0.0
+        && k0 == 1.0
+}
+
 /// The conversion of a projected CRS's PROJ string, by its EPSG method, and the PROJ string's
 /// parameters it carries (see [`refuse_unwritten`]).
 fn conversion(p: &Params) -> Result<(Value, Vec<&'static str>)> {
@@ -499,7 +509,7 @@ fn conversion(p: &Params) -> Result<(Value, Vec<&'static str>)> {
     let k0 = num("k_0").or_else(|| num("k")).unwrap_or(1.0);
     let (lat0, lon0) = (deg("lat_0").unwrap_or(0.0), deg("lon_0").unwrap_or(0.0));
     let (x0, y0) = (num("x_0").unwrap_or(0.0), num("y_0").unwrap_or(0.0));
-    let sphere = !p.has("ellps") && !p.has("datum") && (p.has("R") || (p.has("a") && p.f64("a") == p.f64("b")));
+    let sphere = on_sphere(p);
     let mut name = "unknown".to_string();
     let mut conversion_id = None;
     // The parameters most methods carry.
@@ -571,7 +581,7 @@ fn conversion(p: &Params) -> Result<(Value, Vec<&'static str>)> {
         }
         "laea" => ("Lambert Azimuthal Equal Area", 9820, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], ORIGIN),
         // EPSG:3857: WGS 84 coordinates projected on its semi-major axis's sphere.
-        "merc" if sphere && num("a") == Some(6378137.0) && deg("lat_ts").unwrap_or(0.0) == 0.0 && k0 == 1.0 => {
+        "merc" if pseudo_mercator(p) => {
             let values = vec![(LAT_NAT, 0.0), (LON_NAT, lon0), (FE, x0), (FN, y0)];
             ("Popular Visualisation Pseudo Mercator", 1024, values, &["lat_ts", "lon_0", "x_0", "y_0"])
         }
