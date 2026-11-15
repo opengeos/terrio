@@ -26,8 +26,9 @@ fn a_prj_with_a_nul_in_its_name_has_no_crs() {
 
 /// A one-point shapefile with this `.prj`, as terrio reads it.
 fn shapefile_with_prj(name: &str, prj: &str) -> Vec<terrio::Layer> {
-    let dir = std::env::temp_dir().join(format!("terrio-wkt-file-nul-{name}-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    // Removed when dropped, on a panic too.
+    let tmp = tempfile::Builder::new().prefix(&format!("terrio-wkt-file-nul-{name}-")).tempdir().unwrap();
+    let dir = tmp.path();
     let mut layer = terrio::Layer::new("p");
     layer.add_field(terrio::FieldDef::new("id", terrio::FieldType::Integer));
     let point = terrio::Geometry::Point(terrio::vector::Coord::xy(451_219.33, 5_411_550.2));
@@ -35,9 +36,7 @@ fn shapefile_with_prj(name: &str, prj: &str) -> Vec<terrio::Layer> {
     let path = dir.join("p.shp");
     terrio::write_vector(&[layer], path.to_str().unwrap(), &Default::default()).unwrap();
     std::fs::write(dir.join("p.prj"), prj).unwrap();
-    let layers = terrio::open_vector(path.to_str().unwrap(), &Default::default()).unwrap().layers;
-    std::fs::remove_dir_all(&dir).ok();
-    layers
+    terrio::open_vector(path.to_str().unwrap(), &Default::default()).unwrap().layers
 }
 
 /// A layer whose WKT ends in NULs, as a driver may keep it, is identified as without them.

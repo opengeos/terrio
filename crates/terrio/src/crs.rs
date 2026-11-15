@@ -820,4 +820,20 @@ mod nul_tests {
         let wgs84 = super::SpatialRef::from_epsg(4326).unwrap();
         assert!(super::Transformer::new(&back, &wgs84).is_ok());
     }
+
+    /// A CRS's geographic CRS, taken from its stored WKT with a NUL in a name, reads as a whole
+    /// geographic CRS (as warp's poles and the GRIB writer take it): its name is cut at the NUL, as
+    /// PROJ 9.8.1 gives such a name.
+    #[test]
+    fn the_geographic_crs_of_a_stored_wkt_with_a_nul_in_a_name_reads() {
+        use super::{SpatialRef, Transformer};
+        let wkt = "PROJCS[\"WGS_1984_UTM_Zone_31N\",GEOGCS[\"GCS_WGS_1984\",DATUM[\"D_WGS_1984\",SPHEROID[\"WGS_1984\",6378137.0,298.257223563]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",3.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]".replace("GCS_WGS_1984", "GCS_WGS\0_1984");
+        let crs = SpatialRef { wkt: Some(wkt), ..Default::default() };
+        let geographic = crs.geographic_wkt().unwrap();
+        assert!(!geographic.contains('\0') && geographic.starts_with("GEOGCS[\"GCS_WGS\","), "{geographic}");
+        let geographic = SpatialRef::from_wkt(&geographic);
+        assert!(geographic.is_geographic());
+        let (x, y) = Transformer::new(&geographic, &crs).unwrap().transform(3.0, 45.0).unwrap();
+        assert!((x - 500_000.0).abs() < 1e-6 && y > 4_900_000.0, "{x} {y}");
+    }
 }

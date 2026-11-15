@@ -161,11 +161,14 @@ impl CrsSummary {
     }
 
     /// The CRS as `info` prints it: `EPSG:4326 (WGS 84)`, else its name.
+    /// The CRS on one line of the text report. A NUL in its name (from a PROJJSON name) is
+    /// written `\u0000`, as the JSON report escapes it, rather than sent to the terminal.
     pub(crate) fn line(&self) -> String {
-        match (self.code(), &self.name) {
+        let name = self.name.as_deref().map(|n| n.replace('\0', "\\u0000"));
+        match (self.code(), name) {
             (Some(code), Some(name)) => format!("{code} ({name})"),
             (Some(code), None) => code,
-            (None, Some(name)) => name.clone(),
+            (None, Some(name)) => name,
             (None, None) => "unknown".into(),
         }
     }

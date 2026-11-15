@@ -59,6 +59,11 @@ pub struct Args {
     coords: Vec<f64>,
 }
 
+/// Text for the terminal: a NUL (in a name a PROJJSON gives) written `\u0000`, as JSON escapes it.
+fn printable(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.contains('\0') { text.replace('\0', "\\u0000").into() } else { text.into() }
+}
+
 pub fn run(a: Args) -> terrio::Result<()> {
     let src = SpatialRef::parse(&a.crs)?;
     if a.projjson {
@@ -69,7 +74,7 @@ pub fn run(a: Args) -> terrio::Result<()> {
         let wkt = src
             .to_wkt1_strict()
             .ok_or_else(|| terrio::Error::InvalidArgument(format!("{} has no WKT 1 without the PROJ4 extension", src.label())))?;
-        println!("{wkt}");
+        println!("{}", printable(&wkt));
         return Ok(());
     }
     if a.proj4 {
@@ -78,9 +83,9 @@ pub fn run(a: Args) -> terrio::Result<()> {
         return Ok(());
     }
     let Some(to) = a.to else {
-        println!("{}", src.label());
+        println!("{}", printable(&src.label()));
         if let Some(name) = src.name() {
-            println!("Name: {name}");
+            println!("Name: {}", printable(&name));
         }
         println!("Geographic: {}", src.is_geographic());
         if src.is_geocentric() {
@@ -105,7 +110,7 @@ pub fn run(a: Args) -> terrio::Result<()> {
         if a.wkt
             && let Some(w) = src.to_wkt()
         {
-            println!("{w}");
+            println!("{}", printable(&w));
         }
         return Ok(());
     };

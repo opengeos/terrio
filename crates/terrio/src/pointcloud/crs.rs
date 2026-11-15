@@ -70,7 +70,10 @@ impl LasCrs {
         let vertical = SpatialRef::from_epsg(v).ok().and_then(|v| v.to_wkt()).filter(|w| w.starts_with("VERT_CS["));
         match (crs.proj4.is_none().then(|| crs.to_file_wkt()).flatten(), vertical) {
             (Some(h), Some(v)) => {
-                let name = format!("{} + {}", crs.name().unwrap_or_default(), quoted_name(&v).unwrap_or_default());
+                // The CRS's own name may keep a NUL (from a PROJJSON name): cut there, as `h`'s
+                // names are, so that the WKT reads whole.
+                let own = crs.name().unwrap_or_default();
+                let name = format!("{} + {}", terrio_crs::until_nul(&own), quoted_name(&v).unwrap_or_default());
                 SpatialRef::from_wkt(&format!("COMPD_CS[\"{name}\",{h},{v}]"))
             }
             _ => crs.clone(),
@@ -239,6 +242,20 @@ pub(crate) fn is_crs_vlr(v: &Vlr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A CRS without an EPSG code whose name holds a NUL (Mollweide's PROJ 9.8.1 PROJJSON, from
+    /// terrio-crs's `wkt1_proj_reads` data), in a file declaring a vertical EPSG CRS, stands for
+    /// the compound CRS: its WKT is built with the name cut at the NUL, so it reads whole.
+    #[test]
+    fn a_crs_with_a_nul_in_its_name_gets_the_files_vertical_crs() {
+        let data: serde_json::Value = serde_json::from_str(include_str!("../../../terrio-crs/tests/data/wkt1_proj_reads.json")).unwrap();
+        let h = SpatialRef::from_projjson(data["mollweide_projjson"]["projjson"].as_str().unwrap()).unwrap();
+        assert!(h.epsg.is_none() && h.wkt.as_deref().is_some_and(|w| w.contains('\0')));
+        let las = LasCrs { horizontal: h.clone(), vertical_epsg: Some(5703), vertical_name: None };
+        let c = las.with_vertical(&h);
+        assert!(c.has_height(), "{c:?}");
+        assert!(c.to_wkt().is_some_and(|w| w.starts_with("COMPD_CS[\"Moll + ") && !w.contains('\0')), "{:?}", c.to_wkt());
+    }
 
     #[test]
     fn splits_compound_wkt() {
