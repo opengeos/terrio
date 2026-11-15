@@ -14,8 +14,9 @@
 //!
 //! Without grids, PROJ uses its best transformation that needs none, a datum transformation in
 //! every case (none is its no-shift ballpark). For OSGB36, DHDN, NZGD49 and some CH1903 cases a
-//! better one needs a grid (OSTN15, BETA2007, CHENyx06, the NZGD2000 grids; `best_grid_missing`): with those
-//! grids installed, PROJ places these points otherwise, and this test does not cover that.
+//! better one needs a grid (OSTN15, BETA2007, CHENyx06, the NZGD2000 grids; `best_grid_missing`):
+//! with those grids installed, PROJ may place these points otherwise, which this test doesn't
+//! cover.
 //!
 //! PROJ places a few WKTs otherwise than their EPSG code (`differences`), which terrio does not
 //! follow: it does not resolve their geographic CRS to the code (an ESRI WKT 1 has no `AXIS`, so
