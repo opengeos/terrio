@@ -36,3 +36,25 @@ fn projected_axes_are_read_and_written_as_proj_does() {
         assert_eq!(axis, case["proj4_axis"].as_str(), "{wkt}: {proj}");
     }
 }
+
+/// A WKT 2 CRS keeps the axes of its PROJ string: those of a geographic CRS with west and north
+/// axes, and those of south-orientated Transverse Mercator given by its EPSG method code under
+/// the name `custom`.
+#[test]
+fn wkt2_axes_survive_export_by_geographic_axes_and_method_code() {
+    let geographic = r#"GEOGCRS["Mars West",DATUM["Mars",ELLIPSOID["Mars",3396190,169.8944472236118,LENGTHUNIT["metre",1]]],PRIMEM["Reference_Meridian",0,ANGLEUNIT["degree",0.0174532925199433]],CS[ellipsoidal,2],AXIS["geodetic longitude (Lon)",west,ORDER[1]],AXIS["geodetic latitude (Lat)",north,ORDER[2]],ANGLEUNIT["degree",0.0174532925199433]]"#;
+    let proj = SpatialRef::from_wkt(geographic).to_proj4().unwrap();
+    assert!(proj.split_whitespace().any(|t| t == "+axis=wnu"), "{geographic}: {proj}");
+
+    let data: Value = serde_json::from_str(include_str!("data/wkt1_axes.json")).unwrap();
+    let case = data["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["wkt"].as_str().unwrap().starts_with(r#"PROJCS["Transverse_Mercator_South_Orientated none""#))
+        .unwrap();
+    let custom = case["wkt2"].as_str().unwrap().replace(r#"METHOD["Transverse Mercator (South Orientated)""#, r#"METHOD["custom""#);
+    assert!(custom.contains(r#"METHOD["custom",ID["EPSG",9808]]"#), "{custom}");
+    let proj = SpatialRef::from_wkt(&custom).to_proj4().unwrap();
+    assert!(proj.split_whitespace().any(|t| t == "+axis=wsu"), "{custom}: {proj}");
+}

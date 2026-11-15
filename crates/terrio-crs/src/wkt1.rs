@@ -331,7 +331,9 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             push(&mut out, "k", k.or(Some(1.0)));
         }
         "transversemercatorsouthorientated" => {
-            out.push("+proj=tmerc +axis=wsu".into());
+            // West and south, but for a north-east CS, which PROJ reads south then west.
+            let north_east = projected_axes(root) == Some([b'n', b'e']);
+            out.push(if north_east { "+proj=tmerc +axis=swu" } else { "+proj=tmerc +axis=wsu" }.into());
             push(&mut out, "lat_0", lat_0.or(Some(0.0)));
             push(&mut out, "lon_0", lon_0);
             push(&mut out, "k", k.or(Some(1.0)));
@@ -691,9 +693,6 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
     // `AXIS` nodes, in their order but for northing then easting, which is read as easting then
     // northing. South-orientated Transverse Mercator and Krovak have their own axes.
     match (method.as_str(), projected_axes(root)) {
-        ("transversemercatorsouthorientated", Some([b'n', b'e'])) => {
-            out.iter_mut().filter(|p| p.as_str() == "+proj=tmerc +axis=wsu").for_each(|p| *p = "+proj=tmerc +axis=swu".into())
-        }
         ("transversemercatorsouthorientated" | "krovak", _) => {}
         (_, Some([a, b])) if [a, b] != *b"ne" && [a, b] != *b"en" => out.push(format!("+axis={}{}u", a as char, b as char)),
         _ => {}

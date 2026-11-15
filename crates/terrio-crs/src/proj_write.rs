@@ -152,10 +152,10 @@ fn towgs84(values: &str) -> Option<String> {
 /// them (south-orientated Transverse Mercator, Krovak's south and west), as PROJ 9.8.1 writes
 /// them, and a PROJ4 extension's as given.
 fn wkt_axes(wkt: &str, proj: &str) -> String {
-    /// The normalized name of the WKT's projection method, at any depth.
-    fn method(n: &crate::wkt1::Node) -> Option<String> {
+    /// The normalized name and the EPSG code of the WKT's projection method, at any depth.
+    fn method(n: &crate::wkt1::Node) -> Option<(String, Option<u32>)> {
         if ["PROJECTION", "METHOD"].iter().any(|k| n.key.eq_ignore_ascii_case(k)) {
-            return n.name().map(crate::wkt1::norm);
+            return n.name().map(|name| (crate::wkt1::norm(name), n.epsg()));
         }
         n.args.iter().find_map(|a| match a {
             crate::wkt1::Arg::Node(c) => method(c),
@@ -165,15 +165,21 @@ fn wkt_axes(wkt: &str, proj: &str) -> String {
     if crate::proj4_extension(wkt).is_some() {
         return proj.to_string();
     }
-    let method = crate::wkt1::parse(wkt).and_then(|root| method(&root)).unwrap_or_default();
+    // A method is recognized by its name or its EPSG code, as the WKT 2 reader does.
+    let (method, code) = crate::wkt1::parse(wkt).and_then(|root| method(&root)).unwrap_or_default();
+    let south_orientated = method.contains("southorientated") || code == Some(9808);
+    let krovak = method.starts_with("krovak") || matches!(code, Some(1041 | 9819));
     let axis = |t: &str| t.starts_with("+axis=");
     let tokens = proj.split_whitespace();
-    if method.contains("southorientated") {
+    if south_orientated {
         // The method's axes, west and south, whatever the coordinate system's order.
         tokens.map(|t| if axis(t) { "+axis=wsu" } else { t }).collect::<Vec<_>>().join(" ")
-    } else if method.starts_with("krovak") {
+    } else if krovak {
         // Krovak's south and west (EPSG's), which PROJ writes; not other axes.
         tokens.filter(|t| !axis(t) || *t == "+axis=swu").collect::<Vec<_>>().join(" ")
+    } else if method.is_empty() {
+        // A geographic CRS's own axes (WKT 2's west or south), which PROJ writes.
+        proj.to_string()
     } else {
         tokens.filter(|t| !axis(t)).collect::<Vec<_>>().join(" ")
     }
