@@ -2650,6 +2650,28 @@ fn square_scales(p: [(f64, f64); 4]) -> Option<(f64, f64)> {
     (x > 1e-10 && y > 1e-10).then_some((1.0 / x, 1.0 / y))
 }
 
+/// Whether both of [`square_scales`]'s scales of `p` are surely above 0.5 (or it has none),
+/// without its square roots: a margin below the threshold leaves rounding out of the question.
+/// `false` means "compute them".
+fn square_scales_above_half(p: [(f64, f64); 4]) -> bool {
+    let edge = |a: usize, b: usize| (p[b].0 - p[a].0, p[b].1 - p[a].1);
+    let length2 = |v: (f64, f64)| v.0 * v.0 + v.1 * v.1;
+    let (v01, v23) = (edge(0, 1), edge(2, 3));
+    let (a, b, c, d) = (length2(v01), length2(v23), length2(edge(0, 2)), length2(edge(1, 3)));
+    if v01.1.abs() < 0.35 * v01.0 && v23.1.abs() < 0.35 * v23.0 && (a - b).abs() < 0.1 * a.abs() && (c - d).abs() < 0.1 * c.abs() {
+        // sqrt(sqrt(15.9)) < 1.9969: each scale, its inverse, is above 0.5008.
+        a * b < 15.9 && c * d < 15.9
+    } else {
+        let poly = [p[0], p[1], p[3], p[2]];
+        let mut area = 0.0;
+        for i in 0..4 {
+            area += poly[i].0 * (poly[(i + 1) % 4].1 - poly[(i + 3) % 4].1);
+        }
+        // sqrt(0.5 * 7.9) < 1.988: the scale is above 0.503.
+        area.abs() < 7.9
+    }
+}
+
 /// Longitude facts of a warp's source, constant over the warp (see [`WarpContext::source_wrap`]).
 #[derive(Clone, Copy)]
 struct SourceWrap {
@@ -3891,6 +3913,12 @@ impl WarpContext<'_> {
             }
         }
         if self.kernel_version == KernelVersion::Gdal313 {
+            // Bilinear and cubic take their four-tap kernels at every scale above 0.5 and never
+            // read the scale then: when the footprint is surely smaller than two source pixels,
+            // skip `square_scales`'s square roots (the same kernel, the same values).
+            if matches!(self.resampling, Resampling::Bilinear | Resampling::Cubic) && square_scales_above_half(p) {
+                return (1.0, 1.0);
+            }
             return square_scales(p).unwrap_or((1.0, 1.0));
         }
         let range = |axis: usize| {
@@ -6377,6 +6405,15 @@ mod tests {
         assert!((rotated.0 - 1.0 / 8.0_f64.sqrt()).abs() < 1e-15);
         assert_eq!(rotated.0, rotated.1);
         assert!(square_scales([(0.0, 0.0); 4]).is_none());
+        // The shortcut never claims "above half" where square_scales gives a scale at or below it.
+        for k in 0..20_000 {
+            let f = |i: u32| ((k as u32).wrapping_mul(2_654_435_761).rotate_left(i) % 1000) as f64 / 250.0 - 2.0;
+            let p = [(0.0, 0.0), (f(1).abs() + 0.01, f(2) * 0.3), (f(3) * 0.3, f(4).abs() + 0.01), (f(5).abs(), f(6).abs())];
+            if square_scales_above_half(p) {
+                let (x, y) = square_scales(p).unwrap_or((1.0, 1.0));
+                assert!(x > 0.5 && y > 0.5, "{p:?}: {x} {y}");
+            }
+        }
     }
 
     #[test]
