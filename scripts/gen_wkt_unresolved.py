@@ -8,8 +8,10 @@ place points otherwise than the EPSG code.
 
 The WKTs are variants of EPSG geographic 2D CRSs (``variants``): ESRI's WKT 1, the same with the
 ``GEOGCS`` renamed, WKT 2 without IDs, the same with the datum's ID, the same renamed (CRS and
-datum), and WKT 1 with the datum's ``AUTHORITY`` alone; and ESRI WKT 1 of some projected CRSs,
-also with the ``GEOGCS`` renamed. Each case is a WKT, a point and the point in the other CRS by
+datum), WKT 1 with the datum's ``AUTHORITY`` alone, a renamed WKT 2 on a datum ensemble with its
+ID (WGS 84, ETRS89); for the CRSs PROJ places otherwise, also a renamed WKT 2 ``GEODCRS`` with an
+ellipsoidal CS and an ESRI compound CRS with the ``GEOGCS`` renamed; and ESRI WKT 1 of some
+projected CRSs, also with the ``GEOGCS`` renamed. Each case is a WKT, a point and the point in the other CRS by
 ``Transformer.from_crs(src, dst, always_xy=True).transform``: to WGS 84, from WGS 84 (the point in
 WGS 84), and, for a sample, to ETRS89, NAD83 and ETRS89 / UTM zone 32N. ``by_code`` is the same
 with the EPSG code in place of the WKT.
@@ -60,9 +62,16 @@ SEARCHED = [
     5132,
 ]
 PENDING_CODES = [7373, 9309, 10831]
-SAMPLE_EVERY = 20
+# CRSs on datum ensembles.
+ENSEMBLES = [4326, 4258]
+SAMPLE_EVERY = 25
 TARGETS = [4258, 4269, 25832]
-TARGET_VARIANTS = ["esri", "esri gcs renamed", "wkt2 no ids"]
+TARGET_VARIANTS = [
+    "esri",
+    "esri gcs renamed",
+    "wkt2 no ids",
+    "wkt2 ensemble id, renamed",
+]
 PROJECTED = [3003, 31467, 3006, 2193, 27700, 2056, 5514, 32633]
 # What terrio does not follow yet (see the module's doc comment).
 PENDING = {
@@ -73,16 +82,25 @@ PENDING = {
     "10831 wkt2 datum id, renamed",
     "7373 esri",
     "7373 esri gcs renamed",
+    "7373 wkt2 geodcrs renamed",
+    "7373 esri compound renamed",
+    "7373 wkt1 datum authority",
 }
+
+
+# A vertical CRS PROJ has no transformation for, which leaves the horizontal one alone.
+VERT_CS = (
+    'VERT_CS["Local height",VERT_DATUM["Local",2005],UNIT["metre",1],AXIS["Up",UP]]'
+)
 
 
 def strip_ids(w):
     """A WKT without its EPSG and ESRI IDs."""
-    return re.sub(r',(AUTHORITY|ID)\["(EPSG|ESRI)",\d+\]', "", w)
+    return re.sub(r',(AUTHORITY|ID)\["(EPSG|ESRI)","?\d+"?\]', "", w)
 
 
-def variants(c):
-    """The WKT variants of a geographic CRS, by name."""
+def variants(c, more):
+    """The WKT variants of a geographic CRS, by name (``more``: also as a geodetic and a compound CRS)."""
     v = {}
     esri = c.to_wkt("WKT1_ESRI")
     if esri:
@@ -93,6 +111,26 @@ def variants(c):
         re.sub(r",USAGE\[SCOPE\[[^\]]*\],AREA\[[^\]]*\],BBOX\[[^\]]*\]\]", "", w2)
     )
     v["wkt2 no ids"] = w2
+    if more:
+        # A WKT 2 geodetic CRS with an ellipsoidal CS, which PROJ reads as a geographic CRS.
+        v["wkt2 geodcrs renamed"] = re.sub(r'^GEOGCRS\["[^"]*"', 'GEODCRS["Local"', w2)
+    if esri and more:
+        # A compound CRS whose horizontal CRS is ESRI's, renamed.
+        v["esri compound renamed"] = (
+            f'COMPD_CS["Local + height",{v["esri gcs renamed"]},{VERT_CS}]'
+        )
+    # A datum ensemble with its ID (WGS 84, ETRS89), the CRS renamed.
+    if c.datum.to_json_dict().get("type") == "DatumEnsemble":
+        ensemble = c.datum.to_json_dict()["id"]["code"]
+        with_id = re.sub(
+            r"(ENSEMBLEACCURACY\[[^\]]*\])\]",
+            rf'\1,ID["EPSG",{ensemble}]]',
+            w2,
+            count=1,
+        )
+        v["wkt2 ensemble id, renamed"] = re.sub(
+            r'^GEOGCRS\["[^"]*"', 'GEOGCRS["Local"', with_id
+        )
     datum = (c.datum.to_json_dict().get("id") or {}).get("code")
     if datum:
         with_id = re.sub(
@@ -171,6 +209,7 @@ def main():
         {int(i.code) for i in infos[::SAMPLE_EVERY]}
         | set(SEARCHED)
         | set(PENDING_CODES)
+        | set(ENSEMBLES)
     )
     wkts, cases = {}, []
 
@@ -205,7 +244,7 @@ def main():
         point = place(wgs84, c, lonlat)
         if point is None:
             continue
-        for kind, wkt in variants(c).items():
+        for kind, wkt in variants(c, code in SEARCHED or code in PENDING_CODES).items():
             key = f"{code} {kind}"
             w = CRS.from_wkt(wkt)
             wkts[key] = wkt

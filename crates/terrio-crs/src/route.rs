@@ -693,8 +693,9 @@ fn crs_extents(src: &Def, dst: &Def) -> Vec<[f64; 4]> {
 /// PROJ's datum pivot tries the CRSs of the datum in order of code, the geocentric and 3D ones
 /// too, and frames each transformation with the operation from the CRS into that CRS: a
 /// ballpark of unknown accuracy when the datum's name is not its ID's. terrio does not follow
-/// it yet: it uses the code's own transformations between geographic 2D CRSs, and the code's
-/// own placement for a CRS whose datum is renamed (opengeos/terrio#1012).
+/// it yet (opengeos/terrio#1012). It uses the code's own transformations between geographic 2D
+/// CRSs. When either CRS has a renamed datum, `Route::build` does not search at all, for both
+/// sides, and that CRS keeps its code's area: the route is the one between the codes.
 fn unresolved_search(list: Vec<Leg>, a: u32, b: u32, src: &Def, dst: &Def, aoi: Option<&[f64; 4]>, all: bool) -> Kind {
     let reg = epsg::registry();
     if !list.iter().any(|l| !l.op.ballpark) {

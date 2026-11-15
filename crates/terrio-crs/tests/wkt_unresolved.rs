@@ -7,7 +7,8 @@
 //!
 //! `data/wkt_unresolved.json` (`scripts/gen_wkt_unresolved.py`, pyproj 3.8.0, no grids,
 //! `PROJ_NETWORK=OFF`) holds variants of EPSG geographic 2D CRSs and of some projected CRSs: ESRI
-//! WKT 1, renamed, WKT 2 without IDs, and others. Each case is a point and where PROJ places it,
+//! WKT 1, renamed, WKT 2 without IDs, a WKT 2 `GEODCRS` with an ellipsoidal CS, an ESRI compound
+//! CRS, renamed CRSs on the WGS 84 and ETRS89 ensembles with their IDs, and others. Each case is a point and where PROJ places it,
 //! with `Transformer.from_crs(src, dst, always_xy=True).transform`: to WGS 84, from WGS 84, and,
 //! for a sample, to ETRS89, NAD83 and ETRS89 / UTM zone 32N. `by_code` is the same with the EPSG
 //! code in place of the WKT. Tolerance: 1 mm.
@@ -89,7 +90,7 @@ fn wkts_proj_does_not_resolve_are_placed_as_proj_does() {
     }
     assert!(bad.is_empty(), "{}", bad.join("\n"));
     // Those PROJ places otherwise than the code, through its search: both ways.
-    assert!(searched >= 30, "{searched} cases placed otherwise than by the code");
+    assert!(searched >= 90, "{searched} cases placed otherwise than by the code");
 }
 
 /// The cases of PROJ's datum pivot and of a renamed datum are placed by the code, not as PROJ
@@ -97,7 +98,7 @@ fn wkts_proj_does_not_resolve_are_placed_as_proj_does() {
 #[test]
 fn datum_pivot_and_renamed_datums_are_placed_by_the_code() {
     let pending: Vec<_> = offsets().into_iter().filter(|(case, ..)| case["pending"].as_bool().unwrap()).collect();
-    assert_eq!(pending.len(), 13);
+    assert_eq!(pending.len(), 18);
     for (case, proj, by_code) in pending {
         let name = case["name"].as_str().unwrap();
         assert!(by_code < 1e-3, "{name}: {by_code:.3} m from the code's placement");

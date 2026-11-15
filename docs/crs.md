@@ -441,7 +441,8 @@ name among its database's names and aliases (an ESRI `GCS_` name first stands fo
 ESRI alias of), and the WKT must match the CRS it finds, axis order included. So an ESRI WKT 1
 geographic CRS, which has no `AXIS` and is therefore longitude first, is never resolved. Neither is
 a renamed CRS, nor a projected CRS whose axis order differs (ESRI's Gauss-Krüger zones), together
-with its geographic CRS. PROJ takes such a CRS's area from the CRS it finds by name, even when the
+with its geographic CRS. The same holds for a WKT 2 `GEODCRS` with an ellipsoidal CS, which PROJ
+reads as a geographic CRS, and for the horizontal CRS of a compound CRS. PROJ takes such a CRS's area from the CRS it finds by name, even when the
 WKT does not match it, and it has none for a name it does not find. Because the direct lookup in its
 database finds nothing, PROJ also searches chains through an intermediate datum. It does so when
 the CRSs' own transformations cover at most half the CRSs' common area (with no area for the CRS,
@@ -456,7 +457,9 @@ Two of PROJ's steps are not followed yet. The first is its datum pivot, which tr
 in order of code, the geocentric ones too. That is why ESRI's ONGD14 (EPSG:7373) gets "ONGD14 to
 WGS 84 (1)" between the geocentric CRSs, while terrio keeps EPSG:7373's "(2)". The second is the
 ballpark PROJ goes through, of unknown accuracy, when the datum's name is not its ID's
-(`DATUM["Local datum",...,ID["EPSG",6806]]`). For such a CRS terrio keeps the code's placement.
+(`DATUM["Local datum",...,ID["EPSG",6806]]`). When either CRS has such a datum, terrio does not
+search at all, for either side, and that CRS keeps its code's area. The transformation is then the
+one between the codes.
 terrio also does not follow PROJ for an ESRI ATF (Paris) (EPSG:4901) WKT without a code. PROJ takes
 IGNF's ATIG geocentric chain, which applies the Paris prime meridian twice and lands 178 km from
 PROJ's own placement of EPSG:4901 (opengeos/terrio#1012).

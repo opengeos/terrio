@@ -107,6 +107,14 @@ precedence = "override"
 SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright © 2010-2025 Esri", "Copyright (c) 2021, Hobu Inc", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
 SPDX-License-Identifier = "LicenseRef-EPSG AND Apache-2.0 AND MIT"
 
+# The EPSG names and aliases and the ESRI aliases of CRSs PROJ 9.8.1 looks CRSs up by, with the
+# EPSG codes they stand for, from PROJ 9.8.1's database (scripts/gen_crs_names.py).
+[[annotations]]
+path = "crates/terrio-crs/data/crs_names.tsv.zst"
+precedence = "override"
+SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright © 2010-2025 Esri", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
+SPDX-License-Identifier = "LicenseRef-EPSG AND Apache-2.0 AND MIT"
+
 # IAU_2015 definitions from PROJ 9.8.1's data/sql/iau.sql (scripts/build_db_from_iau.py).
 [[annotations]]
 path = ["crates/terrio-crs/data/iau.tsv.zst", "crates/terrio-crs/data/iau-source.json"]

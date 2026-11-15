@@ -294,10 +294,12 @@ impl Def {
                 }
                 d.bound = bound.bound;
             }
+            // Not the registry's own WKT, nor one with the CRS's ID, which PROJ resolves: checked
+            // without parsing first, as `Def::new` runs often.
             if s.proj4.is_none()
                 && s.epsg.is_some()
                 && d.geog.is_some()
-                && let Some(w) = s.wkt.as_deref()
+                && let Some(w) = s.wkt.as_deref().filter(|w| *w != e.wkt && super::declared_epsg(w).is_none())
             {
                 d.resolve_as_proj(w, s.epsg);
             }
@@ -312,7 +314,7 @@ impl Def {
             let mut d = Self::from_wkt(w)?;
             d.tag_iau(s)?;
             // A WKT without EPSG code on the datum of one, which PROJ resolves by its name only.
-            if d.geog.is_some() && d.bound.is_none() {
+            if d.geog.is_some() && d.bound.is_none() && super::declared_epsg(w).is_none() {
                 d.resolve_as_proj(w, None);
             }
             return Ok(d);
@@ -1217,12 +1219,12 @@ impl Def {
         self.area
     }
 
-    /// The EPSG code of the datum.
     /// Whether PROJ does not resolve the WKT the CRS was read from to its EPSG CRS.
     pub fn unresolved(&self) -> Option<Unresolved> {
         self.unresolved
     }
 
+    /// The EPSG code of the datum.
     pub fn datum_code(&self) -> Option<u32> {
         self.datum
     }
@@ -1296,17 +1298,19 @@ impl Def {
     }
 }
 
-/// PROJ's rule for an ellipsoid of the Earth: a semi-major axis within 0.7% of its mean radius
-/// (`Ellipsoid::guessBodyName`).
 impl Def {
     /// Records whether PROJ resolves the CRS of WKT `w` (read as EPSG `code`, if any) and the area
     /// it then uses: that of the CRS it finds by the WKT's name, even one that differs, else none.
+    /// A CRS whose datum is renamed keeps the code's area, as PROJ's way through its ballpark is
+    /// not followed yet: routes with it are those of the code.
     fn resolve_as_proj(&mut self, w: &str, code: Option<u32>) {
         if let Some((resolved, area, datum_renamed)) = proj_resolution(w, code)
             && !resolved
         {
             self.unresolved = Some(Unresolved { datum_renamed });
-            self.area = area;
+            if !datum_renamed {
+                self.area = area;
+            }
         }
     }
 }
@@ -1321,16 +1325,20 @@ fn north_first(n: &wkt1::Node, implicit: bool) -> bool {
     }
 }
 
-/// Whether the first axis of an EPSG CRS points north or south.
+/// Whether the first axis of an EPSG CRS points north or south, parsed once per code.
 fn registered_north_first(code: u32) -> Option<bool> {
-    let e = epsg::get(code)?;
-    wkt1::parse(&e.wkt).map(|r| north_first(&r, false))
+    static SEEN: std::sync::Mutex<Option<std::collections::HashMap<u32, Option<bool>>>> = std::sync::Mutex::new(None);
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    *seen
+        .get_or_insert_with(Default::default)
+        .entry(code)
+        .or_insert_with(|| epsg::get(code).and_then(|e| wkt1::parse(&e.wkt)).map(|r| north_first(&r, false)))
 }
 
 /// How PROJ 9.8.1 resolves the geographic or projected CRS of WKT `w`, which terrio reads as EPSG
 /// `code`: whether it resolves it (for a projected CRS, the CRS or else its geographic CRS), the
 /// area it uses for it, and whether the datum is renamed (see [`Unresolved`]). `None` for other
-/// kinds of CRS.
+/// kinds of CRS (the horizontal CRS of a compound CRS is resolved on its own, as PROJ does).
 ///
 /// A CRS with an ID is resolved (PROJ's `buildCRSIds` takes it whatever its axis order). Without,
 /// PROJ looks its name up (`createObjectsFromName`, with `data/crs_names.tsv.zst`), and resolves
@@ -1340,8 +1348,15 @@ fn proj_resolution(w: &str, code: Option<u32>) -> Option<(bool, Option<[f64; 4]>
     let root = wkt1::parse(w)?;
     let key = root.key.to_ascii_uppercase();
     let wkt1 = key == "GEOGCS" || key == "PROJCS";
+    // A WKT 2 geodetic CRS with an ellipsoidal CS is a geographic CRS to PROJ.
+    let ellipsoidal = || {
+        root.child("CS")
+            .and_then(|cs| cs.args.first())
+            .is_some_and(|a| matches!(a, wkt1::Arg::Ident(t) if t.eq_ignore_ascii_case("ellipsoidal")))
+    };
     let projected = match key.as_str() {
         "GEOGCS" | "GEOGCRS" | "GEOGRAPHICCRS" => false,
+        "GEODCRS" | "GEODETICCRS" if ellipsoidal() => false,
         "PROJCS" | "PROJCRS" | "PROJECTEDCRS" => true,
         _ => return None,
     };
@@ -1381,6 +1396,8 @@ fn proj_resolution(w: &str, code: Option<u32>) -> Option<(bool, Option<[f64; 4]>
     Some((resolved, area(found), datum_renamed))
 }
 
+/// PROJ's rule for an ellipsoid of the Earth: a semi-major axis within 0.7% of its mean radius
+/// (`Ellipsoid::guessBodyName`).
 pub(crate) fn earth_sized(a: f64) -> bool {
     (a - 6_375_000.0).abs() < 0.007 * 6_375_000.0
 }
@@ -1641,5 +1658,33 @@ mod inverted_degrees_tests {
             changed += usize::from((lon, lat) != plain.unproject(u, v).unwrap());
         }
         assert!(changed > 0, "the two conversions never differed");
+    }
+}
+
+#[cfg(test)]
+mod resolution_tests {
+    use super::*;
+
+    /// A renamed geographic CRS on a datum or ensemble with an ID, as WKT 2.
+    fn renamed(datum: &str) -> String {
+        let deg = r#"ANGLEUNIT["degree",0.0174532925199433]"#;
+        format!(
+            r#"GEOGCRS["Local",{datum},PRIMEM["Greenwich",0,{deg}],CS[ellipsoidal,2],AXIS["geodetic latitude (Lat)",north,ORDER[1],{deg}],AXIS["geodetic longitude (Lon)",east,ORDER[2],{deg}]]"#
+        )
+    }
+
+    #[test]
+    fn ensembles_named_as_their_id_are_not_renamed_datums() {
+        let wgs84 = renamed(
+            r#"ENSEMBLE["World Geodetic System 1984 ensemble",MEMBER["World Geodetic System 1984 (Transit)"],ELLIPSOID["WGS 84",6378137,298.257223563,LENGTHUNIT["metre",1]],ENSEMBLEACCURACY[2.0],ID["EPSG",6326]]"#,
+        );
+        let etrs89 = renamed(
+            r#"ENSEMBLE["European Terrestrial Reference System 1989 ensemble",MEMBER["European Terrestrial Reference Frame 1989"],ELLIPSOID["GRS 1980",6378137,298.257222101,LENGTHUNIT["metre",1]],ENSEMBLEACCURACY[0.1],ID["EPSG",6258]]"#,
+        );
+        // Renamed, so not resolved, but on the ensemble the ID names.
+        assert_eq!(proj_resolution(&wgs84, Some(4326)), Some((false, None, false)));
+        assert_eq!(proj_resolution(&etrs89, Some(4258)), Some((false, None, false)));
+        let local = renamed(r#"DATUM["Local datum",ELLIPSOID["International 1924",6378388,297,LENGTHUNIT["metre",1]],ID["EPSG",6806]]"#);
+        assert_eq!(proj_resolution(&local, Some(4806)), Some((false, None, true)));
     }
 }
