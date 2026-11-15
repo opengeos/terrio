@@ -684,6 +684,7 @@ impl Def {
         }
         let geog = c.geog.or_else(|| c.geogcs.epsg()).or_else(|| match &c.geogcs_wkt1 {
             // WKT 2: identified loosely, so on the same ellipsoid only.
+            // Uncut: text cut where it was given, or WKT terrio built (a PROJJSON's names keep a NUL).
             Some(text) => super::identify_epsg_text(text).filter(|g| wkt2::same_ellipsoid(*g, self.ell.a, self.ell.es)),
             None => super::identify_epsg_text(geogcs_text?),
         });
@@ -773,6 +774,7 @@ impl Def {
     /// `GEOGCS` is identified as.
     pub fn from_wkt(w: &str) -> Result<Self> {
         if let Some((horizontal, vertical)) = split_compound(w) {
+            // Uncut: text cut where it was given, or WKT terrio built (a PROJJSON's names keep a NUL).
             let h = SpatialRef::from_wkt_text(&horizontal);
             let mut d = Self::new(&h)?;
             d.vertical = vertical_from_wkt(&vertical).map(Arc::new);

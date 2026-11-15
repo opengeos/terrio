@@ -8,7 +8,9 @@
 //! neither transforms nor writes as a PROJ string. A definition ends at its first NUL, as PROJ
 //! takes it as a C string, so a NUL in a keyword is refused; text after a complete WKT, NUL or
 //! not, was already ignored. A NUL a PROJJSON name gives (`\u0000`) is part of the name, as in
-//! PROJ: EPSG:32631's PROJJSON with one is still read.
+//! PROJ: EPSG:32631's PROJJSON with one is still read. A quote in a value runs to the next quote,
+//! delimiters included, as in PROJ (`b"c,d"e` is one value), and a quote left unclosed refuses
+//! the WKT. An ESRI PE string in a GeoTIFF citation ends at its first NUL too.
 //!
 //! `data/wkt1_proj_reads.json` (`scripts/gen_wkt1_proj_reads.py`, pyproj 3.8.0, no grids,
 //! `PROJ_NETWORK=OFF`) holds, for each WKT, a point in its geographic CRS, the point in the
@@ -18,9 +20,10 @@
 //! `CRS.from_wkt` refuses; and the WKT `Transformer.from_crs(crs.geodetic_crs, crs)` and
 //! `CRS.to_proj4()` refuse; and EPSG:32631's PROJJSON with a `\u0000` in a name, with its
 //! `CRS.to_epsg()` and a point by `Transformer.from_crs("EPSG:4326", crs, always_xy=True)`.
-//! Tolerance: 1 mm (in the CRS's unit for projected coordinates, 1e-9 degrees for geographic ones,
-//! 1e-8 degrees in WGS 84); PROJ strings have PROJ's parameters, their values within a relative
-//! 1e-12.
+//! Tolerance: 1e-3 in the CRS's unit for projected coordinates (1 mm, or 0.3 mm in US survey
+//! feet), 1e-9 degrees for geographic ones, 1e-8 degrees (about 1 mm) in WGS 84, and 1e-3 m for
+//! the PROJJSON's UTM coordinates; PROJ strings have PROJ's parameters, their values within a
+//! relative 1e-12.
 
 use serde_json::Value;
 use terrio_crs::{SpatialRef, Transformer};
@@ -39,7 +42,7 @@ fn wkt_proj_reads_is_read_and_places_points_as_proj_does() {
     offline();
     let data = data();
     let cases = data["read"].as_array().unwrap();
-    assert_eq!(cases.len(), 24);
+    assert_eq!(cases.len(), 26);
     let mut bad = vec![];
     for case in cases {
         let name = case["name"].as_str().unwrap();
@@ -101,7 +104,7 @@ fn a_keyword_proj_refuses_is_refused() {
     offline();
     let data = data();
     let cases = data["refused"].as_array().unwrap();
-    assert_eq!(cases.len(), 4);
+    assert_eq!(cases.len(), 6);
     let wgs84 = SpatialRef::from_epsg(4326).unwrap();
     for case in cases {
         let wkt = case["wkt"].as_str().unwrap();
@@ -186,4 +189,26 @@ fn a_nul_in_a_projjson_name_is_read_as_in_proj() {
     assert_eq!(SpatialRef::from_projjson(&trailing).unwrap().epsg, SpatialRef::from_projjson(text).unwrap().epsg);
     let inside = format!("{}\0{}", &text[..50], &text[50..]);
     assert!(SpatialRef::from_projjson(&inside).is_err());
+}
+
+/// An ESRI PE string in a GeoTIFF citation ends at its first NUL, as PROJ 9.8.1 and GDAL take text
+/// as a C string: a NUL in a keyword leaves the WKT unclosed, and the CRS is refused, where the
+/// same citation without the NUL is NAD 27.
+#[test]
+fn an_esri_pe_citation_ends_at_its_first_nul() {
+    offline();
+    let data = data();
+    let refused = data["refused"].as_array().unwrap().iter().find(|c| c["name"] == "a keyword with a NUL").unwrap();
+    let with_nul = refused["wkt"].as_str().unwrap();
+    let without = with_nul.replace(",a\0b[\"x\"]", "");
+    assert_ne!(without, with_nul);
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    let read = |wkt: &str| {
+        // A user-defined geographic CRS, its GeogCitationGeoKey (2049) in GeoAsciiParams.
+        let ascii = format!("ESRI PE String = {wkt}|");
+        let directory = [1, 1, 0, 3, 1024, 0, 1, 2, 2048, 0, 1, 32767, 2049, 34737, ascii.len() as u16, 0];
+        terrio_crs::geokeys::read(&directory, &[], ascii.as_bytes()).crs.and_then(|crs| Transformer::new(&crs, &wgs84).ok())
+    };
+    assert!(read(&without).is_some());
+    assert!(read(with_nul).is_none());
 }

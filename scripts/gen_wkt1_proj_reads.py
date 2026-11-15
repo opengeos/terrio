@@ -109,6 +109,12 @@ READ = [
     ("a keyword with a quoted space", nad27(',a"b c"["x"]'), (-79.0, 43.0)),
     ("a keyword with a quoted comma", nad27(',a"b,c"["x"]'), (-79.0, 43.0)),
     ("a quoted keyword", nad27(',"q"["x"]'), (-79.0, 43.0)),
+    ("a value with a quoted comma", nad27(',x["a",b"c,d"e]'), (-79.0, 43.0)),
+    (
+        "a value whose quote runs over a sibling node",
+        nad27(',x["a",b"],y["c"],z[d"]'),
+        (-79.0, 43.0),
+    ),
     ("a vertical tab before a keyword", nad27(',\vq["x"]'), (-79.0, 43.0)),
     ("text after a NUL", nad27() + "\0garbage", (-79.0, 43.0)),
     (
@@ -157,6 +163,8 @@ REFUSED = [
     ("a keyword with an unclosed quote", nad27(',a"b["x"]')),
     ("a keyword with a vertical tab", nad27(',a\vb["x"]')),
     ("a keyword with a NUL", nad27(',a\0b["x"]')),
+    ("a value with an unclosed quote", nad27(',x["a",b"c]')),
+    ("a value whose quote runs to a later quote", nad27(',x["a",b"],y["c"]')),
 ]
 
 # Read by `CRS.from_wkt`, but neither transformed nor written as a PROJ string.
@@ -199,7 +207,9 @@ def main():
     warnings.simplefilter("ignore")
     read = []
     for name, wkt, point in READ:
-        assert "vendor:note" in wkt or "WKT 2" not in name, name
+        if "WKT 2" in name:
+            # The node went into PROJ's WKT 2.
+            assert "vendor:note" in wkt, name
         crs = CRS.from_wkt(wkt)
         t = Transformer.from_crs(crs.geodetic_crs, crs, always_xy=True)
         x, y = t.transform(*point, errcheck=True)
@@ -276,7 +286,8 @@ def main():
             indent=1,
             ensure_ascii=False,
         )
-        + "\n"
+        + "\n",
+        encoding="utf-8",
     )
 
 

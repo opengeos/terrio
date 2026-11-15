@@ -94,15 +94,16 @@ pub(crate) const MAX_LEVELS: usize = 16;
 /// bytes unless `OSR_IMPORT_FROM_WKT_LIMIT=NO`).
 pub(crate) const MAX_LEN: usize = 100_000;
 
-/// A definition given as text, as PROJ and GDAL take it: a C string, which ends at its first NUL
-/// (text after a complete WKT was ignored before as well). The public entry points cut the text
-/// they are given; the parser does not, as the WKT terrio builds from PROJJSON keeps its names
-/// whole, a NUL (`\u0000`) in them included, as PROJ reads them.
-pub(crate) fn c_text(s: &str) -> &str {
+/// A definition given as text, as PROJ 9.8.1 and GDAL take it: a C string, which ends at its
+/// first NUL (text after a complete WKT was ignored before as well). The public entry points and
+/// readers of text from files (GeoTIFF citations) cut the text they are given; the parser does
+/// not, as the WKT terrio builds from PROJJSON keeps its names whole, a NUL (`\u0000`) in them
+/// included, as PROJ 9.8.1 reads them. The parser refuses a NUL outside quotes.
+pub(crate) fn until_nul(s: &str) -> &str {
     s.split('\0').next().unwrap_or_default()
 }
 
-/// Parses WKT into its tree, as PROJ's WKT parser (and so GDAL) accepts it: `[` and `(` open a
+/// Parses WKT into its tree, as PROJ 9.8.1's WKT parser (and so GDAL) accepts it: `[` and `(` open a
 /// node, and either `]` or `)` closes it whichever opened it (`SPHEROID["WGS 84",6378137,
 /// 298.257223563)` is WGS 84's spheroid for GDAL). `None` for text that is not WKT, WKT nested
 /// deeper than PROJ allows, or longer than GDAL imports. Every step of the parser consumes
@@ -116,7 +117,7 @@ pub(crate) fn parse(s: &str) -> Option<Node> {
     node(b, &mut i, 0)
 }
 
-/// Whether `c` is a space as C's `isspace` reads it, which PROJ's parser skips: ASCII
+/// Whether `c` is a space as C's `isspace` reads it, which PROJ 9.8.1's parser skips: ASCII
 /// whitespace and the vertical tab.
 fn space(c: u8) -> bool {
     c.is_ascii_whitespace() || c == 0x0b
@@ -151,14 +152,15 @@ fn node(b: &[u8], i: &mut usize, level: usize) -> Option<Node> {
     }
     skip_ws(b, i);
     // A keyword is any run of characters up to a space or a delimiter, a quoted run in it
-    // included, as PROJ reads it: an unknown node is skipped whatever its keyword
-    // (`vendor:mark[...]`, `a-b[...]`, `a"b c"[...]`).
+    // included, as PROJ 9.8.1's `WKTNode::createFrom` reads it: an unknown node is skipped
+    // whatever its keyword (`vendor:mark[...]`, `a-b[...]`, `a"b c"[...]`). A NUL outside quotes
+    // is refused: PROJ's text ends there, which leaves the WKT unclosed.
     let start = *i;
     while *i < b.len() && !space(b[*i]) && !matches!(b[*i], b',' | b'[' | b'(' | b']' | b')') {
-        if b[*i] == b'"' {
-            skip_quoted(b, i)?;
-        } else {
-            *i += 1;
+        match b[*i] {
+            b'"' => skip_quoted(b, i)?,
+            0 => return None,
+            _ => *i += 1,
         }
     }
     let key = std::str::from_utf8(&b[start..*i]).ok()?.to_string();
@@ -172,7 +174,7 @@ fn node(b: &[u8], i: &mut usize, level: usize) -> Option<Node> {
         skip_ws(b, i);
         let before = *i;
         match b.get(*i)? {
-            // Either closer ends the node, as in PROJ.
+            // Either closer ends the node, as in PROJ 9.8.1.
             b']' | b')' => {
                 *i += 1;
                 break;
@@ -208,15 +210,17 @@ fn node(b: &[u8], i: &mut usize, level: usize) -> Option<Node> {
             }
             args.push(Arg::Str(String::from_utf8_lossy(&s).into_owned()));
         } else {
-            // A number, a word or a nested node: the scan stops at a delimiter outside quotes
-            // (`a"b,c"[...]` is one keyword for PROJ), which is not the first byte (handled
-            // above) unless it opens a nested node.
+            // A number, a word or a nested node: the scan stops at a delimiter outside quotes,
+            // which is not the first byte (handled above) unless it opens a nested node. As in
+            // PROJ 9.8.1, a quote in a value runs to the next quote, delimiters included:
+            // `b"c,d"e` is one value and `b"],y["c` too, and a quote left unclosed refuses the
+            // WKT. A NUL outside quotes is refused, as in a keyword.
             let start = *i;
             while *i < b.len() && !matches!(b[*i], b',' | b'[' | b'(' | b']' | b')') {
-                if b[*i] == b'"' {
-                    skip_quoted(b, i)?;
-                } else {
-                    *i += 1;
+                match b[*i] {
+                    b'"' => skip_quoted(b, i)?,
+                    0 => return None,
+                    _ => *i += 1,
                 }
             }
             let tok = std::str::from_utf8(&b[start..*i]).ok()?.trim();
@@ -426,7 +430,7 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             push(&mut out, "lat_2", sp2);
         }
         // ESRI's `Mercator_Variant_A` and EPSG's `Mercator (variant A)` are Mercator (1SP), as
-        // PROJ reads them. PROJ leaves a latitude of origin out of ESRI's, and refuses EPSG's
+        // PROJ 9.8.1 reads them. PROJ leaves a latitude of origin out of ESRI's, and refuses EPSG's
         // with one other than 0, which `+proj=merc` has no parameter for.
         "mercator1sp" | "mercatorvarianta" => {
             let origin = get(&["latitudeoforigin", "latitudeofnaturalorigin"]);
@@ -864,6 +868,24 @@ mod tests {
         assert_eq!(within(30, move || parse(&deep)), None);
         let deep = format!("GEOGCS[{}", "[".repeat(MAX_LEN - 8));
         assert_eq!(within(30, move || parse(&deep)), None);
+    }
+
+    /// The parser refuses a NUL outside quotes, which text reaching it uncut (the WKT terrio
+    /// builds from PROJJSON) could hold, as PROJ 9.8.1's text would end there; one in a quoted
+    /// name stays part of the name.
+    #[test]
+    fn a_nul_outside_quotes_is_refused_by_the_parser() {
+        let with = |part: &str| {
+            format!(
+                r#"GEOGCS["g",DATUM["d",SPHEROID["s",6378137,298.257223563]{part}],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#
+            )
+        };
+        assert!(parse(&with("")).is_some());
+        assert_eq!(parse(&with(",a\0b[\"x\"]")), None);
+        assert_eq!(parse(&with(",x[\"a\",b\0c]")), None);
+        let quoted = parse(&with(",x[\"a\0b\"]")).unwrap();
+        let x = quoted.child("DATUM").and_then(|d| d.child("x")).unwrap();
+        assert_eq!(x.name(), Some("a\0b"));
     }
 
     #[test]

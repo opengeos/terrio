@@ -240,6 +240,34 @@
    "epsg": 4267
   },
   {
+   "name": "a value with a quoted comma",
+   "wkt": "GEOGCS[\"unknown\",DATUM[\"North American Datum 1927\",SPHEROID[\"Clarke 1866\",6378206.4,294.978698213898],x[\"a\",b\"c,d\"e]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+   "point": [
+    -79.0,
+    43.0
+   ],
+   "proj": [
+    -79.0,
+    43.0
+   ],
+   "proj4": "+proj=longlat +datum=NAD27 +no_defs +type=crs",
+   "epsg": 4267
+  },
+  {
+   "name": "a value whose quote runs over a sibling node",
+   "wkt": "GEOGCS[\"unknown\",DATUM[\"North American Datum 1927\",SPHEROID[\"Clarke 1866\",6378206.4,294.978698213898],x[\"a\",b\"],y[\"c\"],z[d\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+   "point": [
+    -79.0,
+    43.0
+   ],
+   "proj": [
+    -79.0,
+    43.0
+   ],
+   "proj4": "+proj=longlat +datum=NAD27 +no_defs +type=crs",
+   "epsg": 4267
+  },
+  {
    "name": "a vertical tab before a keyword",
    "wkt": "GEOGCS[\"unknown\",DATUM[\"North American Datum 1927\",SPHEROID[\"Clarke 1866\",6378206.4,294.978698213898],\u000bq[\"x\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
    "point": [
@@ -378,6 +406,14 @@
   {
    "name": "a keyword with a NUL",
    "wkt": "GEOGCS[\"unknown\",DATUM[\"North American Datum 1927\",SPHEROID[\"Clarke 1866\",6378206.4,294.978698213898],a\u0000b[\"x\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]"
+  },
+  {
+   "name": "a value with an unclosed quote",
+   "wkt": "GEOGCS[\"unknown\",DATUM[\"North American Datum 1927\",SPHEROID[\"Clarke 1866\",6378206.4,294.978698213898],x[\"a\",b\"c]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]"
+  },
+  {
+   "name": "a value whose quote runs to a later quote",
+   "wkt": "GEOGCS[\"unknown\",DATUM[\"North American Datum 1927\",SPHEROID[\"Clarke 1866\",6378206.4,294.978698213898],x[\"a\",b\"],y[\"c\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]"
   }
  ],
  "untransformed": [

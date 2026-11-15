@@ -383,7 +383,7 @@ impl SpatialRef {
     /// A CRS from a WKT definition (WKT1 or WKT2). The EPSG code (or else the ESRI code) is
     /// identified when possible. The WKT ends at its first NUL, as in PROJ and GDAL.
     pub fn from_wkt(wkt: &str) -> Self {
-        Self::from_wkt_text(wkt1::c_text(wkt))
+        Self::from_wkt_text(wkt1::until_nul(wkt))
     }
 
     /// [`Self::from_wkt`] of the whole text, a NUL in a name included (the WKT of a PROJJSON).
@@ -406,6 +406,7 @@ impl SpatialRef {
                 })
             };
             let epsg = declared_epsg(wkt)
+                // Uncut: text cut where it was given, or WKT terrio built (a PROJJSON's names keep a NUL).
                 .or_else(|| identify_epsg_text(wkt))
                 .filter(|code| fits(SpatialRef { epsg: Some(*code), ..Default::default() }));
             // Retain a lenient extension through its WKT: re-reading it as a literal PROJ
@@ -426,6 +427,7 @@ impl SpatialRef {
         if (is_variant_c(wkt) || proj4_extension(wkt).is_some()) && Def::from_wkt(wkt).is_err() {
             return Self { wkt: Some(wkt.to_string()), ..Default::default() };
         }
+        // Uncut: text cut where it was given, or WKT terrio built (a PROJJSON's names keep a NUL).
         let epsg = identify_epsg_text(wkt);
         Self { epsg, wkt: Some(wkt.to_string()), ..Default::default() }.with_esri()
     }
@@ -536,7 +538,7 @@ impl SpatialRef {
     pub fn from_projjson(text: &str) -> Result<Self> {
         // The text ends at its first NUL, as PROJ's `proj_create` reads it; a NUL a JSON string
         // gives (`\u0000`) is part of its name.
-        projjson::parse(wkt1::c_text(text))
+        projjson::parse(wkt1::until_nul(text))
     }
 
     /// Parses a user-supplied CRS: `EPSG:4326`, `4326`, `urn:ogc:def:crs:EPSG::4326`, an OGC URL,
@@ -558,7 +560,7 @@ impl SpatialRef {
     #[cfg_attr(target_family = "wasm", allow(unused_variables))]
     fn parse_definition(s: &str, files: bool) -> Result<Self> {
         // The definition ends at its first NUL, as PROJ's `proj_create` reads it.
-        let s = wkt1::c_text(s).trim();
+        let s = wkt1::until_nul(s).trim();
         if s.is_empty() {
             return Err(Error::Crs("empty definition".into()));
         }
@@ -613,6 +615,7 @@ impl SpatialRef {
                 let head: String = s.chars().take(80).collect();
                 return Err(Error::Crs(format!("not a WKT definition GDAL reads: '{head}'")));
             }
+            // Uncut: text cut where it was given, or WKT terrio built (a PROJJSON's names keep a NUL).
             return Ok(Self::from_wkt_text(s));
         }
         if let Some(code) = esri_reference(&upper) {
@@ -874,6 +877,7 @@ impl SpatialRef {
         }
         let (horizontal, vertical) = def::split_compound(self.wkt.as_deref()?)?;
         let vertical = declared_epsg(&vertical).filter(|v| epsg::vertical(*v).is_some())?;
+        // Uncut: text cut where it was given, or WKT terrio built (a PROJJSON's names keep a NUL).
         Some((identify_epsg_text(&horizontal)?, vertical))
     }
 
@@ -1174,7 +1178,7 @@ pub(crate) fn is_variant_c(wkt: &str) -> bool {
 /// or WKT 2 conversion. `None` for a WKT terrio reads otherwise (through wbprojection).
 #[doc(hidden)]
 pub fn wkt_proj(wkt: &str) -> Option<String> {
-    wkt_proj_text(wkt1::c_text(wkt))
+    wkt_proj_text(wkt1::until_nul(wkt))
 }
 
 /// [`wkt_proj`] of the whole text, a NUL in a name included (the WKT of a PROJJSON).
@@ -1298,7 +1302,7 @@ pub fn compound_code(horizontal: u32, vertical: u32, name: Option<&str>) -> Opti
 /// unless the WKT names one, then the lowest code.
 #[doc(hidden)]
 pub fn identify_epsg(wkt: &str) -> Option<u32> {
-    identify_epsg_text(wkt1::c_text(wkt))
+    identify_epsg_text(wkt1::until_nul(wkt))
 }
 
 /// [`identify_epsg`] of the whole text, a NUL in a name included (the WKT of a PROJJSON).
@@ -1403,6 +1407,7 @@ pub(crate) fn identify_epsg_text(wkt: &str) -> Option<u32> {
         // by its parameters alone.
         if report.used_embedded_epsg && !report.resolved_code.is_some_and(|c| wbp::to_ogc_wkt(c).is_ok()) {
             let stripped = strip_authorities(wkt);
+            // Uncut: text cut where it was given, or WKT terrio built (a PROJJSON's names keep a NUL).
             return if stripped != wkt { identify_epsg_text(&stripped) } else { None };
         }
         if report.used_embedded_epsg || !report.ambiguous {

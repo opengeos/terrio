@@ -73,6 +73,7 @@ pub(crate) fn from_proj(s: &str) -> Option<String> {
     // Faithful when terrio reads it back as the PROJ string: the same conversion on the same
     // datum (its EPSG code identified, its geographic CRS).
     let faithful = |wkt: &str| {
+        // Uncut: text cut where it was given, or WKT terrio built (a PROJJSON's names keep a NUL).
         described && Def::new(&SpatialRef::from_wkt_text(wkt)).is_ok_and(|read| read.same_conversion(&own) && read.same_datum(&own))
     };
     if own.is_geocentric() {
@@ -255,6 +256,7 @@ pub(crate) fn strict(sr: &SpatialRef) -> Option<String> {
     }
     // A PROJ string can lose a conversion (EPSG's ellipsoidal Equidistant Cylindrical becomes
     // `+proj=eqc`, which WKT 1's Equirectangular is read as): the WKT 1 must read back as the CRS.
+    // Uncut: text cut where it was given, or WKT terrio built (a PROJJSON's names keep a NUL).
     let same = Def::new(&SpatialRef::from_wkt_text(&w)).is_ok_and(|read| read.same_conversion(&own));
     (same && super::wkt1::parse(&w).is_some_and(|root| plain(&root, None))).then_some(w)
 }

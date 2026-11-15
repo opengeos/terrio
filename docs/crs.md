@@ -274,11 +274,14 @@ A node of a keyword terrio does not know is skipped, whatever its keyword, as PR
 `vendor:mark["x"]`, `a-b["x"]`, `a"b c"["x"]` and an empty keyword (`["x"]`) are read past. A
 keyword ends at a space (C's `isspace`, the vertical tab included) or a delimiter, outside a quoted
 run, and a keyword with a space, a NUL or an unclosed quote in it (`a b["x"]`, `a"b["x"]`) makes the
-WKT one terrio refuses, as PROJ does. A definition given as text (WKT, PROJJSON, any text
-`SpatialRef::parse` takes) ends at its first NUL, as PROJ and GDAL take it as a C string; text after
-a complete WKT was already ignored. A NUL a PROJJSON name gives (`\u0000`) is part of the name, as
-in PROJ. WKT 1 and WKT 2 share this parser, as do the readers of PROJJSON and of IAU definitions,
-which go through WKT, so an unknown node is skipped in each.
+WKT one terrio refuses, as PROJ does. A quote in a value runs to the next quote, delimiters
+included, as in PROJ 9.8.1: `x["a",b"c,d"e]` is a node of two values, and a quote left unclosed
+makes the WKT one terrio refuses. A definition given as text (WKT, PROJJSON, any text
+`SpatialRef::parse` takes, an ESRI PE string in a GeoTIFF citation) ends at its first NUL, as PROJ
+and GDAL take it as a C string; text after a complete WKT was already ignored. A NUL a PROJJSON name
+gives (`\u0000`) is part of the name, as in PROJ. WKT 1 and WKT 2 share this parser, as do the
+readers of PROJJSON and of IAU definitions, which go through WKT, so an unknown node is skipped in
+each.
 
 A CRS of PROJ's ESRI authority is reported under it, as GDAL reports it: a GeoTIFF GDAL writes in
 `ESRI:54009` is `ESRI:54009` (from the ESRI code the WKT declares or, for GDAL's ESRI PE strings,

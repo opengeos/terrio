@@ -94,10 +94,12 @@ impl GeoKeys<'_> {
 /// user-defined CRS more completely than the GeoKeys. Its EPSG code is the root node's: codes on
 /// inner nodes (a unit's, a datum's) are not the CRS's.
 fn esri_pe_crs(k: &GeoKeys) -> Option<SpatialRef> {
-    let wkt = [3073, 1026, 2049].iter().find_map(|id| k.text(*id).and_then(|c| c.strip_prefix("ESRI PE String = ")))?.trim();
+    let wkt = [3073, 1026, 2049].iter().find_map(|id| k.text(*id).and_then(|c| c.strip_prefix("ESRI PE String = ")))?;
+    // Text from the file, which ends at its first NUL, as GDAL and PROJ 9.8.1 read it.
+    let wkt = crate::wkt1::until_nul(wkt).trim();
     // Read as any WKT: the code identified, and its PROJ4 extension (GDAL writes the sweep axis
     // of a geostationary CRS there) taken as the CRS.
-    let s = SpatialRef::from_wkt_text(wkt);
+    let s = SpatialRef::from_wkt(wkt);
     Some(SpatialRef { epsg: s.epsg, wkt: Some(wkt.to_string()), proj4: s.proj4, esri: s.esri })
 }
 
@@ -330,6 +332,7 @@ fn user_defined_projected_crs(k: &GeoKeys, proj4: &str) -> Option<SpatialRef> {
     let name = [3073, 1026].iter().find_map(|id| k.text(*id)).map(str::trim).filter(|n| !n.is_empty() && !n.contains(" = "));
     if let Some(name) = name
         && let Some(named) = renamed(&wkt, name)
+        // Uncut: terrio's WKT, with the citation's name in quotes.
         && let Some(code) = SpatialRef::from_wkt_text(&named).with_esri().esri
         && let Some(esri) = SpatialRef::from_esri(code).ok().and_then(|s| s.to_wkt())
     {
@@ -469,6 +472,7 @@ fn user_defined_crs(k: &GeoKeys) -> Option<SpatialRef> {
     // (`+proj=longlat +ellps=bessel +pm=paris` is not EPSG:4162). When terrio cannot read it,
     // wbprojection's code and WKT stay the fallback.
     let epsg = match own.as_deref() {
+        // Uncut: terrio's WKT of a PROJ string.
         Some(w) => guess.filter(|code| crate::identify_epsg_text(w) == Some(*code)),
         None => guess,
     };

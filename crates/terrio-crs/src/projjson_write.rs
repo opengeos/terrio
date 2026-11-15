@@ -67,6 +67,7 @@ fn crs(s: &SpatialRef) -> Result<Value> {
     }
     let wkt = s.to_wkt().ok_or_else(|| unsupported("a CRS without definition"))?;
     if let Some((h, v)) = crate::def::split_compound(&wkt) {
+        // Uncut: text cut where it was given, or WKT terrio built (a PROJJSON's names keep a NUL).
         let horizontal = crs(&SpatialRef::from_wkt_text(&h))?;
         let code = wkt1::parse(&v).and_then(|n| n.epsg()).ok_or_else(|| unsupported("a vertical CRS without EPSG code"))?;
         let name = wkt1::parse(&wkt).and_then(|n| n.name().map(str::to_string)).unwrap_or_else(|| "unknown".into());
@@ -138,6 +139,7 @@ fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
     let proj = match (entry, s.proj4.as_deref()) {
         (_, Some(p)) => p.to_string(),
         (Some(e), None) => e.proj.clone(),
+        // Uncut: text cut where it was given, or WKT terrio built (a PROJJSON's names keep a NUL).
         (None, None) => crate::wkt_proj_text(wkt).ok_or_else(|| unsupported("a WKT terrio reads otherwise"))?,
     };
     let p = Params::parse(&proj);
