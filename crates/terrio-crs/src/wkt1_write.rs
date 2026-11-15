@@ -932,7 +932,7 @@ mod tests {
             "{w}"
         );
         let w = from_proj("+proj=tmerc +lon_0=-100 +ellps=WGS84 +towgs84=100,50,-30 +pm=ferro +units=us-ft").unwrap();
-        assert!(w.contains("TOWGS84[100,50,-30,0,0,0,0]") && w.contains("PRIMEM[\"Ferro\",-17.666666666667]"), "{w}");
+        assert!(w.contains("TOWGS84[100,50,-30,0,0,0,0]") && w.contains("PRIMEM[\"Ferro\",-17.6666666666667]"), "{w}");
         assert!(w.contains("UNIT[\"US survey foot\",0.304800609601219"), "{w}");
     }
 
