@@ -155,20 +155,25 @@ fn ntm_zone_5_keeps_its_own_false_origin() {
     assert!((y - 1_276_307.579_3).abs() < 1e-3, "{y}");
 }
 
-/// A deprecated code GDAL 3.12 substitutes by default (a single replacement) is written to
-/// GeoKeys as a user-defined CRS, not by its code, which GDAL would read as the replacement
-/// (EPSG:4855 as 5105, 6,431 km away); its keys read back as its own definition. A code GDAL
-/// keeps (EPSG:2191, two replacements) is written by its code.
+/// A deprecated code GDAL 3.12 substitutes by default (a single replacement) is not written to
+/// GeoKeys by its code, which GDAL would read as the replacement (EPSG:4855 as 5105, 6,431 km
+/// away): by the replacement's code where it is the same CRS (EPSG:4329, WGS 84 (3D), as 4979),
+/// else as its WKT in a citation, as GDAL writes CRSs GeoKeys cannot hold. Its keys read back as
+/// its own definition. A code GDAL keeps (EPSG:2191, two replacements) is written by its code.
 #[test]
 fn geokeys_of_deprecated_codes_read_as_their_own_definition() {
     offline();
     let coded = |keys: &terrio_crs::geokeys::GeoKeyValues, code: u32| {
         keys.shorts.iter().any(|(k, v)| matches!(k, 2048 | 3072) && u32::from(*v) == code)
     };
-    // No geographic or projected code GDAL would substitute, the CRS's own or its base's.
+    // No code GDAL would substitute, of the CRS, its base or its vertical part.
     let substituted = |keys: &terrio_crs::geokeys::GeoKeyValues| {
-        keys.shorts.iter().find(|(k, v)| matches!(k, 2048 | 3072) && terrio_crs::epsg_replacements(u32::from(*v)).len() == 1).copied()
+        keys.shorts
+            .iter()
+            .find(|(k, v)| matches!(k, 2048 | 3072 | 4096) && terrio_crs::epsg_replacements(u32::from(*v)).len() == 1)
+            .copied()
     };
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
     let mut written = 0;
     for case in cases() {
         let code = case["code"].as_u64().unwrap() as u32;
@@ -176,12 +181,33 @@ fn geokeys_of_deprecated_codes_read_as_their_own_definition() {
         let Ok(keys) = crs.to_geokeys() else { continue };
         written += 1;
         assert_eq!(substituted(&keys), None, "EPSG:{code}: {keys:?}");
+        // A geographic 3D CRS keeps its height: a vertical key, or its WKT in a citation.
+        if case["name"].as_str().unwrap().contains("3D") {
+            let pe = keys.ascii.iter().any(|(_, a)| a.contains("ESRI PE String"));
+            assert!(pe || keys.shorts.iter().any(|(k, _)| *k == 4096), "EPSG:{code}: {keys:?}");
+        }
+        // Read back, it places the case's point as the CRS does.
+        let tags = keys.encode().unwrap();
+        let back = SpatialRef::from_geokeys(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).unwrap();
+        let (lon, lat) = (case["point"][0].as_f64().unwrap(), case["point"][1].as_f64().unwrap());
+        let place = |c: &SpatialRef| Transformer::new(&wgs84, c).and_then(|t| t.transform(lon, lat)).ok();
+        if let (Some(a), Some(b)) = (place(&crs), place(&back)) {
+            let tolerance = if crs.is_geographic() { 1e-8 } else { 1e-3 };
+            let same = (a.0 - b.0).abs() < tolerance && (a.1 - b.1).abs() < tolerance;
+            // EPSG:6986 (IGD05/12, 3D), written as WKT: terrio reads that WKT with a datum shift
+            // about 0.3 m from PROJ 9.8.1's ballpark, which it gives both the code and the WKT
+            // (opengeos/terrio#1012, item 19).
+            assert_eq!(same, code != 6986, "EPSG:{code}: {a:?} read back as {b:?}");
+        }
     }
     assert!(written > 400, "{written}");
+    // WGS 84 (3D), deprecated, is written as its replacement, the same CRS: EPSG:4979.
+    let keys = SpatialRef::from_epsg(4329).unwrap().to_geokeys().unwrap();
+    assert!(keys.shorts.contains(&(4096, 4979)), "{keys:?}");
     assert!(coded(&SpatialRef::from_epsg(2191).unwrap().to_geokeys().unwrap(), 2191));
     let own = SpatialRef::from_epsg(4855).unwrap();
     let keys = own.to_geokeys().unwrap();
-    assert!(keys.shorts.contains(&(3072, 32767)), "{keys:?}");
+    assert!(keys.ascii.iter().any(|(_, a)| a.contains("ESRI PE String")), "{keys:?}");
     let tags = keys.encode().unwrap();
     let back = SpatialRef::from_geokeys(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).unwrap();
     let wgs84 = SpatialRef::from_epsg(4326).unwrap();

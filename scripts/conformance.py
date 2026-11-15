@@ -2906,9 +2906,9 @@ PROJ_CASES = {
             "geocentric CRSs (EPSG:4384, 4972) by their datum's ballpark",
         ),
         "geokeys_of_deprecated_codes_read_as_their_own_definition": (
-            "Deprecated EPSG CRSs GDAL substitutes are written to GeoKeys as user-defined CRSs", IDENTICAL,
+            "Deprecated EPSG CRSs GDAL substitutes are written to GeoKeys by an identical replacement or as WKT", IDENTICAL,
             "PROJ 9.8.1 (pyproj 3.8.0, no grids): EPSG:4855's keys read back within 1 mm; GDAL 3.12 reads a code with a single "
-            "replacement as the replacement",
+            "replacement as the replacement; EPSG:6986's WKT is read 0.3 m from PROJ (opengeos/terrio#1012, item 19)",
         ),
         "ntm_zone_5_keeps_its_own_false_origin": (
             "EPSG:4855 (deprecated ETRS89 / NTM zone 5) keeps its own false origin", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
