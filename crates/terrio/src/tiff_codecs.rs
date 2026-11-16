@@ -219,7 +219,7 @@ fn decompress(compression: u16, raw: Vec<u8>, limit: usize) -> TiffResult<Vec<u8
 /// does anything unusual (a code past the table, a table filled without a clear): `weezl` then
 /// decodes it, and reports what is wrong. Every string is a copy of earlier output, so the table
 /// holds where each one starts in the output and its length, and a short one is copied as 16
-/// bytes: about 1.5x faster than `weezl` on Float32 elevation tiles.
+/// bytes: about 1.3x faster than `weezl` on Float32 elevation tiles.
 fn lzw_bytes(raw: &[u8], limit: usize) -> Option<Vec<u8>> {
     const CLEAR: usize = 256;
     const EOI: usize = 257;
@@ -268,7 +268,7 @@ fn lzw_bytes(raw: &[u8], limit: usize) -> Option<Vec<u8>> {
         // The output grows as the stream backs it, from eight times the stream (LZW rarely packs
         // more): a chunk size from the header is not allocated up front.
         if out.len() < pos + ROOM {
-            let len = (limit + ROOM).min((out.len() * 2).max(pos + ROOM).max(raw.len().saturating_mul(8)));
+            let len = (limit + ROOM).min(out.len().saturating_mul(2).max(pos + ROOM).max(raw.len().saturating_mul(8)));
             let extra = len - out.len();
             crate::dataset::fallible::reserve(&mut out, extra, "a TIFF chunk").ok()?;
             out.resize(len, 0);
