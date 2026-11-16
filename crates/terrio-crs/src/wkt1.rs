@@ -421,6 +421,8 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
                     | "latitudeoforigin"
                     | "latitudeofnaturalorigin"
                     | "latitudeofcentre"
+                    | "latitudeoffalseorigin"
+                    | "latitudeofprojectioncentre"
                     | "scalefactor"
                     | "scalefactoratnaturalorigin"
                     | "scalefactoroninitialline"
@@ -533,8 +535,9 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             out.push("+proj=stere".into());
             // EPSG's variant B gives its standard parallel as `Latitude of standard parallel`.
             let parallel = if method == "polarstereographicvariantb" { angle(&["latitudeofstandardparallel"]) } else { None };
-            // GDAL's name with it alone, which PROJ 9.8.1 refuses: not read at the north pole.
-            if method == "polarstereographic" && lat_0.is_none() && sp1.is_none() && get(&["latitudeofstandardparallel"]).is_some() {
+            // GDAL's name gives its latitude only as `latitude_of_origin`; PROJ 9.8.1 refuses it
+            // without, rather than read it at the north pole.
+            if method == "polarstereographic" && get(&["latitudeoforigin"]).is_none() {
                 return None;
             }
             let lat = lat_0.or(sp1).or(parallel).unwrap_or(90.0);

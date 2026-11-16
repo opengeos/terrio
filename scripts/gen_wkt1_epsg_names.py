@@ -1,7 +1,7 @@
 """Generate crates/terrio-crs/tests/data/wkt1_epsg_names.json: WKT 1 projected CRSs whose
 parameters have EPSG's names (`Latitude of false origin`, `Longitude of projection centre`,
 `Angle from Rectified to Skew Grid`, `Latitude of standard parallel`), which PROJ 9.8.1 reads as
-GDAL's, and a `PROJCS` with two `UNIT` nodes, of which PROJ takes the first (opengeos/terrio#1012,
+GDAL's, GDAL's `Polar_Stereographic`, which PROJ reads only with `latitude_of_origin`, and a `PROJCS` with two `UNIT` nodes, of which PROJ takes the first (opengeos/terrio#1012,
 items 25 and 31). Each case has PROJ's PROJ string and where it places a point from WGS 84
 (`always_xy`), or `null` where PROJ refuses the CRS.
 
@@ -99,6 +99,30 @@ CASES = [
     (
         "Polar_Stereographic with EPSG's standard parallel",
         projcs("Polar_Stereographic", STANDARD_PARALLEL),
+        (10, -80),
+    ),
+    (
+        "Polar_Stereographic with a standard parallel 1",
+        projcs(
+            "Polar_Stereographic",
+            [("standard_parallel_1", -71)] + STANDARD_PARALLEL[1:],
+        ),
+        (10, -80),
+    ),
+    (
+        "Polar_Stereographic with a latitude of natural origin",
+        projcs(
+            "Polar_Stereographic",
+            [("latitude_of_natural_origin", -71)] + STANDARD_PARALLEL[1:],
+        ),
+        (10, -80),
+    ),
+    (
+        "Polar_Stereographic with a latitude of origin",
+        projcs(
+            "Polar_Stereographic",
+            [("latitude_of_origin", -71)] + STANDARD_PARALLEL[1:],
+        ),
         (10, -80),
     ),
     (
