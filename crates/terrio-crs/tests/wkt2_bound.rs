@@ -177,3 +177,26 @@ fn a_bound_crs_without_its_transformation_is_refused() {
         assert!(Transformer::new(&SpatialRef::from_wkt(&without), &wgs84).is_err(), "{name}");
     }
 }
+
+/// A full-matrix or evaluation-point Helmert transformation to a CRS terrio cannot read as a
+/// target (here ED50 in WKT 1) is left out with that target, as `+towgs84` ones are: the source
+/// CRS places points as without its `BOUNDCRS`, not shifted by that transformation as if it were
+/// to WGS 84.
+#[test]
+fn an_exact_or_evaluation_point_shift_to_an_unread_target_is_left_out() {
+    offline();
+    let data: Value = serde_json::from_str(include_str!("data/wkt2_bound.json")).unwrap();
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    let ed50 = r#"GEOGCS["ED50",DATUM["European_Datum_1950",SPHEROID["International 1924",6378388,297]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#;
+    for name in ["Saba, method EPSG:1132, to ED50", "method EPSG:9636 about an evaluation point, to ED50"] {
+        let case = data["cases"].as_array().unwrap().iter().find(|c| c["name"] == name).unwrap();
+        let wkt = case["wkt"].as_str().unwrap();
+        let (start, end) = (wkt.find("TARGETCRS[").unwrap() + "TARGETCRS[".len(), wkt.find("],ABRIDGEDTRANSFORMATION").unwrap());
+        let unread = format!("{}{ed50}{}", &wkt[..start], &wkt[end..]);
+        let source = &wkt["BOUNDCRS[SOURCECRS[".len()..wkt.find("],TARGETCRS[").unwrap()];
+        let (x, y) = (case["point"][0].as_f64().unwrap(), case["point"][1].as_f64().unwrap());
+        let got = Transformer::new(&SpatialRef::from_wkt(&unread), &wgs84).unwrap().transform(x, y).unwrap();
+        let alone = Transformer::new(&SpatialRef::from_wkt(source), &wgs84).unwrap().transform(x, y).unwrap();
+        assert!(metres(got, alone) < 1e-3, "{name}: {got:?}, without the BOUNDCRS {alone:?}");
+    }
+}

@@ -57,18 +57,20 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         let mut c = if is_wkt1_source(source) { wkt1_source(source)? } else { to_proj(source)? };
         // A Helmert transformation terrio cannot read fails, whatever its target; one to a CRS
         // terrio cannot convert is left out, as terrio did before it read those.
-        let shift = helmert_shift(root)?;
-        c.helmert = shift.as_ref().and_then(|s| s.2.clone());
-        match shift {
-            Some((t, true, _)) => {
+        // The exact or evaluation-point step only with the target it is to: not to WGS 84 when
+        // the target is left out.
+        match helmert_shift(root)? {
+            Some((t, true, helmert)) => {
                 c.proj = format!("{} +towgs84={}", c.proj, t.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","));
+                c.helmert = helmert;
             }
             // To another CRS (ED50): the shift to it, then its own transformations to WGS 84, as
             // PROJ chains them.
-            Some((t, false, _)) => {
+            Some((t, false, helmert)) => {
                 let target = root.child("TARGETCRS").and_then(first_node).filter(|t| handles(t));
                 if let Some(target) = target.and_then(|t| to_proj(t).ok()) {
                     c.bound = Some(Box::new(BoundTo { target, shift: t }));
+                    c.helmert = helmert;
                 }
             }
             None => {}
@@ -1138,7 +1140,7 @@ fn helmert_method(t: &Node) -> Option<HelmertMethod> {
 
 /// Whether a transformation method PROJ 9.8.1 does not apply is one of the Helmert family (a
 /// time-specific one, which needs a coordinate epoch; one given by name without its kind's
-/// number of parameters; geocentric translations by grid), which terrio refuses rather than
+/// number of parameters, as geocentric translations without three), which terrio refuses rather than
 /// reading the `BOUNDCRS` without its shift.
 fn helmert_family(t: &Node) -> bool {
     let method = t.child("METHOD");
@@ -1275,8 +1277,7 @@ fn helmert_shift(root: &Node) -> Result<Option<BoundShift>> {
 /// (one given twice leaves another out), and geocentric translations with their three and without
 /// a rotation or scale. Not the time-dependent methods by code and the Molodensky-Badekas ones,
 /// which PROJ writes no string for (a time-dependent one named with its convention's words and
-/// seven parameters PROJ writes, as terrio does), nor
-/// coordinate frame's full matrix, nor geocentric translations given a rotation or scale, which
+/// seven parameters PROJ writes, as terrio does), nor coordinate frame's full matrix, nor geocentric translations given a rotation or scale, which
 /// PROJ writes as a `+towgs84` placing points elsewhere than it does.
 pub(crate) fn helmert_writable(t: &Node) -> bool {
     // The methods `getTOWGS84Parameters` writes: by code, or by a name with the whole words of

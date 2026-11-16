@@ -2799,6 +2799,10 @@ PROJ_CASES = {
                 "terrio reads it in its unit"
             ),
         ),
+        "an_exact_or_evaluation_point_shift_to_an_unread_target_is_left_out": (
+            "WKT 2 BOUNDCRS: a full-matrix or evaluation-point shift to a target terrio cannot convert", NOT_COMPARED,
+            "left out with its target, as a `+towgs84` one is: placed as the source CRS alone (PROJ 9.8.1 reads a WKT 1 target)",
+        ),
         "an_unreadable_shift_to_another_crs_is_refused": (
             "WKT 2 BOUNDCRS: a Helmert transformation terrio cannot read", EXPECTED_REJECTION,
             "refused rather than left out, which would place points unshifted",
