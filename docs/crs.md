@@ -620,11 +620,11 @@ transformation, which covers only Sardinia. `Tokyo_1892` (EPSG:5132) goes throug
 renamed DHDN goes through ETRS89. This works in both directions and to every CRS. The names PROJ
 finds come from `crates/terrio-crs/data/crs_names.tsv.zst` (`scripts/gen_crs_names.py`).
 
-Two of PROJ's steps are not followed yet. The first is its datum pivot, which tries the datum's CRSs
-in order of code, the geocentric ones too. That is why ESRI's ONGD14 (EPSG:7373) gets "ONGD14 to
-WGS 84 (1)" between the geocentric CRSs, while terrio keeps EPSG:7373's "(2)". The second is the
-ballpark PROJ goes through, of unknown accuracy, when the datum's name is not its ID's
-(`DATUM["Local datum",...,ID["EPSG",6806]]`). When either CRS has such a datum, terrio does not
+PROJ's datum pivot, which tries the datum's CRSs in order of code, the geocentric ones too, is
+followed: ESRI's ONGD14 (EPSG:7373) without its code gets "ONGD14 to WGS 84 (1)", registered between
+the geocentric CRSs, as in PROJ, while EPSG:7373 by its code keeps "(2)". One of PROJ's steps is not
+followed yet: the ballpark PROJ goes through, of unknown accuracy, when the datum's name is not its
+ID's (`DATUM["Local datum",...,ID["EPSG",6806]]`). When either CRS has such a datum, terrio does not
 search at all, for either side, and that CRS keeps its code's area. The transformation is then the
 one between the codes.
 terrio also does not follow PROJ for an ESRI ATF (Paris) (EPSG:4901) WKT without a code. PROJ takes
@@ -634,7 +634,9 @@ EPSG:4901 and places it as PROJ places EPSG:4901 (opengeos/terrio#1012).
 
 `Transformer::operation_at(x, y, z)` returns the transformations `transform_3d` runs for a point,
 as PROJ's `proj_trans_get_last_used_operation`: their names, summed accuracy, grids and whether one
-is a ballpark, or `None` between CRSs of one datum. Conversions (projections, units) are not
+is a ballpark, or `None` between CRSs of one datum. EPSG's null transformations (`SWEREF99 to WGS
+84 (1)`, 1 m) and their concatenations are named, as by PROJ, not reported as a ballpark.
+Conversions (projections, units) are not
 named, and geoid models are named without PROJ's EPSG index (`WGS 84 to EGM96 height`).
 
 ```rust

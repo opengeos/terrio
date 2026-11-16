@@ -15664,7 +15664,7 @@
     20.535
    ],
    "geographic": true,
-   "pending": true
+   "pending": false
   },
   {
    "name": "7373 esri <- 4326",
@@ -15764,7 +15764,7 @@
     20.535
    ],
    "geographic": true,
-   "pending": true
+   "pending": false
   },
   {
    "name": "7373 esri gcs renamed <- 4326",
@@ -15964,7 +15964,7 @@
     20.535
    ],
    "geographic": true,
-   "pending": true
+   "pending": false
   },
   {
    "name": "7373 wkt2 geodcrs renamed <- 4326",
@@ -16044,7 +16044,7 @@
     20.535
    ],
    "geographic": true,
-   "pending": true
+   "pending": false
   },
   {
    "name": "7373 esri compound renamed <- 4326",
@@ -16204,7 +16204,7 @@
     20.535
    ],
    "geographic": true,
-   "pending": true
+   "pending": false
   },
   {
    "name": "7373 wkt1 datum authority <- 4326",

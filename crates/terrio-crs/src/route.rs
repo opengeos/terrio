@@ -64,14 +64,17 @@ pub(crate) enum OpKind {
     Vertical,
 }
 
-/// Records that an operation was used, run in reverse or not: `None` (or one without steps) for
-/// PROJ's ballpark.
+/// Records that an operation was used, run in reverse or not: `None` (or an unnamed one without
+/// steps) for PROJ's ballpark.
 pub(crate) fn note(op: Option<&Op>, reverse: bool, kind: OpKind) {
     USED.with(|u| {
         let mut u = u.borrow_mut();
         let Some(used) = u.as_mut() else { return };
         used.push(match op {
-            Some(op) if !op.ballpark && !op.steps.is_empty() => {
+            // A named transformation without steps is EPSG's null transformation (SWEREF99 to
+            // WGS 84 (1), ETRS89 to WGS 84 (1)), or a concatenation of them (Inverse of ETRS89 to
+            // ETRF89 + ETRS89 to WGS 84 (1)), which PROJ 9.8.1 names: not a ballpark.
+            Some(op) if !op.ballpark && (!op.steps.is_empty() || !op.name.is_empty()) => {
                 let names = step_names(op, reverse);
                 let name = if names.is_empty() {
                     let unnamed = match kind {
@@ -698,11 +701,12 @@ fn crs_extents(src: &Def, dst: &Def) -> Vec<[f64; 4]> {
 /// CRSs and datums ([`chains`]).
 ///
 /// PROJ's datum pivot tries the CRSs of the datum in order of code, the geocentric and 3D ones
-/// too, and frames each transformation with the operation from the CRS into that CRS: a
-/// ballpark of unknown accuracy when the datum's name is not its ID's. terrio does not follow
-/// it yet (opengeos/terrio#1012). It uses the code's own transformations between geographic 2D
-/// CRSs. When either CRS has a renamed datum, `Route::build` does not search at all, for both
-/// sides, and that CRS keeps its code's area: the route is the one between the codes.
+/// too, and frames each transformation with the operation from the CRS into that CRS: so the
+/// transformations registered for the datum's other CRSs join the list. The framing is a
+/// ballpark of unknown accuracy when the datum's name is not its ID's, which terrio does not
+/// follow yet (opengeos/terrio#1012): when either CRS has a renamed datum, `Route::build` does not
+/// search at all, for both sides, and that CRS keeps its code's area: the route is the one
+/// between the codes.
 fn unresolved_search(list: Vec<Leg>, a: u32, b: u32, src: &Def, dst: &Def, aoi: Option<&[f64; 4]>, all: bool) -> Kind {
     let reg = epsg::registry();
     if !list.iter().any(|l| !l.op.ballpark) {
@@ -715,6 +719,36 @@ fn unresolved_search(list: Vec<Leg>, a: u32, b: u32, src: &Def, dst: &Def, aoi: 
         resort(&mut kind, a, b, aoi);
         return kind;
     };
+    // PROJ's datum pivot also tries the other CRSs of an unresolved source CRS's datum (its
+    // geocentric and 3D ones), with the conversion into each: their transformations to the target
+    // CRS's datum join the list (ONGD14's Esri WKT, without ID, takes "ONGD14 to WGS 84 (1)",
+    // registered between the geocentric CRSs, at 0.1 m, over the geographic 2D CRS's null
+    // transformation). Not for an unresolved target: PROJ 9.8.1 goes from WGS 84 into that WKT
+    // by the code's own transformations.
+    let mut list = list;
+    for (own, other, unresolved, forward) in [(ga, gb, src.unresolved().is_some(), true)] {
+        if !unresolved {
+            continue;
+        }
+        for code in reg.by_datum.get(&own.datum).into_iter().flatten().filter(|c| **c != own.code) {
+            for &i in reg.at.get(code).into_iter().flatten() {
+                let r = &reg.ops[i];
+                let (end, from_code) = if r.source == *code { (r.target, true) } else { (r.source, false) };
+                if r.time_dependent || r.ensemble || !reg.geodetic.get(&end).is_some_and(|g| g.datum == other.datum) {
+                    continue;
+                }
+                if !all && !r.op.available() {
+                    continue;
+                }
+                // Run from the source CRS to the target: forward when the registered operation
+                // leaves the unresolved CRS's datum on the source side.
+                let reverse = from_code != forward;
+                if !list.iter().any(|l| Arc::ptr_eq(&l.op, &r.op)) {
+                    list.push(Leg { op: r.op.clone(), reverse });
+                }
+            }
+        }
+    }
     let direct: Vec<&Leg> = list.iter().filter(|l| !l.op.ballpark).collect();
     // Whether every transformation has a step among `names`.
     let all_with = |names: &HashSet<&str>| direct.iter().all(|l| step_names(&l.op, false).iter().any(|n| names.contains(n.as_str())));
