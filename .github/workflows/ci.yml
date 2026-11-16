@@ -335,6 +335,14 @@ jobs:
         run: |
           wasm-pack build js/zarr --release --target nodejs --out-dir ../pkg-node/zarr --out-name terrio --no-pack
           node --test js/tests/zarr.test.mjs
+      # The GeoTIFF-only module, `terrio-js/cog` (its own crate, js/cog).
+      - name: Build and test terrio-js/cog (Node.js)
+        run: |
+          wasm-pack build js/cog --release --target nodejs --out-dir ../pkg-node/cog --out-name terrio --no-pack
+          node --test js/tests/cog.test.mjs
+          # Without the CRS engine: none of its EPSG names (Pulkovo, which the full module's tables hold).
+          grep -qaF Pulkovo js/pkg-node/terrio_bg.wasm || { echo "::error::the full module lacks the EPSG name the guard looks for"; exit 1; }
+          if grep -qaF Pulkovo js/pkg-node/cog/terrio_bg.wasm; then echo "::error::terrio-js/cog links the CRS engine"; exit 1; fi
 
   # The cargo features (see crates/terrio/Cargo.toml): each builds on its own, and so does the
   # core without them, natively and for WebAssembly.

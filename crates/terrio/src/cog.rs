@@ -755,7 +755,7 @@ impl LazyRaster {
         // allowed. `LazyRaster::open` judges a local file's content before; a remote one's, and a
         // TIFF opened here directly, are judged here, after the first request.
         crate::formats::check_driver_allowed("GTiff", path, crate::formats::Kind::Raster)?;
-        let mut t = TiffRaster::new(source, local, limits)?;
+        let mut t = TiffRaster::new::<true>(source, local, limits)?;
         t.files.push(path.to_string());
         if let Location::Local(p) = &loc
             && t.tags.apply_sidecar_crs(p)
@@ -815,7 +815,7 @@ impl LazyRaster {
         let limits = limits()?;
         // Opened as a GeoTIFF by its caller: only if the GTiff driver is allowed.
         crate::formats::check_driver_allowed("GTiff", "a GeoTIFF in memory", crate::formats::Kind::Raster)?;
-        let t = TiffRaster::new(source, None, limits)?;
+        let t = TiffRaster::new::<true>(source, None, limits)?;
         t.tags.warn_unreadable("a GeoTIFF in memory");
         Ok(Some(Self { inner: Inner::Tiff(Box::new(t)), sidecar_mask: None, asset_policy: crate::stac::AssetReadPolicy::current() }))
     }
@@ -825,7 +825,30 @@ impl LazyRaster {
     /// again. Returns `None` when the file is not a TIFF. Refused when it declares more than
     /// `TERRIO_MAX_DECLARED_BYTES` or `TERRIO_MAX_BANDS` allow, as [`LazyRaster::open`] refuses it.
     pub fn from_sparse(file: crate::sparse::SparseFile) -> Result<Option<Self>> {
-        declared_allowed(Self::from_sparse_using(file, TiffReadLimits::from_config))
+        declared_allowed(Self::from_sparse_using::<true>(file, TiffReadLimits::from_config))
+    }
+
+    /// [`LazyRaster::from_sparse`] with the CRS reduced to the EPSG code the GeoKeys name, without
+    /// the CRS engine: a build that opens GeoTIFFs only this way, reads them with
+    /// [`LazyRaster::read_geotiff_samples`] and asks for the CRS with
+    /// [`LazyRaster::geotiff_epsg`] leaves the engine out (terrio-js/cog). A user-defined or
+    /// vertical CRS is not read; [`LazyRaster::crs`] then has no CRS, or only the horizontal one.
+    ///
+    /// ```no_run
+    /// use terrio::sparse::{SparseFile, read_with};
+    /// use terrio::{LazyRaster, Window, WindowOptions};
+    ///
+    /// let bytes = std::fs::read("dem.tif")?; // the remote file, fetched by range in practice
+    /// let file = SparseFile::new(bytes.len() as u64);
+    /// let fetch = |offset: u64, len: u64| Ok(bytes[offset as usize..(offset + len) as usize].to_vec());
+    /// let mut dem = read_with(&file, 64, fetch, || LazyRaster::from_sparse_epsg_only(file.clone()))?.expect("a TIFF");
+    /// let epsg = dem.geotiff_epsg();
+    /// let options = WindowOptions { bands: vec![1], overview: None };
+    /// let pixels = read_with(&file, 64, fetch, || dem.read_geotiff_samples(Window::new(0, 0, 256, 256), &options))?;
+    /// # Ok::<(), terrio::Error>(())
+    /// ```
+    pub fn from_sparse_epsg_only(file: crate::sparse::SparseFile) -> Result<Option<Self>> {
+        declared_allowed(Self::from_sparse_using::<false>(file, TiffReadLimits::from_config))
     }
 
     /// Opens the array at `key` (`""` for the store's root: a group's single array) of a Zarr
@@ -844,10 +867,13 @@ impl LazyRaster {
 
     /// [`LazyRaster::from_sparse`] with other decoding limits than the defaults.
     pub fn from_sparse_with_limits(file: crate::sparse::SparseFile, limits: TiffReadLimits) -> Result<Option<Self>> {
-        declared_allowed(Self::from_sparse_using(file, || Ok(limits)))
+        declared_allowed(Self::from_sparse_using::<true>(file, || Ok(limits)))
     }
 
-    fn from_sparse_using(file: crate::sparse::SparseFile, limits: impl FnOnce() -> Result<TiffReadLimits>) -> Result<Option<Self>> {
+    fn from_sparse_using<const ENGINE: bool>(
+        file: crate::sparse::SparseFile,
+        limits: impl FnOnce() -> Result<TiffReadLimits>,
+    ) -> Result<Option<Self>> {
         let mut source = Source::sparse(file);
         source.seek(SeekFrom::Start(0))?;
         let mut magic = [0u8; 4];
@@ -859,7 +885,7 @@ impl LazyRaster {
         // Opened as a GeoTIFF by its caller: only if the GTiff driver is allowed.
         crate::formats::check_driver_allowed("GTiff", "a remote GeoTIFF", crate::formats::Kind::Raster)?;
         source.seek(SeekFrom::Start(0))?;
-        let t = TiffRaster::new(source, None, limits)?;
+        let t = TiffRaster::new::<ENGINE>(source, None, limits)?;
         t.tags.warn_unreadable("a remote GeoTIFF");
         Ok(Some(Self { inner: Inner::Tiff(Box::new(t)), sidecar_mask: None, asset_policy: crate::stac::AssetReadPolicy::current() }))
     }
@@ -1101,6 +1127,18 @@ impl LazyRaster {
     pub fn geotiff_has_geo_transform(&self) -> Option<bool> {
         match &self.inner {
             Inner::Tiff(t) => Some(t.tags.corner_geo_transform().is_some()),
+            Inner::Memory(_) | Inner::Source(..) => None,
+        }
+    }
+
+    /// The EPSG code a GeoTIFF's CRS has, without resolving the CRS: after
+    /// [`LazyRaster::from_sparse_epsg_only`], the code of ProjectedCSTypeGeoKey, or of
+    /// GeographicTypeGeoKey in a geographic model; after other opens, the code the CRS was
+    /// identified with, which a compound CRS does not have. `None` without one, and for other
+    /// formats.
+    pub fn geotiff_epsg(&self) -> Option<u32> {
+        match &self.inner {
+            Inner::Tiff(t) => t.tags.epsg,
             Inner::Memory(_) | Inner::Source(..) => None,
         }
     }
@@ -1571,6 +1609,27 @@ impl LazyRaster {
             dataset.set_sample_bits(0);
         }
         Ok(dataset)
+    }
+
+    /// The samples of a window of some bands of a GeoTIFF, band after band, as
+    /// [`LazyRaster::read_window`] reads them, without the dataset it builds around them: no mask
+    /// is applied and no CRS resolved, so a build that reads only this way and with
+    /// [`LazyRaster::geotiff_epsg`] leaves the CRS engine out (terrio-js/cog).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidArgument`] for a raster that is not a GeoTIFF, a window outside the image or
+    /// overview, or a band that does not exist; the read's own errors otherwise.
+    pub fn read_geotiff_samples(&mut self, window: Window, options: &WindowOptions) -> Result<RasterData> {
+        let _scope = self.enter_asset_read()?;
+        let (lw, lh) = self.level_size(options.overview)?;
+        window.check(lw, lh)?;
+        let bands = read_bands(&options.bands, self.band_count())?;
+        crate::dataset::fallible::check_raster_buffer("a window", window.width, window.height, bands.len(), self.data_type())?;
+        match &mut self.inner {
+            Inner::Tiff(t) => t.read(options.overview.map_or(0, |i| i + 1), window, &bands),
+            Inner::Memory(_) | Inner::Source(..) => Err(Error::InvalidArgument("not a GeoTIFF".into())),
+        }
     }
 
     /// The nodata values of some bands (numbered from 1) at full resolution or of an overview,
@@ -2431,13 +2490,15 @@ fn tiff_err(e: tiff::TiffError) -> Error {
 }
 
 impl TiffRaster {
-    fn new(mut source: Source, local: Option<vfs::LocalPath>, limits: TiffReadLimits) -> Result<Self> {
+    /// Opens a TIFF; without the CRS engine (`ENGINE` false), its CRS is only the EPSG code its
+    /// GeoKeys name.
+    fn new<const ENGINE: bool>(mut source: Source, local: Option<vfs::LocalPath>, limits: TiffReadLimits) -> Result<Self> {
         let zip = match &source {
             Source::Zip(member) => member.reopen(),
             _ => None,
         };
         let uploaded = matches!(&source, Source::Memory(_));
-        let tags = try_read_geo_tags_from(&mut source)
+        let tags = if ENGINE { try_read_geo_tags_from(&mut source) } else { crate::geotiff::try_read_geo_tags_epsg_only(&mut source) }
             .map_err(|error| {
                 // Invalid metadata is malformed input regardless of its source. An immutable
                 // buffer's EOF is malformed too; live EOF errors retain their I/O causes.
@@ -2560,7 +2621,8 @@ impl TiffRaster {
             return Ok(());
         }
         let Ok(file) = std::fs::File::open(path) else { return Ok(()) };
-        let mut ovr = match TiffRaster::new(Source::File(BufReader::new(crate::geotiff::FileCursor::new(file))), None, self.limits) {
+        let mut ovr = match TiffRaster::new::<true>(Source::File(BufReader::new(crate::geotiff::FileCursor::new(file))), None, self.limits)
+        {
             Ok(ovr) => ovr,
             Err(error) if error.is_resource_refusal() => return Err(error),
             Err(_) => return Ok(()),
@@ -4198,7 +4260,7 @@ mod tests {
         write_tiled_tiff(&path, (64, 64, 1), sequence(DataType::U8, 64 * 64, 1), &[]);
         let file = std::fs::File::open(&path).unwrap();
         let source = Source::File(BufReader::new(crate::geotiff::FileCursor::new(file)));
-        let mut r = TiffRaster::new(source, None, TiffReadLimits::default()).unwrap();
+        let mut r = TiffRaster::new::<true>(source, None, TiffReadLimits::default()).unwrap();
         r.read_samples(0, Window::full(64, 64), &[1]).unwrap();
         let handle = r.cache_handle;
         assert!(crate::block_cache::get(handle, 0, 0).is_some());

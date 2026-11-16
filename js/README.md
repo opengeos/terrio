@@ -168,6 +168,39 @@ snapshot:
 |---|---|---|---|
 | `terrio-js/zarr` | 0.53 MB | 0.23 MB | 0.19 MB |
 
+## GeoTIFF alone: `terrio-js/cog`
+
+`terrio-js/cog` is a fourth module, of its own API, that reads GeoTIFFs and COGs over HTTP and
+nothing else: terrio's GeoTIFF reader (tiles and strips, overviews, LZW, Deflate, PackBits, ZSTD,
+JPEG, WebP and JPEG XL; not LZMA or LERC), the range requests of `openUrl` (64 KiB blocks, 12 in
+flight, blocks kept between reads), and no CRS engine. It suits pages that only show COGs.
+
+```js
+import init, { openCog } from "terrio-js/cog";
+
+await init();
+const r = await openCog("https://example.com/dem.tif");
+r.width, r.height, r.count, r.dtype, r.nodata, r.transform, r.epsg;
+r.overviews;                                      // [[width, height], ...], largest first
+const [red, nir] = await r.read({ window: [0, 0, 512, 512], bands: [3, 4] }); // typed arrays
+const [preview] = await r.read({ overview: 2, bands: [1] }); // an overview, whole
+r.stats();                                        // { requests, bytes }
+```
+
+Its options are those of `openUrl` for GeoTIFFs: `blockSize`, `cacheSize`, `fetch` and `headers`;
+a read fetches the bytes `openUrl` fetches for it. Without the CRS engine, `epsg` is the code of
+ProjectedCSTypeGeoKey, or of GeographicTypeGeoKey in a geographic model (GTModelTypeGeoKey 2):
+a user-defined or vertical CRS is not read (`epsg` is then `undefined`, or the horizontal CRS's
+code). Reads return the samples `openUrl` reads (CMYK as RGBA) without applying masks; `nodata` is
+the first band's.
+
+Measured from a local `wasm-release` build (wasm-opt `-Oz`; gzip 9, Brotli 11), not a recorded CI
+snapshot:
+
+| Module | `.wasm` | gzip | Brotli |
+|---|---|---|---|
+| `terrio-js/cog` | 2.37 MB | 0.87 MB | 0.65 MB |
+
 ## Threads: `terrio-js/load` and `terrio-js/threads`
 
 A separate module, `terrio-js/threads`, has every format and a thread pool of Web Workers (or

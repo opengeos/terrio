@@ -216,22 +216,28 @@ pub(crate) fn check_tiff_allowed(path: &std::path::Path, shown: &str) -> crate::
 /// cannot be read. Later directory failures retain the collected metadata; use
 /// `try_read_geo_tags_from` when any directory read failure must be reported.
 pub(crate) fn read_geo_tags_from<R: Read + Seek>(f: R) -> Option<GeoTags> {
-    read_geo_tags_impl(f, false, ImageScope::BestEffort).ok().flatten()
+    read_geo_tags_impl::<true, _>(f, false, ImageScope::BestEffort).ok().flatten()
 }
 
 /// Reads TIFF metadata while preserving read and seek failures for lazy opens.
 pub(crate) fn try_read_geo_tags_from<R: Read + Seek>(f: R) -> std::io::Result<Option<GeoTags>> {
-    read_geo_tags_impl(f, false, ImageScope::All)
+    read_geo_tags_impl::<true, _>(f, false, ImageScope::All)
+}
+
+/// [`try_read_geo_tags_from`] with the CRS reduced to the EPSG code the GeoKeys name, without the
+/// CRS engine (see [`apply_geokeys`]).
+pub(crate) fn try_read_geo_tags_epsg_only<R: Read + Seek>(f: R) -> std::io::Result<Option<GeoTags>> {
+    read_geo_tags_impl::<false, _>(f, false, ImageScope::All)
 }
 
 /// First-image metadata for inventory, without reading the next-directory pointer or later IFDs.
 pub(crate) fn read_first_geo_tags_from<R: Read + Seek>(f: R) -> std::io::Result<Option<GeoTags>> {
-    read_geo_tags_impl(f, false, ImageScope::First)
+    read_geo_tags_impl::<true, _>(f, false, ImageScope::First)
 }
 
 /// Comparison-only TIFF metadata; ordinary lazy opens avoid its out-of-line reads.
 pub(crate) fn read_compare_geo_tags(path: &std::path::Path) -> Option<GeoTags> {
-    read_geo_tags_impl(std::io::BufReader::new(std::fs::File::open(path).ok()?), true, ImageScope::BestEffort).ok().flatten()
+    read_geo_tags_impl::<true, _>(std::io::BufReader::new(std::fs::File::open(path).ok()?), true, ImageScope::BestEffort).ok().flatten()
 }
 
 enum ImageScope {
@@ -243,7 +249,11 @@ enum ImageScope {
     BestEffort,
 }
 
-fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool, images: ImageScope) -> std::io::Result<Option<GeoTags>> {
+fn read_geo_tags_impl<const ENGINE: bool, R: Read + Seek>(
+    mut f: R,
+    compare_metadata: bool,
+    images: ImageScope,
+) -> std::io::Result<Option<GeoTags>> {
     let mut header = [0u8; 16];
     f.read_exact(&mut header[..8])?;
     let le = match &header[..2] {
@@ -594,7 +604,7 @@ fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool, images: 
     }
 
     if let Some(keys) = keys {
-        apply_geokeys(&mut out, keys, doubles(GEO_DOUBLE_PARAMS), geo_ascii);
+        apply_geokeys::<ENGINE>(&mut out, keys, doubles(GEO_DOUBLE_PARAMS), geo_ascii);
     }
     // Raster type is a GeoKey, exposed as dataset metadata by GDAL.
     out.metadata.retain(|(k, _)| k != "AREA_OR_POINT");
@@ -662,16 +672,22 @@ pub(crate) fn color_interpretation(value: &str) -> &'static str {
 /// or LAS `LASF_Projection` records).
 pub(crate) fn crs_from_geokeys(keys: &[u16], doubles: Option<&[f64]>, ascii: Option<&[u8]>) -> wbraster::CrsInfo {
     let mut out = GeoTags::default();
-    apply_geokeys(&mut out, keys, doubles, ascii);
+    apply_geokeys::<true>(&mut out, keys, doubles, ascii);
     out.warn_unreadable("GeoKeys");
     out.crs_info()
 }
 
 /// Sets the CRS (and the raster type) of `out` from a GeoKey directory, as GDAL reads it (see
-/// `terrio_crs::geokeys::read`).
-fn apply_geokeys(out: &mut GeoTags, keys: &[u16], doubles: Option<&[f64]>, ascii: Option<&[u8]>) {
-    let raster_type = keys.get(4..).and_then(|k| k.chunks(4).find(|k| k.len() == 4 && k[0] == 1025 && k[1] == 0)).map(|k| k[3]);
-    out.pixel_is_point = raster_type == Some(2);
+/// `terrio_crs::geokeys::read`). Without the CRS engine (`ENGINE` false), only the EPSG code of
+/// ProjectedCSTypeGeoKey or GeographicTypeGeoKey: no user-defined CRS, no vertical CRS.
+fn apply_geokeys<const ENGINE: bool>(out: &mut GeoTags, keys: &[u16], doubles: Option<&[f64]>, ascii: Option<&[u8]>) {
+    let short_key = |id: u16| keys.get(4..)?.chunks(4).find(|k| k.len() == 4 && k[0] == id && k[1] == 0).map(|k| k[3]);
+    out.pixel_is_point = short_key(1025) == Some(2);
+    if !ENGINE {
+        let code = |c: Option<u16>| c.filter(|c| *c != 0 && *c != 32767).map(u32::from);
+        out.epsg = code(short_key(3072)).or_else(|| if short_key(1024) == Some(2) { code(short_key(2048)) } else { None });
+        return;
+    }
     let read = crate::crs::SpatialRef::read_geokeys(keys, doubles.unwrap_or_default(), ascii.unwrap_or_default());
     out.unreadable_method = read.unsupported_method;
     if let Some(crs) = read.crs {
@@ -2179,7 +2195,7 @@ mod tests {
     fn a_citation_inside_a_multibyte_character_is_read() {
         let mut out = GeoTags::default();
         let keys = [1, 1, 0, 2, 1024, 0, 1, 1, 1026, GEO_ASCII_PARAMS, 3, 1];
-        apply_geokeys(&mut out, &keys, None, Some("\u{fffd}abc|".as_bytes()));
+        apply_geokeys::<true>(&mut out, &keys, None, Some("\u{fffd}abc|".as_bytes()));
     }
 
     #[test]
