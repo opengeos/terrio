@@ -177,11 +177,12 @@ fn check_remote_window(src: &str, window: Window, overview: Option<usize>, max_b
     }
 }
 
-/// A USGS 3DEP 1 arc-second tile over HTTPS: a 512 x 512 window at full resolution.
+/// A USGS 3DEP 1 arc-second tile over HTTPS: a 512 x 512 window at full resolution. The edition
+/// of 2026-07-08, which the expected values come from.
 #[test]
 #[ignore = "network"]
 fn usgs_3dep_window_over_http() {
-    let url = "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1/TIFF/current/n40w106/USGS_1_n40w106.tif";
+    let url = "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1/TIFF/historical/n40w106/USGS_1_n40w106_20260708.tif";
     // The file is 50 MB; the window's tiles are about 3 MB.
     check_remote_window(url, Window::new(1024, 1024, 512, 512), None, 5_000_000, &[(886312289.9777832, 3323.39453125, 3262.534423828125)]);
 }
