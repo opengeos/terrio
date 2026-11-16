@@ -105,10 +105,13 @@ done
 # Vector tiles in a PMTiles archive (ZIP code tabulation areas, by Protomaps, made with Tippecanoe).
 [ -e cb_2018_us_zcta510_500k.pmtiles ] || curl -sSfL -o cb_2018_us_zcta510_500k.pmtiles \
   https://r2-public.protomaps.com/protomaps-sample-datasets/cb_2018_us_zcta510_500k.pmtiles
-[ -e usgs_dem.tif ] || curl -sSfL -o usgs_dem.tif https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1/TIFF/current/n40w106/USGS_1_n40w106.tif
-# Adjacent USGS 3DEP 1 arc-second tiles, for mosaics.
+# USGS 3DEP 1 arc-second tiles, pinned to the edition of 2026-07-08: the tests' expected values
+# come from it, and USGS replaces the files under current/ with each new edition.
+usgs_3dep=https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1/TIFF/historical
+[ -e usgs_dem.tif ] || curl -sSfL -o usgs_dem.tif $usgs_3dep/n40w106/USGS_1_n40w106_20260708.tif
+# Adjacent tiles, for mosaics.
 for t in n40w107 n41w106 n41w107; do
-  [ -e "USGS_1_$t.tif" ] || curl -sSfL -o "USGS_1_$t.tif" "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1/TIFF/current/$t/USGS_1_$t.tif"
+  [ -e "USGS_1_$t.tif" ] || curl -sSfL -o "USGS_1_$t.tif" "$usgs_3dep/$t/USGS_1_${t}_20260708.tif"
 done
 # HDF5 and netCDF-4 products: JPSS ATMS and VIIRS sensor data records (HDF5 with a user block,
 # from NOAA's open data on AWS) and a Sentinel-5P methane product (netCDF-4 with nested groups, from
