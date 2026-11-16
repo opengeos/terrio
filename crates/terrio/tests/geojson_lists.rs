@@ -4,7 +4,7 @@
 //! whole, from memory and as a stream, from a FeatureCollection and from a text sequence.
 
 use serde_json::Value;
-use terrio::ops::vector_schema::OgrType;
+use terrio::ops::vector_schema::{OgrFieldSubType, OgrType};
 use terrio::{FieldValue, Layer};
 
 fn data(name: &str) -> String {
@@ -26,9 +26,13 @@ fn as_gdal(v: &FieldValue, t: OgrType) -> Value {
         FieldValue::Float(f) => Value::from(*f),
         FieldValue::Text(s) if t.field_type.is_list() => {
             let list: Value = serde_json::from_str(s).unwrap_or_else(|e| panic!("{s} is no JSON list: {e}"));
-            Value::Array(
-                list.as_array().unwrap().iter().map(|e| e.as_bool().map_or_else(|| e.clone(), |b| Value::from(u8::from(b)))).collect(),
-            )
+            // Only the elements of a boolean list are 0 or 1; other lists keep their booleans.
+            let boolean = t.subtype == OgrFieldSubType::Boolean;
+            let items = list.as_array().unwrap().iter().map(|e| match e.as_bool() {
+                Some(b) if boolean => Value::from(u8::from(b)),
+                _ => e.clone(),
+            });
+            Value::Array(items.collect())
         }
         FieldValue::Text(s) | FieldValue::Date(s) | FieldValue::DateTime(s) => {
             serde_json::from_str(s).unwrap_or_else(|_| Value::from(s.as_str()))

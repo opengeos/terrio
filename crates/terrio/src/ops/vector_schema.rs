@@ -263,7 +263,8 @@ pub fn ogr_type(layer: &Layer, i: usize) -> OgrType {
 
 /// A terrio field definition of an OGR type: `Integer64` fields declare a width of at least
 /// [`INTEGER64_WIDTH`] when they have none (so that writers keep them 64-bit), and `Integer`
-/// fields at most 9 (so that they stay 32-bit).
+/// fields at most 9 (so that they stay 32-bit). List types have no field of their own: they
+/// store JSON text, as [`OgrType::storage`] gives them.
 pub fn field_def(name: &str, t: OgrType, width: usize, precision: usize) -> FieldDef {
     let mut def = FieldDef::new(name, t.storage());
     def.width = match t.field_type {
@@ -1438,6 +1439,12 @@ mod tests {
             [FieldType::Float, FieldType::Integer, FieldType::Text]
         );
         assert!(set_field_type(&l, &FieldSelector::Name("missing".into()), OgrType::parse("Real").unwrap()).is_err());
+    }
+
+    #[test]
+    fn list_types_are_stored_as_json_fields() {
+        let def = field_def("ints", OgrType::new(OgrFieldType::IntegerList), 0, 0);
+        assert!(matches!(def.field_type, FieldType::Json));
     }
 
     #[test]

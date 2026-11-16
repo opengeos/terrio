@@ -350,7 +350,7 @@ fn string_list(s: &str) -> FieldValue {
     if s.starts_with('(') && s.ends_with(')') && s.contains(':') {
         let tokens: Vec<&str> = s.split([',', ':', '(', ')']).filter(|t| !t.is_empty()).collect();
         let n = tokens.first().map_or(0, |t| leading_int(t));
-        if usize::try_from(n).is_ok_and(|n| n == tokens.len() - 1) {
+        if !tokens.is_empty() && usize::try_from(n).is_ok_and(|n| n == tokens.len() - 1) {
             return strings(tokens[1..].iter().map(|t| Value::from(*t)).collect());
         }
         return FieldValue::Null;
@@ -465,6 +465,9 @@ mod tests {
         assert_eq!(text(value(&json!([1, true]), State::StringList)), "[\"1\",\"true\"]");
         assert_eq!(text(value(&json!("x"), State::StringList)), "[\"x\"]");
         assert_eq!(text(value(&json!("(2:a,b)"), State::StringList)), "[\"a\",\"b\"]");
+        // Malformed OGR lists with no values, or a count that does not match, are null.
+        assert_eq!(value(&json!("(:)"), State::StringList), FieldValue::Null);
+        assert_eq!(value(&json!("(1:)"), State::StringList), FieldValue::Null);
         assert_eq!(text(value(&json!([]), State::RealList)), "[]");
         assert_eq!(value(&json!(null), State::RealList), FieldValue::Null);
         assert_eq!(value(&json!(""), State::StringList), FieldValue::Null);
