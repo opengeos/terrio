@@ -1200,8 +1200,6 @@ mod tests {
         }
     }
 
-    /// Zstandard chunks decode (with the zstd C library natively with the `libzstd` feature, with
-    /// `ruzstd` otherwise), whichever encoder wrote them.
     /// Deflate chunks of three samples a pixel with the floating-point predictor, coded as libtiff
     /// codes them: each row's samples split into byte planes, then differenced byte by byte with
     /// a stride of the samples a pixel.
@@ -1228,6 +1226,8 @@ mod tests {
         assert_eq!(out, values);
     }
 
+    /// Zstandard chunks decode (with the zstd C library natively with the `libzstd` feature, with
+    /// `ruzstd` otherwise), whichever encoder wrote them.
     #[test]
     fn zstandard_chunks_decode_in_pure_rust() {
         let c = ChunkCodec { codec: Codec::Zstd, ..lzw(Sample::U16, 1, 2, false) };
