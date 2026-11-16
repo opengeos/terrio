@@ -211,6 +211,13 @@ pub(crate) fn parse_dms(s: &str) -> Option<f64> {
     dms(s, true)
 }
 
+/// [`parse_dms`] of the value's longest readable start, as PROJ reads `+R_lat_a` and `+R_lat_g`
+/// even in a PROJ string (`40.5NS` is 40.5°, `abc` none): `INFINITY` where PROJ's `dmstor` gives
+/// `HUGE_VAL` (`40d30d`, `1e400`).
+pub(crate) fn parse_dms_prefix(s: &str) -> Option<f64> {
+    dms(s, false)
+}
+
 /// [`parse_dms`], of the whole value (`whole`) or of its longest readable start, as PROJ's
 /// `dmstor` reads a pipeline step's angle: `9d-30` is 9°, `40.5NS` 40.5°.
 fn dms(s: &str, whole: bool) -> Option<f64> {
@@ -248,12 +255,18 @@ fn dms(s: &str, whole: bool) -> Option<f64> {
     // PROJ's `HUGE_VAL` for a malformed angle (`40d30d`): no angle for a CRS's value; for a
     // pipeline step's, an infinite one, which the parameter's own check refuses, as PROJ does.
     let error = (!whole).then_some(f64::INFINITY);
-    // In radians, as PROJ sums them: degrees, minutes and seconds.
+    // In degrees, as PROJ sums them: degrees, minutes and seconds.
     const UNITS: [f64; 3] = [1.0, 1.0 / 60.0, 1.0 / 3600.0];
     let (mut degrees, mut radians) = (0.0, None);
     let mut next = 0;
     while next < 3 && i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
-        let v = number(&mut i)?;
+        // An unreadable number (`40d.`) ends the angle without being read: PROJ's `strtod`
+        // reads nothing there, so the angle so far stands (a whole value is then refused below).
+        let start = i;
+        let Some(v) = number(&mut i) else {
+            i = start;
+            break;
+        };
         let unit = match chars.get(i) {
             Some('d' | 'D' | '\u{b0}') => 0,
             Some('\'') => 1,

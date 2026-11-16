@@ -21,7 +21,7 @@
 
 use super::datum::{self, Op};
 use super::math::*;
-use super::params::{Params, parse_dms};
+use super::params::{Params, parse_dms, parse_dms_prefix};
 use super::projections::{self, Proj, Setup};
 use super::rotation::{ObTran, Rotation};
 use super::{SpatialRef, epsg, route, wkt1, wkt2};
@@ -370,8 +370,11 @@ pub(crate) fn proj_ellipsoid(p: &Params, method: &str, extension: bool) -> std::
         Some("R_h") => 2.0 * r * b / (r + b),
         // The arithmetic or geometric mean of the radii of curvature at a latitude.
         Some(key @ ("R_lat_a" | "R_lat_g")) => {
-            let lat = p.str(key).and_then(parse_dms).unwrap_or(0.0).to_radians();
-            if lat.abs() > HALFPI {
+            // Read as a prefix, as PROJ 9.8.1's `ell_set` reads it (`40.5NS` is 40.5°); an empty
+            // value is refused, as by PROJ.
+            let value = p.str(key);
+            let lat = value.and_then(parse_dms_prefix).unwrap_or(0.0).to_radians();
+            if value.is_some_and(|v| v.trim().is_empty()) || lat.abs() > HALFPI {
                 return Err(format!("invalid value for {key}"));
             }
             let t = 1.0 - es * lat.sin().powi(2);

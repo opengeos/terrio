@@ -128,6 +128,10 @@ fn a_wkt_proj4_extension_is_read_as_a_pipeline_step() {
         // A second point ends the number (40.5); a fraction is a vertical unit's size.
         ("+proj=tmerc +lat_0=40.5.2 +lon_0=9 +ellps=GRS80", (78_846.841_654_020_22, 500_382.189)),
         ("+proj=tmerc +lat_0=0 +lon_0=9 +ellps=GRS80 +vto_meter=1200/3937", (78_846.841_654_020_22, 4_985_430.940_605_843)),
+        // An unreadable number ends the angle, which keeps what was read before it.
+        ("+proj=tmerc +lat_0=40d. +lon_0=9 +ellps=GRS80", (78_846.841_654_020_22, 555_901.910_369_254_4)),
+        ("+proj=tmerc +lat_0=40d30'. +lon_0=9 +ellps=GRS80", (78_846.841_654_020_22, 500_382.189_403_225)),
+        ("+proj=tmerc +lat_0=. +lon_0=9 +ellps=GRS80", (78_846.841_654_020_22, 4_985_430.940_605_843)),
     ] {
         let (x, y) = Transformer::new(&wgs84, &SpatialRef::from_wkt(&wkt(ext))).unwrap().transform(10.0, 45.0).unwrap();
         assert!((x - px).abs() < 1e-3 && (y - py).abs() < 1e-3, "{ext}: ({x}, {y}), PROJ ({px}, {py})");
@@ -192,4 +196,39 @@ fn an_overflowing_angle_is_refused_and_a_fraction_reads_beside_a_geoid() {
     let (x, y) = place("1200/3937").unwrap();
     assert!((x - 78_846.841_654_020_22).abs() < 1e-3 && (y - 4_985_430.940_605_843).abs() < 1e-3, "({x}, {y})");
     assert!(place("-1").is_err());
+}
+
+/// `+R_lat_a` and `+R_lat_g` are read as their longest readable start, as PROJ 9.8.1's `ell_set`
+/// reads them, in a PROJ string too: `40.5NS` is 40.5°, `40d.` 40° and `abc` none (0°), while
+/// `40d30d`, an overflow, a latitude past 90° and an empty value are refused. PROJ places WGS 84
+/// (10, 45) as given.
+#[test]
+fn a_sphere_radius_latitude_is_read_as_its_readable_start() {
+    for (key, cases) in [
+        (
+            "R_lat_a",
+            [
+                ("40.5NS", Some((1_112_606.200, 5_618_548.571))),
+                ("40d.", Some((1_112_541.980, 5_618_224.264))),
+                ("9d-30", Some((1_109_650.318, 5_603_621.666))),
+                ("abc", Some((1_109_468.833, 5_602_705.186))),
+            ],
+        ),
+        (
+            "R_lat_g",
+            [
+                ("40d.", Some((1_112_539.813, 5_618_213.323))),
+                ("9d-30", Some((1_109_644.362, 5_603_591.587))),
+                ("abc", Some((1_109_462.576, 5_602_673.589))),
+                (".", Some((1_109_462.576, 5_602_673.589))),
+            ],
+        ),
+    ] {
+        for (value, expected) in cases {
+            assert_places(&format!("+proj=merc +ellps=GRS80 +{key}={value}"), expected);
+        }
+        for value in ["40d30d", "1e400", "95", ""] {
+            assert_places(&format!("+proj=merc +ellps=GRS80 +{key}={value}"), None);
+        }
+    }
 }
