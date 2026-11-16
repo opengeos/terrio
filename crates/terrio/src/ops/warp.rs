@@ -4035,26 +4035,39 @@ impl WarpContext<'_> {
             let b = (inv[1] * g[2] + inv[2] * g[5], inv[4] * g[2] + inv[5] * g[5]);
             return vec![self.footprint_scales(None, [(0.0, 0.0), a, b, (a.0 + b.0, a.1 + b.1)], None); width];
         }
+        self.scales_between(dx, dy, width, &self.corner_row(dx, dy, width), &self.corner_row(dx, dy + 1, width))
+    }
+
+    /// Whether [`Self::pixel_scales_row`] transforms rows of corners (it does not for an affine
+    /// warp, whose every pixel has the same scales).
+    fn scales_from_corners(&self) -> bool {
+        !(self.t.ct.is_none() && self.t.src_gcp.is_none())
+    }
+
+    /// The `width + 1` pixel corners of output row boundary `y` from column `dx`, transformed to
+    /// the source under the anchored approximation policy of the sample coordinates: an exact
+    /// threshold still transforms every corner exactly; approximate warps do not pay for exact
+    /// transformations merely to size their kernels. A row's bottom boundary is the next row's
+    /// top one: the same points, transformed alike.
+    fn corner_row(&self, dx: usize, y: usize, width: usize) -> CornerRow {
+        let mut row =
+            CornerRow { x: (dx..=dx + width).map(|i| i as f64).collect(), y: vec![y as f64; width + 1], ok: vec![false; width + 1] };
+        self.transform_row(&mut row.x, &mut row.y, &mut row.ok);
+        row
+    }
+
+    /// The kernel scales of output row `dy`'s pixels from column `dx`, from its `top` and `bottom`
+    /// [`Self::corner_row`]s.
+    fn scales_between(&self, dx: usize, dy: usize, width: usize, top: &CornerRow, bottom: &CornerRow) -> Vec<(f64, f64)> {
         let turn = self.longitude_turn();
-        let mut top_x: Vec<f64> = (dx..=dx + width).map(|i| i as f64).collect();
-        let mut top_y = vec![dy as f64; width + 1];
-        let mut bottom_x = top_x.clone();
-        let mut bottom_y = vec![(dy + 1) as f64; width + 1];
-        let mut top_ok = vec![false; width + 1];
-        let mut bottom_ok = top_ok.clone();
-        // Use the same anchored approximation policy as the sample coordinates. An exact
-        // threshold still transforms every corner exactly; approximate warps do not pay for
-        // two full exact transformations per output pixel merely to size their kernels.
-        self.transform_row(&mut top_x, &mut top_y, &mut top_ok);
-        self.transform_row(&mut bottom_x, &mut bottom_y, &mut bottom_ok);
         (0..width)
             .map(|i| {
-                if !(top_ok[i] && top_ok[i + 1] && bottom_ok[i] && bottom_ok[i + 1]) {
+                if !(top.ok[i] && top.ok[i + 1] && bottom.ok[i] && bottom.ok[i + 1]) {
                     return (1.0, 1.0);
                 }
                 self.footprint_scales(
                     turn,
-                    [(top_x[i], top_y[i]), (top_x[i + 1], top_y[i + 1]), (bottom_x[i], bottom_y[i]), (bottom_x[i + 1], bottom_y[i + 1])],
+                    [(top.x[i], top.y[i]), (top.x[i + 1], top.y[i + 1]), (bottom.x[i], bottom.y[i]), (bottom.x[i + 1], bottom.y[i + 1])],
                     Some(((dx + i) as f64 + 0.5, dy as f64 + 0.5)),
                 )
             })
@@ -4087,17 +4100,48 @@ impl WarpContext<'_> {
             crate::par::for_each_owned(rows, |row, mut out| self.warp_area_row(c, &k, sink, row, &mut out));
             return;
         }
-        crate::par::for_each_owned(rows, |row, mut out| self.warp_row(c, &k, sink, row, &mut out));
+        let degenerate = if self.grid_invariant { self.src_w == 1 || self.src_h == 1 } else { c.sw == 1 || c.sh == 1 };
+        let per_pixel_scales = self.grid_invariant && !(self.resampling == Resampling::Nearest || degenerate);
+        if per_pixel_scales && self.scales_from_corners() {
+            // Stable kernels take each pixel's scales from its corners: rows in groups, a few for
+            // each thread, so a row of corners between two rows of a group is transformed once.
+            let group = crate::par::chunk_len(c.dh, 1);
+            let mut rows = rows.into_iter();
+            let groups: Vec<Vec<RowOut>> = (0..c.dh.div_ceil(group)).map(|_| rows.by_ref().take(group).collect()).collect();
+            crate::par::for_each_owned(groups, |g, outs| {
+                let mut top = self.corner_row(c.dx, c.dy + g * group, c.dw);
+                for (j, mut out) in outs.into_iter().enumerate() {
+                    let row = g * group + j;
+                    let bottom = self.corner_row(c.dx, c.dy + row + 1, c.dw);
+                    let scales = self.scales_between(c.dx, c.dy + row, c.dw, &top, &bottom);
+                    self.warp_row(c, &k, sink, row, Some(scales), &mut out);
+                    top = bottom;
+                }
+            });
+            return;
+        }
+        crate::par::for_each_owned(rows, |row, mut out| {
+            let scales = per_pixel_scales.then(|| self.pixel_scales_row(c.dx, c.dy + row, c.dw));
+            self.warp_row(c, &k, sink, row, scales, &mut out)
+        });
     }
 
     /// Warps one output row of a chunk.
-    fn warp_row<T: crate::pixel::Pixel>(&self, c: &Chunk, k: &Kernel<T>, sink: &Sink, row: usize, out: &mut [&mut [f64]]) {
+    fn warp_row<T: crate::pixel::Pixel>(
+        &self,
+        c: &Chunk,
+        k: &Kernel<T>,
+        sink: &Sink,
+        row: usize,
+        scales: Option<Vec<(f64, f64)>>,
+        out: &mut [&mut [f64]],
+    ) {
         // Source dimensions, rather than a cropped window's dimensions, choose the degenerate case.
         let degenerate = if self.grid_invariant { self.src_w == 1 || self.src_h == 1 } else { c.sw == 1 || c.sh == 1 };
         if self.resampling == Resampling::Nearest || degenerate {
-            self.warp_row_with(c, k, sink, row, out, true, |k, b, ix, iy, _, _| k.valid(b, ix, iy).then(|| k.value(b, ix, iy)));
+            self.warp_row_with(c, k, sink, row, None, out, true, |k, b, ix, iy, _, _| k.valid(b, ix, iy).then(|| k.value(b, ix, iy)));
         } else {
-            self.warp_row_with(c, k, sink, row, out, false, |k, b, _, _, fx, fy| {
+            self.warp_row_with(c, k, sink, row, scales, out, false, |k, b, _, _, fx, fy| {
                 let four = match self.kernel_version {
                     KernelVersion::Gdal312 => k.xscale >= 0.95 && k.yscale >= 0.95,
                     KernelVersion::Gdal313 => k.xscale > 0.5 && k.yscale > 0.5,
@@ -4124,6 +4168,7 @@ impl WarpContext<'_> {
         k: &Kernel<T>,
         sink: &Sink,
         row: usize,
+        scales: Option<Vec<(f64, f64)>>,
         out: &mut [&mut [f64]],
         nearest: bool,
         sample: impl Fn(&Kernel<T>, usize, usize, usize, f64, f64) -> Option<f64>,
@@ -4138,7 +4183,6 @@ impl WarpContext<'_> {
         // With one band, the unified check below already tests the band's own validity.
         let all_bands = global_validity && !(self.unified_center && self.bands == 1);
         let nodata: Vec<Option<f64>> = (0..self.bands).map(|b| sink.avoid_nodata.then(|| sink.nodata(b)).flatten()).collect();
-        let scales = (!nearest && self.grid_invariant).then(|| self.pixel_scales_row(c.dx, c.dy + row, c.dw));
         let mut xs = vec![0.0; c.dw];
         let mut ys = vec![0.0; c.dw];
         let mut ok = vec![false; c.dw];
