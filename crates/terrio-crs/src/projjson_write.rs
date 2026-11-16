@@ -547,6 +547,12 @@ fn conversion(p: &Params) -> Result<(Value, Vec<&'static str>)> {
                 vec![(LAT_NAT, 0.0), (LON_NAT, lon), (K_NAT, 0.9996), (FE, 500000.0), (FN, if south { 10_000_000.0 } else { 0.0 })];
             ("Transverse Mercator", 9807, values, &["zone", "south"])
         }
+        // South-orientated (EPSG method 9808), whose false easting and northing the readers
+        // write negated under `+axis=wsu` (`+axis=swu` for a north-east CS).
+        "tmerc" if matches!(p.str("axis"), Some("wsu" | "swu")) => {
+            let values = vec![(LAT_NAT, lat0), (LON_NAT, lon0), (K_NAT, k0), (FE, 0.0 - x0), (FN, 0.0 - y0)];
+            ("Transverse Mercator (South Orientated)", 9808, values, ORIGIN_K)
+        }
         "tmerc" => ("Transverse Mercator", 9807, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (K_NAT, k0), (FE, x0), (FN, y0)], ORIGIN_K),
         "lcc" => {
             // As PROJ (and terrio) read the CRS: with `lat_0` and no `lat_2`, one standard parallel

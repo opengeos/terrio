@@ -41,6 +41,14 @@ fn south_orientated_transverse_mercator_subtracts_its_offsets() {
         let origin = t.transform(19.0, 0.0).unwrap();
         assert!((origin.0 - fe).abs() < 1e-6 && (origin.1 - fn_).abs() < 1e-6, "{form}: {origin:?}");
         assert_eq!(crs.to_proj4(), None, "{form}");
+        // Written as PROJJSON with EPSG's method and its offsets as given, as PROJ 9.8.1 writes
+        // EPSG:2046's.
+        let json: serde_json::Value = serde_json::from_str(&crs.to_projjson().unwrap()).unwrap();
+        let conversion = &json["conversion"];
+        assert_eq!(conversion["method"]["id"]["code"], 9808, "{form}: {conversion}");
+        let param =
+            |code: u64| conversion["parameters"].as_array().unwrap().iter().find(|v| v["id"]["code"] == code).unwrap()["value"].as_f64();
+        assert_eq!((param(8806), param(8807)), (Some(fe), Some(fn_)), "{form}: {conversion}");
         assert!(SpatialRef::from_wkt(&build(0.0, 0.0)).to_proj4().is_some_and(|p| p.contains("+axis=wsu")), "{form}");
         // Written as WKT 1 and as GeoKeys, it reads back in place. A WKT 2 is written as WKT 1
         // through its PROJ string, which it has none of: no strict WKT 1 rather than a wrong one.

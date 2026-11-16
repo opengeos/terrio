@@ -1801,6 +1801,8 @@ pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
             // A CRS without a conversion (a geocentric CRS in PROJ's simplified WKT 2, whose
             // bare `UNIT` the reader refuses): the code's, on its ellipsoid.
             // Of the code's kind: a geocentric WKT is not a geographic code on its ellipsoid.
+            // A compound CRS by its horizontal CRS, the registry's too.
+            let wkt = horizontal.as_deref().unwrap_or(wkt);
             let Some(own) = method(wkt) else {
                 let Some(root) = wkt1::parse(wkt) else { return false };
                 let converted = root.child("PROJECTION").is_some() || root.child("CONVERSION").is_some();
@@ -1813,7 +1815,10 @@ pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
                     && geocentric == theirs.is_geocentric()
                     && semi_major_axis(wkt).is_some_and(|a| (a - theirs.ell.a).abs() < 1e-3);
             };
-            let registered = epsg::get(code).map(|e| e.wkt.clone()).or_else(|| registry_wkt(code));
+            let registered = epsg::get(code)
+                .map(|e| e.wkt.clone())
+                .or_else(|| registry_wkt(code))
+                .map(|w| def::split_compound(&w).map(|(h, _)| h).unwrap_or(w));
             let Some(name) = own.name().map(wkt1::norm) else { return false };
             catalog::epsg_method(code).is_some_and(|m| wkt1::norm(m) == name)
                 || registered.as_deref().and_then(method).is_some_and(|t| t.name().map(wkt1::norm).as_deref() == Some(name.as_str()))

@@ -43,6 +43,12 @@ NTF_2D = (
 )
 
 
+def sub(wkt, old, new):
+    """`wkt` with `old`, which must occur once, replaced by `new`."""
+    assert wkt.count(old) == 1, old
+    return wkt.replace(old, new)
+
+
 def relabel(wkt, code, new):
     """The WKT 2 with its root `ID` replaced."""
     old = f'ID["EPSG",{code}]'
@@ -67,11 +73,19 @@ HARN = (
 )
 
 
+def wgs84_on(datum):
+    """WGS 84 on a datum named `datum`, declaring EPSG:4326."""
+    wkt = sub(LOCAL_GRS80, "My_Local_Datum", datum)
+    wkt = sub(wkt, "GRS 1980", "WGS 84")
+    wkt = sub(wkt, "298.257222101", "298.257223563")
+    return sub(wkt, '"4258"', '"4326"')
+
+
 def greenland(code):
     """EPSG:4747's WKT 1 with its datum by name only, declaring `code`."""
     wkt = CRS.from_epsg(4747).to_wkt("WKT1_GDAL")
-    wkt = wkt.replace(',AUTHORITY["EPSG","1421"]', "")
-    return wkt.replace('AUTHORITY["EPSG","4747"]]', f'AUTHORITY["EPSG","{code}"]]')
+    wkt = sub(wkt, ',AUTHORITY["EPSG","1421"]', "")
+    return sub(wkt, 'AUTHORITY["EPSG","4747"]]', f'AUTHORITY["EPSG","{code}"]]')
 
 
 LOCAL_GRS80 = (
@@ -112,7 +126,7 @@ def main():
         ("Esri Monte_Mario_Italy_1", monte_mario, (12.5, 41.9)),
         (
             "Esri Monte_Mario_Italy_1 on a datum renamed D_Local",
-            monte_mario.replace("D_Monte_Mario", "D_Local"),
+            sub(monte_mario, "D_Monte_Mario", "D_Local"),
             (12.5, 41.9),
         ),
         (
@@ -147,9 +161,11 @@ def main():
         ),
         (
             "ETRS89 in WKT 1 declaring NAD83",
-            CRS.from_epsg(4258)
-            .to_wkt("WKT1_GDAL")
-            .replace('AUTHORITY["EPSG","4258"]]', 'AUTHORITY["EPSG","4269"]]'),
+            sub(
+                CRS.from_epsg(4258).to_wkt("WKT1_GDAL"),
+                'AUTHORITY["EPSG","4258"]]',
+                'AUTHORITY["EPSG","4269"]]',
+            ),
             (-100.0, 40.0),
         ),
         (
@@ -180,14 +196,13 @@ def main():
         ),
         (
             "WGS 84 + EGM96 height in US survey feet declaring EPSG:9707",
-            CRS.from_epsg(9707).to_wkt("WKT1_GDAL").replace(METRE_UP, FOOT_UP),
+            sub(CRS.from_epsg(9707).to_wkt("WKT1_GDAL"), METRE_UP, FOOT_UP),
             (10.0, 50.0),
         ),
         (
             "WGS 84 + EGM96 depth declaring EPSG:9707",
-            CRS.from_epsg(9707)
-            .to_wkt("WKT1_GDAL")
-            .replace(
+            sub(
+                CRS.from_epsg(9707).to_wkt("WKT1_GDAL"),
                 'AXIS["Gravity-related height",UP]',
                 'AXIS["Gravity-related depth",DOWN]',
             ),
@@ -199,24 +214,27 @@ def main():
             (-100.0, 40.0),
         ),
         (
+            "an unknown method in a compound declaring EPSG:7405",
+            sub(
+                CRS.from_epsg(7405).to_wkt("WKT1_GDAL"),
+                'PROJECTION["Transverse_Mercator"]',
+                'PROJECTION["Unheard_Of"]',
+            ),
+            (-2.0, 54.0),
+        ),
+        (
             "a local datum on GRS 1980 declaring ETRS89",
             LOCAL_GRS80,
             (10.0, 50.0),
         ),
         (
             "WGS 84 on PROJ's placeholder datum unknown with its code",
-            LOCAL_GRS80.replace("My_Local_Datum", "unknown")
-            .replace("GRS 1980", "WGS 84")
-            .replace("298.257222101", "298.257223563")
-            .replace("4258", "4326"),
+            wgs84_on("unknown"),
             (10.0, 50.0),
         ),
         (
             "WGS 84 on a datum named Unknown declaring EPSG:4326",
-            LOCAL_GRS80.replace("My_Local_Datum", "Unknown")
-            .replace("GRS 1980", "WGS 84")
-            .replace("298.257222101", "298.257223563")
-            .replace("4258", "4326"),
+            wgs84_on("Unknown"),
             (10.0, 50.0),
         ),
         (
@@ -251,6 +269,7 @@ def main():
         "WGS 84 + EGM96 height in US survey feet declaring EPSG:9707": 9707,
         "WGS 84 + EGM96 depth declaring EPSG:9707": 9707,
         "NAD83(HARN) by name declaring NAD83": 4269,
+        "an unknown method in a compound declaring EPSG:7405": 7405,
         "a local datum on GRS 1980 declaring ETRS89": 4258,
         "WGS 84 on a datum named Unknown declaring EPSG:4326": 4326,
         "WGS 84 3D declaring EPSG:4326": 4326,
