@@ -3177,7 +3177,7 @@ impl WarpContext<'_> {
                     let shrink = GUESS_SHRINK.with(std::cell::Cell::get);
                     ((x0 + shrink).min(x1), (y0 + shrink).min(y1), x1.saturating_sub(shrink).max(x0), y1.saturating_sub(shrink).max(y0))
                 };
-                (x1 > x0 && y1 > y0).then_some((x0, y0, x1 - x0, y1 - y0, fill, rw, rh)).or_else(|| self.source_window(dx, dy, dw, dh))
+                (x1 > x0 && y1 > y0).then(|| (x0, y0, x1 - x0, y1 - y0, fill, rw, rh)).or_else(|| self.source_window(dx, dy, dw, dh))
             }
             _ if stable_window => self.source_window(dx, dy, dw, dh),
             _ => estimated,
