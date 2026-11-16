@@ -113,7 +113,8 @@ wasm_ref_tools=(gdal_translate gdalwarp gdaldem gdal_calc.py gdal_merge.py gdal_
 # come from it, and USGS replaces the files under current/ with each new edition. Tiles of
 # another edition (an earlier download from current/) are replaced. The references made from
 # usgs_dem.tif go with them: with GDAL's tools, the whole of wasm_refs/ is removed and made again
-# (several of its tools refuse to write over an existing output); without them, only those three.
+# (gdal_polygonize.py adds to an existing output instead of replacing it); without them, only
+# those three.
 usgs_3dep=https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1/TIFF/historical
 usgs_edition=20260708
 if [ "$(cat usgs_3dep_edition 2>/dev/null || true)" != "$usgs_edition" ]; then
