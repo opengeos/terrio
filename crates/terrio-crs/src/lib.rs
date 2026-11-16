@@ -430,6 +430,12 @@ impl SpatialRef {
     pub(crate) fn from_wkt_text(wkt: &str) -> Self {
         // A WKT 1 extended with its PROJ string (`EXTENSION["PROJ4", ...]`, as GDAL writes CRSs
         // WKT 1 cannot describe) is that PROJ string, as GDAL reads it.
+        // A registry CRS's own WKT with its PROJ string as an extension (`spherical_extension`,
+        // EPSG:3973 to 3975 and 9311) is its code, with its datum's transformations, which the
+        // extension (without a datum, as the table holds it) does not give.
+        if let Some(code) = declared_epsg(wkt).filter(|c| is_registry_extension(wkt, *c)) {
+            return Self { epsg: Some(code), ..Default::default() };
+        }
         if let Some(proj4) = proj4_extension(wkt)
             && let Ok(own) = Def::from_proj_extension(&proj4)
         {
@@ -486,7 +492,14 @@ impl SpatialRef {
     pub fn with_esri(mut self) -> Self {
         // A declared ESRI code wins over an identified EPSG code (ESRI:102100 is EPSG:3857's
         // definition), as GDAL keeps it.
-        if let Some(code) = self.wkt.as_deref().and_then(|w| declared_code(w, "ESRI")).filter(|c| epsg::esri(*c).is_some()) {
+        // Only when the WKT's content is that CRS, as a declared EPSG code (`declared_fits`): the
+        // same conversion on the same ellipsoid, or content terrio cannot read.
+        let fits = |w: &str, code: u32| {
+            let Some(own) = Def::wkt_conversion(w) else { return true };
+            Def::new(&SpatialRef { esri: Some(code), ..Default::default() })
+                .is_ok_and(|r| own.same_conversion(&r) && (own.ell.a - r.ell.a).abs() < 1e-3 && (own.ell.es - r.ell.es).abs() < 1e-9)
+        };
+        if let Some(code) = self.wkt.as_deref().and_then(|w| declared_code(w, "ESRI").filter(|c| epsg::esri(*c).is_some() && fits(w, *c))) {
             self.epsg = None;
             self.esri = Some(code);
             return self;
@@ -928,7 +941,8 @@ impl SpatialRef {
             return Some((c.horizontal, c.vertical));
         }
         let (horizontal, vertical) = def::split_compound(self.wkt.as_deref()?)?;
-        let vertical = declared_epsg(&vertical).filter(|v| epsg::vertical(*v).is_some())?;
+        // Its vertical CRS's code only of its unit and direction (not heights in feet as EPSG:5701).
+        let vertical = def::vertical_code(&vertical)?;
         Some((identify_epsg(&horizontal)?, vertical))
     }
 
@@ -1673,6 +1687,7 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
 /// of its ellipsoid (`+R_A`, the spherical Lambert azimuthal equal-area of EPSG:3973 and 3974),
 /// which WKT 1 has no method for: PROJ 9.8.1 writes those as the ellipsoidal method, which it
 /// and terrio read back about 13 km away (a WKT's content, not its code, gives the CRS).
+/// Read back, that WKT is its code (see [`SpatialRef::from_wkt_text`]).
 fn spherical_extension(wkt: &str, proj: &str) -> String {
     if !proj.split_whitespace().any(|p| p == "+R_A") || !wkt.starts_with("PROJCS[") || wkt.contains("EXTENSION[") {
         return wkt.to_string();
@@ -1683,6 +1698,12 @@ fn spherical_extension(wkt: &str, proj: &str) -> String {
     // The root's own `AUTHORITY`: its last child, closed with the root (`...]]`), not a child's.
     let at = wkt.rfind(",AUTHORITY[").filter(|i| wkt[*i..].matches(']').count() == 2).unwrap_or(wkt.len() - 1);
     format!("{},EXTENSION[\"PROJ4\",\"{proj}\"]{}", &wkt[..at], &wkt[at..])
+}
+
+/// Whether a WKT is the registry's own WKT of an EPSG CRS with its PROJ string as an extension
+/// (see [`spherical_extension`]).
+pub(crate) fn is_registry_extension(wkt: &str, code: u32) -> bool {
+    epsg::get(code).is_some_and(|e| e.wkt != wkt && spherical_extension(&e.wkt, &e.proj) == wkt)
 }
 
 /// Whether a WKT's own content is the EPSG CRS it declares: the same conversion (units and
@@ -1709,8 +1730,16 @@ pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
         .iter()
         .any(|k| r.key.eq_ignore_ascii_case(k))
     });
+    // A vertical CRS's code only of its unit and direction; another root's (engineering, local)
+    // not the code of a CRS terrio places (a vertical CRS declaring EPSG:4326 is not WGS 84).
     if !horizontal_root {
-        return true;
+        let vertical =
+            wkt1::parse(wkt).is_some_and(|r| ["VERT_CS", "VERTCRS", "VERTICALCRS"].iter().any(|k| r.key.eq_ignore_ascii_case(k)));
+        return if vertical {
+            def::vertical_code(wkt) == Some(code)
+        } else {
+            epsg::vertical(code).is_none() && Def::new(&SpatialRef { epsg: Some(code), ..Default::default() }).is_err()
+        };
     }
     // A compound CRS by its horizontal CRS, and its vertical CRS below.
     let compound = def::split_compound(wkt);
@@ -1728,7 +1757,18 @@ pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
     }
     if let Some((_, v)) = &compound {
         let Some(their_vertical) = theirs.vertical() else { return false };
-        if declared_epsg(v).is_some_and(|c| their_vertical.code.is_some_and(|t| t != c)) {
+        // Another vertical code, unless its vertical datum is the code's by name (PROJ keeps
+        // EPSG:7405 whose vertical CRS, Ordnance Datum Newlyn, declares another code).
+        let vertical_datum = |w: &str| {
+            let root = wkt1::parse(w)?;
+            let datum = ["VERT_DATUM", "VDATUM", "VERTICALDATUM", "VRF"].iter().find_map(|k| root.child(k))?;
+            datum.name().map(epsg::datum_key)
+        };
+        let same_vertical_datum = || {
+            let theirs = their_vertical.code.and_then(epsg::vertical).and_then(|t| vertical_datum(&t.wkt));
+            vertical_datum(v).is_some_and(|own| Some(own) == theirs)
+        };
+        if declared_epsg(v).is_some_and(|c| their_vertical.code.is_some_and(|t| t != c)) && !same_vertical_datum() {
             return false;
         }
         let Some((to_meter, down)) = vertical_axis(v) else { return false };

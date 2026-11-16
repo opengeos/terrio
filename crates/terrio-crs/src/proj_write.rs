@@ -226,7 +226,10 @@ fn kept_axis(method: &str, axis: &str) -> bool {
 /// describe), which is the CRS's PROJ string: PROJ writes it as it is, but GDAL's Web Mercator,
 /// which it writes as its own; not for a CRS given by a PROJ string, whose WKT terrio builds.
 fn extension(s: &SpatialRef) -> Option<Vec<String>> {
-    let text = s.wkt.as_deref().and_then(crate::proj4_extension).filter(|_| s.proj4.is_none())?;
+    // Not the registry's own extension of a code's WKT, written without its datum: the code's
+    // string (`+datum=NAD27` for EPSG:9311).
+    let wkt = s.wkt.as_deref().filter(|w| !s.epsg.is_some_and(|c| crate::is_registry_extension(w, c)))?;
+    let text = crate::proj4_extension(wkt).filter(|_| s.proj4.is_none())?;
     let text = gdal_web_mercator(&text).unwrap_or(text);
     Some(tokens(&text, true).into_iter().filter(|t| t != "+type=crs").collect())
 }

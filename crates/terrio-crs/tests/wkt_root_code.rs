@@ -32,7 +32,7 @@ fn read(case: &Value) -> (SpatialRef, terrio_crs::Result<(f64, f64)>) {
 #[test]
 fn a_wkt_is_read_by_its_nodes_not_its_root_code() {
     let cases = cases();
-    assert_eq!(cases.len(), 31);
+    assert_eq!(cases.len(), 35);
     for case in cases.iter().filter(|c| c["terrio"].is_null()) {
         let name = case["name"].as_str().unwrap();
         let (crs, got) = read(case);
@@ -101,4 +101,50 @@ fn a_vertical_crs_of_another_unit_is_not_written_as_its_code() {
     let own = cases.iter().find(|c| c["name"] == "WGS 84 + EGM96 height with its own code").unwrap();
     let json = SpatialRef::from_wkt(own["wkt"].as_str().unwrap()).to_projjson().unwrap();
     assert!(json.contains("\"code\":5773"), "{json}");
+}
+
+/// A compound CRS whose heights are in another unit than its vertical code's has no compound
+/// parts to write as GeoKeys (EPSG:7405's ODN height in metres), as it has no compound code.
+#[test]
+fn a_vertical_crs_of_another_unit_has_no_compound_parts() {
+    let cases = cases();
+    let case = cases.iter().find(|c| c["name"] == "WGS 84 + EGM96 height in US survey feet declaring EPSG:9707").unwrap();
+    assert_eq!(SpatialRef::from_wkt(case["wkt"].as_str().unwrap()).compound_parts(), None);
+    let own = cases.iter().find(|c| c["name"] == "WGS 84 + EGM96 height with its own code").unwrap();
+    assert_eq!(SpatialRef::from_wkt(own["wkt"].as_str().unwrap()).compound_parts(), Some((4326, 5773)));
+}
+
+/// A vertical CRS declaring a horizontal code is not that CRS: no code, and no PROJ string of
+/// WGS 84 (PROJ 9.8.1 identifies no code either).
+#[test]
+fn a_vertical_crs_declaring_a_horizontal_code_is_not_it() {
+    let wkt = r#"VERT_CS["ODN height",VERT_DATUM["Ordnance Datum Newlyn",2005],UNIT["metre",1],AXIS["Gravity-related height",UP],AUTHORITY["EPSG","4326"]]"#;
+    let crs = SpatialRef::from_wkt(wkt);
+    assert_eq!(crs.epsg, None);
+    assert_eq!(crs.to_proj4(), None);
+}
+
+/// The registry's own WKT of a CRS on the authalic sphere carries its PROJ string as an extension
+/// (EPSG:3973 to 3975, and 9311 on NAD27): read back, it is its code, placed as the code is,
+/// and its PROJ string is PROJ 9.8.1's (`projinfo -o PROJ`), with its datum.
+#[test]
+fn a_registry_wkt_with_its_proj_string_is_its_code() {
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    for (code, proj4) in [
+        (9311, "+proj=laea +R_A +lat_0=45 +lon_0=-100 +x_0=0 +y_0=0 +datum=NAD27 +units=m +no_defs +type=crs"),
+        (3973, "+proj=laea +R_A +lat_0=90 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs"),
+        (3974, "+proj=laea +R_A +lat_0=-90 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs"),
+        (3975, "+proj=cea +R_A +lat_ts=30 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs"),
+    ] {
+        let crs = SpatialRef::from_epsg(code).unwrap();
+        assert_eq!(crs.to_proj4().as_deref(), Some(proj4), "EPSG:{code}");
+        let want = Transformer::new(&wgs84, &crs).unwrap().transform(-100.0, 40.0).unwrap();
+        for (form, w) in [("WKT", crs.to_wkt()), ("strict WKT 1", crs.to_wkt1_strict())] {
+            let read = SpatialRef::from_wkt(&w.unwrap());
+            assert_eq!(read.epsg, Some(code), "EPSG:{code}, {form}");
+            assert_eq!(read.to_proj4().as_deref(), Some(proj4), "EPSG:{code}, {form}");
+            let got = Transformer::new(&wgs84, &read).unwrap().transform(-100.0, 40.0).unwrap();
+            assert!((got.0 - want.0).abs() < 1e-3 && (got.1 - want.1).abs() < 1e-3, "EPSG:{code}, {form}: {got:?}, {want:?}");
+        }
+    }
 }

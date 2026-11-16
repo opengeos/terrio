@@ -390,6 +390,74 @@
    "terrio": null
   },
   {
+   "name": "a local datum on Airy 1830 declaring OSGB36",
+   "wkt": "GEOGCS[\"x\",DATUM[\"My_Local\",SPHEROID[\"Airy 1830\",6377563.396,299.3249646]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433],AUTHORITY[\"EPSG\",\"4277\"]]",
+   "point": [
+    -2.0,
+    54.0
+   ],
+   "proj": [
+    -2.0,
+    54.0
+   ],
+   "epsg": null,
+   "esri": null,
+   "declared": 4277,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "British National Grid on a local datum with OSGB36's code inside",
+   "wkt": "PROJCS[\"OSGB36 / British National Grid\",GEOGCS[\"OSGB36\",DATUM[\"My_Local\",SPHEROID[\"Airy 1830\",6377563.396,299.3249646,AUTHORITY[\"EPSG\",\"7001\"]]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4277\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",49],PARAMETER[\"central_meridian\",-2],PARAMETER[\"scale_factor\",0.9996012717],PARAMETER[\"false_easting\",400000],PARAMETER[\"false_northing\",-100000],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"27700\"]]",
+   "point": [
+    -2.0,
+    54.0
+   ],
+   "proj": [
+    400000.0,
+    456017.69885104
+   ],
+   "epsg": null,
+   "esri": null,
+   "declared": 27700,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "British National Grid declaring ESRI:54009",
+   "wkt": "PROJCS[\"OSGB36 / British National Grid\",GEOGCS[\"OSGB36\",DATUM[\"Ordnance_Survey_of_Great_Britain_1936\",SPHEROID[\"Airy 1830\",6377563.396,299.3249646,AUTHORITY[\"EPSG\",\"7001\"]],AUTHORITY[\"EPSG\",\"6277\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4277\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",49],PARAMETER[\"central_meridian\",-2],PARAMETER[\"scale_factor\",0.9996012717],PARAMETER[\"false_easting\",400000],PARAMETER[\"false_northing\",-100000],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"ESRI\",\"54009\"]]",
+   "point": [
+    -2.0,
+    54.0
+   ],
+   "proj": [
+    400097.646389362,
+    455996.5031583572
+   ],
+   "epsg": 27700,
+   "esri": null,
+   "declared": null,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "OSGB36 + ODN height whose vertical CRS declares EPSG:5703",
+   "wkt": "COMPD_CS[\"OSGB36 / British National Grid + ODN height\",PROJCS[\"OSGB36 / British National Grid\",GEOGCS[\"OSGB36\",DATUM[\"Ordnance_Survey_of_Great_Britain_1936\",SPHEROID[\"Airy 1830\",6377563.396,299.3249646,AUTHORITY[\"EPSG\",\"7001\"]],AUTHORITY[\"EPSG\",\"6277\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4277\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",49],PARAMETER[\"central_meridian\",-2],PARAMETER[\"scale_factor\",0.9996012717],PARAMETER[\"false_easting\",400000],PARAMETER[\"false_northing\",-100000],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"27700\"]],VERT_CS[\"ODN height\",VERT_DATUM[\"Ordnance Datum Newlyn\",2005,AUTHORITY[\"EPSG\",\"5101\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP],AUTHORITY[\"EPSG\",\"5703\"]],AUTHORITY[\"EPSG\",\"7405\"]]",
+   "point": [
+    -2.0,
+    54.0
+   ],
+   "proj": [
+    400097.646389362,
+    455996.5031583572
+   ],
+   "epsg": 7405,
+   "esri": null,
+   "declared": null,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
    "name": "NAD83(HARN) by name declaring NAD83",
    "wkt": "GEOGCS[\"NAD83(HARN)\",DATUM[\"NAD83_High_Accuracy_Reference_Network\",SPHEROID[\"GRS 1980\",6378137,298.257222101]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433],AUTHORITY[\"EPSG\",\"4269\"]]",
    "point": [

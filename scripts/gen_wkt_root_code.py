@@ -66,6 +66,10 @@ FOOT_UP = (
     'AXIS["Gravity-related height",UP]'
 )
 
+LOCAL_AIRY = (
+    'GEOGCS["x",DATUM["My_Local",SPHEROID["Airy 1830",6377563.396,299.3249646]],'
+    'PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],AUTHORITY["EPSG","4277"]]'
+)
 HARN = (
     'GEOGCS["NAD83(HARN)",DATUM["NAD83_High_Accuracy_Reference_Network",'
     'SPHEROID["GRS 1980",6378137,298.257222101]],PRIMEM["Greenwich",0],'
@@ -214,6 +218,42 @@ def main():
             (10.0, 50.0),
         ),
         (
+            "a local datum on Airy 1830 declaring OSGB36",
+            LOCAL_AIRY,
+            (-2.0, 54.0),
+        ),
+        (
+            "British National Grid on a local datum with OSGB36's code inside",
+            sub(
+                sub(
+                    CRS.from_epsg(27700).to_wkt("WKT1_GDAL"),
+                    'DATUM["Ordnance_Survey_of_Great_Britain_1936"',
+                    'DATUM["My_Local"',
+                ),
+                ',AUTHORITY["EPSG","6277"]',
+                "",
+            ),
+            (-2.0, 54.0),
+        ),
+        (
+            "British National Grid declaring ESRI:54009",
+            sub(
+                CRS.from_epsg(27700).to_wkt("WKT1_GDAL"),
+                'AUTHORITY["EPSG","27700"]]',
+                'AUTHORITY["ESRI","54009"]]',
+            ),
+            (-2.0, 54.0),
+        ),
+        (
+            "OSGB36 + ODN height whose vertical CRS declares EPSG:5703",
+            sub(
+                CRS.from_epsg(7405).to_wkt("WKT1_GDAL"),
+                'AUTHORITY["EPSG","5701"]',
+                'AUTHORITY["EPSG","5703"]',
+            ),
+            (-2.0, 54.0),
+        ),
+        (
             "NAD83(HARN) by name declaring NAD83",
             HARN,
             (-100.0, 40.0),
@@ -274,6 +314,8 @@ def main():
         "WGS 84 + EGM96 height in US survey feet declaring EPSG:9707": 9707,
         "WGS 84 + EGM96 depth declaring EPSG:9707": 9707,
         "WGS 84 without a vertical CRS declaring EPSG:9707": 9707,
+        "a local datum on Airy 1830 declaring OSGB36": 4277,
+        "British National Grid on a local datum with OSGB36's code inside": 27700,
         "NAD83(HARN) by name declaring NAD83": 4269,
         "an unknown method in a compound declaring EPSG:7405": 7405,
         "a local datum on GRS 1980 declaring ETRS89": 4258,

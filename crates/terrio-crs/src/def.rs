@@ -922,7 +922,19 @@ impl Def {
         if !self.ops.is_empty() {
             return;
         }
-        let geog = c.geog.or_else(|| c.geogcs.epsg()).or_else(|| match &c.geogcs_wkt1 {
+        // The geographic CRS's own code only when its content is that CRS (a local datum under
+        // OSGB36's code does not get OSGB36's transformations), as a root code.
+        // WKT 2: its base CRS node, whose datum keeps its ID (`BASEGEOGCRS` read as `GEOGCRS`).
+        let own = match geogcs_text {
+            Some(t) => Some(t.to_string()),
+            None if c.geogcs_wkt1.is_some() => {
+                let t = c.geogcs.to_wkt();
+                Some(t.strip_prefix("BASE").map(str::to_string).unwrap_or(t))
+            }
+            None => None,
+        };
+        let fits = |g: &u32| own.as_deref().is_none_or(|t| super::declared_fits(t, *g));
+        let geog = c.geog.filter(fits).or_else(|| c.geogcs.epsg().filter(fits)).or_else(|| match &c.geogcs_wkt1 {
             // WKT 2: identified loosely, so on the same ellipsoid only.
             Some(text) => super::identify_epsg(text).filter(|g| wkt2::same_ellipsoid(*g, self.ell.a, self.ell.es)),
             None => super::identify_epsg(geogcs_text?),
