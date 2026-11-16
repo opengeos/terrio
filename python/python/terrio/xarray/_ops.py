@@ -31,6 +31,7 @@ class _Grid(NamedTuple):
     crs: CRS | None
     transform: Affine  # north-up, as terrio holds rasters
     ascending: bool  # rows stored from south to north
+    reversed_x: bool  # columns stored from east to west
     nodata: Any = None
     encoded: Any = None
 
@@ -38,13 +39,17 @@ class _Grid(NamedTuple):
 def _grid(obj: xarray.DataArray | xarray.Dataset) -> _Grid:
     acc = obj.terrio
     y = obj[acc.y_dim].values
+    x = obj[acc.x_dim].values
     ascending = bool(y.size > 1 and y[1] > y[0])
+    reversed_x = bool(x.size > 1 and x[1] < x[0])
     transform = acc.transform(recalc=True)
     if ascending:
         transform = transform @ Affine.translation(0, y.size) @ Affine.scale(1, -1)
+    if reversed_x:
+        transform = transform @ Affine.translation(x.size, 0) @ Affine.scale(-1, 1)
     nodata = acc.nodata if isinstance(obj, xarray.DataArray) else None
     encoded = acc.encoded_nodata if isinstance(obj, xarray.DataArray) else None
-    return _Grid(acc.y_dim, acc.x_dim, acc.crs, transform, ascending, nodata, encoded)
+    return _Grid(acc.y_dim, acc.x_dim, acc.crs, transform, ascending, reversed_x, nodata, encoded)
 
 
 def _band_dims(da: xarray.DataArray, g: _Grid) -> list[Hashable]:
@@ -65,6 +70,8 @@ def to_raster(da: xarray.DataArray, g: _Grid | None = None) -> _terrio.Raster:
     values = da.transpose(*_band_dims(da, g), g.y, g.x).values
     if g.ascending:
         values = values[..., ::-1, :]
+    if g.reversed_x:
+        values = values[..., ::-1]
     values = np.ascontiguousarray(values)
     nodata = g.nodata
     if g.encoded is not None and not np.isnan(g.encoded):
@@ -106,8 +113,12 @@ def from_raster(raster: _terrio.Raster, like: xarray.DataArray, g: _Grid) -> xar
         coords[g.y] = t.f + t.e * (np.arange(raster.height) + 0.5)
         if g.ascending:
             coords[g.y] = coords[g.y][::-1]
+        if g.reversed_x:
+            coords[g.x] = coords[g.x][::-1]
     if g.ascending:
         values = values[:, ::-1]
+    if g.reversed_x:
+        values = values[..., ::-1]
     if raster.count == 1:
         out = xarray.DataArray(values[0], dims=(g.y, g.x), coords=coords, name=like.name)
         out = out.transpose(*(d for d in like.dims if d in (g.y, g.x)))

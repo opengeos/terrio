@@ -187,7 +187,7 @@ def test_band_keyword_picks_a_band_of_a_3d_array(files):
     np.testing.assert_array_equal(sieved.values, expected)
 
 
-def test_several_bands_per_band_are_refused(files, tmp_path):
+def test_color_relief_of_a_2d_array_gives_a_band_dimension(files, tmp_path):
     colors = tmp_path / "colors.txt"
     colors.write_text("1000 0 0 0\n2000 255 255 255\n")
     dem = txr.open_rasterio(files["dem"], masked=True).squeeze("band", drop=True)
@@ -195,6 +195,12 @@ def test_several_bands_per_band_are_refused(files, tmp_path):
     assert relief.dims == ("band", "y", "x") and relief.sizes["band"] == 3
     expected = terrio.dem(files["dem"], "color-relief", color_file=str(colors)).read()
     np.testing.assert_array_equal(relief.values, expected)
+
+
+def test_several_bands_per_band_are_refused(files, tmp_path):
+    colors = tmp_path / "colors.txt"
+    colors.write_text("1000 0 0 0\n2000 255 255 255\n")
+    dem = txr.open_rasterio(files["dem"], masked=True).squeeze("band", drop=True)
     with pytest.raises(ValueError, match="3 bands per band"):
         dem.expand_dims(time=2).terrio.dem("color-relief", color_file=str(colors))
 
@@ -204,7 +210,8 @@ def test_viewshed_cropped_to_its_distance(files):
     ox, oy = TRANSFORM @ (40.5, 30.5)
     got = dem.terrio.viewshed(ox, oy, md=300.0)
     expected = terrio.viewshed(files["dem"], ox, oy, md=300.0)
-    assert got.shape == (expected.height, expected.width) != dem.shape
+    assert got.shape == (expected.height, expected.width)
+    assert got.shape != dem.shape
     np.testing.assert_array_equal(got.values, expected.read(1))
     assert got.terrio.transform() == Affine.from_gdal(*expected.transform)
     assert got.terrio.transform(recalc=False) == Affine.from_gdal(*expected.transform)
@@ -230,6 +237,17 @@ def test_crs_from_attributes_is_kept(files):
     bare = dem.drop_vars("spatial_ref").assign_attrs(crs="EPSG:32611")
     assert bare.terrio.crs == dem.terrio.crs
     assert bare.terrio.dem("slope").terrio.crs == dem.terrio.crs
+
+
+def test_columns_from_east_to_west_give_the_west_to_east_result(files):
+    """A grid whose columns run east to west is flipped for terrio and back, as rows are."""
+    dem = txr.open_rasterio(files["dem"], masked=True).squeeze("band", drop=True)
+    reversed_dem = dem.isel(x=slice(None, None, -1))
+    got = reversed_dem.terrio.dem("slope")
+    expected = dem.terrio.dem("slope")
+    assert got.dims == ("y", "x")
+    np.testing.assert_array_equal(got.x.values, expected.x.values[::-1])
+    np.testing.assert_array_equal(got.values, expected.values[:, ::-1])
 
 
 def test_rasterize_on_a_single_row(files):

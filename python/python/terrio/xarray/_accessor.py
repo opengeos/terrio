@@ -1776,8 +1776,6 @@ class TerrioArray(XRasterBase):
         add_attrs_proj(new_data_array=out, src_data_array=self._obj)
         return out
 
-    # Writing.
-
     # terrio's raster operations: the array goes to terrio in memory, band by band (dask arrays
     # are computed). Keyword arguments are those of the terrio function of the same name.
 
@@ -1900,6 +1898,8 @@ class TerrioArray(XRasterBase):
         """
         prefixes = kwargs.pop("prefixes", None)
         return _ops.zonal_stats([self._obj], zones, prefixes, **kwargs)
+
+    # Writing.
 
     def to_raster(
         self,
@@ -2282,6 +2282,10 @@ class TerrioDataset(XRasterBase):
             terrio.Layer: The zones with a column per variable, band and statistic.
         """
         names = [v for v in self.vars if has_spatial_dims(self._obj, var=v)]
+        if not names:
+            raise MissingSpatialDimensionError(
+                "No variable has spatial dimensions: there are no zonal statistics to compute."
+            )
         arrays = []
         for name in names:
             x_dim, y_dim = get_spatial_dims(self._obj, var=name)
