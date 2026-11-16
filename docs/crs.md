@@ -450,11 +450,18 @@ the numeric prefix 0.5 or reject the CRS, depending on the method.
 A known `+units` comes before `+to_meter`, as in PROJ, and `+to_meter` is otherwise
 refused unless it is a positive number (likewise `+vunits` and `+vto_meter` with `+geoidgrids`); a
 scale factor is refused unless the number it starts with is positive (NaN passes, as in PROJ).
-`lat_0`, `lon_0`, `x_0` and `y_0`, and `+f`, `+es` and `+e` without `+a`, stay as lenient as before:
-PROJ checks them only for some methods, and an unreadable one is read as absent. A WKT's `PROJ4`
-extension is read as PROJ reads it, without refusing the values PROJ's CRS parser would (an
-unreadable `+lat_ts` is read as 0); the scale-factor, `+to_meter` and `towgs84`-length refusals
-still apply.
+Names PROJ 9.8.1 does not know are refused, as it refuses them: an `+ellps` (unless beside `+R`,
+which PROJ reads instead), a `+datum`, a `+units` or a `+vunits`, compared as written (`wgs84`,
+`meter` and `feet` are unknown), and a `+vto_meter` that is not a positive number. Angles are read
+as PROJ's `dmstor` reads them: `40d30'N`, `40D30`, `40°30'`, `0.7rS`; a value with text after the
+angle (`9d-30`, `40.5NS`) or that is not finite is refused. `lat_0`, `lon_0`, `x_0` and `y_0` that
+are not finite numbers (or angles) are refused for the methods PROJ's CRS parser maps them for
+(`+proj=tmerc +lat_0=abc`), and read as absent for the others (`+proj=robin +lat_0=abc`), as PROJ
+reads them; `+f`, `+es` and `+e` without `+a` stay as lenient as before. A WKT's `PROJ4` extension
+is read as PROJ reads a pipeline step, without refusing the values PROJ's CRS parser would (an
+unreadable `+lat_ts` or `+lat_0` is read as 0, and an angle by its longest readable start: `9d-30`
+is 9°), with a `+vto_meter` fraction (`1200/3937`); unknown names, the scale-factor, `+to_meter` and
+`towgs84`-length refusals still apply.
 Unreadable `towgs84` lists inside extensions retain the legacy behavior of ignoring the
 shift. This differs from PROJ, which can interpret unreadable elements as zero.
 
