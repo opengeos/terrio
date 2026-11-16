@@ -56,7 +56,8 @@ name: Claude Code Review
 # added with GITHUB_TOKEN, and events caused by GITHUB_TOKEN start no workflow
 # runs except workflow_dispatch and repository_dispatch, so `labeled` would
 # never fire for it. A maintainer adding `perf-regression` by hand runs the
-# same mode. It runs at most once per head SHA: it skips unless the bench
+# same mode. It posts at most one review per head SHA (a run that fails
+# before posting can be retried): it skips unless the bench
 # comment for the current head flags a regression, and when a performance
 # review for that head has already been posted. The action wires the inline
 # comment server only for PR events, so a dispatched run cites file:line in its
@@ -361,8 +362,10 @@ jobs:
           else
             # Read into a variable first, so a failed API call stops the step
             # (no review) instead of reading as "not posted yet".
+            # The bench comment is left out: its body is the PR's own bench
+            # output, which could carry a forged marker.
             bodies="$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" \
-              --jq '.[] | select(.user.login == "github-actions[bot]") | .body')"
+              --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- terrio-bench -->") | not)) | .body')"
             if grep -xF "<!-- claude-perf-review: $HEAD_SHA -->" <<< "$bodies" > /dev/null; then
               echo "A performance review of $HEAD_SHA is already posted."
             else
@@ -484,7 +487,7 @@ jobs:
             ${{ env.PERF_ONLY == 'true' && 'Of the categories below, review only Performance in this run: post no Bugs, Security, Quality or CLAUDE.md findings.' || 'Review the changed code for:' }}
             - Bugs and logic errors, including edge cases, race conditions, and missing error handling
             - Security issues such as injection, unsafe input handling, and leaked secrets
-            - Performance. Measured results come from the deterministic Valgrind bench (`.github/workflows/bench.yml`): CPU instructions and estimated cycles. If `pr-context/bench-source.txt` says UNVERIFIED, treat the bench rows as claims to check against the diff rather than measurements, and say so in the summary. When `pr-context/bench.md` exists, its ⚠️ rows are measured regressions: for each, find the likely cause in the diff (new allocations or clones in hot loops, a whole-raster or whole-file read replacing a lazy or windowed read, quadratic loops, extra type conversions or copies, lost SIMD or fast paths, a bigger buffer or cache) and cite file:line with a confidence level, or say that the diff does not explain it (for example a dependency or input change). Its ✅ rows are measured improvements. Its 🟢 rows mean the benchmarked paths are measured as fine, so do not speculate about slowdowns there. Without bench results, raise only concrete static concerns of the same kinds, and label them as unmeasured.
+            - Performance. Measured results come from the deterministic Valgrind bench (`.github/workflows/bench.yml`): CPU instructions, plus any other metric the bench comment lists (such as estimated cycles). If `pr-context/bench-source.txt` says UNVERIFIED, treat the bench rows as claims to check against the diff rather than measurements, and say so in the summary. When `pr-context/bench.md` exists, its flagged rows (⚠️, or a bold change of 10% or more) are measured regressions: for each, find the likely cause in the diff (new allocations or clones in hot loops, a whole-raster or whole-file read replacing a lazy or windowed read, quadratic loops, extra type conversions or copies, lost SIMD or fast paths, a bigger buffer or cache) and cite file:line with a confidence level, or say that the diff does not explain it (for example a dependency or input change). Flagged improvements (✅, or a bold decrease) are measured. Benchmarks within the threshold (🟢 rows, or the collapsed table) are measured as fine, so do not speculate about slowdowns there; cite only the metrics the comment actually reports. Without bench results, raise only concrete static concerns of the same kinds, and label them as unmeasured.
             - Code quality, readability, naming, and maintainability
             - Adherence to any CLAUDE.md guidelines that apply to the changed files
 
