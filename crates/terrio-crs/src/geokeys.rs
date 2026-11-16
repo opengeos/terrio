@@ -649,9 +649,12 @@ fn projection(k: &GeoKeys, to_meter: f64) -> Option<String> {
     let lat1 = angle(&[STD_PARALLEL_1]);
     let lat2 = angle(&[STD_PARALLEL_2]);
     let false_xy = format!("+x_0={x0} +y_0={y0}");
+    // Without ProjRectifiedGridAngleGeoKey, 90 in the keys' angular unit, as libgeotiff defaults
+    // it before converting (81° in grads, GDAL 3.12.2).
+    let grid_angle = angle(&[RECTIFIED_GRID_ANGLE]).unwrap_or(90.0 * to_degrees);
     let oblique_mercator = |variant: &str| -> Option<String> {
-        // Without ProjRectifiedGridAngleGeoKey, 90°, as libgeotiff defaults it.
-        let gamma = format!(" +gamma={}", angle(&[RECTIFIED_GRID_ANGLE]).unwrap_or(90.0));
+        // Always written: PROJ's own default (gamma = alpha) is not libgeotiff's.
+        let gamma = format!(" +gamma={grid_angle}");
         Some(format!("omerc{variant} +lat_0={lat0} +lonc={lon0} +alpha={}{gamma} +k={scale} {false_xy}", k.double(AZIMUTH)?))
     };
     // A UTM zone by its ProjectionGeoKey (16001-16060 north, 16101-16160 south) alone, as GDAL
@@ -668,7 +671,7 @@ fn projection(k: &GeoKeys, to_meter: f64) -> Option<String> {
         // Hotine oblique Mercator: variant A (natural origin) and B (centre of projection).
         3 => oblique_mercator(" +no_uoff")?,
         // Swiss oblique Mercator, as GDAL writes it: variant B of azimuth 90°.
-        9815 if k.double(AZIMUTH) == Some(90.0) && angle(&[RECTIFIED_GRID_ANGLE]).is_none_or(|g| g == 90.0) => {
+        9815 if k.double(AZIMUTH) == Some(90.0) && grid_angle == 90.0 => {
             format!("somerc +lat_0={lat0} +lon_0={lon0} +k_0={scale} {false_xy}")
         }
         9815 => oblique_mercator("")?,
@@ -691,12 +694,16 @@ fn projection(k: &GeoKeys, to_meter: f64) -> Option<String> {
             // latitude of ±90 is variant A, with its scale.
             // An origin latitude given (ProjNatOriginLatGeoKey, else ProjFalseOriginLatGeoKey, else
             // ProjCenterLatGeoKey, as libgeotiff's `GTIFFetchProjParms` reads them for this method)
-            // wins over ProjStdParallel1GeoKey, which libgeotiff does not read for it (GDAL 3.12.2:
-            // 90 and 71 is variant A, of its scale).
+            // wins over ProjStdParallel1GeoKey, which libgeotiff does not read for it: GDAL 3.12.2
+            // reads a natural origin latitude of 90 with a standard parallel of 71 as variant A,
+            // with its scale. Not one that is not finite, which would be read at the north pole.
             // Without any latitude key, ProjStdParallel1GeoKey is still read as the standard
             // parallel, leniently for the writers that put it there; libgeotiff would take a
             // latitude of 0 instead.
             let given = angle(&[NAT_ORIGIN_LAT, FALSE_ORIGIN_LAT, CENTER_LAT]);
+            if given.is_some_and(|v| !v.is_finite()) || lat1.is_some_and(|v| !v.is_finite()) {
+                return None;
+            }
             let origin = given.unwrap_or(90.0);
             let off_pole = ((origin.abs() - 90.0).abs() > 1e-9).then_some(origin);
             let ts = if given.is_some() { off_pole } else { lat1.or(off_pole) };

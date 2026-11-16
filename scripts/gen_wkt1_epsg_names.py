@@ -29,8 +29,8 @@ FALSE_ORIGIN = [
     ("Longitude of false origin", -96),
     ("Latitude of 1st standard parallel", 29.5),
     ("Latitude of 2nd standard parallel", 45.5),
-    ("Easting at false origin", 0),
-    ("Northing at false origin", 0),
+    ("Easting at false origin", 1000),
+    ("Northing at false origin", 2000),
 ]
 CENTRE = [
     ("Latitude of projection centre", 40),
@@ -78,8 +78,8 @@ CASES = [
             "Hotine_Oblique_Mercator_Azimuth_Center",
             CENTRE
             + [
-                ("Easting at projection centre", 0),
-                ("Northing at projection centre", 0),
+                ("Easting at projection centre", 1000),
+                ("Northing at projection centre", 2000),
             ],
         ),
         (11, 41),
@@ -152,7 +152,7 @@ def main():
                 *point, errcheck=True
             )
             proj = [x, y]
-        except pyproj.exceptions.CRSError:
+        except pyproj.exceptions.ProjError:  # CRSError too, and refusals at transform time
             proj4, proj = None, None
         cases.append(
             {

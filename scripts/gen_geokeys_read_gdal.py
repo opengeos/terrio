@@ -86,6 +86,56 @@ CASES = [
         ],
         (10.0, 80.0),
     ),
+    # The default grid angle is 90 in the GeoKeys' angular unit: 81° in grads.
+    (
+        "Hotine oblique Mercator (variant A) in grads without a rectified grid angle",
+        3,
+        [
+            (3088, 11.0),
+            (3089, 44.0),
+            (3094, 30.0),
+            (3093, 1.0),
+            (3082, 0.0),
+            (3083, 0.0),
+        ],
+        (11.0, 41.0),
+        [(2054, 9105)],
+    ),
+    # Swiss oblique Mercator (variant B of azimuth 90) in grads, without a grid angle.
+    (
+        "Hotine oblique Mercator (variant B) of azimuth 90 in grads without a rectified grid angle",
+        9815,
+        [
+            (3088, 8.2),
+            (3089, 51.9),
+            (3094, 90.0),
+            (3093, 1.0),
+            (3082, 600000.0),
+            (3083, 200000.0),
+        ],
+        (7.4, 46.9),
+        [(2054, 9105)],
+    ),
+    # A natural origin latitude of 90 wins over a southern standard parallel.
+    (
+        "polar stereographic at 90° with a standard parallel of -71°",
+        15,
+        [(3095, 0.0), (3081, 90.0), (3078, -71.0), (3082, 0.0), (3083, 0.0)],
+        (10.0, 80.0),
+    ),
+    # A centre or false origin latitude is an origin latitude too, whatever the standard parallel.
+    (
+        "polar stereographic with a centre latitude of -90° and a standard parallel of -71°",
+        15,
+        [(3095, 0.0), (3089, -90.0), (3078, -71.0), (3082, 0.0), (3083, 0.0)],
+        (10.0, -80.0),
+    ),
+    (
+        "polar stereographic with a false origin latitude of -71°",
+        15,
+        [(3095, 0.0), (3085, -71.0), (3078, -60.0), (3082, 0.0), (3083, 0.0)],
+        (10.0, -80.0),
+    ),
 ]
 
 
@@ -142,12 +192,15 @@ def main():
     assert gdal.__version__ == "3.12.2", gdal.__version__
     assert os.environ.get("PROJ_NETWORK") == "OFF"
     cases = []
-    for name, method, doubles, point in CASES:
-        keys, values = directory(USER + [(3075, method)], doubles)
+    for name, method, doubles, point, *extra in CASES:
+        shorts = USER + (extra[0] if extra else []) + [(3075, method)]
+        keys, values = directory(shorts, doubles)
         path = "/vsimem/case.tif"
         gdal.FileFromMemBuffer(path, tiff(keys, values))
-        srs = gdal.Open(path).GetSpatialRef()
+        ds = gdal.Open(path)
+        srs = ds.GetSpatialRef()
         wkt = srs.ExportToWkt(["FORMAT=WKT2_2019"])
+        ds = None
         gdal.Unlink(path)
         x, y = Transformer.from_crs(
             "EPSG:4326", CRS.from_wkt(wkt), always_xy=True

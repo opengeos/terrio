@@ -1159,11 +1159,14 @@ They read and write:
   `TOWGS84` shifts. These parameters are read as libgeotiff's `GTIFFetchProjParms` reads them, as
   GDAL 3.12.2 does: the false easting and northing from ProjFalseEasting/NorthingGeoKey, else
   ProjCenterEasting/NorthingGeoKey, else the false origin's; a Hotine oblique Mercator without
-  ProjRectifiedGridAngleGeoKey at 90°; and a polar stereographic CRS by its natural origin
-  latitude when given (90° and a ProjStdParallel1GeoKey of 71° is variant A of its scale, the
-  standard parallel unread). Not yet as libgeotiff reads them: a Stereographic or Mercator CRS's
-  scale keys, a Mercator's latitude keys, and Laborde (CT 4) (#1012 item 35). A user-defined
-  projected CRS can be read by a registered code (see below);
+  ProjRectifiedGridAngleGeoKey at 90 in the keys' angular unit (81° in grads); and a polar
+  stereographic CRS by its origin latitude when given (ProjNatOriginLatGeoKey, else
+  ProjFalseOriginLatGeoKey, else ProjCenterLatGeoKey: 90° and a ProjStdParallel1GeoKey of 71° or
+  -71° is variant A of its scale, the standard parallel unread). Not yet as libgeotiff reads them:
+  without any origin latitude, a polar stereographic CRS's ProjStdParallel1GeoKey is still read as
+  its standard parallel, leniently, where libgeotiff takes a latitude of 0; a Stereographic or
+  Mercator CRS's scale keys, a Mercator's latitude keys, and Laborde (CT 4) (#1012 item 35). A
+  user-defined projected CRS can be read by a registered code (see below);
 - ESRI PE citations (`ESRI PE String = <WKT>`), which GDAL writes for a CRS GeoKeys cannot hold
   (an engineering CRS, a method GeoTIFF has no code for, a definition only its PROJ string
   describes): terrio writes them for the same CRSs. A CRS whose WKT holds a NUL (from a PROJJSON

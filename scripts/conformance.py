@@ -2774,7 +2774,7 @@ PROJ_CASES = {
     },
     "geokeys_read_gdal": {
         "user_defined_geokeys_are_read_as_gdal_reads_them": (
-            "GeoKeys of user-defined projected CRSs as other writers write them (5 cases)", IDENTICAL,
+            "GeoKeys of user-defined projected CRSs as other writers write them (10 cases)", IDENTICAL,
             "GDAL 3.12.2 (libgeotiff GTIFFetchProjParms): within 1 mm",
         ),
     },

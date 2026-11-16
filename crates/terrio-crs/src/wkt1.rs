@@ -240,13 +240,17 @@ fn node(b: &[u8], i: &mut usize, level: usize) -> Option<Node> {
     Some(Node { key, args })
 }
 
-/// Whether a WKT 1 is on GDAL's `Polar_Stereographic` without a finite `latitude_of_origin`,
-/// which PROJ 9.8.1 refuses rather than read at the north pole.
+/// Whether a WKT 1 is on a polar stereographic method the reader refuses for its latitude: GDAL's
+/// `Polar_Stereographic` without a finite `latitude_of_origin` (the first, as the reader takes
+/// it), which PROJ 9.8.1 refuses rather than read at the north pole, or EPSG's variant B with a
+/// standard parallel that is not finite.
 pub(crate) fn polar_without_origin(root: &Node) -> bool {
-    root.child("PROJECTION").and_then(Node::name).is_some_and(|m| norm(m) == "polarstereographic")
-        && !root
-            .children("PARAMETER")
-            .any(|p| p.name().is_some_and(|n| norm(n) == "latitudeoforigin") && p.num(1).is_some_and(f64::is_finite))
+    let first = |name: &str| root.children("PARAMETER").find(|p| p.name().is_some_and(|n| norm(n) == name)).and_then(|p| p.num(1));
+    match root.child("PROJECTION").and_then(Node::name).map(norm).as_deref() {
+        Some("polarstereographic") => !first("latitudeoforigin").is_some_and(f64::is_finite),
+        Some("polarstereographicvariantb") => first("latitudeofstandardparallel").is_some_and(|v| !v.is_finite()),
+        _ => false,
+    }
 }
 
 pub(crate) fn norm(s: &str) -> String {
@@ -546,7 +550,7 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             let parallel = if method == "polarstereographicvariantb" { angle(&["latitudeofstandardparallel"]) } else { None };
             // GDAL's name gives its latitude only as `latitude_of_origin`; PROJ 9.8.1 refuses it
             // without, rather than read it at the north pole.
-            if method == "polarstereographic" && !get(&["latitudeoforigin"]).is_some_and(f64::is_finite) {
+            if polar_without_origin(root) {
                 return None;
             }
             // Not a latitude of NaN, read at the north pole.
