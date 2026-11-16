@@ -1118,7 +1118,10 @@ impl Def {
         // WKT 2 parameters and method names would be read wrongly, silently (#123).
         #[cfg(feature = "wbprojection-fallback")]
         {
-            let crs = wbprojection::Crs::from_wkt(w).map_err(|e| Error::Crs(format!("{e}")))?;
+            // Without a root code that is not its content's, which wbprojection's parser would
+            // read as the CRS (an unknown method declaring EPSG:27700).
+            let stripped = super::declared_epsg(w).filter(|c| !super::declared_fits(w, *c)).and_then(|_| super::strip_root_code(w));
+            let crs = wbprojection::Crs::from_wkt(stripped.as_deref().unwrap_or(w)).map_err(|e| Error::Crs(format!("{e}")))?;
             let geographic = crs.is_geographic();
             let e = &crs.datum.ellipsoid;
             let ell = Ell::from_a_es(e.a, 2.0 * e.f - e.f * e.f);

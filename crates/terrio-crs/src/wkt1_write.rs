@@ -680,6 +680,9 @@ fn method(p: &Params, to_meter: f64) -> Option<Method> {
     };
     Some(match p.str("proj")? {
         "tmerc" | "etmerc" if axis == "ws" => {
+            // `+x_0`/`+y_0` negated with x and y: the method's false easting and northing,
+            // which it subtracts (EPSG method 9808).
+            let (fe, fn_) = (crate::wkt1::negated(fe), crate::wkt1::negated(fn_));
             Method { name: "Transverse_Mercator_South_Orientated", params: tm(lat_0, lon_0, k, fe, fn_), axes: "", axis_described: true }
         }
         "tmerc" | "etmerc" => m("Transverse_Mercator", tm(lat_0, lon_0, k, fe, fn_)),

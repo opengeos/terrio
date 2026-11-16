@@ -358,7 +358,7 @@ impl SpatialRef {
     /// as in PROJ.
     pub fn from_epsg(code: u32) -> Result<Self> {
         let wkt = match epsg::get(code) {
-            Some(e) => e.wkt.clone(),
+            Some(e) => spherical_extension(&e.wkt, &e.proj),
             None => match (epsg::compound(code), epsg::vertical(code)) {
                 (Some(c), _) => c.wkt.clone(),
                 (None, Some(v)) => v.wkt.clone(),
@@ -810,7 +810,7 @@ impl SpatialRef {
         }
         if let Some(code) = self.epsg {
             return epsg::get(code)
-                .map(|e| e.wkt.clone())
+                .map(|e| spherical_extension(&e.wkt, &e.proj))
                 .or_else(|| epsg::compound(code).map(|c| c.wkt.clone()))
                 .or_else(|| epsg::vertical(code).map(|v| v.wkt.clone()))
                 .or_else(|| registry_wkt(code));
@@ -1524,8 +1524,20 @@ pub fn compound_code(horizontal: u32, vertical: u32, name: Option<&str>) -> Opti
 /// file must be cut at its first NUL by the caller ([`until_nul`]).
 #[doc(hidden)]
 pub fn identify_epsg(wkt: &str) -> Option<u32> {
+    // A declared code only when the WKT's own content is that CRS, as PROJ 9.8.1 keeps the
+    // content of a WKT whose root `ID` or `AUTHORITY` is wrong (a geographic code on a projected
+    // CRS, a code that does not exist, a compound code's units); else the WKT is identified by its
+    // content, as without the code.
     if let Some(code) = declared_epsg(wkt) {
-        return Some(code);
+        if declared_fits(wkt, code) {
+            return Some(code);
+        }
+        // Content terrio cannot read (an unknown method) is not identified loosely either: it
+        // stays unusable, as in PROJ.
+        if Def::wkt_conversion(wkt).is_none() {
+            return None;
+        }
+        return strip_root_code(wkt).and_then(|w| identify_epsg(&w));
     }
     // A compound CRS is not its horizontal CRS: only the code it declares identifies it, as in
     // `SpatialRef::from_wkt`.
@@ -1644,6 +1656,72 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
     None
 }
 
+/// A registry CRS's WKT 1, with its PROJ string as an extension when it is on the authalic sphere
+/// of its ellipsoid (`+R_A`, the spherical Lambert azimuthal equal-area of EPSG:3973 and 3974),
+/// which WKT 1 has no method for: PROJ 9.8.1 writes those as the ellipsoidal method, which it
+/// and terrio read back about 13 km away (a WKT's content, not its code, gives the CRS).
+fn spherical_extension(wkt: &str, proj: &str) -> String {
+    if !proj.split_whitespace().any(|p| p == "+R_A") || !wkt.starts_with("PROJCS[") || wkt.contains("EXTENSION[") {
+        return wkt.to_string();
+    }
+    let proj =
+        format!("{} +no_defs", proj.split_whitespace().filter(|p| *p != "+no_defs" && *p != "+type=crs").collect::<Vec<_>>().join(" "));
+    // Before the root's code, as GDAL writes it.
+    let at = wkt.rfind(",AUTHORITY[").filter(|i| !wkt[*i..].trim_end_matches(']').contains("],")).unwrap_or(wkt.len() - 1);
+    format!("{},EXTENSION[\"PROJ4\",\"{proj}\"]{}", &wkt[..at], &wkt[at..])
+}
+
+/// Whether a WKT's own content is the EPSG CRS it declares: the same conversion (units and
+/// axes included) on the same ellipsoid. When terrio cannot read the content (a method only the
+/// registry has), when the WKT names the code's own projection method.
+pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
+    // Only a horizontal CRS's content is compared (not a vertical or engineering CRS's).
+    let horizontal_root = wkt1::parse(wkt).is_some_and(|r| {
+        [
+            "GEOGCS",
+            "PROJCS",
+            "GEOCCS",
+            "COMPD_CS",
+            "GEOGCRS",
+            "GEOGRAPHICCRS",
+            "GEODCRS",
+            "GEODETICCRS",
+            "PROJCRS",
+            "PROJECTEDCRS",
+            "COMPOUNDCRS",
+            "BOUNDCRS",
+        ]
+        .iter()
+        .any(|k| r.key.eq_ignore_ascii_case(k))
+    });
+    if !horizontal_root {
+        return true;
+    }
+    let Ok(theirs) = Def::new(&SpatialRef { epsg: Some(code), ..Default::default() }) else { return false };
+    // A compound CRS by its horizontal CRS.
+    let horizontal = def::split_compound(wkt).map(|(h, _)| h);
+    match Def::wkt_conversion(horizontal.as_deref().unwrap_or(wkt)) {
+        Some(own) => own.same_conversion(&theirs) && (own.ell.a - theirs.ell.a).abs() < 1e-3 && (own.ell.es - theirs.ell.es).abs() < 1e-9,
+        None => {
+            let method = |w: &str| {
+                let root = wkt1::parse(w)?;
+                let node = root.child("PROJECTION").or_else(|| root.child("CONVERSION").and_then(|c| c.child("METHOD")))?;
+                node.epsg().map(|c| c.to_string()).or_else(|| node.name().map(wkt1::norm))
+            };
+            let theirs = epsg::get(code).and_then(|e| method(&e.wkt));
+            theirs.is_some() && method(wkt) == theirs
+        }
+    }
+}
+
+/// A WKT definition without the code its root declares (see [`declared_epsg`]).
+pub(crate) fn strip_root_code(wkt: &str) -> Option<String> {
+    let body = wkt.trim_end().strip_suffix(']')?.trim_end().strip_suffix(']')?;
+    let start = body.rfind('[')?;
+    let comma = body[..start].rfind(',')?;
+    Some(format!("{}]", &body[..comma]))
+}
+
 /// The projection method (`+proj=tmerc`) of a WKT definition's conversion.
 fn conversion_method(wkt: &str) -> Option<String> {
     let root = wkt1::parse(wkt)?;
@@ -1717,12 +1795,31 @@ fn identify_esri(wkt: &str) -> Option<u32> {
     // a name alone does not identify a CRS.
     let own = Def::wkt_conversion(wkt).or_else(|| Def::new(&SpatialRef { wkt: Some(wkt.to_string()), ..Default::default() }).ok())?;
     let a = semi_major_axis(wkt);
+    // On the same datum, by name: PROJ 9.8.1 identifies no code for ESRI's Monte_Mario_Italy_1 on
+    // a datum renamed `D_Local`, and places it by a ballpark, not by Monte Mario's transformations.
+    let datum = datum_name(wkt).map(|n| epsg::datum_key(&n));
     candidates.into_iter().find(|code| {
         let Some(e) = epsg::esri(*code) else { return false };
         let Ok(registered) = Def::from_proj(&e.proj) else { return false };
         let same_ellipsoid = a.is_none_or(|a| (a - registered.ell.a).abs() < 1e-3);
-        same_ellipsoid && own.same_conversion(&registered)
+        let same_datum = datum.is_none() || datum_name(&e.wkt).map(|n| epsg::datum_key(&n)) == datum;
+        same_ellipsoid && same_datum && own.same_conversion(&registered)
     })
+}
+
+/// The name of a WKT definition's geodetic datum (`DATUM`, `GEODETICDATUM` or `TRF`), its first
+/// one (a compound or bound CRS's horizontal or source CRS).
+fn datum_name(wkt: &str) -> Option<String> {
+    fn find(n: &wkt1::Node) -> Option<String> {
+        if ["DATUM", "GEODETICDATUM", "TRF"].iter().any(|k| n.key.eq_ignore_ascii_case(k)) {
+            return n.name().map(str::to_string);
+        }
+        n.args.iter().find_map(|a| match a {
+            wkt1::Arg::Node(c) => find(c),
+            _ => None,
+        })
+    }
+    find(&wkt1::parse(wkt)?)
 }
 
 /// The ESRI code of a reference such as `ESRI:54009` (whatever its case, as PROJ reads it),

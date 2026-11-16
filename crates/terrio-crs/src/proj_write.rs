@@ -79,7 +79,7 @@ pub(crate) fn write(s: &SpatialRef) -> Option<String> {
         if s.wkt.as_deref().is_some_and(crate::is_variant_c) {
             return None;
         }
-        return s.wkt.as_deref().and_then(|w| crate::wkt_proj(w).and_then(|p| custom(&wkt_axes(w, &p), wkt_datum(w))));
+        return s.wkt.as_deref().and_then(|w| crate::wkt_proj(w).and_then(|p| custom(&wkt_axes(w, &p)?, wkt_datum(w))));
     }
     // A WKT's shift to WGS 84 (`TOWGS84`, a WKT 2 `BOUNDCRS`) makes it a bound CRS, which PROJ
     // writes with the ellipsoid and `+towgs84` in place of the datum, even for a code.
@@ -152,8 +152,9 @@ fn towgs84(values: &str) -> Option<String> {
 /// A WKT's PROJ string without the axes of its coordinate system, which PROJ does not write
 /// (`AXIS["Y",WEST],AXIS["X",SOUTH]` on Transverse Mercator): only those of a method defining
 /// them (south-orientated Transverse Mercator, Krovak's south and west), as PROJ 9.8.1 writes
-/// them, and a PROJ4 extension's as given.
-fn wkt_axes(wkt: &str, proj: &str) -> String {
+/// them, and a PROJ4 extension's as given. `None` for south-orientated Transverse Mercator with
+/// a false easting or northing, which PROJ 9.8.1 writes no PROJ string for.
+fn wkt_axes(wkt: &str, proj: &str) -> Option<String> {
     /// The source CRS's conversion method, excluding a bound datum transformation.
     fn method(n: &crate::wkt1::Node) -> Option<(String, Option<u32>)> {
         if n.key.eq_ignore_ascii_case("BOUNDCRS") {
@@ -170,7 +171,7 @@ fn wkt_axes(wkt: &str, proj: &str) -> String {
         projection.name().map(|name| (crate::wkt1::norm(name), projection.epsg()))
     }
     if crate::proj4_extension(wkt).is_some() {
-        return proj.to_string();
+        return Some(proj.to_string());
     }
     // A method is recognized by its name or its EPSG code, as the WKT 2 reader does.
     let (method, code) = crate::wkt1::parse(wkt).and_then(|root| method(&root)).unwrap_or_default();
@@ -179,14 +180,21 @@ fn wkt_axes(wkt: &str, proj: &str) -> String {
     let axis = |t: &str| t.starts_with("+axis=");
     let tokens = proj.split_whitespace();
     if south_orientated {
+        // PROJ refuses a false easting or northing ("CRS cannot be converted to a PROJ string"):
+        // it would write them added, where the method subtracts them.
+        let offset =
+            |t: &str| ["+x_0=", "+y_0="].iter().any(|k| t.strip_prefix(k).and_then(|v| v.parse::<f64>().ok()).is_some_and(|v| v != 0.0));
+        if proj.split_whitespace().any(offset) {
+            return None;
+        }
         // The method's axes, west and south, whatever the coordinate system's order.
-        tokens.map(|t| if axis(t) { "+axis=wsu" } else { t }).collect::<Vec<_>>().join(" ")
+        Some(tokens.map(|t| if axis(t) { "+axis=wsu" } else { t }).collect::<Vec<_>>().join(" "))
     } else if krovak {
         // Krovak's south and west (EPSG's), which PROJ writes; not other axes.
-        tokens.filter(|t| !axis(t) || *t == "+axis=swu").collect::<Vec<_>>().join(" ")
+        Some(tokens.filter(|t| !axis(t) || *t == "+axis=swu").collect::<Vec<_>>().join(" "))
     } else {
         // PROJ 9.8.1 also omits geographic coordinate-system axes on export.
-        tokens.filter(|t| !axis(t)).collect::<Vec<_>>().join(" ")
+        Some(tokens.filter(|t| !axis(t)).collect::<Vec<_>>().join(" "))
     }
 }
 

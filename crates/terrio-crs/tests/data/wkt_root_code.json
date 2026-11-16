@@ -1,0 +1,106 @@
+{
+ "proj": "9.8.1",
+ "cases": [
+  {
+   "name": "British National Grid with its own code",
+   "wkt": "PROJCS[\"OSGB 1936 / British National Grid\",GEOGCS[\"OSGB 1936\",DATUM[\"OSGB_1936\",SPHEROID[\"Airy 1830\",6377563.396,299.3249646,AUTHORITY[\"EPSG\",\"7001\"]],TOWGS84[446.448,-125.157,542.06,0.15,0.247,0.842,-20.489],AUTHORITY[\"EPSG\",\"6277\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4277\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",49],PARAMETER[\"central_meridian\",-2],PARAMETER[\"scale_factor\",0.9996012717],PARAMETER[\"false_easting\",400000],PARAMETER[\"false_northing\",-100000],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"27700\"]]",
+   "point": [
+    -2.0,
+    54.0
+   ],
+   "proj": [
+    400097.646389362,
+    455996.5031583572
+   ],
+   "epsg": null
+  },
+  {
+   "name": "British National Grid declaring EPSG:4277",
+   "wkt": "PROJCS[\"OSGB 1936 / British National Grid\",GEOGCS[\"OSGB 1936\",DATUM[\"OSGB_1936\",SPHEROID[\"Airy 1830\",6377563.396,299.3249646,AUTHORITY[\"EPSG\",\"7001\"]],TOWGS84[446.448,-125.157,542.06,0.15,0.247,0.842,-20.489],AUTHORITY[\"EPSG\",\"6277\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4277\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",49],PARAMETER[\"central_meridian\",-2],PARAMETER[\"scale_factor\",0.9996012717],PARAMETER[\"false_easting\",400000],PARAMETER[\"false_northing\",-100000],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"4277\"]]",
+   "point": [
+    -2.0,
+    54.0
+   ],
+   "proj": [
+    400097.646389362,
+    455996.5031583572
+   ],
+   "epsg": null
+  },
+  {
+   "name": "an unknown method declaring EPSG:27700",
+   "wkt": "PROJCS[\"OSGB 1936 / British National Grid\",GEOGCS[\"OSGB 1936\",DATUM[\"OSGB_1936\",SPHEROID[\"Airy 1830\",6377563.396,299.3249646,AUTHORITY[\"EPSG\",\"7001\"]],TOWGS84[375,-111,431,0,0,0,0],AUTHORITY[\"EPSG\",\"6277\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4277\"]],PROJECTION[\"Unheard_Of\"],PARAMETER[\"latitude_of_origin\",49],PARAMETER[\"central_meridian\",-2],PARAMETER[\"scale_factor\",0.9996012717],PARAMETER[\"false_easting\",400000],PARAMETER[\"false_northing\",-100000],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"27700\"]]",
+   "point": [
+    -2.0,
+    54.0
+   ],
+   "proj": null,
+   "epsg": null
+  },
+  {
+   "name": "Hartebeesthoek94 / Lo19 declaring EPSG:1",
+   "wkt": "PROJCRS[\"Hartebeesthoek94 / Lo19\",BASEGEOGCRS[\"Hartebeesthoek94\",DATUM[\"Hartebeesthoek94\",ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4148]],CONVERSION[\"South African Survey Grid zone 19\",METHOD[\"Transverse Mercator (South Orientated)\",ID[\"EPSG\",9808]],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8801]],PARAMETER[\"Longitude of natural origin\",19,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8802]],PARAMETER[\"Scale factor at natural origin\",1,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8805]],PARAMETER[\"False easting\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8806]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8807]]],CS[Cartesian,2],AXIS[\"westing (Y)\",west,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"southing (X)\",south,ORDER[2],LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Cadastre, engineering survey, topographic mapping (large and medium scale).\"],AREA[\"South Africa - onshore between 18\u00b0E and 20\u00b0E.\"],BBOX[-34.88,17.99,-28.38,20]],ID[\"EPSG\",1]]",
+   "point": [
+    18.5,
+    -33.9
+   ],
+   "proj": [
+    46246.67499191615,
+    3752681.842487887
+   ],
+   "epsg": 2048
+  },
+  {
+   "name": "Hartebeesthoek94 / Lo19 with its own code",
+   "wkt": "PROJCRS[\"Hartebeesthoek94 / Lo19\",BASEGEOGCRS[\"Hartebeesthoek94\",DATUM[\"Hartebeesthoek94\",ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4148]],CONVERSION[\"South African Survey Grid zone 19\",METHOD[\"Transverse Mercator (South Orientated)\",ID[\"EPSG\",9808]],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8801]],PARAMETER[\"Longitude of natural origin\",19,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8802]],PARAMETER[\"Scale factor at natural origin\",1,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8805]],PARAMETER[\"False easting\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8806]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8807]]],CS[Cartesian,2],AXIS[\"westing (Y)\",west,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"southing (X)\",south,ORDER[2],LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Cadastre, engineering survey, topographic mapping (large and medium scale).\"],AREA[\"South Africa - onshore between 18\u00b0E and 20\u00b0E.\"],BBOX[-34.88,17.99,-28.38,20]],ID[\"EPSG\",2048]]",
+   "point": [
+    18.5,
+    -33.9
+   ],
+   "proj": [
+    46246.67499191615,
+    3752681.842487887
+   ],
+   "epsg": 2048
+  },
+  {
+   "name": "a 2D NTF (Paris) in degrees declaring EPSG:7400",
+   "wkt": "GEOGCS[\"unnamed ellipsoid\",DATUM[\"unknown\",SPHEROID[\"unnamed\",6378249.2,293.466021294],TOWGS84[-168,-60,320,0,0,0,0]],PRIMEM[\"Paris\",2.337229166666667],UNIT[\"degree\",0.0174532925199433],AUTHORITY[\"EPSG\",\"7400\"]]",
+   "point": [
+    2.35,
+    48.86
+   ],
+   "proj": [
+    0.013493934732394302,
+    48.86006929458865
+   ],
+   "epsg": null
+  },
+  {
+   "name": "Esri Monte_Mario_Italy_1",
+   "wkt": "PROJCS[\"Monte_Mario_Italy_1\",GEOGCS[\"GCS_Monte_Mario\",DATUM[\"D_Monte_Mario\",SPHEROID[\"International_1924\",6378388.0,297.0]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",1500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",9.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]",
+   "point": [
+    12.5,
+    41.9
+   ],
+   "proj": [
+    1790366.4715186497,
+    4644611.025881862
+   ],
+   "epsg": 3003
+  },
+  {
+   "name": "Esri Monte_Mario_Italy_1 on a datum renamed D_Local",
+   "wkt": "PROJCS[\"Monte_Mario_Italy_1\",GEOGCS[\"GCS_Monte_Mario\",DATUM[\"D_Local\",SPHEROID[\"International_1924\",6378388.0,297.0]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",1500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",9.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]",
+   "point": [
+    12.5,
+    41.9
+   ],
+   "proj": [
+    1790348.1042215184,
+    4644681.853456515
+   ],
+   "epsg": null
+  }
+ ]
+}
