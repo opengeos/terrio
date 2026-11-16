@@ -1031,11 +1031,13 @@ impl Def {
         });
         let Some((e, registered)) = found else { return };
         let same = |a: &Ell, b: &Ell| (a.a - b.a).abs() < 1e-3 && (a.es - b.es).abs() < 1e-9;
-        // On the datum's own ellipsoid, the CRS is identified by its content.
-        if same(&registered, &self.ell) {
+        // The geographic CRS's own ellipsoid, which a projection may not use (Esri's
+        // `Mercator_Auxiliary_Sphere` projects on a sphere): on the datum's own, the CRS is
+        // identified by its content.
+        let Some(own) = Def::wkt_conversion(geogcs).map(|d| d.ell) else { return };
+        if same(&registered, &own) {
             return;
         }
-        let own = self.ell;
         let rebase = |op: &Arc<Op>| {
             let mut op = (**op).clone();
             if let Some(datum::Step::Cart { ell, inv: false }) = op.steps.first_mut()
@@ -1184,7 +1186,7 @@ impl Def {
                 // none, the source CRS's own, as PROJ uses them (else its ballpark to WGS 84).
                 let wkt1::BoundTo { target, shift } = &**bound;
                 let mut source = d.clone();
-                source.registered_datum(&c, geogcs_text(w));
+                source.registered_datum(&c, own_geogcs_text(w, &c));
                 // A target terrio cannot read is left out, as one it cannot convert is.
                 let Ok(mut t) = Self::from_proj(&target.proj) else {
                     return Ok(source);
@@ -1224,12 +1226,12 @@ impl Def {
                 // To WGS 84: the source CRS's own datum, into which PROJ applies no shift.
                 let mut source = d.clone();
                 source.ops.clear();
-                source.registered_datum(&c, geogcs_text(w));
+                source.registered_datum(&c, own_geogcs_text(w, &c));
                 d.bound = Some(Arc::new(Bound { source_datum: source.datum, target: None }));
                 return Ok(d);
             }
             if !c.proj.contains("+towgs84=") {
-                d.registered_datum(&c, geogcs_text(w));
+                d.registered_datum(&c, own_geogcs_text(w, &c));
             }
             return Ok(d);
         }
@@ -1971,6 +1973,14 @@ fn proj_maps_origin(method: &str, key: &str) -> bool {
 }
 
 /// The `GEOGCS[...]` part of a WKT 1 definition.
+/// The text of a WKT 1 definition's own geographic CRS: none for a CRS read as WKT 2 (its
+/// `GEOGCRS` the text search does not find), whose search would find a WKT 1 `BOUNDCRS` target's
+/// `GEOGCS` instead (ED50 with its own `TOWGS84` under a Bessel source), so that its datum would
+/// be taken for the source's. The source's node is read then.
+fn own_geogcs_text<'a>(w: &'a str, c: &wkt1::Converted) -> Option<&'a str> {
+    geogcs_text(w).filter(|_| c.geogcs_wkt1.is_none())
+}
+
 fn geogcs_text(w: &str) -> Option<&str> {
     // WKT 1 delimits nodes with brackets or parentheses, and either closer ends a node, as the
     // WKT reader (and PROJ) reads it; brackets in quoted names do not count.
