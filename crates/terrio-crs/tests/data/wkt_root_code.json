@@ -351,6 +351,22 @@
    "terrio": null
   },
   {
+   "name": "NAD83(HARN) by name declaring NAD83",
+   "wkt": "GEOGCS[\"NAD83(HARN)\",DATUM[\"NAD83_High_Accuracy_Reference_Network\",SPHEROID[\"GRS 1980\",6378137,298.257222101]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433],AUTHORITY[\"EPSG\",\"4269\"]]",
+   "point": [
+    -100.0,
+    40.0
+   ],
+   "proj": [
+    -99.99999116896775,
+    39.99999318270061
+   ],
+   "epsg": null,
+   "esri": null,
+   "declared": 4269,
+   "terrio": null
+  },
+  {
    "name": "a local datum on GRS 1980 declaring ETRS89",
    "wkt": "GEOGCS[\"x\",DATUM[\"My_Local_Datum\",SPHEROID[\"GRS 1980\",6378137,298.257222101]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433],AUTHORITY[\"EPSG\",\"4258\"]]",
    "point": [

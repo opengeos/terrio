@@ -60,6 +60,12 @@ FOOT_UP = (
     'AXIS["Gravity-related height",UP]'
 )
 
+HARN = (
+    'GEOGCS["NAD83(HARN)",DATUM["NAD83_High_Accuracy_Reference_Network",'
+    'SPHEROID["GRS 1980",6378137,298.257222101]],PRIMEM["Greenwich",0],'
+    'UNIT["degree",0.0174532925199433],AUTHORITY["EPSG","4269"]]'
+)
+
 
 def greenland(code):
     """EPSG:4747's WKT 1 with its datum by name only, declaring `code`."""
@@ -188,6 +194,11 @@ def main():
             (10.0, 50.0),
         ),
         (
+            "NAD83(HARN) by name declaring NAD83",
+            HARN,
+            (-100.0, 40.0),
+        ),
+        (
             "a local datum on GRS 1980 declaring ETRS89",
             LOCAL_GRS80,
             (10.0, 50.0),
@@ -239,6 +250,7 @@ def main():
         "Web Mercator and EGM96 height declaring EPSG:9707": 9707,
         "WGS 84 + EGM96 height in US survey feet declaring EPSG:9707": 9707,
         "WGS 84 + EGM96 depth declaring EPSG:9707": 9707,
+        "NAD83(HARN) by name declaring NAD83": 4269,
         "a local datum on GRS 1980 declaring ETRS89": 4258,
         "WGS 84 on a datum named Unknown declaring EPSG:4326": 4326,
         "WGS 84 3D declaring EPSG:4326": 4326,

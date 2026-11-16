@@ -1770,9 +1770,13 @@ pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
         && !their_datums.is_empty()
         && !own_datums.iter().chain(&named_datums).any(|d| their_datums.contains(d) || their_others.contains(d))
         && !their_datums.iter().any(|d| own_others.contains(d))
-        // Datums PROJ's database gives a name in common (`GR96` for Greenland 1996, 6747, and its
-        // ensemble, 1421).
-        && !named_datums.iter().any(|d| their_datums.iter().any(|t| epsg::datums_share_a_name(*d, *t)))
+        // A named datum terrio has no CRSs on, and the code's datum, that PROJ's database gives a
+        // name in common (`GR96` for Greenland 1996, 6747, and its ensemble, 1421). Not datums
+        // terrio has CRSs on, which aliases also share (`NAD83` for NAD83 and NAD83(HARN)).
+        && !named_datums
+            .iter()
+            .filter(|d| !own_datums.contains(d))
+            .any(|d| their_datums.iter().any(|t| epsg::datums_share_a_name(*d, *t)))
         && !same_name()
     {
         return false;
