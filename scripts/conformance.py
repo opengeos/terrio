@@ -2774,13 +2774,20 @@ PROJ_CASES = {
     },
     "wkt2_bound": {
         "bound_crss_place_points_as_proj_does": (
-            "WKT 2 BOUNDCRS to WGS 84 and to another CRS (ED50, OSGB36)", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
+            "WKT 2 BOUNDCRS to WGS 84 and to another CRS (ED50, OSGB36), over WKT 2 and WKT 1 source CRSs", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
         ),
         "the_bound_transformation_is_undone_the_other_way": (
             "WKT 2 BOUNDCRS: the shift undone from a CRS on the target's datum", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
         ),
         "only_best_transforms_a_bound_crs_as_proj_does": (
             "WKT 2 BOUNDCRS under ONLY_BEST", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
+        ),
+        "a_time_specific_helmert_transformation_is_refused_and_rates_are_left_out": (
+            "WKT 2 BOUNDCRS: time-specific Helmert refused, time-dependent rates left out", IDENTICAL,
+            "PROJ 9.8.1 (pyproj 3.8.0): refused; within 1 mm",
+        ),
+        "a_bound_crs_without_its_transformation_is_refused": (
+            "WKT 2 BOUNDCRS without its transformation refused", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0): refused",
         ),
         "a_wgs84_target_is_known_by_any_datum_keyword": (
             "WKT 2 BOUNDCRS: WGS 84 target by `DATUM`, `GEODETICDATUM` or `TRF`", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
@@ -2791,6 +2798,14 @@ PROJ_CASES = {
                 "known difference: PROJ 9.8.1 reads an abridged transformation's scale as a ratio whatever its unit; "
                 "terrio reads it in its unit"
             ),
+        ),
+        "an_exact_or_evaluation_point_shift_to_an_unread_target_is_left_out": (
+            "WKT 2 BOUNDCRS: a full-matrix or evaluation-point shift to a target terrio cannot convert", NOT_COMPARED,
+            "left out with its target, as a `+towgs84` one is: placed as the source CRS alone (PROJ 9.8.1 reads a WKT 1 target)",
+        ),
+        "an_unapplied_transformation_method_is_refused": (
+            "WKT 2 BOUNDCRS: a transformation method terrio does not apply", EXPECTED_REJECTION,
+            "PROJ 9.8.1 (pyproj 3.8.0): unknown names refused; Molodensky applied, refused rather than left out",
         ),
         "an_unreadable_shift_to_another_crs_is_refused": (
             "WKT 2 BOUNDCRS: a Helmert transformation terrio cannot read", EXPECTED_REJECTION,

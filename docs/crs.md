@@ -34,11 +34,21 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
   Mollweide), `esri:102003`, `urn:ogc:def:crs:ESRI::102003`. The few whose projection terrio
   does not compute (Goode homolosine of the oceans, Peirce quincuncial and others) are refused;
 - WKT1 and WKT2 (2015 and 2019) definitions, including ESRI `.prj` WKT and WKT2 `BOUNDCRS`s with a
-  Helmert transformation: to WGS 84, as `+towgs84`, and to another CRS (ED50), followed by that
+  Helmert transformation, recognized and applied as PROJ 9.8.1 does: the 25 methods of its table
+  (geocentric translations, position vector and coordinate frame in each domain, coordinate
+  frame's full matrix with its rotation exact, geog3D to compound, the time-dependent methods
+  without their rates and reference epoch, which a `BOUNDCRS` has no coordinate epoch for, and
+  Molodensky-Badekas about its evaluation point), by their EPSG code or name, and other names by
+  the words of their convention with their kind's number of parameters. One of that family PROJ
+  does not apply (time-specific, which needs a coordinate epoch) is refused, as is any other
+  method terrio does not apply but a grid's (a name PROJ does not know, such as `PositionVector`;
+  Molodensky, EPSG 9604 and 9605, which PROJ applies), and a `BOUNDCRS` without its
+  transformation: to WGS 84, as `+towgs84`, and to another CRS (ED50), followed by that
   CRS's own transformations to WGS 84, as PROJ concatenates them (into a CRS on that CRS's datum,
   when terrio identifies it, the shift alone; into one on the source CRS's own datum, no shift,
   whatever the target; to a CRS without transformations, the source CRS's own, else PROJ's
-  ballpark); such a shift wins over the EPSG code of a source CRS terrio identifies. Their PROJ
+  ballpark); such a shift wins over the EPSG code of a source CRS terrio identifies, and over the
+  `TOWGS84` of a WKT 1 source CRS (GDAL's `GEOGCS` or `PROJCS` in `SOURCECRS`). Their PROJ
   string leaves out a shift to a CRS other than WGS 84, as PROJ's does. Their scale difference is a
   ratio in unity (`1.0000067`, as PROJ writes it) or in the unit given (parts per million, where
   PROJ 9.8.1 misreads 6.7 ppm as the ratio 6.7, which terrio does not follow); an unknown WKT2
@@ -978,7 +988,16 @@ Known differences, all of WKTs and PROJ strings without a code:
 - a WKT 2 ellipsoid in other units than metres is written `+a +b` where PROJ writes `+a +rf`
   (the same ellipsoid);
 - an ESRI `.prj` that terrio identifies as a code gets the code's order of standard parallels,
-  where PROJ keeps the WKT's.
+  where PROJ keeps the WKT's;
+- a WKT 2 `BOUNDCRS` whose WKT 1 source CRS has a `TOWGS84` of its own has no string, where
+  PROJ writes that `TOWGS84` but transforms by the bound transformation (which terrio does too).
+  As in PROJ, a `BOUNDCRS` whose position vector or coordinate frame transformation lacks any of
+  its seven parameters, or whose transformation is a Molodensky-Badekas one or a time-dependent
+  one given by its code or with its rates, has no string either;
+- a WKT 2 `BOUNDCRS` with a geocentric translations transformation given a rotation or scale, or
+  with coordinate frame's full matrix, has no string, where PROJ writes a `+towgs84` it does not
+  transform by (without the rotation; by the small-angle approximation, 9 m away for Saba to
+  WGS 84's rotations of hundreds of arc-seconds).
 
 ### Writing strict WKT 1
 
