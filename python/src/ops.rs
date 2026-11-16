@@ -1552,6 +1552,9 @@ fn warp(
             Some(Cutline::from_vector(&ds).py()?)
         }
     };
+    // Default options warn about an unknown TERRIO_WARP_GRID or TERRIO_GDAL_COMPAT. Drop warnings
+    // left by earlier calls, then issue those now: the `with_warnings` calls below would drop them.
+    let _ = terrio::warnings::take();
     let mut o = WarpOptions {
         src_srs: srs(s_srs)?,
         dst_srs: srs(t_srs)?,
@@ -1582,6 +1585,7 @@ fn warp(
         sum_scale: _sum_scale,
         ..Default::default()
     };
+    crate::issue_warnings(py, terrio::warnings::take())?;
     if let Some(value) = grid_invariant {
         o.grid_invariant = value;
     }
@@ -1600,12 +1604,10 @@ fn warp(
         }
         let initial = input_raster(py, init)?;
         let sources = input_rasters(py, src)?;
-        let out = py
-            .detach_result(|| {
-                let refs: Vec<&RasterDataset> = sources.iter().map(|(_, ds)| &**ds).collect();
-                terrio::ops::warp::warp_onto(&refs, &o, &initial.raster.data)
-            })
-            .py()?;
+        let out = crate::with_warnings(py, || {
+            let refs: Vec<&RasterDataset> = sources.iter().map(|(_, ds)| &**ds).collect();
+            terrio::ops::warp::warp_onto(&refs, &o, &initial.raster.data)
+        })?;
         return finish_raster(py, out, dst, format, compress, tile_size, bigtiff, creation_options);
     }
     enum Input {
@@ -1699,7 +1701,7 @@ fn warp(
             _ => return Err(invalid("serialized warped VRT output needs a single source path")),
         };
         let options = crate::raster::write_options_with_creation(format, compress, tile_size, bigtiff, creation_options)?;
-        py.detach_result(|| terrio::ops::warp::warp_to_path(&[source], &o, path, &options)).py()?;
+        crate::with_warnings(py, || terrio::ops::warp::warp_to_path(&[source], &o, path, &options))?;
         return Ok(PyRaster { inner: py.detach_result(|| terrio::open_raster_lazy(path)).py()? });
     }
     let first_path = match &args[0] {

@@ -215,12 +215,20 @@ pub(crate) fn invalid(message: impl Into<String>) -> PyErr {
 /// Runs `f` without the GIL and issues the warnings it records (see `terrio::warnings`) as Python
 /// `UserWarning`s, whether it succeeds or fails. Warnings left by earlier calls are dropped first,
 /// so none is attributed to this call; `f`'s own error is preferred to a warning turned into one.
-/// If shutdown has disabled imports, best-effort C warning emission must not discard the result.
 pub(crate) fn with_warnings<T: Send>(py: Python<'_>, f: impl FnOnce() -> terrio::Result<T> + Send) -> PyResult<T> {
     let _ = terrio::warnings::take();
     let result = py.detach_result(f).py();
+    let warned = issue_warnings(py, terrio::warnings::take());
+    let value = result?;
+    warned.map(|()| value)
+}
+
+/// Issues `warnings` as Python `UserWarning`s: those [`with_warnings`] takes, and those a binding
+/// records while preparing its call (such as the `TERRIO_WARP_GRID` check of default options).
+/// If shutdown has disabled imports, best-effort C warning emission must not discard the result.
+pub(crate) fn issue_warnings(py: Python<'_>, warnings: Vec<String>) -> PyResult<()> {
     let mut warned = Ok(());
-    for w in terrio::warnings::take() {
+    for w in warnings {
         let message = w.replace('\0', " ");
         let emitted = match py.import("terrio._warnings") {
             Ok(module) => module.call_method1("warn_user", (message,)).map(|_| ()),
@@ -235,8 +243,7 @@ pub(crate) fn with_warnings<T: Send>(py: Python<'_>, f: impl FnOnce() -> terrio:
         };
         warned = warned.and(emitted);
     }
-    let value = result?;
-    warned.map(|()| value)
+    warned
 }
 
 /// A CRS as Python sees it: `EPSG:xxxx` (or `ESRI:xxxx`) when the code is known, otherwise the
