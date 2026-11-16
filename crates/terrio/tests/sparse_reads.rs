@@ -62,6 +62,66 @@ fn cog_by_window_and_overview() {
     assert!(opened <= 2 * terrio::sparse::DEFAULT_BLOCK_SIZE);
 }
 
+/// Opened without the CRS engine (terrio-js/cog), a COG reads the samples, overviews and EPSG
+/// code a full open reads; a user-defined CRS has no EPSG code and is not resolved.
+#[test]
+fn cog_samples_and_epsg_without_crs_engine() {
+    let ds = raster(2000, 1500);
+    let options = terrio::RasterWriteOptions { driver: Some(terrio::formats::RasterDriver::Cog), ..Default::default() };
+    let bytes = terrio::memory::write_raster_bytes(&ds, "c.tif", &options).unwrap();
+    let file = SparseFile::new(bytes.len() as u64);
+    let (mut lean, _) = sparse(&bytes, &file, || Ok(terrio::LazyRaster::from_sparse_epsg_only(file.clone())?.unwrap()));
+    let mut whole = terrio::memory::open_raster_lazy_bytes(bytes.clone(), "c.tif").unwrap();
+    assert_eq!(lean.geotiff_epsg(), Some(32610));
+    assert_eq!((lean.width(), lean.height(), lean.overviews()), (whole.width(), whole.height(), whole.overviews()));
+    assert_eq!(lean.geo_transform(), whole.geo_transform());
+    for (w, overview) in [(Window::new(700, 300, 300, 200), None), (Window::new(10, 10, 200, 100), Some(0))] {
+        let o = WindowOptions { bands: vec![1], overview };
+        let (got, _) = sparse(&bytes, &file, || lean.read_geotiff_samples(w, &o));
+        assert_eq!(got.to_f64_vec(), whole.read_window(w, &o).unwrap().raster.data.to_f64_vec());
+    }
+    let o = WindowOptions { bands: vec![2], overview: None };
+    assert!(matches!(lean.read_geotiff_samples(Window::new(0, 0, 8, 8), &o), Err(terrio::Error::InvalidArgument(_))));
+    let o = WindowOptions { bands: vec![1], overview: Some(9) };
+    assert!(matches!(lean.read_geotiff_samples(Window::new(0, 0, 8, 8), &o), Err(terrio::Error::InvalidArgument(_))));
+    // Not a GeoTIFF: no EPSG code, and its samples are not read this way.
+    let asc = b"ncols 8\nnrows 8\nxllcorner 0\nyllcorner 0\ncellsize 1\n".iter().copied().chain("1 ".repeat(64).into_bytes()).collect();
+    let mut memory = terrio::memory::open_raster_lazy_bytes(asc, "c.asc").unwrap();
+    assert_eq!(memory.geotiff_epsg(), None);
+    let o = WindowOptions::default();
+    assert!(matches!(memory.read_geotiff_samples(Window::new(0, 0, 8, 8), &o), Err(terrio::Error::InvalidArgument(_))));
+
+    // A user-defined transverse Mercator: the full open resolves it, the lean one leaves it out.
+    let tmerc = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/user_crs/tmerc.tif")).unwrap();
+    let file = SparseFile::new(tmerc.len() as u64);
+    let (lean, _) = sparse(&tmerc, &file, || Ok(terrio::LazyRaster::from_sparse_epsg_only(file.clone())?.unwrap()));
+    assert_eq!(lean.geotiff_epsg(), None);
+    assert!(lean.crs().to_wkt().is_none_or(|w| w.is_empty()));
+    let file = SparseFile::new(tmerc.len() as u64);
+    let (full, _) = sparse(&tmerc, &file, || Ok(terrio::LazyRaster::from_sparse(file.clone())?.unwrap()));
+    assert!(full.crs().to_wkt().is_some_and(|w| w.contains("Transverse_Mercator")));
+}
+
+/// Opened without the CRS engine, a geographic GeoTIFF (GTModelTypeGeoKey 2) reads its EPSG code
+/// from GeographicTypeGeoKey.
+#[test]
+fn geographic_epsg_without_crs_engine() {
+    let cfg = terrio::RasterConfig {
+        cols: 16,
+        rows: 16,
+        bands: 1,
+        data_type: terrio::DataType::U8,
+        crs: terrio::crs::SpatialRef::from_epsg(4326).unwrap().to_crs_info(),
+        cell_size: 0.1,
+        ..Default::default()
+    };
+    let ds = terrio::RasterDataset::new(terrio::Raster::from_data_native(cfg, terrio::raster::RasterData::U8(vec![1; 256])).unwrap(), true);
+    let bytes = terrio::memory::write_raster_bytes(&ds, "g.tif", &Default::default()).unwrap();
+    let file = SparseFile::new(bytes.len() as u64);
+    let (lean, _) = sparse(&bytes, &file, || Ok(terrio::LazyRaster::from_sparse_epsg_only(file.clone())?.unwrap()));
+    assert_eq!(lean.geotiff_epsg(), Some(4326));
+}
+
 fn countries() -> Vec<terrio::Layer> {
     let mut layer = terrio::Layer::new("squares");
     layer.add_field(terrio::FieldDef::new("id", terrio::FieldType::Integer));

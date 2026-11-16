@@ -704,6 +704,8 @@ def suite_raster_manage(ctx):
     suite = Suite("raster-manage", "Raster management", "GDAL 3.13.3",
                   "Creation types/bands, metadata escaping, nodata, internal overview add/delete and external "
                   "overview add/delete beside read-only GeoTIFFs (left unchanged), "
+                  "two-band average overviews of an odd size (non-integer ratios), internal and external "
+                  "(band-separate .ovr), "
                   "exact Landsat Byte/UInt16/Float32 mode on uneven levels, "
                   "internal mask overviews added, refreshed (whole and over an extent) and added again over "
                   "gdaladdo's, and real DEM subset updates: masks, mask blocks, type, nodata, CRS and "
@@ -2627,11 +2629,12 @@ def suite_crs(ctx):
         "`BOUNDCRS` (wkt2_bound.rs), Mercator variant A, unknown node keywords and NULs "
         "(wkt1_proj_reads.rs), grads and prime meridians (grads_and_prime_meridians.rs), datums "
         "known by ID or name (wkt_datum_shift.rs), WKTs PROJ does not resolve to their EPSG CRS "
-        "(wkt_unresolved.rs), and PROJ-string ellipsoid parameters and PROJ4 extensions "
+        "(wkt_unresolved.rs), root codes that are not the CRS (wkt_root_code.rs), unused latitudes "
+        "of world projections (wkt2_world_latitude.rs), and PROJ-string ellipsoid parameters and PROJ4 extensions "
         "(proj_ellipsoid_shape.rs, proj_ellipsoid_registry.rs), and deprecated EPSG codes by their own "
         "definition (epsg_deprecated.rs); not compared there: the known "
         "differences each row names (a scale in parts per million, ESRI ATF (Paris), PROJ's datum "
-        "pivot and renamed datums, #1012). "
+        "pivot and renamed datums, south-orientated Transverse Mercator with offsets, #1012). "
         "Identical: within 1 mm. Within tolerance: within 1 cm (forward, inverse) or 1 m (CRS to "
         "CRS, where the datum transformations GDAL picks can differ by area of use). Known "
         "differences: RRAF 1991 (EPSG:4640 and 2989), deprecated CRSs whose own datum PROJ chains "
@@ -2784,6 +2787,31 @@ PROJ_CASES = {
         "wkt2_exports_follow_geographic_and_method_axis_rules": (
             "WKT 2 export: method-defined projected axes kept, as PROJ 9.8.1", IDENTICAL,
             "PROJ 9.8.1: a point on a west-counted Mars CRS within 1e-10 degrees",
+        ),
+    },
+    "wkt_root_code": {
+        "a_wkt_is_read_by_its_nodes_not_its_root_code": (
+            "WKT root code not the CRS of its nodes, and an ESRI name on another datum, with controls (34 cases)", IDENTICAL,
+            "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm, or refused as PROJ refuses; a declared code that is not the CRS not kept",
+        ),
+        "an_unread_method_under_another_code_is_refused": (
+            "WKT 2 of a method terrio does not read (Belgian Lambert 72) declaring another code", EXPECTED_REJECTION,
+            "refused, not read as the code; PROJ 9.8.1 reads its content (#1012 item 43)",
+        ),
+    },
+    "wkt2_world_latitude": {
+        "an_unused_latitude_of_a_world_projection_is_ignored": (
+            "WKT 2 world projections with an unused latitude of natural origin (10 cases)", IDENTICAL,
+            "PROJ 9.8.1 (pyproj 3.8.0): PROJ string and point within 1 mm",
+        ),
+    },
+    "south_orientated_offsets": {
+        "south_orientated_transverse_mercator_subtracts_its_offsets": (
+            "South-orientated Transverse Mercator with a false easting and northing", NOT_COMPARED,
+            (
+                "PROJ 9.8.1 refuses it; checked against EPSG method 9808 (W = FE - x, S = FN - y) from "
+                "the placement without offsets, which matches PROJ"
+            ),
         ),
     },
     "wkt2_bound": {

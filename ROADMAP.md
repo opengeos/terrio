@@ -564,6 +564,11 @@ Python:
       synthetic and real files (257 checks, none differing); subdatasets (`group=`,
       `variable=`), GCPs and RPCs as rioxarray opens, stores, writes and (GCPs) reprojects them,
       identical to rioxarray on an ESA CCI soil moisture netCDF and ICEYE GCP and RPC images.
+- [x] terrio's raster operations on the `.terrio` accessor: `dem`, `sieve`, `proximity`,
+      `fill_nodata`, `reclassify`, `viewshed` (DataArrays and Datasets, band by band),
+      `polygonize`, `contour`, `footprint` and `zonal_stats` (a `terrio.Layer`), and
+      `terrio.xarray.rasterize` on an array's grid; the same pixels as the terrio functions on
+      the array written to a file.
 - [x] Wheels with the GDAL backend as an optional extra, for the formats terrio doesn't read itself.
       Done: the Python package's `gdal` feature, built from source against an installed GDAL
       (`maturin build --features gdal`).
@@ -621,7 +626,9 @@ WebAssembly (the `terrio-js` npm package):
       whole-program LTO, the codecs optimized for speed and the rest for size, and wasm-opt -Oz:
       both decode GeoTIFFs and write COGs as fast in Node.js, and the full module decodes JPEG 2000.
       The separate `terrio-js/zarr` module reads Zarr arrays over HTTP by window and band,
-      retaining declared EPSG codes without including the CRS engine (#900).
+      retaining declared EPSG codes without including the CRS engine (#900). The separate
+      `terrio-js/cog` module reads GeoTIFFs and COGs over HTTP by window, band and overview the
+      same way, with the EPSG code of their GeoKeys.
 - [x] Datasets larger than 4 GB, with the 64-bit memory proposal (memory64) where runtimes support
       it. Done: a memory64 module, `terrio-js/memory64` (every format, up to 16 GB), which
       `load({ memory64: true })` picks where the runtime has 64-bit memories (Node.js 24+, Chrome

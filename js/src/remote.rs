@@ -191,36 +191,11 @@ pub async fn open_url(url: String, options: JsValue) -> Result<RemoteDataset, Js
         #[cfg(feature = "zarr")]
         return open_zarr(path.to_string(), fetcher, o).await;
     }
-    // Blocks of 512 bytes to 16 MiB: the first request is one block.
-    let block = o.block_size.clamp(512, 16 << 20);
     // The first block: the file's length, and its first bytes.
-    let first = fetcher.response(fetcher.request(Some((0, block - 1)), false)?).await?;
-    // A server that ignores `Range` sends the whole file: every block is then held, and nothing
-    // more is requested.
-    let len = match (first.status, first.total) {
-        (206, Some(total)) => total,
-        (206, None) => match fetcher.head_len().await? {
-            Some(len) => len,
-            None => {
-                return Err(JsError::new(&format!(
-                    "{url}: the server's response has no Content-Range (cross-origin servers must expose it) and no Content-Length"
-                )));
-            }
-        },
-        _ => first.data.len() as u64,
-    };
-    let file = SparseFile::with_block_size(len, block);
-    if first.status == 206 {
-        let expected = block.min(len);
-        first.validate_content_range(terrio::sparse::ObjectRange::At(0, expected), Some(len))?;
-        if first.data.len() as u64 != expected {
-            return Err(JsError::new("initial range response has an unexpected length"));
-        }
-    }
-    file.insert(0, &first.data);
+    let (file, first) = fetcher.open_file(o.block_size).await?;
     let path = url.split(['?', '#']).next().unwrap_or(&url);
     let name = path.rsplit('/').next().filter(|n| !n.is_empty()).unwrap_or("remote").to_string();
-    let format = detect(&name, &first.data, o.format.as_deref())?;
+    let format = detect(&name, &first, o.format.as_deref())?;
     check_built(format)?;
     let state = Rc::new(State { remote: Remote::new(file, None, fetcher, o.cache_size), name, format, reader: RefCell::new(None) });
     let (file, name) = (state.remote.file.clone(), state.name.clone());

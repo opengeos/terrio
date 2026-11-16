@@ -215,6 +215,14 @@ struct Catalog {
     records: Vec<Record>,
 }
 
+/// The projection method of an EPSG CRS of the catalog, by EPSG's name (`Lambert Conic Conformal
+/// (2SP Belgium)`).
+pub(crate) fn epsg_method(code: u32) -> Option<&'static str> {
+    let c = catalog();
+    let r = c.records.iter().find(|r| r.authority == "EPSG" && r.code == code)?;
+    r.method.and_then(|i| c.methods.get(i)).map(String::as_str)
+}
+
 fn catalog() -> &'static Catalog {
     static CATALOG: OnceLock<Catalog> = OnceLock::new();
     CATALOG.get_or_init(|| parse(&crate::epsg::decompress(DATA)))

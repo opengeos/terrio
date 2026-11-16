@@ -715,7 +715,13 @@ fn projection(k: &GeoKeys, to_meter: f64) -> Option<String> {
         25 => format!("vandg +lon_0={lon0} {false_xy}"),
         26 => format!("nzmg +lat_0={lat0} +lon_0={lon0} {false_xy}"),
         // Transverse Mercator, south-orientated: x westwards and y southwards.
-        27 => format!("tmerc +axis=wsu +lat_0={lat0} +lon_0={lon0} +k={scale} {false_xy}"),
+        // Its false easting and northing subtracted (EPSG method 9808: W = FE - x, S = FN - y),
+        // where `+axis=wsu` negates `+x_0`/`+y_0` with x and y.
+        27 => format!(
+            "tmerc +axis=wsu +lat_0={lat0} +lon_0={lon0} +k={scale} +x_0={} +y_0={}",
+            crate::wkt1::negated(x0),
+            crate::wkt1::negated(y0)
+        ),
         28 => format!("cea +lat_ts={} +lon_0={lon0} {false_xy}", lat1.unwrap_or(0.0)),
         _ => return None,
     })

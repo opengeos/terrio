@@ -6,6 +6,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
+use terrio::raster::RasterData;
 use terrio::sparse::{self, ObjectRange, SparseFile, SparseObjects};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
@@ -458,6 +459,28 @@ pub fn server_runtime() -> bool {
         && get(&global, "document").is_undefined()
 }
 
+/// Pixels of `bands` bands, band after band, as one typed array of their type per band.
+pub fn typed_bands(data: RasterData, count: usize) -> js_sys::Array {
+    macro_rules! split {
+        ($v:expr, $t:ty) => {{
+            let n = $v.len() / count.max(1);
+            $v.chunks(n.max(1)).take(count).map(|b| JsValue::from(<$t>::from(b))).collect()
+        }};
+    }
+    match data {
+        RasterData::U8(v) => split!(v, js_sys::Uint8Array),
+        RasterData::I8(v) => split!(v, js_sys::Int8Array),
+        RasterData::U16(v) => split!(v, js_sys::Uint16Array),
+        RasterData::I16(v) => split!(v, js_sys::Int16Array),
+        RasterData::U32(v) => split!(v, js_sys::Uint32Array),
+        RasterData::I32(v) => split!(v, js_sys::Int32Array),
+        RasterData::U64(v) => split!(v, js_sys::BigUint64Array),
+        RasterData::I64(v) => split!(v, js_sys::BigInt64Array),
+        RasterData::F32(v) => split!(v, js_sys::Float32Array),
+        RasterData::F64(v) => split!(v, js_sys::Float64Array),
+    }
+}
+
 impl Fetcher {
     /// A fetcher of `url` with the `fetch` and `headers` of `options` (the global `fetch` without
     /// one), and the rest of the options, without those two.
@@ -480,6 +503,39 @@ impl Fetcher {
         let fetcher =
             Self { url: url.to_string(), fetch, headers, allow_missing_metadata403: false, requests: Cell::new(0), bytes: Cell::new(0) };
         Ok((fetcher, rest))
+    }
+
+    /// Fetches a file's first block of `block` bytes (clamped to 512 bytes–16 MiB), which also
+    /// tells the file's length, and returns the file in blocks of that size, holding them, and
+    /// those first bytes. A server that ignores `Range` sends the whole file: every block is then
+    /// held, and nothing more is requested.
+    pub async fn open_file(&self, block: u64) -> Result<(SparseFile, Vec<u8>), JsError> {
+        let block = block.clamp(512, 16 << 20);
+        let first = self.response(self.request(Some((0, block - 1)), false)?).await?;
+        let len = match (first.status, first.total) {
+            (206, Some(total)) => total,
+            (206, None) => match self.head_len().await? {
+                Some(len) => len,
+                None => {
+                    return Err(JsError::new(&format!(
+                        "{}: the server's response has no Content-Range (cross-origin servers must expose it) and no Content-Length",
+                        // Without the query, which may hold a signed URL's credentials.
+                        self.url.split(['?', '#']).next().unwrap_or(&self.url)
+                    )));
+                }
+            },
+            _ => first.data.len() as u64,
+        };
+        let file = SparseFile::with_block_size(len, block);
+        if first.status == 206 {
+            let expected = block.min(len);
+            first.validate_content_range(ObjectRange::At(0, expected), Some(len))?;
+            if first.data.len() as u64 != expected {
+                return Err(JsError::new("initial range response has an unexpected length"));
+            }
+        }
+        file.insert(0, &first.data);
+        Ok((file, first.data))
     }
 }
 

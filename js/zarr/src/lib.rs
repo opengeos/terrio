@@ -14,9 +14,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
-use terrio::raster::RasterData;
 use terrio::sparse::{SparseFile, SparseObjects};
-use terrio_js_fetch::{Fetcher, MAX_PARALLEL, Remote, get, server_runtime};
+use terrio_js_fetch::{Fetcher, MAX_PARALLEL, Remote, get, server_runtime, typed_bands};
 use wasm_bindgen::prelude::*;
 
 fn err(e: terrio::Error) -> JsError {
@@ -86,28 +85,6 @@ pub async fn open_zarr(url: String, options: JsValue) -> Result<ZarrArray, JsErr
         .map_err(err)?;
     let array = opened.ok_or_else(|| JsError::new("Zarr: not opened"))?;
     Ok(ZarrArray { inner: Rc::new(Inner { remote, array: RefCell::new(array) }) })
-}
-
-/// Pixels of `bands` bands, band after band, as one typed array of their type per band.
-fn bands(data: RasterData, count: usize) -> js_sys::Array {
-    macro_rules! split {
-        ($v:expr, $t:ty) => {{
-            let n = $v.len() / count.max(1);
-            $v.chunks(n.max(1)).take(count).map(|b| JsValue::from(<$t>::from(b))).collect()
-        }};
-    }
-    match data {
-        RasterData::U8(v) => split!(v, js_sys::Uint8Array),
-        RasterData::I8(v) => split!(v, js_sys::Int8Array),
-        RasterData::U16(v) => split!(v, js_sys::Uint16Array),
-        RasterData::I16(v) => split!(v, js_sys::Int16Array),
-        RasterData::U32(v) => split!(v, js_sys::Uint32Array),
-        RasterData::I32(v) => split!(v, js_sys::Int32Array),
-        RasterData::U64(v) => split!(v, js_sys::BigUint64Array),
-        RasterData::I64(v) => split!(v, js_sys::BigInt64Array),
-        RasterData::F32(v) => split!(v, js_sys::Float32Array),
-        RasterData::F64(v) => split!(v, js_sys::Float64Array),
-    }
 }
 
 #[wasm_bindgen]
@@ -212,7 +189,7 @@ impl ZarrArray {
             // An empty list reads every band, as no list does.
             let wanted = numbers("bands")?.filter(|b| !b.is_empty()).unwrap_or_else(|| (1..=count).collect());
             let data = inner.remote.run(|| false, || inner.array.borrow_mut().read(window, &wanted)).await?.map_err(err)?;
-            Ok(bands(data, wanted.len()).into())
+            Ok(typed_bands(data, wanted.len()).into())
         })
     }
 }
