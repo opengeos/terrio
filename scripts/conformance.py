@@ -2775,6 +2775,20 @@ PROJ_CASES = {
             "PROJ 9.8.1: a point on a west-counted Mars CRS within 1e-10 degrees",
         ),
     },
+    "esri_datum_altered_ellipsoid": {
+        "an_esri_datum_on_an_altered_ellipsoid_keeps_its_transformation": (
+            "Esri D_Monte_Mario on an International 1924 of another axis (3 points)", IDENTICAL,
+            "PROJ 9.8.1 (pyproj 3.8.0, no grids): Monte Mario to WGS 84 (4) on the file's ellipsoid, within 1e-9°",
+        ),
+        "esri_datums_on_altered_ellipsoids_keep_their_transformations": (
+            "Esri OSGB 1936, ED50 and Tokyo on an ellipsoid 88 m shorter", IDENTICAL,
+            "PROJ 9.8.1 (pyproj 3.8.0, no grids): the datum's transformation on the file's ellipsoid, within 1e-9°",
+        ),
+        "a_datum_named_with_spaces_on_an_altered_ellipsoid_is_not_found_by_its_name": (
+            "Datum names PROJ finds (underscores, D_) or not (spaces, EPSG alias) on an altered ellipsoid (8 cases)", IDENTICAL,
+            "PROJ 9.8.1 (pyproj 3.8.0, no grids): shifted or ballpark as PROJ",
+        ),
+    },
     "wkt_root_code": {
         "a_wkt_is_read_by_its_nodes_not_its_root_code": (
             "WKT root code not the CRS of its nodes, and an ESRI name on another datum, with controls (34 cases)", IDENTICAL,
