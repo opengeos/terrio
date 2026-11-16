@@ -202,6 +202,7 @@ impl Resampling {
 
     /// The interpolation kernel's weight at distance `x` (in pixels), as GDAL computes it. Weights
     /// are normalized by their sum, so the B-spline's constant factor is left out.
+    #[inline]
     pub(crate) fn weight(self, x: f64) -> f64 {
         match self {
             Self::Bilinear => {
@@ -364,6 +365,7 @@ pub(crate) fn convert_value(v: f64, dt: DataType) -> f64 {
 
 /// Converts a value as GDAL's warp kernel does: integers are rounded half up (`floor(v + 0.5)`) and
 /// clamped.
+#[inline]
 pub(crate) fn warp_round(v: f64, dt: DataType) -> f64 {
     match dt {
         DataType::F64 => v,

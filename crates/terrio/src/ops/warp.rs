@@ -1649,7 +1649,7 @@ impl<'a> Plan<'a> {
         let nodata = self.src_nodata(k, o);
         let unified = o.unified_src_nodata.unwrap_or(matches!(o.src_nodata, Nodata::Values(_))) && self.bands > 1;
         let translation = t.ct.is_none() && s.gcp.is_none() && is_pixel_translation(&s.grid.geo_transform, &self.grid.geo_transform);
-        let ctx = WarpContext {
+        let mut ctx = WarpContext {
             kernel_version: o.kernel_version,
             grid_invariant: o.grid_invariant,
             t,
@@ -1659,6 +1659,9 @@ impl<'a> Plan<'a> {
             resampling: o.resampling,
             translation,
             memory_limit: o.memory_limit,
+            resident: source_bytes.is_none(),
+            guessed: false,
+            missed: std::sync::atomic::AtomicBool::new(false),
             bands: self.bands,
             out_bits: self.out_type.size_bytes() * 8,
             source_bits: source_bytes.map_or(self.out_type.size_bytes() * self.bands * 8, |bytes| bytes * 8),
@@ -1678,6 +1681,12 @@ impl<'a> Plan<'a> {
             poles: std::sync::OnceLock::new(),
             sum_scale: s.sum_scale,
         };
+        ctx.guessed = !ctx.resident
+            && ctx.grid_invariant
+            && ctx.resampling != Resampling::Sum
+            && !ctx.resampling.is_area_based()
+            && ctx.source_extra.is_none()
+            && ctx.global_longitude_turn().is_none();
         let mut chunks = Vec::new();
         if let Some((x, y, w, h)) = self.rpc_window(k, t, o) {
             ctx.collect_chunks(x, y, w, h, &mut chunks);
@@ -2080,19 +2089,28 @@ fn warp_reader_selected(
             warp_chunks(std::slice::from_ref(c), bands, &storage, target, |c, sink, rows| ctx.store_sum_strips(c, &sums, sink, rows));
             continue;
         }
-        let (window, valid, masked) = read(crate::Window::new(c.sx, c.sy, c.sw, c.sh))?;
-        if masked {
-            ctx.global_validity = true;
-            storage.src_masked = true;
+        let mut c = *c;
+        loop {
+            ctx.missed.store(false, std::sync::atomic::Ordering::Relaxed);
+            let (window, valid, masked) = read(crate::Window::new(c.sx, c.sy, c.sw, c.sh))?;
+            if masked {
+                ctx.global_validity = true;
+                storage.src_masked = true;
+            }
+            let sn = c.sw * c.sh;
+            // The chunks partition the output: each finds it at its initial value, so a chunk
+            // warped again overwrites what it wrote.
+            let target = Target { out: &mut out, width: grid.width, n, fill: &fill, out_type, first: true };
+            crate::pixel::with_data!(&window.raster.data, v => {
+                let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
+                let data = SrcData { bands: &typed, valid: &valid, width: c.sw, origin: (c.sx, c.sy) };
+                warp_source(&ctx, std::slice::from_ref(&c), &data, &storage, target);
+            });
+            match ctx.exact_chunk(&c) {
+                Some(exact) => c = exact,
+                None => break,
+            }
         }
-        let sn = c.sw * c.sh;
-        // The chunks partition the output: each finds it at its initial value.
-        let target = Target { out: &mut out, width: grid.width, n, fill: &fill, out_type, first: true };
-        crate::pixel::with_data!(&window.raster.data, v => {
-            let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
-            let data = SrcData { bands: &typed, valid: &valid, width: c.sw, origin: (c.sx, c.sy) };
-            warp_source(&ctx, std::slice::from_ref(c), &data, &storage, target);
-        });
     }
     t.check_policy()?;
     let mut ds = output_dataset(grid, out, bands, p.dst_nodata, &p.dst_srs)?;
@@ -2278,7 +2296,7 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
     if paths.len() != 1 || o.cutline.is_some() || super::strips::overwrites(path, paths) {
         return crate::write_raster_dataset(&warp_paths(paths, o)?, path, options);
     }
-    let mut src = crate::open_raster_lazy(&paths[0])?;
+    let src = crate::open_raster_lazy(&paths[0])?;
     let header = src.header();
     let o = &*with_file_gcps(o, &paths[0], &header)?;
     let mut p = Plan::new(&[&header], o)?;
@@ -2353,42 +2371,65 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
         Window(Box<RasterDataset>, Option<Vec<bool>>),
         Summed(SumStrips),
     }
+    // Shared by the reading thread and, to read a chunk again from its exact window (see
+    // `WarpContext::guessed`), the warping one.
+    let src = std::sync::Mutex::new(src);
+    let read_window = |c: &Chunk| -> Result<(RasterDataset, Option<Vec<bool>>)> {
+        let options = crate::WindowOptions { overview, bands: Vec::new() };
+        let window = crate::Window::new(c.sx, c.sy, c.sw, c.sh);
+        let mut src = src.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok((src.read_window(window, &options)?, source_mask(&mut *src, window, overview)?))
+    };
     super::strips::pipelined(
         chunks.len(),
         |i| {
             let c = &chunks[i];
-            let options = crate::WindowOptions { overview, bands: Vec::new() };
             let strip = ctx.sum_strip_rows(c);
             if strip < c.sh {
+                let options = crate::WindowOptions { overview, bands: Vec::new() };
+                let mut src = src.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let sums = ctx.sum_in_strips(c, strip, |window| {
                     let data = src.read_window(window, &options)?;
                     let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&data.raster, b)).collect();
-                    let valid = validity(&src_bands, &nodata, unified, source_mask(&mut src, window, overview)?);
+                    let valid = validity(&src_bands, &nodata, unified, source_mask(&mut *src, window, overview)?);
                     Ok(Strip { data, valid })
                 })?;
                 return Ok(ChunkRead::Summed(sums));
             }
-            let window = crate::Window::new(c.sx, c.sy, c.sw, c.sh);
-            Ok(ChunkRead::Window(Box::new(src.read_window(window, &options)?), source_mask(&mut src, window, overview)?))
+            let (window, mask) = read_window(c)?;
+            Ok(ChunkRead::Window(Box::new(window), mask))
         },
         |i, read| {
-            let c = &chunks[i];
+            let mut c = chunks[i];
             // The chunk's part of the output, as `f64`: the output's initial value (the chunks of
             // a source don't overlap), warped.
             let mut staged: Vec<Vec<f64>> = fill.iter().map(|fill| vec![*fill; c.dw * c.dh]).collect();
             let sink = storage.sink(storage.first_nodata().is_some_and(|nd| is_nodata(warp_round(nd, storage.work_type), nd)));
-            let part = chunk_rows(&mut staged, c.dw, &Chunk { dx: 0, dy: 0, ..*c });
             match read {
-                ChunkRead::Summed(sums) => ctx.store_sum_strips(c, &sums, &sink, part),
+                ChunkRead::Summed(sums) => {
+                    ctx.store_sum_strips(&c, &sums, &sink, chunk_rows(&mut staged, c.dw, &Chunk { dx: 0, dy: 0, ..c }))
+                }
                 ChunkRead::Window(window, mask) => {
-                    let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&window.raster, b)).collect();
-                    let valid = validity(&src_bands, &nodata, unified, mask);
-                    let sn = c.sw * c.sh;
-                    crate::pixel::with_data!(&window.raster.data, v => {
-                        let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
-                        let data = SrcData { bands: &typed, valid: &valid, width: c.sw, origin: (c.sx, c.sy) };
-                        ctx.warp_chunk(c, &data, &sink, part);
-                    });
+                    let (mut window, mut mask) = (*window, mask);
+                    loop {
+                        ctx.missed.store(false, std::sync::atomic::Ordering::Relaxed);
+                        let part = chunk_rows(&mut staged, c.dw, &Chunk { dx: 0, dy: 0, ..c });
+                        let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&window.raster, b)).collect();
+                        let valid = validity(&src_bands, &nodata, unified, mask);
+                        let sn = c.sw * c.sh;
+                        crate::pixel::with_data!(&window.raster.data, v => {
+                            let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
+                            let data = SrcData { bands: &typed, valid: &valid, width: c.sw, origin: (c.sx, c.sy) };
+                            ctx.warp_chunk(&c, &data, &sink, part);
+                        });
+                        let Some(exact) = ctx.exact_chunk(&c) else { break };
+                        // Warped again from the initial value, without the first attempt's warnings.
+                        c = exact;
+                        staged.iter_mut().zip(&fill).for_each(|(band, fill)| band.fill(*fill));
+                        sink.nudged.store(false, Ordering::Relaxed);
+                        sink.moved_all.store(false, Ordering::Relaxed);
+                        (window, mask) = read_window(&c)?;
+                    }
                 }
             }
             sink.finish();
@@ -2649,6 +2690,51 @@ fn square_scales(p: [(f64, f64); 4]) -> Option<(f64, f64)> {
     (x > 1e-10 && y > 1e-10).then_some((1.0 / x, 1.0 / y))
 }
 
+/// Whether both of [`square_scales`]'s scales of `p` are surely above 0.5 (or it has none),
+/// without its square roots: a margin below the threshold leaves rounding out of the question.
+/// `false` means "compute them". It repeats `square_scales`' choice between GDAL 3.13.3's
+/// transformed-square formulas (the edge tests and their 0.35 and 0.1 thresholds): the two must
+/// change together.
+fn square_scales_above_half(p: [(f64, f64); 4]) -> bool {
+    let edge = |a: usize, b: usize| (p[b].0 - p[a].0, p[b].1 - p[a].1);
+    let length2 = |v: (f64, f64)| v.0 * v.0 + v.1 * v.1;
+    let (v01, v23) = (edge(0, 1), edge(2, 3));
+    let (a, b, c, d) = (length2(v01), length2(v23), length2(edge(0, 2)), length2(edge(1, 3)));
+    if v01.1.abs() < 0.35 * v01.0 && v23.1.abs() < 0.35 * v23.0 && (a - b).abs() < 0.1 * a.abs() && (c - d).abs() < 0.1 * c.abs() {
+        // sqrt(sqrt(15.9)) < 1.9969: each scale, its inverse, is above 0.5008.
+        a * b < 15.9 && c * d < 15.9
+    } else {
+        let poly = [p[0], p[1], p[3], p[2]];
+        let mut area = 0.0;
+        for i in 0..4 {
+            area += poly[i].0 * (poly[(i + 1) % 4].1 - poly[(i + 3) % 4].1);
+        }
+        // sqrt(0.5 * 7.9) < 1.988: the scale is above 0.503.
+        area.abs() < 7.9
+    }
+}
+
+/// Source pixels added around GDAL's estimate of a chunk's window when it is guessed (see
+/// `WarpContext::guessed`): enough for the estimate's approximation to hold every tap mostly.
+const GUESS_PAD: usize = 2;
+
+#[cfg(test)]
+thread_local! {
+    /// Source pixels taken off every side of a guessed window, in tests.
+    static GUESS_SHRINK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Chunks warped again from their exact window on this thread, in tests.
+    static GUESS_RETRIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Longitude facts of a warp's source, constant over the warp (see [`WarpContext::source_wrap`]).
+#[derive(Clone, Copy)]
+struct SourceWrap {
+    /// The source covers exactly one turn of longitude: columns wrap around.
+    global: bool,
+    /// A regional source's columns per turn, to bring points from the next turn back onto it.
+    regional_turn: Option<f64>,
+}
+
 struct WarpContext<'a> {
     kernel_version: KernelVersion,
     grid_invariant: bool,
@@ -2659,6 +2745,14 @@ struct WarpContext<'a> {
     resampling: Resampling,
     translation: bool,
     memory_limit: f64,
+    /// The source is in memory, whole (`warp`, not a reader): with stable sampling, a chunk
+    /// takes the whole source as its window instead of bounding its kernels pixel by pixel.
+    resident: bool,
+    /// Stable sampling of a read source (`resident` false, a point kernel): chunks read a window
+    /// estimated from their edges, padded, and [`Self::warp_row_with`] checks that it holds every
+    /// tap, setting `missed` otherwise; the chunk is then warped again from its exact window.
+    guessed: bool,
+    missed: std::sync::atomic::AtomicBool,
     bands: usize,
     out_bits: usize,
     /// Source data held per pixel during a read, including simultaneous conversion buffers.
@@ -2712,7 +2806,15 @@ struct Target<'a> {
 /// stored back. The chunks of a source partition the output (`collect_chunks`), and the values
 /// stored are already rounded to the output type (`Sink::value`), so storing them back is exact.
 fn warp_source<T: crate::pixel::Pixel>(ctx: &WarpContext, chunks: &[Chunk], data: &SrcData<T>, storage: &Storage, t: Target) {
-    warp_chunks(chunks, data.bands.len(), storage, t, |c, sink, rows| ctx.warp_chunk(c, data, sink, rows));
+    warp_chunks(chunks, data.bands.len(), storage, t, |c, sink, rows| {
+        ctx.warp_chunk(c, data, sink, rows);
+        if ctx.missed.load(Ordering::Relaxed) {
+            // The chunk is warped again from its exact window (see `exact_chunk`): this attempt's
+            // nodata warnings are not published.
+            sink.nudged.store(false, Ordering::Relaxed);
+            sink.moved_all.store(false, Ordering::Relaxed);
+        }
+    });
 }
 
 /// [`warp_source`], each chunk's part of the output (its rows, `bands` bands) warped by `warp`.
@@ -3053,11 +3155,32 @@ impl WarpContext<'_> {
             split(out);
             return;
         }
+        let stable_window = self.grid_invariant && self.resampling != Resampling::Sum && !self.uses_angular_area();
+        if stable_window && self.resident {
+            // The whole source is in memory and stable kernels are clipped only at its edges: its
+            // whole extent bounds every kernel, as `source_window` would find pixel by pixel, and
+            // a pixel that maps outside it is skipped as there. The values are the same.
+            let (w, h) = (self.src_w as f64, self.src_h as f64);
+            out.push(Chunk { dx, dy, dw, dh, sx: 0, sy: 0, sw: self.src_w, sh: self.src_h, raw_w: w, raw_h: h });
+            return;
+        }
         // Polygon kernels already bound every footprint in the estimate under both policies.
-        let win = if self.grid_invariant && self.resampling != Resampling::Sum && !self.uses_angular_area() {
-            self.source_window(dx, dy, dw, dh)
-        } else {
-            estimated
+        let win = match estimated {
+            // GDAL's estimate from the chunk's edges, padded: the warp checks it holds every tap
+            // (see `guessed`), so the source window is not bounded pixel by pixel up front.
+            Some((x, y, w, h, fill, rw, rh)) if stable_window && self.guessed && w > 0 && h > 0 => {
+                let (x0, y0) = (x.saturating_sub(GUESS_PAD), y.saturating_sub(GUESS_PAD));
+                let (x1, y1) = ((x + w + GUESS_PAD).min(self.src_w), (y + h + GUESS_PAD).min(self.src_h));
+                // Tests shrink the guess to make chunks miss taps and warp again.
+                #[cfg(test)]
+                let (x0, y0, x1, y1) = {
+                    let shrink = GUESS_SHRINK.with(std::cell::Cell::get);
+                    ((x0 + shrink).min(x1), (y0 + shrink).min(y1), x1.saturating_sub(shrink).max(x0), y1.saturating_sub(shrink).max(y0))
+                };
+                (x1 > x0 && y1 > y0).then(|| (x0, y0, x1 - x0, y1 - y0, fill, rw, rh)).or_else(|| self.source_window(dx, dy, dw, dh))
+            }
+            _ if stable_window => self.source_window(dx, dy, dw, dh),
+            _ => estimated,
         };
         if let Some((x, y, w, h, _, rw, rh)) = win {
             (sx, sy, sw, sh, raw_w, raw_h) = (x, y, w, h, rw, rh);
@@ -3071,10 +3194,70 @@ impl WarpContext<'_> {
         }
     }
 
+    /// After a chunk is warped from a guessed window (see `guessed`): `None` when the window held
+    /// every tap, else the chunk with its exact window, bounded pixel by pixel, to warp again.
+    fn exact_chunk(&self, c: &Chunk) -> Option<Chunk> {
+        if !self.missed.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
+        // An exact window holds every tap: warped from it, the chunk is not checked again.
+        let (sx, sy, sw, sh, _, raw_w, raw_h) = self.source_window(c.dx, c.dy, c.dw, c.dh)?;
+        let exact = Chunk { sx, sy, sw, sh, raw_w, raw_h, ..*c };
+        #[cfg(test)]
+        GUESS_RETRIES.with(|n| n.set(n.get() + 1));
+        ((sx, sy, sw, sh) != (c.sx, c.sy, c.sw, c.sh) && sw > 0 && sh > 0).then_some(exact)
+    }
+
+    /// The source pixels `(x0, y0, x1, y1)` (end exclusive, not clipped to the source) that a
+    /// stable point kernel reads around source point `(x, y)`: `scale` is the pixel's kernel
+    /// scales, `None` for nearest. [`Self::source_window`] bounds a chunk's window with it, and
+    /// a guessed window is checked against it (see `guessed`).
+    #[inline(always)]
+    fn tap_box(&self, x: f64, y: f64, scale: Option<(f64, f64)>) -> (f64, f64, f64, f64) {
+        let Some((sx, sy)) = scale else {
+            // Sampling validates the unrounded centre, then selects its epsilon-rounded tap.
+            // Keep both when they straddle an integer.
+            return (x.floor(), y.floor(), (x + 1e-10).floor() + 1.0, (y + 1e-10).floor() + 1.0);
+        };
+        let four = matches!(self.resampling, Resampling::Bilinear | Resampling::Cubic)
+            && match self.kernel_version {
+                KernelVersion::Gdal312 => sx >= 0.95 && sy >= 0.95,
+                KernelVersion::Gdal313 => sx > 0.5 && sy > 0.5,
+            };
+        let (x, y) = ((x - 0.5).floor(), (y - 0.5).floor());
+        if four {
+            let before = if self.resampling == Resampling::Cubic { 1.0 } else { 0.0 };
+            (x - before, y - before, x + before + 2.0, y + before + 2.0)
+        } else {
+            let radius = self.resampling.radius() as f64;
+            let xr = (radius / sx.min(1.0)).ceil();
+            let yr = (radius / sy.min(1.0)).ceil();
+            let first = ((self.resampling.radius() + 1) % 2) as f64;
+            (x + first - xr, y + first - yr, x + xr + 1.0, y + yr + 1.0)
+        }
+    }
+
+    /// [`Self::source_point`]'s longitude rules, the same for every point of a warp: computed
+    /// once per row, not per pixel.
+    fn source_wrap(&self) -> SourceWrap {
+        SourceWrap {
+            global: self.global_longitude_turn().is_some(),
+            regional_turn: self.longitude_turn().filter(|turn| self.src_w as f64 <= *turn),
+        }
+    }
+
     /// Retry/edge rules follow GDAL 3.13.3 `GWKCheckAndComputeSrcOffsets()`.
     /// The sample point is validated against the source, not a requested crop. Near-edge
     /// approximations use the same exact retry in a full warp and in a narrow window.
-    fn source_point(&self, point: Option<(f64, f64)>, dx: f64, dy: f64, bounds: (usize, usize, usize, usize)) -> Option<(f64, f64)> {
+    #[inline(always)]
+    fn source_point(
+        &self,
+        wrap: SourceWrap,
+        point: Option<(f64, f64)>,
+        dx: f64,
+        dy: f64,
+        bounds: (usize, usize, usize, usize),
+    ) -> Option<(f64, f64)> {
         let (mut x, mut y) = point?;
         let (sx, sy, w, h) = (bounds.0 as f64, bounds.1 as f64, bounds.2 as f64, bounds.3 as f64);
         for attempt in 0..2 {
@@ -3084,13 +3267,13 @@ impl WarpContext<'_> {
             if !x.is_finite() || !y.is_finite() {
                 return None;
             }
-            if self.global_longitude_turn().is_some() {
+            if wrap.global {
                 x = x.rem_euclid(self.src_w as f64);
                 if x + 1e-10 > self.src_w as f64 {
                     x = 0.0;
                 }
             } else if (x < 0.0 || x >= self.src_w as f64)
-                && let Some(turn) = self.longitude_turn().filter(|turn| self.src_w as f64 <= *turn)
+                && let Some(turn) = wrap.regional_turn
             {
                 // A regional source is not periodic in its stored width. Move only by
                 // the actual angular turn, and only when that reaches a stored column.
@@ -3157,6 +3340,7 @@ impl WarpContext<'_> {
         let mut bx = vec![0.0; if area { dw } else { 0 }];
         let mut by = bx.clone();
         let mut bok = vec![false; bx.len()];
+        let wrap = self.source_wrap();
         for row in dy..dy + dh {
             for i in 0..dw {
                 xs[i] = (dx + i) as f64 + if area { 0.0 } else { 0.5 };
@@ -3188,33 +3372,12 @@ impl WarpContext<'_> {
                     (left.floor(), ys[i].min(by[i]).floor(), right.ceil() + 1.0, ys[i].max(by[i]).ceil() + 1.0)
                 } else {
                     let point = ok[i].then_some((xs[i], ys[i]));
-                    let Some((x, y)) = self.source_point(point, (dx + i) as f64 + 0.5, row as f64 + 0.5, (0, 0, self.src_w, self.src_h))
+                    let Some((x, y)) =
+                        self.source_point(wrap, point, (dx + i) as f64 + 0.5, row as f64 + 0.5, (0, 0, self.src_w, self.src_h))
                     else {
                         continue;
                     };
-                    if nearest {
-                        // Sampling validates the unrounded centre, then selects its
-                        // epsilon-rounded tap. Keep both when they straddle an integer.
-                        (x.floor(), y.floor(), (x + 1e-10).floor() + 1.0, (y + 1e-10).floor() + 1.0)
-                    } else {
-                        let (sx, sy) = scales.as_ref().unwrap()[i];
-                        let four = matches!(self.resampling, Resampling::Bilinear | Resampling::Cubic)
-                            && match self.kernel_version {
-                                KernelVersion::Gdal312 => sx >= 0.95 && sy >= 0.95,
-                                KernelVersion::Gdal313 => sx > 0.5 && sy > 0.5,
-                            };
-                        let (x, y) = ((x - 0.5).floor(), (y - 0.5).floor());
-                        if four {
-                            let before = if self.resampling == Resampling::Cubic { 1.0 } else { 0.0 };
-                            (x - before, y - before, x + before + 2.0, y + before + 2.0)
-                        } else {
-                            let radius = self.resampling.radius() as f64;
-                            let xr = (radius / sx.min(1.0)).ceil();
-                            let yr = (radius / sy.min(1.0)).ceil();
-                            let first = ((self.resampling.radius() + 1) % 2) as f64;
-                            (x + first - xr, y + first - yr, x + xr + 1.0, y + yr + 1.0)
-                        }
-                    }
+                    self.tap_box(x, y, (!nearest).then(|| scales.as_ref().unwrap()[i]))
                 };
                 x0 = x0.min(bounds.0);
                 y0 = y0.min(bounds.1);
@@ -3842,8 +4005,11 @@ impl WarpContext<'_> {
 
     /// Apply GDAL 3.12.1 axis-range or GDAL 3.13.3 transformed-square scale arithmetic
     /// locally. The per-pixel footprint policy is Terrio's rather than GDAL's chunk sampling.
-    fn footprint_scales(&self, mut p: [(f64, f64); 4], output_center: Option<(f64, f64)>) -> (f64, f64) {
-        if let (Some(turn), Some(centre)) = (self.longitude_turn(), output_center) {
+    fn footprint_scales(&self, turn: Option<f64>, mut p: [(f64, f64); 4], output_center: Option<(f64, f64)>) -> (f64, f64) {
+        // `unwrap_longitudes` moves nothing unless the corners span more than half a turn: a
+        // footprint of a few source columns skips the call.
+        let span = p.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), q| (lo.min(q.0), hi.max(q.0)));
+        if let (Some(turn), Some(centre)) = (turn.filter(|turn| span.1 - span.0 > turn / 2.0), output_center) {
             let mut xs = p.map(|point| point.0);
             self.unwrap_longitudes(&mut xs, turn, centre);
             for (point, x) in p.iter_mut().zip(xs) {
@@ -3851,6 +4017,12 @@ impl WarpContext<'_> {
             }
         }
         if self.kernel_version == KernelVersion::Gdal313 {
+            // Bilinear and cubic take their four-tap kernels at every scale above 0.5 and never
+            // read the scale then: when the footprint is surely smaller than two source pixels,
+            // skip `square_scales`'s square roots (the same kernel, the same values).
+            if matches!(self.resampling, Resampling::Bilinear | Resampling::Cubic) && square_scales_above_half(p) {
+                return (1.0, 1.0);
+            }
             return square_scales(p).unwrap_or((1.0, 1.0));
         }
         let range = |axis: usize| {
@@ -3875,26 +4047,41 @@ impl WarpContext<'_> {
             let inv = self.t.src_inv;
             let a = (inv[1] * g[1] + inv[2] * g[4], inv[4] * g[1] + inv[5] * g[4]);
             let b = (inv[1] * g[2] + inv[2] * g[5], inv[4] * g[2] + inv[5] * g[5]);
-            return vec![self.footprint_scales([(0.0, 0.0), a, b, (a.0 + b.0, a.1 + b.1)], None); width];
+            return vec![self.footprint_scales(None, [(0.0, 0.0), a, b, (a.0 + b.0, a.1 + b.1)], None); width];
         }
-        let mut top_x: Vec<f64> = (dx..=dx + width).map(|i| i as f64).collect();
-        let mut top_y = vec![dy as f64; width + 1];
-        let mut bottom_x = top_x.clone();
-        let mut bottom_y = vec![(dy + 1) as f64; width + 1];
-        let mut top_ok = vec![false; width + 1];
-        let mut bottom_ok = top_ok.clone();
-        // Use the same anchored approximation policy as the sample coordinates. An exact
-        // threshold still transforms every corner exactly; approximate warps do not pay for
-        // two full exact transformations per output pixel merely to size their kernels.
-        self.transform_row(&mut top_x, &mut top_y, &mut top_ok);
-        self.transform_row(&mut bottom_x, &mut bottom_y, &mut bottom_ok);
+        self.scales_between(dx, dy, width, &self.corner_row(dx, dy, width), &self.corner_row(dx, dy + 1, width))
+    }
+
+    /// Whether [`Self::pixel_scales_row`] transforms rows of corners (it does not for an affine
+    /// warp, whose every pixel has the same scales).
+    fn scales_from_corners(&self) -> bool {
+        !(self.t.ct.is_none() && self.t.src_gcp.is_none())
+    }
+
+    /// The `width + 1` pixel corners of output row boundary `y` from column `dx`, transformed to
+    /// the source under the anchored approximation policy of the sample coordinates: an exact
+    /// threshold still transforms every corner exactly; approximate warps do not pay for exact
+    /// transformations merely to size their kernels. A row's bottom boundary is the next row's
+    /// top one: the same points, transformed alike.
+    fn corner_row(&self, dx: usize, y: usize, width: usize) -> CornerRow {
+        let mut row =
+            CornerRow { x: (dx..=dx + width).map(|i| i as f64).collect(), y: vec![y as f64; width + 1], ok: vec![false; width + 1] };
+        self.transform_row(&mut row.x, &mut row.y, &mut row.ok);
+        row
+    }
+
+    /// The kernel scales of output row `dy`'s pixels from column `dx`, from its `top` and `bottom`
+    /// [`Self::corner_row`]s.
+    fn scales_between(&self, dx: usize, dy: usize, width: usize, top: &CornerRow, bottom: &CornerRow) -> Vec<(f64, f64)> {
+        let turn = self.longitude_turn();
         (0..width)
             .map(|i| {
-                if !(top_ok[i] && top_ok[i + 1] && bottom_ok[i] && bottom_ok[i + 1]) {
+                if !(top.ok[i] && top.ok[i + 1] && bottom.ok[i] && bottom.ok[i + 1]) {
                     return (1.0, 1.0);
                 }
                 self.footprint_scales(
-                    [(top_x[i], top_y[i]), (top_x[i + 1], top_y[i + 1]), (bottom_x[i], bottom_y[i]), (bottom_x[i + 1], bottom_y[i + 1])],
+                    turn,
+                    [(top.x[i], top.y[i]), (top.x[i + 1], top.y[i + 1]), (bottom.x[i], bottom.y[i]), (bottom.x[i + 1], bottom.y[i + 1])],
                     Some(((dx + i) as f64 + 0.5, dy as f64 + 0.5)),
                 )
             })
@@ -3927,17 +4114,48 @@ impl WarpContext<'_> {
             crate::par::for_each_owned(rows, |row, mut out| self.warp_area_row(c, &k, sink, row, &mut out));
             return;
         }
-        crate::par::for_each_owned(rows, |row, mut out| self.warp_row(c, &k, sink, row, &mut out));
+        let degenerate = if self.grid_invariant { self.src_w == 1 || self.src_h == 1 } else { c.sw == 1 || c.sh == 1 };
+        let per_pixel_scales = self.grid_invariant && !(self.resampling == Resampling::Nearest || degenerate);
+        if per_pixel_scales && self.scales_from_corners() {
+            // Stable kernels take each pixel's scales from its corners: rows in groups, a few for
+            // each thread, so a row of corners between two rows of a group is transformed once.
+            let group = crate::par::chunk_len(c.dh, 1);
+            let mut rows = rows.into_iter();
+            let groups: Vec<Vec<RowOut>> = (0..c.dh.div_ceil(group)).map(|_| rows.by_ref().take(group).collect()).collect();
+            crate::par::for_each_owned(groups, |g, outs| {
+                let mut top = self.corner_row(c.dx, c.dy + g * group, c.dw);
+                for (j, mut out) in outs.into_iter().enumerate() {
+                    let row = g * group + j;
+                    let bottom = self.corner_row(c.dx, c.dy + row + 1, c.dw);
+                    let scales = self.scales_between(c.dx, c.dy + row, c.dw, &top, &bottom);
+                    self.warp_row(c, &k, sink, row, Some(scales), &mut out);
+                    top = bottom;
+                }
+            });
+            return;
+        }
+        crate::par::for_each_owned(rows, |row, mut out| {
+            let scales = per_pixel_scales.then(|| self.pixel_scales_row(c.dx, c.dy + row, c.dw));
+            self.warp_row(c, &k, sink, row, scales, &mut out)
+        });
     }
 
     /// Warps one output row of a chunk.
-    fn warp_row<T: crate::pixel::Pixel>(&self, c: &Chunk, k: &Kernel<T>, sink: &Sink, row: usize, out: &mut [&mut [f64]]) {
+    fn warp_row<T: crate::pixel::Pixel>(
+        &self,
+        c: &Chunk,
+        k: &Kernel<T>,
+        sink: &Sink,
+        row: usize,
+        scales: Option<Vec<(f64, f64)>>,
+        out: &mut [&mut [f64]],
+    ) {
         // Source dimensions, rather than a cropped window's dimensions, choose the degenerate case.
         let degenerate = if self.grid_invariant { self.src_w == 1 || self.src_h == 1 } else { c.sw == 1 || c.sh == 1 };
         if self.resampling == Resampling::Nearest || degenerate {
-            self.warp_row_with(c, k, sink, row, out, true, |k, b, ix, iy, _, _| k.valid(b, ix, iy).then(|| k.value(b, ix, iy)));
+            self.warp_row_with(c, k, sink, row, None, out, true, |k, b, ix, iy, _, _| k.valid(b, ix, iy).then(|| k.value(b, ix, iy)));
         } else {
-            self.warp_row_with(c, k, sink, row, out, false, |k, b, _, _, fx, fy| {
+            self.warp_row_with(c, k, sink, row, scales, out, false, |k, b, _, _, fx, fy| {
                 let four = match self.kernel_version {
                     KernelVersion::Gdal312 => k.xscale >= 0.95 && k.yscale >= 0.95,
                     KernelVersion::Gdal313 => k.xscale > 0.5 && k.yscale > 0.5,
@@ -3964,6 +4182,7 @@ impl WarpContext<'_> {
         k: &Kernel<T>,
         sink: &Sink,
         row: usize,
+        scales: Option<Vec<(f64, f64)>>,
         out: &mut [&mut [f64]],
         nearest: bool,
         sample: impl Fn(&Kernel<T>, usize, usize, usize, f64, f64) -> Option<f64>,
@@ -3978,11 +4197,12 @@ impl WarpContext<'_> {
         // With one band, the unified check below already tests the band's own validity.
         let all_bands = global_validity && !(self.unified_center && self.bands == 1);
         let nodata: Vec<Option<f64>> = (0..self.bands).map(|b| sink.avoid_nodata.then(|| sink.nodata(b)).flatten()).collect();
-        let scales = (!nearest && self.grid_invariant).then(|| self.pixel_scales_row(c.dx, c.dy + row, c.dw));
         let mut xs = vec![0.0; c.dw];
         let mut ys = vec![0.0; c.dw];
         let mut ok = vec![false; c.dw];
         let (sxo, syo, sw, sh) = (c.sx as f64, c.sy as f64, c.sw as f64, c.sh as f64);
+        let wrap = self.source_wrap();
+        let bounds = if self.grid_invariant { (0, 0, self.src_w, self.src_h) } else { (c.sx, c.sy, c.sw, c.sh) };
         {
             let y = row as f64 + 0.5 + c.dy as f64;
             for (i, x) in xs.iter_mut().enumerate() {
@@ -3992,15 +4212,18 @@ impl WarpContext<'_> {
             self.transform_row(&mut xs, &mut ys, &mut ok);
             for i in 0..c.dw {
                 let point = ok[i].then_some((xs[i], ys[i]));
-                let Some((px, py)) = self.source_point(
-                    point,
-                    i as f64 + 0.5 + c.dx as f64,
-                    y,
-                    if self.grid_invariant { (0, 0, self.src_w, self.src_h) } else { (c.sx, c.sy, c.sw, c.sh) },
-                ) else {
+                let Some((px, py)) = self.source_point(wrap, point, i as f64 + 0.5 + c.dx as f64, y, bounds) else {
                     continue;
                 };
                 (xs[i], ys[i]) = (px, py);
+                if self.guessed {
+                    // Every tap inside the source must be in the guessed window.
+                    let b = self.tap_box(px, py, scales.as_ref().map(|s| s[i]));
+                    let (x0, y0, x1, y1) = (b.0.max(0.0), b.1.max(0.0), b.2.min(self.src_w as f64), b.3.min(self.src_h as f64));
+                    if x0 < x1 && y0 < y1 && (x0 < sxo || y0 < syo || x1 > sxo + sw || y1 > syo + sh) {
+                        self.missed.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
                 if px < sxo || py < syo || px + 1e-10 > sxo + sw || py + 1e-10 > syo + sh {
                     continue;
                 }
@@ -4963,6 +5186,7 @@ fn overlap(lo: f64, hi: f64, p: usize) -> f64 {
 /// `x.floor()`, for a finite `x`, without the call to `floor` that targets without SSE4.1 make.
 /// A value beyond ±2^62 is taken as ±2^62, so that neither the cast nor the step to the next
 /// integer leaves the range of `i64`; callers clamp the result to a window far smaller.
+#[inline]
 fn floor_i(x: f64) -> i64 {
     let x = x.clamp(-INTEGER_LIMIT, INTEGER_LIMIT);
     let t = x as i64;
@@ -5387,20 +5611,29 @@ impl<'a, T: crate::pixel::Pixel> Kernel<'a, T> {
     /// weights renormalized.
     fn bilinear(&self, b: usize, sx: f64, sy: f64) -> Option<f64> {
         let (w, h) = (self.win.sw as i64, self.win.sh as i64);
-        let mut ix = (sx - 0.5).floor() as i64;
-        let mut iy = (sy - 0.5).floor() as i64;
+        let mut ix = floor_i(sx - 0.5);
+        let mut iy = floor_i(sy - 0.5);
         let mut rx = 1.5 - (sx - ix as f64);
         let mut ry = 1.5 - (sy - iy as f64);
+        // Clamped at the source's first column or row, the sample takes that one only: the next
+        // one, of weight zero, lies outside its footprint ([`WarpContext::tap_box`]) and is not read,
+        // so a non-finite value there cannot reach it whatever window the chunk holds.
+        let (mut last_x, mut last_y) = (1, 1);
         if ix == -1 && !self.periodic_x {
             ix = 0;
             rx = 1.0;
+            last_x = 0;
         }
         if iy == -1 {
             iy = 0;
             ry = 1.0;
+            last_y = 0;
         }
         let (mut acc, mut div) = (0.0, 0.0);
         for (dx, dy, m) in [(0, 0, rx * ry), (1, 0, (1.0 - rx) * ry), (0, 1, rx * (1.0 - ry)), (1, 1, (1.0 - rx) * (1.0 - ry))] {
+            if dx > last_x || dy > last_y {
+                continue;
+            }
             let (x, y) = (self.column(ix + dx), iy + dy);
             if x >= 0 && x < w && y >= 0 && y < h && self.valid(b, x as usize, y as usize) {
                 div += m;
@@ -5419,7 +5652,7 @@ impl<'a, T: crate::pixel::Pixel> Kernel<'a, T> {
     /// `GWKCubicResample4Sample()`: falls back to bilinear at the edges and when a neighbour is
     /// invalid.
     fn cubic(&self, b: usize, sx: f64, sy: f64) -> Option<f64> {
-        let ix = (sx - 0.5).floor() as i64;
+        let ix = floor_i(sx - 0.5);
         let iy = (sy - 0.5) as i64;
         if (!self.periodic_x && (ix - 1 < 0 || ix + 2 >= self.win.sw as i64)) || iy - 1 < 0 || iy + 2 >= self.win.sh as i64 {
             return self.bilinear(b, sx, sy);
@@ -5451,9 +5684,20 @@ impl<'a, T: crate::pixel::Pixel> Kernel<'a, T> {
     /// `GWKResample()`: a separable kernel, stretched when downsampling, renormalized over the
     /// valid pixels.
     fn general(&self, b: usize, sx: f64, sy: f64) -> Option<f64> {
+        // The kernel's weight function, chosen once per sample rather than per tap: each arm
+        // compiles a loop with its weights inlined (the same arithmetic, so the same values).
+        match self.method {
+            Resampling::Bilinear => self.general_with(b, sx, sy, |x| Resampling::Bilinear.weight(x)),
+            Resampling::Cubic => self.general_with(b, sx, sy, |x| Resampling::Cubic.weight(x)),
+            method => self.general_with(b, sx, sy, move |x| method.weight(x)),
+        }
+    }
+
+    #[inline(always)]
+    fn general_with(&self, b: usize, sx: f64, sy: f64, weight: impl Fn(f64) -> f64) -> Option<f64> {
         let ((xr, yr), (init_x, init_y)) = (self.reach, self.init);
-        let ix = (sx - 0.5).floor() as i64;
-        let iy = (sy - 0.5).floor() as i64;
+        let ix = floor_i(sx - 0.5);
+        let iy = floor_i(sy - 0.5);
         let dx = sx - 0.5 - ix as f64;
         let dy = sy - 0.5 - iy as f64;
         let (w, h) = (self.win.sw as i64, self.win.sh as i64);
@@ -5502,31 +5746,55 @@ impl<'a, T: crate::pixel::Pixel> Kernel<'a, T> {
                 }
             }
         }
-        let wfn = |d: f64, s: f64| if s < 1.0 { self.method.weight(d * s) } else { self.method.weight(d) };
+        let wfn = |d: f64, s: f64| if s < 1.0 { weight(d * s) } else { weight(d) };
         // The column weights are the same on every row: computed once (the same values, summed
         // in the same order, so the same result).
         let mut wxs = [0.0f64; 64];
         let nx = (i1 - i0 + 1).max(0) as usize;
         let hoisted = nx <= wxs.len();
         if hoisted {
-            for (n, i) in (i0..=i1).enumerate() {
-                wxs[n] = wfn(i as f64 - dx, self.xscale);
+            // Counted loops: inclusive ranges compile to slow iterators here.
+            for (n, w) in wxs[..nx].iter_mut().enumerate() {
+                *w = wfn((i0 + n as i64) as f64 - dx, self.xscale);
             }
         }
         let (data, valid) = (self.src.bands[b], self.src.valid[b].as_deref());
         let (mut acc, mut wsum) = (0.0, 0.0);
-        for j in j0..=j1 {
+        for j in j0..j1 + 1 {
             let wy = wfn(j as f64 - dy, self.yscale);
             let line = self.index(0, (iy + j) as usize);
             let (mut la, mut lw) = (0.0, 0.0);
-            for (n, i) in (i0..=i1).enumerate() {
-                let at = line + self.column(ix + i) as usize;
-                if valid.is_some_and(|m| !m[at]) {
-                    continue;
+            if hoisted && !self.periodic_x && nx > 0 {
+                // Columns that do not wrap are contiguous: the row's taps as one slice, without a
+                // bounds check or a wrap per tap (the same taps, summed in the same order).
+                let start = line + (ix + i0) as usize;
+                let (taps, ws) = (&data[start..start + nx], &wxs[..nx]);
+                match valid {
+                    None => {
+                        for (v, wx) in taps.iter().zip(ws) {
+                            la += crate::pixel::Pixel::to_f64(*v) * wx;
+                            lw += wx;
+                        }
+                    }
+                    Some(m) => {
+                        for ((v, wx), ok) in taps.iter().zip(ws).zip(&m[start..start + nx]) {
+                            if *ok {
+                                la += crate::pixel::Pixel::to_f64(*v) * wx;
+                                lw += wx;
+                            }
+                        }
+                    }
                 }
-                let wx = if hoisted { wxs[n] } else { wfn(i as f64 - dx, self.xscale) };
-                la += crate::pixel::Pixel::to_f64(data[at]) * wx;
-                lw += wx;
+            } else {
+                for i in i0..i1 + 1 {
+                    let at = line + self.column(ix + i) as usize;
+                    if valid.is_some_and(|m| !m[at]) {
+                        continue;
+                    }
+                    let wx = if hoisted { wxs[(i - i0) as usize] } else { wfn(i as f64 - dx, self.xscale) };
+                    la += crate::pixel::Pixel::to_f64(data[at]) * wx;
+                    lw += wx;
+                }
             }
             acc += la * wy;
             wsum += lw * wy;
@@ -6036,6 +6304,9 @@ impl RegionWarp {
             resampling: self.resampling,
             translation: self.translation,
             memory_limit: f64::INFINITY,
+            resident: false,
+            guessed: false,
+            missed: std::sync::atomic::AtomicBool::new(false),
             bands: self.src_nodata.len(),
             out_bits: self.out_type.size_bytes() * 8,
             source_bits: self.out_type.size_bytes() * self.src_nodata.len() * 8,
@@ -6302,6 +6573,15 @@ mod tests {
         assert!((rotated.0 - 1.0 / 8.0_f64.sqrt()).abs() < 1e-15);
         assert_eq!(rotated.0, rotated.1);
         assert!(square_scales([(0.0, 0.0); 4]).is_none());
+        // The shortcut never claims "above half" where square_scales gives a scale at or below it.
+        for k in 0..20_000 {
+            let f = |i: u32| ((k as u32).wrapping_mul(2_654_435_761).rotate_left(i) % 1000) as f64 / 250.0 - 2.0;
+            let p = [(0.0, 0.0), (f(1).abs() + 0.01, f(2) * 0.3), (f(3) * 0.3, f(4).abs() + 0.01), (f(5).abs(), f(6).abs())];
+            if square_scales_above_half(p) {
+                let (x, y) = square_scales(p).unwrap_or((1.0, 1.0));
+                assert!(x > 0.5 && y > 0.5, "{p:?}: {x} {y}");
+            }
+        }
     }
 
     #[test]
@@ -7077,6 +7357,85 @@ mod tests {
                 let (a, b) = (crate::open_raster(whole.to_str().unwrap()).unwrap(), crate::open_raster(out.to_str().unwrap()).unwrap());
                 assert_eq!((a.raster.cols, a.raster.rows, a.geo_transform()), (b.raster.cols, b.raster.rows, b.geo_transform()));
                 assert_eq!(a.raster.data.to_f64_vec(), b.raster.data.to_f64_vec(), "{resampling:?} {memory_limit} {ext}");
+            }
+        }
+    }
+
+    #[test]
+    fn bilinear_clamped_at_the_first_column_ignores_the_next() {
+        // A sample a quarter pixel inside the source's first column is clamped to it: the second
+        // column has weight zero and lies outside the sample's footprint. A NaN there (no nodata)
+        // must not reach the sample, whatever window its chunk reads (the whole source in memory,
+        // a guessed window from a file, or GDAL's chunk window).
+        let dir = tempfile::tempdir().unwrap();
+        let mut ds = typed_raster(DataType::F64, 4, 4, [0.0, 1.0, 0.0, 4.0, 0.0, -1.0], 32631, |_, _| 7.0);
+        ds.raster.set(0, 1, 1, f64::NAN).unwrap();
+        let input = dir.path().join("nan.tif");
+        crate::write_raster_dataset(&ds, input.to_str().unwrap(), &Default::default()).unwrap();
+        for kernel_version in [KernelVersion::Gdal312, KernelVersion::Gdal313] {
+            for grid_invariant in [true, false] {
+                let o = WarpOptions {
+                    dst_transform: Some([-0.25, 1.0, 0.0, 3.0, 0.0, -1.0]),
+                    size: Some((1, 1)),
+                    resampling: Resampling::Bilinear,
+                    src_nodata: Nodata::None,
+                    kernel_version,
+                    grid_invariant,
+                    ..Default::default()
+                };
+                let whole = warp(&[&ds], &o).unwrap().raster.data.to_f64_vec();
+                let mut lazy = crate::open_raster_lazy(input.to_str().unwrap()).unwrap();
+                let lazily = warp_lazy(&mut lazy, &o).unwrap().raster.data.to_f64_vec();
+                assert_eq!((whole[0], lazily[0]), (7.0, 7.0), "{kernel_version:?} grid_invariant {grid_invariant}");
+            }
+        }
+    }
+
+    #[test]
+    fn guessed_windows_missing_taps_warp_again_from_exact_ones() {
+        // Reader paths guess each chunk's window from its edges; a chunk whose guess misses a tap
+        // is warped again from its exact window. Shrunk guesses miss on purpose: the output must
+        // still be the in-memory warp's, which needs no window.
+        let dir = tempfile::tempdir().unwrap();
+        let mut utm = raster(97, 83, [500000.0, 30.0, 0.0, 4000000.0, 0.0, -30.0], 32610, |c, r| ((c * 7 + r * 13) % 50) as f64 + 0.25);
+        utm.has_nodata = true;
+        utm.raster.set(0, 40, 30, -9999.0).unwrap();
+        // A regional lon/lat source near the pole, warped to polar stereographic: chunk edges
+        // bound their interiors poorly there.
+        let polar = raster(120, 40, [-30.0, 0.5, 0.0, 89.0, 0.0, -0.5], 4326, |c, r| ((c * 3 + r * 5) % 41) as f64 + 0.5);
+        for (name, ds, dst) in [("utm", &utm, "EPSG:32611"), ("polar", &polar, "EPSG:3413")] {
+            let input = dir.path().join(format!("{name}.tif"));
+            crate::write_raster_dataset(ds, input.to_str().unwrap(), &Default::default()).unwrap();
+            for resampling in [Resampling::Nearest, Resampling::Bilinear, Resampling::Cubic, Resampling::Lanczos] {
+                for kernel_version in [KernelVersion::Gdal312, KernelVersion::Gdal313] {
+                    let o = WarpOptions {
+                        dst_srs: Some(SpatialRef::parse(dst).unwrap()),
+                        resampling,
+                        kernel_version,
+                        memory_limit: 4000.0,
+                        output_type: Some(DataType::F64),
+                        ..Default::default()
+                    };
+                    let whole = warp(&[ds], &o).unwrap().raster.data.to_f64_vec();
+                    for shrink in [0, 3] {
+                        GUESS_SHRINK.with(|s| s.set(shrink));
+                        GUESS_RETRIES.with(|n| n.set(0));
+                        let mut lazy = crate::open_raster_lazy(input.to_str().unwrap()).unwrap();
+                        let lazily = warp_lazy(&mut lazy, &o).unwrap().raster.data.to_f64_vec();
+                        let out = dir.path().join(format!("{name}-out.tif"));
+                        let _ = std::fs::remove_file(&out);
+                        warp_to_path(&[input.to_str().unwrap().to_string()], &o, out.to_str().unwrap(), &Default::default()).unwrap();
+                        let written = crate::open_raster(out.to_str().unwrap()).unwrap().raster.data.to_f64_vec();
+                        GUESS_SHRINK.with(|s| s.set(0));
+                        if shrink > 0 {
+                            // The shrunk guesses did miss: the retry path ran.
+                            assert!(GUESS_RETRIES.with(std::cell::Cell::get) > 0, "{name} {resampling:?} {kernel_version:?}: no retry");
+                        }
+                        let same = |a: &[f64], b: &[f64]| a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits());
+                        assert!(same(&whole, &lazily), "{name} {resampling:?} {kernel_version:?} shrink {shrink}: lazy");
+                        assert!(same(&whole, &written), "{name} {resampling:?} {kernel_version:?} shrink {shrink}: written");
+                    }
+                }
             }
         }
     }
