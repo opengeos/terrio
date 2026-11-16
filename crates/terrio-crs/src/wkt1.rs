@@ -240,6 +240,15 @@ fn node(b: &[u8], i: &mut usize, level: usize) -> Option<Node> {
     Some(Node { key, args })
 }
 
+/// Whether a WKT 1 is on GDAL's `Polar_Stereographic` without a finite `latitude_of_origin`,
+/// which PROJ 9.8.1 refuses rather than read at the north pole.
+pub(crate) fn polar_without_origin(root: &Node) -> bool {
+    root.child("PROJECTION").and_then(Node::name).is_some_and(|m| norm(m) == "polarstereographic")
+        && !root
+            .children("PARAMETER")
+            .any(|p| p.name().is_some_and(|n| norm(n) == "latitudeoforigin") && p.num(1).is_some_and(f64::is_finite))
+}
+
 pub(crate) fn norm(s: &str) -> String {
     s.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase()
 }
@@ -537,10 +546,14 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             let parallel = if method == "polarstereographicvariantb" { angle(&["latitudeofstandardparallel"]) } else { None };
             // GDAL's name gives its latitude only as `latitude_of_origin`; PROJ 9.8.1 refuses it
             // without, rather than read it at the north pole.
-            if method == "polarstereographic" && get(&["latitudeoforigin"]).is_none() {
+            if method == "polarstereographic" && !get(&["latitudeoforigin"]).is_some_and(f64::is_finite) {
                 return None;
             }
+            // Not a latitude of NaN, read at the north pole.
             let lat = lat_0.or(sp1).or(parallel).unwrap_or(90.0);
+            if !lat.is_finite() {
+                return None;
+            }
             push(&mut out, "lat_0", Some(if lat < 0.0 { -90.0 } else { 90.0 }));
             if (lat.abs() - 90.0).abs() > 1e-9 {
                 push(&mut out, "lat_ts", Some(lat));

@@ -624,11 +624,11 @@ fn projection(k: &GeoKeys, to_meter: f64) -> Option<String> {
     const FALSE_ORIGIN_LONG: u16 = 3084;
     const FALSE_ORIGIN_LAT: u16 = 3085;
     const FALSE_ORIGIN_EASTING: u16 = 3086;
-    const CENTER_EASTING: u16 = 3090;
-    const CENTER_NORTHING: u16 = 3091;
     const FALSE_ORIGIN_NORTHING: u16 = 3087;
     const CENTER_LONG: u16 = 3088;
     const CENTER_LAT: u16 = 3089;
+    const CENTER_EASTING: u16 = 3090;
+    const CENTER_NORTHING: u16 = 3091;
     const SCALE_AT_NAT_ORIGIN: u16 = 3092;
     const SCALE_AT_CENTER: u16 = 3093;
     const AZIMUTH: u16 = 3094;
@@ -689,8 +689,13 @@ fn projection(k: &GeoKeys, to_meter: f64) -> Option<String> {
             // Variant B's standard parallel is in ProjStdParallel1GeoKey for some writers, and in
             // ProjNatOriginLatGeoKey for GDAL (which writes a scale of 1 too); a natural origin
             // latitude of ±90 is variant A, with its scale.
-            // A natural origin latitude given wins over ProjStdParallel1GeoKey, which libgeotiff
-            // does not read for this method (GDAL 3.12.2: 90 and 71 is variant A, of its scale).
+            // An origin latitude given (ProjNatOriginLatGeoKey, else ProjFalseOriginLatGeoKey, else
+            // ProjCenterLatGeoKey, as libgeotiff's `GTIFFetchProjParms` reads them for this method)
+            // wins over ProjStdParallel1GeoKey, which libgeotiff does not read for it (GDAL 3.12.2:
+            // 90 and 71 is variant A, of its scale).
+            // Without any latitude key, ProjStdParallel1GeoKey is still read as the standard
+            // parallel, leniently for the writers that put it there; libgeotiff would take a
+            // latitude of 0 instead.
             let given = angle(&[NAT_ORIGIN_LAT, FALSE_ORIGIN_LAT, CENTER_LAT]);
             let origin = given.unwrap_or(90.0);
             let off_pole = ((origin.abs() - 90.0).abs() > 1e-9).then_some(origin);

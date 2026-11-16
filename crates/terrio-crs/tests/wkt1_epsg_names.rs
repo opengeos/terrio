@@ -46,3 +46,22 @@ fn a_malformed_epsg_named_latitude_of_two_point_hotine_is_refused() {
         assert!(place(&wkt).is_err(), "{name}");
     }
 }
+
+/// GDAL's `Polar_Stereographic` with a `latitude_of_origin` of NaN, or under EPSG's variant B a
+/// standard parallel of NaN, is refused, not read at the north pole; with or without the
+/// `wbprojection-fallback` feature, whose parser would otherwise read it.
+#[test]
+fn a_polar_stereographic_latitude_of_nan_is_refused() {
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    let place = |wkt: &str| Transformer::new(&wgs84, &SpatialRef::from_wkt(wkt)).and_then(|t| t.transform(0.0, -75.0));
+    let gdal = r#"PROJCS["x",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Polar_Stereographic"],PARAMETER["latitude_of_origin",-71],PARAMETER["central_meridian",0],PARAMETER["scale_factor",1],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1]]"#;
+    assert!(place(gdal).is_ok());
+    assert!(place(&gdal.replace("-71", "NaN")).is_err());
+    let variant_b = gdal
+        .replace("Polar_Stereographic", "Polar Stereographic (variant B)")
+        .replace("latitude_of_origin", "Latitude of standard parallel");
+    assert!(place(&variant_b).is_ok());
+    assert!(place(&variant_b.replace("-71", "NaN")).is_err());
+    // Without its latitude of origin.
+    assert!(place(&gdal.replace(r#"PARAMETER["latitude_of_origin",-71],"#, "")).is_err());
+}

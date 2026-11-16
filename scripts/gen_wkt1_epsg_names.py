@@ -1,9 +1,10 @@
 """Generate crates/terrio-crs/tests/data/wkt1_epsg_names.json: WKT 1 projected CRSs whose
 parameters have EPSG's names (`Latitude of false origin`, `Longitude of projection centre`,
 `Angle from Rectified to Skew Grid`, `Latitude of standard parallel`), which PROJ 9.8.1 reads as
-GDAL's, GDAL's `Polar_Stereographic`, which PROJ reads only with `latitude_of_origin`, and a `PROJCS` with two `UNIT` nodes, of which PROJ takes the first (opengeos/terrio#1012,
-items 25 and 31). Each case has PROJ's PROJ string and where it places a point from WGS 84
-(`always_xy`), or `null` where PROJ refuses the CRS.
+GDAL's, GDAL's `Polar_Stereographic`, which PROJ reads only with `latitude_of_origin`, and a
+`PROJCS` with two `UNIT` nodes, of which PROJ takes the first (opengeos/terrio#1012, items 25
+and 31). Each case has PROJ's PROJ string and where it places a point from WGS 84 (`always_xy`),
+or `null` where PROJ refuses the CRS.
 
 Usage: PROJ_NETWORK=OFF python scripts/gen_wkt1_epsg_names.py (needs pyproj 3.8.0)
 """
@@ -35,7 +36,7 @@ CENTRE = [
     ("Latitude of projection centre", 40),
     ("Longitude of projection centre", 10),
     ("Azimuth of initial line", 30),
-    ("Angle from Rectified to Skew Grid", 30),
+    ("Angle from Rectified to Skew Grid", 20),
     ("Scale factor on initial line", 1),
 ]
 STANDARD_PARALLEL = [

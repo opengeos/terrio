@@ -1142,6 +1142,11 @@ impl Def {
         {
             return Err(Error::Crs("an incomplete Polar Stereographic (variant C) WKT".into()));
         }
+        // Nor GDAL's Polar Stereographic without its latitude of origin, which wbprojection would
+        // read at the north pole (PROJ 9.8.1 refuses it).
+        if wkt1::polar_without_origin(&root) {
+            return Err(Error::Crs("a Polar_Stereographic WKT without latitude_of_origin".into()));
+        }
         // Other kinds of WKT 2 CRS and WKT 1 projections the readers do not know: wbprojection's
         // parser. A WKT 2 geographic or projected CRS the reader refuses is not handed to it: its
         // WKT 2 parameters and method names would be read wrongly, silently (#123).

@@ -2768,7 +2768,7 @@ PROJ_CASES = {
     # The WKT and PROJ-string readings of opengeos/terrio#1012, against PROJ 9.8.1 (pyproj 3.8.0, no grids).
     "wkt1_epsg_names": {
         "epsg_parameter_names_in_wkt1_are_read_as_proj_reads_them": (
-            "WKT 1 with EPSG parameter names, and two UNIT nodes (9 cases)", IDENTICAL,
+            "WKT 1 with EPSG parameter names, and two UNIT nodes (12 cases)", IDENTICAL,
             "PROJ 9.8.1 (pyproj 3.8.0): within 1 mm, or refused as PROJ refuses",
         ),
     },
