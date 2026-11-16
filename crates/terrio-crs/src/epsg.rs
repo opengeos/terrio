@@ -503,6 +503,12 @@ pub(crate) fn datums_named(name: &str) -> Vec<u32> {
     datum_names().0.get(&datum_key(name)).map(|(_, c)| c.clone()).unwrap_or_default()
 }
 
+/// The best rank of a datum name in the table: 0 for an official name or GDAL's WKT 1 name, 1
+/// for an EPSG alias, 2 for PROJ's, 3 for ESRI's (`D_ETRS_1989`), 4 for a former name.
+pub(crate) fn datum_name_rank(name: &str) -> Option<u8> {
+    datum_names().0.get(&datum_key(name)).map(|(rank, _)| *rank)
+}
+
 /// The EPSG CRS PROJ 9.8.1 finds by the name of a geographic 2D or projected CRS without ID, when
 /// it finds a single CRS (`createObjectsFromName`, among the names and aliases of its database's
 /// CRSs, whatever the case of their ASCII letters); first, for an ESRI WKT 1 (`esri`), the CRS the
