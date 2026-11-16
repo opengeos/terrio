@@ -401,10 +401,16 @@ def bound_wkts():
     ] + [
         # Each Helmert method PROJ applies, by its EPSG code alone, with seven parameters:
         # PROJ writes none for the time-dependent and Molodensky-Badekas methods. (Geocentric
-        # translations with a rotation are written with it, but transformed without it; terrio
-        # writes none, a known difference.)
+        # translations with a rotation, and coordinate frame's full matrix, are written as a
+        # +towgs84 PROJ does not transform by; terrio writes none, a known difference.)
         bound_wkt(BNG_WKT2, ("m", code), OSGB_7)
-        for code in (1037, 1033, 1038, 1032, 1034, 1053, 1054, 1056, 1057, 1061, 1063, 1133, 1140, 1149)
+        for code in (1037, 1033, 1038, 1032, 1149, 1053, 1054, 1055, 1056, 1057, 1058)
+        + (1034, 1039, 9636, 1061, 1062, 1063)
+    ] + [
+        # A Molodensky-Badekas method by its EPSG name alone, with seven parameters: no string.
+        bound_wkt(BNG_WKT2, ("Molodensky-Badekas (CF geog2D domain)", 9636), OSGB_7).replace(
+            ',ID["EPSG",9636]]', "]"
+        ),
     ]
 
 

@@ -1052,6 +1052,14 @@ impl Def {
         let converted = if wkt2::handles(&root) { Some(wkt2::to_proj(&root)?) } else { wkt1::to_proj(&root) };
         if let Some(c) = converted {
             let mut d = Self::from_proj(&c.proj)?;
+            // A `BOUNDCRS`'s Helmert transformation that `+towgs84` cannot stand for (a full
+            // rotation matrix, a Molodensky-Badekas evaluation point), as PROJ applies it.
+            let helmert = c.helmert.as_ref().map(|h| datum::helmert(h.t, h.r, h.s, h.position_vector, h.exact, h.pivot));
+            if let Some(step) = &helmert
+                && c.bound.is_none()
+            {
+                d.ops = vec![Arc::new(Op::world(datum::helmert_steps_with(d.ell, Ell::wgs84(), step.clone())))];
+            }
             if let Some(bound) = &c.bound {
                 // A WKT 2 `BOUNDCRS` to another CRS: its Helmert transformation to that CRS, then
                 // each of that CRS's transformations to WGS 84, as PROJ concatenates them. With
@@ -1064,7 +1072,10 @@ impl Def {
                     return Ok(source);
                 };
                 t.registered_datum(target, None);
-                let to_target = datum::helmert_steps(d.ell, t.ell, shift);
+                let to_target = match helmert {
+                    Some(step) => datum::helmert_steps_with(d.ell, t.ell, step),
+                    None => datum::helmert_steps(d.ell, t.ell, shift),
+                };
                 let mut ops: Vec<Arc<Op>> = t
                     .ops
                     .iter()

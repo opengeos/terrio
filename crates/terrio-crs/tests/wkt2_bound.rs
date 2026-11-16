@@ -26,7 +26,7 @@ fn bound_crss_place_points_as_proj_does() {
     offline();
     let data: Value = serde_json::from_str(include_str!("data/wkt2_bound.json")).unwrap();
     let cases = data["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 58);
+    assert_eq!(cases.len(), 77);
     let mut bad = vec![];
     for case in cases {
         let num = |v: &Value, i: usize| v[i].as_f64().unwrap();

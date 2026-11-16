@@ -235,11 +235,12 @@ pub(crate) fn helmert_steps(from: Ell, to: Ell, p: &[f64]) -> Vec<Step> {
         return Vec::new();
     }
     let g = |i: usize| p.get(i).copied().unwrap_or(0.0);
-    vec![
-        Step::Cart { ell: from, inv: false },
-        helmert([g(0), g(1), g(2)], [g(3), g(4), g(5)], g(6), true, false, [0.0; 3]),
-        Step::Cart { ell: to, inv: true },
-    ]
+    helmert_steps_with(from, to, helmert([g(0), g(1), g(2)], [g(3), g(4), g(5)], g(6), true, false, [0.0; 3]))
+}
+
+/// The steps of a Helmert step between two ellipsoids: to geocentric, the step, and back.
+pub(crate) fn helmert_steps_with(from: Ell, to: Ell, step: Step) -> Vec<Step> {
+    vec![Step::Cart { ell: from, inv: false }, step, Step::Cart { ell: to, inv: true }]
 }
 
 /// The steps of `+nadgrids=` (horizontal grids to WGS 84).

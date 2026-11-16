@@ -1,7 +1,20 @@
+// SPDX-FileCopyrightText: Copyright (c) 2018, Even Rouault <even dot rouault at spatialys dot com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified), for a `BOUNDCRS`'s Helmert transformation:
+//   PROJ 9.8.1:
+//     src/proj_constants.h (the Helmert methods' EPSG codes and names, the parameters' codes)
+//     src/iso19111/operation/singleoperation.cpp (exportToPROJStringGeneric: how a method is
+//       recognized and applied)
+//     src/iso19111/operation/transformation.cpp (getTOWGS84Parameters: which are written as
+//       +towgs84)
+//     src/iso19111/operation/oputils.cpp (isTimeDependent)
+//     src/iso19111/operation/parammappings.cpp (a method's code by its name)
 // Written to match the behavior of:
 //   PROJ 9.8.1:
 //     src/iso19111/io.cpp
-// No code is translated from these sources.
+// No code is translated from that source.
 
 //! A WKT 2 (ISO 19162, 2015 and 2019) reader for geographic and projected CRSs, turning them
 //! into PROJ strings as [`super::wkt1`] does for WKT 1, so they go through terrio's projections.
@@ -11,7 +24,7 @@
 //! projected CS's unit. Methods and parameters are named as in EPSG, and identified by their
 //! EPSG codes when the WKT gives them.
 
-use super::wkt1::{Arg, BoundTo, Converted, Node, norm};
+use super::wkt1::{Arg, BoundTo, Converted, Helmert, Node, norm};
 use crate::{Error, Result};
 
 /// The keywords of the WKT 2 CRSs this reader converts.
@@ -43,13 +56,15 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         let mut c = if is_wkt1_source(source) { wkt1_source(source)? } else { to_proj(source)? };
         // A Helmert transformation terrio cannot read fails, whatever its target; one to a CRS
         // terrio cannot convert is left out, as terrio did before it read those.
-        match helmert_shift(root)? {
-            Some((t, true)) => {
+        let shift = helmert_shift(root)?;
+        c.helmert = shift.as_ref().and_then(|s| s.2.clone());
+        match shift {
+            Some((t, true, _)) => {
                 c.proj = format!("{} +towgs84={}", c.proj, t.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","));
             }
             // To another CRS (ED50): the shift to it, then its own transformations to WGS 84, as
             // PROJ chains them.
-            Some((t, false)) => {
+            Some((t, false, _)) => {
                 let target = root.child("TARGETCRS").and_then(first_node).filter(|t| handles(t));
                 if let Some(target) = target.and_then(|t| to_proj(t).ok()) {
                     c.bound = Some(Box::new(BoundTo { target, shift: t }));
@@ -815,7 +830,7 @@ impl Geodetic {
             self.rf,
             self.pm
         );
-        Converted { proj, geogcs: self.node.clone(), geog: self.geog, geogcs_wkt1: Some(geogcs_wkt1), bound: None }
+        Converted { proj, geogcs: self.node.clone(), geog: self.geog, geogcs_wkt1: Some(geogcs_wkt1), bound: None, helmert: None }
     }
 }
 
@@ -1009,72 +1024,187 @@ fn bound_to_wgs84(root: &Node) -> bool {
     })
 }
 
-/// The Helmert method of a `BOUNDCRS`'s transformation.
-pub(crate) struct HelmertMethod {
-    /// Position vector or coordinate frame, with rotations and a scale (seven parameters), where
-    /// geocentric translations have three.
-    pub rotations: bool,
+// The EPSG codes of the Helmert transformation methods PROJ 9.8.1 applies (`proj_constants.h`).
+const CF_FULL_MATRIX: [u32; 3] = [1132, 1133, 1140];
+const CF: [u32; 4] = [1032, 9607, 1038, 1149];
+const CF_TIME_DEPENDENT: [u32; 3] = [1056, 1057, 1058];
+const PV: [u32; 3] = [1033, 9606, 1037];
+const PV_TIME_DEPENDENT: [u32; 3] = [1053, 1054, 1055];
+const TRANSLATIONS: [u32; 3] = [1031, 9603, 1035];
+const BADEKAS_CF: [u32; 3] = [1034, 1039, 9636];
+const BADEKAS_PV: [u32; 3] = [1061, 1062, 1063];
+
+/// The EPSG names of those methods (`proj_constants.h`), by which PROJ 9.8.1 gives a method
+/// without an `ID` its code (`parammappings.cpp`'s `getMapping`, names compared ignoring case and
+/// punctuation).
+const HELMERT_NAMES: [(u32, &str); 25] = [
+    (1031, "Geocentric translations (geocentric domain)"),
+    (1032, "Coordinate Frame rotation (geocentric domain)"),
+    (1033, "Position Vector transformation (geocentric domain)"),
+    (1034, "Molodensky-Badekas (CF geocentric domain)"),
+    (1035, "Geocentric translations (geog3D domain)"),
+    (1037, "Position Vector transformation (geog3D domain)"),
+    (1038, "Coordinate Frame rotation (geog3D domain)"),
+    (1039, "Molodensky-Badekas (CF geog3D domain)"),
+    (1053, "Time-dependent Position Vector tfm (geocentric)"),
+    (1054, "Time-dependent Position Vector tfm (geog2D)"),
+    (1055, "Time-dependent Position Vector tfm (geog3D)"),
+    (1056, "Time-dependent Coordinate Frame rotation (geocen)"),
+    (1057, "Time-dependent Coordinate Frame rotation (geog2D)"),
+    (1058, "Time-dependent Coordinate Frame rotation (geog3D)"),
+    (1061, "Molodensky-Badekas (PV geocentric domain)"),
+    (1062, "Molodensky-Badekas (PV geog3D domain)"),
+    (1063, "Molodensky-Badekas (PV geog2D domain)"),
+    (1132, "Coordinate Frame rotation full matrix (geocen)"),
+    (1133, "Coordinate Frame rotation full matrix (geog2D)"),
+    (1140, "Coordinate Frame rotation full matrix (geog3D)"),
+    (1149, "Coordinate Frame rotation (geog3D to compound)"),
+    (9603, "Geocentric translations (geog2D domain)"),
+    (9606, "Position Vector transformation (geog2D domain)"),
+    (9607, "Coordinate Frame rotation (geog2D domain)"),
+    (9636, "Molodensky-Badekas (CF geog2D domain)"),
+];
+
+/// How PROJ applies a Helmert transformation method.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HelmertKind {
+    /// Geocentric translations: three parameters, whatever else is given.
+    Translations,
+    /// Position vector or coordinate frame: seven.
+    Seven,
+    /// Time-dependent: seven, with rates and a reference epoch that a `BOUNDCRS`, which has no
+    /// coordinate epoch, does not apply.
+    TimeDependent,
+    /// Molodensky-Badekas: seven, about an evaluation point.
+    Badekas,
+}
+
+/// A Helmert transformation method, as PROJ 9.8.1 recognizes it.
+struct HelmertMethod {
+    kind: HelmertKind,
     /// Coordinate frame, whose rotations turn the other way from position vector's.
-    pub frame: bool,
-    /// Whether PROJ 9.8.1 writes it in a PROJ string: not the time-dependent or Molodensky-Badekas
-    /// methods, which it applies without their rates or evaluation point as the plain ones.
-    pub writable: bool,
-    /// A time-dependent method, whose rates and reference epoch PROJ 9.8.1 does not apply to a
-    /// `BOUNDCRS` (which has no coordinate epoch).
-    pub time_dependent: bool,
+    frame: bool,
+    /// Coordinate frame's full matrix: the rotation exact, not the small-angle approximation.
+    exact: bool,
 }
 
-/// The Helmert method of a `BOUNDCRS`'s `ABRIDGEDTRANSFORMATION`, by its name or EPSG code, as
-/// PROJ 9.8.1 applies them: geocentric translations, position vector and coordinate frame (in the
-/// geog2D, geocentric and geog3D domains), the time-dependent and Molodensky-Badekas ones without
-/// their rates or evaluation point, and coordinate frame's full matrix and geog3D to compound
-/// variants. `None` for another method (a grid's).
-pub(crate) fn helmert_method(t: &Node) -> Option<HelmertMethod> {
-    let (name, code) = t.child("METHOD").map(|m| (norm(m.name().unwrap_or("")), m.epsg())).unwrap_or_default();
-    let named = |prefixes: &[&str]| prefixes.iter().any(|p| name.starts_with(p));
-    let translations = named(&["geocentrictranslations"]) || matches!(code, Some(9603 | 1031 | 1035));
-    let vector = named(&["positionvector", "timedependentpositionvector", "molodenskybadekaspv"])
-        || matches!(code, Some(9606 | 1033 | 1037 | 1053 | 1054 | 1061 | 1063));
-    let frame = named(&["coordinateframe", "timedependentcoordinateframe", "molodenskybadekascf"])
-        || matches!(code, Some(9607 | 1032 | 1038 | 1034 | 1056 | 1057 | 1133 | 1140 | 1149));
-    let time_dependent = named(&["timedependent"]) || matches!(code, Some(1053 | 1054 | 1056 | 1057));
-    let writable = !time_dependent && !named(&["molodenskybadekas"]) && !matches!(code, Some(1034 | 1061 | 1063));
-    (translations || vector || frame).then_some(HelmertMethod { rotations: vector || frame, frame, writable, time_dependent })
+/// A transformation's method name (lower case), its EPSG code (its `ID`, else that of its EPSG
+/// name), and its number of parameters.
+fn method_of(t: &Node) -> (String, Option<u32>, usize) {
+    let method = t.child("METHOD");
+    let name = method.and_then(Node::name).unwrap_or("").to_ascii_lowercase();
+    let code = method.and_then(Node::epsg).or_else(|| {
+        let key = norm(&name);
+        HELMERT_NAMES.iter().find(|(_, n)| norm(n) == key).map(|(c, _)| *c)
+    });
+    (name, code, t.children("PARAMETER").count())
 }
 
-/// Whether a `BOUNDCRS`'s transformation is a time-specific Helmert one (EPSG 1065, 1066), which
-/// PROJ 9.8.1 refuses without a coordinate epoch.
-fn time_specific(t: &Node) -> bool {
-    let (name, code) = t.child("METHOD").map(|m| (norm(m.name().unwrap_or("")), m.epsg())).unwrap_or_default();
-    name.starts_with("timespecific") || matches!(code, Some(1065 | 1066))
-}
-
-/// The seven values of a `BOUNDCRS`'s Helmert transformation as `+towgs84`'s, which of them it
-/// gives (a bit each, translations first), and its method. `None` when it is not a Helmert
-/// transformation.
-fn helmert_values(t: &Node) -> Result<Option<([f64; 7], u8, HelmertMethod)>> {
-    if time_specific(t) {
-        return Err(bad("a time-specific Helmert transformation, which needs a coordinate epoch"));
+/// The Helmert method of a `BOUNDCRS`'s `ABRIDGEDTRANSFORMATION`, as PROJ 9.8.1 recognizes it
+/// (`singleoperation.cpp`'s `exportToPROJStringGeneric`): by its EPSG code, else by its name with
+/// the number of parameters its kind has (seven, fifteen for a time-dependent one, three for
+/// geocentric translations). Molodensky-Badekas only by its code. `None` for another method.
+fn helmert_method(t: &Node) -> Option<HelmertMethod> {
+    let (name, code, count) = method_of(t);
+    let is = |codes: &[u32]| code.is_some_and(|c| codes.contains(&c));
+    // `oputils.cpp`'s `isTimeDependent`, and PROJ's tests of the name's convention.
+    let time_dependent = name.contains("time dependent") || name.contains("time-dependent");
+    let vector = name.contains("position vector") || name.contains("pv");
+    let frame = name.contains("coordinate frame") || name.contains("cf");
+    let method = |kind, frame, exact| Some(HelmertMethod { kind, frame, exact });
+    use HelmertKind::*;
+    if is(&CF_FULL_MATRIX) {
+        method(Seven, true, true)
+    } else if (count == 7 && frame && !time_dependent) || is(&CF) {
+        method(Seven, true, false)
+    } else if (count == 15 && frame && time_dependent) || is(&CF_TIME_DEPENDENT) {
+        method(TimeDependent, true, false)
+    } else if (count == 7 && vector && !time_dependent) || is(&PV) {
+        method(Seven, false, false)
+    } else if (count == 15 && vector && time_dependent) || is(&PV_TIME_DEPENDENT) {
+        method(TimeDependent, false, false)
+    } else if (count == 3 && name.contains("geocentric translations")) || is(&TRANSLATIONS) {
+        method(Translations, false, false)
+    } else if is(&BADEKAS_CF) || is(&BADEKAS_PV) {
+        method(Badekas, !(vector || is(&BADEKAS_PV)), false)
+    } else {
+        None
     }
-    // So is one that is not a 3 or 7 parameter Helmert transformation (a grid's, NTv2 or
-    // NADCON, whose file is a PARAMETERFILE).
-    let Some(method) = helmert_method(t) else { return Ok(None) };
-    // Coordinate frame rotations turn the other way from PROJ's (position vector) `+towgs84`.
-    let frame = method.frame;
-    let mut v = [0.0; 7];
-    let mut given = 0u8;
+}
+
+/// Whether a transformation method PROJ 9.8.1 does not apply is one of the Helmert family (a
+/// time-specific one, which needs a coordinate epoch; one given by name without its kind's
+/// number of parameters; geocentric translations by grid), which terrio refuses rather than
+/// reading the `BOUNDCRS` without its shift.
+fn helmert_family(t: &Node) -> bool {
+    let method = t.child("METHOD");
+    let name = method.and_then(Node::name).unwrap_or("").to_ascii_lowercase();
+    ["position vector", "coordinate frame", "geocentric translations", "helmert", "molodensky-badekas", "time-specific"]
+        .iter()
+        .any(|k| name.contains(k))
+        || matches!(method.and_then(Node::epsg), Some(1065 | 1066))
+}
+
+/// A `BOUNDCRS`'s Helmert transformation, read: its method, its parameters in the method's own
+/// convention, and which of the seven it gives (a bit each, translations first).
+struct HelmertValues {
+    method: HelmertMethod,
+    t: [f64; 3],
+    r: [f64; 3],
+    s: f64,
+    pivot: [f64; 3],
+    given: u8,
+    /// Geocentric translations given a non-zero rotation or scale, which PROJ does not apply.
+    unapplied: bool,
+}
+
+impl HelmertValues {
+    /// The `+towgs84` values (position vector convention, small-angle), 3 or 7 of them.
+    fn towgs84(&self) -> Vec<f64> {
+        if self.method.kind == HelmertKind::Translations || self.given & !0b111 == 0 {
+            return self.t.to_vec();
+        }
+        let sign = if self.method.frame { -1.0 } else { 1.0 };
+        vec![self.t[0], self.t[1], self.t[2], self.r[0] * sign, self.r[1] * sign, self.r[2] * sign, self.s]
+    }
+
+    /// The transformation, where `+towgs84` cannot stand for it: a full rotation matrix, or a
+    /// Molodensky-Badekas evaluation point.
+    fn beyond_towgs84(&self) -> Option<Helmert> {
+        (self.method.exact || self.pivot != [0.0; 3]).then_some(Helmert {
+            t: self.t,
+            r: self.r,
+            s: self.s,
+            position_vector: !self.method.frame,
+            exact: self.method.exact,
+            pivot: self.pivot,
+        })
+    }
+}
+
+/// The Helmert transformation of a `BOUNDCRS`'s `ABRIDGEDTRANSFORMATION`. `None` when it is not
+/// one PROJ 9.8.1 applies (a grid's, NTv2 or NADCON, whose file is a PARAMETERFILE); an error for
+/// one of the Helmert family PROJ does not apply, or an unknown parameter.
+fn helmert_values(t: &Node) -> Result<Option<HelmertValues>> {
+    let Some(method) = helmert_method(t) else {
+        if helmert_family(t) {
+            return Err(bad("a Helmert transformation PROJ 9.8.1 does not apply"));
+        }
+        return Ok(None);
+    };
+    let (mut tr, mut r, mut s, mut pivot, mut given) = ([0.0; 3], [0.0; 3], 0.0, [0.0; 3], 0u8);
     for p in t.children("PARAMETER") {
         let name = norm(p.name().unwrap_or(""));
         let x = p.num(1).ok_or_else(|| bad("a transformation parameter without a value"))?;
         let unit = ["ANGLEUNIT", "LENGTHUNIT", "SCALEUNIT", "UNIT"].iter().find_map(|k| p.child(k)).and_then(|u| u.num(1));
         let code = p.epsg();
-        // A time-dependent method's rates and reference epoch, which PROJ 9.8.1 leaves out.
-        if method.time_dependent
-            && (name.starts_with("rateofchange") || name == "parameterreferenceepoch" || matches!(code, Some(1040..=1047 | 1049)))
+        // A time-dependent method's rates and reference epoch, which PROJ 9.8.1 does not apply
+        // without a coordinate epoch.
+        if method.kind == HelmertKind::TimeDependent
+            && (name.starts_with("rateofchange") || name.ends_with("referenceepoch") || matches!(code, Some(1040..=1047 | 1049)))
         {
             continue;
         }
-        // Another parameter (an evaluation point) is refused, not dropped.
         let i = match (name.as_str(), code) {
             ("xaxistranslation", _) | (_, Some(8605)) => 0,
             ("yaxistranslation", _) | (_, Some(8606)) => 1,
@@ -1083,50 +1213,84 @@ fn helmert_values(t: &Node) -> Result<Option<([f64; 7], u8, HelmertMethod)>> {
             ("yaxisrotation", _) | (_, Some(8609)) => 4,
             ("zaxisrotation", _) | (_, Some(8610)) => 5,
             ("scaledifference", _) | (_, Some(8611)) => 6,
+            ("ordinate1ofevaluationpoint", _) | (_, Some(8617)) if method.kind == HelmertKind::Badekas => 7,
+            ("ordinate2ofevaluationpoint", _) | (_, Some(8618)) if method.kind == HelmertKind::Badekas => 8,
+            ("ordinate3ofevaluationpoint", _) | (_, Some(8667)) if method.kind == HelmertKind::Badekas => 9,
+            // Another parameter is refused, not dropped.
             _ => return Err(bad(&format!("transformation parameter '{}'", p.name().unwrap_or("")))),
         };
-        v[i] = match i {
-            0..=2 => x * unit.unwrap_or(1.0),
+        match i {
+            0..=2 => tr[i] = x * unit.unwrap_or(1.0),
             // Arc-seconds, and parts per million.
-            3..=5 => x * unit.map(|r| r.to_degrees() * 3600.0).unwrap_or(1.0) * if frame { -1.0 } else { 1.0 },
+            3..=5 => r[i - 3] = x * unit.map(|u| u.to_degrees() * 3600.0).unwrap_or(1.0),
             // A scale difference as the ratio PROJ writes, in unity (1.0000067 for 6.7 ppm), or
             // without a unit; in another unit (parts per million), in that unit, which PROJ 9.8.1
             // would read as a ratio too. Any other unit-less value is ambiguous.
-            _ => match unit {
-                Some(1.0) => (x - 1.0) * 1e6,
-                Some(u) => x * u * 1e6,
-                None if (x - 1.0).abs() < 0.01 => (x - 1.0) * 1e6,
-                None => return Err(bad("a scale difference without its unit")),
-            },
-        };
-        given |= 1 << i;
+            6 => {
+                s = match unit {
+                    Some(1.0) => (x - 1.0) * 1e6,
+                    Some(u) => x * u * 1e6,
+                    None if (x - 1.0).abs() < 0.01 => (x - 1.0) * 1e6,
+                    None => return Err(bad("a scale difference without its unit")),
+                }
+            }
+            _ => pivot[i - 7] = x * unit.unwrap_or(1.0),
+        }
+        if i < 7 {
+            given |= 1 << i;
+        }
     }
-    Ok(Some((v, given, method)))
+    // Geocentric translations are three, whatever else is given, as PROJ applies them.
+    let unapplied = method.kind == HelmertKind::Translations && (r != [0.0; 3] || s != 0.0);
+    if method.kind == HelmertKind::Translations {
+        (r, s) = ([0.0; 3], 0.0);
+    }
+    Ok(Some(HelmertValues { method, t: tr, r, s, pivot, given, unapplied }))
 }
 
-/// The 3 or 7 parameters (as `+towgs84`'s) of a `BOUNDCRS`'s Helmert transformation, and
-/// whether it is to WGS 84: `None` when it is not a supported Helmert operation.
-fn helmert_shift(root: &Node) -> Result<Option<(Vec<f64>, bool)>> {
+/// A `BOUNDCRS`'s Helmert transformation: its `+towgs84` values, whether it is to WGS 84, and the
+/// transformation itself where `+towgs84` cannot stand for it.
+type BoundShift = (Vec<f64>, bool, Option<Helmert>);
+
+/// The 3 or 7 parameters (as `+towgs84`'s) of a `BOUNDCRS`'s Helmert transformation, whether it
+/// is to WGS 84, and the transformation itself where `+towgs84` cannot stand for it: `None` when
+/// it is not a supported Helmert operation.
+fn helmert_shift(root: &Node) -> Result<Option<BoundShift>> {
     let to_wgs84 = bound_to_wgs84(root);
     // PROJ 9.8.1 does not read a BOUNDCRS without its transformation.
     let t = root.child("ABRIDGEDTRANSFORMATION").ok_or_else(|| bad("a BOUNDCRS without its ABRIDGEDTRANSFORMATION"))?;
-    let Some((v, given, method)) = helmert_values(t)? else { return Ok(None) };
-    let seven = given & !0b111 != 0;
-    // Geocentric translations are three, whatever else is given, as PROJ applies them.
+    let Some(v) = helmert_values(t)? else { return Ok(None) };
     // Even zero parameters declare a Cartesian datum operation. Keeping it is
     // necessary when the source and destination ellipsoids differ.
-    Ok(Some((if seven && method.rotations { v.to_vec() } else { v[..3].to_vec() }, to_wgs84)))
+    Ok(Some((v.towgs84(), to_wgs84, v.beyond_towgs84())))
 }
 
-/// Whether PROJ 9.8.1 writes a `BOUNDCRS`'s Helmert transformation in a PROJ string that places
-/// points where it does: not for the time-dependent and Molodensky-Badekas methods, nor for a
-/// position vector or coordinate frame transformation without all seven parameters, nor for
-/// geocentric translations with a rotation or scale (which PROJ writes but does not apply).
+/// Whether a `BOUNDCRS`'s Helmert transformation has a PROJ string that places points where
+/// PROJ 9.8.1 does (`transformation.cpp`'s `getTOWGS84Parameters`, less what the maintainer's
+/// rule leaves out): position vector and coordinate frame with each of their seven parameters
+/// (one given twice leaves another out), and geocentric translations without a rotation or scale.
+/// Not the time-dependent and Molodensky-Badekas methods, which PROJ writes no string for, nor
+/// coordinate frame's full matrix, nor geocentric translations given a rotation or scale, which
+/// PROJ writes as a `+towgs84` placing points elsewhere than it does.
 pub(crate) fn helmert_writable(t: &Node) -> bool {
-    match helmert_values(t) {
-        // Each of the seven, not only seven parameters (one given twice leaves another out).
-        Ok(Some((v, given, m))) => m.writable && if m.rotations { given == 0b111_1111 } else { v[3..].iter().all(|x| *x == 0.0) },
-        Ok(None) => true,
-        Err(_) => false,
+    // The methods `getTOWGS84Parameters` writes: by code, or by a name with the whole words of
+    // its convention and its number of parameters (not a Molodensky-Badekas "CF" one).
+    let (name, code, count) = method_of(t);
+    let is = |codes: &[u32]| code.is_some_and(|c| codes.contains(&c));
+    let towgs84 = is(&CF)
+        || is(&CF_FULL_MATRIX)
+        || is(&PV)
+        || is(&TRANSLATIONS)
+        || (count == 7 && (name.contains("coordinate frame") || name.contains("position vector")))
+        || (count == 3 && name.contains("geocentric translations"));
+    if !towgs84 {
+        return helmert_method(t).is_none() && !helmert_family(t);
+    }
+    let Ok(values) = helmert_values(t) else { return false };
+    let Some(v) = values else { return true };
+    match v.method.kind {
+        HelmertKind::Seven => !v.method.exact && v.given == 0b111_1111,
+        HelmertKind::Translations => !v.unapplied,
+        HelmertKind::TimeDependent | HelmertKind::Badekas => false,
     }
 }

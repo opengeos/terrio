@@ -34,11 +34,14 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
   Mollweide), `esri:102003`, `urn:ogc:def:crs:ESRI::102003`. The few whose projection terrio
   does not compute (Goode homolosine of the oceans, Peirce quincuncial and others) are refused;
 - WKT1 and WKT2 (2015 and 2019) definitions, including ESRI `.prj` WKT and WKT2 `BOUNDCRS`s with a
-  Helmert transformation (geocentric translations, position vector and coordinate frame in each
-  domain, and, as PROJ 9.8.1 applies them, the time-dependent methods without their rates and
-  reference epoch, the Molodensky-Badekas ones without an evaluation point (one with it is refused), coordinate frame's full matrix and geog3D to compound
-  variants; a time-specific one, which needs a coordinate epoch, is refused, as is a `BOUNDCRS`
-  without its transformation): to WGS 84, as `+towgs84`, and to another CRS (ED50), followed by that
+  Helmert transformation, recognized and applied as PROJ 9.8.1 does: the 25 methods of its table
+  (geocentric translations, position vector and coordinate frame in each domain, coordinate
+  frame's full matrix with its rotation exact, geog3D to compound, the time-dependent methods
+  without their rates and reference epoch, which a `BOUNDCRS` has no coordinate epoch for, and
+  Molodensky-Badekas about its evaluation point), by their EPSG code or name, and other names by
+  the words of their convention with their kind's number of parameters. One of that family PROJ
+  does not apply (time-specific, which needs a coordinate epoch) is refused, as is a `BOUNDCRS`
+  without its transformation: to WGS 84, as `+towgs84`, and to another CRS (ED50), followed by that
   CRS's own transformations to WGS 84, as PROJ concatenates them (into a CRS on that CRS's datum,
   when terrio identifies it, the shift alone; into one on the source CRS's own datum, no shift,
   whatever the target; to a CRS without transformations, the source CRS's own, else PROJ's
@@ -989,8 +992,10 @@ Known differences, all of WKTs and PROJ strings without a code:
   As in PROJ, a `BOUNDCRS` whose position vector or coordinate frame transformation lacks any of
   its seven parameters, or whose transformation is a time-dependent or Molodensky-Badekas one,
   has no string either;
-- a WKT 2 `BOUNDCRS` with a geocentric translations transformation given a rotation or scale has
-  no string, where PROJ writes them but transforms without them (as terrio does too).
+- a WKT 2 `BOUNDCRS` with a geocentric translations transformation given a rotation or scale, or
+  with coordinate frame's full matrix, has no string, where PROJ writes a `+towgs84` it does not
+  transform by (without the rotation; by the small-angle approximation, 9 m away for Saba to
+  WGS 84's rotations of hundreds of arc-seconds).
 
 ### Writing strict WKT 1
 

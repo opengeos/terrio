@@ -107,9 +107,10 @@ def bound(
         params.append(
             f'PARAMETER["Scale difference",{1 + shift[6] * 1e-6!r},SCALEUNIT["unity",1],ID["EPSG",8611]]'
         )
+    ident = f',ID["EPSG",{code}]' if code else ""
     return (
         f'BOUNDCRS[SOURCECRS[{source}],TARGETCRS[{target}],ABRIDGEDTRANSFORMATION["t",'
-        f'METHOD["{method}",ID["EPSG",{code}]],{",".join(params)}]]'
+        f'METHOD["{method}"{ident}],{",".join(params)}]]'
     )
 
 
@@ -295,12 +296,27 @@ CASES = [
         (-0.1246, 51.5007),
     ),
 ]
-# Each Helmert method PROJ applies, given by its EPSG code alone: geocentric translations (which
-# PROJ applies without the rotations and scale given), position vector and coordinate frame in
-# each domain, the time-dependent and Molodensky-Badekas methods without their rates or
-# evaluation point, and coordinate frame's full matrix and geog3D to compound variants.
-METHOD_CODES = [9603, 1031, 1035, 1037, 9606, 1033, 1038, 9607, 1032, 1034, 1053, 1054]
-METHOD_CODES += [1056, 1057, 1061, 1063, 1133, 1140, 1149]
+# Each Helmert method PROJ applies (proj_constants.h), given by its EPSG code alone: geocentric
+# translations (which PROJ applies without the rotations and scale given), position vector and
+# coordinate frame in each domain, the time-dependent methods without their rates, coordinate
+# frame's full matrix and geog3D to compound variants, and Molodensky-Badekas without an
+# evaluation point.
+METHOD_CODES = [
+    9603,
+    1031,
+    1035,
+    9606,
+    1033,
+    1037,
+    9607,
+    1032,
+    1038,
+    1149,
+    1132,
+    1133,
+    1140,
+]
+METHOD_CODES += [1053, 1054, 1055, 1056, 1057, 1058, 1034, 1039, 9636, 1061, 1062, 1063]
 CASES += [
     (
         f"method EPSG:{code}, to WGS 84",
@@ -308,6 +324,50 @@ CASES += [
         (530000.0, 180000.0),
     )
     for code in METHOD_CODES
+]
+# Coordinate frame's full matrix, whose rotation PROJ applies exactly: Saba to WGS 84 (1)
+# (EPSG:10676), rotations of hundreds of arc-seconds, where the small-angle approximation is 9 m
+# away; and coordinate frame itself.
+SABA = geog("Saba", "Saba", "International 1924", 6378388, 297)
+SABA_SHIFT = [1138.7432, -2064.4761, 110.7016, -214.615206, 479.360036, -164.703951]
+SABA_SHIFT += [-402.32073]
+CASES += [
+    (
+        f"Saba, method EPSG:{code}, to WGS 84",
+        bound(SABA, WGS84, SABA_SHIFT, "m", code),
+        (-63.23, 17.63),
+    )
+    for code in [1132, 1133, 1140, 9607]
+]
+# Molodensky-Badekas about an evaluation point, which PROJ applies as its pivot.
+EVALUATION_POINT = (
+    'PARAMETER["Ordinate 1 of evaluation point",3900000,LENGTHUNIT["metre",1],ID["EPSG",8617]],'
+    'PARAMETER["Ordinate 2 of evaluation point",-100000,LENGTHUNIT["metre",1],ID["EPSG",8618]],'
+    'PARAMETER["Ordinate 3 of evaluation point",5000000,LENGTHUNIT["metre",1],ID["EPSG",8667]]'
+)
+CASES += [
+    (
+        f"method EPSG:{code} about an evaluation point, to WGS 84",
+        bound(BNG, WGS84, SHIFT, "m", code)[:-2] + "," + EVALUATION_POINT + "]]",
+        (530000.0, 180000.0),
+    )
+    for code in [9636, 1034, 1063, 1061]
+]
+# Methods by name alone: an EPSG name, whatever the number of parameters, as its code; another,
+# by its convention's words and the number of parameters of its kind.
+CASES += [
+    (
+        f"method by name {name!r}, {len(shift)} parameters, to WGS 84",
+        bound(BNG, WGS84, shift, name, None),
+        (530000.0, 180000.0),
+    )
+    for name, shift in [
+        ("Position Vector transformation (geog2D domain)", SHIFT[:3]),
+        ("Geocentric translations (geog2D domain)", SHIFT),
+        ("Molodensky-Badekas (CF geog2D domain)", SHIFT),
+        ("Coordinate Frame rotation", SHIFT),
+        ("Time-specific Coordinate Frame rotation (geocen)", SHIFT),
+    ]
 ]
 
 

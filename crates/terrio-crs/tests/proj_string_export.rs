@@ -262,3 +262,19 @@ fn geocentric_translations_with_a_rotation_have_no_proj_string() {
     let three = rows.iter().find(|r| r.input.contains(r#""Geocentric translations (geog2D domain)",ID["EPSG",9603]"#)).unwrap();
     assert!(three.proj.as_deref().is_some_and(|p| p.contains("+towgs84=446.448,-125.157,542.06,0,0,0,0")));
 }
+
+#[test]
+fn a_full_matrix_helmert_transformation_has_no_proj_string() {
+    // PROJ 9.8.1 (pyproj 3.8.0) applies coordinate frame's full matrix (EPSG 1132, 1133, 1140)
+    // exactly (`+exact`), as `wkt2_bound.rs` checks, but writes it as a `+towgs84`, which stands
+    // for the small-angle approximation: for Saba to WGS 84 (1) (EPSG:10676), rotations of
+    // hundreds of arc-seconds, its string places points 9 m from its transformation. terrio
+    // writes none; the plain coordinate frame method (EPSG 9607) is written as PROJ writes it.
+    let data: serde_json::Value = serde_json::from_str(include_str!("data/wkt2_bound.json")).unwrap();
+    for code in [1132, 1133, 1140, 9607] {
+        let name = format!("Saba, method EPSG:{code}, to WGS 84");
+        let case = data["cases"].as_array().unwrap().iter().find(|c| c["name"] == name.as_str()).unwrap();
+        let written = SpatialRef::from_wkt(case["wkt"].as_str().unwrap()).to_proj4();
+        assert_eq!(written.is_some(), code == 9607, "{name}: {written:?}");
+    }
+}
