@@ -92,11 +92,13 @@ on:
 #     but cancel-in-progress has already killed the first. Per-name keeps the
 #     review isolated from every other label, while remove-and-re-add of
 #     `claude-review` still supersedes its own older run, which is what we want.)
-#   - workflow_dispatch for PR N          -> claude-review-workflow_dispatch-N-push
-#     (a performance-only review dispatched for a newer head supersedes the older one)
+#   - performance-only review of PR N     -> claude-review-perf-N
+#     (the bench's workflow_dispatch and a maintainer's `perf-regression` label
+#     share it and never cancel: a second run waits, then skips at the
+#     once-per-head check once the first has posted)
 concurrency:
-  group: claude-review-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr }}-${{ github.event.comment.id || (github.event.action == 'labeled' && format('label-{0}', github.event.label.name)) || 'push' }}
-  cancel-in-progress: true
+  group: claude-review-${{ (github.event_name == 'workflow_dispatch' || github.event.label.name == 'perf-regression') && format('perf-{0}', github.event.pull_request.number || inputs.pr) || format('{0}-{1}-{2}', github.event_name, github.event.pull_request.number || github.event.issue.number, github.event.comment.id || (github.event.action == 'labeled' && format('label-{0}', github.event.label.name)) || 'push') }}
+  cancel-in-progress: ${{ !(github.event_name == 'workflow_dispatch' || github.event.label.name == 'perf-regression') }}
 
 jobs:
   claude-review:
@@ -299,14 +301,14 @@ jobs:
 
           echo "Staged pr-context/: $(wc -c < pr-context/diff.patch) bytes of diff, $(wc -l < pr-context/changed-files.txt) changed files"
 
-      # The latest bench comment (bench-comment.yml), staged only when it
-      # reports the PR head, so the reviewer never reads stale numbers. Its
-      # text was written by the PR's own code (a fork can change bench.yml), so
-      # it is untrusted data: only written to a file and matched with grep,
-      # never interpolated into shell or an expression. In performance-only
-      # mode this step also decides whether the review runs (`run`). Best
-      # effort: on failure a regular review goes ahead without bench results,
-      # and a performance-only review does not run.
+      # The bench comment (the first one, which bench-comment.yml updates),
+      # staged only when it reports the PR head, so the reviewer never reads
+      # stale numbers. Its text was written by the PR's own code (a fork can
+      # change bench.yml), so it is untrusted data: only written to a file and
+      # matched with grep, never interpolated into shell or an expression. In
+      # performance-only mode this step also decides whether the review runs
+      # (`run`). Best effort: on failure a regular review goes ahead without
+      # bench results, and a performance-only review does not run.
       - name: Stage benchmark results for the reviewer
         id: bench
         continue-on-error: true
@@ -318,7 +320,7 @@ jobs:
         run: |
           set -euo pipefail
           id="$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" \
-            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- terrio-bench -->"))) | .id' | tail -n 1)"
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- terrio-bench -->"))) | .id' | head -n 1)"
           if [ -n "$id" ]; then
             gh api "repos/$REPO/issues/comments/$id" --jq .body > "$RUNNER_TEMP/bench.md"
             if grep -F "this PR \`${HEAD_SHA:0:7}\`" "$RUNNER_TEMP/bench.md" > /dev/null; then
@@ -332,7 +334,10 @@ jobs:
           fi
 
           [ "$PERF_ONLY" = true ] || exit 0
-          if ! grep -x '<!-- terrio-bench: regression -->' pr-context/bench.md > /dev/null 2>&1; then
+          state="$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .state)"
+          if [ "$state" != open ]; then
+            echo "Pull request #$PR_NUMBER is $state: no performance review."
+          elif ! grep -x '<!-- terrio-bench: regression -->' pr-context/bench.md > /dev/null 2>&1; then
             echo "The bench flags no regression at $HEAD_SHA: no performance review."
           elif gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" \
               --jq '.[] | select(.user.login == "github-actions[bot]") | .body' \
@@ -440,7 +445,7 @@ jobs:
           prompt: |
             Perform a thorough code review of pull request ${{ github.repository }}/pull/${{ steps.pr.outputs.number }}.
 
-            ${{ env.PERF_ONLY == 'true' && 'PERFORMANCE-ONLY RUN: the bench flagged a regression at this head. Review only the Performance category below, using `pr-context/bench.md`, and skip the other categories: the regular review covers them. Head the final message "## Performance review" instead of "## Code review", lead with the regressed (⚠️) rows, and leave out the Change size tables. Post an inline comment only for a concrete cause. When the create_inline_comment tool is not available, cite file:line in the summary instead.' || '' }}
+            ${{ env.PERF_ONLY == 'true' && 'PERFORMANCE-ONLY RUN: the bench flagged a regression at this head. Review only the Performance category below, using `pr-context/bench.md`, and skip the other categories: the regular review covers them. Post an inline comment only for a concrete cause. When the create_inline_comment tool is not available, cite file:line in the summary instead.' || '' }}
 
             You have no Bash tool and no network access; everything you need is already on disk. The repository working directory is the PR head, so Read/Grep/Glob show the *proposed* file contents. The diff and PR metadata have been staged for you:
               - `pr-context/diff.patch` — the full PR diff (read it first; it may be large, so page through it with Read's offset/limit)
@@ -464,9 +469,9 @@ jobs:
 
             After posting inline comments, end your run by writing the summary as your FINAL MESSAGE. Do not try to post it yourself — you have no tool that can, and a workflow step publishes your final message as the PR comment verbatim. So your final message must be the comment body and nothing else: no preamble, no "I've completed the review", no meta-commentary about the tools you used.
 
-            That final message must start with the heading "## Code review" and list the findings grouped by category (Bugs, Security, Performance, Quality, CLAUDE.md), each with a one-line description and confidence. Mark each Performance finding as measured (a bench row) or unmeasured; if `pr-context/bench.md` is absent, say the bench was pending. If you genuinely find nothing worth raising, say so and note what you checked.
+            ${{ env.PERF_ONLY == 'true' && 'That final message must start with the heading "## Performance review", lead with the regressed (⚠️) rows of `pr-context/bench.md`, and give for each its likely cause (file:line) and confidence, or say that the diff does not explain it. Then list any other measured performance findings. Leave out the other categories and the Change size tables.' || 'That final message must start with the heading "## Code review" and list the findings grouped by category (Bugs, Security, Performance, Quality, CLAUDE.md), each with a one-line description and confidence. Mark each Performance finding as measured (a bench row) or unmeasured; if `pr-context/bench.md` is absent, say the bench was pending. If you genuinely find nothing worth raising, say so and note what you checked.' }}
 
-            End the final message with a "### Change size" table built from `pr-context/stats.json`. It covers the whole PR compared with the base branch, not the latest push, so put its `compared` text in a line under the heading. The table has one row each for files changed (with the added, modified, removed and renamed counts), size before, size after, and the total size change (signed, e.g. "+12.3 KB"). Under it, add a second table from `largest_changes` with one row per file: path, size before, size after and size change. Show sizes in B, KB or MB as fits. Both tables report file sizes, not line counts: never substitute the diff's added or removed lines for a size. If the stats file says they are unavailable, or `trees_truncated` is true, say so under the table instead of estimating.
+            ${{ env.PERF_ONLY != 'true' && 'End the final message with a "### Change size" table built from `pr-context/stats.json`. It covers the whole PR compared with the base branch, not the latest push, so put its `compared` text in a line under the heading. The table has one row each for files changed (with the added, modified, removed and renamed counts), size before, size after, and the total size change (signed, e.g. "+12.3 KB"). Under it, add a second table from `largest_changes` with one row per file: path, size before, size after and size change. Show sizes in B, KB or MB as fits. Both tables report file sizes, not line counts: never substitute the diff''s added or removed lines for a size. If the stats file says they are unavailable, or `trees_truncated` is true, say so under the table instead of estimating.' || '' }}
 
             Do not approve, merge, or modify any code. Only review and comment.
 
