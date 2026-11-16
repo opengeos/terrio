@@ -5719,13 +5719,12 @@ impl<'a, T: crate::pixel::Pixel> Kernel<'a, T> {
                     }
                 }
             } else {
-                for n in 0..nx {
-                    let i = i0 + n as i64;
+                for i in i0..i1 + 1 {
                     let at = line + self.column(ix + i) as usize;
                     if valid.is_some_and(|m| !m[at]) {
                         continue;
                     }
-                    let wx = if hoisted { wxs[n] } else { wfn(i as f64 - dx, self.xscale) };
+                    let wx = if hoisted { wxs[(i - i0) as usize] } else { wfn(i as f64 - dx, self.xscale) };
                     la += crate::pixel::Pixel::to_f64(data[at]) * wx;
                     lw += wx;
                 }
