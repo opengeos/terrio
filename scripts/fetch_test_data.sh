@@ -105,14 +105,24 @@ done
 # Vector tiles in a PMTiles archive (ZIP code tabulation areas, by Protomaps, made with Tippecanoe).
 [ -e cb_2018_us_zcta510_500k.pmtiles ] || curl -sSfL -o cb_2018_us_zcta510_500k.pmtiles \
   https://r2-public.protomaps.com/protomaps-sample-datasets/cb_2018_us_zcta510_500k.pmtiles
+# The GDAL tools that make the references in wasm_refs/ (below).
+have_tools() { for t in "$@"; do command -v "$t" >/dev/null || return 1; done; }
+wasm_ref_tools=(gdal_translate gdalwarp gdaldem gdal_calc.py gdal_merge.py gdal_proximity.py gdal_sieve.py
+  gdal_rasterize gdal_polygonize.py)
 # USGS 3DEP 1 arc-second tiles, pinned to the edition of 2026-07-08: the tests' expected values
 # come from it, and USGS replaces the files under current/ with each new edition. Tiles of
-# another edition (an earlier download from current/) are replaced, and the GDAL references
-# derived from them in wasm_refs/ are made again.
+# another edition (an earlier download from current/) are replaced. The references made from
+# usgs_dem.tif go with them: with GDAL's tools, the whole of wasm_refs/ is removed and made again
+# (several of its tools refuse to write over an existing output); without them, only those three.
 usgs_3dep=https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1/TIFF/historical
 usgs_edition=20260708
 if [ "$(cat usgs_3dep_edition 2>/dev/null || true)" != "$usgs_edition" ]; then
-  rm -rf usgs_dem.tif USGS_1_n40w107.tif USGS_1_n41w106.tif USGS_1_n41w107.tif wasm_refs
+  rm -f usgs_dem.tif USGS_1_n40w107.tif USGS_1_n41w106.tif USGS_1_n41w107.tif
+  if have_tools "${wasm_ref_tools[@]}"; then
+    rm -rf wasm_refs
+  else
+    rm -f wasm_refs/translate_srcwin.tif wasm_refs/translate_scale.tif wasm_refs/warp_3857.tif
+  fi
 fi
 [ -e usgs_dem.tif ] || curl -sSfL -o usgs_dem.tif "$usgs_3dep/n40w106/USGS_1_n40w106_$usgs_edition.tif"
 # Adjacent tiles, for mosaics.
@@ -401,9 +411,7 @@ if command -v ogr2ogr >/dev/null && command -v gdal_translate >/dev/null; then
 fi
 # The outputs of GDAL's tools that the WebAssembly build's operations are checked against
 # (js/tests/node.test.mjs), for the cases where terrio's native output is identical to GDAL's.
-have_tools() { for t in "$@"; do command -v "$t" >/dev/null || return 1; done; }
-if have_tools gdal_translate gdalwarp gdaldem gdal_calc.py gdal_merge.py gdal_proximity.py gdal_sieve.py \
-  gdal_rasterize gdal_polygonize.py && [ ! -e wasm_refs/done ]; then
+if have_tools "${wasm_ref_tools[@]}" && [ ! -e wasm_refs/done ]; then
   mkdir -p wasm_refs
   r=wasm_refs
   gdal_translate -q -srcwin 100 200 500 400 usgs_dem.tif $r/translate_srcwin.tif
