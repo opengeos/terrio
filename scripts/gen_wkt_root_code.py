@@ -54,6 +54,12 @@ def lo19(code):
     return relabel(CRS.from_epsg(2048).to_wkt(), 2048, code)
 
 
+LOCAL_GRS80 = (
+    'GEOGCS["x",DATUM["My_Local_Datum",SPHEROID["GRS 1980",6378137,298.257222101]],'
+    'PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],AUTHORITY["EPSG","4258"]]'
+)
+
+
 def main():
     assert pyproj.__version__ == "3.8.0" and pyproj.proj_version_str == "9.8.1", (
         pyproj.proj_version_str
@@ -119,6 +125,26 @@ def main():
             relabel(CRS.from_epsg(4258).to_wkt(), 4258, 4269),
             (-100.0, 40.0),
         ),
+        (
+            "a local datum on GRS 1980 declaring ETRS89",
+            LOCAL_GRS80,
+            (10.0, 50.0),
+        ),
+        (
+            "WGS 84 3D declaring EPSG:4326",
+            relabel(CRS.from_epsg(4979).to_wkt(), 4979, 4326),
+            (10.0, 50.0),
+        ),
+        (
+            "WGS 84 2D declaring EPSG:4979",
+            relabel(CRS.from_epsg(4326).to_wkt(), 4326, 4979),
+            (10.0, 50.0),
+        ),
+        (
+            "Esri RRAF 1991 of the deprecated EPSG:4640 with its own code",
+            CRS.from_epsg(4640).to_wkt("WKT1_ESRI")[:-1] + ',AUTHORITY["EPSG",4640]]',
+            (-61.0, 16.0),
+        ),
     ]
     # Declared codes that are not the CRS; a method terrio's WKT 2 reader does not know
     # (opengeos/terrio#1012 item 43) is refused under one, where PROJ reads its content.
@@ -130,6 +156,9 @@ def main():
         "Belge 1972 / Belgian Lambert 72 declaring EPSG:27700": 27700,
         "WGS 84 geocentric in simplified WKT 2 declaring EPSG:4326": 4326,
         "ETRS89 declaring NAD83": 4269,
+        "a local datum on GRS 1980 declaring ETRS89": 4258,
+        "WGS 84 3D declaring EPSG:4326": 4326,
+        "WGS 84 2D declaring EPSG:4979": 4979,
     }
     refused = {"Belge 1972 / Belgian Lambert 72 declaring EPSG:27700"}
     out = []

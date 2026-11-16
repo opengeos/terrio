@@ -32,7 +32,7 @@ fn read(case: &Value) -> (SpatialRef, terrio_crs::Result<(f64, f64)>) {
 #[test]
 fn a_wkt_is_read_by_its_nodes_not_its_root_code() {
     let cases = cases();
-    assert_eq!(cases.len(), 14);
+    assert_eq!(cases.len(), 18);
     for case in cases.iter().filter(|c| c["terrio"].is_null()) {
         let name = case["name"].as_str().unwrap();
         let (crs, got) = read(case);

@@ -1573,13 +1573,22 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
     let search = |datums: &[u32]| {
         let own = own.as_ref()?;
         let geogs = datums.iter().flat_map(|d| epsg::geographic_on(*d)).copied();
-        if own.is_geocentric() {
+        // A geocentric or geographic 3D CRS among the geodetic CRSs of its kind (EPSG:4979's
+        // content is not EPSG:4326, as PROJ identifies it).
+        let kind = if own.is_geocentric() {
+            Some(epsg::GeodeticKind::Geocentric)
+        } else if own.is_geographic() && geographic_dimension_3d(wkt) == Some(true) {
+            Some(epsg::GeodeticKind::Geographic3D)
+        } else {
+            None
+        };
+        if let Some(kind) = kind {
             return datums
                 .iter()
                 .filter_map(|d| epsg::registry().by_datum.get(d))
                 .flatten()
                 .copied()
-                .filter(|c| epsg::registry().geodetic.get(c).is_some_and(|g| g.kind == epsg::GeodeticKind::Geocentric) && same(own, *c))
+                .filter(|c| epsg::registry().geodetic.get(c).is_some_and(|g| g.kind == kind) && same(own, *c))
                 // `by_datum` holds current CRSs only.
                 .min_by_key(|c| (!named(*c), *c));
         }
@@ -1671,8 +1680,9 @@ fn spherical_extension(wkt: &str, proj: &str) -> String {
 }
 
 /// Whether a WKT's own content is the EPSG CRS it declares: the same conversion (units and
-/// axes included) on the same ellipsoid and datum. When terrio cannot read the content (a method only the
-/// registry has), when the WKT names the code's own projection method.
+/// axes included) on the same ellipsoid and datum, and of the same kind (geocentric, geographic 2D
+/// or 3D). When terrio cannot read the content (a method only the registry has), when the WKT
+/// names the code's own projection method.
 pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
     // Only a horizontal CRS's content is compared (not a vertical or engineering CRS's).
     let horizontal_root = wkt1::parse(wkt).is_some_and(|r| {
@@ -1706,23 +1716,43 @@ pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
     // NAD83, both on GRS 1980): not the code, whose transformations would move it wrongly.
     // Both as their names identify them (and the code's datum), others included.
     // Datums terrio has CRSs on (not a superseded code a name still gives: Greenland 1996's 6747).
-    let (mut own_datums, own_others) = wkt_datums_and_others(horizontal.as_deref().unwrap_or(wkt));
+    let (named_datums, own_others) = wkt_datums_and_others(horizontal.as_deref().unwrap_or(wkt));
+    let mut own_datums = named_datums.clone();
     own_datums.retain(|d| !epsg::geographic_on(*d).is_empty());
     let registered = SpatialRef { epsg: Some(code), ..Default::default() }.to_wkt();
     let registered = registered.as_deref().map(|w| def::split_compound(w).map(|(h, _)| h).unwrap_or_else(|| w.to_string()));
     let (mut their_datums, their_others) = registered.as_deref().map(wkt_datums_and_others).unwrap_or_default();
     their_datums.extend(theirs.datum_code());
-    // A datum of the same name is the same (EPSG gives Greenland 1996 two codes, 6747 and 1421).
+    // A datum of the same name is the same: EPSG gives Greenland 1996 two codes (6747 and 1421),
+    // and a deprecated CRS (EPSG:4640) is on a superseded datum of the current one's name, which
+    // ESRI's `D_RRAF_1991` identifies.
+    let own_name = datum_name(horizontal.as_deref().unwrap_or(wkt));
     let same_name = || {
-        let Some(own) = datum_name(horizontal.as_deref().unwrap_or(wkt)).map(|n| epsg::datum_key(&n)) else { return false };
+        let own: Vec<String> =
+            own_name.iter().cloned().chain(named_datums.iter().filter_map(|d| epsg::datum_name(*d))).map(|n| epsg::datum_key(&n)).collect();
         let registered_name = registered.as_deref().and_then(datum_name);
-        registered_name.into_iter().chain(their_datums.iter().filter_map(|d| epsg::datum_name(*d))).any(|n| epsg::datum_key(&n) == own)
+        registered_name
+            .into_iter()
+            .chain(their_datums.iter().filter_map(|d| epsg::datum_name(*d)))
+            .any(|n| own.contains(&epsg::datum_key(&n)))
     };
-    if !own_datums.is_empty()
+    // A datum terrio does not know is not the code's unless named as it (PROJ keeps no code
+    // either): a local datum declaring ETRS89 would get ETRS89's transformations.
+    let unknown = named_datums.is_empty() && own_others.is_empty() && own_name.is_some();
+    if (!own_datums.is_empty() || unknown)
         && !their_datums.is_empty()
         && !own_datums.iter().any(|d| their_datums.contains(d) || their_others.contains(d))
         && !their_datums.iter().any(|d| own_others.contains(d))
         && !same_name()
+    {
+        return false;
+    }
+    // A geographic 2D CRS is not a 3D code, nor the reverse (PROJ identifies EPSG:4979's WKT
+    // declaring 4326 as 4979).
+    if let Some(three_d) = geographic_dimension_3d(horizontal.as_deref().unwrap_or(wkt))
+        && theirs.is_geographic()
+        && theirs.vertical().is_none()
+        && three_d != theirs.has_height()
     {
         return false;
     }
@@ -1758,6 +1788,26 @@ pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
             catalog::epsg_method(code).is_some_and(|m| wkt1::norm(m) == name)
                 || registered.as_deref().and_then(method).is_some_and(|t| t.name().map(wkt1::norm).as_deref() == Some(name.as_str()))
         }
+    }
+}
+
+/// Whether a geographic CRS's WKT is 3D, by its `CS` dimension or its `AXIS` nodes; `None` when
+/// it is not geographic or gives no axes (Esri's WKT 1 of a 3D CRS has none).
+fn geographic_dimension_3d(wkt: &str) -> Option<bool> {
+    let root = wkt1::parse(wkt)?;
+    let cs = root.child("CS");
+    let ellipsoidal = cs.is_some_and(|c| matches!(c.args.first(), Some(wkt1::Arg::Ident(t)) if t.eq_ignore_ascii_case("ellipsoidal")));
+    let geographic = ["GEOGCS", "GEOGCRS", "GEOGRAPHICCRS"].iter().any(|k| root.key.eq_ignore_ascii_case(k))
+        || (["GEODCRS", "GEODETICCRS"].iter().any(|k| root.key.eq_ignore_ascii_case(k)) && ellipsoidal);
+    if !geographic {
+        return None;
+    }
+    match cs.and_then(|c| c.num(1)) {
+        Some(n) => Some(n == 3.0),
+        None => match root.children("AXIS").count() {
+            0 => None,
+            n => Some(n == 3),
+        },
     }
 }
 

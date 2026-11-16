@@ -221,6 +221,70 @@
    "esri": null,
    "declared": 4269,
    "terrio": null
+  },
+  {
+   "name": "a local datum on GRS 1980 declaring ETRS89",
+   "wkt": "GEOGCS[\"x\",DATUM[\"My_Local_Datum\",SPHEROID[\"GRS 1980\",6378137,298.257222101]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433],AUTHORITY[\"EPSG\",\"4258\"]]",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "proj": [
+    10.0,
+    50.0
+   ],
+   "epsg": null,
+   "esri": null,
+   "declared": 4258,
+   "terrio": null
+  },
+  {
+   "name": "WGS 84 3D declaring EPSG:4326",
+   "wkt": "GEOGCRS[\"WGS 84\",ENSEMBLE[\"World Geodetic System 1984 ensemble\",MEMBER[\"World Geodetic System 1984 (Transit)\"],MEMBER[\"World Geodetic System 1984 (G730)\"],MEMBER[\"World Geodetic System 1984 (G873)\"],MEMBER[\"World Geodetic System 1984 (G1150)\"],MEMBER[\"World Geodetic System 1984 (G1674)\"],MEMBER[\"World Geodetic System 1984 (G1762)\"],MEMBER[\"World Geodetic System 1984 (G2139)\"],MEMBER[\"World Geodetic System 1984 (G2296)\"],ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]],ENSEMBLEACCURACY[2.0]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,3],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"ellipsoidal height (h)\",up,ORDER[3],LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Geodesy. Navigation and positioning using GPS satellite system.\"],AREA[\"World.\"],BBOX[-90,-180,90,180]],ID[\"EPSG\",4326]]",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "proj": [
+    10.0,
+    50.0
+   ],
+   "epsg": 4979,
+   "esri": null,
+   "declared": 4326,
+   "terrio": null
+  },
+  {
+   "name": "WGS 84 2D declaring EPSG:4979",
+   "wkt": "GEOGCRS[\"WGS 84\",ENSEMBLE[\"World Geodetic System 1984 ensemble\",MEMBER[\"World Geodetic System 1984 (Transit)\"],MEMBER[\"World Geodetic System 1984 (G730)\"],MEMBER[\"World Geodetic System 1984 (G873)\"],MEMBER[\"World Geodetic System 1984 (G1150)\"],MEMBER[\"World Geodetic System 1984 (G1674)\"],MEMBER[\"World Geodetic System 1984 (G1762)\"],MEMBER[\"World Geodetic System 1984 (G2139)\"],MEMBER[\"World Geodetic System 1984 (G2296)\"],ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]],ENSEMBLEACCURACY[2.0]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],USAGE[SCOPE[\"Horizontal component of 3D system.\"],AREA[\"World.\"],BBOX[-90,-180,90,180]],ID[\"EPSG\",4979]]",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "proj": [
+    10.0,
+    50.0
+   ],
+   "epsg": 4326,
+   "esri": null,
+   "declared": 4979,
+   "terrio": null
+  },
+  {
+   "name": "Esri RRAF 1991 of the deprecated EPSG:4640 with its own code",
+   "wkt": "GEOGCS[\"GCS_RRAF_1991\",DATUM[\"D_RRAF_1991\",SPHEROID[\"WGS_1984\",6378137.0,298.257223563]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433],AUTHORITY[\"EPSG\",4640]]",
+   "point": [
+    -61.0,
+    16.0
+   ],
+   "proj": [
+    -61.0,
+    16.0
+   ],
+   "epsg": 4640,
+   "esri": null,
+   "declared": null,
+   "terrio": null
   }
  ]
 }
