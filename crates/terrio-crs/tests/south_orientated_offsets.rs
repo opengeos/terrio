@@ -65,6 +65,9 @@ fn south_orientated_transverse_mercator_subtracts_its_offsets() {
         let read = SpatialRef::from_geokeys(&keys.directory, &keys.doubles, keys.ascii.as_bytes()).unwrap();
         let got = back(&read);
         assert!((got.0 - want.0).abs() < 1e-3 && (got.1 - want.1).abs() < 1e-3, "{form}, GeoKeys: {got:?}, {want:?}");
+        let read = SpatialRef::from_projjson(&crs.to_projjson().unwrap()).unwrap();
+        let got = back(&read);
+        assert!((got.0 - want.0).abs() < 1e-3 && (got.1 - want.1).abs() < 1e-3, "{form}, PROJJSON: {got:?}, {want:?}");
     }
 }
 
@@ -89,5 +92,24 @@ fn south_orientated_offsets_with_a_north_east_wkt1() {
         let got = t.transform(lon, lat).unwrap();
         let want = (fn_ + s, fe + w);
         assert!((got.0 - want.0).abs() < 1e-3 && (got.1 - want.1).abs() < 1e-3, "({lon}, {lat}): {got:?}, {want:?}");
+    }
+    // Written as WKT 1 (strict or not) and as PROJJSON, from the WKT and from its PROJ string as
+    // terrio stores it, it reads back in place: no WKT 1 that places it elsewhere.
+    let crs = SpatialRef::from_wkt(&wkt1(fe, fn_));
+    let typed =
+        SpatialRef::from_proj4(&format!("+proj=tmerc +axis=swu +lat_0=0 +lon_0=19 +k=1 +x_0={} +y_0={} +datum=WGS84 +units=m", -fe, -fn_))
+            .unwrap();
+    let want = t.transform(18.5, -33.9).unwrap();
+    for (source, c) in [("WKT", &crs), ("PROJ string", &typed)] {
+        let placed = |c: &SpatialRef| Transformer::new(&wgs84, c).unwrap().transform(18.5, -33.9).unwrap();
+        let got = placed(c);
+        assert!((got.0 - want.0).abs() < 1e-3 && (got.1 - want.1).abs() < 1e-3, "{source}: {got:?}, {want:?}");
+        let written = [("WKT 1", c.to_wkt()), ("strict WKT 1", c.to_wkt1_strict()), ("PROJJSON", c.to_projjson().ok())];
+        for (form, w) in written {
+            let Some(w) = w else { continue };
+            let read = if form == "PROJJSON" { SpatialRef::from_projjson(&w).unwrap() } else { SpatialRef::from_wkt(&w) };
+            let got = placed(&read);
+            assert!((got.0 - want.0).abs() < 1e-3 && (got.1 - want.1).abs() < 1e-3, "{source}, {form}: {got:?}, {want:?}\n{w}");
+        }
     }
 }
