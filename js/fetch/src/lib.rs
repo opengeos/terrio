@@ -596,6 +596,11 @@ impl Remote {
             if opening() {
                 let block = self.file.block_size();
                 missing = sparse::grow_ranges(&missing, self.file.fetched().0.min(OPEN_GROWTH_MAX), block, self.file.len());
+            } else if !missing.is_empty()
+                && server_runtime()
+                && let Some(pieces) = sparse::parallel_ranges(&missing, self.file.block_size())
+            {
+                missing = pieces;
             }
             let parts = self.objects.as_ref().map(|o| o.missing()).unwrap_or_default();
             if missing.is_empty() && parts.is_empty() {

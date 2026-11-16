@@ -8,6 +8,22 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::{Error, Result};
+
+/// A portable relative store key, without roots, drive prefixes, or parent components.
+pub(crate) fn relative_name(name: &str) -> Result<String> {
+    let name = name.replace('\\', "/");
+    let parts: Vec<_> = name.split('/').filter(|part| !part.is_empty() && *part != ".").collect();
+    let drive = parts.first().is_some_and(|part| {
+        let bytes = part.as_bytes();
+        bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+    });
+    if name.starts_with('/') || name.contains('\0') || drive || parts.contains(&"..") {
+        return Err(Error::InvalidArgument("store file names must be relative and must not contain parent components".into()));
+    }
+    Ok(parts.join("/"))
+}
+
 /// The prefix of the virtual paths of mounts, reserved: [`crate::vsi`] refuses paths below it,
 /// and listings above it leave it out, so that `/vsimem/` files and mounts never meet.
 const ROOT: &str = "/vsimem/.terrio-mounts";
@@ -45,22 +61,34 @@ pub(crate) struct Mount {
 
 impl Mount {
     /// Mounts files given by their paths relative to the mount (`a/.zarray`).
-    pub(crate) fn new(entries: impl IntoIterator<Item = (String, Vec<u8>)>) -> Self {
+    pub(crate) fn new(entries: impl IntoIterator<Item = (String, Vec<u8>)>) -> Result<Self> {
+        let mut names = std::collections::HashSet::new();
+        let entries = entries
+            .into_iter()
+            .map(|(name, bytes)| {
+                let name = relative_name(&name)?;
+                if name.is_empty() || !names.insert(name.clone()) {
+                    return Err(Error::InvalidArgument("store file names must be nonempty and unique after normalization".into()));
+                }
+                Ok((name, bytes))
+            })
+            .collect::<Result<Vec<_>>>()?;
         let root = format!("{ROOT}/{}", NEXT.fetch_add(1, Ordering::Relaxed));
         let mut f = files();
         for (name, bytes) in entries {
-            let name = name.replace('\\', "/");
-            let name = name.trim_matches('/');
-            if !name.is_empty() {
-                f.insert(format!("{root}/{name}"), Arc::new(bytes));
-            }
+            f.insert(format!("{root}/{name}"), Arc::new(bytes));
         }
-        Self { root: PathBuf::from(root) }
+        Ok(Self { root: PathBuf::from(root) })
     }
 
     /// The mount's directory.
     pub(crate) fn path(&self) -> &Path {
         &self.root
+    }
+
+    /// Resolves a relative store root without allowing a host filesystem path.
+    pub(crate) fn join(&self, name: &str) -> Result<PathBuf> {
+        Ok(self.root.join(relative_name(name)?))
     }
 
     /// The files under the mount, by their paths relative to it, sorted.
@@ -285,7 +313,7 @@ mod tests {
     #[test]
     fn mounts_are_reserved_and_left_out_of_listings() {
         crate::memfs::write(Path::new("/vsimem/memfs-reserved-test/a"), b"user").unwrap();
-        let m = Mount::new([("x".to_string(), b"mounted".to_vec())]);
+        let m = Mount::new([("x".to_string(), b"mounted".to_vec())]).unwrap();
         assert!(m.path().starts_with(ROOT) && is_reserved(&m.path().join("x")) && is_reserved(Path::new(ROOT)));
         assert!(!is_reserved(Path::new("/vsimem/.terrio-mounts2/a")) && !is_reserved(Path::new("/vsimem/terrio/1/a")));
         let all = list_files(Path::new("/vsimem")).unwrap();
@@ -296,8 +324,29 @@ mod tests {
     }
 
     #[test]
+    fn mount_names_cannot_escape_their_namespace() {
+        for name in [
+            "/tmp/host/.zarray",
+            r"\host\store\.zarray",
+            "C:/host/.zarray",
+            "./C:/host/.zarray",
+            "../host/.zarray",
+            "s/../../host/.zarray",
+            "a\0b",
+        ] {
+            assert!(Mount::new([(name.into(), Vec::new())]).is_err(), "{name}");
+        }
+        assert!(Mount::new([("./s/a".into(), vec![1]), ("s/a".into(), vec![2])]).is_err());
+        let mount = Mount::new([("./s/a".into(), vec![1])]).unwrap();
+        assert_eq!(read(&mount.join("./s/a").unwrap()).unwrap(), [1]);
+        assert!(mount.join("/tmp/host").is_err());
+        assert!(mount.join("../host").is_err());
+    }
+
+    #[test]
     fn mounts_files() {
-        let m = Mount::new([("s/.zgroup".to_string(), b"{}".to_vec()), ("s/a/.zarray".into(), b"x".to_vec()), ("s/b/0.0".into(), vec![1])]);
+        let m = Mount::new([("s/.zgroup".to_string(), b"{}".to_vec()), ("s/a/.zarray".into(), b"x".to_vec()), ("s/b/0.0".into(), vec![1])])
+            .unwrap();
         let s = m.path().join("s");
         assert!(is_dir(&s) && !is_file(&s));
         assert!(is_file(&s.join(".zgroup")));

@@ -11,8 +11,10 @@ authors:
     orcid: "https://orcid.org/0000-0001-5437-4073"
   - given-names: Mavrick
     family-names: Fitzgerald
-version: 0.8.0
-date-released: 2026-11-08
+  - given-names: Guillermo
+    family-names: Morales Sanchez
+version: 0.9.0
+date-released: 2026-11-14
 doi: "10.5281/zenodo.23642204"
 repository-code: "https://github.com/opengeos/terrio"
 url: "https://terrio.dev"

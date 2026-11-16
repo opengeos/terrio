@@ -250,8 +250,8 @@ impl EptReader {
         }
         let srs = &json["srs"];
         let horizontal = match (srs["wkt"].as_str(), srs["authority"].as_str(), srs["horizontal"].as_str()) {
-            (Some(wkt), ..) if !wkt.is_empty() => SpatialRef::parse(wkt).unwrap_or_default(),
-            (_, Some(auth), Some(code)) => SpatialRef::parse(&format!("{auth}:{code}")).unwrap_or_default(),
+            (Some(wkt), ..) if !wkt.is_empty() => SpatialRef::parse_literal(wkt).unwrap_or_default(),
+            (_, Some(auth), Some(code)) => SpatialRef::parse_literal(&format!("{auth}:{code}")).unwrap_or_default(),
             _ => SpatialRef::default(),
         };
         let vertical_epsg = srs["vertical"].as_str().and_then(|v| v.parse().ok());
@@ -530,7 +530,7 @@ impl FormatReader for EptReader {
         let base = &self.base;
         #[cfg(not(target_family = "wasm"))]
         let parts: Vec<Result<Vec<Dimension>>> = {
-            let options = crate::config::thread_options();
+            let options = crate::config::ThreadOptions::capture();
             let context = crate::stac::AssetReadContext::capture(crate::stac::AssetReadPolicy::current());
             crate::par::map_range(keys.len(), |i| {
                 crate::config::with_thread_options(options.clone(), || {

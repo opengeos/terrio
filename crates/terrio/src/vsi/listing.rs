@@ -18,7 +18,8 @@ use std::collections::HashMap;
 type EntryIndex = HashMap<(String, bool), usize>;
 
 /// Removes credentials from diagnostics and public names: userinfo in every URL authority
-/// and credential-bearing query strings. Raw whitespace in malformed userinfo is retained
+/// and all URL query strings and fragments, plus credential-bearing query strings in
+/// schemeless locations such as `/vsiaz/…?sig=`. Raw whitespace in malformed userinfo is retained
 /// through the `@` for conservative redaction, avoiding password fragments. An unencoded
 /// `/`, `?` or `#` ends the authority; percent-encode those characters in passwords. An `@`
 /// in a path is not userinfo.
@@ -46,18 +47,66 @@ pub(crate) fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
         redacted.push_str(&url[copied..]);
         std::borrow::Cow::Owned(redacted)
     };
-    if let Some((base, query)) = out.split_once('?') {
-        // Parameter names as a server reads them too: `%6Bey=` is `key=`.
-        let lower = format!("{query}&{}", percent_decoded(query)).to_ascii_lowercase();
-        const KEYS: [&str; 9] = ["sig", "token=", "credential=", "api_key=", "apikey=", "access_key=", "key=", "password=", "passwd="];
-        if KEYS.iter().any(|key| lower.contains(key)) {
-            return format!("{base}?<redacted>").into();
-        }
+    // Schemeless locations (`/vsiaz/c/b?sig=…`, a mistyped path) keep a query that names no
+    // credential, since `?` is legal in a file name; one that names a credential is private.
+    // Checked first, so a URL later in the same message cannot end redaction early. A `?`
+    // after a URL's scheme is left to the URL rule below, which redacts the whole suffix.
+    // A Windows verbatim prefix (`\\?\C:\…`) is part of the path, not a query.
+    let start = if out.starts_with(r"\\?\") || out.starts_with("//?/") { 4 } else { 0 };
+    let scheme = out.find("://").unwrap_or(out.len());
+    if let Some(separator) = out[start..].find(['?', '#']).map(|q| start + q).filter(|&q| q < scheme)
+        && names_credential(&out[separator + 1..])
+    {
+        return format!("{}{}<redacted>", &out[..separator], &out[separator..=separator]).into();
     }
+    if let Some(scheme) = out.find("://")
+        && let Some(end) = out[scheme + 3..].find(['?', '#'])
+    {
+        // Treat the entire suffix as private, including malformed or nested URLs. An
+        // allowlist of credential parameter names cannot cover custom authentication.
+        let end = scheme + 3 + end;
+        return format!("{}{}<redacted>", &out[..end], &out[end..end + 1]).into();
+    }
+    // Schemeless inputs without a credential parameter can be literal filenames,
+    // including Windows verbatim paths. The credential check above already covers
+    // standalone signed paths as well as paths embedded in diagnostics.
     out
 }
 
-/// `text` with its `%XX` escapes decoded (invalid escapes and non-UTF-8 bytes kept as they are).
+/// Whether a schemeless query (and any text after it, URL-valued parameters included) names a
+/// credential parameter. Names are
+/// compared whole, percent-decoded as a server reads them (`%73ig` is `sig`), so a file name
+/// such as `what?design.tif` is not one. Parameters split at `&`, `;`, `?`, `#` and whitespace,
+/// so a later location in the same message is checked too. Only `name=value` parameters count.
+fn names_credential(query: &str) -> bool {
+    const NAMES: [&str; 13] = [
+        "sig",
+        "key",
+        "access_key",
+        "auth",
+        "authorization",
+        "password",
+        "passwd",
+        "pwd",
+        "secret",
+        "token",
+        "credential",
+        "code",
+        "session",
+    ];
+    const PARTS: [&str; 8] = ["signature", "token", "secret", "password", "credential", "apikey", "api_key", "api-key"];
+    let separator = |c: char| matches!(c, '&' | ';' | '?' | '#') || c.is_whitespace();
+    let credential = |parameter: &str| {
+        let Some((name, _)) = parameter.split_once('=') else { return false };
+        let name = percent_decoded(name).to_ascii_lowercase();
+        NAMES.contains(&name.as_str()) || PARTS.iter().any(|part| name.contains(part))
+    };
+    // Check original parameter names too: decoding a name's encoded '&' must not
+    // split its credential-bearing portion away from its '=' and value.
+    query.split(separator).any(credential) || percent_decoded(query).split(separator).any(credential)
+}
+
+/// `text` with its `%XX` escapes decoded. Invalid escapes are kept; decoded bytes that are not UTF-8 become U+FFFD.
 fn percent_decoded(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -799,10 +848,7 @@ mod tests {
     fn url_passwords_and_key_parameters_are_redacted() {
         let redacted = super::redact_url("https://user:secret@example.com/f.tif?key=AIza123");
         assert_eq!(redacted, "https://example.com/f.tif?<redacted>");
-        assert_eq!(
-            super::redact_url("https://a.example/x?harmless=1 then https://u:secret@b.example/y"),
-            "https://a.example/x?harmless=1 then https://b.example/y"
-        );
+        assert_eq!(super::redact_url("https://a.example/x?harmless=1 then https://u:secret@b.example/y"), "https://a.example/x?<redacted>");
         assert_eq!(super::redact_url("https://u:p@example.com"), "https://example.com");
         assert_eq!(super::redact_url("https://user:my pass@host/x"), "https://host/x");
         assert_eq!(
@@ -815,6 +861,65 @@ mod tests {
         assert_eq!(super::redact_url("/vsizip/local@archive.zip/x.tif"), "/vsizip/local@archive.zip/x.tif");
         assert!(super::redact_url("https://example.com/f.tif?password=hunter2").ends_with("?<redacted>"));
         assert!(super::redact_url("https://example.com/f.tif?%6Bey=AIza123").ends_with("?<redacted>"));
+        for key in ["code", "auth", "jwt", "secret", "client_secret", "session", "X-Amz-Signature", "X-Goog-Signature"] {
+            let url = format!("https://user:private@example.com/f.tif?{key}=PRIVATE");
+            let shown = super::redact_url(&url);
+            assert_eq!(shown, "https://example.com/f.tif?<redacted>");
+            assert_eq!(super::redact_url(&shown), shown);
+        }
+        assert_eq!(super::redact_url("https://host/a?<redacted>&token=PRIVATE"), "https://host/a?<redacted>");
+        assert_eq!(super::redact_url("https://host/a#PRIVATE"), "https://host/a#<redacted>");
+        assert_eq!(super::redact_url("/no/such/file.zip?sig=PRIVATE"), "/no/such/file.zip?<redacted>");
+        assert_eq!(super::redact_url("/vsiaz/c/b.tif?%73ig=PRIVATE"), "/vsiaz/c/b.tif?<redacted>");
+        assert_eq!(super::redact_url("/data/a?token%3DPRIVATE"), "/data/a?<redacted>");
+        assert_eq!(super::redact_url("/data/a?%74oken%3dPRIVATE"), "/data/a?<redacted>");
+        assert_eq!(super::redact_url("/data/a?x=1%26token=PRIVATE"), "/data/a?<redacted>");
+        assert_eq!(super::redact_url("/data/a?client_secret%26label=PRIVATE"), "/data/a?<redacted>");
+        assert_eq!(super::redact_url("/data/a#client_secret%26label=PRIVATE"), "/data/a#<redacted>");
+        assert_eq!(super::redact_url("/data/a#sig=PRIVATE"), "/data/a#<redacted>");
+        assert_eq!(super::redact_url("/data/a#x=1%26token%3DPRIVATE"), "/data/a#<redacted>");
+        assert_eq!(super::redact_url("/data/file#notes.txt"), "/data/file#notes.txt");
+        assert_eq!(super::redact_url("/vsiaz/c/b.tif?BARE_VALUE"), "/vsiaz/c/b.tif?BARE_VALUE");
+        assert_eq!(super::redact_url("/data/what?.tif"), "/data/what?.tif");
+        assert_eq!(super::redact_url("/data/what?design.tif"), "/data/what?design.tif");
+        assert_eq!(super::redact_url("/data/a?signal=1&monkey=2"), "/data/a?signal=1&monkey=2");
+        assert_eq!(super::redact_url("/vsiaz/c/b.tif?client_secret=PRIVATE"), "/vsiaz/c/b.tif?<redacted>");
+        assert_eq!(super::redact_url("/vsiaz/c/b.tif?X-Amz-Signature=PRIVATE"), "/vsiaz/c/b.tif?<redacted>");
+        // A credential before a URL in the same message is not exposed by the URL rule.
+        assert_eq!(super::redact_url("/vsiaz/c/b.tif?sig=PRIVATE then https://h/x?y"), "/vsiaz/c/b.tif?<redacted>");
+        assert_eq!(super::redact_url("/vsiaz/c/b.tif?sig=PRIVATE&next=https://host/a?x=1"), "/vsiaz/c/b.tif?<redacted>");
+        // The schemeless check reads past URL-valued parameters, so a credential after one is
+        // found; a later URL's credential then redacts from the schemeless query on.
+        assert_eq!(super::redact_url("/vsiaz/c/b.tif?next=https://host/a&sig=PRIVATE"), "/vsiaz/c/b.tif?<redacted>");
+        assert_eq!(super::redact_url("/data/a?x=1://b&sig=PRIVATE"), "/data/a?<redacted>");
+        assert_eq!(super::redact_url("/data/a?x then https://h/f?sig=PRIVATE"), "/data/a?<redacted>");
+        assert_eq!(super::redact_url("/data/a?x then https://h/f?y=1"), "/data/a?x then https://h/f?<redacted>");
+        for name in ["api-key", "x-api-key", "authorization", "apiKey"] {
+            assert_eq!(super::redact_url(&format!("/vsicurl/x.tif?{name}=PRIVATE")), "/vsicurl/x.tif?<redacted>");
+        }
+        // Words of the message after a path's `?` are not parameters.
+        assert_eq!(super::redact_url("/data/a?b.tif: unsupported code"), "/data/a?b.tif: unsupported code");
+        assert_eq!(super::redact_url("/data/a?b.tif: unexpected token, missing key"), "/data/a?b.tif: unexpected token, missing key");
+        // A Windows verbatim prefix is not a query.
+        assert_eq!(super::redact_url(r"\\?\C:\token-cache\a.tif"), r"\\?\C:\token-cache\a.tif");
+        assert_eq!(super::redact_url(r"\\?\C:\data\a.tif?sig=PRIVATE"), r"\\?\C:\data\a.tif?<redacted>");
+        // A `?` inside a URL fragment never shortens the URL rule's redaction.
+        assert_eq!(super::redact_url("https://h/a#frag?sig=PRIVATE"), "https://h/a#<redacted>");
+    }
+
+    #[test]
+    fn scheme_less_file_names_keep_a_query_that_names_no_credential() {
+        assert_eq!(super::redact_url("/data/what?.tif"), "/data/what?.tif");
+        assert_eq!(super::redact_url("/vsimem/a?x=1"), "/vsimem/a?x=1");
+        assert_eq!(super::redact_url(r"\\?\C:\token-cache\a.tif"), r"\\?\C:\token-cache\a.tif");
+    }
+
+    #[test]
+    fn scheme_less_locations_redact_their_query_but_prose_is_kept() {
+        assert_eq!(super::redact_url("/no/such/file.zip?sig=PRIVATE"), "/no/such/file.zip?<redacted>");
+        assert_eq!(super::redact_url("/vsimem/a.tif?sig=PRIVATE"), "/vsimem/a.tif?<redacted>");
+        assert_eq!(super::redact_url("/no/such/file.zip?<redacted>"), "/no/such/file.zip?<redacted>");
+        assert_eq!(super::redact_url("did you mean a.tif? yes"), "did you mean a.tif? yes");
     }
 
     #[test]

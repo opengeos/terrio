@@ -147,9 +147,10 @@ fn what_would_be_written_wrongly_is_refused() {
     }
     // On a sphere, the auxiliary sphere is the sphere: written.
     assert!(SpatialRef::parse("+proj=merc +R_C +R=696000000").unwrap().to_projjson().is_ok());
-    assert!(refusal("+proj=longlat +ellps=bessel +towgs84=1,2,3,4,5,6").contains("+towgs84 of 6 values"));
-    // A prime meridian it cannot read is not written as Greenwich.
-    assert!(refusal("+proj=longlat +datum=WGS84 +pm=foo").contains("+pm=foo"));
+    assert!(SpatialRef::parse("+proj=longlat +ellps=bessel +towgs84=1,2,3,4,5,6").unwrap_err().to_string().contains("3 or 7"));
+    // A prime meridian it cannot read is refused when read, as PROJ refuses it, rather than
+    // written as Greenwich.
+    assert!(SpatialRef::parse("+proj=longlat +datum=WGS84 +pm=foo").unwrap_err().to_string().contains("invalid value for pm"));
     // JSON has no NaN: a non-finite parameter is refused rather than written as null.
     assert!(refusal("+proj=tmerc +k_0=nan +ellps=WGS84").contains("non-finite"));
     // A WKT 2 dynamic CRS without code (its frame epoch would be lost).
@@ -208,6 +209,42 @@ fn projjson_reads_back_as_the_same_crs() {
         let b = Transformer::new(&back, &wgs84).unwrap().transform(x, y).unwrap();
         assert!((a.0 - b.0).abs() < 1e-9 && (a.1 - b.1).abs() < 1e-9, "{definition}: {a:?} {b:?}");
     }
+}
+
+#[test]
+fn projjson_identifies_definitions_without_trusting_root_ids() {
+    // PROJJSON v0.7 / PROJ 9.8.1: identity follows the complete definition.
+    for code in [4326, 32633, 2154] {
+        let original = SpatialRef::from_epsg(code).unwrap();
+        let mut json: Value = serde_json::from_str(&original.to_projjson().unwrap()).unwrap();
+        for id in [Some(json!({"authority": "EPSG", "code": 3857})), None] {
+            json.as_object_mut().unwrap().remove("id");
+            if let Some(id) = id {
+                json["id"] = id;
+            }
+            let back = SpatialRef::from_projjson(&json.to_string()).unwrap();
+            assert_eq!(back.epsg, Some(code));
+            assert_eq!(back.authority(), Some(("EPSG", code)));
+        }
+    }
+}
+
+#[test]
+fn projected_base_type_is_optional_but_not_arbitrary() {
+    // PROJJSON v0.7 permits omitted type only in this geographic-base context.
+    let mut json: Value = serde_json::from_str(&SpatialRef::from_epsg(32633).unwrap().to_projjson().unwrap()).unwrap();
+    json["base_crs"].as_object_mut().unwrap().remove("type");
+    let back = SpatialRef::from_projjson(&json.to_string()).unwrap();
+    assert_eq!(back.epsg, Some(32633));
+    let (x, y) = Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &back).unwrap().transform(15.0, 0.0).unwrap();
+    assert!((x - 500000.0).abs() < 1e-8 && y.abs() < 1e-8);
+    for kind in [json!(null), json!("ProjectedCRS"), json!(false)] {
+        json["base_crs"]["type"] = kind;
+        assert!(SpatialRef::from_projjson(&json.to_string()).is_err());
+    }
+    json["base_crs"].as_object_mut().unwrap().remove("type");
+    json.as_object_mut().unwrap().remove("type");
+    assert!(SpatialRef::from_projjson(&json.to_string()).is_err());
 }
 
 /// For `scripts/conformance.py` (`projjson-export`): writes the PROJJSON of each definition of

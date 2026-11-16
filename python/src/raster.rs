@@ -42,7 +42,7 @@ pub(crate) struct Readers {
     /// The options of the thread that opened the raster (an `Env`, which is thread-local), so
     /// that a reader opened on another thread sees the dataset as the raster does: its sidecars,
     /// such as a `.msk` mask, ignored under `EMPTY_DIR` as they were at the open.
-    options: std::collections::HashMap<String, Option<String>>,
+    options: terrio::config::ThreadOptions,
     spare: std::sync::Mutex<Vec<LazyRaster>>,
 }
 
@@ -63,7 +63,7 @@ impl Readers {
             _ => None,
         };
         let path = absolute.as_deref().and_then(std::path::Path::to_str).unwrap_or(path);
-        let mut options = terrio::config::thread_options();
+        let mut options = terrio::config::ThreadOptions::capture();
         // Freeze the resolved limit, including an unset value, for readers opened later.
         let limit = "TERRIO_TIFF_MAX_CHUNK_BYTES";
         options.insert(limit.to_owned(), terrio::config::get(limit));
@@ -72,14 +72,7 @@ impl Readers {
 
     /// Opens another reader with the options the raster was opened with, on whatever thread.
     fn open(&self) -> terrio::Result<LazyRaster> {
-        struct Scope;
-        impl Drop for Scope {
-            fn drop(&mut self) {
-                terrio::config::pop_scope();
-            }
-        }
-        terrio::config::push_scope(self.options.clone());
-        let _scope = Scope;
+        let _scope = self.options.enter();
         terrio::open_raster_lazy(&self.path)
     }
 }
@@ -891,6 +884,32 @@ impl PyRaster {
         self.inner.block_size()
     }
 
+    /// A TIFF block's file offset and byte count without decoding pixels.
+    ///
+    /// Args:
+    ///     band: Band numbered from 1.
+    ///     x: Block column numbered from 0.
+    ///     y: Block row numbered from 0.
+    ///     overview: Overview numbered from 0, or None for the base image.
+    ///
+    /// Returns:
+    ///     tuple[int, int] | None: Offset and size, or None if absent.
+    #[pyo3(signature = (band, x, y, overview=None))]
+    fn _tiff_block_range(
+        &mut self,
+        py: Python<'_>,
+        band: usize,
+        x: usize,
+        y: usize,
+        overview: Option<usize>,
+    ) -> PyResult<Option<(u64, u64)>> {
+        if band == 0 || band > self.count() {
+            return Ok(None);
+        }
+        let band = if self.is_complex() { (band - 1) * 2 + 1 } else { band };
+        py.detach_result(|| self.inner.tiff_block_range(band, x, y, overview)).py()
+    }
+
     /// Reads the per-dataset mask: 255 for valid pixels, 0 for invalid ones.
     ///
     /// Args:
@@ -1060,7 +1079,7 @@ impl PyRaster {
         if g[1] * g[5] - g[2] * g[4] == 0.0 || g.iter().any(|v| !v.is_finite()) {
             return Err(invalid("the transform is not invertible"));
         }
-        let crs = crs.map(SpatialRef::parse).transpose().py()?.unwrap_or_default();
+        let crs = crs.map(SpatialRef::parse_literal).transpose().py()?.unwrap_or_default();
         let target = complex_dtype
             .map(|name| self::complex_dtype(name).ok_or_else(|| invalid(format!("unsupported complex sample type {name}"))))
             .transpose()?;
@@ -1382,7 +1401,7 @@ impl PyGeoTiffWriter {
             return Err(invalid("the raster is empty"));
         }
         let (data_type, complex) = storage_type(dtype)?;
-        let crs = crs.map(SpatialRef::parse).transpose().py()?.unwrap_or_default();
+        let crs = crs.map(SpatialRef::parse_literal).transpose().py()?.unwrap_or_default();
         let cfg = terrio::RasterConfig {
             cols: 1,
             rows: 1,

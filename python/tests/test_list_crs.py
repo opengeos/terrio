@@ -22,6 +22,7 @@ def test_finds_australian_albers_by_name_and_code():
         "name": "GDA94 / Australian Albers",
         "kind": "projected",
         "deprecated": False,
+        "replaced_by": [],
         "area_name": entry["area_name"],
         "bounds": [112.85, -43.7, 153.69, -9.86],
         "projection_method": "Albers Equal Area",
@@ -37,7 +38,7 @@ def test_filters_by_authority_kind_and_deprecation():
     assert not any(e["deprecated"] for e in epsg)
     assert terrio.list_crs("EPSG:3785") == []
     deprecated = terrio.list_crs("EPSG:3785", include_deprecated=True)
-    assert [(e["code"], e["deprecated"]) for e in deprecated] == [(3785, True)]
+    assert [(e["code"], e["deprecated"], e["replaced_by"]) for e in deprecated] == [(3785, True, [3857])]
     esri = terrio.list_crs("contiguous albers", authority=["ESRI"])
     assert 102003 in {e["code"] for e in esri}
     mars = terrio.list_crs("49902", authority="IAU_2015")

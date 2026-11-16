@@ -1,0 +1,3527 @@
+{
+ "proj_version": "9.8.1",
+ "cases": [
+  {
+   "name": "EPSG:3003 as ESRI WKT 1 (opengeos/terrio#1012)",
+   "code": "EPSG:3003",
+   "wkt": "PROJCS[\"Monte_Mario_Italy_1\",GEOGCS[\"GCS_Monte_Mario\",DATUM[\"D_Monte_Mario\",SPHEROID[\"International_1924\",6378388.0,297.0]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",1500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",9.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]",
+   "point": [
+    1514881.490594152,
+    5034556.812441661
+   ],
+   "proj": [
+    9.19000000788174,
+    45.464200001031124
+   ],
+   "operation": "Inverse of Italy zone 1 + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    9.19000000788174,
+    45.464200001031124
+   ]
+  },
+  {
+   "name": "EPSG:4277 as WKT 2 without its CRS and datum IDs (opengeos/terrio#1012)",
+   "code": "EPSG:4277",
+   "wkt": "GEOGCRS[\"OSGB36\",DATUM[\"Ordnance Survey of Great Britain 1936\",ELLIPSOID[\"Airy 1830\",6377563.396,299.3249646,LENGTHUNIT[\"metre\",1,ID[\"EPSG\",9001]]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8901]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433,ID[\"EPSG\",9122]]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433,ID[\"EPSG\",9122]]]]",
+   "point": [
+    -3.4986390218735695,
+    55.37999381533582
+   ],
+   "proj": [
+    -3.4999999358118803,
+    55.380000002292874
+   ],
+   "operation": "OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    -3.4999999358118803,
+    55.380000002292874
+   ]
+  },
+  {
+   "name": "EPSG:4277, WKT 2 without IDs",
+   "code": "EPSG:4277",
+   "wkt": "GEOGCRS[\"OSGB36\",DATUM[\"Ordnance Survey of Great Britain 1936\",ELLIPSOID[\"Airy 1830\",6377563.396,299.3249646,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
+   "point": [
+    -3.4986390738821282,
+    55.37999381202529
+   ],
+   "proj": [
+    -3.499999987813721,
+    55.37999999898204
+   ],
+   "operation": "OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    -3.499999987813721,
+    55.37999999898204
+   ]
+  },
+  {
+   "name": "EPSG:4277, WKT 2 with the datum's ID alone",
+   "code": "EPSG:4277",
+   "wkt": "GEOGCRS[\"OSGB36\",DATUM[\"Ordnance Survey of Great Britain 1936\",ELLIPSOID[\"Airy 1830\",6377563.396,299.3249646,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6277]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
+   "point": [
+    -3.4986390738821282,
+    55.37999381202529
+   ],
+   "proj": [
+    -3.499999987813721,
+    55.37999999898204
+   ],
+   "operation": "OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    -3.499999987813721,
+    55.37999999898204
+   ]
+  },
+  {
+   "name": "EPSG:4277, WKT 2 with the datum's ID alone, renamed",
+   "code": "EPSG:4277",
+   "wkt": "GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"Airy 1830\",6377563.396,299.3249646,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6277]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
+   "point": [
+    -3.4986390738821282,
+    55.37999381202529
+   ],
+   "proj": [
+    -3.499999987813721,
+    55.37999999898204
+   ],
+   "operation": "OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    -3.499999987813721,
+    55.37999999898204
+   ]
+  },
+  {
+   "name": "EPSG:4277, WKT 1 with the datum's AUTHORITY alone",
+   "code": "EPSG:4277",
+   "wkt": "GEOGCS[\"OSGB36\",DATUM[\"Ordnance_Survey_of_Great_Britain_1936\",SPHEROID[\"Airy 1830\",6377563.396,299.3249646],AUTHORITY[\"EPSG\",\"6277\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+   "point": [
+    -3.4986390738821282,
+    55.37999381202529
+   ],
+   "proj": [
+    -3.499999987813721,
+    55.37999999898204
+   ],
+   "operation": "axis order change (2D) + OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    -3.499999987813721,
+    55.37999999898204
+   ]
+  },
+  {
+   "name": "EPSG:4277, WKT 1 with the datum's AUTHORITY alone, renamed",
+   "code": "EPSG:4277",
+   "wkt": "GEOGCS[\"Local\",DATUM[\"Local datum\",SPHEROID[\"Airy 1830\",6377563.396,299.3249646],AUTHORITY[\"EPSG\",\"6277\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+   "point": [
+    -3.4986390738821282,
+    55.37999381202529
+   ],
+   "proj": [
+    -3.499999987813721,
+    55.37999999898204
+   ],
+   "operation": "OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    -3.499999987813721,
+    55.37999999898204
+   ]
+  },
+  {
+   "name": "EPSG:4277, ESRI WKT 1",
+   "code": "EPSG:4277",
+   "wkt": "GEOGCS[\"GCS_OSGB_1936\",DATUM[\"D_OSGB_1936\",SPHEROID[\"Airy_1830\",6377563.396,299.3249646]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    -3.4986390738821282,
+    55.37999381202529
+   ],
+   "proj": [
+    -3.499999987813721,
+    55.37999999898204
+   ],
+   "operation": "axis order change (2D) + OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    -3.499999987813721,
+    55.37999999898204
+   ]
+  },
+  {
+   "name": "EPSG:4277, ESRI WKT 1, renamed",
+   "code": "EPSG:4277",
+   "wkt": "GEOGCS[\"GCS_Local\",DATUM[\"D_OSGB_1936\",SPHEROID[\"Airy_1830\",6377563.396,299.3249646]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    -3.4986390738821282,
+    55.37999381202529
+   ],
+   "proj": [
+    -3.499999987813721,
+    55.37999999898204
+   ],
+   "operation": "axis order change (2D) + OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    -3.499999987813721,
+    55.37999999898204
+   ]
+  },
+  {
+   "name": "EPSG:4277, ESRI WKT 1 with the datum's code",
+   "code": "EPSG:4277",
+   "wkt": "GEOGCS[\"GCS_OSGB_1936\",DATUM[\"D_OSGB_1936\",SPHEROID[\"Airy_1830\",6377563.396,299.3249646],AUTHORITY[\"EPSG\",\"6277\"]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    -3.4986390738821282,
+    55.37999381202529
+   ],
+   "proj": [
+    -3.499999987813721,
+    55.37999999898204
+   ],
+   "operation": "axis order change (2D) + OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    -3.499999987813721,
+    55.37999999898204
+   ]
+  },
+  {
+   "name": "EPSG:4277, ESRI WKT 1 with the CRS's code",
+   "code": "EPSG:4277",
+   "wkt": "GEOGCS[\"GCS_OSGB_1936\",DATUM[\"D_OSGB_1936\",SPHEROID[\"Airy_1830\",6377563.396,299.3249646]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433],AUTHORITY[\"EPSG\",\"4277\"]]",
+   "point": [
+    -3.4986390738821282,
+    55.37999381202529
+   ],
+   "proj": [
+    -3.499999987813721,
+    55.37999999898204
+   ],
+   "operation": "OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    -3.499999987813721,
+    55.37999999898204
+   ]
+  },
+  {
+   "name": "EPSG:27700, WKT 2 without IDs",
+   "code": "EPSG:27700",
+   "wkt": "PROJCRS[\"OSGB36 / British National Grid\",BASEGEOGCRS[\"OSGB36\",DATUM[\"Ordnance Survey of Great Britain 1936\",ELLIPSOID[\"Airy 1830\",6377563.396,299.3249646,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"British National Grid\",METHOD[\"Transverse Mercator\"],PARAMETER[\"Latitude of natural origin\",49,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",-2,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9996012717,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",400000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",-100000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "point": [
+    305055.40550976736,
+    610582.4481918588
+   ],
+   "proj": [
+    -3.499999987813721,
+    55.37999999898204
+   ],
+   "operation": "Inverse of British National Grid + OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    -3.499999987813721,
+    55.37999999898204
+   ]
+  },
+  {
+   "name": "EPSG:27700, WKT 2 with the datum's ID alone",
+   "code": "EPSG:27700",
+   "wkt": "PROJCRS[\"OSGB36 / British National Grid\",BASEGEOGCRS[\"OSGB36\",DATUM[\"Ordnance Survey of Great Britain 1936\",ELLIPSOID[\"Airy 1830\",6377563.396,299.3249646,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6277]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"British National Grid\",METHOD[\"Transverse Mercator\"],PARAMETER[\"Latitude of natural origin\",49,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",-2,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9996012717,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",400000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",-100000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "point": [
+    305055.40550976736,
+    610582.4481918588
+   ],
+   "proj": [
+    -3.499999987813721,
+    55.37999999898204
+   ],
+   "operation": "Inverse of British National Grid + OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    -3.499999987813721,
+    55.37999999898204
+   ]
+  },
+  {
+   "name": "EPSG:27700, WKT 2 with the datum's ID alone, renamed",
+   "code": "EPSG:27700",
+   "wkt": "PROJCRS[\"Local\",BASEGEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"Airy 1830\",6377563.396,299.3249646,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6277]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"British National Grid\",METHOD[\"Transverse Mercator\"],PARAMETER[\"Latitude of natural origin\",49,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",-2,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9996012717,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",400000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",-100000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "point": [
+    305055.40550976736,
+    610582.4481918588
+   ],
+   "proj": [
+    -3.499999987813721,
+    55.37999999898204
+   ],
+   "operation": "Inverse of British National Grid + OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    -3.499999987813721,
+    55.37999999898204
+   ]
+  },
+  {
+   "name": "EPSG:27700, WKT 1 with the datum's AUTHORITY alone",
+   "code": "EPSG:27700",
+   "wkt": "PROJCS[\"OSGB36 / British National Grid\",GEOGCS[\"OSGB36\",DATUM[\"Ordnance_Survey_of_Great_Britain_1936\",SPHEROID[\"Airy 1830\",6377563.396,299.3249646],AUTHORITY[\"EPSG\",\"6277\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",49],PARAMETER[\"central_meridian\",-2],PARAMETER[\"scale_factor\",0.9996012717],PARAMETER[\"false_easting\",400000],PARAMETER[\"false_northing\",-100000],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "point": [
+    305055.40550976736,
+    610582.4481918588
+   ],
+   "proj": [
+    -3.499999987813721,
+    55.37999999898204
+   ],
+   "operation": "Inverse of British National Grid + OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    -3.499999987813721,
+    55.37999999898204
+   ]
+  },
+  {
+   "name": "EPSG:27700, WKT 1 with the datum's AUTHORITY alone, renamed",
+   "code": "EPSG:27700",
+   "wkt": "PROJCS[\"Local\",GEOGCS[\"Local\",DATUM[\"Local datum\",SPHEROID[\"Airy 1830\",6377563.396,299.3249646],AUTHORITY[\"EPSG\",\"6277\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",49],PARAMETER[\"central_meridian\",-2],PARAMETER[\"scale_factor\",0.9996012717],PARAMETER[\"false_easting\",400000],PARAMETER[\"false_northing\",-100000],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "point": [
+    305055.40550976736,
+    610582.4481918588
+   ],
+   "proj": [
+    -3.499999987813721,
+    55.37999999898204
+   ],
+   "operation": "Inverse of unnamed + OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    -3.499999987813721,
+    55.37999999898204
+   ]
+  },
+  {
+   "name": "EPSG:27700, ESRI WKT 1",
+   "code": "EPSG:27700",
+   "wkt": "PROJCS[\"British_National_Grid\",GEOGCS[\"GCS_OSGB_1936\",DATUM[\"D_OSGB_1936\",SPHEROID[\"Airy_1830\",6377563.396,299.3249646]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",400000.0],PARAMETER[\"False_Northing\",-100000.0],PARAMETER[\"Central_Meridian\",-2.0],PARAMETER[\"Scale_Factor\",0.9996012717],PARAMETER[\"Latitude_Of_Origin\",49.0],UNIT[\"Meter\",1.0]]",
+   "point": [
+    305055.40550976736,
+    610582.4481918588
+   ],
+   "proj": [
+    -3.499999987813721,
+    55.37999999898204
+   ],
+   "operation": "Inverse of British National Grid + OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    -3.499999987813721,
+    55.37999999898204
+   ]
+  },
+  {
+   "name": "EPSG:27700, ESRI WKT 1, renamed",
+   "code": "EPSG:27700",
+   "wkt": "PROJCS[\"Local grid\",GEOGCS[\"GCS_Local\",DATUM[\"D_OSGB_1936\",SPHEROID[\"Airy_1830\",6377563.396,299.3249646]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",400000.0],PARAMETER[\"False_Northing\",-100000.0],PARAMETER[\"Central_Meridian\",-2.0],PARAMETER[\"Scale_Factor\",0.9996012717],PARAMETER[\"Latitude_Of_Origin\",49.0],UNIT[\"Meter\",1.0]]",
+   "point": [
+    305055.40550976736,
+    610582.4481918588
+   ],
+   "proj": [
+    -3.499999987813721,
+    55.37999999898204
+   ],
+   "operation": "Inverse of unnamed + axis order change (2D) + OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    -3.499999987813721,
+    55.37999999898204
+   ]
+  },
+  {
+   "name": "EPSG:27700, ESRI WKT 1 with the datum's code",
+   "code": "EPSG:27700",
+   "wkt": "PROJCS[\"British_National_Grid\",GEOGCS[\"GCS_OSGB_1936\",DATUM[\"D_OSGB_1936\",SPHEROID[\"Airy_1830\",6377563.396,299.3249646],AUTHORITY[\"EPSG\",\"6277\"]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",400000.0],PARAMETER[\"False_Northing\",-100000.0],PARAMETER[\"Central_Meridian\",-2.0],PARAMETER[\"Scale_Factor\",0.9996012717],PARAMETER[\"Latitude_Of_Origin\",49.0],UNIT[\"Meter\",1.0]]",
+   "point": [
+    305055.40550976736,
+    610582.4481918588
+   ],
+   "proj": [
+    -3.499999987813721,
+    55.37999999898204
+   ],
+   "operation": "Inverse of British National Grid + OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    -3.499999987813721,
+    55.37999999898204
+   ]
+  },
+  {
+   "name": "EPSG:27700, ESRI WKT 1 with the CRS's code",
+   "code": "EPSG:27700",
+   "wkt": "PROJCS[\"British_National_Grid\",GEOGCS[\"GCS_OSGB_1936\",DATUM[\"D_OSGB_1936\",SPHEROID[\"Airy_1830\",6377563.396,299.3249646]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",400000.0],PARAMETER[\"False_Northing\",-100000.0],PARAMETER[\"Central_Meridian\",-2.0],PARAMETER[\"Scale_Factor\",0.9996012717],PARAMETER[\"Latitude_Of_Origin\",49.0],UNIT[\"Meter\",1.0],AUTHORITY[\"EPSG\",\"27700\"]]",
+   "point": [
+    305055.40550976736,
+    610582.4481918588
+   ],
+   "proj": [
+    -3.499999987813721,
+    55.37999999898204
+   ],
+   "operation": "Inverse of British National Grid + OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    -3.499999987813721,
+    55.37999999898204
+   ]
+  },
+  {
+   "name": "EPSG:4265, WKT 2 without IDs",
+   "code": "EPSG:4265",
+   "wkt": "GEOGCRS[\"Monte Mario\",DATUM[\"Monte Mario\",ELLIPSOID[\"International 1924\",6378388,297,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
+   "point": [
+    12.460180486798627,
+    40.92936681895168
+   ],
+   "proj": [
+    12.460000006043874,
+    40.93000000121986
+   ],
+   "operation": "Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    12.460000006043874,
+    40.93000000121986
+   ]
+  },
+  {
+   "name": "EPSG:4265, WKT 2 with the datum's ID alone",
+   "code": "EPSG:4265",
+   "wkt": "GEOGCRS[\"Monte Mario\",DATUM[\"Monte Mario\",ELLIPSOID[\"International 1924\",6378388,297,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6265]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
+   "point": [
+    12.460180486798627,
+    40.92936681895168
+   ],
+   "proj": [
+    12.460000006043874,
+    40.93000000121986
+   ],
+   "operation": "Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    12.460000006043874,
+    40.93000000121986
+   ]
+  },
+  {
+   "name": "EPSG:4265, WKT 2 with the datum's ID alone, renamed",
+   "code": "EPSG:4265",
+   "wkt": "GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"International 1924\",6378388,297,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6265]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
+   "point": [
+    12.460180486798627,
+    40.92936681895168
+   ],
+   "proj": [
+    12.460000006043874,
+    40.93000000121986
+   ],
+   "operation": "Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    12.460000006043874,
+    40.93000000121986
+   ]
+  },
+  {
+   "name": "EPSG:4265, WKT 1 with the datum's AUTHORITY alone",
+   "code": "EPSG:4265",
+   "wkt": "GEOGCS[\"Monte Mario\",DATUM[\"Monte_Mario\",SPHEROID[\"International 1924\",6378388,297],AUTHORITY[\"EPSG\",\"6265\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+   "point": [
+    12.460180486798627,
+    40.92936681895168
+   ],
+   "proj": [
+    12.460000006043874,
+    40.93000000121986
+   ],
+   "operation": "axis order change (2D) + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    12.460000006043874,
+    40.93000000121986
+   ]
+  },
+  {
+   "name": "EPSG:4265, WKT 1 with the datum's AUTHORITY alone, renamed",
+   "code": "EPSG:4265",
+   "wkt": "GEOGCS[\"Local\",DATUM[\"Local datum\",SPHEROID[\"International 1924\",6378388,297],AUTHORITY[\"EPSG\",\"6265\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+   "point": [
+    12.460180486798627,
+    40.92936681895168
+   ],
+   "proj": [
+    12.460000006043874,
+    40.93000000121986
+   ],
+   "operation": "Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    12.460000006043874,
+    40.93000000121986
+   ]
+  },
+  {
+   "name": "EPSG:4265, ESRI WKT 1",
+   "code": "EPSG:4265",
+   "wkt": "GEOGCS[\"GCS_Monte_Mario\",DATUM[\"D_Monte_Mario\",SPHEROID[\"International_1924\",6378388.0,297.0]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    12.460180486798627,
+    40.92936681895168
+   ],
+   "proj": [
+    12.460000006043874,
+    40.93000000121986
+   ],
+   "operation": "axis order change (2D) + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    12.460000006043874,
+    40.93000000121986
+   ]
+  },
+  {
+   "name": "EPSG:4265, ESRI WKT 1, renamed",
+   "code": "EPSG:4265",
+   "wkt": "GEOGCS[\"GCS_Local\",DATUM[\"D_Monte_Mario\",SPHEROID[\"International_1924\",6378388.0,297.0]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    12.460180486798627,
+    40.92936681895168
+   ],
+   "proj": [
+    12.460000006043874,
+    40.93000000121986
+   ],
+   "operation": "axis order change (2D) + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    12.460000006043874,
+    40.93000000121986
+   ]
+  },
+  {
+   "name": "EPSG:4265, ESRI WKT 1 with the datum's code",
+   "code": "EPSG:4265",
+   "wkt": "GEOGCS[\"GCS_Monte_Mario\",DATUM[\"D_Monte_Mario\",SPHEROID[\"International_1924\",6378388.0,297.0],AUTHORITY[\"EPSG\",\"6265\"]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    12.460180486798627,
+    40.92936681895168
+   ],
+   "proj": [
+    12.460000006043874,
+    40.93000000121986
+   ],
+   "operation": "axis order change (2D) + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    12.460000006043874,
+    40.93000000121986
+   ]
+  },
+  {
+   "name": "EPSG:4265, ESRI WKT 1 with the CRS's code",
+   "code": "EPSG:4265",
+   "wkt": "GEOGCS[\"GCS_Monte_Mario\",DATUM[\"D_Monte_Mario\",SPHEROID[\"International_1924\",6378388.0,297.0]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433],AUTHORITY[\"EPSG\",\"4265\"]]",
+   "point": [
+    12.460180486798627,
+    40.92936681895168
+   ],
+   "proj": [
+    12.460000006043874,
+    40.93000000121986
+   ],
+   "operation": "Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    12.460000006043874,
+    40.93000000121986
+   ]
+  },
+  {
+   "name": "EPSG:3003, WKT 2 without IDs",
+   "code": "EPSG:3003",
+   "wkt": "PROJCRS[\"Monte Mario / Italy zone 1\",BASEGEOGCRS[\"Monte Mario\",DATUM[\"Monte Mario\",ELLIPSOID[\"International 1924\",6378388,297,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Italy zone 1\",METHOD[\"Transverse Mercator\"],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",9,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",1500000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"easting (X)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing (Y)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "point": [
+    1497117.608433237,
+    4625918.3801927455
+   ],
+   "proj": [
+    8.965000007527676,
+    41.785000001354966
+   ],
+   "operation": "Inverse of Italy zone 1 + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.965000007527676,
+    41.785000001354966
+   ]
+  },
+  {
+   "name": "EPSG:3003, WKT 2 with the datum's ID alone",
+   "code": "EPSG:3003",
+   "wkt": "PROJCRS[\"Monte Mario / Italy zone 1\",BASEGEOGCRS[\"Monte Mario\",DATUM[\"Monte Mario\",ELLIPSOID[\"International 1924\",6378388,297,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6265]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Italy zone 1\",METHOD[\"Transverse Mercator\"],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",9,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",1500000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"easting (X)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing (Y)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "point": [
+    1497117.608433237,
+    4625918.3801927455
+   ],
+   "proj": [
+    8.965000007527676,
+    41.785000001354966
+   ],
+   "operation": "Inverse of Italy zone 1 + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.965000007527676,
+    41.785000001354966
+   ]
+  },
+  {
+   "name": "EPSG:3003, WKT 2 with the datum's ID alone, renamed",
+   "code": "EPSG:3003",
+   "wkt": "PROJCRS[\"Local\",BASEGEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"International 1924\",6378388,297,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6265]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Italy zone 1\",METHOD[\"Transverse Mercator\"],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",9,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",1500000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"easting (X)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing (Y)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "point": [
+    1497117.608433237,
+    4625918.3801927455
+   ],
+   "proj": [
+    8.965000007527676,
+    41.785000001354966
+   ],
+   "operation": "Inverse of Italy zone 1 + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.965000007527676,
+    41.785000001354966
+   ]
+  },
+  {
+   "name": "EPSG:3003, WKT 1 with the datum's AUTHORITY alone",
+   "code": "EPSG:3003",
+   "wkt": "PROJCS[\"Monte Mario / Italy zone 1\",GEOGCS[\"Monte Mario\",DATUM[\"Monte_Mario\",SPHEROID[\"International 1924\",6378388,297],AUTHORITY[\"EPSG\",\"6265\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",9],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",1500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "point": [
+    1497117.608433237,
+    4625918.3801927455
+   ],
+   "proj": [
+    8.965000007527676,
+    41.785000001354966
+   ],
+   "operation": "Inverse of Italy zone 1 + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.965000007527676,
+    41.785000001354966
+   ]
+  },
+  {
+   "name": "EPSG:3003, WKT 1 with the datum's AUTHORITY alone, renamed",
+   "code": "EPSG:3003",
+   "wkt": "PROJCS[\"Local\",GEOGCS[\"Local\",DATUM[\"Local datum\",SPHEROID[\"International 1924\",6378388,297],AUTHORITY[\"EPSG\",\"6265\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",9],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",1500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "point": [
+    1497117.608433237,
+    4625918.3801927455
+   ],
+   "proj": [
+    8.965000007527676,
+    41.785000001354966
+   ],
+   "operation": "Inverse of unnamed + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.965000007527676,
+    41.785000001354966
+   ]
+  },
+  {
+   "name": "EPSG:3003, ESRI WKT 1",
+   "code": "EPSG:3003",
+   "wkt": "PROJCS[\"Monte_Mario_Italy_1\",GEOGCS[\"GCS_Monte_Mario\",DATUM[\"D_Monte_Mario\",SPHEROID[\"International_1924\",6378388.0,297.0]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",1500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",9.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]",
+   "point": [
+    1497117.608433237,
+    4625918.3801927455
+   ],
+   "proj": [
+    8.965000007527676,
+    41.785000001354966
+   ],
+   "operation": "Inverse of Italy zone 1 + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.965000007527676,
+    41.785000001354966
+   ]
+  },
+  {
+   "name": "EPSG:3003, ESRI WKT 1, renamed",
+   "code": "EPSG:3003",
+   "wkt": "PROJCS[\"Local grid\",GEOGCS[\"GCS_Local\",DATUM[\"D_Monte_Mario\",SPHEROID[\"International_1924\",6378388.0,297.0]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",1500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",9.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]",
+   "point": [
+    1497117.608433237,
+    4625918.3801927455
+   ],
+   "proj": [
+    8.965000007527676,
+    41.785000001354966
+   ],
+   "operation": "Inverse of unnamed + axis order change (2D) + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.965000007527676,
+    41.785000001354966
+   ]
+  },
+  {
+   "name": "EPSG:3003, ESRI WKT 1 with the datum's code",
+   "code": "EPSG:3003",
+   "wkt": "PROJCS[\"Monte_Mario_Italy_1\",GEOGCS[\"GCS_Monte_Mario\",DATUM[\"D_Monte_Mario\",SPHEROID[\"International_1924\",6378388.0,297.0],AUTHORITY[\"EPSG\",\"6265\"]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",1500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",9.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]",
+   "point": [
+    1497117.608433237,
+    4625918.3801927455
+   ],
+   "proj": [
+    8.965000007527676,
+    41.785000001354966
+   ],
+   "operation": "Inverse of Italy zone 1 + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.965000007527676,
+    41.785000001354966
+   ]
+  },
+  {
+   "name": "EPSG:3003, ESRI WKT 1 with the CRS's code",
+   "code": "EPSG:3003",
+   "wkt": "PROJCS[\"Monte_Mario_Italy_1\",GEOGCS[\"GCS_Monte_Mario\",DATUM[\"D_Monte_Mario\",SPHEROID[\"International_1924\",6378388.0,297.0]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",1500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",9.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0],AUTHORITY[\"EPSG\",\"3003\"]]",
+   "point": [
+    1497117.608433237,
+    4625918.3801927455
+   ],
+   "proj": [
+    8.965000007527676,
+    41.785000001354966
+   ],
+   "operation": "Inverse of Italy zone 1 + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.965000007527676,
+    41.785000001354966
+   ]
+  },
+  {
+   "name": "EPSG:3004, WKT 2 without IDs",
+   "code": "EPSG:3004",
+   "wkt": "PROJCRS[\"Monte Mario / Italy zone 2\",BASEGEOGCRS[\"Monte Mario\",DATUM[\"Monte Mario\",ELLIPSOID[\"International 1924\",6378388,297,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Italy zone 2\",METHOD[\"Transverse Mercator\"],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",15,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",2520000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"easting (X)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing (Y)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "point": [
+    2561682.5927382475,
+    4531111.834827556
+   ],
+   "proj": [
+    15.49500000484105,
+    40.93000000110988
+   ],
+   "operation": "Inverse of Italy zone 2 + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    15.49500000484105,
+    40.93000000110988
+   ]
+  },
+  {
+   "name": "EPSG:3004, WKT 2 with the datum's ID alone",
+   "code": "EPSG:3004",
+   "wkt": "PROJCRS[\"Monte Mario / Italy zone 2\",BASEGEOGCRS[\"Monte Mario\",DATUM[\"Monte Mario\",ELLIPSOID[\"International 1924\",6378388,297,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6265]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Italy zone 2\",METHOD[\"Transverse Mercator\"],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",15,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",2520000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"easting (X)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing (Y)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "point": [
+    2561682.5927382475,
+    4531111.834827556
+   ],
+   "proj": [
+    15.49500000484105,
+    40.93000000110988
+   ],
+   "operation": "Inverse of Italy zone 2 + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    15.49500000484105,
+    40.93000000110988
+   ]
+  },
+  {
+   "name": "EPSG:3004, WKT 2 with the datum's ID alone, renamed",
+   "code": "EPSG:3004",
+   "wkt": "PROJCRS[\"Local\",BASEGEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"International 1924\",6378388,297,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6265]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Italy zone 2\",METHOD[\"Transverse Mercator\"],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",15,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",2520000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"easting (X)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing (Y)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "point": [
+    2561682.5927382475,
+    4531111.834827556
+   ],
+   "proj": [
+    15.49500000484105,
+    40.93000000110988
+   ],
+   "operation": "Inverse of Italy zone 2 + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    15.49500000484105,
+    40.93000000110988
+   ]
+  },
+  {
+   "name": "EPSG:3004, WKT 1 with the datum's AUTHORITY alone",
+   "code": "EPSG:3004",
+   "wkt": "PROJCS[\"Monte Mario / Italy zone 2\",GEOGCS[\"Monte Mario\",DATUM[\"Monte_Mario\",SPHEROID[\"International 1924\",6378388,297],AUTHORITY[\"EPSG\",\"6265\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",15],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",2520000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "point": [
+    2561682.5927382475,
+    4531111.834827556
+   ],
+   "proj": [
+    15.49500000484105,
+    40.93000000110988
+   ],
+   "operation": "Inverse of Italy zone 2 + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    15.49500000484105,
+    40.93000000110988
+   ]
+  },
+  {
+   "name": "EPSG:3004, WKT 1 with the datum's AUTHORITY alone, renamed",
+   "code": "EPSG:3004",
+   "wkt": "PROJCS[\"Local\",GEOGCS[\"Local\",DATUM[\"Local datum\",SPHEROID[\"International 1924\",6378388,297],AUTHORITY[\"EPSG\",\"6265\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",15],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",2520000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "point": [
+    2561682.5927382475,
+    4531111.834827556
+   ],
+   "proj": [
+    15.49500000484105,
+    40.93000000110988
+   ],
+   "operation": "Inverse of unnamed + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    15.49500000484105,
+    40.93000000110988
+   ]
+  },
+  {
+   "name": "EPSG:3004, ESRI WKT 1",
+   "code": "EPSG:3004",
+   "wkt": "PROJCS[\"Monte_Mario_Italy_2\",GEOGCS[\"GCS_Monte_Mario\",DATUM[\"D_Monte_Mario\",SPHEROID[\"International_1924\",6378388.0,297.0]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",2520000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",15.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]",
+   "point": [
+    2561682.5927382475,
+    4531111.834827556
+   ],
+   "proj": [
+    15.49500000484105,
+    40.93000000110988
+   ],
+   "operation": "Inverse of Italy zone 2 + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    15.49500000484105,
+    40.93000000110988
+   ]
+  },
+  {
+   "name": "EPSG:3004, ESRI WKT 1, renamed",
+   "code": "EPSG:3004",
+   "wkt": "PROJCS[\"Local grid\",GEOGCS[\"GCS_Local\",DATUM[\"D_Monte_Mario\",SPHEROID[\"International_1924\",6378388.0,297.0]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",2520000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",15.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]",
+   "point": [
+    2561682.5927382475,
+    4531111.834827556
+   ],
+   "proj": [
+    15.49500000484105,
+    40.93000000110988
+   ],
+   "operation": "Inverse of unnamed + axis order change (2D) + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    15.49500000484105,
+    40.93000000110988
+   ]
+  },
+  {
+   "name": "EPSG:3004, ESRI WKT 1 with the datum's code",
+   "code": "EPSG:3004",
+   "wkt": "PROJCS[\"Monte_Mario_Italy_2\",GEOGCS[\"GCS_Monte_Mario\",DATUM[\"D_Monte_Mario\",SPHEROID[\"International_1924\",6378388.0,297.0],AUTHORITY[\"EPSG\",\"6265\"]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",2520000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",15.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]",
+   "point": [
+    2561682.5927382475,
+    4531111.834827556
+   ],
+   "proj": [
+    15.49500000484105,
+    40.93000000110988
+   ],
+   "operation": "Inverse of Italy zone 2 + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    15.49500000484105,
+    40.93000000110988
+   ]
+  },
+  {
+   "name": "EPSG:3004, ESRI WKT 1 with the CRS's code",
+   "code": "EPSG:3004",
+   "wkt": "PROJCS[\"Monte_Mario_Italy_2\",GEOGCS[\"GCS_Monte_Mario\",DATUM[\"D_Monte_Mario\",SPHEROID[\"International_1924\",6378388.0,297.0]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",2520000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",15.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0],AUTHORITY[\"EPSG\",\"3004\"]]",
+   "point": [
+    2561682.5927382475,
+    4531111.834827556
+   ],
+   "proj": [
+    15.49500000484105,
+    40.93000000110988
+   ],
+   "operation": "Inverse of Italy zone 2 + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    15.49500000484105,
+    40.93000000110988
+   ]
+  },
+  {
+   "name": "EPSG:4230, WKT 2 without IDs",
+   "code": "EPSG:4230",
+   "wkt": "GEOGCRS[\"ED50\",DATUM[\"European Datum 1950\",ELLIPSOID[\"International 1924\",6378388,297,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
+   "point": [
+    16.256065434334296,
+    55.220570317985405
+   ],
+   "proj": [
+    16.255000004649105,
+    55.220000002494146
+   ],
+   "operation": "ED50 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    16.255000004649105,
+    55.220000002494146
+   ]
+  },
+  {
+   "name": "EPSG:4230, WKT 2 with the datum's ID alone",
+   "code": "EPSG:4230",
+   "wkt": "GEOGCRS[\"ED50\",DATUM[\"European Datum 1950\",ELLIPSOID[\"International 1924\",6378388,297,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6230]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
+   "point": [
+    16.256065434334296,
+    55.220570317985405
+   ],
+   "proj": [
+    16.255000004649105,
+    55.220000002494146
+   ],
+   "operation": "ED50 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    16.255000004649105,
+    55.220000002494146
+   ]
+  },
+  {
+   "name": "EPSG:4230, WKT 2 with the datum's ID alone, renamed",
+   "code": "EPSG:4230",
+   "wkt": "GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"International 1924\",6378388,297,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6230]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
+   "point": [
+    16.256065434334296,
+    55.220570317985405
+   ],
+   "proj": [
+    16.255000004649105,
+    55.220000002494146
+   ],
+   "operation": "ED50 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    16.255000004649105,
+    55.220000002494146
+   ]
+  },
+  {
+   "name": "EPSG:4230, WKT 1 with the datum's AUTHORITY alone",
+   "code": "EPSG:4230",
+   "wkt": "GEOGCS[\"ED50\",DATUM[\"European_Datum_1950\",SPHEROID[\"International 1924\",6378388,297],AUTHORITY[\"EPSG\",\"6230\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+   "point": [
+    16.256065434334296,
+    55.220570317985405
+   ],
+   "proj": [
+    16.255000004649105,
+    55.220000002494146
+   ],
+   "operation": "axis order change (2D) + ED50 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    16.255000004649105,
+    55.220000002494146
+   ]
+  },
+  {
+   "name": "EPSG:4230, WKT 1 with the datum's AUTHORITY alone, renamed",
+   "code": "EPSG:4230",
+   "wkt": "GEOGCS[\"Local\",DATUM[\"Local datum\",SPHEROID[\"International 1924\",6378388,297],AUTHORITY[\"EPSG\",\"6230\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+   "point": [
+    16.256065434334296,
+    55.220570317985405
+   ],
+   "proj": [
+    16.255000004649105,
+    55.220000002494146
+   ],
+   "operation": "ED50 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    16.255000004649105,
+    55.220000002494146
+   ]
+  },
+  {
+   "name": "EPSG:4230, ESRI WKT 1",
+   "code": "EPSG:4230",
+   "wkt": "GEOGCS[\"GCS_European_1950\",DATUM[\"D_European_1950\",SPHEROID[\"International_1924\",6378388.0,297.0]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    16.256065434334296,
+    55.220570317985405
+   ],
+   "proj": [
+    16.255000004649105,
+    55.220000002494146
+   ],
+   "operation": "axis order change (2D) + ED50 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    16.255000004649105,
+    55.220000002494146
+   ]
+  },
+  {
+   "name": "EPSG:4230, ESRI WKT 1, renamed",
+   "code": "EPSG:4230",
+   "wkt": "GEOGCS[\"GCS_Local\",DATUM[\"D_European_1950\",SPHEROID[\"International_1924\",6378388.0,297.0]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    16.256065434334296,
+    55.220570317985405
+   ],
+   "proj": [
+    16.255000004649105,
+    55.220000002494146
+   ],
+   "operation": "axis order change (2D) + ED50 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    16.255000004649105,
+    55.220000002494146
+   ]
+  },
+  {
+   "name": "EPSG:4230, ESRI WKT 1 with the datum's code",
+   "code": "EPSG:4230",
+   "wkt": "GEOGCS[\"GCS_European_1950\",DATUM[\"D_European_1950\",SPHEROID[\"International_1924\",6378388.0,297.0],AUTHORITY[\"EPSG\",\"6230\"]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    16.256065434334296,
+    55.220570317985405
+   ],
+   "proj": [
+    16.255000004649105,
+    55.220000002494146
+   ],
+   "operation": "axis order change (2D) + ED50 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    16.255000004649105,
+    55.220000002494146
+   ]
+  },
+  {
+   "name": "EPSG:4230, ESRI WKT 1 with the CRS's code",
+   "code": "EPSG:4230",
+   "wkt": "GEOGCS[\"GCS_European_1950\",DATUM[\"D_European_1950\",SPHEROID[\"International_1924\",6378388.0,297.0]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433],AUTHORITY[\"EPSG\",\"4230\"]]",
+   "point": [
+    16.256065434334296,
+    55.220570317985405
+   ],
+   "proj": [
+    16.255000004649105,
+    55.220000002494146
+   ],
+   "operation": "ED50 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    16.255000004649105,
+    55.220000002494146
+   ]
+  },
+  {
+   "name": "EPSG:23032, WKT 2 without IDs",
+   "code": "EPSG:23032",
+   "wkt": "PROJCRS[\"ED50 / UTM zone 32N\",BASEGEOGCRS[\"ED50\",DATUM[\"European Datum 1950\",ELLIPSOID[\"International 1924\",6378388,297,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"UTM zone 32N\",METHOD[\"Transverse Mercator\"],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",9,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "point": [
+    499804.9263179779,
+    6699508.564645673
+   ],
+   "proj": [
+    8.99500000634053,
+    60.4300000019615
+   ],
+   "operation": "Inverse of UTM zone 32N + ED50 to WGS 84 (7) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.99500000634053,
+    60.4300000019615
+   ]
+  },
+  {
+   "name": "EPSG:23032, WKT 2 with the datum's ID alone",
+   "code": "EPSG:23032",
+   "wkt": "PROJCRS[\"ED50 / UTM zone 32N\",BASEGEOGCRS[\"ED50\",DATUM[\"European Datum 1950\",ELLIPSOID[\"International 1924\",6378388,297,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6230]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"UTM zone 32N\",METHOD[\"Transverse Mercator\"],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",9,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "point": [
+    499804.9263179779,
+    6699508.564645673
+   ],
+   "proj": [
+    8.99500000634053,
+    60.4300000019615
+   ],
+   "operation": "Inverse of UTM zone 32N + ED50 to WGS 84 (7) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.99500000634053,
+    60.4300000019615
+   ]
+  },
+  {
+   "name": "EPSG:23032, WKT 2 with the datum's ID alone, renamed",
+   "code": "EPSG:23032",
+   "wkt": "PROJCRS[\"Local\",BASEGEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"International 1924\",6378388,297,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6230]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"UTM zone 32N\",METHOD[\"Transverse Mercator\"],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",9,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "point": [
+    499804.9263179779,
+    6699508.564645673
+   ],
+   "proj": [
+    8.99500000634053,
+    60.4300000019615
+   ],
+   "operation": "Inverse of UTM zone 32N + ED50 to WGS 84 (7) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.99500000634053,
+    60.4300000019615
+   ]
+  },
+  {
+   "name": "EPSG:23032, WKT 1 with the datum's AUTHORITY alone",
+   "code": "EPSG:23032",
+   "wkt": "PROJCS[\"ED50 / UTM zone 32N\",GEOGCS[\"ED50\",DATUM[\"European_Datum_1950\",SPHEROID[\"International 1924\",6378388,297],AUTHORITY[\"EPSG\",\"6230\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",9],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "point": [
+    499804.9263179779,
+    6699508.564645673
+   ],
+   "proj": [
+    8.99500000634053,
+    60.4300000019615
+   ],
+   "operation": "Inverse of UTM zone 32N + ED50 to WGS 84 (7) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.99500000634053,
+    60.4300000019615
+   ]
+  },
+  {
+   "name": "EPSG:23032, WKT 1 with the datum's AUTHORITY alone, renamed",
+   "code": "EPSG:23032",
+   "wkt": "PROJCS[\"Local\",GEOGCS[\"Local\",DATUM[\"Local datum\",SPHEROID[\"International 1924\",6378388,297],AUTHORITY[\"EPSG\",\"6230\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",9],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "point": [
+    499804.9263179779,
+    6699508.564645673
+   ],
+   "proj": [
+    8.99500000634053,
+    60.4300000019615
+   ],
+   "operation": "Inverse of UTM zone 32N + ED50 to WGS 84 (7) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.99500000634053,
+    60.4300000019615
+   ]
+  },
+  {
+   "name": "EPSG:23032, ESRI WKT 1",
+   "code": "EPSG:23032",
+   "wkt": "PROJCS[\"ED_1950_UTM_Zone_32N\",GEOGCS[\"GCS_European_1950\",DATUM[\"D_European_1950\",SPHEROID[\"International_1924\",6378388.0,297.0]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",9.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]",
+   "point": [
+    499804.9263179779,
+    6699508.564645673
+   ],
+   "proj": [
+    8.99500000634053,
+    60.4300000019615
+   ],
+   "operation": "Inverse of UTM zone 32N + ED50 to WGS 84 (7) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.99500000634053,
+    60.4300000019615
+   ]
+  },
+  {
+   "name": "EPSG:23032, ESRI WKT 1, renamed",
+   "code": "EPSG:23032",
+   "wkt": "PROJCS[\"Local grid\",GEOGCS[\"GCS_Local\",DATUM[\"D_European_1950\",SPHEROID[\"International_1924\",6378388.0,297.0]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",9.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]",
+   "point": [
+    499804.9263179779,
+    6699508.564645673
+   ],
+   "proj": [
+    8.99500000634053,
+    60.4300000019615
+   ],
+   "operation": "Inverse of UTM zone 32N + axis order change (2D) + ED50 to WGS 84 (7) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.99500000634053,
+    60.4300000019615
+   ]
+  },
+  {
+   "name": "EPSG:23032, ESRI WKT 1 with the datum's code",
+   "code": "EPSG:23032",
+   "wkt": "PROJCS[\"ED_1950_UTM_Zone_32N\",GEOGCS[\"GCS_European_1950\",DATUM[\"D_European_1950\",SPHEROID[\"International_1924\",6378388.0,297.0],AUTHORITY[\"EPSG\",\"6230\"]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",9.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]",
+   "point": [
+    499804.9263179779,
+    6699508.564645673
+   ],
+   "proj": [
+    8.99500000634053,
+    60.4300000019615
+   ],
+   "operation": "Inverse of UTM zone 32N + ED50 to WGS 84 (7) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.99500000634053,
+    60.4300000019615
+   ]
+  },
+  {
+   "name": "EPSG:23032, ESRI WKT 1 with the CRS's code",
+   "code": "EPSG:23032",
+   "wkt": "PROJCS[\"ED_1950_UTM_Zone_32N\",GEOGCS[\"GCS_European_1950\",DATUM[\"D_European_1950\",SPHEROID[\"International_1924\",6378388.0,297.0]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",9.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0],AUTHORITY[\"EPSG\",\"23032\"]]",
+   "point": [
+    499804.9263179779,
+    6699508.564645673
+   ],
+   "proj": [
+    8.99500000634053,
+    60.4300000019615
+   ],
+   "operation": "Inverse of UTM zone 32N + ED50 to WGS 84 (7) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.99500000634053,
+    60.4300000019615
+   ]
+  },
+  {
+   "name": "EPSG:4314, WKT 2 without IDs",
+   "code": "EPSG:4314",
+   "wkt": "GEOGCRS[\"DHDN\",DATUM[\"Deutsches Hauptdreiecksnetz\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"See also RD/83 for Saxony and PD/83 for Thuringen. For national digital cartographic purposes used across all German states.\"]]",
+   "point": [
+    9.851177682522307,
+    51.18127858555922
+   ],
+   "proj": [
+    9.85000000310771,
+    51.18000000516607
+   ],
+   "operation": "DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    9.85000000310771,
+    51.18000000516607
+   ]
+  },
+  {
+   "name": "EPSG:4314, WKT 2 with the datum's ID alone",
+   "code": "EPSG:4314",
+   "wkt": "GEOGCRS[\"DHDN\",DATUM[\"Deutsches Hauptdreiecksnetz\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6314]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"See also RD/83 for Saxony and PD/83 for Thuringen. For national digital cartographic purposes used across all German states.\"]]",
+   "point": [
+    9.851177682522307,
+    51.18127858555922
+   ],
+   "proj": [
+    9.85000000310771,
+    51.18000000516607
+   ],
+   "operation": "DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    9.85000000310771,
+    51.18000000516607
+   ]
+  },
+  {
+   "name": "EPSG:4314, WKT 2 with the datum's ID alone, renamed",
+   "code": "EPSG:4314",
+   "wkt": "GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6314]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"See also RD/83 for Saxony and PD/83 for Thuringen. For national digital cartographic purposes used across all German states.\"]]",
+   "point": [
+    9.851177682522307,
+    51.18127858555922
+   ],
+   "proj": [
+    9.85000000310771,
+    51.18000000516607
+   ],
+   "operation": "DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    9.85000000310771,
+    51.18000000516607
+   ]
+  },
+  {
+   "name": "EPSG:4314, WKT 1 with the datum's AUTHORITY alone",
+   "code": "EPSG:4314",
+   "wkt": "GEOGCS[\"DHDN\",DATUM[\"Deutsches_Hauptdreiecksnetz\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128],AUTHORITY[\"EPSG\",\"6314\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+   "point": [
+    9.851177682522307,
+    51.18127858555922
+   ],
+   "proj": [
+    9.85000000310771,
+    51.18000000516607
+   ],
+   "operation": "axis order change (2D) + DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    9.85000000310771,
+    51.18000000516607
+   ]
+  },
+  {
+   "name": "EPSG:4314, WKT 1 with the datum's AUTHORITY alone, renamed",
+   "code": "EPSG:4314",
+   "wkt": "GEOGCS[\"Local\",DATUM[\"Local datum\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128],AUTHORITY[\"EPSG\",\"6314\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+   "point": [
+    9.851177682522307,
+    51.18127858555922
+   ],
+   "proj": [
+    9.85000000310771,
+    51.18000000516607
+   ],
+   "operation": "DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    9.85000000310771,
+    51.18000000516607
+   ]
+  },
+  {
+   "name": "EPSG:4314, ESRI WKT 1",
+   "code": "EPSG:4314",
+   "wkt": "GEOGCS[\"GCS_Deutsches_Hauptdreiecksnetz\",DATUM[\"D_Deutsches_Hauptdreiecksnetz\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    9.851177682522307,
+    51.18127858555922
+   ],
+   "proj": [
+    9.85000000310771,
+    51.18000000516607
+   ],
+   "operation": "axis order change (2D) + DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    9.85000000310771,
+    51.18000000516607
+   ]
+  },
+  {
+   "name": "EPSG:4314, ESRI WKT 1 with the datum's code",
+   "code": "EPSG:4314",
+   "wkt": "GEOGCS[\"GCS_Deutsches_Hauptdreiecksnetz\",DATUM[\"D_Deutsches_Hauptdreiecksnetz\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128],AUTHORITY[\"EPSG\",\"6314\"]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    9.851177682522307,
+    51.18127858555922
+   ],
+   "proj": [
+    9.85000000310771,
+    51.18000000516607
+   ],
+   "operation": "axis order change (2D) + DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    9.85000000310771,
+    51.18000000516607
+   ]
+  },
+  {
+   "name": "EPSG:4314, ESRI WKT 1 with the CRS's code",
+   "code": "EPSG:4314",
+   "wkt": "GEOGCS[\"GCS_Deutsches_Hauptdreiecksnetz\",DATUM[\"D_Deutsches_Hauptdreiecksnetz\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433],AUTHORITY[\"EPSG\",\"4314\"]]",
+   "point": [
+    9.851177682522307,
+    51.18127858555922
+   ],
+   "proj": [
+    9.85000000310771,
+    51.18000000516607
+   ],
+   "operation": "DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    9.85000000310771,
+    51.18000000516607
+   ]
+  },
+  {
+   "name": "EPSG:31467, WKT 2 without IDs",
+   "code": "EPSG:31467",
+   "wkt": "PROJCRS[\"DHDN / 3-degree Gauss-Kruger zone 3\",BASEGEOGCRS[\"DHDN\",DATUM[\"Deutsches Hauptdreiecksnetz\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"3-degree Gauss-Kruger zone 3\",METHOD[\"Transverse Mercator\"],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",9,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",1,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",3500000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"northing (X)\",north,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"easting (Y)\",east,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "point": [
+    3500423.0305487677,
+    5671670.909857799
+   ],
+   "proj": [
+    9.005000002211203,
+    51.180000005231854
+   ],
+   "operation": "Inverse of 3-degree Gauss-Kruger zone 3 + DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    9.005000002211203,
+    51.180000005231854
+   ]
+  },
+  {
+   "name": "EPSG:31467, WKT 2 with the datum's ID alone",
+   "code": "EPSG:31467",
+   "wkt": "PROJCRS[\"DHDN / 3-degree Gauss-Kruger zone 3\",BASEGEOGCRS[\"DHDN\",DATUM[\"Deutsches Hauptdreiecksnetz\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6314]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"3-degree Gauss-Kruger zone 3\",METHOD[\"Transverse Mercator\"],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",9,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",1,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",3500000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"northing (X)\",north,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"easting (Y)\",east,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "point": [
+    3500423.0305487677,
+    5671670.909857799
+   ],
+   "proj": [
+    9.005000002211203,
+    51.180000005231854
+   ],
+   "operation": "Inverse of 3-degree Gauss-Kruger zone 3 + DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    9.005000002211203,
+    51.180000005231854
+   ]
+  },
+  {
+   "name": "EPSG:31467, WKT 2 with the datum's ID alone, renamed",
+   "code": "EPSG:31467",
+   "wkt": "PROJCRS[\"Local\",BASEGEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6314]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"3-degree Gauss-Kruger zone 3\",METHOD[\"Transverse Mercator\"],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",9,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",1,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",3500000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"northing (X)\",north,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"easting (Y)\",east,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "point": [
+    3500423.0305487677,
+    5671670.909857799
+   ],
+   "proj": [
+    9.005000002211203,
+    51.180000005231854
+   ],
+   "operation": "Inverse of 3-degree Gauss-Kruger zone 3 + DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    9.005000002211203,
+    51.180000005231854
+   ]
+  },
+  {
+   "name": "EPSG:31467, WKT 1 with the datum's AUTHORITY alone",
+   "code": "EPSG:31467",
+   "wkt": "PROJCS[\"DHDN / 3-degree Gauss-Kruger zone 3\",GEOGCS[\"DHDN\",DATUM[\"Deutsches_Hauptdreiecksnetz\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128],AUTHORITY[\"EPSG\",\"6314\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",9],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",3500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1]]",
+   "point": [
+    3500423.0305487677,
+    5671670.909857799
+   ],
+   "proj": [
+    9.005000002211203,
+    51.180000005231854
+   ],
+   "operation": "Inverse of unnamed + axis order change (2D) + DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    9.005000002211203,
+    51.180000005231854
+   ]
+  },
+  {
+   "name": "EPSG:31467, WKT 1 with the datum's AUTHORITY alone, renamed",
+   "code": "EPSG:31467",
+   "wkt": "PROJCS[\"Local\",GEOGCS[\"Local\",DATUM[\"Local datum\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128],AUTHORITY[\"EPSG\",\"6314\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",9],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",3500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1]]",
+   "point": [
+    3500423.0305487677,
+    5671670.909857799
+   ],
+   "proj": [
+    9.005000002211203,
+    51.180000005231854
+   ],
+   "operation": "Inverse of unnamed + DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    9.005000002211203,
+    51.180000005231854
+   ]
+  },
+  {
+   "name": "EPSG:31467, ESRI WKT 1",
+   "code": "EPSG:31467",
+   "wkt": "PROJCS[\"DHDN_3_Degree_Gauss_Zone_3\",GEOGCS[\"GCS_Deutsches_Hauptdreiecksnetz\",DATUM[\"D_Deutsches_Hauptdreiecksnetz\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Gauss_Kruger\"],PARAMETER[\"False_Easting\",3500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",9.0],PARAMETER[\"Scale_Factor\",1.0],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]",
+   "point": [
+    3500423.0305487677,
+    5671670.909857799
+   ],
+   "proj": [
+    9.005000002211203,
+    51.180000005231854
+   ],
+   "operation": "Inverse of unnnamed (Gauss Kruger) + axis order change (2D) + DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    9.005000002211203,
+    51.180000005231854
+   ]
+  },
+  {
+   "name": "EPSG:31467, ESRI WKT 1 with the datum's code",
+   "code": "EPSG:31467",
+   "wkt": "PROJCS[\"DHDN_3_Degree_Gauss_Zone_3\",GEOGCS[\"GCS_Deutsches_Hauptdreiecksnetz\",DATUM[\"D_Deutsches_Hauptdreiecksnetz\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128],AUTHORITY[\"EPSG\",\"6314\"]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Gauss_Kruger\"],PARAMETER[\"False_Easting\",3500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",9.0],PARAMETER[\"Scale_Factor\",1.0],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]",
+   "point": [
+    3500423.0305487677,
+    5671670.909857799
+   ],
+   "proj": [
+    9.005000002211203,
+    51.180000005231854
+   ],
+   "operation": "Inverse of unnnamed (Gauss Kruger) + axis order change (2D) + DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    9.005000002211203,
+    51.180000005231854
+   ]
+  },
+  {
+   "name": "EPSG:31467, ESRI WKT 1 with the CRS's code",
+   "code": "EPSG:31467",
+   "wkt": "PROJCS[\"DHDN_3_Degree_Gauss_Zone_3\",GEOGCS[\"GCS_Deutsches_Hauptdreiecksnetz\",DATUM[\"D_Deutsches_Hauptdreiecksnetz\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Gauss_Kruger\"],PARAMETER[\"False_Easting\",3500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",9.0],PARAMETER[\"Scale_Factor\",1.0],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0],AUTHORITY[\"EPSG\",\"31467\"]]",
+   "point": [
+    3500423.0305487677,
+    5671670.909857799
+   ],
+   "proj": [
+    9.005000002211203,
+    51.180000005231854
+   ],
+   "operation": "Inverse of unnnamed (Gauss Kruger) + axis order change (2D) + DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    9.005000002211203,
+    51.180000005231854
+   ]
+  },
+  {
+   "name": "EPSG:4289, WKT 2 without IDs",
+   "code": "EPSG:4289",
+   "wkt": "GEOGCRS[\"Amersfoort\",DATUM[\"Amersfoort\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Use of geographic2D CRS Amersfoort (code 4289) for spatial referencing is discouraged. Use projected CRS Amersfoort / RD New (code 28992).\"]]",
+   "point": [
+    5.2104090102818175,
+    52.22599617674505
+   ],
+   "proj": [
+    5.210000001540763,
+    52.22500000405172
+   ],
+   "operation": "Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    5.210000001540763,
+    52.22500000405172
+   ]
+  },
+  {
+   "name": "EPSG:4289, WKT 2 with the datum's ID alone",
+   "code": "EPSG:4289",
+   "wkt": "GEOGCRS[\"Amersfoort\",DATUM[\"Amersfoort\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6289]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Use of geographic2D CRS Amersfoort (code 4289) for spatial referencing is discouraged. Use projected CRS Amersfoort / RD New (code 28992).\"]]",
+   "point": [
+    5.2104090102818175,
+    52.22599617674505
+   ],
+   "proj": [
+    5.210000001540763,
+    52.22500000405172
+   ],
+   "operation": "Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    5.210000001540763,
+    52.22500000405172
+   ]
+  },
+  {
+   "name": "EPSG:4289, WKT 2 with the datum's ID alone, renamed",
+   "code": "EPSG:4289",
+   "wkt": "GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6289]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Use of geographic2D CRS Amersfoort (code 4289) for spatial referencing is discouraged. Use projected CRS Amersfoort / RD New (code 28992).\"]]",
+   "point": [
+    5.2104090102818175,
+    52.22599617674505
+   ],
+   "proj": [
+    5.210000001540763,
+    52.22500000405172
+   ],
+   "operation": "Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    5.210000001540763,
+    52.22500000405172
+   ]
+  },
+  {
+   "name": "EPSG:4289, WKT 1 with the datum's AUTHORITY alone",
+   "code": "EPSG:4289",
+   "wkt": "GEOGCS[\"Amersfoort\",DATUM[\"Amersfoort\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128],AUTHORITY[\"EPSG\",\"6289\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+   "point": [
+    5.2104090102818175,
+    52.22599617674505
+   ],
+   "proj": [
+    5.210000001540763,
+    52.22500000405172
+   ],
+   "operation": "axis order change (2D) + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    5.210000001540763,
+    52.22500000405172
+   ]
+  },
+  {
+   "name": "EPSG:4289, WKT 1 with the datum's AUTHORITY alone, renamed",
+   "code": "EPSG:4289",
+   "wkt": "GEOGCS[\"Local\",DATUM[\"Local datum\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128],AUTHORITY[\"EPSG\",\"6289\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+   "point": [
+    5.2104090102818175,
+    52.22599617674505
+   ],
+   "proj": [
+    5.210000001540763,
+    52.22500000405172
+   ],
+   "operation": "Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    5.210000001540763,
+    52.22500000405172
+   ]
+  },
+  {
+   "name": "EPSG:4289, ESRI WKT 1",
+   "code": "EPSG:4289",
+   "wkt": "GEOGCS[\"GCS_Amersfoort\",DATUM[\"D_Amersfoort\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    5.2104090102818175,
+    52.22599617674505
+   ],
+   "proj": [
+    5.210000001540763,
+    52.22500000405172
+   ],
+   "operation": "axis order change (2D) + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    5.210000001540763,
+    52.22500000405172
+   ]
+  },
+  {
+   "name": "EPSG:4289, ESRI WKT 1, renamed",
+   "code": "EPSG:4289",
+   "wkt": "GEOGCS[\"GCS_Local\",DATUM[\"D_Amersfoort\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    5.2104090102818175,
+    52.22599617674505
+   ],
+   "proj": [
+    5.210000001540763,
+    52.22500000405172
+   ],
+   "operation": "axis order change (2D) + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    5.210000001540763,
+    52.22500000405172
+   ]
+  },
+  {
+   "name": "EPSG:4289, ESRI WKT 1 with the datum's code",
+   "code": "EPSG:4289",
+   "wkt": "GEOGCS[\"GCS_Amersfoort\",DATUM[\"D_Amersfoort\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128],AUTHORITY[\"EPSG\",\"6289\"]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    5.2104090102818175,
+    52.22599617674505
+   ],
+   "proj": [
+    5.210000001540763,
+    52.22500000405172
+   ],
+   "operation": "axis order change (2D) + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    5.210000001540763,
+    52.22500000405172
+   ]
+  },
+  {
+   "name": "EPSG:4289, ESRI WKT 1 with the CRS's code",
+   "code": "EPSG:4289",
+   "wkt": "GEOGCS[\"GCS_Amersfoort\",DATUM[\"D_Amersfoort\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433],AUTHORITY[\"EPSG\",\"4289\"]]",
+   "point": [
+    5.2104090102818175,
+    52.22599617674505
+   ],
+   "proj": [
+    5.210000001540763,
+    52.22500000405172
+   ],
+   "operation": "Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    5.210000001540763,
+    52.22500000405172
+   ]
+  },
+  {
+   "name": "EPSG:28992, WKT 2 without IDs",
+   "code": "EPSG:28992",
+   "wkt": "PROJCRS[\"Amersfoort / RD New\",BASEGEOGCRS[\"Amersfoort\",DATUM[\"Amersfoort\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"RD New\",METHOD[\"Oblique Stereographic\"],PARAMETER[\"Latitude of natural origin\",52.1561605555556,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",5.38763888888889,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9999079,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",155000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",463000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"easting (X)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing (Y)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "point": [
+    142892.19257513565,
+    470783.86722838413
+   ],
+   "proj": [
+    5.210000001540762,
+    52.22500000405172
+   ],
+   "operation": "Inverse of RD New + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    5.210000001540762,
+    52.22500000405172
+   ]
+  },
+  {
+   "name": "EPSG:28992, WKT 2 with the datum's ID alone",
+   "code": "EPSG:28992",
+   "wkt": "PROJCRS[\"Amersfoort / RD New\",BASEGEOGCRS[\"Amersfoort\",DATUM[\"Amersfoort\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6289]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"RD New\",METHOD[\"Oblique Stereographic\"],PARAMETER[\"Latitude of natural origin\",52.1561605555556,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",5.38763888888889,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9999079,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",155000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",463000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"easting (X)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing (Y)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "point": [
+    142892.19257513565,
+    470783.86722838413
+   ],
+   "proj": [
+    5.210000001540762,
+    52.22500000405172
+   ],
+   "operation": "Inverse of RD New + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    5.210000001540762,
+    52.22500000405172
+   ]
+  },
+  {
+   "name": "EPSG:28992, WKT 2 with the datum's ID alone, renamed",
+   "code": "EPSG:28992",
+   "wkt": "PROJCRS[\"Local\",BASEGEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6289]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"RD New\",METHOD[\"Oblique Stereographic\"],PARAMETER[\"Latitude of natural origin\",52.1561605555556,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",5.38763888888889,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9999079,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",155000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",463000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"easting (X)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing (Y)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "point": [
+    142892.19257513565,
+    470783.86722838413
+   ],
+   "proj": [
+    5.210000001540762,
+    52.22500000405172
+   ],
+   "operation": "Inverse of RD New + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    5.210000001540762,
+    52.22500000405172
+   ]
+  },
+  {
+   "name": "EPSG:28992, WKT 1 with the datum's AUTHORITY alone",
+   "code": "EPSG:28992",
+   "wkt": "PROJCS[\"Amersfoort / RD New\",GEOGCS[\"Amersfoort\",DATUM[\"Amersfoort\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128],AUTHORITY[\"EPSG\",\"6289\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Oblique_Stereographic\"],PARAMETER[\"latitude_of_origin\",52.1561605555556],PARAMETER[\"central_meridian\",5.38763888888889],PARAMETER[\"scale_factor\",0.9999079],PARAMETER[\"false_easting\",155000],PARAMETER[\"false_northing\",463000],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "point": [
+    142892.19257513565,
+    470783.86722838413
+   ],
+   "proj": [
+    5.210000001540762,
+    52.22500000405172
+   ],
+   "operation": "Inverse of RD New + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    5.210000001540762,
+    52.22500000405172
+   ]
+  },
+  {
+   "name": "EPSG:28992, WKT 1 with the datum's AUTHORITY alone, renamed",
+   "code": "EPSG:28992",
+   "wkt": "PROJCS[\"Local\",GEOGCS[\"Local\",DATUM[\"Local datum\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128],AUTHORITY[\"EPSG\",\"6289\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Oblique_Stereographic\"],PARAMETER[\"latitude_of_origin\",52.1561605555556],PARAMETER[\"central_meridian\",5.38763888888889],PARAMETER[\"scale_factor\",0.9999079],PARAMETER[\"false_easting\",155000],PARAMETER[\"false_northing\",463000],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "point": [
+    142892.19257513565,
+    470783.86722838413
+   ],
+   "proj": [
+    5.210000001540762,
+    52.22500000405172
+   ],
+   "operation": "Inverse of unnamed + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    5.210000001540762,
+    52.22500000405172
+   ]
+  },
+  {
+   "name": "EPSG:28992, ESRI WKT 1",
+   "code": "EPSG:28992",
+   "wkt": "PROJCS[\"RD_New\",GEOGCS[\"GCS_Amersfoort\",DATUM[\"D_Amersfoort\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Double_Stereographic\"],PARAMETER[\"False_Easting\",155000.0],PARAMETER[\"False_Northing\",463000.0],PARAMETER[\"Central_Meridian\",5.38763888888889],PARAMETER[\"Scale_Factor\",0.9999079],PARAMETER[\"Latitude_Of_Origin\",52.1561605555556],UNIT[\"Meter\",1.0]]",
+   "point": [
+    142892.19257513565,
+    470783.86722838413
+   ],
+   "proj": [
+    5.210000001540762,
+    52.22500000405172
+   ],
+   "operation": "Inverse of RD New + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    5.210000001540762,
+    52.22500000405172
+   ]
+  },
+  {
+   "name": "EPSG:28992, ESRI WKT 1, renamed",
+   "code": "EPSG:28992",
+   "wkt": "PROJCS[\"Local grid\",GEOGCS[\"GCS_Local\",DATUM[\"D_Amersfoort\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Double_Stereographic\"],PARAMETER[\"False_Easting\",155000.0],PARAMETER[\"False_Northing\",463000.0],PARAMETER[\"Central_Meridian\",5.38763888888889],PARAMETER[\"Scale_Factor\",0.9999079],PARAMETER[\"Latitude_Of_Origin\",52.1561605555556],UNIT[\"Meter\",1.0]]",
+   "point": [
+    142892.19257513565,
+    470783.86722838413
+   ],
+   "proj": [
+    5.210000001540762,
+    52.22500000405172
+   ],
+   "operation": "Inverse of unnamed + axis order change (2D) + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    5.210000001540762,
+    52.22500000405172
+   ]
+  },
+  {
+   "name": "EPSG:28992, ESRI WKT 1 with the datum's code",
+   "code": "EPSG:28992",
+   "wkt": "PROJCS[\"RD_New\",GEOGCS[\"GCS_Amersfoort\",DATUM[\"D_Amersfoort\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128],AUTHORITY[\"EPSG\",\"6289\"]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Double_Stereographic\"],PARAMETER[\"False_Easting\",155000.0],PARAMETER[\"False_Northing\",463000.0],PARAMETER[\"Central_Meridian\",5.38763888888889],PARAMETER[\"Scale_Factor\",0.9999079],PARAMETER[\"Latitude_Of_Origin\",52.1561605555556],UNIT[\"Meter\",1.0]]",
+   "point": [
+    142892.19257513565,
+    470783.86722838413
+   ],
+   "proj": [
+    5.210000001540762,
+    52.22500000405172
+   ],
+   "operation": "Inverse of RD New + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    5.210000001540762,
+    52.22500000405172
+   ]
+  },
+  {
+   "name": "EPSG:28992, ESRI WKT 1 with the CRS's code",
+   "code": "EPSG:28992",
+   "wkt": "PROJCS[\"RD_New\",GEOGCS[\"GCS_Amersfoort\",DATUM[\"D_Amersfoort\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Double_Stereographic\"],PARAMETER[\"False_Easting\",155000.0],PARAMETER[\"False_Northing\",463000.0],PARAMETER[\"Central_Meridian\",5.38763888888889],PARAMETER[\"Scale_Factor\",0.9999079],PARAMETER[\"Latitude_Of_Origin\",52.1561605555556],UNIT[\"Meter\",1.0],AUTHORITY[\"EPSG\",\"28992\"]]",
+   "point": [
+    142892.19257513565,
+    470783.86722838413
+   ],
+   "proj": [
+    5.210000001540762,
+    52.22500000405172
+   ],
+   "operation": "Inverse of RD New + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    5.210000001540762,
+    52.22500000405172
+   ]
+  },
+  {
+   "name": "EPSG:4121, WKT 2 without IDs",
+   "code": "EPSG:4121",
+   "wkt": "GEOGCRS[\"GGRS87\",DATUM[\"Greek Geodetic Reference System 1987\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
+   "point": [
+    23.933291229699897,
+    38.31240588690885
+   ],
+   "proj": [
+    23.934999991072655,
+    38.31499998639156
+   ],
+   "operation": "GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    23.934999991072655,
+    38.31499998639156
+   ]
+  },
+  {
+   "name": "EPSG:4121, WKT 2 with the datum's ID alone",
+   "code": "EPSG:4121",
+   "wkt": "GEOGCRS[\"GGRS87\",DATUM[\"Greek Geodetic Reference System 1987\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6121]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
+   "point": [
+    23.933291229699897,
+    38.31240588690885
+   ],
+   "proj": [
+    23.934999991072655,
+    38.31499998639156
+   ],
+   "operation": "GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    23.934999991072655,
+    38.31499998639156
+   ]
+  },
+  {
+   "name": "EPSG:4121, WKT 2 with the datum's ID alone, renamed",
+   "code": "EPSG:4121",
+   "wkt": "GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6121]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
+   "point": [
+    23.933291229699897,
+    38.31240588690885
+   ],
+   "proj": [
+    23.934999991072655,
+    38.31499998639156
+   ],
+   "operation": "GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    23.934999991072655,
+    38.31499998639156
+   ]
+  },
+  {
+   "name": "EPSG:4121, WKT 1 with the datum's AUTHORITY alone",
+   "code": "EPSG:4121",
+   "wkt": "GEOGCS[\"GGRS87\",DATUM[\"Greek_Geodetic_Reference_System_1987\",SPHEROID[\"GRS 1980\",6378137,298.257222101],AUTHORITY[\"EPSG\",\"6121\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+   "point": [
+    23.933291229699897,
+    38.31240588690885
+   ],
+   "proj": [
+    23.934999991072655,
+    38.31499998639156
+   ],
+   "operation": "axis order change (2D) + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    23.934999991072655,
+    38.31499998639156
+   ]
+  },
+  {
+   "name": "EPSG:4121, WKT 1 with the datum's AUTHORITY alone, renamed",
+   "code": "EPSG:4121",
+   "wkt": "GEOGCS[\"Local\",DATUM[\"Local datum\",SPHEROID[\"GRS 1980\",6378137,298.257222101],AUTHORITY[\"EPSG\",\"6121\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+   "point": [
+    23.933291229699897,
+    38.31240588690885
+   ],
+   "proj": [
+    23.934999991072655,
+    38.31499998639156
+   ],
+   "operation": "GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    23.934999991072655,
+    38.31499998639156
+   ]
+  },
+  {
+   "name": "EPSG:4121, ESRI WKT 1",
+   "code": "EPSG:4121",
+   "wkt": "GEOGCS[\"GCS_GGRS_1987\",DATUM[\"D_GGRS_1987\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    23.933291229699897,
+    38.31240588690885
+   ],
+   "proj": [
+    23.934999991072655,
+    38.31499998639156
+   ],
+   "operation": "axis order change (2D) + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    23.934999991072655,
+    38.31499998639156
+   ]
+  },
+  {
+   "name": "EPSG:4121, ESRI WKT 1, renamed",
+   "code": "EPSG:4121",
+   "wkt": "GEOGCS[\"GCS_Local\",DATUM[\"D_GGRS_1987\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    23.933291229699897,
+    38.31240588690885
+   ],
+   "proj": [
+    23.934999991072655,
+    38.31499998639156
+   ],
+   "operation": "axis order change (2D) + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    23.934999991072655,
+    38.31499998639156
+   ]
+  },
+  {
+   "name": "EPSG:4121, ESRI WKT 1 with the datum's code",
+   "code": "EPSG:4121",
+   "wkt": "GEOGCS[\"GCS_GGRS_1987\",DATUM[\"D_GGRS_1987\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101],AUTHORITY[\"EPSG\",\"6121\"]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    23.933291229699897,
+    38.31240588690885
+   ],
+   "proj": [
+    23.934999991072655,
+    38.31499998639156
+   ],
+   "operation": "axis order change (2D) + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    23.934999991072655,
+    38.31499998639156
+   ]
+  },
+  {
+   "name": "EPSG:4121, ESRI WKT 1 with the CRS's code",
+   "code": "EPSG:4121",
+   "wkt": "GEOGCS[\"GCS_GGRS_1987\",DATUM[\"D_GGRS_1987\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433],AUTHORITY[\"EPSG\",\"4121\"]]",
+   "point": [
+    23.933291229699897,
+    38.31240588690885
+   ],
+   "proj": [
+    23.934999991072655,
+    38.31499998639156
+   ],
+   "operation": "GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    23.934999991072655,
+    38.31499998639156
+   ]
+  },
+  {
+   "name": "EPSG:2100, WKT 2 without IDs",
+   "code": "EPSG:2100",
+   "wkt": "PROJCRS[\"GGRS87 / Greek Grid\",BASEGEOGCRS[\"GGRS87\",DATUM[\"Greek Geodetic Reference System 1987\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Greek Grid\",METHOD[\"Transverse Mercator\"],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",24,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "point": [
+    494168.08116862935,
+    4240480.130834421
+   ],
+   "proj": [
+    23.934999991072655,
+    38.31499998639156
+   ],
+   "operation": "Inverse of Greek Grid + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    23.934999991072655,
+    38.31499998639156
+   ]
+  },
+  {
+   "name": "EPSG:2100, WKT 2 with the datum's ID alone",
+   "code": "EPSG:2100",
+   "wkt": "PROJCRS[\"GGRS87 / Greek Grid\",BASEGEOGCRS[\"GGRS87\",DATUM[\"Greek Geodetic Reference System 1987\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6121]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Greek Grid\",METHOD[\"Transverse Mercator\"],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",24,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "point": [
+    494168.08116862935,
+    4240480.130834421
+   ],
+   "proj": [
+    23.934999991072655,
+    38.31499998639156
+   ],
+   "operation": "Inverse of Greek Grid + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    23.934999991072655,
+    38.31499998639156
+   ]
+  },
+  {
+   "name": "EPSG:2100, WKT 2 with the datum's ID alone, renamed",
+   "code": "EPSG:2100",
+   "wkt": "PROJCRS[\"Local\",BASEGEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6121]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Greek Grid\",METHOD[\"Transverse Mercator\"],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",24,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "point": [
+    494168.08116862935,
+    4240480.130834421
+   ],
+   "proj": [
+    23.934999991072655,
+    38.31499998639156
+   ],
+   "operation": "Inverse of Greek Grid + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    23.934999991072655,
+    38.31499998639156
+   ]
+  },
+  {
+   "name": "EPSG:2100, WKT 1 with the datum's AUTHORITY alone",
+   "code": "EPSG:2100",
+   "wkt": "PROJCS[\"GGRS87 / Greek Grid\",GEOGCS[\"GGRS87\",DATUM[\"Greek_Geodetic_Reference_System_1987\",SPHEROID[\"GRS 1980\",6378137,298.257222101],AUTHORITY[\"EPSG\",\"6121\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",24],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "point": [
+    494168.08116862935,
+    4240480.130834421
+   ],
+   "proj": [
+    23.934999991072655,
+    38.31499998639156
+   ],
+   "operation": "Inverse of Greek Grid + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    23.934999991072655,
+    38.31499998639156
+   ]
+  },
+  {
+   "name": "EPSG:2100, WKT 1 with the datum's AUTHORITY alone, renamed",
+   "code": "EPSG:2100",
+   "wkt": "PROJCS[\"Local\",GEOGCS[\"Local\",DATUM[\"Local datum\",SPHEROID[\"GRS 1980\",6378137,298.257222101],AUTHORITY[\"EPSG\",\"6121\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",24],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "point": [
+    494168.08116862935,
+    4240480.130834421
+   ],
+   "proj": [
+    23.934999991072655,
+    38.31499998639156
+   ],
+   "operation": "Inverse of unnamed + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    23.934999991072655,
+    38.31499998639156
+   ]
+  },
+  {
+   "name": "EPSG:2100, ESRI WKT 1",
+   "code": "EPSG:2100",
+   "wkt": "PROJCS[\"Greek_Grid\",GEOGCS[\"GCS_GGRS_1987\",DATUM[\"D_GGRS_1987\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",24.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]",
+   "point": [
+    494168.08116862935,
+    4240480.130834421
+   ],
+   "proj": [
+    23.934999991072655,
+    38.31499998639156
+   ],
+   "operation": "Inverse of Greek Grid + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    23.934999991072655,
+    38.31499998639156
+   ]
+  },
+  {
+   "name": "EPSG:2100, ESRI WKT 1, renamed",
+   "code": "EPSG:2100",
+   "wkt": "PROJCS[\"Local grid\",GEOGCS[\"GCS_Local\",DATUM[\"D_GGRS_1987\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",24.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]",
+   "point": [
+    494168.08116862935,
+    4240480.130834421
+   ],
+   "proj": [
+    23.934999991072655,
+    38.31499998639156
+   ],
+   "operation": "Inverse of unnamed + axis order change (2D) + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    23.934999991072655,
+    38.31499998639156
+   ]
+  },
+  {
+   "name": "EPSG:2100, ESRI WKT 1 with the datum's code",
+   "code": "EPSG:2100",
+   "wkt": "PROJCS[\"Greek_Grid\",GEOGCS[\"GCS_GGRS_1987\",DATUM[\"D_GGRS_1987\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101],AUTHORITY[\"EPSG\",\"6121\"]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",24.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]",
+   "point": [
+    494168.08116862935,
+    4240480.130834421
+   ],
+   "proj": [
+    23.934999991072655,
+    38.31499998639156
+   ],
+   "operation": "Inverse of Greek Grid + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    23.934999991072655,
+    38.31499998639156
+   ]
+  },
+  {
+   "name": "EPSG:2100, ESRI WKT 1 with the CRS's code",
+   "code": "EPSG:2100",
+   "wkt": "PROJCS[\"Greek_Grid\",GEOGCS[\"GCS_GGRS_1987\",DATUM[\"D_GGRS_1987\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",24.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0],AUTHORITY[\"EPSG\",\"2100\"]]",
+   "point": [
+    494168.08116862935,
+    4240480.130834421
+   ],
+   "proj": [
+    23.934999991072655,
+    38.31499998639156
+   ],
+   "operation": "Inverse of Greek Grid + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    23.934999991072655,
+    38.31499998639156
+   ]
+  },
+  {
+   "name": "EPSG:4149, WKT 2 without IDs",
+   "code": "EPSG:4149",
+   "wkt": "GEOGCRS[\"CH1903\",DATUM[\"CH1903\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaced by CH1903+.\"]]",
+   "point": [
+    8.22606895027668,
+    46.81129900278438
+   ],
+   "proj": [
+    8.225000008240604,
+    46.81000001004599
+   ],
+   "operation": "CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.225000008240604,
+    46.81000001004599
+   ]
+  },
+  {
+   "name": "EPSG:4149, WKT 2 with the datum's ID alone",
+   "code": "EPSG:4149",
+   "wkt": "GEOGCRS[\"CH1903\",DATUM[\"CH1903\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6149]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaced by CH1903+.\"]]",
+   "point": [
+    8.22606895027668,
+    46.81129900278438
+   ],
+   "proj": [
+    8.225000008240604,
+    46.81000001004599
+   ],
+   "operation": "CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.225000008240604,
+    46.81000001004599
+   ]
+  },
+  {
+   "name": "EPSG:4149, WKT 2 with the datum's ID alone, renamed",
+   "code": "EPSG:4149",
+   "wkt": "GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6149]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaced by CH1903+.\"]]",
+   "point": [
+    8.22606895027668,
+    46.81129900278438
+   ],
+   "proj": [
+    8.225000008240604,
+    46.81000001004599
+   ],
+   "operation": "CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.225000008240604,
+    46.81000001004599
+   ]
+  },
+  {
+   "name": "EPSG:4149, WKT 1 with the datum's AUTHORITY alone",
+   "code": "EPSG:4149",
+   "wkt": "GEOGCS[\"CH1903\",DATUM[\"CH1903\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128],AUTHORITY[\"EPSG\",\"6149\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+   "point": [
+    8.22606895027668,
+    46.81129900278438
+   ],
+   "proj": [
+    8.225000008240604,
+    46.81000001004599
+   ],
+   "operation": "axis order change (2D) + CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.225000008240604,
+    46.81000001004599
+   ]
+  },
+  {
+   "name": "EPSG:4149, WKT 1 with the datum's AUTHORITY alone, renamed",
+   "code": "EPSG:4149",
+   "wkt": "GEOGCS[\"Local\",DATUM[\"Local datum\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128],AUTHORITY[\"EPSG\",\"6149\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+   "point": [
+    8.22606895027668,
+    46.81129900278438
+   ],
+   "proj": [
+    8.225000008240604,
+    46.81000001004599
+   ],
+   "operation": "CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.225000008240604,
+    46.81000001004599
+   ]
+  },
+  {
+   "name": "EPSG:4149, ESRI WKT 1",
+   "code": "EPSG:4149",
+   "wkt": "GEOGCS[\"GCS_CH1903\",DATUM[\"D_CH1903\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    8.22606895027668,
+    46.81129900278438
+   ],
+   "proj": [
+    8.225000008240604,
+    46.81000001004599
+   ],
+   "operation": "axis order change (2D) + CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.225000008240604,
+    46.81000001004599
+   ]
+  },
+  {
+   "name": "EPSG:4149, ESRI WKT 1, renamed",
+   "code": "EPSG:4149",
+   "wkt": "GEOGCS[\"GCS_Local\",DATUM[\"D_CH1903\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    8.22606895027668,
+    46.81129900278438
+   ],
+   "proj": [
+    8.225000008240604,
+    46.81000001004599
+   ],
+   "operation": "axis order change (2D) + CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    8.225000008240604,
+    46.81000001004599
+   ]
+  },
+  {
+   "name": "EPSG:4149, ESRI WKT 1 with the datum's code",
+   "code": "EPSG:4149",
+   "wkt": "GEOGCS[\"GCS_CH1903\",DATUM[\"D_CH1903\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128],AUTHORITY[\"EPSG\",\"6149\"]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    8.22606895027668,
+    46.81129900278438
+   ],
+   "proj": [
+    8.225000008240604,
+    46.81000001004599
+   ],
+   "operation": "axis order change (2D) + CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.225000008240604,
+    46.81000001004599
+   ]
+  },
+  {
+   "name": "EPSG:4149, ESRI WKT 1 with the CRS's code",
+   "code": "EPSG:4149",
+   "wkt": "GEOGCS[\"GCS_CH1903\",DATUM[\"D_CH1903\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433],AUTHORITY[\"EPSG\",\"4149\"]]",
+   "point": [
+    8.22606895027668,
+    46.81129900278438
+   ],
+   "proj": [
+    8.225000008240604,
+    46.81000001004599
+   ],
+   "operation": "CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.225000008240604,
+    46.81000001004599
+   ]
+  },
+  {
+   "name": "EPSG:21781, WKT 2 without IDs",
+   "code": "EPSG:21781",
+   "wkt": "PROJCRS[\"CH1903 / LV03\",BASEGEOGCRS[\"CH1903\",DATUM[\"CH1903\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Swiss Oblique Mercator 1903M\",METHOD[\"Hotine Oblique Mercator (variant B)\"],PARAMETER[\"Latitude of projection centre\",46.9524055555556,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of projection centre\",7.43958333333333,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Azimuth at projection centre\",90,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Angle from Rectified to Skew Grid\",90,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at projection centre\",1,SCALEUNIT[\"unity\",1]],PARAMETER[\"Easting at projection centre\",600000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"Northing at projection centre\",200000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"easting (Y)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing (X)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "point": [
+    660019.1118579194,
+    184616.16783986264
+   ],
+   "proj": [
+    8.2250000082406,
+    46.810000010046
+   ],
+   "operation": "Inverse of Swiss Oblique Mercator 1903M + CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.2250000082406,
+    46.810000010046
+   ]
+  },
+  {
+   "name": "EPSG:21781, WKT 2 with the datum's ID alone",
+   "code": "EPSG:21781",
+   "wkt": "PROJCRS[\"CH1903 / LV03\",BASEGEOGCRS[\"CH1903\",DATUM[\"CH1903\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6149]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Swiss Oblique Mercator 1903M\",METHOD[\"Hotine Oblique Mercator (variant B)\"],PARAMETER[\"Latitude of projection centre\",46.9524055555556,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of projection centre\",7.43958333333333,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Azimuth at projection centre\",90,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Angle from Rectified to Skew Grid\",90,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at projection centre\",1,SCALEUNIT[\"unity\",1]],PARAMETER[\"Easting at projection centre\",600000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"Northing at projection centre\",200000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"easting (Y)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing (X)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "point": [
+    660019.1118579194,
+    184616.16783986264
+   ],
+   "proj": [
+    8.2250000082406,
+    46.810000010046
+   ],
+   "operation": "Inverse of Swiss Oblique Mercator 1903M + CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.2250000082406,
+    46.810000010046
+   ]
+  },
+  {
+   "name": "EPSG:21781, WKT 2 with the datum's ID alone, renamed",
+   "code": "EPSG:21781",
+   "wkt": "PROJCRS[\"Local\",BASEGEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6149]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Swiss Oblique Mercator 1903M\",METHOD[\"Hotine Oblique Mercator (variant B)\"],PARAMETER[\"Latitude of projection centre\",46.9524055555556,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of projection centre\",7.43958333333333,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Azimuth at projection centre\",90,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Angle from Rectified to Skew Grid\",90,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at projection centre\",1,SCALEUNIT[\"unity\",1]],PARAMETER[\"Easting at projection centre\",600000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"Northing at projection centre\",200000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"easting (Y)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing (X)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "point": [
+    660019.1118579194,
+    184616.16783986264
+   ],
+   "proj": [
+    8.2250000082406,
+    46.810000010046
+   ],
+   "operation": "Inverse of Swiss Oblique Mercator 1903M + CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.2250000082406,
+    46.810000010046
+   ]
+  },
+  {
+   "name": "EPSG:21781, WKT 1 with the datum's AUTHORITY alone",
+   "code": "EPSG:21781",
+   "wkt": "PROJCS[\"CH1903 / LV03\",GEOGCS[\"CH1903\",DATUM[\"CH1903\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128],AUTHORITY[\"EPSG\",\"6149\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Hotine_Oblique_Mercator_Azimuth_Center\"],PARAMETER[\"latitude_of_center\",46.9524055555556],PARAMETER[\"longitude_of_center\",7.43958333333333],PARAMETER[\"azimuth\",90],PARAMETER[\"rectified_grid_angle\",90],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",600000],PARAMETER[\"false_northing\",200000],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "point": [
+    660019.1118579194,
+    184616.16783986264
+   ],
+   "proj": [
+    8.2250000082406,
+    46.810000010046
+   ],
+   "operation": "Inverse of Swiss Oblique Mercator 1903M + CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.2250000082406,
+    46.810000010046
+   ]
+  },
+  {
+   "name": "EPSG:21781, WKT 1 with the datum's AUTHORITY alone, renamed",
+   "code": "EPSG:21781",
+   "wkt": "PROJCS[\"Local\",GEOGCS[\"Local\",DATUM[\"Local datum\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128],AUTHORITY[\"EPSG\",\"6149\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Hotine_Oblique_Mercator_Azimuth_Center\"],PARAMETER[\"latitude_of_center\",46.9524055555556],PARAMETER[\"longitude_of_center\",7.43958333333333],PARAMETER[\"azimuth\",90],PARAMETER[\"rectified_grid_angle\",90],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",600000],PARAMETER[\"false_northing\",200000],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "point": [
+    660019.1118579194,
+    184616.16783986264
+   ],
+   "proj": [
+    8.2250000082406,
+    46.810000010046
+   ],
+   "operation": "Inverse of unnamed + CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.2250000082406,
+    46.810000010046
+   ]
+  },
+  {
+   "name": "EPSG:21781, ESRI WKT 1",
+   "code": "EPSG:21781",
+   "wkt": "PROJCS[\"CH1903_LV03\",GEOGCS[\"GCS_CH1903\",DATUM[\"D_CH1903\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Hotine_Oblique_Mercator_Azimuth_Center\"],PARAMETER[\"False_Easting\",600000.0],PARAMETER[\"False_Northing\",200000.0],PARAMETER[\"Scale_Factor\",1.0],PARAMETER[\"Azimuth\",90.0],PARAMETER[\"Longitude_Of_Center\",7.43958333333333],PARAMETER[\"Latitude_Of_Center\",46.9524055555556],UNIT[\"Meter\",1.0]]",
+   "point": [
+    660019.1118579194,
+    184616.16783986264
+   ],
+   "proj": [
+    8.2250000082406,
+    46.810000010046
+   ],
+   "operation": "Inverse of Swiss Oblique Mercator 1903M + CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.2250000082406,
+    46.810000010046
+   ]
+  },
+  {
+   "name": "EPSG:21781, ESRI WKT 1, renamed",
+   "code": "EPSG:21781",
+   "wkt": "PROJCS[\"Local grid\",GEOGCS[\"GCS_Local\",DATUM[\"D_CH1903\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Hotine_Oblique_Mercator_Azimuth_Center\"],PARAMETER[\"False_Easting\",600000.0],PARAMETER[\"False_Northing\",200000.0],PARAMETER[\"Scale_Factor\",1.0],PARAMETER[\"Azimuth\",90.0],PARAMETER[\"Longitude_Of_Center\",7.43958333333333],PARAMETER[\"Latitude_Of_Center\",46.9524055555556],UNIT[\"Meter\",1.0]]",
+   "point": [
+    660019.1118579194,
+    184616.16783986264
+   ],
+   "proj": [
+    8.2250000082406,
+    46.810000010046
+   ],
+   "operation": "Inverse of unnamed + axis order change (2D) + CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    8.2250000082406,
+    46.810000010046
+   ]
+  },
+  {
+   "name": "EPSG:21781, ESRI WKT 1 with the datum's code",
+   "code": "EPSG:21781",
+   "wkt": "PROJCS[\"CH1903_LV03\",GEOGCS[\"GCS_CH1903\",DATUM[\"D_CH1903\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128],AUTHORITY[\"EPSG\",\"6149\"]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Hotine_Oblique_Mercator_Azimuth_Center\"],PARAMETER[\"False_Easting\",600000.0],PARAMETER[\"False_Northing\",200000.0],PARAMETER[\"Scale_Factor\",1.0],PARAMETER[\"Azimuth\",90.0],PARAMETER[\"Longitude_Of_Center\",7.43958333333333],PARAMETER[\"Latitude_Of_Center\",46.9524055555556],UNIT[\"Meter\",1.0]]",
+   "point": [
+    660019.1118579194,
+    184616.16783986264
+   ],
+   "proj": [
+    8.2250000082406,
+    46.810000010046
+   ],
+   "operation": "Inverse of Swiss Oblique Mercator 1903M + CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.2250000082406,
+    46.810000010046
+   ]
+  },
+  {
+   "name": "EPSG:21781, ESRI WKT 1 with the CRS's code",
+   "code": "EPSG:21781",
+   "wkt": "PROJCS[\"CH1903_LV03\",GEOGCS[\"GCS_CH1903\",DATUM[\"D_CH1903\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Hotine_Oblique_Mercator_Azimuth_Center\"],PARAMETER[\"False_Easting\",600000.0],PARAMETER[\"False_Northing\",200000.0],PARAMETER[\"Scale_Factor\",1.0],PARAMETER[\"Azimuth\",90.0],PARAMETER[\"Longitude_Of_Center\",7.43958333333333],PARAMETER[\"Latitude_Of_Center\",46.9524055555556],UNIT[\"Meter\",1.0],AUTHORITY[\"EPSG\",\"21781\"]]",
+   "point": [
+    660019.1118579194,
+    184616.16783986264
+   ],
+   "proj": [
+    8.2250000082406,
+    46.810000010046
+   ],
+   "operation": "Inverse of Swiss Oblique Mercator 1903M + CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    8.2250000082406,
+    46.810000010046
+   ]
+  },
+  {
+   "name": "EPSG:4301, WKT 2 without IDs",
+   "code": "EPSG:4301",
+   "wkt": "GEOGCRS[\"Tokyo\",DATUM[\"Tokyo\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"In Japan, replaces Tokyo 1892 (CRS code 5132) and replaced by JGD2000 (code 4612) from April 2002. In Korea used only for geodetic applications before being replaced by Korean 1985 (code 4162).\"]]",
+   "point": [
+    138.44302150486158,
+    32.951492489150986
+   ],
+   "proj": [
+    138.44000001149723,
+    32.95499998659077
+   ],
+   "operation": "Tokyo to WGS 84 (108) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    138.44000001149723,
+    32.95499998659077
+   ]
+  },
+  {
+   "name": "EPSG:4301, WKT 2 with the datum's ID alone",
+   "code": "EPSG:4301",
+   "wkt": "GEOGCRS[\"Tokyo\",DATUM[\"Tokyo\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6301]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"In Japan, replaces Tokyo 1892 (CRS code 5132) and replaced by JGD2000 (code 4612) from April 2002. In Korea used only for geodetic applications before being replaced by Korean 1985 (code 4162).\"]]",
+   "point": [
+    138.44302150486158,
+    32.951492489150986
+   ],
+   "proj": [
+    138.44000001149723,
+    32.95499998659077
+   ],
+   "operation": "Tokyo to WGS 84 (108) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    138.44000001149723,
+    32.95499998659077
+   ]
+  },
+  {
+   "name": "EPSG:4301, WKT 2 with the datum's ID alone, renamed",
+   "code": "EPSG:4301",
+   "wkt": "GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6301]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"In Japan, replaces Tokyo 1892 (CRS code 5132) and replaced by JGD2000 (code 4612) from April 2002. In Korea used only for geodetic applications before being replaced by Korean 1985 (code 4162).\"]]",
+   "point": [
+    138.44302150486158,
+    32.951492489150986
+   ],
+   "proj": [
+    138.44000001149723,
+    32.95499998659077
+   ],
+   "operation": "Tokyo to WGS 84 (108) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    138.44000001149723,
+    32.95499998659077
+   ]
+  },
+  {
+   "name": "EPSG:4301, WKT 1 with the datum's AUTHORITY alone",
+   "code": "EPSG:4301",
+   "wkt": "GEOGCS[\"Tokyo\",DATUM[\"Tokyo\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128],AUTHORITY[\"EPSG\",\"6301\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+   "point": [
+    138.44302150486158,
+    32.951492489150986
+   ],
+   "proj": [
+    138.44000001149723,
+    32.95499998659077
+   ],
+   "operation": "axis order change (2D) + Tokyo to WGS 84 (108) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    138.44000001149723,
+    32.95499998659077
+   ]
+  },
+  {
+   "name": "EPSG:4301, WKT 1 with the datum's AUTHORITY alone, renamed",
+   "code": "EPSG:4301",
+   "wkt": "GEOGCS[\"Local\",DATUM[\"Local datum\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128],AUTHORITY[\"EPSG\",\"6301\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+   "point": [
+    138.44302150486158,
+    32.951492489150986
+   ],
+   "proj": [
+    138.44000001149723,
+    32.95499998659077
+   ],
+   "operation": "Tokyo to WGS 84 (108) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    138.44000001149723,
+    32.95499998659077
+   ]
+  },
+  {
+   "name": "EPSG:4301, ESRI WKT 1",
+   "code": "EPSG:4301",
+   "wkt": "GEOGCS[\"GCS_Tokyo\",DATUM[\"D_Tokyo\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    138.44302150486158,
+    32.951492489150986
+   ],
+   "proj": [
+    138.44000001149723,
+    32.95499998659077
+   ],
+   "operation": "axis order change (2D) + Tokyo to WGS 84 (108) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    138.44000001149723,
+    32.95499998659077
+   ]
+  },
+  {
+   "name": "EPSG:4301, ESRI WKT 1, renamed",
+   "code": "EPSG:4301",
+   "wkt": "GEOGCS[\"GCS_Local\",DATUM[\"D_Tokyo\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    138.44302150486158,
+    32.951492489150986
+   ],
+   "proj": [
+    138.44000001149723,
+    32.95499998659077
+   ],
+   "operation": "axis order change (2D) + Tokyo to WGS 84 (108) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    138.44000001149723,
+    32.95499998659077
+   ]
+  },
+  {
+   "name": "EPSG:4301, ESRI WKT 1 with the datum's code",
+   "code": "EPSG:4301",
+   "wkt": "GEOGCS[\"GCS_Tokyo\",DATUM[\"D_Tokyo\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128],AUTHORITY[\"EPSG\",\"6301\"]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    138.44302150486158,
+    32.951492489150986
+   ],
+   "proj": [
+    138.44000001149723,
+    32.95499998659077
+   ],
+   "operation": "axis order change (2D) + Tokyo to WGS 84 (108) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    138.44000001149723,
+    32.95499998659077
+   ]
+  },
+  {
+   "name": "EPSG:4301, ESRI WKT 1 with the CRS's code",
+   "code": "EPSG:4301",
+   "wkt": "GEOGCS[\"GCS_Tokyo\",DATUM[\"D_Tokyo\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433],AUTHORITY[\"EPSG\",\"4301\"]]",
+   "point": [
+    138.44302150486158,
+    32.951492489150986
+   ],
+   "proj": [
+    138.44000001149723,
+    32.95499998659077
+   ],
+   "operation": "Tokyo to WGS 84 (108) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    138.44000001149723,
+    32.95499998659077
+   ]
+  },
+  {
+   "name": "EPSG:4237, WKT 2 without IDs",
+   "code": "EPSG:4237",
+   "wkt": "GEOGCRS[\"HD72\",DATUM[\"Hungarian Datum 1972\",ELLIPSOID[\"GRS 1967\",6378160,298.247167427,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaced HD1909 (EPSG CRS code 3819).\"]]",
+   "point": [
+    19.50612250323989,
+    47.160264468611786
+   ],
+   "proj": [
+    19.505000005055468,
+    47.16000000119484
+   ],
+   "operation": "HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    19.505000005055468,
+    47.16000000119484
+   ]
+  },
+  {
+   "name": "EPSG:4237, WKT 2 with the datum's ID alone",
+   "code": "EPSG:4237",
+   "wkt": "GEOGCRS[\"HD72\",DATUM[\"Hungarian Datum 1972\",ELLIPSOID[\"GRS 1967\",6378160,298.247167427,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6237]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaced HD1909 (EPSG CRS code 3819).\"]]",
+   "point": [
+    19.50612250323989,
+    47.160264468611786
+   ],
+   "proj": [
+    19.505000005055468,
+    47.16000000119484
+   ],
+   "operation": "HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    19.505000005055468,
+    47.16000000119484
+   ]
+  },
+  {
+   "name": "EPSG:4237, WKT 2 with the datum's ID alone, renamed",
+   "code": "EPSG:4237",
+   "wkt": "GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"GRS 1967\",6378160,298.247167427,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6237]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaced HD1909 (EPSG CRS code 3819).\"]]",
+   "point": [
+    19.50612250323989,
+    47.160264468611786
+   ],
+   "proj": [
+    19.505000005055468,
+    47.16000000119484
+   ],
+   "operation": "HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    19.505000005055468,
+    47.16000000119484
+   ]
+  },
+  {
+   "name": "EPSG:4237, WKT 1 with the datum's AUTHORITY alone",
+   "code": "EPSG:4237",
+   "wkt": "GEOGCS[\"HD72\",DATUM[\"Hungarian_Datum_1972\",SPHEROID[\"GRS 1967\",6378160,298.247167427],AUTHORITY[\"EPSG\",\"6237\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+   "point": [
+    19.50612250323989,
+    47.160264468611786
+   ],
+   "proj": [
+    19.505000005055468,
+    47.16000000119484
+   ],
+   "operation": "axis order change (2D) + HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    19.505000005055468,
+    47.16000000119484
+   ]
+  },
+  {
+   "name": "EPSG:4237, WKT 1 with the datum's AUTHORITY alone, renamed",
+   "code": "EPSG:4237",
+   "wkt": "GEOGCS[\"Local\",DATUM[\"Local datum\",SPHEROID[\"GRS 1967\",6378160,298.247167427],AUTHORITY[\"EPSG\",\"6237\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+   "point": [
+    19.50612250323989,
+    47.160264468611786
+   ],
+   "proj": [
+    19.505000005055468,
+    47.16000000119484
+   ],
+   "operation": "HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    19.505000005055468,
+    47.16000000119484
+   ]
+  },
+  {
+   "name": "EPSG:4237, ESRI WKT 1",
+   "code": "EPSG:4237",
+   "wkt": "GEOGCS[\"GCS_Hungarian_1972\",DATUM[\"D_Hungarian_1972\",SPHEROID[\"GRS_1967\",6378160.0,298.247167427]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    19.50612250323989,
+    47.160264468611786
+   ],
+   "proj": [
+    19.505000005055468,
+    47.16000000119484
+   ],
+   "operation": "axis order change (2D) + HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    19.505000005055468,
+    47.16000000119484
+   ]
+  },
+  {
+   "name": "EPSG:4237, ESRI WKT 1, renamed",
+   "code": "EPSG:4237",
+   "wkt": "GEOGCS[\"GCS_Local\",DATUM[\"D_Hungarian_1972\",SPHEROID[\"GRS_1967\",6378160.0,298.247167427]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    19.50612250323989,
+    47.160264468611786
+   ],
+   "proj": [
+    19.505000005055468,
+    47.16000000119484
+   ],
+   "operation": "axis order change (2D) + HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    19.505000005055468,
+    47.16000000119484
+   ]
+  },
+  {
+   "name": "EPSG:4237, ESRI WKT 1 with the datum's code",
+   "code": "EPSG:4237",
+   "wkt": "GEOGCS[\"GCS_Hungarian_1972\",DATUM[\"D_Hungarian_1972\",SPHEROID[\"GRS_1967\",6378160.0,298.247167427],AUTHORITY[\"EPSG\",\"6237\"]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    19.50612250323989,
+    47.160264468611786
+   ],
+   "proj": [
+    19.505000005055468,
+    47.16000000119484
+   ],
+   "operation": "axis order change (2D) + HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    19.505000005055468,
+    47.16000000119484
+   ]
+  },
+  {
+   "name": "EPSG:4237, ESRI WKT 1 with the CRS's code",
+   "code": "EPSG:4237",
+   "wkt": "GEOGCS[\"GCS_Hungarian_1972\",DATUM[\"D_Hungarian_1972\",SPHEROID[\"GRS_1967\",6378160.0,298.247167427]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433],AUTHORITY[\"EPSG\",\"4237\"]]",
+   "point": [
+    19.50612250323989,
+    47.160264468611786
+   ],
+   "proj": [
+    19.505000005055468,
+    47.16000000119484
+   ],
+   "operation": "HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    19.505000005055468,
+    47.16000000119484
+   ]
+  },
+  {
+   "name": "EPSG:23700, WKT 2 without IDs",
+   "code": "EPSG:23700",
+   "wkt": "PROJCRS[\"HD72 / EOV\",BASEGEOGCRS[\"HD72\",DATUM[\"Hungarian Datum 1972\",ELLIPSOID[\"GRS 1967\",6378160,298.247167427,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Egyseges Orszagos Vetuleti\",METHOD[\"Hotine Oblique Mercator (variant B)\"],PARAMETER[\"Latitude of projection centre\",47.1443937222222,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of projection centre\",19.0485717777778,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Azimuth at projection centre\",90,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Angle from Rectified to Skew Grid\",90,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at projection centre\",0.99993,SCALEUNIT[\"unity\",1]],PARAMETER[\"Easting at projection centre\",650000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"Northing at projection centre\",200000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"easting (Y)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing (X)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "point": [
+    684692.7847029,
+    201865.84220322352
+   ],
+   "proj": [
+    19.505000005055464,
+    47.16000000119482
+   ],
+   "operation": "Inverse of Egyseges Orszagos Vetuleti + HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    19.505000005055464,
+    47.16000000119482
+   ]
+  },
+  {
+   "name": "EPSG:23700, WKT 2 with the datum's ID alone",
+   "code": "EPSG:23700",
+   "wkt": "PROJCRS[\"HD72 / EOV\",BASEGEOGCRS[\"HD72\",DATUM[\"Hungarian Datum 1972\",ELLIPSOID[\"GRS 1967\",6378160,298.247167427,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6237]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Egyseges Orszagos Vetuleti\",METHOD[\"Hotine Oblique Mercator (variant B)\"],PARAMETER[\"Latitude of projection centre\",47.1443937222222,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of projection centre\",19.0485717777778,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Azimuth at projection centre\",90,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Angle from Rectified to Skew Grid\",90,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at projection centre\",0.99993,SCALEUNIT[\"unity\",1]],PARAMETER[\"Easting at projection centre\",650000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"Northing at projection centre\",200000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"easting (Y)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing (X)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "point": [
+    684692.7847029,
+    201865.84220322352
+   ],
+   "proj": [
+    19.505000005055464,
+    47.16000000119482
+   ],
+   "operation": "Inverse of Egyseges Orszagos Vetuleti + HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    19.505000005055464,
+    47.16000000119482
+   ]
+  },
+  {
+   "name": "EPSG:23700, WKT 2 with the datum's ID alone, renamed",
+   "code": "EPSG:23700",
+   "wkt": "PROJCRS[\"Local\",BASEGEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"GRS 1967\",6378160,298.247167427,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6237]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Egyseges Orszagos Vetuleti\",METHOD[\"Hotine Oblique Mercator (variant B)\"],PARAMETER[\"Latitude of projection centre\",47.1443937222222,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of projection centre\",19.0485717777778,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Azimuth at projection centre\",90,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Angle from Rectified to Skew Grid\",90,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at projection centre\",0.99993,SCALEUNIT[\"unity\",1]],PARAMETER[\"Easting at projection centre\",650000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"Northing at projection centre\",200000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"easting (Y)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing (X)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "point": [
+    684692.7847029,
+    201865.84220322352
+   ],
+   "proj": [
+    19.505000005055464,
+    47.16000000119482
+   ],
+   "operation": "Inverse of Egyseges Orszagos Vetuleti + HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    19.505000005055464,
+    47.16000000119482
+   ]
+  },
+  {
+   "name": "EPSG:23700, WKT 1 with the datum's AUTHORITY alone",
+   "code": "EPSG:23700",
+   "wkt": "PROJCS[\"HD72 / EOV\",GEOGCS[\"HD72\",DATUM[\"Hungarian_Datum_1972\",SPHEROID[\"GRS 1967\",6378160,298.247167427],AUTHORITY[\"EPSG\",\"6237\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Hotine_Oblique_Mercator_Azimuth_Center\"],PARAMETER[\"latitude_of_center\",47.1443937222222],PARAMETER[\"longitude_of_center\",19.0485717777778],PARAMETER[\"azimuth\",90],PARAMETER[\"rectified_grid_angle\",90],PARAMETER[\"scale_factor\",0.99993],PARAMETER[\"false_easting\",650000],PARAMETER[\"false_northing\",200000],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "point": [
+    684692.7847029,
+    201865.84220322352
+   ],
+   "proj": [
+    19.505000005055464,
+    47.16000000119482
+   ],
+   "operation": "Inverse of Egyseges Orszagos Vetuleti + HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    19.505000005055464,
+    47.16000000119482
+   ]
+  },
+  {
+   "name": "EPSG:23700, WKT 1 with the datum's AUTHORITY alone, renamed",
+   "code": "EPSG:23700",
+   "wkt": "PROJCS[\"Local\",GEOGCS[\"Local\",DATUM[\"Local datum\",SPHEROID[\"GRS 1967\",6378160,298.247167427],AUTHORITY[\"EPSG\",\"6237\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Hotine_Oblique_Mercator_Azimuth_Center\"],PARAMETER[\"latitude_of_center\",47.1443937222222],PARAMETER[\"longitude_of_center\",19.0485717777778],PARAMETER[\"azimuth\",90],PARAMETER[\"rectified_grid_angle\",90],PARAMETER[\"scale_factor\",0.99993],PARAMETER[\"false_easting\",650000],PARAMETER[\"false_northing\",200000],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "point": [
+    684692.7847029,
+    201865.84220322352
+   ],
+   "proj": [
+    19.505000005055464,
+    47.16000000119482
+   ],
+   "operation": "Inverse of unnamed + HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    19.505000005055464,
+    47.16000000119482
+   ]
+  },
+  {
+   "name": "EPSG:23700, ESRI WKT 1",
+   "code": "EPSG:23700",
+   "wkt": "PROJCS[\"Hungarian_1972_Egyseges_Orszagos_Vetuleti\",GEOGCS[\"GCS_Hungarian_1972\",DATUM[\"D_Hungarian_1972\",SPHEROID[\"GRS_1967\",6378160.0,298.247167427]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Hotine_Oblique_Mercator_Azimuth_Center\"],PARAMETER[\"False_Easting\",650000.0],PARAMETER[\"False_Northing\",200000.0],PARAMETER[\"Scale_Factor\",0.99993],PARAMETER[\"Azimuth\",90.0],PARAMETER[\"Longitude_Of_Center\",19.0485717777778],PARAMETER[\"Latitude_Of_Center\",47.1443937222222],UNIT[\"Meter\",1.0]]",
+   "point": [
+    684692.7847029,
+    201865.84220322352
+   ],
+   "proj": [
+    19.505000005055464,
+    47.16000000119482
+   ],
+   "operation": "Inverse of Egyseges Orszagos Vetuleti + HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    19.505000005055464,
+    47.16000000119482
+   ]
+  },
+  {
+   "name": "EPSG:23700, ESRI WKT 1, renamed",
+   "code": "EPSG:23700",
+   "wkt": "PROJCS[\"Local grid\",GEOGCS[\"GCS_Local\",DATUM[\"D_Hungarian_1972\",SPHEROID[\"GRS_1967\",6378160.0,298.247167427]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Hotine_Oblique_Mercator_Azimuth_Center\"],PARAMETER[\"False_Easting\",650000.0],PARAMETER[\"False_Northing\",200000.0],PARAMETER[\"Scale_Factor\",0.99993],PARAMETER[\"Azimuth\",90.0],PARAMETER[\"Longitude_Of_Center\",19.0485717777778],PARAMETER[\"Latitude_Of_Center\",47.1443937222222],UNIT[\"Meter\",1.0]]",
+   "point": [
+    684692.7847029,
+    201865.84220322352
+   ],
+   "proj": [
+    19.505000005055464,
+    47.16000000119482
+   ],
+   "operation": "Inverse of unnamed + axis order change (2D) + HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    19.505000005055464,
+    47.16000000119482
+   ]
+  },
+  {
+   "name": "EPSG:23700, ESRI WKT 1 with the datum's code",
+   "code": "EPSG:23700",
+   "wkt": "PROJCS[\"Hungarian_1972_Egyseges_Orszagos_Vetuleti\",GEOGCS[\"GCS_Hungarian_1972\",DATUM[\"D_Hungarian_1972\",SPHEROID[\"GRS_1967\",6378160.0,298.247167427],AUTHORITY[\"EPSG\",\"6237\"]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Hotine_Oblique_Mercator_Azimuth_Center\"],PARAMETER[\"False_Easting\",650000.0],PARAMETER[\"False_Northing\",200000.0],PARAMETER[\"Scale_Factor\",0.99993],PARAMETER[\"Azimuth\",90.0],PARAMETER[\"Longitude_Of_Center\",19.0485717777778],PARAMETER[\"Latitude_Of_Center\",47.1443937222222],UNIT[\"Meter\",1.0]]",
+   "point": [
+    684692.7847029,
+    201865.84220322352
+   ],
+   "proj": [
+    19.505000005055464,
+    47.16000000119482
+   ],
+   "operation": "Inverse of Egyseges Orszagos Vetuleti + HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    19.505000005055464,
+    47.16000000119482
+   ]
+  },
+  {
+   "name": "EPSG:23700, ESRI WKT 1 with the CRS's code",
+   "code": "EPSG:23700",
+   "wkt": "PROJCS[\"Hungarian_1972_Egyseges_Orszagos_Vetuleti\",GEOGCS[\"GCS_Hungarian_1972\",DATUM[\"D_Hungarian_1972\",SPHEROID[\"GRS_1967\",6378160.0,298.247167427]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Hotine_Oblique_Mercator_Azimuth_Center\"],PARAMETER[\"False_Easting\",650000.0],PARAMETER[\"False_Northing\",200000.0],PARAMETER[\"Scale_Factor\",0.99993],PARAMETER[\"Azimuth\",90.0],PARAMETER[\"Longitude_Of_Center\",19.0485717777778],PARAMETER[\"Latitude_Of_Center\",47.1443937222222],UNIT[\"Meter\",1.0],AUTHORITY[\"EPSG\",\"23700\"]]",
+   "point": [
+    684692.7847029,
+    201865.84220322352
+   ],
+   "proj": [
+    19.505000005055464,
+    47.16000000119482
+   ],
+   "operation": "Inverse of Egyseges Orszagos Vetuleti + HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    19.505000005055464,
+    47.16000000119482
+   ]
+  },
+  {
+   "name": "EPSG:4202, WKT 2 without IDs",
+   "code": "EPSG:4202",
+   "wkt": "GEOGCRS[\"AGD66\",DATUM[\"Australian Geodetic Datum 1966\",ELLIPSOID[\"Australian National Spheroid\",6378160,298.25,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
+   "point": [
+    136.21375752330417,
+    -24.25146997243673
+   ],
+   "proj": [
+    136.21499999840512,
+    -24.25000000222823
+   ],
+   "operation": "AGD66 to WGS 84 (15) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    136.21499999840512,
+    -24.25000000222823
+   ]
+  },
+  {
+   "name": "EPSG:4202, WKT 2 with the datum's ID alone",
+   "code": "EPSG:4202",
+   "wkt": "GEOGCRS[\"AGD66\",DATUM[\"Australian Geodetic Datum 1966\",ELLIPSOID[\"Australian National Spheroid\",6378160,298.25,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6202]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
+   "point": [
+    136.21375752330417,
+    -24.25146997243673
+   ],
+   "proj": [
+    136.21499999840512,
+    -24.25000000222823
+   ],
+   "operation": "AGD66 to WGS 84 (15) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    136.21499999840512,
+    -24.25000000222823
+   ]
+  },
+  {
+   "name": "EPSG:4202, WKT 2 with the datum's ID alone, renamed",
+   "code": "EPSG:4202",
+   "wkt": "GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"Australian National Spheroid\",6378160,298.25,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6202]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
+   "point": [
+    136.21375752330417,
+    -24.25146997243673
+   ],
+   "proj": [
+    136.21499999840512,
+    -24.25000000222823
+   ],
+   "operation": "AGD66 to WGS 84 (15) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    136.21499999840512,
+    -24.25000000222823
+   ]
+  },
+  {
+   "name": "EPSG:4202, WKT 1 with the datum's AUTHORITY alone",
+   "code": "EPSG:4202",
+   "wkt": "GEOGCS[\"AGD66\",DATUM[\"Australian_Geodetic_Datum_1966\",SPHEROID[\"Australian National Spheroid\",6378160,298.25],AUTHORITY[\"EPSG\",\"6202\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+   "point": [
+    136.21375752330417,
+    -24.25146997243673
+   ],
+   "proj": [
+    136.21499999840512,
+    -24.25000000222823
+   ],
+   "operation": "axis order change (2D) + AGD66 to WGS 84 (15) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    136.21499999840512,
+    -24.25000000222823
+   ]
+  },
+  {
+   "name": "EPSG:4202, WKT 1 with the datum's AUTHORITY alone, renamed",
+   "code": "EPSG:4202",
+   "wkt": "GEOGCS[\"Local\",DATUM[\"Local datum\",SPHEROID[\"Australian National Spheroid\",6378160,298.25],AUTHORITY[\"EPSG\",\"6202\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+   "point": [
+    136.21375752330417,
+    -24.25146997243673
+   ],
+   "proj": [
+    136.21499999840512,
+    -24.25000000222823
+   ],
+   "operation": "AGD66 to WGS 84 (15) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    136.21499999840512,
+    -24.25000000222823
+   ]
+  },
+  {
+   "name": "EPSG:4202, ESRI WKT 1",
+   "code": "EPSG:4202",
+   "wkt": "GEOGCS[\"GCS_Australian_1966\",DATUM[\"D_Australian_1966\",SPHEROID[\"Australian\",6378160.0,298.25]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    136.21375752330417,
+    -24.25146997243673
+   ],
+   "proj": [
+    136.21499999840512,
+    -24.25000000222823
+   ],
+   "operation": "axis order change (2D) + AGD66 to WGS 84 (15) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    136.21499999840512,
+    -24.25000000222823
+   ]
+  },
+  {
+   "name": "EPSG:4202, ESRI WKT 1, renamed",
+   "code": "EPSG:4202",
+   "wkt": "GEOGCS[\"GCS_Local\",DATUM[\"D_Australian_1966\",SPHEROID[\"Australian\",6378160.0,298.25]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    136.21375752330417,
+    -24.25146997243673
+   ],
+   "proj": [
+    136.21499999840512,
+    -24.25000000222823
+   ],
+   "operation": "axis order change (2D) + AGD66 to WGS 84 (15) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    136.21499999840512,
+    -24.25000000222823
+   ]
+  },
+  {
+   "name": "EPSG:4202, ESRI WKT 1 with the datum's code",
+   "code": "EPSG:4202",
+   "wkt": "GEOGCS[\"GCS_Australian_1966\",DATUM[\"D_Australian_1966\",SPHEROID[\"Australian\",6378160.0,298.25],AUTHORITY[\"EPSG\",\"6202\"]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    136.21375752330417,
+    -24.25146997243673
+   ],
+   "proj": [
+    136.21499999840512,
+    -24.25000000222823
+   ],
+   "operation": "axis order change (2D) + AGD66 to WGS 84 (15) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    136.21499999840512,
+    -24.25000000222823
+   ]
+  },
+  {
+   "name": "EPSG:4202, ESRI WKT 1 with the CRS's code",
+   "code": "EPSG:4202",
+   "wkt": "GEOGCS[\"GCS_Australian_1966\",DATUM[\"D_Australian_1966\",SPHEROID[\"Australian\",6378160.0,298.25]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433],AUTHORITY[\"EPSG\",\"4202\"]]",
+   "point": [
+    136.21375752330417,
+    -24.25146997243673
+   ],
+   "proj": [
+    136.21499999840512,
+    -24.25000000222823
+   ],
+   "operation": "AGD66 to WGS 84 (15) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    136.21499999840512,
+    -24.25000000222823
+   ]
+  },
+  {
+   "name": "EPSG:4272, WKT 2 without IDs",
+   "code": "EPSG:4272",
+   "wkt": "GEOGCRS[\"NZGD49\",DATUM[\"New Zealand Geodetic Datum 1949\",ELLIPSOID[\"International 1924\",6378388,297,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaced by NZGD2000 (CRS code 4167) in March 2000.\"]]",
+   "point": [
+    172.5698614098027,
+    -40.77172951954459
+   ],
+   "proj": [
+    172.5700000001445,
+    -40.77000000352588
+   ],
+   "operation": "NZGD49 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    172.5700000001445,
+    -40.77000000352588
+   ]
+  },
+  {
+   "name": "EPSG:4272, WKT 2 with the datum's ID alone",
+   "code": "EPSG:4272",
+   "wkt": "GEOGCRS[\"NZGD49\",DATUM[\"New Zealand Geodetic Datum 1949\",ELLIPSOID[\"International 1924\",6378388,297,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6272]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaced by NZGD2000 (CRS code 4167) in March 2000.\"]]",
+   "point": [
+    172.5698614098027,
+    -40.77172951954459
+   ],
+   "proj": [
+    172.5700000001445,
+    -40.77000000352588
+   ],
+   "operation": "NZGD49 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    172.5700000001445,
+    -40.77000000352588
+   ]
+  },
+  {
+   "name": "EPSG:4272, WKT 2 with the datum's ID alone, renamed",
+   "code": "EPSG:4272",
+   "wkt": "GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"International 1924\",6378388,297,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6272]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaced by NZGD2000 (CRS code 4167) in March 2000.\"]]",
+   "point": [
+    172.5698614098027,
+    -40.77172951954459
+   ],
+   "proj": [
+    172.5700000001445,
+    -40.77000000352588
+   ],
+   "operation": "NZGD49 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    172.5700000001445,
+    -40.77000000352588
+   ]
+  },
+  {
+   "name": "EPSG:4272, WKT 1 with the datum's AUTHORITY alone",
+   "code": "EPSG:4272",
+   "wkt": "GEOGCS[\"NZGD49\",DATUM[\"New_Zealand_Geodetic_Datum_1949\",SPHEROID[\"International 1924\",6378388,297],AUTHORITY[\"EPSG\",\"6272\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+   "point": [
+    172.5698614098027,
+    -40.77172951954459
+   ],
+   "proj": [
+    172.5700000001445,
+    -40.77000000352588
+   ],
+   "operation": "axis order change (2D) + NZGD49 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    172.5700000001445,
+    -40.77000000352588
+   ]
+  },
+  {
+   "name": "EPSG:4272, WKT 1 with the datum's AUTHORITY alone, renamed",
+   "code": "EPSG:4272",
+   "wkt": "GEOGCS[\"Local\",DATUM[\"Local datum\",SPHEROID[\"International 1924\",6378388,297],AUTHORITY[\"EPSG\",\"6272\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+   "point": [
+    172.5698614098027,
+    -40.77172951954459
+   ],
+   "proj": [
+    172.5700000001445,
+    -40.77000000352588
+   ],
+   "operation": "NZGD49 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    172.5700000001445,
+    -40.77000000352588
+   ]
+  },
+  {
+   "name": "EPSG:4272, ESRI WKT 1",
+   "code": "EPSG:4272",
+   "wkt": "GEOGCS[\"GCS_New_Zealand_1949\",DATUM[\"D_New_Zealand_1949\",SPHEROID[\"International_1924\",6378388.0,297.0]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    172.5698614098027,
+    -40.77172951954459
+   ],
+   "proj": [
+    172.5700000001445,
+    -40.77000000352588
+   ],
+   "operation": "axis order change (2D) + NZGD49 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    172.5700000001445,
+    -40.77000000352588
+   ]
+  },
+  {
+   "name": "EPSG:4272, ESRI WKT 1, renamed",
+   "code": "EPSG:4272",
+   "wkt": "GEOGCS[\"GCS_Local\",DATUM[\"D_New_Zealand_1949\",SPHEROID[\"International_1924\",6378388.0,297.0]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    172.5698614098027,
+    -40.77172951954459
+   ],
+   "proj": [
+    172.5700000001445,
+    -40.77000000352588
+   ],
+   "operation": "axis order change (2D) + NZGD49 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    172.5700000001445,
+    -40.77000000352588
+   ]
+  },
+  {
+   "name": "EPSG:4272, ESRI WKT 1 with the datum's code",
+   "code": "EPSG:4272",
+   "wkt": "GEOGCS[\"GCS_New_Zealand_1949\",DATUM[\"D_New_Zealand_1949\",SPHEROID[\"International_1924\",6378388.0,297.0],AUTHORITY[\"EPSG\",\"6272\"]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    172.5698614098027,
+    -40.77172951954459
+   ],
+   "proj": [
+    172.5700000001445,
+    -40.77000000352588
+   ],
+   "operation": "axis order change (2D) + NZGD49 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    172.5700000001445,
+    -40.77000000352588
+   ]
+  },
+  {
+   "name": "EPSG:4272, ESRI WKT 1 with the CRS's code",
+   "code": "EPSG:4272",
+   "wkt": "GEOGCS[\"GCS_New_Zealand_1949\",DATUM[\"D_New_Zealand_1949\",SPHEROID[\"International_1924\",6378388.0,297.0]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433],AUTHORITY[\"EPSG\",\"4272\"]]",
+   "point": [
+    172.5698614098027,
+    -40.77172951954459
+   ],
+   "proj": [
+    172.5700000001445,
+    -40.77000000352588
+   ],
+   "operation": "NZGD49 to WGS 84 (2) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    172.5700000001445,
+    -40.77000000352588
+   ]
+  }
+ ],
+ "differences": [
+  {
+   "name": "EPSG:4314, ESRI WKT 1, renamed",
+   "code": "EPSG:4314",
+   "wkt": "GEOGCS[\"GCS_Local\",DATUM[\"D_Deutsches_Hauptdreiecksnetz\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    9.851177682522307,
+    51.18127858555922
+   ],
+   "proj": [
+    9.849994173118628,
+    51.18000241411849
+   ],
+   "operation": "axis order change (2D) + DHDN to ETRS89 (4) + ETRS89 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    9.85000000310771,
+    51.18000000516607
+   ],
+   "pending": false
+  },
+  {
+   "name": "EPSG:31467, ESRI WKT 1, renamed",
+   "code": "EPSG:31467",
+   "wkt": "PROJCS[\"Local grid\",GEOGCS[\"GCS_Local\",DATUM[\"D_Deutsches_Hauptdreiecksnetz\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Gauss_Kruger\"],PARAMETER[\"False_Easting\",3500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",9.0],PARAMETER[\"Scale_Factor\",1.0],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]",
+   "point": [
+    3500423.0305487677,
+    5671670.909857799
+   ],
+   "proj": [
+    9.00499109384395,
+    51.1800023694017
+   ],
+   "operation": "Inverse of unnnamed (Gauss Kruger) + axis order change (2D) + DHDN to ETRS89 (4) + ETRS89 to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    9.005000002211203,
+    51.180000005231854
+   ],
+   "pending": false
+  },
+  {
+   "name": "EPSG:4806, ESRI WKT 1",
+   "code": "EPSG:4806",
+   "wkt": "GEOGCS[\"GCS_Monte_Mario_Rome\",DATUM[\"Monte_Mario_(Rome)\",SPHEROID[\"International_1924\",6378388.0,297.0]],PRIMEM[\"Rome\",12.4523333333333],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    0.007666666666664175,
+    40.93
+   ],
+   "proj": [
+    12.459819508151522,
+    40.930633187872075
+   ],
+   "operation": "axis order change (2D) + Monte Mario (Rome) to Monte Mario (1) + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    12.459999999999999,
+    40.93
+   ],
+   "pending": false
+  },
+  {
+   "name": "EPSG:5132, ESRI WKT 1",
+   "code": "EPSG:5132",
+   "wkt": "GEOGCS[\"Tokyo_1892\",DATUM[\"Tokyo_1892\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    138.44,
+    32.955
+   ],
+   "proj": [
+    138.4398686760085,
+    32.958507111447425
+   ],
+   "operation": "axis order change (2D) + Tokyo 1892 to Tokyo (1) + Tokyo to WGS 84 (108) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    138.44,
+    32.955
+   ],
+   "pending": false
+  },
+  {
+   "name": "EPSG:7373, ESRI WKT 1",
+   "code": "EPSG:7373",
+   "wkt": "GEOGCS[\"ONGD14\",DATUM[\"Oman_National_Geodetic_Datum_2014\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    57.685,
+    20.535
+   ],
+   "proj": [
+    57.68499439903528,
+    20.534990293968672
+   ],
+   "operation": "Conversion from ONGD14 (geog2D) to ONGD14 (geocentric) + ONGD14 to WGS 84 (1) + Conversion from WGS 84 (geocentric) to WGS 84 (geog2D) (with axis order normalized for visualization)",
+   "best_grid_missing": false,
+   "by_code": [
+    57.685,
+    20.535
+   ],
+   "pending": true
+  }
+ ]
+}

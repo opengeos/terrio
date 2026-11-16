@@ -63,12 +63,16 @@ impl Grids {
 
     /// The grids, loaded with `load` (`None` when a required one is missing, which is not
     /// remembered so that a grid installed later is found).
-    fn get(&self, load: fn(&str) -> Option<Vec<Arc<GridSet>>>) -> Option<&[Arc<GridSet>]> {
+    /// Under `grid::without_grids`, they are loaded anew (as missing) and not kept.
+    fn get(&self, load: fn(&str) -> Option<Vec<Arc<GridSet>>>) -> Option<std::borrow::Cow<'_, [Arc<GridSet>]>> {
+        if grid::without_grids_active() {
+            return load(&self.spec).map(std::borrow::Cow::Owned);
+        }
         if let Some(s) = self.sets.get() {
-            return Some(s);
+            return Some(std::borrow::Cow::Borrowed(s));
         }
         let s = load(&self.spec)?;
-        Some(self.sets.get_or_init(|| s))
+        Some(std::borrow::Cow::Borrowed(self.sets.get_or_init(|| s)))
     }
 }
 
@@ -221,17 +225,22 @@ pub(crate) fn helmert(t: [f64; 3], rot: [f64; 3], s: f64, position_vector: bool,
 
 /// The steps of a `+towgs84=` shift (position vector convention) from an ellipsoid to WGS 84.
 pub(crate) fn towgs84_steps(ell: Ell, p: &[f64]) -> Vec<Step> {
-    let wgs84 = Ell::wgs84();
-    if p.iter().all(|v| *v == 0.0) && ell.a == wgs84.a && ell.es == wgs84.es {
+    helmert_steps(ell, Ell::wgs84(), p)
+}
+
+/// The steps of a 3 or 7 parameter Helmert transformation (position vector, as `+towgs84`'s)
+/// from geodetic coordinates on `from` to geodetic coordinates on `to`.
+pub(crate) fn helmert_steps(from: Ell, to: Ell, p: &[f64]) -> Vec<Step> {
+    if p.iter().all(|v| *v == 0.0) && from.a == to.a && from.es == to.es {
         return Vec::new();
     }
-
     let g = |i: usize| p.get(i).copied().unwrap_or(0.0);
-    vec![
-        Step::Cart { ell, inv: false },
-        helmert([g(0), g(1), g(2)], [g(3), g(4), g(5)], g(6), true, false, [0.0; 3]),
-        Step::Cart { ell: Ell::wgs84(), inv: true },
-    ]
+    helmert_steps_with(from, to, helmert([g(0), g(1), g(2)], [g(3), g(4), g(5)], g(6), true, false, [0.0; 3]))
+}
+
+/// The steps of a Helmert step between two ellipsoids: to geocentric, the step, and back.
+pub(crate) fn helmert_steps_with(from: Ell, to: Ell, step: Step) -> Vec<Step> {
+    vec![Step::Cart { ell: from, inv: false }, step, Step::Cart { ell: to, inv: true }]
 }
 
 /// The steps of `+nadgrids=` (horizontal grids to WGS 84).
@@ -437,7 +446,17 @@ impl Step {
     fn apply(&self, v: [f64; 3], t: Option<f64>, reverse: bool) -> Option<[f64; 3]> {
         match self {
             Step::Cart { ell, inv } => {
-                Some(if *inv != reverse { from_cart(ell, v[0], v[1], v[2]) } else { to_cart(ell, v[0], v[1], v[2]) })
+                if *inv != reverse {
+                    Some(from_cart(ell, v[0], v[1], v[2]))
+                } else if v[1].abs() > crate::math::HALFPI + 1e-12 {
+                    // PROJ refuses a latitude beyond a pole (`fwd_prepare`), rather than folding
+                    // it back across the pole; the next operation is tried, then the ballpark.
+                    None
+                } else {
+                    // Within the tolerance, at the pole, as PROJ clamps it.
+                    let lat = v[1].clamp(-crate::math::HALFPI, crate::math::HALFPI);
+                    Some(to_cart(ell, v[0], lat, v[2]))
+                }
             }
             Step::Helmert { t: tr, r, scale, pivot, inv, rates } => {
                 let inverse = *inv != reverse;
@@ -472,7 +491,7 @@ impl Step {
                 if sets.is_empty() {
                     return Some(v);
                 }
-                let (lon, lat) = grid::hgrid_apply(sets, v[0], v[1], *inv != reverse)?;
+                let (lon, lat) = grid::hgrid_apply(&sets, v[0], v[1], *inv != reverse)?;
                 Some([lon, lat, v[2]])
             }
             Step::VGridShift { grids, multiplier, inv, epoch, final_epoch } => {
@@ -483,13 +502,20 @@ impl Step {
                 if sets.is_empty() {
                     return Some(v);
                 }
-                let d = grid::vgrid_value(sets, v[0], v[1], *multiplier)?;
+                let d = grid::vgrid_value(&sets, v[0], v[1], *multiplier)?;
                 Some([v[0], v[1], if *inv != reverse { v[2] - d } else { v[2] + d }])
             }
             Step::GridShift { grids, interpolation, no_z, inv } => {
                 let sets = grids.get(grid::generic_grids)?;
-                let kinds = grids.kinds.get_or_init(|| grid::gridshift_kinds(sets)).as_ref()?;
-                grid::gridshift_apply(sets, kinds, v, *inv != reverse, interpolation.as_deref(), *no_z)
+                // Not kept for grids loaded under `grid::without_grids`.
+                let local;
+                let kinds = if grid::without_grids_active() {
+                    local = grid::gridshift_kinds(&sets);
+                    local.as_ref()?
+                } else {
+                    grids.kinds.get_or_init(|| grid::gridshift_kinds(&sets)).as_ref()?
+                };
+                grid::gridshift_apply(&sets, kinds, v, *inv != reverse, interpolation.as_deref(), *no_z)
             }
             Step::XyzGridShift { grids, ell, input_ref, multiplier, inv } => {
                 let sets = grids.get(grid::generic_grids)?;
@@ -498,12 +524,12 @@ impl Step {
                 // The grid is referenced to the input CRS: forward applies it directly, the
                 // inverse iterates (and the other way round for the output CRS).
                 if forward == *input_ref {
-                    let d = xyz_values(sets, ell, v, *multiplier)?;
+                    let d = xyz_values(&sets, ell, v, *multiplier)?;
                     Some([v[0] + factor * d[0], v[1] + factor * d[1], v[2] + factor * d[2]])
                 } else {
                     let mut p = v;
                     for _ in 0..10 {
-                        let d = xyz_values(sets, ell, p, *multiplier)?;
+                        let d = xyz_values(&sets, ell, p, *multiplier)?;
                         let d = [d[0] * factor, d[1] * factor, d[2] * factor];
                         let err = ((p[0] - v[0]) - d[0]).powi(2) + ((p[1] - v[1]) - d[1]).powi(2) + ((p[2] - v[2]) - d[2]).powi(2);
                         p = [v[0] + d[0], v[1] + d[1], v[2] + d[2]];
@@ -521,15 +547,15 @@ impl Step {
                     None => t? - epoch,
                 };
                 if *inv == reverse {
-                    let s = deformation_shift(sets, ell, v)?;
+                    let s = deformation_shift(&sets, ell, v)?;
                     Some([v[0] + dt * s[0], v[1] + dt * s[1], v[2] + dt * s[2]])
                 } else {
                     // PROJ's pj_deformation_reverse_shift.
-                    let d0 = deformation_shift(sets, ell, v)?;
+                    let d0 = deformation_shift(&sets, ell, v)?;
                     let z0 = d0[2];
                     let mut out = [v[0] - dt * d0[0], v[1] - dt * d0[1], v[2] + dt * d0[2]];
                     for _ in 0..10 {
-                        let Some(d) = deformation_shift(sets, ell, out) else { break };
+                        let Some(d) = deformation_shift(&sets, ell, out) else { break };
                         let dif = [out[0] + dt * d[0] - v[0], out[1] + dt * d[1] - v[1], out[2] - dt * d[2] - v[2]];
                         out = [out[0] + dif[0], out[1] + dif[1], out[2] + dif[2]];
                         if dif[0].hypot(dif[1]) <= 1e-8 {
@@ -593,9 +619,14 @@ impl Op {
         (e - w) * (n.to_radians().sin() - s.to_radians().sin())
     }
 
-    /// Whether the op's area holds a point in degrees.
+    /// Whether the op's area holds a point in degrees. A world-wide area holds every point, even
+    /// one beyond a pole or the antimeridian, as PROJ's `proj_create_crs_to_crs` leaves such an
+    /// operation's source bounds unbounded.
     pub fn contains(&self, lon: f64, lat: f64) -> bool {
         let [w, s, e, n] = self.bounds;
+        if w <= -180.0 && e >= 180.0 && s <= -90.0 && n >= 90.0 {
+            return true;
+        }
         if lat < s || lat > n {
             return false;
         }
@@ -605,6 +636,19 @@ impl Op {
     /// The grids the transformation needs, with whether each is optional.
     pub fn grids(&self) -> Vec<(String, bool)> {
         self.steps.iter().flat_map(Step::grid_names).collect()
+    }
+
+    /// Whether it shifts no point: conversions and a null Helmert transformation or grid alone
+    /// (NAD83 to WGS 84 (1)).
+    pub fn is_null_shift(&self) -> bool {
+        let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        self.steps.iter().all(|s| match s {
+            Step::Cart { .. } => true,
+            Step::Helmert { t, r, scale, rates, .. } => *t == [0.0; 3] && *r == identity && *scale == 1.0 && rates.is_none(),
+            Step::GeogOffset { dlon, dlat, dh, .. } => *dlon == 0.0 && *dlat == 0.0 && *dh == 0.0,
+            Step::HGridShift { .. } | Step::GridShift { .. } => s.grid_names().iter().all(|(g, _)| g.trim_start_matches('@') == "null"),
+            _ => false,
+        })
     }
 
     /// Whether it needs grids.
@@ -621,6 +665,13 @@ impl Op {
     pub fn network_failed(&self) -> bool {
         self.grids().iter().any(|(name, optional)| !*optional && grid::fetch_failed(name))
     }
+}
+
+/// Whether steps cannot run for want of a grid they require: one that is not available, or whose
+/// download failed ([`Op::available`] and [`Op::network_failed`] together), as opposed to a point
+/// outside grids that are there.
+pub(crate) fn grids_missing(steps: &[Step]) -> bool {
+    steps.iter().flat_map(Step::grid_names).any(|(name, optional)| !optional && (!grid::available(&name) || grid::fetch_failed(&name)))
 }
 
 /// A point being transformed: longitude and latitude in radians, height in metres, and time
@@ -729,6 +780,41 @@ impl AsRef<Op> for Op {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Grids loaded before `grid::without_grids` are not used under it, nor are the grids it
+    /// leaves out (an optional one) kept for later: either order gives the same grids.
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn grids_under_without_grids_are_neither_reused_nor_kept() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("without-grids-test.gtx");
+        // A geoid grid of 5 m over 0..10°N, 0..10°E (GTX: big-endian header and values).
+        let mut bytes = Vec::new();
+        for v in [0.0f64, 0.0, 1.0, 1.0] {
+            bytes.extend(v.to_be_bytes());
+        }
+        bytes.extend(11i32.to_be_bytes());
+        bytes.extend(11i32.to_be_bytes());
+        for _ in 0..121 {
+            bytes.extend(5.0f32.to_be_bytes());
+        }
+        std::fs::write(&path, bytes).unwrap();
+        let spec = format!("@{}", path.to_str().unwrap());
+        let count = |g: &Grids| g.get(grid::vgrids).map(|s| s.len());
+        // Loaded first, then not used under the override.
+        let loaded = Grids::new(&spec);
+        assert_eq!(count(&loaded), Some(1));
+        assert_eq!(grid::without_grids(|| count(&loaded)), Some(0));
+        assert_eq!(count(&loaded), Some(1));
+        // Asked for under the override first, then still loaded.
+        let later = Grids::new(&spec);
+        assert_eq!(grid::without_grids(|| count(&later)), Some(0));
+        assert_eq!(count(&later), Some(1));
+        // A required grid is missing under the override.
+        let required = Grids::new(path.to_str().unwrap());
+        assert_eq!(count(&required), Some(1));
+        assert_eq!(grid::without_grids(|| count(&required)), None);
+    }
 
     #[test]
     fn cart_round_trips() {

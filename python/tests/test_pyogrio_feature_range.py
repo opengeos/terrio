@@ -2,6 +2,7 @@
 `skip_features` on, `max_features` of them at most, in the layer's order, whatever the format of
 the file, and counted after the `bbox` filter when there is one."""
 
+import io
 import json
 
 import pytest
@@ -74,7 +75,13 @@ def test_gpkg_page_decodes_only_selected_records(tmp_path, damaged, memory):
     assert offset >= 0
     raw[offset + 2] += 2  # The unselected text now declares one byte beyond its record.
     path.write_bytes(raw)
-    source = path.read_bytes() if memory else path
+    # This deliberately minimal SQLite fixture has no GeoPackage application id.
+    # Name its buffer so routing does not have to guess between SQLite formats.
+    if memory:
+        source = io.BytesIO(path.read_bytes())
+        source.name = path.name
+    else:
+        source = path
     if damaged == 1:
         from terrio.pyogrio.errors import DataSourceError
 

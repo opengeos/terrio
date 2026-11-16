@@ -244,8 +244,8 @@ pub(crate) fn convert_points(
 ) -> PyResult<()> {
     let options = pointcloud::ConvertOptions {
         read: read_options(bounds, z_range, classes, returns, max_level, resolution, max_points)?,
-        assign_srs: a_srs.map(SpatialRef::parse).transpose().py()?,
-        target_srs: t_srs.map(SpatialRef::parse).transpose().py()?,
+        assign_srs: a_srs.map(SpatialRef::parse_literal).transpose().py()?,
+        target_srs: t_srs.map(SpatialRef::parse_literal).transpose().py()?,
         write: PointWriteOptions {
             point_format,
             minor_version,
@@ -312,8 +312,8 @@ pub(crate) fn append_points(
 ) -> PyResult<()> {
     let options = pointcloud::ConvertOptions {
         read: read_options(bounds, z_range, classes, returns, None, None, None)?,
-        assign_srs: a_srs.map(SpatialRef::parse).transpose().py()?,
-        target_srs: t_srs.map(SpatialRef::parse).transpose().py()?,
+        assign_srs: a_srs.map(SpatialRef::parse_literal).transpose().py()?,
+        target_srs: t_srs.map(SpatialRef::parse_literal).transpose().py()?,
         write: PointWriteOptions { copc_leaf_points: leaf_points, copc_memory_points: memory_points, ..Default::default() },
         chunk_points,
         append: true,
@@ -645,7 +645,7 @@ pub(crate) fn grid_points(
 ) -> PyResult<crate::raster::PyRaster> {
     let options = grid_options(resolution, method, stat, dimension, radius, power, window_size, bin_mode, bounds, nodata, ot)?;
     let read = read_options(None, None, classes, returns, None, None, None)?;
-    let srs = a_srs.map(SpatialRef::parse).transpose().py()?;
+    let srs = a_srs.map(SpatialRef::parse_literal).transpose().py()?;
     let ds = py
         .detach_result(|| {
             let mut r = pointcloud::open_points(path)?;
@@ -729,7 +729,7 @@ impl PyPointCloud {
                 d.values = d.values.cast(t);
             }
         }
-        let crs = crs.map(SpatialRef::parse).transpose().py()?.unwrap_or_default();
+        let crs = crs.map(SpatialRef::parse_literal).transpose().py()?.unwrap_or_default();
         Ok(Self { inner: pointcloud::from_dimensions(dims, crs) })
     }
 
@@ -834,7 +834,7 @@ impl PyPointCloud {
     /// Returns:
     ///     PointCloud: The reprojected points.
     fn reproject(&self, py: Python<'_>, crs: &str) -> PyResult<Self> {
-        let dst = SpatialRef::parse(crs).py()?;
+        let dst = SpatialRef::parse_literal(crs).py()?;
         let mut inner = self.inner.clone();
         crate::with_warnings(py, || inner.reproject(&dst))?;
         Ok(Self { inner })
@@ -1295,7 +1295,7 @@ impl PyPointCloud {
             points: points.unwrap_or_default(),
             distance,
             outside,
-            a_srs: a_srs.map(SpatialRef::parse).transpose().py()?,
+            a_srs: a_srs.map(SpatialRef::parse_literal).transpose().py()?,
         };
         Ok(Self { inner: py.detach_result(|| filters::crop(&self.inner, &o)).py()? })
     }

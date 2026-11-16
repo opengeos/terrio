@@ -71,17 +71,21 @@ use serde::Serialize;
 #[cfg(feature = "wbprojection-fallback")]
 use wbprojection as wbp;
 
+mod bodies;
 mod catalog;
 mod datum;
 mod def;
 mod epsg;
+pub mod geokeys;
 mod grid;
 mod iau;
 mod math;
 mod params;
+mod proj_write;
 mod projections;
 mod projjson;
 mod projjson_gdal;
+mod projjson_order;
 mod projjson_write;
 mod rotation;
 mod route;
@@ -120,11 +124,12 @@ pub fn prefetch() {
 pub fn geographic_on_datum(datum: u32, ellipsoid: &str) -> Option<u32> {
     let own = Def::from_proj(&format!("+proj=longlat {ellipsoid} +no_defs")).ok()?;
     epsg::geographic_on(datum).iter().copied().find(|code| {
-        epsg::get(*code).is_some_and(|e| {
-            !e.three_d
-                && !e.proj.contains("+pm=")
-                && Def::from_proj(&e.proj).is_ok_and(|d| (own.ell.a - d.ell.a).abs() < 1e-3 && (own.ell.es - d.ell.es).abs() < 1e-9)
-        })
+        !epsg::is_deprecated(*code)
+            && epsg::get(*code).is_some_and(|e| {
+                !e.three_d
+                    && !e.proj.contains("+pm=")
+                    && Def::from_proj(&e.proj).is_ok_and(|d| (own.ell.a - d.ell.a).abs() < 1e-3 && (own.ell.es - d.ell.es).abs() < 1e-9)
+            })
     })
 }
 
@@ -138,6 +143,18 @@ pub fn geographic_datum(geog: u32) -> Option<u32> {
 #[doc(hidden)]
 pub fn epsg_wkt(code: u32) -> Option<&'static str> {
     epsg::get(code).map(|e| e.wkt.as_str())
+}
+
+/// The EPSG codes of the CRSs that replace a deprecated EPSG CRS, those PROJ lists
+/// (`proj_get_non_deprecated`), in order of code: `[5105]` for EPSG:4855. Empty for a current
+/// CRS, a deprecated one without replacement, and a code terrio does not know.
+///
+/// ```no_run
+/// assert_eq!(terrio_crs::epsg_replacements(4855), &[5105]);
+/// assert!(terrio_crs::epsg_replacements(5105).is_empty());
+/// ```
+pub fn epsg_replacements(code: u32) -> &'static [u32] {
+    epsg::replacements(code)
 }
 
 /// The ESRI CRSs whose projection terrio computes otherwise than PROJ (by more than a millimetre
@@ -276,6 +293,47 @@ fn canonical_epsg_reference(s: &str) -> Option<u32> {
     None
 }
 
+/// The parameters of a CRS's conversion, as its PROJ string gives them (see
+/// [`SpatialRef::projection_params`]).
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct ProjParams {
+    /// PROJ's name of the method (`+proj=`): `tmerc`, `utm`, `longlat`, `geocent`...
+    pub method: String,
+    /// The central meridian (`+lon_0`), in degrees from the prime meridian.
+    pub lon_0: f64,
+    /// The latitude of origin (`+lat_0`), in degrees.
+    pub lat_0: f64,
+    /// The scale factor (`+k_0` or `+k`).
+    pub k_0: f64,
+    /// The false easting (`+x_0`), in metres.
+    pub x_0: f64,
+    /// The false northing (`+y_0`), in metres.
+    pub y_0: f64,
+    /// The prime meridian (`+pm`), in degrees east of Greenwich.
+    pub prime_meridian: f64,
+    /// The semi-major axis of the ellipsoid, in metres.
+    pub a: f64,
+    /// The semi-minor axis of the ellipsoid, in metres.
+    pub b: f64,
+    /// Metres per linear unit of the coordinates (`+to_meter` or `+units`); 1 for a geographic CRS.
+    pub to_meter: f64,
+}
+
+/// The order of a CRS's first two axes (see [`SpatialRef::axis_order`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum AxisOrder {
+    /// East then north: longitude/latitude, easting/northing.
+    EastNorth,
+    /// North then east: latitude/longitude, northing/easting.
+    NorthEast,
+    /// Other axes, such as west/south or geocentric X/Y/Z, or the single axis of a vertical CRS.
+    Other,
+    /// A CRS terrio can't read, or an EPSG code it reads only through wbprojection.
+    Unknown,
+}
+
 /// A coordinate reference system, known by an EPSG (or ESRI) code, a WKT definition, a PROJ
 /// string or a combination of them.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -294,8 +352,10 @@ pub struct SpatialRef {
 
 impl SpatialRef {
     /// A CRS from an EPSG code. Fails when the code is not in the EPSG registry terrio carries.
-    /// The ESRI codes wbprojection holds as EPSG codes (54008, 54009 and 54030) give those ESRI
-    /// CRSs; other ESRI codes are not EPSG codes, as in PROJ.
+    /// A deprecated code keeps its own definition, as in PROJ ([`Self::from_epsg_non_deprecated`]
+    /// gives its replacement, as GDAL does by default). The ESRI codes wbprojection holds as EPSG
+    /// codes (54008, 54009 and 54030) give those ESRI CRSs; other ESRI codes are not EPSG codes,
+    /// as in PROJ.
     pub fn from_epsg(code: u32) -> Result<Self> {
         let wkt = match epsg::get(code) {
             Some(e) => e.wkt.clone(),
@@ -320,6 +380,30 @@ impl SpatialRef {
         Ok(Self { epsg: Some(code), wkt: Some(wkt), ..Default::default() })
     }
 
+    /// A CRS from an EPSG code as GDAL 3.12 gives it by default (`OSR_USE_NON_DEPRECATED=YES`): a
+    /// deprecated code with a single replacement ([`epsg_replacements`]) gives that replacement's
+    /// CRS, any other code its own, as [`Self::from_epsg`].
+    ///
+    /// ```no_run
+    /// use terrio_crs::SpatialRef;
+    /// // The deprecated ETRS89 / NTM zone 5 by its own definition, as PROJ gives it ...
+    /// assert_eq!(SpatialRef::from_epsg(4855)?.epsg, Some(4855));
+    /// // ... and as GDAL gives it by default, its replacement's.
+    /// assert_eq!(SpatialRef::from_epsg_non_deprecated(4855)?.epsg, Some(5105));
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
+    pub fn from_epsg_non_deprecated(code: u32) -> Result<Self> {
+        match epsg_replacements(code) {
+            [replacement] => Self::from_epsg(*replacement),
+            _ => Self::from_epsg(code),
+        }
+    }
+
+    /// Whether the CRS is a deprecated EPSG CRS (one with an EPSG code EPSG has deprecated).
+    pub fn is_deprecated(&self) -> bool {
+        self.epsg.is_some_and(epsg::is_deprecated)
+    }
+
     /// A CRS from a code of PROJ's ESRI authority, such as 54009 (World Mollweide), with the WKT
     /// GDAL writes for it. Fails when terrio does not know the code or cannot compute its
     /// projection.
@@ -336,12 +420,18 @@ impl SpatialRef {
     }
 
     /// A CRS from a WKT definition (WKT1 or WKT2). The EPSG code (or else the ESRI code) is
-    /// identified when possible.
+    /// identified when possible. The WKT ends at its first NUL, as in PROJ and GDAL.
     pub fn from_wkt(wkt: &str) -> Self {
+        Self::from_wkt_text(until_nul(wkt))
+    }
+
+    /// [`Self::from_wkt`] of the whole text, uncut at a NUL: for stored WKT and WKT terrio
+    /// built, whose names (a PROJJSON's) may keep one (see [`until_nul`]).
+    pub(crate) fn from_wkt_text(wkt: &str) -> Self {
         // A WKT 1 extended with its PROJ string (`EXTENSION["PROJ4", ...]`, as GDAL writes CRSs
         // WKT 1 cannot describe) is that PROJ string, as GDAL reads it.
         if let Some(proj4) = proj4_extension(wkt)
-            && let Ok(own) = Def::from_proj(&proj4)
+            && let Ok(own) = Def::from_proj_extension(&proj4)
         {
             // Its EPSG (or ESRI) code, declared or identified, when its definition converts as
             // the PROJ string does, on its ellipsoid and datum: the extension wins over a code
@@ -352,13 +442,24 @@ impl SpatialRef {
                 Def::new(&code).is_ok_and(|r| {
                     let unshifted = own.ops().is_empty() && own.datum_code().is_none() && r.is_wgs84();
                     let ellipsoid = (own.ell.a - r.ell.a).abs() < 1e-3 && (own.ell.es - r.ell.es).abs() < 1e-9;
-                    own.same_conversion(&r) && ellipsoid && (unshifted || own.same_datum(&r))
+                    // On the code's datum by its transformations, not by a shift of its own
+                    // (`+datum=OSGB36 +nadgrids=@null`, no shift to WGS 84); unless the code's
+                    // transformations to WGS 84 are all null shifts too (WGS 84 itself), so that
+                    // its own place the points alike. Not NAD83, shifted in places (Hawaii, by
+                    // NAD83 to WGS 84 (2) and (3)), which PROJ's `to_epsg` takes by its nodes.
+                    let null_shift = own.ops().iter().any(|op| op.grids().iter().any(|(g, _)| g.trim_start_matches('@') == "null"));
+                    let registry_null = r.is_wgs84()
+                        || r.geog().and_then(epsg::get).is_some_and(|e| !e.ops.is_empty() && e.ops.iter().all(|op| op.is_null_shift()));
+                    own.same_conversion(&r) && ellipsoid && (unshifted || (own.same_datum(&r) && (!null_shift || registry_null)))
                 })
             };
             let epsg = declared_epsg(wkt)
                 .or_else(|| identify_epsg(wkt))
                 .filter(|code| fits(SpatialRef { epsg: Some(*code), ..Default::default() }));
-            let mut s = Self { epsg, wkt: Some(wkt.to_string()), proj4: Some(proj4), esri: None }.with_esri();
+            // The extension is kept through the WKT, not as the CRS's PROJ string: PROJ computes
+            // on it as a pipeline step reads it, whose ellipsoid rules and leniency differ from
+            // those of its CRS parser, which reads a PROJ string given.
+            let mut s = Self { epsg, wkt: Some(wkt.to_string()), proj4: None, esri: None }.with_esri();
             if let Some(code) = s.esri
                 && !fits(SpatialRef { esri: Some(code), ..Default::default() })
             {
@@ -366,10 +467,11 @@ impl SpatialRef {
             }
             return s;
         }
-        // Do not let a declared registry code repair an incomplete variant C definition.
+        // Do not let a registry code repair an incomplete variant C definition or a refused
+        // PROJ4 extension, including codes identified by the optional projection fallback.
         // Keep it as WKT so the transformer reports the parsing error. Valid PROJ4
         // extensions have already taken precedence above.
-        if is_variant_c(wkt) && Def::from_wkt(wkt).is_err() {
+        if (is_variant_c(wkt) || proj4_extension(wkt).is_some()) && Def::from_wkt(wkt).is_err() {
             return Self { wkt: Some(wkt.to_string()), ..Default::default() };
         }
         let epsg = identify_epsg(wkt);
@@ -404,6 +506,24 @@ impl SpatialRef {
             self.esri = identify_esri(w);
         }
         self
+    }
+
+    /// The ESRI code only when its registered conversion, datum and ellipsoid match.
+    /// Used by name-only writers, which cannot preserve conflicting stored definitions.
+    #[doc(hidden)]
+    pub fn trusted_esri(&self) -> Option<u32> {
+        let code = self.esri?;
+        let own = match (self.proj4.as_deref(), self.wkt.as_deref()) {
+            (Some(proj), _) => Def::from_proj(proj).ok()?,
+            (None, Some(wkt)) => Def::from_wkt(wkt).ok()?,
+            (None, None) => return epsg::esri(code).map(|_| code),
+        };
+        let registered = Def::new(&SpatialRef { esri: Some(code), ..Default::default() }).ok()?;
+        (own.same_conversion(&registered)
+            && own.same_datum(&registered)
+            && (own.ell.a - registered.ell.a).abs() < 1e-3
+            && (own.ell.es - registered.ell.es).abs() < 1e-9)
+            .then_some(code)
     }
 
     /// A compound CRS from the EPSG codes of a horizontal and a vertical CRS, as GDAL builds
@@ -462,7 +582,9 @@ impl SpatialRef {
     /// Parses the supported PROJJSON v0.7 geographic, projected or bound CRS subset.
     /// Unsupported coordinate systems, datum models and operations return errors.
     pub fn from_projjson(text: &str) -> Result<Self> {
-        projjson::parse(text)
+        // The text ends at its first NUL, as PROJ's `proj_create` reads it; a NUL a JSON string
+        // gives (`\u0000`) is part of its name.
+        projjson::parse(until_nul(text))
     }
 
     /// Parses a user-supplied CRS: `EPSG:4326`, `4326`, `urn:ogc:def:crs:EPSG::4326`, an OGC URL,
@@ -483,7 +605,8 @@ impl SpatialRef {
     /// [`Self::parse`], reading a file only when `files` (not for a file's own text).
     #[cfg_attr(target_family = "wasm", allow(unused_variables))]
     fn parse_definition(s: &str, files: bool) -> Result<Self> {
-        let s = s.trim();
+        // The definition ends at its first NUL, as PROJ's `proj_create` reads it.
+        let s = until_nul(s).trim();
         if s.is_empty() {
             return Err(Error::Crs("empty definition".into()));
         }
@@ -534,9 +657,15 @@ impl SpatialRef {
         if looks_like_wkt(s) {
             // As GDAL's `importFromWkt`: WKT its reader refuses (unbalanced, nested deeper than
             // PROJ allows, over 100,000 bytes) is an error, not an opaque CRS.
-            if wkt1::parse(s).is_none() {
-                let head: String = s.chars().take(80).collect();
-                return Err(Error::Crs(format!("not a WKT definition GDAL reads: '{head}'")));
+            let head = || s.chars().take(80).collect::<String>();
+            let Some(root) = wkt1::parse(s) else {
+                return Err(Error::Crs(format!("not a WKT definition GDAL reads: '{}'", head())));
+            };
+            // Every WKT CRS production requires member nodes, such as a geographic CRS's datum
+            // and a projected CRS's base CRS (OGC 01-009 7.2; ISO 19162:2019 8.1, 9.1): a keyword
+            // with only its name, `GEOGCS["x"]`, defines nothing.
+            if !root.args.iter().any(|arg| matches!(arg, wkt1::Arg::Node(_))) {
+                return Err(Error::Crs(format!("WKT {} has no definition after its name: '{}'", root.key, head())));
             }
             return Ok(Self::from_wkt(s));
         }
@@ -559,7 +688,7 @@ impl SpatialRef {
                 && (bytes.len() as u64) < MAX
                 && let Ok(text) = String::from_utf8(bytes)
             {
-                return Self::parse_definition(&text, false);
+                return Self::parse_definition(&text, false).map_err(|_| Error::Crs(format!("cannot parse CRS definition file '{s}'")));
             }
         }
         Err(Error::Crs(format!("cannot parse '{s}'")))
@@ -567,7 +696,8 @@ impl SpatialRef {
 
     /// The WKT of the geographic CRS this CRS is based on (its own when geographic): from the
     /// EPSG table for an EPSG CRS, else the `GEOGCS` node of its WKT 1. `None` when neither is
-    /// known.
+    /// known. Taken from the CRS's WKT, it has its names cut at a NUL ([`wkt_for_files`]), so
+    /// that it reads as a whole WKT with [`SpatialRef::from_wkt`], which ends text at a NUL.
     #[doc(hidden)]
     pub fn geographic_wkt(&self) -> Option<String> {
         if let Some(entry) = self.wkt.as_deref().and_then(|wkt| iau::identify(wkt, self.proj4.as_deref())).and_then(iau::get) {
@@ -587,7 +717,7 @@ impl SpatialRef {
                 ']' => {
                     depth -= 1;
                     if depth == 0 {
-                        return Some(wkt[start..=start + i].to_string());
+                        return Some(wkt_for_files(&wkt[start..=start + i]).into_owned());
                     }
                 }
                 _ => {}
@@ -627,6 +757,48 @@ impl SpatialRef {
         self.authority().map(|(a, code)| format!("{a}:{code}"))
     }
 
+    /// The PROJ string of the CRS as PROJ 9.8.1 writes it (`proj_as_proj_string` with
+    /// `PJ_PROJ_4`, pyproj's `CRS.to_proj4()`, `projinfo -o PROJ`), or `None` for a CRS PROJ has
+    /// none for (an engineering CRS, Polar Stereographic variant C, an EPSG code terrio reads only
+    /// through the wbprojection fallback).
+    ///
+    /// Like PROJ's, the string leaves out what a PROJ string cannot hold, so it is no substitute
+    /// for the code or WKT to keep a CRS:
+    /// - the datum transformation of a registry CRS (`+datum=` names only WGS 84, NAD83 and NAD27;
+    ///   `+towgs84` comes only from a definition that gives it, a WKT's `TOWGS84` or `BOUNDCRS`,
+    ///   which PROJ writes with the ellipsoid in place of the datum, even for a registry CRS);
+    /// - the angular unit of a geographic CRS (EPSG:4807 is in grads, its string in degrees);
+    /// - the axis order, but for south-orientated Transverse Mercator and Krovak (`+axis=wsu`,
+    ///   `+axis=swu`);
+    /// - a PROJ string's vertical unit (`+vunits`) without a geoid model (`+geoidgrids`).
+    ///
+    /// A compound CRS (`EPSG:4326+5773`) is its horizontal CRS's string with the vertical unit
+    /// (and a WKT's geoid model, `+geoidgrids`). A CRS given by a PROJ string or a WKT without
+    /// a code comes back as PROJ writes it: `+datum=` for WGS84, NAD83 and NAD27 when nothing
+    /// changes them (`+ellps` beside `+datum` is ignored), else the datum's ellipsoid; the
+    /// ellipsoid by name, else a sphere as `+R`, else as given (`+rf` or `+b`); `+towgs84` with
+    /// seven values, or `+nadgrids` in its place; units by PROJ's names; UTM zones as
+    /// `+proj=utm`; GDAL's Web Mercator string as PROJ's. Its parameters stay in their order,
+    /// which PROJ rewrites in its own, adding the defaults. A WKT's PROJ4 extension is written as
+    /// it is, as PROJ writes it. A planetocentric CRS on an ellipsoid (`+geoc`) has none. A WKT's
+    /// grid shift (`PROJ4_GRIDS` in its datum, a `BOUNDCRS` with a grid) is not read, so not
+    /// written.
+    /// As in PROJ 9.8.1, export need not preserve a WKT's coordinate mapping: south-orientated
+    /// Transverse Mercator with north-east axes transforms south-west but exports west-south;
+    /// Krovak with west-south axes exports without that axis order. Keep the WKT when the
+    /// declared coordinate-system axes must survive a round trip.
+    ///
+    /// ```
+    /// use terrio_crs::SpatialRef;
+    ///
+    /// let utm = SpatialRef::from_epsg(32632)?;
+    /// assert_eq!(utm.to_proj4().as_deref(), Some("+proj=utm +zone=32 +datum=WGS84 +units=m +no_defs +type=crs"));
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
+    pub fn to_proj4(&self) -> Option<String> {
+        proj_write::write(self)
+    }
+
     /// The WKT definition, built from the EPSG (or ESRI) code or PROJ string when no WKT is
     /// stored.
     pub fn to_wkt(&self) -> Option<String> {
@@ -644,6 +816,45 @@ impl SpatialRef {
                 .or_else(|| registry_wkt(code));
         }
         self.proj4.as_deref().and_then(proj_to_wkt)
+    }
+
+    /// The CRS in WKT 1 that needs no PROJ4 extension, for formats whose readers ignore
+    /// `EXTENSION["PROJ4", ...]` (shapefile `.prj`, GeoPackage, GeoTIFF citations), as PROJ 9.8.1
+    /// exports `WKT1_GDAL` (with the AXIS nodes GDAL's `exportToWkt` writes). `None` where
+    /// [`to_wkt`](Self::to_wkt) would give another CRS to such a reader, or is no WKT 1:
+    /// - a CRS PROJ cannot write in WKT 1: geographic 3D CRSs (EPSG:4979), Equal Earth
+    ///   (EPSG:8857), the registry CRSs whose method has no WKT 1 name (Colombia Urban, Modified
+    ///   Krovak...), rotated poles (`+proj=ob_tran`), and EPSG codes terrio reads only through
+    ///   the wbprojection fallback, whose WKT is not the registry's;
+    /// - a planetocentric CRS on an ellipsoid, which PROJ writes as a `GEOGCS` that its readers
+    ///   take for planetographic latitudes;
+    /// - a WKT 1 that keeps part of its CRS in the extension: a datum grid (`+nadgrids`, a WKT 2
+    ///   bound CRS's `PARAMETERFILE`), an axis order or parameter its nodes do not describe,
+    ///   GDAL's `custom_proj4` method.
+    ///
+    /// A WKT 1 with an extension is kept when an EPSG or ESRI `AUTHORITY` of its root identifies
+    /// the CRS, as GDAL's Web Mercator (EPSG:3857). A stored WKT 1 is returned as it is when it
+    /// needs no extension (or its root code is the CRS's own), else `None`. A stored
+    /// WKT 2 that terrio identifies as a code, without a datum shift of its own, is the code's
+    /// WKT 1; with the code's two horizontal axes swapped (ETRS89 in longitude and latitude), the
+    /// code's WKT 1 with its axes swapped and without the codes that give their order. Another
+    /// WKT 2 is the WKT 1 of its PROJ string ([`to_proj4`](Self::to_proj4)) when that reads back
+    /// as the same conversion with the WKT 2's axes (east-north, or north-east for a geographic
+    /// CRS), on the EPSG geographic CRS of a datum terrio identifies (OSGB36), which keeps the
+    /// datum's name, code and transformations.
+    ///
+    /// ```
+    /// use terrio_crs::SpatialRef;
+    ///
+    /// assert!(SpatialRef::from_epsg(32632)?.to_wkt1_strict().is_some());
+    /// assert!(SpatialRef::from_epsg(4979)?.to_wkt1_strict().is_none());
+    /// let grid = SpatialRef::from_proj4("+proj=longlat +ellps=clrk66 +nadgrids=conus +no_defs")?;
+    /// assert!(grid.to_wkt().is_some_and(|w| w.contains("EXTENSION[\"PROJ4\"")));
+    /// assert_eq!(grid.to_wkt1_strict(), None);
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
+    pub fn to_wkt1_strict(&self) -> Option<String> {
+        wkt1_write::strict(self)
     }
 
     /// The CRS's name, such as `WGS 84 / UTM zone 33N`.
@@ -755,6 +966,178 @@ impl SpatialRef {
         points(axes.next(), "north") && points(axes.next(), "east")
     }
 
+    /// The order of the first two axes, as PROJ 9.8.1 reads the CRS: the registry's axes for an
+    /// EPSG or ESRI code, `+axis` for a CRS given as a PROJ string (east then north by default),
+    /// and otherwise its WKT's `AXIS` nodes. Without them, a WKT 1 geographic CRS with an EPSG
+    /// code is in that code's order, and other CRSs east then north. Geocentric and vertical CRSs,
+    /// and Polar Stereographic, whose axes point along meridians (unless a WKT states others), are
+    /// [`AxisOrder::Other`], as are axes other than north and east (`northEast`, `south`).
+    ///
+    /// Unlike [`Self::has_north_east_axis_order`], which goes by the CRS's WKT, a PROJ string
+    /// such as `+proj=longlat +datum=WGS84` is east then north.
+    /// ```
+    /// use terrio_crs::{AxisOrder, SpatialRef};
+    /// assert_eq!(SpatialRef::from_epsg(4326)?.axis_order(), AxisOrder::NorthEast);
+    /// assert_eq!(SpatialRef::from_proj4("+proj=longlat +datum=WGS84")?.axis_order(), AxisOrder::EastNorth);
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
+    pub fn axis_order(&self) -> AxisOrder {
+        // A vertical CRS, by its code or its WKT (`VERT_CS`, ESRI's `VERTCS`, `VERTCRS`), has a
+        // single axis.
+        let vertical_wkt = self.wkt.as_deref().is_some_and(|w| {
+            let root = w.trim_start().split(['[', '(']).next().unwrap_or_default().trim();
+            ["VERT_CS", "VERTCS", "VERTCRS", "VERTICALCRS"].iter().any(|k| root.eq_ignore_ascii_case(k))
+        });
+        if self.epsg.and_then(epsg::vertical).is_some() || vertical_wkt {
+            return AxisOrder::Other;
+        }
+        // An EPSG code terrio reads only through wbprojection, whose WKT has no axes (it drops
+        // the west-orientated ones of EPSG:3053 and others).
+        if self.epsg.is_some_and(|c| epsg::get(c).is_none() && epsg::compound(c).is_none() && self.wkt == registry_wkt(c)) {
+            return AxisOrder::Unknown;
+        }
+        let Ok(def) = Def::new(self) else { return AxisOrder::Unknown };
+        if def.is_geocentric() {
+            return AxisOrder::Other;
+        }
+        let order = |first: u8, second: u8| match (first.to_ascii_lowercase(), second.to_ascii_lowercase()) {
+            (b'e', b'n') => AxisOrder::EastNorth,
+            (b'n', b'e') => AxisOrder::NorthEast,
+            _ => AxisOrder::Other,
+        };
+        // PROJ's Polar Stereographic has both axes pointing south (or north) along meridians,
+        // unless a WKT states others.
+        let polar = def.params().is_some_and(|p| p.method == "stere" && p.lat_0.abs() == 90.0);
+        // A PROJ string's axes (one from the WKT of an IAU_2015 CRS goes by the WKT, as PROJ
+        // reads it).
+        let iau = self.wkt.as_deref().and_then(iau::declared).is_some();
+        // A WKT's PROJ4 extension is its PROJ string too.
+        let extension = self.wkt.as_deref().and_then(proj4_extension).is_some();
+        if !self.registry_entry() && !iau && (self.proj4.is_some() || extension) {
+            let [first, second] = def.axis_directions();
+            return if polar { AxisOrder::Other } else { order(first, second) };
+        }
+        let Some(wkt) = self.to_wkt() else { return AxisOrder::Unknown };
+        let horizontal = def::split_compound(&wkt).map(|(horizontal, _)| horizontal);
+        let Some(root) = wkt1::parse(horizontal.as_deref().unwrap_or(&wkt)) else { return AxisOrder::Unknown };
+        // A bound CRS has the axes of its source CRS, as PROJ reads it.
+        let source = root.key.eq_ignore_ascii_case("BOUNDCRS").then(|| root.child("SOURCECRS")).flatten().and_then(|s| {
+            s.args.iter().find_map(|a| match a {
+                wkt1::Arg::Node(n) => Some(n.clone()),
+                _ => None,
+            })
+        });
+        let root = source.unwrap_or(root);
+        // Only the four directions count: `northEast` is another one.
+        let direction = |axis: &wkt1::Node| match axis.args.get(1) {
+            Some(wkt1::Arg::Ident(d)) if d.eq_ignore_ascii_case("north") => b'n',
+            Some(wkt1::Arg::Ident(d)) if d.eq_ignore_ascii_case("east") => b'e',
+            _ => 0,
+        };
+        let mut axes = root.children("AXIS");
+        match (axes.next(), axes.next()) {
+            // Axes the stored WKT states, a registry code's included (from_epsg stores the
+            // registry's WKT, whose polar CRSs state their axes, but EPSG:2985 and 2986's do not).
+            (Some(first), Some(second)) if self.wkt.is_some() => order(direction(first), direction(second)),
+            // Polar Stereographic without a stored WKT, or with one that states no axes.
+            _ if polar => AxisOrder::Other,
+            // Otherwise, those of the WKT built from a code alone.
+            (Some(first), Some(second)) => order(direction(first), direction(second)),
+            // A WKT 1 geographic CRS without axes is in its EPSG code's order, as PROJ reads it,
+            // else (or for a code terrio doesn't have) in longitude/latitude order, as any other
+            // CRS. (Every geographic EPSG code of PROJ 9.8.1 is in terrio's table, so none is
+            // read only through wbprojection here.)
+            _ => match root.epsg().filter(|_| root.key.eq_ignore_ascii_case("GEOGCS") && self.wkt.is_some()) {
+                Some(code) => match (SpatialRef { epsg: Some(code), ..Default::default() }).axis_order() {
+                    AxisOrder::Unknown => AxisOrder::EastNorth,
+                    known => known,
+                },
+                None => AxisOrder::EastNorth,
+            },
+        }
+    }
+
+    /// The parameters of the CRS's conversion, as its PROJ string (from the registry, as given,
+    /// or converted from its WKT) has them, with PROJ's defaults (a central meridian of 0, a scale
+    /// factor of 1, no false easting or northing). A UTM or UPS zone gives its own, as in PROJ's conversion. A compound CRS
+    /// gives those of its horizontal CRS. `None` for a CRS terrio can't read, or reads only
+    /// through wbprojection's WKT parser.
+    ///
+    /// The values are those of the definition, not derived ones: Mercator's `+lat_ts` is not
+    /// turned into a scale factor, nor Oblique Mercator's `+lonc` into a central meridian. A WKT
+    /// that declares an EPSG code terrio has gives that code's, as terrio transforms it (PROJ
+    /// reads the WKT's own nodes, which may differ).
+    /// ```
+    /// use terrio_crs::SpatialRef;
+    /// let p = SpatialRef::from_epsg(32633)?.projection_params().unwrap();
+    /// assert_eq!((p.method.as_str(), p.lon_0, p.k_0, p.x_0), ("utm", 15.0, 0.9996, 500000.0));
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
+    pub fn projection_params(&self) -> Option<ProjParams> {
+        let def = Def::new(self).ok()?;
+        let mut params = def.params()?.clone();
+        // A registry CRS is on the registry's ellipsoid, as PROJ reports it: the one its PROJ
+        // string names may be rounded (Bessel Namibia's `bess_nam`, 0.28 m) or a sphere computed on
+        // (Web Mercator). The WKT's is taken in metres only (EPSG:3139's is in feet).
+        if let Some((a, b)) = self.registry_horizontal_wkt().and_then(wkt_ellipsoid).filter(|(a, _)| (a - params.a).abs() < 1.0) {
+            (params.a, params.b) = (a, b);
+        }
+        Some(params)
+    }
+
+    /// The WKT of the registry entry `Def::new` reads the CRS from (that of the horizontal CRS
+    /// of a compound one).
+    fn registry_horizontal_wkt(&self) -> Option<&'static str> {
+        let entry = match (self.epsg, self.esri) {
+            (Some(code), _) => epsg::get(code).or_else(|| epsg::compound(code).and_then(|c| epsg::get(c.horizontal))),
+            (None, Some(code)) => Some(code).filter(|c| !ESRI_UNLIKE_PROJ.contains(c)).and_then(epsg::esri),
+            // A compound CRS without a code of its own (`EPSG:3857+5773`), by its horizontal one.
+            (None, None) => self.compound_parts().and_then(|(horizontal, _)| epsg::get(horizontal)),
+        };
+        entry.map(|e| e.wkt.as_str())
+    }
+
+    /// Whether `Def::new` reads the CRS from the EPSG or ESRI table.
+    fn registry_entry(&self) -> bool {
+        match self.epsg {
+            Some(code) => epsg::get(code).is_some() || epsg::compound(code).is_some(),
+            None => self.esri.is_some_and(|c| !ESRI_UNLIKE_PROJ.contains(&c) && epsg::esri(c).is_some()),
+        }
+    }
+
+    /// The celestial body the CRS is on, as PROJ 9.8.1 names it: `Earth` for an EPSG or ESRI
+    /// code, the body of an IAU_2015 CRS (`Mars`), and for another CRS, `Earth` for an ellipsoid
+    /// within 0.7% of the Earth's size, else the body of PROJ's table whose semi-major axis is
+    /// within 0.7% of the ellipsoid's (`+R=3396190` is on Mars). `None` for another ellipsoid,
+    /// which PROJ calls `Non-Earth body`, for one near the size of several bodies, and for a CRS
+    /// terrio can't read.
+    /// ```
+    /// use terrio_crs::SpatialRef;
+    /// assert_eq!(SpatialRef::from_iau(49900)?.body(), Some("Mars"));
+    /// assert_eq!(SpatialRef::from_epsg(4326)?.body(), Some("Earth"));
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
+    pub fn body(&self) -> Option<&'static str> {
+        let def = Def::new(self).ok()?;
+        if let Some(code) = def.declared_body() {
+            return bodies::NAIF.binary_search_by_key(&code, |(c, _)| *c).ok().map(|i| bodies::NAIF[i].1);
+        }
+        // PROJ's `Ellipsoid::guessBodyName`: the Earth within 0.7% of its mean radius, else the
+        // one body whose semi-major axis is within 0.7% of the ellipsoid's.
+        let a = def.params().map_or(def.ell.a, |p| p.a);
+        if def::earth_sized(a) {
+            return Some("Earth");
+        }
+        let mut near = bodies::RADII.iter().filter(|(_, r)| (r - a).abs() / r <= 0.007).map(|(name, _)| *name);
+        let first = near.next()?;
+        near.all(|name| name == first).then_some(first)
+    }
+
+    /// Whether the CRS is on the Earth (see [`Self::body`]).
+    pub fn is_earth(&self) -> bool {
+        self.body() == Some("Earth")
+    }
+
     /// Whether this is a rotated-pole grid (PROJ's `+proj=ob_tran`, CF's
     /// `rotated_latitude_longitude`): its coordinates are in degrees but are not longitudes and
     /// latitudes, so it is not geographic.
@@ -800,7 +1183,12 @@ impl SpatialRef {
             && is_variant_c(w)
         {
             let p = wkt_proj(w).ok_or_else(|| Error::Crs("a Polar Stereographic (variant C) CRS terrio cannot convert".into()))?;
-            return Ok(wbp::from_proj_string(&p)?);
+            let c = wbp::from_proj_string(&p)?;
+            // `wkt_proj` gives a WKT's PROJ4 extension when it has one.
+            if self.proj4.is_none() && proj4_extension(w).is_some() {
+                same_figure_as_step(&c, &p)?;
+            }
+            return Ok(c);
         }
         if let Some(code) = self.epsg
             && let Ok(c) = wbp::Crs::from_epsg(code)
@@ -811,10 +1199,19 @@ impl SpatialRef {
         if self.is_rotated_pole() {
             return Err(Error::Crs("a rotated-pole CRS has no wbprojection equivalent".into()));
         }
-        // The PROJ string over its WKT, which wbprojection reads with fewer parameters.
-        if let Some(p) = &self.proj4
-            && let Ok(c) = wbp::from_proj_string(&mercator_lat_ts_as_k(p))
+        // The PROJ string (or a WKT's PROJ4 extension) over its WKT, which wbprojection reads
+        // with fewer parameters.
+        // An extension only as terrio reads it: one it refuses (`+rf=0`) goes by its WKT, as
+        // before terrio read extensions as pipeline steps.
+        if let Some(p) = self.proj4_or_extension()
+            && let Ok(c) = wbp::from_proj_string(&mercator_lat_ts_as_k(&p))
         {
+            // An extension is computed as a pipeline step, whose figure wbprojection may read
+            // otherwise (`+ellps=WGS84 +f=0` is a sphere to the step, WGS 84 to wbprojection):
+            // refused then, rather than describe another figure.
+            if self.proj4.is_none() {
+                same_figure_as_step(&c, &p)?;
+            }
             return Ok(c);
         }
         if let Some(w) = &self.wkt {
@@ -829,13 +1226,13 @@ impl SpatialRef {
 }
 
 /// The WKT 1 of a PROJ string, as GDAL writes it (see [`wkt1_write`]).
-fn proj_to_wkt(p: &str) -> Option<String> {
+pub(crate) fn proj_to_wkt(p: &str) -> Option<String> {
     wkt1_write::from_proj(p)
 }
 
 /// Whether a WKT 1 or WKT 2 names Polar Stereographic (variant C), EPSG method 9830, as a
 /// projection or conversion method, at any depth (in a bound or compound CRS too).
-fn is_variant_c(wkt: &str) -> bool {
+pub(crate) fn is_variant_c(wkt: &str) -> bool {
     fn names(n: &wkt1::Node) -> bool {
         (["PROJECTION", "METHOD"].iter().any(|k| n.key.eq_ignore_ascii_case(k))
             && (n.epsg() == Some(9830) || n.name().is_some_and(|m| wkt1::norm(m) == "polarstereographicvariantc")))
@@ -844,8 +1241,67 @@ fn is_variant_c(wkt: &str) -> bool {
     wkt1::parse(wkt).is_some_and(|root| names(&root))
 }
 
+/// A CRS's stored WKT as it is written where its readers end text at its first NUL (a `.prj`,
+/// a raster's or layer's WKT, which GDAL reads as a C string): each quoted name cut at its first
+/// NUL, as PROJ 9.8.1 gives such a name (`CRS.name` of a PROJJSON name `"WGS\u0000 84"` is
+/// `WGS`), so that the text stays a whole WKT. PROJ's own WKT export of such a CRS ends at the
+/// NUL (`PROJCRS["WGS`), which no reader takes back. Text without a NUL is returned as it is.
+#[doc(hidden)]
+pub fn wkt_for_files(wkt: &str) -> std::borrow::Cow<'_, str> {
+    if !wkt.contains('\0') {
+        return wkt.into();
+    }
+    let mut out = String::with_capacity(wkt.len());
+    let (mut quoted, mut cut) = (false, false);
+    let mut chars = wkt.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            // A doubled quote inside a name is a quote of the name.
+            '"' if quoted && chars.peek() == Some(&'"') => {
+                chars.next();
+                if !cut {
+                    out.push_str("\"\"");
+                }
+            }
+            '"' => {
+                quoted = !quoted;
+                cut = false;
+                out.push(c);
+            }
+            '\0' if quoted => cut = true,
+            // A NUL outside quotes is dropped: the parser refuses one, so a CRS read by terrio
+            // has none there, and text with one set by hand (`SpatialRef::wkt`) is written as
+            // the WKT the reader would see without it, rather than one its readers cut short.
+            '\0' => {}
+            _ if cut => {}
+            _ => out.push(c),
+        }
+    }
+    out.into()
+}
+
+/// Text up to its first NUL: a definition given as text, as PROJ 9.8.1 and GDAL take it (a C
+/// string, which ends there; text after a complete WKT was ignored before as well). Who cuts:
+/// - the entry points for a definition given as text cut it themselves ([`SpatialRef::from_wkt`],
+///   `parse`, `parse_literal`, `from_projjson`, and `geokeys::read` its GeoAsciiParamsTag);
+/// - [`wkt_proj`] and [`identify_epsg`] read their text whole: a caller with text from a file (a
+///   `.prj`, a raster's or layer's WKT) cuts it first with this;
+/// - a CRS's own stored WKT ([`SpatialRef::to_wkt`], the WKT of a PROJJSON, whose names keep a
+///   NUL (`\u0000`) as PROJ 9.8.1 reads them) is not cut: inside terrio-crs it goes through
+///   `SpatialRef::from_wkt_text`, whose call sites say `uncut`; WKT built from it to be parsed
+///   again or written goes through [`wkt_for_files`].
+///
+/// The WKT parser refuses a NUL outside quotes.
+#[doc(hidden)]
+pub fn until_nul(text: &str) -> &str {
+    text.split('\0').next().unwrap_or_default()
+}
+
 /// The PROJ string of a WKT definition as terrio reads it: its PROJ4 extension, else its WKT 1
-/// or WKT 2 conversion. `None` for a WKT terrio reads otherwise (through wbprojection).
+/// or WKT 2 conversion. `None` for a WKT terrio reads otherwise (through wbprojection). The WKT
+/// is read whole, a NUL in a name included, as a CRS's stored WKT ([`SpatialRef::to_wkt`]) may
+/// keep one from a PROJJSON name. Text read from a file must be cut at its first NUL by the
+/// caller ([`until_nul`]), as GDAL reads it.
 #[doc(hidden)]
 pub fn wkt_proj(wkt: &str) -> Option<String> {
     if let Some(p) = proj4_extension(wkt) {
@@ -856,8 +1312,106 @@ pub fn wkt_proj(wkt: &str) -> Option<String> {
     Some(c.proj)
 }
 
+/// Whether PROJ string `s`, as a WKT's PROJ4 extension (which PROJ computes on as a pipeline
+/// step), places points where PROJ's CRS rules for the string place them: the same conversion
+/// and figure (but for the round-off between WGS 84 and GRS 1980), and the same datum, or one
+/// that places points around the projection's origin within 1 mm, both judged as without grids
+/// (PROJ's default here), whatever is installed: `+datum=NAD83`, which the step takes as WGS 84
+/// and whose transformations are null without grids, places as the string; a step's grid shift
+/// (NAD27's) does not, nor OSGB36's Helmert shift against `pj_datum_set`'s. The writers that describe a PROJ string by those rules (PROJJSON, GeoKeys)
+/// describe such an extension only, and the WKT writer writes the string itself so.
+pub(crate) fn extension_places_as_string(s: &str) -> bool {
+    // Both as they place points without grids, whatever is installed: PROJ's default here. Their
+    // diagnostics (a missing grid, a ballpark) are this check's, not the caller's.
+    warnings::silenced(|| grid::without_grids(|| extension_places_without_grids(s)))
+}
+
+/// [`extension_places_as_string`], under [`grid::without_grids`].
+fn extension_places_without_grids(s: &str) -> bool {
+    let (Ok(crs), Ok(step)) = (Def::from_proj(s), Def::from_proj_extension(s)) else { return false };
+    if !crs.same_conversion(&step) || (crs.ell.a - step.ell.a).abs() > 1e-6 || (crs.ell.es - step.ell.es).abs() > 1e-10 {
+        return false;
+    }
+    if crs.same_datum(&step) {
+        return true;
+    }
+    // The step's grid shift (NAD27's, potsdam's `+nadgrids`) is no datum the CRS rules have.
+    let real_grids = |op: &std::sync::Arc<datum::Op>| op.grids().iter().any(|(g, _)| g.trim_start_matches('@') != "null");
+    if step.ops().iter().any(real_grids) {
+        return false;
+    }
+    // Each with a WKT of its own stored. The `Transformer`s below compare their CRSs by WKT
+    // (`same_as`), and the WKT of a CRS given only by a PROJ string is written from that string,
+    // which writes its extension by this check: without the stored placeholder, this recurses
+    // until the stack overflows. `Def::new` reads `proj4` first, so the placeholder is not read.
+    let given = SpatialRef { proj4: Some(s.to_string()), wkt: Some("given".into()), ..Default::default() };
+    let extension = SpatialRef {
+        wkt: Some(format!(
+            "GEOGCS[\"step\",DATUM[\"step\",SPHEROID[\"step\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433],EXTENSION[\"PROJ4\",\"{}\"]]",
+            s.replace('"', "")
+        )),
+        ..Default::default()
+    };
+    let Ok(wgs84) = SpatialRef::from_epsg(4326) else { return false };
+    let (Ok(to_given), Ok(to_extension)) = (Transformer::new(&wgs84, &given), Transformer::new(&wgs84, &extension)) else {
+        return false;
+    };
+    // The datum's transformations without grids (NAD83's null one, OSGB36's Helmert ones)
+    // against the step's shift, around the origin (in Greenwich longitudes): on a 3 × 3 grid
+    // 5° apart and 4 points 15° away.
+    let (lon, lat) = crs.params().map_or((0.0, 0.0), |p| (p.lon_0 + p.prime_meridian, p.lat_0));
+    // Metres per coordinate unit (`+to_meter`).
+    let scale = if crs.is_geographic() { 111_195.0 } else { crs.to_meter() };
+    let offsets = [-5.0, 0.0, 5.0].into_iter().flat_map(|x| [-5.0, 0.0, 5.0].map(|y| (x, y)));
+    let mut compared = 0;
+    let alike = offsets.chain([(-15.0, 0.0), (15.0, 0.0), (0.0, -15.0), (0.0, 15.0)]).all(|(dx, dy)| {
+        let point = ((lon + dx + 180.0).rem_euclid(360.0) - 180.0, (lat + dy).clamp(-89.0, 89.0));
+        match (to_given.transform(point.0, point.1), to_extension.transform(point.0, point.1)) {
+            (Ok(a), Ok(b)) => {
+                compared += 1;
+                ((a.0 - b.0) * scale).hypot((a.1 - b.1) * scale) < 1e-3
+            }
+            // Outside the projection's domain on both sides.
+            (Err(_), Err(_)) => true,
+            _ => false,
+        }
+    });
+    // Not alike when no point could be compared.
+    alike && compared > 0
+}
+
+/// Fails when wbprojection reads the PROJ string `p` of a WKT's PROJ4 extension on another figure
+/// than terrio's pipeline step does (`+ellps=WGS84 +f=0` is a sphere to the step, WGS 84 to
+/// wbprojection, which takes `+ellps` before `+f`), rather than describe another figure.
+#[cfg(feature = "wbprojection-fallback")]
+fn same_figure_as_step(c: &wbp::Crs, p: &str) -> Result<()> {
+    let Ok(step) = Def::from_proj_extension(p) else { return Ok(()) };
+    let e = &c.projection.params().ellipsoid;
+    let es = e.f * (2.0 - e.f);
+    if (e.a - step.ell.a).abs() > 1e-3 || (es - step.ell.es).abs() > 1e-10 {
+        return Err(Error::Crs(format!("wbprojection reads another ellipsoid than terrio's for {p}")));
+    }
+    Ok(())
+}
+
+impl SpatialRef {
+    /// The CRS's PROJ string, or else its WKT 1's `EXTENSION["PROJ4", ...]` as terrio reads it (one
+    /// it refuses, such as `+rf=0`, is none): the string a CRS from such a WKT computes on.
+    #[doc(hidden)]
+    pub fn proj4_or_extension(&self) -> Option<String> {
+        self.proj4.clone().or_else(|| self.wkt.as_deref().and_then(proj4_extension).filter(|p| Def::from_proj_extension(p).is_ok()))
+    }
+}
+
+/// Whether a WKT 1 has a root `EXTENSION["PROJ4", ...]`, which PROJ and terrio compute on in place
+/// of its nodes.
+#[doc(hidden)]
+pub fn has_proj4_extension(wkt: &str) -> bool {
+    proj4_extension(wkt).is_some()
+}
+
 /// The PROJ string of a WKT 1's root `EXTENSION["PROJ4", ...]`.
-fn proj4_extension(wkt: &str) -> Option<String> {
+pub(crate) fn proj4_extension(wkt: &str) -> Option<String> {
     let root = wkt1::parse(wkt)?;
     let ext = root.children("EXTENSION").find(|n| n.name().is_some_and(|k| k.eq_ignore_ascii_case("PROJ4")))?;
     match ext.args.get(1)? {
@@ -901,6 +1455,24 @@ pub fn semi_major_axis(wkt: &str) -> Option<f64> {
     // Skip the quoted name, then read the number after it.
     let after_name = rest.strip_prefix('"').and_then(|r| r.find('"').map(|i| &r[i + 1..]))?;
     after_name.trim_start_matches([',', ' ']).split([',', ']']).next()?.trim().parse().ok()
+}
+
+/// The semi-major and semi-minor axes of the first `SPHEROID` or `ELLIPSOID` of a WKT
+/// definition, from its axis and inverse flattening (0 for a sphere), in the WKT's unit.
+fn wkt_ellipsoid(wkt: &str) -> Option<(f64, f64)> {
+    fn find(n: &wkt1::Node) -> Option<&wkt1::Node> {
+        if n.key.eq_ignore_ascii_case("SPHEROID") || n.key.eq_ignore_ascii_case("ELLIPSOID") {
+            return Some(n);
+        }
+        n.args.iter().find_map(|a| match a {
+            wkt1::Arg::Node(c) => find(c),
+            _ => None,
+        })
+    }
+    let root = wkt1::parse(wkt)?;
+    let node = find(&root)?;
+    let (a, rf) = (node.num(1)?, node.num(2)?);
+    Some((a, if rf == 0.0 { a } else { a * (1.0 - 1.0 / rf) }))
 }
 
 /// The EPSG datums the geodetic datum of a WKT definition is: the one its `AUTHORITY` (WKT 1) or
@@ -947,6 +1519,9 @@ pub fn compound_code(horizontal: u32, vertical: u32, name: Option<&str>) -> Opti
 /// lowest code; for other CRSs, wbprojection's registry, where among equally good matches the
 /// base datum is preferred over its later realizations (NAD83 over NAD83(HARN) and NAD83(2011))
 /// unless the WKT names one, then the lowest code.
+///
+/// The WKT is read whole, a NUL in a name included, as [`wkt_proj`] reads it: text read from a
+/// file must be cut at its first NUL by the caller ([`until_nul`]).
 #[doc(hidden)]
 pub fn identify_epsg(wkt: &str) -> Option<u32> {
     if let Some(code) = declared_epsg(wkt) {
@@ -971,8 +1546,9 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
             .is_ok_and(|d| own.same_conversion(&d) && (own.ell.a - d.ell.a).abs() < 1e-3 && (own.ell.es - d.ell.es).abs() < 1e-9)
     };
     // Among CRSs that match, the one named as the WKT's CRS (`RGF93 v2 (lon-lat)`, ESRI's `GCS_`
-    // prefix aside), else the base datum over its later realizations (`NAD83`, which EPSG lists
-    // as an alias of NAD83(HARN) too) unless the WKT names one, else the lowest code.
+    // prefix aside), else a current one over a deprecated one (as PROJ ranks them), else the base
+    // datum over its later realizations (`NAD83`, which EPSG lists as an alias of NAD83(HARN) too)
+    // unless the WKT names one, else the lowest code.
     let key = |n: &str| epsg::datum_key(n.strip_prefix("GCS_").unwrap_or(n));
     let name = wkt_name(wkt).map(|n| key(&n));
     let named = |c: u32| epsg::get(c).is_some_and(|e| Some(key(&e.name)) == name);
@@ -993,10 +1569,11 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
                 .flatten()
                 .copied()
                 .filter(|c| epsg::registry().geodetic.get(c).is_some_and(|g| g.kind == epsg::GeodeticKind::Geocentric) && same(own, *c))
+                // `by_datum` holds current CRSs only.
                 .min_by_key(|c| (!named(*c), *c));
         }
         if own.is_geographic() {
-            return geogs.filter(|c| same(own, *c)).min_by_key(|c| (!named(*c), realization(*c), *c));
+            return geogs.filter(|c| same(own, *c)).min_by_key(|c| (!named(*c), epsg::is_deprecated(*c), realization(*c), *c));
         }
         let method = conversion_method(wkt)?;
         let found = geogs.flat_map(epsg::projected_on).filter(|(c, m)| same_method(m, &method) && same(own, *c)).map(|(c, _)| *c);
@@ -1004,7 +1581,7 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
         // variant for ESRI's WKT, without axes).
         let own_north_first = north_first(wkt);
         let axes = |c: u32| epsg::get(c).is_some_and(|e| north_first(&e.wkt) != own_north_first);
-        found.min_by_key(|c| (!named(*c), axes(*c), realization(*c), *c))
+        found.min_by_key(|c| (!named(*c), epsg::is_deprecated(*c), axes(*c), realization(*c), *c))
     };
     // On the datum the WKT names, else on those whose CRSs ESRI writes with its name: GDAL
     // identifies ESRI's ETRS_1989_NTM_Zone_18 on D_ETRS_1989 by its name as EPSG:5118, on
@@ -1015,11 +1592,11 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
     #[cfg(feature = "wbprojection-fallback")]
     {
         // A current CRS on the WKT's datum. Its datum: its code in the table, else its WKT's (WKT 2
-        // CRSs of the table, on datum ensembles, and those only the registry has). A deprecated code
-        // has its replacement's WKT in the table.
+        // CRSs of the table, on datum ensembles, and those only the registry has).
         let on_datum = |code: u32| {
             let theirs = match epsg::get(code) {
-                Some(e) if declared_epsg(&e.wkt).is_some_and(|c| c != code) => return false,
+                // Not a deprecated code that has a replacement (one without stays, EPSG:2008).
+                Some(_) if !epsg_replacements(code).is_empty() => return false,
                 Some(e) if e.datum != 0 => vec![e.datum],
                 Some(e) => wkt_datums(&e.wkt),
                 None => wbp::to_ogc_wkt(code).map(|w| wkt_datums(&w)).unwrap_or_default(),
@@ -1270,7 +1847,15 @@ impl TransformOptions {
 /// through an intermediate datum such as WGS 84. Datum shift grids are used when they can be
 /// found, as GDAL uses them; heights of geographic 3D and compound CRSs go through geoid
 /// models; time-dependent transformations use the coordinate epoch (see [`TransformOptions`]).
+///
+/// A transformer is `Send + Sync` and caches what it looks up on first use (routes, grids, geoid
+/// models), so build it once per pair of CRSs and share it, between threads too, through an
+/// [`Arc`](std::sync::Arc) rather than building it again. [`inverse`](Self::inverse) builds the
+/// transformer of the other direction.
 pub struct Transformer {
+    /// The CRSs and options it was built from, for [`inverse`](Self::inverse).
+    src_ref: SpatialRef,
+    dst_ref: SpatialRef,
     src: Def,
     dst: Def,
     cartesian_src: Option<Def>,
@@ -1278,6 +1863,7 @@ pub struct Transformer {
     identity: bool,
     route: route::Route,
     best_route: std::sync::OnceLock<route::Route>,
+    bounds_reverse_route: std::sync::OnceLock<route::Route>,
     policy: TransformOptions,
     missing_grid_checked: std::sync::OnceLock<()>,
     /// The geoid models with grids of the source and target vertical CRSs, found on first use.
@@ -1608,6 +2194,8 @@ impl Transformer {
         let web_mercator_to_wgs84 = web_mercator_to_wgs84(src, dst);
         Ok(Self {
             identity,
+            src_ref: src.clone(),
+            dst_ref: dst.clone(),
             src: s,
             dst: d,
             cartesian_src,
@@ -1622,6 +2210,7 @@ impl Transformer {
             web_mercator_to_wgs84,
             wgs84_to_web_mercator,
             best_route: std::sync::OnceLock::new(),
+            bounds_reverse_route: std::sync::OnceLock::new(),
             policy: opts.clone(),
             missing_grid_checked: std::sync::OnceLock::new(),
             src_geoid_grids: std::sync::OnceLock::new(),
@@ -1633,7 +2222,10 @@ impl Transformer {
     }
 
     /// Route this transformer's diagnostics to a caller-provided warning sink.
-    /// The sink runs on the thread calling `flush_warnings` (or dropping the transformer).
+    /// The sink runs on the thread calling `flush_warnings` (or dropping the transformer). A
+    /// transformer kept in a `thread_local!` is dropped while the thread's locals are destroyed,
+    /// so a sink that records into a thread-local should use `LocalKey::try_with`, and must not
+    /// panic.
     pub fn with_warning_handler(mut self, handler: fn(String)) -> Self {
         self.warning_handler = handler;
         self
@@ -1651,6 +2243,122 @@ impl Transformer {
         }
         let (x, y, _) = self.transform_2d(x, y, 0.0, self.time)?;
         Ok((x, y))
+    }
+
+    /// Transforms points in place, each as [`transform`](Self::transform) does. Stops at the
+    /// first point that fails and returns its error: the points before it are transformed, it and
+    /// those after it are left as they were. Where failures are expected, as at the edges of a
+    /// projection's domain, [`transform_slice_or_nan`](Self::transform_slice_or_nan) goes on.
+    ///
+    /// The datum operation is still chosen for each point (by its area of use), as `transform`
+    /// chooses it, so the results are those of `transform`, bit for bit. Where `transform` returns
+    /// every point as it is (identical CRSs, neither geocentric, without a point motion between
+    /// coordinate epochs), the points are left as they are without visiting them.
+    ///
+    /// ```no_run
+    /// use terrio_crs::{SpatialRef, Transformer};
+    ///
+    /// let utm = SpatialRef::from_epsg(32632)?;
+    /// let t = Transformer::new(&SpatialRef::from_epsg(4326)?, &utm)?;
+    /// let mut points = vec![(9.0, 47.0), (7.5, 45.9)];
+    /// t.transform_slice(&mut points)?;
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
+    pub fn transform_slice(&self, xy: &mut [(f64, f64)]) -> Result<()> {
+        if self.is_identity_2d() {
+            return Ok(());
+        }
+        for p in xy.iter_mut() {
+            *p = self.transform(p.0, p.1)?;
+        }
+        Ok(())
+    }
+
+    /// Transforms points in place, each as [`transform`](Self::transform) does, setting the
+    /// points it fails for to `(NaN, NaN)` and going on, and returns how many there were. For
+    /// renderers, which draw what transforms and skip the rest, such as a grid of pixels reaching
+    /// beyond a projection's domain.
+    ///
+    /// As PROJ 9.8.1's `proj_trans_generic` does, every point that fails is marked, whatever the
+    /// reason: outside a projection's domain or a velocity grid ([`Error::Crs`]), and refused under
+    /// the strict options, such as a missing grid with [`TransformOptions::only_best`]
+    /// ([`Error::MissingGrid`]) or no allowed operation with
+    /// [`TransformOptions::allow_ballpark`] off ([`Error::NoOperation`]). PROJ marks them
+    /// `HUGE_VAL` (infinity); NaN is terrio's choice, so that a marked point is never taken for a
+    /// coordinate. To learn whether a missing grid refused points under `only_best`, call
+    /// [`check_policy`](Self::check_policy) after the batch, as raster workers do; it is not called
+    /// for you. Only errors that are not about a point (I/O, an invalid argument, and any other
+    /// kind) are returned, at once: as with
+    /// [`transform_slice`](Self::transform_slice), the points before it are then transformed (or
+    /// marked), and it and those after it are left as they were.
+    ///
+    /// ```no_run
+    /// use terrio_crs::{SpatialRef, Transformer};
+    ///
+    /// let ortho = SpatialRef::from_proj4("+proj=ortho +lat_0=0 +lon_0=0 +datum=WGS84")?;
+    /// let t = Transformer::new(&SpatialRef::from_epsg(4326)?, &ortho)?;
+    /// let mut points = vec![(10.0, 10.0), (170.0, 0.0)];
+    /// assert_eq!(t.transform_slice_or_nan(&mut points)?, 1); // 170°E is on the far side
+    /// assert!(points[1].0.is_nan());
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
+    pub fn transform_slice_or_nan(&self, xy: &mut [(f64, f64)]) -> Result<usize> {
+        if self.is_identity_2d() {
+            return Ok(0);
+        }
+        let mut failed = 0;
+        for p in xy.iter_mut() {
+            *p = match self.transform(p.0, p.1) {
+                Ok(q) => q,
+                Err(Error::Crs(_) | Error::MissingGrid(_) | Error::NoOperation(_)) => {
+                    failed += 1;
+                    (f64::NAN, f64::NAN)
+                }
+                Err(e) => return Err(e),
+            };
+        }
+        Ok(failed)
+    }
+
+    /// Whether [`transform`](Self::transform) returns every point as it is.
+    fn is_identity_2d(&self) -> bool {
+        self.identity && self.cartesian_src.is_none() && self.cartesian_dst.is_none()
+    }
+
+    /// The transformer of the other direction, from this one's target CRS to its source CRS,
+    /// with the same options, the coordinate epochs swapped, and the same warning handler.
+    ///
+    /// It is built as [`with_options`](Self::with_options) builds one, so it picks its datum
+    /// operations for the other direction as `with_options` picks them for that pair (the tests
+    /// compare both directions with PROJ 9.8.1). Between two dynamic CRSs with both coordinate
+    /// epochs given, each direction runs at its own source epoch, by `with_options`'s rule, so a
+    /// time-dependent transformation is not evaluated at the same time both ways and a round trip
+    /// does not come back to the point. This is not GDAL's `OGRProjCT::GetInverse()`, which
+    /// inverts the forward pipeline; its rounding of degrees is what
+    /// [`with_reverse_degree_division`](Self::with_reverse_degree_division) reproduces, and the
+    /// inverse keeps that rounding when this transformer has it.
+    ///
+    /// ```no_run
+    /// use terrio_crs::{SpatialRef, Transformer};
+    ///
+    /// let lv95 = SpatialRef::from_epsg(2056)?;
+    /// let to_wgs84 = Transformer::new(&lv95, &SpatialRef::from_epsg(4326)?)?;
+    /// let back = to_wgs84.inverse()?;
+    /// let (lon, lat) = to_wgs84.transform(2_600_000.0, 1_200_000.0)?;
+    /// let (e, n) = back.transform(lon, lat)?;
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
+    pub fn inverse(&self) -> Result<Transformer> {
+        let opts = TransformOptions {
+            source_coordinate_epoch: self.policy.target_coordinate_epoch,
+            target_coordinate_epoch: self.policy.source_coordinate_epoch,
+            ..self.policy.clone()
+        };
+        let mut t = Self::with_options(&self.dst_ref, &self.src_ref, &opts)?.with_warning_handler(self.warning_handler);
+        if self.src.inverted_degrees {
+            t = t.with_reverse_degree_division();
+        }
+        Ok(t)
     }
 
     fn best_route(&self) -> &route::Route {
@@ -1805,11 +2513,16 @@ impl Transformer {
 
         let p = match &self.motion {
             Some(steps) => datum::run(steps, p, false, true).ok_or_else(|| {
-                let grids: Vec<String> = steps.iter().flat_map(|s| s.grid_names()).map(|(g, _)| g).collect();
-                Error::Crs(format!(
-                    "cannot move ({x}, {y}) between coordinate epochs: outside the velocity grid, or the grid ({}) is not available",
-                    grids.join(", ")
-                ))
+                let names = steps.iter().flat_map(|s| s.grid_names()).map(|(g, _)| g).collect::<Vec<_>>().join(", ");
+                // A velocity grid that is not there, or whose download failed (with the network
+                // on, a grid counts as available until it is fetched), is a missing grid, not a
+                // point outside it.
+                if datum::grids_missing(steps) {
+                    return Error::MissingGrid(format!(
+                        "cannot move ({x}, {y}) between coordinate epochs: the velocity grid ({names}) is not available; set TERRIO_NETWORK=ON or TERRIO_GRID_DIR"
+                    ));
+                }
+                Error::Crs(format!("cannot move ({x}, {y}) between coordinate epochs: outside the velocity grid ({names})"))
             })?,
             None => p,
         };
@@ -2043,11 +2756,24 @@ impl Transformer {
 
     /// Transforms a bounding box `(min_x, min_y, max_x, max_y)`, densifying its edges so that
     /// curved edges in the target CRS are covered. Points that fail to transform are skipped.
+    /// Uses 21 interior points per edge, as GDAL 3.12.1 does by default.
     pub fn transform_bounds(&self, b: (f64, f64, f64, f64)) -> Result<(f64, f64, f64, f64)> {
-        const STEPS: usize = 20;
+        self.transform_bounds_densified(b, 21)
+    }
+
+    /// Transforms bounds with `densify` interior points per edge. Projected boxes containing
+    /// a pole include that pole and the full longitude range in a geographic target CRS.
+    /// Geographic antimeridian crossings retain scalar longitude minima and maxima; wrapped
+    /// bounds with `min_x > max_x` are not produced.
+    /// Counts above 65,536 interior points per edge are refused to bound computation time.
+    pub fn transform_bounds_densified(&self, b: (f64, f64, f64, f64), densify: usize) -> Result<(f64, f64, f64, f64)> {
+        let steps = densify.checked_add(1).ok_or_else(|| Error::Crs("densify count is too large".into()))?;
+        if densify > 65_536 {
+            return Err(Error::Crs("densify count must not exceed 65536 interior points per edge".into()));
+        }
         let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
-        for i in 0..=STEPS {
-            let t = i as f64 / STEPS as f64;
+        for i in 0..=steps {
+            let t = i as f64 / steps as f64;
             let x = b.0 + (b.2 - b.0) * t;
             let y = b.1 + (b.3 - b.1) * t;
             for (px, py) in [(x, b.1), (x, b.3), (b.0, y), (b.2, y)] {
@@ -2065,13 +2791,133 @@ impl Transformer {
         if !x0.is_finite() {
             return Err(Error::Crs("no point of the bounds could be transformed".into()));
         }
+        if self.src.is_projected() && self.dst.is_geographic() {
+            // Synthetic probes must not record diagnostics or change operation reporting for
+            // actual edge coordinates. In particular, UTM's projected pole is usually outside
+            // the box and outside the datum operation's area of use.
+            route::recording(|| {
+                let reverse = self.bounds_reverse_route.get_or_init(|| route::Route::new(&self.dst, &self.src));
+                for lat in [std::f64::consts::FRAC_PI_2, -std::f64::consts::FRAC_PI_2] {
+                    let probe = || -> Option<()> {
+                        let (px, py) = self.dst.project(0.0, lat)?;
+                        let p = datum::Point { lon: 0.0, lat, h: 0.0, t: self.time };
+                        let mut q = reverse.apply(&self.dst, px, py, p, false)?;
+                        if let Some(steps) = &self.motion {
+                            q = datum::run(steps, q, true, true)?;
+                        }
+                        let (sx, sy) = self.src.project(q.lon, q.lat)?;
+                        if !(b.0 < sx && sx < b.2 && b.1 < sy && sy < b.3) {
+                            return None;
+                        }
+                        let (lon, phi) = self.src.unproject(sx, sy)?;
+                        let mut p = datum::Point { lon, lat: phi, h: 0.0, t: self.time };
+                        if let Some(steps) = &self.motion {
+                            p = datum::run(steps, p, false, true)?;
+                        }
+                        let q = self.bounds_probe_forward(sx, sy, p)?;
+                        if !q.lat.is_finite() || (q.lat - lat).abs() > 1e-10 {
+                            return None;
+                        }
+                        Some(())
+                    };
+                    if probe().is_some() {
+                        for (x, y) in self.dst.pole_bounds(lat) {
+                            x0 = x0.min(x);
+                            y0 = y0.min(y);
+                            x1 = x1.max(x);
+                            y1 = y1.max(y);
+                        }
+                    }
+                }
+            });
+        }
         Ok((x0, y0, x1, y1))
+    }
+
+    /// Apply the forward policy to a synthetic bounds probe without recording diagnostics.
+    fn bounds_probe_forward(&self, x: f64, y: f64, p: datum::Point) -> Option<datum::Point> {
+        if self.policy.only_best && !self.route.same_datum() {
+            let route = self.best_route();
+            let (selected, _) = route.selected(&self.src, x, y, p);
+            if selected.is_some_and(|op| !op.available())
+                || (self.policy.allow_ballpark == Some(false) && selected.is_none_or(|op| op.ballpark))
+            {
+                return None;
+            }
+            route.apply_selected(&self.src, x, y, p, false, selected)
+        } else {
+            let refused_ballpark = std::cell::Cell::new(false);
+            let q = self.route.apply_reporting(&self.src, x, y, p, false, &|op, _| {
+                if self.policy.allow_ballpark == Some(false) && op.is_none_or(|op| op.ballpark) {
+                    refused_ballpark.set(true);
+                }
+            })?;
+            (!refused_ballpark.get()).then_some(q)
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Polar bounds from GDAL 3.12.1 include an interior pole and every longitude.
+    #[test]
+    fn transform_bounds_contains_interior_poles() {
+        for (code, pole) in [(3413, 90.0), (3995, 90.0), (3031, -90.0), (3976, -90.0)] {
+            let t = Transformer::new(&SpatialRef::from_epsg(code).unwrap(), &SpatialRef::from_epsg(4326).unwrap()).unwrap();
+            let b = t.transform_bounds((-1e6, -1e6, 1e6, 1e6)).unwrap();
+            assert_eq!((b.0, b.2), (-180.0, 180.0), "EPSG:{code}: {b:?}");
+            assert_eq!(if pole > 0.0 { b.3 } else { b.1 }, pole, "EPSG:{code}: {b:?}");
+        }
+    }
+
+    #[test]
+    fn transform_bounds_probes_do_not_record_diagnostics() {
+        let t = Transformer::new(&SpatialRef::from_epsg(25830).unwrap(), &SpatialRef::from_epsg(4326).unwrap()).unwrap();
+        let b = t.transform_bounds((500_000.0, 4_000_000.0, 600_000.0, 4_100_000.0)).unwrap();
+        assert!(b.0 > -4.0 && b.2 < -1.0 && b.1 > 35.0 && b.3 < 38.0, "{b:?}");
+        assert_eq!(t.diagnostics.load(std::sync::atomic::Ordering::Relaxed), 0);
+        // Real out-of-area coordinates must still record a warning.
+        t.transform(500_000.0, -4_000_000.0).unwrap();
+        assert_ne!(t.diagnostics.load(std::sync::atomic::Ordering::Relaxed) & 4, 0);
+    }
+
+    #[test]
+    fn transform_bounds_probe_refuses_an_unavailable_best_operation() {
+        let source = SpatialRef::parse("+proj=stere +lat_0=90 +datum=NAD27").unwrap();
+        let target = SpatialRef::from_epsg(4326).unwrap();
+        let mut t = Transformer::with_options(&source, &target, &TransformOptions { only_best: true, ..Default::default() }).unwrap();
+        // A world-covering required grid whose file cannot exist, independent of installed
+        // PROJ data. The ordinary NAD27 route remains available as a fallback.
+        let directory = tempfile::tempdir().unwrap();
+        let grid = directory.path().join("missing.gsb");
+        let ideal = Def::from_proj(&format!("+proj=stere +lat_0=90 +ellps=clrk66 +nadgrids={}", grid.display())).unwrap();
+        assert!(t.best_route.set(route::Route::all(&ideal, &t.dst)).is_ok());
+        let p = datum::Point { lon: 0.0, lat: std::f64::consts::FRAC_PI_2, h: 0.0, t: None };
+        assert!(t.bounds_probe_forward(0.0, 0.0, p).is_none());
+        assert_eq!(t.diagnostics.load(std::sync::atomic::Ordering::Relaxed), 0);
+        t.policy.only_best = false;
+        assert!(t.bounds_probe_forward(0.0, 0.0, p).is_some());
+        t.policy.only_best = true;
+        assert!(matches!(t.transform(0.0, 0.0), Err(Error::MissingGrid(_))));
+        assert_ne!(t.diagnostics.load(std::sync::atomic::Ordering::Relaxed) & 2, 0);
+    }
+
+    #[test]
+    fn transform_bounds_uses_requested_densification() {
+        let t = Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &SpatialRef::from_epsg(5070).unwrap()).unwrap();
+        let b = (-100.0, 30.0, -90.0, 40.0);
+        let corners = t.transform_bounds_densified(b, 0).unwrap();
+        let dense = t.transform_bounds_densified(b, 21).unwrap();
+        assert!(dense.1 < corners.1, "{dense:?} {corners:?}");
+        assert_eq!(dense, t.transform_bounds(b).unwrap());
+        assert!(t.transform_bounds_densified(b, usize::MAX).is_err());
+        assert!(t.transform_bounds_densified(b, 65_537).is_err());
+        let identity = Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &SpatialRef::from_epsg(4326).unwrap()).unwrap();
+        assert_eq!(identity.transform_bounds_densified(b, 65_536).unwrap(), b);
+        assert!(t.transform_bounds((f64::NAN, f64::NAN, f64::NAN, f64::NAN)).is_err());
+    }
 
     /// GDAL 3.12.1 axis predicates: projected, geographic, 3D and non-NE controls.
     #[test]

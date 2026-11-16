@@ -140,7 +140,7 @@ pub(crate) fn split_options(options: &JsValue, keys: &[&str]) -> Result<(JsValue
 }
 
 pub(crate) fn srs(s: Option<&str>) -> Result<Option<SpatialRef>, JsError> {
-    s.map(SpatialRef::parse).transpose().map_err(js_err)
+    s.map(SpatialRef::parse_literal).transpose().map_err(js_err)
 }
 
 /// A number, a list of numbers, or a word (`"none"`).

@@ -155,7 +155,7 @@ pub fn plan(source: &RasterDataset, options: &TileOptions) -> Result<(TilePlan, 
     if scheme == "raster" {
         let mut plan = TilePlan::raster(r.cols, r.rows, source.geo_transform(), &options.grid)?;
         let crs = source.crs();
-        plan.crs = crs.authority_code().or_else(|| crs.to_wkt()).or(crs.proj4);
+        plan.crs = crs.authority_code().or_else(|| crs.to_file_wkt()).or(crs.proj4);
         validate_publication(&plan)?;
         return Ok((plan, None));
     }

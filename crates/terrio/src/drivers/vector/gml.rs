@@ -8,7 +8,7 @@
 //!
 //! Reading makes one layer per feature type, with a `gml_id` field, field types from the
 //! application schema (`.xsd` next to the file) or inferred from the values, geometries in GML 2
-//! or 3 encodings, and the CRS from `srsName`. Authority-order EPSG names (URNs or modern URLs)
+//! or 3 encodings, and the CRS from `srsName`. Authority-order names (URNs or modern URLs)
 //! with north/east axes are normalized to GIS XY, including northing-first projected CRSs.
 //!
 //! Writing produces GML 3.2 with an `.xsd` schema, like GDAL's default output.
@@ -220,7 +220,16 @@ fn parse_impl(root: &Element, xsd: Option<&Element>, compiled: Option<&Applicati
             {
                 Some(parse_srs_name(name)?)
             }
-            _ => srs_name.and_then(|srs| parse_srs_name(srs).ok()),
+            Some(name) => match parse_srs_name(name) {
+                Ok(srs) => Some(srs),
+                Err(_) => {
+                    let shown = crate::vsi::redact_diagnostic_location(name);
+                    let shown: String = shown.chars().take(120).flat_map(char::escape_debug).collect();
+                    crate::warnings::warn(format!("GML srsName '{shown}' cannot be resolved; reading features without a CRS"));
+                    None
+                }
+            },
+            None => None,
         };
         let swap = srs_name.is_some_and(authority_axis_order) && srs.as_ref().is_some_and(SpatialRef::has_north_east_axis_order);
         let dimension = if srs.as_ref().is_some_and(|srs| srs.compound_parts().is_some()) { 3 } else { 2 };
@@ -396,11 +405,11 @@ pub(crate) fn parse_srs_name(name: &str) -> Result<SpatialRef> {
     SpatialRef::parse_literal(name)
 }
 
-/// Whether a srsName form declares authority axis order: URNs and modern `/def/crs/` URLs,
-/// but not short `EPSG:` names or the old `epsg.xml#` URLs. The CRS determines whether to swap.
+/// EPSG, ESRI and IAU URNs and modern URLs declare authority axis order.
+/// Short identifiers, legacy EPSG URLs and OGC CRS84/CRS27/CRS83 retain XY.
 pub(crate) fn authority_axis_order(srs_name: &str) -> bool {
     let s = srs_name.to_ascii_lowercase();
-    (s.starts_with("urn:") || s.contains("/def/crs/")) && s.contains("epsg")
+    (s.starts_with("urn:") || s.contains("/def/crs/")) && ["epsg", "esri", "iau_2015"].iter().any(|authority| s.contains(authority))
 }
 
 fn swap_xy(g: Geometry) -> Geometry {
@@ -542,8 +551,9 @@ pub fn geometry(e: &Element, dim: usize) -> Option<Geometry> {
 pub fn write(layer: &Layer, path: &str) -> Result<()> {
     let p = Path::new(path);
     let schema_name = p.with_extension("xsd").file_name().and_then(|s| s.to_str()).unwrap_or("schema.xsd").to_string();
+    let text = to_string(layer, &schema_name)?;
     std::fs::write(p.with_extension("xsd"), xsd(layer))?;
-    std::fs::write(path, to_string(layer, &schema_name))?;
+    std::fs::write(path, text)?;
     Ok(())
 }
 
@@ -617,16 +627,39 @@ fn xsd(layer: &Layer) -> String {
 }
 
 /// Encodes a layer as GML 3.2 referring to the application schema file `schema` (none when empty).
-pub fn to_string(layer: &Layer, schema: &str) -> String {
+pub fn to_string(layer: &Layer, schema: &str) -> Result<String> {
     let name = element_name(&layer.name);
-    let code = super::naming_epsg(layer);
+    let reference = SpatialRef::from_layer(layer);
+    let authority = match reference.authority() {
+        // A refused ESRI claim must not fall back to a nested geographic EPSG identifier.
+        Some(("ESRI", _)) => reference.trusted_esri().map(|code| ("ESRI", code)),
+        Some((authority, code)) if authority != "EPSG" => Some((authority, code)),
+        _ => super::naming_epsg(layer).map(|code| ("EPSG", code)),
+    }
+    // A horizontal code alone cannot name a retained compound definition.
+    .filter(|(authority, code)| {
+        reference.compound_parts().is_none_or(|parts| {
+            SpatialRef::parse_literal(&format!("{authority}:{code}")).ok().and_then(|s| s.compound_parts()) == Some(parts)
+        })
+    });
+    if authority.is_none() && !reference.is_unknown() {
+        return Err(Error::Unsupported(
+            "GML cannot name this layer's CRS: reproject to a named CRS or use a format that stores CRS definitions".into(),
+        ));
+    }
     // Only a resolvable authority declares recoverable authority axes. Keep unknown codes
     // in the legacy XY naming convention, so reading them cannot silently transpose coordinates.
-    let canonical = code.and_then(|code| SpatialRef::from_epsg(code).ok());
+    let canonical = authority.and_then(|(authority, code)| SpatialRef::parse_literal(&format!("{authority}:{code}")).ok());
     let swap = canonical.as_ref().is_some_and(SpatialRef::has_north_east_axis_order);
-    let srs = code
-        .map(|c| {
-            let name = if canonical.is_some() { format!("urn:ogc:def:crs:EPSG::{c}") } else { format!("EPSG:{c}") };
+    let srs = authority
+        .map(|(authority, code)| {
+            let name = if canonical.is_some() {
+                format!("urn:ogc:def:crs:{authority}::{code}")
+            } else {
+                let name = format!("{authority}:{code}");
+                crate::warnings::warn(format!("GML writes unresolved srsName '{name}'; Terrio will read it without a CRS"));
+                name
+            };
             format!(r#" srsName="{name}""#)
         })
         .unwrap_or_default();
@@ -680,7 +713,7 @@ pub fn to_string(layer: &Layer, schema: &str) -> String {
         let _ = writeln!(s, "    </ogr:{name}>\n  </ogr:featureMember>");
     }
     s.push_str("</ogr:FeatureCollection>\n");
-    s
+    Ok(s)
 }
 
 fn pos_list(s: &mut String, cs: &[Coord], close: bool, swap: bool) {
@@ -774,6 +807,37 @@ fn write_geometry(s: &mut String, g: &Geometry, srs: &str, swap: bool, id: &str,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unresolved_gml_names_warn_and_preserve_coordinates() {
+        for name in ["EPSG:5800", "urn:ogc:def:crs:EPSG::5800", "urn:ogc:def:crs:FOO::1"] {
+            crate::warnings::take();
+            let text = format!(
+                "<FeatureCollection><featureMember><p><geom><Point srsName=\"{name}\"><pos>12000 34000</pos></Point></geom></p></featureMember></FeatureCollection>"
+            );
+            let layers = parse(&xml::parse(&text).unwrap(), None).unwrap();
+            assert!(SpatialRef::from_layer(&layers[0]).is_unknown());
+            assert_eq!(layers[0].features[0].geometry, Some(Geometry::point(12000., 34000.)));
+            let warnings = crate::warnings::take();
+            assert_eq!(warnings.len(), 1);
+            assert!(warnings[0].contains(name));
+            assert!(warnings[0].contains("cannot be resolved"));
+        }
+    }
+
+    /// GDAL 3.12.1 reads the IAU URN's latitude-first coordinates back in GIS XY order.
+    #[test]
+    fn named_non_epsg_authorities_preserve_coordinates() {
+        for name in ["ESRI:102003", "IAU_2015:49900"] {
+            let mut layer = Layer::new("points");
+            SpatialRef::parse_literal(name).unwrap().apply_to_layer(&mut layer);
+            layer.push(Feature { fid: 0, geometry: Some(Geometry::point(12., 34.)), attributes: vec![] });
+            let text = to_string(&layer, "").unwrap();
+            let restored = parse(&xml::parse(&text).unwrap(), None).unwrap();
+            assert_eq!(SpatialRef::from_layer(&restored[0]).authority(), SpatialRef::from_layer(&layer).authority());
+            assert_eq!(restored[0].features[0].geometry, layer.features[0].geometry);
+        }
+    }
 
     /// GDAL 3.13.3 keeps both compound components and normalizes only horizontal XY.
     #[test]
@@ -931,7 +995,7 @@ mod tests {
             geometry: Some(Geometry::Point(Coord { x: 561_996.39, y: 4_823_832.72, z: Some(7.0), m: None })),
             attributes: vec![],
         });
-        let text = to_string(&layer, "");
+        let text = to_string(&layer, "").unwrap();
         assert!(text.contains(">4823832.72 561996.39 7<"), "{text}");
         assert!(text.contains("<gml:lowerCorner>4823832.72 561996.39</gml:lowerCorner>"), "{text}");
         let restored = &parse(&xml::parse(&text).unwrap(), None).unwrap()[0];
@@ -947,11 +1011,25 @@ mod tests {
             r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],AUTHORITY["EPSG","4326"]]"#.into(),
         ));
         layer.push(Feature { fid: 0, geometry: Some(Geometry::point(12.24, 43.56)), attributes: vec![] });
-        let text = to_string(&layer, "");
+        let text = to_string(&layer, "").unwrap();
         assert!(text.contains("urn:ogc:def:crs:EPSG::4326"), "{text}");
         assert!(text.contains(">43.56 12.24<"), "{text}");
         let restored = &parse(&xml::parse(&text).unwrap(), None).unwrap()[0];
         assert_eq!(restored.features[0].geometry, layer.features[0].geometry);
+    }
+
+    #[test]
+    fn gml_refuses_an_esri_code_that_conflicts_with_stored_parameters() {
+        let canonical = SpatialRef::parse_literal("ESRI:102003").unwrap().to_wkt().unwrap();
+        let changed = canonical.replace(r#"PARAMETER["longitude_of_center",-96]"#, r#"PARAMETER["longitude_of_center",-95]"#);
+        assert_ne!(changed, canonical);
+        let mut layer = Layer::new("places");
+        // GML attaches srsName to an envelope or geometry, so the success control needs one.
+        layer.push(Feature { fid: 0, geometry: Some(Geometry::point(12., 34.)), attributes: vec![] });
+        layer.set_crs_wkt(Some(changed));
+        assert!(matches!(to_string(&layer, ""), Err(Error::Unsupported(message)) if message.contains("cannot name")));
+        layer.set_crs_wkt(Some(canonical));
+        assert!(to_string(&layer, "").unwrap().contains("urn:ogc:def:crs:ESRI::102003"));
     }
 
     #[test]
@@ -965,7 +1043,7 @@ mod tests {
             let mut layer = Layer::new("places").with_epsg(999999);
             layer.set_crs_wkt(Some(wkt.into()));
             layer.push(Feature { fid: 0, geometry: Some(Geometry::point(12.24, 43.56)), attributes: vec![] });
-            let text = to_string(&layer, "");
+            let text = to_string(&layer, "").unwrap();
             assert!(text.contains(r#"srsName="EPSG:999999""#), "{text}");
             assert!(text.contains(">12.24 43.56<"), "{text}");
             let restored = &parse(&xml::parse(&text).unwrap(), None).unwrap()[0];
@@ -1085,7 +1163,7 @@ mod tests {
             geometry: Some(Geometry::point(10.5, 45.0)),
             attributes: vec![FieldValue::Text("A & B".into()), FieldValue::Float(1.5)],
         });
-        let text = to_string(&l, "places.xsd");
+        let text = to_string(&l, "places.xsd").unwrap();
         let schema = xml::parse(&xsd(&l)).unwrap();
         let back = &parse(&xml::parse(&text).unwrap(), Some(&schema)).unwrap()[0];
         assert_eq!(back.features[0].geometry, Some(Geometry::point(10.5, 45.0)));

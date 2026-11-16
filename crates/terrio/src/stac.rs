@@ -514,22 +514,17 @@ impl AssetReadPolicy {
 /// travel together; the lexical scope itself stays on the thread that enters it.
 pub(crate) struct AssetReadContext {
     policy: Option<AssetReadPolicy>,
-    options: std::collections::HashMap<String, Option<String>>,
+    options: crate::config::ThreadOptions,
 }
 
 pub(crate) struct AssetReadContextScope {
     _policy: Option<AssetReadScope>,
-}
-
-impl Drop for AssetReadContextScope {
-    fn drop(&mut self) {
-        crate::config::pop_scope();
-    }
+    _options: crate::config::ThreadOptionsScope,
 }
 
 impl AssetReadContext {
     pub(crate) fn capture(policy: Option<AssetReadPolicy>) -> Self {
-        Self { policy, options: crate::config::thread_options() }
+        Self { policy, options: crate::config::ThreadOptions::capture() }
     }
 
     pub(crate) fn check(&self) -> Result<()> {
@@ -538,8 +533,8 @@ impl AssetReadContext {
     }
 
     pub(crate) fn enter(&self) -> Result<AssetReadContextScope> {
-        crate::config::push_scope(self.options.clone());
-        let mut scope = AssetReadContextScope { _policy: None };
+        let options = self.options.enter();
+        let mut scope = AssetReadContextScope { _policy: None, _options: options };
         scope._policy = Some(match &self.policy {
             Some(policy) => policy.enter()?,
             // A snapshot without provenance must clear a suspended worker task's policy too.
@@ -1146,7 +1141,10 @@ fn load_items_from(doc: Value, request: &Request, max_items: usize) -> Result<It
             }
         }
         None => {
-            return Err(bad(format!("'{loc}' is not a STAC item, item collection, collection or catalog")));
+            return Err(bad(format!(
+                "'{}' is not a STAC item, item collection, collection or catalog",
+                crate::vsi::redact_diagnostic_location(loc)
+            )));
         }
     }
     Ok(out)
@@ -1570,10 +1568,12 @@ fn crs_of(s: &str) -> SpatialRef {
             return r;
         }
         if let Some(w) = crate::drivers::vector::projjson::to_wkt1(&v) {
-            return SpatialRef::from_wkt(&w);
+            // WKT built from PROJJSON, whose names keep a NUL JSON gives (`\u0000`): its names
+            // cut there (`wkt_for_files`), so the WKT reads whole.
+            return SpatialRef::from_wkt(&terrio_crs::wkt_for_files(&w));
         }
     }
-    SpatialRef::parse(s).unwrap_or_default()
+    SpatialRef::parse_literal(s).unwrap_or_default()
 }
 
 /// A mosaic of the files of a STACIT subdataset, read by window.
@@ -1630,7 +1630,12 @@ impl WindowSource for Mosaic {
             let r = raster.as_mut().ok_or_else(|| bad("unreachable"))?;
             let (sw, sh) = (sx1 - sx0, sy1 - sy0);
             if sx1 > r.width() || sy1 > r.height() {
-                return Err(bad(format!("{} is {}x{}, smaller than its STAC metadata says", item.href, r.width(), r.height())));
+                return Err(bad(format!(
+                    "{} is {}x{}, smaller than its STAC metadata says",
+                    crate::vsi::redact_diagnostic_location(&item.href),
+                    r.width(),
+                    r.height()
+                )));
             }
             let source_bytes = [sw, sh, bands.len(), r.data_type().size_bytes()].iter().try_fold(1usize, |n, &size| n.checked_mul(size));
             let validity_bytes = if self.nodata.is_some() { sw.checked_mul(sh) } else { Some(0) };
@@ -3660,5 +3665,24 @@ mod tests {
     fn sanitizes_crs_like_gdal() {
         assert_eq!(sanitize_crs("EPSG:32613"), "EPSG_32613");
         assert_eq!(sanitize_crs("{\"a\": 1}"), "_a_1");
+    }
+
+    /// A STAC CRS given as PROJJSON with a NUL (`\u0000`) in its name (EPSG:32631's PROJ 9.8.1
+    /// PROJJSON without its code) is read as without it: the WKT built from it has the name cut at the NUL.
+    #[test]
+    fn a_projjson_crs_with_a_nul_in_its_name_is_read() {
+        // EPSG:32631's PROJ 9.8.1 PROJJSON without its code, so that it is read through WKT.
+        let data: serde_json::Value = serde_json::from_str(include_str!("../../terrio-crs/tests/data/wkt1_proj_reads.json")).unwrap();
+        let mut v: serde_json::Value = serde_json::from_str(data["projjson"]["projjson"].as_str().unwrap()).unwrap();
+        v.as_object_mut().unwrap().remove("id");
+        let plain = v.to_string();
+        v["name"] = "WGS\0 84 / UTM zone 31N".into();
+        let text = v.to_string();
+        assert!(text.contains(r"WGS\u0000 84"), "{text}");
+        let (nul, plain) = (super::crs_of(&text), super::crs_of(&plain));
+        assert!(plain.to_proj4().is_some());
+        assert_eq!(nul.to_proj4(), plain.to_proj4());
+        // Read through the WKT 1 built from it, not as PROJJSON text.
+        assert!(nul.wkt.as_deref().is_some_and(|w| w.starts_with("PROJCS[\"WGS\",")), "{:?}", nul.wkt);
     }
 }

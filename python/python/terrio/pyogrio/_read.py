@@ -38,6 +38,7 @@ import numpy as np
 from terrio import _terrio
 from terrio import errors as _terrio_errors
 from terrio._crs import dataframe_crs as _crs
+from terrio._terrio import _redact_diagnostic_location as _redact
 from terrio.pyogrio.errors import DataLayerError, DataSourceError
 
 _INT32 = (-(2**31), 2**31 - 1)
@@ -77,7 +78,7 @@ def _vsizip(archive: str, member: str | None) -> _Located:
             with zipfile.ZipFile(archive) as z:
                 names = [n for n in z.namelist() if not n.endswith("/")]
         except (OSError, zipfile.BadZipFile) as e:
-            raise DataSourceError(f"{archive}: {e}") from None
+            raise DataSourceError(f"{_redact(archive)}: {_redact(str(e))}") from None
         if len(names) == 1:
             member = names[0]
         else:
@@ -97,7 +98,7 @@ def _directory(directory: str) -> _Located:
     """
     names = sorted(n for n in os.listdir(directory) if n.lower().endswith(".shp"))
     if not names:
-        raise DataSourceError(_NOT_RECOGNIZED.format(directory))
+        raise DataSourceError(_NOT_RECOGNIZED.format(_redact(directory)))
     return _shapefiles(directory, names, lambda n: os.path.join(directory, n))
 
 
@@ -123,23 +124,46 @@ def _local_path(path: str) -> _Located:
     return path, None
 
 
-def _spill_name(data: bytes) -> str:
+def _spill_name(data: bytes, filename: str | None = None) -> str:
     """A file name telling terrio the format of bytes, from their content.
 
     Args:
         data: Uploaded bytes, identified without opening a file or decoding a dataset.
+        filename: Optional file-object basename, used for unsigned formats and layer names.
 
     Returns:
         str: A filename derived from the core's shared vector identifiers.
 
     Raises:
-        DataSourceError: Content cannot be identified without a filename.
+        DataSourceError: Content needs a filename or exceeds archive resource limits.
     """
-    if data[:4] == b"PK\x03\x04":
-        return "data.zip"
-    extension = _terrio.vector_byte_extension(data)
+    try:
+        extension = _terrio.vector_byte_extension(data)
+    except _terrio_errors.TerrioError as error:
+        raise DataSourceError(str(error)) from error
     if extension is not None:
-        return f"data.{extension}"
+        if extension in {"zip", "kmz"} and filename and Path(filename).suffix.lower() == ".zip":
+            return filename
+        if (
+            extension == "geojson"
+            and filename
+            and Path(filename).suffix.lower() in (".geojsonl", ".geojsons", ".geojsonseq")
+        ):
+            return filename
+        return str(Path(filename).with_suffix(f".{extension}")) if filename else f"data.{extension}"
+    if data.startswith(b"SQLite format 3\0"):
+        if filename and Path(filename).suffix.lower() in {".mbtiles", ".gpkg"}:
+            return filename
+        if filename:
+            raise DataSourceError(
+                f"SQLite buffer '{filename}' needs a .mbtiles or .gpkg filename "
+                "to identify its format"
+            )
+        raise DataSourceError(
+            "SQLite buffer needs a filename to distinguish MBTiles from GeoPackage"
+        )
+    if filename and Path(filename).suffix:
+        return filename
     raise DataSourceError(_NOT_RECOGNIZED.format("/vsimem/pyogrio"))
 
 
@@ -155,9 +179,15 @@ class _Source:
     def __init__(self, path_or_buffer):
         self._tmp = None
         self._names = None
+        self._archive_input = False
+        filename = None
         if isinstance(path_or_buffer, Path):
             path_or_buffer = str(path_or_buffer)
         if hasattr(path_or_buffer, "read") and not isinstance(path_or_buffer, (str, bytes)):
+            source_name = getattr(path_or_buffer, "name", None)
+            if isinstance(source_name, (str, os.PathLike)):
+                # Uploaded basenames are literal names, not the archive/member path syntax.
+                filename = Path(source_name).name.replace("!", "_")
             data = path_or_buffer.read()
             if hasattr(path_or_buffer, "seekable") and path_or_buffer.seekable():
                 path_or_buffer.seek(0)
@@ -165,17 +195,56 @@ class _Source:
                 data = data.encode("utf-8")
             path_or_buffer = data
         if isinstance(path_or_buffer, (bytes, bytearray, memoryview)):
+            self._input_name = filename or "buffer"
             data = bytes(path_or_buffer)
-            name = _spill_name(data)
+            name = _spill_name(data, filename)
             self._tmp = tempfile.TemporaryDirectory(prefix="terrio-pyogrio-")
             spilled = os.path.join(self._tmp.name, name)
             with open(spilled, "wb") as f:
                 f.write(data)
-            self.path, self.shapefiles = _local_path(spilled)
+            self._archive_input = spilled.lower().endswith(".zip")
+            try:
+                self.path, self.shapefiles = _local_path(spilled)
+            except DataSourceError as error:
+                refusal = self.refusal(error, spilled)
+                self.close()
+                raise refusal from None
             return
         if not isinstance(path_or_buffer, str):
             path_or_buffer = str(path_or_buffer)
+        self._input_name = path_or_buffer
+        self._archive_input = path_or_buffer.lower().endswith((".zip", ".zip!", ".zip/"))
         self.path, self.shapefiles = _local_path(path_or_buffer)
+
+    def refusal(self, error: Exception, path: str | None = None) -> DataSourceError:
+        """Name a native refusal after the caller's input rather than its temporary copy.
+
+        Args:
+            error: The archive-resolution, native read or layer-inspection error.
+            path: The selected layer or spilled input's resolved path, if available.
+
+        Returns:
+            DataSourceError: A refusal retaining its reason and caller-visible location.
+        """
+        shown = _redact(self._input_name)
+        if isinstance(error, _terrio_errors.NotFoundError):
+            return DataSourceError(f"{shown}: No such file or directory")
+        message = str(error)
+        # Match the native refusal category narrowly: other UnsupportedError values can
+        # contain useful malformed-member diagnostics. Buffer routing tests pin this bridge.
+        if message.startswith("no dataset found in ") or (
+            self._archive_input
+            and isinstance(error, _terrio_errors.UnsupportedError)
+            and "format not recognized by terrio's drivers" in message
+        ):
+            return DataSourceError(f"no dataset found in '{shown}'")
+        if self._tmp is not None:
+            resolved = path or self.path
+            message = message.replace(resolved, shown).replace(_redact(resolved), shown)
+            message = message.replace(self._tmp.name, shown)
+            if shown not in message:
+                message = f"'{shown}': {message}"
+        return DataSourceError(_redact(message))
 
     def layer_names(self) -> list[str]:
         """The dataset's layers, in its order.
@@ -189,16 +258,16 @@ class _Source:
             else:
                 try:
                     self._names = _terrio.list_layers(self.path)
-                except _terrio_errors.NotFoundError as e:
-                    raise DataSourceError(f"{self.path}: No such file or directory") from e
                 except _terrio_errors.TerrioError as e:
-                    raise DataSourceError(str(e)) from e
+                    raise self.refusal(e) from None
+            if not self._names and self.path.lower().endswith((".zip", ".kmz", ".xlsx")):
+                raise DataSourceError(f"no dataset found in '{_redact(self._input_name)}'")
         return self._names
 
     def name(self) -> str:
         """The dataset's file name, as the warnings quote it."""
         container = self.shapefiles[0] if self.shapefiles is not None else self.path
-        return os.path.basename(os.path.normpath(container))
+        return os.path.basename(os.path.normpath(_redact(container)))
 
     def close(self):
         if self._tmp is not None:
@@ -257,13 +326,13 @@ def _open(
     max_features: int | None,
     read_geometry: bool,
     layer: str | None = None,
+    *,
+    source: _Source,
 ) -> dict:
     try:
         return _terrio.pyogrio_read(path, skip_features, max_features, read_geometry, layer)
-    except _terrio_errors.NotFoundError as e:
-        raise DataSourceError(f"{path}: No such file or directory") from e
     except _terrio_errors.TerrioError as e:
-        raise DataSourceError(str(e)) from e
+        raise source.refusal(e, path) from None
 
 
 # ----------------------------------------------------------------------------------------------
@@ -525,7 +594,7 @@ def read_source(
         if source.shapefiles is not None:
             # The shapefile is that layer alone.
             path, layer_name = dict(source.shapefiles[1])[layer_name], None
-    raw = _open(path, skip_features, max_features or None, read_geometry, layer_name)
+    raw = _open(path, skip_features, max_features or None, read_geometry, layer_name, source=source)
     if layer is None:
         names = source.layer_names() if source.shapefiles is not None else raw["layers"]
         if len(names) > 1:

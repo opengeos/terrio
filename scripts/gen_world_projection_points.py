@@ -1,5 +1,6 @@
 """Writes `crates/terrio-crs/tests/data/world_projections.tsv`: PROJ's coordinates for the spherical
-world projections terrio ports from PROJ (Robinson, the Winkels, Gall, Foucaut sinusoidal...).
+world projections terrio ports from PROJ (Robinson, the Winkels, Gall, Foucaut sinusoidal, Eckert IV,
+Natural Earth...).
 
 Usage:
     python scripts/gen_world_projection_points.py
@@ -43,6 +44,10 @@ CASES = [
     "+proj=fouc_s +n=0.3",
     "+proj=mbtfps",
     "+proj=putp4p",
+    "+proj=eck4",
+    "+proj=eck4 +lon_0=-100 +x_0=1000 +y_0=-2000",
+    "+proj=natearth",
+    "+proj=natearth +lon_0=20",
     "+proj=murd2 +lat_1=20 +lat_2=60",
     "+proj=murd2 +lat_1=-30 +lat_2=-60 +lat_0=-40 +lon_0=10",
     "+proj=tissot +lat_1=20 +lat_2=60",

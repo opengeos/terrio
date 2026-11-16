@@ -346,7 +346,7 @@ fn finish_copy(
     let crs = crate::crs::SpatialRef::from_raster_crs(&r.crs);
     let srs = match crs.epsg {
         Some(code) => gdal::spatial_ref::SpatialRef::from_epsg(code).ok(),
-        None => crs.to_wkt().and_then(|wkt| gdal::spatial_ref::SpatialRef::from_wkt(&wkt).ok()),
+        None => crs.to_file_wkt().and_then(|wkt| gdal::spatial_ref::SpatialRef::from_wkt(&wkt).ok()),
     };
     if let Some(srs) = srs {
         mem.set_spatial_ref(&srs).map_err(gdal_err)?;

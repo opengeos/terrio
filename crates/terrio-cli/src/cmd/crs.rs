@@ -9,7 +9,7 @@
 
 use clap::builder::TypedValueParser;
 use std::io::Write;
-use terrio::crs::{AUTHORITIES, CrsKind, CrsQuery, SpatialRef, TransformOptions, Transformer, list_crs};
+use terrio::crs::{AUTHORITIES, AxisOrder, CrsKind, CrsQuery, SpatialRef, TransformOptions, Transformer, list_crs};
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -21,8 +21,18 @@ pub struct Args {
     wkt: bool,
     /// Print only the PROJJSON definition, so that the output is a PROJJSON file (refused for a CRS
     /// it would describe wrongly).
-    #[arg(long, conflicts_with_all = ["to", "wkt", "coords", "dimension", "transform_options", "s_coord_epoch", "t_coord_epoch"])]
+    #[arg(long, conflicts_with_all = ["to", "wkt", "proj4", "wkt1_strict", "coords", "dimension", "transform_options", "s_coord_epoch", "t_coord_epoch"])]
     projjson: bool,
+    /// Print only the PROJ string, as `projinfo -o PROJ` writes it (an error for a CRS PROJ has
+    /// none for, such as an engineering CRS). It leaves out what a PROJ string cannot hold, such as
+    /// the datum transformation of an EPSG CRS: keep the code or WKT to keep the CRS.
+    #[arg(long, conflicts_with_all = ["to", "wkt", "wkt1_strict", "coords", "dimension", "transform_options", "s_coord_epoch", "t_coord_epoch"])]
+    proj4: bool,
+    /// Print only the WKT 1 without GDAL's PROJ4 extension, for formats whose readers ignore it
+    /// (a `.prj` file), as PROJ's `WKT1_GDAL` (an error where WKT 1 needs the extension, such as a
+    /// datum grid, or PROJ writes no WKT 1, such as a geographic 3D CRS).
+    #[arg(long, conflicts_with_all = ["to", "wkt", "coords", "dimension", "transform_options", "s_coord_epoch", "t_coord_epoch"])]
+    wkt1_strict: bool,
     /// Transform coordinates into this CRS. Reads `x y` pairs from the arguments, or lines of
     /// `x y`, `x y z` or `x y z t` (t: a decimal year) from standard input when none are given,
     /// as `gdaltransform` does (printing `transformation failed.` for a point that fails).
@@ -55,19 +65,47 @@ pub fn run(a: Args) -> terrio::Result<()> {
         println!("{}", src.to_projjson()?);
         return Ok(());
     }
+    if a.wkt1_strict {
+        let wkt = src
+            .to_wkt1_strict()
+            .ok_or_else(|| terrio::Error::InvalidArgument(format!("{} has no WKT 1 without the PROJ4 extension", src.label())))?;
+        println!("{}", terrio::crs::escape_nul(&wkt));
+        return Ok(());
+    }
+    if a.proj4 {
+        let proj = src.to_proj4().ok_or_else(|| terrio::Error::InvalidArgument(format!("{} has no PROJ string", src.label())))?;
+        println!("{proj}");
+        return Ok(());
+    }
     let Some(to) = a.to else {
-        println!("{}", src.label());
+        println!("{}", terrio::crs::escape_nul(&src.label()));
         if let Some(name) = src.name() {
-            println!("Name: {name}");
+            println!("Name: {}", terrio::crs::escape_nul(&name));
         }
         println!("Geographic: {}", src.is_geographic());
         if src.is_geocentric() {
             println!("Geocentric: true");
         }
+        let axes = match src.axis_order() {
+            AxisOrder::EastNorth => "east, north",
+            AxisOrder::NorthEast => "north, east",
+            AxisOrder::Other => "other",
+            _ => "unknown",
+        };
+        println!("Axis order: {axes}");
+        if let Some(body) = src.body() {
+            println!("Body: {body}");
+        }
+        if let Some(p) = src.projection_params() {
+            println!(
+                "Method: {} (lon_0={} lat_0={} k_0={} x_0={} y_0={} prime meridian={} a={} b={} metres per unit={})",
+                p.method, p.lon_0, p.lat_0, p.k_0, p.x_0, p.y_0, p.prime_meridian, p.a, p.b, p.to_meter
+            );
+        }
         if a.wkt
             && let Some(w) = src.to_wkt()
         {
-            println!("{w}");
+            println!("{}", terrio::crs::escape_nul(&w));
         }
         return Ok(());
     };
@@ -131,8 +169,9 @@ pub struct ListArgs {
     /// List deprecated CRSs too, marked `[deprecated]`.
     #[arg(long, visible_alias = "allow-deprecated")]
     include_deprecated: bool,
-    /// Print JSON: an array of `{authority, code, name, kind, deprecated, area_name, bounds,
-    /// projection_method, celestial_body}`, bounds being west, south, east and north in degrees.
+    /// Print JSON: an array of `{authority, code, name, kind, deprecated, replaced_by, area_name,
+    /// bounds, projection_method, celestial_body}`, bounds being west, south, east and north in
+    /// degrees, and replaced_by the codes of the CRSs that replace a deprecated EPSG CRS.
     #[arg(long)]
     json: bool,
 }

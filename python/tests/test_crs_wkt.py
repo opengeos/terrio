@@ -123,12 +123,12 @@ CASES = {
     "putp4p": (f"+proj=putp4p +lon_0=20 {W}", (25.0, 40.0)),
     "murd2": (f"+proj=murd2 +lat_1=30 +lat_2=50 +lon_0=20 {W}", (25.0, 40.0)),
     "tissot": (f"+proj=tissot +lat_1=30 +lat_2=50 +lon_0=20 {W}", (25.0, 40.0)),
-    # Projections terrio computes with wbprojection.
     "moll": (f"+proj=moll +lon_0=20 +x_0=1000 {W}", (25.0, 40.0)),
     "eck4": (f"+proj=eck4 +lon_0=20 {W}", (25.0, 40.0)),
+    "natearth": (f"+proj=natearth +lon_0=20 {W}", (25.0, 40.0)),
+    # Projections terrio computes with wbprojection.
     "eck6": (f"+proj=eck6 +lon_0=20 {W}", (25.0, 40.0)),
     "aitoff": (f"+proj=aitoff +lon_0=20 {W}", (25.0, 40.0)),
-    "natearth": (f"+proj=natearth +lon_0=20 {W}", (25.0, 40.0)),
     "wag3": (f"+proj=wag3 +lon_0=20 {W}", (25.0, 40.0)),
     "kav7": (f"+proj=kav7 +lon_0=20 {W}", (25.0, 40.0)),
     # Units, datum shifts and prime meridians.
@@ -238,10 +238,50 @@ def test_crs_to_projjson():
         trio.CRS.from_user_input("+proj=longlat +lon_0=10 +datum=WGS84").to_projjson()
 
 
-def test_crs_to_projjson_exports_the_file_read_at_construction(tmp_path):
+def test_crs_to_proj4_writes_proj_string():
+    # PROJ 9.8.1's projinfo -o PROJ for the same CRSs.
+    assert (
+        terrio._terrio.crs_to_proj4("EPSG:32632")
+        == "+proj=utm +zone=32 +datum=WGS84 +units=m +no_defs +type=crs"
+    )
+    assert (
+        terrio._terrio.crs_to_proj4("EPSG:4807")
+        == "+proj=longlat +ellps=clrk80ign +pm=paris +no_defs +type=crs"
+    )
+    local = (
+        'LOCAL_CS["Engineering",LOCAL_DATUM["site",0],UNIT["metre",1],'
+        'AXIS["X",EAST],AXIS["Y",NORTH]]'
+    )
+    assert terrio._terrio.crs_to_proj4(local) is None
+
+
+def test_crs_to_wkt1_strict_writes_wkt1_without_the_extension():
+    # PROJ 9.8.1's WKT1_GDAL of EPSG:4326, with GDAL's axes (pyproj 3.8.0,
+    # to_wkt("WKT1_GDAL", output_axis_rule=True)).
+    assert terrio._terrio.crs_to_wkt1_strict("EPSG:4326") == (
+        'GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563,'
+        'AUTHORITY["EPSG","7030"]],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0,'
+        'AUTHORITY["EPSG","8901"]],UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]],'
+        'AXIS["Latitude",NORTH],AXIS["Longitude",EAST],AUTHORITY["EPSG","4326"]]'
+    )
+    # A datum grid needs the PROJ4 extension; PROJ writes no WKT 1 of a geographic 3D CRS.
+    grid = "+proj=longlat +ellps=clrk66 +nadgrids=conus +no_defs"
+    assert terrio._terrio.crs_to_wkt1_strict(grid) is None
+    assert terrio._terrio.crs_to_wkt1_strict("EPSG:4979") is None
+    # The same through rio.CRS.
+    assert trio.CRS.from_epsg(4326).to_wkt1_strict().endswith('AUTHORITY["EPSG","4326"]]')
+    assert trio.CRS.from_user_input(grid).to_wkt1_strict() is None
+
+
+def test_crs_to_projjson_exports_explicitly_read_file_text(tmp_path):
+    """Export a definition that the caller deliberately reads from a file.
+
+    Args:
+        tmp_path: Temporary directory containing the trusted CRS file.
+    """
     prj = tmp_path / "crs.prj"
     prj.write_text(trio.CRS.from_epsg(32632).to_wkt())
-    crs = trio.CRS.from_user_input(str(prj))
+    crs = trio.CRS.from_user_input(prj.read_text())
     prj.unlink()
     assert json.loads(crs.to_projjson())["conversion"]["name"] == "UTM zone 32N"
 

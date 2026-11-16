@@ -382,9 +382,121 @@ pub fn grow_ranges(ranges: &[(u64, u64)], least: u64, block: u64, len: u64) -> V
     out.into_iter().map(|(start, end)| (start, end - start)).collect()
 }
 
+/// The least payload worth another server-runtime request. Small windows keep their merged
+/// runs; large reads can fill the request window without multiplying requests in saturated rounds.
+const MIN_PARALLEL_PIECE: u64 = 256 << 10;
+
+/// Splits a round with fewer runs than request slots, balancing pieces across its largest runs.
+/// Boundaries remain on the sparse file's block grid, with the original final partial block.
+/// No bytes are added or duplicated. `None` leaves an already saturated or small round intact.
+/// Long runs get pieces of at least 256 KiB (or a whole larger block); existing short ranges
+/// remain intact. Ranges that overflow or do not start on the block grid remain for the
+/// caller's usual range validation.
+///
+/// The fetching client selects where this is useful: terrio-js uses it after opening, in
+/// Node.js, Deno and Bun, where extra requests are not queued behind a browser's connection cap.
+/// This request-grouping policy does not change raster decoding or GDAL conformance.
+pub fn parallel_ranges(ranges: &[(u64, u64)], block_size: u64) -> Option<Vec<(u64, u64)>> {
+    if ranges.is_empty() || ranges.len() >= PARALLEL_REQUESTS {
+        return None;
+    }
+    let block = block_size.max(1);
+    let least_blocks = MIN_PARALLEL_PIECE.div_ceil(block).max(1);
+    let mut pieces = [1usize; PARALLEL_REQUESTS];
+    let mut capacity = [1usize; PARALLEL_REQUESTS];
+    for (i, &(offset, len)) in ranges.iter().enumerate() {
+        // Leave invalid ranges for the fetcher's existing validation, without overflowing or
+        // introducing boundaries outside the block grid.
+        if offset.checked_add(len).is_none() || offset % block != 0 {
+            continue;
+        }
+        let full = len / block;
+        let tail = len % block;
+        capacity[i] = (full / least_blocks + u64::from(tail >= MIN_PARALLEL_PIECE)).clamp(1, PARALLEL_REQUESTS as u64) as usize;
+    }
+    let mut count = ranges.len();
+    while count < PARALLEL_REQUESTS {
+        let next = (0..ranges.len()).filter(|&i| pieces[i] < capacity[i]).max_by_key(|&i| ranges[i].1 / pieces[i] as u64);
+        let Some(i) = next else { break };
+        pieces[i] += 1;
+        count += 1;
+    }
+    if count == ranges.len() {
+        return None;
+    }
+    let mut split = Vec::with_capacity(count);
+    for (i, &(offset, len)) in ranges.iter().enumerate() {
+        let n = pieces[i] as u64;
+        if n == 1 {
+            split.push((offset, len));
+            continue;
+        }
+        let full = len / block;
+        let tail = len % block;
+        let (base, extra) = (full / n, full % n);
+        let mut from = offset;
+        for part in 0..n {
+            let bytes = (base + u64::from(part < extra)) * block + if part + 1 == n { tail } else { 0 };
+            split.push((from, bytes));
+            from += bytes;
+        }
+    }
+    Some(split)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parallel_pieces_preserve_ranges_and_partial_blocks() {
+        let block = 16 << 10;
+        let ranges = [(2 * block, (5 << 20) + 17), (20 << 20, 2 << 20)];
+        let pieces = parallel_ranges(&ranges, block).unwrap();
+        assert_eq!(pieces.len(), PARALLEL_REQUESTS);
+        let mut merged: Vec<(u64, u64)> = Vec::new();
+        for &(offset, len) in &pieces {
+            assert_eq!(offset % block, 0);
+            assert!(len >= MIN_PARALLEL_PIECE);
+            let &(start, total) = ranges.iter().find(|&&(start, total)| offset >= start && offset < start + total).unwrap();
+            assert!(offset + len <= start + total);
+            if offset + len < start + total {
+                assert_eq!(len % block, 0);
+            }
+            if let Some(last) = merged.last_mut()
+                && last.0 + last.1 == offset
+            {
+                last.1 += len;
+            } else {
+                merged.push((offset, len));
+            }
+        }
+        assert_eq!(merged, ranges);
+        assert!(pieces.iter().map(|&(_, len)| len).max().unwrap() < ranges[0].1);
+    }
+
+    #[test]
+    fn parallel_pieces_keep_small_and_saturated_rounds_whole() {
+        assert!(parallel_ranges(&[], 16384).is_none());
+        assert!(parallel_ranges(&[(0, MIN_PARALLEL_PIECE * 2 - 1)], 16384).is_none());
+        let ranges: Vec<_> = (0..PARALLEL_REQUESTS).map(|i| ((i as u64) * (16 << 20), 8 << 20)).collect();
+        assert!(parallel_ranges(&ranges, 16384).is_none());
+    }
+
+    #[test]
+    fn parallel_pieces_respect_large_blocks_and_extreme_offsets() {
+        assert_eq!(parallel_ranges(&[(0, 24 << 20)], 16 << 20).unwrap(), [(0, 16 << 20), (16 << 20, 8 << 20)]);
+        let block = 16384;
+        let from = (u64::MAX / block - 1000) * block;
+        let len = 300 * block + 7;
+        let pieces = parallel_ranges(&[(from, len)], block).unwrap();
+        assert_eq!(pieces[0].0, from);
+        assert_eq!(pieces.last().map(|&(off, size)| off + size), Some(from + len));
+        assert_eq!(pieces.iter().map(|&(_, size)| size).sum::<u64>(), len);
+        assert!(parallel_ranges(&[(u64::MAX - 5, 10)], block).is_none());
+        assert!(parallel_ranges(&[(1, 4 << 20)], block).is_none());
+        assert!(parallel_ranges(&[(0, 0)], block).is_none());
+    }
 
     fn data() -> Vec<u8> {
         (0..300_000u32).map(|i| (i * 7 % 251) as u8).collect()

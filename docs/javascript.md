@@ -35,7 +35,7 @@ const [xs, ys] = transformPoints([-122.4], [37.8], "EPSG:4326", "EPSG:32610");
 registerGrid("us_nga_egm96_15.tif", new Uint8Array(await (await fetch(gridUrl)).arrayBuffer()));
 const [lon, lat, h] = transformPoints([-100], [40], "EPSG:4979", "EPSG:4326+5773", [100]);
 transformPoints([135], [-25], "EPSG:7912", "EPSG:7843", [0], { sCoordEpoch: 2010.0 });
-// The registry CRSs, for a CRS picker: [{ authority, code, name, kind, deprecated, area_name, bounds, ... }].
+// The registry CRSs, for a CRS picker: [{ authority, code, name, kind, deprecated, replaced_by, area_name, bounds, ... }].
 const albers = listCrs("albers", { authority: "EPSG", kind: "projected" });
 ```
 

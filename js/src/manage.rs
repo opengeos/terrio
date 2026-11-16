@@ -40,7 +40,7 @@ pub fn create_raster(like: JsValue, options: JsValue) -> Result<Dataset, JsError
         size: a.size,
         band_count: a.band_count,
         data_type: a.ot.as_deref().map(terrio::ops::parse_data_type).transpose().map_err(js_err)?,
-        crs: a.crs.as_deref().map(terrio::crs::SpatialRef::parse).transpose().map_err(js_err)?,
+        crs: a.crs.as_deref().map(terrio::crs::SpatialRef::parse_literal).transpose().map_err(js_err)?,
         bbox: a.bbox,
         nodata: a.nodata,
         unset_nodata: a.unset_nodata,
@@ -154,7 +154,7 @@ pub fn update_raster(src: JsValue, dst: Vec<u8>, options: JsValue) -> Result<Vec
     if a.geometry.is_none() && a.geometry_crs.is_some() {
         return Err(JsError::new("geometryCrs requires geometry"));
     }
-    let crs = a.geometry_crs.as_deref().map(terrio::crs::SpatialRef::parse).transpose().map_err(js_err)?;
+    let crs = a.geometry_crs.as_deref().map(terrio::crs::SpatialRef::parse_literal).transpose().map_err(js_err)?;
     let o = update::UpdateOptions {
         resampling: Resampling::parse(&a.resampling).map_err(js_err)?,
         geometry: a.geometry.as_deref().map(|g| update::parse_geometry(g, crs)).transpose().map_err(js_err)?,
@@ -190,7 +190,7 @@ struct EditArgs {
 pub fn edit_raster(bytes: Vec<u8>, options: JsValue) -> Result<Vec<u8>, JsError> {
     let a: EditArgs = parse_options(&options)?;
     let options = edit::EditOptions {
-        crs: a.crs.as_deref().map(terrio::crs::SpatialRef::parse).transpose().map_err(js_err)?,
+        crs: a.crs.as_deref().map(terrio::crs::SpatialRef::parse_literal).transpose().map_err(js_err)?,
         unset_crs: a.unset_crs,
         geo_transform: a.geotransform,
         bbox: a.bbox,
@@ -235,8 +235,8 @@ pub fn move_raster(bytes: Vec<u8>, options: JsValue) -> Result<JsValue, JsError>
         return Err(JsError::new("tSrs is required"));
     }
     let options = edit::MoveOptions {
-        t_srs: terrio::crs::SpatialRef::parse(&a.t_srs).map_err(js_err)?,
-        s_srs: a.s_srs.as_deref().map(terrio::crs::SpatialRef::parse).transpose().map_err(js_err)?,
+        t_srs: terrio::crs::SpatialRef::parse_literal(&a.t_srs).map_err(js_err)?,
+        s_srs: a.s_srs.as_deref().map(terrio::crs::SpatialRef::parse_literal).transpose().map_err(js_err)?,
         error_threshold: a.error_threshold,
         ignore_cog_layout_break: a.ignore_cog_layout_break,
     };

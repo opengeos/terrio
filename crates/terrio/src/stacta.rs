@@ -69,10 +69,11 @@ pub(crate) fn document_location(path: &str) -> Option<Result<String>> {
 /// `Err` for a `STACTA:` name of more parts, which GDAL does not open.
 fn parse_name(path: &str) -> Option<Result<Name>> {
     let rest = path.trim().strip_prefix("STACTA:")?;
+    let shown = crate::vsi::redact_diagnostic_location(path);
     let (item, tail) = match rest.strip_prefix('"') {
         Some(q) => match q.find('"') {
             Some(end) => (q[..end].to_string(), q[end + 1..].to_string()),
-            None => return Some(Err(bad(format!("unterminated quote in '{path}'")))),
+            None => return Some(Err(bad(format!("unterminated quote in '{shown}'")))),
         },
         // Unquoted: a URL whole, else the item up to the first colon.
         None if rest.contains("://") => (rest.to_string(), String::new()),
@@ -84,10 +85,10 @@ fn parse_name(path: &str) -> Option<Result<Name>> {
     let parts: Vec<String> = match tail.strip_prefix(':') {
         Some(t) => t.split(':').map(str::to_string).collect(),
         None if tail.is_empty() => Vec::new(),
-        None => return Some(Err(bad(format!("invalid name '{path}'")))),
+        None => return Some(Err(bad(format!("invalid name '{shown}'")))),
     };
     if parts.len() > 2 {
-        return Some(Err(bad(format!("invalid name '{path}': STACTA:\"item.json\":asset:tile_matrix_set at most"))));
+        return Some(Err(bad(format!("invalid name '{shown}': STACTA:\"item.json\":asset:tile_matrix_set at most"))));
     }
     let mut parts = parts.into_iter().filter(|s| !s.is_empty());
     Some(Ok((item, parts.next(), parts.next())))
@@ -146,7 +147,8 @@ impl Item {
 
     fn load(loc: &str) -> Result<Self> {
         let (bytes, location) = crate::stac::fetch_document(loc)?;
-        let item = Self::parse(&bytes, &location, loc).ok_or_else(|| bad(format!("'{loc}' is not JSON")))?;
+        let item = Self::parse(&bytes, &location, loc)
+            .ok_or_else(|| bad(format!("'{}' is not JSON", crate::vsi::redact_diagnostic_location(loc))))?;
         crate::stac::check_document_assets(&item.doc, &location)?;
         Ok(item)
     }
@@ -334,7 +336,7 @@ fn parse_tms(set: &Value) -> Result<(String, Vec<TileMatrix>)> {
         }
     };
     let crs_text = crs_of(&set[if v2 { "crs" } else { "supportedCRS" }]);
-    let crs = SpatialRef::parse(&crs_text).map_err(|_| bad(format!("Cannot parse CRS {crs_text}")))?;
+    let crs = SpatialRef::parse_literal(&crs_text).map_err(|_| bad(format!("Cannot parse CRS {crs_text}")))?;
     let metres_per_unit = crs.metres_per_unit();
     let mut out = Vec::new();
     let mut last_scale = f64::MAX;
@@ -607,7 +609,7 @@ fn open_item_native(item: &Item, asset: Option<&str>, tms: Option<&str>, extra: 
                 Err(e) if matches!(e, Error::InvalidArgument(_)) || e.is_resource_refusal() => {
                     return Err(e);
                 }
-                Err(e) if !skip_missing => return Err(bad(format!("Cannot open {url}: {e}"))),
+                Err(e) if !skip_missing => return Err(bad(format!("Cannot open {}: {e}", crate::vsi::redact_diagnostic_location(&url)))),
                 Err(_) => {}
             }
         }
@@ -680,7 +682,7 @@ fn open_item_native(item: &Item, asset: Option<&str>, tms: Option<&str>, extra: 
         levels.push(level);
     }
     let first = levels.first().ok_or_else(|| bad("Cannot find valid tile matrix"))?;
-    let crs = SpatialRef::parse(&crs_text).map_err(|_| bad(format!("Cannot parse CRS {crs_text}")))?;
+    let crs = SpatialRef::parse_literal(&crs_text).map_err(|_| bad(format!("Cannot parse CRS {crs_text}")))?;
     // The block size: the first tile's when it divides the tiles, else 256 x 256.
     let block = match proto_block {
         Some((bw, bh)) if bw > 0 && bh > 0 && first.tile_w % bw == 0 && first.tile_h % bh == 0 => (bw, bh),
@@ -734,7 +736,8 @@ impl Tiled {
                 Err(_) if self.skip_missing => None,
                 Err(e) => {
                     return Err(bad(format!(
-                        "Cannot open {href}: {e} (GDAL_STACTA_SKIP_MISSING_METATILE=YES reads missing tiles as nodata)"
+                        "Cannot open {}: {e} (GDAL_STACTA_SKIP_MISSING_METATILE=YES reads missing tiles as nodata)",
+                        crate::vsi::redact_diagnostic_location(href)
                     )));
                 }
             },

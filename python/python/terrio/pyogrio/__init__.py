@@ -53,6 +53,7 @@ from typing import Any
 import numpy as np
 
 from terrio import _terrio
+from terrio._terrio import _redact_diagnostic_location as _redact
 from terrio._warnings import warn_user
 from terrio.pyogrio import errors
 from terrio.pyogrio._read import _Source
@@ -157,7 +158,9 @@ def detect_write_driver(path) -> str:
     ext = os.path.splitext(str(path))[1].lower()
     if ext in _EXTENSIONS:
         return _EXTENSIONS[ext]
-    raise ValueError(f"Could not infer driver from path: {path}; please specify driver explicitly")
+    raise ValueError(
+        f"Could not infer driver from path: {_redact(str(path))}; please specify driver explicitly"
+    )
 
 
 def _unsupported(**kwargs):
@@ -475,6 +478,41 @@ def _to_datetime_iso8601(pd, ser):
     return pd.to_datetime(ser, format="ISO8601")
 
 
+def _to_datetime_utc(pd, ser):
+    """Convert ISO strings to UTC without pandas 2 leaking offsets into naive rows.
+
+    Args:
+        pd: The pandas module.
+        ser: A series of ISO date-time strings and missing values.
+
+    Returns:
+        Series: UTC timestamps with naive input interpreted as UTC, in input order.
+    """
+    if int(pd.__version__.split(".")[0]) >= 3:
+        return pd.to_datetime(ser, utc=True, format="ISO8601")
+    unique = pd.unique(ser)
+    reduced = _parse_reduced_iso_dates(pd, unique)
+    aware_values = set()
+    for value in unique:
+        if pd.isna(value):
+            continue
+        match = _STANDARD_ISO_OFFSET.fullmatch(value) if isinstance(value, str) else None
+        if match is not None:
+            aware = match.group("offset") is not None
+        else:
+            parsed = reduced[value] if value in reduced else _parse_iso_datetime(pd, value)
+            aware = parsed is not pd.NaT and parsed.utcoffset() is not None
+        if aware:
+            aware_values.add(value)
+    aware = ser.isin(aware_values)
+    # Keep original strings for pandas' precision and calendar validation. Each call sees
+    # either naive or aware values, so a preceding row cannot supply a naive row's offset.
+    result = pd.to_datetime(ser.where(~aware), utc=True, format="ISO8601")
+    if aware.any():
+        result.loc[aware] = pd.to_datetime(ser.loc[aware], utc=True, format="ISO8601")
+    return result
+
+
 def _parse_datetime(ser, datetime_as_string: bool, mixed_offsets_as_utc: bool):
     """Date and date-time strings to datetime64[ms], as pyogrio 0.13 parses them with pandas."""
     import pandas as pd
@@ -490,7 +528,7 @@ def _parse_datetime(ser, datetime_as_string: bool, mixed_offsets_as_utc: bool):
         if isinstance(ex, ValueError) and "Mixed timezones detected" in str(ex):
             if mixed_offsets_as_utc:
                 try:
-                    res = pd.to_datetime(ser, utc=True, format="ISO8601")
+                    res = _to_datetime_utc(pd, ser)
                 except Exception as ex2:
                     warnings.warn(warning.format(message=str(ex2)), stacklevel=3)
                     return ser
@@ -514,7 +552,7 @@ def _parse_datetime(ser, datetime_as_string: bool, mixed_offsets_as_utc: bool):
             return ser
     if mixed_offsets_as_utc and res.dtype in ("object", "string"):
         try:
-            res = pd.to_datetime(ser, utc=True, format="ISO8601")
+            res = _to_datetime_utc(pd, ser)
         except Exception as ex:
             warnings.warn(warning.format(message=str(ex)), stacklevel=3)
     if res.dtype.kind == "M":
@@ -767,6 +805,25 @@ def open_arrow(
         or getattr(f.type, "extension_name", "").startswith("geoarrow.")
     ]
     meta["geometry_name"] = geometry[0] if geometry else ""
+    if geometry:
+        from terrio._crs import dataframe_crs
+
+        field = reader.schema.field(geometry[0])
+        encoded = (field.metadata or {}).get(b"ARROW:extension:metadata")
+        if encoded is None:
+            # GeoParquet C-stream export reconstructs geometry metadata and writes this
+            # validated decision itself. Other native sources build fresh fields without
+            # this key. Prefer that decision to a registered type's lossy serializer.
+            encoded = (field.metadata or {}).get(b"terrio:geoarrow:metadata")
+        if encoded is None and hasattr(field.type, "__arrow_ext_serialize__"):
+            encoded = field.type.__arrow_ext_serialize__()
+        definition = json.loads(encoded or b"{}").get("crs")
+        stored = definition if isinstance(definition, str) else json.dumps(definition)
+        # Native Arrow export already warned for rejected definitions. Reuse that decision,
+        # then normalize accepted metadata as the ordinary dataframe reader does.
+        meta["crs"] = (
+            dataframe_crs(stream.crs or stored, fallback=stored) if definition is not None else None
+        )
     if not read_geometry and geometry:
         schema = pa.schema(
             [f for f in reader.schema if f.name not in geometry], reader.schema.metadata

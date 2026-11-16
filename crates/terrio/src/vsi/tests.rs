@@ -981,7 +981,7 @@ fn memory_paths_refuse_parent_segments() {
 
 #[test]
 fn mounts_are_out_of_reach_of_vsi() {
-    let mount = crate::memfs::Mount::new([("a/file".to_string(), b"mounted".to_vec())]);
+    let mount = crate::memfs::Mount::new([("a/file".to_string(), b"mounted".to_vec())]).unwrap();
     let inside = format!("{}/a/file", mount.path().display());
     // Neither written, copied over, moved, deleted nor listed through `vsi`.
     assert!(write(&inside, b"user").unwrap_err().to_string().contains("reserved"));

@@ -266,11 +266,12 @@ fn custom_ellipsoid_body_compatibility_applies_without_iau_ids() {
     assert_ne!(mars, earth_sized_mars);
     let target = SpatialRef::parse(&earth_sized_mars).unwrap();
     assert!(Transformer::new(&source, &target).err().unwrap().to_string().contains("celestial body"));
-    for shift in ["+towgs84=1,2,3", "+datum=WGS84"] {
-        let source = SpatialRef::parse(&format!("+proj=longlat +a=1 +b=1 {shift}")).unwrap();
-        let target = SpatialRef::parse("+proj=longlat +R=1").unwrap();
-        assert!(Transformer::new(&source, &target).err().unwrap().to_string().contains("Earth datum operations"));
-    }
+    let source = SpatialRef::parse("+proj=longlat +a=1 +b=1 +towgs84=1,2,3").unwrap();
+    let target = SpatialRef::parse("+proj=longlat +R=1").unwrap();
+    assert!(Transformer::new(&source, &target).err().unwrap().to_string().contains("Earth datum operations"));
+    // `+datum=WGS84` beside an ellipsoid of the string's own is no datum, as PROJ 9.8.1 drops it.
+    let source = SpatialRef::parse("+proj=longlat +a=1 +b=1 +datum=WGS84").unwrap();
+    assert_eq!(Transformer::new(&source, &target).unwrap().transform(1.0, 2.0).unwrap(), (1.0, 2.0));
 }
 
 #[test]

@@ -295,7 +295,7 @@ terrio formats [--json]
 ## crs
 
 ```sh
-terrio crs CRS [--wkt] [--projjson]
+terrio crs CRS [--wkt] [--projjson | --proj4 | --wkt1-strict]
 terrio crs SRC --to DST [--s_coord_epoch YEAR] [--t_coord_epoch YEAR] X Y [X Y ...]
 echo "X Y [Z [T]]" | terrio crs SRC --to DST [--s_coord_epoch YEAR] [--t_coord_epoch YEAR]
 ```
@@ -306,6 +306,11 @@ year) use it for time-dependent transformations, and a point that cannot be tran
 [Coordinate Systems](crs.md#datum-shift-grids)). `--projjson` prints only the CRS as PROJJSON, so that
 `terrio crs CRS --projjson > crs.json` writes a PROJJSON file (see
 [Writing PROJJSON](crs.md#writing-projjson)); it cannot be combined with `--to` or `--wkt`.
+`--proj4` prints only the PROJ string, as `projinfo -o PROJ` writes it, which leaves out the
+datum transformation of an EPSG CRS (see [Writing PROJ strings](crs.md#writing-proj-strings)).
+`--wkt1-strict` prints only the WKT 1 without GDAL's PROJ4 extension, for a `.prj` file whose
+readers ignore it, and fails where WKT 1 needs the extension or PROJ writes none (see
+[Writing strict WKT 1](crs.md#writing-strict-wkt-1)).
 
 ## list-crs
 
@@ -1096,8 +1101,21 @@ valid source pixels inside its footprint on the source grid: where the footprint
 source's edges, only its part inside the source counts, and `average`, `rms` and `mode` weigh each
 source pixel by its area inside that part. A footprint counts within the source window that its
 chunk of the output reads, and an output pixel is left empty only when no valid source pixel of
-that window lies inside it or one of the two corners that bound its footprint (top left and bottom
-right) cannot be transformed. On a geographic source with an unrotated grid, warped into another
+that window lies inside it or a required footprint corner cannot be transformed.
+An unrotated geographic source warped into another CRS uses a polygonal footprint
+through all four exactly transformed corners. A corner on a projected point pole
+has separate longitude limits along its two incident edges, so the pole's arbitrary
+inverse longitude cannot select another sector. Source-cell overlap areas provide
+the weights, and both grid policies plan reads from the same polygons. Other source
+grids retain their diagonal-corner rectangular footprints. These polygonal
+approximations can differ from GDAL's diagonal rectangles, especially near poles.
+For floating-point `mode`, a newly encountered value can become the leader when
+its overlap exceeds the current leader's accumulated overlap. Equal weights keep
+the first value in source traversal order. This rule also applies to nonpolar warps.
+It intentionally differs from GDAL 3.12.1's floating-mode insertion rule: for
+three distinct values with overlaps 0.1, 1.0 and 0.1, Terrio selects the middle
+value while GDAL selects the first.
+On a geographic source with an unrotated grid, warped into another
 CRS, a footprint across the antimeridian takes the source on both sides of it, as one across any
 other meridian does: near both edges of a source of every longitude, and its part on the source's
 side of one that ends at the antimeridian. A footprint counts as across it when its corners lie
@@ -1105,11 +1123,36 @@ more than half a turn of longitude apart on the source grid and the source posit
 lies outside them. Any other footprint keeps its corners: a coarse pixel's, whose centre lies
 between them, and that of a pixel more than half a turn wide, whose corners lie less than half a
 turn apart, which takes the source between them.
-The window holds the footprints of its chunk unless a strongly curved
+
+For an unrotated geographic source covering exactly one longitude turn, the stored grid's
+edges are periodic wherever its origin lies. Sources stored from 0° to 360° and from 180° W to
+180° E therefore sample the same geographic field, including warps within the source CRS.
+Point samples and interpolation neighbors wrap by the source's longitude period. Area methods
+and `sum` include both stored edges when a footprint crosses that cut, including a cut at 0°.
+This does not wrap latitude or extend a regional source beyond its right edge.
+Interpolation halos are periodic too. A coarse bilinear filter accumulates the weights of
+every periodic image inside its support; it does not clip the filter at the stored cut.
+This source-extension rule applies under both grid policies and can differ from GDAL's
+finite-edge clipping for coarse global filters.
+
+Regional geographic sources also accept a longitude a whole turn away when it falls inside
+their stored columns. A source from 160° E to 200° E therefore covers 180° to 160° W.
+The shift uses the CRS's angular period, rather than the regional raster's width. A source
+ending at 180° E keeps its excluded right edge; a source starting at 180° W owns that meridian.
+A nearly full world keeps its actual uncovered gap, including when cell sizes are rounded.
+These rules apply to point samples and area footprints under both grid policies. They do not
+make regional interpolation halos periodic or change placement of sources wider than a turn.
+
+The geographic area kernels described above bound all their polygonal footprints
+before reading source data. For other kernels, the window holds the footprints
+of its chunk unless a strongly curved
 transformation takes one past the points the window is sampled from: such a footprint is shortened,
 and its pixel can then differ with the chunks the warp splits the output grid into.
 With chunk-dependent sampling, the sampled source window can also omit one side of an
 antimeridian-crossing footprint; default stable sampling avoids that window-selection gap.
+With chunk-dependent sampling, the source window of a kernel other than `sum` also reaches a pole
+of the source's CRS that lies inside or beside its chunk, which the points sampled along the
+chunk's edges do not bound.
 For a source wider than one longitude turn, repeated longitudes are read at the single placement
 with the greatest overlap. If no single placement covers the footprint, the part beyond the
 other edge is omitted. Covering that remainder without counting repeated longitudes twice is
@@ -1267,6 +1310,13 @@ GDAL 3.13 changed warp kernel scales and the bilinear/cubic downsampling thresho
 `TERRIO_GDAL_COMPAT` (`3.12` or `3.13`), else `3.12`. To reproduce the corresponding
 GDAL chunk-dependent sampling, also pass `--grid-invariant false`, or set
 `TERRIO_WARP_GRID=GDAL`. An explicit `--grid-invariant true` overrides that setting.
+Terrio's chunk-dependent source windows of kernels other than `sum` also reach a pole of the
+source's CRS inside or beside their chunk, which the points sampled along the chunk's edges do not
+bound, so that a grid holding a pole is written up to it. Values in such a chunk can therefore
+differ from those of a window bounded by those points alone.
+Both kernel-version selectors apply Terrio's periodic global-source boundaries and the
+pole-window extension described above; these policies can differ from GDAL's finite-edge
+or edge-only window planning even with chunk-dependent sampling selected.
 Both policies retain lazy window/overview reads. Python's `warp` and `WarpedVRT`
 accept `grid_invariant=True|False`; JavaScript's `warp` accepts `gridInvariant`.
 
@@ -1436,14 +1486,22 @@ alone converts to its native integer type. Python GDAL's default `ReadAsArray`
 chooses Float32 for any mixed dataset; use its explicit `buf_type` argument to
 compare a promoted Float64 buffer.
 
-VRT references use the caller’s normal file and network access. Supplied source maps
-override matching names; unresolved names are opened by the usual drivers.
+VRT files opened by path use the caller’s normal file and network access.
+Python `open_vrt(xml, sources)`, JavaScript `openVrt`, and Rust `into_lazy`
+require every source reference, including masks and RPC DEMs, in the supplied map.
+Missing entries are refused before source reads. Map keys match stored references
+exactly; Python map values may explicitly authorize paths or supply bytes.
+A supplied VRT document is resolved against the same map (Rust
+`VirtualRaster::open_supplied`); supplied STAC, STACTA and STACIT documents are
+refused, because they name further datasets.
 For heterogeneous plain/derived bands, a shared buffer uses the common numeric
 type needed by its requested bands. Each band's declared rounding is retained;
 a leading Byte band does not truncate later floating-point bands.
 
 The Rust `VirtualRaster` API parses and serializes these descriptions. Its
-`into_lazy` source map also permits filesystem-free reads in WebAssembly.
+`into_lazy` source map supports filesystem-free reads in WebAssembly. Rust callers
+that deliberately trust an XML description can opt into `into_lazy_with_files`
+to resolve missing map entries against the filesystem or network.
 
 Warped VRT block evaluation is limited to 8,388,608 samples across all bands per
 declared block. Larger blocks return an unsupported error, including for small
@@ -3964,11 +4022,12 @@ terrio ui --port 8080 --no-open
 Serves a page with a form for every command, generated from the
 [command catalog](#machine-readable-command-catalog), so it always matches this binary. Pick files
 with the built-in file browser, which lists the disk of the computer running terrio: type the start of
-a name to jump to it, and repeat a letter to step through the names that start with it. For the
-inputs that take `@FILE` lists and wildcards (those of `mosaic`, `warp`, `concat`, `raster-index` and
-others; see [Commands](#commands)), **Add matching files** adds every file of the listed folder that matches a pattern, such as `*.tif`, as one
-`folder/*.tif` line that the command expands when it runs; the browser shows how many files match.
-The page shows
+a name to jump to it, and repeat a letter to step through the names that start with it. On Windows,
+**Up** from the root of a drive or of a network share lists the drives. For the inputs that take
+`@FILE` lists and wildcards (those of `mosaic`, `warp`, `concat`, `raster-index` and others; see
+[Commands](#commands)), **Add matching files** adds every file of the listed folder that matches a
+pattern, such as `*.tif`, as one `folder/*.tif` line that the command expands when it runs; the
+browser shows how many files match. The page shows
 the equivalent command line, quoted for a POSIX shell, to copy into a script. Relative paths are
 taken from the directory `terrio ui` started in. **Cancel**, or closing the tab, stops a running command, which can leave a
 partial output file; Ctrl-C stops the server. This works through both the `terrio` binary and the
@@ -4109,7 +4168,7 @@ for one command and its descendants. Required dataset arguments may be omitted;
 metadata requests open no datasets or output files. The Python package supports
 identical requests with `python -m terrio`.
 
-The payload has `schema_version: "0.1.4"`, `unstable: true`, the program/version,
+The payload has `schema_version: "0.1.7"`, `unstable: true`, the program/version,
 and a recursive `command` object. Each command records its canonical name/path,
 aliases, description, arguments and subcommands. Arguments include flags and
 aliases, positional index, type, raw default tokens, choices, required status,

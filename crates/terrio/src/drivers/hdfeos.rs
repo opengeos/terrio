@@ -588,7 +588,7 @@ pub(crate) fn gctp_crs(proj: i32, zone: i64, params: &[f64], sphere: i64) -> Opt
     };
     let units = if proj == 0 { "" } else { " +units=m" };
     let definition = format!("{projection} {ellps}{units} +no_defs");
-    let srs = crate::crs::SpatialRef::parse(&definition).ok()?;
+    let srs = crate::crs::SpatialRef::parse_literal(&definition).ok()?;
     Some(srs.to_crs_info())
 }
 

@@ -344,7 +344,10 @@ fn open_bytes(path: &str, which: &str) -> Result<Option<Bytes>> {
                 return Ok(Some(Bytes { len: bytes.len() as u64, reader: Box::new(std::io::Cursor::new(bytes)) }));
             }
             if !p.is_file() {
-                crate::warnings::warn(format!("{which} dataset '{path}' is not a file. Skipping binary file comparison"));
+                crate::warnings::warn(format!(
+                    "{which} dataset '{}' is not a file. Skipping binary file comparison",
+                    crate::vsi::redact_diagnostic_location(path)
+                ));
                 return Ok(None);
             }
             let f = std::fs::File::open(p)?;
@@ -363,7 +366,10 @@ fn open_bytes(path: &str, which: &str) -> Result<Option<Bytes>> {
             Ok(Some(Bytes { len: f.metadata()?.len(), reader: Box::new(f) }))
         }
         _ => {
-            crate::warnings::warn(format!("{which} dataset '{path}' is not a file. Skipping binary file comparison"));
+            crate::warnings::warn(format!(
+                "{which} dataset '{}' is not a file. Skipping binary file comparison",
+                crate::vsi::redact_diagnostic_location(path)
+            ));
             Ok(None)
         }
     }

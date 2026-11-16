@@ -7,6 +7,15 @@ use crate::{Error, Result};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
 
+/// Parses an XML document and requires the format's root element, allowing namespace prefixes.
+pub(crate) fn parse_document(text: &str, expected: &str, format: &str) -> Result<Element> {
+    let root = parse(text).map_err(|error| if error.is_resource_refusal() { error } else { super::document_error(format, error) })?;
+    if root.name != expected {
+        return Err(super::document_error(format, format!("expected <{expected}> root element, found <{}>", root.name)));
+    }
+    Ok(root)
+}
+
 /// An XML element.
 #[derive(Debug, Clone, Default)]
 pub struct Element {
@@ -102,10 +111,21 @@ fn element(e: &BytesStart, strict: bool) -> Result<Element> {
     Ok(Element { name: local(qname), prefix, attrs, ..Default::default() })
 }
 
-/// Decodes a document's bytes: UTF-8 (with or without a byte order mark), or Latin-1 when the
-/// bytes are not UTF-8.
+/// Decodes UTF-8, BOM-marked UTF-16, or Latin-1 when the bytes are not UTF-8.
 pub fn decode(bytes: &[u8]) -> String {
     let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+    if (bytes.starts_with(b"\xff\xfe") || bytes.starts_with(b"\xfe\xff")) && bytes.len().is_multiple_of(2) {
+        let little_endian = bytes.starts_with(b"\xff\xfe");
+        let units: Vec<u16> = bytes[2..]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| if little_endian { u16::from_le_bytes([pair[0], pair[1]]) } else { u16::from_be_bytes([pair[0], pair[1]]) })
+            .collect();
+        if let Ok(text) = String::from_utf16(&units) {
+            return text;
+        }
+    }
     match std::str::from_utf8(bytes) {
         Ok(s) => s.to_string(),
         Err(_) => bytes.iter().map(|&b| b as char).collect(),
@@ -230,6 +250,18 @@ pub fn escape(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn utf16_boms_preserve_document_text_and_surrogate_pairs() {
+        let text = "<kml><name>café 🌍</name></kml>";
+        for little_endian in [true, false] {
+            let mut bytes = if little_endian { vec![0xff, 0xfe] } else { vec![0xfe, 0xff] };
+            for unit in text.encode_utf16() {
+                bytes.extend(if little_endian { unit.to_le_bytes() } else { unit.to_be_bytes() });
+            }
+            assert_eq!(super::decode(&bytes), text);
+        }
+    }
+
     #[test]
     fn caller_element_limit_counts_empty_siblings() {
         assert!(super::parse_limited("<a><b/><b/><b/></a>", 3).unwrap_err().to_string().contains("element count"));

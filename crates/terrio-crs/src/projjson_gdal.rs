@@ -162,6 +162,9 @@ impl SpatialRef {
     /// the CRS's WKT (a dataset's CRS, `CRS.from_wkt`). Fails for a CRS this writer does not model.
     /// (`to_projjson` writes terrio's own PROJJSON, for more kinds of CRS, with documented
     /// differences from PROJ's.)
+    ///
+    /// The value's objects hold their keys in serde_json's `Map` order (sorted, unless a crate of
+    /// the build enables serde_json's `preserve_order`), not in the order GDAL writes them.
     pub fn to_gdal_projjson(&self, database: bool) -> Result<Value> {
         let code = if database { self.epsg } else { None };
         if database && code.is_none() {

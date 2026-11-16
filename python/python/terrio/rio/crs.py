@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import re
 import warnings
 from collections.abc import Mapping
@@ -190,7 +189,7 @@ class CRS(Mapping[str, Any]):
         crs._input = definition
         if _AUTHORITY_CODE.match(definition):
             crs._database = definition.strip()
-        crs._from_file = os.path.isfile(definition) and bool(info.get("wkt"))
+        crs._from_file = False
         return crs
 
     @classmethod
@@ -627,7 +626,9 @@ class CRS(Mapping[str, Any]):
         its shift and ellipsoid instead of a datum name. Other datum identities and
         area-dependent operations cannot be represented by an ellipsoid alone;
         use WKT, PROJJSON or an authority code to preserve them. Unsupported projections
-        return an empty string.
+        return an empty string. This is rasterio's parameter string;
+        ``terrio._terrio.crs_to_proj4`` writes the string PROJ 9.8.1 writes
+        (``pyproj.CRS.to_proj4()``), ``None`` when PROJ has none.
 
         Returns:
             str: The PROJ string.
@@ -642,6 +643,12 @@ class CRS(Mapping[str, Any]):
             if value is not False
         )
 
+    def _construction_definition(self) -> str:
+        """The definition captured at construction: a file's WKT, not the file read again."""
+        if self._from_file and isinstance(self._info.get("wkt"), str):
+            return self._info["wkt"]
+        return self._input
+
     def to_projjson(self) -> str:
         """The CRS as PROJJSON v0.7.
 
@@ -651,14 +658,32 @@ class CRS(Mapping[str, Any]):
         Raises:
             CRSError: If terrio would describe the CRS wrongly in PROJJSON.
         """
-        # The definition captured at construction: a file's WKT, not the file read again.
-        definition = self._input
-        if self._from_file and isinstance(self._info.get("wkt"), str):
-            definition = self._info["wkt"]
+        definition = self._construction_definition()
         try:
             return _terrio.crs_to_projjson(definition)
         except Exception as err:
             raise CRSError(f"No PROJJSON for '{self._input}': {err}") from err
+
+    def to_wkt1_strict(self) -> str | None:
+        """The CRS in WKT 1 without GDAL's ``EXTENSION["PROJ4", ...]``.
+
+        As PROJ 9.8.1 exports ``WKT1_GDAL``, for formats whose readers ignore the extension
+        (a ``.prj`` file).
+
+        Returns:
+            str | None: The WKT 1, or None where WKT 1 needs the extension (a datum grid, an
+                axis order or parameter it has no node for) or PROJ writes no WKT 1 (a
+                geographic 3D CRS, Equal Earth). Web Mercator keeps GDAL's extension under
+                its code.
+
+        Raises:
+            CRSError: If the CRS cannot be parsed.
+        """
+        definition = self._construction_definition()
+        try:
+            return _terrio.crs_to_wkt1_strict(definition)
+        except Exception as err:
+            raise CRSError(f"No WKT 1 for '{self._input}': {err}") from err
 
     def to_dict(self, projjson: bool = False) -> dict[str, Any]:
         """The CRS as PROJ parameters, or as PROJJSON.

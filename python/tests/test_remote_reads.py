@@ -22,10 +22,54 @@ import terrio.rio as rio
 from terrio.rio.windows import Window
 
 
+class HttpTestServer(http.server.ThreadingHTTPServer):
+    """Handle TLS handshakes in workers so a stalled peer cannot block accepts."""
+
+    def __init__(self, address, handler, tls_context=None):
+        """Configure an optional TLS context before serving requests.
+
+        Args:
+            address: Loopback host and port.
+            handler: HTTP request handler class.
+            tls_context: Server certificate context, or plain HTTP when absent.
+        """
+        self.tls_context = tls_context
+        super().__init__(address, handler)
+
+    def get_request(self):
+        """Accept without performing a blocking TLS handshake.
+
+        Returns:
+            tuple: Accepted socket and client address.
+        """
+        connection, address = super().get_request()
+        if self.tls_context is not None:
+            connection.settimeout(5)
+            connection = self.tls_context.wrap_socket(
+                connection, server_side=True, do_handshake_on_connect=False
+            )
+        return connection, address
+
+    def finish_request(self, request, client_address):
+        """Complete TLS in the request worker before reading HTTP.
+
+        Args:
+            request: Accepted socket.
+            client_address: Client host and port.
+        """
+        if self.tls_context is not None:
+            try:
+                request.do_handshake()
+            except OSError:
+                request.close()
+                return
+        super().finish_request(request, client_address)
+
+
 class Server:
     """A loopback server of the files in a directory, logging every request."""
 
-    def __init__(self, root, ranges=True, failures=0):
+    def __init__(self, root, ranges=True, failures=0, tls_context=None):
         self.root, self.ranges, self.failures = root, ranges, failures
         self.log = []
         server = self
@@ -83,10 +127,11 @@ class Server:
                 except (BrokenPipeError, ConnectionResetError):
                     self.close_connection = True
 
-        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.httpd = HttpTestServer(("127.0.0.1", 0), Handler, tls_context)
         self.httpd.daemon_threads = True
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
-        self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        scheme = "https" if tls_context is not None else "http"
+        self.url = f"{scheme}://127.0.0.1:{self.httpd.server_address[1]}"
 
     def bytes_sent(self):
         return sum(row[3] for row in self.log)

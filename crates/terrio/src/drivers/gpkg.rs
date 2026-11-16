@@ -445,13 +445,16 @@ pub(crate) fn read_db(db: &Db, table: Option<&str>, path: &Path) -> Result<Raste
 fn crs_for_srs(db: &Db, id: i64) -> Result<Option<CrsInfo>> {
     let Some(t) = db.optional_table("gpkg_spatial_ref_sys")? else { return Ok(None) };
     let Some(row) = t.rows.iter().find(|r| i(&t, r, "srs_id") == Some(id)) else { return Ok(None) };
+    if let Some(crs) = t.get(row, "definition").and_then(Value::as_str).and_then(common::crs_from_text) {
+        return Ok(Some(crs));
+    }
     let org = t.get(row, "organization").and_then(Value::as_str).unwrap_or_default();
     if org.eq_ignore_ascii_case("EPSG")
         && let Some(code) = i(&t, row, "organization_coordsys_id").filter(|c| *c > 0)
     {
         return Ok(Some(crate::crs::epsg_crs_info(code as u32)));
     }
-    Ok(t.get(row, "definition").and_then(Value::as_str).and_then(common::crs_from_text))
+    Ok(None)
 }
 
 /// The tile size GDAL writes.

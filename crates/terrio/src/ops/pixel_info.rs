@@ -63,7 +63,7 @@ impl PositionCrs {
         Ok(match s.trim().to_ascii_lowercase().as_str() {
             "pixel" => Self::Pixel,
             "dataset" => Self::Dataset,
-            _ => Self::Crs(SpatialRef::parse(s)?),
+            _ => Self::Crs(SpatialRef::parse_literal(s)?),
         })
     }
 }

@@ -157,14 +157,7 @@ pub(crate) fn write_jpeg(r: &Raster, path: &Path, quality: Option<&str>, georefe
 /// luminance table, as libjpeg's do. Other data types are rounded and saturated to Byte. GDAL also
 /// writes 4 bands (as CMYK) and 12-bit samples; terrio does not.
 pub(crate) fn encode_jpeg(r: &Raster, quality: Option<&str>) -> Result<Vec<u8>> {
-    let quality = match quality {
-        None => 75,
-        // `atoi`, as GDAL reads it.
-        Some(q) => match crate::ops::dem::atoi(q) {
-            v @ 1..=100 => v as u8,
-            _ => return Err(Error::InvalidArgument(format!("QUALITY={q} is not a legal value in the range 1-100."))),
-        },
-    };
+    let quality = quality.map(common::jpeg_quality).transpose()?.unwrap_or(75);
     let color = match r.bands {
         1 => jpeg_encoder::ColorType::Luma,
         3 => jpeg_encoder::ColorType::Rgb,

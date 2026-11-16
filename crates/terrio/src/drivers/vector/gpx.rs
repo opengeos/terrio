@@ -149,7 +149,7 @@ pub fn read(path: &str) -> Result<Vec<Layer>> {
 
 /// Parses GPX text.
 pub fn parse(text: &str) -> Result<Vec<Layer>> {
-    let root = xml::parse(text)?;
+    let root = xml::parse_document(text, "gpx", "GPX")?;
     let gpx10 = root.attr("version").is_some_and(|v| v.trim() == "1.0");
     let mut waypoints = Builder::new("waypoints", GeometryType::Point, &point_fields(gpx10, false));
     let mut routes = Builder::new("routes", GeometryType::LineString, &line_fields());

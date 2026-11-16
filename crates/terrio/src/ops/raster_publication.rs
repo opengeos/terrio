@@ -161,7 +161,7 @@ impl<'a> Publication<'a> {
         let bounds = plan.levels.last().map(level_bounds).unwrap_or([0.; 4]);
         let geographic = if !plan.levels.is_empty() && (options.kml || viewers.contains("stac") || viewers.contains("leaflet")) {
             let srs = match &plan.crs {
-                Some(definition) => SpatialRef::parse(definition)?,
+                Some(definition) => SpatialRef::parse_literal(definition)?,
                 None => source.crs(),
             };
             if srs.is_unknown() {
@@ -315,7 +315,7 @@ impl<'a> Publication<'a> {
     fn stac(&self, source: &RasterDataset) -> Result<String> {
         let bounds = self.geo_bounds(self.bounds)?;
         let crs = self.plan.crs.as_deref().ok_or_else(|| invalid("STAC requires a CRS"))?;
-        let srs = SpatialRef::parse(crs)?;
+        let srs = SpatialRef::parse_literal(crs)?;
         let meters = srs.metres_per_unit();
         if !meters.is_finite() || meters <= 0. {
             return Err(invalid("STAC needs a known unit conversion"));

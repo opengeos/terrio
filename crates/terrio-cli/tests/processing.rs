@@ -179,6 +179,59 @@ fn crs_prints_projjson() {
 }
 
 #[test]
+fn crs_prints_axis_order_body_and_conversion_parameters() {
+    // As PROJ 9.8.1 reads EPSG:2056 (see terrio-crs's tests/crs_accessors.rs).
+    let dir = tempfile::tempdir().unwrap();
+    let output = run(&["crs", "EPSG:2056"], dir.path());
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("Axis order: east, north\nBody: Earth\nMethod: somerc (lon_0=7.43958333333333 "), "{text}");
+    assert!(text.contains(" x_0=2600000 y_0=1200000 prime meridian=0 a=6377397.155 "), "{text}");
+    let output = run(&["crs", "EPSG:4326"], dir.path());
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(String::from_utf8(output.stdout).unwrap().contains("Axis order: north, east\n"));
+}
+
+#[test]
+fn crs_prints_proj_string() {
+    let dir = tempfile::tempdir().unwrap();
+    // PROJ 9.8.1's `projinfo -o PROJ EPSG:2056`: without its datum shift, as PROJ writes it.
+    let output = run(&["crs", "EPSG:2056", "--proj4"], dir.path());
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim_end(),
+        "+proj=somerc +lat_0=46.9524055555556 +lon_0=7.43958333333333 +k_0=1 +x_0=2600000 +y_0=1200000 +ellps=bessel +units=m +no_defs +type=crs"
+    );
+    // An engineering CRS has none.
+    let local = r#"LOCAL_CS["Engineering",LOCAL_DATUM["site",0],UNIT["metre",1],AXIS["X",EAST],AXIS["Y",NORTH]]"#;
+    let output = run(&["crs", local, "--proj4"], dir.path());
+    assert!(!output.status.success() && String::from_utf8_lossy(&output.stderr).contains("no PROJ string"));
+    // Not with a transformation, which it would not apply to.
+    let output = run(&["crs", "EPSG:2056", "--proj4", "--to", "EPSG:4326"], dir.path());
+    assert!(!output.status.success() && String::from_utf8_lossy(&output.stderr).contains("cannot be used with"));
+}
+
+#[test]
+fn crs_prints_strict_wkt1() {
+    let dir = tempfile::tempdir().unwrap();
+    // PROJ 9.8.1's WKT1_GDAL of EPSG:4326, with GDAL's axes (pyproj 3.8.0,
+    // `to_wkt("WKT1_GDAL", output_axis_rule=True)`).
+    let output = run(&["crs", "EPSG:4326", "--wkt1-strict"], dir.path());
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim_end(),
+        r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563,AUTHORITY["EPSG","7030"]],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]],AXIS["Latitude",NORTH],AXIS["Longitude",EAST],AUTHORITY["EPSG","4326"]]"#
+    );
+    // A datum grid needs the PROJ4 extension; PROJ writes no WKT 1 of a geographic 3D CRS.
+    for crs in ["+proj=longlat +ellps=clrk66 +nadgrids=conus +no_defs", "EPSG:4979"] {
+        let output = run(&["crs", crs, "--wkt1-strict"], dir.path());
+        assert!(!output.status.success() && String::from_utf8_lossy(&output.stderr).contains("no WKT 1 without"), "{crs}");
+    }
+    let output = run(&["crs", "EPSG:4326", "--wkt1-strict", "--wkt"], dir.path());
+    assert!(!output.status.success() && String::from_utf8_lossy(&output.stderr).contains("cannot be used with"));
+}
+
+#[test]
 fn crs_promotes_2d_crss_to_3d_on_request() {
     // RD New to WGS 84 3D: the height is kept (h = 0) unless the 2D CRS is promoted, when it goes
     // through the datum transformation (43.6 m, as GDAL after `PromoteTo3D`).

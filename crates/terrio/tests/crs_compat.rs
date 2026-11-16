@@ -1,5 +1,6 @@
 //! Existing Terrio callers and standalone callers share one engine without changing errors,
-//! public CRS fields, format conversion behavior, registered grids or warning sinks.
+//! public CRS fields, format conversion behavior or registered grids. Terrio drains both
+//! per-thread warning queues; standalone callers can still drain their own queue first.
 
 use terrio::crs::{SpatialRef, TransformOptions, Transformer};
 
@@ -65,7 +66,25 @@ fn registered_grids_are_shared_in_both_directions() {
 }
 
 #[test]
-fn direct_and_terrio_warning_sinks_remain_independent() {
+fn refused_grid_diagnostics_keep_reasons_and_hide_credentials() {
+    for name in [
+        "blocked/../https://user:PRIVATE@host/grid.gtx?sig=PRIVATE".to_string(),
+        format!("blocked/../https://user:{}@host/grid.gtx", "PRIVATE".repeat(30)),
+        "blocked/../grid.gtx?sig=PRIVATE".to_string(),
+    ] {
+        let _ = terrio::warnings::take();
+        let source = SpatialRef::parse(&format!("+proj=longlat +datum=WGS84 +geoidgrids={name} +vunits=m")).unwrap();
+        let result =
+            Transformer::new(&source, &SpatialRef::from_epsg(4979).unwrap()).and_then(|transform| transform.transform_3d(0.25, 0.5, 100.0));
+        assert!(result.is_err());
+        let warnings = terrio::warnings::take();
+        assert!(!warnings.is_empty());
+        assert!(warnings.iter().all(|warning| warning.contains("is not read") && !warning.contains("PRIVATE")), "{warnings:?}");
+    }
+}
+
+#[test]
+fn terrio_drains_both_warning_queues_and_standalone_can_drain_first() {
     let _ = terrio::warnings::take();
     let _ = terrio_crs::take_warnings();
     let source = "EPSG:4610";
@@ -84,5 +103,14 @@ fn direct_and_terrio_warning_sinks_remain_independent() {
         transform.transform(110.0, 35.0).unwrap();
     }
     assert!(terrio_crs::take_warnings().iter().any(|w| w.contains("ballpark")));
+    assert!(terrio::warnings::take().is_empty());
+    {
+        let transform =
+            terrio_crs::Transformer::new(&terrio_crs::SpatialRef::parse(source).unwrap(), &terrio_crs::SpatialRef::parse(target).unwrap())
+                .unwrap();
+        transform.transform(110.0, 35.0).unwrap();
+    }
+    assert!(terrio::warnings::take().iter().any(|w| w.contains("ballpark")));
+    assert!(terrio_crs::take_warnings().is_empty());
     assert!(terrio::warnings::take().is_empty());
 }

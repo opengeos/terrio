@@ -435,12 +435,13 @@ function updateMatchCount() {
 
 // Only the latest listing counts: an earlier, slower one must not replace it.
 let lastListing = 0;
-async function browseTo(path) {
+// Windows has a tree per drive: `drives` lists them, one level above every drive's root.
+async function browseTo(path, drives = false) {
   const list = byId("browse-list");
   const listing = ++lastListing;
   let result;
   try {
-    result = await api("/api/list", { path });
+    result = await api("/api/list", drives ? { drives: true } : { path });
     if (listing !== lastListing) return;
     browsing = result;
   } catch (error) {
@@ -453,12 +454,13 @@ async function browseTo(path) {
     updateMatchCount();
     return;
   }
-  byId("browse-path").textContent = browsing.path;
-  byId("browse-folder").disabled = false;
-  byId("browse-up").disabled = !browsing.parent;
+  // The list of drives is not a folder to use, and its entries are whole paths (`C:\`).
+  byId("browse-path").textContent = drives ? "Drives" : browsing.path;
+  byId("browse-folder").disabled = drives;
+  byId("browse-up").disabled = !browsing.parent && !browsing.drives;
   list.replaceChildren(...browsing.entries.map((entry) => {
-    const full = browsing.path.endsWith(separator) ? browsing.path + entry.name : browsing.path + separator + entry.name;
-    const button = el("button", { type: "button", "data-name": entry.name }, el("span", { textContent: entry.dir ? `${entry.name}${separator}` : entry.name }), el("span", { className: "size", textContent: formatSize(entry.size) }));
+    const full = drives || browsing.path.endsWith(separator) ? browsing.path + entry.name : browsing.path + separator + entry.name;
+    const button = el("button", { type: "button", "data-name": entry.name }, el("span", { textContent: entry.dir && !drives ? `${entry.name}${separator}` : entry.name }), el("span", { className: "size", textContent: formatSize(entry.size) }));
     button.addEventListener("click", () => (entry.dir ? browseTo(full) : choose(full)));
     return el("li", {}, button);
   }));
@@ -525,7 +527,10 @@ function browseKeys(event) {
 // Listen on the document: opening a folder with the mouse removes the focused entry, and the keys
 // then go to the body rather than the dialog.
 document.addEventListener("keydown", (event) => byId("browse").open && browseKeys(event));
-byId("browse-up").addEventListener("click", () => browsing.parent && browseTo(browsing.parent));
+byId("browse-up").addEventListener("click", () => {
+  if (browsing.parent) browseTo(browsing.parent);
+  else if (browsing.drives) browseTo("", true);
+});
 byId("browse-folder").addEventListener("click", () => choose(browsing.path));
 byId("browse-close").addEventListener("click", () => byId("browse").close());
 byId("browse-pattern").addEventListener("input", updateMatchCount);

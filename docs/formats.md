@@ -47,7 +47,12 @@ PNG, JPEG and WebP files are written with a world file (`.wld`) and the CRS in a
 sidecar. JPEG files are written as GDAL's JPEG driver writes them: one band as grayscale, three as
 YCbCr with 4:2:0 chroma subsampling (each 2 x 2 block's chroma averaged, as libjpeg averages it),
 quantized at the `QUALITY` creation option (1 to 100, default 75) as libjpeg scales its tables,
-with optimized Huffman tables. Other data types are rounded and saturated to Byte; GDAL's 4-band
+with optimized Huffman tables. JPEG `QUALITY` accepts a complete finite number, allowing
+surrounding whitespace and scientific notation. Values outside 1 to 100 and malformed text
+are refused; valid fractional values are truncated for the integer encoder. The same validation
+applies to MBTiles/PMTiles `QUALITY`. GeoTIFF/COG JPEG `QUALITY` and `JPEG_QUALITY`
+retain their integer-only syntax: decimal and exponent spellings are refused there.
+Other data types are rounded and saturated to Byte; GDAL's 4-band
 (CMYK) and 12-bit JPEGs are not written. WebP files hold 3 (RGB) or 4 (RGBA) Byte bands of at most
 16383 x 16383 pixels, as GDAL's WEBP driver requires. With no lossy options, files are
 lossless, every sample kept, including RGB under fully transparent pixels. `LOSSLESS=NO`
@@ -634,6 +639,28 @@ terrio convert 'STACTA:"https://example.com/pyramid/stacta.json":bands' preview.
 | MBTiles | MBTiles vector tiles (MVT) | ✓ | ✓ | mbtiles |
 | MVT | Mapbox Vector Tiles: a tile, or a directory of tiles | ✓ | ✓ | mvt, z/x/y.pbf |
 
+CSV/TSV, MapInfo MIF/MID, Shapefile DBF, FlatGeobuf, Parquet and Arrow imports
+preserve every declared attribute column when names repeat. Repeated names gain
+`_2`, `_3`, ... suffixes without taking another original column's name. Names
+remain case-sensitive, and field order, types and values stay aligned. This is
+Terrio's naming policy rather than a claim of identical naming in other readers.
+GeoParquet Arrow exports also retain each physical column's own values and type.
+Names are assigned before projection and bbox filtering, so `columns=["count_2"]`
+selects the renamed second column consistently when the file declares `count` twice.
+Empty GeoParquet attribute names receive `field_N` names, with collisions resolved by
+the same suffix policy. Column selection prefers an exact resolved name before falling
+back to case-insensitive matching, so `count_2` and `COUNT_2` remain independently selectable.
+
+GeoJSON writing keeps coordinates in the layer's CRS by default and names a
+registered CRS in a GeoJSON 2008 `crs` member (EPSG, ESRI and IAU_2015). WGS 84
+needs no member. A retained definition without a usable authority code, such as
+a custom projection or engineering grid, is refused instead of silently writing
+it as WGS 84. Reproject with `Layer.to_crs("EPSG:4326")` or CLI
+`--lco RFC7946=YES` when a transformation exists, or choose a format that stores
+CRS definitions, such as GeoPackage. RFC 7946 output reprojects to WGS 84 and
+omits the `crs` member. The pyogrio facade uses the same naming/refusal policy
+and retains its explicit OGC CRS84 spelling for WGS 84.
+
 A local vector file whose name points to no driver (`data`, `data.txt`, `data.xml`) is identified
 by its first 16 KiB. A JSON root `type` of `FeatureCollection`, `Feature` or a geometry type is
 read as GeoJSON, and an XML root element `FeatureCollection` as GML, as a remote response under
@@ -764,17 +791,26 @@ Schemas define conformance. GDAL 3.13.3 has no CityJSON driver.
 
 ### GML axis order
 
-The simple-feature GML reader normalizes authority-order EPSG identifiers (URNs and
+The simple-feature GML reader normalizes authority-order identifiers (URNs and
 modern `/def/crs/` URLs) to GIS XY using the CRS's declared horizontal axes. This
 includes latitude-first geographic CRSs and northing-first projected CRSs such as
 EPSG:6708. Short `EPSG:` names and legacy `epsg.xml#` URLs retain XY order; easting-first
 projected CRSs retain XY for every identifier form. Heights are preserved. The GML
-writer emits authority-order coordinates and envelopes for its EPSG URNs. WFS 1.1/2.0
+writer names EPSG, ESRI and IAU_2015 authorities and emits authority-order coordinates
+and envelopes for their URNs. A retained definition with no nameable authority is
+refused before creating the GML or its schema file. This includes unregistered compound
+CRSs such as `EPSG:6341+5773`; compound URNs are read but not written. Reproject to a named CRS or use
+a format that stores the definition, such as GeoPackage. WFS 1.1/2.0
 bounding boxes follow the advertised authority order; WFS 1.0 bounding boxes use XY.
+CityGML currently applies authority-axis normalization only to EPSG identifiers;
+its ESRI and IAU identifiers do not share the simple-feature GML axis handling.
 Standalone layers with conflicting coordinate-axis declarations, including nested geometry
 members, are refused. Unknown EPSG identifiers are written with short `EPSG:` names and XY
 coordinates, preserving coordinate values on a local round trip; their custom CRS definition
-cannot be reconstructed from the code alone.
+cannot be reconstructed from the code alone. Writing such a name warns that Terrio will read
+it without a CRS. Reading an unresolved simple `srsName` also warns, while retaining features
+and coordinates. GeoJSON and TopoJSON refuse an unresolved CRS name before
+creating output because their name-only metadata cannot preserve the definition.
 
 Older Terrio versions wrote XY coordinates under northing-first projected EPSG URNs. Such
 files need their `srsName` changed to the short `EPSG:` form before reading; the current reader
@@ -1080,6 +1116,30 @@ files are written with a `crs` member naming their CRS, which GDAL reads (it ass
 otherwise), and a CSV file's CRS is read from a `.prj` file next to it, as GDAL's CSV driver
 reads it.
 
+CSV/TSV exports do not write a `.prj` sidecar. When geometry is exported from a
+layer with a known CRS, writers warn once that the CRS is not stored. This also
+applies to byte exports and streamed conversions. Supply a matching `.prj` or
+use a format that stores CRS definitions. Without one, the reader can infer
+WGS 84 for longitude/latitude-shaped coordinates, including a local grid near its origin.
+
+CSV/TSV writers write each geometry as WKT in a leading `WKT` column by default.
+A `.tsv` filename selects tab separators, including byte exports; `.csv` defaults
+to commas. An explicit CSV `SEPARATOR` option overrides the filename on Rust and
+CLI writes (`--lco SEPARATOR=COMMA|SEMICOLON|TAB|PIPE`).
+
+When attribute names also form a recognized coordinate pair, such as `lon`/`lat`
+or `easting`/`northing`, the writer uses a distinct `__terrio_wkt` geometry column
+(with a suffix if needed). Without an explicit `GEOM_POSSIBLE_NAMES`, readers
+recognize it before inferring coordinates, even when X/Y/Z name options are set, so
+the geometry and coordinate-named attributes both survive a round trip. An explicit
+`GEOM_POSSIBLE_NAMES` selection takes precedence when the selected column holds WKT;
+non-WKT selections retain X/Y fallback.
+An entirely blank reserved WKT marker retains null geometry rather than turning
+coordinate-named attributes into points.
+Ordinary external CSV files without that selection retain their default X/Y precedence.
+The reserved marker is a Terrio convention. Other CSV readers may require explicit
+geometry-column options to distinguish it from coordinate-like attributes.
+
 - **XLSX** workbooks are read and written without GDAL, in WebAssembly too, as GDAL's XLSX driver
   does: a layer per worksheet, feature ids that are row numbers, and the open options `HEADERS`
   (`AUTO`, `FORCE`, `DISABLE`) and `FIELD_TYPES` (`AUTO`, `STRING`). Formulas are not evaluated: a
@@ -1181,7 +1241,10 @@ reads it.
   `ID_TYPE` (`GeoJsonOptions::id_type`: `String` or `Integer`) asks.
 - **GeoJSONSeq** files hold a GeoJSON feature per line (RFC 8142, optionally with record
   separators), written in WGS 84 with counter-clockwise exterior rings, as GDAL's GeoJSONSeq
-  driver writes them.
+  driver writes them. The reader accepts Feature and bare geometry records. It refuses
+  FeatureCollection records and other JSON values rather than converting them to empty
+  features. This is a subset of RFC 8142's permitted GeoJSON text types. An empty sequence
+  remains valid and contains zero features.
 - **GeoParquet** is written as GeoParquet 1.1: the CRS as PROJJSON (none for EPSG:4326, which
   the specification makes the default), a `geometry_bbox` covering column, and row groups of
   65536 rows with statistics. Reading with a bounding box (`terrio convert --spat` on a Parquet
@@ -1247,6 +1310,16 @@ reads it.
   are passed through; the native Rust/JavaScript Arrow metadata remains portable
   and retains definitions that Terrio cannot parse.
 - **OSM XML** (`.osm`) gives the same five layers as PBF, with tags in the file's order.
+- **Document recognition**: KML, GPX and OSM XML require a `kml`, `gpx` or `osm` root
+  element, respectively. Namespace prefixes are allowed. HTML error pages and other
+  document kinds are refused with `InvalidData` rather than read as empty layers. KMZ
+  main and linked layer documents require KML roots too. Zero bytes are not KML, GPX, OSM XML
+  or PBF document. PBF requires an `OSMHeader` block; a header-only file is valid
+  empty data. XML and GeoJSON-sequence syntax errors are terminal native document
+  refusals and are not retried through the optional GDAL backend. Valid empty KML,
+  GPX and OSM documents retain their existing layer counts. XML bytes may use UTF-8 or
+  BOM-marked UTF-16. Input that exceeds an OSM PBF framing budget returns `ResourceLimit`,
+  including non-PBF content whose leading bytes describe an excessive header length.
 - **KML layer names** use the same ASCII case-insensitive collision rule as KMZ.
   Within one document, `Roads` followed by `roads` becomes `Roads` and `roads (2)`,
   preserving feature order and the original spelling before the suffix.
@@ -1504,6 +1577,12 @@ hint. This prevents a ZIP from being interpreted as an empty MIF layer or
 malformed XML/TAB document. KMZ and XLSX retain their intrinsic ZIP packaging.
 
 ## Shapefile ZIP output in memory
+
+Filesystem Shapefile readers find lowercase, uppercase and mixed-case component
+extensions. Replacing a dataset removes superseded case spellings of its SHP,
+SHX, DBF, CPG and PRJ components after creating the replacement files. A layer
+without a CRS removes every matching PRJ spelling, so an old definition cannot
+be attached to the new geometry. Dotted basenames remain intact.
 
 Rust, Python and JavaScript/WASM use the same pure-Rust archive writer, including
 builds with default features disabled. Request **`places.shp.zip`**, save that

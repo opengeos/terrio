@@ -250,6 +250,15 @@ the file's native encoding) with their CRS, and the bounding-box covering column
 unless `columns` names it. Iterating the stream instead gives `Layer` chunks, whose struct
 columns are flattened into `name.member` fields, as GDAL's features have them.
 
+Python GeoParquet C-stream geometry fields also carry `terrio:geoarrow:metadata`, a
+JSON copy of the validated GeoArrow extension metadata. It preserves the accepted,
+null or rejected CRS decision when a registered PyArrow type consumes the standard
+extension keys without exposing that metadata again. Terrio constructs this key
+from its validated output schema; uploaded field metadata cannot supply the decision.
+The pyogrio adapter prefers standard metadata, then this key, then the registered
+type's serializer. Consumers that save the stream schema may retain the key in their
+output. Ordinary `Layer` and `Layer.to_arrow()` exports do not add it.
+
 ### Arrow
 
 Layers convert to and from [Apache Arrow](https://arrow.apache.org) through the
@@ -399,11 +408,22 @@ xs, ys = terrio.transform_points([699960], [3900000], "EPSG:32610", "EPSG:4326")
 xs, ys, hs = terrio.transform_points([-100], [40], "EPSG:4979", "EPSG:4326+5773", [100])  # EGM96
 xs, ys, hs = terrio.transform_points([135], [-25], "EPSG:7912", "EPSG:7843", [0], s_coord_epoch=2010.0)
 terrio.set_grid_search_paths(["/data/proj-grids"])  # grids are then read only from these (and registered ones)
+terrio.confine_grid_search_paths()  # preserve effective directories; refuse path-named grids
+terrio.register_grid("tiny.gtx", grid_bytes)  # encoded GeoTIFF, NTv2 or GTX bytes
 albers = terrio.list_crs("albers", authority="EPSG", kind="projected")  # registry CRSs, for a CRS picker
 
 data = open("dem.tif", "rb").read()
 raster = terrio.open_bytes(data, "dem.tif")  # from bytes; to bytes with raster.to_bytes("x.tif")
 ```
+
+`transform_points` raises on failed points by default. Pass `errcheck=False` to
+set every output ordinate of a failed point to positive infinity and continue
+with the same transformer. Invalid CRS definitions, operation setup and unequal
+array lengths still raise. The rio coordinate and geometry helpers use this
+batch mode to keep valid points when a batch contains missing or invalid values.
+The `errcheck` option currently applies to Python. JavaScript `transformPoints`
+retains its strict failure policy; adding the equivalent optional batch policy
+to that binding remains a follow-up.
 
 Raster operations with `dst` and the standard output keywords accept `options={...}`, just
 like `Raster.write(options=...)` and CLI `--co`. This includes streamed terrain/warp outputs,
@@ -764,7 +784,13 @@ uploaded = terrio.open_vrt(xml, {"dem.tif": image_bytes})
 ```
 
 `open_vrt` accepts source names mapped to file bytes, paths or `PathLike` objects;
-source windows remain lazy. `open_raster(path, lazy=True)` also opens VRT files
+every referenced name, including masks and RPC DEMs, must appear in the map.
+Missing entries raise an error without resolving host files or URLs. Supplied
+path values explicitly authorize those paths; source windows remain lazy.
+Only referenced entries are opened. A source supplied as bytes that is itself
+a VRT is opened against the same map (up to 8 levels, without cycles), and bytes
+of a STAC, STACTA or STACIT document are refused.
+`open_raster(path, lazy=True)` also opens VRT files
 lazily. The [serialized VRT support](cli.md#serialized-virtual-rasters) lists the
 supported transformers, built-in functions, kernels and masks.
 

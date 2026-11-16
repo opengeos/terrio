@@ -8,9 +8,15 @@
 //! Reading behaves like GDAL's CSV driver opened with `AUTODETECT_TYPE=YES` and the
 //! `X_POSSIBLE_NAMES` / `Y_POSSIBLE_NAMES` / `GEOM_POSSIBLE_NAMES` open options set to common
 //! names. Writing follows GDAL's `GEOMETRY=AS_WKT` (the default) or `GEOMETRY=AS_XY`.
+//! Repeated headers are given distinct case-sensitive names with `_2`, `_3`, ... suffixes.
+//! On collision, generated geometry columns use reserved `__terrio_*` headers, recognized only
+//! as a leading geometry block under default inference. Ordinary suffixed attributes keep their
+//! existing meaning. This naming policy is Terrio's.
 
+use super::unique_column_names;
 use crate::crs::SpatialRef;
 use crate::{Error, Result};
+use std::collections::HashSet;
 use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer};
 
 /// How [`CsvOptions`] writes geometries.
@@ -38,7 +44,7 @@ pub struct CsvOptions {
     /// Column names that may hold Z coordinates. Empty means the default, `z`.
     pub z_possible_names: Vec<String>,
     /// Column names that may hold WKT geometries. Empty means the defaults: `wkt`, `geometry`,
-    /// `geom`, `the_geom`.
+    /// `geom`, `the_geom`. Explicit matching names take precedence over X/Y inference.
     pub geom_possible_names: Vec<String>,
     /// Infer integer, real, date and date-time fields from the values (otherwise every field is a
     /// string, as GDAL does by default).
@@ -127,6 +133,45 @@ pub(super) fn matches_name(column: &str, patterns: &[String], defaults: &[&str])
     if patterns.is_empty() { defaults.iter().any(|p| check(p)) } else { patterns.iter().any(|p| check(p)) }
 }
 
+/// A free column name, retaining the base unless it collides with an existing name.
+fn available_column_name(base: &str, occupied: impl Fn(&str) -> bool) -> String {
+    if !occupied(base) {
+        return base.to_string();
+    }
+    for suffix in 2usize.. {
+        let candidate = format!("{base}_{suffix}");
+        if !occupied(&candidate) {
+            return candidate;
+        }
+    }
+    unreachable!("a CSV cannot hold every possible column name")
+}
+
+/// A writer-owned marker, optionally followed by a canonical collision suffix.
+fn geometry_marker(name: &str, base: &str) -> bool {
+    name == base
+        || name
+            .strip_prefix(base)
+            .and_then(|s| s.strip_prefix('_'))
+            .is_some_and(|s| s.parse::<usize>().is_ok_and(|n| n >= 2 && n.to_string() == s))
+}
+
+/// The dimensionality of a complete, leading coordinate marker block.
+fn marked_coordinates(header: &[String]) -> Option<bool> {
+    let stem = header.first()?.strip_suffix("_x")?;
+    let has_z = if geometry_marker(stem, "__terrio_xy2") {
+        false
+    } else if geometry_marker(stem, "__terrio_xy3") {
+        true
+    } else {
+        return None;
+    };
+    if header.get(1)? != &format!("{stem}_y") || (has_z && header.get(2)? != &format!("{stem}_z")) {
+        return None;
+    }
+    Some(has_z)
+}
+
 /// Reads a CSV file.
 pub fn read(path: &str, options: &CsvOptions) -> Result<Layer> {
     let mut stream = CsvStream::open(path, options)?;
@@ -138,7 +183,7 @@ pub fn read(path: &str, options: &CsvOptions) -> Result<Layer> {
 }
 
 /// The CSV options for a file: a `.tsv` file is tab-separated unless a separator is given.
-fn file_options(path: &str, options: &CsvOptions) -> CsvOptions {
+pub(crate) fn file_options(path: &str, options: &CsvOptions) -> CsvOptions {
     let tsv = crate::formats::extension(path).as_deref() == Some("tsv");
     CsvOptions { separator: options.separator.or(tsv.then_some(b'\t')), ..options.clone() }
 }
@@ -218,7 +263,7 @@ impl CsvStream {
         // CREATE_CSVT=YES), for a layer with geometries.
         if options.crs.is_none() && decoder.has_geometry {
             let prj = std::path::Path::new(path).with_extension("prj");
-            if let Some(crs) = std::fs::read(&prj).ok().and_then(|b| SpatialRef::parse(String::from_utf8_lossy(&b).trim()).ok()) {
+            if let Some(crs) = std::fs::read(&prj).ok().and_then(|b| SpatialRef::parse_literal(String::from_utf8_lossy(&b).trim()).ok()) {
                 crs.apply_to_layer(&mut layer);
             }
         }
@@ -349,6 +394,30 @@ fn cell(r: &[Vec<u8>], i: usize, utf8: bool) -> Option<String> {
 
 impl CsvScan {
     fn start(&mut self, header: &[String], options: &CsvOptions) {
+        self.types = vec![TypeInference::default(); header.len()];
+        self.lonlat_xy = true;
+        let default_names = options.x_possible_names.is_empty()
+            && options.y_possible_names.is_empty()
+            && options.z_possible_names.is_empty()
+            && options.geom_possible_names.is_empty();
+        if options.geom_possible_names.is_empty() && header.first().is_some_and(|h| geometry_marker(h, "__terrio_wkt")) {
+            self.wkt = vec![WktCandidate { column: 0, is_wkt: None, any: false, lonlat: true }];
+        }
+        if default_names && let Some(has_z) = marked_coordinates(header) {
+            (self.x_col, self.y_col, self.z_col) = (Some(0), Some(1), has_z.then_some(2));
+            return;
+        }
+        let wkt_candidates = || {
+            header
+                .iter()
+                .enumerate()
+                .filter(|(_, h)| matches_name(h, &options.geom_possible_names, GEOM_NAMES))
+                .map(|(column, _)| WktCandidate { column, is_wkt: None, any: false, lonlat: true })
+                .collect::<Vec<_>>()
+        };
+        if !options.geom_possible_names.is_empty() {
+            self.wkt = wkt_candidates();
+        }
         let find = |patterns: &[String], defaults: &[&str]| header.iter().position(|h| matches_name(h, patterns, defaults));
         let mut x_col = find(&options.x_possible_names, X_NAMES);
         let mut y_col = find(&options.y_possible_names, Y_NAMES);
@@ -357,16 +426,9 @@ impl CsvScan {
         }
         self.z_col = x_col.and_then(|_| find(&options.z_possible_names, Z_NAMES));
         (self.x_col, self.y_col) = (x_col, y_col);
-        if x_col.is_none() {
-            self.wkt = header
-                .iter()
-                .enumerate()
-                .filter(|(_, h)| matches_name(h, &options.geom_possible_names, GEOM_NAMES))
-                .map(|(column, _)| WktCandidate { column, is_wkt: None, any: false, lonlat: true })
-                .collect();
+        if x_col.is_none() && self.wkt.is_empty() {
+            self.wkt = wkt_candidates();
         }
-        self.types = vec![TypeInference::default(); header.len()];
-        self.lonlat_xy = true;
     }
 
     /// Adds a record (empty lines are skipped).
@@ -380,12 +442,11 @@ impl CsvScan {
             t.add(&String::from_utf8_lossy(f));
         }
         let get = |i: usize| cell(r, i, true);
-        if let (Some(xc), Some(yc)) = (self.x_col, self.y_col) {
-            if let Some(g) = xy_point(get, xc, yc, self.z_col) {
-                self.any_xy = true;
-                self.lonlat_xy &= in_lonlat(&g).unwrap_or(true);
-            }
-            return;
+        if let (Some(xc), Some(yc)) = (self.x_col, self.y_col)
+            && let Some(g) = xy_point(get, xc, yc, self.z_col)
+        {
+            self.any_xy = true;
+            self.lonlat_xy &= in_lonlat(&g).unwrap_or(true);
         }
         for c in &mut self.wkt {
             let Some(v) = r.get(c.column).map(|f| String::from_utf8_lossy(f)) else { continue };
@@ -405,10 +466,16 @@ impl CsvScan {
     }
 
     /// The layer the rows make (without features), and their decoder.
-    fn finish(self, header: Vec<String>, name: &str, options: &CsvOptions, utf8: bool) -> RowDecoder {
-        // A WKT column must hold geometries: a "geometry" column of other values is an attribute.
-        let wkt = self.wkt.iter().find(|c| c.is_wkt == Some(true));
+    fn finish(mut self, header: Vec<String>, name: &str, options: &CsvOptions, utf8: bool) -> RowDecoder {
+        let header = unique_column_names(header);
+        // An entirely blank writer-owned marker denotes null geometry. Ordinary WKT
+        // candidates must contain geometries; other values remain attributes.
+        let marked = options.geom_possible_names.is_empty() && header.first().is_some_and(|h| geometry_marker(h, "__terrio_wkt"));
+        let wkt = self.wkt.iter().find(|c| c.is_wkt == Some(true) || (marked && c.column == 0 && c.is_wkt.is_none()));
         let wkt_col = wkt.map(|c| c.column);
+        if wkt_col.is_some() {
+            (self.x_col, self.y_col, self.z_col) = (None, None, None);
+        }
         let geom_cols: Vec<usize> = [self.x_col, self.y_col, self.z_col, wkt_col].into_iter().flatten().collect();
         let mut layer = Layer::new(name);
         let mut fields = Vec::new();
@@ -417,8 +484,7 @@ impl CsvScan {
                 continue;
             }
             let t = if !options.autodetect_type || Some(i) == wkt_col { FieldType::Text } else { self.types[i].field_type() };
-            let h = if h.is_empty() { format!("field_{}", i + 1) } else { h.clone() };
-            layer.add_field(FieldDef::new(h, t));
+            layer.add_field(FieldDef::new(h.clone(), t));
             fields.push((i, t));
         }
         if self.x_col.is_some() {
@@ -611,7 +677,7 @@ fn value(v: &str, t: FieldType) -> FieldValue {
 
 /// Writes a layer as CSV.
 pub fn write(layer: &Layer, path: &str, options: &CsvOptions) -> Result<()> {
-    std::fs::write(path, to_string(layer, options)?)?;
+    std::fs::write(path, to_string(layer, &file_options(path, options))?)?;
     Ok(())
 }
 
@@ -641,13 +707,34 @@ impl CsvEncoder {
         if mode == CsvGeometry::AsXy && profile.geometry.non_point {
             return Err(Error::InvalidArgument("CSV: writing geometries as X/Y columns needs a point layer".into()));
         }
+        if mode != CsvGeometry::None && !SpatialRef::from_layer(layer).is_unknown() {
+            crate::warnings::warn("CSV does not store this layer's CRS or write a .prj sidecar: supply a matching .prj or use a format that stores CRS definitions".into());
+        }
         let mut header: Vec<String> = match mode {
             CsvGeometry::AsWkt => vec!["WKT".into()],
             CsvGeometry::AsXy if has_z => vec!["X".into(), "Y".into(), "Z".into()],
             CsvGeometry::AsXy => vec!["X".into(), "Y".into()],
             CsvGeometry::None => vec![],
         };
+        // Geometry inference is case-insensitive, whereas distinct attribute names are not.
+        let occupied: HashSet<String> = layer.schema.fields().iter().map(|f| f.name.trim().to_ascii_lowercase()).collect();
+        match mode {
+            CsvGeometry::AsWkt
+                if occupied.contains("wkt")
+                    || (X_NAMES.iter().any(|name| occupied.contains(*name)) && Y_NAMES.iter().any(|name| occupied.contains(*name))) =>
+            {
+                header = vec![available_column_name("__terrio_wkt", |s| occupied.contains(s))];
+            }
+            CsvGeometry::AsXy if ["x", "y", "z"].iter().any(|s| occupied.contains(*s)) => {
+                let base = if has_z { "__terrio_xy3" } else { "__terrio_xy2" };
+                let axes = if has_z { &["x", "y", "z"][..] } else { &["x", "y"][..] };
+                let stem = available_column_name(base, |s| axes.iter().any(|axis| occupied.contains(&format!("{s}_{axis}"))));
+                header = axes.iter().map(|axis| format!("{stem}_{axis}")).collect();
+            }
+            _ => {}
+        }
         header.extend(layer.schema.fields().iter().map(|f| f.name.clone()));
+        let header = unique_column_names(header);
         Ok(Self { sep, mode, has_z, header, fields: layer.schema.len() })
     }
 
@@ -716,6 +803,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn geometry_exports_warn_once_when_crs_is_not_stored() {
+        let layer = super::super::geojson::parse(br#"{"type":"Point","coordinates":[12,34]}"#, "points").unwrap();
+        crate::warnings::take();
+        to_string(&layer, &Default::default()).unwrap();
+        let warnings = crate::warnings::take();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("CSV does not store this layer's CRS"));
+        to_string(&layer, &CsvOptions { geometry: CsvGeometry::None, ..Default::default() }).unwrap();
+        assert!(crate::warnings::take().is_empty());
+    }
+
+    #[test]
     fn reads_long_multibyte_text() {
         // Byte 10 of this name falls inside a character; the date check must not slice there (#159).
         let l = parse("id,name\n1,東京都千代田区\n", "t", &CsvOptions::default()).unwrap();
@@ -763,12 +862,40 @@ mod tests {
     fn writes_wkt_and_xy() {
         let l = parse("lon,lat,name\n1.5,2,a b\n3,4,\"c,d\"\n", "pts", &CsvOptions::default()).unwrap();
         let wkt = to_string(&l, &CsvOptions::default()).unwrap();
-        assert_eq!(wkt, "WKT,lon,lat,name\nPOINT (1.5 2),1.5,2,a b\nPOINT (3 4),3,4,\"c,d\"\n");
+        assert_eq!(wkt, "__terrio_wkt,lon,lat,name\nPOINT (1.5 2),1.5,2,a b\nPOINT (3 4),3,4,\"c,d\"\n");
         let xy = to_string(&l, &CsvOptions { geometry: CsvGeometry::AsXy, ..Default::default() }).unwrap();
         assert_eq!(xy, "X,Y,lon,lat,name\n1.5,2,1.5,2,a b\n3,4,3,4,\"c,d\"\n");
         let opts = CsvOptions { keep_geom_columns: false, ..Default::default() };
         let l = parse("WKT,name\nPOINT (1.5 2),a b\n", "pts", &opts).unwrap();
         assert_eq!(to_string(&l, &opts).unwrap(), "WKT,name\nPOINT (1.5 2),a b\n");
+    }
+
+    #[test]
+    fn explicit_wkt_preference_keeps_xy_fallback_and_marker_overrides() {
+        let selected = CsvOptions { geom_possible_names: vec!["shape".into()], ..Default::default() };
+        for value in ["A", "42", ""] {
+            let layer = parse(&format!("shape,lon,lat\n{value},12,34\n"), "fallback", &selected).unwrap();
+            assert_eq!(layer.features[0].geometry, Some(Geometry::point(12., 34.)));
+        }
+        let text = "shape,lon,lat\n\"LINESTRING (1 2,3 4)\",12,34\n";
+        let line = super::super::wkt::parse("LINESTRING (1 2,3 4)");
+        assert_eq!(parse(text, "selected", &selected).unwrap().features[0].geometry, line);
+        for options in [
+            CsvOptions::default(),
+            CsvOptions { x_possible_names: vec!["lon".into()], ..Default::default() },
+            CsvOptions { y_possible_names: vec!["lat".into()], ..Default::default() },
+            CsvOptions { z_possible_names: vec!["height".into()], ..Default::default() },
+        ] {
+            let marked = text.replacen("shape", "__terrio_wkt", 1);
+            assert_eq!(parse(&marked, "marker", &options).unwrap().features[0].geometry, line);
+            let non_wkt = "__terrio_wkt,lon,lat\nnote,12,34\n";
+            assert_eq!(parse(non_wkt, "fallback", &options).unwrap().features[0].geometry, Some(Geometry::point(12., 34.)));
+            let null_geometry = "__terrio_wkt,lon,lat\n,12,34\n";
+            assert!(parse(null_geometry, "null", &options).unwrap().features[0].geometry.is_none());
+        }
+        let selected = CsvOptions { keep_geom_columns: false, ..selected };
+        let layer = parse(text, "selected", &selected).unwrap();
+        assert_eq!(layer.schema.fields().iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["lon", "lat"]);
     }
 
     #[test]

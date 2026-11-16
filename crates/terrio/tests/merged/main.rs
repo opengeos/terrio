@@ -20,6 +20,8 @@ mod citygml;
 mod cityjson;
 #[path = "../crs_compat.rs"]
 mod crs_compat;
+#[path = "../csv_writing.rs"]
+mod csv_writing;
 #[path = "../deep_wkt_sinks.rs"]
 mod deep_wkt_sinks;
 #[path = "../dem_calc_real_data.rs"]
@@ -136,6 +138,8 @@ mod stacta;
 mod tiff_limits;
 #[path = "../topology.rs"]
 mod topology;
+#[path = "../transformer_thread_exit.rs"]
+mod transformer_thread_exit;
 #[path = "../unreferenced_writes.rs"]
 mod unreferenced_writes;
 #[path = "../user_crs.rs"]
@@ -148,6 +152,8 @@ mod vector_sql;
 mod white_is_zero;
 #[path = "../wkt2.rs"]
 mod wkt2;
+#[path = "../wkt_file_nul.rs"]
+mod wkt_file_nul;
 #[path = "../zip_duplicate_names.rs"]
 mod zip_duplicate_names;
 #[path = "../zonal_remote.rs"]

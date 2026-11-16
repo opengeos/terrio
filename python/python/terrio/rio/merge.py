@@ -22,6 +22,7 @@ from typing import Any
 import numpy as np
 from affine import Affine
 
+from terrio._terrio import _redact_diagnostic_location as _redact
 from terrio.rio import windows
 from terrio.rio.enums import Resampling
 from terrio.rio.errors import MergeError, RasterioDeprecationWarning, RasterioError, WindowError
@@ -344,7 +345,7 @@ def merge(
             for idx, ds in enumerate(sources):
                 with opener(ds) as src:
                     if first_crs != src.crs:
-                        raise RasterioError(f"CRS mismatch with source: {ds}")
+                        raise RasterioError(f"CRS mismatch with source: {_redact(str(ds))}")
                     try:
                         ib = intersect(src.bounds, chunk_bounds, chunk_t)
                         sw = windows.from_bounds(*ib, src.transform)

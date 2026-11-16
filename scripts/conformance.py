@@ -66,6 +66,10 @@ Suites:
     compound-crs      compound EPSG URNs and GML XYZ against GDAL/OGR
     crs-list          ``terrio list-crs`` vs GDAL's GetCRSInfoListFromDatabase, field by field, for
                       the EPSG, ESRI and IAU_2015 CRSs (compare_crs_list_with_gdal.py)
+    transform-bounds  polar and regional bounding boxes vs GDAL via rasterio
+    geojson-crs       named GeoJSON CRS and real projected boundaries read by GDAL
+    wkt1-strict-export  ``terrio crs --wkt1-strict`` of custom CRSs read by PROJ (compare_wkt1_strict_with_proj.py)
+    transform-batches  mixed-validity Python batches and Natural Earth points vs GDAL
 
 Usage:
     python scripts/conformance.py ../terrio-data [--output docs/conformance.md] [--json FILE]
@@ -122,10 +126,12 @@ GDAL_FREE_SUITES = frozenset(
         "grib",
         "hecras",
         "jp2-writer",
+        "longitude-period",
         "pointclouds",
         "pyogrio-buffers",
         "vsi",
         "webp-writer",
+        "wkt1-strict-export",
         "xlsx-workbook",
     )
 )
@@ -634,10 +640,11 @@ def suite_vector_byte_packaging(ctx):
         ctx: Conformance run context.
 
     Returns:
-        Suite: Three document/archive comparisons.
+        Suite: Document/archive and MIF header comparisons.
     """
     suite = Suite("vector-byte-packaging", "Vector byte packaging", "GDAL/OGR",
-                  "16 Natural Earth populated places; feature count, scalar attributes, archive members and CRS exact; coordinates within 1e-6 degrees for MapInfo's grid.")
+                  "16 Natural Earth populated places; feature count, scalar attributes, archive members and CRS exact; coordinates within 1e-6 degrees for MapInfo's grid. "
+                  "Explicit MIF driver identification refuses wrong-format bytes and retains valid empty schemas.")
     missing = missing_modules("terrio", "osgeo")
     if missing:
         suite.skipped = "needs the Python modules " + ", ".join(missing)
@@ -655,7 +662,10 @@ def suite_vector_byte_packaging(ctx):
         status = {"identical": IDENTICAL, "within tolerance": TOLERANCE,
                   "not compared": NOT_COMPARED}.get(result["status"], DIFFERS)
         suite.cases.append(Case("Vector bytes", result["name"], status, result["detail"]))
-    if code and not any(case.status == DIFFERS for case in suite.cases):
+    expected = ["places.gml", "places.mif.zip", "places.tab.zip", "MIF header recognition"]
+    if sorted(result["name"] for result in results) != sorted(expected):
+        suite.error = "incomplete vector byte packaging comparisons"
+    elif code and not any(case.status == DIFFERS for case in suite.cases):
         suite.error = tail(err or out) or f"exit {code}"
     return suite
 
@@ -1062,6 +1072,48 @@ def suite_benchmark_compat(ctx):
         "WebP lossless pixels/masks and JPEG XL Byte/UInt16 layouts roundtrip exactly; "
         "lossy WebP quality must change valid decoded output, with no cross-encoder pixel equality claim.", 1,
     )
+
+
+def suite_longitude_period(ctx):
+    """Compare real global country coverage across stored longitude ranges.
+
+    Args:
+        ctx: Conformance execution context.
+
+    Returns:
+        Suite: Twelve required real-data comparisons with explicit GDAL policy scope.
+    """
+    suite = Suite("longitude-period", "Periodic geographic storage", "GDAL via rasterio",
+                  "Natural Earth country coverage stored from zero and minus 180 degrees: "
+                  "each grid policy's two storage layouts agree within 1e-8 for nearest, bilinear, average and sum. "
+                  "Nearest, average and chunk-dependent bilinear also match GDAL within 1e-6. "
+                  "Stable bilinear uses local scales; exact sum preserves the source-area "
+                  "total but can distribute it differently from GDAL among output rows. "
+                  "Three polar meridian samples of real country coverage match GDAL within 1e-8 "
+                  "for bilinear and sum under both policies and storage layouts. "
+                  "Regional Pacific country coverage matches GDAL exactly with nearest under both policies. "
+                  "Wider-source average and sum include both nonduplicated placements and match "
+                  "independent source-area integrals within 1e-9; average matches GDAL within 1e-9, "
+                  "while GDAL's approximate sum weights differ by at most 0.03.")
+    missing = missing_modules("terrio", "pytest", "numpy", "rasterio")
+    if missing:
+        suite.skipped = "needs " + ", ".join(missing)
+        return suite
+    import rasterio
+    suite.reference = f"GDAL {rasterio.__gdal_version__} via rasterio {rasterio.__version__}"
+    complete, detail = _pytest_module_conformance(
+        ctx, "test_warp_longitude_period.py", selection="real_world_field_storage_equivalence", expected_count=4)
+    suite.cases.append(Case("Global rasters", "Natural Earth countries", TOLERANCE if complete else DIFFERS, detail))
+    complete, detail = _pytest_module_conformance(
+        ctx, "test_warp_meridian_footprints.py", selection="real_country_coverage", expected_count=2)
+    suite.cases.append(Case("Polar meridian footprints", "Natural Earth countries", TOLERANCE if complete else DIFFERS, detail))
+    complete, detail = _pytest_module_conformance(
+        ctx, "test_warp_regional_longitudes.py", selection="real_country_regional_coverage", expected_count=2)
+    suite.cases.append(Case("Regional longitude numbering", "Natural Earth Pacific countries", IDENTICAL if complete else DIFFERS, detail))
+    complete, detail = _pytest_module_conformance(
+        ctx, "test_warp_wider_source_placements.py", selection="real_country_coverage", expected_count=4)
+    suite.cases.append(Case("Wider-source footprint placements", "Natural Earth countries", TOLERANCE if complete else DIFFERS, detail))
+    return suite
 
 
 def suite_warp_policy(ctx):
@@ -2034,16 +2086,18 @@ def suite_compound_crs(ctx):
 
 def suite_wkt_keywords(ctx):
     """Engineering and vertical WKT roots through native bindings and CLI."""
-    suite = Suite("wkt-keywords", "Engineering and vertical WKT keywords", "GDAL 3.13.3",
+    suite = Suite("wkt-keywords", "Engineering and vertical WKT keywords", "GDAL/OGR",
                   "Engineering/vertical definitions: exact root authority and CRS kind, "
-                  "CLI WKT retention and unchanged real USGS elevation pixels, nodata and affine. "
-                  "This checks metadata parsing, not engineering-to-Earth transformations.")
+                  "CLI and GTiff/COG WKT retention and unchanged real USGS elevation pixels, type, nodata and affine. "
+                  "GDAL reads equivalent output CRSs; engineering-to-Earth warps are refused.")
     if missing_modules("terrio", "osgeo", "numpy"):
         suite.skipped = "needs current Python bindings, GDAL and NumPy"
         return suite
     if not (Path(ctx.data) / "usgs_dem.tif").exists():
         suite.skipped = "usgs_dem.tif is missing (scripts/fetch_test_data.sh)"
         return suite
+    from osgeo import gdal
+    suite.reference = f"GDAL {gdal.VersionInfo('RELEASE_NAME')}"
     code, out, err = run([sys.executable, str(SCRIPTS / "compare_wkt_keywords_with_gdal.py"),
                           ctx.data, "--terrio", ctx.terrio, "--json"])
     try:
@@ -2055,7 +2109,8 @@ def suite_wkt_keywords(ctx):
         status = IDENTICAL if result["status"] == "identical" else DIFFERS
         suite.cases.append(Case("WKT keywords", result["name"], status, result["detail"]))
     fixture = SCRIPTS.parent / "crates/terrio-crs/tests/data/wkt_keywords_reference.json"
-    expected_names = [case["name"] for case in json.loads(fixture.read_text())["cases"]]
+    cases = json.loads(fixture.read_text())["cases"]
+    expected_names = [case["name"] for case in cases] + [case["name"] + "-root-id" for case in cases if case["local"]]
     if sorted(result["name"] for result in results) != sorted(expected_names) or (code and not any(c.status == DIFFERS for c in suite.cases)):
         suite.error = tail(err or out) or "incomplete WKT keyword comparisons"
     return suite
@@ -2294,6 +2349,145 @@ def suite_projjson_export(ctx):
     return suite
 
 
+def suite_wkt1_strict_export(ctx):
+    """terrio's strict WKT 1 (`--wkt1-strict`) of custom definitions, read by live PROJ."""
+    suite = Suite("wkt1-strict-export", "Strict WKT 1 export", "PROJ",
+                  "`SpatialRef::to_wkt1_strict` of every custom definition of "
+                  "`tests/data/wkt1_strict_export.tsv` (PROJ strings, WKT 1 and 2, references, IAU_2015 "
+                  "CRSs), read by PROJ (as GDAL reads a `.prj`): points around each CRS's origin "
+                  "transform as from the original, within 1 mm or 1e-8 degrees; none written where "
+                  "PROJ has no WKT 1 without extension. Not compared: the known differences (terrio "
+                  "writes none), Halley's and Eros's projected CRSs, and CRSs PROJ transforms no "
+                  "point to.")
+    if missing_modules("pyproj"):
+        suite.skipped = "needs pyproj"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_wkt1_strict_with_proj.py"), "--terrio", ctx.terrio, "--json"])
+    try:
+        cases = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    statuses = {"identical": IDENTICAL, "within tolerance": TOLERANCE, "expected rejection": EXPECTED_REJECTION,
+                "not compared": NOT_COMPARED}
+    for case in cases:
+        suite.cases.append(Case(case["group"], case["name"], statuses.get(case["status"], DIFFERS), case["detail"]))
+    if code and not any(c.status == DIFFERS for c in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
+def suite_tiff_block_tags(ctx):
+    """Compare TIFF block addresses with file tables and GDAL.
+
+    Args:
+        ctx: Conformance execution context.
+
+    Returns:
+        Suite: Exact block offsets and sizes, with measured remote-read bounds.
+    """
+    suite = Suite("tiff-block-tags", "TIFF block metadata", "GDAL via rasterio",
+                  "Classic TIFF and BigTIFF tiles/strips, planar/interleaved bands, "
+                  "complex samples, internal/external overviews and real Landsat storage: "
+                  "offsets and sizes match exactly. HTTP COG queries transfer less than "
+                  "one quarter of the file and repeated queries send no requests.")
+    missing = missing_modules("terrio", "pytest", "numpy", "rasterio", "osgeo")
+    if missing:
+        suite.skipped = "needs " + ", ".join(missing)
+        return suite
+    import rasterio
+    suite.reference = f"GDAL {rasterio.__gdal_version__} via rasterio {rasterio.__version__}"
+    complete, detail = _pytest_module_conformance(ctx, "test_rio_block_tags.py", expected_count=15)
+    suite.cases.append(Case("TIFF", "stored block addresses", IDENTICAL if complete else DIFFERS, detail))
+    return suite
+
+
+def suite_geojson_crs(ctx):
+    """Compare GeoJSON CRS names and projected boundary coordinates with GDAL.
+
+    Args:
+        ctx: Conformance execution context.
+
+    Returns:
+        Suite: Eight real-data comparisons, or a prerequisite skip.
+    """
+    suite = Suite("geojson-crs", "GeoJSON CRS names", "GDAL/OGR",
+                  "Real US boundaries projected by GDAL to EPSG:32615 and ESRI:102003, "
+                  "written through Layer, bytes, convert and pyogrio. CRS authority/code, "
+                  "feature count and scalar attributes exact; coordinates within 1e-7 metres. "
+                  "Unnamed-CRS refusal is Terrio policy, not a GDAL equivalence claim.")
+    missing = missing_modules("terrio", "pytest", "osgeo", "shapely", "numpy", "geopandas")
+    if missing:
+        suite.skipped = "needs " + ", ".join(missing)
+        return suite
+    if not (Path(ctx.data) / "countries.gpkg").exists():
+        suite.error = "needs countries.gpkg from scripts/fetch_test_data.sh"
+        return suite
+    from osgeo import gdal
+    suite.reference = f"GDAL {gdal.VersionInfo('RELEASE_NAME')}"
+    complete, detail = _pytest_module_conformance(
+        ctx, "test_geojson_write_crs.py", selection="matches_gdal", expected_count=8)
+    suite.cases.append(Case("GeoJSON", "projected US boundaries", TOLERANCE if complete else DIFFERS, detail))
+    return suite
+
+
+def suite_transform_batches(ctx):
+    """Check single-call point failures and successful real coordinates against GDAL.
+
+    Args:
+        ctx: Conformance execution context.
+
+    Returns:
+        Suite: Batch policy regressions and real point comparisons within 1e-7 metres.
+    """
+    suite = Suite("transform-batches", "Mixed-validity coordinate batches", "GDAL via rasterio",
+                  "22 Python checks: one native call for mixed-validity coordinate/geometry batches, "
+                  "strict native defaults, optional infinite failed ordinates and empty/setup controls. "
+                  "Two sets of 1,000 Natural Earth populated places retain successful Mercator "
+                  "coordinates within 1e-7 metres of GDAL after inserting one NaN. "
+                  "Failed points follow Terrio's existing infinity policy; rasterio raises on these batches. "
+                  "Timing is measured separately, not asserted in conformance.")
+    missing = missing_modules("terrio", "pytest", "numpy", "rasterio", "osgeo")
+    if missing:
+        suite.skipped = "needs " + ", ".join(missing)
+        return suite
+    if not (Path(ctx.data) / "ne_places/ne_10m_populated_places_simple.shp").exists():
+        suite.skipped = "needs Natural Earth populated places"
+        return suite
+    import rasterio
+    suite.reference = f"GDAL {rasterio.__gdal_version__} / PROJ {rasterio.__proj_version__} via rasterio {rasterio.__version__}"
+    complete, detail = _pytest_module_conformance(ctx, "test_rio_transform_batch.py", expected_count=22)
+    suite.cases.append(Case("Coordinate batches", "failure policy and real places", TOLERANCE if complete else DIFFERS, detail))
+    return suite
+
+
+def suite_transform_bounds(ctx):
+    """Compare polar and regional transformed bounds with live GDAL.
+
+    Args:
+        ctx: Conformance execution context.
+
+    Returns:
+        Suite: Bounds comparisons within 1e-8 target units, or a prerequisite skip.
+    """
+    suite = Suite("transform-bounds", "Transformed bounds", "GDAL via rasterio",
+                  "Four polar stereographic CRSs and the northern/southern NSIDC 25 km grid "
+                  "extents, EPSG:4326 and OGC:CRS84 targets, and four regional controls. "
+                  "48 comparisons at 2, 21 and 40 interior edge points: pole and full longitude "
+                  "limits exact, remaining bounds within 1e-8 target units. "
+                  "Wrapped antimeridian bounds are outside this suite's scope.")
+    missing = missing_modules("terrio", "pytest", "numpy", "rasterio")
+    if missing:
+        suite.skipped = "needs " + ", ".join(missing)
+        return suite
+    import rasterio
+    suite.reference = f"GDAL {rasterio.__gdal_version__} via rasterio {rasterio.__version__}"
+    complete, detail = _pytest_module_conformance(
+        ctx, "test_transform_bounds_poles.py", selection="match_gdal", expected_count=48)
+    suite.cases.append(Case("Bounds", "polar and regional bounds", TOLERANCE if complete else DIFFERS, detail))
+    return suite
+
+
 def suite_crs_parameters(ctx):
     """Compare exported projection parameters with the active rasterio GDAL oracle.
 
@@ -2426,10 +2620,21 @@ def suite_crs(ctx):
         "1e-7 degrees with longitude weighted by cos(latitude) (1e-6 degrees at exact "
         "input poles for platform asin rounding); PROJ-refused inverse "
         "boundary points may be refused or recover the original input). "
+        "Then the WKT and PROJ-string readings of opengeos/terrio#1012, against PROJ 9.8.1 "
+        "(pyproj 3.8.0, no grids) in JSON fixtures: WKT 1 `AXIS` nodes (wkt1_axes.rs), WKT 2 "
+        "`BOUNDCRS` (wkt2_bound.rs), Mercator variant A, unknown node keywords and NULs "
+        "(wkt1_proj_reads.rs), grads and prime meridians (grads_and_prime_meridians.rs), datums "
+        "known by ID or name (wkt_datum_shift.rs), WKTs PROJ does not resolve to their EPSG CRS "
+        "(wkt_unresolved.rs), and PROJ-string ellipsoid parameters and PROJ4 extensions "
+        "(proj_ellipsoid_shape.rs, proj_ellipsoid_registry.rs), and deprecated EPSG codes by their own "
+        "definition (epsg_deprecated.rs); not compared there: the known "
+        "differences each row names (a scale in parts per million, ESRI ATF (Paris), PROJ's datum "
+        "pivot and renamed datums, #1012). "
         "Identical: within 1 mm. Within tolerance: within 1 cm (forward, inverse) or 1 m (CRS to "
         "CRS, where the datum transformations GDAL picks can differ by area of use). Known "
-        "differences: deprecated CRSs whose own datum PROJ uses, where terrio uses their "
-        "replacement's (#153).",
+        "differences: RRAF 1991 (EPSG:4640 and 2989), deprecated CRSs whose own datum PROJ chains "
+        "through its RRAFG transformation, where terrio uses its ballpark (#153). Deprecated "
+        "codes have their own definition, as in PROJ (GDAL with OSR_USE_NON_DEPRECATED=NO).",
     )
     if not shutil.which("cargo"):
         s.skipped = "needs cargo"
@@ -2555,6 +2760,179 @@ PROJ_CASES = {
         "own_wkt_reads_back_as_the_same_crs": "The same CRSs through the WKT terrio writes, read back by terrio",
         "longlat_longitudes_are_relative_to_lon_0": "Geographic PROJ strings with `+lon_0` (`longlat`, `latlong`, `+pm`, `+towgs84`): seven GDAL 3.13.3 points",
     },
+    # The WKT and PROJ-string readings of opengeos/terrio#1012, against PROJ 9.8.1 (pyproj 3.8.0, no grids).
+    "wkt1_axes": {
+        "projected_axes_are_read_and_written_as_proj_does": (
+            "WKT 1 projected CRSs with `AXIS` nodes in every direction and order (54 cases)", IDENTICAL,
+            "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm; `+axis` of `to_proj4()` as PROJ's",
+        ),
+        "geographic_and_bound_exports_match_proj": "WKT 2 export: geographic CS axes omitted, also under a BOUNDCRS, as PROJ 9.8.1",
+        "wkt2_exports_follow_geographic_and_method_axis_rules": (
+            "WKT 2 export: method-defined projected axes kept, as PROJ 9.8.1", IDENTICAL,
+            "PROJ 9.8.1: a point on a west-counted Mars CRS within 1e-10 degrees",
+        ),
+    },
+    "wkt2_bound": {
+        "bound_crss_place_points_as_proj_does": (
+            "WKT 2 BOUNDCRS to WGS 84 and to another CRS (ED50, OSGB36), over WKT 2 and WKT 1 source CRSs", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
+        ),
+        "the_bound_transformation_is_undone_the_other_way": (
+            "WKT 2 BOUNDCRS: the shift undone from a CRS on the target's datum", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
+        ),
+        "only_best_transforms_a_bound_crs_as_proj_does": (
+            "WKT 2 BOUNDCRS under ONLY_BEST", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
+        ),
+        "a_time_specific_helmert_transformation_is_refused_and_rates_are_left_out": (
+            "WKT 2 BOUNDCRS: time-specific Helmert refused, time-dependent rates left out", IDENTICAL,
+            "PROJ 9.8.1 (pyproj 3.8.0): refused; within 1 mm",
+        ),
+        "a_bound_crs_without_its_transformation_is_refused": (
+            "WKT 2 BOUNDCRS without its transformation refused", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0): refused",
+        ),
+        "a_wgs84_target_is_known_by_any_datum_keyword": (
+            "WKT 2 BOUNDCRS: WGS 84 target by `DATUM`, `GEODETICDATUM` or `TRF`", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
+        ),
+        "a_scale_difference_in_parts_per_million_is_read_in_that_unit": (
+            "WKT 2 BOUNDCRS: scale difference in parts per million", NOT_COMPARED,
+            (
+                "known difference: PROJ 9.8.1 reads an abridged transformation's scale as a ratio whatever its unit; "
+                "terrio reads it in its unit"
+            ),
+        ),
+        "an_exact_or_evaluation_point_shift_to_an_unread_target_is_left_out": (
+            "WKT 2 BOUNDCRS: a full-matrix or evaluation-point shift to a target terrio cannot convert", NOT_COMPARED,
+            "left out with its target, as a `+towgs84` one is: placed as the source CRS alone (PROJ 9.8.1 reads a WKT 1 target)",
+        ),
+        "an_unapplied_transformation_method_is_refused": (
+            "WKT 2 BOUNDCRS: a transformation method terrio does not apply", EXPECTED_REJECTION,
+            "PROJ 9.8.1 (pyproj 3.8.0): unknown names refused; Molodensky applied, refused rather than left out",
+        ),
+        "an_unreadable_shift_to_another_crs_is_refused": (
+            "WKT 2 BOUNDCRS: a Helmert transformation terrio cannot read", EXPECTED_REJECTION,
+            "refused rather than left out, which would place points unshifted",
+        ),
+    },
+    "wkt1_proj_reads": {
+        "wkt_read_by_proj_places_points_as_proj_does": (
+            "WKT 1/2 PROJ reads: Mercator variant A and nodes of unknown keywords (26 cases)", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm, or 1e-9 degrees",
+        ),
+        "wkt_read_by_proj_exports_proj_strings_as_proj_does": (
+            "WKT 1/2 PROJ reads: the PROJ string is PROJ 9.8.1's", IDENTICAL,
+            "PROJ 9.8.1: the same parameters, numeric values within a relative 1e-12",
+        ),
+        "wkt_read_by_proj_is_identified_as_proj_identifies_it": "WKT 1/2 PROJ reads: identified as the EPSG code PROJ 9.8.1 identifies",
+        "wkt_refused_by_proj_is_refused": (
+            "WKT keywords with a space, vertical tab, NUL or unclosed quote", EXPECTED_REJECTION, "refused as PROJ 9.8.1 refuses them",
+        ),
+        "makassar_neiez_goes_to_wgs84_as_in_proj": (
+            "ESRI `.prj` Makassar / NEIEZ (EPSG:3002, Mercator variant A) to WGS 84", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1e-8 degrees",
+        ),
+        "mercator_variant_a_with_a_latitude_of_origin_is_refused_as_in_proj": (
+            "EPSG Mercator (variant A) with a latitude of origin", EXPECTED_REJECTION,
+            "PROJ 9.8.1 reads it but neither transforms it nor writes a PROJ string",
+        ),
+        "a_nul_in_a_projjson_name_is_read_as_in_proj": (
+            "PROJJSON with a NUL in a name; raw NUL ends the text", IDENTICAL, "PROJ 9.8.1 C API: within 1e-3 m",
+        ),
+        "geoascii_params_end_at_their_first_nul": "GeoAsciiParamsTag ends at its first NUL, as GDAL 3.12.1 reads it",
+        "geoascii_params_are_read_per_key_and_need_the_tag": "GeoAsciiParamsTag keys read per key, non-UTF-8 bytes as U+FFFD, as GDAL 3.12.1",
+        "a_stored_wkt_is_written_for_files_with_names_cut_at_a_nul": "Stored WKT written for files with names cut at a NUL, as PROJ 9.8.1 gives such a name",
+    },
+    "grads_and_prime_meridians": {
+        "crss_in_grads_place_points_as_proj_does": (
+            "WKT 1/2 in grads and with prime meridians: NTF (Paris), ATF (Paris), Krovak, Ferro, Lisbon (116 cases)", IDENTICAL,
+            "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm, or 1e-9 of an angular unit",
+        ),
+        "prime_meridians_within_1e_10_radians_of_paris_are_paris": (
+            "Prime meridians within 1e-10 radians of Paris, Copenhagen and Greenwich", IDENTICAL, "PROJ 9.8.1: within 1e-12 degrees",
+        ),
+        "paris_is_written_as_proj_writes_it": (
+            "NTF (Paris) Lambert II: Paris written as PROJ 9.8.1 writes it (PROJ string, WKT 1, PROJJSON, GeoKeys)", IDENTICAL,
+            "PROJ 9.8.1: within 1e-12 degrees",
+        ),
+        "a_prime_meridian_unit_without_its_size_is_refused": (
+            "WKT 2 prime meridian unit without its size", EXPECTED_REJECTION, "refused as PROJ 9.8.1 refuses it",
+        ),
+        "esri_atf_paris_is_identified_as_its_code": (
+            "ESRI ATF (Paris) and Nord de Guerre identified as EPSG:4901 and 27500", NOT_COMPARED,
+            (
+                "known difference: PROJ's transformation of the bare ESRI WKT applies the Paris meridian twice (IGNF chain); "
+                "terrio places it as PROJ places the code, within 1 mm"
+            ),
+        ),
+    },
+    "wkt_datum_shift": {
+        "datums_known_by_id_or_esri_name_are_shifted_as_proj_does": (
+            "WKTs whose datum is known by its EPSG ID or ESRI name, to WGS 84 (180 cases)", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
+        ),
+        "wkts_proj_does_not_resolve_are_placed_through_other_datums_as_proj_does": (
+            "WKTs PROJ places through other datums than their code's", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
+        ),
+        "a_wkt_proj_places_by_its_datum_pivot_is_placed_by_its_code": (
+            "EPSG:7373's ESRI WKT 1 (ONGD14), which PROJ places by its datum pivot", NOT_COMPARED,
+            "known difference, placed by the code until terrio follows that step (opengeos/terrio#1012, item 7 step 2)",
+        ),
+    },
+    "wkt_unresolved": {
+        "wkts_proj_does_not_resolve_are_placed_as_proj_does": (
+            "WKTs PROJ does not resolve to their EPSG CRS: ESRI, renamed, WKT 2 without IDs (1,100 cases)", IDENTICAL,
+            "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
+        ),
+        "datum_pivot_and_renamed_datums_are_placed_by_the_code": (
+            "WKTs PROJ places by its datum pivot or a renamed datum", NOT_COMPARED,
+            "known difference, placed by the code until terrio follows those steps (opengeos/terrio#1012, item 7 step 2)",
+        ),
+    },
+    "proj_ellipsoid_shape": {
+        "ellipsoid_parameters_are_read_as_proj_reads_them": (
+            "PROJ strings with `+R`, `+ellps`, `+datum`, `+a`, `+b`, `+rf`, `+f`, `+es`, `+e` and spherification flags (484 cases)",
+            IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm and the ellipsoid's axes within 1e-3 m",
+        ),
+        "a_wkt_proj4_extension_is_computed_on_as_a_pipeline_step": (
+            "WKT `EXTENSION[\"PROJ4\", ...]` computed on as a PROJ pipeline step (27 cases)", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
+        ),
+        "a_written_wkt_reads_back_as_its_proj_string": (
+            "terrio's WKT of a PROJ string read back by PROJ", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
+        ),
+        "wkt_writes_the_crs_ellipsoid_under_a_spherification_flag": "WKT 1 of a PROJ string with a spherification flag: the CRS's ellipsoid, as PROJ 9.8.1 writes it",
+        "a_null_grid_is_no_shift_and_keeps_the_datum": (
+            "`+nadgrids=@null` beside `+datum` and `+towgs84`", IDENTICAL, "PROJ 9.8.1: within 1e-9 degrees",
+        ),
+        "projjson_is_refused_on_another_figure": (
+            "PROJJSON of a CRS that would describe another figure", EXPECTED_REJECTION,
+            "refused where PROJ 9.8.1 writes another ellipsoid than the CRS computes on",
+        ),
+    },
+    "proj_ellipsoid_registry": {
+        "registry_proj_strings_keep_their_ellipsoids": (
+            "EPSG and ESRI registry PROJ strings keep their WKT's ellipsoid", IDENTICAL, "within 1e-6 m",
+        ),
+    },
+    "epsg_deprecated": {
+        "deprecated_codes_are_placed_by_their_own_definition_as_proj_does": (
+            "Deprecated EPSG CRSs by their own definition (486 cases)", IDENTICAL,
+            "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm (1e-8 degrees geographic); 4 geographic 3D and geocentric CRSs pending "
+            "(opengeos/terrio#1012, item 8)",
+        ),
+        "replacements_are_those_proj_lists": "Deprecated EPSG CRSs: their replacements are PROJ 9.8.1's, GDAL's substitution of a single one",
+        "codes_proj_cannot_transform": (
+            "Deprecated EPSG CRSs PROJ cannot transform (8 cases)", NOT_COMPARED,
+            "PROJ 9.8.1 refuses them; terrio refuses the 6 it cannot write as PROJ strings and transforms the RRAF 1991 "
+            "geocentric CRSs (EPSG:4384, 4972) by their datum's ballpark",
+        ),
+        "geokeys_of_deprecated_codes_read_as_their_own_definition": (
+            "Deprecated EPSG CRSs GDAL substitutes are written to GeoKeys by an identical replacement or as WKT", IDENTICAL,
+            "PROJ 9.8.1 (pyproj 3.8.0, no grids): EPSG:4855's keys read back within 1 mm; GDAL 3.12 reads a code with a single "
+            "replacement as the replacement; EPSG:6986's WKT is read 0.3 m from PROJ (opengeos/terrio#1012, item 19)",
+        ),
+        "geokeys_of_deprecated_codes_read_as_gdal_reads_them": (
+            "GeoKeys giving a deprecated projected code read as GDAL reads them", IDENTICAL,
+            "GDAL 3.12.2: a single replacement's CRS (EPSG:4855 as 5105, 2036 as 2953, 3752 as 3994), another code its own (2191)",
+        ),
+        "ntm_zone_5_keeps_its_own_false_origin": (
+            "EPSG:4855 (deprecated ETRS89 / NTM zone 5) keeps its own false origin", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
+        ),
+    },
 }
 
 
@@ -2596,8 +2974,9 @@ def suite_crs_grids(ctx):
         "and time-dependent transformations with coordinate epochs "
         "(scripts/compare_crs_grids_with_gdal.py), with the largest difference of each case. "
         "Identical: within 1 mm. Within tolerance: within 1 cm, or 1 m from CRS to CRS. Known "
-        "differences: deprecated CRSs whose own datum PROJ uses, where terrio uses their "
-        "replacement's (#153).",
+        "differences: RRAF 1991 (EPSG:4640 and 2989), deprecated CRSs whose own datum PROJ chains "
+        "through its RRAFG transformation, where terrio uses its ballpark (#153). Deprecated "
+        "codes have their own definition, as in PROJ (GDAL with OSR_USE_NON_DEPRECATED=NO).",
     )
     if not shutil.which("cargo"):
         s.skipped = "needs cargo"
@@ -3687,9 +4066,9 @@ def suite_coverage_clean(ctx):
 
 
 def suite_wfs(ctx):
-    """Local GML axis-order controls and public WFS feature reads versus GDAL."""
+    """Local GML authority exports, axis controls and public WFS reads versus GDAL."""
     suite = Suite("wfs", "WFS services and extensionless responses", "GDAL WFS/GML/GeoJSON",
-                  "Local GML northing-first/easting-first/geographic controls with URN/URL/legacy names, exports and reprojection. "
+                  "Local GML EPSG/ESRI/IAU authority exports and northing-first/easting-first/geographic controls with URN/URL/legacy names and reprojection. "
                   "Public WFS 1.0/1.1/2.0 catalogs; selected complete layers and opaque GetFeature URLs. "
                   "Exact field names, attributes, source IDs and CRS; field types checked, with direct GML integer inference differences reported. "
                   "Every linear geometry vertex within 1e-8 CRS units. Unavailable reference services are not compared. Generated numeric FIDs are ignored.")
@@ -3707,6 +4086,9 @@ def suite_wfs(ctx):
         suite.error = f"{error}: {tail(err or out)}"
     if code and not suite.error and not any(case.status == DIFFERS for case in suite.cases):
         suite.error = tail(err or "WFS comparison failed")
+    complete, detail = _pytest_module_conformance(
+        ctx, "test_vector_export_crs_loss.py", selection="named_gml_coordinates_agree_with_gdal", expected_count=3)
+    suite.cases.append(Case("GML", "EPSG, ESRI and IAU authority-order exports", IDENTICAL if complete else DIFFERS, detail))
     return suite
 
 
@@ -3773,15 +4155,28 @@ def suite_complex_writes(ctx):
     return suite
 
 
-def _pytest_module_conformance(ctx, filename):
-    """Require the complete, unfiltered test module and its successful JUnit report."""
+def _pytest_module_conformance(ctx, filename, *, selection=None, expected_count=None):
+    """Require every intended comparison and its successful JUnit report.
+
+    Args:
+        ctx: Conformance context with a data directory.
+        filename: Test module under python/tests.
+        selection: Optional explicit pytest keyword expression.
+        expected_count: Required number of comparisons, when known.
+
+    Returns:
+        tuple: Whether all comparisons passed, and a report detail string.
+    """
     command = [sys.executable, "-m", "pytest", "-o", "addopts=", "-q",
                str(ROOT / "python/tests" / filename)]
+    if selection is not None:
+        command += ["-k", selection]
     env = {"TERRIO_TEST_DATA": os.path.abspath(ctx.data), "PYTEST_ADDOPTS": ""}
     code, collected, err = run(command + ["--collect-only"], env)
     expected = sum("::" in line and Path(line.split("::", 1)[0]).name == filename
                    for line in collected.splitlines())
-    if code or not expected or "deselected" in collected:
+    if (code or not expected or (selection is None and "deselected" in collected)
+            or (expected_count is not None and expected != expected_count)):
         return False, "Could not collect the complete test module. " + tail(err or collected)
     with tempfile.TemporaryDirectory(prefix="terrio-pytest-conformance-") as directory:
         report = Path(directory) / "results.xml"
@@ -3795,7 +4190,7 @@ def _pytest_module_conformance(ctx, filename):
         except (OSError, ET.ParseError) as error:
             complete = False
             detail = f"Pytest report unavailable: {error}. "
-    return code == 0 and complete and "deselected" not in out, detail + tail(err or out)
+    return code == 0 and complete and (selection is not None or "deselected" not in out), detail + tail(err or out)
 
 
 def suite_jp2_writer(ctx):
@@ -3824,8 +4219,11 @@ def suite_webp_writer(ctx):
     s = Suite("webp-writer", "WebP creation options", reference,
               "Default/explicit lossless pixels are exact; lossy quality changes bytes and pixels, "
               "with exact alpha and independent GDAL decoding, including real Landsat RGB. "
-              "Lossy encoder bytes, size and PSNR are not compared with libwebp.")
-    missing = missing_modules("rasterio", "pytest", "terrio", "numpy")
+              "Malformed QUALITY is refused rather than parsed as zero, a deliberate difference from GDAL. "
+              "Lossy encoder bytes, size and PSNR are not compared with libwebp. "
+              "Synthetic tile controls require at least 30 dB PSNR and no damaged macroblocks, "
+              "using independent libwebp/GDAL decoding.")
+    missing = missing_modules("rasterio", "pytest", "terrio", "numpy", "PIL")
     if missing:
         s.skipped = "needs the Python modules " + ", ".join(missing)
         return s
@@ -3834,6 +4232,11 @@ def suite_webp_writer(ctx):
                         IDENTICAL if complete else DIFFERS,
                         "Exact decoding/alpha comparisons and creation-option assertions; "
                         "GDAL encoder parity is not asserted. " + detail))
+    complete, detail = _pytest_module_conformance(ctx, "test_webp_lossy_damage.py", expected_count=17)
+    s.cases.append(Case("Lossy VP8", "30 tiles at 11 qualities and default GeoTIFF WebP",
+                        TOLERANCE if complete else DIFFERS,
+                        "At least 30 dB PSNR versus input; no 16x16 macroblock with mean error above 20. "
+                        "Independent libwebp/GDAL decoding, not encoder parity. " + detail))
     return s
 
 
@@ -3871,6 +4274,7 @@ SUITES = OrderedDict(
         ("overviews", suite_overviews),
         ("packed-tiff", suite_packed_tiff),
         ("warp-grid", suite_warp_grid),
+        ("longitude-period", suite_longitude_period),
         ("sum-overviews", suite_sum_overviews),
         ("translate-overviews", suite_translate_overviews),
         ("raster-manage", suite_raster_manage),
@@ -3937,6 +4341,10 @@ SUITES = OrderedDict(
         ("hecras", suite_hecras),
         ("crs", suite_crs),
         ("crs-parameters", suite_crs_parameters),
+        ("transform-batches", suite_transform_batches),
+        ("transform-bounds", suite_transform_bounds),
+        ("tiff-block-tags", suite_tiff_block_tags),
+        ("geojson-crs", suite_geojson_crs),
         ("geocentric", suite_geocentric),
         ("perspective", suite_perspective),
         ("omerc-two-point", suite_omerc_two_point),
@@ -3947,6 +4355,7 @@ SUITES = OrderedDict(
         ("isea", suite_isea),
         ("projjson", suite_projjson),
         ("projjson-export", suite_projjson_export),
+        ("wkt1-strict-export", suite_wkt1_strict_export),
         ("iau", suite_iau),
         ("compound-crs", suite_compound_crs),
         ("wkt-keywords", suite_wkt_keywords),

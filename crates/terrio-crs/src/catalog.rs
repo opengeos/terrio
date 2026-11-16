@@ -123,8 +123,8 @@ impl std::str::FromStr for CrsKind {
 /// A CRS of the registries terrio carries, as [`list_crs`] lists it.
 ///
 /// `SpatialRef::parse` resolves `"{authority}:{code}"` to it (`SpatialRef::from_epsg`,
-/// `from_esri` or `from_iau` take the code), a deprecated EPSG code to the definition of its
-/// replacement, as GDAL does.
+/// `from_esri` or `from_iau` take the code), a deprecated EPSG code to its own definition, as
+/// PROJ does.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[non_exhaustive]
 pub struct CrsEntry {
@@ -137,6 +137,10 @@ pub struct CrsEntry {
     pub kind: CrsKind,
     /// Whether the authority has deprecated it.
     pub deprecated: bool,
+    /// The codes of the CRSs of the same authority that replace a deprecated CRS, as PROJ lists
+    /// them (`proj_get_non_deprecated`): `[5105]` for EPSG:4855. Empty for a current CRS, and for
+    /// deprecated ESRI and IAU_2015 CRSs, whose replacements terrio does not carry.
+    pub replaced_by: Vec<u32>,
     /// The name of its area of use (`Australia - Australian Capital Territory; ...`).
     pub area_name: Option<String>,
     /// The bounding box of its area of use: west, south, east and north, in degrees (west is
@@ -308,6 +312,7 @@ impl Record {
             name: self.name.clone(),
             kind: self.kind,
             deprecated: self.deprecated,
+            replaced_by: if self.authority == "EPSG" { crate::epsg_replacements(self.code).to_vec() } else { Vec::new() },
             area_name: area.map(|(_, n)| n.clone()).filter(|n| !n.is_empty()),
             bounds: area.and_then(|(b, _)| *b),
             projection_method: self.method.and_then(|i| c.methods.get(i)).cloned(),
@@ -422,20 +427,20 @@ mod tests {
                 .count()
         };
         // PROJ 9.8.1 lists 7741 EPSG usage rows, including 17 duplicate codes. Its
-        // 7724 distinct codes include 43 codes our table does not resolve (15 other,
-        // 28 projected). The catalog stores one row per distinct code.
-        assert_eq!(count("EPSG", None, None), 7681);
+        // 7724 distinct codes include 44 codes our table does not resolve (15 other,
+        // 29 projected, EPSG:3752 among them). The catalog stores one row per distinct code.
+        assert_eq!(count("EPSG", None, None), 7680);
         assert_eq!(count("EPSG", Some(CrsKind::Geographic2D), None), 689);
         assert_eq!(count("EPSG", Some(CrsKind::Geographic3D), None), 273);
         assert_eq!(count("EPSG", Some(CrsKind::Geocentric), None), 269);
-        assert_eq!(count("EPSG", Some(CrsKind::Projected), None), 5680);
+        assert_eq!(count("EPSG", Some(CrsKind::Projected), None), 5679);
         assert_eq!(count("EPSG", Some(CrsKind::Vertical), None), 299);
         assert_eq!(count("EPSG", Some(CrsKind::Compound), None), 471);
-        assert_eq!(count("EPSG", None, Some(true)), 520);
+        assert_eq!(count("EPSG", None, Some(true)), 519);
         // 2528 in the catalog, less those on projections terrio does not compute: Wagner VII,
         // Compact Miller, Goode Homolosine Ocean, Peirce quincuncial and Spilhaus; and without
-        // wbprojection, the 32 on Eckert, Aitoff, Natural Earth and other projections.
-        let refused = if cfg!(feature = "wbprojection-fallback") { 9 } else { 41 };
+        // wbprojection, the 28 on Aitoff, the other Eckerts and other projections.
+        let refused = if cfg!(feature = "wbprojection-fallback") { 9 } else { 37 };
         assert_eq!(count("ESRI", None, None), 2528 - refused);
         assert_eq!(count("IAU_2015", None, None), 2201);
         assert_eq!(count("IAU_2015", Some(CrsKind::Other), None), 12);

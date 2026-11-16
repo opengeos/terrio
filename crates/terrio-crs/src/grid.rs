@@ -818,7 +818,7 @@ fn cache_generation() -> u64 {
 }
 
 /// Files read, by name (`None` when not found or not readable) and cache generation.
-type FileCache = Mutex<HashMap<String, (u64, Option<Arc<GridFile>>)>>;
+type FileCache = Mutex<HashMap<String, (u64, Option<Arc<GridFile>>, Vec<String>)>>;
 fn files() -> &'static FileCache {
     crate::host::before_lock();
     static F: OnceLock<FileCache> = OnceLock::new();
@@ -827,10 +827,10 @@ fn files() -> &'static FileCache {
 
 /// A late lookup must not overwrite a result cached after a reset. Check while
 /// holding the cache lock so reset either invalidates this write or clears it.
-fn cache_file_result(name: &str, generation: u64, file: Option<Arc<GridFile>>) {
+fn cache_file_result(name: &str, generation: u64, file: Option<Arc<GridFile>>, warnings: Vec<String>) {
     let mut cache = files().lock().unwrap_or_else(PoisonError::into_inner);
     if generation == cache_generation() {
-        cache.insert(name.to_string(), (generation, file));
+        cache.insert(name.to_string(), (generation, file, warnings));
     }
 }
 
@@ -849,6 +849,8 @@ pub fn register_grid(name: &str, bytes: Vec<u8>) {
         let mut a = availability().lock().unwrap_or_else(PoisonError::into_inner);
         a.clear();
     }
+    // A download of it that failed before no longer counts: the grid is there now.
+    fetch_failures().lock().unwrap_or_else(PoisonError::into_inner).remove(name);
 }
 
 /// Old names of PROJ-data grids (before PROJ 7), by current name, from the EPSG table.
@@ -951,6 +953,16 @@ fn is_grid_file(p: &std::path::Path) -> bool {
     std::fs::metadata(p).is_ok_and(|m| readable_grid(&m))
 }
 
+/// Keep untrusted grid names bounded and escape controls before displaying diagnostics.
+#[cfg(not(target_family = "wasm"))]
+fn diagnostic_grid_name(name: &str) -> String {
+    // Omit URL-shaped input before truncation, which could leave private userinfo visible.
+    if name.contains("://") {
+        return "<URL-shaped grid name omitted>".into();
+    }
+    name.chars().take(120).flat_map(char::escape_debug).collect()
+}
+
 /// The bytes of a regular file of at most [`MAX_GRID_BYTES`]: devices, FIFOs and directories are
 /// never read, and a file growing while it is read is cut off rather than read without bound.
 #[cfg(not(target_family = "wasm"))]
@@ -958,7 +970,10 @@ fn read_grid_file(p: &std::path::Path) -> Option<Arc<[u8]>> {
     use std::io::Read;
     let meta = std::fs::metadata(p).ok()?;
     if meta.is_file() && meta.len() > MAX_GRID_BYTES {
-        crate::warnings::warn(format!("grid file {} is not read: larger than {MAX_GRID_BYTES} bytes", p.display()));
+        crate::warnings::warn(format!(
+            "grid file is not read: larger than {MAX_GRID_BYTES} bytes ({})",
+            diagnostic_grid_name(&p.to_string_lossy())
+        ));
         return None;
     }
     if !readable_grid(&meta) {
@@ -1004,9 +1019,9 @@ fn grid_location(name: &str) -> GridLocation<'_> {
         // from code: those then bound what is read, so a CRS definition from untrusted input
         // cannot name any file the process can see.
         if config().lock().unwrap_or_else(PoisonError::into_inner).paths.is_some() {
-            let shown: String = name.chars().take(120).collect();
+            let shown = diagnostic_grid_name(name);
             crate::warnings::warn(format!(
-                "grid {shown} named by a path is not read: grid search paths are set, so grids are read only from them"
+                "grid named by a path is not read: grid search paths are set, so grids are read only from them ({shown})"
             ));
             return GridLocation::Refused;
         }
@@ -1015,8 +1030,8 @@ fn grid_location(name: &str) -> GridLocation<'_> {
     if first.is_some() && p.components().all(|c| matches!(c, Component::Normal(_))) {
         GridLocation::InSearchDirs
     } else {
-        let shown: String = name.chars().take(120).collect();
-        crate::warnings::warn(format!("grid {shown} is not read: relative grid names must contain only ordinary path components"));
+        let shown = diagnostic_grid_name(name);
+        crate::warnings::warn(format!("grid is not read: relative grid names must contain only ordinary path components ({shown})"));
         GridLocation::Refused
     }
 }
@@ -1115,17 +1130,35 @@ fn load(name: &str) -> Option<Arc<GridFile>> {
         static NULL: OnceLock<Arc<GridFile>> = OnceLock::new();
         return Some(NULL.get_or_init(|| Arc::new(null_file())).clone());
     }
-    let generation = cache_generation();
-    if let Some((_, f)) = files().lock().unwrap_or_else(PoisonError::into_inner).get(name).filter(|(g, _)| *g == generation) {
-        return f.clone();
+    // Under `without_grids`, no grid is read nor fetched (an optional one is skipped).
+    if without_grids_active() {
+        return None;
     }
+    let generation = cache_generation();
+    let cached = files()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(name)
+        .filter(|(g, _, _)| *g == generation)
+        .map(|(_, file, warnings)| (file.clone(), warnings.clone()));
+    if let Some((file, warnings)) = cached {
+        for warning in warnings {
+            crate::warnings::warn(warning);
+        }
+        return file;
+    }
+    let (file, warnings) = crate::warnings::capture(|| load_uncached(name));
+    cache_file_result(name, generation, file.clone(), warnings);
+    file
+}
+
+/// Looks up a grid once; [`load`] caches both the result and its diagnostics.
+fn load_uncached(name: &str) -> Option<Arc<GridFile>> {
     let bytes = find_local(name);
     if bytes.is_none() {
         for old in old_names(name) {
             if let Some(b) = find_local(&old) {
-                let file = read_file(&old, b).map(Arc::new);
-                cache_file_result(name, generation, file.clone());
-                return file;
+                return read_file(&old, b).map(Arc::new);
             }
         }
     }
@@ -1141,13 +1174,10 @@ fn load(name: &str) -> Option<Arc<GridFile>> {
     if fetch && !download_whole() {
         match open_remote(name) {
             Ok(file) => {
-                let file = Arc::new(file);
-                cache_file_result(name, generation, Some(file.clone()));
-                return Some(file);
+                return Some(Arc::new(file));
             }
             Err(true) => {
                 fetch_failures().lock().unwrap_or_else(PoisonError::into_inner).insert(name.to_string());
-                cache_file_result(name, generation, None);
                 return None;
             }
             Err(false) => {}
@@ -1164,9 +1194,7 @@ fn load(name: &str) -> Option<Arc<GridFile>> {
         }
         b => b,
     };
-    let file = bytes.and_then(|b| read_file(name, b)).map(Arc::new);
-    cache_file_result(name, generation, file.clone());
-    file
+    bytes.and_then(|b| read_file(name, b)).map(Arc::new)
 }
 
 /// The grids the network was asked for and did not give (the CDN does not have them, or the
@@ -1204,11 +1232,40 @@ pub(crate) fn hold_for_fork(held: &mut Vec<Box<dyn std::any::Any>>) {
     held.push(Box::new(sets_cache().lock().unwrap_or_else(PoisonError::into_inner)));
 }
 
+thread_local! {
+    /// Whether grids count as missing on this thread, while [`without_grids`] runs.
+    static WITHOUT_GRIDS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether this thread runs as if no grid were installed nor could be fetched (PROJ's default
+/// here: no grid directory, the network off), whatever the process's grid settings, while
+/// [`without_grids`] runs: no grid, not even an optional one, is read or fetched, and no grid
+/// already loaded is used. Other threads are not affected, and the availability, file and
+/// grid-set caches (nor the grids an operation keeps) are neither read nor written meanwhile.
+pub(crate) fn without_grids_active() -> bool {
+    WITHOUT_GRIDS.with(std::cell::Cell::get)
+}
+
+/// Runs `f` on this thread as if no grid were installed: see [`without_grids_active`].
+pub(crate) fn without_grids<T>(f: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            WITHOUT_GRIDS.with(|w| w.set(self.0));
+        }
+    }
+    let _restore = Restore(WITHOUT_GRIDS.with(|w| w.replace(true)));
+    f()
+}
+
 /// Whether a grid can be used: present locally, or (with network access enabled) on the PROJ
 /// CDN. This is what makes PROJ consider an operation needing it.
 pub(crate) fn available(name: &str) -> bool {
     if name == "null" {
         return true;
+    }
+    if without_grids_active() {
+        return false;
     }
     let generation = cache_generation();
     if let Some((_, a)) = availability().lock().unwrap_or_else(PoisonError::into_inner).get(name).copied().filter(|(g, _)| *g == generation)
@@ -1339,6 +1396,14 @@ where
     let cache = sets_cache();
     let mut out = Vec::new();
     for (name, optional) in grid_names(spec) {
+        // Under `without_grids`, a grid is missing whatever was loaded before: not read from the
+        // cache, nor stored into it.
+        if without_grids_active() && name != "null" {
+            if optional {
+                continue;
+            }
+            return None;
+        }
         let generation = cache_generation();
         if let Some((_, s)) =
             cache.lock().unwrap_or_else(PoisonError::into_inner).get(&(name.clone(), kind)).filter(|(g, _)| *g == generation)
@@ -2137,6 +2202,39 @@ pub(crate) fn gridshift_apply(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn cached_size_refusals_warn_without_reopening_the_grid() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("cached-oversized-grid.gtx");
+        std::fs::File::create(&path).unwrap().set_len(super::MAX_GRID_BYTES + 1).unwrap();
+        let name = path.to_str().unwrap();
+        crate::warnings::take();
+        crate::warnings::warn("pending caller warning".into());
+        assert!(super::load(name).is_none());
+        let warnings = crate::warnings::take();
+        assert_eq!(warnings.len(), 2);
+        assert_eq!(warnings[0], "pending caller warning");
+        assert!(warnings[1].contains("larger than"));
+        std::fs::remove_file(&path).unwrap();
+        // The cached diagnosis survives even after the refused file has gone away.
+        assert!(super::load(name).is_none());
+        assert_eq!(crate::warnings::take(), vec![warnings[1].clone()]);
+    }
+
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn cached_path_refusals_warn_each_caller() {
+        let name = "refused-test/../cached-refusal.gtx";
+        for _ in 0..2 {
+            crate::warnings::take();
+            assert!(super::load(name).is_none());
+            let warnings = crate::warnings::take();
+            assert_eq!(warnings.len(), 1);
+            assert!(warnings[0].contains("ordinary path components"));
+        }
+    }
+
     /// Resolution-orientation and empty-dimension safety checks, as in PROJ 9.8.1's
     /// GTiffDataset::nextGrid; this does not claim its complete extent/admission parity.
     #[test]

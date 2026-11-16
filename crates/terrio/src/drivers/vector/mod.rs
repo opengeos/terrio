@@ -1,6 +1,20 @@
 //! The vector drivers terrio supplies itself, where the format libraries are wrong or missing, and
 //! fixes applied to what the format libraries read.
 
+const INVALID_DOCUMENT: &str = "invalid document:";
+
+/// A recognized filename whose content is not a document of that format.
+pub(crate) fn document_error(format: &str, detail: impl std::fmt::Display) -> crate::Error {
+    crate::Error::InvalidData(format!("{format}: {INVALID_DOCUMENT} {detail}"))
+}
+
+/// These format refusals must not be retried as empty datasets by optional readers.
+#[cfg(any(test, feature = "gdal"))]
+pub(crate) fn is_document_error(error: &crate::Error) -> bool {
+    matches!(error, crate::Error::InvalidData(message) if ["KML", "GPX", "OSM", "OSM XML", "OSM PBF", "GeoJSONSeq"]
+        .iter().any(|format| message.contains(&format!("{format}: {INVALID_DOCUMENT} "))))
+}
+
 #[cfg(feature = "cad")]
 pub(crate) mod cad;
 mod city;
@@ -64,6 +78,40 @@ use crate::Result;
 use crate::dataset::{VectorOpenOptions, VectorWriteOptions};
 use crate::formats::VectorDriver;
 use wbvector::{GeometryType, Layer};
+
+/// Gives declared columns distinct names without taking another original column's name.
+/// Case remains significant; blank names use the `field_N` convention.
+pub(crate) fn unique_column_names(header: Vec<String>) -> Vec<String> {
+    use std::collections::HashSet;
+    let reserved: HashSet<&str> = header.iter().filter(|name| !name.is_empty()).map(String::as_str).collect();
+    let mut emitted = HashSet::new();
+    header
+        .iter()
+        .enumerate()
+        .map(|(index, original)| {
+            let base = if original.is_empty() { format!("field_{}", index + 1) } else { original.clone() };
+            let name = if !emitted.contains(&base) && (!original.is_empty() || !reserved.contains(base.as_str())) {
+                base
+            } else {
+                (2usize..)
+                    .map(|suffix| format!("{base}_{suffix}"))
+                    .find(|name| !emitted.contains(name) && !reserved.contains(name.as_str()))
+                    .expect("column names cannot exhaust every suffix")
+            };
+            emitted.insert(name.clone());
+            name
+        })
+        .collect()
+}
+
+/// Preserves declared field order and metadata while making every name distinct.
+pub(crate) fn unique_field_defs(fields: Vec<wbvector::FieldDef>) -> impl Iterator<Item = wbvector::FieldDef> {
+    let names = unique_column_names(fields.iter().map(|field| field.name.clone()).collect());
+    fields.into_iter().zip(names).map(|(mut field, name)| {
+        field.name = name;
+        field
+    })
+}
 
 /// A layer in WGS 84, reprojected when its CRS is another one.
 pub(crate) fn in_wgs84(layer: &Layer) -> Result<std::borrow::Cow<'_, Layer>> {
@@ -301,7 +349,7 @@ pub(crate) fn write_bytes(layers: &[Layer], driver: VectorDriver, options: &Vect
         #[cfg(feature = "parquet")]
         VectorDriver::Parquet => geoparquet::to_bytes(first)?,
         // Without its schema file: readers infer the field types.
-        VectorDriver::GML => gml::to_string(first, "").into_bytes(),
+        VectorDriver::GML => gml::to_string(first, "")?.into_bytes(),
         _ => return Ok(None),
     }))
 }
@@ -312,7 +360,9 @@ pub(crate) fn write_bytes(layers: &[Layer], driver: VectorDriver, options: &Vect
 /// its metre twin), so a writer keeps the source WKT instead. ESRI codes the registry holds as
 /// EPSG codes (54009) are not EPSG codes.
 pub(crate) fn trusted_epsg(layer: &Layer) -> Option<u32> {
-    let code = match (layer.crs_epsg(), layer.crs_wkt()) {
+    // The layer's WKT as a file's text, up to its first NUL, as GDAL reads it (and identified it
+    // in `fix_layer`): a `.prj` padded with NULs is its registry WKT.
+    let code = match (layer.crs_epsg(), layer.crs_wkt().map(terrio_crs::until_nul)) {
         (code, None) => code,
         (Some(code), Some(wkt)) if wbprojection::to_ogc_wkt(code).is_ok_and(|w| w == wkt) => Some(code),
         // Only CRS codes: the registry can return a datum's or prime meridian's.
@@ -326,7 +376,7 @@ pub(crate) fn trusted_epsg(layer: &Layer) -> Option<u32> {
 pub(crate) fn output_wkt(layer: &Layer) -> Option<String> {
     match trusted_epsg(layer).and_then(|c| crate::crs::SpatialRef::from_epsg(c).ok()) {
         Some(s) => super::wkt::gdal_wkt(&s),
-        None => crate::crs::SpatialRef::from_layer(layer).to_wkt(),
+        None => crate::crs::SpatialRef::from_layer(layer).to_file_wkt(),
     }
 }
 
@@ -411,6 +461,23 @@ fn on_boundary(r: &wbvector::Ring, x: f64, y: f64) -> bool {
 #[cfg(test)]
 mod byte_writer_layer_tests {
     use super::*;
+    #[test]
+    fn duplicate_declared_fields_keep_positions_and_reserved_names() {
+        let names = ["count", "count", "count_2", "total", "", "field_5", "Count"];
+        let names = unique_column_names(names.into_iter().map(str::to_string).collect());
+        assert_eq!(names, ["count", "count_3", "count_2", "total", "field_5_2", "field_5", "Count"]);
+        let fields = vec![
+            wbvector::FieldDef::new("value", wbvector::FieldType::Integer).width(12),
+            wbvector::FieldDef::new("value", wbvector::FieldType::Float).width(24).precision(5),
+        ];
+        let fields: Vec<_> = unique_field_defs(fields).collect();
+        assert_eq!(fields[0].name, "value");
+        assert_eq!(fields[1].name, "value_2");
+        assert_eq!(fields[0].field_type, wbvector::FieldType::Integer);
+        assert_eq!(fields[1].field_type, wbvector::FieldType::Float);
+        assert_eq!((fields[0].width, fields[1].width, fields[1].precision), (12, 24, 5));
+    }
+
     #[test]
     fn single_layer_byte_formats_refuse_to_drop_other_layers() {
         let layers = [Layer::new("first"), Layer::new("second")];

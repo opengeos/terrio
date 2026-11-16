@@ -229,7 +229,7 @@ impl Dataset {
         write::validate(self)?;
         #[cfg(feature = "zarr")]
         {
-            let mount = crate::memfs::Mount::new(Vec::<(String, Vec<u8>)>::new());
+            let mount = crate::memfs::Mount::new(Vec::<(String, Vec<u8>)>::new())?;
             let destination = mount.path().join("data.zarr");
             crate::drivers::zarr::md_write(self, destination.to_str().ok_or_else(|| bad("non-UTF8 output path"))?)?;
             Ok(mount
@@ -616,8 +616,8 @@ pub fn open_zarr_store(files: Vec<(String, Vec<u8>)>) -> Result<Dataset> {
         // Opened as Zarr by its caller, as `memory::open_zarr_store` opens one.
         let shown = if prefix.is_empty() { "the Zarr store" } else { prefix };
         crate::formats::check_driver_allowed("Zarr", shown, crate::formats::Kind::Raster)?;
-        let mount = Arc::new(crate::memfs::Mount::new(files));
-        let root = mount.path().join(prefix).to_string_lossy().to_string();
+        let mount = Arc::new(crate::memfs::Mount::new(files)?);
+        let root = mount.join(prefix)?.to_string_lossy().to_string();
         crate::drivers::zarr::md_open(&root, Some(mount))
     }
     #[cfg(not(feature = "zarr"))]

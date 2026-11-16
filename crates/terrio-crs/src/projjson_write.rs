@@ -18,7 +18,7 @@
 //! sphere of an ellipsoid (`+R_C`), and any parameter of the PROJ string the PROJJSON would not
 //! carry, unless it has the value used when it is absent (see [`refuse_unwritten`]).
 
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
 use crate::params::Params;
 use crate::wkt1::{self, Node};
@@ -35,13 +35,9 @@ fn unsupported(what: impl std::fmt::Display) -> Error {
 pub(crate) fn write(s: &SpatialRef) -> Result<String> {
     let mut v = crs(s)?;
     if let Value::Object(o) = &mut v {
-        // `$schema` first, as PROJ writes it.
-        let mut out = Map::new();
-        out.insert("$schema".into(), SCHEMA.into());
-        out.append(o);
-        v = Value::Object(out);
+        o.insert("$schema".into(), SCHEMA.into());
     }
-    serde_json::to_string(&v).map_err(|e| Error::Crs(e.to_string()))
+    Ok(crate::projjson_order::to_string(&v))
 }
 
 fn id(code: u32) -> Value {
@@ -71,7 +67,8 @@ fn crs(s: &SpatialRef) -> Result<Value> {
     }
     let wkt = s.to_wkt().ok_or_else(|| unsupported("a CRS without definition"))?;
     if let Some((h, v)) = crate::def::split_compound(&wkt) {
-        let horizontal = crs(&SpatialRef::from_wkt(&h))?;
+        // uncut: stored or built WKT
+        let horizontal = crs(&SpatialRef::from_wkt_text(&h))?;
         let code = wkt1::parse(&v).and_then(|n| n.epsg()).ok_or_else(|| unsupported("a vertical CRS without EPSG code"))?;
         let name = wkt1::parse(&wkt).and_then(|n| n.name().map(str::to_string)).unwrap_or_else(|| "unknown".into());
         return Ok(with_id(
@@ -144,8 +141,43 @@ fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
         (Some(e), None) => e.proj.clone(),
         (None, None) => crate::wkt_proj(wkt).ok_or_else(|| unsupported("a WKT terrio reads otherwise"))?,
     };
+    // A WKT's PROJ4 extension is computed on as a pipeline step; it is described by the CRS rules
+    // of its PROJ string only where those read it the same way.
+    // Not a registry CRS's own WKT (ESRI:102100's extension is Web Mercator's, written as such).
+    let extension = s.proj4.is_none() && entry.is_none() && s.esri.is_none() && crate::proj4_extension(wkt).is_some();
+    if extension && !crate::extension_places_as_string(&proj) {
+        return Err(unsupported("a PROJ4 extension PROJ computes on otherwise than its PROJ string"));
+    }
+    // Nor one on another figure than the WKT's ellipsoid, which this writer writes (PROJ 9.8.1
+    // writes the WKT's, `+R=6400000` beside a WGS 84 `SPHEROID` as WGS 84).
+    let spheroid = base.child("DATUM").and_then(|d| d.child("SPHEROID").or_else(|| d.child("ELLIPSOID")));
+    // But Web Mercator on its WGS 84 (GDAL's, GeoServer's EPSG:900913), which this writer writes
+    // as Popular Visualisation Pseudo Mercator, as PROJ does.
+    let web_mercator = pseudo_mercator(&Params::parse(&proj));
+    if extension
+        && !web_mercator
+        && let Some((a, rf)) = spheroid.and_then(|e| Some((e.num(1)?, e.num(2)?)))
+    {
+        let f = if rf == 0.0 { 0.0 } else { 1.0 / rf };
+        if (a - def.ell.a).abs() > 1e-3 || (2.0 * f - f * f - def.ell.es).abs() > 1e-10 {
+            return Err(unsupported("a PROJ4 extension on another ellipsoid than its WKT's"));
+        }
+    }
     let p = Params::parse(&proj);
     refuse_misdescribed(&root, &p, &def)?;
+    // `+nadgrids=@null` beside a datum whose transformations to WGS 84 shift points (OSGB36):
+    // PROJ writes a bound CRS with the null grid, which terrio's reader does not take; written
+    // as the datum alone, it would be read back with them.
+    if p.has("nadgrids") && def.ops().iter().all(|op| op.is_null_shift()) && !def.ops().is_empty() {
+        let shifting = def
+            .datum_code()
+            .and_then(|d| p.str("datum").and_then(crate::def::datum_geog).filter(|_| d != 6326))
+            .and_then(epsg::get)
+            .is_some_and(|e| !e.ops.iter().all(|op| op.is_null_shift()));
+        if shifting {
+            return Err(unsupported("a datum given no shift by +nadgrids=@null (PROJ's bound CRS with the null grid)"));
+        }
+    }
     let name = root.name().unwrap_or("unknown").to_string();
     let code = s.epsg.or_else(|| crate::declared_epsg(wkt));
     // A datum shift the definition gives (`+towgs84`, WKT's TOWGS84) makes a bound CRS, as PROJ
@@ -153,7 +185,9 @@ fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
     // WKT holds: its datum shift is EPSG's.
     let from_table = s.proj4.is_none() && entry.is_some_and(|e| s.wkt.as_deref() == Some(e.wkt.as_str()));
     let given = if from_table { None } else { s.proj4.clone().or_else(|| s.wkt.as_deref().and_then(crate::wkt_proj)) };
-    let towgs84 = match given.and_then(|g| Params::parse(&g).list("towgs84")) {
+    // `+nadgrids` wins over `+towgs84` (`@null` alone: no shift, written as none; others refused
+    // as unwritten), as PROJ reads them.
+    let towgs84 = match given.map(|g| Params::parse(&g)).filter(|g| !g.has("nadgrids")).and_then(|g| g.list("towgs84")) {
         Some(t) if !matches!(t.len(), 3 | 7) => return Err(unsupported(format!("a +towgs84 of {} values", t.len()))),
         Some(t) if t.iter().any(|v| !v.is_finite()) => return Err(unsupported("a +towgs84 with a non-finite value")),
         t => t,
@@ -215,14 +249,17 @@ fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
 /// latitudes with heights. A projected CRS's coordinates do not depend on how its base CRS's
 /// latitudes are given, so a planetocentric base is written.
 fn refuse_misdescribed(root: &Node, p: &Params, def: &Def) -> Result<()> {
-    // The ellipsoid the PROJ string names, before an auxiliary sphere replaces it: its own
-    // parameters, its datum's, else WGS 84 (as `Def::from_proj` defaults).
-    let named = crate::datum::ellipsoid(p)
-        .or_else(|| p.str("datum").and_then(crate::def::datum_ellps).and_then(crate::math::Ell::named))
-        .unwrap_or_else(crate::math::Ell::wgs84);
-    let ellipsoidal = named.es != 0.0;
-    if ellipsoidal && let Some(k) = ["R_A", "R_C", "R_V", "R_a", "R_g", "R_h", "R_lat_a", "R_lat_g"].iter().find(|k| p.has(k)) {
-        return Err(unsupported(format!("a projection on an auxiliary sphere (+{k})")));
+    // The figure computed on, as PROJ reads the string, against the CRS's ellipsoid written:
+    // misdescribed when a flag makes another sphere of it (`+R_C` on an ellipsoid).
+    let shape = crate::def::proj_ellipsoid(p, p.str("proj").unwrap_or_default(), false).ok();
+    let ellipsoidal = shape.is_some_and(|e| if e.conformal { e.figure.es != 0.0 } else { e.figure != e.crs });
+    if ellipsoidal {
+        return Err(match ["R_A", "R_C", "R_V", "R_a", "R_g", "R_h", "R_lat_a", "R_lat_g"].iter().find(|k| p.has(k)) {
+            Some(k) => unsupported(format!("a projection on an auxiliary sphere (+{k})")),
+            // Spherical orthographic (`+f=0`), which PROJ writes as its own "Orthographic
+            // (Spherical)", a method terrio's readers do not take.
+            None => unsupported("spherical orthographic on an ellipsoid (+f=0)"),
+        });
     }
     if def.is_geographic() && def.has_height() && (p.has("geoc") || spherical_cs(root)) {
         return Err(unsupported("planetocentric latitudes with heights"));
@@ -460,6 +497,25 @@ const LAT_PSEUDO: Param = ("Latitude of pseudo standard parallel", 8818, 'a');
 const K_PSEUDO: Param = ("Scale factor on pseudo standard parallel", 8819, 's');
 const K_ELLIPSOID: Param = ("Ellipsoid scaling factor", 1038, 's');
 
+/// Whether a PROJ string gives a sphere by its own parameters (`+R`, or `+a` and `+b` equal).
+fn on_sphere(p: &Params) -> bool {
+    !p.has("ellps") && !p.has("datum") && (p.has("R") || (p.has("a") && p.f64("a") == p.f64("b")))
+}
+
+/// Whether [`conversion`] writes a PROJ string as Popular Visualisation Pseudo Mercator (EPSG
+/// method 1024): Mercator on the sphere of WGS 84's semi-major axis (`+a=6378137 +b=6378137`),
+/// with a null standard parallel and a scale of 1.
+fn pseudo_mercator(p: &Params) -> bool {
+    let k0 = p.f64("k_0").or_else(|| p.f64("k")).unwrap_or(1.0);
+    // `+R` wins over `+a`: a sphere of another radius is not Web Mercator's.
+    p.str("proj") == Some("merc")
+        && !p.has("R")
+        && on_sphere(p)
+        && p.f64("a") == Some(6378137.0)
+        && p.angle("lat_ts").map(f64::to_degrees).unwrap_or(0.0) == 0.0
+        && k0 == 1.0
+}
+
 /// The conversion of a projected CRS's PROJ string, by its EPSG method, and the PROJ string's
 /// parameters it carries (see [`refuse_unwritten`]).
 fn conversion(p: &Params) -> Result<(Value, Vec<&'static str>)> {
@@ -469,7 +525,7 @@ fn conversion(p: &Params) -> Result<(Value, Vec<&'static str>)> {
     let k0 = num("k_0").or_else(|| num("k")).unwrap_or(1.0);
     let (lat0, lon0) = (deg("lat_0").unwrap_or(0.0), deg("lon_0").unwrap_or(0.0));
     let (x0, y0) = (num("x_0").unwrap_or(0.0), num("y_0").unwrap_or(0.0));
-    let sphere = !p.has("ellps") && !p.has("datum") && (p.has("R") || (p.has("a") && p.f64("a") == p.f64("b")));
+    let sphere = on_sphere(p);
     let mut name = "unknown".to_string();
     let mut conversion_id = None;
     // The parameters most methods carry.
@@ -541,7 +597,7 @@ fn conversion(p: &Params) -> Result<(Value, Vec<&'static str>)> {
         }
         "laea" => ("Lambert Azimuthal Equal Area", 9820, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], ORIGIN),
         // EPSG:3857: WGS 84 coordinates projected on its semi-major axis's sphere.
-        "merc" if sphere && num("a") == Some(6378137.0) && deg("lat_ts").unwrap_or(0.0) == 0.0 && k0 == 1.0 => {
+        "merc" if pseudo_mercator(p) => {
             let values = vec![(LAT_NAT, 0.0), (LON_NAT, lon0), (FE, x0), (FN, y0)];
             ("Popular Visualisation Pseudo Mercator", 1024, values, &["lat_ts", "lon_0", "x_0", "y_0"])
         }

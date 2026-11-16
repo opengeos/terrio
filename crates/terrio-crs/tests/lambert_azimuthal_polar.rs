@@ -54,16 +54,22 @@ fn proj(definition: &str, figure: &str, origin: (f64, f64), opposite: f64, (a, r
     }
 }
 
-/// The polar CRSs: on WGS 84, the North Pole LAEA (EPSG:3571 to 3576), the NSIDC EASE-Grid North
-/// and South (EPSG:3973, 3974) and the EASE-Grid 2.0 North and South (EPSG:6931, 6932); PROJ
-/// strings on other ellipsoids, north and south, one with a false origin; and on a sphere, the
-/// NSIDC EASE-Grid North and South (EPSG:3408, 3409).
+/// The polar CRSs: on WGS 84, the North Pole LAEA (EPSG:3571 to 3576) and the EASE-Grid 2.0 North
+/// and South (EPSG:6931, 6932); PROJ strings on other ellipsoids, north and south, one with a
+/// false origin; and on a sphere, the NSIDC EASE-Grid North and South (EPSG:3408, 3409) and the
+/// deprecated WGS 84 / NSIDC EASE-Grid North and South (EPSG:3973, 3974), on WGS 84's authalic
+/// sphere (`+R_A`), as PROJ defines them.
 fn polar() -> Vec<Case> {
     let mut cases: Vec<Case> = (3571..=3576).map(|code| epsg(code, -90.0, WGS84)).collect();
-    cases.extend([epsg(3973, -90.0, WGS84), epsg(3974, 90.0, WGS84), epsg(6931, -90.0, WGS84), epsg(6932, 90.0, WGS84)]);
+    cases.extend([epsg(6931, -90.0, WGS84), epsg(6932, 90.0, WGS84)]);
     cases.push(proj("+proj=laea +lat_0=90 +lon_0=-45", "+ellps=GRS80", (0.0, 0.0), -90.0, (6_378_137.0, 298.257_222_101)));
     cases.push(proj("+proj=laea +lat_0=-90 +lon_0=40 +x_0=1000 +y_0=-2000", "+ellps=intl", (1000.0, -2000.0), 90.0, (6_378_388.0, 297.0)));
     cases.extend([epsg(3408, -90.0, (6_371_228.0, 0.0)), epsg(3409, 90.0, (6_371_228.0, 0.0))]);
+    // WGS 84's authalic radius, by PROJ's series for `+R_A` (`pj_ell_set`): 1 - es/6 - 17 es²/360
+    // - 67 es³/3024 of the semi-major axis.
+    let es = (2.0 - 1.0 / 298.257_223_563) / 298.257_223_563;
+    let r_a = (6_378_137.0 * (1.0 - es * (1.0 / 6.0 + es * (17.0 / 360.0 + es * 67.0 / 3024.0))), 0.0);
+    cases.extend([epsg(3973, -90.0, r_a), epsg(3974, 90.0, r_a)]);
     cases
 }
 

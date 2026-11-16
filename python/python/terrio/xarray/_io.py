@@ -39,6 +39,7 @@ from xarray.coding import times, variables
 from xarray.core import indexing
 
 from terrio import _terrio
+from terrio._terrio import _redact_diagnostic_location as _redact
 from terrio.rio import _tiff
 from terrio.rio import open as rio_open
 from terrio.rio.crs import CRS
@@ -317,7 +318,9 @@ class _Source:
                         )
                     if m is None:
                         if self.overview is None:
-                            raise RioXarrayError(f"cannot read dataset mask of {self.name}")
+                            raise RioXarrayError(
+                                f"cannot read dataset mask of {_redact(self.name)}"
+                            )
                         ds_mask = np.zeros(data.shape[1:], dtype=bool)
                     else:
                         ds_mask = np.asarray(m) == 0

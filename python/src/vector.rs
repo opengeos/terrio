@@ -18,6 +18,23 @@ pub struct PyLayer {
 /// A dataset's shared styles: each id with its OGR style string.
 pub(crate) type StyleTable = std::sync::Arc<Vec<(String, String)>>;
 
+/// The shared GeoJSON writer's naming policy for a dataframe's CRS.
+///
+/// Args:
+///     crs: The dataframe's WKT definition.
+///
+/// Returns:
+///     str | None: Its GeoJSON CRS name, omitted for WGS 84 or an unknown CRS.
+///
+/// Raises:
+///     UnsupportedError: The retained definition cannot be named in GeoJSON.
+#[pyfunction(name = "_geojson_crs_name")]
+pub(crate) fn geojson_crs_name(crs: &str) -> PyResult<Option<String>> {
+    let mut layer = Layer::new("crs");
+    SpatialRef::parse_literal(crs).py()?.apply_to_layer(&mut layer);
+    terrio::GeoJsonOptions::default().crs_name(&layer).py()
+}
+
 impl From<Layer> for PyLayer {
     fn from(inner: Layer) -> Self {
         Self { inner, style_table: StyleTable::default() }
@@ -138,7 +155,7 @@ fn layer_from_geojson_text(text: &str, name: Option<&str>, crs: Option<&str>) ->
     let mut layer = terrio::memory::parse_geojson_layer(text.as_bytes(), "layer").py()?;
     layer.name = name.unwrap_or("layer").to_string();
     let crs = match crs {
-        Some(c) => SpatialRef::parse(c).py()?,
+        Some(c) => SpatialRef::parse_literal(c).py()?,
         None => SpatialRef::from_epsg(4326).py()?,
     };
     layer.set_crs_epsg(crs.epsg);
@@ -406,7 +423,7 @@ impl PyLayer {
     /// Raises:
     ///     CRSError: If a CRS is unknown or cannot be parsed.
     fn to_crs(&self, py: Python<'_>, crs: &str) -> PyResult<Self> {
-        let dst = SpatialRef::parse(crs).py()?;
+        let dst = SpatialRef::parse_literal(crs).py()?;
         let inner = &self.inner;
         Ok(Self { inner: py.detach_result(|| terrio::vector::reproject_layer(inner, &dst)).py()?, style_table: self.style_table.clone() })
     }
@@ -462,7 +479,7 @@ impl PyLayer {
         options.citygml_lod0_surface = crate::ops::parse_citygml_lod0_surface(citygml_lod0_surface)?;
         options.kmz.resources = kmz_resources.into_iter().flatten().map(|(path, bytes)| (path, bytes.to_vec())).collect();
         let layer = self.prepare_write(&mut options, style_table, path);
-        py.detach_result(|| terrio::write_vector(std::slice::from_ref(layer.as_ref()), path, &options)).py()
+        crate::with_warnings(py, || terrio::write_vector(std::slice::from_ref(layer.as_ref()), path, &options))
     }
 
     /// Encodes the layer in a file format, in memory.
@@ -508,7 +525,7 @@ impl PyLayer {
         options.kmz.resources = kmz_resources.into_iter().flatten().map(|(path, bytes)| (path, bytes.to_vec())).collect();
         let layer = self.prepare_write(&mut options, style_table, filename);
         let bytes =
-            py.detach_result(|| terrio::memory::write_vector_bytes(std::slice::from_ref(layer.as_ref()), filename, &options)).py()?;
+            crate::with_warnings(py, || terrio::memory::write_vector_bytes(std::slice::from_ref(layer.as_ref()), filename, &options))?;
         Ok(PyBytes::new(py, &bytes))
     }
 }
@@ -606,6 +623,6 @@ impl PyVectorDataset {
         } else {
             self.layer_copies(py)
         };
-        py.detach_result(|| terrio::write_vector(&layers, path, &options)).py()
+        crate::with_warnings(py, || terrio::write_vector(&layers, path, &options))
     }
 }

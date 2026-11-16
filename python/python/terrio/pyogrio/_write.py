@@ -29,6 +29,7 @@ import re
 import numpy as np
 
 from terrio import _terrio
+from terrio.errors import CRSError, UnsupportedError
 
 
 def _escape(s: str) -> str:
@@ -282,12 +283,38 @@ def _is_null(v) -> bool:
 
 
 def _crs_member(crs) -> str | None:
+    """Format a CRS member accepted by the shared GeoJSON writer.
+
+    Args:
+        crs: The dataframe's pyproj CRS, or None.
+
+    Returns:
+        str | None: A json-c-style CRS member, omitted for an unknown CRS.
+
+    Raises:
+        UnsupportedError: GeoJSON cannot name the retained definition.
+    """
     if crs is None:
         return None
-    epsg = crs.to_epsg()
-    if epsg is None:
+    name: str | None
+    code = crs.to_epsg()
+    if code == 4326:
+        # Retain pyogrio's existing spelling for WGS 84.
+        name = "urn:ogc:def:crs:OGC:1.3:CRS84"
+    elif code is not None:
+        # Preserve pyproj's established EPSG identification without requiring its
+        # WKT dialect to be supported, but require the reader to resolve the code.
+        try:
+            name = _terrio._geojson_crs_name(f"EPSG:{code}")
+        except CRSError as exc:
+            raise UnsupportedError(
+                "GeoJSON cannot name this layer's CRS: reproject to EPSG:4326 (RFC7946=YES), "
+                "or use a format that stores CRS definitions"
+            ) from exc
+    else:
+        name = _terrio._geojson_crs_name(crs.to_wkt())
+    if name is None:
         return None
-    name = "urn:ogc:def:crs:OGC:1.3:CRS84" if epsg == 4326 else f"urn:ogc:def:crs:EPSG::{epsg}"
     return '{ "type": "name", "properties": { "name": ' + _escape(name) + " } }"
 
 

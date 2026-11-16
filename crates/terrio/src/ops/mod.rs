@@ -202,6 +202,7 @@ impl Resampling {
 
     /// The interpolation kernel's weight at distance `x` (in pixels), as GDAL computes it. Weights
     /// are normalized by their sum, so the B-spline's constant factor is left out.
+    #[inline]
     pub(crate) fn weight(self, x: f64) -> f64 {
         match self {
             Self::Bilinear => {
@@ -364,6 +365,7 @@ pub(crate) fn convert_value(v: f64, dt: DataType) -> f64 {
 
 /// Converts a value as GDAL's warp kernel does: integers are rounded half up (`floor(v + 0.5)`) and
 /// clamped.
+#[inline]
 pub(crate) fn warp_round(v: f64, dt: DataType) -> f64 {
     match dt {
         DataType::F64 => v,
@@ -468,7 +470,7 @@ pub(crate) fn crs_info(srs: &SpatialRef) -> CrsInfo {
             c.wkt = crate::crs::raster_crs_wkt(&srs.to_crs_info()).or(c.wkt);
             c
         }
-        None => CrsInfo { epsg: None, wkt: srs.to_wkt(), proj4: srs.proj4.clone() },
+        None => CrsInfo { epsg: None, wkt: srs.to_file_wkt(), proj4: srs.proj4.clone() },
     }
 }
 
@@ -764,33 +766,20 @@ pub(crate) use crate::crs::Transformer as Ct;
 /// Transforms a bounding box between two CRSs, as GDAL's `OGRCoordinateTransformation::TransformBounds`
 /// does with `densify` extra points per edge.
 pub(crate) fn transform_bounds(t: &Ct, b: (f64, f64, f64, f64), densify: usize) -> Result<(f64, f64, f64, f64)> {
-    let steps = densify + 1;
-    let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
-    for i in 0..=steps {
-        let f = i as f64 / steps as f64;
-        let x = b.0 + (b.2 - b.0) * f;
-        let y = b.1 + (b.3 - b.1) * f;
-        for (px, py) in [(x, b.1), (x, b.3), (b.0, y), (b.2, y)] {
-            if let Ok((tx, ty)) = t.transform(px, py)
-                && tx.is_finite()
-                && ty.is_finite()
-            {
-                x0 = x0.min(tx);
-                y0 = y0.min(ty);
-                x1 = x1.max(tx);
-                y1 = y1.max(ty);
-            }
-        }
-    }
-    if !x0.is_finite() {
-        return Err(Error::Crs("no point of the bounds could be transformed".into()));
-    }
-    Ok((x0, y0, x1, y1))
+    t.transform_bounds_densified(b, densify)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transform_bounds_includes_polar_caps() {
+        let t = Ct::new(&SpatialRef::from_epsg(3976).unwrap(), &SpatialRef::from_epsg(4326).unwrap()).unwrap();
+        let bounds = transform_bounds(&t, (-3_950_000.0, -3_950_000.0, 3_950_000.0, 4_350_000.0), 21).unwrap();
+        assert_eq!((bounds.0, bounds.1, bounds.2), (-180.0, -90.0, 180.0));
+        assert!(bounds.3 > -40.0 && bounds.3 < -39.0, "{bounds:?}");
+    }
 
     #[test]
     fn rounds_like_gdal() {

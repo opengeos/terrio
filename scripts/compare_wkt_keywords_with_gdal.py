@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Compare WKT keyword identity and real USGS pixels with GDAL 3.13.3."""
+"""Compare WKT keyword identity and real USGS raster round trips with live GDAL."""
 
 import argparse
 import json
 import subprocess
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -38,6 +39,12 @@ def main():
     osr.UseExceptions()
     fixture = Path(__file__).resolve().parents[1] / "crates/terrio-crs/tests/data/wkt_keywords_reference.json"
     cases = json.loads(fixture.read_text())["cases"]
+    # Exercise identifiers absent from Terrio's registry with full engineering definitions.
+    cases += [
+        {**case, "name": case["name"] + "-root-id", "epsg": 5800,
+         "wkt": case["wkt"][:-1] + (',AUTHORITY["EPSG","5800"]]' if case["name"] == "LOCAL_CS" else ',ID["EPSG",5800]]')}
+        for case in cases if case["local"]
+    ]
     source = gdal.Open(str(args.data / "usgs_dem.tif"))
     # Real elevation samples; assigning a CRS changes metadata, not coordinates or pixels.
     crop = gdal.Translate("", source, format="MEM", srcWin=[1000, 1000, 16, 16])
@@ -67,12 +74,42 @@ def main():
             require(tuple(raster.transform) == transform, "affine changed")
             require(raster.nodata == nodata, "nodata changed")
             require(raster.read(1).dtype == values.dtype, "pixel type changed")
-            actual_crs = CRS.from_user_input(raster.crs)
+            actual_crs = CRS.from_user_input(raster.crs_wkt or raster.crs)
             require(actual_crs.to_epsg() == case["epsg"], "raster root authority differs")
             raster_srs = osr.SpatialReference()
             raster_srs.ImportFromWkt(actual_crs.to_wkt())
             require(raster_srs.IsSame(reference), "raster CRS identity differs")
-            results.append(dict(name=case["name"], status="identical", detail="Exact CRS kind/root authority, CLI WKT, USGS pixels, nodata and affine"))
+            with tempfile.TemporaryDirectory(prefix="terrio-wkt-geotiff-") as directory:
+                for driver in ("GTiff", "COG"):
+                    path = str(Path(directory) / f"{driver}.tif")
+                    raster.write(path, driver=driver)
+                    restored_raster = terrio.open_raster(path)
+                    require(restored_raster.crs_wkt == case["wkt"], "GeoTIFF lost the retained WKT")
+                    np.testing.assert_array_equal(restored_raster.read(1), values)
+                    require(tuple(restored_raster.transform) == transform, "GeoTIFF affine changed")
+                    require(restored_raster.nodata == nodata, "GeoTIFF nodata changed")
+                    reopened = gdal.Open(path)
+                    written_srs = osr.SpatialReference()
+                    written_srs.ImportFromWkt(reopened.GetProjectionRef())
+                    require(written_srs.IsSame(reference), "GDAL reads a different GeoTIFF CRS")
+                    require(bool(written_srs.IsLocal()) == case["local"], "GDAL reads a different CRS kind")
+                    require(bool(written_srs.IsVertical()) == case["vertical"], "GDAL reads a different vertical CRS kind")
+                    np.testing.assert_array_equal(reopened.ReadAsArray(), values)
+                    require(reopened.GetGeoTransform() == transform, "GDAL reads a different affine")
+                    require(reopened.GetRasterBand(1).GetNoDataValue() == nodata, "GDAL reads different nodata")
+                    require(reopened.GetRasterBand(1).DataType == crop.GetRasterBand(1).DataType, "GDAL reads a different sample type")
+                    reopened = None
+                    if case["local"]:
+                        try:
+                            terrio.warp(path, t_srs="EPSG:4326")
+                        except terrio.CRSError:
+                            pass
+                        else:
+                            require(False, "engineering coordinates were warped as an Earth CRS")
+            detail = "Exact CRS kind/root authority, CLI/GeoTIFF WKT retention, GTiff/COG USGS pixels, type, nodata and affine"
+            if case["local"]:
+                detail += "; local-to-Earth warp refused"
+            results.append(dict(name=case["name"], status="identical", detail=detail))
         except AssertionError as error:
             results.append(dict(name=case["name"], status="differs", detail=str(error)))
     print(json.dumps(results, indent=2) if args.json else "\n".join(f"{r['name']}: {r['status']}: {r['detail']}" for r in results))

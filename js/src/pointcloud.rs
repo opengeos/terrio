@@ -285,7 +285,7 @@ pub fn points_from_arrays(arrays: &js_sys::Object, crs: Option<String>) -> Resul
     if dims.iter().any(|d| d.values.len() != n) {
         return Err(JsError::new("the arrays differ in length"));
     }
-    let crs = crs.as_deref().map(terrio::crs::SpatialRef::parse).transpose().map_err(js_err)?.unwrap_or_default();
+    let crs = crs.as_deref().map(terrio::crs::SpatialRef::parse_literal).transpose().map_err(js_err)?.unwrap_or_default();
     Ok(JsPointCloud { inner: pointcloud::from_dimensions(dims, crs) })
 }
 

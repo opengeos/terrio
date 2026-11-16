@@ -36,9 +36,9 @@ MACOS_ARM = sys.platform == "darwin" and platform.machine() == "arm64"
 # handful of boundary samples. The limits are looser than that file's 1e-4, presumably because
 # 9/7 output at these qualities sits on rounding boundaries more often; that is not measured.
 # The seeds are fixed, so re-measure these counts when the rasterio wheel is upgraded.
-# The trade-off: on macOS arm64 alone, a decoder change moving at most these many samples by
-# one step in these four cases would pass. Linux and Windows compare every case exactly, so it
-# would fail there. Every other case, and the reversible 5/3 path, stays exact everywhere.
+# These limits apply only to the live GDAL comparison. `test_jp2_decode_reference.py` pins
+# terrio's decode of frozen payloads for these four cases exactly on every platform, without
+# depending on GDAL. Every other case, and the reversible 5/3 path, stays exact here everywhere.
 DRIFT_UINT8 = 0.001
 
 

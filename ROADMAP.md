@@ -592,6 +592,8 @@ WebAssembly (the `terrio-js` npm package):
       Zarr v2/v3 stores (including sharded arrays) read by window with `openUrl` in
       [#683](https://github.com/opengeos/terrio/pull/683), with explicit array selection when a
       group cannot be discovered through consolidated metadata.
+      Node.js, Deno and Bun split long merged tile runs across up to twelve requests without
+      adding fetched bytes (#865); browser reads keep their merged runs.
 - [x] More formats in memory: Zarr and GeoZarr, netCDF and HDF5, point clouds (LAS, LAZ, COPC), and
       writing LERC, JPEG XL and JPEG GeoTIFFs.
 - [x] terrio's own FlatGeobuf reader in place of the format library's, which overflowed on large
@@ -633,6 +635,12 @@ WebAssembly (the `terrio-js` npm package):
       wasm32 only (`tar`, `acadrust`, `arrow-buffer`); single-threaded.
 
 ## Later
+
+- [ ] Evaluate Parquet attribute predicates by row group window so unselective limited
+      conversions can stop the predicate scan early and fetch predicate chunks in parallel (#1031).
+
+- [ ] Derive Parquet filtered FIDs from group offsets and row selectors while decoding,
+      replacing the per-match FID vectors shared by spatial and attribute reads (#1031).
 
 - [ ] Pipeline writer options as GDAL has them, such as retaining source feature IDs in a
       write step rather than assigning sequential ones (see the pipeline section of

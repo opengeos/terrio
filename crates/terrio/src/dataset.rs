@@ -485,6 +485,8 @@ pub(crate) fn open_native(path: &str) -> Result<Dataset> {
     let ds = open_native_unchecked(path)?;
     if let Dataset::Raster(r) = &ds {
         crate::declared::check_dataset(r)?;
+    } else if let Dataset::Vector(v) = &ds {
+        check_archive_layers(path, &v.layers)?;
     }
     Ok(ds)
 }
@@ -509,7 +511,7 @@ fn open_native_unchecked(path: &str) -> Result<Dataset> {
     #[cfg(remote)]
     check_remote_copy(path, true)?;
     let local = vfs::resolve(path)?;
-    open_local(local.as_str(), &VectorOpenOptions::default()).map_err(|e| naming_dataset(e, path, local.as_str()))
+    open_local(local.as_str(), &VectorOpenOptions::default()).map_err(|e| naming_resolved_dataset(e, path, &local))
 }
 
 /// Opens a raster dataset, reading it into memory.
@@ -594,7 +596,7 @@ fn read_raster_native(path: &str) -> Result<RasterDataset> {
     #[cfg(remote)]
     check_remote_copy(path, false)?;
     let local = vfs::resolve(path)?;
-    read_raster_local(local.as_str()).map_err(|e| naming_dataset(e, path, local.as_str()))
+    read_raster_local(local.as_str()).map_err(|e| naming_resolved_dataset(e, path, &local))
 }
 
 /// Refuses a remote file that [`vfs::resolve`] would download whole for the whole read of a raster
@@ -662,20 +664,43 @@ fn judged_by_content(name: &str, generic: bool) -> bool {
 /// downloaded, an archive member extracted, to a temporary directory), naming the dataset as the
 /// caller gave it rather than the copy, whose path means nothing to the caller and would show a
 /// server's directories to the clients of a service that passes the message on. The copy's path
-/// is replaced with the dataset's name (without its query, which may hold a signature); a message
+/// is replaced with the dataset's name (remote queries omitted, literal local archive punctuation
+/// retained); a message
 /// that names neither starts with it. The variant is kept, but for the format libraries' errors,
 /// which become [`Error::InvalidData`] (the Python class they already map to).
+#[cfg(test)]
 fn naming_dataset(e: Error, path: &str, local: &str) -> Error {
+    naming_dataset_copy(e, path, local, None)
+}
+
+fn naming_resolved_dataset(e: Error, path: &str, local: &vfs::LocalPath) -> Error {
+    naming_dataset_copy(e, path, local.as_str(), local.temporary_directory().and_then(Path::to_str))
+}
+
+fn naming_dataset_copy(e: Error, path: &str, local: &str, directory: Option<&str>) -> Error {
     if vfs::Location::parse(path).is_local() {
         return e;
     }
-    let shown = path.trim().split(['?', '#']).next().unwrap_or(path);
-    let named = |m: String| if m.contains(local) { m.replace(local, shown) } else { format!("'{shown}': {m}") };
+    let local_archive = matches!(vfs::Location::parse(path), vfs::Location::Zip { archive, .. } if archive.is_local());
+    let shown = if local_archive {
+        crate::vsi::redact_diagnostic_location(path.trim())
+    } else {
+        crate::vsi::redact_diagnostic_location(path.trim().split(['?', '#']).next().unwrap_or(path))
+    };
+    let replace = |m: String| {
+        let m = m.replace(local, &shown);
+        if let Some(directory) = directory { m.replace(directory, &shown) } else { m }
+    };
+    let named = |m: String| {
+        let m = replace(m);
+        if m.contains(shown.as_ref()) { m } else { format!("'{shown}': {m}") }
+    };
     match e {
         Error::Unsupported(m) => Error::Unsupported(named(m)),
         Error::ResourceLimit(m) => Error::ResourceLimit(named(m)),
         Error::InvalidData(m) => Error::InvalidData(named(m)),
-        Error::InvalidArgument(m) => Error::InvalidArgument(named(m)),
+        // Option/layer-selection errors need no source prefix, but must not retain a copy's path.
+        Error::InvalidArgument(m) => Error::InvalidArgument(replace(m)),
         Error::Raster(e) => Error::InvalidData(named(e.to_string())),
         Error::Vector(e) => Error::InvalidData(named(e.to_string())),
         Error::Io(e) => Error::Io(std::io::Error::new(e.kind(), named(e.to_string()))),
@@ -874,7 +899,7 @@ fn open_query(url: &str, named: Option<VectorDriver>, options: &VectorOpenOption
             return Err(if crate::drivers::vector::wfs::is_exception(&bytes) {
                 crate::drivers::vector::wfs::feature_exception(&bytes)
             } else {
-                Error::Http(format!("{}: status {status}", url.split(['?', '#']).next().unwrap_or(url)))
+                Error::Http(format!("{}: status {status}", crate::vsi::redact_diagnostic_location(url)))
             });
         }
         // Asked for the protocol buffer, a service answers a query it refuses with nothing, or with
@@ -992,8 +1017,11 @@ pub(crate) fn open_vector_native(path: &str, options: &VectorOpenOptions) -> Res
         return Ok(finish_vector(layers, path, VectorDriver::Parquet));
     }
     let local = vfs::resolve(path)?;
-    match open_local(local.as_str(), options)? {
-        Dataset::Vector(v) => Ok(v),
+    match open_local(local.as_str(), options).map_err(|e| naming_resolved_dataset(e, path, &local))? {
+        Dataset::Vector(v) => {
+            check_archive_layers(path, &v.layers)?;
+            Ok(v)
+        }
         Dataset::Raster(_) => Err(Error::Unsupported(format!("'{path}' is a raster, not a vector dataset"))),
     }
 }
@@ -1046,16 +1074,39 @@ fn list_layers_native(path: &str) -> Result<Vec<String>> {
     let local = vfs::resolve(path)?;
     if VectorDriver::for_extension(local.as_str()) == Some(VectorDriver::GPKG) {
         #[cfg(feature = "sqlite")]
-        return crate::drivers::vector::gpkg_read::list_layers(local.as_str());
+        {
+            let names =
+                crate::drivers::vector::gpkg_read::list_layers(local.as_str()).map_err(|e| naming_resolved_dataset(e, path, &local))?;
+            if names.is_empty() {
+                check_archive_layers(path, &[])?;
+            }
+            return Ok(names);
+        }
         #[cfg(not(feature = "sqlite"))]
         return Err(Error::disabled("sqlite"));
     }
-    Ok(open_vector_native(local.as_str(), &VectorOpenOptions::default())?.layers.into_iter().map(|l| l.name).collect())
+    let dataset =
+        open_vector_native(local.as_str(), &VectorOpenOptions::default()).map_err(|e| naming_resolved_dataset(e, path, &local))?;
+    Ok(dataset.layers.into_iter().map(|l| l.name).collect())
+}
+
+const NO_ARCHIVE_DATASET: &str = "no dataset found in ";
+const NO_ARCHIVE_LAYERS: &str = ": selected document has no layers";
+
+/// Refuses an archive whose selected document provides no dataset layers.
+fn check_archive_layers(path: &str, layers: &[Layer]) -> Result<()> {
+    let location = vfs::Location::parse(path);
+    if layers.is_empty() && (matches!(location, vfs::Location::Zip { .. }) || VectorDriver::for_extension(path) == Some(VectorDriver::KMZ))
+    {
+        return Err(Error::Unsupported(format!("{NO_ARCHIVE_DATASET}'{}'{NO_ARCHIVE_LAYERS}", location.file_name())));
+    }
+    Ok(())
 }
 
 /// When terrio's own drivers could not open `path`, tries GDAL; if GDAL cannot either, terrio's
 /// error is kept, except for GDAL's resource refusals. Missing local files and invalid arguments
-/// are not retried, nor are network errors or resource-limit refusals.
+/// are not retried, nor are network errors, resource-limit refusals or native MIF header
+/// recognition failures or native document-kind/syntax refusals. MIF geometry errors remain eligible for fallback.
 #[cfg(feature = "gdal")]
 pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(&str) -> Result<T>) -> Result<T> {
     let Err(e) = result else { return result };
@@ -1066,11 +1117,17 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
     }
     let retry = match &e {
         Error::InvalidArgument(_) | Error::Http(_) => false,
+        error if crate::drivers::vector::geojson::is_crs_refusal(error) => false,
         Error::InvalidData(message) if message.ends_with(crate::drivers::vector::kml::AMBIGUOUS_KMZ) => false,
         Error::InvalidData(message) if message.ends_with(vfs::AMBIGUOUS_ZIP) => false,
+        Error::InvalidData(message) if message.contains(crate::drivers::vector::mapinfo::INVALID_HEADER) => false,
         e if e.is_resource_refusal() => false,
         // A missing file, unless the path is one of GDAL's dataset names (`HDF5:"f.h5"://x`).
         Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound => vfs::is_gdal_name(path),
+        error if crate::drivers::vector::is_document_error(error) => false,
+        // VFS uses the same leading words for archives containing only unsupported formats.
+        // Those remain eligible for GDAL (for example a zipped File Geodatabase).
+        Error::Unsupported(message) if message.starts_with(NO_ARCHIVE_DATASET) && message.ends_with(NO_ARCHIVE_LAYERS) => false,
         _ => true,
     };
     if !retry {
@@ -1086,6 +1143,40 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
 #[cfg(all(test, feature = "gdal"))]
 mod fallback_tests {
     use super::*;
+
+    #[test]
+    fn named_terminal_parser_refusals_are_not_retried() {
+        let path = "/vsizip/input.zip/data";
+        for message in ["GeoJSON: invalid crs member {}", crate::drivers::vector::mapinfo::INVALID_HEADER] {
+            let error = naming_dataset(Error::InvalidData(message.into()), path, "/private/copy");
+            let result: Result<()> = gdal_fallback(path, Err(error), |_| panic!("terminal parser refusal retried through GDAL"));
+            assert!(matches!(result, Err(Error::InvalidData(_))));
+        }
+    }
+
+    #[test]
+    fn wrong_document_refusals_are_not_retried() {
+        let error = crate::drivers::vector::kml::parse_styled("<html/>", "input").unwrap_err();
+        for path in ["input.kml", "https://example.test/input.kml?signature=secret"] {
+            let named = naming_dataset(Error::InvalidData(error.to_string()), path, "input.kml");
+            let result: Result<()> = gdal_fallback(path, Err(named), |_| panic!("wrong-document refusal retried through GDAL"));
+            assert!(result.is_err_and(|error| crate::drivers::vector::is_document_error(&error)));
+        }
+    }
+
+    #[test]
+    fn archives_without_layers_are_not_retried() {
+        let error = check_archive_layers("empty.kmz", &[]).unwrap_err();
+        assert_eq!(error.to_string(), "no dataset found in 'empty.kmz': selected document has no layers");
+        let result: Result<()> = gdal_fallback("empty.kmz", Err(error), |_| panic!("empty archive retried through GDAL"));
+        assert!(matches!(result, Err(Error::Unsupported(message)) if message.starts_with(NO_ARCHIVE_DATASET)));
+    }
+
+    #[test]
+    fn unrecognized_archive_contents_remain_eligible_for_gdal() {
+        let result = gdal_fallback("parcels.gdb.zip", Err(Error::Unsupported("no dataset found in 'parcels.gdb.zip'".into())), |_| Ok(()));
+        assert!(result.is_ok());
+    }
 
     #[test]
     fn missing_windows_files_are_not_retried() {
@@ -1256,7 +1347,7 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
             // that is allowed.
             let to_fallback = matches!(found, Some("GeoJSON" | "GML"))
                 && wbvector_fallback_allowed()
-                && result.as_ref().is_err_and(|e| !e.is_resource_refusal());
+                && result.as_ref().is_err_and(|e| !e.is_resource_refusal() && !crate::drivers::vector::geojson::is_crs_refusal(e));
             match result {
                 Err(e) if to_fallback => reader_error = Some(e),
                 result => return result.map(Dataset::Vector),
@@ -1295,6 +1386,10 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
     }
     match raster {
         Ok(r) => Ok(Dataset::Raster(r)),
+        // The raster reader's message names the path already when no format matched: append the hint only.
+        Err(raster_err) if !wbvector_fallback_allowed() && raster_err.to_string().contains(&format!("'{path}': format not recognized")) => {
+            Err(Error::Unsupported(format!("{raster_err}; TERRIO_WBVECTOR_FALLBACK=YES lets wbvector detect it")))
+        }
         Err(raster_err) if !wbvector_fallback_allowed() => Err(Error::Unsupported(format!(
             "'{path}': format not recognized ({raster_err}; TERRIO_WBVECTOR_FALLBACK=YES lets wbvector detect it)"
         ))),
@@ -1325,7 +1420,15 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
                     Err(e) => Err(reader_error.unwrap_or_else(|| e.into())),
                 }
             }
-            Err(_) => Err(reader_error.unwrap_or_else(|| Error::Unsupported(format!("'{path}': format not recognized ({raster_err})")))),
+            Err(_) => Err(reader_error.unwrap_or_else(|| {
+                // As above: a raster message that already names the path is kept as it is.
+                let message = raster_err.to_string();
+                Error::Unsupported(if message.contains(&format!("'{path}': format not recognized")) {
+                    message
+                } else {
+                    format!("'{path}': format not recognized ({message})")
+                })
+            })),
         },
     }
 }
@@ -1333,7 +1436,12 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
 /// The dataset of a layer read by the `wbvector` fallback: the range of features `options` asks
 /// for (`skip_features`, `max_features`), as a driver's read keeps it, and the driver of the format
 /// the fallback found.
-fn wbvector_dataset(layer: Layer, path: &str, options: &VectorOpenOptions, driver: VectorDriver) -> Result<Dataset> {
+fn wbvector_dataset(mut layer: Layer, path: &str, options: &VectorOpenOptions, driver: VectorDriver) -> Result<Dataset> {
+    // The optional reader does not assign GeoJSON's default. Keep its established behavior
+    // here, without overwriting an explicit null CRS returned by the native JSON readers.
+    if driver == VectorDriver::GeoJSON && layer.crs_epsg().is_none() && layer.crs_wkt().is_none() {
+        layer.set_crs_epsg(Some(4326));
+    }
     let mut layers = select_layers(vec![layer], path, options)?;
     layers.iter_mut().for_each(|l| options.keep_range(l));
     Ok(Dataset::Vector(finish_vector(layers, path, driver)))
@@ -1412,9 +1520,7 @@ fn read_raster_local(path: &str) -> Result<RasterDataset> {
             (fmt.read(path)?, RasterDriver::from_wb(fmt))
         }
         None => {
-            return Err(Error::Unsupported(format!(
-                "'{path}': format not recognized by terrio's drivers (TERRIO_WBRASTER_FALLBACK=YES lets wbraster detect it)"
-            )));
+            return Err(Error::Unsupported(format!("'{path}': format not recognized by terrio's drivers")));
         }
     };
     let mut ds = crate::drivers::nodata::finish(path, driver, raster);
@@ -1530,14 +1636,14 @@ pub(crate) fn fix_layer(mut layer: Layer, path: &str, driver: VectorDriver) -> L
     // HEC-RAS layers keep the stored projection text without an EPSG code: the engine never
     // asserts one, and the CRS of a hydraulic model is not re-identified.
     if driver != VectorDriver::HECRAS
-        && let Some(wkt) = layer.crs_wkt().map(str::to_string)
+        // The file's text, which ends at its first NUL as GDAL reads it.
+        && let Some(wkt) = layer.crs_wkt().map(|w| terrio_crs::until_nul(w).to_string())
         && registry.as_deref() != Some(wkt.as_str())
         && let Some(code) = crate::crs::identify_epsg(&wkt)
     {
         layer.set_crs_epsg(Some(code));
     }
-    let wgs84_by_definition =
-        matches!(driver, VectorDriver::GeoJSON | VectorDriver::TopoJSON | VectorDriver::KML | VectorDriver::KMZ | VectorDriver::GPX);
+    let wgs84_by_definition = matches!(driver, VectorDriver::KML | VectorDriver::KMZ | VectorDriver::GPX);
     if wgs84_by_definition && layer.crs_epsg().is_none() && layer.crs_wkt().is_none() {
         layer.set_crs_epsg(Some(4326));
     }
@@ -2311,6 +2417,37 @@ pub(crate) mod fallible {
 
 #[cfg(test)]
 mod tests {
+    /// A file no driver reads names its path once, with the fallback hint after the reason.
+    #[test]
+    fn unrecognized_format_names_its_path_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.txt");
+        std::fs::write(&path, "not geospatial\n").unwrap();
+        // The hint is shown only while the wbvector fallback is off: pin that, whatever the environment.
+        crate::config::push_scope([("TERRIO_WBVECTOR_FALLBACK".to_string(), None)].into());
+        let opened = super::open_local(path.to_str().unwrap(), &crate::VectorOpenOptions::default());
+        crate::config::pop_scope();
+        let Err(error) = opened else {
+            panic!("a text file opened as a dataset");
+        };
+        let message = error.to_string();
+        assert_eq!(message.matches("format not recognized").count(), 1, "{message}");
+        assert_eq!(message.matches("notes.txt").count(), 1, "{message}");
+        assert!(message.contains("TERRIO_WBVECTOR_FALLBACK=YES"), "{message}");
+    }
+
+    #[test]
+    fn optional_geojson_reader_retains_its_default_crs() {
+        use super::{Dataset, VectorDriver, wbvector_dataset};
+        let layer = wbvector::geojson::parse_str(r#"{"type":"FeatureCollection","features":[]}"#).unwrap();
+        assert!(layer.crs_epsg().is_none());
+        let Dataset::Vector(dataset) = wbvector_dataset(layer, "points.geojson", &Default::default(), VectorDriver::GeoJSON).unwrap()
+        else {
+            panic!("not a vector")
+        };
+        assert_eq!(dataset.layers[0].crs_epsg(), Some(4326));
+    }
+
     /// GDAL 3.13.3's NBITS item remains visible beside other IMAGE_STRUCTURE items.
     #[test]
     fn inherited_width_is_found_after_other_image_structure_domains() {
@@ -2380,6 +2517,84 @@ mod tests {
         );
         assert!(matches!(&error, crate::Error::ResourceLimit(_)));
         assert_eq!(error.to_string(), "budget exceeded at https://example.com/input.hdf");
+        for path in [
+            "https://user:PRIVATE@example.com/input.hdf?signature=secret",
+            "/vsizip/https://user:PRIVATE@example.com/input.zip/roads.gpkg?signature=secret",
+        ] {
+            let error = super::naming_dataset(crate::Error::InvalidData(format!("invalid data at {local}")), path, local).to_string();
+            assert!(error.contains("example.com/input"), "{error}");
+            assert!(!error.contains("PRIVATE"), "{error}");
+            assert!(!error.contains("user:"), "{error}");
+            assert!(!error.contains("secret"), "{error}");
+            assert!(!error.contains(local), "{error}");
+        }
+    }
+
+    #[test]
+    fn extracted_sidecar_and_directory_errors_hide_the_private_root() {
+        for copy in ["/private/extracted/roads.dbf", "/private/extracted"] {
+            let error = super::naming_dataset_copy(
+                crate::Error::InvalidData(format!("invalid data at {copy}")),
+                "/vsizip/input.zip/roads.shp",
+                "/private/extracted/roads.shp",
+                Some("/private/extracted"),
+            );
+            assert!(error.to_string().contains("/vsizip/input.zip/roads.shp"));
+            assert!(!error.to_string().contains("/private/extracted"));
+        }
+    }
+
+    #[test]
+    fn vector_archive_member_refusals_name_the_requested_location() {
+        use std::io::Write;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("input #2.zip");
+        let members: &[&str] = if cfg!(feature = "sqlite") { &["README.txt", "broken.gpkg"] } else { &["README.txt"] };
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        for member in members {
+            writer.start_file(*member, zip::write::SimpleFileOptions::default()).unwrap();
+            writer.write_all(b"not a dataset").unwrap();
+        }
+        writer.finish().unwrap();
+        for member in members {
+            let requested = format!("/vsizip/{}/{member}", path.display());
+            let open_error = super::open_vector_native(&requested, &Default::default()).unwrap_err().to_string();
+            let list_error = super::list_layers_native(&requested).unwrap_err().to_string();
+            for error in [open_error, list_error] {
+                assert!(error.contains(&requested), "{error}");
+                assert!(!error.contains("terrio-"), "an extraction path leaked: {error}");
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_archive_geojson_crs_is_not_replaced_by_fallback() {
+        use std::io::Write;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("input.zip");
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        writer.start_file("data.geojson", zip::write::SimpleFileOptions::default()).unwrap();
+        writer.write_all(br#"{"type":"FeatureCollection","crs":{},"features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[0,0]}}]}"#).unwrap();
+        writer.finish().unwrap();
+        let requested = format!("/vsizip/{}/data.geojson", path.display());
+        let error = super::open_vector(&requested, &Default::default()).unwrap_err();
+        assert!(crate::drivers::vector::geojson::is_crs_refusal(&error), "{error}");
+        assert!(error.to_string().contains(&requested), "{error}");
+    }
+
+    #[test]
+    fn local_archive_diagnostic_names_keep_literal_punctuation() {
+        for suffix in [" #2", "?notes"] {
+            let requested = format!("/vsizip/input{suffix}.zip/roads.gpkg");
+            let error = super::naming_dataset(crate::Error::Unsupported("bad format in /private/copy".into()), &requested, "/private/copy");
+            assert_eq!(error.to_string(), format!("bad format in {requested}"));
+        }
+        let error = super::naming_dataset(
+            crate::Error::Unsupported("bad format in /private/copy".into()),
+            "/vsizip/input.zip?sig=PRIVATE/roads.gpkg",
+            "/private/copy",
+        );
+        assert_eq!(error.to_string(), "bad format in /vsizip/input.zip?<redacted>");
     }
 
     #[cfg(feature = "grib")]
@@ -2452,7 +2667,8 @@ mod tests {
         std::fs::write(&path, "ncols 2\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\nNODATA_value -9999\n1 2\n3 4\n").unwrap();
         let path = path.to_str().unwrap();
         let err = crate::open_raster(path).unwrap_err().to_string();
-        assert!(err.contains("TERRIO_WBRASTER_FALLBACK"), "{err}");
+        assert!(err.contains("format not recognized by terrio's drivers"), "{err}");
+        assert!(!err.contains("TERRIO_WBRASTER_FALLBACK"), "{err}");
         crate::config::push_scope([("TERRIO_WBRASTER_FALLBACK".to_string(), Some("YES".to_string()))].into());
         let opened = crate::open_raster(path);
         crate::config::pop_scope();

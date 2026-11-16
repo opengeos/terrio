@@ -61,6 +61,65 @@ fn grids_match_gdal() {
     check("EPSG:26744", "EPSG:32611", (1840000.0, 640000.0, 0.0), (273402.1191350536, 4107905.0740628922, 0.0), 1e-3);
 }
 
+#[test]
+fn projjson_identity_and_custom_parameters_keep_wkt_grid_operations() {
+    const ISOLATED_GRID: &str = "TERRIO_TEST_PROJJSON_NADCON_GRID";
+    let frozen_reference = if let Some(directory) = std::env::var_os(ISOLATED_GRID) {
+        terrio_crs::set_grid_search_paths(Some(vec![directory.into()]));
+        terrio_crs::set_network_enabled(Some(false));
+        true
+    } else {
+        if grids().is_none() {
+            return;
+        }
+        // The frozen GDAL oracle uses only classic NADCON. Also test the complete
+        // installed grid set below, whose registry may prefer newer NADCON5 operations.
+        let data = std::path::PathBuf::from(std::env::var_os("TERRIO_TEST_DATA").unwrap());
+        let isolated = tempfile::tempdir().unwrap();
+        std::fs::copy(data.join("grids/us_noaa_conus.tif"), isolated.path().join("us_noaa_conus.tif")).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "projjson_identity_and_custom_parameters_keep_wkt_grid_operations", "--nocapture"])
+            .env(ISOLATED_GRID, isolated.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "isolated NADCON oracle: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        false
+    };
+    // PROJJSON v0.7 / GDAL 3.12.1: NAD27 UTM uses the real NADCON grid to NAD83.
+    let original = SpatialRef::from_epsg(26711).unwrap();
+    let mut definition: serde_json::Value = serde_json::from_str(&original.to_projjson().unwrap()).unwrap();
+    let target = SpatialRef::from_epsg(4269).unwrap();
+    let point = (500000.0, 4500000.0);
+    let registered = Transformer::new(&original, &target).unwrap().transform(point.0, point.1).unwrap();
+    let mut outcomes = Vec::new();
+    for (offset, expected) in [(500000.0, (-117.00093611319762, 40.6526705145774)), (500100.0, (-117.00211897236916, 40.65267049927753))] {
+        for parameter in definition["conversion"]["parameters"].as_array_mut().unwrap() {
+            if parameter["id"]["code"] == 8806 {
+                parameter["value"] = offset.into();
+            }
+        }
+        let parsed = SpatialRef::from_projjson(&definition.to_string()).unwrap();
+        assert_eq!(parsed.epsg, (offset == 500000.0).then_some(26711));
+        let wkt_only = SpatialRef { wkt: parsed.wkt.clone(), ..Default::default() };
+        let actual = Transformer::new(&parsed, &target).unwrap().transform(point.0, point.1).unwrap();
+        let from_wkt = Transformer::new(&wkt_only, &target).unwrap().transform(point.0, point.1).unwrap();
+        assert!((actual.0 - from_wkt.0).abs() < 1e-10 && (actual.1 - from_wkt.1).abs() < 1e-10);
+        if frozen_reference {
+            assert!((actual.0 - expected.0).abs() < 1e-10 && (actual.1 - expected.1).abs() < 1e-10, "GDAL's NADCON result: {actual:?}");
+        }
+        outcomes.push(actual);
+    }
+    assert_eq!(outcomes[0], registered);
+    assert!((outcomes[1].0 - outcomes[0].0).abs() > 1e-3, "the supplied false easting still changes the output");
+    // At UTM's central meridian a NAD27-only inverse gives exactly -117 degrees.
+    assert!((outcomes[0].0 + 117.0).abs() > 1e-5, "the installed NADCON grid must actually affect the result");
+}
+
 /// A grid read from many threads at once (its blocks decoded by whichever thread reaches them
 /// first) gives the values it gives read from one.
 #[test]

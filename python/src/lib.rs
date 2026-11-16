@@ -40,6 +40,12 @@ mod vsi;
 use pyo3::prelude::*;
 use pyo3::types::PyType;
 
+/// Remove URL credentials from user-facing diagnostics without changing I/O locations.
+#[pyfunction]
+fn _redact_diagnostic_location(location: &str) -> String {
+    terrio::vsi::redact_diagnostic_location(location).into_owned()
+}
+
 /// Converts a terrio error into the matching exception of `terrio.errors`.
 pub(crate) fn to_py(e: terrio::Error) -> PyErr {
     let class = match &e {
@@ -212,13 +218,32 @@ pub(crate) fn invalid(message: impl Into<String>) -> PyErr {
 pub(crate) fn with_warnings<T: Send>(py: Python<'_>, f: impl FnOnce() -> terrio::Result<T> + Send) -> PyResult<T> {
     let _ = terrio::warnings::take();
     let result = py.detach_result(f).py();
-    let mut warned = Ok(());
-    for w in terrio::warnings::take() {
-        warned = warned
-            .and(py.import("terrio._warnings").and_then(|module| module.call_method1("warn_user", (w.replace('\0', " "),))).map(|_| ()));
-    }
+    let warned = issue_warnings(py, terrio::warnings::take());
     let value = result?;
     warned.map(|()| value)
+}
+
+/// Issues `warnings` as Python `UserWarning`s: those [`with_warnings`] takes, and those a binding
+/// records while preparing its call (such as the `TERRIO_WARP_GRID` check of default options).
+/// If shutdown has disabled imports, best-effort C warning emission must not discard the result.
+pub(crate) fn issue_warnings(py: Python<'_>, warnings: Vec<String>) -> PyResult<()> {
+    let mut warned = Ok(());
+    for w in warnings {
+        let message = w.replace('\0', " ");
+        let emitted = match py.import("terrio._warnings") {
+            Ok(module) => module.call_method1("warn_user", (message,)).map(|_| ()),
+            Err(_) => {
+                // Late finalizers can still call bindings after Python clears sys.meta_path.
+                // The C warning machinery may remain usable, but even it can fail at teardown.
+                if let Ok(message) = std::ffi::CString::new(message) {
+                    let _ = PyErr::warn(py, &py.get_type::<pyo3::exceptions::PyUserWarning>(), &message, 1);
+                }
+                Ok(())
+            }
+        };
+        warned = warned.and(emitted);
+    }
+    warned
 }
 
 /// A CRS as Python sees it: `EPSG:xxxx` (or `ESRI:xxxx`) when the code is known, otherwise the
@@ -230,10 +255,12 @@ pub(crate) fn crs_string(crs: &terrio::crs::SpatialRef) -> Option<String> {
 #[pymodule]
 fn _terrio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", terrio::VERSION)?;
+    m.add_function(wrap_pyfunction!(_redact_diagnostic_location, m)?)?;
     m.add_class::<raster::PyRaster>()?;
     m.add_class::<raster::PyGeoTiffWriter>()?;
     m.add_class::<cog_writer::PyCogWriter>()?;
     m.add_class::<vector::PyLayer>()?;
+    m.add_function(wrap_pyfunction!(vector::geojson_crs_name, m)?)?;
     m.add_class::<vector::PyVectorDataset>()?;
     m.add_class::<arrow::PyArrowTable>()?;
     m.add_function(wrap_pyfunction!(arrow::from_arrow, m)?)?;

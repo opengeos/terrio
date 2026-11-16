@@ -27,6 +27,58 @@
 
 use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI};
 
+/// PROJ's named ellipsoids (`proj_list_ellps`), in its order: name, semi-major axis, and inverse
+/// flattening, or semi-minor axis when negative. PROJ writes a custom CRS's ellipsoid by the first
+/// name whose values it has.
+pub(crate) const PROJ_ELLIPSOIDS: &[(&str, f64, f64)] = &[
+    ("MERIT", 6378137.0, 298.257),
+    ("SGS85", 6378136.0, 298.257),
+    ("GRS80", 6378137.0, 298.257222101),
+    ("IAU76", 6378140.0, 298.257),
+    ("airy", 6377563.396, 299.3249646),
+    ("APL4.9", 6378137.0, 298.25),
+    ("NWL9D", 6378145.0, 298.25),
+    ("mod_airy", 6377340.189, -6356034.446),
+    ("andrae", 6377104.43, 300.0),
+    ("danish", 6377019.2563, 300.0),
+    ("aust_SA", 6378160.0, 298.25),
+    ("GRS67", 6378160.0, 298.2471674270),
+    ("GSK2011", 6378136.5, 298.2564151),
+    ("bessel", 6377397.155, 299.1528128),
+    ("bess_nam", 6377483.865, 299.1528128),
+    ("clrk66", 6378206.4, -6356583.8),
+    ("clrk80", 6378249.145, 293.4663),
+    ("clrk80ign", 6378249.2, 293.4660212936269),
+    ("CPM", 6375738.7, 334.29),
+    ("delmbr", 6376428.0, 311.5),
+    ("engelis", 6378136.05, 298.2566),
+    ("evrst30", 6377276.345, 300.8017),
+    ("evrst48", 6377304.063, 300.8017),
+    ("evrst56", 6377301.243, 300.8017),
+    ("evrst69", 6377295.664, 300.8017),
+    ("evrstSS", 6377298.556, 300.8017),
+    ("fschr60", 6378166.0, 298.3),
+    ("fschr60m", 6378155.0, 298.3),
+    ("fschr68", 6378150.0, 298.3),
+    ("helmert", 6378200.0, 298.3),
+    ("hough", 6378270.0, 297.0),
+    ("intl", 6378388.0, 297.0),
+    ("krass", 6378245.0, 298.3),
+    ("kaula", 6378163.0, 298.24),
+    ("lerch", 6378139.0, 298.257),
+    ("mprts", 6397300.0, 191.0),
+    ("new_intl", 6378157.5, -6356772.2),
+    ("plessis", 6376523.0, -6355863.0),
+    ("PZ90", 6378136.0, 298.25784),
+    ("SEasia", 6378155.0, -6356773.3205),
+    ("walbeck", 6376896.0, -6355834.8467),
+    ("WGS60", 6378165.0, 298.3),
+    ("WGS66", 6378145.0, 298.25),
+    ("WGS72", 6378135.0, 298.26),
+    ("WGS84", 6378137.0, 298.257223563),
+    ("sphere", 6370997.0, -6370997.0),
+];
+
 /// An ellipsoid normalized to a semi-major axis of 1, as projections use it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Ell {
@@ -65,57 +117,22 @@ impl Ell {
 
     /// One of PROJ's named ellipsoids (`+ellps=`).
     pub fn named(name: &str) -> Option<Self> {
-        // (name, a, rf, or b when negative).
-        const ELLIPSOIDS: &[(&str, f64, f64)] = &[
-            ("MERIT", 6378137.0, 298.257),
-            ("SGS85", 6378136.0, 298.257),
-            ("GRS80", 6378137.0, 298.257222101),
-            ("IAU76", 6378140.0, 298.257),
-            ("airy", 6377563.396, -6356256.910),
-            ("APL4.9", 6378137.0, 298.25),
-            ("NWL9D", 6378145.0, 298.25),
-            ("mod_airy", 6377340.189, -6356034.446),
-            ("andrae", 6377104.43, 300.0),
-            ("danish", 6377019.2563, 300.0),
-            ("aust_SA", 6378160.0, 298.25),
-            ("GRS67", 6378160.0, 298.2471674270),
-            ("GSK2011", 6378136.5, 298.2564151),
-            ("bessel", 6377397.155, 299.1528128),
-            ("bess_nam", 6377483.865, 299.1528128),
-            ("clrk66", 6378206.4, -6356583.8),
-            ("clrk80", 6378249.145, 293.4663),
-            ("clrk80ign", 6378249.2, 293.4660212936269),
-            ("CPM", 6375738.7, 334.29),
-            ("delmbr", 6376428.0, 311.5),
-            ("engelis", 6378136.05, 298.2566),
-            ("evrst30", 6377276.345, 300.8017),
-            ("evrst48", 6377304.063, 300.8017),
-            ("evrst56", 6377301.243, 300.8017),
-            ("evrst69", 6377295.664, 300.8017),
-            ("evrstSS", 6377298.556, 300.8017),
-            ("fschr60", 6378166.0, 298.3),
-            ("fschr60m", 6378155.0, 298.3),
-            ("fschr68", 6378150.0, 298.3),
-            ("helmert", 6378200.0, 298.3),
-            ("hough", 6378270.0, 297.0),
-            ("intl", 6378388.0, 297.0),
-            ("krass", 6378245.0, 298.3),
-            ("kaula", 6378163.0, 298.24),
-            ("lerch", 6378139.0, 298.257),
-            ("mprts", 6397300.0, 191.0),
-            ("new_intl", 6378157.5, -6356772.2),
-            ("plessis", 6376523.0, -6355863.0),
-            ("PZ90", 6378136.0, 298.25784),
-            ("SEasia", 6378155.0, -6356773.3205),
-            ("walbeck", 6376896.0, -6355834.8467),
-            ("WGS60", 6378165.0, 298.3),
-            ("WGS66", 6378145.0, 298.25),
-            ("WGS72", 6378135.0, 298.26),
-            ("WGS84", 6378137.0, 298.257223563),
-            ("sphere", 6370997.0, 0.0),
-        ];
-        let &(_, a, v) = ELLIPSOIDS.iter().find(|e| e.0 == name)?;
+        let (a, v) = Self::named_definition(name)?;
         Some(if v < 0.0 { Self::from_a_b(a, -v) } else { Self::from_a_rf(a, v) })
+    }
+
+    /// The semi-major axis of one of PROJ's named ellipsoids and the parameter PROJ defines its
+    /// shape by: its inverse flattening, or its semi-minor axis negated (`clrk66`, `sphere`).
+    pub fn named_definition(name: &str) -> Option<(f64, f64)> {
+        PROJ_ELLIPSOIDS.iter().find(|e| e.0 == name).map(|&(_, a, v)| (a, v))
+    }
+
+    /// Whether PROJ names this ellipsoid, being one of its list (`lookForProjWellKnownEllps`).
+    pub fn is_proj_named(&self) -> bool {
+        let (b, rf) = (self.a * self.one_es.sqrt(), 1.0 / (1.0 - self.one_es.sqrt()));
+        PROJ_ELLIPSOIDS.iter().any(|&(_, a, v)| {
+            (self.a - a).abs() < 1e-10 * a && if v < 0.0 { (b + v).abs() < -1e-10 * v } else { (rf - v).abs() < 1e-10 * v }
+        })
     }
 }
 
@@ -147,25 +164,42 @@ pub(crate) fn unit_to_meter(name: &str) -> Option<f64> {
     })
 }
 
+/// PROJ's named prime meridians (`proj_list_prime_meridians`), by longitude in degrees from their
+/// degrees, minutes and seconds, as PROJ reads `+pm=` and writes them by name. One table for
+/// reading `+pm=`, writing it, and transforming as PROJ does.
+pub(crate) const PRIME_MERIDIANS: [(&str, f64); 13] = [
+    ("lisbon", -(9.0 + 7.0 / 60.0 + 54.862 / 3600.0)),
+    ("paris", 2.0 + 20.0 / 60.0 + 14.025 / 3600.0),
+    ("bogota", -(74.0 + 4.0 / 60.0 + 51.3 / 3600.0)),
+    ("madrid", -(3.0 + 41.0 / 60.0 + 16.58 / 3600.0)),
+    ("rome", 12.0 + 27.0 / 60.0 + 8.4 / 3600.0),
+    ("bern", 7.0 + 26.0 / 60.0 + 22.5 / 3600.0),
+    ("jakarta", 106.0 + 48.0 / 60.0 + 27.79 / 3600.0),
+    ("ferro", -(17.0 + 40.0 / 60.0)),
+    ("brussels", 4.0 + 22.0 / 60.0 + 4.71 / 3600.0),
+    ("stockholm", 18.0 + 3.0 / 60.0 + 29.8 / 3600.0),
+    ("athens", 23.0 + 42.0 / 60.0 + 58.815 / 3600.0),
+    ("oslo", 10.0 + 43.0 / 60.0 + 22.5 / 3600.0),
+    ("copenhagen", 12.0 + 34.0 / 60.0 + 40.35 / 3600.0),
+];
+
 /// The longitude of one of PROJ's named prime meridians (`+pm=`), in degrees.
 pub(crate) fn prime_meridian(name: &str) -> Option<f64> {
-    Some(match name {
-        "greenwich" => 0.0,
-        "lisbon" => -9.131906111111,
-        "paris" => 2.337229166667,
-        "bogota" => -74.080916666667,
-        "madrid" => -3.687938888889,
-        "rome" => 12.452333333333,
-        "bern" => 7.439583333333,
-        "jakarta" => 106.807719444444,
-        "ferro" => -17.666666666667,
-        "brussels" => 4.367975,
-        "stockholm" => 18.058277777778,
-        "athens" => 23.7163375,
-        "oslo" => 10.722916666667,
-        "copenhagen" => 12.57788,
-        _ => return None,
-    })
+    if name == "greenwich" {
+        return Some(0.0);
+    }
+    PRIME_MERIDIANS.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
+}
+
+/// A prime meridian in degrees as PROJ 9.8.1 transforms with it between CRSs: one of its named
+/// meridians when within 1e-10 radians of it (`PrimeMeridian::getPROJStringWellKnownName`), so
+/// Paris's 2.33722917° (2.5969213 grads) is `+pm=paris`, 2.337229166667°. Greenwich is one of
+/// them: 5e-9° is 0.
+pub(crate) fn proj_prime_meridian(degrees: f64) -> f64 {
+    std::iter::once(0.0)
+        .chain(PRIME_MERIDIANS.iter().map(|(_, v)| *v))
+        .find(|v| (v - degrees).to_radians().abs() < 1e-10)
+        .unwrap_or(degrees)
 }
 
 /// Wraps a longitude in radians into [-π, π].

@@ -40,7 +40,7 @@ pub fn clip_vector(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
     if args.like.is_some() && args.crs.is_some() {
         return Err(invalid("crs applies only to bbox/geometry"));
     }
-    let crs = args.crs.as_deref().map(SpatialRef::parse).transpose().map_err(js_err)?;
+    let crs = args.crs.as_deref().map(SpatialRef::parse_literal).transpose().map_err(js_err)?;
     let template = ClipTemplateOptions { layer: args.like_layer, where_clause: args.like_where, sql: args.like_sql };
     let region = if let Some(bbox) = args.bbox {
         ClipRegion::bbox(bbox, crs).map_err(js_err)?

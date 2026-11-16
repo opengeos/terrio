@@ -1071,7 +1071,7 @@ pub(crate) fn crs_json(s: &SpatialRef) -> serde_json::Value {
         return serde_json::json!({ "authid": code });
     }
     let mut o = serde_json::Map::new();
-    if let Some(w) = s.to_wkt() {
+    if let Some(w) = s.to_file_wkt() {
         o.insert("wkt".into(), w.into());
     }
     o.insert("dataAxisToSRSAxisMapping".into(), serde_json::json!([1, 2]));
@@ -1082,13 +1082,13 @@ pub(crate) fn crs_json(s: &SpatialRef) -> serde_json::Value {
 fn crs_from_json(v: &serde_json::Value) -> Result<Option<SpatialRef>> {
     match v {
         serde_json::Value::Null => Ok(None),
-        serde_json::Value::String(s) => SpatialRef::parse(s).map(Some),
+        serde_json::Value::String(s) => SpatialRef::parse_literal(s).map(Some),
         serde_json::Value::Object(o) => {
             if let Some(a) = o.get("authid").and_then(|a| a.as_str()) {
-                return SpatialRef::parse(a).map(Some);
+                return SpatialRef::parse_literal(a).map(Some);
             }
             if let Some(w) = o.get("wkt").and_then(|a| a.as_str()) {
-                return SpatialRef::parse(w).map(Some);
+                return SpatialRef::parse_literal(w).map(Some);
             }
             if let Some(p) = o.get("projjson") {
                 return SpatialRef::from_projjson(&p.to_string()).map(Some);

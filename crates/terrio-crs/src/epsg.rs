@@ -28,6 +28,9 @@ static VERTICAL_DATA: &[u8] = include_bytes!("../data/epsg_vertical.tsv.zst");
 /// The names and aliases of EPSG datums, generated from PROJ by `scripts/gen_datum_names.py`:
 /// `code<TAB>rank<TAB>name` lines.
 static DATUM_NAMES: &[u8] = include_bytes!("../data/datums.tsv.zst");
+/// The CRSs PROJ finds by the names of CRSs without ID, generated from PROJ by
+/// `scripts/gen_crs_names.py`.
+static CRS_NAMES: &[u8] = include_bytes!("../data/crs_names.tsv.zst");
 
 /// An EPSG (or ESRI) CRS of the table.
 #[derive(Debug)]
@@ -118,6 +121,8 @@ struct Table {
     /// The lines of the geodetic CRSs (`E`) and registered operations (`R`), after their kind.
     geodetic: Vec<(usize, usize)>,
     registered: Vec<(usize, usize)>,
+    /// The deprecated CRSs, with the codes of those that replace them.
+    replacements: HashMap<u32, Vec<u32>>,
 }
 
 /// A line of the table (its fields after the code) and what it parses to.
@@ -169,6 +174,7 @@ fn load(data: &[u8]) -> Table {
     let mut alternatives = HashMap::<String, Vec<String>>::new();
     let mut dates = HashMap::new();
     let (mut geodetic, mut registered) = (Vec::new(), Vec::new());
+    let mut replacements = HashMap::new();
     let mut pos = 0;
     for line in text.split_inclusive('\n') {
         let start = pos;
@@ -226,12 +232,17 @@ fn load(data: &[u8]) -> Table {
                     dates.insert(code, line[rest - start..].to_string());
                 }
             }
+            "X" => {
+                if let Ok(code) = key.parse::<u32>() {
+                    replacements.insert(code, line[rest - start..].split(',').filter_map(|c| c.parse().ok()).collect());
+                }
+            }
             "E" => geodetic.push((start + 2, end)),
             "R" => registered.push((start + 2, end)),
             _ => {}
         }
     }
-    Table { text, crs, ops, pairs, verticals, compounds, geoids, vertical_ops, alternatives, dates, geodetic, registered }
+    Table { text, crs, ops, pairs, verticals, compounds, geoids, vertical_ops, alternatives, dates, geodetic, registered, replacements }
 }
 
 impl Table {
@@ -367,6 +378,11 @@ const VARIANT_C: [(u32, &str, u32, [f64; 4]); 2] = [
     (2986, "Perroud 1950 / Terre Adelie Polar Stereographic", 4637, [-67.0, 140.0, 300_000.0, 200_000.0]),
 ];
 
+/// Whether a code is one of [`VARIANT_C`], whose method no PROJ string names.
+pub(crate) fn is_variant_c_code(code: u32) -> bool {
+    VARIANT_C.iter().any(|(c, ..)| *c == code)
+}
+
 /// The entry of a CRS of [`VARIANT_C`]: its geographic CRS's datum, transformations and area of
 /// use, with the WKT 1 of its definition and the PROJ string the WKT 1 reader gives it.
 fn variant_c(code: u32) -> Option<&'static Entry> {
@@ -487,6 +503,93 @@ pub(crate) fn datums_named(name: &str) -> Vec<u32> {
     datum_names().0.get(&datum_key(name)).map(|(_, c)| c.clone()).unwrap_or_default()
 }
 
+/// The EPSG CRS PROJ 9.8.1 finds by the name of a geographic 2D or projected CRS without ID, when
+/// it finds a single CRS (`createObjectsFromName`, among the names and aliases of its database's
+/// CRSs, whatever the case of their ASCII letters); first, for an ESRI WKT 1 (`esri`), the CRS the
+/// name is an ESRI alias of. A name absent from the table stands for the single EPSG CRS of that
+/// official name and kind, if any. PROJ looks a geographic 3D CRS (`three_d`) up among those,
+/// which the table leaves out: by official name alone.
+pub(crate) fn crs_named_as_proj(name: &str, projected: bool, three_d: bool, esri: bool) -> Option<u32> {
+    static NAMES: OnceLock<HashMap<(u8, String), u32>> = OnceLock::new();
+    let names = NAMES.get_or_init(|| {
+        decompress(CRS_NAMES)
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .filter_map(|l| {
+                let mut f = l.splitn(3, '\t');
+                let (kind, name, code) = (f.next()?, f.next()?, f.next()?.parse().ok()?);
+                Some(((*kind.as_bytes().first()?, name.to_string()), code))
+            })
+            .collect()
+    });
+    let (exact, folded) = if projected { (b'P', b'p') } else { (b'G', b'g') };
+    let found = if three_d && !projected {
+        None
+    } else {
+        (esri.then(|| names.get(&(exact, name.to_string()))).flatten()).or_else(|| names.get(&(folded, name.to_ascii_lowercase())))
+    };
+    match found {
+        Some(&code) => (code != 0).then_some(code),
+        // PROJ drops the deprecated CRSs after current ones (RRAF 1991: EPSG:4557, not 4973).
+        None => {
+            let codes = officially_named().get(&(kind_of(projected, three_d), name.to_ascii_lowercase()))?;
+            let current: Vec<u32> = codes.iter().filter(|c| c.1).map(|c| c.0).collect();
+            match (&current[..], &codes[..]) {
+                ([code], _) => Some(*code),
+                ([], [(code, _)]) => Some(*code),
+                _ => None,
+            }
+        }
+    }
+}
+
+/// The kind of CRS PROJ looks a name up among: `p` projected, `g` geographic 2D, `G` 3D.
+fn kind_of(projected: bool, three_d: bool) -> u8 {
+    match (projected, three_d) {
+        (true, _) => b'p',
+        (false, false) => b'g',
+        (false, true) => b'G',
+    }
+}
+
+/// EPSG codes by kind and name, with whether each is current.
+type NameIndex = HashMap<(u8, String), Vec<(u32, bool)>>;
+
+/// The EPSG geographic and projected CRSs of the table by kind ([`kind_of`]) and official name,
+/// its ASCII letters in lowercase, with whether each is current.
+fn officially_named() -> &'static NameIndex {
+    static INDEX: OnceLock<NameIndex> = OnceLock::new();
+    INDEX.get_or_init(|| {
+        let t = table();
+        let mut index = NameIndex::new();
+        for (code, l) in &t.crs {
+            let f: Vec<&str> = t.text[l.line.0 as usize..l.line.1 as usize].splitn(9, '\t').collect();
+            let [name, _, _, _, _, flags, _, proj, _] = f[..] else { continue };
+            let kind = if proj.starts_with("+proj=longlat") {
+                kind_of(false, flags.contains('3'))
+            } else if proj.starts_with("+proj=geocent") {
+                continue;
+            } else {
+                b'p'
+            };
+            let current = !flags.contains('x');
+            index.entry((kind, name.to_ascii_lowercase())).or_default().push((*code, current));
+        }
+        index
+    })
+}
+
+/// Whether an EPSG CRS (geographic, geocentric, projected, vertical or compound) is deprecated.
+pub(crate) fn is_deprecated(code: u32) -> bool {
+    table().replacements.contains_key(&code)
+}
+
+/// The EPSG CRSs that replace a deprecated one, those PROJ lists, in order of code (none for a
+/// current CRS, or a deprecated one without replacement).
+pub(crate) fn replacements(code: u32) -> &'static [u32] {
+    table().replacements.get(&code).map_or(&[], Vec::as_slice)
+}
+
 /// The official name of an EPSG datum; of the WGS 84 and ETRS89 ensembles, without `ensemble`
 /// (they are written as datums).
 pub(crate) fn datum_name(code: u32) -> Option<String> {
@@ -499,7 +602,8 @@ pub(crate) fn datums_written_as(name: &str) -> &'static [u32] {
     datum_names().1.get(&datum_key(name)).map_or(&[], Vec::as_slice)
 }
 
-/// The EPSG geographic 2D CRSs on a datum, without deprecated ones, in order of code.
+/// The EPSG geographic 2D CRSs on a datum, current ones first (as PROJ ranks deprecated CRSs
+/// after them), each in order of code.
 pub(crate) fn geographic_on(datum: u32) -> &'static [u32] {
     static INDEX: OnceLock<HashMap<u32, Vec<u32>>> = OnceLock::new();
     let index = INDEX.get_or_init(|| {
@@ -507,7 +611,6 @@ pub(crate) fn geographic_on(datum: u32) -> &'static [u32] {
         let mut index = HashMap::<u32, Vec<u32>>::new();
         for (code, l) in &t.crs {
             let f: Vec<&str> = t.text[l.line.0 as usize..l.line.1 as usize].splitn(9, '\t').collect();
-            // A deprecated code has its replacement's geographic CRS.
             let [_, datum_field, geog, _, _, flags, _, proj, ..] = f[..] else { continue };
             if geog.parse() == Ok(*code)
                 && !flags.contains('3')
@@ -517,13 +620,13 @@ pub(crate) fn geographic_on(datum: u32) -> &'static [u32] {
                 index.entry(d).or_default().push(*code);
             }
         }
-        index.values_mut().for_each(|c| c.sort_unstable());
+        index.values_mut().for_each(|c| c.sort_unstable_by_key(|c| (is_deprecated(*c), *c)));
         index
     });
     index.get(&datum).map_or(&[], Vec::as_slice)
 }
 
-/// The EPSG projected CRSs on a geographic CRS, without deprecated ones, in order of code, with
+/// The EPSG projected CRSs on a geographic CRS, current ones first, each in order of code, with
 /// their projection method (`+proj=tmerc`).
 pub(crate) fn projected_on(geog: u32) -> &'static [(u32, &'static str)] {
     static INDEX: OnceLock<HashMap<u32, Vec<(u32, &'static str)>>> = OnceLock::new();
@@ -532,19 +635,16 @@ pub(crate) fn projected_on(geog: u32) -> &'static [(u32, &'static str)] {
         let mut index = HashMap::<u32, Vec<(u32, &'static str)>>::new();
         for (code, l) in &t.crs {
             let f: Vec<&'static str> = t.text[l.line.0 as usize..l.line.1 as usize].splitn(9, '\t').collect();
-            let [_, _, geog, _, _, flags, _, proj, wkt] = f[..] else { continue };
-            // A deprecated code has its replacement's WKT.
-            let current = super::declared_epsg(wkt) == Some(*code);
+            let [_, _, geog, _, _, flags, _, proj, _] = f[..] else { continue };
             let method = proj.split_whitespace().next().unwrap_or_default();
-            if current
-                && !flags.contains('3')
+            if !flags.contains('3')
                 && method != "+proj=longlat"
                 && let Ok(g) = geog.parse::<u32>()
             {
                 index.entry(g).or_default().push((*code, method));
             }
         }
-        index.values_mut().for_each(|c| c.sort_unstable());
+        index.values_mut().for_each(|c| c.sort_unstable_by_key(|(c, _)| (is_deprecated(*c), *c)));
         index
     });
     index.get(&geog).map_or(&[], Vec::as_slice)
@@ -619,6 +719,9 @@ pub(crate) fn registry() -> &'static Registry {
         for &(start, end) in &t.geodetic {
             let f: Vec<&str> = t.text[start..end].splitn(4, '\t').collect();
             let [code, datum, kind, name] = f[..] else { continue };
+            // A deprecated CRS is chained from or to itself, not through, as PROJ's datum pivot
+            // goes through the current CRSs of a datum.
+            let (kind, deprecated) = kind.strip_suffix('x').map_or((kind, false), |k| (k, true));
             let kind = match kind {
                 "2" => GeodeticKind::Geographic2D,
                 "3" => GeodeticKind::Geographic3D,
@@ -626,7 +729,9 @@ pub(crate) fn registry() -> &'static Registry {
                 _ => continue,
             };
             let (Ok(code), Ok(datum)) = (code.parse(), datum.parse()) else { continue };
-            r.by_datum.entry(datum).or_default().push(code);
+            if !deprecated {
+                r.by_datum.entry(datum).or_default().push(code);
+            }
             r.geodetic.insert(code, Geodetic { code, datum, kind, name: name.to_string() });
         }
         r.by_datum.values_mut().for_each(|c| c.sort_unstable());

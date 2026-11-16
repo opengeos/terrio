@@ -28,6 +28,7 @@ from typing import Any
 import numpy as np
 from affine import Affine
 
+from terrio._terrio import _redact_diagnostic_location as _redact
 from terrio.rio import windows
 from terrio.rio.coords import disjoint_bounds
 from terrio.rio.enums import Resampling
@@ -278,7 +279,7 @@ def stack(
                     if disjoint_bounds(chunk_bounds, src.bounds):
                         continue
                     if first_crs != src.crs:
-                        raise RasterioError(f"CRS mismatch with source: {dataset}")
+                        raise RasterioError(f"CRS mismatch with source: {_redact(str(dataset))}")
                     try:
                         ibounds = _intersect_bounds(src.bounds, chunk_bounds, chunk_transform)
                         sw = windows.from_bounds(*ibounds, src.transform)

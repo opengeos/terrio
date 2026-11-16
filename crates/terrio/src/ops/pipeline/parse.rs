@@ -128,7 +128,7 @@ fn parse_step(argv: &[String]) -> Result<Step> {
             Step::Clip { bbox }
         }
         "reproject" => {
-            let crs = SpatialRef::parse(&a.one("output-crs")?.ok_or_else(|| bad("reproject needs --output-crs"))?)?;
+            let crs = SpatialRef::parse_literal(&a.one("output-crs")?.ok_or_else(|| bad("reproject needs --output-crs"))?)?;
             let resampling = a.one("resampling")?.map(|v| Resampling::parse(&v)).transpose()?;
             let size = a.usize_pair("size")?;
             let resolution = a.pair("resolution")?;

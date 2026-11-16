@@ -39,7 +39,7 @@ pub(crate) mod zipdir;
 
 pub use listing::RemoteLister;
 
-/// Redact credential-bearing query strings when displaying locations in diagnostics.
+/// Redact URL userinfo, queries and fragments when displaying locations in diagnostics.
 /// The returned value is only for display, never for issuing I/O requests.
 pub fn redact_diagnostic_location(location: &str) -> std::borrow::Cow<'_, str> {
     listing::redact_url(location)

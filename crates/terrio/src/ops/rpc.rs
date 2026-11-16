@@ -430,11 +430,14 @@ fn cubic_spline(v: f64) -> f64 {
 impl Dem {
     fn open(path: &str, o: &RpcOptions, rpc: &Rpc) -> Result<Self> {
         let ds = crate::open_raster(path)?;
+        Self::from_dataset(&ds, o, rpc)
+    }
+
+    fn from_dataset(ds: &crate::RasterDataset, o: &RpcOptions, rpc: &Rpc) -> Result<Self> {
         let gt = ds.geo_transform();
-        let inv =
-            super::invert_gt(&gt).ok_or_else(|| Error::InvalidData(format!("the geotransform of the DEM {path} is not invertible")))?;
+        let inv = super::invert_gt(&gt).ok_or_else(|| Error::InvalidData("the DEM geotransform is not invertible".into()))?;
         let srs = match &o.dem_srs {
-            Some(s) => SpatialRef::parse(s)?,
+            Some(s) => SpatialRef::parse_literal(s)?,
             None => ds.crs(),
         };
         let ct = if srs.is_unknown() { None } else { Self::transformer(&srs, o.dem_apply_vdatum_shift, rpc)? };
@@ -569,7 +572,9 @@ fn horizontal(srs: &SpatialRef) -> Result<SpatialRef> {
             ']' | ')' => {
                 depth -= 1;
                 if depth == 0 {
-                    return Ok(SpatialRef::from_wkt(&rest[..=i]));
+                    // Part of the CRS's stored WKT, whose names may keep a NUL (from a PROJJSON
+                    // name): cut there, so that it reads whole.
+                    return Ok(SpatialRef::from_wkt(&terrio_crs::wkt_for_files(&rest[..=i])));
                 }
             }
             _ => {}
@@ -612,14 +617,23 @@ impl RpcTransformer {
     /// # Errors
     /// When the DEM cannot be read, or the RPCs are degenerate near their reference point.
     pub fn new(rpc: &Rpc, options: &RpcOptions) -> Result<Self> {
-        let mut height = options.height;
-        if height.is_none() && options.dem.is_none() {
-            height = rpc.height_default;
-        }
         let dem = match &options.dem {
             Some(p) => Some(Dem::open(p, options, rpc)?),
             None => None,
         };
+        Self::with_dem(rpc, options, dem)
+    }
+
+    /// Build from an explicitly supplied DEM without resolving its diagnostic name as a path.
+    pub(crate) fn with_dem_dataset(rpc: &Rpc, options: &RpcOptions, dem: &crate::RasterDataset) -> Result<Self> {
+        Self::with_dem(rpc, options, Some(Dem::from_dataset(dem, options, rpc)?))
+    }
+
+    fn with_dem(rpc: &Rpc, options: &RpcOptions, dem: Option<Dem>) -> Result<Self> {
+        let mut height = options.height;
+        if height.is_none() && dem.is_none() {
+            height = rpc.height_default;
+        }
         let mut t = Self {
             rpc: rpc.clone(),
             pixel_error_threshold: options.pixel_error_threshold.unwrap_or(DEFAULT_PIXEL_ERROR_THRESHOLD),
@@ -1052,6 +1066,17 @@ pub fn parse_rpc_file(text: &str, rpb: bool) -> Option<Vec<(String, String)>> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// The horizontal part of a compound CRS whose stored WKT keeps a NUL in a name (one a
+    /// PROJJSON name gives) reads as that CRS: it is cut at the NUL, as files have it.
+    #[test]
+    fn the_horizontal_crs_of_a_compound_crs_with_a_nul_in_a_name_reads() {
+        let utm = SpatialRef::from_epsg(32631).unwrap().to_wkt().unwrap().replacen("WGS 84 / UTM zone 31N", "WGS 84\0 / UTM zone 31N", 1);
+        let vertical = SpatialRef::from_epsg(5703).unwrap().to_wkt().unwrap();
+        let compound = SpatialRef { wkt: Some(format!("COMPD_CS[\"x\",{utm},{vertical}]")), ..Default::default() };
+        let h = horizontal(&compound).unwrap();
+        assert!(h.to_proj4().is_some_and(|p| p.contains("+proj=utm +zone=31")), "{h:?}");
+    }
 
     /// RPCs of a 100 x 100 image over 0.2 degrees, with a parallax along the samples.
     pub(crate) fn rpc() -> Rpc {

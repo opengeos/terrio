@@ -819,7 +819,7 @@ fn select_crs(value: &Value, options: &OapifOpenOptions) -> Result<(String, Spat
         if is_crs84(asked) {
             return Some(CRS84);
         }
-        let crs = SpatialRef::parse(asked).ok()?;
+        let crs = SpatialRef::parse_literal(asked).ok()?;
         supported.iter().copied().find(|s| {
             !is_crs84(s) && SpatialRef::parse_literal(s).is_ok_and(|c| c.epsg == crs.epsg && c.esri == crs.esri && c.same_as(&crs))
         })

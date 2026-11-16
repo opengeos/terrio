@@ -220,6 +220,15 @@ jobs:
       - run: cargo check --workspace --all-targets --locked
       - run: cargo check -p terrio-crs --all-targets --locked
       - run: cargo check -p terrio-crs --all-targets --all-features --locked
+      # Cargo enables a dependency's features for the whole build: serde_json's `preserve_order`
+      # in terrio-crs would reorder the JSON of every crate built with it. The PROJJSON tests run
+      # here without it, as a dependent builds terrio-crs (the workspace's `terrio` enables it).
+      - name: terrio-crs does not enable serde_json's preserve_order
+        run: |
+          cargo tree -p terrio-crs --all-features -e features -i serde_json --locked > "$RUNNER_TEMP/serde_json.txt"
+          grep -q '^serde_json v' "$RUNNER_TEMP/serde_json.txt"
+          ! grep preserve_order "$RUNNER_TEMP/serde_json.txt"
+      - run: cargo test -p terrio-crs --locked --test projjson_key_order --test projjson_export --test projjson
 
   api-docs:
     name: API docs and packaging

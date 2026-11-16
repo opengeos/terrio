@@ -43,7 +43,10 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rasterize, m)?)?;
     m.add_function(wrap_pyfunction!(polygonize, m)?)?;
     m.add_function(wrap_pyfunction!(transform_points, m)?)?;
+    m.add_function(wrap_pyfunction!(transform_bounds, m)?)?;
     m.add_function(wrap_pyfunction!(set_grid_search_paths, m)?)?;
+    m.add_function(wrap_pyfunction!(confine_grid_search_paths, m)?)?;
+    m.add_function(wrap_pyfunction!(register_grid, m)?)?;
     m.add_function(wrap_pyfunction!(set_network_enabled, m)?)?;
     m.add_function(wrap_pyfunction!(list_crs, m)?)?;
     m.add_function(wrap_pyfunction!(translate, m)?)?;
@@ -83,7 +86,7 @@ fn dataset_to_py(py: Python<'_>, ds: Dataset) -> PyResult<Py<PyAny>> {
 }
 
 pub(crate) fn srs(s: Option<&str>) -> PyResult<Option<SpatialRef>> {
-    s.map(SpatialRef::parse).transpose().py()
+    s.map(SpatialRef::parse_literal).transpose().py()
 }
 
 pub(crate) fn write_mode(append: bool, overwrite: bool) -> PyResult<WriteMode> {
@@ -122,25 +125,27 @@ fn open(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
 }
 
 /// Opens a serialized VRT with source names mapped to file bytes or paths.
-/// Sources are opened once; pixel windows remain lazy. This also supports VRTs
-/// referring to uploaded GeoTIFFs without writing those files beside the XML.
+/// Every referenced source, including masks and RPC DEMs, must be supplied.
+/// Missing map entries never fall back to filesystem or network access. A source
+/// given as bytes that is itself a VRT is opened against the same map; bytes of a
+/// STAC, STACTA or STACIT document are refused. Only referenced entries are opened;
+/// pixel windows remain lazy. This also supports VRTs referring to uploaded
+/// GeoTIFFs without writing those files beside the XML.
 #[pyfunction]
 fn open_vrt(py: Python<'_>, xml: &str, sources: &Bound<'_, PyDict>) -> PyResult<PyRaster> {
-    let description = terrio::ops::vrt::VirtualRaster::from_xml(xml).py()?;
-    let mut resolved = std::collections::HashMap::new();
+    use terrio::ops::vrt::SuppliedSource;
+    let mut supplied = std::collections::HashMap::new();
     for (name, value) in sources.iter() {
         let name = name.extract::<String>()?;
-        let reader = if let Ok(bytes) = value.cast::<PyBytes>() {
-            let bytes = bytes.as_bytes().to_vec();
-            py.detach_result(|| terrio::memory::open_raster_lazy_bytes(bytes, &name)).py()?
+        let source = if let Ok(bytes) = value.cast::<PyBytes>() {
+            SuppliedSource::Bytes(bytes.as_bytes().to_vec())
         } else {
             let path = value.extract::<std::path::PathBuf>()?;
-            let path = path.to_str().ok_or_else(|| invalid("source paths must be UTF-8"))?;
-            py.detach_result(|| terrio::open_raster_lazy(path)).py()?
+            SuppliedSource::Path(path.to_str().ok_or_else(|| invalid("source paths must be UTF-8"))?.to_string())
         };
-        resolved.insert(name, reader);
+        supplied.insert(name, source);
     }
-    let inner = py.detach_result(|| description.into_lazy(std::path::Path::new(""), resolved)).py()?;
+    let inner = py.detach_result(|| terrio::ops::vrt::VirtualRaster::open_supplied(xml, &supplied)).py()?;
     Ok(PyRaster { inner })
 }
 
@@ -441,7 +446,7 @@ fn write_vector(
     options.citygml_version = parse_citygml_version(citygml_version)?;
     options.citygml_lod0_surface = parse_citygml_lod0_surface(citygml_lod0_surface)?;
     let mode = write_mode(append, overwrite)?;
-    py.detach_result(|| terrio::ops::vector_filter::write_vector_with_mode(&layers, path, &options, mode)).py()
+    crate::with_warnings(py, || terrio::ops::vector_filter::write_vector_with_mode(&layers, path, &options, mode))
 }
 
 /// Converts a dataset to another format, optionally reprojecting, subsetting and filtering it,
@@ -977,6 +982,33 @@ fn polygonize(
     Ok(PyLayer::from(layer))
 }
 
+/// Transform bounds through the shared CRS implementation, including interior poles.
+///
+/// Args:
+///     src_crs: Source CRS definition.
+///     dst_crs: Target CRS definition.
+///     bounds: Source (left, bottom, right, top).
+///     densify_pts: Interior points per edge.
+///
+/// Returns:
+///     tuple: Target (left, bottom, right, top).
+///
+/// Raises:
+///     CRSError: If the CRSs or bounds cannot be transformed.
+#[pyfunction]
+#[pyo3(signature = (src_crs, dst_crs, bounds, densify_pts=21))]
+fn transform_bounds(
+    py: Python<'_>,
+    src_crs: &str,
+    dst_crs: &str,
+    bounds: (f64, f64, f64, f64),
+    densify_pts: usize,
+) -> PyResult<(f64, f64, f64, f64)> {
+    let src = SpatialRef::parse_literal(src_crs).py()?;
+    let dst = SpatialRef::parse_literal(dst_crs).py()?;
+    crate::with_warnings(py, || Transformer::new(&src, &dst)?.transform_bounds_densified(bounds, densify_pts))
+}
+
 /// Transforms coordinates from one CRS to another.
 ///
 /// Coordinates are in GIS order whatever the CRS's axis order: x (easting, longitude) first.
@@ -999,6 +1031,9 @@ fn polygonize(
 ///         (GDAL's ``-t_coord_epoch``).
 ///     promote_to_3d: Take the heights of 2D CRSs as ellipsoidal heights, so that datum
 ///         transformations change them, as GDAL does after ``PromoteTo3D``.
+///     errcheck: Raise on a failed point (default True). If False, set every output
+///         ordinate of that point to positive infinity and continue with the same
+///         transformer. Invalid CRS definitions and array lengths still raise.
 ///
 /// Returns:
 ///     tuple[numpy.ndarray, ...]: The transformed x and y coordinates, and heights when ``zs`` is
@@ -1007,7 +1042,7 @@ fn polygonize(
 /// Raises:
 ///     CRSError: If a CRS cannot be parsed or a point cannot be transformed.
 #[pyfunction]
-#[pyo3(signature = (xs, ys, src_crs, dst_crs, zs=None, *, s_coord_epoch=None, t_coord_epoch=None, allow_ballpark=None, only_best=false, promote_to_3d=false))]
+#[pyo3(signature = (xs, ys, src_crs, dst_crs, zs=None, *, s_coord_epoch=None, t_coord_epoch=None, allow_ballpark=None, only_best=false, promote_to_3d=false, errcheck=true))]
 #[allow(clippy::too_many_arguments)]
 fn transform_points<'py>(
     py: Python<'py>,
@@ -1021,6 +1056,7 @@ fn transform_points<'py>(
     allow_ballpark: Option<bool>,
     only_best: bool,
     promote_to_3d: bool,
+    errcheck: bool,
 ) -> PyResult<Bound<'py, PyTuple>> {
     let np = py.import("numpy")?;
     let coords = |v: &Bound<'py, PyAny>| -> PyResult<Vec<f64>> {
@@ -1037,8 +1073,8 @@ fn transform_points<'py>(
     {
         return Err(invalid(format!("xs and zs differ in length ({} and {})", xs.len(), z.len())));
     }
-    let src = SpatialRef::parse(src_crs).py()?;
-    let dst = SpatialRef::parse(dst_crs).py()?;
+    let src = SpatialRef::parse_literal(src_crs).py()?;
+    let dst = SpatialRef::parse_literal(dst_crs).py()?;
     let opts = TransformOptions {
         source_coordinate_epoch: s_coord_epoch,
         target_coordinate_epoch: t_coord_epoch,
@@ -1052,18 +1088,19 @@ fn transform_points<'py>(
         let mut oy = Vec::with_capacity(ys.len());
         let mut oz = Vec::with_capacity(zs.as_ref().map_or(0, Vec::len));
         for (i, (x, y)) in xs.iter().zip(&ys).enumerate() {
-            match &zs {
-                Some(z) => {
-                    let (a, b, c) = t.transform_3d(*x, *y, z[i])?;
-                    ox.push(a);
-                    oy.push(b);
-                    oz.push(c);
-                }
-                None => {
-                    let (a, b) = t.transform(*x, *y)?;
-                    ox.push(a);
-                    oy.push(b);
-                }
+            let result = match &zs {
+                Some(z) => t.transform_3d(*x, *y, z[i]),
+                None => t.transform(*x, *y).map(|(a, b)| (a, b, 0.0)),
+            };
+            let (a, b, c) = match result {
+                Ok(point) => point,
+                Err(error) if errcheck => return Err(error),
+                Err(_) => (f64::INFINITY, f64::INFINITY, f64::INFINITY),
+            };
+            ox.push(a);
+            oy.push(b);
+            if zs.is_some() {
+                oz.push(c);
             }
         }
         Ok((ox, oy, oz))
@@ -1087,6 +1124,26 @@ fn transform_points<'py>(
 #[pyo3(signature = (paths))]
 fn set_grid_search_paths(paths: Option<Vec<std::path::PathBuf>>) {
     terrio::crs::set_grid_search_paths(paths);
+}
+
+/// Confines grids to the effective search directories, preserving configured or host defaults.
+///
+/// Call before creating transformers for untrusted CRS definitions. Grids named by a path
+/// are then refused with a warning. Registered grids and the network policy are unchanged.
+/// Use ``set_grid_search_paths(None)`` to restore the environment's search policy.
+#[pyfunction]
+fn confine_grid_search_paths() {
+    terrio::crs::confine_grid_search_paths();
+}
+
+/// Registers a datum shift or geoid grid from memory, available even with confined search paths.
+///
+/// Args:
+///     name: The grid name used in CRS definitions.
+///     data: The encoded grid bytes (GeoTIFF, NTv2 or GTX).
+#[pyfunction]
+fn register_grid(name: &str, data: &[u8]) {
+    terrio::crs::register_grid(name, data.to_vec());
 }
 
 /// Enables or disables downloading grids from the PROJ CDN (https://cdn.proj.org) into terrio's
@@ -1121,9 +1178,12 @@ fn set_network_enabled(enabled: Option<bool>) {
 ///
 /// Returns:
 ///     list[dict]: One entry per CRS, in order of authority and code: ``authority``, ``code``
-///     (int), ``name``, ``kind``, ``deprecated``, ``area_name`` (str or None), ``bounds``
-///     (``[west, south, east, north]`` in degrees, or None), ``projection_method`` (str or None)
-///     and ``celestial_body`` (str or None).
+///     (int), ``name``, ``kind``, ``deprecated``, ``replaced_by`` (the codes of the CRSs that
+///     replace a deprecated EPSG CRS, ``[5105]`` for EPSG:4855), ``area_name`` (str or None),
+///     ``bounds`` (``[west, south, east, north]`` in degrees, or None), ``projection_method``
+///     (str or None) and ``celestial_body`` (str or None). A deprecated code gives its own CRS,
+///     as PROJ does; for GDAL's default (``OSR_USE_NON_DEPRECATED=YES``), pass the code of a
+///     single replacement instead.
 ///
 /// Raises:
 ///     InvalidArgumentError: If an authority or a kind is unknown.
@@ -1495,6 +1555,9 @@ fn warp(
             Some(Cutline::from_vector(&ds).py()?)
         }
     };
+    // Default options warn about an unknown TERRIO_WARP_GRID or TERRIO_GDAL_COMPAT. Drop warnings
+    // left by earlier calls, then issue those now: the `with_warnings` calls below would drop them.
+    let _ = terrio::warnings::take();
     let mut o = WarpOptions {
         src_srs: srs(s_srs)?,
         dst_srs: srs(t_srs)?,
@@ -1525,6 +1588,7 @@ fn warp(
         sum_scale: _sum_scale,
         ..Default::default()
     };
+    crate::issue_warnings(py, terrio::warnings::take())?;
     if let Some(value) = grid_invariant {
         o.grid_invariant = value;
     }
@@ -1543,12 +1607,10 @@ fn warp(
         }
         let initial = input_raster(py, init)?;
         let sources = input_rasters(py, src)?;
-        let out = py
-            .detach_result(|| {
-                let refs: Vec<&RasterDataset> = sources.iter().map(|(_, ds)| &**ds).collect();
-                terrio::ops::warp::warp_onto(&refs, &o, &initial.raster.data)
-            })
-            .py()?;
+        let out = crate::with_warnings(py, || {
+            let refs: Vec<&RasterDataset> = sources.iter().map(|(_, ds)| &**ds).collect();
+            terrio::ops::warp::warp_onto(&refs, &o, &initial.raster.data)
+        })?;
         return finish_raster(py, out, dst, format, compress, tile_size, bigtiff, creation_options);
     }
     enum Input {
@@ -1642,7 +1704,7 @@ fn warp(
             _ => return Err(invalid("serialized warped VRT output needs a single source path")),
         };
         let options = crate::raster::write_options_with_creation(format, compress, tile_size, bigtiff, creation_options)?;
-        py.detach_result(|| terrio::ops::warp::warp_to_path(&[source], &o, path, &options)).py()?;
+        crate::with_warnings(py, || terrio::ops::warp::warp_to_path(&[source], &o, path, &options))?;
         return Ok(PyRaster { inner: py.detach_result(|| terrio::open_raster_lazy(path)).py()? });
     }
     let first_path = match &args[0] {
@@ -1863,6 +1925,7 @@ fn _window_converts(src: &str, work: &str) -> bool {
 #[pyclass(module = "terrio", name = "RegionWarp", frozen)]
 pub struct PyRegionWarp {
     inner: RegionWarp,
+    bands: usize,
 }
 
 #[pymethods]
@@ -1894,9 +1957,10 @@ impl PyRegionWarp {
         if !(sum_scale.is_finite() && sum_scale > 0.0) {
             return Err(invalid(format!("sum_scale must be a positive number, not {sum_scale}")));
         }
+        let bands = src_nodata.len();
         let kernel_version = terrio::ops::warp::KernelVersion::parse_or_configured(kernel_version).py()?;
         let grid_invariant = grid_invariant.unwrap_or_else(|| WarpOptions::default().grid_invariant);
-        let (src_srs, dst_srs) = (SpatialRef::parse(src_crs).py()?, SpatialRef::parse(dst_crs).py()?);
+        let (src_srs, dst_srs) = (SpatialRef::parse_literal(src_crs).py()?, SpatialRef::parse_literal(dst_crs).py()?);
         let (resampling, dtype) = (Resampling::parse(resampling).py()?, terrio::ops::parse_data_type(dtype).py()?);
         if let (None, Some(rpc)) = (&gcps, rpc) {
             // RPCs georeference the source instead of `src_transform` (a DEM is read here).
@@ -1917,6 +1981,7 @@ impl PyRegionWarp {
             )
             .py()?;
             return Ok(Self {
+                bands,
                 inner: inner.with_kernel_version(kernel_version).with_grid_invariance(grid_invariant).with_sum_scale(sum_scale),
             });
         }
@@ -1953,7 +2018,7 @@ impl PyRegionWarp {
             ),
         }
         .py()?;
-        Ok(Self { inner: inner.with_kernel_version(kernel_version).with_grid_invariance(grid_invariant).with_sum_scale(sum_scale) })
+        Ok(Self { bands, inner: inner.with_kernel_version(kernel_version).with_grid_invariance(grid_invariant).with_sum_scale(sum_scale) })
     }
 
     /// The source window `(x, y, width, height)` a region `(x, y, width, height)` of the grid
@@ -2014,7 +2079,7 @@ impl PyRegionWarp {
         crate::pass_on_http_retries(py);
         crate::pass_on_nodata_warnings(py);
         let (out, written) = result?.py()?;
-        region_arrays(py, region, out, written)
+        region_arrays(py, region, self.bands, out, written)
     }
 
     /// Reads a region's source window from a `Raster` and warps the region from it, the GIL
@@ -2064,6 +2129,11 @@ impl PyRegionWarp {
         if alpha.is_some_and(|a| a == 0 || a > bands.len()) {
             return Err(invalid(format!("alpha must be one of the {} bands read", bands.len())));
         }
+        if region.2 == 0 || region.3 == 0 {
+            let empty = RasterData::U8(Vec::new());
+            let (out, written) = py.detach_result(|| self.inner.warp(region, window, &empty, None, init, padded_scale)).py()?;
+            return region_arrays(py, region, self.bands, out, written);
+        }
         let (x, y, w, h) = window;
         let win = Window::new(x, y, w, h);
         // The window and the per-dataset mask, read with the `Raster` borrowed.
@@ -2100,7 +2170,7 @@ impl PyRegionWarp {
                 inner.warp(region, window, &data, mask.as_deref(), init, padded_scale)
             })
             .py()?;
-        region_arrays(py, region, out, written)
+        region_arrays(py, region, self.bands, out, written)
     }
 }
 
@@ -2109,11 +2179,11 @@ impl PyRegionWarp {
 fn region_arrays<'py>(
     py: Python<'py>,
     region: (usize, usize, usize, usize),
+    bands: usize,
     out: RasterData,
     written: Vec<bool>,
 ) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
     let (w, h) = (region.2, region.3);
-    let bands = out.len() / (w * h).max(1);
     let arr = crate::raster::to_numpy(py, out, &[bands, h, w])?;
     let written = PyArray1::from_vec(py, written).reshape([h, w])?.into_any();
     Ok((arr, written))
@@ -2171,7 +2241,7 @@ fn open_catalog(
         sort_descending,
         resolution: tr,
         extent: te,
-        srs: srs.map(SpatialRef::parse).transpose().py()?,
+        srs: srs.map(SpatialRef::parse_literal).transpose().py()?,
         bands,
         data_type: ot.map(terrio::ops::parse_data_type).transpose().py()?,
         nodata,

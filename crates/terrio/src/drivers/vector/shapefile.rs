@@ -30,9 +30,70 @@ use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, Geomet
 
 const NULL_SHAPE: i32 = 0;
 
-/// Finds a sidecar file (`dbf`, `prj`, `cpg`) next to the `.shp`, in either letter case.
-fn sidecar(base: &Path, ext: &str) -> Option<PathBuf> {
-    [ext.to_string(), ext.to_ascii_uppercase()].into_iter().map(|e| base.with_extension(e)).find(|p| p.exists())
+/// The geometry output path: replace a recognized vector or companion extension with `.shp`,
+/// or append `.shp` to other names. An existing `.shp` retains its case.
+/// Derive sidecars from this full path so unknown dotted suffixes remain part of the basename.
+pub(crate) fn output_path(path: &str) -> PathBuf {
+    let path = Path::new(path);
+    let extension = path.extension().and_then(|e| e.to_str()).unwrap_or_default();
+    if extension.eq_ignore_ascii_case("shp") {
+        path.to_path_buf()
+    } else if crate::formats::VectorDriver::for_extension(&path.to_string_lossy()).is_some()
+        || ["shx", "dbf", "prj", "cpg"].iter().any(|e| extension.eq_ignore_ascii_case(e))
+    {
+        path.with_extension("shp")
+    } else {
+        let mut name = path.as_os_str().to_os_string();
+        name.push(".shp");
+        name.into()
+    }
+}
+
+/// Component spellings, preferring lowercase then uppercase before mixed-case extensions.
+fn component_variants(path: &Path, ext: &str) -> impl Iterator<Item = PathBuf> {
+    let upper = (1usize << ext.len()) - 1;
+    [0, upper].into_iter().chain(1..upper).map(move |mask| {
+        let extension: String =
+            ext.bytes().enumerate().map(|(i, c)| if mask & (1 << i) != 0 { c.to_ascii_uppercase() } else { c } as char).collect();
+        path.with_extension(extension)
+    })
+}
+
+/// Finds a sidecar file (`dbf`, `prj`, `cpg`) next to the `.shp`, including mixed case.
+pub(crate) fn sidecar(path: &Path, ext: &str) -> Option<PathBuf> {
+    component_variants(path, ext).find(|p| p.exists())
+}
+
+/// Removes superseded spellings after creating all replacement files. `path` is the SHP path.
+pub(crate) fn remove_stale_components(path: &Path, has_prj: bool) -> Result<()> {
+    for ext in ["shp", "shx", "dbf", "cpg", "prj"] {
+        let keep = (ext != "prj" || has_prj).then(|| if ext == "shp" { path.to_path_buf() } else { path.with_extension(ext) });
+        #[cfg(unix)]
+        let identity = keep.as_ref().map(std::fs::metadata).transpose()?.map(|metadata| {
+            use std::os::unix::fs::MetadataExt;
+            (metadata.dev(), metadata.ino())
+        });
+        #[cfg(not(unix))]
+        let canonical = keep.as_ref().map(std::fs::canonicalize).transpose()?;
+        for candidate in component_variants(path, ext) {
+            if !candidate.exists() || keep.as_ref() == Some(&candidate) {
+                continue;
+            }
+            // Different spellings can name the replacement itself on a case-insensitive filesystem.
+            #[cfg(unix)]
+            let same_file = identity.is_some_and(|kept| {
+                use std::os::unix::fs::MetadataExt;
+                std::fs::metadata(&candidate).is_ok_and(|actual| (actual.dev(), actual.ino()) == kept)
+            });
+            #[cfg(not(unix))]
+            let same_file = canonical.as_ref().is_some_and(|kept| std::fs::canonicalize(&candidate).is_ok_and(|actual| &actual == kept));
+            if same_file {
+                continue;
+            }
+            std::fs::remove_file(candidate)?;
+        }
+    }
+    Ok(())
 }
 
 /// Decode a present `.prj` without silently treating unreadable text as a missing CRS.
@@ -134,15 +195,15 @@ fn method_from_env(get: impl Fn(&str) -> Option<String>) -> Option<OrganizePolyg
 
 /// Reads a shapefile. `path` names the `.shp` file.
 pub fn read(path: &str, options: &ShapefileOptions) -> Result<Layer> {
-    let base = Path::new(path).with_extension("");
+    let base = Path::new(path);
     let shp = std::fs::read(path)?;
-    let dbf = sidecar(&base, "dbf").map(std::fs::read).transpose()?;
-    let prj = sidecar(&base, "prj").as_deref().and_then(read_prj);
+    let dbf = sidecar(base, "dbf").map(std::fs::read).transpose()?;
+    let prj = sidecar(base, "prj").as_deref().and_then(read_prj);
     if prj.is_some() {
         crate::crs::prefetch();
     }
-    let cpg = sidecar(&base, "cpg").and_then(|p| std::fs::read_to_string(p).ok());
-    let name = base.file_name().and_then(|s| s.to_str()).unwrap_or("layer");
+    let cpg = sidecar(base, "cpg").and_then(|p| std::fs::read_to_string(p).ok());
+    let name = base.file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
     parse(&shp, dbf.as_deref(), prj.as_deref(), cpg.as_deref(), name, options).map_err(|e| match e {
         Error::InvalidData(m) if m == "not a shapefile" => Error::InvalidData(format!("'{path}' is not a shapefile")),
         e => e,
@@ -161,22 +222,22 @@ pub fn read_range(path: &str, skip: usize, max: Option<usize>, options: &Shapefi
     use std::io::{Read, Seek, SeekFrom};
     let method = options.method();
     let not_a_shapefile = || Error::InvalidData(format!("'{path}' is not a shapefile"));
-    let base = Path::new(path).with_extension("");
-    let name = base.file_name().and_then(|s| s.to_str()).unwrap_or("layer");
+    let base = Path::new(path);
+    let name = base.file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
     let mut shp = std::io::BufReader::new(std::fs::File::open(path)?);
     let shp_len = shp.get_ref().metadata()?.len();
     let mut head = [0u8; 100];
     shp.read_exact(&mut head).map_err(|_| not_a_shapefile())?;
     let mut layer = header_layer(&head, name).map_err(|_| not_a_shapefile())?;
-    let prj = sidecar(&base, "prj").as_deref().and_then(read_prj);
+    let prj = sidecar(base, "prj").as_deref().and_then(read_prj);
     if prj.is_some() {
         crate::crs::prefetch();
     }
-    let cpg = sidecar(&base, "cpg").and_then(|p| std::fs::read_to_string(p).ok());
+    let cpg = sidecar(base, "cpg").and_then(|p| std::fs::read_to_string(p).ok());
 
     // Where each record of the .shp starts: from the .shx when it indexes the file, else a scan
     // of the record headers.
-    let shx = sidecar(&base, "shx").map(std::fs::read).transpose()?.filter(|x| x.len() >= 100 && (x.len() - 100) % 8 == 0);
+    let shx = sidecar(base, "shx").map(std::fs::read).transpose()?.filter(|x| x.len() >= 100 && (x.len() - 100) % 8 == 0);
     let offsets: Vec<u64> = match &shx {
         Some(x) => x[100..].as_chunks::<8>().0.iter().map(|e| 2 * u64::from(u32::from_be_bytes([e[0], e[1], e[2], e[3]]))).collect(),
         None => {
@@ -193,7 +254,7 @@ pub fn read_range(path: &str, skip: usize, max: Option<usize>, options: &Shapefi
         }
     };
 
-    let (fields, dbf_total, mut dbf) = match sidecar(&base, "dbf") {
+    let (fields, dbf_total, mut dbf) = match sidecar(base, "dbf") {
         Some(p) => {
             let mut f = std::fs::File::open(p)?;
             let len = f.metadata()?.len();
@@ -910,7 +971,7 @@ pub(crate) fn dbf_layout(d: &[u8], cpg: Option<&str>) -> Result<DbfLayout> {
         offset += width;
         pos += 32;
     }
-    Ok(DbfLayout { fields, layout, encoding, count, header_len, record_len })
+    Ok(DbfLayout { fields: super::unique_field_defs(fields).collect(), layout, encoding, count, header_len, record_len })
 }
 
 impl DbfLayout {
@@ -995,24 +1056,26 @@ fn read_dbf_records(d: &[u8], l: &DbfLayout, make_record: impl Fn(&[u8]) -> Vec<
     Ok(records)
 }
 
-/// Writes a layer as a shapefile. `path` names the `.shp` file; the other files are written next
-/// to it.
+/// Writes a layer as a shapefile. Recognized vector or companion extensions become `.shp`;
+/// other names get `.shp` appended. Companion files are written next to that geometry file.
 pub fn write(layer: &Layer, path: &str) -> Result<()> {
-    let base = Path::new(path).with_extension("");
+    let geometry_path = output_path(path);
+    let base = geometry_path.as_path();
     let (shp, shx) = encode_shapes(layer)?;
-    std::fs::write(base.with_extension("shp"), shp)?;
+    std::fs::write(&geometry_path, shp)?;
     std::fs::write(base.with_extension("shx"), shx)?;
     std::fs::write(base.with_extension("dbf"), encode_dbf(layer)?)?;
     std::fs::write(base.with_extension("cpg"), "UTF-8")?;
     // The source definition when there is one; GDAL reads OGC WKT in `.prj` files too.
     let prj = super::output_wkt(layer);
+    let has_prj = prj.is_some();
     let prj_path = base.with_extension("prj");
     match prj {
         Some(wkt) => std::fs::write(prj_path, wkt)?,
         None if prj_path.exists() => std::fs::remove_file(prj_path)?,
         None => {}
     }
-    Ok(())
+    remove_stale_components(base, has_prj)
 }
 
 /// Writes one layer to a ZIP containing `.shp`, `.shx`, `.dbf`, `.cpg` and,
@@ -1494,6 +1557,30 @@ fn encode_dbf(layer: &Layer) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
     use wbvector::{Feature, FieldDef};
+
+    #[cfg(unix)]
+    #[test]
+    fn replacement_aliases_are_identified_by_file_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("roads.SHP");
+        for ext in ["shp", "shx", "dbf", "cpg", "prj"] {
+            let lower = path.with_extension(ext);
+            let upper = path.with_extension(ext.to_ascii_uppercase());
+            std::fs::write(&lower, "replacement").unwrap();
+            if !upper.exists() {
+                std::fs::hard_link(&lower, &upper).unwrap();
+            }
+        }
+        remove_stale_components(&path, true).unwrap();
+        for ext in ["shp", "shx", "dbf", "cpg", "prj"] {
+            assert!(path.with_extension(ext).exists());
+            assert!(path.with_extension(ext.to_ascii_uppercase()).exists());
+        }
+        remove_stale_components(&path, false).unwrap();
+        assert!(!path.with_extension("prj").exists());
+        assert!(!path.with_extension("PRJ").exists());
+        assert!(path.exists());
+    }
 
     /// glibc record storage is built on the calling thread; deleted slots are skipped.
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
@@ -1981,12 +2068,13 @@ mod tests {
         }
         // Engineering definitions retain their WKT without inventing an EPSG identity.
         let engineering = r#"ENGCRS["site grid",EDATUM["site"],CS[Cartesian,2],AXIS["(E)",east],AXIS["(N)",north],LENGTHUNIT["metre",1]]"#;
-        for prj in [r#"LOCAL_CS["site grid",UNIT["metre",1]]"#, engineering, r#"ENGCRS["x"]"#] {
+        for prj in [r#"LOCAL_CS["site grid",UNIT["metre",1]]"#, engineering] {
             assert!(SpatialRef::parse_literal(prj).is_ok(), "{prj:?}");
             assert_eq!(read_with(&format!("{prj}\n")), (None, Some(prj.to_string()), vec![]), "{prj:?}");
         }
-        // Unsupported authorities and unknown codes retain definition-shaped metadata too.
-        for prj in ["IGNF:LAMB93", "ignf:LAMB93", "urn:ogc:def:crs:IGNF::LAMB93", "EPSG:999999"] {
+        // Unsupported authorities, unknown codes and a keyword with only its name (#1032) retain
+        // definition-shaped metadata too.
+        for prj in ["IGNF:LAMB93", "ignf:LAMB93", "urn:ogc:def:crs:IGNF::LAMB93", "EPSG:999999", r#"ENGCRS["x"]"#] {
             assert!(SpatialRef::parse_literal(prj).is_err(), "{prj:?}");
             assert_eq!(read_with(&format!("{prj}\n")), (None, Some(prj.to_string()), vec![]), "{prj:?}");
         }

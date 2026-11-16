@@ -46,6 +46,14 @@ impl Node {
         })
     }
 
+    /// The first child node with a keyword, to change.
+    pub fn child_mut(&mut self, key: &str) -> Option<&mut Node> {
+        self.args.iter_mut().find_map(|a| match a {
+            Arg::Node(n) if n.key.eq_ignore_ascii_case(key) => Some(n),
+            _ => None,
+        })
+    }
+
     /// The child nodes with a keyword.
     pub fn children<'a>(&'a self, key: &'a str) -> impl Iterator<Item = &'a Node> + 'a {
         self.args.iter().filter_map(move |a| match a {
@@ -94,7 +102,7 @@ pub(crate) const MAX_LEVELS: usize = 16;
 /// bytes unless `OSR_IMPORT_FROM_WKT_LIMIT=NO`).
 pub(crate) const MAX_LEN: usize = 100_000;
 
-/// Parses WKT into its tree, as PROJ's WKT parser (and so GDAL) accepts it: `[` and `(` open a
+/// Parses WKT into its tree, as PROJ 9.8.1's WKT parser (and so GDAL) accepts it: `[` and `(` open a
 /// node, and either `]` or `)` closes it whichever opened it (`SPHEROID["WGS 84",6378137,
 /// 298.257223563)` is WGS 84's spheroid for GDAL). `None` for text that is not WKT, WKT nested
 /// deeper than PROJ allows, or longer than GDAL imports. Every step of the parser consumes
@@ -108,9 +116,31 @@ pub(crate) fn parse(s: &str) -> Option<Node> {
     node(b, &mut i, 0)
 }
 
+/// Whether `c` is a space as C's `isspace` reads it, which PROJ 9.8.1's parser skips: ASCII
+/// whitespace and the vertical tab.
+fn space(c: u8) -> bool {
+    c.is_ascii_whitespace() || c == 0x0b
+}
+
 fn skip_ws(b: &[u8], i: &mut usize) {
-    while *i < b.len() && b[*i].is_ascii_whitespace() {
+    while *i < b.len() && space(b[*i]) {
         *i += 1;
+    }
+}
+
+/// Moves `*i` past the quoted run that opens at `b[*i]`, a doubled quote inside it a quote.
+/// `None` when the quote is not closed.
+fn skip_quoted(b: &[u8], i: &mut usize) -> Option<()> {
+    *i += 1;
+    loop {
+        match *b.get(*i)? {
+            b'"' if b.get(*i + 1) == Some(&b'"') => *i += 2,
+            b'"' => {
+                *i += 1;
+                return Some(());
+            }
+            _ => *i += 1,
+        }
     }
 }
 
@@ -120,9 +150,17 @@ fn node(b: &[u8], i: &mut usize, level: usize) -> Option<Node> {
         return None;
     }
     skip_ws(b, i);
+    // A keyword is any run of characters up to a space or a delimiter, a quoted run in it
+    // included, as PROJ 9.8.1's `WKTNode::createFrom` reads it: an unknown node is skipped
+    // whatever its keyword (`vendor:mark[...]`, `a-b[...]`, `a"b c"[...]`). A NUL outside quotes
+    // is refused: PROJ's text ends there, which leaves the WKT unclosed.
     let start = *i;
-    while *i < b.len() && (b[*i].is_ascii_alphanumeric() || b[*i] == b'_') {
-        *i += 1;
+    while *i < b.len() && !space(b[*i]) && !matches!(b[*i], b',' | b'[' | b'(' | b']' | b')') {
+        match b[*i] {
+            b'"' => skip_quoted(b, i)?,
+            0 => return None,
+            _ => *i += 1,
+        }
     }
     let key = std::str::from_utf8(&b[start..*i]).ok()?.to_string();
     skip_ws(b, i);
@@ -135,7 +173,7 @@ fn node(b: &[u8], i: &mut usize, level: usize) -> Option<Node> {
         skip_ws(b, i);
         let before = *i;
         match b.get(*i)? {
-            // Either closer ends the node, as in PROJ.
+            // Either closer ends the node, as in PROJ 9.8.1.
             b']' | b')' => {
                 *i += 1;
                 break;
@@ -171,11 +209,18 @@ fn node(b: &[u8], i: &mut usize, level: usize) -> Option<Node> {
             }
             args.push(Arg::Str(String::from_utf8_lossy(&s).into_owned()));
         } else {
-            // A number, a word or a nested node: the scan stops at a delimiter, which is not
-            // the first byte (handled above) unless it opens a nested node.
+            // A number, a word or a nested node: the scan stops at a delimiter outside quotes,
+            // which is not the first byte (handled above) unless it opens a nested node. As in
+            // PROJ 9.8.1, a quote in a value runs to the next quote, delimiters included:
+            // `b"c,d"e` is one value and `b"],y["c` too, and a quote left unclosed refuses the
+            // WKT. A NUL outside quotes is refused, as in a keyword.
             let start = *i;
             while *i < b.len() && !matches!(b[*i], b',' | b'[' | b'(' | b']' | b')') {
-                *i += 1;
+                match b[*i] {
+                    b'"' => skip_quoted(b, i)?,
+                    0 => return None,
+                    _ => *i += 1,
+                }
             }
             let tok = std::str::from_utf8(&b[start..*i]).ok()?.trim();
             if *i < b.len() && (b[*i] == b'[' || b[*i] == b'(') {
@@ -199,6 +244,48 @@ pub(crate) fn norm(s: &str) -> String {
     s.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase()
 }
 
+/// The prime meridians PROJ 9.8.1 reads in degrees by name whatever the WKT's unit
+/// (`primeMeridiansDMS`), by degrees, minutes and seconds. Not its `+pm=` names
+/// (`math::PRIME_MERIDIANS`): it has no Paris or Copenhagen (which stay in the CRS's unit), adds
+/// Paris RGS, and its Madrid is at 3°41'14.55"W.
+const PRIME_MERIDIANS_DMS: [(&str, f64, f64, f64); 13] = [
+    ("Lisbon", -9.0, 7.0, 54.862),
+    ("Bogota", -74.0, 4.0, 51.3),
+    ("Madrid", -3.0, 41.0, 14.55),
+    ("Rome", 12.0, 27.0, 8.4),
+    ("Bern", 7.0, 26.0, 22.5),
+    ("Jakarta", 106.0, 48.0, 27.79),
+    ("Ferro", -17.0, 40.0, 0.0),
+    ("Brussels", 4.0, 22.0, 4.71),
+    ("Stockholm", 18.0, 3.0, 29.8),
+    ("Athens", 23.0, 42.0, 58.815),
+    ("Oslo", 10.0, 43.0, 22.5),
+    ("Paris RGS", 2.0, 20.0, 13.95),
+    ("Paris_RGS", 2.0, 20.0, 13.95),
+];
+
+/// The longitude in degrees of a WKT `PRIMEM` named `name` with the value `value`, in a CRS
+/// whose angular unit is `ang` degrees, as PROJ 9.8.1 reads it (`buildPrimeMeridian`): in that
+/// unit, but for Paris in a CRS in grads, which GDAL and ESRI write in degrees (2.33722917,
+/// Paris's 2.5969213 grads, to within 1e-8), and for the meridians PROJ knows by name and value
+/// in degrees (`Paris RGS`, 2.33720833, in ATF (Paris), also in grads) or in EPSG's sexagesimal
+/// degrees (`Ferro` at -17.40, 17°40'W), whatever the unit.
+pub(crate) fn prime_meridian_degrees(name: &str, value: f64, ang: f64) -> f64 {
+    // Within 1e-8 of it, Paris is 2.5969213 grads exactly, as PROJ replaces it.
+    if name == "Paris" && (ang - 0.9).abs() < 1e-9 && (value - 2.33722917).abs() < 1e-8 {
+        return 2.5969213 * 0.9;
+    }
+    if let Some(&(_, d, m, s)) = PRIME_MERIDIANS_DMS.iter().find(|(n, ..)| *n == name) {
+        let sign = d.signum();
+        let sexagesimal = sign * (d.abs() + m / 100.0 + s / 10000.0);
+        let decimal = sign * (d.abs() + m / 60.0 + s / 3600.0);
+        if (value - sexagesimal).abs() < 1e-8 || (value - decimal).abs() < 1e-8 {
+            return decimal;
+        }
+    }
+    value * ang
+}
+
 /// A WKT 1 CRS as a PROJ string, with the code of its geographic CRS when it declares one.
 pub(crate) struct Converted {
     pub proj: String,
@@ -208,6 +295,33 @@ pub(crate) struct Converted {
     pub geog: Option<u32>,
     /// A WKT 1 `GEOGCS` to identify the datum by, when the WKT has none of its own (WKT 2).
     pub geogcs_wkt1: Option<String>,
+    /// A WKT 2 `BOUNDCRS` to another CRS than WGS 84: that CRS and the shift to it.
+    pub bound: Option<Box<BoundTo>>,
+    /// A `BOUNDCRS`'s Helmert transformation that `+towgs84` cannot stand for: a full rotation
+    /// matrix, or a Molodensky-Badekas evaluation point.
+    pub helmert: Option<Helmert>,
+}
+
+/// A Helmert transformation as PROJ's `helmert` and `molobadekas` steps take it: translations in
+/// metres, rotations in arc-seconds and the scale difference in parts per million, in the
+/// method's own convention, the rotation matrix exact or approximate, about a pivot point.
+#[derive(Clone, Debug)]
+pub(crate) struct Helmert {
+    pub t: [f64; 3],
+    pub r: [f64; 3],
+    pub s: f64,
+    pub position_vector: bool,
+    pub exact: bool,
+    pub pivot: [f64; 3],
+}
+
+/// The target CRS of a WKT 2 `BOUNDCRS` to a CRS other than WGS 84, and its Helmert
+/// transformation to it.
+pub(crate) struct BoundTo {
+    /// The target CRS.
+    pub target: Converted,
+    /// The 3 or 7 parameters of the Helmert transformation to it, as `+towgs84`'s.
+    pub shift: Vec<f64>,
 }
 
 /// Converts a WKT 1 `GEOGCS` or `PROJCS` (ESRI or OGC flavour) into a PROJ string. `None` for
@@ -227,7 +341,9 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
     let ang = if key == "GEOCCS" { 1.0 } else { geogcs.child("UNIT").and_then(|u| u.num(1)).map(|r| r.to_degrees()).unwrap_or(1.0) };
     // WKT rounds the size of a degree (0.0174532925199433) and of a grad.
     let ang = [1.0, 0.9].into_iter().find(|u| (ang - u).abs() < 1e-9).unwrap_or(ang);
-    let pm = geogcs.child("PRIMEM").and_then(|p| p.num(1)).unwrap_or(0.0) * ang;
+    let primem = geogcs.child("PRIMEM");
+    let pm = primem.and_then(|p| p.num(1)).unwrap_or(0.0);
+    let pm = prime_meridian_degrees(primem.and_then(Node::name).unwrap_or(""), pm, ang);
     let mut out = Vec::new();
     let mut tail = vec![format!("+a={a}"), format!("+rf={rf}")];
     if rf == 0.0 {
@@ -246,8 +362,8 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
         let unit = root.child("UNIT").and_then(|u| u.num(1)).unwrap_or(1.0);
         out.push(format!("+proj=geocent +to_meter={unit}"));
         out.extend(tail);
-        let geog = datum.epsg().and_then(|d| super::epsg::geographic_on(d).first().copied());
-        return Some(Converted { proj: out.join(" "), geogcs: root.clone(), geog, geogcs_wkt1: None });
+        let geog = datum.epsg().and_then(|d| super::epsg::geographic_on(d).iter().copied().find(|c| !super::epsg::is_deprecated(*c)));
+        return Some(Converted { proj: out.join(" "), geogcs: root.clone(), geog, geogcs_wkt1: None, bound: None, helmert: None });
     }
     if key == "GEOGCS" {
         out.push("+proj=longlat".to_string());
@@ -255,7 +371,7 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             tail.push(format!("+to_deg={ang}"));
         }
         out.extend(tail);
-        return Some(Converted { proj: out.join(" "), geogcs: geogcs.clone(), geog: None, geogcs_wkt1: None });
+        return Some(Converted { proj: out.join(" "), geogcs: geogcs.clone(), geog: None, geogcs_wkt1: None, bound: None, helmert: None });
     }
 
     let to_meter = root.children("UNIT").last().and_then(|u| u.num(1)).unwrap_or(1.0);
@@ -326,7 +442,9 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             push(&mut out, "k", k.or(Some(1.0)));
         }
         "transversemercatorsouthorientated" => {
-            out.push("+proj=tmerc +axis=wsu".into());
+            // West and south, but for a north-east CS, which PROJ reads south then west.
+            let north_east = projected_axes(root) == Some(*b"ne");
+            out.push(if north_east { "+proj=tmerc +axis=swu" } else { "+proj=tmerc +axis=wsu" }.into());
             push(&mut out, "lat_0", lat_0.or(Some(0.0)));
             push(&mut out, "lon_0", lon_0);
             push(&mut out, "k", k.or(Some(1.0)));
@@ -365,7 +483,15 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             push(&mut out, "lat_1", sp1);
             push(&mut out, "lat_2", sp2);
         }
-        "mercator1sp" => {
+        // ESRI's `Mercator_Variant_A` and EPSG's `Mercator (variant A)` are Mercator (1SP), as
+        // PROJ 9.8.1 reads them. PROJ leaves a latitude of origin out of ESRI's, and refuses EPSG's
+        // with one other than 0, which `+proj=merc` has no parameter for.
+        "mercator1sp" | "mercatorvarianta" => {
+            let origin = get(&["latitudeoforigin", "latitudeofnaturalorigin"]);
+            let esri = projection.name().is_some_and(|n| n.eq_ignore_ascii_case("Mercator_Variant_A"));
+            if method == "mercatorvarianta" && !esri && origin.is_some_and(|v| v != 0.0) {
+                return None;
+            }
             out.push("+proj=merc".into());
             push(&mut out, "lon_0", lon_0);
             push(&mut out, "k", k.or(Some(1.0)));
@@ -474,22 +600,24 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             push(&mut out, "k_0", k.or(Some(1.0)));
         }
         "krovak" => {
-            // Its axes: ESRI's scale and rotation of the plane (-1 and 90° for east-north), else
-            // the WKT's, east-north unless south and west, as PROJ reads them.
-            let east_north = match (get(&["xscale"]), get(&["xyplanerotation"])) {
-                (Some(sx), Some(rot)) => sx < 0.0 && (rot - 90.0).abs() < 1e-10,
-                _ => {
-                    let dirs: Vec<String> = root
-                        .children("AXIS")
-                        .filter_map(|a| match a.args.get(1) {
-                            Some(Arg::Ident(d)) => Some(d.to_ascii_lowercase()),
-                            _ => None,
-                        })
-                        .collect();
-                    !(dirs.iter().any(|d| d == "south") && dirs.iter().any(|d| d == "west"))
+            // Its axes: ESRI's scale and rotation of the plane (-1 and 90° for east-north, else
+            // south-west; the rotation in the CRS's angular unit, 100 grads for 90°), else the
+            // WKT's, south-west without them, as GDAL 3.10 and PROJ 9.8.1 read them (northing then
+            // easting read as easting then northing).
+            let axes = match (get(&["xscale"]), angle(&["xyplanerotation"])) {
+                (Some(sx), Some(rot)) => {
+                    if sx < 0.0 && (rot - 90.0).abs() < 1e-10 {
+                        *b"en"
+                    } else {
+                        *b"sw"
+                    }
                 }
+                _ => projected_axes(root).unwrap_or(*b"sw"),
             };
-            out.push(if east_north { "+proj=krovak" } else { "+proj=krovak +axis=swu" }.into());
+            out.push(match axes {
+                [b'e', b'n'] | [b'n', b'e'] => "+proj=krovak".into(),
+                [a, b] => format!("+proj=krovak +axis={}{}u", a as char, b as char),
+            });
             push(&mut out, "lat_0", lat_0);
             push(&mut out, "lon_0", lon_0);
             push(&mut out, "alpha", azimuth);
@@ -551,6 +679,13 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
         "cylindricalequalarea" | "lambertcylindricalequalarea" => {
             out.push("+proj=cea".into());
             push(&mut out, "lat_ts", sp1);
+            push(&mut out, "lon_0", lon_0);
+        }
+        // ESRI's Behrmann: cylindrical equal area true at 30°, or at the standard parallel it
+        // gives (EASE-Grid 2.0, EPSG:6933, as ESRI writes it), as PROJ reads it.
+        "behrmann" => {
+            out.push("+proj=cea".into());
+            push(&mut out, "lat_ts", sp1.or(Some(30.0)));
             push(&mut out, "lon_0", lon_0);
         }
         "azimuthalequidistant" | "modifiedazimuthalequidistant" => {
@@ -674,11 +809,40 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             push(&mut out, "lon_0", lon_0);
         }
     }
+    // The CRS's axes, as GDAL 3.10 and PROJ 9.8.1 (`always_xy`) read them: the directions of its
+    // `AXIS` nodes, in their order but for northing then easting, which is read as easting then
+    // northing. South-orientated Transverse Mercator and Krovak have their own axes.
+    match (method.as_str(), projected_axes(root)) {
+        ("transversemercatorsouthorientated" | "krovak", _) => {}
+        (_, Some([a, b])) if [a, b] != *b"ne" && [a, b] != *b"en" => out.push(format!("+axis={}{}u", a as char, b as char)),
+        _ => {}
+    }
     out.push(format!("+x_0={fe}"));
     out.push(format!("+y_0={fn_}"));
     out.push(format!("+to_meter={to_meter}"));
     out.extend(tail);
-    Some(Converted { proj: out.join(" "), geogcs: geogcs.clone(), geog: None, geogcs_wkt1: None })
+    Some(Converted { proj: out.join(" "), geogcs: geogcs.clone(), geog: None, geogcs_wkt1: None, bound: None, helmert: None })
+}
+
+/// The directions of a projected CRS's two `AXIS` nodes as PROJ's `+axis` letters (`e`, `w`,
+/// `n`, `s`), when it has two along east-west and north-south.
+fn projected_axes(root: &Node) -> Option<[u8; 2]> {
+    let letters: Vec<u8> = root
+        .children("AXIS")
+        .map(|a| match a.args.get(1) {
+            Some(Arg::Ident(d)) => match d.to_ascii_lowercase().as_str() {
+                "east" => Some(b'e'),
+                "west" => Some(b'w'),
+                "north" => Some(b'n'),
+                "south" => Some(b's'),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
+    let [a, b] = letters[..] else { return None };
+    let east_west = |c: u8| matches!(c, b'e' | b'w');
+    (east_west(a) != east_west(b)).then_some([a, b])
 }
 
 /// The northing of the pole in Polar Stereographic (variant C), EPSG method 9830, whose false
@@ -700,6 +864,25 @@ mod tests {
     use super::*;
     use crate::{SpatialRef, Transformer};
     use std::time::Duration;
+
+    /// PROJ's two tables of named meridians agree on every name they share but Madrid, which
+    /// `primeMeridiansDMS` has at 3°41'14.55"W and `proj_list_prime_meridians` at 16.58". Paris
+    /// RGS is only in the first; Paris and Copenhagen only in the second.
+    #[test]
+    fn the_two_tables_of_named_prime_meridians_agree_but_where_proj_differs() {
+        let mut shared = Vec::new();
+        for (name, d, m, s) in PRIME_MERIDIANS_DMS {
+            let decimal = d.signum() * (d.abs() + m / 60.0 + s / 3600.0);
+            match crate::math::prime_meridian(&name.to_ascii_lowercase()) {
+                Some(v) if name == "Madrid" => assert!((v - decimal + (16.58 - 14.55) / 3600.0).abs() < 1e-12, "{name}: {v} {decimal}"),
+                Some(v) => assert!((v - decimal).abs() < 1e-12, "{name}: {v} {decimal}"),
+                None => assert!(matches!(name, "Paris RGS" | "Paris_RGS"), "{name}"),
+            }
+            shared.push(name.to_ascii_lowercase());
+        }
+        let only_pm: Vec<&str> = crate::math::PRIME_MERIDIANS.iter().map(|(n, _)| *n).filter(|n| !shared.iter().any(|s| s == n)).collect();
+        assert_eq!(only_pm, ["paris", "copenhagen"]);
+    }
 
     /// GDAL's WKT of WGS 84 as a GeoJSON `crs` member or a PAM `<SRS>` carries it, and the same
     /// with the spheroid's `]` replaced by `)` (reproducers from a fuzzing campaign).
@@ -761,6 +944,24 @@ mod tests {
         assert_eq!(within(30, move || parse(&deep)), None);
     }
 
+    /// The parser refuses a NUL outside quotes, which text reaching it uncut (the WKT terrio
+    /// builds from PROJJSON) could hold, as PROJ 9.8.1's text would end there; one in a quoted
+    /// name stays part of the name.
+    #[test]
+    fn a_nul_outside_quotes_is_refused_by_the_parser() {
+        let with = |part: &str| {
+            format!(
+                r#"GEOGCS["g",DATUM["d",SPHEROID["s",6378137,298.257223563]{part}],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#
+            )
+        };
+        assert!(parse(&with("")).is_some());
+        assert_eq!(parse(&with(",a\0b[\"x\"]")), None);
+        assert_eq!(parse(&with(",x[\"a\",b\0c]")), None);
+        let quoted = parse(&with(",x[\"a\0b\"]")).unwrap();
+        let x = quoted.child("DATUM").and_then(|d| d.child("x")).unwrap();
+        assert_eq!(x.name(), Some("a\0b"));
+    }
+
     #[test]
     fn wkt_longer_than_gdal_imports_is_refused() {
         let padded = |len: usize| format!("{WGS84}{}", " ".repeat(len - WGS84.len()));
@@ -799,6 +1000,23 @@ mod tests {
             assert!(within(30, move || SpatialRef::parse(&b)).is_err());
         }
         assert_eq!(within(5, || SpatialRef::parse(WGS84_PAREN).unwrap().epsg), Some(4326));
+    }
+
+    #[test]
+    fn user_wkt_keyword_without_definition_is_an_error() {
+        // #1032: a CRS keyword with only its name was a CRS that no transformation could use.
+        // GDAL 3.10.3 (PROJ 9.6.0) refuses them too: `gdalsrsinfo 'GEOGCS["x"]'` reports "Missing
+        // DATUM or ENSEMBLE node", `PROJCS["x"]` "missing CONVERSION node".
+        let keywords = "GEOGCS PROJCS GEOCCS COMPD_CS VERT_CS LOCAL_CS GEOGCRS GEOGRAPHICCRS GEODCRS GEODETICCRS \
+                        PROJCRS PROJECTEDCRS COMPOUNDCRS BOUNDCRS VERTCRS VERTICALCRS ENGCRS ENGINEERINGCRS";
+        for keyword in keywords.split_whitespace() {
+            for text in [format!("{keyword}[x]"), format!("{keyword}[\"WGS 84\"]")] {
+                let err = SpatialRef::parse_literal(&text).unwrap_err().to_string();
+                assert!(err.contains("has no definition after its name"), "{text}: {err}");
+            }
+        }
+        // A member node is enough: such minimal definitions stay readable.
+        assert!(SpatialRef::parse_literal(r#"LOCAL_CS["site grid",UNIT["metre",1]]"#).is_ok());
     }
 
     #[test]

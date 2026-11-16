@@ -57,6 +57,7 @@ OUTPUTS = {
     "shp": "ESRI Shapefile",
     "geojsonl": "GeoJSONSeq",
     "csv": "CSV",
+    "tsv": "CSV",
     "geojson": "GeoJSON",
 }
 

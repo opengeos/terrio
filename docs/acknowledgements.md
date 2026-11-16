@@ -2,6 +2,14 @@
 
 terrio stands on the work of many projects and their authors. Thank you to all of them.
 
+The lossy WebP regression fixture adapts the seeded image reproduction supplied by
+[gmoralessanchez in issue #973](https://github.com/opengeos/terrio/issues/973), under
+Terrio's MIT license.
+
+The corrected private VP8 encoder adapts the MIT-licensed lossy encoder from
+[webp-rust 0.3.2](https://github.com/mith-mmk/webp-rust) by MITH@mmk. The existing
+dependency supplies its decoder tables; see `NOTICE` for the adapted files.
+
 terrio is released under the MIT License, except its point cloud eigensolver
 (`pointcloud/filters/selfadjoint.rs`), a port of Eigen under MPL-2.0, and its
 coverage-weighted median (`ops/zonal_weighted_median.rs`), adapted from exactextract
@@ -197,6 +205,11 @@ runs it in parallel, [ureq](https://crates.io/crates/ureq) fetches remote data,
 [rust-numpy](https://github.com/PyO3/rust-numpy) build the Python package, and
 [wasm-bindgen](https://github.com/rustwasm/wasm-bindgen) builds the JavaScript one. The optional
 `gdal` feature uses the [`gdal`](https://crates.io/crates/gdal) crate.
+
+The additional-CA TLS transport adapts the MIT-licensed rustls connector and
+transport adapter from [ureq 3.5.1](https://github.com/algesten/ureq) by
+Martin Algesten. Its custom verifier retains Mozilla-applied trust-anchor
+constraints while adding private roots; see `NOTICE` for the source files.
 
 JPEG writing (through `jpeg-encoder`) is based in part on the work of the Independent JPEG
 Group.

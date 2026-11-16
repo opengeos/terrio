@@ -485,15 +485,19 @@ fn children(objects: &BTreeMap<String, Object<'_>>, version: CityJsonVersion) ->
 }
 fn crs(layers: &[Layer]) -> Result<Option<u32>> {
     let registered = |layer: &Layer| -> Result<Option<u32>> {
-        if layer.crs_epsg().is_none() && layer.crs_wkt().is_none() {
+        // As `from_layer` reads it: a WKT cut at a NUL inside a name is no CRS either.
+        let source = SpatialRef::from_layer(layer);
+        if source.is_unknown() {
             return Ok(None);
         }
-        let source = SpatialRef::from_layer(layer);
         // Compound EPSG codes need the complete CRS registry. Only accept an
         // inferred code here when its full definition equals the stored WKT.
         let declared = source.epsg.filter(|code| {
             !crate::crs::is_esri_code(*code)
-                && layer.crs_wkt().is_none_or(|wkt| SpatialRef::from_epsg(*code).ok().and_then(|s| s.to_wkt()).as_deref() == Some(wkt))
+                && layer
+                    .crs_wkt()
+                    .map(terrio_crs::until_nul)
+                    .is_none_or(|wkt| SpatialRef::from_epsg(*code).ok().and_then(|s| s.to_wkt()).as_deref() == Some(wkt))
         });
         let code = declared
             .or_else(|| super::trusted_epsg(layer))
@@ -591,6 +595,15 @@ fn encode(layers: &[Layer], version: CityJsonVersion) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A layer whose WKT has a NUL inside a name (no CRS, as GDAL and `from_layer` read it) is
+    /// written without a CRS, rather than refused for one without an EPSG URI.
+    #[test]
+    fn a_wkt_with_a_nul_in_a_name_is_no_crs() {
+        let mut layer = Layer::new("p");
+        layer.set_crs_wkt(Some("PROJCS[\"WGS_1984_UTM\0_Zone_31N\",GEOGCS[\"GCS_WGS_1984\",DATUM[\"D_WGS_1984\",SPHEROID[\"WGS_1984\",6378137.0,298.257223563]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",3.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]".to_string()));
+        assert_eq!(crs(&[layer]).unwrap(), None);
+    }
 
     fn source() -> Vec<Layer> {
         let doc = json!({"type":"CityJSON","version":"2.0","transform":{"scale":[1,1,1],"translate":[0,0,0]},

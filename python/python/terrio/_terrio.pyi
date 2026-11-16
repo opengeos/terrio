@@ -47,6 +47,7 @@ __all__ = [
     "write_raster",
     "write_netcdf_groups",
     "write_vector",
+    "_geojson_crs_name",
     "convert",
     "sql",
     "clip_vector",
@@ -62,7 +63,10 @@ __all__ = [
     "pansharpen",
     "polygonize",
     "transform_points",
+    "transform_bounds",
     "set_grid_search_paths",
+    "confine_grid_search_paths",
+    "register_grid",
     "set_network_enabled",
     "list_crs",
     "translate",
@@ -128,6 +132,8 @@ __all__ = [
     "crs_info",
     "proj_boolean_parameters",
     "crs_to_projjson",
+    "crs_to_proj4",
+    "crs_to_wkt1_strict",
     "suggested_grid",
     "warped_vrt_type",
     "gcp_transform",
@@ -170,8 +176,10 @@ __all__ = [
     "cli_main",
     "CogWriter",
     "_panic_for_tests",
+    "_redact_diagnostic_location",
     "usable_memory",
     "_set_http_retry_logger",
+    "_redact_diagnostic_location",
     "_set_warp_nodata_logger",
     "RegionWarp",
     "_check_sum_window",
@@ -346,6 +354,9 @@ class Raster:
     def has_mask(self) -> bool: ...
     @property
     def block_size(self) -> tuple[int, int] | None: ...
+    def _tiff_block_range(
+        self, band: int, x: int, y: int, overview: int | None = None
+    ) -> tuple[int, int] | None: ...
     def read(
         self,
         band: int | Sequence[int] | None = None,
@@ -1080,6 +1091,12 @@ def polygonize(
     append: bool = False,
     overwrite: bool = False,
 ) -> Layer: ...
+def transform_bounds(
+    src_crs: str,
+    dst_crs: str,
+    bounds: tuple[float, float, float, float],
+    densify_pts: int = 21,
+) -> tuple[float, float, float, float]: ...
 @overload
 def transform_points(
     xs: Any,
@@ -1093,6 +1110,7 @@ def transform_points(
     allow_ballpark: bool | None = None,
     only_best: bool = False,
     promote_to_3d: bool = False,
+    errcheck: bool = True,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]: ...
 @overload
 def transform_points(
@@ -1107,11 +1125,24 @@ def transform_points(
     allow_ballpark: bool | None = None,
     only_best: bool = False,
     promote_to_3d: bool = False,
+    errcheck: bool = True,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]: ...
+def _geojson_crs_name(crs: str) -> str | None: ...
 def config_push(options: dict[str, str | None]) -> None: ...
 def config_pop() -> bool: ...
 def usable_memory() -> int | None: ...
 def _set_http_retry_logger(callback: object) -> None: ...
+def _redact_diagnostic_location(location: str) -> str:
+    """Remove authentication from a displayed URL without changing network input.
+
+    Args:
+        location: Location or diagnostic containing a URL.
+
+    Returns:
+        str: Diagnostic text without URL userinfo, queries or fragments.
+    """
+    ...
+
 def _set_warp_nodata_logger(callback: object) -> None: ...
 def _panic_for_tests(message: str) -> None: ...
 def config_get(key: str) -> str | None: ...
@@ -1147,6 +1178,8 @@ def set_block_cache_max(nbytes: int) -> None: ...
 def clear_block_cache() -> None: ...
 def config_options() -> dict[str, str | None]: ...
 def set_grid_search_paths(paths: Sequence[str | os.PathLike[str]] | None) -> None: ...
+def confine_grid_search_paths() -> None: ...
+def register_grid(name: str, data: bytes) -> None: ...
 def set_network_enabled(enabled: bool | None) -> None: ...
 
 class _CrsEntry(TypedDict):
@@ -1157,6 +1190,7 @@ class _CrsEntry(TypedDict):
         "geographic_2d", "geographic_3d", "geocentric", "projected", "vertical", "compound", "other"
     ]
     deprecated: bool
+    replaced_by: list[int]
     area_name: str | None
     bounds: list[float] | None
     projection_method: str | None
@@ -1752,6 +1786,8 @@ def proj_boolean_parameters(definition: str) -> list[tuple[str, bool]]:
     ...
 
 def crs_to_projjson(crs: str) -> str: ...
+def crs_to_proj4(crs: str) -> str | None: ...
+def crs_to_wkt1_strict(crs: str) -> str | None: ...
 def crs_projjson(crs: str, database: bool) -> str: ...
 def gcp_transform(
     gcps: Sequence[tuple[float, float, float, float, float]],

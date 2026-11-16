@@ -22,6 +22,11 @@ count = 2
 origin = "existing"
 reason = "libc::signal restores SIGPIPE's default and libc::mallopt sets glibc's mmap threshold, at start-up before any thread"
 
+[files."crates/terrio-cli/src/ui.rs"]
+count = 1
+origin = "added"
+reason = "GetLogicalDrives, a Windows call with no arguments, lists the drives for the file browser of terrio ui without touching each disk"
+
 [files."crates/terrio/src/drivers/jp2.rs"]
 count = 37
 origin = "existing"

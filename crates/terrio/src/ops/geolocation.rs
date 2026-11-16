@@ -80,8 +80,11 @@ impl GeolocationTransformer {
         };
         let mut xs = read(x, metadata.x_band)?;
         let mut ys = read(y, metadata.y_band)?;
-        let srs =
-            if metadata.srs.is_empty() { crate::crs::SpatialRef::from_epsg(4326)? } else { crate::crs::SpatialRef::parse(&metadata.srs)? };
+        let srs = if metadata.srs.is_empty() {
+            crate::crs::SpatialRef::from_epsg(4326)?
+        } else {
+            crate::crs::SpatialRef::parse_literal(&metadata.srs)?
+        };
         let longitude = srs.is_geographic();
         let anchor = xs
             .iter()

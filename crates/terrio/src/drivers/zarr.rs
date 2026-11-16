@@ -1228,7 +1228,8 @@ fn read_plan(a: &Array, total: usize, requests: usize) -> (usize, usize, bool) {
 }
 
 /// [`at_most`], or on threads waiting on a server ([`read_plan`]), `at_once` at a time; no chunk
-/// is requested once one has failed.
+/// is requested once one has failed. The first observed error is returned; when independent
+/// chunks fail concurrently, completion timing determines which error reaches the caller.
 fn each(waiting: bool, n: usize, at_once: usize, f: impl Fn(usize) -> Result<()> + Sync + Send) -> Result<()> {
     if waiting {
         return crate::par::map_waiting(n, at_once, f).map(drop);
@@ -1699,7 +1700,7 @@ fn proj_crs<const ENGINE: bool>(a: &Value) -> Option<CrsInfo> {
         return Some(epsg_only(code));
     }
     let s = if let Some(code) = a["proj:code"].as_str() {
-        SpatialRef::parse(code).ok()?
+        SpatialRef::parse_literal(code).ok()?
     } else if let Some(code) = a["proj:epsg"].as_u64() {
         SpatialRef::from_epsg(u32::try_from(code).ok()?).ok()?
     } else if let Some(w) = a["proj:wkt2"].as_str() {
@@ -1708,7 +1709,9 @@ fn proj_crs<const ENGINE: bool>(a: &Value) -> Option<CrsInfo> {
         let v = &a["proj:projjson"];
         match crate::drivers::vector::projjson::epsg(v) {
             Some(code) => SpatialRef::from_epsg(code).ok()?,
-            None => SpatialRef::from_wkt(&crate::drivers::vector::projjson::to_wkt1(v)?),
+            // WKT built from PROJJSON, whose names keep a NUL JSON gives (`\u0000`): its names
+            // cut there (`wkt_for_files`), so the WKT reads whole.
+            None => SpatialRef::from_wkt(&terrio_crs::wkt_for_files(&crate::drivers::vector::projjson::to_wkt1(v)?)),
         }
     } else {
         return None;
@@ -2050,7 +2053,7 @@ fn open_node_with<const ENGINE: bool>(node: &Node, list_subdatasets: bool) -> Re
             };
             crs = super::cf::cf_crs(|k| gm.attrs[k].as_str().map(str::to_string), numbers).map(|c| match &c.proj4 {
                 // CF parameters: a PROJ string, parsed by terrio (not matched to an EPSG code).
-                Some(p) => crate::crs::SpatialRef::parse(p).map(|s| s.to_crs_info()).unwrap_or(c),
+                Some(p) => crate::crs::SpatialRef::parse_literal(p).map(|s| s.to_crs_info()).unwrap_or(c),
                 None => c,
             });
         }
@@ -2174,7 +2177,7 @@ fn band_dim_metadata(array: &Array, bds: &[usize], coord: impl Fn(usize) -> Opti
     // Each dimension's coordinates at once, retaining its own shape check even when names
     // repeat. Scope only the blocking metadata lookup; decoding can yield to unrelated pool
     // work, so its chunk policy is passed explicitly instead of holding thread-local options.
-    let options = crate::config::thread_options();
+    let options = crate::config::ThreadOptions::capture();
     let allow_big = big_chunks_allowed();
     let (values, units): (Vec<Option<Vec<f64>>>, Vec<Option<String>>) = crate::par::map_range(bds.len(), |k| {
         let a = crate::config::with_thread_options(options.clone(), || coord(bds[k]).filter(|a| a.shape == [array.shape[bds[k]]]));
@@ -2314,9 +2317,12 @@ pub(crate) fn open_named(name: &str) -> Option<Result<RasterDataset>> {
     )
 }
 
-/// The CRS of a GDAL `_CRS` attribute: its URL, PROJJSON identifier or WKT. Without the CRS
-/// engine (`ENGINE` false), only the EPSG code of its URL or identifier.
+/// The CRS of a GDAL `_CRS` attribute: its stored WKT, then its URL or PROJJSON identifier.
+/// Without the CRS engine (`ENGINE` false), only the EPSG code of its URL or identifier.
 fn crs_attribute<const ENGINE: bool>(v: &Value) -> Option<CrsInfo> {
+    if ENGINE && let Some(crs) = v["wkt"].as_str().and_then(common::crs_from_text) {
+        return Some(crs);
+    }
     let info = |code: u32| if ENGINE { crate::crs::epsg_crs_info(code) } else { epsg_only(code) };
     if let Some(code) = v["url"].as_str().and_then(epsg_code) {
         return Some(info(code));
@@ -2326,10 +2332,7 @@ fn crs_attribute<const ENGINE: bool>(v: &Value) -> Option<CrsInfo> {
     {
         return Some(info(u32::try_from(code).ok()?));
     }
-    if !ENGINE {
-        return None;
-    }
-    v["wkt"].as_str().and_then(common::crs_from_text)
+    None
 }
 
 /// A CRS known by its EPSG code alone, without its WKT.
@@ -3088,6 +3091,26 @@ pub(crate) fn write_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `proj:projjson` with a NUL (`\u0000`) in its name (EPSG:32631's PROJ 9.8.1 PROJJSON without its code) is
+    /// read as without it: the WKT built from it has the name cut at the NUL.
+    #[test]
+    fn a_projjson_with_a_nul_in_its_name_is_read() {
+        // EPSG:32631's PROJ 9.8.1 PROJJSON without its code, so that it is read through WKT.
+        let data: serde_json::Value = serde_json::from_str(include_str!("../../../terrio-crs/tests/data/wkt1_proj_reads.json")).unwrap();
+        let mut v: serde_json::Value = serde_json::from_str(data["projjson"]["projjson"].as_str().unwrap()).unwrap();
+        v.as_object_mut().unwrap().remove("id");
+        let plain = v.to_string();
+        v["name"] = "WGS\0 84 / UTM zone 31N".into();
+        let text = v.to_string();
+        assert!(text.contains(r"WGS\u0000 84"), "{text}");
+        let crs = |t: &str| {
+            let a = serde_json::json!({ "proj:projjson": serde_json::from_str::<serde_json::Value>(t).unwrap() });
+            proj_crs::<true>(&a).map(|c| crate::crs::SpatialRef::from_raster_crs(&c).to_proj4())
+        };
+        assert!(crs(&plain).flatten().is_some());
+        assert_eq!(crs(&text), crs(&plain));
+    }
 
     /// Authority codes name their EPSG code in either form; other authorities name none.
     #[test]

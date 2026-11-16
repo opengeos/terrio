@@ -782,13 +782,13 @@ fn every_public_entry_point_is_refused_by_what_a_raster_declares() {
         }),
         row("ops::vrt::read_vrt", || terrio::ops::vrt::read_vrt(vrt).map(|d| dataset_dims(&d))),
         row("ops::vrt::open_virtual_raster", || terrio::ops::vrt::open_virtual_raster(vrt).map(|r| lazy_dims(&r))),
-        row("VirtualRaster::into_lazy", || {
-            terrio::ops::vrt::VirtualRaster::from_xml(&vrt_text)?.into_lazy(dir.path(), HashMap::new()).map(|r| lazy_dims(&r))
+        row("VirtualRaster::into_lazy_with_files", || {
+            terrio::ops::vrt::VirtualRaster::from_xml(&vrt_text)?.into_lazy_with_files(dir.path(), HashMap::new()).map(|r| lazy_dims(&r))
         }),
         row("VrtDataset::materialize", || terrio::ops::vrt::VrtDataset::open(vrt)?.materialize(dir.path()).map(|d| dataset_dims(&d))),
-        row("PansharpenVrt::into_lazy", || {
+        row("PansharpenVrt::into_lazy_with_files", || {
             let description = terrio::ops::pansharpen::vrt::PansharpenVrt::from_xml(&pansharpened)?;
-            description.into_lazy(dir.path(), HashMap::new()).map(|r| lazy_dims(&r))
+            description.into_lazy_with_files(dir.path(), HashMap::new()).map(|r| lazy_dims(&r))
         }),
         row("RasterCatalog::from_layer", || {
             let sources = HashMap::from([("x.tif".to_string(), ds.clone())]);

@@ -193,7 +193,7 @@ pub fn zonal_stats(zones: &JsValue, rasters: &JsValue, options: JsValue) -> Resu
         weights: weights.map(|raster| ZonalWeight::new(raster, a.weight_band)),
         stats,
         all_touched: a.all_touched,
-        dst_srs: a.t_srs.as_deref().map(terrio::crs::SpatialRef::parse).transpose().map_err(js_err)?,
+        dst_srs: a.t_srs.as_deref().map(terrio::crs::SpatialRef::parse_literal).transpose().map_err(js_err)?,
         decimal_places: a.decimal_places,
     };
     let items: Vec<JsValue> = if js_sys::Array::is_array(rasters) { js_sys::Array::from(rasters).to_vec() } else { vec![rasters.clone()] };
@@ -338,7 +338,7 @@ impl JsZonalReducer {
         }
         let zones = layers.remove(0);
         let options = ZonalOptions { fractional: a.fractional, stats, all_touched: a.all_touched, ..Default::default() };
-        let crs = crs.as_deref().map(terrio::crs::SpatialRef::parse).transpose().map_err(js_err)?.unwrap_or_default();
+        let crs = crs.as_deref().map(terrio::crs::SpatialRef::parse_literal).transpose().map_err(js_err)?.unwrap_or_default();
         let grid = Grid { cols: width, rows: height, geo_transform, crs };
         let inner = ZonalReducer::new(&zones, grid, &options, a.strip_rows).map_err(js_err)?;
         Ok(Self { inner, names })

@@ -472,7 +472,7 @@ pub fn parse_metadata_items(items: &[String]) -> Result<Vec<(String, String)>> {
 
 /// Parses a CRS option as `gdal vector edit --crs` reads it: `null` or `none` removes the CRS.
 pub fn parse_crs_override(s: &str) -> Result<Option<SpatialRef>> {
-    if s.eq_ignore_ascii_case("null") || s.eq_ignore_ascii_case("none") { Ok(None) } else { SpatialRef::parse(s).map(Some) }
+    if s.eq_ignore_ascii_case("null") || s.eq_ignore_ascii_case("none") { Ok(None) } else { SpatialRef::parse_literal(s).map(Some) }
 }
 
 fn edit_layer_name<'a>(names: impl Iterator<Item = &'a str>, requested: &str) -> Result<String> {

@@ -678,7 +678,7 @@ impl Builder {
                 code as i64
             }
             None => {
-                let def = wkt.or_else(|| s.to_wkt()).unwrap_or_default();
+                let def = wkt.or_else(|| s.to_file_wkt()).unwrap_or_default();
                 if let Some(r) = self.srs.iter().find(|r| r[2] == Value::Text("NONE".into()) && r[4] == Value::Text(def.clone()))
                     && let Value::Int(id) = r[3]
                 {

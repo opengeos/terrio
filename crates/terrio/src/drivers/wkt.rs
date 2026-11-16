@@ -36,15 +36,15 @@ pub(crate) fn gdal_wkt(crs: &SpatialRef) -> Option<String> {
     if let Some(w) = crs.epsg.and_then(crate::crs::epsg_wkt) {
         return Some(w.to_string());
     }
-    // A PROJ string: GDAL's WKT 1 of it, which terrio stores.
-    if crs.epsg.is_none() && crs.proj4.is_some() {
-        return crs.to_wkt();
+    // A PROJ string: GDAL's WKT 1 of it, which terrio stores; or a WKT with its PROJ4 extension.
+    if crs.epsg.is_none() && (crs.proj4.is_some() || crs.wkt.as_deref().is_some_and(terrio_crs::has_proj4_extension)) {
+        return crs.to_file_wkt();
     }
     let built = match crs.epsg {
         Some(code) => wbprojection::Crs::from_epsg(code).ok().and_then(|c| build(&c, Some(code))),
         None => crs.to_wbp().ok().and_then(|c| build(&c, None)),
     };
-    built.or_else(|| crs.to_wkt())
+    built.or_else(|| crs.to_file_wkt())
 }
 
 /// Builds the WKT of a CRS from its parameters, with its EPSG code when it has one.
@@ -244,5 +244,17 @@ mod tests {
         assert!(w.contains("PARAMETER[\"central_meridian\",-117]") && w.ends_with("AUTHORITY[\"EPSG\",\"32611\"]]"), "{w}");
         let g = gdal_wkt(&SpatialRef::from_epsg(4326).unwrap()).unwrap();
         assert!(g.starts_with("GEOGCS[\"WGS 84\"") && g.ends_with("AUTHORITY[\"EPSG\",\"4326\"]]"), "{g}");
+    }
+
+    /// A WKT with a PROJ4 extension (GDAL's, for a CRS WKT 1 cannot describe) is written as it
+    /// is, with its extension, and a raster's is identified only as a code it converts as: here
+    /// its nodes are UTM zone 18N's, its extension on the 10th meridian.
+    #[test]
+    fn a_wkt_with_a_proj4_extension_keeps_it() {
+        let wkt = r#"PROJCS["unknown",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",-75],PARAMETER["scale_factor",0.9996],PARAMETER["false_easting",500000],PARAMETER["false_northing",0],UNIT["metre",1],EXTENSION["PROJ4","+proj=tmerc +lon_0=10 +k=0.9996 +x_0=500000 +datum=WGS84 +units=m +no_defs"]]"#;
+        let crs = SpatialRef::from_wkt(wkt);
+        assert_eq!(gdal_wkt(&crs).as_deref(), Some(wkt));
+        let raster = SpatialRef::from_raster_crs(&wbraster::CrsInfo { epsg: None, wkt: Some(wkt.into()), proj4: None });
+        assert_eq!((raster.epsg, raster.wkt.as_deref()), (None, Some(wkt)));
     }
 }

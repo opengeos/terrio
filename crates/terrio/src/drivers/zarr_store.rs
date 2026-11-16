@@ -279,7 +279,7 @@ impl Store {
         let mut map = HashMap::new();
         // Both looked for at once: on a remote store, each is a round trip.
         let this = &*self;
-        let options = crate::config::thread_options();
+        let options = crate::config::ThreadOptions::capture();
         let found = crate::par::map_range(2, |i| {
             crate::config::with_thread_options(options.clone(), || this.probe([".zmetadata", "zarr.json"][i]))
         });
