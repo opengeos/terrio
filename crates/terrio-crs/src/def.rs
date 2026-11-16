@@ -462,9 +462,13 @@ impl Def {
             }
             // Likewise a WKT 2 `BOUNDCRS` over the code with a Helmert transformation, to WGS 84
             // or to another CRS, as PROJ uses it (not a grid's, whose datum stays the code's).
-            if s.proj4.is_none()
-                && let Some(w) = s.wkt.as_deref().filter(|w| *w != e.wkt && is_bound_crs(w))
-                && let Ok(bound) = Self::from_wkt(w)
+            // One the reader refuses (a Helmert transformation PROJ does not apply, none at all)
+            // is refused here too, not read as the code without its shift.
+            let bound = match s.wkt.as_deref().filter(|w| s.proj4.is_none() && *w != e.wkt && is_bound_crs(w)) {
+                Some(w) => Some(Self::from_wkt(w)?),
+                None => None,
+            };
+            if let Some(bound) = bound
                 && bound.datum.is_none()
             {
                 // The bound's transformations replace the code's, unless its target has none to
