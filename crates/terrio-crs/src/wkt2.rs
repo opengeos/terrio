@@ -1188,13 +1188,18 @@ impl HelmertValues {
     }
 }
 
-/// The Helmert transformation of a `BOUNDCRS`'s `ABRIDGEDTRANSFORMATION`. `None` when it is not
-/// one PROJ 9.8.1 applies (a grid's, NTv2 or NADCON, whose file is a PARAMETERFILE); an error for
-/// one of the Helmert family PROJ does not apply, or an unknown parameter.
+/// The Helmert transformation of a `BOUNDCRS`'s `ABRIDGEDTRANSFORMATION`. `None` for a grid's
+/// (NTv2 or NADCON, whose file is a `PARAMETERFILE`), which terrio does not read. An error for any
+/// other method terrio does not apply: one of the Helmert family PROJ 9.8.1 does not apply, a name
+/// PROJ does not know ("PositionVector", "Input is not a transformation"), or one PROJ applies and
+/// terrio does not (Molodensky, EPSG 9604 and 9605); and for an unknown parameter.
 fn helmert_values(t: &Node) -> Result<Option<HelmertValues>> {
     let Some(method) = helmert_method(t) else {
         if helmert_family(t) {
             return Err(bad("a Helmert transformation PROJ 9.8.1 does not apply"));
+        }
+        if t.child("PARAMETERFILE").is_none() {
+            return Err(bad("a BOUNDCRS transformation method terrio does not apply"));
         }
         return Ok(None);
     };
@@ -1272,13 +1277,13 @@ fn helmert_shift(root: &Node) -> Result<Option<BoundShift>> {
 }
 
 /// Whether a `BOUNDCRS`'s Helmert transformation has a PROJ string that places points where
-/// PROJ 9.8.1 does (`transformation.cpp`'s `getTOWGS84Parameters`, less what the maintainer's
-/// rule leaves out): position vector and coordinate frame with each of their seven parameters
-/// (one given twice leaves another out), and geocentric translations with their three and without
-/// a rotation or scale. Not the time-dependent methods by code and the Molodensky-Badekas ones,
-/// which PROJ writes no string for (a time-dependent one named with its convention's words and
-/// seven parameters PROJ writes, as terrio does), nor coordinate frame's full matrix, nor geocentric translations given a rotation or scale, which
-/// PROJ writes as a `+towgs84` placing points elsewhere than it does.
+/// PROJ 9.8.1 transforms them (`transformation.cpp`'s `getTOWGS84Parameters`): position vector
+/// and coordinate frame with each of their seven parameters (one given twice leaves another out),
+/// and geocentric translations with their three and without a rotation or scale. Not the
+/// time-dependent methods by code and the Molodensky-Badekas ones, which PROJ writes no string
+/// for (a time-dependent one named with its convention's words and seven parameters PROJ writes,
+/// as terrio does). Nor coordinate frame's full matrix, or geocentric translations given a
+/// rotation or scale, which PROJ writes as a `+towgs84` placing points elsewhere.
 pub(crate) fn helmert_writable(t: &Node) -> bool {
     // The methods `getTOWGS84Parameters` writes: by code, or by a name with the whole words of
     // its convention and its number of parameters (not a Molodensky-Badekas "CF" one).

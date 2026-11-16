@@ -40,8 +40,10 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
   without their rates and reference epoch, which a `BOUNDCRS` has no coordinate epoch for, and
   Molodensky-Badekas about its evaluation point), by their EPSG code or name, and other names by
   the words of their convention with their kind's number of parameters. One of that family PROJ
-  does not apply (time-specific, which needs a coordinate epoch) is refused, as is a `BOUNDCRS`
-  without its transformation: to WGS 84, as `+towgs84`, and to another CRS (ED50), followed by that
+  does not apply (time-specific, which needs a coordinate epoch) is refused, as is any other
+  method terrio does not apply but a grid's (a name PROJ does not know, such as `PositionVector`;
+  Molodensky, EPSG 9604 and 9605, which PROJ applies), and a `BOUNDCRS` without its
+  transformation: to WGS 84, as `+towgs84`, and to another CRS (ED50), followed by that
   CRS's own transformations to WGS 84, as PROJ concatenates them (into a CRS on that CRS's datum,
   when terrio identifies it, the shift alone; into one on the source CRS's own datum, no shift,
   whatever the target; to a CRS without transformations, the source CRS's own, else PROJ's

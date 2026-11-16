@@ -2803,6 +2803,10 @@ PROJ_CASES = {
             "WKT 2 BOUNDCRS: a full-matrix or evaluation-point shift to a target terrio cannot convert", NOT_COMPARED,
             "left out with its target, as a `+towgs84` one is: placed as the source CRS alone (PROJ 9.8.1 reads a WKT 1 target)",
         ),
+        "an_unapplied_transformation_method_is_refused": (
+            "WKT 2 BOUNDCRS: a transformation method terrio does not apply", EXPECTED_REJECTION,
+            "PROJ 9.8.1 (pyproj 3.8.0): unknown names refused; Molodensky applied, refused rather than left out",
+        ),
         "an_unreadable_shift_to_another_crs_is_refused": (
             "WKT 2 BOUNDCRS: a Helmert transformation terrio cannot read", EXPECTED_REJECTION,
             "refused rather than left out, which would place points unshifted",

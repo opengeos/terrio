@@ -200,3 +200,28 @@ fn an_exact_or_evaluation_point_shift_to_an_unread_target_is_left_out() {
         assert!(metres(got, alone) < 1e-3, "{name}: {got:?}, without the BOUNDCRS {alone:?}");
     }
 }
+
+/// A `BOUNDCRS` transformation method terrio does not apply is refused, not read without its
+/// shift: a name PROJ 9.8.1 does not know ("PositionVector", "Frobnicate": "Input is not a
+/// transformation"), and Molodensky (EPSG 9604) and Abridged Molodensky (EPSG 9605), which PROJ
+/// applies (about 40 m at (10°, 50°) for Bessel's shift) and terrio does not.
+#[test]
+fn an_unapplied_transformation_method_is_refused() {
+    offline();
+    let data: Value = serde_json::from_str(include_str!("data/wkt2_bound.json")).unwrap();
+    let case = data["cases"].as_array().unwrap().iter().find(|c| c["name"] == "method EPSG:9607, to WGS 84").unwrap();
+    let wkt = case["wkt"].as_str().unwrap();
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    for method in [
+        r#"METHOD["PositionVector"]"#,
+        r#"METHOD["Frobnicate"]"#,
+        r#"METHOD["Molodensky",ID["EPSG",9604]]"#,
+        r#"METHOD["Abridged Molodensky",ID["EPSG",9605]]"#,
+    ] {
+        let w = wkt.replace(r#"METHOD["m",ID["EPSG",9607]]"#, method);
+        assert_ne!(w, wkt);
+        let crs = SpatialRef::from_wkt(&w);
+        assert!(Transformer::new(&crs, &wgs84).is_err(), "{method}");
+        assert_eq!(crs.to_proj4(), None, "{method}");
+    }
+}
