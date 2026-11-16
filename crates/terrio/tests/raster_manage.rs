@@ -679,3 +679,83 @@ fn external_overview_directory_failure_precedes_computation() {
         assert_eq!(unsafe { libc::geteuid() }, 0, "{seen:?}");
     }
 }
+
+/// FNV-1a (64-bit) of the little-endian bytes of Float32 values.
+fn fnv1a64(values: &[f64]) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in values.iter().flat_map(|v| (*v as f32).to_le_bytes()) {
+        h = (h ^ byte as u64).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
+/// Average overviews of non-integer ratios are GDAL 3.13.2's, external (`gdaladdo -ro -r average
+/// --config COMPRESS_OVERVIEW DEFLATE`) and internal (`gdaladdo -r average`), on a two-band
+/// pixel-interleaved Float32 raster wide enough that GDAL computes the external overviews band by
+/// band from chunks of 256 rows, whose windows it clamps to the chunk: overview row 128 straddles
+/// the chunks (`tests/data/odd_overviews`, `scripts/make_odd_overviews_fixtures.py`, which gives
+/// why the values do not depend on fused multiply-adds).
+#[test]
+fn odd_size_average_overviews_are_gdal_overviews() {
+    let expected: serde_json::Value = serde_json::from_str(include_str!("data/odd_overviews/expected.json")).expect("the fixture is JSON");
+    let (cols, rows, bands) = (8191usize, 511usize, 2usize);
+    assert_eq!((expected["width"].as_u64(), expected["height"].as_u64()), (Some(cols as u64), Some(rows as u64)));
+    let nodata = -9999.0;
+    let mut values = Vec::with_capacity(cols * rows * bands);
+    for b in 1..=bands {
+        for y in 0..rows {
+            for x in 0..cols {
+                let invalid = (x / 37 + y / 23) % 11 == 0 || (x * b + y) % 101 == 0;
+                values.push(if invalid { nodata as f32 } else { ((x * 7 + y * 13 * b) % 1000 + y) as f32 });
+            }
+        }
+    }
+    let cfg = terrio::RasterConfig { cols, rows, bands, data_type: DataType::F32, nodata, ..Default::default() };
+    let ds = RasterDataset::new(terrio::Raster::from_data_native(cfg, terrio::raster::RasterData::F32(values)).unwrap(), true);
+    let dir = tempfile::tempdir().unwrap();
+    let options = RasterWriteOptions {
+        compression: Some("DEFLATE".into()),
+        tile_size: Some(256),
+        creation_options: vec![("INTERLEAVE".into(), "PIXEL".into())],
+        ..Default::default()
+    };
+    for case in expected["cases"].as_array().unwrap() {
+        let external = case["external"].as_bool().unwrap();
+        let path = write(dir.path(), &format!("{external}.tif"), &ds, &options);
+        let o = OverviewOptions {
+            levels: vec![2, 4, 8, 16],
+            resampling: Resampling::Average,
+            external,
+            compression: external.then(|| "DEFLATE".into()),
+            ..Default::default()
+        };
+        add_overviews(&path, &o).unwrap();
+        let mut r = terrio::open_raster_lazy(&path).unwrap();
+        for (i, level) in case["levels"].as_array().unwrap().iter().enumerate() {
+            let (w, h) = r.overviews()[i];
+            assert_eq!(level["size"], serde_json::json!([w, h]));
+            let data = r.read_window(Window::new(0, 0, w, h), &WindowOptions { bands: vec![], overview: Some(i) }).unwrap();
+            let data = data.raster.data.to_f64_vec();
+            for (b, want) in level["bands"].as_array().unwrap().iter().enumerate() {
+                let band = &data[b * w * h..(b + 1) * w * h];
+                let sum: f64 = band.iter().filter(|v| **v != nodata).sum();
+                let missing = band.iter().filter(|v| **v == nodata).count();
+                let case = format!("{} level {i} band {}", if external { "external" } else { "internal" }, b + 1);
+                assert_eq!(missing as u64, want["nodata"].as_u64().unwrap(), "{case}: nodata pixels");
+                // numpy sums in another order: the sum tells how far apart values that differ are.
+                let want_sum = want["sum"].as_f64().unwrap();
+                assert!((sum - want_sum).abs() <= 1e-12 * want_sum.abs(), "{case}: sum of the valid pixels {sum}, GDAL {want_sum}");
+                assert_eq!(fnv1a64(band), want["fnv1a64"].as_str().unwrap(), "{case}: values");
+            }
+        }
+        if external {
+            // GDAL writes the bands of the sidecar's images apart, which is why it computes them
+            // band by band.
+            assert_eq!(case["ovr_interleave"], "BAND");
+            for d in directories(&std::fs::read(format!("{path}.ovr")).unwrap()) {
+                assert_eq!(d[&284], [2], "the .ovr images are band-separate");
+                assert_eq!(d[&259], [8], "the .ovr images are DEFLATE compressed");
+            }
+        }
+    }
+}
