@@ -57,7 +57,11 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
   CRS's `AXIS` nodes give its axes in WKT 1 as in WKT 2, as GDAL and PROJ read them in GIS order:
   `AXIS["Y",WEST],AXIS["X",SOUTH]` counts coordinates west and south, and northing then easting is
   read as easting then northing; south-orientated Transverse Mercator is west and south but for
-  north-east axes (south and west), and Krovak without them south and west. Its PROJ string carries
+  north-east axes (south and west), and Krovak without them south and west. South-orientated
+  Transverse Mercator subtracts its false easting and northing (EPSG method 9808: W = FE - x,
+  S = FN - y); PROJ 9.8.1 refuses one with offsets, and terrio writes it no PROJ string. A world
+  projection given a latitude of natural origin its method has no use for (Robinson, Sinusoidal)
+  is read without it, as PROJ ignores it. Its PROJ string carries
   only the axes PROJ writes: south-orientated Transverse Mercator's `+axis=wsu` and Krovak's
   `+axis=swu`, not a coordinate system's. Export follows PROJ 9.8.1 and can lose the WKT's
   coordinate mapping: north-east south-orientated Transverse Mercator transforms south-west but
@@ -265,6 +269,20 @@ NAD83(2011)) unless the WKT names one, then the lowest code. CRSs that terrio's 
 whose projection it cannot compare are looked up in wbprojection's registry, on the same datum,
 with the last two preferences. This is what GDAL reports: the New York City boroughs shapefile is
 EPSG:2263 in both, and ESRI's `GCS_European_1950` is EPSG:4230.
+
+A code the WKT declares at its root (`AUTHORITY["EPSG","27700"]`, `ID["EPSG",27700]`) is kept only
+when the WKT's content is that CRS: the same conversion, units and axes included, on the same
+ellipsoid and datum, and of the same kind. The datum is compared by its EPSG code, from the WKT's
+`AUTHORITY` or `ID` or as its name identifies it, else by name: ETRS89 declaring NAD83 is not NAD83,
+and a datum terrio does not know is not the code's unless named as it or `unknown`, PROJ's
+placeholder. A geocentric WKT is not a geographic code, nor a geographic 2D WKT 2 a 3D code (a WKT 1
+`GEOGCS` may be either, as in PROJ). A vertical CRS keeps only a vertical code; an engineering or
+local CRS keeps no code terrio places. Otherwise the WKT is read and identified by its content, as PROJ 9.8.1 reads it: a projected
+CRS declaring a geographic code, a code that does not exist, or a 2D CRS in degrees declaring a
+compound code in grads is not that code. When terrio cannot read the content (a method only the
+registry has), the code is kept if the WKT names the code's own projection method; an unknown method
+stays unusable. An ESRI CRS is identified by its name only on its datum: ESRI's
+`Monte_Mario_Italy_1` on a datum renamed `D_Local` has no code, and PROJ places it by a ballpark.
 
 A datum terrio does not know by name and without `TOWGS84` (`Unknown based on Bessel 1841
 ellipsoid`, as GDAL and PROJ write a PROJ string's `+ellps=bessel`) gets no EPSG code and no datum

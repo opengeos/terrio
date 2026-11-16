@@ -108,8 +108,11 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
             let units = axes
                 .iter()
                 .map(|a| {
+                    // Or the CS's, after the axes: `LENGTHUNIT`, or a bare `UNIT` as PROJ's
+                    // simplified WKT 2 writes it.
                     a.child("LENGTHUNIT")
                         .or_else(|| root.child("LENGTHUNIT"))
+                        .or_else(|| root.child("UNIT"))
                         .and_then(|u| u.num(1))
                         .ok_or_else(|| bad("geocentric axis needs a linear unit"))
                 })
@@ -436,6 +439,9 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         "wag3"
     } else if let Some(proj) = WORLD.iter().find(|(n, _)| *n == name).map(|(_, p)| *p) {
         push("lon_0", lon_0());
+        // A latitude of natural origin is ignored, as PROJ 9.8.1 ignores it (its mapping of these
+        // methods has none): Robinson and Sinusoidal with one are read.
+        p.ignore(LAT_NAT);
         proj
     } else if let Some((proj, parallel)) =
         [("winkeli", "wink1", "lat_ts"), ("winkelii", "wink2", "lat_1"), ("winkeltripel", "wintri", "lat_1")]
@@ -487,6 +493,11 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         proj_str.push(if north_east { "+axis=swu" } else { "+axis=wsu" }.into());
     } else if let Some(axis) = axis(&directions) {
         proj_str.push(format!("+axis={axis}"));
+    }
+    // EPSG method 9808 subtracts the false easting and northing (W = FE - x, S = FN - y), where
+    // `+axis=wsu` negates `+x_0`/`+y_0` with x and y.
+    if south_orientated {
+        (fe, fn_) = (super::wkt1::negated(fe), super::wkt1::negated(fn_));
     }
     proj_str.push(format!("+x_0={fe}"));
     proj_str.push(format!("+y_0={fn_}"));
@@ -1007,6 +1018,11 @@ impl Params {
         let v = self.values.iter().find(|v| v.0 == p.1)?;
         self.used.borrow_mut().push(p.1);
         Some(v.2)
+    }
+
+    /// Marks a parameter used without reading it: one PROJ ignores for the method.
+    fn ignore(&self, p: Param) {
+        self.used.borrow_mut().push(p.1);
     }
 
     /// The name of a parameter no method arm used, with a value that matters (not 0).

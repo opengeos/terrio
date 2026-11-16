@@ -1826,6 +1826,18 @@ out; a time-specific Helmert transformation and a `BOUNDCRS` without its transfo
 refused, as PROJ refuses them (`cargo test -p terrio-crs --test wkt2_bound`; regenerate with
 `scripts/gen_wkt2_bound.py`, pyproj 3.8.0).
 
+WKTs whose root code is not the CRS their nodes describe (British National Grid declaring
+EPSG:4277, a Lo19 declaring EPSG:1, a 2D NTF (Paris) in degrees declaring the compound EPSG:7400,
+an unknown method declaring EPSG:27700) and ESRI's Monte Mario on a renamed datum are read and
+identified by their content, placing points where PROJ 9.8.1 does within 1 mm, or refused where
+PROJ refuses (`cargo test -p terrio-crs --test wkt_root_code`; regenerate with
+`scripts/gen_wkt_root_code.py`, pyproj 3.8.0). WKT 2 Robinson, Sinusoidal, Mollweide, Eckert IV and
+Natural Earth with an unused latitude of natural origin, on WGS 84 and a sphere, match PROJ's PROJ
+string and point within 1 mm (`--test wkt2_world_latitude`; `scripts/gen_wkt2_world_latitude.py`).
+South-orientated Transverse Mercator with a false easting and northing, which PROJ refuses, is
+checked against EPSG method 9808 from its placement without them, in WKT 1, WKT 2, its strict WKT 1
+and GeoKeys (`--test south_orientated_offsets`).
+
 WKT that PROJ 9.8.1 reads, 26 CRSs (20 of which terrio refused), is read and places a point where
 PROJ does, within 1 mm (1e-9 degrees for geographic CRSs), with PROJ's PROJ string (values within a
 relative 1e-12) and PROJ's EPSG code where PROJ identifies one: ESRI's `Mercator_Variant_A` (EPSG

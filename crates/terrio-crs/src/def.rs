@@ -922,7 +922,21 @@ impl Def {
         if !self.ops.is_empty() {
             return;
         }
-        let geog = c.geog.or_else(|| c.geogcs.epsg()).or_else(|| match &c.geogcs_wkt1 {
+        // The geographic CRS's own code only when its content is that CRS (a local datum under
+        // OSGB36's code does not get OSGB36's transformations), as a root code.
+        // WKT 2: its base CRS node, whose datum keeps its ID (`BASEGEOGCRS` read as `GEOGCRS`).
+        // Else the node as written back (a WKT 1 `geogcs` or `GEOGCS [` the text search misses):
+        // never no comparison at all.
+        let own = match geogcs_text {
+            Some(t) => Some(t.to_string()),
+            None => {
+                let t = c.geogcs.to_wkt();
+                Some(t.strip_prefix("BASE").map(str::to_string).unwrap_or(t))
+            }
+        };
+        // Or on its datum but another prime meridian, which the definition applies itself.
+        let fits = |g: &u32| own.as_deref().is_none_or(|t| super::declared_fits(t, *g) || super::declared_fits_but_meridian(t, *g));
+        let geog = c.geog.filter(fits).or_else(|| c.geogcs.epsg().filter(fits)).or_else(|| match &c.geogcs_wkt1 {
             // WKT 2: identified loosely, so on the same ellipsoid only.
             Some(text) => super::identify_epsg(text).filter(|g| wkt2::same_ellipsoid(*g, self.ell.a, self.ell.es)),
             None => super::identify_epsg(geogcs_text?),
@@ -1133,7 +1147,10 @@ impl Def {
         // WKT 2 parameters and method names would be read wrongly, silently (#123).
         #[cfg(feature = "wbprojection-fallback")]
         {
-            let crs = wbprojection::Crs::from_wkt(w).map_err(|e| Error::Crs(format!("{e}")))?;
+            // Without a root code that is not its content's, which wbprojection's parser would
+            // read as the CRS (an unknown method declaring EPSG:27700).
+            let stripped = super::without_unfit_root_code(w);
+            let crs = wbprojection::Crs::from_wkt(stripped.as_deref().unwrap_or(w)).map_err(|e| Error::Crs(format!("{e}")))?;
             let geographic = crs.is_geographic();
             let e = &crs.datum.ellipsoid;
             let ell = Ell::from_a_es(e.a, 2.0 * e.f - e.f * e.f);
@@ -1191,6 +1208,14 @@ impl Def {
         let half = 180.0 / self.to_deg;
         let y = latitude.to_degrees() / self.to_deg;
         [self.axis(-half, y), self.axis(half, y)]
+    }
+    /// The prime meridian's longitude east of Greenwich, in radians.
+    pub(crate) fn pm(&self) -> f64 {
+        self.pm
+    }
+
+    pub(crate) fn set_pm(&mut self, pm: f64) {
+        self.pm = pm;
     }
 
     /// Whether this is a geographic CRS. A rotated-pole grid is not: its coordinates are in
@@ -1754,20 +1779,29 @@ pub(crate) fn split_compound(w: &str) -> Option<(String, String)> {
 /// The vertical CRS of a `VERT_CS` (or WKT 2 `VERTCRS`) definition: its EPSG code when it has
 /// one, else its unit and the geoid grids of GDAL's `PROJ4_GRIDS` extension.
 pub(crate) fn vertical_from_wkt(w: &str) -> Option<Vertical> {
-    let declared = super::declared_epsg(w);
+    let declared = vertical_code(w);
     if let Some(v) = declared.and_then(Vertical::from_epsg) {
         return Some(v);
     }
+    let (to_meter, down) = super::vertical_axis(w)?;
     let root = wkt1::parse(w)?;
-    let to_meter = root.child("UNIT").or_else(|| root.child("LENGTHUNIT")).and_then(|u| u.num(1)).unwrap_or(1.0);
     let grids = root.children("EXTENSION").find(|e| e.name() == Some("PROJ4_GRIDS")).and_then(|e| match e.args.get(1) {
         Some(wkt1::Arg::Str(s)) => Some(s.clone()),
         _ => None,
     });
     Some(match grids {
         Some(g) => Vertical::from_geoid_grids(&g, to_meter),
-        None => Vertical { code: declared, to_meter, down: false, models: Vec::new(), ballpark: true },
+        None => Vertical { code: declared, to_meter, down, models: Vec::new(), ballpark: true },
     })
+}
+
+/// The EPSG code a vertical CRS's WKT declares, when its unit and direction are the code's
+/// (heights in feet declaring EGM96 height in metres are not EGM96 height).
+pub(crate) fn vertical_code(w: &str) -> Option<u32> {
+    let code = super::declared_epsg(w)?;
+    let registered = Vertical::from_epsg(code)?;
+    let (to_meter, down) = super::vertical_axis(w)?;
+    ((to_meter - registered.to_meter).abs() <= 1e-9 * registered.to_meter && down == registered.down).then_some(code)
 }
 
 /// Whether a WKT is a WKT 2 `BOUNDCRS`.

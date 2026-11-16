@@ -817,6 +817,9 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
         (_, Some([a, b])) if [a, b] != *b"ne" && [a, b] != *b"en" => out.push(format!("+axis={}{}u", a as char, b as char)),
         _ => {}
     }
+    // South-orientated Transverse Mercator's false easting and northing are subtracted (EPSG
+    // method 9808: W = FE - x, S = FN - y), where `+axis=wsu` negates `+x_0`/`+y_0` with x and y.
+    let (fe, fn_) = if method == "transversemercatorsouthorientated" { (negated(fe), negated(fn_)) } else { (fe, fn_) };
     out.push(format!("+x_0={fe}"));
     out.push(format!("+y_0={fn_}"));
     out.push(format!("+to_meter={to_meter}"));
@@ -857,6 +860,11 @@ pub(crate) fn variant_c_pole_northing(a: f64, rf: f64, lat_ts: f64, northing: f6
     let phi = lat_ts.to_radians();
     let rho_f = a * phi.cos() / (1.0 - es * phi.sin().powi(2)).sqrt();
     if lat_ts < 0.0 { northing - rho_f } else { northing + rho_f }
+}
+
+/// `-v`, without a negative zero.
+pub(crate) fn negated(v: f64) -> f64 {
+    if v == 0.0 { 0.0 } else { -v }
 }
 
 #[cfg(test)]
