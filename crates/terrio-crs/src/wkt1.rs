@@ -46,6 +46,14 @@ impl Node {
         })
     }
 
+    /// The first child node with a keyword, to change.
+    pub fn child_mut(&mut self, key: &str) -> Option<&mut Node> {
+        self.args.iter_mut().find_map(|a| match a {
+            Arg::Node(n) if n.key.eq_ignore_ascii_case(key) => Some(n),
+            _ => None,
+        })
+    }
+
     /// The child nodes with a keyword.
     pub fn children<'a>(&'a self, key: &'a str) -> impl Iterator<Item = &'a Node> + 'a {
         self.args.iter().filter_map(move |a| match a {
@@ -289,6 +297,22 @@ pub(crate) struct Converted {
     pub geogcs_wkt1: Option<String>,
     /// A WKT 2 `BOUNDCRS` to another CRS than WGS 84: that CRS and the shift to it.
     pub bound: Option<Box<BoundTo>>,
+    /// A `BOUNDCRS`'s Helmert transformation that `+towgs84` cannot stand for: a full rotation
+    /// matrix, or a Molodensky-Badekas evaluation point.
+    pub helmert: Option<Helmert>,
+}
+
+/// A Helmert transformation as PROJ's `helmert` and `molobadekas` steps take it: translations in
+/// metres, rotations in arc-seconds and the scale difference in parts per million, in the
+/// method's own convention, the rotation matrix exact or approximate, about a pivot point.
+#[derive(Clone, Debug)]
+pub(crate) struct Helmert {
+    pub t: [f64; 3],
+    pub r: [f64; 3],
+    pub s: f64,
+    pub position_vector: bool,
+    pub exact: bool,
+    pub pivot: [f64; 3],
 }
 
 /// The target CRS of a WKT 2 `BOUNDCRS` to a CRS other than WGS 84, and its Helmert
@@ -339,7 +363,7 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
         out.push(format!("+proj=geocent +to_meter={unit}"));
         out.extend(tail);
         let geog = datum.epsg().and_then(|d| super::epsg::geographic_on(d).iter().copied().find(|c| !super::epsg::is_deprecated(*c)));
-        return Some(Converted { proj: out.join(" "), geogcs: root.clone(), geog, geogcs_wkt1: None, bound: None });
+        return Some(Converted { proj: out.join(" "), geogcs: root.clone(), geog, geogcs_wkt1: None, bound: None, helmert: None });
     }
     if key == "GEOGCS" {
         out.push("+proj=longlat".to_string());
@@ -347,7 +371,7 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             tail.push(format!("+to_deg={ang}"));
         }
         out.extend(tail);
-        return Some(Converted { proj: out.join(" "), geogcs: geogcs.clone(), geog: None, geogcs_wkt1: None, bound: None });
+        return Some(Converted { proj: out.join(" "), geogcs: geogcs.clone(), geog: None, geogcs_wkt1: None, bound: None, helmert: None });
     }
 
     let to_meter = root.children("UNIT").last().and_then(|u| u.num(1)).unwrap_or(1.0);
@@ -800,7 +824,7 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
     out.push(format!("+y_0={fn_}"));
     out.push(format!("+to_meter={to_meter}"));
     out.extend(tail);
-    Some(Converted { proj: out.join(" "), geogcs: geogcs.clone(), geog: None, geogcs_wkt1: None, bound: None })
+    Some(Converted { proj: out.join(" "), geogcs: geogcs.clone(), geog: None, geogcs_wkt1: None, bound: None, helmert: None })
 }
 
 /// The directions of a projected CRS's two `AXIS` nodes as PROJ's `+axis` letters (`e`, `w`,

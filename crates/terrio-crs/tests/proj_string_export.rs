@@ -8,8 +8,11 @@
 //! Known differences, left out of the data: an ESRI WKT of Miller's projection, which PROJ reads
 //! on the authalic sphere (`+proj=mill +R_A`) and terrio does not; a WKT's grid shift (GDAL's
 //! `PROJ4_GRIDS` in a datum, a `BOUNDCRS` with a grid), which terrio's WKT reader does not read,
-//! so its string has no `+nadgrids`; and the order of the parameters of a custom PROJ string,
-//! which PROJ rewrites in its own order, adding the defaults, and terrio keeps.
+//! so its string has no `+nadgrids`; the order of the parameters of a custom PROJ string,
+//! which PROJ rewrites in its own order, adding the defaults, and terrio keeps; and a WKT 2
+//! `BOUNDCRS` whose WKT 1 source CRS has a `TOWGS84` of its own, for which PROJ writes that
+//! shift but transforms by the bound one, and terrio writes no string (see
+//! `a_bound_crs_over_a_source_with_its_own_shift_has_no_proj_string`).
 
 use std::collections::HashMap;
 use terrio_crs::{CrsQuery, SpatialRef, Transformer, list_crs};
@@ -207,4 +210,75 @@ fn airy_and_copenhagen_are_read_as_proj_defines_them() {
     let copenhagen = SpatialRef::from_proj4("+proj=longlat +ellps=intl +pm=copenhagen").unwrap();
     let (lon, lat) = Transformer::new(&intl, &copenhagen).unwrap().transform(13.0, 55.0).unwrap();
     assert!((lon - 0.42212500000000014).abs() < 1e-12 && (lat - 55.0).abs() < 1e-12, "({lon}, {lat})");
+}
+
+#[test]
+fn a_bound_crs_over_a_source_with_its_own_shift_has_no_proj_string() {
+    // PROJ 9.8.1 (pyproj 3.8.0) writes this CRS as `+proj=tmerc ... +towgs84=446.448,-125.157,
+    // 542.06,0.15,0.247,0.842,-20.489`, the WKT 1 source's own shift, but transforms it by the
+    // bound one (375, -111, 431): (530000, 180000) is (-0.128334°, 51.503937°) in WGS 84 by its
+    // transformation and 4 m from there by its PROJ string. terrio places it as PROJ does
+    // (`wkt2_bound.rs`) and writes no PROJ string, rather than one placing points elsewhere.
+    // British National Grid and OSGB36 (from WGS 84 at (-0.1246°, 51.5007°): (-0.1261868°,
+    // 51.5011573°) in PROJ, by the bound transformation).
+    let with_shift = |code: u32| {
+        let source = SpatialRef::from_epsg(code).unwrap().to_wkt1_strict().unwrap().replacen(
+            r#"AUTHORITY["EPSG","7001"]]"#,
+            r#"AUTHORITY["EPSG","7001"]],TOWGS84[446.448,-125.157,542.06,0.15,0.247,0.842,-20.489]"#,
+            1,
+        );
+        assert!(source.contains("TOWGS84[446.448"), "{source}");
+        source
+    };
+    let sources = [
+        (with_shift(27700), (530000.0, 180000.0), (-0.1283343456018606, 51.50393705844268)),
+        (with_shift(4277), (-0.1246, 51.5007), (-0.1261867716887, 51.501157314855305)),
+    ];
+    let wgs84 = r#"GEOGCRS["WGS 84",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563,LENGTHUNIT["metre",1]]],PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.0174532925199433]],CS[ellipsoidal,2],AXIS["latitude",north,ORDER[1],ANGLEUNIT["degree",0.0174532925199433]],AXIS["longitude",east,ORDER[2],ANGLEUNIT["degree",0.0174532925199433]],ID["EPSG",4326]]"#;
+    for method in [
+        r#""Geocentric translations (geog2D domain)",ID["EPSG",9603]],PARAMETER["X-axis translation",375,ID["EPSG",8605]],PARAMETER["Y-axis translation",-111,ID["EPSG",8606]],PARAMETER["Z-axis translation",431,ID["EPSG",8607]]"#,
+        r#""Position Vector transformation (geog2D domain)",ID["EPSG",9606]],PARAMETER["X-axis translation",375,ID["EPSG",8605]],PARAMETER["Y-axis translation",-111,ID["EPSG",8606]],PARAMETER["Z-axis translation",431,ID["EPSG",8607]],PARAMETER["X-axis rotation",0,ID["EPSG",8608]],PARAMETER["Y-axis rotation",0,ID["EPSG",8609]],PARAMETER["Z-axis rotation",0,ID["EPSG",8610]],PARAMETER["Scale difference",1,ID["EPSG",8611]]"#,
+    ] {
+        for (source, (x, y), proj) in &sources {
+            let wkt = format!(r#"BOUNDCRS[SOURCECRS[{source}],TARGETCRS[{wgs84}],ABRIDGEDTRANSFORMATION["t",METHOD[{method}]]"#);
+            let crs = SpatialRef::from_wkt(&wkt);
+            let (lon, lat) = Transformer::new(&crs, &SpatialRef::from_epsg(4326).unwrap()).unwrap().transform(*x, *y).unwrap();
+            assert!((lon - proj.0).abs() < 1e-8 && (lat - proj.1).abs() < 1e-8, "({lon}, {lat}), PROJ {proj:?}");
+            assert_eq!(crs.to_proj4(), None, "{wkt}");
+        }
+    }
+}
+
+#[test]
+fn geocentric_translations_with_a_rotation_have_no_proj_string() {
+    // PROJ 9.8.1 (pyproj 3.8.0) applies a geocentric translations transformation (EPSG 9603)
+    // without the rotations and scale a `BOUNDCRS` gives it, as `wkt2_bound.rs` checks, but writes
+    // them in its PROJ string (`+towgs84=446.448,-125.157,542.06,0.15,0.247,0.842,-20.489`), which
+    // places points elsewhere. terrio writes none; with no rotation or scale it writes PROJ's.
+    let rows = rows();
+    let seven = rows.iter().find(|r| r.kind == "wkt" && r.input.contains(r#"METHOD["m",ID["EPSG",1033]]"#)).unwrap();
+    let wkt = seven.input.replace(r#"METHOD["m",ID["EPSG",1033]]"#, r#"METHOD["m",ID["EPSG",9603]]"#);
+    assert_eq!(SpatialRef::from_wkt(&wkt).to_proj4(), None);
+    let three = rows.iter().find(|r| r.input.contains(r#""Geocentric translations (geog2D domain)",ID["EPSG",9603]"#)).unwrap();
+    assert!(three.proj.as_deref().is_some_and(|p| p.contains("+towgs84=446.448,-125.157,542.06,0,0,0,0")));
+}
+
+#[test]
+fn a_full_matrix_helmert_transformation_has_no_proj_string() {
+    // PROJ 9.8.1 (pyproj 3.8.0) applies coordinate frame's full matrix (EPSG 1132, 1133, 1140)
+    // exactly (`+exact`), as `wkt2_bound.rs` checks, but writes it as a `+towgs84`, which stands
+    // for the small-angle approximation: for Saba to WGS 84 (1) (EPSG:10676), rotations of
+    // hundreds of arc-seconds, its string places points 9 m from its transformation. terrio
+    // writes none; the plain coordinate frame method (EPSG 9607) is written as PROJ writes it.
+    let data: serde_json::Value = serde_json::from_str(include_str!("data/wkt2_bound.json")).unwrap();
+    for code in [1132, 1133, 1140, 9607] {
+        let name = format!("Saba, method EPSG:{code}, to WGS 84");
+        let case = data["cases"].as_array().unwrap().iter().find(|c| c["name"] == name.as_str()).unwrap();
+        let written = SpatialRef::from_wkt(case["wkt"].as_str().unwrap()).to_proj4();
+        assert_eq!(written.is_some(), code == 9607, "{name}: {written:?}");
+    }
+    // By its EPSG name with PROJ's " (3D)" suffix, which PROJ drops to find its code.
+    let name = "method by name 'Coordinate Frame rotation full matrix (geog2D) (3D)', 7 parameters, to WGS 84";
+    let case = data["cases"].as_array().unwrap().iter().find(|c| c["name"] == name).unwrap();
+    assert_eq!(SpatialRef::from_wkt(case["wkt"].as_str().unwrap()).to_proj4(), None, "{name}");
 }

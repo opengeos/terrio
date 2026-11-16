@@ -23,6 +23,7 @@ Terrio files derived from PROJ source files (each file's header names them):
   crates/terrio-crs/src/proj_write.rs
   crates/terrio-crs/src/rotation.rs
   crates/terrio-crs/src/route.rs
+  crates/terrio-crs/src/wkt2.rs
 
 The two-point form of the Hotine oblique Mercator follows src/projections/omerc.cpp in PROJ 9.8.1.
 

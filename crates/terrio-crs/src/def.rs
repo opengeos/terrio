@@ -462,9 +462,13 @@ impl Def {
             }
             // Likewise a WKT 2 `BOUNDCRS` over the code with a Helmert transformation, to WGS 84
             // or to another CRS, as PROJ uses it (not a grid's, whose datum stays the code's).
-            if s.proj4.is_none()
-                && let Some(w) = s.wkt.as_deref().filter(|w| *w != e.wkt && is_bound_crs(w))
-                && let Ok(bound) = Self::from_wkt(w)
+            // One the reader refuses (a Helmert transformation PROJ does not apply, none at all)
+            // is refused here too, not read as the code without its shift.
+            let bound = match s.wkt.as_deref().filter(|w| s.proj4.is_none() && *w != e.wkt && is_bound_crs(w)) {
+                Some(w) => Some(Self::from_wkt(w)?),
+                None => None,
+            };
+            if let Some(bound) = bound
                 && bound.datum.is_none()
             {
                 // The bound's transformations replace the code's, unless its target has none to
@@ -1052,6 +1056,14 @@ impl Def {
         let converted = if wkt2::handles(&root) { Some(wkt2::to_proj(&root)?) } else { wkt1::to_proj(&root) };
         if let Some(c) = converted {
             let mut d = Self::from_proj(&c.proj)?;
+            // A `BOUNDCRS`'s Helmert transformation that `+towgs84` cannot stand for (a full
+            // rotation matrix, a Molodensky-Badekas evaluation point), as PROJ applies it.
+            let helmert = c.helmert.as_ref().map(|h| datum::helmert(h.t, h.r, h.s, h.position_vector, h.exact, h.pivot));
+            if let Some(step) = &helmert
+                && c.bound.is_none()
+            {
+                d.ops = vec![Arc::new(Op::world(datum::helmert_steps_with(d.ell, Ell::wgs84(), step.clone())))];
+            }
             if let Some(bound) = &c.bound {
                 // A WKT 2 `BOUNDCRS` to another CRS: its Helmert transformation to that CRS, then
                 // each of that CRS's transformations to WGS 84, as PROJ concatenates them. With
@@ -1064,7 +1076,10 @@ impl Def {
                     return Ok(source);
                 };
                 t.registered_datum(target, None);
-                let to_target = datum::helmert_steps(d.ell, t.ell, shift);
+                let to_target = match helmert {
+                    Some(step) => datum::helmert_steps_with(d.ell, t.ell, step),
+                    None => datum::helmert_steps(d.ell, t.ell, shift),
+                };
                 let mut ops: Vec<Arc<Op>> = t
                     .ops
                     .iter()
@@ -1759,7 +1774,7 @@ pub(crate) fn vertical_from_wkt(w: &str) -> Option<Vertical> {
 }
 
 /// Whether a WKT is a WKT 2 `BOUNDCRS`.
-fn is_bound_crs(w: &str) -> bool {
+pub(crate) fn is_bound_crs(w: &str) -> bool {
     w.trim_start().get(..8).is_some_and(|k| k.eq_ignore_ascii_case("BOUNDCRS"))
 }
 

@@ -12,6 +12,7 @@ Usage: PROJ_NETWORK=OFF python scripts/gen_wkt2_bound.py (needs pyproj 3.8.0)
 
 import json
 import os
+import re
 from pathlib import Path
 
 import pyproj
@@ -106,11 +107,30 @@ def bound(
         params.append(
             f'PARAMETER["Scale difference",{1 + shift[6] * 1e-6!r},SCALEUNIT["unity",1],ID["EPSG",8611]]'
         )
+    ident = f',ID["EPSG",{code}]' if code else ""
     return (
         f'BOUNDCRS[SOURCECRS[{source}],TARGETCRS[{target}],ABRIDGEDTRANSFORMATION["t",'
-        f'METHOD["{method}",ID["EPSG",{code}]],{",".join(params)}]]'
+        f'METHOD["{method}"{ident}],{",".join(params)}]]'
     )
 
+
+def wkt1(code, fmt="WKT1_GDAL", towgs84=None):
+    """GDAL's (or Esri's) WKT 1 of an EPSG code, with a TOWGS84 node in its datum if given, as
+    GDAL writes a bound CRS's source CRS when it has only WKT 1 for it."""
+    wkt = CRS.from_epsg(code).to_wkt(fmt)
+    if towgs84:
+        wkt, n = re.subn(
+            r"(SPHEROID\[[^\]]*\]\])", rf"\1,TOWGS84[{towgs84}]", wkt, count=1
+        )
+        assert n == 1, code
+    return wkt
+
+
+# British National Grid and OSGB36 as WKT 1 source CRSs: with a TOWGS84 of their own, which the
+# bound transformation replaces, as PROJ transforms them; without one; and Esri's.
+OSGB_SHIFT = "446.448,-125.157,542.06,0.15,0.247,0.842,-20.489"
+BNG_WKT1_SHIFTED = wkt1(27700, towgs84=OSGB_SHIFT)
+OSGB36_WKT1_SHIFTED = wkt1(4277, towgs84=OSGB_SHIFT)
 
 CASES = [
     ("to ED50", bound(BESSEL, ED50, SHIFT), (10.0, 50.0)),
@@ -238,6 +258,141 @@ CASES = [
         (-0.1246, 51.5007),
         "EPSG:4277",
     ),
+    # WKT 1 source CRSs (#1012 item 11): the bound transformation, not the source's TOWGS84.
+    (
+        "WKT 1 projected source with its own TOWGS84, to WGS 84",
+        bound(BNG_WKT1_SHIFTED, WGS84, [375.0, -111.0, 431.0]),
+        (530000.0, 180000.0),
+    ),
+    (
+        "WKT 1 projected source with its own TOWGS84, to WGS 84, into OSGB36",
+        bound(BNG_WKT1_SHIFTED, WGS84, [375.0, -111.0, 431.0]),
+        (530000.0, 180000.0),
+        "EPSG:4277",
+    ),
+    (
+        "WKT 1 projected source with its own TOWGS84, seven parameters, to WGS 84",
+        bound(BNG_WKT1_SHIFTED, WGS84, SHIFT),
+        (530000.0, 180000.0),
+    ),
+    (
+        "WKT 1 projected source with its own TOWGS84, to ED50",
+        bound(BNG_WKT1_SHIFTED, ED50, SHIFT),
+        (530000.0, 180000.0),
+    ),
+    (
+        "WKT 1 projected source, to WGS 84",
+        bound(wkt1(27700), WGS84, [375.0, -111.0, 431.0]),
+        (530000.0, 180000.0),
+    ),
+    (
+        "Esri WKT 1 projected source, to WGS 84",
+        bound(wkt1(27700, "WKT1_ESRI"), WGS84, [375.0, -111.0, 431.0]),
+        (530000.0, 180000.0),
+    ),
+    (
+        "WKT 1 geographic source with its own TOWGS84, to WGS 84",
+        bound(OSGB36_WKT1_SHIFTED, WGS84, [375.0, -111.0, 431.0]),
+        (-0.1246, 51.5007),
+    ),
+]
+# Each Helmert method PROJ applies (proj_constants.h), given by its EPSG code alone: geocentric
+# translations (which PROJ applies without the rotations and scale given), position vector and
+# coordinate frame in each domain, the time-dependent methods without their rates, coordinate
+# frame's full matrix and geog3D to compound variants, and Molodensky-Badekas without an
+# evaluation point.
+METHOD_CODES = [
+    9603,
+    1031,
+    1035,
+    9606,
+    1033,
+    1037,
+    9607,
+    1032,
+    1038,
+    1149,
+    1132,
+    1133,
+    1140,
+]
+METHOD_CODES += [1053, 1054, 1055, 1056, 1057, 1058, 1034, 1039, 9636, 1061, 1062, 1063]
+CASES += [
+    (
+        f"method EPSG:{code}, to WGS 84",
+        bound(BNG, WGS84, SHIFT, "m", code),
+        (530000.0, 180000.0),
+    )
+    for code in METHOD_CODES
+]
+# Coordinate frame's full matrix, whose rotation PROJ applies exactly: Saba to WGS 84 (1)
+# (EPSG:10676), rotations of hundreds of arc-seconds, where the small-angle approximation is 9 m
+# away; and coordinate frame itself.
+SABA = geog("Saba", "Saba", "International 1924", 6378388, 297)
+SABA_SHIFT = [1138.7432, -2064.4761, 110.7016, -214.615206, 479.360036, -164.703951]
+SABA_SHIFT += [-402.32073]
+CASES += [
+    (
+        f"Saba, method EPSG:{code}, to WGS 84",
+        bound(SABA, WGS84, SABA_SHIFT, "m", code),
+        (-63.23, 17.63),
+    )
+    for code in [1132, 1133, 1140, 9607]
+]
+# Molodensky-Badekas about an evaluation point, which PROJ applies as its pivot.
+EVALUATION_POINT = (
+    'PARAMETER["Ordinate 1 of evaluation point",3900000,LENGTHUNIT["metre",1],ID["EPSG",8617]],'
+    'PARAMETER["Ordinate 2 of evaluation point",-100000,LENGTHUNIT["metre",1],ID["EPSG",8618]],'
+    'PARAMETER["Ordinate 3 of evaluation point",5000000,LENGTHUNIT["metre",1],ID["EPSG",8667]]'
+)
+CASES += [
+    (
+        f"method EPSG:{code} about an evaluation point, to WGS 84",
+        bound(BNG, WGS84, SHIFT, "m", code)[:-2] + "," + EVALUATION_POINT + "]]",
+        (530000.0, 180000.0),
+    )
+    for code in [9636, 1034, 1063, 1061]
+]
+# The full matrix and an evaluation point to another CRS (ED50), then its transformations, and
+# into ED50 and back.
+CASES += [
+    (
+        f"{what}, to ED50{', into ED50' if dst else ''}",
+        wkt,
+        point,
+        *dst,
+    )
+    for what, wkt, point in [
+        (
+            "Saba, method EPSG:1132",
+            bound(SABA, ED50, SABA_SHIFT, "m", 1132),
+            (-63.23, 17.63),
+        ),
+        (
+            "method EPSG:9636 about an evaluation point",
+            bound(BNG, ED50, SHIFT, "m", 9636)[:-2] + "," + EVALUATION_POINT + "]]",
+            (530000.0, 180000.0),
+        ),
+    ]
+    for dst in ([], ["EPSG:4230"])
+]
+# Methods by name alone: an EPSG name, whatever the number of parameters, as its code; another,
+# by its convention's words and the number of parameters of its kind.
+CASES += [
+    (
+        f"method by name {name!r}, {len(shift)} parameters, to WGS 84",
+        bound(BNG, WGS84, shift, name, None),
+        (530000.0, 180000.0),
+    )
+    for name, shift in [
+        ("Position Vector transformation (geog2D domain)", SHIFT[:3]),
+        ("Geocentric translations (geog2D domain)", SHIFT),
+        ("Molodensky-Badekas (CF geog2D domain)", SHIFT),
+        ("Coordinate Frame rotation", SHIFT),
+        ("Time-specific Coordinate Frame rotation (geocen)", SHIFT),
+        ("Coordinate Frame rotation full matrix (geog2D) (3D)", SHIFT),
+        ("Position Vector transformation (geog2D domain) (3D)", SHIFT[:3]),
+    ]
 ]
 
 
