@@ -1535,9 +1535,7 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
         }
         // Content terrio cannot read (an unknown method) is not identified loosely either: it
         // stays unusable, as in PROJ.
-        if Def::wkt_conversion(wkt).is_none() {
-            return None;
-        }
+        Def::wkt_conversion(wkt)?;
         return strip_root_code(wkt).and_then(|w| identify_epsg(&w));
     }
     // A compound CRS is not its horizontal CRS: only the code it declares identifies it, as in

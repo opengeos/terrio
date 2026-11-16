@@ -13,7 +13,10 @@ from pathlib import Path
 import pyproj
 from pyproj import CRS, Transformer
 
-OUT = Path(__file__).resolve().parents[1] / "crates/terrio-crs/tests/data/wkt2_world_latitude.json"
+OUT = (
+    Path(__file__).resolve().parents[1]
+    / "crates/terrio-crs/tests/data/wkt2_world_latitude.json"
+)
 DEG = 'ANGLEUNIT["degree",0.0174532925199433]'
 METRE = 'LENGTHUNIT["metre",1]'
 ELLIPSOIDS = {
@@ -34,7 +37,9 @@ def wkt(method, ellipsoid):
 
 
 def main():
-    assert pyproj.__version__ == "3.8.0" and pyproj.proj_version_str == "9.8.1", pyproj.proj_version_str
+    assert pyproj.__version__ == "3.8.0" and pyproj.proj_version_str == "9.8.1", (
+        pyproj.proj_version_str
+    )
     assert os.environ.get("PROJ_NETWORK") == "OFF"
     cases = []
     for method in METHODS:
@@ -42,9 +47,21 @@ def main():
             w = wkt(method, ellipsoid)
             crs = CRS.from_wkt(w)
             point = (6.0, 54.0)
-            x, y = Transformer.from_crs("EPSG:4326", crs, always_xy=True).transform(*point, errcheck=True)
-            cases.append({"name": f"{method} on {name}", "wkt": w, "point": list(point), "proj": [x, y], "proj4": crs.to_proj4()})
-    OUT.write_text(json.dumps({"proj": pyproj.proj_version_str, "cases": cases}, indent=1) + "\n")
+            x, y = Transformer.from_crs("EPSG:4326", crs, always_xy=True).transform(
+                *point, errcheck=True
+            )
+            cases.append(
+                {
+                    "name": f"{method} on {name}",
+                    "wkt": w,
+                    "point": list(point),
+                    "proj": [x, y],
+                    "proj4": crs.to_proj4(),
+                }
+            )
+    OUT.write_text(
+        json.dumps({"proj": pyproj.proj_version_str, "cases": cases}, indent=1) + "\n"
+    )
 
 
 if __name__ == "__main__":

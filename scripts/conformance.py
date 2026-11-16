@@ -2788,8 +2788,10 @@ PROJ_CASES = {
     "south_orientated_offsets": {
         "south_orientated_transverse_mercator_subtracts_its_offsets": (
             "South-orientated Transverse Mercator with a false easting and northing", NOT_COMPARED,
-            "PROJ 9.8.1 refuses it; checked against EPSG method 9808 (W = FE - x, S = FN - y) from "
-            "the placement without offsets, which matches PROJ",
+            (
+                "PROJ 9.8.1 refuses it; checked against EPSG method 9808 (W = FE - x, S = FN - y) from "
+                "the placement without offsets, which matches PROJ"
+            ),
         ),
     },
     "wkt2_bound": {
