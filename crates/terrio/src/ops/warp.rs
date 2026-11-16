@@ -2692,7 +2692,9 @@ fn square_scales(p: [(f64, f64); 4]) -> Option<(f64, f64)> {
 
 /// Whether both of [`square_scales`]'s scales of `p` are surely above 0.5 (or it has none),
 /// without its square roots: a margin below the threshold leaves rounding out of the question.
-/// `false` means "compute them".
+/// `false` means "compute them". It repeats `square_scales`' choice between GDAL 3.13.3's
+/// transformed-square formulas (the edge tests and their 0.35 and 0.1 thresholds): the two must
+/// change together.
 fn square_scales_above_half(p: [(f64, f64); 4]) -> bool {
     let edge = |a: usize, b: usize| (p[b].0 - p[a].0, p[b].1 - p[a].1);
     let length2 = |v: (f64, f64)| v.0 * v.0 + v.1 * v.1;
@@ -2720,6 +2722,8 @@ const GUESS_PAD: usize = 2;
 thread_local! {
     /// Source pixels taken off every side of a guessed window, in tests.
     static GUESS_SHRINK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Chunks warped again from their exact window on this thread, in tests.
+    static GUESS_RETRIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Longitude facts of a warp's source, constant over the warp (see [`WarpContext::source_wrap`]).
@@ -2802,7 +2806,15 @@ struct Target<'a> {
 /// stored back. The chunks of a source partition the output (`collect_chunks`), and the values
 /// stored are already rounded to the output type (`Sink::value`), so storing them back is exact.
 fn warp_source<T: crate::pixel::Pixel>(ctx: &WarpContext, chunks: &[Chunk], data: &SrcData<T>, storage: &Storage, t: Target) {
-    warp_chunks(chunks, data.bands.len(), storage, t, |c, sink, rows| ctx.warp_chunk(c, data, sink, rows));
+    warp_chunks(chunks, data.bands.len(), storage, t, |c, sink, rows| {
+        ctx.warp_chunk(c, data, sink, rows);
+        if ctx.missed.load(Ordering::Relaxed) {
+            // The chunk is warped again from its exact window (see `exact_chunk`): this attempt's
+            // nodata warnings are not published.
+            sink.nudged.store(false, Ordering::Relaxed);
+            sink.moved_all.store(false, Ordering::Relaxed);
+        }
+    });
 }
 
 /// [`warp_source`], each chunk's part of the output (its rows, `bands` bands) warped by `warp`.
@@ -3191,6 +3203,8 @@ impl WarpContext<'_> {
         // An exact window holds every tap: warped from it, the chunk is not checked again.
         let (sx, sy, sw, sh, _, raw_w, raw_h) = self.source_window(c.dx, c.dy, c.dw, c.dh)?;
         let exact = Chunk { sx, sy, sw, sh, raw_w, raw_h, ..*c };
+        #[cfg(test)]
+        GUESS_RETRIES.with(|n| n.set(n.get() + 1));
         ((sx, sy, sw, sh) != (c.sx, c.sy, c.sw, c.sh) && sw > 0 && sh > 0).then_some(exact)
     }
 
@@ -5601,16 +5615,25 @@ impl<'a, T: crate::pixel::Pixel> Kernel<'a, T> {
         let mut iy = floor_i(sy - 0.5);
         let mut rx = 1.5 - (sx - ix as f64);
         let mut ry = 1.5 - (sy - iy as f64);
+        // Clamped at the source's first column or row, the sample takes that one only: the next
+        // one, of weight zero, lies outside its footprint ([`WarpContext::tap_box`]) and is not read,
+        // so a non-finite value there cannot reach it whatever window the chunk holds.
+        let (mut last_x, mut last_y) = (1, 1);
         if ix == -1 && !self.periodic_x {
             ix = 0;
             rx = 1.0;
+            last_x = 0;
         }
         if iy == -1 {
             iy = 0;
             ry = 1.0;
+            last_y = 0;
         }
         let (mut acc, mut div) = (0.0, 0.0);
         for (dx, dy, m) in [(0, 0, rx * ry), (1, 0, (1.0 - rx) * ry), (0, 1, rx * (1.0 - ry)), (1, 1, (1.0 - rx) * (1.0 - ry))] {
+            if dx > last_x || dy > last_y {
+                continue;
+            }
             let (x, y) = (self.column(ix + dx), iy + dy);
             if x >= 0 && x < w && y >= 0 && y < h && self.valid(b, x as usize, y as usize) {
                 div += m;
@@ -7339,6 +7362,36 @@ mod tests {
     }
 
     #[test]
+    fn bilinear_clamped_at_the_first_column_ignores_the_next() {
+        // A sample a quarter pixel inside the source's first column is clamped to it: the second
+        // column has weight zero and lies outside the sample's footprint. A NaN there (no nodata)
+        // must not reach the sample, whatever window its chunk reads (the whole source in memory,
+        // a guessed window from a file, or GDAL's chunk window).
+        let dir = tempfile::tempdir().unwrap();
+        let mut ds = typed_raster(DataType::F64, 4, 4, [0.0, 1.0, 0.0, 4.0, 0.0, -1.0], 32631, |_, _| 7.0);
+        ds.raster.set(0, 1, 1, f64::NAN).unwrap();
+        let input = dir.path().join("nan.tif");
+        crate::write_raster_dataset(&ds, input.to_str().unwrap(), &Default::default()).unwrap();
+        for kernel_version in [KernelVersion::Gdal312, KernelVersion::Gdal313] {
+            for grid_invariant in [true, false] {
+                let o = WarpOptions {
+                    dst_transform: Some([-0.25, 1.0, 0.0, 3.0, 0.0, -1.0]),
+                    size: Some((1, 1)),
+                    resampling: Resampling::Bilinear,
+                    src_nodata: Nodata::None,
+                    kernel_version,
+                    grid_invariant,
+                    ..Default::default()
+                };
+                let whole = warp(&[&ds], &o).unwrap().raster.data.to_f64_vec();
+                let mut lazy = crate::open_raster_lazy(input.to_str().unwrap()).unwrap();
+                let lazily = warp_lazy(&mut lazy, &o).unwrap().raster.data.to_f64_vec();
+                assert_eq!((whole[0], lazily[0]), (7.0, 7.0), "{kernel_version:?} grid_invariant {grid_invariant}");
+            }
+        }
+    }
+
+    #[test]
     fn guessed_windows_missing_taps_warp_again_from_exact_ones() {
         // Reader paths guess each chunk's window from its edges; a chunk whose guess misses a tap
         // is warped again from its exact window. Shrunk guesses miss on purpose: the output must
@@ -7366,6 +7419,7 @@ mod tests {
                     let whole = warp(&[ds], &o).unwrap().raster.data.to_f64_vec();
                     for shrink in [0, 3] {
                         GUESS_SHRINK.with(|s| s.set(shrink));
+                        GUESS_RETRIES.with(|n| n.set(0));
                         let mut lazy = crate::open_raster_lazy(input.to_str().unwrap()).unwrap();
                         let lazily = warp_lazy(&mut lazy, &o).unwrap().raster.data.to_f64_vec();
                         let out = dir.path().join(format!("{name}-out.tif"));
@@ -7373,6 +7427,10 @@ mod tests {
                         warp_to_path(&[input.to_str().unwrap().to_string()], &o, out.to_str().unwrap(), &Default::default()).unwrap();
                         let written = crate::open_raster(out.to_str().unwrap()).unwrap().raster.data.to_f64_vec();
                         GUESS_SHRINK.with(|s| s.set(0));
+                        if shrink > 0 {
+                            // The shrunk guesses did miss: the retry path ran.
+                            assert!(GUESS_RETRIES.with(std::cell::Cell::get) > 0, "{name} {resampling:?} {kernel_version:?}: no retry");
+                        }
                         let same = |a: &[f64], b: &[f64]| a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits());
                         assert!(same(&whole, &lazily), "{name} {resampling:?} {kernel_version:?} shrink {shrink}: lazy");
                         assert!(same(&whole, &written), "{name} {resampling:?} {kernel_version:?} shrink {shrink}: written");

@@ -365,6 +365,7 @@ pub(crate) fn convert_value(v: f64, dt: DataType) -> f64 {
 
 /// Converts a value as GDAL's warp kernel does: integers are rounded half up (`floor(v + 0.5)`) and
 /// clamped.
+#[inline]
 pub(crate) fn warp_round(v: f64, dt: DataType) -> f64 {
     match dt {
         DataType::F64 => v,
