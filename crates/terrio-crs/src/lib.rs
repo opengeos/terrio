@@ -124,11 +124,12 @@ pub fn prefetch() {
 pub fn geographic_on_datum(datum: u32, ellipsoid: &str) -> Option<u32> {
     let own = Def::from_proj(&format!("+proj=longlat {ellipsoid} +no_defs")).ok()?;
     epsg::geographic_on(datum).iter().copied().find(|code| {
-        epsg::get(*code).is_some_and(|e| {
-            !e.three_d
-                && !e.proj.contains("+pm=")
-                && Def::from_proj(&e.proj).is_ok_and(|d| (own.ell.a - d.ell.a).abs() < 1e-3 && (own.ell.es - d.ell.es).abs() < 1e-9)
-        })
+        !epsg::is_deprecated(*code)
+            && epsg::get(*code).is_some_and(|e| {
+                !e.three_d
+                    && !e.proj.contains("+pm=")
+                    && Def::from_proj(&e.proj).is_ok_and(|d| (own.ell.a - d.ell.a).abs() < 1e-3 && (own.ell.es - d.ell.es).abs() < 1e-9)
+            })
     })
 }
 
@@ -142,6 +143,18 @@ pub fn geographic_datum(geog: u32) -> Option<u32> {
 #[doc(hidden)]
 pub fn epsg_wkt(code: u32) -> Option<&'static str> {
     epsg::get(code).map(|e| e.wkt.as_str())
+}
+
+/// The EPSG codes of the CRSs that replace a deprecated EPSG CRS, those PROJ lists
+/// (`proj_get_non_deprecated`), in order of code: `[5105]` for EPSG:4855. Empty for a current
+/// CRS, a deprecated one without replacement, and a code terrio does not know.
+///
+/// ```no_run
+/// assert_eq!(terrio_crs::epsg_replacements(4855), &[5105]);
+/// assert!(terrio_crs::epsg_replacements(5105).is_empty());
+/// ```
+pub fn epsg_replacements(code: u32) -> &'static [u32] {
+    epsg::replacements(code)
 }
 
 /// The ESRI CRSs whose projection terrio computes otherwise than PROJ (by more than a millimetre
@@ -339,8 +352,10 @@ pub struct SpatialRef {
 
 impl SpatialRef {
     /// A CRS from an EPSG code. Fails when the code is not in the EPSG registry terrio carries.
-    /// The ESRI codes wbprojection holds as EPSG codes (54008, 54009 and 54030) give those ESRI
-    /// CRSs; other ESRI codes are not EPSG codes, as in PROJ.
+    /// A deprecated code keeps its own definition, as in PROJ ([`Self::from_epsg_non_deprecated`]
+    /// gives its replacement, as GDAL does by default). The ESRI codes wbprojection holds as EPSG
+    /// codes (54008, 54009 and 54030) give those ESRI CRSs; other ESRI codes are not EPSG codes,
+    /// as in PROJ.
     pub fn from_epsg(code: u32) -> Result<Self> {
         let wkt = match epsg::get(code) {
             Some(e) => e.wkt.clone(),
@@ -363,6 +378,30 @@ impl SpatialRef {
             },
         };
         Ok(Self { epsg: Some(code), wkt: Some(wkt), ..Default::default() })
+    }
+
+    /// A CRS from an EPSG code as GDAL 3.12 gives it by default (`OSR_USE_NON_DEPRECATED=YES`): a
+    /// deprecated code with a single replacement ([`epsg_replacements`]) gives that replacement's
+    /// CRS, any other code its own, as [`Self::from_epsg`].
+    ///
+    /// ```no_run
+    /// use terrio_crs::SpatialRef;
+    /// // The deprecated ETRS89 / NTM zone 5 by its own definition, as PROJ gives it ...
+    /// assert_eq!(SpatialRef::from_epsg(4855)?.epsg, Some(4855));
+    /// // ... and as GDAL gives it by default, its replacement's.
+    /// assert_eq!(SpatialRef::from_epsg_non_deprecated(4855)?.epsg, Some(5105));
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
+    pub fn from_epsg_non_deprecated(code: u32) -> Result<Self> {
+        match epsg_replacements(code) {
+            [replacement] => Self::from_epsg(*replacement),
+            _ => Self::from_epsg(code),
+        }
+    }
+
+    /// Whether the CRS is a deprecated EPSG CRS (one with an EPSG code EPSG has deprecated).
+    pub fn is_deprecated(&self) -> bool {
+        self.epsg.is_some_and(epsg::is_deprecated)
     }
 
     /// A CRS from a code of PROJ's ESRI authority, such as 54009 (World Mollweide), with the WKT
@@ -1507,8 +1546,9 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
             .is_ok_and(|d| own.same_conversion(&d) && (own.ell.a - d.ell.a).abs() < 1e-3 && (own.ell.es - d.ell.es).abs() < 1e-9)
     };
     // Among CRSs that match, the one named as the WKT's CRS (`RGF93 v2 (lon-lat)`, ESRI's `GCS_`
-    // prefix aside), else the base datum over its later realizations (`NAD83`, which EPSG lists
-    // as an alias of NAD83(HARN) too) unless the WKT names one, else the lowest code.
+    // prefix aside), else a current one over a deprecated one (as PROJ ranks them), else the base
+    // datum over its later realizations (`NAD83`, which EPSG lists as an alias of NAD83(HARN) too)
+    // unless the WKT names one, else the lowest code.
     let key = |n: &str| epsg::datum_key(n.strip_prefix("GCS_").unwrap_or(n));
     let name = wkt_name(wkt).map(|n| key(&n));
     let named = |c: u32| epsg::get(c).is_some_and(|e| Some(key(&e.name)) == name);
@@ -1529,10 +1569,11 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
                 .flatten()
                 .copied()
                 .filter(|c| epsg::registry().geodetic.get(c).is_some_and(|g| g.kind == epsg::GeodeticKind::Geocentric) && same(own, *c))
+                // `by_datum` holds current CRSs only.
                 .min_by_key(|c| (!named(*c), *c));
         }
         if own.is_geographic() {
-            return geogs.filter(|c| same(own, *c)).min_by_key(|c| (!named(*c), realization(*c), *c));
+            return geogs.filter(|c| same(own, *c)).min_by_key(|c| (!named(*c), epsg::is_deprecated(*c), realization(*c), *c));
         }
         let method = conversion_method(wkt)?;
         let found = geogs.flat_map(epsg::projected_on).filter(|(c, m)| same_method(m, &method) && same(own, *c)).map(|(c, _)| *c);
@@ -1540,7 +1581,7 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
         // variant for ESRI's WKT, without axes).
         let own_north_first = north_first(wkt);
         let axes = |c: u32| epsg::get(c).is_some_and(|e| north_first(&e.wkt) != own_north_first);
-        found.min_by_key(|c| (!named(*c), axes(*c), realization(*c), *c))
+        found.min_by_key(|c| (!named(*c), epsg::is_deprecated(*c), axes(*c), realization(*c), *c))
     };
     // On the datum the WKT names, else on those whose CRSs ESRI writes with its name: GDAL
     // identifies ESRI's ETRS_1989_NTM_Zone_18 on D_ETRS_1989 by its name as EPSG:5118, on
@@ -1551,11 +1592,11 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
     #[cfg(feature = "wbprojection-fallback")]
     {
         // A current CRS on the WKT's datum. Its datum: its code in the table, else its WKT's (WKT 2
-        // CRSs of the table, on datum ensembles, and those only the registry has). A deprecated code
-        // has its replacement's WKT in the table.
+        // CRSs of the table, on datum ensembles, and those only the registry has).
         let on_datum = |code: u32| {
             let theirs = match epsg::get(code) {
-                Some(e) if declared_epsg(&e.wkt).is_some_and(|c| c != code) => return false,
+                // Not a deprecated code that has a replacement (one without stays, EPSG:2008).
+                Some(_) if !epsg_replacements(code).is_empty() => return false,
                 Some(e) if e.datum != 0 => vec![e.datum],
                 Some(e) => wkt_datums(&e.wkt),
                 None => wbp::to_ogc_wkt(code).map(|w| wkt_datums(&w)).unwrap_or_default(),

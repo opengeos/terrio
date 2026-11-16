@@ -2626,13 +2626,15 @@ def suite_crs(ctx):
         "(wkt1_proj_reads.rs), grads and prime meridians (grads_and_prime_meridians.rs), datums "
         "known by ID or name (wkt_datum_shift.rs), WKTs PROJ does not resolve to their EPSG CRS "
         "(wkt_unresolved.rs), and PROJ-string ellipsoid parameters and PROJ4 extensions "
-        "(proj_ellipsoid_shape.rs, proj_ellipsoid_registry.rs); not compared there: the known "
+        "(proj_ellipsoid_shape.rs, proj_ellipsoid_registry.rs), and deprecated EPSG codes by their own "
+        "definition (epsg_deprecated.rs); not compared there: the known "
         "differences each row names (a scale in parts per million, ESRI ATF (Paris), PROJ's datum "
         "pivot and renamed datums, #1012). "
         "Identical: within 1 mm. Within tolerance: within 1 cm (forward, inverse) or 1 m (CRS to "
         "CRS, where the datum transformations GDAL picks can differ by area of use). Known "
-        "differences: deprecated CRSs whose own datum PROJ uses, where terrio uses their "
-        "replacement's (#153).",
+        "differences: RRAF 1991 (EPSG:4640 and 2989), deprecated CRSs whose own datum PROJ chains "
+        "through its RRAFG transformation, where terrio uses its ballpark (#153). Deprecated "
+        "codes have their own definition, as in PROJ (GDAL with OSR_USE_NON_DEPRECATED=NO).",
     )
     if not shutil.which("cargo"):
         s.skipped = "needs cargo"
@@ -2891,6 +2893,31 @@ PROJ_CASES = {
             "EPSG and ESRI registry PROJ strings keep their WKT's ellipsoid", IDENTICAL, "within 1e-6 m",
         ),
     },
+    "epsg_deprecated": {
+        "deprecated_codes_are_placed_by_their_own_definition_as_proj_does": (
+            "Deprecated EPSG CRSs by their own definition (486 cases)", IDENTICAL,
+            "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm (1e-8 degrees geographic); 4 geographic 3D and geocentric CRSs pending "
+            "(opengeos/terrio#1012, item 8)",
+        ),
+        "replacements_are_those_proj_lists": "Deprecated EPSG CRSs: their replacements are PROJ 9.8.1's, GDAL's substitution of a single one",
+        "codes_proj_cannot_transform": (
+            "Deprecated EPSG CRSs PROJ cannot transform (8 cases)", NOT_COMPARED,
+            "PROJ 9.8.1 refuses them; terrio refuses the 6 it cannot write as PROJ strings and transforms the RRAF 1991 "
+            "geocentric CRSs (EPSG:4384, 4972) by their datum's ballpark",
+        ),
+        "geokeys_of_deprecated_codes_read_as_their_own_definition": (
+            "Deprecated EPSG CRSs GDAL substitutes are written to GeoKeys by an identical replacement or as WKT", IDENTICAL,
+            "PROJ 9.8.1 (pyproj 3.8.0, no grids): EPSG:4855's keys read back within 1 mm; GDAL 3.12 reads a code with a single "
+            "replacement as the replacement; EPSG:6986's WKT is read 0.3 m from PROJ (opengeos/terrio#1012, item 19)",
+        ),
+        "geokeys_of_deprecated_codes_read_as_gdal_reads_them": (
+            "GeoKeys giving a deprecated projected code read as GDAL reads them", IDENTICAL,
+            "GDAL 3.12.2: a single replacement's CRS (EPSG:4855 as 5105, 2036 as 2953, 3752 as 3994), another code its own (2191)",
+        ),
+        "ntm_zone_5_keeps_its_own_false_origin": (
+            "EPSG:4855 (deprecated ETRS89 / NTM zone 5) keeps its own false origin", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
+        ),
+    },
 }
 
 
@@ -2932,8 +2959,9 @@ def suite_crs_grids(ctx):
         "and time-dependent transformations with coordinate epochs "
         "(scripts/compare_crs_grids_with_gdal.py), with the largest difference of each case. "
         "Identical: within 1 mm. Within tolerance: within 1 cm, or 1 m from CRS to CRS. Known "
-        "differences: deprecated CRSs whose own datum PROJ uses, where terrio uses their "
-        "replacement's (#153).",
+        "differences: RRAF 1991 (EPSG:4640 and 2989), deprecated CRSs whose own datum PROJ chains "
+        "through its RRAFG transformation, where terrio uses its ballpark (#153). Deprecated "
+        "codes have their own definition, as in PROJ (GDAL with OSR_USE_NON_DEPRECATED=NO).",
     )
     if not shutil.which("cargo"):
         s.skipped = "needs cargo"

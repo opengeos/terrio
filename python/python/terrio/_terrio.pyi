@@ -1190,6 +1190,7 @@ class _CrsEntry(TypedDict):
         "geographic_2d", "geographic_3d", "geocentric", "projected", "vertical", "compound", "other"
     ]
     deprecated: bool
+    replaced_by: list[int]
     area_name: str | None
     bounds: list[float] | None
     projection_method: str | None

@@ -1414,6 +1414,9 @@ wkt1_axes.json, wkt1_proj_reads.json, wkt2_bound.json and proj_ellipsoid_shape.j
 WKTs and placements of points, by scripts/gen_grads_and_prime_meridians.py,
 gen_wkt_datum_shift.py, gen_wkt1_axes.py, gen_wkt1_proj_reads.py, gen_wkt2_bound.py and
 gen_proj_ellipsoid_shape.py).
+So are the EPSG codes, names and replacements of the deprecated EPSG CRSs in the test data
+crates/terrio-crs/tests/data/epsg_deprecated.json (PROJ 9.8.1's placements of points in them, by
+scripts/gen_epsg_deprecated.py).
 The EPSG rows of the test data crates/terrio-crs/tests/data/proj_string_export.tsv and
 wkt1_strict_export.tsv (PROJ 9.8.1's PROJ strings and WKT 1 of EPSG CRSs, by
 scripts/gen_proj_string_export.py and scripts/gen_wkt1_strict_export.py) and geokeys_gdal.tsv

@@ -160,7 +160,13 @@ pub fn read(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> GeoKeysCrs {
     }
     let k = GeoKeys { keys: directory, doubles, ascii };
     let mut epsg = match (k.short(1024), k.short(3072), k.short(2048)) {
-        (_, Some(code), _) if code != 0 && code != USER_DEFINED => Some(code as u32),
+        // A deprecated projected code with a single replacement, as GDAL 3.12 reads it by default
+        // (`OSR_USE_NON_DEPRECATED=YES`): EPSG:4855 as 5105, 3752 (which terrio does not carry)
+        // as 3994. A geographic one GDAL keeps (EPSG:4140).
+        (_, Some(code), _) if code != 0 && code != USER_DEFINED => match crate::epsg_replacements(u32::from(code)) {
+            [replacement] if SpatialRef::from_epsg(*replacement).is_ok() => Some(*replacement),
+            _ => Some(u32::from(code)),
+        },
         (Some(2), _, Some(code)) if code != 0 && code != USER_DEFINED => Some(code as u32),
         (Some(1), _, _) => {
             // A registered CRS only in the GeoKeys' linear unit: GDAL builds the CRS from the
@@ -906,6 +912,12 @@ fn keys_for_proj(proj4: &str, name: &str, geog: Option<u32>) -> Option<GeoKeyVal
     let mut v = GeoKeyValues::default();
     // The geographic CRS it was identified on, unless the PROJ string shifts its datum itself.
     let geog = d.geog.or(geog.filter(|_| d.towgs84.is_none() && d.pm == 0.0));
+    // As GDAL reads it (see `gdal_code`); none for a base GDAL would read as another CRS, whose
+    // datum transformations user-defined keys would lose (EPSG:2036 on NAD83(CSRS98)).
+    let geog = match geog {
+        Some(code) => Some(gdal_code(code)?),
+        None => None,
+    };
     match geog {
         Some(code) => v.shorts.push((2048, u16::try_from(code).ok()?)),
         None => {
@@ -1227,7 +1239,7 @@ impl SpatialRef {
         // a horizontal key reads as another CRS.
         let compound = (!engineering).then(|| self.compound_parts()).flatten().and_then(|(h, v)| {
             let (h, geographic) = horizontal_geokey(h)?;
-            Some((h, u16::try_from(v).ok()?, geographic))
+            Some((h, u16::try_from(gdal_code(v)?).ok()?, geographic))
         });
         match (compound, registered) {
             (Some((h, vertical, geographic)), _) => {
@@ -1250,6 +1262,9 @@ impl SpatialRef {
                 let name = self.name().unwrap_or_else(|| "unnamed".into());
                 // Keep engineering and unrepresentable coded definitions as WKT. In particular,
                 // an engineering identifier must never be written as a projected EPSG code.
+                // Every coded CRS not written by its code, a code GDAL would read as another CRS
+                // (`gdal_code`) among them, is written as WKT, which keeps its datum
+                // transformations and height.
                 let user = if engineering || self.epsg.is_some() { None } else { user_defined_keys(self, &name) };
                 match user {
                     Some(keys) => v = keys,
@@ -1289,9 +1304,34 @@ fn engineering_cs(wkt: &str) -> bool {
     matches!(root.as_str(), "LOCAL_CS" | "ENGCRS" | "ENGINEERINGCRS")
 }
 
+/// The EPSG code to write for an EPSG CRS, so that GDAL 3.12 reads it as that CRS. A deprecated
+/// code with a single replacement reads as the replacement by default
+/// (`OSR_USE_NON_DEPRECATED=YES`): the replacement where it is the same CRS (EPSG:4329, WGS 84
+/// (3D), as 4979: current, with the same definition, datum, datum transformations and area of
+/// use), else `None`, for WKT (EPSG:4855, ETRS89 / NTM zone 5, would read as EPSG:5105, 6,431 km
+/// away). The code itself otherwise.
+fn gdal_code(code: u32) -> Option<u32> {
+    match crate::epsg_replacements(code) {
+        [replacement] => {
+            let (own, other) = (SpatialRef::from_epsg(code).ok()?, SpatialRef::from_epsg(*replacement).ok()?);
+            // The same definition on the same EPSG datum, with the same datum transformations and
+            // area of use (from which PROJ picks them): EPSG:32074's replacement 32064 is not.
+            let datum = |c: u32| crate::epsg::get(c).map(|e| (e.datum, e.three_d, &e.ops, &e.grid_ops, e.area));
+            // And a current replacement (EPSG:3786's, 4088, is deprecated too).
+            let same = !crate::epsg::is_deprecated(*replacement)
+                && own.to_proj4().is_some()
+                && own.to_proj4() == other.to_proj4()
+                && datum(code) == datum(*replacement);
+            same.then_some(*replacement)
+        }
+        _ => Some(code),
+    }
+}
+
 /// A registered horizontal code usable by GeoTIFF 1.1 (requirements 12.4 and 13.4), and
 /// whether it is geographic. Engineering, vertical, geocentric and unknown codes need WKT.
 fn horizontal_geokey(code: u32) -> Option<(u16, bool)> {
+    let code = gdal_code(code)?;
     let short = u16::try_from(code).ok().filter(|code| (1024..USER_DEFINED).contains(code))?;
     let wkt = crate::epsg_wkt(code)?;
     let geographic = SpatialRef::from_epsg(code).is_ok_and(|s| s.is_geographic());

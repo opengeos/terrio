@@ -522,13 +522,16 @@ test("listCrs lists the registry CRSs", () => {
   assert.equal(albers.name, "GDA94 / Australian Albers");
   assert.equal(albers.kind, "projected");
   assert.equal(albers.deprecated, false);
+  assert.deepEqual(albers.replaced_by, []);
   assert.deepEqual(albers.bounds, [112.85, -43.7, 153.69, -9.86]);
   assert.equal(albers.projection_method, "Albers Equal Area");
   assert.match(albers.area_name, /^Australia - Australian Capital Territory/);
   const geographic = terrio.listCrs(undefined, { authority: "EPSG", kind: ["geographic_2d"] });
   assert.ok(geographic.length > 600 && geographic.every((e) => e.kind === "geographic_2d" && !e.deprecated));
   assert.deepEqual(terrio.listCrs("EPSG:3785"), []);
-  assert.equal(terrio.listCrs("EPSG:3785", { includeDeprecated: true })[0].deprecated, true);
+  const [pseudo] = terrio.listCrs("EPSG:3785", { includeDeprecated: true });
+  assert.equal(pseudo.deprecated, true);
+  assert.deepEqual(pseudo.replaced_by, [3857]);
   const both = terrio.listCrs("albers", { authority: ["epsg", "ESRI"] });
   assert.deepEqual([...new Set(both.map((e) => e.authority))].sort(), ["EPSG", "ESRI"]);
   assert.ok(terrio.listCrs(undefined, { authority: "IAU_2015" }).every((e) => e.authority === "IAU_2015"));

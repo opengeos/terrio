@@ -1878,6 +1878,27 @@ renamed) are placed as PROJ places them, but EPSG:7373's, which PROJ places thro
 and terrio still where its code places it (`cargo test -p terrio-crs --test wkt_datum_shift`;
 regenerate with `scripts/gen_wkt_datum_shift.py`, pyproj 3.8.0).
 
+Deprecated EPSG codes keep their own definition, as PROJ 9.8.1 gives it (`CRS.from_epsg`), not their
+replacement's, which GDAL substitutes by default: every deprecated EPSG geographic, geocentric and
+projected CRS with an area of use (498, of 513: 15 have none) places the centre of its area of use
+from WGS 84 where PROJ does without grids, within 1 mm (1e-8 degrees for geographic longitudes and
+latitudes), 486 of them; PROJ cannot transform 8: terrio refuses the 6 PROJ cannot write as PROJ
+strings (EPSG:3752's Mercator (variant A) with a latitude of origin among them) and transforms the
+RRAF 1991 geocentric CRSs (EPSG:4384, 4972) by their datum's ballpark. 4 geographic 3D and
+geocentric CRSs (NAD83(CSRS) and RGNC 1991) are pinned, as still differing, for the geocentric CRSs
+of opengeos/terrio#1012, item 8. Their replacements are those PROJ lists
+(`CRS.get_non_deprecated()`), and `SpatialRef::from_epsg_non_deprecated` gives a single replacement,
+as GDAL does, also of a code terrio does not carry (EPSG:3752 gives 3994) (`cargo test -p terrio-crs
+--test epsg_deprecated`; regenerate with `scripts/gen_epsg_deprecated.py`, pyproj 3.8.0). Where GDAL
+3.12 would read a code as its single replacement, it is written to GeoKeys by the replacement's code
+when that is the same CRS (definition, datum, transformations and area of use: EPSG:4329 as 4979),
+else as WKT in a citation; read back, each places its point as the code does, but EPSG:6986, whose
+WKT terrio reads about 0.3 m from PROJ (opengeos/terrio#1012, item 19). GeoKeys giving a deprecated
+projected code are read as GDAL 3.12.2 reads them: a single replacement's CRS (EPSG:4855 as 5105,
+2036 as 2953, 3752 as 3994), another code its own. The EPSG table itself is generated with
+`OSR_USE_NON_DEPRECATED=NO` (`scripts/gen_epsg_table.py`), and so are the GDAL reference points of
+`epsg_accuracy` (`scripts/gen_epsg_points.py`).
+
 CRSs in grads, and prime meridians, place points where PROJ 9.8.1 does, both ways, within 1 mm and
 1e-9 of a degree or grad: in WKT 1, NTF (Paris) (EPSG:4807) and its sixteen projected CRSs
 (EPSG:27561-27594) as GDAL and ESRI write them, with their codes and without; geographic CRSs in

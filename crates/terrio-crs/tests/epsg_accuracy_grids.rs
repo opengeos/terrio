@@ -20,14 +20,20 @@ fn epsg_transformations_with_grids_match_gdal() {
     terrio_crs::set_network_enabled(Some(false));
     let Some((fwd, inv, cross)) = epsg_common::check("epsg_points_grids.tsv") else { return };
     // Regression guards, counting CRSs (pairs from CRS to CRS) whose every point is within the
-    // distance. With GDAL 3.12.2 and PROJ 9.8.1 and 50 points of each kind per CRS, every point
-    // of the 6354 CRSs is within 1 cm forward and inverse, and 6294 of 6295 pairs are within 1 m
-    // (6291 within 1 cm). The other is a deprecated CRS whose own datum PROJ uses (#153).
+    // distance. With GDAL 3.12.2 and PROJ 9.8.1 and 50 points of each kind per CRS, deprecated
+    // codes by their own definition (`OSR_USE_NON_DEPRECATED=NO`, as PROJ), every point of the
+    // 6354 CRSs is within 1 cm forward and inverse, and 6290 of 6293 pairs are within 1 m (6287
+    // within 1 cm). The other three go from or to RRAF 1991 (EPSG:4640 and 2989), deprecated CRSs
+    // whose own datum PROJ chains through its RRAFG transformation, where terrio uses its
+    // ballpark (#153, opengeos/terrio#1012).
     let n = fwd.errors.len();
     assert!(n > 6000, "only {n} forward CRSs");
     assert!(fwd.points > 300_000, "only {} forward points (an older reference? run scripts/gen_epsg_points.py)", fwd.points);
     assert!(fwd.count(0.01) >= 6354, "forward within 1 cm: {}", fwd.count(0.01));
     assert!(inv.count(0.01) >= 6354, "inverse within 1 cm: {}", inv.count(0.01));
-    assert!(cross.count(0.01) >= 6291, "CRS to CRS within 1 cm: {}", cross.count(0.01));
-    assert!(cross.count(1.0) >= 6294, "CRS to CRS within 1 m: {}", cross.count(1.0));
+    assert!(cross.count(0.01) >= 6287, "CRS to CRS within 1 cm: {}", cross.count(0.01));
+    assert!(cross.count(1.0) >= 6290, "CRS to CRS within 1 m: {}", cross.count(1.0));
+    // The pairs beyond 1 cm, so a lower count hides no other: the three of RRAF 1991 (17 m to
+    // 118 m) and three within 1 m (0.31 m to 0.61 m).
+    assert_eq!(cross.beyond(0.01), ["2989>32220", "4640>32220", "5513>5224", "5651>9000", "10744>2989", "11117>3117"]);
 }

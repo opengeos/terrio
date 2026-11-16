@@ -31,15 +31,16 @@ Writes ``crates/terrio-crs/data/epsg.tsv.zst``, a zstd-compressed text table wit
   code of its geographic 2D CRS, its datum transformations to WGS 84 in the order GDAL lists them
   when no grid is installed (PROJ picks among them for each point), the list GDAL uses when the
   grids are available (empty when it is the same), flags (``d``: a dynamic CRS, ``3``: a
-  geographic 3D CRS), its area of use (``west,south,east,north`` in degrees, which PROJ intersects
-  with the transformations' areas), the PROJ string of its coordinate conversion and the WKT
-  GDAL writes for it.
+  geographic 3D CRS, ``x``: a deprecated CRS), its area of use (``west,south,east,north`` in
+  degrees, which PROJ intersects with the transformations' areas), the PROJ string of its
+  coordinate conversion and the WKT GDAL writes for it.
 - ``P<TAB>geog1<TAB>geog2<TAB>ops<TAB>grid ops``: the transformations GDAL lists between two
   geographic CRSs whose datums have direct transformations between them in the EPSG dataset,
   without and with grids, in the direction geog1 to geog2.
 - ``E<TAB>code<TAB>datum<TAB>type<TAB>name``: a geodetic CRS (``2`` or ``3`` for geographic 2D
-  or 3D, ``g`` for geocentric) of the EPSG dataset or of NKG's (numbered from 2,000,000,000,
-  as their datums are), which PROJ chains transformations through.
+  or 3D, ``g`` for geocentric, followed by ``x`` for a deprecated one) of the EPSG dataset or of
+  NKG's (numbered from 2,000,000,000, as their datums are), which PROJ chains transformations
+  through; a deprecated one only from or to itself, not as an intermediate CRS.
 - ``R<TAB>key<TAB>source<TAB>target<TAB>op<TAB>replaced by<TAB>flags<TAB>via``: a transformation
   PROJ's database registers between geodetic CRSs of two datums (``EPSG:1321``), from and to the
   CRSs it registers it for, with the ``O`` row that runs it between the geographic coordinates of
@@ -58,6 +59,9 @@ Writes ``crates/terrio-crs/data/epsg.tsv.zst``, a zstd-compressed text table wit
   chooses the datums it chains through.
 - ``A<TAB>grid<TAB>old name``: the name a PROJ-data grid had before PROJ 7 (``conus`` for
   ``us_noaa_conus.tif``), which terrio also looks for.
+- ``X<TAB>code<TAB>replacements``: a deprecated EPSG CRS (of a ``C``, ``V`` or ``K`` line) and
+  the codes of the CRSs that replace it, comma-separated (empty when none), as PROJ's
+  ``proj_get_non_deprecated`` lists them.
 
 The PROJ strings are normalized for terrio: datum shifts (``+towgs84``, ``+nadgrids``) are left
 out since the transformations carry them, ``+datum`` is replaced by its ellipsoid, prime meridians
@@ -68,7 +72,8 @@ The lists "with grids" are PROJ's as if every grid of the PROJ CDN (https://cdn.
 installed (``--grid-check known_available``); terrio uses them, without the operations whose
 grids it cannot find, when at least one operation needing grids can be used.
 
-Deprecated codes get the definition of their replacement, as GDAL substitutes it by default.
+Deprecated codes keep their own definition, as PROJ gives it: GDAL's substitution of their
+replacement (``OSR_USE_NON_DEPRECATED``) is turned off.
 
 Usage: python scripts/gen_epsg_table.py
 
@@ -89,6 +94,8 @@ from pyproj.enums import PJType
 
 osr.UseExceptions()
 gdal.PushErrorHandler("CPLQuietErrorHandler")
+# A deprecated code's own definition, as PROJ gives it, not its replacement's.
+gdal.SetConfigOption("OSR_USE_NON_DEPRECATED", "NO")
 warnings.simplefilter("ignore")
 
 OUT = os.path.join(os.path.dirname(__file__), "..", "crates", "terrio-crs", "data", "epsg.tsv.zst")
@@ -705,17 +712,17 @@ def geodetic_rows():
 
     Returns:
         ``("E", code, datum, type, name)`` rows in order of code, ``type`` being ``2`` or ``3``
-        for geographic 2D or 3D CRSs and ``g`` for geocentric ones; with the ``D`` rows of the
-        publication dates of other authorities' datums.
+        for geographic 2D or 3D CRSs and ``g`` for geocentric ones, followed by ``x`` for a
+        deprecated CRS; with the ``D`` rows of the publication dates of other authorities' datums.
     """
     db = sqlite3.connect(os.path.join(pyproj.datadir.get_data_dir(), "proj.db"))
-    query = "SELECT auth_name, code, datum_auth_name, datum_code, type, name FROM geodetic_crs WHERE deprecated = 0"
+    query = "SELECT auth_name, code, datum_auth_name, datum_code, type, name, deprecated FROM geodetic_crs"
     kinds = {"geographic 2D": "2", "geographic 3D": "3", "geocentric": "g"}
     rows = []
-    for auth, code, dauth, dcode, kind, name in db.execute(query):
+    for auth, code, dauth, dcode, kind, name, deprecated in db.execute(query):
         c, d = code_of(auth, code), code_of(dauth, dcode)
         if auth in CHAIN_CRS_AUTHORITIES and kind in kinds and c is not None and d is not None:
-            rows.append(("E", c, d, kinds[kind], name.replace("\t", " ")))
+            rows.append(("E", c, d, kinds[kind] + ("x" if deprecated else ""), name.replace("\t", " ")))
     dates = [
         ("D", OTHER[(a, str(c))], date)
         for a, c, date in db.execute("SELECT auth_name, code, publication_date FROM geodetic_datum WHERE publication_date IS NOT NULL")
@@ -997,7 +1004,8 @@ def geocentric_rows(base):
         area = crs.area_of_use
         bounds = ",".join(repr(round(v, 6)) for v in (area.west, area.south, area.east, area.north)) if area else ""
         yield ("C", code, requested.name.replace("\t", " "), datum, proxy[4] if proxy else "",
-               proxy[5] if proxy else "", proxy[6] if proxy else "", "3" + ("d" if srs.IsDynamic() else ""), bounds,
+               proxy[5] if proxy else "", proxy[6] if proxy else "",
+               "3" + ("d" if srs.IsDynamic() else "") + ("x" if requested.is_deprecated else ""), bounds,
                normalize_proj(srs.ExportToProj4(), crs, "en"), srs.ExportToWkt())
 
 
@@ -1039,7 +1047,7 @@ def rows():
             geog = str(crs.geodetic_crs.to_2d().to_epsg() or "")
         if three_d:
             geog = str(crs.to_2d().to_epsg() or "")
-        flags = ("d" if srs.IsDynamic() else "") + ("3" if three_d else "")
+        flags = ("d" if srs.IsDynamic() else "") + ("3" if three_d else "") + ("x" if crs.is_deprecated else "")
         aou = crs.area_of_use
         area = ",".join(repr(round(v, 6)) for v in (aou.west, aou.south, aou.east, aou.north)) if aou else ""
         line = (code, name, datum, geog, flags, area, normalize_proj(proj, crs, gis_axis(srs, crs)), wkt)
@@ -1191,6 +1199,41 @@ def rows():
     yield from grid_alternatives(names)
 
 
+REPLACEMENT_KINDS = (
+    PJType.GEOGRAPHIC_2D_CRS,
+    PJType.GEOGRAPHIC_3D_CRS,
+    PJType.GEOCENTRIC_CRS,
+    PJType.PROJECTED_CRS,
+    PJType.VERTICAL_CRS,
+    PJType.COMPOUND_CRS,
+)
+
+
+def replacement_rows(lines):
+    """List the deprecated CRSs with their replacements: those of the table, and the deprecated
+    EPSG geographic, geocentric, projected, vertical and compound CRSs it leaves out (EPSG:3752,
+    which PROJ cannot write as a PROJ string), whose replacements GDAL still substitutes.
+
+    Args:
+        lines: The table's lines.
+
+    Returns:
+        ``("X", code, replacements)`` rows, in order of code.
+    """
+    codes = {int(line.split("\t", 2)[1]) for line in lines if line[:2] in ("C\t", "V\t", "K\t")}
+    for kind in REPLACEMENT_KINDS:
+        codes |= {int(c) for c in pyproj.get_codes("EPSG", kind, allow_deprecated=True)}
+    codes = sorted(codes)
+    out = []
+    for code in codes:
+        crs = pyproj.CRS.from_epsg(code)
+        if crs.is_deprecated:
+            ids = (c.to_json_dict().get("id", {}) for c in crs.get_non_deprecated())
+            replacements = sorted({int(i["code"]) for i in ids if i.get("authority") == "EPSG"})
+            out.append(("X", code, ",".join(map(str, replacements))))
+    return out
+
+
 def main():
     """Write the compressed table."""
     # conda's PROJ activation turns PROJ's network access on, with which GDAL fails to import
@@ -1199,6 +1242,7 @@ def main():
     os.environ["PROJ_NETWORK"] = "OFF"
     osr.SetPROJEnableNetwork(False)
     lines = ["\t".join(map(str, r)) + "\n" for r in rows()]
+    lines += ["\t".join(map(str, r)) + "\n" for r in replacement_rows(lines)]
     header = (
         f"# EPSG Geodetic Parameter Dataset (https://epsg.org), via PROJ {pyproj.proj_version_str} "
         f"and GDAL {gdal.__version__}. Generated by scripts/gen_epsg_table.py.\n"
