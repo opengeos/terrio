@@ -102,6 +102,26 @@ fn cog_samples_and_epsg_without_crs_engine() {
     assert!(full.crs().to_wkt().is_some_and(|w| w.contains("Transverse_Mercator")));
 }
 
+/// Opened without the CRS engine, a geographic GeoTIFF (GTModelTypeGeoKey 2) reads its EPSG code
+/// from GeographicTypeGeoKey.
+#[test]
+fn geographic_epsg_without_crs_engine() {
+    let cfg = terrio::RasterConfig {
+        cols: 16,
+        rows: 16,
+        bands: 1,
+        data_type: terrio::DataType::U8,
+        crs: terrio::crs::SpatialRef::from_epsg(4326).unwrap().to_crs_info(),
+        cell_size: 0.1,
+        ..Default::default()
+    };
+    let ds = terrio::RasterDataset::new(terrio::Raster::from_data_native(cfg, terrio::raster::RasterData::U8(vec![1; 256])).unwrap(), true);
+    let bytes = terrio::memory::write_raster_bytes(&ds, "g.tif", &Default::default()).unwrap();
+    let file = SparseFile::new(bytes.len() as u64);
+    let (lean, _) = sparse(&bytes, &file, || Ok(terrio::LazyRaster::from_sparse_epsg_only(file.clone())?.unwrap()));
+    assert_eq!(lean.geotiff_epsg(), Some(4326));
+}
+
 fn countries() -> Vec<terrio::Layer> {
     let mut layer = terrio::Layer::new("squares");
     layer.add_field(terrio::FieldDef::new("id", terrio::FieldType::Integer));
