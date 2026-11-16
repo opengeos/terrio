@@ -64,14 +64,18 @@ pub(crate) enum OpKind {
     Vertical,
 }
 
-/// Records that an operation was used, run in reverse or not: `None` (or one without steps) for
-/// PROJ's ballpark.
+/// Records that an operation was used, run in reverse or not: `None` (or an unnamed one without
+/// steps) for PROJ's ballpark.
 pub(crate) fn note(op: Option<&Op>, reverse: bool, kind: OpKind) {
     USED.with(|u| {
         let mut u = u.borrow_mut();
         let Some(used) = u.as_mut() else { return };
         used.push(match op {
-            Some(op) if !op.ballpark && !op.steps.is_empty() => {
+            // A named transformation without steps is EPSG's null transformation (SWEREF99 to
+            // WGS 84 (1), ETRS89 to WGS 84 (1)), or a concatenation of them (Inverse of ETRS89 to
+            // ETRF89 + ETRS89 to WGS 84 (1)), which PROJ 9.8.1 names: not a ballpark. So is a
+            // WKT 2 `BOUNDCRS`'s zero Helmert transformation, which PROJ names too.
+            Some(op) if !op.ballpark && (!op.steps.is_empty() || (!op.name.is_empty() && matches!(kind, OpKind::Datum))) => {
                 let names = step_names(op, reverse);
                 let name = if names.is_empty() {
                     let unnamed = match kind {
@@ -698,11 +702,13 @@ fn crs_extents(src: &Def, dst: &Def) -> Vec<[f64; 4]> {
 /// CRSs and datums ([`chains`]).
 ///
 /// PROJ's datum pivot tries the CRSs of the datum in order of code, the geocentric and 3D ones
-/// too, and frames each transformation with the operation from the CRS into that CRS: a
-/// ballpark of unknown accuracy when the datum's name is not its ID's. terrio does not follow
-/// it yet (opengeos/terrio#1012). It uses the code's own transformations between geographic 2D
-/// CRSs. When either CRS has a renamed datum, `Route::build` does not search at all, for both
-/// sides, and that CRS keeps its code's area: the route is the one between the codes.
+/// too, and frames each transformation with the operation from the CRS into that CRS: so, for an
+/// unresolved source CRS, the static transformations registered from the datum's other CRSs to
+/// the target's datum join the list, filtered and sorted as the CRSs' own. The framing is a
+/// ballpark of unknown accuracy when the datum's name is not its ID's, which terrio does not
+/// follow yet (opengeos/terrio#1012): when either CRS has a renamed datum, `Route::build` does not
+/// search at all, for both sides, and that CRS keeps its code's area: the route is the one
+/// between the codes.
 fn unresolved_search(list: Vec<Leg>, a: u32, b: u32, src: &Def, dst: &Def, aoi: Option<&[f64; 4]>, all: bool) -> Kind {
     let reg = epsg::registry();
     if !list.iter().any(|l| !l.op.ballpark) {
@@ -715,6 +721,47 @@ fn unresolved_search(list: Vec<Leg>, a: u32, b: u32, src: &Def, dst: &Def, aoi: 
         resort(&mut kind, a, b, aoi);
         return kind;
     };
+    // PROJ's datum pivot also tries the other CRSs of an unresolved source CRS's datum (its
+    // geocentric and 3D ones), with the conversion into each: their transformations to the target
+    // CRS's datum join the list (ONGD14's Esri WKT, without ID, takes "ONGD14 to WGS 84 (1)",
+    // registered between the geocentric CRSs, at 0.1 m, over the geographic 2D CRS's null
+    // transformation). Not for an unresolved target: PROJ 9.8.1 goes from WGS 84 into that WKT
+    // by the code's own transformations.
+    let mut list = list;
+    let mut pivot: Vec<(usize, bool)> = Vec::new();
+    if src.unresolved().is_some() {
+        for code in reg.by_datum.get(&ga.datum).into_iter().flatten().filter(|c| **c != ga.code) {
+            for &i in reg.at.get(code).into_iter().flatten() {
+                let r = &reg.ops[i];
+                let (end, from_code) = if r.source == *code { (r.target, true) } else { (r.source, false) };
+                // As the CRSs' own: static, between the datums, available, and relevant to the
+                // CRSs' areas and the area of interest.
+                if r.time_dependent || r.ensemble || !reg.geodetic.get(&end).is_some_and(|g| g.datum == gb.datum) {
+                    continue;
+                }
+                if (!all && !r.op.available()) || !relevant(&r.op, src, dst, aoi) {
+                    continue;
+                }
+                // Run from the source CRS to the target: forward when the registered operation
+                // leaves the source CRS's datum.
+                pivot.push((i, !from_code));
+            }
+        }
+    }
+    // Without those another of them replaces, and those the list has (by name: a list between
+    // projected CRSs holds them flattened).
+    let gone = superseded(reg, pivot.iter().map(|p| p.0), false);
+    let concatenated = !src.is_geographic() || !dst.is_geographic();
+    let mut pivoted = false;
+    for (i, reverse) in pivot {
+        let op = &reg.ops[i].op;
+        if gone.contains(&i) || list.iter().any(|l| Arc::ptr_eq(&l.op, op) || (l.op.name == op.name && !op.name.is_empty())) {
+            continue;
+        }
+        let flat = concatenated && (op.chain_accuracy != op.accuracy || op.chain_bounds != op.bounds);
+        list.push(Leg { op: if flat { Arc::new(op.as_concatenated()) } else { op.clone() }, reverse });
+        pivoted = true;
+    }
     let direct: Vec<&Leg> = list.iter().filter(|l| !l.op.ballpark).collect();
     // Whether every transformation has a step among `names`.
     let all_with = |names: &HashSet<&str>| direct.iter().all(|l| step_names(&l.op, false).iter().any(|n| names.contains(n.as_str())));
@@ -725,7 +772,12 @@ fn unresolved_search(list: Vec<Leg>, a: u32, b: u32, src: &Def, dst: &Def, aoi: 
         || (!src.is_dynamic() && !dst.is_dynamic() && all_with(time_dependent));
     if !search {
         let mut kind = Kind::List(list);
-        resort(&mut kind, a, b, aoi);
+        // The transformations the datum pivot adds are sorted in with the CRSs' own.
+        if pivoted {
+            sort_legs(&mut kind, aoi);
+        } else {
+            resort(&mut kind, a, b, aoi);
+        }
         return kind;
     }
     let extents = crs_extents(src, dst);
@@ -768,9 +820,14 @@ fn direct_chain(l: &Leg, aoi: Option<&[f64; 4]>) -> (SortKey, Chain) {
 /// interest is not theirs, as PROJ sorts them for its own.
 fn resort(kind: &mut Kind, a: u32, b: u32, aoi: Option<&[f64; 4]>) {
     let area = |code: u32| epsg::get(code).and_then(|e| e.area);
-    if let Kind::List(l) = kind
-        && aoi.copied() != smaller(area(a), area(b))
-    {
+    if aoi.copied() != smaller(area(a), area(b)) {
+        sort_legs(kind, aoi);
+    }
+}
+
+/// Sorts a list of transformations as PROJ sorts them for an area of interest.
+fn sort_legs(kind: &mut Kind, aoi: Option<&[f64; 4]>) {
+    if let Kind::List(l) = kind {
         // Run in reverse, a transformation has the inverse's name.
         let key = |leg: &Leg| {
             let name = step_names(&leg.op, leg.reverse).join(" + ");

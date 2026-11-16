@@ -20,9 +20,9 @@ always_xy=True).transform``: to WGS 84, from WGS 84 (the point in WGS 84), and, 
 ETRS89, NAD83 and ETRS89 / UTM zone 32N. ``by_code`` is the same with the EPSG code in place of the
 WKT.
 
-``pending`` cases are those PROJ places by its datum pivot through the datum's CRSs in order of
-code (ONGD14) or through its ballpark into a CRS of a renamed datum, which terrio does not follow
-yet. EPSG:4901 (ATF (Paris)) is left out: PROJ's placement of its ESRI WKT applies the Paris
+``pending`` cases are those PROJ places through its ballpark into a CRS of a renamed datum, or by
+its datum pivot into a CRS it cannot find by its name (ONGD14 renamed), which terrio does not
+follow yet. From an unresolved CRS terrio follows the datum pivot (``PIVOT_FOLLOWED``). EPSG:4901 (ATF (Paris)) is left out: PROJ's placement of its ESRI WKT applies the Paris
 prime meridian twice, which terrio does not copy (``tests/grads_and_prime_meridians.rs`` checks it
 is placed as PROJ places EPSG:4901).
 
@@ -103,16 +103,27 @@ PENDING = {
     "5132 wkt2 datum id, renamed",
     "9309 wkt2 datum id, renamed",
     "10831 wkt2 datum id, renamed",
-    "7373 esri",
     "7373 esri gcs renamed",
     "7373 wkt2 geodcrs renamed",
     "7373 esri compound renamed",
-    "7373 wkt1 datum authority",
     "7373 esri gcs renamed, local id",
     "7373 wkt2 datum id, datum renamed",
     "4806 wkt2 datum id, datum renamed",
     "5132 wkt2 datum id, datum renamed",
     "9309 wkt2 datum id, datum renamed",
+}
+
+
+# WKTs whose placement from them (not into them) terrio follows PROJ's datum pivot for: PROJ
+# goes from an unresolved CRS through the transformations of its datum's other CRSs. Into one
+# PROJ goes through the pivot only when it cannot find the CRS by its name (a renamed one), which
+# terrio does not follow yet.
+PIVOT_FOLLOWED = {
+    "7373 esri",
+    "7373 esri gcs renamed",
+    "7373 wkt2 geodcrs renamed",
+    "7373 esri compound renamed",
+    "7373 wkt1 datum authority",
 }
 
 
@@ -340,7 +351,11 @@ def main():
         by_code = place(*((other, code_crs) if reverse else (code_crs, other)), point)
         if proj and by_code:
             # Pending: PROJ places it otherwise than the code, by a step terrio does not follow.
-            pending = key in PENDING and metres(proj, by_code, geographic) > 0.1
+            pending = (
+                key in PENDING
+                and metres(proj, by_code, geographic) > 0.1
+                and not (key in PIVOT_FOLLOWED and not reverse)
+            )
             cases.append(
                 {
                     "name": name,

@@ -1878,12 +1878,13 @@ the datum's ID). WKT 1 with the datum's `AUTHORITY` alone falls under one or the
 The WKTs are variants of the 16 geographic CRSs whose ESRI or renamed WKT PROJ places through an
 intermediate datum (Monte Mario (Rome), Tokyo 1892, DHDN, ...), of every 25th EPSG geographic 2D
 CRS, and ESRI WKTs of eight projected CRSs (three with northing first). The points go to and from
-WGS 84 and, for a sample, to ETRS89, NAD83 and ETRS89 / UTM zone 32N: 1,100 cases. 1,074 of them are
-placed within 1 mm of PROJ, 107 of those where PROJ places them otherwise than by the code; on main,
-those 107 differ, by 0.12 m to 390 m. The other 26 are pinned at the code's placement: those PROJ
-places by its datum pivot (ESRI's ONGD14) or through its ballpark into a CRS of a renamed datum
-(also under the CRS's own name), which terrio does not follow yet. ATF (Paris) is left out (its ESRI
-WKT is checked in `grads_and_prime_meridians`) (`cargo test -p terrio-crs --test wkt_unresolved`;
+WGS 84 and, for a sample, to ETRS89, NAD83 and ETRS89 / UTM zone 32N: 1,100 cases. 1,079 of them are
+placed within 1 mm of PROJ, 112 of those where PROJ places them otherwise than by the code, by
+0.12 m to 390 m (five, ESRI's ONGD14 to WGS 84 and its variants, by 1.23 m through PROJ's datum
+pivot). The other 21 are pinned at the code's placement: those PROJ places through its ballpark
+into a CRS of a renamed datum (also under the CRS's own name), or by its datum pivot into a CRS it
+cannot find by its name (ONGD14 renamed), which terrio does not follow yet. ATF (Paris) is left
+out (its ESRI WKT is checked in `grads_and_prime_meridians`) (`cargo test -p terrio-crs --test wkt_unresolved`;
 regenerate with `scripts/gen_wkt_unresolved.py`, pyproj 3.8.0; the names PROJ looks CRSs up by come
 from `scripts/gen_crs_names.py`).
 
@@ -1897,9 +1898,8 @@ cases). For OSGB36, DHDN, NZGD49 and some CH1903 cases (46), PROJ's best transfo
 (OSTN15, BETA2007, CHENyx06, the NZGD2000 grids), so with those grids installed PROJ may place these
 points otherwise; the cases record it. Five WKTs PROJ does not resolve to their code and places
 through other datums or CRSs (the ESRI WKT 1 of EPSG:4806, 5132 and 7373, and of EPSG:4314 and 31467
-renamed) are placed as PROJ places them, but EPSG:7373's, which PROJ places through its datum pivot
-and terrio still where its code places it (`cargo test -p terrio-crs --test wkt_datum_shift`;
-regenerate with `scripts/gen_wkt_datum_shift.py`, pyproj 3.8.0).
+renamed) are placed as PROJ places them, EPSG:7373's through its datum pivot (`cargo test -p
+terrio-crs --test wkt_datum_shift`; regenerate with `scripts/gen_wkt_datum_shift.py`, pyproj 3.8.0).
 
 Deprecated EPSG codes keep their own definition, as PROJ 9.8.1 gives it (`CRS.from_epsg`), not their
 replacement's, which GDAL substitutes by default: every deprecated EPSG geographic, geocentric and

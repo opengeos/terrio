@@ -110,10 +110,11 @@ fn wkts_proj_does_not_resolve_are_placed_through_other_datums_as_proj_does() {
     }
 }
 
-/// The one PROJ places by its datum pivot (EPSG:7373's ESRI WKT 1, ONGD14) is placed by its code,
-/// not as PROJ places it, until terrio follows that step (opengeos/terrio#1012, item 7 step 2).
+/// The one PROJ places by its datum pivot (EPSG:7373's ESRI WKT 1, ONGD14) is placed as PROJ
+/// places it: through "ONGD14 to WGS 84 (1)", registered between the datum's geocentric CRSs
+/// (0.1 m), not its code's null transformation (opengeos/terrio#1012, item 7 step 2).
 #[test]
-fn a_wkt_proj_places_by_its_datum_pivot_is_placed_by_its_code() {
+fn a_wkt_proj_places_by_its_datum_pivot_is_placed_as_proj_does() {
     offline();
     let cases = differences(true);
     assert_eq!(cases.len(), 1);
@@ -121,7 +122,7 @@ fn a_wkt_proj_places_by_its_datum_pivot_is_placed_by_its_code() {
         let (got, _) = place(case);
         let (proj, by_code) = (pair(&case["proj"]), pair(&case["by_code"]));
         let name = case["name"].as_str().unwrap();
-        assert!(metres(got, by_code) < 1e-3, "{name}: {got:?}, by its code {by_code:?}");
+        assert!(metres(got, proj) < 1e-3, "{name}: {got:?}, PROJ {proj:?}");
         assert!(metres(proj, by_code) >= 1e-3, "{name}: PROJ {proj:?} placed by its code");
     }
 }

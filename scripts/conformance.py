@@ -2950,9 +2950,9 @@ PROJ_CASES = {
         "wkts_proj_does_not_resolve_are_placed_through_other_datums_as_proj_does": (
             "WKTs PROJ places through other datums than their code's", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
         ),
-        "a_wkt_proj_places_by_its_datum_pivot_is_placed_by_its_code": (
-            "EPSG:7373's ESRI WKT 1 (ONGD14), which PROJ places by its datum pivot", NOT_COMPARED,
-            "known difference, placed by the code until terrio follows that step (opengeos/terrio#1012, item 7 step 2)",
+        "a_wkt_proj_places_by_its_datum_pivot_is_placed_as_proj_does": (
+            "EPSG:7373's ESRI WKT 1 (ONGD14), which PROJ places by its datum pivot", IDENTICAL,
+            "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm, through the datum's geocentric CRSs' transformation",
         ),
     },
     "wkt_unresolved": {
@@ -2960,9 +2960,23 @@ PROJ_CASES = {
             "WKTs PROJ does not resolve to their EPSG CRS: ESRI, renamed, WKT 2 without IDs (1,100 cases)", IDENTICAL,
             "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
         ),
-        "datum_pivot_and_renamed_datums_are_placed_by_the_code": (
-            "WKTs PROJ places by its datum pivot or a renamed datum", NOT_COMPARED,
+        "renamed_datums_and_the_datum_pivot_into_them_are_placed_by_the_code": (
+            "WKTs PROJ places through a renamed datum, or by its datum pivot into a CRS it cannot find by name", NOT_COMPARED,
             "known difference, placed by the code until terrio follows those steps (opengeos/terrio#1012, item 7 step 2)",
+        ),
+    },
+    "null_transformations": {
+        "null_transformations_are_named_not_ballparks": (
+            "EPSG null transformations (SWEREF99, ETRS89, NZGD2000, REGVEN to WGS 84) and their concatenations: name, accuracy, ballpark flag",
+            IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0): proj_trans_get_last_used_operation's name and accuracy",
+        ),
+        "a_wkt2_projected_crs_on_a_null_transformation_datum_is_not_a_ballpark": (
+            "SWEREF99 TM as WKT 2 without its ID, to WGS 84: the null transformation, not a ballpark",
+            IDENTICAL,
+            (
+                "PROJ 9.8.1 (pyproj 3.8.0): proj_trans_get_last_used_operation's name to WGS 84; known difference from WGS 84: "
+                "PROJ adds \"+ SWEREF99 TM\", terrio leaves the projection unnamed"
+            ),
         ),
     },
     "proj_ellipsoid_shape": {
