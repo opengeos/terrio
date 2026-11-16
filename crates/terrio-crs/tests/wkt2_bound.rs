@@ -26,7 +26,7 @@ fn bound_crss_place_points_as_proj_does() {
     offline();
     let data: Value = serde_json::from_str(include_str!("data/wkt2_bound.json")).unwrap();
     let cases = data["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 39);
+    assert_eq!(cases.len(), 58);
     let mut bad = vec![];
     for case in cases {
         let num = |v: &Value, i: usize| v[i].as_f64().unwrap();
@@ -129,5 +129,51 @@ fn an_unreadable_shift_to_another_crs_is_refused() {
             assert_ne!(w, wkt, "{name}");
             assert!(Transformer::new(&SpatialRef::from_wkt(&w), &wgs84).is_err(), "{name}: {w}");
         }
+    }
+}
+
+/// A time-specific Helmert transformation (EPSG 1065, 1066) needs a coordinate epoch, which a
+/// `BOUNDCRS` has none of: PROJ 9.8.1 refuses it ("Input is not a transformation"), and terrio
+/// refuses it too, rather than leaving the shift out. A time-dependent one (EPSG 1057) is applied
+/// without its rates and reference epoch, as PROJ applies it: where PROJ places the coordinate
+/// frame case (EPSG 9607), with or without them.
+#[test]
+fn a_time_specific_helmert_transformation_is_refused_and_rates_are_left_out() {
+    offline();
+    let data: Value = serde_json::from_str(include_str!("data/wkt2_bound.json")).unwrap();
+    let case = data["cases"].as_array().unwrap().iter().find(|c| c["name"] == "method EPSG:9607, to WGS 84").unwrap();
+    let wkt = case["wkt"].as_str().unwrap();
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    for code in [1065, 1066] {
+        let w = wkt.replace(r#"METHOD["m",ID["EPSG",9607]]"#, &format!(r#"METHOD["m",ID["EPSG",{code}]]"#));
+        assert_ne!(w, wkt);
+        let crs = SpatialRef::from_wkt(&w);
+        assert!(Transformer::new(&crs, &wgs84).is_err(), "EPSG:{code}");
+        assert_eq!(crs.to_proj4(), None, "EPSG:{code}");
+    }
+    // The last parameter, then the transformation's and the BOUNDCRS's brackets.
+    let dependent = wkt.replace(r#"METHOD["m",ID["EPSG",9607]]"#, r#"METHOD["m",ID["EPSG",1057]]"#);
+    let rates = r#",PARAMETER["Rate of change of X-axis translation",0.001,LENGTHUNIT["metre per year",1],ID["EPSG",1040]],PARAMETER["Parameter reference epoch",2010,TIMEUNIT["year",31556925.445],ID["EPSG",1049]]"#;
+    let with_rates = format!("{}{rates}]]", dependent.strip_suffix("]]").unwrap());
+    for w in [&dependent, &with_rates] {
+        let crs = SpatialRef::from_wkt(w);
+        let (lon, lat) = Transformer::new(&crs, &wgs84).unwrap().transform(530000.0, 180000.0).unwrap();
+        let proj = (case["proj"][0].as_f64().unwrap(), case["proj"][1].as_f64().unwrap());
+        assert!(metres((lon, lat), proj) < 1e-3, "({lon}, {lat}), PROJ {proj:?}");
+        assert_eq!(crs.to_proj4(), None);
+    }
+}
+
+/// PROJ 9.8.1 does not read a `BOUNDCRS` without its `ABRIDGEDTRANSFORMATION` ("Invalid
+/// projection"); terrio refuses it too, rather than reading its source CRS without a shift.
+#[test]
+fn a_bound_crs_without_its_transformation_is_refused() {
+    offline();
+    let data: Value = serde_json::from_str(include_str!("data/wkt2_bound.json")).unwrap();
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    for name in ["method EPSG:9607, to WGS 84", "WKT 1 projected source with its own TOWGS84, to WGS 84"] {
+        let wkt = data["cases"].as_array().unwrap().iter().find(|c| c["name"] == name).unwrap()["wkt"].as_str().unwrap();
+        let without = format!("{}]", &wkt[..wkt.find(",ABRIDGEDTRANSFORMATION").unwrap()]);
+        assert!(Transformer::new(&SpatialRef::from_wkt(&without), &wgs84).is_err(), "{name}");
     }
 }

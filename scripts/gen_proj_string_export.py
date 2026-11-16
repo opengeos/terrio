@@ -393,6 +393,18 @@ def bound_wkts():
         bound_wkt(BNG_WKT2, ("Geocentric translations (geocentric domain)", 1031), OSGB_7[:3]),
         bound_wkt(BNG_WKT2, ("Position Vector transformation (geog3D domain)", 1037), OSGB_7),
         bound_wkt(BNG_WKT2, PV, OSGB_7[:3]).replace(',ID["EPSG",9606]]', "]"),
+        # Seven parameters, one of them twice and the scale missing: no string.
+        bound_wkt(BNG_WKT2, PV, OSGB_7).replace(
+            'PARAMETER["Scale difference",0.999979511,ID["EPSG",8611]]',
+            'PARAMETER["X-axis translation",446.448,ID["EPSG",8605]]',
+        ),
+    ] + [
+        # Each Helmert method PROJ applies, by its EPSG code alone, with seven parameters:
+        # PROJ writes none for the time-dependent and Molodensky-Badekas methods. (Geocentric
+        # translations with a rotation are written with it, but transformed without it; terrio
+        # writes none, a known difference.)
+        bound_wkt(BNG_WKT2, ("m", code), OSGB_7)
+        for code in (1037, 1033, 1038, 1032, 1034, 1053, 1054, 1056, 1057, 1061, 1063, 1133, 1140, 1149)
     ]
 
 

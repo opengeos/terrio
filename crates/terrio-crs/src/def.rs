@@ -1756,7 +1756,7 @@ pub(crate) fn vertical_from_wkt(w: &str) -> Option<Vertical> {
 }
 
 /// Whether a WKT is a WKT 2 `BOUNDCRS`.
-fn is_bound_crs(w: &str) -> bool {
+pub(crate) fn is_bound_crs(w: &str) -> bool {
     w.trim_start().get(..8).is_some_and(|k| k.eq_ignore_ascii_case("BOUNDCRS"))
 }
 

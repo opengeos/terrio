@@ -248,3 +248,17 @@ fn a_bound_crs_over_a_source_with_its_own_shift_has_no_proj_string() {
         }
     }
 }
+
+#[test]
+fn geocentric_translations_with_a_rotation_have_no_proj_string() {
+    // PROJ 9.8.1 (pyproj 3.8.0) applies a geocentric translations transformation (EPSG 9603)
+    // without the rotations and scale a `BOUNDCRS` gives it, as `wkt2_bound.rs` checks, but writes
+    // them in its PROJ string (`+towgs84=446.448,-125.157,542.06,0.15,0.247,0.842,-20.489`), which
+    // places points elsewhere. terrio writes none; with no rotation or scale it writes PROJ's.
+    let rows = rows();
+    let seven = rows.iter().find(|r| r.kind == "wkt" && r.input.contains(r#"METHOD["m",ID["EPSG",1033]]"#)).unwrap();
+    let wkt = seven.input.replace(r#"METHOD["m",ID["EPSG",1033]]"#, r#"METHOD["m",ID["EPSG",9603]]"#);
+    assert_eq!(SpatialRef::from_wkt(&wkt).to_proj4(), None);
+    let three = rows.iter().find(|r| r.input.contains(r#""Geocentric translations (geog2D domain)",ID["EPSG",9603]"#)).unwrap();
+    assert!(three.proj.as_deref().is_some_and(|p| p.contains("+towgs84=446.448,-125.157,542.06,0,0,0,0")));
+}

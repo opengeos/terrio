@@ -1816,10 +1816,14 @@ WKT 2 `BOUNDCRS`s with a Helmert transformation, to WGS 84 and to ED50 and OSGB3
 without their codes, three and seven parameters, position vector and coordinate frame, a
 geographic and a projected source, over a source terrio identifies as EPSG:4277, over WKT 1
 sources (GDAL's and Esri's, with and without a `TOWGS84` of their own, which the bound
-transformation replaces), and to a datum without transformations), place points where PROJ 9.8.1 does, in WGS 84 and, both ways, in CRSs on
-the target's datum (and without the shift in CRSs on the source's datum and in other CRSs of the
-target's ellipsoid), within 1 mm (`cargo test -p terrio-crs --test wkt2_bound`;
-regenerate with `scripts/gen_wkt2_bound.py`, pyproj 3.8.0).
+transformation replaces), to a datum without transformations, and each Helmert method PROJ
+applies, given by its EPSG code alone: 19 of them, the time-dependent, Molodensky-Badekas, full
+matrix and geog3D to compound ones among them), place points where PROJ 9.8.1 does, in WGS 84
+and, both ways, in CRSs on the target's datum (and without the shift in CRSs on the source's
+datum and in other CRSs of the target's ellipsoid), within 1 mm. A time-dependent one's rates
+are left out, as PROJ leaves them out; a time-specific Helmert transformation and a `BOUNDCRS`
+without its transformation are refused, as PROJ refuses them (`cargo test -p terrio-crs --test wkt2_bound`; regenerate with
+`scripts/gen_wkt2_bound.py`, pyproj 3.8.0).
 
 WKT that PROJ 9.8.1 reads, 26 CRSs (20 of which terrio refused), is read and places a point where
 PROJ does, within 1 mm (1e-9 degrees for geographic CRSs), with PROJ's PROJ string (values within a

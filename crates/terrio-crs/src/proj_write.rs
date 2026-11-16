@@ -113,20 +113,20 @@ pub(crate) fn write(s: &SpatialRef) -> Option<String> {
 
 /// Whether a WKT 2 `BOUNDCRS` has no PROJ string, as PROJ 9.8.1 writes none (or one that does
 /// not place points where it does):
-/// - a position vector or coordinate frame transformation without all seven parameters (a
-///   geocentric translation's three are enough);
+/// - a Helmert transformation PROJ does not write (see `wkt2::helmert_writable`);
 /// - a source CRS whose datum has a `TOWGS84` of its own (a WKT 1 source, as GDAL writes one):
 ///   PROJ writes that shift, but transforms by the bound one.
 fn unwritable_bound(wkt: &str) -> bool {
+    if !crate::def::is_bound_crs(wkt) {
+        return false;
+    }
     let Some(root) = crate::wkt1::parse(wkt).filter(|r| r.key.eq_ignore_ascii_case("BOUNDCRS")) else { return false };
     let source = root.child("SOURCECRS").and_then(crate::wkt2::first_node);
     let own_shift = source.is_some_and(|s| {
         let geogcs = if s.key.eq_ignore_ascii_case("PROJCS") { s.child("GEOGCS") } else { Some(s) };
         geogcs.and_then(|g| g.child("DATUM")).is_some_and(|d| d.child("TOWGS84").is_some())
     });
-    let Some(t) = root.child("ABRIDGEDTRANSFORMATION") else { return own_shift };
-    let seven = crate::wkt2::helmert_method(t).is_some_and(|m| m.rotations);
-    own_shift || (seven && t.children("PARAMETER").count() < 7)
+    own_shift || root.child("ABRIDGEDTRANSFORMATION").is_some_and(|t| !crate::wkt2::helmert_writable(t))
 }
 
 /// The shift to WGS 84 of a CRS's WKT, when it has one: `+nadgrids`, else `+towgs84`.

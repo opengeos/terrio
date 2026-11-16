@@ -2782,6 +2782,13 @@ PROJ_CASES = {
         "only_best_transforms_a_bound_crs_as_proj_does": (
             "WKT 2 BOUNDCRS under ONLY_BEST", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
         ),
+        "a_time_specific_helmert_transformation_is_refused_and_rates_are_left_out": (
+            "WKT 2 BOUNDCRS: time-specific Helmert refused, time-dependent rates left out", IDENTICAL,
+            "PROJ 9.8.1 (pyproj 3.8.0): refused; within 1 mm",
+        ),
+        "a_bound_crs_without_its_transformation_is_refused": (
+            "WKT 2 BOUNDCRS without its transformation refused", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0): refused",
+        ),
         "a_wgs84_target_is_known_by_any_datum_keyword": (
             "WKT 2 BOUNDCRS: WGS 84 target by `DATUM`, `GEODETICDATUM` or `TRF`", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
         ),

@@ -295,6 +295,20 @@ CASES = [
         (-0.1246, 51.5007),
     ),
 ]
+# Each Helmert method PROJ applies, given by its EPSG code alone: geocentric translations (which
+# PROJ applies without the rotations and scale given), position vector and coordinate frame in
+# each domain, the time-dependent and Molodensky-Badekas methods without their rates or
+# evaluation point, and coordinate frame's full matrix and geog3D to compound variants.
+METHOD_CODES = [9603, 1031, 1035, 1037, 9606, 1033, 1038, 9607, 1032, 1034, 1053, 1054]
+METHOD_CODES += [1056, 1057, 1061, 1063, 1133, 1140, 1149]
+CASES += [
+    (
+        f"method EPSG:{code}, to WGS 84",
+        bound(BNG, WGS84, SHIFT, "m", code),
+        (530000.0, 180000.0),
+    )
+    for code in METHOD_CODES
+]
 
 
 def main():
