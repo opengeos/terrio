@@ -1707,9 +1707,10 @@ pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
     match own {
         Some(own) => own.same_conversion(&theirs) && (own.ell.a - theirs.ell.a).abs() < 1e-3 && (own.ell.es - theirs.ell.es).abs() < 1e-9,
         None => {
-            // A method EPSG names by its code (PROJ's own WKT 2 of Belge 72, `ID["EPSG",9803]`),
-            // which the registry's WKT 1 names otherwise; else the same method name. Not a method
-            // known by neither (an unknown method declaring EPSG:27700).
+            // The code's method, by EPSG's name (PROJ's own WKT 2 of Belge 72, `Lambert Conic
+            // Conformal (2SP Belgium)`, which the registry's WKT 1 names otherwise) or by the
+            // registry WKT's name. Not another method (Belge 72 or an unknown method declaring
+            // EPSG:27700).
             let method = |w: &str| {
                 let root = wkt1::parse(w)?;
                 let node = root.child("PROJECTION").or_else(|| root.child("CONVERSION").and_then(|c| c.child("METHOD")))?.clone();
@@ -1717,8 +1718,9 @@ pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
             };
             let Some(own) = method(wkt) else { return false };
             let registered = epsg::get(code).map(|e| e.wkt.clone()).or_else(|| registry_wkt(code));
-            own.epsg().is_some()
-                || registered.as_deref().and_then(method).is_some_and(|t| t.name().map(wkt1::norm) == own.name().map(wkt1::norm))
+            let Some(name) = own.name().map(wkt1::norm) else { return false };
+            catalog::epsg_method(code).is_some_and(|m| wkt1::norm(m) == name)
+                || registered.as_deref().and_then(method).is_some_and(|t| t.name().map(wkt1::norm).as_deref() == Some(name.as_str()))
         }
     }
 }

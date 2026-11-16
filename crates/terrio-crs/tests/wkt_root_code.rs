@@ -17,14 +17,17 @@ fn a_wkt_is_read_by_its_nodes_not_its_root_code() {
     terrio_crs::set_network_enabled(Some(false));
     let data: Value = serde_json::from_str(include_str!("data/wkt_root_code.json")).unwrap();
     let cases = data["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 10);
+    assert_eq!(cases.len(), 11);
     let wgs84 = SpatialRef::from_epsg(4326).unwrap();
     for case in cases {
         let name = case["name"].as_str().unwrap();
         let crs = SpatialRef::from_wkt(case["wkt"].as_str().unwrap());
         let (lon, lat) = (case["point"][0].as_f64().unwrap(), case["point"][1].as_f64().unwrap());
         let got = Transformer::new(&wgs84, &crs).and_then(|t| t.transform(lon, lat));
-        match case["proj"].as_array() {
+        // A method terrio's WKT 2 reader does not know (Belgian Lambert 72, opengeos/terrio#1012
+        // item 43) under a code that is not its CRS: refused, not read as that code.
+        let unread = name.starts_with("Belge 1972") && name.contains("declaring");
+        match case["proj"].as_array().filter(|_| !unread) {
             Some(p) => {
                 let (x, y) = got.unwrap_or_else(|e| panic!("{name}: {e}"));
                 let tolerance = if crs.is_geographic() { 1e-8 } else { 1e-3 };
@@ -38,7 +41,7 @@ fn a_wkt_is_read_by_its_nodes_not_its_root_code() {
         }
         // The code PROJ identifies, where it identifies one; a declared code that is not the CRS
         // is not kept.
-        if let Some(code) = case["epsg"].as_u64() {
+        if let Some(code) = case["epsg"].as_u64().filter(|_| !unread) {
             assert_eq!(crs.epsg, Some(code as u32), "{name}");
         }
         if let Some(code) = case["esri"].as_u64() {

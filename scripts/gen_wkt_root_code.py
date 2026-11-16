@@ -39,10 +39,15 @@ NTF_2D = (
 )
 
 
+def relabel(wkt, code, new):
+    """The WKT 2 with its root `ID` replaced."""
+    old = f'ID["EPSG",{code}]'
+    i = wkt.rindex(old)
+    return wkt[:i] + f'ID["EPSG",{new}]' + wkt[i + len(old) :]
+
+
 def lo19(code):
-    wkt = CRS.from_epsg(2048).to_wkt()
-    i = wkt.rindex('ID["EPSG",2048]')
-    return wkt[:i] + f'ID["EPSG",{code}]' + wkt[i + len('ID["EPSG",2048]') :]
+    return relabel(CRS.from_epsg(2048).to_wkt(), 2048, code)
 
 
 def main():
@@ -61,6 +66,7 @@ def main():
         ("Esri Monte_Mario_Italy_1 on a datum renamed D_Local", MONTE_MARIO.replace("D_Monte_Mario", "D_Local"), (12.5, 41.9)),
         ("Esri USA_Contiguous_Albers_Equal_Area_Conic", CRS.from_user_input("ESRI:102003").to_wkt("WKT1_ESRI"), (-96.0, 40.0)),
         ("Belge 1972 / Belgian Lambert 72 with its own code", CRS.from_epsg(31300).to_wkt(), (4.4, 50.8)),
+        ("Belge 1972 / Belgian Lambert 72 declaring EPSG:27700", relabel(CRS.from_epsg(31300).to_wkt(), 31300, 27700), (4.4, 50.8)),
     ]
     out = []
     for name, wkt, point in cases:
