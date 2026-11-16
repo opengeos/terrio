@@ -312,9 +312,10 @@ axis), the datum's transformation runs on the WKT's ellipsoid, as PROJ 9.8.1 run
 transformation ("TWD97 to WGS 84 (1)") is still geocentric, from the WKT's ellipsoid to WGS 84's:
 TWD97 on International 1924 is placed 70 m from where its degrees are. A transformation registered
 between geocentric CRSs (ONGD14 to WGS 84 (1), NAD83(CSRS)v6 through NAD83(2011)) runs on the
-datum's own ellipsoid, after PROJ's ballpark into the datum's CRS, which keeps the point; a datum
-ensemble other than WGS 84's and ETRS89's (GR96) is not found, and the CRS is placed by a ballpark
-(`cargo test -p terrio-crs --test esri_datum_altered_ellipsoid`).
+datum's own ellipsoid, after PROJ's ballpark into the datum's CRS, which keeps the point. Heights
+are kept between 2D CRSs. A datum name PROJ finds wins over the datum's ID there: `Greenland_1996`
+with GR96's ID is the former Greenland 1996 datum, which no current CRS has, and is placed by a
+ballpark (`cargo test -p terrio-crs --test esri_datum_altered_ellipsoid`).
 
 A WKT 1's angles are in its geographic CRS's angular unit: NTF (Paris) (EPSG:4807) and its Lambert
 zones (EPSG:27572) have their parameters in grads, and coordinates in a geographic CRS in grads are

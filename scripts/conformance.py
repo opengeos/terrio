@@ -2833,7 +2833,7 @@ PROJ_CASES = {
             "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1e-9°",
         ),
         "null_transformations_on_another_ellipsoid_stop_where_proj_stops": (
-            "ETRF89 (geocentric), NAD83(CSRS)v6 and GR96 (kept) on GRS 1980 88 m shorter", TOLERANCE,
+            "ETRF89 and D_GR96 (geocentric), NAD83(CSRS)v6 and Greenland_1996 with GR96's ID (kept) on GRS 1980 88 m shorter", TOLERANCE,
             (
                 "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1e-9°; known difference: PROJ reports NAD83(CSRS)v6 as a ballpark "
                 "before its registered operation, terrio by the operation alone (opengeos/terrio#1012 item 56)"

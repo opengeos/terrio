@@ -1013,32 +1013,31 @@ impl Def {
     /// datum's ellipsoid are moved onto the CRS's, as PROJ replaces the first operation's source,
     /// and a null transformation becomes the geocentric change from the CRS's ellipsoid to WGS 84's;
     /// others (grids, a concatenation starting with an offset, one registered between geocentric
-    /// CRSs) are kept as registered. A datum ensemble other than WGS 84's and ETRS89's is not
-    /// found, as PROJ does not find it.
+    /// CRSs) are kept as registered.
     fn datum_by_name(&mut self, geogcs: &str) {
         if self.pm != 0.0 {
             return;
         }
         let Some((name, code)) = super::wkt_datum_name_and_code(geogcs) else { return };
-        let found_as_proj = code.is_some()
-            || if name.starts_with("D_") {
-                epsg::datum_name_rank(&name).is_some()
-            } else {
-                name.contains('_') && epsg::datum_name_rank(&name).is_some_and(|r| r <= 1)
-            };
-        if !found_as_proj {
-            return;
-        }
-        let (datums, _) = super::wkt_datums_and_others(geogcs);
+        let by_name = if name.starts_with("D_") {
+            epsg::datum_name_rank(&name).is_some()
+        } else {
+            name.contains('_') && epsg::datum_name_rank(&name).is_some_and(|r| r <= 1)
+        };
+        // A name PROJ finds wins over the datum's ID: `Greenland_1996` with `AUTHORITY["EPSG",
+        // "1421"]` is the former Greenland 1996 datum (EPSG:6747), which no current CRS has, so
+        // PROJ places it by a ballpark; under a name it does not find, the ID's datum.
+        let datums = match code {
+            _ if by_name => epsg::datums_named(&name),
+            Some(code) => vec![code],
+            None => return,
+        };
         let found = datums.iter().flat_map(|d| epsg::geographic_on(*d)).copied().filter(|g| !epsg::is_deprecated(*g)).find_map(|g| {
             let e = epsg::get(g).filter(|e| e.proj.starts_with("+proj=longlat") && !e.three_d && !e.ops.is_empty())?;
             let registered = Def::new(&SpatialRef { epsg: Some(g), ..Default::default() }).ok()?;
             (registered.pm == 0.0).then_some((e, registered.ell))
         });
         let Some((e, registered)) = found else { return };
-        if epsg::is_other_ensemble(e.datum) {
-            return;
-        }
         let same = |a: &Ell, b: &Ell| (a.a - b.a).abs() < 1e-3 && (a.es - b.es).abs() < 1e-9;
         // The geographic CRS's own ellipsoid, which a projection may not use (Esri's
         // `Mercator_Auxiliary_Sphere` projects on a sphere): on the datum's own, the CRS is
@@ -1061,7 +1060,9 @@ impl Def {
                 // A null transformation ("TWD97 to WGS 84 (1)") is still geocentric: PROJ runs it
                 // from the file's ellipsoid to WGS 84's, which moves latitudes, as are
                 // concatenations of them (ETRF89 through ETRS89).
+                // Between 2D CRSs, heights are kept, as PROJ keeps them around a geocentric step.
                 op.steps = vec![datum::Step::Cart { ell: own, inv: false }, datum::Step::Cart { ell: Ell::wgs84(), inv: true }];
+                op.keeps_height = true;
             }
             Arc::new(op)
         };

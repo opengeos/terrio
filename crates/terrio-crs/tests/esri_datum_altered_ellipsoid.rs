@@ -176,14 +176,18 @@ fn a_null_transformation_on_another_ellipsoid_is_applied_geocentrically() {
         assert!((a - lon).abs() < 1e-9 && (b - lat).abs() < 1e-9, "{datum} on {spheroid}: ({a}, {b}), PROJ ({lon}, {lat})");
         let op = t.operation_at(x, y, 0.0).unwrap().unwrap();
         assert_eq!((op.name.as_str(), op.ballpark), (name, false), "{datum} on {spheroid}");
+        // Between 2D CRSs, a height is kept, as PROJ keeps it.
+        assert_eq!(t.transform_3d(x, y, 100.0).unwrap().2, 100.0, "{datum} on {spheroid}");
     }
 }
 
 /// Where that stops, on GRS 1980 with its axis 88 m shorter: a concatenation of null
 /// transformations between geographic CRSs (ETRF89 through ETRS89) is applied geocentrically too.
 /// One registered between geocentric CRSs (NAD83(CSRS)v6 through NAD83(2011)) keeps the point, as
-/// PROJ 9.8.1 puts a ballpark before it, and a datum ensemble other than WGS 84's and ETRS89's
-/// (`D_Greenland_1996`) is not found and keeps it by a ballpark. Values as above. PROJ reports
+/// PROJ 9.8.1 puts a ballpark before it. A datum name PROJ finds wins over the datum's ID:
+/// `Greenland_1996` with GR96's ID (EPSG:1421) is the former datum EPSG:6747, which no current CRS
+/// has, so the point is kept by a ballpark; `D_GR96`, and an unknown name with that ID, are GR96
+/// and its null transformation. Values as above. PROJ reports
 /// the NAD83(CSRS)v6 case as a ballpark (its first step), terrio by the registered operation
 /// alone: not compared (opengeos/terrio#1012 item 56).
 #[test]
@@ -196,10 +200,18 @@ fn null_transformations_on_another_ellipsoid_stop_where_proj_stops() {
             r#"GEOGCS["{name}",DATUM["{datum}",SPHEROID["GRS_1980",6378049.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]"#
         )
     };
+    let with_id = |datum: &str| {
+        format!(
+            r#"GEOGCS["X",DATUM["{datum}",SPHEROID["S",6378049.0,298.257222101],AUTHORITY["EPSG","1421"]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#
+        )
+    };
     for (wkt, (x, y), (lon, lat), ballpark) in [
         (geogcs("GCS_ETRF_1989", "D_ETRF_1989"), (10.955, 58.995), (10.955, 58.995_002_339_885_04), Some(false)),
         (geogcs("NAD83(CSRS)v6", "North_American_Datum_of_1983_(CSRS)_version_6"), (-90.87, 62.335), (-90.87, 62.335), None),
         (geogcs("GCS_Greenland_1996", "D_Greenland_1996"), (-33.505, 71.7), (-33.505, 71.7), Some(true)),
+        (with_id("Greenland_1996"), (-33.505, 71.7), (-33.505, 71.7), Some(true)),
+        (geogcs("GCS_GR96", "D_GR96"), (-33.505, 71.7), (-33.505, 71.700_001_578_126_53), Some(false)),
+        (with_id("Foo"), (-33.505, 71.7), (-33.505, 71.700_001_578_126_53), Some(false)),
     ] {
         let t = Transformer::new(&SpatialRef::from_wkt(&wkt), &wgs84).unwrap();
         let (a, b) = t.transform(x, y).unwrap();
