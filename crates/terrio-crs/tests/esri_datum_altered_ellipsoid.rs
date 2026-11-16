@@ -150,3 +150,62 @@ fn an_auxiliary_sphere_on_an_altered_datum_keeps_its_transformation() {
     let (x, y) = t.transform(12.0, 42.0).unwrap();
     assert!((x - 1_335_909.742_468_337_3).abs() < 1e-3 && (y - 5_161_087.942_280_648).abs() < 1e-3, "({x}, {y})");
 }
+
+/// A datum whose transformation to WGS 84 is a null one (TWD97, RDN2008, IGM95, MAGNA-SIRGAS),
+/// named by an Esri GEOGCS on another ellipsoid: PROJ 9.8.1 applies "<datum> to WGS 84 (1)"
+/// geocentrically, from the file's ellipsoid to WGS 84's, which moves latitudes (70 m for TWD97
+/// on International 1924). On the datum's own ellipsoid the point is kept. `Transformer.from_crs(
+/// CRS(wkt), "EPSG:4326", always_xy=True)`, pyproj 3.8.0, network off. Reported by RustGIS.
+#[test]
+fn a_null_transformation_on_another_ellipsoid_is_applied_geocentrically() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    for (datum, spheroid, (x, y), (lon, lat), name) in [
+        ("D_TWD_1997", "6378388.0,297.0", (121.5, 25.0), (121.5, 24.999_369_532_669_89), "TWD97 to WGS 84 (1)"),
+        ("D_Rete_Dinamica_Nazionale_2008", "6378000.0,298.257223563", (12.5, 41.9), (12.5, 41.900_004_110_644_24), "RDN2008 to WGS 84 (1)"),
+        ("D_IGM_1995", "6378000.0,298.257223563", (12.5, 41.9), (12.5, 41.900_004_110_644_24), "IGM95 to WGS 84 (1)"),
+        ("D_MAGNA", "6378388.0,297.0", (-74.1, 4.6), (-74.1, 4.599_868_339_200_481), "MAGNA-SIRGAS to WGS 84 (1)"),
+        ("D_TWD_1997", "6378137.0,298.257222101", (121.5, 25.0), (121.5, 25.0), "TWD97 to WGS 84 (1)"),
+    ] {
+        let wkt = format!(
+            r#"GEOGCS["GCS_X",DATUM["{datum}",SPHEROID["S",{spheroid}]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]"#
+        );
+        let t = Transformer::new(&SpatialRef::from_wkt(&wkt), &wgs84).unwrap();
+        let (a, b) = t.transform(x, y).unwrap();
+        assert!((a - lon).abs() < 1e-9 && (b - lat).abs() < 1e-9, "{datum} on {spheroid}: ({a}, {b}), PROJ ({lon}, {lat})");
+        let op = t.operation_at(x, y, 0.0).unwrap().unwrap();
+        assert_eq!((op.name.as_str(), op.ballpark), (name, false), "{datum} on {spheroid}");
+    }
+}
+
+/// Where that stops, on GRS 1980 with its axis 88 m shorter: a concatenation of null
+/// transformations between geographic CRSs (ETRF89 through ETRS89) is applied geocentrically too.
+/// One registered between geocentric CRSs (NAD83(CSRS)v6 through NAD83(2011)) keeps the point, as
+/// PROJ 9.8.1 puts a ballpark before it, and a datum ensemble other than WGS 84's and ETRS89's
+/// (`D_Greenland_1996`) is not found and keeps it by a ballpark. Values as above. PROJ reports
+/// the NAD83(CSRS)v6 case as a ballpark (its first step), terrio by the registered operation
+/// alone: not compared (opengeos/terrio#1012).
+#[test]
+fn null_transformations_on_another_ellipsoid_stop_where_proj_stops() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    let geogcs = |name: &str, datum: &str| {
+        format!(
+            r#"GEOGCS["{name}",DATUM["{datum}",SPHEROID["GRS_1980",6378049.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]"#
+        )
+    };
+    for (wkt, (x, y), (lon, lat), ballpark) in [
+        (geogcs("GCS_ETRF_1989", "D_ETRF_1989"), (10.955, 58.995), (10.955, 58.995_002_339_885_04), Some(false)),
+        (geogcs("NAD83(CSRS)v6", "North_American_Datum_of_1983_(CSRS)_version_6"), (-90.87, 62.335), (-90.87, 62.335), None),
+        (geogcs("GCS_Greenland_1996", "D_Greenland_1996"), (-33.505, 71.7), (-33.505, 71.7), Some(true)),
+    ] {
+        let t = Transformer::new(&SpatialRef::from_wkt(&wkt), &wgs84).unwrap();
+        let (a, b) = t.transform(x, y).unwrap();
+        assert!((a - lon).abs() < 1e-9 && (b - lat).abs() < 1e-9, "{wkt}: ({a}, {b}), PROJ ({lon}, {lat})");
+        if let Some(ballpark) = ballpark {
+            assert_eq!(t.operation_at(x, y, 0.0).unwrap().unwrap().ballpark, ballpark, "{wkt}");
+        }
+    }
+}

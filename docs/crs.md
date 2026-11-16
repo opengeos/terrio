@@ -300,12 +300,21 @@ the datum transformations of that datum's EPSG geographic CRS, as PROJ transform
 does not resolve the WKT's geographic CRS to an EPSG CRS (ESRI's WKT 1 has no `AXIS`, so longitude
 first, unlike the EPSG CRS; or the CRS has another name), it also searches transformations through
 another datum, and terrio follows it (see "Transformations"): ESRI's `GCS_Monte_Mario_Rome` through
-Monte Mario (72 m from EPSG:4806's own), `Tokyo_1892` through Tokyo (390 m). ONGD14, which PROJ
-places by its geocentric transformation (1.2 m), is still placed by the EPSG CRS's.
+Monte Mario (72 m from EPSG:4806's own), `Tokyo_1892` through Tokyo (390 m), and ONGD14 by its
+geocentric transformation (1.2 m from the EPSG CRS's).
 Without grids, this is PROJ's own choice; with OSTN15, BETA2007, CHENyx06 or the NZGD2000 grids
 installed, PROJ may place some of these points otherwise (46 of the 180 test cases; see
 `docs/testing.md`). The repository's evidence is those 180 cases on 20 CRSs (a wider sweep of
 3,648 variants was a local run whose script and data are not committed).
+
+On another ellipsoid than its datum's (ESRI's `D_Monte_Mario` on an International 1924 of another
+axis), the datum's transformation runs on the WKT's ellipsoid, as PROJ 9.8.1 runs it. A null
+transformation ("TWD97 to WGS 84 (1)") is still geocentric, from the WKT's ellipsoid to WGS 84's:
+TWD97 on International 1924 is placed 70 m from where its degrees are. A transformation registered
+between geocentric CRSs (ONGD14 to WGS 84 (1), NAD83(CSRS)v6 through NAD83(2011)) runs on the
+datum's own ellipsoid, after PROJ's ballpark into the datum's CRS, which keeps the point; a datum
+ensemble other than WGS 84's and ETRS89's (GR96) is not found, and the CRS is placed by a ballpark
+(`cargo test -p terrio-crs --test esri_datum_altered_ellipsoid`).
 
 A WKT 1's angles are in its geographic CRS's angular unit: NTF (Paris) (EPSG:4807) and its Lambert
 zones (EPSG:27572) have their parameters in grads, and coordinates in a geographic CRS in grads are

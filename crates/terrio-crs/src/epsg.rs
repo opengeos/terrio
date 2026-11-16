@@ -602,6 +602,13 @@ pub(crate) fn datum_name(code: u32) -> Option<String> {
     datum_names().2.get(&code).map(|n| n.strip_suffix(" ensemble").unwrap_or(n).to_string())
 }
 
+/// Whether an EPSG datum is an ensemble other than WGS 84's and ETRS89's, which PROJ 9.8.1 does
+/// not take for a WKT 1 datum on another ellipsoid (`D_Greenland_1996` on an altered GRS 1980
+/// is placed by a ballpark, ETRS89 by its transformation).
+pub(crate) fn is_other_ensemble(code: u32) -> bool {
+    code != 6326 && code != 6258 && datum_names().2.get(&code).is_some_and(|n| n.ends_with(" ensemble"))
+}
+
 /// Whether two EPSG datums have a name or alias in common in PROJ's database (`GR96` for
 /// Greenland 1996 and its ensemble).
 pub(crate) fn datums_share_a_name(a: u32, b: u32) -> bool {

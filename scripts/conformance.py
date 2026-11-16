@@ -2828,6 +2828,17 @@ PROJ_CASES = {
             "Datum names PROJ finds (underscores, D_) or not (spaces, EPSG alias) on an altered ellipsoid (9 cases)", IDENTICAL,
             "PROJ 9.8.1 (pyproj 3.8.0, no grids): shifted or ballpark as PROJ",
         ),
+        "a_null_transformation_on_another_ellipsoid_is_applied_geocentrically": (
+            "Esri TWD97, RDN2008, IGM95 and MAGNA-SIRGAS on other ellipsoids, and TWD97 on its own: name, flag and point", IDENTICAL,
+            "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1e-9°",
+        ),
+        "null_transformations_on_another_ellipsoid_stop_where_proj_stops": (
+            "ETRF89 (geocentric), NAD83(CSRS)v6 and GR96 (kept) on GRS 1980 88 m shorter", TOLERANCE,
+            (
+                "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1e-9°; known difference: PROJ reports NAD83(CSRS)v6 as a ballpark "
+                "before its registered operation, terrio by the operation alone (opengeos/terrio#1012)"
+            ),
+        ),
     },
     "wkt_root_code": {
         "a_wkt_is_read_by_its_nodes_not_its_root_code": (

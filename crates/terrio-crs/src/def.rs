@@ -1010,8 +1010,11 @@ impl Def {
     /// The transformations are a current geographic 2D CRS's of the datum on Greenwich (not
     /// Monte Mario (Rome)'s on the Rome meridian): CRSs on another meridian keep the route's
     /// search, which places them as PROJ does. Only those starting with a geocentric step on the
-    /// datum's ellipsoid are moved onto the CRS's, as PROJ replaces the first operation's source;
-    /// others (grids, a concatenation starting with an offset) are kept as registered.
+    /// datum's ellipsoid are moved onto the CRS's, as PROJ replaces the first operation's source,
+    /// and a null transformation becomes the geocentric change from the CRS's ellipsoid to WGS 84's;
+    /// others (grids, a concatenation starting with an offset, one registered between geocentric
+    /// CRSs) are kept as registered. A datum ensemble other than WGS 84's and ETRS89's is not
+    /// found, as PROJ does not find it.
     fn datum_by_name(&mut self, geogcs: &str) {
         if self.pm != 0.0 {
             return;
@@ -1033,6 +1036,9 @@ impl Def {
             (registered.pm == 0.0).then_some((e, registered.ell))
         });
         let Some((e, registered)) = found else { return };
+        if epsg::is_other_ensemble(e.datum) {
+            return;
+        }
         let same = |a: &Ell, b: &Ell| (a.a - b.a).abs() < 1e-3 && (a.es - b.es).abs() < 1e-9;
         // The geographic CRS's own ellipsoid, which a projection may not use (Esri's
         // `Mercator_Auxiliary_Sphere` projects on a sphere): on the datum's own, the CRS is
@@ -1043,10 +1049,19 @@ impl Def {
         }
         let rebase = |op: &Arc<Op>| {
             let mut op = (**op).clone();
-            if let Some(datum::Step::Cart { ell, inv: false }) = op.steps.first_mut()
+            if op.geocentric {
+                // Registered between geocentric CRSs (ONGD14 to WGS 84 (1), NAD83(CSRS)v6 through
+                // NAD83(2011)): PROJ puts a ballpark into the datum's CRS before it, which keeps
+                // the point, and runs it on the datum's own ellipsoid.
+            } else if let Some(datum::Step::Cart { ell, inv: false }) = op.steps.first_mut()
                 && same(ell, &registered)
             {
                 *ell = own;
+            } else if op.steps.is_empty() && !op.ballpark {
+                // A null transformation ("TWD97 to WGS 84 (1)") is still geocentric: PROJ runs it
+                // from the file's ellipsoid to WGS 84's, which moves latitudes, as are
+                // concatenations of them (ETRF89 through ETRS89).
+                op.steps = vec![datum::Step::Cart { ell: own, inv: false }, datum::Step::Cart { ell: Ell::wgs84(), inv: true }];
             }
             Arc::new(op)
         };
