@@ -2008,7 +2008,11 @@ fn esri_fits(w: &str, code: u32) -> bool {
         let (Some((m, id)), Some((r, _))) = (method(w), epsg::esri(code).and_then(|e| method(&e.wkt))) else {
             return false;
         };
-        return m == r || m == format!("{r}spherical") || (r == "equirectangular" && id == Some(1029));
+        // On the registry's ellipsoid too (in metres in its Esri WKT 1): the definition terrio
+        // builds is the registry's, not the WKT's.
+        let a = epsg::esri(code).and_then(|e| semi_major_axis(&e.wkt));
+        let same_ellipsoid = a.is_none_or(|a| semi_major_axis(w).is_some_and(|own| (own - a).abs() < 1e-3));
+        return same_ellipsoid && (m == r || m == format!("{r}spherical") || (r == "equirectangular" && id == Some(1029)));
     };
     // The conversion, and the datum's ellipsoid by the registry WKT's (in metres in an Esri WKT 1),
     // not the definition's: a spherical method's `+R_A` sphere (ESRI:54003, Miller on WGS 84).

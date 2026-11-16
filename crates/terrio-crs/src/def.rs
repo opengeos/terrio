@@ -925,13 +925,14 @@ impl Def {
         // The geographic CRS's own code only when its content is that CRS (a local datum under
         // OSGB36's code does not get OSGB36's transformations), as a root code.
         // WKT 2: its base CRS node, whose datum keeps its ID (`BASEGEOGCRS` read as `GEOGCRS`).
+        // Else the node as written back (a WKT 1 `geogcs` or `GEOGCS [` the text search misses):
+        // never no comparison at all.
         let own = match geogcs_text {
             Some(t) => Some(t.to_string()),
-            None if c.geogcs_wkt1.is_some() => {
+            None => {
                 let t = c.geogcs.to_wkt();
                 Some(t.strip_prefix("BASE").map(str::to_string).unwrap_or(t))
             }
-            None => None,
         };
         // Or on its datum but another prime meridian, which the definition applies itself.
         let fits = |g: &u32| own.as_deref().is_none_or(|t| super::declared_fits(t, *g) || super::declared_fits_but_meridian(t, *g));

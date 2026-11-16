@@ -267,3 +267,37 @@ fn a_geographic_crs_on_another_meridian_keeps_its_datum() {
     let (lon, lat) = Transformer::new(&crs, &wgs84).unwrap().transform(549_826.63, 2_192_990.71).unwrap();
     assert!((lon - 1.446_268_029_3).abs() < 1e-8 && (lat - 46.734_998_500_4).abs() < 1e-8, "{lon} {lat}");
 }
+
+/// A geographic CRS written `geogcs` (which the WKT reader accepts) is compared with its declared
+/// code as one written `GEOGCS`: a local datum declaring OSGB 1936 (EPSG:4277) does not get
+/// OSGB36's transformations either way.
+#[test]
+fn a_lower_case_geogcs_is_compared_with_its_code() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let upper = r#"PROJCS["local",GEOGCS["OSGB 1936",DATUM["My_Local",SPHEROID["Airy 1830",6377563.396,299.3249646]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],AUTHORITY["EPSG","4277"]],PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",49],PARAMETER["central_meridian",-2],PARAMETER["scale_factor",0.9996012717],PARAMETER["false_easting",400000],PARAMETER["false_northing",-100000],UNIT["metre",1]]"#;
+    let lower = upper.replace("GEOGCS[", "geogcs[");
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    let at = |w: &str| Transformer::new(&wgs84, &SpatialRef::from_wkt(w)).unwrap().transform(-2.0, 54.0).unwrap();
+    let bng = Transformer::new(&wgs84, &SpatialRef::from_epsg(27700).unwrap()).unwrap().transform(-2.0, 54.0).unwrap();
+    let (u, l) = (at(upper), at(&lower));
+    assert!((u.0 - l.0).abs() < 1e-6 && (u.1 - l.1).abs() < 1e-6, "{u:?} {l:?}");
+    assert!((u.0 - bng.0).hypot(u.1 - bng.1) > 50.0, "{u:?} {bng:?}");
+}
+
+/// An unreadable spelling of the ESRI CRS's own method keeps its code only on the code's
+/// ellipsoid (ESRI:102035's orthographic, written `Orthographic_Spherical`, on a 6400 km sphere is
+/// not ESRI:102035, whose definition terrio would build).
+#[test]
+fn an_unread_esri_method_on_another_ellipsoid_is_refused() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let own = SpatialRef::from_esri(102035).unwrap().to_wkt().unwrap();
+    assert!(own.contains(r#"PROJECTION["Orthographic"]"#), "{own}");
+    let spelled = own.replace(r#"PROJECTION["Orthographic"]"#, r#"PROJECTION["Orthographic_Spherical"]"#);
+    assert_eq!(SpatialRef::from_wkt(&spelled).esri, Some(102035), "{spelled}");
+    let a = terrio_crs::semi_major_axis(&spelled).unwrap();
+    let other = spelled.replacen(&format!("{a}"), "6400000", 1);
+    assert_ne!(other, spelled);
+    assert_eq!(SpatialRef::from_wkt(&other).esri, None, "{other}");
+}
