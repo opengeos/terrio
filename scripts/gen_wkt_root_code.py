@@ -131,6 +131,22 @@ def main():
             (10.0, 50.0),
         ),
         (
+            "WGS 84 on PROJ's placeholder datum unknown with its code",
+            LOCAL_GRS80.replace("My_Local_Datum", "unknown")
+            .replace("GRS 1980", "WGS 84")
+            .replace("298.257222101", "298.257223563")
+            .replace("4258", "4326"),
+            (10.0, 50.0),
+        ),
+        (
+            "WGS 84 on a datum named Unknown declaring EPSG:4326",
+            LOCAL_GRS80.replace("My_Local_Datum", "Unknown")
+            .replace("GRS 1980", "WGS 84")
+            .replace("298.257222101", "298.257223563")
+            .replace("4258", "4326"),
+            (10.0, 50.0),
+        ),
+        (
             "WGS 84 3D declaring EPSG:4326",
             relabel(CRS.from_epsg(4979).to_wkt(), 4979, 4326),
             (10.0, 50.0),
@@ -157,6 +173,7 @@ def main():
         "WGS 84 geocentric in simplified WKT 2 declaring EPSG:4326": 4326,
         "ETRS89 declaring NAD83": 4269,
         "a local datum on GRS 1980 declaring ETRS89": 4258,
+        "WGS 84 on a datum named Unknown declaring EPSG:4326": 4326,
         "WGS 84 3D declaring EPSG:4326": 4326,
         "WGS 84 2D declaring EPSG:4979": 4979,
     }

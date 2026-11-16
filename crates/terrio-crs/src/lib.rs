@@ -1738,7 +1738,9 @@ pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
     };
     // A datum terrio does not know is not the code's unless named as it (PROJ keeps no code
     // either): a local datum declaring ETRS89 would get ETRS89's transformations.
-    let unknown = named_datums.is_empty() && own_others.is_empty() && own_name.is_some();
+    // PROJ 9.8.1's placeholder `unknown` (`D_unknown`), spelt so, matches any datum.
+    let placeholder = own_name.as_deref().is_some_and(|n| n.strip_prefix("D_").unwrap_or(n) == "unknown");
+    let unknown = named_datums.is_empty() && own_others.is_empty() && own_name.is_some() && !placeholder;
     if (!own_datums.is_empty() || unknown)
         && !their_datums.is_empty()
         && !own_datums.iter().any(|d| their_datums.contains(d) || their_others.contains(d))
