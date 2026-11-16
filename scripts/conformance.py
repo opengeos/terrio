@@ -2621,7 +2621,9 @@ def suite_crs(ctx):
         "input poles for platform asin rounding); PROJ-refused inverse "
         "boundary points may be refused or recover the original input). "
         "Then the WKT and PROJ-string readings of opengeos/terrio#1012, against PROJ 9.8.1 "
-        "(pyproj 3.8.0, no grids) in JSON fixtures: WKT 1 `AXIS` nodes (wkt1_axes.rs), WKT 2 "
+        "(pyproj 3.8.0, no grids) in JSON fixtures: WKT 1 `AXIS` nodes (wkt1_axes.rs), WKT 1 EPSG "
+        "parameter names and two UNIT nodes (wkt1_epsg_names.rs), GeoKeys other writers write, "
+        "against GDAL 3.12.2 (geokeys_read_gdal.rs), WKT 2 "
         "`BOUNDCRS` (wkt2_bound.rs), Mercator variant A, unknown node keywords and NULs "
         "(wkt1_proj_reads.rs), grads and prime meridians (grads_and_prime_meridians.rs), datums "
         "known by ID or name (wkt_datum_shift.rs), WKTs PROJ does not resolve to their EPSG CRS "
@@ -2761,6 +2763,18 @@ PROJ_CASES = {
         "longlat_longitudes_are_relative_to_lon_0": "Geographic PROJ strings with `+lon_0` (`longlat`, `latlong`, `+pm`, `+towgs84`): seven GDAL 3.13.3 points",
     },
     # The WKT and PROJ-string readings of opengeos/terrio#1012, against PROJ 9.8.1 (pyproj 3.8.0, no grids).
+    "wkt1_epsg_names": {
+        "epsg_parameter_names_in_wkt1_are_read_as_proj_reads_them": (
+            "WKT 1 with EPSG parameter names, and two UNIT nodes (9 cases)", IDENTICAL,
+            "PROJ 9.8.1 (pyproj 3.8.0): within 1 mm, or refused as PROJ refuses",
+        ),
+    },
+    "geokeys_read_gdal": {
+        "user_defined_geokeys_are_read_as_gdal_reads_them": (
+            "GeoKeys of user-defined projected CRSs as other writers write them (5 cases)", IDENTICAL,
+            "GDAL 3.12.2 (libgeotiff GTIFFetchProjParms): within 1 mm",
+        ),
+    },
     "wkt1_axes": {
         "projected_axes_are_read_and_written_as_proj_does": (
             "WKT 1 projected CRSs with `AXIS` nodes in every direction and order (54 cases)", IDENTICAL,

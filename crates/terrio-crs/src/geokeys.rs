@@ -624,6 +624,8 @@ fn projection(k: &GeoKeys, to_meter: f64) -> Option<String> {
     const FALSE_ORIGIN_LONG: u16 = 3084;
     const FALSE_ORIGIN_LAT: u16 = 3085;
     const FALSE_ORIGIN_EASTING: u16 = 3086;
+    const CENTER_EASTING: u16 = 3090;
+    const CENTER_NORTHING: u16 = 3091;
     const FALSE_ORIGIN_NORTHING: u16 = 3087;
     const CENTER_LONG: u16 = 3088;
     const CENTER_LAT: u16 = 3089;
@@ -639,14 +641,17 @@ fn projection(k: &GeoKeys, to_meter: f64) -> Option<String> {
     let angle = |ids: &[u16]| k.first(ids).map(|v| v * to_degrees);
     let lon0 = angle(&[NAT_ORIGIN_LONG, FALSE_ORIGIN_LONG, CENTER_LONG, STRAIGHT_VERT_POLE_LONG]).unwrap_or(0.0);
     let lat0 = angle(&[NAT_ORIGIN_LAT, FALSE_ORIGIN_LAT, CENTER_LAT]).unwrap_or(0.0);
-    let x0 = k.first(&[FALSE_EASTING, FALSE_ORIGIN_EASTING]).unwrap_or(0.0) * to_meter;
-    let y0 = k.first(&[FALSE_NORTHING, FALSE_ORIGIN_NORTHING]).unwrap_or(0.0) * to_meter;
+    // In libgeotiff's order (`GTIFFetchProjParms`): the false easting, else the projection
+    // centre's, else the false origin's.
+    let x0 = k.first(&[FALSE_EASTING, CENTER_EASTING, FALSE_ORIGIN_EASTING]).unwrap_or(0.0) * to_meter;
+    let y0 = k.first(&[FALSE_NORTHING, CENTER_NORTHING, FALSE_ORIGIN_NORTHING]).unwrap_or(0.0) * to_meter;
     let scale = k.first(&[SCALE_AT_NAT_ORIGIN, SCALE_AT_CENTER]).unwrap_or(1.0);
     let lat1 = angle(&[STD_PARALLEL_1]);
     let lat2 = angle(&[STD_PARALLEL_2]);
     let false_xy = format!("+x_0={x0} +y_0={y0}");
     let oblique_mercator = |variant: &str| -> Option<String> {
-        let gamma = angle(&[RECTIFIED_GRID_ANGLE]).map(|g| format!(" +gamma={g}")).unwrap_or_default();
+        // Without ProjRectifiedGridAngleGeoKey, 90°, as libgeotiff defaults it.
+        let gamma = format!(" +gamma={}", angle(&[RECTIFIED_GRID_ANGLE]).unwrap_or(90.0));
         Some(format!("omerc{variant} +lat_0={lat0} +lonc={lon0} +alpha={}{gamma} +k={scale} {false_xy}", k.double(AZIMUTH)?))
     };
     // A UTM zone by its ProjectionGeoKey (16001-16060 north, 16101-16160 south) alone, as GDAL
@@ -684,8 +689,12 @@ fn projection(k: &GeoKeys, to_meter: f64) -> Option<String> {
             // Variant B's standard parallel is in ProjStdParallel1GeoKey for some writers, and in
             // ProjNatOriginLatGeoKey for GDAL (which writes a scale of 1 too); a natural origin
             // latitude of ±90 is variant A, with its scale.
-            let origin = angle(&[NAT_ORIGIN_LAT]).unwrap_or(90.0);
-            let ts = lat1.or(((origin.abs() - 90.0).abs() > 1e-9).then_some(origin));
+            // A natural origin latitude given wins over ProjStdParallel1GeoKey, which libgeotiff
+            // does not read for this method (GDAL 3.12.2: 90 and 71 is variant A, of its scale).
+            let given = angle(&[NAT_ORIGIN_LAT, FALSE_ORIGIN_LAT, CENTER_LAT]);
+            let origin = given.unwrap_or(90.0);
+            let off_pole = ((origin.abs() - 90.0).abs() > 1e-9).then_some(origin);
+            let ts = if given.is_some() { off_pole } else { lat1.or(off_pole) };
             let pole = if ts.unwrap_or(origin) < 0.0 { -90.0 } else { 90.0 };
             // The longitude is ProjStraightVertPoleLongGeoKey's, whatever other origin keys say.
             let lon0 = angle(&[STRAIGHT_VERT_POLE_LONG]).unwrap_or(lon0);

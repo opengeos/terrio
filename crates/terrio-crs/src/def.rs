@@ -1807,12 +1807,12 @@ fn geogcs_text(w: &str) -> Option<&str> {
     None
 }
 
-/// The size in metres of a WKT definition's linear unit: the last `UNIT` (WKT 1) or
-/// `LENGTHUNIT` (WKT 2) that is not angular.
+/// The size in metres of a WKT definition's linear unit: the root's first `UNIT` (WKT 1, as PROJ
+/// 9.8.1 takes it) or last `LENGTHUNIT` (WKT 2).
 #[cfg(feature = "wbprojection-fallback")]
 pub(crate) fn wkt_linear_unit(w: &str) -> Option<f64> {
     let root = wkt1::parse(w)?;
-    if let Some(u) = root.children("UNIT").last().or_else(|| root.children("LENGTHUNIT").last()) {
+    if let Some(u) = root.children("UNIT").next().or_else(|| root.children("LENGTHUNIT").last()) {
         return u.num(1);
     }
     root.children("AXIS").find_map(|a| a.child("LENGTHUNIT")).and_then(|u| u.num(1))
