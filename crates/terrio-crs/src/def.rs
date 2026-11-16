@@ -1135,10 +1135,7 @@ impl Def {
         {
             // Without a root code that is not its content's, which wbprojection's parser would
             // read as the CRS (an unknown method declaring EPSG:27700).
-            let stripped = match super::declared_epsg(w) {
-                Some(c) if !super::declared_fits(w, c) => super::strip_root_code(w),
-                _ => None,
-            };
+            let stripped = super::without_unfit_root_code(w);
             let crs = wbprojection::Crs::from_wkt(stripped.as_deref().unwrap_or(w)).map_err(|e| Error::Crs(format!("{e}")))?;
             let geographic = crs.is_geographic();
             let e = &crs.datum.ellipsoid;

@@ -1222,11 +1222,7 @@ impl SpatialRef {
             }
             // Without a root code that is not its content's, which wbprojection's parser reads
             // as the CRS (an unknown method declaring EPSG:27700), as `Def` reads it.
-            let stripped = match declared_epsg(w) {
-                Some(c) if !declared_fits(w, c) => strip_root_code(w),
-                _ => None,
-            };
-            return Ok(wbp::Crs::from_wkt(stripped.as_deref().unwrap_or(w))?);
+            return Ok(wbp::Crs::from_wkt(without_unfit_root_code(w).as_deref().unwrap_or(w))?);
         }
         Err(Error::Crs("the CRS is unknown".into()))
     }
@@ -1847,6 +1843,17 @@ fn geographic_dimension_3d(wkt: &str) -> Option<bool> {
     let ellipsoidal = matches!(cs.args.first(), Some(wkt1::Arg::Ident(t)) if t.eq_ignore_ascii_case("ellipsoidal"));
     let geodetic = ["GEOGCRS", "GEOGRAPHICCRS", "GEODCRS", "GEODETICCRS"].iter().any(|k| root.key.eq_ignore_ascii_case(k));
     (geodetic && ellipsoidal).then(|| cs.num(1) == Some(3.0))
+}
+
+/// A WKT definition without its root code when that code is not its content's (see
+/// [`declared_fits`]); `None` when it declares none or its own. For wbprojection's parser, which
+/// reads a WKT by its root code.
+#[cfg(feature = "wbprojection-fallback")]
+pub(crate) fn without_unfit_root_code(wkt: &str) -> Option<String> {
+    match declared_epsg(wkt) {
+        Some(c) if !declared_fits(wkt, c) => strip_root_code(wkt),
+        _ => None,
+    }
 }
 
 /// A WKT definition without the code its root declares (see [`declared_epsg`]).

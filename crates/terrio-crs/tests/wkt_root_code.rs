@@ -50,9 +50,9 @@ fn a_wkt_is_read_by_its_nodes_not_its_root_code() {
         }
         // The code PROJ identifies, none for an Esri name on another datum, and never a declared
         // code that is not the CRS, nor in the PROJJSON written.
-        if let Some(code) = case["epsg"].as_u64() {
-            assert_eq!(crs.epsg, Some(code as u32), "{name}");
-        }
+        // Where PROJ identifies none, the code terrio identifies by the content (`terrio_epsg`).
+        let want = case["terrio_epsg"].as_u64().or(case["epsg"].as_u64());
+        assert_eq!(crs.epsg.map(u64::from), want, "{name}");
         if let Some(code) = case["esri"].as_u64() {
             assert_eq!(crs.esri, Some(code as u32), "{name}");
         }

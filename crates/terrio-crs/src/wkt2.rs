@@ -439,9 +439,10 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         "wag3"
     } else if let Some(proj) = WORLD.iter().find(|(n, _)| *n == name).map(|(_, p)| *p) {
         push("lon_0", lon_0());
-        // A latitude of natural origin is read and ignored, as PROJ 9.8.1 ignores it (its
-        // mapping of these methods has none): Robinson and Sinusoidal with one are read.
-        let _ = p.get(LAT_NAT);
+        // A latitude of natural origin is ignored, as PROJ 9.8.1 ignores it (its mapping of these
+        // methods has none): taken here, so that the check for unused parameters does not refuse
+        // Robinson and Sinusoidal with one.
+        let _ignored_latitude_of_natural_origin = p.get(LAT_NAT);
         proj
     } else if let Some((proj, parallel)) =
         [("winkeli", "wink1", "lat_ts"), ("winkelii", "wink2", "lat_1"), ("winkeltripel", "wintri", "lat_1")]

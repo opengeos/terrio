@@ -15,6 +15,7 @@
    "epsg": null,
    "esri": null,
    "declared": null,
+   "terrio_epsg": 27700,
    "terrio": null
   },
   {
@@ -31,6 +32,7 @@
    "epsg": null,
    "esri": null,
    "declared": 4277,
+   "terrio_epsg": 27700,
    "terrio": null
   },
   {
@@ -44,6 +46,7 @@
    "epsg": null,
    "esri": null,
    "declared": 27700,
+   "terrio_epsg": null,
    "terrio": null
   },
   {
@@ -60,6 +63,7 @@
    "epsg": 2048,
    "esri": null,
    "declared": 1,
+   "terrio_epsg": null,
    "terrio": null
   },
   {
@@ -76,6 +80,7 @@
    "epsg": 2048,
    "esri": null,
    "declared": null,
+   "terrio_epsg": null,
    "terrio": null
   },
   {
@@ -92,6 +97,7 @@
    "epsg": null,
    "esri": null,
    "declared": 7400,
+   "terrio_epsg": null,
    "terrio": null
   },
   {
@@ -108,6 +114,7 @@
    "epsg": 3003,
    "esri": null,
    "declared": null,
+   "terrio_epsg": null,
    "terrio": null
   },
   {
@@ -124,6 +131,7 @@
    "epsg": null,
    "esri": null,
    "declared": null,
+   "terrio_epsg": null,
    "terrio": null
   },
   {
@@ -140,6 +148,7 @@
    "epsg": null,
    "esri": 102003,
    "declared": null,
+   "terrio_epsg": null,
    "terrio": null
   },
   {
@@ -156,6 +165,7 @@
    "epsg": 31300,
    "esri": null,
    "declared": null,
+   "terrio_epsg": null,
    "terrio": null
   },
   {
@@ -172,6 +182,7 @@
    "epsg": 31300,
    "esri": null,
    "declared": 27700,
+   "terrio_epsg": null,
    "terrio": "refused"
   },
   {
@@ -188,6 +199,7 @@
    "epsg": 4978,
    "esri": null,
    "declared": null,
+   "terrio_epsg": null,
    "terrio": null
   },
   {
@@ -204,6 +216,7 @@
    "epsg": null,
    "esri": null,
    "declared": 4326,
+   "terrio_epsg": 4978,
    "terrio": null
   },
   {
@@ -220,6 +233,7 @@
    "epsg": null,
    "esri": null,
    "declared": 4269,
+   "terrio_epsg": 4258,
    "terrio": null
   },
   {
@@ -236,6 +250,7 @@
    "epsg": null,
    "esri": null,
    "declared": 4269,
+   "terrio_epsg": 4258,
    "terrio": null
   },
   {
@@ -252,6 +267,7 @@
    "epsg": null,
    "esri": null,
    "declared": 4258,
+   "terrio_epsg": null,
    "terrio": null
   },
   {
@@ -268,6 +284,7 @@
    "epsg": 4747,
    "esri": null,
    "declared": null,
+   "terrio_epsg": null,
    "terrio": null
   },
   {
@@ -284,6 +301,7 @@
    "epsg": 4909,
    "esri": null,
    "declared": null,
+   "terrio_epsg": null,
    "terrio": null
   },
   {
@@ -300,6 +318,7 @@
    "epsg": null,
    "esri": null,
    "declared": 9707,
+   "terrio_epsg": null,
    "terrio": null
   },
   {
@@ -316,6 +335,7 @@
    "epsg": 9707,
    "esri": null,
    "declared": null,
+   "terrio_epsg": null,
    "terrio": null
   },
   {
@@ -332,6 +352,7 @@
    "epsg": null,
    "esri": null,
    "declared": 9707,
+   "terrio_epsg": null,
    "terrio": null
   },
   {
@@ -348,6 +369,7 @@
    "epsg": null,
    "esri": null,
    "declared": 9707,
+   "terrio_epsg": null,
    "terrio": null
   },
   {
@@ -364,6 +386,7 @@
    "epsg": null,
    "esri": null,
    "declared": 4269,
+   "terrio_epsg": 4152,
    "terrio": null
   },
   {
@@ -380,6 +403,7 @@
    "epsg": null,
    "esri": null,
    "declared": 4258,
+   "terrio_epsg": null,
    "terrio": null
   },
   {
@@ -396,6 +420,7 @@
    "epsg": 4326,
    "esri": null,
    "declared": null,
+   "terrio_epsg": null,
    "terrio": null
   },
   {
@@ -412,6 +437,7 @@
    "epsg": null,
    "esri": null,
    "declared": 4326,
+   "terrio_epsg": null,
    "terrio": null
   },
   {
@@ -428,6 +454,7 @@
    "epsg": 4979,
    "esri": null,
    "declared": 4326,
+   "terrio_epsg": null,
    "terrio": null
   },
   {
@@ -444,6 +471,7 @@
    "epsg": 4326,
    "esri": null,
    "declared": 4979,
+   "terrio_epsg": null,
    "terrio": null
   },
   {
@@ -460,6 +488,7 @@
    "epsg": 4640,
    "esri": null,
    "declared": null,
+   "terrio_epsg": null,
    "terrio": null
   }
  ]

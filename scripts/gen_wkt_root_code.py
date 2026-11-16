@@ -256,6 +256,17 @@ def main():
         "WGS 84 3D declaring EPSG:4326": 4326,
         "WGS 84 2D declaring EPSG:4979": 4979,
     }
+    # The code terrio identifies by the content where PROJ's `to_epsg` gives none: British
+    # National Grid's `TOWGS84` makes it a bound CRS to PROJ, and PROJ identifies no WKT whose
+    # root code is not its content.
+    terrio_epsg = {
+        "British National Grid with its own code": 27700,
+        "British National Grid declaring EPSG:4277": 27700,
+        "WGS 84 geocentric in simplified WKT 2 declaring EPSG:4326": 4978,
+        "ETRS89 declaring NAD83": 4258,
+        "ETRS89 in WKT 1 declaring NAD83": 4258,
+        "NAD83(HARN) by name declaring NAD83": 4152,
+    }
     refused = {"Belge 1972 / Belgian Lambert 72 declaring EPSG:27700"}
     out = []
     for name, wkt, point in cases:
@@ -278,6 +289,7 @@ def main():
                 "epsg": crs.to_epsg(),
                 "esri": esri,
                 "declared": declared.get(name),
+                "terrio_epsg": terrio_epsg.get(name),
                 "terrio": "refused" if name in refused else None,
             }
         )
