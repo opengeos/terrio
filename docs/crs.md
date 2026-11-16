@@ -636,8 +636,7 @@ EPSG:4901 and places it as PROJ places EPSG:4901 (opengeos/terrio#1012).
 as PROJ's `proj_trans_get_last_used_operation`: their names, summed accuracy, grids and whether one
 is a ballpark, or `None` between CRSs of one datum. EPSG's null transformations (`SWEREF99 to WGS
 84 (1)`, 1 m) and their concatenations are named, as by PROJ, not reported as a ballpark.
-Conversions (projections, units) are not
-named, and geoid models are named without PROJ's EPSG index (`WGS 84 to EGM96 height`).
+Conversions (projections, units) are not named, and geoid models are named without PROJ's EPSG index (`WGS 84 to EGM96 height`).
 
 ```rust
 let t = terrio_crs::Transformer::new(&SpatialRef::parse("EPSG:27700")?, &SpatialRef::parse("EPSG:4326")?)?;

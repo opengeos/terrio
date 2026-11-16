@@ -75,7 +75,7 @@ pub(crate) fn note(op: Option<&Op>, reverse: bool, kind: OpKind) {
             // WGS 84 (1), ETRS89 to WGS 84 (1)), or a concatenation of them (Inverse of ETRS89 to
             // ETRF89 + ETRS89 to WGS 84 (1)), which PROJ 9.8.1 names: not a ballpark. So is a
             // WKT 2 `BOUNDCRS`'s zero Helmert transformation, which PROJ names too.
-            Some(op) if !op.ballpark && (!op.steps.is_empty() || !op.name.is_empty()) => {
+            Some(op) if !op.ballpark && (!op.steps.is_empty() || (!op.name.is_empty() && matches!(kind, OpKind::Datum))) => {
                 let names = step_names(op, reverse);
                 let name = if names.is_empty() {
                     let unnamed = match kind {

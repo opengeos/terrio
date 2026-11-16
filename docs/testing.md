@@ -1883,8 +1883,8 @@ placed within 1 mm of PROJ, 112 of those where PROJ places them otherwise than b
 0.12 m to 390 m (five, ESRI's ONGD14 to WGS 84 and its variants, by 1.23 m through PROJ's datum
 pivot). The other 21 are pinned at the code's placement: those PROJ places through its ballpark
 into a CRS of a renamed datum (also under the CRS's own name), or by its datum pivot into a CRS it
-cannot find by its name (ONGD14 renamed), which terrio does not follow yet. ATF (Paris) is left out (its ESRI
-WKT is checked in `grads_and_prime_meridians`) (`cargo test -p terrio-crs --test wkt_unresolved`;
+cannot find by its name (ONGD14 renamed), which terrio does not follow yet. ATF (Paris) is left
+out (its ESRI WKT is checked in `grads_and_prime_meridians`) (`cargo test -p terrio-crs --test wkt_unresolved`;
 regenerate with `scripts/gen_wkt_unresolved.py`, pyproj 3.8.0; the names PROJ looks CRSs up by come
 from `scripts/gen_crs_names.py`).
 

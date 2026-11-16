@@ -2950,7 +2950,11 @@ PROJ_CASES = {
         ),
         "a_wkt2_projected_crs_on_a_null_transformation_datum_is_not_a_ballpark": (
             "SWEREF99 TM as WKT 2 without its ID, to WGS 84: the null transformation, not a ballpark",
-            IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0): proj_trans_get_last_used_operation's name",
+            IDENTICAL,
+            (
+                "PROJ 9.8.1 (pyproj 3.8.0): proj_trans_get_last_used_operation's name to WGS 84; known difference from WGS 84: "
+                "PROJ adds \"+ SWEREF99 TM\", terrio leaves the projection unnamed"
+            ),
         ),
     },
     "proj_ellipsoid_shape": {
