@@ -657,9 +657,15 @@ impl SpatialRef {
         if looks_like_wkt(s) {
             // As GDAL's `importFromWkt`: WKT its reader refuses (unbalanced, nested deeper than
             // PROJ allows, over 100,000 bytes) is an error, not an opaque CRS.
-            if wkt1::parse(s).is_none() {
-                let head: String = s.chars().take(80).collect();
-                return Err(Error::Crs(format!("not a WKT definition GDAL reads: '{head}'")));
+            let head = || s.chars().take(80).collect::<String>();
+            let Some(root) = wkt1::parse(s) else {
+                return Err(Error::Crs(format!("not a WKT definition GDAL reads: '{}'", head())));
+            };
+            // Every WKT CRS production requires member nodes, such as a geographic CRS's datum
+            // and a projected CRS's base CRS (OGC 01-009 7.2; ISO 19162:2019 8.1, 9.1): a keyword
+            // with only its name, `GEOGCS["x"]`, defines nothing.
+            if !root.args.iter().any(|arg| matches!(arg, wkt1::Arg::Node(_))) {
+                return Err(Error::Crs(format!("WKT {} has no definition after its name: '{}'", root.key, head())));
             }
             return Ok(Self::from_wkt(s));
         }

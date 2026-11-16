@@ -195,5 +195,8 @@ quicklook (RPCs) images, every variable, coordinate and attribute, the GCPs and 
   HTTP, terrio does not read `.aux.xml` sidecar files.
 - terrio writes north-up or south-up grids, not rotated ones. Writers other than GeoTIFF do not
   store band scales and offsets: `to_raster` warns when it would lose them.
+- `clip` also takes a GeoDataFrame or GeoSeries, a vector file path or a terrio `Layer` (each
+  with its own CRS), a GeoJSON Feature or FeatureCollection, or a single geometry; rioxarray
+  takes an iterable of geometries.
 - `clip(from_disk=True)` of an overview clips in memory. `estimate_utm_crs` knows the WGS 84,
   NAD83 and NAD27 UTM zones. Complex data types are not supported.

@@ -979,6 +979,23 @@ mod tests {
     }
 
     #[test]
+    fn user_wkt_keyword_without_definition_is_an_error() {
+        // #1032: a CRS keyword with only its name was a CRS that no transformation could use.
+        // GDAL 3.10.3 (PROJ 9.6.0) refuses them too: `gdalsrsinfo 'GEOGCS["x"]'` reports "Missing
+        // DATUM or ENSEMBLE node", `PROJCS["x"]` "missing CONVERSION node".
+        let keywords = "GEOGCS PROJCS GEOCCS COMPD_CS VERT_CS LOCAL_CS GEOGCRS GEOGRAPHICCRS GEODCRS GEODETICCRS \
+                        PROJCRS PROJECTEDCRS COMPOUNDCRS BOUNDCRS VERTCRS VERTICALCRS ENGCRS ENGINEERINGCRS";
+        for keyword in keywords.split_whitespace() {
+            for text in [format!("{keyword}[x]"), format!("{keyword}[\"WGS 84\"]")] {
+                let err = SpatialRef::parse_literal(&text).unwrap_err().to_string();
+                assert!(err.contains("has no definition after its name"), "{text}: {err}");
+            }
+        }
+        // A member node is enough: such minimal definitions stay readable.
+        assert!(SpatialRef::parse_literal(r#"LOCAL_CS["site grid",UNIT["metre",1]]"#).is_ok());
+    }
+
+    #[test]
     fn crs_files_are_read_as_gdal_reads_them() {
         let dir = std::env::temp_dir().join(format!("terrio-crs-files-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

@@ -282,6 +282,85 @@ def test_clip_takes_a_layer(files):
     )
 
 
+def test_clip_takes_any_geometry_input(files, tmp_path, monkeypatch):
+    """Files, GeoPandas objects, Features, FeatureCollections and single geometries clip as the
+    list of their geometries does, from their own CRS."""
+    da = txr.open_rasterio(files["dem"], masked=True)
+    polys = [
+        {
+            "type": "Polygon",
+            "coordinates": [
+                [(503000, 4093000), (506000, 4093000), (503000, 4096000), (503000, 4093000)]
+            ],
+        },
+        {
+            "type": "Polygon",
+            "coordinates": [
+                [(507000, 4094000), (508000, 4094000), (508000, 4095000), (507000, 4094000)]
+            ],
+        },
+    ]
+    collection = {
+        "type": "FeatureCollection",
+        "features": [
+            {"type": "Feature", "properties": {"id": i}, "geometry": p} for i, p in enumerate(polys)
+        ],
+    }
+    expected = da.terrio.clip(polys)
+    xr.testing.assert_identical(da.terrio.clip(collection), expected)
+    xr.testing.assert_identical(
+        da.terrio.clip(collection["features"][0]), da.terrio.clip(polys[:1])
+    )
+    xr.testing.assert_identical(da.terrio.clip(polys[0]), da.terrio.clip(polys[:1]))
+    # A file and GeoPandas objects carry their CRS: lon/lat here, the array's is UTM.
+    lon_lat = terrio.Layer.from_geojson(collection, crs=da.terrio.crs.to_wkt()).to_crs("EPSG:4326")
+    lon_lat_polys = [f["geometry"] for f in lon_lat.to_geojson()["features"]]
+    from_lon_lat = da.terrio.clip(lon_lat_polys, crs="EPSG:4326")
+    path = tmp_path / "zones.geojson"
+    lon_lat.write(str(path))
+    xr.testing.assert_identical(da.terrio.clip(path), from_lon_lat)
+    xr.testing.assert_identical(
+        da.terrio.clip(str(path), from_disk=True),
+        da.terrio.clip(lon_lat_polys, crs="EPSG:4326", from_disk=True),
+    )
+    ds = xr.Dataset({"a": da, "b": da * 2})
+    xr.testing.assert_identical(
+        ds.terrio.clip(path), ds.terrio.clip(lon_lat_polys, crs="EPSG:4326")
+    )
+    gpd = pytest.importorskip("geopandas")
+    pytest.importorskip("pyarrow")
+    frame = gpd.GeoDataFrame.from_features(lon_lat.to_geojson(), crs="EPSG:4326")
+    xr.testing.assert_identical(da.terrio.clip(frame), from_lon_lat)
+    xr.testing.assert_identical(da.terrio.clip(frame.geometry), from_lon_lat)
+    xr.testing.assert_identical(ds.terrio.clip(frame), ds.terrio.clip(path))
+    xr.testing.assert_identical(da.terrio.clip(terrio.open_vector(str(path))), from_lon_lat)
+    # Unnamed GeoSeries; the active geometry column when it is not the first.
+    xr.testing.assert_identical(da.terrio.clip(gpd.GeoSeries(frame.geometry.values)), from_lon_lat)
+    two = gpd.GeoDataFrame(
+        {"other": gpd.GeoSeries.from_xy([0.0], [0.0], crs="EPSG:4326").repeat(len(frame)).values},
+        geometry=frame.geometry.values,
+        crs="EPSG:4326",
+    )
+    two = two[["other", "geometry"]]
+    assert two.columns[0] == "other"
+    xr.testing.assert_identical(da.terrio.clip(two), from_lon_lat)
+    shapely = pytest.importorskip("shapely")
+    # GeoPandas before 1.0 (no to_arrow): through GeoJSON, still with its CRS.
+    monkeypatch.delattr(gpd.GeoSeries, "to_arrow")
+    xr.testing.assert_identical(da.terrio.clip(frame), from_lon_lat)
+    # Without a CRS, the array's, on either path (not GeoJSON's EPSG:4326).
+    bare = gpd.GeoDataFrame(geometry=gpd.GeoSeries([shapely.geometry.shape(p) for p in polys]))
+    assert bare.crs is None
+    xr.testing.assert_identical(da.terrio.clip(bare), expected)
+    monkeypatch.undo()
+    xr.testing.assert_identical(da.terrio.clip(bare), expected)
+    xr.testing.assert_identical(
+        da.terrio.clip(shapely.geometry.shape(polys[0])), da.terrio.clip(polys[:1])
+    )
+    with pytest.raises(ValueError, match="own CRS"):
+        da.terrio.clip(frame, crs=da.terrio.crs)
+
+
 def test_clip_reproject_pad(files):
     da = txr.open_rasterio(files["dem"], masked=True)
     acc = da.terrio

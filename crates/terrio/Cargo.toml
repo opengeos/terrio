@@ -201,6 +201,12 @@ webpki-root-certs.workspace = true
 # The bounded-memory test of compressed XLSX workbooks maps its input.
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 memmap2.workspace = true
+gungraun.workspace = true
+
+# CPU instructions under Valgrind, compared on pull requests (.github/workflows/bench.yml).
+[[bench]]
+name = "instructions"
+harness = false
 
 [[example]]
 name = "xlsx_workbook"
