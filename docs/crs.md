@@ -33,6 +33,11 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
 - ESRI codes, the geographic and projected CRSs of PROJ's ESRI authority: `ESRI:54009` (World
   Mollweide), `esri:102003`, `urn:ogc:def:crs:ESRI::102003`. The few whose projection terrio
   does not compute (Goode homolosine of the oceans, Peirce quincuncial and others) are refused;
+- WKT1 parameters by GDAL's names or EPSG's (`Latitude of false origin`, `Longitude of projection
+  centre`, `Angle from Rectified to Skew Grid`, variant B's `Latitude of standard parallel`), as
+  PROJ 9.8.1 reads both; GDAL's `Polar_Stereographic` without `latitude_of_origin` (with GDAL's
+  `standard_parallel_1` or EPSG's standard parallel alone) is refused, as PROJ refuses it. A
+  `PROJCS` with two `UNIT` nodes is in the first, as PROJ takes it.
 - WKT1 and WKT2 (2015 and 2019) definitions, including ESRI `.prj` WKT and WKT2 `BOUNDCRS`s with a
   Helmert transformation, recognized and applied as PROJ 9.8.1 does: the 25 methods of its table
   (geocentric translations, position vector and coordinate frame in each domain, coordinate
@@ -1151,7 +1156,17 @@ They read and write:
   (ProjCoordTransGeoKey 1, 3, 7 to 28, and 9815 for Hotine oblique Mercator variant B and Swiss
   oblique Mercator), a UTM zone by its ProjectionGeoKey, linear units by EPSG code or by size
   (ProjLinearUnitSizeGeoKey), angular units, and EPSG datums, ellipsoids, prime meridians and
-  `TOWGS84` shifts. A user-defined projected CRS can be read by a registered code (see below);
+  `TOWGS84` shifts. These parameters are read as libgeotiff's `GTIFFetchProjParms` reads them, as
+  GDAL 3.12.2 does: the false easting and northing from ProjFalseEasting/NorthingGeoKey, else
+  ProjCenterEasting/NorthingGeoKey, else the false origin's; a Hotine oblique Mercator without
+  ProjRectifiedGridAngleGeoKey at 90 in the keys' angular unit (81° in grads); and a polar
+  stereographic CRS by its origin latitude when given (ProjNatOriginLatGeoKey, else
+  ProjFalseOriginLatGeoKey, else ProjCenterLatGeoKey: 90° and a ProjStdParallel1GeoKey of 71° or
+  -71° is variant A of its scale, the standard parallel unread). Not yet as libgeotiff reads them:
+  without any origin latitude, a polar stereographic CRS's ProjStdParallel1GeoKey is still read as
+  its standard parallel, leniently, where libgeotiff takes a latitude of 0; a Stereographic or
+  Mercator CRS's scale keys, a Mercator's latitude keys, and Laborde (CT 4) (#1012 item 35). A
+  user-defined projected CRS can be read by a registered code (see below);
 - ESRI PE citations (`ESRI PE String = <WKT>`), which GDAL writes for a CRS GeoKeys cannot hold
   (an engineering CRS, a method GeoTIFF has no code for, a definition only its PROJ string
   describes): terrio writes them for the same CRSs. A CRS whose WKT holds a NUL (from a PROJJSON

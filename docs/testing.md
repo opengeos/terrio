@@ -1812,6 +1812,11 @@ geographic and geographic BOUNDCRS exports also match PROJ, including omission o
 and preservation of the bound datum shift (`cargo test -p
 terrio-crs --test wkt1_axes`; regenerate with `scripts/gen_wkt1_axes.py`, pyproj 3.8.0).
 
+WKT 1 projected CRSs with EPSG's parameter names (Albers, Equidistant Conic, Lambert 2SP, Hotine
+variants A and B, polar stereographic variant B) and a `PROJCS` with two `UNIT` nodes place a point
+where PROJ 9.8.1 does within 1 mm, or are refused where PROJ refuses (`--test wkt1_epsg_names`;
+regenerate with `scripts/gen_wkt1_epsg_names.py`, pyproj 3.8.0).
+
 WKT 2 `BOUNDCRS`s with a Helmert transformation, to WGS 84 and to ED50 and OSGB36 (with and
 without their codes, three and seven parameters, position vector and coordinate frame, a
 geographic and a projected source, over a source terrio identifies as EPSG:4277, over WKT 1
@@ -1992,7 +1997,11 @@ strings of every method GeoTIFF names in other units and datums, ESRI codes, com
 3D CRSs): GDAL's GeoKeys must read as the CRS GDAL reads from them, and terrio's must hold GDAL's
 model type, codes, method, linear unit and projection parameters and read back as the CRS (`cargo
 test -p terrio-crs --test geokeys_gdal`; regenerate with `scripts/gen_geokeys_gdal.py`, rasterio
-1.5.0, pyproj 3.8.0, numpy and tifffile).
+1.5.0, pyproj 3.8.0, numpy and tifffile). GeoKeys of user-defined projected CRSs as other
+writers write them (ProjCenterEasting/NorthingGeoKey, a Hotine oblique Mercator without its
+rectified grid angle, polar stereographic with a natural origin latitude and a standard parallel)
+place a point where GDAL 3.12.2's reading of them does, within 1 mm (`--test geokeys_read_gdal`;
+regenerate with `scripts/gen_geokeys_read_gdal.py`, GDAL 3.12.2 and pyproj).
 
 Axis orders, conversion parameters and celestial bodies (`SpatialRef::axis_order`,
 `projection_params`, `body`, `is_earth`) are compared with PROJ 9.8.1 on 777 CRSs:

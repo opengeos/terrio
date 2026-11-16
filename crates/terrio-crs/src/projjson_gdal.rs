@@ -423,7 +423,8 @@ fn projected1(p: &Node) -> Result<Map<String, Value>> {
     let g = p.child("GEOGCS").ok_or_else(|| unsupported("a PROJCS without GEOGCS"))?;
     let mut base = geographic1(g, !inner)?;
     let (angular, _) = unit1(g.child("UNIT"), "AngularUnit")?;
-    let (linear, to_meter) = unit1(p.children("UNIT").last(), "LinearUnit")?;
+    // The first `UNIT`, as PROJ 9.8.1 takes it.
+    let (linear, to_meter) = unit1(p.children("UNIT").next(), "LinearUnit")?;
     let params: Vec<(String, f64)> = p.children("PARAMETER").filter_map(|x| Some((norm(x.name()?), x.num(1)?))).collect();
     let param = |names: &[&str]| names.iter().find_map(|n| params.iter().find(|(k, _)| k == n).map(|(_, v)| *v));
     // A WKT 1 GDAL extends with a PROJ string: only Web Mercator's, as PROJ reads it.
