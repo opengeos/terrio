@@ -2836,7 +2836,7 @@ PROJ_CASES = {
             "ETRF89 (geocentric), NAD83(CSRS)v6 and GR96 (kept) on GRS 1980 88 m shorter", TOLERANCE,
             (
                 "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1e-9°; known difference: PROJ reports NAD83(CSRS)v6 as a ballpark "
-                "before its registered operation, terrio by the operation alone (opengeos/terrio#1012)"
+                "before its registered operation, terrio by the operation alone (opengeos/terrio#1012 item 56)"
             ),
         ),
     },

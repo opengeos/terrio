@@ -185,7 +185,7 @@ fn a_null_transformation_on_another_ellipsoid_is_applied_geocentrically() {
 /// PROJ 9.8.1 puts a ballpark before it, and a datum ensemble other than WGS 84's and ETRS89's
 /// (`D_Greenland_1996`) is not found and keeps it by a ballpark. Values as above. PROJ reports
 /// the NAD83(CSRS)v6 case as a ballpark (its first step), terrio by the registered operation
-/// alone: not compared (opengeos/terrio#1012).
+/// alone: not compared (opengeos/terrio#1012 item 56).
 #[test]
 fn null_transformations_on_another_ellipsoid_stop_where_proj_stops() {
     terrio_crs::set_grid_search_paths(Some(vec![]));
