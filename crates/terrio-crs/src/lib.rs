@@ -1699,6 +1699,71 @@ pub(crate) fn is_registry_extension(wkt: &str, code: u32) -> bool {
     epsg::get(code).is_some_and(|e| e.wkt != wkt && spherical_extension(&e.wkt, &e.proj) == wkt)
 }
 
+/// Whether a horizontal CRS's WKT is on the datum of the registry's CRS `code` (`theirs`), as
+/// [`declared_fits`] compares it.
+pub(crate) fn declared_datum_fits(wkt: &str, code: u32, theirs: &Def) -> bool {
+    // On another datum than the code's, when the WKT's names one terrio knows (ETRS89 declaring
+    // NAD83, both on GRS 1980): not the code, whose transformations would move it wrongly.
+    // Both as their names identify them (and the code's datum), others included.
+    // Datums terrio has CRSs on (not a superseded code a name still gives: Greenland 1996's 6747).
+    let (named_datums, own_others) = wkt_datums_and_others(wkt);
+    let mut own_datums = named_datums.clone();
+    own_datums.retain(|d| !epsg::geographic_on(*d).is_empty());
+    let registered = SpatialRef { epsg: Some(code), ..Default::default() }.to_wkt();
+    let registered = registered.as_deref().map(|w| def::split_compound(w).map(|(h, _)| h).unwrap_or_else(|| w.to_string()));
+    let (mut their_datums, their_others) = registered.as_deref().map(wkt_datums_and_others).unwrap_or_default();
+    their_datums.extend(theirs.datum_code());
+    // A datum of the same name is the same: EPSG gives Greenland 1996 two codes (6747 and 1421),
+    // and a deprecated CRS (EPSG:4640) is on a superseded datum of the current one's name, which
+    // ESRI's `D_RRAF_1991` identifies.
+    let own_name = datum_name(wkt);
+    let same_name = || {
+        let own: Vec<String> =
+            own_name.iter().cloned().chain(named_datums.iter().filter_map(|d| epsg::datum_name(*d))).map(|n| epsg::datum_key(&n)).collect();
+        let registered_name = registered.as_deref().and_then(datum_name);
+        registered_name
+            .into_iter()
+            .chain(their_datums.iter().filter_map(|d| epsg::datum_name(*d)))
+            .any(|n| own.contains(&epsg::datum_key(&n)))
+    };
+    // A datum terrio does not know is not the code's unless named as it (PROJ keeps no code
+    // either): a local datum declaring ETRS89 would get ETRS89's transformations.
+    // PROJ 9.8.1's placeholder `unknown` (`D_unknown`), spelt so, matches any datum.
+    let placeholder = own_name.as_deref().is_some_and(|n| n.strip_prefix("D_").unwrap_or(n) == "unknown");
+    // A named datum terrio has no CRS on (Greenland 1996's 6747 and 1421) is compared too.
+    let unknown = own_datums.is_empty() && own_others.is_empty() && own_name.is_some() && !placeholder;
+    !((!own_datums.is_empty() || unknown)
+        && !their_datums.is_empty()
+        && !own_datums.iter().chain(&named_datums).any(|d| their_datums.contains(d) || their_others.contains(d))
+        && !their_datums.iter().any(|d| own_others.contains(d))
+        // A named datum terrio has no CRSs on, and the code's datum, that PROJ's database gives a
+        // name in common (`GR96` for Greenland 1996, 6747, and its ensemble, 1421). Not datums
+        // terrio has CRSs on, which aliases also share (`NAD83` for NAD83 and NAD83(HARN)).
+        && !named_datums
+            .iter()
+            .filter(|d| !own_datums.contains(d))
+            .any(|d| their_datums.iter().any(|t| epsg::datums_share_a_name(*d, *t)))
+        && !same_name())
+}
+
+/// Whether a geographic CRS's WKT is the EPSG CRS it declares but for its prime meridian: on its
+/// datum, so with its transformations after the meridian's shift, as PROJ 9.8.1 places NTF (Paris)
+/// on another meridian through NTF (Paris) and "NTF to WGS 84 (1)".
+pub(crate) fn declared_fits_but_meridian(wkt: &str, code: u32) -> bool {
+    let (Some(mut own), Ok(theirs)) = (Def::wkt_conversion(wkt), Def::new(&SpatialRef { epsg: Some(code), ..Default::default() })) else {
+        return false;
+    };
+    // A geographic code, not a compound one (a vertical CRS the GEOGCS has none of).
+    if !theirs.is_geographic() || theirs.vertical().is_some() || own.pm() == theirs.pm() {
+        return false;
+    }
+    own.set_pm(theirs.pm());
+    own.same_conversion(&theirs)
+        && (own.ell.a - theirs.ell.a).abs() < 1e-3
+        && (own.ell.es - theirs.ell.es).abs() < 1e-9
+        && declared_datum_fits(wkt, code, &theirs)
+}
+
 /// Whether a WKT's own content is the EPSG CRS it declares: the same conversion (units and
 /// axes included) on the same ellipsoid and datum, and of the same kind (geocentric, geographic 2D
 /// or 3D). When terrio cannot read the content (a method only the registry has), when the WKT
@@ -1769,49 +1834,7 @@ pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
             return false;
         }
     }
-    // On another datum than the code's, when the WKT's names one terrio knows (ETRS89 declaring
-    // NAD83, both on GRS 1980): not the code, whose transformations would move it wrongly.
-    // Both as their names identify them (and the code's datum), others included.
-    // Datums terrio has CRSs on (not a superseded code a name still gives: Greenland 1996's 6747).
-    let (named_datums, own_others) = wkt_datums_and_others(horizontal.as_deref().unwrap_or(wkt));
-    let mut own_datums = named_datums.clone();
-    own_datums.retain(|d| !epsg::geographic_on(*d).is_empty());
-    let registered = SpatialRef { epsg: Some(code), ..Default::default() }.to_wkt();
-    let registered = registered.as_deref().map(|w| def::split_compound(w).map(|(h, _)| h).unwrap_or_else(|| w.to_string()));
-    let (mut their_datums, their_others) = registered.as_deref().map(wkt_datums_and_others).unwrap_or_default();
-    their_datums.extend(theirs.datum_code());
-    // A datum of the same name is the same: EPSG gives Greenland 1996 two codes (6747 and 1421),
-    // and a deprecated CRS (EPSG:4640) is on a superseded datum of the current one's name, which
-    // ESRI's `D_RRAF_1991` identifies.
-    let own_name = datum_name(horizontal.as_deref().unwrap_or(wkt));
-    let same_name = || {
-        let own: Vec<String> =
-            own_name.iter().cloned().chain(named_datums.iter().filter_map(|d| epsg::datum_name(*d))).map(|n| epsg::datum_key(&n)).collect();
-        let registered_name = registered.as_deref().and_then(datum_name);
-        registered_name
-            .into_iter()
-            .chain(their_datums.iter().filter_map(|d| epsg::datum_name(*d)))
-            .any(|n| own.contains(&epsg::datum_key(&n)))
-    };
-    // A datum terrio does not know is not the code's unless named as it (PROJ keeps no code
-    // either): a local datum declaring ETRS89 would get ETRS89's transformations.
-    // PROJ 9.8.1's placeholder `unknown` (`D_unknown`), spelt so, matches any datum.
-    let placeholder = own_name.as_deref().is_some_and(|n| n.strip_prefix("D_").unwrap_or(n) == "unknown");
-    // A named datum terrio has no CRS on (Greenland 1996's 6747 and 1421) is compared too.
-    let unknown = own_datums.is_empty() && own_others.is_empty() && own_name.is_some() && !placeholder;
-    if (!own_datums.is_empty() || unknown)
-        && !their_datums.is_empty()
-        && !own_datums.iter().chain(&named_datums).any(|d| their_datums.contains(d) || their_others.contains(d))
-        && !their_datums.iter().any(|d| own_others.contains(d))
-        // A named datum terrio has no CRSs on, and the code's datum, that PROJ's database gives a
-        // name in common (`GR96` for Greenland 1996, 6747, and its ensemble, 1421). Not datums
-        // terrio has CRSs on, which aliases also share (`NAD83` for NAD83 and NAD83(HARN)).
-        && !named_datums
-            .iter()
-            .filter(|d| !own_datums.contains(d))
-            .any(|d| their_datums.iter().any(|t| epsg::datums_share_a_name(*d, *t)))
-        && !same_name()
-    {
+    if !declared_datum_fits(horizontal.as_deref().unwrap_or(wkt), code, &theirs) {
         return false;
     }
     // A geographic 2D CRS is not a 3D code, nor the reverse (PROJ identifies EPSG:4979's WKT
@@ -1963,12 +1986,10 @@ fn declared_code(wkt: &str, authority: &str) -> Option<u32> {
     parts.next()?.parse().ok()
 }
 
-/// The ESRI code of a WKT definition: the one it declares (`AUTHORITY["ESRI","54009"]`), or that
-/// of the ESRI CRS of the same name (GDAL's ESRI PE strings carry none) whose definition converts
-/// coordinates as the WKT does, on the same ellipsoid.
-/// Whether a WKT's content is the ESRI CRS it declares, as [`declared_fits`] decides it for an EPSG
-/// code: the same conversion on the same ellipsoid and datum; content terrio cannot read only when it names
-/// the ESRI CRS's own method (an unknown method declaring ESRI:54009 is not Mollweide).
+/// Whether a WKT's content is the ESRI CRS it declares, as [`declared_fits`] decides it for an
+/// EPSG code: the same conversion on the same ellipsoid and datum; content terrio cannot read only
+/// when it names the ESRI CRS's own method (an unknown method declaring ESRI:54009 is not
+/// Mollweide).
 fn esri_fits(w: &str, code: u32) -> bool {
     // On its datum (a local datum declaring an ESRI CRS on WGS 84 is not that CRS).
     if !epsg::esri(code).is_some_and(|e| esri_same_datum(w, &e.wkt)) {
@@ -1978,14 +1999,16 @@ fn esri_fits(w: &str, code: u32) -> bool {
         let method = |w: &str| {
             let root = wkt1::parse(w)?;
             let node = root.child("PROJECTION").or_else(|| root.child("CONVERSION").and_then(|c| c.child("METHOD")))?.clone();
-            Some((node.name().map(wkt1::norm)?, node.epsg().is_some()))
+            Some((node.name().map(wkt1::norm)?, node.epsg()))
         };
-        // The registry WKT's method, a variant of it by PROJ's name (PROJ writes ESRI:102035's
-        // `Orthographic` as `Orthographic (Spherical)`), or an EPSG method PROJ names otherwise
-        // (ESRI:54002's `Equirectangular` as `Equidistant Cylindrical (Spherical)`, EPSG 1029);
-        // not a method of no known name.
-        let Some((m, epsg_method)) = method(w) else { return false };
-        return epsg_method || epsg::esri(code).and_then(|e| method(&e.wkt)).is_some_and(|(r, _)| m.starts_with(&r));
+        // The registry WKT's method, by its name or PROJ's spherical variant of it (PROJ writes
+        // ESRI:102035's `Orthographic` as `Orthographic (Spherical)`), or by the EPSG method PROJ
+        // names otherwise (ESRI:54002's `Equirectangular` as `Equidistant Cylindrical
+        // (Spherical)`, EPSG 1029); not another method, nor a method of no known name.
+        let (Some((m, id)), Some((r, _))) = (method(w), epsg::esri(code).and_then(|e| method(&e.wkt))) else {
+            return false;
+        };
+        return m == r || m == format!("{r}spherical") || (r == "equirectangular" && id == Some(1029));
     };
     // The conversion, and the datum's ellipsoid by the registry WKT's (in metres in an Esri WKT 1),
     // not the definition's: a spherical method's `+R_A` sphere (ESRI:54003, Miller on WGS 84).
@@ -1994,6 +2017,9 @@ fn esri_fits(w: &str, code: u32) -> bool {
         .is_ok_and(|r| own.same_conversion(&r) && a.is_none_or(|a| (own.ell.a - a).abs() < 1e-3))
 }
 
+/// The ESRI code of a WKT definition: the one it declares (`AUTHORITY["ESRI","54009"]`), or that
+/// of the ESRI CRS of the same name (GDAL's ESRI PE strings carry none) whose definition converts
+/// coordinates as the WKT does, on the same ellipsoid.
 fn identify_esri(wkt: &str) -> Option<u32> {
     // A declared code only when the content is that CRS; else the content is identified by name.
     if let Some(code) = declared_code(wkt, "ESRI").filter(|c| esri_fits(wkt, *c)) {
@@ -2999,8 +3025,9 @@ impl Transformer {
         if start.is_none() && self.src.vertical().is_some() {
             route::note(None, false, route::OpKind::Vertical);
         }
-        // From a vertical CRS without a transformation, heights are kept (PROJ's ballpark).
-        let kept = start.is_none() && self.src.vertical().is_some();
+        // From a vertical CRS without a transformation, or whose geoid model's grid is missing,
+        // heights are kept (PROJ's ballpark).
+        let kept = !geoid && self.src.vertical().is_some();
         let (i, p) = start.unwrap_or((0, p0));
         let (sx, sy) = if i == 0 { (x, y) } else { (p.lon.to_degrees(), p.lat.to_degrees()) };
         // From ellipsoidal heights to the target.

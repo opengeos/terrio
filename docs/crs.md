@@ -276,8 +276,8 @@ ellipsoid and datum, and of the same kind. The datum is compared by its EPSG cod
 `AUTHORITY` or `ID` or as its name identifies it, else by name: ETRS89 declaring NAD83 is not NAD83,
 and a datum terrio does not know is not the code's unless named as it or `unknown`, PROJ's
 placeholder. A geocentric WKT is not a geographic code, nor a geographic 2D WKT 2 a 3D code (a WKT 1
-`GEOGCS` may be either, as in PROJ). A vertical or engineering CRS keeps its
-code. Otherwise the WKT is read and identified by its content, as PROJ 9.8.1 reads it: a projected
+`GEOGCS` may be either, as in PROJ). A vertical CRS keeps only a vertical code; an engineering or
+local CRS keeps no code terrio places. Otherwise the WKT is read and identified by its content, as PROJ 9.8.1 reads it: a projected
 CRS declaring a geographic code, a code that does not exist, or a 2D CRS in degrees declaring a
 compound code in grads is not that code. When terrio cannot read the content (a method only the
 registry has), the code is kept if the WKT names the code's own projection method; an unknown method

@@ -933,7 +933,8 @@ impl Def {
             }
             None => None,
         };
-        let fits = |g: &u32| own.as_deref().is_none_or(|t| super::declared_fits(t, *g));
+        // Or on its datum but another prime meridian, which the definition applies itself.
+        let fits = |g: &u32| own.as_deref().is_none_or(|t| super::declared_fits(t, *g) || super::declared_fits_but_meridian(t, *g));
         let geog = c.geog.filter(fits).or_else(|| c.geogcs.epsg().filter(fits)).or_else(|| match &c.geogcs_wkt1 {
             // WKT 2: identified loosely, so on the same ellipsoid only.
             Some(text) => super::identify_epsg(text).filter(|g| wkt2::same_ellipsoid(*g, self.ell.a, self.ell.es)),
@@ -1206,6 +1207,14 @@ impl Def {
         let half = 180.0 / self.to_deg;
         let y = latitude.to_degrees() / self.to_deg;
         [self.axis(-half, y), self.axis(half, y)]
+    }
+    /// The prime meridian's longitude east of Greenwich, in radians.
+    pub(crate) fn pm(&self) -> f64 {
+        self.pm
+    }
+
+    pub(crate) fn set_pm(&mut self, pm: f64) {
+        self.pm = pm;
     }
 
     /// Whether this is a geographic CRS. A rotated-pole grid is not: its coordinates are in

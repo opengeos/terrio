@@ -200,6 +200,22 @@ fn an_unknown_method_declaring_an_esri_code_is_refused() {
     assert!(Transformer::new(&wgs84, &crs).and_then(|t| t.transform(-2.0, 54.0)).is_err());
 }
 
+/// A method terrio cannot read keeps a declared ESRI code only when it is the ESRI CRS's own:
+/// not one whose name merely begins with it, nor another EPSG method (Belgian Lambert, EPSG 9803,
+/// declaring ESRI:54009, Mollweide on WGS 84).
+#[test]
+fn another_unread_method_declaring_an_esri_code_is_refused() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let own = SpatialRef::from_esri(54009).unwrap().to_wkt().unwrap();
+    assert!(own.contains(r#"PROJECTION["Mollweide"]"#), "{own}");
+    assert_eq!(SpatialRef::from_wkt(&own).esri, Some(54009));
+    for method in [r#"PROJECTION["Mollweide_X"]"#, r#"PROJECTION["Lambert_Conformal_Conic_2SP_Belgium",AUTHORITY["EPSG","9803"]]"#] {
+        let crs = SpatialRef::from_wkt(&own.replace(r#"PROJECTION["Mollweide"]"#, method));
+        assert_eq!((crs.epsg, crs.esri), (None, None), "{method}");
+    }
+}
+
 /// An ESRI CRS's WKT on a local datum, keeping its root ESRI code, is not that CRS: no ESRI code,
 /// and no NAD83 transformations (ESRI:102003, USA Contiguous Albers, on NAD83).
 #[test]
@@ -223,4 +239,31 @@ fn an_esri_code_on_a_local_datum_is_not_kept() {
         .replace(r#",AUTHORITY["EPSG","4269"]"#, "");
     let crs = SpatialRef::from_wkt(&declare(&local));
     assert_eq!((crs.epsg, crs.esri), (None, None));
+}
+
+/// Heights of a vertical CRS whose geoid model's grid is missing are kept, though the horizontal
+/// shift is three-dimensional (PROJ 9.8.1, no grids, network off: EPSG:7405, OSGB36 / British
+/// National Grid + ODN height, to EPSG:4979 keeps 100 m at (530000, 180000)).
+#[test]
+fn heights_without_their_geoid_grid_are_kept() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let (src, dst) = (SpatialRef::from_epsg(7405).unwrap(), SpatialRef::from_epsg(4979).unwrap());
+    let (_, _, h) = Transformer::new(&src, &dst).unwrap().transform_3d(530_000.0, 180_000.0, 100.0).unwrap();
+    assert!((h - 100.0).abs() < 1e-6, "{h}");
+}
+
+/// A geographic CRS declaring its code on another prime meridian keeps the code's datum
+/// transformations, after the meridian's shift (PROJ 9.8.1, no grids, network off: NTF (Paris)
+/// on a meridian `Another` at 2.33722917 grads goes through "NTF to WGS 84 (1)", to
+/// (1.4462680293, 46.7349985004), not a ballpark 56 m off).
+#[test]
+fn a_geographic_crs_on_another_meridian_keeps_its_datum() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let wkt = r#"PROJCS["NTF (Paris) / Lambert zone II",GEOGCS["NTF (Paris)",DATUM["Nouvelle_Triangulation_Francaise_Paris",SPHEROID["Clarke 1880 (IGN)",6378249.2,293.466021293627,AUTHORITY["EPSG","7011"]],AUTHORITY["EPSG","6807"]],PRIMEM["Another",2.33722917,AUTHORITY["EPSG","8903"]],UNIT["grad",0.0157079632679489,AUTHORITY["EPSG","9105"]],AUTHORITY["EPSG","4807"]],PROJECTION["Lambert_Conformal_Conic_1SP"],PARAMETER["latitude_of_origin",52],PARAMETER["central_meridian",0],PARAMETER["scale_factor",0.99987742],PARAMETER["false_easting",600000],PARAMETER["false_northing",2200000],UNIT["metre",1,AUTHORITY["EPSG","9001"]],AXIS["Easting",EAST],AXIS["Northing",NORTH]]"#;
+    let crs = SpatialRef::from_wkt(wkt);
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    let (lon, lat) = Transformer::new(&crs, &wgs84).unwrap().transform(549_826.63, 2_192_990.71).unwrap();
+    assert!((lon - 1.446_268_029_3).abs() < 1e-8 && (lat - 46.734_998_500_4).abs() < 1e-8, "{lon} {lat}");
 }
