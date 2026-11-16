@@ -1065,8 +1065,9 @@ impl SpatialRef {
     ///
     /// The values are those of the definition, not derived ones: Mercator's `+lat_ts` is not
     /// turned into a scale factor, nor Oblique Mercator's `+lonc` into a central meridian. A WKT
-    /// that declares an EPSG code terrio has gives that code's, as terrio transforms it (PROJ
-    /// reads the WKT's own nodes, which may differ).
+    /// identified as an EPSG code (one whose content is that CRS) gives the code's, as terrio
+    /// transforms it. South-orientated Transverse Mercator gives `+x_0`/`+y_0` as its PROJ string
+    /// has them, negated with x and y: a WKT's false easting of 1000 is an `x_0` of -1000.
     /// ```
     /// use terrio_crs::SpatialRef;
     /// let p = SpatialRef::from_epsg(32633)?.projection_params().unwrap();
@@ -1697,19 +1698,27 @@ pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
     if !horizontal_root {
         return true;
     }
-    let Ok(theirs) = Def::new(&SpatialRef { epsg: Some(code), ..Default::default() }) else { return false };
     // A compound CRS by its horizontal CRS.
     let horizontal = def::split_compound(wkt).map(|(h, _)| h);
-    match Def::wkt_conversion(horizontal.as_deref().unwrap_or(wkt)) {
+    let own = Def::wkt_conversion(horizontal.as_deref().unwrap_or(wkt));
+    // A code terrio cannot build (EPSG:1, or one only wbprojection's registry has, without that
+    // feature): kept only when the content cannot be read either, as there is nothing to compare.
+    let Ok(theirs) = Def::new(&SpatialRef { epsg: Some(code), ..Default::default() }) else { return own.is_none() };
+    match own {
         Some(own) => own.same_conversion(&theirs) && (own.ell.a - theirs.ell.a).abs() < 1e-3 && (own.ell.es - theirs.ell.es).abs() < 1e-9,
         None => {
+            // A method EPSG names by its code (PROJ's own WKT 2 of Belge 72, `ID["EPSG",9803]`),
+            // which the registry's WKT 1 names otherwise; else the same method name. Not a method
+            // known by neither (an unknown method declaring EPSG:27700).
             let method = |w: &str| {
                 let root = wkt1::parse(w)?;
-                let node = root.child("PROJECTION").or_else(|| root.child("CONVERSION").and_then(|c| c.child("METHOD")))?;
-                node.epsg().map(|c| c.to_string()).or_else(|| node.name().map(wkt1::norm))
+                let node = root.child("PROJECTION").or_else(|| root.child("CONVERSION").and_then(|c| c.child("METHOD")))?.clone();
+                Some(node)
             };
-            let theirs = epsg::get(code).and_then(|e| method(&e.wkt));
-            theirs.is_some() && method(wkt) == theirs
+            let Some(own) = method(wkt) else { return false };
+            let registered = epsg::get(code).map(|e| e.wkt.clone()).or_else(|| registry_wkt(code));
+            own.epsg().is_some()
+                || registered.as_deref().and_then(method).is_some_and(|t| t.name().map(wkt1::norm) == own.name().map(wkt1::norm))
         }
     }
 }
@@ -1798,11 +1807,23 @@ fn identify_esri(wkt: &str) -> Option<u32> {
     // On the same datum, by name: PROJ 9.8.1 identifies no code for ESRI's Monte_Mario_Italy_1 on
     // a datum renamed `D_Local`, and places it by a ballpark, not by Monte Mario's transformations.
     let datum = datum_name(wkt).map(|n| epsg::datum_key(&n));
+    let (own_datums, own_others) = wkt_datums_and_others(wkt);
     candidates.into_iter().find(|code| {
         let Some(e) = epsg::esri(*code) else { return false };
         let Ok(registered) = Def::from_proj(&e.proj) else { return false };
         let same_ellipsoid = a.is_none_or(|a| (a - registered.ell.a).abs() < 1e-3);
-        let same_datum = datum.is_none() || datum_name(&e.wkt).map(|n| epsg::datum_key(&n)) == datum;
+        // By the EPSG datums the names are (ESRI's `D_North_American_1983` and the registry's
+        // `North_American_Datum_1983` are NAD83); by name when one is not known; either way when
+        // neither is (a datum without a transformation).
+        let (their_datums, their_others) = wkt_datums_and_others(&e.wkt);
+        let same_datum = match (own_datums.is_empty(), their_datums.is_empty()) {
+            (false, false) => {
+                own_datums.iter().any(|d| their_datums.contains(d) || their_others.contains(d))
+                    || their_datums.iter().any(|d| own_others.contains(d))
+            }
+            (true, true) => true,
+            _ => datum.is_none() || datum_name(&e.wkt).map(|n| epsg::datum_key(&n)) == datum,
+        };
         same_ellipsoid && same_datum && own.same_conversion(&registered)
     })
 }

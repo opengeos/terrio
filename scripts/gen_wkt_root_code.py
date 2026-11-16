@@ -1,7 +1,9 @@
 """Generate crates/terrio-crs/tests/data/wkt_root_code.json: where PROJ 9.8.1 places points of
 WKTs whose root `AUTHORITY` or `ID` is not the CRS their nodes describe (opengeos/terrio#1012,
 item 16), or whose name is that of an Esri CRS on another datum (item 14), and the code PROJ
-identifies (`to_epsg()`).
+identifies (`to_epsg()`, and an ESRI one by `to_authority()`). Controls: WKTs of the right code,
+an Esri `.prj` identified by its name and datum, and PROJ's WKT 2 of a method terrio identifies by
+its code (Belgian Lambert 72).
 
 PROJ keeps a WKT's content and identifies a code only when the content is that CRS. Each case is a
 WKT, a point in WGS 84 and that point in the CRS by `Transformer.from_crs("EPSG:4326", wkt,
@@ -57,6 +59,8 @@ def main():
         ("a 2D NTF (Paris) in degrees declaring EPSG:7400", NTF_2D.format(code=7400), (2.35, 48.86)),
         ("Esri Monte_Mario_Italy_1", MONTE_MARIO, (12.5, 41.9)),
         ("Esri Monte_Mario_Italy_1 on a datum renamed D_Local", MONTE_MARIO.replace("D_Monte_Mario", "D_Local"), (12.5, 41.9)),
+        ("Esri USA_Contiguous_Albers_Equal_Area_Conic", CRS.from_user_input("ESRI:102003").to_wkt("WKT1_ESRI"), (-96.0, 40.0)),
+        ("Belge 1972 / Belgian Lambert 72 with its own code", CRS.from_epsg(31300).to_wkt(), (4.4, 50.8)),
     ]
     out = []
     for name, wkt, point in cases:
@@ -66,7 +70,9 @@ def main():
             proj = [x, y]
         except pyproj.exceptions.ProjError:
             proj = None
-        out.append({"name": name, "wkt": wkt, "point": list(point), "proj": proj, "epsg": crs.to_epsg()})
+        authority = crs.to_authority()
+        esri = int(authority[1]) if authority and authority[0] == "ESRI" else None
+        out.append({"name": name, "wkt": wkt, "point": list(point), "proj": proj, "epsg": crs.to_epsg(), "esri": esri})
     OUT.write_text(json.dumps({"proj": pyproj.proj_version_str, "cases": out}, indent=1) + "\n")
 
 

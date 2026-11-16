@@ -2,7 +2,7 @@
 //! PROJ 9.8.1 reads it: a geographic code on a projected CRS, a code that does not exist, a
 //! compound code's units and axes on a 2D CRS in degrees. The declared code is kept only when the
 //! content is that CRS; an unknown method stays unusable rather than read as the code. An Esri
-//! CRS's name identifies its code only on its datum.
+//! CRS's name identifies its code only on its datum (ESRI's `D_` datum names included).
 //!
 //! `data/wkt_root_code.json` (`scripts/gen_wkt_root_code.py`, pyproj 3.8.0, `PROJ_NETWORK=OFF`, no
 //! grids installed) holds PROJ's point in each CRS from WGS 84 (`always_xy`), `null` where PROJ
@@ -17,7 +17,7 @@ fn a_wkt_is_read_by_its_nodes_not_its_root_code() {
     terrio_crs::set_network_enabled(Some(false));
     let data: Value = serde_json::from_str(include_str!("data/wkt_root_code.json")).unwrap();
     let cases = data["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 8);
+    assert_eq!(cases.len(), 10);
     let wgs84 = SpatialRef::from_epsg(4326).unwrap();
     for case in cases {
         let name = case["name"].as_str().unwrap();
@@ -40,6 +40,9 @@ fn a_wkt_is_read_by_its_nodes_not_its_root_code() {
         // is not kept.
         if let Some(code) = case["epsg"].as_u64() {
             assert_eq!(crs.epsg, Some(code as u32), "{name}");
+        }
+        if let Some(code) = case["esri"].as_u64() {
+            assert_eq!(crs.esri, Some(code as u32), "{name}");
         }
         // An Esri CRS's name on another datum identifies no code.
         if name.contains("renamed") {

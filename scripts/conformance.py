@@ -2775,7 +2775,7 @@ PROJ_CASES = {
     },
     "wkt_root_code": {
         "a_wkt_is_read_by_its_nodes_not_its_root_code": (
-            "WKT root code not the CRS of its nodes, and an ESRI name on another datum (8 cases)", IDENTICAL,
+            "WKT root code not the CRS of its nodes, and an ESRI name on another datum, with controls (10 cases)", IDENTICAL,
             "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm, or refused as PROJ refuses; no code where PROJ identifies none",
         ),
     },

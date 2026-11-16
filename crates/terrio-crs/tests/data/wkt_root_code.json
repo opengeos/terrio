@@ -12,7 +12,8 @@
     400097.646389362,
     455996.5031583572
    ],
-   "epsg": null
+   "epsg": null,
+   "esri": null
   },
   {
    "name": "British National Grid declaring EPSG:4277",
@@ -25,7 +26,8 @@
     400097.646389362,
     455996.5031583572
    ],
-   "epsg": null
+   "epsg": null,
+   "esri": null
   },
   {
    "name": "an unknown method declaring EPSG:27700",
@@ -35,7 +37,8 @@
     54.0
    ],
    "proj": null,
-   "epsg": null
+   "epsg": null,
+   "esri": null
   },
   {
    "name": "Hartebeesthoek94 / Lo19 declaring EPSG:1",
@@ -48,7 +51,8 @@
     46246.67499191615,
     3752681.842487887
    ],
-   "epsg": 2048
+   "epsg": 2048,
+   "esri": null
   },
   {
    "name": "Hartebeesthoek94 / Lo19 with its own code",
@@ -61,7 +65,8 @@
     46246.67499191615,
     3752681.842487887
    ],
-   "epsg": 2048
+   "epsg": 2048,
+   "esri": null
   },
   {
    "name": "a 2D NTF (Paris) in degrees declaring EPSG:7400",
@@ -74,7 +79,8 @@
     0.013493934732394302,
     48.86006929458865
    ],
-   "epsg": null
+   "epsg": null,
+   "esri": null
   },
   {
    "name": "Esri Monte_Mario_Italy_1",
@@ -87,7 +93,8 @@
     1790366.4715186497,
     4644611.025881862
    ],
-   "epsg": 3003
+   "epsg": 3003,
+   "esri": null
   },
   {
    "name": "Esri Monte_Mario_Italy_1 on a datum renamed D_Local",
@@ -100,7 +107,36 @@
     1790348.1042215184,
     4644681.853456515
    ],
-   "epsg": null
+   "epsg": null,
+   "esri": null
+  },
+  {
+   "name": "Esri USA_Contiguous_Albers_Equal_Area_Conic",
+   "wkt": "PROJCS[\"USA_Contiguous_Albers_Equal_Area_Conic\",GEOGCS[\"GCS_North_American_1983\",DATUM[\"D_North_American_1983\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Albers\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",-96.0],PARAMETER[\"Standard_Parallel_1\",29.5],PARAMETER[\"Standard_Parallel_2\",45.5],PARAMETER[\"Latitude_Of_Origin\",37.5],UNIT[\"Meter\",1.0]]",
+   "point": [
+    -96.0,
+    40.0
+   ],
+   "proj": [
+    0.0,
+    280191.3043214676
+   ],
+   "epsg": null,
+   "esri": 102003
+  },
+  {
+   "name": "Belge 1972 / Belgian Lambert 72 with its own code",
+   "wkt": "PROJCRS[\"BD72 / Belge Lambert 72\",BASEGEOGCRS[\"BD72\",DATUM[\"Reseau National Belge 1972\",ELLIPSOID[\"International 1924\",6378388,297,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4313]],CONVERSION[\"Belge Lambert 72\",METHOD[\"Lambert Conic Conformal (2SP Belgium)\",ID[\"EPSG\",9803]],PARAMETER[\"Latitude of false origin\",90,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8821]],PARAMETER[\"Longitude of false origin\",4.35693972222222,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8822]],PARAMETER[\"Latitude of 1st standard parallel\",49.8333333333333,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8823]],PARAMETER[\"Latitude of 2nd standard parallel\",51.1666666666667,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8824]],PARAMETER[\"Easting at false origin\",150000.01256,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8826]],PARAMETER[\"Northing at false origin\",5400088.4378,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8827]]],CS[Cartesian,2],AXIS[\"easting (X)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing (Y)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Engineering survey, topographic mapping.\"],AREA[\"Belgium - onshore.\"],BBOX[49.5,2.5,51.51,6.4]],ID[\"EPSG\",31300]]",
+   "point": [
+    4.4,
+    50.8
+   ],
+   "proj": [
+    152946.41980783828,
+    165505.45808677655
+   ],
+   "epsg": 31300,
+   "esri": null
   }
  ]
 }
