@@ -24,7 +24,7 @@ from pyproj import CRS, Transformer
 # GDAL reads the PROJ database of pyproj's PROJ, where its own has none.
 os.environ.setdefault("PROJ_DATA", pyproj.datadir.get_data_dir())
 
-from osgeo import gdal  # noqa: E402
+from osgeo import gdal
 
 gdal.UseExceptions()
 OUT = (
