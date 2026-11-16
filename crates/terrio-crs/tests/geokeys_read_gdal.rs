@@ -47,9 +47,30 @@ fn a_polar_stereographic_latitude_that_is_not_finite_is_refused() {
         SpatialRef::from_geokeys(&directory, doubles, b"").and_then(|crs| Transformer::new(&wgs84, &crs)?.transform(10.0, 80.0))
     };
     assert!(place(&doubles).is_ok());
-    for (from, to) in [(90.0, f64::NAN), (-71.0, f64::NAN)] {
-        let changed: Vec<f64> = doubles.iter().map(|v| if *v == from { to } else { *v }).collect();
-        assert_ne!(changed, doubles);
-        assert!(place(&changed).is_err(), "{from} as {to}");
-    }
+    // The origin latitude; the standard parallel is read only without one.
+    let changed: Vec<f64> = doubles.iter().map(|v| if *v == 90.0 { f64::NAN } else { *v }).collect();
+    assert_ne!(changed, doubles);
+    assert!(place(&changed).is_err());
+}
+
+/// A standard parallel that is not finite does not refuse a polar stereographic CRS whose origin
+/// latitude is given, as the standard parallel is then not read (GDAL 3.12.2 reads 90 with any
+/// standard parallel as variant A).
+#[test]
+fn an_unread_standard_parallel_that_is_not_finite_is_ignored() {
+    let data: Value = serde_json::from_str(include_str!("data/geokeys_read_gdal.json")).unwrap();
+    let case = data["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "polar stereographic at 90° with a standard parallel of -71°")
+        .unwrap();
+    let directory: Vec<u16> = case["directory"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u16).collect();
+    let doubles: Vec<f64> =
+        case["doubles"].as_array().unwrap().iter().map(|v| if *v == -71.0 { f64::NAN } else { v.as_f64().unwrap() }).collect();
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    let crs = SpatialRef::from_geokeys(&directory, &doubles, b"").unwrap();
+    let (x, y) = Transformer::new(&wgs84, &crs).and_then(|t| t.transform(10.0, 80.0)).unwrap();
+    let (gx, gy) = (case["gdal"][0].as_f64().unwrap(), case["gdal"][1].as_f64().unwrap());
+    assert!((x - gx).abs() < 1e-3 && (y - gy).abs() < 1e-3, "({x}, {y}), GDAL ({gx}, {gy})");
 }

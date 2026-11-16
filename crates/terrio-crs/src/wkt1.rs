@@ -243,12 +243,15 @@ fn node(b: &[u8], i: &mut usize, level: usize) -> Option<Node> {
 /// Whether a WKT 1 is on a polar stereographic method the reader refuses for its latitude: GDAL's
 /// `Polar_Stereographic` without a finite `latitude_of_origin` (the first, as the reader takes
 /// it), which PROJ 9.8.1 refuses rather than read at the north pole, or EPSG's variant B with a
-/// standard parallel that is not finite.
-pub(crate) fn polar_without_origin(root: &Node) -> bool {
-    let first = |name: &str| root.children("PARAMETER").find(|p| p.name().is_some_and(|n| norm(n) == name)).and_then(|p| p.num(1));
+/// standard parallel given that is not a finite number.
+pub(crate) fn polar_latitude_refused(root: &Node) -> bool {
+    // The first parameter of a name, as the reader takes it: `None` when absent, `Some(None)`
+    // when not a number.
+    let first = |name: &str| root.children("PARAMETER").find(|p| p.name().is_some_and(|n| norm(n) == name)).map(|p| p.num(1));
     match root.child("PROJECTION").and_then(Node::name).map(norm).as_deref() {
-        Some("polarstereographic") => !first("latitudeoforigin").is_some_and(f64::is_finite),
-        Some("polarstereographicvariantb") => first("latitudeofstandardparallel").is_some_and(|v| !v.is_finite()),
+        Some("polarstereographic") => !first("latitudeoforigin").flatten().is_some_and(f64::is_finite),
+        // Given but not a finite number (PROJ 9.8.1 refuses "abc" too).
+        Some("polarstereographicvariantb") => first("latitudeofstandardparallel").is_some_and(|v| !v.is_some_and(f64::is_finite)),
         _ => false,
     }
 }
@@ -550,7 +553,7 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             let parallel = if method == "polarstereographicvariantb" { angle(&["latitudeofstandardparallel"]) } else { None };
             // GDAL's name gives its latitude only as `latitude_of_origin`; PROJ 9.8.1 refuses it
             // without, rather than read it at the north pole.
-            if polar_without_origin(root) {
+            if polar_latitude_refused(root) {
                 return None;
             }
             // Not a latitude of NaN, read at the north pole.

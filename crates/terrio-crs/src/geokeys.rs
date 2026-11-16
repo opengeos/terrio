@@ -701,7 +701,8 @@ fn projection(k: &GeoKeys, to_meter: f64) -> Option<String> {
             // parallel, leniently for the writers that put it there; libgeotiff would take a
             // latitude of 0 instead.
             let given = angle(&[NAT_ORIGIN_LAT, FALSE_ORIGIN_LAT, CENTER_LAT]);
-            if given.is_some_and(|v| !v.is_finite()) || lat1.is_some_and(|v| !v.is_finite()) {
+            // The standard parallel only when it is read, without an origin latitude.
+            if given.is_some_and(|v| !v.is_finite()) || (given.is_none() && lat1.is_some_and(|v| !v.is_finite())) {
                 return None;
             }
             let origin = given.unwrap_or(90.0);

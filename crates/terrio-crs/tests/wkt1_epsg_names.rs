@@ -62,6 +62,8 @@ fn a_polar_stereographic_latitude_of_nan_is_refused() {
         .replace("latitude_of_origin", "Latitude of standard parallel");
     assert!(place(&variant_b).is_ok());
     assert!(place(&variant_b.replace("-71", "NaN")).is_err());
+    // Not a number at all, which PROJ 9.8.1 refuses too.
+    assert!(place(&variant_b.replace("-71", r#""abc""#)).is_err());
     // Without its latitude of origin.
     assert!(place(&gdal.replace(r#"PARAMETER["latitude_of_origin",-71],"#, "")).is_err());
 }
