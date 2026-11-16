@@ -376,7 +376,18 @@ pub(crate) fn trusted_epsg(layer: &Layer) -> Option<u32> {
 /// Whether an EPSG code is a CRS of a WKT's kind: projected for a projected CRS, geographic for a
 /// geographic one.
 fn same_kind(wkt: &str, code: u32) -> bool {
-    let projected = |w: &str| w.trim_start().get(..4).is_some_and(|k| k.eq_ignore_ascii_case("PROJ"));
+    // By the first horizontal CRS node, a compound CRS's horizontal CRS's.
+    let projected = |w: &str| {
+        let upper = w.to_ascii_uppercase();
+        let first = |keys: &[&str]| keys.iter().filter_map(|k| upper.find(&format!("{k}["))).min();
+        match (
+            first(&["PROJCS", "PROJCRS", "PROJECTEDCRS"]),
+            first(&["GEOGCS", "GEOGCRS", "GEOGRAPHICCRS", "GEOCCS", "GEODCRS", "GEODETICCRS"]),
+        ) {
+            (Some(p), Some(g)) => p < g,
+            (p, _) => p.is_some(),
+        }
+    };
     wbprojection::to_ogc_wkt(code).is_ok_and(|c| projected(&c) == projected(wkt))
 }
 
