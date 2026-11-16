@@ -249,7 +249,7 @@ fn invalid(msg: impl Into<String>) -> TiffError {
 }
 
 /// The error of a compression this build leaves out: terrio was built without `feature`.
-#[cfg(not(all(feature = "lerc", feature = "lzma")))]
+#[cfg(not(all(feature = "lerc", feature = "lzma", feature = "jxl")))]
 fn disabled(feature: &str) -> TiffError {
     TiffError::IoError(std::io::Error::new(std::io::ErrorKind::Unsupported, format!("built without the `{feature}` feature")))
 }
@@ -941,6 +941,7 @@ impl ChunkCodec {
 
     /// Decodes a JPEG XL codestream into native-endian samples: the colour channels, then the extra
     /// channels, interleaved by pixel, as libtiff's JPEG XL codec does.
+    #[cfg(feature = "jxl")]
     fn jxl(&self, raw: &[u8], w: usize, h: usize) -> TiffResult<Vec<u8>> {
         use jxl_oxide::image::BitDepth;
         // On terrio's thread pool: `jxl-oxide` decodes with rayon (see `par`).
@@ -987,6 +988,11 @@ impl ChunkCodec {
             }
         }
         self.to_bytes(&samples)
+    }
+
+    #[cfg(not(feature = "jxl"))]
+    fn jxl(&self, _raw: &[u8], _w: usize, _h: usize) -> TiffResult<Vec<u8>> {
+        Err(disabled("jxl"))
     }
 
     /// Decodes a JPEG chunk, its stream completed with the shared tables.
