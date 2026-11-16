@@ -108,8 +108,11 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
             let units = axes
                 .iter()
                 .map(|a| {
+                    // Or the CS's, after the axes: `LENGTHUNIT`, or a bare `UNIT` as PROJ's
+                    // simplified WKT 2 writes it.
                     a.child("LENGTHUNIT")
                         .or_else(|| root.child("LENGTHUNIT"))
+                        .or_else(|| root.child("UNIT"))
                         .and_then(|u| u.num(1))
                         .ok_or_else(|| bad("geocentric axis needs a linear unit"))
                 })

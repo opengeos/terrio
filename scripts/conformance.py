@@ -2775,8 +2775,12 @@ PROJ_CASES = {
     },
     "wkt_root_code": {
         "a_wkt_is_read_by_its_nodes_not_its_root_code": (
-            "WKT root code not the CRS of its nodes, and an ESRI name on another datum, with controls (12 cases)", IDENTICAL,
-            "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm, or refused as PROJ refuses; no code where PROJ identifies none",
+            "WKT root code not the CRS of its nodes, and an ESRI name on another datum, with controls (13 cases)", IDENTICAL,
+            "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm, or refused as PROJ refuses; a declared code that is not the CRS not kept",
+        ),
+        "an_unread_method_under_another_code_is_refused": (
+            "WKT 2 of a method terrio does not read (Belgian Lambert 72) declaring another code", EXPECTED_REJECTION,
+            "refused, not read as the code; PROJ 9.8.1 reads its content (#1012 item 43)",
         ),
     },
     "wkt2_world_latitude": {

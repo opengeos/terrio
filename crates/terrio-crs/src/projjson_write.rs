@@ -179,7 +179,8 @@ fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
         }
     }
     let name = root.name().unwrap_or("unknown").to_string();
-    let code = s.epsg.or_else(|| crate::declared_epsg(wkt));
+    // A root code only when it is the CRS's (`identify_epsg` refuses another's).
+    let code = s.epsg.or_else(|| crate::declared_epsg(wkt).filter(|c| crate::declared_fits(wkt, *c)));
     // A datum shift the definition gives (`+towgs84`, WKT's TOWGS84) makes a bound CRS, as PROJ
     // reads it; a CRS made from an EPSG code (its table WKT) is written as such, whatever that
     // WKT holds: its datum shift is EPSG's.

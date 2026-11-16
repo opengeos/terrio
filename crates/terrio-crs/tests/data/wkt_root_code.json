@@ -13,7 +13,9 @@
     455996.5031583572
    ],
    "epsg": null,
-   "esri": null
+   "esri": null,
+   "declared": null,
+   "terrio": null
   },
   {
    "name": "British National Grid declaring EPSG:4277",
@@ -27,7 +29,9 @@
     455996.5031583572
    ],
    "epsg": null,
-   "esri": null
+   "esri": null,
+   "declared": 4277,
+   "terrio": null
   },
   {
    "name": "an unknown method declaring EPSG:27700",
@@ -38,7 +42,9 @@
    ],
    "proj": null,
    "epsg": null,
-   "esri": null
+   "esri": null,
+   "declared": 27700,
+   "terrio": null
   },
   {
    "name": "Hartebeesthoek94 / Lo19 declaring EPSG:1",
@@ -52,7 +58,9 @@
     3752681.842487887
    ],
    "epsg": 2048,
-   "esri": null
+   "esri": null,
+   "declared": 1,
+   "terrio": null
   },
   {
    "name": "Hartebeesthoek94 / Lo19 with its own code",
@@ -66,7 +74,9 @@
     3752681.842487887
    ],
    "epsg": 2048,
-   "esri": null
+   "esri": null,
+   "declared": null,
+   "terrio": null
   },
   {
    "name": "a 2D NTF (Paris) in degrees declaring EPSG:7400",
@@ -80,7 +90,9 @@
     48.86006929458865
    ],
    "epsg": null,
-   "esri": null
+   "esri": null,
+   "declared": 7400,
+   "terrio": null
   },
   {
    "name": "Esri Monte_Mario_Italy_1",
@@ -94,7 +106,9 @@
     4644611.025881862
    ],
    "epsg": 3003,
-   "esri": null
+   "esri": null,
+   "declared": null,
+   "terrio": null
   },
   {
    "name": "Esri Monte_Mario_Italy_1 on a datum renamed D_Local",
@@ -108,7 +122,9 @@
     4644681.853456515
    ],
    "epsg": null,
-   "esri": null
+   "esri": null,
+   "declared": null,
+   "terrio": null
   },
   {
    "name": "Esri USA_Contiguous_Albers_Equal_Area_Conic",
@@ -122,7 +138,9 @@
     280191.3043214676
    ],
    "epsg": null,
-   "esri": 102003
+   "esri": 102003,
+   "declared": null,
+   "terrio": null
   },
   {
    "name": "Belge 1972 / Belgian Lambert 72 with its own code",
@@ -136,7 +154,9 @@
     165505.45808677655
    ],
    "epsg": 31300,
-   "esri": null
+   "esri": null,
+   "declared": null,
+   "terrio": null
   },
   {
    "name": "Belge 1972 / Belgian Lambert 72 declaring EPSG:27700",
@@ -150,7 +170,9 @@
     165505.45808677655
    ],
    "epsg": 31300,
-   "esri": null
+   "esri": null,
+   "declared": 27700,
+   "terrio": "refused"
   },
   {
    "name": "WGS 84 geocentric in simplified WKT 2 with its own code",
@@ -164,7 +186,41 @@
     713323.1135414789
    ],
    "epsg": 4978,
-   "esri": null
+   "esri": null,
+   "declared": null,
+   "terrio": null
+  },
+  {
+   "name": "WGS 84 geocentric in simplified WKT 2 declaring EPSG:4326",
+   "wkt": "GEODCRS[\"WGS 84\",ENSEMBLE[\"World Geodetic System 1984 ensemble\",MEMBER[\"World Geodetic System 1984 (Transit)\"],MEMBER[\"World Geodetic System 1984 (G730)\"],MEMBER[\"World Geodetic System 1984 (G873)\"],MEMBER[\"World Geodetic System 1984 (G1150)\"],MEMBER[\"World Geodetic System 1984 (G1674)\"],MEMBER[\"World Geodetic System 1984 (G1762)\"],MEMBER[\"World Geodetic System 1984 (G2139)\"],MEMBER[\"World Geodetic System 1984 (G2296)\"],ELLIPSOID[\"WGS 84\",6378137,298.257223563],ENSEMBLEACCURACY[2.0]],CS[Cartesian,3],AXIS[\"(X)\",geocentricX],AXIS[\"(Y)\",geocentricY],AXIS[\"(Z)\",geocentricZ],UNIT[\"metre\",1],USAGE[SCOPE[\"Geodesy. Navigation and positioning using GPS satellite system.\"],AREA[\"World.\"],BBOX[-90,-180,90,180]],ID[\"EPSG\",4326]]",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "proj": [
+    4045456.4053408885,
+    713323.1135414789
+   ],
+   "epsg": null,
+   "esri": null,
+   "declared": 4326,
+   "terrio": null
+  },
+  {
+   "name": "ETRS89 declaring NAD83",
+   "wkt": "GEOGCRS[\"ETRS89\",ENSEMBLE[\"European Terrestrial Reference System 1989 ensemble\",MEMBER[\"European Terrestrial Reference Frame 1989\"],MEMBER[\"European Terrestrial Reference Frame 1990\"],MEMBER[\"European Terrestrial Reference Frame 1991\"],MEMBER[\"European Terrestrial Reference Frame 1992\"],MEMBER[\"European Terrestrial Reference Frame 1993\"],MEMBER[\"European Terrestrial Reference Frame 1994\"],MEMBER[\"European Terrestrial Reference Frame 1996\"],MEMBER[\"European Terrestrial Reference Frame 1997\"],MEMBER[\"European Terrestrial Reference Frame 2000\"],MEMBER[\"European Terrestrial Reference Frame 2005\"],MEMBER[\"European Terrestrial Reference Frame 2014\"],MEMBER[\"European Terrestrial Reference Frame 2020\"],ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ENSEMBLEACCURACY[0.1]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],USAGE[SCOPE[\"Spatial referencing.\"],AREA[\"Europe - onshore and offshore: Albania; Andorra; Austria; Belgium; Bosnia and Herzegovina; Bulgaria; Croatia; Czechia; Denmark; Estonia; Faroe Islands; Finland; France; Germany; Gibraltar; Greece; Hungary; Ireland; Italy; Kosovo; Latvia; Liechtenstein; Lithuania; Luxembourg; Malta; Moldova; Monaco; Montenegro; Netherlands; North Macedonia; Norway including Svalbard and Jan Mayen; Poland; Portugal - mainland; Romania; San Marino; Serbia; Slovakia; Slovenia; Spain - mainland and Balearic islands; Sweden; Switzerland; United Kingdom (UK) including Channel Islands and Isle of Man; Vatican City State.\"],BBOX[33.26,-16.1,84.73,38.01]],ID[\"EPSG\",4269],REMARK[\"Has been realized through ETRF89, ETRF90, ETRF91, ETRF92, ETRF93, ETRF94, ETRF96, ETRF97, ETRF2000, ETRF2005 and ETRF2014. This 'ensemble' covers any or all of these realizations without distinction.\"]]",
+   "point": [
+    -100.0,
+    40.0
+   ],
+   "proj": [
+    -100.0,
+    40.0
+   ],
+   "epsg": null,
+   "esri": null,
+   "declared": 4269,
+   "terrio": null
   }
  ]
 }

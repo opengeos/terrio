@@ -3,7 +3,8 @@ WKTs whose root `AUTHORITY` or `ID` is not the CRS their nodes describe (opengeo
 item 16), or whose name is that of an Esri CRS on another datum (item 14), and the code PROJ
 identifies (`to_epsg()`, and an ESRI one by `to_authority()`). Controls: WKTs of the right code,
 an Esri `.prj` identified by its name and datum, and PROJ's WKT 2 of a method terrio identifies by
-its code (Belgian Lambert 72) and a geocentric CRS in simplified WKT 2.
+its code (Belgian Lambert 72) and a geocentric CRS in simplified WKT 2, under its own code and 4326,
+and ETRS89 declaring NAD83.
 
 PROJ keeps a WKT's content and identifies a code only when the content is that CRS. Each case is a
 WKT, a point in WGS 84 and that point in the CRS by `Transformer.from_crs("EPSG:4326", wkt,
@@ -58,8 +59,7 @@ def main():
         pyproj.proj_version_str
     )
     assert os.environ.get("PROJ_NETWORK") == "OFF"
-    global MONTE_MARIO
-    MONTE_MARIO = CRS.from_epsg(3003).to_wkt("WKT1_ESRI")
+    monte_mario = CRS.from_epsg(3003).to_wkt("WKT1_ESRI")
     cases = [
         (
             "British National Grid with its own code",
@@ -83,10 +83,10 @@ def main():
             NTF_2D.format(code=7400),
             (2.35, 48.86),
         ),
-        ("Esri Monte_Mario_Italy_1", MONTE_MARIO, (12.5, 41.9)),
+        ("Esri Monte_Mario_Italy_1", monte_mario, (12.5, 41.9)),
         (
             "Esri Monte_Mario_Italy_1 on a datum renamed D_Local",
-            MONTE_MARIO.replace("D_Monte_Mario", "D_Local"),
+            monte_mario.replace("D_Monte_Mario", "D_Local"),
             (12.5, 41.9),
         ),
         (
@@ -109,7 +109,29 @@ def main():
             CRS.from_epsg(4978).to_wkt("WKT2_2019_SIMPLIFIED"),
             (10.0, 50.0),
         ),
+        (
+            "WGS 84 geocentric in simplified WKT 2 declaring EPSG:4326",
+            relabel(CRS.from_epsg(4978).to_wkt("WKT2_2019_SIMPLIFIED"), 4978, 4326),
+            (10.0, 50.0),
+        ),
+        (
+            "ETRS89 declaring NAD83",
+            relabel(CRS.from_epsg(4258).to_wkt(), 4258, 4269),
+            (-100.0, 40.0),
+        ),
     ]
+    # Declared codes that are not the CRS; a method terrio's WKT 2 reader does not know
+    # (opengeos/terrio#1012 item 43) is refused under one, where PROJ reads its content.
+    declared = {
+        "British National Grid declaring EPSG:4277": 4277,
+        "an unknown method declaring EPSG:27700": 27700,
+        "Hartebeesthoek94 / Lo19 declaring EPSG:1": 1,
+        "a 2D NTF (Paris) in degrees declaring EPSG:7400": 7400,
+        "Belge 1972 / Belgian Lambert 72 declaring EPSG:27700": 27700,
+        "WGS 84 geocentric in simplified WKT 2 declaring EPSG:4326": 4326,
+        "ETRS89 declaring NAD83": 4269,
+    }
+    refused = {"Belge 1972 / Belgian Lambert 72 declaring EPSG:27700"}
     out = []
     for name, wkt, point in cases:
         crs = CRS.from_wkt(wkt)
@@ -130,6 +152,8 @@ def main():
                 "proj": proj,
                 "epsg": crs.to_epsg(),
                 "esri": esri,
+                "declared": declared.get(name),
+                "terrio": "refused" if name in refused else None,
             }
         )
     OUT.write_text(

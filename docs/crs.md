@@ -272,7 +272,8 @@ EPSG:2263 in both, and ESRI's `GCS_European_1950` is EPSG:4230.
 
 A code the WKT declares at its root (`AUTHORITY["EPSG","27700"]`, `ID["EPSG",27700]`) is kept only
 when the WKT's content is that CRS: the same conversion, units and axes included, on the same
-ellipsoid (a vertical or engineering CRS keeps its code). Otherwise the WKT is read and identified
+ellipsoid and datum (by name; ETRS89 declaring NAD83 is not NAD83), and of the same kind (a
+geocentric WKT is not a geographic code). A vertical or engineering CRS keeps its code. Otherwise the WKT is read and identified
 by its content, as PROJ 9.8.1 reads it: a projected CRS declaring a geographic code, a code that
 does not exist, or a 2D CRS in degrees declaring a compound code in grads is not that code. When
 terrio cannot read the content (a method only the registry has), the code is kept if the WKT names

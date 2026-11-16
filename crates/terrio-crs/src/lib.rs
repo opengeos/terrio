@@ -1671,7 +1671,7 @@ fn spherical_extension(wkt: &str, proj: &str) -> String {
 }
 
 /// Whether a WKT's own content is the EPSG CRS it declares: the same conversion (units and
-/// axes included) on the same ellipsoid. When terrio cannot read the content (a method only the
+/// axes included) on the same ellipsoid and datum. When terrio cannot read the content (a method only the
 /// registry has), when the WKT names the code's own projection method.
 pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
     // Only a horizontal CRS's content is compared (not a vertical or engineering CRS's).
@@ -1702,6 +1702,30 @@ pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
     // A code terrio cannot build (EPSG:1, or one only wbprojection's registry has, without that
     // feature): kept only when the content cannot be read either, as there is nothing to compare.
     let Ok(theirs) = Def::new(&SpatialRef { epsg: Some(code), ..Default::default() }) else { return own.is_none() };
+    // On another datum than the code's, when the WKT's names one terrio knows (ETRS89 declaring
+    // NAD83, both on GRS 1980): not the code, whose transformations would move it wrongly.
+    // Both as their names identify them (and the code's datum), others included.
+    // Datums terrio has CRSs on (not a superseded code a name still gives: Greenland 1996's 6747).
+    let (mut own_datums, own_others) = wkt_datums_and_others(horizontal.as_deref().unwrap_or(wkt));
+    own_datums.retain(|d| !epsg::geographic_on(*d).is_empty());
+    let registered = SpatialRef { epsg: Some(code), ..Default::default() }.to_wkt();
+    let registered = registered.as_deref().map(|w| def::split_compound(w).map(|(h, _)| h).unwrap_or_else(|| w.to_string()));
+    let (mut their_datums, their_others) = registered.as_deref().map(wkt_datums_and_others).unwrap_or_default();
+    their_datums.extend(theirs.datum_code());
+    // A datum of the same name is the same (EPSG gives Greenland 1996 two codes, 6747 and 1421).
+    let same_name = || {
+        let Some(own) = datum_name(horizontal.as_deref().unwrap_or(wkt)).map(|n| epsg::datum_key(&n)) else { return false };
+        let registered_name = registered.as_deref().and_then(datum_name);
+        registered_name.into_iter().chain(their_datums.iter().filter_map(|d| epsg::datum_name(*d))).any(|n| epsg::datum_key(&n) == own)
+    };
+    if !own_datums.is_empty()
+        && !their_datums.is_empty()
+        && !own_datums.iter().any(|d| their_datums.contains(d) || their_others.contains(d))
+        && !their_datums.iter().any(|d| own_others.contains(d))
+        && !same_name()
+    {
+        return false;
+    }
     match own {
         Some(own) => own.same_conversion(&theirs) && (own.ell.a - theirs.ell.a).abs() < 1e-3 && (own.ell.es - theirs.ell.es).abs() < 1e-9,
         None => {
@@ -1716,9 +1740,18 @@ pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
             };
             // A CRS without a conversion (a geocentric CRS in PROJ's simplified WKT 2, whose
             // bare `UNIT` the reader refuses): the code's, on its ellipsoid.
+            // Of the code's kind: a geocentric WKT is not a geographic code on its ellipsoid.
             let Some(own) = method(wkt) else {
-                let converted = wkt1::parse(wkt).is_some_and(|r| r.child("PROJECTION").is_some() || r.child("CONVERSION").is_some());
-                return !converted && semi_major_axis(wkt).is_some_and(|a| (a - theirs.ell.a).abs() < 1e-3);
+                let Some(root) = wkt1::parse(wkt) else { return false };
+                let converted = root.child("PROJECTION").is_some() || root.child("CONVERSION").is_some();
+                let cartesian = root
+                    .child("CS")
+                    .is_some_and(|c| matches!(c.args.first(), Some(wkt1::Arg::Ident(t)) if t.eq_ignore_ascii_case("Cartesian")));
+                let geocentric = root.key.eq_ignore_ascii_case("GEOCCS")
+                    || (["GEODCRS", "GEODETICCRS"].iter().any(|k| root.key.eq_ignore_ascii_case(k)) && cartesian);
+                return !converted
+                    && geocentric == theirs.is_geocentric()
+                    && semi_major_axis(wkt).is_some_and(|a| (a - theirs.ell.a).abs() < 1e-3);
             };
             let registered = epsg::get(code).map(|e| e.wkt.clone()).or_else(|| registry_wkt(code));
             let Some(name) = own.name().map(wkt1::norm) else { return false };
@@ -1816,7 +1849,9 @@ fn identify_esri(wkt: &str) -> Option<u32> {
     candidates.into_iter().find(|code| {
         let Some(e) = epsg::esri(*code) else { return false };
         let Ok(registered) = Def::from_proj(&e.proj) else { return false };
-        let same_ellipsoid = a.is_none_or(|a| (a - registered.ell.a).abs() < 1e-3);
+        if !a.is_none_or(|a| (a - registered.ell.a).abs() < 1e-3) {
+            return false;
+        }
         // By the EPSG datums the names are (ESRI's `D_North_American_1983` and the registry's
         // `North_American_Datum_1983` are NAD83); by name when one is not known; either way when
         // neither is (a datum without a transformation).
@@ -1829,7 +1864,7 @@ fn identify_esri(wkt: &str) -> Option<u32> {
             (true, true) => true,
             _ => datum.is_none() || datum_name(&e.wkt).map(|n| epsg::datum_key(&n)) == datum,
         };
-        same_ellipsoid && same_datum && own.same_conversion(&registered)
+        same_datum && own.same_conversion(&registered)
     })
 }
 
