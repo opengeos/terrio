@@ -967,7 +967,7 @@ fn export_schema_typed(
                         name: Some(f.name.clone()),
                         field_type: Some(t.field_type.name().into()),
                         sub_type: (t.subtype != OgrFieldSubType::None).then(|| t.subtype.name().into()),
-                        // GDAL's GeoJSON readers give boolean fields and lists a width of 1.
+                        // GDAL's GeoJSON readers give every boolean field of a GeoJSON layer, scalar or list, a width of 1.
                         width: if t.subtype == OgrFieldSubType::Boolean && geojson {
                             Some(1)
                         } else {

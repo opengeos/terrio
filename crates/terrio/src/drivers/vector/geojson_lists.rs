@@ -5,7 +5,8 @@
 // SPDX-License-Identifier: MIT
 //
 // Derived from (translated to Rust and modified):
-//   GDAL v3.13.1:
+//   GDAL v3.13.1 (the source the port follows; its fixtures in tests/data/geojson_lists
+//     were validated against GDAL 3.13.2):
 //     ogr/ogrlibjsonutils.cpp (GeoJSONPropertyToFieldType)
 //     ogr/ogrsf_frmts/geojson/ogrgeojsonreader.cpp (OGRGeoJSONReaderAddOrUpdateField,
 //       OGRGeoJSONReaderSetField)

@@ -25,6 +25,7 @@ from pathlib import Path
 from osgeo import gdal, ogr
 
 gdal.UseExceptions()
+ogr.UseExceptions()
 
 OUT = Path(__file__).resolve().parent.parent / "crates" / "terrio" / "tests" / "data" / "geojson_lists"
 
