@@ -9,6 +9,8 @@
 //   GDAL v3.12.0:
 //     gcore/overview.cpp
 //     gcore/gdaldefaultoverviews.cpp
+//   GDAL v3.13.1:
+//     frmts/gtiff/gt_overview.cpp (the planar configuration of `.ovr` images)
 
 //! Overviews: their selection for warping, following GDAL's `-ovr` choices, and their management
 //! in GeoTIFFs as `gdaladdo` and `gdal raster overview add/delete/refresh` manage them
@@ -19,12 +21,13 @@
 //! it has no internal ones). As GDAL does, each overview is computed from the previous (larger)
 //! one being built, the valid pixels (not nodata, not masked out by a per-dataset mask) only,
 //! internal overviews take the full-resolution image's compression, predictor and tile size (128
-//! pixel tiles for a striped image), and a raster with an internal mask gets mask overviews. The
-//! full-resolution image is read once, by strips of rows, rather than whole, for whole levels
-//! (partial refreshes read the rows over their region). The file is changed through a copy
-//! renamed over it, so a failure leaves it as it was. External overviews leave the GeoTIFF itself
-//! untouched, so it may be read-only, as with `gdaladdo -ro`. [`add_overviews_with_progress`]
-//! reports progress and can be cancelled.
+//! pixel tiles for a striped image), the images of a new `.ovr` sidecar of several bands are
+//! band-separate (pixel-interleaved in WebP, JPEG XL and JPEG), and a raster with an internal mask
+//! gets mask overviews. The full-resolution image is read once, by strips of rows, rather than
+//! whole, for whole levels (partial refreshes read the rows over their region). The file is
+//! changed through a copy renamed over it, so a failure leaves it as it was. External overviews
+//! leave the GeoTIFF itself untouched, so it may be read-only, as with `gdaladdo -ro`.
+//! [`add_overviews_with_progress`] reports progress and can be cancelled.
 //!
 //! Overviews are managed for GeoTIFFs only: terrio reads an `.ovr` sidecar as the overviews of a
 //! GeoTIFF, not of other formats.
@@ -839,14 +842,33 @@ fn source_of<'c>(
     }
 }
 
-/// Whether GDAL computes the overviews of a TIFF image like `dir` with
+/// Whether GDAL computes overviews written as pixel-interleaved (`contig`) images with
 /// `GDALRegenerateOverviewsMultiBand` (block by block, every level from the previous one)
 /// rather than band by band with `GDALRegenerateOverviewsEx`: for internal overviews of
 /// pixel-interleaved (or single-band, or alpha) images, and for compressed pixel-interleaved
 /// external ones.
-fn gdal_multiband(dir: &Directory, external: bool, compressed: bool, bands: usize, alpha: bool) -> bool {
-    let contig = dir.uint(284) != Some(2) || bands == 1;
+fn gdal_multiband(contig: bool, external: bool, compressed: bool, alpha: bool) -> bool {
     if external { (compressed && contig) || alpha } else { contig || alpha }
+}
+
+/// Whether the bands of a TIFF image like `dir` of `bands` bands are pixel-interleaved.
+fn contiguous(dir: &Directory, bands: usize) -> bool {
+    dir.uint(284) != Some(2) || bands == 1
+}
+
+/// Whether the new images of an `.ovr` sidecar of `bands` bands are band-separate, as GDAL writes
+/// them (`GTIFFBuildOverviewsEx`, GDAL 3.13), whatever the interleaving of the full-resolution
+/// image: several bands are, except in WebP and JPEG XL, which GDAL interleaves. Terrio's JPEG and
+/// JPEG XL encoders take 1 or 3 interleaved bands, so it interleaves only those counts (GDAL
+/// separates JPEG bands) and separates the others. The layout decides how GDAL computes the levels
+/// ([`gdal_multiband`]), and so their windows.
+fn ovr_planar(bands: usize, compression: Compression) -> bool {
+    let interleaved = match compression {
+        Compression::WebP => true,
+        Compression::Jxl | Compression::Jpeg => matches!(bands, 1 | 3),
+        _ => false,
+    };
+    bands > 1 && !interleaved
 }
 
 /// The band GDAL takes as an alpha band (its color interpretation, which `GDAL_METADATA` may
@@ -1312,7 +1334,8 @@ fn stored_method(dir: &Directory) -> Option<Result<OverviewResampling>> {
     }))
 }
 
-/// Encodes a computed level as a new overview image like `like` (the full-resolution image).
+/// Encodes a computed level as a new overview image like `like` (the full-resolution image),
+/// band-separate or pixel-interleaved as `planar` says when it is given.
 fn new_level_image(
     c: &Computed,
     like: &Directory,
@@ -1320,8 +1343,12 @@ fn new_level_image(
     method: OverviewResampling,
     data_type: DataType,
     bands: usize,
+    planar: Option<bool>,
 ) -> Result<(gw::Image, Option<gw::Image>)> {
-    let (layout, compression, codec) = layout_like(like, compression, true, data_type)?;
+    let (mut layout, compression, codec) = layout_like(like, compression, true, data_type)?;
+    if let Some(planar) = planar {
+        layout.planar = planar && bands > 1;
+    }
     let level = gw::Level { cols: c.size.0, rows: c.size.1, bands, data: std::borrow::Cow::Borrowed(&c.data) };
     let mut img = level.image(data_type, compression, &codec, &layout)?;
     img.tags.push((254, Value::Longs(vec![1])));
@@ -1385,7 +1412,9 @@ fn build_new_levels(
         })
         .collect::<Result<_>>()?;
     let alpha = alpha_band(src);
-    let multiband = gdal_multiband(like, true, new_compression != Compression::None, src.band_count(), alpha.is_some());
+    // New levels are band-separate as GDAL writes them, which decides how it computes them.
+    let planar = ovr_planar(src.band_count(), new_compression);
+    let multiband = gdal_multiband(!planar, true, new_compression != Compression::None, alpha.is_some());
     let base_block = base_block(src);
     let (data, _) = schedules((src.width(), src.height()), base_block, &sizes, &blocks, method, src.data_type(), multiband, src.has_mask());
     let levels: Vec<WholeLevel> = sizes.iter().zip(data).map(|(&size, data)| WholeLevel { size, method, data, mask: None }).collect();
@@ -1394,7 +1423,11 @@ fn build_new_levels(
     whole_levels(&mut srcs, &levels, report, |srcs, _, c| {
         let old = existing.and_then(|dirs| dirs.iter().find(|d| !d.is_mask() && d.size() == c.size));
         let compression = if old.is_some() && !override_compression { None } else { Some(compression) };
-        out.push(new_level_image(c, old.unwrap_or(like), compression, method, srcs.src.data_type(), srcs.src.band_count())?.0);
+        let (like, planar) = match old {
+            Some(old) => (old, compression.map(|_| planar)),
+            None => (like, Some(planar)),
+        };
+        out.push(new_level_image(c, like, compression, method, srcs.src.data_type(), srcs.src.band_count(), planar)?.0);
         Ok(())
     })?;
     Ok(out)
@@ -1470,7 +1503,7 @@ fn add_internal<F: Read + Write + Seek>(
         })
         .collect::<Result<_>>()?;
     let alpha = alpha_band(src);
-    let multiband = gdal_multiband(main_dir, false, true, src.band_count(), alpha.is_some());
+    let multiband = gdal_multiband(contiguous(main_dir, src.band_count()), false, true, alpha.is_some());
     let (mut data, masks) = schedules((w, h), base_block(src), &sizes, &blocks, method, src.data_type(), multiband, im.main_mask);
     if !im.main_mask && src.has_mask() {
         // A `.msk` sidecar: its pixels count, and GDAL cannot cascade over it.
@@ -1488,7 +1521,7 @@ fn add_internal<F: Read + Write + Seek>(
         let src = &mut *srcs.src;
         let (dir, mask) = match existing {
             Some(&(_, i, old_mask)) if compression.is_some() => {
-                let (image, mask) = new_level_image(c, &tiff.dirs[i], compression, method, src.data_type(), src.band_count())?;
+                let (image, mask) = new_level_image(c, &tiff.dirs[i], compression, method, src.data_type(), src.band_count(), None)?;
                 let mut dir = a.image(image)?;
                 shared_tags(main_dir, &mut dir);
                 let mask = if im.main_mask || old_mask.is_some() { mask.map(|m| a.image(m)).transpose()? } else { None };
@@ -1503,7 +1536,7 @@ fn add_internal<F: Read + Write + Seek>(
                         Some(replace_chunks(&mut a, &tiff.dirs[m], c, 0..c.size.0, src.data_type(), src.band_count(), Some(&tiff.dirs[i]))?)
                     }
                     (None, Some(_)) if im.main_mask => {
-                        new_level_image(c, main_dir, compression, method, src.data_type(), src.band_count())?
+                        new_level_image(c, main_dir, compression, method, src.data_type(), src.band_count(), None)?
                             .1
                             .map(|m| a.image(m))
                             .transpose()?
@@ -1513,7 +1546,7 @@ fn add_internal<F: Read + Write + Seek>(
                 (dir, mask)
             }
             None => {
-                let (img, mask) = new_level_image(c, main_dir, compression, method, src.data_type(), src.band_count())?;
+                let (img, mask) = new_level_image(c, main_dir, compression, method, src.data_type(), src.band_count(), None)?;
                 let mut dir = a.image(img)?;
                 shared_tags(main_dir, &mut dir);
                 let mask = if im.main_mask { mask.map(|m| a.image(m)).transpose()? } else { None };
@@ -1703,10 +1736,10 @@ pub(crate) fn refresh<F: Read + Write + Seek>(file: &mut F, src: &mut LazyRaster
         .collect::<Result<_>>()?;
     let alpha = alpha_band(src);
     let multiband = match im.main {
-        Some(m) => gdal_multiband(&tiff.dirs[m], false, true, src.band_count(), alpha.is_some()),
+        Some(m) => gdal_multiband(contiguous(&tiff.dirs[m], src.band_count()), false, true, alpha.is_some()),
         None => {
             let first = &tiff.dirs[targets[0].1];
-            gdal_multiband(first, true, first.uint(259).unwrap_or(1) != 1, src.band_count(), alpha.is_some())
+            gdal_multiband(contiguous(first, src.band_count()), true, first.uint(259).unwrap_or(1) != 1, alpha.is_some())
         }
     };
     let has_mask = targets.iter().all(|t| t.2.is_some());
@@ -1843,6 +1876,19 @@ mod tests {
         for invalid in ["-1", "AUTO-", "AUTO--1", "bilinear"] {
             assert!(OverviewSelection::parse(invalid).is_err());
         }
+    }
+
+    #[test]
+    fn jpeg_and_jxl_overviews_separate_the_bands_their_encoders_cannot_interleave() {
+        assert!(!ovr_planar(3, Compression::Jpeg));
+        assert!(!ovr_planar(3, Compression::Jxl));
+        assert!(!ovr_planar(1, Compression::Jpeg));
+        assert!(ovr_planar(2, Compression::Jpeg));
+        assert!(ovr_planar(2, Compression::Jxl));
+        assert!(ovr_planar(4, Compression::Jxl));
+        assert!(ovr_planar(5, Compression::Jxl));
+        assert!(!ovr_planar(3, Compression::WebP));
+        assert!(ovr_planar(3, Compression::Deflate));
     }
 
     #[test]
