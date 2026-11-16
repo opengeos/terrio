@@ -365,10 +365,19 @@ pub(crate) fn trusted_epsg(layer: &Layer) -> Option<u32> {
     let code = match (layer.crs_epsg(), layer.crs_wkt().map(terrio_crs::until_nul)) {
         (code, None) => code,
         (Some(code), Some(wkt)) if wbprojection::to_ogc_wkt(code).is_ok_and(|w| w == wkt) => Some(code),
-        // Only CRS codes: the registry can return a datum's or prime meridian's.
-        (_, Some(wkt)) => wbprojection::epsg::epsg_from_wkt(wkt).filter(|c| wbprojection::to_ogc_wkt(*c).is_ok()),
+        // Only CRS codes: the registry can return a datum's or prime meridian's. And only of the
+        // WKT's kind: for a projected CRS without a code, it can return its geographic CRS's
+        // (WGS 84 for an Albers on WGS 84), which would be written in place of the projection.
+        (_, Some(wkt)) => wbprojection::epsg::epsg_from_wkt(wkt).filter(|c| wbprojection::to_ogc_wkt(*c).is_ok() && same_kind(wkt, *c)),
     };
     code.filter(|c| !crate::crs::is_esri_code(*c))
+}
+
+/// Whether an EPSG code is a CRS of a WKT's kind: projected for a projected CRS, geographic for a
+/// geographic one.
+fn same_kind(wkt: &str, code: u32) -> bool {
+    let projected = |w: &str| w.trim_start().get(..4).is_some_and(|k| k.eq_ignore_ascii_case("PROJ"));
+    wbprojection::to_ogc_wkt(code).is_ok_and(|c| projected(&c) == projected(wkt))
 }
 
 /// The WKT to write for a layer's CRS: GDAL-style WKT with the EPSG authority when the code is
