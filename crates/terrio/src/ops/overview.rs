@@ -858,11 +858,17 @@ fn contiguous(dir: &Directory, bands: usize) -> bool {
 
 /// Whether the new images of an `.ovr` sidecar of `bands` bands are band-separate, as GDAL writes
 /// them (`GTIFFBuildOverviewsEx`, GDAL 3.13), whatever the interleaving of the full-resolution
-/// image: several bands are, except in WebP and JPEG XL, which GDAL interleaves. Terrio also
-/// interleaves JPEG bands (its encoder takes 1 or 3 interleaved bands), which GDAL separates.
-/// The layout decides how GDAL computes the levels ([`gdal_multiband`]), and so their windows.
+/// image: several bands are, except in WebP and JPEG XL, which GDAL interleaves. Terrio's JPEG and
+/// JPEG XL encoders take 1 or 3 interleaved bands, so it interleaves only those counts (GDAL
+/// separates JPEG bands) and separates the others. The layout decides how GDAL computes the levels
+/// ([`gdal_multiband`]), and so their windows.
 fn ovr_planar(bands: usize, compression: Compression) -> bool {
-    bands > 1 && !matches!(compression, Compression::WebP | Compression::Jxl | Compression::Jpeg)
+    let interleaved = match compression {
+        Compression::WebP => true,
+        Compression::Jxl | Compression::Jpeg => matches!(bands, 1 | 3),
+        _ => false,
+    };
+    bands > 1 && !interleaved
 }
 
 /// The band GDAL takes as an alpha band (its color interpretation, which `GDAL_METADATA` may
@@ -1330,7 +1336,6 @@ fn stored_method(dir: &Directory) -> Option<Result<OverviewResampling>> {
 
 /// Encodes a computed level as a new overview image like `like` (the full-resolution image),
 /// band-separate or pixel-interleaved as `planar` says when it is given.
-#[allow(clippy::too_many_arguments)]
 fn new_level_image(
     c: &Computed,
     like: &Directory,
@@ -1419,7 +1424,7 @@ fn build_new_levels(
         let old = existing.and_then(|dirs| dirs.iter().find(|d| !d.is_mask() && d.size() == c.size));
         let compression = if old.is_some() && !override_compression { None } else { Some(compression) };
         let (like, planar) = match old {
-            Some(old) => (old, None),
+            Some(old) => (old, compression.map(|_| planar)),
             None => (like, Some(planar)),
         };
         out.push(new_level_image(c, like, compression, method, srcs.src.data_type(), srcs.src.band_count(), planar)?.0);
@@ -1871,6 +1876,19 @@ mod tests {
         for invalid in ["-1", "AUTO-", "AUTO--1", "bilinear"] {
             assert!(OverviewSelection::parse(invalid).is_err());
         }
+    }
+
+    #[test]
+    fn jpeg_and_jxl_overviews_separate_the_bands_their_encoders_cannot_interleave() {
+        assert!(!ovr_planar(3, Compression::Jpeg));
+        assert!(!ovr_planar(3, Compression::Jxl));
+        assert!(!ovr_planar(1, Compression::Jpeg));
+        assert!(ovr_planar(2, Compression::Jpeg));
+        assert!(ovr_planar(2, Compression::Jxl));
+        assert!(ovr_planar(4, Compression::Jxl));
+        assert!(ovr_planar(5, Compression::Jxl));
+        assert!(!ovr_planar(3, Compression::WebP));
+        assert!(ovr_planar(3, Compression::Deflate));
     }
 
     #[test]
