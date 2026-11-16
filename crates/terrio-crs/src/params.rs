@@ -1,7 +1,13 @@
+// SPDX-FileCopyrightText: PROJ contributors
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   PROJ 9.8.1:
+//     src/dmstor.cpp (`dmstor_ctx`, in `dms`)
 // Written to match the behavior of:
 //   PROJ 9.8.1:
-//     src/param.cpp / src/dmstor.cpp
-// No code is translated from these sources.
+//     src/param.cpp
 
 //! The `+key=value` parameters of a PROJ string.
 
@@ -53,6 +59,9 @@ pub(crate) struct Params {
     unterminated_quote: bool,
     /// The parameters read as a number or an angle whose values are neither, in reading order.
     invalid: std::cell::RefCell<Vec<String>>,
+    /// Angles read by their longest readable start, as PROJ reads a pipeline step's (a WKT's
+    /// `PROJ4` extension: `9d-30` is 9°), not whole, as its CRS parser reads them.
+    angle_prefixes: bool,
 }
 
 impl Params {
@@ -70,7 +79,12 @@ impl Params {
                 })
             })
             .collect();
-        Self { items, unterminated_quote, invalid: Default::default() }
+        Self { items, unterminated_quote, invalid: Default::default(), angle_prefixes: false }
+    }
+
+    /// [`Self::parse`] of a WKT's `PROJ4` extension, whose angles PROJ reads as a pipeline step's.
+    pub fn parse_extension(s: &str) -> Self {
+        Self { angle_prefixes: true, ..Self::parse(s) }
     }
 
     /// Refuses a quoted value that would swallow the rest of a definition.
@@ -152,12 +166,12 @@ impl Params {
     /// The parameter as an angle, in radians: decimal degrees, PROJ's DMS (`40d30'15"N`), or
     /// radians (`0.5r`).
     pub fn angle(&self, key: &str) -> Option<f64> {
-        self.read(key, parse_dms).map(f64::to_radians)
+        self.degrees(key).map(f64::to_radians)
     }
 
     /// The parameter as an angle in degrees, as [`Self::angle`] reads it.
     pub fn degrees(&self, key: &str) -> Option<f64> {
-        self.read(key, parse_dms)
+        if self.angle_prefixes { self.read(key, |v| dms(v, false)) } else { self.read(key, parse_dms) }
     }
 
     /// The parameter as a comma-separated list of numbers.
@@ -187,45 +201,119 @@ fn tokens(s: &str) -> (Vec<String>, bool) {
     (out, quoted)
 }
 
-/// Parses decimal degrees, PROJ's DMS notation or radians (`0.5r`, as PROJ's `dmstor`) into
-/// degrees.
+/// Parses an angle as PROJ 9.8.1's `dmstor` reads it, into degrees: a sign, then up to three
+/// numbers each followed by its unit (`d`, `D` or `°` for degrees, `'` for minutes, `"` for
+/// seconds; a number without one is in the unit after the previous one), or a single number in
+/// radians (`0.5r`), then an optional hemisphere letter (`N`, `E`, `S`, `W`, either case), which
+/// gives the sign over the leading one. The whole value must be read: PROJ refuses `9d-30` or
+/// `40.5NS` ("Invalid value"), so they are not angles here either.
 pub(crate) fn parse_dms(s: &str) -> Option<f64> {
+    dms(s, true)
+}
+
+/// [`parse_dms`] of the value's longest readable start, as PROJ reads `+R_lat_a` and `+R_lat_g`
+/// even in a PROJ string (`40.5NS` is 40.5°, `abc` none): `INFINITY` where PROJ's `dmstor` gives
+/// `HUGE_VAL` (`40d30d`, `1e400`).
+pub(crate) fn parse_dms_prefix(s: &str) -> Option<f64> {
+    dms(s, false)
+}
+
+/// [`parse_dms`], of the whole value (`whole`) or of its longest readable start, as PROJ's
+/// `dmstor` reads a pipeline step's angle: `9d-30` is 9°, `40.5NS` 40.5°.
+fn dms(s: &str, whole: bool) -> Option<f64> {
     let s = s.trim();
-    if let Ok(v) = s.parse() {
-        return Some(v);
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    let mut negative = false;
+    if let Some(c @ ('+' | '-')) = chars.first() {
+        negative = *c == '-';
+        i = 1;
     }
-    // Radians, as PROJ's `dmstor` reads a number ending in `r` or `R`.
-    if let Some(v) = s.strip_suffix(['r', 'R']).and_then(|v| v.parse::<f64>().ok()) {
-        return Some(v.to_degrees());
-    }
-    let (body, sign) = match s.chars().last()? {
-        'N' | 'n' | 'E' | 'e' => (&s[..s.len() - 1], 1.0),
-        'S' | 's' | 'W' | 'w' => (&s[..s.len() - 1], -1.0),
-        _ => (s, 1.0),
-    };
-    let mut deg = 0.0;
-    let mut rest = body;
-    for (sep, div) in [('d', 1.0), ('\'', 60.0), ('"', 3600.0)] {
-        if let Some((v, r)) = rest.split_once(sep) {
-            deg += v.trim().parse::<f64>().ok()?.abs() / div;
-            rest = r;
+    // A number as `strtod` reads it: digits with one point, then an exponent only when digits
+    // follow (`40.5.2` is 40.5 and `.2`).
+    let number = |i: &mut usize| -> Option<f64> {
+        let start = *i;
+        let mut point = false;
+        while *i < chars.len() && (chars[*i].is_ascii_digit() || (chars[*i] == '.' && !point)) {
+            point |= chars[*i] == '.';
+            *i += 1;
         }
-    }
-    if !rest.trim().is_empty() {
-        let div = if body.contains('\'') {
-            3600.0
-        } else if body.contains('d') {
-            60.0
-        } else {
-            1.0
+        if *i < chars.len() && matches!(chars[*i], 'e' | 'E') {
+            let mut j = *i + 1;
+            if j < chars.len() && matches!(chars[j], '+' | '-') {
+                j += 1;
+            }
+            if j < chars.len() && chars[j].is_ascii_digit() {
+                while j < chars.len() && chars[j].is_ascii_digit() {
+                    j += 1;
+                }
+                *i = j;
+            }
+        }
+        chars[start..*i].iter().collect::<String>().parse().ok()
+    };
+    // PROJ's `HUGE_VAL` for a malformed angle (`40d30d`): no angle for a CRS's value; for a
+    // pipeline step's, an infinite one, which the parameter's own check refuses, as PROJ does.
+    let error = (!whole).then_some(f64::INFINITY);
+    // In degrees, as PROJ sums them: degrees, minutes and seconds.
+    const UNITS: [f64; 3] = [1.0, 1.0 / 60.0, 1.0 / 3600.0];
+    let (mut degrees, mut radians) = (0.0, None);
+    let mut next = 0;
+    while next < 3 && i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
+        // An unreadable number (`40d.`) ends the angle without being read: PROJ's `strtod`
+        // reads nothing there, so the angle so far stands (a whole value is then refused below).
+        let start = i;
+        let Some(v) = number(&mut i) else {
+            i = start;
+            break;
         };
-        deg += rest.trim().parse::<f64>().ok()?.abs() / div;
+        let unit = match chars.get(i) {
+            Some('d' | 'D' | '\u{b0}') => 0,
+            Some('\'') => 1,
+            Some('"') => 2,
+            Some('r' | 'R') => {
+                // Radians only as the first number: else PROJ's `HUGE_VAL`, an error (see below).
+                if next > 0 {
+                    return error;
+                }
+                radians = Some(v);
+                i += 1;
+                break;
+            }
+            // No unit: the one after the previous number's, and the end of the numbers.
+            _ => {
+                degrees += v * UNITS[next];
+                break;
+            }
+        };
+        // Units in order (not minutes after seconds).
+        if unit < next {
+            return error;
+        }
+        degrees += v * UNITS[unit];
+        i += 1;
+        next = unit + 1;
     }
-    // A hemisphere letter gives the sign, a minus sign only without one, as PROJ reads them
-    // (`-52d30'10"S` is south, `-52d30'10"N` north).
-    let lettered = body.len() < s.len();
-    let negative = !lettered && body.trim_start().starts_with('-');
-    Some(sign * if negative { -deg } else { deg })
+    if i == usize::from(chars.first().is_some_and(|c| matches!(c, '+' | '-'))) {
+        return None;
+    }
+    if let Some(c) = chars.get(i)
+        && "NnEeSsWw".contains(*c)
+    {
+        negative = "SsWw".contains(*c);
+        i += 1;
+    }
+    if whole && i != chars.len() {
+        return None;
+    }
+    let v = radians.map_or(degrees, f64::to_degrees);
+    // An overflow (`1e400`) is PROJ's `HUGE_VAL`, an error: no angle for a CRS's value; for a
+    // pipeline step's, the overflow itself, which the parameter's own check then refuses
+    // (`+lat_0`: "|lat_0| should be <= 90°"), rather than an absent value read as 0.
+    if !v.is_finite() && whole {
+        return None;
+    }
+    Some(if negative { -v } else { v })
 }
 
 #[cfg(test)]
@@ -234,11 +322,11 @@ mod tests {
     fn a_hemisphere_letter_gives_the_sign_over_a_minus() {
         // As PROJ 9.8.1 reads them (`+lat_0=-52.5S` is -52.5, `-52.5N` 52.5).
         let near = |s: &str, v: f64| (super::parse_dms(s).unwrap() - v).abs() < 1e-12;
-        let dms = 52.0 + 30.0 / 60.0 + 10.0 / 3600.0;
+        let seconds = 52.0 + 30.0 / 60.0 + 10.0 / 3600.0;
         for (s, v) in [("-52.5S", -52.5), ("-52.5N", 52.5), ("52.5S", -52.5), ("-52.5", -52.5), ("-5W", -5.0), ("-5E", 5.0)] {
             assert!(near(s, v), "{s}");
         }
-        for (s, v) in [("-52d30'10\"S", -dms), ("-52d30'10\"N", dms), ("52d30'10\"S", -dms), ("-52d30'10\"", -dms)] {
+        for (s, v) in [("-52d30'10\"S", -seconds), ("-52d30'10\"N", seconds), ("52d30'10\"S", -seconds), ("-52d30'10\"", -seconds)] {
             assert!(near(s, v), "{s}");
         }
     }
