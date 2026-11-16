@@ -548,7 +548,9 @@ fn conversion(p: &Params) -> Result<(Value, Vec<&'static str>)> {
             ("Transverse Mercator", 9807, values, &["zone", "south"])
         }
         // South-orientated (EPSG method 9808), whose false easting and northing the readers
-        // write negated under `+axis=wsu` (`+axis=swu` for a north-east CS).
+        // write negated under `+axis=wsu` (`+axis=swu` for a north-east CS). A difference from
+        // PROJ 9.8.1, which writes a typed `+axis=wsu +x_0=1000` with a false easting of 1000:
+        // that places its origin 2000 m away, where W = FE - x places it at the string's.
         "tmerc" if matches!(p.str("axis"), Some("wsu" | "swu")) => {
             let values = vec![(LAT_NAT, lat0), (LON_NAT, lon0), (K_NAT, k0), (FE, 0.0 - x0), (FN, 0.0 - y0)];
             ("Transverse Mercator (South Orientated)", 9808, values, ORIGIN_K)
