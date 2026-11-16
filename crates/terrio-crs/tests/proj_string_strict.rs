@@ -147,9 +147,9 @@ fn a_wkt_proj4_extension_is_read_as_a_pipeline_step() {
 }
 
 /// `+R` is read instead of `+ellps`, so an ellipsoid name PROJ does not know beside it is not
-/// refused; beside `+a` it is.
+/// refused; beside `+a`, which does not replace it, it is.
 #[test]
-fn an_unknown_ellipsoid_beside_a_sphere_radius_is_ignored() {
+fn an_unknown_ellipsoid_is_ignored_beside_a_sphere_radius_only() {
     assert_places("+proj=tmerc +lon_0=9 +R=6378137 +ellps=foo", Some((78_714.767, 5_009_862.833)));
     assert_places("+proj=merc +R=6378137 +ellps=wgs84", Some((1_113_194.908, 5_621_521.486)));
     assert_places("+proj=tmerc +lon_0=9 +a=6378137 +ellps=foo", None);
@@ -163,6 +163,11 @@ fn an_unknown_ellipsoid_beside_a_sphere_radius_is_ignored() {
 #[test]
 fn an_overflowing_angle_is_refused_and_a_fraction_reads_beside_a_geoid() {
     assert_places("+proj=tmerc +lat_0=1e400 +lon_0=9 +ellps=GRS80", None);
+    // Empty values, refused where PROJ maps the parameter, ignored where it does not.
+    assert_places("+proj=tmerc +lat_0= +lon_0=9 +ellps=GRS80", None);
+    assert_places("+proj=lcc +lat_1= +lat_2=60 +lat_0=30 +lon_0=9 +ellps=GRS80", None);
+    assert_places("+proj=tmerc +lat_0=0 +lon_0=9 +x_0= +ellps=GRS80", None);
+    assert_places("+proj=robin +lat_0= +ellps=GRS80", Some((846_701.547, 4_805_073.647)));
     let wkt = |v: &str| {
         format!(
             r#"PROJCS["x",GEOGCS["GRS 1980",DATUM["unknown",SPHEROID["GRS80",6378137,298.257222101]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",9],PARAMETER["scale_factor",1],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1],EXTENSION["PROJ4","+proj=tmerc +lat_0=0 +lon_0=9 +ellps=GRS80 +geoidgrids=@egm96_15.gtx +vto_meter={v}"]]"#
@@ -171,6 +176,19 @@ fn an_overflowing_angle_is_refused_and_a_fraction_reads_beside_a_geoid() {
     let place = |v: &str| {
         Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &SpatialRef::from_wkt(&wkt(v))).and_then(|t| t.transform(10.0, 45.0))
     };
+    // An overflowing angle in an extension is refused there too, as PROJ's pipeline refuses it.
+    let overflow = wkt("1").replace("+lat_0=0 ", "+lat_0=1e400 ");
+    // Malformed angles too (units out of order, radians after degrees), PROJ's `HUGE_VAL`.
+    for angle in ["40d30d", "40d30'0.5r"] {
+        let malformed = wkt("1").replace("+lat_0=0 ", &format!("+lat_0={angle} "));
+        let t = Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &SpatialRef::from_wkt(&malformed));
+        assert!(t.and_then(|t| t.transform(10.0, 45.0)).is_err(), "{angle}");
+    }
+    assert!(
+        Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &SpatialRef::from_wkt(&overflow))
+            .and_then(|t| t.transform(10.0, 45.0))
+            .is_err()
+    );
     let (x, y) = place("1200/3937").unwrap();
     assert!((x - 78_846.841_654_020_22).abs() < 1e-3 && (y - 4_985_430.940_605_843).abs() < 1e-3, "({x}, {y})");
     assert!(place("-1").is_err());

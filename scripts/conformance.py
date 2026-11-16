@@ -2803,10 +2803,10 @@ PROJ_CASES = {
             "PROJ 9.8.1 (pyproj 3.8.0): within 1 mm",
         ),
         "an_overflowing_angle_is_refused_and_a_fraction_reads_beside_a_geoid": (
-            "An angle of 1e400, and a PROJ4 extension's vto_meter fraction or negative value with geoidgrids (3 cases)", TOLERANCE,
-            "PROJ 9.8.1 (pyproj 3.8.0): 1e400 and -1 refused; the fraction read, within 1 mm",
+            "An angle of 1e400, and a PROJ4 extension's vto_meter fraction or negative value with geoidgrids, an overflow in an extension, and empty values (8 cases)", TOLERANCE,
+            "PROJ 9.8.1 (pyproj 3.8.0): 1e400, -1 and empty mapped values refused; the fraction and robin read, within 1 mm",
         ),
-        "an_unknown_ellipsoid_beside_a_sphere_radius_is_ignored": (
+        "an_unknown_ellipsoid_is_ignored_beside_a_sphere_radius_only": (
             "+ellps beside +R, refused beside +a (3 cases)", TOLERANCE,
             "PROJ 9.8.1 (pyproj 3.8.0): within 1 mm, or refused as PROJ refuses",
         ),

@@ -245,6 +245,9 @@ fn dms(s: &str, whole: bool) -> Option<f64> {
         }
         chars[start..*i].iter().collect::<String>().parse().ok()
     };
+    // PROJ's `HUGE_VAL` for a malformed angle (`40d30d`): no angle for a CRS's value; for a
+    // pipeline step's, an infinite one, which the parameter's own check refuses, as PROJ does.
+    let error = (!whole).then_some(f64::INFINITY);
     // In radians, as PROJ sums them: degrees, minutes and seconds.
     const UNITS: [f64; 3] = [1.0, 1.0 / 60.0, 1.0 / 3600.0];
     let (mut degrees, mut radians) = (0.0, None);
@@ -256,9 +259,9 @@ fn dms(s: &str, whole: bool) -> Option<f64> {
             Some('\'') => 1,
             Some('"') => 2,
             Some('r' | 'R') => {
-                // Radians only as the first number.
+                // Radians only as the first number: else PROJ's `HUGE_VAL`, an error (see below).
                 if next > 0 {
-                    return None;
+                    return error;
                 }
                 radians = Some(v);
                 i += 1;
@@ -272,7 +275,7 @@ fn dms(s: &str, whole: bool) -> Option<f64> {
         };
         // Units in order (not minutes after seconds).
         if unit < next {
-            return None;
+            return error;
         }
         degrees += v * UNITS[unit];
         i += 1;
@@ -291,8 +294,10 @@ fn dms(s: &str, whole: bool) -> Option<f64> {
         return None;
     }
     let v = radians.map_or(degrees, f64::to_degrees);
-    // An overflow (`1e400`) is PROJ's `HUGE_VAL`, an error.
-    if !v.is_finite() {
+    // An overflow (`1e400`) is PROJ's `HUGE_VAL`, an error: no angle for a CRS's value; for a
+    // pipeline step's, the overflow itself, which the parameter's own check then refuses
+    // (`+lat_0`: "|lat_0| should be <= 90°"), rather than an absent value read as 0.
+    if !v.is_finite() && whole {
         return None;
     }
     Some(if negative { -v } else { v })

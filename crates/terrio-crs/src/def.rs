@@ -945,13 +945,8 @@ impl Def {
             d.dynamic = e.dynamic;
         }
         if let Some(g) = p.str("geoidgrids") {
-            // `+vunits` first, then a positive `+vto_meter`, as PROJ reads them.
-            let vunits = p.str("vunits").and_then(unit_to_meter);
-            let vto_meter = vto_meter(p, extension);
-            if vunits.is_none() && p.has("vto_meter") && vto_meter.is_none() {
-                return Err(Error::Crs(format!("invalid value for vto_meter in '{s}'")));
-            }
-            let to_meter = vunits.or(vto_meter).unwrap_or(1.0);
+            // `+vunits` first, then `+vto_meter` (both checked above), as PROJ reads them.
+            let to_meter = p.str("vunits").and_then(unit_to_meter).or_else(|| vto_meter(p, extension)).unwrap_or(1.0);
             d.vertical = Some(Arc::new(Vertical::from_geoid_grids(g, to_meter)));
         }
         Ok(d)
