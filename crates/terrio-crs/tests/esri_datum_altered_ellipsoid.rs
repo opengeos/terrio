@@ -1,7 +1,7 @@
 //! An Esri datum name on an altered ellipsoid keeps the datum's transformation, applied on the
 //! file's ellipsoid, as PROJ 9.8.1 applies it (#1012 item 51).
 
-use terrio_crs::{SpatialRef, Transformer};
+use terrio_crs::{SpatialRef, TransformOptions, Transformer};
 
 /// A WKT, a point in it and PROJ's WGS 84 longitude and latitude for it.
 type Case = (&'static str, (f64, f64), (f64, f64));
@@ -67,7 +67,7 @@ fn esri_datums_on_altered_ellipsoids_keep_their_transformations() {
 /// grids) places it by a ballpark, the point unchanged to WGS 84. With underscores (`Monte_Mario`,
 /// `OSGB_1936`) or a `D_` prefix, it is found, and the point moves.
 #[test]
-fn a_datum_named_with_spaces_on_an_altered_ellipsoid_is_not_found_by_its_name() {
+fn a_datum_on_an_altered_ellipsoid_is_found_by_its_name_only_as_proj_finds_it() {
     terrio_crs::set_grid_search_paths(Some(vec![]));
     terrio_crs::set_network_enabled(Some(false));
     let wgs84 = SpatialRef::from_epsg(4326).unwrap();
@@ -84,10 +84,27 @@ fn a_datum_named_with_spaces_on_an_altered_ellipsoid_is_not_found_by_its_name() 
         ("Monte Mario", mario, false),
         ("OSGB_1936", osgb, true),
         ("D_OSGB36", osgb, true),
+        ("D_Monte Mario", mario, true),
         ("OSGB36", osgb, false),
         ("Ordnance Survey of Great Britain 1936", osgb, false),
         ("European_1950", (r#""International 1924",6378300,297"#, (10.0, 50.0)), false),
     ] {
         assert_eq!(moved(datum, spheroid, at), proj_moves, "{datum}");
     }
+}
+
+/// A datum found by its name keeps its operations whose grids are missing for `ONLY_BEST`: Esri
+/// OSGB 1936 on an Airy ellipsoid 88 m shorter, with no grids, is refused under `only_best` (its
+/// best operation needs OSTN15), as PROJ 9.8.1 refuses it ("No operation matching criteria
+/// found"); without it, PROJ's Helmert gives (-2.0014488760169202, 53.000310567922426).
+#[test]
+fn a_datum_found_by_its_name_keeps_its_missing_grids_for_only_best() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let wkt = r#"GEOGCS["GCS_OSGB_1936",DATUM["D_OSGB_1936",SPHEROID["Airy_1830",6377475.396,299.3249646]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]"#;
+    let (crs, wgs84) = (SpatialRef::from_wkt(wkt), SpatialRef::from_epsg(4326).unwrap());
+    let (lon, lat) = Transformer::new(&crs, &wgs84).unwrap().transform(-2.0, 53.0).unwrap();
+    assert!((lon - -2.001_448_876_016_920_2).abs() < 1e-9 && (lat - 53.000_310_567_922_426).abs() < 1e-9, "({lon}, {lat})");
+    let strict = Transformer::with_options(&crs, &wgs84, &TransformOptions { only_best: true, ..Default::default() });
+    assert!(strict.and_then(|t| t.transform(-2.0, 53.0)).is_err());
 }

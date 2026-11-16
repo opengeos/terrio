@@ -69,6 +69,9 @@ pub(crate) struct Def {
     datum: Option<u32>,
     /// The EPSG code of the geographic CRS, when known.
     geog: Option<u32>,
+    /// All the operations of a datum found by its name ([`Def::datum_by_name`]), those whose
+    /// grids are missing included, as `geog`'s registry entry gives them otherwise.
+    all_ops: Option<Vec<Arc<Op>>>,
     /// Whether it is a geographic 3D CRS (with ellipsoidal heights).
     three_d: bool,
     /// Whether it is a dynamic CRS (on a dynamic reference frame such as ITRF2014).
@@ -828,6 +831,7 @@ impl Def {
             ops: Vec::new(),
             datum: None,
             geog: None,
+            all_ops: None,
             three_d: false,
             dynamic: false,
             vertical: None,
@@ -961,12 +965,12 @@ impl Def {
     /// finds Esri's `D_Monte_Mario` on an International 1924 ellipsoid of another axis by its name
     /// and applies "Monte Mario to WGS 84 (4)" with its geocentric step on the file's ellipsoid.
     ///
-    /// The datum is found as PROJ finds it: by its `ID`; by an ESRI name (`D_OSGB_1936`, and
-    /// `D_` before any other name of the datum); or by a name written with underscores that is
-    /// the datum's official name or an EPSG alias once they are spaces (`Monte_Mario`,
-    /// `OSGB_1936`). Not by a name with spaces (`Monte Mario`, `ED50`, as PROJ's own WKT writes
-    /// them), which PROJ places by a ballpark on another ellipsoid, nor by an ESRI name without
-    /// its `D_` (`European_1950`).
+    /// The datum is found as PROJ finds it: by its `ID`; by `D_` before any name of the datum,
+    /// spaces and former names included (`D_OSGB_1936`, `D_Monte Mario`); or, without `D_`, by a
+    /// name written with underscores that is the datum's official name or an EPSG alias once they
+    /// are spaces (`Monte_Mario`, `OSGB_1936`). Not by a name with spaces and no `D_` (`Monte
+    /// Mario`, `ED50`, as PROJ's own WKT writes them), which PROJ places by a ballpark on another
+    /// ellipsoid, nor by an ESRI name without its `D_` (`European_1950`).
     ///
     /// The transformations are a current geographic 2D CRS's of the datum on Greenwich (not
     /// Monte Mario (Rome)'s on the Rome meridian): CRSs on another meridian keep the route's
@@ -979,9 +983,10 @@ impl Def {
         }
         let Some((name, code)) = super::wkt_datum_name_and_code(geogcs) else { return };
         let found_as_proj = code.is_some()
-            || match name.strip_prefix("D_") {
-                Some(_) => epsg::datum_name_rank(&name).is_some(),
-                None => name.contains('_') && epsg::datum_name_rank(&name).is_some_and(|r| r <= 1),
+            || if name.starts_with("D_") {
+                epsg::datum_name_rank(&name).is_some()
+            } else {
+                name.contains('_') && epsg::datum_name_rank(&name).is_some_and(|r| r <= 1)
             };
         if !found_as_proj {
             return;
@@ -1009,6 +1014,8 @@ impl Def {
             Arc::new(op)
         };
         self.ops = epsg::usable(&e.ops, &e.grid_ops).iter().map(rebase).collect();
+        // Those with missing grids too, for the routes of every operation (`ONLY_BEST`).
+        self.all_ops = (!e.grid_ops.is_empty()).then(|| e.grid_ops.iter().map(rebase).collect());
         self.datum = (e.datum != 0).then_some(e.datum);
         self.dynamic = e.dynamic;
     }
@@ -1173,7 +1180,7 @@ impl Def {
                 if ops.is_empty() {
                     // The datum stays `None`: `Def::new` tells by it that a bound CRS over a code
                     // has the bound's transformations, and `on_bound_source` covers the source's.
-                    (d.ops, d.geog, d.dynamic) = (source.ops.clone(), source.geog, source.dynamic);
+                    (d.ops, d.geog, d.dynamic, d.all_ops) = (source.ops.clone(), source.geog, source.dynamic, source.all_ops.clone());
                 } else {
                     d.ops = ops;
                 }
@@ -1237,6 +1244,7 @@ impl Def {
                 ops: Vec::new(),
                 datum: None,
                 geog: None,
+                all_ops: None,
                 three_d: false,
                 dynamic: false,
                 vertical: None,
@@ -1520,7 +1528,9 @@ impl Def {
     /// A definition with all registered grid operations, including unavailable grids.
     pub fn with_all_operations(&self) -> Self {
         let mut out = self.clone();
-        if let Some(e) = self.geog.and_then(epsg::get)
+        if let Some(all) = &self.all_ops {
+            out.ops = all.clone();
+        } else if let Some(e) = self.geog.and_then(epsg::get)
             && !e.grid_ops.is_empty()
         {
             out.ops = e.grid_ops.clone();

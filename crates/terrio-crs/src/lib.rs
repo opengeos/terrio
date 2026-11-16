@@ -1496,10 +1496,8 @@ fn wkt_datums(wkt: &str) -> Vec<u32> {
 /// The WKT keys of a geodetic datum or datum ensemble.
 const DATUM_KEYS: [&str; 5] = ["DATUM", "GEODETICDATUM", "TRF", "ENSEMBLE", "DATUMENSEMBLE"];
 
-/// The EPSG datums of a WKT definition's geodetic datum, and the other datums
-/// whose CRSs ESRI writes with its name (ETRS89-NOR for `D_ETRS_1989`).
-/// The name and EPSG code (from its `ID` or `AUTHORITY`) of the first datum of a WKT definition.
-pub(crate) fn wkt_datum_name_and_code(wkt: &str) -> Option<(String, Option<u32>)> {
+/// The first geodetic datum (or datum ensemble) node of a WKT definition.
+fn wkt_datum(wkt: &str) -> Option<wkt1::Node> {
     fn find(n: &wkt1::Node) -> Option<&wkt1::Node> {
         if DATUM_KEYS.iter().any(|k| n.key.eq_ignore_ascii_case(k)) {
             return Some(n);
@@ -1509,22 +1507,19 @@ pub(crate) fn wkt_datum_name_and_code(wkt: &str) -> Option<(String, Option<u32>)
             _ => None,
         })
     }
-    let root = wkt1::parse(wkt)?;
-    let datum = find(&root)?;
+    wkt1::parse(wkt).and_then(|root| find(&root).cloned())
+}
+
+/// The name and EPSG code (from its `ID` or `AUTHORITY`) of the first datum of a WKT definition.
+pub(crate) fn wkt_datum_name_and_code(wkt: &str) -> Option<(String, Option<u32>)> {
+    let datum = wkt_datum(wkt)?;
     Some((datum.name().unwrap_or_default().to_string(), datum.epsg()))
 }
 
+/// The EPSG datums of a WKT definition's geodetic datum, and the other datums
+/// whose CRSs ESRI writes with its name (ETRS89-NOR for `D_ETRS_1989`).
 fn wkt_datums_and_others(wkt: &str) -> (Vec<u32>, &'static [u32]) {
-    fn find(n: &wkt1::Node) -> Option<&wkt1::Node> {
-        if DATUM_KEYS.iter().any(|k| n.key.eq_ignore_ascii_case(k)) {
-            return Some(n);
-        }
-        n.args.iter().find_map(|a| match a {
-            wkt1::Arg::Node(c) => find(c),
-            _ => None,
-        })
-    }
-    let Some(datum) = wkt1::parse(wkt).and_then(|root| find(&root).cloned()) else { return (Vec::new(), &[]) };
+    let Some(datum) = wkt_datum(wkt) else { return (Vec::new(), &[]) };
     if let Some(code) = datum.epsg() {
         return (vec![code], &[]);
     }
