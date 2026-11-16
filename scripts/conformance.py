@@ -2789,6 +2789,24 @@ PROJ_CASES = {
             "PROJ 9.8.1: a point on a west-counted Mars CRS within 1e-10 degrees",
         ),
     },
+    "proj_string_strict": {
+        "angles_are_read_as_proj_reads_them": (
+            "PROJ-string angles: D, °, implied minutes and seconds, radians with a hemisphere, trailing text (26 cases)", TOLERANCE,
+            "PROJ 9.8.1 (pyproj 3.8.0): within 1 mm, or refused as PROJ refuses",
+        ),
+        "names_proj_does_not_know_are_refused": (
+            "Unknown ellipsoid, datum, units and vunits names, and vto_meter values (23 cases)", TOLERANCE,
+            "PROJ 9.8.1 (pyproj 3.8.0): within 1 mm, or refused as PROJ refuses",
+        ),
+        "a_wkt_proj4_extension_is_read_as_a_pipeline_step": (
+            "WKT PROJ4 extensions with unreadable values or angle prefixes (4 cases)", TOLERANCE,
+            "PROJ 9.8.1 (pyproj 3.8.0): within 1 mm",
+        ),
+        "an_unknown_ellipsoid_beside_a_sphere_radius_is_ignored": (
+            "+ellps beside +R, refused beside +a (3 cases)", TOLERANCE,
+            "PROJ 9.8.1 (pyproj 3.8.0): within 1 mm, or refused as PROJ refuses",
+        ),
+    },
     "esri_datum_altered_ellipsoid": {
         "an_esri_datum_on_an_altered_ellipsoid_keeps_its_transformation": (
             "Esri D_Monte_Mario on an International 1924 of another axis (3 points)", TOLERANCE,
