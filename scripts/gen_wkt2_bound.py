@@ -113,14 +113,14 @@ def bound(
     )
 
 
-
-
 def wkt1(code, fmt="WKT1_GDAL", towgs84=None):
     """GDAL's (or Esri's) WKT 1 of an EPSG code, with a TOWGS84 node in its datum if given, as
     GDAL writes a bound CRS's source CRS when it has only WKT 1 for it."""
     wkt = CRS.from_epsg(code).to_wkt(fmt)
     if towgs84:
-        wkt, n = re.subn(r"(SPHEROID\[[^\]]*\]\])", rf"\1,TOWGS84[{towgs84}]", wkt, count=1)
+        wkt, n = re.subn(
+            r"(SPHEROID\[[^\]]*\]\])", rf"\1,TOWGS84[{towgs84}]", wkt, count=1
+        )
         assert n == 1, code
     return wkt
 

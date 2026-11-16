@@ -385,6 +385,14 @@ def bound_wkts():
         bound_wkt(BNG_WKT2, CF, OSGB_7[:3]),
         bound_wkt(BNG_WKT2, PV, OSGB_7[:6]),
         bound_wkt(bng_wkt1, PV, [375, -111, 431]),
+        # A WKT 1 source without a TOWGS84 of its own: the bound transformation's string.
+        bound_wkt(CRS.from_epsg(27700).to_wkt("WKT1_GDAL"), GT, [375, -111, 431]),
+        # The geocentric and geog3D domains, and a method known by its name alone.
+        bound_wkt(BNG_WKT2, ("Position Vector transformation (geocentric domain)", 1033), OSGB_7[:3]),
+        bound_wkt(BNG_WKT2, ("Coordinate Frame rotation (geog3D domain)", 1038), OSGB_7[:6]),
+        bound_wkt(BNG_WKT2, ("Geocentric translations (geocentric domain)", 1031), OSGB_7[:3]),
+        bound_wkt(BNG_WKT2, ("Position Vector transformation (geog3D domain)", 1037), OSGB_7),
+        bound_wkt(BNG_WKT2, PV, OSGB_7[:3]).replace(',ID["EPSG",9606]]', "]"),
     ]
 
 

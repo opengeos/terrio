@@ -219,21 +219,32 @@ fn a_bound_crs_over_a_source_with_its_own_shift_has_no_proj_string() {
     // bound one (375, -111, 431): (530000, 180000) is (-0.128334°, 51.503937°) in WGS 84 by its
     // transformation and 4 m from there by its PROJ string. terrio places it as PROJ does
     // (`wkt2_bound.rs`) and writes no PROJ string, rather than one placing points elsewhere.
-    let source = SpatialRef::from_epsg(27700).unwrap().to_wkt1_strict().unwrap().replacen(
-        r#"AUTHORITY["EPSG","7001"]]"#,
-        r#"AUTHORITY["EPSG","7001"]],TOWGS84[446.448,-125.157,542.06,0.15,0.247,0.842,-20.489]"#,
-        1,
-    );
-    assert!(source.contains("TOWGS84[446.448"), "{source}");
+    // British National Grid and OSGB36 (from WGS 84 at (-0.1246°, 51.5007°): (-0.1261868°,
+    // 51.5011573°) in PROJ, by the bound transformation).
+    let with_shift = |code: u32| {
+        let source = SpatialRef::from_epsg(code).unwrap().to_wkt1_strict().unwrap().replacen(
+            r#"AUTHORITY["EPSG","7001"]]"#,
+            r#"AUTHORITY["EPSG","7001"]],TOWGS84[446.448,-125.157,542.06,0.15,0.247,0.842,-20.489]"#,
+            1,
+        );
+        assert!(source.contains("TOWGS84[446.448"), "{source}");
+        source
+    };
+    let sources = [
+        (with_shift(27700), (530000.0, 180000.0), (-0.1283343456018606, 51.50393705844268)),
+        (with_shift(4277), (-0.1246, 51.5007), (-0.1261867716887, 51.501157314855305)),
+    ];
     let wgs84 = r#"GEOGCRS["WGS 84",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563,LENGTHUNIT["metre",1]]],PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.0174532925199433]],CS[ellipsoidal,2],AXIS["latitude",north,ORDER[1],ANGLEUNIT["degree",0.0174532925199433]],AXIS["longitude",east,ORDER[2],ANGLEUNIT["degree",0.0174532925199433]],ID["EPSG",4326]]"#;
     for method in [
         r#""Geocentric translations (geog2D domain)",ID["EPSG",9603]],PARAMETER["X-axis translation",375,ID["EPSG",8605]],PARAMETER["Y-axis translation",-111,ID["EPSG",8606]],PARAMETER["Z-axis translation",431,ID["EPSG",8607]]"#,
         r#""Position Vector transformation (geog2D domain)",ID["EPSG",9606]],PARAMETER["X-axis translation",375,ID["EPSG",8605]],PARAMETER["Y-axis translation",-111,ID["EPSG",8606]],PARAMETER["Z-axis translation",431,ID["EPSG",8607]],PARAMETER["X-axis rotation",0,ID["EPSG",8608]],PARAMETER["Y-axis rotation",0,ID["EPSG",8609]],PARAMETER["Z-axis rotation",0,ID["EPSG",8610]],PARAMETER["Scale difference",1,ID["EPSG",8611]]"#,
     ] {
-        let wkt = format!(r#"BOUNDCRS[SOURCECRS[{source}],TARGETCRS[{wgs84}],ABRIDGEDTRANSFORMATION["t",METHOD[{method}]]"#);
-        let crs = SpatialRef::from_wkt(&wkt);
-        let (lon, lat) = Transformer::new(&crs, &SpatialRef::from_epsg(4326).unwrap()).unwrap().transform(530000.0, 180000.0).unwrap();
-        assert!((lon + 0.1283343456018606).abs() < 1e-8 && (lat - 51.50393705844268).abs() < 1e-8, "({lon}, {lat})");
-        assert_eq!(crs.to_proj4(), None, "{wkt}");
+        for (source, (x, y), proj) in &sources {
+            let wkt = format!(r#"BOUNDCRS[SOURCECRS[{source}],TARGETCRS[{wgs84}],ABRIDGEDTRANSFORMATION["t",METHOD[{method}]]"#);
+            let crs = SpatialRef::from_wkt(&wkt);
+            let (lon, lat) = Transformer::new(&crs, &SpatialRef::from_epsg(4326).unwrap()).unwrap().transform(*x, *y).unwrap();
+            assert!((lon - proj.0).abs() < 1e-8 && (lat - proj.1).abs() < 1e-8, "({lon}, {lat}), PROJ {proj:?}");
+            assert_eq!(crs.to_proj4(), None, "{wkt}");
+        }
     }
 }

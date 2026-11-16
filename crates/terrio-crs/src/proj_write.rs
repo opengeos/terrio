@@ -119,21 +119,13 @@ pub(crate) fn write(s: &SpatialRef) -> Option<String> {
 ///   PROJ writes that shift, but transforms by the bound one.
 fn unwritable_bound(wkt: &str) -> bool {
     let Some(root) = crate::wkt1::parse(wkt).filter(|r| r.key.eq_ignore_ascii_case("BOUNDCRS")) else { return false };
-    let first = |n: &crate::wkt1::Node| {
-        n.args.iter().find_map(|a| match a {
-            crate::wkt1::Arg::Node(n) => Some(n.clone()),
-            _ => None,
-        })
-    };
-    let source = root.child("SOURCECRS").and_then(first);
-    let own_shift = source.as_ref().is_some_and(|s| {
+    let source = root.child("SOURCECRS").and_then(crate::wkt2::first_node);
+    let own_shift = source.is_some_and(|s| {
         let geogcs = if s.key.eq_ignore_ascii_case("PROJCS") { s.child("GEOGCS") } else { Some(s) };
         geogcs.and_then(|g| g.child("DATUM")).is_some_and(|d| d.child("TOWGS84").is_some())
     });
     let Some(t) = root.child("ABRIDGEDTRANSFORMATION") else { return own_shift };
-    let method = t.child("METHOD").map(|m| (crate::wkt1::norm(m.name().unwrap_or("")), m.epsg())).unwrap_or_default();
-    let seven = ["positionvector", "coordinateframe"].iter().any(|m| method.0.starts_with(m))
-        || matches!(method.1, Some(9606 | 1033 | 1037 | 9607 | 1032 | 1038));
+    let seven = crate::wkt2::helmert_method(t).is_some_and(|m| m.rotations);
     own_shift || (seven && t.children("PARAMETER").count() < 7)
 }
 

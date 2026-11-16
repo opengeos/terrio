@@ -701,7 +701,7 @@ fn wkt1_source(source: &Node) -> Result<Converted> {
 }
 
 /// The first child node of a node.
-fn first_node(n: &Node) -> Option<&Node> {
+pub(crate) fn first_node(n: &Node) -> Option<&Node> {
     n.args.iter().find_map(|a| if let Arg::Node(n) = a { Some(n) } else { None })
 }
 
@@ -1009,22 +1009,36 @@ fn bound_to_wgs84(root: &Node) -> bool {
     })
 }
 
+/// The Helmert method of a `BOUNDCRS`'s transformation.
+pub(crate) struct HelmertMethod {
+    /// Position vector or coordinate frame, with rotations and a scale (seven parameters), where
+    /// geocentric translations have three.
+    pub rotations: bool,
+    /// Coordinate frame, whose rotations turn the other way from position vector's.
+    pub frame: bool,
+}
+
+/// The Helmert method of a `BOUNDCRS`'s `ABRIDGEDTRANSFORMATION`, by its name or EPSG code:
+/// geocentric translations, position vector and coordinate frame, in the geog2D, geocentric and
+/// geog3D domains. `None` for another method (a grid's).
+pub(crate) fn helmert_method(t: &Node) -> Option<HelmertMethod> {
+    let (name, code) = t.child("METHOD").map(|m| (norm(m.name().unwrap_or("")), m.epsg())).unwrap_or_default();
+    let translations = name.starts_with("geocentrictranslations") || matches!(code, Some(9603 | 1031 | 1035));
+    let vector = name.starts_with("positionvector") || matches!(code, Some(9606 | 1033 | 1037));
+    let frame = name.starts_with("coordinateframe") || matches!(code, Some(9607 | 1032 | 1038));
+    (translations || vector || frame).then_some(HelmertMethod { rotations: vector || frame, frame })
+}
+
 /// The 3 or 7 parameters (as `+towgs84`'s) of a `BOUNDCRS`'s Helmert transformation, and
 /// whether it is to WGS 84: `None` when it is not a supported Helmert operation.
 fn helmert_shift(root: &Node) -> Result<Option<(Vec<f64>, bool)>> {
     let to_wgs84 = bound_to_wgs84(root);
     let Some(t) = root.child("ABRIDGEDTRANSFORMATION") else { return Ok(None) };
-    let method = t.child("METHOD").map(|m| (norm(m.name().unwrap_or("")), m.epsg())).unwrap_or_default();
     // So is one that is not a 3 or 7 parameter Helmert transformation (a grid's, NTv2 or
-    // NADCON, whose file is a PARAMETERFILE): geocentric translations, position vector and
-    // coordinate frame, in the geog2D, geocentric and geog3D domains.
-    let helmert = ["geocentrictranslations", "positionvector", "coordinateframe"].iter().any(|m| method.0.starts_with(m))
-        || matches!(method.1, Some(9603 | 1031 | 1035 | 9606 | 1033 | 1037 | 9607 | 1032 | 1038));
-    if !helmert {
-        return Ok(None);
-    }
+    // NADCON, whose file is a PARAMETERFILE).
+    let Some(method) = helmert_method(t) else { return Ok(None) };
     // Coordinate frame rotations turn the other way from PROJ's (position vector) `+towgs84`.
-    let frame = method.0.contains("coordinateframe") || matches!(method.1, Some(9607 | 1032 | 1038));
+    let frame = method.frame;
     let mut v = [0.0; 7];
     let mut seven = false;
     for p in t.children("PARAMETER") {
