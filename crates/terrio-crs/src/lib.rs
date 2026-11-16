@@ -1220,7 +1220,13 @@ impl SpatialRef {
             if wkt1::parse(w).is_none() {
                 return Err(Error::Crs("not a WKT definition GDAL reads".into()));
             }
-            return Ok(wbp::Crs::from_wkt(w)?);
+            // Without a root code that is not its content's, which wbprojection's parser reads
+            // as the CRS (an unknown method declaring EPSG:27700), as `Def` reads it.
+            let stripped = match declared_epsg(w) {
+                Some(c) if !declared_fits(w, c) => strip_root_code(w),
+                _ => None,
+            };
+            return Ok(wbp::Crs::from_wkt(stripped.as_deref().unwrap_or(w))?);
         }
         Err(Error::Crs("the CRS is unknown".into()))
     }
@@ -1710,12 +1716,26 @@ pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
     if !horizontal_root {
         return true;
     }
-    // A compound CRS by its horizontal CRS.
-    let horizontal = def::split_compound(wkt).map(|(h, _)| h);
+    // A compound CRS by its horizontal CRS, and its vertical CRS below.
+    let compound = def::split_compound(wkt);
+    let horizontal = compound.as_ref().map(|(h, _)| h.clone());
     let own = Def::wkt_conversion(horizontal.as_deref().unwrap_or(wkt));
     // A code terrio cannot build (EPSG:1, or one only wbprojection's registry has, without that
     // feature): kept only when the content cannot be read either, as there is nothing to compare.
     let Ok(theirs) = Def::new(&SpatialRef { epsg: Some(code), ..Default::default() }) else { return own.is_none() };
+    // The vertical CRS of a compound code is the code's: its vertical code when the WKT's has one,
+    // its unit and direction (heights in feet or depths declaring a code in metres up are not
+    // that code, whose heights terrio would give).
+    if let Some((_, v)) = &compound {
+        let Some(their_vertical) = theirs.vertical() else { return false };
+        if declared_epsg(v).is_some_and(|c| their_vertical.code.is_some_and(|t| t != c)) {
+            return false;
+        }
+        let Some((to_meter, down)) = vertical_axis(v) else { return false };
+        if (to_meter - their_vertical.to_meter).abs() > 1e-9 * their_vertical.to_meter || down != their_vertical.down {
+            return false;
+        }
+    }
     // On another datum than the code's, when the WKT's names one terrio knows (ETRS89 declaring
     // NAD83, both on GRS 1980): not the code, whose transformations would move it wrongly.
     // Both as their names identify them (and the code's datum), others included.
@@ -1799,6 +1819,19 @@ pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
                 || registered.as_deref().and_then(method).is_some_and(|t| t.name().map(wkt1::norm).as_deref() == Some(name.as_str()))
         }
     }
+}
+
+/// The metres per unit of a vertical CRS's WKT (`VERT_CS`, `VERTCRS`), from its `UNIT` or its
+/// axis's, and whether its axis points down (depths).
+fn vertical_axis(wkt: &str) -> Option<(f64, bool)> {
+    let root = wkt1::parse(wkt)?;
+    let axis = root.child("AXIS");
+    let down = axis.is_some_and(|a| matches!(a.args.get(1), Some(wkt1::Arg::Ident(d)) if d.eq_ignore_ascii_case("down")));
+    let unit = root
+        .child("UNIT")
+        .or_else(|| root.child("LENGTHUNIT"))
+        .or_else(|| axis.and_then(|a| a.child("LENGTHUNIT").or_else(|| a.child("UNIT"))));
+    Some((unit.and_then(|u| u.num(1)).unwrap_or(1.0), down))
 }
 
 /// Whether a WKT 2 geographic CRS is 3D, by its `CS` dimension; `None` when it is not one. A

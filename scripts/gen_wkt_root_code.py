@@ -54,6 +54,13 @@ def lo19(code):
     return relabel(CRS.from_epsg(2048).to_wkt(), 2048, code)
 
 
+METRE_UP = 'UNIT["metre",1,AUTHORITY["EPSG","9001"]],AXIS["Gravity-related height",UP]'
+FOOT_UP = (
+    'UNIT["US survey foot",0.304800609601219,AUTHORITY["EPSG","9003"]],'
+    'AXIS["Gravity-related height",UP]'
+)
+
+
 def greenland(code):
     """EPSG:4747's WKT 1 with its datum by name only, declaring `code`."""
     wkt = CRS.from_epsg(4747).to_wkt("WKT1_GDAL")
@@ -161,6 +168,26 @@ def main():
             (10.0, 50.0),
         ),
         (
+            "WGS 84 + EGM96 height with its own code",
+            CRS.from_epsg(9707).to_wkt("WKT1_GDAL"),
+            (10.0, 50.0),
+        ),
+        (
+            "WGS 84 + EGM96 height in US survey feet declaring EPSG:9707",
+            CRS.from_epsg(9707).to_wkt("WKT1_GDAL").replace(METRE_UP, FOOT_UP),
+            (10.0, 50.0),
+        ),
+        (
+            "WGS 84 + EGM96 depth declaring EPSG:9707",
+            CRS.from_epsg(9707)
+            .to_wkt("WKT1_GDAL")
+            .replace(
+                'AXIS["Gravity-related height",UP]',
+                'AXIS["Gravity-related depth",DOWN]',
+            ),
+            (10.0, 50.0),
+        ),
+        (
             "a local datum on GRS 1980 declaring ETRS89",
             LOCAL_GRS80,
             (10.0, 50.0),
@@ -210,6 +237,8 @@ def main():
         "ETRS89 in WKT 1 declaring NAD83": 4269,
         "Greenland 1996 by name declaring ETRS89": 4258,
         "Web Mercator and EGM96 height declaring EPSG:9707": 9707,
+        "WGS 84 + EGM96 height in US survey feet declaring EPSG:9707": 9707,
+        "WGS 84 + EGM96 depth declaring EPSG:9707": 9707,
         "a local datum on GRS 1980 declaring ETRS89": 4258,
         "WGS 84 on a datum named Unknown declaring EPSG:4326": 4326,
         "WGS 84 3D declaring EPSG:4326": 4326,

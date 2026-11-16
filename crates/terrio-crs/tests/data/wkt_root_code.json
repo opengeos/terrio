@@ -303,6 +303,54 @@
    "terrio": null
   },
   {
+   "name": "WGS 84 + EGM96 height with its own code",
+   "wkt": "COMPD_CS[\"WGS 84 + EGM96 height\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],VERT_CS[\"EGM96 height\",VERT_DATUM[\"EGM96 geoid\",2005,AUTHORITY[\"EPSG\",\"5171\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP],AUTHORITY[\"EPSG\",\"5773\"]],AUTHORITY[\"EPSG\",\"9707\"]]",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "proj": [
+    10.0,
+    50.0
+   ],
+   "epsg": 9707,
+   "esri": null,
+   "declared": null,
+   "terrio": null
+  },
+  {
+   "name": "WGS 84 + EGM96 height in US survey feet declaring EPSG:9707",
+   "wkt": "COMPD_CS[\"WGS 84 + EGM96 height\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],VERT_CS[\"EGM96 height\",VERT_DATUM[\"EGM96 geoid\",2005,AUTHORITY[\"EPSG\",\"5171\"]],UNIT[\"US survey foot\",0.304800609601219,AUTHORITY[\"EPSG\",\"9003\"]],AXIS[\"Gravity-related height\",UP],AUTHORITY[\"EPSG\",\"5773\"]],AUTHORITY[\"EPSG\",\"9707\"]]",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "proj": [
+    10.0,
+    50.0
+   ],
+   "epsg": null,
+   "esri": null,
+   "declared": 9707,
+   "terrio": null
+  },
+  {
+   "name": "WGS 84 + EGM96 depth declaring EPSG:9707",
+   "wkt": "COMPD_CS[\"WGS 84 + EGM96 height\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],VERT_CS[\"EGM96 height\",VERT_DATUM[\"EGM96 geoid\",2005,AUTHORITY[\"EPSG\",\"5171\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related depth\",DOWN],AUTHORITY[\"EPSG\",\"5773\"]],AUTHORITY[\"EPSG\",\"9707\"]]",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "proj": [
+    10.0,
+    50.0
+   ],
+   "epsg": null,
+   "esri": null,
+   "declared": 9707,
+   "terrio": null
+  },
+  {
    "name": "a local datum on GRS 1980 declaring ETRS89",
    "wkt": "GEOGCS[\"x\",DATUM[\"My_Local_Datum\",SPHEROID[\"GRS 1980\",6378137,298.257222101]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433],AUTHORITY[\"EPSG\",\"4258\"]]",
    "point": [
