@@ -273,16 +273,16 @@ EPSG:2263 in both, and ESRI's `GCS_European_1950` is EPSG:4230.
 A code the WKT declares at its root (`AUTHORITY["EPSG","27700"]`, `ID["EPSG",27700]`) is kept only
 when the WKT's content is that CRS: the same conversion, units and axes included, on the same
 ellipsoid and datum, and of the same kind. The datum is compared by its EPSG code, from the WKT's
-`AUTHORITY` or `ID` or as its name identifies it, else by name: ETRS89 declaring NAD83 is not
-NAD83, and a datum terrio does not know is not the code's unless named as it or `unknown`, PROJ's placeholder. A geocentric WKT is
-not a geographic code, nor a geographic 2D WKT a 3D code (a WKT 1 without `AXIS` nodes, as Esri
-writes it, may be either). A vertical or engineering CRS keeps its code. Otherwise the WKT is read and identified
-by its content, as PROJ 9.8.1 reads it: a projected CRS declaring a geographic code, a code that
-does not exist, or a 2D CRS in degrees declaring a compound code in grads is not that code. When
-terrio cannot read the content (a method only the registry has), the code is kept if the WKT names
-the code's own projection method; an unknown method stays unusable. An ESRI CRS is identified by
-its name only on its datum: ESRI's `Monte_Mario_Italy_1` on a datum renamed `D_Local` has no code,
-and PROJ places it by a ballpark.
+`AUTHORITY` or `ID` or as its name identifies it, else by name: ETRS89 declaring NAD83 is not NAD83,
+and a datum terrio does not know is not the code's unless named as it or `unknown`, PROJ's
+placeholder. A geocentric WKT is not a geographic code, nor a geographic 2D WKT a 3D code (a WKT 1
+without `AXIS` nodes, as Esri writes it, may be either). A vertical or engineering CRS keeps its
+code. Otherwise the WKT is read and identified by its content, as PROJ 9.8.1 reads it: a projected
+CRS declaring a geographic code, a code that does not exist, or a 2D CRS in degrees declaring a
+compound code in grads is not that code. When terrio cannot read the content (a method only the
+registry has), the code is kept if the WKT names the code's own projection method; an unknown method
+stays unusable. An ESRI CRS is identified by its name only on its datum: ESRI's
+`Monte_Mario_Italy_1` on a datum renamed `D_Local` has no code, and PROJ places it by a ballpark.
 
 A datum terrio does not know by name and without `TOWGS84` (`Unknown based on Bessel 1841
 ellipsoid`, as GDAL and PROJ write a PROJ string's `+ellps=bessel`) gets no EPSG code and no datum

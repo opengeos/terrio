@@ -1484,12 +1484,14 @@ fn wkt_datums(wkt: &str) -> Vec<u32> {
     wkt_datums_and_others(wkt).0
 }
 
+/// The WKT keys of a geodetic datum or datum ensemble.
+const DATUM_KEYS: [&str; 5] = ["DATUM", "GEODETICDATUM", "TRF", "ENSEMBLE", "DATUMENSEMBLE"];
+
 /// The EPSG datums of a WKT definition's geodetic datum, and the other datums
 /// whose CRSs ESRI writes with its name (ETRS89-NOR for `D_ETRS_1989`).
 fn wkt_datums_and_others(wkt: &str) -> (Vec<u32>, &'static [u32]) {
     fn find(n: &wkt1::Node) -> Option<&wkt1::Node> {
-        const DATUMS: [&str; 5] = ["DATUM", "GEODETICDATUM", "TRF", "ENSEMBLE", "DATUMENSEMBLE"];
-        if DATUMS.iter().any(|k| n.key.eq_ignore_ascii_case(k)) {
+        if DATUM_KEYS.iter().any(|k| n.key.eq_ignore_ascii_case(k)) {
             return Some(n);
         }
         n.args.iter().find_map(|a| match a {
@@ -1920,11 +1922,12 @@ fn identify_esri(wkt: &str) -> Option<u32> {
     })
 }
 
-/// The name of a WKT definition's geodetic datum (`DATUM`, `GEODETICDATUM` or `TRF`), its first
-/// one (a compound or bound CRS's horizontal or source CRS).
+/// The name of a WKT definition's geodetic datum (`DATUM`, `GEODETICDATUM`, `TRF` or a datum
+/// ensemble, as [`wkt_datums_and_others`] finds it), its first one (a compound or bound CRS's
+/// horizontal or source CRS).
 fn datum_name(wkt: &str) -> Option<String> {
     fn find(n: &wkt1::Node) -> Option<String> {
-        if ["DATUM", "GEODETICDATUM", "TRF"].iter().any(|k| n.key.eq_ignore_ascii_case(k)) {
+        if DATUM_KEYS.iter().any(|k| n.key.eq_ignore_ascii_case(k)) {
             return n.name().map(str::to_string);
         }
         n.args.iter().find_map(|a| match a {
