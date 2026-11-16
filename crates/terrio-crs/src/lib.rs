@@ -1716,7 +1716,12 @@ pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
                 let node = root.child("PROJECTION").or_else(|| root.child("CONVERSION").and_then(|c| c.child("METHOD")))?.clone();
                 Some(node)
             };
-            let Some(own) = method(wkt) else { return false };
+            // A CRS without a conversion (a geocentric CRS in PROJ's simplified WKT 2, whose
+            // bare `UNIT` the reader refuses): the code's, on its ellipsoid.
+            let Some(own) = method(wkt) else {
+                let converted = wkt1::parse(wkt).is_some_and(|r| r.child("PROJECTION").is_some() || r.child("CONVERSION").is_some());
+                return !converted && semi_major_axis(wkt).is_some_and(|a| (a - theirs.ell.a).abs() < 1e-3);
+            };
             let registered = epsg::get(code).map(|e| e.wkt.clone()).or_else(|| registry_wkt(code));
             let Some(name) = own.name().map(wkt1::norm) else { return false };
             catalog::epsg_method(code).is_some_and(|m| wkt1::norm(m) == name)

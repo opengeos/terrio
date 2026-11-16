@@ -3,7 +3,7 @@ WKTs whose root `AUTHORITY` or `ID` is not the CRS their nodes describe (opengeo
 item 16), or whose name is that of an Esri CRS on another datum (item 14), and the code PROJ
 identifies (`to_epsg()`, and an ESRI one by `to_authority()`). Controls: WKTs of the right code,
 an Esri `.prj` identified by its name and datum, and PROJ's WKT 2 of a method terrio identifies by
-its code (Belgian Lambert 72).
+its code (Belgian Lambert 72) and a geocentric CRS in simplified WKT 2.
 
 PROJ keeps a WKT's content and identifies a code only when the content is that CRS. Each case is a
 WKT, a point in WGS 84 and that point in the CRS by `Transformer.from_crs("EPSG:4326", wkt,
@@ -67,6 +67,7 @@ def main():
         ("Esri USA_Contiguous_Albers_Equal_Area_Conic", CRS.from_user_input("ESRI:102003").to_wkt("WKT1_ESRI"), (-96.0, 40.0)),
         ("Belge 1972 / Belgian Lambert 72 with its own code", CRS.from_epsg(31300).to_wkt(), (4.4, 50.8)),
         ("Belge 1972 / Belgian Lambert 72 declaring EPSG:27700", relabel(CRS.from_epsg(31300).to_wkt(), 31300, 27700), (4.4, 50.8)),
+        ("WGS 84 geocentric in simplified WKT 2 with its own code", CRS.from_epsg(4978).to_wkt("WKT2_2019_SIMPLIFIED"), (10.0, 50.0)),
     ]
     out = []
     for name, wkt, point in cases:

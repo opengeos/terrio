@@ -151,6 +151,20 @@
    ],
    "epsg": 31300,
    "esri": null
+  },
+  {
+   "name": "WGS 84 geocentric in simplified WKT 2 with its own code",
+   "wkt": "GEODCRS[\"WGS 84\",ENSEMBLE[\"World Geodetic System 1984 ensemble\",MEMBER[\"World Geodetic System 1984 (Transit)\"],MEMBER[\"World Geodetic System 1984 (G730)\"],MEMBER[\"World Geodetic System 1984 (G873)\"],MEMBER[\"World Geodetic System 1984 (G1150)\"],MEMBER[\"World Geodetic System 1984 (G1674)\"],MEMBER[\"World Geodetic System 1984 (G1762)\"],MEMBER[\"World Geodetic System 1984 (G2139)\"],MEMBER[\"World Geodetic System 1984 (G2296)\"],ELLIPSOID[\"WGS 84\",6378137,298.257223563],ENSEMBLEACCURACY[2.0]],CS[Cartesian,3],AXIS[\"(X)\",geocentricX],AXIS[\"(Y)\",geocentricY],AXIS[\"(Z)\",geocentricZ],UNIT[\"metre\",1],USAGE[SCOPE[\"Geodesy. Navigation and positioning using GPS satellite system.\"],AREA[\"World.\"],BBOX[-90,-180,90,180]],ID[\"EPSG\",4978]]",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "proj": [
+    4045456.4053408885,
+    713323.1135414789
+   ],
+   "epsg": 4978,
+   "esri": null
   }
  ]
 }

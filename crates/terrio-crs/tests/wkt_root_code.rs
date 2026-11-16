@@ -17,7 +17,7 @@ fn a_wkt_is_read_by_its_nodes_not_its_root_code() {
     terrio_crs::set_network_enabled(Some(false));
     let data: Value = serde_json::from_str(include_str!("data/wkt_root_code.json")).unwrap();
     let cases = data["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 11);
+    assert_eq!(cases.len(), 12);
     let wgs84 = SpatialRef::from_epsg(4326).unwrap();
     for case in cases {
         let name = case["name"].as_str().unwrap();
