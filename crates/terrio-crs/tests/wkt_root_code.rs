@@ -118,6 +118,8 @@ fn a_vertical_crs_of_another_unit_has_no_compound_parts() {
 /// WGS 84 (PROJ 9.8.1 identifies no code either).
 #[test]
 fn a_vertical_crs_declaring_a_horizontal_code_is_not_it() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
     let wkt = r#"VERT_CS["ODN height",VERT_DATUM["Ordnance Datum Newlyn",2005],UNIT["metre",1],AXIS["Gravity-related height",UP],AUTHORITY["EPSG","4326"]]"#;
     let crs = SpatialRef::from_wkt(wkt);
     assert_eq!(crs.epsg, None);
@@ -129,6 +131,8 @@ fn a_vertical_crs_declaring_a_horizontal_code_is_not_it() {
 /// and its PROJ string is PROJ 9.8.1's (`projinfo -o PROJ`), with its datum.
 #[test]
 fn a_registry_wkt_with_its_proj_string_is_its_code() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
     let wgs84 = SpatialRef::from_epsg(4326).unwrap();
     for (code, proj4) in [
         (9311, "+proj=laea +R_A +lat_0=45 +lon_0=-100 +x_0=0 +y_0=0 +datum=NAD27 +units=m +no_defs +type=crs"),
@@ -156,6 +160,8 @@ fn a_registry_wkt_with_its_proj_string_is_its_code() {
 /// EPSG:4979 at (-2°, 54°, 100 m); PROJ: 100, 328.0833 and -100, and 100 back.
 #[test]
 fn heights_into_a_vertical_crs_without_a_transformation_are_kept() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
     let wgs84 = SpatialRef::from_epsg(4979).unwrap();
     let own = SpatialRef::from_epsg(7405).unwrap().to_wkt().unwrap();
     let swap = |w: &str, from: &str, to: &str| {
@@ -176,4 +182,49 @@ fn heights_into_a_vertical_crs_without_a_transformation_are_kept() {
         let (_, _, back) = Transformer::new(&crs, &wgs84).unwrap().transform_3d(x, y, z).unwrap();
         assert!((back - 100.0).abs() < 1e-6, "{name}: {back}");
     }
+}
+
+/// An unknown method declaring an ESRI code is not that CRS: no code, and refused, as PROJ 9.8.1
+/// refuses it ("Input is not a transformation"); not placed as Mollweide (ESRI:54009).
+#[test]
+fn an_unknown_method_declaring_an_esri_code_is_refused() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let bng = SpatialRef::from_epsg(27700).unwrap().to_wkt().unwrap();
+    let root = bng.rfind(",AUTHORITY[").unwrap();
+    assert!(bng.contains(r#"PROJECTION["Transverse_Mercator"]"#));
+    let wkt = format!("{},AUTHORITY[\"ESRI\",\"54009\"]]", bng[..root].replace("Transverse_Mercator", "Unheard_Of"));
+    let crs = SpatialRef::from_wkt(&wkt);
+    assert_eq!((crs.epsg, crs.esri), (None, None));
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    assert!(Transformer::new(&wgs84, &crs).and_then(|t| t.transform(-2.0, 54.0)).is_err());
+}
+
+/// An ESRI CRS's WKT on a local datum, keeping its root ESRI code, is not that CRS: no ESRI code,
+/// and no NAD83 transformations (ESRI:102003, USA Contiguous Albers, on NAD83).
+#[test]
+fn an_esri_code_on_a_local_datum_is_not_kept() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let own = SpatialRef::from_esri(102003).unwrap().to_wkt().unwrap();
+    // Without its root code, then declaring ESRI:102003 at the root.
+    let body = match own.rfind(",AUTHORITY[") {
+        Some(i) if own[i..].matches(']').count() == 2 => own[..i].to_string(),
+        _ => own.trim_end().strip_suffix(']').unwrap().to_string(),
+    };
+    let declare = |w: &str| format!("{w},AUTHORITY[\"ESRI\",\"102003\"]]");
+    assert_eq!(SpatialRef::from_wkt(&declare(&body)).esri, Some(102003));
+    for (from, to) in [
+        (r#"DATUM["North_American_Datum_1983""#, r#"DATUM["My_Local""#),
+        (r#",AUTHORITY["EPSG","6269"]"#, ""),
+        (r#",AUTHORITY["EPSG","4269"]"#, ""),
+    ] {
+        assert!(body.contains(from), "{from}");
+    }
+    let local = body
+        .replace(r#"DATUM["North_American_Datum_1983""#, r#"DATUM["My_Local""#)
+        .replace(r#",AUTHORITY["EPSG","6269"]"#, "")
+        .replace(r#",AUTHORITY["EPSG","4269"]"#, "");
+    let crs = SpatialRef::from_wkt(&declare(&local));
+    assert_eq!((crs.epsg, crs.esri), (None, None));
 }

@@ -492,14 +492,7 @@ impl SpatialRef {
     pub fn with_esri(mut self) -> Self {
         // A declared ESRI code wins over an identified EPSG code (ESRI:102100 is EPSG:3857's
         // definition), as GDAL keeps it.
-        // Only when the WKT's content is that CRS, as a declared EPSG code (`declared_fits`): the
-        // same conversion on the same ellipsoid, or content terrio cannot read.
-        let fits = |w: &str, code: u32| {
-            let Some(own) = Def::wkt_conversion(w) else { return true };
-            Def::new(&SpatialRef { esri: Some(code), ..Default::default() })
-                .is_ok_and(|r| own.same_conversion(&r) && (own.ell.a - r.ell.a).abs() < 1e-3 && (own.ell.es - r.ell.es).abs() < 1e-9)
-        };
-        if let Some(code) = self.wkt.as_deref().and_then(|w| declared_code(w, "ESRI").filter(|c| epsg::esri(*c).is_some() && fits(w, *c))) {
+        if let Some(code) = self.wkt.as_deref().and_then(|w| declared_code(w, "ESRI").filter(|c| esri_fits(w, *c))) {
             self.epsg = None;
             self.esri = Some(code);
             return self;
@@ -1973,9 +1966,38 @@ fn declared_code(wkt: &str, authority: &str) -> Option<u32> {
 /// The ESRI code of a WKT definition: the one it declares (`AUTHORITY["ESRI","54009"]`), or that
 /// of the ESRI CRS of the same name (GDAL's ESRI PE strings carry none) whose definition converts
 /// coordinates as the WKT does, on the same ellipsoid.
+/// Whether a WKT's content is the ESRI CRS it declares, as [`declared_fits`] decides it for an EPSG
+/// code: the same conversion on the same ellipsoid and datum; content terrio cannot read only when it names
+/// the ESRI CRS's own method (an unknown method declaring ESRI:54009 is not Mollweide).
+fn esri_fits(w: &str, code: u32) -> bool {
+    // On its datum (a local datum declaring an ESRI CRS on WGS 84 is not that CRS).
+    if !epsg::esri(code).is_some_and(|e| esri_same_datum(w, &e.wkt)) {
+        return false;
+    }
+    let Some(own) = Def::wkt_conversion(w) else {
+        let method = |w: &str| {
+            let root = wkt1::parse(w)?;
+            let node = root.child("PROJECTION").or_else(|| root.child("CONVERSION").and_then(|c| c.child("METHOD")))?.clone();
+            Some((node.name().map(wkt1::norm)?, node.epsg().is_some()))
+        };
+        // The registry WKT's method, a variant of it by PROJ's name (PROJ writes ESRI:102035's
+        // `Orthographic` as `Orthographic (Spherical)`), or an EPSG method PROJ names otherwise
+        // (ESRI:54002's `Equirectangular` as `Equidistant Cylindrical (Spherical)`, EPSG 1029);
+        // not a method of no known name.
+        let Some((m, epsg_method)) = method(w) else { return false };
+        return epsg_method || epsg::esri(code).and_then(|e| method(&e.wkt)).is_some_and(|(r, _)| m.starts_with(&r));
+    };
+    // The conversion, and the datum's ellipsoid by the registry WKT's (in metres in an Esri WKT 1),
+    // not the definition's: a spherical method's `+R_A` sphere (ESRI:54003, Miller on WGS 84).
+    let a = epsg::esri(code).and_then(|e| semi_major_axis(&e.wkt));
+    Def::new(&SpatialRef { esri: Some(code), ..Default::default() })
+        .is_ok_and(|r| own.same_conversion(&r) && a.is_none_or(|a| (own.ell.a - a).abs() < 1e-3))
+}
+
 fn identify_esri(wkt: &str) -> Option<u32> {
-    if let Some(code) = declared_code(wkt, "ESRI") {
-        return epsg::esri(code).is_some().then_some(code);
+    // A declared code only when the content is that CRS; else the content is identified by name.
+    if let Some(code) = declared_code(wkt, "ESRI").filter(|c| esri_fits(wkt, *c)) {
+        return Some(code);
     }
     let name = wkt_name(wkt)?;
     let candidates = epsg::esri_named(&name);
@@ -1986,30 +2008,33 @@ fn identify_esri(wkt: &str) -> Option<u32> {
     // a name alone does not identify a CRS.
     let own = Def::wkt_conversion(wkt).or_else(|| Def::new(&SpatialRef { wkt: Some(wkt.to_string()), ..Default::default() }).ok())?;
     let a = semi_major_axis(wkt);
-    // On the same datum, by name: PROJ 9.8.1 identifies no code for ESRI's Monte_Mario_Italy_1 on
-    // a datum renamed `D_Local`, and places it by a ballpark, not by Monte Mario's transformations.
-    let datum = datum_name(wkt).map(|n| epsg::datum_key(&n));
-    let (own_datums, own_others) = wkt_datums_and_others(wkt);
     candidates.into_iter().find(|code| {
         let Some(e) = epsg::esri(*code) else { return false };
         let Ok(registered) = Def::from_proj(&e.proj) else { return false };
         if !a.is_none_or(|a| (a - registered.ell.a).abs() < 1e-3) {
             return false;
         }
-        // By the EPSG datums the names are (ESRI's `D_North_American_1983` and the registry's
-        // `North_American_Datum_1983` are NAD83); by name when one is not known; either way when
-        // neither is (a datum without a transformation).
-        let (their_datums, their_others) = wkt_datums_and_others(&e.wkt);
-        let same_datum = match (own_datums.is_empty(), their_datums.is_empty()) {
-            (false, false) => {
-                own_datums.iter().any(|d| their_datums.contains(d) || their_others.contains(d))
-                    || their_datums.iter().any(|d| own_others.contains(d))
-            }
-            (true, true) => true,
-            _ => datum.is_none() || datum_name(&e.wkt).map(|n| epsg::datum_key(&n)) == datum,
-        };
-        same_datum && own.same_conversion(&registered)
+        esri_same_datum(wkt, &e.wkt) && own.same_conversion(&registered)
     })
+}
+
+/// Whether a WKT is on an ESRI CRS's datum (its registry WKT's). On the same datum, by name: PROJ
+/// 9.8.1 identifies no code for ESRI's Monte_Mario_Italy_1 on a datum renamed `D_Local`, and places
+/// it by a ballpark, not by Monte Mario's transformations. By the EPSG datums the names are (ESRI's
+/// `D_North_American_1983` and the registry's `North_American_Datum_1983` are NAD83); by name when
+/// one is not known; either way when neither is (a datum without a transformation).
+fn esri_same_datum(wkt: &str, registered: &str) -> bool {
+    let datum = datum_name(wkt).map(|n| epsg::datum_key(&n));
+    let (own_datums, own_others) = wkt_datums_and_others(wkt);
+    let (their_datums, their_others) = wkt_datums_and_others(registered);
+    match (own_datums.is_empty(), their_datums.is_empty()) {
+        (false, false) => {
+            own_datums.iter().any(|d| their_datums.contains(d) || their_others.contains(d))
+                || their_datums.iter().any(|d| own_others.contains(d))
+        }
+        (true, true) => true,
+        _ => datum.is_none() || datum_name(registered).map(|n| epsg::datum_key(&n)) == datum,
+    }
 }
 
 /// The name of a WKT definition's geodetic datum (`DATUM`, `GEODETICDATUM`, `TRF` or a datum
