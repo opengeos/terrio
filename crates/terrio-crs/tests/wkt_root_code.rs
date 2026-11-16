@@ -148,3 +148,32 @@ fn a_registry_wkt_with_its_proj_string_is_its_code() {
         }
     }
 }
+
+/// Into and from a vertical CRS without a transformation (its code dropped, or none), heights
+/// are kept, as PROJ 9.8.1's ballpark vertical transformation keeps them, in the vertical CRS's
+/// unit and direction; not moved by the horizontal datum shift (about 50 m for OSGB36). EPSG:7405
+/// (British National Grid + ODN height) without codes, in US survey feet and as depths, from
+/// EPSG:4979 at (-2°, 54°, 100 m); PROJ: 100, 328.0833 and -100, and 100 back.
+#[test]
+fn heights_into_a_vertical_crs_without_a_transformation_are_kept() {
+    let wgs84 = SpatialRef::from_epsg(4979).unwrap();
+    let own = SpatialRef::from_epsg(7405).unwrap().to_wkt().unwrap();
+    let swap = |w: &str, from: &str, to: &str| {
+        assert!(w.contains(from), "{from}");
+        w.replace(from, to)
+    };
+    let no_code = swap(&swap(&own, r#",AUTHORITY["EPSG","5701"]"#, ""), r#",AUTHORITY["EPSG","7405"]]"#, "]");
+    let metre_up = r#"UNIT["metre",1,AUTHORITY["EPSG","9001"]],AXIS["Gravity-related height",UP]"#;
+    let feet =
+        swap(&own, metre_up, r#"UNIT["US survey foot",0.304800609601219,AUTHORITY["EPSG","9003"]],AXIS["Gravity-related height",UP]"#);
+    let depth = swap(&own, r#"AXIS["Gravity-related height",UP]"#, r#"AXIS["Gravity-related depth",DOWN]"#);
+    for (name, wkt, height) in
+        [("without codes", no_code, 100.0), ("in US survey feet", feet, 328.083_333_333_333_4), ("as depths", depth, -100.0)]
+    {
+        let crs = SpatialRef::from_wkt(&wkt);
+        let (x, y, z) = Transformer::new(&wgs84, &crs).unwrap().transform_3d(-2.0, 54.0, 100.0).unwrap();
+        assert!((z - height).abs() < 1e-6, "{name}: {z}");
+        let (_, _, back) = Transformer::new(&crs, &wgs84).unwrap().transform_3d(x, y, z).unwrap();
+        assert!((back - 100.0).abs() < 1e-6, "{name}: {back}");
+    }
+}

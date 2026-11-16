@@ -2974,6 +2974,8 @@ impl Transformer {
         if start.is_none() && self.src.vertical().is_some() {
             route::note(None, false, route::OpKind::Vertical);
         }
+        // From a vertical CRS without a transformation, heights are kept (PROJ's ballpark).
+        let kept = start.is_none() && self.src.vertical().is_some();
         let (i, p) = start.unwrap_or((0, p0));
         let (sx, sy) = if i == 0 { (x, y) } else { (p.lon.to_degrees(), p.lat.to_degrees()) };
         // From ellipsoidal heights to the target.
@@ -3001,7 +3003,11 @@ impl Transformer {
         }
         let q = h.middle(i, 0).apply(&h.src.defs[i], sx, sy, p, true).ok_or_else(fail)?;
         let (tx, ty) = self.dst.project(q.lon, q.lat).ok_or_else(fail)?;
-        Ok((tx, ty, self.dst.vertical().map_or(q.h, |v| v.height_of(q.h))))
+        // From or into a vertical CRS without a transformation: PROJ's ballpark vertical
+        // transformation, which keeps the height, not the ellipsoidal height the horizontal datum
+        // shift changes.
+        let z = if kept || self.dst.vertical().is_some() { p.h } else { q.h };
+        Ok((tx, ty, self.dst.vertical().map_or(z, |v| v.height_of(z))))
     }
 
     /// The height of a point (metres, in the source's axis direction) after the transformation
