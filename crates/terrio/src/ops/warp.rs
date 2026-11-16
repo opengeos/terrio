@@ -3157,19 +3157,14 @@ impl WarpContext<'_> {
             // GDAL's estimate from the chunk's edges, padded: the warp checks it holds every tap
             // (see `guessed`), so the source window is not bounded pixel by pixel up front.
             Some((x, y, w, h, fill, rw, rh)) if stable_window && self.guessed && w > 0 && h > 0 => {
-                let (mut x0, mut y0) = (x.saturating_sub(GUESS_PAD), y.saturating_sub(GUESS_PAD));
-                let (mut x1, mut y1) = ((x + w + GUESS_PAD).min(self.src_w), (y + h + GUESS_PAD).min(self.src_h));
+                let (x0, y0) = (x.saturating_sub(GUESS_PAD), y.saturating_sub(GUESS_PAD));
+                let (x1, y1) = ((x + w + GUESS_PAD).min(self.src_w), (y + h + GUESS_PAD).min(self.src_h));
+                // Tests shrink the guess to make chunks miss taps and warp again.
                 #[cfg(test)]
-                {
-                    // Tests shrink the guess to make chunks miss taps and warp again.
+                let (x0, y0, x1, y1) = {
                     let shrink = GUESS_SHRINK.with(std::cell::Cell::get);
-                    (x0, y0, x1, y1) = (
-                        (x0 + shrink).min(x1),
-                        (y0 + shrink).min(y1),
-                        x1.saturating_sub(shrink).max(x0),
-                        y1.saturating_sub(shrink).max(y0),
-                    );
-                }
+                    ((x0 + shrink).min(x1), (y0 + shrink).min(y1), x1.saturating_sub(shrink).max(x0), y1.saturating_sub(shrink).max(y0))
+                };
                 (x1 > x0 && y1 > y0).then_some((x0, y0, x1 - x0, y1 - y0, fill, rw, rh)).or_else(|| self.source_window(dx, dy, dw, dh))
             }
             _ if stable_window => self.source_window(dx, dy, dw, dh),
@@ -5691,13 +5686,14 @@ impl<'a, T: crate::pixel::Pixel> Kernel<'a, T> {
         let nx = (i1 - i0 + 1).max(0) as usize;
         let hoisted = nx <= wxs.len();
         if hoisted {
-            for (n, i) in (i0..=i1).enumerate() {
-                wxs[n] = wfn(i as f64 - dx, self.xscale);
+            // Counted loops: inclusive ranges compile to slow iterators here.
+            for (n, w) in wxs[..nx].iter_mut().enumerate() {
+                *w = wfn((i0 + n as i64) as f64 - dx, self.xscale);
             }
         }
         let (data, valid) = (self.src.bands[b], self.src.valid[b].as_deref());
         let (mut acc, mut wsum) = (0.0, 0.0);
-        for j in j0..=j1 {
+        for j in j0..j1 + 1 {
             let wy = wfn(j as f64 - dy, self.yscale);
             let line = self.index(0, (iy + j) as usize);
             let (mut la, mut lw) = (0.0, 0.0);
@@ -5723,7 +5719,8 @@ impl<'a, T: crate::pixel::Pixel> Kernel<'a, T> {
                     }
                 }
             } else {
-                for (n, i) in (i0..=i1).enumerate() {
+                for n in 0..nx {
+                    let i = i0 + n as i64;
                     let at = line + self.column(ix + i) as usize;
                     if valid.is_some_and(|m| !m[at]) {
                         continue;
