@@ -214,11 +214,7 @@ fn an_esri_code_on_a_local_datum_is_not_kept() {
     };
     let declare = |w: &str| format!("{w},AUTHORITY[\"ESRI\",\"102003\"]]");
     assert_eq!(SpatialRef::from_wkt(&declare(&body)).esri, Some(102003));
-    for (from, to) in [
-        (r#"DATUM["North_American_Datum_1983""#, r#"DATUM["My_Local""#),
-        (r#",AUTHORITY["EPSG","6269"]"#, ""),
-        (r#",AUTHORITY["EPSG","4269"]"#, ""),
-    ] {
+    for from in [r#"DATUM["North_American_Datum_1983""#, r#",AUTHORITY["EPSG","6269"]"#, r#",AUTHORITY["EPSG","4269"]"#] {
         assert!(body.contains(from), "{from}");
     }
     let local = body
