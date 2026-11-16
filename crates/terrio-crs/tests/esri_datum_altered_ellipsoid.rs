@@ -108,3 +108,45 @@ fn a_datum_found_by_its_name_keeps_its_missing_grids_for_only_best() {
     let strict = Transformer::with_options(&crs, &wgs84, &TransformOptions { only_best: true, ..Default::default() });
     assert!(strict.and_then(|t| t.transform(-2.0, 53.0)).is_err());
 }
+
+/// A `BOUNDCRS` whose target names a datum PROJ finds by its name (`European_Datum_1950`) with
+/// its own `TOWGS84`, under a source on another ellipsoid (Bessel), does not give the source the
+/// target's datum transformations: PROJ 9.8.1 (pyproj 3.8.0, network off, no grids) cannot go on
+/// through such a target and places (10, 50) by "Ballpark geographic offset from Local to WGS 84",
+/// unchanged. Reported by RustGIS.
+#[test]
+fn a_bound_crs_target_named_as_a_datum_is_not_its_source_datum() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let wkt = r#"BOUNDCRS[SOURCECRS[GEOGCRS["Local",DATUM["Local datum",ELLIPSOID["Bessel 1841",6377397.155,299.1528128,LENGTHUNIT["metre",1]]],PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.0174532925199433]],CS[ellipsoidal,2],AXIS["lat",north],AXIS["lon",east],ANGLEUNIT["degree",0.0174532925199433]]],TARGETCRS[GEOGCS["ED50",DATUM["European_Datum_1950",SPHEROID["International 1924",6378388,297],TOWGS84[-80,-90,-110,0,0,0,0]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],AUTHORITY["EPSG","4230"]]],ABRIDGEDTRANSFORMATION["t",METHOD["Position Vector transformation (geog2D domain)",ID["EPSG",9606]],PARAMETER["X-axis translation",598.1,ID["EPSG",8605]],PARAMETER["Y-axis translation",73.7,ID["EPSG",8606]],PARAMETER["Z-axis translation",418.2,ID["EPSG",8607]],PARAMETER["X-axis rotation",0.202,ID["EPSG",8608]],PARAMETER["Y-axis rotation",0.045,ID["EPSG",8609]],PARAMETER["Z-axis rotation",-2.455,ID["EPSG",8610]],PARAMETER["Scale difference",6.7,SCALEUNIT["parts per million",1E-06],ID["EPSG",8611]]]]"#;
+    let t = Transformer::new(&SpatialRef::from_wkt(wkt), &SpatialRef::from_epsg(4326).unwrap()).unwrap();
+    let (lon, lat) = t.transform(10.0, 50.0).unwrap();
+    assert!((lon - 10.0).abs() < 1e-9 && (lat - 50.0).abs() < 1e-9, "({lon}, {lat})");
+}
+
+/// The same with a target named as a datum on the source's own ellipsoid (`D_Monte_Mario` on
+/// Bessel, with its own `TOWGS84`): PROJ 9.8.1 places (12, 42) by a ballpark, unchanged, not by
+/// Monte Mario's transformation on Bessel (about 230 m away).
+#[test]
+fn a_bound_crs_target_on_the_source_ellipsoid_is_not_its_source_datum() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let wkt = r#"BOUNDCRS[SOURCECRS[GEOGCRS["Local",DATUM["Local datum",ELLIPSOID["Bessel 1841",6377397.155,299.1528128,LENGTHUNIT["metre",1]]],PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.0174532925199433]],CS[ellipsoidal,2],AXIS["lat",north],AXIS["lon",east],ANGLEUNIT["degree",0.0174532925199433]]],TARGETCRS[GEOGCS["MM",DATUM["D_Monte_Mario",SPHEROID["Bessel 1841",6377397.155,299.1528128],TOWGS84[-80,-90,-110,0,0,0,0]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]],ABRIDGEDTRANSFORMATION["t",METHOD["Position Vector transformation (geog2D domain)",ID["EPSG",9606]],PARAMETER["X-axis translation",598.1,ID["EPSG",8605]],PARAMETER["Y-axis translation",73.7,ID["EPSG",8606]],PARAMETER["Z-axis translation",418.2,ID["EPSG",8607]],PARAMETER["X-axis rotation",0.202,ID["EPSG",8608]],PARAMETER["Y-axis rotation",0.045,ID["EPSG",8609]],PARAMETER["Z-axis rotation",-2.455,ID["EPSG",8610]],PARAMETER["Scale difference",6.7,SCALEUNIT["parts per million",1E-06],ID["EPSG",8611]]]]"#;
+    let t = Transformer::new(&SpatialRef::from_wkt(wkt), &SpatialRef::from_epsg(4326).unwrap()).unwrap();
+    let (lon, lat) = t.transform(12.0, 42.0).unwrap();
+    assert!((lon - 12.0).abs() < 1e-9 && (lat - 42.0).abs() < 1e-9, "({lon}, {lat})");
+}
+
+/// Esri's Mercator_Auxiliary_Sphere, which projects on a sphere, on `D_Monte_Mario` with an
+/// altered International 1924 axis (6378390): the datum's transformation on the geographic CRS's
+/// ellipsoid, not the projection's sphere. PROJ 9.8.1 places WGS 84 (12, 42) at
+/// (1335909.7424683373, 5161087.942280648). Within 1 mm.
+#[test]
+fn an_auxiliary_sphere_on_an_altered_datum_keeps_its_transformation() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let wkt = r#"PROJCS["x",GEOGCS["GCS_Monte_Mario",DATUM["D_Monte_Mario",SPHEROID["International_1924",6378390.0,297.0]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Mercator_Auxiliary_Sphere"],PARAMETER["False_Easting",0.0],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",0.0],PARAMETER["Standard_Parallel_1",0.0],PARAMETER["Auxiliary_Sphere_Type",0.0],UNIT["Meter",1.0]]"#;
+    let t = Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &SpatialRef::from_wkt(wkt)).unwrap();
+    let (x, y) = t.transform(12.0, 42.0).unwrap();
+    assert!((x - 1_335_909.742_468_337_3).abs() < 1e-3 && (y - 5_161_087.942_280_648).abs() < 1e-3, "({x}, {y})");
+}
