@@ -338,7 +338,9 @@ jobs:
                 fi
                 if [ -n "$bench_files" ]; then
                   echo "UNVERIFIED: this PR changes the bench itself:"
-                  echo "$bench_files"
+                  # Every line indented, so a file name holding a newline
+                  # cannot pass for a header line.
+                  sed 's/^/  - /' <<< "$bench_files"
                 fi
               } > pr-context/bench-source.txt
               cp "$RUNNER_TEMP/bench.md" pr-context/bench.md
@@ -555,6 +557,12 @@ jobs:
             printf '\n\n_[summary truncated]_\n' >> "$trimmed_file"
             mv "$trimmed_file" "$summary_file"
           fi
+
+          # The model's output can be steered by the untrusted diff, so it may
+          # not carry the markers other steps trust: a forged perf-review
+          # marker would suppress a performance review, and a comment starting
+          # with the bench marker would be taken for the bench comment.
+          sed -i -e '/<!-- claude-perf-review/d' -e '/<!-- terrio-bench/d' "$summary_file"
 
           # The once-per-head marker the bench staging step looks for.
           if [ "$PERF_ONLY" = true ]; then
