@@ -277,4 +277,8 @@ fn a_full_matrix_helmert_transformation_has_no_proj_string() {
         let written = SpatialRef::from_wkt(case["wkt"].as_str().unwrap()).to_proj4();
         assert_eq!(written.is_some(), code == 9607, "{name}: {written:?}");
     }
+    // By its EPSG name with PROJ's " (3D)" suffix, which PROJ drops to find its code.
+    let name = "method by name 'Coordinate Frame rotation full matrix (geog2D) (3D)', 7 parameters, to WGS 84";
+    let case = data["cases"].as_array().unwrap().iter().find(|c| c["name"] == name).unwrap();
+    assert_eq!(SpatialRef::from_wkt(case["wkt"].as_str().unwrap()).to_proj4(), None, "{name}");
 }

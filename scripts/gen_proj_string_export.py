@@ -407,6 +407,12 @@ def bound_wkts():
         for code in (1037, 1033, 1038, 1032, 1149, 1053, 1054, 1055, 1056, 1057, 1058)
         + (1034, 1039, 9636, 1061, 1062, 1063)
     ] + [
+        # Geocentric translations without one of its three translations: no string.
+        bound_wkt(BNG_WKT2, GT, OSGB_7[:2]),
+        # A time-dependent method by its name alone, with seven parameters: PROJ's string.
+        bound_wkt(BNG_WKT2, ("Time-dependent Coordinate Frame rotation (geog2D)", 0), OSGB_7).replace(
+            ',ID["EPSG",0]]', "]"
+        ),
         # A Molodensky-Badekas method by its EPSG name alone, with seven parameters: no string.
         bound_wkt(BNG_WKT2, ("Molodensky-Badekas (CF geog2D domain)", 9636), OSGB_7).replace(
             ',ID["EPSG",9636]]', "]"

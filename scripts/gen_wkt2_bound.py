@@ -353,6 +353,29 @@ CASES += [
     )
     for code in [9636, 1034, 1063, 1061]
 ]
+# The full matrix and an evaluation point to another CRS (ED50), then its transformations, and
+# into ED50 and back.
+CASES += [
+    (
+        f"{what}, to ED50{', into ED50' if dst else ''}",
+        wkt,
+        point,
+        *dst,
+    )
+    for what, wkt, point in [
+        (
+            "Saba, method EPSG:1132",
+            bound(SABA, ED50, SABA_SHIFT, "m", 1132),
+            (-63.23, 17.63),
+        ),
+        (
+            "method EPSG:9636 about an evaluation point",
+            bound(BNG, ED50, SHIFT, "m", 9636)[:-2] + "," + EVALUATION_POINT + "]]",
+            (530000.0, 180000.0),
+        ),
+    ]
+    for dst in ([], ["EPSG:4230"])
+]
 # Methods by name alone: an EPSG name, whatever the number of parameters, as its code; another,
 # by its convention's words and the number of parameters of its kind.
 CASES += [
@@ -367,6 +390,8 @@ CASES += [
         ("Molodensky-Badekas (CF geog2D domain)", SHIFT),
         ("Coordinate Frame rotation", SHIFT),
         ("Time-specific Coordinate Frame rotation (geocen)", SHIFT),
+        ("Coordinate Frame rotation full matrix (geog2D) (3D)", SHIFT),
+        ("Position Vector transformation (geog2D domain) (3D)", SHIFT[:3]),
     ]
 ]
 

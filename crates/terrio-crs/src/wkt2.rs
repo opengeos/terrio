@@ -10,7 +10,8 @@
 //     src/iso19111/operation/transformation.cpp (getTOWGS84Parameters: which are written as
 //       +towgs84)
 //     src/iso19111/operation/oputils.cpp (isTimeDependent)
-//     src/iso19111/operation/parammappings.cpp (a method's code by its name)
+//     src/iso19111/operation/singleoperation.cpp (OperationMethod::getEPSGCode: a method's code
+//       by its name) and parammappings.cpp (methodNameCodesList)
 // Written to match the behavior of:
 //   PROJ 9.8.1:
 //     src/iso19111/io.cpp
@@ -1035,8 +1036,9 @@ const BADEKAS_CF: [u32; 3] = [1034, 1039, 9636];
 const BADEKAS_PV: [u32; 3] = [1061, 1062, 1063];
 
 /// The EPSG names of those methods (`proj_constants.h`), by which PROJ 9.8.1 gives a method
-/// without an `ID` its code (`parammappings.cpp`'s `getMapping`, names compared ignoring case and
-/// punctuation).
+/// without an `ID` its code (`OperationMethod::getEPSGCode` in `singleoperation.cpp`, which looks
+/// the name, less a " (3D)" suffix, up in `parammappings.cpp`'s `methodNameCodesList`, compared
+/// ignoring case and punctuation).
 const HELMERT_NAMES: [(u32, &str); 25] = [
     (1031, "Geocentric translations (geocentric domain)"),
     (1032, "Coordinate Frame rotation (geocentric domain)"),
@@ -1094,10 +1096,12 @@ fn method_of(t: &Node) -> (String, Option<u32>, usize) {
     let method = t.child("METHOD");
     let name = method.and_then(Node::name).unwrap_or("").to_ascii_lowercase();
     let code = method.and_then(Node::epsg).or_else(|| {
-        let key = norm(&name);
+        // Its EPSG name, less a " (3D)" suffix, as `getEPSGCode` looks it up.
+        let key = norm(name.strip_suffix(" (3d)").unwrap_or(&name));
         HELMERT_NAMES.iter().find(|(_, n)| norm(n) == key).map(|(c, _)| *c)
     });
-    (name, code, t.children("PARAMETER").count())
+    // A grid's file counts as a parameter, as in PROJ.
+    (name, code, t.children("PARAMETER").count() + t.children("PARAMETERFILE").count())
 }
 
 /// The Helmert method of a `BOUNDCRS`'s `ABRIDGEDTRANSFORMATION`, as PROJ 9.8.1 recognizes it
@@ -1268,8 +1272,10 @@ fn helmert_shift(root: &Node) -> Result<Option<BoundShift>> {
 /// Whether a `BOUNDCRS`'s Helmert transformation has a PROJ string that places points where
 /// PROJ 9.8.1 does (`transformation.cpp`'s `getTOWGS84Parameters`, less what the maintainer's
 /// rule leaves out): position vector and coordinate frame with each of their seven parameters
-/// (one given twice leaves another out), and geocentric translations without a rotation or scale.
-/// Not the time-dependent and Molodensky-Badekas methods, which PROJ writes no string for, nor
+/// (one given twice leaves another out), and geocentric translations with their three and without
+/// a rotation or scale. Not the time-dependent methods by code and the Molodensky-Badekas ones,
+/// which PROJ writes no string for (a time-dependent one named with its convention's words and
+/// seven parameters PROJ writes, as terrio does), nor
 /// coordinate frame's full matrix, nor geocentric translations given a rotation or scale, which
 /// PROJ writes as a `+towgs84` placing points elsewhere than it does.
 pub(crate) fn helmert_writable(t: &Node) -> bool {
@@ -1289,8 +1295,10 @@ pub(crate) fn helmert_writable(t: &Node) -> bool {
     let Ok(values) = helmert_values(t) else { return false };
     let Some(v) = values else { return true };
     match v.method.kind {
-        HelmertKind::Seven => !v.method.exact && v.given == 0b111_1111,
-        HelmertKind::Translations => !v.unapplied,
-        HelmertKind::TimeDependent | HelmertKind::Badekas => false,
+        // A time-dependent one gets here only by the name of its convention with seven
+        // parameters, which `getTOWGS84Parameters` writes as it is.
+        HelmertKind::Seven | HelmertKind::TimeDependent => !v.method.exact && v.given == 0b111_1111,
+        HelmertKind::Translations => !v.unapplied && v.given & 0b111 == 0b111,
+        HelmertKind::Badekas => false,
     }
 }

@@ -990,8 +990,8 @@ Known differences, all of WKTs and PROJ strings without a code:
 - a WKT 2 `BOUNDCRS` whose WKT 1 source CRS has a `TOWGS84` of its own has no string, where
   PROJ writes that `TOWGS84` but transforms by the bound transformation (which terrio does too).
   As in PROJ, a `BOUNDCRS` whose position vector or coordinate frame transformation lacks any of
-  its seven parameters, or whose transformation is a time-dependent or Molodensky-Badekas one,
-  has no string either;
+  its seven parameters, or whose transformation is a Molodensky-Badekas one or a time-dependent
+  one given by its code or with its rates, has no string either;
 - a WKT 2 `BOUNDCRS` with a geocentric translations transformation given a rotation or scale, or
   with coordinate frame's full matrix, has no string, where PROJ writes a `+towgs84` it does not
   transform by (without the rotation; by the small-angle approximation, 9 m away for Saba to
