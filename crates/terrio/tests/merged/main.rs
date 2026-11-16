@@ -40,6 +40,8 @@ mod flatgeobuf_hostile;
 mod gdal_redirect_policy;
 #[path = "../geocentric.rs"]
 mod geocentric;
+#[path = "../geojson_lists.rs"]
+mod geojson_lists;
 #[path = "../geolocation_warp.rs"]
 mod geolocation_warp;
 #[path = "../geopackage.rs"]

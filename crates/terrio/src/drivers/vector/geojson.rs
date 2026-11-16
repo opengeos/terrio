@@ -7,8 +7,9 @@
 //! GeoJSON, read and written as GDAL does.
 //!
 //! Reading: fields in the order the properties first appear, typed from their JSON values
-//! (integers, reals, booleans, ISO 8601 dates and date-times, strings; arrays and objects become
-//! JSON text), string feature ids as a leading `id` field and integer ids as feature ids, and the
+//! (integers, reals, booleans, ISO 8601 dates and date-times, strings; objects become JSON text,
+//! and arrays lists of GDAL's list types held as JSON arrays, or JSON text: see
+//! [`super::geojson_lists`]), string feature ids as a leading `id` field and integer ids as feature ids, and the
 //! CRS from a GeoJSON 2008 `crs` member; without one, EPSG:4326, or EPSG:4979 when the layer's
 //! geometry type has heights, as GDAL infers the type (see [`LayerGeom`]).
 //!
@@ -17,7 +18,9 @@
 //! [`GeoJsonOptions::rfc7946`] reprojects to WGS 84 instead and
 //! orients polygon rings counter-clockwise, like GDAL's `RFC7946=YES`.
 
+use super::geojson_lists::{self, State, Typing};
 use crate::crs::SpatialRef;
+use crate::ops::vector_schema::OgrType;
 use crate::{Error, Result};
 use serde_json::{Map, Value, json};
 use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, Layer, Ring};
@@ -188,6 +191,7 @@ pub fn parse(bytes: &[u8], default_name: &str) -> Result<Layer> {
         layer.push(reader.feature(n as u64, f));
     }
     declare(schema.geom);
+    declare_lists(&layer, &schema);
     Ok(layer)
 }
 
@@ -237,8 +241,9 @@ pub(crate) struct SchemaScan {
     string_ids: bool,
     /// The first feature is a STAC item: foreign members become fields.
     stac: Option<bool>,
-    /// The fields in the order they first appear, with their merged kinds.
-    kinds: Vec<(String, Option<Kind>)>,
+    /// The fields in the order they first appear, with their merged kinds and the summary of
+    /// their values' OGR types, which tells their list types.
+    kinds: Vec<(String, Option<Kind>, Typing)>,
     /// The layer's geometry type as GDAL infers it, for the default CRS.
     geom: LayerGeom,
 }
@@ -489,6 +494,50 @@ pub fn with_declared_geometry_types<T>(f: impl FnOnce() -> T) -> (T, Vec<String>
     let declared = DECLARED.with(|d| d.borrow_mut().take()).unwrap_or_default();
     drop(scope);
     (out, declared)
+}
+
+thread_local! {
+    /// The list fields of the layers read on this thread inside [`with_list_types`].
+    static LISTS: std::cell::RefCell<Option<ListTypes>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The OGR types of list fields, by layer name, then field name.
+pub(crate) type ListTypes = Vec<(String, Vec<(String, OgrType)>)>;
+
+/// Runs `f`, returning with its result the list fields of the GeoJSON layers it read on this
+/// thread: each layer's name with the OGR types of its list fields. They are also recorded for an
+/// enclosing call, whose dataset may hold those layers.
+pub(crate) fn with_list_types<T>(f: impl FnOnce() -> T) -> (T, ListTypes) {
+    /// Restores the enclosing call's record with these layers added, also when `f` panics.
+    struct Scope(Option<ListTypes>);
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            let inner = LISTS.with(|d| d.borrow_mut().take()).unwrap_or_default();
+            let outer = self.0.take().map(|mut o| {
+                o.extend(inner);
+                o
+            });
+            LISTS.with(|d| *d.borrow_mut() = outer);
+        }
+    }
+    let scope = Scope(LISTS.with(|d| d.replace(Some(Vec::new()))));
+    let out = f();
+    let lists = LISTS.with(|d| d.borrow().clone()).unwrap_or_default();
+    drop(scope);
+    (out, lists)
+}
+
+/// Records the list fields of a layer read (see [`with_list_types`]).
+pub(crate) fn declare_lists(layer: &Layer, scan: &SchemaScan) {
+    let types = scan.list_types();
+    if types.is_empty() {
+        return;
+    }
+    LISTS.with(|d| {
+        if let Some(lists) = d.borrow_mut().as_mut() {
+            lists.push((layer.name.clone(), types));
+        }
+    });
 }
 
 /// Records the type GDAL declares for a layer read with these geometries (see
@@ -771,20 +820,48 @@ impl SchemaScan {
         if self.stac.is_none() {
             self.stac = other.stac;
         }
-        for (k, t) in other.kinds {
-            match self.kinds.iter_mut().find(|(n, _)| *n == k) {
-                Some((_, prev)) => *prev = merge(*prev, t),
-                None => self.kinds.push((k, t)),
+        for (k, t, typing) in other.kinds {
+            match self.kinds.iter_mut().find(|(n, ..)| *n == k) {
+                Some((_, prev, prev_typing)) => {
+                    *prev = merge(*prev, t);
+                    prev_typing.then(&typing);
+                }
+                None => self.kinds.push((k, t, typing)),
             }
         }
     }
 
     fn add_kind(&mut self, k: &str, v: &Value) {
         let t = kind(v);
-        match self.kinds.iter_mut().find(|(n, _)| n == k) {
-            Some((_, prev)) => *prev = merge(*prev, t),
-            None => self.kinds.push((k.to_string(), t)),
+        let string = match t {
+            Some(Kind::Date) => State::Date,
+            Some(Kind::DateTime) => State::DateTime,
+            Some(Kind::Time) => State::Time,
+            _ => State::String,
+        };
+        let i = match self.kinds.iter().position(|(n, ..)| n == k) {
+            Some(i) => {
+                self.kinds[i].1 = merge(self.kinds[i].1, t);
+                i
+            }
+            None => {
+                self.kinds.push((k.to_string(), t, Typing::default()));
+                self.kinds.len() - 1
+            }
+        };
+        if let Some(c) = geojson_lists::class(v, string) {
+            self.kinds[i].2.add(c);
         }
+    }
+
+    /// The list type of each field that holds lists (see [`geojson_lists`]).
+    fn list_states(&self) -> impl Iterator<Item = (&str, State)> {
+        self.kinds.iter().filter_map(|(k, _, typing)| typing.state().list_type().map(|_| (k.as_str(), typing.state())))
+    }
+
+    /// The OGR types of the fields that hold lists, by name.
+    pub(crate) fn list_types(&self) -> Vec<(String, OgrType)> {
+        self.list_states().filter_map(|(k, s)| s.list_type().map(|t| (k.to_string(), t))).collect()
     }
 
     /// The layer a GeoJSON document's features make, without its features: without a `crs`
@@ -805,7 +882,7 @@ impl SchemaScan {
         if self.string_ids {
             layer.add_field(FieldDef::new("id", FieldType::Text));
         }
-        for (k, t) in &self.kinds {
+        for (k, t, _) in &self.kinds {
             if layer.schema.field_index(k).is_none() {
                 layer.add_field(FieldDef::new(k, t.map_or(FieldType::Text, Kind::field_type)));
             }
@@ -822,15 +899,24 @@ impl SchemaScan {
 pub(crate) struct FeatureDecoder {
     names: Vec<String>,
     types: Vec<FieldType>,
+    /// The type of each field that holds lists.
+    lists: Vec<Option<State>>,
     string_ids: bool,
     stac: bool,
 }
 
 impl FeatureDecoder {
     pub(crate) fn new(layer: &Layer, scan: &SchemaScan) -> Self {
+        let lists: Vec<(&str, State)> = scan.list_states().collect();
         Self {
             names: layer.schema.fields().iter().map(|f| f.name.clone()).collect(),
             types: layer.schema.fields().iter().map(|f| f.field_type).collect(),
+            lists: layer
+                .schema
+                .fields()
+                .iter()
+                .map(|f| lists.iter().find(|(k, _)| *k == f.name && f.field_type == FieldType::Json).map(|(_, s)| *s))
+                .collect(),
             string_ids: scan.string_ids,
             stac: scan.stac.unwrap_or(false),
         }
@@ -848,7 +934,10 @@ impl FeatureDecoder {
         }
         for (k, v) in attributes_of(f, self.stac) {
             if let Some(i) = self.names.iter().position(|n| *n == k).filter(|&i| !(self.string_ids && i == 0)) {
-                attributes[i] = value(v, self.types[i]);
+                attributes[i] = match self.lists[i] {
+                    Some(s) => geojson_lists::value(v, s),
+                    None => value(v, self.types[i]),
+                };
             }
         }
         let fid = if self.string_ids { n } else { f["id"].as_u64().unwrap_or(n) };
@@ -1239,6 +1328,7 @@ pub fn parse_seq(bytes: &[u8], name: &str) -> Result<Layer> {
     let raw: Vec<Vec<u8>> = lines.iter().map(|l| l.to_vec()).collect();
     layer.features = decoder.features_raw(0, &raw)?;
     declare(scan.geom);
+    declare_lists(&layer, &scan);
     Ok(layer)
 }
 
