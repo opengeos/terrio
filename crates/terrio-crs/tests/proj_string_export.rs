@@ -8,8 +8,11 @@
 //! Known differences, left out of the data: an ESRI WKT of Miller's projection, which PROJ reads
 //! on the authalic sphere (`+proj=mill +R_A`) and terrio does not; a WKT's grid shift (GDAL's
 //! `PROJ4_GRIDS` in a datum, a `BOUNDCRS` with a grid), which terrio's WKT reader does not read,
-//! so its string has no `+nadgrids`; and the order of the parameters of a custom PROJ string,
-//! which PROJ rewrites in its own order, adding the defaults, and terrio keeps.
+//! so its string has no `+nadgrids`; the order of the parameters of a custom PROJ string,
+//! which PROJ rewrites in its own order, adding the defaults, and terrio keeps; and a WKT 2
+//! `BOUNDCRS` whose WKT 1 source CRS has a `TOWGS84` of its own, for which PROJ writes that
+//! shift but transforms by the bound one, and terrio writes no string (see
+//! `a_bound_crs_over_a_source_with_its_own_shift_has_no_proj_string`).
 
 use std::collections::HashMap;
 use terrio_crs::{CrsQuery, SpatialRef, Transformer, list_crs};
@@ -207,4 +210,30 @@ fn airy_and_copenhagen_are_read_as_proj_defines_them() {
     let copenhagen = SpatialRef::from_proj4("+proj=longlat +ellps=intl +pm=copenhagen").unwrap();
     let (lon, lat) = Transformer::new(&intl, &copenhagen).unwrap().transform(13.0, 55.0).unwrap();
     assert!((lon - 0.42212500000000014).abs() < 1e-12 && (lat - 55.0).abs() < 1e-12, "({lon}, {lat})");
+}
+
+#[test]
+fn a_bound_crs_over_a_source_with_its_own_shift_has_no_proj_string() {
+    // PROJ 9.8.1 (pyproj 3.8.0) writes this CRS as `+proj=tmerc ... +towgs84=446.448,-125.157,
+    // 542.06,0.15,0.247,0.842,-20.489`, the WKT 1 source's own shift, but transforms it by the
+    // bound one (375, -111, 431): (530000, 180000) is (-0.128334°, 51.503937°) in WGS 84 by its
+    // transformation and 4 m from there by its PROJ string. terrio places it as PROJ does
+    // (`wkt2_bound.rs`) and writes no PROJ string, rather than one placing points elsewhere.
+    let source = SpatialRef::from_epsg(27700).unwrap().to_wkt1_strict().unwrap().replacen(
+        r#"AUTHORITY["EPSG","7001"]]"#,
+        r#"AUTHORITY["EPSG","7001"]],TOWGS84[446.448,-125.157,542.06,0.15,0.247,0.842,-20.489]"#,
+        1,
+    );
+    assert!(source.contains("TOWGS84[446.448"), "{source}");
+    let wgs84 = r#"GEOGCRS["WGS 84",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563,LENGTHUNIT["metre",1]]],PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.0174532925199433]],CS[ellipsoidal,2],AXIS["latitude",north,ORDER[1],ANGLEUNIT["degree",0.0174532925199433]],AXIS["longitude",east,ORDER[2],ANGLEUNIT["degree",0.0174532925199433]],ID["EPSG",4326]]"#;
+    for method in [
+        r#""Geocentric translations (geog2D domain)",ID["EPSG",9603]],PARAMETER["X-axis translation",375,ID["EPSG",8605]],PARAMETER["Y-axis translation",-111,ID["EPSG",8606]],PARAMETER["Z-axis translation",431,ID["EPSG",8607]]"#,
+        r#""Position Vector transformation (geog2D domain)",ID["EPSG",9606]],PARAMETER["X-axis translation",375,ID["EPSG",8605]],PARAMETER["Y-axis translation",-111,ID["EPSG",8606]],PARAMETER["Z-axis translation",431,ID["EPSG",8607]],PARAMETER["X-axis rotation",0,ID["EPSG",8608]],PARAMETER["Y-axis rotation",0,ID["EPSG",8609]],PARAMETER["Z-axis rotation",0,ID["EPSG",8610]],PARAMETER["Scale difference",1,ID["EPSG",8611]]"#,
+    ] {
+        let wkt = format!(r#"BOUNDCRS[SOURCECRS[{source}],TARGETCRS[{wgs84}],ABRIDGEDTRANSFORMATION["t",METHOD[{method}]]"#);
+        let crs = SpatialRef::from_wkt(&wkt);
+        let (lon, lat) = Transformer::new(&crs, &SpatialRef::from_epsg(4326).unwrap()).unwrap().transform(530000.0, 180000.0).unwrap();
+        assert!((lon + 0.1283343456018606).abs() < 1e-8 && (lat - 51.50393705844268).abs() < 1e-8, "({lon}, {lat})");
+        assert_eq!(crs.to_proj4(), None, "{wkt}");
+    }
 }

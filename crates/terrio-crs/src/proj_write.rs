@@ -26,7 +26,7 @@ use crate::{SpatialRef, def, epsg};
 
 /// The PROJ string of a CRS, or `None` when it has none.
 pub(crate) fn write(s: &SpatialRef) -> Option<String> {
-    if s.wkt.as_deref().is_some_and(is_engineering) {
+    if s.wkt.as_deref().is_some_and(is_engineering) || s.wkt.as_deref().is_some_and(unwritable_bound) {
         return None;
     }
     if let Some(mut tokens) = extension(s) {
@@ -109,6 +109,32 @@ pub(crate) fn write(s: &SpatialRef) -> Option<String> {
         return None;
     }
     s.esri.and_then(epsg::esri).map(|e| registry(&e.proj, e.datum, &e.wkt, is_web_mercator(s), shift.as_deref()))
+}
+
+/// Whether a WKT 2 `BOUNDCRS` has no PROJ string, as PROJ 9.8.1 writes none (or one that does
+/// not place points where it does):
+/// - a position vector or coordinate frame transformation without all seven parameters (a
+///   geocentric translation's three are enough);
+/// - a source CRS whose datum has a `TOWGS84` of its own (a WKT 1 source, as GDAL writes one):
+///   PROJ writes that shift, but transforms by the bound one.
+fn unwritable_bound(wkt: &str) -> bool {
+    let Some(root) = crate::wkt1::parse(wkt).filter(|r| r.key.eq_ignore_ascii_case("BOUNDCRS")) else { return false };
+    let first = |n: &crate::wkt1::Node| {
+        n.args.iter().find_map(|a| match a {
+            crate::wkt1::Arg::Node(n) => Some(n.clone()),
+            _ => None,
+        })
+    };
+    let source = root.child("SOURCECRS").and_then(first);
+    let own_shift = source.as_ref().is_some_and(|s| {
+        let geogcs = if s.key.eq_ignore_ascii_case("PROJCS") { s.child("GEOGCS") } else { Some(s) };
+        geogcs.and_then(|g| g.child("DATUM")).is_some_and(|d| d.child("TOWGS84").is_some())
+    });
+    let Some(t) = root.child("ABRIDGEDTRANSFORMATION") else { return own_shift };
+    let method = t.child("METHOD").map(|m| (crate::wkt1::norm(m.name().unwrap_or("")), m.epsg())).unwrap_or_default();
+    let seven = ["positionvector", "coordinateframe"].iter().any(|m| method.0.starts_with(m))
+        || matches!(method.1, Some(9606 | 1033 | 1037 | 9607 | 1032 | 1038));
+    own_shift || (seven && t.children("PARAMETER").count() < 7)
 }
 
 /// The shift to WGS 84 of a CRS's WKT, when it has one: `+nadgrids`, else `+towgs84`.

@@ -336,6 +336,58 @@ SHIFTED = [
     (7405, "446.448,-125.157,542.06,0.15,0.247,0.842,-20.489"),
 ]
 
+# WKT 2 BOUNDCRSs with a Helmert transformation to WGS 84 (#1012 items 10 and 11). PROJ writes the
+# rotations of a coordinate frame transformation with the other sign, and nothing for a position
+# vector or coordinate frame transformation without all seven parameters, nor for one whose
+# source CRS is a WKT 1 CRS with a TOWGS84 of its own, bound by a transformation PROJ cannot
+# write. (Bound by one it can write, PROJ writes the source's TOWGS84, not the bound
+# transformation it transforms by; terrio writes none, a known difference.)
+BNG_WKT2 = (
+    'PROJCRS["unknown",BASEGEOGCRS["unknown",DATUM["Unknown based on Airy 1830 ellipsoid",ELLIPSOID['
+    '"Airy 1830",6377563.396,299.3249646,LENGTHUNIT["metre",1]]],PRIMEM["Greenwich",0,ANGLEUNIT['
+    '"degree",0.0174532925199433]]],CONVERSION["unknown",METHOD["Transverse Mercator",ID["EPSG",9807]],'
+    'PARAMETER["Latitude of natural origin",49,ANGLEUNIT["degree",0.0174532925199433],ID["EPSG",8801]],'
+    'PARAMETER["Longitude of natural origin",-2,ANGLEUNIT["degree",0.0174532925199433],ID["EPSG",8802]],'
+    'PARAMETER["Scale factor at natural origin",0.9996012717,SCALEUNIT["unity",1],ID["EPSG",8805]],'
+    'PARAMETER["False easting",400000,LENGTHUNIT["metre",1],ID["EPSG",8806]],PARAMETER["False northing",'
+    '-100000,LENGTHUNIT["metre",1],ID["EPSG",8807]]],CS[Cartesian,2],AXIS["(E)",east,ORDER[1],'
+    'LENGTHUNIT["metre",1]],AXIS["(N)",north,ORDER[2],LENGTHUNIT["metre",1]]]'
+)
+OSGB_7 = [446.448, -125.157, 542.06, 0.15, 0.247, 0.842, 0.999979511]
+PV = ("Position Vector transformation (geog2D domain)", 9606)
+CF = ("Coordinate Frame rotation (geog2D domain)", 9607)
+GT = ("Geocentric translations (geog2D domain)", 9603)
+
+
+def bound_wkt(source, method, values):
+    """A WKT 2 BOUNDCRS of a source CRS to WGS 84 by a Helmert transformation (as PROJ writes
+    one: the scale difference as a ratio, without a unit)."""
+    names = ["X-axis translation", "Y-axis translation", "Z-axis translation", "X-axis rotation"]
+    names += ["Y-axis rotation", "Z-axis rotation", "Scale difference"]
+    params = ",".join(
+        f'PARAMETER["{n}",{v},ID["EPSG",{c}]]' for (n, c), v in zip(zip(names, range(8605, 8612)), values)
+    )
+    target = CRS.from_epsg(4326).to_wkt("WKT2_2019")
+    return (
+        f'BOUNDCRS[SOURCECRS[{source}],TARGETCRS[{target}],ABRIDGEDTRANSFORMATION["t",'
+        f'METHOD["{method[0]}",ID["EPSG",{method[1]}]],{params}]]'
+    )
+
+
+def bound_wkts():
+    """The BOUNDCRS rows."""
+    bng_wkt1 = shifted_wkt(27700, "446.448,-125.157,542.06,0.15,0.247,0.842,-20.489")
+    return [
+        bound_wkt(BNG_WKT2, PV, OSGB_7),
+        bound_wkt(BNG_WKT2, CF, OSGB_7),
+        bound_wkt(BNG_WKT2, GT, OSGB_7[:3]),
+        bound_wkt(BNG_WKT2, PV, OSGB_7[:3]),
+        bound_wkt(BNG_WKT2, CF, OSGB_7[:3]),
+        bound_wkt(BNG_WKT2, PV, OSGB_7[:6]),
+        bound_wkt(bng_wkt1, PV, [375, -111, 431]),
+    ]
+
+
 # CRSs given by reference: compound CRSs of a horizontal and a vertical code, and every 20th
 # IAU_2015 CRS.
 REFERENCES = ["EPSG:4326+5773", "EPSG:2056+5728", "EPSG:32632+5773", "EPSG:4269+5703"]
@@ -408,7 +460,7 @@ def main():
         lines.append(f"{auth}\t{code}\t{proj4(CRS.from_authority(auth, code))}")
     for p in PROJ_STRINGS:
         lines.append(f"proj\t{p}\t{proj4(CRS(p))}")
-    for w in WKTS + [shifted_wkt(c, t) for c, t in SHIFTED] + [unidentified_wkt(c) for c in UNIDENTIFIED]:
+    for w in WKTS + [shifted_wkt(c, t) for c, t in SHIFTED] + [unidentified_wkt(c) for c in UNIDENTIFIED] + bound_wkts():
         lines.append(f"wkt\t{w}\t{proj4(CRS(w))}")
     iau = [f"IAU_2015:{i.code}" for i in query_crs_info(auth_name="IAU_2015")][::20]
     for r in REFERENCES + iau:

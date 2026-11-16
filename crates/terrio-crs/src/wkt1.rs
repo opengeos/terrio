@@ -46,6 +46,14 @@ impl Node {
         })
     }
 
+    /// The first child node with a keyword, to change.
+    pub fn child_mut(&mut self, key: &str) -> Option<&mut Node> {
+        self.args.iter_mut().find_map(|a| match a {
+            Arg::Node(n) if n.key.eq_ignore_ascii_case(key) => Some(n),
+            _ => None,
+        })
+    }
+
     /// The child nodes with a keyword.
     pub fn children<'a>(&'a self, key: &'a str) -> impl Iterator<Item = &'a Node> + 'a {
         self.args.iter().filter_map(move |a| match a {

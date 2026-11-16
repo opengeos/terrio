@@ -2774,7 +2774,7 @@ PROJ_CASES = {
     },
     "wkt2_bound": {
         "bound_crss_place_points_as_proj_does": (
-            "WKT 2 BOUNDCRS to WGS 84 and to another CRS (ED50, OSGB36)", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
+            "WKT 2 BOUNDCRS to WGS 84 and to another CRS (ED50, OSGB36), over WKT 2 and WKT 1 source CRSs", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
         ),
         "the_bound_transformation_is_undone_the_other_way": (
             "WKT 2 BOUNDCRS: the shift undone from a CRS on the target's datum", IDENTICAL, "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",

@@ -12,6 +12,7 @@ Usage: PROJ_NETWORK=OFF python scripts/gen_wkt2_bound.py (needs pyproj 3.8.0)
 
 import json
 import os
+import re
 from pathlib import Path
 
 import pyproj
@@ -111,6 +112,24 @@ def bound(
         f'METHOD["{method}",ID["EPSG",{code}]],{",".join(params)}]]'
     )
 
+
+
+
+def wkt1(code, fmt="WKT1_GDAL", towgs84=None):
+    """GDAL's (or Esri's) WKT 1 of an EPSG code, with a TOWGS84 node in its datum if given, as
+    GDAL writes a bound CRS's source CRS when it has only WKT 1 for it."""
+    wkt = CRS.from_epsg(code).to_wkt(fmt)
+    if towgs84:
+        wkt, n = re.subn(r"(SPHEROID\[[^\]]*\]\])", rf"\1,TOWGS84[{towgs84}]", wkt, count=1)
+        assert n == 1, code
+    return wkt
+
+
+# British National Grid and OSGB36 as WKT 1 source CRSs: with a TOWGS84 of their own, which the
+# bound transformation replaces, as PROJ transforms them; without one; and Esri's.
+OSGB_SHIFT = "446.448,-125.157,542.06,0.15,0.247,0.842,-20.489"
+BNG_WKT1_SHIFTED = wkt1(27700, towgs84=OSGB_SHIFT)
+OSGB36_WKT1_SHIFTED = wkt1(4277, towgs84=OSGB_SHIFT)
 
 CASES = [
     ("to ED50", bound(BESSEL, ED50, SHIFT), (10.0, 50.0)),
@@ -237,6 +256,43 @@ CASES = [
         bound(OSGB36, WGS84, [375.0, -111.0, 431.0]),
         (-0.1246, 51.5007),
         "EPSG:4277",
+    ),
+    # WKT 1 source CRSs (#1012 item 11): the bound transformation, not the source's TOWGS84.
+    (
+        "WKT 1 projected source with its own TOWGS84, to WGS 84",
+        bound(BNG_WKT1_SHIFTED, WGS84, [375.0, -111.0, 431.0]),
+        (530000.0, 180000.0),
+    ),
+    (
+        "WKT 1 projected source with its own TOWGS84, to WGS 84, into OSGB36",
+        bound(BNG_WKT1_SHIFTED, WGS84, [375.0, -111.0, 431.0]),
+        (530000.0, 180000.0),
+        "EPSG:4277",
+    ),
+    (
+        "WKT 1 projected source with its own TOWGS84, seven parameters, to WGS 84",
+        bound(BNG_WKT1_SHIFTED, WGS84, SHIFT),
+        (530000.0, 180000.0),
+    ),
+    (
+        "WKT 1 projected source with its own TOWGS84, to ED50",
+        bound(BNG_WKT1_SHIFTED, ED50, SHIFT),
+        (530000.0, 180000.0),
+    ),
+    (
+        "WKT 1 projected source, to WGS 84",
+        bound(wkt1(27700), WGS84, [375.0, -111.0, 431.0]),
+        (530000.0, 180000.0),
+    ),
+    (
+        "Esri WKT 1 projected source, to WGS 84",
+        bound(wkt1(27700, "WKT1_ESRI"), WGS84, [375.0, -111.0, 431.0]),
+        (530000.0, 180000.0),
+    ),
+    (
+        "WKT 1 geographic source with its own TOWGS84, to WGS 84",
+        bound(OSGB36_WKT1_SHIFTED, WGS84, [375.0, -111.0, 431.0]),
+        (-0.1246, 51.5007),
     ),
 ]
 

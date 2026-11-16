@@ -1814,8 +1814,9 @@ terrio-crs --test wkt1_axes`; regenerate with `scripts/gen_wkt1_axes.py`, pyproj
 
 WKT 2 `BOUNDCRS`s with a Helmert transformation, to WGS 84 and to ED50 and OSGB36 (with and
 without their codes, three and seven parameters, position vector and coordinate frame, a
-geographic and a projected source, over a source terrio identifies as EPSG:4277, and to a datum
-without transformations), place points where PROJ 9.8.1 does, in WGS 84 and, both ways, in CRSs on
+geographic and a projected source, over a source terrio identifies as EPSG:4277, over WKT 1
+sources (GDAL's and Esri's, with and without a `TOWGS84` of their own, which the bound
+transformation replaces), and to a datum without transformations), place points where PROJ 9.8.1 does, in WGS 84 and, both ways, in CRSs on
 the target's datum (and without the shift in CRSs on the source's datum and in other CRSs of the
 target's ellipsoid), within 1 mm (`cargo test -p terrio-crs --test wkt2_bound`;
 regenerate with `scripts/gen_wkt2_bound.py`, pyproj 3.8.0).

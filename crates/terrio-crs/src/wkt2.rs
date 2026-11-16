@@ -23,8 +23,8 @@ const BASE: [&str; 4] = ["BASEGEOGCRS", "BASEGEODCRS", "BASEGEOGRAPHICCRS", "BAS
 pub(crate) fn handles(root: &Node) -> bool {
     let key = root.key.to_ascii_uppercase();
     if key == "BOUNDCRS" {
-        // Only of a CRS this reader converts.
-        return root.child("SOURCECRS").and_then(first_node).is_some_and(handles);
+        // Only of a CRS this reader converts, or of a WKT 1 geographic or projected CRS.
+        return root.child("SOURCECRS").and_then(first_node).is_some_and(|s| handles(s) || is_wkt1_source(s));
     }
     if GEOGRAPHIC.contains(&key.as_str()) {
         return true;
@@ -40,7 +40,7 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
     let key = root.key.to_ascii_uppercase();
     if key == "BOUNDCRS" {
         let source = root.child("SOURCECRS").and_then(first_node).ok_or_else(|| bad("a BOUNDCRS without its SOURCECRS"))?;
-        let mut c = to_proj(source)?;
+        let mut c = if is_wkt1_source(source) { wkt1_source(source)? } else { to_proj(source)? };
         // A Helmert transformation terrio cannot read fails, whatever its target; one to a CRS
         // terrio cannot convert is left out, as terrio did before it read those.
         match helmert_shift(root)? {
@@ -681,6 +681,23 @@ fn axis(directions: &[String]) -> Option<String> {
     let has = |d: &str| directions.iter().any(|x| x == d);
     let (e, n) = (if has("west") { 'w' } else { 'e' }, if has("south") { 's' } else { 'n' });
     (e != 'e' || n != 'n').then(|| format!("{e}{n}u"))
+}
+
+/// Whether a `BOUNDCRS`'s source CRS is a WKT 1 geographic or projected CRS (`GEOGCS`,
+/// `PROJCS`), as GDAL writes a bound CRS's source when it has only WKT 1 for it.
+fn is_wkt1_source(n: &Node) -> bool {
+    n.key.eq_ignore_ascii_case("GEOGCS") || n.key.eq_ignore_ascii_case("PROJCS")
+}
+
+/// A `BOUNDCRS`'s WKT 1 source CRS, converted without the `TOWGS84` of its datum: the bound
+/// transformation replaces it, as PROJ 9.8.1 transforms such a CRS.
+fn wkt1_source(source: &Node) -> Result<Converted> {
+    let mut source = source.clone();
+    let geogcs = if source.key.eq_ignore_ascii_case("PROJCS") { source.child_mut("GEOGCS") } else { Some(&mut source) };
+    if let Some(datum) = geogcs.and_then(|g| g.child_mut("DATUM")) {
+        datum.args.retain(|a| !matches!(a, Arg::Node(n) if n.key.eq_ignore_ascii_case("TOWGS84")));
+    }
+    super::wkt1::to_proj(&source).ok_or_else(|| bad("a BOUNDCRS whose WKT 1 source CRS terrio cannot read"))
 }
 
 /// The first child node of a node.
