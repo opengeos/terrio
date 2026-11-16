@@ -74,9 +74,9 @@ enum Codec {
     /// compression `.0`, which the `tiff` crate inverts (unsigned and floating-point ones, one
     /// sample per pixel) or refuses (the others): read as stored, as libtiff gives them to GDAL.
     WhiteIsZero(u16),
-    /// Deflate of little-endian integer samples (or floating-point ones without a predictor),
-    /// inflated straight into the result with `fdeflate` (pure Rust), then its predictor undone:
-    /// faster than the `tiff` crate's streaming reader and its predictor.
+    /// Deflate of little-endian integer and floating-point samples, inflated straight into the
+    /// result with `fdeflate` (pure Rust), then its predictor undone: faster than the `tiff`
+    /// crate's streaming reader and its predictor.
     Deflate,
 }
 
@@ -211,13 +211,19 @@ fn decompress(compression: u16, raw: Vec<u8>, limit: usize) -> TiffResult<Vec<u8
 
 /// Whether Deflate chunks of an image are inflated here ([`Codec::Deflate`]) rather than by the
 /// `tiff` crate: a little-endian file on a little-endian host, not YCbCr, samples of a type read
-/// here (8- to 64-bit integers, Float32, Float64; not Float16), and no predictor, or the
-/// horizontal one on integers. Images matched by an earlier codec arm never reach this choice.
+/// here (8- to 64-bit integers, Float32, Float64; not Float16), and no predictor, the
+/// horizontal one on integers or the floating-point one on floats. Images matched by an earlier
+/// codec arm never reach this choice.
 fn inflated_here(little_endian: bool, photometric: Option<u16>, format: u16, bits: u16, predictor: u16) -> bool {
     cfg!(target_endian = "little")
         && little_endian
         && photometric != Some(6) // YCbCr may be subsampled: left to the crate
-        && Sample::new(format, bits).is_some_and(|s| predictor == 1 || (predictor == 2 && !s.is_float()))
+        && Sample::new(format, bits).is_some_and(|s| match predictor {
+            1 => true,
+            2 => !s.is_float(),
+            3 => s.is_float(),
+            _ => false,
+        })
 }
 
 /// Whether the `tiff` crate reads the pixel-interleaved chunks of an image of `samples` samples
@@ -576,6 +582,8 @@ impl ChunkCodec {
                 };
             }
             acc!(U8, I8, U16, I16, U32, I32, U64, I64);
+        } else if self.predictor == 3 {
+            self.unpredict(res.as_buffer(0).as_bytes_mut(), w);
         }
         if (dw, dh) == (w, h) {
             return Ok(res);
@@ -1220,8 +1228,8 @@ mod tests {
     }
 
     /// Deflate is inflated here for little-endian, non-YCbCr images of integer samples (with or
-    /// without the horizontal predictor) or Float32/Float64 samples without a predictor; every
-    /// other image is left to the `tiff` crate.
+    /// without the horizontal predictor) or Float32/Float64 samples (with or without the
+    /// floating-point predictor); every other image is left to the `tiff` crate.
     #[test]
     fn deflate_is_inflated_here_only_for_the_images_it_reads_as_the_crate() {
         let gray = Some(1);
@@ -1241,7 +1249,10 @@ mod tests {
             (true, gray, 3, 32, 2, false),
             (true, gray, 3, 64, 2, false),
             (true, gray, 1, 16, 3, false),
-            (true, gray, 3, 32, 3, false),
+            (true, gray, 3, 32, 3, true),
+            (true, gray, 3, 64, 3, true),
+            (true, gray, 3, 16, 3, false),
+            (true, gray, 3, 32, 4, false),
             (true, gray, 5, 32, 1, false),
             (true, gray, 1, 12, 1, false),
         ];
@@ -1367,8 +1378,8 @@ mod tests {
     }
 
     /// Deflate tiles inflated here give what the `tiff` crate gives, the edge tiles of a 37 x 23
-    /// image in 16 x 16 tiles included: the horizontal predictor is undone over the stored tile
-    /// width, padding included, before the tile is cut to its image data.
+    /// image in 16 x 16 tiles included: the horizontal and floating-point predictors are undone
+    /// over the stored tile width, padding included, before the tile is cut to its image data.
     #[test]
     fn deflate_tiles_decode_as_the_tiff_crate_decodes_them() {
         // Every byte of every sample set: a 64-bit multiplicative hash of the tile and position.
@@ -1417,6 +1428,10 @@ mod tests {
         case!(i32, 32, 2, 2, differenced!(i32));
         case!(u64, 64, 1, 2, differenced!(u64));
         case!(f32, 32, 3, 1, |_: &mut Vec<f32>| {});
+        // Any bytes are a valid floating-point predictor's planes: the predictor is undone as the
+        // crate undoes it, over the stored tile width.
+        case!(f32, 32, 3, 3, |_: &mut Vec<f32>| {});
+        case!(f64, 64, 3, 3, |_: &mut Vec<f64>| {});
     }
 
     /// Deflate chunks inflated here give what the `tiff` crate gives, for every sample type
