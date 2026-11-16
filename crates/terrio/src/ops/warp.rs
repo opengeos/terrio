@@ -1649,7 +1649,7 @@ impl<'a> Plan<'a> {
         let nodata = self.src_nodata(k, o);
         let unified = o.unified_src_nodata.unwrap_or(matches!(o.src_nodata, Nodata::Values(_))) && self.bands > 1;
         let translation = t.ct.is_none() && s.gcp.is_none() && is_pixel_translation(&s.grid.geo_transform, &self.grid.geo_transform);
-        let ctx = WarpContext {
+        let mut ctx = WarpContext {
             kernel_version: o.kernel_version,
             grid_invariant: o.grid_invariant,
             t,
@@ -1660,6 +1660,8 @@ impl<'a> Plan<'a> {
             translation,
             memory_limit: o.memory_limit,
             resident: source_bytes.is_none(),
+            guessed: false,
+            missed: std::sync::atomic::AtomicBool::new(false),
             bands: self.bands,
             out_bits: self.out_type.size_bytes() * 8,
             source_bits: source_bytes.map_or(self.out_type.size_bytes() * self.bands * 8, |bytes| bytes * 8),
@@ -1679,6 +1681,12 @@ impl<'a> Plan<'a> {
             poles: std::sync::OnceLock::new(),
             sum_scale: s.sum_scale,
         };
+        ctx.guessed = !ctx.resident
+            && ctx.grid_invariant
+            && ctx.resampling != Resampling::Sum
+            && !ctx.resampling.is_area_based()
+            && ctx.source_extra.is_none()
+            && ctx.global_longitude_turn().is_none();
         let mut chunks = Vec::new();
         if let Some((x, y, w, h)) = self.rpc_window(k, t, o) {
             ctx.collect_chunks(x, y, w, h, &mut chunks);
@@ -2081,19 +2089,28 @@ fn warp_reader_selected(
             warp_chunks(std::slice::from_ref(c), bands, &storage, target, |c, sink, rows| ctx.store_sum_strips(c, &sums, sink, rows));
             continue;
         }
-        let (window, valid, masked) = read(crate::Window::new(c.sx, c.sy, c.sw, c.sh))?;
-        if masked {
-            ctx.global_validity = true;
-            storage.src_masked = true;
+        let mut c = *c;
+        loop {
+            ctx.missed.store(false, std::sync::atomic::Ordering::Relaxed);
+            let (window, valid, masked) = read(crate::Window::new(c.sx, c.sy, c.sw, c.sh))?;
+            if masked {
+                ctx.global_validity = true;
+                storage.src_masked = true;
+            }
+            let sn = c.sw * c.sh;
+            // The chunks partition the output: each finds it at its initial value, so a chunk
+            // warped again overwrites what it wrote.
+            let target = Target { out: &mut out, width: grid.width, n, fill: &fill, out_type, first: true };
+            crate::pixel::with_data!(&window.raster.data, v => {
+                let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
+                let data = SrcData { bands: &typed, valid: &valid, width: c.sw, origin: (c.sx, c.sy) };
+                warp_source(&ctx, std::slice::from_ref(&c), &data, &storage, target);
+            });
+            match ctx.exact_chunk(&c) {
+                Some(exact) => c = exact,
+                None => break,
+            }
         }
-        let sn = c.sw * c.sh;
-        // The chunks partition the output: each finds it at its initial value.
-        let target = Target { out: &mut out, width: grid.width, n, fill: &fill, out_type, first: true };
-        crate::pixel::with_data!(&window.raster.data, v => {
-            let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
-            let data = SrcData { bands: &typed, valid: &valid, width: c.sw, origin: (c.sx, c.sy) };
-            warp_source(&ctx, std::slice::from_ref(c), &data, &storage, target);
-        });
     }
     t.check_policy()?;
     let mut ds = output_dataset(grid, out, bands, p.dst_nodata, &p.dst_srs)?;
@@ -2279,7 +2296,7 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
     if paths.len() != 1 || o.cutline.is_some() || super::strips::overwrites(path, paths) {
         return crate::write_raster_dataset(&warp_paths(paths, o)?, path, options);
     }
-    let mut src = crate::open_raster_lazy(&paths[0])?;
+    let src = crate::open_raster_lazy(&paths[0])?;
     let header = src.header();
     let o = &*with_file_gcps(o, &paths[0], &header)?;
     let mut p = Plan::new(&[&header], o)?;
@@ -2354,42 +2371,65 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
         Window(Box<RasterDataset>, Option<Vec<bool>>),
         Summed(SumStrips),
     }
+    // Shared by the reading thread and, to read a chunk again from its exact window (see
+    // `WarpContext::guessed`), the warping one.
+    let src = std::sync::Mutex::new(src);
+    let read_window = |c: &Chunk| -> Result<(RasterDataset, Option<Vec<bool>>)> {
+        let options = crate::WindowOptions { overview, bands: Vec::new() };
+        let window = crate::Window::new(c.sx, c.sy, c.sw, c.sh);
+        let mut src = src.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok((src.read_window(window, &options)?, source_mask(&mut *src, window, overview)?))
+    };
     super::strips::pipelined(
         chunks.len(),
         |i| {
             let c = &chunks[i];
-            let options = crate::WindowOptions { overview, bands: Vec::new() };
             let strip = ctx.sum_strip_rows(c);
             if strip < c.sh {
+                let options = crate::WindowOptions { overview, bands: Vec::new() };
+                let mut src = src.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let sums = ctx.sum_in_strips(c, strip, |window| {
                     let data = src.read_window(window, &options)?;
                     let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&data.raster, b)).collect();
-                    let valid = validity(&src_bands, &nodata, unified, source_mask(&mut src, window, overview)?);
+                    let valid = validity(&src_bands, &nodata, unified, source_mask(&mut *src, window, overview)?);
                     Ok(Strip { data, valid })
                 })?;
                 return Ok(ChunkRead::Summed(sums));
             }
-            let window = crate::Window::new(c.sx, c.sy, c.sw, c.sh);
-            Ok(ChunkRead::Window(Box::new(src.read_window(window, &options)?), source_mask(&mut src, window, overview)?))
+            let (window, mask) = read_window(c)?;
+            Ok(ChunkRead::Window(Box::new(window), mask))
         },
         |i, read| {
-            let c = &chunks[i];
+            let mut c = chunks[i];
             // The chunk's part of the output, as `f64`: the output's initial value (the chunks of
             // a source don't overlap), warped.
             let mut staged: Vec<Vec<f64>> = fill.iter().map(|fill| vec![*fill; c.dw * c.dh]).collect();
             let sink = storage.sink(storage.first_nodata().is_some_and(|nd| is_nodata(warp_round(nd, storage.work_type), nd)));
-            let part = chunk_rows(&mut staged, c.dw, &Chunk { dx: 0, dy: 0, ..*c });
             match read {
-                ChunkRead::Summed(sums) => ctx.store_sum_strips(c, &sums, &sink, part),
+                ChunkRead::Summed(sums) => {
+                    ctx.store_sum_strips(&c, &sums, &sink, chunk_rows(&mut staged, c.dw, &Chunk { dx: 0, dy: 0, ..c }))
+                }
                 ChunkRead::Window(window, mask) => {
-                    let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&window.raster, b)).collect();
-                    let valid = validity(&src_bands, &nodata, unified, mask);
-                    let sn = c.sw * c.sh;
-                    crate::pixel::with_data!(&window.raster.data, v => {
-                        let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
-                        let data = SrcData { bands: &typed, valid: &valid, width: c.sw, origin: (c.sx, c.sy) };
-                        ctx.warp_chunk(c, &data, &sink, part);
-                    });
+                    let (mut window, mut mask) = (*window, mask);
+                    loop {
+                        ctx.missed.store(false, std::sync::atomic::Ordering::Relaxed);
+                        let part = chunk_rows(&mut staged, c.dw, &Chunk { dx: 0, dy: 0, ..c });
+                        let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&window.raster, b)).collect();
+                        let valid = validity(&src_bands, &nodata, unified, mask);
+                        let sn = c.sw * c.sh;
+                        crate::pixel::with_data!(&window.raster.data, v => {
+                            let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
+                            let data = SrcData { bands: &typed, valid: &valid, width: c.sw, origin: (c.sx, c.sy) };
+                            ctx.warp_chunk(&c, &data, &sink, part);
+                        });
+                        let Some(exact) = ctx.exact_chunk(&c) else { break };
+                        // Warped again from the initial value, without the first attempt's warnings.
+                        c = exact;
+                        staged.iter_mut().zip(&fill).for_each(|(band, fill)| band.fill(*fill));
+                        sink.nudged.store(false, Ordering::Relaxed);
+                        sink.moved_all.store(false, Ordering::Relaxed);
+                        (window, mask) = read_window(&c)?;
+                    }
                 }
             }
             sink.finish();
@@ -2672,6 +2712,16 @@ fn square_scales_above_half(p: [(f64, f64); 4]) -> bool {
     }
 }
 
+/// Source pixels added around GDAL's estimate of a chunk's window when it is guessed (see
+/// `WarpContext::guessed`): enough for the estimate's approximation to hold every tap mostly.
+const GUESS_PAD: usize = 2;
+
+#[cfg(test)]
+thread_local! {
+    /// Source pixels taken off every side of a guessed window, in tests.
+    static GUESS_SHRINK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Longitude facts of a warp's source, constant over the warp (see [`WarpContext::source_wrap`]).
 #[derive(Clone, Copy)]
 struct SourceWrap {
@@ -2694,6 +2744,11 @@ struct WarpContext<'a> {
     /// The source is in memory, whole (`warp`, not a reader): with stable sampling, a chunk
     /// takes the whole source as its window instead of bounding its kernels pixel by pixel.
     resident: bool,
+    /// Stable sampling of a read source (`resident` false, a point kernel): chunks read a window
+    /// estimated from their edges, padded, and [`Self::warp_row_with`] checks that it holds every
+    /// tap, setting `missed` otherwise; the chunk is then warped again from its exact window.
+    guessed: bool,
+    missed: std::sync::atomic::AtomicBool,
     bands: usize,
     out_bits: usize,
     /// Source data held per pixel during a read, including simultaneous conversion buffers.
@@ -3098,7 +3153,28 @@ impl WarpContext<'_> {
             return;
         }
         // Polygon kernels already bound every footprint in the estimate under both policies.
-        let win = if stable_window { self.source_window(dx, dy, dw, dh) } else { estimated };
+        let win = match estimated {
+            // GDAL's estimate from the chunk's edges, padded: the warp checks it holds every tap
+            // (see `guessed`), so the source window is not bounded pixel by pixel up front.
+            Some((x, y, w, h, fill, rw, rh)) if stable_window && self.guessed && w > 0 && h > 0 => {
+                let (mut x0, mut y0) = (x.saturating_sub(GUESS_PAD), y.saturating_sub(GUESS_PAD));
+                let (mut x1, mut y1) = ((x + w + GUESS_PAD).min(self.src_w), (y + h + GUESS_PAD).min(self.src_h));
+                #[cfg(test)]
+                {
+                    // Tests shrink the guess to make chunks miss taps and warp again.
+                    let shrink = GUESS_SHRINK.with(std::cell::Cell::get);
+                    (x0, y0, x1, y1) = (
+                        (x0 + shrink).min(x1),
+                        (y0 + shrink).min(y1),
+                        x1.saturating_sub(shrink).max(x0),
+                        y1.saturating_sub(shrink).max(y0),
+                    );
+                }
+                (x1 > x0 && y1 > y0).then_some((x0, y0, x1 - x0, y1 - y0, fill, rw, rh)).or_else(|| self.source_window(dx, dy, dw, dh))
+            }
+            _ if stable_window => self.source_window(dx, dy, dw, dh),
+            _ => estimated,
+        };
         if let Some((x, y, w, h, _, rw, rh)) = win {
             (sx, sy, sw, sh, raw_w, raw_h) = (x, y, w, h, rw, rh);
         }
@@ -3108,6 +3184,47 @@ impl WarpContext<'_> {
         }
         if win.is_some() && sw > 0 && sh > 0 {
             out.push(Chunk { dx, dy, dw, dh, sx, sy, sw, sh, raw_w, raw_h });
+        }
+    }
+
+    /// After a chunk is warped from a guessed window (see `guessed`): `None` when the window held
+    /// every tap, else the chunk with its exact window, bounded pixel by pixel, to warp again.
+    fn exact_chunk(&self, c: &Chunk) -> Option<Chunk> {
+        if !self.missed.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
+        // An exact window holds every tap: warped from it, the chunk is not checked again.
+        let (sx, sy, sw, sh, _, raw_w, raw_h) = self.source_window(c.dx, c.dy, c.dw, c.dh)?;
+        let exact = Chunk { sx, sy, sw, sh, raw_w, raw_h, ..*c };
+        ((sx, sy, sw, sh) != (c.sx, c.sy, c.sw, c.sh) && sw > 0 && sh > 0).then_some(exact)
+    }
+
+    /// The source pixels `(x0, y0, x1, y1)` (end exclusive, not clipped to the source) that a
+    /// stable point kernel reads around source point `(x, y)`: `scale` is the pixel's kernel
+    /// scales, `None` for nearest. [`Self::source_window`] bounds a chunk's window with it, and
+    /// a guessed window is checked against it (see `guessed`).
+    #[inline(always)]
+    fn tap_box(&self, x: f64, y: f64, scale: Option<(f64, f64)>) -> (f64, f64, f64, f64) {
+        let Some((sx, sy)) = scale else {
+            // Sampling validates the unrounded centre, then selects its epsilon-rounded tap.
+            // Keep both when they straddle an integer.
+            return (x.floor(), y.floor(), (x + 1e-10).floor() + 1.0, (y + 1e-10).floor() + 1.0);
+        };
+        let four = matches!(self.resampling, Resampling::Bilinear | Resampling::Cubic)
+            && match self.kernel_version {
+                KernelVersion::Gdal312 => sx >= 0.95 && sy >= 0.95,
+                KernelVersion::Gdal313 => sx > 0.5 && sy > 0.5,
+            };
+        let (x, y) = ((x - 0.5).floor(), (y - 0.5).floor());
+        if four {
+            let before = if self.resampling == Resampling::Cubic { 1.0 } else { 0.0 };
+            (x - before, y - before, x + before + 2.0, y + before + 2.0)
+        } else {
+            let radius = self.resampling.radius() as f64;
+            let xr = (radius / sx.min(1.0)).ceil();
+            let yr = (radius / sy.min(1.0)).ceil();
+            let first = ((self.resampling.radius() + 1) % 2) as f64;
+            (x + first - xr, y + first - yr, x + xr + 1.0, y + yr + 1.0)
         }
     }
 
@@ -3251,29 +3368,7 @@ impl WarpContext<'_> {
                     else {
                         continue;
                     };
-                    if nearest {
-                        // Sampling validates the unrounded centre, then selects its
-                        // epsilon-rounded tap. Keep both when they straddle an integer.
-                        (x.floor(), y.floor(), (x + 1e-10).floor() + 1.0, (y + 1e-10).floor() + 1.0)
-                    } else {
-                        let (sx, sy) = scales.as_ref().unwrap()[i];
-                        let four = matches!(self.resampling, Resampling::Bilinear | Resampling::Cubic)
-                            && match self.kernel_version {
-                                KernelVersion::Gdal312 => sx >= 0.95 && sy >= 0.95,
-                                KernelVersion::Gdal313 => sx > 0.5 && sy > 0.5,
-                            };
-                        let (x, y) = ((x - 0.5).floor(), (y - 0.5).floor());
-                        if four {
-                            let before = if self.resampling == Resampling::Cubic { 1.0 } else { 0.0 };
-                            (x - before, y - before, x + before + 2.0, y + before + 2.0)
-                        } else {
-                            let radius = self.resampling.radius() as f64;
-                            let xr = (radius / sx.min(1.0)).ceil();
-                            let yr = (radius / sy.min(1.0)).ceil();
-                            let first = ((self.resampling.radius() + 1) % 2) as f64;
-                            (x + first - xr, y + first - yr, x + xr + 1.0, y + yr + 1.0)
-                        }
-                    }
+                    self.tap_box(x, y, (!nearest).then(|| scales.as_ref().unwrap()[i]))
                 };
                 x0 = x0.min(bounds.0);
                 y0 = y0.min(bounds.1);
@@ -4068,6 +4163,14 @@ impl WarpContext<'_> {
                     continue;
                 };
                 (xs[i], ys[i]) = (px, py);
+                if self.guessed {
+                    // Every tap inside the source must be in the guessed window.
+                    let b = self.tap_box(px, py, scales.as_ref().map(|s| s[i]));
+                    let (x0, y0, x1, y1) = (b.0.max(0.0), b.1.max(0.0), b.2.min(self.src_w as f64), b.3.min(self.src_h as f64));
+                    if x0 < x1 && y0 < y1 && (x0 < sxo || y0 < syo || x1 > sxo + sw || y1 > syo + sh) {
+                        self.missed.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
                 if px < sxo || py < syo || px + 1e-10 > sxo + sw || py + 1e-10 > syo + sh {
                     continue;
                 }
@@ -6139,6 +6242,8 @@ impl RegionWarp {
             translation: self.translation,
             memory_limit: f64::INFINITY,
             resident: false,
+            guessed: false,
+            missed: std::sync::atomic::AtomicBool::new(false),
             bands: self.src_nodata.len(),
             out_bits: self.out_type.size_bytes() * 8,
             source_bits: self.out_type.size_bytes() * self.src_nodata.len() * 8,
@@ -7189,6 +7294,50 @@ mod tests {
                 let (a, b) = (crate::open_raster(whole.to_str().unwrap()).unwrap(), crate::open_raster(out.to_str().unwrap()).unwrap());
                 assert_eq!((a.raster.cols, a.raster.rows, a.geo_transform()), (b.raster.cols, b.raster.rows, b.geo_transform()));
                 assert_eq!(a.raster.data.to_f64_vec(), b.raster.data.to_f64_vec(), "{resampling:?} {memory_limit} {ext}");
+            }
+        }
+    }
+
+    #[test]
+    fn guessed_windows_missing_taps_warp_again_from_exact_ones() {
+        // Reader paths guess each chunk's window from its edges; a chunk whose guess misses a tap
+        // is warped again from its exact window. Shrunk guesses miss on purpose: the output must
+        // still be the in-memory warp's, which needs no window.
+        let dir = tempfile::tempdir().unwrap();
+        let mut utm = raster(97, 83, [500000.0, 30.0, 0.0, 4000000.0, 0.0, -30.0], 32610, |c, r| ((c * 7 + r * 13) % 50) as f64 + 0.25);
+        utm.has_nodata = true;
+        utm.raster.set(0, 40, 30, -9999.0).unwrap();
+        // A regional lon/lat source near the pole, warped to polar stereographic: chunk edges
+        // bound their interiors poorly there.
+        let polar = raster(120, 40, [-30.0, 0.5, 0.0, 89.0, 0.0, -0.5], 4326, |c, r| ((c * 3 + r * 5) % 41) as f64 + 0.5);
+        for (name, ds, dst) in [("utm", &utm, "EPSG:32611"), ("polar", &polar, "EPSG:3413")] {
+            let input = dir.path().join(format!("{name}.tif"));
+            crate::write_raster_dataset(ds, input.to_str().unwrap(), &Default::default()).unwrap();
+            for resampling in [Resampling::Nearest, Resampling::Bilinear, Resampling::Cubic, Resampling::Lanczos] {
+                for kernel_version in [KernelVersion::Gdal312, KernelVersion::Gdal313] {
+                    let o = WarpOptions {
+                        dst_srs: Some(SpatialRef::parse(dst).unwrap()),
+                        resampling,
+                        kernel_version,
+                        memory_limit: 4000.0,
+                        output_type: Some(DataType::F64),
+                        ..Default::default()
+                    };
+                    let whole = warp(&[ds], &o).unwrap().raster.data.to_f64_vec();
+                    for shrink in [0, 3] {
+                        GUESS_SHRINK.with(|s| s.set(shrink));
+                        let mut lazy = crate::open_raster_lazy(input.to_str().unwrap()).unwrap();
+                        let lazily = warp_lazy(&mut lazy, &o).unwrap().raster.data.to_f64_vec();
+                        let out = dir.path().join(format!("{name}-out.tif"));
+                        let _ = std::fs::remove_file(&out);
+                        warp_to_path(&[input.to_str().unwrap().to_string()], &o, out.to_str().unwrap(), &Default::default()).unwrap();
+                        let written = crate::open_raster(out.to_str().unwrap()).unwrap().raster.data.to_f64_vec();
+                        GUESS_SHRINK.with(|s| s.set(0));
+                        let same = |a: &[f64], b: &[f64]| a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits());
+                        assert!(same(&whole, &lazily), "{name} {resampling:?} {kernel_version:?} shrink {shrink}: lazy");
+                        assert!(same(&whole, &written), "{name} {resampling:?} {kernel_version:?} shrink {shrink}: written");
+                    }
+                }
             }
         }
     }
