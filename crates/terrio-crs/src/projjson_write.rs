@@ -69,7 +69,10 @@ fn crs(s: &SpatialRef) -> Result<Value> {
     if let Some((h, v)) = crate::def::split_compound(&wkt) {
         // uncut: stored or built WKT
         let horizontal = crs(&SpatialRef::from_wkt_text(&h))?;
-        let code = wkt1::parse(&v).and_then(|n| n.epsg()).ok_or_else(|| unsupported("a vertical CRS without EPSG code"))?;
+        // Its EPSG code only when its unit and direction are the code's: not heights in feet as
+        // the code's metres.
+        let code =
+            crate::def::vertical_code(&v).ok_or_else(|| unsupported("a vertical CRS without an EPSG code of its unit and direction"))?;
         let name = wkt1::parse(&wkt).and_then(|n| n.name().map(str::to_string)).unwrap_or_else(|| "unknown".into());
         return Ok(with_id(
             json!({"type": "CompoundCRS", "name": name, "components": [horizontal, vertical(code)?]}),

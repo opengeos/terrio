@@ -1757,20 +1757,29 @@ pub(crate) fn split_compound(w: &str) -> Option<(String, String)> {
 /// The vertical CRS of a `VERT_CS` (or WKT 2 `VERTCRS`) definition: its EPSG code when it has
 /// one, else its unit and the geoid grids of GDAL's `PROJ4_GRIDS` extension.
 pub(crate) fn vertical_from_wkt(w: &str) -> Option<Vertical> {
-    let declared = super::declared_epsg(w);
+    let declared = vertical_code(w);
     if let Some(v) = declared.and_then(Vertical::from_epsg) {
         return Some(v);
     }
+    let (to_meter, down) = super::vertical_axis(w)?;
     let root = wkt1::parse(w)?;
-    let to_meter = root.child("UNIT").or_else(|| root.child("LENGTHUNIT")).and_then(|u| u.num(1)).unwrap_or(1.0);
     let grids = root.children("EXTENSION").find(|e| e.name() == Some("PROJ4_GRIDS")).and_then(|e| match e.args.get(1) {
         Some(wkt1::Arg::Str(s)) => Some(s.clone()),
         _ => None,
     });
     Some(match grids {
         Some(g) => Vertical::from_geoid_grids(&g, to_meter),
-        None => Vertical { code: declared, to_meter, down: false, models: Vec::new(), ballpark: true },
+        None => Vertical { code: declared, to_meter, down, models: Vec::new(), ballpark: true },
     })
+}
+
+/// The EPSG code a vertical CRS's WKT declares, when its unit and direction are the code's
+/// (heights in feet declaring EGM96 height in metres are not EGM96 height).
+pub(crate) fn vertical_code(w: &str) -> Option<u32> {
+    let code = super::declared_epsg(w)?;
+    let registered = Vertical::from_epsg(code)?;
+    let (to_meter, down) = super::vertical_axis(w)?;
+    ((to_meter - registered.to_meter).abs() <= 1e-9 * registered.to_meter && down == registered.down).then_some(code)
 }
 
 /// Whether a WKT is a WKT 2 `BOUNDCRS`.

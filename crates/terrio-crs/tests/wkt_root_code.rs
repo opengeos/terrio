@@ -32,7 +32,7 @@ fn read(case: &Value) -> (SpatialRef, terrio_crs::Result<(f64, f64)>) {
 #[test]
 fn a_wkt_is_read_by_its_nodes_not_its_root_code() {
     let cases = cases();
-    assert_eq!(cases.len(), 30);
+    assert_eq!(cases.len(), 31);
     for case in cases.iter().filter(|c| c["terrio"].is_null()) {
         let name = case["name"].as_str().unwrap();
         let (crs, got) = read(case);
@@ -85,4 +85,20 @@ fn an_unread_method_under_another_code_is_refused() {
         assert_eq!(crs.to_proj4(), None, "{name}");
         assert_ne!(crs.epsg, case["declared"].as_u64().map(|c| c as u32), "{name}");
     }
+}
+
+/// A compound CRS whose vertical CRS declares a code of another unit or direction (EGM96 height,
+/// EPSG:5773, in US survey feet or as depths) is not written as that code: PROJJSON refuses it
+/// rather than give its heights in metres up.
+#[test]
+fn a_vertical_crs_of_another_unit_is_not_written_as_its_code() {
+    let cases = cases();
+    for name in ["WGS 84 + EGM96 height in US survey feet declaring EPSG:9707", "WGS 84 + EGM96 depth declaring EPSG:9707"] {
+        let case = cases.iter().find(|c| c["name"] == name).unwrap();
+        let crs = SpatialRef::from_wkt(case["wkt"].as_str().unwrap());
+        assert!(crs.to_projjson().is_err(), "{name}: {:?}", crs.to_projjson());
+    }
+    let own = cases.iter().find(|c| c["name"] == "WGS 84 + EGM96 height with its own code").unwrap();
+    let json = SpatialRef::from_wkt(own["wkt"].as_str().unwrap()).to_projjson().unwrap();
+    assert!(json.contains("\"code\":5773"), "{json}");
 }

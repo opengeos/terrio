@@ -209,6 +209,11 @@ def main():
             (10.0, 50.0),
         ),
         (
+            "WGS 84 without a vertical CRS declaring EPSG:9707",
+            sub(CRS.from_epsg(4326).to_wkt("WKT1_GDAL"), '"4326"]]', '"9707"]]'),
+            (10.0, 50.0),
+        ),
+        (
             "NAD83(HARN) by name declaring NAD83",
             HARN,
             (-100.0, 40.0),
@@ -268,6 +273,7 @@ def main():
         "Web Mercator and EGM96 height declaring EPSG:9707": 9707,
         "WGS 84 + EGM96 height in US survey feet declaring EPSG:9707": 9707,
         "WGS 84 + EGM96 depth declaring EPSG:9707": 9707,
+        "WGS 84 without a vertical CRS declaring EPSG:9707": 9707,
         "NAD83(HARN) by name declaring NAD83": 4269,
         "an unknown method in a compound declaring EPSG:7405": 7405,
         "a local datum on GRS 1980 declaring ETRS89": 4258,

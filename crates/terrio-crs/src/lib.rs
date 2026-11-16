@@ -1722,6 +1722,10 @@ pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
     // The vertical CRS of a compound code is the code's: its vertical code when the WKT's has one,
     // its unit and direction (heights in feet or depths declaring a code in metres up are not
     // that code, whose heights terrio would give).
+    // Nor is a CRS without a vertical CRS a compound code (EPSG:9707's heights it has none of).
+    if compound.is_none() && theirs.vertical().is_some() {
+        return false;
+    }
     if let Some((_, v)) = &compound {
         let Some(their_vertical) = theirs.vertical() else { return false };
         if declared_epsg(v).is_some_and(|c| their_vertical.code.is_some_and(|t| t != c)) {
@@ -1828,7 +1832,7 @@ pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
 
 /// The metres per unit of a vertical CRS's WKT (`VERT_CS`, `VERTCRS`), from its `UNIT` or its
 /// axis's, and whether its axis points down (depths).
-fn vertical_axis(wkt: &str) -> Option<(f64, bool)> {
+pub(crate) fn vertical_axis(wkt: &str) -> Option<(f64, bool)> {
     let root = wkt1::parse(wkt)?;
     let axis = root.child("AXIS");
     let down = axis.is_some_and(|a| matches!(a.args.get(1), Some(wkt1::Arg::Ident(d)) if d.eq_ignore_ascii_case("down")));
