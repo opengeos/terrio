@@ -1202,6 +1202,32 @@ mod tests {
 
     /// Zstandard chunks decode (with the zstd C library natively with the `libzstd` feature, with
     /// `ruzstd` otherwise), whichever encoder wrote them.
+    /// Deflate chunks of three samples a pixel with the floating-point predictor, coded as libtiff
+    /// codes them: each row's samples split into byte planes, then differenced byte by byte with
+    /// a stride of the samples a pixel.
+    #[test]
+    fn deflate_with_the_floating_point_predictor_over_several_samples() {
+        let (w, h, spp) = (5, 4, 3);
+        let wc = w * spp;
+        let values: Vec<f32> = (0..wc * h).map(|i| (i as f32 * 0.73).cos() * 500.0).collect();
+        let mut coded = Vec::new();
+        for row in values.chunks(wc) {
+            let mut planes = vec![0u8; wc * 4];
+            for (i, v) in row.iter().enumerate() {
+                for (b, byte) in v.to_be_bytes().iter().enumerate() {
+                    planes[b * wc + i] = *byte;
+                }
+            }
+            for i in (spp..planes.len()).rev() {
+                planes[i] = planes[i].wrapping_sub(planes[i - spp]);
+            }
+            coded.extend(planes);
+        }
+        let c = ChunkCodec { codec: Codec::Deflate, sample: Sample::F32, spp, predictor: 3, big_endian: false, ..packed(8, spp) };
+        let DecodingResult::F32(out) = c.deflate(&zlib(&coded), w, h, w, h).unwrap() else { panic!("Float32 expected") };
+        assert_eq!(out, values);
+    }
+
     #[test]
     fn zstandard_chunks_decode_in_pure_rust() {
         let c = ChunkCodec { codec: Codec::Zstd, ..lzw(Sample::U16, 1, 2, false) };
