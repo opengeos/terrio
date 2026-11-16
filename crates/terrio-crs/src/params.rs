@@ -1,7 +1,13 @@
+// SPDX-FileCopyrightText: PROJ contributors
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   PROJ 9.8.1:
+//     src/dmstor.cpp (`dmstor_ctx`, in `dms`)
 // Written to match the behavior of:
 //   PROJ 9.8.1:
-//     src/param.cpp / src/dmstor.cpp
-// No code is translated from these sources.
+//     src/param.cpp
 
 //! The `+key=value` parameters of a PROJ string.
 
@@ -216,10 +222,13 @@ fn dms(s: &str, whole: bool) -> Option<f64> {
         negative = *c == '-';
         i = 1;
     }
-    // A number as `strtod` reads it: digits and a point, then an exponent only when digits follow.
+    // A number as `strtod` reads it: digits with one point, then an exponent only when digits
+    // follow (`40.5.2` is 40.5 and `.2`).
     let number = |i: &mut usize| -> Option<f64> {
         let start = *i;
-        while *i < chars.len() && (chars[*i].is_ascii_digit() || chars[*i] == '.') {
+        let mut point = false;
+        while *i < chars.len() && (chars[*i].is_ascii_digit() || (chars[*i] == '.' && !point)) {
+            point |= chars[*i] == '.';
             *i += 1;
         }
         if *i < chars.len() && matches!(chars[*i], 'e' | 'E') {
@@ -282,6 +291,10 @@ fn dms(s: &str, whole: bool) -> Option<f64> {
         return None;
     }
     let v = radians.map_or(degrees, f64::to_degrees);
+    // An overflow (`1e400`) is PROJ's `HUGE_VAL`, an error.
+    if !v.is_finite() {
+        return None;
+    }
     Some(if negative { -v } else { v })
 }
 
@@ -291,11 +304,11 @@ mod tests {
     fn a_hemisphere_letter_gives_the_sign_over_a_minus() {
         // As PROJ 9.8.1 reads them (`+lat_0=-52.5S` is -52.5, `-52.5N` 52.5).
         let near = |s: &str, v: f64| (super::parse_dms(s).unwrap() - v).abs() < 1e-12;
-        let dms = 52.0 + 30.0 / 60.0 + 10.0 / 3600.0;
+        let seconds = 52.0 + 30.0 / 60.0 + 10.0 / 3600.0;
         for (s, v) in [("-52.5S", -52.5), ("-52.5N", 52.5), ("52.5S", -52.5), ("-52.5", -52.5), ("-5W", -5.0), ("-5E", 5.0)] {
             assert!(near(s, v), "{s}");
         }
-        for (s, v) in [("-52d30'10\"S", -dms), ("-52d30'10\"N", dms), ("52d30'10\"S", -dms), ("-52d30'10\"", -dms)] {
+        for (s, v) in [("-52d30'10\"S", -seconds), ("-52d30'10\"N", seconds), ("52d30'10\"S", -seconds), ("-52d30'10\"", -seconds)] {
             assert!(near(s, v), "{s}");
         }
     }

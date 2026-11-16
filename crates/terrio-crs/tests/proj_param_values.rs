@@ -33,8 +33,9 @@ fn unchecked_parameters_have_proj_accepted_fixture_rows() {
 /// Where terrio and PROJ still differ:
 /// - the parameters every method reads: `lat_0`, `lon_0`, `x_0` and `y_0` are refused when
 ///   unreadable for the methods PROJ's CRS parser maps them for (`Def`'s `proj_maps_origin`), but
-///   a value that starts with a number (`+x_0=0.5r`, a scale factor of `0.5r`) is still read as
-///   absent where PROJ refuses it; likewise `+f`, `+es` and `+e` without `+a`, which PROJ
+///   for the methods PROJ does not map them for (`healpix`, `fouc_s`, `isea`, `ups`), a value
+///   that starts with a number (`+x_0=0.5r`, a scale factor of `0.5r`) is still read as absent
+///   where PROJ refuses it; likewise `+f`, `+es` and `+e` without `+a`, which PROJ
 ///   ignores when unreadable but for `etmerc`, `utm` and `ups`;
 /// - checks of terrio's own for methods PROJ keeps as PROJ strings (`isea`, `murd2`, `tissot`,
 ///   `tpers`), and of a geocentric CRS's ellipsoid, which refuse an unreadable value PROJ ignores;

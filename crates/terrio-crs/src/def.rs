@@ -621,9 +621,10 @@ impl Def {
         }
         let name = p.str("proj").ok_or_else(|| Error::Crs(format!("no +proj in '{s}'")))?;
         let datum_name = p.str("datum");
-        // Names PROJ 9.8.1 does not know are refused, as it refuses them, not read as a default:
-        // `+ellps=foo` is not WGS 84, nor `+units=feet` metres. Its names, as written (`wgs84`,
-        // `meter` and `M` are none of them), whatever else the string gives (`+to_meter`).
+        // Names PROJ 9.8.1 does not know are refused, as it refuses them, in a WKT's `PROJ4`
+        // extension too, rather than read as a default: `+ellps=foo` is not WGS 84, nor
+        // `+units=feet` metres. Names are compared as written, so `wgs84`, `meter` and `M` are
+        // unknown, and a `+to_meter` beside an unknown `+units` does not help.
         // Not with `+R`, which PROJ reads instead of `+ellps`.
         if let Some(e) = p.str("ellps").filter(|e| Ell::named(e).is_none() && !p.has("R")) {
             return Err(Error::Crs(format!("unknown ellipsoid {e} in '{s}'")));
@@ -636,21 +637,25 @@ impl Def {
                 return Err(Error::Crs(format!("invalid value for {key} ({u}) in '{s}'")));
             }
         }
-        // `+lat_0`, `+lon_0`, `+x_0` and `+y_0` that are not numbers (or angles) are refused for
-        // the methods PROJ 9.8.1's CRS parser maps them for, ignored for the others
-        // (`+proj=tmerc +lat_0=abc` is refused, `+proj=robin +lat_0=abc` read without it).
-        // Not in a WKT's `PROJ4` extension, which PROJ takes as it is.
-        for key in ["lat_0", "lon_0", "x_0", "y_0"].into_iter().filter(|_| !extension) {
-            let unreadable = p.str(key).is_some_and(|v| match key {
-                "lat_0" | "lon_0" => parse_dms(v).is_none(),
-                _ => v.trim().parse::<f64>().is_err(),
-            });
-            if unreadable && proj_maps_origin(name, key) {
-                return Err(Error::Crs(format!("invalid value for {key} in '{s}'")));
+        // `+lat_0`, `+lon_0`, `+x_0` and `+y_0` that are not finite numbers (or angles) are
+        // refused for the methods PROJ 9.8.1's CRS parser maps them for, and ignored for the
+        // others: `+proj=tmerc +lat_0=abc` is refused, `+proj=robin +lat_0=abc` read without it.
+        // A WKT's `PROJ4` extension is not checked, as PROJ takes it as it is.
+        if !extension {
+            for key in ["lat_0", "lon_0", "x_0", "y_0"] {
+                let unreadable = p.str(key).is_some_and(|v| match key {
+                    "lat_0" | "lon_0" => parse_dms(v).is_none(),
+                    _ => v.trim().parse::<f64>().ok().is_none_or(|v| !v.is_finite()),
+                });
+                if unreadable && proj_maps_origin(name, key) {
+                    return Err(Error::Crs(format!("invalid value for {key} in '{s}'")));
+                }
             }
         }
-        // A vertical unit by `+vto_meter` only without `+vunits`, a positive number.
-        if !p.has("vunits") && p.has("vto_meter") && p.f64("vto_meter").is_none_or(|v| !v.is_finite() || v <= 0.0) {
+        // Without `+vunits`, `+vto_meter` gives the vertical unit and must be a positive number.
+        // A WKT's `PROJ4` extension may give it as a fraction (`1200/3937`), as PROJ's pipeline
+        // reads it; its CRS parser refuses one.
+        if !p.has("vunits") && p.has("vto_meter") && vto_meter(p, extension).is_none() {
             return Err(Error::Crs(format!("invalid value for vto_meter in '{s}'")));
         }
         if name == "geocent" {
@@ -942,11 +947,11 @@ impl Def {
         if let Some(g) = p.str("geoidgrids") {
             // `+vunits` first, then a positive `+vto_meter`, as PROJ reads them.
             let vunits = p.str("vunits").and_then(unit_to_meter);
-            let vto_meter = p.str("vto_meter").map(|v| v.parse::<f64>().ok().filter(|v| v.is_finite() && *v > 0.0));
-            if vunits.is_none() && p.has("vto_meter") && vto_meter.flatten().is_none() {
+            let vto_meter = vto_meter(p, extension);
+            if vunits.is_none() && p.has("vto_meter") && vto_meter.is_none() {
                 return Err(Error::Crs(format!("invalid value for vto_meter in '{s}'")));
             }
-            let to_meter = vunits.or(vto_meter.flatten()).unwrap_or(1.0);
+            let to_meter = vunits.or(vto_meter).unwrap_or(1.0);
             d.vertical = Some(Arc::new(Vertical::from_geoid_grids(g, to_meter)));
         }
         Ok(d)
@@ -1928,6 +1933,17 @@ fn wkt_towgs84(w: &str) -> Option<Vec<f64>> {
     let t = geogcs.child("DATUM")?.child("TOWGS84")?;
     let v: Vec<f64> = (0..t.args.len()).filter_map(|i| t.num(i)).collect();
     (v.len() == 3 || v.len() == 7).then_some(v)
+}
+
+/// A PROJ string's `+vto_meter`, a positive number: a fraction (`1200/3937`) only in a WKT's
+/// `PROJ4` extension, as PROJ 9.8.1's pipeline reads it (its CRS parser refuses one).
+fn vto_meter(p: &Params, extension: bool) -> Option<f64> {
+    let v = p.str("vto_meter")?.trim();
+    let value = match v.split_once('/').filter(|_| extension) {
+        Some((n, d)) => n.trim().parse::<f64>().ok()? / d.trim().parse::<f64>().ok()?,
+        None => v.parse::<f64>().ok()?,
+    };
+    (value.is_finite() && value > 0.0).then_some(value)
 }
 
 /// Whether PROJ 9.8.1 maps a PROJ string's `+lat_0`, `+lon_0`, `+x_0` or `+y_0` into the CRS of a

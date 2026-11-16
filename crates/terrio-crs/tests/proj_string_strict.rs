@@ -24,7 +24,7 @@ fn assert_places(proj: &str, expected: Option<(f64, f64)>) {
 fn angles_are_read_as_proj_reads_them() {
     let north = Some((78_846.842, 500_382.189));
     let south = Some((78_846.842, 9_470_479.692));
-    let cases: [(&str, Option<(f64, f64)>); 24] = [
+    let cases: [(&str, Option<(f64, f64)>); 27] = [
         ("40.5", north),
         ("40d30", north),
         ("40D30", north),
@@ -49,6 +49,9 @@ fn angles_are_read_as_proj_reads_them() {
         ("9d-30", None),
         ("40d30x", None),
         ("40.5NS", None),
+        ("40.5.2", None),
+        ("nan", None),
+        ("inf", None),
     ];
     for (angle, expected) in cases {
         assert_places(&format!("+proj=tmerc +lat_0={angle} +lon_0=9 +ellps=GRS80"), expected);
@@ -84,8 +87,15 @@ fn names_proj_does_not_know_are_refused() {
         ("+ellps=GRS80 +vto_meter=0.3048", utm),
         ("+ellps=GRS80 +vto_meter=abc", None),
         ("+ellps=GRS80 +vto_meter=-1", None),
+        // A fraction is a pipeline step's (a WKT's `PROJ4` extension), not a CRS's.
+        ("+ellps=GRS80 +vto_meter=1200/3937", None),
     ] {
         assert_places(&format!("{tmerc} {rest}"), expected);
+    }
+    // A false easting or northing that is not a finite number.
+    for value in ["nan", "inf"] {
+        assert_places(&format!("+proj=tmerc +lat_0=0 +lon_0=9 +x_0={value} +ellps=GRS80"), None);
+        assert_places(&format!("+proj=tmerc +lat_0=0 +lon_0=9 +y_0={value} +ellps=GRS80"), None);
     }
     for proj in [
         "+proj=longlat +ellps=foo",
@@ -94,13 +104,14 @@ fn names_proj_does_not_know_are_refused() {
         "+proj=longlat +ellps=intl +units=foo",
         "+proj=geocent +ellps=foo",
     ] {
-        assert!(SpatialRef::from_proj4(proj).is_err() || place(proj).is_none(), "{proj}");
+        assert!(SpatialRef::from_proj4(proj).is_err(), "{proj}");
     }
 }
 
 /// A WKT's `PROJ4` extension is read as PROJ 9.8.1 reads it, as a pipeline step: values it cannot
 /// read are not refused (`+lat_0=abc` is 0, `+x_0=abc` 0), and an angle is read by its longest
-/// readable start (`9d-30` is 9°, `40.5NS` 40.5°). PROJ's points from WGS 84 (10, 45).
+/// readable start (`9d-30` is 9°, `40.5NS` 40.5°). Names PROJ does not know are refused, as by PROJ.
+/// PROJ's points from WGS 84 (10, 45).
 #[test]
 fn a_wkt_proj4_extension_is_read_as_a_pipeline_step() {
     let wkt = |ext: &str| {
@@ -114,9 +125,24 @@ fn a_wkt_proj4_extension_is_read_as_a_pipeline_step() {
         ("+proj=tmerc +lat_0=9d-30 +lon_0=9 +ellps=GRS80", (78_846.841_654_020_22, 3_990_180.663_242_629)),
         ("+proj=tmerc +lat_0=0 +lon_0=40.5NS +ellps=GRS80", (-2_399_800.421_768_027_4, 5_459_095.433_999_421)),
         ("+proj=tmerc +lat_0=0 +lon_0=9 +x_0=abc +ellps=GRS80", (78_846.841_654_020_22, 4_985_430.940_605_843)),
+        // A second point ends the number (40.5); a fraction is a vertical unit's size.
+        ("+proj=tmerc +lat_0=40.5.2 +lon_0=9 +ellps=GRS80", (78_846.841_654_020_22, 500_382.189)),
+        ("+proj=tmerc +lat_0=0 +lon_0=9 +ellps=GRS80 +vto_meter=1200/3937", (78_846.841_654_020_22, 4_985_430.940_605_843)),
     ] {
         let (x, y) = Transformer::new(&wgs84, &SpatialRef::from_wkt(&wkt(ext))).unwrap().transform(10.0, 45.0).unwrap();
         assert!((x - px).abs() < 1e-3 && (y - py).abs() < 1e-3, "{ext}: ({x}, {y}), PROJ ({px}, {py})");
+    }
+    // Names PROJ does not know are refused there too, as is a vertical unit size that is not
+    // positive.
+    for ext in [
+        "+proj=tmerc +lat_0=0 +lon_0=9 +ellps=foo",
+        "+proj=tmerc +lat_0=0 +lon_0=9 +ellps=GRS80 +datum=foo",
+        "+proj=tmerc +lat_0=0 +lon_0=9 +ellps=GRS80 +units=feet",
+        "+proj=tmerc +lat_0=0 +lon_0=9 +ellps=GRS80 +vunits=foo",
+        "+proj=tmerc +lat_0=0 +lon_0=9 +ellps=GRS80 +vto_meter=-1",
+    ] {
+        let placed = Transformer::new(&wgs84, &SpatialRef::from_wkt(&wkt(ext))).and_then(|t| t.transform(10.0, 45.0));
+        assert!(placed.is_err(), "{ext}: {placed:?}");
     }
 }
 
@@ -127,4 +153,25 @@ fn an_unknown_ellipsoid_beside_a_sphere_radius_is_ignored() {
     assert_places("+proj=tmerc +lon_0=9 +R=6378137 +ellps=foo", Some((78_714.767, 5_009_862.833)));
     assert_places("+proj=merc +R=6378137 +ellps=wgs84", Some((1_113_194.908, 5_621_521.486)));
     assert_places("+proj=tmerc +lon_0=9 +a=6378137 +ellps=foo", None);
+}
+
+/// An angle that overflows (`1e400`) is not an angle, as PROJ 9.8.1's `dmstor` gives `HUGE_VAL`
+/// ("Invalid value for lat_0"). A `PROJ4` extension's `+vto_meter` fraction is read beside
+/// `+geoidgrids` too, and a negative one refused there, as PROJ's pipeline does (an optional grid,
+/// `@egm96_15.gtx`, so that the string reads without it): WGS 84 (10, 45) is
+/// (78846.84165402022, 4985430.940605843).
+#[test]
+fn an_overflowing_angle_is_refused_and_a_fraction_reads_beside_a_geoid() {
+    assert_places("+proj=tmerc +lat_0=1e400 +lon_0=9 +ellps=GRS80", None);
+    let wkt = |v: &str| {
+        format!(
+            r#"PROJCS["x",GEOGCS["GRS 1980",DATUM["unknown",SPHEROID["GRS80",6378137,298.257222101]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",9],PARAMETER["scale_factor",1],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1],EXTENSION["PROJ4","+proj=tmerc +lat_0=0 +lon_0=9 +ellps=GRS80 +geoidgrids=@egm96_15.gtx +vto_meter={v}"]]"#
+        )
+    };
+    let place = |v: &str| {
+        Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &SpatialRef::from_wkt(&wkt(v))).and_then(|t| t.transform(10.0, 45.0))
+    };
+    let (x, y) = place("1200/3937").unwrap();
+    assert!((x - 78_846.841_654_020_22).abs() < 1e-3 && (y - 4_985_430.940_605_843).abs() < 1e-3, "({x}, {y})");
+    assert!(place("-1").is_err());
 }

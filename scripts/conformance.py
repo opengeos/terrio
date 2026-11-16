@@ -2791,16 +2791,20 @@ PROJ_CASES = {
     },
     "proj_string_strict": {
         "angles_are_read_as_proj_reads_them": (
-            "PROJ-string angles: D, °, implied minutes and seconds, radians with a hemisphere, trailing text (26 cases)", TOLERANCE,
+            "PROJ-string angles: D, °, implied minutes and seconds, radians with a hemisphere, trailing text (29 cases)", TOLERANCE,
             "PROJ 9.8.1 (pyproj 3.8.0): within 1 mm, or refused as PROJ refuses",
         ),
         "names_proj_does_not_know_are_refused": (
-            "Unknown ellipsoid, datum, units and vunits names, and vto_meter values (23 cases)", TOLERANCE,
+            "Unknown ellipsoid, datum, units and vunits names, and vto_meter values, false origins of nan or inf (28 cases)", TOLERANCE,
             "PROJ 9.8.1 (pyproj 3.8.0): within 1 mm, or refused as PROJ refuses",
         ),
         "a_wkt_proj4_extension_is_read_as_a_pipeline_step": (
-            "WKT PROJ4 extensions with unreadable values or angle prefixes (4 cases)", TOLERANCE,
+            "WKT PROJ4 extensions with unreadable values, angle prefixes, fractions and unknown names (11 cases)", TOLERANCE,
             "PROJ 9.8.1 (pyproj 3.8.0): within 1 mm",
+        ),
+        "an_overflowing_angle_is_refused_and_a_fraction_reads_beside_a_geoid": (
+            "An angle of 1e400, and a PROJ4 extension's vto_meter fraction or negative value with geoidgrids (3 cases)", TOLERANCE,
+            "PROJ 9.8.1 (pyproj 3.8.0): 1e400 and -1 refused; the fraction read, within 1 mm",
         ),
         "an_unknown_ellipsoid_beside_a_sphere_radius_is_ignored": (
             "+ellps beside +R, refused beside +a (3 cases)", TOLERANCE,
