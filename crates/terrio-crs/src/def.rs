@@ -606,7 +606,7 @@ impl Def {
     /// eccentricity. An ellipsoid the step refuses (`+rf=abc` or `+rf=0`, read as 0, `+es=1`, a
     /// shape without a size) is refused, as PROJ refuses to transform with it.
     pub fn from_proj_extension(s: &str) -> Result<Self> {
-        Self::from_params(s, &Params::parse(s), true)
+        Self::from_params(s, &Params::parse_extension(s), true)
     }
 
     /// [`Self::from_proj`] of parsed parameters.
@@ -621,6 +621,38 @@ impl Def {
         }
         let name = p.str("proj").ok_or_else(|| Error::Crs(format!("no +proj in '{s}'")))?;
         let datum_name = p.str("datum");
+        // Names PROJ 9.8.1 does not know are refused, as it refuses them, not read as a default:
+        // `+ellps=foo` is not WGS 84, nor `+units=feet` metres. Its names, as written (`wgs84`,
+        // `meter` and `M` are none of them), whatever else the string gives (`+to_meter`).
+        // Not with `+R`, which PROJ reads instead of `+ellps`.
+        if let Some(e) = p.str("ellps").filter(|e| Ell::named(e).is_none() && !p.has("R")) {
+            return Err(Error::Crs(format!("unknown ellipsoid {e} in '{s}'")));
+        }
+        if let Some(d) = datum_name.filter(|d| datum_ellps(d).is_none()) {
+            return Err(Error::Crs(format!("unknown datum {d} in '{s}'")));
+        }
+        for key in ["units", "vunits"] {
+            if let Some(u) = p.str(key).filter(|u| unit_to_meter(u).is_none()) {
+                return Err(Error::Crs(format!("invalid value for {key} ({u}) in '{s}'")));
+            }
+        }
+        // `+lat_0`, `+lon_0`, `+x_0` and `+y_0` that are not numbers (or angles) are refused for
+        // the methods PROJ 9.8.1's CRS parser maps them for, ignored for the others
+        // (`+proj=tmerc +lat_0=abc` is refused, `+proj=robin +lat_0=abc` read without it).
+        // Not in a WKT's `PROJ4` extension, which PROJ takes as it is.
+        for key in ["lat_0", "lon_0", "x_0", "y_0"].into_iter().filter(|_| !extension) {
+            let unreadable = p.str(key).is_some_and(|v| match key {
+                "lat_0" | "lon_0" => parse_dms(v).is_none(),
+                _ => v.trim().parse::<f64>().is_err(),
+            });
+            if unreadable && proj_maps_origin(name, key) {
+                return Err(Error::Crs(format!("invalid value for {key} in '{s}'")));
+            }
+        }
+        // A vertical unit by `+vto_meter` only without `+vunits`, a positive number.
+        if !p.has("vunits") && p.has("vto_meter") && p.f64("vto_meter").is_none_or(|v| !v.is_finite() || v <= 0.0) {
+            return Err(Error::Crs(format!("invalid value for vto_meter in '{s}'")));
+        }
         if name == "geocent" {
             for key in ["a", "b", "rf", "f", "es", "e", "R"] {
                 if p.has(key) && p.f64(key).is_none_or(|v| !v.is_finite()) {
@@ -1894,6 +1926,48 @@ fn wkt_towgs84(w: &str) -> Option<Vec<f64>> {
     let t = geogcs.child("DATUM")?.child("TOWGS84")?;
     let v: Vec<f64> = (0..t.args.len()).filter_map(|i| t.num(i)).collect();
     (v.len() == 3 || v.len() == 7).then_some(v)
+}
+
+/// Whether PROJ 9.8.1 maps a PROJ string's `+lat_0`, `+lon_0`, `+x_0` or `+y_0` into the CRS of a
+/// method, and so refuses a value that is not a number: as probed with pyproj 3.8.0
+/// (`CRS("+proj=<method> ... +<key>=abc")` refused where the same string without it is read),
+/// and Laborde by `data/proj_param_values.tsv`.
+fn proj_maps_origin(method: &str, key: &str) -> bool {
+    const ALL: [&str; 24] = [
+        "aea",
+        "aeqd",
+        "cass",
+        "col_urban",
+        "eqc",
+        "eqdc",
+        "etmerc",
+        "gnom",
+        "gstmerc",
+        "krovak",
+        "labrd",
+        "laea",
+        "lcc",
+        "mod_krovak",
+        "nsper",
+        "nzmg",
+        "ortho",
+        "poly",
+        "qsc",
+        "somerc",
+        "stere",
+        "sterea",
+        "tmerc",
+        "webmerc",
+    ];
+    // Methods without a latitude of origin.
+    const NO_LATITUDE: [&str; 19] = [
+        "bonne", "cea", "eck4", "eqearth", "gall", "geos", "igh", "merc", "mill", "moll", "natearth", "robin", "sinu", "vandg", "wag4",
+        "wag5", "wink1", "wink2", "wintri",
+    ];
+    ALL.contains(&method)
+        || (NO_LATITUDE.contains(&method) && key != "lat_0")
+        // Hotine's longitude is `+lonc`.
+        || (method == "omerc" && key != "lon_0")
 }
 
 /// The `GEOGCS[...]` part of a WKT 1 definition.
