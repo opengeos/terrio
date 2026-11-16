@@ -225,6 +225,10 @@ fn lzw_bytes(raw: &[u8], limit: usize) -> Option<Vec<u8>> {
     const EOI: usize = 257;
     // Room past the string being written: the longest string (under 4096 bytes) and a 16-byte copy.
     const ROOM: usize = 4096 + 16;
+    // The table's offsets are 32-bit: larger chunks are left to `weezl`.
+    if limit > u32::MAX as usize - ROOM {
+        return None;
+    }
     let mut out: Vec<u8> = Vec::new();
     // Codes 258 and up: (start, length) in `out`.
     let mut table = vec![(0u32, 0u32); 4096];
@@ -306,6 +310,7 @@ fn lzw_bytes(raw: &[u8], limit: usize) -> Option<Vec<u8>> {
 /// dst`). Up to 16 bytes are copied as 16, the bytes past `len` to be overwritten.
 #[inline(always)]
 fn copy_earlier(out: &mut [u8], src: usize, len: usize, dst: usize) {
+    debug_assert!(src + len <= dst && dst + len.max(16) <= out.len());
     if len <= 16 {
         let b: [u8; 16] = out[src..src + 16].try_into().unwrap();
         out[dst..dst + 16].copy_from_slice(&b);
@@ -1353,6 +1358,8 @@ mod tests {
             vec![1, 2, 3],
             vec![],
         ];
+        // Chunks past the table's 32-bit offsets are left to `weezl`.
+        assert_eq!(lzw_bytes(&lzw_encode(&[1, 2]), u32::MAX as usize), None);
         for data in &inputs {
             let raw = lzw_encode(data);
             assert_eq!(lzw_bytes(&raw, data.len()).as_deref(), Some(&data[..]));
