@@ -275,8 +275,8 @@ when the WKT's content is that CRS: the same conversion, units and axes included
 ellipsoid and datum, and of the same kind. The datum is compared by its EPSG code, from the WKT's
 `AUTHORITY` or `ID` or as its name identifies it, else by name: ETRS89 declaring NAD83 is not NAD83,
 and a datum terrio does not know is not the code's unless named as it or `unknown`, PROJ's
-placeholder. A geocentric WKT is not a geographic code, nor a geographic 2D WKT a 3D code (a WKT 1
-without `AXIS` nodes, as Esri writes it, may be either). A vertical or engineering CRS keeps its
+placeholder. A geocentric WKT is not a geographic code, nor a geographic 2D WKT 2 a 3D code (a WKT 1
+`GEOGCS` may be either, as in PROJ). A vertical or engineering CRS keeps its
 code. Otherwise the WKT is read and identified by its content, as PROJ 9.8.1 reads it: a projected
 CRS declaring a geographic code, a code that does not exist, or a 2D CRS in degrees declaring a
 compound code in grads is not that code. When terrio cannot read the content (a method only the

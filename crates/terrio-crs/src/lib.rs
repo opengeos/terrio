@@ -1535,8 +1535,9 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
         if declared_fits(wkt, code) {
             return Some(code);
         }
-        // Content terrio cannot read (an unknown method) is not identified loosely either: it
-        // stays unusable, as in PROJ.
+        // Content terrio cannot read (an unknown method, or a CRS without a conversion such as
+        // PROJ's simplified WKT 2 of a geocentric CRS) is not identified loosely without the
+        // code: no code, as PROJ identifies none for those.
         Def::wkt_conversion(wkt)?;
         return strip_root_code(wkt).and_then(|w| identify_epsg(&w));
     }
@@ -1677,7 +1678,8 @@ fn spherical_extension(wkt: &str, proj: &str) -> String {
     let proj =
         format!("{} +no_defs", proj.split_whitespace().filter(|p| *p != "+no_defs" && *p != "+type=crs").collect::<Vec<_>>().join(" "));
     // Before the root's code, as GDAL writes it.
-    let at = wkt.rfind(",AUTHORITY[").filter(|i| !wkt[*i..].trim_end_matches(']').contains("],")).unwrap_or(wkt.len() - 1);
+    // The root's own `AUTHORITY`: its last child, closed with the root (`...]]`), not a child's.
+    let at = wkt.rfind(",AUTHORITY[").filter(|i| wkt[*i..].matches(']').count() == 2).unwrap_or(wkt.len() - 1);
     format!("{},EXTENSION[\"PROJ4\",\"{proj}\"]{}", &wkt[..at], &wkt[at..])
 }
 
@@ -1742,11 +1744,15 @@ pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
     // either): a local datum declaring ETRS89 would get ETRS89's transformations.
     // PROJ 9.8.1's placeholder `unknown` (`D_unknown`), spelt so, matches any datum.
     let placeholder = own_name.as_deref().is_some_and(|n| n.strip_prefix("D_").unwrap_or(n) == "unknown");
-    let unknown = named_datums.is_empty() && own_others.is_empty() && own_name.is_some() && !placeholder;
+    // A named datum terrio has no CRS on (Greenland 1996's 6747 and 1421) is compared too.
+    let unknown = own_datums.is_empty() && own_others.is_empty() && own_name.is_some() && !placeholder;
     if (!own_datums.is_empty() || unknown)
         && !their_datums.is_empty()
-        && !own_datums.iter().any(|d| their_datums.contains(d) || their_others.contains(d))
+        && !own_datums.iter().chain(&named_datums).any(|d| their_datums.contains(d) || their_others.contains(d))
         && !their_datums.iter().any(|d| own_others.contains(d))
+        // Datums PROJ's database gives a name in common (`GR96` for Greenland 1996, 6747, and its
+        // ensemble, 1421).
+        && !named_datums.iter().any(|d| their_datums.iter().any(|t| epsg::datums_share_a_name(*d, *t)))
         && !same_name()
     {
         return false;
@@ -1795,24 +1801,15 @@ pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
     }
 }
 
-/// Whether a geographic CRS's WKT is 3D, by its `CS` dimension or its `AXIS` nodes; `None` when
-/// it is not geographic or gives no axes (Esri's WKT 1 of a 3D CRS has none).
+/// Whether a WKT 2 geographic CRS is 3D, by its `CS` dimension; `None` when it is not one. A
+/// WKT 1 `GEOGCS` is either, as PROJ 9.8.1 keeps EPSG:4909 (GR96 3D) declared by one with two
+/// axes, and Esri's WKT 1 of a 3D CRS has none.
 fn geographic_dimension_3d(wkt: &str) -> Option<bool> {
     let root = wkt1::parse(wkt)?;
-    let cs = root.child("CS");
-    let ellipsoidal = cs.is_some_and(|c| matches!(c.args.first(), Some(wkt1::Arg::Ident(t)) if t.eq_ignore_ascii_case("ellipsoidal")));
-    let geographic = ["GEOGCS", "GEOGCRS", "GEOGRAPHICCRS"].iter().any(|k| root.key.eq_ignore_ascii_case(k))
-        || (["GEODCRS", "GEODETICCRS"].iter().any(|k| root.key.eq_ignore_ascii_case(k)) && ellipsoidal);
-    if !geographic {
-        return None;
-    }
-    match cs.and_then(|c| c.num(1)) {
-        Some(n) => Some(n == 3.0),
-        None => match root.children("AXIS").count() {
-            0 => None,
-            n => Some(n == 3),
-        },
-    }
+    let cs = root.child("CS")?;
+    let ellipsoidal = matches!(cs.args.first(), Some(wkt1::Arg::Ident(t)) if t.eq_ignore_ascii_case("ellipsoidal"));
+    let geodetic = ["GEOGCRS", "GEOGRAPHICCRS", "GEODCRS", "GEODETICCRS"].iter().any(|k| root.key.eq_ignore_ascii_case(k));
+    (geodetic && ellipsoidal).then(|| cs.num(1) == Some(3.0))
 }
 
 /// A WKT definition without the code its root declares (see [`declared_epsg`]).

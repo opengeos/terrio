@@ -59,3 +59,27 @@ fn south_orientated_transverse_mercator_subtracts_its_offsets() {
         assert!((got.0 - want.0).abs() < 1e-3 && (got.1 - want.1).abs() < 1e-3, "{form}, GeoKeys: {got:?}, {want:?}");
     }
 }
+
+/// A WKT 1 with a north-east CS, read south then west (`+axis=swu`), subtracts the offsets alike:
+/// (S, W) = (FN - y, FE - x).
+#[test]
+fn south_orientated_offsets_with_a_north_east_wkt1() {
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    let (fe, fn_) = (1000.0, 2000.0);
+    let wkt1 = |fe: f64, fn_: f64| {
+        format!(
+            r#"PROJCS["Lo19",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Transverse_Mercator_South_Orientated"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",19],PARAMETER["scale_factor",1],PARAMETER["false_easting",{fe}],PARAMETER["false_northing",{fn_}],UNIT["metre",1],AXIS["Northing",NORTH],AXIS["Easting",EAST]]"#
+        )
+    };
+    let plain = Transformer::new(&wgs84, &SpatialRef::from_wkt(&wkt1(0.0, 0.0))).unwrap();
+    // Southing first: about 3753 km, then a westing of about 46 km.
+    let (s, w) = plain.transform(18.5, -33.9).unwrap();
+    assert!((s - 3_752_681.8).abs() < 1.0 && (w - 46_246.7).abs() < 1.0, "({s}, {w})");
+    let t = Transformer::new(&wgs84, &SpatialRef::from_wkt(&wkt1(fe, fn_))).unwrap();
+    for (lon, lat) in [(19.0, 0.0), (18.5, -33.9), (20.2, -30.1)] {
+        let (s, w) = plain.transform(lon, lat).unwrap();
+        let got = t.transform(lon, lat).unwrap();
+        let want = (fn_ + s, fe + w);
+        assert!((got.0 - want.0).abs() < 1e-3 && (got.1 - want.1).abs() < 1e-3, "({lon}, {lat}): {got:?}, {want:?}");
+    }
+}

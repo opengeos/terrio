@@ -596,6 +596,12 @@ pub(crate) fn datum_name(code: u32) -> Option<String> {
     datum_names().2.get(&code).map(|n| n.strip_suffix(" ensemble").unwrap_or(n).to_string())
 }
 
+/// Whether two EPSG datums have a name or alias in common in PROJ's database (`GR96` for
+/// Greenland 1996 and its ensemble).
+pub(crate) fn datums_share_a_name(a: u32, b: u32) -> bool {
+    a == b || datum_names().0.values().any(|(_, c)| c.contains(&a) && c.contains(&b))
+}
+
 /// The other EPSG datums whose CRSs ESRI writes with a datum name: ETRS89-NOR for
 /// `D_ETRS_1989` (ETRS89-NOR [EUREF89] / NTM zone 18, EPSG:5118), S-JTSK (Ferro) for `D_S_JTSK`.
 pub(crate) fn datums_written_as(name: &str) -> &'static [u32] {

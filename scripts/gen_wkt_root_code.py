@@ -54,6 +54,13 @@ def lo19(code):
     return relabel(CRS.from_epsg(2048).to_wkt(), 2048, code)
 
 
+def greenland(code):
+    """EPSG:4747's WKT 1 with its datum by name only, declaring `code`."""
+    wkt = CRS.from_epsg(4747).to_wkt("WKT1_GDAL")
+    wkt = wkt.replace(',AUTHORITY["EPSG","1421"]', "")
+    return wkt.replace('AUTHORITY["EPSG","4747"]]', f'AUTHORITY["EPSG","{code}"]]')
+
+
 LOCAL_GRS80 = (
     'GEOGCS["x",DATUM["My_Local_Datum",SPHEROID["GRS 1980",6378137,298.257222101]],'
     'PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],AUTHORITY["EPSG","4258"]]'
@@ -126,6 +133,34 @@ def main():
             (-100.0, 40.0),
         ),
         (
+            "ETRS89 in WKT 1 declaring NAD83",
+            CRS.from_epsg(4258)
+            .to_wkt("WKT1_GDAL")
+            .replace('AUTHORITY["EPSG","4258"]]', 'AUTHORITY["EPSG","4269"]]'),
+            (-100.0, 40.0),
+        ),
+        (
+            "Greenland 1996 by name declaring ETRS89",
+            greenland(4258),
+            (-45.0, 65.0),
+        ),
+        (
+            "Greenland 1996 by name with its own code",
+            greenland(4747),
+            (-45.0, 65.0),
+        ),
+        (
+            "Greenland 1996 by name in WKT 1 declaring GR96 3D (EPSG:4909)",
+            greenland(4909),
+            (-45.0, 65.0),
+        ),
+        (
+            "Web Mercator and EGM96 height declaring EPSG:9707",
+            CRS.from_user_input("EPSG:3857+5773").to_wkt("WKT1_GDAL")[:-1]
+            + ',AUTHORITY["EPSG","9707"]]',
+            (10.0, 50.0),
+        ),
+        (
             "a local datum on GRS 1980 declaring ETRS89",
             LOCAL_GRS80,
             (10.0, 50.0),
@@ -172,6 +207,9 @@ def main():
         "Belge 1972 / Belgian Lambert 72 declaring EPSG:27700": 27700,
         "WGS 84 geocentric in simplified WKT 2 declaring EPSG:4326": 4326,
         "ETRS89 declaring NAD83": 4269,
+        "ETRS89 in WKT 1 declaring NAD83": 4269,
+        "Greenland 1996 by name declaring ETRS89": 4258,
+        "Web Mercator and EGM96 height declaring EPSG:9707": 9707,
         "a local datum on GRS 1980 declaring ETRS89": 4258,
         "WGS 84 on a datum named Unknown declaring EPSG:4326": 4326,
         "WGS 84 3D declaring EPSG:4326": 4326,

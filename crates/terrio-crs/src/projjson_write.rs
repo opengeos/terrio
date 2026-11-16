@@ -73,7 +73,7 @@ fn crs(s: &SpatialRef) -> Result<Value> {
         let name = wkt1::parse(&wkt).and_then(|n| n.name().map(str::to_string)).unwrap_or_else(|| "unknown".into());
         return Ok(with_id(
             json!({"type": "CompoundCRS", "name": name, "components": [horizontal, vertical(code)?]}),
-            crate::declared_epsg(&wkt),
+            crate::declared_epsg(&wkt).filter(|c| crate::declared_fits(&wkt, *c)),
         ));
     }
     horizontal(s, &wkt)
