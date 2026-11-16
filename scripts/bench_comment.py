@@ -83,7 +83,7 @@ def main():
         out.append("<!-- terrio-bench: regression -->")
     out += [
         "### Performance vs main",
-        f"CPU instructions under Valgrind (deterministic, about ±1%), main `{args.base[:7]}` vs this PR `{args.head[:7]}`.",
+        f"CPU instructions under Valgrind (runs repeat within 0.01%), main `{args.base[:7]}` vs this PR `{args.head[:7]}`.",
         f"Flagged at ±{FLAG:g}%. Informational: this check never fails.",
         "",
     ]

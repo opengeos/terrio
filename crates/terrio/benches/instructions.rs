@@ -1,5 +1,5 @@
 //! CPU-instruction benchmarks of terrio's hot paths, run under Valgrind's Callgrind by gungraun.
-//! Instruction counts repeat to about 1% on any machine, so the `bench` workflow compares a pull
+//! Instruction counts repeat within 0.01% between runs, so the `bench` workflow compares a pull
 //! request with its merge base on a shared CI runner and comments the changes.
 //!
 //! Run: `cargo bench -p terrio --bench instructions` (needs `valgrind` and `gungraun-runner` of
@@ -33,12 +33,13 @@ fn client_request(request: usize) {
     #[cfg(target_arch = "x86_64")]
     {
         let args: [usize; 6] = [request, 0, 0, 0, 0, 0];
-        // SAFETY: the rotations of rdi add up to 128 bits and leave it unchanged, and `xchg rbx,
-        // rbx` changes nothing; Valgrind recognizes the sequence, reads `args` and writes rdx.
+        // SAFETY: the rotations of rdi add up to 128 bits, and `xchg rbx, rbx` changes nothing;
+        // Valgrind recognizes the sequence, reads `args` and writes rdx.
         unsafe {
             std::arch::asm!(
                 "rol rdi, 3", "rol rdi, 13", "rol rdi, 61", "rol rdi, 51", "xchg rbx, rbx",
                 in("rax") args.as_ptr(),
+                inout("rdi") 0usize => _,
                 inout("rdx") 0usize => _,
                 options(nostack),
             );

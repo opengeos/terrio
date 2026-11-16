@@ -1343,8 +1343,9 @@ nearest, bilinear and cubic, GDAL's chunk-dependent grid, and a half-pixel shift
 hillshade, a DEFLATE + floating-point-predictor GeoTIFF read, and zonal statistics of 1024
 polygons, each on 1 M synthetic pixels. The `bench` workflow runs both commits under Valgrind
 (Callgrind) in the same job, and `bench comment` posts the table and sets the `perf-regression`
-label when a benchmark runs 10% or more instructions. Instruction counts repeat to within 0.01%
-between runs, where shared runners' timings vary by 10–30%. The check never fails a pull request.
+label when a benchmark runs 10% or more instructions. Instruction counts of a commit repeat within
+0.01% between runs on one machine (both commits run on the same runner), where shared runners'
+timings vary by 10–30%. The check never fails a pull request.
 
 The counts cover every thread of the second of two runs of each operation (the first loads the
 EPSG table, starts the thread pool and fills caches), with one worker thread. To run them
