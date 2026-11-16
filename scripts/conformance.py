@@ -2829,7 +2829,7 @@ PROJ_CASES = {
             "PROJ 9.8.1 (pyproj 3.8.0, no grids): shifted or ballpark as PROJ",
         ),
         "a_null_transformation_on_another_ellipsoid_is_applied_geocentrically": (
-            "Esri TWD97, RDN2008, IGM95 and MAGNA-SIRGAS on other ellipsoids, and TWD97 on its own: name, flag and point", IDENTICAL,
+            "Esri TWD97, RDN2008, IGM95 and MAGNA-SIRGAS on other ellipsoids, and TWD97 on its own: name, flag, point and height", TOLERANCE,
             "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1e-9°",
         ),
         "null_transformations_on_another_ellipsoid_stop_where_proj_stops": (

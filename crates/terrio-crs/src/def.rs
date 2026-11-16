@@ -1027,10 +1027,12 @@ impl Def {
         // A name PROJ finds wins over the datum's ID: `Greenland_1996` with `AUTHORITY["EPSG",
         // "1421"]` is the former Greenland 1996 datum (EPSG:6747), which no current CRS has, so
         // PROJ places it by a ballpark; under a name it does not find, the ID's datum.
-        let datums = match code {
-            _ if by_name => epsg::datums_named(&name),
-            Some(code) => vec![code],
-            None => return,
+        let datums = if by_name {
+            epsg::datums_named(&name)
+        } else if let Some(code) = code {
+            vec![code]
+        } else {
+            return;
         };
         let found = datums.iter().flat_map(|d| epsg::geographic_on(*d)).copied().filter(|g| !epsg::is_deprecated(*g)).find_map(|g| {
             let e = epsg::get(g).filter(|e| e.proj.starts_with("+proj=longlat") && !e.three_d && !e.ops.is_empty())?;
@@ -1046,23 +1048,24 @@ impl Def {
         if same(&registered, &own) {
             return;
         }
+        // One registered between geocentric CRSs (ONGD14 to WGS 84 (1), NAD83(CSRS)v6 through
+        // NAD83(2011)) is kept: PROJ puts a ballpark into the datum's CRS before it, which keeps the
+        // point, and runs it on the datum's own ellipsoid.
         let rebase = |op: &Arc<Op>| {
             let mut op = (**op).clone();
-            if op.geocentric {
-                // Registered between geocentric CRSs (ONGD14 to WGS 84 (1), NAD83(CSRS)v6 through
-                // NAD83(2011)): PROJ puts a ballpark into the datum's CRS before it, which keeps
-                // the point, and runs it on the datum's own ellipsoid.
-            } else if let Some(datum::Step::Cart { ell, inv: false }) = op.steps.first_mut()
-                && same(ell, &registered)
-            {
-                *ell = own;
-            } else if op.steps.is_empty() && !op.ballpark {
-                // A null transformation ("TWD97 to WGS 84 (1)") is still geocentric: PROJ runs it
-                // from the file's ellipsoid to WGS 84's, which moves latitudes, as are
-                // concatenations of them (ETRF89 through ETRS89).
-                // Between 2D CRSs, heights are kept, as PROJ keeps them around a geocentric step.
-                op.steps = vec![datum::Step::Cart { ell: own, inv: false }, datum::Step::Cart { ell: Ell::wgs84(), inv: true }];
-                op.keeps_height = true;
+            if !op.geocentric {
+                if let Some(datum::Step::Cart { ell, inv: false }) = op.steps.first_mut()
+                    && same(ell, &registered)
+                {
+                    *ell = own;
+                } else if op.steps.is_empty() && !op.ballpark {
+                    // A null transformation ("TWD97 to WGS 84 (1)"), or a concatenation of them
+                    // (ETRF89 through ETRS89), is still geocentric: PROJ runs it from the file's
+                    // ellipsoid to WGS 84's, which moves latitudes, and keeps heights between 2D
+                    // CRSs around it.
+                    op.steps = vec![datum::Step::Cart { ell: own, inv: false }, datum::Step::Cart { ell: Ell::wgs84(), inv: true }];
+                    op.keeps_height = true;
+                }
             }
             Arc::new(op)
         };
