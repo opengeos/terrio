@@ -4,6 +4,11 @@ name: bench comment
 # the `perf-regression` label when a benchmark runs 10% or more instructions. It runs from main
 # with a write token, so it never checks out or runs the pull request's code: the artifact it
 # reads was written by that code (a fork can change bench.yml), and is only posted as text.
+#
+# On a regression it also dispatches the performance-only review of claude-code-review.yml for the
+# pull request. A dispatch, because the label added here with GITHUB_TOKEN starts no workflow. Only
+# for the authors that review covers automatically, so a first-time contributor's edited bench.yml
+# cannot spend reviews; a maintainer can still dispatch one, or add `perf-regression` by hand.
 
 on:
   workflow_run:
@@ -22,7 +27,7 @@ jobs:
     if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     permissions:
-      actions: read
+      actions: write # read the artifact, dispatch the performance review
       issues: write
       pull-requests: write
     steps:
@@ -71,6 +76,14 @@ jobs:
             gh label create perf-regression --color D93F0B \
               --description "A benchmark runs 10% or more CPU instructions than on main" 2>/dev/null || true
             gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$pr/labels" -f "labels[]=perf-regression" > /dev/null
+            assoc=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" -q .author_association)
+            case "$assoc" in
+              OWNER | MEMBER | COLLABORATOR | CONTRIBUTOR)
+                gh workflow run claude-code-review.yml -f "pr=$pr" \
+                  || echo "::warning::Could not dispatch the performance review."
+                ;;
+              *) echo "No automatic performance review for a $assoc author." ;;
+            esac
           else
             gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/$pr/labels/perf-regression" > /dev/null 2>&1 || true
           fi
