@@ -1972,7 +1972,6 @@ fn proj_maps_origin(method: &str, key: &str) -> bool {
         || (method == "omerc" && key != "lon_0")
 }
 
-/// The `GEOGCS[...]` part of a WKT 1 definition.
 /// The text of a WKT 1 definition's own geographic CRS: none for a CRS read as WKT 2 (its
 /// `GEOGCRS` the text search does not find), whose search would find a WKT 1 `BOUNDCRS` target's
 /// `GEOGCS` instead (ED50 with its own `TOWGS84` under a Bessel source), so that its datum would
@@ -1981,6 +1980,7 @@ fn own_geogcs_text<'a>(w: &'a str, c: &wkt1::Converted) -> Option<&'a str> {
     geogcs_text(w).filter(|_| c.geogcs_wkt1.is_none())
 }
 
+/// The `GEOGCS[...]` part of a WKT 1 definition.
 fn geogcs_text(w: &str) -> Option<&str> {
     // WKT 1 delimits nodes with brackets or parentheses, and either closer ends a node, as the
     // WKT reader (and PROJ) reads it; brackets in quoted names do not count.
