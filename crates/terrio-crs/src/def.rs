@@ -949,7 +949,68 @@ impl Def {
             self.datum = (e.datum != 0).then_some(e.datum);
             self.geog = if e.three_d { Some(e.geog) } else { geog };
             self.dynamic = e.dynamic;
+        } else if geog.is_none()
+            && let Some(own) = own.as_deref()
+        {
+            self.datum_by_name(own);
         }
+    }
+
+    /// Takes the transformations of the datum a geographic CRS names when the CRS is on another
+    /// ellipsoid than the datum's, and runs them on the CRS's ellipsoid, as PROJ 9.8.1 does: it
+    /// finds Esri's `D_Monte_Mario` on an International 1924 ellipsoid of another axis by its name
+    /// and applies "Monte Mario to WGS 84 (4)" with its geocentric step on the file's ellipsoid.
+    ///
+    /// The datum is found as PROJ finds it: by its `ID`; by an ESRI name (`D_OSGB_1936`, and
+    /// `D_` before any other name of the datum); or by a name written with underscores that is
+    /// the datum's official name or an EPSG alias once they are spaces (`Monte_Mario`,
+    /// `OSGB_1936`). Not by a name with spaces (`Monte Mario`, `ED50`, as PROJ's own WKT writes
+    /// them), which PROJ places by a ballpark on another ellipsoid, nor by an ESRI name without
+    /// its `D_` (`European_1950`).
+    ///
+    /// The transformations are a current geographic 2D CRS's of the datum on Greenwich (not
+    /// Monte Mario (Rome)'s on the Rome meridian): CRSs on another meridian keep the route's
+    /// search, which places them as PROJ does. Only those starting with a geocentric step on the
+    /// datum's ellipsoid are moved onto the CRS's, as PROJ replaces the first operation's source;
+    /// others (grids, a concatenation starting with an offset) are kept as registered.
+    fn datum_by_name(&mut self, geogcs: &str) {
+        if self.pm != 0.0 {
+            return;
+        }
+        let Some((name, code)) = super::wkt_datum_name_and_code(geogcs) else { return };
+        let found_as_proj = code.is_some()
+            || match name.strip_prefix("D_") {
+                Some(_) => epsg::datum_name_rank(&name).is_some(),
+                None => name.contains('_') && epsg::datum_name_rank(&name).is_some_and(|r| r <= 1),
+            };
+        if !found_as_proj {
+            return;
+        }
+        let (datums, _) = super::wkt_datums_and_others(geogcs);
+        let found = datums.iter().flat_map(|d| epsg::geographic_on(*d)).copied().filter(|g| !epsg::is_deprecated(*g)).find_map(|g| {
+            let e = epsg::get(g).filter(|e| e.proj.starts_with("+proj=longlat") && !e.three_d && !e.ops.is_empty())?;
+            let registered = Def::new(&SpatialRef { epsg: Some(g), ..Default::default() }).ok()?;
+            (registered.pm == 0.0).then_some((e, registered.ell))
+        });
+        let Some((e, registered)) = found else { return };
+        let same = |a: &Ell, b: &Ell| (a.a - b.a).abs() < 1e-3 && (a.es - b.es).abs() < 1e-9;
+        // On the datum's own ellipsoid, the CRS is identified by its content.
+        if same(&registered, &self.ell) {
+            return;
+        }
+        let own = self.ell;
+        let rebase = |op: &Arc<Op>| {
+            let mut op = (**op).clone();
+            if let Some(datum::Step::Cart { ell, inv: false }) = op.steps.first_mut()
+                && same(ell, &registered)
+            {
+                *ell = own;
+            }
+            Arc::new(op)
+        };
+        self.ops = epsg::usable(&e.ops, &e.grid_ops).iter().map(rebase).collect();
+        self.datum = (e.datum != 0).then_some(e.datum);
+        self.dynamic = e.dynamic;
     }
 
     /// The coordinate conversion of a WKT definition (without its datum), when terrio reads it: that
