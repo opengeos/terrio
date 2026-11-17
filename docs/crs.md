@@ -675,7 +675,9 @@ geocentric translations. terrio reads the grids PROJ uses, in pure Rust:
   with their subgrids, offsets in arc-seconds or degrees, scale and offset metadata, and every
   layout PROJ reads (tiled or stripped, chunky or planar, deflate, LZW or ZSTD compressed);
 - NTv2 (`.gsb`) files with their subgrids, and GTX (`.gtx`) geoid grids;
-- the old names of PROJ-data grids (`conus` for `us_noaa_conus.tif`).
+- the old names of PROJ-data grids, both ways, as PROJ looks them up in its database: an operation
+  naming `us_noaa_conus.tif` finds a file named `conus`, and `+nadgrids=conus` finds
+  `us_noaa_conus.tif`.
 
 They are applied as PROJ applies them: bilinear interpolation (biquadratic for NADCON5 grids, as
 their metadata asks), PROJ's iterated inverse, its handling of grid edges and of the
@@ -705,6 +707,31 @@ PROJ's `proj_context_set_search_paths` and `proj_context_set_enable_network`. Gr
 search directories must use ordinary path components (`subdir/grid.gsb`): embedded `..` components
 are refused with a warning even when they would normalize inside a directory (`sub/../grid.gsb`).
 Only regular files of at most 2 GiB are read (a larger one is skipped with a warning).
+
+A Rust application that downloads grids itself, with terrio's network off (built for WebAssembly,
+or to download in the background), asks a transformer which grids a point needs:
+`Transformer::best_operation_grids_at(x, y, z)` lists the grids of the operation PROJ's
+`proj_trans` would use there with every grid present, missing ones included, each with its name
+on the PROJ CDN (also for a definition that gives an old name), its URL, whether the URL gives the
+file and whether the grid has an open licence (from PROJ's database, as
+`proj_coordoperation_get_grid_used` reports them), and whether terrio finds it now. Download the
+missing ones, register them under their name (or save them in a search directory), build the
+transformer again, and ask again: when the point is outside a grid once it is there, the next
+operation's grids come up. Geoid models of vertical CRSs are not listed, and between CRSs with
+heights the horizontal grids listed are those between their geographic CRSs. With `ONLY_BEST=YES`, the
+error for a missing grid names it too.
+
+```rust
+let t = terrio_crs::Transformer::new(&SpatialRef::parse("EPSG:4267")?, &SpatialRef::parse("EPSG:4326")?)?;
+for g in t.best_operation_grids_at(-100.0, 40.0, 0.0)?.iter().filter(|g| !g.available) {
+    // us_noaa_conus.tif and us_noaa_kshpgn.tif, from https://cdn.proj.org/<name>
+}
+```
+
+`terrio_crs::default_grid_search_paths()` gives the directories of point 2 (empty in
+WebAssembly), so an application can put its own grid directory first and keep these:
+`set_grid_search_paths(Some(own.into_iter().chain(default_grid_search_paths()).collect()))`.
+Path-named grids are then refused, as below.
 
 A grid named by a path (`+nadgrids=/data/a.gsb`, `./a.gsb`) is read from that path by default, as
 PROJ does, but once search paths are set from code it is treated as missing, with a warning, so a

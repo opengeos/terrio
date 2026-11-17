@@ -105,7 +105,10 @@ pub fn proj_boolean_parameters(definition: &str) -> Result<Vec<(String, bool)>> 
 
 pub use catalog::{AUTHORITIES, CrsEntry, CrsKind, CrsQuery, EPSG_VERSION, check_authorities, list_crs};
 pub(crate) use def::Def;
-pub use grid::{confine_grid_search_paths, register_grid, reset_grid_cache, set_grid_search_paths, set_network_enabled};
+pub use grid::{
+    GridUse, confine_grid_search_paths, default_grid_search_paths, register_grid, reset_grid_cache, set_grid_search_paths,
+    set_network_enabled,
+};
 #[doc(hidden)]
 pub use wkt1_write::{Described, describe, epsg_ellipsoid, from_proj_on};
 
@@ -2266,6 +2269,9 @@ pub struct Transformer {
     bounds_reverse_route: std::sync::OnceLock<route::Route>,
     policy: TransformOptions,
     missing_grid_checked: std::sync::OnceLock<()>,
+    /// The missing grids of the best operation, for the warning: those of the first point it
+    /// was found missing for.
+    missing_grids: std::sync::OnceLock<String>,
     /// The geoid models with grids of the source and target vertical CRSs, found on first use.
     src_geoid_grids: std::sync::OnceLock<Vec<std::sync::Arc<datum::Op>>>,
     dst_geoid_grids: std::sync::OnceLock<Vec<std::sync::Arc<datum::Op>>>,
@@ -2613,6 +2619,7 @@ impl Transformer {
             bounds_reverse_route: std::sync::OnceLock::new(),
             policy: opts.clone(),
             missing_grid_checked: std::sync::OnceLock::new(),
+            missing_grids: std::sync::OnceLock::new(),
             src_geoid_grids: std::sync::OnceLock::new(),
             dst_geoid_grids: std::sync::OnceLock::new(),
             emitted_diagnostics: std::sync::atomic::AtomicU8::new(0),
@@ -2779,9 +2786,10 @@ impl Transformer {
         let flags = self.diagnostics.load(std::sync::atomic::Ordering::Relaxed);
         let previous = self.emitted_diagnostics.fetch_or(flags, std::sync::atomic::Ordering::Relaxed);
         let flags = flags & !previous;
+        let missing = self.missing_grid_message();
         for (bit, message) in [
             (1, "ballpark coordinate operation used between different ellipsoids; datum shift is unknown"),
-            (2, "best coordinate operation needs a missing grid; set TERRIO_NETWORK=ON or TERRIO_GRID_DIR"),
+            (2, missing.as_str()),
             (4, "coordinate operation used outside its area of use"),
             (
                 8,
@@ -2800,11 +2808,29 @@ impl Transformer {
         self.flush_warnings();
         let flags = self.diagnostics.load(std::sync::atomic::Ordering::Relaxed);
         if self.policy.only_best && flags & 2 != 0 {
-            return Err(Error::MissingGrid(
-                "ONLY_BEST=YES: best coordinate operation needs a missing grid; set TERRIO_NETWORK=ON or TERRIO_GRID_DIR".into(),
-            ));
+            return Err(Error::MissingGrid(format!("ONLY_BEST=YES: {}", self.missing_grid_message())));
         }
         Ok(())
+    }
+
+    /// The message for a best operation that needs a missing grid, naming the grids.
+    fn missing_grid_message(&self) -> String {
+        let named = self.missing_grids.get().filter(|g| !g.is_empty()).map_or_else(String::new, |g| format!(" ({g})"));
+        format!("best coordinate operation needs a missing grid{named}; set TERRIO_NETWORK=ON or TERRIO_GRID_DIR")
+    }
+
+    /// Records that the best operation for a point needs a missing grid, and which.
+    fn record_missing_grid(&self, op: &datum::Op) {
+        self.missing_grids.get_or_init(|| {
+            let names: Vec<String> = op
+                .grids()
+                .into_iter()
+                .filter(|(n, optional)| !optional && !grid::available(n))
+                .map(|(n, _)| grid::grid_use(&n, false).name)
+                .collect();
+            names.join(", ")
+        });
+        self.diagnostics.fetch_or(2, std::sync::atomic::Ordering::Relaxed);
     }
 
     fn record_operation(&self, op: Option<&datum::Op>, outside: bool) {
@@ -2823,8 +2849,8 @@ impl Transformer {
         // every point. Ordinary transforms select their actual operation only once.
         self.missing_grid_checked.get_or_init(|| {
             let (ideal, _) = self.best_route().selected(&self.src, x, y, p);
-            if ideal.is_some_and(|op| !op.available()) {
-                self.diagnostics.fetch_or(2, std::sync::atomic::Ordering::Relaxed);
+            if let Some(op) = ideal.filter(|op| !op.available()) {
+                self.record_missing_grid(op);
             }
         });
     }
@@ -2836,11 +2862,9 @@ impl Transformer {
         let selected = if self.policy.only_best {
             let (ideal, outside) = self.best_route().selected(&self.src, x, y, p);
             self.record_operation(ideal, outside);
-            if ideal.is_some_and(|op| !op.available()) {
-                self.diagnostics.fetch_or(2, std::sync::atomic::Ordering::Relaxed);
-                return Err(Error::MissingGrid(
-                    "ONLY_BEST=YES: best coordinate operation needs a missing grid; set TERRIO_NETWORK=ON or TERRIO_GRID_DIR".into(),
-                ));
+            if let Some(op) = ideal.filter(|op| !op.available()) {
+                self.record_missing_grid(op);
+                return Err(Error::MissingGrid(format!("ONLY_BEST=YES: {}", self.missing_grid_message())));
             }
             ideal
         } else {
@@ -2970,6 +2994,47 @@ impl Transformer {
         let (result, used) = route::recording(|| self.transform_at(x, y, z, self.time));
         result?;
         Ok(CoordinateOperation::from_used(used))
+    }
+
+    /// The grids the transformation of a point needs, with where to get them, missing ones
+    /// included: those of the operation PROJ's `proj_trans` picks for the point with every grid
+    /// present, as PROJ's `proj_coordoperation_get_grid_used` reports them, and of a point motion
+    /// between coordinate epochs. Empty when that operation needs no grid.
+    ///
+    /// An application that downloads grids itself (with terrio's network off, in WebAssembly
+    /// too) fetches the missing ones from their `url`, gives them to [`register_grid`] under
+    /// their `name` (or saves them in a search directory), and builds the transformer again. The
+    /// operation is the best one for the point whose grid is missing, or else the one that
+    /// applies there: when the point is outside a grid once it is present, the next operation's
+    /// grids come up, so ask again until every grid listed is available.
+    ///
+    /// Geoid models of vertical CRSs are not listed. Between CRSs with heights (geographic 3D,
+    /// compound), the horizontal grids listed are those between their geographic CRSs, which
+    /// the transformations through a geoid model's CRS may not use.
+    pub fn best_operation_grids_at(&self, x: f64, y: f64, z: f64) -> Result<Vec<GridUse>> {
+        let fail = || Error::Crs(format!("cannot transform ({x}, {y}, {z})"));
+        // A geocentric source: its geographic coordinates, as `transform_at` takes them.
+        let (x, y, z) = match &self.cartesian_src {
+            Some(src) => src.unproject_geocentric(x, y, z).ok_or_else(fail)?,
+            None => (x, y, z),
+        };
+        let mut names: Vec<(String, bool)> = Vec::new();
+        if let Some(steps) = &self.motion {
+            names.extend(steps.iter().flat_map(|s| s.grid_names()));
+        }
+        if !self.web_mercator_to_wgs84 && !self.route.same_datum() {
+            let (lon, lat) = self.src.unproject(x, y).ok_or_else(fail)?;
+            let p = datum::Point { lon, lat, h: z, t: self.time };
+            names.extend(self.best_route().grid_operations_at(&self.src, x, y, p).into_iter().flat_map(|op| op.grids()));
+        }
+        let mut uses: Vec<GridUse> = Vec::new();
+        for (name, optional) in names.into_iter().filter(|(n, _)| n != "null") {
+            let used = grid::grid_use(&name, optional);
+            if !uses.iter().any(|u| u.name == used.name) {
+                uses.push(used);
+            }
+        }
+        Ok(uses)
     }
 
     fn transform_at(&self, x: f64, y: f64, z: f64, t: Option<f64>) -> Result<(f64, f64, f64)> {

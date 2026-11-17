@@ -841,21 +841,52 @@ pub fn register_grid(name: &str, bytes: Vec<u8>) {
         let mut r = registered().lock().unwrap_or_else(PoisonError::into_inner);
         r.insert(name.to_string(), Arc::from(bytes));
     }
+    // Lookups that found nothing under any of its names (`conus` for `us_noaa_conus.tif`) are
+    // forgotten too: they find it now.
+    let names = linked_names(name);
     {
         let mut f = files().lock().unwrap_or_else(PoisonError::into_inner);
-        f.remove(name);
+        for n in &names {
+            f.remove(n);
+        }
     }
     {
         let mut a = availability().lock().unwrap_or_else(PoisonError::into_inner);
         a.clear();
     }
     // A download of it that failed before no longer counts: the grid is there now.
-    fetch_failures().lock().unwrap_or_else(PoisonError::into_inner).remove(name);
+    let mut failures = fetch_failures().lock().unwrap_or_else(PoisonError::into_inner);
+    for n in &names {
+        failures.remove(n);
+    }
 }
 
 /// Old names of PROJ-data grids (before PROJ 7), by current name, from the EPSG table.
 fn old_names(name: &str) -> Vec<String> {
     super::epsg::grid_alternatives(name)
+}
+
+/// A grid's name with all the names it is looked up under or found by: its current name, its
+/// old names and the producer's (`us_noaa_conus.tif`, `conus`, `conus.las`).
+fn linked_names(name: &str) -> Vec<String> {
+    let current = catalog().get(name).map_or(name, |k| k.name);
+    let mut names = vec![name.to_string(), current.to_string()];
+    names.extend(old_names(current));
+    names.extend(catalog().iter().filter(|(_, k)| k.name == current).map(|(n, _)| n.to_string()));
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// The other names a grid may be found under: its old names (before PROJ 7) for a current
+/// name, and its current name (on the PROJ CDN) for an old or producer's name (`conus`,
+/// `conus.las`), as PROJ looks a grid up through its database.
+fn other_names(name: &str) -> Vec<String> {
+    let mut names = old_names(name);
+    if let Some(k) = catalog().get(name).filter(|k| k.name != name) {
+        names.push(k.name.to_string());
+    }
+    names
 }
 
 /// Whether network access to the PROJ CDN is enabled.
@@ -1056,16 +1087,19 @@ fn find_local(name: &str) -> Option<Arc<[u8]>> {
     None
 }
 
-/// Whether a grid file is present locally (by its name or an old name).
+/// Whether a grid file is present locally (by its name or another of its names).
 fn present_locally(name: &str) -> bool {
-    if registered().lock().unwrap_or_else(PoisonError::into_inner).contains_key(name) {
-        return true;
+    let mut names = vec![name.to_string()];
+    names.extend(other_names(name));
+    {
+        let registered = registered().lock().unwrap_or_else(PoisonError::into_inner);
+        if names.iter().any(|n| registered.contains_key(n.as_str())) {
+            return true;
+        }
     }
     #[cfg(not(target_family = "wasm"))]
     {
         let dirs = search_dirs();
-        let mut names = vec![name.to_string()];
-        names.extend(old_names(name));
         return names.iter().any(|n| match grid_location(n) {
             GridLocation::Path(p) => is_grid_file(p),
             GridLocation::InSearchDirs => dirs.iter().any(|d| is_grid_file(&d.join(n))),
@@ -1156,9 +1190,9 @@ fn load(name: &str) -> Option<Arc<GridFile>> {
 fn load_uncached(name: &str) -> Option<Arc<GridFile>> {
     let bytes = find_local(name);
     if bytes.is_none() {
-        for old in old_names(name) {
-            if let Some(b) = find_local(&old) {
-                return read_file(&old, b).map(Arc::new);
+        for other in other_names(name) {
+            if let Some(b) = find_local(&other) {
+                return read_file(&other, b).map(Arc::new);
             }
         }
     }
@@ -1296,6 +1330,91 @@ pub fn reset_grid_cache() {
     }
     fetch_failures().lock().unwrap_or_else(PoisonError::into_inner).clear();
     sets_cache().lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
+/// A grid a coordinate operation interpolates in, with where to get it, as PROJ's
+/// `proj_coordoperation_get_grid_used` reports it (see
+/// [`crate::Transformer::best_operation_grids_at`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GridUse {
+    /// The grid's name on the PROJ CDN (`us_noaa_conus.tif`), also when a definition names it as
+    /// before PROJ 7 (`conus`) or as its producer does (`conus.las`). The name to download it
+    /// under and to give [`register_grid`]. A grid PROJ's database does not know keeps the name
+    /// the definition gives it.
+    pub name: String,
+    /// Where to download it: for a grid PROJ distributes, `https://cdn.proj.org/` followed by its
+    /// name. `None` for a grid PROJ's database does not know.
+    pub url: Option<String>,
+    /// Whether `url` gives the grid file itself (not a page or an archive to unpack).
+    pub direct_download: bool,
+    /// Whether the grid has an open licence.
+    pub open_license: bool,
+    /// Whether terrio finds it now: registered with [`register_grid`], in a search directory,
+    /// or, with the network on, on the PROJ CDN.
+    pub available: bool,
+    /// Whether the operation runs without it (`@` before its name in the PROJ string).
+    pub optional: bool,
+}
+
+/// What PROJ's database says of a grid: its name, URL (`None` on the CDN under its name), and
+/// whether the URL gives the file and the grid has an open licence.
+struct Known {
+    name: &'static str,
+    url: Option<&'static str>,
+    direct_download: bool,
+    open_license: bool,
+}
+
+/// The grids of PROJ's database by each of their names, its own name first
+/// (`data/grids.tsv`, `scripts/gen_grid_catalog.py`).
+fn catalog() -> &'static HashMap<&'static str, Known> {
+    static TABLE: &str = include_str!("../data/grids.tsv");
+    static CATALOG: OnceLock<HashMap<&'static str, Known>> = OnceLock::new();
+    CATALOG.get_or_init(|| {
+        let mut by_name = HashMap::new();
+        let mut aliases = Vec::new();
+        for line in TABLE.lines().filter(|l| !l.starts_with('#') && !l.is_empty()) {
+            let f: Vec<&'static str> = line.split('\t').collect();
+            let [name, other, url, direct, open] = f[..] else { continue };
+            let known = || Known { name, url: (!url.is_empty()).then_some(url), direct_download: direct == "1", open_license: open == "1" };
+            by_name.insert(name, known());
+            aliases.extend(other.split(',').filter(|a| !a.is_empty()).map(|a| (a, known())));
+        }
+        // A grid's own name wins over another's old name.
+        for (alias, known) in aliases {
+            by_name.entry(alias).or_insert(known);
+        }
+        by_name
+    })
+}
+
+/// A grid an operation names, with what PROJ's database says of it and whether it is found.
+pub(crate) fn grid_use(name: &str, optional: bool) -> GridUse {
+    let available = available(name);
+    match catalog().get(name) {
+        Some(k) => GridUse {
+            name: k.name.to_string(),
+            url: Some(k.url.map_or_else(|| format!("https://cdn.proj.org/{}", k.name), str::to_string)),
+            direct_download: k.direct_download,
+            open_license: k.open_license,
+            available,
+            optional,
+        },
+        None => GridUse { name: name.to_string(), url: None, direct_download: false, open_license: false, available, optional },
+    }
+}
+
+/// The directories grids are looked up in when no search paths are set
+/// ([`set_grid_search_paths`]), in order: those of `TERRIO_GRID_DIR`, `PROJ_DATA` and `PROJ_LIB`,
+/// PROJ's user directory (where `projsync` and PROJ's network cache put grids) and terrio's
+/// download cache. To look up grids in a directory of one's own first and keep these, give
+/// [`set_grid_search_paths`] that directory followed by these: a grid named by a path in a CRS
+/// definition stays refused. Empty in WebAssembly, which has no file system.
+pub fn default_grid_search_paths() -> Vec<std::path::PathBuf> {
+    #[cfg(not(target_family = "wasm"))]
+    return machine_search_dirs();
+    #[cfg(target_family = "wasm")]
+    Vec::new()
 }
 
 /// The names of a step's `grids=` list, with whether each is optional (`@` prefix).
@@ -2202,6 +2321,15 @@ pub(crate) fn gridshift_apply(
 
 #[cfg(test)]
 mod tests {
+    /// The default search directories end with terrio's download cache.
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn default_search_paths_end_with_the_download_cache() {
+        if let Some(cache) = super::cache_dir() {
+            assert_eq!(super::default_grid_search_paths().last(), Some(&cache));
+        }
+    }
+
     #[test]
     #[cfg(not(target_family = "wasm"))]
     fn cached_size_refusals_warn_without_reopening_the_grid() {
