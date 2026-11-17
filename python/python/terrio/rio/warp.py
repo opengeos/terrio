@@ -712,8 +712,8 @@ def reproject(
         rpcs: Rational polynomial coefficients georeferencing the source (an `RPC` or GDAL's RPC
             items; a dataset source is warped by its own RPCs), warped with GDAL's RPC
             transformer, in WGS 84 (see `**kwargs`).
-        src_crs: The source CRS (arrays only; datasets give theirs, or with a geotransform and
-            no CRS are not reprojected: the geotransform is in the destination CRS).
+        src_crs: The source CRS (arrays only; datasets give theirs). A dataset with a geotransform
+            and no CRS is not reprojected: its geotransform is in the destination CRS.
         src_nodata: The source nodata value (by default, the dataset's).
         dst_transform: The destination's transform; computed when None.
         dst_crs: The destination CRS (by default, the source's).

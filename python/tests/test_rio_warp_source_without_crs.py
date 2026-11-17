@@ -98,6 +98,13 @@ def test_a_dataset_with_no_geotransform_still_requires_a_crs(tmp_path):
         for size in ({}, {"width": 32, "height": 32}):
             with pytest.raises(CRSError, match="A CRS is required"):
                 WarpedVRT(src, crs="EPSG:4326", **size)
+        # rasterio 1.5.0: a `src_transform` places it on a grid given in full, and only there.
+        for size in ({}, {"width": 32, "height": 32}):
+            with pytest.raises(CRSError, match="A CRS is required"):
+                WarpedVRT(src, crs="EPSG:4326", src_transform=TRANSFORM, **size)
+        grid = dict(transform=TRANSFORM, width=64, height=64)
+        with WarpedVRT(src, crs="EPSG:4326", src_transform=TRANSFORM, **grid) as vrt:
+            assert (vrt.read(1) == DATA).all()
         # Its bounds are pixels and lines.
         with pytest.raises(CRSError, match="A CRS is required"):
             calculate_default_transform(src.crs, "EPSG:4326", src.width, src.height, *src.bounds)

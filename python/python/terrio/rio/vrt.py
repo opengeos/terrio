@@ -288,13 +288,15 @@ class WarpedVRT(DatasetReader):
         if rpc_georef:
             self._rpc_crs = CRS.from_epsg(4326)
         # A source with no CRS is warped by its geotransform, read in the destination CRS; with
-        # no geotransform either (and no RPCs), there is nothing to place it by.
+        # no geotransform either (and no RPCs), there is nothing to place it by. A `src_transform`
+        # places it only on a grid given in full: the other grids come from the dataset's own
+        # geotransform, as rasterio's (GDALAutoCreateWarpedVRTEx() does not see the override).
         if (
             self.src_crs is None
             and not rpc_georef
             and (
                 self.src_transform.almost_equals(Affine.identity())
-                or src_dataset.transform.almost_equals(Affine.identity())
+                or (no_geotransform and not (transform is not None and width and height))
             )
         ):
             raise CRSError("A CRS is required")
