@@ -121,7 +121,11 @@ def read_fields(path):
             fd = defn.GetFieldDefn(i)
             value = None
             if f.IsFieldSetAndNotNull(i):
-                value = f.GetField(i) if fd.GetType() in (ogr.OFTIntegerList, ogr.OFTInteger64List, ogr.OFTRealList, ogr.OFTStringList) else f.GetFieldAsString(i)
+                if fd.GetType() in (ogr.OFTIntegerList, ogr.OFTInteger64List, ogr.OFTRealList, ogr.OFTStringList):
+                    # The bindings return None for an empty list, which GDAL holds as set and not null.
+                    value = f.GetField(i) or []
+                else:
+                    value = f.GetFieldAsString(i)
             out[fd.GetName()][2].append(value)
     return out
 

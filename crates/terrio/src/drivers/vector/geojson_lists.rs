@@ -30,7 +30,8 @@
 //! The values of a list field are converted as GDAL sets them (`OGRGeoJSONReaderSetField`): array
 //! elements to the list's type (booleans to 0 or 1 except in boolean lists, numbers to strings in
 //! string lists), a scalar to a list of one, and strings to a string list as `OGRFeature::SetField`
-//! parses them (`(n:a,b)` lists and JSON arrays); an empty string list is null.
+//! parses them (`(n:a,b)` lists and JSON arrays); an empty array, `[]` or `(0:)` is an empty
+//! string list, which GDAL holds as set, not null.
 
 use crate::ops::vector_schema::{OgrFieldSubType, OgrFieldType, OgrType};
 use serde_json::Value;
@@ -337,11 +338,6 @@ fn list(values: Vec<Value>) -> FieldValue {
     FieldValue::Text(Value::Array(values).to_string())
 }
 
-/// A string list: null when empty, as GDAL reads an empty one.
-fn strings(values: Vec<Value>) -> FieldValue {
-    if values.is_empty() { FieldValue::Null } else { list(values) }
-}
-
 /// A string set into a string list field (`OGRFeature::SetField`): an OGR list `(n:a,b)` of `n`
 /// values, a JSON array (nulls as empty strings), or one value; nothing for an empty string.
 fn string_list(s: &str) -> FieldValue {
@@ -352,7 +348,7 @@ fn string_list(s: &str) -> FieldValue {
         let tokens: Vec<&str> = s.split([',', ':', '(', ')']).filter(|t| !t.is_empty()).collect();
         let n = tokens.first().map_or(0, |t| leading_int(t));
         if !tokens.is_empty() && usize::try_from(n).is_ok_and(|n| n == tokens.len() - 1) {
-            return strings(tokens[1..].iter().map(|t| Value::from(*t)).collect());
+            return list(tokens[1..].iter().map(|t| Value::from(*t)).collect());
         }
         return FieldValue::Null;
     }
@@ -360,7 +356,7 @@ fn string_list(s: &str) -> FieldValue {
         && s.ends_with(']')
         && let Ok(Value::Array(a)) = serde_json::from_str::<Value>(s)
     {
-        return strings(a.iter().map(|e| Value::from(if e.is_null() { String::new() } else { get_string(e) })).collect());
+        return list(a.iter().map(|e| Value::from(if e.is_null() { String::new() } else { get_string(e) })).collect());
     }
     list(vec![Value::from(s)])
 }
@@ -370,9 +366,7 @@ fn string_list(s: &str) -> FieldValue {
 pub(crate) fn value(v: &Value, s: State) -> FieldValue {
     match (s, v) {
         (_, Value::Null) => FieldValue::Null,
-        (State::StringList, Value::Array(a)) => {
-            strings(a.iter().take_while(|e| !e.is_null()).map(|e| Value::from(get_string(e))).collect())
-        }
+        (State::StringList, Value::Array(a)) => list(a.iter().take_while(|e| !e.is_null()).map(|e| Value::from(get_string(e))).collect()),
         (State::StringList, v) => string_list(&get_string(v)),
         (_, Value::Array(a)) => list(a.iter().map(|e| element(e, s)).collect()),
         (State::IntegerList | State::BooleanList | State::Integer64List, Value::Bool(_)) => list(vec![element(v, s)]),
@@ -462,7 +456,10 @@ mod tests {
         assert_eq!(text(value(&json!(false), State::BooleanList)), "[false]");
         assert_eq!(text(value(&json!([9007199254740993i64]), State::Integer64List)), "[9007199254740993]");
         assert_eq!(text(value(&json!([1, 2.5]), State::RealList)), "[1.0,2.5]");
-        assert_eq!(value(&json!([]), State::StringList), FieldValue::Null);
+        // GDAL holds an empty string list as set, not null (`(0:)`), as pyogrio reads it.
+        assert_eq!(text(value(&json!([]), State::StringList)), "[]");
+        assert_eq!(text(value(&json!("[]"), State::StringList)), "[]");
+        assert_eq!(text(value(&json!("(0:)"), State::StringList)), "[]");
         assert_eq!(text(value(&json!([1, true]), State::StringList)), "[\"1\",\"true\"]");
         assert_eq!(text(value(&json!("x"), State::StringList)), "[\"x\"]");
         assert_eq!(text(value(&json!("(2:a,b)"), State::StringList)), "[\"a\",\"b\"]");

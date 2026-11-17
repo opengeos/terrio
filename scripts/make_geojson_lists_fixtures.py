@@ -85,7 +85,8 @@ def field_value(f: ogr.Feature, i: int, defn: ogr.FieldDefn):
     if t == ogr.OFTRealList:
         return f.GetFieldAsDoubleList(i)
     if t == ogr.OFTStringList:
-        return f.GetFieldAsStringList(i)
+        # The bindings return None for an empty list, which GDAL holds as set and not null.
+        return f.GetFieldAsStringList(i) or []
     if t == ogr.OFTInteger64:
         return f.GetFieldAsInteger64(i)
     if t == ogr.OFTInteger:
