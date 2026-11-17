@@ -1552,7 +1552,12 @@ fn warp(
     let cutline = match cutline {
         None => None,
         Some(c) => {
-            let layers = input_layers(py, c, None)?;
+            // Geometries as text are read as the CLI's --cutline reads them: WKT has no CRS, so
+            // it is in the sources' CRS; GeoJSON is in WGS 84.
+            let layers = match c.extract::<String>() {
+                Ok(text) if terrio::memory::is_geometry_text(&text) => vec![terrio::memory::parse_geometry_text(&text, "cutline").py()?],
+                _ => input_layers(py, c, None)?,
+            };
             let ds = terrio::VectorDataset::new(layers, VectorDriver::GeoJSON);
             Some(Cutline::from_vector(&ds).py()?)
         }

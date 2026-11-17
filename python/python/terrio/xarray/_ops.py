@@ -200,8 +200,11 @@ def in_crs(src: Any, crs: CRS | None) -> Any:
         _is_path(src)
         or isinstance(src, (_terrio.Layer, _terrio.VectorDataset))
         or getattr(src, "crs", None) is not None  # GeoPandas
-        or hasattr(src, "__arrow_c_stream__")
-        or hasattr(src, "__arrow_c_array__")
+        # Arrow data, but not GeoPandas without a CRS (a GeoDataFrame is Arrow data too)
+        or (
+            not hasattr(src, "__geo_interface__")
+            and (hasattr(src, "__arrow_c_stream__") or hasattr(src, "__arrow_c_array__"))
+        )
         or (isinstance(src, (list, tuple)) and any(isinstance(i, _terrio.Layer) for i in src))
     )
     if own or crs is None:

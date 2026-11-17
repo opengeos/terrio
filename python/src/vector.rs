@@ -218,11 +218,16 @@ pub(crate) fn layer_from_object(obj: &Bound<'_, PyAny>, name: Option<&str>, crs:
     layer
 }
 
-/// One geometry as WKT or GeoJSON text: a `str` as given, a Shapely geometry as its WKT (in the
-/// CRS the caller assumes for WKT), or a GeoJSON mapping or `__geo_interface__` as JSON.
+/// One geometry as WKT or GeoJSON text: a `str` as given, bounds or a Shapely geometry as WKT
+/// (in the CRS the caller assumes for WKT), or a GeoJSON mapping or `__geo_interface__` as JSON.
 pub(crate) fn geometry_text(obj: &Bound<'_, PyAny>) -> PyResult<String> {
     if let Ok(text) = obj.extract::<String>() {
         return Ok(text);
+    }
+    // `(xmin, ymin, xmax, ymax)` bounds: their box, as WKT (in the caller's CRS for WKT).
+    if let Ok([x0, y0, x1, y1]) = obj.extract::<[f64; 4]>() {
+        let (x0, x1, y0, y1) = (x0.min(x1), x0.max(x1), y0.min(y1), y0.max(y1));
+        return Ok(format!("POLYGON (({x0} {y0}, {x1} {y0}, {x1} {y1}, {x0} {y1}, {x0} {y0}))"));
     }
     if !obj.is_instance_of::<PyDict>() && obj.hasattr("wkt")? {
         return obj.getattr("wkt")?.extract();

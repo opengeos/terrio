@@ -295,7 +295,10 @@ pub fn looks_like(text: &str) -> bool {
         t = rest.trim_start();
     }
     let word = t.split(|c: char| !c.is_ascii_alphabetic()).next().unwrap_or("");
-    if !is_kind(&word.to_ascii_uppercase()) {
+    let upper = word.to_ascii_uppercase();
+    // A dimension suffix may be joined to the keyword (`POINTZ`), as `parse` reads it.
+    let joined = ["ZM", "Z", "M"].iter().find_map(|d| upper.strip_suffix(d).filter(|k| is_kind(k)).map(|_| ()));
+    if !is_kind(&upper) && joined.is_none() {
         return false;
     }
     let mut rest = t[word.len()..].trim_start();
@@ -317,6 +320,14 @@ fn is_kind(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn joined_dimension_suffixes_look_like_wkt() {
+        for text in ["POINTZ (1 2 3)", "LINESTRINGM (0 0 1, 1 1 2)", "polygonzm ((0 0 0 0, 1 0 0 0, 1 1 0 0, 0 0 0 0))", "POINTZ(1 2 3)"] {
+            assert!(looks_like(text), "{text}");
+        }
+        assert!(!looks_like("POINTS (1 2)"));
+    }
 
     #[test]
     fn parses_wkt() {
