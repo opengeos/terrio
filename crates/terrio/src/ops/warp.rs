@@ -128,9 +128,9 @@ impl Cutline {
         Ok(Self { polygons, srs })
     }
 
-    /// Reads a cutline from a vector file.
+    /// Reads a cutline from a vector file, or from WKT or GeoJSON text.
     pub fn open(path: &str) -> Result<Self> {
-        Self::from_vector(&crate::open_vector(path, &Default::default())?)
+        Self::from_vector(&crate::memory::open_vector_or_geometries(path, &Default::default())?)
     }
 
     fn map(&self, f: &dyn Fn(f64, f64) -> Option<(f64, f64)>) -> Result<Polygons> {

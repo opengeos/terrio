@@ -232,7 +232,7 @@ fn update_raster(
     src: &Bound<'_, PyAny>,
     dst: &str,
     resampling: &str,
-    geometry: Option<&str>,
+    geometry: Option<&Bound<'_, PyAny>>,
     geometry_crs: Option<&str>,
     no_update_overviews: bool,
     error_threshold: Option<f64>,
@@ -244,7 +244,12 @@ fn update_raster(
     let crs = geometry_crs.map(terrio::crs::SpatialRef::parse_literal).transpose().py()?;
     let options = update::UpdateOptions {
         resampling: Resampling::parse(resampling).py()?,
-        geometry: geometry.map(|g| update::parse_geometry(g, crs)).transpose().py()?,
+        geometry: geometry
+            .map(|g| crate::vector::geometry_text(g))
+            .transpose()?
+            .map(|g| update::parse_geometry(&g, crs))
+            .transpose()
+            .py()?,
         no_update_overviews,
         error_threshold,
         ignore_cog_layout_break,

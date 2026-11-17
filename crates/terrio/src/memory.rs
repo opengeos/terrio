@@ -38,6 +38,60 @@ use wbvector::Layer;
 pub use crate::drivers::vector::geojson::parse as parse_geojson_layer;
 pub use crate::drivers::vector::shapefile::to_zip_bytes as write_shapefile_zip_bytes;
 
+/// A layer of geometries given as text rather than as a file: GeoJSON (a FeatureCollection, a
+/// Feature or a geometry), a JSON array of those, a JSON `[xmin, ymin, xmax, ymax]` box, or a
+/// WKT/EWKT geometry. GeoJSON, lists and boxes are in WGS 84 unless GeoJSON's `crs` member
+/// names a CRS, as GeoJSON is read; WKT has no CRS, for the caller to give.
+pub fn parse_geometries(text: &str, name: &str) -> Result<Layer> {
+    use serde_json::{Value, json};
+    let trimmed = text.trim_start();
+    if trimmed.starts_with('[') {
+        let items: Vec<Value> = serde_json::from_str(trimmed).map_err(|e| Error::InvalidData(format!("geometries: {e}")))?;
+        let doc = if let [Some(x0), Some(y0), Some(x1), Some(y1)] = items.iter().map(Value::as_f64).collect::<Vec<_>>()[..] {
+            if x0 > x1 || y0 > y1 {
+                return Err(Error::InvalidArgument(format!("bounds [{x0}, {y0}, {x1}, {y1}] are not xmin, ymin, xmax, ymax")));
+            }
+            json!({"type": "Polygon", "coordinates": [[[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]]})
+        } else {
+            let features: Vec<Value> = items
+                .into_iter()
+                .flat_map(|v| match v["type"].as_str() {
+                    Some("FeatureCollection") => v["features"].as_array().cloned().unwrap_or_default(),
+                    Some("Feature") => vec![v],
+                    _ => vec![json!({"type": "Feature", "properties": {}, "geometry": v})],
+                })
+                .collect();
+            json!({"type": "FeatureCollection", "features": features})
+        };
+        return parse_geojson_layer(doc.to_string().as_bytes(), name);
+    }
+    if !trimmed.starts_with('{')
+        && let Some(geometry) = crate::drivers::vector::wkt::parse(trimmed)
+    {
+        let mut layer = Layer::new(name);
+        layer.geom_type = Some(geometry.geom_type());
+        layer.push(wbvector::Feature::with_geometry(0, geometry, 0));
+        return Ok(layer);
+    }
+    parse_geojson_layer(text.as_bytes(), name)
+}
+
+/// Opens a vector dataset with [`crate::open_vector`], or reads `src` with [`parse_geometries`]
+/// when it is geometries as text (GeoJSON, WKT or a JSON box), as GDAL's `-cutline` takes WKT.
+pub fn open_vector_or_geometries(src: &str, options: &VectorOpenOptions) -> Result<VectorDataset> {
+    if is_geometry_text(src) {
+        return Ok(VectorDataset::new(vec![parse_geometries(src, "geometries")?], VectorDriver::GeoJSON));
+    }
+    crate::open_vector(src, options)
+}
+
+/// Whether `text` is geometries for [`parse_geometries`] rather than a path or URL. An existing
+/// file is a path, whatever its name.
+pub fn is_geometry_text(text: &str) -> bool {
+    let t = text.trim_start();
+    (t.starts_with(['{', '[']) || crate::drivers::vector::wkt::parse(t).is_some()) && !std::path::Path::new(text).exists()
+}
+
 #[cfg(test)]
 mod range_tests;
 
@@ -1003,6 +1057,28 @@ mod tests {
     use super::*;
     use wbraster::raster::RasterData;
     use wbraster::{DataType, Raster};
+
+    #[test]
+    fn geometries_as_text_read_from_geojson_lists_bounds_and_wkt() {
+        let square = r#"{"type":"Polygon","coordinates":[[[0,0],[2,0],[2,2],[0,2],[0,0]]]}"#;
+        let one = parse_geometries(square, "zones").unwrap();
+        assert_eq!((one.name.as_str(), one.features.len()), ("zones", 1));
+        let feature = format!(r#"{{"type":"Feature","properties":{{"id":7}},"geometry":{square}}}"#);
+        let list = parse_geometries(&format!("[{square}, {feature}]"), "zones").unwrap();
+        assert_eq!(list.features.len(), 2);
+        let bounds = parse_geometries("[0, 0, 2, 2]", "zones").unwrap();
+        assert_eq!(bounds.features[0].geometry, one.features[0].geometry);
+        assert!(parse_geometries("[2, 0, 0, 2]", "zones").is_err(), "xmin > xmax");
+        let wkt = parse_geometries("SRID=4326;POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))", "zones").unwrap();
+        assert_eq!(wkt.features[0].geometry, one.features[0].geometry);
+        assert!(is_geometry_text(" POINT (1 2)") && is_geometry_text("[0, 0, 1, 1]") && is_geometry_text("{}"));
+        assert!(!is_geometry_text("fields.gpkg") && !is_geometry_text("point.gpkg") && !is_geometry_text("s3://b/k.fgb"));
+        // `--cutline` and the CLI's vector inputs take geometries as text too; WKT has no CRS.
+        let cutline = crate::ops::warp::Cutline::open("POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))").unwrap();
+        assert_eq!((cutline.polygons.len(), cutline.srs.is_none()), (1, true));
+        let ds = open_vector_or_geometries("[0, 0, 2, 2]", &Default::default()).unwrap();
+        assert_eq!(ds.layers[0].features[0].geometry, one.features[0].geometry);
+    }
 
     #[test]
     fn empty_mvt_keeps_an_empty_dataset_without_a_layer_selection() {

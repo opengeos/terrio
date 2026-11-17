@@ -23,12 +23,12 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 /// Opens the layers given to an operation: a path, or layers in memory.
 fn input_layers(py: Python<'_>, src: &Bound<'_, PyAny>, layers: Option<Vec<String>>) -> PyResult<Vec<terrio::Layer>> {
-    match src.extract::<String>() {
-        Ok(path) => {
+    match crate::vector::vector_path(src)? {
+        Some(path) => {
             let options = terrio::VectorOpenOptions { layers: layers.unwrap_or_default(), ..Default::default() };
             py.detach_result(|| terrio::ops::vector_filter::open_layers(&path, &options)).py()
         }
-        Err(_) => {
+        None => {
             let all = layers_from_object(src, None, None)?;
             Ok(match layers {
                 Some(names) => terrio::ops::vector_filter::select_layers(all, &names).py()?,
@@ -42,7 +42,7 @@ fn input_layers(py: Python<'_>, src: &Bound<'_, PyAny>, layers: Option<Vec<Strin
 /// `gdal vector grid` and `gdal_grid`).
 ///
 /// Args:
-///     src: The points: a path, a `Layer`, a `VectorDataset`, a list of layers, or GeoJSON. The
+///     src: The points, as vector data (see "Vector inputs" in the Python guide). The
 ///         vertices of lines and polygons count as points.
 ///     dst: Also write the raster to this path.
 ///     algorithm: `"invdist"` (the default), `"invdistnn"`, `"average"`, `"nearest"`,
@@ -210,7 +210,7 @@ fn write_layer(py: Python<'_>, layer: &terrio::Layer, dst: Option<&str>, format:
 /// `terrio lineref create` (GDAL's `ogrlineref -create`).
 ///
 /// Args:
-///     lines: The route lines: a path, a `Layer`, a `VectorDataset`, or GeoJSON. The first
+///     lines: The route lines, as vector data (see "Vector inputs" in the Python guide). The first
 ///         feature is the route, or each route with `line_field`.
 ///     points: The reference points (milestones), with their positions in `position_field`.
 ///     position_field: The field of the points' positions.

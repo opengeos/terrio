@@ -150,9 +150,9 @@ pub(crate) fn value_to_py<'py>(py: Python<'py>, v: &FieldValue) -> PyResult<Boun
     })
 }
 
-/// Parses GeoJSON text into a layer.
+/// Parses geometries as text (GeoJSON, a JSON list or box, or WKT) into a layer.
 fn layer_from_geojson_text(text: &str, name: Option<&str>, crs: Option<&str>) -> PyResult<Layer> {
-    let mut layer = terrio::memory::parse_geojson_layer(text.as_bytes(), "layer").py()?;
+    let mut layer = terrio::memory::parse_geometries(text, "layer").py()?;
     layer.name = name.unwrap_or("layer").to_string();
     let crs = match crs {
         Some(c) => SpatialRef::parse_literal(c).py()?,
@@ -163,14 +163,41 @@ fn layer_from_geojson_text(text: &str, name: Option<&str>, crs: Option<&str>) ->
     Ok(layer)
 }
 
-/// Converts a GeoJSON-like Python object (a dict, a JSON string, or an object with
-/// `__geo_interface__`) into a layer.
+/// An object's GeoJSON-like value: its `__geo_interface__` (Shapely, GeoPandas...), a NumPy
+/// array as a list, or itself.
+fn geo_interface<'py>(obj: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    if obj.hasattr("__geo_interface__")? {
+        obj.getattr("__geo_interface__")
+    } else if obj.hasattr("__array__")? && obj.hasattr("tolist")? {
+        obj.call_method0("tolist")
+    } else {
+        Ok(obj.clone())
+    }
+}
+
+/// Converts geometries given as data into a layer: a GeoJSON mapping or text, an object with
+/// `__geo_interface__` (a Shapely geometry, a GeoDataFrame or GeoSeries), WKT, a sequence of
+/// geometries or Features, or `(xmin, ymin, xmax, ymax)` bounds.
 pub(crate) fn layer_from_object(obj: &Bound<'_, PyAny>, name: Option<&str>, crs: Option<&str>) -> PyResult<Layer> {
     let py = obj.py();
     let text: String = if let Ok(s) = obj.extract::<String>() {
         s
     } else {
-        let value = if obj.hasattr("__geo_interface__")? { obj.getattr("__geo_interface__")? } else { obj.clone() };
+        let mut value = geo_interface(obj)?;
+        if value.cast::<PyList>().is_ok() || value.cast::<pyo3::types::PyTuple>().is_ok() {
+            // Each item as GeoJSON (a Shapely geometry...), numbers (bounds) as floats.
+            let items = value
+                .try_iter()?
+                .map(|item| {
+                    let item = item?;
+                    match item.extract::<f64>() {
+                        Ok(v) => Ok(v.into_pyobject(py)?.into_any()),
+                        Err(_) => geo_interface(&item),
+                    }
+                })
+                .collect::<PyResult<Vec<_>>>()?;
+            value = PyList::new(py, items)?.into_any();
+        }
         py.import("json")?.call_method1("dumps", (value,))?.extract()?
     };
     // A GeoDataFrame knows its CRS.
@@ -184,8 +211,32 @@ pub(crate) fn layer_from_object(obj: &Bound<'_, PyAny>, name: Option<&str>, crs:
     layer_from_geojson_text(&text, name, crs.as_deref())
 }
 
-/// The layers in a Python object: a `Layer`, a `VectorDataset`, a sequence of layers, or a
-/// GeoJSON-like object.
+/// One geometry as WKT or GeoJSON text: a `str` as given, a Shapely geometry as its WKT (in the
+/// CRS the caller assumes for WKT), or a GeoJSON mapping or `__geo_interface__` as JSON.
+pub(crate) fn geometry_text(obj: &Bound<'_, PyAny>) -> PyResult<String> {
+    if let Ok(text) = obj.extract::<String>() {
+        return Ok(text);
+    }
+    if !obj.is_instance_of::<PyDict>() && obj.hasattr("wkt")? {
+        return obj.getattr("wkt")?.extract();
+    }
+    obj.py().import("json")?.call_method1("dumps", (geo_interface(obj)?,))?.extract()
+}
+
+/// A vector source given as a path: an `os.PathLike`, or a `str` that is not geometries as text
+/// (GeoJSON or WKT).
+pub(crate) fn vector_path(src: &Bound<'_, PyAny>) -> PyResult<Option<String>> {
+    if src.extract::<String>().is_ok_and(|s| terrio::memory::is_geometry_text(&s)) {
+        return Ok(None);
+    }
+    match src.extract::<std::path::PathBuf>() {
+        Ok(path) => path.into_os_string().into_string().map(Some).map_err(|_| invalid("paths must be UTF-8")),
+        Err(_) => Ok(None),
+    }
+}
+
+/// The layers in a Python object: a `Layer`, a `VectorDataset`, a sequence of layers, or
+/// geometries as data (see [`layer_from_object`]).
 pub(crate) fn layers_from_object(obj: &Bound<'_, PyAny>, name: Option<&str>, crs: Option<&str>) -> PyResult<Vec<Layer>> {
     if let Ok(l) = obj.cast::<PyLayer>() {
         return Ok(vec![l.borrow().resolved().into_owned()]);

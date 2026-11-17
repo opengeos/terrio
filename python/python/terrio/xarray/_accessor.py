@@ -1054,49 +1054,6 @@ class XRasterBase:
             return None
 
 
-def _geometry_input(geometries: Any) -> Any:
-    """`clip`'s geometries as a terrio `Layer` or a list of GeoJSON-like geometries.
-
-    A vector file path, a one-layer `VectorDataset` or a GeoDataFrame/GeoSeries (its active
-    geometry column) becomes a `Layer` (with its CRS); a GeoJSON
-    FeatureCollection, a Feature or a single geometry becomes a list of geometries; other inputs
-    are returned as given.
-    """
-    if isinstance(geometries, _terrio.Layer):
-        return geometries
-    if isinstance(geometries, (str, os.PathLike, _terrio.VectorDataset)):
-        dataset = (
-            geometries
-            if isinstance(geometries, _terrio.VectorDataset)
-            else _terrio.open_vector(os.fspath(geometries))
-        )
-        if len(dataset) != 1:
-            raise ValueError(
-                f"the vector dataset has {len(dataset)} layers {dataset.layer_names}; pass one "
-                "as terrio.open_vector(path)[name]"
-            )
-        return dataset[0]
-    if hasattr(geometries, "__geo_interface__") and hasattr(geometries, "crs"):
-        # GeoPandas: the active geometry column only (a GeoSeries is its own), with its CRS
-        series = geometries.geometry
-        if hasattr(series, "to_arrow"):  # GeoPandas 1.0: through Arrow, without GeoJSON
-            try:
-                return _terrio.Layer.from_arrow(series.to_frame(name="geometry"))
-            except ImportError:  # no pyarrow
-                pass
-        if series.crs is None:  # plain geometries, in `crs=` or the array's (GeoJSON means 4326)
-            return [f["geometry"] for f in series.__geo_interface__["features"]]
-        return _terrio.Layer.from_geojson(series.__geo_interface__, crs=series.crs.to_wkt())
-    gi = getattr(geometries, "__geo_interface__", geometries)
-    if isinstance(gi, dict):
-        if gi.get("type") == "FeatureCollection":
-            return [f["geometry"] for f in gi["features"]]
-        if gi.get("type") == "Feature":
-            return [gi["geometry"]]
-        return [gi]
-    return geometries
-
-
 def _gcps_to_geojson(gcps: Iterable[Any]) -> dict[str, Any]:
     """Ground control points as rioxarray stores them: a GeoJSON FeatureCollection.
 
@@ -1640,8 +1597,9 @@ class TerrioArray(XRasterBase):
 
         Args:
             geometries: GeoJSON-like geometries (dicts, or objects with `__geo_interface__`), a
-                single one, a GeoJSON Feature or FeatureCollection, a GeoDataFrame or GeoSeries,
-                a vector file path, or a terrio `Layer`. Layers, GeoPandas objects and files
+                single one, a GeoJSON Feature or FeatureCollection, WKT, `(xmin, ymin, xmax,
+                ymax)` bounds, a GeoDataFrame or GeoSeries, Arrow data, a vector file path, or a
+                terrio `Layer`. Layers, GeoPandas objects, Arrow data and files
                 carry their own CRS and are burnt without a round trip through GeoJSON on
                 north-up grids in memory.
             crs: Their CRS (default: the Layer's, GeoPandas object's or file's own, else the
@@ -1666,7 +1624,7 @@ class TerrioArray(XRasterBase):
                 f"{get_data_var_message(self._obj)}"
             )
         crs = crs_from_user_input(crs) if crs is not None else None
-        geometries = _geometry_input(geometries)
+        geometries = _ops.geometry_input(geometries, (crs or self.crs).to_wkt())
         geoms: Any
         if isinstance(geometries, _terrio.Layer):
             own = crs_from_user_input(geometries.crs) if geometries.crs else None
@@ -1936,7 +1894,9 @@ class TerrioArray(XRasterBase):
         """Statistics of the pixels in each zone with `terrio.zonal_stats`.
 
         Args:
-            zones: The zones, as `terrio.zonal_stats` takes them (a vector path or a `Layer`).
+            zones: The zones, as `terrio.zonal_stats` takes them (a path, a `Layer`,
+                a GeoDataFrame, Shapely geometries, GeoJSON, WKT, bounds...). Geometries
+                without a CRS of their own are in the array's.
             **kwargs: Options of `terrio.zonal_stats` (`stats`, `all_touched`, `fractional`,
                 `weights`, `bands`, ...).
 
@@ -1944,7 +1904,7 @@ class TerrioArray(XRasterBase):
             terrio.Layer: The zones with a column per band and statistic.
         """
         prefixes = kwargs.pop("prefixes", None)
-        return _ops.zonal_stats([self._obj], zones, prefixes, **kwargs)
+        return _ops.zonal_stats([self._obj], _ops.in_crs(zones, self.crs), prefixes, **kwargs)
 
     # Writing.
 
@@ -2263,7 +2223,8 @@ class TerrioDataset(XRasterBase):
         Returns:
             xarray.Dataset: The clipped Dataset.
         """
-        geometries = _geometry_input(geometries)
+        own = crs_from_user_input(crs) if crs is not None else self.crs
+        geometries = _ops.geometry_input(geometries, own.to_wkt() if own is not None else None)
         if not isinstance(geometries, _terrio.Layer):
             geometries = list(geometries)
         out = self._per_var(
@@ -2322,7 +2283,9 @@ class TerrioDataset(XRasterBase):
         """Statistics of each spatial variable in each zone, with `terrio.zonal_stats`.
 
         Args:
-            zones: The zones, as `terrio.zonal_stats` takes them (a vector path or a `Layer`).
+            zones: The zones, as `terrio.zonal_stats` takes them (a path, a `Layer`,
+                a GeoDataFrame, Shapely geometries, GeoJSON, WKT, bounds...). Geometries
+                without a CRS of their own are in the array's.
             **kwargs: Options of `terrio.zonal_stats`; `prefixes` defaults to the variables'
                 names.
 
@@ -2341,7 +2304,7 @@ class TerrioDataset(XRasterBase):
             da.terrio.set_spatial_dims(x_dim=x_dim, y_dim=y_dim, inplace=True)
             arrays.append(da)
         prefixes = kwargs.pop("prefixes", None) or [str(n) for n in names]
-        return _ops.zonal_stats(arrays, zones, prefixes, **kwargs)
+        return _ops.zonal_stats(arrays, _ops.in_crs(zones, self.crs), prefixes, **kwargs)
 
     def to_raster(
         self,
