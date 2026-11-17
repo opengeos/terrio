@@ -46,4 +46,10 @@ fn a_grid_whose_first_download_fails_is_listed() {
         // The fetch was tried, by this query.
         assert!(attempts.load(Ordering::SeqCst) > before, "{source}");
     }
+    // NGVD29 height (m) to NAVD88 height (2), VERTCON central, whose fetch fails when it runs:
+    // listed, not the next transformation's grids or none.
+    let t = Transformer::new(&SpatialRef::parse("EPSG:4267+7968").unwrap(), &SpatialRef::parse("EPSG:4269+5703").unwrap()).unwrap();
+    let uses = t.best_operation_grids_at(-100.0, 40.0, 0.0).unwrap();
+    let names: Vec<&str> = uses.iter().map(|g| g.name.as_str()).collect();
+    assert_eq!(names, ["us_noaa_nadcon5_nad27_nad83_1986_conus.tif", "us_noaa_vertconc.tif"]);
 }

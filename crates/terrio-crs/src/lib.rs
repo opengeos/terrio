@@ -3079,12 +3079,12 @@ impl Transformer {
             let (lon, lat) = self.src.unproject(x, y).ok_or_else(fail)?;
             let p = datum::Point { lon, lat, h: z * v.to_meter, t: self.time };
             // Stops at the first whose grid, or the grid of its route, is missing.
+            // Or whose download failed, before or by its run: the point stops there, as for the
+            // horizontal transformation (`Route::grid_operations_at`).
+            let lacks = |op: &datum::Op| !op.available() || op.network_failed();
             let missing = |i: usize| {
-                !all[i].0.available()
-                    || all[i]
-                        .1
-                        .as_ref()
-                        .is_some_and(|r| r.grid_operations_at(&self.src_horizontal, x, y, p).iter().any(|op| !op.available()))
+                lacks(&all[i].0)
+                    || all[i].1.as_ref().is_some_and(|r| r.grid_operations_at(&self.src_horizontal, x, y, p).into_iter().any(lacks))
             };
             if let Some((i, _)) = self.vertical_pick(all, x, y, p, missing) {
                 names.extend(all[i].0.grids());
@@ -3311,6 +3311,10 @@ impl Transformer {
             };
             if let Some(h) = q.and_then(|q| datum::run_op(op, q, false, true)).map(|r| r.h) {
                 return Some((i, Some(h)));
+            }
+            // A grid it failed for by this run (a failed download).
+            if stop(i) {
+                return Some((i, None));
             }
             excluded.push(i);
         }
