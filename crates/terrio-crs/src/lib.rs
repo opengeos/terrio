@@ -460,7 +460,7 @@ impl SpatialRef {
                 })
             };
             let epsg = declared_epsg(wkt)
-                .or_else(|| identify_epsg(wkt).filter(|code| !identified_by_shared_name(wkt, *code)))
+                .or_else(|| identify_epsg(wkt))
                 .filter(|code| fits(SpatialRef { epsg: Some(*code), ..Default::default() }));
             // The extension is kept through the WKT, not as the CRS's PROJ string: PROJ computes
             // on it as a pipeline step reads it, whose ellipsoid rules and leniency differ from
@@ -480,10 +480,7 @@ impl SpatialRef {
         if (is_variant_c(wkt) || proj4_extension(wkt).is_some()) && Def::from_wkt(wkt).is_err() {
             return Self { wkt: Some(wkt.to_string()), ..Default::default() };
         }
-        // Not a code identified by name alone on a datum no CRS is on (ESRI's GCS_Greenland_1996,
-        // GR96): the WKT keeps its own datum's transformations, as PROJ 9.8.1 places it by a
-        // ballpark, and gives the code as its geographic CRS ([`Self::geographic_code`]).
-        let epsg = identify_epsg(wkt).filter(|code| declared_epsg(wkt) == Some(*code) || !identified_by_shared_name(wkt, *code));
+        let epsg = identify_epsg(wkt);
         Self { epsg, wkt: Some(wkt.to_string()), ..Default::default() }.with_esri()
     }
 
@@ -1519,14 +1516,33 @@ pub(crate) fn wkt_datum_name_and_code(wkt: &str) -> Option<(String, Option<u32>)
     Some((datum.name().unwrap_or_default().to_string(), datum.epsg()))
 }
 
-/// Whether `code` is identified for a WKT only by its name, on a datum with which the WKT's has a
-/// name in common, the WKT's having no EPSG geographic CRS on it: ESRI's GCS_Greenland_1996
-/// (Greenland 1996, 6747) as GR96 (EPSG:4747, on the GR96 ensemble).
-pub(crate) fn identified_by_shared_name(wkt: &str, code: u32) -> bool {
-    let (datums, _) = wkt_datums_and_others(wkt);
-    !datums.is_empty()
-        && datums.iter().all(|d| epsg::geographic_on(*d).is_empty())
-        && epsg::get(code).is_some_and(|e| !datums.contains(&e.datum) && datums.iter().any(|d| epsg::datums_share_a_name(*d, e.datum)))
+/// The EPSG geographic CRS PROJ 9.8.1 identifies a WKT 1 `GEOGCS` as by its name alone, on a datum
+/// no EPSG geographic CRS is on and with which the CRS's datum has a name in common: ESRI's
+/// GCS_Greenland_1996 on `D_Greenland_1996` (Greenland 1996, 6747) as GR96, EPSG:4747, on the GR96
+/// ensemble (1421). Not for another name on that datum, where PROJ identifies none, nor for a
+/// geographic 3D CRS (ESRI's `LINUNIT`), which the name table leaves out, nor for WKT 2, where PROJ
+/// does not read ESRI's datum names. The caller gives it as the geographic CRS only, not as the
+/// CRS's own code: PROJ places such a CRS by a ballpark, not by the transformations of GR96.
+pub(crate) fn identify_by_shared_name(geogcs: &str) -> Option<u32> {
+    let (datums, _) = wkt_datums_and_others(geogcs);
+    if datums.is_empty() || !datums.iter().all(|d| epsg::geographic_on(*d).is_empty()) {
+        return None;
+    }
+    let root = wkt1::parse(geogcs)?;
+    if !root.key.eq_ignore_ascii_case("GEOGCS") || root.child("LINUNIT").is_some() {
+        return None;
+    }
+    // ESRI's names for a `GCS_` geographic CRS, as PROJ's WKT reader maps them.
+    let esri = root.name().is_some_and(|n| n.starts_with("GCS_"));
+    let code = epsg::crs_named_as_proj(root.name()?, false, false, esri)?;
+    let datum = epsg::get(code)?.datum;
+    if datums.contains(&datum) || !datums.iter().any(|d| epsg::datums_share_a_name(*d, datum)) {
+        return None;
+    }
+    // The same conversion on the same ellipsoid.
+    let own = Def::wkt_conversion(geogcs)?;
+    let theirs = Def::new(&SpatialRef { epsg: Some(code), ..Default::default() }).ok()?;
+    (own.same_conversion(&theirs) && (own.ell.a - theirs.ell.a).abs() < 1e-3 && (own.ell.es - theirs.ell.es).abs() < 1e-9).then_some(code)
 }
 
 /// The EPSG datums of a WKT definition's geodetic datum, and the other datums
@@ -1642,39 +1658,7 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
     // On the datum the WKT names, else on those whose CRSs ESRI writes with its name: GDAL
     // identifies ESRI's ETRS_1989_NTM_Zone_18 on D_ETRS_1989 by its name as EPSG:5118, on
     // ETRS89-NOR.
-    // Else, for a named datum terrio has no CRS on, the CRS PROJ 9.8.1 finds by the WKT's name on a
-    // datum its database gives a name in common: ESRI's GCS_Greenland_1996 on D_Greenland_1996
-    // (Greenland 1996, 6747) is GR96, EPSG:4747, on the GR96 ensemble (1421). By its name only, as
-    // PROJ identifies no CRS for another name on that datum. Not a geographic 3D CRS, which the
-    // name table leaves out.
-    let sharing = || {
-        let own = own.as_ref()?;
-        // A WKT 1 GEOGCS with a `LINUNIT` is ESRI's geographic 3D CRS: PROJ identifies
-        // GCS_Greenland_1996 with one as EPSG:4909, which the name table leaves out.
-        if geographic_dimension_3d(wkt) == Some(true) || wkt1::parse(wkt).is_some_and(|r| r.child("LINUNIT").is_some()) {
-            return None;
-        }
-        // WKT 1 only: PROJ reads ESRI's datum names in WKT 1 alone (a WKT 2 `GEOGCRS` named
-        // GCS_Greenland_1996 on `D_Greenland_1996` has an unknown datum, and no code). ESRI's
-        // names for a `GCS_` geographic CRS, or a projected CRS after one or a `D_` datum, as
-        // PROJ's WKT reader maps them.
-        let root = wkt1::parse(wkt)?;
-        let projected = !own.is_geographic();
-        if !root.key.eq_ignore_ascii_case(if projected { "PROJCS" } else { "GEOGCS" }) {
-            return None;
-        }
-        let gcs = |n: &wkt1::Node| n.name().is_some_and(|n| n.starts_with("GCS_"));
-        let esri = if projected {
-            root.child("GEOGCS").is_some_and(|g| gcs(g) || g.child("DATUM").and_then(|d| d.name()).is_some_and(|n| n.starts_with("D_")))
-        } else {
-            gcs(&root)
-        };
-        let code = epsg::crs_named_as_proj(root.name()?, projected, false, esri)?;
-        let datum = epsg::get(code)?.datum;
-        let shared = datums.iter().any(|d| epsg::geographic_on(*d).is_empty() && *d != datum && epsg::datums_share_a_name(*d, datum));
-        (shared && same(own, code)).then_some(code)
-    };
-    if let Some(code) = search(&datums).or_else(|| search(others)).or_else(sharing) {
+    if let Some(code) = search(&datums).or_else(|| search(others)) {
         return Some(code);
     }
     #[cfg(feature = "wbprojection-fallback")]

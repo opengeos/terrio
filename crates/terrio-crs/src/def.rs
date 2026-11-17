@@ -979,26 +979,11 @@ impl Def {
         };
         // Or on its datum but another prime meridian, which the definition applies itself.
         let fits = |g: &u32| own.as_deref().is_none_or(|t| super::declared_fits(t, *g) || super::declared_fits_but_meridian(t, *g));
-        let declared = c.geog.filter(fits).or_else(|| c.geogcs.epsg().filter(fits));
-        let geog = declared.or_else(|| match &c.geogcs_wkt1 {
+        let geog = c.geog.filter(fits).or_else(|| c.geogcs.epsg().filter(fits)).or_else(|| match &c.geogcs_wkt1 {
             // WKT 2: identified loosely, so on the same ellipsoid only.
             Some(text) => super::identify_epsg(text).filter(|g| wkt2::same_ellipsoid(*g, self.ell.a, self.ell.es)),
             None => super::identify_epsg(geogcs_text?),
         });
-        // A datum no CRS is on keeps its own transformations when its CRS is identified by name
-        // on a datum with which it has a name in common: PROJ 9.8.1 identifies ESRI's
-        // GCS_Greenland_1996 (Greenland 1996) as GR96 but places it by a ballpark, not by "GR96 to
-        // WGS 84 (1)".
-        if declared.is_none()
-            && let (Some(g), Some(own)) = (geog, own.as_deref())
-            && super::identified_by_shared_name(c.geogcs_wkt1.as_deref().unwrap_or(own), g)
-        {
-            self.datum_by_name(own);
-            // Not for WKT 2, identified through its WKT 1 form: PROJ identifies it by EPSG's names
-            // only (a `GEOGCRS` named GCS_Greenland_1996 has no code).
-            self.named_geog = geog.filter(|_| c.geogcs_wkt1.is_none());
-            return;
-        }
         let geog = geog.map(|g| epsg::get(g).filter(|e| e.proj.starts_with("+proj=geocent")).map_or(g, |e| e.geog));
         if let Some(e) = geog.and_then(epsg::get)
             && e.proj.starts_with("+proj=longlat")
@@ -1011,10 +996,11 @@ impl Def {
             && let Some(own) = own.as_deref()
         {
             self.datum_by_name(own);
-            // A WKT 1 `GEOGCS [` the text search misses, identified by name as above from the node
-            // as written back.
-            if geogcs_text.is_none() && c.geogcs_wkt1.is_none() {
-                self.named_geog = super::identify_epsg(own).filter(|g| super::identified_by_shared_name(own, *g));
+            // A WKT 1 GEOGCS on a datum no CRS is on keeps its datum's transformations, but gives
+            // the CRS PROJ 9.8.1 identifies it as by name (ESRI's GCS_Greenland_1996, GR96) as its
+            // geographic CRS. The text as written, else the node as written back (`GEOGCS [`).
+            if c.geogcs_wkt1.is_none() {
+                self.named_geog = super::identify_by_shared_name(geogcs_text.unwrap_or(own));
             }
         }
     }

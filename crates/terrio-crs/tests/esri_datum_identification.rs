@@ -23,39 +23,44 @@ fn gcrs(dimension: u8) -> String {
     )
 }
 
-/// PROJ 9.8.1 (pyproj 3.8.0, network off) identifies ESRI's GCS_Greenland_1996 and its UTM zone
-/// 22N as GR96 by their names, and no CRS for another name, for another axis or for a geographic
-/// 3D CRS: `CRS.from_wkt(wkt).to_epsg(min_confidence=100)` gives 4747, 4747, 4747 (spaced), 3182,
-/// None, None, None and None for the WKT 2 `GEOGCRS` of that name in 2D and 3D, and
-/// None (for `Foo` it lists none at all), then EPSG:4909 for ESRI's GCS_Greenland_1996 with a
-/// `LINUNIT`, a geographic 3D CRS terrio does not identify by name, and EPSG:4909 at 70 % for
-/// Greenland_1996_3D.
+/// The geographic CRS of ESRI's GCS_Greenland_1996 and its variants, against PROJ 9.8.1
+/// (pyproj 3.8.0, network off): `CRS.from_wkt(wkt).to_epsg(min_confidence=100)` of the WKT, or of
+/// its GEOGCS for a projected CRS, given per case. None of them takes the code as its own
+/// (`SpatialRef::epsg`): PROJ places them by a ballpark, not by GR96's transformations.
 #[test]
 fn greenland_1996_is_gr96_by_its_name_as_proj_identifies_it() {
-    let cases: [(String, Option<u32>, Option<u32>); 11] = [
-        (GR96.to_string(), Some(4747), Some(4747)),
-        (GR96.replace("GCS_Greenland_1996", "GR96"), Some(4747), Some(4747)),
-        // Spaced, as some writers put it.
-        (GR96.replace("GEOGCS[", "GEOGCS ["), Some(4747), Some(4747)),
-        (utm_22n("Greenland_1996_UTM_Zone_22N"), Some(3182), Some(4747)),
-        (GR96.replace("GCS_Greenland_1996", "Foo"), None, None),
-        (GR96.replace("6378137.0", "6378142.0"), None, None),
-        // The projected CRS of another name is not EPSG:3182, but its GEOGCS is GR96.
-        (utm_22n("Foo"), None, Some(4747)),
-        // WKT 2 of that name, 2D and 3D: PROJ maps ESRI's names for WKT 1 only.
-        (gcrs(2), None, None),
-        (gcrs(3), None, None),
-        // ESRI's geographic 3D CRS, which PROJ identifies as EPSG:4909 (not in the name table).
-        (GR96.replace("0.0174532925199433]]", r#"0.0174532925199433],LINUNIT["Meter",1.0]]"#), None, None),
+    let cases: [(String, Option<u32>); 11] = [
+        // PROJ: 4747.
+        (GR96.to_string(), Some(4747)),
+        // PROJ: 4747, by EPSG's name.
+        (GR96.replace("GCS_Greenland_1996", "GR96"), Some(4747)),
+        // Spaced, as some writers put it. PROJ: 4747.
+        (GR96.replace("GEOGCS[", "GEOGCS ["), Some(4747)),
+        // PROJ: 3182, and 4747 for its GEOGCS.
+        (utm_22n("Greenland_1996_UTM_Zone_22N"), Some(4747)),
+        // Another name for the projected CRS: PROJ identifies none, but 4747 for its GEOGCS.
+        (utm_22n("Foo"), Some(4747)),
+        // Another name: PROJ lists no CRS at all.
+        (GR96.replace("GCS_Greenland_1996", "Foo"), None),
+        // Another axis: PROJ identifies none.
+        (GR96.replace("6378137.0", "6378142.0"), None),
+        // WKT 2 of that name, 2D and 3D: PROJ reads ESRI's datum names in WKT 1 only, and lists
+        // 4747 at 25 %.
+        (gcrs(2), None),
+        (gcrs(3), None),
+        // ESRI's geographic 3D CRS with a `LINUNIT`: PROJ gives 4909 (at 100 %), a geographic 3D
+        // CRS terrio's name table leaves out, so terrio gives none.
+        (GR96.replace("0.0174532925199433]]", r#"0.0174532925199433],LINUNIT["Meter",1.0]]"#), None),
+        // Named Greenland_1996_3D: PROJ gives 4909 at 70 % only; terrio none either.
         (
             r#"GEOGCS["Greenland_1996_3D",DATUM["D_Greenland_1996",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433],LINUNIT["Meter",1.0]]"#.to_string(),
             None,
-            None,
         ),
     ];
-    for (wkt, code, geographic) in cases {
-        assert_eq!(terrio_crs::identify_epsg(&wkt), code, "{wkt}");
-        assert_eq!(SpatialRef::from_wkt(&wkt).geographic_code(), geographic, "{wkt}");
+    for (wkt, geographic) in cases {
+        let crs = SpatialRef::from_wkt(&wkt);
+        assert_eq!(crs.geographic_code(), geographic, "{wkt}");
+        assert_eq!(crs.epsg, None, "{wkt}");
     }
 }
 
@@ -66,8 +71,8 @@ fn greenland_1996_is_gr96_by_its_name_as_proj_identifies_it() {
 /// identifies none (`to_epsg(min_confidence=100)` is None), nor does terrio.
 ///
 /// PROJ identifies Mhast's, Hong Kong's and Tapi Aike's GEOGCSs at 70 % or 90 % only (their CRS
-/// names differ from EPSG's), where terrio gives the CRS of the datum PROJ resolves (as
-/// [`terrio_crs::identify_epsg`] identifies a CRS on its datum with its conversion, as GDAL does).
+/// names differ from EPSG's), where terrio gives the CRS of the datum PROJ resolves (as terrio
+/// identifies a CRS on its datum with its conversion, as GDAL does).
 #[test]
 fn an_esri_datum_name_alone_gives_the_geographic_crs_of_that_datum() {
     let gcs = |name: &str, datum: &str, ellipsoid: &str, a: f64, rf: f64| {
@@ -104,12 +109,11 @@ fn greenland_1996_identified_as_gr96_keeps_its_ballpark() {
     let (x, y) = t.transform(-51.7, 64.2).unwrap();
     assert!((x + 51.7).abs() < 1e-9 && (y - 64.2).abs() < 1e-9, "({x}, {y})");
     assert!(t.operation_at(-51.7, 64.2, 0.0).unwrap().unwrap().ballpark);
-    // Neither it nor its projected CRS takes the identified code as its own, and a GeoTIFF writes
-    // its datum, not GR96's GeographicTypeGeoKey (2048).
+    // A GeoTIFF writes its datum, not GR96's GeographicTypeGeoKey (2048), for it and its
+    // projected CRS; nor does terrio's identification give a layer or raster GR96's code.
     for wkt in [GR96.to_string(), utm_22n("Greenland_1996_UTM_Zone_22N")] {
         let crs = SpatialRef::from_wkt(&wkt);
-        assert_eq!(crs.epsg, None, "{wkt}");
-        assert_eq!(crs.geographic_code(), Some(4747), "{wkt}");
+        assert_eq!(terrio_crs::identify_epsg(&wkt), None, "{wkt}");
         let keys = terrio_crs::geokeys::user_defined_keys(&crs, "custom").unwrap();
         assert!(!keys.shorts.contains(&(2048, 4747)), "{wkt}: {:?}", keys.shorts);
     }
