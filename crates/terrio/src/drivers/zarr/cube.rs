@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::ops::zonal_cube::{CubeValues, ZonalCube};
-use wbvector::{Coord, FieldValue, Geometry, Ring};
+use wbvector::{Coord, FieldType, FieldValue, Geometry, Ring};
 
 /// Arrays of the CF encoding, and the dimensions they use; a field of the same name is suffixed.
 const RESERVED: [&str; 14] = [
@@ -28,6 +28,21 @@ const RESERVED: [&str; 14] = [
 pub(crate) fn write(cube: &ZonalCube, path: &Path) -> Result<()> {
     if memfs::exists(path) {
         return Err(Error::InvalidArgument(format!("{} already exists", path.display())));
+    }
+    for (v, var) in cube.variables.iter().enumerate() {
+        let expected = cube.shape(v).unwrap_or_default().iter().try_fold(1usize, |n, &d| n.checked_mul(d));
+        let given = match &var.values {
+            CubeValues::F32(values) => values.len(),
+            CubeValues::F64(values) => values.len(),
+        };
+        if expected != Some(given) {
+            let shape = cube.shape(v).unwrap_or_default();
+            return Err(Error::InvalidArgument(format!(
+                "variable '{}' has {given} values for its shape {shape:?} ({} values)",
+                var.name,
+                expected.map_or("too many".to_string(), |n| n.to_string())
+            )));
+        }
     }
     let polygons = polygons(cube)?;
     let srs = crate::crs::SpatialRef::from_layer(&cube.zones);
@@ -132,7 +147,7 @@ pub(crate) fn write(cube: &ZonalCube, path: &Path) -> Result<()> {
     for (i, field) in cube.zones.schema.fields().iter().enumerate() {
         let name = unique(&field.name, &mut taken);
         let column: Vec<&FieldValue> = cube.zones.features.iter().map(|f| f.attributes.get(i).unwrap_or(&FieldValue::Null)).collect();
-        write_field(path, &name, &column)?;
+        write_field(path, &name, field.field_type, &column)?;
         coordinates.push(name);
     }
 
@@ -161,7 +176,7 @@ pub(crate) fn write(cube: &ZonalCube, path: &Path) -> Result<()> {
     let names: Vec<String> = cube.statistics.iter().map(|s| s.name()).collect();
     strings(path, "statistic", &["statistic"], &names, json!({}))?;
     for (v, var) in cube.variables.iter().enumerate() {
-        let shape = cube.shape(v);
+        let shape = cube.shape(v).unwrap_or_default();
         let mut dims = vec!["geometry"];
         dims.extend(var.dims.iter().map(|d| d.name.as_str()));
         dims.push("statistic");
@@ -197,10 +212,12 @@ fn count(n: usize) -> Result<i32> {
     i32::try_from(n).map_err(|_| Error::InvalidArgument("too many vertices for a Zarr cube's CF geometries".into()))
 }
 
-/// `name` as an array name of its own: a path separator becomes `_`, no name `field`, and
+/// `name` as an array name of its own: a path separator or whitespace becomes `_`, no name `field`, and
 /// `_2`, `_3`... is added when it is taken, ignoring case (for case-insensitive file systems).
 fn unique(name: &str, taken: &mut Vec<String>) -> String {
-    let base = if name.is_empty() { "field".to_string() } else { name.replace(['/', '\\'], "_") };
+    // CF lists coordinates separated by whitespace: a name holds none.
+    let base: String = name.chars().map(|c| if c == '/' || c == '\\' || c.is_whitespace() { '_' } else { c }).collect();
+    let base = if base.is_empty() { "field".to_string() } else { base };
     let clash = |n: &str, taken: &[String]| taken.iter().any(|t| t.eq_ignore_ascii_case(n));
     let mut out = base.clone();
     let mut k = 2;
@@ -212,24 +229,23 @@ fn unique(name: &str, taken: &mut Vec<String>) -> String {
     out
 }
 
-/// A field: integers as int64 (float64 with NaN when one is null), floats as float64, others as
-/// strings (null as "").
-fn write_field(path: &Path, name: &str, column: &[&FieldValue]) -> Result<()> {
+/// A field, by its type: integers as int64 (float64 with NaN when one is null), floats as
+/// float64 (NaN for null), others as strings (null as "").
+fn write_field(path: &Path, name: &str, field_type: FieldType, column: &[&FieldValue]) -> Result<()> {
     let dims = ["geometry"];
-    let integers: Option<Vec<i64>> = column.iter().map(|v| if let FieldValue::Integer(i) = v { Some(*i) } else { None }).collect();
-    if let Some(values) = integers {
+    let number = |v: &FieldValue| match v {
+        FieldValue::Integer(i) => Some(*i as f64),
+        FieldValue::Float(x) => Some(*x),
+        _ => None,
+    };
+    if field_type == FieldType::Integer
+        && let Some(values) =
+            column.iter().map(|v| if let FieldValue::Integer(i) = v { Some(*i) } else { None }).collect::<Option<Vec<i64>>>()
+    {
         return numeric(path, name, &dims, DataType::I64, &i64_bytes(&values), json!({}));
     }
-    let numbers: Option<Vec<f64>> = column
-        .iter()
-        .map(|v| match v {
-            FieldValue::Integer(i) => Some(*i as f64),
-            FieldValue::Float(x) => Some(*x),
-            FieldValue::Null => Some(f64::NAN),
-            _ => None,
-        })
-        .collect();
-    if let Some(values) = numbers.filter(|v| v.iter().any(|x| !x.is_nan())) {
+    if matches!(field_type, FieldType::Integer | FieldType::Float) {
+        let values: Vec<f64> = column.iter().map(|v| number(v).unwrap_or(f64::NAN)).collect();
         return write_array_v3(path, name, &[values.len()], &dims, DataType::F64, &f64_bytes(&values), Some(f64::NAN), json!({}));
     }
     let text: Vec<String> = column

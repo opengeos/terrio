@@ -55,12 +55,12 @@ pub enum CubeValues {
 }
 
 impl ZonalCube {
-    /// The shape of variable `variable`: `[features, dims..., statistics]`.
-    pub fn shape(&self, variable: usize) -> Vec<usize> {
+    /// The shape of variable `variable`, `[features, dims..., statistics]`, if it exists.
+    pub fn shape(&self, variable: usize) -> Option<Vec<usize>> {
         let mut shape = vec![self.zones.features.len()];
-        shape.extend(self.variables[variable].dims.iter().map(|d| d.labels.len()));
+        shape.extend(self.variables.get(variable)?.dims.iter().map(|d| d.labels.len()));
         shape.push(self.statistics.len());
-        shape
+        Some(shape)
     }
 
     /// Writes the cube to the new Zarr v3 store `path`, readable by xarray and CF tools:
@@ -75,7 +75,10 @@ impl ZonalCube {
     /// # Errors
     ///
     /// [`Error::InvalidArgument`] when `path` exists, or a zone has no geometry, an empty one or
-    /// one that is not a polygon (CF cannot store it), naming it; I/O errors.
+    /// one that is not a polygon (CF cannot store it), naming it, or a variable whose values do not
+    /// match its shape; I/O errors. Nothing is written when one of these is found.
+    ///
+    /// See [`zonal_cube`] for an example.
     pub fn write_zarr(&self, path: &str) -> Result<()> {
         #[cfg(feature = "zarr")]
         {
@@ -102,7 +105,24 @@ impl ZonalCube {
 ///
 /// [`Error::InvalidArgument`] for weighted statistics, `dst_srs` or `decimal_places` (a cube keeps
 /// the zones' CRS and full precision), a band without a time when another has one, or two bands
-/// on the same cell, naming their prefixes; and the errors of [`zonal_stats_with`].
+/// on the same cell, naming their files; [`Error::ResourceLimit`] for a cube too large to hold;
+/// and the errors of [`zonal_stats_with`].
+///
+/// ```no_run
+/// use terrio::ops::zonal::{Statistic, ZonalBand, ZonalOptions, ZonalRaster, ZonalSource};
+/// let fields = terrio::open_vector("fields.gpkg", &Default::default())?.layers.remove(0);
+/// let dated = |path: &str, time: &str, label: &str| ZonalSource {
+///     raster: ZonalRaster::Path(path.into()),
+///     bands: vec![ZonalBand { band: 1, prefix: format!("{time}_{label}"), time: Some(time.into()), label: Some(label.into()) }],
+/// };
+/// let mut sources = vec![dated("s2/20240701_B04.tif", "2024-07-01", "B04"), dated("s2/20240711_B04.tif", "2024-07-11", "B04")];
+/// let options = ZonalOptions { stats: vec![Statistic::Mean, Statistic::Median], ..Default::default() };
+/// terrio::ops::zonal_cube::check_zones(&fields)?; // before reading any raster
+/// let cube = terrio::ops::zonal_cube::zonal_cube(&fields, &mut sources, &options, "red")?;
+/// assert_eq!(cube.shape(0), Some(vec![fields.features.len(), 2, 1, 2])); // geometry, time, band, statistic
+/// cube.write_zarr("red.zarr")?;
+/// # Ok::<(), terrio::Error>(())
+/// ```
 pub fn zonal_cube(zones: &Layer, sources: &mut [ZonalSource], options: &ZonalOptions, name: &str) -> Result<ZonalCube> {
     if options.weights.is_some() || options.stats.iter().any(|s| s.uses_weights()) {
         return Err(Error::InvalidArgument("weighted statistics are not supported in zonal cubes".into()));
@@ -123,30 +143,33 @@ pub fn zonal_cube(zones: &Layer, sources: &mut [ZonalSource], options: &ZonalOpt
         (None, Some(_)) => format!("b{}", b.band),
         (None, None) => b.prefix.clone(),
     };
-    let mut times: Vec<String> = Vec::new();
-    let mut keys: Vec<String> = Vec::new();
+    // Entries in first-appearance order, and the index of each.
+    let (mut times, mut time_index): (Vec<String>, HashMap<String, usize>) = (Vec::new(), HashMap::new());
+    let (mut keys, mut key_index): (Vec<String>, HashMap<String, usize>) = (Vec::new(), HashMap::new());
     for (_, b) in &bands {
         if let Some(t) = &b.time
-            && !times.contains(t)
+            && !time_index.contains_key(t)
         {
+            time_index.insert(t.clone(), times.len());
             times.push(t.clone());
         }
         let k = key(b);
-        if !keys.contains(&k) {
+        if !key_index.contains_key(&k) {
+            key_index.insert(k.clone(), keys.len());
             keys.push(k);
         }
     }
     let banded = bands.iter().any(|(_, b)| b.label.is_some()) || keys.len() > 1;
     let key_count = if banded { keys.len() } else { 1 };
-    let cells = times.len().max(1) * key_count;
+    let cells = times.len().max(1).checked_mul(key_count).ok_or_else(|| Error::ResourceLimit("too many zonal cube cells".into()))?;
     // The cell of each band of each source; two bands on one cell are an error.
     let mut taken: HashMap<usize, String> = HashMap::new();
     let mut cell_of: Vec<Vec<usize>> = Vec::with_capacity(sources.len());
     for source in sources.iter() {
         let mut row = Vec::with_capacity(source.bands.len());
         for b in &source.bands {
-            let t = b.time.as_ref().map_or(0, |t| times.iter().position(|x| x == t).unwrap_or(0));
-            let k = if banded { keys.iter().position(|x| *x == key(b)).unwrap_or(0) } else { 0 };
+            let t = b.time.as_ref().and_then(|t| time_index.get(t).copied()).unwrap_or(0);
+            let k = if banded { key_index.get(&key(b)).copied().unwrap_or(0) } else { 0 };
             let cell = t * key_count + k;
             if let Some(first) = taken.insert(cell, input_name(source, b)) {
                 return Err(Error::InvalidArgument(format!("inputs {first} and {} fall on the same time and band", input_name(source, b))));
@@ -163,7 +186,12 @@ pub fn zonal_cube(zones: &Layer, sources: &mut [ZonalSource], options: &ZonalOpt
         dims.push(CubeDim { name: "band".into(), labels: keys });
     }
     let stat_count = options.stats.len();
-    let values = Mutex::new(vec![f64::NAN; zones.features.len() * cells * stat_count]);
+    let too_big = || Error::ResourceLimit("the zonal cube has too many values to hold in memory".into());
+    let len = zones.features.len().checked_mul(cells).and_then(|n| n.checked_mul(stat_count)).ok_or_else(too_big)?;
+    let mut values = Vec::new();
+    values.try_reserve_exact(len).map_err(|_| too_big())?;
+    values.resize(len, f64::NAN);
+    let values = Mutex::new(values);
     zonal_stats_with(zones, sources, options, &|stats: BandStats| {
         let cell = cell_of[stats.source][stats.band];
         let mut values = values.lock().map_err(|_| Error::InvalidArgument("zonal cube lock poisoned".into()))?;
@@ -202,6 +230,12 @@ fn input_name(source: &ZonalSource, band: &ZonalBand) -> String {
 ///
 /// [`Error::InvalidArgument`] naming the first zone (index and FID) without a geometry, with an
 /// empty one, or with one that is not a polygon.
+///
+/// ```no_run
+/// let fields = terrio::open_vector("fields.gpkg", &Default::default())?.layers.remove(0);
+/// terrio::ops::zonal_cube::check_zones(&fields)?;
+/// # Ok::<(), terrio::Error>(())
+/// ```
 pub fn check_zones(zones: &Layer) -> Result<()> {
     for (i, f) in zones.features.iter().enumerate() {
         let why = match &f.geometry {

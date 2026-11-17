@@ -71,7 +71,7 @@ fn cube_cells_equal_wide_columns() {
     assert_eq!(var.name, "ndvi");
     let dims: Vec<_> = var.dims.iter().map(|d| (d.name.as_str(), d.labels.clone())).collect();
     assert_eq!(dims, vec![("time", vec!["2024-07-01".to_string(), "2024-07-11".into()]), ("band", vec!["B04".to_string(), "B08".into()])]);
-    assert_eq!(cube.shape(0), vec![2, 2, 2, 2]);
+    assert_eq!(cube.shape(0), Some(vec![2, 2, 2, 2]));
     let values = f64s(&var.values);
     let wide = zonal_stats(&zones(), &mut sources(), &options()).unwrap();
     let column = |name: &str| wide.schema.fields().iter().position(|f| f.name == name).unwrap();
@@ -97,7 +97,7 @@ fn no_labels_no_time_gives_geometry_statistic() {
     let mut sources = vec![ZonalSource { raster: raster(1.0), bands: vec![ZonalBand::new(1, "dem_b1")] }];
     let cube = zonal_cube(&zones(), &mut sources, &options(), "dem").unwrap();
     assert!(cube.variables[0].dims.is_empty());
-    assert_eq!(cube.shape(0), vec![2, 2]);
+    assert_eq!(cube.shape(0), Some(vec![2, 2]));
 }
 
 #[test]
@@ -133,6 +133,7 @@ fn weighted_and_output_options_are_refused() {
     assert!(zonal_cube(&zones(), &mut sources, &rounded, "x").is_err());
 }
 
+#[cfg(feature = "zarr")]
 mod zarr {
     use terrio::crs::SpatialRef;
     use terrio::ops::zonal::Statistic;
@@ -332,7 +333,7 @@ mod zarr {
     #[test]
     fn names_never_clash_or_leave_their_array() {
         let mut zones = zones();
-        for name in ["", "a/b", "geometry_node", "Time"] {
+        for name in ["", "a/b", "geometry_node", "Time", "Land Use"] {
             zones.schema.add_field(FieldDef::new(name, FieldType::Text));
             for f in &mut zones.features {
                 f.attributes.push(FieldValue::Text("x".into()));
@@ -346,10 +347,41 @@ mod zarr {
         assert_eq!(json(&path)["attributes"]["Conventions"], "CF-1.8", "the group's metadata is intact");
         let mut names: Vec<String> = std::fs::read_dir(&path).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
         names.sort();
-        for expected in ["band_2", "field", "a_b", "geometry_node_2", "Time_2"] {
+        for expected in ["band_2", "field", "a_b", "geometry_node_2", "Time_2", "Land_Use"] {
             assert!(names.contains(&expected.to_string()), "{expected} not in {names:?}");
         }
         assert_eq!(strings(&path, "band"), ["B04", "B08"], "the band coordinate is untouched");
+        let coordinates = json(&path.join("band_2"))["attributes"]["coordinates"].as_str().unwrap().to_string();
+        assert!(coordinates.split_whitespace().any(|c| c == "Land_Use"), "{coordinates}");
+    }
+
+    /// A field's type, not its values, decides its array type: an all-null float field is float64.
+    #[test]
+    fn all_null_number_fields_stay_numbers() {
+        let mut zones = zones();
+        zones.schema.add_field(FieldDef::new("area", FieldType::Float));
+        for f in &mut zones.features {
+            f.attributes.push(FieldValue::Null);
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.zarr");
+        cube(zones).write_zarr(path.to_str().unwrap()).unwrap();
+        let (kind, values) = nums(read(path.to_str().unwrap(), "area").1);
+        assert_eq!(kind, "f64");
+        assert!(values.iter().all(|v| v.is_nan()));
+    }
+
+    #[test]
+    fn values_of_the_wrong_length_are_an_error_before_writing() {
+        let mut cube = cube(zones());
+        cube.variables[0].values = CubeValues::F64(vec![0.0; 3]);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.zarr");
+        let err = cube.write_zarr(path.to_str().unwrap()).unwrap_err().to_string();
+        assert!(err.contains("ndvi") && err.contains("16"), "{err}");
+        assert!(!path.exists(), "nothing written");
+        assert_eq!(cube.shape(1), None);
+        assert_eq!(cube.shape(0), Some(vec![2, 2, 2, 2]));
     }
 
     #[test]
