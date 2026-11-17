@@ -115,6 +115,22 @@ fn bounds_geometry(x0: f64, y0: f64, x1: f64, y1: f64) -> serde_json::Value {
     json!({"type": "Polygon", "coordinates": ring(x1, x0)})
 }
 
+/// The WKT of `[xmin, ymin, xmax, ymax]` bounds, read as [`parse_geometries`] reads a box: a
+/// polygon, or two across the antimeridian, with the same warnings.
+///
+/// ```no_run
+/// let across = terrio::memory::bounds_wkt([170.0, 0.0, -170.0, 2.0])?; // warns: across the antimeridian
+/// assert!(across.starts_with("MULTIPOLYGON"));
+/// # Ok::<(), terrio::Error>(())
+/// ```
+pub fn bounds_wkt(bounds: [f64; 4]) -> Result<String> {
+    let [x0, y0, x1, y1] = bounds;
+    let layer = parse_geojson_layer(bounds_geometry(x0, y0, x1, y1).to_string().as_bytes(), "bounds")?;
+    let geometry =
+        layer.features.first().and_then(|f| f.geometry.as_ref()).ok_or_else(|| Error::InvalidData("bounds: no geometry".into()))?;
+    Ok(crate::drivers::vector::wkt::format(geometry))
+}
+
 /// [`parse_geometries`] of a string that may have been meant as a path: a failure names both
 /// readings.
 ///

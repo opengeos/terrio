@@ -137,3 +137,13 @@ def test_geodataframe_without_crs_is_in_the_arrays_crs():
     gdf = gpd.GeoDataFrame(geometry=[shapely.box(500000, 4600000, 500020, 4600020)])  # no CRS
     layer = _ops.in_crs(gdf, CRS.from_user_input("EPSG:32631"))
     assert isinstance(layer, terrio.Layer) and layer.crs == "EPSG:32631"
+
+
+def test_clip_bounds_across_the_antimeridian_read_as_everywhere_else():
+    """clip_vector's geometry=bounds follows the same rule as the other inputs."""
+    points = terrio.Layer.from_geojson(
+        [{"type": "Point", "coordinates": [0, 1]}, {"type": "Point", "coordinates": [175, 1]}]
+    )
+    with pytest.warns(UserWarning, match="antimeridian"):
+        clipped = terrio.clip_vector(points, geometry=(170, 0, -170, 2))
+    assert _geometries(clipped) == [{"type": "Point", "coordinates": [175.0, 1.0]}]
