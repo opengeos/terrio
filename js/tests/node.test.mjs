@@ -3515,7 +3515,7 @@ test("compare, pixelInfo and xyz", () => {
 });
 
 test("promoteTo3d transforms ellipsoidal heights of a 2D CRS", () => {
-  // GDAL 3.12.2 / PROJ 9.9.0, RD New to WGS 84 3D, without grids.
+  // GDAL 3.12.2 / PROJ 9.8.1, RD New to WGS 84 3D, without grids.
   const args = [[85000], [447000], "EPSG:28992", "EPSG:4979", [0]];
   const normal = terrio.transformPoints(...args);
   const promoted = terrio.transformPoints(...args, { promoteTo3d: true });
@@ -3637,7 +3637,7 @@ test("vsi: listUrl lists object stores and HTML index pages through fetch", asyn
 });
 
 test("promoteTo3d transforms ellipsoidal heights of a 2D CRS", () => {
-  // GDAL 3.12.2 / PROJ 9.9.0, RD New to WGS 84 3D, without grids.
+  // GDAL 3.12.2 / PROJ 9.8.1, RD New to WGS 84 3D, without grids.
   const args = [[85000], [447000], "EPSG:28992", "EPSG:4979", [0]];
   const normal = terrio.transformPoints(...args);
   const promoted = terrio.transformPoints(...args, { promoteTo3d: true });

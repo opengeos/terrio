@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Freeze ISEA cases against pyproj 3.8.0 / PROJ 9.9.0."""
+"""Freeze ISEA cases against pyproj 3.8.0 / PROJ 9.8.1.
+
+Not PROJ 9.9.0, whose `isea` is a new method terrio does not compute yet (opengeos/terrio#1012,
+item 67).
+"""
 
 import json
 import math
@@ -63,7 +67,7 @@ def scattered(count):
 
 
 def main():
-    assert pyproj.__version__ == "3.8.0" and pyproj.proj_version_str == "9.9.0"
+    assert pyproj.__version__ == "3.8.0" and pyproj.proj_version_str == "9.8.1"
     pyproj.network.set_network_enabled(False)
     for option in REFUSED:
         try:
