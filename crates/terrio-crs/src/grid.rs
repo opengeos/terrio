@@ -1239,7 +1239,7 @@ fn load_uncached(name: &str) -> Option<Arc<GridFile>> {
                 return Some(Arc::new(file));
             }
             Err(true) => {
-                fetch_failures().lock().unwrap_or_else(PoisonError::into_inner).insert(name.to_string());
+                fetch_failures().lock().unwrap_or_else(PoisonError::into_inner).extend(linked_names(name));
                 return None;
             }
             Err(false) => {}
@@ -1250,7 +1250,7 @@ fn load_uncached(name: &str) -> Option<Arc<GridFile>> {
         // Read as the file fetched (`us_nga_egm96_15.tif` for `egm96_15.gtx`), not as named.
         let got = download(remote_name);
         if got.is_none() {
-            fetch_failures().lock().unwrap_or_else(PoisonError::into_inner).insert(name.to_string());
+            fetch_failures().lock().unwrap_or_else(PoisonError::into_inner).extend(linked_names(name));
         }
         return got.and_then(|b| read_file(remote_name, b)).map(Arc::new);
     }
@@ -1368,7 +1368,8 @@ pub struct GridUse {
     /// The grid's name on the PROJ CDN (`us_noaa_conus.tif`), also when a definition names it as
     /// before PROJ 7 (`conus`): the name to give [`register_grid`]. A grid named as its producer
     /// names it (`conus.las`), which PROJ does not open by its CDN name, and one PROJ's database
-    /// does not know keep the name the definition gives them.
+    /// does not know keep the name the definition gives them, which is then the definition's own
+    /// text (it may be a path or a URL): check it before using it as a file name.
     pub name: String,
     /// Where to download it, as PROJ's database gives it: for a grid PROJ distributes,
     /// `https://cdn.proj.org/` followed by its name, whatever CDN terrio's own downloads use
@@ -1470,6 +1471,12 @@ pub(crate) fn grid_use(name: &str, optional: bool) -> GridUse {
 /// download cache. To look up grids in a directory of one's own first and keep these, give
 /// [`set_grid_search_paths`] that directory followed by these: a grid named by a path in a CRS
 /// definition stays refused. Empty in WebAssembly, which has no file system.
+///
+/// ```no_run
+/// use terrio_crs::{default_grid_search_paths, set_grid_search_paths};
+/// let own = std::path::PathBuf::from("/opt/my-app/grids");
+/// set_grid_search_paths(Some(std::iter::once(own).chain(default_grid_search_paths()).collect()));
+/// ```
 pub fn default_grid_search_paths() -> Vec<std::path::PathBuf> {
     #[cfg(not(target_family = "wasm"))]
     return machine_search_dirs();

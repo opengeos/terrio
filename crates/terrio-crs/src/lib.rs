@@ -3019,7 +3019,8 @@ impl Transformer {
     ///
     /// An application that downloads grids itself (with terrio's network off, in WebAssembly
     /// too) fetches the missing ones from their `url`, gives them to [`register_grid`] under
-    /// their `name` (or saves them in a search directory), and builds the transformer again. The
+    /// their `name` (or saves them in a search directory and calls [`reset_grid_cache`], as
+    /// whether a grid is found is cached), and builds the transformer again. The
     /// operation is the best one for the point whose grid is missing, or else the one that
     /// applies there: when the point is outside a grid once it is present, the next operation's
     /// grids come up, so ask again until every grid listed is available.
@@ -3033,6 +3034,26 @@ impl Transformer {
     /// To find the operation that applies, the point is transformed as by `transform`, so with
     /// the network on, the grids it reads are fetched (their blocks for the point, or whole with
     /// `TERRIO_GRID_DOWNLOAD=YES`) and cached as for a transformation.
+    ///
+    /// ```no_run
+    /// use terrio_crs::{SpatialRef, Transformer, register_grid};
+    /// # fn download(url: &str) -> Vec<u8> { unimplemented!() }
+    /// let (src, dst) = (SpatialRef::parse("EPSG:4267")?, SpatialRef::parse("EPSG:4326")?);
+    /// loop {
+    ///     let t = Transformer::new(&src, &dst)?;
+    ///     let missing: Vec<_> = t.best_operation_grids_at(-100.0, 40.0, 0.0)?.into_iter().filter(|g| !g.available).collect();
+    ///     if missing.is_empty() {
+    ///         break;
+    ///     }
+    ///     // us_noaa_conus.tif and us_noaa_kshpgn.tif, from https://cdn.proj.org/<name>.
+    ///     for g in missing {
+    ///         // A grid PROJ's database does not know has no URL: give up on it.
+    ///         let url = g.url.as_deref().ok_or_else(|| terrio_crs::Error::MissingGrid(g.name.clone()))?;
+    ///         register_grid(&g.name, download(url));
+    ///     }
+    /// }
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
     pub fn best_operation_grids_at(&self, x: f64, y: f64, z: f64) -> Result<Vec<GridUse>> {
         let fail = || Error::Crs(format!("cannot transform ({x}, {y}, {z})"));
         // A geocentric source: its geographic coordinates, as `transform_at` takes them.

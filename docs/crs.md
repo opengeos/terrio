@@ -716,8 +716,8 @@ on the PROJ CDN (also for a definition that gives its name before PROJ 7; a prod
 PROJ does not open the grid by under its CDN name, is kept), its URL, whether the URL gives the
 file and whether the grid has an open licence (from PROJ's database, as
 `proj_coordoperation_get_grid_used` reports them), and whether terrio finds it now. Download the
-missing ones, register them under their name (or save them in a search directory), build the
-transformer again, and ask again: when the point is outside a grid once it is there, the next
+missing ones, register them under their name (or save them in a search directory and call
+`reset_grid_cache()`, as whether a grid is found is cached), build the transformer again, and ask again: when the point is outside a grid once it is there, the next
 operation's grids come up. Between compound CRSs, the grid of the transformation between their
 vertical CRSs (VERTCON...) is listed too, but geoid models are not (`+geoidgrids`, nor those of a
 geoid model's CRS, from a geographic 3D CRS too), and between CRSs with heights
@@ -725,9 +725,13 @@ the horizontal grids listed are those between their geographic CRSs. With `ONLY_
 error for a missing grid names it too.
 
 ```rust
-let t = terrio_crs::Transformer::new(&SpatialRef::parse("EPSG:4267")?, &SpatialRef::parse("EPSG:4326")?)?;
-for g in t.best_operation_grids_at(-100.0, 40.0, 0.0)?.iter().filter(|g| !g.available) {
+use terrio_crs::{SpatialRef, Transformer, register_grid};
+let t = Transformer::new(&SpatialRef::parse("EPSG:4267")?, &SpatialRef::parse("EPSG:4326")?)?;
+for g in t.best_operation_grids_at(-100.0, 40.0, 0.0)?.into_iter().filter(|g| !g.available) {
     // us_noaa_conus.tif and us_noaa_kshpgn.tif, from https://cdn.proj.org/<name>
+    if let Some(url) = &g.url {
+        register_grid(&g.name, download(url)?);
+    }
 }
 ```
 
