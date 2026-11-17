@@ -58,7 +58,7 @@ from terrio.rio._tiff import Structure
 from terrio.rio.crs import CRS
 from terrio.rio.dtypes import dtype_fwd, typename_rev
 from terrio.rio.enums import ColorInterp, MaskFlags, Resampling
-from terrio.rio.errors import RasterioIOError, WarpedVRTError, WarpOptionsError
+from terrio.rio.errors import CRSError, RasterioIOError, WarpedVRTError, WarpOptionsError
 from terrio.rio.io import _READER_READ_LEVEL, DatasetReader, _sum_scale
 from terrio.rio.transform import compose
 from terrio.rio.warp import (
@@ -287,6 +287,14 @@ class WarpedVRT(DatasetReader):
         self._rpc_crs: CRS | None = None
         if rpc_georef:
             self._rpc_crs = CRS.from_epsg(4326)
+        # A source with no CRS is warped by its geotransform, read in the destination CRS; with
+        # no geotransform either (and no RPCs), there is nothing to place it by.
+        if (
+            self.src_crs is None
+            and not rpc_georef
+            and self.src_transform.almost_equals(Affine.identity())
+        ):
+            raise CRSError("A CRS is required")
 
         # Alpha bands, as rasterio sets them up.
         src_count = src_dataset.count

@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 import terrio.rio as rio
+from terrio.rio.control import GroundControlPoint
 from terrio.rio.enums import Resampling
 from terrio.rio.errors import CRSError
 from terrio.rio.transform import from_origin
@@ -90,11 +91,14 @@ def test_a_dataset_with_no_geotransform_still_requires_a_crs(tmp_path):
                 dst_transform=TRANSFORM,
                 dst_crs="EPSG:4326",
             )
+        for size in ({}, {"width": 32, "height": 32}):
+            with pytest.raises(CRSError, match="A CRS is required"):
+                WarpedVRT(src, crs="EPSG:4326", **size)
 
 
 def test_default_transform_from_gcps_still_requires_a_crs():
     gcps = [
-        rio.control.GroundControlPoint(row=r, col=c, x=10 + c / 64, y=46 - r / 64)
+        GroundControlPoint(row=r, col=c, x=10 + c / 64, y=46 - r / 64)
         for r, c in ((0, 0), (0, 64), (64, 0), (64, 64))
     ]
     with pytest.raises(CRSError, match="A CRS is required"):
