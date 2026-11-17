@@ -708,28 +708,36 @@ search directories must use ordinary path components (`subdir/grid.gsb`): embedd
 are refused with a warning even when they would normalize inside a directory (`sub/../grid.gsb`).
 Only regular files of at most 2 GiB are read (a larger one is skipped with a warning).
 
-A Rust application that downloads grids itself, with terrio's network off (built for WebAssembly,
-or to download in the background), asks a transformer which grids a point needs:
-`Transformer::best_operation_grids_at(x, y, z)` lists the grids of the operation PROJ's
-`proj_trans` would use there with every grid present, missing ones included, each with its name
-on the PROJ CDN (also for a definition that gives its name before PROJ 7; a producer's name, which
-PROJ does not open the grid by under its CDN name, is kept), its URL, whether the URL gives the
-file and whether the grid has an open licence (from PROJ's database, as
-`proj_coordoperation_get_grid_used` reports them), and whether terrio finds it now. Download the
-missing ones, register them under their name (or save them in a search directory and call
-`reset_grid_cache()`, as whether a grid is found is cached), build the transformer again, and ask again: when the point is outside a grid once it is there, the next
-operation's grids come up. Between compound CRSs, the grid of the transformation between their
-vertical CRSs (VERTCON...) is listed too, but geoid models are not (`+geoidgrids`, nor those of a
-geoid model's CRS, from a geographic 3D CRS too), and between CRSs with heights
-the horizontal grids listed are those between their geographic CRSs. With `ONLY_BEST=YES`, the
-error for a missing grid names it too.
+A Rust application that downloads grids itself, with terrio's network off (built for WebAssembly, or
+to download in the background), asks a transformer which grids a point needs:
+`Transformer::best_operation_grids_at(x, y, z)` lists the grids of the operation PROJ's `proj_trans`
+would use there with every grid present, missing ones included, each with its name on the PROJ CDN
+(also for a definition that gives its name before PROJ 7; a producer's name, which PROJ does not
+open the grid by under its CDN name, is kept), its URL, whether the URL gives the file and whether
+the grid has an open licence (from PROJ's database, as `proj_coordoperation_get_grid_used` reports
+them), and whether terrio finds it now. Download the missing ones, register them under their name
+(or save them in a search directory and call `reset_grid_cache()`, as whether a grid is found is
+cached), build the transformer again, and ask again: when the point is outside a grid once it is
+there, the next operation's grids come up. Between compound CRSs, the grid of the transformation
+between their vertical CRSs (VERTCON...) is listed too, but geoid models are not (`+geoidgrids`, nor
+those of a geoid model's CRS, from a geographic 3D CRS too), and between CRSs with heights the
+horizontal grids listed are those between their geographic CRSs. With `ONLY_BEST=YES`, the error for
+a missing grid names it too. (Not in terrio-crs 0.2.4: on `main`, as a git dependency, until the
+next release.)
 
 ```rust
 use terrio_crs::{SpatialRef, Transformer, register_grid};
-let t = Transformer::new(&SpatialRef::parse("EPSG:4267")?, &SpatialRef::parse("EPSG:4326")?)?;
-for g in t.best_operation_grids_at(-100.0, 40.0, 0.0)?.into_iter().filter(|g| !g.available) {
-    // us_noaa_conus.tif and us_noaa_kshpgn.tif, from https://cdn.proj.org/<name>
-    if let Some(url) = &g.url {
+let (src, dst) = (SpatialRef::parse("EPSG:4267")?, SpatialRef::parse("EPSG:4326")?);
+loop {
+    let t = Transformer::new(&src, &dst)?;
+    let missing: Vec<_> = t.best_operation_grids_at(-100.0, 40.0, 0.0)?.into_iter().filter(|g| !g.available).collect();
+    if missing.is_empty() {
+        break; // t has every grid the point needs
+    }
+    for g in missing {
+        // us_noaa_conus.tif and us_noaa_kshpgn.tif, from https://cdn.proj.org/<name>; a grid
+        // PROJ's database does not know has no URL to download it from.
+        let url = g.url.as_deref().ok_or_else(|| terrio_crs::Error::MissingGrid(g.name.clone()))?;
         register_grid(&g.name, download(url)?);
     }
 }

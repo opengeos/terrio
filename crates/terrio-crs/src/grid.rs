@@ -864,7 +864,8 @@ pub fn register_grid(name: &str, bytes: Vec<u8>) {
         let mut a = availability().lock().unwrap_or_else(PoisonError::into_inner);
         a.clear();
     }
-    // A download of it that failed before no longer counts: the grid is there now.
+    // A download of it that failed before no longer counts: the grid is there now (one that
+    // fails after is not recorded, see `record_fetch_failure`).
     {
         let mut failures = fetch_failures().lock().unwrap_or_else(PoisonError::into_inner);
         for n in &names {
@@ -1101,8 +1102,7 @@ fn find_local(name: &str) -> Option<Arc<[u8]>> {
 
 /// Whether a grid file is present locally (by its name or another of its names).
 fn present_locally(name: &str) -> bool {
-    let mut names = vec![name.to_string()];
-    names.extend(other_names(name));
+    let names = linked_names(name);
     {
         let registered = registered().lock().unwrap_or_else(PoisonError::into_inner);
         if names.iter().any(|n| registered.contains_key(n.as_str())) {
@@ -1211,6 +1211,19 @@ fn load(name: &str) -> Option<Arc<GridFile>> {
     file
 }
 
+/// Records that the network did not give a grid, under all its names, unless it has been
+/// registered meanwhile under one of them. The registered grids stay locked until the failure
+/// is recorded: `register_grid` stores a grid before it clears its failures, so either this
+/// sees it or the clearing comes after. (Locks taken in [`hold_for_fork`]'s order.)
+#[cfg(remote)]
+fn record_fetch_failure(name: &str) {
+    let names = linked_names(name);
+    let registered = registered().lock().unwrap_or_else(PoisonError::into_inner);
+    if !names.iter().any(|n| registered.contains_key(n.as_str())) {
+        fetch_failures().lock().unwrap_or_else(PoisonError::into_inner).extend(names);
+    }
+}
+
 /// Looks up a grid once; [`load`] caches both the result and its diagnostics.
 fn load_uncached(name: &str) -> Option<Arc<GridFile>> {
     let bytes = find_local(name);
@@ -1239,7 +1252,7 @@ fn load_uncached(name: &str) -> Option<Arc<GridFile>> {
                 return Some(Arc::new(file));
             }
             Err(true) => {
-                fetch_failures().lock().unwrap_or_else(PoisonError::into_inner).extend(linked_names(name));
+                record_fetch_failure(name);
                 return None;
             }
             Err(false) => {}
@@ -1250,7 +1263,7 @@ fn load_uncached(name: &str) -> Option<Arc<GridFile>> {
         // Read as the file fetched (`us_nga_egm96_15.tif` for `egm96_15.gtx`), not as named.
         let got = download(remote_name);
         if got.is_none() {
-            fetch_failures().lock().unwrap_or_else(PoisonError::into_inner).extend(linked_names(name));
+            record_fetch_failure(name);
         }
         return got.and_then(|b| read_file(remote_name, b)).map(Arc::new);
     }
@@ -2388,6 +2401,18 @@ pub(crate) fn gridshift_apply(
 
 #[cfg(test)]
 mod tests {
+    /// A fetch that failed after its grid was registered is not recorded, so the registered grid
+    /// is not reported as failed; another grid's failure still is.
+    #[cfg(remote)]
+    #[test]
+    fn a_fetch_failing_after_its_grid_is_registered_is_not_recorded() {
+        let (registered, other) = ("terrio_registered_during_fetch.tif", "terrio_failing_during_fetch.tif");
+        super::register_grid(registered, Vec::new());
+        super::record_fetch_failure(registered);
+        super::record_fetch_failure(other);
+        assert!(!super::fetch_failed(registered) && super::fetch_failed(other));
+    }
+
     /// Every row of the grid table is read, each grid by its own name.
     #[test]
     fn every_grid_of_the_table_is_read() {

@@ -621,7 +621,8 @@ impl Route {
                     }
                     excluded.push(i);
                 }
-                // Then the point goes through the first transformation that needs no grid.
+                // Then the point goes through the first transformation that needs no grid, so no
+                // grid is returned.
                 Vec::new()
             }
             Kind::Chains { chains, ballpark } => {
