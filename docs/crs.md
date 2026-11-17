@@ -677,7 +677,7 @@ geocentric translations. terrio reads the grids PROJ uses, in pure Rust:
 - NTv2 (`.gsb`) files with their subgrids, and GTX (`.gtx`) geoid grids;
 - the old names of PROJ-data grids, both ways, as PROJ looks them up in its database: an operation
   naming `us_noaa_conus.tif` finds a file named `conus`, and `+nadgrids=conus` finds
-  `us_noaa_conus.tif`.
+  `us_noaa_conus.tif`, locally or, with the network on, on the PROJ CDN.
 
 They are applied as PROJ applies them: bilinear interpolation (biquadratic for NADCON5 grids, as
 their metadata asks), PROJ's iterated inverse, its handling of grid edges and of the

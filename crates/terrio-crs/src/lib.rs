@@ -3052,7 +3052,15 @@ impl Transformer {
                 .get_or_init(|| with_vertical_routes(epsg::vertical_transformations_all(a, b), &self.src_horizontal, true));
             let (lon, lat) = self.src.unproject(x, y).ok_or_else(fail)?;
             let p = datum::Point { lon, lat, h: z * v.to_meter, t: self.time };
-            if let Some((i, _)) = self.vertical_pick(all, x, y, p, |op| !op.available()) {
+            // Stops at the first whose grid, or the grid of its route, is missing.
+            let missing = |i: usize| {
+                !all[i].0.available()
+                    || all[i]
+                        .1
+                        .as_ref()
+                        .is_some_and(|r| r.grid_operations_at(&self.src_horizontal, x, y, p).iter().any(|op| !op.available()))
+            };
+            if let Some((i, _)) = self.vertical_pick(all, x, y, p, missing) {
                 names.extend(all[i].0.grids());
                 // The horizontal transformation to the CRS it interpolates in (NZGD49 to NZGD2000
                 // for the Auckland 1946 height grid), as PROJ chains it.
@@ -3225,15 +3233,15 @@ impl Transformer {
     }
 
     /// The transformation between the vertical CRSs [`Transformer::vertical_height`] picks for a
-    /// point among `ops`, with the height it gives; or, the first whose grid is missing
-    /// (`stop`), with none.
+    /// point among `ops`, with the height it gives; or, the first `stop` holds for (by its index:
+    /// one whose grid is missing), with none.
     fn vertical_pick(
         &self,
         ops: &[(std::sync::Arc<datum::Op>, Option<route::Route>)],
         x: f64,
         y: f64,
         p: datum::Point,
-        stop: impl Fn(&datum::Op) -> bool,
+        stop: impl Fn(usize) -> bool,
     ) -> Option<(usize, Option<f64>)> {
         let horizontal = &self.src_horizontal;
         let (dlon, dlat) = (p.lon.to_degrees(), p.lat.to_degrees());
@@ -3267,7 +3275,7 @@ impl Transformer {
             }
             let (i, _) = best?;
             let (op, route) = &ops[i];
-            if stop(op) {
+            if stop(i) {
                 return Some((i, None));
             }
             // The point's position in the interpolation CRS; its height stays as it is.

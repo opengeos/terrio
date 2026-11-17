@@ -17,7 +17,7 @@ Lines: ``name<TAB>old names<TAB>producer's names<TAB>url<TAB>direct_download<TAB
 
 Usage: python scripts/gen_grid_catalog.py
 
-Needs pyproj, with the PROJ version of ``epsg.tsv.zst``.
+Needs pyproj on the PROJ version ``epsg.tsv.zst`` was generated from.
 """
 
 import os
@@ -44,7 +44,9 @@ def main():
         entry = grids.setdefault(name, {"old": set(), "original": set(), "info": set()})
         if old and old != name:
             entry["old"].add(old)
-        if original and original != name and original != old:
+        # proj.db marks a grid it has no transformation for yet by a placeholder, not a name.
+        placeholder = (original or "").startswith("NOT-YET-IN-GRID-TRANSFORMATION-")
+        if original and original != name and original != old and not placeholder:
             entry["original"].add(original)
         if not url:
             raise SystemExit(f"{name}: no URL in proj.db")

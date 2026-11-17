@@ -108,7 +108,7 @@ fi_nls_fin2023n2000.tif				1	1
 fi_nls_n43_n60.json				1	1
 fi_nls_n60_n2000.json				1	1
 fi_nls_ykj_etrs35fin.json				1	1
-fr_ign_CGVD2013RGSPM06.tif		NOT-YET-IN-GRID-TRANSFORMATION-fr_ign_CGVD2013RGSPM06.tif		1	1
+fr_ign_CGVD2013RGSPM06.tif				1	1
 fr_ign_RAC09.tif	RAC09.gtx	RAC09.mnt,https://fiches-geodesie.ign.fr/contenu/fichiers/documentation/grilles/anciennes/RAC09.mnt		1	1
 fr_ign_RAC23.tif		RAC23.mnt		1	1
 fr_ign_RAF09.tif	RAF09.gtx	RAF09.mnt,http://fiches-geodesie.ign.fr/contenu/fichiers/documentation/grilles/anciennes/RAF09.mnt		1	1
@@ -138,22 +138,22 @@ fr_ign_ggm04v1.tif	ggm04v1.gtx	https://fiches-geodesie.ign.fr/contenu/fichiers/d
 fr_ign_ggm23v2.tif		GGM23V2.tac		1	1
 fr_ign_ggpf02-Bora.tif	ggpf02-Bora.gtx	https://fiches-geodesie.ign.fr/contenu/fichiers/documentation/grilles/outremer/ggpf02-Bora.mnt		1	1
 fr_ign_ggpf02-Huahine.tif	ggpf02-Huahine.gtx	https://fiches-geodesie.ign.fr/contenu/fichiers/documentation/grilles/outremer/ggpf02-Huahine.mnt		1	1
-fr_ign_ggpf02-Maiao.tif		NOT-YET-IN-GRID-TRANSFORMATION-fr_ign_ggpf02-Maiao.tif		1	1
+fr_ign_ggpf02-Maiao.tif				1	1
 fr_ign_ggpf02-Maupiti.tif	ggpf02-Maupiti.gtx	https://fiches-geodesie.ign.fr/contenu/fichiers/documentation/grilles/outremer/ggpf02-Maupiti.mnt		1	1
 fr_ign_ggpf02-Raiatea.tif	ggpf02-Raiatea.gtx	https://fiches-geodesie.ign.fr/contenu/fichiers/documentation/grilles/outremer/ggpf02-Raiatea.mnt		1	1
 fr_ign_ggpf02-Tahaa.tif	ggpf02-Tahaa.gtx	https://fiches-geodesie.ign.fr/contenu/fichiers/documentation/grilles/outremer/ggpf02-Tahaa.mnt		1	1
-fr_ign_ggpf02-Tupai.tif		NOT-YET-IN-GRID-TRANSFORMATION-fr_ign_ggpf02-Tupai.tif		1	1
-fr_ign_ggpf05-HivaOa.tif		NOT-YET-IN-GRID-TRANSFORMATION-fr_ign_ggpf05-HivaOa.tif		1	1
-fr_ign_ggpf05-Nuku.tif		NOT-YET-IN-GRID-TRANSFORMATION-fr_ign_ggpf05-Nuku.tif		1	1
+fr_ign_ggpf02-Tupai.tif				1	1
+fr_ign_ggpf05-HivaOa.tif				1	1
+fr_ign_ggpf05-Nuku.tif				1	1
 fr_ign_ggpf08-Fakarava.tif	ggpf08-Fakarava.gtx	https://fiches-geodesie.ign.fr/contenu/fichiers/documentation/grilles/outremer/ggpf08-Fakarava.mnt		1	1
-fr_ign_ggpf08-Gambier.tif		NOT-YET-IN-GRID-TRANSFORMATION-fr_ign_ggpf08-Gambier.tif		1	1
-fr_ign_ggpf08-Hao.tif		NOT-YET-IN-GRID-TRANSFORMATION-fr_ign_ggpf08-Hao.tif		1	1
-fr_ign_ggpf08-Mataiva.tif		NOT-YET-IN-GRID-TRANSFORMATION-fr_ign_ggpf08-Mataiva.tif		1	1
-fr_ign_ggpf08-Raivavae.tif		NOT-YET-IN-GRID-TRANSFORMATION-fr_ign_ggpf08-Raivavae.tif		1	1
-fr_ign_ggpf08-Reao.tif		NOT-YET-IN-GRID-TRANSFORMATION-fr_ign_ggpf08-Reao.tif		1	1
-fr_ign_ggpf08-Rurutu.tif		NOT-YET-IN-GRID-TRANSFORMATION-fr_ign_ggpf08-Rurutu.tif		1	1
-fr_ign_ggpf08-Tikehau.tif		NOT-YET-IN-GRID-TRANSFORMATION-fr_ign_ggpf08-Tikehau.tif		1	1
-fr_ign_ggpf08-Tubuai.tif		NOT-YET-IN-GRID-TRANSFORMATION-fr_ign_ggpf08-Tubuai.tif		1	1
+fr_ign_ggpf08-Gambier.tif				1	1
+fr_ign_ggpf08-Hao.tif				1	1
+fr_ign_ggpf08-Mataiva.tif				1	1
+fr_ign_ggpf08-Raivavae.tif				1	1
+fr_ign_ggpf08-Reao.tif				1	1
+fr_ign_ggpf08-Rurutu.tif				1	1
+fr_ign_ggpf08-Tikehau.tif				1	1
+fr_ign_ggpf08-Tubuai.tif				1	1
 fr_ign_ggpf10-Moorea.tif	ggpf10-Moorea.gtx	https://fiches-geodesie.ign.fr/contenu/fichiers/documentation/grilles/outremer/ggpf10-Moorea.mnt		1	1
 fr_ign_ggpf10-Tahiti.tif	ggpf10-Tahiti.gtx	https://fiches-geodesie.ign.fr/contenu/fichiers/documentation/grilles/outremer/ggpf10-Tahiti.mnt		1	1
 fr_ign_ggspm06v1.tif	ggspm06v1.gtx	GGSPM06v1.mnt,http://geodesie.ign.fr/contenu/fichiers/documentation/grilles/outremer/ggspm06v1.mnt		1	1
@@ -163,7 +163,7 @@ hu_bme_geoid2014.tif	geoid_eht2014.gtx			1	1
 hu_bme_hd72corr.tif	etrs2eov_notowgs.gsb	hu_bme_hd72corr.gsb		1	1
 is_lmi_ISN2004_ISN2016.tif	ISN2004_ISN2016.gsb			1	1
 is_lmi_ISN93_ISN2016.tif	ISN93_ISN2016.gsb			1	1
-is_lmi_ISN_vel_beta.tif		NOT-YET-IN-GRID-TRANSFORMATION-is_lmi_ISN_vel_beta.tif		1	1
+is_lmi_ISN_vel_beta.tif				1	1
 is_lmi_Icegeoid_ISN2004.tif	Icegeoid_ISN2004.gtx	Icegeoid_ISN2004.gri		1	1
 is_lmi_Icegeoid_ISN2016.tif	Icegeoid_ISN2016.gtx	Icegeoid_ISN2016.gri		1	1
 is_lmi_Icegeoid_ISN93.tif	Icegeoid_ISN93.gtx	Icegeoid_ISN93.gri		1	1
@@ -182,7 +182,7 @@ nc_dittt_gr3dncI08.tif		gr3dncl08.tac		1	1
 nl_nsgi_bongeo2004.tif	bongeo2004.gtx			1	1
 nl_nsgi_nlgeo2018.tif	nlgeo2018.gtx			1	1
 nl_nsgi_nllat2018.tif	nllat2018.gtx			1	1
-nl_nsgi_rdcorr2018.tif	rdcorr2018.gsb	NOT-YET-IN-GRID-TRANSFORMATION-rdcorr2018.gsb		1	1
+nl_nsgi_rdcorr2018.tif	rdcorr2018.gsb			1	1
 nl_nsgi_rdtrans2018.tif	rdtrans2018.gsb			1	1
 no_kv_CD_above_Ell_ETRS89_v2021a.tif		ChartDatum_above_Ellipsoid_EUREF89_v2021a.bin		1	1
 no_kv_CD_above_Ell_ETRS89_v2023b.tif		ChartDatum_above_Ellipsoid_EUREF89_v2023b.bin		1	1
@@ -251,13 +251,13 @@ us_noaa_cshpgn.tif	cshpgn.gsb	cshpgn.las		1	1
 us_noaa_emhpgn.tif	emhpgn.gsb	emhpgn.las		1	1
 us_noaa_eshpgn.tif	eshpgn.gsb	eshpgn.las		1	1
 us_noaa_ethpgn.tif	ethpgn.gsb	ethpgn.las		1	1
-us_noaa_flhpgn.tif		NOT-YET-IN-GRID-TRANSFORMATION-us_noaa_flhpgn.tif		1	1
-us_noaa_g1999a01.tif	g1999a01.gtx	NOT-YET-IN-GRID-TRANSFORMATION-g1999a01.bin		1	1
-us_noaa_g1999a02.tif	g1999a02.gtx	NOT-YET-IN-GRID-TRANSFORMATION-g1999a02.bin		1	1
-us_noaa_g1999a03.tif	g1999a03.gtx	NOT-YET-IN-GRID-TRANSFORMATION-g1999a03.bin		1	1
-us_noaa_g1999a04.tif	g1999a04.gtx	NOT-YET-IN-GRID-TRANSFORMATION-g1999a04.bin		1	1
-us_noaa_g1999h01.tif	g1999h01.gtx	NOT-YET-IN-GRID-TRANSFORMATION-g1999h01.bin		1	1
-us_noaa_g1999p01.tif	g1999p01.gtx	NOT-YET-IN-GRID-TRANSFORMATION-g1999p01.bin		1	1
+us_noaa_flhpgn.tif				1	1
+us_noaa_g1999a01.tif	g1999a01.gtx			1	1
+us_noaa_g1999a02.tif	g1999a02.gtx			1	1
+us_noaa_g1999a03.tif	g1999a03.gtx			1	1
+us_noaa_g1999a04.tif	g1999a04.gtx			1	1
+us_noaa_g1999h01.tif	g1999h01.gtx			1	1
+us_noaa_g1999p01.tif	g1999p01.gtx			1	1
 us_noaa_g1999u01.tif	g1999u01.gtx	g1999u01.bin		1	1
 us_noaa_g1999u02.tif	g1999u02.gtx	g1999u02.bin		1	1
 us_noaa_g1999u03.tif	g1999u03.gtx	g1999u03.bin		1	1
@@ -266,19 +266,19 @@ us_noaa_g1999u05.tif	g1999u05.gtx	g1999u05.bin		1	1
 us_noaa_g1999u06.tif	g1999u06.gtx	g1999u06.bin		1	1
 us_noaa_g1999u07.tif	g1999u07.gtx	g1999u07.bin		1	1
 us_noaa_g1999u08.tif	g1999u08.gtx	g1999u08.bin		1	1
-us_noaa_g2003a01.tif	g2003a01.gtx	NOT-YET-IN-GRID-TRANSFORMATION-g2003a01.bin		1	1
-us_noaa_g2003a02.tif	g2003a02.gtx	NOT-YET-IN-GRID-TRANSFORMATION-g2003a02.bin		1	1
-us_noaa_g2003a03.tif	g2003a03.gtx	NOT-YET-IN-GRID-TRANSFORMATION-g2003a03.bin		1	1
-us_noaa_g2003a04.tif	g2003a04.gtx	NOT-YET-IN-GRID-TRANSFORMATION-g2003a04.bin		1	1
-us_noaa_g2003h01.tif	g2003h01.gtx	NOT-YET-IN-GRID-TRANSFORMATION-g2003h01.bin		1	1
-us_noaa_g2003p01.tif	g2003p01.gtx	NOT-YET-IN-GRID-TRANSFORMATION-g2003p01.bin		1	1
+us_noaa_g2003a01.tif	g2003a01.gtx			1	1
+us_noaa_g2003a02.tif	g2003a02.gtx			1	1
+us_noaa_g2003a03.tif	g2003a03.gtx			1	1
+us_noaa_g2003a04.tif	g2003a04.gtx			1	1
+us_noaa_g2003h01.tif	g2003h01.gtx			1	1
+us_noaa_g2003p01.tif	g2003p01.gtx			1	1
 us_noaa_g2009g01.tif	g2009g01.gtx	g2009g01.bin		1	1
-us_noaa_g2009h01.tif	g2009h01.gtx	NOT-YET-IN-GRID-TRANSFORMATION-g2009h01.bin		1	1
+us_noaa_g2009h01.tif	g2009h01.gtx			1	1
 us_noaa_g2009p01.tif	g2009p01.gtx	g2009p01.bin		1	1
 us_noaa_g2009s01.tif	g2009s01.gtx	g2009s01.bin		1	1
 us_noaa_g2012ba0.tif	g2012ba0.gtx	g2012ba0.bin		1	1
 us_noaa_g2012bg0.tif	g2012bg0.gtx	g2012bg0.bin		1	1
-us_noaa_g2012bh0.tif	g2012bh0.gtx	NOT-YET-IN-GRID-TRANSFORMATION-g2012bh0.bin		1	1
+us_noaa_g2012bh0.tif	g2012bh0.gtx			1	1
 us_noaa_g2012bp0.tif	g2012bp0.gtx	g2012bp0.bin		1	1
 us_noaa_g2012bs0.tif	g2012bs0.gtx	g2012bs0.bin		1	1
 us_noaa_g2012bu0.tif	g2012bu0.gtx	g2012bu0.bin		1	1
@@ -298,7 +298,7 @@ us_noaa_inhpgn.tif	inhpgn.gsb	inhpgn.las		1	1
 us_noaa_kshpgn.tif	kshpgn.gsb	kshpgn.las		1	1
 us_noaa_kyhpgn.tif	kyhpgn.gsb	kyhpgn.las		1	1
 us_noaa_lahpgn.tif	lahpgn.gsb	lahpgn.las		1	1
-us_noaa_mdhpgn.tif		NOT-YET-IN-GRID-TRANSFORMATION-us_noaa_mdhpgn.tif		1	1
+us_noaa_mdhpgn.tif				1	1
 us_noaa_mehpgn.tif	mehpgn.gsb	mehpgn.las		1	1
 us_noaa_mihpgn.tif	mihpgn.gsb	mihpgn.las		1	1
 us_noaa_mnhpgn.tif	mnhpgn.gsb	mnhpgn.las		1	1
@@ -349,15 +349,15 @@ us_noaa_sdhpgn.tif	sdhpgn.gsb	sdhpgn.las		1	1
 us_noaa_stgeorge.tif	stgeorge	stgeorge.las		1	1
 us_noaa_stlrnc.tif	stlrnc	stlrnc.las		1	1
 us_noaa_stpaul.tif	stpaul	stpaul.las		1	1
-us_noaa_tnhpgn.tif		NOT-YET-IN-GRID-TRANSFORMATION-us_noaa_tnhpgn.tif		1	1
+us_noaa_tnhpgn.tif				1	1
 us_noaa_uthpgn.tif	uthpgn.gsb	uthpgn.las		1	1
 us_noaa_vahpgn.tif	vahpgn.gsb	vahpgn.las		1	1
 us_noaa_vertconc.tif	vertconc.gtx	vertconc.94		1	1
 us_noaa_vertcone.tif	vertcone.gtx	vertcone.94		1	1
 us_noaa_vertconw.tif	vertconw.gtx	vertconw.94		1	1
-us_noaa_wihpgn.tif		NOT-YET-IN-GRID-TRANSFORMATION-us_noaa_wihpgn.tif		1	1
+us_noaa_wihpgn.tif				1	1
 us_noaa_wmhpgn.tif	wmhpgn.gsb	wmhpgn.las		1	1
-us_noaa_wohpgn.tif		NOT-YET-IN-GRID-TRANSFORMATION-us_noaa_wohpgn.tif		1	1
+us_noaa_wohpgn.tif				1	1
 us_noaa_wshpgn.tif	wshpgn.gsb	wshpgn.las		1	1
 us_noaa_wthpgn.tif	wthpgn.gsb	wthpgn.las		1	1
 us_noaa_wvhpgn.tif	wvhpgn.gsb	wvhpgn.las		1	1

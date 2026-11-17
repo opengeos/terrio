@@ -1122,6 +1122,19 @@ fn present_locally(name: &str) -> bool {
     false
 }
 
+/// The name a grid is fetched by from the PROJ CDN: its own, or for a name before PROJ 7
+/// (`conus`), its current name (`us_noaa_conus.tif`), which PROJ fetches it by through its
+/// database. `None` for a grid the CDN cannot serve.
+fn cdn_name(name: &str) -> Option<&str> {
+    if !single_file_name(name) {
+        return None;
+    }
+    if name.ends_with(".tif") {
+        return Some(name);
+    }
+    catalog().opened_by(name).filter(|k| k.url.is_none() && k.name.ends_with(".tif")).map(|k| k.name)
+}
+
 /// Whether a grid name is a single ordinary file component on this platform.
 fn single_file_name(name: &str) -> bool {
     let mut parts = std::path::Path::new(name).components();
@@ -1212,13 +1225,16 @@ fn load_uncached(name: &str) -> Option<Arc<GridFile>> {
     // request) is downloaded instead, unless the CDN does not have it.
     // Only a single file name can be on the CDN. Anything else (a path, a name with directories,
     // a Windows drive prefix) is missing, not a network failure, so the transformation can fall
-    // back to another operation. Plain names the CDN cannot serve (non-`.tif` names such as `.gsb`)
-    // are recorded as fetch failures without a request.
+    // back to another operation. Plain names the CDN cannot serve (non-`.tif` names such as `.gsb`
+    // that are not a CDN grid's name before PROJ 7) are recorded as fetch failures without a
+    // request. A name before PROJ 7 is fetched by its current name.
     #[cfg(remote)]
     let fetch = bytes.is_none() && network_enabled() && single_file_name(name);
     #[cfg(remote)]
+    let remote_name = cdn_name(name).unwrap_or(name);
+    #[cfg(remote)]
     if fetch && !download_whole() {
-        match open_remote(name) {
+        match open_remote(remote_name) {
             Ok(file) => {
                 return Some(Arc::new(file));
             }
@@ -1232,7 +1248,7 @@ fn load_uncached(name: &str) -> Option<Arc<GridFile>> {
     #[cfg(remote)]
     let bytes = match bytes {
         None if fetch => {
-            let got = download(name);
+            let got = download(remote_name);
             if got.is_none() {
                 fetch_failures().lock().unwrap_or_else(PoisonError::into_inner).insert(name.to_string());
             }
@@ -1318,7 +1334,7 @@ pub(crate) fn available(name: &str) -> bool {
     {
         return a;
     }
-    let a = present_locally(name) || (network_enabled() && name.ends_with(".tif") && single_file_name(name));
+    let a = present_locally(name) || (network_enabled() && cdn_name(name).is_some());
     {
         let mut m = availability().lock().unwrap_or_else(PoisonError::into_inner);
         if generation == cache_generation() {
