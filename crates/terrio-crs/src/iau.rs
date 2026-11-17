@@ -1,4 +1,4 @@
-//! IAU_2015 definitions from PROJ 9.8.1; see data/iau-source.json and NOTICE.
+//! IAU_2015 definitions from PROJ 9.9.0; see data/iau-source.json and NOTICE.
 use std::collections::HashMap;
 use std::io::Read;
 use std::sync::OnceLock;

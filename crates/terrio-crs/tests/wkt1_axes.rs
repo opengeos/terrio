@@ -1,4 +1,4 @@
-//! A projected CRS given by WKT has the axes of its `AXIS` nodes, as PROJ 9.8.1 and GDAL 3.10
+//! A projected CRS given by WKT has the axes of its `AXIS` nodes, as PROJ 9.9.0 and GDAL 3.10
 //! read them, rather than east and north: `AXIS["Y",WEST],AXIS["X",SOUTH]` on Transverse
 //! Mercator puts 18.5°E 33.9°S at (46246.675, 3752681.842), not (-46246.675, -3752681.842).
 //!
@@ -13,7 +13,7 @@
 use serde_json::Value;
 use terrio_crs::{SpatialRef, Transformer};
 
-/// PROJ 9.8.1 omits geographic CS axes even when a BOUNDCRS carries a datum method.
+/// PROJ 9.9.0 omits geographic CS axes even when a BOUNDCRS carries a datum method.
 #[test]
 fn geographic_and_bound_exports_match_proj() {
     let data: Value = serde_json::from_str(include_str!("data/wkt1_axes.json")).unwrap();
@@ -52,7 +52,7 @@ fn projected_axes_are_read_and_written_as_proj_does() {
     }
 }
 
-/// PROJ 9.8.1 omits geographic CS axes on export, but keeps method-defined projected axes
+/// PROJ 9.9.0 omits geographic CS axes on export, but keeps method-defined projected axes
 /// even when the method's name is `custom` and only its EPSG code identifies it.
 #[test]
 fn wkt2_exports_follow_geographic_and_method_axis_rules() {

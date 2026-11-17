@@ -180,7 +180,7 @@ fn slice_or_nan_marks_failures_and_goes_on() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Against PROJ. The references are PROJ 9.8.1's (pyproj 3.8.0, EPSG v12.029), with the network
+// Against PROJ. The references are PROJ 9.9.0's (pyproj 3.8.0, EPSG v13.102), with the network
 // off and no grids in its PROJ directory, as terrio's tests run, printed with 12 decimals:
 //
 //   from pyproj import Transformer as T

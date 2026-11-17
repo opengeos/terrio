@@ -1,14 +1,14 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
 //! A Web Mercator WKT with a `TOWGS84` of its own is placed as EPSG:3857, whose
-//! `+nadgrids=@null` wins over the shift, as PROJ 9.8.1 places it (opengeos/terrio#1012, item 63).
+//! `+nadgrids=@null` wins over the shift, as PROJ 9.9.0 places it (opengeos/terrio#1012, item 63).
 
 use terrio_crs::{SpatialRef, Transformer};
 
 /// ESRI's WGS_1984_Web_Mercator_Auxiliary_Sphere with `TOWGS84[0,0,0,0,0,0,0]` in its datum.
 const ESRI: &str = r#"PROJCS["WGS_1984_Web_Mercator_Auxiliary_Sphere",GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563],TOWGS84[0,0,0,0,0,0,0]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Mercator_Auxiliary_Sphere"],PARAMETER["False_Easting",0.0],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",0.0],PARAMETER["Standard_Parallel_1",0.0],PARAMETER["Auxiliary_Sphere_Type",0.0],UNIT["Meter",1.0]]"#;
 
-/// PROJ 9.8.1 (pyproj 3.8.0, network off) identifies ESRI's Web Mercator with a zero or a 10 m
+/// PROJ 9.9.0 (pyproj 3.8.0, network off) identifies ESRI's Web Mercator with a zero or a 10 m
 /// `TOWGS84`, and GDAL's WKT 1 of EPSG:3857 with one added, as EPSG:3857 and places (0°, 45°) and
 /// (10°, 60°) from WGS 84 at (0, 5621521.486192066) and (1113194.9079327357, 8399737.889818357)
 /// (`Transformer.from_crs("EPSG:4326", CRS.from_wkt(wkt), always_xy=True)`), as EPSG:3857 itself.

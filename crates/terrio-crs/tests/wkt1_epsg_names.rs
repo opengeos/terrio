@@ -1,6 +1,6 @@
 //! A WKT 1 projected CRS whose parameters have EPSG's names (`Latitude of false origin`,
 //! `Longitude of projection centre`, `Angle from Rectified to Skew Grid`, `Latitude of standard
-//! parallel`) is read as PROJ 9.8.1 reads it, not without them; one PROJ refuses is refused, as is
+//! parallel`) is read as PROJ 9.9.0 reads it, not without them; one PROJ refuses is refused, as is
 //! GDAL's `Polar_Stereographic` without `latitude_of_origin`. A `PROJCS` with two `UNIT` nodes is
 //! in the first, as PROJ takes it (opengeos/terrio#1012, items 25 and 31).
 //!
@@ -62,7 +62,7 @@ fn a_polar_stereographic_latitude_of_nan_is_refused() {
         .replace("latitude_of_origin", "Latitude of standard parallel");
     assert!(place(&variant_b).is_ok());
     assert!(place(&variant_b.replace("-71", "NaN")).is_err());
-    // Not a number at all, which PROJ 9.8.1 refuses too.
+    // Not a number at all, which PROJ 9.9.0 refuses too.
     assert!(place(&variant_b.replace("-71", r#""abc""#)).is_err());
     // Without its latitude of origin.
     assert!(place(&gdal.replace(r#"PARAMETER["latitude_of_origin",-71],"#, "")).is_err());

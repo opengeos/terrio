@@ -267,7 +267,7 @@ fn coordinate_epochs_match_gdal() {
     assert!(close(p, (10.000000015839479, 49.99999997488123, 0.001877542585135)), "{p:?}");
 }
 
-/// With the grids present, the grids listed for a point are those of the operation PROJ 9.8.1
+/// With the grids present, the grids listed for a point are those of the operation PROJ 9.9.0
 /// uses for it (pyproj 3.8.0, network off, these grid directories: `get_last_used_operation()`
 /// after `transform`), all available; and a PROJ string naming a grid as before PROJ 7
 /// (`+nadgrids=conus`) finds it under its current name, at PROJ's value.

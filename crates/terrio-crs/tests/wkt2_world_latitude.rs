@@ -1,5 +1,5 @@
 //! A WKT 2 world projection (Robinson, Sinusoidal, Mollweide, Eckert IV, Natural Earth) given a
-//! latitude of natural origin, which its method has no use for, is read without it, as PROJ 9.8.1
+//! latitude of natural origin, which its method has no use for, is read without it, as PROJ 9.9.0
 //! ignores it, rather than refused.
 //!
 //! `data/wkt2_world_latitude.json` (`scripts/gen_wkt2_world_latitude.py`, pyproj 3.8.0,

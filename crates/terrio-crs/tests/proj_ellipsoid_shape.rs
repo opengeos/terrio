@@ -1,4 +1,4 @@
-//! A PROJ string's ellipsoid is read as PROJ 9.8.1 reads it, with `+type=crs`: `+R` first, then
+//! A PROJ string's ellipsoid is read as PROJ 9.9.0 reads it, with `+type=crs`: `+R` first, then
 //! `+datum`'s ellipsoid or else `+ellps`', with `+a` for its size, and the first of `+rf`, `+f`,
 //! `+es`, `+e` and `+b` for its shape (PROJ drops the others). A named ellipsoid or datum keeps
 //! its shape under `+f`, `+es` and `+e`. An ellipsoid PROJ defines by its semi-minor axis
@@ -85,14 +85,14 @@ fn ellipsoid_parameters_are_read_as_proj_reads_them() {
 }
 
 /// An unchanged datum's ellipsoid is its named ellipsoid, bit for bit, so that WKT 1 names it:
-/// PROJ 9.8.1 writes `SPHEROID["Clarke 1866",6378206.4,294.978698213898,AUTHORITY["EPSG","7008"]]`
+/// PROJ 9.9.0 writes `SPHEROID["Clarke 1866",6378206.4,294.978698213898,AUTHORITY["EPSG","7008"]]`
 /// for `+proj=longlat +datum=NAD27 +towgs84=-8,160,176`.
 #[test]
 fn an_unchanged_datum_keeps_its_named_ellipsoid() {
     let params = |s: &str| SpatialRef::parse(s).unwrap().projection_params().unwrap();
     for (datum, ellps) in [("NAD27", "clrk66"), ("ire65", "mod_airy"), ("WGS84", "WGS84"), ("OSGB36", "airy")] {
         let e = params(&format!("+proj=tmerc +ellps={ellps}"));
-        // Also under `+a` of its own semi-major axis, which PROJ 9.8.1 reports as the named
+        // Also under `+a` of its own semi-major axis, which PROJ 9.9.0 reports as the named
         // ellipsoid (Clarke 1866, b = 6356583.8).
         for s in [
             format!("+proj=tmerc +datum={datum}"),
@@ -115,7 +115,7 @@ fn an_unchanged_datum_keeps_its_named_ellipsoid() {
 }
 
 /// WKT writes the CRS's ellipsoid, not the sphere a spherification flag or spherical
-/// orthographic computes on, as PROJ 9.8.1's `CRS(s + " +type=crs").to_wkt("WKT1_GDAL")` writes
+/// orthographic computes on, as PROJ 9.9.0's `CRS(s + " +type=crs").to_wkt("WKT1_GDAL")` writes
 /// it (pyproj 3.8.0); the PROJ4 extension keeps the flag. The inverse flattening of Clarke 1866,
 /// which terrio computes from its eccentricity, is compared to 10 decimals.
 #[test]
@@ -139,7 +139,7 @@ fn wkt_writes_the_crs_ellipsoid_under_a_spherification_flag() {
     }
 }
 
-/// A WKT's `PROJ4` extension is computed on as PROJ 9.8.1 computes on it, as a pipeline step:
+/// A WKT's `PROJ4` extension is computed on as PROJ 9.9.0 computes on it, as a pipeline step:
 /// `+ellps=WGS84 +f=0` (or an unreadable `+f`, read as 0) is a sphere, `+ellps=clrk66
 /// +a=6400000` keeps Clarke 1866's eccentricity, no ellipsoid is GRS 1980, `+R_a` is not `+R_A`
 /// (as it is to PROJ's CRS parser for `laea`), and `+datum=` is `pj_datum_set`'s shift onto the
@@ -174,7 +174,7 @@ fn a_wkt_proj4_extension_is_computed_on_as_a_pipeline_step() {
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
 
-/// The WKT terrio writes for a PROJ string reads back as the string, as PROJ 9.8.1 reads the
+/// The WKT terrio writes for a PROJ string reads back as the string, as PROJ 9.9.0 reads the
 /// string: where WKT 1 cannot describe the CRS, its `PROJ4` extension, which PROJ and terrio
 /// compute on as a pipeline step, gives the CRS's figure and datum rather than the string's own
 /// ellipsoid parameters (which the step reads otherwise). `data/proj_ellipsoid_shape.json`'s
@@ -230,7 +230,7 @@ fn a_written_wkt_reads_back_as_its_proj_string() {
 /// writers that describe a PROJ string by PROJ's CRS rules (PROJJSON, GeoKeys) refuse one the
 /// pipeline step computes on otherwise: `+ellps=WGS84 +f=0` is a sphere there, and a datum
 /// shifted otherwise (by the step's grids, or as placed without grids). One that places points alike
-/// both ways is described as before, as PROJ 9.8.1 writes PROJJSON for all of them
+/// both ways is described as before, as PROJ 9.9.0 writes PROJJSON for all of them
 /// (losing the sphere of the first).
 #[test]
 fn writers_describe_an_extension_only_as_it_is_computed_on() {
@@ -272,7 +272,7 @@ fn writers_describe_an_extension_only_as_it_is_computed_on() {
 }
 
 /// PROJJSON is refused where it would describe another figure than the CRS computes on: a WKT
-/// whose `PROJ4` extension is on another ellipsoid than its `SPHEROID` (PROJ 9.8.1 writes the
+/// whose `PROJ4` extension is on another ellipsoid than its `SPHEROID` (PROJ 9.9.0 writes the
 /// WKT's, WGS 84 here, where its coordinates are on the 6400 km sphere), and spherical
 /// orthographic (`+f=0`), which PROJ writes as its own "Orthographic (Spherical)" method.
 #[test]
@@ -284,7 +284,7 @@ fn projjson_is_refused_on_another_figure() {
 }
 
 /// `+nadgrids=@null` is no shift whatever `+towgs84` says, and keeps a `+datum=` as it is, as
-/// PROJ 9.8.1 reads it: `+datum=OSGB36 +nadgrids=@null` into EPSG:4277 and into WGS 84 is the
+/// PROJ 9.9.0 reads it: `+datum=OSGB36 +nadgrids=@null` into EPSG:4277 and into WGS 84 is the
 /// identity (PROJ's bound CRS over OSGB36 with the null grid), likewise NAD27's into EPSG:4267.
 /// PROJJSON writes no shift either (PROJ writes the null grid), and reads back so.
 #[test]
@@ -332,7 +332,7 @@ fn a_null_grid_is_no_shift_and_keeps_the_datum() {
         let q = at(&crs, "EPSG:4326", (-2.0, 52.0));
         assert!((q.0 + 2.0).abs() < 1e-9 && (q.1 - 52.0).abs() < 1e-9, "{w}: {q:?}");
     }
-    // But one on WGS 84, geographic or projected, is identified as its code, as PROJ 9.8.1
+    // But one on WGS 84, geographic or projected, is identified as its code, as PROJ 9.9.0
     // identifies them (`CRS.to_epsg()`): the code places points alike. Not one on NAD83, which
     // PROJ identifies as EPSG:4269 by its nodes but places by the extension: (-157.8, 21.3)
     // stays there in WGS 84, where EPSG:4269 moves it by 0.5 m.
@@ -355,7 +355,7 @@ fn a_null_grid_is_no_shift_and_keeps_the_datum() {
 }
 
 /// GeoServer's Web Mercator (EPSG:900913, a sphere in its extension beside a WGS 84
-/// `SPHEROID`) is written as Popular Visualisation Pseudo Mercator on WGS 84, as PROJ 9.8.1
+/// `SPHEROID`) is written as Popular Visualisation Pseudo Mercator on WGS 84, as PROJ 9.9.0
 /// writes it; and a WKT with an extension reports its own `SPHEROID`, as PROJ does, whatever
 /// the extension computes on.
 #[test]
@@ -404,7 +404,7 @@ fn projjson_of_a_null_grid_beside_a_datum_round_trips_or_is_refused() {
 }
 
 /// `+R` wins over `+a`: Mercator on a 6400 km sphere is not Web Mercator, and beside a WGS 84
-/// `SPHEROID` its PROJJSON is refused, as PROJ 9.8.1 writes it as Mercator (variant A) on the
+/// `SPHEROID` its PROJJSON is refused, as PROJ 9.9.0 writes it as Mercator (variant A) on the
 /// sphere of `+R` for the PROJ string and on WGS 84 for the WKT.
 #[test]
 fn a_mercator_sphere_of_another_radius_is_not_web_mercator() {

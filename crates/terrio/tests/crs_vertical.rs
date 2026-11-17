@@ -1,5 +1,5 @@
 //! Transformations between vertical CRSs, as PROJ lists and picks them, between compound CRSs.
-//! The expected heights are pyproj's (PROJ 9.8.1); `scripts/compare_vertical_with_proj.py`
+//! The expected heights are pyproj's (PROJ 9.9.0); `scripts/compare_vertical_with_proj.py`
 //! compares every pair of the table.
 
 use terrio::crs::{SpatialRef, Transformer};

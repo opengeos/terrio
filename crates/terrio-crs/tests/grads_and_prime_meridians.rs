@@ -1,4 +1,4 @@
-//! CRSs whose angular unit is the grad, and prime meridians, place points as PROJ 9.8.1 does.
+//! CRSs whose angular unit is the grad, and prime meridians, place points as PROJ 9.9.0 does.
 //!
 //! WKT 1: NTF (Paris) (EPSG:4807) and its projected CRSs (EPSG:27561-27564, 27571-27574,
 //! 27581-27584, 27591-27594), as GDAL and ESRI write them, with their codes (identified) and
