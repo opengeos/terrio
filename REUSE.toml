@@ -85,6 +85,20 @@ precedence = "override"
 SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
 SPDX-License-Identifier = "LicenseRef-EPSG AND MIT"
 
+# Every EPSG and ESRI CRS in PROJ 9.8.1's WKT 2, GDAL WKT 1 and ESRI WKT 1 and PROJ's PROJJSON
+# of each: the EPSG Geodetic Parameter Dataset (IOGP) and Esri projection engine data (Apache-2.0),
+# through PROJ 9.8.1 (scripts/gen_projjson_corpus.py), and the differences terrio records from them.
+[[annotations]]
+path = [
+    "crates/terrio-crs/tests/data/projjson_corpus_epsg.jsonl.zst",
+    "crates/terrio-crs/tests/data/projjson_corpus_esri.jsonl.zst",
+    "crates/terrio-crs/tests/data/projjson_corpus_diffs.tsv",
+    "crates/terrio-crs/tests/data/projjson_corpus_diffs_fallback.tsv",
+]
+precedence = "override"
+SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright © 2010-2025 Esri", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
+SPDX-License-Identifier = "LicenseRef-EPSG AND Apache-2.0 AND MIT"
+
 # EPSG datums with the Esri datum names (Esri projection engine data, Apache-2.0, via PROJ 9.7.1).
 [[annotations]]
 path = "crates/terrio-crs/data/datums.tsv.zst"
