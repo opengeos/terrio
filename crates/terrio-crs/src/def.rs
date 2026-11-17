@@ -466,9 +466,9 @@ impl Def {
             // TOWGS84, zero or not, as EPSG:3857 (a shift on the projection's sphere put 45°N 30 km
             // away).
             if s.proj4.is_none()
-                && !super::proj4_extension(&e.wkt).is_some_and(|p| p.split_whitespace().any(|t| t == "+nadgrids=@null"))
                 && let Some(w) = s.wkt.as_deref().filter(|w| *w != e.wkt && super::proj4_extension(w).is_none())
                 && let Some(t) = wkt_towgs84(w)
+                && !super::proj4_extension(&e.wkt).is_some_and(|p| p.split_whitespace().any(|t| t == "+nadgrids=@null"))
             {
                 d.ops = vec![Arc::new(Op::world(datum::towgs84_steps(d.ell, &t)))];
                 d.datum = None;
