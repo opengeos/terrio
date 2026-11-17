@@ -160,9 +160,14 @@ shapely.box(0, 0, 1, 1); [geom1, geom2]         # Shapely geometries, alone or i
 (0, 0, 1, 1)                                    # (xmin, ymin, xmax, ymax) bounds
 ```
 
-A `str` is a path unless it is GeoJSON or WKT. Files, Layers, GeoPandas objects and Arrow data
-carry their CRS; geometries given alone are in EPSG:4326, as GeoJSON's are, unless the operation
-says otherwise (`clip_vector`'s `geometry` takes WKT and Shapely geometries in the input's CRS).
+A `str` is a path unless it has the shape of JSON (`{`, `[`) or WKT and is no existing file; text
+of that shape that does not parse is an error naming both readings. Bounds out of order are put
+in order with a warning: `xmin > xmax` longitudes cross the antimeridian (two boxes split at
+±180°, as GeoJSON reads such a `bbox`), other values and `ymin > ymax` are swapped.
+
+Files, Layers, GeoPandas objects and Arrow data carry their CRS; geometries given alone are in
+EPSG:4326, as GeoJSON's are, unless the operation says otherwise (`clip_vector`'s `geometry`
+takes WKT and Shapely geometries in the input's CRS).
 
 ### Layer selection
 

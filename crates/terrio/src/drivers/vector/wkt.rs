@@ -286,6 +286,30 @@ impl Parser<'_> {
     }
 }
 
+/// Whether `text` has the shape of WKT (an optional `SRID=n;`, a geometry keyword, an optional
+/// `Z`, `M` or `ZM`, then `(` or `EMPTY`), valid or not: a path or URL never has it.
+pub fn looks_like(text: &str) -> bool {
+    let mut t = text.trim_start();
+    if t.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("SRID=")) {
+        let Some((_, rest)) = t.split_once(';') else { return false };
+        t = rest.trim_start();
+    }
+    let word = t.split(|c: char| !c.is_ascii_alphabetic()).next().unwrap_or("");
+    if !is_kind(&word.to_ascii_uppercase()) {
+        return false;
+    }
+    let mut rest = t[word.len()..].trim_start();
+    for dims in ["ZM", "Z", "M"] {
+        if rest.get(..dims.len()).is_some_and(|d| d.eq_ignore_ascii_case(dims))
+            && !rest[dims.len()..].starts_with(|c: char| c.is_ascii_alphabetic())
+        {
+            rest = rest[dims.len()..].trim_start();
+            break;
+        }
+    }
+    rest.starts_with('(') || rest.get(..5).is_some_and(|e| e.eq_ignore_ascii_case("EMPTY"))
+}
+
 fn is_kind(s: &str) -> bool {
     matches!(s, "POINT" | "LINESTRING" | "POLYGON" | "MULTIPOINT" | "MULTILINESTRING" | "MULTIPOLYGON" | "GEOMETRYCOLLECTION")
 }

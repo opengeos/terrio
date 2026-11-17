@@ -42,16 +42,17 @@ pub use crate::drivers::vector::shapefile::to_zip_bytes as write_shapefile_zip_b
 /// Feature or a geometry), a JSON array of those, a JSON `[xmin, ymin, xmax, ymax]` box, or a
 /// WKT/EWKT geometry. GeoJSON, lists and boxes are in WGS 84 unless GeoJSON's `crs` member
 /// names a CRS, as GeoJSON is read; WKT has no CRS, for the caller to give.
+///
+/// A box with `xmin > xmax` crosses the antimeridian when both are longitudes (two boxes split
+/// at ±180°, as RFC 7946 reads such a `bbox`), and has its corners swapped otherwise; `ymin >
+/// ymax` is swapped. Each is reported as a warning.
 pub fn parse_geometries(text: &str, name: &str) -> Result<Layer> {
     use serde_json::{Value, json};
     let trimmed = text.trim_start();
     if trimmed.starts_with('[') {
         let items: Vec<Value> = serde_json::from_str(trimmed).map_err(|e| Error::InvalidData(format!("geometries: {e}")))?;
         let doc = if let [Some(x0), Some(y0), Some(x1), Some(y1)] = items.iter().map(Value::as_f64).collect::<Vec<_>>()[..] {
-            if x0 > x1 || y0 > y1 {
-                return Err(Error::InvalidArgument(format!("bounds [{x0}, {y0}, {x1}, {y1}] are not xmin, ymin, xmax, ymax")));
-            }
-            json!({"type": "Polygon", "coordinates": [[[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]]})
+            bounds_geometry(x0, y0, x1, y1)
         } else {
             let features: Vec<Value> = items
                 .into_iter()
@@ -65,9 +66,9 @@ pub fn parse_geometries(text: &str, name: &str) -> Result<Layer> {
         };
         return parse_geojson_layer(doc.to_string().as_bytes(), name);
     }
-    if !trimmed.starts_with('{')
-        && let Some(geometry) = crate::drivers::vector::wkt::parse(trimmed)
-    {
+    if crate::drivers::vector::wkt::looks_like(trimmed) {
+        let geometry = crate::drivers::vector::wkt::parse(trimmed)
+            .ok_or_else(|| Error::InvalidData("WKT: not a valid or non-empty geometry".into()))?;
         let mut layer = Layer::new(name);
         layer.geom_type = Some(geometry.geom_type());
         layer.push(wbvector::Feature::with_geometry(0, geometry, 0));
@@ -76,20 +77,54 @@ pub fn parse_geometries(text: &str, name: &str) -> Result<Layer> {
     parse_geojson_layer(text.as_bytes(), name)
 }
 
+/// The GeoJSON geometry of a box, its corners put in order (see [`parse_geometries`]).
+fn bounds_geometry(x0: f64, y0: f64, x1: f64, y1: f64) -> serde_json::Value {
+    use serde_json::json;
+    let given = format!("[{x0}, {y0}, {x1}, {y1}]");
+    let (y0, y1) = if y0 > y1 {
+        crate::warnings::warn(format!("bounds {given}: ymin > ymax, read with the two swapped"));
+        (y1, y0)
+    } else {
+        (y0, y1)
+    };
+    let ring = |x0: f64, x1: f64| json!([[[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]]);
+    if x0 <= x1 {
+        return json!({"type": "Polygon", "coordinates": ring(x0, x1)});
+    }
+    if [x0, x1].iter().all(|x| (-180.0..=180.0).contains(x)) {
+        crate::warnings::warn(format!(
+            "bounds {given}: xmin > xmax, read as longitudes across the antimeridian (two boxes split at ±180°)"
+        ));
+        return json!({"type": "MultiPolygon", "coordinates": [ring(x0, 180.0), ring(-180.0, x1)]});
+    }
+    crate::warnings::warn(format!("bounds {given}: xmin > xmax, read with the two swapped"));
+    json!({"type": "Polygon", "coordinates": ring(x1, x0)})
+}
+
+/// [`parse_geometries`] of a string that may have been meant as a path: a failure names both
+/// readings.
+pub fn parse_geometry_text(text: &str, name: &str) -> Result<Layer> {
+    parse_geometries(text, name).map_err(|e| {
+        let shown: String = text.trim().chars().take(60).collect();
+        let more = if text.trim().chars().count() > 60 { "..." } else { "" };
+        Error::InvalidArgument(format!("'{shown}{more}' is neither an existing file nor valid geometries (GeoJSON, WKT or bounds): {e}"))
+    })
+}
+
 /// Opens a vector dataset with [`crate::open_vector`], or reads `src` with [`parse_geometries`]
 /// when it is geometries as text (GeoJSON, WKT or a JSON box), as GDAL's `-cutline` takes WKT.
 pub fn open_vector_or_geometries(src: &str, options: &VectorOpenOptions) -> Result<VectorDataset> {
     if is_geometry_text(src) {
-        return Ok(VectorDataset::new(vec![parse_geometries(src, "geometries")?], VectorDriver::GeoJSON));
+        return Ok(VectorDataset::new(vec![parse_geometry_text(src, "geometries")?], VectorDriver::GeoJSON));
     }
     crate::open_vector(src, options)
 }
 
-/// Whether `text` is geometries for [`parse_geometries`] rather than a path or URL. An existing
-/// file is a path, whatever its name.
+/// Whether `text` is meant as geometries for [`parse_geometries`] rather than a path or URL: it
+/// has the shape of JSON (`{`, `[`) or WKT, and is not an existing file.
 pub fn is_geometry_text(text: &str) -> bool {
     let t = text.trim_start();
-    (t.starts_with(['{', '[']) || crate::drivers::vector::wkt::parse(t).is_some()) && !std::path::Path::new(text).exists()
+    (t.starts_with(['{', '[']) || crate::drivers::vector::wkt::looks_like(t)) && !std::path::Path::new(text).exists()
 }
 
 #[cfg(test)]
@@ -1068,11 +1103,25 @@ mod tests {
         assert_eq!(list.features.len(), 2);
         let bounds = parse_geometries("[0, 0, 2, 2]", "zones").unwrap();
         assert_eq!(bounds.features[0].geometry, one.features[0].geometry);
-        assert!(parse_geometries("[2, 0, 0, 2]", "zones").is_err(), "xmin > xmax");
+        // Boxes out of order: across the antimeridian for longitudes, else swapped; warned.
+        let _ = crate::warnings::take();
+        let across = parse_geometries("[170, 0, -170, 2]", "zones").unwrap();
+        assert!(matches!(&across.features[0].geometry, Some(wbvector::Geometry::MultiPolygon(p)) if p.len() == 2));
+        assert_eq!(parse_geometries("[0, 2, 2, 0]", "zones").unwrap().features[0].geometry, one.features[0].geometry);
+        let projected = parse_geometries("[500002, 0, 500000, 2]", "zones").unwrap();
+        assert_eq!(projected.features[0].geometry, parse_geometries("[500000, 0, 500002, 2]", "zones").unwrap().features[0].geometry);
+        let warned = crate::warnings::take();
+        assert!(warned.iter().any(|w| w.contains("antimeridian")) && warned.iter().any(|w| w.contains("swapped")), "{warned:?}");
         let wkt = parse_geometries("SRID=4326;POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))", "zones").unwrap();
         assert_eq!(wkt.features[0].geometry, one.features[0].geometry);
         assert!(is_geometry_text(" POINT (1 2)") && is_geometry_text("[0, 0, 1, 1]") && is_geometry_text("{}"));
+        assert!(is_geometry_text("polygon z ((0 0 0, 1 0 0, 0 0 0") && is_geometry_text("POINT EMPTY"), "WKT's shape, valid or not");
         assert!(!is_geometry_text("fields.gpkg") && !is_geometry_text("point.gpkg") && !is_geometry_text("s3://b/k.fgb"));
+        // Text meant as geometries that does not parse names both readings.
+        let error = parse_geometry_text("POLYGON ((0 0, 1 0", "zones").unwrap_err().to_string();
+        assert!(error.contains("neither an existing file nor valid geometries"), "{error}");
+        let error = open_vector_or_geometries("[draft].geojson", &Default::default()).unwrap_err().to_string();
+        assert!(error.contains("neither an existing file"), "{error}");
         // `--cutline` and the CLI's vector inputs take geometries as text too; WKT has no CRS.
         let cutline = crate::ops::warp::Cutline::open("POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))").unwrap();
         assert_eq!((cutline.polygons.len(), cutline.srs.is_none()), (1, true));

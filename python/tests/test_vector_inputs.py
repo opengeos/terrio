@@ -59,11 +59,33 @@ def test_shapely_and_geopandas_inputs():
     assert clipped.bounds == (0.0, 0.0, 1.0, 1.0)
 
 
-def test_paths_and_geometry_text_are_told_apart(tmp_path):
+def test_paths_and_geometry_text_are_told_apart(tmp_path, monkeypatch):
     with pytest.raises(Exception, match="point.gpkg"):
         terrio.convex_hull(str(tmp_path / "point.gpkg"))
-    with pytest.raises(ValueError, match="xmin, ymin, xmax, ymax"):
-        terrio.convex_hull((2, 0, 0, 2))
+    # Text shaped as geometries that is no file and does not parse names both readings.
+    for text in ("POLYGON ((0 0, 1 0", "[draft].geojson"):
+        with pytest.raises(ValueError, match="neither an existing file nor valid geometries"):
+            terrio.convex_hull(text)
+    # An existing file is a path, whatever its name.
+    monkeypatch.chdir(tmp_path)
+    terrio.Layer.from_geojson(SQUARE).write("[draft].geojson")
+    assert _geometries(terrio.convex_hull("[draft].geojson")) == _geometries(
+        terrio.convex_hull(SQUARE)
+    )
+
+
+def test_bounds_out_of_order_are_put_in_order_with_a_warning():
+    with pytest.warns(UserWarning, match="antimeridian"):
+        across = terrio.Layer.from_geojson((170, 0, -170, 2))
+    assert across.to_geojson()["features"][0]["geometry"]["type"] == "MultiPolygon"
+    assert across.bounds == (-180.0, 0.0, 180.0, 2.0)
+    with pytest.warns(UserWarning, match="ymin > ymax"):
+        swapped = terrio.convex_hull((0, 2, 2, 0))
+    assert _geometries(swapped) == _geometries(terrio.convex_hull(SQUARE))
+    # Not longitudes: projected corners swapped.
+    with pytest.warns(UserWarning, match="xmin > xmax, read with the two swapped"):
+        projected = terrio.Layer.from_geojson((500002, 0, 500000, 2))
+    assert projected.bounds == (500000.0, 0.0, 500002.0, 2.0)
 
 
 def test_zonal_stats_zones_as_bounds_and_wkt(tmp_path):

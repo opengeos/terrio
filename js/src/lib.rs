@@ -628,14 +628,18 @@ pub fn raster_from_array(
 /// Creates a vector dataset from geometries: GeoJSON (a FeatureCollection, a Feature or a
 /// geometry) as an object or a JSON string, an array of geometries or Features, an
 /// `[xmin, ymin, xmax, ymax]` array of bounds, or WKT. `crs` is the coordinates' CRS, EPSG:4326
-/// by default.
+/// by default. Bounds out of order are put in order (`xmin > xmax` longitudes cross the
+/// antimeridian), with a warning for `takeWarnings`.
 #[wasm_bindgen(js_name = fromGeoJSON)]
 pub fn from_geojson(geojson: JsValue, name: Option<String>, crs: Option<String>) -> Result<Dataset, JsError> {
-    let text = match geojson.as_string() {
-        Some(s) => s,
-        None => js_sys::JSON::stringify(&geojson).map_err(|_| JsError::new("cannot serialize the GeoJSON"))?.into(),
-    };
-    let mut layer = terrio::memory::parse_geometries(&text, "layer").map_err(js_err)?;
+    let mut layer = match geojson.as_string() {
+        Some(s) => terrio::memory::parse_geometry_text(&s, "layer"),
+        None => {
+            let text: String = js_sys::JSON::stringify(&geojson).map_err(|_| JsError::new("cannot serialize the GeoJSON"))?.into();
+            terrio::memory::parse_geometries(&text, "layer")
+        }
+    }
+    .map_err(js_err)?;
     layer.name = name.unwrap_or_else(|| "layer".into());
     let crs = SpatialRef::parse_literal(crs.as_deref().unwrap_or("EPSG:4326")).map_err(js_err)?;
     crs.apply_to_layer(&mut layer);

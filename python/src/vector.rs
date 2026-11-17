@@ -150,9 +150,11 @@ pub(crate) fn value_to_py<'py>(py: Python<'py>, v: &FieldValue) -> PyResult<Boun
     })
 }
 
-/// Parses geometries as text (GeoJSON, a JSON list or box, or WKT) into a layer.
-fn layer_from_geojson_text(text: &str, name: Option<&str>, crs: Option<&str>) -> PyResult<Layer> {
-    let mut layer = terrio::memory::parse_geometries(text, "layer").py()?;
+/// Parses geometries as text (GeoJSON, a JSON list or box, or WKT) into a layer; `given` when the
+/// text is the caller's own string, which may have been meant as a path.
+fn layer_from_geojson_text(text: &str, name: Option<&str>, crs: Option<&str>, given: bool) -> PyResult<Layer> {
+    let parse = if given { terrio::memory::parse_geometry_text } else { terrio::memory::parse_geometries };
+    let mut layer = parse(text, "layer").py()?;
     layer.name = name.unwrap_or("layer").to_string();
     let crs = match crs {
         Some(c) => SpatialRef::parse_literal(c).py()?,
@@ -180,7 +182,8 @@ fn geo_interface<'py>(obj: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
 /// geometries or Features, or `(xmin, ymin, xmax, ymax)` bounds.
 pub(crate) fn layer_from_object(obj: &Bound<'_, PyAny>, name: Option<&str>, crs: Option<&str>) -> PyResult<Layer> {
     let py = obj.py();
-    let text: String = if let Ok(s) = obj.extract::<String>() {
+    let given = obj.extract::<String>().ok();
+    let text: String = if let Some(s) = given.clone() {
         s
     } else {
         let mut value = geo_interface(obj)?;
@@ -208,7 +211,11 @@ pub(crate) fn layer_from_object(obj: &Bound<'_, PyAny>, name: Option<&str>, crs:
             _ => None,
         },
     };
-    layer_from_geojson_text(&text, name, crs.as_deref())
+    // Bounds put in order are reported as warnings.
+    let _ = terrio::warnings::take();
+    let layer = layer_from_geojson_text(&text, name, crs.as_deref(), given.is_some());
+    crate::issue_warnings(py, terrio::warnings::take())?;
+    layer
 }
 
 /// One geometry as WKT or GeoJSON text: a `str` as given, a Shapely geometry as its WKT (in the

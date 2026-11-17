@@ -229,7 +229,11 @@ test("geometries as WKT, bounds or arrays read as GeoJSON does", () => {
   assert.deepEqual(geometries("POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))"), expected);
   assert.deepEqual(geometries([0, 0, 2, 2]), expected);
   assert.deepEqual(geometries([square, { type: "Feature", properties: {}, geometry: square }]), [...expected, ...expected]);
-  assert.throws(() => terrio.fromGeoJSON([2, 0, 0, 2]), /xmin, ymin, xmax, ymax/);
+  terrio.takeWarnings();
+  const across = terrio.fromGeoJSON([170, 0, -170, 2]).toGeoJSON().features[0].geometry;
+  assert.equal(across.type, "MultiPolygon");
+  assert.ok(terrio.takeWarnings().some((w) => w.includes("antimeridian")));
+  assert.throws(() => terrio.fromGeoJSON("POLYGON ((0 0, 1 0"), /neither an existing file nor valid geometries/);
 });
 
 test("vector layers as Arrow IPC streams, and back", { skip: needs("parquet") }, () => {
