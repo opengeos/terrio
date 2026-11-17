@@ -564,6 +564,11 @@ pub fn zonal(a: ZonalArgs) -> Result<()> {
             return Err(Error::InvalidArgument(format!("a Zarr cube output takes one zone layer; the input has {}", layers.len())));
         };
         let output = &a.sources.output.output;
+        // Checked before any raster is read: the store is written once every statistic is done.
+        if std::path::Path::new(output).exists() {
+            return Err(Error::InvalidArgument(format!("{output} already exists")));
+        }
+        terrio::ops::zonal_cube::check_zones(layer)?;
         let name = std::path::Path::new(output.trim_end_matches(['/', '\\'])).file_stem().and_then(|s| s.to_str()).unwrap_or("statistics");
         let mut sources: Vec<ZonalSource> =
             plan.into_iter().map(|(path, bands)| ZonalSource { raster: ZonalRaster::Path(path), bands }).collect();

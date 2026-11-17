@@ -10,8 +10,8 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use super::zonal::{BandStats, Statistic, ZonalOptions, ZonalSource, zonal_stats_with};
-use crate::{Error, FieldValue, Layer, Result};
+use super::zonal::{BandStats, Statistic, ZonalBand, ZonalOptions, ZonalRaster, ZonalSource, zonal_stats_with};
+use crate::{Error, FieldValue, Geometry, Layer, Result};
 
 /// Zonal statistics of the features of `zones`, as variables of dims
 /// `(geometry, dims..., statistic)`.
@@ -112,15 +112,20 @@ pub fn zonal_cube(zones: &Layer, sources: &mut [ZonalSource], options: &ZonalOpt
             "zonal cubes keep the zones' CRS and full precision: dst_srs and decimal_places are not supported".into(),
         ));
     }
-    let bands: Vec<_> = sources.iter().flat_map(|s| &s.bands).collect();
-    let timed = bands.iter().any(|b| b.time.is_some());
-    if timed && let Some(b) = bands.iter().find(|b| b.time.is_none()) {
-        return Err(Error::InvalidArgument(format!("input '{}' has no time while other inputs have one", b.prefix)));
+    let bands: Vec<_> = sources.iter().flat_map(|s| s.bands.iter().map(move |b| (s, b))).collect();
+    let timed = bands.iter().any(|(_, b)| b.time.is_some());
+    if timed && let Some((s, b)) = bands.iter().find(|(_, b)| b.time.is_none()) {
+        return Err(Error::InvalidArgument(format!("input {} has no time while other inputs have one", input_name(s, b))));
     }
-    let key = |b: &super::zonal::ZonalBand| b.label.clone().unwrap_or_else(|| b.prefix.clone());
+    // A band's entry along `band`: its label, else its number among dated inputs, else its prefix.
+    let key = |b: &ZonalBand| match (&b.label, &b.time) {
+        (Some(label), _) => label.clone(),
+        (None, Some(_)) => format!("b{}", b.band),
+        (None, None) => b.prefix.clone(),
+    };
     let mut times: Vec<String> = Vec::new();
     let mut keys: Vec<String> = Vec::new();
-    for b in &bands {
+    for (_, b) in &bands {
         if let Some(t) = &b.time
             && !times.contains(t)
         {
@@ -131,11 +136,11 @@ pub fn zonal_cube(zones: &Layer, sources: &mut [ZonalSource], options: &ZonalOpt
             keys.push(k);
         }
     }
-    let banded = bands.iter().any(|b| b.label.is_some()) || keys.len() > 1;
+    let banded = bands.iter().any(|(_, b)| b.label.is_some()) || keys.len() > 1;
     let key_count = if banded { keys.len() } else { 1 };
     let cells = times.len().max(1) * key_count;
     // The cell of each band of each source; two bands on one cell are an error.
-    let mut taken: HashMap<usize, &str> = HashMap::new();
+    let mut taken: HashMap<usize, String> = HashMap::new();
     let mut cell_of: Vec<Vec<usize>> = Vec::with_capacity(sources.len());
     for source in sources.iter() {
         let mut row = Vec::with_capacity(source.bands.len());
@@ -143,8 +148,8 @@ pub fn zonal_cube(zones: &Layer, sources: &mut [ZonalSource], options: &ZonalOpt
             let t = b.time.as_ref().map_or(0, |t| times.iter().position(|x| x == t).unwrap_or(0));
             let k = if banded { keys.iter().position(|x| *x == key(b)).unwrap_or(0) } else { 0 };
             let cell = t * key_count + k;
-            if let Some(first) = taken.insert(cell, &b.prefix) {
-                return Err(Error::InvalidArgument(format!("inputs '{first}' and '{}' fall on the same time and band", b.prefix)));
+            if let Some(first) = taken.insert(cell, input_name(source, b)) {
+                return Err(Error::InvalidArgument(format!("inputs {first} and {} fall on the same time and band", input_name(source, b))));
             }
             row.push(cell);
         }
@@ -179,4 +184,34 @@ pub fn zonal_cube(zones: &Layer, sources: &mut [ZonalSource], options: &ZonalOpt
         statistics: options.stats.clone(),
         variables: vec![CubeVariable { name: name.into(), dims, values: CubeValues::F64(values) }],
     })
+}
+
+/// An input as an error names it: its path (and band, among several), else its prefix.
+fn input_name(source: &ZonalSource, band: &ZonalBand) -> String {
+    match &source.raster {
+        ZonalRaster::Path(path) if source.bands.len() > 1 => format!("'{path}' (band {})", band.band),
+        ZonalRaster::Path(path) => format!("'{path}'"),
+        ZonalRaster::Open(_) => format!("'{}'", band.prefix),
+    }
+}
+
+/// Checks that every zone of `zones` can be stored as a CF polygon geometry, as
+/// [`ZonalCube::write_zarr`] requires: a polygon or multipolygon with at least one ring.
+///
+/// # Errors
+///
+/// [`Error::InvalidArgument`] naming the first zone (index and FID) without a geometry, with an
+/// empty one, or with one that is not a polygon.
+pub fn check_zones(zones: &Layer) -> Result<()> {
+    for (i, f) in zones.features.iter().enumerate() {
+        let why = match &f.geometry {
+            None => "has no geometry",
+            Some(Geometry::Polygon { exterior, .. }) if exterior.is_empty() => "has an empty geometry",
+            Some(Geometry::MultiPolygon(parts)) if parts.is_empty() || parts.iter().any(|(e, _)| e.is_empty()) => "has an empty geometry",
+            Some(Geometry::Polygon { .. } | Geometry::MultiPolygon(_)) => continue,
+            Some(_) => "is not a polygon",
+        };
+        return Err(Error::InvalidArgument(format!("feature {i} (FID {}) {why}: CF geometries in Zarr cannot store it", f.fid)));
+    }
+    Ok(())
 }

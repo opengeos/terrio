@@ -210,9 +210,9 @@ pub fn time_text(iso: &str) -> String {
 /// The bands of one labelled input (a CLI `--inputs` row, a Python dict, a JavaScript object):
 /// each of `bands`, its fields named by [`label_prefix`] when the input has a time or a label,
 /// else `unlabelled(band)`. A label given to several bands is suffixed with each band's number
-/// (`B04_b1`, `B04_b2`), so that their fields say which band they hold. Every band gets a
-/// `label`, `bN` when the input gives none, so that outputs with a band dimension can name it.
-/// Blank times and labels are absent, as an empty `--inputs` cell is.
+/// (`B04_b1`, `B04_b2`), so that their fields say which band they hold. A band's `label` is
+/// set only when the input gives one. Blank times and labels are absent, as an empty `--inputs`
+/// cell is.
 pub fn labelled_bands(bands: &[usize], time: Option<&str>, label: Option<&str>, unlabelled: impl Fn(usize) -> String) -> Vec<ZonalBand> {
     let (time, label) = (time.filter(|t| !t.trim().is_empty()), label.filter(|l| !l.trim().is_empty()));
     bands
@@ -224,7 +224,7 @@ pub fn labelled_bands(bands: &[usize], time: Option<&str>, label: Option<&str>, 
                 None => format!("b{band}"),
             };
             let prefix = if time.is_some() || label.is_some() { label_prefix(time, &name) } else { unlabelled(band) };
-            ZonalBand { band, prefix, time: time.map(String::from), label: Some(name) }
+            ZonalBand { band, prefix, time: time.map(String::from), label: label.map(|_| name) }
         })
         .collect()
 }

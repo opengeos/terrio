@@ -7,8 +7,10 @@ use crate::ops::zonal_cube::{CubeValues, ZonalCube};
 use wbvector::{Coord, FieldValue, Geometry, Ring};
 
 /// Arrays of the CF encoding, and the dimensions they use; a field of the same name is suffixed.
-const RESERVED: [&str; 12] = [
+const RESERVED: [&str; 14] = [
     "geometry",
+    "geometry_node",
+    "geometry_part",
     "geometry_container",
     "geometry_x",
     "geometry_y",
@@ -36,12 +38,15 @@ pub(crate) fn write(cube: &ZonalCube, path: &Path) -> Result<()> {
         let before = xs.len();
         for (exterior, holes) in parts {
             for (ring, hole) in std::iter::once((*exterior, false)).chain(holes.iter().map(|h| (h, true))) {
-                // CF: exterior rings anticlockwise, holes clockwise.
-                let coords: Vec<&Coord> = if (signed_area(ring.coords()) > 0.0) == hole {
-                    ring.coords().iter().rev().collect()
-                } else {
-                    ring.coords().iter().collect()
-                };
+                // CF: exterior rings anticlockwise, holes clockwise, closed (terrio's rings are
+                // open: no closing vertex).
+                let mut coords: Vec<&Coord> =
+                    if (ring.signed_area() > 0.0) == hole { ring.coords().iter().rev().collect() } else { ring.coords().iter().collect() };
+                if let (Some(first), Some(last)) = (coords.first(), coords.last())
+                    && (first.x, first.y) != (last.x, last.y)
+                {
+                    coords.push(first);
+                }
                 xs.extend(coords.iter().map(|c| c.x));
                 ys.extend(coords.iter().map(|c| c.y));
                 part_nodes.push(count(coords.len())?);
@@ -122,7 +127,7 @@ pub(crate) fn write(cube: &ZonalCube, path: &Path) -> Result<()> {
     let fids: Vec<i64> = cube.zones.features.iter().map(|f| f.fid as i64).collect();
     numeric(path, "feature_id", &["geometry"], DataType::I64, &i64_bytes(&fids), json!({}))?;
     let mut taken: Vec<String> = RESERVED.iter().map(|s| s.to_string()).collect();
-    taken.extend(cube.variables.iter().map(|v| v.name.clone()));
+    let variable_names: Vec<String> = cube.variables.iter().map(|v| unique(&v.name, &mut taken)).collect();
     let mut coordinates = vec!["feature_id".to_string()];
     for (i, field) in cube.zones.schema.fields().iter().enumerate() {
         let name = unique(&field.name, &mut taken);
@@ -165,7 +170,7 @@ pub(crate) fn write(cube: &ZonalCube, path: &Path) -> Result<()> {
             CubeValues::F64(values) => (DataType::F64, f64_bytes(values)),
         };
         let attrs = json!({"geometry": "geometry_container", "grid_mapping": "spatial_ref", "coordinates": coordinates.join(" ")});
-        write_array_v3(path, &var.name, &shape, &dims, data_type, &bytes, Some(f64::NAN), attrs)?;
+        write_array_v3(path, &variable_names[v], &shape, &dims, data_type, &bytes, Some(f64::NAN), attrs)?;
     }
     Ok(())
 }
@@ -173,44 +178,34 @@ pub(crate) fn write(cube: &ZonalCube, path: &Path) -> Result<()> {
 /// A polygon: its exterior ring and its holes.
 type Polygon<'a> = (&'a Ring, &'a [Ring]);
 
-/// The polygons of each zone, or an error naming a zone that has none.
+/// The polygons of each zone (checked by [`crate::ops::zonal_cube::check_zones`]).
 fn polygons(cube: &ZonalCube) -> Result<Vec<Vec<Polygon<'_>>>> {
-    cube.zones
+    crate::ops::zonal_cube::check_zones(&cube.zones)?;
+    Ok(cube
+        .zones
         .features
         .iter()
-        .enumerate()
-        .map(|(i, f)| {
-            let why =
-                |what: &str| Error::InvalidArgument(format!("feature {i} (FID {}) {what}: CF geometries in Zarr cannot store it", f.fid));
-            let parts: Vec<Polygon> = match &f.geometry {
-                None => return Err(why("has no geometry")),
-                Some(Geometry::Polygon { exterior, interiors }) => vec![(exterior, interiors.as_slice())],
-                Some(Geometry::MultiPolygon(parts)) => parts.iter().map(|(e, h)| (e, h.as_slice())).collect(),
-                Some(_) => return Err(why("is not a polygon")),
-            };
-            if parts.is_empty() || parts.iter().any(|(e, _)| e.coords().is_empty()) {
-                return Err(why("has an empty geometry"));
-            }
-            Ok(parts)
+        .map(|f| match &f.geometry {
+            Some(Geometry::Polygon { exterior, interiors }) => vec![(exterior, interiors.as_slice())],
+            Some(Geometry::MultiPolygon(parts)) => parts.iter().map(|(e, h)| (e, h.as_slice())).collect(),
+            _ => Vec::new(),
         })
-        .collect()
-}
-
-/// The signed area of a ring (shoelace formula): positive when anticlockwise.
-fn signed_area(coords: &[Coord]) -> f64 {
-    coords.windows(2).map(|w| w[0].x * w[1].y - w[1].x * w[0].y).sum::<f64>() / 2.0
+        .collect())
 }
 
 fn count(n: usize) -> Result<i32> {
     i32::try_from(n).map_err(|_| Error::InvalidArgument("too many vertices for a Zarr cube's CF geometries".into()))
 }
 
-/// `name`, or `name_2`, `name_3`... when it is taken.
+/// `name` as an array name of its own: a path separator becomes `_`, no name `field`, and
+/// `_2`, `_3`... is added when it is taken, ignoring case (for case-insensitive file systems).
 fn unique(name: &str, taken: &mut Vec<String>) -> String {
-    let mut out = name.to_string();
+    let base = if name.is_empty() { "field".to_string() } else { name.replace(['/', '\\'], "_") };
+    let clash = |n: &str, taken: &[String]| taken.iter().any(|t| t.eq_ignore_ascii_case(n));
+    let mut out = base.clone();
     let mut k = 2;
-    while taken.contains(&out) {
-        out = format!("{name}_{k}");
+    while clash(&out, taken) || out == "." || out == ".." {
+        out = format!("{base}_{k}");
         k += 1;
     }
     taken.push(out.clone());
@@ -241,7 +236,7 @@ fn write_field(path: &Path, name: &str, column: &[&FieldValue]) -> Result<()> {
         .iter()
         .map(|v| match v {
             FieldValue::Null => String::new(),
-            FieldValue::Text(s) | FieldValue::Date(s) => s.clone(),
+            FieldValue::Text(s) | FieldValue::Date(s) | FieldValue::DateTime(s) => s.clone(),
             FieldValue::Integer(i) => i.to_string(),
             FieldValue::Float(x) => x.to_string(),
             FieldValue::Boolean(b) => b.to_string(),

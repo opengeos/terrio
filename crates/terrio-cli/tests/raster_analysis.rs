@@ -390,3 +390,51 @@ fn zarr_cube_output_refuses_vector_output_options() {
         assert!(String::from_utf8_lossy(&r.stderr).contains(option[0]), "{option:?}: {}", String::from_utf8_lossy(&r.stderr));
     }
 }
+
+#[test]
+fn zarr_cube_from_inputs_without_labels() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    dated_rasters(d);
+    let dims = |store: &str| -> serde_json::Value {
+        let meta: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(d.join(store).join(format!("{}/zarr.json", store.trim_end_matches(".zarr")))).unwrap(),
+        )
+        .unwrap();
+        meta["dimension_names"].clone()
+    };
+    // One band per date: no band dimension.
+    std::fs::write(d.join("dated.csv"), "path,time\n2024-07-01/B04.tif,2024-07-01\n2024-07-11/B04.tif,2024-07-11\n").unwrap();
+    ok(&["zonal-stats", "zones.geojson", "dated.zarr", "--inputs", "dated.csv", "--stats", "mean"], d);
+    assert_eq!(dims("dated.zarr"), serde_json::json!(["geometry", "time", "statistic"]));
+    // Paths alone: one band entry per file, as --raster gives.
+    std::fs::copy(d.join("2024-07-11/B04.tif"), d.join("other.tif")).unwrap();
+    std::fs::write(d.join("paths.csv"), "path\n2024-07-01/B04.tif\nother.tif\n").unwrap();
+    ok(&["zonal-stats", "zones.geojson", "paths.zarr", "--inputs", "paths.csv", "--stats", "mean"], d);
+    assert_eq!(dims("paths.zarr"), serde_json::json!(["geometry", "band", "statistic"]));
+}
+
+#[test]
+fn zarr_cube_errors_name_the_files_and_come_before_reading() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    dated_rasters(d);
+    let fails = |args: &[&str], why: &str| {
+        let r = run(args, d);
+        let err = String::from_utf8_lossy(&r.stderr).to_string();
+        assert!(!r.status.success() && err.contains(why), "{args:?}: {err}");
+    };
+    std::fs::write(d.join("twice.csv"), "path,time,label\n2024-07-01/B04.tif,2024-07-01,B04\n2024-07-11/B04.tif,2024-07-01,B04\n").unwrap();
+    fails(&["zonal-stats", "zones.geojson", "twice.zarr", "--inputs", "twice.csv"], "2024-07-11/B04.tif");
+    std::fs::write(d.join("mixed.csv"), "path,time\n2024-07-01/B04.tif,2024-07-01\n2024-07-11/B04.tif,\n").unwrap();
+    fails(&["zonal-stats", "zones.geojson", "mixed.zarr", "--inputs", "mixed.csv"], "2024-07-11/B04.tif");
+    // An existing store, or a zone CF cannot store, fails before any raster is read.
+    std::fs::create_dir(d.join("taken.zarr")).unwrap();
+    fails(&["zonal-stats", "zones.geojson", "taken.zarr", "--raster", "missing.tif"], "already exists");
+    std::fs::write(
+        d.join("null.geojson"),
+        r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":null}]}"#,
+    )
+    .unwrap();
+    fails(&["zonal-stats", "null.geojson", "null.zarr", "--raster", "missing.tif"], "no geometry");
+}

@@ -288,6 +288,70 @@ mod zarr {
         assert!(err.contains("feature 1") && err.contains("11"), "{err}");
     }
 
+    /// Rings as terrio's readers give them: open (no closing vertex), far from the origin,
+    /// starting anywhere.
+    #[test]
+    fn open_rings_far_from_the_origin_are_closed_and_oriented() {
+        let (x0, y0) = (500_000.0, 5_000_000.0);
+        let exterior = ring(&[(x0, y0 + 10.0), (x0, y0), (x0 + 10.0, y0), (x0 + 10.0, y0 + 10.0)]); // anticlockwise, open
+        let hole = ring(&[(x0 + 2.0, y0 + 2.0), (x0 + 4.0, y0 + 2.0), (x0 + 4.0, y0 + 4.0), (x0 + 2.0, y0 + 4.0)]); // anticlockwise, open
+        let mut zones = Layer::new("fields");
+        zones.features.push(Feature { fid: 0, geometry: Some(Geometry::polygon(exterior, vec![hole])), attributes: vec![] });
+        SpatialRef::parse("EPSG:32631").unwrap().apply_to_layer(&mut zones);
+        let mut cube = cube(zones);
+        cube.variables[0].values = CubeValues::F64(vec![0.0; 8]);
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("c.zarr");
+        cube.write_zarr(store.to_str().unwrap()).unwrap();
+        let (_, x) = nums(read(store.to_str().unwrap(), "geometry_x").1);
+        let (_, y) = nums(read(store.to_str().unwrap(), "geometry_y").1);
+        assert_eq!(nums(read(store.to_str().unwrap(), "geometry_part_node_count").1).1, [5.0, 5.0], "rings closed");
+        assert_eq!((x[0], y[0]), (x[4], y[4]));
+        let area = |from: usize, to: usize| {
+            (from..to - 1).map(|i| (x[i] - x0) * (y[i + 1] - y0) - (x[i + 1] - x0) * (y[i] - y0)).sum::<f64>() / 2.0
+        };
+        assert_eq!(area(0, 5), 100.0, "exterior anticlockwise");
+        assert_eq!(area(5, 10), -4.0, "hole clockwise");
+    }
+
+    #[test]
+    fn date_time_fields_are_written_as_their_text() {
+        let mut zones = zones();
+        zones.schema.add_field(FieldDef::new("seen", FieldType::DateTime));
+        for f in &mut zones.features {
+            f.attributes.push(FieldValue::DateTime("2024-07-01T10:00:00".into()));
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.zarr");
+        cube(zones).write_zarr(path.to_str().unwrap()).unwrap();
+        assert_eq!(strings(&path, "seen"), ["2024-07-01T10:00:00", "2024-07-01T10:00:00"]);
+    }
+
+    /// Names that would be paths outside an array, another array, or one of its dimensions get
+    /// a name of their own.
+    #[test]
+    fn names_never_clash_or_leave_their_array() {
+        let mut zones = zones();
+        for name in ["", "a/b", "geometry_node", "Time"] {
+            zones.schema.add_field(FieldDef::new(name, FieldType::Text));
+            for f in &mut zones.features {
+                f.attributes.push(FieldValue::Text("x".into()));
+            }
+        }
+        let mut cube = cube(zones);
+        cube.variables[0].name = "band".into();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.zarr");
+        cube.write_zarr(path.to_str().unwrap()).unwrap();
+        assert_eq!(json(&path)["attributes"]["Conventions"], "CF-1.8", "the group's metadata is intact");
+        let mut names: Vec<String> = std::fs::read_dir(&path).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        names.sort();
+        for expected in ["band_2", "field", "a_b", "geometry_node_2", "Time_2"] {
+            assert!(names.contains(&expected.to_string()), "{expected} not in {names:?}");
+        }
+        assert_eq!(strings(&path, "band"), ["B04", "B08"], "the band coordinate is untouched");
+    }
+
     #[test]
     fn existing_output_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
