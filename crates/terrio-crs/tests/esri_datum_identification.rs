@@ -17,15 +17,18 @@ fn utm_22n(name: &str) -> String {
 
 /// PROJ 9.8.1 (pyproj 3.8.0, network off) identifies ESRI's GCS_Greenland_1996 and its UTM zone
 /// 22N as GR96 by their names, and no CRS for another name, for another axis or for a geographic
-/// 3D CRS: `CRS.from_wkt(wkt).to_epsg(min_confidence=100)` gives 4747, 4747, 3182, None, None and
+/// 3D CRS: `CRS.from_wkt(wkt).to_epsg(min_confidence=100)` gives 4747, 4747, 4747 (spaced), 3182,
+/// None, None and
 /// None (for `Foo` it lists none at all), then EPSG:4909 for ESRI's GCS_Greenland_1996 with a
 /// `LINUNIT`, a geographic 3D CRS terrio does not identify by name, and EPSG:4909 at 70 % for
 /// Greenland_1996_3D.
 #[test]
 fn greenland_1996_is_gr96_by_its_name_as_proj_identifies_it() {
-    let cases: [(String, Option<u32>, Option<u32>); 8] = [
+    let cases: [(String, Option<u32>, Option<u32>); 9] = [
         (GR96.to_string(), Some(4747), Some(4747)),
         (GR96.replace("GCS_Greenland_1996", "GR96"), Some(4747), Some(4747)),
+        // Spaced, as some writers put it.
+        (GR96.replace("GEOGCS[", "GEOGCS ["), Some(4747), Some(4747)),
         (utm_22n("Greenland_1996_UTM_Zone_22N"), Some(3182), Some(4747)),
         (GR96.replace("GCS_Greenland_1996", "Foo"), None, None),
         (GR96.replace("6378137.0", "6378142.0"), None, None),
@@ -90,4 +93,13 @@ fn greenland_1996_identified_as_gr96_keeps_its_ballpark() {
     let (x, y) = t.transform(-51.7, 64.2).unwrap();
     assert!((x + 51.7).abs() < 1e-9 && (y - 64.2).abs() < 1e-9, "({x}, {y})");
     assert!(t.operation_at(-51.7, 64.2, 0.0).unwrap().unwrap().ballpark);
+    // Neither it nor its projected CRS takes the identified code as its own, and a GeoTIFF writes
+    // its datum, not GR96's GeographicTypeGeoKey (2048).
+    for wkt in [GR96.to_string(), utm_22n("Greenland_1996_UTM_Zone_22N")] {
+        let crs = SpatialRef::from_wkt(&wkt);
+        assert_eq!(crs.epsg, None, "{wkt}");
+        assert_eq!(crs.geographic_code(), Some(4747), "{wkt}");
+        let keys = terrio_crs::geokeys::user_defined_keys(&crs, "custom").unwrap();
+        assert!(!keys.shorts.contains(&(2048, 4747)), "{wkt}: {:?}", keys.shorts);
+    }
 }

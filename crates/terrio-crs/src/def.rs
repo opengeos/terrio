@@ -990,9 +990,8 @@ impl Def {
         // GCS_Greenland_1996 (Greenland 1996) as GR96 but places it by a ballpark, not by "GR96 to
         // WGS 84 (1)".
         if declared.is_none()
-            && geog.is_some()
-            && let Some(own) = own.as_deref()
-            && super::names_datum_without_crs(own)
+            && let (Some(g), Some(own)) = (geog, own.as_deref())
+            && super::identified_by_shared_name(own, g)
         {
             self.datum_by_name(own);
             self.named_geog = geog;
@@ -1010,6 +1009,11 @@ impl Def {
             && let Some(own) = own.as_deref()
         {
             self.datum_by_name(own);
+            // A WKT 1 `GEOGCS [` the text search misses, identified by name as above from the node
+            // as written back.
+            if geogcs_text.is_none() && c.geogcs_wkt1.is_none() {
+                self.named_geog = super::identify_epsg(own).filter(|g| super::identified_by_shared_name(own, *g));
+            }
         }
     }
 

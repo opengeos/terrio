@@ -915,7 +915,9 @@ pub fn user_defined_keys(crs: &SpatialRef, name: &str) -> Option<GeoKeyValues> {
         return None;
     }
     if let Some(p) = crs.wkt.as_deref().and_then(crate::wkt_proj) {
-        let geog = crs.geographic_code();
+        // The geographic CRS it is placed on, not one its name alone identifies on a datum no CRS
+        // is on (ESRI's GCS_Greenland_1996, placed by a ballpark rather than as GR96).
+        let geog = crate::def::Def::new(crs).ok().and_then(|d| d.geog());
         return keys_for_proj(&p, name, geog);
     }
     wbprojection_keys(crs, name)

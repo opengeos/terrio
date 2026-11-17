@@ -460,7 +460,7 @@ impl SpatialRef {
                 })
             };
             let epsg = declared_epsg(wkt)
-                .or_else(|| identify_epsg(wkt).filter(|_| !names_datum_without_crs(wkt)))
+                .or_else(|| identify_epsg(wkt).filter(|code| !identified_by_shared_name(wkt, *code)))
                 .filter(|code| fits(SpatialRef { epsg: Some(*code), ..Default::default() }));
             // The extension is kept through the WKT, not as the CRS's PROJ string: PROJ computes
             // on it as a pipeline step reads it, whose ellipsoid rules and leniency differ from
@@ -483,7 +483,7 @@ impl SpatialRef {
         // Not a code identified by name alone on a datum no CRS is on (ESRI's GCS_Greenland_1996,
         // GR96): the WKT keeps its own datum's transformations, as PROJ 9.8.1 places it by a
         // ballpark, and gives the code as its geographic CRS ([`Self::geographic_code`]).
-        let epsg = identify_epsg(wkt).filter(|code| declared_epsg(wkt) == Some(*code) || !names_datum_without_crs(wkt));
+        let epsg = identify_epsg(wkt).filter(|code| declared_epsg(wkt) == Some(*code) || !identified_by_shared_name(wkt, *code));
         Self { epsg, wkt: Some(wkt.to_string()), ..Default::default() }.with_esri()
     }
 
@@ -1519,11 +1519,14 @@ pub(crate) fn wkt_datum_name_and_code(wkt: &str) -> Option<(String, Option<u32>)
     Some((datum.name().unwrap_or_default().to_string(), datum.epsg()))
 }
 
-/// Whether a WKT names a datum, by code or name, that no EPSG geographic CRS is on (Greenland
-/// 1996, 6747).
-pub(crate) fn names_datum_without_crs(wkt: &str) -> bool {
+/// Whether `code` is identified for a WKT only by its name, on a datum with which the WKT's has a
+/// name in common, the WKT's having no EPSG geographic CRS on it: ESRI's GCS_Greenland_1996
+/// (Greenland 1996, 6747) as GR96 (EPSG:4747, on the GR96 ensemble).
+pub(crate) fn identified_by_shared_name(wkt: &str, code: u32) -> bool {
     let (datums, _) = wkt_datums_and_others(wkt);
-    !datums.is_empty() && datums.iter().all(|d| epsg::geographic_on(*d).is_empty())
+    !datums.is_empty()
+        && datums.iter().all(|d| epsg::geographic_on(*d).is_empty())
+        && epsg::get(code).is_some_and(|e| !datums.contains(&e.datum))
 }
 
 /// The EPSG datums of a WKT definition's geodetic datum, and the other datums
@@ -1651,10 +1654,10 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
         if geographic_dimension_3d(wkt) == Some(true) || wkt1::parse(wkt).is_some_and(|r| r.child("LINUNIT").is_some()) {
             return None;
         }
-        let sharing: Vec<u32> =
-            datums.iter().filter(|d| epsg::geographic_on(**d).is_empty()).flat_map(|d| epsg::datums_sharing_a_name(*d)).collect();
         let code = epsg::crs_named_as_proj(&wkt_name(wkt)?, !own.is_geographic(), false, true)?;
-        (epsg::get(code).is_some_and(|e| sharing.contains(&e.datum)) && same(own, code)).then_some(code)
+        let datum = epsg::get(code)?.datum;
+        let shared = datums.iter().any(|d| epsg::geographic_on(*d).is_empty() && epsg::datums_sharing_a_name(*d).contains(&datum));
+        (shared && same(own, code)).then_some(code)
     };
     if let Some(code) = search(&datums).or_else(|| search(others)).or_else(sharing) {
         return Some(code);
