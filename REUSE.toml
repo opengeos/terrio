@@ -77,6 +77,14 @@ precedence = "override"
 SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
 SPDX-License-Identifier = "LicenseRef-EPSG AND MIT"
 
+# The grids of PROJ 9.8.1's database (data/sql/grid_alternatives.sql): names, download URLs and
+# licence flags (scripts/gen_grid_catalog.py).
+[[annotations]]
+path = "crates/terrio-crs/data/grids.tsv"
+precedence = "override"
+SPDX-FileCopyrightText = ["PROJ contributors", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
+SPDX-License-Identifier = "MIT"
+
 # What PROJ's database adds to the PROJJSON of EPSG CRSs: the EPSG Geodetic Parameter Dataset
 # v12.029, owned by IOGP, through PROJ 9.7.1's proj.db (scripts/gen_projjson_table.py).
 [[annotations]]
