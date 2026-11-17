@@ -1749,6 +1749,34 @@ CARGO_TARGET_WASM32_WASIP1_RUNNER=wasmtime cargo test -p terrio \
 cargo check -p terrio --target wasm32-unknown-unknown --no-default-features --features tiles
 ```
 
+## CRS reading against PROJ's PROJJSON (#1058)
+
+`projjson_corpus_epsg.jsonl.zst` and `projjson_corpus_esri.jsonl.zst` hold every CRS of terrio's EPSG table (geographic,
+geocentric, projected, vertical and compound) and ESRI table, as PROJ 9.8.1
+writes it in WKT 2 (`WKT2_2019`), GDAL WKT 1 and ESRI WKT 1: 29,967 texts, each
+with the PROJJSON PROJ writes for it (pyproj 3.8.0, network off). The test reads
+each text with `SpatialRef::from_wkt`, writes it with `to_projjson`, and compares
+what the CRS is field by field: types, the IDs and names of CRSs, the names and
+values of datums, ellipsoids and prime meridians, axis directions and units,
+method names and IDs, and parameter values keyed by their ID (else their name),
+in metres, degrees and unity within a relative 1e-9; a differing number records
+the decade of its difference. Usages, remarks, the names of axes and
+conversions, axis abbreviations, ensemble members and accuracy, and the IDs of
+objects other than CRSs, methods and parameters are left out.
+
+The fields that differ today are recorded, grouped by the set of differing
+fields, in `projjson_corpus_diffs.tsv` (`projjson_corpus_diffs_fallback.tsv`
+with `wbprojection-fallback`). The test fails on any change to them, better or
+worse, so that a change to how a CRS is read lists every CRS it moves. After a
+deliberate change, record it and review the diff of the recorded file:
+
+```sh
+PROJ_NETWORK=OFF python scripts/gen_projjson_corpus.py   # regenerate the corpus
+TERRIO_RECORD=1 cargo test --release -p terrio-crs --test projjson_corpus
+TERRIO_RECORD=1 cargo test --release -p terrio-crs --features wbprojection-fallback \
+  --test projjson_corpus
+```
+
 ## PROJJSON parsing (#270)
 
 `projjson_benchmark.json` retains `form-27700-projjson` from rust-proj-capability
