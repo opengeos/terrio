@@ -1010,23 +1010,30 @@ impl Def {
     /// The transformations are a current geographic 2D CRS's of the datum on Greenwich (not
     /// Monte Mario (Rome)'s on the Rome meridian): CRSs on another meridian keep the route's
     /// search, which places them as PROJ does. Only those starting with a geocentric step on the
-    /// datum's ellipsoid are moved onto the CRS's, as PROJ replaces the first operation's source;
-    /// others (grids, a concatenation starting with an offset) are kept as registered.
+    /// datum's ellipsoid are moved onto the CRS's, as PROJ replaces the first operation's source,
+    /// and a null transformation becomes the geocentric change from the CRS's ellipsoid to WGS 84's;
+    /// others (grids, a concatenation starting with an offset, one registered between geocentric
+    /// CRSs) are kept as registered.
     fn datum_by_name(&mut self, geogcs: &str) {
         if self.pm != 0.0 {
             return;
         }
         let Some((name, code)) = super::wkt_datum_name_and_code(geogcs) else { return };
-        let found_as_proj = code.is_some()
-            || if name.starts_with("D_") {
-                epsg::datum_name_rank(&name).is_some()
-            } else {
-                name.contains('_') && epsg::datum_name_rank(&name).is_some_and(|r| r <= 1)
-            };
-        if !found_as_proj {
+        let by_name = if name.starts_with("D_") {
+            epsg::datum_name_rank(&name).is_some()
+        } else {
+            name.contains('_') && epsg::datum_name_rank(&name).is_some_and(|r| r <= 1)
+        };
+        // A name PROJ finds wins over the datum's ID: `Greenland_1996` with `AUTHORITY["EPSG",
+        // "1421"]` is the former Greenland 1996 datum (EPSG:6747), which no current CRS has, so
+        // PROJ places it by a ballpark; under a name it does not find, the ID's datum.
+        let datums = if by_name {
+            epsg::datums_named(&name)
+        } else if let Some(code) = code {
+            vec![code]
+        } else {
             return;
-        }
-        let (datums, _) = super::wkt_datums_and_others(geogcs);
+        };
         let found = datums.iter().flat_map(|d| epsg::geographic_on(*d)).copied().filter(|g| !epsg::is_deprecated(*g)).find_map(|g| {
             let e = epsg::get(g).filter(|e| e.proj.starts_with("+proj=longlat") && !e.three_d && !e.ops.is_empty())?;
             let registered = Def::new(&SpatialRef { epsg: Some(g), ..Default::default() }).ok()?;
@@ -1041,12 +1048,24 @@ impl Def {
         if same(&registered, &own) {
             return;
         }
+        // One registered between geocentric CRSs (ONGD14 to WGS 84 (1), NAD83(CSRS)v6 through
+        // NAD83(2011)) is kept: PROJ puts a ballpark into the datum's CRS before it, which keeps the
+        // point, and runs it on the datum's own ellipsoid.
         let rebase = |op: &Arc<Op>| {
             let mut op = (**op).clone();
-            if let Some(datum::Step::Cart { ell, inv: false }) = op.steps.first_mut()
-                && same(ell, &registered)
-            {
-                *ell = own;
+            if !op.geocentric {
+                if let Some(datum::Step::Cart { ell, inv: false }) = op.steps.first_mut()
+                    && same(ell, &registered)
+                {
+                    *ell = own;
+                } else if op.steps.is_empty() && !op.ballpark {
+                    // A null transformation ("TWD97 to WGS 84 (1)"), or a concatenation of them
+                    // (ETRF89 through ETRS89), is still geocentric: PROJ runs it from the file's
+                    // ellipsoid to WGS 84's, which moves latitudes, and keeps heights between 2D
+                    // CRSs around it.
+                    op.steps = vec![datum::Step::Cart { ell: own, inv: false }, datum::Step::Cart { ell: Ell::wgs84(), inv: true }];
+                    op.keeps_height = true;
+                }
             }
             Arc::new(op)
         };
