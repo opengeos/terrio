@@ -1246,16 +1246,14 @@ fn load_uncached(name: &str) -> Option<Arc<GridFile>> {
         }
     }
     #[cfg(remote)]
-    let bytes = match bytes {
-        None if fetch => {
-            let got = download(remote_name);
-            if got.is_none() {
-                fetch_failures().lock().unwrap_or_else(PoisonError::into_inner).insert(name.to_string());
-            }
-            got
+    if bytes.is_none() && fetch {
+        // Read as the file fetched (`us_nga_egm96_15.tif` for `egm96_15.gtx`), not as named.
+        let got = download(remote_name);
+        if got.is_none() {
+            fetch_failures().lock().unwrap_or_else(PoisonError::into_inner).insert(name.to_string());
         }
-        b => b,
-    };
+        return got.and_then(|b| read_file(remote_name, b)).map(Arc::new);
+    }
     bytes.and_then(|b| read_file(name, b)).map(Arc::new)
 }
 
