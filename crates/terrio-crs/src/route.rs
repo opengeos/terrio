@@ -592,6 +592,78 @@ impl Route {
     }
 }
 
+impl Route {
+    /// The transformations whose grids a point needs, as [`Route::apply_reporting`] tries them:
+    /// the best one for the point, and while it does not apply (the point is outside its grid),
+    /// the next best, up to three. The first whose grid is missing, else the one that applies.
+    /// With the grids found that way present, the point goes through the transformation PROJ
+    /// picks with every grid present (asking again after each grid is added). Empty when the
+    /// transformation the point goes through needs no grid.
+    pub fn grid_operations_at<'a>(&'a self, src: &Def, x: f64, y: f64, p: Point) -> Vec<&'a Op> {
+        let (dlon, dlat) = src.source_degrees(x, y).unwrap_or((p.lon.to_degrees(), p.lat.to_degrees()));
+        let wrapped = if (-180.0..=180.0).contains(&dlon) { dlon } else { (dlon + 180.0).rem_euclid(360.0) - 180.0 };
+        let inside = |op: &Op, boxes: Option<&Vec<[f64; 4]>>| match boxes {
+            Some(b) if !b.is_empty() => b.iter().any(|b| x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3]),
+            _ => op.contains(dlon, dlat) || op.contains(wrapped, dlat),
+        };
+        match &self.kind {
+            Kind::Same => Vec::new(),
+            Kind::List(list) => {
+                let boxes = self.boxes.get_or_init(|| list.iter().map(|l| src.areas(&l.op)).collect());
+                let ops: Vec<&Op> = list.iter().map(|l| l.op.as_ref()).collect();
+                let mut excluded = Vec::new();
+                for _ in 0..3 {
+                    let Some(i) = datum::pick_index(&ops, &excluded, |op, i| inside(op, boxes.get(i))) else { break };
+                    // A grid the network did not give, before or by this run, stops the point there, as
+                    // in `apply_reporting`.
+                    if !ops[i].available() || datum::run_op(ops[i], p, list[i].reverse, false).is_some() || ops[i].network_failed() {
+                        return vec![ops[i]];
+                    }
+                    excluded.push(i);
+                }
+                // Then the point goes through the first transformation that needs no grid, so no
+                // grid is returned.
+                Vec::new()
+            }
+            Kind::Chains { chains, ballpark } => {
+                let legs = |c: &'a Chain| c.legs.iter().map(|l| l.op.as_ref()).collect::<Vec<_>>();
+                if chains.len() == 1 && ballpark.is_none() {
+                    return legs(&chains[0]);
+                }
+                let boxes = self.boxes.get_or_init(|| chains.iter().map(|c| src.areas(&c.rank)).collect());
+                let ranks: Vec<&Op> = chains.iter().map(|c| &c.rank).chain(ballpark.as_ref()).collect();
+                let mut excluded = Vec::new();
+                for _ in 0..3 {
+                    let Some(i) = datum::pick_index(&ranks, &excluded, |op, i| op.ballpark || inside(op, boxes.get(i))) else { break };
+                    let Some(chain) = chains.get(i) else { return Vec::new() };
+                    if chain.legs.iter().any(|l| !l.op.available())
+                        || chain.run(p).is_some()
+                        || chain.legs.iter().any(|l| l.op.network_failed())
+                    {
+                        return legs(chain);
+                    }
+                    excluded.push(i);
+                }
+                Vec::new()
+            }
+            Kind::Hub => {
+                let (sb, db) = self.hub_boxes.get_or_init(|| {
+                    let areas = |ops: &[Arc<Op>]| ops.iter().map(|o| src.areas(o)).collect();
+                    (areas(&self.src_ops), areas(&self.dst_ops))
+                });
+                let single = |op: &Op| !op.ballpark && !op.concatenated;
+                let s = datum::pick_in(&self.src_ops, |op, i| single(op) && inside(op, sb.get(i)));
+                let d = datum::pick_in(&self.dst_ops, |op, i| single(op) && inside(op, db.get(i)));
+                // Both, or the ballpark (no shift).
+                match (s, d) {
+                    (Some(s), Some(d)) => vec![s, d],
+                    _ => Vec::new(),
+                }
+            }
+        }
+    }
+}
+
 /// What a chain is made of, before PROJ sorts the chains: its two registered transformations in
 /// the directions they run, and the names of the conversions PROJ frames them with.
 struct Found {
