@@ -1064,6 +1064,9 @@ JavaScript `crsToWkt1Strict(crs)`. It is the WKT 1 of `to_wkt`, or `None`:
   `custom_proj4` method for a projection WKT 1 has no name for.
 
 Web Mercator (EPSG:3857) keeps GDAL's extension, as PROJ does: its `AUTHORITY` identifies it.
+A Web Mercator WKT with a `TOWGS84` of its own (ESRI's WGS_1984_Web_Mercator_Auxiliary_Sphere
+with one, zero or not) is placed as EPSG:3857, whose `+nadgrids=@null` wins over the shift, as
+PROJ 9.8.1 places it; the shift is not applied on the projection's sphere.
 A WKT 1 given is returned as it is when it needs no extension (or its root code is the CRS's
 own), else `None`. A WKT 2 that terrio identifies as a code, without a datum
 shift of its own, is written as the code's WKT 1; with the code's two horizontal axes swapped
