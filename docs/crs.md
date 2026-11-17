@@ -1195,8 +1195,8 @@ They read and write:
   a user-defined datum, never as a code it is only identified as (ESRI's British_National_Grid
   with `TOWGS84[375,-111,431,0,0,0,0]`, EPSG:27700 alone, would read 3.1 m away). GDAL 3.10.3
   writes the same keys but names the EPSG datum (GeogGeodeticDatumGeoKey 6277), and reads that
-  file back without the shift; it keeps the shift of terrio's keys. A zero shift on WGS 84 is no
-  shift (written by the code, as GDAL does). A code with GeogTOWGS84GeoKey next to it is read as
+  file back without the shift; it keeps the shift of terrio's keys. A CRS identified by a code
+  with a zero shift on WGS 84 is written by the code, as GDAL does. A code with GeogTOWGS84GeoKey next to it is read as
   the code, without the shift, as GDAL reads it. Not yet: a compound CRS with a shift is written
   by its codes, without it (#1012 item 62);
 - ESRI PE citations (`ESRI PE String = <WKT>`), which GDAL writes for a CRS GeoKeys cannot hold

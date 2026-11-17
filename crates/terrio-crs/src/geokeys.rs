@@ -925,17 +925,20 @@ pub fn user_defined_keys(crs: &SpatialRef, name: &str) -> Option<GeoKeyValues> {
 
 /// The `+towgs84` (3 or 7 values) of a CRS's own definition: its PROJ string, else its WKT's (a
 /// `TOWGS84` or a `BOUNDCRS` Helmert). Not one the registry's WKT of its code carries (the
-/// deprecated EPSG:3785's), nor a zero shift on WGS 84 itself, which GDAL 3.10.3 writes by the
-/// code alone (ESRI's WGS_1984_UTM_Zone_33N with `TOWGS84[0,0,0,0,0,0,0]` as 32633).
+/// deprecated EPSG:3785's), nor a zero shift on WGS 84 itself, for which GDAL 3.10.3 writes a CRS's
+/// code alone (ESRI's WGS_1984_UTM_Zone_33N with `TOWGS84[0,0,0,0,0,0,0]` as 32633). For keys
+/// without a code it only decides whether a code is written: user-defined keys write the PROJ
+/// string's shift, a zero one included.
 fn own_towgs84(crs: &SpatialRef) -> Option<Vec<f64>> {
-    let registry = |w: &str| crs.epsg.and_then(crate::epsg_wkt).is_some_and(|r| r == w);
+    // The registry's WKT as `from_epsg` gives it, with a spherical CRS's PROJ extension.
+    let registry = |w: &str| crs.epsg.is_some_and(|c| crate::epsg_wkt(c).is_some_and(|r| r == w) || crate::is_registry_extension(w, c));
     let proj = match (&crs.proj4, crs.wkt.as_deref()) {
         (Some(p), _) => p.clone(),
         (None, Some(w)) if !registry(w) => crate::wkt_proj(w)?,
         _ => return None,
     };
     let values = proj.split_whitespace().find_map(|t| t.strip_prefix("+towgs84="))?;
-    let t: Vec<f64> = values.split(',').map(|x| x.parse().ok()).collect::<Option<_>>()?;
+    let t: Vec<f64> = values.split(',').map(|x| x.parse().ok().filter(|v: &f64| v.is_finite())).collect::<Option<_>>()?;
     // On WGS 84: its datum or ellipsoid by name, or the ellipsoid's axis and flattening.
     let has = |token: &str| proj.split_whitespace().any(|t| t == token);
     let wgs84 = has("+datum=WGS84") || has("+ellps=WGS84") || (has("+a=6378137") && has("+rf=298.257223563"));
