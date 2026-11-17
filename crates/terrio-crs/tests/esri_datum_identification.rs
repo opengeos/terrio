@@ -1,5 +1,5 @@
 //! The EPSG geographic CRS of an Esri WKT that names its datum only (no `AUTHORITY`), as PROJ
-//! 9.8.1 identifies it.
+//! 9.9.0 identifies it.
 
 use terrio_crs::{SpatialRef, Transformer};
 
@@ -23,7 +23,7 @@ fn gcrs(dimension: u8) -> String {
     )
 }
 
-/// The geographic CRS of ESRI's GCS_Greenland_1996 and its variants, against PROJ 9.8.1
+/// The geographic CRS of ESRI's GCS_Greenland_1996 and its variants, against PROJ 9.9.0
 /// (pyproj 3.8.0, network off): `CRS.from_wkt(wkt).to_epsg(min_confidence=100)` of the WKT, or of
 /// its GEOGCS for a projected CRS, given per case. None of them takes the code as its own
 /// (`SpatialRef::epsg`): PROJ places them by a ballpark, not by GR96's transformations.
@@ -98,7 +98,7 @@ fn an_esri_datum_name_alone_gives_the_geographic_crs_of_that_datum() {
 }
 
 /// Identified as GR96, ESRI's GCS_Greenland_1996 keeps the transformations of its own datum, which
-/// no CRS is on: PROJ 9.8.1 places it on WGS 84 by "Ballpark geographic offset from GR96 to WGS 84",
+/// no CRS is on: PROJ 9.9.0 places it on WGS 84 by "Ballpark geographic offset from GR96 to WGS 84",
 /// not by "GR96 to WGS 84 (1)" as EPSG:4747 (`Transformer.from_crs(CRS(wkt), "EPSG:4326",
 /// always_xy=True)`; the point (-51.7, 64.2) is kept in both).
 #[test]

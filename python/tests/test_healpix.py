@@ -33,7 +33,7 @@ def test_healpix_oracle(case):
         )
         assert np.all(np.abs(actual - [s[2] for s in samples]) * case["metres_per_unit"] <= 0.001)
     # On the edge of the image the last bit moves the point in or out of it (the platform's
-    # libm, and PROJ 9.8.1's US survey foot in these methods' own +units, 0.304800609601219,
+    # libm, and PROJ 9.9.0's US survey foot in these methods' own +units, 0.304800609601219,
     # where terrio has 1200/3937): there either is right, and a point terrio unprojects must be
     # the projected one. As in crates/terrio-crs/tests/healpix.rs.
     edge = set(case["edge_samples"])

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 //! A transformation between vertical CRSs whose grid is found, but whose grid in another datum's
 //! coordinates needs a horizontal transformation with a missing grid: the missing grid is listed,
-//! as PROJ 9.8.1 lists both grids of "Inverse of NZVD2016 height to Auckland 1946 height (2) using
+//! as PROJ 9.9.0 lists both grids of "Inverse of NZVD2016 height to Auckland 1946 height (2) using
 //! NZGD49 to NZGD2000 (3)" for EPSG:4272+5759 to EPSG:4272+7839 at (174.76, -36.85). Its own test
 //! binary: the registered grid is process-wide.
 

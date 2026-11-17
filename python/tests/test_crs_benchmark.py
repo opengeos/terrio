@@ -62,7 +62,7 @@ def test_projection_benchmark(case):
     ],
 )
 def test_versioned_authority_references(reference):
-    """The version token is independent of the code, as in PROJ 9.8.1."""
+    """The version token is independent of the code, as in PROJ 9.9.0."""
     (x,), (y,) = terrio.transform_points([10.0], [40.0], reference, "EPSG:3857")
     assert abs(x - 1113194.9079327357) < 1e-7
     assert abs(y - 4865942.279503175) < 1e-7

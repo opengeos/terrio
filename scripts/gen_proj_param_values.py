@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 # SPDX-License-Identifier: MIT
 
-"""Generate crates/terrio-crs/tests/data/proj_param_values.tsv: whether PROJ 9.8.1 accepts a CRS
+"""Generate crates/terrio-crs/tests/data/proj_param_values.tsv: whether PROJ 9.9.0 accepts a CRS
 given by a PROJ string with a parameter value it may not read.
 
 Each method in the frozen METHODS list gets, in turn, each common parameter
@@ -208,9 +208,9 @@ def accepted(definition):
 
 
 def main():
-    """Regenerate the frozen acceptance fixture using PROJ 9.8.1."""
+    """Regenerate the frozen acceptance fixture using PROJ 9.9.0."""
     pyproj.network.set_network_enabled(False)
-    assert pyproj.proj_version_str == "9.8.1", pyproj.proj_version_str
+    assert pyproj.proj_version_str == "9.9.0", pyproj.proj_version_str
     rows = []
     for method, key, value in itertools.product(METHODS, PARAMS, ["abc", "0.5r"]):
         given = [

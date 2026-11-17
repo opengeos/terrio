@@ -4,7 +4,7 @@
 //! (`Transformer::best_operation_grids_at`). Its own test binary: no grid is found (search paths
 //! empty, network off), as in WebAssembly before an application registers grids.
 //!
-//! The grids expected are those of the operation PROJ 9.8.1 uses for the point with every grid
+//! The grids expected are those of the operation PROJ 9.9.0 uses for the point with every grid
 //! present (pyproj 3.8.0, network off, the grids of `scripts/proj_grids.txt` in its data
 //! directory: `Transformer.from_crs(source, target, always_xy=True)`, `transform`, then
 //! `get_last_used_operation()` and its grids), and their URLs, direct download and licence those

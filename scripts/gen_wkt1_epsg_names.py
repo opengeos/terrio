@@ -1,6 +1,6 @@
 """Generate crates/terrio-crs/tests/data/wkt1_epsg_names.json: WKT 1 projected CRSs whose
 parameters have EPSG's names (`Latitude of false origin`, `Longitude of projection centre`,
-`Angle from Rectified to Skew Grid`, `Latitude of standard parallel`), which PROJ 9.8.1 reads as
+`Angle from Rectified to Skew Grid`, `Latitude of standard parallel`), which PROJ 9.9.0 reads as
 GDAL's, GDAL's `Polar_Stereographic`, which PROJ reads only with `latitude_of_origin`, and a
 `PROJCS` with two `UNIT` nodes, of which PROJ takes the first (opengeos/terrio#1012, items 25
 and 31). Each case has PROJ's PROJ string and where it places a point from WGS 84 (`always_xy`),
@@ -139,7 +139,7 @@ CASES = [
 
 
 def main():
-    assert pyproj.__version__ == "3.8.0" and pyproj.proj_version_str == "9.8.1", (
+    assert pyproj.__version__ == "3.8.0" and pyproj.proj_version_str == "9.9.0", (
         pyproj.proj_version_str
     )
     assert os.environ.get("PROJ_NETWORK") == "OFF"

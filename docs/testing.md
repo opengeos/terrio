@@ -1834,7 +1834,7 @@ The complete installed grid set is checked against WKT behavior. A child process
 `us_noaa_conus.tif` for the frozen GDAL coordinates, so additional NADCON5 grids cannot change
 the operation behind that independent oracle.
 
-PROJ-string export (`SpatialRef::to_proj4`) is compared with PROJ 9.8.1's strings of every 20th
+PROJ-string export (`SpatialRef::to_proj4`) is compared with PROJ 9.9.0's strings of every 20th
 EPSG, ESRI and IAU_2015 code, the codes behind each rule, custom definitions (bound CRSs among
 them) and compound references, character for character, and reads back as the same conversion
 (`cargo test -p terrio-crs --test proj_string_export`; regenerate with
@@ -1843,7 +1843,7 @@ them) and compound references, character for character, and reads back as the sa
 
 Projected CRSs given by WKT 1 and by PROJ's WKT 2 of them, with each order of an east-west and a
 north-south `AXIS` (Transverse Mercator, south-orientated Transverse Mercator, Lambert Conformal
-Conic, Krovak, Mercator and Polar Stereographic, 54 CRSs), place a point where PROJ 9.8.1 does with `always_xy`, as GDAL 3.10's
+Conic, Krovak, Mercator and Polar Stereographic, 54 CRSs), place a point where PROJ 9.9.0 does with `always_xy`, as GDAL 3.10's
 `gdaltransform` also does, within 1 mm. Both WKT versions write the `+axis` PROJ writes. Eighteen
 geographic and geographic BOUNDCRS exports also match PROJ, including omission of their CS axes
 and preservation of the bound datum shift (`cargo test -p
@@ -1851,7 +1851,7 @@ terrio-crs --test wkt1_axes`; regenerate with `scripts/gen_wkt1_axes.py`, pyproj
 
 WKT 1 projected CRSs with EPSG's parameter names (Albers, Equidistant Conic, Lambert 2SP, Hotine
 variants A and B, polar stereographic variant B) and a `PROJCS` with two `UNIT` nodes place a point
-where PROJ 9.8.1 does within 1 mm, or are refused where PROJ refuses (`--test wkt1_epsg_names`;
+where PROJ 9.9.0 does within 1 mm, or are refused where PROJ refuses (`--test wkt1_epsg_names`;
 regenerate with `scripts/gen_wkt1_epsg_names.py`, pyproj 3.8.0).
 
 WKT 2 `BOUNDCRS`s with a Helmert transformation, to WGS 84 and to ED50 and OSGB36 (with and
@@ -1861,7 +1861,7 @@ sources (GDAL's and Esri's, with and without a `TOWGS84` of their own, which the
 transformation replaces), to a datum without transformations, each of the 25 Helmert methods
 PROJ applies by its EPSG code alone, coordinate frame's full matrix with Saba to WGS 84's
 rotations of hundreds of arc-seconds, Molodensky-Badekas about an evaluation point, and methods
-by name alone), place points where PROJ 9.8.1 does, in WGS 84 and, both ways, in CRSs on the
+by name alone), place points where PROJ 9.9.0 does, in WGS 84 and, both ways, in CRSs on the
 target's datum (and without the shift in CRSs on the source's datum and in other CRSs of the
 target's ellipsoid), within 1 mm. A time-dependent one's rates are left out, as PROJ leaves them
 out; a time-specific Helmert transformation and a `BOUNDCRS` without its transformation are
@@ -1880,7 +1880,7 @@ South-orientated Transverse Mercator with a false easting and northing, which PR
 checked against EPSG method 9808 from its placement without them, in WKT 1, WKT 2, its strict WKT 1
 and GeoKeys (`--test south_orientated_offsets`).
 
-WKT that PROJ 9.8.1 reads, 26 CRSs (20 of which terrio refused), is read and places a point where
+WKT that PROJ 9.9.0 reads, 26 CRSs (20 of which terrio refused), is read and places a point where
 PROJ does, within 1 mm (1e-9 degrees for geographic CRSs), with PROJ's PROJ string (values within a
 relative 1e-12) and PROJ's EPSG code where PROJ identifies one: ESRI's `Mercator_Variant_A` (EPSG
 Guidance Note 7-2's Makassar / NEIEZ example, in metres and US survey feet, without a scale factor,
@@ -1960,7 +1960,7 @@ projected code are read as GDAL 3.12.2 reads them: a single replacement's CRS (E
 `OSR_USE_NON_DEPRECATED=NO` (`scripts/gen_epsg_table.py`), and so are the GDAL reference points of
 `epsg_accuracy` (`scripts/gen_epsg_points.py`).
 
-CRSs in grads, and prime meridians, place points where PROJ 9.8.1 does, both ways, within 1 mm and
+CRSs in grads, and prime meridians, place points where PROJ 9.9.0 does, both ways, within 1 mm and
 1e-9 of a degree or grad: in WKT 1, NTF (Paris) (EPSG:4807) and its sixteen projected CRSs
 (EPSG:27561-27594) as GDAL and ESRI write them, with their codes and without; geographic CRSs in
 grads written by hand, with Paris, Ferro, Lisbon and Copenhagen meridians in grads, in degrees and
@@ -1976,7 +1976,7 @@ PROJ places the code. A WKT 2 prime meridian unit without its size is refused, a
 (`cargo test -p terrio-crs --test grads_and_prime_meridians`; regenerate with
 `scripts/gen_grads_and_prime_meridians.py`, pyproj 3.8.0).
 
-PROJ-string parameter values are refused where PROJ 9.8.1 refuses them: each method with each
+PROJ-string parameter values are refused where PROJ 9.9.0 refuses them: each method with each
 common parameter unreadable (`abc`) or in radians (`0.5r`), scale factors PROJ may refuse, and
 `+to_meter`, `+units`, `+vto_meter`, `+towgs84`, `+pm` and rotated-pole cases, 3,350 unique strings
 in all, against whether PROJ accepts them (`cargo test -p terrio-crs --test proj_param_values`; regenerate with
@@ -1995,7 +1995,7 @@ rows, edit only the approved rows in `proj_param_value_differences.tsv` (definit
 PROJ's `OK`/`ERR` outcome), keep them sorted, and update the count in the test. Rerun the focused
 test with default features and `--all-features`; unexpected changes require investigation.
 
-PROJ-string ellipsoids are compared with PROJ 9.8.1 in 484 strings. Each of `laea`, `tmerc`,
+PROJ-string ellipsoids are compared with PROJ 9.9.0 in 484 strings. Each of `laea`, `tmerc`,
 `merc`, `ortho`, `geocent` and `longlat` (with a null `+towgs84`) is combined with `+R`,
 `+ellps`, `+datum`, `+a`, `+b`, `+rf`, `+f`, `+es`, `+e` and the spherification flags, alone
 and together. A few strings cover spherical orthographic (`+f=0`), `mill`, `cea`, the latitude of
@@ -2042,7 +2042,7 @@ place a point where GDAL 3.12.2's reading of them does, within 1 mm (`--test geo
 regenerate with `scripts/gen_geokeys_read_gdal.py`, GDAL 3.12.2 and pyproj).
 
 Axis orders, conversion parameters and celestial bodies (`SpatialRef::axis_order`,
-`projection_params`, `body`, `is_earth`) are compared with PROJ 9.8.1 on 777 CRSs:
+`projection_params`, `body`, `is_earth`) are compared with PROJ 9.9.0 on 777 CRSs:
 - every 20th EPSG and ESRI code, and the codes behind each rule;
 - custom PROJ strings and WKTs;
 - compound references, every 20th IAU_2015 CRS and a CRS of every IAU_2015 body.
@@ -2071,7 +2071,7 @@ PROJ 9.9.0 writes for its registry CRSs is frozen in
 
 `iau-source.json` records the registry version, PROJ source revision and
 attribution. `scripts/gen_iau_table.py` exports all 2,201 definitions from the
-pinned PROJ 9.8.1 database, retaining their full WKT2 and celestial-body IDs.
+pinned PROJ 9.9.0 database, retaining their full WKT2 and celestial-body IDs.
 `iau_benchmark.json` separately retains `pair-mars-iau` and its PROJ 9.9.0 oracle
 from rust-proj-capability revision `ddd9fac70ec370acd9651ebb8b46035207347ad5`.
 
@@ -2161,7 +2161,7 @@ python scripts/conformance.py ../terrio-data --only perspective --strict
 `igh_benchmark.json` retains `seed-igh` from rust-proj-capability revision
 `ddd9fac70ec370acd9651ebb8b46035207347ad5`, with its PROJ 9.9.0 oracle.
 `igh_reference.json` is generated by `scripts/gen_igh_reference.py` with pyproj
-3.8.0 / PROJ 9.8.1, without network access: 8 configurations on a sphere and on
+3.8.0 / PROJ 9.9.0, without network access: 8 configurations on a sphere and on
 WGS 84 (central meridians 0, 147, -160 and 20; metres, kilometres and US survey
 feet; false offsets) and 5,120 geographic samples, every 10 degrees of longitude
 from the central meridian at 17 latitudes including the poles and each side of
@@ -2192,7 +2192,7 @@ python scripts/conformance.py ../terrio-data --only igh --strict
 `ob_tran_benchmark.json` retains `seed-ob_tran-moll` from rust-proj-capability revision
 `ddd9fac70ec370acd9651ebb8b46035207347ad5`, with its PROJ 9.9.0 oracle.
 `ob_tran_reference.json` is generated by `scripts/gen_ob_tran_reference.py` with pyproj
-3.8.0 / PROJ 9.8.1, without network access: 15 configurations on a sphere and on WGS 84 of
+3.8.0 / PROJ 9.9.0, without network access: 15 configurations on a sphere and on WGS 84 of
 eight rotated projections (`moll`, `merc` with `lat_ts`, `eqc`, `sinu`, `ortho` with `lat_0`,
 `robin`, `lcc` with two parallels, and `utm` on WGS 84 only, which PROJ refuses on a sphere),
 with the pole given as `o_lat_p`/`o_lon_p`, as a centre and azimuth and as two equator points,
@@ -2230,7 +2230,7 @@ python scripts/conformance.py ../terrio-data --only ob_tran --strict
 `qsc_benchmark.json` retains `method-qsc` from rust-proj-capability revision
 `ddd9fac70ec370acd9651ebb8b46035207347ad5`, with its PROJ 9.9.0 oracle.
 `qsc_reference.json` is generated by `scripts/gen_qsc_reference.py` with pyproj 3.8.0 / PROJ
-9.8.1, without network access: 16 configurations on a sphere and on WGS 84, the six cube face
+9.9.0, without network access: 16 configurations on a sphere and on WGS 84, the six cube face
 centres, and two centres off them, in the front and back faces (PROJ picks the face and keeps
 the central meridian), with metres, kilometres and US survey feet and false offsets. Each has 268
 geographic samples, every 30 degrees from the central meridian at 17 latitudes including the
@@ -2261,7 +2261,7 @@ python scripts/conformance.py ../terrio-data --only qsc --strict
 `healpix_benchmark.json` retains `method-healpix` and `method-rhealpix` from rust-proj-capability
 revision `ddd9fac70ec370acd9651ebb8b46035207347ad5`, with their PROJ 9.9.0 oracles.
 `healpix_reference.json` is generated by `scripts/gen_healpix_reference.py` with pyproj 3.8.0 /
-PROJ 9.8.1, without network access: 10 configurations (`healpix` with `rot_xy` 0, 30, -45 and
+PROJ 9.9.0, without network access: 10 configurations (`healpix` with `rot_xy` 0, 30, -45 and
 90; `rhealpix` with each polar square; central meridians; metres, kilometres and US survey feet;
 false offsets) on a sphere and on WGS 84, and two on an ellipsoid of flattening 1/40, where PROJ
 computes the authalic latitude in closed form and refines its inverse. Each has 300 geographic
@@ -2305,7 +2305,8 @@ operation itself, and that PROJ's inverse is defined only for the expected confi
 the sphere at every sample, on WGS 84 at most samples (its forward takes the semi-major axis and
 its inverse the authalic radius, so some projected points fall outside the triangles).
 The `method-isea` fixture of rust-proj-capability is from PROJ 9.9.0, whose `isea` is a new
-method (see the CRS page), and is not used.
+method (see the CRS page), and is not used. For the same reason this corpus stays on PROJ 9.8.1, while the other
+fixtures moved to PROJ 9.9.0, until terrio computes the new method (opengeos/terrio#1012, item 67).
 
 Rust checks the corpus in every encoding and terrio's own WKT1, with PROJ's inverse refusals,
 and the refusal of invalid options and grid-address modes; Python and Node/WASM check every

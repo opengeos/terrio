@@ -1,8 +1,8 @@
-//! A PROJ string with a parameter value PROJ cannot read is refused as PROJ 9.8.1 refuses it,
+//! A PROJ string with a parameter value PROJ cannot read is refused as PROJ 9.9.0 refuses it,
 //! rather than read with the parameter's default: `+lat_ts=abc` for `eqc`, an unreadable
 //! `+towgs84` or `+pm`, a scale factor or `+to_meter` that is not positive. `0.5r` is in radians.
 //!
-//! `data/proj_param_values.tsv` (`scripts/gen_proj_param_values.py`) holds whether PROJ 9.8.1
+//! `data/proj_param_values.tsv` (`scripts/gen_proj_param_values.py`) holds whether PROJ 9.9.0
 //! (pyproj 3.8.0, `PROJ_NETWORK=OFF`) accepts each string, with `+type=crs`, on WGS 84 unless
 //! the string gives its own ellipsoid. Remaining differences are listed in [`known`].
 
@@ -15,7 +15,7 @@ fn own_ellipsoid(definition: &str) -> bool {
 
 #[test]
 fn unchecked_parameters_have_proj_accepted_fixture_rows() {
-    // PROJ 9.8.1 accepts each exemption in Def's unchecked method rules.
+    // PROJ 9.9.0 accepts each exemption in Def's unchecked method rules.
     for definition in [
         "+proj=murd2 +lat_2=50 +lat_1=abc",
         "+proj=murd2 +lat_1=30 +lat_2=abc",
@@ -100,12 +100,12 @@ fn radians_and_units_are_read_as_proj_reads_them() {
 #[test]
 fn scale_factors_retain_the_documented_numeric_alias_policy() {
     let params = |d: &str| SpatialRef::parse(d).unwrap().projection_params().unwrap();
-    // Known difference from PROJ 9.8.1: Terrio does not parse a scale's `r` suffix.
+    // Known difference from PROJ 9.9.0: Terrio does not parse a scale's `r` suffix.
     // It retains the first fully numeric alias, or 1 without one; PROJ may use the numeric
     // prefix or reject the CRS, depending on the method.
     assert_eq!(params("+proj=tmerc +k_0=0.5r +ellps=WGS84").k_0, 1.0);
     assert_eq!(params("+proj=tmerc +k_0=0.5r +k=0.9996 +ellps=WGS84").k_0, 0.9996);
-    // PROJ 9.8.1 refuses a nonpositive fallback too, while NaN still passes.
+    // PROJ 9.9.0 refuses a nonpositive fallback too (and a NaN one).
     for k in ["0", "-1"] {
         assert!(SpatialRef::parse(&format!("+proj=tmerc +k_0=0.5r +k={k} +ellps=WGS84")).is_err());
     }
@@ -114,7 +114,7 @@ fn scale_factors_retain_the_documented_numeric_alias_policy() {
 /// GeoKey prime meridians follow GDAL 3.12.1 and PROJ 9.8.1's angular parsing.
 #[test]
 fn angular_prime_meridians_survive_geokey_round_trips() {
-    // PROJ 9.8.1 reads these angular values in degrees; GeoKey 2061 stores degrees too.
+    // PROJ 9.9.0 reads these angular values in degrees; GeoKey 2061 stores degrees too.
     for (value, degrees) in
         [("0.5r", 0.5f64.to_degrees()), ("0.5R", 0.5f64.to_degrees()), ("2d20'14.025\"E", 2.0 + 20.0 / 60.0 + 14.025 / 3600.0)]
     {
@@ -132,7 +132,7 @@ fn angular_prime_meridians_survive_geokey_round_trips() {
 }
 
 /// A WKT's `PROJ4` extension is taken as PROJ takes it, its unreadable values as their defaults:
-/// PROJ 9.8.1 (pyproj 3.8.0) transforms (10°E, 10°N) to (1113194.9079327357, 1105854.833234372)
+/// PROJ 9.9.0 (pyproj 3.8.0) transforms (10°E, 10°N) to (1113194.9079327357, 1105854.833234372)
 /// with `+lat_ts=abc` read as 0, not the WKT's standard parallel of 10°.
 #[test]
 fn a_wkt_s_proj4_extension_is_read_as_proj_reads_it() {
@@ -168,13 +168,13 @@ fn a_wkt_s_proj4_extension_is_read_as_proj_reads_it() {
     let (x, y) = t.transform(10.0, 10.0).unwrap();
     assert!((x - 1113194.9079327357).abs() < 1e-6 && (y - 1105854.833234372).abs() < 1e-6);
     // Legacy limitation: an unreadable list in an extension is ignored as a whole. PROJ
-    // 9.8.1 accepts it too, but treats abc as zero and applies the remaining datum shift.
+    // 9.9.0 accepts it too, but treats abc as zero and applies the remaining datum shift.
     let ignored = wkt.replace("+proj=eqc +lat_ts=abc +ellps=WGS84 +units=m", "+proj=eqc +ellps=WGS84 +towgs84=1,abc,3");
     let crs = SpatialRef::parse(&ignored).unwrap();
     let t = terrio_crs::Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &crs).unwrap();
     let (x, y) = t.transform(10.0, 10.0).unwrap();
     assert!((x - 1113194.9079327357).abs() < 1e-6 && (y - 1105854.833234372).abs() < 1e-6);
-    // PROJ 9.8.1 cannot construct a transformation from any of these extensions; the WKT
+    // PROJ 9.9.0 cannot construct a transformation from any of these extensions; the WKT
     // nodes must not silently replace the refused conversion.
     for extension in [
         "+proj=eqc +k_0=0 +ellps=WGS84",

@@ -1,7 +1,7 @@
 """Freeze PROJ's axis orders, celestial bodies and conversion parameters of CRSs for
 ``SpatialRef::axis_order``, ``body`` and ``projection_params`` (``tests/crs_accessors.rs``).
 
-PROJ 9.8.1 (pyproj 3.8.0, network off) reads each CRS:
+PROJ 9.9.0 (pyproj 3.8.0, network off) reads each CRS:
 
 - the axis order is the direction of its first two axes (``CRS.axis_info``): ``EN`` for east then
   north, ``NE`` for north then east, ``OTHER`` for any other;
@@ -29,6 +29,7 @@ import glob
 import math
 import os
 import re
+import sys
 import warnings
 from pathlib import Path
 
@@ -172,10 +173,13 @@ class Proj:
         libs = os.path.join(
             os.path.dirname(pyproj.__file__), "..", "pyproj.libs", "libproj-*.so*"
         )
-        found = glob.glob(libs)
+        # A conda-forge pyproj links the environment's libproj instead.
+        conda = os.path.join(sys.prefix, "lib", "libproj.so.*")
+        found = glob.glob(libs) or glob.glob(conda)
         if not found:
             raise SystemExit(
-                "needs a Linux pyproj 3.8.0 wheel, which bundles libproj in pyproj.libs"
+                "needs a Linux pyproj 3.8.0 wheel, which bundles libproj in pyproj.libs,"
+                " or a conda-forge pyproj, whose environment has libproj"
             )
         lib = ctypes.CDLL(found[0])
         p, s = ctypes.c_void_p, ctypes.c_char_p
@@ -333,7 +337,7 @@ def main():
     args = parser.parse_args()
     warnings.simplefilter("ignore")
     pyproj.network.set_network_enabled(False)
-    assert pyproj.proj_version_str == "9.8.1", pyproj.proj_version_str
+    assert pyproj.proj_version_str == "9.9.0", pyproj.proj_version_str
     proj = Proj()
     if args.all:
         write_all(proj, args.all)

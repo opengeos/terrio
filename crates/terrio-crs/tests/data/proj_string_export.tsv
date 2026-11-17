@@ -1,4 +1,4 @@
-# PROJ strings of CRSs as PROJ 9.8.1 writes them (pyproj 3.8.0 CRS.to_proj4(), network off),
+# PROJ strings of CRSs as PROJ 9.9.0 writes them (pyproj 3.8.0 CRS.to_proj4(), network off),
 # from scripts/gen_proj_string_export.py. Columns: kind (EPSG, ESRI, proj, wkt, ref), code or
 # definition, PROJ string (NONE: PROJ has none).
 EPSG	2000	+proj=tmerc +lat_0=0 +lon_0=-62 +k=0.9995 +x_0=400000 +y_0=0 +a=6378249.145 +rf=293.465 +units=m +no_defs +type=crs
@@ -260,136 +260,150 @@ EPSG	8800	+proj=tmerc +lat_0=40.5 +lon_0=-110.083333333333 +k=0.9999375 +x_0=800
 EPSG	8836	+proj=utm +zone=36 +ellps=GRS80 +units=m +no_defs +type=crs
 EPSG	8905	+proj=geocent +ellps=GRS80 +units=m +no_defs +type=crs
 EPSG	8927	+proj=geocent +ellps=GRS80 +units=m +no_defs +type=crs
-EPSG	8947	+proj=geocent +ellps=GRS80 +units=m +no_defs +type=crs
-EPSG	8987	+proj=longlat +ellps=GRS80 +no_defs +type=crs
+EPSG	8972	+proj=longlat +ellps=GRS80 +no_defs +type=crs
+EPSG	8992	+proj=longlat +ellps=GRS80 +no_defs +type=crs
 EPSG	9000	+proj=longlat +ellps=GRS80 +no_defs +type=crs
-EPSG	9007	+proj=geocent +ellps=GRS80 +units=m +no_defs +type=crs
-EPSG	9059	+proj=longlat +ellps=GRS80 +no_defs +type=crs
-EPSG	9140	+proj=longlat +ellps=GRS80 +no_defs +type=crs
-EPSG	9208	+proj=tmerc +lat_0=0 +lon_0=104.75 +k=0.9999 +x_0=500000 +y_0=0 +ellps=WGS84 +units=m +no_defs +type=crs
-EPSG	9254	+proj=tmerc +lat_0=-90 +lon_0=-69 +k=1 +x_0=2500000 +y_0=0 +ellps=intl +units=m +no_defs +type=crs
-EPSG	9295	+proj=utm +zone=39 +ellps=GRS80 +units=m +no_defs +type=crs
-EPSG	9359	+proj=utm +zone=39 +ellps=GRS80 +units=m +no_defs +type=crs
-EPSG	9394	+vunits=m +no_defs +type=crs
-EPSG	9428	+proj=longlat +ellps=GRS80 +vunits=m +no_defs +type=crs
-EPSG	9475	+proj=longlat +a=6378136 +rf=298.257839303 +no_defs +type=crs
-EPSG	9503	+proj=longlat +ellps=GRS80 +vunits=ft +no_defs +type=crs
-EPSG	9523	+proj=longlat +ellps=GRS80 +vunits=m +no_defs +type=crs
-EPSG	9543	+proj=longlat +ellps=GRS80 +vunits=m +no_defs +type=crs
-EPSG	9695	+proj=longlat +ellps=GRS80 +no_defs +type=crs
-EPSG	9724	+proj=longlat +ellps=GRS80 +vunits=m +no_defs +type=crs
-EPSG	9779	+proj=longlat +ellps=GRS80 +no_defs +type=crs
-EPSG	9832	+proj=tmerc +lat_0=0 +lon_0=28.6666666666667 +k=1 +x_0=300000 +y_0=0 +ellps=krass +units=m +no_defs +type=crs
-EPSG	9852	+proj=tmerc +lat_0=0 +lon_0=31.8333333333333 +k=1 +x_0=300000 +y_0=0 +ellps=krass +units=m +no_defs +type=crs
-EPSG	9880	+proj=tmerc +lat_0=53.35 +lon_0=-1.9 +k=1 +x_0=226574.2032 +y_0=390894.838 +ellps=GRS80 +units=m +no_defs +type=crs
-EPSG	9935	+proj=tmerc +lat_0=0 +lon_0=15 +k=1 +x_0=5500000 +y_0=0 +ellps=bessel +units=m +vunits=m +no_defs +type=crs
-EPSG	9978	+proj=tmerc +lat_0=58 +lon_0=-3.8 +k=1 +x_0=139618.9493 +y_0=183110.794 +ellps=GRS80 +units=m +vunits=m +no_defs +type=crs
-EPSG	10172	+proj=tmerc +lat_0=44 +lon_0=140.25 +k=0.9999 +x_0=0 +y_0=0 +ellps=GRS80 +units=m +vunits=m +no_defs +type=crs
-EPSG	10207	+proj=tmerc +lat_0=51.85 +lon_0=-1.3 +k=1 +x_0=511622.854 +y_0=324737.4633 +ellps=GRS80 +units=m +no_defs +type=crs
-EPSG	10245	+proj=longlat +ellps=GRS80 +vunits=m +no_defs +type=crs
-EPSG	10282	+proj=geocent +ellps=GRS80 +units=m +no_defs +type=crs
-EPSG	10308	+proj=geocent +ellps=GRS80 +units=m +no_defs +type=crs
-EPSG	10355	+proj=longlat +ellps=GRS80 +vunits=m +no_defs +type=crs
-EPSG	10450	+proj=tmerc +lat_0=0 +lon_0=122.333333333333 +k=1.00000298 +x_0=50000 +y_0=2200000 +ellps=GRS80 +units=m +no_defs +type=crs
-EPSG	10474	+proj=longlat +ellps=WGS84 +no_defs +type=crs
-EPSG	10549	+vunits=m +no_defs +type=crs
-EPSG	10605	+proj=longlat +ellps=WGS84 +no_defs +type=crs
-EPSG	10649	+vunits=m +no_defs +type=crs
-EPSG	10691	+proj=longlat +ellps=GRS80 +vunits=m +no_defs +type=crs
-EPSG	10740	+vunits=m +no_defs +type=crs
-EPSG	10783	+proj=geocent +ellps=GRS80 +units=m +no_defs +type=crs
-EPSG	10829	+proj=geocent +ellps=GRS80 +units=m +no_defs +type=crs
-EPSG	10892	+proj=longlat +ellps=GRS80 +no_defs +type=crs
-EPSG	10922	+proj=lcc +lat_0=37.6666666666667 +lon_0=-122 +lat_1=39.8333333333333 +lat_2=38.3333333333333 +x_0=2000000 +y_0=500000 +ellps=GRS80 +units=m +no_defs +type=crs
-EPSG	10955	+proj=longlat +ellps=GRS80 +no_defs +type=crs
-EPSG	11013	+proj=utm +zone=31 +ellps=GRS80 +units=m +no_defs +type=crs
+EPSG	9012	+proj=longlat +ellps=GRS80 +no_defs +type=crs
+EPSG	9064	+proj=longlat +ellps=GRS80 +no_defs +type=crs
+EPSG	9149	+proj=utm +zone=18 +south +ellps=GRS80 +units=m +no_defs +type=crs
+EPSG	9213	+proj=tmerc +lat_0=0 +lon_0=106.5 +k=0.9999 +x_0=500000 +y_0=0 +ellps=WGS84 +units=m +no_defs +type=crs
+EPSG	9271	+proj=tmerc +lat_0=0 +lon_0=10.3333333333333 +k=1 +x_0=0 +y_0=0 +ellps=bessel +units=m +no_defs +type=crs
+EPSG	9303	+vunits=m +no_defs +type=crs
+EPSG	9372	+proj=longlat +ellps=GRS80 +no_defs +type=crs
+EPSG	9399	+vunits=m +no_defs +type=crs
+EPSG	9451	+vunits=m +no_defs +type=crs
+EPSG	9480	+proj=utm +zone=50 +ellps=WGS84 +units=m +no_defs +type=crs
+EPSG	9508	+proj=longlat +ellps=GRS80 +vunits=m +no_defs +type=crs
+EPSG	9528	+proj=longlat +ellps=GRS80 +vunits=m +no_defs +type=crs
+EPSG	9549	+proj=lcc +lat_1=44.3791666666667 +k_0=1 +lat_0=45.1833333333333 +lon_0=6.81666666666667 +x_0=150000 +y_0=50000 +ellps=GRS80 +units=m +no_defs +type=crs
+EPSG	9700	+proj=geocent +ellps=GRS80 +units=m +no_defs +type=crs
+EPSG	9748	+proj=tmerc +lat_0=30.5 +lon_0=-85.8333333333333 +k=0.99996 +x_0=200000.0001016 +y_0=0 +ellps=GRS80 +units=us-ft +no_defs +type=crs
+EPSG	9784	+proj=longlat +ellps=GRS80 +no_defs +type=crs
+EPSG	9837	+proj=tmerc +lat_0=0 +lon_0=23.5 +k=1 +x_0=300000 +y_0=0 +ellps=krass +units=m +no_defs +type=crs
+EPSG	9857	+proj=tmerc +lat_0=0 +lon_0=25.5 +k=1 +x_0=300000 +y_0=0 +ellps=krass +units=m +no_defs +type=crs
+EPSG	9895	+proj=tmerc +lat_0=49.8333333333333 +lon_0=6.16666666666667 +k=1 +x_0=80000 +y_0=100000 +ellps=intl +units=m +no_defs +type=crs
+EPSG	9947	+proj=laea +lat_0=65 +lon_0=-19 +x_0=1700000 +y_0=1300000 +ellps=GRS80 +units=m +no_defs +type=crs
+EPSG	10151	+vunits=m +no_defs +type=crs
+EPSG	10177	+proj=longlat +ellps=GRS80 +no_defs +type=crs
+EPSG	10214	+proj=longlat +ellps=GRS80 +no_defs +type=crs
+EPSG	10254	+proj=tmerc +lat_0=55.11171 +lon_0=14.88927 +k=1 +x_0=-50000 +y_0=50000 +ellps=intl +units=m +no_defs +type=crs
+EPSG	10287	+proj=tmerc +lat_0=0 +lon_0=3 +k=0.9996 +x_0=31500000 +y_0=0 +ellps=GRS80 +units=m +no_defs +type=crs
+EPSG	10314	+proj=lcc +lat_0=-21.5 +lon_0=166 +lat_1=-20.6666666666667 +lat_2=-22.3333333333333 +x_0=2400000 +y_0=2300000 +ellps=GRS80 +units=m +no_defs +type=crs
+EPSG	10370	+vunits=m +no_defs +type=crs
+EPSG	10455	+proj=tmerc +lat_0=0 +lon_0=114.066666666667 +k=1.00000236 +x_0=50000 +y_0=2650000 +ellps=GRS80 +units=m +no_defs +type=crs
+EPSG	10483	+vunits=m +no_defs +type=crs
+EPSG	10554	+proj=longlat +ellps=GRS80 +vunits=m +no_defs +type=crs
+EPSG	10627	+proj=tmerc +lat_0=53.8 +lon_0=-1.6 +k=1 +x_0=108021.121 +y_0=263196.8721 +ellps=GRS80 +units=m +vunits=m +no_defs +type=crs
+EPSG	10660	+proj=somerc +lat_0=47.1443937222222 +lon_0=19.0485717777778 +k_0=0.99993 +x_0=650000 +y_0=200000 +ellps=GRS67 +units=m +vunits=m +no_defs +type=crs
+EPSG	10724	+proj=longlat +ellps=GRS80 +no_defs +type=crs
+EPSG	10746	+proj=tmerc +lat_0=0 +lon_0=-63 +k=0.9996 +x_0=578.55 +y_0=-1930396.26 +ellps=intl +units=m +vunits=m +no_defs +type=crs
+EPSG	10799	+proj=longlat +ellps=GRS80 +no_defs +type=crs
+EPSG	10860	+proj=longlat +ellps=GRS80 +no_defs +type=crs
+EPSG	10913	+proj=lcc +lat_0=36.5 +lon_0=-120.5 +lat_1=38.4333333333333 +lat_2=37.0666666666667 +x_0=2000000.0001016 +y_0=500000.0001016 +ellps=GRS80 +units=us-ft +no_defs +type=crs
+EPSG	10945	+proj=tmerc +lat_0=0 +lon_0=63 +k=1 +x_0=11500000 +y_0=0 +ellps=GRS80 +units=m +no_defs +type=crs
+EPSG	10982	+proj=lcc +lat_1=29.3325 +lat_0=29.3325 +lon_0=-99 +k_0=0.9998499 +x_0=609633.909 +y_0=166114.095 +ellps=GRS80 +units=ft +no_defs +type=crs
+EPSG	11014	+proj=utm +zone=32 +ellps=GRS80 +units=m +no_defs +type=crs
+EPSG	11041	+proj=geocent +ellps=GRS80 +units=m +no_defs +type=crs
+EPSG	11076	+proj=longlat +ellps=GRS80 +no_defs +type=crs
 EPSG	11116	+proj=tmerc +lat_0=4.59620322222222 +lon_0=-74.0775077694444 +k=1 +x_0=1000000 +y_0=1000000 +ellps=GRS80 +units=m +no_defs +type=crs
-EPSG	20015	+proj=tmerc +lat_0=0 +lon_0=87 +k=1 +x_0=15500000 +y_0=0 +ellps=krass +units=m +no_defs +type=crs
-EPSG	20035	+vunits=m +no_defs +type=crs
-EPSG	20249	+proj=utm +zone=49 +south +ellps=aust_SA +units=m +no_defs +type=crs
-EPSG	20438	+proj=utm +zone=38 +ellps=intl +units=m +no_defs +type=crs
-EPSG	20913	+proj=tmerc +lat_0=0 +lon_0=75 +k=1 +x_0=13500000 +y_0=0 +ellps=GSK2011 +units=m +no_defs +type=crs
-EPSG	20934	+proj=utm +zone=34 +south +a=6378249.145 +rf=293.4663077 +units=m +no_defs +type=crs
-EPSG	21021	+proj=tmerc +lat_0=0 +lon_0=123 +k=1 +x_0=500000 +y_0=0 +ellps=GSK2011 +units=m +no_defs +type=crs
-EPSG	21150	+proj=utm +zone=50 +south +ellps=bessel +units=m +no_defs +type=crs
-EPSG	21226	+proj=tmerc +lat_0=0 +lon_0=78 +k=1 +x_0=26250000 +y_0=0 +ellps=GSK2011 +units=m +no_defs +type=crs
-EPSG	21246	+proj=tmerc +lat_0=0 +lon_0=138 +k=1 +x_0=46250000 +y_0=0 +ellps=GSK2011 +units=m +no_defs +type=crs
-EPSG	21292	+proj=tmerc +lat_0=13.1763888888889 +lon_0=-59.5597222222222 +k=0.9999986 +x_0=30000 +y_0=75000 +a=6378249.145 +rf=293.465 +units=m +no_defs +type=crs
-EPSG	21326	+proj=tmerc +lat_0=0 +lon_0=78 +k=1 +x_0=250000 +y_0=0 +ellps=GSK2011 +units=m +no_defs +type=crs
-EPSG	21346	+proj=tmerc +lat_0=0 +lon_0=138 +k=1 +x_0=250000 +y_0=0 +ellps=GSK2011 +units=m +no_defs +type=crs
-EPSG	21414	+proj=tmerc +lat_0=0 +lon_0=81 +k=1 +x_0=14500000 +y_0=0 +ellps=krass +units=m +no_defs +type=crs
-EPSG	21463	+proj=tmerc +lat_0=0 +lon_0=135 +k=1 +x_0=500000 +y_0=0 +ellps=krass +units=m +no_defs +type=crs
-EPSG	22177	+proj=tmerc +lat_0=-90 +lon_0=-54 +k=1 +x_0=7500000 +y_0=0 +ellps=GRS80 +units=m +no_defs +type=crs
-EPSG	22212	+proj=utm +zone=12 +ellps=GRS80 +units=m +no_defs +type=crs
-EPSG	22243	+proj=tmerc +lat_0=0 +lon_0=-58.5 +k=0.9999 +x_0=304800 +y_0=0 +ellps=GRS80 +units=m +no_defs +type=crs
-EPSG	22291	+proj=tmerc +axis=wsu +lat_0=0 +lon_0=31 +k=1 +x_0=0 +y_0=0 +a=6378249.145 +rf=293.4663077 +units=m +no_defs +type=crs
-EPSG	22337	+proj=tmerc +lat_0=0 +lon_0=-64.5 +k=0.9999 +x_0=15500000 +y_0=0 +ellps=GRS80 +units=m +no_defs +type=crs
-EPSG	22413	+proj=utm +zone=13 +ellps=GRS80 +units=m +no_defs +type=crs
-EPSG	22608	+proj=utm +zone=8 +ellps=GRS80 +units=m +no_defs +type=crs
-EPSG	22645	+proj=tmerc +lat_0=0 +lon_0=-64.5 +k=0.9999 +x_0=304800 +y_0=0 +ellps=GRS80 +units=m +no_defs +type=crs
-EPSG	22714	+proj=utm +zone=14 +ellps=GRS80 +units=m +no_defs +type=crs
-EPSG	22811	+proj=utm +zone=11 +ellps=GRS80 +units=m +no_defs +type=crs
-EPSG	23032	+proj=utm +zone=32 +ellps=intl +units=m +no_defs +type=crs
-EPSG	23310	+proj=tmerc +lat_0=37.25 +lon_0=-90.1 +k=1.000023 +x_0=70104.1402082804 +y_0=149961.8999238 +ellps=GRS80 +units=us-ft +no_defs +type=crs
-EPSG	23330	+proj=lcc +lat_1=38.45 +lat_0=38.45 +lon_0=-89.15 +k_0=1.000015 +x_0=99974.5999491999 +y_0=1150012.7000254 +ellps=GRS80 +units=us-ft +no_defs +type=crs
-EPSG	23845	+proj=tmerc +lat_0=0 +lon_0=139.5 +k=0.9999 +x_0=200000 +y_0=1500000 +ellps=WGS84 +units=m +no_defs +type=crs
-EPSG	23882	+proj=utm +zone=52 +south +ellps=WGS84 +units=m +no_defs +type=crs
-EPSG	24311	+proj=utm +zone=41 +a=6377301.243 +rf=300.8017255 +units=m +no_defs +type=crs
-EPSG	24381	+proj=lcc +lat_1=19 +lat_0=19 +lon_0=80 +k_0=0.99878641 +x_0=2743195.5 +y_0=914398.5 +a=6377299.151 +rf=300.8017255 +units=m +no_defs +type=crs
-EPSG	24882	+proj=utm +zone=22 +south +ellps=intl +units=m +no_defs +type=crs
-EPSG	25833	+proj=utm +zone=33 +ellps=GRS80 +units=m +no_defs +type=crs
-EPSG	26393	+proj=tmerc +lat_0=4 +lon_0=12.5 +k=0.99975 +x_0=1110369.7 +y_0=0 +a=6378249.145 +rf=293.465 +units=m +no_defs +type=crs
-EPSG	26718	+proj=utm +zone=18 +datum=NAD27 +units=m +no_defs +type=crs
-EPSG	26744	+proj=lcc +lat_0=35.3333333333333 +lon_0=-119 +lat_1=37.25 +lat_2=36 +x_0=609601.219202438 +y_0=0 +datum=NAD27 +units=us-ft +no_defs +type=crs
-EPSG	26770	+proj=tmerc +lat_0=41.6666666666667 +lon_0=-115.75 +k=0.999933333 +x_0=152400.30480061 +y_0=0 +datum=NAD27 +units=us-ft +no_defs +type=crs
-EPSG	26793	+proj=lcc +lat_0=43 +lon_0=-94 +lat_1=43.7833333333333 +lat_2=45.2166666666667 +x_0=609601.219202438 +y_0=0 +datum=NAD27 +units=us-ft +no_defs +type=crs
-EPSG	26860	+proj=lcc +lat_0=39.8333333333333 +lon_0=-100 +lat_1=43 +lat_2=40 +x_0=500000.00001016 +y_0=0 +ellps=GRS80 +units=us-ft +no_defs +type=crs
-EPSG	26901	+proj=utm +zone=1 +datum=NAD83 +units=m +no_defs +type=crs
+EPSG	11158	+proj=longlat +ellps=GRS80 +vunits=m +no_defs +type=crs
+EPSG	11197	+proj=geocent +ellps=GRS80 +units=m +no_defs +type=crs
+EPSG	11277	+proj=utm +zone=47 +south +ellps=WGS84 +units=m +no_defs +type=crs
+EPSG	11314	+proj=longlat +ellps=GRS80 +vunits=m +no_defs +type=crs
+EPSG	11361	+proj=tmerc +lat_0=44 +lon_0=-110 +k=1.000209 +x_0=174999.99999168 +y_0=0 +ellps=GRS80 +units=ft +no_defs +type=crs
+EPSG	11390	+proj=ortho +lat_0=51.4701102238889 +lon_0=-0.451656585555556 +alpha=359.700932272222 +k=1.000002816 +x_0=7334.818 +y_0=5637.421 +ellps=airy +units=m +no_defs +type=crs
+EPSG	11416	+proj=tmerc +lat_0=58 +lon_0=16.5 +k=1 +x_0=100000 +y_0=1000000 +ellps=GRS80 +units=m +vunits=m +no_defs +type=crs
+EPSG	11443	+proj=tmerc +lat_0=26 +lon_0=131 +k=0.9999 +x_0=0 +y_0=0 +ellps=GRS80 +units=m +vunits=m +no_defs +type=crs
+EPSG	11473	+proj=longlat +ellps=GRS80 +no_defs +type=crs
+EPSG	11585	+proj=longlat +ellps=GRS80 +vunits=m +no_defs +type=crs
+EPSG	12230	+proj=longlat +ellps=GRS80 +vunits=m +no_defs +type=crs
+EPSG	20016	+proj=tmerc +lat_0=0 +lon_0=93 +k=1 +x_0=16500000 +y_0=0 +ellps=krass +units=m +no_defs +type=crs
+EPSG	20036	+vunits=m +no_defs +type=crs
+EPSG	20250	+proj=utm +zone=50 +south +ellps=aust_SA +units=m +no_defs +type=crs
+EPSG	20439	+proj=utm +zone=39 +ellps=intl +units=m +no_defs +type=crs
+EPSG	20914	+proj=tmerc +lat_0=0 +lon_0=81 +k=1 +x_0=14500000 +y_0=0 +ellps=GSK2011 +units=m +no_defs +type=crs
+EPSG	20935	+proj=utm +zone=35 +south +a=6378249.145 +rf=293.4663077 +units=m +no_defs +type=crs
+EPSG	21022	+proj=tmerc +lat_0=0 +lon_0=129 +k=1 +x_0=500000 +y_0=0 +ellps=GSK2011 +units=m +no_defs +type=crs
+EPSG	21207	+proj=tmerc +lat_0=0 +lon_0=21 +k=1 +x_0=7250000 +y_0=0 +ellps=GSK2011 +units=m +no_defs +type=crs
+EPSG	21227	+proj=tmerc +lat_0=0 +lon_0=81 +k=1 +x_0=27250000 +y_0=0 +ellps=GSK2011 +units=m +no_defs +type=crs
+EPSG	21247	+proj=tmerc +lat_0=0 +lon_0=141 +k=1 +x_0=47250000 +y_0=0 +ellps=GSK2011 +units=m +no_defs +type=crs
+EPSG	21307	+proj=tmerc +lat_0=0 +lon_0=21 +k=1 +x_0=250000 +y_0=0 +ellps=GSK2011 +units=m +no_defs +type=crs
+EPSG	21327	+proj=tmerc +lat_0=0 +lon_0=81 +k=1 +x_0=250000 +y_0=0 +ellps=GSK2011 +units=m +no_defs +type=crs
+EPSG	21347	+proj=tmerc +lat_0=0 +lon_0=141 +k=1 +x_0=250000 +y_0=0 +ellps=GSK2011 +units=m +no_defs +type=crs
+EPSG	21415	+proj=tmerc +lat_0=0 +lon_0=87 +k=1 +x_0=15500000 +y_0=0 +ellps=krass +units=m +no_defs +type=crs
+EPSG	21500	+proj=lcc +lat_0=90 +lon_0=0 +lat_1=49.8333333333333 +lat_2=51.1666666666667 +x_0=150000 +y_0=5400000 +ellps=intl +pm=brussels +units=m +no_defs +type=crs
+EPSG	22144	+proj=lcc +lat_1=38.0666666666667 +lat_0=38.0666666666667 +lon_0=-89.8166666666667 +k_0=1.000016739 +x_0=35966.4719329439 +y_0=30784.8615697231 +ellps=GRS80 +units=us-ft +no_defs +type=crs
+EPSG	22195	+proj=tmerc +lat_0=-90 +lon_0=-60 +k=1 +x_0=5500000 +y_0=0 +ellps=intl +units=m +no_defs +type=crs
+EPSG	22229	+proj=utm +zone=29 +ellps=GRS80 +units=m +no_defs +type=crs
+EPSG	22275	+proj=tmerc +axis=wsu +lat_0=0 +lon_0=15 +k=1 +x_0=0 +y_0=0 +a=6378249.145 +rf=293.4663077 +units=m +no_defs +type=crs
+EPSG	22316	+proj=utm +zone=16 +ellps=GRS80 +units=m +no_defs +type=crs
+EPSG	22391	+proj=lcc +lat_1=36 +lat_0=36 +lon_0=9.9 +k_0=0.999625544 +x_0=500000 +y_0=300000 +ellps=clrk80ign +units=m +no_defs +type=crs
+EPSG	22464	+proj=tmerc +lat_0=0 +lon_0=-117 +k=0.9999 +x_0=0 +y_0=0 +ellps=GRS80 +units=m +no_defs +type=crs
+EPSG	22620	+proj=utm +zone=20 +ellps=GRS80 +units=m +no_defs +type=crs
+EPSG	22700	NONE
+EPSG	22764	+proj=tmerc +lat_0=0 +lon_0=-117 +k=0.9999 +x_0=0 +y_0=0 +ellps=GRS80 +units=m +no_defs +type=crs
+EPSG	22991	+proj=tmerc +lat_0=30 +lon_0=35 +k=1 +x_0=300000 +y_0=1100000 +ellps=helmert +units=m +no_defs +type=crs
+EPSG	23302	+proj=tmerc +lat_0=41.25 +lon_0=-89.25 +k=1.000029 +x_0=860147.320294641 +y_0=149961.8999238 +ellps=GRS80 +units=us-ft +no_defs +type=crs
+EPSG	23322	+proj=lcc +lat_1=39.75 +lat_0=39.75 +lon_0=-89.65 +k_0=1.000022 +x_0=709880.61976124 +y_0=879959.35991872 +ellps=GRS80 +units=us-ft +no_defs +type=crs
+EPSG	23837	+proj=tmerc +lat_0=0 +lon_0=115.5 +k=0.9999 +x_0=200000 +y_0=1500000 +ellps=WGS84 +units=m +no_defs +type=crs
+EPSG	23870	+proj=utm +zone=50 +ellps=WGS84 +units=m +no_defs +type=crs
+EPSG	23947	+proj=utm +zone=47 +ellps=evrst30 +units=m +no_defs +type=crs
+EPSG	24373	+proj=lcc +lat_1=19 +lat_0=19 +lon_0=80 +k_0=0.99878641 +x_0=2743195.59223332 +y_0=914398.530744441 +a=6377299.36559538 +b=6356098.35900516 +to_meter=0.914398530744441 +no_defs +type=crs
+EPSG	24819	+proj=utm +zone=19 +ellps=intl +units=m +no_defs +type=crs
+EPSG	25829	+proj=utm +zone=29 +ellps=GRS80 +units=m +no_defs +type=crs
+EPSG	26191	+proj=lcc +lat_1=33.3 +lat_0=33.3 +lon_0=-5.4 +k_0=0.999625769 +x_0=500000 +y_0=300000 +ellps=clrk80ign +units=m +no_defs +type=crs
+EPSG	26709	+proj=utm +zone=9 +datum=NAD27 +units=m +no_defs +type=crs
+EPSG	26735	+proj=tmerc +lat_0=54 +lon_0=-154 +k=0.9999 +x_0=152400.30480061 +y_0=0 +datum=NAD27 +units=us-ft +no_defs +type=crs
+EPSG	26756	+proj=lcc +lat_0=40.8333333333333 +lon_0=-72.75 +lat_1=41.8666666666667 +lat_2=41.2 +x_0=182880.365760732 +y_0=0 +datum=NAD27 +units=us-ft +no_defs +type=crs
+EPSG	26781	+proj=lcc +lat_0=30.6666666666667 +lon_0=-92.5 +lat_1=31.1666666666667 +lat_2=32.6666666666667 +x_0=609601.219202438 +y_0=0 +datum=NAD27 +units=us-ft +no_defs +type=crs
+EPSG	26851	+proj=lcc +lat_0=43 +lon_0=-94 +lat_1=45.2166666666667 +lat_2=43.7833333333333 +x_0=800000.00001016 +y_0=99999.99998984 +datum=NAD83 +units=us-ft +no_defs +type=crs
+EPSG	26891	+proj=tmerc +lat_0=0 +lon_0=-82.5 +k=0.9999 +x_0=304800 +y_0=0 +ellps=GRS80 +units=m +no_defs +type=crs
+EPSG	26912	+proj=utm +zone=12 +datum=NAD83 +units=m +no_defs +type=crs
 EPSG	26917	+proj=utm +zone=17 +datum=NAD83 +units=m +no_defs +type=crs
-EPSG	26921	+proj=utm +zone=21 +datum=NAD83 +units=m +no_defs +type=crs
-EPSG	26946	+proj=lcc +lat_0=32.1666666666667 +lon_0=-116.25 +lat_1=33.8833333333333 +lat_2=32.7833333333333 +x_0=2000000 +y_0=500000 +datum=NAD83 +units=m +no_defs +type=crs
-EPSG	26967	+proj=tmerc +lat_0=30 +lon_0=-84.1666666666667 +k=0.9999 +x_0=700000 +y_0=0 +datum=NAD83 +units=m +no_defs +type=crs
-EPSG	26988	+proj=lcc +lat_0=44.7833333333333 +lon_0=-87 +lat_1=47.0833333333333 +lat_2=45.4833333333333 +x_0=8000000 +y_0=0 +datum=NAD83 +units=m +no_defs +type=crs
-EPSG	27210	+proj=tmerc +lat_0=-39.5124703888889 +lon_0=175.640036805556 +k=1 +x_0=300000 +y_0=700000 +ellps=intl +units=m +no_defs +type=crs
-EPSG	27230	+proj=tmerc +lat_0=-45.8161966111111 +lon_0=170.628595166667 +k=1 +x_0=300000 +y_0=700000 +ellps=intl +units=m +no_defs +type=crs
-EPSG	27562	+proj=lcc +lat_1=46.8 +lat_0=46.8 +lon_0=0 +k_0=0.99987742 +x_0=600000 +y_0=200000 +ellps=clrk80ign +pm=paris +units=m +no_defs +type=crs
+EPSG	26937	+proj=tmerc +lat_0=54 +lon_0=-162 +k=0.9999 +x_0=500000 +y_0=0 +datum=NAD83 +units=m +no_defs +type=crs
+EPSG	26958	+proj=tmerc +lat_0=24.3333333333333 +lon_0=-81 +k=0.999941177 +x_0=200000 +y_0=0 +datum=NAD83 +units=m +no_defs +type=crs
+EPSG	26978	+proj=lcc +lat_0=36.6666666666667 +lon_0=-98.5 +lat_1=38.5666666666667 +lat_2=37.2666666666667 +x_0=400000 +y_0=400000 +datum=NAD83 +units=m +no_defs +type=crs
+EPSG	27039	+proj=utm +zone=39 +a=6378249.145 +rf=293.465 +units=m +no_defs +type=crs
+EPSG	27221	+proj=tmerc +lat_0=-42.8863223611111 +lon_0=170.9799935 +k=1 +x_0=300000 +y_0=700000 +ellps=intl +units=m +no_defs +type=crs
+EPSG	27394	+proj=tmerc +lat_0=58 +lon_0=2.5 +k=1 +x_0=0 +y_0=0 +a=6377492.018 +rf=299.1528128 +pm=oslo +units=m +no_defs +type=crs
 EPSG	27700	+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 +ellps=airy +units=m +no_defs +type=crs
-EPSG	28349	+proj=utm +zone=49 +south +ellps=GRS80 +units=m +no_defs +type=crs
-EPSG	28414	+proj=tmerc +lat_0=0 +lon_0=81 +k=1 +x_0=14500000 +y_0=0 +ellps=krass +units=m +no_defs +type=crs
-EPSG	28991	+proj=sterea +lat_0=52.1561605555556 +lon_0=5.38763888888889 +k=0.9999079 +x_0=0 +y_0=0 +ellps=bessel +units=m +no_defs +type=crs
-EPSG	29371	+proj=tmerc +axis=wsu +lat_0=-22 +lon_0=11 +k=1 +x_0=0 +y_0=0 +ellps=bess_nam +to_meter=1.0000135965 +no_defs +type=crs
-EPSG	29903	+proj=tmerc +lat_0=53.5 +lon_0=-8 +k=1.000035 +x_0=200000 +y_0=250000 +a=6377340.189 +rf=299.3249646 +units=m +no_defs +type=crs
-EPSG	30200	+proj=cass +lat_0=10.4416666666667 +lon_0=-61.3333333333333 +x_0=86501.46392052 +y_0=65379.0134283 +a=6378293.64520876 +b=6356617.98767984 +to_meter=0.201166195164 +no_defs +type=crs
-EPSG	31253	+proj=tmerc +lat_0=0 +lon_0=34 +k=1 +x_0=0 +y_0=-5000000 +ellps=bessel +pm=ferro +units=m +no_defs +type=crs
-EPSG	31467	+proj=tmerc +lat_0=0 +lon_0=9 +k=1 +x_0=3500000 +y_0=0 +ellps=bessel +units=m +no_defs +type=crs
-EPSG	31976	+proj=utm +zone=22 +ellps=GRS80 +units=m +no_defs +type=crs
-EPSG	31996	+proj=utm +zone=21 +south +ellps=GRS80 +units=m +no_defs +type=crs
-EPSG	32017	+proj=tmerc +lat_0=40 +lon_0=-78.5833333333333 +k=0.9999375 +x_0=152400.30480061 +y_0=0 +datum=NAD27 +units=us-ft +no_defs +type=crs
-EPSG	32041	+proj=lcc +lat_0=25.6666666666667 +lon_0=-98.5 +lat_1=26.1666666666667 +lat_2=27.8333333333333 +x_0=609601.219202438 +y_0=0 +datum=NAD27 +units=us-ft +no_defs +type=crs
-EPSG	32066	+proj=tmerc +lat_0=0 +lon_0=-87 +k=0.9996 +x_0=500000.001016002 +y_0=0 +datum=NAD27 +units=us-ft +no_defs +type=crs
-EPSG	32115	+proj=tmerc +lat_0=38.8333333333333 +lon_0=-74.5 +k=0.9999 +x_0=150000 +y_0=0 +datum=NAD83 +units=m +no_defs +type=crs
-EPSG	32137	+proj=lcc +lat_0=34 +lon_0=-101.5 +lat_1=36.1833333333333 +lat_2=34.65 +x_0=200000 +y_0=1000000 +datum=NAD83 +units=m +no_defs +type=crs
-EPSG	32157	+proj=tmerc +lat_0=40.5 +lon_0=-108.75 +k=0.9999375 +x_0=600000 +y_0=0 +datum=NAD83 +units=m +no_defs +type=crs
-EPSG	32193	+proj=tmerc +lat_0=0 +lon_0=-84 +k=0.9999 +x_0=304800 +y_0=0 +datum=NAD83 +units=m +no_defs +type=crs
-EPSG	32214	+proj=utm +zone=14 +ellps=WGS72 +units=m +no_defs +type=crs
-EPSG	32234	+proj=utm +zone=34 +ellps=WGS72 +units=m +no_defs +type=crs
-EPSG	32254	+proj=utm +zone=54 +ellps=WGS72 +units=m +no_defs +type=crs
-EPSG	32314	+proj=utm +zone=14 +south +ellps=WGS72 +units=m +no_defs +type=crs
-EPSG	32334	+proj=utm +zone=34 +south +ellps=WGS72 +units=m +no_defs +type=crs
-EPSG	32354	+proj=utm +zone=54 +south +ellps=WGS72 +units=m +no_defs +type=crs
-EPSG	32414	+proj=utm +zone=14 +ellps=WGS72 +units=m +no_defs +type=crs
-EPSG	32434	+proj=utm +zone=34 +ellps=WGS72 +units=m +no_defs +type=crs
-EPSG	32454	+proj=utm +zone=54 +ellps=WGS72 +units=m +no_defs +type=crs
-EPSG	32514	+proj=utm +zone=14 +south +ellps=WGS72 +units=m +no_defs +type=crs
-EPSG	32534	+proj=utm +zone=34 +south +ellps=WGS72 +units=m +no_defs +type=crs
-EPSG	32554	+proj=utm +zone=54 +south +ellps=WGS72 +units=m +no_defs +type=crs
-EPSG	32613	+proj=utm +zone=13 +datum=WGS84 +units=m +no_defs +type=crs
+EPSG	27704	+proj=aeqd +lat_0=53 +lon_0=24 +x_0=5837287.82 +y_0=2121415.696 +datum=WGS84 +units=m +no_defs +type=crs
+EPSG	28405	+proj=tmerc +lat_0=0 +lon_0=27 +k=1 +x_0=5500000 +y_0=0 +ellps=krass +units=m +no_defs +type=crs
+EPSG	28425	+proj=tmerc +lat_0=0 +lon_0=147 +k=1 +x_0=25500000 +y_0=0 +ellps=krass +units=m +no_defs +type=crs
+EPSG	29190	+proj=utm +zone=20 +south +ellps=aust_SA +units=m +no_defs +type=crs
+EPSG	29739	+proj=utm +zone=39 +south +ellps=intl +units=m +no_defs +type=crs
+EPSG	30171	+proj=tmerc +lat_0=44 +lon_0=140.25 +k=0.9999 +x_0=0 +y_0=0 +ellps=bessel +units=m +no_defs +type=crs
+EPSG	30791	+proj=lcc +lat_1=36 +lat_0=36 +lon_0=2.7 +k_0=0.999625544 +x_0=500135 +y_0=300090 +a=6378249.145 +rf=293.465 +units=m +no_defs +type=crs
+EPSG	31285	+proj=tmerc +lat_0=0 +lon_0=13.3333333333333 +k=1 +x_0=450000 +y_0=0 +ellps=bessel +units=m +no_defs +type=crs
+EPSG	31967	+proj=utm +zone=13 +ellps=GRS80 +units=m +no_defs +type=crs
+EPSG	31987	+proj=utm +zone=18 +ellps=GRS80 +units=m +no_defs +type=crs
+EPSG	32008	+proj=tmerc +lat_0=34.75 +lon_0=-116.666666666667 +k=0.9999 +x_0=152400.30480061 +y_0=0 +datum=NAD27 +units=us-ft +no_defs +type=crs
+EPSG	32030	+proj=tmerc +lat_0=41.0833333333333 +lon_0=-71.5 +k=0.9999938 +x_0=152400.30480061 +y_0=0 +datum=NAD27 +units=us-ft +no_defs +type=crs
+EPSG	32052	+proj=lcc +lat_0=45.1666666666667 +lon_0=-90 +lat_1=45.5666666666667 +lat_2=46.7666666666667 +x_0=609601.219202438 +y_0=0 +datum=NAD27 +units=us-ft +no_defs +type=crs
+EPSG	32104	+proj=lcc +lat_0=39.8333333333333 +lon_0=-100 +lat_1=43 +lat_2=40 +x_0=500000 +y_0=0 +datum=NAD83 +units=m +no_defs +type=crs
+EPSG	32126	+proj=lcc +lat_0=43.6666666666667 +lon_0=-120.5 +lat_1=46 +lat_2=44.3333333333333 +x_0=2500000 +y_0=0 +datum=NAD83 +units=m +no_defs +type=crs
+EPSG	32148	+proj=lcc +lat_0=47 +lon_0=-120.833333333333 +lat_1=48.7333333333333 +lat_2=47.5 +x_0=500000 +y_0=0 +datum=NAD83 +units=m +no_defs +type=crs
+EPSG	32184	+proj=tmerc +lat_0=0 +lon_0=-61.5 +k=0.9999 +x_0=304800 +y_0=0 +datum=NAD83 +units=m +no_defs +type=crs
+EPSG	32205	+proj=utm +zone=5 +ellps=WGS72 +units=m +no_defs +type=crs
+EPSG	32225	+proj=utm +zone=25 +ellps=WGS72 +units=m +no_defs +type=crs
+EPSG	32245	+proj=utm +zone=45 +ellps=WGS72 +units=m +no_defs +type=crs
+EPSG	32305	+proj=utm +zone=5 +south +ellps=WGS72 +units=m +no_defs +type=crs
+EPSG	32325	+proj=utm +zone=25 +south +ellps=WGS72 +units=m +no_defs +type=crs
+EPSG	32345	+proj=utm +zone=45 +south +ellps=WGS72 +units=m +no_defs +type=crs
+EPSG	32405	+proj=utm +zone=5 +ellps=WGS72 +units=m +no_defs +type=crs
+EPSG	32425	+proj=utm +zone=25 +ellps=WGS72 +units=m +no_defs +type=crs
+EPSG	32445	+proj=utm +zone=45 +ellps=WGS72 +units=m +no_defs +type=crs
+EPSG	32505	+proj=utm +zone=5 +south +ellps=WGS72 +units=m +no_defs +type=crs
+EPSG	32525	+proj=utm +zone=25 +south +ellps=WGS72 +units=m +no_defs +type=crs
+EPSG	32545	+proj=utm +zone=45 +south +ellps=WGS72 +units=m +no_defs +type=crs
+EPSG	32604	+proj=utm +zone=4 +datum=WGS84 +units=m +no_defs +type=crs
+EPSG	32624	+proj=utm +zone=24 +datum=WGS84 +units=m +no_defs +type=crs
 EPSG	32632	+proj=utm +zone=32 +datum=WGS84 +units=m +no_defs +type=crs
-EPSG	32633	+proj=utm +zone=33 +datum=WGS84 +units=m +no_defs +type=crs
-EPSG	32653	+proj=utm +zone=53 +datum=WGS84 +units=m +no_defs +type=crs
-EPSG	32707	+proj=utm +zone=7 +south +datum=WGS84 +units=m +no_defs +type=crs
-EPSG	32727	+proj=utm +zone=27 +south +datum=WGS84 +units=m +no_defs +type=crs
-EPSG	32747	+proj=utm +zone=47 +south +datum=WGS84 +units=m +no_defs +type=crs
+EPSG	32644	+proj=utm +zone=44 +datum=WGS84 +units=m +no_defs +type=crs
+EPSG	32666	+proj=tmerc +lat_0=0 +lon_0=-87 +k=0.9996 +x_0=500000.001016002 +y_0=0 +datum=WGS84 +units=us-ft +no_defs +type=crs
+EPSG	32718	+proj=utm +zone=18 +south +datum=WGS84 +units=m +no_defs +type=crs
+EPSG	32738	+proj=utm +zone=38 +south +datum=WGS84 +units=m +no_defs +type=crs
+EPSG	32758	+proj=utm +zone=58 +south +datum=WGS84 +units=m +no_defs +type=crs
 ESRI	26788	+proj=lcc +lat_0=44.7833333333333 +lon_0=-87 +lat_1=45.4833333333333 +lat_2=47.0833333333333 +x_0=609601.219202438 +y_0=0 +datum=NAD27 +units=us-ft +no_defs +type=crs
 ESRI	37240	+proj=longlat +a=6378249.145 +rf=293.465 +no_defs +type=crs
 ESRI	53012	+proj=eck4 +lon_0=0 +x_0=0 +y_0=0 +R=6371000 +units=m +no_defs +type=crs

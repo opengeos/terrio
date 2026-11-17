@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
 //! With the network on, a grid a PROJ string names as before PROJ 7 (`+nadgrids=conus`) counts as
-//! available and is fetched from the CDN by its current name (`us_noaa_conus.tif`), as PROJ 9.8.1
+//! available and is fetched from the CDN by its current name (`us_noaa_conus.tif`), as PROJ 9.9.0
 //! fetches `https://cdn.proj.org/us_noaa_conus.tif` for it (`PROJ_NETWORK=ON`, no grid installed).
 //! Its own test binary: the grid transport and network setting are process-wide.
 #![cfg(all(feature = "grid-transport", not(target_family = "wasm")))]

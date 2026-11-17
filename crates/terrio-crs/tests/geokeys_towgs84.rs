@@ -9,7 +9,7 @@ use terrio_crs::{SpatialRef, Transformer};
 /// ESRI's British_National_Grid with a datum shift of its own, which has no `AUTHORITY`.
 const ESRI_BNG: &str = r#"PROJCS["British_National_Grid",GEOGCS["GCS_OSGB_1936",DATUM["D_OSGB_1936",SPHEROID["Airy_1830",6377563.396,299.3249646],TOWGS84[375,-111,431,0,0,0,0]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",400000.0],PARAMETER["False_Northing",-100000.0],PARAMETER["Central_Meridian",-2.0],PARAMETER["Scale_Factor",0.9996012717],PARAMETER["Latitude_Of_Origin",49.0],UNIT["Meter",1.0]]"#;
 
-/// PROJ 9.8.1's ESRI WKT 1 of WGS 84 / UTM zone 33N (EPSG:32633).
+/// PROJ 9.9.0's ESRI WKT 1 of WGS 84 / UTM zone 33N (EPSG:32633).
 const UTM_33N: &str = r#"PROJCS["WGS_1984_UTM_Zone_33N",GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",500000.0],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",15.0],PARAMETER["Scale_Factor",0.9996],PARAMETER["Latitude_Of_Origin",0.0],UNIT["Meter",1.0]]"#;
 
 /// The WGS 84 longitude and latitude of (400000, 300000) in a CRS.
@@ -25,7 +25,7 @@ fn towgs84(keys: &terrio_crs::geokeys::GeoKeyValues) -> Vec<f64> {
 /// GDAL 3.10.3 (`gdal_create -a_srs` of the `.prj`) writes ESRI's BNG with `TOWGS84` as a
 /// user-defined projected CRS (ProjectedCSTypeGeoKey 32767) with GeogTOWGS84GeoKey 375, -111, 431,
 /// not as EPSG:27700. Read back, the keys place (400000, 300000) where the WKT does, and where PROJ
-/// 9.8.1 places the WKT: (-2.0014439944404914, 52.59776558325506) (`Transformer.from_crs(
+/// 9.9.0 places the WKT: (-2.0014439944404914, 52.59776558325506) (`Transformer.from_crs(
 /// CRS.from_wkt(wkt), "EPSG:4326", always_xy=True)`), not where EPSG:27700 does
 /// (-2.0014331155108924, 52.59779243083379), 3.1 m away.
 #[test]

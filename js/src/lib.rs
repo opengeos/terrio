@@ -1237,7 +1237,7 @@ pub fn crs_to_projjson(crs: &str) -> Result<String, JsError> {
     SpatialRef::parse_literal(crs).and_then(|s| s.to_projjson()).map_err(js_err)
 }
 
-/// The PROJ string of a CRS as PROJ 9.8.1 writes it (`projinfo -o PROJ`), `undefined` for a CRS
+/// The PROJ string of a CRS as PROJ 9.9.0 writes it (`projinfo -o PROJ`), `undefined` for a CRS
 /// PROJ has none for (an engineering CRS). Like PROJ's, it leaves out the datum transformation of
 /// an EPSG CRS: keep the code or WKT to keep the CRS.
 #[wasm_bindgen(js_name = crsToProj4)]
@@ -1246,7 +1246,7 @@ pub fn crs_to_proj4(crs: &str) -> Result<Option<String>, JsError> {
 }
 
 /// The WKT 1 of a CRS without GDAL's `EXTENSION["PROJ4", ...]`, for formats whose readers ignore
-/// it (a `.prj` file), as PROJ 9.8.1 exports `WKT1_GDAL`; `undefined` where WKT 1 needs the
+/// it (a `.prj` file), as PROJ 9.9.0 exports `WKT1_GDAL`; `undefined` where WKT 1 needs the
 /// extension (a datum grid) or PROJ writes no WKT 1 (a geographic 3D CRS).
 #[wasm_bindgen(js_name = crsToWkt1Strict)]
 pub fn crs_to_wkt1_strict(crs: &str) -> Result<Option<String>, JsError> {

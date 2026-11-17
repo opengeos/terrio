@@ -1,4 +1,4 @@
-"""Generate crates/terrio-crs/tests/data/grads_and_prime_meridians.json: where PROJ 9.8.1 places
+"""Generate crates/terrio-crs/tests/data/grads_and_prime_meridians.json: where PROJ 9.9.0 places
 points of CRSs whose angular unit is the grad, and of CRSs whose prime meridian PROJ reads otherwise
 than as written.
 
@@ -397,7 +397,7 @@ PM_CASES = ["EPSG:4807"] + [
 
 
 def main():
-    assert pyproj.proj_version_str == "9.8.1", pyproj.proj_version_str
+    assert pyproj.proj_version_str == "9.9.0", pyproj.proj_version_str
     pyproj.network.set_network_enabled(False)
     # No grids, so the values don't depend on what is installed.
     for d in pyproj.datadir.get_data_dir().split(os.pathsep) + [

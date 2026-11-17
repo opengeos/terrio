@@ -1,9 +1,9 @@
-//! EPSG's null transformations to WGS 84 are reported by their names, as PROJ 9.8.1 reports
+//! EPSG's null transformations to WGS 84 are reported by their names, as PROJ 9.9.0 reports
 //! them, not as ballparks: they are transformations, with an accuracy, that move no point.
 
 use terrio_crs::{SpatialRef, Transformer};
 
-/// PROJ 9.8.1 (pyproj 3.8.0, network off): `Transformer.from_crs(CRS, "EPSG:4326")` at a point of
+/// PROJ 9.9.0 (pyproj 3.8.0, network off): `Transformer.from_crs(CRS, "EPSG:4326")` at a point of
 /// each CRS uses EPSG's null transformation ("ETRS89 to WGS 84 (1)", "NZGD2000 to WGS 84 (1)",
 /// "REGVEN to WGS 84 (1)", and "ETRS89-SWE [SWEREF 99] to WGS 84 (1)", as PROJ 9.9.0 names it
 /// since EPSG v13.102), and its inverse the other way. RustGIS

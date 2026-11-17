@@ -612,16 +612,16 @@ test("CRS transforms", () => {
   assert.equal(crs.epsg, 32633);
   assert.equal(JSON.parse(terrio.crsToProjjson("EPSG:32633")).conversion.name, "UTM zone 33N");
   assert.throws(() => terrio.crsToProjjson("+proj=longlat +lon_0=10 +datum=WGS84"), /lon_0/);
-  // PROJ 9.8.1's projinfo -o PROJ.
+  // PROJ 9.9.0's projinfo -o PROJ.
   assert.equal(terrio.crsToProj4("EPSG:32633"), "+proj=utm +zone=33 +datum=WGS84 +units=m +no_defs +type=crs");
-  // PROJ 9.8.1's WKT1_GDAL with GDAL's axes; none where it needs the PROJ4 extension, or PROJ
+  // PROJ 9.9.0's WKT1_GDAL with GDAL's axes; none where it needs the PROJ4 extension, or PROJ
   // writes no WKT 1 (geographic 3D).
   assert.match(terrio.crsToWkt1Strict("EPSG:32633"), /^PROJCS\["WGS 84 \/ UTM zone 33N",.*AUTHORITY\["EPSG","32633"\]\]$/);
   assert.equal(terrio.crsToWkt1Strict("+proj=longlat +ellps=clrk66 +nadgrids=conus +no_defs"), undefined);
   assert.equal(terrio.crsToWkt1Strict("EPSG:4979"), undefined);
   assert.match(crs.name, /UTM zone 33N/);
   assert.equal(crs.geographic, false);
-  // PROJ 9.8.1 resolves the authority version separately from the EPSG code.
+  // PROJ 9.9.0 resolves the authority version separately from the EPSG code.
   for (const reference of [
     "urn:ogc:def:crs:EPSG:6.6:4326",
     "urn:ogc:def:crs:EPSG:9.9:4326",
@@ -3313,7 +3313,7 @@ test("HEALPix and rHEALPix match PROJ", () => {
       }
     }
     // On the edge of the image the last bit moves the point in or out of it (the platform's
-    // libm, and PROJ 9.8.1's US survey foot in these methods' own +units, 0.304800609601219,
+    // libm, and PROJ 9.9.0's US survey foot in these methods' own +units, 0.304800609601219,
     // where terrio has 1200/3937): there either is right, and a point terrio unprojects must be
     // the projected one. As in crates/terrio-crs/tests/healpix.rs.
     const edge = new Set(c.edge_samples);
