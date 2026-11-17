@@ -292,7 +292,10 @@ class WarpedVRT(DatasetReader):
         if (
             self.src_crs is None
             and not rpc_georef
-            and self.src_transform.almost_equals(Affine.identity())
+            and (
+                self.src_transform.almost_equals(Affine.identity())
+                or src_dataset.transform.almost_equals(Affine.identity())
+            )
         ):
             raise CRSError("A CRS is required")
 

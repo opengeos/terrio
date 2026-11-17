@@ -454,7 +454,8 @@ def calculate_default_transform(
     """The output grid GDAL suggests for reprojecting a raster.
 
     Args:
-        src_crs: The source CRS.
+        src_crs: The source CRS. `None` with georeferenced bounds: the bounds are in the target
+            CRS, and the source is not reprojected.
         dst_crs: The target CRS.
         width: The source width.
         height: The source height.
@@ -503,8 +504,9 @@ def calculate_default_transform(
         raise ValueError("Resolution cannot be used with dst_width and dst_height.")
     t = from_bounds(left, bottom, right, top, width, height)
     gcp_kw = _gcp_args(gcps, kwargs) if gcps is not None else {}
-    if src_crs is None and gcps is None:
+    if src_crs is None and gcps is None and rpcs is None and not t.almost_equals(Affine.identity()):
         # GDAL does not reproject a source with no CRS: its geotransform is in the target CRS.
+        # Bounds of pixels and lines (no geotransform) place nothing, and a CRS stays required.
         src_crs = dst_crs
     if rpcs is not None:
         rpc_kw = _rpc_args(rpcs, kwargs)
@@ -710,7 +712,8 @@ def reproject(
         rpcs: Rational polynomial coefficients georeferencing the source (an `RPC` or GDAL's RPC
             items; a dataset source is warped by its own RPCs), warped with GDAL's RPC
             transformer, in WGS 84 (see `**kwargs`).
-        src_crs: The source CRS (arrays only; datasets give theirs).
+        src_crs: The source CRS (arrays only; datasets give theirs, or with a geotransform and
+            no CRS are not reprojected: the geotransform is in the destination CRS).
         src_nodata: The source nodata value (by default, the dataset's).
         dst_transform: The destination's transform; computed when None.
         dst_crs: The destination CRS (by default, the source's).

@@ -44,6 +44,10 @@ def test_warped_vrt_reads_the_source_pixels(source):
         assert vrt.src_crs is None
         assert vrt.transform.almost_equals(TRANSFORM)
         assert (vrt.read(1) == DATA).all()
+    # rasterio 1.5.0 (GDAL 3.12.1): the source grid at half the size.
+    with WarpedVRT(source, crs="EPSG:4326", width=32, height=32) as vrt:
+        assert vrt.transform.almost_equals(from_origin(10, 46, 1 / 32, 1 / 32))
+        assert vrt.read(1).shape == (32, 32)
 
 
 def test_reproject_from_a_band_copies_the_pixels(source):
@@ -94,6 +98,9 @@ def test_a_dataset_with_no_geotransform_still_requires_a_crs(tmp_path):
         for size in ({}, {"width": 32, "height": 32}):
             with pytest.raises(CRSError, match="A CRS is required"):
                 WarpedVRT(src, crs="EPSG:4326", **size)
+        # Its bounds are pixels and lines.
+        with pytest.raises(CRSError, match="A CRS is required"):
+            calculate_default_transform(src.crs, "EPSG:4326", src.width, src.height, *src.bounds)
 
 
 def test_default_transform_from_gcps_still_requires_a_crs():
