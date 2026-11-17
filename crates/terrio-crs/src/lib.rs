@@ -336,7 +336,7 @@ pub enum AxisOrder {
 
 /// A coordinate reference system, known by an EPSG (or ESRI) code, a WKT definition, a PROJ
 /// string or a combination of them.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize)]
 pub struct SpatialRef {
     /// The EPSG code, when the CRS has (or was identified as having) one.
     pub epsg: Option<u32>,

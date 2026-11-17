@@ -24,7 +24,7 @@ use super::math::*;
 use super::params::{Params, parse_dms, parse_dms_prefix};
 use super::projections::{self, Proj, Setup};
 use super::rotation::{ObTran, Rotation};
-use super::{SpatialRef, epsg, route, wkt1, wkt2};
+use super::{SpatialRef, epsg, grid, route, wkt1, wkt2};
 use crate::{Error, Result};
 use std::sync::Arc;
 
@@ -419,10 +419,77 @@ impl Proj for WbProj {
     }
 }
 
+/// The definitions built, by CRS, while the grids found stay the same ([`grid::epoch`]), with the
+/// bytes they count against the memo's bound.
+#[derive(Default)]
+struct Memo {
+    epoch: (u64, u64),
+    defs: std::collections::HashMap<SpatialRef, Arc<Def>>,
+    bytes: usize,
+}
+
+fn memo() -> &'static std::sync::Mutex<Memo> {
+    crate::host::before_lock();
+    static M: std::sync::OnceLock<std::sync::Mutex<Memo>> = std::sync::OnceLock::new();
+    M.get_or_init(Default::default)
+}
+
+/// Holds the memo of definitions across a fork, for [`crate::host::hold_for_fork`].
+#[cfg(all(unix, not(target_family = "wasm")))]
+pub(crate) fn hold_for_fork(held: &mut Vec<Box<dyn std::any::Any>>) {
+    held.push(Box::new(memo().lock().unwrap_or_else(std::sync::PoisonError::into_inner)));
+}
+
 impl Def {
     /// The definition of a CRS: from the EPSG (or ESRI) table when it has a code there, else
-    /// from its PROJ string or WKT.
+    /// from its PROJ string or WKT. Built once per CRS ([`Def::shared`]).
     pub fn new(s: &SpatialRef) -> Result<Self> {
+        Self::shared(s).map(|d| (*d).clone())
+    }
+
+    /// The definition of a CRS, built once and kept, as about 25 accessors of a `SpatialRef`
+    /// each need it: by the whole `SpatialRef`, while the grids found stay the same (until
+    /// [`crate::reset_grid_cache`], the settings that call it, or [`crate::register_grid`]), as
+    /// the transformations a definition holds depend on them. Up to 1 MiB, counting the WKT and
+    /// PROJ text and the definition's own size, not the transformations and projection it shares
+    /// with others: then all is forgotten, and the memo fills again. A larger one is not kept. Not
+    /// kept under `grid::without_grids`, where no grid counts as found, nor a failure. A change of
+    /// `TERRIO_NETWORK` or `PROJ_NETWORK` is seen at the next reset, as by the grids' availability
+    /// cache.
+    pub(crate) fn shared(s: &SpatialRef) -> Result<Arc<Self>> {
+        if grid::without_grids_active() {
+            return Self::build(s).map(Arc::new);
+        }
+        let epoch = grid::epoch();
+        {
+            let m = memo().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if m.epoch == epoch
+                && let Some(d) = m.defs.get(s)
+            {
+                return Ok(d.clone());
+            }
+        }
+        // Built without the lock: a definition may need others (a compound CRS's horizontal one).
+        let d = Arc::new(Self::build(s)?);
+        let mut m = memo().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Not kept when the grids changed meanwhile: it may hold transformations they no longer give.
+        if epoch == grid::epoch() {
+            let size = s.wkt.as_ref().map_or(0, String::len) + s.proj4.as_ref().map_or(0, String::len) + std::mem::size_of::<Self>();
+            if size > 1 << 20 {
+                return Ok(d);
+            }
+            if m.epoch != epoch || m.bytes + size > 1 << 20 {
+                *m = Memo { epoch, ..Default::default() };
+            }
+            if m.defs.insert(s.clone(), d.clone()).is_none() {
+                m.bytes += size;
+            }
+        }
+        Ok(d)
+    }
+
+    /// The definition of a CRS, built anew (see [`Def::new`]).
+    fn build(s: &SpatialRef) -> Result<Self> {
         // A retained engineering definition must not become an Earth CRS just because
         // its root carries a registered identifier. Keep explicit PROJ extensions handled
         // by the WKT path, before considering the authority registry.
@@ -2318,5 +2385,42 @@ mod resolution_tests {
         assert_eq!(resolution(&wgs84_3d, Some(4979)).map(|r| r.0), Some(true));
         let renamed_3d = wgs84_3d.replacen(r#"GEOGCRS["WGS 84""#, r#"GEOGCRS["Local""#, 1);
         assert_eq!(resolution(&renamed_3d, Some(4979)), Some((false, None, false)));
+    }
+}
+
+#[cfg(test)]
+mod memo_tests {
+    use super::*;
+
+    /// A CRS's definition is built once and shared, until the grids found may change: a reset of
+    /// the grid caches or a grid registered.
+    #[test]
+    fn a_definition_is_kept_until_the_grids_change() {
+        let s = SpatialRef { epsg: Some(4267), ..Default::default() };
+        // Kept within an epoch: tried again when another test changes the grids meanwhile.
+        assert!((0..100).any(|_| {
+            let epoch = grid::epoch();
+            let (a, b) = (Def::shared(&s).unwrap(), Def::shared(&s).unwrap());
+            Arc::ptr_eq(&a, &b) && epoch == grid::epoch()
+        }));
+        let first = Def::shared(&s).unwrap();
+        crate::reset_grid_cache();
+        let after_reset = Def::shared(&s).unwrap();
+        assert!(!Arc::ptr_eq(&first, &after_reset));
+        crate::register_grid("terrio-memo-test-unused.gsb", vec![0; 16]);
+        assert!(!Arc::ptr_eq(&after_reset, &Def::shared(&s).unwrap()));
+        // Not kept while no grid counts as found.
+        let kept = Def::shared(&s).unwrap();
+        grid::without_grids(|| assert!(!Arc::ptr_eq(&kept, &Def::shared(&s).unwrap())));
+    }
+
+    /// The memo's lock is one `host::hold_for_fork` takes across a fork.
+    #[cfg(all(unix, not(target_family = "wasm")))]
+    #[test]
+    fn hold_for_fork_takes_the_memo_lock() {
+        crate::host::assert_held_for_fork("definitions", |wait| {
+            let _g = memo().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            wait();
+        });
     }
 }

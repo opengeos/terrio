@@ -817,6 +817,16 @@ fn cache_generation() -> u64 {
     CACHE_GENERATION.load(Ordering::SeqCst)
 }
 
+/// Grids registered in memory so far, for [`epoch`].
+static REGISTRATIONS: AtomicU64 = AtomicU64::new(0);
+
+/// Changes when the grids found may change: a reset of the caches ([`reset_grid_cache`], also by
+/// the settings), or a grid registered ([`register_grid`]). What a CRS's definition holds is kept
+/// for one epoch (`Def::shared`), as the transformations it holds depend on the grids found.
+pub(crate) fn epoch() -> (u64, u64) {
+    (cache_generation(), REGISTRATIONS.load(Ordering::SeqCst))
+}
+
 /// Files read, by name (`None` when not found or not readable) and cache generation.
 type FileCache = Mutex<HashMap<String, (u64, Option<Arc<GridFile>>, Vec<String>)>>;
 fn files() -> &'static FileCache {
@@ -851,6 +861,7 @@ pub fn register_grid(name: &str, bytes: Vec<u8>) {
     }
     // A download of it that failed before no longer counts: the grid is there now.
     fetch_failures().lock().unwrap_or_else(PoisonError::into_inner).remove(name);
+    REGISTRATIONS.fetch_add(1, Ordering::SeqCst);
 }
 
 /// Old names of PROJ-data grids (before PROJ 7), by current name, from the EPSG table.
