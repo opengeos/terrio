@@ -62,6 +62,31 @@ impl ZonalCube {
         shape.push(self.statistics.len());
         shape
     }
+
+    /// Writes the cube to the new Zarr v3 store `path`, readable by xarray and CF tools:
+    /// - each variable over `(geometry, dims..., statistic)`, NaN where there is no value;
+    /// - the zones as CF-1.8 polygon geometries (`geometry_container`; exterior rings
+    ///   anticlockwise, holes clockwise) with a CF grid mapping (`spatial_ref`) of their CRS, and
+    ///   their fields and FIDs (`feature_id`) as coordinates along `geometry`;
+    /// - `time` labels that all are ISO 8601 dates or date-times as CF times, other labels and
+    ///   the statistics' names as strings;
+    /// - the zones' CRS and extent as `proj:` and `spatial:` group attributes.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidArgument`] when `path` exists, or a zone has no geometry, an empty one or
+    /// one that is not a polygon (CF cannot store it), naming it; I/O errors.
+    pub fn write_zarr(&self, path: &str) -> Result<()> {
+        #[cfg(feature = "zarr")]
+        {
+            crate::drivers::zarr::write_cube(self, std::path::Path::new(path))
+        }
+        #[cfg(not(feature = "zarr"))]
+        {
+            let _ = path;
+            Err(Error::disabled("zarr"))
+        }
+    }
 }
 
 /// The zonal statistics of `sources` over `zones`, as [`zonal_stats`](super::zonal::zonal_stats)

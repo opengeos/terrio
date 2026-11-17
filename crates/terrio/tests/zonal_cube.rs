@@ -132,3 +132,167 @@ fn weighted_and_output_options_are_refused() {
     let rounded = ZonalOptions { decimal_places: Some(2), ..options() };
     assert!(zonal_cube(&zones(), &mut sources, &rounded, "x").is_err());
 }
+
+mod zarr {
+    use terrio::crs::SpatialRef;
+    use terrio::ops::zonal::Statistic;
+    use terrio::ops::zonal_cube::{CubeDim, CubeValues, CubeVariable, ZonalCube};
+    use terrio::raster::RasterData;
+    use terrio::vector::Coord;
+    use terrio::{Feature, FieldDef, FieldType, FieldValue, Geometry, Layer};
+
+    fn ring(points: &[(f64, f64)]) -> Vec<Coord> {
+        points.iter().map(|&(x, y)| Coord::xy(x, y)).collect()
+    }
+
+    /// A clockwise square with an anticlockwise hole, and a two-part multipolygon, in EPSG:32631,
+    /// with a text and an integer attribute (one null).
+    fn zones() -> Layer {
+        let mut zones = Layer::new("fields");
+        zones.schema.add_field(FieldDef::new("name", FieldType::Text));
+        zones.schema.add_field(FieldDef::new("code", FieldType::Integer));
+        let square = ring(&[(0.0, 0.0), (0.0, 10.0), (10.0, 10.0), (10.0, 0.0), (0.0, 0.0)]); // clockwise
+        let hole = ring(&[(2.0, 2.0), (4.0, 2.0), (4.0, 4.0), (2.0, 4.0), (2.0, 2.0)]); // anticlockwise
+        let a = ring(&[(20.0, 0.0), (30.0, 0.0), (30.0, 10.0), (20.0, 0.0)]);
+        let b = ring(&[(40.0, 0.0), (50.0, 0.0), (50.0, 10.0), (40.0, 0.0)]);
+        let features = [
+            (Geometry::polygon(square, vec![hole]), FieldValue::Text("north".into()), FieldValue::Integer(7)),
+            (Geometry::multi_polygon(vec![(a, vec![]), (b, vec![])]), FieldValue::Text("south".into()), FieldValue::Null),
+        ];
+        for (fid, (geometry, name, code)) in features.into_iter().enumerate() {
+            zones.features.push(Feature { fid: 10 + fid as u64, geometry: Some(geometry), attributes: vec![name, code] });
+        }
+        SpatialRef::parse("EPSG:32631").unwrap().apply_to_layer(&mut zones);
+        zones
+    }
+
+    fn cube(zones: Layer) -> ZonalCube {
+        let dims = vec![
+            CubeDim { name: "time".into(), labels: vec!["2024-07-01".into(), "2024-07-11".into()] },
+            CubeDim { name: "band".into(), labels: vec!["B04".into(), "B08".into()] },
+        ];
+        let values: Vec<f64> = (0..2 * 2 * 2 * 2).map(|v| v as f64).collect();
+        let variables = vec![CubeVariable { name: "ndvi".into(), dims, values: CubeValues::F64(values) }];
+        ZonalCube { zones, statistics: vec![Statistic::Mean, Statistic::Count], variables }
+    }
+
+    /// The values as f64 (NaN-aware comparisons are done on their bits) and the type's name.
+    fn nums(data: RasterData) -> (&'static str, Vec<f64>) {
+        match data {
+            RasterData::I32(v) => ("i32", v.into_iter().map(f64::from).collect()),
+            RasterData::I64(v) => ("i64", v.into_iter().map(|x| x as f64).collect()),
+            RasterData::F32(v) => ("f32", v.into_iter().map(f64::from).collect()),
+            RasterData::F64(v) => ("f64", v),
+            other => panic!("unexpected type {other:?}"),
+        }
+    }
+
+    fn bits(values: &[f64]) -> Vec<u64> {
+        values.iter().map(|v| if v.is_nan() { f64::NAN.to_bits() } else { v.to_bits() }).collect()
+    }
+
+    fn json(path: &std::path::Path) -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(path.join("zarr.json")).unwrap()).unwrap()
+    }
+
+    fn read(store: &str, array: &str) -> (Vec<String>, RasterData) {
+        let ds = terrio::multidim::open(store).unwrap();
+        let a = ds.array(array).unwrap();
+        let dims = a.info.dimensions.iter().map(|d| d.name.clone()).collect();
+        (dims, a.read().unwrap().data().unwrap())
+    }
+
+    /// Strings of a `vlen-utf8` array written without compression.
+    fn strings(store: &std::path::Path, array: &str) -> Vec<String> {
+        let bytes = std::fs::read(store.join(array).join("c/0")).unwrap();
+        let count = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
+        let mut at = 4;
+        (0..count)
+            .map(|_| {
+                let n = u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
+                at += 4 + n;
+                String::from_utf8(bytes[at - n..at].to_vec()).unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn writes_a_cf_cube() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.zarr");
+        let store = path.to_str().unwrap();
+        cube(zones()).write_zarr(store).unwrap();
+
+        let group = json(&path);
+        let attrs = &group["attributes"];
+        assert_eq!(attrs["Conventions"], "CF-1.8");
+        assert_eq!(attrs["proj:code"], "EPSG:32631");
+        assert_eq!(attrs["spatial:bbox"], serde_json::json!([0.0, 0.0, 50.0, 10.0]));
+        assert!(!group.to_string().contains("vector"), "{group}");
+        let container = json(&path.join("geometry_container"));
+        assert_eq!(container["attributes"]["geometry_type"], "polygon");
+        assert_eq!(container["attributes"]["node_coordinates"], "geometry_x geometry_y");
+        assert!(json(&path.join("spatial_ref"))["attributes"]["crs_wkt"].as_str().unwrap().contains("31N"));
+
+        let (dims, values) = read(store, "ndvi");
+        assert_eq!(dims, ["geometry", "time", "band", "statistic"]);
+        assert_eq!(nums(values), ("f64", (0..16).map(|v| v as f64).collect()));
+        let var = json(&path.join("ndvi"));
+        assert_eq!(var["attributes"]["geometry"], "geometry_container");
+        assert_eq!(var["attributes"]["grid_mapping"], "spatial_ref");
+
+        assert_eq!(nums(read(store, "geometry_node_count").1), ("i32", vec![10.0, 8.0]));
+        assert_eq!(nums(read(store, "geometry_part_node_count").1), ("i32", vec![5.0, 5.0, 4.0, 4.0]));
+        assert_eq!(nums(read(store, "geometry_interior_ring").1), ("i32", vec![0.0, 1.0, 0.0, 0.0]));
+        assert_eq!(nums(read(store, "feature_id").1), ("i64", vec![10.0, 11.0]));
+        let (kind, code) = nums(read(store, "code").1);
+        assert_eq!((kind, bits(&code)), ("f64", bits(&[7.0, f64::NAN])), "an integer field with nulls");
+        assert_eq!(strings(&path, "name"), ["north", "south"]);
+        assert_eq!(strings(&path, "statistic"), ["mean", "count"]);
+        assert_eq!(strings(&path, "band"), ["B04", "B08"]);
+        // 2024-07-01 and 2024-07-11 as CF times
+        let time = json(&path.join("time"));
+        assert_eq!(time["attributes"]["units"], "seconds since 1970-01-01T00:00:00");
+        assert_eq!(nums(read(store, "time").1), ("i64", vec![1_719_792_000.0, 1_720_656_000.0]));
+    }
+
+    #[test]
+    fn exterior_rings_anticlockwise_holes_clockwise() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("c.zarr");
+        cube(zones()).write_zarr(store.to_str().unwrap()).unwrap();
+        let (_, x) = nums(read(store.to_str().unwrap(), "geometry_x").1);
+        let (_, y) = nums(read(store.to_str().unwrap(), "geometry_y").1);
+        let area = |from: usize, to: usize| (from..to - 1).map(|i| x[i] * y[i + 1] - x[i + 1] * y[i]).sum::<f64>() / 2.0;
+        assert!(area(0, 5) > 0.0, "exterior anticlockwise");
+        assert!(area(5, 10) < 0.0, "hole clockwise");
+        assert!(area(10, 14) > 0.0 && area(14, 18) > 0.0, "parts anticlockwise");
+    }
+
+    #[test]
+    fn labels_that_are_not_dates_stay_strings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.zarr");
+        let mut cube = cube(zones());
+        cube.variables[0].dims[0].labels = vec!["spring".into(), "summer".into()];
+        cube.write_zarr(path.to_str().unwrap()).unwrap();
+        assert_eq!(strings(&path, "time"), ["spring", "summer"]);
+    }
+
+    #[test]
+    fn null_geometry_is_an_error() {
+        let mut zones = zones();
+        zones.features[1].geometry = None;
+        let dir = tempfile::tempdir().unwrap();
+        let err = cube(zones).write_zarr(dir.path().join("c.zarr").to_str().unwrap()).unwrap_err().to_string();
+        assert!(err.contains("feature 1") && err.contains("11"), "{err}");
+    }
+
+    #[test]
+    fn existing_output_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("c.zarr");
+        std::fs::create_dir(&store).unwrap();
+        assert!(cube(zones()).write_zarr(store.to_str().unwrap()).is_err());
+    }
+}
