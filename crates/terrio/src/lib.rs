@@ -365,6 +365,15 @@ pub use pixel::{complex_components_from_iter, raster_from_data};
 /// The vector types: layers of features with geometries and attributes.
 pub use wbvector::{Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer};
 
+/// A feature's ID as the signed 64-bit integer of its source.
+///
+/// [`Feature::fid`] is unsigned, and a SQLite rowid is signed: a GeoPackage read keeps the
+/// rowid's bits, so a row of ID `-1` has a `fid` of `u64::MAX` and `signed_fid` gives `-1` back.
+/// SQL's `FID`, the Arrow export and GeoPackage edits read the ID this way.
+pub fn signed_fid(feature: &Feature) -> i64 {
+    feature.fid as i64
+}
+
 /// The system allocator, ignoring the release of null pointers.
 ///
 /// OpenJPEG's Rust port, terrio's JPEG 2000 codec (the `jp2` feature), releases code-block

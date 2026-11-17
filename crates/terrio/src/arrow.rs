@@ -638,7 +638,7 @@ impl ArrowEncoder {
         let schema = &self.schema;
         let mut columns: Vec<ArrayRef> = Vec::with_capacity(schema.fields().len());
         if self.options.fid_column.is_some() {
-            columns.push(Arc::new(chunk.iter().map(|f| Some(f.fid as i64)).collect::<Int64Array>()));
+            columns.push(Arc::new(chunk.iter().map(|f| Some(crate::signed_fid(f))).collect::<Int64Array>()));
         }
         columns.extend(self.kinds.iter().enumerate().map(|(i, k)| k.build(chunk, i)));
         columns.push(match self.native {
