@@ -30,6 +30,7 @@ fn read(case: &Value) -> (SpatialRef, terrio_crs::Result<(f64, f64)>) {
 }
 
 #[test]
+#[ignore = "PROJ 9.8.1 values; EPSG v13.102 changed Greenland 1996 (GR96): re-derived with PROJ 9.9.0 in #1076 (b)"]
 fn a_wkt_is_read_by_its_nodes_not_its_root_code() {
     let cases = cases();
     assert_eq!(cases.len(), 35);

@@ -62,6 +62,7 @@ fn place(case: &Value) -> ((f64, f64), String) {
 }
 
 #[test]
+#[ignore = "PROJ 9.8.1 values; EPSG v13.102 added Amersfoort to ETRS89-NLD [AGRS2010] (8): re-derived with PROJ 9.9.0 in #1076 (b)"]
 fn datums_known_by_id_or_esri_name_are_shifted_as_proj_does() {
     offline();
     let data = data();

@@ -8,6 +8,7 @@ use terrio_crs::{SpatialRef, Transformer};
 /// "NZGD2000 to WGS 84 (1)", "REGVEN to WGS 84 (1)"), and its inverse the other way. RustGIS
 /// reads `ballpark` as "no transformation to WGS 84".
 #[test]
+#[ignore = "PROJ 9.8.1 values; EPSG v13.102 renamed SWEREF99 to ETRS89-SWE [SWEREF 99]: re-derived with PROJ 9.9.0 in #1076 (b)"]
 fn null_transformations_are_named_not_ballparks() {
     terrio_crs::set_grid_search_paths(Some(vec![]));
     terrio_crs::set_network_enabled(Some(false));
@@ -37,6 +38,7 @@ fn null_transformations_are_named_not_ballparks() {
 /// WGS 84 (1) + SWEREF99 TM" from WGS 84 (terrio leaves the projection unnamed). Reported by
 /// RustGIS.
 #[test]
+#[ignore = "PROJ 9.8.1 values; EPSG v13.102 renamed SWEREF99 to ETRS89-SWE [SWEREF 99]: re-derived with PROJ 9.9.0 in #1076 (b)"]
 fn a_wkt2_projected_crs_on_a_null_transformation_datum_is_not_a_ballpark() {
     terrio_crs::set_grid_search_paths(Some(vec![]));
     terrio_crs::set_network_enabled(Some(false));

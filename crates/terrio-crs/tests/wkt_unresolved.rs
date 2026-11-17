@@ -79,6 +79,7 @@ fn compute_offsets() -> Vec<(Value, f64, f64)> {
 }
 
 #[test]
+#[ignore = "PROJ 9.8.1 values; EPSG v13.102 changed EPSG:5514: re-derived with PROJ 9.9.0 in #1076 (b)"]
 fn wkts_proj_does_not_resolve_are_placed_as_proj_does() {
     let all = offsets();
     assert!(all.len() > 1000, "{} cases", all.len());

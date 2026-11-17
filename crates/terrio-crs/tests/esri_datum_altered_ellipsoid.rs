@@ -157,6 +157,7 @@ fn an_auxiliary_sphere_on_an_altered_datum_keeps_its_transformation() {
 /// on International 1924). On the datum's own ellipsoid the point is kept. `Transformer.from_crs(
 /// CRS(wkt), "EPSG:4326", always_xy=True)`, pyproj 3.8.0, network off. Reported by RustGIS.
 #[test]
+#[ignore = "PROJ 9.8.1 values; EPSG v13.102 renamed RDN2008 to ETRS89-ITA [RDN2008]: re-derived with PROJ 9.9.0 in #1076 (b)"]
 fn a_null_transformation_on_another_ellipsoid_is_applied_geocentrically() {
     terrio_crs::set_grid_search_paths(Some(vec![]));
     terrio_crs::set_network_enabled(Some(false));
@@ -191,6 +192,7 @@ fn a_null_transformation_on_another_ellipsoid_is_applied_geocentrically() {
 /// the NAD83(CSRS)v6 case as a ballpark (its first step), terrio by the registered operation
 /// alone: not compared (opengeos/terrio#1012 item 56).
 #[test]
+#[ignore = "PROJ 9.8.1 values; EPSG v13.102 changed Greenland 1996: re-derived with PROJ 9.9.0 in #1076 (b)"]
 fn null_transformations_on_another_ellipsoid_stop_where_proj_stops() {
     terrio_crs::set_grid_search_paths(Some(vec![]));
     terrio_crs::set_network_enabled(Some(false));

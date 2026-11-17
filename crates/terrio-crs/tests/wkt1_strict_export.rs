@@ -233,6 +233,7 @@ fn check(row: &Row, s: &SpatialRef) -> Option<String> {
 }
 
 #[test]
+#[ignore = "PROJ 9.8.1 values; EPSG v13.102 renamed datums and CRSs (ETRS89 realizations): re-derived with PROJ 9.9.0 in #1076 (b)"]
 fn strict_wkt1_matches_proj() {
     let rows = rows();
     let mut read = 0;

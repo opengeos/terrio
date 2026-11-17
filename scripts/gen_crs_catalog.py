@@ -7,8 +7,8 @@ Writes ``crates/terrio-crs/data/crs_catalog.tsv.zst``, a zstd-compressed text ta
 lines:
 
 - ``#`` comments, the first giving the PROJ and GDAL versions, and ``#<TAB>authority<TAB>version<TAB>date``
-  lines with the version of each registry in PROJ's database (``EPSG``, ``v12.029``,
-  ``2025-10-02``).
+  lines with the version of each registry in PROJ's database (``EPSG``, ``v13.102``,
+  ``2026-08-27``).
 - ``U<TAB>id<TAB>west,south,east,north<TAB>name``: an area of use, with its bounding box in
   degrees (empty when PROJ gives none).
 - ``M<TAB>id<TAB>name``: a projection method (``Albers Equal Area``).

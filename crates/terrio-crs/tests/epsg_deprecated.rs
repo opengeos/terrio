@@ -39,6 +39,7 @@ const PENDING: &[u32] = &[4359, 4360, 4382, 4968];
 
 /// Every deprecated code PROJ transforms is placed as PROJ places it, by its own definition.
 #[test]
+#[ignore = "PROJ 9.8.1 values; EPSG v13.102 changed EPSG:4347 and EPSG:4348: re-derived with PROJ 9.9.0 in #1076 (b)"]
 fn deprecated_codes_are_placed_by_their_own_definition_as_proj_does() {
     offline();
     let wgs84 = SpatialRef::from_epsg(4326).unwrap();
@@ -163,6 +164,7 @@ fn ntm_zone_5_keeps_its_own_false_origin() {
 /// (Keys giving such a code, which terrio does not write, read as GDAL reads them: see
 /// `geokeys_of_deprecated_codes_read_as_gdal_reads_them`.)
 #[test]
+#[ignore = "PROJ 9.8.1 values; EPSG v13.102 changed EPSG:4347: re-derived with PROJ 9.9.0 in #1076 (b)"]
 fn geokeys_of_deprecated_codes_read_as_their_own_definition() {
     offline();
     let coded = |keys: &terrio_crs::geokeys::GeoKeyValues, code: u32| {

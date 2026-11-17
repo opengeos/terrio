@@ -18,7 +18,7 @@ let (x, y) = transformer.transform(-100.0, 40.0)?;
 # Ok::<(), terrio_crs::Error>(())
 ```
 
-`list_crs` lists the EPSG (v12.029), ESRI and IAU_2015 CRSs the crate resolves, with their
+`list_crs` lists the EPSG (v13.102), ESRI and IAU_2015 CRSs the crate resolves, with their
 names, kinds, deprecation, areas of use and projection methods, for searchable CRS pickers:
 
 ```rust
