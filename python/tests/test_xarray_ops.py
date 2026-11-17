@@ -272,3 +272,96 @@ def test_rasterize_on_a_single_row(files):
         files["zones"], like=files["dem"], attribute="id", init=-1, ot="Int16"
     ).read(1)[55:56]
     np.testing.assert_array_equal(burnt.values, expected)
+
+
+@pytest.fixture
+def cube(files):
+    dem = txr.open_rasterio(files["dem"], masked=True).squeeze("band", drop=True)
+    t = xr.DataArray(np.array(["2024-01-01", "2024-02-01", "2024-03-01"], "M8[ns]"), dims="time")
+    return xr.concat([dem, dem * 2, dem + 100], dim=t)
+
+
+@pytest.mark.parametrize("chunks", [None, {"time": 1, "x": 50}])
+def test_zonal_stats_of_a_cube_matches_each_slice(files, cube, chunks):
+    """A cube gives `(geometry, ..., zonal_statistics)`: the zones' Shapely geometries in their
+    CRS, their attributes along `geometry`, each slice as terrio.zonal_stats gives it."""
+    shapely = pytest.importorskip("shapely")
+    stats = ["count", "mean", "median"]
+    out = (cube.chunk(chunks) if chunks else cube).terrio.zonal_stats(files["zones"], stats=stats)
+    assert out.dims == ("geometry", "time", "zonal_statistics")
+    assert out.dtype == np.float32
+    assert out.zonal_statistics.values.tolist() == stats
+    assert out.id.dims == ("geometry",) and out.id.values.tolist() == [0, 1, 2]
+    assert out.terrio.crs == "EPSG:32611"
+    expected_geometries = shapely.from_wkb(files["zones"].to_wkb())
+    assert shapely.equals(out.geometry.values, expected_geometries).all()
+    for i in range(cube.sizes["time"]):
+        columns = cube.isel(time=i).terrio.zonal_stats(files["zones"], stats=stats).columns()
+        for s in stats:
+            expected = np.array([np.nan if v is None else v for v in columns[f"raster1_b1_{s}"]])
+            np.testing.assert_array_equal(
+                out.isel(time=i).sel(zonal_statistics=s).values, expected.astype(np.float32)
+            )
+
+
+@pytest.mark.parametrize("chunks", [None, {"time": 1}, {"band": 1, "time": 2, "y": 7}])
+def test_zonal_stats_of_a_cube_in_batches_and_strips_equals_one_pass(
+    files, cube, chunks, monkeypatch
+):
+    """Batches of one chunk (`batch_bytes=1` warns), strips of 3 rows and variables read
+    together give what one pass gives."""
+    pytest.importorskip("shapely")
+    from terrio.xarray import _zonal
+
+    four = xr.concat([cube, cube + 1], dim="band").assign_coords(band=["red", "nir"])
+    four = four.chunk(chunks) if chunks else four
+    stats = ["count", "mean", "median", "stddev"]
+    whole = four.terrio.zonal_stats(files["zones"], stats=stats)
+    assert whole.dims == ("geometry", "band", "time", "zonal_statistics")
+    with pytest.warns(RuntimeWarning, match="more than batch_bytes") as caught:
+        one = four.terrio.zonal_stats(files["zones"], stats=stats, batch_bytes=1)
+    assert caught[0].filename == __file__  # points at the call
+    xr.testing.assert_identical(one, whole)
+    monkeypatch.setattr(_zonal, "_STRIP_PIXELS", 3 * W)
+    xr.testing.assert_identical(four.terrio.zonal_stats(files["zones"], stats=stats), whole)
+    ds = xr.Dataset({"a": four, "b": four * 3, "dem": cube.isel(time=0)})
+    together = ds.terrio.zonal_stats(files["zones"], stats=stats)
+    with pytest.warns(RuntimeWarning):
+        apart = ds.terrio.zonal_stats(files["zones"], stats=stats, batch_bytes=1)
+    for out in (together, apart):
+        xr.testing.assert_identical(out["a"], whole.rename("a"))
+        xr.testing.assert_identical(
+            out["dem"], ds["dem"].expand_dims(t=1).terrio.zonal_stats(files["zones"], stats=stats)
+            .isel(t=0, drop=True).rename("dem")
+        )  # fmt: skip
+
+
+def test_zonal_stats_of_a_cube_computes_each_dask_chunk_once(files, cube, monkeypatch):
+    """Strips of 3 rows on chunks of 7: a strip across a chunk edge would compute the next
+    chunk once for it and once more for its own strips."""
+    pytest.importorskip("shapely")
+    from terrio.xarray import _zonal
+
+    calls = {}
+
+    def count(block, block_info=None):
+        loc = tuple(block_info[0]["chunk-location"])
+        calls[loc] = calls.get(loc, 0) + 1
+        return block
+
+    data = cube.chunk(time=1, y=7)
+    data = data.copy(data=data.data.map_blocks(count, dtype=data.dtype))
+    monkeypatch.setattr(_zonal, "_STRIP_PIXELS", 3 * W)
+    data.terrio.zonal_stats(files["zones"], stats=["mean"])
+    assert calls and max(calls.values()) == 1, calls
+
+
+def test_zonal_stats_of_a_cube_without_zone_pixels(cube):
+    """Zones off the grid, and an empty time axis, give NaN and empty cubes."""
+    pytest.importorskip("shapely")
+    off = cube.terrio.zonal_stats((0.0, 0.0, 1.0, 1.0), stats=["count", "mean"])
+    assert off.sizes == {"geometry": 1, "time": 3, "zonal_statistics": 2}
+    np.testing.assert_array_equal(off.sel(zonal_statistics="count").values, 0)
+    assert np.isnan(off.sel(zonal_statistics="mean").values).all()
+    empty = cube.isel(time=slice(0, 0)).terrio.zonal_stats((0.0, 0.0, 1.0, 1.0), stats=["mean"])
+    assert empty.sizes["time"] == 0

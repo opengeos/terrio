@@ -119,14 +119,37 @@ classes = txr.rasterize("fields.gpkg", like=dem, attribute="crop_id")
 | | Methods |
 |---|---|
 | DataArray and Dataset `.terrio`, band by band | `dem`, `sieve`, `proximity`, `fill_nodata`, `reclassify`, `viewshed` |
-| DataArray `.terrio`, a `terrio.Layer` | `polygonize`, `contour`, `footprint`, `zonal_stats` |
-| Dataset `.terrio`, a `terrio.Layer` | `zonal_stats` (columns prefixed with the variables' names) |
+| DataArray `.terrio`, a `terrio.Layer` | `polygonize`, `contour`, `footprint`, `zonal_stats` (2-D) |
+| Dataset `.terrio`, a `terrio.Layer` | `zonal_stats` (2-D variables; columns prefixed with the variables' names) |
 | `terrio.xarray` | `rasterize(src, like)`: vectors burnt on the grid of a DataArray or Dataset |
 
 Zones and vectors to burn may be any vector input of terrio's Python API (a path, a `Layer`, a
 GeoDataFrame, Shapely geometries, GeoJSON, WKT, bounds...; see
 [Vector inputs](python.md#vector-inputs)); geometries without a CRS of their own are in the
 array's CRS, as `clip` reads them.
+
+### Zonal statistics of cubes
+
+On an array with other dimensions than its spatial ones (`time`, `band`...), `zonal_stats`
+reduces every 2-D slice and returns a cube indexed by the zones' geometries:
+
+```python
+ndvi = cube.terrio.zonal_stats(fields, stats=["mean", "median"])  # (geometry, time, zonal_statistics)
+ndvi.sel(zonal_statistics="mean")  # one time series per field
+ndvi.terrio.crs  # the zones' CRS
+```
+
+- `geometry`: the zones' Shapely geometries, in their own CRS (written as the grid mapping), with
+  the zones' attributes as coordinates along it.
+- Then the array's other dimensions, and `zonal_statistics`, one entry per statistic.
+- float32 for float32 data, float64 otherwise; NaN where a zone has no valid pixel.
+- A Dataset gives one such variable per spatial variable, sharing `geometry`.
+
+Options: `stats`, `all_touched`, `fractional`, `layer` and `batch_bytes`. The cube is reduced a
+few slices at a time (whole dask chunks of its first other dimension), holding about
+`batch_bytes` (512 MiB by default): only the strips holding zone pixels are read, and each dask
+chunk is computed once. Variables of a Dataset on one grid are read in one dask computation.
+A chunk larger than `batch_bytes` warns. Weighted statistics are for 2-D arrays only.
 
 Arrays of two or three dimensions are supported; dask arrays are computed first. Pixels masked
 on read (`masked=True`) go back to terrio with the file's nodata value. Floating-point results
