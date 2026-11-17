@@ -419,13 +419,21 @@ impl Proj for WbProj {
     }
 }
 
-/// The definitions built, by CRS, while the grids found stay the same ([`grid::epoch`]), with the
-/// bytes they count against the memo's bound.
+/// The definitions built, by the hash of their CRS (taken before the lock) and then the CRS, while
+/// the grids found stay the same ([`grid::epoch`]), with the bytes they count against the memo's
+/// bound.
 #[derive(Default)]
 struct Memo {
     epoch: (u64, u64),
-    defs: std::collections::HashMap<SpatialRef, Arc<Def>>,
+    defs: std::collections::HashMap<u64, Vec<(SpatialRef, Arc<Def>)>>,
     bytes: usize,
+}
+
+/// The hash of a CRS in the memo, with keys drawn once per process.
+fn memo_hash(s: &SpatialRef) -> u64 {
+    use std::hash::BuildHasher;
+    static KEYS: std::sync::OnceLock<std::collections::hash_map::RandomState> = std::sync::OnceLock::new();
+    KEYS.get_or_init(Default::default).hash_one(s)
 }
 
 fn memo() -> &'static std::sync::Mutex<Memo> {
@@ -434,8 +442,9 @@ fn memo() -> &'static std::sync::Mutex<Memo> {
     M.get_or_init(Default::default)
 }
 
-/// Forgets the definitions built, for [`crate::reset_grid_cache`]: so that the grids they hold
-/// are let go, without waiting for the next definition built. Dropped after the lock is released.
+/// Forgets the definitions built, for [`crate::reset_grid_cache`] and [`crate::register_grid`]:
+/// so that the grids they hold are let go, without waiting for the next definition built.
+/// Dropped after the lock is released.
 pub(crate) fn forget_definitions() {
     let old = std::mem::take(&mut *memo().lock().unwrap_or_else(std::sync::PoisonError::into_inner));
     drop(old);
@@ -449,30 +458,33 @@ pub(crate) fn hold_for_fork(held: &mut Vec<Box<dyn std::any::Any>>) {
 
 impl Def {
     /// The definition of a CRS: from the EPSG (or ESRI) table when it has a code there, else
-    /// from its PROJ string or WKT. Built once per CRS ([`Def::shared`]).
+    /// from its PROJ string or WKT. A copy of the one kept for the CRS ([`Def::shared`]).
     pub fn new(s: &SpatialRef) -> Result<Self> {
         Self::shared(s).map(|d| (*d).clone())
     }
 
-    /// The definition of a CRS, built once and kept, as about 25 accessors of a `SpatialRef`
-    /// each need it: by the whole `SpatialRef`, while the grids found stay the same (until
-    /// [`crate::reset_grid_cache`], the settings that call it, or [`crate::register_grid`]), as
-    /// the transformations a definition holds depend on them. Up to 1 MiB, counting the WKT and
-    /// PROJ text, the definition's own size and its lists of transformations, not the
-    /// transformations and projection it shares with others: then all is forgotten, and the memo
-    /// fills again. A larger one is not kept. Not
-    /// kept under `grid::without_grids`, where no grid counts as found, nor a failure. A change of
-    /// `TERRIO_NETWORK` or `PROJ_NETWORK` is seen at the next reset, as by the grids' availability
-    /// cache.
+    /// The definition of a CRS, kept for the whole `SpatialRef`, as about 25 of its accessors
+    /// need it.
+    ///
+    /// It is built once while the grids found stay the same: until [`crate::reset_grid_cache`],
+    /// the settings that call it, or [`crate::register_grid`]. The transformations it holds
+    /// depend on those grids. A change of `TERRIO_NETWORK` or `PROJ_NETWORK` is seen at the next
+    /// reset, as by the grids' availability cache.
+    ///
+    /// The memo holds up to 1 MiB, counting the WKT and PROJ text, the definition's own size and
+    /// its lists of transformations. It does not count what definitions share (transformations,
+    /// projections) nor a projection's parameters. When full, it is emptied and fills again. A
+    /// definition larger than that, one built under `grid::without_grids` (where no grid counts
+    /// as found), and a failure are not kept.
     pub(crate) fn shared(s: &SpatialRef) -> Result<Arc<Self>> {
         if grid::without_grids_active() {
             return Self::build(s).map(Arc::new);
         }
-        let epoch = grid::epoch();
+        let (epoch, hash) = (grid::epoch(), memo_hash(s));
         {
             let m = memo().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if m.epoch == epoch
-                && let Some(d) = m.defs.get(s)
+                && let Some((_, d)) = m.defs.get(&hash).and_then(|v| v.iter().find(|(k, _)| k == s))
             {
                 return Ok(d.clone());
             }
@@ -497,7 +509,9 @@ impl Def {
                 if m.epoch != epoch || m.bytes + size > 1 << 20 {
                     forgotten = Some(std::mem::replace(&mut *m, Memo { epoch, ..Default::default() }));
                 }
-                if m.defs.insert(s.clone(), d.clone()).is_none() {
+                let same = m.defs.entry(hash).or_default();
+                if !same.iter().any(|(k, _)| k == s) {
+                    same.push((s.clone(), d.clone()));
                     m.bytes += size;
                 }
             }
@@ -2421,11 +2435,14 @@ mod memo_tests {
             let (a, b) = (Def::shared(&s).unwrap(), Def::shared(&s).unwrap());
             Arc::ptr_eq(&a, &b) && epoch == grid::epoch()
         }));
-        let first = Def::shared(&s).unwrap();
         // The definition kept is the one built: the same transformations, in the same order.
-        let built = Def::build(&s).unwrap();
-        assert_eq!(first.ops.len(), built.ops.len());
-        assert!(first.ops.iter().zip(&built.ops).all(|(a, b)| Arc::ptr_eq(a, b)));
+        assert!((0..100).any(|_| {
+            let epoch = grid::epoch();
+            let (kept, built) = (Def::shared(&s).unwrap(), Def::build(&s).unwrap());
+            let same = kept.ops.len() == built.ops.len() && kept.ops.iter().zip(&built.ops).all(|(a, b)| Arc::ptr_eq(a, b));
+            same && epoch == grid::epoch()
+        }));
+        let first = Def::shared(&s).unwrap();
         crate::reset_grid_cache();
         let after_reset = Def::shared(&s).unwrap();
         assert!(!Arc::ptr_eq(&first, &after_reset));
@@ -2435,6 +2452,14 @@ mod memo_tests {
         // Not kept while no grid counts as found.
         let kept = Def::shared(&s).unwrap();
         grid::without_grids(|| assert!(!Arc::ptr_eq(&kept, &Def::shared(&s).unwrap())));
+    }
+
+    /// A definition larger than the memo's bound is built each time, not kept.
+    #[test]
+    fn a_definition_larger_than_the_bound_is_not_kept() {
+        let s = SpatialRef { proj4: Some(format!("+proj=longlat +datum=WGS84{}", " ".repeat(1 << 20))), ..Default::default() };
+        let first = Def::shared(&s).unwrap();
+        assert!(!Arc::ptr_eq(&first, &Def::shared(&s).unwrap()));
     }
 
     /// The memo's lock is one `host::hold_for_fork` takes across a fork.

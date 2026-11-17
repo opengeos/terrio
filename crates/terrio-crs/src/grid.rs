@@ -862,6 +862,7 @@ pub fn register_grid(name: &str, bytes: Vec<u8>) {
     // A download of it that failed before no longer counts: the grid is there now.
     fetch_failures().lock().unwrap_or_else(PoisonError::into_inner).remove(name);
     REGISTRATIONS.fetch_add(1, Ordering::SeqCst);
+    crate::def::forget_definitions();
 }
 
 /// Old names of PROJ-data grids (before PROJ 7), by current name, from the EPSG table.
