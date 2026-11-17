@@ -359,7 +359,7 @@ class WarpedVRT(DatasetReader):
                 src_dataset.width,
                 src_dataset.height,
                 src_dataset.transform.to_gdal(),
-                _crs_text(self.src_crs),
+                _crs_text(self.src_crs if self.src_crs is not None else self.dst_crs),
                 _crs_text(self.dst_crs),
             )
             t = Affine.from_gdal(*gt)
@@ -614,10 +614,10 @@ class WarpedVRT(DatasetReader):
                     sgt[5] *= rx
                 size = self._src_levels[grid.level]
             # rasterio's cases 1 to 3 warp with GDALCreateGenImgProjTransformer3(), which does not
-            # reproject when the source has no CRS (an RPC source's): the source transform maps
-            # straight into the grid's CRS.
+            # reproject when the source has no CRS: the source transform maps straight into the
+            # grid's CRS.
             src_crs = self.src_crs
-            if src_crs is None and self._rpc_crs is not None:
+            if src_crs is None:
                 src_crs = self.dst_crs if self.dst_crs is not None else self._rpc_crs
             rw = _terrio.RegionWarp(
                 (int(size[0]), int(size[1])),
