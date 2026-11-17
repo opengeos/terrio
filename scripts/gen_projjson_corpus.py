@@ -35,9 +35,9 @@ def rows(table, kinds):
 
 
 def strip(value, field=""):
-    """The PROJJSON without what the test leaves out: usages, remarks, the names of axes,
-    conversions and parameters, axis abbreviations, ensemble members and accuracy, and the IDs of
-    objects other than CRSs and methods (parameters keep theirs, which key them)."""
+    """The PROJJSON without what the test leaves out: usages, remarks, the names of axes and
+    conversions, axis abbreviations, ensemble members and accuracy, and the IDs of objects other
+    than CRSs, methods and parameters. Parameters keep their names and IDs, which key them."""
     if isinstance(value, dict):
         is_crs = str(value.get("type", "")).endswith("CRS")
 
@@ -61,7 +61,7 @@ def main():
     assert os.environ.get("PROJ_NETWORK") == "OFF"
     codes = [("EPSG", c) for c in rows("epsg.tsv.zst", {"C", "V", "K"})]
     codes += [("ESRI", c) for c in rows("esri.tsv.zst", {"C"})]
-    lines, skipped = [], []
+    lines, skipped, unread = [], [], []
     for authority, code in codes:
         try:
             crs = CRS.from_authority(authority, code)
@@ -71,10 +71,15 @@ def main():
         for form, version in FORMS:
             try:
                 text = crs.to_wkt(version)
-                if not text:
-                    continue
+            except pyproj.exceptions.CRSError:
+                text = None
+            if not text:
+                continue
+            # PROJ reads back the text it wrote; a text it cannot read is reported, not kept.
+            try:
                 projjson = strip(CRS.from_wkt(text).to_json_dict())
             except pyproj.exceptions.CRSError:
+                unread.append(f"{authority}:{code} {form}")
                 continue
             lines.append(json.dumps([f"{authority}:{code}", form, text, projjson], separators=(",", ":"), ensure_ascii=False))
     # One file per authority, each under the repository's 1 MiB limit.
@@ -83,7 +88,9 @@ def main():
         out = OUT / f"projjson_corpus_{authority.lower()}.jsonl.zst"
         out.write_bytes(subprocess.run(["zstd", "-19", "-c"], input=data, check=True, capture_output=True).stdout)
         print(f"{out.name}: {out.stat().st_size} bytes")
-    print(f"{len(codes)} CRSs, {len(lines)} texts; PROJ refuses {len(skipped)}: {' '.join(skipped)}")
+    print(f"{len(codes)} CRSs, {len(lines)} texts")
+    print(f"PROJ has no CRS for {len(skipped)}: {' '.join(skipped)}")
+    print(f"PROJ cannot read back {len(unread)} texts it wrote: {', '.join(unread)}")
 
 
 if __name__ == "__main__":

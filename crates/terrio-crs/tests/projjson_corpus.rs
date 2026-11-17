@@ -149,7 +149,10 @@ fn flatten(v: &Value, path: &str, field: &str, out: &mut BTreeMap<String, Leaf>)
 /// writes none.
 fn differences(text: &str, proj: &Value) -> String {
     let ours = match SpatialRef::from_wkt(text).to_projjson() {
-        Ok(json) => serde_json::from_str::<Value>(&json).unwrap(),
+        Ok(json) => match serde_json::from_str::<Value>(&json) {
+            Ok(v) => v,
+            Err(e) => return format!("!invalid PROJJSON: {e}"),
+        },
         Err(e) => return format!("!{}", e.to_string().replace(['\t', '\n'], " ")),
     };
     let (mut a, mut b) = (BTreeMap::new(), BTreeMap::new());
