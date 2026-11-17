@@ -1760,9 +1760,11 @@ what the CRS is field by field: types, the IDs and names of CRSs, the names and
 values of datums, ellipsoids and prime meridians, axis directions and units,
 method names and IDs, and parameter values keyed by their ID (else their name),
 in metres, degrees and unity within a relative 1e-9; a differing number records
-the decade of its difference. Usages, remarks, the names of axes and
-conversions, axis abbreviations, ensemble members and accuracy, and the IDs of
-objects other than CRSs, methods and parameters are left out.
+the decade of its difference, and a value given with its unit on both sides is
+compared with the unit's kind too. Usages, remarks, the names of axes and
+conversions, the names of parameters (which key them only where they have no
+ID), axis abbreviations, ensemble members and accuracy, and the IDs of objects
+other than CRSs, methods and parameters are left out.
 
 The fields that differ today are recorded, grouped by the set of differing
 fields, in `projjson_corpus_diffs.tsv` (`projjson_corpus_diffs_fallback.tsv`

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
 //! What terrio-crs understands of every EPSG and ESRI CRS, against PROJ 9.8.1, through PROJJSON:
 //! each CRS's WKT 2 (`WKT2_2019`), GDAL WKT 1 (`WKT1_GDAL`) and ESRI WKT 1 (`WKT1_ESRI`) as PROJ
 //! writes them is read by `SpatialRef::from_wkt` and written back by `SpatialRef::to_projjson`, and
@@ -13,9 +15,10 @@
 //! ellipsoids and prime meridians; axis directions and units; method names and IDs; parameter
 //! values, keyed by their ID (else their name); and the components of compound and bound CRSs.
 //! Values are compared in metres, degrees and unity within a relative 1e-9, and a differing number
-//! records the decade of its difference. Left out: usages, remarks, the names of axes and
-//! conversions, axis abbreviations, ensemble members and accuracy, and the IDs of objects other
-//! than CRSs, methods and parameters.
+//! records the decade of its difference; a value given with its unit on both sides is compared
+//! with the unit's kind too. Left out: usages, remarks, the names of axes and conversions, the
+//! names of parameters (which key them only where they have no ID), axis abbreviations, ensemble
+//! members and accuracy, and the IDs of objects other than CRSs, methods and parameters.
 
 use std::collections::{BTreeMap, HashSet};
 use std::f64::consts::PI;
@@ -39,6 +42,8 @@ const LEFT_OUT: [&str; 7] = ["$schema", "usages", "scope", "area", "bbox", "rema
 #[derive(Debug, Clone, PartialEq)]
 enum Leaf {
     Number(f64),
+    /// A value given with its unit, in metres, degrees or unity, and the unit's kind.
+    Quantity(f64, String),
     Text(String),
     Bool(bool),
     Null,
@@ -47,7 +52,14 @@ enum Leaf {
 impl Leaf {
     fn same(&self, other: &Leaf) -> bool {
         match (self, other) {
-            (Leaf::Number(a), Leaf::Number(b)) => a == b || (a - b).abs() <= 1e-9 * a.abs().max(b.abs()),
+            (Leaf::Number(a) | Leaf::Quantity(a, _), Leaf::Number(b) | Leaf::Quantity(b, _)) => {
+                // A unit's kind when both sides give one (a bare number is in the implied unit).
+                let kinds = match (self, other) {
+                    (Leaf::Quantity(_, x), Leaf::Quantity(_, y)) => x == y,
+                    _ => true,
+                };
+                kinds && (a == b || (a - b).abs() <= 1e-9 * a.abs().max(b.abs()))
+            }
             _ => self == other,
         }
     }
@@ -96,9 +108,9 @@ fn flatten(v: &Value, path: &str, field: &str, out: &mut BTreeMap<String, Leaf>)
             // A value with its unit, `{"value": 3, "unit": "metre"}`, compared as the bare number in
             // metres, degrees or unity it is.
             if let (Some(value), Some(u)) = (o.get("value").and_then(Value::as_f64), o.get("unit"))
-                && let Some((factor, _)) = unit(u)
+                && let Some((factor, kind)) = unit(u)
             {
-                out.insert(path.to_string(), Leaf::Number(value * factor));
+                out.insert(path.to_string(), Leaf::Quantity(value * factor, kind));
                 return;
             }
             let is_crs = o.get("type").and_then(Value::as_str).is_some_and(|t| t.ends_with("CRS"));
@@ -115,11 +127,12 @@ fn flatten(v: &Value, path: &str, field: &str, out: &mut BTreeMap<String, Leaf>)
                     continue;
                 }
                 let p = if path.is_empty() { k.clone() } else { format!("{path}.{k}") };
-                // A unit alone (an axis's): its kind and factor.
+                // A unit alone (an axis's): its kind, and its factor as a number.
                 if k == "unit"
                     && let Some((factor, kind)) = unit(x)
                 {
-                    out.insert(p, Leaf::Text(format!("{kind}:{}", (factor * 1e12).round() / 1e12)));
+                    out.insert(format!("{p}.factor"), Leaf::Number(factor));
+                    out.insert(p, Leaf::Text(kind));
                     continue;
                 }
                 flatten(x, &p, k, out);
@@ -168,7 +181,9 @@ fn differences(text: &str, proj: &Value) -> String {
     // A number that differs carries the decade of the difference (`~-3` for millimetres to
     // centimetres), so that a larger error at a path that already differs shows too.
     let decade = |p: &str| match (a.get(p), b.get(p)) {
-        (Some(Leaf::Number(x)), Some(Leaf::Number(y))) => format!("{p}~{}", (x - y).abs().log10().floor()),
+        (Some(Leaf::Number(x) | Leaf::Quantity(x, _)), Some(Leaf::Number(y) | Leaf::Quantity(y, _))) if x != y => {
+            format!("{p}~{}", (x - y).abs().log10().floor())
+        }
         _ => p.to_string(),
     };
     paths.into_iter().map(decade).collect::<Vec<_>>().join(",")

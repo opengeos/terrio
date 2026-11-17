@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT
+
 """Generate crates/terrio-crs/tests/data/projjson_corpus_{epsg,esri}.jsonl.zst: every CRS of terrio's EPSG table
 (geographic, geocentric, projected, vertical and compound) and ESRI table, as PROJ 9.8.1 writes it
 in WKT 2 (`WKT2_2019`), GDAL WKT 1 (`WKT1_GDAL`) and ESRI WKT 1 (`WKT1_ESRI`), each with the
