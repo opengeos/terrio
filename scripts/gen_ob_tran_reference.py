@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Freeze general oblique transformation (ob_tran) cases against pyproj 3.8.0 / PROJ 9.8.1."""
+"""Freeze general oblique transformation (ob_tran) cases against pyproj 3.8.0 / PROJ 9.9.0."""
 
 import json
 import math
@@ -49,7 +49,7 @@ def agree(a, b, tolerance):
 
 
 def main():
-    assert pyproj.__version__ == "3.8.0" and pyproj.proj_version_str == "9.8.1"
+    assert pyproj.__version__ == "3.8.0" and pyproj.proj_version_str == "9.9.0"
     pyproj.network.set_network_enabled(False)
     cases = []
     for figure in ["+R=6371000", "+datum=WGS84"]:

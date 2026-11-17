@@ -45,7 +45,7 @@ fn offline() {
 
 fn data() -> Value {
     let data: Value = serde_json::from_str(include_str!("data/grads_and_prime_meridians.json")).unwrap();
-    assert_eq!(data["proj_version"], "9.8.1");
+    assert_eq!(data["proj_version"], "9.9.0");
     data
 }
 

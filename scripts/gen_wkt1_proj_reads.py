@@ -1,4 +1,4 @@
-"""Generate crates/terrio-crs/tests/data/wkt1_proj_reads.json: WKT 1 that PROJ 9.8.1 reads and
+"""Generate crates/terrio-crs/tests/data/wkt1_proj_reads.json: WKT 1 that PROJ 9.9.0 reads and
 where it places points in them.
 
 - ESRI's `Mercator_Variant_A` (EPSG Guidance Note 7-2's example of Mercator (variant A),
@@ -196,7 +196,7 @@ NOT_TRANSFORMED = [
 
 
 def main():
-    assert pyproj.proj_version_str == "9.8.1", pyproj.proj_version_str
+    assert pyproj.proj_version_str == "9.9.0", pyproj.proj_version_str
     pyproj.network.set_network_enabled(False)
     # No grids, so the values don't depend on what is installed.
     for d in pyproj.datadir.get_data_dir().split(os.pathsep) + [

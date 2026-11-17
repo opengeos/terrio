@@ -1,5 +1,5 @@
 // Written to match the behavior of:
-//   GDAL v3.13.2:
+//   GDAL v3.13.3:
 //     ogr/ogr_srs_api.h (OSRGetCRSInfoListFromDatabase)
 //   PROJ 9.9.0:
 //     src/iso19111/c_api.cpp (proj_get_crs_info_list_from_database)
@@ -307,7 +307,8 @@ impl Record {
     /// that need the `wbprojection-fallback` feature, and those terrio does not compute as PROJ).
     fn resolves(&self) -> bool {
         *self.resolves.get_or_init(|| match self.authority {
-            "EPSG" => crate::SpatialRef::from_epsg(self.code).is_ok(),
+            // By the table, without building every EPSG CRS of an unfiltered listing.
+            "EPSG" => !crate::epsg::get(self.code).is_some_and(crate::epsg::Entry::unsupported),
             "ESRI" => crate::SpatialRef::from_esri(self.code).is_ok(),
             "IAU_2015" => crate::SpatialRef::from_iau(self.code).is_ok(),
             _ => true,

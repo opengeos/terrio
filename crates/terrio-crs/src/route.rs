@@ -281,9 +281,10 @@ impl Route {
     fn build(src: &Def, dst: &Def, all: bool) -> Self {
         let aoi = area_of_interest(src, dst);
         let keep = |op: &Op| relevant(op, src, dst, aoi.as_ref());
-        // From a 2D CRS, PROJ makes a concatenation through a transformation its database
-        // registers between geocentric CRSs only where no transformation links the datums
-        // directly: from 2D WGS 84, PROJ 9.9.0 places the deprecated GDA94 (3D) (EPSG:4347) by
+        // Unless both CRSs are 3D (geographic 3D or geocentric), PROJ makes a concatenation
+        // through a transformation its database registers between geocentric CRSs only where no
+        // transformation of the area links the datums directly (PROJ filters the direct ones by
+        // area before it tries the pivot): from 2D WGS 84, PROJ 9.9.0 places the deprecated GDA94 (3D) (EPSG:4347) by
         // GDA94 to WGS 84 (1), from 3D WGS 84 through WGS 84 (G1762); ITRF90 (geocentric)
         // (EPSG:4332), which none links directly, through WGS 84 (Transit) from both.
         let dimensions = src.geodetic_3d() && dst.geodetic_3d();
@@ -294,7 +295,7 @@ impl Route {
         // and UTM).
         let concatenated = !src.is_geographic() || !dst.is_geographic();
         let list = |ops: &[Arc<Op>], reverse: bool| -> Kind {
-            let direct = ops.iter().any(|op| !op.concatenated && !op.ballpark);
+            let direct = ops.iter().any(|op| !op.concatenated && !op.ballpark && keep(op));
             Kind::List(
                 legs(ops, reverse)
                     .into_iter()
