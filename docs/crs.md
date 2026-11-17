@@ -273,7 +273,12 @@ with its axis order, then the base datum over its later realizations (NAD83 over
 NAD83(2011)) unless the WKT names one, then the lowest code. CRSs that terrio's EPSG table lacks or
 whose projection it cannot compare are looked up in wbprojection's registry, on the same datum,
 with the last two preferences. This is what GDAL reports: the New York City boroughs shapefile is
-EPSG:2263 in both, and ESRI's `GCS_European_1950` is EPSG:4230.
+EPSG:2263 in both, and ESRI's `GCS_European_1950` is EPSG:4230. A datum no CRS is on is identified
+through the CRS PROJ 9.8.1 finds by the WKT's name, on a datum with which it has a name in common:
+ESRI's `GCS_Greenland_1996` on `D_Greenland_1996` (Greenland 1996) is GR96, EPSG:4747, on the GR96
+ensemble; under another name it has no code, as in PROJ. Such a CRS is placed as its own datum,
+by a ballpark as PROJ places it, and gives the code as its geographic CRS only
+(`SpatialRef::geographic_code`).
 
 A code the WKT declares at its root (`AUTHORITY["EPSG","27700"]`, `ID["EPSG",27700]`) is kept only
 when the WKT's content is that CRS: the same conversion, units and axes included, on the same

@@ -69,6 +69,9 @@ pub(crate) struct Def {
     datum: Option<u32>,
     /// The EPSG code of the geographic CRS, when known.
     geog: Option<u32>,
+    /// The EPSG geographic CRS a CRS on a datum no CRS is on is identified as by its name
+    /// ([`Def::registered_datum`]), which does not give it that CRS's transformations.
+    named_geog: Option<u32>,
     /// All the operations of a datum found by its name ([`Def::datum_by_name`]), those whose
     /// grids are missing included, as `geog`'s registry entry gives them otherwise.
     all_ops: Option<Vec<Arc<Op>>>,
@@ -871,6 +874,7 @@ impl Def {
             ops: Vec::new(),
             datum: None,
             geog: None,
+            named_geog: None,
             all_ops: None,
             three_d: false,
             dynamic: false,
@@ -975,11 +979,25 @@ impl Def {
         };
         // Or on its datum but another prime meridian, which the definition applies itself.
         let fits = |g: &u32| own.as_deref().is_none_or(|t| super::declared_fits(t, *g) || super::declared_fits_but_meridian(t, *g));
-        let geog = c.geog.filter(fits).or_else(|| c.geogcs.epsg().filter(fits)).or_else(|| match &c.geogcs_wkt1 {
+        let declared = c.geog.filter(fits).or_else(|| c.geogcs.epsg().filter(fits));
+        let geog = declared.or_else(|| match &c.geogcs_wkt1 {
             // WKT 2: identified loosely, so on the same ellipsoid only.
             Some(text) => super::identify_epsg(text).filter(|g| wkt2::same_ellipsoid(*g, self.ell.a, self.ell.es)),
             None => super::identify_epsg(geogcs_text?),
         });
+        // A datum no CRS is on keeps its own transformations when its CRS is identified by name
+        // on a datum with which it has a name in common: PROJ 9.8.1 identifies ESRI's
+        // GCS_Greenland_1996 (Greenland 1996) as GR96 but places it by a ballpark, not by "GR96 to
+        // WGS 84 (1)".
+        if declared.is_none()
+            && geog.is_some()
+            && let Some(own) = own.as_deref()
+            && super::names_datum_without_crs(own)
+        {
+            self.datum_by_name(own);
+            self.named_geog = geog;
+            return;
+        }
         let geog = geog.map(|g| epsg::get(g).filter(|e| e.proj.starts_with("+proj=geocent")).map_or(g, |e| e.geog));
         if let Some(e) = geog.and_then(epsg::get)
             && e.proj.starts_with("+proj=longlat")
@@ -1306,6 +1324,7 @@ impl Def {
                 ops: Vec::new(),
                 datum: None,
                 geog: None,
+                named_geog: None,
                 all_ops: None,
                 three_d: false,
                 dynamic: false,
@@ -1628,6 +1647,12 @@ impl Def {
     /// The EPSG code of the geographic CRS.
     pub fn geog(&self) -> Option<u32> {
         self.geog
+    }
+
+    /// The EPSG geographic CRS, also when only its name identifies it on a datum no CRS is on
+    /// (ESRI's GCS_Greenland_1996, GR96).
+    pub fn geographic_code(&self) -> Option<u32> {
+        self.geog.or(self.named_geog)
     }
 
     /// Whether the CRS is on WGS 84 itself.

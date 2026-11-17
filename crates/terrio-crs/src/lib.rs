@@ -460,7 +460,7 @@ impl SpatialRef {
                 })
             };
             let epsg = declared_epsg(wkt)
-                .or_else(|| identify_epsg(wkt))
+                .or_else(|| identify_epsg(wkt).filter(|_| !names_datum_without_crs(wkt)))
                 .filter(|code| fits(SpatialRef { epsg: Some(*code), ..Default::default() }));
             // The extension is kept through the WKT, not as the CRS's PROJ string: PROJ computes
             // on it as a pipeline step reads it, whose ellipsoid rules and leniency differ from
@@ -480,7 +480,10 @@ impl SpatialRef {
         if (is_variant_c(wkt) || proj4_extension(wkt).is_some()) && Def::from_wkt(wkt).is_err() {
             return Self { wkt: Some(wkt.to_string()), ..Default::default() };
         }
-        let epsg = identify_epsg(wkt);
+        // Not a code identified by name alone on a datum no CRS is on (ESRI's GCS_Greenland_1996,
+        // GR96): the WKT keeps its own datum's transformations, as PROJ 9.8.1 places it by a
+        // ballpark, and gives the code as its geographic CRS ([`Self::geographic_code`]).
+        let epsg = identify_epsg(wkt).filter(|code| declared_epsg(wkt) == Some(*code) || !names_datum_without_crs(wkt));
         Self { epsg, wkt: Some(wkt.to_string()), ..Default::default() }.with_esri()
     }
 
@@ -734,7 +737,7 @@ impl SpatialRef {
 
     /// EPSG code of the geographic CRS underlying this definition, when known.
     pub fn geographic_code(&self) -> Option<u32> {
-        Def::new(self).ok().and_then(|d| d.geog())
+        Def::new(self).ok().and_then(|d| d.geographic_code())
     }
 
     /// Rotated-pole CF parameters, semi-major axis and eccentricity squared.
@@ -1516,6 +1519,13 @@ pub(crate) fn wkt_datum_name_and_code(wkt: &str) -> Option<(String, Option<u32>)
     Some((datum.name().unwrap_or_default().to_string(), datum.epsg()))
 }
 
+/// Whether a WKT names a datum, by code or name, that no EPSG geographic CRS is on (Greenland
+/// 1996, 6747).
+pub(crate) fn names_datum_without_crs(wkt: &str) -> bool {
+    let (datums, _) = wkt_datums_and_others(wkt);
+    !datums.is_empty() && datums.iter().all(|d| epsg::geographic_on(*d).is_empty())
+}
+
 /// The EPSG datums of a WKT definition's geodetic datum, and the other datums
 /// whose CRSs ESRI writes with its name (ETRS89-NOR for `D_ETRS_1989`).
 fn wkt_datums_and_others(wkt: &str) -> (Vec<u32>, &'static [u32]) {
@@ -1629,7 +1639,24 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
     // On the datum the WKT names, else on those whose CRSs ESRI writes with its name: GDAL
     // identifies ESRI's ETRS_1989_NTM_Zone_18 on D_ETRS_1989 by its name as EPSG:5118, on
     // ETRS89-NOR.
-    if let Some(code) = search(&datums).or_else(|| search(others)) {
+    // Else, for a named datum terrio has no CRS on, the CRS PROJ 9.8.1 finds by the WKT's name on a
+    // datum its database gives a name in common: ESRI's GCS_Greenland_1996 on D_Greenland_1996
+    // (Greenland 1996, 6747) is GR96, EPSG:4747, on the GR96 ensemble (1421). By its name only, as
+    // PROJ identifies no CRS for another name on that datum. Not a geographic 3D CRS, which the
+    // name table leaves out.
+    let sharing = || {
+        let own = own.as_ref()?;
+        // A WKT 1 GEOGCS with a `LINUNIT` is ESRI's geographic 3D CRS: PROJ identifies
+        // GCS_Greenland_1996 with one as EPSG:4909, which the name table leaves out.
+        if geographic_dimension_3d(wkt) == Some(true) || wkt1::parse(wkt).is_some_and(|r| r.child("LINUNIT").is_some()) {
+            return None;
+        }
+        let sharing: Vec<u32> =
+            datums.iter().filter(|d| epsg::geographic_on(**d).is_empty()).flat_map(|d| epsg::datums_sharing_a_name(*d)).collect();
+        let code = epsg::crs_named_as_proj(&wkt_name(wkt)?, !own.is_geographic(), false, true)?;
+        (epsg::get(code).is_some_and(|e| sharing.contains(&e.datum)) && same(own, code)).then_some(code)
+    };
+    if let Some(code) = search(&datums).or_else(|| search(others)).or_else(sharing) {
         return Some(code);
     }
     #[cfg(feature = "wbprojection-fallback")]
