@@ -76,3 +76,28 @@ fn a_declared_code_with_its_own_shift_is_written_with_both() {
         assert!(towgs84(&keys).is_empty(), "{code}: {:?}", keys.doubles);
     }
 }
+
+/// A WKT 2 `BOUNDCRS` to WGS 84 whose transformation `+towgs84` only approximates (a
+/// Molodensky-Badekas evaluation point, a full rotation matrix) is written as its WKT in an ESRI
+/// PE citation, which keeps the exact transformation, not as GeogTOWGS84GeoKey nor as a code; one
+/// it represents exactly (Molodensky-Badekas without an evaluation point) with GeogTOWGS84GeoKey
+/// (cases of `wkt2_bound.json`).
+#[test]
+fn a_bound_crs_beyond_towgs84_is_written_as_its_wkt() {
+    let cases: serde_json::Value = serde_json::from_str(include_str!("data/wkt2_bound.json")).unwrap();
+    let list = cases.as_array().or_else(|| cases["cases"].as_array()).unwrap();
+    let named = |name: &str| list.iter().find(|c| c["name"] == name).unwrap()["wkt"].as_str().unwrap().to_string();
+    for name in [
+        "method EPSG:9636 about an evaluation point, to WGS 84",
+        "method EPSG:1063 about an evaluation point, to WGS 84",
+        "method by name 'Coordinate Frame rotation full matrix (geog2D) (3D)', 7 parameters, to WGS 84",
+    ] {
+        let keys = SpatialRef::from_wkt(&named(name)).to_geokeys().unwrap();
+        assert!(towgs84(&keys).is_empty(), "{name}: {:?}", keys.doubles);
+        assert!(keys.ascii.iter().any(|(id, t)| *id == 3073 && t.starts_with("ESRI PE String = BOUNDCRS")), "{name}: {:?}", keys.ascii);
+    }
+    let keys = SpatialRef::from_wkt(&named("method by name 'Molodensky-Badekas (CF geog2D domain)', 7 parameters, to WGS 84"))
+        .to_geokeys()
+        .unwrap();
+    assert_eq!(towgs84(&keys).len(), 7, "{:?}", keys.doubles);
+}

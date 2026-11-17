@@ -945,6 +945,19 @@ fn own_towgs84(crs: &SpatialRef) -> Option<Vec<f64>> {
     (matches!(t.len(), 3 | 7) && !(wgs84 && t.iter().all(|x| *x == 0.0))).then_some(t)
 }
 
+/// Whether a CRS is a WKT 2 `BOUNDCRS` whose Helmert transformation its `+towgs84` only
+/// approximates: the reader keeps the exact operation beside it (a Molodensky-Badekas evaluation
+/// point, a full rotation matrix).
+fn bound_beyond_towgs84(crs: &SpatialRef) -> bool {
+    crs.wkt
+        .as_deref()
+        .filter(|w| crate::def::is_bound_crs(w))
+        .and_then(crate::wkt1::parse)
+        .filter(crate::wkt2::handles)
+        .and_then(|root| crate::wkt2::to_proj(&root).ok())
+        .is_some_and(|c| c.helmert.is_some())
+}
+
 /// GeoKeys from wbprojection's model of a CRS, when terrio is built with it.
 #[cfg(feature = "wbprojection-fallback")]
 fn wbprojection_keys(crs: &SpatialRef, name: &str) -> Option<GeoKeyValues> {
@@ -1297,8 +1310,12 @@ impl SpatialRef {
         // transformations (ESRI's British_National_Grid with `TOWGS84[375,-111,431,0,0,0,0]`,
         // identified as EPSG:27700, is 3.1 m from it).
         let shift = own_towgs84(self);
+        // A WKT 2 `BOUNDCRS` whose transformation `+towgs84` only approximates (Molodensky-Badekas,
+        // a full rotation matrix): neither its code nor GeogTOWGS84GeoKey, but its WKT.
+        let exact = bound_beyond_towgs84(self);
         let declared = self.wkt.as_deref().and_then(crate::declared_epsg);
-        let registered = self.epsg.filter(|c| !engineering && (shift.is_none() || declared == Some(*c))).and_then(horizontal_geokey);
+        let registered =
+            self.epsg.filter(|c| !engineering && !exact && (shift.is_none() || declared == Some(*c))).and_then(horizontal_geokey);
         // A compound CRS of EPSG CRSs: its horizontal CRS's keys, its vertical CRS's and its name,
         // in GeoTIFF 1.1 as GDAL 3.12.1 writes them (`GTIFSetFromOGISDefnEx`); a compound code in
         // a horizontal key reads as another CRS.
@@ -1336,7 +1353,7 @@ impl SpatialRef {
                 // A code with its own datum shift is written as user-defined keys with that shift,
                 // which is the CRS's transformation.
                 let user = match (self.epsg, &shift) {
-                    _ if engineering => None,
+                    _ if engineering || exact => None,
                     (Some(_), None) => None,
                     (Some(_), Some(_)) => user_defined_keys(&SpatialRef { epsg: None, ..self.clone() }, &name),
                     (None, _) => user_defined_keys(self, &name),

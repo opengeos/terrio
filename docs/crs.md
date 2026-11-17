@@ -1197,8 +1197,10 @@ They read and write:
   writes the same keys but names the EPSG datum (GeogGeodeticDatumGeoKey 6277), and reads that
   file back without the shift; it keeps the shift of terrio's keys. A CRS identified by a code
   with a zero shift on WGS 84 is written by the code, as GDAL does. A code with GeogTOWGS84GeoKey next to it is read as
-  the code, without the shift, as GDAL reads it. Not yet: a compound CRS with a shift is written
-  by its codes, without it (#1012 item 62);
+  the code, without the shift, as GDAL reads it. A WKT 2 `BOUNDCRS` whose transformation
+  `+towgs84` only approximates (a Molodensky-Badekas evaluation point, a full rotation matrix) is
+  written as its WKT in an ESRI PE citation, which keeps it. Not yet: a compound CRS with a shift is
+  written by its codes, without it (#1012 item 62);
 - ESRI PE citations (`ESRI PE String = <WKT>`), which GDAL writes for a CRS GeoKeys cannot hold
   (an engineering CRS, a method GeoTIFF has no code for, a definition only its PROJ string
   describes): terrio writes them for the same CRSs. A CRS whose WKT holds a NUL (from a PROJJSON
