@@ -1,5 +1,5 @@
 //! A WKT whose root `AUTHORITY` or `ID` is not the CRS its nodes describe is read by its nodes, as
-//! PROJ 9.8.1 reads it: a geographic code on a projected CRS, a code that does not exist, a
+//! PROJ 9.9.0 reads it: a geographic code on a projected CRS, a code that does not exist, a
 //! compound code's units and axes on a 2D CRS in degrees, a geographic code on a geocentric CRS, a
 //! code of another datum on the same ellipsoid. The declared code is kept only when the content is
 //! that CRS; an unknown method stays unusable rather than read as the code. An Esri CRS's name

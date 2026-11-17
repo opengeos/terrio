@@ -1,4 +1,4 @@
-"""Generate crates/terrio-crs/tests/data/wkt_root_code.json: where PROJ 9.8.1 places points of
+"""Generate crates/terrio-crs/tests/data/wkt_root_code.json: where PROJ 9.9.0 places points of
 WKTs whose root `AUTHORITY` or `ID` is not the CRS their nodes describe (opengeos/terrio#1012,
 item 16), or whose name is that of an Esri CRS on another datum (item 14), and the code PROJ
 identifies (`to_epsg()`, and an ESRI one by `to_authority()`). Controls: WKTs of the right code,
@@ -99,7 +99,7 @@ LOCAL_GRS80 = (
 
 
 def main():
-    assert pyproj.__version__ == "3.8.0" and pyproj.proj_version_str == "9.8.1", (
+    assert pyproj.__version__ == "3.8.0" and pyproj.proj_version_str == "9.9.0", (
         pyproj.proj_version_str
     )
     assert os.environ.get("PROJ_NETWORK") == "OFF"

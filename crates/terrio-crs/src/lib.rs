@@ -361,6 +361,14 @@ impl SpatialRef {
     /// as in PROJ.
     pub fn from_epsg(code: u32) -> Result<Self> {
         let wkt = match epsg::get(code) {
+            // WGS 84 / UTM grid system (EPSG:32600 and 32700, EPSG v13): PROJ 9.9.0's
+            // `tmerczoned`, which terrio does not compute yet.
+            Some(e) if e.proj.split_whitespace().next() == Some("+proj=tmerczoned") => {
+                return Err(Error::Crs(format!(
+                    "EPSG:{code} ({}) is not supported: terrio does not compute the Transverse Mercator Zoned Grid System yet",
+                    e.name
+                )));
+            }
             Some(e) => spherical_extension(&e.wkt, &e.proj),
             None => match (epsg::compound(code), epsg::vertical(code)) {
                 (Some(c), _) => c.wkt.clone(),

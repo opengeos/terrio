@@ -185,7 +185,12 @@ fn crs(definition: &str) -> Result<Option<SpatialRef>, String> {
     if definition.starts_with('+') {
         return SpatialRef::from_proj4(definition).map(Some).map_err(|e| e.to_string());
     }
-    let fallback = definition.strip_prefix("EPSG:").and_then(|c| c.parse().ok()).is_some_and(|c| terrio_crs::epsg_wkt(c).is_none());
+    // Codes terrio does not resolve: outside its tables, or on a projection it does not compute
+    // yet (the UTM grid systems, EPSG:32600 and 32700).
+    let fallback = definition
+        .strip_prefix("EPSG:")
+        .and_then(|c| c.parse().ok())
+        .is_some_and(|c| terrio_crs::epsg_wkt(c).is_none() || SpatialRef::from_epsg(c).is_err());
     if fallback { Ok(None) } else { SpatialRef::parse(definition).map(Some).map_err(|e| e.to_string()) }
 }
 

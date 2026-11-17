@@ -916,6 +916,13 @@ impl Def {
         } else {
             match projections::build(name, &mut setup)? {
                 Some(b) => Some(Arc::from(b)),
+                // PROJ 9.9.0's Transverse Mercator Zoned Grid System (EPSG:32600 and 32700), which
+                // neither terrio nor wbprojection computes yet.
+                None if name == "tmerczoned" => {
+                    return Err(Error::Crs(
+                        "unsupported projection: +proj=tmerczoned (Transverse Mercator Zoned Grid System) is not computed yet".into(),
+                    ));
+                }
                 None => {
                     #[cfg(feature = "wbprojection-fallback")]
                     {
@@ -1773,6 +1780,11 @@ impl Def {
         if !self.geocentric && self.vertical.is_none() {
             self.three_d = true;
         }
+    }
+
+    /// Whether it is a geographic 3D or a geocentric CRS.
+    pub fn geodetic_3d(&self) -> bool {
+        self.three_d || self.geocentric
     }
 
     /// Whether coordinates have a height: a geographic 3D or a compound CRS.

@@ -66,7 +66,7 @@ precedence = "override"
 SPDX-FileCopyrightText = "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"
 SPDX-License-Identifier = "MIT"
 
-# The EPSG Geodetic Parameter Dataset, owned by IOGP, through PROJ 9.8.1 and GDAL.
+# The EPSG Geodetic Parameter Dataset, owned by IOGP, through PROJ 9.9.0 and GDAL.
 [[annotations]]
 path = [
     "crates/terrio-crs/data/epsg.tsv.zst",
@@ -77,7 +77,7 @@ precedence = "override"
 SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
 SPDX-License-Identifier = "LicenseRef-EPSG AND MIT"
 
-# The grids of PROJ 9.8.1's database (data/sql/grid_alternatives.sql): names, download URLs and
+# The grids of PROJ 9.9.0's database (data/sql/grid_alternatives.sql): names, download URLs and
 # licence flags (scripts/gen_grid_catalog.py).
 [[annotations]]
 path = "crates/terrio-crs/data/grids.tsv"
@@ -93,9 +93,9 @@ precedence = "override"
 SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
 SPDX-License-Identifier = "LicenseRef-EPSG AND MIT"
 
-# Every EPSG and ESRI CRS in PROJ 9.8.1's WKT 2, GDAL WKT 1 and ESRI WKT 1 and PROJ's PROJJSON
+# Every EPSG and ESRI CRS in PROJ 9.9.0's WKT 2, GDAL WKT 1 and ESRI WKT 1 and PROJ's PROJJSON
 # of each: the EPSG Geodetic Parameter Dataset (IOGP) and Esri projection engine data (Apache-2.0),
-# through PROJ 9.8.1 (scripts/gen_projjson_corpus.py), and the differences terrio records from them.
+# through PROJ 9.9.0 (scripts/gen_projjson_corpus.py), and the differences terrio records from them.
 [[annotations]]
 path = [
     "crates/terrio-crs/tests/data/projjson_corpus_epsg.jsonl.zst",
@@ -107,7 +107,7 @@ precedence = "override"
 SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright © 2010-2025 Esri", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
 SPDX-License-Identifier = "LicenseRef-EPSG AND Apache-2.0 AND MIT"
 
-# EPSG datums with the Esri datum names (Esri projection engine data, Apache-2.0, via PROJ 9.7.1).
+# EPSG datums with the Esri datum names (Esri projection engine data, Apache-2.0, via PROJ 9.9.0).
 [[annotations]]
 path = "crates/terrio-crs/data/datums.tsv.zst"
 precedence = "override"
@@ -120,8 +120,8 @@ precedence = "override"
 SPDX-FileCopyrightText = ["Copyright © 2010-2025 Esri", "International Association of Oil & Gas Producers (IOGP)", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
 SPDX-License-Identifier = "Apache-2.0 AND LicenseRef-EPSG AND MIT"
 
-# The registry CRSs terrio lists: EPSG v12.029 (IOGP), ESRI (Esri projection engine data,
-# Apache-2.0) and IAU_2015 (PROJ, MIT) names and areas of use, through PROJ 9.8.1's database and
+# The registry CRSs terrio lists: EPSG v13.102 (IOGP), ESRI (Esri projection engine data,
+# Apache-2.0) and IAU_2015 (PROJ, MIT) names and areas of use, through PROJ 9.9.0's database and
 # GDAL (scripts/gen_crs_catalog.py).
 [[annotations]]
 path = "crates/terrio-crs/data/crs_catalog.tsv.zst"
@@ -129,15 +129,15 @@ precedence = "override"
 SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright © 2010-2025 Esri", "Copyright (c) 2021, Hobu Inc", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
 SPDX-License-Identifier = "LicenseRef-EPSG AND Apache-2.0 AND MIT"
 
-# The EPSG names and aliases and the ESRI aliases of CRSs PROJ 9.8.1 looks CRSs up by, with the
-# EPSG codes they stand for, from PROJ 9.8.1's database (scripts/gen_crs_names.py).
+# The EPSG names and aliases and the ESRI aliases of CRSs PROJ 9.9.0 looks CRSs up by, with the
+# EPSG codes they stand for, from PROJ 9.9.0's database (scripts/gen_crs_names.py).
 [[annotations]]
 path = "crates/terrio-crs/data/crs_names.tsv.zst"
 precedence = "override"
 SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright © 2010-2025 Esri", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
 SPDX-License-Identifier = "LicenseRef-EPSG AND Apache-2.0 AND MIT"
 
-# PROJ 9.8.1's placements of EPSG and ESRI WKTs of EPSG CRSs (scripts/gen_wkt_unresolved.py).
+# PROJ 9.9.0's placements of EPSG and ESRI WKTs of EPSG CRSs (scripts/gen_wkt_unresolved.py).
 [[annotations]]
 path = "crates/terrio-crs/tests/data/wkt_unresolved.json"
 precedence = "override"
@@ -147,7 +147,7 @@ SPDX-License-Identifier = "LicenseRef-EPSG AND Apache-2.0 AND MIT"
 # PROJ 9.8.1's placements of points of EPSG CRSs and of WKTs with ESRI names (ESRI WKT 1, ESRI
 # methods and datum names): in grads, with prime meridians, with datums known by ID or name, read
 # by PROJ, and bound (scripts/gen_grads_and_prime_meridians.py, gen_wkt_datum_shift.py,
-# gen_wkt1_proj_reads.py, gen_wkt2_bound.py).
+# gen_wkt1_proj_reads.py, gen_wkt2_bound.py; wkt_datum_shift.json from PROJ 9.9.0).
 [[annotations]]
 path = [
     "crates/terrio-crs/tests/data/grads_and_prime_meridians.json",
@@ -161,7 +161,7 @@ SPDX-License-Identifier = "LicenseRef-EPSG AND Apache-2.0 AND MIT"
 
 # PROJ 9.8.1's readings of WKTs and PROJ strings, with EPSG CRSs, datums and transformations, and
 # its placements in deprecated EPSG CRSs (scripts/gen_wkt1_axes.py, gen_proj_ellipsoid_shape.py,
-# gen_epsg_deprecated.py).
+# gen_epsg_deprecated.py; epsg_deprecated.json from PROJ 9.9.0).
 [[annotations]]
 path = [
     "crates/terrio-crs/tests/data/epsg_deprecated.json",

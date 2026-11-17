@@ -30,6 +30,7 @@ const KEPT_AXES: &[(&str, f64, f64)] = &[
     ("EPSG:29381", 6377483.865, 6356165.382966326),
     ("EPSG:29383", 6377483.865, 6356165.382966326),
     ("EPSG:29385", 6377483.865, 6356165.382966326),
+    ("ESRI:103989", 6377483.865, 6356165.382966326),
     // PROJ's `walbeck` and `clrk66` by their semi-minor axes, where ESRI's WKT rounds the
     // inverse flattening.
     ("ESRI:37007", 6376896.0, 6355834.8467),

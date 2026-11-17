@@ -1,7 +1,7 @@
 // Written to match the behavior of:
 //   GDAL v3.13.2:
 //     ogr/ogr_srs_api.h (OSRGetCRSInfoListFromDatabase)
-//   PROJ 9.8.1:
+//   PROJ 9.9.0:
 //     src/iso19111/c_api.cpp (proj_get_crs_info_list_from_database)
 // No code is translated from these sources.
 
@@ -18,8 +18,8 @@ use std::sync::OnceLock;
 static DATA: &[u8] = include_bytes!("../data/crs_catalog.tsv.zst");
 
 /// The version of the EPSG Geodetic Parameter Dataset whose CRSs terrio carries and
-/// [`list_crs`] lists: that of PROJ 9.8.1's database.
-pub const EPSG_VERSION: &str = "v12.029";
+/// [`list_crs`] lists: that of PROJ 9.9.0's database.
+pub const EPSG_VERSION: &str = "v13.102";
 
 /// The authorities [`list_crs`] lists, in the order it lists them.
 pub const AUTHORITIES: [&str; 3] = ["EPSG", "ESRI", "IAU_2015"];
@@ -300,12 +300,14 @@ impl Record {
         words.iter().all(|w| self.search.contains(w.as_str()) || self.code_text.starts_with(w.as_str()) || self.key.starts_with(w.as_str()))
     }
 
-    /// Whether terrio resolves the CRS's code: always for the EPSG CRSs of the catalog, which are
-    /// those of terrio's table; for the ESRI and IAU_2015 CRSs, when terrio computes their
+    /// Whether terrio resolves the CRS's code: for the EPSG CRSs of the catalog, which are those
+    /// of terrio's table, unless terrio does not compute their projection yet (the UTM grid
+    /// systems EPSG:32600 and 32700); for the ESRI and IAU_2015 CRSs, when terrio computes their
     /// projection (in this build: `SpatialRef::from_esri` refuses the ESRI CRSs on projections
     /// that need the `wbprojection-fallback` feature, and those terrio does not compute as PROJ).
     fn resolves(&self) -> bool {
         *self.resolves.get_or_init(|| match self.authority {
+            "EPSG" => crate::SpatialRef::from_epsg(self.code).is_ok(),
             "ESRI" => crate::SpatialRef::from_esri(self.code).is_ok(),
             "IAU_2015" => crate::SpatialRef::from_iau(self.code).is_ok(),
             _ => true,
@@ -331,7 +333,7 @@ impl Record {
 
 /// The CRSs of the registries terrio carries that a query selects, by authority (EPSG, ESRI,
 /// IAU_2015) and code, as GDAL's `OSRGetCRSInfoListFromDatabase` describes them (EPSG
-/// [`EPSG_VERSION`], from PROJ 9.8.1's database).
+/// [`EPSG_VERSION`], from PROJ 9.9.0's database).
 ///
 /// Listed are the CRSs terrio resolves without network or PROJ installation: the EPSG geographic,
 /// geocentric, projected, vertical and compound CRSs of its table (not engineering CRSs, compound
@@ -434,22 +436,24 @@ mod tests {
                 .filter(|e| e.authority == auth && kind.is_none_or(|k| e.kind == k) && deprecated.is_none_or(|d| e.deprecated == d))
                 .count()
         };
-        // PROJ 9.8.1 lists 7741 EPSG usage rows, including 17 duplicate codes. Its
-        // 7724 distinct codes include 44 codes our table does not resolve (15 other,
-        // 29 projected, EPSG:3752 among them). The catalog stores one row per distinct code.
-        assert_eq!(count("EPSG", None, None), 7680);
-        assert_eq!(count("EPSG", Some(CrsKind::Geographic2D), None), 689);
-        assert_eq!(count("EPSG", Some(CrsKind::Geographic3D), None), 273);
-        assert_eq!(count("EPSG", Some(CrsKind::Geocentric), None), 269);
-        assert_eq!(count("EPSG", Some(CrsKind::Projected), None), 5679);
-        assert_eq!(count("EPSG", Some(CrsKind::Vertical), None), 299);
-        assert_eq!(count("EPSG", Some(CrsKind::Compound), None), 471);
-        assert_eq!(count("EPSG", None, Some(true)), 519);
-        // 2528 in the catalog, less those on projections terrio does not compute: Wagner VII,
+        // PROJ 9.9.0 (GDAL 3.13.3's `OSRGetCRSInfoListFromDatabase`) lists 8021 EPSG usage rows,
+        // including 17 duplicate codes. Its 8004 distinct codes include 43 codes our table does
+        // not resolve (16 other, 27 projected, EPSG:3752 among them). The catalog stores one row
+        // per distinct code, 7961, of which the two UTM grid systems (EPSG:32600 and 32700) are not
+        // listed: terrio does not compute their projection yet.
+        assert_eq!(count("EPSG", None, None), 7959);
+        assert_eq!(count("EPSG", Some(CrsKind::Geographic2D), None), 718);
+        assert_eq!(count("EPSG", Some(CrsKind::Geographic3D), None), 300);
+        assert_eq!(count("EPSG", Some(CrsKind::Geocentric), None), 296);
+        assert_eq!(count("EPSG", Some(CrsKind::Projected), None), 5752);
+        assert_eq!(count("EPSG", Some(CrsKind::Vertical), None), 309);
+        assert_eq!(count("EPSG", Some(CrsKind::Compound), None), 584);
+        assert_eq!(count("EPSG", None, Some(true)), 530);
+        // 2589 in the catalog, less those on projections terrio does not compute: Wagner VII,
         // Compact Miller, Goode Homolosine Ocean, Peirce quincuncial and Spilhaus; and without
         // wbprojection, the 28 on Aitoff, the other Eckerts and other projections.
         let refused = if cfg!(feature = "wbprojection-fallback") { 9 } else { 37 };
-        assert_eq!(count("ESRI", None, None), 2528 - refused);
+        assert_eq!(count("ESRI", None, None), 2589 - refused);
         assert_eq!(count("IAU_2015", None, None), 2201);
         assert_eq!(count("IAU_2015", Some(CrsKind::Other), None), 12);
         // The default leaves deprecated CRSs out.
@@ -514,6 +518,6 @@ mod tests {
     #[test]
     fn epsg_version_is_the_catalogs() {
         let text = crate::epsg::decompress(DATA);
-        assert!(text.lines().any(|l| l == format!("#\tEPSG\t{EPSG_VERSION}\t2025-10-02")), "{}", &text[..300]);
+        assert!(text.lines().any(|l| l == format!("#\tEPSG\t{EPSG_VERSION}\t2026-08-27")), "{}", &text[..300]);
     }
 }

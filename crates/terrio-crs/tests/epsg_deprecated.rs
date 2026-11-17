@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
 
-//! A deprecated EPSG code keeps its own definition, as PROJ 9.8.1 gives it (`CRS.from_epsg`), not
+//! A deprecated EPSG code keeps its own definition, as PROJ 9.9.0 gives it (`CRS.from_epsg`), not
 //! its replacement's, which GDAL substitutes by default (`OSR_USE_NON_DEPRECATED=YES`): EPSG:4855,
 //! the deprecated ETRS89 / NTM zone 5, has a false northing of 1,000,000 m and a latitude of origin
 //! of 0, where its replacement EPSG:5105 has 0 and 58°N, 6,431 km apart.
@@ -24,7 +24,7 @@ fn offline() {
 fn cases() -> Vec<Value> {
     let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/epsg_deprecated.json")).unwrap();
     let data: Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(data["proj_version"], "9.8.1");
+    assert_eq!(data["proj_version"], "9.9.0");
     data["cases"].as_array().unwrap().clone()
 }
 
@@ -43,7 +43,7 @@ fn deprecated_codes_are_placed_by_their_own_definition_as_proj_does() {
     offline();
     let wgs84 = SpatialRef::from_epsg(4326).unwrap();
     let cases = cases();
-    assert_eq!(cases.len(), 498);
+    assert_eq!(cases.len(), 509);
     let mut bad = Vec::new();
     let mut compared = 0;
     for case in &cases {
@@ -72,7 +72,7 @@ fn deprecated_codes_are_placed_by_their_own_definition_as_proj_does() {
             bad.push(format!("EPSG:{code}: ({x}, {y}, {z}), PROJ {proj:?}"));
         }
     }
-    assert_eq!(compared, 490);
+    assert_eq!(compared, 501);
     // The pending codes still differ: remove one from `PENDING` once it matches.
     let matching: Vec<u32> = PENDING.iter().copied().filter(|c| !bad.iter().any(|b| b.starts_with(&format!("EPSG:{c}:")))).collect();
     assert!(matching.is_empty(), "pending codes that now match PROJ: {matching:?}");

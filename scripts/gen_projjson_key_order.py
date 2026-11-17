@@ -1,5 +1,5 @@
 """Generate crates/terrio-crs/tests/data/projjson_key_order.txt: the key order of every kind of
-object PROJ 9.8.1 writes in PROJJSON, one comma-separated list of keys per line.
+object PROJ 9.9.0 writes in PROJJSON, one comma-separated list of keys per line.
 
 The objects are those of the PROJJSON of every EPSG, ESRI and IAU_2015 CRS in PROJ's database
 (deprecated ones included), and of a few CRSs given by PROJ strings (bound and planetary).
@@ -27,7 +27,7 @@ PROJ_STRINGS = [
 
 
 def main():
-    assert pyproj.proj_version_str == "9.8.1", pyproj.proj_version_str
+    assert pyproj.proj_version_str == "9.9.0", pyproj.proj_version_str
     seen = set()
 
     def walk(value):

@@ -32,9 +32,10 @@ PDAL code, and its results are tested against them (see [Acknowledgements](#ackn
 
 Coordinate transformations match GDAL's: terrio carries the EPSG CRSs with the coordinate
 operations GDAL uses for them (generated from GDAL and PROJ by `scripts/gen_epsg_table.py`) and
-pure-Rust ports of the projections they need. For each of the 6,354 EPSG geographic and projected
-CRSs GDAL 3.12 transforms, transformations from and to WGS 84 agree with GDAL's within a
-centimetre, and 99 % of a sample of transformations between two CRSs within a metre (see
+pure-Rust ports of the projections they need. For 6,456 of the 6,458 EPSG geographic and projected
+CRSs GDAL 3.13 transforms (all but the two UTM grid systems of EPSG v13, whose projection terrio
+does not compute yet), transformations from and to WGS 84 agree with GDAL's within a centimetre,
+and 99 % of a sample of transformations between two CRSs within a metre (see
 `crates/terrio-crs/tests/epsg_accuracy.rs`).
 
 ## Command line

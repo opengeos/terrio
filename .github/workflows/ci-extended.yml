@@ -166,9 +166,14 @@ jobs:
       - uses: actions/cache/restore@v6
         with:
           path: terrio-data
-          key: terrio-data-gdal3.12.2-proj9.8.1-${{ hashFiles('scripts/fetch_test_data.sh', 'scripts/gen_epsg_points.py', 'scripts/proj_grids.txt') }}
+          key: terrio-data-gdal3.12.2-proj9.8.1-points-gdal3.13.3-proj9.9.0-${{ hashFiles('scripts/fetch_test_data.sh', 'scripts/gen_epsg_points.py', 'scripts/proj_grids.txt') }}
       - name: Fetch test data
         shell: micromamba-shell {0}
+        env:
+          # The EPSG reference points come from ci.yml's real-data job, which saves the cache this
+          # job restores; on a cache miss they are not computed here (the crs and crs-grids
+          # conformance suites then skip).
+          TERRIO_EPSG_POINTS_PYTHON: "false"
         run: scripts/fetch_test_data.sh terrio-data
       - name: Build
         run: |
