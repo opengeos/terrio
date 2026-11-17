@@ -460,8 +460,13 @@ impl Def {
             d.area = e.area;
             d.body = Some(399);
             // A WKT identified as this code but with its own TOWGS84: GDAL uses that shift (not
-            // over a PROJ4 extension, which describes the whole CRS).
+            // over a PROJ4 extension, which describes the whole CRS). Not over Web Mercator's
+            // `+nadgrids=@null` (its registry WKT's extension), which wins over `+towgs84` as in a
+            // PROJ string: PROJ 9.8.1 places ESRI's WGS_1984_Web_Mercator_Auxiliary_Sphere with a
+            // TOWGS84, zero or not, as EPSG:3857 (a shift on the projection's sphere put 45°N 30 km
+            // away).
             if s.proj4.is_none()
+                && !super::proj4_extension(&e.wkt).is_some_and(|p| p.split_whitespace().any(|t| t == "+nadgrids=@null"))
                 && let Some(w) = s.wkt.as_deref().filter(|w| *w != e.wkt && super::proj4_extension(w).is_none())
                 && let Some(t) = wkt_towgs84(w)
             {
