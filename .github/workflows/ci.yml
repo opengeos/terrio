@@ -505,21 +505,32 @@ jobs:
       - uses: mamba-org/setup-micromamba@v3
         with:
           environment-name: gdal
-          # The reference: the EPSG table and test points come from GDAL 3.12.2 and PROJ 9.8.1, and
-          # newer EPSG databases change some transformations. rasterio comes from pip (with its
-          # bundled GDAL), as conda-forge has none for GDAL 3.12.2 with PROJ 9.8.
+          # The reference for the raster and vector comparisons: GDAL 3.12.2 and PROJ 9.8.1 (the
+          # EPSG points come from GDAL 3.13.3 and PROJ 9.9.0, below). rasterio comes from pip (with
+          # its bundled GDAL), as conda-forge has none for GDAL 3.12.2 with PROJ 9.8.
           create-args: gdal=${{ env.GDAL_REFERENCE_VERSION }} libgdal-core=${{ env.GDAL_REFERENCE_VERSION }} proj=9.8.1 libgdal-arrow-parquet libgdal-jp2openjpeg libgdal-netcdf libgdal-hdf5 libgdal-grib numpy pip pytest maturin pyproj pdal laspy lazrs-python pyarrow geopandas shapely
           cache-environment: true
       - name: Benchmark harness regression tests
         shell: micromamba-shell {0}
         run: python -m pytest -v scripts/tests
       - uses: actions/cache@v6
+        id: terrio-data
         with:
           path: terrio-data
-          # Holds the datum shift and geoid grids of scripts/proj_grids.txt too (230 MB).
-          key: terrio-data-gdal${{ env.GDAL_REFERENCE_VERSION }}-proj9.8.1-${{ hashFiles('scripts/fetch_test_data.sh', 'scripts/gen_epsg_points.py', 'scripts/proj_grids.txt') }}
+          # Holds the datum shift and geoid grids of scripts/proj_grids.txt too (230 MB), and the
+          # EPSG reference points of GDAL 3.13.3 and PROJ 9.9.0.
+          key: terrio-data-gdal${{ env.GDAL_REFERENCE_VERSION }}-proj9.8.1-points-proj9.9.0-${{ hashFiles('scripts/fetch_test_data.sh', 'scripts/gen_epsg_points.py', 'scripts/proj_grids.txt') }}
+      # terrio-crs's EPSG table comes from PROJ 9.9.0, and so do the points its transformations
+      # are checked against (epsg_accuracy): GDAL 3.13.3, the first GDAL conda-forge builds on
+      # PROJ 9.9, in an environment of their own, only to compute them.
+      - name: EPSG reference points environment
+        if: steps.terrio-data.outputs.cache-hit != 'true'
+        shell: micromamba-shell {0}
+        run: micromamba create -y -n epsg-points -c conda-forge gdal=3.13.3 proj=9.9.0 pyproj numpy
       - name: Fetch test data
         shell: micromamba-shell {0}
+        env:
+          TERRIO_EPSG_POINTS_PYTHON: micromamba run -n epsg-points python
         run: scripts/fetch_test_data.sh terrio-data
       - name: Install rasterio, xarray, dask, rioxarray, zarr and scipy
         # With pip, on top of the cached environment: terrio.rio is compared with rasterio, and

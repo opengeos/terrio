@@ -166,3 +166,11 @@ pub fn check(name: &str) -> Option<(Tally, Tally, Tally)> {
     println!("{}", cross.row("CRS to CRS"));
     Some((fwd, inv, cross))
 }
+
+/// The pairs of `beyond`, without those from or to WGS 84 / UTM grid system (EPSG:32600 and
+/// 32700), on the Transverse Mercator Zoned Grid System, which terrio does not compute yet
+/// (PROJ 9.9.0's `tmerczoned`).
+#[allow(dead_code)]
+pub fn without_utm_grid_systems(beyond: Vec<&str>) -> Vec<&str> {
+    beyond.into_iter().filter(|p| !p.split('>').any(|c| c == "32600" || c == "32700")).collect()
+}

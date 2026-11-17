@@ -687,6 +687,13 @@ GDAL:
 - Sentinel-2 L1C and L2A band files (JPEG 2000 with GMLJP2 boxes) and GDAL's JPEG 2000 test files
 - GeoTIFFs written by GDAL in each compression it offers beyond the common ones: JPEG (YCbCr and
   RGB), WebP, JPEG XL, LERC (with Deflate and Zstandard, lossy and with NaN masks) and LZMA
+- GDAL's transformations of points of every EPSG CRS, without and with the grids of
+  `scripts/proj_grids.txt` (`epsg_points.tsv`, `epsg_points_grids.tsv`, from
+  `scripts/gen_epsg_points.py`), which `epsg_accuracy` and `epsg_accuracy_grids` check terrio
+  against. They need the PROJ terrio-crs's EPSG table comes from, PROJ 9.9.0, with GDAL 3.13.3
+  (the raster and vector comparisons stay on GDAL 3.12.2 and PROJ 9.8.1). When that GDAL is in
+  another environment, `TERRIO_EPSG_POINTS_PYTHON` names its Python (`micromamba run -n NAME
+  python`), as CI does. Points of PROJ 9.8.1 are refused: delete them, and run the script again.
 
 ### Datum shift grids and PROJ directories
 
