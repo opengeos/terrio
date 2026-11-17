@@ -85,12 +85,12 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
-      # With .cargo/audit.toml, which ignores five advisories of wbraster's dependencies.
+      # With .cargo/audit.toml, which ignores nine advisories of wbraster's dependencies.
       - run: cargo audit
       - run: cargo audit --no-fetch --file fuzz/Cargo.lock
       # cargo audit ignores an advisory by its ID, in every version of the crate. Without the
       # config (read from the working directory), the only vulnerabilities in either lockfile may be
-      # those five, in zip 8.6.0 and ruzstd 0.8.3: another crate or version, or a new advisory for
+      # those nine, in zip 8.6.0 and ruzstd 0.8.3: another crate or version, or a new advisory for
       # these two, fails.
       - name: The ignored advisories are only wbraster's
         working-directory: ${{ runner.temp }}
@@ -102,9 +102,9 @@ jobs:
             found=$(jq -r '.vulnerabilities.list[] | "\(.package.name)@\(.package.version) \(.advisory.id)"' audit.json)
             echo "$lock:"
             echo "$found"
-            unexpected=$(echo "$found" | grep -vxE 'zip@8\.6\.0 RUSTSEC-2026-0(367|368|369|429)|ruzstd@0\.8\.3 RUSTSEC-2026-0344' || true)
+            unexpected=$(echo "$found" | grep -vxE 'zip@8\.6\.0 RUSTSEC-2026-0(367|368|369|429|545|546|547|548)|ruzstd@0\.8\.3 RUSTSEC-2026-0344' || true)
             if [ -n "$unexpected" ]; then
-              echo "::error::$lock: vulnerabilities other than wbraster's five (zip 8.6.0, ruzstd 0.8.3): ${unexpected//$'\n'/, }"
+              echo "::error::$lock: vulnerabilities other than wbraster's nine (zip 8.6.0, ruzstd 0.8.3): ${unexpected//$'\n'/, }"
               failed=1
             fi
           done
