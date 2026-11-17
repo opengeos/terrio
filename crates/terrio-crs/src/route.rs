@@ -284,9 +284,10 @@ impl Route {
         // Unless both CRSs are 3D (geographic 3D or geocentric), PROJ makes a concatenation
         // through a transformation its database registers between geocentric CRSs only where no
         // transformation of the area links the datums directly (PROJ filters the direct ones by
-        // area before it tries the pivot): from 2D WGS 84, PROJ 9.9.0 places the deprecated GDA94 (3D) (EPSG:4347) by
-        // GDA94 to WGS 84 (1), from 3D WGS 84 through WGS 84 (G1762); ITRF90 (geocentric)
-        // (EPSG:4332), which none links directly, through WGS 84 (Transit) from both.
+        // area before it tries the pivot): from 2D WGS 84, PROJ 9.9.0 places the deprecated
+        // GDA94 (3D) (EPSG:4347) by GDA94 to WGS 84 (1), from 3D WGS 84 through WGS 84 (G1762);
+        // ITRF90 (geocentric) (EPSG:4332), which none links directly, through WGS 84 (Transit)
+        // from both.
         let dimensions = src.geodetic_3d() && dst.geodetic_3d();
         let pivoted = |op: &Op| op.geocentric && op.concatenated;
         // Between projected CRSs, PROJ concatenates the transformations with the projections,
