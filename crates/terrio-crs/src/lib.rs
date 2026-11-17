@@ -732,9 +732,11 @@ impl SpatialRef {
         None
     }
 
-    /// EPSG code of the geographic CRS underlying this definition, when known.
+    /// EPSG code of the geographic CRS underlying this definition, when known. For a WKT 1 CRS on a
+    /// datum no CRS is on, this is the CRS its name identifies it as (GR96 for ESRI's
+    /// GCS_Greenland_1996), whose transformations the definition does not take.
     pub fn geographic_code(&self) -> Option<u32> {
-        Def::new(self).ok().and_then(|d| d.geog())
+        Def::new(self).ok().and_then(|d| d.geographic_code())
     }
 
     /// Rotated-pole CF parameters, semi-major axis and eccentricity squared.
@@ -1514,6 +1516,35 @@ fn wkt_datum(wkt: &str) -> Option<wkt1::Node> {
 pub(crate) fn wkt_datum_name_and_code(wkt: &str) -> Option<(String, Option<u32>)> {
     let datum = wkt_datum(wkt)?;
     Some((datum.name().unwrap_or_default().to_string(), datum.epsg()))
+}
+
+/// The EPSG geographic CRS PROJ 9.8.1 identifies a WKT 1 `GEOGCS` as by its name alone, on a datum
+/// no EPSG geographic CRS is on and with which the CRS's datum has a name in common: ESRI's
+/// GCS_Greenland_1996 on `D_Greenland_1996` (Greenland 1996, 6747) as GR96, EPSG:4747, on the GR96
+/// ensemble (1421). Not for another name on that datum, where PROJ identifies none, nor for a
+/// geographic 3D CRS (ESRI's `LINUNIT`), which the name table leaves out, nor for WKT 2, where PROJ
+/// does not read ESRI's datum names. The caller gives it as the geographic CRS only, not as the
+/// CRS's own code: PROJ places such a CRS by a ballpark, not by the transformations of GR96.
+pub(crate) fn identify_by_shared_name(geogcs: &str) -> Option<u32> {
+    let (datums, _) = wkt_datums_and_others(geogcs);
+    if datums.is_empty() || !datums.iter().all(|d| epsg::geographic_on(*d).is_empty()) {
+        return None;
+    }
+    let root = wkt1::parse(geogcs)?;
+    if !root.key.eq_ignore_ascii_case("GEOGCS") || root.child("LINUNIT").is_some() {
+        return None;
+    }
+    // ESRI's names for a `GCS_` geographic CRS, as PROJ's WKT reader maps them.
+    let esri = root.name().is_some_and(|n| n.starts_with("GCS_"));
+    let code = epsg::crs_named_as_proj(root.name()?, false, false, esri)?;
+    let datum = epsg::get(code)?.datum;
+    if datums.contains(&datum) || !datums.iter().any(|d| epsg::datums_share_a_name(*d, datum)) {
+        return None;
+    }
+    // The same conversion on the same ellipsoid.
+    let own = Def::wkt_conversion(geogcs)?;
+    let theirs = Def::new(&SpatialRef { epsg: Some(code), ..Default::default() }).ok()?;
+    (own.same_conversion(&theirs) && (own.ell.a - theirs.ell.a).abs() < 1e-3 && (own.ell.es - theirs.ell.es).abs() < 1e-9).then_some(code)
 }
 
 /// The EPSG datums of a WKT definition's geodetic datum, and the other datums

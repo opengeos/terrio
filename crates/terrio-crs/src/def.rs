@@ -69,6 +69,9 @@ pub(crate) struct Def {
     datum: Option<u32>,
     /// The EPSG code of the geographic CRS, when known.
     geog: Option<u32>,
+    /// The EPSG geographic CRS that a CRS on a datum no CRS is on is identified as by its name
+    /// ([`Def::registered_datum`]). Its transformations are not those of that CRS.
+    named_geog: Option<u32>,
     /// All the operations of a datum found by its name ([`Def::datum_by_name`]), those whose
     /// grids are missing included, as `geog`'s registry entry gives them otherwise.
     all_ops: Option<Vec<Arc<Op>>>,
@@ -871,6 +874,7 @@ impl Def {
             ops: Vec::new(),
             datum: None,
             geog: None,
+            named_geog: None,
             all_ops: None,
             three_d: false,
             dynamic: false,
@@ -992,6 +996,12 @@ impl Def {
             && let Some(own) = own.as_deref()
         {
             self.datum_by_name(own);
+            // A WKT 1 GEOGCS on a datum no CRS is on keeps its datum's transformations, but gives
+            // the CRS PROJ 9.8.1 identifies it as by name (ESRI's GCS_Greenland_1996, GR96) as its
+            // geographic CRS (`own`: the text as written, else the node as written back).
+            if c.geogcs_wkt1.is_none() {
+                self.named_geog = super::identify_by_shared_name(own);
+            }
         }
     }
 
@@ -1306,6 +1316,7 @@ impl Def {
                 ops: Vec::new(),
                 datum: None,
                 geog: None,
+                named_geog: None,
                 all_ops: None,
                 three_d: false,
                 dynamic: false,
@@ -1628,6 +1639,12 @@ impl Def {
     /// The EPSG code of the geographic CRS.
     pub fn geog(&self) -> Option<u32> {
         self.geog
+    }
+
+    /// The EPSG geographic CRS, also when only its name identifies it on a datum no CRS is on
+    /// (ESRI's GCS_Greenland_1996, GR96).
+    pub fn geographic_code(&self) -> Option<u32> {
+        self.geog.or(self.named_geog)
     }
 
     /// Whether the CRS is on WGS 84 itself.
