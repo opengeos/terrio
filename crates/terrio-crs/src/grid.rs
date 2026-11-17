@@ -998,8 +998,7 @@ fn is_grid_file(p: &std::path::Path) -> bool {
 }
 
 /// Keep untrusted grid names bounded and escape controls before displaying diagnostics.
-#[cfg(not(target_family = "wasm"))]
-fn diagnostic_grid_name(name: &str) -> String {
+pub(crate) fn diagnostic_grid_name(name: &str) -> String {
     // Omit URL-shaped input before truncation, which could leave private userinfo visible.
     if name.contains("://") {
         return "<URL-shaped grid name omitted>".into();
@@ -1357,8 +1356,9 @@ pub struct GridUse {
     /// names it (`conus.las`), which PROJ does not open by its CDN name, and one PROJ's database
     /// does not know keep the name the definition gives them.
     pub name: String,
-    /// Where to download it: for a grid PROJ distributes, `https://cdn.proj.org/` followed by its
-    /// name. `None` for a grid PROJ's database does not know.
+    /// Where to download it, as PROJ's database gives it: for a grid PROJ distributes,
+    /// `https://cdn.proj.org/` followed by its name, whatever CDN terrio's own downloads use
+    /// (`TERRIO_CDN_ENDPOINT`). `None` for a grid PROJ's database does not know.
     pub url: Option<String>,
     /// Whether `url` gives the grid file itself (not a page or an archive to unpack).
     pub direct_download: bool,
@@ -1397,7 +1397,7 @@ fn catalog() -> &'static Catalog {
         let mut others = Vec::new();
         for line in TABLE.lines().filter(|l| !l.starts_with('#') && !l.is_empty()) {
             let f: Vec<&'static str> = line.split('\t').collect();
-            let [name, old, original, url, direct, open] = f[..] else { continue };
+            let [name, old, original, url, direct, open] = f[..] else { panic!("data/grids.tsv: not six fields: {line}") };
             let names = |list: &'static str| list.split(',').filter(|a| !a.is_empty()).collect::<Vec<_>>();
             let i = c.grids.len();
             c.by_name.insert(name, (i, true));
@@ -2364,6 +2364,15 @@ pub(crate) fn gridshift_apply(
 
 #[cfg(test)]
 mod tests {
+    /// Every row of the grid table is read, each grid by its own name.
+    #[test]
+    fn every_grid_of_the_table_is_read() {
+        let rows = include_str!("../data/grids.tsv").lines().filter(|l| !l.starts_with('#') && !l.is_empty()).count();
+        let c = super::catalog();
+        assert_eq!(c.grids.len(), rows);
+        assert!(c.grids.iter().all(|k| c.opened_by(k.name).is_some_and(|f| f.name == k.name)));
+    }
+
     /// The default search directories end with terrio's download cache.
     #[test]
     #[cfg(not(target_family = "wasm"))]

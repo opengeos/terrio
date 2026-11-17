@@ -45,6 +45,9 @@ fn a_transformation_names_the_grids_its_best_operation_needs() {
         // PROJ's database), with NAD27 to NAD83 (7): PROJ's first operation whose area holds the
         // point (`TransformerGroup` with the network on, so that every grid counts as found).
         ("EPSG:4267+7968", "EPSG:4269+5703", -100.0, 40.0, &["us_noaa_nadcon5_nad27_nad83_1986_conus.tif", "us_noaa_vertconc.tif"]),
+        // Auckland 1946 height to NZVD2016 height (2), whose grid is in NZGD2000 coordinates:
+        // with NZGD49 to NZGD2000 (3) to get there, though the horizontal CRS stays NZGD49.
+        ("EPSG:4272+5759", "EPSG:4272+7839", 174.76, -36.85, &["nz_linz_auckht1946-nzvd2016.tif", "nz_linz_nzgd2kgrid0005.tif"]),
         // One datum: no transformation.
         ("EPSG:4326", "EPSG:32633", 15.0, 50.0, &[]),
         // To NAD27 from geocentric WGS 84 coordinates of (-100°, 40°) (PROJ's EPSG:4326 to

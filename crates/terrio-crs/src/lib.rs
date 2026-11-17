@@ -2440,7 +2440,6 @@ fn point_motion(datum: u32, dt: f64) -> Option<Vec<datum::Step>> {
     datum::parse_steps(&steps)
 }
 
-/// The definition of an EPSG geographic 3D CRS.
 /// The message for a best operation that needs missing grids, naming them (`names`, joined).
 fn missing_grid_message(names: &str) -> String {
     let named = if names.is_empty() { String::new() } else { format!(" ({names})") };
@@ -2449,7 +2448,8 @@ fn missing_grid_message(names: &str) -> String {
 
 /// Vertical transformations, each with the horizontal route from the source's horizontal CRS
 /// to the geographic CRS it interpolates in, when that is on another datum.
-fn with_vertical_routes(ops: Vec<epsg::VerticalOp>, horizontal: &Def) -> Vec<(std::sync::Arc<datum::Op>, Option<route::Route>)> {
+/// With `all`, routes as if every grid were available (for the grids a point needs).
+fn with_vertical_routes(ops: Vec<epsg::VerticalOp>, horizontal: &Def, all: bool) -> Vec<(std::sync::Arc<datum::Op>, Option<route::Route>)> {
     ops.into_iter()
         .map(|v| {
             // On the geographic 2D CRS of a 3D one (ETRS89 for EPSG:4937).
@@ -2458,12 +2458,13 @@ fn with_vertical_routes(ops: Vec<epsg::VerticalOp>, horizontal: &Def) -> Vec<(st
                 .map(|g| epsg::get(g).map_or(g, |e| e.geog))
                 .and_then(def_of)
                 .filter(|g| g.datum_code().is_none() || g.datum_code() != horizontal.datum_code())
-                .map(|g| route::Route::new(horizontal, &g));
+                .map(|g| if all { route::Route::all(horizontal, &g) } else { route::Route::new(horizontal, &g) });
             (v.op, route)
         })
         .collect()
 }
 
+/// The definition of an EPSG geographic 3D CRS.
 fn def_of(code: u32) -> Option<Def> {
     Def::new(&SpatialRef { epsg: Some(code), ..Default::default() }).ok()
 }
@@ -2604,7 +2605,7 @@ impl Transformer {
                 let datum = |c: u32| epsg::vertical(c).map(|v| v.datum).filter(|d| *d != 0);
                 let same = datum(a).is_some() && datum(a) == datum(b);
                 let ops = if same { Vec::new() } else { epsg::vertical_transformations(a, b) };
-                (with_vertical_routes(ops, &s.horizontal()), same, (!same).then_some((a, b)))
+                (with_vertical_routes(ops, &s.horizontal(), false), same, (!same).then_some((a, b)))
             }
             _ => (Vec::new(), false, None),
         };
@@ -2840,7 +2841,7 @@ impl Transformer {
             .grids()
             .into_iter()
             .filter(|(n, optional)| !optional && !grid::available(n))
-            .map(|(n, _)| grid::grid_use(&n, false).name)
+            .map(|(n, _)| grid::diagnostic_grid_name(&grid::grid_use(&n, false).name))
             .collect();
         let names = names.join(", ");
         self.missing_grids.get_or_init(|| names.clone());
@@ -3046,12 +3047,18 @@ impl Transformer {
         // A transformation between the vertical CRSs of compound CRSs (VERTCON...), as
         // `vertical_height` picks it when every grid can be found.
         if let (Some((a, b)), Some(v)) = (self.vertical_codes, self.src.vertical()) {
-            let all =
-                self.all_vertical_ops.get_or_init(|| with_vertical_routes(epsg::vertical_transformations_all(a, b), &self.src_horizontal));
+            let all = self
+                .all_vertical_ops
+                .get_or_init(|| with_vertical_routes(epsg::vertical_transformations_all(a, b), &self.src_horizontal, true));
             let (lon, lat) = self.src.unproject(x, y).ok_or_else(fail)?;
             let p = datum::Point { lon, lat, h: z * v.to_meter, t: self.time };
             if let Some((i, _)) = self.vertical_pick(all, x, y, p, |op| !op.available()) {
                 names.extend(all[i].0.grids());
+                // The horizontal transformation to the CRS it interpolates in (NZGD49 to NZGD2000
+                // for the Auckland 1946 height grid), as PROJ chains it.
+                if let Some(r) = &all[i].1 {
+                    names.extend(r.grid_operations_at(&self.src_horizontal, x, y, p).into_iter().flat_map(|op| op.grids()));
+                }
             }
         }
         let mut uses: Vec<GridUse> = Vec::new();
