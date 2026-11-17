@@ -903,6 +903,15 @@ pub(crate) fn vertical_transformations(source: u32, target: u32) -> Vec<Vertical
     chosen.iter().filter_map(|c| all.iter().find(|v| Arc::ptr_eq(&v.op, c)).map(|v| (*v).clone())).collect()
 }
 
+/// The transformations from a vertical CRS to another that PROJ lists when every grid can be
+/// found (see [`vertical_transformations`]).
+pub(crate) fn vertical_transformations_all(source: u32, target: u32) -> Vec<VerticalOp> {
+    let t = vertical_table();
+    let Some(lazy) = t.vertical_ops.get(&(source, target)) else { return Vec::new() };
+    let (ops, grid_ops) = lazy.get(&t.text, |ids| t.vertical_lists(ids));
+    if grid_ops.is_empty() { ops.clone() } else { grid_ops.clone() }
+}
+
 /// The publication date of an EPSG datum (`2007-01-01`), when it has one.
 pub(crate) fn datum_date(datum: u32) -> Option<&'static str> {
     table().dates.get(&datum).map(String::as_str)

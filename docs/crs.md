@@ -712,13 +712,15 @@ A Rust application that downloads grids itself, with terrio's network off (built
 or to download in the background), asks a transformer which grids a point needs:
 `Transformer::best_operation_grids_at(x, y, z)` lists the grids of the operation PROJ's
 `proj_trans` would use there with every grid present, missing ones included, each with its name
-on the PROJ CDN (also for a definition that gives an old name), its URL, whether the URL gives the
+on the PROJ CDN (also for a definition that gives its name before PROJ 7; a producer's name, which
+PROJ does not open the grid by under its CDN name, is kept), its URL, whether the URL gives the
 file and whether the grid has an open licence (from PROJ's database, as
 `proj_coordoperation_get_grid_used` reports them), and whether terrio finds it now. Download the
 missing ones, register them under their name (or save them in a search directory), build the
 transformer again, and ask again: when the point is outside a grid once it is there, the next
-operation's grids come up. Geoid models of vertical CRSs are not listed, and between CRSs with
-heights the horizontal grids listed are those between their geographic CRSs. With `ONLY_BEST=YES`, the
+operation's grids come up. Between compound CRSs, the grid of the transformation between their
+vertical CRSs (VERTCON...) is listed too, but geoid models are not, and between CRSs with heights
+the horizontal grids listed are those between their geographic CRSs. With `ONLY_BEST=YES`, the
 error for a missing grid names it too.
 
 ```rust

@@ -614,7 +614,8 @@ impl Route {
                 let mut excluded = Vec::new();
                 for _ in 0..3 {
                     let Some(i) = datum::pick_index(&ops, &excluded, |op, i| inside(op, boxes.get(i))) else { break };
-                    if !ops[i].available() || datum::run_op(ops[i], p, list[i].reverse, false).is_some() {
+                    // A grid the network did not give stops the point there, as in `apply_reporting`.
+                    if !ops[i].available() || ops[i].network_failed() || datum::run_op(ops[i], p, list[i].reverse, false).is_some() {
                         return vec![ops[i]];
                     }
                     excluded.push(i);
@@ -633,7 +634,7 @@ impl Route {
                 for _ in 0..3 {
                     let Some(i) = datum::pick_index(&ranks, &excluded, |op, i| op.ballpark || inside(op, boxes.get(i))) else { break };
                     let Some(chain) = chains.get(i) else { return Vec::new() };
-                    if chain.legs.iter().any(|l| !l.op.available()) || chain.run(p).is_some() {
+                    if chain.legs.iter().any(|l| !l.op.available() || l.op.network_failed()) || chain.run(p).is_some() {
                         return legs(chain);
                     }
                     excluded.push(i);

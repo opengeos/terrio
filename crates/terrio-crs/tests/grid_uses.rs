@@ -41,6 +41,10 @@ fn a_transformation_names_the_grids_its_best_operation_needs() {
         // CH1903 to ETRS89 (2), CHENyx06; to WGS 84 (2), a Helmert transformation without grid.
         ("EPSG:4149", "EPSG:4258", 7.44, 46.95, &["ch_swisstopo_CHENyx06_ETRS.tif"]),
         ("EPSG:4149", "EPSG:4326", 7.44, 46.95, &[]),
+        // NGVD29 height (m) to NAVD88 height (2), VERTCON central (its grid `vertconc.94` in
+        // PROJ's database), with NAD27 to NAD83 (7): PROJ's first operation whose area holds the
+        // point (`TransformerGroup` with the network on, so that every grid counts as found).
+        ("EPSG:4267+7968", "EPSG:4269+5703", -100.0, 40.0, &["us_noaa_nadcon5_nad27_nad83_1986_conus.tif", "us_noaa_vertconc.tif"]),
         // One datum: no transformation.
         ("EPSG:4326", "EPSG:32633", 15.0, 50.0, &[]),
         // To NAD27 from geocentric WGS 84 coordinates of (-100°, 40°) (PROJ's EPSG:4326 to
@@ -76,6 +80,14 @@ fn a_grid_is_named_and_located_as_in_proj_database() {
             optional: false,
         }]
     );
+    // A producer's name (PROJ's `original_grid_name`), which PROJ reports the grid by but does
+    // not open it by under its CDN name: kept, with the CDN's URL, so that a grid registered
+    // under it is found.
+    let uses = grids("+proj=longlat +ellps=clrk66 +nadgrids=conus.las", "EPSG:4326", -100.0, 40.0, 0.0);
+    assert_eq!((uses[0].name.as_str(), uses[0].url.as_deref()), ("conus.las", Some("https://cdn.proj.org/us_noaa_conus.tif")));
+    // A grid named twice, once optional: required.
+    let uses = grids("+proj=longlat +ellps=clrk66 +nadgrids=@conus,conus", "EPSG:4326", -100.0, 40.0, 0.0);
+    assert_eq!((names(&uses), uses[0].optional), (vec!["us_noaa_conus.tif"], false));
     let uses = grids("+proj=longlat +ellps=bessel +nadgrids=rdtrans2008.gsb", "EPSG:4326", 5.0, 52.0, 0.0);
     assert_eq!(names(&uses), ["rdtrans2008.gsb"]);
     assert_eq!(
@@ -106,6 +118,21 @@ fn a_missing_grid_error_names_the_grid() {
     match t.transform(-2.0, 52.6) {
         Err(Error::MissingGrid(m)) => assert!(m.contains("(uk_os_OSTN15_NTv2_OSGBtoETRS.tif)"), "{m}"),
         other => panic!("{other:?}"),
+    }
+}
+
+/// Each point's error names the grids its own best operation needs, not an earlier point's.
+#[test]
+fn each_point_names_its_own_missing_grid() {
+    terrio_crs::set_grid_search_paths(Some(Vec::new()));
+    terrio_crs::set_network_enabled(Some(false));
+    let opts = TransformOptions { only_best: true, ..Default::default() };
+    let t = Transformer::with_options(&SpatialRef::from_epsg(4267).unwrap(), &SpatialRef::from_epsg(4326).unwrap(), &opts).unwrap();
+    for (x, y, grid) in [(-100.0, 50.0, "(ca_nrc_ntv2_0.tif)"), (-150.0, 62.0, "(us_noaa_alaska.tif)")] {
+        match t.transform(x, y) {
+            Err(Error::MissingGrid(m)) => assert!(m.contains(grid), "({x}, {y}): {m}"),
+            other => panic!("{other:?}"),
+        }
     }
 }
 

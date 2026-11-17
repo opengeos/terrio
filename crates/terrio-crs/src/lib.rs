@@ -2294,6 +2294,11 @@ pub struct Transformer {
     /// each with the horizontal route from the source to the geographic CRS it interpolates in,
     /// when that is on another datum.
     vertical_ops: Vec<(std::sync::Arc<datum::Op>, Option<route::Route>)>,
+    /// The source's and target's vertical CRSs when `vertical_ops` are listed between them, and
+    /// the transformations PROJ lists between them when every grid can be found (for
+    /// [`Transformer::best_operation_grids_at`]), built on first use.
+    vertical_codes: Option<(u32, u32)>,
+    all_vertical_ops: std::sync::OnceLock<Vec<(std::sync::Arc<datum::Op>, Option<route::Route>)>>,
     /// The source's horizontal CRS, which the routes of `vertical_ops` start from.
     src_horizontal: Def,
     /// Whether the vertical CRSs share their datum (heights only change unit).
@@ -2436,6 +2441,29 @@ fn point_motion(datum: u32, dt: f64) -> Option<Vec<datum::Step>> {
 }
 
 /// The definition of an EPSG geographic 3D CRS.
+/// The message for a best operation that needs missing grids, naming them (`names`, joined).
+fn missing_grid_message(names: &str) -> String {
+    let named = if names.is_empty() { String::new() } else { format!(" ({names})") };
+    format!("best coordinate operation needs a missing grid{named}; set TERRIO_NETWORK=ON or TERRIO_GRID_DIR")
+}
+
+/// Vertical transformations, each with the horizontal route from the source's horizontal CRS
+/// to the geographic CRS it interpolates in, when that is on another datum.
+fn with_vertical_routes(ops: Vec<epsg::VerticalOp>, horizontal: &Def) -> Vec<(std::sync::Arc<datum::Op>, Option<route::Route>)> {
+    ops.into_iter()
+        .map(|v| {
+            // On the geographic 2D CRS of a 3D one (ETRS89 for EPSG:4937).
+            let route = v
+                .interpolation
+                .map(|g| epsg::get(g).map_or(g, |e| e.geog))
+                .and_then(def_of)
+                .filter(|g| g.datum_code().is_none() || g.datum_code() != horizontal.datum_code())
+                .map(|g| route::Route::new(horizontal, &g));
+            (v.op, route)
+        })
+        .collect()
+}
+
 fn def_of(code: u32) -> Option<Def> {
     Def::new(&SpatialRef { epsg: Some(code), ..Default::default() }).ok()
 }
@@ -2571,28 +2599,14 @@ impl Transformer {
             })
         });
         let codes = (s.vertical().and_then(|v| v.code), d.vertical().and_then(|v| v.code));
-        let (vertical_ops, same_vertical_datum) = match codes {
+        let (vertical_ops, same_vertical_datum, vertical_codes) = match codes {
             (Some(a), Some(b)) if a != b => {
                 let datum = |c: u32| epsg::vertical(c).map(|v| v.datum).filter(|d| *d != 0);
                 let same = datum(a).is_some() && datum(a) == datum(b);
                 let ops = if same { Vec::new() } else { epsg::vertical_transformations(a, b) };
-                let horizontal = s.horizontal();
-                let ops = ops
-                    .into_iter()
-                    .map(|v| {
-                        // On the geographic 2D CRS of a 3D one (ETRS89 for EPSG:4937).
-                        let route = v
-                            .interpolation
-                            .map(|g| epsg::get(g).map_or(g, |e| e.geog))
-                            .and_then(def_of)
-                            .filter(|g| g.datum_code().is_none() || g.datum_code() != horizontal.datum_code())
-                            .map(|g| route::Route::new(&horizontal, &g));
-                        (v.op, route)
-                    })
-                    .collect();
-                (ops, same)
+                (with_vertical_routes(ops, &s.horizontal()), same, (!same).then_some((a, b)))
             }
-            _ => (Vec::new(), false),
+            _ => (Vec::new(), false, None),
         };
         let src_horizontal = s.horizontal();
         let identity = src.same_as(dst) && motion.is_none();
@@ -2612,6 +2626,8 @@ impl Transformer {
             motion,
             vertical_ops,
             same_vertical_datum,
+            vertical_codes,
+            all_vertical_ops: std::sync::OnceLock::new(),
             src_horizontal,
             web_mercator_to_wgs84,
             wgs84_to_web_mercator,
@@ -2786,7 +2802,8 @@ impl Transformer {
         let flags = self.diagnostics.load(std::sync::atomic::Ordering::Relaxed);
         let previous = self.emitted_diagnostics.fetch_or(flags, std::sync::atomic::Ordering::Relaxed);
         let flags = flags & !previous;
-        let missing = self.missing_grid_message();
+        let missing =
+            if flags & 2 != 0 { missing_grid_message(self.missing_grids.get().map_or("", String::as_str)) } else { String::new() };
         for (bit, message) in [
             (1, "ballpark coordinate operation used between different ellipsoids; datum shift is unknown"),
             (2, missing.as_str()),
@@ -2808,29 +2825,27 @@ impl Transformer {
         self.flush_warnings();
         let flags = self.diagnostics.load(std::sync::atomic::Ordering::Relaxed);
         if self.policy.only_best && flags & 2 != 0 {
-            return Err(Error::MissingGrid(format!("ONLY_BEST=YES: {}", self.missing_grid_message())));
+            return Err(Error::MissingGrid(format!(
+                "ONLY_BEST=YES: {}",
+                missing_grid_message(self.missing_grids.get().map_or("", String::as_str))
+            )));
         }
         Ok(())
     }
 
-    /// The message for a best operation that needs a missing grid, naming the grids.
-    fn missing_grid_message(&self) -> String {
-        let named = self.missing_grids.get().filter(|g| !g.is_empty()).map_or_else(String::new, |g| format!(" ({g})"));
-        format!("best coordinate operation needs a missing grid{named}; set TERRIO_NETWORK=ON or TERRIO_GRID_DIR")
-    }
-
-    /// Records that the best operation for a point needs a missing grid, and which.
-    fn record_missing_grid(&self, op: &datum::Op) {
-        self.missing_grids.get_or_init(|| {
-            let names: Vec<String> = op
-                .grids()
-                .into_iter()
-                .filter(|(n, optional)| !optional && !grid::available(n))
-                .map(|(n, _)| grid::grid_use(&n, false).name)
-                .collect();
-            names.join(", ")
-        });
+    /// Records that the best operation for a point needs a missing grid, for the warning (which
+    /// names those of the first such point), and gives the missing grids of this one.
+    fn record_missing_grid(&self, op: &datum::Op) -> String {
+        let names: Vec<String> = op
+            .grids()
+            .into_iter()
+            .filter(|(n, optional)| !optional && !grid::available(n))
+            .map(|(n, _)| grid::grid_use(&n, false).name)
+            .collect();
+        let names = names.join(", ");
+        self.missing_grids.get_or_init(|| names.clone());
         self.diagnostics.fetch_or(2, std::sync::atomic::Ordering::Relaxed);
+        names
     }
 
     fn record_operation(&self, op: Option<&datum::Op>, outside: bool) {
@@ -2863,8 +2878,8 @@ impl Transformer {
             let (ideal, outside) = self.best_route().selected(&self.src, x, y, p);
             self.record_operation(ideal, outside);
             if let Some(op) = ideal.filter(|op| !op.available()) {
-                self.record_missing_grid(op);
-                return Err(Error::MissingGrid(format!("ONLY_BEST=YES: {}", self.missing_grid_message())));
+                let names = self.record_missing_grid(op);
+                return Err(Error::MissingGrid(format!("ONLY_BEST=YES: {}", missing_grid_message(&names))));
             }
             ideal
         } else {
@@ -3008,8 +3023,9 @@ impl Transformer {
     /// applies there: when the point is outside a grid once it is present, the next operation's
     /// grids come up, so ask again until every grid listed is available.
     ///
-    /// Geoid models of vertical CRSs are not listed. Between CRSs with heights (geographic 3D,
-    /// compound), the horizontal grids listed are those between their geographic CRSs, which
+    /// Between compound CRSs, the grids of the transformation between their vertical CRSs
+    /// (VERTCON...) are listed too, but not geoid models. Between CRSs with heights (geographic
+    /// 3D, compound), the horizontal grids listed are those between their geographic CRSs, which
     /// the transformations through a geoid model's CRS may not use.
     pub fn best_operation_grids_at(&self, x: f64, y: f64, z: f64) -> Result<Vec<GridUse>> {
         let fail = || Error::Crs(format!("cannot transform ({x}, {y}, {z})"));
@@ -3027,11 +3043,24 @@ impl Transformer {
             let p = datum::Point { lon, lat, h: z, t: self.time };
             names.extend(self.best_route().grid_operations_at(&self.src, x, y, p).into_iter().flat_map(|op| op.grids()));
         }
+        // A transformation between the vertical CRSs of compound CRSs (VERTCON...), as
+        // `vertical_height` picks it when every grid can be found.
+        if let (Some((a, b)), Some(v)) = (self.vertical_codes, self.src.vertical()) {
+            let all =
+                self.all_vertical_ops.get_or_init(|| with_vertical_routes(epsg::vertical_transformations_all(a, b), &self.src_horizontal));
+            let (lon, lat) = self.src.unproject(x, y).ok_or_else(fail)?;
+            let p = datum::Point { lon, lat, h: z * v.to_meter, t: self.time };
+            if let Some((i, _)) = self.vertical_pick(all, x, y, p, |op| !op.available()) {
+                names.extend(all[i].0.grids());
+            }
+        }
         let mut uses: Vec<GridUse> = Vec::new();
         for (name, optional) in names.into_iter().filter(|(n, _)| n != "null") {
             let used = grid::grid_use(&name, optional);
-            if !uses.iter().any(|u| u.name == used.name) {
-                uses.push(used);
+            match uses.iter_mut().find(|u| u.name == used.name) {
+                // Required when any step requires it.
+                Some(u) => u.optional &= used.optional,
+                None => uses.push(used),
             }
         }
         Ok(uses)
@@ -3179,10 +3208,29 @@ impl Transformer {
     /// the horizontal transformation to it both ways (as PROJ chains it); the next when it fails
     /// (outside its grid), up to three. `None` when none applies.
     fn vertical_height(&self, x: f64, y: f64, p: datum::Point) -> Option<f64> {
+        match self.vertical_pick(&self.vertical_ops, x, y, p, |_| false)? {
+            (i, Some(h)) => {
+                route::note(Some(&self.vertical_ops[i].0), false, route::OpKind::Vertical);
+                Some(h)
+            }
+            (_, None) => None,
+        }
+    }
+
+    /// The transformation between the vertical CRSs [`Transformer::vertical_height`] picks for a
+    /// point among `ops`, with the height it gives; or, the first whose grid is missing
+    /// (`stop`), with none.
+    fn vertical_pick(
+        &self,
+        ops: &[(std::sync::Arc<datum::Op>, Option<route::Route>)],
+        x: f64,
+        y: f64,
+        p: datum::Point,
+        stop: impl Fn(&datum::Op) -> bool,
+    ) -> Option<(usize, Option<f64>)> {
         let horizontal = &self.src_horizontal;
         let (dlon, dlat) = (p.lon.to_degrees(), p.lat.to_degrees());
-        let mut candidates: Vec<(usize, f64)> = self
-            .vertical_ops
+        let mut candidates: Vec<(usize, f64)> = ops
             .iter()
             .enumerate()
             .filter(|(_, (op, _))| op.contains(dlon, dlat))
@@ -3205,21 +3253,23 @@ impl Transformer {
         for _ in 0..3 {
             let mut best: Option<(usize, f64)> = None;
             for &(i, accuracy) in candidates.iter().filter(|(i, _)| !excluded.contains(i)) {
-                let op = &self.vertical_ops[i].0;
-                if best.is_none_or(|(b, ba)| datum::better_by(op, accuracy, &self.vertical_ops[b].0, ba)) {
+                let op = &ops[i].0;
+                if best.is_none_or(|(b, ba)| datum::better_by(op, accuracy, &ops[b].0, ba)) {
                     best = Some((i, accuracy));
                 }
             }
             let (i, _) = best?;
-            let (op, route) = &self.vertical_ops[i];
+            let (op, route) = &ops[i];
+            if stop(op) {
+                return Some((i, None));
+            }
             // The point's position in the interpolation CRS; its height stays as it is.
             let q = match route {
                 Some(r) => r.apply(horizontal, x, y, p, false).map(|q| datum::Point { h: p.h, ..q }),
                 None => Some(p),
             };
             if let Some(h) = q.and_then(|q| datum::run_op(op, q, false, true)).map(|r| r.h) {
-                route::note(Some(op), false, route::OpKind::Vertical);
-                return Some(h);
+                return Some((i, Some(h)));
             }
             excluded.push(i);
         }

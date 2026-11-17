@@ -880,26 +880,25 @@ fn old_names(name: &str) -> Vec<String> {
     super::epsg::grid_alternatives(name)
 }
 
-/// A grid's name with all the names it is looked up under or found by: its current name, its
-/// old names and the producer's (`us_noaa_conus.tif`, `conus`, `conus.las`).
+/// A grid's name with the other names it is opened by (see [`other_names`]).
 fn linked_names(name: &str) -> Vec<String> {
-    let current = catalog().get(name).map_or(name, |k| k.name);
-    let mut names = vec![name.to_string(), current.to_string()];
-    names.extend(old_names(current));
-    names.extend(catalog().iter().filter(|(_, k)| k.name == current).map(|(n, _)| n.to_string()));
-    names.sort();
-    names.dedup();
+    let mut names = vec![name.to_string()];
+    names.extend(other_names(name));
     names
 }
 
-/// The other names a grid may be found under: its old names (before PROJ 7) for a current
-/// name, and its current name (on the PROJ CDN) for an old or producer's name (`conus`,
-/// `conus.las`), as PROJ looks a grid up through its database.
+/// The other names a grid is opened by, as PROJ opens it through its database: for its current
+/// name (on the PROJ CDN), its names before PROJ 7; for one of those (`conus`), its current name
+/// (`us_noaa_conus.tif`) and its other old names. Not a producer's name (`conus.las`), which PROJ
+/// only reports a grid by.
 fn other_names(name: &str) -> Vec<String> {
     let mut names = old_names(name);
-    if let Some(k) = catalog().get(name).filter(|k| k.name != name) {
-        names.push(k.name.to_string());
+    if let Some(k) = catalog().opened_by(name) {
+        names.extend(std::iter::once(k.name).chain(k.old.iter().copied()).map(str::to_string));
     }
+    names.retain(|n| n != name);
+    names.sort();
+    names.dedup();
     names
 }
 
@@ -1354,9 +1353,9 @@ pub fn reset_grid_cache() {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GridUse {
     /// The grid's name on the PROJ CDN (`us_noaa_conus.tif`), also when a definition names it as
-    /// before PROJ 7 (`conus`) or as its producer does (`conus.las`). The name to download it
-    /// under and to give [`register_grid`]. A grid PROJ's database does not know keeps the name
-    /// the definition gives it.
+    /// before PROJ 7 (`conus`): the name to give [`register_grid`]. A grid named as its producer
+    /// names it (`conus.las`), which PROJ does not open by its CDN name, and one PROJ's database
+    /// does not know keep the name the definition gives them.
     pub name: String,
     /// Where to download it: for a grid PROJ distributes, `https://cdn.proj.org/` followed by its
     /// name. `None` for a grid PROJ's database does not know.
@@ -1372,36 +1371,63 @@ pub struct GridUse {
     pub optional: bool,
 }
 
-/// What PROJ's database says of a grid: its name, URL (`None` on the CDN under its name), and
-/// whether the URL gives the file and the grid has an open licence.
+/// What PROJ's database says of a grid: its name, its names before PROJ 7, its URL (`None` on the
+/// CDN under its name), and whether the URL gives the file and the grid has an open licence.
 struct Known {
     name: &'static str,
+    old: Vec<&'static str>,
     url: Option<&'static str>,
     direct_download: bool,
     open_license: bool,
 }
 
-/// The grids of PROJ's database by each of their names, its own name first
-/// (`data/grids.tsv`, `scripts/gen_grid_catalog.py`).
-fn catalog() -> &'static HashMap<&'static str, Known> {
+/// The grids of PROJ's database (`data/grids.tsv`, `scripts/gen_grid_catalog.py`), and each by its
+/// names: whether the name is one PROJ opens the grid by (its own, or one before PROJ 7) rather
+/// than a producer's name it only reports the grid by. A grid's own name wins over another's.
+struct Catalog {
+    grids: Vec<Known>,
+    by_name: HashMap<&'static str, (usize, bool)>,
+}
+
+fn catalog() -> &'static Catalog {
     static TABLE: &str = include_str!("../data/grids.tsv");
-    static CATALOG: OnceLock<HashMap<&'static str, Known>> = OnceLock::new();
+    static CATALOG: OnceLock<Catalog> = OnceLock::new();
     CATALOG.get_or_init(|| {
-        let mut by_name = HashMap::new();
-        let mut aliases = Vec::new();
+        let mut c = Catalog { grids: Vec::new(), by_name: HashMap::new() };
+        let mut others = Vec::new();
         for line in TABLE.lines().filter(|l| !l.starts_with('#') && !l.is_empty()) {
             let f: Vec<&'static str> = line.split('\t').collect();
-            let [name, other, url, direct, open] = f[..] else { continue };
-            let known = || Known { name, url: (!url.is_empty()).then_some(url), direct_download: direct == "1", open_license: open == "1" };
-            by_name.insert(name, known());
-            aliases.extend(other.split(',').filter(|a| !a.is_empty()).map(|a| (a, known())));
+            let [name, old, original, url, direct, open] = f[..] else { continue };
+            let names = |list: &'static str| list.split(',').filter(|a| !a.is_empty()).collect::<Vec<_>>();
+            let i = c.grids.len();
+            c.by_name.insert(name, (i, true));
+            others.extend(names(old).into_iter().map(|n| (n, (i, true))));
+            others.extend(names(original).into_iter().map(|n| (n, (i, false))));
+            c.grids.push(Known {
+                name,
+                old: names(old),
+                url: (!url.is_empty()).then_some(url),
+                direct_download: direct == "1",
+                open_license: open == "1",
+            });
         }
-        // A grid's own name wins over another's old name.
-        for (alias, known) in aliases {
-            by_name.entry(alias).or_insert(known);
+        for (name, at) in others {
+            c.by_name.entry(name).or_insert(at);
         }
-        by_name
+        c
     })
+}
+
+impl Catalog {
+    /// A grid by any of its names.
+    fn get(&self, name: &str) -> Option<&Known> {
+        self.by_name.get(name).map(|(i, _)| &self.grids[*i])
+    }
+
+    /// A grid by a name PROJ opens it by: its own, or one before PROJ 7.
+    fn opened_by(&self, name: &str) -> Option<&Known> {
+        self.by_name.get(name).filter(|(_, opens)| *opens).map(|(i, _)| &self.grids[*i])
+    }
 }
 
 /// A grid an operation names, with what PROJ's database says of it and whether it is found.
@@ -1409,7 +1435,8 @@ pub(crate) fn grid_use(name: &str, optional: bool) -> GridUse {
     let available = available(name);
     match catalog().get(name) {
         Some(k) => GridUse {
-            name: k.name.to_string(),
+            // A producer's name (`conus.las`) stays: the grid is found by it only under it.
+            name: catalog().opened_by(name).map_or(name, |k| k.name).to_string(),
             url: Some(k.url.map_or_else(|| format!("https://cdn.proj.org/{}", k.name), str::to_string)),
             direct_download: k.direct_download,
             open_license: k.open_license,
