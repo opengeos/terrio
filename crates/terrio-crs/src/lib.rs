@@ -732,7 +732,9 @@ impl SpatialRef {
         None
     }
 
-    /// EPSG code of the geographic CRS underlying this definition, when known.
+    /// EPSG code of the geographic CRS underlying this definition, when known. For a WKT 1 CRS on a
+    /// datum no CRS is on, this is the CRS its name identifies it as (GR96 for ESRI's
+    /// GCS_Greenland_1996), whose transformations the definition does not take.
     pub fn geographic_code(&self) -> Option<u32> {
         Def::new(self).ok().and_then(|d| d.geographic_code())
     }

@@ -998,9 +998,9 @@ impl Def {
             self.datum_by_name(own);
             // A WKT 1 GEOGCS on a datum no CRS is on keeps its datum's transformations, but gives
             // the CRS PROJ 9.8.1 identifies it as by name (ESRI's GCS_Greenland_1996, GR96) as its
-            // geographic CRS. The text as written, else the node as written back (`GEOGCS [`).
+            // geographic CRS (`own`: the text as written, else the node as written back).
             if c.geogcs_wkt1.is_none() {
-                self.named_geog = super::identify_by_shared_name(geogcs_text.unwrap_or(own));
+                self.named_geog = super::identify_by_shared_name(own);
             }
         }
     }
