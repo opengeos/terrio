@@ -1189,7 +1189,18 @@ They read and write:
   without any origin latitude, a polar stereographic CRS's ProjStdParallel1GeoKey is still read as
   its standard parallel, leniently, where libgeotiff takes a latitude of 0; a Stereographic or
   Mercator CRS's scale keys, a Mercator's latitude keys, and Laborde (CT 4) (#1012 item 35). A
-  user-defined projected CRS can be read by a registered code (see below);
+  user-defined projected CRS can be read by a registered code (see below). A horizontal CRS with a
+  datum shift of its own (a WKT's `TOWGS84` or `BOUNDCRS` to WGS 84, a PROJ string's `+towgs84`)
+  is written with GeogTOWGS84GeoKey: with the code its WKT declares, else as a user-defined CRS on
+  a user-defined datum, never as a code it is only identified as (ESRI's British_National_Grid
+  with `TOWGS84[375,-111,431,0,0,0,0]`, EPSG:27700 alone, would read 3.1 m away). GDAL 3.10.3
+  writes the same keys but names the EPSG datum (GeogGeodeticDatumGeoKey 6277), and reads that
+  file back without the shift; it keeps the shift of terrio's keys. A CRS identified by a code
+  with a zero shift on WGS 84 is written by the code, as GDAL does. A code with GeogTOWGS84GeoKey next to it is read as
+  the code, without the shift, as GDAL reads it. A WKT 2 `BOUNDCRS` whose transformation
+  `+towgs84` only approximates (a Molodensky-Badekas evaluation point, a full rotation matrix) is
+  written as its WKT in an ESRI PE citation, which keeps it. Not yet: a compound CRS with a shift is
+  written by its codes, without it (#1012 item 62);
 - ESRI PE citations (`ESRI PE String = <WKT>`), which GDAL writes for a CRS GeoKeys cannot hold
   (an engineering CRS, a method GeoTIFF has no code for, a definition only its PROJ string
   describes): terrio writes them for the same CRSs. A CRS whose WKT holds a NUL (from a PROJJSON
