@@ -13,6 +13,7 @@ import sys
 import warnings
 from collections.abc import Hashable, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from types import FrameType
 from typing import Any
 
 import numpy as np
@@ -33,7 +34,8 @@ _SORTED = ("median", "mode", "majority", "minority", "variety")
 def _outside_level() -> int:
     """The `stacklevel` of the first caller outside terrio, for a warning about its call."""
     here = os.path.dirname(os.path.dirname(__file__))
-    frame, level = sys._getframe(1), 1
+    frame: FrameType | None = sys._getframe(1)
+    level = 1
     while frame is not None and frame.f_code.co_filename.startswith(here):
         frame, level = frame.f_back, level + 1
     return level
@@ -170,7 +172,7 @@ def zonal_cube(
 
 def _shapely() -> Any:
     try:
-        import shapely
+        import shapely  # type: ignore[import-untyped, unused-ignore]
     except ImportError as e:
         raise ImportError(
             "zonal statistics of an array with more than its two spatial dimensions return the "
@@ -274,13 +276,14 @@ def _reduce(arrays, other, shape, fills, reducer, fractional, budget) -> list[np
                 stacklevel=_outside_level(),
             )
         # Arrays read together: as many as one index of them fits the budget, at least one.
-        sets, used = [[]], 0
+        sets: list[list[int]] = [[]]
+        used = 0
         for v in everything:
             if sets[-1] and used + size[v] > budget:
                 sets, used = [*sets, []], 0
             sets[-1].append(v)
             used += size[v]
-        batches = [
+        batches: list[tuple[list[int], tuple[int, int] | None]] = [
             (vs, batch)
             for vs in sets
             for batch in _batches(arrays[0], other[0], sum(size[v] for v in vs), budget)
@@ -315,8 +318,10 @@ def _reduce(arrays, other, shape, fills, reducer, fractional, budget) -> list[np
     # Reads in order, batch after batch, each reduced strip by strip; with `ahead`, the reader
     # computes the next one meanwhile.
     jobs = [(vs, batch, b) for vs, batch in batches for b in range(len(blocks))]
+    if not jobs:  # an empty first dim
+        return outs
     with ThreadPoolExecutor() as pool, ThreadPoolExecutor(1) as reader:
-        future = reader.submit(read, *jobs[0][:2], blocks[0]) if jobs else None
+        future = reader.submit(read, *jobs[0][:2], blocks[0])
         for k, (vs, batch, b) in enumerate(jobs):
             data = dict(zip(vs, future.result(), strict=True))
             following = jobs[k + 1] if k + 1 < len(jobs) else None
@@ -336,7 +341,7 @@ def _reduce(arrays, other, shape, fills, reducer, fractional, budget) -> list[np
                 list(pool.map(lambda j: j[2].add(i, data[j[0]][j[1]][cut]), streams))  # noqa: B023
             if b == len(blocks) - 1:
                 put(0 if batch is None else batch[0], streams)
-            data = None  # not held while the next one is read
+            data = {}  # not held while the next one is read
             if following and not ahead:
                 future = reader.submit(read, *following[:2], blocks[following[2]])
     return outs
