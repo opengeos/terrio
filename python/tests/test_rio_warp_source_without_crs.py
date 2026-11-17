@@ -66,3 +66,36 @@ def test_an_array_with_no_crs_still_requires_one():
             dst_transform=TRANSFORM,
             dst_crs="EPSG:4326",
         )
+
+
+def test_reproject_into_a_band_takes_the_destination_crs(source, tmp_path):
+    path = str(tmp_path / "dst.tif")
+    profile = dict(driver="GTiff", width=64, height=64, count=1, dtype="uint8")
+    with rio.open(path, "w", transform=TRANSFORM, crs="EPSG:4326", **profile) as dst:
+        reproject(rio.band(source, 1), rio.band(dst, 1), resampling=Resampling.nearest)
+    with rio.open(path) as dst:
+        assert (dst.read(1) == DATA).all()
+
+
+def test_a_dataset_with_no_geotransform_still_requires_a_crs(tmp_path):
+    path = str(tmp_path / "bare.tif")
+    profile = dict(driver="GTiff", width=64, height=64, count=1, dtype="uint8")
+    with rio.open(path, "w", **profile) as dst:
+        dst.write(DATA, 1)
+    with rio.open(path) as src:
+        with pytest.raises(CRSError, match="A source CRS is required"):
+            reproject(
+                rio.band(src, 1),
+                np.zeros((64, 64), "uint8"),
+                dst_transform=TRANSFORM,
+                dst_crs="EPSG:4326",
+            )
+
+
+def test_default_transform_from_gcps_still_requires_a_crs():
+    gcps = [
+        rio.control.GroundControlPoint(row=r, col=c, x=10 + c / 64, y=46 - r / 64)
+        for r, c in ((0, 0), (0, 64), (64, 0), (64, 64))
+    ]
+    with pytest.raises(CRSError, match="A CRS is required"):
+        calculate_default_transform(None, "EPSG:4326", 64, 64, gcps=gcps)
