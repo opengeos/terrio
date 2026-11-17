@@ -454,9 +454,9 @@ if [ ! -e grids_legacy/egm96_15.gtx ]; then
   unzip -q -o grids_legacy/proj-datumgrid.zip BETA2007.gsb ntf_r93.gsb nzgd2kgrid0005.gsb egm96_15.gtx -d grids_legacy
   rm grids_legacy/proj-datumgrid.zip
 fi
-# GDAL's transformations for every EPSG CRS, which terrio's are checked against (needs pyproj,
-# NumPy and GDAL's Python bindings, on the PROJ of terrio-crs's EPSG table: GDAL 3.13.3 and
-# PROJ 9.9.0): without grids, and with those of grids/. TERRIO_EPSG_POINTS_PYTHON names the
+# GDAL's transformations for every EPSG CRS, which terrio's are checked against, without grids
+# and with those of grids/. They need pyproj, NumPy and GDAL's Python bindings on the PROJ of
+# terrio-crs's EPSG table: GDAL 3.13.3 and PROJ 9.9.0. TERRIO_EPSG_POINTS_PYTHON names the
 # Python to run them with, when that GDAL is in another environment (`micromamba run -n NAME
 # python`). 50 points of each kind per CRS: about 950,000 lines and 85 MB per file, and 10 CPU
 # minutes each to compute.

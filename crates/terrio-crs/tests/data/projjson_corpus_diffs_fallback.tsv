@@ -112,13 +112,13 @@ wkt2	!coordinate reference system: no PROJJSON for the projection +proj=wink2	ES
 esri	!coordinate reference system: no PROJJSON for the projection +proj=wintri	ESRI:53042 ESRI:54042
 wkt1	!coordinate reference system: no PROJJSON for the projection +proj=wintri	ESRI:53042 ESRI:54042
 wkt2	!coordinate reference system: no PROJJSON for the projection +proj=wintri	ESRI:53042 ESRI:54042
+wkt2	!coordinate reference system: unsupported projection: +proj=tmerczoned (Transverse Mercator Zoned Grid System) is not computed yet	EPSG:32600 EPSG:32700
 wkt1	!coordinate reference system: unsupported projection: PROJ +proj=comill is not supported by wbprojection	ESRI:53080 ESRI:54080
 wkt2	!coordinate reference system: unsupported projection: PROJ +proj=comill is not supported by wbprojection	ESRI:53080 ESRI:54080
 wkt2	!coordinate reference system: unsupported projection: PROJ +proj=igh_o is not supported by wbprojection	ESRI:54053
 wkt2	!coordinate reference system: unsupported projection: PROJ +proj=peirce_q is not supported by wbprojection	ESRI:54090 ESRI:54091
 wkt1	!coordinate reference system: unsupported projection: PROJ +proj=spilhaus is not supported by wbprojection	ESRI:54098 ESRI:54099
 wkt2	!coordinate reference system: unsupported projection: PROJ +proj=spilhaus is not supported by wbprojection	ESRI:54098 ESRI:54099
-wkt2	!coordinate reference system: unsupported projection: PROJ +proj=tmerczoned is not supported by wbprojection	EPSG:32600 EPSG:32700
 wkt1	!coordinate reference system: unsupported projection: PROJ +proj=wag7 is not supported by wbprojection	ESRI:53076 ESRI:54076
 wkt2	!coordinate reference system: unsupported projection: PROJ +proj=wag7 is not supported by wbprojection	ESRI:53076 ESRI:54076
 esri	!coordinate reference system: unsupported projection: unsupported WKT projection method 'adamssquareii'	ESRI:54098 ESRI:54099

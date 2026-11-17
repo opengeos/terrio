@@ -170,7 +170,9 @@ jobs:
       - name: Fetch test data
         shell: micromamba-shell {0}
         env:
-          # The EPSG reference points (ci.yml's epsg_accuracy tests) are not used here: not computed.
+          # The EPSG reference points come from ci.yml's real-data job, which saves the cache this
+          # job restores; on a cache miss they are not computed here (the crs and crs-grids
+          # conformance suites then skip).
           TERRIO_EPSG_POINTS_PYTHON: "false"
         run: scripts/fetch_test_data.sh terrio-data
       - name: Build

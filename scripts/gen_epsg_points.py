@@ -253,6 +253,10 @@ def points(code):
 
 def main():
     """Write the reference points."""
+    # The PROJ terrio-crs's EPSG table comes from, and the first GDAL conda-forge builds on it:
+    # another one gives other transformations (and a reference the tests refuse).
+    versions = (gdal.__version__, pyproj.proj_version_str)
+    assert versions == ("3.13.3", "9.9.0"), f"GDAL and PROJ {versions}: run with GDAL 3.13.3 and PROJ 9.9.0"
     codes = set()
     for kind in (PJType.GEOGRAPHIC_2D_CRS, PJType.PROJECTED_CRS):
         codes.update(int(c) for c in pyproj.get_codes("EPSG", kind, allow_deprecated=True))

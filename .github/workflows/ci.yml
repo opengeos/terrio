@@ -531,7 +531,11 @@ jobs:
         shell: micromamba-shell {0}
         env:
           TERRIO_EPSG_POINTS_PYTHON: micromamba run -n epsg-points python
-        run: scripts/fetch_test_data.sh terrio-data
+        # The points must be there, or the EPSG tests would pass without checking, from a cache
+        # saved without them.
+        run: |
+          scripts/fetch_test_data.sh terrio-data
+          test -s terrio-data/epsg_points.tsv && test -s terrio-data/epsg_points_grids.tsv
       - name: Install rasterio, xarray, dask, rioxarray, zarr and scipy
         # With pip, on top of the cached environment: terrio.rio is compared with rasterio, and
         # terrio.xarray with rioxarray.

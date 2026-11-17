@@ -185,7 +185,12 @@ fn crs(definition: &str) -> Result<Option<SpatialRef>, String> {
     if definition.starts_with('+') {
         return SpatialRef::from_proj4(definition).map(Some).map_err(|e| e.to_string());
     }
-    let fallback = definition.strip_prefix("EPSG:").and_then(|c| c.parse().ok()).is_some_and(|c| terrio_crs::epsg_wkt(c).is_none());
+    // Codes terrio does not resolve: outside its tables, or on a projection it does not compute
+    // yet (the UTM grid systems, EPSG:32700).
+    let fallback = definition
+        .strip_prefix("EPSG:")
+        .and_then(|c| c.parse().ok())
+        .is_some_and(|c| terrio_crs::epsg_wkt(c).is_none() || SpatialRef::from_epsg(c).is_err());
     if fallback { Ok(None) } else { SpatialRef::parse(definition).map(Some).map_err(|e| e.to_string()) }
 }
 
@@ -240,7 +245,6 @@ fn geokeys_are_read_as_gdal_reads_them() {
 }
 
 #[test]
-#[ignore = "PROJ 9.8.1 values; EPSG v13.102 has EPSG:32700: re-derived with PROJ 9.9.0 in #1076 (b)"]
 fn only_codes_outside_the_tables_are_not_written() {
     let skipped: Vec<String> = rows().into_iter().filter(|r| matches!(crs(&r.definition), Ok(None))).map(|r| r.definition).collect();
     assert_eq!(skipped, ["EPSG:3053", "EPSG:32700"]);

@@ -68,7 +68,7 @@ fn the_scan_finds_each_object_s_keys() {
 /// and planetary CRSs): no two keys in the other order than PROJ's, and no key PROJ lacks. Two
 /// keys PROJ never writes in one object have no order to check.
 #[test]
-#[ignore = "PROJ 9.8.1 values; EPSG v13.102 has more CRSs: re-derived with PROJ 9.9.0 in #1076 (b)"]
+#[ignore = "PROJ 9.8.1 values; EPSG v13.102 adds 45 CRSs to those written (1082 against 1037): re-derived with PROJ 9.9.0 in #1076 (b)"]
 fn keys_are_in_proj_s_order() {
     let pairs = proj_pairs();
     let known: HashSet<&str> = include_str!("data/projjson_key_order.txt").lines().flat_map(|l| l.split(',')).collect();
