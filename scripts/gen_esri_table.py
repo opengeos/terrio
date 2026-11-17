@@ -130,7 +130,7 @@ def rows():
         """
         is_wgs84, pm, three_d, line = c
         if is_wgs84:
-            return [("", (-180.0, -90.0, 180.0, 90.0), -1.0, "")]
+            return [("", (-180.0, -90.0, 180.0, 90.0), -1.0, "", "", "", "")]
         return transformations(f"ESRI:{line[0]}", "EPSG:4979" if three_d else "EPSG:4326", pm, 0.0, grids)
 
     with ThreadPoolExecutor(os.cpu_count()) as pool:
@@ -148,11 +148,14 @@ def rows():
             Their ids and the ``O`` rows of those not seen before.
         """
         ids, new = [], []
-        for steps, bounds, accuracy, flags in transfos:
-            key = (steps, bounds, accuracy, flags)
+        # As gen_epsg_table.py writes them (name, the steps' accuracies and areas since #171).
+        for steps, bounds, accuracy, flags, name, steps_accuracy, steps_bounds in transfos:
+            key = (steps, bounds, accuracy, flags, name, steps_accuracy, steps_bounds)
             if key not in ops:
                 ops[key] = len(ops)
-                new.append(("O", ops[key], ",".join(repr(round(b, 6)) for b in bounds), repr(accuracy), flags, steps))
+                new.append(
+                    ("O", ops[key], ",".join(repr(round(b, 6)) for b in bounds), repr(accuracy), flags, steps, name, steps_accuracy, steps_bounds)
+                )
             if ops[key] not in ids:
                 ids.append(ops[key])
         return ids, new
