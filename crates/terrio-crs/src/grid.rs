@@ -1379,7 +1379,9 @@ pub struct GridUse {
     /// Whether the grid has an open licence.
     pub open_license: bool,
     /// Whether terrio finds it now: registered with [`register_grid`], in a search directory,
-    /// or, with the network on, on the PROJ CDN.
+    /// or, with the network on, to be fetched from the PROJ CDN: a GeoTIFF (`.tif`) name, also one
+    /// PROJ's database does not know (PROJ tries the CDN for it too), or a name before PROJ 7 of a
+    /// grid there. `false` once a fetch of it has failed.
     pub available: bool,
     /// Whether the operation runs without it (`@` before its name in the PROJ string).
     pub optional: bool,
@@ -1446,7 +1448,8 @@ impl Catalog {
 
 /// A grid an operation names, with what PROJ's database says of it and whether it is found.
 pub(crate) fn grid_use(name: &str, optional: bool) -> GridUse {
-    let available = available(name);
+    // A grid whose fetch failed is missing, as for the operation (`Op::network_failed`).
+    let available = available(name) && !fetch_failed(name);
     match catalog().get(name) {
         Some(k) => GridUse {
             // A producer's name (`conus.las`) stays: the grid is found by it only under it.

@@ -719,7 +719,8 @@ file and whether the grid has an open licence (from PROJ's database, as
 missing ones, register them under their name (or save them in a search directory), build the
 transformer again, and ask again: when the point is outside a grid once it is there, the next
 operation's grids come up. Between compound CRSs, the grid of the transformation between their
-vertical CRSs (VERTCON...) is listed too, but geoid models are not, and between CRSs with heights
+vertical CRSs (VERTCON...) is listed too, but geoid models are not (`+geoidgrids`, nor those of a
+geoid model's CRS, from a geographic 3D CRS too), and between CRSs with heights
 the horizontal grids listed are those between their geographic CRSs. With `ONLY_BEST=YES`, the
 error for a missing grid names it too.
 

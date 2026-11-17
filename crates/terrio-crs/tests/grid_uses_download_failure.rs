@@ -41,6 +41,8 @@ fn a_grid_whose_first_download_fails_is_listed() {
         let uses = t.best_operation_grids_at(x, y, 0.0).unwrap();
         let names: Vec<&str> = uses.iter().map(|g| g.name.as_str()).collect();
         assert_eq!(names, expected, "{source}");
+        // Missing once its fetch has failed (a later grid of the operation was not tried).
+        assert!(!uses[0].available, "{uses:?}");
         // The fetch was tried, by this query.
         assert!(attempts.load(Ordering::SeqCst) > before, "{source}");
     }

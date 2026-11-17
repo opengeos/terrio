@@ -3025,9 +3025,14 @@ impl Transformer {
     /// grids come up, so ask again until every grid listed is available.
     ///
     /// Between compound CRSs, the grids of the transformation between their vertical CRSs
-    /// (VERTCON...) are listed too, but not geoid models. Between CRSs with heights (geographic
+    /// (VERTCON...) are listed too. Geoid models are not listed (`+geoidgrids`, nor those of a
+    /// geoid model's CRS, from a geographic 3D CRS too). Between CRSs with heights (geographic
     /// 3D, compound), the horizontal grids listed are those between their geographic CRSs, which
     /// the transformations through a geoid model's CRS may not use.
+    ///
+    /// To find the operation that applies, the point is transformed as by `transform`, so with
+    /// the network on, the grids it reads are fetched (their blocks for the point, or whole with
+    /// `TERRIO_GRID_DOWNLOAD=YES`) and cached as for a transformation.
     pub fn best_operation_grids_at(&self, x: f64, y: f64, z: f64) -> Result<Vec<GridUse>> {
         let fail = || Error::Crs(format!("cannot transform ({x}, {y}, {z})"));
         // A geocentric source: its geographic coordinates, as `transform_at` takes them.
