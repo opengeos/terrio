@@ -429,11 +429,21 @@ struct Memo {
     bytes: usize,
 }
 
-/// The hash of a CRS in the memo, with keys drawn once per process.
+/// The keys of the memo's hash, drawn once per process. Drawn after the host's `before_lock`,
+/// and by [`hold_for_fork`] before a fork, so that no child starts while they are being drawn.
+fn memo_keys() -> &'static std::collections::hash_map::RandomState {
+    MEMO_KEYS.get().unwrap_or_else(|| {
+        crate::host::before_lock();
+        MEMO_KEYS.get_or_init(Default::default)
+    })
+}
+
+static MEMO_KEYS: std::sync::OnceLock<std::collections::hash_map::RandomState> = std::sync::OnceLock::new();
+
+/// The hash of a CRS in the memo.
 fn memo_hash(s: &SpatialRef) -> u64 {
     use std::hash::BuildHasher;
-    static KEYS: std::sync::OnceLock<std::collections::hash_map::RandomState> = std::sync::OnceLock::new();
-    KEYS.get_or_init(Default::default).hash_one(s)
+    memo_keys().hash_one(s)
 }
 
 fn memo() -> &'static std::sync::Mutex<Memo> {
@@ -450,9 +460,11 @@ pub(crate) fn forget_definitions() {
     drop(old);
 }
 
-/// Holds the memo of definitions across a fork, for [`crate::host::hold_for_fork`].
+/// Holds the memo of definitions across a fork, for [`crate::host::hold_for_fork`], with its hash
+/// keys drawn first.
 #[cfg(all(unix, not(target_family = "wasm")))]
 pub(crate) fn hold_for_fork(held: &mut Vec<Box<dyn std::any::Any>>) {
+    memo_keys();
     held.push(Box::new(memo().lock().unwrap_or_else(std::sync::PoisonError::into_inner)));
 }
 
@@ -2462,10 +2474,15 @@ mod memo_tests {
         assert!(!Arc::ptr_eq(&first, &Def::shared(&s).unwrap()));
     }
 
-    /// The memo's lock is one `host::hold_for_fork` takes across a fork.
+    /// The memo's lock is one `host::hold_for_fork` takes across a fork, and its hash keys are
+    /// drawn before it.
     #[cfg(all(unix, not(target_family = "wasm")))]
     #[test]
     fn hold_for_fork_takes_the_memo_lock() {
+        let mut held = Vec::new();
+        hold_for_fork(&mut held);
+        assert!(MEMO_KEYS.get().is_some());
+        drop(held);
         crate::host::assert_held_for_fork("definitions", |wait| {
             let _g = memo().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             wait();
