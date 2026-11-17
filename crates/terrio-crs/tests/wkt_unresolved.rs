@@ -1,4 +1,4 @@
-//! A WKT PROJ 9.8.1 does not resolve to the EPSG CRS terrio reads it as is placed as PROJ places
+//! A WKT PROJ 9.9.0 does not resolve to the EPSG CRS terrio reads it as is placed as PROJ places
 //! it. Such WKTs include an ESRI WKT 1 (no `AXIS`, so longitude first, unlike the EPSG CRS), a
 //! renamed CRS, and a projected CRS whose axis order differs. PROJ then also searches chains
 //! through an intermediate datum, and may rank one of them first: ESRI's `GCS_Monte_Mario_Rome`
@@ -79,7 +79,6 @@ fn compute_offsets() -> Vec<(Value, f64, f64)> {
 }
 
 #[test]
-#[ignore = "PROJ 9.8.1 values; EPSG v13.102 changed EPSG:5514: re-derived with PROJ 9.9.0 in #1076 (b)"]
 fn wkts_proj_does_not_resolve_are_placed_as_proj_does() {
     let all = offsets();
     assert!(all.len() > 1000, "{} cases", all.len());

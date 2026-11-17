@@ -281,16 +281,24 @@ impl Route {
     fn build(src: &Def, dst: &Def, all: bool) -> Self {
         let aoi = area_of_interest(src, dst);
         let keep = |op: &Op| relevant(op, src, dst, aoi.as_ref());
+        // From a 2D CRS, PROJ makes a concatenation through a transformation its database
+        // registers between geocentric CRSs only where no transformation links the datums
+        // directly: from 2D WGS 84, PROJ 9.9.0 places the deprecated GDA94 (3D) (EPSG:4347) by
+        // GDA94 to WGS 84 (1), from 3D WGS 84 through WGS 84 (G1762); ITRF90 (geocentric)
+        // (EPSG:4332), which none links directly, through WGS 84 (Transit) from both.
+        let dimensions = src.geodetic_3d() && dst.geodetic_3d();
+        let pivoted = |op: &Op| op.geocentric && op.concatenated;
         // Between projected CRSs, PROJ concatenates the transformations with the projections,
         // which gives a concatenation its database registers the accuracy and area of its
         // steps (NAD83 to NAD83(NSRS2007) (NADCON5, Alaska) between British Columbia Albers
         // and UTM).
         let concatenated = !src.is_geographic() || !dst.is_geographic();
         let list = |ops: &[Arc<Op>], reverse: bool| -> Kind {
+            let direct = ops.iter().any(|op| !op.concatenated && !op.ballpark);
             Kind::List(
                 legs(ops, reverse)
                     .into_iter()
-                    .filter(|l| keep(&l.op))
+                    .filter(|l| keep(&l.op) && (dimensions || !direct || !pivoted(&l.op)))
                     .map(|l| {
                         let flat = concatenated && (l.op.chain_accuracy != l.op.accuracy || l.op.chain_bounds != l.op.bounds);
                         if flat { Leg { op: Arc::new(l.op.as_concatenated()), reverse: l.reverse } } else { l }

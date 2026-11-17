@@ -690,7 +690,7 @@ GDAL:
 - GDAL's transformations of points of every EPSG CRS, without and with the grids of
   `scripts/proj_grids.txt` (`epsg_points.tsv`, `epsg_points_grids.tsv`, from
   `scripts/gen_epsg_points.py`), which `epsg_accuracy` and `epsg_accuracy_grids` check terrio
-  against. They need the PROJ terrio-crs's EPSG table comes from, PROJ 9.9.0, with GDAL 3.13.3
+  against. They need PROJ 9.9.0, which terrio-crs's EPSG table comes from, with GDAL 3.13.3
   (the raster and vector comparisons stay on GDAL 3.12.2 and PROJ 9.8.1). When that GDAL is in
   another environment, `TERRIO_EPSG_POINTS_PYTHON` names its Python (`micromamba run -n NAME
   python`), as CI does. Points of PROJ 9.8.1 are refused: delete them, and run the script again.
@@ -1759,8 +1759,8 @@ cargo check -p terrio --target wasm32-unknown-unknown --no-default-features --fe
 ## CRS reading against PROJ's PROJJSON (#1058)
 
 `projjson_corpus_epsg.jsonl.zst` and `projjson_corpus_esri.jsonl.zst` hold every CRS of terrio's EPSG table (geographic,
-geocentric, projected, vertical and compound) and ESRI table, as PROJ 9.8.1
-writes it in WKT 2 (`WKT2_2019`), GDAL WKT 1 and ESRI WKT 1: 29,967 texts, each
+geocentric, projected, vertical and compound) and ESRI table, as PROJ 9.9.0
+writes it in WKT 2 (`WKT2_2019`), GDAL WKT 1 and ESRI WKT 1: 30,932 texts, each
 with the PROJJSON PROJ writes for it (pyproj 3.8.0, network off). The test reads
 each text with `SpatialRef::from_wkt`, writes it with `to_projjson`, and compares
 what the CRS is field by field: types, the IDs and names of CRSs, the names and
@@ -1871,7 +1871,7 @@ refused, as PROJ refuses them (`cargo test -p terrio-crs --test wkt2_bound`; reg
 WKTs whose root code is not the CRS their nodes describe (British National Grid declaring
 EPSG:4277, a Lo19 declaring EPSG:1, a 2D NTF (Paris) in degrees declaring the compound EPSG:7400,
 an unknown method declaring EPSG:27700) and ESRI's Monte Mario on a renamed datum are read and
-identified by their content, placing points where PROJ 9.8.1 does within 1 mm, or refused where
+identified by their content, placing points where PROJ 9.9.0 does within 1 mm, or refused where
 PROJ refuses (`cargo test -p terrio-crs --test wkt_root_code`; regenerate with
 `scripts/gen_wkt_root_code.py`, pyproj 3.8.0). WKT 2 Robinson, Sinusoidal, Mollweide, Eckert IV and
 Natural Earth with an unused latitude of natural origin, on WGS 84 and a sphere, match PROJ's PROJ
@@ -1903,7 +1903,7 @@ of origin other than 0, which PROJ neither transforms nor writes as a PROJ strin
 (`cargo test -p terrio-crs --test wkt1_proj_reads`; regenerate with
 `scripts/gen_wkt1_proj_reads.py`, pyproj 3.8.0).
 
-WKTs that PROJ 9.8.1 does not resolve to their EPSG CRS place points where PROJ does: ESRI WKT 1,
+WKTs that PROJ 9.9.0 does not resolve to their EPSG CRS place points where PROJ does: ESRI WKT 1,
 renamed CRSs, renamed WKT 2 `GEODCRS`s with an ellipsoidal CS, ESRI compound CRSs, renamed WKT 2
 CRSs on the WGS 84 and ETRS89 ensembles with their IDs, WKT 2 CRSs named by an alias (lon-first
 Monte Mario (Rome); NAD83(2011) on a renamed datum, which terrio reads as no code), and custom
@@ -1915,9 +1915,9 @@ the datum's ID). WKT 1 with the datum's `AUTHORITY` alone falls under one or the
 The WKTs are variants of the 16 geographic CRSs whose ESRI or renamed WKT PROJ places through an
 intermediate datum (Monte Mario (Rome), Tokyo 1892, DHDN, ...), of every 25th EPSG geographic 2D
 CRS, and ESRI WKTs of eight projected CRSs (three with northing first). The points go to and from
-WGS 84 and, for a sample, to ETRS89, NAD83 and ETRS89 / UTM zone 32N: 1,100 cases. 1,079 of them are
+WGS 84 and, for a sample, to ETRS89, NAD83 and ETRS89 / UTM zone 32N: 1,121 cases. 1,100 of them are
 placed within 1 mm of PROJ, 112 of those where PROJ places them otherwise than by the code, by
-0.12 m to 390 m (five, ESRI's ONGD14 to WGS 84 and its variants, by 1.23 m through PROJ's datum
+0.12 m to 388 m (five, ESRI's ONGD14 to WGS 84 and its variants, by 1.23 m through PROJ's datum
 pivot). The other 21 are pinned at the code's placement: those PROJ places through its ballpark
 into a CRS of a renamed datum (also under the CRS's own name), or by its datum pivot into a CRS it
 cannot find by its name (ONGD14 renamed), which terrio does not follow yet. ATF (Paris) is left
@@ -1930,19 +1930,20 @@ WKTs whose geographic CRS has no EPSG code of its own, with the datum known by i
 2 without IDs, or by ESRI's name (`D_Monte_Mario`, with and without the datum's or the CRS's code,
 and under another `GEOGCS` name), of 20 EPSG CRSs on OSGB36, Monte Mario, ED50, DHDN, Amersfoort,
 GGRS87, CH1903, Tokyo, HD72, AGD66 and NZGD49, and the two WKTs of opengeos/terrio#1012, place a
-point in WGS 84 where PROJ 9.8.1 does without grids, by the transformation it uses, within 1 mm (180
-cases). For OSGB36, DHDN, NZGD49 and some CH1903 cases (46), PROJ's best transformation needs a grid
-(OSTN15, BETA2007, CHENyx06, the NZGD2000 grids), so with those grids installed PROJ may place these
-points otherwise; the cases record it. Five WKTs PROJ does not resolve to their code and places
-through other datums or CRSs (the ESRI WKT 1 of EPSG:4806, 5132 and 7373, and of EPSG:4314 and 31467
-renamed) are placed as PROJ places them, EPSG:7373's through its datum pivot (`cargo test -p
+point in WGS 84 where PROJ 9.9.0 does without grids, by the transformation it uses, within 1 mm (178
+cases). For OSGB36, DHDN and some CH1903 cases (37), PROJ's best transformation needs a grid (OSTN15,
+BETA2007, CHENyx06), so with those grids installed PROJ may place these
+points otherwise; the cases record it. Seven WKTs PROJ does not resolve to their code and places
+through other datums or CRSs (the ESRI WKT 1 of EPSG:4806, 5132 and 7373, and of EPSG:4314, 31467,
+4289 and 28992 renamed) are placed as PROJ places them, EPSG:7373's through its datum pivot, and
+Amersfoort's by "Amersfoort to WGS 84 (4)" where its code goes through ETRS89-NLD [AGRS2010] (`cargo test -p
 terrio-crs --test wkt_datum_shift`; regenerate with `scripts/gen_wkt_datum_shift.py`, pyproj 3.8.0).
 
-Deprecated EPSG codes keep their own definition, as PROJ 9.8.1 gives it (`CRS.from_epsg`), not their
+Deprecated EPSG codes keep their own definition, as PROJ 9.9.0 gives it (`CRS.from_epsg`), not their
 replacement's, which GDAL substitutes by default: every deprecated EPSG geographic, geocentric and
-projected CRS with an area of use (498, of 513: 15 have none) places the centre of its area of use
+projected CRS with an area of use (509, of 524: 15 have none) places the centre of its area of use
 from WGS 84 where PROJ does without grids, within 1 mm (1e-8 degrees for geographic longitudes and
-latitudes), 486 of them; PROJ cannot transform 8: terrio refuses the 6 PROJ cannot write as PROJ
+latitudes), 497 of them; PROJ cannot transform 8: terrio refuses the 6 PROJ cannot write as PROJ
 strings (EPSG:3752's Mercator (variant A) with a latitude of origin among them) and transforms the
 RRAF 1991 geocentric CRSs (EPSG:4384, 4972) by their datum's ballpark. 4 geographic 3D and
 geocentric CRSs (NAD83(CSRS) and RGNC 1991) are pinned, as still differing, for the geocentric CRSs
@@ -2018,7 +2019,7 @@ with other axes than its WKT's are pinned bit for bit to the axes terrio read be
 PROJ's `bess_nam`, `walbeck` and `clrk66`, and EPSG:3139 in links (`cargo test -p terrio-crs --test
 proj_ellipsoid_registry`).
 
-Strict WKT 1 export (`SpatialRef::to_wkt1_strict`) is compared with PROJ 9.8.1's `WKT1_GDAL`
+Strict WKT 1 export (`SpatialRef::to_wkt1_strict`) is compared with PROJ 9.9.0's `WKT1_GDAL`
 (with GDAL's axes) of every 20th EPSG and ESRI code and every one PROJ refuses, character for
 character, and of custom definitions and every 20th IAU_2015 CRS by whether PROJ has a WKT 1
 without extension and by reading it back (`cargo test -p terrio-crs --test wkt1_strict_export`;
@@ -2062,7 +2063,7 @@ original transforms as `differs`.
 
 Its keys are in PROJ's order without serde_json's `preserve_order` feature, which terrio-crs leaves
 off (`cargo test -p terrio-crs --test projjson_key_order`). The key order of every kind of object
-PROJ 9.8.1 writes for its registry CRSs is frozen in
+PROJ 9.9.0 writes for its registry CRSs is frozen in
 `crates/terrio-crs/tests/data/projjson_key_order.txt`; regenerate it with
 `scripts/gen_projjson_key_order.py` (pyproj 3.8.0, `PROJ_NETWORK=OFF`).
 

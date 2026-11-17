@@ -1,4 +1,4 @@
-//! `SpatialRef::to_projjson` writes each object's keys in the order PROJ 9.8.1 writes them,
+//! `SpatialRef::to_projjson` writes each object's keys in the order PROJ 9.9.0 writes them,
 //! whether or not serde_json's `preserve_order` feature is on in the build. The key orders of
 //! PROJ's objects are `data/projjson_key_order.txt` (`scripts/gen_projjson_key_order.py`).
 
@@ -68,7 +68,6 @@ fn the_scan_finds_each_object_s_keys() {
 /// and planetary CRSs): no two keys in the other order than PROJ's, and no key PROJ lacks. Two
 /// keys PROJ never writes in one object have no order to check.
 #[test]
-#[ignore = "PROJ 9.8.1 values; EPSG v13.102 adds 45 CRSs to those written (1082 against 1037): re-derived with PROJ 9.9.0 in #1076 (b)"]
 fn keys_are_in_proj_s_order() {
     let pairs = proj_pairs();
     let known: HashSet<&str> = include_str!("data/projjson_key_order.txt").lines().flat_map(|l| l.split(',')).collect();
@@ -103,6 +102,6 @@ fn keys_are_in_proj_s_order() {
     }
     // Every definition that reads and writes is checked; a new refusal changes the count. The
     // fallback reads some EPSG codes the default build refuses.
-    let expected = if cfg!(feature = "wbprojection-fallback") { 1054 } else { 1037 };
+    let expected = if cfg!(feature = "wbprojection-fallback") { 1099 } else { 1082 };
     assert_eq!(written, expected, "CRSs written");
 }

@@ -28,7 +28,6 @@ fn gcrs(dimension: u8) -> String {
 /// its GEOGCS for a projected CRS, given per case. None of them takes the code as its own
 /// (`SpatialRef::epsg`): PROJ places them by a ballpark, not by GR96's transformations.
 #[test]
-#[ignore = "PROJ 9.8.1 values; EPSG v13.102 changed Greenland 1996 (GR96): re-derived with PROJ 9.9.0 in #1076 (b)"]
 fn greenland_1996_is_gr96_by_its_name_as_proj_identifies_it() {
     let cases: [(String, Option<u32>); 11] = [
         // PROJ: 4747.
@@ -103,7 +102,6 @@ fn an_esri_datum_name_alone_gives_the_geographic_crs_of_that_datum() {
 /// not by "GR96 to WGS 84 (1)" as EPSG:4747 (`Transformer.from_crs(CRS(wkt), "EPSG:4326",
 /// always_xy=True)`; the point (-51.7, 64.2) is kept in both).
 #[test]
-#[ignore = "PROJ 9.8.1 values; EPSG v13.102 changed Greenland 1996 (GR96): re-derived with PROJ 9.9.0 in #1076 (b)"]
 fn greenland_1996_identified_as_gr96_keeps_its_ballpark() {
     terrio_crs::set_grid_search_paths(Some(vec![]));
     terrio_crs::set_network_enabled(Some(false));

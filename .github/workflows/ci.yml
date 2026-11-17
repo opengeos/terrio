@@ -519,7 +519,7 @@ jobs:
           path: terrio-data
           # Holds the datum shift and geoid grids of scripts/proj_grids.txt too (230 MB), and the
           # EPSG reference points of GDAL 3.13.3 and PROJ 9.9.0.
-          key: terrio-data-gdal${{ env.GDAL_REFERENCE_VERSION }}-proj9.8.1-points-proj9.9.0-${{ hashFiles('scripts/fetch_test_data.sh', 'scripts/gen_epsg_points.py', 'scripts/proj_grids.txt') }}
+          key: terrio-data-gdal${{ env.GDAL_REFERENCE_VERSION }}-proj9.8.1-points-gdal3.13.3-proj9.9.0-${{ hashFiles('scripts/fetch_test_data.sh', 'scripts/gen_epsg_points.py', 'scripts/proj_grids.txt') }}
       # terrio-crs's EPSG table comes from PROJ 9.9.0, and so do the points its transformations
       # are checked against (epsg_accuracy): GDAL 3.13.3, the first GDAL conda-forge builds on
       # PROJ 9.9, in an environment of their own, only to compute them.

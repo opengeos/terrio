@@ -157,15 +157,20 @@ fn an_auxiliary_sphere_on_an_altered_datum_keeps_its_transformation() {
 /// on International 1924). On the datum's own ellipsoid the point is kept. `Transformer.from_crs(
 /// CRS(wkt), "EPSG:4326", always_xy=True)`, pyproj 3.8.0, network off. Reported by RustGIS.
 #[test]
-#[ignore = "PROJ 9.8.1 values; EPSG v13.102 renamed RDN2008 to ETRS89-ITA [RDN2008]: re-derived with PROJ 9.9.0 in #1076 (b)"]
 fn a_null_transformation_on_another_ellipsoid_is_applied_geocentrically() {
     terrio_crs::set_grid_search_paths(Some(vec![]));
     terrio_crs::set_network_enabled(Some(false));
     let wgs84 = SpatialRef::from_epsg(4326).unwrap();
     for (datum, spheroid, (x, y), (lon, lat), name) in [
         ("D_TWD_1997", "6378388.0,297.0", (121.5, 25.0), (121.5, 24.999_369_532_669_89), "TWD97 to WGS 84 (1)"),
-        ("D_Rete_Dinamica_Nazionale_2008", "6378000.0,298.257223563", (12.5, 41.9), (12.5, 41.900_004_110_644_24), "RDN2008 to WGS 84 (1)"),
-        ("D_IGM_1995", "6378000.0,298.257223563", (12.5, 41.9), (12.5, 41.900_004_110_644_24), "IGM95 to WGS 84 (1)"),
+        (
+            "D_Rete_Dinamica_Nazionale_2008",
+            "6378000.0,298.257223563",
+            (12.5, 41.9),
+            (12.5, 41.900_004_110_644_24),
+            "ETRS89-ITA [RDN2008] to WGS 84 (1)",
+        ), // EPSG v13.102's name (PROJ 9.9.0)
+        ("D_IGM_1995", "6378000.0,298.257223563", (12.5, 41.9), (12.5, 41.900_004_110_644_24), "ETRS89-ITA [IGM95] to WGS 84 (1)"), // EPSG v13.102's name (PROJ 9.9.0)
         ("D_MAGNA", "6378388.0,297.0", (-74.1, 4.6), (-74.1, 4.599_868_339_200_481), "MAGNA-SIRGAS to WGS 84 (1)"),
         ("D_TWD_1997", "6378137.0,298.257222101", (121.5, 25.0), (121.5, 25.0), "TWD97 to WGS 84 (1)"),
     ] {
@@ -192,7 +197,6 @@ fn a_null_transformation_on_another_ellipsoid_is_applied_geocentrically() {
 /// the NAD83(CSRS)v6 case as a ballpark (its first step), terrio by the registered operation
 /// alone: not compared (opengeos/terrio#1012 item 56).
 #[test]
-#[ignore = "PROJ 9.8.1 values; EPSG v13.102 changed Greenland 1996: re-derived with PROJ 9.9.0 in #1076 (b)"]
 fn null_transformations_on_another_ellipsoid_stop_where_proj_stops() {
     terrio_crs::set_grid_search_paths(Some(vec![]));
     terrio_crs::set_network_enabled(Some(false));

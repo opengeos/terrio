@@ -1,4 +1,4 @@
-//! `SpatialRef::to_wkt1_strict` against the WKT 1 PROJ 9.8.1 writes (pyproj 3.8.0's
+//! `SpatialRef::to_wkt1_strict` against the WKT 1 PROJ 9.9.0 writes (pyproj 3.8.0's
 //! `CRS.to_wkt("WKT1_GDAL", output_axis_rule=True)`, `proj_as_wkt` with `WKT1_GDAL` and the
 //! AXIS nodes GDAL writes), frozen in `data/wkt1_strict_export.tsv` by
 //! `scripts/gen_wkt1_strict_export.py`: every 20th EPSG and ESRI code, every registry code PROJ
@@ -233,7 +233,6 @@ fn check(row: &Row, s: &SpatialRef) -> Option<String> {
 }
 
 #[test]
-#[ignore = "PROJ 9.8.1 values; EPSG v13.102 renamed datums and CRSs (ETRS89 realizations): re-derived with PROJ 9.9.0 in #1076 (b)"]
 fn strict_wkt1_matches_proj() {
     let rows = rows();
     let mut read = 0;

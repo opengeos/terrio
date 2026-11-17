@@ -137,7 +137,7 @@ precedence = "override"
 SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright © 2010-2025 Esri", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
 SPDX-License-Identifier = "LicenseRef-EPSG AND Apache-2.0 AND MIT"
 
-# PROJ 9.8.1's placements of EPSG and ESRI WKTs of EPSG CRSs (scripts/gen_wkt_unresolved.py).
+# PROJ 9.9.0's placements of EPSG and ESRI WKTs of EPSG CRSs (scripts/gen_wkt_unresolved.py).
 [[annotations]]
 path = "crates/terrio-crs/tests/data/wkt_unresolved.json"
 precedence = "override"
@@ -147,7 +147,7 @@ SPDX-License-Identifier = "LicenseRef-EPSG AND Apache-2.0 AND MIT"
 # PROJ 9.8.1's placements of points of EPSG CRSs and of WKTs with ESRI names (ESRI WKT 1, ESRI
 # methods and datum names): in grads, with prime meridians, with datums known by ID or name, read
 # by PROJ, and bound (scripts/gen_grads_and_prime_meridians.py, gen_wkt_datum_shift.py,
-# gen_wkt1_proj_reads.py, gen_wkt2_bound.py).
+# gen_wkt1_proj_reads.py, gen_wkt2_bound.py; wkt_datum_shift.json from PROJ 9.9.0).
 [[annotations]]
 path = [
     "crates/terrio-crs/tests/data/grads_and_prime_meridians.json",
@@ -161,7 +161,7 @@ SPDX-License-Identifier = "LicenseRef-EPSG AND Apache-2.0 AND MIT"
 
 # PROJ 9.8.1's readings of WKTs and PROJ strings, with EPSG CRSs, datums and transformations, and
 # its placements in deprecated EPSG CRSs (scripts/gen_wkt1_axes.py, gen_proj_ellipsoid_shape.py,
-# gen_epsg_deprecated.py).
+# gen_epsg_deprecated.py; epsg_deprecated.json from PROJ 9.9.0).
 [[annotations]]
 path = [
     "crates/terrio-crs/tests/data/epsg_deprecated.json",

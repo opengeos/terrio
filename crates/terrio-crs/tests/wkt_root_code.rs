@@ -1,5 +1,5 @@
 //! A WKT whose root `AUTHORITY` or `ID` is not the CRS its nodes describe is read by its nodes, as
-//! PROJ 9.8.1 reads it: a geographic code on a projected CRS, a code that does not exist, a
+//! PROJ 9.9.0 reads it: a geographic code on a projected CRS, a code that does not exist, a
 //! compound code's units and axes on a 2D CRS in degrees, a geographic code on a geocentric CRS, a
 //! code of another datum on the same ellipsoid. The declared code is kept only when the content is
 //! that CRS; an unknown method stays unusable rather than read as the code. An Esri CRS's name
@@ -30,7 +30,6 @@ fn read(case: &Value) -> (SpatialRef, terrio_crs::Result<(f64, f64)>) {
 }
 
 #[test]
-#[ignore = "PROJ 9.8.1 values; EPSG v13.102 changed Greenland 1996 (GR96): re-derived with PROJ 9.9.0 in #1076 (b)"]
 fn a_wkt_is_read_by_its_nodes_not_its_root_code() {
     let cases = cases();
     assert_eq!(cases.len(), 35);

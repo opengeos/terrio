@@ -186,7 +186,7 @@ fn crs(definition: &str) -> Result<Option<SpatialRef>, String> {
         return SpatialRef::from_proj4(definition).map(Some).map_err(|e| e.to_string());
     }
     // Codes terrio does not resolve: outside its tables, or on a projection it does not compute
-    // yet (the UTM grid systems, EPSG:32700).
+    // yet (the UTM grid systems, EPSG:32600 and 32700).
     let fallback = definition
         .strip_prefix("EPSG:")
         .and_then(|c| c.parse().ok())

@@ -1782,6 +1782,11 @@ impl Def {
         }
     }
 
+    /// Whether it is a geographic 3D or a geocentric CRS.
+    pub fn geodetic_3d(&self) -> bool {
+        self.three_d || self.geocentric
+    }
+
     /// Whether coordinates have a height: a geographic 3D or a compound CRS.
     pub fn has_height(&self) -> bool {
         self.three_d || self.geocentric || self.vertical.is_some()
