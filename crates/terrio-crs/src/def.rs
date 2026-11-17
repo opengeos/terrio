@@ -434,6 +434,13 @@ fn memo() -> &'static std::sync::Mutex<Memo> {
     M.get_or_init(Default::default)
 }
 
+/// Forgets the definitions built, for [`crate::reset_grid_cache`]: so that the grids they hold
+/// are let go, without waiting for the next definition built. Dropped after the lock is released.
+pub(crate) fn forget_definitions() {
+    let old = std::mem::take(&mut *memo().lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+    drop(old);
+}
+
 /// Holds the memo of definitions across a fork, for [`crate::host::hold_for_fork`].
 #[cfg(all(unix, not(target_family = "wasm")))]
 pub(crate) fn hold_for_fork(held: &mut Vec<Box<dyn std::any::Any>>) {
@@ -451,8 +458,9 @@ impl Def {
     /// each need it: by the whole `SpatialRef`, while the grids found stay the same (until
     /// [`crate::reset_grid_cache`], the settings that call it, or [`crate::register_grid`]), as
     /// the transformations a definition holds depend on them. Up to 1 MiB, counting the WKT and
-    /// PROJ text and the definition's own size, not the transformations and projection it shares
-    /// with others: then all is forgotten, and the memo fills again. A larger one is not kept. Not
+    /// PROJ text, the definition's own size and its lists of transformations, not the
+    /// transformations and projection it shares with others: then all is forgotten, and the memo
+    /// fills again. A larger one is not kept. Not
     /// kept under `grid::without_grids`, where no grid counts as found, nor a failure. A change of
     /// `TERRIO_NETWORK` or `PROJ_NETWORK` is seen at the next reset, as by the grids' availability
     /// cache.
@@ -471,20 +479,30 @@ impl Def {
         }
         // Built without the lock: a definition may need others (a compound CRS's horizontal one).
         let d = Arc::new(Self::build(s)?);
-        let mut m = memo().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        // Not kept when the grids changed meanwhile: it may hold transformations they no longer give.
-        if epoch == grid::epoch() {
-            let size = s.wkt.as_ref().map_or(0, String::len) + s.proj4.as_ref().map_or(0, String::len) + std::mem::size_of::<Self>();
-            if size > 1 << 20 {
-                return Ok(d);
-            }
-            if m.epoch != epoch || m.bytes + size > 1 << 20 {
-                *m = Memo { epoch, ..Default::default() };
-            }
-            if m.defs.insert(s.clone(), d.clone()).is_none() {
-                m.bytes += size;
+        let ops = d.ops.len() + d.all_ops.as_ref().map_or(0, Vec::len);
+        let size = s.wkt.as_ref().map_or(0, String::len)
+            + s.proj4.as_ref().map_or(0, String::len)
+            + std::mem::size_of::<Self>()
+            + ops * std::mem::size_of::<Arc<Op>>();
+        if size > 1 << 20 {
+            return Ok(d);
+        }
+        // The definitions forgotten are dropped after the lock is released.
+        let mut forgotten = None;
+        {
+            let mut m = memo().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Not kept when the grids changed meanwhile: it may hold transformations they no
+            // longer give.
+            if epoch == grid::epoch() {
+                if m.epoch != epoch || m.bytes + size > 1 << 20 {
+                    forgotten = Some(std::mem::replace(&mut *m, Memo { epoch, ..Default::default() }));
+                }
+                if m.defs.insert(s.clone(), d.clone()).is_none() {
+                    m.bytes += size;
+                }
             }
         }
+        drop(forgotten);
         Ok(d)
     }
 
@@ -2404,9 +2422,14 @@ mod memo_tests {
             Arc::ptr_eq(&a, &b) && epoch == grid::epoch()
         }));
         let first = Def::shared(&s).unwrap();
+        // The definition kept is the one built: the same transformations, in the same order.
+        let built = Def::build(&s).unwrap();
+        assert_eq!(first.ops.len(), built.ops.len());
+        assert!(first.ops.iter().zip(&built.ops).all(|(a, b)| Arc::ptr_eq(a, b)));
         crate::reset_grid_cache();
         let after_reset = Def::shared(&s).unwrap();
         assert!(!Arc::ptr_eq(&first, &after_reset));
+        // A name no CRS uses, so that no other test's grids change.
         crate::register_grid("terrio-memo-test-unused.gsb", vec![0; 16]);
         assert!(!Arc::ptr_eq(&after_reset, &Def::shared(&s).unwrap()));
         // Not kept while no grid counts as found.

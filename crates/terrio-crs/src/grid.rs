@@ -1294,7 +1294,8 @@ pub(crate) fn available(name: &str) -> bool {
 }
 
 /// Forgets which grids were found, so that the next lookups search again (after the grid
-/// directories or network setting change).
+/// directories or network setting change), and the CRS definitions whose transformations were
+/// chosen by them.
 pub fn reset_grid_cache() {
     CACHE_GENERATION.fetch_add(1, Ordering::SeqCst);
     {
@@ -1307,6 +1308,7 @@ pub fn reset_grid_cache() {
     }
     fetch_failures().lock().unwrap_or_else(PoisonError::into_inner).clear();
     sets_cache().lock().unwrap_or_else(|e| e.into_inner()).clear();
+    crate::def::forget_definitions();
 }
 
 /// The names of a step's `grids=` list, with whether each is optional (`@` prefix).

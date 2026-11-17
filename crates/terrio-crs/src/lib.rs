@@ -736,12 +736,12 @@ impl SpatialRef {
     /// datum no CRS is on, this is the CRS its name identifies it as (GR96 for ESRI's
     /// GCS_Greenland_1996), whose transformations the definition does not take.
     pub fn geographic_code(&self) -> Option<u32> {
-        Def::new(self).ok().and_then(|d| d.geographic_code())
+        Def::shared(self).ok().and_then(|d| d.geographic_code())
     }
 
     /// Rotated-pole CF parameters, semi-major axis and eccentricity squared.
     pub fn rotated_pole_parameters(&self) -> Option<([f64; 3], f64, f64)> {
-        let d = Def::new(self).ok()?;
+        let d = Def::shared(self).ok()?;
         Some((d.rotated_pole()?, d.ell.a, d.ell.es))
     }
 
@@ -920,12 +920,12 @@ impl SpatialRef {
     /// One longitude revolution in native angular units, or `None` for a nongeographic CRS.
     #[doc(hidden)]
     pub fn longitude_period(&self) -> Option<f64> {
-        Def::new(self).ok()?.longitude_period()
+        Def::shared(self).ok()?.longitude_period()
     }
 
     /// Whether the CRS has geocentric Cartesian X/Y/Z coordinates.
     pub fn is_geocentric(&self) -> bool {
-        Def::new(self).is_ok_and(|d| d.is_geocentric())
+        Def::shared(self).is_ok_and(|d| d.is_geocentric())
     }
 
     /// The EPSG codes of the horizontal and the vertical CRS of a compound CRS: those of the
@@ -945,13 +945,13 @@ impl SpatialRef {
     /// vertical CRS), a geographic 3D or a geocentric CRS. [`Transformer::transform_3d`]
     /// transforms heights between two such CRSs.
     pub fn has_height(&self) -> bool {
-        Def::new(self).is_ok_and(|d| d.has_height())
+        Def::shared(self).is_ok_and(|d| d.has_height())
     }
 
     /// Whether the enabled engines recognize a geographic (longitude/latitude) CRS.
     /// Unrecognized definitions return `false`, as do projected and geocentric CRSs.
     pub fn is_geographic(&self) -> bool {
-        match Def::new(self) {
+        match Def::shared(self) {
             Ok(d) => d.is_geographic(),
             #[cfg(feature = "wbprojection-fallback")]
             Err(_) => self.to_wbp().map(|c| c.is_geographic()).unwrap_or(false),
@@ -1005,7 +1005,7 @@ impl SpatialRef {
         if self.epsg.is_some_and(|c| epsg::get(c).is_none() && epsg::compound(c).is_none() && self.wkt == registry_wkt(c)) {
             return AxisOrder::Unknown;
         }
-        let Ok(def) = Def::new(self) else { return AxisOrder::Unknown };
+        let Ok(def) = Def::shared(self) else { return AxisOrder::Unknown };
         if def.is_geocentric() {
             return AxisOrder::Other;
         }
@@ -1084,7 +1084,7 @@ impl SpatialRef {
     /// # Ok::<(), terrio_crs::Error>(())
     /// ```
     pub fn projection_params(&self) -> Option<ProjParams> {
-        let def = Def::new(self).ok()?;
+        let def = Def::shared(self).ok()?;
         let mut params = def.params()?.clone();
         // A registry CRS is on the registry's ellipsoid, as PROJ reports it: the one its PROJ
         // string names may be rounded (Bessel Namibia's `bess_nam`, 0.28 m) or a sphere computed on
@@ -1128,7 +1128,7 @@ impl SpatialRef {
     /// # Ok::<(), terrio_crs::Error>(())
     /// ```
     pub fn body(&self) -> Option<&'static str> {
-        let def = Def::new(self).ok()?;
+        let def = Def::shared(self).ok()?;
         if let Some(code) = def.declared_body() {
             return bodies::NAIF.binary_search_by_key(&code, |(c, _)| *c).ok().map(|i| bodies::NAIF[i].1);
         }
@@ -1152,7 +1152,7 @@ impl SpatialRef {
     /// `rotated_latitude_longitude`): its coordinates are in degrees but are not longitudes and
     /// latitudes, so it is not geographic.
     pub fn is_rotated_pole(&self) -> bool {
-        self.epsg.is_none() && Def::new(self).is_ok_and(|d| d.is_rotated_pole())
+        self.epsg.is_none() && Def::shared(self).is_ok_and(|d| d.is_rotated_pole())
     }
 
     /// Whether coordinates are in degrees: a geographic CRS or a rotated-pole grid.
