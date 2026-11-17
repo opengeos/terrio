@@ -15,16 +15,24 @@ fn utm_22n(name: &str) -> String {
     )
 }
 
+/// A WKT 2 `GEOGCRS` named GCS_Greenland_1996 on `D_Greenland_1996`, of `dimension` 2 or 3.
+fn gcrs(dimension: u8) -> String {
+    let height = if dimension == 3 { r#",AXIS["ellipsoidal height",up,ORDER[3],LENGTHUNIT["metre",1]]"# } else { "" };
+    format!(
+        r#"GEOGCRS["GCS_Greenland_1996",DATUM["D_Greenland_1996",ELLIPSOID["GRS_1980",6378137,298.257222101,LENGTHUNIT["metre",1]]],PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.0174532925199433]],CS[ellipsoidal,{dimension}],AXIS["longitude",east,ORDER[1],ANGLEUNIT["degree",0.0174532925199433]],AXIS["latitude",north,ORDER[2],ANGLEUNIT["degree",0.0174532925199433]]{height}]"#
+    )
+}
+
 /// PROJ 9.8.1 (pyproj 3.8.0, network off) identifies ESRI's GCS_Greenland_1996 and its UTM zone
 /// 22N as GR96 by their names, and no CRS for another name, for another axis or for a geographic
 /// 3D CRS: `CRS.from_wkt(wkt).to_epsg(min_confidence=100)` gives 4747, 4747, 4747 (spaced), 3182,
-/// None, None and
+/// None, None, None and None for the WKT 2 `GEOGCRS` of that name in 2D and 3D, and
 /// None (for `Foo` it lists none at all), then EPSG:4909 for ESRI's GCS_Greenland_1996 with a
 /// `LINUNIT`, a geographic 3D CRS terrio does not identify by name, and EPSG:4909 at 70 % for
 /// Greenland_1996_3D.
 #[test]
 fn greenland_1996_is_gr96_by_its_name_as_proj_identifies_it() {
-    let cases: [(String, Option<u32>, Option<u32>); 9] = [
+    let cases: [(String, Option<u32>, Option<u32>); 11] = [
         (GR96.to_string(), Some(4747), Some(4747)),
         (GR96.replace("GCS_Greenland_1996", "GR96"), Some(4747), Some(4747)),
         // Spaced, as some writers put it.
@@ -34,6 +42,9 @@ fn greenland_1996_is_gr96_by_its_name_as_proj_identifies_it() {
         (GR96.replace("6378137.0", "6378142.0"), None, None),
         // The projected CRS of another name is not EPSG:3182, but its GEOGCS is GR96.
         (utm_22n("Foo"), None, Some(4747)),
+        // WKT 2 of that name, 2D and 3D: PROJ maps ESRI's names for WKT 1 only.
+        (gcrs(2), None, None),
+        (gcrs(3), None, None),
         // ESRI's geographic 3D CRS, which PROJ identifies as EPSG:4909 (not in the name table).
         (GR96.replace("0.0174532925199433]]", r#"0.0174532925199433],LINUNIT["Meter",1.0]]"#), None, None),
         (

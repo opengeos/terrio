@@ -1526,7 +1526,7 @@ pub(crate) fn identified_by_shared_name(wkt: &str, code: u32) -> bool {
     let (datums, _) = wkt_datums_and_others(wkt);
     !datums.is_empty()
         && datums.iter().all(|d| epsg::geographic_on(*d).is_empty())
-        && epsg::get(code).is_some_and(|e| !datums.contains(&e.datum))
+        && epsg::get(code).is_some_and(|e| !datums.contains(&e.datum) && datums.iter().any(|d| epsg::datums_share_a_name(*d, e.datum)))
 }
 
 /// The EPSG datums of a WKT definition's geodetic datum, and the other datums
@@ -1654,9 +1654,24 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
         if geographic_dimension_3d(wkt) == Some(true) || wkt1::parse(wkt).is_some_and(|r| r.child("LINUNIT").is_some()) {
             return None;
         }
-        let code = epsg::crs_named_as_proj(&wkt_name(wkt)?, !own.is_geographic(), false, true)?;
+        // WKT 1 only: PROJ reads ESRI's datum names in WKT 1 alone (a WKT 2 `GEOGCRS` named
+        // GCS_Greenland_1996 on `D_Greenland_1996` has an unknown datum, and no code). ESRI's
+        // names for a `GCS_` geographic CRS, or a projected CRS after one or a `D_` datum, as
+        // PROJ's WKT reader maps them.
+        let root = wkt1::parse(wkt)?;
+        let projected = !own.is_geographic();
+        if !root.key.eq_ignore_ascii_case(if projected { "PROJCS" } else { "GEOGCS" }) {
+            return None;
+        }
+        let gcs = |n: &wkt1::Node| n.name().is_some_and(|n| n.starts_with("GCS_"));
+        let esri = if projected {
+            root.child("GEOGCS").is_some_and(|g| gcs(g) || g.child("DATUM").and_then(|d| d.name()).is_some_and(|n| n.starts_with("D_")))
+        } else {
+            gcs(&root)
+        };
+        let code = epsg::crs_named_as_proj(root.name()?, projected, false, esri)?;
         let datum = epsg::get(code)?.datum;
-        let shared = datums.iter().any(|d| epsg::geographic_on(*d).is_empty() && epsg::datums_sharing_a_name(*d).contains(&datum));
+        let shared = datums.iter().any(|d| epsg::geographic_on(*d).is_empty() && *d != datum && epsg::datums_share_a_name(*d, datum));
         (shared && same(own, code)).then_some(code)
     };
     if let Some(code) = search(&datums).or_else(|| search(others)).or_else(sharing) {

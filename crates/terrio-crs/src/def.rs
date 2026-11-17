@@ -69,8 +69,8 @@ pub(crate) struct Def {
     datum: Option<u32>,
     /// The EPSG code of the geographic CRS, when known.
     geog: Option<u32>,
-    /// The EPSG geographic CRS a CRS on a datum no CRS is on is identified as by its name
-    /// ([`Def::registered_datum`]), which does not give it that CRS's transformations.
+    /// The EPSG geographic CRS that a CRS on a datum no CRS is on is identified as by its name
+    /// ([`Def::registered_datum`]). Its transformations are not those of that CRS.
     named_geog: Option<u32>,
     /// All the operations of a datum found by its name ([`Def::datum_by_name`]), those whose
     /// grids are missing included, as `geog`'s registry entry gives them otherwise.
@@ -991,10 +991,12 @@ impl Def {
         // WGS 84 (1)".
         if declared.is_none()
             && let (Some(g), Some(own)) = (geog, own.as_deref())
-            && super::identified_by_shared_name(own, g)
+            && super::identified_by_shared_name(c.geogcs_wkt1.as_deref().unwrap_or(own), g)
         {
             self.datum_by_name(own);
-            self.named_geog = geog;
+            // Not for WKT 2, identified through its WKT 1 form: PROJ identifies it by EPSG's names
+            // only (a `GEOGCRS` named GCS_Greenland_1996 has no code).
+            self.named_geog = geog.filter(|_| c.geogcs_wkt1.is_none());
             return;
         }
         let geog = geog.map(|g| epsg::get(g).filter(|e| e.proj.starts_with("+proj=geocent")).map_or(g, |e| e.geog));
