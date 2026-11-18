@@ -148,8 +148,8 @@ def main():
     if flagged:
         out += ["", *header, *flagged]
     if rest:
-        green = sum(r[1] == "🟢" for r in table)
-        label = f"🟢 {green} within ±{FLAG:g}%" if green else f"🆕 {len(rest)} benchmarks"
+        green, new = sum(r[1] == "🟢" for r in table), sum(r[1] == "🆕" for r in table)
+        label = " · ".join(([f"🟢 {green} within ±{FLAG:g}%"] if green else []) + ([f"🆕 {new} new"] if new else []))
         out += ["", f"<details><summary>{label}</summary>", "", *header, *rest, "</details>"]
     out += [
         "",

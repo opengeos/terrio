@@ -60,7 +60,7 @@ name: Claude Code Review
 # added with GITHUB_TOKEN, and events caused by GITHUB_TOKEN start no workflow
 # runs except workflow_dispatch and repository_dispatch, so `labeled` would
 # never fire for it. A maintainer adding `perf-regression` by hand runs the
-# same mode. It posts at most one review per head SHA (a run that fails
+# same mode. It writes at most one explanation per head SHA (a run that fails
 # before posting can be retried): it skips unless the bench
 # comment for the current head flags a regression, and when it already holds
 # the explanation for that head. The action wires the inline

@@ -103,3 +103,8 @@ def test_just_under_the_threshold_is_not_shown_as_10(tmp_path):
 def test_verdict_says_from_0(tmp_path):
     out = comment(tmp_path, summary("grew", 500, 0))
     assert "warp_f32 grew from 0." in out
+
+
+def test_fold_counts_green_and_new_apart(tmp_path):
+    out = comment(tmp_path, summary("same", 1000, 1000), summary("added", 500))
+    assert "<summary>🟢 1 within ±10% · 🆕 1 new</summary>" in out
