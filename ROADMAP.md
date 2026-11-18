@@ -668,7 +668,9 @@ WebAssembly (the `terrio-js` npm package):
 - [ ] HEC-RAS files read in place over HTTP and S3 by range requests: needs an engine byte-source
       interface (plan the ranges from the HDF5 metadata, fetch them, then decode, as
       `sparse::SparseFile` reads).
-- [x] One HDF5 reader for terrio and the HEC-RAS engine: both on crates.io `hdf5-reader` 0.10.1.
+- [x] Pure-Rust HDF5 reading through crates.io `hdf5-reader`. Terrio and NetCDF share compatible
+      reader types; the HEC-RAS engine owns its reader and may pin a different release, so reader
+      updates do not have to wait for an engine release.
 - [x] CRS: datum shift grids (NTv2, GeoTIFF grids), vertical datums, time-dependent transformations
       between dynamic datums (coordinate epochs). Done: PROJ's GeoTIFF grids (PROJ-data), NTv2 and GTX
       read in pure Rust and interpolated as PROJ does (`hgridshift`, `vgridshift`, NADCON5's

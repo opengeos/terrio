@@ -262,6 +262,20 @@ to a Rust release less than six months old, and from 1.0 on only in a minor rele
   Add the project to `NOTICE` and [Acknowledgements](acknowledgements.md), and data files from
   elsewhere to `REUSE.toml`.
 
+## NetCDF and HDF5 dependency updates
+
+Upgrade `netcdf-reader` and Terrio's direct `hdf5-reader` together on compatible release lines.
+`multidim::netcdf` passes shared storage between them, so incompatible reader versions fail to
+compile even if each crate builds on its own. Dependabot groups this pair, including major
+updates, separately from the general Cargo group.
+
+The optional `hecras` feature remains enabled by default. Its `ras-commander-fast-hdf` engine
+owns its HDF5 reader and may pin an older version. Temporary duplicate HDF5 dependencies are
+allowed: do not hold the direct reader updates for an engine release or pass reader-specific
+types across the engine boundary. Reunify versions when upstream supports the newer reader.
+Check both the default build and NetCDF/HDF5 without HEC-RAS, as described in
+[Testing](testing.md#netcdf-and-hdf5-reader-compatibility).
+
 ## Changelog
 
 Pull requests do not edit `CHANGELOG.md`. Each one would add its entry at the top of the
