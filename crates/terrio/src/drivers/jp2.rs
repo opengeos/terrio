@@ -1058,10 +1058,14 @@ fn reversibility(r: &mut dyn codec::ReadSeek, len: u64, j2k: bool) -> Result<Opt
         let mut pos = 2;
         // Whether the markers ended (SOD, EOC or a malformed one) inside the bytes read.
         let mut ended = false;
-        while pos + 4 <= cs.len() && cs[pos] == 0xff {
+        while pos + 2 <= cs.len() && cs[pos] == 0xff {
             let marker = cs[pos + 1];
             if marker == 0x93 || marker == 0xd9 {
                 ended = true;
+                break;
+            }
+            if pos + 4 > cs.len() {
+                // A segment length cut by the end of what was read.
                 break;
             }
             let seg = u16::from_be_bytes([cs[pos + 2], cs[pos + 3]]) as usize;
@@ -1081,7 +1085,7 @@ fn reversibility(r: &mut dyn codec::ReadSeek, len: u64, j2k: bool) -> Result<Opt
             }
             pos += 2 + seg;
         }
-        ended |= pos + 4 <= cs.len() && cs[pos] != 0xff;
+        ended |= pos < cs.len() && cs[pos] != 0xff;
         if ended || n == most {
             break;
         }
@@ -1619,6 +1623,41 @@ mod tests {
         options.push(("REVERSIBLE".into(), "YES".into()));
         let explicit = EncodingOptions::from_creation_options(&options).unwrap();
         assert!(explicit.reversible && !explicit.lossless());
+    }
+
+    /// A raw codestream: SOC, a COM segment holding `comment`, a COD whose transformation is 5-3
+    /// (reversible), then SOD.
+    fn codestream_with_comment(comment: &[u8]) -> Vec<u8> {
+        let mut cs = vec![0xff, 0x4f, 0xff, 0x64];
+        cs.extend_from_slice(&(4 + comment.len() as u16).to_be_bytes());
+        cs.extend_from_slice(&[0, 1]);
+        cs.extend_from_slice(comment);
+        cs.extend_from_slice(&[0xff, 0x52, 0, 12, 0, 0, 0, 1, 0, 5, 4, 4, 0, 1]);
+        cs.extend_from_slice(&[0xff, 0x93]);
+        cs
+    }
+
+    #[test]
+    fn reversibility_reads_past_a_comment_longer_than_the_first_read() {
+        let text = b"Created by OpenJPEG version 2.5.0, LOSSY settings used";
+        let mut long = text.to_vec();
+        long.resize(20_000, b' ');
+        for comment in [&text[..], &long[..]] {
+            let cs = codestream_with_comment(comment);
+            let len = cs.len() as u64;
+            let got = reversibility(&mut std::io::Cursor::new(cs), len, true).unwrap();
+            assert_eq!(got, Some("LOSSY"), "comment of {} bytes", comment.len());
+        }
+    }
+
+    #[test]
+    fn reversibility_stops_at_a_start_of_data_in_the_last_two_bytes_read() {
+        // SOD ends exactly at 16 KiB, the first read. The stream holds nothing after it, so a
+        // second read past it would fail.
+        let cs = codestream_with_comment(&vec![b' '; (1 << 14) - 24]);
+        assert_eq!(cs.len(), 1 << 14);
+        let got = reversibility(&mut std::io::Cursor::new(cs), 1 << 20, true).unwrap();
+        assert_eq!(got, Some("LOSSLESS (possibly)"));
     }
 
     #[test]
