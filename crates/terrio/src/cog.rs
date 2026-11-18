@@ -2978,6 +2978,63 @@ impl TiffRaster {
         if misses.is_empty() {
             return Ok(out);
         }
+        // An uncompressed strip that takes more than the chunk limit (an image stored as one
+        // strip, as TIFF 6.0 allows) is read by the rows the window needs, at their offsets in the
+        // file, a few at a time, when those rows fit the limit: the limit then bounds what the
+        // read holds, not what the strip declares. Only for a strip the file holds whole; one cut
+        // short or declared past the end of the file is decoded, and refused, as any chunk.
+        if compression == 1 && !self.complex && dec.get_chunk_type() == tiff::decoder::ChunkType::Strip {
+            let limit = self.limits.chunk_bytes as u64;
+            let row_bytes = cw.checked_mul(spp).and_then(|n| n.checked_mul(self.data_type.size_bytes())).filter(|n| *n > 0);
+            // (first row, rows) of the strip to read by rows, when it is.
+            let by_rows = |idx: u32, row_bytes: usize| -> Option<(usize, usize)> {
+                let rows = ch.min(lh - (idx as usize % per_plane) * ch);
+                let strip = (rows as u64).checked_mul(row_bytes as u64)?;
+                let (offset, count) = tables.get(idx as usize)?;
+                let y0 = targets[&idx][0].1;
+                let (first, end) = (w.y.max(y0) - y0, (w.y + w.height).min(y0 + rows) - y0);
+                let held = count >= strip && offset.checked_add(count).is_some_and(|stop| stop <= self.file_len);
+                (strip > limit && held && (end - first) as u64 * row_bytes as u64 <= limit).then_some((first, end - first))
+            };
+            if let Some(row_bytes) = row_bytes
+                && misses.iter().any(|idx| by_rows(*idx, row_bytes).is_some())
+                && stored_as_decoded(dec, self.data_type)?
+            {
+                let batch = (STRIP_ROWS_BYTES / row_bytes).max(1);
+                let mut whole: Vec<u32> = Vec::new();
+                crate::dataset::fallible::reserve(&mut whole, misses.len(), what)?;
+                for &idx in &misses {
+                    let Some((first, rows)) = by_rows(idx, row_bytes) else {
+                        whole.push(idx);
+                        continue;
+                    };
+                    let offset = tables.offsets[idx as usize];
+                    let mut row = first;
+                    while row < first + rows {
+                        let n = batch.min(first + rows - row);
+                        let at = offset + row as u64 * row_bytes as u64;
+                        // One row larger than the batch is held whole: refused, as a whole strip
+                        // is, when the process cannot hold it.
+                        crate::dataset::fallible::check_usable(n.checked_mul(row_bytes), || "a TIFF strip row".into())
+                            .map_err(Error::ResourceLimit)?;
+                        dec.inner().get_ref().prefetch(&[(at, (n * row_bytes) as u64)])?;
+                        let mut bytes = Vec::new();
+                        crate::dataset::fallible::reserve(&mut bytes, n * row_bytes, "TIFF strip rows")?;
+                        bytes.resize(n * row_bytes, 0u8);
+                        dec.inner().seek(SeekFrom::Start(at))?;
+                        dec.inner().read_exact(&mut bytes)?;
+                        let samples = stored_samples(bytes, self.data_type, self.tags.little_endian)?;
+                        let placed: Vec<ChunkTarget> = targets[&idx].iter().map(|&(x0, y0, map)| (x0, y0 + row, map)).collect();
+                        place_decoded(&mut out, &samples, (cw, n), &placed, w, spp)?;
+                        row += n;
+                    }
+                }
+                misses = whole;
+                if misses.is_empty() {
+                    return Ok(out);
+                }
+            }
+        }
         let mut ranges: Vec<(u64, u64)> = Vec::new();
         crate::dataset::fallible::reserve(&mut ranges, misses.len(), what)?;
         ranges.extend(misses.iter().filter_map(|i| tables.get(*i as usize)));
@@ -3039,6 +3096,58 @@ impl TiffRaster {
         })?;
         Ok(out)
     }
+}
+
+/// The bytes read at a time from an uncompressed strip larger than the chunk limit.
+const STRIP_ROWS_BYTES: usize = 8 << 20;
+
+/// Whether the bytes of the decoder's uncompressed image are its samples as the `tiff` crate
+/// returns them, in the file's byte order: whole-byte samples of `data_type`, most significant
+/// bit first, without a predictor, and of a photometric interpretation the crate leaves as
+/// stored (it inverts WhiteIsZero).
+fn stored_as_decoded<R: Read + Seek>(dec: &mut Decoder<R>, data_type: DataType) -> Result<bool> {
+    let tag = |dec: &mut Decoder<R>, tag| dec.find_tag_unsigned::<u16>(tag).map_err(tiff_err);
+    let list = |dec: &mut Decoder<R>, tag| dec.find_tag_unsigned_vec::<u16>(tag).map_err(tiff_err);
+    let format = match data_type {
+        DataType::U8 | DataType::U16 | DataType::U32 | DataType::U64 => 1,
+        DataType::I8 | DataType::I16 | DataType::I32 | DataType::I64 => 2,
+        DataType::F32 | DataType::F64 => 3,
+    };
+    let bits = (data_type.size_bytes() * 8) as u16;
+    Ok(tag(dec, Tag::Predictor)?.unwrap_or(1) == 1
+        && tag(dec, Tag::FillOrder)?.unwrap_or(1) == 1
+        && matches!(tag(dec, Tag::PhotometricInterpretation)?, Some(1..=3))
+        && list(dec, Tag::BitsPerSample)?.is_some_and(|v| !v.is_empty() && v.iter().all(|b| *b == bits))
+        && list(dec, Tag::SampleFormat)?.unwrap_or_default().iter().all(|f| *f == format))
+}
+
+/// The samples of `data_type` stored in `bytes`, in the file's byte order.
+fn stored_samples(bytes: Vec<u8>, data_type: DataType, little_endian: bool) -> Result<DecodingResult> {
+    macro_rules! samples {
+        ($variant:ident, $t:ty) => {{
+            const N: usize = std::mem::size_of::<$t>();
+            let value = |b: &[u8]| {
+                let b: [u8; N] = b.try_into().expect("chunks_exact gives N bytes");
+                if little_endian { <$t>::from_le_bytes(b) } else { <$t>::from_be_bytes(b) }
+            };
+            let mut samples: Vec<$t> = Vec::new();
+            crate::dataset::fallible::reserve(&mut samples, bytes.len() / N, "TIFF strip samples")?;
+            samples.extend(bytes.chunks_exact(N).map(value));
+            DecodingResult::$variant(samples)
+        }};
+    }
+    Ok(match data_type {
+        DataType::U8 => DecodingResult::U8(bytes),
+        DataType::I8 => samples!(I8, i8),
+        DataType::U16 => samples!(U16, u16),
+        DataType::I16 => samples!(I16, i16),
+        DataType::U32 => samples!(U32, u32),
+        DataType::I32 => samples!(I32, i32),
+        DataType::U64 => samples!(U64, u64),
+        DataType::I64 => samples!(I64, i64),
+        DataType::F32 => samples!(F32, f32),
+        DataType::F64 => samples!(F64, f64),
+    })
 }
 
 /// Places a decoded chunk, whose image data is `dims` (width, height) pixels, into the window `w`
