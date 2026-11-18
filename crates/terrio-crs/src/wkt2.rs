@@ -607,18 +607,18 @@ type ProjMethod = (String, Vec<(String, f64)>);
 fn proj_method(conv: &Node, method: &Node, ang: f64, to_meter: f64) -> Result<Option<ProjMethod>> {
     let Some(name) = method.name().and_then(|n| n.strip_prefix("PROJ ")) else { return Ok(None) };
     let word = |w: &str| !w.is_empty() && w.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_');
-    // PROJ writes a projection's string-valued parameters in the method's name:
-    // `PROJ ob_tran o_proj=moll`, `PROJ isea orient=pole`.
+    // PROJ writes a projection's string-valued parameters and flags in the method's name:
+    // `PROJ ob_tran o_proj=moll`, `PROJ isea orient=pole`, `PROJ isea dual net=a5`.
     let mut words = name.split(' ');
     let mut name = match words.next() {
         Some(w) if word(w) => w.to_string(),
         _ => return Ok(None),
     };
     // The string-valued parameters each projection takes; the others are PARAMETERs.
-    let strings: &[&str] = match name.as_str() {
-        "ob_tran" => &["o_proj"],
-        "isea" => &["orient", "mode"],
-        _ => &[],
+    let (strings, flags): (&[&str], &[&str]) = match name.as_str() {
+        "ob_tran" => (&["o_proj"], &[]),
+        "isea" => (&["orient", "mode", "net"], &["dual"]),
+        _ => (&[], &[]),
     };
     let mut keys: Vec<&str> = Vec::new();
     for w in words {
@@ -629,6 +629,10 @@ fn proj_method(conv: &Node, method: &Node, ang: f64, to_meter: f64) -> Result<Op
                 }
                 keys.push(k);
                 name.push_str(&format!(" +{k}={v}"));
+            }
+            None if flags.contains(&w) && !keys.contains(&w) => {
+                keys.push(w);
+                name.push_str(&format!(" +{w}"));
             }
             _ => return Ok(None),
         }

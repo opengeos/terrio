@@ -87,6 +87,12 @@ impl Params {
         Self { angle_prefixes: true, ..Self::parse(s) }
     }
 
+    /// Whether these are a WKT `PROJ4` extension's parameters ([`Self::parse_extension`]), which
+    /// PROJ reads as a pipeline step's, without its CRS parser's checks.
+    pub fn is_extension(&self) -> bool {
+        self.angle_prefixes
+    }
+
     /// Refuses a quoted value that would swallow the rest of a definition.
     pub fn validate_quoting(&self) -> crate::Result<()> {
         if self.unterminated_quote {
