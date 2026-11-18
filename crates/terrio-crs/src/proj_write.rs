@@ -236,8 +236,7 @@ fn extension(s: &SpatialRef) -> Option<Vec<String>> {
 
 /// Whether a WKT is of an engineering CRS, which has no PROJ string.
 fn is_engineering(wkt: &str) -> bool {
-    let root = wkt.split(['[', '(']).next().unwrap_or_default().trim();
-    ["LOCAL_CS", "ENGCRS", "ENGINEERINGCRS"].iter().any(|key| root.eq_ignore_ascii_case(key))
+    crate::keywords::is(crate::keywords::root_key(wkt), crate::keywords::ENGINEERING_CRS)
 }
 
 /// Web Mercator, which PROJ writes on its sphere with `+nadgrids=@null +wktext`, not with its
@@ -733,7 +732,7 @@ fn strip_suffix(proj: &str) -> Vec<String> {
 /// grid.gtx"`), as the reader splits them: a quote opens a value right after `=` and closes it,
 /// `""` in it is a quote, and elsewhere a quote is a character (DMS seconds, `52d30'10"N`).
 /// Quoted values are unquoted, or `keep` as they are written.
-fn tokens(proj: &str, keep: bool) -> Vec<String> {
+pub(crate) fn tokens(proj: &str, keep: bool) -> Vec<String> {
     let (mut tokens, mut token, mut quoted) = (Vec::new(), String::new(), false);
     let mut chars = proj.chars().peekable();
     while let Some(c) = chars.next() {

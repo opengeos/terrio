@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 # SPDX-License-Identifier: MIT
 
-"""Generate crates/terrio-crs/tests/data/proj_ellipsoid_shape.json: the ellipsoid PROJ 9.8.1
+"""Generate crates/terrio-crs/tests/data/proj_ellipsoid_shape.json: the ellipsoid PROJ 9.9.0
 gives a CRS defined by a PROJ string with `+R`, `+ellps`, `+datum`, `+a`, `+b`, `+rf`, `+f`,
 `+es`, `+e` and the spherification flags (`+R_A`, `+R_V`, `+R_a`, `+R_g`, `+R_h`, `+R_lat_a`,
 `+R_lat_g`, `+R_C`), alone and combined, and where it places a point with that ellipsoid.
@@ -319,7 +319,7 @@ def case(definition):
 
 
 def main():
-    assert pyproj.proj_version_str == "9.8.1", pyproj.proj_version_str
+    assert pyproj.proj_version_str == "9.9.0", pyproj.proj_version_str
     pyproj.network.set_network_enabled(False)
     # No grids, so the values don't depend on what is installed.
     for d in pyproj.datadir.get_data_dir().split(os.pathsep) + [

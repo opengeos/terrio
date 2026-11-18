@@ -58,7 +58,7 @@ from terrio.rio._tiff import Structure
 from terrio.rio.crs import CRS
 from terrio.rio.dtypes import dtype_fwd, typename_rev
 from terrio.rio.enums import ColorInterp, MaskFlags, Resampling
-from terrio.rio.errors import RasterioIOError, WarpedVRTError, WarpOptionsError
+from terrio.rio.errors import CRSError, RasterioIOError, WarpedVRTError, WarpOptionsError
 from terrio.rio.io import _READER_READ_LEVEL, DatasetReader, _sum_scale
 from terrio.rio.transform import compose
 from terrio.rio.warp import (
@@ -200,6 +200,7 @@ class WarpedVRT(DatasetReader):
         warp_mem_limit: int = 0,
         dtype: Any = None,
         grid_invariant: bool | None = None,
+        periodic_longitude: bool | None = None,
         **warp_extras: Any,
     ) -> None:
         """Creates the view.
@@ -224,6 +225,9 @@ class WarpedVRT(DatasetReader):
             dtype: The working and output data type; by default, the source's.
             grid_invariant: Keep values independent of windows (default); False reproduces
                 GDAL's chunk-dependent sampling. None follows TERRIO_WARP_GRID.
+            periodic_longitude: Wrap interpolation across the stored edge of a geographic source
+                covering one turn of longitude (default); False keeps it inside the stored
+                columns, for fields that are not continuous across that edge.
             **warp_extras: GDAL warp options; `init_dest` is honoured, others are ignored.
                 GDAL's transformer options too: a source with neither a geotransform nor GCPs
                 is warped by its RPCs (`SRC_METHOD="RPC"` forces them), with the `RPC_*`
@@ -253,6 +257,8 @@ class WarpedVRT(DatasetReader):
         self.resampling = rs
         self.tolerance = tolerance
         self.grid_invariant = grid_invariant
+        # Read-only (see the property): the warpers cached by grid are built with it.
+        self._periodic_longitude = periodic_longitude
         self.src_crs = CRS.from_user_input(src_crs) if src_crs is not None else src_dataset.crs
         self.src_transform = src_transform or src_dataset.transform
         # A source georeferenced by GCPs alone: rasterio takes their CRS when none is given.
@@ -287,6 +293,19 @@ class WarpedVRT(DatasetReader):
         self._rpc_crs: CRS | None = None
         if rpc_georef:
             self._rpc_crs = CRS.from_epsg(4326)
+        # A source with no CRS is warped by its geotransform, read in the destination CRS; with
+        # no geotransform either (and no RPCs), there is nothing to place it by. A `src_transform`
+        # places it only on a grid given in full: the other grids come from the dataset's own
+        # geotransform, as rasterio's (GDALAutoCreateWarpedVRTEx() does not see the override).
+        if (
+            self.src_crs is None
+            and not rpc_georef
+            and (
+                self.src_transform.almost_equals(Affine.identity())
+                or (no_geotransform and not (transform is not None and width and height))
+            )
+        ):
+            raise CRSError("A CRS is required")
 
         # Alpha bands, as rasterio sets them up.
         src_count = src_dataset.count
@@ -359,7 +378,7 @@ class WarpedVRT(DatasetReader):
                 src_dataset.width,
                 src_dataset.height,
                 src_dataset.transform.to_gdal(),
-                _crs_text(self.src_crs),
+                _crs_text(self.src_crs if self.src_crs is not None else self.dst_crs),
                 _crs_text(self.dst_crs),
             )
             t = Affine.from_gdal(*gt)
@@ -614,10 +633,10 @@ class WarpedVRT(DatasetReader):
                     sgt[5] *= rx
                 size = self._src_levels[grid.level]
             # rasterio's cases 1 to 3 warp with GDALCreateGenImgProjTransformer3(), which does not
-            # reproject when the source has no CRS (an RPC source's): the source transform maps
-            # straight into the grid's CRS.
+            # reproject when the source has no CRS: the source transform maps straight into the
+            # grid's CRS.
             src_crs = self.src_crs
-            if src_crs is None and self._rpc_crs is not None:
+            if src_crs is None:
                 src_crs = self.dst_crs if self.dst_crs is not None else self._rpc_crs
             rw = _terrio.RegionWarp(
                 (int(size[0]), int(size[1])),
@@ -633,6 +652,7 @@ class WarpedVRT(DatasetReader):
                 self._warp_dst_nodata,
                 sum_scale=grid.scale,
                 grid_invariant=self.grid_invariant,
+                periodic_longitude=self._periodic_longitude,
                 **(
                     {}
                     if gcps is None
@@ -693,6 +713,7 @@ class WarpedVRT(DatasetReader):
             rpc_options=options,
             sum_scale=grid.scale,
             grid_invariant=self.grid_invariant,
+            periodic_longitude=self._periodic_longitude,
         )
         if len(self._warpers) > 32:
             self._warpers.clear()
@@ -1430,6 +1451,15 @@ class WarpedVRT(DatasetReader):
             CRS: The CRS.
         """
         return self.dst_crs
+
+    @property
+    def periodic_longitude(self) -> bool | None:
+        """Whether a source covering one turn of longitude is read as periodic (read-only).
+
+        Returns:
+            bool | None: The value given at construction; None is the default, periodic.
+        """
+        return self._periodic_longitude
 
     @property
     def nodatavals(self) -> tuple[Any, ...]:

@@ -1,5 +1,5 @@
 {
- "proj_version": "9.8.1",
+ "proj_version": "9.9.0",
  "cases": [
   {
    "proj_string": "+proj=laea +lat_0=45 +lon_0=-100 +ellps=WGS84",

@@ -26,12 +26,8 @@
 //! EPSG codes when the WKT gives them.
 
 use super::wkt1::{Arg, BoundTo, Converted, Helmert, Node, norm};
+use crate::keywords::{BASE_GEODETIC_CRS, GEOGRAPHIC_OR_GEODETIC_CRS, PROJECTED_CRS, STANDARD_GEODETIC_DATUM};
 use crate::{Error, Result};
-
-/// The keywords of the WKT 2 CRSs this reader converts.
-const GEOGRAPHIC: [&str; 4] = ["GEOGCRS", "GEOGRAPHICCRS", "GEODCRS", "GEODETICCRS"];
-const PROJECTED: [&str; 2] = ["PROJCRS", "PROJECTEDCRS"];
-const BASE: [&str; 4] = ["BASEGEOGCRS", "BASEGEODCRS", "BASEGEOGRAPHICCRS", "BASEGEODETICCRS"];
 
 /// Whether `root` is a WKT 2 CRS this reader converts.
 pub(crate) fn handles(root: &Node) -> bool {
@@ -40,10 +36,7 @@ pub(crate) fn handles(root: &Node) -> bool {
         // Only of a CRS this reader converts, or of a WKT 1 geographic or projected CRS.
         return root.child("SOURCECRS").and_then(first_node).is_some_and(|s| handles(s) || is_wkt1_source(s));
     }
-    if GEOGRAPHIC.contains(&key.as_str()) {
-        return true;
-    }
-    PROJECTED.contains(&key.as_str())
+    root.is(GEOGRAPHIC_OR_GEODETIC_CRS) || root.is(PROJECTED_CRS)
 }
 
 /// Converts a WKT 2 geographic or projected CRS, or a `BOUNDCRS` of one, into a PROJ string,
@@ -77,11 +70,11 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         }
         return Ok(c);
     }
-    let projected = PROJECTED.contains(&key.as_str());
+    let projected = root.is(PROJECTED_CRS);
     if !projected && let Some(conv) = root.child("DERIVINGCONVERSION") {
         return derived(root, conv);
     }
-    let base = if projected { BASE.iter().find_map(|k| root.child(k)).ok_or_else(|| bad("a PROJCRS without its base CRS"))? } else { root };
+    let base = if projected { root.child_in(BASE_GEODETIC_CRS).ok_or_else(|| bad("a PROJCRS without its base CRS"))? } else { root };
     let geog = Geodetic::read(base, !projected)?;
     let mut tail = geog.tail();
     if !projected {
@@ -214,6 +207,13 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         push("k", Some(p.get(K_NAT).unwrap_or(1.0)));
         south_orientated = true;
         "tmerc"
+    } else if is(&["transversemercatorzonedgridsystem"], &[9824]) {
+        // PROJ 9.9.0's `tmerczoned`, with its initial longitude as `+lon_0`.
+        push("lat_0", Some(lat_0().unwrap_or(0.0)));
+        push("lon_0", Some(p.get(LON_INITIAL).unwrap_or(0.0)));
+        push("width", p.get(ZONE_WIDTH));
+        push("k_0", Some(p.get(K_NAT).unwrap_or(1.0)));
+        "tmerczoned"
     } else if is(&["lambertconicconformal1sp"], &[9801]) {
         push("lat_1", lat_0());
         push("lat_0", lat_0());
@@ -510,7 +510,7 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
 /// rotated-pole grid, in one of the three forms PROJ writes. Fails on any other conversion, which
 /// would otherwise be dropped.
 fn derived(root: &Node, conv: &Node) -> Result<Converted> {
-    let base = BASE.iter().find_map(|k| root.child(k)).ok_or_else(|| bad("a derived geographic CRS without its base CRS"))?;
+    let base = root.child_in(BASE_GEODETIC_CRS).ok_or_else(|| bad("a derived geographic CRS without its base CRS"))?;
     let geog = Geodetic::read(base, false)?;
     let method = conv.child("METHOD").ok_or_else(|| bad("a DERIVINGCONVERSION without its METHOD"))?;
     let method_name = method.name().unwrap_or("");
@@ -600,18 +600,18 @@ type ProjMethod = (String, Vec<(String, f64)>);
 fn proj_method(conv: &Node, method: &Node, ang: f64, to_meter: f64) -> Result<Option<ProjMethod>> {
     let Some(name) = method.name().and_then(|n| n.strip_prefix("PROJ ")) else { return Ok(None) };
     let word = |w: &str| !w.is_empty() && w.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_');
-    // PROJ writes a projection's string-valued parameters in the method's name:
-    // `PROJ ob_tran o_proj=moll`, `PROJ isea orient=pole`.
+    // PROJ writes a projection's string-valued parameters and flags in the method's name:
+    // `PROJ ob_tran o_proj=moll`, `PROJ isea orient=pole`, `PROJ isea dual net=a5`.
     let mut words = name.split(' ');
     let mut name = match words.next() {
         Some(w) if word(w) => w.to_string(),
         _ => return Ok(None),
     };
     // The string-valued parameters each projection takes; the others are PARAMETERs.
-    let strings: &[&str] = match name.as_str() {
-        "ob_tran" => &["o_proj"],
-        "isea" => &["orient", "mode"],
-        _ => &[],
+    let (strings, flags): (&[&str], &[&str]) = match name.as_str() {
+        "ob_tran" => (&["o_proj"], &[]),
+        "isea" => (&["orient", "mode", "net"], &["dual"]),
+        _ => (&[], &[]),
     };
     let mut keys: Vec<&str> = Vec::new();
     for w in words {
@@ -622,6 +622,10 @@ fn proj_method(conv: &Node, method: &Node, ang: f64, to_meter: f64) -> Result<Op
                 }
                 keys.push(k);
                 name.push_str(&format!(" +{k}={v}"));
+            }
+            None if flags.contains(&w) && !keys.contains(&w) => {
+                keys.push(w);
+                name.push_str(&format!(" +{w}"));
             }
             _ => return Ok(None),
         }
@@ -755,10 +759,7 @@ struct Geodetic {
 
 impl Geodetic {
     fn read(n: &Node, root: bool) -> Result<Self> {
-        let datum = ["DATUM", "GEODETICDATUM", "TRF", "ENSEMBLE"]
-            .iter()
-            .find_map(|k| n.child(k))
-            .ok_or_else(|| bad("a geodetic CRS without its datum"))?;
+        let datum = n.child_in(STANDARD_GEODETIC_DATUM).ok_or_else(|| bad("a geodetic CRS without its datum"))?;
         let ell = datum.child("ELLIPSOID").or_else(|| datum.child("SPHEROID")).ok_or_else(|| bad("a datum without its ellipsoid"))?;
         let ell_unit = ell.child("LENGTHUNIT").or_else(|| ell.child("UNIT")).and_then(|u| u.num(1)).unwrap_or(1.0);
         let a = ell.num(1).ok_or_else(|| bad("an ellipsoid without its semi-major axis"))? * ell_unit;
@@ -895,6 +896,9 @@ const FN_FALSE: Param = (&["northingatfalseorigin"], 8827, Kind::Length);
 const LAT_TS: Param = (&["latitudeofstandardparallel"], 8832, Kind::Angle);
 const LON_ORIGIN: Param = (&["longitudeoforigin"], 8833, Kind::Angle);
 
+const LON_INITIAL: Param = (&["initiallongitude"], 8830, Kind::Angle);
+const ZONE_WIDTH: Param = (&["zonewidth"], 8831, Kind::Angle);
+
 const LAT_TOPO: Param = (&["latitudeoftopocentricorigin"], 8834, Kind::Angle);
 const LON_TOPO: Param = (&["longitudeoftopocentricorigin"], 8835, Kind::Angle);
 const HEIGHT_TOPO: Param = (&["ellipsoidalheightoftopocentricorigin"], 8836, Kind::Length);
@@ -912,7 +916,7 @@ const LAT_P2: Param = (&["latitudeof2ndpoint"], u32::MAX - 3, Kind::Angle);
 const LON_P2: Param = (&["longitudeof2ndpoint"], u32::MAX - 4, Kind::Angle);
 const LAT_TRUE_SCALE: Param = (&["latitudeoftruescale"], u32::MAX - 5, Kind::Angle);
 
-const PARAMS: [Param; 33] = [
+const PARAMS: [Param; 35] = [
     LAT_TOPO,
     LON_TOPO,
     HEIGHT_TOPO,
@@ -943,6 +947,8 @@ const PARAMS: [Param; 33] = [
     FN_FALSE,
     LAT_TS,
     LON_ORIGIN,
+    LON_INITIAL,
+    ZONE_WIDTH,
     CO_LAT_CONE,
     LAT_PSEUDO_SP,
     K_PSEUDO_SP,
@@ -1036,7 +1042,7 @@ impl Params {
 fn bound_to_wgs84(root: &Node) -> bool {
     root.child("TARGETCRS").and_then(first_node).is_some_and(|t| {
         matches!(t.epsg(), Some(4326 | 4979))
-            || ["DATUM", "GEODETICDATUM", "TRF", "ENSEMBLE"]
+            || STANDARD_GEODETIC_DATUM
                 .iter()
                 .filter_map(|k| t.child(k))
                 .any(|d| d.epsg() == Some(6326) || norm(d.name().unwrap_or("")).starts_with("worldgeodeticsystem1984"))

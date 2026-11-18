@@ -330,6 +330,7 @@ Terrio files derived from PROJ source files (each file's header names them):
   crates/terrio-crs/src/params.rs
   crates/terrio-crs/src/projections.rs
   crates/terrio-crs/src/projections/perspective.rs
+  crates/terrio-crs/src/projections/polyhedral.rs
   crates/terrio-crs/src/proj_write.rs
   crates/terrio-crs/src/rotation.rs
   crates/terrio-crs/src/route.rs
@@ -339,7 +340,11 @@ Terrio files derived from PROJ source files (each file's header names them):
 
 The two-point form of the Hotine oblique Mercator follows src/projections/omerc.cpp in PROJ 9.8.1.
 
-The test data crates/terrio-crs/tests/data/proj_ellipsoid_shape.json is PROJ 9.8.1's output
+The table crates/terrio-crs/data/grids.tsv (scripts/gen_grid_catalog.py) is drawn from PROJ
+9.9.0's database (data/sql/grid_alternatives.sql): each grid's names, download URL, and whether
+the URL gives the file and the grid has an open licence.
+
+The test data crates/terrio-crs/tests/data/proj_ellipsoid_shape.json is PROJ 9.9.0's output
 (pyproj 3.8.0, scripts/gen_proj_ellipsoid_shape.py): the coordinates and ellipsoids PROJ gives
 PROJ strings and WKTs, by its ellipsoid and datum definitions (src/ellps.cpp, src/datums.cpp)
 and, through its database, EPSG's transformations (EPSG dataset, see below).
@@ -357,6 +362,7 @@ The copyright notices of those source files:
   Copyright (c) 2000, Frank Warmerdam <warmerdam@pobox.com>
   Copyright (c) 2022, Even Rouault, <even.rouault at spatialys.com>
   Copyright (c) 2025 Javier Jimenez Shaw
+  Copyright (c) 2026 Weston James Renoud
   Copyright (c) 1995, Gerald Evenden
   Copyright (c) 2003   Gerald I. Evenden
   Changes to handle +over are: Copyright 2011-2014 Morelli Informatik
@@ -1403,47 +1409,66 @@ crates/terrio-crs/src/projjson_db.tsv.zst is derived from the same dataset (EPSG
 PROJ 9.7.1's database, under the same terms; the EPSG method and parameter names and codes in
 crates/terrio-crs/src/projjson_gdal.rs come from it too.
 The EPSG names, areas of use and projection method names in
-crates/terrio-crs/data/crs_catalog.tsv.zst are derived from the same dataset (EPSG v12.029),
-through PROJ 9.8.1's database and GDAL (scripts/gen_crs_catalog.py), under the same terms.
+crates/terrio-crs/data/crs_catalog.tsv.zst are derived from the same dataset (EPSG v13.102),
+through PROJ 9.9.0's database and GDAL (scripts/gen_crs_catalog.py), under the same terms.
 The EPSG names and aliases in crates/terrio-crs/data/crs_names.tsv.zst are derived from the
-same dataset, through PROJ 9.8.1's database (scripts/gen_crs_names.py), under the same terms.
+same dataset, through PROJ 9.9.0's database (scripts/gen_crs_names.py), under the same terms.
 So are the EPSG WKTs and points of the test data crates/terrio-crs/tests/data/wkt_unresolved.json
-(PROJ 9.8.1's WKTs of EPSG CRSs and its placements of points in them, by
+(PROJ 9.9.0's WKTs of EPSG CRSs and its placements of points in them, by
 scripts/gen_wkt_unresolved.py).
 So are the EPSG WKTs, datums and transformations of the test data in
 crates/terrio-crs/tests/data/: grads_and_prime_meridians.json, wkt_datum_shift.json,
-wkt1_axes.json, wkt1_proj_reads.json, wkt2_bound.json and proj_ellipsoid_shape.json (PROJ 9.8.1's
+wkt1_axes.json, wkt1_proj_reads.json, wkt2_bound.json and proj_ellipsoid_shape.json (PROJ 9.9.0's
 WKTs and placements of points, by scripts/gen_grads_and_prime_meridians.py,
 gen_wkt_datum_shift.py, gen_wkt1_axes.py, gen_wkt1_proj_reads.py, gen_wkt2_bound.py and
 gen_proj_ellipsoid_shape.py).
 So are the EPSG codes, names and replacements of the deprecated EPSG CRSs in the test data
-crates/terrio-crs/tests/data/epsg_deprecated.json (PROJ 9.8.1's placements of points in them, by
+crates/terrio-crs/tests/data/epsg_deprecated.json (PROJ 9.9.0's placements of points in them, by
 scripts/gen_epsg_deprecated.py).
 The EPSG rows of the test data crates/terrio-crs/tests/data/proj_string_export.tsv and
-wkt1_strict_export.tsv (PROJ 9.8.1's PROJ strings and WKT 1 of EPSG CRSs, by
+wkt1_strict_export.tsv (PROJ 9.9.0's PROJ strings and WKT 1 of EPSG CRSs, by
 scripts/gen_proj_string_export.py and scripts/gen_wkt1_strict_export.py) and geokeys_gdal.tsv
 (GDAL 3.12.1's GeoKeys and WKT 1 of EPSG CRSs, by scripts/gen_geokeys_gdal.py) are derived from
-the same dataset, under the same terms, as are the EPSG rows of crs_accessors.tsv (PROJ 9.8.1's
+the same dataset, under the same terms, as are the EPSG rows of crs_accessors.tsv (PROJ 9.9.0's
 axis orders, ellipsoids and conversion parameters of EPSG CRSs, by scripts/gen_crs_accessors.py).
+The EPSG rows of crates/terrio-crs/data/gdal_towgs84.tsv.zst and of the test data
+crates/terrio-crs/tests/data/gdal_proj4_export.tsv and gdal_proj4_export_inputs.tsv (GDAL
+3.13.3's datum transformations to WGS 84 and geoid models of EPSG CRSs in their PROJ strings, and
+GDAL's WKT of them, by scripts/gen_gdal_towgs84.py) are derived
+from the same dataset, under the same terms.
+The EPSG rows of the test data crates/terrio-crs/tests/data/crs_list_changes.json (the names,
+deprecation, areas of use and bounds of EPSG CRSs added or changed between PROJ 9.8.1's and PROJ 9.9.0's
+databases, by scripts/gen_crs_list_changes.py) are derived from the same dataset, under the same
+terms.
+The test data crates/terrio-crs/tests/data/helmert_to_wgs84.tsv (PROJ 9.9.0's datum
+transformations to WGS 84 of EPSG geographic CRSs, by scripts/gen_helmert_to_wgs84.py) is derived
+from the same dataset, under the same terms.
 
 -------------------------------------------------------------------------------
 Esri projection engine data
 -------------------------------------------------------------------------------
 
 crates/terrio-crs/data/esri.tsv.zst, and the Esri datum names in
-crates/terrio-crs/data/datums.tsv.zst, are derived, through PROJ 9.7.1's database, from Esri's
+crates/terrio-crs/data/datums.tsv.zst, are derived, through PROJ 9.9.0's database, from Esri's
 projection engine documentation (https://github.com/Esri/projection-engine-db-doc), modified.
 The ESRI names, areas of use and projection method names in
-crates/terrio-crs/data/crs_catalog.tsv.zst, the ESRI aliases in
-crates/terrio-crs/data/crs_names.tsv.zst, and the ESRI WKTs of the test data
-crates/terrio-crs/tests/data/wkt_unresolved.json, grads_and_prime_meridians.json and
-wkt_datum_shift.json, are derived from the same documentation (ArcGIS Pro 3.6), through PROJ
-9.8.1's database, as are the ESRI rows of the test data
-crates/terrio-crs/tests/data/proj_string_export.tsv and wkt1_strict_export.tsv (PROJ 9.8.1's
+crates/terrio-crs/data/crs_catalog.tsv.zst and the ESRI aliases in
+crates/terrio-crs/data/crs_names.tsv.zst are derived from the same documentation (ArcGIS Pro
+3.6), through PROJ 9.9.0's database. The ESRI WKTs of the test data
+crates/terrio-crs/tests/data/grads_and_prime_meridians.json, wkt_unresolved.json and
+wkt_datum_shift.json are derived from it through PROJ 9.9.0's database, as are the ESRI rows of the test data
+crates/terrio-crs/tests/data/proj_string_export.tsv and wkt1_strict_export.tsv (PROJ 9.9.0's
 PROJ strings and WKT 1 of ESRI CRSs), geokeys_gdal.tsv (GDAL 3.12.1's GeoKeys of ESRI CRSs) and
-crs_accessors.tsv (PROJ 9.8.1's axis orders, ellipsoids and conversion parameters of ESRI CRSs).
+crs_accessors.tsv (PROJ 9.9.0's axis orders, ellipsoids and conversion parameters of ESRI CRSs).
+So are the ESRI rows of crates/terrio-crs/data/gdal_towgs84.tsv.zst and of the test data
+crates/terrio-crs/tests/data/gdal_proj4_export.tsv and gdal_proj4_export_inputs.tsv (GDAL 3.13.3's
+datum transformations to WGS 84 of ESRI CRSs in their PROJ strings, and their WKT, by
+scripts/gen_gdal_towgs84.py).
+The ESRI rows of crs_list_changes.json (the names, deprecation, areas of use and bounds of
+ESRI CRSs that changed between PROJ 9.8.1's and PROJ 9.9.0's databases) are derived from it
+the same way.
 The ESRI celestial bodies and their semi-major axes in crates/terrio-crs/src/bodies.rs are derived
-from the same documentation, through PROJ 9.8.1's database (scripts/gen_celestial_bodies.py).
+from the same documentation, through PROJ 9.9.0's database (scripts/gen_celestial_bodies.py).
 The ESRI names in the test data crates/terrio-crs/tests/data/wkt1_proj_reads.json (Makassar /
 NEIEZ as an ESRI `.prj` names it, `D_Makassar`) and wkt2_bound.json (`D_OSGB_1936`) follow the
 same documentation.
@@ -1465,17 +1490,74 @@ No code is copied from it.
 Licensed under the Apache License, Version 2.0, reproduced at the end of this file.
 
 -------------------------------------------------------------------------------
+A5, DGGAL and gl-matrix (through PROJ's polyhedral projections)
+-------------------------------------------------------------------------------
+
+crates/terrio-crs/src/projections/polyhedral.rs is translated from PROJ 9.9.0's polyhedral
+Snyder equal-area projections (src/projections/polyhedral.cpp and the files it includes, by
+Felix Palmer), which are derived from A5 (https://github.com/felixpalmer/a5) and, in
+src/projections/polyhedral/snyder.h, from DGGAL (https://github.com/ecere/dggal), and in
+src/vec3.h from gl-matrix.
+
+  Copyright (c) A5 contributors
+
+Licensed under the Apache License, Version 2.0, reproduced at the end of this file.
+
+  Copyright (c) 2014-2025, Ecere Corporation
+
+Redistribution and use in source and binary forms, with or without modification, are permitted
+provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this list of
+   conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice, this list of
+   conditions and the following disclaimer in the documentation and/or other materials provided
+   with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its contributors may be used to
+   endorse or promote products derived from this software without specific prior written
+   permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR
+IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
+CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
+IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
+OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+  Copyright (c) 2015-2021, Brandon Jones, Colin MacKenzie IV (gl-matrix,
+  https://github.com/toji/gl-matrix, from which PROJ's src/vec3.h derives)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
+associated documentation files (the "Software"), to deal in the Software without restriction,
+including without limitation the rights to use, copy, modify, merge, publish, distribute,
+sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or
+substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT
+NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT
+OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+-------------------------------------------------------------------------------
 IAU_2015 definitions
 -------------------------------------------------------------------------------
 
-crates/terrio-crs/data/iau.tsv.zst and iau-source.json are derived from PROJ 9.8.1's
+crates/terrio-crs/data/iau.tsv.zst and iau-source.json are derived from PROJ 9.9.0's
 data/sql/iau.sql, Git blob 900564ccf2e1f77fb708ddc2c8544843b29bc24a, generated by
 scripts/build_db_from_iau.py (Copyright (c) 2021, Hobu Inc; author Even Rouault), under PROJ's
 license (see the PROJ section). The source planetary reference is the IAU Working Group report
 at https://doi.org/10.1007/s10569-017-9805-5 .
 The IAU_2015 names in crates/terrio-crs/data/crs_catalog.tsv.zst, and the IAU_2015 celestial
 bodies, their NAIF codes and semi-major axes in crates/terrio-crs/src/bodies.rs, come from the same
-source, through PROJ 9.8.1's database.
+source, through PROJ 9.9.0's database.
 
 -------------------------------------------------------------------------------
 CRS benchmark reference data

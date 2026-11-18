@@ -295,7 +295,7 @@ terrio formats [--json]
 ## crs
 
 ```sh
-terrio crs CRS [--wkt] [--projjson | --proj4 | --wkt1-strict]
+terrio crs CRS [--wkt | --projjson | --proj4 | --proj4-gdal | --wkt1-strict]
 terrio crs SRC --to DST [--s_coord_epoch YEAR] [--t_coord_epoch YEAR] X Y [X Y ...]
 echo "X Y [Z [T]]" | terrio crs SRC --to DST [--s_coord_epoch YEAR] [--t_coord_epoch YEAR]
 ```
@@ -308,6 +308,10 @@ year) use it for time-dependent transformations, and a point that cannot be tran
 [Writing PROJJSON](crs.md#writing-projjson)); it cannot be combined with `--to` or `--wkt`.
 `--proj4` prints only the PROJ string, as `projinfo -o PROJ` writes it, which leaves out the
 datum transformation of an EPSG CRS (see [Writing PROJ strings](crs.md#writing-proj-strings)).
+`--proj4-gdal` prints the PROJ string GDAL 3.13.3 writes. For an EPSG or ESRI code, or a WKT whose
+root names one, it adds GDAL's `+towgs84` where PROJ finds a single transformation to WGS 84 for the
+CRS's area of use (EPSG:31467 gets one; EPSG:27700 has several, so it gets none), and a compound
+CRS's geoid model.
 `--wkt1-strict` prints only the WKT 1 without GDAL's PROJ4 extension, for a `.prj` file whose
 readers ignore it, and fails where WKT 1 needs the extension or PROJ writes none (see
 [Writing strict WKT 1](crs.md#writing-strict-wkt-1)).
@@ -1134,6 +1138,17 @@ Interpolation halos are periodic too. A coarse bilinear filter accumulates the w
 every periodic image inside its support; it does not clip the filter at the stored cut.
 This source-extension rule applies under both grid policies and can differ from GDAL's
 finite-edge clipping for coarse global filters.
+
+That is right for a field that is continuous across the stored edge. For one that is not, such
+as longitudes, class codes or a product made per hemisphere or per tile, pass
+`--periodic-longitude false`: interpolation neighbors then stay inside the stored columns, as
+for a regional source, and the edge columns are not blended. A point a whole turn away is still
+found on the source, so nearest-neighbour results do not change, and area methods and `sum`
+still count both stored edges under a footprint that crosses the cut: they measure what the
+footprint covers, and `sum` would otherwise lose it.
+Python's `warp`, `terrio.rio`'s `reproject` and `WarpedVRT` accept
+`periodic_longitude=False`; JavaScript's `warp` accepts `periodicLongitude: false`. A
+serialized warped VRT cannot record it: write a materialized output.
 
 Regional geographic sources also accept a longitude a whole turn away when it falls inside
 their stored columns. A source from 160° E to 200° E therefore covers 180° to 160° W.
@@ -2696,6 +2711,24 @@ s3://bucket/S2A_20240701/B08.tif,2024-07-01,B08
 s3://bucket/S2B_20240711/B04.tif,2024-07-11,B04
 ```
 
+An output ending in `.zarr` (or `-f Zarr`) gets the statistics as a cube instead of a layer:
+a Zarr v3 store with one variable, named after the store (`ndvi.zarr` holds `ndvi`), of dims
+`(geometry, time, band, statistic)`:
+
+```sh
+terrio zonal-stats fields.gpkg ndvi.zarr --inputs s2.csv --stats mean,median
+```
+
+- `time` is present when the `--inputs` rows have times (then every row needs one), as CF times
+  when they are ISO 8601 dates; `band` when rows have labels or there are several bands. A date
+  without one of the bands holds NaN for it; two rows on the same time and label are an error.
+- The zones are stored as CF-1.8 polygon geometries with a CF grid mapping of their CRS, their
+  fields and FIDs (`feature_id`) as coordinates along `geometry`: xarray opens the store, and
+  cf_xarray and xvec decode the geometries. A zone without a polygon geometry is an error, as
+  CF cannot store it.
+- `--t-srs`, `--decimal-places`, `--nln`, `--append` and `--overwrite` do not apply, and the zones
+  input must have one layer.
+
 `zonal-stats` (alias `zonal`) adds statistics independently for each polygon or multipolygon.
 Repeat `--raster` for multiple rasters (or give `--raster @FILE`, a list of paths one per line)
 and use `--band` for comma-separated bands from each. `--inputs FILE` reads a CSV table with a
@@ -4168,7 +4201,7 @@ for one command and its descendants. Required dataset arguments may be omitted;
 metadata requests open no datasets or output files. The Python package supports
 identical requests with `python -m terrio`.
 
-The payload has `schema_version: "0.1.7"`, `unstable: true`, the program/version,
+The payload has `schema_version: "0.1.11"`, `unstable: true`, the program/version,
 and a recursive `command` object. Each command records its canonical name/path,
 aliases, description, arguments and subcommands. Arguments include flags and
 aliases, positional index, type, raw default tokens, choices, required status,

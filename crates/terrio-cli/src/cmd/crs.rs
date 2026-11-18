@@ -28,6 +28,15 @@ pub struct Args {
     /// the datum transformation of an EPSG CRS: keep the code or WKT to keep the CRS.
     #[arg(long, conflicts_with_all = ["to", "wkt", "wkt1_strict", "coords", "dimension", "transform_options", "s_coord_epoch", "t_coord_epoch"])]
     proj4: bool,
+    /// Print only the PROJ string GDAL 3.13.3 writes (`gdalsrsinfo -o proj4`, `OSRExportToProj4`):
+    /// that of `--proj4` without `+type=crs`, and for an EPSG or ESRI code (or a WKT whose root
+    /// names one) with GDAL's `+towgs84` (where PROJ finds a single transformation to WGS 84) and
+    /// a compound CRS's geoid model.
+    #[arg(
+        long,
+        conflicts_with_all = ["to", "wkt", "projjson", "proj4", "wkt1_strict", "coords", "dimension", "transform_options", "s_coord_epoch", "t_coord_epoch"]
+    )]
+    proj4_gdal: bool,
     /// Print only the WKT 1 without GDAL's PROJ4 extension, for formats whose readers ignore it
     /// (a `.prj` file), as PROJ's `WKT1_GDAL` (an error where WKT 1 needs the extension, such as a
     /// datum grid, or PROJ writes no WKT 1, such as a geographic 3D CRS).
@@ -74,6 +83,11 @@ pub fn run(a: Args) -> terrio::Result<()> {
     }
     if a.proj4 {
         let proj = src.to_proj4().ok_or_else(|| terrio::Error::InvalidArgument(format!("{} has no PROJ string", src.label())))?;
+        println!("{proj}");
+        return Ok(());
+    }
+    if a.proj4_gdal {
+        let proj = src.to_proj4_gdal().ok_or_else(|| terrio::Error::InvalidArgument(format!("{} has no PROJ string", src.label())))?;
         println!("{proj}");
         return Ok(());
     }

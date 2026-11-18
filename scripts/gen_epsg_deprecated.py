@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 # SPDX-License-Identifier: MIT
 
-"""Generate crates/terrio-crs/tests/data/epsg_deprecated.json: where PROJ 9.8.1 places a point
+"""Generate crates/terrio-crs/tests/data/epsg_deprecated.json: where PROJ 9.9.0 places a point
 in each deprecated EPSG geographic, geocentric and projected CRS, by the code's own definition.
 
 For each such CRS (``pyproj.get_codes(..., allow_deprecated=True)`` less the current ones), the
@@ -12,7 +12,7 @@ PROJ's coordinates of the point in the CRS by
 or ``null`` where PROJ cannot transform it. PROJ uses the code's own definition, where GDAL
 substitutes the replacement by default (``OSR_USE_NON_DEPRECATED``).
 
-Usage: PROJ_NETWORK=OFF python scripts/gen_epsg_deprecated.py (needs pyproj 3.8.0, PROJ 9.8.1,
+Usage: PROJ_NETWORK=OFF python scripts/gen_epsg_deprecated.py (needs pyproj 3.8.0, PROJ 9.9.0,
 no grids installed)
 """
 

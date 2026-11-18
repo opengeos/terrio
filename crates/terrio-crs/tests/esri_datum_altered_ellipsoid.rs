@@ -1,5 +1,5 @@
 //! An Esri datum name on an altered ellipsoid keeps the datum's transformation, applied on the
-//! file's ellipsoid, as PROJ 9.8.1 applies it (#1012 item 51).
+//! file's ellipsoid, as PROJ 9.9.0 applies it (#1012 item 51).
 
 use terrio_crs::{SpatialRef, TransformOptions, Transformer};
 
@@ -7,7 +7,7 @@ use terrio_crs::{SpatialRef, TransformOptions, Transformer};
 type Case = (&'static str, (f64, f64), (f64, f64));
 
 /// Esri's Monte_Mario_Italy_1 with its International 1924 axis changed from 6378388 to 6378300.
-/// PROJ 9.8.1 (pyproj 3.8.0, network off, no grids) finds `D_Monte_Mario` by its name (EPSG:4265)
+/// PROJ 9.9.0 (pyproj 3.8.0, network off, no grids) finds `D_Monte_Mario` by its name (EPSG:4265)
 /// and applies "Monte Mario to WGS 84 (4)" on the file's ellipsoid: `Transformer.from_crs(
 /// CRS(wkt), "EPSG:4326", always_xy=True)`. Within 1e-9°.
 #[test]
@@ -27,8 +27,8 @@ fn an_esri_datum_on_an_altered_ellipsoid_keeps_its_transformation() {
     }
 }
 
-/// Esri GEOGCSs of other datums (PROJ 9.8.1's `WKT1_ESRI` of the EPSG CRS) with their axis 88 m
-/// shorter, from the centre of the CRS's area to WGS 84, as PROJ 9.8.1 transforms them (network off,
+/// Esri GEOGCSs of other datums (PROJ 9.9.0's `WKT1_ESRI` of the EPSG CRS) with their axis 88 m
+/// shorter, from the centre of the CRS's area to WGS 84, as PROJ 9.9.0 transforms them (network off,
 /// no grids): each with its datum's transformation on the file's ellipsoid. Within 1e-9°.
 #[test]
 fn esri_datums_on_altered_ellipsoids_keep_their_transformations() {
@@ -63,7 +63,7 @@ fn esri_datums_on_altered_ellipsoids_keep_their_transformations() {
 }
 
 /// A datum named with spaces (its official name, or an EPSG alias, as PROJ's own WKT writes them)
-/// on an altered ellipsoid is not found by its name: PROJ 9.8.1 (pyproj 3.8.0, network off, no
+/// on an altered ellipsoid is not found by its name: PROJ 9.9.0 (pyproj 3.8.0, network off, no
 /// grids) places it by a ballpark, the point unchanged to WGS 84. With underscores (`Monte_Mario`,
 /// `OSGB_1936`) or a `D_` prefix, it is found, and the point moves.
 #[test]
@@ -95,7 +95,7 @@ fn a_datum_on_an_altered_ellipsoid_is_found_by_its_name_only_as_proj_finds_it() 
 
 /// A datum found by its name keeps its operations whose grids are missing for `ONLY_BEST`: Esri
 /// OSGB 1936 on an Airy ellipsoid 88 m shorter, with no grids, is refused under `only_best` (its
-/// best operation needs OSTN15), as PROJ 9.8.1 refuses it ("No operation matching criteria
+/// best operation needs OSTN15), as PROJ 9.9.0 refuses it ("No operation matching criteria
 /// found"); without it, PROJ's Helmert gives (-2.0014488760169202, 53.000310567922426).
 #[test]
 fn a_datum_found_by_its_name_keeps_its_missing_grids_for_only_best() {
@@ -111,7 +111,7 @@ fn a_datum_found_by_its_name_keeps_its_missing_grids_for_only_best() {
 
 /// A `BOUNDCRS` whose target names a datum PROJ finds by its name (`European_Datum_1950`) with
 /// its own `TOWGS84`, under a source on another ellipsoid (Bessel), does not give the source the
-/// target's datum transformations: PROJ 9.8.1 (pyproj 3.8.0, network off, no grids) cannot go on
+/// target's datum transformations: PROJ 9.9.0 (pyproj 3.8.0, network off, no grids) cannot go on
 /// through such a target and places (10, 50) by "Ballpark geographic offset from Local to WGS 84",
 /// unchanged. Reported by RustGIS.
 #[test]
@@ -125,7 +125,7 @@ fn a_bound_crs_target_named_as_a_datum_is_not_its_source_datum() {
 }
 
 /// The same with a target named as a datum on the source's own ellipsoid (`D_Monte_Mario` on
-/// Bessel, with its own `TOWGS84`): PROJ 9.8.1 places (12, 42) by a ballpark, unchanged, not by
+/// Bessel, with its own `TOWGS84`): PROJ 9.9.0 places (12, 42) by a ballpark, unchanged, not by
 /// Monte Mario's transformation on Bessel (about 230 m away).
 #[test]
 fn a_bound_crs_target_on_the_source_ellipsoid_is_not_its_source_datum() {
@@ -139,7 +139,7 @@ fn a_bound_crs_target_on_the_source_ellipsoid_is_not_its_source_datum() {
 
 /// Esri's Mercator_Auxiliary_Sphere, which projects on a sphere, on `D_Monte_Mario` with an
 /// altered International 1924 axis (6378390): the datum's transformation on the geographic CRS's
-/// ellipsoid, not the projection's sphere. PROJ 9.8.1 places WGS 84 (12, 42) at
+/// ellipsoid, not the projection's sphere. PROJ 9.9.0 places WGS 84 (12, 42) at
 /// (1335909.7424683373, 5161087.942280648). Within 1 mm.
 #[test]
 fn an_auxiliary_sphere_on_an_altered_datum_keeps_its_transformation() {
@@ -152,7 +152,7 @@ fn an_auxiliary_sphere_on_an_altered_datum_keeps_its_transformation() {
 }
 
 /// A datum whose transformation to WGS 84 is a null one (TWD97, RDN2008, IGM95, MAGNA-SIRGAS),
-/// named by an Esri GEOGCS on another ellipsoid: PROJ 9.8.1 applies "<datum> to WGS 84 (1)"
+/// named by an Esri GEOGCS on another ellipsoid: PROJ 9.9.0 applies "<datum> to WGS 84 (1)"
 /// geocentrically, from the file's ellipsoid to WGS 84's, which moves latitudes (70 m for TWD97
 /// on International 1924). On the datum's own ellipsoid the point is kept. `Transformer.from_crs(
 /// CRS(wkt), "EPSG:4326", always_xy=True)`, pyproj 3.8.0, network off. Reported by RustGIS.
@@ -163,8 +163,14 @@ fn a_null_transformation_on_another_ellipsoid_is_applied_geocentrically() {
     let wgs84 = SpatialRef::from_epsg(4326).unwrap();
     for (datum, spheroid, (x, y), (lon, lat), name) in [
         ("D_TWD_1997", "6378388.0,297.0", (121.5, 25.0), (121.5, 24.999_369_532_669_89), "TWD97 to WGS 84 (1)"),
-        ("D_Rete_Dinamica_Nazionale_2008", "6378000.0,298.257223563", (12.5, 41.9), (12.5, 41.900_004_110_644_24), "RDN2008 to WGS 84 (1)"),
-        ("D_IGM_1995", "6378000.0,298.257223563", (12.5, 41.9), (12.5, 41.900_004_110_644_24), "IGM95 to WGS 84 (1)"),
+        (
+            "D_Rete_Dinamica_Nazionale_2008",
+            "6378000.0,298.257223563",
+            (12.5, 41.9),
+            (12.5, 41.900_004_110_644_24),
+            "ETRS89-ITA [RDN2008] to WGS 84 (1)",
+        ), // EPSG v13.102's name (PROJ 9.9.0)
+        ("D_IGM_1995", "6378000.0,298.257223563", (12.5, 41.9), (12.5, 41.900_004_110_644_24), "ETRS89-ITA [IGM95] to WGS 84 (1)"), // EPSG v13.102's name (PROJ 9.9.0)
         ("D_MAGNA", "6378388.0,297.0", (-74.1, 4.6), (-74.1, 4.599_868_339_200_481), "MAGNA-SIRGAS to WGS 84 (1)"),
         ("D_TWD_1997", "6378137.0,298.257222101", (121.5, 25.0), (121.5, 25.0), "TWD97 to WGS 84 (1)"),
     ] {
@@ -184,7 +190,7 @@ fn a_null_transformation_on_another_ellipsoid_is_applied_geocentrically() {
 /// Where that stops, on GRS 1980 with its axis 88 m shorter: a concatenation of null
 /// transformations between geographic CRSs (ETRF89 through ETRS89) is applied geocentrically too.
 /// One registered between geocentric CRSs (NAD83(CSRS)v6 through NAD83(2011)) keeps the point, as
-/// PROJ 9.8.1 puts a ballpark before it. A datum name PROJ finds wins over the datum's ID:
+/// PROJ 9.9.0 puts a ballpark before it. A datum name PROJ finds wins over the datum's ID:
 /// `Greenland_1996` with GR96's ID (EPSG:1421) is the former datum EPSG:6747, which no current CRS
 /// has, so the point is kept by a ballpark; `D_GR96`, and an unknown name with that ID, are GR96
 /// and its null transformation. Values as above. PROJ reports

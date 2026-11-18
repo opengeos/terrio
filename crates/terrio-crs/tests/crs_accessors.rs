@@ -1,4 +1,4 @@
-//! `SpatialRef::axis_order`, `body`, `is_earth` and `projection_params` against PROJ 9.8.1
+//! `SpatialRef::axis_order`, `body`, `is_earth` and `projection_params` against PROJ 9.9.0
 //! (pyproj 3.8.0, network off), frozen in `data/crs_accessors.tsv` by
 //! `scripts/gen_crs_accessors.py`: every 20th EPSG and ESRI code, the codes behind each rule, custom
 //! PROJ strings and WKT, compound references, every 20th IAU_2015 CRS and a CRS of every IAU_2015
@@ -148,7 +148,7 @@ fn a_utm_zone_s_central_meridian_is_a_whole_degree() {
 
 #[test]
 fn a_vertical_crs_without_a_code_has_one_other_axis() {
-    // PROJ 9.8.1 reads both with a single `up` axis.
+    // PROJ 9.9.0 reads both with a single `up` axis.
     for wkt in [
         r#"VERT_CS["h",VERT_DATUM["d",2005],UNIT["metre",1],AXIS["Up",UP]]"#,
         r#"VERTCRS["h",VDATUM["d"],CS[vertical,1],AXIS["gravity-related height (H)",up,LENGTHUNIT["metre",1]]]"#,
@@ -159,7 +159,7 @@ fn a_vertical_crs_without_a_code_has_one_other_axis() {
 
 #[test]
 fn a_wkt_s_own_axes_are_kept_where_proj_keeps_them() {
-    // PROJ 9.8.1: Polar Stereographic stated east then north (or north then east) keeps them;
+    // PROJ 9.9.0: Polar Stereographic stated east then north (or north then east) keeps them;
     // compass directions other than north and east are other axes; a geographic CRS without axes
     // of a code PROJ doesn't have is east then north.
     let geog = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]"#;
@@ -187,7 +187,7 @@ fn a_wkt_s_own_axes_are_kept_where_proj_keeps_them() {
 #[test]
 #[cfg(feature = "wbprojection-fallback")]
 fn an_epsg_code_read_only_through_wbprojection_has_unknown_axes() {
-    // PROJ 9.8.1 gives EPSG:3053 (Lambert Conic Conformal, West Orientated) west then north axes,
+    // PROJ 9.9.0 gives EPSG:3053 (Lambert Conic Conformal, West Orientated) west then north axes,
     // which wbprojection's WKT leaves out; its parameters are still read.
     let s = SpatialRef::from_epsg(3053).unwrap();
     assert_eq!(s.axis_order(), AxisOrder::Unknown);
@@ -203,7 +203,7 @@ fn nan_is_never_within_a_tolerance() {
 
 #[test]
 fn bound_compound_and_angular_crss_read_as_proj_reads_them() {
-    // PROJ 9.8.1 (pyproj 3.8.0): a BOUNDCRS has its source CRS's axes; a COMPD_CS's geographic
+    // PROJ 9.9.0 (pyproj 3.8.0): a BOUNDCRS has its source CRS's axes; a COMPD_CS's geographic
     // part with EPSG:4326's authority and no axes is north then east; a compound CRS of Web
     // Mercator is on WGS 84; `+units=km` doesn't make longitudes and latitudes linear.
     let bound = format!(
@@ -219,7 +219,7 @@ fn bound_compound_and_angular_crss_read_as_proj_reads_them() {
     assert_eq!(km.to_meter, 1.0);
 }
 
-/// PROJ 9.8.1's WKT 2 of EPSG:4326 (pyproj 3.8.0 `CRS("EPSG:4326").to_wkt("WKT2_2019")`).
+/// PROJ 9.9.0's WKT 2 of EPSG:4326 (pyproj 3.8.0 `CRS("EPSG:4326").to_wkt("WKT2_2019")`).
 const WGS84_WKT2: &str = r#"GEOGCRS["WGS 84",ENSEMBLE["World Geodetic System 1984 ensemble",MEMBER["World Geodetic System 1984 (Transit)"],MEMBER["World Geodetic System 1984 (G730)"],MEMBER["World Geodetic System 1984 (G873)"],MEMBER["World Geodetic System 1984 (G1150)"],MEMBER["World Geodetic System 1984 (G1674)"],MEMBER["World Geodetic System 1984 (G1762)"],MEMBER["World Geodetic System 1984 (G2139)"],MEMBER["World Geodetic System 1984 (G2296)"],ELLIPSOID["WGS 84",6378137,298.257223563,LENGTHUNIT["metre",1]],ENSEMBLEACCURACY[2.0]],PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.0174532925199433]],CS[ellipsoidal,2],AXIS["geodetic latitude (Lat)",north,ORDER[1],ANGLEUNIT["degree",0.0174532925199433]],AXIS["geodetic longitude (Lon)",east,ORDER[2],ANGLEUNIT["degree",0.0174532925199433]],USAGE[SCOPE["Horizontal component of 3D system."],AREA["World."],BBOX[-90,-180,90,180]],ID["EPSG",4326]]"#;
 
 #[test]

@@ -2,7 +2,7 @@
 //! the pole to a valid place. As in PROJ, the geodetic-to-geocentric step of a datum shift
 //! refuses it, and an operation whose area is the whole world (the ballpark) holds every point.
 //!
-//! The values are PROJ 9.8.1's (pyproj 3.8.0, `Transformer.from_crs(src, dst, always_xy=True)`,
+//! The values are PROJ 9.9.0's (pyproj 3.8.0, `Transformer.from_crs(src, dst, always_xy=True)`,
 //! `transform(x, y, errcheck=True)`, a refusal or an infinite result as `None`), with only
 //! `proj.db` and `proj.ini` and `PROJ_NETWORK=OFF`, so no grids. Tolerance: 1e-9 for degrees,
 //! 1 mm for metres. terrio wraps the output longitude into [-180, 180] where PROJ's ballpark

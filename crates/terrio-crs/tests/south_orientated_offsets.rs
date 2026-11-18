@@ -1,6 +1,6 @@
 //! South-orientated Transverse Mercator (EPSG method 9808) subtracts its false easting and
 //! northing: W = FE - x, S = FN - y (EPSG Guidance Note 7-2), where x and y are Transverse
-//! Mercator's easting and northing without offsets. PROJ 9.8.1 reads such a CRS but refuses to
+//! Mercator's easting and northing without offsets. PROJ 9.9.0 reads such a CRS but refuses to
 //! transform it or write it as a PROJ string when the offsets are not zero (opengeos/terrio#1012,
 //! item 18); terrio applies the method, a documented difference, and writes no PROJ string.
 //!
@@ -41,7 +41,7 @@ fn south_orientated_transverse_mercator_subtracts_its_offsets() {
         let origin = t.transform(19.0, 0.0).unwrap();
         assert!((origin.0 - fe).abs() < 1e-6 && (origin.1 - fn_).abs() < 1e-6, "{form}: {origin:?}");
         assert_eq!(crs.to_proj4(), None, "{form}");
-        // Written as PROJJSON with EPSG's method and its offsets as given, as PROJ 9.8.1 writes
+        // Written as PROJJSON with EPSG's method and its offsets as given, as PROJ 9.9.0 writes
         // EPSG:2046's.
         let json: serde_json::Value = serde_json::from_str(&crs.to_projjson().unwrap()).unwrap();
         let conversion = &json["conversion"];

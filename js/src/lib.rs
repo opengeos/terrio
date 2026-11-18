@@ -81,6 +81,7 @@ const FEATURES: &[(&str, bool)] = &[
     ("grib", cfg!(feature = "grib")),
     ("hecras", cfg!(feature = "hecras")),
     ("jp2", cfg!(feature = "jp2")),
+    ("jxl", cfg!(feature = "jxl")),
     ("lerc", cfg!(feature = "lerc")),
     ("lzma", cfg!(feature = "lzma")),
     ("netcdf-hdf5", cfg!(feature = "netcdf-hdf5")),
@@ -1212,8 +1213,8 @@ struct ListCrsOptions {
 }
 
 /// The CRSs of the registries terrio carries (EPSG, ESRI and IAU_2015), for searchable CRS
-/// pickers, as GDAL's `OSRGetCRSInfoListFromDatabase` describes them (PROJ 9.8.1's database, EPSG
-/// v12.029): `[{ authority, code, name, kind, deprecated, replaced_by, area_name, bounds,
+/// pickers, as GDAL's `OSRGetCRSInfoListFromDatabase` describes them (PROJ 9.9.0's database, EPSG
+/// v13.102): `[{ authority, code, name, kind, deprecated, replaced_by, area_name, bounds,
 /// projection_method, celestial_body }]`, in order of authority and code, `bounds` being `[west,
 /// south, east, north]` in degrees and `replaced_by` the codes of the CRSs that replace a
 /// deprecated EPSG CRS (`[5105]` for EPSG:4855). `` `${authority}:${code}` `` is a CRS the
@@ -1243,7 +1244,7 @@ pub fn crs_to_projjson(crs: &str) -> Result<String, JsError> {
     SpatialRef::parse_literal(crs).and_then(|s| s.to_projjson()).map_err(js_err)
 }
 
-/// The PROJ string of a CRS as PROJ 9.8.1 writes it (`projinfo -o PROJ`), `undefined` for a CRS
+/// The PROJ string of a CRS as PROJ 9.9.0 writes it (`projinfo -o PROJ`), `undefined` for a CRS
 /// PROJ has none for (an engineering CRS). Like PROJ's, it leaves out the datum transformation of
 /// an EPSG CRS: keep the code or WKT to keep the CRS.
 #[wasm_bindgen(js_name = crsToProj4)]
@@ -1251,8 +1252,19 @@ pub fn crs_to_proj4(crs: &str) -> Result<Option<String>, JsError> {
     SpatialRef::parse_literal(crs).map(|s| s.to_proj4()).map_err(js_err)
 }
 
+/// The PROJ string GDAL 3.13.3 writes for a CRS (`OSRExportToProj4`): `crsToProj4`'s without
+/// `+type=crs`, and for an EPSG or ESRI code (or a WKT whose root names one) with what GDAL adds:
+/// the datum transformation to WGS 84 as `+towgs84`, where PROJ finds a single one for the CRS's
+/// area of use, and a compound CRS's geoid model as `+geoidgrids` and `+geoid_crs`. A WKT with a
+/// datum shift of its own keeps it. `docs/crs.md` lists where it differs from GDAL (a PROJJSON,
+/// `+init=epsg:N`, compound CRSs given by a definition). `undefined` where `crsToProj4` is.
+#[wasm_bindgen(js_name = crsToProj4Gdal)]
+pub fn crs_to_proj4_gdal(crs: &str) -> Result<Option<String>, JsError> {
+    SpatialRef::parse_literal(crs).map(|s| s.to_proj4_gdal()).map_err(js_err)
+}
+
 /// The WKT 1 of a CRS without GDAL's `EXTENSION["PROJ4", ...]`, for formats whose readers ignore
-/// it (a `.prj` file), as PROJ 9.8.1 exports `WKT1_GDAL`; `undefined` where WKT 1 needs the
+/// it (a `.prj` file), as PROJ 9.9.0 exports `WKT1_GDAL`; `undefined` where WKT 1 needs the
 /// extension (a datum grid) or PROJ writes no WKT 1 (a geographic 3D CRS).
 #[wasm_bindgen(js_name = crsToWkt1Strict)]
 pub fn crs_to_wkt1_strict(crs: &str) -> Result<Option<String>, JsError> {

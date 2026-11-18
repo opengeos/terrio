@@ -24,25 +24,30 @@ def transformation(source, target):
 
 
 def same_isea(reference):
-    """Whether GDAL's PROJ computes isea as PROJ 9.8.1 does, which the corpus uses.
+    """Whether GDAL's PROJ computes isea as PROJ 9.9.0 does, which the corpus uses: not before
+    PROJ 9.9; from it on, an error when the first case does not match.
 
-    PROJ 9.4 has no inverse and a forward up to a few millimetres different; PROJ 9.9
-    replaced the method (another origin, the authalic latitude on an ellipsoid).
+    PROJ 9.9 replaced the method of PROJ 9.8 and earlier (another origin, the authalic latitude
+    on an ellipsoid); PROJ 9.4 has no inverse.
     """
+    # PROJ 9.8 and earlier agree with 9.9.0 on the default sphere, so the version decides first.
+    if (osr.GetPROJVersionMajor(), osr.GetPROJVersionMinor()) < (9, 9):
+        return False
+    # On PROJ 9.9, a probe that fails is an error, not another implementation.
     case = reference["cases"][0]
     source, target = transformation(case["source"], case["target"])
     try:
         forward = osr.CoordinateTransformation(source, target)
         inverse = osr.CoordinateTransformation(target, source)
-    except RuntimeError:
-        return False
+    except RuntimeError as e:
+        raise SystemExit(f"GDAL's PROJ refuses {case['name']}: {e}") from e
     for sample in case["samples"]:
         got = oracle(forward, sample[:2])
         if got is None or max(abs(a - b) for a, b in zip(got, sample[2], strict=True)) > 0.001:
-            return False
+            raise SystemExit(f"GDAL's PROJ projects {sample[:2]} of {case['name']} to {got}, not {sample[2]}")
         back = oracle(inverse, sample[2])
         if (back is None) != (sample[3] is None):
-            return False
+            raise SystemExit(f"GDAL's PROJ inverts {sample[2]} of {case['name']} to {back}, not {sample[3]}")
     return True
 
 
@@ -61,7 +66,7 @@ def main():
     version = f"{osr.GetPROJVersionMajor()}.{osr.GetPROJVersionMinor()}.{osr.GetPROJVersionMicro()}"
     for case in reference["cases"]:
         if not comparable:
-            detail = f"PROJ {version} computes isea otherwise than PROJ 9.8.1, which the corpus uses"
+            detail = f"PROJ {version} computes isea otherwise than PROJ 9.9.0, which the corpus uses"
             results.append(dict(name=case["name"], status="not compared", detail=detail))
             continue
         try:
@@ -97,8 +102,9 @@ def main():
                 error = max(abs(a - b) for a, b in zip(got, want, strict=True)) * case["metres_per_unit"]
                 assert error <= 0.001, f"GDAL through terrio's WKT1: {error} metres"
                 maximum_forward = max(maximum_forward, error)
-            # PROJ's inverse, which is not the forward's on an ellipsoid and is refused outside
-            # its default grid.
+            # PROJ's inverse, refused outside the unfolded net. Within 1e-8 degrees, but 1e-5 within
+            # 0.001 degrees of a pole, where the latitude is the arcsine of a component near 1
+            # (tests/isea.rs).
             inverse_points = expected + [s[0] for s in case["inverse_samples"]]
             expected_inverse = [oracle(inverse, p) for p in inverse_points]
             actual = native(args.terrio, case["target"], case["source"], inverse_points)
@@ -108,7 +114,7 @@ def main():
                 if want is not None:
                     dlon = ((got[0] - want[0] + 180) % 360 - 180) * math.cos(math.radians(want[1]))
                     error = max(abs(dlon), abs(got[1] - want[1]))
-                    assert error <= 1e-8, f"inverse {error} degrees"
+                    assert error <= (1e-5 if abs(want[1]) > 89.999 else 1e-8), f"inverse {error} degrees"
                     maximum_inverse = max(maximum_inverse, error)
             status = "identical" if maximum_forward == maximum_inverse == 0 else "within tolerance"
             detail = f"max forward {maximum_forward} m; inverse {maximum_inverse} deg"

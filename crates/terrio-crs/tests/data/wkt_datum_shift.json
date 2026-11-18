@@ -1,5 +1,5 @@
 {
- "proj_version": "9.8.1",
+ "proj_version": "9.9.0",
  "cases": [
   {
    "name": "EPSG:3003 as ESRI WKT 1 (opengeos/terrio#1012)",
@@ -298,7 +298,7 @@
     -3.499999987813721,
     55.37999999898204
    ],
-   "operation": "Inverse of unnamed + OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "operation": "Inverse of unknown + OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
    "best_grid_missing": true,
    "by_code": [
     -3.499999987813721,
@@ -336,7 +336,7 @@
     -3.499999987813721,
     55.37999999898204
    ],
-   "operation": "Inverse of unnamed + axis order change (2D) + OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
+   "operation": "Inverse of unknown + axis order change (2D) + OSGB36 to WGS 84 (6) (with axis order normalized for visualization)",
    "best_grid_missing": true,
    "by_code": [
     -3.499999987813721,
@@ -640,7 +640,7 @@
     8.965000007527676,
     41.785000001354966
    ],
-   "operation": "Inverse of unnamed + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "operation": "Inverse of unknown + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
     8.965000007527676,
@@ -678,7 +678,7 @@
     8.965000007527676,
     41.785000001354966
    ],
-   "operation": "Inverse of unnamed + axis order change (2D) + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "operation": "Inverse of unknown + axis order change (2D) + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
     8.965000007527676,
@@ -811,7 +811,7 @@
     15.49500000484105,
     40.93000000110988
    ],
-   "operation": "Inverse of unnamed + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "operation": "Inverse of unknown + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
     15.49500000484105,
@@ -849,7 +849,7 @@
     15.49500000484105,
     40.93000000110988
    ],
-   "operation": "Inverse of unnamed + axis order change (2D) + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
+   "operation": "Inverse of unknown + axis order change (2D) + Monte Mario to WGS 84 (4) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
     15.49500000484105,
@@ -1457,7 +1457,7 @@
     9.005000002211203,
     51.180000005231854
    ],
-   "operation": "Inverse of unnamed + axis order change (2D) + DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "operation": "Inverse of unknown + axis order change (2D) + DHDN to WGS 84 (2) (with axis order normalized for visualization)",
    "best_grid_missing": true,
    "by_code": [
     9.005000002211203,
@@ -1476,7 +1476,7 @@
     9.005000002211203,
     51.180000005231854
    ],
-   "operation": "Inverse of unnamed + DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "operation": "Inverse of unknown + DHDN to WGS 84 (2) (with axis order normalized for visualization)",
    "best_grid_missing": true,
    "by_code": [
     9.005000002211203,
@@ -1495,7 +1495,7 @@
     9.005000002211203,
     51.180000005231854
    ],
-   "operation": "Inverse of unnnamed (Gauss Kruger) + axis order change (2D) + DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "operation": "Inverse of unknown (Gauss Kruger) + axis order change (2D) + DHDN to WGS 84 (2) (with axis order normalized for visualization)",
    "best_grid_missing": true,
    "by_code": [
     9.005000002211203,
@@ -1514,7 +1514,7 @@
     9.005000002211203,
     51.180000005231854
    ],
-   "operation": "Inverse of unnnamed (Gauss Kruger) + axis order change (2D) + DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "operation": "Inverse of unknown (Gauss Kruger) + axis order change (2D) + DHDN to WGS 84 (2) (with axis order normalized for visualization)",
    "best_grid_missing": true,
    "by_code": [
     9.005000002211203,
@@ -1533,7 +1533,7 @@
     9.005000002211203,
     51.180000005231854
    ],
-   "operation": "Inverse of unnnamed (Gauss Kruger) + axis order change (2D) + DHDN to WGS 84 (2) (with axis order normalized for visualization)",
+   "operation": "Inverse of unknown (Gauss Kruger) + axis order change (2D) + DHDN to WGS 84 (2) (with axis order normalized for visualization)",
    "best_grid_missing": true,
    "by_code": [
     9.005000002211203,
@@ -1543,58 +1543,58 @@
   {
    "name": "EPSG:4289, WKT 2 without IDs",
    "code": "EPSG:4289",
-   "wkt": "GEOGCRS[\"Amersfoort\",DATUM[\"Amersfoort\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Use of geographic2D CRS Amersfoort (code 4289) for spatial referencing is discouraged. Use projected CRS Amersfoort / RD New (code 28992).\"]]",
+   "wkt": "GEOGCRS[\"Amersfoort\",DATUM[\"Amersfoort\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Use of this geographic2D CRS (Amersfoort, code 4289) for spatial referencing is discouraged. Use projected CRS RD (code 28992) or geodetic CRS ETRS89-NLD [AGRS2010] (codes 11035-11037).\"]]",
    "point": [
-    5.2104090102818175,
-    52.22599617674505
+    4.875353899348048,
+    53.26111701389631
    ],
    "proj": [
-    5.210000001540763,
-    52.22500000405172
+    4.875000001256372,
+    53.26000000462712
    ],
    "operation": "Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    5.210000001540763,
-    52.22500000405172
+    4.875000001256372,
+    53.26000000462712
    ]
   },
   {
    "name": "EPSG:4289, WKT 2 with the datum's ID alone",
    "code": "EPSG:4289",
-   "wkt": "GEOGCRS[\"Amersfoort\",DATUM[\"Amersfoort\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6289]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Use of geographic2D CRS Amersfoort (code 4289) for spatial referencing is discouraged. Use projected CRS Amersfoort / RD New (code 28992).\"]]",
+   "wkt": "GEOGCRS[\"Amersfoort\",DATUM[\"Amersfoort\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6289]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Use of this geographic2D CRS (Amersfoort, code 4289) for spatial referencing is discouraged. Use projected CRS RD (code 28992) or geodetic CRS ETRS89-NLD [AGRS2010] (codes 11035-11037).\"]]",
    "point": [
-    5.2104090102818175,
-    52.22599617674505
+    4.875353899348048,
+    53.26111701389631
    ],
    "proj": [
-    5.210000001540763,
-    52.22500000405172
+    4.875000001256372,
+    53.26000000462712
    ],
    "operation": "Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    5.210000001540763,
-    52.22500000405172
+    4.875000001256372,
+    53.26000000462712
    ]
   },
   {
    "name": "EPSG:4289, WKT 2 with the datum's ID alone, renamed",
    "code": "EPSG:4289",
-   "wkt": "GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6289]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Use of geographic2D CRS Amersfoort (code 4289) for spatial referencing is discouraged. Use projected CRS Amersfoort / RD New (code 28992).\"]]",
+   "wkt": "GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6289]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Use of this geographic2D CRS (Amersfoort, code 4289) for spatial referencing is discouraged. Use projected CRS RD (code 28992) or geodetic CRS ETRS89-NLD [AGRS2010] (codes 11035-11037).\"]]",
    "point": [
-    5.2104090102818175,
-    52.22599617674505
+    4.875353899348048,
+    53.26111701389631
    ],
    "proj": [
-    5.210000001540763,
-    52.22500000405172
+    4.875000001256372,
+    53.26000000462712
    ],
    "operation": "Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    5.210000001540763,
-    52.22500000405172
+    4.875000001256372,
+    53.26000000462712
    ]
   },
   {
@@ -1602,18 +1602,18 @@
    "code": "EPSG:4289",
    "wkt": "GEOGCS[\"Amersfoort\",DATUM[\"Amersfoort\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128],AUTHORITY[\"EPSG\",\"6289\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
    "point": [
-    5.2104090102818175,
-    52.22599617674505
+    4.875353899348048,
+    53.26111701389631
    ],
    "proj": [
-    5.210000001540763,
-    52.22500000405172
+    4.875000001256372,
+    53.26000000462712
    ],
    "operation": "axis order change (2D) + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    5.210000001540763,
-    52.22500000405172
+    4.875000001256372,
+    53.26000000462712
    ]
   },
   {
@@ -1621,18 +1621,18 @@
    "code": "EPSG:4289",
    "wkt": "GEOGCS[\"Local\",DATUM[\"Local datum\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128],AUTHORITY[\"EPSG\",\"6289\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
    "point": [
-    5.2104090102818175,
-    52.22599617674505
+    4.875353899348048,
+    53.26111701389631
    ],
    "proj": [
-    5.210000001540763,
-    52.22500000405172
+    4.875000001256372,
+    53.26000000462712
    ],
    "operation": "Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    5.210000001540763,
-    52.22500000405172
+    4.875000001256372,
+    53.26000000462712
    ]
   },
   {
@@ -1640,37 +1640,18 @@
    "code": "EPSG:4289",
    "wkt": "GEOGCS[\"GCS_Amersfoort\",DATUM[\"D_Amersfoort\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
    "point": [
-    5.2104090102818175,
-    52.22599617674505
+    4.875353899348048,
+    53.26111701389631
    ],
    "proj": [
-    5.210000001540763,
-    52.22500000405172
+    4.875000001256372,
+    53.26000000462712
    ],
    "operation": "axis order change (2D) + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    5.210000001540763,
-    52.22500000405172
-   ]
-  },
-  {
-   "name": "EPSG:4289, ESRI WKT 1, renamed",
-   "code": "EPSG:4289",
-   "wkt": "GEOGCS[\"GCS_Local\",DATUM[\"D_Amersfoort\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
-   "point": [
-    5.2104090102818175,
-    52.22599617674505
-   ],
-   "proj": [
-    5.210000001540763,
-    52.22500000405172
-   ],
-   "operation": "axis order change (2D) + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
-   "best_grid_missing": false,
-   "by_code": [
-    5.210000001540763,
-    52.22500000405172
+    4.875000001256372,
+    53.26000000462712
    ]
   },
   {
@@ -1678,18 +1659,18 @@
    "code": "EPSG:4289",
    "wkt": "GEOGCS[\"GCS_Amersfoort\",DATUM[\"D_Amersfoort\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128],AUTHORITY[\"EPSG\",\"6289\"]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
    "point": [
-    5.2104090102818175,
-    52.22599617674505
+    4.875353899348048,
+    53.26111701389631
    ],
    "proj": [
-    5.210000001540763,
-    52.22500000405172
+    4.875000001256372,
+    53.26000000462712
    ],
    "operation": "axis order change (2D) + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    5.210000001540763,
-    52.22500000405172
+    4.875000001256372,
+    53.26000000462712
    ]
   },
   {
@@ -1697,94 +1678,94 @@
    "code": "EPSG:4289",
    "wkt": "GEOGCS[\"GCS_Amersfoort\",DATUM[\"D_Amersfoort\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433],AUTHORITY[\"EPSG\",\"4289\"]]",
    "point": [
-    5.2104090102818175,
-    52.22599617674505
+    4.875353899348048,
+    53.26111701389631
    ],
    "proj": [
-    5.210000001540763,
-    52.22500000405172
+    4.875000001256372,
+    53.26000000462712
    ],
    "operation": "Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    5.210000001540763,
-    52.22500000405172
+    4.875000001256372,
+    53.26000000462712
    ]
   },
   {
    "name": "EPSG:28992, WKT 2 without IDs",
    "code": "EPSG:28992",
-   "wkt": "PROJCRS[\"Amersfoort / RD New\",BASEGEOGCRS[\"Amersfoort\",DATUM[\"Amersfoort\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"RD New\",METHOD[\"Oblique Stereographic\"],PARAMETER[\"Latitude of natural origin\",52.1561605555556,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",5.38763888888889,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9999079,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",155000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",463000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"easting (X)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing (Y)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "wkt": "PROJCRS[\"RD\",BASEGEOGCRS[\"Amersfoort\",DATUM[\"Amersfoort\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"RD\",METHOD[\"Oblique Stereographic\"],PARAMETER[\"Latitude of natural origin\",52.1561605555556,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",5.38763888888889,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9999079,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",155000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",463000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"easting (x)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing (y)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
    "point": [
-    142892.19257513565,
-    470783.86722838413
+    120818.83344377759,
+    586060.3231296679
    ],
    "proj": [
-    5.210000001540762,
-    52.22500000405172
+    4.875000001256372,
+    53.26000000462712
    ],
-   "operation": "Inverse of RD New + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "operation": "Inverse of RD + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    5.210000001540762,
-    52.22500000405172
+    4.875000001256372,
+    53.26000000462712
    ]
   },
   {
    "name": "EPSG:28992, WKT 2 with the datum's ID alone",
    "code": "EPSG:28992",
-   "wkt": "PROJCRS[\"Amersfoort / RD New\",BASEGEOGCRS[\"Amersfoort\",DATUM[\"Amersfoort\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6289]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"RD New\",METHOD[\"Oblique Stereographic\"],PARAMETER[\"Latitude of natural origin\",52.1561605555556,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",5.38763888888889,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9999079,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",155000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",463000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"easting (X)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing (Y)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "wkt": "PROJCRS[\"RD\",BASEGEOGCRS[\"Amersfoort\",DATUM[\"Amersfoort\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6289]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"RD\",METHOD[\"Oblique Stereographic\"],PARAMETER[\"Latitude of natural origin\",52.1561605555556,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",5.38763888888889,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9999079,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",155000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",463000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"easting (x)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing (y)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
    "point": [
-    142892.19257513565,
-    470783.86722838413
+    120818.83344377759,
+    586060.3231296679
    ],
    "proj": [
-    5.210000001540762,
-    52.22500000405172
+    4.875000001256372,
+    53.26000000462712
    ],
-   "operation": "Inverse of RD New + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "operation": "Inverse of RD + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    5.210000001540762,
-    52.22500000405172
+    4.875000001256372,
+    53.26000000462712
    ]
   },
   {
    "name": "EPSG:28992, WKT 2 with the datum's ID alone, renamed",
    "code": "EPSG:28992",
-   "wkt": "PROJCRS[\"Local\",BASEGEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6289]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"RD New\",METHOD[\"Oblique Stereographic\"],PARAMETER[\"Latitude of natural origin\",52.1561605555556,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",5.38763888888889,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9999079,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",155000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",463000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"easting (X)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing (Y)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "wkt": "PROJCRS[\"Local\",BASEGEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6289]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"RD\",METHOD[\"Oblique Stereographic\"],PARAMETER[\"Latitude of natural origin\",52.1561605555556,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",5.38763888888889,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9999079,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",155000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",463000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"easting (x)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing (y)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
    "point": [
-    142892.19257513565,
-    470783.86722838413
+    120818.83344377759,
+    586060.3231296679
    ],
    "proj": [
-    5.210000001540762,
-    52.22500000405172
+    4.875000001256372,
+    53.26000000462712
    ],
-   "operation": "Inverse of RD New + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "operation": "Inverse of RD + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    5.210000001540762,
-    52.22500000405172
+    4.875000001256372,
+    53.26000000462712
    ]
   },
   {
    "name": "EPSG:28992, WKT 1 with the datum's AUTHORITY alone",
    "code": "EPSG:28992",
-   "wkt": "PROJCS[\"Amersfoort / RD New\",GEOGCS[\"Amersfoort\",DATUM[\"Amersfoort\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128],AUTHORITY[\"EPSG\",\"6289\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Oblique_Stereographic\"],PARAMETER[\"latitude_of_origin\",52.1561605555556],PARAMETER[\"central_meridian\",5.38763888888889],PARAMETER[\"scale_factor\",0.9999079],PARAMETER[\"false_easting\",155000],PARAMETER[\"false_northing\",463000],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "wkt": "PROJCS[\"RD\",GEOGCS[\"Amersfoort\",DATUM[\"Amersfoort\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128],AUTHORITY[\"EPSG\",\"6289\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Oblique_Stereographic\"],PARAMETER[\"latitude_of_origin\",52.1561605555556],PARAMETER[\"central_meridian\",5.38763888888889],PARAMETER[\"scale_factor\",0.9999079],PARAMETER[\"false_easting\",155000],PARAMETER[\"false_northing\",463000],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
    "point": [
-    142892.19257513565,
-    470783.86722838413
+    120818.83344377759,
+    586060.3231296679
    ],
    "proj": [
-    5.210000001540762,
-    52.22500000405172
+    4.875000001256372,
+    53.26000000462712
    ],
-   "operation": "Inverse of RD New + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "operation": "Inverse of RD + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    5.210000001540762,
-    52.22500000405172
+    4.875000001256372,
+    53.26000000462712
    ]
   },
   {
@@ -1792,18 +1773,18 @@
    "code": "EPSG:28992",
    "wkt": "PROJCS[\"Local\",GEOGCS[\"Local\",DATUM[\"Local datum\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128],AUTHORITY[\"EPSG\",\"6289\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Oblique_Stereographic\"],PARAMETER[\"latitude_of_origin\",52.1561605555556],PARAMETER[\"central_meridian\",5.38763888888889],PARAMETER[\"scale_factor\",0.9999079],PARAMETER[\"false_easting\",155000],PARAMETER[\"false_northing\",463000],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
    "point": [
-    142892.19257513565,
-    470783.86722838413
+    120818.83344377759,
+    586060.3231296679
    ],
    "proj": [
-    5.210000001540762,
-    52.22500000405172
+    4.875000001256372,
+    53.26000000462712
    ],
-   "operation": "Inverse of unnamed + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "operation": "Inverse of unknown + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    5.210000001540762,
-    52.22500000405172
+    4.875000001256372,
+    53.26000000462712
    ]
   },
   {
@@ -1811,37 +1792,18 @@
    "code": "EPSG:28992",
    "wkt": "PROJCS[\"RD_New\",GEOGCS[\"GCS_Amersfoort\",DATUM[\"D_Amersfoort\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Double_Stereographic\"],PARAMETER[\"False_Easting\",155000.0],PARAMETER[\"False_Northing\",463000.0],PARAMETER[\"Central_Meridian\",5.38763888888889],PARAMETER[\"Scale_Factor\",0.9999079],PARAMETER[\"Latitude_Of_Origin\",52.1561605555556],UNIT[\"Meter\",1.0]]",
    "point": [
-    142892.19257513565,
-    470783.86722838413
+    120818.83344377759,
+    586060.3231296679
    ],
    "proj": [
-    5.210000001540762,
-    52.22500000405172
+    4.875000001256372,
+    53.26000000462712
    ],
-   "operation": "Inverse of RD New + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "operation": "Inverse of RD + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    5.210000001540762,
-    52.22500000405172
-   ]
-  },
-  {
-   "name": "EPSG:28992, ESRI WKT 1, renamed",
-   "code": "EPSG:28992",
-   "wkt": "PROJCS[\"Local grid\",GEOGCS[\"GCS_Local\",DATUM[\"D_Amersfoort\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Double_Stereographic\"],PARAMETER[\"False_Easting\",155000.0],PARAMETER[\"False_Northing\",463000.0],PARAMETER[\"Central_Meridian\",5.38763888888889],PARAMETER[\"Scale_Factor\",0.9999079],PARAMETER[\"Latitude_Of_Origin\",52.1561605555556],UNIT[\"Meter\",1.0]]",
-   "point": [
-    142892.19257513565,
-    470783.86722838413
-   ],
-   "proj": [
-    5.210000001540762,
-    52.22500000405172
-   ],
-   "operation": "Inverse of unnamed + axis order change (2D) + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
-   "best_grid_missing": false,
-   "by_code": [
-    5.210000001540762,
-    52.22500000405172
+    4.875000001256372,
+    53.26000000462712
    ]
   },
   {
@@ -1849,18 +1811,18 @@
    "code": "EPSG:28992",
    "wkt": "PROJCS[\"RD_New\",GEOGCS[\"GCS_Amersfoort\",DATUM[\"D_Amersfoort\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128],AUTHORITY[\"EPSG\",\"6289\"]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Double_Stereographic\"],PARAMETER[\"False_Easting\",155000.0],PARAMETER[\"False_Northing\",463000.0],PARAMETER[\"Central_Meridian\",5.38763888888889],PARAMETER[\"Scale_Factor\",0.9999079],PARAMETER[\"Latitude_Of_Origin\",52.1561605555556],UNIT[\"Meter\",1.0]]",
    "point": [
-    142892.19257513565,
-    470783.86722838413
+    120818.83344377759,
+    586060.3231296679
    ],
    "proj": [
-    5.210000001540762,
-    52.22500000405172
+    4.875000001256372,
+    53.26000000462712
    ],
-   "operation": "Inverse of RD New + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "operation": "Inverse of RD + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    5.210000001540762,
-    52.22500000405172
+    4.875000001256372,
+    53.26000000462712
    ]
   },
   {
@@ -1868,18 +1830,18 @@
    "code": "EPSG:28992",
    "wkt": "PROJCS[\"RD_New\",GEOGCS[\"GCS_Amersfoort\",DATUM[\"D_Amersfoort\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Double_Stereographic\"],PARAMETER[\"False_Easting\",155000.0],PARAMETER[\"False_Northing\",463000.0],PARAMETER[\"Central_Meridian\",5.38763888888889],PARAMETER[\"Scale_Factor\",0.9999079],PARAMETER[\"Latitude_Of_Origin\",52.1561605555556],UNIT[\"Meter\",1.0],AUTHORITY[\"EPSG\",\"28992\"]]",
    "point": [
-    142892.19257513565,
-    470783.86722838413
+    120818.83344377759,
+    586060.3231296679
    ],
    "proj": [
-    5.210000001540762,
-    52.22500000405172
+    4.875000001256372,
+    53.26000000462712
    ],
-   "operation": "Inverse of RD New + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
+   "operation": "Inverse of RD + Amersfoort to WGS 84 (4) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    5.210000001540762,
-    52.22500000405172
+    4.875000001256372,
+    53.26000000462712
    ]
   },
   {
@@ -1887,18 +1849,18 @@
    "code": "EPSG:4121",
    "wkt": "GEOGCRS[\"GGRS87\",DATUM[\"Greek Geodetic Reference System 1987\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
    "point": [
-    23.933291229699897,
-    38.31240588690885
+    24.62827176808906,
+    38.2474156908218
    ],
    "proj": [
-    23.934999991072655,
-    38.31499998639156
+    24.629999990671728,
+    38.249999985993576
    ],
    "operation": "GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    23.934999991072655,
-    38.31499998639156
+    24.629999990671728,
+    38.249999985993576
    ]
   },
   {
@@ -1906,18 +1868,18 @@
    "code": "EPSG:4121",
    "wkt": "GEOGCRS[\"GGRS87\",DATUM[\"Greek Geodetic Reference System 1987\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6121]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
    "point": [
-    23.933291229699897,
-    38.31240588690885
+    24.62827176808906,
+    38.2474156908218
    ],
    "proj": [
-    23.934999991072655,
-    38.31499998639156
+    24.629999990671728,
+    38.249999985993576
    ],
    "operation": "GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    23.934999991072655,
-    38.31499998639156
+    24.629999990671728,
+    38.249999985993576
    ]
   },
   {
@@ -1925,18 +1887,18 @@
    "code": "EPSG:4121",
    "wkt": "GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6121]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
    "point": [
-    23.933291229699897,
-    38.31240588690885
+    24.62827176808906,
+    38.2474156908218
    ],
    "proj": [
-    23.934999991072655,
-    38.31499998639156
+    24.629999990671728,
+    38.249999985993576
    ],
    "operation": "GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    23.934999991072655,
-    38.31499998639156
+    24.629999990671728,
+    38.249999985993576
    ]
   },
   {
@@ -1944,18 +1906,18 @@
    "code": "EPSG:4121",
    "wkt": "GEOGCS[\"GGRS87\",DATUM[\"Greek_Geodetic_Reference_System_1987\",SPHEROID[\"GRS 1980\",6378137,298.257222101],AUTHORITY[\"EPSG\",\"6121\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
    "point": [
-    23.933291229699897,
-    38.31240588690885
+    24.62827176808906,
+    38.2474156908218
    ],
    "proj": [
-    23.934999991072655,
-    38.31499998639156
+    24.629999990671728,
+    38.249999985993576
    ],
    "operation": "axis order change (2D) + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    23.934999991072655,
-    38.31499998639156
+    24.629999990671728,
+    38.249999985993576
    ]
   },
   {
@@ -1963,18 +1925,18 @@
    "code": "EPSG:4121",
    "wkt": "GEOGCS[\"Local\",DATUM[\"Local datum\",SPHEROID[\"GRS 1980\",6378137,298.257222101],AUTHORITY[\"EPSG\",\"6121\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
    "point": [
-    23.933291229699897,
-    38.31240588690885
+    24.62827176808906,
+    38.2474156908218
    ],
    "proj": [
-    23.934999991072655,
-    38.31499998639156
+    24.629999990671728,
+    38.249999985993576
    ],
    "operation": "GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    23.934999991072655,
-    38.31499998639156
+    24.629999990671728,
+    38.249999985993576
    ]
   },
   {
@@ -1982,18 +1944,18 @@
    "code": "EPSG:4121",
    "wkt": "GEOGCS[\"GCS_GGRS_1987\",DATUM[\"D_GGRS_1987\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
    "point": [
-    23.933291229699897,
-    38.31240588690885
+    24.62827176808906,
+    38.2474156908218
    ],
    "proj": [
-    23.934999991072655,
-    38.31499998639156
+    24.629999990671728,
+    38.249999985993576
    ],
    "operation": "axis order change (2D) + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    23.934999991072655,
-    38.31499998639156
+    24.629999990671728,
+    38.249999985993576
    ]
   },
   {
@@ -2001,18 +1963,18 @@
    "code": "EPSG:4121",
    "wkt": "GEOGCS[\"GCS_Local\",DATUM[\"D_GGRS_1987\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
    "point": [
-    23.933291229699897,
-    38.31240588690885
+    24.62827176808906,
+    38.2474156908218
    ],
    "proj": [
-    23.934999991072655,
-    38.31499998639156
+    24.629999990671728,
+    38.249999985993576
    ],
    "operation": "axis order change (2D) + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    23.934999991072655,
-    38.31499998639156
+    24.629999990671728,
+    38.249999985993576
    ]
   },
   {
@@ -2020,18 +1982,18 @@
    "code": "EPSG:4121",
    "wkt": "GEOGCS[\"GCS_GGRS_1987\",DATUM[\"D_GGRS_1987\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101],AUTHORITY[\"EPSG\",\"6121\"]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
    "point": [
-    23.933291229699897,
-    38.31240588690885
+    24.62827176808906,
+    38.2474156908218
    ],
    "proj": [
-    23.934999991072655,
-    38.31499998639156
+    24.629999990671728,
+    38.249999985993576
    ],
    "operation": "axis order change (2D) + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    23.934999991072655,
-    38.31499998639156
+    24.629999990671728,
+    38.249999985993576
    ]
   },
   {
@@ -2039,94 +2001,94 @@
    "code": "EPSG:4121",
    "wkt": "GEOGCS[\"GCS_GGRS_1987\",DATUM[\"D_GGRS_1987\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433],AUTHORITY[\"EPSG\",\"4121\"]]",
    "point": [
-    23.933291229699897,
-    38.31240588690885
+    24.62827176808906,
+    38.2474156908218
    ],
    "proj": [
-    23.934999991072655,
-    38.31499998639156
+    24.629999990671728,
+    38.249999985993576
    ],
    "operation": "GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    23.934999991072655,
-    38.31499998639156
+    24.629999990671728,
+    38.249999985993576
    ]
   },
   {
    "name": "EPSG:2100, WKT 2 without IDs",
    "code": "EPSG:2100",
-   "wkt": "PROJCRS[\"GGRS87 / Greek Grid\",BASEGEOGCRS[\"GGRS87\",DATUM[\"Greek Geodetic Reference System 1987\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Greek Grid\",METHOD[\"Transverse Mercator\"],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",24,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "wkt": "PROJCRS[\"GGRS87 / TM87\",BASEGEOGCRS[\"GGRS87\",DATUM[\"Greek Geodetic Reference System 1987\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Greek Transverse Mercator 87\",METHOD[\"Transverse Mercator\"],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",24,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
    "point": [
-    494168.08116862935,
-    4240480.130834421
+    494163.01235557115,
+    4233267.859098759
    ],
    "proj": [
-    23.934999991072655,
-    38.31499998639156
+    23.934999991167917,
+    38.24999998652275
    ],
-   "operation": "Inverse of Greek Grid + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "operation": "Inverse of Greek Transverse Mercator 87 + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    23.934999991072655,
-    38.31499998639156
+    23.934999991167917,
+    38.24999998652275
    ]
   },
   {
    "name": "EPSG:2100, WKT 2 with the datum's ID alone",
    "code": "EPSG:2100",
-   "wkt": "PROJCRS[\"GGRS87 / Greek Grid\",BASEGEOGCRS[\"GGRS87\",DATUM[\"Greek Geodetic Reference System 1987\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6121]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Greek Grid\",METHOD[\"Transverse Mercator\"],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",24,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "wkt": "PROJCRS[\"GGRS87 / TM87\",BASEGEOGCRS[\"GGRS87\",DATUM[\"Greek Geodetic Reference System 1987\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6121]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Greek Transverse Mercator 87\",METHOD[\"Transverse Mercator\"],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",24,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
    "point": [
-    494168.08116862935,
-    4240480.130834421
+    494163.01235557115,
+    4233267.859098759
    ],
    "proj": [
-    23.934999991072655,
-    38.31499998639156
+    23.934999991167917,
+    38.24999998652275
    ],
-   "operation": "Inverse of Greek Grid + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "operation": "Inverse of Greek Transverse Mercator 87 + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    23.934999991072655,
-    38.31499998639156
+    23.934999991167917,
+    38.24999998652275
    ]
   },
   {
    "name": "EPSG:2100, WKT 2 with the datum's ID alone, renamed",
    "code": "EPSG:2100",
-   "wkt": "PROJCRS[\"Local\",BASEGEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6121]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Greek Grid\",METHOD[\"Transverse Mercator\"],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",24,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "wkt": "PROJCRS[\"Local\",BASEGEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6121]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Greek Transverse Mercator 87\",METHOD[\"Transverse Mercator\"],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",24,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor at natural origin\",0.9996,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",500000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
    "point": [
-    494168.08116862935,
-    4240480.130834421
+    494163.01235557115,
+    4233267.859098759
    ],
    "proj": [
-    23.934999991072655,
-    38.31499998639156
+    23.934999991167917,
+    38.24999998652275
    ],
-   "operation": "Inverse of Greek Grid + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "operation": "Inverse of Greek Transverse Mercator 87 + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    23.934999991072655,
-    38.31499998639156
+    23.934999991167917,
+    38.24999998652275
    ]
   },
   {
    "name": "EPSG:2100, WKT 1 with the datum's AUTHORITY alone",
    "code": "EPSG:2100",
-   "wkt": "PROJCS[\"GGRS87 / Greek Grid\",GEOGCS[\"GGRS87\",DATUM[\"Greek_Geodetic_Reference_System_1987\",SPHEROID[\"GRS 1980\",6378137,298.257222101],AUTHORITY[\"EPSG\",\"6121\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",24],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "wkt": "PROJCS[\"GGRS87 / TM87\",GEOGCS[\"GGRS87\",DATUM[\"Greek_Geodetic_Reference_System_1987\",SPHEROID[\"GRS 1980\",6378137,298.257222101],AUTHORITY[\"EPSG\",\"6121\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",24],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
    "point": [
-    494168.08116862935,
-    4240480.130834421
+    494163.01235557115,
+    4233267.859098759
    ],
    "proj": [
-    23.934999991072655,
-    38.31499998639156
+    23.934999991167917,
+    38.24999998652275
    ],
-   "operation": "Inverse of Greek Grid + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "operation": "Inverse of Greek Transverse Mercator 87 + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    23.934999991072655,
-    38.31499998639156
+    23.934999991167917,
+    38.24999998652275
    ]
   },
   {
@@ -2134,18 +2096,18 @@
    "code": "EPSG:2100",
    "wkt": "PROJCS[\"Local\",GEOGCS[\"Local\",DATUM[\"Local datum\",SPHEROID[\"GRS 1980\",6378137,298.257222101],AUTHORITY[\"EPSG\",\"6121\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",24],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
    "point": [
-    494168.08116862935,
-    4240480.130834421
+    494163.01235557115,
+    4233267.859098759
    ],
    "proj": [
-    23.934999991072655,
-    38.31499998639156
+    23.934999991167917,
+    38.24999998652275
    ],
-   "operation": "Inverse of unnamed + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "operation": "Inverse of unknown + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    23.934999991072655,
-    38.31499998639156
+    23.934999991167917,
+    38.24999998652275
    ]
   },
   {
@@ -2153,18 +2115,18 @@
    "code": "EPSG:2100",
    "wkt": "PROJCS[\"Greek_Grid\",GEOGCS[\"GCS_GGRS_1987\",DATUM[\"D_GGRS_1987\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",24.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]",
    "point": [
-    494168.08116862935,
-    4240480.130834421
+    494163.01235557115,
+    4233267.859098759
    ],
    "proj": [
-    23.934999991072655,
-    38.31499998639156
+    23.934999991167917,
+    38.24999998652275
    ],
-   "operation": "Inverse of Greek Grid + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "operation": "Inverse of Greek Transverse Mercator 87 + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    23.934999991072655,
-    38.31499998639156
+    23.934999991167917,
+    38.24999998652275
    ]
   },
   {
@@ -2172,18 +2134,18 @@
    "code": "EPSG:2100",
    "wkt": "PROJCS[\"Local grid\",GEOGCS[\"GCS_Local\",DATUM[\"D_GGRS_1987\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",24.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]",
    "point": [
-    494168.08116862935,
-    4240480.130834421
+    494163.01235557115,
+    4233267.859098759
    ],
    "proj": [
-    23.934999991072655,
-    38.31499998639156
+    23.934999991167917,
+    38.24999998652275
    ],
-   "operation": "Inverse of unnamed + axis order change (2D) + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "operation": "Inverse of unknown + axis order change (2D) + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    23.934999991072655,
-    38.31499998639156
+    23.934999991167917,
+    38.24999998652275
    ]
   },
   {
@@ -2191,18 +2153,18 @@
    "code": "EPSG:2100",
    "wkt": "PROJCS[\"Greek_Grid\",GEOGCS[\"GCS_GGRS_1987\",DATUM[\"D_GGRS_1987\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101],AUTHORITY[\"EPSG\",\"6121\"]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",24.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]",
    "point": [
-    494168.08116862935,
-    4240480.130834421
+    494163.01235557115,
+    4233267.859098759
    ],
    "proj": [
-    23.934999991072655,
-    38.31499998639156
+    23.934999991167917,
+    38.24999998652275
    ],
-   "operation": "Inverse of Greek Grid + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "operation": "Inverse of Greek Transverse Mercator 87 + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    23.934999991072655,
-    38.31499998639156
+    23.934999991167917,
+    38.24999998652275
    ]
   },
   {
@@ -2210,18 +2172,18 @@
    "code": "EPSG:2100",
    "wkt": "PROJCS[\"Greek_Grid\",GEOGCS[\"GCS_GGRS_1987\",DATUM[\"D_GGRS_1987\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",24.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0],AUTHORITY[\"EPSG\",\"2100\"]]",
    "point": [
-    494168.08116862935,
-    4240480.130834421
+    494163.01235557115,
+    4233267.859098759
    ],
    "proj": [
-    23.934999991072655,
-    38.31499998639156
+    23.934999991167917,
+    38.24999998652275
    ],
-   "operation": "Inverse of Greek Grid + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
+   "operation": "Inverse of Greek Transverse Mercator 87 + GGRS87 to WGS 84 (1) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
-    23.934999991072655,
-    38.31499998639156
+    23.934999991167917,
+    38.24999998652275
    ]
   },
   {
@@ -2483,7 +2445,7 @@
     8.2250000082406,
     46.810000010046
    ],
-   "operation": "Inverse of unnamed + CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "operation": "Inverse of unknown + CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
     8.2250000082406,
@@ -2521,7 +2483,7 @@
     8.2250000082406,
     46.810000010046
    ],
-   "operation": "Inverse of unnamed + axis order change (2D) + CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
+   "operation": "Inverse of unknown + axis order change (2D) + CH1903 to WGS 84 (2) (with axis order normalized for visualization)",
    "best_grid_missing": true,
    "by_code": [
     8.2250000082406,
@@ -2996,7 +2958,7 @@
     19.505000005055464,
     47.16000000119482
    ],
-   "operation": "Inverse of unnamed + HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "operation": "Inverse of unknown + HD72 to WGS 84 (4) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
     19.505000005055464,
@@ -3034,7 +2996,7 @@
     19.505000005055464,
     47.16000000119482
    ],
-   "operation": "Inverse of unnamed + axis order change (2D) + HD72 to WGS 84 (4) (with axis order normalized for visualization)",
+   "operation": "Inverse of unknown + axis order change (2D) + HD72 to WGS 84 (4) (with axis order normalized for visualization)",
    "best_grid_missing": false,
    "by_code": [
     19.505000005055464,
@@ -3263,7 +3225,7 @@
     -40.77000000352588
    ],
    "operation": "NZGD49 to WGS 84 (2) (with axis order normalized for visualization)",
-   "best_grid_missing": true,
+   "best_grid_missing": false,
    "by_code": [
     172.5700000001445,
     -40.77000000352588
@@ -3282,7 +3244,7 @@
     -40.77000000352588
    ],
    "operation": "NZGD49 to WGS 84 (2) (with axis order normalized for visualization)",
-   "best_grid_missing": true,
+   "best_grid_missing": false,
    "by_code": [
     172.5700000001445,
     -40.77000000352588
@@ -3301,7 +3263,7 @@
     -40.77000000352588
    ],
    "operation": "NZGD49 to WGS 84 (2) (with axis order normalized for visualization)",
-   "best_grid_missing": true,
+   "best_grid_missing": false,
    "by_code": [
     172.5700000001445,
     -40.77000000352588
@@ -3320,7 +3282,7 @@
     -40.77000000352588
    ],
    "operation": "axis order change (2D) + NZGD49 to WGS 84 (2) (with axis order normalized for visualization)",
-   "best_grid_missing": true,
+   "best_grid_missing": false,
    "by_code": [
     172.5700000001445,
     -40.77000000352588
@@ -3339,7 +3301,7 @@
     -40.77000000352588
    ],
    "operation": "NZGD49 to WGS 84 (2) (with axis order normalized for visualization)",
-   "best_grid_missing": true,
+   "best_grid_missing": false,
    "by_code": [
     172.5700000001445,
     -40.77000000352588
@@ -3358,7 +3320,7 @@
     -40.77000000352588
    ],
    "operation": "axis order change (2D) + NZGD49 to WGS 84 (2) (with axis order normalized for visualization)",
-   "best_grid_missing": true,
+   "best_grid_missing": false,
    "by_code": [
     172.5700000001445,
     -40.77000000352588
@@ -3377,7 +3339,7 @@
     -40.77000000352588
    ],
    "operation": "axis order change (2D) + NZGD49 to WGS 84 (2) (with axis order normalized for visualization)",
-   "best_grid_missing": true,
+   "best_grid_missing": false,
    "by_code": [
     172.5700000001445,
     -40.77000000352588
@@ -3396,7 +3358,7 @@
     -40.77000000352588
    ],
    "operation": "axis order change (2D) + NZGD49 to WGS 84 (2) (with axis order normalized for visualization)",
-   "best_grid_missing": true,
+   "best_grid_missing": false,
    "by_code": [
     172.5700000001445,
     -40.77000000352588
@@ -3415,7 +3377,7 @@
     -40.77000000352588
    ],
    "operation": "NZGD49 to WGS 84 (2) (with axis order normalized for visualization)",
-   "best_grid_missing": true,
+   "best_grid_missing": false,
    "by_code": [
     172.5700000001445,
     -40.77000000352588
@@ -3455,11 +3417,51 @@
     9.00499109384395,
     51.1800023694017
    ],
-   "operation": "Inverse of unnnamed (Gauss Kruger) + axis order change (2D) + DHDN to ETRS89 (4) + ETRS89 to WGS 84 (1) (with axis order normalized for visualization)",
+   "operation": "Inverse of unknown (Gauss Kruger) + axis order change (2D) + DHDN to ETRS89 (4) + ETRS89 to WGS 84 (1) (with axis order normalized for visualization)",
    "best_grid_missing": true,
    "by_code": [
     9.005000002211203,
     51.180000005231854
+   ],
+   "pending": false
+  },
+  {
+   "name": "EPSG:4289, ESRI WKT 1, renamed",
+   "code": "EPSG:4289",
+   "wkt": "GEOGCS[\"GCS_Local\",DATUM[\"D_Amersfoort\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+   "point": [
+    4.875353899348048,
+    53.26111701389631
+   ],
+   "proj": [
+    4.874999972359734,
+    53.25999999356709
+   ],
+   "operation": "axis order change (2D) + Amersfoort to ETRS89-NLD [AGRS2010] (8) + ETRS89-NLD [AGRS2010] to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    4.875000001256372,
+    53.26000000462712
+   ],
+   "pending": false
+  },
+  {
+   "name": "EPSG:28992, ESRI WKT 1, renamed",
+   "code": "EPSG:28992",
+   "wkt": "PROJCS[\"Local grid\",GEOGCS[\"GCS_Local\",DATUM[\"D_Amersfoort\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Double_Stereographic\"],PARAMETER[\"False_Easting\",155000.0],PARAMETER[\"False_Northing\",463000.0],PARAMETER[\"Central_Meridian\",5.38763888888889],PARAMETER[\"Scale_Factor\",0.9999079],PARAMETER[\"Latitude_Of_Origin\",52.1561605555556],UNIT[\"Meter\",1.0]]",
+   "point": [
+    120818.83344377759,
+    586060.3231296679
+   ],
+   "proj": [
+    4.874999972359734,
+    53.25999999356709
+   ],
+   "operation": "Inverse of unknown + axis order change (2D) + Amersfoort to ETRS89-NLD [AGRS2010] (8) + ETRS89-NLD [AGRS2010] to WGS 84 (1) (with axis order normalized for visualization)",
+   "best_grid_missing": true,
+   "by_code": [
+    4.875000001256372,
+    53.26000000462712
    ],
    "pending": false
   },

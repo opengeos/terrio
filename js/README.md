@@ -124,7 +124,7 @@ not a guarantee for other Rust/wasm-opt versions:
 import init, { open, features } from "terrio-js/core";
 
 await init();
-features(); // { build: "terrio-js/core", features: ["flatgeobuf", "lerc", "lzma", "sqlite", "tiles"] }
+features(); // { build: "terrio-js/core", features: ["flatgeobuf", "jxl", "lerc", "lzma", "sqlite", "tiles"] }
 ```
 
 A format the module leaves out fails with a message that says so (``built without the `jp2`
@@ -172,8 +172,9 @@ snapshot:
 
 `terrio-js/cog` is a fourth module, of its own API, that reads GeoTIFFs and COGs over HTTP and
 nothing else: terrio's GeoTIFF reader (tiles and strips, overviews, LZW, Deflate, PackBits, ZSTD,
-JPEG, WebP and JPEG XL; not LZMA or LERC), the range requests of `openUrl` (64 KiB blocks, 12 in
-flight, blocks kept between reads), and no CRS engine. It suits pages that only show COGs.
+JPEG and WebP; not JPEG XL, LZMA or LERC, which the full module reads), the range requests of
+`openUrl` (64 KiB blocks, 12 in flight, blocks kept between reads), and no CRS engine. It suits
+pages that only show COGs.
 
 ```js
 import init, { openCog } from "terrio-js/cog";
@@ -199,7 +200,7 @@ snapshot:
 
 | Module | `.wasm` | gzip | Brotli |
 |---|---|---|---|
-| `terrio-js/cog` | 2.37 MB | 0.87 MB | 0.65 MB |
+| `terrio-js/cog` | 1.00 MB | 0.38 MB | 0.30 MB |
 
 ## Threads: `terrio-js/load` and `terrio-js/threads`
 
@@ -334,7 +335,9 @@ with `takeWarnings()` after an operation. `warp` also accepts `kernelVersion: "3
 for GDAL 3.13 kernel arithmetic; `"3.12"` remains the default. Sampling uses
 grid-invariant coordinates and local footprints by default, so aligned output tiles
 retain whole-grid values. Set `gridInvariant: false` to reproduce GDAL's
-chunk-dependent sampling instead. GeoTIFF/COG outputs preserve
+chunk-dependent sampling instead. A geographic source covering one turn of longitude
+is periodic: interpolation wraps across its stored edge. Set `periodicLongitude: false`
+for a field that is not continuous there. GeoTIFF/COG outputs preserve
 PixelIsPoint metadata and corner georeferencing.
 
 `blend(color, overlay, {operator: "multiply", opacity: 75})` composes same-sized

@@ -153,7 +153,7 @@ fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
     }
     // Nor one on another figure than the WKT's ellipsoid, which this writer writes (PROJ 9.8.1
     // writes the WKT's, `+R=6400000` beside a WGS 84 `SPHEROID` as WGS 84).
-    let spheroid = base.child("DATUM").and_then(|d| d.child("SPHEROID").or_else(|| d.child("ELLIPSOID")));
+    let spheroid = base.child("DATUM").and_then(|d| d.child_in(crate::keywords::ELLIPSOID));
     // But Web Mercator on its WGS 84 (GDAL's, GeoServer's EPSG:900913), which this writer writes
     // as Popular Visualisation Pseudo Mercator, as PROJ does.
     let web_mercator = pseudo_mercator(&Params::parse(&proj));
@@ -313,7 +313,7 @@ fn datum(base: &Node, p: &Params, def: &Def) -> Result<Value> {
     let code = node.and_then(Node::epsg);
     let name =
         code.and_then(epsg::datum_name).or_else(|| node.and_then(Node::name).map(str::to_string)).unwrap_or_else(|| "unknown".into());
-    let e = node.and_then(|d| d.child("SPHEROID").or_else(|| d.child("ELLIPSOID")));
+    let e = node.and_then(|d| d.child_in(crate::keywords::ELLIPSOID));
     // The WKT's ellipsoid as written (EPSG:3857's datum is WGS 84, projected on a sphere), else
     // the PROJ string's.
     let es_rf = |es: f64| if es == 0.0 { 0.0 } else { 1.0 / (1.0 - (1.0 - es).sqrt()) };
@@ -496,6 +496,8 @@ const FE_FALSE: Param = ("Easting at false origin", 8826, 'l');
 const FN_FALSE: Param = ("Northing at false origin", 8827, 'l');
 const LAT_TS: Param = ("Latitude of standard parallel", 8832, 'a');
 const LON_ORIGIN: Param = ("Longitude of origin", 8833, 'a');
+const LON_INITIAL: Param = ("Initial longitude", 8830, 'a');
+const ZONE_WIDTH: Param = ("Zone width", 8831, 'a');
 const CO_LAT: Param = ("Co-latitude of cone axis", 1036, 'a');
 const LAT_PSEUDO: Param = ("Latitude of pseudo standard parallel", 8818, 'a');
 const K_PSEUDO: Param = ("Scale factor on pseudo standard parallel", 8819, 's');
@@ -559,6 +561,18 @@ fn conversion(p: &Params) -> Result<(Value, Vec<&'static str>)> {
         "tmerc" if p.str("axis") == Some("wsu") => {
             let values = vec![(LAT_NAT, lat0), (LON_NAT, lon0), (K_NAT, k0), (FE, 0.0 - x0), (FN, 0.0 - y0)];
             ("Transverse Mercator (South Orientated)", 9808, values, ORIGIN_K)
+        }
+        // PROJ 9.9.0's `tmerczoned`, whose `+lon_0` is the initial longitude.
+        "tmerczoned" => {
+            let width = num("width")
+                .filter(|w| w.is_finite() && *w > 0.0)
+                .ok_or_else(|| unsupported("a zoned grid system without a positive width"))?;
+            (
+                "Transverse Mercator Zoned Grid System",
+                9824,
+                vec![(LAT_NAT, lat0), (LON_INITIAL, lon0), (ZONE_WIDTH, width), (K_NAT, k0), (FE, x0), (FN, y0)],
+                &["lat_0", "lon_0", "width", "k", "k_0", "x_0", "y_0"],
+            )
         }
         "tmerc" => ("Transverse Mercator", 9807, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (K_NAT, k0), (FE, x0), (FN, y0)], ORIGIN_K),
         "lcc" => {

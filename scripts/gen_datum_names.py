@@ -79,8 +79,13 @@ def rows():
     names = []
     for code, name in db.execute("SELECT code, name FROM geodetic_datum WHERE auth_name = 'EPSG'"):
         names.append((int(code), 0, name))
+    # A name GDAL writes in WKT 1 that is another datum's official name is read as that datum by
+    # PROJ: `Greenland_1996`, written for the Greenland Reference 1996 ensemble since PROJ 9.8,
+    # is Greenland 1996 (6747) to PROJ 9.9.0, even in GDAL's WKT 1 of GR96 (EPSG:4747).
+    official = {normalize(name): code for code, _, name in names}
     for code, name in wkt1_names(db).items():
-        names.append((int(code), 0, name))
+        if official.get(normalize(name), int(code)) == int(code):
+            names.append((int(code), 0, name))
     query = (
         "SELECT code, alt_name, source FROM alias_name WHERE table_name = 'geodetic_datum' "
         "AND auth_name = 'EPSG'"
@@ -129,13 +134,19 @@ def esri_written(db, best):
         "UNION SELECT code, datum_code FROM geodetic_crs WHERE auth_name = 'EPSG' "
         "AND deprecated = 0 AND type = 'geographic 2D' AND datum_auth_name = 'EPSG'"
     )
+    # The datums some EPSG CRS is on. A name that stands for datums none is on (Greenland 1996,
+    # 6747, which ESRI's `D_Greenland_1996` names, also written for GR96's CRSs since PROJ 9.8)
+    # stays that datum, which PROJ places by a ballpark: it is not also written for the other
+    # datum of the CRS it is written for.
+    on = {int(c) for (c,) in db.execute("SELECT DISTINCT datum_code FROM geodetic_crs WHERE auth_name = 'EPSG' AND datum_auth_name = 'EPSG'")}
     for crs, datum in db.execute(query).fetchall():
         try:
             wkt = pyproj.CRS.from_epsg(int(crs)).to_wkt("WKT1_ESRI")
         except pyproj.exceptions.CRSError:
             continue
         m = re.search(r'DATUM\["([^"]+)"', wkt or "")
-        if m and int(datum) not in by_name.get(normalize(m.group(1)), (0, set()))[1]:
+        named = by_name.get(normalize(m.group(1)), (0, set()))[1] if m else set()
+        if m and int(datum) not in named and (not named or named & on):
             yield int(datum), 5, m.group(1)
 
 

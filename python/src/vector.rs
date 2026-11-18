@@ -218,11 +218,19 @@ pub(crate) fn layer_from_object(obj: &Bound<'_, PyAny>, name: Option<&str>, crs:
     layer
 }
 
-/// One geometry as WKT or GeoJSON text: a `str` as given, a Shapely geometry as its WKT (in the
-/// CRS the caller assumes for WKT), or a GeoJSON mapping or `__geo_interface__` as JSON.
+/// One geometry as WKT or GeoJSON text: a `str` as given, bounds or a Shapely geometry as WKT
+/// (in the CRS the caller assumes for WKT), or a GeoJSON mapping or `__geo_interface__` as JSON.
 pub(crate) fn geometry_text(obj: &Bound<'_, PyAny>) -> PyResult<String> {
     if let Ok(text) = obj.extract::<String>() {
         return Ok(text);
+    }
+    // `(xmin, ymin, xmax, ymax)` bounds: their box as WKT (in the caller's CRS for WKT), by the
+    // core's rule for boxes (across the antimeridian, corners put in order), with its warnings.
+    if let Ok(bounds) = obj.extract::<[f64; 4]>() {
+        let _ = terrio::warnings::take();
+        let wkt = terrio::memory::bounds_wkt(bounds).py();
+        crate::issue_warnings(obj.py(), terrio::warnings::take())?;
+        return wkt;
     }
     if !obj.is_instance_of::<PyDict>() && obj.hasattr("wkt")? {
         return obj.getattr("wkt")?.extract();

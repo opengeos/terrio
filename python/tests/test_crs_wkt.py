@@ -239,7 +239,7 @@ def test_crs_to_projjson():
 
 
 def test_crs_to_proj4_writes_proj_string():
-    # PROJ 9.8.1's projinfo -o PROJ for the same CRSs.
+    # PROJ 9.9.0's projinfo -o PROJ for the same CRSs.
     assert (
         terrio._terrio.crs_to_proj4("EPSG:32632")
         == "+proj=utm +zone=32 +datum=WGS84 +units=m +no_defs +type=crs"
@@ -255,8 +255,35 @@ def test_crs_to_proj4_writes_proj_string():
     assert terrio._terrio.crs_to_proj4(local) is None
 
 
+def test_crs_to_proj4_gdal_writes_what_gdal_exports():
+    # GDAL 3.13.3 (PROJ 9.9.0, network off): osr.SpatialReference's ExportToProj4().
+    assert terrio._terrio.crs_to_proj4_gdal("EPSG:31467") == (
+        "+proj=tmerc +lat_0=0 +lon_0=9 +k=1 +x_0=3500000 +y_0=0 +ellps=bessel "
+        "+towgs84=598.1,73.7,418.2,0.202,0.045,-2.455,6.7 +units=m +no_defs"
+    )
+    # Several transformations to WGS 84: no +towgs84.
+    assert terrio._terrio.crs_to_proj4_gdal("EPSG:27700") == (
+        "+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 "
+        "+ellps=airy +units=m +no_defs"
+    )
+    assert (
+        terrio._terrio.crs_to_proj4_gdal("EPSG:32633")
+        == "+proj=utm +zone=33 +datum=WGS84 +units=m +no_defs"
+    )
+    # A compound CRS with its geoid model.
+    assert terrio._terrio.crs_to_proj4_gdal("EPSG:5972") == (
+        "+proj=utm +zone=32 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m "
+        "+geoidgrids=no_kv_HREF2018B_NN2000_EUREF89.tif +geoid_crs=WGS84 +vunits=m +no_defs"
+    )
+    local = (
+        'LOCAL_CS["Engineering",LOCAL_DATUM["site",0],UNIT["metre",1],'
+        'AXIS["X",EAST],AXIS["Y",NORTH]]'
+    )
+    assert terrio._terrio.crs_to_proj4_gdal(local) is None
+
+
 def test_crs_to_wkt1_strict_writes_wkt1_without_the_extension():
-    # PROJ 9.8.1's WKT1_GDAL of EPSG:4326, with GDAL's axes (pyproj 3.8.0,
+    # PROJ 9.9.0's WKT1_GDAL of EPSG:4326, with GDAL's axes (pyproj 3.8.0,
     # to_wkt("WKT1_GDAL", output_axis_rule=True)).
     assert terrio._terrio.crs_to_wkt1_strict("EPSG:4326") == (
         'GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563,'

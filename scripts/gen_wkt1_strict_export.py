@@ -1,6 +1,6 @@
 """Freeze PROJ's WKT 1 of CRSs for ``SpatialRef::to_wkt1_strict`` (``tests/wkt1_strict_export.rs``).
 
-PROJ 9.8.1 (pyproj 3.8.0) writes each CRS with ``CRS.to_wkt("WKT1_GDAL", output_axis_rule=True)``
+PROJ 9.9.0 (pyproj 3.8.0) writes each CRS with ``CRS.to_wkt("WKT1_GDAL", output_axis_rule=True)``
 (``proj_as_wkt`` with ``WKT1_GDAL`` and ``OUTPUT_AXIS=YES``, the AXIS nodes GDAL's
 ``exportToWkt`` writes, as ``projinfo -o WKT1_GDAL``), with the network off. The rows are every
 20th EPSG and ESRI code, every registry code PROJ writes no WKT 1 for, the codes behind each
@@ -49,7 +49,7 @@ RULES = [("EPSG", c) for c in (3857, 4979, 4978, 8857, 2046, 5514, 7405, 9707)] 
 ]
 
 # Polar Stereographic (variant C): terrio's table WKT is GDAL's, without the AXIS nodes PROJ
-# 9.8.1 writes for it.
+# 9.9.0 writes for it.
 LEFT_OUT = {("EPSG", 2985), ("EPSG", 2986)}
 
 STRICT_PROJ_STRINGS = [
@@ -224,7 +224,7 @@ def main():
     args = parser.parse_args()
     warnings.simplefilter("ignore")
     pyproj.network.set_network_enabled(False)
-    assert pyproj.proj_version_str == "9.8.1", pyproj.proj_version_str
+    assert pyproj.proj_version_str == "9.9.0", pyproj.proj_version_str
     if args.all:
         write_all(args.all)
         return

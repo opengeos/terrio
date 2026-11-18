@@ -99,3 +99,51 @@ def test_zonal_stats_zones_as_bounds_and_wkt(tmp_path):
         if isinstance(zones, pathlib.Path):
             terrio.Layer.from_geojson(SQUARE).write(str(zones))
         assert terrio.zonal_stats(zones, src, stats=["sum"]).columns() == by_layer, zones
+
+
+def test_lists_take_wkt_strings():
+    layer = terrio.Layer.from_geojson([WKT, SQUARE])
+    assert _geometries(layer) == [SQUARE, SQUARE]
+
+
+def test_bounds_as_a_clip_geometry():
+    clipped = terrio.clip_vector(terrio.Layer.from_geojson(SQUARE), geometry=(0, 0, 1, 1))
+    assert clipped.bounds == (0.0, 0.0, 1.0, 1.0)
+
+
+def test_warp_wkt_cutline_is_in_the_sources_crs(tmp_path):
+    """As the CLI's --cutline: WKT has no CRS of its own, so it is in the sources' CRS."""
+    src = str(tmp_path / "utm.tif")
+    terrio.Raster.from_array(
+        np.ones((4, 4), dtype="float32"),
+        transform=(500000, 10, 0, 4600040, 0, -10),
+        crs="EPSG:32631",
+    ).write(src)
+    cutline = (
+        "POLYGON ((500000 4600000, 500020 4600000, 500020 4600020, 500000 4600020, 500000 4600000))"
+    )
+    out = terrio.warp(src, cutline=cutline, crop_to_cutline=True, dstnodata=0)
+    assert (out.width, out.height) == (2, 2)
+    assert out.read(1).tolist() == [[1.0, 1.0], [1.0, 1.0]]
+
+
+def test_geodataframe_without_crs_is_in_the_arrays_crs():
+    gpd = pytest.importorskip("geopandas")
+    shapely = pytest.importorskip("shapely")
+    pytest.importorskip("xarray")
+    from terrio.rio.crs import CRS
+    from terrio.xarray import _ops
+
+    gdf = gpd.GeoDataFrame(geometry=[shapely.box(500000, 4600000, 500020, 4600020)])  # no CRS
+    layer = _ops.in_crs(gdf, CRS.from_user_input("EPSG:32631"))
+    assert isinstance(layer, terrio.Layer) and layer.crs == "EPSG:32631"
+
+
+def test_clip_bounds_across_the_antimeridian_read_as_everywhere_else():
+    """clip_vector's geometry=bounds follows the same rule as the other inputs."""
+    points = terrio.Layer.from_geojson(
+        [{"type": "Point", "coordinates": [0, 1]}, {"type": "Point", "coordinates": [175, 1]}]
+    )
+    with pytest.warns(UserWarning, match="antimeridian"):
+        clipped = terrio.clip_vector(points, geometry=(170, 0, -170, 2))
+    assert _geometries(clipped) == [{"type": "Point", "coordinates": [175.0, 1.0]}]

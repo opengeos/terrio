@@ -134,14 +134,15 @@ On an array with other dimensions than its spatial ones (`time`, `band`...), `zo
 reduces every 2-D slice and returns a cube indexed by the zones' geometries:
 
 ```python
-ndvi = cube.terrio.zonal_stats(fields, stats=["mean", "median"])  # (geometry, time, zonal_statistics)
-ndvi.sel(zonal_statistics="mean")  # one time series per field
+ndvi = cube.terrio.zonal_stats(fields, stats=["mean", "median"])  # (geometry, time, statistic)
+ndvi.sel(statistic="mean")  # one time series per field
 ndvi.terrio.crs  # the zones' CRS
 ```
 
 - `geometry`: the zones' Shapely geometries, in their own CRS (written as the grid mapping), with
-  the zones' attributes as coordinates along it.
-- Then the array's other dimensions, and `zonal_statistics`, one entry per statistic.
+  the zones' attributes as coordinates along it. An attribute named like one of the result's
+  coordinates gets `_2`, `_3`...
+- Then the array's other dimensions, and `statistic`, one entry per statistic.
 - float32 for float32 data, float64 otherwise; NaN where a zone has no valid pixel.
 - A Dataset gives one such variable per spatial variable, sharing `geometry`.
 
@@ -149,7 +150,12 @@ Options: `stats`, `all_touched`, `fractional`, `layer` and `batch_bytes`. The cu
 few slices at a time (whole dask chunks of its first other dimension), holding about
 `batch_bytes` (512 MiB by default): only the strips holding zone pixels are read, and each dask
 chunk is computed once. Variables of a Dataset on one grid are read in one dask computation.
-A chunk larger than `batch_bytes` warns. Weighted statistics are for 2-D arrays only.
+A chunk larger than `batch_bytes` warns.
+
+Limits: the zones are rasterized once per grid and their geometries held in memory; the result
+is held in memory (zones × slices × statistics); strips never cross a dask chunk edge, so chunks
+of very uneven heights (or a prime common height) give strips of a few rows, which reads the
+same data in more, smaller pieces. Weighted statistics are not available on cubes.
 
 Arrays of two or three dimensions are supported; dask arrays are computed first. Pixels masked
 on read (`masked=True`) go back to terrio with the file's nodata value. Floating-point results

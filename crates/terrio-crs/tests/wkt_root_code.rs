@@ -1,5 +1,5 @@
 //! A WKT whose root `AUTHORITY` or `ID` is not the CRS its nodes describe is read by its nodes, as
-//! PROJ 9.8.1 reads it: a geographic code on a projected CRS, a code that does not exist, a
+//! PROJ 9.9.0 reads it: a geographic code on a projected CRS, a code that does not exist, a
 //! compound code's units and axes on a 2D CRS in degrees, a geographic code on a geocentric CRS, a
 //! code of another datum on the same ellipsoid. The declared code is kept only when the content is
 //! that CRS; an unknown method stays unusable rather than read as the code. An Esri CRS's name
@@ -115,7 +115,7 @@ fn a_vertical_crs_of_another_unit_has_no_compound_parts() {
 }
 
 /// A vertical CRS declaring a horizontal code is not that CRS: no code, and no PROJ string of
-/// WGS 84 (PROJ 9.8.1 identifies no code either).
+/// WGS 84 (PROJ 9.9.0 identifies no code either).
 #[test]
 fn a_vertical_crs_declaring_a_horizontal_code_is_not_it() {
     terrio_crs::set_grid_search_paths(Some(vec![]));
@@ -128,7 +128,7 @@ fn a_vertical_crs_declaring_a_horizontal_code_is_not_it() {
 
 /// The registry's own WKT of a CRS on the authalic sphere carries its PROJ string as an extension
 /// (EPSG:3973 to 3975, and 9311 on NAD27): read back, it is its code, placed as the code is,
-/// and its PROJ string is PROJ 9.8.1's (`projinfo -o PROJ`), with its datum.
+/// and its PROJ string is PROJ 9.9.0's (`projinfo -o PROJ`), with its datum.
 #[test]
 fn a_registry_wkt_with_its_proj_string_is_its_code() {
     terrio_crs::set_grid_search_paths(Some(vec![]));
@@ -154,7 +154,7 @@ fn a_registry_wkt_with_its_proj_string_is_its_code() {
 }
 
 /// Into and from a vertical CRS without a transformation (its code dropped, or none), heights
-/// are kept, as PROJ 9.8.1's ballpark vertical transformation keeps them, in the vertical CRS's
+/// are kept, as PROJ 9.9.0's ballpark vertical transformation keeps them, in the vertical CRS's
 /// unit and direction; not moved by the horizontal datum shift (about 50 m for OSGB36). EPSG:7405
 /// (British National Grid + ODN height) without codes, in US survey feet and as depths, from
 /// EPSG:4979 at (-2°, 54°, 100 m); PROJ: 100, 328.0833 and -100, and 100 back.
@@ -184,7 +184,7 @@ fn heights_into_a_vertical_crs_without_a_transformation_are_kept() {
     }
 }
 
-/// An unknown method declaring an ESRI code is not that CRS: no code, and refused, as PROJ 9.8.1
+/// An unknown method declaring an ESRI code is not that CRS: no code, and refused, as PROJ 9.9.0
 /// refuses it ("Input is not a transformation"); not placed as Mollweide (ESRI:54009).
 #[test]
 fn an_unknown_method_declaring_an_esri_code_is_refused() {
@@ -242,7 +242,7 @@ fn an_esri_code_on_a_local_datum_is_not_kept() {
 }
 
 /// Heights of a vertical CRS whose geoid model's grid is missing are kept, though the horizontal
-/// shift is three-dimensional (PROJ 9.8.1, no grids, network off: EPSG:7405, OSGB36 / British
+/// shift is three-dimensional (PROJ 9.9.0, no grids, network off: EPSG:7405, OSGB36 / British
 /// National Grid + ODN height, to EPSG:4979 keeps 100 m at (530000, 180000)).
 #[test]
 fn heights_without_their_geoid_grid_are_kept() {
@@ -254,7 +254,7 @@ fn heights_without_their_geoid_grid_are_kept() {
 }
 
 /// A geographic CRS declaring its code on another prime meridian keeps the code's datum
-/// transformations, after the meridian's shift (PROJ 9.8.1, no grids, network off: NTF (Paris)
+/// transformations, after the meridian's shift (PROJ 9.9.0, no grids, network off: NTF (Paris)
 /// on a meridian `Another` at 2.33722917 grads goes through "NTF to WGS 84 (1)", to
 /// (1.4462680293, 46.7349985004), not a ballpark 56 m off).
 #[test]

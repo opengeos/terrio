@@ -133,6 +133,7 @@ __all__ = [
     "proj_boolean_parameters",
     "crs_to_projjson",
     "crs_to_proj4",
+    "crs_to_proj4_gdal",
     "crs_to_wkt1_strict",
     "suggested_grid",
     "warped_vrt_type",
@@ -1267,6 +1268,7 @@ def warp(
     grid_invariant: bool | None = None,
     init: Raster | None = None,
     _sum_scale: float = 1.0,
+    periodic_longitude: bool | None = None,
 ) -> Raster: ...
 def mosaic(
     srcs: _RasterSource | Sequence[_RasterSource],
@@ -1790,6 +1792,7 @@ def proj_boolean_parameters(definition: str) -> list[tuple[str, bool]]:
 
 def crs_to_projjson(crs: str) -> str: ...
 def crs_to_proj4(crs: str) -> str | None: ...
+def crs_to_proj4_gdal(crs: str) -> str | None: ...
 def crs_to_wkt1_strict(crs: str) -> str | None: ...
 def crs_projjson(crs: str, database: bool) -> str: ...
 def gcp_transform(
@@ -1842,6 +1845,7 @@ class RegionWarp:
         kernel_version: str | None = None,
         sum_scale: float = 1.0,
         grid_invariant: bool | None = None,
+        periodic_longitude: bool | None = None,
     ) -> RegionWarp: ...
     def source_window(self, region: _Window) -> _Window | None: ...
     def warp(

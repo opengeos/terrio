@@ -1,4 +1,4 @@
-//! `SpatialRef::to_proj4` against the PROJ strings PROJ 9.8.1 writes (pyproj 3.8.0's
+//! `SpatialRef::to_proj4` against the PROJ strings PROJ 9.9.0 writes (pyproj 3.8.0's
 //! `CRS.to_proj4()`, `proj_as_proj_string` with `PJ_PROJ_4`), frozen in
 //! `data/proj_string_export.tsv` by `scripts/gen_proj_string_export.py`: every 20th EPSG and ESRI
 //! code, the codes behind each rule of the writer, custom PROJ strings and WKT (bound CRSs among
@@ -154,7 +154,7 @@ fn proj_strings_read_back_as_the_same_conversion() {
 #[test]
 fn shape_parameters_without_a_change_the_named_ellipsoid_as_proj() {
     // `+f`, `+rf` and `+b` without `+a` change the shape of `+ellps` or `+datum`'s ellipsoid, as
-    // PROJ's `pj_ell_set` does: what reading back ESRI:102035's PROJ string needs. PROJ 9.8.1's
+    // PROJ's `pj_ell_set` does: what reading back ESRI:102035's PROJ string needs. PROJ 9.9.0's
     // (pyproj 3.8.0) `Transformer.from_crs(crs.geodetic_crs, crs, always_xy=True)` values.
     for (definition, (lon, lat), expected) in [
         ("+proj=ortho +f=0 +lat_0=90 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m", (0.0, 45.0), (0.0, -4510023.924036823)),
@@ -192,14 +192,14 @@ fn a_unit_given_as_a_fraction_is_written_by_its_name() {
 
 #[test]
 fn a_shift_with_the_wrong_number_of_parameters_is_refused() {
-    // PROJ 9.8.1 refuses `+towgs84` with other than 3 or 7 values. Do not silently drop it
+    // PROJ 9.9.0 refuses `+towgs84` with other than 3 or 7 values. Do not silently drop it
     // while exporting an apparently valid definition with no datum shift.
     assert!(SpatialRef::from_proj4("+proj=longlat +ellps=GRS80 +towgs84=1,2,3,4,5,6").is_err());
 }
 
 #[test]
 fn airy_and_copenhagen_are_read_as_proj_defines_them() {
-    // PROJ 9.8.1's `airy` is a = 6377563.396, rf = 299.3249646 (b = 6356256.909237285), and its
+    // PROJ 9.9.0's `airy` is a = 6377563.396, rf = 299.3249646 (b = 6356256.909237285), and its
     // Copenhagen meridian 12°34'40.35"E = 12.577875°: pyproj 3.8.0's
     // `Transformer.from_crs(..., always_xy=True)` values.
     let airy = SpatialRef::from_proj4("+proj=longlat +ellps=airy").unwrap();
@@ -214,7 +214,7 @@ fn airy_and_copenhagen_are_read_as_proj_defines_them() {
 
 #[test]
 fn a_bound_crs_over_a_source_with_its_own_shift_has_no_proj_string() {
-    // PROJ 9.8.1 (pyproj 3.8.0) writes this CRS as `+proj=tmerc ... +towgs84=446.448,-125.157,
+    // PROJ 9.9.0 (pyproj 3.8.0) writes this CRS as `+proj=tmerc ... +towgs84=446.448,-125.157,
     // 542.06,0.15,0.247,0.842,-20.489`, the WKT 1 source's own shift, but transforms it by the
     // bound one (375, -111, 431): (530000, 180000) is (-0.128334°, 51.503937°) in WGS 84 by its
     // transformation and 4 m from there by its PROJ string. terrio places it as PROJ does
@@ -251,7 +251,7 @@ fn a_bound_crs_over_a_source_with_its_own_shift_has_no_proj_string() {
 
 #[test]
 fn geocentric_translations_with_a_rotation_have_no_proj_string() {
-    // PROJ 9.8.1 (pyproj 3.8.0) applies a geocentric translations transformation (EPSG 9603)
+    // PROJ 9.9.0 (pyproj 3.8.0) applies a geocentric translations transformation (EPSG 9603)
     // without the rotations and scale a `BOUNDCRS` gives it, as `wkt2_bound.rs` checks, but writes
     // them in its PROJ string (`+towgs84=446.448,-125.157,542.06,0.15,0.247,0.842,-20.489`), which
     // places points elsewhere. terrio writes none; with no rotation or scale it writes PROJ's.
@@ -265,7 +265,7 @@ fn geocentric_translations_with_a_rotation_have_no_proj_string() {
 
 #[test]
 fn a_full_matrix_helmert_transformation_has_no_proj_string() {
-    // PROJ 9.8.1 (pyproj 3.8.0) applies coordinate frame's full matrix (EPSG 1132, 1133, 1140)
+    // PROJ 9.9.0 (pyproj 3.8.0) applies coordinate frame's full matrix (EPSG 1132, 1133, 1140)
     // exactly (`+exact`), as `wkt2_bound.rs` checks, but writes it as a `+towgs84`, which stands
     // for the small-angle approximation: for Saba to WGS 84 (1) (EPSG:10676), rotations of
     // hundreds of arc-seconds, its string places points 9 m from its transformation. terrio

@@ -414,7 +414,7 @@ def test_init_mapping_non_switch_parameters_keep_authority(authority):
 def test_declared_projected_authority_exports_its_effective_spheroid():
     """A conflicting WKT spheroid cannot change coordinates after a PROJ round trip.
 
-    The declared code is not the CRS's, which PROJ 9.8.1 does not identify either.
+    The declared code is not the CRS's, which PROJ 9.9.0 does not identify either.
     """
     crs = CRS.from_wkt(CRS.from_epsg(32633).to_wkt().replace("6378137", "6379000"))
     assert crs.to_epsg() is None
@@ -427,7 +427,7 @@ def test_declared_projected_authority_exports_its_effective_spheroid():
 def test_authority_export_follows_edited_projection_nodes(method):
     """A declared code that is not the CRS's does not override edited projection parameters.
 
-    The WKT is identified by its content, as PROJ 9.8.1 identifies it (UTM zone 32N).
+    The WKT is identified by its content, as PROJ 9.9.0 identifies it (UTM zone 32N).
 
     Args:
         method: Public parameter export method.
@@ -492,7 +492,7 @@ def test_registry_parameter_exports_reuse_native_lookup(monkeypatch):
 def test_unknown_declared_authority_has_safe_parameter_exports():
     """An unregistered authority retains representable WKT parameter exports.
 
-    The content is identified instead, as PROJ 9.8.1 identifies it.
+    The content is identified instead, as PROJ 9.9.0 identifies it.
     """
     wkt = (
         CRS.from_epsg(32633)

@@ -2,7 +2,7 @@
 
 The result is a vector data cube: a `geometry` dimension indexed by the zones' geometries
 (Shapely, in their own CRS, recorded as the grid mapping), the array's other dimensions, and
-`zonal_statistics`. The zones' attributes are coordinates along `geometry`.
+`statistic`. The zones' attributes are coordinates along `geometry`.
 """
 
 from __future__ import annotations
@@ -43,8 +43,13 @@ def _outside_level() -> int:
 
 def zones_layer(zones: Any, crs: Any, layer: str | None = None) -> _terrio.Layer:
     """`zones` as one `Layer` with its attributes; plain geometries are in `crs`."""
-    if layer is not None and _ops._is_path(zones):
-        return _terrio.open_vector(os.fspath(zones))[layer]
+    if layer is not None:
+        if _ops._is_path(zones):
+            return _terrio.open_vector(os.fspath(zones))[layer]
+        if isinstance(zones, _terrio.VectorDataset):
+            return zones[layer]
+        if isinstance(zones, _terrio.Layer) and zones.name != layer:
+            raise ValueError(f"no layer named '{layer}': the zones are layer '{zones.name}'")
     src = _ops.in_crs(zones, crs)
     if isinstance(src, _terrio.Layer):
         return src
@@ -86,14 +91,10 @@ def _prepared(da: xarray.DataArray) -> tuple:
     nodata = g.nodata
     if nodata is not None and np.isnan(nodata):
         nodata = None  # NaN: terrio leaves non-finite pixels out
-    # Strips of about _STRIP_PIXELS. A dask array's chunks are cut in whole strips, so each
-    # is computed once.
     rows = max(1, _STRIP_PIXELS // max(da.sizes[g.x], 1))
     y_chunks = da.chunksizes.get(g.y) if da.chunks is not None else None
-    if y_chunks and len(set(y_chunks[:-1])) <= 1 and rows < y_chunks[0]:
-        # a divisor of the chunk height: a strip across a chunk edge computes the next chunk twice
-        # ponytail: a prime chunk height gives strips of 1 row; chunks of 2^n or 1000s avoid it
-        rows = max(d for d in range(1, rows + 1) if y_chunks[0] % d == 0)
+    if y_chunks and len(y_chunks) > 1:
+        rows = _strip_rows(rows, y_chunks)
     grid = (
         da.sizes[g.x],
         da.sizes[g.y],
@@ -102,6 +103,20 @@ def _prepared(da: xarray.DataArray) -> tuple:
         rows,
     )
     return da, other, coords, None if nodata is None else float(nodata), grid
+
+
+def _strip_rows(rows: int, y_chunks: Sequence[int]) -> int:
+    """Rows per strip, about `rows`, so that no strip crosses a dask chunk edge.
+
+    A strip across an edge would compute the next chunk once for itself and once more for that
+    chunk's own strips. Strips are then whole chunks (equal chunks, `rows` at least one chunk
+    high) or divide every chunk (the largest divisor of the chunks' common height).
+    """
+    inner = y_chunks[:-1]  # the last chunk ends at the array's edge
+    if len(set(inner)) == 1 and rows >= inner[0]:
+        return rows - rows % inner[0]
+    common = math.gcd(*inner)
+    return max(d for d in range(1, min(rows, common) + 1) if common % d == 0)
 
 
 def zonal_cube(
@@ -115,7 +130,7 @@ def zonal_cube(
 ) -> list[xarray.DataArray]:
     """The zonal statistics of every 2-D slice of each of `arrays`.
 
-    Each has dims `(geometry, ..., zonal_statistics)`.
+    Each has dims `(geometry, ..., statistic)`.
     The zones are rasterized once per grid, then the strips holding zone pixels are reduced in
     order, for a batch of slices at a time (whole chunks of the first non-spatial dim, about
     `batch_bytes` held). A lazy array reads only those strips; a dask array computes each chunk
@@ -155,19 +170,37 @@ def zonal_cube(
             values[i] = out
     names = next(iter(reducers.values())).stats if reducers else []
     geometry = shapely.from_wkb(zones.to_wkb())
-    attributes = {k: ("geometry", np.asarray(v)) for k, v in zones.columns().items()}
+    columns = zones.columns()
     results = []
     for (da, other, coords, _, _), out in zip(prepared, values, strict=True):
+        attributes = _attributes(columns, {"geometry", "statistic", *other, *coords})
         result = xarray.DataArray(
             out,
-            dims=(*other, "geometry", "zonal_statistics"),
-            coords=coords | attributes | {"geometry": geometry, "zonal_statistics": names},
+            dims=(*other, "geometry", "statistic"),
+            coords=coords | attributes | {"geometry": geometry, "statistic": names},
             name=da.name,
-        ).transpose("geometry", *other, "zonal_statistics")
+        ).transpose("geometry", *other, "statistic")
         if zones.crs_wkt is not None:
             result = result.terrio.write_crs(zones.crs_wkt)
         results.append(result)
     return results
+
+
+def _attributes(columns: dict, taken: set) -> dict:
+    """The zones' attributes as coords along `geometry`.
+
+    A name already taken by a coordinate gets `_2`, `_3`... (as the Zarr writer of zonal cubes
+    does).
+    """
+    out = {}
+    for name, values in columns.items():
+        unique, n = name, 1
+        while unique in taken:
+            n += 1
+            unique = f"{name}_{n}"
+        taken.add(unique)
+        out[unique] = ("geometry", np.asarray(values))
+    return out
 
 
 def _shapely() -> Any:

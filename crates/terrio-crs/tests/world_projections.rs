@@ -1,7 +1,7 @@
 //! The world projections terrio ports from PROJ's spherical ones (Robinson, the three Winkels,
 //! Gall, Gauss-Schreiber transverse Mercator, Foucaut sinusoidal, McBryde-Thomas flat-polar
 //! sinusoidal, Putniņš P4′, Eckert IV, Natural Earth, Murdoch II and Tissot) against PROJ, on a
-//! sphere and on WGS 84. The reference points are pyproj's (PROJ 9.8.1), from
+//! sphere and on WGS 84. The reference points are pyproj's (PROJ 9.9.0), from
 //! `scripts/gen_world_projection_points.py`, from the geographic CRS on the same figure, so that
 //! no datum transformation is involved: forward within 1 mm, and the inverse of PROJ's projected
 //! points within 1e-9°.
@@ -196,7 +196,7 @@ fn check_on_sphere(name: &str, fwd: &[[f64; 4]], inv: &[InverseCase]) {
     }
 }
 
-/// PROJ 9.8.1's own test values (`test/gie/builtins.gie`).
+/// PROJ 9.9.0's own test values (`test/gie/builtins.gie`).
 #[test]
 fn eckert_iv_matches_proj_gie() {
     let (x, y) = (188646.389356416, 132268.540174065);
@@ -237,7 +237,7 @@ fn eckert_iv_matches_proj_gie() {
     check_on_sphere("eck4", &fwd, &inv);
 }
 
-/// PROJ 9.8.1's own test values (`test/gie/builtins.gie`).
+/// PROJ 9.9.0's own test values (`test/gie/builtins.gie`).
 #[test]
 fn natural_earth_matches_proj_gie() {
     let (x, y) = (194507.265257889, 112508.737358295);
@@ -252,7 +252,7 @@ fn natural_earth_matches_proj_gie() {
     check_on_sphere("natearth", &fwd, &inv);
 }
 
-/// Within about 0.005° of a pole, where Newton's method stalls, PROJ 9.8.1 (pyproj 3.8.0,
+/// Within about 0.005° of a pole, where Newton's method stalls, PROJ 9.9.0 (pyproj 3.8.0,
 /// `+proj=eck4 +a=6400000`) puts Eckert IV's points on the pole line, without the (1 + cos θ)
 /// factor of x; 89.99° still converges.
 #[test]
@@ -273,7 +273,7 @@ fn eckert_iv_puts_points_near_a_pole_on_its_pole_line_as_proj_does() {
     check_on_sphere("eck4", &fwd, &inv);
 }
 
-/// Past Natural Earth's outline, PROJ 9.8.1 (pyproj 3.8.0, `+proj=natearth +a=6400000`) reads a
+/// Past Natural Earth's outline, PROJ 9.9.0 (pyproj 3.8.0, `+proj=natearth +a=6400000`) reads a
 /// northing beyond the pole line on it, which its polynomial puts at 90.0045°, and wraps an
 /// easting beyond the antimeridian.
 #[test]

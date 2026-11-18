@@ -32,9 +32,9 @@ PDAL code, and its results are tested against them (see [Acknowledgements](#ackn
 
 Coordinate transformations match GDAL's: terrio carries the EPSG CRSs with the coordinate
 operations GDAL uses for them (generated from GDAL and PROJ by `scripts/gen_epsg_table.py`) and
-pure-Rust ports of the projections they need. For each of the 6,354 EPSG geographic and projected
-CRSs GDAL 3.12 transforms, transformations from and to WGS 84 agree with GDAL's within a
-centimetre, and 99 % of a sample of transformations between two CRSs within a metre (see
+pure-Rust ports of the projections they need. For all 6,458 EPSG geographic and projected CRSs
+GDAL 3.13 transforms, transformations from and to WGS 84 agree with GDAL's within a centimetre,
+and 99 % of a sample of transformations between two CRSs within a metre (see
 `crates/terrio-crs/tests/epsg_accuracy.rs`).
 
 ## Command line
@@ -183,7 +183,7 @@ into the same data model, and writes rasters with GDAL's drivers: `terrio::open(
 Every driver is on by default; each family of them is a cargo feature that can be turned off,
 for a smaller dependency tree and WebAssembly module: `cad` (DWG and DXF), `xlsx`, `parquet`, `remote` (URLs and object
 storage), `netcdf-hdf5`, `sqlite` (GeoPackage), `tiles` (MBTiles, PMTiles, MVT), `avif`, `zarr`,
-`jp2`, `grib`, `flatgeobuf`, `osm`, `pointcloud`, `lerc`, `lzma` and `hecras` (HEC-RAS geometry and
+`jp2`, `grib`, `flatgeobuf`, `osm`, `pointcloud`, `lerc`, `jxl`, `lzma` and `hecras` (HEC-RAS geometry and
 plan HDF files). GeoTIFF and COG, the plain raster
 and vector formats, the CRS engine and the operations are always built. A COG writer, say,
 needs only:

@@ -39,13 +39,20 @@ pub use crate::drivers::vector::geojson::parse as parse_geojson_layer;
 pub use crate::drivers::vector::shapefile::to_zip_bytes as write_shapefile_zip_bytes;
 
 /// A layer of geometries given as text rather than as a file: GeoJSON (a FeatureCollection, a
-/// Feature or a geometry), a JSON array of those, a JSON `[xmin, ymin, xmax, ymax]` box, or a
-/// WKT/EWKT geometry. GeoJSON, lists and boxes are in WGS 84 unless GeoJSON's `crs` member
+/// Feature or a geometry), a JSON array of those (or of WKT strings), a JSON `[xmin, ymin, xmax,
+/// ymax]` box, or a WKT/EWKT geometry. GeoJSON, lists and boxes are in WGS 84 unless GeoJSON's `crs` member
 /// names a CRS, as GeoJSON is read; WKT has no CRS, for the caller to give.
 ///
 /// A box with `xmin > xmax` crosses the antimeridian when both are longitudes (two boxes split
 /// at ±180°, as RFC 7946 reads such a `bbox`), and has its corners swapped otherwise; `ymin >
 /// ymax` is swapped. Each is reported as a warning.
+///
+/// ```no_run
+/// let fields = terrio::memory::parse_geometries(r#"{"type": "Point", "coordinates": [2.35, 48.85]}"#, "fields")?; // WGS 84
+/// let mut zone = terrio::memory::parse_geometries("POLYGON ((0 0, 10 0, 10 10, 0 0))", "zone")?;
+/// terrio::crs::SpatialRef::parse("EPSG:32631")?.apply_to_layer(&mut zone); // WKT: the caller's CRS
+/// # Ok::<(), terrio::Error>(())
+/// ```
 pub fn parse_geometries(text: &str, name: &str) -> Result<Layer> {
     use serde_json::{Value, json};
     let trimmed = text.trim_start();
@@ -54,14 +61,21 @@ pub fn parse_geometries(text: &str, name: &str) -> Result<Layer> {
         let doc = if let [Some(x0), Some(y0), Some(x1), Some(y1)] = items.iter().map(Value::as_f64).collect::<Vec<_>>()[..] {
             bounds_geometry(x0, y0, x1, y1)
         } else {
-            let features: Vec<Value> = items
-                .into_iter()
-                .flat_map(|v| match v["type"].as_str() {
-                    Some("FeatureCollection") => v["features"].as_array().cloned().unwrap_or_default(),
-                    Some("Feature") => vec![v],
-                    _ => vec![json!({"type": "Feature", "properties": {}, "geometry": v})],
-                })
-                .collect();
+            let mut features: Vec<Value> = Vec::new();
+            for v in items {
+                match (v.as_str(), v["type"].as_str()) {
+                    // A WKT (or GeoJSON) string among the items: its features.
+                    (Some(text), _) => {
+                        let layer = parse_geometries(text, name)?;
+                        let doc: Value = serde_json::from_str(&crate::drivers::vector::geojson::to_string(&layer, &Default::default())?)
+                            .map_err(|e| Error::InvalidData(format!("geometries: {e}")))?;
+                        features.extend(doc["features"].as_array().cloned().unwrap_or_default());
+                    }
+                    (None, Some("FeatureCollection")) => features.extend(v["features"].as_array().cloned().unwrap_or_default()),
+                    (None, Some("Feature")) => features.push(v),
+                    _ => features.push(json!({"type": "Feature", "properties": {}, "geometry": v})),
+                }
+            }
             json!({"type": "FeatureCollection", "features": features})
         };
         return parse_geojson_layer(doc.to_string().as_bytes(), name);
@@ -101,8 +115,29 @@ fn bounds_geometry(x0: f64, y0: f64, x1: f64, y1: f64) -> serde_json::Value {
     json!({"type": "Polygon", "coordinates": ring(x1, x0)})
 }
 
+/// The WKT of `[xmin, ymin, xmax, ymax]` bounds, read as [`parse_geometries`] reads a box: a
+/// polygon, or two across the antimeridian, with the same warnings.
+///
+/// ```no_run
+/// let across = terrio::memory::bounds_wkt([170.0, 0.0, -170.0, 2.0])?; // warns: across the antimeridian
+/// assert!(across.starts_with("MULTIPOLYGON"));
+/// # Ok::<(), terrio::Error>(())
+/// ```
+pub fn bounds_wkt(bounds: [f64; 4]) -> Result<String> {
+    let [x0, y0, x1, y1] = bounds;
+    let layer = parse_geojson_layer(bounds_geometry(x0, y0, x1, y1).to_string().as_bytes(), "bounds")?;
+    let geometry =
+        layer.features.first().and_then(|f| f.geometry.as_ref()).ok_or_else(|| Error::InvalidData("bounds: no geometry".into()))?;
+    Ok(crate::drivers::vector::wkt::format(geometry))
+}
+
 /// [`parse_geometries`] of a string that may have been meant as a path: a failure names both
 /// readings.
+///
+/// ```no_run
+/// let err = terrio::memory::parse_geometry_text("POLYGON ((0 0, 1 0", "zone").unwrap_err();
+/// assert!(err.to_string().contains("neither an existing file nor valid geometries"));
+/// ```
 pub fn parse_geometry_text(text: &str, name: &str) -> Result<Layer> {
     parse_geometries(text, name).map_err(|e| {
         let shown: String = text.trim().chars().take(60).collect();
@@ -113,9 +148,26 @@ pub fn parse_geometry_text(text: &str, name: &str) -> Result<Layer> {
 
 /// Opens a vector dataset with [`crate::open_vector`], or reads `src` with [`parse_geometries`]
 /// when it is geometries as text (GeoJSON, WKT or a JSON box), as GDAL's `-cutline` takes WKT.
+/// Geometries as text make one layer, `geometries`, which takes `options`' layer selection and
+/// feature range as a file's layers do; WKT has no CRS, for the caller to give.
+///
+/// ```no_run
+/// let options = terrio::VectorOpenOptions::default();
+/// let file = terrio::memory::open_vector_or_geometries("fields.gpkg", &options)?; // a path
+/// let text = terrio::memory::parse_geometries("POINT (1 2)", "geometries")?; // the same as text
+/// let parsed = terrio::memory::open_vector_or_geometries("POINT (1 2)", &options)?;
+/// assert_eq!(parsed.layers[0].features.len(), text.features.len());
+/// # let _ = file;
+/// # Ok::<(), terrio::Error>(())
+/// ```
 pub fn open_vector_or_geometries(src: &str, options: &VectorOpenOptions) -> Result<VectorDataset> {
     if is_geometry_text(src) {
-        return Ok(VectorDataset::new(vec![parse_geometry_text(src, "geometries")?], VectorDriver::GeoJSON));
+        // The one layer, named `geometries`, takes the layer and feature-range options as a file's.
+        let mut layers = crate::dataset::select_layers(vec![parse_geometry_text(src, "geometries")?], "geometries", options)?;
+        for layer in &mut layers {
+            options.keep_range(layer);
+        }
+        return Ok(VectorDataset::new(layers, VectorDriver::GeoJSON));
     }
     crate::open_vector(src, options)
 }

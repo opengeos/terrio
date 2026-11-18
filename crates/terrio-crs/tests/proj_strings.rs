@@ -1,6 +1,6 @@
 //! Every PROJ projection, as a PROJ string with typical parameters on a sphere and on WGS 84, and
 //! as pyproj's WKT1_GDAL and WKT2_2019 of the same CRS, against PROJ (#134). The reference points
-//! are pyproj's (PROJ 9.8.1), from `scripts/gen_proj_string_points.py`
+//! are pyproj's (PROJ 9.9.0), from `scripts/gen_proj_string_points.py`
 //! (`tests/data/proj_strings.tsv`), transformed from the geographic CRS on the same figure (in
 //! the same encoding), so that no datum transformation is involved: forward within 1 mm, and the
 //! inverse of PROJ's projected points within 1e-8°. terrio must either match PROJ or refuse the

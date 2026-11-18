@@ -283,14 +283,14 @@ def cube(files):
 
 @pytest.mark.parametrize("chunks", [None, {"time": 1, "x": 50}])
 def test_zonal_stats_of_a_cube_matches_each_slice(files, cube, chunks):
-    """A cube gives `(geometry, ..., zonal_statistics)`: the zones' Shapely geometries in their
+    """A cube gives `(geometry, ..., statistic)`: the zones' Shapely geometries in their
     CRS, their attributes along `geometry`, each slice as terrio.zonal_stats gives it."""
     shapely = pytest.importorskip("shapely")
     stats = ["count", "mean", "median"]
     out = (cube.chunk(chunks) if chunks else cube).terrio.zonal_stats(files["zones"], stats=stats)
-    assert out.dims == ("geometry", "time", "zonal_statistics")
+    assert out.dims == ("geometry", "time", "statistic")
     assert out.dtype == np.float32
-    assert out.zonal_statistics.values.tolist() == stats
+    assert out.statistic.values.tolist() == stats
     assert out.id.dims == ("geometry",) and out.id.values.tolist() == [0, 1, 2]
     assert out.terrio.crs == "EPSG:32611"
     expected_geometries = shapely.from_wkb(files["zones"].to_wkb())
@@ -300,7 +300,7 @@ def test_zonal_stats_of_a_cube_matches_each_slice(files, cube, chunks):
         for s in stats:
             expected = np.array([np.nan if v is None else v for v in columns[f"raster1_b1_{s}"]])
             np.testing.assert_array_equal(
-                out.isel(time=i).sel(zonal_statistics=s).values, expected.astype(np.float32)
+                out.isel(time=i).sel(statistic=s).values, expected.astype(np.float32)
             )
 
 
@@ -317,7 +317,7 @@ def test_zonal_stats_of_a_cube_in_batches_and_strips_equals_one_pass(
     four = four.chunk(chunks) if chunks else four
     stats = ["count", "mean", "median", "stddev"]
     whole = four.terrio.zonal_stats(files["zones"], stats=stats)
-    assert whole.dims == ("geometry", "band", "time", "zonal_statistics")
+    assert whole.dims == ("geometry", "band", "time", "statistic")
     with pytest.warns(RuntimeWarning, match="more than batch_bytes") as caught:
         one = four.terrio.zonal_stats(files["zones"], stats=stats, batch_bytes=1)
     assert caught[0].filename == __file__  # points at the call
@@ -336,9 +336,16 @@ def test_zonal_stats_of_a_cube_in_batches_and_strips_equals_one_pass(
         )  # fmt: skip
 
 
-def test_zonal_stats_of_a_cube_computes_each_dask_chunk_once(files, cube, monkeypatch):
-    """Strips of 3 rows on chunks of 7: a strip across a chunk edge would compute the next
-    chunk once for it and once more for its own strips."""
+@pytest.mark.parametrize(
+    ("y_chunks", "strip_rows"),
+    [(7, 3), (2, 5), ((4, 6, 10, 100), 5), ((30, 45, 45), 50)],
+    ids=["strip-shorter", "strip-taller", "uneven", "uneven-taller"],
+)
+def test_zonal_stats_of_a_cube_computes_each_dask_chunk_once(
+    files, cube, monkeypatch, y_chunks, strip_rows
+):
+    """Strips shorter or taller than the chunks, on equal or uneven chunks: a strip across a
+    chunk edge would compute the next chunk once for it and once more for its own strips."""
     pytest.importorskip("shapely")
     from terrio.xarray import _zonal
 
@@ -349,19 +356,57 @@ def test_zonal_stats_of_a_cube_computes_each_dask_chunk_once(files, cube, monkey
         calls[loc] = calls.get(loc, 0) + 1
         return block
 
-    data = cube.chunk(time=1, y=7)
+    data = cube.chunk(time=1, y=y_chunks)
+    expected = cube.terrio.zonal_stats(files["zones"], stats=["mean"])
     data = data.copy(data=data.data.map_blocks(count, dtype=data.dtype))
-    monkeypatch.setattr(_zonal, "_STRIP_PIXELS", 3 * W)
-    data.terrio.zonal_stats(files["zones"], stats=["mean"])
+    monkeypatch.setattr(_zonal, "_STRIP_PIXELS", strip_rows * W)
+    got = data.terrio.zonal_stats(files["zones"], stats=["mean"])
     assert calls and max(calls.values()) == 1, calls
+    xr.testing.assert_identical(got, expected)
+
+
+def test_zonal_stats_of_a_cube_selects_the_layer_of_any_zones_input(files, cube, tmp_path):
+    """`layer=` picks a layer of a VectorDataset as of a path, and names the layer a `Layer`
+    must be."""
+    pytest.importorskip("shapely")
+    zones = terrio.Layer.from_geojson(files["zones"].to_geojson(), name="fields", crs="EPSG:32611")
+    expected = cube.terrio.zonal_stats(zones, stats=["mean"])
+    path = str(tmp_path / "zones.gpkg")
+    terrio.write_vector(zones, path)
+    for src in (zones, path, terrio.open_vector(path)):
+        out = cube.terrio.zonal_stats(src, stats=["mean"], layer="fields")
+        np.testing.assert_array_equal(out.values, expected.values)
+    with pytest.raises(ValueError, match="no layer named 'roads'"):
+        cube.terrio.zonal_stats(zones, stats=["mean"], layer="roads")
+
+
+def test_zonal_stats_of_a_cube_suffixes_attributes_named_like_coordinates(files, cube):
+    """A zone attribute named like a coordinate of the result (`time`, `statistic`) is kept,
+    with a suffix."""
+    pytest.importorskip("shapely")
+    zones = terrio.Layer.from_geojson(
+        {
+            "type": "FeatureCollection",
+            "features": [
+                {**f, "properties": {**f["properties"], "time": "spring", "statistic": 7}}
+                for f in files["zones"].to_geojson()["features"]
+            ],
+        },
+        crs="EPSG:32611",
+    )
+    out = cube.terrio.zonal_stats(zones, stats=["mean"])
+    assert out.dims == ("geometry", "time", "statistic")
+    assert out["time_2"].dims == ("geometry",) and set(out["time_2"].values) == {"spring"}
+    assert out["statistic_2"].values.tolist() == [7] * out.sizes["geometry"]
+    np.testing.assert_array_equal(out.time.values, cube.time.values)
 
 
 def test_zonal_stats_of_a_cube_without_zone_pixels(cube):
     """Zones off the grid, and an empty time axis, give NaN and empty cubes."""
     pytest.importorskip("shapely")
     off = cube.terrio.zonal_stats((0.0, 0.0, 1.0, 1.0), stats=["count", "mean"])
-    assert off.sizes == {"geometry": 1, "time": 3, "zonal_statistics": 2}
-    np.testing.assert_array_equal(off.sel(zonal_statistics="count").values, 0)
-    assert np.isnan(off.sel(zonal_statistics="mean").values).all()
+    assert off.sizes == {"geometry": 1, "time": 3, "statistic": 2}
+    np.testing.assert_array_equal(off.sel(statistic="count").values, 0)
+    assert np.isnan(off.sel(statistic="mean").values).all()
     empty = cube.isel(time=slice(0, 0)).terrio.zonal_stats((0.0, 0.0, 1.0, 1.0), stats=["mean"])
     assert empty.sizes["time"] == 0

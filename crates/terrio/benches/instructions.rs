@@ -1,6 +1,7 @@
-//! CPU-instruction benchmarks of terrio's hot paths, run under Valgrind's Callgrind by gungraun.
-//! Instruction counts repeat within 0.01% between runs, so the `bench` workflow compares a pull
-//! request with its merge base on a shared CI runner and comments the changes.
+//! CPU-instruction and peak-memory benchmarks of terrio's hot paths, run under Valgrind's
+//! Callgrind and DHAT by gungraun. Instruction counts repeat within 0.01% between runs, and the
+//! peak heap repeats exactly, so the `bench` workflow compares a pull request with its merge base
+//! on a shared CI runner and comments the changes.
 //!
 //! Run: `cargo bench -p terrio --bench instructions` (needs `valgrind` and `gungraun-runner` of
 //! the same version as the `gungraun` dev-dependency). Inputs are synthetic: no downloads.
@@ -9,10 +10,19 @@
 //! to load the EPSG table, start the thread pool and fill caches, then counted, on every thread.
 //! Valgrind instruments only the second run (`--instr-atstart=no` and client requests, see
 //! [`measured`]), so the setup and the first run are not counted, and run faster.
+//!
+//! The peak heap of the counted run is the most heap memory it held at once, on every thread,
+//! beyond what was alive when it started: its working set, its output included, its input not.
+//! [`Counting`], the global allocator, keeps it, and [`measured`] reports it to DHAT as one ad-hoc
+//! event, which DHAT, run on each benchmark after Callgrind, sums into `TotalUnits`. DHAT's own
+//! peak would cover the whole process, where loading the EPSG table (about 17 MB while it is
+//! decompressed) outweighs most operations.
 
 use gungraun::prelude::*;
-use gungraun::{Callgrind, EntryPoint};
+use gungraun::{Callgrind, Dhat, EntryPoint};
+use std::alloc::{GlobalAlloc, Layout, System};
 use std::hint::black_box;
+use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use terrio::crs::SpatialRef;
 use terrio::ops::Resampling;
 use terrio::ops::dem::{DemOptions, DemProduct, dem};
@@ -25,14 +35,67 @@ use terrio::{DataType, Feature, Geometry, Layer, LazyRaster, Raster, RasterConfi
 /// (`valgrind/callgrind.h`: `VG_USERREQ_TOOL_BASE('C','T') + 4` and `+ 5`).
 const START: usize = 0x4354_0004;
 const STOP: usize = 0x4354_0005;
+/// DHAT's `DHAT_AD_HOC_EVENT` client request (`valgrind/dhat.h`: `VG_USERREQ_TOOL_BASE('D','H')`).
+const AD_HOC_EVENT: usize = 0x4448_0000;
+
+/// The system allocator, counting the heap bytes alive and their peak since [`measured`] reset it.
+struct Counting;
+
+static LIVE: AtomicUsize = AtomicUsize::new(0);
+static PEAK: AtomicUsize = AtomicUsize::new(0);
+
+impl Counting {
+    fn grew(by: usize) {
+        PEAK.fetch_max(LIVE.fetch_add(by, Relaxed) + by, Relaxed);
+    }
+}
+
+// SAFETY: every call goes to `System` unchanged; only the counters are added.
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let p = unsafe { System.alloc(layout) };
+        if !p.is_null() {
+            Self::grew(layout.size());
+        }
+        p
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        let p = unsafe { System.alloc_zeroed(layout) };
+        if !p.is_null() {
+            Self::grew(layout.size());
+        }
+        p
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) };
+        LIVE.fetch_sub(layout.size(), Relaxed);
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let p = unsafe { System.realloc(ptr, layout, new_size) };
+        if !p.is_null() {
+            if new_size >= layout.size() {
+                Self::grew(new_size - layout.size());
+            } else {
+                LIVE.fetch_sub(layout.size() - new_size, Relaxed);
+            }
+        }
+        p
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: Counting = Counting;
 
 /// Sends a client request to Valgrind: Valgrind's "special instruction preamble" for x86_64
 /// (`valgrind/valgrind.h`), which does nothing outside Valgrind. Elsewhere it is not sent, and
 /// nothing is counted: the CI runner is x86_64.
-fn client_request(request: usize) {
+fn client_request(request: usize, arg: usize) {
     #[cfg(target_arch = "x86_64")]
     {
-        let args: [usize; 6] = [request, 0, 0, 0, 0, 0];
+        let args: [usize; 6] = [request, arg, 0, 0, 0, 0];
         // SAFETY: the rotations of rdi add up to 128 bits, and `xchg rbx, rbx` changes nothing;
         // Valgrind recognizes the sequence, reads `args` and writes rdx.
         unsafe {
@@ -46,16 +109,20 @@ fn client_request(request: usize) {
         }
     }
     #[cfg(not(target_arch = "x86_64"))]
-    let _ = request;
+    let _ = (request, arg);
 }
 
 /// Runs `f` once uninstrumented, then again counting the instructions of every thread, terrio's
-/// pool workers' too: Callgrind's default entry point would count only this thread's.
+/// pool workers' too: Callgrind's default entry point would count only this thread's. Reports the
+/// peak heap of the counted run to DHAT.
 fn measured<R>(f: impl Fn() -> R) -> R {
     drop(black_box(f()));
-    client_request(START);
+    let before = LIVE.load(Relaxed);
+    PEAK.store(before, Relaxed);
+    client_request(START, 0);
     let out = black_box(f());
-    client_request(STOP);
+    client_request(STOP, 0);
+    client_request(AD_HOC_EVENT, PEAK.load(Relaxed) - before);
     out
 }
 
@@ -191,6 +258,8 @@ library_benchmark_group!(name = zonal_group, benchmarks = [zonal_stats_f32]);
 main!(
     config = LibraryBenchmarkConfig::default()
         .env("RAYON_NUM_THREADS", "1")
-        .tool(Callgrind::with_args(["--instr-atstart=no"]).entry_point(EntryPoint::None));
+        .tool(Callgrind::with_args(["--instr-atstart=no"]).entry_point(EntryPoint::None))
+        // The ad-hoc event of `measured`, wherever it is sent.
+        .tool(Dhat::with_args(["--mode=ad-hoc"]).entry_point(EntryPoint::None));
     library_benchmark_groups = warp_group, dem_group, read_group, zonal_group
 );

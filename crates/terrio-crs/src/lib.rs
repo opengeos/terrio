@@ -79,6 +79,7 @@ mod epsg;
 pub mod geokeys;
 mod grid;
 mod iau;
+mod keywords;
 mod math;
 mod params;
 mod proj_write;
@@ -105,7 +106,10 @@ pub fn proj_boolean_parameters(definition: &str) -> Result<Vec<(String, bool)>> 
 
 pub use catalog::{AUTHORITIES, CrsEntry, CrsKind, CrsQuery, EPSG_VERSION, check_authorities, list_crs};
 pub(crate) use def::Def;
-pub use grid::{confine_grid_search_paths, register_grid, reset_grid_cache, set_grid_search_paths, set_network_enabled};
+pub use grid::{
+    GridUse, confine_grid_search_paths, default_grid_search_paths, register_grid, reset_grid_cache, set_grid_search_paths,
+    set_network_enabled,
+};
 #[doc(hidden)]
 pub use wkt1_write::{Described, describe, epsg_ellipsoid, from_proj_on};
 
@@ -137,6 +141,76 @@ pub fn geographic_on_datum(datum: u32, ellipsoid: &str) -> Option<u32> {
 #[doc(hidden)]
 pub fn geographic_datum(geog: u32) -> Option<u32> {
     epsg::get(geog).map(|e| e.datum).filter(|d| *d != 0)
+}
+
+/// The datum shift to WGS 84 of an EPSG geographic 2D CRS, or of the base geographic CRS of an
+/// EPSG projected or compound CRS, as `+towgs84` carries it: that of the first transformation to
+/// WGS 84 (EPSG:4326) that needs no grid, in PROJ 9.9.0's order (pyproj's
+/// `TransformerGroup("EPSG:<code>", "EPSG:4326").transformers`), when PROJ runs it as a single
+/// Helmert transformation of 3 or 7 parameters. That includes a concatenation PROJ runs as one
+/// (a change of prime meridian or between geographic and geocentric coordinates around it, two
+/// geocentric translations through a datum on the same ellipsoid). When PROJ's ballpark comes
+/// first, it is the transformation PROJ's `proj_create_crs_to_crs` finds through another datum,
+/// as terrio's [`Transformer`] does (RD/83 through ETRS89 without its grid): terrio's EPSG table
+/// lists it before the ballpark.
+///
+/// The parameters are tx, ty, tz in metres, rx, ry, rz in arc-seconds and ds in ppm, in the
+/// position vector convention: a coordinate frame rotation's rotations are negated, and an
+/// inverted transformation's seven parameters are negated: the first-order inverse that
+/// `+towgs84` can carry, where PROJ inverts the step exactly (they differ at the second order,
+/// with rotations or a scale). A geocentric translation has zero rotations and scale; a
+/// transformation that shifts nothing (WGS 84's realizations, NAD83 to WGS 84 (1)) gives zeros,
+/// as `+towgs84=0,0,0`.
+///
+/// Every EPSG geographic 2D CRS other than WGS 84 is checked against PROJ 9.9.0
+/// (`tests/data/helmert_to_wgs84.tsv`, `scripts/gen_helmert_to_wgs84.py`).
+///
+/// `None` for WGS 84 itself, a code terrio's table does not have, and when that transformation
+/// is another one: a Molodensky-Badekas, a time-dependent or an exact-rotation Helmert
+/// transformation, a geographic offset, several Helmert transformations, or PROJ's ballpark
+/// (no transformation without a grid). Also for MGI (Ferro) (EPSG:4805), whose transformation
+/// turns longitudes by another Ferro meridian than the CRS's own.
+///
+/// Unlike [`SpatialRef::to_proj4_gdal`], which follows GDAL 3.13.3 and writes no `+towgs84` when a
+/// datum has several transformations to WGS 84, this gives the one PROJ picks without grids.
+///
+/// ```
+/// // ED50 to WGS 84 (1), also for ED50 / UTM zone 32N.
+/// assert_eq!(terrio_crs::helmert_to_wgs84(4230), Some([-87.0, -98.0, -121.0, 0.0, 0.0, 0.0, 0.0]));
+/// assert_eq!(terrio_crs::helmert_to_wgs84(23032), terrio_crs::helmert_to_wgs84(4230));
+/// assert_eq!(terrio_crs::helmert_to_wgs84(4326), None);
+/// ```
+pub fn helmert_to_wgs84(code: u32) -> Option<[f64; 7]> {
+    // A compound CRS's horizontal CRS.
+    let base = if epsg::get(code).is_some() { code } else { epsg::compound(code)?.horizontal };
+    let entry = epsg::get(base)?;
+    let geog = epsg::get(if entry.geog != 0 { entry.geog } else { base })?;
+    if geog.datum == 6326 {
+        return None;
+    }
+    let op = geog.ops.iter().find(|op| !op.needs_grids())?;
+    if op.ballpark {
+        return None;
+    }
+    // The datum shift PROJ runs, without the conversions to and from geocentric coordinates.
+    let mut shifts = op.steps.iter().filter(|s| !matches!(s, datum::Step::Cart { .. }));
+    match (shifts.next(), shifts.next()) {
+        (None, _) => Some([0.0; 7]),
+        (Some(datum::Step::Helmert { pivot: [0.0, 0.0, 0.0], rates: None, seven: datum::Seven(Some(p)), inv, .. }), None) => {
+            let p: &[f64; 7] = p;
+            // Without negative zeros, which a `+towgs84` written with `{}` would carry.
+            Some(p.map(|v| {
+                if v == 0.0 {
+                    0.0
+                } else if *inv {
+                    -v
+                } else {
+                    v
+                }
+            }))
+        }
+        _ => None,
+    }
 }
 
 /// The WKT GDAL writes for an EPSG code, from terrio's EPSG table.
@@ -336,7 +410,7 @@ pub enum AxisOrder {
 
 /// A coordinate reference system, known by an EPSG (or ESRI) code, a WKT definition, a PROJ
 /// string or a combination of them.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize)]
 pub struct SpatialRef {
     /// The EPSG code, when the CRS has (or was identified as having) one.
     pub epsg: Option<u32>,
@@ -736,12 +810,12 @@ impl SpatialRef {
     /// datum no CRS is on, this is the CRS its name identifies it as (GR96 for ESRI's
     /// GCS_Greenland_1996), whose transformations the definition does not take.
     pub fn geographic_code(&self) -> Option<u32> {
-        Def::new(self).ok().and_then(|d| d.geographic_code())
+        Def::shared(self).ok().and_then(|d| d.geographic_code())
     }
 
     /// Rotated-pole CF parameters, semi-major axis and eccentricity squared.
     pub fn rotated_pole_parameters(&self) -> Option<([f64; 3], f64, f64)> {
-        let d = Def::new(self).ok()?;
+        let d = Def::shared(self).ok()?;
         Some((d.rotated_pole()?, d.ell.a, d.ell.es))
     }
 
@@ -805,6 +879,95 @@ impl SpatialRef {
     /// ```
     pub fn to_proj4(&self) -> Option<String> {
         proj_write::write(self)
+    }
+
+    /// The PROJ string GDAL writes for the CRS (`OSRExportToProj4`, GDAL 3.13.3 on PROJ 9.9.0):
+    /// [`Self::to_proj4`] without `+type=crs`, and for an EPSG or ESRI code's own definition (from
+    /// [`Self::from_epsg`] or [`Self::from_esri`]), with what GDAL adds to it: the datum
+    /// transformation to WGS 84 as `+towgs84`, when PROJ finds a single one for the CRS's area of
+    /// use (GDAL's default `OSR_ADD_TOWGS84_ON_EXPORT_TO_PROJ4=YES`), and a compound CRS's geoid
+    /// model as `+geoidgrids` and `+geoid_crs`. `None` where [`Self::to_proj4`] is.
+    ///
+    /// A WKT 1 or WKT 2 whose root `AUTHORITY` or `ID` names the code gets the same, as GDAL
+    /// binds a CRS by its root identifier, unless it has a datum shift of its own, which it keeps;
+    /// another CRS keeps its own `+towgs84`, if any. A deprecated code has its own definition's,
+    /// as GDAL with `OSR_USE_NON_DEPRECATED=NO`. `docs/crs.md` lists where terrio's string differs
+    /// from GDAL's (PROJJSON, `+init=epsg:N`, compound CRSs given by a definition).
+    ///
+    /// ```
+    /// use terrio_crs::SpatialRef;
+    ///
+    /// let gk3 = SpatialRef::from_epsg(31467)?;
+    /// assert_eq!(
+    ///     gk3.to_proj4_gdal().as_deref(),
+    ///     Some("+proj=tmerc +lat_0=0 +lon_0=9 +k=1 +x_0=3500000 +y_0=0 +ellps=bessel +towgs84=598.1,73.7,418.2,0.202,0.045,-2.455,6.7 +units=m +no_defs")
+    /// );
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
+    pub fn to_proj4_gdal(&self) -> Option<String> {
+        let proj = self.to_proj4()?;
+        let mut tokens: Vec<String> = proj_write::tokens(&proj, true).into_iter().filter(|t| t.replace('"', "") != "+type=crs").collect();
+        // The table first: rebuilding the code's own definition is the costlier check. A code's
+        // own PROJ string has no `+towgs84`, `+nadgrids` or `+geoidgrids` of its own where the
+        // table adds one (`a_registry_string_has_nothing_the_table_adds`); a WKT naming the code
+        // can, and keeps it, as in GDAL.
+        let Some((towgs84, geoid)) =
+            self.authority().and_then(|(authority, code)| epsg::gdal_additions(authority, code)).filter(|_| self.gdal_binds_to_wgs84())
+        else {
+            return Some(tokens.join(" "));
+        };
+        // After the ellipsoid, before the units and what follows them.
+        let has = |tokens: &[String], keys: &[&str]| tokens.iter().any(|t| keys.iter().any(|k| t.starts_with(k)));
+        if !towgs84.is_empty() && !has(&tokens, &["+towgs84=", "+nadgrids="]) {
+            let at = tokens
+                .iter()
+                .position(|t| {
+                    ["+units=", "+to_meter=", "+vunits=", "+nadgrids=", "+geoidgrids="].iter().any(|k| t.starts_with(k))
+                        || t == "+no_defs"
+                        || t == "+wktext"
+                })
+                .unwrap_or(tokens.len());
+            tokens.insert(at, format!("+towgs84={towgs84}"));
+        }
+        if !geoid.is_empty() && !has(&tokens, &["+geoidgrids="]) {
+            let geoid = geoid.split_whitespace().map(str::to_string);
+            if tokens.iter().any(|t| t == "+wktext") {
+                // A CRS PROJ writes through its PROJ4 extension (Web Mercator's): GDAL appends
+                // the geoid model after it, and the vertical unit last.
+                let vunits: Vec<String> = tokens.iter().filter(|t| t.starts_with("+vunits=")).cloned().collect();
+                tokens.retain(|t| !t.starts_with("+vunits="));
+                tokens.extend(geoid);
+                tokens.extend(vunits);
+            } else {
+                let at = tokens.iter().position(|t| t.starts_with("+vunits=") || t == "+no_defs").unwrap_or(tokens.len());
+                tokens.splice(at..at, geoid);
+            }
+        }
+        Some(tokens.join(" "))
+    }
+
+    /// Whether GDAL binds this CRS to WGS 84 by its code, as its PROJ string export does: a CRS
+    /// that is its EPSG or ESRI code's own definition (that of [`Self::from_epsg`] or
+    /// [`Self::from_esri`], or a bare code), or a WKT, without a PROJ string set over it, whose
+    /// root `AUTHORITY` or `ID` declares the code. A compound CRS's WKT does not count (GDAL's
+    /// results for those vary; the tests list them).
+    fn gdal_binds_to_wgs84(&self) -> bool {
+        let Some((authority, code)) = self.authority() else { return false };
+        // A bare code is the code's definition; a PROJ string set over a WKT is what is written.
+        if self.wkt.is_none() && self.proj4.is_none() {
+            return true;
+        }
+        if self.proj4.is_none()
+            && self.wkt.as_deref().and_then(gdal_root_identifier).is_some_and(|(a, c)| a.eq_ignore_ascii_case(authority) && c == code)
+        {
+            return true;
+        }
+        let own = match authority {
+            "EPSG" => Self::from_epsg(code),
+            "ESRI" => Self::from_esri(code),
+            _ => return false,
+        };
+        own.is_ok_and(|own| own.wkt == self.wkt && own.proj4 == self.proj4 && own.esri == self.esri)
     }
 
     /// The WKT definition, built from the EPSG (or ESRI) code or PROJ string when no WKT is
@@ -920,12 +1083,12 @@ impl SpatialRef {
     /// One longitude revolution in native angular units, or `None` for a nongeographic CRS.
     #[doc(hidden)]
     pub fn longitude_period(&self) -> Option<f64> {
-        Def::new(self).ok()?.longitude_period()
+        Def::shared(self).ok()?.longitude_period()
     }
 
     /// Whether the CRS has geocentric Cartesian X/Y/Z coordinates.
     pub fn is_geocentric(&self) -> bool {
-        Def::new(self).is_ok_and(|d| d.is_geocentric())
+        Def::shared(self).is_ok_and(|d| d.is_geocentric())
     }
 
     /// The EPSG codes of the horizontal and the vertical CRS of a compound CRS: those of the
@@ -945,13 +1108,13 @@ impl SpatialRef {
     /// vertical CRS), a geographic 3D or a geocentric CRS. [`Transformer::transform_3d`]
     /// transforms heights between two such CRSs.
     pub fn has_height(&self) -> bool {
-        Def::new(self).is_ok_and(|d| d.has_height())
+        Def::shared(self).is_ok_and(|d| d.has_height())
     }
 
     /// Whether the enabled engines recognize a geographic (longitude/latitude) CRS.
     /// Unrecognized definitions return `false`, as do projected and geocentric CRSs.
     pub fn is_geographic(&self) -> bool {
-        match Def::new(self) {
+        match Def::shared(self) {
             Ok(d) => d.is_geographic(),
             #[cfg(feature = "wbprojection-fallback")]
             Err(_) => self.to_wbp().map(|c| c.is_geographic()).unwrap_or(false),
@@ -991,12 +1154,9 @@ impl SpatialRef {
     /// # Ok::<(), terrio_crs::Error>(())
     /// ```
     pub fn axis_order(&self) -> AxisOrder {
-        // A vertical CRS, by its code or its WKT (`VERT_CS`, ESRI's `VERTCS`, `VERTCRS`), has a
-        // single axis.
-        let vertical_wkt = self.wkt.as_deref().is_some_and(|w| {
-            let root = w.trim_start().split(['[', '(']).next().unwrap_or_default().trim();
-            ["VERT_CS", "VERTCS", "VERTCRS", "VERTICALCRS"].iter().any(|k| root.eq_ignore_ascii_case(k))
-        });
+        // A vertical CRS, by its code or its WKT (`VERT_CS`, ESRI's `VERTCS`, `VERTCRS`,
+        // `VERTICALCRS`), has a single axis.
+        let vertical_wkt = self.wkt.as_deref().is_some_and(|w| keywords::is(keywords::root_key(w), keywords::VERTICAL_CRS));
         if self.epsg.and_then(epsg::vertical).is_some() || vertical_wkt {
             return AxisOrder::Other;
         }
@@ -1005,7 +1165,7 @@ impl SpatialRef {
         if self.epsg.is_some_and(|c| epsg::get(c).is_none() && epsg::compound(c).is_none() && self.wkt == registry_wkt(c)) {
             return AxisOrder::Unknown;
         }
-        let Ok(def) = Def::new(self) else { return AxisOrder::Unknown };
+        let Ok(def) = Def::shared(self) else { return AxisOrder::Unknown };
         if def.is_geocentric() {
             return AxisOrder::Other;
         }
@@ -1084,7 +1244,7 @@ impl SpatialRef {
     /// # Ok::<(), terrio_crs::Error>(())
     /// ```
     pub fn projection_params(&self) -> Option<ProjParams> {
-        let def = Def::new(self).ok()?;
+        let def = Def::shared(self).ok()?;
         let mut params = def.params()?.clone();
         // A registry CRS is on the registry's ellipsoid, as PROJ reports it: the one its PROJ
         // string names may be rounded (Bessel Namibia's `bess_nam`, 0.28 m) or a sphere computed on
@@ -1128,7 +1288,7 @@ impl SpatialRef {
     /// # Ok::<(), terrio_crs::Error>(())
     /// ```
     pub fn body(&self) -> Option<&'static str> {
-        let def = Def::new(self).ok()?;
+        let def = Def::shared(self).ok()?;
         if let Some(code) = def.declared_body() {
             return bodies::NAIF.binary_search_by_key(&code, |(c, _)| *c).ok().map(|i| bodies::NAIF[i].1);
         }
@@ -1152,7 +1312,7 @@ impl SpatialRef {
     /// `rotated_latitude_longitude`): its coordinates are in degrees but are not longitudes and
     /// latitudes, so it is not geographic.
     pub fn is_rotated_pole(&self) -> bool {
-        self.epsg.is_none() && Def::new(self).is_ok_and(|d| d.is_rotated_pole())
+        self.epsg.is_none() && Def::shared(self).is_ok_and(|d| d.is_rotated_pole())
     }
 
     /// Whether coordinates are in degrees: a geographic CRS or a rotated-pole grid.
@@ -1472,17 +1632,8 @@ pub fn semi_major_axis(wkt: &str) -> Option<f64> {
 /// The semi-major and semi-minor axes of the first `SPHEROID` or `ELLIPSOID` of a WKT
 /// definition, from its axis and inverse flattening (0 for a sphere), in the WKT's unit.
 fn wkt_ellipsoid(wkt: &str) -> Option<(f64, f64)> {
-    fn find(n: &wkt1::Node) -> Option<&wkt1::Node> {
-        if n.key.eq_ignore_ascii_case("SPHEROID") || n.key.eq_ignore_ascii_case("ELLIPSOID") {
-            return Some(n);
-        }
-        n.args.iter().find_map(|a| match a {
-            wkt1::Arg::Node(c) => find(c),
-            _ => None,
-        })
-    }
     let root = wkt1::parse(wkt)?;
-    let node = find(&root)?;
+    let node = root.find(keywords::ELLIPSOID)?;
     let (a, rf) = (node.num(1)?, node.num(2)?);
     Some((a, if rf == 0.0 { a } else { a * (1.0 - 1.0 / rf) }))
 }
@@ -1495,21 +1646,9 @@ fn wkt_datums(wkt: &str) -> Vec<u32> {
     wkt_datums_and_others(wkt).0
 }
 
-/// The WKT keys of a geodetic datum or datum ensemble.
-const DATUM_KEYS: [&str; 5] = ["DATUM", "GEODETICDATUM", "TRF", "ENSEMBLE", "DATUMENSEMBLE"];
-
 /// The first geodetic datum (or datum ensemble) node of a WKT definition.
 fn wkt_datum(wkt: &str) -> Option<wkt1::Node> {
-    fn find(n: &wkt1::Node) -> Option<&wkt1::Node> {
-        if DATUM_KEYS.iter().any(|k| n.key.eq_ignore_ascii_case(k)) {
-            return Some(n);
-        }
-        n.args.iter().find_map(|a| match a {
-            wkt1::Arg::Node(c) => find(c),
-            _ => None,
-        })
-    }
-    wkt1::parse(wkt).and_then(|root| find(&root).cloned())
+    wkt1::parse(wkt).and_then(|root| root.find(keywords::GEODETIC_DATUM).cloned())
 }
 
 /// The name and EPSG code (from its `ID` or `AUTHORITY`) of the first datum of a WKT definition.
@@ -1812,29 +1951,11 @@ pub(crate) fn declared_fits_but_meridian(wkt: &str, code: u32) -> bool {
 /// names the code's own projection method.
 pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
     // Only a horizontal CRS's content is compared (not a vertical or engineering CRS's).
-    let horizontal_root = wkt1::parse(wkt).is_some_and(|r| {
-        [
-            "GEOGCS",
-            "PROJCS",
-            "GEOCCS",
-            "COMPD_CS",
-            "GEOGCRS",
-            "GEOGRAPHICCRS",
-            "GEODCRS",
-            "GEODETICCRS",
-            "PROJCRS",
-            "PROJECTEDCRS",
-            "COMPOUNDCRS",
-            "BOUNDCRS",
-        ]
-        .iter()
-        .any(|k| r.key.eq_ignore_ascii_case(k))
-    });
+    let horizontal_root = wkt1::parse(wkt).is_some_and(|r| r.is(keywords::HORIZONTAL_CRS) || r.is(keywords::COMPOUND_CRS));
     // A vertical CRS's code only of its unit and direction; another root's (engineering, local)
     // not the code of a CRS terrio places (a vertical CRS declaring EPSG:4326 is not WGS 84).
     if !horizontal_root {
-        let vertical =
-            wkt1::parse(wkt).is_some_and(|r| ["VERT_CS", "VERTCRS", "VERTICALCRS"].iter().any(|k| r.key.eq_ignore_ascii_case(k)));
+        let vertical = wkt1::parse(wkt).is_some_and(|r| r.is(keywords::VERTICAL_CRS_BUT_ESRI));
         return if vertical {
             def::vertical_code(wkt) == Some(code)
         } else {
@@ -1861,7 +1982,7 @@ pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
         // EPSG:7405 whose vertical CRS, Ordnance Datum Newlyn, declares another code).
         let vertical_datum = |w: &str| {
             let root = wkt1::parse(w)?;
-            let datum = ["VERT_DATUM", "VDATUM", "VERTICALDATUM", "VRF"].iter().find_map(|k| root.child(k))?;
+            let datum = root.child_in(keywords::VERTICAL_DATUM)?;
             datum.name().map(epsg::datum_key)
         };
         let same_vertical_datum = || {
@@ -1911,8 +2032,7 @@ pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
                 let cartesian = root
                     .child("CS")
                     .is_some_and(|c| matches!(c.args.first(), Some(wkt1::Arg::Ident(t)) if t.eq_ignore_ascii_case("Cartesian")));
-                let geocentric = root.key.eq_ignore_ascii_case("GEOCCS")
-                    || (["GEODCRS", "GEODETICCRS"].iter().any(|k| root.key.eq_ignore_ascii_case(k)) && cartesian);
+                let geocentric = root.key.eq_ignore_ascii_case("GEOCCS") || (root.is(keywords::GEODETIC_CRS) && cartesian);
                 return !converted
                     && geocentric == theirs.is_geocentric()
                     && semi_major_axis(wkt).is_some_and(|a| (a - theirs.ell.a).abs() < 1e-3);
@@ -1948,7 +2068,7 @@ fn geographic_dimension_3d(wkt: &str) -> Option<bool> {
     let root = wkt1::parse(wkt)?;
     let cs = root.child("CS")?;
     let ellipsoidal = matches!(cs.args.first(), Some(wkt1::Arg::Ident(t)) if t.eq_ignore_ascii_case("ellipsoidal"));
-    let geodetic = ["GEOGCRS", "GEOGRAPHICCRS", "GEODCRS", "GEODETICCRS"].iter().any(|k| root.key.eq_ignore_ascii_case(k));
+    let geodetic = root.is(keywords::GEOGRAPHIC_OR_GEODETIC_CRS);
     (geodetic && ellipsoidal).then(|| cs.num(1) == Some(3.0))
 }
 
@@ -2017,8 +2137,8 @@ fn declared_code(wkt: &str, authority: &str) -> Option<u32> {
         return None;
     }
     let start = body.rfind('[')?;
-    let keyword = body[..start].trim_end().rsplit([',', '[']).next()?.trim().to_ascii_uppercase();
-    if keyword != "AUTHORITY" && keyword != "ID" {
+    let keyword = body[..start].trim_end().rsplit([',', '[']).next()?.trim();
+    if !keywords::is(keyword, keywords::ID) {
         return None;
     }
     let mut parts = body[start + 1..].split(',').map(|p| p.trim().trim_matches('"'));
@@ -2113,8 +2233,9 @@ fn esri_same_datum(wkt: &str, registered: &str) -> bool {
 /// ensemble, as [`wkt_datums_and_others`] finds it), its first one (a compound or bound CRS's
 /// horizontal or source CRS).
 fn datum_name(wkt: &str) -> Option<String> {
+    // A datum node without a quoted name gives none, and the search goes on after it.
     fn find(n: &wkt1::Node) -> Option<String> {
-        if DATUM_KEYS.iter().any(|k| n.key.eq_ignore_ascii_case(k)) {
+        if n.is(keywords::GEODETIC_DATUM) {
             return n.name().map(str::to_string);
         }
         n.args.iter().find_map(|a| match a {
@@ -2152,28 +2273,10 @@ fn open_definition_file(path: &str) -> Option<std::fs::File> {
 }
 
 fn looks_like_wkt(s: &str) -> bool {
-    let head: String = s.chars().take_while(|c| *c != '[' && *c != '(').collect::<String>().trim().to_ascii_uppercase();
-    matches!(
-        head.as_str(),
-        "GEOGCS"
-            | "PROJCS"
-            | "GEOCCS"
-            | "COMPD_CS"
-            | "GEOGCRS"
-            | "GEOGRAPHICCRS"
-            | "PROJCRS"
-            | "PROJECTEDCRS"
-            | "GEODCRS"
-            | "GEODETICCRS"
-            | "BOUNDCRS"
-            | "COMPOUNDCRS"
-            | "VERTCRS"
-            | "VERTICALCRS"
-            | "VERT_CS"
-            | "LOCAL_CS"
-            | "ENGCRS"
-            | "ENGINEERINGCRS"
-    )
+    let head = keywords::root_key(s);
+    [keywords::HORIZONTAL_CRS, keywords::COMPOUND_CRS, keywords::VERTICAL_CRS_BUT_ESRI, keywords::ENGINEERING_CRS]
+        .iter()
+        .any(|keys| keywords::is(head, keys))
 }
 
 /// The name in a WKT definition's outermost node.
@@ -2266,6 +2369,9 @@ pub struct Transformer {
     bounds_reverse_route: std::sync::OnceLock<route::Route>,
     policy: TransformOptions,
     missing_grid_checked: std::sync::OnceLock<()>,
+    /// The missing grids of the best operation, for the warning: those of the first point it
+    /// was found missing for.
+    missing_grids: std::sync::OnceLock<String>,
     /// The geoid models with grids of the source and target vertical CRSs, found on first use.
     src_geoid_grids: std::sync::OnceLock<Vec<std::sync::Arc<datum::Op>>>,
     dst_geoid_grids: std::sync::OnceLock<Vec<std::sync::Arc<datum::Op>>>,
@@ -2288,6 +2394,11 @@ pub struct Transformer {
     /// each with the horizontal route from the source to the geographic CRS it interpolates in,
     /// when that is on another datum.
     vertical_ops: Vec<(std::sync::Arc<datum::Op>, Option<route::Route>)>,
+    /// The source's and target's vertical CRSs when `vertical_ops` are listed between them, and
+    /// the transformations PROJ lists between them when every grid can be found (for
+    /// [`Transformer::best_operation_grids_at`]), built on first use.
+    vertical_codes: Option<(u32, u32)>,
+    all_vertical_ops: std::sync::OnceLock<Vec<(std::sync::Arc<datum::Op>, Option<route::Route>)>>,
     /// The source's horizontal CRS, which the routes of `vertical_ops` start from.
     src_horizontal: Def,
     /// Whether the vertical CRSs share their datum (heights only change unit).
@@ -2429,6 +2540,30 @@ fn point_motion(datum: u32, dt: f64) -> Option<Vec<datum::Step>> {
     datum::parse_steps(&steps)
 }
 
+/// The message for a best operation that needs missing grids, naming them (`names`, joined).
+fn missing_grid_message(names: &str) -> String {
+    let named = if names.is_empty() { String::new() } else { format!(" ({names})") };
+    format!("best coordinate operation needs a missing grid{named}; set TERRIO_NETWORK=ON or TERRIO_GRID_DIR")
+}
+
+/// Vertical transformations, each with the horizontal route from the source's horizontal CRS
+/// to the geographic CRS it interpolates in, when that is on another datum.
+/// With `all`, routes as if every grid were available (for the grids a point needs).
+fn with_vertical_routes(ops: Vec<epsg::VerticalOp>, horizontal: &Def, all: bool) -> Vec<(std::sync::Arc<datum::Op>, Option<route::Route>)> {
+    ops.into_iter()
+        .map(|v| {
+            // On the geographic 2D CRS of a 3D one (ETRS89 for EPSG:4937).
+            let route = v
+                .interpolation
+                .map(|g| epsg::get(g).map_or(g, |e| e.geog))
+                .and_then(def_of)
+                .filter(|g| g.datum_code().is_none() || g.datum_code() != horizontal.datum_code())
+                .map(|g| if all { route::Route::all(horizontal, &g) } else { route::Route::new(horizontal, &g) });
+            (v.op, route)
+        })
+        .collect()
+}
+
 /// The definition of an EPSG geographic 3D CRS.
 fn def_of(code: u32) -> Option<Def> {
     Def::new(&SpatialRef { epsg: Some(code), ..Default::default() }).ok()
@@ -2565,28 +2700,14 @@ impl Transformer {
             })
         });
         let codes = (s.vertical().and_then(|v| v.code), d.vertical().and_then(|v| v.code));
-        let (vertical_ops, same_vertical_datum) = match codes {
+        let (vertical_ops, same_vertical_datum, vertical_codes) = match codes {
             (Some(a), Some(b)) if a != b => {
                 let datum = |c: u32| epsg::vertical(c).map(|v| v.datum).filter(|d| *d != 0);
                 let same = datum(a).is_some() && datum(a) == datum(b);
                 let ops = if same { Vec::new() } else { epsg::vertical_transformations(a, b) };
-                let horizontal = s.horizontal();
-                let ops = ops
-                    .into_iter()
-                    .map(|v| {
-                        // On the geographic 2D CRS of a 3D one (ETRS89 for EPSG:4937).
-                        let route = v
-                            .interpolation
-                            .map(|g| epsg::get(g).map_or(g, |e| e.geog))
-                            .and_then(def_of)
-                            .filter(|g| g.datum_code().is_none() || g.datum_code() != horizontal.datum_code())
-                            .map(|g| route::Route::new(&horizontal, &g));
-                        (v.op, route)
-                    })
-                    .collect();
-                (ops, same)
+                (with_vertical_routes(ops, &s.horizontal(), false), same, (!same).then_some((a, b)))
             }
-            _ => (Vec::new(), false),
+            _ => (Vec::new(), false, None),
         };
         let src_horizontal = s.horizontal();
         let identity = src.same_as(dst) && motion.is_none();
@@ -2606,6 +2727,8 @@ impl Transformer {
             motion,
             vertical_ops,
             same_vertical_datum,
+            vertical_codes,
+            all_vertical_ops: std::sync::OnceLock::new(),
             src_horizontal,
             web_mercator_to_wgs84,
             wgs84_to_web_mercator,
@@ -2613,6 +2736,7 @@ impl Transformer {
             bounds_reverse_route: std::sync::OnceLock::new(),
             policy: opts.clone(),
             missing_grid_checked: std::sync::OnceLock::new(),
+            missing_grids: std::sync::OnceLock::new(),
             src_geoid_grids: std::sync::OnceLock::new(),
             dst_geoid_grids: std::sync::OnceLock::new(),
             emitted_diagnostics: std::sync::atomic::AtomicU8::new(0),
@@ -2779,9 +2903,11 @@ impl Transformer {
         let flags = self.diagnostics.load(std::sync::atomic::Ordering::Relaxed);
         let previous = self.emitted_diagnostics.fetch_or(flags, std::sync::atomic::Ordering::Relaxed);
         let flags = flags & !previous;
+        let missing =
+            if flags & 2 != 0 { missing_grid_message(self.missing_grids.get().map_or("", String::as_str)) } else { String::new() };
         for (bit, message) in [
             (1, "ballpark coordinate operation used between different ellipsoids; datum shift is unknown"),
-            (2, "best coordinate operation needs a missing grid; set TERRIO_NETWORK=ON or TERRIO_GRID_DIR"),
+            (2, missing.as_str()),
             (4, "coordinate operation used outside its area of use"),
             (
                 8,
@@ -2800,11 +2926,27 @@ impl Transformer {
         self.flush_warnings();
         let flags = self.diagnostics.load(std::sync::atomic::Ordering::Relaxed);
         if self.policy.only_best && flags & 2 != 0 {
-            return Err(Error::MissingGrid(
-                "ONLY_BEST=YES: best coordinate operation needs a missing grid; set TERRIO_NETWORK=ON or TERRIO_GRID_DIR".into(),
-            ));
+            return Err(Error::MissingGrid(format!(
+                "ONLY_BEST=YES: {}",
+                missing_grid_message(self.missing_grids.get().map_or("", String::as_str))
+            )));
         }
         Ok(())
+    }
+
+    /// Records that the best operation for a point needs a missing grid, for the warning (which
+    /// names those of the first such point), and gives the missing grids of this one.
+    fn record_missing_grid(&self, op: &datum::Op) -> String {
+        let names: Vec<String> = op
+            .grids()
+            .into_iter()
+            .filter(|(n, optional)| !optional && !grid::available(n))
+            .map(|(n, _)| grid::diagnostic_grid_name(&grid::grid_use(&n, false).name))
+            .collect();
+        let names = names.join(", ");
+        self.missing_grids.get_or_init(|| names.clone());
+        self.diagnostics.fetch_or(2, std::sync::atomic::Ordering::Relaxed);
+        names
     }
 
     fn record_operation(&self, op: Option<&datum::Op>, outside: bool) {
@@ -2823,8 +2965,8 @@ impl Transformer {
         // every point. Ordinary transforms select their actual operation only once.
         self.missing_grid_checked.get_or_init(|| {
             let (ideal, _) = self.best_route().selected(&self.src, x, y, p);
-            if ideal.is_some_and(|op| !op.available()) {
-                self.diagnostics.fetch_or(2, std::sync::atomic::Ordering::Relaxed);
+            if let Some(op) = ideal.filter(|op| !op.available()) {
+                self.record_missing_grid(op);
             }
         });
     }
@@ -2836,11 +2978,9 @@ impl Transformer {
         let selected = if self.policy.only_best {
             let (ideal, outside) = self.best_route().selected(&self.src, x, y, p);
             self.record_operation(ideal, outside);
-            if ideal.is_some_and(|op| !op.available()) {
-                self.diagnostics.fetch_or(2, std::sync::atomic::Ordering::Relaxed);
-                return Err(Error::MissingGrid(
-                    "ONLY_BEST=YES: best coordinate operation needs a missing grid; set TERRIO_NETWORK=ON or TERRIO_GRID_DIR".into(),
-                ));
+            if let Some(op) = ideal.filter(|op| !op.available()) {
+                let names = self.record_missing_grid(op);
+                return Err(Error::MissingGrid(format!("ONLY_BEST=YES: {}", missing_grid_message(&names))));
             }
             ideal
         } else {
@@ -2970,6 +3110,101 @@ impl Transformer {
         let (result, used) = route::recording(|| self.transform_at(x, y, z, self.time));
         result?;
         Ok(CoordinateOperation::from_used(used))
+    }
+
+    /// The grids the transformation of a point needs, with where to get them, missing ones
+    /// included: those of the operation PROJ's `proj_trans` picks for the point with every grid
+    /// present, as PROJ's `proj_coordoperation_get_grid_used` reports them, and of a point motion
+    /// between coordinate epochs. Empty when that operation needs no grid.
+    ///
+    /// An application that downloads grids itself (with terrio's network off, in WebAssembly
+    /// too) fetches the missing ones from their `url`, gives them to [`register_grid`] under
+    /// their `name` (or saves them in a search directory and calls [`reset_grid_cache`], as
+    /// whether a grid is found is cached), and builds the transformer again. The
+    /// operation is the best one for the point whose grid is missing, or else the one that
+    /// applies there: when the point is outside a grid once it is present, the next operation's
+    /// grids come up, so ask again until every grid listed is available.
+    ///
+    /// Between compound CRSs, the grids of the transformation between their vertical CRSs
+    /// (VERTCON...) are listed too. Geoid models are not listed (`+geoidgrids`, nor those of a
+    /// geoid model's CRS, from a geographic 3D CRS too). Between CRSs with heights (geographic
+    /// 3D, compound), the horizontal grids listed are those between their geographic CRSs, which
+    /// the transformations through a geoid model's CRS may not use.
+    ///
+    /// To find the operation that applies, the point is transformed as by `transform`, so with
+    /// the network on, the grids it reads are fetched (their blocks for the point, or whole with
+    /// `TERRIO_GRID_DOWNLOAD=YES`) and cached as for a transformation.
+    ///
+    /// ```no_run
+    /// use terrio_crs::{SpatialRef, Transformer, register_grid};
+    /// # fn download(url: &str) -> Vec<u8> { unimplemented!() }
+    /// let (src, dst) = (SpatialRef::parse("EPSG:4267")?, SpatialRef::parse("EPSG:4326")?);
+    /// loop {
+    ///     let t = Transformer::new(&src, &dst)?;
+    ///     let missing: Vec<_> = t.best_operation_grids_at(-100.0, 40.0, 0.0)?.into_iter().filter(|g| !g.available).collect();
+    ///     if missing.is_empty() {
+    ///         break;
+    ///     }
+    ///     // us_noaa_conus.tif and us_noaa_kshpgn.tif, from https://cdn.proj.org/<name>.
+    ///     for g in missing {
+    ///         // A grid PROJ's database does not know has no URL: give up on it.
+    ///         let url = g.url.as_deref().ok_or_else(|| terrio_crs::Error::MissingGrid(g.name.clone()))?;
+    ///         register_grid(&g.name, download(url));
+    ///     }
+    /// }
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
+    pub fn best_operation_grids_at(&self, x: f64, y: f64, z: f64) -> Result<Vec<GridUse>> {
+        let fail = || Error::Crs(format!("cannot transform ({x}, {y}, {z})"));
+        // A geocentric source: its geographic coordinates, as `transform_at` takes them.
+        let (x, y, z) = match &self.cartesian_src {
+            Some(src) => src.unproject_geocentric(x, y, z).ok_or_else(fail)?,
+            None => (x, y, z),
+        };
+        let mut names: Vec<(String, bool)> = Vec::new();
+        if let Some(steps) = &self.motion {
+            names.extend(steps.iter().flat_map(|s| s.grid_names()));
+        }
+        if !self.web_mercator_to_wgs84 && !self.route.same_datum() {
+            let (lon, lat) = self.src.unproject(x, y).ok_or_else(fail)?;
+            let p = datum::Point { lon, lat, h: z, t: self.time };
+            names.extend(self.best_route().grid_operations_at(&self.src, x, y, p).into_iter().flat_map(|op| op.grids()));
+        }
+        // A transformation between the vertical CRSs of compound CRSs (VERTCON...), as
+        // `vertical_height` picks it when every grid can be found.
+        if let (Some((a, b)), Some(v)) = (self.vertical_codes, self.src.vertical()) {
+            let all = self
+                .all_vertical_ops
+                .get_or_init(|| with_vertical_routes(epsg::vertical_transformations_all(a, b), &self.src_horizontal, true));
+            let (lon, lat) = self.src.unproject(x, y).ok_or_else(fail)?;
+            let p = datum::Point { lon, lat, h: z * v.to_meter, t: self.time };
+            // Stops at the first whose grid, or the grid of its route, is missing.
+            // Or whose download failed, before or by its run: the point stops there, as for the
+            // horizontal transformation (`Route::grid_operations_at`).
+            let lacks = |op: &datum::Op| !op.available() || op.network_failed();
+            let missing = |i: usize| {
+                lacks(&all[i].0)
+                    || all[i].1.as_ref().is_some_and(|r| r.grid_operations_at(&self.src_horizontal, x, y, p).into_iter().any(lacks))
+            };
+            if let Some((i, _)) = self.vertical_pick(all, x, y, p, missing) {
+                names.extend(all[i].0.grids());
+                // The horizontal transformation to the CRS it interpolates in (NZGD49 to NZGD2000
+                // for the Auckland 1946 height grid), as PROJ chains it.
+                if let Some(r) = &all[i].1 {
+                    names.extend(r.grid_operations_at(&self.src_horizontal, x, y, p).into_iter().flat_map(|op| op.grids()));
+                }
+            }
+        }
+        let mut uses: Vec<GridUse> = Vec::new();
+        for (name, optional) in names.into_iter().filter(|(n, _)| n != "null") {
+            let used = grid::grid_use(&name, optional);
+            match uses.iter_mut().find(|u| u.name == used.name) {
+                // Required when any step requires it.
+                Some(u) => u.optional &= used.optional,
+                None => uses.push(used),
+            }
+        }
+        Ok(uses)
     }
 
     fn transform_at(&self, x: f64, y: f64, z: f64, t: Option<f64>) -> Result<(f64, f64, f64)> {
@@ -3114,10 +3349,29 @@ impl Transformer {
     /// the horizontal transformation to it both ways (as PROJ chains it); the next when it fails
     /// (outside its grid), up to three. `None` when none applies.
     fn vertical_height(&self, x: f64, y: f64, p: datum::Point) -> Option<f64> {
+        match self.vertical_pick(&self.vertical_ops, x, y, p, |_| false)? {
+            (i, Some(h)) => {
+                route::note(Some(&self.vertical_ops[i].0), false, route::OpKind::Vertical);
+                Some(h)
+            }
+            (_, None) => None,
+        }
+    }
+
+    /// The transformation between the vertical CRSs [`Transformer::vertical_height`] picks for a
+    /// point among `ops`, with the height it gives; or, the first `stop` holds for (by its index:
+    /// one whose grid is missing), with none.
+    fn vertical_pick(
+        &self,
+        ops: &[(std::sync::Arc<datum::Op>, Option<route::Route>)],
+        x: f64,
+        y: f64,
+        p: datum::Point,
+        stop: impl Fn(usize) -> bool,
+    ) -> Option<(usize, Option<f64>)> {
         let horizontal = &self.src_horizontal;
         let (dlon, dlat) = (p.lon.to_degrees(), p.lat.to_degrees());
-        let mut candidates: Vec<(usize, f64)> = self
-            .vertical_ops
+        let mut candidates: Vec<(usize, f64)> = ops
             .iter()
             .enumerate()
             .filter(|(_, (op, _))| op.contains(dlon, dlat))
@@ -3140,21 +3394,27 @@ impl Transformer {
         for _ in 0..3 {
             let mut best: Option<(usize, f64)> = None;
             for &(i, accuracy) in candidates.iter().filter(|(i, _)| !excluded.contains(i)) {
-                let op = &self.vertical_ops[i].0;
-                if best.is_none_or(|(b, ba)| datum::better_by(op, accuracy, &self.vertical_ops[b].0, ba)) {
+                let op = &ops[i].0;
+                if best.is_none_or(|(b, ba)| datum::better_by(op, accuracy, &ops[b].0, ba)) {
                     best = Some((i, accuracy));
                 }
             }
             let (i, _) = best?;
-            let (op, route) = &self.vertical_ops[i];
+            let (op, route) = &ops[i];
+            if stop(i) {
+                return Some((i, None));
+            }
             // The point's position in the interpolation CRS; its height stays as it is.
             let q = match route {
                 Some(r) => r.apply(horizontal, x, y, p, false).map(|q| datum::Point { h: p.h, ..q }),
                 None => Some(p),
             };
             if let Some(h) = q.and_then(|q| datum::run_op(op, q, false, true)).map(|r| r.h) {
-                route::note(Some(op), false, route::OpKind::Vertical);
-                return Some(h);
+                return Some((i, Some(h)));
+            }
+            // A grid it failed for by this run (a failed download).
+            if stop(i) {
+                return Some((i, None));
             }
             excluded.push(i);
         }
@@ -4064,5 +4324,60 @@ mod tests {
             let r = (x * (1.0 / 6378137.0)) % two_pi;
             assert!(!stuck.contains(&x) || lon == r || lon == r - two_pi.copysign(r), "easting {x:e}: {lon}, remainder {r}");
         }
+    }
+}
+
+/// The authority and code of a WKT's root `AUTHORITY` or `ID`, wherever it is among the root's
+/// children (WKT 2 can give a `REMARK` after it), but for a compound CRS's.
+fn gdal_root_identifier(wkt: &str) -> Option<(String, u32)> {
+    let root = wkt1::parse(wkt)?;
+    if root.is(keywords::COMPOUND_CRS) {
+        return None;
+    }
+    root.children("ID").chain(root.children("AUTHORITY")).find_map(|id| match (id.args.first()?, id.args.get(1)?) {
+        (wkt1::Arg::Str(authority), wkt1::Arg::Num(code)) if code.fract() == 0.0 && *code >= 0.0 && *code <= f64::from(u32::MAX) => {
+            Some((authority.clone(), *code as u32))
+        }
+        (wkt1::Arg::Str(authority), wkt1::Arg::Str(code)) => Some((authority.clone(), code.trim().parse().ok()?)),
+        _ => None,
+    })
+}
+
+#[cfg(test)]
+mod gdal_proj4_tests {
+    #[test]
+    fn a_registry_string_has_nothing_the_table_adds() {
+        // What `to_proj4_gdal` inserts is never already there: no EPSG or ESRI code GDAL adds a
+        // `+towgs84` to has a `+towgs84` or `+nadgrids` of its own, none it adds a geoid to has
+        // `+geoidgrids`.
+        let text = crate::epsg::decompress(include_bytes!("../data/gdal_towgs84.tsv.zst"));
+        let (mut checked, mut skipped) = (0, Vec::new());
+        for line in text.lines() {
+            let f: Vec<&str> = line.split('\t').collect();
+            let code = f[1].parse().unwrap();
+            let s = if f[0] == "EPSG" { crate::SpatialRef::from_epsg(code) } else { crate::SpatialRef::from_esri(code) };
+            let Some(proj) = s.ok().and_then(|s| s.to_proj4()) else {
+                skipped.push(format!("{}:{code}", f[0]));
+                continue;
+            };
+            // Every row is read into the table.
+            assert_eq!(crate::epsg::gdal_additions(f[0], code), Some((f[2], f[3])), "{}:{code}", f[0]);
+            assert!(f[2].is_empty() || !(proj.contains("+towgs84=") || proj.contains("+nadgrids=")), "{}:{code} {proj}", f[0]);
+            assert!(f[3].is_empty() || !proj.contains("+geoidgrids="), "{}:{code} {proj}", f[0]);
+            checked += 1;
+        }
+        // Every one is in terrio's tables, ESRI:102151 and 102964 too.
+        assert!(skipped.is_empty(), "{skipped:?}");
+        assert_eq!(checked, 5130);
+    }
+
+    #[test]
+    fn quoted_values_keep_their_spaces() {
+        // `to_proj4_gdal` splits as PROJ strings are read and keeps values as written.
+        let tokens = crate::proj_write::tokens(r#"+proj=longlat  +geoidgrids="@my  ""grid"".gtx" +no_defs"#, true);
+        assert_eq!(tokens, ["+proj=longlat", r#"+geoidgrids="@my  ""grid"".gtx""#, "+no_defs"]);
+        // DMS seconds are no quoted value.
+        let tokens = crate::proj_write::tokens(r#"+proj=longlat +pm=2d20'14.025"E +type=crs"#, true);
+        assert_eq!(tokens, ["+proj=longlat", r#"+pm=2d20'14.025"E"#, "+type=crs"]);
     }
 }

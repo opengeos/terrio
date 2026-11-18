@@ -101,6 +101,7 @@ pub mod warp;
 pub(crate) mod window;
 pub mod xyz;
 pub mod zonal;
+pub mod zonal_cube;
 
 use crate::crs::SpatialRef;
 use crate::{Error, RasterDataset, Result};

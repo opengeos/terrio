@@ -110,3 +110,18 @@ test("terrio-js/cog refuses unknown options and options of the wrong type", asyn
   await assert.rejects(cog.openCog("http://127.0.0.1:9/a.tif", { blockSize: 1000.5 }), /`blockSize` must be a whole number/);
   await assert.rejects(cog.openCog("http://127.0.0.1:9/a.tif", { cacheSize: 1e30 }), /`cacheSize` must be a whole number/);
 });
+
+test("terrio-js/cog leaves JPEG XL out and says so", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "terrio-cog-"));
+  const src = terrio.rasterFromArray(new Uint8Array(64 * 64).map((_, i) => i % 251), 64, 64, [0, 1, 0, 64, 0, -1], "EPSG:4326");
+  writeFileSync(join(dir, "jxl.tif"), src.toBytes("jxl.tif", { format: "GTiff", compress: "JXL" }));
+  const server = await serve(dir);
+  try {
+    const r = await cog.openCog(server.url + "jxl.tif");
+    assert.equal(r.width, 64);
+    await assert.rejects(r.read(), /built without the `jxl` feature/);
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true });
+  }
+});

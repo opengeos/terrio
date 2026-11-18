@@ -1901,7 +1901,7 @@ class TerrioArray(XRasterBase):
         """Statistics of the pixels in each zone, for a 2-D array or every 2-D slice of a cube.
 
         A 2-D array gives `terrio.zonal_stats`'s `Layer`. An array with other dimensions
-        (`band`, `time`...) gives a DataArray of dims `(geometry, ..., zonal_statistics)`: one
+        (`band`, `time`...) gives a DataArray of dims `(geometry, ..., statistic)`: one
         row per zone, indexed by its Shapely geometry in the zones' CRS (written as the grid
         mapping, `.terrio.crs`), the array's other dimensions, and one column per statistic.
         The zones' attributes are coordinates along `geometry`. The values are float32 for

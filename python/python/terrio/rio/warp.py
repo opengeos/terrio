@@ -454,7 +454,8 @@ def calculate_default_transform(
     """The output grid GDAL suggests for reprojecting a raster.
 
     Args:
-        src_crs: The source CRS.
+        src_crs: The source CRS. `None` with georeferenced bounds: the bounds are in the target
+            CRS, and the source is not reprojected.
         dst_crs: The target CRS.
         width: The source width.
         height: The source height.
@@ -503,6 +504,10 @@ def calculate_default_transform(
         raise ValueError("Resolution cannot be used with dst_width and dst_height.")
     t = from_bounds(left, bottom, right, top, width, height)
     gcp_kw = _gcp_args(gcps, kwargs) if gcps is not None else {}
+    if src_crs is None and gcps is None and rpcs is None and not t.almost_equals(Affine.identity()):
+        # GDAL does not reproject a source with no CRS: its geotransform is in the target CRS.
+        # Bounds of pixels and lines (no geotransform) place nothing, and a CRS stays required.
+        src_crs = dst_crs
     if rpcs is not None:
         rpc_kw = _rpc_args(rpcs, kwargs)
         gt, w, h = _terrio.suggested_grid(
@@ -689,6 +694,7 @@ def reproject(
     warp_mem_limit: int = 0,
     src_geoloc_array: Any = None,
     grid_invariant: bool | None = None,
+    periodic_longitude: bool | None = None,
     **kwargs: Any,
 ) -> tuple[Any, Affine]:
     """Reprojects a raster array (or band) into another grid.
@@ -707,7 +713,8 @@ def reproject(
         rpcs: Rational polynomial coefficients georeferencing the source (an `RPC` or GDAL's RPC
             items; a dataset source is warped by its own RPCs), warped with GDAL's RPC
             transformer, in WGS 84 (see `**kwargs`).
-        src_crs: The source CRS (arrays only; datasets give theirs).
+        src_crs: The source CRS (arrays only; datasets give theirs). A dataset with a geotransform
+            and no CRS is not reprojected: its geotransform is in the destination CRS.
         src_nodata: The source nodata value (by default, the dataset's).
         dst_transform: The destination's transform; computed when None.
         dst_crs: The destination CRS (by default, the source's).
@@ -728,6 +735,9 @@ def reproject(
         src_geoloc_array: Unsupported.
         grid_invariant: Keep values independent of tiles (default); False selects GDAL's
             chunk-dependent sampling. None follows TERRIO_WARP_GRID.
+        periodic_longitude: Wrap interpolation across the stored edge of a geographic source
+            covering one turn of longitude (default); False keeps it inside the stored columns,
+            for fields that are not continuous across that edge.
         **kwargs: GDAL transformer options: `MAX_GCP_ORDER` and `SRC_METHOD` (`GCP_POLYNOMIAL`,
             `GCP_TPS` or `GCP_HOMOGRAPHY`) with GCPs; `RPC_HEIGHT`, `RPC_HEIGHT_SCALE`, `RPC_DEM`
             (warped with exact transformations, as rasterio), `RPC_DEMINTERPOLATION`,
@@ -769,6 +779,10 @@ def reproject(
     sum_scale = 1.0
     if isinstance(source, DatasetBase):
         source = Band(source, list(source.indexes), source.dtypes[0], source.shape)
+    # A dataset with a geotransform, which stands in for a missing CRS below.
+    georeferenced = isinstance(source, Band) and not source.ds.transform.almost_equals(
+        Affine.identity()
+    )
     if isinstance(source, Band):
         ds, bidx = source.ds, source.bidx
         if rs == Resampling.sum:
@@ -818,6 +832,12 @@ def reproject(
     src_count, src_h, src_w = src3.shape
     if src_crs is None and rpcs is not None:
         src_crs = "EPSG:4326"
+    if src_crs is None and georeferenced:
+        # A dataset with no CRS is not reprojected: its geotransform is in the destination CRS
+        # (the destination dataset's when none is given).
+        src_crs = dst_crs
+        if src_crs is None and isinstance(destination, Band):
+            src_crs = destination.ds.crs
     if src_crs is None:
         raise CRSError("A source CRS is required")
     if dst_crs is None:
@@ -936,6 +956,7 @@ def reproject(
         et=0.0 if "to" in rpc_kw and "RPC_DEM" in rpc_kw["to"] else tolerance,
         wo=_warp_extras(kwargs),
         grid_invariant=grid_invariant,
+        periodic_longitude=periodic_longitude,
         **gcp_kw,
         **rpc_kw,
     )

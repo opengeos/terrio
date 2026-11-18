@@ -47,7 +47,7 @@ fn a_layer_wkt_padded_with_nuls_is_identified() {
     assert_eq!(terrio::crs::SpatialRef::from_layer(&layer).epsg, Some(32631));
 }
 
-/// PROJ 9.8.1's PROJJSON (pyproj 3.8.0, `scripts/gen_wkt1_proj_reads.py`) of
+/// PROJ 9.9.0's PROJJSON (pyproj 3.8.0, `scripts/gen_wkt1_proj_reads.py`) of
 /// EPSG:32631 with a NUL (`\u0000`) in a parameter's name, and of Mollweide with one in its name.
 fn projjson_with_a_nul() -> [(String, Option<u32>, &'static str); 2] {
     let data: serde_json::Value = serde_json::from_str(include_str!("../../terrio-crs/tests/data/wkt1_proj_reads.json")).unwrap();
@@ -55,7 +55,7 @@ fn projjson_with_a_nul() -> [(String, Option<u32>, &'static str); 2] {
     [(text("projjson"), Some(32631), "\"Latitude of\""), (text("mollweide_projjson"), None, "\"Moll\"")]
 }
 
-/// A CRS read from PROJJSON with a NUL in a name, as PROJ 9.8.1 reads it, keeps it in its stored
+/// A CRS read from PROJJSON with a NUL in a name, as PROJ 9.9.0 reads it, keeps it in its stored
 /// WKT. Set on a layer, its WKT is written with the name cut at the NUL, as PROJ gives such a
 /// name (`CRS.name` of `"WGS\u0000 84 / UTM zone 31N"` is `WGS`; PROJ's own WKT of it ends at
 /// the NUL), so the layer reads back as the CRS: with its EPSG code, and without one.
@@ -78,7 +78,7 @@ fn a_crs_with_a_nul_in_its_name_round_trips_through_a_layer() {
     }
 }
 
-/// A raster rasterized in a CRS with a NUL in its name (Mollweide's PROJ 9.8.1 PROJJSON) has
+/// A raster rasterized in a CRS with a NUL in its name (Mollweide's PROJ 9.9.0 PROJJSON) has
 /// that CRS: its stored WKT has the name cut at the NUL, so it reads back.
 #[test]
 fn a_raster_made_in_a_crs_with_a_nul_in_its_name_has_that_crs() {

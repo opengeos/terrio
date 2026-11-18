@@ -1131,6 +1131,56 @@ impl Seek for RemoteArchive {
     }
 }
 
+/// A buffered reader that keeps its buffer when a seek lands inside it.
+///
+/// `BufReader::seek` discards the buffer, so a reader that seeks before each small read (the
+/// `tiff` crate at every tag, a JPEG 2000 header scan at every box) reads a whole buffer from the
+/// file each time, the same bytes again and again.
+pub struct NearSeek<R>(std::io::BufReader<R>);
+
+impl<R: std::io::Read> NearSeek<R> {
+    /// A reader over `inner`, with `BufReader`'s default capacity.
+    pub fn new(inner: R) -> Self {
+        Self(std::io::BufReader::new(inner))
+    }
+
+    /// A reader over `inner` that buffers `capacity` bytes.
+    pub fn with_capacity(capacity: usize, inner: R) -> Self {
+        Self(std::io::BufReader::with_capacity(capacity, inner))
+    }
+
+    /// The wrapped reader.
+    pub fn get_ref(&self) -> &R {
+        self.0.get_ref()
+    }
+}
+
+impl<R: std::io::Read> std::io::Read for NearSeek<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        std::io::Read::read(&mut self.0, buf)
+    }
+}
+
+impl<R: std::io::Read + std::io::Seek> std::io::Seek for NearSeek<R> {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        match pos {
+            std::io::SeekFrom::Start(target) => {
+                let current = std::io::Seek::stream_position(&mut self.0)?;
+                match i64::try_from(i128::from(target) - i128::from(current)) {
+                    Ok(delta) => self.0.seek_relative(delta)?,
+                    Err(_) => return std::io::Seek::seek(&mut self.0, pos),
+                }
+                Ok(target)
+            }
+            std::io::SeekFrom::Current(delta) => {
+                self.0.seek_relative(delta)?;
+                std::io::Seek::stream_position(&mut self.0)
+            }
+            std::io::SeekFrom::End(_) => std::io::Seek::seek(&mut self.0, pos),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(remote)]
@@ -1537,5 +1587,46 @@ mod tests {
         std::fs::write(&path, zip.archive().clone().into_inner().into_inner()).unwrap();
         let error = resolve(&format!("/vsizip/{}/a", path.display())).err().unwrap();
         assert!(matches!(&error, Error::ResourceLimit(m) if m == "zip: 'a' holds more than the 10 bytes it declares"), "{error:?}");
+    }
+
+    /// Seeks inside the buffer read nothing more; `BufReader::seek` reads a buffer at each.
+    #[test]
+    fn near_seek_keeps_its_buffer_across_seeks_inside_it() {
+        use std::io::{Read, Seek, SeekFrom};
+        /// Counts the reads of the bytes it wraps.
+        struct Counting(std::io::Cursor<Vec<u8>>, usize);
+        impl Read for Counting {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                self.1 += 1;
+                self.0.read(buf)
+            }
+        }
+        impl Seek for Counting {
+            fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+                self.0.seek(pos)
+            }
+        }
+        let bytes: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+        let mut r = NearSeek::with_capacity(4096, Counting(std::io::Cursor::new(bytes.clone()), 0));
+        let at = |r: &mut NearSeek<Counting>, pos: SeekFrom, expected: u64| {
+            assert_eq!(r.seek(pos).unwrap(), expected);
+            let mut b = [0u8; 8];
+            r.read_exact(&mut b).unwrap();
+            assert_eq!(b[..], bytes[expected as usize..expected as usize + 8]);
+        };
+        // Tags of a header, visited in any order, backwards too.
+        for offset in [0, 192, 902, 8, 1594, 386, 4000, 0] {
+            at(&mut r, SeekFrom::Start(offset), offset);
+        }
+        assert_eq!(r.get_ref().1, 1, "one read fills the buffer for every seek inside it");
+        at(&mut r, SeekFrom::Current(-8), 0);
+        at(&mut r, SeekFrom::Current(92), 100);
+        assert_eq!(r.get_ref().1, 1);
+        // Outside the buffer, and from the end: read again.
+        at(&mut r, SeekFrom::Start(50_000), 50_000);
+        assert_eq!(r.get_ref().1, 2);
+        at(&mut r, SeekFrom::End(-16), 99_984);
+        assert_eq!(r.get_ref().1, 3);
+        assert_eq!(r.stream_position().unwrap(), 99_992);
     }
 }
