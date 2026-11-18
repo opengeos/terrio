@@ -79,6 +79,7 @@ mod epsg;
 pub mod geokeys;
 mod grid;
 mod iau;
+mod keywords;
 mod math;
 mod params;
 mod proj_write;
@@ -1153,12 +1154,9 @@ impl SpatialRef {
     /// # Ok::<(), terrio_crs::Error>(())
     /// ```
     pub fn axis_order(&self) -> AxisOrder {
-        // A vertical CRS, by its code or its WKT (`VERT_CS`, ESRI's `VERTCS`, `VERTCRS`), has a
-        // single axis.
-        let vertical_wkt = self.wkt.as_deref().is_some_and(|w| {
-            let root = w.trim_start().split(['[', '(']).next().unwrap_or_default().trim();
-            ["VERT_CS", "VERTCS", "VERTCRS", "VERTICALCRS"].iter().any(|k| root.eq_ignore_ascii_case(k))
-        });
+        // A vertical CRS, by its code or its WKT (`VERT_CS`, ESRI's `VERTCS`, `VERTCRS`,
+        // `VERTICALCRS`), has a single axis.
+        let vertical_wkt = self.wkt.as_deref().is_some_and(|w| keywords::is(keywords::root_key(w), keywords::VERTICAL_CRS));
         if self.epsg.and_then(epsg::vertical).is_some() || vertical_wkt {
             return AxisOrder::Other;
         }
@@ -1634,17 +1632,8 @@ pub fn semi_major_axis(wkt: &str) -> Option<f64> {
 /// The semi-major and semi-minor axes of the first `SPHEROID` or `ELLIPSOID` of a WKT
 /// definition, from its axis and inverse flattening (0 for a sphere), in the WKT's unit.
 fn wkt_ellipsoid(wkt: &str) -> Option<(f64, f64)> {
-    fn find(n: &wkt1::Node) -> Option<&wkt1::Node> {
-        if n.key.eq_ignore_ascii_case("SPHEROID") || n.key.eq_ignore_ascii_case("ELLIPSOID") {
-            return Some(n);
-        }
-        n.args.iter().find_map(|a| match a {
-            wkt1::Arg::Node(c) => find(c),
-            _ => None,
-        })
-    }
     let root = wkt1::parse(wkt)?;
-    let node = find(&root)?;
+    let node = root.find(keywords::ELLIPSOID)?;
     let (a, rf) = (node.num(1)?, node.num(2)?);
     Some((a, if rf == 0.0 { a } else { a * (1.0 - 1.0 / rf) }))
 }
@@ -1657,21 +1646,9 @@ fn wkt_datums(wkt: &str) -> Vec<u32> {
     wkt_datums_and_others(wkt).0
 }
 
-/// The WKT keys of a geodetic datum or datum ensemble.
-const DATUM_KEYS: [&str; 5] = ["DATUM", "GEODETICDATUM", "TRF", "ENSEMBLE", "DATUMENSEMBLE"];
-
 /// The first geodetic datum (or datum ensemble) node of a WKT definition.
 fn wkt_datum(wkt: &str) -> Option<wkt1::Node> {
-    fn find(n: &wkt1::Node) -> Option<&wkt1::Node> {
-        if DATUM_KEYS.iter().any(|k| n.key.eq_ignore_ascii_case(k)) {
-            return Some(n);
-        }
-        n.args.iter().find_map(|a| match a {
-            wkt1::Arg::Node(c) => find(c),
-            _ => None,
-        })
-    }
-    wkt1::parse(wkt).and_then(|root| find(&root).cloned())
+    wkt1::parse(wkt).and_then(|root| root.find(keywords::GEODETIC_DATUM).cloned())
 }
 
 /// The name and EPSG code (from its `ID` or `AUTHORITY`) of the first datum of a WKT definition.
@@ -1974,29 +1951,11 @@ pub(crate) fn declared_fits_but_meridian(wkt: &str, code: u32) -> bool {
 /// names the code's own projection method.
 pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
     // Only a horizontal CRS's content is compared (not a vertical or engineering CRS's).
-    let horizontal_root = wkt1::parse(wkt).is_some_and(|r| {
-        [
-            "GEOGCS",
-            "PROJCS",
-            "GEOCCS",
-            "COMPD_CS",
-            "GEOGCRS",
-            "GEOGRAPHICCRS",
-            "GEODCRS",
-            "GEODETICCRS",
-            "PROJCRS",
-            "PROJECTEDCRS",
-            "COMPOUNDCRS",
-            "BOUNDCRS",
-        ]
-        .iter()
-        .any(|k| r.key.eq_ignore_ascii_case(k))
-    });
+    let horizontal_root = wkt1::parse(wkt).is_some_and(|r| r.is(keywords::HORIZONTAL_CRS) || r.is(keywords::COMPOUND_CRS));
     // A vertical CRS's code only of its unit and direction; another root's (engineering, local)
     // not the code of a CRS terrio places (a vertical CRS declaring EPSG:4326 is not WGS 84).
     if !horizontal_root {
-        let vertical =
-            wkt1::parse(wkt).is_some_and(|r| ["VERT_CS", "VERTCRS", "VERTICALCRS"].iter().any(|k| r.key.eq_ignore_ascii_case(k)));
+        let vertical = wkt1::parse(wkt).is_some_and(|r| r.is(keywords::VERTICAL_CRS_BUT_ESRI));
         return if vertical {
             def::vertical_code(wkt) == Some(code)
         } else {
@@ -2023,7 +1982,7 @@ pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
         // EPSG:7405 whose vertical CRS, Ordnance Datum Newlyn, declares another code).
         let vertical_datum = |w: &str| {
             let root = wkt1::parse(w)?;
-            let datum = ["VERT_DATUM", "VDATUM", "VERTICALDATUM", "VRF"].iter().find_map(|k| root.child(k))?;
+            let datum = root.child_in(keywords::VERTICAL_DATUM)?;
             datum.name().map(epsg::datum_key)
         };
         let same_vertical_datum = || {
@@ -2073,8 +2032,7 @@ pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
                 let cartesian = root
                     .child("CS")
                     .is_some_and(|c| matches!(c.args.first(), Some(wkt1::Arg::Ident(t)) if t.eq_ignore_ascii_case("Cartesian")));
-                let geocentric = root.key.eq_ignore_ascii_case("GEOCCS")
-                    || (["GEODCRS", "GEODETICCRS"].iter().any(|k| root.key.eq_ignore_ascii_case(k)) && cartesian);
+                let geocentric = root.key.eq_ignore_ascii_case("GEOCCS") || (root.is(keywords::GEODETIC_CRS) && cartesian);
                 return !converted
                     && geocentric == theirs.is_geocentric()
                     && semi_major_axis(wkt).is_some_and(|a| (a - theirs.ell.a).abs() < 1e-3);
@@ -2110,7 +2068,7 @@ fn geographic_dimension_3d(wkt: &str) -> Option<bool> {
     let root = wkt1::parse(wkt)?;
     let cs = root.child("CS")?;
     let ellipsoidal = matches!(cs.args.first(), Some(wkt1::Arg::Ident(t)) if t.eq_ignore_ascii_case("ellipsoidal"));
-    let geodetic = ["GEOGCRS", "GEOGRAPHICCRS", "GEODCRS", "GEODETICCRS"].iter().any(|k| root.key.eq_ignore_ascii_case(k));
+    let geodetic = root.is(keywords::GEOGRAPHIC_OR_GEODETIC_CRS);
     (geodetic && ellipsoidal).then(|| cs.num(1) == Some(3.0))
 }
 
@@ -2179,8 +2137,8 @@ fn declared_code(wkt: &str, authority: &str) -> Option<u32> {
         return None;
     }
     let start = body.rfind('[')?;
-    let keyword = body[..start].trim_end().rsplit([',', '[']).next()?.trim().to_ascii_uppercase();
-    if keyword != "AUTHORITY" && keyword != "ID" {
+    let keyword = body[..start].trim_end().rsplit([',', '[']).next()?.trim();
+    if !keywords::is(keyword, keywords::ID) {
         return None;
     }
     let mut parts = body[start + 1..].split(',').map(|p| p.trim().trim_matches('"'));
@@ -2275,8 +2233,9 @@ fn esri_same_datum(wkt: &str, registered: &str) -> bool {
 /// ensemble, as [`wkt_datums_and_others`] finds it), its first one (a compound or bound CRS's
 /// horizontal or source CRS).
 fn datum_name(wkt: &str) -> Option<String> {
+    // A datum node without a quoted name gives none, and the search goes on after it.
     fn find(n: &wkt1::Node) -> Option<String> {
-        if DATUM_KEYS.iter().any(|k| n.key.eq_ignore_ascii_case(k)) {
+        if n.is(keywords::GEODETIC_DATUM) {
             return n.name().map(str::to_string);
         }
         n.args.iter().find_map(|a| match a {
@@ -2314,28 +2273,10 @@ fn open_definition_file(path: &str) -> Option<std::fs::File> {
 }
 
 fn looks_like_wkt(s: &str) -> bool {
-    let head: String = s.chars().take_while(|c| *c != '[' && *c != '(').collect::<String>().trim().to_ascii_uppercase();
-    matches!(
-        head.as_str(),
-        "GEOGCS"
-            | "PROJCS"
-            | "GEOCCS"
-            | "COMPD_CS"
-            | "GEOGCRS"
-            | "GEOGRAPHICCRS"
-            | "PROJCRS"
-            | "PROJECTEDCRS"
-            | "GEODCRS"
-            | "GEODETICCRS"
-            | "BOUNDCRS"
-            | "COMPOUNDCRS"
-            | "VERTCRS"
-            | "VERTICALCRS"
-            | "VERT_CS"
-            | "LOCAL_CS"
-            | "ENGCRS"
-            | "ENGINEERINGCRS"
-    )
+    let head = keywords::root_key(s);
+    [keywords::HORIZONTAL_CRS, keywords::COMPOUND_CRS, keywords::VERTICAL_CRS_BUT_ESRI, keywords::ENGINEERING_CRS]
+        .iter()
+        .any(|keys| keywords::is(head, keys))
 }
 
 /// The name in a WKT definition's outermost node.
@@ -4390,7 +4331,7 @@ mod tests {
 /// children (WKT 2 can give a `REMARK` after it), but for a compound CRS's.
 fn gdal_root_identifier(wkt: &str) -> Option<(String, u32)> {
     let root = wkt1::parse(wkt)?;
-    if ["COMPD_CS", "COMPOUNDCRS"].iter().any(|k| root.key.eq_ignore_ascii_case(k)) {
+    if root.is(keywords::COMPOUND_CRS) {
         return None;
     }
     root.children("ID").chain(root.children("AUTHORITY")).find_map(|id| match (id.args.first()?, id.args.get(1)?) {
@@ -4425,9 +4366,9 @@ mod gdal_proj4_tests {
             assert!(f[3].is_empty() || !proj.contains("+geoidgrids="), "{}:{code} {proj}", f[0]);
             checked += 1;
         }
-        // Two of PROJ 9.9.0's ESRI codes are not in terrio's ESRI table.
-        assert_eq!(skipped, ["ESRI:102151", "ESRI:102964"]);
-        assert_eq!(checked, 5128);
+        // Every one is in terrio's tables, ESRI:102151 and 102964 too.
+        assert!(skipped.is_empty(), "{skipped:?}");
+        assert_eq!(checked, 5130);
     }
 
     #[test]

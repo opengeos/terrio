@@ -31,9 +31,8 @@ fn registry_crss_are_written_as_gdal_exports_them() {
         compared += 1;
     }
     assert!(compared > 1250, "only {compared} compared");
-    // The ESRI CRSs terrio does not carry: CRSs of other bodies, and ESRI:102151, which is not
-    // in its ESRI table.
-    let expected = ["ESRI:102151", "ESRI:103880", "ESRI:104902", "ESRI:104922", "ESRI:104942", "ESRI:104962", "ESRI:104982"];
+    // The ESRI CRSs terrio does not carry: CRSs of other bodies.
+    let expected = ["ESRI:103880", "ESRI:104902", "ESRI:104922", "ESRI:104942", "ESRI:104962", "ESRI:104982"];
     assert_eq!(unread, expected);
 }
 

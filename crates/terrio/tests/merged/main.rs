@@ -156,6 +156,8 @@ mod wkt2;
 mod wkt_file_nul;
 #[path = "../zip_duplicate_names.rs"]
 mod zip_duplicate_names;
+#[path = "../zonal_cube.rs"]
+mod zonal_cube;
 #[path = "../zonal_remote.rs"]
 mod zonal_remote;
 #[path = "../zstd_input_limits.rs"]

@@ -1135,6 +1135,17 @@ every periodic image inside its support; it does not clip the filter at the stor
 This source-extension rule applies under both grid policies and can differ from GDAL's
 finite-edge clipping for coarse global filters.
 
+That is right for a field that is continuous across the stored edge. For one that is not, such
+as longitudes, class codes or a product made per hemisphere or per tile, pass
+`--periodic-longitude false`: interpolation neighbors then stay inside the stored columns, as
+for a regional source, and the edge columns are not blended. A point a whole turn away is still
+found on the source, so nearest-neighbour results do not change, and area methods and `sum`
+still count both stored edges under a footprint that crosses the cut: they measure what the
+footprint covers, and `sum` would otherwise lose it.
+Python's `warp`, `terrio.rio`'s `reproject` and `WarpedVRT` accept
+`periodic_longitude=False`; JavaScript's `warp` accepts `periodicLongitude: false`. A
+serialized warped VRT cannot record it: write a materialized output.
+
 Regional geographic sources also accept a longitude a whole turn away when it falls inside
 their stored columns. A source from 160° E to 200° E therefore covers 180° to 160° W.
 The shift uses the CRS's angular period, rather than the regional raster's width. A source
@@ -2695,6 +2706,24 @@ s3://bucket/S2A_20240701/B04.tif,2024-07-01,B04
 s3://bucket/S2A_20240701/B08.tif,2024-07-01,B08
 s3://bucket/S2B_20240711/B04.tif,2024-07-11,B04
 ```
+
+An output ending in `.zarr` (or `-f Zarr`) gets the statistics as a cube instead of a layer:
+a Zarr v3 store with one variable, named after the store (`ndvi.zarr` holds `ndvi`), of dims
+`(geometry, time, band, statistic)`:
+
+```sh
+terrio zonal-stats fields.gpkg ndvi.zarr --inputs s2.csv --stats mean,median
+```
+
+- `time` is present when the `--inputs` rows have times (then every row needs one), as CF times
+  when they are ISO 8601 dates; `band` when rows have labels or there are several bands. A date
+  without one of the bands holds NaN for it; two rows on the same time and label are an error.
+- The zones are stored as CF-1.8 polygon geometries with a CF grid mapping of their CRS, their
+  fields and FIDs (`feature_id`) as coordinates along `geometry`: xarray opens the store, and
+  cf_xarray and xvec decode the geometries. A zone without a polygon geometry is an error, as
+  CF cannot store it.
+- `--t-srs`, `--decimal-places`, `--nln`, `--append` and `--overwrite` do not apply, and the zones
+  input must have one layer.
 
 `zonal-stats` (alias `zonal`) adds statistics independently for each polygon or multipolygon.
 Repeat `--raster` for multiple rasters (or give `--raster @FILE`, a list of paths one per line)

@@ -52,6 +52,22 @@ const SQUARES = {
   ],
 };
 
+test("periodicLongitude: false keeps bilinear inside a full-turn source's stored columns", () => {
+  // Each pixel holds its centre longitude: -179.5 and 179.5 meet at the stored edge.
+  const values = Float64Array.from({length: 360 * 180}, (_, i) => (i % 360) - 179.5);
+  const source = terrio.rasterFromArray(values, 360, 180, [-180, 1, 0, 90, 0, -1], "EPSG:4326");
+  const options = {tSrs: "+proj=longlat +datum=WGS84 +lon_0=180", te: [-10.5, 58, 10.5, 60], ts: [21, 2], ot: "Float64"};
+  const turn = (d) => Math.abs((((d + 180) % 360) + 360) % 360 - 180);
+  const nearest = terrio.warp(source, {...options, resampling: "near"}).readBand(1);
+  const worst = (extra, difference) => {
+    const out = terrio.warp(source, {...options, resampling: "bilinear", ...extra}).readBand(1);
+    return Math.max(...Array.from(out, (v, i) => difference(v - nearest[i])));
+  };
+  assert.ok(worst({}, turn) > 90, "the periodic default blends the two edge columns");
+  // The plain difference: a value from the other stored edge would be 359 away.
+  assert.ok(worst({periodicLongitude: false}, Math.abs) <= 1);
+});
+
 test("wider-source area footprints use two nonduplicated placements", () => {
   const values = Float64Array.from({length: 3610}, (_, i) => ({0: 2, 1: 4, 359: 8, 360: 1000})[i % 361] ?? 1);
   const source = terrio.rasterFromArray(values, 361, 10, [-180.5, 1, 0, 10, 0, -1], "EPSG:4326");

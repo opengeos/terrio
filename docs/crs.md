@@ -438,7 +438,7 @@ listed.
 | Authority | Listed | Of which deprecated | Not listed (GDAL lists them) |
 |---|---:|---:|---|
 | EPSG | 7,961: 718 geographic 2D, 300 geographic 3D, 296 geocentric, 5,754 projected, 309 vertical, 584 compound | 530 | 16 engineering and other CRSs, 26 projected CRSs GDAL does not import (Qornoq 1927 Greenland zones...), and the deprecated EPSG:3752 (Mercator variant A with a latitude of origin, which PROJ neither writes as a PROJ string nor transforms) |
-| ESRI | 2,580: 323 geographic 2D, 14 geographic 3D, 2,243 projected | 1,338 | 272 vertical CRSs; 130 geographic and projected CRSs terrio's ESRI table leaves out (119 of other bodies than the Earth, and those PROJ does not transform from WGS 84); 37 on projections terrio does not compute without the `wbprojection-fallback` feature of `terrio-crs` (9 of them with it, Wagner VII, Compact Miller, Peirce quincuncial...) |
+| ESRI | 2,582: 323 geographic 2D, 14 geographic 3D, 2,245 projected | 1,339 | 272 vertical CRSs; 128 geographic and projected CRSs terrio's ESRI table leaves out (119 of other bodies than the Earth, and those PROJ does not transform from WGS 84); 37 on projections terrio does not compute without the `wbprojection-fallback` feature of `terrio-crs` (9 of them with it, Wagner VII, Compact Miller, Peirce quincuncial...) |
 | IAU_2015 | 2,201: 115 geographic 2D, 2,074 projected, 12 other | 0 | none |
 
 The conformance suite `crs-list` (`scripts/compare_crs_list_with_gdal.py`) compares every listed

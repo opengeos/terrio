@@ -335,7 +335,9 @@ with `takeWarnings()` after an operation. `warp` also accepts `kernelVersion: "3
 for GDAL 3.13 kernel arithmetic; `"3.12"` remains the default. Sampling uses
 grid-invariant coordinates and local footprints by default, so aligned output tiles
 retain whole-grid values. Set `gridInvariant: false` to reproduce GDAL's
-chunk-dependent sampling instead. GeoTIFF/COG outputs preserve
+chunk-dependent sampling instead. A geographic source covering one turn of longitude
+is periodic: interpolation wraps across its stored edge. Set `periodicLongitude: false`
+for a field that is not continuous there. GeoTIFF/COG outputs preserve
 PixelIsPoint metadata and corner georeferencing.
 
 `blend(color, overlay, {operator: "multiply", opacity: 75})` composes same-sized
