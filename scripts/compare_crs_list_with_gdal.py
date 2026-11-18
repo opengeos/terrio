@@ -122,6 +122,11 @@ def main():
         # The CRSs the registry removed since GDAL's PROJ: no rejection of terrio's, but terrio
         # must not list them.
         removed = set(changes["removed"][authority]) if changes else set()
+        # The CRSs the registry added since GDAL's PROJ, which GDAL must not list.
+        added_codes = {int(c) for c in changes["added"][authority]} if changes else set()
+        differs.extend(
+            f"{authority}:{c} is in GDAL's list, though {changes['from']} does not have it" for c in sorted(added_codes & set(reference))
+        )
         if len(ours) != EXPECTED_COUNTS[authority]:
             differs.append(f"catalog count {len(ours)} vs pinned {EXPECTED_COUNTS[authority]}")
         if len({e["code"] for e in ours}) != len(ours):
@@ -134,8 +139,8 @@ def main():
             if added is not None:
                 # A CRS the registry added since GDAL's PROJ: compared with the newer PROJ's entry,
                 # and GDAL must not list it.
+                # (reported below, whether terrio lists it or not).
                 if expected is not None:
-                    differs.append(f"{authority}:{e['code']} is in GDAL's list, though {changes['from']} does not have it")
                     stale = ["listed"]
                 expected = added
             elif e["code"] in removed:
@@ -172,7 +177,7 @@ def main():
             cases.append({"name": f"{authority}: {len(changed)} CRSs added or changed after {changes['from']}",
                           "status": "not compared", "detail": detail})
         codes = {e["code"] for e in ours}
-        left_out = Counter(e["kind"] for c, e in reference.items() if c not in codes and c not in removed)
+        left_out = Counter(e["kind"] for c, e in reference.items() if c not in codes and c not in removed and c not in added_codes)
         if removed:
             cases.append({"name": f"{authority}: {len(removed)} CRSs removed after {changes['from']}", "status": "not compared",
                           "detail": f"GDAL's {changes['from']} lists them, {changes['to']} does not (crs_list_changes.json)"})
