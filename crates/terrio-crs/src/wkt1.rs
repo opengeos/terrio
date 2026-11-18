@@ -118,6 +118,18 @@ impl Node {
         }
     }
 
+    /// The semi-major axis in metres and the inverse flattening (0 for a sphere) of an ellipsoid
+    /// node (`SPHEROID` or `ELLIPSOID`): its axis in its `LENGTHUNIT` (WKT 2, as PROJ reads
+    /// `LENGTHUNIT["Clarke's foot",0.3047972654]`), else in metres.
+    pub fn ellipsoid(&self) -> Option<(f64, f64)> {
+        let unit = match self.child_in(&["LENGTHUNIT", "UNIT"]) {
+            Some(u) => u.num(1).filter(|v| v.is_finite() && *v > 0.0)?,
+            None => 1.0,
+        };
+        let (a, rf) = (self.num(1)? * unit, self.num(2)?);
+        (a.is_finite() && a > 0.0 && rf.is_finite() && rf >= 0.0).then_some((a, rf))
+    }
+
     /// The EPSG code of the node's `AUTHORITY` or `ID`.
     pub fn epsg(&self) -> Option<u32> {
         let n = self.child_in(crate::keywords::ID)?;

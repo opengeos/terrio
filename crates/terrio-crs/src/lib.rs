@@ -1248,7 +1248,7 @@ impl SpatialRef {
         let mut params = def.params()?.clone();
         // A registry CRS is on the registry's ellipsoid, as PROJ reports it: the one its PROJ
         // string names may be rounded (Bessel Namibia's `bess_nam`, 0.28 m) or a sphere computed on
-        // (Web Mercator). The WKT's is taken in metres only (EPSG:3139's is in feet).
+        // (Web Mercator). The WKT's is taken in metres (EPSG:3139's is in feet).
         if let Some((a, b)) = self.registry_horizontal_wkt().and_then(wkt_ellipsoid).filter(|(a, _)| (a - params.a).abs() < 1.0) {
             (params.a, params.b) = (a, b);
         }
@@ -1618,24 +1618,17 @@ impl std::fmt::Display for SpatialRef {
 /// Datum realizations, which a WKT definition names when it means them.
 const REALIZATIONS: &[&str] = &["2011", "HARN", "NSRS", "CSRS", "CORS", "MA11", "PA11", "NAD83(", "ITRF", "GDA2020", "ETRF"];
 
-/// The semi-major axis of the first `SPHEROID` or `ELLIPSOID` of a WKT definition.
+/// The semi-major axis in metres of the first `SPHEROID` or `ELLIPSOID` of a WKT definition (in
+/// its `LENGTHUNIT`, as PROJ reads a WKT 2 ellipsoid in feet).
 #[doc(hidden)]
 pub fn semi_major_axis(wkt: &str) -> Option<f64> {
-    let upper = wkt.to_ascii_uppercase();
-    let start = upper.find("SPHEROID[").or_else(|| upper.find("ELLIPSOID["))?;
-    let body = &wkt[start..];
-    let rest = &body[body.find('[')? + 1..];
-    // Skip the quoted name, then read the number after it.
-    let after_name = rest.strip_prefix('"').and_then(|r| r.find('"').map(|i| &r[i + 1..]))?;
-    after_name.trim_start_matches([',', ' ']).split([',', ']']).next()?.trim().parse().ok()
+    Some(wkt1::parse(wkt)?.find(keywords::ELLIPSOID)?.ellipsoid()?.0)
 }
 
-/// The semi-major and semi-minor axes of the first `SPHEROID` or `ELLIPSOID` of a WKT
-/// definition, from its axis and inverse flattening (0 for a sphere), in the WKT's unit.
+/// The semi-major and semi-minor axes in metres of the first `SPHEROID` or `ELLIPSOID` of a WKT
+/// definition, from its axis and inverse flattening (0 for a sphere).
 fn wkt_ellipsoid(wkt: &str) -> Option<(f64, f64)> {
-    let root = wkt1::parse(wkt)?;
-    let node = root.find(keywords::ELLIPSOID)?;
-    let (a, rf) = (node.num(1)?, node.num(2)?);
+    let (a, rf) = wkt1::parse(wkt)?.find(keywords::ELLIPSOID)?.ellipsoid()?;
     Some((a, if rf == 0.0 { a } else { a * (1.0 - 1.0 / rf) }))
 }
 

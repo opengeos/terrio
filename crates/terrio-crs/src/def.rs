@@ -213,9 +213,7 @@ fn wkt_spheroid(w: &str) -> Option<(f64, f64)> {
     let root = wkt1::parse(w)?;
     let geodetic = ["GEOGCS", "GEOCCS"].iter().any(|k| root.key.eq_ignore_ascii_case(k));
     let geog = if geodetic { &root } else { root.child("GEOGCS")? };
-    let spheroid = geog.child("DATUM")?.child("SPHEROID")?;
-    let (a, rf) = (spheroid.num(1)?, spheroid.num(2)?);
-    (a.is_finite() && a > 0.0 && rf.is_finite() && rf >= 0.0).then_some((a, rf))
+    geog.child("DATUM")?.child("SPHEROID")?.ellipsoid()
 }
 
 /// The datum shift PROJ's `pj_datum_set` gives a pipeline step's `+datum=` (`datums.cpp`).
