@@ -60,6 +60,7 @@ Terrio files derived from GDAL source files (each file's header names them):
   crates/terrio/src/drivers/hgt.rs
   crates/terrio/src/drivers/jp2.rs
   crates/terrio/src/drivers/netcdf.rs
+  crates/terrio/src/drivers/vector/geojson_lists.rs
   crates/terrio/src/drivers/vector/mapinfo.rs
   crates/terrio/src/drivers/vector/osm.rs
   crates/terrio/src/drivers/vector/tab.rs

@@ -185,7 +185,7 @@ mod range_tests;
 /// Opens a dataset, raster or vector, from its bytes. `name` is a file name whose extension tells
 /// the format (`dem.tif`, `roads.fgb`, `parcels.zip`).
 pub fn open_bytes(bytes: Vec<u8>, name: &str) -> Result<Dataset> {
-    open_bytes_of_kind(bytes, name, None)
+    crate::dataset::typed_lists_of(|| open_bytes_of_kind(bytes, name, None))
 }
 
 /// A vector filename extension suggested by the shared byte identifiers, without opening a
@@ -433,6 +433,11 @@ pub fn open_zarr_store(files: Vec<(String, Vec<u8>)>) -> Result<RasterDataset> {
 
 /// Opens a vector dataset from its bytes.
 pub fn open_vector_bytes(bytes: Vec<u8>, name: &str, options: &VectorOpenOptions) -> Result<VectorDataset> {
+    crate::dataset::typed_lists(|| open_vector_bytes_untyped(bytes, name, options))
+}
+
+/// [`open_vector_bytes`] without the types of its list fields.
+fn open_vector_bytes_untyped(bytes: Vec<u8>, name: &str, options: &VectorOpenOptions) -> Result<VectorDataset> {
     #[cfg(not(target_family = "wasm"))]
     {
         let (_dir, path) = native::spill(&bytes, name)?;

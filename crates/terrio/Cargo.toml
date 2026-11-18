@@ -327,6 +327,11 @@ name = "geotiff_nodata"
 path = "tests/geotiff_nodata.rs"
 
 [[test]]
+name = "hdf_readers"
+path = "tests/hdf_readers.rs"
+required-features = ["netcdf-hdf5"]
+
+[[test]]
 name = "hecras_corpus"
 path = "tests/hecras_corpus.rs"
 

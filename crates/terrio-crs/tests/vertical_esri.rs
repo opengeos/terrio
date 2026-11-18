@@ -162,3 +162,44 @@ fn own_geoid_grids_keep_a_compound_crs_from_its_parts_codes() {
         SpatialRef::from_wkt(&format!(r#"COMPD_CS["x",{wgs84},{}]"#, vertical.replace(r#",EXTENSION["PROJ4_GRIDS","custom.gtx"]"#, "")));
     assert_eq!(plain.compound_parts(), Some((4326, 5773)));
 }
+
+/// Where GDAL's `PROJ4_GRIDS` extension of a vertical CRS counts, against PROJ 9.9.0 (pyproj
+/// 3.8.0, `PROJ_NETWORK=OFF`): in its vertical datum (where GDAL writes it), it makes a bound CRS
+/// of no code even with a declared `AUTHORITY`, and wins over one at its root; at its root, PROJ
+/// ignores it, and so does terrio beside a declared code (without one, terrio reads it as before,
+/// where PROJ identifies EGM96 height). PROJ's `to_epsg()` of the vertical CRS, and `to_proj4()`
+/// of `COMPD_CS["x",GEOGCS["WGS 84",...,AUTHORITY["EPSG","4326"]],<vertical>]`.
+#[test]
+fn geoid_grids_by_their_place() {
+    const WGS84: &str = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],AUTHORITY["EPSG","4326"]]"#;
+    let wkt = |datum: &str, root: &str, declared: bool| {
+        let grids = |g: &str| if g.is_empty() { String::new() } else { format!(r#",EXTENSION["PROJ4_GRIDS","{g}"]"#) };
+        let id = if declared { r#",AUTHORITY["EPSG","5773"]"# } else { "" };
+        format!(
+            r#"VERT_CS["EGM96 height",VERT_DATUM["EGM96 geoid",2005{}],UNIT["metre",1]{},AXIS["Gravity-related height",UP]{id}]"#,
+            grids(datum),
+            grids(root)
+        )
+    };
+    let with_grids = |g: &str| format!("+proj=longlat +datum=WGS84 +geoidgrids={g} +geoid_crs=WGS84 +vunits=m +no_defs +type=crs");
+    let plain = "+proj=longlat +datum=WGS84 +vunits=m +no_defs +type=crs".to_string();
+    // (datum grids, root grids, declared, code, compound PROJ string)
+    let cases = [
+        ("custom.gtx", "", false, None, with_grids("custom.gtx")),
+        ("custom.gtx", "", true, None, with_grids("custom.gtx")),
+        ("dat.gtx", "root.gtx", false, None, with_grids("dat.gtx")),
+        ("", "custom.gtx", true, Some(5773), plain.clone()),
+        // PROJ: 5773 and no grids.
+        ("", "custom.gtx", false, None, with_grids("custom.gtx")),
+        ("", "", false, Some(5773), plain),
+    ];
+    for (datum, root, declared, code, proj4) in cases {
+        let v = wkt(datum, root, declared);
+        assert_eq!(SpatialRef::from_wkt(&v).epsg, code, "{v}");
+        let compound = SpatialRef::from_wkt(&format!(r#"COMPD_CS["x",{WGS84},{v}]"#));
+        assert_eq!(compound.to_proj4(), Some(proj4), "{v}");
+        assert_eq!(compound.compound_parts(), code.map(|c| (4326, c)), "{v}");
+        // A vertical CRS of no code has no PROJJSON (PROJ's, of a bound CRS, is refused).
+        assert_eq!(compound.to_projjson().is_ok(), code.is_some(), "{v}");
+    }
+}

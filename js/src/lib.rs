@@ -348,7 +348,8 @@ pub(crate) type StyleTable = Rc<Vec<(String, String)>>;
 
 /// Layers with each `@id` style reference replaced by its definition in a style table.
 pub(crate) fn resolve_styles(layers: Vec<Layer>, table: &[(String, String)]) -> Vec<Layer> {
-    terrio::VectorDataset { layers, driver: VectorDriver::GeoJSON, style_table: table.to_vec() }.into_resolved_layers()
+    terrio::VectorDataset { style_table: table.to_vec(), ..terrio::VectorDataset::new(layers, VectorDriver::GeoJSON) }
+        .into_resolved_layers()
 }
 
 thread_local! {

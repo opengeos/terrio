@@ -16,8 +16,10 @@
 
 use crate::crs::SpatialRef;
 use crate::formats::{RasterDriver, VectorDriver, extension};
+use crate::ops::vector_schema::OgrType;
 use crate::vfs;
 use crate::{Error, Result};
+use std::collections::BTreeMap;
 use std::path::Path;
 use wbraster::Raster;
 use wbvector::Layer;
@@ -321,12 +323,59 @@ pub struct VectorDataset {
     /// id with its OGR style string. Features using one have `@id` in their `OGR_STYLE` field.
     /// Empty for other formats. Hand it to [`VectorWriteOptions::style_table`] to write it back.
     pub style_table: Vec<(String, String)>,
+    /// The OGR types of the fields that hold lists, by layer name, then field name: GeoJSON and
+    /// GeoJSONSeq properties that GDAL's GeoJSON reader types `IntegerList`, `Integer64List`,
+    /// `RealList`, `StringList` or `IntegerList` of the `Boolean` subtype. Their values are JSON
+    /// arrays of that type ([`wbvector::FieldType::Json`] text, null for a null list): 32-bit or
+    /// 64-bit integers, booleans, reals or strings, converted as GDAL converts them (a scalar
+    /// to a list of one, a null element to 0). Other fields of JSON text, and the lists of other
+    /// formats, are not listed. Read a field's type with [`Self::ogr_type`].
+    pub list_types: BTreeMap<String, BTreeMap<String, OgrType>>,
 }
 
 impl VectorDataset {
-    /// A dataset of layers, without a style table.
+    /// A dataset of layers, without a style table or list fields.
     pub fn new(layers: Vec<Layer>, driver: VectorDriver) -> Self {
-        Self { layers, driver, style_table: Vec::new() }
+        Self { layers, driver, style_table: Vec::new(), list_types: BTreeMap::new() }
+    }
+
+    /// The OGR type of field `i` of `layer`, a layer of this dataset or one made from it that keeps
+    /// its name and fields (filtered or reprojected): the list type [`Self::list_types`] records
+    /// for a field of JSON text, otherwise [`crate::ops::vector_schema::ogr_type`]'s.
+    pub fn ogr_type(&self, layer: &Layer, i: usize) -> OgrType {
+        typed_field(self.list_types.get(&layer.name), layer, i)
+    }
+
+    /// Records the list fields of the GeoJSON layers an open read (see
+    /// [`crate::drivers::vector::geojson::with_list_types`]): by name, or the one layer read
+    /// when the dataset renamed it. A field of layers sharing a name keeps a type only when they
+    /// agree on it.
+    pub(crate) fn with_list_types(mut self, lists: crate::drivers::vector::geojson::ListTypes) -> Self {
+        let single = (self.layers.len() == 1 && lists.len() == 1).then(|| self.layers[0].name.clone());
+        let mut conflicts = Vec::new();
+        for (name, fields) in lists {
+            let name = match single.clone() {
+                Some(only) => only,
+                None if self.layers.iter().any(|l| l.name == name) => name,
+                None => continue,
+            };
+            let entry = self.list_types.entry(name.clone()).or_default();
+            for (field, t) in fields {
+                match entry.get(&field) {
+                    Some(old) if *old != t => conflicts.push((name.clone(), field)),
+                    _ => {
+                        entry.insert(field, t);
+                    }
+                }
+            }
+        }
+        for (name, field) in conflicts {
+            if let Some(fields) = self.list_types.get_mut(&name) {
+                fields.remove(&field);
+            }
+        }
+        self.list_types.retain(|_, fields| !fields.is_empty());
+        self
     }
 
     /// Replaces each `@id` in the layers' `OGR_STYLE` fields with its definition in the style
@@ -464,6 +513,11 @@ impl VectorOpenOptions {
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn open(path: &str) -> Result<Dataset> {
+    typed_lists_of(|| open_untyped(path))
+}
+
+/// [`open`] without the types of a vector dataset's list fields.
+fn open_untyped(path: &str) -> Result<Dataset> {
     let _asset_scope = crate::stac::AssetReadPolicy::enter_nested(path)?;
     crate::formats::check_allowed(path, None)?;
     #[cfg(feature = "gdal")]
@@ -722,6 +776,39 @@ fn naming_dataset_copy(e: Error, path: &str, local: &str, directory: Option<&str
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn open_vector(path: &str, options: &VectorOpenOptions) -> Result<VectorDataset> {
+    typed_lists(|| open_vector_untyped(path, options))
+}
+
+/// The OGR type of field `i` of `layer`: its type in `lists` (the layer's list fields) when it
+/// holds JSON text, otherwise [`crate::ops::vector_schema::ogr_type`]'s.
+pub(crate) fn typed_field(lists: Option<&BTreeMap<String, OgrType>>, layer: &Layer, i: usize) -> OgrType {
+    layer
+        .schema
+        .fields()
+        .get(i)
+        .filter(|f| f.field_type == wbvector::FieldType::Json)
+        .and_then(|f| lists?.get(&f.name).copied())
+        .unwrap_or_else(|| crate::ops::vector_schema::ogr_type(layer, i))
+}
+
+/// Runs an open of a vector dataset, recording in it the list fields of the GeoJSON layers it
+/// reads.
+pub(crate) fn typed_lists(open: impl FnOnce() -> Result<VectorDataset>) -> Result<VectorDataset> {
+    let (ds, lists) = crate::drivers::vector::geojson::with_list_types(open);
+    ds.map(|ds| ds.with_list_types(lists))
+}
+
+/// [`typed_lists`] for an open of a raster or vector dataset.
+pub(crate) fn typed_lists_of(open: impl FnOnce() -> Result<Dataset>) -> Result<Dataset> {
+    let (ds, lists) = crate::drivers::vector::geojson::with_list_types(open);
+    ds.map(|ds| match ds {
+        Dataset::Vector(v) => Dataset::Vector(v.with_list_types(lists)),
+        raster => raster,
+    })
+}
+
+/// [`open_vector`] without its list fields' types.
+fn open_vector_untyped(path: &str, options: &VectorOpenOptions) -> Result<VectorDataset> {
     let _asset_scope = crate::stac::AssetReadPolicy::enter_nested(path)?;
     options.oapif.validate_source(path)?;
     crate::formats::check_allowed(path, Some(crate::formats::Kind::Vector))?;

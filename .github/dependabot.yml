@@ -1,15 +1,21 @@
 version: 2
 updates:
   # The Rust workspace (library, CLI, Python and JS bindings share one Cargo.lock). Minor and
-  # patch updates come as one weekly PR; major updates come one per PR. The ignored major
-  # updates below require coordinated format dependencies or a deliberate public API change.
+  # patch updates come as one weekly PR; major updates come one per PR except for the paired
+  # NetCDF/HDF5 readers. The ignored major updates below require coordinated format dependencies
+  # or a deliberate public API change.
   - package-ecosystem: cargo
     directory: /
     schedule:
       interval: weekly
     groups:
+      hdf-readers:
+        # These readers share Storage types inside Terrio and must update together,
+        # including across 0.x minor bumps. The HEC-RAS engine can update independently.
+        patterns: ["netcdf-reader", "hdf5-reader"]
       cargo:
         update-types: [minor, patch]
+        exclude-patterns: ["netcdf-reader", "hdf5-reader"]
     open-pull-requests-limit: 10
     # Major versions taken deliberately rather than as they come out: parquet and arrow move together,
     # and terrio re-exports arrow-array and arrow-schema (`terrio::arrow`), so their majors change

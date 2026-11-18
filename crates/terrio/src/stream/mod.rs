@@ -46,8 +46,9 @@ use crate::drivers::vector::gpkg_read;
 use crate::drivers::vector::{csv, geojson, shapefile};
 use crate::formats::VectorDriver;
 use crate::ops::vector_filter::{Translator, VectorTranslateOptions};
+use crate::ops::vector_schema::OgrType;
 use crate::{Error, Result};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use wbvector::{Feature, FieldValue, Layer};
@@ -203,11 +204,34 @@ pub struct FeatureReader {
     done: bool,
     /// The most a chunk holds, about, in bytes, and the most read ahead.
     chunk_bytes: usize,
+    /// The OGR types of the fields that hold lists, by name.
+    list_types: BTreeMap<String, OgrType>,
 }
 
 impl FeatureReader {
     fn new(layer: Layer, source: Box<dyn FeatureSource>) -> Self {
-        Self { layer: schema_of(&layer), source, buffer: VecDeque::new(), buffered: 0, done: false, chunk_bytes: CHUNK_BYTES }
+        Self {
+            layer: schema_of(&layer),
+            source,
+            buffer: VecDeque::new(),
+            buffered: 0,
+            done: false,
+            chunk_bytes: CHUNK_BYTES,
+            list_types: BTreeMap::new(),
+        }
+    }
+
+    /// The OGR types of the fields that hold lists, by name, as
+    /// [`crate::VectorDataset::list_types`] records them for the layer.
+    pub fn list_types(&self) -> &BTreeMap<String, OgrType> {
+        &self.list_types
+    }
+
+    /// The OGR type of field `i`, as [`crate::VectorDataset::ogr_type`] gives it (an `Integer`
+    /// field holding values beyond 32 bits is told apart from its features, which a stream has
+    /// not read: it is `Integer64` only when it declares a width of 10 or more).
+    pub fn ogr_type(&self, i: usize) -> OgrType {
+        crate::dataset::typed_field(Some(&self.list_types), &self.layer, i)
     }
 
     /// Limits raw streamed sources once; whole-read fallbacks already kept their range.
@@ -365,6 +389,18 @@ pub fn can_read_stream(driver: VectorDriver) -> bool {
 /// are read whole. Remote files are downloaded first (except as their drivers read them in
 /// place).
 pub fn open_layers(path: &str, options: &VectorOpenOptions, batch: usize) -> Result<Vec<FeatureReader>> {
+    let (readers, lists) = geojson::with_list_types(|| open_untyped_layers(path, options, batch));
+    let mut readers = readers?;
+    let layers: Vec<Layer> = readers.iter().map(|r| r.layer.clone()).collect();
+    let typed = crate::VectorDataset::new(layers, VectorDriver::GeoJSON).with_list_types(lists);
+    for r in &mut readers {
+        r.list_types = typed.list_types.get(&r.layer.name).cloned().unwrap_or_default();
+    }
+    Ok(readers)
+}
+
+/// [`open_layers`] without the types of the list fields.
+fn open_untyped_layers(path: &str, options: &VectorOpenOptions, batch: usize) -> Result<Vec<FeatureReader>> {
     options.oapif.validate_source(path)?;
     let batch = batch.max(1);
     // `.json` files may be STAC items or collections, which the dataset reader recognizes.
@@ -499,6 +535,7 @@ fn open_geojson(path: &str, stem: &str, batch: usize) -> Result<(Layer, Box<dyn 
     let name = c.members.get("name").and_then(|n| n.as_str()).unwrap_or(stem).to_string();
     let crs = geojson::read_crs_member(c.members.get("crs"), "GeoJSON")?;
     let layer = scan.geojson_layer(&name, crs);
+    geojson::declare_lists(&layer, &scan);
     let decoder = geojson::FeatureDecoder::new(&layer, &scan);
     let collection = json::Collection::new(File::open(path)?)?;
     Ok((layer, Box::new(GeoJsonSource { collection, decoder, n: 0, batch })))
@@ -558,6 +595,7 @@ fn open_geojson_seq(path: &str, stem: &str, batch: usize) -> Result<(Layer, Box<
     }
     observe_batch(&mut scan, &mut raw, true)?;
     let layer = scan.layer(stem, None);
+    geojson::declare_lists(&layer, &scan);
     let decoder = geojson::FeatureDecoder::new(&layer, &scan);
     let r = BufReader::with_capacity(1 << 20, File::open(path)?);
     Ok((layer, Box::new(SeqSource { r, decoder, n: 0, batch })))

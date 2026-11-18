@@ -311,6 +311,11 @@ One- and two-band RGB subsets write as grayscale. Larger RGB colour sets require
 exactly one red, green and blue channel; incomplete or duplicate sets are rejected.
 When any roles are supplied, omitted entries are unspecified. When none are supplied,
 the existing band-count defaults apply (RGB for three or four components).
+A new `terrio.rio` dataset reports these defaults before it is written, as the file reads
+back: red, green and blue for three or four components (the fourth undefined), gray for one
+or two, and undefined for more. Supplied back as reported, three or four components stay sRGB;
+with the last of four made alpha, the file is sRGB with an opacity channel. Red, green and
+alpha on three components are an incomplete RGB set and are rejected.
 Decoding preserves stored component order,
 as GDAL 3.13.3 does, instead of permuting BGR or ARGB samples into RGB order. Palette
 decoding keeps its existing expansion. As with GDAL, grayscale images of one or two
@@ -660,6 +665,18 @@ it as WGS 84. Reproject with `Layer.to_crs("EPSG:4326")` or CLI
 CRS definitions, such as GeoPackage. RFC 7946 output reprojects to WGS 84 and
 omits the `crs` member. The pyogrio facade uses the same naming/refusal policy
 and retains its explicit OGC CRS84 spelling for WGS 84.
+
+GeoJSON and GeoJSON text sequence properties holding arrays are typed as GDAL's GeoJSON
+reader types them: `IntegerList`, `Integer64List`, `RealList`, `StringList`, or `IntegerList`
+of the `Boolean` subtype, by the arrays' elements and the values around them in feature order
+(an integer and an integer list make an integer list, an empty array keeps a list's type); an
+empty array alone, an array with a null or mixed elements, and an object are JSON. A list field
+holds each value as a JSON array of its type, converted as GDAL converts it (a scalar becomes a
+list of one, a boolean in a number list 0 or 1), and `VectorDataset.ogr_type` (Rust),
+the streamed layers' `ogr_type`, and `export-schema` report its OGR type. The types and values
+are GDAL 3.13.2's, except that the reals of a string list are written as terrio formats reals,
+not as the file spells them. Fields are not changed to or created as lists, and the lists of
+other formats (and of the GDAL fallback) are still JSON text of type `String(JSON)`.
 
 A local vector file whose name points to no driver (`data`, `data.txt`, `data.xml`) is identified
 by its first 16 KiB. A JSON root `type` of `FeatureCollection`, `Feature` or a geometry type is

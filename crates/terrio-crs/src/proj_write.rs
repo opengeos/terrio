@@ -52,7 +52,7 @@ pub(crate) fn write(s: &SpatialRef) -> Option<String> {
         };
         let to_meter = def::vertical_from_wkt(&vertical)?.to_meter;
         // A geoid model (GDAL's `PROJ4_GRIDS` extension) comes with the CRS of its heights.
-        if let Some(grids) = wkt_geoid_grids(&vertical) {
+        if let Some(grids) = def::wkt_geoid_grids(&vertical) {
             // Quoted when it has a space, as PROJ does (`+geoidgrids="egm96 15.gtx"`): by
             // `finish`, or here after an extension.
             let grids = format!("+geoidgrids={grids}");
@@ -144,14 +144,6 @@ fn wkt_shift(s: &SpatialRef) -> Option<String> {
 /// Whether a PROJ parameter is an angle, which may be given in degrees, minutes and seconds.
 fn is_angle(key: &str) -> bool {
     ["+lat_", "+lon_", "+o_lat_", "+o_lon_"].iter().any(|p| key.starts_with(p)) || matches!(key, "+lonc" | "+alpha" | "+gamma" | "+lat_ts")
-}
-
-/// The geoid grids of a vertical CRS's WKT (GDAL's `EXTENSION["PROJ4_GRIDS", ...]`).
-fn wkt_geoid_grids(wkt: &str) -> Option<&str> {
-    // After the key and its quotes (13 bytes): at most the end of the string.
-    let rest = &wkt[wkt.find("\"PROJ4_GRIDS\"")? + 13..];
-    let rest = &rest[rest.find('"')? + 1..];
-    Some(&rest[..rest.find('"')?])
 }
 
 /// `+towgs84` values as PROJ writes them: seven of them. `None` for other than 3 or 7 finite

@@ -155,6 +155,46 @@ def test_inferred_and_alias_writers_keep_explicit_undefined_roles(tmp_path, driv
         np.testing.assert_array_equal(src.read(), values)
 
 
+@pytest.mark.parametrize("options", [{}, {"photometric": "RGB"}], ids=["default", "photometric"])
+@pytest.mark.parametrize(
+    "roles, last_alpha",
+    [
+        (("Red", "Green", "Blue"), False),
+        (("Red", "Green", "Blue", "Undefined"), False),
+        (("Red", "Green", "Blue", "Alpha"), True),
+    ],
+    ids=["three", "four", "four-last-alpha"],
+)
+def test_reported_rgb_roles_set_back_keep_srgb(tmp_path, options, roles, last_alpha):
+    """A new dataset of three or four bands reports red, green and blue, as its file reads back
+    without roles: set back as reported, or with the last of four bands made alpha, they write
+    sRGB (`colr` EnumCS 16) with colour channels 1 to 3 and an opacity channel of the whole
+    image. The dataset reported gray, then undefined, which wrote grayscale (EnumCS 17) with
+    unspecified channels unless `photometric="RGB"` was given; with it, they still write sRGB."""
+    values = _source(roles, "uint8")
+    path = tmp_path / "reported.jp2"
+    with rio.open(
+        path, "w", driver="JP2", width=64, height=48, count=len(roles), dtype="uint8", **options
+    ) as dst:
+        dst.write(values)
+        reported = dst.colorinterp
+        dst.colorinterp = [*reported[:-1], ColorInterp.alpha] if last_alpha else reported
+    header = next(payload for kind, payload in _boxes(path.read_bytes()) if kind == b"jp2h")
+    boxes = dict(_boxes(header))
+    # METH 1 (enumerated colour space), PREC, APPROX, EnumCS.
+    assert struct.unpack(">BBBI", boxes[b"colr"]) == (1, 0, 0, 16)
+    definitions = boxes[b"cdef"]
+    assert struct.unpack_from(">H", definitions) == (len(roles),)
+    records = [struct.unpack_from(">HHH", definitions, 2 + 6 * i) for i in range(len(roles))]
+    expected = [(0, 0, 1), (1, 0, 2), (2, 0, 3)]
+    if len(roles) == 4:
+        expected.append((3, 1, 0) if last_alpha else (3, 65535, 65535))
+    assert records == expected
+    with rio.open(path) as src:
+        assert src.colorinterp == tuple(ColorInterp[name.lower()] for name in roles)
+        np.testing.assert_array_equal(src.read(), values)
+
+
 @pytest.mark.parametrize("roles", ROLES, ids=lambda r: "-".join(r))
 def test_native_byte_export_retains_roles_and_absent_transform(tmp_path, gdal, roles):
     values, path, _ = _write(tmp_path, roles, "uint16", False)
