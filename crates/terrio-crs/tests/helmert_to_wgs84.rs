@@ -10,7 +10,9 @@ use terrio_crs::helmert_to_wgs84;
 
 /// MGI (Ferro): PROJ's MGI (Ferro) to WGS 84 (1) turns longitudes by Ferro's meridian as MGI
 /// 1901 has it (-17.6627833333333°, the transformation's), not the CRS's (-17.6666666666667°), so
-/// that a `+towgs84` beside `+pm=ferro` would leave out 13.98" of longitude: terrio gives none.
+/// that a `+towgs84` beside `+pm=ferro` would leave out 13.98" of longitude. terrio's EPSG table
+/// (scripts/gen_epsg_table.py) keeps that difference as a `geogoffset dlon=13.98...` step before
+/// the Helmert step, two shifts, for which terrio gives none.
 const KNOWN_DIFFERENCES: [u32; 1] = [4805];
 
 /// The parameters within a relative 1e-12: PROJ converts microradians to arc-seconds.
@@ -50,8 +52,9 @@ fn every_geographic_crs_has_proj_s_helmert_transformation() {
 #[test]
 fn a_projected_or_compound_crs_has_its_geographic_crs_s() {
     // ED50 / UTM zone 32N, OSGB 1936 / British National Grid, Monte Mario (Rome) / Italy zone 1,
-    // and the compound KKJ / Finland Uniform Coordinate System + N60 height.
-    for (projected, geographic) in [(23032, 4230), (27700, 4277), (26591, 4806), (3901, 4123)] {
+    // and the compound KKJ / Finland Uniform Coordinate System + N60 height and RT90 + RH70 height
+    // (on a geographic CRS).
+    for (projected, geographic) in [(23032, 4230), (27700, 4277), (26591, 4806), (3901, 4123), (7404, 4124)] {
         assert!(helmert_to_wgs84(geographic).is_some(), "{geographic}");
         assert_eq!(helmert_to_wgs84(projected), helmert_to_wgs84(geographic), "{projected}");
     }

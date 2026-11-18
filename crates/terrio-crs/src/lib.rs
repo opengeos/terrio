@@ -181,8 +181,9 @@ pub fn geographic_datum(geog: u32) -> Option<u32> {
 /// ```
 pub fn helmert_to_wgs84(code: u32) -> Option<[f64; 7]> {
     // A compound CRS's horizontal CRS.
-    let entry = epsg::get(code).or_else(|| epsg::get(epsg::compound(code)?.horizontal))?;
-    let geog = epsg::get(if entry.geog != 0 { entry.geog } else { code })?;
+    let base = if epsg::get(code).is_some() { code } else { epsg::compound(code)?.horizontal };
+    let entry = epsg::get(base)?;
+    let geog = epsg::get(if entry.geog != 0 { entry.geog } else { base })?;
     if geog.datum == 6326 {
         return None;
     }
@@ -195,6 +196,7 @@ pub fn helmert_to_wgs84(code: u32) -> Option<[f64; 7]> {
     match (shifts.next(), shifts.next()) {
         (None, _) => Some([0.0; 7]),
         (Some(datum::Step::Helmert { pivot: [0.0, 0.0, 0.0], rates: None, seven: datum::Seven(Some(p)), inv, .. }), None) => {
+            let p: &[f64; 7] = p;
             // Without negative zeros, which a `+towgs84` written with `{}` would carry.
             Some(p.map(|v| {
                 if v == 0.0 {

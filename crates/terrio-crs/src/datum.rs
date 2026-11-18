@@ -126,8 +126,9 @@ pub(crate) enum Step {
 /// equality, which is that of the transformation it applies: two values of a parameter that
 /// differ in the last digits (6.7 and 6.699999999915107 ppm, read back from GeoKeys) apply the
 /// same scale.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Seven(pub Option<[f64; 7]>);
+/// Boxed, so that every step is not larger by them.
+#[derive(Debug, Clone)]
+pub(crate) struct Seven(pub Option<Box<[f64; 7]>>);
 
 impl PartialEq for Seven {
     fn eq(&self, _: &Self) -> bool {
@@ -236,7 +237,7 @@ fn rotation(rot: [f64; 3], position_vector: bool, exact: bool) -> [[f64; 3]; 3] 
 /// A Helmert step from its seven parameters (metres, arc-seconds and ppm).
 pub(crate) fn helmert(t: [f64; 3], rot: [f64; 3], s: f64, position_vector: bool, exact: bool, pivot: [f64; 3]) -> Step {
     let sign = if position_vector { 1.0 } else { -1.0 };
-    let seven = Seven((!exact).then_some([t[0], t[1], t[2], sign * rot[0], sign * rot[1], sign * rot[2], s]));
+    let seven = Seven((!exact).then(|| Box::new([t[0], t[1], t[2], sign * rot[0], sign * rot[1], sign * rot[2], s])));
     Step::Helmert { t, r: rotation(rot, position_vector, exact), scale: 1.0 + s * 1e-6, pivot, inv: false, rates: None, seven }
 }
 
