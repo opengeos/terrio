@@ -488,3 +488,157 @@ fn non_tiff_probes_ignore_invalid_tiff_configuration() {
         assert!(read_with(&file, 8, fetch, || LazyRaster::from_sparse(file.clone())).unwrap().is_none());
     });
 }
+
+/// A UInt16 raster of `bands` bands, each value its own, written as one uncompressed strip per
+/// plane (pixel-interleaved, or one plane per band).
+fn one_strip(cols: usize, rows: usize, bands: usize, interleave: &str) -> Vec<u8> {
+    use terrio::raster::RasterData;
+    let cfg = terrio::RasterConfig { cols, rows, bands, data_type: terrio::DataType::U16, ..Default::default() };
+    let values = (0..bands * cols * rows).map(|i| (i * 7 % 65_521) as u16).collect();
+    let ds = terrio::RasterDataset::new(terrio::Raster::from_data_native(cfg, RasterData::U16(values)).unwrap(), true);
+    let creation = [("BLOCKYSIZE", rows.to_string()), ("INTERLEAVE", interleave.to_string())];
+    let options = terrio::RasterWriteOptions {
+        compression: Some("NONE".into()),
+        creation_options: creation.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
+        ..Default::default()
+    };
+    terrio::memory::write_raster_bytes(&ds, "strip.tif", &options).unwrap()
+}
+
+/// An uncompressed strip over the limit is read by the rows a window needs: the limit bounds
+/// those rows, not the strip (TIFF 6.0 allows an image stored as one strip; libtiff reads one
+/// as smaller strips, `ChopUpSingleUncompressedStrip`).
+#[test]
+fn windows_of_an_uncompressed_strip_over_the_limit_read_by_rows() {
+    let (cols, rows, bands) = (64, 48, 3);
+    for interleave in ["PIXEL", "BAND"] {
+        let bytes = one_strip(cols, rows, bands, interleave);
+        let read = |limits, w: Window, bands: &[usize]| {
+            let mut r = LazyRaster::from_tiff_bytes_with_limits(bytes.clone(), limits).unwrap().unwrap();
+            assert_eq!(r.block_size(), Some((cols, rows)), "{interleave}: one strip");
+            r.read_window(w, &WindowOptions { bands: bands.to_vec(), overview: None }).map(|ds| ds.raster.data.to_f64_vec())
+        };
+        // Ten rows of a plane's strip: 3,840 bytes pixel-interleaved, 1,280 per band's plane.
+        let row_bytes = if interleave == "PIXEL" { cols * bands * 2 } else { cols * 2 };
+        let limits = TiffReadLimits { chunk_bytes: 10 * row_bytes };
+        for (w, selected) in [
+            (Window::new(5, 7, 20, 9), &[3usize, 1][..]),
+            (Window::new(0, 0, 1, 1), &[2]),
+            (Window::new(0, 38, cols, 10), &[1, 2, 3]),
+            (Window::new(63, 47, 1, 1), &[1]),
+        ] {
+            let expected = read(TiffReadLimits::unlimited(), w, selected).unwrap();
+            assert_eq!(read(limits, w, selected).unwrap(), expected, "{interleave}: {w:?}, bands {selected:?}");
+        }
+        // The rows of a window are what a read holds: eleven are over the limit.
+        let e = read(limits, Window::new(0, 0, 4, 11), &[1]).unwrap_err();
+        assert!(matches!(e, terrio::Error::DecodedLimitExceeded { limit, .. } if limit == 10 * row_bytes), "{interleave}: {e}");
+    }
+}
+
+/// A window taller than one 8 MiB part of rows reads the same pixels (the parts themselves are
+/// not observable here).
+#[test]
+fn a_tall_window_of_an_uncompressed_strip_over_the_limit_reads_the_same_pixels() {
+    // 4096 x 3000 UInt16 pixels: rows of 8,192 bytes, 2,400 of them (19.7 MB) under a 20 MB limit.
+    let bytes = one_strip(4096, 3000, 1, "PIXEL");
+    let w = Window::new(100, 300, 500, 2400);
+    let read = |limits| {
+        let mut r = LazyRaster::from_tiff_bytes_with_limits(bytes.clone(), limits).unwrap().unwrap();
+        r.read_window(w, &band1()).unwrap().raster.data.to_f64_vec()
+    };
+    assert_eq!(read(TiffReadLimits { chunk_bytes: 20 << 20 }), read(TiffReadLimits::unlimited()));
+}
+
+/// A compressed strip over the limit is still refused: it is decoded whole.
+#[test]
+fn a_compressed_strip_over_the_limit_is_still_refused() {
+    use terrio::raster::RasterData;
+    let cfg = terrio::RasterConfig { cols: 64, rows: 48, bands: 1, data_type: terrio::DataType::U16, ..Default::default() };
+    let ds = terrio::RasterDataset::new(terrio::Raster::from_data_native(cfg, RasterData::U16(vec![7; 64 * 48])).unwrap(), true);
+    let options = terrio::RasterWriteOptions {
+        compression: Some("DEFLATE".into()),
+        creation_options: [("BLOCKYSIZE".to_string(), "48".to_string())].into_iter().collect(),
+        ..Default::default()
+    };
+    let bytes = terrio::memory::write_raster_bytes(&ds, "strip.tif", &options).unwrap();
+    let mut r = LazyRaster::from_tiff_bytes_with_limits(bytes, TiffReadLimits { chunk_bytes: 1280 }).unwrap().unwrap();
+    let e = r.read_window(Window::new(0, 0, 1, 1), &band1()).unwrap_err();
+    assert!(matches!(e, terrio::Error::DecodedLimitExceeded { limit: 1280, .. }), "{e}");
+}
+
+/// A big-endian ("MM") one-band TIFF of `cols` x `rows` samples of `bits` bits and
+/// `SampleFormat` `format`, stored as one uncompressed strip holding `data`.
+fn big_endian_strip(cols: u32, rows: u32, bits: u16, format: u16, data: &[u8]) -> Vec<u8> {
+    // (tag, type, value): SHORT 3 (left-justified in the value field), LONG 4.
+    let entries: [(u16, u16, u32); 9] = [
+        (256, 4, cols),
+        (257, 4, rows),
+        (258, 3, u32::from(bits)),
+        (259, 3, 1),
+        (262, 3, 1),
+        (273, 4, 0), // StripOffsets, set below
+        (278, 4, rows),
+        (279, 4, data.len() as u32),
+        (339, 3, u32::from(format)),
+    ];
+    let data_offset = 8 + 2 + entries.len() * 12 + 4;
+    let mut out = b"MM\0*".to_vec();
+    out.extend_from_slice(&8u32.to_be_bytes());
+    out.extend_from_slice(&(entries.len() as u16).to_be_bytes());
+    for (tag, typ, value) in entries {
+        let value = if tag == 273 { data_offset as u32 } else { value };
+        out.extend_from_slice(&tag.to_be_bytes());
+        out.extend_from_slice(&typ.to_be_bytes());
+        out.extend_from_slice(&1u32.to_be_bytes());
+        if typ == 3 {
+            out.extend_from_slice(&(value as u16).to_be_bytes());
+            out.extend_from_slice(&[0, 0]);
+        } else {
+            out.extend_from_slice(&value.to_be_bytes());
+        }
+    }
+    out.extend_from_slice(&[0; 4]);
+    assert_eq!(out.len(), data_offset);
+    out.extend_from_slice(data);
+    out
+}
+
+/// The rows of a big-endian Int16 or Float32 strip over the limit are read as their native type,
+/// with their values: the byte order and sample format are applied on the row path too.
+#[test]
+fn rows_of_a_big_endian_strip_over_the_limit_keep_their_type_and_values() {
+    use terrio::raster::RasterData;
+    let (cols, rows) = (8usize, 6usize);
+    let ints: Vec<i16> = (0..cols * rows).map(|i| (i as i16 - 20) * 101).collect();
+    let floats: Vec<f32> = (0..cols * rows).map(|i| i as f32 * -1.25).collect();
+    let cases = [
+        (16, 2, ints.iter().flat_map(|v| v.to_be_bytes()).collect::<Vec<u8>>(), ints.iter().map(|v| f64::from(*v)).collect::<Vec<f64>>()),
+        (32, 3, floats.iter().flat_map(|v| v.to_be_bytes()).collect(), floats.iter().map(|v| f64::from(*v)).collect()),
+    ];
+    for (bits, format, data, values) in cases {
+        let bytes = big_endian_strip(cols as u32, rows as u32, bits, format, &data);
+        // Two rows fit the limit, the strip does not: the window's rows are read by themselves.
+        let limits = TiffReadLimits { chunk_bytes: 2 * cols * usize::from(bits / 8) };
+        let mut r = LazyRaster::from_tiff_bytes_with_limits(bytes, limits).unwrap().unwrap();
+        let ds = r.read_window(Window::new(1, 2, 5, 2), &band1()).unwrap();
+        match (&ds.raster.data, bits) {
+            (RasterData::I16(_), 16) | (RasterData::F32(_), 32) => {}
+            (other, _) => panic!("{bits}-bit samples read as {other:?}"),
+        }
+        let expected: Vec<f64> = (2..4).flat_map(|y| (1..6).map(move |x| (x, y))).map(|(x, y)| values[y * cols + x]).collect();
+        assert_eq!(ds.raster.data.to_f64_vec(), expected, "{bits}-bit samples");
+    }
+}
+
+/// A strip whose StripByteCounts runs past the end of the file is decoded whole, and so refused
+/// over the limit, even when the file holds all of its pixels: the row path reads only strips
+/// the file holds as declared.
+#[test]
+fn a_strip_declared_past_the_end_of_the_file_is_not_read_by_rows() {
+    // 4 x 4 Float64 pixels: 128 bytes stored, 2,176 declared; rows of 32 bytes.
+    let bytes = tiff(4, 4, 128 + 2048, 128, false);
+    let mut r = LazyRaster::from_tiff_bytes_with_limits(bytes, TiffReadLimits { chunk_bytes: 64 }).unwrap().unwrap();
+    let e = r.read_window(Window::new(0, 1, 4, 1), &band1()).unwrap_err();
+    assert!(matches!(e, terrio::Error::DecodedLimitExceeded { limit: 64, .. }), "{e}");
+}

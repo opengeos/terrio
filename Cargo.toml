@@ -75,7 +75,7 @@ netcdf-reader = { version = "0.12.1", default-features = false, features = ["net
 hdf5-reader = { version = "0.12.1", default-features = false }
 # HEC-RAS geometry and plan HDF files (the `hecras` feature): the read-only engine behind
 # ras-commander. It owns every HEC-RAS rule; terrio's driver only translates its values.
-ras-commander-fast-hdf = { version = "0.4.0", default-features = false, features = ["hdf", "mesh", "results"] }
+ras-commander-fast-hdf = { version = "0.5.0", default-features = false, features = ["hdf", "mesh", "results"] }
 # The portable decoder: the same pixels on every platform, closer to libjpeg's than its SIMD paths.
 jpeg-decoder = { version = "0.3", default-features = false, features = ["platform_independent"] }
 # GeoPackage JPEG tiles; the version wbraster already uses.
@@ -83,7 +83,7 @@ jpeg-encoder = "0.7"
 # WebP tiles of PMTiles and MBTiles archives; the version tiff already uses.
 image-webp = "0.2"
 # Pure-Rust WebP encoder for GeoTIFF/COG (wbgeotiff still uses 0.2).
-webp-rust = "0.3.2"
+webp-rust = "0.5.0"
 openjp2 = { version = "0.6", default-features = false, features = ["std"] }
 # GeoTIFF compressions GDAL writes and the tiff crate does not read: LERC, JPEG XL and LZMA (XZ).
 lerc-reader = { version = "0.5", default-features = false }
@@ -116,7 +116,7 @@ ureq = { version = "3", default-features = false, features = ["gzip", "rustls-no
 rustls-graviola = "0.4"
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12"] }
 # Test-only original DER snapshot for constrained-anchor regressions; update with webpki-roots.
-webpki-root-certs = "=1.0.11"
+webpki-root-certs = "=1.0.12"
 webpki-roots = "1"
 hmac = "0.13"
 sha2 = "0.11"

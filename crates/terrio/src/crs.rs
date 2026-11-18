@@ -173,6 +173,23 @@ impl SpatialRef {
         self.as_core().to_proj4()
     }
 
+    /// The PROJ string GDAL 3.13.3 writes for the CRS (`OSRExportToProj4`): [`Self::to_proj4`]
+    /// without `+type=crs`, and for an EPSG or ESRI code's own definition with what GDAL adds, its
+    /// `+towgs84` and a compound CRS's geoid model. `None` where [`Self::to_proj4`] is (see the
+    /// standalone engine's `SpatialRef::to_proj4_gdal`, which lists where it differs from GDAL).
+    ///
+    /// ```no_run
+    /// use terrio::crs::SpatialRef;
+    ///
+    /// let gk3 = SpatialRef::from_epsg(31467)?;
+    /// assert!(gk3.to_proj4_gdal().is_some_and(|p| p.contains("+towgs84=598.1,73.7,418.2")));
+    /// # Ok::<(), terrio::Error>(())
+    /// ```
+    pub fn to_proj4_gdal(&self) -> Option<String> {
+        initialize();
+        self.as_core().to_proj4_gdal()
+    }
+
     /// The CRS in WKT 1 without GDAL's `EXTENSION["PROJ4", ...]`, for formats whose readers
     /// ignore it, as PROJ 9.8.1 exports `WKT1_GDAL`; `None` where WKT 1 needs the extension or
     /// PROJ writes no WKT 1 (see the standalone engine's `SpatialRef::to_wkt1_strict`).

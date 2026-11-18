@@ -1368,19 +1368,24 @@ cargo update --manifest-path fuzz/Cargo.toml --workspace
 
 ## Performance on pull requests
 
-Each pull request that changes Rust sources or manifests gets one comment comparing the CPU
-instructions of `crates/terrio/benches/instructions.rs` with main: warp (4326 to UTM with
-nearest, bilinear and cubic, GDAL's chunk-dependent grid, and a half-pixel shift), slope and
-hillshade, a DEFLATE + floating-point-predictor GeoTIFF read, and zonal statistics of 1024
-polygons, each on 1 M synthetic pixels. The `bench` workflow runs both commits under Valgrind
-(Callgrind) in the same job, and `bench comment` posts the table, with what each benchmark runs
-and its exact change, and sets the `perf-regression` label when a benchmark runs 10% or more
-instructions or estimated cycles. The Claude code review then adds, under the table, the likely
-cause of each slower benchmark in the diff, for the authors it reviews automatically; for a
-first-time contributor, a maintainer starts it by removing and adding the `perf-regression` label
-again. The regular code review leaves performance to this comment. Instruction counts of a commit
-repeat within 0.01% between runs, and estimated cycles within 0.1%, on one machine (both commits
-run on the same runner), where shared runners' timings vary by 10–30%. The check never fails a pull request.
+Each pull request that changes Rust sources or manifests gets one comment comparing CPU, speed
+and memory of the benchmarks of `crates/terrio/benches/instructions.rs` with main: warp (4326 to
+UTM with nearest, bilinear and cubic, GDAL's chunk-dependent grid, and a half-pixel shift), slope
+and hillshade, a DEFLATE + floating-point-predictor GeoTIFF read, and zonal statistics of 1024
+polygons, each on 1 M synthetic pixels. CPU is the instructions executed and speed the estimated
+cycles (instructions plus cache and RAM misses), both from Callgrind; memory is the peak heap of the
+operation, the most heap memory it holds at once beyond its input, its output included (a counting
+allocator in the benchmark keeps it, and reports it to DHAT). The `bench`
+workflow runs both commits under Valgrind in the same job, and `bench comment` posts the table,
+with what each benchmark runs and its exact change, and sets the `perf-regression` label when a
+benchmark runs 10% or more instructions or estimated cycles, or needs 10% and 1 MB or more peak
+heap. The Claude code review then adds, under the table, the likely cause of each flagged
+benchmark in the diff, for the authors it reviews automatically; for a first-time contributor, a
+maintainer starts it by removing and adding the `perf-regression` label again. The regular code
+review leaves performance to this comment. The peak heap of a commit repeats exactly between runs
+on one machine, instruction counts within 0.01% and estimated cycles within 0.1% (both commits run
+on the same runner), where shared runners' timings vary by 10–30%. The check never fails a pull
+request.
 
 The counts cover every thread of the second of two runs of each operation (the first loads the
 EPSG table, starts the thread pool and fills caches), with one worker thread. To run them
