@@ -260,28 +260,35 @@ pub(crate) fn read(text: &str) -> Option<Model> {
     if let Some((h, v)) = wkt1::esri_compound(text) {
         // A `VERTCS` on a geodetic `DATUM` is an ellipsoidal height: PROJ 9.9.0 reads the two as
         // a 3D CRS (ESRI's LUREF / Luxembourg TM (3D), EPSG:9895), its base CRS 3D too.
+        // The horizontal CRS's dialect as PROJ guesses it (a GDAL `PROJCS` with its `AUTHORITY`
+        // stays GDAL's).
+        let d = dialect(text, &h);
         if v.child("DATUM").is_some() {
+            // Its height in the `VERTCS`'s unit and `Direction`; the base CRS's up in metres.
             let length = v.child("UNIT").and_then(|u| unit(u, UnitKind::Length)).unwrap_or_else(Unit::metre);
-            let mut crs = crs(&h, Dialect::Wkt1Esri)?;
-            let up = |cs: &mut Cs| {
-                cs.axes.push(Axis { name: String::new(), direction: "up".into(), unit: Some(length.clone()), meridian: None })
+            let direction = if esri_down(&v) { "down" } else { "up" };
+            let mut crs = crs(&h, d)?;
+            let height = |cs: &mut Cs, unit: Unit, direction: &str| {
+                if cs.axes.len() == 2 {
+                    cs.axes.push(Axis { name: String::new(), direction: direction.into(), unit: Some(unit), meridian: None });
+                }
             };
             match &mut crs {
                 Crs::Projected { base, cs, .. } => {
-                    up(cs);
+                    height(cs, length, direction);
                     if let Crs::Geodetic { cs, .. } = base.as_mut() {
-                        up(cs);
+                        height(cs, Unit::metre(), "up");
                     }
                 }
-                Crs::Geodetic { cs, .. } => up(cs),
+                Crs::Geodetic { cs, .. } => height(cs, length, direction),
                 _ => {}
             }
-            return Some(Model { crs, dialect: Dialect::Wkt1Esri, extensions: Vec::new() });
+            return Some(Model { crs, dialect: d, extensions: Vec::new() });
         }
-        let parts = vec![crs(&h, Dialect::Wkt1Esri)?, crs(&v, Dialect::Wkt1Esri)?];
+        let parts = vec![crs(&h, d)?, crs(&v, Dialect::Wkt1Esri)?];
         let name = format!("{} + {}", h.name().unwrap_or(""), v.name().unwrap_or(""));
         let crs = Crs::Compound { ident: Ident { name, ids: Vec::new() }, parts };
-        return Some(Model { crs, dialect: Dialect::Wkt1Esri, extensions: Vec::new() });
+        return Some(Model { crs, dialect: d, extensions: Vec::new() });
     }
     let root = wkt1::parse(text)?;
     let d = dialect(text, &root);
@@ -325,7 +332,9 @@ fn crs(n: &Node, d: Dialect) -> Option<Crs> {
     } else if n.is(kw::VERTICAL_CRS) {
         vertical(n, d)
     } else if n.is(kw::COMPOUND_CRS) {
-        let parts = nodes(n).filter_map(|c| crs(c, d)).collect();
+        // Every component, or none: a component without what it needs leaves the compound CRS
+        // unread.
+        let parts = nodes(n).filter(|c| is_crs(c)).map(|c| crs(c, d)).collect::<Option<Vec<_>>>()?;
         Some(Crs::Compound { ident: ident(n), parts })
     } else if n.key.eq_ignore_ascii_case("BOUNDCRS") {
         bound(n, d)
@@ -334,6 +343,16 @@ fn crs(n: &Node, d: Dialect) -> Option<Crs> {
     } else {
         None
     }
+}
+
+/// Whether a node's keyword is a CRS's this model reads.
+fn is_crs(n: &Node) -> bool {
+    n.is(kw::HORIZONTAL_CRS) || n.is(kw::VERTICAL_CRS) || n.is(kw::COMPOUND_CRS) || n.is(kw::ENGINEERING_CRS)
+}
+
+/// Whether an ESRI `VERTCS` is down (`PARAMETER["Direction",-1]`), as PROJ 9.9.0 reads it.
+fn esri_down(n: &Node) -> bool {
+    n.children("PARAMETER").any(|p| p.name().is_some_and(|s| s.eq_ignore_ascii_case("Direction")) && p.num(1) == Some(-1.0))
 }
 
 /// The child nodes of a node.
@@ -403,7 +422,9 @@ fn geodetic(n: &Node, d: Dialect) -> Option<Crs> {
     let ell = datum_node.first_in(kw::ELLIPSOID)?;
     let (a, rf) = ell.ellipsoid()?;
     let ellipsoid = Ellipsoid { ident: ident(ell), a, rf };
-    // A WKT 1 `GEOCCS`'s `UNIT` is its length unit; its prime meridian is in degrees.
+    // A WKT 1 `GEOCCS`'s `UNIT` is its length unit, and so is a WKT 2 Cartesian CS's; its prime
+    // meridian is in degrees.
+    let cartesian = n.child("CS").is_some_and(|c| matches!(c.args.first(), Some(Arg::Ident(k)) if k.eq_ignore_ascii_case("Cartesian")));
     let ang = if geocentric { Unit::degree() } else { angular_unit(n, d) };
     let prime_meridian = prime_meridian(n, d, geocentric);
     let datum = if datum_node.is(kw::GEODETIC_DATUM_ENSEMBLE) {
@@ -438,7 +459,12 @@ fn geodetic(n: &Node, d: Dialect) -> Option<Crs> {
         // `GEOGCS` without `AXIS` the axes of the geographic CRS its root `AUTHORITY` names in its
         // database (#1058 step 4), else longitude first.
         let default = if d == Dialect::Wkt2 { ["north", "east"] } else { ["east", "north"] };
-        let mut cs = cs(n, d, CsKind::Ellipsoidal, &default, &ang);
+        let default_unit = if cartesian {
+            n.child("LENGTHUNIT").or_else(|| n.child("UNIT")).and_then(|u| unit(u, UnitKind::Length)).unwrap_or_else(Unit::metre)
+        } else {
+            ang.clone()
+        };
+        let mut cs = cs(n, d, CsKind::Ellipsoidal, &default, &default_unit);
         // ESRI's 3D geographic CRS: its `LINUNIT` is its ellipsoidal height's, as PROJ reads it.
         if !cs.explicit
             && let Some(length) = n.child("LINUNIT").and_then(|u| unit(u, UnitKind::Length))
@@ -527,7 +553,8 @@ fn direction(s: &str) -> String {
     DIRECTIONS.iter().find(|d| d.eq_ignore_ascii_case(s)).map_or_else(|| s.to_ascii_lowercase(), |d| d.to_string())
 }
 
-/// The coordinate system of a CRS node: its `AXIS` nodes (in their `ORDER`, WKT 2), each in its own
+/// The coordinate system of a CRS node: its `AXIS` nodes (sorted by their WKT 2 `ORDER`, which
+/// PROJ 9.9.0 refuses out of sequence and terrio reads), each in its own
 /// unit, else the CRS's (`default_unit`, or WKT 2's unit after the axes); WKT 2's `CS` kind. Without
 /// axes, `default` in `default_unit`, not explicit.
 fn cs(n: &Node, d: Dialect, kind: CsKind, default: &[&str], default_unit: &Unit) -> Cs {
@@ -633,14 +660,13 @@ fn projected(n: &Node, d: Dialect) -> Option<Crs> {
         ["east", "north"]
     };
     let cs = cs(n, d, CsKind::Cartesian, &default, &linear);
-    // A 3D projected CRS's base CRS without its own axes is 3D, its height in the projected CRS's
-    // height unit, as PROJ 9.9.0 reads it.
+    // A 3D projected CRS's 2D base CRS is 3D, its ellipsoidal height up in metres whatever the
+    // projected CRS's unit, as PROJ 9.9.0 reads it.
     let mut base = base;
-    if let (Some(h), Crs::Geodetic { cs: base_cs, .. }) = (cs.axes.get(2), &mut base)
-        && !base_cs.explicit
+    if let (3, Crs::Geodetic { cs: base_cs, .. }) = (cs.axes.len(), &mut base)
         && base_cs.axes.len() == 2
     {
-        base_cs.axes.push(Axis { name: String::new(), direction: "up".into(), unit: h.unit.clone(), meridian: None });
+        base_cs.axes.push(Axis { name: String::new(), direction: "up".into(), unit: Some(Unit::metre()), meridian: None });
     }
     Some(Crs::Projected { ident: ident(n), base: Box::new(base), conversion, cs })
 }
@@ -648,8 +674,12 @@ fn projected(n: &Node, d: Dialect) -> Option<Crs> {
 /// A vertical CRS: WKT 1's `VERT_CS`, ESRI's `VERTCS` (down with its `Direction` -1, as PROJ
 /// reads it), WKT 2's `VERTCRS`.
 fn vertical(n: &Node, d: Dialect) -> Option<Crs> {
-    // Its vertical datum, or WKT 2's datum ensemble (DVR90's).
-    let datum = n.first_in(kw::VERTICAL_DATUM).or_else(|| n.first_in(kw::GEODETIC_DATUM_ENSEMBLE))?;
+    // Its vertical datum, or WKT 2's datum ensemble (DVR90's), or an ESRI `VERTCS`'s geodetic
+    // `DATUM` (an ellipsoidal height, read alone as a vertical CRS on that datum, as by PROJ).
+    let datum = n
+        .first_in(kw::VERTICAL_DATUM)
+        .or_else(|| n.first_in(kw::GEODETIC_DATUM_ENSEMBLE))
+        .or_else(|| if n.key.eq_ignore_ascii_case("VERTCS") { n.child("DATUM") } else { None })?;
     let ensemble = datum.is(kw::GEODETIC_DATUM_ENSEMBLE);
     let length = n
         .child("UNIT")
@@ -657,7 +687,7 @@ fn vertical(n: &Node, d: Dialect) -> Option<Crs> {
         .or_else(|| n.child("AXIS").and_then(|a| a.child("LENGTHUNIT").or_else(|| a.child("UNIT"))))
         .and_then(|u| unit(u, UnitKind::Length))
         .unwrap_or_else(Unit::metre);
-    let down = n.children("PARAMETER").any(|p| p.name().is_some_and(|s| s.eq_ignore_ascii_case("Direction")) && p.num(1) == Some(-1.0));
+    let down = esri_down(n);
     let mut cs = cs(n, d, CsKind::Vertical, &[if down { "down" } else { "up" }], &length);
     if d != Dialect::Wkt2 {
         cs.kind = CsKind::Vertical;
@@ -678,8 +708,8 @@ fn vertical(n: &Node, d: Dialect) -> Option<Crs> {
 fn bound(n: &Node, d: Dialect) -> Option<Crs> {
     let inner = |key: &str| {
         let c = crate::wkt2::first_node(n.child(key)?)?;
-        // A WKT 1 CRS inside a WKT 2 `BOUNDCRS` is read as WKT 1.
-        let d = if WKT1_ROOTS.iter().any(|k| c.key.eq_ignore_ascii_case(k)) { Dialect::Wkt1Gdal } else { d };
+        // A WKT 1 CRS inside a WKT 2 `BOUNDCRS` is read in its own dialect.
+        let d = if WKT1_ROOTS.iter().any(|k| c.key.eq_ignore_ascii_case(k)) { dialect(&c.to_wkt(), c) } else { d };
         crs(c, d)
     };
     let (source, target) = (inner("SOURCECRS")?, inner("TARGETCRS")?);
@@ -785,5 +815,52 @@ mod tests {
         let p = read(r#"PROJCRS["x",BASEGEOGCRS["WGS 84",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]]],CONVERSION["Polar",METHOD["Polar Stereographic (variant A)",ID["EPSG",9810]]],CS[Cartesian,2],AXIS["(E)",south,MERIDIAN[90,ANGLEUNIT["degree",0.0174532925199433]],ORDER[2]],AXIS["(N)",south,MERIDIAN[180,ANGLEUNIT["degree",0.0174532925199433]],ORDER[1]],LENGTHUNIT["metre",1]]"#).unwrap();
         let Crs::Projected { cs, .. } = &p.crs else { panic!() };
         assert_eq!(cs.axes.iter().map(|a| a.meridian).collect::<Vec<_>>(), [Some(180.0), Some(90.0)]);
+    }
+
+    fn directions(cs: &Cs) -> Vec<(&str, f64)> {
+        cs.axes.iter().map(|a| (a.direction.as_str(), a.unit.as_ref().map_or(f64::NAN, |u| u.factor))).collect()
+    }
+
+    /// Heights as PROJ 9.9.0 (pyproj 3.8.0) reads them:
+    /// - a 3D projected CRS's 2D base CRS is 3D, up in metres, whatever the projected CRS's unit and
+    ///   whether its axes are explicit;
+    /// - ESRI's `VERTCS` on a geodetic `DATUM` after a `GEOGCS` is a 3D geographic CRS, its height
+    ///   in the `VERTCS`'s unit and `Direction` (down, in feet), and alone a vertical CRS on that
+    ///   datum (up).
+    #[test]
+    fn heights_as_proj_reads_them() {
+        let g = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#;
+        let tail = r#"PROJECTION["Transverse_Mercator"],PARAMETER["central_meridian",0],UNIT["foot",0.3048],AXIS["Easting",EAST],AXIS["Northing",NORTH],AXIS["h",UP]]"#;
+        let explicit = g.replace("]]", r#"],AXIS["Lat",NORTH],AXIS["Lon",EAST]]"#);
+        for base in [g.to_string(), explicit] {
+            let m = read(&format!(r#"PROJCS["x",{base},{tail}"#)).unwrap();
+            let Crs::Projected { base, cs, .. } = &m.crs else { panic!("{m:?}") };
+            assert_eq!(directions(cs)[2], ("up", 0.3048));
+            let Crs::Geodetic { cs, .. } = base.as_ref() else { panic!() };
+            assert_eq!(directions(cs)[2], ("up", 1.0));
+        }
+        let e = r#"GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]"#;
+        let v = r#"VERTCS["WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PARAMETER["Vertical_Shift",0.0],PARAMETER["Direction",-1.0],UNIT["Foot",0.3048]]"#;
+        let m = read(&format!("{e},{v}")).unwrap();
+        let Crs::Geodetic { cs, .. } = &m.crs else { panic!("{m:?}") };
+        assert_eq!(directions(cs).iter().map(|d| d.0).collect::<Vec<_>>(), ["east", "north", "down"]);
+        assert_eq!(directions(cs)[2].1, 0.3048);
+        let alone = read(&v.replace("-1.0", "1.0")).unwrap();
+        assert!(matches!(&alone.crs, Crs::Vertical { datum, cs, .. } if datum.name == "D_WGS_1984" && cs.axes[0].direction == "up"));
+    }
+
+    /// A WKT 2 Cartesian CS's bare `UNIT` is a length (PROJ 9.9.0: geocentric X, Y, Z in metres); a
+    /// GDAL Krovak with its `AUTHORITY` keeps east and north (only ESRI's is south and west); a
+    /// `COMPD_CS` with a component it cannot read is unread.
+    #[test]
+    fn units_dialects_and_whole_compounds() {
+        let m = read(r#"GEODCRS["x",DATUM["WGS 84",ELLIPSOID["WGS 84",6378137,298.257223563]],CS[Cartesian,3],AXIS["X",geocentricX],AXIS["Y",geocentricY],AXIS["Z",geocentricZ],UNIT["metre",1]]"#).unwrap();
+        let (_, _, cs) = geodetic_parts(&m);
+        assert!(cs.axes.iter().all(|a| a.unit.as_ref().is_some_and(|u| u.kind == UnitKind::Length && u.factor == 1.0)), "{cs:?}");
+        let k = r#"PROJCS["S-JTSK / Krovak",GEOGCS["S-JTSK",DATUM["S_JTSK",SPHEROID["Bessel 1841",6377397.155,299.1528128]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Krovak"],PARAMETER["latitude_of_center",49.5],UNIT["metre",1],AUTHORITY["EPSG","5513"]]"#;
+        let m = read(k).unwrap();
+        let Crs::Projected { cs, .. } = &m.crs else { panic!() };
+        assert_eq!((m.dialect, cs.axes[0].direction.as_str()), (Dialect::Wkt1Gdal, "east"));
+        assert!(read(r#"COMPD_CS["c",GEOGCS["g",PRIMEM["Greenwich",0]],VERT_CS["h",VERT_DATUM["d",2005],UNIT["metre",1]]]"#).is_none());
     }
 }

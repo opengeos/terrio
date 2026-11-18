@@ -14,7 +14,7 @@
 //! ellipsoid names stay as written (ESRI's `GCS_` and `D_` names, GDAL's underscores): PROJ maps
 //! those through its database, which is #1058 step 4.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 use serde_json::{Map, Value, json};
 
@@ -296,15 +296,21 @@ fn differences(text: &str, proj: &Value) -> String {
 
 /// The paths at which terrio's PROJJSON writer differs from PROJ's, as `tests/projjson_corpus.rs`
 /// records them, `None` when it writes none.
-fn writer_differences(text: &str, proj: &Value) -> Option<BTreeSet<String>> {
+fn writer_differences(text: &str, proj: &Value) -> Option<BTreeMap<String, Option<i32>>> {
     let json = crate::SpatialRef::from_wkt(text).to_projjson().ok()?;
     let ours: Value = serde_json::from_str(&json).ok()?;
     Some(paths(&compare(&ours, proj)))
 }
 
-/// The paths of a list of differences, without the decade of a number's.
-fn paths(d: &str) -> BTreeSet<String> {
-    d.split(',').filter(|p| !p.is_empty()).map(|p| p.split('~').next().unwrap_or(p).to_string()).collect()
+/// The paths of a list of differences, each with the decade of a number's difference.
+fn paths(d: &str) -> BTreeMap<String, Option<i32>> {
+    d.split(',')
+        .filter(|p| !p.is_empty())
+        .map(|p| match p.rsplit_once('~') {
+            Some((path, decade)) => (path.to_string(), decade.parse().ok()),
+            None => (p.to_string(), None),
+        })
+        .collect()
 }
 
 /// Whether a CRS has a WKT 1 conversion whose method GDAL's table (`projjson_gdal::method1`) does
@@ -322,20 +328,36 @@ fn unnamed_method(crs: &Crs) -> bool {
     }
 }
 
-/// The paths of the coordinate systems whose axes PROJ takes from its database: a WKT 1 `GEOGCS`
-/// without `AXIS` has those of the geographic CRS its `AUTHORITY` names (#1058 step 4).
-fn database_axes(crs: &Crs, prefix: &str, out: &mut Vec<String>) {
+/// The paths of the coordinate systems whose axes PROJ takes from its database (#1058 step 4): a
+/// geographic CRS without axes that names a code (`AUTHORITY`, a WKT 2 base CRS's `ID`: PROJ gives
+/// it that CRS's axes, EPSG:27500's base CRS in grads) or that ESRI names (ESRI's dialect: PROJ
+/// finds the CRS by its name).
+fn database_axes(crs: &Crs, prefix: &str, esri: bool, out: &mut Vec<String>) {
     let at = |key: &str| if prefix.is_empty() { key.to_string() } else { format!("{prefix}.{key}") };
     match crs {
-        Crs::Geodetic { cs, .. } if !cs.explicit && cs.kind == CsKind::Ellipsoidal => out.push(at("coordinate_system")),
-        Crs::Projected { base, .. } => database_axes(base, &at("base_crs"), out),
+        Crs::Geodetic { cs, ident, .. } if !cs.explicit && cs.kind == CsKind::Ellipsoidal && (esri || !ident.ids.is_empty()) => {
+            out.push(at("coordinate_system"))
+        }
+        Crs::Projected { base, .. } => database_axes(base, &at("base_crs"), esri, out),
         Crs::Compound { parts, .. } => {
             for (i, p) in parts.iter().enumerate() {
-                database_axes(p, &format!("{}[{i}]", at("components")), out);
+                database_axes(p, &format!("{}[{i}]", at("components")), esri, out);
             }
         }
         _ => {}
     }
+}
+
+/// The prefixes of the CRSs whose datum ensemble PROJ replaces by a datum from its database
+/// (EPSG:3857's, 4855's base CRS): PROJ's PROJJSON has a `datum` where the model's has a
+/// `datum_ensemble`.
+fn substituted_ensembles(model: &BTreeMap<String, Option<i32>>) -> Vec<String> {
+    model
+        .keys()
+        .filter_map(|p| p.strip_suffix(".datum.type"))
+        .filter(|prefix| model.keys().any(|q| q.starts_with(&format!("{prefix}.datum_ensemble."))))
+        .map(str::to_string)
+        .collect()
 }
 
 /// Whether a path is of a name or identifier, which PROJ maps or adds through its database.
@@ -356,8 +378,14 @@ fn every_crs_reads_into_the_model_as_recorded_against_proj() {
 }
 
 /// The model reads every value at least as terrio's PROJJSON writer does: where the writer's
-/// PROJJSON has PROJ's value at a path (other than a name or an identifier, which the model leaves
-/// as written), the model's has it too.
+/// PROJJSON has PROJ's value at a path, the model's has it too, and where both differ from PROJ's
+/// by a number, the model's is not further off. Left out, as the model leaves them to later steps:
+/// names and identifiers, which PROJ maps or adds through its database; the axes PROJ takes from its
+/// database (`database_axes`) and a datum ensemble it replaces (`substituted_ensembles`); the
+/// conversion of a WKT 1 whose method GDAL's table does not name (its parameters are then keyed by
+/// name, PROJ's by code, so no value compares), of a WKT 1 with a PROJ4 extension (PROJ computes
+/// from the extension), and of a Mercator PROJ reads as Pseudo Mercator. A text the writer writes
+/// no PROJJSON for has nothing to compare.
 #[test]
 fn the_model_reads_no_value_worse_than_the_writer() {
     let corpus = the_corpus();
@@ -374,29 +402,26 @@ fn the_model_reads_no_value_worse_than_the_writer() {
                             let model = paths(&differences(text, proj));
                             let m = read(text);
                             let unnamed = m.as_ref().is_some_and(|m| unnamed_method(&m.crs));
-                            // A WKT 1 extended with a PROJ string (at its root or a component's),
-                            // which PROJ computes from; or a conversion PROJ gives another method
-                            // (Mercator (variant B) on a sphere as Pseudo Mercator), whose
-                            // parameters are another method's (#1058 step 5a).
                             let extended = text.contains("\"PROJ4\"");
-                            let rewritten = model.iter().any(|p| p.contains("conversion.method."));
+                            let pseudo_mercator = proj["conversion"]["method"]["id"]["code"] == 1024;
                             let mut implicit = Vec::new();
                             if let Some(m) = &m {
-                                database_axes(&m.crs, "", &mut implicit);
+                                database_axes(&m.crs, "", m.dialect == Dialect::Wkt1Esri, &mut implicit);
                             }
-                            // PROJ gives some CRSs on a datum ensemble (EPSG:3857, 4855) a base CRS of
-                            // one of its members from its database.
-                            let substituted = |p: &str| {
-                                p.contains("datum_ensemble") || (p.contains("datum.") && model.iter().any(|q| q.contains("datum_ensemble")))
-                            };
+                            let substituted = substituted_ensembles(&model);
                             let worse: Vec<&String> = model
                                 .iter()
+                                .filter(|(p, decade)| match writer.get(*p) {
+                                    // Both off: worse only by a larger decade.
+                                    Some(w) => matches!((decade, w), (Some(a), Some(b)) if a > b),
+                                    None => true,
+                                })
+                                .map(|(p, _)| p)
                                 .filter(|p| {
-                                    !writer.contains(*p)
-                                        && !naming(p)
-                                        && !((unnamed || extended || rewritten) && p.contains("conversion"))
-                                        && !implicit.iter().any(|c| p.starts_with(&format!("{c}.axis")))
-                                        && !substituted(p)
+                                    !naming(p)
+                                        && !((unnamed || extended || pseudo_mercator) && p.contains("conversion"))
+                                        && !implicit.iter().any(|c| p.starts_with(&format!("{c}.axis")) && p.ends_with(".direction"))
+                                        && !substituted.iter().any(|c| p.starts_with(&format!("{c}.datum")))
                                 })
                                 .collect();
                             (!worse.is_empty()).then(|| format!("{code} {form}: {worse:?}"))
