@@ -31,6 +31,32 @@ static DATUM_NAMES: &[u8] = include_bytes!("../data/datums.tsv.zst");
 /// The CRSs PROJ finds by the names of CRSs without ID, generated from PROJ by
 /// `scripts/gen_crs_names.py`.
 static CRS_NAMES: &[u8] = include_bytes!("../data/crs_names.tsv.zst");
+/// What GDAL adds to the PROJ string of an EPSG or ESRI CRS when it exports it, generated from
+/// GDAL 3.13.3 by `scripts/gen_gdal_towgs84.py`: `authority<TAB>code<TAB>towgs84<TAB>geoid` lines.
+static GDAL_TOWGS84: &[u8] = include_bytes!("../data/gdal_towgs84.tsv.zst");
+
+/// The `+towgs84` values (`598.1,73.7,418.2,0.202,0.045,-2.455,6.7`) and the `+geoidgrids=...
+/// +geoid_crs=...` tokens GDAL 3.13.3 adds to the PROJ string of an EPSG or ESRI CRS
+/// (`OSRExportToProj4`), each empty when it adds none; `None` when it adds neither.
+pub(crate) fn gdal_additions(authority: &str, code: u32) -> Option<(&'static str, &'static str)> {
+    static TABLE: OnceLock<HashMap<(bool, u32), (String, String)>> = OnceLock::new();
+    let esri = match authority {
+        "EPSG" => false,
+        "ESRI" => true,
+        _ => return None,
+    };
+    let table = TABLE.get_or_init(|| {
+        decompress(GDAL_TOWGS84)
+            .lines()
+            .filter_map(|l| {
+                let mut f = l.split('\t');
+                let (authority, code) = (f.next()?, f.next()?.parse().ok()?);
+                Some(((authority == "ESRI", code), (f.next()?.to_string(), f.next()?.to_string())))
+            })
+            .collect()
+    });
+    table.get(&(esri, code)).map(|(t, g)| (t.as_str(), g.as_str()))
+}
 
 /// An EPSG (or ESRI) CRS of the table.
 #[derive(Debug)]

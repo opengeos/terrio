@@ -524,21 +524,28 @@ fn healpix_and_rhealpix_coordinates_through_mcp() {
 
 #[test]
 fn isea_coordinates_through_mcp() {
-    // PROJ 9.8.1 on the authalic sphere of WGS 84, forward and back.
-    let (source, target) = ("+proj=longlat +R=6371007.1809184747", "+proj=isea +R=6371007.1809184747 +units=m");
-    let (x, y) = (11127619.110975388, -6172668.500855954);
-    let (xs, ys) = (x.to_string(), y.to_string());
-    let replies = session(&[call(1, "crs", &[source, "--to", target, "147", "-42"]), call(2, "crs", &[target, "--to", source, &xs, &ys])]);
-    let values = |id: u64| -> Vec<f64> {
-        assert_eq!(replies[&id]["result"]["isError"], false);
-        replies[&id]["result"]["content"][0]["text"].as_str().unwrap().split_whitespace().filter_map(|v| v.parse().ok()).collect()
-    };
-    let forward = values(1);
-    assert_eq!(forward.len(), 2);
-    assert!((forward[0] - x).abs() < 0.001 && (forward[1] - y).abs() < 0.001, "{forward:?}");
-    let inverse = values(2);
-    assert_eq!(inverse.len(), 2);
-    assert!((inverse[0] - 147.0).abs() < 1e-8 && (inverse[1] + 42.0).abs() < 1e-8, "{inverse:?}");
+    // PROJ 9.9.0 (pyproj 3.8.0, `always_xy`) on the authalic sphere of WGS 84 and on WGS 84,
+    // forward and back.
+    let r = "+R=6371007.1809184747";
+    let (sphere, sphere_isea) = (format!("+proj=longlat {r}"), format!("+proj=isea {r} +units=m"));
+    for (source, target, x, y) in [
+        (sphere.as_str(), sphere_isea.as_str(), 11127619.110850101, -6172668.500894079),
+        ("OGC:CRS84", "+proj=isea +datum=WGS84 +units=m +no_defs", 11139011.780462181, -6164461.280222207),
+    ] {
+        let (xs, ys) = (x.to_string(), y.to_string());
+        let replies =
+            session(&[call(1, "crs", &[source, "--to", target, "147", "-42"]), call(2, "crs", &[target, "--to", source, &xs, &ys])]);
+        let values = |id: u64| -> Vec<f64> {
+            assert_eq!(replies[&id]["result"]["isError"], false);
+            replies[&id]["result"]["content"][0]["text"].as_str().unwrap().split_whitespace().filter_map(|v| v.parse().ok()).collect()
+        };
+        let forward = values(1);
+        assert_eq!(forward.len(), 2);
+        assert!((forward[0] - x).abs() < 0.001 && (forward[1] - y).abs() < 0.001, "{target} {forward:?}");
+        let inverse = values(2);
+        assert_eq!(inverse.len(), 2);
+        assert!((inverse[0] - 147.0).abs() < 1e-8 && (inverse[1] + 42.0).abs() < 1e-8, "{target} {inverse:?}");
+    }
 }
 
 #[test]

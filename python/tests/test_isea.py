@@ -31,8 +31,7 @@ def test_isea_oracle(case):
             )
         )
         assert np.all(np.abs(actual - [s[2] for s in samples]) * case["metres_per_unit"] <= 0.001)
-    # PROJ's inverse, which is not the forward's on an ellipsoid and is refused outside its
-    # default grid. As in crates/terrio-crs/tests/isea.rs.
+    # PROJ's inverse, refused outside the unfolded net. As in crates/terrio-crs/tests/isea.rs.
     pairs = [(s[2], s[3]) for s in samples] + [tuple(s) for s in case["inverse_samples"]]
     accepted = [(p, e) for p, e in pairs if e is not None]
     if accepted:
@@ -44,7 +43,10 @@ def test_isea_oracle(case):
                 case["source"],
             )
         )
-        assert np.all(np.abs(angular_delta(actual, [e for _, e in accepted])) <= 1e-8)
+        # 1e-5 within 0.001 degrees of a pole, where the latitude is the arcsine of a number
+        # near 1 (crates/terrio-crs/tests/isea.rs).
+        tolerance = np.array([[1e-5 if abs(e[1]) > 89.999 else 1e-8] for _, e in accepted])
+        assert np.all(np.abs(angular_delta(actual, [e for _, e in accepted])) <= tolerance)
     for point in [p for p, e in pairs if e is None]:
         with pytest.raises(terrio.CRSError):
             terrio.transform_points([point[0]], [point[1]], case["target"], case["source"])

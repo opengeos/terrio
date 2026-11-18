@@ -4,10 +4,18 @@ use terrio_crs::{SpatialRef, Transformer};
 mod angular;
 use angular::angular_error;
 
+/// The inverse's tolerance, in degrees: 1e-8, but 1e-5 within 0.001° of a pole, where the
+/// latitude is the arcsine of a unit vector's component near ±1: one unit in its last place
+/// there (from a radius written with fewer digits, as ESRI's WKT writes it) is 1.2e-6° of
+/// latitude, in PROJ's result as in terrio's.
+fn tolerance(expected: &serde_json::Value) -> f64 {
+    if expected[1].as_f64().unwrap().abs() > 89.999 { 1e-5 } else { 1e-8 }
+}
+
 #[test]
 fn every_configuration_figure_and_unit_matches_frozen_proj() {
     let data: serde_json::Value = serde_json::from_str(include_str!("data/isea_reference.json")).unwrap();
-    assert_eq!(data["environment"]["proj"], "9.8.1");
+    assert_eq!(data["environment"]["proj"], "9.9.0");
     for case in data["cases"].as_array().unwrap() {
         let name = case["name"].as_str().unwrap();
         let source = SpatialRef::parse(case["source"].as_str().unwrap()).unwrap();
@@ -26,15 +34,14 @@ fn every_configuration_figure_and_unit_matches_frozen_proj() {
                 let actual = forward.transform(point.0, point.1).unwrap_or_else(|e| panic!("{name} {encoding} {point:?}: {e}"));
                 let error = (actual.0 - expected.0).abs().max((actual.1 - expected.1).abs()) * factor;
                 assert!(error <= 0.001, "{name} {encoding} {point:?}: forward error {error} m");
-                // PROJ's inverse, which is not the forward's on an ellipsoid and is refused
-                // outside its default grid.
+                // PROJ's inverse.
                 let actual = inverse.transform(expected.0, expected.1);
                 if sample[3].is_null() {
                     assert!(actual.is_err(), "{name} {encoding}: inverse must refuse {expected:?}, as PROJ does: {actual:?}");
                 } else {
                     let actual = actual.unwrap_or_else(|e| panic!("{name} {encoding} inverse {point:?}: {e}"));
                     let error = angular_error(actual, &sample[3]);
-                    assert!(error <= 1e-8, "{name} {encoding} {point:?}: inverse error {error} degrees");
+                    assert!(error <= tolerance(&sample[3]), "{name} {encoding} {point:?}: inverse error {error} degrees");
                 }
             }
             for sample in case["inverse_samples"].as_array().unwrap() {
@@ -45,7 +52,7 @@ fn every_configuration_figure_and_unit_matches_frozen_proj() {
                 } else {
                     let actual = actual.unwrap_or_else(|e| panic!("{name} {encoding} inverse {point:?}: {e}"));
                     let error = angular_error(actual, &sample[1]);
-                    assert!(error <= 1e-8, "{name} {encoding}: inverse {point:?} error {error} degrees");
+                    assert!(error <= tolerance(&sample[1]), "{name} {encoding}: inverse {point:?} error {error} degrees");
                 }
             }
         }
@@ -55,30 +62,35 @@ fn every_configuration_figure_and_unit_matches_frozen_proj() {
 }
 
 #[test]
-fn invalid_and_grid_address_options_are_refused() {
+fn invalid_options_are_refused_and_ignored_ones_read() {
     let lonlat = SpatialRef::parse("+proj=longlat +R=1").unwrap();
-    // PROJ 9.8.1 refuses the first eight, as gen_isea_reference.py checks. The grid addresses of
-    // +mode=di, dd and hex are not coordinates, and terrio does not compute them.
+    // As PROJ 9.9.0 refuses and reads them (gen_isea_reference.py checks both lists): a value
+    // given as a number must be a whole angle, a string is read as 0, and `+mode`, `+resolution`
+    // and `+aperture` are ignored.
     for bad in [
         "+orient=foo",
         "+orient",
-        "+mode=foo",
-        "+mode",
-        "+resolution=4.0",
-        "+aperture=-3",
-        "+resolution=99999999999999999999x",
         "+azi=30x",
-        "+mode=di",
-        "+mode=dd",
-        "+mode=hex",
+        "+orient_lat=1e400",
+        "+orient_lon=30x",
+        "+lat_0=30x",
+        "+lat_0=95",
+        "+dual=1",
+        "+dual=yes",
+        "+dual +net=foo",
     ] {
         let crs = format!("+proj=isea +R=1 {bad}");
         assert!(SpatialRef::parse(&crs).and_then(|t| Transformer::new(&lonlat, &t)).is_err(), "{crs}");
     }
-    for good in ["+orient=isea", "+orient=pole", "+mode=plane", "+resolution=4 +aperture=3", "+resolution", "+azi"] {
-        let crs = format!("+proj=isea +R=1 {good}");
-        assert!(SpatialRef::parse(&crs).and_then(|t| Transformer::new(&lonlat, &t)).is_ok(), "{crs}");
+    let default = Transformer::new(&lonlat, &SpatialRef::parse("+proj=isea +R=1").unwrap()).unwrap().transform(10.0, 20.0).unwrap();
+    for ignored in ["+mode=foo", "+mode=hex", "+resolution=4.0", "+aperture=-3", "+azi=abc", "+azi", "+dual=foo", "+net=foo"] {
+        let crs = format!("+proj=isea +R=1 {ignored}");
+        let t = SpatialRef::parse(&crs).and_then(|t| Transformer::new(&lonlat, &t)).unwrap_or_else(|e| panic!("{crs}: {e}"));
+        assert_eq!(t.transform(10.0, 20.0).unwrap(), default, "{crs}");
     }
+    let dual = Transformer::new(&lonlat, &SpatialRef::parse("+proj=isea +R=1 +dual").unwrap()).unwrap().transform(10.0, 20.0).unwrap();
+    let t = SpatialRef::parse("+proj=isea +R=1 +dual=t").and_then(|t| Transformer::new(&lonlat, &t)).unwrap();
+    assert_eq!(t.transform(10.0, 20.0).unwrap(), dual);
 }
 
 #[test]
@@ -141,18 +153,70 @@ fn esri_method_name_parameters_are_checked() {
 }
 
 #[test]
-fn origin_after_lon_0_and_lat_0_decides_the_inverse() {
-    // PROJ 9.8.1: `+lat_0=90 +lon_0=0` is the pole orientation's origin, so its inverse is
-    // defined; `+orient=pole +lon_0=11.25` is neither origin, so it is not.
+fn lat_0_and_lon_0_are_the_projected_origin() {
+    // PROJ 9.9.0: `+lat_0` and `+lon_0` name the point projected to (0, 0), through the
+    // icosahedron's orientation, rather than move it; the inverse is defined there too.
     let lonlat = SpatialRef::parse("+proj=longlat +R=1").unwrap();
-    let (x, y) = (0.28895720253590557, 0.1948919583135193);
-    for crs in ["+proj=isea +R=1 +lat_0=90 +lon_0=0", "+proj=isea +R=1 +orient=pole"] {
-        let target = SpatialRef::parse(crs).unwrap();
-        let p = Transformer::new(&lonlat, &target).unwrap().transform(17.0, 11.0).unwrap();
-        assert!((p.0 - x).abs() < 1e-12 && (p.1 - y).abs() < 1e-12, "{crs} {p:?}");
-        let q = Transformer::new(&target, &lonlat).unwrap().transform(x, y).unwrap();
-        assert!((q.0 - 17.0).abs() < 1e-9 && (q.1 - 11.0).abs() < 1e-9, "{crs} {q:?}");
+    let target = SpatialRef::parse("+proj=isea +R=1 +lat_0=11 +lon_0=17").unwrap();
+    let p = Transformer::new(&lonlat, &target).unwrap().transform(17.0, 11.0).unwrap();
+    assert!(p.0.abs() < 1e-12 && p.1.abs() < 1e-12, "{p:?}");
+    let p = Transformer::new(&lonlat, &target).unwrap().transform(10.0, 20.0).unwrap();
+    assert!((p.0 - -0.1255809856647115).abs() < 1e-12 && (p.1 - 0.15034411761725153).abs() < 1e-12, "{p:?}");
+    let q = Transformer::new(&target, &lonlat).unwrap().transform(p.0, p.1).unwrap();
+    assert!((q.0 - 10.0).abs() < 1e-9 && (q.1 - 20.0).abs() < 1e-9, "{q:?}");
+    // opengeos/terrio#1012 item 67: (10°, 20°) with `+lon_0=10` (PROJ 9.8.1 gave
+    // (-1041822.44, 5435383.88)).
+    let r = "+R=6371007.181";
+    let (lonlat, target) =
+        (SpatialRef::parse(&format!("+proj=longlat {r}")).unwrap(), SpatialRef::parse(&format!("+proj=isea +lon_0=10 {r}")).unwrap());
+    let p = Transformer::new(&lonlat, &target).unwrap().transform(10.0, 20.0).unwrap();
+    assert!((p.0 - 7863.091604233761).abs() < 1e-6 && (p.1 - 2111980.52214099).abs() < 1e-6, "{p:?}");
+}
+
+#[test]
+fn a_wkt_proj4_extension_reads_angles_as_a_pipeline_step() {
+    // PROJ's CRS parser refuses `+lat_0=30x` in a PROJ string, but reads a WKT's PROJ4
+    // extension as a pipeline step, whose `dmstor` takes the angle's readable start: 30°.
+    let lonlat = SpatialRef::parse("+proj=longlat +R=1").unwrap();
+    let wkt = |proj: &str| {
+        format!(
+            "PROJCS[\"unknown\",GEOGCS[\"unknown\",DATUM[\"unknown\",SPHEROID[\"unknown\",1,0]],PRIMEM[\"Greenwich\",0],\
+             UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"custom_proj4\"],UNIT[\"metre\",1],\
+             EXTENSION[\"PROJ4\",\"{proj} +wktext +no_defs\"]]"
+        )
+    };
+    let at = |crs: &str| SpatialRef::parse(crs).and_then(|t| Transformer::new(&lonlat, &t)).and_then(|t| t.transform(10.0, 20.0));
+    let thirty = at("+proj=isea +R=1 +lat_0=30").unwrap();
+    assert!(at("+proj=isea +R=1 +lat_0=30x").is_err());
+    assert_eq!(at(&wkt("+proj=isea +R=1 +lat_0=30")).unwrap(), thirty);
+    assert_eq!(at(&wkt("+proj=isea +R=1 +lat_0=30x")).unwrap(), thirty);
+}
+
+/// `+net=dsea`, the default net of `+dual`, spelt out, in a PROJ string and in PROJ's WKT 2
+/// method name, as PROJ 9.9.0 projects it (pyproj 3.8.0, network off): the same as without it.
+#[test]
+fn the_default_dual_net_can_be_named() {
+    let wkt = |method: &str| {
+        format!(
+            "PROJCRS[\"unknown\",BASEGEOGCRS[\"unknown\",DATUM[\"unknown\",ELLIPSOID[\"unknown\",6371007.18091847,0,\
+             LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],\
+             CONVERSION[\"unknown\",METHOD[\"{method}\"],PARAMETER[\"x_0\",0,LENGTHUNIT[\"metre\",1]]],\
+             CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],\
+             AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]"
+        )
+    };
+    let lonlat = SpatialRef::parse("+proj=longlat +R=6371007.18091847").unwrap();
+    let proj = [((10.0, 20.0), (1048942.810604034, -688596.7502670765)), ((-120.0, -45.0), (-13040996.968282918, -7635451.685148043))];
+    for target in [
+        "+proj=isea +dual +R=6371007.18091847".to_string(),
+        "+proj=isea +dual +net=dsea +R=6371007.18091847".to_string(),
+        wkt("PROJ isea dual"),
+        wkt("PROJ isea dual net=dsea"),
+    ] {
+        let t = Transformer::new(&lonlat, &SpatialRef::parse(&target).unwrap()).unwrap();
+        for ((lon, lat), (x, y)) in proj {
+            let (gx, gy) = t.transform(lon, lat).unwrap();
+            assert!((gx - x).abs() < 1e-3 && (gy - y).abs() < 1e-3, "{target} ({lon}, {lat}): ({gx}, {gy})");
+        }
     }
-    let target = SpatialRef::parse("+proj=isea +R=1 +orient=pole +lon_0=11.25").unwrap();
-    assert!(Transformer::new(&target, &lonlat).and_then(|t| t.transform(x, y)).is_err());
 }

@@ -18,7 +18,6 @@
 +proj=healpix +k_0=0.5r	ERR
 +proj=healpix +x_0=0.5r	ERR
 +proj=healpix +y_0=0.5r	ERR
-+proj=isea +azi=abc	OK
 +proj=isea +k_0=0.5r	ERR
 +proj=isea +x_0=0.5r	ERR
 +proj=isea +y_0=0.5r	ERR
