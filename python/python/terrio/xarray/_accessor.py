@@ -1057,6 +1057,13 @@ class XRasterBase:
         self, arrays: list[xarray.DataArray], zones: Any, **kwargs: Any
     ) -> list[xarray.DataArray]:
         """`_zonal.zonal_cube` of `zones` (one layer, plain geometries in this CRS)."""
+        unsupported = set(kwargs) - {"stats", "all_touched", "fractional", "layer", "batch_bytes"}
+        if unsupported:
+            raise TypeError(
+                f"{', '.join(sorted(unsupported))}: not available on arrays with dimensions "
+                "besides y and x, which take stats, all_touched, fractional, layer and "
+                "batch_bytes; reduce each 2-D slice for the others"
+            )
         layer = _zonal.zones_layer(zones, self.crs, kwargs.pop("layer", None))
         return _zonal.zonal_cube(arrays, layer, **kwargs)
 

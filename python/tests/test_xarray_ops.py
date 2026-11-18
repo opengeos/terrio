@@ -378,6 +378,24 @@ def test_zonal_stats_of_a_cube_selects_the_layer_of_any_zones_input(files, cube,
         np.testing.assert_array_equal(out.values, expected.values)
     with pytest.raises(ValueError, match="no layer named 'roads'"):
         cube.terrio.zonal_stats(zones, stats=["mean"], layer="roads")
+    with pytest.raises(ValueError, match="layer= applies to"):
+        cube.terrio.zonal_stats(zones.to_geojson(), stats=["mean"], layer="fields")
+
+
+def test_zonal_stats_of_a_cube_refuses_2d_only_options_by_name(files, cube):
+    """Options of 2-D arrays only (bands, weights...) name themselves and the cube's options."""
+    with pytest.raises(TypeError, match="bands: not available on arrays with dimensions"):
+        cube.terrio.zonal_stats(files["zones"], bands=[1])
+
+
+def test_zonal_stats_of_a_cube_warns_for_its_largest_chunk(files, cube):
+    """Uneven chunks along the first other dimension: the largest one is checked against
+    `batch_bytes`, not the first."""
+    pytest.importorskip("shapely")
+    uneven = xr.concat([cube] * 4, dim="time").chunk(time=(1, 11))
+    one_slice = H * W * uneven.dtype.itemsize
+    with pytest.warns(RuntimeWarning, match="more than batch_bytes"):
+        uneven.terrio.zonal_stats(files["zones"], stats=["mean"], batch_bytes=3 * one_slice)
 
 
 def test_zonal_stats_of_a_cube_suffixes_attributes_named_like_coordinates(files, cube):

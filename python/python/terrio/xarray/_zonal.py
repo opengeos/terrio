@@ -36,7 +36,7 @@ def _outside_level() -> int:
     here = os.path.dirname(os.path.dirname(__file__))
     frame: FrameType | None = sys._getframe(1)
     level = 1
-    while frame is not None and frame.f_code.co_filename.startswith(here):
+    while frame is not None and frame.f_code.co_filename.startswith(here + os.sep):
         frame, level = frame.f_back, level + 1
     return level
 
@@ -48,8 +48,11 @@ def zones_layer(zones: Any, crs: Any, layer: str | None = None) -> _terrio.Layer
             return _terrio.open_vector(os.fspath(zones))[layer]
         if isinstance(zones, _terrio.VectorDataset):
             return zones[layer]
-        if isinstance(zones, _terrio.Layer) and zones.name != layer:
-            raise ValueError(f"no layer named '{layer}': the zones are layer '{zones.name}'")
+        if isinstance(zones, _terrio.Layer):
+            if zones.name != layer:
+                raise ValueError(f"no layer named '{layer}': the zones are layer '{zones.name}'")
+        else:
+            raise ValueError("layer= applies to a vector file, a VectorDataset or a Layer")
     src = _ops.in_crs(zones, crs)
     if isinstance(src, _terrio.Layer):
         return src
@@ -81,7 +84,8 @@ def _prepared(da: xarray.DataArray) -> tuple:
     coords = {
         name: c
         for name, c in da.coords.items()
-        if set(c.dims) <= set(other) and "crs_wkt" not in c.attrs  # not the grid mapping
+        if set(c.dims) <= set(other)
+        and not {"crs_wkt", "spatial_ref"} & set(c.attrs)  # not the grid mapping
     }
     da = da.transpose(*other, g.y, g.x)
     if g.ascending:
@@ -131,11 +135,11 @@ def zonal_cube(
     """The zonal statistics of every 2-D slice of each of `arrays`.
 
     Each has dims `(geometry, ..., statistic)`.
-    The zones are rasterized once per grid, then the strips holding zone pixels are reduced in
-    order, for a batch of slices at a time (whole chunks of the first non-spatial dim, about
-    `batch_bytes` held). A lazy array reads only those strips; a dask array computes each chunk
-    once. Arrays on the same grid, dims and chunks are read in one dask computation, so what
-    they share (a mask...) is computed once.
+    The zones are rasterized once per grid and strip height, then the strips holding zone
+    pixels are reduced in order, for a batch of slices at a time (whole chunks of the first
+    non-spatial dim, about `batch_bytes` held). A lazy array reads only those strips; a dask
+    array computes each chunk once. Arrays on the same grid, dims and chunks are read in one
+    dask computation, so what they share (a mask...) is computed once.
     """
     shapely = _shapely()
     prepared = [_prepared(da) for da in arrays]
@@ -294,7 +298,7 @@ def _reduce(arrays, other, shape, fills, reducer, fractional, budget) -> list[np
         per = math.prod(shape[1:])
         pixels = [per * largest * a.dtype.itemsize for a in arrays]
         size = [p + per * kept for p in pixels]
-        chunk = (arrays[0].chunksizes.get(other[0]) or (1,))[0] if arrays[0].chunks else 1
+        chunk = max(arrays[0].chunksizes.get(other[0]) or (1,)) if arrays[0].chunks else 1
         # The next batch is read while one is reduced when two fit the budget.
         ahead = 2 * max(size) * chunk <= budget
         budget = budget // 2 if ahead else budget

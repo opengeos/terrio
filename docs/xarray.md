@@ -152,8 +152,8 @@ few slices at a time (whole dask chunks of its first other dimension), holding a
 chunk is computed once. Variables of a Dataset on one grid are read in one dask computation.
 A chunk larger than `batch_bytes` warns.
 
-Limits: the zones are rasterized once per grid and their geometries held in memory; the result
-is held in memory (zones × slices × statistics); strips never cross a dask chunk edge, so chunks
+Limits: the zones are rasterized once per grid and strip height, and their geometries held
+in memory; the result is held in memory (zones × slices × statistics); strips never cross a dask chunk edge, so chunks
 of very uneven heights (or a prime common height) give strips of a few rows, which reads the
 same data in more, smaller pieces. Weighted statistics are not available on cubes.
 
