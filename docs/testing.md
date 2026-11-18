@@ -2057,7 +2057,7 @@ The PROJ string GDAL exports (`SpatialRef::to_proj4_gdal`) is compared with GDAL
 9.9.0 (`OSRExportToProj4`, `OSR_USE_NON_DEPRECATED=NO`, network off), character for character. The
 fixture holds GDAL's string of 1,298 EPSG and ESRI codes (every fifth of the 5,130 GDAL adds a
 `+towgs84` or geoid model to, every twentieth other one and those RustGIS named); all are compared
-but the 7 ESRI codes terrio does not carry, which the test lists. A second fixture holds 13 of them
+but the 6 ESRI codes terrio does not carry, which the test lists. A second fixture holds 13 of them
 given as GDAL's WKT 1 and WKT 2, the WKT 1 without its root identifier or with a datum shift of its
 own, ESRI's WKT and the PROJ string (76 cases); all are compared but 7 listed compound-CRS cases,
 which must still give a string (`cargo test -p terrio-crs --test gdal_proj4_export`; regenerate the

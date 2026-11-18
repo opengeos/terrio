@@ -446,11 +446,11 @@ mod tests {
         assert_eq!(count("EPSG", Some(CrsKind::Vertical), None), 309);
         assert_eq!(count("EPSG", Some(CrsKind::Compound), None), 584);
         assert_eq!(count("EPSG", None, Some(true)), 530);
-        // 2589 in the catalog, less those on projections terrio does not compute: Wagner VII,
+        // 2591 in the catalog, less those on projections terrio does not compute: Wagner VII,
         // Compact Miller, Goode Homolosine Ocean, Peirce quincuncial and Spilhaus; and without
         // wbprojection, the 28 on Aitoff, the other Eckerts and other projections.
         let refused = if cfg!(feature = "wbprojection-fallback") { 9 } else { 37 };
-        assert_eq!(count("ESRI", None, None), 2589 - refused);
+        assert_eq!(count("ESRI", None, None), 2591 - refused);
         assert_eq!(count("IAU_2015", None, None), 2201);
         assert_eq!(count("IAU_2015", Some(CrsKind::Other), None), 12);
         // The default leaves deprecated CRSs out.

@@ -47,7 +47,7 @@ CHANGES = ROOT / "crates" / "terrio-crs" / "tests" / "data" / "crs_list_changes.
 # Pinned catalog counts for the CLI's wbprojection-fallback build (PROJ 9.9.0 snapshot, EPSG
 # v13.102). Missing registry entries must fail even if a newer GDAL database lists additional
 # codes.
-EXPECTED_COUNTS = {"EPSG": 7961, "ESRI": 2580, "IAU_2015": 2201}
+EXPECTED_COUNTS = {"EPSG": 7961, "ESRI": 2582, "IAU_2015": 2201}
 
 KINDS = {
     osr.OSR_CRS_TYPE_GEOGRAPHIC_2D: "geographic_2d",
