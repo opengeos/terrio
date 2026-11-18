@@ -28,9 +28,10 @@ pub struct Args {
     /// the datum transformation of an EPSG CRS: keep the code or WKT to keep the CRS.
     #[arg(long, conflicts_with_all = ["to", "wkt", "wkt1_strict", "coords", "dimension", "transform_options", "s_coord_epoch", "t_coord_epoch"])]
     proj4: bool,
-    /// Print only the PROJ string GDAL 3.13.3 writes (`gdalsrsinfo -o proj4`, `OSRExportToProj4`): that of
-    /// `--proj4` without `+type=crs`, and for an EPSG or ESRI code with GDAL's `+towgs84` (where
-    /// PROJ finds a single transformation to WGS 84) and a compound CRS's geoid model.
+    /// Print only the PROJ string GDAL 3.13.3 writes (`gdalsrsinfo -o proj4`, `OSRExportToProj4`):
+    /// that of `--proj4` without `+type=crs`, and for an EPSG or ESRI code (or a WKT whose root
+    /// names one) with GDAL's `+towgs84` (where PROJ finds a single transformation to WGS 84) and
+    /// a compound CRS's geoid model.
     #[arg(
         long,
         conflicts_with_all = ["to", "wkt", "projjson", "proj4", "wkt1_strict", "coords", "dimension", "transform_options", "s_coord_epoch", "t_coord_epoch"]
