@@ -2028,8 +2028,9 @@ pub(crate) fn split_compound(w: &str) -> Option<(String, String)> {
     Some((horizontal.to_string(), vertical.to_string()))
 }
 
-/// The vertical CRS of a `VERT_CS` (or WKT 2 `VERTCRS`) definition: its EPSG code when it has
-/// one, else its unit and the geoid grids of GDAL's `PROJ4_GRIDS` extension.
+/// The vertical CRS of a `VERT_CS` (ESRI's `VERTCS`, WKT 2's `VERTCRS`) definition: its EPSG code
+/// when it has one or is identified ([`vertical_code`]), else its unit and the geoid grids of
+/// GDAL's `PROJ4_GRIDS` extension.
 pub(crate) fn vertical_from_wkt(w: &str) -> Option<Vertical> {
     let declared = vertical_code(w);
     if let Some(v) = declared.and_then(Vertical::from_epsg) {
@@ -2048,12 +2049,28 @@ pub(crate) fn vertical_from_wkt(w: &str) -> Option<Vertical> {
 }
 
 /// The EPSG code a vertical CRS's WKT declares, when its unit and direction are the code's
-/// (heights in feet declaring EGM96 height in metres are not EGM96 height).
+/// (heights in feet declaring EGM96 height in metres are not EGM96 height); without one, the code
+/// PROJ 9.9.0 identifies by its name, datum, unit and direction.
 pub(crate) fn vertical_code(w: &str) -> Option<u32> {
-    let code = super::declared_epsg(w)?;
-    let registered = Vertical::from_epsg(code)?;
     let (to_meter, down) = super::vertical_axis(w)?;
-    ((to_meter - registered.to_meter).abs() <= 1e-9 * registered.to_meter && down == registered.down).then_some(code)
+    let fits = |code: u32| epsg::vertical(code).is_some_and(|r| (to_meter - r.to_meter).abs() <= 1e-9 * r.to_meter && down == r.down);
+    if let Some(code) = super::declared_epsg(w) {
+        return fits(code).then_some(code);
+    }
+    // Without a code, the CRS its name finds on the datum its datum's name is, as PROJ 9.9.0
+    // identifies it (`VerticalCRS::identify`): ESRI's `VERTCS["EGM96_height",
+    // VDATUM["EGM96_Geoid"],...]` is EPSG:5773. Only a single such CRS.
+    let root = wkt1::parse(w)?;
+    if !root.is(keywords::VERTICAL_CRS) {
+        return None;
+    }
+    let esri = root.key.eq_ignore_ascii_case("VERTCS");
+    let on_datum = epsg::verticals_on_datum_named(root.first_in(keywords::VERTICAL_DATUM)?.name()?);
+    let found: Vec<u32> = epsg::verticals_named(root.name()?, esri).into_iter().filter(|c| fits(*c) && on_datum.contains(c)).collect();
+    match found[..] {
+        [code] => Some(code),
+        _ => None,
+    }
 }
 
 /// Whether a WKT is a WKT 2 `BOUNDCRS`.

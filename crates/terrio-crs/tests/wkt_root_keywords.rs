@@ -37,21 +37,26 @@ fn engineering_definitions_keep_their_wkt_without_an_epsg_guess() {
     }
 }
 
+/// The CRS's own identifier, never a nested one (its unit's, its datum's), is its code; without
+/// one, a vertical CRS is identified by its name, as PROJ 9.9.0's `to_epsg()` gives NAVD88 height
+/// EPSG:5703 and `Site height` on its datum none, whatever their nested identifiers.
 #[test]
 fn long_vertical_keyword_uses_the_crs_identifier_instead_of_nested_identifiers() {
-    for nested in ["", ",ID[\"EPSG\",9001]"] {
-        for identifier in ["", ",ID[\"EPSG\",5703]"] {
-            let body = format!(
-                "[\"NAVD88 height\",VDATUM[\"North American Vertical Datum 1988\",ID[\"EPSG\",5103]],CS[vertical,1],AXIS[\"gravity-related height (H)\",up],LENGTHUNIT[\"metre\",1{nested}]{identifier}]"
-            );
-            let short = SpatialRef::parse_literal(&format!("VERTCRS{body}")).unwrap();
-            for keyword in ["VERTICALCRS", "verticalcrs"] {
-                let text = format!("{keyword}{body}");
-                for parsed in [SpatialRef::parse(&text), SpatialRef::parse_literal(&text)] {
-                    let parsed = parsed.unwrap();
-                    assert_eq!(parsed.epsg, if identifier.is_empty() { None } else { Some(5703) });
-                    assert_eq!(parsed.epsg, short.epsg);
-                    assert_eq!(parsed.to_wkt().as_deref(), Some(text.as_str()));
+    for (name, identified) in [("NAVD88 height", Some(5703)), ("Site height", None)] {
+        for nested in ["", ",ID[\"EPSG\",9001]"] {
+            for identifier in ["", ",ID[\"EPSG\",5703]"] {
+                let body = format!(
+                    "[\"{name}\",VDATUM[\"North American Vertical Datum 1988\",ID[\"EPSG\",5103]],CS[vertical,1],AXIS[\"gravity-related height (H)\",up],LENGTHUNIT[\"metre\",1{nested}]{identifier}]"
+                );
+                let short = SpatialRef::parse_literal(&format!("VERTCRS{body}")).unwrap();
+                for keyword in ["VERTICALCRS", "verticalcrs"] {
+                    let text = format!("{keyword}{body}");
+                    for parsed in [SpatialRef::parse(&text), SpatialRef::parse_literal(&text)] {
+                        let parsed = parsed.unwrap();
+                        assert_eq!(parsed.epsg, if identifier.is_empty() { identified } else { Some(5703) }, "{text}");
+                        assert_eq!(parsed.epsg, short.epsg);
+                        assert_eq!(parsed.to_wkt().as_deref(), Some(text.as_str()));
+                    }
                 }
             }
         }

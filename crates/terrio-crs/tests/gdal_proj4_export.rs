@@ -68,18 +68,11 @@ fn other_definitions_of_a_code_are_written_as_gdal_exports_them() {
     // without the identifier, ESRI's WKT and the PROJ string get none
     // (`data/gdal_proj4_export_inputs.tsv`, `scripts/gen_gdal_towgs84.py`). The known differences
     // are compound CRSs given by a definition, which GDAL writes case by case (a WKT 1, rooted or
-    // not, with its horizontal part's `+towgs84` or its `PROJ4_GRIDS` geoid model; `+vunits` from
-    // ESRI's WKT), and EPSG:6871's PROJ string, which terrio writes on its sphere (`+R`), GDAL with
-    // `+wktext`.
-    let known = [
-        "EPSG:6871 wkt2",
-        "EPSG:6871 wkt1-rootless",
-        "EPSG:6871 esri",
-        "EPSG:6871 proj",
-        "EPSG:3901 wkt1",
-        "EPSG:3901 wkt1-rootless",
-        "EPSG:3901 esri",
-    ];
+    // not, with its horizontal part's `+towgs84` or its `PROJ4_GRIDS` geoid model), and EPSG:6871's
+    // PROJ string, which terrio writes on its sphere (`+R`), GDAL with `+wktext`. ESRI's WKT of a
+    // compound CRS (`PROJCS[...],VERTCS[...]`) is compound, with GDAL's `+vunits`.
+    let known =
+        ["EPSG:6871 wkt2", "EPSG:6871 wkt1-rootless", "EPSG:6871 esri", "EPSG:6871 proj", "EPSG:3901 wkt1", "EPSG:3901 wkt1-rootless"];
     let mut differ = Vec::new();
     for line in include_str!("data/gdal_proj4_export_inputs.tsv").lines() {
         let [code, kind, input, gdal] = line.split('\t').collect::<Vec<_>>()[..] else { panic!("{line}") };

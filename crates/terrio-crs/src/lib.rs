@@ -1713,6 +1713,10 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
     if def::split_compound(wkt).is_some() {
         return None;
     }
+    // A vertical CRS by its name, datum, unit and direction, as PROJ 9.9.0 identifies it.
+    if keywords::is(keywords::root_key(wkt), keywords::VERTICAL_CRS) {
+        return def::vertical_code(wkt);
+    }
     let (datums, others) = wkt_datums_and_others(wkt);
     // No known datum (or no datum node, or WKT the reader cannot parse): no code, and on purpose
     // not the registry's loose guess (#125).

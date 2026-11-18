@@ -190,5 +190,2163 @@
     "east"
    ]
   }
+ ],
+ "identified": [
+  {
+   "code": 3855,
+   "esri": "VERTCS[\"EGM2008_height\",VDATUM[\"EGM2008_Geoid\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 3855,
+   "gdal": "VERT_CS[\"EGM2008 height\",VERT_DATUM[\"EGM2008 geoid\",2005,AUTHORITY[\"EPSG\",\"1027\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 3855
+  },
+  {
+   "code": 3886,
+   "esri": "VERTCS[\"Fao_1979\",VDATUM[\"Fao_1979\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 3886,
+   "gdal": "VERT_CS[\"Fao 1979 height\",VERT_DATUM[\"Fao 1979\",2005,AUTHORITY[\"EPSG\",\"1028\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 3886
+  },
+  {
+   "code": 3900,
+   "esri": "VERTCS[\"N2000_height\",VDATUM[\"N2000\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 3900,
+   "gdal": "VERT_CS[\"N2000 height\",VERT_DATUM[\"N2000\",2005,AUTHORITY[\"EPSG\",\"1030\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 3900
+  },
+  {
+   "code": 4440,
+   "esri": "VERTCS[\"NZVD2009_height\",VDATUM[\"New_Zealand_Vertical_Datum_2009\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 4440,
+   "gdal": "VERT_CS[\"NZVD2009 height\",VERT_DATUM[\"New Zealand Vertical Datum 2009\",2005,AUTHORITY[\"EPSG\",\"1039\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 4440
+  },
+  {
+   "code": 4458,
+   "esri": "VERTCS[\"Dunedin_Bluff_1960_height\",VDATUM[\"Dunedin_Bluff_1960\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 4458,
+   "gdal": "VERT_CS[\"Dunedin-Bluff 1960 height\",VERT_DATUM[\"Dunedin-Bluff 1960\",2005,AUTHORITY[\"EPSG\",\"1040\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 4458
+  },
+  {
+   "code": 5193,
+   "esri": "VERTCS[\"KVD1964_Height\",VDATUM[\"Korean_Vertical_Datum_1964\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5193,
+   "gdal": "VERT_CS[\"KVD1964 height\",VERT_DATUM[\"Korean Vertical Datum 1964\",2005,AUTHORITY[\"EPSG\",\"1049\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5193
+  },
+  {
+   "code": 5195,
+   "esri": "VERTCS[\"Trieste_height\",VDATUM[\"Trieste\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5195,
+   "gdal": "VERT_CS[\"Trieste height\",VERT_DATUM[\"Trieste\",2005,AUTHORITY[\"EPSG\",\"1050\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5195
+  },
+  {
+   "code": 5214,
+   "esri": "VERTCS[\"Genoa_height\",VDATUM[\"Genoa\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5214,
+   "gdal": "VERT_CS[\"Genoa 1942 height\",VERT_DATUM[\"Genoa 1942\",2005,AUTHORITY[\"EPSG\",\"1051\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5214
+  },
+  {
+   "code": 5237,
+   "esri": "VERTCS[\"SLVD_height\",VDATUM[\"Sri_Lanka_Vertical_Datum\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5237,
+   "gdal": "VERT_CS[\"SLVD height\",VERT_DATUM[\"Sri Lanka Vertical Datum\",2005,AUTHORITY[\"EPSG\",\"1054\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5237
+  },
+  {
+   "code": 5317,
+   "esri": "VERTCS[\"FVR09_height\",VDATUM[\"Faroe_Islands_Vertical_Reference_2009\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5317,
+   "gdal": "VERT_CS[\"FVR09 height\",VERT_DATUM[\"Faroe Islands Vertical Reference 2009\",2005,AUTHORITY[\"EPSG\",\"1059\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5317
+  },
+  {
+   "code": 5336,
+   "esri": "VERTCS[\"Black_Sea_Depth\",VDATUM[\"Black_Sea\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5336,
+   "gdal": "VERT_CS[\"Black Sea depth\",VERT_DATUM[\"Black Sea\",2005,AUTHORITY[\"EPSG\",\"5134\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 5336
+  },
+  {
+   "code": 5597,
+   "esri": "VERTCS[\"FCSVR10_Height\",VDATUM[\"Fehmarnbelt_Vertical_Reference_2010\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5597,
+   "gdal": "VERT_CS[\"FCSVR10 height\",VERT_DATUM[\"Fehmarnbelt Vertical Reference 2010\",2005,AUTHORITY[\"EPSG\",\"1079\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5597
+  },
+  {
+   "code": 5600,
+   "esri": "VERTCS[\"NGPF\",VDATUM[\"Nivellement_General_de_Polynesie_Francaise\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5600,
+   "gdal": "VERT_CS[\"NGPF height\",VERT_DATUM[\"Nivellement General de Polynesie Francaise\",2005,AUTHORITY[\"EPSG\",\"5195\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5600
+  },
+  {
+   "code": 5601,
+   "esri": "VERTCS[\"IGN_1966\",VDATUM[\"IGN_1966\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5601,
+   "gdal": "VERT_CS[\"IGN 1966 height\",VERT_DATUM[\"IGN 1966\",2005,AUTHORITY[\"EPSG\",\"5196\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5601
+  },
+  {
+   "code": 5602,
+   "esri": "VERTCS[\"Moorea_SAU_1981\",VDATUM[\"Moorea_SAU_1981\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5602,
+   "gdal": "VERT_CS[\"Moorea SAU 1981 height\",VERT_DATUM[\"Moorea SAU 1981\",2005,AUTHORITY[\"EPSG\",\"5197\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5602
+  },
+  {
+   "code": 5603,
+   "esri": "VERTCS[\"Raiatea_SAU_2001\",VDATUM[\"Raiatea_SAU_2001\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5603,
+   "gdal": "VERT_CS[\"Raiatea SAU 2001 height\",VERT_DATUM[\"Raiatea SAU 2001\",2005,AUTHORITY[\"EPSG\",\"5198\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5603
+  },
+  {
+   "code": 5604,
+   "esri": "VERTCS[\"Maupiti_SAU_2001\",VDATUM[\"Maupiti_SAU_2001\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5604,
+   "gdal": "VERT_CS[\"Maupiti SAU 2001 height\",VERT_DATUM[\"Maupiti SAU 2001\",2005,AUTHORITY[\"EPSG\",\"5199\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5604
+  },
+  {
+   "code": 5605,
+   "esri": "VERTCS[\"Huahine_SAU_2001\",VDATUM[\"Huahine_SAU_2001\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5605,
+   "gdal": "VERT_CS[\"Huahine SAU 2001 height\",VERT_DATUM[\"Huahine SAU 2001\",2005,AUTHORITY[\"EPSG\",\"5200\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5605
+  },
+  {
+   "code": 5606,
+   "esri": "VERTCS[\"Tahaa_SAU_2001\",VDATUM[\"Tahaa_SAU_2001\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5606,
+   "gdal": "VERT_CS[\"Tahaa SAU 2001 height\",VERT_DATUM[\"Tahaa SAU 2001\",2005,AUTHORITY[\"EPSG\",\"5201\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5606
+  },
+  {
+   "code": 5607,
+   "esri": "VERTCS[\"Bora_Bora_SAU_2001\",VDATUM[\"Bora_Bora_SAU_2001\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5607,
+   "gdal": "VERT_CS[\"Bora Bora SAU 2001 height\",VERT_DATUM[\"Bora Bora SAU 2001\",2005,AUTHORITY[\"EPSG\",\"5202\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5607
+  },
+  {
+   "code": 5608,
+   "esri": "VERTCS[\"IGLD_1955\",VDATUM[\"International_Great_Lakes_Datum_1955\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5608,
+   "gdal": "VERT_CS[\"IGLD 1955 height\",VERT_DATUM[\"International Great Lakes Datum 1955\",2005,AUTHORITY[\"EPSG\",\"5204\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5608
+  },
+  {
+   "code": 5609,
+   "esri": "VERTCS[\"IGLD_1985\",VDATUM[\"International_Great_Lakes_Datum_1985\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5609,
+   "gdal": "VERT_CS[\"IGLD 1985 height\",VERT_DATUM[\"International Great Lakes Datum 1985\",2005,AUTHORITY[\"EPSG\",\"5205\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5609
+  },
+  {
+   "code": 5610,
+   "esri": "VERTCS[\"HVRS_1971\",VDATUM[\"Croatian_Vertical_Reference_System_1971\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5610,
+   "gdal": "VERT_CS[\"HVRS71 height\",VERT_DATUM[\"Croatian Vertical Reference Datum 1971\",2005,AUTHORITY[\"EPSG\",\"5207\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5610
+  },
+  {
+   "code": 5611,
+   "esri": "VERTCS[\"Caspian_height\",VDATUM[\"Caspian_Sea\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5611,
+   "gdal": "VERT_CS[\"Caspian height\",VERT_DATUM[\"Caspian Sea\",2005,AUTHORITY[\"EPSG\",\"5106\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5611
+  },
+  {
+   "code": 5612,
+   "esri": "VERTCS[\"Baltic_depth\",VDATUM[\"Baltic_Sea\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5612,
+   "gdal": "VERT_CS[\"Baltic 1977 depth\",VERT_DATUM[\"Baltic 1977\",2005,AUTHORITY[\"EPSG\",\"5105\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 5612
+  },
+  {
+   "code": 5613,
+   "esri": "VERTCS[\"RH2000\",VDATUM[\"Rikets_Hojdsystem_2000\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5613,
+   "gdal": "VERT_CS[\"RH2000 height\",VERT_DATUM[\"Rikets hojdsystem 2000\",2005,AUTHORITY[\"EPSG\",\"5208\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5613
+  },
+  {
+   "code": 5614,
+   "esri": "VERTCS[\"KOC_WD_depth_ft\",VDATUM[\"KOC_Well_Datum\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"foot\",0.3048]]",
+   "esri_epsg": 5614,
+   "gdal": "VERT_CS[\"KOC WD depth (ft)\",VERT_DATUM[\"KOC Well Datum\",2005,AUTHORITY[\"EPSG\",\"5187\"]],UNIT[\"foot\",0.3048,AUTHORITY[\"EPSG\",\"9002\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 5614
+  },
+  {
+   "code": 5615,
+   "esri": "VERTCS[\"RH1900\",VDATUM[\"Rikets_Hojdsystem_1900\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5615,
+   "gdal": "VERT_CS[\"RH00 height\",VERT_DATUM[\"Rikets hojdsystem 1900\",2005,AUTHORITY[\"EPSG\",\"5209\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5615
+  },
+  {
+   "code": 5616,
+   "esri": "VERTCS[\"IGN_1988_LS\",VDATUM[\"IGN_1988_LS\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5616,
+   "gdal": "VERT_CS[\"IGN 1988 LS height\",VERT_DATUM[\"IGN 1988 LS\",2005,AUTHORITY[\"EPSG\",\"5210\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5616
+  },
+  {
+   "code": 5617,
+   "esri": "VERTCS[\"IGN_1988_MG\",VDATUM[\"IGN_1988_MG\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5617,
+   "gdal": "VERT_CS[\"IGN 1988 MG height\",VERT_DATUM[\"IGN 1988 MG\",2005,AUTHORITY[\"EPSG\",\"5211\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5617
+  },
+  {
+   "code": 5618,
+   "esri": "VERTCS[\"IGN_1992_LD\",VDATUM[\"IGN_1992_LD\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5618,
+   "gdal": "VERT_CS[\"IGN 1992 LD height\",VERT_DATUM[\"IGN 1992 LD\",2005,AUTHORITY[\"EPSG\",\"5212\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5618
+  },
+  {
+   "code": 5619,
+   "esri": "VERTCS[\"IGN_1988_SB\",VDATUM[\"IGN_1988_SB\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5619,
+   "gdal": "VERT_CS[\"IGN 1988 SB height\",VERT_DATUM[\"IGN 1988 SB\",2005,AUTHORITY[\"EPSG\",\"5213\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5619
+  },
+  {
+   "code": 5620,
+   "esri": "VERTCS[\"IGN_1988_SM\",VDATUM[\"IGN_1988_SM\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5620,
+   "gdal": "VERT_CS[\"IGN 1988 SM height\",VERT_DATUM[\"IGN 1988 SM\",2005,AUTHORITY[\"EPSG\",\"5214\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5620
+  },
+  {
+   "code": 5621,
+   "esri": "VERTCS[\"EVRF_2007\",VDATUM[\"European_Vertical_Reference_Frame_2007\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5621,
+   "gdal": "VERT_CS[\"EVRF2007 height\",VERT_DATUM[\"European Vertical Reference Frame 2007\",2005,AUTHORITY[\"EPSG\",\"5215\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5621
+  },
+  {
+   "code": 5701,
+   "esri": "VERTCS[\"Newlyn\",VDATUM[\"Ordnance_Datum_Newlyn\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5701,
+   "gdal": "VERT_CS[\"ODN height\",VERT_DATUM[\"Ordnance Datum Newlyn\",2005,AUTHORITY[\"EPSG\",\"5101\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5701
+  },
+  {
+   "code": 5702,
+   "esri": "VERTCS[\"NGVD_1929\",VDATUM[\"National_Geodetic_Vertical_Datum_1929\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"US survey foot\",0.304800609601219]]",
+   "esri_epsg": 5702,
+   "gdal": "VERT_CS[\"NGVD29 height (ftUS)\",VERT_DATUM[\"National Geodetic Vertical Datum 1929\",2005,AUTHORITY[\"EPSG\",\"5102\"]],UNIT[\"US survey foot\",0.304800609601219,AUTHORITY[\"EPSG\",\"9003\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5702
+  },
+  {
+   "code": 5703,
+   "esri": "VERTCS[\"NAVD_1988\",VDATUM[\"North_American_Vertical_Datum_1988\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5703,
+   "gdal": "VERT_CS[\"NAVD88 height\",VERT_DATUM[\"North American Vertical Datum 1988\",2005,AUTHORITY[\"EPSG\",\"5103\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5703
+  },
+  {
+   "code": 5705,
+   "esri": "VERTCS[\"Baltic\",VDATUM[\"Baltic_Sea\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5705,
+   "gdal": "VERT_CS[\"Baltic 1977 height\",VERT_DATUM[\"Baltic 1977\",2005,AUTHORITY[\"EPSG\",\"5105\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5705
+  },
+  {
+   "code": 5706,
+   "esri": "VERTCS[\"Caspian\",VDATUM[\"Caspian_Sea\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5706,
+   "gdal": "VERT_CS[\"Caspian depth\",VERT_DATUM[\"Caspian Sea\",2005,AUTHORITY[\"EPSG\",\"5106\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 5706
+  },
+  {
+   "code": 5709,
+   "esri": "VERTCS[\"NAP\",VDATUM[\"Normaal_Amsterdams_Peil\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5709,
+   "gdal": "VERT_CS[\"NAP height\",VERT_DATUM[\"Normaal Amsterdams Peil\",2005,AUTHORITY[\"EPSG\",\"5109\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5709
+  },
+  {
+   "code": 5710,
+   "esri": "VERTCS[\"Oostende\",VDATUM[\"Oostende\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5710,
+   "gdal": "VERT_CS[\"Ostend height\",VERT_DATUM[\"Ostend\",2005,AUTHORITY[\"EPSG\",\"5110\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5710
+  },
+  {
+   "code": 5711,
+   "esri": "VERTCS[\"AHD\",VDATUM[\"Australian_Height_Datum\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5711,
+   "gdal": "VERT_CS[\"AHD height\",VERT_DATUM[\"Australian Height Datum\",2005,AUTHORITY[\"EPSG\",\"5111\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5711
+  },
+  {
+   "code": 5712,
+   "esri": "VERTCS[\"AHD_Tasmania\",VDATUM[\"Australian_Height_Datum_Tasmania\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5712,
+   "gdal": "VERT_CS[\"AHD (Tasmania) height\",VERT_DATUM[\"Australian Height Datum (Tasmania)\",2005,AUTHORITY[\"EPSG\",\"5112\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5712
+  },
+  {
+   "code": 5713,
+   "esri": "VERTCS[\"CGVD_1928\",VDATUM[\"Canadian_Geodetic_Vertical_Datum_of_1928\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5713,
+   "gdal": "VERT_CS[\"CGVD28 height\",VERT_DATUM[\"Canadian Geodetic Vertical Datum of 1928\",2005,AUTHORITY[\"EPSG\",\"5114\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5713
+  },
+  {
+   "code": 5714,
+   "esri": "VERTCS[\"MSL_Height\",VDATUM[\"Mean_Sea_Level\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5714,
+   "gdal": "VERT_CS[\"MSL height\",VERT_DATUM[\"Mean Sea Level\",2005,AUTHORITY[\"EPSG\",\"5100\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5714
+  },
+  {
+   "code": 5715,
+   "esri": "VERTCS[\"MSL_Depth\",VDATUM[\"Mean_Sea_Level\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5715,
+   "gdal": "VERT_CS[\"MSL depth\",VERT_DATUM[\"Mean Sea Level\",2005,AUTHORITY[\"EPSG\",\"5100\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 5715
+  },
+  {
+   "code": 5716,
+   "esri": "VERTCS[\"Piraeus\",VDATUM[\"Piraeus_Harbour_1986\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5716,
+   "gdal": "VERT_CS[\"Piraeus height\",VERT_DATUM[\"Piraeus Harbour 1986\",2005,AUTHORITY[\"EPSG\",\"5115\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5716
+  },
+  {
+   "code": 5717,
+   "esri": "VERTCS[\"N60\",VDATUM[\"Helsinki_1960\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5717,
+   "gdal": "VERT_CS[\"N60 height\",VERT_DATUM[\"Helsinki 1960\",2005,AUTHORITY[\"EPSG\",\"5116\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5717
+  },
+  {
+   "code": 5718,
+   "esri": "VERTCS[\"RH70\",VDATUM[\"Rikets_Hojdsystem_1970\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5718,
+   "gdal": "VERT_CS[\"RH70 height\",VERT_DATUM[\"Rikets hojdsystem 1970\",2005,AUTHORITY[\"EPSG\",\"5117\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5718
+  },
+  {
+   "code": 5719,
+   "esri": "VERTCS[\"NGF_Lallemand\",VDATUM[\"Nivellement_General_de_la_France_Lallemand\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5719,
+   "gdal": "VERT_CS[\"NGF Lallemand height\",VERT_DATUM[\"Nivellement General de la France - Lallemand\",2005,AUTHORITY[\"EPSG\",\"5118\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5719
+  },
+  {
+   "code": 5720,
+   "esri": "VERTCS[\"NGF_IGN69\",VDATUM[\"Nivellement_General_de_la_France_IGN69\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5720,
+   "gdal": "VERT_CS[\"NGF-IGN69 height\",VERT_DATUM[\"Nivellement General de la France - IGN69\",2005,AUTHORITY[\"EPSG\",\"5119\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5720
+  },
+  {
+   "code": 5721,
+   "esri": "VERTCS[\"NGF_IGN78\",VDATUM[\"Nivellement_General_de_la_France_IGN78\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5721,
+   "gdal": "VERT_CS[\"NGF-IGN78 height\",VERT_DATUM[\"Nivellement General de la France - IGN78\",2005,AUTHORITY[\"EPSG\",\"5120\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5721
+  },
+  {
+   "code": 5722,
+   "esri": "VERTCS[\"Maputo\",VDATUM[\"Maputo\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5722,
+   "gdal": "VERT_CS[\"Maputo height\",VERT_DATUM[\"Maputo\",2005,AUTHORITY[\"EPSG\",\"5121\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5722
+  },
+  {
+   "code": 5723,
+   "esri": "VERTCS[\"Japanese_Standard_Levelling_Datum_1969\",VDATUM[\"Japanese_Standard_Levelling_Datum_1969\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5723,
+   "gdal": "VERT_CS[\"JSLD69 height\",VERT_DATUM[\"Japanese Standard Levelling Datum 1969\",2005,AUTHORITY[\"EPSG\",\"5122\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5723
+  },
+  {
+   "code": 5724,
+   "esri": "VERTCS[\"PDO_Height_Datum_1993\",VDATUM[\"PDO_Height_Datum_1993\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5724,
+   "gdal": "VERT_CS[\"PHD93 height\",VERT_DATUM[\"PDO Height Datum 1993\",2005,AUTHORITY[\"EPSG\",\"5123\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5724
+  },
+  {
+   "code": 5725,
+   "esri": "VERTCS[\"Fahud_Height_Datum_1993\",VDATUM[\"Fahud_Height_Datum\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5725,
+   "gdal": "VERT_CS[\"Fahud HD height\",VERT_DATUM[\"Fahud Height Datum\",2005,AUTHORITY[\"EPSG\",\"5124\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5725
+  },
+  {
+   "code": 5726,
+   "esri": "VERTCS[\"Ha_Tien_1960\",VDATUM[\"Ha_Tien_1960\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5726,
+   "gdal": "VERT_CS[\"Ha Tien 1960 height\",VERT_DATUM[\"Ha Tien 1960\",2005,AUTHORITY[\"EPSG\",\"5125\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5726
+  },
+  {
+   "code": 5727,
+   "esri": "VERTCS[\"Hon_Dau_1992\",VDATUM[\"Hon_Dau_1992\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5727,
+   "gdal": "VERT_CS[\"Hon Dau 1992 height\",VERT_DATUM[\"Hon Dau 1992\",2005,AUTHORITY[\"EPSG\",\"5126\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5727
+  },
+  {
+   "code": 5728,
+   "esri": "VERTCS[\"LN_1902\",VDATUM[\"Landesnivellement_1902\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5728,
+   "gdal": "VERT_CS[\"LN02 height\",VERT_DATUM[\"Landesnivellement 1902\",2005,AUTHORITY[\"EPSG\",\"5127\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5728
+  },
+  {
+   "code": 5729,
+   "esri": "VERTCS[\"LHN95\",VDATUM[\"Landeshohennetz_1995\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5729,
+   "gdal": "VERT_CS[\"LHN95 height\",VERT_DATUM[\"Landeshohennetz 1995\",2005,AUTHORITY[\"EPSG\",\"5128\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5729
+  },
+  {
+   "code": 5730,
+   "esri": "VERTCS[\"EVRS_2000\",VDATUM[\"European_Vertical_Reference_Frame_2000\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5730,
+   "gdal": "VERT_CS[\"EVRF2000 height\",VERT_DATUM[\"European Vertical Reference Frame 2000\",2005,AUTHORITY[\"EPSG\",\"5129\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5730
+  },
+  {
+   "code": 5731,
+   "esri": "VERTCS[\"Malin_Head\",VDATUM[\"Malin_Head\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5731,
+   "gdal": "VERT_CS[\"Malin Head height\",VERT_DATUM[\"Malin Head\",2005,AUTHORITY[\"EPSG\",\"5130\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5731
+  },
+  {
+   "code": 5732,
+   "esri": "VERTCS[\"Belfast\",VDATUM[\"Belfast\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5732,
+   "gdal": "VERT_CS[\"Belfast height\",VERT_DATUM[\"Belfast Lough\",2005,AUTHORITY[\"EPSG\",\"5131\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5732
+  },
+  {
+   "code": 5733,
+   "esri": "VERTCS[\"Dansk_Normal_Nul\",VDATUM[\"Dansk_Normal_Nul\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5733,
+   "gdal": "VERT_CS[\"DNN height\",VERT_DATUM[\"Dansk Normal Nul\",2005,AUTHORITY[\"EPSG\",\"5132\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5733
+  },
+  {
+   "code": 5734,
+   "esri": "VERTCS[\"AIOC95_Depth\",VDATUM[\"AIOC_1995\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5734,
+   "gdal": "VERT_CS[\"AIOC95 depth\",VERT_DATUM[\"AIOC 1995\",2005,AUTHORITY[\"EPSG\",\"5133\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 5734
+  },
+  {
+   "code": 5735,
+   "esri": "VERTCS[\"Black_Sea\",VDATUM[\"Black_Sea\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5735,
+   "gdal": "VERT_CS[\"Black Sea height\",VERT_DATUM[\"Black Sea\",2005,AUTHORITY[\"EPSG\",\"5134\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5735
+  },
+  {
+   "code": 5736,
+   "esri": "VERTCS[\"Yellow_Sea_1956\",VDATUM[\"Yellow_Sea_1956\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5736,
+   "gdal": "VERT_CS[\"Yellow Sea 1956 height\",VERT_DATUM[\"Yellow Sea 1956\",2005,AUTHORITY[\"EPSG\",\"5104\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5736
+  },
+  {
+   "code": 5737,
+   "esri": "VERTCS[\"Yellow_Sea_1985\",VDATUM[\"Yellow_Sea_1985\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5737,
+   "gdal": "VERT_CS[\"Yellow Sea 1985 height\",VERT_DATUM[\"Yellow Sea 1985\",2005,AUTHORITY[\"EPSG\",\"5137\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5737
+  },
+  {
+   "code": 5738,
+   "esri": "VERTCS[\"Hong_Kong_Principal_Datum\",VDATUM[\"Hong_Kong_Principal_Datum\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5738,
+   "gdal": "VERT_CS[\"HKPD height\",VERT_DATUM[\"Hong Kong Principal Datum\",2005,AUTHORITY[\"EPSG\",\"5135\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5738
+  },
+  {
+   "code": 5739,
+   "esri": "VERTCS[\"Hong_Kong_Chart_Datum\",VDATUM[\"Hong_Kong_Chart_Datum\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5739,
+   "gdal": "VERT_CS[\"HKCD depth\",VERT_DATUM[\"Hong Kong Chart Datum\",2005,AUTHORITY[\"EPSG\",\"5136\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 5739
+  },
+  {
+   "code": 5740,
+   "esri": "VERTCS[\"Newlyn_Orkney_Isles\",VDATUM[\"Ordnance_Datum_Newlyn_Orkney_Isles\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5740,
+   "gdal": "VERT_CS[\"ODN Orkney height\",VERT_DATUM[\"Ordnance Datum Newlyn (Orkney Isles)\",2005,AUTHORITY[\"EPSG\",\"5138\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5740
+  },
+  {
+   "code": 5741,
+   "esri": "VERTCS[\"Fair_Isle\",VDATUM[\"Fair_Isle\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5741,
+   "gdal": "VERT_CS[\"Fair Isle height\",VERT_DATUM[\"Fair Isle\",2005,AUTHORITY[\"EPSG\",\"5139\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5741
+  },
+  {
+   "code": 5742,
+   "esri": "VERTCS[\"Lerwick\",VDATUM[\"Lerwick\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5742,
+   "gdal": "VERT_CS[\"Lerwick height\",VERT_DATUM[\"Lerwick\",2005,AUTHORITY[\"EPSG\",\"5140\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5742
+  },
+  {
+   "code": 5743,
+   "esri": "VERTCS[\"Foula\",VDATUM[\"Foula\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5743,
+   "gdal": "VERT_CS[\"Foula height\",VERT_DATUM[\"Foula\",2005,AUTHORITY[\"EPSG\",\"5141\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5743
+  },
+  {
+   "code": 5744,
+   "esri": "VERTCS[\"Sule_Skerry\",VDATUM[\"Sule_Skerry\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5744,
+   "gdal": "VERT_CS[\"Sule Skerry height\",VERT_DATUM[\"Sule Skerry\",2005,AUTHORITY[\"EPSG\",\"5142\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5744
+  },
+  {
+   "code": 5745,
+   "esri": "VERTCS[\"North_Rona\",VDATUM[\"North_Rona\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5745,
+   "gdal": "VERT_CS[\"North Rona height\",VERT_DATUM[\"North Rona\",2005,AUTHORITY[\"EPSG\",\"5143\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5745
+  },
+  {
+   "code": 5746,
+   "esri": "VERTCS[\"Stornoway\",VDATUM[\"Stornoway\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5746,
+   "gdal": "VERT_CS[\"Stornoway height\",VERT_DATUM[\"Stornoway\",2005,AUTHORITY[\"EPSG\",\"5144\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5746
+  },
+  {
+   "code": 5747,
+   "esri": "VERTCS[\"St_Kilda\",VDATUM[\"St_Kilda\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5747,
+   "gdal": "VERT_CS[\"St. Kilda height\",VERT_DATUM[\"St. Kilda\",2005,AUTHORITY[\"EPSG\",\"5145\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5747
+  },
+  {
+   "code": 5748,
+   "esri": "VERTCS[\"Flannan_Isles\",VDATUM[\"Flannan_Isles\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5748,
+   "gdal": "VERT_CS[\"Flannan Isles height\",VERT_DATUM[\"Flannan Isles\",2005,AUTHORITY[\"EPSG\",\"5146\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5748
+  },
+  {
+   "code": 5749,
+   "esri": "VERTCS[\"St_Marys\",VDATUM[\"St_Marys\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5749,
+   "gdal": "VERT_CS[\"St. Marys height\",VERT_DATUM[\"St. Marys\",2005,AUTHORITY[\"EPSG\",\"5147\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5749
+  },
+  {
+   "code": 5750,
+   "esri": "VERTCS[\"Douglas\",VDATUM[\"Douglas\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5750,
+   "gdal": "VERT_CS[\"Douglas height\",VERT_DATUM[\"Douglas\",2005,AUTHORITY[\"EPSG\",\"5148\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5750
+  },
+  {
+   "code": 5751,
+   "esri": "VERTCS[\"Fao\",VDATUM[\"Fao\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5751,
+   "gdal": "VERT_CS[\"Fao height\",VERT_DATUM[\"Fao\",2005,AUTHORITY[\"EPSG\",\"5149\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5751
+  },
+  {
+   "code": 5752,
+   "esri": "VERTCS[\"Bandar_Abbas\",VDATUM[\"Bandar_Abbas\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5752,
+   "gdal": "VERT_CS[\"Bandar Abbas height\",VERT_DATUM[\"Bandar Abbas\",2005,AUTHORITY[\"EPSG\",\"5150\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5752
+  },
+  {
+   "code": 5753,
+   "esri": "VERTCS[\"NGNC\",VDATUM[\"Nivellement_General_de_Nouvelle_Caledonie\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5753,
+   "gdal": "VERT_CS[\"NGNC69 height\",VERT_DATUM[\"Nivellement General de Nouvelle Caledonie\",2005,AUTHORITY[\"EPSG\",\"5151\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5753
+  },
+  {
+   "code": 5754,
+   "esri": "VERTCS[\"Poolbeg\",VDATUM[\"Poolbeg\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"British foot (1936)\",0.3048007491]]",
+   "esri_epsg": 5754,
+   "gdal": "VERT_CS[\"Poolbeg height (ft(Br36))\",VERT_DATUM[\"Poolbeg\",2005,AUTHORITY[\"EPSG\",\"5152\"]],UNIT[\"British foot (1936)\",0.3048007491,AUTHORITY[\"EPSG\",\"9095\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5754
+  },
+  {
+   "code": 5755,
+   "esri": "VERTCS[\"NGG_1977\",VDATUM[\"Nivellement_General_Guyanais_1977\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5755,
+   "gdal": "VERT_CS[\"NGG1977 height\",VERT_DATUM[\"Nivellement General Guyanais 1977\",2005,AUTHORITY[\"EPSG\",\"5153\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5755
+  },
+  {
+   "code": 5756,
+   "esri": "VERTCS[\"IGN_1987\",VDATUM[\"IGN_1987\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5756,
+   "gdal": "VERT_CS[\"Martinique 1987 height\",VERT_DATUM[\"Martinique 1987\",2005,AUTHORITY[\"EPSG\",\"5154\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5756
+  },
+  {
+   "code": 5757,
+   "esri": "VERTCS[\"IGN_1988\",VDATUM[\"IGN_1988\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5757,
+   "gdal": "VERT_CS[\"Guadeloupe 1988 height\",VERT_DATUM[\"Guadeloupe 1988\",2005,AUTHORITY[\"EPSG\",\"5155\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5757
+  },
+  {
+   "code": 5758,
+   "esri": "VERTCS[\"IGN_1989\",VDATUM[\"IGN_1989\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5758,
+   "gdal": "VERT_CS[\"Reunion 1989 height\",VERT_DATUM[\"Reunion 1989\",2005,AUTHORITY[\"EPSG\",\"5156\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5758
+  },
+  {
+   "code": 5759,
+   "esri": "VERTCS[\"Auckland\",VDATUM[\"Auckland\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5759,
+   "gdal": "VERT_CS[\"Auckland 1946 height\",VERT_DATUM[\"Auckland 1946\",2005,AUTHORITY[\"EPSG\",\"5157\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5759
+  },
+  {
+   "code": 5760,
+   "esri": "VERTCS[\"Bluff\",VDATUM[\"Bluff\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5760,
+   "gdal": "VERT_CS[\"Bluff 1955 height\",VERT_DATUM[\"Bluff 1955\",2005,AUTHORITY[\"EPSG\",\"5158\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5760
+  },
+  {
+   "code": 5761,
+   "esri": "VERTCS[\"Dunedin\",VDATUM[\"Dunedin\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5761,
+   "gdal": "VERT_CS[\"Dunedin 1958 height\",VERT_DATUM[\"Dunedin 1958\",2005,AUTHORITY[\"EPSG\",\"5159\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5761
+  },
+  {
+   "code": 5762,
+   "esri": "VERTCS[\"Gisborne\",VDATUM[\"Gisborne\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5762,
+   "gdal": "VERT_CS[\"Gisborne 1926 height\",VERT_DATUM[\"Gisborne 1926\",2005,AUTHORITY[\"EPSG\",\"5160\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5762
+  },
+  {
+   "code": 5763,
+   "esri": "VERTCS[\"Lyttelton\",VDATUM[\"Lyttelton\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5763,
+   "gdal": "VERT_CS[\"Lyttelton 1937 height\",VERT_DATUM[\"Lyttelton 1937\",2005,AUTHORITY[\"EPSG\",\"5161\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5763
+  },
+  {
+   "code": 5764,
+   "esri": "VERTCS[\"Moturiki\",VDATUM[\"Moturiki\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5764,
+   "gdal": "VERT_CS[\"Moturiki 1953 height\",VERT_DATUM[\"Moturiki 1953\",2005,AUTHORITY[\"EPSG\",\"5162\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5764
+  },
+  {
+   "code": 5765,
+   "esri": "VERTCS[\"Napier\",VDATUM[\"Napier\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5765,
+   "gdal": "VERT_CS[\"Napier 1962 height\",VERT_DATUM[\"Napier 1962\",2005,AUTHORITY[\"EPSG\",\"5163\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5765
+  },
+  {
+   "code": 5766,
+   "esri": "VERTCS[\"Nelson\",VDATUM[\"Nelson\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5766,
+   "gdal": "VERT_CS[\"Nelson 1955 height\",VERT_DATUM[\"Nelson 1955\",2005,AUTHORITY[\"EPSG\",\"5164\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5766
+  },
+  {
+   "code": 5767,
+   "esri": "VERTCS[\"One_Tree_Point\",VDATUM[\"One_Tree_Point\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5767,
+   "gdal": "VERT_CS[\"One Tree Point 1964 height\",VERT_DATUM[\"One Tree Point 1964\",2005,AUTHORITY[\"EPSG\",\"5165\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5767
+  },
+  {
+   "code": 5768,
+   "esri": "VERTCS[\"Tararu\",VDATUM[\"Tararu\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5768,
+   "gdal": "VERT_CS[\"Tararu 1952 height\",VERT_DATUM[\"Tararu 1952\",2005,AUTHORITY[\"EPSG\",\"5166\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5768
+  },
+  {
+   "code": 5769,
+   "esri": "VERTCS[\"Taranaki\",VDATUM[\"Taranaki\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5769,
+   "gdal": "VERT_CS[\"Taranaki 1970 height\",VERT_DATUM[\"Taranaki 1970\",2005,AUTHORITY[\"EPSG\",\"5167\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5769
+  },
+  {
+   "code": 5770,
+   "esri": "VERTCS[\"Wellington\",VDATUM[\"Wellington\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5770,
+   "gdal": "VERT_CS[\"Wellington 1953 height\",VERT_DATUM[\"Wellington 1953\",2005,AUTHORITY[\"EPSG\",\"5168\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5770
+  },
+  {
+   "code": 5771,
+   "esri": "VERTCS[\"Chatham_Island\",VDATUM[\"Chatham_Island\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5771,
+   "gdal": "VERT_CS[\"Chatham Island 1959 height\",VERT_DATUM[\"Waitangi (Chatham Island) 1959\",2005,AUTHORITY[\"EPSG\",\"5169\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5771
+  },
+  {
+   "code": 5772,
+   "esri": "VERTCS[\"Stewart_Island\",VDATUM[\"Stewart_Island\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5772,
+   "gdal": "VERT_CS[\"Stewart Island 1977 height\",VERT_DATUM[\"Stewart Island 1977\",2005,AUTHORITY[\"EPSG\",\"5170\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5772
+  },
+  {
+   "code": 5773,
+   "esri": "VERTCS[\"EGM96_height\",VDATUM[\"EGM96_Geoid\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5773,
+   "gdal": "VERT_CS[\"EGM96 height\",VERT_DATUM[\"EGM96 geoid\",2005,AUTHORITY[\"EPSG\",\"5171\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5773
+  },
+  {
+   "code": 5774,
+   "esri": "VERTCS[\"NG95_height\",VDATUM[\"Nivellement_General_du_Luxembourg\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5774,
+   "gdal": "VERT_CS[\"NG95 height\",VERT_DATUM[\"Nivellement General du Luxembourg 1995\",2005,AUTHORITY[\"EPSG\",\"5172\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5774
+  },
+  {
+   "code": 5775,
+   "esri": "VERTCS[\"Antalya\",VDATUM[\"Antalya\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5775,
+   "gdal": "VERT_CS[\"Antalya height\",VERT_DATUM[\"Antalya\",2005,AUTHORITY[\"EPSG\",\"5173\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5775
+  },
+  {
+   "code": 5776,
+   "esri": "VERTCS[\"NN54\",VDATUM[\"Norway_Normal_Null_1954\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5776,
+   "gdal": "VERT_CS[\"NN54 height\",VERT_DATUM[\"Norway Normal Null 1954\",2005,AUTHORITY[\"EPSG\",\"5174\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5776
+  },
+  {
+   "code": 5777,
+   "esri": "VERTCS[\"Durres\",VDATUM[\"Durres\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5777,
+   "gdal": "VERT_CS[\"Durres height\",VERT_DATUM[\"Durres\",2005,AUTHORITY[\"EPSG\",\"5175\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5777
+  },
+  {
+   "code": 5778,
+   "esri": "VERTCS[\"GHA\",VDATUM[\"Gebrauchshohen_Adria\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5778,
+   "gdal": "VERT_CS[\"GHA height\",VERT_DATUM[\"Gebrauchshohen ADRIA\",2005,AUTHORITY[\"EPSG\",\"5176\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5778
+  },
+  {
+   "code": 5779,
+   "esri": "VERTCS[\"SVS2000\",VDATUM[\"Slovenian_Vertical_System_2000\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5779,
+   "gdal": "VERT_CS[\"SVS2000 height\",VERT_DATUM[\"Slovenian Vertical System 2000\",2005,AUTHORITY[\"EPSG\",\"5177\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5779
+  },
+  {
+   "code": 5780,
+   "esri": "VERTCS[\"Cascais\",VDATUM[\"Cascais\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5780,
+   "gdal": "VERT_CS[\"Cascais height\",VERT_DATUM[\"Cascais\",2005,AUTHORITY[\"EPSG\",\"5178\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5780
+  },
+  {
+   "code": 5781,
+   "esri": "VERTCS[\"Constanta\",VDATUM[\"Constanta\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5781,
+   "gdal": "VERT_CS[\"Constanta height\",VERT_DATUM[\"Constanta\",2005,AUTHORITY[\"EPSG\",\"5179\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5781
+  },
+  {
+   "code": 5782,
+   "esri": "VERTCS[\"Alicante\",VDATUM[\"Alicante\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5782,
+   "gdal": "VERT_CS[\"Alicante height\",VERT_DATUM[\"Alicante\",2005,AUTHORITY[\"EPSG\",\"5180\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5782
+  },
+  {
+   "code": 5783,
+   "esri": "VERTCS[\"DHHN92\",VDATUM[\"Deutsches_Haupthoehennetz_1992\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5783,
+   "gdal": "VERT_CS[\"DHHN92 height\",VERT_DATUM[\"Deutsches Haupthoehennetz 1992\",2005,AUTHORITY[\"EPSG\",\"5181\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5783
+  },
+  {
+   "code": 5784,
+   "esri": "VERTCS[\"DHHN85\",VDATUM[\"Deutsches_Haupthoehennetz_1985\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5784,
+   "gdal": "VERT_CS[\"DHHN85 height\",VERT_DATUM[\"Deutsches Haupthoehennetz 1985\",2005,AUTHORITY[\"EPSG\",\"5182\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5784
+  },
+  {
+   "code": 5785,
+   "esri": "VERTCS[\"SNN76\",VDATUM[\"SNN76\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5785,
+   "gdal": "VERT_CS[\"SNN76 height\",VERT_DATUM[\"Staatlichen Nivellementnetzes 1976\",2005,AUTHORITY[\"EPSG\",\"5183\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5785
+  },
+  {
+   "code": 5786,
+   "esri": "VERTCS[\"Baltic_1982\",VDATUM[\"Baltic_1982\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5786,
+   "gdal": "VERT_CS[\"Baltic 1982 height\",VERT_DATUM[\"Baltic 1982\",2005,AUTHORITY[\"EPSG\",\"5184\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5786
+  },
+  {
+   "code": 5787,
+   "esri": "VERTCS[\"EOMA_1980\",VDATUM[\"Baltic_1980\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5787,
+   "gdal": "VERT_CS[\"EOMA 1980 height\",VERT_DATUM[\"Baltic 1980\",2005,AUTHORITY[\"EPSG\",\"5185\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5787
+  },
+  {
+   "code": 5788,
+   "esri": "VERTCS[\"Kuwait_PWD\",VDATUM[\"Kuwait_PWD\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5788,
+   "gdal": "VERT_CS[\"Kuwait PWD height\",VERT_DATUM[\"Kuwait PWD\",2005,AUTHORITY[\"EPSG\",\"5186\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5788
+  },
+  {
+   "code": 5789,
+   "esri": "VERTCS[\"KOC_Well_Datum\",VDATUM[\"KOC_Well_Datum\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5789,
+   "gdal": "VERT_CS[\"KOC WD depth\",VERT_DATUM[\"KOC Well Datum\",2005,AUTHORITY[\"EPSG\",\"5187\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 5789
+  },
+  {
+   "code": 5790,
+   "esri": "VERTCS[\"KOC_Construction_Datum\",VDATUM[\"KOC_Construction_Datum\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5790,
+   "gdal": "VERT_CS[\"KOC CD height\",VERT_DATUM[\"KOC Construction Datum\",2005,AUTHORITY[\"EPSG\",\"5188\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5790
+  },
+  {
+   "code": 5791,
+   "esri": "VERTCS[\"NGC_1948\",VDATUM[\"Nivellement_General_de_la_Corse_1948\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5791,
+   "gdal": "VERT_CS[\"NGC 1948 height\",VERT_DATUM[\"Nivellement General de la Corse 1948\",2005,AUTHORITY[\"EPSG\",\"5189\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5791
+  },
+  {
+   "code": 5792,
+   "esri": "VERTCS[\"Danger_1950\",VDATUM[\"Danger_1950\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5792,
+   "gdal": "VERT_CS[\"Danger 1950 height\",VERT_DATUM[\"Danger 1950\",2005,AUTHORITY[\"EPSG\",\"5190\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5792
+  },
+  {
+   "code": 5793,
+   "esri": "VERTCS[\"Mayotte_1950\",VDATUM[\"Mayotte_1950\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5793,
+   "gdal": "VERT_CS[\"Mayotte 1950 height\",VERT_DATUM[\"Mayotte 1950\",2005,AUTHORITY[\"EPSG\",\"5191\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5793
+  },
+  {
+   "code": 5794,
+   "esri": "VERTCS[\"Martinique_1955\",VDATUM[\"Martinique_1955\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5794,
+   "gdal": "VERT_CS[\"Martinique 1955 height\",VERT_DATUM[\"Martinique 1955\",2005,AUTHORITY[\"EPSG\",\"5192\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5794
+  },
+  {
+   "code": 5795,
+   "esri": "VERTCS[\"Guadeloupe_1951\",VDATUM[\"Guadeloupe_1951\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5795,
+   "gdal": "VERT_CS[\"Guadeloupe 1951 height\",VERT_DATUM[\"Guadeloupe 1951\",2005,AUTHORITY[\"EPSG\",\"5193\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5795
+  },
+  {
+   "code": 5796,
+   "esri": "VERTCS[\"Lagos_1955\",VDATUM[\"Lagos_1955\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5796,
+   "gdal": "VERT_CS[\"Lagos 1955 height\",VERT_DATUM[\"Lagos 1955\",2005,AUTHORITY[\"EPSG\",\"5194\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5796
+  },
+  {
+   "code": 5797,
+   "esri": "VERTCS[\"AIOC95_Height\",VDATUM[\"AIOC_1995\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5797,
+   "gdal": "VERT_CS[\"AIOC95 height\",VERT_DATUM[\"AIOC 1995\",2005,AUTHORITY[\"EPSG\",\"5133\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5797
+  },
+  {
+   "code": 5798,
+   "esri": "VERTCS[\"EGM84_height\",VDATUM[\"EGM84_Geoid\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5798,
+   "gdal": "VERT_CS[\"EGM84 height\",VERT_DATUM[\"EGM84 geoid\",2005,AUTHORITY[\"EPSG\",\"5203\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5798
+  },
+  {
+   "code": 5799,
+   "esri": "VERTCS[\"DVR90\",VDATUM[\"Dansk_Vertikal_Reference_1990_ensemble\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5799,
+   "gdal": "VERT_CS[\"DVR90 height\",VERT_DATUM[\"Dansk Vertikal Reference 1990 ensemble\",2005,AUTHORITY[\"EPSG\",\"1371\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5799
+  },
+  {
+   "code": 5829,
+   "esri": "VERTCS[\"Instantaneous_Water_Level_Height\",VDATUM[\"Sea_Level\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5829,
+   "gdal": "VERT_CS[\"Instantaneous Water Level height\",VERT_DATUM[\"Instantaneous Water Level\",2005,AUTHORITY[\"EPSG\",\"5113\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5829
+  },
+  {
+   "code": 5831,
+   "esri": "VERTCS[\"Instantaneous_Water_Level_Depth\",VDATUM[\"Sea_Level\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5831,
+   "gdal": "VERT_CS[\"Instantaneous Water Level depth\",VERT_DATUM[\"Instantaneous Water Level\",2005,AUTHORITY[\"EPSG\",\"5113\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 5831
+  },
+  {
+   "code": 5843,
+   "esri": "VERTCS[\"Ras_Ghumays_height\",VDATUM[\"Ras_Ghumays\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5843,
+   "gdal": "VERT_CS[\"Ras Ghumays height\",VERT_DATUM[\"Ras Ghumays\",2005,AUTHORITY[\"EPSG\",\"1146\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5843
+  },
+  {
+   "code": 5861,
+   "esri": "VERTCS[\"LAT_Depth\",VDATUM[\"Lowest_Astronomic_Tide\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5861,
+   "gdal": "VERT_CS[\"LAT depth\",VERT_DATUM[\"Lowest Astronomical Tide\",2005,AUTHORITY[\"EPSG\",\"1080\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 5861
+  },
+  {
+   "code": 5862,
+   "esri": "VERTCS[\"LLWLT_Depth\",VDATUM[\"Lower_Low_Water_Large_Tide\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5862,
+   "gdal": "VERT_CS[\"LLWLT depth\",VERT_DATUM[\"Lower Low Water Large Tide\",2005,AUTHORITY[\"EPSG\",\"1083\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 5862
+  },
+  {
+   "code": 5863,
+   "esri": "VERTCS[\"ISLW_Depth\",VDATUM[\"Indian_Spring_Low_Water\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5863,
+   "gdal": "VERT_CS[\"ISLW depth\",VERT_DATUM[\"Indian Spring Low Water\",2005,AUTHORITY[\"EPSG\",\"1085\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 5863
+  },
+  {
+   "code": 5864,
+   "esri": "VERTCS[\"MLLWS_Depth\",VDATUM[\"Mean_Lower_Low_Water_Spring_Tides\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5864,
+   "gdal": "VERT_CS[\"MLLWS depth\",VERT_DATUM[\"Mean Lower Low Water Spring Tides\",2005,AUTHORITY[\"EPSG\",\"1086\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 5864
+  },
+  {
+   "code": 5865,
+   "esri": "VERTCS[\"MLWS_Depth\",VDATUM[\"Mean_Low_Water_Spring_Tides\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5865,
+   "gdal": "VERT_CS[\"MLWS depth\",VERT_DATUM[\"Mean Low Water Spring Tides\",2005,AUTHORITY[\"EPSG\",\"1087\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 5865
+  },
+  {
+   "code": 5866,
+   "esri": "VERTCS[\"MLLW_Depth\",VDATUM[\"Mean_Lower_Low_Water\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5866,
+   "gdal": "VERT_CS[\"MLLW depth\",VERT_DATUM[\"Mean Lower Low Water\",2005,AUTHORITY[\"EPSG\",\"1089\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 5866
+  },
+  {
+   "code": 5867,
+   "esri": "VERTCS[\"MLW_Depth\",VDATUM[\"Mean_Low_Water\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5867,
+   "gdal": "VERT_CS[\"MLW depth\",VERT_DATUM[\"Mean Low Water\",2005,AUTHORITY[\"EPSG\",\"1091\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 5867
+  },
+  {
+   "code": 5868,
+   "esri": "VERTCS[\"MHW_Height\",VDATUM[\"Mean_High_Water\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5868,
+   "gdal": "VERT_CS[\"MHW height\",VERT_DATUM[\"Mean High Water\",2005,AUTHORITY[\"EPSG\",\"1092\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5868
+  },
+  {
+   "code": 5869,
+   "esri": "VERTCS[\"MHHW_Height\",VDATUM[\"Mean_Higher_High_Water\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5869,
+   "gdal": "VERT_CS[\"MHHW height\",VERT_DATUM[\"Mean Higher High Water\",2005,AUTHORITY[\"EPSG\",\"1090\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5869
+  },
+  {
+   "code": 5870,
+   "esri": "VERTCS[\"MHWS_Height\",VDATUM[\"Mean_High_Water_Spring_Tides\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5870,
+   "gdal": "VERT_CS[\"MHWS height\",VERT_DATUM[\"Mean High Water Spring Tides\",2005,AUTHORITY[\"EPSG\",\"1088\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5870
+  },
+  {
+   "code": 5871,
+   "esri": "VERTCS[\"HHWLT_Height\",VDATUM[\"Higher_High_Water_Large_Tide\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5871,
+   "gdal": "VERT_CS[\"HHWLT height\",VERT_DATUM[\"Higher High Water Large Tide\",2005,AUTHORITY[\"EPSG\",\"1084\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5871
+  },
+  {
+   "code": 5872,
+   "esri": "VERTCS[\"HAT_Height\",VDATUM[\"Highest_Astronomic_Tide\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5872,
+   "gdal": "VERT_CS[\"HAT height\",VERT_DATUM[\"Highest Astronomical Tide\",2005,AUTHORITY[\"EPSG\",\"1082\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5872
+  },
+  {
+   "code": 5873,
+   "esri": "VERTCS[\"Low_Water_Depth\",VDATUM[\"Low_Water\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5873,
+   "gdal": "VERT_CS[\"Low Water depth\",VERT_DATUM[\"Low Water\",2005,AUTHORITY[\"EPSG\",\"1093\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 5873
+  },
+  {
+   "code": 5874,
+   "esri": "VERTCS[\"High_Water_Height\",VDATUM[\"High_Water\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5874,
+   "gdal": "VERT_CS[\"High Water height\",VERT_DATUM[\"High Water\",2005,AUTHORITY[\"EPSG\",\"1094\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5874
+  },
+  {
+   "code": 5941,
+   "esri": "VERTCS[\"NN2000_height\",VDATUM[\"Norway_Normal_Null_2000\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 5941,
+   "gdal": "VERT_CS[\"NN2000:2018 height\",VERT_DATUM[\"Norway Normal Null 2000:2018\",2005,AUTHORITY[\"EPSG\",\"1096\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 5941
+  },
+  {
+   "code": 6130,
+   "esri": "VERTCS[\"GCVD54_height\",VDATUM[\"Grand_Cayman_Vertical_Datum_1954\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"foot\",0.3048]]",
+   "esri_epsg": 6130,
+   "gdal": "VERT_CS[\"GCVD54 height (ft)\",VERT_DATUM[\"Grand Cayman Vertical Datum 1954\",2005,AUTHORITY[\"EPSG\",\"1097\"]],UNIT[\"foot\",0.3048,AUTHORITY[\"EPSG\",\"9002\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 6130
+  },
+  {
+   "code": 6131,
+   "esri": "VERTCS[\"LCVD61_height\",VDATUM[\"Little_Cayman_Vertical_Datum_1961\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"foot\",0.3048]]",
+   "esri_epsg": 6131,
+   "gdal": "VERT_CS[\"LCVD61 height (ft)\",VERT_DATUM[\"Little Cayman Vertical Datum 1961\",2005,AUTHORITY[\"EPSG\",\"1098\"]],UNIT[\"foot\",0.3048,AUTHORITY[\"EPSG\",\"9002\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 6131
+  },
+  {
+   "code": 6132,
+   "esri": "VERTCS[\"CBVD61_height\",VDATUM[\"Cayman_Brac_Vertical_Datum_1961\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"foot\",0.3048]]",
+   "esri_epsg": 6132,
+   "gdal": "VERT_CS[\"CBVD61 height (ft)\",VERT_DATUM[\"Cayman Brac Vertical Datum 1961\",2005,AUTHORITY[\"EPSG\",\"1099\"]],UNIT[\"foot\",0.3048,AUTHORITY[\"EPSG\",\"9002\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 6132
+  },
+  {
+   "code": 6178,
+   "esri": "VERTCS[\"Cais_da_Pontinha-Funchal_height\",VDATUM[\"Cais_da_Pontinha-Funchal\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 6178,
+   "gdal": "VERT_CS[\"Cais da Pontinha height\",VERT_DATUM[\"Cais da Pontinha\",2005,AUTHORITY[\"EPSG\",\"1101\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 6178
+  },
+  {
+   "code": 6179,
+   "esri": "VERTCS[\"Cais_da_Vila-Porto_Santo_height\",VDATUM[\"Cais_da_Vila-Porto_Santo\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 6179,
+   "gdal": "VERT_CS[\"Cais da Vila height\",VERT_DATUM[\"Cais da Vila\",2005,AUTHORITY[\"EPSG\",\"1102\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 6179
+  },
+  {
+   "code": 6180,
+   "esri": "VERTCS[\"Cais_das_Velas_height\",VDATUM[\"Cais_das_Velas\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 6180,
+   "gdal": "VERT_CS[\"Cais das Velas height\",VERT_DATUM[\"Cais das Velas\",2005,AUTHORITY[\"EPSG\",\"1103\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 6180
+  },
+  {
+   "code": 6181,
+   "esri": "VERTCS[\"Horta_height\",VDATUM[\"Horta\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 6181,
+   "gdal": "VERT_CS[\"Horta height\",VERT_DATUM[\"Horta\",2005,AUTHORITY[\"EPSG\",\"1104\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 6181
+  },
+  {
+   "code": 6182,
+   "esri": "VERTCS[\"Cais_da_Madalena_height\",VDATUM[\"Cais_da_Madalena\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 6182,
+   "gdal": "VERT_CS[\"Cais da Madalena height\",VERT_DATUM[\"Cais da Madalena\",2005,AUTHORITY[\"EPSG\",\"1105\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 6182
+  },
+  {
+   "code": 6183,
+   "esri": "VERTCS[\"Santa_Cruz_da_Graciosa_height\",VDATUM[\"Santa_Cruz_da_Graciosa\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 6183,
+   "gdal": "VERT_CS[\"Santa Cruz da Graciosa height\",VERT_DATUM[\"Santa Cruz da Graciosa\",2005,AUTHORITY[\"EPSG\",\"1106\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 6183
+  },
+  {
+   "code": 6184,
+   "esri": "VERTCS[\"Cais_da_Figueirinha-Angra_do_Heroismo_height\",VDATUM[\"Cais_da_Figueirinha-Angra_do_Heroismo\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 6184,
+   "gdal": "VERT_CS[\"Cais da Figueirinha height\",VERT_DATUM[\"Cais da Figueirinha\",2005,AUTHORITY[\"EPSG\",\"1107\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 6184
+  },
+  {
+   "code": 6185,
+   "esri": "VERTCS[\"Santa_Cruz_das_Flores_height\",VDATUM[\"Santa_Cruz_das_Flores\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 6185,
+   "gdal": "VERT_CS[\"Santa Cruz das Flores height\",VERT_DATUM[\"Santa Cruz das Flores\",2005,AUTHORITY[\"EPSG\",\"1108\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 6185
+  },
+  {
+   "code": 6186,
+   "esri": "VERTCS[\"Cais_da_Vila_do_Porto_height\",VDATUM[\"Cais_da_Vila_do_Porto\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 6186,
+   "gdal": "VERT_CS[\"Cais da Vila do Porto height\",VERT_DATUM[\"Cais da Vila do Porto\",2005,AUTHORITY[\"EPSG\",\"1109\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 6186
+  },
+  {
+   "code": 6187,
+   "esri": "VERTCS[\"Ponta_Delgada_height\",VDATUM[\"Ponta_Delgada\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 6187,
+   "gdal": "VERT_CS[\"Ponta Delgada height\",VERT_DATUM[\"Ponta Delgada\",2005,AUTHORITY[\"EPSG\",\"1110\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 6187
+  },
+  {
+   "code": 6357,
+   "esri": "VERTCS[\"NAVD88_depth\",VDATUM[\"North_American_Vertical_Datum_1988\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 6357,
+   "gdal": "VERT_CS[\"NAVD88 depth\",VERT_DATUM[\"North American Vertical Datum 1988\",2005,AUTHORITY[\"EPSG\",\"5103\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 6357
+  },
+  {
+   "code": 6358,
+   "esri": "VERTCS[\"NAVD88_depth_(ftUS)\",VDATUM[\"North_American_Vertical_Datum_1988\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"US survey foot\",0.304800609601219]]",
+   "esri_epsg": 6358,
+   "gdal": "VERT_CS[\"NAVD88 depth (ftUS)\",VERT_DATUM[\"North American Vertical Datum 1988\",2005,AUTHORITY[\"EPSG\",\"5103\"]],UNIT[\"US survey foot\",0.304800609601219,AUTHORITY[\"EPSG\",\"9003\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 6358
+  },
+  {
+   "code": 6359,
+   "esri": "VERTCS[\"NGVD29_depth\",VDATUM[\"National_Geodetic_Vertical_Datum_1929\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"US survey foot\",0.304800609601219]]",
+   "esri_epsg": 6359,
+   "gdal": "VERT_CS[\"NGVD29 depth (ftUS)\",VERT_DATUM[\"National Geodetic Vertical Datum 1929\",2005,AUTHORITY[\"EPSG\",\"5102\"]],UNIT[\"US survey foot\",0.304800609601219,AUTHORITY[\"EPSG\",\"9003\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 6359
+  },
+  {
+   "code": 6360,
+   "esri": "VERTCS[\"NAVD88_height_(ftUS)\",VDATUM[\"North_American_Vertical_Datum_1988\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"US survey foot\",0.304800609601219]]",
+   "esri_epsg": 6360,
+   "gdal": "VERT_CS[\"NAVD88 height (ftUS)\",VERT_DATUM[\"North American Vertical Datum 1988\",2005,AUTHORITY[\"EPSG\",\"5103\"]],UNIT[\"US survey foot\",0.304800609601219,AUTHORITY[\"EPSG\",\"9003\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 6360
+  },
+  {
+   "code": 6638,
+   "esri": "VERTCS[\"Tutuila_1962_height\",VDATUM[\"Tutuila_Vertical_Datum_of_1962\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 6638,
+   "gdal": "VERT_CS[\"Tutuila 1962 height\",VERT_DATUM[\"Tutuila Vertical Datum of 1962\",2005,AUTHORITY[\"EPSG\",\"1121\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 6638
+  },
+  {
+   "code": 6639,
+   "esri": "VERTCS[\"Guam_1963_height\",VDATUM[\"Guam_Vertical_Datum_of_1963\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 6639,
+   "gdal": "VERT_CS[\"Guam 1963 height\",VERT_DATUM[\"Guam Vertical Datum of 1963\",2005,AUTHORITY[\"EPSG\",\"1122\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 6639
+  },
+  {
+   "code": 6640,
+   "esri": "VERTCS[\"NMVD03_height\",VDATUM[\"Northern_Marianas_Vertical_Datum_of_2003\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 6640,
+   "gdal": "VERT_CS[\"NMVD03 height\",VERT_DATUM[\"Northern Marianas Vertical Datum of 2003\",2005,AUTHORITY[\"EPSG\",\"1119\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 6640
+  },
+  {
+   "code": 6641,
+   "esri": "VERTCS[\"PRVD02_height\",VDATUM[\"Puerto_Rico_Vertical_Datum_of_2002\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 6641,
+   "gdal": "VERT_CS[\"PRVD02 height\",VERT_DATUM[\"Puerto Rico Vertical Datum of 2002\",2005,AUTHORITY[\"EPSG\",\"1123\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 6641
+  },
+  {
+   "code": 6642,
+   "esri": "VERTCS[\"VIVD09_height\",VDATUM[\"Virgin_Islands_Vertical_Datum_of_2009\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 6642,
+   "gdal": "VERT_CS[\"VIVD09 height\",VERT_DATUM[\"Virgin Islands Vertical Datum of 2009\",2005,AUTHORITY[\"EPSG\",\"1124\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 6642
+  },
+  {
+   "code": 6643,
+   "esri": "VERTCS[\"ASVD02_height\",VDATUM[\"American_Samoa_Vertical_Datum_of_2002\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 6643,
+   "gdal": "VERT_CS[\"ASVD02 height\",VERT_DATUM[\"American Samoa Vertical Datum of 2002\",2005,AUTHORITY[\"EPSG\",\"1125\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 6643
+  },
+  {
+   "code": 6644,
+   "esri": "VERTCS[\"GUVD04_height\",VDATUM[\"Guam_Vertical_Datum_of_2004\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 6644,
+   "gdal": "VERT_CS[\"GUVD04 height\",VERT_DATUM[\"Guam Vertical Datum of 2004\",2005,AUTHORITY[\"EPSG\",\"1126\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 6644
+  },
+  {
+   "code": 6647,
+   "esri": "VERTCS[\"CGVD2013_height\",VDATUM[\"Canadian_Geodetic_Vertical_Datum_of_2013\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 6647,
+   "gdal": "VERT_CS[\"CGVD2013(CGG2013) height\",VERT_DATUM[\"Canadian Geodetic Vertical Datum of 2013 (CGG2013)\",2005,AUTHORITY[\"EPSG\",\"1127\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 6647
+  },
+  {
+   "code": 6693,
+   "esri": "VERTCS[\"JSLD72_height\",VDATUM[\"Japanese_Standard_Levelling_Datum_1972\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 6693,
+   "gdal": "VERT_CS[\"JSLD72 height\",VERT_DATUM[\"Japanese Standard Levelling Datum 1972\",2005,AUTHORITY[\"EPSG\",\"1129\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 6693
+  },
+  {
+   "code": 6694,
+   "esri": "VERTCS[\"JGD2000_vertical_height\",VDATUM[\"Japanese_Geodetic_Datum_2000_vertical\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 6694,
+   "gdal": "VERT_CS[\"JGD2000 (vertical) height\",VERT_DATUM[\"Japanese Geodetic Datum 2000 (vertical)\",2005,AUTHORITY[\"EPSG\",\"1130\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 6694
+  },
+  {
+   "code": 6695,
+   "esri": "VERTCS[\"JGD2011_vertical_height\",VDATUM[\"Japanese_Geodetic_Datum_2011_vertical\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 6695,
+   "gdal": "VERT_CS[\"JGD2011 (vertical) height\",VERT_DATUM[\"Japanese Geodetic Datum 2011 (vertical)\",2005,AUTHORITY[\"EPSG\",\"1131\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 6695
+  },
+  {
+   "code": 6916,
+   "esri": "VERTCS[\"SHD_height\",VDATUM[\"Singapore_Height_Datum\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 6916,
+   "gdal": "VERT_CS[\"SHD height\",VERT_DATUM[\"Singapore Height Datum\",2005,AUTHORITY[\"EPSG\",\"1140\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 6916
+  },
+  {
+   "code": 7446,
+   "esri": "VERTCS[\"Famagusta_1960_(height)\",VDATUM[\"Famagusta_1960\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 7446,
+   "gdal": "VERT_CS[\"Famagusta 1960 height\",VERT_DATUM[\"Famagusta 1960\",2005,AUTHORITY[\"EPSG\",\"1148\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 7446
+  },
+  {
+   "code": 7447,
+   "esri": "VERTCS[\"PNG08_(height)\",VDATUM[\"Papua_New_Guinea_2008\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 7447,
+   "gdal": "VERT_CS[\"PNG08 height\",VERT_DATUM[\"PNG08\",2005,AUTHORITY[\"EPSG\",\"1149\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 7447
+  },
+  {
+   "code": 7651,
+   "esri": "VERTCS[\"Kumul_34_(height)\",VDATUM[\"Kumul_34\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 7651,
+   "gdal": "VERT_CS[\"Kumul 34 height\",VERT_DATUM[\"Kumul 34\",2005,AUTHORITY[\"EPSG\",\"1150\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 7651
+  },
+  {
+   "code": 7652,
+   "esri": "VERTCS[\"Kiunga_(height)\",VDATUM[\"Kiunga\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 7652,
+   "gdal": "VERT_CS[\"Kiunga height\",VERT_DATUM[\"Kiunga\",2005,AUTHORITY[\"EPSG\",\"1151\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 7652
+  },
+  {
+   "code": 7699,
+   "esri": "VERTCS[\"DHHN12_(height)\",VDATUM[\"Deutsches_Haupthoehennetz_1912\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 7699,
+   "gdal": "VERT_CS[\"DHHN12 height\",VERT_DATUM[\"Deutsches Haupthoehennetz 1912\",2005,AUTHORITY[\"EPSG\",\"1161\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 7699
+  },
+  {
+   "code": 7700,
+   "esri": "VERTCS[\"Latvia_2000_(height)\",VDATUM[\"Latvian_Height_System_2000\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 7700,
+   "gdal": "VERT_CS[\"Latvia 2000 height\",VERT_DATUM[\"Latvian Height System 2000\",2005,AUTHORITY[\"EPSG\",\"1162\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 7700
+  },
+  {
+   "code": 7707,
+   "esri": "VERTCS[\"ODN_(Offshore)_(height)\",VDATUM[\"Ordnance_Datum_Newlyn_(Offshore)\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 7707,
+   "gdal": "VERT_CS[\"ODN (Offshore) height\",VERT_DATUM[\"Ordnance Datum Newlyn (Offshore)\",2005,AUTHORITY[\"EPSG\",\"1164\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 7707
+  },
+  {
+   "code": 7832,
+   "esri": "VERTCS[\"POM96_height\",VDATUM[\"Port_Moresby_1996\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 7832,
+   "gdal": "VERT_CS[\"POM96 height\",VERT_DATUM[\"Port Moresby 1996\",2005,AUTHORITY[\"EPSG\",\"1171\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 7832
+  },
+  {
+   "code": 7837,
+   "esri": "VERTCS[\"DHHN2016_(height)\",VDATUM[\"Deutsches_Haupthoehennetz_2016\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 7837,
+   "gdal": "VERT_CS[\"DHHN2016 height\",VERT_DATUM[\"Deutsches Haupthoehennetz 2016\",2005,AUTHORITY[\"EPSG\",\"1170\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 7837
+  },
+  {
+   "code": 7839,
+   "esri": "VERTCS[\"NZVD2016_height\",VDATUM[\"New_Zealand_Vertical_Datum_2016\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 7839,
+   "gdal": "VERT_CS[\"NZVD2016 height\",VERT_DATUM[\"New Zealand Vertical Datum 2016\",2005,AUTHORITY[\"EPSG\",\"1169\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 7839
+  },
+  {
+   "code": 7841,
+   "esri": "VERTCS[\"POM08_height\",VDATUM[\"Port_Moresby_2008\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 7841,
+   "gdal": "VERT_CS[\"POM08 height\",VERT_DATUM[\"Port Moresby 2008\",2005,AUTHORITY[\"EPSG\",\"1172\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 7841
+  },
+  {
+   "code": 7888,
+   "esri": "VERTCS[\"Jamestown_1971_height\",VDATUM[\"Jamestown_1971\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 7888,
+   "gdal": "VERT_CS[\"Jamestown 1971 height\",VERT_DATUM[\"Jamestown 1971\",2005,AUTHORITY[\"EPSG\",\"1175\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 7888
+  },
+  {
+   "code": 7889,
+   "esri": "VERTCS[\"St_Helena_Tritan_2011_height\",VDATUM[\"St_Helena_Tritan_Vertical_Datum_2011\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 7889,
+   "gdal": "VERT_CS[\"St. Helena Tritan 2011 height\",VERT_DATUM[\"St. Helena Tritan Vertical Datum 2011\",2005,AUTHORITY[\"EPSG\",\"1176\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 7889
+  },
+  {
+   "code": 7890,
+   "esri": "VERTCS[\"SHVD2015_height\",VDATUM[\"St_Helena_Vertical_Datum_2015\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 7890,
+   "gdal": "VERT_CS[\"SHVD2015 height\",VERT_DATUM[\"St. Helena Vertical Datum 2015\",2005,AUTHORITY[\"EPSG\",\"1177\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 7890
+  },
+  {
+   "code": 7962,
+   "esri": "VERTCS[\"Poolbeg_height_(m)\",VDATUM[\"Poolbeg\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 7962,
+   "gdal": "VERT_CS[\"Poolbeg height (m)\",VERT_DATUM[\"Poolbeg\",2005,AUTHORITY[\"EPSG\",\"5152\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 7962
+  },
+  {
+   "code": 7968,
+   "esri": "VERTCS[\"NGVD_1929_height_(m)\",VDATUM[\"National_Geodetic_Vertical_Datum_1929\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 7968,
+   "gdal": "VERT_CS[\"NGVD29 height (m)\",VERT_DATUM[\"National Geodetic Vertical Datum 1929\",2005,AUTHORITY[\"EPSG\",\"5102\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 7968
+  },
+  {
+   "code": 7976,
+   "esri": "VERTCS[\"HKPD_depth\",VDATUM[\"Hong_Kong_Principal_Datum\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 7976,
+   "gdal": "VERT_CS[\"HKPD depth\",VERT_DATUM[\"Hong Kong Principal Datum\",2005,AUTHORITY[\"EPSG\",\"5135\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 7976
+  },
+  {
+   "code": 7979,
+   "esri": "VERTCS[\"KOC_WD_height\",VDATUM[\"KOC_Well_Datum\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 7979,
+   "gdal": "VERT_CS[\"KOC WD height\",VERT_DATUM[\"KOC Well Datum\",2005,AUTHORITY[\"EPSG\",\"5187\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 7979
+  },
+  {
+   "code": 8050,
+   "esri": "VERTCS[\"MSL_height_(ftIntl)\",VDATUM[\"Mean_Sea_Level\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"foot\",0.3048]]",
+   "esri_epsg": 8050,
+   "gdal": "VERT_CS[\"MSL height (ft)\",VERT_DATUM[\"Mean Sea Level\",2005,AUTHORITY[\"EPSG\",\"5100\"]],UNIT[\"foot\",0.3048,AUTHORITY[\"EPSG\",\"9002\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 8050
+  },
+  {
+   "code": 8051,
+   "esri": "VERTCS[\"MSL_depth_(ftIntl)\",VDATUM[\"Mean_Sea_Level\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"foot\",0.3048]]",
+   "esri_epsg": 8051,
+   "gdal": "VERT_CS[\"MSL depth (ft)\",VERT_DATUM[\"Mean Sea Level\",2005,AUTHORITY[\"EPSG\",\"5100\"]],UNIT[\"foot\",0.3048,AUTHORITY[\"EPSG\",\"9002\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 8051
+  },
+  {
+   "code": 8052,
+   "esri": "VERTCS[\"MSL_height_(ftUS)\",VDATUM[\"Mean_Sea_Level\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"US survey foot\",0.304800609601219]]",
+   "esri_epsg": 8052,
+   "gdal": "VERT_CS[\"MSL height (ftUS)\",VERT_DATUM[\"Mean Sea Level\",2005,AUTHORITY[\"EPSG\",\"5100\"]],UNIT[\"US survey foot\",0.304800609601219,AUTHORITY[\"EPSG\",\"9003\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 8052
+  },
+  {
+   "code": 8053,
+   "esri": "VERTCS[\"MSL_depth_(ftUS)\",VDATUM[\"Mean_Sea_Level\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"US survey foot\",0.304800609601219]]",
+   "esri_epsg": 8053,
+   "gdal": "VERT_CS[\"MSL depth (ftUS)\",VERT_DATUM[\"Mean Sea Level\",2005,AUTHORITY[\"EPSG\",\"5100\"]],UNIT[\"US survey foot\",0.304800609601219,AUTHORITY[\"EPSG\",\"9003\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 8053
+  },
+  {
+   "code": 8089,
+   "esri": "VERTCS[\"ISH2004_height\",VDATUM[\"Landshaedarkerfi_Islands_2004\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 8089,
+   "gdal": "VERT_CS[\"ISH2004 height\",VERT_DATUM[\"Landshaedarkerfi Islands 2004\",2005,AUTHORITY[\"EPSG\",\"1190\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 8089
+  },
+  {
+   "code": 8228,
+   "esri": "VERTCS[\"NAVD88_height_(ftIntl)\",VDATUM[\"North_American_Vertical_Datum_1988\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"foot\",0.3048]]",
+   "esri_epsg": 8228,
+   "gdal": "VERT_CS[\"NAVD88 height (ft)\",VERT_DATUM[\"North American Vertical Datum 1988\",2005,AUTHORITY[\"EPSG\",\"5103\"]],UNIT[\"foot\",0.3048,AUTHORITY[\"EPSG\",\"9002\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 8228
+  },
+  {
+   "code": 8266,
+   "esri": "VERTCS[\"GVR2000_height\",VDATUM[\"Greenland_Vertical_Reference_2000\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 8266,
+   "gdal": "VERT_CS[\"GVR2000 height\",VERT_DATUM[\"Greenland Vertical Reference 2000\",2005,AUTHORITY[\"EPSG\",\"1199\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 8266
+  },
+  {
+   "code": 8267,
+   "esri": "VERTCS[\"GVR2016_height\",VDATUM[\"Greenland_Vertical_Reference_2016\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 8267,
+   "gdal": "VERT_CS[\"GVR2016 height\",VERT_DATUM[\"Greenland Vertical Reference 2016\",2005,AUTHORITY[\"EPSG\",\"1200\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 8267
+  },
+  {
+   "code": 8357,
+   "esri": "VERTCS[\"Baltic_1957_height\",VDATUM[\"Baltic_1957\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 8357,
+   "gdal": "VERT_CS[\"Baltic 1957 height\",VERT_DATUM[\"Baltic 1957\",2005,AUTHORITY[\"EPSG\",\"1202\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 8357
+  },
+  {
+   "code": 8358,
+   "esri": "VERTCS[\"Baltic_1957_depth\",VDATUM[\"Baltic_1957\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 8358,
+   "gdal": "VERT_CS[\"Baltic 1957 depth\",VERT_DATUM[\"Baltic 1957\",2005,AUTHORITY[\"EPSG\",\"1202\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 8358
+  },
+  {
+   "code": 8378,
+   "esri": "VERTCS[\"EPSG_example_wellbore_local_vertical_CRS\",VDATUM[\"EPSG_example_wellbore_vertical_datum\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 8378,
+   "gdal": "VERT_CS[\"EPSG example wellbore local vertical CRS\",VERT_DATUM[\"EPSG example wellbore vertical datum\",2005,AUTHORITY[\"EPSG\",\"1205\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Local depth\",DOWN]]",
+   "gdal_epsg": 8378
+  },
+  {
+   "code": 8434,
+   "esri": "VERTCS[\"Macao_height\",VDATUM[\"Macao_Height_Datum\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 8434,
+   "gdal": "VERT_CS[\"Macao height\",VERT_DATUM[\"Macao Height Datum\",2005,AUTHORITY[\"EPSG\",\"1210\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 8434
+  },
+  {
+   "code": 8675,
+   "esri": "VERTCS[\"N43_height\",VDATUM[\"Helsinki_1943\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 8675,
+   "gdal": "VERT_CS[\"N43 height\",VERT_DATUM[\"Helsinki 1943\",2005,AUTHORITY[\"EPSG\",\"1213\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 8675
+  },
+  {
+   "code": 8690,
+   "esri": "VERTCS[\"SVS2010\",VDATUM[\"Slovenian_Vertical_System_2010\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 8690,
+   "gdal": "VERT_CS[\"SVS2010 height\",VERT_DATUM[\"Slovenian Vertical System 2010\",2005,AUTHORITY[\"EPSG\",\"1215\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 8690
+  },
+  {
+   "code": 8691,
+   "esri": "VERTCS[\"SRB_VRS12_height\",VDATUM[\"Serbian_Vertical_Reference_System_2012\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 8691,
+   "gdal": "VERT_CS[\"SRB_VRS12 height\",VERT_DATUM[\"Serbian Vertical Reference System 2012\",2005,AUTHORITY[\"EPSG\",\"1216\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 8691
+  },
+  {
+   "code": 8841,
+   "esri": "VERTCS[\"MVGC_height\",VDATUM[\"MOMRA_Vertical_Geodetic_Control\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 8841,
+   "gdal": "VERT_CS[\"MVGC height\",VERT_DATUM[\"MOMRA Vertical Geodetic Control\",2005,AUTHORITY[\"EPSG\",\"1219\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 8841
+  },
+  {
+   "code": 8881,
+   "esri": "VERTCS[\"Vienna_height\",VDATUM[\"Wiener_Null\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 8881,
+   "gdal": "VERT_CS[\"Vienna height\",VERT_DATUM[\"Wiener Null\",2005,AUTHORITY[\"EPSG\",\"1267\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 8881
+  },
+  {
+   "code": 8897,
+   "esri": "VERTCS[\"EPSG_example_wellbore_local_vertical_CRS_ft\",VDATUM[\"EPSG_example_wellbore_vertical_datum\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"foot\",0.3048]]",
+   "esri_epsg": 8897,
+   "gdal": "VERT_CS[\"EPSG example wellbore local vertical CRS (ft)\",VERT_DATUM[\"EPSG example wellbore vertical datum\",2005,AUTHORITY[\"EPSG\",\"1205\"]],UNIT[\"foot\",0.3048,AUTHORITY[\"EPSG\",\"9002\"]],AXIS[\"Local depth\",DOWN]]",
+   "gdal_epsg": 8897
+  },
+  {
+   "code": 8904,
+   "esri": "VERTCS[\"TWVD_2001_height\",VDATUM[\"Taiwan_Vertical_Datum_2001\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 8904,
+   "gdal": "VERT_CS[\"TWVD 2001 height\",VERT_DATUM[\"Taiwan Vertical Datum 2001\",2005,AUTHORITY[\"EPSG\",\"1224\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 8904
+  },
+  {
+   "code": 8911,
+   "esri": "VERTCS[\"DACR52_height\",VDATUM[\"Datum_Altimetrico_de_Costa_Rica_1952\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 8911,
+   "gdal": "VERT_CS[\"DACR52 height\",VERT_DATUM[\"Datum Altimetrico de Costa Rica 1952\",2005,AUTHORITY[\"EPSG\",\"1226\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 8911
+  },
+  {
+   "code": 9130,
+   "esri": "VERTCS[\"IGN_2008_LD_height\",VDATUM[\"IGN_2008_LD\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9130,
+   "gdal": "VERT_CS[\"IGN 2008 LD height\",VERT_DATUM[\"IGN 2008 LD\",2005,AUTHORITY[\"EPSG\",\"1250\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9130
+  },
+  {
+   "code": 9245,
+   "esri": "VERTCS[\"CGVD2013_CGG2013a_height\",VDATUM[\"Canadian_Geodetic_Vertical_Datum_of_2013_CGG2013a\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9245,
+   "gdal": "VERT_CS[\"CGVD2013a(2010) height\",VERT_DATUM[\"Canadian Geodetic Vertical Datum of 2013 (CGG2013a) epoch 2010\",2005,AUTHORITY[\"EPSG\",\"1256\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9245
+  },
+  {
+   "code": 9255,
+   "esri": "VERTCS[\"SRVN16_height\",VDATUM[\"Sistema_de_Referencia_Vertical_Nacional_2016\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9255,
+   "gdal": "VERT_CS[\"SRVN16 height\",VERT_DATUM[\"Sistema de Referencia Vertical Nacional 2016\",2005,AUTHORITY[\"EPSG\",\"1260\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9255
+  },
+  {
+   "code": 9274,
+   "esri": "VERTCS[\"EVRF2000_Austria_height\",VDATUM[\"European_Vertical_Reference_Frame_2000_Austria\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9274,
+   "gdal": "VERT_CS[\"EVRF2000 Austria height\",VERT_DATUM[\"European Vertical Reference Frame 2000 Austria\",2005,AUTHORITY[\"EPSG\",\"1261\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9274
+  },
+  {
+   "code": 9279,
+   "esri": "VERTCS[\"SA_LLD_height\",VDATUM[\"South_Africa_Land_Levelling_Datum\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9279,
+   "gdal": "VERT_CS[\"SA LLD height\",VERT_DATUM[\"South Africa Land Levelling Datum\",2005,AUTHORITY[\"EPSG\",\"1262\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9279
+  },
+  {
+   "code": 9287,
+   "esri": "VERTCS[\"LAT_NL_depth\",VDATUM[\"Lowest_Astronomical_Tide_Netherlands\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9287,
+   "gdal": "VERT_CS[\"LAT-NLD depth\",VERT_DATUM[\"Lowest Astronomical Tide Netherlands\",2005,AUTHORITY[\"EPSG\",\"1290\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 9287
+  },
+  {
+   "code": 9288,
+   "esri": "VERTCS[\"MSL_NL_depth\",VDATUM[\"Mean_Sea_Level_Netherlands\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9288,
+   "gdal": "VERT_CS[\"MSL-NLD depth\",VERT_DATUM[\"Mean Sea Level Netherlands\",2005,AUTHORITY[\"EPSG\",\"1270\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 9288
+  },
+  {
+   "code": 9303,
+   "esri": "VERTCS[\"HS2-VRF_height\",VDATUM[\"HS2_Vertical_Reference_Frame\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9303,
+   "gdal": "VERT_CS[\"HS2-VRF height\",VERT_DATUM[\"HS2 Vertical Reference Frame\",2005,AUTHORITY[\"EPSG\",\"1265\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9303
+  },
+  {
+   "code": 9335,
+   "esri": "VERTCS[\"KSA-VRF14_height\",VDATUM[\"Kingdom_of_Saudi_Arabia_Vertical_Reference_Frame_Jeddah_2014\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9335,
+   "gdal": "VERT_CS[\"KSA-VRF14 height\",VERT_DATUM[\"Kingdom of Saudi Arabia Vertical Reference Frame Jeddah 2014\",2005,AUTHORITY[\"EPSG\",\"1269\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9335
+  },
+  {
+   "code": 9351,
+   "esri": "VERTCS[\"NGNC08_height\",VDATUM[\"Nivellement_General_de_Nouvelle_Caledonie_2008\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9351,
+   "gdal": "VERT_CS[\"NGNC08 height\",VERT_DATUM[\"Nivellement General de Nouvelle Caledonie 2008\",2005,AUTHORITY[\"EPSG\",\"1255\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9351
+  },
+  {
+   "code": 9389,
+   "esri": "VERTCS[\"EVRF_2019\",VDATUM[\"European_Vertical_Reference_Frame_2019\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9389,
+   "gdal": "VERT_CS[\"EVRF2019 height\",VERT_DATUM[\"European Vertical Reference Frame 2019\",2005,AUTHORITY[\"EPSG\",\"1274\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9389
+  },
+  {
+   "code": 9390,
+   "esri": "VERTCS[\"EVRF_2019_mean-tide\",VDATUM[\"European_Vertical_Reference_Frame_2019_mean_tide\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9390,
+   "gdal": "VERT_CS[\"EVRF2019 mean-tide height\",VERT_DATUM[\"European Vertical Reference Frame 2019 mean tide\",2005,AUTHORITY[\"EPSG\",\"1287\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9390
+  },
+  {
+   "code": 9392,
+   "esri": "VERTCS[\"Mallorca_height\",VDATUM[\"Mallorca\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9392,
+   "gdal": "VERT_CS[\"Mallorca height\",VERT_DATUM[\"Mallorca\",2005,AUTHORITY[\"EPSG\",\"1275\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9392
+  },
+  {
+   "code": 9393,
+   "esri": "VERTCS[\"Menorca_height\",VDATUM[\"Menorca\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9393,
+   "gdal": "VERT_CS[\"Menorca height\",VERT_DATUM[\"Menorca\",2005,AUTHORITY[\"EPSG\",\"1276\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9393
+  },
+  {
+   "code": 9394,
+   "esri": "VERTCS[\"Ibiza_height\",VDATUM[\"Ibiza\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9394,
+   "gdal": "VERT_CS[\"Ibiza height\",VERT_DATUM[\"Ibiza\",2005,AUTHORITY[\"EPSG\",\"1277\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9394
+  },
+  {
+   "code": 9395,
+   "esri": "VERTCS[\"Lanzarote_height\",VDATUM[\"Lanzarote\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9395,
+   "gdal": "VERT_CS[\"Lanzarote height\",VERT_DATUM[\"Lanzarote\",2005,AUTHORITY[\"EPSG\",\"1278\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9395
+  },
+  {
+   "code": 9396,
+   "esri": "VERTCS[\"Fuerteventura_height\",VDATUM[\"Fuerteventura\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9396,
+   "gdal": "VERT_CS[\"Fuerteventura height\",VERT_DATUM[\"Fuerteventura\",2005,AUTHORITY[\"EPSG\",\"1279\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9396
+  },
+  {
+   "code": 9397,
+   "esri": "VERTCS[\"Gran_Canaria_height\",VDATUM[\"Gran_Canaria\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9397,
+   "gdal": "VERT_CS[\"Gran Canaria height\",VERT_DATUM[\"Gran Canaria\",2005,AUTHORITY[\"EPSG\",\"1280\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9397
+  },
+  {
+   "code": 9398,
+   "esri": "VERTCS[\"Tenerife_height\",VDATUM[\"Tenerife\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9398,
+   "gdal": "VERT_CS[\"Tenerife height\",VERT_DATUM[\"Tenerife\",2005,AUTHORITY[\"EPSG\",\"1281\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9398
+  },
+  {
+   "code": 9399,
+   "esri": "VERTCS[\"La_Gomera_height\",VDATUM[\"La_Gomera\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9399,
+   "gdal": "VERT_CS[\"La Gomera height\",VERT_DATUM[\"La Gomera\",2005,AUTHORITY[\"EPSG\",\"1282\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9399
+  },
+  {
+   "code": 9400,
+   "esri": "VERTCS[\"La_Palma_height\",VDATUM[\"La_Palma\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9400,
+   "gdal": "VERT_CS[\"La Palma height\",VERT_DATUM[\"La Palma\",2005,AUTHORITY[\"EPSG\",\"1283\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9400
+  },
+  {
+   "code": 9401,
+   "esri": "VERTCS[\"El_Hierro_height\",VDATUM[\"El_Hierro\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9401,
+   "gdal": "VERT_CS[\"El Hierro height\",VERT_DATUM[\"El Hierro\",2005,AUTHORITY[\"EPSG\",\"1284\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9401
+  },
+  {
+   "code": 9402,
+   "esri": "VERTCS[\"Ceuta_2_height\",VDATUM[\"Ceuta_2\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9402,
+   "gdal": "VERT_CS[\"Ceuta 2 height\",VERT_DATUM[\"Ceuta 2\",2005,AUTHORITY[\"EPSG\",\"1285\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9402
+  },
+  {
+   "code": 9451,
+   "esri": "VERTCS[\"BI_height\",VDATUM[\"British_Isles_height_ensemble\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9451,
+   "gdal": "VERT_CS[\"BI height\",VERT_DATUM[\"British Isles height ensemble\",2005,AUTHORITY[\"EPSG\",\"1288\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9451
+  },
+  {
+   "code": 9458,
+   "esri": "VERTCS[\"AVWS_height\",VDATUM[\"Australian_Vertical_Working_Surface\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9458,
+   "gdal": "VERT_CS[\"AVWS height\",VERT_DATUM[\"Australian Vertical Working Surface\",2005,AUTHORITY[\"EPSG\",\"1292\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9458
+  },
+  {
+   "code": 9471,
+   "esri": "VERTCS[\"INAGeoid2020_height\",VDATUM[\"Indonesian_Geoid_2020\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9471,
+   "gdal": "VERT_CS[\"INAGeoid2020 v1 height\",VERT_DATUM[\"Indonesian Geoid 2020 version 1\",2005,AUTHORITY[\"EPSG\",\"1294\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9471
+  },
+  {
+   "code": 9650,
+   "esri": "VERTCS[\"Baltic_1986_height\",VDATUM[\"Baltic_1986\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9650,
+   "gdal": "VERT_CS[\"Baltic 1986 height\",VERT_DATUM[\"Baltic 1986\",2005,AUTHORITY[\"EPSG\",\"1296\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9650
+  },
+  {
+   "code": 9651,
+   "esri": "VERTCS[\"EVRF_2007_PL_height\",VDATUM[\"European_Vertical_Reference_Frame_2007_Poland\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9651,
+   "gdal": "VERT_CS[\"PL-EVRF2007 height\",VERT_DATUM[\"European Vertical Reference Frame 2007 Poland\",2005,AUTHORITY[\"EPSG\",\"1297\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9651
+  },
+  {
+   "code": 9663,
+   "esri": "VERTCS[\"EH2000_height\",VDATUM[\"Estonian_Height_System_2000\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9663,
+   "gdal": "VERT_CS[\"EH2000 height\",VERT_DATUM[\"Estonian Height System 2000\",2005,AUTHORITY[\"EPSG\",\"1298\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9663
+  },
+  {
+   "code": 9666,
+   "esri": "VERTCS[\"LAS07_height\",VDATUM[\"Lithuanian_Height_System_2007\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9666,
+   "gdal": "VERT_CS[\"LAS07 height\",VERT_DATUM[\"Lithuanian Height System 2007\",2005,AUTHORITY[\"EPSG\",\"1299\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9666
+  },
+  {
+   "code": 9669,
+   "esri": "VERTCS[\"BGS2005_height\",VDATUM[\"Bulgarian_Height_System_2005\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9669,
+   "gdal": "VERT_CS[\"BGS2005 height\",VERT_DATUM[\"Bulgarian Height System 2005\",2005,AUTHORITY[\"EPSG\",\"1300\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9669
+  },
+  {
+   "code": 9672,
+   "esri": "VERTCS[\"CD_Norway_depth\",VDATUM[\"Norwegian_Chart_Datum\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9672,
+   "gdal": "VERT_CS[\"CD Norway depth\",VERT_DATUM[\"Norwegian Chart Datum\",2005,AUTHORITY[\"EPSG\",\"1301\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 9672
+  },
+  {
+   "code": 9675,
+   "esri": "VERTCS[\"Pago_Pago_2020_height\",VDATUM[\"Local_Tidal_Datum_at_Pago_Pago_2020\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9675,
+   "gdal": "VERT_CS[\"Pago Pago 2020 height\",VERT_DATUM[\"Local Tidal Datum at Pago Pago 2020\",2005,AUTHORITY[\"EPSG\",\"1302\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9675
+  },
+  {
+   "code": 9681,
+   "esri": "VERTCS[\"NVD_1992_height\",VDATUM[\"National_Vertical_Datum_1992\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9681,
+   "gdal": "VERT_CS[\"NVD 1992 height\",VERT_DATUM[\"National Vertical Datum 1992\",2005,AUTHORITY[\"EPSG\",\"1303\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9681
+  },
+  {
+   "code": 9721,
+   "esri": "VERTCS[\"Catania_1965_height\",VDATUM[\"Catania_1965\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9721,
+   "gdal": "VERT_CS[\"Catania 1965 height\",VERT_DATUM[\"Catania 1965\",2005,AUTHORITY[\"EPSG\",\"1306\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9721
+  },
+  {
+   "code": 9722,
+   "esri": "VERTCS[\"Cagliari_1956_height\",VDATUM[\"Cagliari_1956\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9722,
+   "gdal": "VERT_CS[\"Cagliari 1956 height\",VERT_DATUM[\"Cagliari 1956\",2005,AUTHORITY[\"EPSG\",\"1307\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9722
+  },
+  {
+   "code": 9923,
+   "esri": "VERTCS[\"GNTRANS_height\",VDATUM[\"GNTRANS\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9923,
+   "gdal": "VERT_CS[\"GNTRANS height\",VERT_DATUM[\"GNTRANS\",2005,AUTHORITY[\"EPSG\",\"1316\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9923
+  },
+  {
+   "code": 9927,
+   "esri": "VERTCS[\"GNTRANS2016_height\",VDATUM[\"GNTRANS2016\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 9927,
+   "gdal": "VERT_CS[\"GNTRANS2016 height\",VERT_DATUM[\"GNTRANS2016\",2005,AUTHORITY[\"EPSG\",\"1318\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 9927
+  },
+  {
+   "code": 10150,
+   "esri": "VERTCS[\"MSL_UK_Ireland_VORF08_depth\",VDATUM[\"Mean_Sea_Level_UK_Ireland_VORF08\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10150,
+   "gdal": "VERT_CS[\"MSL UK & Ireland VORF08 depth\",VERT_DATUM[\"Mean Sea Level UK & Ireland VORF08\",2005,AUTHORITY[\"EPSG\",\"1330\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 10150
+  },
+  {
+   "code": 10151,
+   "esri": "VERTCS[\"CD_UK_Ireland_VORF08_depth\",VDATUM[\"Chart_Datum_UK_Ireland_VORF08\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10151,
+   "gdal": "VERT_CS[\"CD UK & Ireland VORF08 depth\",VERT_DATUM[\"Chart Datum UK & Ireland VORF08\",2005,AUTHORITY[\"EPSG\",\"1331\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 10151
+  },
+  {
+   "code": 10190,
+   "esri": "VERTCS[\"NGA_2022_height\",VDATUM[\"Nivellement_General_de_l_Algerie_2022\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10190,
+   "gdal": "VERT_CS[\"NGA 2022 height\",VERT_DATUM[\"Nivellement General de l'Algerie 2022\",2005,AUTHORITY[\"EPSG\",\"1354\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 10190
+  },
+  {
+   "code": 10349,
+   "esri": "VERTCS[\"ZH_Portugal_depth\",VDATUM[\"Chart_Datum_Portugal\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10349,
+   "gdal": "VERT_CS[\"ZH Portugal depth\",VERT_DATUM[\"Chart Datum Portugal \",2005,AUTHORITY[\"EPSG\",\"1361\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 10349
+  },
+  {
+   "code": 10352,
+   "esri": "VERTCS[\"Formentera_height\",VDATUM[\"Formentera\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10352,
+   "gdal": "VERT_CS[\"Formentera height\",VERT_DATUM[\"Formentera\",2005,AUTHORITY[\"EPSG\",\"1362\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 10352
+  },
+  {
+   "code": 10353,
+   "esri": "VERTCS[\"Alboran_height\",VDATUM[\"Alboran\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10353,
+   "gdal": "VERT_CS[\"Alboran height\",VERT_DATUM[\"Alboran\",2005,AUTHORITY[\"EPSG\",\"1363\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 10353
+  },
+  {
+   "code": 10354,
+   "esri": "VERTCS[\"Melilla_height\",VDATUM[\"Melilla\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10354,
+   "gdal": "VERT_CS[\"Melilla height\",VERT_DATUM[\"Melilla\",2005,AUTHORITY[\"EPSG\",\"1364\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 10354
+  },
+  {
+   "code": 10364,
+   "esri": "VERTCS[\"Cascais_depth\",VDATUM[\"Cascais\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10364,
+   "gdal": "VERT_CS[\"Cascais depth\",VERT_DATUM[\"Cascais\",2005,AUTHORITY[\"EPSG\",\"5178\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 10364
+  },
+  {
+   "code": 10370,
+   "esri": "VERTCS[\"Cais_da_Pontinha_depth\",VDATUM[\"Cais_da_Pontinha-Funchal\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10370,
+   "gdal": "VERT_CS[\"Cais da Pontinha depth\",VERT_DATUM[\"Cais da Pontinha\",2005,AUTHORITY[\"EPSG\",\"1101\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 10370
+  },
+  {
+   "code": 10371,
+   "esri": "VERTCS[\"Cais_da_Vila_depth\",VDATUM[\"Cais_da_Vila-Porto_Santo\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10371,
+   "gdal": "VERT_CS[\"Cais da Vila depth\",VERT_DATUM[\"Cais da Vila\",2005,AUTHORITY[\"EPSG\",\"1102\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 10371
+  },
+  {
+   "code": 10372,
+   "esri": "VERTCS[\"Santa_Cruz_das_Flores_depth\",VDATUM[\"Santa_Cruz_das_Flores\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10372,
+   "gdal": "VERT_CS[\"Santa Cruz das Flores depth\",VERT_DATUM[\"Santa Cruz das Flores\",2005,AUTHORITY[\"EPSG\",\"1108\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 10372
+  },
+  {
+   "code": 10373,
+   "esri": "VERTCS[\"Horta_depth\",VDATUM[\"Horta\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10373,
+   "gdal": "VERT_CS[\"Horta depth\",VERT_DATUM[\"Horta\",2005,AUTHORITY[\"EPSG\",\"1104\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 10373
+  },
+  {
+   "code": 10374,
+   "esri": "VERTCS[\"Cais_da_Madalena_depth\",VDATUM[\"Cais_da_Madalena\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10374,
+   "gdal": "VERT_CS[\"Cais da Madalena depth\",VERT_DATUM[\"Cais da Madalena\",2005,AUTHORITY[\"EPSG\",\"1105\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 10374
+  },
+  {
+   "code": 10375,
+   "esri": "VERTCS[\"Cais_das_Velas_depth\",VDATUM[\"Cais_das_Velas\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10375,
+   "gdal": "VERT_CS[\"Cais das Velas depth\",VERT_DATUM[\"Cais das Velas\",2005,AUTHORITY[\"EPSG\",\"1103\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 10375
+  },
+  {
+   "code": 10376,
+   "esri": "VERTCS[\"Santa_Cruz_da_Graciosa_depth\",VDATUM[\"Santa_Cruz_da_Graciosa\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10376,
+   "gdal": "VERT_CS[\"Santa Cruz da Graciosa depth\",VERT_DATUM[\"Santa Cruz da Graciosa\",2005,AUTHORITY[\"EPSG\",\"1106\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 10376
+  },
+  {
+   "code": 10377,
+   "esri": "VERTCS[\"Cais_da_Figueirinha_depth\",VDATUM[\"Cais_da_Figueirinha-Angra_do_Heroismo\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10377,
+   "gdal": "VERT_CS[\"Cais da Figueirinha depth\",VERT_DATUM[\"Cais da Figueirinha\",2005,AUTHORITY[\"EPSG\",\"1107\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 10377
+  },
+  {
+   "code": 10378,
+   "esri": "VERTCS[\"Ponta_Delgada_depth\",VDATUM[\"Ponta_Delgada\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10378,
+   "gdal": "VERT_CS[\"Ponta Delgada depth\",VERT_DATUM[\"Ponta Delgada\",2005,AUTHORITY[\"EPSG\",\"1110\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 10378
+  },
+  {
+   "code": 10379,
+   "esri": "VERTCS[\"Cais_da_Vila_do_Porto_depth\",VDATUM[\"Cais_da_Vila_do_Porto\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10379,
+   "gdal": "VERT_CS[\"Cais da Vila do Porto depth\",VERT_DATUM[\"Cais da Vila do Porto\",2005,AUTHORITY[\"EPSG\",\"1109\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 10379
+  },
+  {
+   "code": 10482,
+   "esri": "VERTCS[\"DVR90(2000)_height\",VDATUM[\"Dansk_Vertikal_Reference_1990\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10482,
+   "gdal": "VERT_CS[\"DVR90(2000) height\",VERT_DATUM[\"Dansk Vertikal Reference 1990 (2000)\",2005,AUTHORITY[\"EPSG\",\"5206\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 10482
+  },
+  {
+   "code": 10483,
+   "esri": "VERTCS[\"DVR90(2002)_height\",VDATUM[\"Dansk_Vertikal_Reference_1990_(2002)\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10483,
+   "gdal": "VERT_CS[\"DVR90(2002) height\",VERT_DATUM[\"Dansk Vertikal Reference 1990 (2002)\",2005,AUTHORITY[\"EPSG\",\"1368\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 10483
+  },
+  {
+   "code": 10484,
+   "esri": "VERTCS[\"DVR90(2013)_height\",VDATUM[\"Dansk_Vertikal_Reference_1990_(2013)\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10484,
+   "gdal": "VERT_CS[\"DVR90(2013) height\",VERT_DATUM[\"Dansk Vertikal Reference 1990 (2013)\",2005,AUTHORITY[\"EPSG\",\"1369\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 10484
+  },
+  {
+   "code": 10485,
+   "esri": "VERTCS[\"DVR90(2023)_height\",VDATUM[\"Dansk_Vertikal_Reference_1990_(2023)\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10485,
+   "gdal": "VERT_CS[\"DVR90(2023) height\",VERT_DATUM[\"Dansk Vertikal Reference 1990 (2023)\",2005,AUTHORITY[\"EPSG\",\"1370\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 10485
+  },
+  {
+   "code": 10547,
+   "esri": "VERTCS[\"DKMSL(2022)_depth\",VDATUM[\"Denmark_Mean_Sea_Level_(2022)\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10547,
+   "gdal": "VERT_CS[\"DKMSL(2022) depth\",VERT_DATUM[\"Denmark Mean Sea Level (2022)\",2005,AUTHORITY[\"EPSG\",\"1372\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 10547
+  },
+  {
+   "code": 10548,
+   "esri": "VERTCS[\"DKLAT(2022)_depth\",VDATUM[\"Denmark_Lowest_Astronomical_Tide_(2022)\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10548,
+   "gdal": "VERT_CS[\"DKLAT(2022) depth\",VERT_DATUM[\"Denmark Lowest Astronomical Tide (2022)\",2005,AUTHORITY[\"EPSG\",\"1373\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 10548
+  },
+  {
+   "code": 10549,
+   "esri": "VERTCS[\"DKMSL(2023)_depth\",VDATUM[\"Denmark_Mean_Sea_Level_(2023)\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10549,
+   "gdal": "VERT_CS[\"DKMSL(2023) depth\",VERT_DATUM[\"Denmark Mean Sea Level (2023)\",2005,AUTHORITY[\"EPSG\",\"1374\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 10549
+  },
+  {
+   "code": 10550,
+   "esri": "VERTCS[\"DKLAT(2023)_depth\",VDATUM[\"Denmark_Lowest_Astronomical_Tide_(2023)\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10550,
+   "gdal": "VERT_CS[\"DKLAT(2023) depth\",VERT_DATUM[\"Denmark Lowest Astronomic Tide (2023)\",2005,AUTHORITY[\"EPSG\",\"1375\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 10550
+  },
+  {
+   "code": 10551,
+   "esri": "VERTCS[\"DKMSL_depth\",VDATUM[\"Denmark_Mean_Sea_Level\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10551,
+   "gdal": "VERT_CS[\"DKMSL depth \",VERT_DATUM[\"Denmark Mean Sea Level \",2005,AUTHORITY[\"EPSG\",\"1376\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 10551
+  },
+  {
+   "code": 10552,
+   "esri": "VERTCS[\"DKLAT_depth\",VDATUM[\"Denmark_Lowest_Astronomical_Tide\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10552,
+   "gdal": "VERT_CS[\"DKLAT depth\",VERT_DATUM[\"Denmark Lowest Astronomical Tide \",2005,AUTHORITY[\"EPSG\",\"1377\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 10552
+  },
+  {
+   "code": 10565,
+   "esri": "VERTCS[\"GLLMSL(2022)_height\",VDATUM[\"Greenland_Local_Mean_Sea_Level_(2022)\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10565,
+   "gdal": "VERT_CS[\"GLLMSL(2022) height\",VERT_DATUM[\"Greenland Local Mean Sea Level (2022)\",2005,AUTHORITY[\"EPSG\",\"1378\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 10565
+  },
+  {
+   "code": 10588,
+   "esri": "VERTCS[\"CGVD28(HTv2_0)_height\",VDATUM[\"Canadian_Geodetic_Vertical_Datum_of_1928_(Height_Transformation_version_2_0)\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10588,
+   "gdal": "VERT_CS[\"CGVD28(HTv2.0) height\",VERT_DATUM[\"Canadian Geodetic Vertical Datum of 1928 (Height Transformation version 2.0)\",2005,AUTHORITY[\"EPSG\",\"1384\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 10588
+  },
+  {
+   "code": 10642,
+   "esri": "VERTCS[\"Saba_height\",VDATUM[\"Saba_Vertical_Datum\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10642,
+   "gdal": "VERT_CS[\"Saba height\",VERT_DATUM[\"Saba Vertical Datum\",2005,AUTHORITY[\"EPSG\",\"1381\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 10642
+  },
+  {
+   "code": 10649,
+   "esri": "VERTCS[\"GLMSL(2023)_depth\",VDATUM[\"Greenland_Mean_Sea_Level_(2023)\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10649,
+   "gdal": "VERT_CS[\"GLMSL(2023) depth\",VERT_DATUM[\"Greenland Mean Sea Level (2023)\",2005,AUTHORITY[\"EPSG\",\"1387\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 10649
+  },
+  {
+   "code": 10650,
+   "esri": "VERTCS[\"GLLAT(2023)_depth\",VDATUM[\"Greenland_Lowest_Astronomic_Tide_(2023)\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10650,
+   "gdal": "VERT_CS[\"GLLAT(2023) depth\",VERT_DATUM[\"Greenland Lowest Astronomic Tide (2023)\",2005,AUTHORITY[\"EPSG\",\"1388\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 10650
+  },
+  {
+   "code": 10678,
+   "esri": "VERTCS[\"BSCD2000_depth\",VDATUM[\"Baltic_Sea_Chart_Datum_2000\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10678,
+   "gdal": "VERT_CS[\"BSCD2000 depth\",VERT_DATUM[\"Baltic Sea Chart Datum 2000\",2005,AUTHORITY[\"EPSG\",\"1390\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 10678
+  },
+  {
+   "code": 10740,
+   "esri": "VERTCS[\"Sint_Eustatius_height\",VDATUM[\"Sint_Eustatius_Vertical_Datum\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10740,
+   "gdal": "VERT_CS[\"Sint Eustatius height\",VERT_DATUM[\"Sint Eustatius Vertical Datum\",2005,AUTHORITY[\"EPSG\",\"1395\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 10740
+  },
+  {
+   "code": 10763,
+   "esri": "VERTCS[\"Bonaire_height\",VDATUM[\"Bonaire_Vertical_Datum\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10763,
+   "gdal": "VERT_CS[\"Bonaire height\",VERT_DATUM[\"Bonaire Vertical Datum\",2005,AUTHORITY[\"EPSG\",\"1398\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 10763
+  },
+  {
+   "code": 10900,
+   "esri": "VERTCS[\"Asse_2025_height\",VDATUM[\"Asse_vertical_datum_2025\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10900,
+   "gdal": "VERT_CS[\"Asse 2025 height\",VERT_DATUM[\"Asse vertical datum 2025\",2005,AUTHORITY[\"EPSG\",\"1415\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 10900
+  },
+  {
+   "code": 10918,
+   "esri": "VERTCS[\"COH88_2025_(NAVD88)_height\",VDATUM[\"Derived_California_Orthometric_Heights_of_1988_epoch_2025\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10918,
+   "gdal": "VERT_CS[\"COH88 2025 (NAVD88) height\",VERT_DATUM[\"Derived California Orthometric Heights of 1988 epoch 2025\",2005,AUTHORITY[\"EPSG\",\"1416\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 10918
+  },
+  {
+   "code": 10919,
+   "esri": "VERTCS[\"COH88_2025_NAVD88_height(ftUS)\",VDATUM[\"Derived_California_Orthometric_Heights_of_1988_epoch_2025\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"US survey foot\",0.304800609601219]]",
+   "esri_epsg": 10919,
+   "gdal": "VERT_CS[\"COH88 2025 (NAVD88) height (ftUS)\",VERT_DATUM[\"Derived California Orthometric Heights of 1988 epoch 2025\",2005,AUTHORITY[\"EPSG\",\"1416\"]],UNIT[\"US survey foot\",0.304800609601219,AUTHORITY[\"EPSG\",\"9003\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 10919
+  },
+  {
+   "code": 10989,
+   "esri": "VERTCS[\"London_Survey_Grid_height\",VDATUM[\"London_Survey_Grid_height_datum\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10989,
+   "gdal": "VERT_CS[\"London Survey Grid height\",VERT_DATUM[\"London Survey Grid height datum\",2005,AUTHORITY[\"EPSG\",\"1423\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 10989
+  },
+  {
+   "code": 10999,
+   "esri": "VERTCS[\"SVD2024_height\",VDATUM[\"Svalbard_vertical_datum_2024\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 10999,
+   "gdal": "VERT_CS[\"SVD2024 height\",VERT_DATUM[\"Svalbard vertical datum 2024\",2005,AUTHORITY[\"EPSG\",\"1424\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 10999
+  },
+  {
+   "code": 11157,
+   "esri": "VERTCS[\"IGN_2023_Mayotte_height\",VDATUM[\"IGN_2023_Mayotte\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 11157,
+   "gdal": "VERT_CS[\"IGN 2023 Mayotte height\",VERT_DATUM[\"IGN 2023 Mayotte\",2005,AUTHORITY[\"EPSG\",\"1443\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 11157
+  },
+  {
+   "code": 11317,
+   "esri": "VERTCS[\"JGD2024_vertical_height\",VDATUM[\"Japanese_Geodetic_Datum_2024_vertical\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 11317,
+   "gdal": "VERT_CS[\"JGD2024 (vertical) height\",VERT_DATUM[\"Japanese Geodetic Datum 2024 (vertical)\",2005,AUTHORITY[\"EPSG\",\"1450\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 11317
+  },
+  {
+   "code": 11338,
+   "esri": "VERTCS[\"Bhutan_Vertical_Datum_2022_height\",VDATUM[\"Bhutan_Vertical_Datum_2022\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 11338,
+   "gdal": "VERT_CS[\"Bhutan Vertical Datum 2022 height\",VERT_DATUM[\"Bhutan Vertical Datum 2022\",2005,AUTHORITY[\"EPSG\",\"1451\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 11338
+  },
+  {
+   "code": 11394,
+   "esri": "VERTCS[\"NN2000_2025_height\",VDATUM[\"Norway_Normal_Null_2000_2025\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": null,
+   "gdal": "VERT_CS[\"NN2000:2025 height\",VERT_DATUM[\"Norway Normal Null 2000:2025\",2005,AUTHORITY[\"EPSG\",\"1454\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 11394
+  },
+  {
+   "code": 11446,
+   "esri": "VERTCS[\"NGFA_2022_height\",VDATUM[\"Nivellement_General_de_Futuna_et_d_Alofi_2022\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": null,
+   "gdal": "VERT_CS[\"NGFA 2022 height\",VERT_DATUM[\"Nivellement General de Futuna et d\u2019Alofi 2022\",2005,AUTHORITY[\"EPSG\",\"1455\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 11446
+  },
+  {
+   "code": 11450,
+   "esri": "VERTCS[\"GLLAT_2025_depth\",VDATUM[\"Greenland_Lowest_Astronomic_Tide_2025\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 11450,
+   "gdal": "VERT_CS[\"GLLAT(2025) depth\",VERT_DATUM[\"Greenland Lowest Astronomic Tide (2025)\",2005,AUTHORITY[\"EPSG\",\"1457\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 11450
+  },
+  {
+   "code": 11451,
+   "esri": "VERTCS[\"GLMSL_2025_depth\",VDATUM[\"Greenland_Mean_Sea_Level_2025\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 11451,
+   "gdal": "VERT_CS[\"GLMSL(2025) depth\",VERT_DATUM[\"Greenland Mean Sea Level (2025)\",2005,AUTHORITY[\"EPSG\",\"1456\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 11451
+  },
+  {
+   "code": 11454,
+   "esri": "VERTCS[\"GLLAT_depth\",VDATUM[\"Greenland_Lowest_Astronomical_Tide\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 11454,
+   "gdal": "VERT_CS[\"GLLAT depth\",VERT_DATUM[\"Greenland Lowest Astronomical Tide \",2005,AUTHORITY[\"EPSG\",\"1459\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 11454
+  },
+  {
+   "code": 11455,
+   "esri": "VERTCS[\"GLMSL_depth\",VDATUM[\"Greenland_Mean_Sea_Level\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 11455,
+   "gdal": "VERT_CS[\"GLMSL depth\",VERT_DATUM[\"Greenland Mean Sea Level \",2005,AUTHORITY[\"EPSG\",\"1458\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Depth\",DOWN]]",
+   "gdal_epsg": 11455
+  },
+  {
+   "code": 11513,
+   "esri": "VERTCS[\"COLGVD2023_height\",VDATUM[\"Colombian_Geodetic_Vertical_Datum_2023\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 11513,
+   "gdal": "VERT_CS[\"COLGVD2023 height\",VERT_DATUM[\"Colombian Geodetic Vertical Datum 2023\",2005,AUTHORITY[\"EPSG\",\"1464\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 11513
+  },
+  {
+   "code": 20000,
+   "esri": "VERTCS[\"SVD2006_height\",VDATUM[\"Svalbard_vertical_datum_2006\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 20000,
+   "gdal": "VERT_CS[\"SVD2006 height\",VERT_DATUM[\"Svalbard vertical datum 2006\",2005,AUTHORITY[\"EPSG\",\"1323\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 20000
+  },
+  {
+   "code": 20034,
+   "esri": "VERTCS[\"CGVD2013a(2002)_height\",VDATUM[\"Canadian_Geodetic_Vertical_Datum_of_2013_(CGG2013a)_epoch_2002\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 20034,
+   "gdal": "VERT_CS[\"CGVD2013a(2002) height\",VERT_DATUM[\"Canadian Geodetic Vertical Datum of 2013 (CGG2013a) epoch 2002\",2005,AUTHORITY[\"EPSG\",\"1325\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 20034
+  },
+  {
+   "code": 20035,
+   "esri": "VERTCS[\"CGVD2013a(1997)_height\",VDATUM[\"Canadian_Geodetic_Vertical_Datum_of_2013_(CGG2013a)_epoch_1997\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 20035,
+   "gdal": "VERT_CS[\"CGVD2013a(1997) height\",VERT_DATUM[\"Canadian Geodetic Vertical Datum of 2013 (CGG2013a) epoch 1997\",2005,AUTHORITY[\"EPSG\",\"1326\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 20035
+  },
+  {
+   "code": 20036,
+   "esri": "VERTCS[\"INAGeoid2020_v2_height\",VDATUM[\"Indonesian_Geoid_2020_version_2\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "esri_epsg": 20036,
+   "gdal": "VERT_CS[\"INAGeoid2020 v2 height\",VERT_DATUM[\"Indonesian Geoid 2020 version 2\",2005,AUTHORITY[\"EPSG\",\"1328\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP]]",
+   "gdal_epsg": 20036
+  }
  ]
 }

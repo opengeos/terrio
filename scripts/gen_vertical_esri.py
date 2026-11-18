@@ -6,7 +6,9 @@ after a WKT 2 `GEOGCRS`, which PROJ ignores.
 
 Each case is a WKT, the type and code PROJ reads (`to_epsg()`), its axis directions, and, for a
 compound CRS, a point from EPSG:9707 (WGS 84 + EGM96 height) by `Transformer.from_crs(
-"EPSG:9707", wkt, always_xy=True)`.
+"EPSG:9707", wkt, always_xy=True)`. Then every EPSG vertical CRS ESRI writes, in ESRI's WKT and in
+GDAL's WKT 1 without its `AUTHORITY`, with the code PROJ identifies it by (`to_epsg()`: by its
+name, datum, unit and direction).
 
 Usage: PROJ_NETWORK=OFF python scripts/gen_vertical_esri.py (needs pyproj 3.8.0)
 """
@@ -16,6 +18,8 @@ from pathlib import Path
 
 import pyproj
 from pyproj import CRS, Transformer
+from pyproj.database import query_crs_info
+from pyproj.enums import PJType
 
 OUT = (
     Path(__file__).resolve().parents[1]
@@ -36,6 +40,34 @@ def declared(wkt, code):
 def down(wkt):
     assert wkt.count('"Direction",1.0') == 1
     return wkt.replace('"Direction",1.0', '"Direction",-1.0')
+
+
+def identified():
+    """Every EPSG vertical CRS ESRI writes as a `VERTCS`, in ESRI's WKT and in GDAL's WKT 1
+    without its `AUTHORITY`, with the code PROJ identifies each by (`to_epsg()`)."""
+    out = []
+    for info in query_crs_info(auth_name="EPSG", pj_types=[PJType.VERTICAL_CRS]):
+        crs = CRS.from_epsg(int(info.code))
+        try:
+            wkt = crs.to_wkt("WKT1_ESRI")
+        except pyproj.exceptions.CRSError:
+            continue
+        if not wkt or not wkt.startswith("VERTCS"):
+            continue
+        gdal = crs.to_wkt("WKT1_GDAL")
+        old = f',AUTHORITY["EPSG","{info.code}"]]'
+        assert gdal.endswith(old), info.code
+        gdal = gdal[: -len(old)] + "]"
+        out.append(
+            {
+                "code": int(info.code),
+                "esri": wkt,
+                "esri_epsg": CRS.from_wkt(wkt).to_epsg(),
+                "gdal": gdal,
+                "gdal_epsg": CRS.from_wkt(gdal).to_epsg(),
+            }
+        )
+    return out
 
 
 def main():
@@ -80,7 +112,12 @@ def main():
             t = Transformer.from_crs("EPSG:9707", wkt, always_xy=True)
             case["proj"] = list(t.transform(*POINT))
         out.append(case)
-    data = {"proj": pyproj.proj_version_str, "point": POINT, "cases": out}
+    data = {
+        "proj": pyproj.proj_version_str,
+        "point": POINT,
+        "cases": out,
+        "identified": identified(),
+    }
     OUT.write_text(json.dumps(data, indent=1) + "\n")
     print(f"{len(out)} cases to {OUT}")
 

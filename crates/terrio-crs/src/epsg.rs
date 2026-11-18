@@ -31,6 +31,9 @@ static DATUM_NAMES: &[u8] = include_bytes!("../data/datums.tsv.zst");
 /// The CRSs PROJ finds by the names of CRSs without ID, generated from PROJ by
 /// `scripts/gen_crs_names.py`.
 static CRS_NAMES: &[u8] = include_bytes!("../data/crs_names.tsv.zst");
+/// The names PROJ identifies vertical CRSs without ID by, generated from PROJ by
+/// `scripts/gen_vertical_names.py`: `kind<TAB>name<TAB>code` lines.
+static VERTICAL_NAMES: &[u8] = include_bytes!("../data/vertical_names.tsv.zst");
 /// What GDAL adds to the PROJ string of an EPSG or ESRI CRS when it exports it, generated from
 /// GDAL 3.13.3 by `scripts/gen_gdal_towgs84.py`: `authority<TAB>code<TAB>towgs84<TAB>geoid` lines.
 static GDAL_TOWGS84: &[u8] = include_bytes!("../data/gdal_towgs84.tsv.zst");
@@ -533,6 +536,70 @@ pub(crate) fn datums_named(name: &str) -> Vec<u32> {
 /// for an EPSG alias, 2 for PROJ's, 3 for ESRI's (`D_ETRS_1989`), 4 for a former name.
 pub(crate) fn datum_name_rank(name: &str) -> Option<u8> {
     datum_names().0.get(&datum_key(name)).map(|(rank, _)| *rank)
+}
+
+/// The names of vertical CRSs and datums by kind (`c`, `e`, `d`; see
+/// `scripts/gen_vertical_names.py`), each with the codes it stands for.
+fn vertical_names() -> &'static HashMap<(u8, String), Vec<u32>> {
+    static NAMES: OnceLock<HashMap<(u8, String), Vec<u32>>> = OnceLock::new();
+    NAMES.get_or_init(|| {
+        let mut names: HashMap<(u8, String), Vec<u32>> = HashMap::new();
+        for l in decompress(VERTICAL_NAMES).lines().filter(|l| !l.starts_with('#')) {
+            let mut f = l.splitn(3, '\t');
+            let (Some(kind), Some(name), Some(Ok(code))) = (f.next(), f.next(), f.next().map(str::parse)) else { continue };
+            let Some(&kind) = kind.as_bytes().first() else { continue };
+            names.entry((kind, name.to_string())).or_default().push(code);
+        }
+        debug_assert!(!names.is_empty(), "the vertical name table did not decompress");
+        names
+    })
+}
+
+/// The EPSG vertical CRSs PROJ 9.9.0 finds by the name of a vertical CRS without ID: among the
+/// names and aliases of its database's vertical CRSs, whatever the case of their ASCII letters;
+/// for ESRI's `VERTCS` (`esri`), first the CRS of the official name the name is an ESRI alias of,
+/// else the name with spaces for its underscores (`Cais_da_Pontinha_depth`); else those of an
+/// equivalent name, as PROJ compares names (`GLLAT_2025_depth` is `GLLAT(2025) depth`).
+pub(crate) fn verticals_named(name: &str, esri: bool) -> Vec<u32> {
+    let names = vertical_names();
+    let spaced = esri.then(|| name.replace('_', " ").to_ascii_lowercase());
+    esri.then(|| names.get(&(b'e', name.to_string())))
+        .flatten()
+        .or_else(|| spaced.and_then(|n| names.get(&(b'c', n))))
+        .or_else(|| names.get(&(b'c', name.to_ascii_lowercase())))
+        .or_else(|| names.get(&(b'n', equivalent_name(name))))
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// The EPSG vertical CRSs on the datum (or datum ensemble) a name is the name or an alias of, as
+/// PROJ compares names (`Identifier::isEquivalentName`: without spaces, `_-/().&,`, case and `19`
+/// before two digits).
+pub(crate) fn verticals_on_datum_named(name: &str) -> Vec<u32> {
+    vertical_names().get(&(b'd', equivalent_name(name))).cloned().unwrap_or_default()
+}
+
+/// A name as PROJ's `Identifier::isEquivalentName` compares it: its ASCII letters in lowercase,
+/// without spaces and `_-/().&,`, and without the `19` of a year before two digits (`1988` is
+/// `88`) unless a digit precedes it.
+fn equivalent_name(name: &str) -> String {
+    let kept: Vec<char> = name.chars().filter(|c| !" _-/().&,".contains(*c)).map(|c| c.to_ascii_lowercase()).collect();
+    let mut out = String::with_capacity(kept.len());
+    let mut i = 0;
+    while i < kept.len() {
+        let year = kept[i] == '1'
+            && kept.get(i + 1) == Some(&'9')
+            && kept.get(i + 2).is_some_and(char::is_ascii_digit)
+            && kept.get(i + 3).is_some_and(char::is_ascii_digit)
+            && (i == 0 || !kept[i - 1].is_ascii_digit());
+        if year {
+            i += 2;
+            continue;
+        }
+        out.push(kept[i]);
+        i += 1;
+    }
+    out
 }
 
 /// The EPSG CRS PROJ 9.8.1 finds by the name of a geographic 2D or projected CRS without ID, when

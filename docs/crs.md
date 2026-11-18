@@ -111,8 +111,12 @@ declared code is kept when its unit and direction are the code's, and
 `PARAMETER["Direction",-1]` (exactly -1) is an axis down unless an `AXIS` says otherwise.
 ESRI's compound CRS, a `GEOGCS` or `PROJCS` followed by a `VERTCS` (`GEOGCS[...],VERTCS[...]`,
 ESRI's WKT of EPSG:9707), is read as a `COMPD_CS` named after its two parts, and so written;
-after a `VERT_CS` or a WKT 2 root, a second node is ignored, as by PROJ. A compound CRS gets an
-EPSG code only from the code it declares.
+after a `VERT_CS` or a WKT 2 root, a second node is ignored, as by PROJ. A vertical CRS
+without a code (`VERTCS`, `VERT_CS` or `VERTCRS`) is the EPSG CRS PROJ identifies by its name
+(an EPSG name or alias in any case, ESRI's `EGM96_height` included) on the datum its datum's name
+is, in the same unit and direction; it then has that CRS's geoid models. A compound CRS gets an
+EPSG code only from the code it declares, but its parts are known when its vertical CRS is
+identified.
 
 Where a WKT 2 CRS has two nodes PROJ reads one of, the first in its order counts, whatever its
 keyword, as in PROJ 9.9.0: of two datums (`DATUM`, `TRF`, `GEODETICDATUM`; a datum and an
