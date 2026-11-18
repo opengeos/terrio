@@ -62,6 +62,35 @@ impl Node {
         })
     }
 
+    /// Whether the node's keyword is one of `keys` (see [`crate::keywords`]).
+    pub fn is(&self, keys: &[&str]) -> bool {
+        crate::keywords::is(&self.key, keys)
+    }
+
+    /// The first child node with the first of `keys` the node has one with.
+    pub fn child_in(&self, keys: &[&str]) -> Option<&Node> {
+        keys.iter().find_map(|k| self.child(k))
+    }
+
+    /// The node itself or the first node below it, depth first, whose keyword is one of `keys`.
+    pub fn find(&self, keys: &[&str]) -> Option<&Node> {
+        if self.is(keys) {
+            return Some(self);
+        }
+        self.args.iter().find_map(|a| match a {
+            Arg::Node(c) => c.find(keys),
+            _ => None,
+        })
+    }
+
+    /// The node's identifiers (its `AUTHORITY` and `ID` children), in the order the node has them.
+    pub fn ids(&self) -> impl Iterator<Item = &Node> {
+        self.args.iter().filter_map(|a| match a {
+            Arg::Node(n) if n.is(crate::keywords::ID) => Some(n),
+            _ => None,
+        })
+    }
+
     /// The node's name (its first argument, when a string).
     pub fn name(&self) -> Option<&str> {
         match self.args.first() {
@@ -81,7 +110,7 @@ impl Node {
 
     /// The EPSG code of the node's `AUTHORITY` or `ID`.
     pub fn epsg(&self) -> Option<u32> {
-        let n = self.child("AUTHORITY").or_else(|| self.child("ID"))?;
+        let n = self.child_in(crate::keywords::ID)?;
         if !n.name()?.eq_ignore_ascii_case("EPSG") {
             return None;
         }
@@ -350,7 +379,7 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
         _ => return None,
     };
     let datum = geogcs.child("DATUM")?;
-    let sph = datum.child("SPHEROID").or_else(|| datum.child("ELLIPSOID"))?;
+    let sph = datum.child_in(crate::keywords::ELLIPSOID)?;
     let a = sph.num(1)?;
     let rf = sph.num(2)?;
     // Angular unit of the geographic CRS, in degrees.

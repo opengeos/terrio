@@ -352,7 +352,7 @@ fn without_root_authority(wkt: &str) -> String {
 fn is_geocentric(root: &super::wkt1::Node) -> bool {
     let cartesian =
         root.child("CS").is_some_and(|c| matches!(c.args.first(), Some(super::wkt1::Arg::Ident(t)) if t.eq_ignore_ascii_case("Cartesian")));
-    ["GEODCRS", "GEODETICCRS"].iter().any(|k| root.key.eq_ignore_ascii_case(k)) && cartesian
+    root.is(crate::keywords::GEODETIC_CRS) && cartesian
 }
 
 /// The directions of the axes of a WKT 2 CRS's horizontal CRS (a bound CRS's source CRS),
@@ -362,8 +362,7 @@ fn horizontal_axes(root: &super::wkt1::Node) -> Option<Vec<String>> {
         return None;
     }
     let crs = wkt2_horizontal(root)?;
-    let horizontal = ["GEOGCRS", "GEOGRAPHICCRS", "GEODCRS", "GEODETICCRS", "PROJCRS", "PROJECTEDCRS"];
-    if !horizontal.iter().any(|k| crs.key.eq_ignore_ascii_case(k)) {
+    if !crs.is(crate::keywords::GEOGRAPHIC_OR_GEODETIC_CRS) && !crs.is(crate::keywords::PROJECTED_CRS) {
         return None;
     }
     let axes = directions(crs);
@@ -412,7 +411,7 @@ fn is_3d(root: &super::wkt1::Node) -> bool {
     let cs = root.child("CS");
     let dims = cs.and_then(|c| c.num(1));
     let cartesian = cs.is_some_and(|c| matches!(c.args.first(), Some(super::wkt1::Arg::Ident(t)) if t.eq_ignore_ascii_case("Cartesian")));
-    let geodetic = ["GEODCRS", "GEODETICCRS"].iter().any(|k| root.key.eq_ignore_ascii_case(k));
+    let geodetic = root.is(crate::keywords::GEODETIC_CRS);
     dims == Some(3.0) && !(geodetic && cartesian)
 }
 
