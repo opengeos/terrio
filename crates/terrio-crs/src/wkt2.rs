@@ -214,6 +214,13 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         push("k", Some(p.get(K_NAT).unwrap_or(1.0)));
         south_orientated = true;
         "tmerc"
+    } else if is(&["transversemercatorzonedgridsystem"], &[9824]) {
+        // PROJ 9.9.0's `tmerczoned`, with its initial longitude as `+lon_0`.
+        push("lat_0", Some(lat_0().unwrap_or(0.0)));
+        push("lon_0", Some(p.get(LON_INITIAL).unwrap_or(0.0)));
+        push("width", p.get(ZONE_WIDTH));
+        push("k_0", Some(p.get(K_NAT).unwrap_or(1.0)));
+        "tmerczoned"
     } else if is(&["lambertconicconformal1sp"], &[9801]) {
         push("lat_1", lat_0());
         push("lat_0", lat_0());
@@ -895,6 +902,9 @@ const FN_FALSE: Param = (&["northingatfalseorigin"], 8827, Kind::Length);
 const LAT_TS: Param = (&["latitudeofstandardparallel"], 8832, Kind::Angle);
 const LON_ORIGIN: Param = (&["longitudeoforigin"], 8833, Kind::Angle);
 
+const LON_INITIAL: Param = (&["initiallongitude"], 8830, Kind::Angle);
+const ZONE_WIDTH: Param = (&["zonewidth"], 8831, Kind::Angle);
+
 const LAT_TOPO: Param = (&["latitudeoftopocentricorigin"], 8834, Kind::Angle);
 const LON_TOPO: Param = (&["longitudeoftopocentricorigin"], 8835, Kind::Angle);
 const HEIGHT_TOPO: Param = (&["ellipsoidalheightoftopocentricorigin"], 8836, Kind::Length);
@@ -912,7 +922,7 @@ const LAT_P2: Param = (&["latitudeof2ndpoint"], u32::MAX - 3, Kind::Angle);
 const LON_P2: Param = (&["longitudeof2ndpoint"], u32::MAX - 4, Kind::Angle);
 const LAT_TRUE_SCALE: Param = (&["latitudeoftruescale"], u32::MAX - 5, Kind::Angle);
 
-const PARAMS: [Param; 33] = [
+const PARAMS: [Param; 35] = [
     LAT_TOPO,
     LON_TOPO,
     HEIGHT_TOPO,
@@ -943,6 +953,8 @@ const PARAMS: [Param; 33] = [
     FN_FALSE,
     LAT_TS,
     LON_ORIGIN,
+    LON_INITIAL,
+    ZONE_WIDTH,
     CO_LAT_CONE,
     LAT_PSEUDO_SP,
     K_PSEUDO_SP,

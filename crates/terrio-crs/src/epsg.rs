@@ -369,14 +369,6 @@ pub(crate) fn get(code: u32) -> Option<&'static Entry> {
     table().entry(code).or_else(|| variant_c(code))
 }
 
-impl Entry {
-    /// Whether the CRS uses a method terrio does not compute yet: WGS 84 / UTM grid system
-    /// (EPSG:32600 and 32700, EPSG v13), PROJ 9.9.0's `tmerczoned`.
-    pub(crate) fn unsupported(&self) -> bool {
-        self.proj.split_whitespace().next() == Some("+proj=tmerczoned")
-    }
-}
-
 /// EPSG's CRSs on Polar Stereographic (variant C), method 9830, which no `+proj=` string names:
 /// the generated table, which holds each CRS's conversion as one, leaves them out. Their name and
 /// geographic CRS, and the latitude of the standard parallel, longitude of origin, and easting and
