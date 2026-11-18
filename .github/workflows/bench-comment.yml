@@ -4,13 +4,14 @@ name: bench comment
 # the `perf-regression` label when a benchmark runs 10% or more instructions or estimated cycles.
 # It runs from main with a write token, so it never checks out or runs the pull request's code:
 # the artifact it reads was written by that code (a fork can change bench.yml), and is only
-# posted as text.
+# posted as text, without any line naming the performance review's marker.
 #
 # On a regression it also dispatches the performance-only review of claude-code-review.yml for the
-# pull request, from a separate job that alone holds `actions: write`. A dispatch, because the label
-# added here with GITHUB_TOKEN starts no workflow. Only for the authors that review covers
-# automatically, so a first-time contributor's edited bench.yml cannot spend reviews; a maintainer
-# can still dispatch one, or add `perf-regression` by hand.
+# pull request, which explains the slower benchmarks under the table of this comment. It is
+# dispatched from a separate job that alone holds `actions: write`, because the label added here
+# with GITHUB_TOKEN starts no workflow. Only for the authors that review covers automatically, so
+# a first-time contributor's edited bench.yml cannot spend reviews; a maintainer can still
+# dispatch one, or add `perf-regression` by hand.
 
 on:
   workflow_run:
@@ -68,8 +69,12 @@ jobs:
             exit 0
           fi
           marker='<!-- terrio-bench -->'
-          # A comment holds at most 65536 characters; invalid UTF-8 from the cut is dropped.
-          { echo "$marker"; head -c 60000 bench/bench.md | iconv -c -f UTF-8 -t UTF-8; } > body.md
+          # A comment holds at most 65536 characters: 40000 here leaves room for the performance
+          # review's explanation. Invalid UTF-8 from the cut is dropped, and so is any line naming
+          # the review's once-per-head marker, which only claude-code-review.yml may write.
+          { echo "$marker"
+            head -c 40000 bench/bench.md | iconv -c -f UTF-8 -t UTF-8 | grep -v claude-perf-review || true
+          } > body.md
           id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$pr/comments" \
             -q ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" | head -n 1)
           if [ -n "$id" ]; then
