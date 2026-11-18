@@ -215,7 +215,7 @@ fn tags_of(path: &str) -> terrio::Result<Option<Ifds>> {
             read_ifds(&mut r)?
         }
         Location::Local(p) if p.is_file() => {
-            let mut f = std::io::BufReader::new(std::fs::File::open(p)?);
+            let mut f = terrio::vfs::NearSeek::new(std::fs::File::open(p)?);
             check_tiff(&mut f, path)?;
             read_ifds(&mut f)?
         }
@@ -224,7 +224,7 @@ fn tags_of(path: &str) -> terrio::Result<Option<Ifds>> {
         Location::Url(_) | Location::S3 { .. } => None,
         _ => {
             let local = terrio::vfs::resolve(path)?;
-            let mut f = std::io::BufReader::new(std::fs::File::open(local.path())?);
+            let mut f = terrio::vfs::NearSeek::new(std::fs::File::open(local.path())?);
             check_tiff(&mut f, path)?;
             read_ifds(&mut f)?
         }

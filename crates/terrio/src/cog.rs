@@ -720,7 +720,7 @@ impl LazyRaster {
             let local = vfs::resolve(path)?;
             let file = local.path().to_path_buf();
             Ok::<_, Error>((
-                Source::File(BufReader::new(crate::geotiff::FileCursor::new(std::fs::File::open(&file)?))),
+                Source::File(crate::vfs::NearSeek::new(crate::geotiff::FileCursor::new(std::fs::File::open(&file)?))),
                 Some(local),
                 Some(file),
             ))
@@ -733,7 +733,7 @@ impl LazyRaster {
             }
             Location::Local(p) if !p.is_file() => return Ok(None),
             Location::Local(p) => {
-                (Source::File(BufReader::new(crate::geotiff::FileCursor::new(std::fs::File::open(p)?))), None, Some(p.clone()))
+                (Source::File(crate::vfs::NearSeek::new(crate::geotiff::FileCursor::new(std::fs::File::open(p)?))), None, Some(p.clone()))
             }
             // A member of a zip archive, stored or seek-optimized: read in place, without
             // extracting the archive (remote archives by range requests).
@@ -2265,7 +2265,7 @@ impl AsRef<[u8]> for SharedBytes {
 
 /// Where a TIFF's bytes come from.
 enum Source {
-    File(BufReader<crate::geotiff::FileCursor>),
+    File(crate::vfs::NearSeek<crate::geotiff::FileCursor>),
     Memory(std::io::Cursor<SharedBytes>),
     #[cfg(remote)]
     Http(crate::http::RangeReader),
@@ -2622,8 +2622,11 @@ impl TiffRaster {
             return Ok(());
         }
         let Ok(file) = std::fs::File::open(path) else { return Ok(()) };
-        let mut ovr = match TiffRaster::new::<true>(Source::File(BufReader::new(crate::geotiff::FileCursor::new(file))), None, self.limits)
-        {
+        let mut ovr = match TiffRaster::new::<true>(
+            Source::File(crate::vfs::NearSeek::new(crate::geotiff::FileCursor::new(file))),
+            None,
+            self.limits,
+        ) {
             Ok(ovr) => ovr,
             Err(error) if error.is_resource_refusal() => return Err(error),
             Err(_) => return Ok(()),
@@ -3000,7 +3003,7 @@ impl TiffRaster {
                         let mut file = file.clone();
                         file.seek(SeekFrom::Start(0))?;
                         let len = file.len()?;
-                        (Source::File(BufReader::new(file)), len)
+                        (Source::File(crate::vfs::NearSeek::new(file)), len)
                     }
                     Reopened::Memory(bytes) => (Source::Memory(std::io::Cursor::new(bytes.clone())), bytes.as_ref().len() as u64),
                     Reopened::Zip(member) => {
@@ -4260,7 +4263,7 @@ mod tests {
         let path = dir.path().join("tiled.tif");
         write_tiled_tiff(&path, (64, 64, 1), sequence(DataType::U8, 64 * 64, 1), &[]);
         let file = std::fs::File::open(&path).unwrap();
-        let source = Source::File(BufReader::new(crate::geotiff::FileCursor::new(file)));
+        let source = Source::File(crate::vfs::NearSeek::new(crate::geotiff::FileCursor::new(file)));
         let mut r = TiffRaster::new::<true>(source, None, TiffReadLimits::default()).unwrap();
         r.read_samples(0, Window::full(64, 64), &[1]).unwrap();
         let handle = r.cache_handle;
