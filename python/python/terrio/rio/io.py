@@ -35,7 +35,7 @@ import weakref
 from collections.abc import Iterator, Sequence
 from contextlib import ExitStack
 from functools import partial
-from typing import Any
+from typing import IO, Any
 
 import numpy as np
 from affine import Affine
@@ -2395,7 +2395,7 @@ class DatasetWriter(DatasetReader):
         self._overview_resampling: str | None = None
         self._mask: np.ndarray | None = None
         self._mask_in_sidecar = False
-        self._spill: list[str] = []
+        self._spill: list[IO[bytes]] = []
         kwargs = {k.lower(): v for k, v in kwargs.items()}
         kwargs.pop("sharing", None)
         kwargs.pop("thread_safe", None)
@@ -2489,6 +2489,9 @@ class DatasetWriter(DatasetReader):
         """An array for pixels, in memory or mapped from a temporary file.
 
         The file, beside the output, is used when the array is larger than the in-memory limit.
+        It has no name (it is unlinked as soon as it is created, where the system cannot create
+        it so; on Windows, it is opened to be deleted once closed), so that it goes with the
+        process however that ends.
 
         Args:
             shape: The shape.
@@ -2500,9 +2503,14 @@ class DatasetWriter(DatasetReader):
         """
         if not self._streams(shape, dtype):
             return np.full(shape, fill, dtype=dtype)
-        spill = self._path + f".terrio-{uuid.uuid4().hex}.tmp"
+        spill = tempfile.TemporaryFile(
+            dir=os.path.dirname(self._path) or ".",
+            prefix=os.path.basename(self._path) + ".terrio-",
+            suffix=".tmp",
+        )
         self._spill.append(spill)
-        arr = np.memmap(spill, dtype=dtype, mode="w+", shape=shape)
+        os.ftruncate(spill.fileno(), int(np.prod(shape)) * np.dtype(dtype).itemsize)
+        arr = np.memmap(spill, dtype=dtype, mode="r+", shape=shape)
         if fill != 0:
             for y, n in self._slabs():
                 arr[..., y : y + n, :] = fill
@@ -2531,7 +2539,7 @@ class DatasetWriter(DatasetReader):
             yield y, min(n, self.height - y)
 
     def _release_spill(self) -> None:
-        """Deletes the temporary files of file-backed arrays."""
+        """Closes the temporary files of file-backed arrays, which go with them."""
         data = getattr(self, "_data", None)
         if isinstance(data, np.memmap):
             data._mmap.close()  # type: ignore[attr-defined]
@@ -2540,10 +2548,7 @@ class DatasetWriter(DatasetReader):
         self._data = np.empty((0, 0, 0), self._dtype)
         self._mask = None
         for f in self._spill:
-            try:
-                os.remove(f)
-            except OSError:
-                pass
+            f.close()
         self._spill = []
 
     def _creation_options(self, kwargs: dict[str, Any]) -> dict[str, str]:

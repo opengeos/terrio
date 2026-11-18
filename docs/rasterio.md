@@ -62,7 +62,10 @@ It needs only NumPy and [affine](https://github.com/rasterio/affine) (installed 
   closed: incremental and windowed writes work in any order. Rasters larger than
   `TERRIO_RIO_IN_MEMORY_LIMIT` bytes (512 MB by default) keep their pixels in a temporary file
   next to the output instead, mapped in memory, and GeoTIFFs are then written in rows of blocks
-  (`terrio.GeoTiffWriter`), without the raster in RAM. `shutil.copy` writes such a GeoTIFF, and a
+  (`terrio.GeoTiffWriter`), without the raster in RAM. The temporary file has no name (on
+  Windows, it is opened to be deleted once closed), so that it goes with the process however
+  that ends.
+  `shutil.copy` writes such a GeoTIFF, and a
   COG, from its source as it writes them, a row of a COG's tiles at a time, the COG's overviews
   computed as the rows come, without an unbounded source array or temporary pixel staging file.
   Taller source blocks are read in slabs of up to 16 MiB (at least one output tile row), aligned

@@ -1,7 +1,5 @@
 """Driver aliases write the same TIFF bytes and apply the same policy as canonical names."""
 
-import os
-
 import numpy as np
 import pytest
 
@@ -57,7 +55,7 @@ def test_aliases_preserve_domains_internal_masks_and_spilling(
             dst.update_tags(ns="SURVEY", flight="7")
             if masked:
                 dst.write_mask(mask)
-        assert all(not os.path.exists(p) for p in spill)
+        assert not [p.name for p in tmp_path.iterdir() if ".terrio-" in p.name]
         assert len(streams) - previous == int(
             (canonical == "COG" and not masked) or (canonical == "GTiff" and limit == "1")
         )
