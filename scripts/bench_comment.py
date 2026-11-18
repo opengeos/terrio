@@ -2,11 +2,13 @@
 """Write the pull-request comment of the `bench` workflow (Markdown, on stdout).
 
 Reads the JSON summaries `cargo bench -p terrio --bench instructions -- --baseline=main
---output-format=json` prints (one object per benchmark) and compares the CPU instructions
-(Callgrind's `Ir`) and estimated cycles (`EstimatedCycles`) of each benchmark with the `main`
-baseline. A change of 10% or more in either is flagged; an increase makes the comment carry a
-`<!-- terrio-bench: regression -->` line, which bench-comment.yml reads to set the
-`perf-regression` label.
+--output-format=json` prints (one object per benchmark) and compares three measures of each
+benchmark with the `main` baseline: CPU instructions (Callgrind's `Ir`), estimated cycles
+(`EstimatedCycles`, the speed) and the peak heap of the operation (reported to DHAT as
+ad-hoc `TotalUnits`, the memory). A change
+of 10% or more is flagged, and for memory only when it is also 1 MB or more; an increase makes
+the comment carry a `<!-- terrio-bench: regression -->` line, which bench-comment.yml reads to set
+the `perf-regression` label.
 
     python3 scripts/bench_comment.py pr.json --base <sha> --head <sha>
 """
@@ -16,6 +18,10 @@ import json
 import sys
 
 FLAG = 10.0  # percent
+MEMORY_FLOOR = 1_000_000  # bytes: a smaller memory change is not flagged, whatever its percent
+
+# (column, tool, metric) of each measure, in table order.
+MEASURES = (("CPU", "Callgrind", "Ir"), ("speed", "Callgrind", "EstimatedCycles"), ("memory", "DHAT", "TotalUnits"))
 
 
 def summaries(text):
@@ -31,28 +37,25 @@ def summaries(text):
 
 
 def metrics(summary):
-    """((main, pull request) instructions, (main, pull request) estimated cycles) of a benchmark
-    summary; main is None without a baseline, and the cycles pair is None when Callgrind has none."""
-    for profile in summary["profiles"]:
-        if profile["tool"] == "Callgrind":
-            found = profile["data"]["total"]["metrics"]
-            pairs = []
-            for key in ("Ir", "EstimatedCycles"):
-                values = found.get(key, {}).get("values")
-                old = None if values is None else values.get("old")
-                pairs.append(None if values is None else (None if old is None else int(old), int(values["new"])))
-            if pairs[0] is None:
-                break
-            return tuple(pairs)
-    raise ValueError(f"no Callgrind instructions in {summary.get('function_name')}")
+    """The (main, pull request) pair of each of MEASURES in a benchmark summary: main is None
+    without a baseline, and the pair is None when the tool did not report the metric."""
+    found = {p["tool"]: p["data"]["total"]["metrics"] for p in summary["profiles"]}
+    pairs = []
+    for _, tool, key in MEASURES:
+        values = found.get(tool, {}).get(key, {}).get("values")
+        old = None if values is None else values.get("old")
+        pairs.append(None if values is None else (None if old is None else int(old), int(values["new"])))
+    if pairs[0] is None:
+        raise ValueError(f"no Callgrind instructions in {summary.get('function_name')}")
+    return pairs
 
 
-def count(n):
+def count(n, unit=""):
     """`n` with an SI prefix, three significant digits."""
-    for div, unit in ((1e9, " G"), (1e6, " M"), (1e3, " k")):
+    for div, prefix in ((1e9, " G"), (1e6, " M"), (1e3, " k")):
         if n >= div:
-            return f"{n / div:.3g}{unit}"
-    return str(n)
+            return f"{n / div:.3g}{prefix}{unit}"
+    return f"{n} {unit}".rstrip()
 
 
 # What each benchmark runs (crates/terrio/benches/instructions.rs), for readers who don't know the
@@ -91,53 +94,60 @@ def main():
     parser.add_argument("--head", required=True, help="the pull request's commit")
     args = parser.parse_args()
     with open(args.summaries, encoding="utf-8") as f:
-        rows = [(s["function_name"] + (f" {s['id']}" if s.get("id") else ""), *metrics(s)) for s in summaries(f.read())]
+        rows = [(s["function_name"] + (f" {s['id']}" if s.get("id") else ""), metrics(s)) for s in summaries(f.read())]
 
-    table = []  # (sort key, mark, table line, label, change named in the verdict)
-    for n, (name, ir, cycles) in enumerate(rows):
-        cells, up, down, big = [], 0.0, 0.0, 0.0
-        for pair in (ir, cycles):
+    table = []  # (sort key, mark, table line, label, flagged changes, largest change)
+    for n, (name, pairs) in enumerate(rows):
+        cells, worse, better, big = [], [], [], (0.0, "")
+        for (column, _, _), pair in zip(MEASURES, pairs):
+            unit = "B" if column == "memory" else ""
             if pair is None:
                 cells.append("")
             elif pair[0] is None:
-                cells.append(f"{count(pair[1])} (new)")
+                cells.append(f"{count(pair[1], unit)} (new)")
             else:
                 pct, text = change(*pair)
-                up, down, big = max(up, pct), min(down, pct), max(big, pct, key=abs)
-                cells.append(f"{count(pair[0])} → {count(pair[1])} ({f'**{text}**' if abs(pct) >= FLAG else text})")
-        mark = "🆕" if ir[0] is None else "⚠️" if up >= FLAG else "✅" if down <= -FLAG else "🟢"
+                flag = abs(pct) >= FLAG and (column != "memory" or abs(pair[1] - pair[0]) >= MEMORY_FLOOR)
+                if flag:
+                    (worse if pct > 0 else better).append((pct, column))
+                big = max(big, (pct, column), key=lambda c: abs(c[0]))
+                values = count(pair[1], unit) if pair[0] == pair[1] else f"{count(pair[0], unit)} → {count(pair[1], unit)}"
+                cells.append(f"{values} ({f'**{text}**' if flag else text})")
+        mark = "🆕" if pairs[0][0] is None else "⚠️" if worse else "✅" if better else "🟢"
         what = WHAT.get(name)
         label = f"{what}<br>`{name}`" if what else f"`{name}`"
-        # Slower, then faster, the largest change first; the others in bench order.
-        key = {"⚠️": (0, -up), "✅": (1, down)}.get(mark, (2, 0.0)) + (n,)
-        # The verdict names the change that flagged the row: the rise of a slower one, the drop of a faster one.
-        shown = up if mark == "⚠️" else down if mark == "✅" else big
-        table.append((key, mark, f"| {mark} | {label} | {cells[0]} | {cells[1]} |", what or name, shown))
+        # Worse, then better, the largest change first; the others in bench order.
+        key = (0, -max(worse)[0], n) if mark == "⚠️" else (1, min(better)[0], n) if mark == "✅" else (2, 0.0, n)
+        line = f"| {mark} | {label} | {' | '.join(cells)} |"
+        table.append((key, mark, line, what or name, worse if mark == "⚠️" else better, big))
     table.sort(key=lambda r: r[0])
 
-    slower = [r for r in table if r[1] == "⚠️"]
-    faster = [r for r in table if r[1] == "✅"]
+    worse = [r for r in table if r[1] == "⚠️"]
+    better = [r for r in table if r[1] == "✅"]
     compared = sum(r[1] != "🆕" for r in table)
 
     def listed(rs):
-        return "; ".join(f"{r[3]} {percent(r[4])}" for r in rs)
+        return "".join(f"\n- {r[3]}: {', '.join(f'**{percent(p)} {c}**' for p, c in r[4])}" for r in rs)
 
-    out = ["<!-- terrio-bench: regression -->"] if slower else []
+    out = ["<!-- terrio-bench: regression -->"] if worse else []
     out.append("### Performance vs main")
     if not compared:
         out.append(f"🆕 main has no benchmarks yet: these are this PR's counts, {len(table)} benchmarks.")
-    if slower:
-        out.append(f"⚠️ **{len(slower)} of {compared} benchmarks are slower** than main: {listed(slower)}.")
-    if faster:
-        out.append(f"✅ **{len(faster)} of {compared} are faster**: {listed(faster)}.")
-    if compared and not slower and not faster:
-        top = max((r for r in table if r[1] != "🆕"), key=lambda r: abs(r[4]))
+    if worse:
+        out.append(f"⚠️ **{len(worse)} of {compared} benchmarks got worse** than main:{listed(worse)}")
+    if better:
+        out += ([""] if worse else []) + [f"✅ **{len(better)} of {compared} got better**:{listed(better)}"]
+    if compared and not worse and not better:
+        top = max((r for r in table if r[1] != "🆕"), key=lambda r: abs(r[5][0]))
         out.append(
-            f"🟢 **As fast as main.** All {compared} benchmarks are within ±{FLAG:g}%; "
-            f"the largest change is {percent(top[4])} ({top[3]})."
+            f"🟢 **As fast and as lean as main.** All {compared} benchmarks are within ±{FLAG:g}% on CPU, "
+            f"speed and memory; the largest change is {percent(top[5][0])} {top[5][1]} ({top[3]})."
         )
     # Only the flagged rows stay in view; the others fold away.
-    header = ["| | benchmark | CPU instructions | est. cycles |", "|---|---|---:|---:|"]
+    header = [
+        "| | benchmark | CPU (instructions) | speed (est. cycles) | memory (peak heap) |",
+        "|---|---|---:|---:|---:|",
+    ]
     flagged = [r[2] for r in table if r[1] in ("⚠️", "✅")]
     rest = [r[2] for r in table if r[1] not in ("⚠️", "✅")]
     if flagged:
@@ -150,13 +160,21 @@ def main():
         "",
         "<details><summary>How to read this</summary>",
         "",
-        (f"- Counted under Valgrind (Callgrind) for main `{args.base[:7]}` and this PR `{args.head[:7]}`, "
-         "with one worker thread, on synthetic inputs."),
-        ("- **CPU instructions**: the work done. **Est. cycles**: instructions plus cache and RAM misses, "
-         "an estimate of the time taken."),
-        "- Both repeat within 0.01% between runs, so a change beyond that comes from the code, not from noise.",
-        (f"- ⚠️ slower or ✅ faster by {FLAG:g}% or more on either; 🟢 within ±{FLAG:g}%. "
-         "Informational: this check never fails."),
+        (
+            f"- Counted under Valgrind for main `{args.base[:7]}` and this PR `{args.head[:7]}`, "
+            "with one worker thread, on synthetic inputs."
+        ),
+        (
+            "- **CPU**: the instructions executed, the work done (Callgrind). **Speed**: estimated cycles, "
+            "instructions plus cache and RAM misses, an estimate of the time taken (Callgrind). "
+            "**Memory**: the peak heap, the most memory the operation holds at once beyond its "
+            "input, its output included."
+        ),
+        "- All three repeat between runs, within 0.01%, so a change beyond that comes from the code.",
+        (
+            f"- ⚠️ worse or ✅ better by {FLAG:g}% or more (and by {count(MEMORY_FLOOR, 'B')} or more for "
+            "memory); 🟢 within. Informational: this check never fails."
+        ),
         "- Run them locally: `cargo bench -p terrio --bench instructions`.",
         "</details>",
     ]
