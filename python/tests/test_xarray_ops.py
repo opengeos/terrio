@@ -428,3 +428,39 @@ def test_zonal_stats_of_a_cube_without_zone_pixels(cube):
     assert np.isnan(off.sel(statistic="mean").values).all()
     empty = cube.isel(time=slice(0, 0)).terrio.zonal_stats((0.0, 0.0, 1.0, 1.0), stats=["mean"])
     assert empty.sizes["time"] == 0
+
+
+def _zones_with_property(files, name, value):
+    """The zones with one more property, as a Layer in EPSG:32611."""
+    return terrio.Layer.from_geojson(
+        {
+            "type": "FeatureCollection",
+            "features": [
+                {**f, "properties": {**f["properties"], name: value}}
+                for f in files["zones"].to_geojson()["features"]
+            ],
+        },
+        crs="EPSG:32611",
+    )
+
+
+def test_zonal_stats_of_a_cube_suffixes_an_attribute_named_like_the_grid_mapping(files, cube):
+    """A zone attribute named `spatial_ref` is kept with a suffix: the grid mapping coordinate
+    still holds the CRS."""
+    pytest.importorskip("shapely")
+    zones = _zones_with_property(files, "spatial_ref", "plot")
+    out = cube.terrio.zonal_stats(zones, stats=["mean"])
+    assert out.terrio.crs == "EPSG:32611"
+    assert set(out["spatial_ref_2"].values) == {"plot"}
+
+
+def test_zonal_stats_of_a_dataset_names_attributes_alike_for_every_variable(files, cube):
+    """A 2-D variable and a cube of one Dataset name a zone attribute clashing with the cube's
+    `time` dimension alike, so the variables assemble."""
+    pytest.importorskip("shapely")
+    zones = _zones_with_property(files, "time", "spring")
+    ds = xr.Dataset({"a": cube, "dem": cube.isel(time=0, drop=True)})
+    out = ds.terrio.zonal_stats(zones, stats=["mean"])
+    assert out["a"]["time_2"].dims == ("geometry",)
+    assert out["dem"]["time_2"].dims == ("geometry",)
+    assert "time" not in out["dem"].coords

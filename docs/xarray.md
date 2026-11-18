@@ -139,6 +139,10 @@ ndvi.sel(statistic="mean")  # one time series per field
 ndvi.terrio.crs  # the zones' CRS
 ```
 
+An array with one extra dimension of length 1 (such as the `band` of `open_rasterio`) is a cube
+too, so it no longer gives a `Layer` with `bands=`. Squeeze the dimension first
+(`da.squeeze("band", drop=True)`) to keep the `Layer`.
+
 - `geometry`: the zones' Shapely geometries, in their own CRS (written as the grid mapping), with
   the zones' attributes as coordinates along it. An attribute named like one of the result's
   coordinates gets `_2`, `_3`...

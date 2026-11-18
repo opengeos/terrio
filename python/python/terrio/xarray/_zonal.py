@@ -175,9 +175,13 @@ def zonal_cube(
     names = next(iter(reducers.values())).stats if reducers else []
     geometry = shapely.from_wkb(zones.to_wkb())
     columns = zones.columns()
+    # One naming of the attributes for every array, so the variables of a Dataset agree on it.
+    reserved = {"geometry", "statistic", "spatial_ref"}  # the grid mapping coordinate
+    for _, other, coords, _, _ in prepared:
+        reserved |= {*other, *coords}
+    attributes = _attributes(columns, reserved)
     results = []
     for (da, other, coords, _, _), out in zip(prepared, values, strict=True):
-        attributes = _attributes(columns, {"geometry", "statistic", *other, *coords})
         result = xarray.DataArray(
             out,
             dims=(*other, "geometry", "statistic"),
@@ -185,7 +189,7 @@ def zonal_cube(
             name=da.name,
         ).transpose("geometry", *other, "statistic")
         if zones.crs_wkt is not None:
-            result = result.terrio.write_crs(zones.crs_wkt)
+            result = result.terrio.write_crs(zones.crs_wkt, inplace=True)
         results.append(result)
     return results
 
@@ -272,7 +276,7 @@ def _reduce(arrays, other, shape, fills, reducer, fractional, budget) -> list[np
         np.full(
             (*shape, n, len(stats)),
             np.nan,
-            np.float32 if a.dtype in (np.float16, np.float32) else np.float64,
+            np.float32 if a.dtype == np.float32 else np.float64,
         )
         for a in arrays
     ]
@@ -312,14 +316,14 @@ def _reduce(arrays, other, shape, fills, reducer, fractional, budget) -> list[np
                 RuntimeWarning,
                 stacklevel=_outside_level(),
             )
-        # Arrays read together: as many as one index of them fits the budget, at least one.
+        # Arrays read together: as many as a whole chunk of each fits the budget, at least one.
         sets: list[list[int]] = [[]]
         used = 0
         for v in everything:
-            if sets[-1] and used + size[v] > budget:
+            if sets[-1] and used + size[v] * chunk > budget:
                 sets, used = [*sets, []], 0
             sets[-1].append(v)
-            used += size[v]
+            used += size[v] * chunk
         batches: list[tuple[list[int], tuple[int, int] | None]] = [
             (vs, batch)
             for vs in sets
