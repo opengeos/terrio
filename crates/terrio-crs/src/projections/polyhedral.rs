@@ -21,11 +21,12 @@
 //     src/sphere.h
 
 //! Icosahedral Snyder Equal Area (`+proj=isea`) as PROJ 9.9.0 computes it: Snyder's equal-area
-//! projection of the authalic sphere onto the faces of a polyhedron, each face split into
-//! triangles from its centre (Conway's meta operation), and the faces unfolded into a planar net.
-//! `isea` is the icosahedron in Snyder's orientation, on PROJ's 4 × 5 strip; with `+dual` it is
-//! PROJ's `dsea +dual`, the dodecahedron's net with the icosahedron's triangles. See NOTICE for the
-//! licenses and attribution.
+//! projection of the authalic sphere onto the faces of a polyhedron, each face split into triangles
+//! from its centre (Conway's meta operation), and the faces unfolded into a planar net. `isea` is
+//! the icosahedron in Snyder's orientation, on PROJ's 4 × 5 strip; with `+dual` it is the
+//! dodecahedron family (PROJ's `dodecahedron_family_setup(dual)`, which reads `+net`): the
+//! dodecahedron's net with the icosahedron's triangles. Reference: PROJ 9.9.0, as GDAL 3.13.3 runs
+//! it (`scripts/compare_isea_with_gdal.py`). See NOTICE for the licenses and attribution.
 
 use super::{Authalic, Proj, Setup, err};
 use crate::Result;
@@ -556,8 +557,9 @@ impl Polyhedral {
             (dodecahedron(), parents, d, true)
         } else {
             // Snyder's orientation: V0 at the authalic latitude arctan(φ), φ the golden ratio
-            // (PROJ's 58.282525588539, geodetic); orient_lon 11.25° on a sphere and 11.20° on an
-            // ellipsoid, as PROJ, matches Snyder's Figure 12.
+            // (PROJ's 58.282525588539, used as authalic; only a user's +orient_lat is geodetic and
+            // converted); orient_lon 11.25° on a sphere and 11.20° on an ellipsoid, as PROJ,
+            // matches Snyder's Figure 12.
             let (mut orient_lat, mut orient_lon, mut azi) = (58.282525588539, if s.ell.es == 0.0 { 11.25 } else { 11.20 }, 0.0);
             if s.p.has("orient") {
                 match s.p.str("orient") {

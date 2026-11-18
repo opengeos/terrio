@@ -191,3 +191,32 @@ fn a_wkt_proj4_extension_reads_angles_as_a_pipeline_step() {
     assert_eq!(at(&wkt("+proj=isea +R=1 +lat_0=30")).unwrap(), thirty);
     assert_eq!(at(&wkt("+proj=isea +R=1 +lat_0=30x")).unwrap(), thirty);
 }
+
+/// `+net=dsea`, the default net of `+dual`, spelt out, in a PROJ string and in PROJ's WKT 2
+/// method name, as PROJ 9.9.0 projects it (pyproj 3.8.0, network off): the same as without it.
+#[test]
+fn the_default_dual_net_can_be_named() {
+    let wkt = |method: &str| {
+        format!(
+            "PROJCRS[\"unknown\",BASEGEOGCRS[\"unknown\",DATUM[\"unknown\",ELLIPSOID[\"unknown\",6371007.18091847,0,\
+             LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],\
+             CONVERSION[\"unknown\",METHOD[\"{method}\"],PARAMETER[\"x_0\",0,LENGTHUNIT[\"metre\",1]]],\
+             CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],\
+             AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]"
+        )
+    };
+    let lonlat = SpatialRef::parse("+proj=longlat +R=6371007.18091847").unwrap();
+    let proj = [((10.0, 20.0), (1048942.810604034, -688596.7502670765)), ((-120.0, -45.0), (-13040996.968282918, -7635451.685148043))];
+    for target in [
+        "+proj=isea +dual +R=6371007.18091847".to_string(),
+        "+proj=isea +dual +net=dsea +R=6371007.18091847".to_string(),
+        wkt("PROJ isea dual"),
+        wkt("PROJ isea dual net=dsea"),
+    ] {
+        let t = Transformer::new(&lonlat, &SpatialRef::parse(&target).unwrap()).unwrap();
+        for ((lon, lat), (x, y)) in proj {
+            let (gx, gy) = t.transform(lon, lat).unwrap();
+            assert!((gx - x).abs() < 1e-3 && (gy - y).abs() < 1e-3, "{target} ({lon}, {lat}): ({gx}, {gy})");
+        }
+    }
+}

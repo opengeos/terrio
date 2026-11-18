@@ -1559,23 +1559,24 @@ projected and 1e-8 degrees inverse.
 ## Icosahedral Snyder Equal Area
 
 `+proj=isea` is computed as PROJ 9.9.0 does (its polyhedral projections,
-`src/projections/polyhedral.cpp`): Snyder's equal-area projection of the authalic sphere onto
-the faces of an icosahedron, each face split into six triangles from its centre, and unfolded
-into PROJ's strip of 4 × 5 faces. `+orient=isea` (the default) is Snyder's orientation, and
-`+orient=pole` places a vertex at each pole. `+orient_lat`, `+orient_lon` (the point brought to
-the pole, its latitude geodetic) and `+azi` set the orientation otherwise. `+lat_0` and
-`+lon_0` name the point projected to the origin, through the orientation; they do not move the
-central meridian. With `+dual`, the dodecahedron's net (`+net=dsea`, the default, `a5`,
-`crescent` or `flower`) carries the icosahedron's triangles, as PROJ's `isea +dual`. On an
-ellipsoid the latitude is authalic and the scale the authalic radius, so that the projection is
-equal-area and the inverse returns the projected point. `+units`, `+x_0` and `+y_0` apply.
+`src/projections/polyhedral.cpp`): Snyder's equal-area projection of the authalic sphere onto the
+faces of an icosahedron, each face split into six triangles from its centre, and unfolded into
+PROJ's strip of 4 × 5 faces. `+orient=isea` (the default) is Snyder's orientation, and
+`+orient=pole` places a vertex at each pole. `+orient_lat`, `+orient_lon` (the point brought to the
+pole, its latitude geodetic) and `+azi` set the orientation otherwise. `+lat_0` and `+lon_0` name
+the point projected to the origin, through the orientation; they do not move the central meridian.
+With `+dual`, the dodecahedron's net (`+net=dsea`, the default, `a5`, `crescent` or `flower`)
+carries the icosahedron's triangles, as PROJ's `isea +dual`. On an ellipsoid the latitude is
+authalic and the scale the authalic radius, so that the projection is equal-area, and the inverse
+returns the longitude and geodetic latitude that were projected. `+units`, `+x_0` and `+y_0` apply.
 `+mode`, `+resolution` and `+aperture` are ignored, as in PROJ 9.9.0.
 
-As PROJ 9.9.0 reads them, a parameter given as a number must be a whole angle (`+azi=30x` is
-refused), one given as a word is read as 0 (`+azi=abc`), and `+dual` takes `t` or `f`. In a
-WKT's `PROJ4` extension, which PROJ reads as a pipeline step, an angle is its readable start
-(`+lat_0=30x` is 30°). The
-inverse refuses points outside the unfolded net.
+As PROJ 9.9.0 reads them, a parameter given as a number must be read whole as an angle (`+azi=30.5`
+and `+lat_0=30d30'` are read, `+azi=30x` is refused), one given as a word is read as 0 (`+azi=abc`),
+and `+dual` is true bare or with a value starting with `t` or `T`, false with one starting with `f`
+or `F`, and refused otherwise. In a WKT's `PROJ4` extension, which PROJ reads as a pipeline step, an
+angle is its readable start (`+lat_0=30x` is 30°). The inverse refuses points outside the unfolded
+net.
 
 GDAL's WKT1 (`custom_proj4`, which carries the PROJ string), ESRI's `PROJ_isea` (with
 `PROJ_isea_orient=pole`, `PROJ_isea_dual` and other options in the method's name) and PROJ's
@@ -1585,9 +1586,9 @@ without an EPSG method.
 
 PROJ 9.8 and earlier computed another method (`isea.cpp`: another orientation by `+lon_0`, the
 geodetic latitude on an ellipsoid, an inverse only for its default grid), which terrio computed
-before. On the default sphere the two agree within a millimetre. A PROJ 9.9.0 corpus covers 24 configurations and
-13,344 samples (see Testing). Allowances are 1 mm projected and 1e-8 degrees inverse (1e-5
-within 0.001° of a pole, where the latitude is the arcsine of a number near 1).
+before. On the default sphere the two agree within a millimetre. A PROJ 9.9.0 corpus covers 24
+configurations and 13,344 samples (see Testing). Allowances are 1 mm projected and 1e-8 degrees
+inverse (1e-5 within 0.001° of a pole, where the latitude is the arcsine of a number near 1).
 
 ## Two-point oblique Mercator
 
