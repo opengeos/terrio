@@ -694,6 +694,7 @@ def reproject(
     warp_mem_limit: int = 0,
     src_geoloc_array: Any = None,
     grid_invariant: bool | None = None,
+    periodic_longitude: bool | None = None,
     **kwargs: Any,
 ) -> tuple[Any, Affine]:
     """Reprojects a raster array (or band) into another grid.
@@ -734,6 +735,9 @@ def reproject(
         src_geoloc_array: Unsupported.
         grid_invariant: Keep values independent of tiles (default); False selects GDAL's
             chunk-dependent sampling. None follows TERRIO_WARP_GRID.
+        periodic_longitude: Wrap interpolation across the stored edge of a geographic source
+            covering one turn of longitude (default); False keeps it inside the stored columns,
+            for fields that are not continuous across that edge.
         **kwargs: GDAL transformer options: `MAX_GCP_ORDER` and `SRC_METHOD` (`GCP_POLYNOMIAL`,
             `GCP_TPS` or `GCP_HOMOGRAPHY`) with GCPs; `RPC_HEIGHT`, `RPC_HEIGHT_SCALE`, `RPC_DEM`
             (warped with exact transformations, as rasterio), `RPC_DEMINTERPOLATION`,
@@ -952,6 +956,7 @@ def reproject(
         et=0.0 if "to" in rpc_kw and "RPC_DEM" in rpc_kw["to"] else tolerance,
         wo=_warp_extras(kwargs),
         grid_invariant=grid_invariant,
+        periodic_longitude=periodic_longitude,
         **gcp_kw,
         **rpc_kw,
     )

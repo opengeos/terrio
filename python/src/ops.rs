@@ -1485,6 +1485,9 @@ fn translate(
 ///         "3.13". By default the `TERRIO_GDAL_COMPAT` option's, else "3.12".
 ///     grid_invariant: Keep values independent of tiles/windows (default). False selects
 ///         GDAL's chunk-dependent sampling. None follows TERRIO_WARP_GRID.
+///     periodic_longitude: Wrap interpolation across the stored edge of a geographic source
+///         covering one turn of longitude (default). False keeps it inside the stored columns,
+///         for fields that are not continuous across that edge.
 ///     init: A `Raster` holding the values the output starts from (all its bands, on the output
 ///         grid, in any type), as GDAL warps without `INIT_DEST`: pixels no valid source pixel
 ///         reaches keep them. By default the output starts at its nodata value, else 0.
@@ -1497,7 +1500,7 @@ fn translate(
     src, dst=None, *, s_srs=None, t_srs=None, tr=None, te=None, te_srs=None, ts=None, dst_transform=None, tap=false,
     resampling="near", overview=None, srcnodata=None, dstnodata=None, ot=None, cutline=None, crop_to_cutline=false, et=0.125,
     format=None, compress=None, tile_size=None, bigtiff=false, options=None, gcps=None, order=0, gcp_method="auto",
-    rpc=None, to=None, wo=None, geoloc=false, geolocation=None, kernel_version=None, grid_invariant=None, init=None, _sum_scale=1.0
+    rpc=None, to=None, wo=None, geoloc=false, geolocation=None, kernel_version=None, grid_invariant=None, init=None, _sum_scale=1.0, periodic_longitude=None
 ))]
 #[allow(clippy::too_many_arguments)]
 fn warp(
@@ -1537,6 +1540,7 @@ fn warp(
     grid_invariant: Option<bool>,
     init: Option<&Bound<'_, PyAny>>,
     _sum_scale: f64,
+    periodic_longitude: Option<bool>,
 ) -> PyResult<PyRaster> {
     let creation_options = options;
     let virtual_output = dst.is_some_and(|path| {
@@ -1598,6 +1602,9 @@ fn warp(
     crate::issue_warnings(py, terrio::warnings::take())?;
     if let Some(value) = grid_invariant {
         o.grid_invariant = value;
+    }
+    if let Some(value) = periodic_longitude {
+        o.periodic_longitude = value;
     }
     for (k, v) in wo.unwrap_or_default() {
         match k.to_ascii_uppercase().as_str() {
@@ -1926,6 +1933,9 @@ fn _window_converts(src: &str, work: &str) -> bool {
 ///         "3.13". By default the `TERRIO_GDAL_COMPAT` option's, else "3.12".
 ///     grid_invariant: Keep values independent of tiles/windows (default). False selects
 ///         GDAL's chunk-dependent sampling. None follows TERRIO_WARP_GRID.
+///     periodic_longitude: Wrap interpolation across the stored edge of a geographic source
+///         covering one turn of longitude (default). False keeps it inside the stored columns,
+///         for fields that are not continuous across that edge.
 ///     sum_scale: With `sum`, the full-resolution pixels each pixel of the source level stands
 ///         for, `(W / w) * (H / h)` for a `w` x `h` overview of a `W` x `H` raster: each source
 ///         value counts that many times. 1 by default; a positive number.
@@ -1938,7 +1948,7 @@ pub struct PyRegionWarp {
 #[pymethods]
 impl PyRegionWarp {
     #[new]
-    #[pyo3(signature = (src_size, src_transform, src_crs, dst_crs, dst_transform, resampling, error_threshold, dtype, src_nodata, dst_nodata=None, gcps=None, gcp_order=0, gcp_method="auto", rpc=None, rpc_options=None, kernel_version=None, sum_scale=1.0, grid_invariant=None))]
+    #[pyo3(signature = (src_size, src_transform, src_crs, dst_crs, dst_transform, resampling, error_threshold, dtype, src_nodata, dst_nodata=None, gcps=None, gcp_order=0, gcp_method="auto", rpc=None, rpc_options=None, kernel_version=None, sum_scale=1.0, grid_invariant=None, periodic_longitude=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
@@ -1960,6 +1970,7 @@ impl PyRegionWarp {
         kernel_version: Option<&str>,
         sum_scale: f64,
         grid_invariant: Option<bool>,
+        periodic_longitude: Option<bool>,
     ) -> PyResult<Self> {
         if !(sum_scale.is_finite() && sum_scale > 0.0) {
             return Err(invalid(format!("sum_scale must be a positive number, not {sum_scale}")));
@@ -1967,6 +1978,7 @@ impl PyRegionWarp {
         let bands = src_nodata.len();
         let kernel_version = terrio::ops::warp::KernelVersion::parse_or_configured(kernel_version).py()?;
         let grid_invariant = grid_invariant.unwrap_or_else(|| WarpOptions::default().grid_invariant);
+        let periodic_longitude = periodic_longitude.unwrap_or_else(|| WarpOptions::default().periodic_longitude);
         let (src_srs, dst_srs) = (SpatialRef::parse_literal(src_crs).py()?, SpatialRef::parse_literal(dst_crs).py()?);
         let (resampling, dtype) = (Resampling::parse(resampling).py()?, terrio::ops::parse_data_type(dtype).py()?);
         if let (None, Some(rpc)) = (&gcps, rpc) {
@@ -1989,7 +2001,11 @@ impl PyRegionWarp {
             .py()?;
             return Ok(Self {
                 bands,
-                inner: inner.with_kernel_version(kernel_version).with_grid_invariance(grid_invariant).with_sum_scale(sum_scale),
+                inner: inner
+                    .with_kernel_version(kernel_version)
+                    .with_grid_invariance(grid_invariant)
+                    .with_periodic_longitude(periodic_longitude)
+                    .with_sum_scale(sum_scale),
             });
         }
         let inner = match gcps {
@@ -2025,7 +2041,14 @@ impl PyRegionWarp {
             ),
         }
         .py()?;
-        Ok(Self { bands, inner: inner.with_kernel_version(kernel_version).with_grid_invariance(grid_invariant).with_sum_scale(sum_scale) })
+        Ok(Self {
+            bands,
+            inner: inner
+                .with_kernel_version(kernel_version)
+                .with_grid_invariance(grid_invariant)
+                .with_periodic_longitude(periodic_longitude)
+                .with_sum_scale(sum_scale),
+        })
     }
 
     /// The source window `(x, y, width, height)` a region `(x, y, width, height)` of the grid
