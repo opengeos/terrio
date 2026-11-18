@@ -14,7 +14,7 @@ LICENSE-THIRD-PARTY.md`, from `about.toml`.
 - MIT License (71)
 - ISC License (20)
 - BSD 3-Clause "New" or "Revised" License (15)
-- BSD 2-Clause "Simplified" License (8)
+- BSD 2-Clause "Simplified" License (9)
 - Mozilla Public License 2.0 (4)
 - Creative Commons Zero v1.0 Universal (2)
 - Independent JPEG Group License (2)
@@ -2616,7 +2616,7 @@ Used by:
 
 Used by:
 
-- [ureq 3.5.1](https://github.com/algesten/ureq)
+- [ureq 3.5.2](https://github.com/algesten/ureq)
 - [zune-core 0.5.3](https://github.com/etemesi254/zune-image)
 - [zune-jpeg 0.5.15](https://github.com/etemesi254/zune-image/tree/dev/crates/zune-jpeg)
 - [zune-jpegxl 0.5.2](https://github.com/etemesi254/zune-image/tree/dev/crates/zune-jpegxl)
@@ -6996,7 +6996,7 @@ limitations under the License.
 
 Used by:
 
-- [rusty_av1d 1.2.1](https://github.com/Remade-With-Rust/rusty-av1-toolkit)
+- [rusty_av1d 1.3.0](https://github.com/Remade-With-Rust/rusty-av1-toolkit)
 
 ```text
 /*
@@ -7064,7 +7064,7 @@ Used by:
 
 Used by:
 
-- [rusty_av1d 1.2.1](https://github.com/Remade-With-Rust/rusty-av1-toolkit)
+- [rusty_av1d 1.3.0](https://github.com/Remade-With-Rust/rusty-av1-toolkit)
 
 ```text
 ; Copyright © 2018, VideoLAN and dav1d authors
@@ -7129,7 +7129,7 @@ cglobal cpu_xgetbv, 0, 0, 0, xcr
 
 Used by:
 
-- [rusty_av1d 1.2.1](https://github.com/Remade-With-Rust/rusty-av1-toolkit)
+- [rusty_av1d 1.3.0](https://github.com/Remade-With-Rust/rusty-av1-toolkit)
 
 ```text
 ; Copyright © 2019-2022, VideoLAN and dav1d authors
@@ -7220,7 +7220,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 Used by:
 
-- [rusty_av1d 1.2.1](https://github.com/Remade-With-Rust/rusty-av1-toolkit)
+- [rusty_av1d 1.3.0](https://github.com/Remade-With-Rust/rusty-av1-toolkit)
 
 ```text
 BSD 2-Clause License
@@ -7278,7 +7278,7 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 
 Used by:
 
-- [rusty_av1d 1.2.1](https://github.com/Remade-With-Rust/rusty-av1-toolkit)
+- [rusty_av1d 1.3.0](https://github.com/Remade-With-Rust/rusty-av1-toolkit)
 
 ```text
 Copyright © 2018-2019, VideoLAN and dav1d authors
@@ -7305,6 +7305,45 @@ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
 ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+```
+
+## BSD 2-Clause "Simplified" License
+
+Used by:
+
+- [zstd-sys 2.1.3+zstd.1.5.7](https://github.com/gyscos/zstd-rs)
+
+```text
+The decoders for legacy formats, in zstd/lib/legacy/, include code under the
+2-clause BSD license:
+
+BSD 2-Clause License
+
+Copyright (C) 2013-2016, Yann Collet.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+    * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ```
 
@@ -7377,10 +7416,10 @@ pub(crate) static GB18030_2022_OVERRIDE_BYTES: [[u8; 2]; 18] = [
 Used by:
 
 - [zstd-safe 7.4.0](https://github.com/gyscos/zstd-rs)
-- [zstd-safe 8.2.0](https://github.com/gyscos/zstd-rs)
-- [zstd-sys 2.1.2+zstd.1.5.7](https://github.com/gyscos/zstd-rs)
+- [zstd-safe 8.3.0](https://github.com/gyscos/zstd-rs)
+- [zstd-sys 2.1.3+zstd.1.5.7](https://github.com/gyscos/zstd-rs)
 - [zstd 0.13.4](https://github.com/gyscos/zstd-rs)
-- [zstd 0.14.3](https://github.com/gyscos/zstd-rs)
+- [zstd 0.14.4](https://github.com/gyscos/zstd-rs)
 
 ```text
 BSD 3-Clause License
@@ -7418,7 +7457,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 Used by:
 
-- [zstd-sys 2.1.2+zstd.1.5.7](https://github.com/gyscos/zstd-rs)
+- [zstd-sys 2.1.3+zstd.1.5.7](https://github.com/gyscos/zstd-rs)
 
 ```text
 BSD License
@@ -7615,7 +7654,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 Used by:
 
-- [zstd-sys 2.1.2+zstd.1.5.7](https://github.com/gyscos/zstd-rs)
+- [zstd-sys 2.1.3+zstd.1.5.7](https://github.com/gyscos/zstd-rs)
 
 ```text
 The auto-generated bindings are under the 3-clause BSD license:
@@ -7789,7 +7828,7 @@ express Statement of Purpose.
 
 Used by:
 
-- [webpki-roots 1.0.11](https://github.com/rustls/webpki-roots)
+- [webpki-roots 1.0.12](https://github.com/rustls/webpki-roots)
 
 ```text
 # Community Data License Agreement - Permissive - Version 2.0
@@ -9634,7 +9673,7 @@ Used by:
 
 - [tracing-core 0.1.36](https://github.com/tokio-rs/tracing)
 - [zip 8.6.0](https://github.com/zip-rs/zip2)
-- [zip 9.5.0](https://github.com/zip-rs/zip2)
+- [zip 9.7.0](https://github.com/zip-rs/zip2)
 
 ```text
 The MIT License (MIT)
@@ -9987,7 +10026,7 @@ Used by:
 
 - [lz4_flex 0.11.6](https://github.com/pseitz/lz4_flex)
 - [lz4_flex 0.13.1](https://github.com/pseitz/lz4_flex)
-- [lz4_flex 0.14.0](https://github.com/pseitz/lz4_flex)
+- [lz4_flex 0.14.2](https://github.com/pseitz/lz4_flex)
 
 ```text
 The MIT License (MIT)
