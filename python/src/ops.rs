@@ -1971,7 +1971,7 @@ impl PyRegionWarp {
         let bands = src_nodata.len();
         let kernel_version = terrio::ops::warp::KernelVersion::parse_or_configured(kernel_version).py()?;
         let grid_invariant = grid_invariant.unwrap_or_else(|| WarpOptions::default().grid_invariant);
-        let periodic_longitude = periodic_longitude.unwrap_or(true);
+        let periodic_longitude = periodic_longitude.unwrap_or_else(|| WarpOptions::default().periodic_longitude);
         let (src_srs, dst_srs) = (SpatialRef::parse_literal(src_crs).py()?, SpatialRef::parse_literal(dst_crs).py()?);
         let (resampling, dtype) = (Resampling::parse(resampling).py()?, terrio::ops::parse_data_type(dtype).py()?);
         if let (None, Some(rpc)) = (&gcps, rpc) {

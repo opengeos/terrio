@@ -1137,9 +1137,11 @@ finite-edge clipping for coarse global filters.
 
 That is right for a field that is continuous across the stored edge. For one that is not, such
 as longitudes, class codes or a product made per hemisphere or per tile, pass
-`--periodic-longitude false`: interpolation neighbors and kernel footprints then stay inside
-the stored columns, as for a regional source, and the edge columns are not blended. A point a
-whole turn away is still found on the source, so nearest-neighbour results do not change.
+`--periodic-longitude false`: interpolation neighbors then stay inside the stored columns, as
+for a regional source, and the edge columns are not blended. A point a whole turn away is still
+found on the source, so nearest-neighbour results do not change, and area methods and `sum`
+still count both stored edges under a footprint that crosses the cut: they measure what the
+footprint covers, and `sum` would otherwise lose it.
 Python's `warp`, `terrio.rio`'s `reproject` and `WarpedVRT` accept
 `periodic_longitude=False`; JavaScript's `warp` accepts `periodicLongitude: false`. A
 serialized warped VRT cannot record it: write a materialized output.

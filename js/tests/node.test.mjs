@@ -59,12 +59,13 @@ test("periodicLongitude: false keeps bilinear inside a full-turn source's stored
   const options = {tSrs: "+proj=longlat +datum=WGS84 +lon_0=180", te: [-10.5, 58, 10.5, 60], ts: [21, 2], ot: "Float64"};
   const turn = (d) => Math.abs((((d + 180) % 360) + 360) % 360 - 180);
   const nearest = terrio.warp(source, {...options, resampling: "near"}).readBand(1);
-  const worst = (extra) => {
+  const worst = (extra, difference) => {
     const out = terrio.warp(source, {...options, resampling: "bilinear", ...extra}).readBand(1);
-    return Math.max(...Array.from(out, (v, i) => turn(v - nearest[i])));
+    return Math.max(...Array.from(out, (v, i) => difference(v - nearest[i])));
   };
-  assert.ok(worst({}) > 90, "the periodic default blends the two edge columns");
-  assert.ok(worst({periodicLongitude: false}) <= 1);
+  assert.ok(worst({}, turn) > 90, "the periodic default blends the two edge columns");
+  // The plain difference: a value from the other stored edge would be 359 away.
+  assert.ok(worst({periodicLongitude: false}, Math.abs) <= 1);
 });
 
 test("wider-source area footprints use two nonduplicated placements", () => {

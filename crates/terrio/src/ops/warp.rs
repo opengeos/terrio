@@ -242,10 +242,10 @@ pub struct WarpOptions {
     /// Enabled by default; `TERRIO_WARP_GRID=GDAL` selects GDAL's chunk-dependent reference behavior.
     pub grid_invariant: bool,
     /// Treat an unrotated geographic source covering exactly one turn of longitude as periodic:
-    /// interpolation neighbors and kernel footprints wrap across its stored edge. Enabled by
-    /// default. `false` keeps them inside the stored columns, as for a regional source, for
-    /// fields that are not continuous across that edge (longitudes, class codes, per-tile
-    /// products).
+    /// interpolation neighbors wrap across its stored edge. Enabled by default. `false` keeps
+    /// them inside the stored columns, as for a regional source, for fields that are not
+    /// continuous across that edge (longitudes, class codes, per-tile products). Area methods
+    /// and `sum` count both stored edges under a footprint across the cut either way.
     pub periodic_longitude: bool,
     /// Coordinate operation selection controls.
     pub transform_options: crate::crs::TransformOptions,
@@ -7078,6 +7078,37 @@ mod tests {
                     }
                     assert!(worst(&run(resampling, true)) > 90., "{label}: the periodic default blends the edge columns");
                 }
+            }
+        }
+    }
+
+    /// A footprint across the stored edge covers both edge columns: area methods and `sum`
+    /// count both whatever `periodic_longitude` is, so that `sum` loses nothing.
+    #[test]
+    fn area_methods_count_both_stored_edges_with_finite_longitude_edges() {
+        // Columns 359 and 0 hold 2 and 4; the others 1.
+        let world = raster(360, 180, [0., 1., 0., 90., 0., -1.], 4326, |x, _| match x {
+            359 => 2.,
+            0 => 4.,
+            _ => 1.,
+        });
+        // One output pixel from 0.25 W to 0.75 E: a quarter of column 359 and three of column 0.
+        let run = |resampling, periodic_longitude| {
+            let options = WarpOptions {
+                dst_srs: Some(SpatialRef::parse("+proj=longlat +datum=WGS84 +lon_0=180").unwrap()),
+                dst_transform: Some([179.75, 1., 0., 60., 0., -1.]),
+                size: Some((1, 1)),
+                output_type: Some(DataType::F64),
+                resampling,
+                periodic_longitude,
+                ..Default::default()
+            };
+            warp(&[&world], &options).unwrap().raster.data.to_f64_vec()[0]
+        };
+        for (resampling, expected) in [(Resampling::Average, 3.5), (Resampling::Sum, 3.5), (Resampling::Max, 4.), (Resampling::Min, 2.)] {
+            for periodic_longitude in [true, false] {
+                let value = run(resampling, periodic_longitude);
+                assert!((value - expected).abs() < 1e-9, "{resampling:?}, periodic {periodic_longitude}: {value}");
             }
         }
     }

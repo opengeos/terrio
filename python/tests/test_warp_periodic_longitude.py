@@ -49,7 +49,8 @@ def test_reproject_keeps_interpolation_inside_the_stored_columns(resampling):
     nearest = warped(Resampling.nearest)
     assert (nearest == warped(Resampling.nearest, periodic_longitude=False)).all()
     finite = warped(resampling, periodic_longitude=False)
-    assert turn(finite - nearest).max() <= 1
+    # The plain difference: a value from the other stored edge would be 359 away.
+    assert np.abs(finite - nearest).max() <= 1
     # The periodic default blends the two edge columns.
     assert turn(warped(resampling) - nearest).max() > 90
     assert (warped(resampling, periodic_longitude=True) == warped(resampling)).all()
@@ -68,4 +69,7 @@ def test_warped_vrt_keeps_interpolation_inside_the_stored_columns(tmp_path):
             assert turn(vrt.read(1) - nearest).max() > 90
         options = dict(resampling=Resampling.bilinear, periodic_longitude=False)
         with WarpedVRT(src, **options, **grid) as vrt:
-            assert turn(vrt.read(1) - nearest).max() <= 1
+            assert np.abs(vrt.read(1) - nearest).max() <= 1
+            assert vrt.periodic_longitude is False
+            with pytest.raises(AttributeError):
+                vrt.periodic_longitude = True

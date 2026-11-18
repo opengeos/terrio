@@ -257,7 +257,8 @@ class WarpedVRT(DatasetReader):
         self.resampling = rs
         self.tolerance = tolerance
         self.grid_invariant = grid_invariant
-        self.periodic_longitude = periodic_longitude
+        # Read-only (see the property): the warpers cached by grid are built with it.
+        self._periodic_longitude = periodic_longitude
         self.src_crs = CRS.from_user_input(src_crs) if src_crs is not None else src_dataset.crs
         self.src_transform = src_transform or src_dataset.transform
         # A source georeferenced by GCPs alone: rasterio takes their CRS when none is given.
@@ -651,7 +652,7 @@ class WarpedVRT(DatasetReader):
                 self._warp_dst_nodata,
                 sum_scale=grid.scale,
                 grid_invariant=self.grid_invariant,
-                periodic_longitude=self.periodic_longitude,
+                periodic_longitude=self._periodic_longitude,
                 **(
                     {}
                     if gcps is None
@@ -712,7 +713,7 @@ class WarpedVRT(DatasetReader):
             rpc_options=options,
             sum_scale=grid.scale,
             grid_invariant=self.grid_invariant,
-            periodic_longitude=self.periodic_longitude,
+            periodic_longitude=self._periodic_longitude,
         )
         if len(self._warpers) > 32:
             self._warpers.clear()
@@ -1450,6 +1451,15 @@ class WarpedVRT(DatasetReader):
             CRS: The CRS.
         """
         return self.dst_crs
+
+    @property
+    def periodic_longitude(self) -> bool | None:
+        """Whether a source covering one turn of longitude is read as periodic (read-only).
+
+        Returns:
+            bool | None: The value given at construction; None is the default, periodic.
+        """
+        return self._periodic_longitude
 
     @property
     def nodatavals(self) -> tuple[Any, ...]:

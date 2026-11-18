@@ -302,7 +302,7 @@ pub fn warp(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
         transform_options: terrio::crs::TransformOptions { allow_ballpark: a.allow_ballpark, only_best: a.only_best, ..Default::default() },
         kernel_version: terrio::ops::warp::KernelVersion::parse_or_configured(a.kernel_version.as_deref()).map_err(js_err)?,
         grid_invariant: a.grid_invariant.unwrap_or_else(|| WarpOptions::default().grid_invariant),
-        periodic_longitude: a.periodic_longitude.unwrap_or(true),
+        periodic_longitude: a.periodic_longitude.unwrap_or_else(|| WarpOptions::default().periodic_longitude),
         geoloc: a.geoloc,
         src_srs: srs(a.s_srs.as_deref())?,
         dst_srs: srs(a.t_srs.as_deref())?,
