@@ -64,3 +64,31 @@ fn a_dms_prime_meridian_keeps_its_seconds_mark() {
     let written = SpatialRef::from_wkt(wkt).to_proj4_gdal();
     assert_eq!(written.as_deref(), Some(r#"+proj=longlat +ellps=clrk80ign +pm=2d20'14.025"E +no_defs"#));
 }
+
+#[test]
+fn other_definitions_of_a_code_are_written_as_gdal_exports_them() {
+    // GDAL binds a CRS to WGS 84 by its root identifier: its WKT 1 and WKT 2 get the code's
+    // additions, the WKT without it, ESRI's WKT and the PROJ string none
+    // (`data/gdal_proj4_export_inputs.tsv`, `scripts/gen_gdal_towgs84.py`).
+    // Compound CRSs given by a definition, where GDAL adds a geoid model only to the code,
+    // binds a WKT 1 by its horizontal part's identifier and writes `+vunits` from ESRI's WKT; and
+    // EPSG:6871's PROJ string, which terrio writes on its sphere (`+R`), GDAL with `+wktext`.
+    let known = [
+        "EPSG:6871 wkt2",
+        "EPSG:6871 wkt1-rootless",
+        "EPSG:6871 esri",
+        "EPSG:6871 proj",
+        "EPSG:3901 wkt1",
+        "EPSG:3901 wkt1-rootless",
+        "EPSG:3901 esri",
+    ];
+    let mut differ = Vec::new();
+    for line in include_str!("data/gdal_proj4_export_inputs.tsv").lines() {
+        let [code, kind, input, gdal] = line.split('\t').collect::<Vec<_>>()[..] else { panic!("{line}") };
+        let crs = if kind == "proj" { SpatialRef::from_proj4(input).unwrap() } else { SpatialRef::from_wkt(input) };
+        if crs.to_proj4_gdal().as_deref() != Some(gdal) {
+            differ.push(format!("{code} {kind}"));
+        }
+    }
+    assert_eq!(differ, known);
+}

@@ -817,8 +817,13 @@ impl SpatialRef {
     /// use (GDAL's default `OSR_ADD_TOWGS84_ON_EXPORT_TO_PROJ4=YES`), and a compound CRS's geoid
     /// model as `+geoidgrids` and `+geoid_crs`. `None` where [`Self::to_proj4`] is.
     ///
-    /// Another CRS (a PROJ string, a WKT, even one GDAL identifies with a code) keeps its own
-    /// `+towgs84`, if any: GDAL's addition to it depends on how GDAL reads it. A deprecated code
+    /// A WKT 1 or WKT 2 whose root `AUTHORITY` or `ID` names the code gets the same, as in GDAL,
+    /// which binds the CRS by its root identifier. Another CRS keeps its own `+towgs84`, if any,
+    /// as GDAL writes it: a PROJ string, a WKT without a root identifier (ESRI's) even where terrio
+    /// identifies its code. Unlike GDAL, a PROJJSON keeps its own too (terrio drops its root `id`
+    /// when it reads it), and so does a WKT whose identifier terrio drops because its
+    /// parameters are not the code's (GDAL binds by the identifier anyway), and a compound CRS
+    /// given by a WKT or PROJ string is not always written as GDAL writes it. A deprecated code
     /// has its own definition's, as GDAL gives it with `OSR_USE_NON_DEPRECATED=NO`
     /// ([`Self::from_epsg_non_deprecated`] has its replacement's, as GDAL's default).
     ///
@@ -834,12 +839,13 @@ impl SpatialRef {
     /// ```
     pub fn to_proj4_gdal(&self) -> Option<String> {
         let proj = self.to_proj4()?;
-        let mut tokens: Vec<String> = proj_tokens(&proj).into_iter().filter(|t| *t != "+type=crs").map(str::to_string).collect();
+        let mut tokens: Vec<String> =
+            proj_tokens(&proj).into_iter().filter(|t| t.replace('"', "") != "+type=crs").map(str::to_string).collect();
         // The table first: rebuilding the code's own definition is the costlier check. A code's
         // own PROJ string has no `+towgs84`, `+nadgrids` or `+geoidgrids` of its own where the
         // table adds one (`a_registry_string_has_nothing_the_table_adds`).
         let Some((towgs84, geoid)) =
-            self.authority().and_then(|(authority, code)| epsg::gdal_additions(authority, code)).filter(|_| self.is_registry_definition())
+            self.authority().and_then(|(authority, code)| epsg::gdal_additions(authority, code)).filter(|_| self.gdal_binds_to_wgs84())
         else {
             return Some(tokens.join(" "));
         };
@@ -872,12 +878,19 @@ impl SpatialRef {
         Some(tokens.join(" "))
     }
 
-    /// Whether this CRS is its EPSG or ESRI code's own definition (that of [`Self::from_epsg`] or
-    /// [`Self::from_esri`]).
-    fn is_registry_definition(&self) -> bool {
-        let own = match self.authority() {
-            Some(("EPSG", code)) => Self::from_epsg(code),
-            Some(("ESRI", code)) => Self::from_esri(code),
+    /// Whether GDAL binds this CRS to WGS 84 by its code, as its PROJ string export does: a CRS
+    /// that is its EPSG or ESRI code's own definition (that of [`Self::from_epsg`] or
+    /// [`Self::from_esri`]), or a WKT whose root `AUTHORITY` or `ID` declares the code, but for
+    /// a compound CRS's (GDAL binds a compound CRS read from WKT 2 by neither part, from WKT 1 by
+    /// its horizontal part's identifier, and adds no geoid model to either).
+    fn gdal_binds_to_wgs84(&self) -> bool {
+        let Some((authority, code)) = self.authority() else { return false };
+        if self.wkt.as_deref().and_then(gdal_root_identifier).is_some_and(|(a, c)| a.eq_ignore_ascii_case(authority) && c == code) {
+            return true;
+        }
+        let own = match authority {
+            "EPSG" => Self::from_epsg(code),
+            "ESRI" => Self::from_esri(code),
             _ => return false,
         };
         own.is_ok_and(|own| own.wkt == self.wkt && own.proj4 == self.proj4 && own.esri == self.esri)
@@ -4298,6 +4311,22 @@ mod tests {
             assert!(!stuck.contains(&x) || lon == r || lon == r - two_pi.copysign(r), "easting {x:e}: {lon}, remainder {r}");
         }
     }
+}
+
+/// The authority and code of a WKT's root `AUTHORITY` or `ID`, wherever it is among the root's
+/// children (WKT 2 can give a `REMARK` after it), but for a compound CRS's.
+fn gdal_root_identifier(wkt: &str) -> Option<(String, u32)> {
+    let root = wkt1::parse(wkt)?;
+    if ["COMPD_CS", "COMPOUNDCRS"].iter().any(|k| root.key.eq_ignore_ascii_case(k)) {
+        return None;
+    }
+    root.children("ID").chain(root.children("AUTHORITY")).find_map(|id| match (id.args.first()?, id.args.get(1)?) {
+        (wkt1::Arg::Str(authority), wkt1::Arg::Num(code)) if code.fract() == 0.0 && *code >= 0.0 && *code <= f64::from(u32::MAX) => {
+            Some((authority.clone(), *code as u32))
+        }
+        (wkt1::Arg::Str(authority), wkt1::Arg::Str(code)) => Some((authority.clone(), code.trim().parse().ok()?)),
+        _ => None,
+    })
 }
 
 /// A PROJ string's `+key=value` tokens, split on whitespace outside a quoted value, each as

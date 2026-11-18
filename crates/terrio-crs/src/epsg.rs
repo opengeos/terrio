@@ -40,6 +40,11 @@ static GDAL_TOWGS84: &[u8] = include_bytes!("../data/gdal_towgs84.tsv.zst");
 /// (`OSRExportToProj4`), each empty when it adds none; `None` when it adds neither.
 pub(crate) fn gdal_additions(authority: &str, code: u32) -> Option<(&'static str, &'static str)> {
     static TABLE: OnceLock<HashMap<(bool, u32), (String, String)>> = OnceLock::new();
+    let esri = match authority {
+        "EPSG" => false,
+        "ESRI" => true,
+        _ => return None,
+    };
     let table = TABLE.get_or_init(|| {
         decompress(GDAL_TOWGS84)
             .lines()
@@ -50,11 +55,6 @@ pub(crate) fn gdal_additions(authority: &str, code: u32) -> Option<(&'static str
             })
             .collect()
     });
-    let esri = match authority {
-        "EPSG" => false,
-        "ESRI" => true,
-        _ => return None,
-    };
     table.get(&(esri, code)).map(|(t, g)| (t.as_str(), g.as_str()))
 }
 

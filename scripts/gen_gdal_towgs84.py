@@ -20,6 +20,11 @@ Also writes ``crates/terrio-crs/tests/data/gdal_proj4_export.tsv``, ``authority:
 string`` as GDAL exports it, for every fifth CRS of the table and every twentieth other one, and
 the CRSs RustGIS named (opengeos/RustGIS#2335 follow-up).
 
+And ``crates/terrio-crs/tests/data/gdal_proj4_export_inputs.tsv``, ``authority:code<TAB>kind<TAB>
+input<TAB>PROJ string``: GDAL's string for the named CRSs given as other definitions, GDAL's WKT 1
+and WKT 2 (with their root identifier, which GDAL binds the CRS by), the WKT 1 without its root
+identifier, ESRI's WKT and GDAL's PROJ string without its additions.
+
 Usage: python scripts/gen_gdal_towgs84.py
 
 Needs GDAL 3.13.3 on PROJ 9.9.0 (conda-forge), its Python bindings and the ``zstd`` command.
@@ -34,6 +39,7 @@ from osgeo import gdal, osr
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 OUT = os.path.join(ROOT, "crates", "terrio-crs", "data", "gdal_towgs84.tsv.zst")
 FIXTURE = os.path.join(ROOT, "crates", "terrio-crs", "tests", "data", "gdal_proj4_export.tsv")
+INPUTS = os.path.join(ROOT, "crates", "terrio-crs", "tests", "data", "gdal_proj4_export_inputs.tsv")
 
 KINDS = (
     osr.OSR_CRS_TYPE_GEOGRAPHIC_2D,
@@ -78,6 +84,8 @@ def main():
                 continue
             towgs84 = re.search(r" \+towgs84=(\S+)", proj)
             geoid = re.search(r" (\+geoidgrids=\S+ \+geoid_crs=\S+)", proj)
+            assert '"' not in proj, f"{code}: a quoted value: {proj}"
+            assert bool(geoid) == ("+geoidgrids=" in proj), f"{code}: a geoid model without its CRS: {proj}"
             if towgs84 or geoid:
                 rows.append((authority, info.code, towgs84.group(1) if towgs84 else "", geoid.group(1) if geoid else ""))
                 with_additions.append((code, proj))
@@ -93,7 +101,32 @@ def main():
     with open(FIXTURE, "w") as f:
         for code, proj in sorted(fixture.items(), key=lambda c: (c[0].split(":")[0], int(c[0].split(":")[1]))):
             f.write(f"{code}\t{proj}\n")
-    print(f"{len(rows)} CRSs with additions; {len(fixture)} in the fixture")
+    lines = 0
+    with open(INPUTS, "w") as f:
+        for code in NAMED:
+            srs = osr.SpatialReference()
+            srs.SetFromUserInput(code)
+            wkt1 = srs.ExportToWkt()
+            esri = srs.Clone()
+            esri.MorphToESRI()
+            root = re.search(r',AUTHORITY\["[A-Z]+","\d+"\]\]$', wkt1)
+            plain = re.sub(r" \+towgs84=\S+| \+geoidgrids=\S+ \+geoid_crs=\S+", "", srs.ExportToProj4())
+            inputs = {
+                "wkt1": wkt1,
+                # One line: the newlines of EPSG's area descriptions become spaces.
+                "wkt2": srs.ExportToWkt(["FORMAT=WKT2_2019", "MULTILINE=NO"]).replace("\n", " "),
+                "wkt1-rootless": wkt1[: root.start()] + "]" if root else None,
+                "esri": esri.ExportToWkt(),
+                "proj": plain,
+            }
+            for kind, text in inputs.items():
+                if text is None:
+                    continue
+                proj = export(text)
+                assert proj is not None and "\t" not in text and "\n" not in text, (code, kind)
+                f.write(f"{code}\t{kind}\t{text}\t{proj}\n")
+                lines += 1
+    print(f"{len(rows)} CRSs with additions; {len(fixture)} in the fixture, {lines} inputs")
 
 
 if __name__ == "__main__":
