@@ -82,8 +82,13 @@ def percent(pct):
 
 
 def change(old, new):
-    """The change in percent, and as text."""
-    pct = (new - old) / old * 100.0 if old else float("inf") if new else 0.0
+    """The change in percent, rounded as it is shown, so a row flagged at 10% reads 10.0% or more,
+    and as text."""
+    if not old:
+        pct = float("inf") if new else 0.0
+    else:
+        pct = (new - old) / old * 100.0
+        pct = round(pct, 2) if abs(pct) < 1 else round(pct, 1)
     return pct, percent(pct)
 
 
@@ -127,7 +132,10 @@ def main():
     compared = sum(r[1] != "🆕" for r in table)
 
     def listed(rs):
-        return "".join(f"\n- {r[3]}: {', '.join(f'**{percent(p)} {c}**' for p, c in r[4])}" for r in rs)
+        def measure(p, c):
+            return f"**{c} from 0**" if p == float("inf") else f"**{percent(p)} {c}**"
+
+        return "".join(f"\n- {r[3]}: {', '.join(measure(p, c) for p, c in r[4])}" for r in rs)
 
     out = ["<!-- terrio-bench: regression -->"] if worse else []
     out.append("### Performance vs main")
@@ -170,7 +178,10 @@ def main():
             "**Memory**: the peak heap, the most memory the operation holds at once beyond its "
             "input, its output included."
         ),
-        "- All three repeat between runs, within 0.01%, so a change beyond that comes from the code.",
+        (
+            "- Memory repeats exactly between runs, instructions within 0.01% and est. cycles within "
+            "0.1%: a larger change comes from the code."
+        ),
         (
             f"- ⚠️ worse or ✅ better by {FLAG:g}% or more (and by {count(MEMORY_FLOOR, 'B')} or more for "
             "memory); 🟢 within. Informational: this check never fails."
