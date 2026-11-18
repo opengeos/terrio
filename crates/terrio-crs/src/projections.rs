@@ -554,8 +554,9 @@ struct Tmerczoned {
 
 impl Tmerczoned {
     fn new(s: &Setup<'_>) -> Result<Self> {
-        // PROJ reads `+width` as a number of degrees (`pj_param(..., "dwidth")`), and computes
-        // with a missing or zero width all the same; terrio refuses it.
+        // PROJ reads `+width` as a number of degrees (`pj_param(..., "dwidth")`); with a missing,
+        // zero or negative width its result is undefined (an integer cast of an infinite zone
+        // number), which terrio refuses.
         let width = s.p.f64("width").unwrap_or(0.0).to_radians();
         if !(width.is_finite() && width > 0.0) {
             return Err(err("tmerczoned: +width should be a positive number of degrees"));
@@ -564,24 +565,26 @@ impl Tmerczoned {
     }
 
     /// The central meridian of zone `zone` (from 1), from the initial longitude.
-    fn center(&self, zone: i32) -> f64 {
-        (f64::from(zone) - 0.5) * self.width
+    fn center(&self, zone: f64) -> f64 {
+        (zone - 0.5) * self.width
     }
 }
 
 impl Proj for Tmerczoned {
     fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
         let lam = if lam < 0.0 { lam + 2.0 * PI } else { lam };
-        // PROJ nudges the zone's lower bound in and its upper bound out.
-        let zone = (lam / self.width + 1e-12) as i32 + 1;
+        // PROJ nudges the zone's lower bound in and its upper bound out. The zone stays a float
+        // (PROJ's int cast, truncation toward zero, of a nonnegative number) so that a tiny width
+        // cannot overflow it.
+        let zone = (lam / self.width + 1e-12).trunc() + 1.0;
         let (x, y) = self.tmerc.fwd(lam - self.center(zone), phi)?;
-        Some((x + f64::from(zone) * self.offset, y))
+        Some((x + zone * self.offset, y))
     }
 
     fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
         // C's truncation toward zero, as PROJ casts.
-        let zone = (x / self.offset + 0.5) as i32;
-        let (lam, phi) = self.tmerc.inv(x - f64::from(zone) * self.offset, y)?;
+        let zone = (x / self.offset + 0.5).trunc();
+        let (lam, phi) = self.tmerc.inv(x - zone * self.offset, y)?;
         Some((lam + self.center(zone), phi))
     }
 }

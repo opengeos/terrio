@@ -563,12 +563,17 @@ fn conversion(p: &Params) -> Result<(Value, Vec<&'static str>)> {
             ("Transverse Mercator (South Orientated)", 9808, values, ORIGIN_K)
         }
         // PROJ 9.9.0's `tmerczoned`, whose `+lon_0` is the initial longitude.
-        "tmerczoned" => (
-            "Transverse Mercator Zoned Grid System",
-            9824,
-            vec![(LAT_NAT, lat0), (LON_INITIAL, lon0), (ZONE_WIDTH, num("width").unwrap_or(0.0)), (K_NAT, k0), (FE, x0), (FN, y0)],
-            &["lat_0", "lon_0", "width", "k", "k_0", "x_0", "y_0"],
-        ),
+        "tmerczoned" => {
+            let width = num("width")
+                .filter(|w| w.is_finite() && *w > 0.0)
+                .ok_or_else(|| unsupported("a zoned grid system without a positive width"))?;
+            (
+                "Transverse Mercator Zoned Grid System",
+                9824,
+                vec![(LAT_NAT, lat0), (LON_INITIAL, lon0), (ZONE_WIDTH, width), (K_NAT, k0), (FE, x0), (FN, y0)],
+                &["lat_0", "lon_0", "width", "k", "k_0", "x_0", "y_0"],
+            )
+        }
         "tmerc" => ("Transverse Mercator", 9807, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (K_NAT, k0), (FE, x0), (FN, y0)], ORIGIN_K),
         "lcc" => {
             // As PROJ (and terrio) read the CRS: with `lat_0` and no `lat_2`, one standard parallel

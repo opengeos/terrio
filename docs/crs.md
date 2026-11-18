@@ -873,9 +873,10 @@ geoid models, compound CRSs and epochs: 250 cases, 50,000 points, the largest di
 For every EPSG CRS, GDAL's reference points computed with those grids
 (`gen_epsg_points.py --grids`, 50 points of each kind per CRS spread over its area of use,
 checked by `crates/terrio-crs/tests/epsg_accuracy_grids.rs`, GDAL 3.13.3 and PROJ 9.9.0) are
-matched within 1 cm forward and inverse; from CRS to CRS, every point of 6,434 of the 6,440 pairs
-is within 1 cm and of 6,437 within 1 m: the three others go from or to RRAF 1991 (EPSG:4640 and 2989), deprecated CRSs whose own datum PROJ
-chains through its RRAFG transformation, where terrio uses its ballpark (#153).
+matched within 1 cm forward and inverse; from CRS to CRS, every point of 6,434 of the 6,440 pairs is
+within 1 cm and of 6,437 within 1 m: the three others go from or to RRAF 1991 (EPSG:4640 and 2989),
+deprecated CRSs whose own datum PROJ chains through its RRAFG transformation, where terrio uses its
+ballpark (#153).
 
 The chains through intermediate datums are checked by `scripts/compare_chains_with_proj.py`, on
 every pair of EPSG geographic 2D CRSs on two datums no transformation links directly whose areas of
