@@ -129,6 +129,15 @@ precedence = "override"
 SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright © 2010-2025 Esri", "Copyright (c) 2021, Hobu Inc", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
 SPDX-License-Identifier = "LicenseRef-EPSG AND Apache-2.0 AND MIT"
 
+# The datum transformations to WGS 84 and geoid models GDAL 3.13.3 adds to the PROJ strings of
+# EPSG and ESRI CRSs, and GDAL's PROJ strings of a sample of them and of other definitions of them
+# (scripts/gen_gdal_towgs84.py).
+[[annotations]]
+path = ["crates/terrio-crs/data/gdal_towgs84.tsv.zst", "crates/terrio-crs/tests/data/gdal_proj4_export.tsv", "crates/terrio-crs/tests/data/gdal_proj4_export_inputs.tsv"]
+precedence = "override"
+SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright © 2010-2025 Esri", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
+SPDX-License-Identifier = "LicenseRef-EPSG AND Apache-2.0 AND MIT"
+
 # The EPSG names and aliases and the ESRI aliases of CRSs PROJ 9.9.0 looks CRSs up by, with the
 # EPSG codes they stand for, from PROJ 9.9.0's database (scripts/gen_crs_names.py).
 [[annotations]]

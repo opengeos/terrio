@@ -166,6 +166,11 @@ scripts/gen_proj_string_export.py and scripts/gen_wkt1_strict_export.py) and geo
 (GDAL 3.12.1's GeoKeys and WKT 1 of EPSG CRSs, by scripts/gen_geokeys_gdal.py) are derived from
 the same dataset, under the same terms, as are the EPSG rows of crs_accessors.tsv (PROJ 9.9.0's
 axis orders, ellipsoids and conversion parameters of EPSG CRSs, by scripts/gen_crs_accessors.py).
+The EPSG rows of crates/terrio-crs/data/gdal_towgs84.tsv.zst and of the test data
+crates/terrio-crs/tests/data/gdal_proj4_export.tsv and gdal_proj4_export_inputs.tsv (GDAL
+3.13.3's datum transformations to WGS 84 and geoid models of EPSG CRSs in their PROJ strings, and
+GDAL's WKT of them, by scripts/gen_gdal_towgs84.py) are derived
+from the same dataset, under the same terms.
 
 -------------------------------------------------------------------------------
 Esri projection engine data
@@ -183,6 +188,10 @@ wkt_datum_shift.json are derived from it through PROJ 9.9.0's database, as are t
 crates/terrio-crs/tests/data/proj_string_export.tsv and wkt1_strict_export.tsv (PROJ 9.9.0's
 PROJ strings and WKT 1 of ESRI CRSs), geokeys_gdal.tsv (GDAL 3.12.1's GeoKeys of ESRI CRSs) and
 crs_accessors.tsv (PROJ 9.9.0's axis orders, ellipsoids and conversion parameters of ESRI CRSs).
+So are the ESRI rows of crates/terrio-crs/data/gdal_towgs84.tsv.zst and of the test data
+crates/terrio-crs/tests/data/gdal_proj4_export.tsv and gdal_proj4_export_inputs.tsv (GDAL 3.13.3's
+datum transformations to WGS 84 of ESRI CRSs in their PROJ strings, and their WKT, by
+scripts/gen_gdal_towgs84.py).
 The ESRI celestial bodies and their semi-major axes in crates/terrio-crs/src/bodies.rs are derived
 from the same documentation, through PROJ 9.9.0's database (scripts/gen_celestial_bodies.py).
 The ESRI names in the test data crates/terrio-crs/tests/data/wkt1_proj_reads.json (Makassar /

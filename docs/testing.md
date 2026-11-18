@@ -2029,6 +2029,17 @@ GDAL reads WKT with) read terrio's strict WKT 1 of every custom definition of th
 points must transform as from the original within 1 mm or 1e-8 degrees
 (`scripts/compare_wkt1_strict_with_proj.py`, needs pyproj).
 
+The PROJ string GDAL exports (`SpatialRef::to_proj4_gdal`) is compared with GDAL 3.13.3 on PROJ
+9.9.0 (`OSRExportToProj4`, `OSR_USE_NON_DEPRECATED=NO`, network off), character for character. The
+fixture holds GDAL's string of 1,298 EPSG and ESRI codes (every fifth of the 5,130 GDAL adds a
+`+towgs84` or geoid model to, every twentieth other one and those RustGIS named); all are compared
+but the 7 ESRI codes terrio does not carry, which the test lists. A second fixture holds 13 of them
+given as GDAL's WKT 1 and WKT 2, the WKT 1 without its root identifier or with a datum shift of its
+own, ESRI's WKT and the PROJ string (76 cases); all are compared but 7 listed compound-CRS cases,
+which must still give a string (`cargo test -p terrio-crs --test gdal_proj4_export`; regenerate the
+table and both fixtures with `scripts/gen_gdal_towgs84.py`, GDAL 3.13.3 on PROJ 9.9.0 from
+conda-forge and the `zstd` command).
+
 GeoTIFF GeoKeys (`SpatialRef::from_geokeys`, `SpatialRef::to_geokeys`) are compared with GDAL 3.12.1
 (rasterio 1.5.0) on 376 CRSs (every 20th EPSG projected and geographic 2D code, rule codes, PROJ
 strings of every method GeoTIFF names in other units and datums, ESRI codes, compound and geographic
