@@ -32,6 +32,16 @@ from osgeo import osr
 osr.UseExceptions()
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class _Missing:
+    """A field missing from terrio's entry, unlike any value of GDAL's (None included)."""
+
+    def __repr__(self):
+        return "missing"
+
+
+MISSING = _Missing()
 CHANGES = ROOT / "crates" / "terrio-crs" / "tests" / "data" / "crs_list_changes.json"
 
 # Pinned catalog counts for the CLI's wbprojection-fallback build (PROJ 9.9.0 snapshot, EPSG
@@ -109,6 +119,9 @@ def main():
         reference = gdal_entries(authority)
         ours = [e for e in listed if e["authority"] == authority]
         differs, changed = [], []
+        # The CRSs the registry removed since GDAL's PROJ: no rejection of terrio's, but terrio
+        # must not list them.
+        removed = set(changes["removed"][authority]) if changes else set()
         if len(ours) != EXPECTED_COUNTS[authority]:
             differs.append(f"catalog count {len(ours)} vs pinned {EXPECTED_COUNTS[authority]}")
         if len({e["code"] for e in ours}) != len(ours):
@@ -118,9 +131,17 @@ def main():
             added = changes["added"][authority].get(str(e["code"])) if changes else None
             registry = changes["changes"][authority].get(str(e["code"])) if changes else None
             stale = []
-            if expected is None and added is not None:
-                # A CRS the registry added since GDAL's PROJ: compared with the newer PROJ's entry.
+            if added is not None:
+                # A CRS the registry added since GDAL's PROJ: compared with the newer PROJ's entry,
+                # and GDAL must not list it.
+                if expected is not None:
+                    differs.append(f"{authority}:{e['code']} is in GDAL's list, though {changes['from']} does not have it")
+                    stale = ["listed"]
                 expected = added
+            elif e["code"] in removed:
+                # A CRS the registry removed since GDAL's PROJ that terrio still lists.
+                differs.append(f"{authority}:{e['code']} is listed, though {changes['to']} removed it")
+                continue
             elif expected is None:
                 differs.append(f"{authority}:{e['code']} is not in GDAL's list")
                 continue
@@ -131,9 +152,10 @@ def main():
                 if stale:
                     differs.append(f"{authority}:{e['code']} GDAL's {', '.join(stale)} is not {changes['from']}'s")
                 expected = {k: registry[k][1] if k in registry else v for k, v in expected.items()}
-            fields = [k for k in expected if e.get(k) != expected[k]]
+            # A field terrio leaves out differs, also from an explicit null.
+            fields = [k for k in expected if e.get(k, MISSING) != expected[k]]
             if fields:
-                differs.append(f"{authority}:{e['code']} {', '.join(f'{k}: {e.get(k)!r} vs {expected[k]!r}' for k in fields)}")
+                differs.append(f"{authority}:{e['code']} {', '.join(f'{k}: {e.get(k, MISSING)!r} vs {expected[k]!r}' for k in fields)}")
             elif (added is not None or registry is not None) and not stale:
                 # Only a CRS that passed every check is counted as the registry's change.
                 changed.append(e["code"])
@@ -150,8 +172,6 @@ def main():
             cases.append({"name": f"{authority}: {len(changed)} CRSs added or changed after {changes['from']}",
                           "status": "not compared", "detail": detail})
         codes = {e["code"] for e in ours}
-        # The CRSs the registry removed since GDAL's PROJ are no rejection of terrio's.
-        removed = set(changes["removed"][authority]) if changes else set()
         left_out = Counter(e["kind"] for c, e in reference.items() if c not in codes and c not in removed)
         if removed:
             cases.append({"name": f"{authority}: {len(removed)} CRSs removed after {changes['from']}", "status": "not compared",
@@ -166,7 +186,7 @@ def main():
     for text in ("Albers", "3577"):
         found = [e for e in terrio_list(args.terrio, text) if (e["authority"], e["code"]) == ("EPSG", 3577)]
         expected = gdal_entries("EPSG")[3577]
-        fields = [k for k in expected if found[0].get(k) != expected[k]] if found else []
+        fields = [k for k in expected if found[0].get(k, MISSING) != expected[k]] if found else []
         status = "identical" if found and not fields else "differs"
         detail = "" if found else "not found"
         if fields:

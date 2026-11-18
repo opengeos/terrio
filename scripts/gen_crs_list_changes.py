@@ -21,7 +21,7 @@ Usage, with the dumps written by each environment::
     python scripts/gen_crs_list_changes.py --dump new.json
     python scripts/gen_crs_list_changes.py old.json new.json
 
-Both dumps are made with the network off and no grids, as the tables.
+The dumps are made with PROJ's network off; GDAL's CRS list does not depend on grids.
 """
 
 import argparse
