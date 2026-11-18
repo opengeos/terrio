@@ -72,6 +72,29 @@ impl Node {
         keys.iter().find_map(|k| self.child(k))
     }
 
+    /// The first child node, in the node's order, whose keyword is one of `keys`: PROJ 9.9.0 reads
+    /// the first of a CRS's datum nodes (`DATUM`, `TRF` or `GEODETICDATUM`), of a datum's
+    /// ellipsoid nodes and of a projected CRS's base CRS nodes, whatever their keyword.
+    pub fn first_in(&self, keys: &[&str]) -> Option<&Node> {
+        self.args.iter().find_map(|a| match a {
+            Arg::Node(n) if n.is(keys) => Some(n),
+            _ => None,
+        })
+    }
+
+    /// The geodetic datum or datum ensemble of a geodetic CRS node, the first in its order (see
+    /// [`Self::first_in`]; PROJ refuses a CRS with both a datum and an ensemble, which terrio
+    /// reads by the first).
+    pub fn datum(&self) -> Option<&Node> {
+        self.first_in(crate::keywords::GEODETIC_DATUM)
+    }
+
+    /// The base geodetic CRS of a projected (or derived) CRS node: WKT 1's `GEOGCS`, WKT 2's
+    /// `BASEGEOGCRS` or `BASEGEODCRS` (terrio's two included), the first in its order.
+    pub fn geodetic_base(&self) -> Option<&Node> {
+        self.first_in(crate::keywords::GEODETIC_BASE)
+    }
+
     /// The node itself or the first node below it, depth first, whose keyword is one of `keys`.
     pub fn find(&self, keys: &[&str]) -> Option<&Node> {
         if self.is(keys) {

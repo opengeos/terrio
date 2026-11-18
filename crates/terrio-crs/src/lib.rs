@@ -4478,14 +4478,15 @@ mod tests {
     }
 }
 
-/// The authority and code of a WKT's root `AUTHORITY` or `ID`, wherever it is among the root's
-/// children (WKT 2 can give a `REMARK` after it), but for a compound CRS's.
+/// The authority and code of a WKT's first root `AUTHORITY` or `ID` (as GDAL 3.13.3 takes it,
+/// whichever keyword comes first), wherever it is among the root's children (WKT 2 can give a
+/// `REMARK` after it), but for a compound CRS's.
 fn gdal_root_identifier(wkt: &str) -> Option<(String, u32)> {
     let root = wkt1::parse(wkt)?;
     if root.is(keywords::COMPOUND_CRS) {
         return None;
     }
-    root.children("ID").chain(root.children("AUTHORITY")).find_map(|id| match (id.args.first()?, id.args.get(1)?) {
+    root.ids().find_map(|id| match (id.args.first()?, id.args.get(1)?) {
         (wkt1::Arg::Str(authority), wkt1::Arg::Num(code)) if code.fract() == 0.0 && *code >= 0.0 && *code <= f64::from(u32::MAX) => {
             Some((authority.clone(), *code as u32))
         }
@@ -4496,6 +4497,18 @@ fn gdal_root_identifier(wkt: &str) -> Option<(String, u32)> {
 
 #[cfg(test)]
 mod gdal_proj4_tests {
+    /// GDAL 3.13.3 (PROJ 9.9.0) takes a WKT 2's first root identifier, `AUTHORITY` or `ID`:
+    /// `osr.SpatialReference().ImportFromWkt(wkt)`, then `GetAuthorityCode(None)` gives 4326 with
+    /// `AUTHORITY["EPSG","4326"]` first, 4258 with `ID["EPSG",4258]` first.
+    #[test]
+    fn the_first_root_identifier_is_gdals() {
+        let wgs84 = r#"GEOGCRS["x",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],CS[ellipsoidal,2],AXIS["latitude",north,ANGLEUNIT["degree",0.0174532925199433]],AXIS["longitude",east,ANGLEUNIT["degree",0.0174532925199433]]"#;
+        let first = format!(r#"{wgs84},AUTHORITY["EPSG","4326"],ID["EPSG",4258]]"#);
+        assert_eq!(super::gdal_root_identifier(&first), Some(("EPSG".into(), 4326)));
+        let first = format!(r#"{wgs84},ID["EPSG",4258],AUTHORITY["EPSG","4326"]]"#);
+        assert_eq!(super::gdal_root_identifier(&first), Some(("EPSG".into(), 4258)));
+    }
+
     #[test]
     fn a_registry_string_has_nothing_the_table_adds() {
         // What `to_proj4_gdal` inserts is never already there: no EPSG or ESRI code GDAL adds a
