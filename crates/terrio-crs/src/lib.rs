@@ -1154,8 +1154,8 @@ impl SpatialRef {
     /// # Ok::<(), terrio_crs::Error>(())
     /// ```
     pub fn axis_order(&self) -> AxisOrder {
-        // A vertical CRS, by its code or its WKT (`VERT_CS`, ESRI's `VERTCS`, `VERTCRS`, `VERTICALCRS`), has a
-        // single axis.
+        // A vertical CRS, by its code or its WKT (`VERT_CS`, ESRI's `VERTCS`, `VERTCRS`,
+        // `VERTICALCRS`), has a single axis.
         let vertical_wkt = self.wkt.as_deref().is_some_and(|w| keywords::is(keywords::root_key(w), keywords::VERTICAL_CRS));
         if self.epsg.and_then(epsg::vertical).is_some() || vertical_wkt {
             return AxisOrder::Other;
@@ -2137,8 +2137,8 @@ fn declared_code(wkt: &str, authority: &str) -> Option<u32> {
         return None;
     }
     let start = body.rfind('[')?;
-    let keyword = body[..start].trim_end().rsplit([',', '[']).next()?.trim().to_ascii_uppercase();
-    if !keywords::is(&keyword, keywords::ID) {
+    let keyword = body[..start].trim_end().rsplit([',', '[']).next()?.trim();
+    if !keywords::is(keyword, keywords::ID) {
         return None;
     }
     let mut parts = body[start + 1..].split(',').map(|p| p.trim().trim_matches('"'));
