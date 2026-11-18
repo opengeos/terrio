@@ -212,6 +212,24 @@ fn crs_prints_proj_string() {
 }
 
 #[test]
+fn crs_prints_gdal_proj_string() {
+    let dir = tempfile::tempdir().unwrap();
+    // GDAL 3.13.3's `ExportToProj4` of EPSG:2056 (PROJ 9.9.0, network off): GDAL adds its datum
+    // shift, which PROJ's string leaves out.
+    let output = run(&["crs", "EPSG:2056", "--proj4-gdal"], dir.path());
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim_end(),
+        "+proj=somerc +lat_0=46.9524055555556 +lon_0=7.43958333333333 +k_0=1 +x_0=2600000 +y_0=1200000 +ellps=bessel +towgs84=674.374,15.056,405.346,0,0,0,0 +units=m +no_defs"
+    );
+    let local = r#"LOCAL_CS["Engineering",LOCAL_DATUM["site",0],UNIT["metre",1],AXIS["X",EAST],AXIS["Y",NORTH]]"#;
+    let output = run(&["crs", local, "--proj4-gdal"], dir.path());
+    assert!(!output.status.success() && String::from_utf8_lossy(&output.stderr).contains("no PROJ string"));
+    let output = run(&["crs", "EPSG:2056", "--proj4-gdal", "--proj4"], dir.path());
+    assert!(!output.status.success() && String::from_utf8_lossy(&output.stderr).contains("cannot be used with"));
+}
+
+#[test]
 fn crs_prints_strict_wkt1() {
     let dir = tempfile::tempdir().unwrap();
     // PROJ 9.9.0's WKT1_GDAL of EPSG:4326, with GDAL's axes (pyproj 3.8.0,
