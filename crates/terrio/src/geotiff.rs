@@ -1655,12 +1655,25 @@ pub(crate) fn read_geotiff_with_limits(path: &std::path::Path, limits: crate::co
     };
     let mut chunks: Vec<u32> = Vec::new();
     crate::dataset::fallible::reserve(&mut chunks, chunk_count, "the TIFF chunk list")?;
-    chunks.extend((0..chunk_count).map(|i| i as u32));
     // Compressed chunks whose stored bytes run past the end of the file: refused, as GDAL does.
     let compression = dec.find_tag_unsigned::<u16>(Tag::Compression).map_err(tiff_err)?.unwrap_or(1);
-    // Read once: the codec below keeps them rather than decoding the tags again.
+    // Read once: the codec below keeps them rather than decoding the tags again. An uncompressed
+    // image needs them only to find its chunks left out: they are read under the limits the `tiff`
+    // crate opened the file with (it read them then), so that the chunk limit bounds the chunks
+    // decoded, not the tables.
+    let tables = if compression == 1 {
+        let len = dec.inner().get_ref().get_ref().len()?;
+        dec = dec.with_limits(tiff::decoder::Limits::default());
+        let tables = ChunkTables::read(&mut dec);
+        dec = dec.with_limits(limits.tiff_within(len));
+        tables
+    } else {
+        ChunkTables::read(&mut dec)
+    }
+    .map_err(tiff_err)?;
+    // Chunks without bytes (left out of a sparse file) are not decoded: see `data` below.
+    chunks.extend((0..chunk_count).filter(|i| tables.counts.get(*i).is_none_or(|n| *n > 0)).map(|i| i as u32));
     let tables = if compression != 1 {
-        let tables = ChunkTables::read(&mut dec).map_err(tiff_err)?;
         let stored = tables.offsets.iter().copied().zip(tables.counts.iter().copied());
         check_stored_chunks(compression, stored, dec.inner().get_ref().get_ref().len()?)?;
         Some(std::sync::Arc::new(tables))
@@ -1668,8 +1681,23 @@ pub(crate) fn read_geotiff_with_limits(path: &std::path::Path, limits: crate::co
         None
     };
 
-    // Band-major output, typed after the first chunk decoded.
+    // Band-major output, typed after the first chunk decoded; with chunks left out, first filled
+    // with nodata (each band's), or 0, which their pixels read as, as by window.
     let mut data: Option<RasterData> = None;
+    if chunks.len() < chunk_count {
+        let mut out = crate::dataset::fallible::raster_data(data_type, raster_len, tags.nodata.unwrap_or(0.0), "the raster")?;
+        match (&mut out, tags.integer_nodata) {
+            (RasterData::U64(values), Some(nodata)) => values.fill(nodata as u64),
+            (RasterData::I64(values), Some(nodata)) => values.fill(nodata as i64),
+            _ => {}
+        }
+        for band in 0..samples * parts {
+            if let Some((_, nodata)) = tags.band_nodata.iter().find(|(b, _)| *b == band / parts + 1) {
+                crate::pixel::with_data!(&mut out, values => values[band * w * h..(band + 1) * w * h].fill(*nodata as _));
+            }
+        }
+        data = Some(out);
+    }
     let file = dec.inner().get_ref().get_ref().clone();
     let reopen = || file_decoder(file.clone(), &tags, limits, path);
     // The compressions the `tiff` crate does not decode (alone), with the same limit.

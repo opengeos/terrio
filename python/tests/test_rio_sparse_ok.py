@@ -22,7 +22,7 @@ from terrio.rio.windows import Window
 )
 def test_blocks_never_written_are_left_out(tmp_path, monkeypatch, layout, nodata, limit):
     """Below and above the in-memory limit (written whole, or in rows); the file reads back
-    whole and by window, and with `terrio.open_raster(lazy=True)`."""
+    whole and by window, and with `terrio.open_raster`, eagerly or lazily."""
     monkeypatch.setenv("TERRIO_RIO_IN_MEMORY_LIMIT", limit)
     path = tmp_path / "out.tif"
     profile = dict(driver="GTiff", width=300, height=200, count=2, dtype="uint16", nodata=nodata)
@@ -44,6 +44,7 @@ def test_blocks_never_written_are_left_out(tmp_path, monkeypatch, layout, nodata
     touched = {(x, y) for y in range(5 // bh, -(-55 // bh)) for x in range(10 // bw, -(-110 // bw))}
     assert {b for b in blocks if sizes[b] != "0"} == touched
     assert {b for b in blocks if offsets[b] != "0"} == touched
+    np.testing.assert_array_equal(terrio.open_raster(str(path)).read(), expected)
     np.testing.assert_array_equal(terrio.open_raster(str(path), lazy=True).read(), expected)
 
 

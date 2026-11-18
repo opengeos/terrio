@@ -5381,15 +5381,17 @@ mod tests {
 
     /// `SPARSE_OK` leaves out of a GeoTIFF, written whole or in rows, tiled or striped, by pixel
     /// or by band, the blocks of its full-resolution image whose samples are all nodata (or 0
-    /// without nodata), bit for bit: their offset and byte count are 0, and the file reads back
-    /// as the same raster written without the option does. Overviews are written whole, and so
-    /// is every block when the samples cannot hold nodata. A COG writes every tile, and warns.
+    /// without nodata), bit for bit: their offset and byte count are 0, and the file reads back,
+    /// eagerly and lazily, as the same raster written without the option does. Overviews are
+    /// written whole, and so is every block when the samples cannot hold nodata. A COG writes
+    /// every tile, and warns.
     #[test]
     fn sparse_ok_leaves_out_the_blocks_of_nodata() {
         let (cols, rows) = (100, 70);
         let dir = tempfile::tempdir().unwrap();
         let (path, dense) = (dir.path().join("sparse.tif"), dir.path().join("dense.tif"));
         let bits = |d: &RasterData| d.to_f64_vec().iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        let eager = |p: &std::path::Path| bits(&crate::geotiff::read_geotiff(p).unwrap().raster.data);
         let lazy = |p: &std::path::Path| bits(&crate::LazyRaster::open(p.to_str().unwrap()).unwrap().read().unwrap().raster.data);
         // The type and nodata, and whether blocks of nodata are left out: not when the samples
         // cannot hold nodata (a fraction, a value out of range).
@@ -5457,10 +5459,40 @@ mod tests {
                         dec.next_image().unwrap();
                         assert!(crate::geotiff::ChunkTables::read(&mut dec).unwrap().counts.iter().all(|n| *n > 0), "{case}");
                     }
+                    assert_eq!(eager(&path), expected, "{case}");
                     assert_eq!(lazy(&path), expected, "{case}");
                 }
             }
         }
+        // Blocks left out read as the file's nodata, held exactly for 64-bit integers (2^53 + 1,
+        // which a double does not hold, written over 2^53), or as a band's own, from the file's
+        // `.aux.xml`, whole as by window.
+        let nodata = 9_007_199_254_740_992u64;
+        let cfg =
+            wbraster::RasterConfig { cols: 32, rows: 32, bands: 2, data_type: DataType::U64, nodata: nodata as f64, ..Default::default() };
+        let mut values = vec![nodata; 2 * 32 * 32];
+        values[0] = 1;
+        let raster = Raster::from_data_native(cfg, RasterData::U64(values)).unwrap();
+        let co = [("SPARSE_OK", "YES"), ("TILED", "YES"), ("BLOCKXSIZE", "16"), ("BLOCKYSIZE", "16")];
+        let options = crate::RasterWriteOptions {
+            creation_options: co.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            ..Default::default()
+        };
+        let opts = TiffOptions::from_write_options(&options, false, Some(nodata as f64)).unwrap().unwrap();
+        let mut bytes = encode(&raster, &opts).unwrap();
+        let at: Vec<usize> = (0..bytes.len() - 16).filter(|&i| bytes[i..].starts_with(b"9007199254740992\0")).collect();
+        assert_eq!(at.len(), 1);
+        bytes[at[0] + 15] = b'3';
+        std::fs::write(&path, bytes).unwrap();
+        let pam = "<PAMDataset><PAMRasterBand band=\"2\"><NoDataValue>9</NoDataValue></PAMRasterBand></PAMDataset>";
+        std::fs::write(dir.path().join("sparse.tif.aux.xml"), pam).unwrap();
+        let u64s = |d: RasterData| match d {
+            RasterData::U64(v) => v,
+            d => panic!("{d:?}"),
+        };
+        let read = u64s(crate::geotiff::read_geotiff(&path).unwrap().raster.data);
+        assert_eq!((read[17 * 32], read[32 * 32 + 17 * 32]), (nodata + 1, 9));
+        assert_eq!(read, u64s(crate::LazyRaster::open(path.to_str().unwrap()).unwrap().read().unwrap().raster.data));
         let _ = crate::warnings::take();
         let options = crate::RasterWriteOptions { creation_options: vec![("SPARSE_OK".into(), "YES".into())], ..Default::default() };
         assert!(!TiffOptions::from_write_options(&options, true, None).unwrap().unwrap().sparse);
