@@ -361,12 +361,6 @@ impl SpatialRef {
     /// as in PROJ.
     pub fn from_epsg(code: u32) -> Result<Self> {
         let wkt = match epsg::get(code) {
-            Some(e) if e.unsupported() => {
-                return Err(Error::Crs(format!(
-                    "EPSG:{code} ({}) is not supported: terrio does not compute the Transverse Mercator Zoned Grid System yet",
-                    e.name
-                )));
-            }
             Some(e) => spherical_extension(&e.wkt, &e.proj),
             None => match (epsg::compound(code), epsg::vertical(code)) {
                 (Some(c), _) => c.wkt.clone(),

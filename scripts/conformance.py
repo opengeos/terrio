@@ -2638,9 +2638,7 @@ def suite_crs(ctx):
         "Identical: within 1 mm. Within tolerance: within 1 cm (forward, inverse) or 1 m (CRS to "
         "CRS, where the datum transformations GDAL picks can differ by area of use). Known "
         "differences: RRAF 1991 (EPSG:4640 and 2989), deprecated CRSs whose own datum PROJ chains "
-        "through its RRAFG transformation, where terrio uses its ballpark (#153); the UTM grid "
-        "systems (EPSG:32600 and 32700, EPSG v13), on the Transverse Mercator Zoned Grid System, "
-        "which terrio does not compute yet (#1076). Deprecated "
+        "through its RRAFG transformation, where terrio uses its ballpark (#153). Deprecated "
         "codes have their own definition, as in PROJ (GDAL with OSR_USE_NON_DEPRECATED=NO).",
     )
     if not shutil.which("cargo"):
@@ -3084,9 +3082,7 @@ def suite_crs_grids(ctx):
         "(scripts/compare_crs_grids_with_gdal.py), with the largest difference of each case. "
         "Identical: within 1 mm. Within tolerance: within 1 cm, or 1 m from CRS to CRS. Known "
         "differences: RRAF 1991 (EPSG:4640 and 2989), deprecated CRSs whose own datum PROJ chains "
-        "through its RRAFG transformation, where terrio uses its ballpark (#153); the UTM grid "
-        "systems (EPSG:32600 and 32700, EPSG v13), on the Transverse Mercator Zoned Grid System, "
-        "which terrio does not compute yet (#1076). Deprecated "
+        "through its RRAFG transformation, where terrio uses its ballpark (#153). Deprecated "
         "codes have their own definition, as in PROJ (GDAL with OSR_USE_NON_DEPRECATED=NO).",
     )
     if not shutil.which("cargo"):

@@ -496,6 +496,8 @@ const FE_FALSE: Param = ("Easting at false origin", 8826, 'l');
 const FN_FALSE: Param = ("Northing at false origin", 8827, 'l');
 const LAT_TS: Param = ("Latitude of standard parallel", 8832, 'a');
 const LON_ORIGIN: Param = ("Longitude of origin", 8833, 'a');
+const LON_INITIAL: Param = ("Initial longitude", 8830, 'a');
+const ZONE_WIDTH: Param = ("Zone width", 8831, 'a');
 const CO_LAT: Param = ("Co-latitude of cone axis", 1036, 'a');
 const LAT_PSEUDO: Param = ("Latitude of pseudo standard parallel", 8818, 'a');
 const K_PSEUDO: Param = ("Scale factor on pseudo standard parallel", 8819, 's');
@@ -559,6 +561,18 @@ fn conversion(p: &Params) -> Result<(Value, Vec<&'static str>)> {
         "tmerc" if p.str("axis") == Some("wsu") => {
             let values = vec![(LAT_NAT, lat0), (LON_NAT, lon0), (K_NAT, k0), (FE, 0.0 - x0), (FN, 0.0 - y0)];
             ("Transverse Mercator (South Orientated)", 9808, values, ORIGIN_K)
+        }
+        // PROJ 9.9.0's `tmerczoned`, whose `+lon_0` is the initial longitude.
+        "tmerczoned" => {
+            let width = num("width")
+                .filter(|w| w.is_finite() && *w > 0.0)
+                .ok_or_else(|| unsupported("a zoned grid system without a positive width"))?;
+            (
+                "Transverse Mercator Zoned Grid System",
+                9824,
+                vec![(LAT_NAT, lat0), (LON_INITIAL, lon0), (ZONE_WIDTH, width), (K_NAT, k0), (FE, x0), (FN, y0)],
+                &["lat_0", "lon_0", "width", "k", "k_0", "x_0", "y_0"],
+            )
         }
         "tmerc" => ("Transverse Mercator", 9807, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (K_NAT, k0), (FE, x0), (FN, y0)], ORIGIN_K),
         "lcc" => {

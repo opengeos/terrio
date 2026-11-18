@@ -29,10 +29,9 @@ osr.UseExceptions()
 ROOT = Path(__file__).resolve().parents[1]
 
 # Pinned catalog counts for the CLI's wbprojection-fallback build (PROJ 9.9.0 snapshot, EPSG
-# v13.102, less the UTM grid systems EPSG:32600 and 32700, whose projection terrio does not
-# compute yet). Missing registry entries must fail even if a newer GDAL database lists additional
+# v13.102). Missing registry entries must fail even if a newer GDAL database lists additional
 # codes.
-EXPECTED_COUNTS = {"EPSG": 7959, "ESRI": 2580, "IAU_2015": 2201}
+EXPECTED_COUNTS = {"EPSG": 7961, "ESRI": 2580, "IAU_2015": 2201}
 
 KINDS = {
     osr.OSR_CRS_TYPE_GEOGRAPHIC_2D: "geographic_2d",

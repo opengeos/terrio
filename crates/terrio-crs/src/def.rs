@@ -916,13 +916,6 @@ impl Def {
         } else {
             match projections::build(name, &mut setup)? {
                 Some(b) => Some(Arc::from(b)),
-                // PROJ 9.9.0's Transverse Mercator Zoned Grid System (EPSG:32600 and 32700), which
-                // neither terrio nor wbprojection computes yet.
-                None if name == "tmerczoned" => {
-                    return Err(Error::Crs(
-                        "unsupported projection: +proj=tmerczoned (Transverse Mercator Zoned Grid System) is not computed yet".into(),
-                    ));
-                }
                 None => {
                     #[cfg(feature = "wbprojection-fallback")]
                     {
@@ -2111,9 +2104,10 @@ fn vto_meter(p: &Params, extension: bool) -> Option<f64> {
 /// Whether PROJ 9.8.1 maps a PROJ string's `+lat_0`, `+lon_0`, `+x_0` or `+y_0` into the CRS of a
 /// method, and so refuses a value that is not a number: as probed with pyproj 3.8.0
 /// (`CRS("+proj=<method> ... +<key>=abc")` refused where the same string without it is read),
-/// and Laborde by `data/proj_param_values.tsv`.
+/// and Laborde by `data/proj_param_values.tsv`; `tmerczoned`, new in PROJ 9.9.0, as PROJ 9.9.0
+/// with pyproj 3.8.0 maps them.
 fn proj_maps_origin(method: &str, key: &str) -> bool {
-    const ALL: [&str; 24] = [
+    const ALL: [&str; 25] = [
         "aea",
         "aeqd",
         "cass",
@@ -2137,6 +2131,7 @@ fn proj_maps_origin(method: &str, key: &str) -> bool {
         "stere",
         "sterea",
         "tmerc",
+        "tmerczoned",
         "webmerc",
     ];
     // Methods without a latitude of origin.
