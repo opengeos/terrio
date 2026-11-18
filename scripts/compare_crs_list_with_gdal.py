@@ -138,8 +138,7 @@ def main():
             stale = []
             if added is not None:
                 # A CRS the registry added since GDAL's PROJ: compared with the newer PROJ's entry,
-                # and GDAL must not list it.
-                # (reported below, whether terrio lists it or not).
+                # and not counted as checked when GDAL lists it (a difference reported before the loop).
                 if expected is not None:
                     stale = ["listed"]
                 expected = added
