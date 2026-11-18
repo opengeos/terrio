@@ -782,9 +782,10 @@ impl SpatialRef {
     }
 
     /// The WKT of the geographic CRS this CRS is based on (its own when geographic): from the
-    /// EPSG table for an EPSG CRS, else the `GEOGCS` node of its WKT 1. `None` when neither is
-    /// known. Taken from the CRS's WKT, it has its names cut at a NUL ([`wkt_for_files`]), so
-    /// that it reads as a whole WKT with [`SpatialRef::from_wkt`], which ends text at a NUL.
+    /// EPSG table for an EPSG CRS, else the first `GEOGCS` node of its WKT 1 (written again from
+    /// its tree, in `[`/`]` brackets). `None` when neither is known. Taken from the CRS's WKT, it
+    /// has its names cut at a NUL ([`wkt_for_files`]), so that it reads as a whole WKT with
+    /// [`SpatialRef::from_wkt`], which ends text at a NUL.
     #[doc(hidden)]
     pub fn geographic_wkt(&self) -> Option<String> {
         if let Some(entry) = self.wkt.as_deref().and_then(|wkt| iau::identify(wkt, self.proj4.as_deref())).and_then(iau::get) {
@@ -795,22 +796,9 @@ impl SpatialRef {
         {
             return Some(g.wkt.clone());
         }
-        let wkt = self.to_wkt()?;
-        let start = wkt.find("GEOGCS[")?;
-        let mut depth = 0usize;
-        for (i, c) in wkt[start..].char_indices() {
-            match c {
-                '[' => depth += 1,
-                ']' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return Some(wkt_for_files(&wkt[start..=start + i]).into_owned());
-                    }
-                }
-                _ => {}
-            }
-        }
-        None
+        // The first `GEOGCS` of the tree (not a name's text, and in `(`/`)` brackets too).
+        let geogcs = wkt1::parse(&self.to_wkt()?)?.find(&["GEOGCS"])?.to_wkt();
+        Some(wkt_for_files(&geogcs).into_owned())
     }
 
     /// EPSG code of the geographic CRS underlying this definition, when known. For a WKT 1 CRS on a
@@ -1135,9 +1123,7 @@ impl SpatialRef {
     /// GML authority-order names need these axes swapped into traditional GIS XY order
     /// (GDAL 3.12.1 `EPSGTreatsAsLatLong` / `EPSGTreatsAsNorthingEasting`).
     pub fn has_north_east_axis_order(&self) -> bool {
-        let Some(wkt) = self.to_wkt() else { return false };
-        let horizontal = def::split_compound(&wkt).map(|(horizontal, _)| horizontal);
-        let Some(root) = wkt1::parse(horizontal.as_deref().unwrap_or(&wkt)) else { return false };
+        let Some(root) = self.to_wkt().as_deref().and_then(horizontal_root) else { return false };
         let mut axes = root.children("AXIS");
         let points = |axis: Option<&wkt1::Node>, direction: &str| {
             axis.is_some_and(|axis| matches!(axis.args.get(1), Some(wkt1::Arg::Ident(d)) if d.eq_ignore_ascii_case(direction)))
@@ -1193,17 +1179,7 @@ impl SpatialRef {
             let [first, second] = def.axis_directions();
             return if polar { AxisOrder::Other } else { order(first, second) };
         }
-        let Some(wkt) = self.to_wkt() else { return AxisOrder::Unknown };
-        let horizontal = def::split_compound(&wkt).map(|(horizontal, _)| horizontal);
-        let Some(root) = wkt1::parse(horizontal.as_deref().unwrap_or(&wkt)) else { return AxisOrder::Unknown };
-        // A bound CRS has the axes of its source CRS, as PROJ reads it.
-        let source = root.key.eq_ignore_ascii_case("BOUNDCRS").then(|| root.child("SOURCECRS")).flatten().and_then(|s| {
-            s.args.iter().find_map(|a| match a {
-                wkt1::Arg::Node(n) => Some(n.clone()),
-                _ => None,
-            })
-        });
-        let root = source.unwrap_or(root);
+        let Some(root) = self.to_wkt().as_deref().and_then(horizontal_root) else { return AxisOrder::Unknown };
         // Only the four directions count: `northEast` is another one.
         let direction = |axis: &wkt1::Node| match axis.args.get(1) {
             Some(wkt1::Arg::Ident(d)) if d.eq_ignore_ascii_case("north") => b'n',
@@ -2047,6 +2023,20 @@ pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
                 || registered.as_deref().and_then(method).is_some_and(|t| t.name().map(wkt1::norm).as_deref() == Some(name.as_str()))
         }
     }
+}
+
+/// The node of a WKT whose axes are its horizontal axes, as PROJ 9.9.0 reads them: a compound
+/// CRS's horizontal CRS, and a bound CRS's source CRS (#1012 item 60); else its root.
+fn horizontal_root(wkt: &str) -> Option<wkt1::Node> {
+    let horizontal = def::split_compound(wkt).map(|(horizontal, _)| horizontal);
+    let root = wkt1::parse(horizontal.as_deref().unwrap_or(wkt))?;
+    let source = root.key.eq_ignore_ascii_case("BOUNDCRS").then(|| root.child("SOURCECRS")).flatten().and_then(|s| {
+        s.args.iter().find_map(|a| match a {
+            wkt1::Arg::Node(n) => Some(n.clone()),
+            _ => None,
+        })
+    });
+    Some(source.unwrap_or(root))
 }
 
 /// The metres per unit of a vertical CRS's WKT (`VERT_CS`, ESRI's `VERTCS`, `VERTCRS`), from its
