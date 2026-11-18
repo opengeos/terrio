@@ -3522,7 +3522,10 @@ class DatasetWriter(DatasetReader):
     def _new_structure_defaults(self) -> list[ColorInterp]:
         """The color interpretations the writer gives the bands when it is not told otherwise.
 
-        A file written without any set reads them back, and a new dataset reports them. For a
+        A new dataset reports them, and a file written without any set reads them back unless it
+        has another number of bands: a WebP leaves out an alpha band that is opaque everywhere,
+        an MBTiles archive reads back as four bands, and a PMTiles archive as the bands of its
+        tiles, which carry an alpha band. For a
         GeoTIFF or a COG they are the GeoTIFF writer's. `PHOTOMETRIC=RGB` or `YCBCR` makes the
         first three bands red, green and blue. Without `PHOTOMETRIC`, so do three Byte bands,
         or four compressed with WebP: a COG takes none (`_creation_options` drops it), and an

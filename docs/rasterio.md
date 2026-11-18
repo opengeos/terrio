@@ -96,7 +96,10 @@ It needs only NumPy and [affine](https://github.com/rasterio/affine) (installed 
   interpretation set on the dataset, or copied by `shutil.copy`, is kept, as it is by an `r+`
   update.
   `cubic`, `nearest` for paletted rasters).
-  A new dataset reports the color interpretation its file reads back when none is set. For a
+  A new dataset reports the color interpretation its file reads back when none is set, unless the
+  file has another number of bands: a four-band WebP whose alpha band is opaque everywhere is
+  written, and reads back, as three-band RGB; an MBTiles archive reads back as four bands, and a
+  PMTiles archive as the bands of its tiles, which carry an alpha band. For a
   GeoTIFF or a COG it is the GeoTIFF writer's, which `photometric` and `alpha` change; the other
   writers take neither option and go by the number of bands. A JPEG 2000 file of three or four
   bands is red, green and blue (the fourth undefined), of one or two gray, and of more undefined;
