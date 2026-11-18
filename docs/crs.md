@@ -117,10 +117,10 @@ without a code (`VERTCS`, `VERT_CS` or `VERTCRS`) is the EPSG CRS PROJ identifie
 is, in the same unit and direction; it then has that CRS's geoid models. GDAL's `PROJ4_GRIDS`
 extension in its vertical datum, where GDAL writes it, makes it its grids, of no code, even with
 a declared code, as PROJ reads it (a bound CRS); one at its root, which PROJ ignores, is ignored
-beside a code it declares, and otherwise read as before (no code, its grids, where PROJ
-identifies the CRS by its name). Its PROJ string's `+geoidgrids` are the same grids. A compound CRS gets an
-EPSG code only from the code it declares, but its parts are known when its vertical CRS is
-identified.
+beside a declared code of its unit and direction, and otherwise read as before (no code, its
+grids, where PROJ identifies the CRS by its name). Its PROJ string's `+geoidgrids` are the same
+grids. A compound CRS gets an EPSG code only from the code it declares, but its parts are known
+when its vertical CRS is identified.
 
 Where a WKT 2 CRS has two nodes PROJ reads one of, the first in its order counts, whatever its
 keyword, as in PROJ 9.9.0: of two datums (`DATUM`, `TRF`, `GEODETICDATUM`; a datum and an

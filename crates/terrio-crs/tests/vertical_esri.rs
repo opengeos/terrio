@@ -199,5 +199,7 @@ fn geoid_grids_by_their_place() {
         let compound = SpatialRef::from_wkt(&format!(r#"COMPD_CS["x",{WGS84},{v}]"#));
         assert_eq!(compound.to_proj4(), Some(proj4), "{v}");
         assert_eq!(compound.compound_parts(), code.map(|c| (4326, c)), "{v}");
+        // A vertical CRS of no code has no PROJJSON (PROJ's, of a bound CRS, is refused).
+        assert_eq!(compound.to_projjson().is_ok(), code.is_some(), "{v}");
     }
 }
