@@ -38,12 +38,13 @@ def test_regression_and_improvement_are_flagged_first(tmp_path):
     assert out.startswith("<!-- terrio-bench: regression -->\n")
     assert "⚠️ **1 of 3 benchmarks are slower** than main: warp_f32 slower +40.0%." in out
     assert "✅ **1 of 3 are faster**: warp_f32 faster −25.0%." in out
-    rows = [line for line in out.splitlines() if line.startswith("| ") and "→" in line]
+    shown, folded = out.split("<details><summary>🟢 1 within ±10%</summary>")
+    rows = [line for line in shown.splitlines() if line.startswith("| ") and "→" in line]
     assert rows == [
         "| ⚠️ | `warp_f32 slower` | 1 G → 1.4 G (**+40.0%**) | 1 G → 1.4 G (**+40.0%**) |",
         "| ✅ | `warp_f32 faster` | 100 → 75 (**−25.0%**) | 100 → 75 (**−25.0%**) |",
-        "| 🟢 | `warp_f32 same` | 1 k → 1 k (+0.10%) | 1 k → 1 k (+0.10%) |",
     ]
+    assert "| 🟢 | `warp_f32 same` | 1 k → 1 k (+0.10%) | 1 k → 1 k (+0.10%) |" in folded
 
 
 def test_cycles_alone_flag_a_regression(tmp_path):
@@ -69,9 +70,11 @@ def test_improvement_alone_sets_no_label(tmp_path):
     assert "| 🟢 | `warp_f32 noted` | 1 k → 1.05 k (+5.0%) | 1 k → 1.05 k (+5.0%) |" in out
 
 
-def test_all_within_threshold_is_green_with_the_largest_change(tmp_path):
+def test_all_within_threshold_is_green_and_folded(tmp_path):
     out = comment(tmp_path, summary("same", 1001, 1000), summary("noted", 1050, 1000))
-    assert "🟢 **No slowdown.** All 2 benchmarks are within ±10% of main; the largest change is +5.0% (warp_f32 noted)." in out
+    assert "🟢 **As fast as main.** All 2 benchmarks are within ±10%; the largest change is +5.0% (warp_f32 noted)." in out
+    shown = out.split("<details><summary>🟢 2 within ±10%</summary>")[0]
+    assert "| 🟢 |" not in shown
 
 
 def test_known_benchmarks_say_what_they_run(tmp_path):

@@ -133,14 +133,20 @@ def main():
     if compared and not slower and not faster:
         top = max((r for r in table if r[1] != "🆕"), key=lambda r: abs(r[4]))
         out.append(
-            f"🟢 **No slowdown.** All {compared} benchmarks are within ±{FLAG:g}% of main; "
+            f"🟢 **As fast as main.** All {compared} benchmarks are within ±{FLAG:g}%; "
             f"the largest change is {percent(top[4])} ({top[3]})."
         )
+    # Only the flagged rows stay in view; the others fold away.
+    header = ["| | benchmark | CPU instructions | est. cycles |", "|---|---|---:|---:|"]
+    flagged = [r[2] for r in table if r[1] in ("⚠️", "✅")]
+    rest = [r[2] for r in table if r[1] not in ("⚠️", "✅")]
+    if flagged:
+        out += ["", *header, *flagged]
+    if rest:
+        green = sum(r[1] == "🟢" for r in table)
+        label = f"🟢 {green} within ±{FLAG:g}%" if green else f"🆕 {len(rest)} benchmarks"
+        out += ["", f"<details><summary>{label}</summary>", "", *header, *rest, "</details>"]
     out += [
-        "",
-        "| | benchmark | CPU instructions | est. cycles |",
-        "|---|---|---:|---:|",
-        *(r[2] for r in table),
         "",
         "<details><summary>How to read this</summary>",
         "",
