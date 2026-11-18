@@ -142,6 +142,76 @@ pub fn geographic_datum(geog: u32) -> Option<u32> {
     epsg::get(geog).map(|e| e.datum).filter(|d| *d != 0)
 }
 
+/// The datum shift to WGS 84 of an EPSG geographic 2D CRS, or of the base geographic CRS of an
+/// EPSG projected or compound CRS, as `+towgs84` carries it: that of the first transformation to
+/// WGS 84 (EPSG:4326) that needs no grid, in PROJ 9.9.0's order (pyproj's
+/// `TransformerGroup("EPSG:<code>", "EPSG:4326").transformers`), when PROJ runs it as a single
+/// Helmert transformation of 3 or 7 parameters. That includes a concatenation PROJ runs as one
+/// (a change of prime meridian or between geographic and geocentric coordinates around it, two
+/// geocentric translations through a datum on the same ellipsoid). When PROJ's ballpark comes
+/// first, it is the transformation PROJ's `proj_create_crs_to_crs` finds through another datum,
+/// as terrio's [`Transformer`] does (RD/83 through ETRS89 without its grid): terrio's EPSG table
+/// lists it before the ballpark.
+///
+/// The parameters are tx, ty, tz in metres, rx, ry, rz in arc-seconds and ds in ppm, in the
+/// position vector convention: a coordinate frame rotation's rotations are negated, and an
+/// inverted transformation's seven parameters are negated: the first-order inverse that
+/// `+towgs84` can carry, where PROJ inverts the step exactly (they differ at the second order,
+/// with rotations or a scale). A geocentric translation has zero rotations and scale; a
+/// transformation that shifts nothing (WGS 84's realizations, NAD83 to WGS 84 (1)) gives zeros,
+/// as `+towgs84=0,0,0`.
+///
+/// Every EPSG geographic 2D CRS other than WGS 84 is checked against PROJ 9.9.0
+/// (`tests/data/helmert_to_wgs84.tsv`, `scripts/gen_helmert_to_wgs84.py`).
+///
+/// `None` for WGS 84 itself, a code terrio's table does not have, and when that transformation
+/// is another one: a Molodensky-Badekas, a time-dependent or an exact-rotation Helmert
+/// transformation, a geographic offset, several Helmert transformations, or PROJ's ballpark
+/// (no transformation without a grid). Also for MGI (Ferro) (EPSG:4805), whose transformation
+/// turns longitudes by another Ferro meridian than the CRS's own.
+///
+/// Unlike [`SpatialRef::to_proj4_gdal`], which follows GDAL 3.13.3 and writes no `+towgs84` when a
+/// datum has several transformations to WGS 84, this gives the one PROJ picks without grids.
+///
+/// ```
+/// // ED50 to WGS 84 (1), also for ED50 / UTM zone 32N.
+/// assert_eq!(terrio_crs::helmert_to_wgs84(4230), Some([-87.0, -98.0, -121.0, 0.0, 0.0, 0.0, 0.0]));
+/// assert_eq!(terrio_crs::helmert_to_wgs84(23032), terrio_crs::helmert_to_wgs84(4230));
+/// assert_eq!(terrio_crs::helmert_to_wgs84(4326), None);
+/// ```
+pub fn helmert_to_wgs84(code: u32) -> Option<[f64; 7]> {
+    // A compound CRS's horizontal CRS.
+    let base = if epsg::get(code).is_some() { code } else { epsg::compound(code)?.horizontal };
+    let entry = epsg::get(base)?;
+    let geog = epsg::get(if entry.geog != 0 { entry.geog } else { base })?;
+    if geog.datum == 6326 {
+        return None;
+    }
+    let op = geog.ops.iter().find(|op| !op.needs_grids())?;
+    if op.ballpark {
+        return None;
+    }
+    // The datum shift PROJ runs, without the conversions to and from geocentric coordinates.
+    let mut shifts = op.steps.iter().filter(|s| !matches!(s, datum::Step::Cart { .. }));
+    match (shifts.next(), shifts.next()) {
+        (None, _) => Some([0.0; 7]),
+        (Some(datum::Step::Helmert { pivot: [0.0, 0.0, 0.0], rates: None, seven: datum::Seven(Some(p)), inv, .. }), None) => {
+            let p: &[f64; 7] = p;
+            // Without negative zeros, which a `+towgs84` written with `{}` would carry.
+            Some(p.map(|v| {
+                if v == 0.0 {
+                    0.0
+                } else if *inv {
+                    -v
+                } else {
+                    v
+                }
+            }))
+        }
+        _ => None,
+    }
+}
+
 /// The WKT GDAL writes for an EPSG code, from terrio's EPSG table.
 #[doc(hidden)]
 pub fn epsg_wkt(code: u32) -> Option<&'static str> {

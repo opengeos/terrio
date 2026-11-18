@@ -175,6 +175,9 @@ The EPSG rows of the test data crates/terrio-crs/tests/data/crs_list_changes.jso
 deprecation, areas of use and bounds of EPSG CRSs added or changed between PROJ 9.8.1's and PROJ 9.9.0's
 databases, by scripts/gen_crs_list_changes.py) are derived from the same dataset, under the same
 terms.
+The test data crates/terrio-crs/tests/data/helmert_to_wgs84.tsv (PROJ 9.9.0's datum
+transformations to WGS 84 of EPSG geographic CRSs, by scripts/gen_helmert_to_wgs84.py) is derived
+from the same dataset, under the same terms.
 
 -------------------------------------------------------------------------------
 Esri projection engine data

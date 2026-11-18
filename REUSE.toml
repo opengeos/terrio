@@ -137,6 +137,14 @@ precedence = "override"
 SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright © 2010-2025 Esri", "Copyright (c) 2021, Hobu Inc", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
 SPDX-License-Identifier = "LicenseRef-EPSG AND Apache-2.0 AND MIT"
 
+# The datum transformations to WGS 84 PROJ 9.9.0 picks first without grids for EPSG geographic
+# CRSs (scripts/gen_helmert_to_wgs84.py).
+[[annotations]]
+path = "crates/terrio-crs/tests/data/helmert_to_wgs84.tsv"
+precedence = "override"
+SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
+SPDX-License-Identifier = "LicenseRef-EPSG AND MIT"
+
 # The datum transformations to WGS 84 and geoid models GDAL 3.13.3 adds to the PROJ strings of
 # EPSG and ESRI CRSs, and GDAL's PROJ strings of a sample of them and of other definitions of them
 # (scripts/gen_gdal_towgs84.py).
