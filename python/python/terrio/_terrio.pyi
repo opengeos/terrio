@@ -1264,6 +1264,7 @@ def warp(
     grid_invariant: bool | None = None,
     init: Raster | None = None,
     _sum_scale: float = 1.0,
+    periodic_longitude: bool | None = None,
 ) -> Raster: ...
 def mosaic(
     srcs: _RasterSource | Sequence[_RasterSource],
@@ -1839,6 +1840,7 @@ class RegionWarp:
         kernel_version: str | None = None,
         sum_scale: float = 1.0,
         grid_invariant: bool | None = None,
+        periodic_longitude: bool | None = None,
     ) -> RegionWarp: ...
     def source_window(self, region: _Window) -> _Window | None: ...
     def warp(

@@ -54,6 +54,10 @@ pub struct Args {
     /// Keep samples independent of tiles/chunks; false reproduces GDAL's chunk-dependent grid.
     #[arg(long, action = clap::ArgAction::Set)]
     grid_invariant: Option<bool>,
+    /// Wrap interpolation across the stored edge of a source covering one turn of longitude
+    /// (default); false keeps it inside the stored columns, for fields not continuous there.
+    #[arg(long, action = clap::ArgAction::Set)]
+    periodic_longitude: Option<bool>,
     /// Source overview: AUTO, AUTO-n, NONE, or a level numbered from 0. With `-r sum`, each pixel
     /// of an overview counts for the source pixels it stands for; NONE sums the full resolution.
     #[arg(long, alias = "ovr", default_value = "AUTO")]
@@ -158,6 +162,9 @@ pub fn run(a: Args) -> terrio::Result<()> {
     };
     if let Some(value) = a.grid_invariant {
         o.grid_invariant = value;
+    }
+    if let Some(value) = a.periodic_longitude {
+        o.periodic_longitude = value;
     }
     if o.target_aligned_pixels && o.resolution.is_none() {
         return Err(terrio::Error::InvalidArgument("--tap needs --tr".into()));
