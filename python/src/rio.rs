@@ -22,6 +22,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(crs_projjson, m)?)?;
     m.add_function(wrap_pyfunction!(crs_to_projjson, m)?)?;
     m.add_function(wrap_pyfunction!(crs_to_proj4, m)?)?;
+    m.add_function(wrap_pyfunction!(crs_to_proj4_gdal, m)?)?;
     m.add_function(wrap_pyfunction!(crs_to_wkt1_strict, m)?)?;
     m.add_function(wrap_pyfunction!(suggested_grid, m)?)?;
     m.add_function(wrap_pyfunction!(warped_vrt_type, m)?)?;
@@ -375,6 +376,22 @@ fn crs_to_projjson(crs: &str) -> PyResult<String> {
 #[pyfunction]
 fn crs_to_proj4(crs: &str) -> PyResult<Option<String>> {
     SpatialRef::parse_literal(crs).map(|s| s.to_proj4()).py()
+}
+
+/// The PROJ string GDAL 3.13.3 writes for a CRS (``OSRExportToProj4``, ``osr``'s
+/// ``ExportToProj4()``): ``crs_to_proj4``'s without ``+type=crs``, and for an EPSG or ESRI code
+/// (or a WKT whose root names one) with what GDAL adds: the datum transformation to WGS 84 as
+/// ``+towgs84``, where PROJ finds a single one for the CRS's area of use, and a compound CRS's
+/// geoid model as ``+geoidgrids`` and ``+geoid_crs``.
+///
+/// Returns:
+///     str | None: The PROJ string, or None for a CRS PROJ has none for (an engineering CRS).
+///
+/// Raises:
+///     CRSError: If the CRS cannot be parsed.
+#[pyfunction]
+fn crs_to_proj4_gdal(crs: &str) -> PyResult<Option<String>> {
+    SpatialRef::parse_literal(crs).map(|s| s.to_proj4_gdal()).py()
 }
 
 /// The WKT 1 of a CRS without GDAL's ``EXTENSION["PROJ4", ...]``, for formats whose readers

@@ -1252,6 +1252,16 @@ pub fn crs_to_proj4(crs: &str) -> Result<Option<String>, JsError> {
     SpatialRef::parse_literal(crs).map(|s| s.to_proj4()).map_err(js_err)
 }
 
+/// The PROJ string GDAL 3.13.3 writes for a CRS (`OSRExportToProj4`): `crsToProj4`'s without
+/// `+type=crs`, and for an EPSG or ESRI code (or a WKT whose root names one) with what GDAL adds:
+/// the datum transformation to WGS 84 as `+towgs84`, where PROJ finds a single one for the CRS's
+/// area of use, and a compound CRS's geoid model as `+geoidgrids` and `+geoid_crs`. `undefined`
+/// where `crsToProj4` is.
+#[wasm_bindgen(js_name = crsToProj4Gdal)]
+pub fn crs_to_proj4_gdal(crs: &str) -> Result<Option<String>, JsError> {
+    SpatialRef::parse_literal(crs).map(|s| s.to_proj4_gdal()).map_err(js_err)
+}
+
 /// The WKT 1 of a CRS without GDAL's `EXTENSION["PROJ4", ...]`, for formats whose readers ignore
 /// it (a `.prj` file), as PROJ 9.9.0 exports `WKT1_GDAL`; `undefined` where WKT 1 needs the
 /// extension (a datum grid) or PROJ writes no WKT 1 (a geographic 3D CRS).

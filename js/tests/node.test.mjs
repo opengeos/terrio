@@ -644,6 +644,17 @@ test("CRS transforms", () => {
   assert.throws(() => terrio.crsToProjjson("+proj=longlat +lon_0=10 +datum=WGS84"), /lon_0/);
   // PROJ 9.9.0's projinfo -o PROJ.
   assert.equal(terrio.crsToProj4("EPSG:32633"), "+proj=utm +zone=33 +datum=WGS84 +units=m +no_defs +type=crs");
+  // GDAL 3.13.3's ExportToProj4 (PROJ 9.9.0, network off): GDAL's +towgs84, none with several
+  // transformations to WGS 84 (EPSG:27700), none for an engineering CRS.
+  assert.equal(
+    terrio.crsToProj4Gdal("EPSG:31467"),
+    "+proj=tmerc +lat_0=0 +lon_0=9 +k=1 +x_0=3500000 +y_0=0 +ellps=bessel +towgs84=598.1,73.7,418.2,0.202,0.045,-2.455,6.7 +units=m +no_defs",
+  );
+  assert.equal(
+    terrio.crsToProj4Gdal("EPSG:27700"),
+    "+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 +ellps=airy +units=m +no_defs",
+  );
+  assert.equal(terrio.crsToProj4Gdal('LOCAL_CS["Engineering",LOCAL_DATUM["site",0],UNIT["metre",1],AXIS["X",EAST],AXIS["Y",NORTH]]'), undefined);
   // PROJ 9.9.0's WKT1_GDAL with GDAL's axes; none where it needs the PROJ4 extension, or PROJ
   // writes no WKT 1 (geographic 3D).
   assert.match(terrio.crsToWkt1Strict("EPSG:32633"), /^PROJCS\["WGS 84 \/ UTM zone 33N",.*AUTHORITY\["EPSG","32633"\]\]$/);
