@@ -9,6 +9,30 @@ terrio reproduces the GDAL they compare with (see [warp](cli.md#warp)). Pull req
 compare the point cloud filters with PDAL's on `autzen_trim.las` only; pushes to `main` on the
 Madison lidar (4 million points) too (`scripts/compare_pointclouds.py --quick` skips it).
 
+## terrio-crs on PROJ 9.9.0, the GDAL reference on PROJ 9.8.1
+
+terrio-crs's tables and PROJ references come from PROJ 9.9.0 (EPSG v13.102), while the GDAL
+comparisons run with GDAL 3.12.2 on PROJ 9.8.1, which conda-forge does not build against PROJ 9.9
+(opengeos/terrio#1076). A comparison whose CRS answer depends on the registry or PROJ version is
+handled as follows; none is changed to agree with the older database:
+- **EPSG points** (`epsg_accuracy`, `epsg_accuracy_grids`): generated with GDAL 3.13.3 on PROJ
+  9.9.0 (`scripts/gen_epsg_points.py`); the tests compare terrio with those frozen values.
+- **CRS listing** (`--only crs-list`, `scripts/compare_crs_list_with_gdal.py`): with GDAL on PROJ
+  9.8.1, the CRSs EPSG and ESRI added or changed since (in a name, deprecation, an area of use or
+  its bounds, for example) are compared with PROJ 9.9.0's values instead of GDAL's, and reported as "not compared"
+  against GDAL: GDAL must have each changed field's PROJ 9.8.1 value and terrio its PROJ 9.9.0
+  value, and an added CRS must match PROJ 9.9.0's entry
+  (`crates/terrio-crs/tests/data/crs_list_changes.json`, regenerated with
+  `scripts/gen_crs_list_changes.py` from a dump of each PROJ). Any other field difference is
+  reported as one. With GDAL on PROJ 9.9.0 all are compared with GDAL.
+- **ISEA** (`--only isea`): PROJ 9.9 replaced the method, so the comparison runs only on a GDAL
+  whose PROJ computes isea as the frozen corpus's PROJ does, and reports its cases as not compared
+  on another.
+- **Frozen GDAL fixtures** (GeoKeys, the PROJJSON, geocentric and projection references): they stay
+  on GDAL 3.12.x and PROJ 9.8.1, and none differs because EPSG changed.
+
+Moving all of terrio's GDAL reference to GDAL 3.13.3 on PROJ 9.9.0 is a separate, later decision.
+
 ## Grid confinement and diagnostics
 
 `python -m pytest python/tests/test_grid_policy.py` checks the Python confinement

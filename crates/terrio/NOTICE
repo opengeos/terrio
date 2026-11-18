@@ -1436,6 +1436,10 @@ crates/terrio-crs/tests/data/gdal_proj4_export.tsv and gdal_proj4_export_inputs.
 3.13.3's datum transformations to WGS 84 and geoid models of EPSG CRSs in their PROJ strings, and
 GDAL's WKT of them, by scripts/gen_gdal_towgs84.py) are derived
 from the same dataset, under the same terms.
+The EPSG rows of the test data crates/terrio-crs/tests/data/crs_list_changes.json (the names,
+deprecation, areas of use and bounds of EPSG CRSs added or changed between PROJ 9.8.1's and PROJ 9.9.0's
+databases, by scripts/gen_crs_list_changes.py) are derived from the same dataset, under the same
+terms.
 The test data crates/terrio-crs/tests/data/helmert_to_wgs84.tsv (PROJ 9.9.0's datum
 transformations to WGS 84 of EPSG geographic CRSs, by scripts/gen_helmert_to_wgs84.py) is derived
 from the same dataset, under the same terms.
@@ -1460,6 +1464,9 @@ So are the ESRI rows of crates/terrio-crs/data/gdal_towgs84.tsv.zst and of the t
 crates/terrio-crs/tests/data/gdal_proj4_export.tsv and gdal_proj4_export_inputs.tsv (GDAL 3.13.3's
 datum transformations to WGS 84 of ESRI CRSs in their PROJ strings, and their WKT, by
 scripts/gen_gdal_towgs84.py).
+The ESRI rows of crs_list_changes.json (the names, deprecation, areas of use and bounds of
+ESRI CRSs that changed between PROJ 9.8.1's and PROJ 9.9.0's databases) are derived from it
+the same way.
 The ESRI celestial bodies and their semi-major axes in crates/terrio-crs/src/bodies.rs are derived
 from the same documentation, through PROJ 9.9.0's database (scripts/gen_celestial_bodies.py).
 The ESRI names in the test data crates/terrio-crs/tests/data/wkt1_proj_reads.json (Makassar /
