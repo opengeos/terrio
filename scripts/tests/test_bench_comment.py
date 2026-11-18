@@ -42,7 +42,7 @@ def test_regression_and_improvement_are_flagged_first(tmp_path):
     assert out.startswith("<!-- terrio-bench: regression -->\n")
     assert "⚠️ **1 of 3 benchmarks got worse** than main:\n- warp_f32 slower: **+40.0% CPU**, **+40.0% speed**" in out
     assert "✅ **1 of 3 got better**:\n- warp_f32 faster: **−25.0% CPU**, **−25.0% speed**" in out
-    shown, folded = out.split("<details><summary>🟢 1 within ±10%</summary>")
+    shown, folded = out.split("<details><summary>🟢 1 not flagged</summary>")
     rows = [line for line in shown.splitlines() if line.startswith("| ") and "→" in line]
     assert rows == [
         "| ⚠️ | `warp_f32 slower` | 1 G → 1.4 G (**+40.0%**) | 1 G → 1.4 G (**+40.0%**) |  |",
@@ -76,8 +76,8 @@ def test_improvement_alone_sets_no_label(tmp_path):
 
 def test_all_within_threshold_is_green_and_folded(tmp_path):
     out = comment(tmp_path, summary("same", 1001, 1000), summary("noted", 1050, 1000))
-    assert "🟢 **As fast and as lean as main.** All 2 benchmarks are within ±10% on CPU, speed and memory; the largest change is +5.0% CPU (warp_f32 noted)." in out
-    shown = out.split("<details><summary>🟢 2 within ±10%</summary>")[0]
+    assert "🟢 **As fast and as lean as main.** No benchmark is flagged on CPU, speed or memory; the largest change is +5.0% CPU (warp_f32 noted)." in out
+    shown = out.split("<details><summary>🟢 2 not flagged</summary>")[0]
     assert "| 🟢 |" not in shown
 
 
@@ -118,7 +118,7 @@ def test_memory_new_on_main_without_dhat(tmp_path):
     assert "| 🟢 | `warp_f32 first_mem` | 1 k (0%) | 1 k (0%) | 9.4 MB (new) |" in out
 
 
-def test_just_under_the_threshold_is_not_shown_as_10(tmp_path):
+def test_a_change_that_rounds_to_10_is_flagged_as_shown(tmp_path):
     out = comment(tmp_path, summary("close", 10_996, 10_000), summary("over", 10_999, 10_000))
     assert "10 k → 11 k (+10.0%)" not in out
     assert "**+10.0%**" in out
@@ -131,4 +131,17 @@ def test_verdict_says_from_0(tmp_path):
 
 def test_fold_counts_green_and_new_apart(tmp_path):
     out = comment(tmp_path, summary("same", 1000, 1000), summary("added", 500))
-    assert "<summary>🟢 1 within ±10% · 🆕 1 new</summary>" in out
+    assert "<summary>🟢 1 not flagged · 🆕 1 new</summary>" in out
+
+
+def test_sizes_just_under_a_prefix_round_up(tmp_path):
+    out = comment(tmp_path, summary("edge", 1000, 1000, memory=(999_999, 999_999)))
+    assert "| 1 MB (0%) |" in out
+    assert "e+03" not in out
+
+
+def test_a_metric_only_main_has_is_left_blank(tmp_path):
+    s = summary("gone", 1000, 1000, memory=(5, 5))
+    del s["profiles"][1]["data"]["total"]["metrics"]["TotalUnits"]["values"]["new"]
+    out = comment(tmp_path, s)
+    assert "| 🟢 | `warp_f32 gone` | 1 k (0%) | 1 k (0%) |  |" in out

@@ -1369,9 +1369,9 @@ cargo update --manifest-path fuzz/Cargo.toml --workspace
 ## Performance on pull requests
 
 Each pull request that changes Rust sources or manifests gets one comment comparing CPU, speed
-and memory of the benchmarks of `crates/terrio/benches/instructions.rs` with main: warp (4326 to UTM with
-nearest, bilinear and cubic, GDAL's chunk-dependent grid, and a half-pixel shift), slope and
-hillshade, a DEFLATE + floating-point-predictor GeoTIFF read, and zonal statistics of 1024
+and memory of the benchmarks of `crates/terrio/benches/instructions.rs` with main: warp (4326 to
+UTM with nearest, bilinear and cubic, GDAL's chunk-dependent grid, and a half-pixel shift), slope
+and hillshade, a DEFLATE + floating-point-predictor GeoTIFF read, and zonal statistics of 1024
 polygons, each on 1 M synthetic pixels. CPU is the instructions executed and speed the estimated
 cycles (instructions plus cache and RAM misses), both from Callgrind; memory is the peak heap of the
 operation, the most heap memory it holds at once beyond its input, its output included (a counting
@@ -1384,7 +1384,8 @@ benchmark in the diff, for the authors it reviews automatically; for a first-tim
 maintainer starts it by removing and adding the `perf-regression` label again. The regular code
 review leaves performance to this comment. The peak heap of a commit repeats exactly between runs
 on one machine, instruction counts within 0.01% and estimated cycles within 0.1% (both commits run
-on the same runner), where shared runners' timings vary by 10–30%. The check never fails a pull request.
+on the same runner), where shared runners' timings vary by 10–30%. The check never fails a pull
+request.
 
 The counts cover every thread of the second of two runs of each operation (the first loads the
 EPSG table, starts the thread pool and fills caches), with one worker thread. To run them

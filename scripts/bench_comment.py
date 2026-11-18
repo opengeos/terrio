@@ -38,11 +38,13 @@ def summaries(text):
 
 def metrics(summary):
     """The (main, pull request) pair of each of MEASURES in a benchmark summary: main is None
-    without a baseline, and the pair is None when the tool did not report the metric."""
+    without a baseline, and the pair is None when this run did not report the metric."""
     found = {p["tool"]: p["data"]["total"]["metrics"] for p in summary["profiles"]}
     pairs = []
     for _, tool, key in MEASURES:
         values = found.get(tool, {}).get(key, {}).get("values")
+        if values is not None and values.get("new") is None:  # only main has it
+            values = None
         old = None if values is None else values.get("old")
         pairs.append(None if values is None else (None if old is None else int(old), int(values["new"])))
     if pairs[0] is None:
@@ -51,9 +53,10 @@ def metrics(summary):
 
 
 def count(n, unit=""):
-    """`n` with an SI prefix, three significant digits."""
+    """`n` with an SI prefix, three significant digits; the prefix is chosen after rounding, so
+    999,999 reads 1 M, not 1e+03 k."""
     for div, prefix in ((1e9, " G"), (1e6, " M"), (1e3, " k")):
-        if n >= div:
+        if float(f"{n / div:.3g}") >= 1:
             return f"{n / div:.3g}{prefix}{unit}"
     return f"{n} {unit}".rstrip()
 
@@ -148,8 +151,8 @@ def main():
     if compared and not worse and not better:
         top = max((r for r in table if r[1] != "🆕"), key=lambda r: abs(r[5][0]))
         out.append(
-            f"🟢 **As fast and as lean as main.** All {compared} benchmarks are within ±{FLAG:g}% on CPU, "
-            f"speed and memory; the largest change is {percent(top[5][0])} {top[5][1]} ({top[3]})."
+            f"🟢 **As fast and as lean as main.** No benchmark is flagged on CPU, speed "
+            f"or memory; the largest change is {percent(top[5][0])} {top[5][1]} ({top[3]})."
         )
     # Only the flagged rows stay in view; the others fold away.
     header = [
@@ -162,7 +165,7 @@ def main():
         out += ["", *header, *flagged]
     if rest:
         green, new = sum(r[1] == "🟢" for r in table), sum(r[1] == "🆕" for r in table)
-        label = " · ".join(([f"🟢 {green} within ±{FLAG:g}%"] if green else []) + ([f"🆕 {new} new"] if new else []))
+        label = " · ".join(([f"🟢 {green} not flagged"] if green else []) + ([f"🆕 {new} new"] if new else []))
         out += ["", f"<details><summary>{label}</summary>", "", *header, *rest, "</details>"]
     out += [
         "",

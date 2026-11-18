@@ -85,7 +85,7 @@ jobs:
           fi
           if grep -q '^<!-- terrio-bench: regression -->$' body.md; then
             gh label create perf-regression --color D93F0B \
-              --description "A benchmark runs 10% more CPU instructions or estimated cycles, or 10% and 1 MB more peak heap, than on main" 2>/dev/null || true
+              --description "10% more CPU instructions or est. cycles, or 10% and 1 MB more peak heap, than on main" 2>/dev/null || true
             gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$pr/labels" -f "labels[]=perf-regression" > /dev/null
             assoc=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" -q .author_association)
             case "$assoc" in
