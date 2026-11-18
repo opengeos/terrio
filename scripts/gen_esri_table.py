@@ -171,9 +171,9 @@ def rows():
 def main():
     """Write the compressed table."""
     # conda's PROJ activation turns PROJ's network access on, with which GDAL fails to import
-    # CRSs whose transformations use grids the PROJ CDN no longer has (ESRI:102151 and 102964,
-    # left out then): off, as for the EPSG table, but for the lists "with grids"
-    # (``transformations``).
+    # CRSs whose transformations use grids the PROJ CDN no longer has, which the table left out
+    # (ESRI:102151 and 102964, until the network was turned off here): off, as for the EPSG
+    # table, but for the lists "with grids" (``transformations``).
     os.environ["PROJ_NETWORK"] = "OFF"
     osr.SetPROJEnableNetwork(False)
     lines = ["\t".join(map(str, r)) + "\n" for r in rows()]

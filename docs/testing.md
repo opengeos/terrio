@@ -1784,7 +1784,7 @@ cargo check -p terrio --target wasm32-unknown-unknown --no-default-features --fe
 
 `projjson_corpus_epsg.jsonl.zst` and `projjson_corpus_esri.jsonl.zst` hold every CRS of terrio's EPSG table (geographic,
 geocentric, projected, vertical and compound) and ESRI table, as PROJ 9.9.0
-writes it in WKT 2 (`WKT2_2019`), GDAL WKT 1 and ESRI WKT 1: 30,932 texts, each
+writes it in WKT 2 (`WKT2_2019`), GDAL WKT 1 and ESRI WKT 1: 30,938 texts, each
 with the PROJJSON PROJ writes for it (pyproj 3.8.0, network off). The test reads
 each text with `SpatialRef::from_wkt`, writes it with `to_projjson`, and compares
 what the CRS is field by field: types, the IDs and names of CRSs, the names and
