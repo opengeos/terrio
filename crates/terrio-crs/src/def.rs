@@ -2031,20 +2031,28 @@ pub(crate) fn split_compound(w: &str) -> Option<(String, String)> {
     Some((horizontal.to_string(), vertical.to_string()))
 }
 
-/// The vertical CRS of a `VERT_CS` (ESRI's `VERTCS`, WKT 2's `VERTCRS`) definition: its EPSG code
-/// when it has one or is identified ([`vertical_code`]), else its unit and the geoid grids of
-/// GDAL's `PROJ4_GRIDS` extension.
-pub(crate) fn vertical_from_wkt(w: &str) -> Option<Vertical> {
-    let root = wkt1::parse(w)?;
-    let grids = root.children("EXTENSION").find(|e| e.name() == Some("PROJ4_GRIDS")).and_then(|e| match e.args.get(1) {
+/// The geoid grids of a vertical CRS's own GDAL `PROJ4_GRIDS` extension: in its vertical datum,
+/// where GDAL writes it, or at its root.
+fn own_geoid_grids(root: &wkt1::Node) -> Option<String> {
+    fn extension(n: &wkt1::Node) -> Option<&wkt1::Node> {
+        n.children("EXTENSION").find(|e| e.name() == Some("PROJ4_GRIDS"))
+    }
+    let e = extension(root).or_else(|| root.first_in(keywords::VERTICAL_DATUM).and_then(extension))?;
+    match e.args.get(1) {
         Some(wkt1::Arg::Str(s)) => Some(s.clone()),
         _ => None,
-    });
-    // A declared code's definition; one identified by name only without grids of the WKT's own,
-    // which its PROJ string writes (`+geoidgrids`).
+    }
+}
+
+/// The vertical CRS of a `VERT_CS` (ESRI's `VERTCS`, WKT 2's `VERTCRS`) definition: its EPSG code
+/// when it has one or is identified ([`vertical_code`]), else its unit and the geoid grids of
+/// GDAL's `PROJ4_GRIDS` extension, which its PROJ string writes (`+geoidgrids`).
+pub(crate) fn vertical_from_wkt(w: &str) -> Option<Vertical> {
+    let root = wkt1::parse(w)?;
+    let grids = own_geoid_grids(&root);
+    // A declared code's definition (a CRS with grids of its own is not identified by its name).
     let declared = vertical_code(w);
-    let own = super::declared_epsg(w).is_some() || grids.is_none();
-    if let Some(v) = declared.filter(|_| own).and_then(Vertical::from_epsg) {
+    if let Some(v) = declared.and_then(Vertical::from_epsg) {
         return Some(v);
     }
     let (to_meter, down) = super::vertical_axis(w)?;
@@ -2057,7 +2065,8 @@ pub(crate) fn vertical_from_wkt(w: &str) -> Option<Vertical> {
 
 /// The EPSG code a vertical CRS's WKT declares, when its unit and direction are the code's
 /// (heights in feet declaring EGM96 height in metres are not EGM96 height); without one, the code
-/// PROJ 9.9.0 identifies by its name, datum, unit and direction.
+/// PROJ 9.9.0 identifies by its name, datum, unit and direction, unless it has geoid grids of its
+/// own (GDAL's `PROJ4_GRIDS`), which PROJ reads as a bound CRS of no code.
 pub(crate) fn vertical_code(w: &str) -> Option<u32> {
     let (to_meter, down) = super::vertical_axis(w)?;
     let fits = |code: u32| epsg::vertical(code).is_some_and(|r| (to_meter - r.to_meter).abs() <= 1e-9 * r.to_meter && down == r.down);
@@ -2068,7 +2077,7 @@ pub(crate) fn vertical_code(w: &str) -> Option<u32> {
     // identifies it (`VerticalCRS::identify`): ESRI's `VERTCS["EGM96_height",
     // VDATUM["EGM96_Geoid"],...]` is EPSG:5773. Only a single such CRS.
     let root = wkt1::parse(w)?;
-    if !root.is(keywords::VERTICAL_CRS) {
+    if !root.is(keywords::VERTICAL_CRS) || own_geoid_grids(&root).is_some() {
         return None;
     }
     let esri = root.key.eq_ignore_ascii_case("VERTCS");
@@ -2503,20 +2512,27 @@ mod memo_tests {
 
 #[cfg(test)]
 mod vertical_wkt_tests {
-    /// A vertical CRS identified by its name is its code's, but a `PROJ4_GRIDS` extension of its
-    /// own (GDAL's), which its PROJ string writes as `+geoidgrids`, wins over the code's models.
+    /// A vertical CRS identified by its name is its code's, but one with geoid grids of its own
+    /// (GDAL's `PROJ4_GRIDS`, in its vertical datum or at its root) is not identified: it is its
+    /// grids, of no code, as the PROJ string writes it. PROJ 9.9.0 (pyproj 3.8.0) reads the
+    /// extension in the datum as a bound CRS of no code (`to_epsg()` None).
     #[test]
     fn own_geoid_grids_win_over_an_identified_code() {
         let bare = r#"VERT_CS["EGM96 height",VERT_DATUM["EGM96 geoid",2005],UNIT["metre",1],AXIS["Gravity-related height",UP]]"#;
         assert_eq!(super::vertical_from_wkt(bare).and_then(|v| v.code), Some(5773));
-        let grids = bare.replace("AXIS[", r#"EXTENSION["PROJ4_GRIDS","custom.gtx"],AXIS["#);
-        let v = super::vertical_from_wkt(&grids).unwrap();
-        assert_eq!((v.code, v.models.len()), (None, 1));
+        let in_datum = bare.replace("2005]", r#"2005,EXTENSION["PROJ4_GRIDS","custom.gtx"]]"#);
+        let at_root = bare.replace("AXIS[", r#"EXTENSION["PROJ4_GRIDS","custom.gtx"],AXIS["#);
+        for grids in [&in_datum, &at_root] {
+            assert_eq!(super::vertical_code(grids), None, "{grids}");
+            assert_eq!(crate::identify_epsg(grids), None, "{grids}");
+            let v = super::vertical_from_wkt(grids).unwrap();
+            assert_eq!((v.code, v.models.len()), (None, 1), "{grids}");
+        }
         // A declared code keeps its definition, as before.
-        let declared = grids.replace("UP]]", r#"UP],AUTHORITY["EPSG","5773"]]"#);
+        let declared = at_root.replace("UP]]", r#"UP],AUTHORITY["EPSG","5773"]]"#);
         assert_eq!(super::vertical_from_wkt(&declared).and_then(|v| v.code), Some(5773));
         // Its own grids keep its direction: an axis down, or ESRI's `Direction` -1.
-        assert!(super::vertical_from_wkt(&grids.replace("UP]", "DOWN]")).unwrap().down);
+        assert!(super::vertical_from_wkt(&at_root.replace("UP]", "DOWN]")).unwrap().down);
         let esri = r#"VERTCS["x",VDATUM["y"],PARAMETER["Vertical_Shift",0.0],PARAMETER["Direction",-1.0],UNIT["Meter",1.0],EXTENSION["PROJ4_GRIDS","custom.gtx"]]"#;
         let v = super::vertical_from_wkt(esri).unwrap();
         assert!(v.down && v.models.len() == 1);

@@ -143,3 +143,22 @@ fn an_esri_compound_crs_is_compound_whatever_builds_it() {
     assert!(long.len() < 100_000);
     assert!(!SpatialRef::from_wkt(&long).has_height());
 }
+
+/// A compound CRS whose vertical CRS has geoid grids of its own (GDAL's `PROJ4_GRIDS`, in its
+/// vertical datum) is not EPSG:9707 by its parts, though named EGM96 height: PROJ 9.9.0 reads it as
+/// a bound vertical CRS of no code. Its parts are unknown, it is not the same CRS as EPSG:9707, and
+/// its PROJJSON is refused rather than written as EGM96 height without its grids.
+#[test]
+fn own_geoid_grids_keep_a_compound_crs_from_its_parts_codes() {
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap().to_wkt().unwrap();
+    let vertical = r#"VERT_CS["EGM96 height",VERT_DATUM["EGM96 geoid",2005,EXTENSION["PROJ4_GRIDS","custom.gtx"]],UNIT["metre",1],AXIS["Gravity-related height",UP]]"#;
+    let crs = SpatialRef::from_wkt(&format!(r#"COMPD_CS["x",{wgs84},{vertical}]"#));
+    assert_eq!(crs.compound_parts(), None);
+    assert!(!crs.same_as(&SpatialRef::from_epsg(9707).unwrap()));
+    assert!(crs.to_projjson().is_err());
+    assert!(crs.to_proj4().is_some_and(|p| p.contains("+geoidgrids=custom.gtx")), "{:?}", crs.to_proj4());
+    // Without the grids, it is EGM96 height's.
+    let plain =
+        SpatialRef::from_wkt(&format!(r#"COMPD_CS["x",{wgs84},{}]"#, vertical.replace(r#",EXTENSION["PROJ4_GRIDS","custom.gtx"]"#, "")));
+    assert_eq!(plain.compound_parts(), Some((4326, 5773)));
+}
