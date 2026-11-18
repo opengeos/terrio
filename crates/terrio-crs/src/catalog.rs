@@ -300,15 +300,12 @@ impl Record {
         words.iter().all(|w| self.search.contains(w.as_str()) || self.code_text.starts_with(w.as_str()) || self.key.starts_with(w.as_str()))
     }
 
-    /// Whether terrio resolves the CRS's code: for the EPSG CRSs of the catalog, which are those
-    /// of terrio's table, unless terrio does not compute their projection yet (the UTM grid
-    /// systems EPSG:32600 and 32700); for the ESRI and IAU_2015 CRSs, when terrio computes their
+    /// Whether terrio resolves the CRS's code: always for the EPSG CRSs of the catalog, which are
+    /// those of terrio's table; for the ESRI and IAU_2015 CRSs, when terrio computes their
     /// projection (in this build: `SpatialRef::from_esri` refuses the ESRI CRSs on projections
     /// that need the `wbprojection-fallback` feature, and those terrio does not compute as PROJ).
     fn resolves(&self) -> bool {
         *self.resolves.get_or_init(|| match self.authority {
-            // By the table, without building every EPSG CRS of an unfiltered listing.
-            "EPSG" => !crate::epsg::get(self.code).is_some_and(crate::epsg::Entry::unsupported),
             "ESRI" => crate::SpatialRef::from_esri(self.code).is_ok(),
             "IAU_2015" => crate::SpatialRef::from_iau(self.code).is_ok(),
             _ => true,
@@ -440,13 +437,12 @@ mod tests {
         // PROJ 9.9.0 (GDAL 3.13.3's `OSRGetCRSInfoListFromDatabase`) lists 8021 EPSG usage rows,
         // including 17 duplicate codes. Its 8004 distinct codes include 43 codes our table does
         // not resolve (16 other, 27 projected, EPSG:3752 among them). The catalog stores one row
-        // per distinct code, 7961, of which the two UTM grid systems (EPSG:32600 and 32700) are not
-        // listed: terrio does not compute their projection yet.
-        assert_eq!(count("EPSG", None, None), 7959);
+        // per distinct code, 7961, and lists them all.
+        assert_eq!(count("EPSG", None, None), 7961);
         assert_eq!(count("EPSG", Some(CrsKind::Geographic2D), None), 718);
         assert_eq!(count("EPSG", Some(CrsKind::Geographic3D), None), 300);
         assert_eq!(count("EPSG", Some(CrsKind::Geocentric), None), 296);
-        assert_eq!(count("EPSG", Some(CrsKind::Projected), None), 5752);
+        assert_eq!(count("EPSG", Some(CrsKind::Projected), None), 5754);
         assert_eq!(count("EPSG", Some(CrsKind::Vertical), None), 309);
         assert_eq!(count("EPSG", Some(CrsKind::Compound), None), 584);
         assert_eq!(count("EPSG", None, Some(true)), 530);
