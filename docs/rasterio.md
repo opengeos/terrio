@@ -94,7 +94,9 @@ It needs only NumPy and [affine](https://github.com/rasterio/affine) (installed 
   `cubic`, `nearest` for paletted rasters). A COG takes no `photometric` option: three Byte bands,
   or four compressed with WebP, are red, green and blue by default, and any other color
   interpretation set on the dataset, or copied by `shutil.copy`, is kept, as it is by an `r+`
-  update.
+  update. With `sparse_ok=True`, a GeoTIFF leaves out its blocks whose pixels are all nodata (or
+  0 without nodata), those never written among them: their offset and byte count are 0, and they
+  read as nodata (or 0). A COG writes every tile, and warns that it does.
   `cubic`, `nearest` for paletted rasters).
   A new dataset reports the color interpretation its file reads back when none is set, unless the
   file has another number of bands: a four-band WebP whose alpha band is opaque everywhere is

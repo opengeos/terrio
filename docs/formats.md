@@ -209,6 +209,12 @@ with the `libzstd` feature: without it, as in the default build and in WebAssemb
 chunks are compressed at the one level their encoder has. A level out of range is refused,
 whatever the compression.
 
+`SPARSE_OK=YES` leaves out of a GeoTIFF the blocks of its full-resolution image whose samples are
+all nodata, or 0 without nodata, bit for bit: their offset and byte count are 0, and terrio reads
+their pixels as nodata (or 0). The overviews and the mask are written whole, and so is every block
+when nodata is not a value of the samples (a fraction or a value out of range for integers). A COG
+writes every tile, and warns that it does.
+
 `NBITS` writes unsigned samples packed into 1–8 bits for Byte, 9–16 bits for
 UInt16 and 17–32 bits for UInt32. Rows begin on byte boundaries; bits are stored
 most significant first. GTiff supports strips or tiles and COG is tiled. Both support pixel/band
