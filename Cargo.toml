@@ -133,7 +133,7 @@ getrandom = "0.4"
 # Silences drivers' diagnostic prints on the command line's standard output.
 gag = "1"
 # LASzip compression of point clouds (LAZ, COPC), pure Rust.
-laz = "0.13"
+laz = "0.14"
 # E57 laser scans, pure Rust.
 e57 = "0.11"
 # Delaunay triangulation, for gridding points by linear interpolation.
