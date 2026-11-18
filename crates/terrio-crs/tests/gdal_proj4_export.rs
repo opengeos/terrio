@@ -31,9 +31,13 @@ fn registry_crss_are_written_as_gdal_exports_them() {
         compared += 1;
     }
     assert!(compared > 1250, "only {compared} compared");
-    // The ESRI CRSs terrio does not carry: two whose methods it has no formulas for (natearth2,
-    // qua_aut), and geographic CRSs of other bodies.
-    assert_eq!(unread, ["ESRI:53078", "ESRI:54022", "ESRI:104916", "ESRI:104936", "ESRI:104956", "ESRI:104976", "ESRI:104996"]);
+    // The ESRI CRSs terrio does not carry: geographic CRSs of other bodies, and without
+    // `wbprojection-fallback` two whose methods it has no formulas for (natearth2, qua_aut).
+    let mut expected = vec!["ESRI:104916", "ESRI:104936", "ESRI:104956", "ESRI:104976", "ESRI:104996"];
+    if cfg!(not(feature = "wbprojection-fallback")) {
+        expected.splice(0..0, ["ESRI:53078", "ESRI:54022"]);
+    }
+    assert_eq!(unread, expected);
 }
 
 #[test]
