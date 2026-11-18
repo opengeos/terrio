@@ -64,7 +64,9 @@ It needs only NumPy and [affine](https://github.com/rasterio/affine) (installed 
   next to the output instead, mapped in memory, and GeoTIFFs are then written in rows of blocks
   (`terrio.GeoTiffWriter`), without the raster in RAM. The temporary file has no name (on
   Windows, it is opened to be deleted once closed), so that it goes with the process however
-  that ends.
+  that ends, and it holds only the blocks written: blocks never written are nodata (or 0)
+  without that value being written to the file when it is created, or read back from it when
+  the GeoTIFF is written in rows.
   `shutil.copy` writes such a GeoTIFF, and a
   COG, from its source as it writes them, a row of a COG's tiles at a time, the COG's overviews
   computed as the rows come, without an unbounded source array or temporary pixel staging file.
