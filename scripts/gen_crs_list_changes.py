@@ -6,9 +6,10 @@
 terrio's catalog comes from PROJ 9.9.0 (EPSG v13.102), while CI's GDAL reference is GDAL 3.12.2 on
 PROJ 9.8.1 (opengeos/terrio#1076). ``compare_crs_list_with_gdal.py`` compares ``terrio list-crs``
 with GDAL's ``osr.GetCRSInfoListFromDatabase`` field by field; on PROJ 9.8.1 a field differs where
-the registry changed it (a renamed CRS, a new area of use). This script records each such field
-with its PROJ 9.8.1 and 9.9.0 values, and the codes PROJ 9.9.0 added or removed, so that the
-comparison can name those changes and still report any other difference.
+the registry changed it (a renamed or deprecated CRS, a new area of use). This script records each
+such field with its PROJ 9.8.1 and 9.9.0 values, the CRSs PROJ 9.9.0 added with their entries,
+and those it removed, so that the comparison can name those changes and still check terrio's
+values against PROJ 9.9.0's.
 
 Writes ``crates/terrio-crs/tests/data/crs_list_changes.json``.
 
@@ -42,13 +43,13 @@ def dump(path):
     osr.SetPROJEnableNetwork(False)
     proj = f"{osr.GetPROJVersionMajor()}.{osr.GetPROJVersionMinor()}.{osr.GetPROJVersionMicro()}"
     entries = {a: {str(code): e for code, e in gdal_entries(a).items()} for a in AUTHORITIES}
-    Path(path).write_text(json.dumps({"proj": proj, "entries": entries}))
+    Path(path).write_text(json.dumps({"proj": proj, "entries": entries}), encoding="utf-8")
     print(f"PROJ {proj}: " + ", ".join(f"{len(entries[a])} {a}" for a in AUTHORITIES))
 
 
 def combine(old_path, new_path):
     """Write the fields that differ between the two dumps, and the codes added and removed."""
-    old, new = json.loads(Path(old_path).read_text()), json.loads(Path(new_path).read_text())
+    old, new = (json.loads(Path(p).read_text(encoding="utf-8")) for p in (old_path, new_path))
     assert (old["proj"], new["proj"]) == ("9.8.1", "9.9.0"), (old["proj"], new["proj"])
     changes, added, removed = {}, {}, {}
     for authority in AUTHORITIES:
@@ -58,21 +59,22 @@ def combine(old_path, new_path):
             for code in sorted(set(a) & set(b), key=int)
             if a[code] != b[code]
         }
-        added[authority] = sorted((int(c) for c in set(b) - set(a)))
-        removed[authority] = sorted((int(c) for c in set(a) - set(b)))
+        # An added CRS with its PROJ 9.9.0 entry, which terrio's is compared with.
+        added[authority] = {code: b[code] for code in sorted(set(b) - set(a), key=int)}
+        removed[authority] = sorted(int(c) for c in set(a) - set(b))
     # One CRS a line, so that a regeneration's diff reads code by code.
-    lines = [f'{{"from": "PROJ {old["proj"]}", "to": "PROJ {new["proj"]}",']
-    lines.append(f' "added": {json.dumps(added)},')
-    lines.append(f' "removed": {json.dumps(removed)},')
-    lines.append(' "changes": {')
-    for i, authority in enumerate(AUTHORITIES):
-        rows = [f"  {json.dumps(code)}: {json.dumps(fields, ensure_ascii=False)}" for code, fields in changes[authority].items()]
-        lines.append(f' {json.dumps(authority)}: {{')
-        lines.append(",\n".join(rows))
-        lines.append(" }" + ("," if i < len(AUTHORITIES) - 1 else ""))
-    lines.append(" }}")
-    OUT.write_text("\n".join(line for line in lines if line) + "\n")
-    json.loads(OUT.read_text())
+    lines = [f'{{"from": "PROJ {old["proj"]}", "to": "PROJ {new["proj"]}",', f' "removed": {json.dumps(removed)},']
+    for key, table in (("added", added), ("changes", changes)):
+        lines.append(f' "{key}": {{')
+        for i, authority in enumerate(AUTHORITIES):
+            rows = [f"  {json.dumps(code)}: {json.dumps(value, ensure_ascii=False)}" for code, value in table[authority].items()]
+            lines.append(f" {json.dumps(authority)}: {{")
+            lines.append(",\n".join(rows))
+            lines.append(" }" + ("," if i < len(AUTHORITIES) - 1 else ""))
+        lines.append(" }" + ("," if key == "added" else ""))
+    lines.append("}")
+    OUT.write_text("\n".join(line for line in lines if line) + "\n", encoding="utf-8")
+    json.loads(OUT.read_text(encoding="utf-8"))
     print(", ".join(f"{a}: {len(changes[a])} changed, {len(added[a])} added, {len(removed[a])} removed" for a in AUTHORITIES))
 
 

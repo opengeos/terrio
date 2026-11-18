@@ -18,13 +18,16 @@ handled as follows; none is changed to agree with the older database:
 - **EPSG points** (`epsg_accuracy`, `epsg_accuracy_grids`): generated with GDAL 3.13.3 on PROJ
   9.9.0 (see the test data below).
 - **CRS listing** (`--only crs-list`, `scripts/compare_crs_list_with_gdal.py`): with GDAL on PROJ
-  9.8.1, the CRSs EPSG and ESRI added or changed since (a name, an area of use or its bounds: 836
-  EPSG and 61 ESRI CRSs) are reported as "not compared", each field only when GDAL has its PROJ
-  9.8.1 value and terrio its PROJ 9.9.0 value (`crates/terrio-crs/tests/data/crs_list_changes.json`,
-  regenerated with `scripts/gen_crs_list_changes.py` from a dump of each PROJ). Any other field
-  difference is reported as one. With GDAL on PROJ 9.9.0 all are compared.
-- **ISEA** (`--only isea`): PROJ 9.9.0 computes it with another method; on an older PROJ the
-  comparison reports its cases as not compared.
+  9.8.1, the CRSs EPSG and ESRI added or changed since (a name, deprecation, an area of use or its
+  bounds) are compared with PROJ 9.9.0's values instead of GDAL's, and reported as "not compared"
+  against GDAL: GDAL must have each changed field's PROJ 9.8.1 value and terrio its PROJ 9.9.0
+  value, and an added CRS must match PROJ 9.9.0's entry
+  (`crates/terrio-crs/tests/data/crs_list_changes.json`, regenerated with
+  `scripts/gen_crs_list_changes.py` from a dump of each PROJ). Any other field difference is
+  reported as one. With GDAL on PROJ 9.9.0 all are compared with GDAL.
+- **ISEA** (`--only isea`): PROJ 9.9 replaced the method, so the comparison runs only on a GDAL
+  whose PROJ computes isea as the frozen corpus's PROJ does, and reports its cases as not compared
+  on another.
 - **Frozen GDAL fixtures** (GeoKeys, the PROJJSON, geocentric and projection references): they stay
   on GDAL 3.12.x and PROJ 9.8.1, and none differs because EPSG changed.
 

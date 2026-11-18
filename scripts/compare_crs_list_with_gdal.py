@@ -16,8 +16,9 @@ Needs GDAL's Python bindings, with the PROJ version terrio's catalog was generat
 (``scripts/gen_crs_catalog.py``, PROJ 9.9.0) for identical results. With GDAL on PROJ 9.8.1 (CI's
 reference, GDAL 3.12.2), the fields EPSG and ESRI changed between the two
 (``crates/terrio-crs/tests/data/crs_list_changes.json``, ``scripts/gen_crs_list_changes.py``) are
-reported as such: a field counts as changed only when GDAL has its PROJ 9.8.1 value and terrio its
-PROJ 9.9.0 value. Any other difference is reported as one.
+reported as such and compared with PROJ 9.9.0's values: GDAL must have each changed field's PROJ
+9.8.1 value and terrio its PROJ 9.9.0 value, and a CRS added since is compared with PROJ 9.9.0's
+entry. Any other difference is reported as one.
 """
 
 import argparse
@@ -81,7 +82,7 @@ def gdal_entries(authority):
 def registry_changes():
     """What EPSG and ESRI changed since GDAL's PROJ, when it is the one the changes start from."""
     proj = f"PROJ {osr.GetPROJVersionMajor()}.{osr.GetPROJVersionMinor()}.{osr.GetPROJVersionMicro()}"
-    changes = json.loads(CHANGES.read_text())
+    changes = json.loads(CHANGES.read_text(encoding="utf-8"))
     return changes if changes["from"] == proj else None
 
 
@@ -114,28 +115,36 @@ def main():
             differs.append("duplicate catalog codes")
         for e in ours:
             expected = reference.get(e["code"])
-            if expected is None:
-                if changes and e["code"] in changes["added"][authority]:
-                    changed.append(e["code"])
-                else:
-                    differs.append(f"{authority}:{e['code']} is not in GDAL's list")
-                continue
-            fields = [k for k in expected if e.get(k) != expected[k]]
-            # A field the registry changed: GDAL's PROJ value before, terrio's after.
-            registry = changes["changes"][authority].get(str(e["code"]), {}) if changes else {}
-            if fields and all(registry.get(k) == [expected[k], e.get(k)] for k in fields):
+            added = changes["added"][authority].get(str(e["code"])) if changes else None
+            registry = changes["changes"][authority].get(str(e["code"])) if changes else None
+            if expected is None and added is not None:
+                # A CRS the registry added since GDAL's PROJ: compared with the newer PROJ's entry.
+                expected = added
                 changed.append(e["code"])
-            elif fields:
+            elif expected is None:
+                differs.append(f"{authority}:{e['code']} is not in GDAL's list")
+                continue
+            elif registry is not None:
+                # A CRS the registry changed: GDAL must have each changed field's older value, and
+                # terrio the newer one; its other fields are compared with GDAL's.
+                stale = [k for k in registry if expected[k] != registry[k][0]]
+                if stale:
+                    differs.append(f"{authority}:{e['code']} GDAL's {', '.join(stale)} is not {changes['from']}'s")
+                expected = {k: registry[k][1] if k in registry else v for k, v in expected.items()}
+                changed.append(e["code"])
+            fields = [k for k in expected if e.get(k) != expected[k]]
+            if fields:
                 differs.append(f"{authority}:{e['code']} {', '.join(f'{k}: {e.get(k)!r} vs {expected[k]!r}' for k in fields)}")
         name = f"{authority}: {len(ours)} listed CRSs, every field"
+        if changed:
+            name += f" (those the registry changed since {changes['from']} as {changes['to']} has them)"
         if differs:
             cases.append({"name": name, "status": "differs", "detail": f"{len(differs)} differ: " + "; ".join(differs[:5])})
         else:
-            detail = f"but the {len(changed)} the registry changed since {changes['from']}, below" if changed else ""
-            cases.append({"name": name, "status": "identical", "detail": detail})
+            cases.append({"name": name, "status": "identical", "detail": ""})
         if changed:
-            detail = (f"{changes['to']} has them as terrio does; GDAL's {changes['from']} has them before {authority} "
-                      f"added or changed them (crs_list_changes.json), e.g. {authority}:{changed[0]}")
+            detail = (f"compared with {changes['to']}'s values (crs_list_changes.json): GDAL's {changes['from']} has them "
+                      f"before {authority} added or changed them, e.g. {authority}:{changed[0]}")
             cases.append({"name": f"{authority}: {len(changed)} CRSs added or changed after {changes['from']}",
                           "status": "not compared", "detail": detail})
         codes = {e["code"] for e in ours}
