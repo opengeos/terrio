@@ -515,7 +515,7 @@ fn geographic2(g: &Node) -> Result<Map<String, Value>> {
     }
     let e = datum_node.first_in(crate::keywords::ELLIPSOID).ok_or_else(|| unsupported("a datum without ELLIPSOID"))?;
     let (a, rf) = (e.num(1).ok_or_else(|| unsupported("an ELLIPSOID without axis"))?, e.num(2).unwrap_or(0.0));
-    if e.child("LENGTHUNIT").and_then(|u| u.num(1)).is_some_and(|f| f != 1.0) {
+    if e.child_in(&["LENGTHUNIT", "UNIT"]).and_then(|u| u.num(1)).is_some_and(|f| f != 1.0) {
         return Err(unsupported("an ellipsoid in another unit than metres"));
     }
     let mut ellipsoid = Map::new();

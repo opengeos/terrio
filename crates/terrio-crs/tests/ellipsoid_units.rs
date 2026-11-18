@@ -73,3 +73,18 @@ fn an_ellipsoid_in_feet_is_read_in_metres() {
     }
     assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
 }
+
+/// The PROJJSON written of such a WKT has its ellipsoid in metres: PROJ's WKT 2 of EPSG:4157
+/// without its root `ID`, on its datum by a `TRF` node too.
+#[test]
+fn the_projjson_ellipsoid_is_in_metres() {
+    let cases = cases();
+    let case = cases.iter().find(|c| c["code"] == 4157).unwrap();
+    let a = f(&case["a"]);
+    let bare = case["bare"].as_str().unwrap().to_string();
+    for wkt in [bare.clone(), bare.replacen("DATUM[", "TRF[", 1)] {
+        let json: Value = serde_json::from_str(&SpatialRef::from_wkt(&wkt).to_projjson().unwrap()).unwrap();
+        let e = &json["datum"]["ellipsoid"];
+        assert!((e["semi_major_axis"].as_f64().unwrap() - a).abs() < 1e-6, "{e}");
+    }
+}

@@ -126,3 +126,20 @@ fn an_esri_compound_crs_is_a_compd_cs() {
     assert!(written.starts_with(r#"COMPD_CS["GCS_WGS_1984 + EGM96_height",GEOGCS["GCS_WGS_1984""#), "{written}");
     assert!(written.contains(r#"VERTCS["EGM96_height""#), "{written}");
 }
+
+/// A `SpatialRef` built from a file's text without `from_wkt` (as `terrio` builds a raster's or a
+/// layer's) reads ESRI's compound CRS as compound too: `identify_epsg` and its definition.
+#[test]
+fn an_esri_compound_crs_is_compound_whatever_builds_it() {
+    let g = r#"GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]"#;
+    let v = r#"VERTCS["EGM96_height",VDATUM["EGM96_Geoid"],PARAMETER["Vertical_Shift",0.0],PARAMETER["Direction",1.0],UNIT["Meter",1.0]]"#;
+    let wkt = format!("{g},{v}");
+    assert_eq!(terrio_crs::identify_epsg(&wkt), None);
+    let raw = SpatialRef { wkt: Some(wkt.clone()), ..Default::default() };
+    assert!(raw.has_height());
+    assert_eq!(raw.compound_parts(), Some((4326, 5773)));
+    // Too long once written as a `COMPD_CS` (its names twice): read by its first node, as before.
+    let long = format!("{},{v}", g.replace("GCS_WGS_1984", &"x".repeat(60_000)));
+    assert!(long.len() < 100_000);
+    assert!(!SpatialRef::from_wkt(&long).has_height());
+}

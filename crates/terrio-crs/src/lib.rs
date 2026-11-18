@@ -502,12 +502,8 @@ impl SpatialRef {
     /// [`Self::from_wkt`] of the whole text, uncut at a NUL: for stored WKT and WKT terrio
     /// built, whose names (a PROJJSON's) may keep one (see [`until_nul`]).
     pub(crate) fn from_wkt_text(wkt: &str) -> Self {
-        // ESRI's compound CRS, a horizontal CRS followed by a `VERTCS`, is that compound CRS, as
-        // PROJ 9.9.0 reads it (EPSG:9707 in ESRI's WKT), named after its two parts as by PROJ.
-        if let Some((horizontal, vertical)) = wkt1::esri_compound(wkt) {
-            let name = format!("{} + {}", horizontal.name().unwrap_or("unnamed"), vertical.name().unwrap_or("unnamed"));
-            let args = vec![wkt1::Arg::Str(name), wkt1::Arg::Node(horizontal), wkt1::Arg::Node(vertical)];
-            return Self::from_wkt_text(&wkt1::Node { key: "COMPD_CS".into(), args }.to_wkt());
+        if let Some(compound) = esri_compound_wkt(wkt) {
+            return Self::from_wkt_text(&compound);
         }
         // A WKT 1 extended with its PROJ string (`EXTENSION["PROJ4", ...]`, as GDAL writes CRSs
         // WKT 1 cannot describe) is that PROJ string, as GDAL reads it.
@@ -1093,7 +1089,8 @@ impl SpatialRef {
         if let Some(c) = self.epsg.and_then(epsg::compound) {
             return Some((c.horizontal, c.vertical));
         }
-        let (horizontal, vertical) = def::split_compound(self.wkt.as_deref()?)?;
+        let wkt = self.wkt.as_deref()?;
+        let (horizontal, vertical) = def::split_compound(&esri_compound_wkt(wkt).unwrap_or_else(|| wkt.to_string()))?;
         // Its vertical CRS's code only of its unit and direction (not heights in feet as EPSG:5701).
         let vertical = def::vertical_code(&vertical)?;
         Some((identify_epsg(&horizontal)?, vertical))
@@ -1601,6 +1598,18 @@ impl std::fmt::Display for SpatialRef {
 /// Datum realizations, which a WKT definition names when it means them.
 const REALIZATIONS: &[&str] = &["2011", "HARN", "NSRS", "CSRS", "CORS", "MA11", "PA11", "NAD83(", "ITRF", "GDA2020", "ETRF"];
 
+/// ESRI's compound CRS, a horizontal CRS followed by a `VERTCS`, as the `COMPD_CS` PROJ 9.9.0
+/// reads it as (EPSG:9707 in ESRI's WKT), named after its two parts as by PROJ. `None` for another
+/// WKT, and when the `COMPD_CS` would be longer than GDAL imports (the WKT is then read by its
+/// first node, as before). [`SpatialRef::from_wkt`], [`identify_epsg`] and `Def::from_wkt` read
+/// it so, for a `SpatialRef` built from a file's text too.
+pub(crate) fn esri_compound_wkt(wkt: &str) -> Option<String> {
+    let (horizontal, vertical) = wkt1::esri_compound(wkt)?;
+    let name = format!("{} + {}", horizontal.name().unwrap_or("unnamed"), vertical.name().unwrap_or("unnamed"));
+    let args = vec![wkt1::Arg::Str(name), wkt1::Arg::Node(horizontal), wkt1::Arg::Node(vertical)];
+    Some(wkt1::Node { key: "COMPD_CS".into(), args }.to_wkt()).filter(|w| w.len() <= wkt1::MAX_LEN)
+}
+
 /// The semi-major axis in metres of the first `SPHEROID` or `ELLIPSOID` of a WKT definition (in
 /// its `LENGTHUNIT`, as PROJ reads a WKT 2 ellipsoid in feet).
 #[doc(hidden)]
@@ -1694,6 +1703,9 @@ pub fn compound_code(horizontal: u32, vertical: u32, name: Option<&str>) -> Opti
 /// file must be cut at its first NUL by the caller ([`until_nul`]).
 #[doc(hidden)]
 pub fn identify_epsg(wkt: &str) -> Option<u32> {
+    if let Some(compound) = esri_compound_wkt(wkt) {
+        return identify_epsg(&compound);
+    }
     // A declared code only when the WKT's own content is that CRS, as PROJ 9.8.1 keeps the
     // content of a WKT whose root `ID` or `AUTHORITY` is wrong (a geographic code on a projected
     // CRS, a code that does not exist, a compound code's units); else the WKT is identified by its
@@ -1932,10 +1944,10 @@ pub(crate) fn declared_fits_but_meridian(wkt: &str, code: u32) -> bool {
 /// names the code's own projection method.
 pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
     // Only a horizontal CRS's content is compared (not a vertical or engineering CRS's).
-    let horizontal_root = wkt1::parse(wkt).is_some_and(|r| r.is(keywords::HORIZONTAL_CRS) || r.is(keywords::COMPOUND_CRS));
+    let horizontal = wkt1::parse(wkt).is_some_and(|r| r.is(keywords::HORIZONTAL_CRS) || r.is(keywords::COMPOUND_CRS));
     // A vertical CRS's code only of its unit and direction; another root's (engineering, local)
     // not the code of a CRS terrio places (a vertical CRS declaring EPSG:4326 is not WGS 84).
-    if !horizontal_root {
+    if !horizontal {
         let vertical = wkt1::parse(wkt).is_some_and(|r| r.is(keywords::VERTICAL_CRS));
         return if vertical {
             def::vertical_code(wkt) == Some(code)

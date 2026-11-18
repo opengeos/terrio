@@ -1354,8 +1354,8 @@ and the `Axis order`, `Body` and `Method` lines of `terrio crs CRS` (and its MCP
 
   Geocentric and vertical CRSs, Polar Stereographic (whose axes point along meridians, unless a
   WKT states others) and axes other than north and east (`northEast`, `south`) are `Other`.
-  `has_north_east_axis_order()` is unchanged: it goes by the CRS's WKT (a bound CRS's by its
-  source CRS, as `axis_order()`), for GML's authority order.
+  `has_north_east_axis_order()` goes by the CRS's WKT instead, for GML's authority order (a
+  bound CRS's by its source CRS, as `axis_order()`).
 - `projection_params()` gives the method (the `+proj` name PROJ writes: `etmerc` is `tmerc`,
   `webmerc` `merc`, `latlong` `longlat`), `lon_0`, `lat_0`, `k_0`, `x_0`, `y_0`, the prime
   meridian, the ellipsoid's `a` and `b` and metres per unit. They are those of

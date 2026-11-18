@@ -1278,6 +1278,9 @@ impl Def {
     /// CRS followed by that CRS's transformations, else from the EPSG geographic CRS the WKT's
     /// `GEOGCS` is identified as.
     pub fn from_wkt(w: &str) -> Result<Self> {
+        if let Some(compound) = super::esri_compound_wkt(w) {
+            return Self::from_wkt(&compound);
+        }
         if let Some((horizontal, vertical)) = split_compound(w) {
             // uncut: stored or built WKT
             let h = SpatialRef::from_wkt_text(&horizontal);
@@ -2032,16 +2035,19 @@ pub(crate) fn split_compound(w: &str) -> Option<(String, String)> {
 /// when it has one or is identified ([`vertical_code`]), else its unit and the geoid grids of
 /// GDAL's `PROJ4_GRIDS` extension.
 pub(crate) fn vertical_from_wkt(w: &str) -> Option<Vertical> {
-    let declared = vertical_code(w);
-    if let Some(v) = declared.and_then(Vertical::from_epsg) {
-        return Some(v);
-    }
-    let (to_meter, down) = super::vertical_axis(w)?;
     let root = wkt1::parse(w)?;
     let grids = root.children("EXTENSION").find(|e| e.name() == Some("PROJ4_GRIDS")).and_then(|e| match e.args.get(1) {
         Some(wkt1::Arg::Str(s)) => Some(s.clone()),
         _ => None,
     });
+    // A declared code's definition; one identified by name only without grids of the WKT's own,
+    // which its PROJ string writes (`+geoidgrids`).
+    let declared = vertical_code(w);
+    let own = super::declared_epsg(w).is_some() || grids.is_none();
+    if let Some(v) = declared.filter(|_| own).and_then(Vertical::from_epsg) {
+        return Some(v);
+    }
+    let (to_meter, down) = super::vertical_axis(w)?;
     Some(match grids {
         Some(g) => Vertical::from_geoid_grids(&g, to_meter),
         None => Vertical { code: declared, to_meter, down, models: Vec::new(), ballpark: true },
@@ -2491,5 +2497,22 @@ mod memo_tests {
             let _g = memo().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             wait();
         });
+    }
+}
+
+#[cfg(test)]
+mod vertical_wkt_tests {
+    /// A vertical CRS identified by its name is its code's, but a `PROJ4_GRIDS` extension of its
+    /// own (GDAL's), which its PROJ string writes as `+geoidgrids`, wins over the code's models.
+    #[test]
+    fn own_geoid_grids_win_over_an_identified_code() {
+        let bare = r#"VERT_CS["EGM96 height",VERT_DATUM["EGM96 geoid",2005],UNIT["metre",1],AXIS["Gravity-related height",UP]]"#;
+        assert_eq!(super::vertical_from_wkt(bare).and_then(|v| v.code), Some(5773));
+        let grids = bare.replace("AXIS[", r#"EXTENSION["PROJ4_GRIDS","custom.gtx"],AXIS["#);
+        let v = super::vertical_from_wkt(&grids).unwrap();
+        assert_eq!((v.code, v.models.len()), (None, 1));
+        // A declared code keeps its definition, as before.
+        let declared = grids.replace("UP]]", r#"UP],AUTHORITY["EPSG","5773"]]"#);
+        assert_eq!(super::vertical_from_wkt(&declared).and_then(|v| v.code), Some(5773));
     }
 }

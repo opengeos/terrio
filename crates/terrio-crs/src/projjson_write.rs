@@ -317,7 +317,8 @@ fn datum(base: &Node, p: &Params, def: &Def) -> Result<Value> {
     // The WKT's ellipsoid as written (EPSG:3857's datum is WGS 84, projected on a sphere), else
     // the PROJ string's.
     let es_rf = |es: f64| if es == 0.0 { 0.0 } else { 1.0 / (1.0 - (1.0 - es).sqrt()) };
-    let (a, rf) = match e.and_then(|e| Some((e.num(1)?, e.num(2)?))) {
+    // In metres, from its `LENGTHUNIT` (PROJ's WKT 2 of EPSG:4157 gives Clarke 1858 in feet).
+    let (a, rf) = match e.and_then(Node::ellipsoid) {
         Some((a, rf)) if a > 0.0 && (rf == 0.0 || rf > 1.0) => (a, rf),
         _ => (def.ell.a, es_rf(def.ell.es)),
     };
