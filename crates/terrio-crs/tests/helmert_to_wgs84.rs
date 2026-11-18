@@ -44,6 +44,12 @@ fn every_geographic_crs_has_proj_s_helmert_transformation() {
             wrong.push(format!("{code}: {ours:?} vs {proj}"));
         }
     }
+    // The known differences are checked whether or not the fixture has them, and it has each once.
+    for code in KNOWN_DIFFERENCES {
+        assert_eq!(helmert_to_wgs84(code), None, "{code}");
+        let rows = include_str!("data/helmert_to_wgs84.tsv").lines().filter(|l| l.starts_with(&format!("{code}\t"))).count();
+        assert_eq!(rows, 1, "{code}");
+    }
     assert!(wrong.is_empty(), "{} of {} differ:\n{}", wrong.len(), helmert + none, wrong.join("\n"));
     // 717 CRSs other than WGS 84, MGI (Ferro) apart.
     assert_eq!((helmert, none), (474, 242));

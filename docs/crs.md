@@ -1060,7 +1060,11 @@ a projected or compound CRS's base geographic CRS) as `+towgs84` carries it, als
 none: the first transformation PROJ 9.9.0 picks without grids, when PROJ runs it as a single Helmert
 transformation of 3 or 7 parameters (ED50 has `-87,-98,-121,0,0,0,0`, from ED50 to WGS 84 (1)).
 `None` otherwise: a Molodensky-Badekas, time-dependent or exact-rotation Helmert transformation, a
-geographic offset, several shifts, PROJ's ballpark. It is in the Rust crate only.
+geographic offset, several shifts, PROJ's ballpark. A transformation that shifts nothing (NAD83 to
+WGS 84 (1)) gives `Some` zeros, as `+towgs84=0,0,0`, unlike an unsupported one. MGI (Ferro),
+EPSG:4805, gives `None` where PROJ has a Helmert transformation: PROJ's MGI (Ferro) to WGS 84 (1)
+turns longitudes by MGI 1901's Ferro meridian, 13.98" from the CRS's own, which a `+towgs84` beside
+`+pm=ferro` would leave out. It is in the Rust crate only.
 
 A compound CRS (`EPSG:4326+5773`, a registry code, a WKT's `COMPD_CS`) is its horizontal CRS's
 string with the vertical unit (`+vunits=m`), and a WKT's geoid model (`+geoidgrids`). A CRS

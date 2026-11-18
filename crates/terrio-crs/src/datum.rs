@@ -131,9 +131,10 @@ pub(crate) enum Step {
 pub(crate) struct Seven(pub Option<Box<[f64; 7]>>);
 
 impl PartialEq for Seven {
-    fn eq(&self, other: &Self) -> bool {
-        // Whether there are any (none for exact rotations), not their values.
-        self.0.is_some() == other.0.is_some()
+    fn eq(&self, _: &Self) -> bool {
+        // Neither their values nor whether there are any (none for exact rotations, which apply
+        // the same transformation as approximate ones when they are zero).
+        true
     }
 }
 
