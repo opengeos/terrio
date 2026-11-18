@@ -23,7 +23,8 @@ the CRSs RustGIS named (opengeos/RustGIS#2335 follow-up).
 And ``crates/terrio-crs/tests/data/gdal_proj4_export_inputs.tsv``, ``authority:code<TAB>kind<TAB>
 input<TAB>PROJ string``: GDAL's string for the named CRSs given as other definitions, GDAL's WKT 1
 and WKT 2 (with their root identifier, which GDAL binds the CRS by), the WKT 1 without its root
-identifier, ESRI's WKT and GDAL's PROJ string without its additions.
+identifier, the WKT 1 with a datum shift of its own, ESRI's WKT and GDAL's PROJ string without
+its additions.
 
 Usage: python scripts/gen_gdal_towgs84.py
 
@@ -117,6 +118,10 @@ def main():
                 "wkt2": srs.ExportToWkt(["FORMAT=WKT2_2019", "MULTILINE=NO"]).replace("\n", " "),
                 "wkt1-rootless": wkt1[: root.start()] + "]" if root else None,
                 "esri": esri.ExportToWkt(),
+                # The WKT 1 with a datum shift of its own, which GDAL keeps.
+                "wkt1-towgs84": re.sub(r"(SPHEROID\[[^\[\]]*(?:\[[^\[\]]*\])?\])", r"\1,TOWGS84[1,2,3,0,0,0,0]", wkt1, count=1)
+                if "TOWGS84" not in wkt1 and not wkt1.startswith("COMPD_CS")
+                else None,
                 "proj": plain,
             }
             for kind, text in inputs.items():

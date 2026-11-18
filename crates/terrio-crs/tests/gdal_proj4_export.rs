@@ -42,8 +42,8 @@ fn registry_crss_are_written_as_gdal_exports_them() {
 
 #[test]
 fn what_gdal_adds_only_to_a_codes_own_definition() {
-    // The registry's own CRS has GDAL's `+towgs84`; the same CRS given by its PROJ string, or by a
-    // WKT with another datum transformation, keeps its own.
+    // The registry's own CRS has GDAL's `+towgs84`; the same CRS given by its PROJ string keeps
+    // its own.
     let own = SpatialRef::from_epsg(2056).unwrap();
     assert!(own.to_proj4_gdal().unwrap().contains("+towgs84=674.374,15.056,405.346,0,0,0,0 "));
     let string = SpatialRef::from_proj4(&own.to_proj4().unwrap()).unwrap();
@@ -68,7 +68,8 @@ fn a_dms_prime_meridian_keeps_its_seconds_mark() {
 #[test]
 fn other_definitions_of_a_code_are_written_as_gdal_exports_them() {
     // GDAL binds a CRS to WGS 84 by its root identifier: its WKT 1 and WKT 2 get the code's
-    // additions, the WKT without it, ESRI's WKT and the PROJ string none
+    // additions, but a WKT 1 with a datum shift of its own keeps its shift; the WKT without
+    // the identifier, ESRI's WKT and the PROJ string get none
     // (`data/gdal_proj4_export_inputs.tsv`, `scripts/gen_gdal_towgs84.py`).
     // Compound CRSs given by a definition, where GDAL adds a geoid model only to the code,
     // binds a WKT 1 by its horizontal part's identifier and writes `+vunits` from ESRI's WKT; and
@@ -86,6 +87,11 @@ fn other_definitions_of_a_code_are_written_as_gdal_exports_them() {
     for line in include_str!("data/gdal_proj4_export_inputs.tsv").lines() {
         let [code, kind, input, gdal] = line.split('\t').collect::<Vec<_>>()[..] else { panic!("{line}") };
         let crs = if kind == "proj" { SpatialRef::from_proj4(input).unwrap() } else { SpatialRef::from_wkt(input) };
+        // A WKT with a datum shift of its own keeps its code: its shift wins over the code's
+        // because the string has one, not because the code is lost.
+        if kind == "wkt1-towgs84" {
+            assert_eq!(crs.authority_code().as_deref(), Some(code), "{code} {kind}");
+        }
         if crs.to_proj4_gdal().as_deref() != Some(gdal) {
             differ.push(format!("{code} {kind}"));
         }

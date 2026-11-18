@@ -1041,16 +1041,18 @@ the string leaves out what a PROJ string cannot hold, so keep the code or WKT to
 
 `SpatialRef::to_proj4_gdal` writes the PROJ string GDAL 3.13.3 writes (`OSRExportToProj4`): the
 same, without `+type=crs`, and for an EPSG or ESRI code's own definition, with what GDAL adds to it
-(`scripts/gen_gdal_towgs84.py`, 5,141 CRSs): the datum transformation to WGS 84 as `+towgs84`,
-where PROJ finds a single one for the CRS's area of use (EPSG:31467 has
+(`scripts/gen_gdal_towgs84.py`, 5,141 CRSs): the datum transformation to WGS 84 as `+towgs84`, where
+PROJ finds a single one for the CRS's area of use (EPSG:31467 has
 `+towgs84=598.1,73.7,418.2,0.202,0.045,-2.455,6.7`; EPSG:27700, with several, has none), and a
 compound CRS's geoid model (`+geoidgrids`, `+geoid_crs=WGS84`). Another CRS keeps its own
 `+towgs84`, if any. A WKT 1 or WKT 2 whose root `AUTHORITY` or `ID` names the code has the same
-additions, as GDAL binds a CRS by its root identifier. A PROJ string or a WKT without a root
-identifier (ESRI's) has none, as in GDAL. Unlike GDAL, a PROJJSON has none either, nor a WKT whose
-parameters are not those of the code it names; and a compound CRS given by a WKT or PROJ string is
-not always written as GDAL writes it (GDAL adds its geoid model only to the code). A deprecated code has its own definition's, as GDAL
-with `OSR_USE_NON_DEPRECATED=NO`.
+additions, as GDAL binds a CRS by its root identifier, unless it has a datum shift of its own
+(`TOWGS84`, `+nadgrids`), which it keeps. A PROJ string or a WKT without a root identifier (ESRI's)
+has none, as in GDAL. Unlike GDAL, a PROJJSON has none either, nor a WKT whose parameters are not
+those of the code it names; and a compound CRS given by a WKT or PROJ string is not always written
+as GDAL writes it (GDAL adds its geoid model only to the code), and `+init=epsg:2056`, the code
+itself to terrio, has its additions, which GDAL does not write. A deprecated code has its own
+definition's, as GDAL with `OSR_USE_NON_DEPRECATED=NO`.
 
 A compound CRS (`EPSG:4326+5773`, a registry code, a WKT's `COMPD_CS`) is its horizontal CRS's
 string with the vertical unit (`+vunits=m`), and a WKT's geoid model (`+geoidgrids`). A CRS

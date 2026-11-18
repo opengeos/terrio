@@ -818,14 +818,17 @@ impl SpatialRef {
     /// model as `+geoidgrids` and `+geoid_crs`. `None` where [`Self::to_proj4`] is.
     ///
     /// A WKT 1 or WKT 2 whose root `AUTHORITY` or `ID` names the code gets the same, as in GDAL,
-    /// which binds the CRS by its root identifier. Another CRS keeps its own `+towgs84`, if any,
-    /// as GDAL writes it: a PROJ string, a WKT without a root identifier (ESRI's) even where terrio
-    /// identifies its code. Unlike GDAL, a PROJJSON keeps its own too (terrio drops its root `id`
-    /// when it reads it), and so does a WKT whose identifier terrio drops because its
-    /// parameters are not the code's (GDAL binds by the identifier anyway), and a compound CRS
-    /// given by a WKT or PROJ string is not always written as GDAL writes it. A deprecated code
-    /// has its own definition's, as GDAL gives it with `OSR_USE_NON_DEPRECATED=NO`
-    /// ([`Self::from_epsg_non_deprecated`] has its replacement's, as GDAL's default).
+    /// which binds the CRS by its root identifier, unless it has a datum shift of its own
+    /// (`TOWGS84`, a PROJ4 extension's `+nadgrids`), which it keeps. Another CRS keeps its own
+    /// `+towgs84`, if any, as GDAL writes it: a PROJ string, a WKT without a root identifier
+    /// (ESRI's) even where terrio identifies its code. Unlike GDAL, a PROJJSON keeps its own too
+    /// (terrio drops its root `id` when it reads it), and so does a WKT whose identifier terrio
+    /// drops because its parameters are not the code's (GDAL binds by the identifier anyway); a
+    /// compound CRS given by a WKT or PROJ string is not always written as GDAL writes it; and
+    /// `+init=epsg:N` is the code itself to terrio, so it gets the code's additions, which GDAL
+    /// does not give it. A deprecated code has its own definition's, as GDAL gives it with
+    /// `OSR_USE_NON_DEPRECATED=NO` ([`Self::from_epsg_non_deprecated`] has its replacement's, as
+    /// GDAL's default).
     ///
     /// ```
     /// use terrio_crs::SpatialRef;
@@ -843,14 +846,16 @@ impl SpatialRef {
             proj_tokens(&proj).into_iter().filter(|t| t.replace('"', "") != "+type=crs").map(str::to_string).collect();
         // The table first: rebuilding the code's own definition is the costlier check. A code's
         // own PROJ string has no `+towgs84`, `+nadgrids` or `+geoidgrids` of its own where the
-        // table adds one (`a_registry_string_has_nothing_the_table_adds`).
+        // table adds one (`a_registry_string_has_nothing_the_table_adds`); a WKT naming the code
+        // can, and keeps it, as in GDAL.
         let Some((towgs84, geoid)) =
             self.authority().and_then(|(authority, code)| epsg::gdal_additions(authority, code)).filter(|_| self.gdal_binds_to_wgs84())
         else {
             return Some(tokens.join(" "));
         };
         // After the ellipsoid, before the units and what follows them.
-        if !towgs84.is_empty() {
+        let has = |tokens: &[String], keys: &[&str]| tokens.iter().any(|t| keys.iter().any(|k| t.starts_with(k)));
+        if !towgs84.is_empty() && !has(&tokens, &["+towgs84=", "+nadgrids="]) {
             let at = tokens
                 .iter()
                 .position(|t| {
@@ -861,7 +866,7 @@ impl SpatialRef {
                 .unwrap_or(tokens.len());
             tokens.insert(at, format!("+towgs84={towgs84}"));
         }
-        if !geoid.is_empty() {
+        if !geoid.is_empty() && !has(&tokens, &["+geoidgrids="]) {
             let geoid = geoid.split_whitespace().map(str::to_string);
             if tokens.iter().any(|t| t == "+wktext") {
                 // A CRS PROJ writes through its PROJ4 extension (Web Mercator's): GDAL appends
@@ -880,9 +885,9 @@ impl SpatialRef {
 
     /// Whether GDAL binds this CRS to WGS 84 by its code, as its PROJ string export does: a CRS
     /// that is its EPSG or ESRI code's own definition (that of [`Self::from_epsg`] or
-    /// [`Self::from_esri`]), or a WKT whose root `AUTHORITY` or `ID` declares the code, but for
-    /// a compound CRS's (GDAL binds a compound CRS read from WKT 2 by neither part, from WKT 1 by
-    /// its horizontal part's identifier, and adds no geoid model to either).
+    /// [`Self::from_esri`]), or a WKT whose root `AUTHORITY` or `ID` declares the code. A compound
+    /// CRS's WKT does not count: GDAL binds one read from WKT 2 by neither part and one read from
+    /// WKT 1 by its horizontal part (which terrio does not), and adds a geoid model to neither.
     fn gdal_binds_to_wgs84(&self) -> bool {
         let Some((authority, code)) = self.authority() else { return false };
         if self.wkt.as_deref().and_then(gdal_root_identifier).is_some_and(|(a, c)| a.eq_ignore_ascii_case(authority) && c == code) {
