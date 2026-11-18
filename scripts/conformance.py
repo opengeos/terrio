@@ -3788,6 +3788,7 @@ def suite_vector_dataset(ctx):
         "GDAL vector concat, partition, set-field-type, make-point, create, export-schema, rename-layer, edit and update",
         "Natural Earth countries and places, US and Tennessee counties, Las Vegas roads and "
         "a GPS trace: OGR_SCHEMA members, created schemas, field type conversions, "
+        "GeoJSON list properties (types, and values converted and read back by GDAL), "
         "concatenated, partitioned and point layers read back by GDAL. Values exact; "
         "coordinates of layers reprojected to a common CRS within 1e-9 (degrees) or 1e-6 "
         "(metres). Int16, Float32 and JSON subtypes stored without the subtype are within "

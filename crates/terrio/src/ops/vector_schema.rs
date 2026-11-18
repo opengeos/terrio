@@ -17,7 +17,10 @@
 //! `Integer64` are integers (an `Integer64` field declares a width of at least 10, as DBF and
 //! GeoPackage readers record it); `Real` and `Float32` are doubles; `String`, `UUID` and `Time` are text (times as `HH:MM:SS[.sss]`);
 //! `Int16` is an integer clamped to 16 bits; `Boolean` is a boolean; `JSON` is JSON text;
-//! `Binary` is a blob. List types are not supported.
+//! `Binary` is a blob. Lists (`IntegerList`, `Integer64List`, `RealList`, `StringList`, and
+//! `IntegerList` of the `Boolean` subtype) are JSON arrays, which GeoJSON layers read hold and
+//! [`crate::VectorDataset::ogr_type`] tells the types of; fields are not changed to or created as
+//! lists.
 
 use crate::crs::SpatialRef;
 use crate::{Error, Result};
@@ -47,6 +50,14 @@ pub enum OgrFieldType {
     DateTime,
     /// Raw bytes.
     Binary,
+    /// A list of 32-bit integers, held as a JSON array.
+    IntegerList,
+    /// A list of 64-bit integers, held as a JSON array.
+    Integer64List,
+    /// A list of double-precision reals, held as a JSON array.
+    RealList,
+    /// A list of UTF-8 strings, held as a JSON array.
+    StringList,
 }
 
 /// An OGR field subtype.
@@ -79,7 +90,16 @@ impl OgrFieldType {
             Self::Time => "Time",
             Self::DateTime => "DateTime",
             Self::Binary => "Binary",
+            Self::IntegerList => "IntegerList",
+            Self::Integer64List => "Integer64List",
+            Self::RealList => "RealList",
+            Self::StringList => "StringList",
         }
+    }
+
+    /// Whether this is a list type.
+    pub fn is_list(self) -> bool {
+        matches!(self, Self::IntegerList | Self::Integer64List | Self::RealList | Self::StringList)
     }
 
     fn parse(s: &str) -> Option<Self> {
@@ -197,6 +217,9 @@ impl OgrType {
             (OgrFieldType::Date, _) => FieldType::Date,
             (OgrFieldType::DateTime, _) => FieldType::DateTime,
             (OgrFieldType::Binary, _) => FieldType::Blob,
+            (OgrFieldType::IntegerList | OgrFieldType::Integer64List | OgrFieldType::RealList | OgrFieldType::StringList, _) => {
+                FieldType::Json
+            }
         }
     }
 
@@ -240,7 +263,8 @@ pub fn ogr_type(layer: &Layer, i: usize) -> OgrType {
 
 /// A terrio field definition of an OGR type: `Integer64` fields declare a width of at least
 /// [`INTEGER64_WIDTH`] when they have none (so that writers keep them 64-bit), and `Integer`
-/// fields at most 9 (so that they stay 32-bit).
+/// fields at most 9 (so that they stay 32-bit). List types have no field of their own: they
+/// store JSON text, as [`OgrType::storage`] gives them.
 pub fn field_def(name: &str, t: OgrType, width: usize, precision: usize) -> FieldDef {
     let mut def = FieldDef::new(name, t.storage());
     def.width = match t.field_type {
@@ -447,6 +471,8 @@ fn convert(v: &FieldValue, def: &FieldDef, from: OgrType, to: OgrType, lossy: &m
     // GDAL stores Float32 values as given (only printing them with single precision).
     let real = FieldValue::Float;
     Ok(match to.field_type {
+        // Refused by `set_field_type`.
+        T::IntegerList | T::Integer64List | T::RealList | T::StringList => return Err(()),
         T::Integer | T::Integer64 => match v {
             FieldValue::Integer(i) => integer(*i, lossy),
             FieldValue::Boolean(b) => integer(i64::from(*b), lossy),
@@ -644,8 +670,11 @@ pub enum FieldSelector {
 /// read as numbers by their numeric prefix, reals truncated and clamped to integers, 32-bit
 /// overflows clamped, dates reformatted). Features whose value GDAL cannot convert (a date or
 /// blob to a number, a date to a blob) are left out, with a warning. Lossy conversions are
-/// reported as warnings.
+/// reported as warnings. List types are refused.
 pub fn set_field_type(layer: &Layer, selector: &FieldSelector, to: OgrType) -> Result<Layer> {
+    if to.field_type.is_list() {
+        return Err(Error::Unsupported(format!("field type '{to}': list types are not supported")));
+    }
     let fields = layer.schema.fields();
     let targets: Vec<usize> = match selector {
         FieldSelector::Name(name) => {
@@ -758,7 +787,8 @@ pub struct SchemaField {
     /// The field name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// The type: `Integer`, `Integer64`, `Real`, `String`, `Date`, `Time`, `DateTime`, `Binary`.
+    /// The type: `Integer`, `Integer64`, `Real`, `String`, `Date`, `Time`, `DateTime`, `Binary`,
+    /// or (exported only) `IntegerList`, `Integer64List`, `RealList`, `StringList`.
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub field_type: Option<String>,
     /// The subtype: `Boolean`, `Int16`, `Float32`, `JSON`, `UUID`.
@@ -905,7 +935,24 @@ pub fn export_schema_with_dims(
     driver: Option<crate::formats::VectorDriver>,
     declared_dims: &[Option<(bool, bool)>],
 ) -> OgrSchema {
+    export_schema_typed(layers, driver, declared_dims, &ogr_type)
+}
+
+/// The `OGR_SCHEMA` of the layers of a dataset, whose list fields it knows the types of
+/// ([`crate::VectorDataset::ogr_type`]).
+fn export_dataset_schema(ds: &crate::VectorDataset, declared_dims: &[Option<(bool, bool)>]) -> OgrSchema {
+    export_schema_typed(&ds.layers, Some(ds.driver), declared_dims, &|l, i| ds.ogr_type(l, i))
+}
+
+/// [`export_schema_with_dims`] with the field types `type_of` gives.
+fn export_schema_typed(
+    layers: &[Layer],
+    driver: Option<crate::formats::VectorDriver>,
+    declared_dims: &[Option<(bool, bool)>],
+    type_of: &dyn Fn(&Layer, usize) -> OgrType,
+) -> OgrSchema {
     let (geom_name, fid) = driver_columns(driver);
+    let geojson = matches!(driver, Some(crate::formats::VectorDriver::GeoJSON | crate::formats::VectorDriver::GeoJSONSeq));
     let layers = layers
         .iter()
         .enumerate()
@@ -913,14 +960,19 @@ pub fn export_schema_with_dims(
             let fields = (0..l.schema.len())
                 .map(|i| {
                     let f = &l.schema.fields()[i];
-                    let t = ogr_type(l, i);
+                    let t = type_of(l, i);
                     let has_width =
                         matches!(t.field_type, OgrFieldType::Integer | OgrFieldType::Integer64 | OgrFieldType::Real | OgrFieldType::String);
                     SchemaField {
                         name: Some(f.name.clone()),
                         field_type: Some(t.field_type.name().into()),
                         sub_type: (t.subtype != OgrFieldSubType::None).then(|| t.subtype.name().into()),
-                        width: (has_width && f.width > 0).then_some(f.width),
+                        // GDAL's GeoJSON readers give every boolean field of a GeoJSON layer, scalar or list, a width of 1.
+                        width: if t.subtype == OgrFieldSubType::Boolean && geojson {
+                            Some(1)
+                        } else {
+                            (has_width && f.width > 0).then_some(f.width)
+                        },
                         precision: (t.field_type == OgrFieldType::Real && f.precision > 0).then_some(f.precision),
                         nullable: Some(f.nullable),
                         unique_constraint: Some(false),
@@ -988,7 +1040,7 @@ pub fn export_schema_path(path: &str, layers: &[String]) -> Result<OgrSchema> {
     }
     let options = crate::VectorOpenOptions { layers: layers.to_vec(), ..Default::default() };
     let (ds, declared) = crate::dataset::open_vector_declared(path, &options)?;
-    Ok(export_schema_with_dims(&ds.layers, Some(ds.driver), &declared))
+    Ok(export_dataset_schema(&ds, &declared))
 }
 
 /// [`export_schema_path`] for a dataset held in memory, named `name` (its file name, which the
@@ -1000,7 +1052,7 @@ pub fn export_schema_bytes(bytes: Vec<u8>, name: &str, layers: Option<&[String]>
         // A pair is declared only for a FlatGeobuf's one layer: it goes when that layer does.
         declared.truncate(ds.layers.len());
     }
-    Ok(export_schema_with_dims(&ds.layers, Some(ds.driver), &declared))
+    Ok(export_dataset_schema(&ds, &declared))
 }
 
 /// The OGR type GDAL's GeoPackage driver gives a declared column type.
@@ -1387,6 +1439,12 @@ mod tests {
             [FieldType::Float, FieldType::Integer, FieldType::Text]
         );
         assert!(set_field_type(&l, &FieldSelector::Name("missing".into()), OgrType::parse("Real").unwrap()).is_err());
+    }
+
+    #[test]
+    fn list_types_are_stored_as_json_fields() {
+        let def = field_def("ints", OgrType::new(OgrFieldType::IntegerList), 0, 0);
+        assert!(matches!(def.field_type, FieldType::Json));
     }
 
     #[test]

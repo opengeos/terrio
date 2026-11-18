@@ -31,6 +31,7 @@ pub(crate) mod featureservice;
 #[cfg(feature = "flatgeobuf")]
 pub mod flatgeobuf;
 pub mod geojson;
+pub(crate) mod geojson_lists;
 #[cfg(feature = "sqlite")]
 pub mod geopackage;
 #[cfg(feature = "parquet")]

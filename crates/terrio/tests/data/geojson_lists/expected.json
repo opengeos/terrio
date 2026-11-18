@@ -1,0 +1,408 @@
+{
+ "gdal_version": "3.13.2",
+ "fields": {
+  "ints": {
+   "type": "IntegerList",
+   "subtype": "None",
+   "values": [
+    [
+     1,
+     2
+    ],
+    [
+     3
+    ],
+    null,
+    null
+   ]
+  },
+  "int64s": {
+   "type": "Integer64List",
+   "subtype": "None",
+   "values": [
+    [
+     9007199254740993,
+     1
+    ],
+    [],
+    [
+     -5
+    ],
+    null
+   ]
+  },
+  "reals": {
+   "type": "RealList",
+   "subtype": "None",
+   "values": [
+    [
+     1.25,
+     2.0
+    ],
+    [],
+    [
+     7.0
+    ],
+    null
+   ]
+  },
+  "strings": {
+   "type": "StringList",
+   "subtype": "None",
+   "values": [
+    [
+     "a",
+     "b"
+    ],
+    [],
+    [
+     "c"
+    ],
+    null
+   ]
+  },
+  "booleans": {
+   "type": "IntegerList",
+   "subtype": "Boolean",
+   "values": [
+    [
+     1,
+     0
+    ],
+    [
+     1
+    ],
+    null,
+    null
+   ]
+  },
+  "booleans_then_ints": {
+   "type": "IntegerList",
+   "subtype": "None",
+   "values": [
+    [
+     1
+    ],
+    [
+     2
+    ],
+    null,
+    null
+   ]
+  },
+  "empty_only": {
+   "type": "String",
+   "subtype": "JSON",
+   "values": [
+    "[ ]",
+    "[ ]",
+    null,
+    null
+   ]
+  },
+  "empty_first": {
+   "type": "String",
+   "subtype": "JSON",
+   "values": [
+    "[ ]",
+    "[ 1 ]",
+    null,
+    null
+   ]
+  },
+  "list_then_empty": {
+   "type": "IntegerList",
+   "subtype": "None",
+   "values": [
+    [
+     1
+    ],
+    [],
+    null,
+    null
+   ]
+  },
+  "scalar_then_list": {
+   "type": "IntegerList",
+   "subtype": "None",
+   "values": [
+    [
+     3
+    ],
+    [
+     1,
+     2
+    ],
+    null,
+    null
+   ]
+  },
+  "int64_scalar_then_list": {
+   "type": "Integer64List",
+   "subtype": "None",
+   "values": [
+    [
+     5000000000
+    ],
+    [
+     1
+    ],
+    null,
+    null
+   ]
+  },
+  "list_then_real": {
+   "type": "RealList",
+   "subtype": "None",
+   "values": [
+    [
+     1.0
+    ],
+    [
+     2.5
+    ],
+    null,
+    null
+   ]
+  },
+  "string_then_strings": {
+   "type": "StringList",
+   "subtype": "None",
+   "values": [
+    [
+     "a"
+    ],
+    [
+     "b",
+     "c"
+    ],
+    null,
+    null
+   ]
+  },
+  "strings_then_int": {
+   "type": "StringList",
+   "subtype": "None",
+   "values": [
+    [
+     "a"
+    ],
+    [
+     "1"
+    ],
+    null,
+    null
+   ]
+  },
+  "strings_then_ints": {
+   "type": "StringList",
+   "subtype": "None",
+   "values": [
+    [
+     "a"
+    ],
+    [
+     "1",
+     "2"
+    ],
+    null,
+    null
+   ]
+  },
+  "strings_then_booleans": {
+   "type": "StringList",
+   "subtype": "None",
+   "values": [
+    [
+     "a"
+    ],
+    [
+     "true"
+    ],
+    null,
+    null
+   ]
+  },
+  "list_then_string": {
+   "type": "String",
+   "subtype": "JSON",
+   "values": [
+    "[ 1 ]",
+    "a",
+    null,
+    null
+   ]
+  },
+  "mixed": {
+   "type": "String",
+   "subtype": "JSON",
+   "values": [
+    "[ 1, \"a\" ]",
+    null,
+    null,
+    null
+   ]
+  },
+  "nested": {
+   "type": "String",
+   "subtype": "JSON",
+   "values": [
+    "[ [ 1 ], [ 2 ] ]",
+    null,
+    null,
+    null
+   ]
+  },
+  "object_then_list": {
+   "type": "String",
+   "subtype": "JSON",
+   "values": [
+    "{ \"a\": 1 }",
+    "[ 1 ]",
+    null,
+    null
+   ]
+  },
+  "null_elements": {
+   "type": "String",
+   "subtype": "JSON",
+   "values": [
+    "[ null, 1 ]",
+    "[ 1, null ]",
+    null,
+    null
+   ]
+  },
+  "strings_with_null": {
+   "type": "String",
+   "subtype": "JSON",
+   "values": [
+    "[ \"a\", null, \"b\" ]",
+    null,
+    null,
+    null
+   ]
+  },
+  "strings_set": {
+   "type": "StringList",
+   "subtype": "None",
+   "values": [
+    [
+     "x"
+    ],
+    [
+     "p",
+     "q"
+    ],
+    [
+     "r",
+     ""
+    ],
+    null
+   ]
+  },
+  "null_first": {
+   "type": "IntegerList",
+   "subtype": "None",
+   "values": [
+    null,
+    [
+     4
+    ],
+    null,
+    null
+   ]
+  },
+  "boolean_after_null": {
+   "type": "String",
+   "subtype": "JSON",
+   "values": [
+    "[ null, true ]",
+    null,
+    null,
+    null
+   ]
+  },
+  "date_then_list": {
+   "type": "String",
+   "subtype": "JSON",
+   "values": [
+    "2020-01-01",
+    "[ 1 ]",
+    null,
+    null
+   ]
+  },
+  "real_then_ints": {
+   "type": "RealList",
+   "subtype": "None",
+   "values": [
+    [
+     1.5
+    ],
+    [
+     2.0,
+     3.0
+    ],
+    null,
+    null
+   ]
+  },
+  "int64s_then_real": {
+   "type": "RealList",
+   "subtype": "None",
+   "values": [
+    [
+     5000000000.0
+    ],
+    [
+     1.5
+    ],
+    null,
+    null
+   ]
+  },
+  "boolean_then_list": {
+   "type": "IntegerList",
+   "subtype": "None",
+   "values": [
+    [
+     1
+    ],
+    [
+     1
+    ],
+    null,
+    null
+   ]
+  },
+  "boolean_then_booleans": {
+   "type": "IntegerList",
+   "subtype": "Boolean",
+   "values": [
+    [
+     1
+    ],
+    [
+     0
+    ],
+    null,
+    null
+   ]
+  },
+  "reals_then_booleans": {
+   "type": "RealList",
+   "subtype": "None",
+   "values": [
+    [
+     1.5
+    ],
+    [
+     1.0
+    ],
+    null,
+    null
+   ]
+  }
+ }
+}

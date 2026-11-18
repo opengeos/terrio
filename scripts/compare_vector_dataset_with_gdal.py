@@ -16,7 +16,9 @@ Commands compared (the complete suite requires GDAL 3.13 or newer):
   files, against ``ogrinfo -json``'s layer descriptions (the same JSON members, as
   ``gdal vector export-schema`` takes them from ``ogrinfo -schema``): geometry and FID
   column names, geometry types, CRS codes, field names, types, subtypes, widths, precisions,
-  nullability, unique constraints and defaults.
+  nullability, unique constraints and defaults. GeoJSON list properties (the repository's
+  ``tests/data/geojson_lists`` fixtures) are compared too, and so are their types and values
+  after ``terrio convert``, read back by GDAL.
 - create: datasets created from a template (``--like``), an exported schema and explicit
   fields, read back by GDAL, against ``ogr2ogr -limit 0`` and GDAL's API.
 - set-field-type: conversions of real fields and of a matrix of edge values between every
@@ -93,6 +95,56 @@ def has_gdal_command(*words):
         return subprocess.run(["gdal", *words, "--help"], capture_output=True, timeout=60).returncode == 0
     except subprocess.TimeoutExpired:
         return False
+
+
+LISTS = Path(__file__).resolve().parent.parent / "crates" / "terrio" / "tests" / "data" / "geojson_lists"
+
+
+def read_fields(path):
+    """The fields GDAL reads of a dataset's first layer: each one's type, subtype and values.
+
+    Args:
+        path: The dataset.
+
+    Returns:
+        ``{name: (type, subtype, [values])}``, lists as lists and other values as text.
+    """
+    ds = ogr.Open(str(path))
+    layer = ds.GetLayer(0)
+    defn = layer.GetLayerDefn()
+    out = {}
+    for i in range(defn.GetFieldCount()):
+        fd = defn.GetFieldDefn(i)
+        out[fd.GetName()] = (ogr.GetFieldTypeName(fd.GetType()), ogr.GetFieldSubTypeName(fd.GetSubType()), [])
+    for f in layer:
+        for i in range(defn.GetFieldCount()):
+            fd = defn.GetFieldDefn(i)
+            value = None
+            if f.IsFieldSetAndNotNull(i):
+                if fd.GetType() in (ogr.OFTIntegerList, ogr.OFTInteger64List, ogr.OFTRealList, ogr.OFTStringList):
+                    # The bindings return None for an empty list, which GDAL holds as set and not null.
+                    value = f.GetField(i) or []
+                else:
+                    value = f.GetFieldAsString(i)
+            out[fd.GetName()][2].append(value)
+    return out
+
+
+def compare_features(name, mine, ref):
+    """Compares the fields :func:`read_fields` reads of two datasets.
+
+    Args:
+        name: The case name.
+        mine: What GDAL reads of terrio's output.
+        ref: What GDAL reads of the source.
+
+    Returns:
+        A case dict.
+    """
+    diffs = [k for k in ref if mine.get(k) != ref[k]] + [k for k in mine if k not in ref]
+    if diffs:
+        return {"name": name, "status": DIFFERS, "detail": "; ".join(f"{k}: {mine.get(k)} != {ref.get(k)}" for k in diffs)[:2000]}
+    return {"name": name, "status": IDENTICAL, "detail": f"{len(ref)} fields: types, subtypes and values"}
 
 
 def gdal_can_open(path):
@@ -629,6 +681,14 @@ def main():
             # GeoParquet int64 columns are Integer64 in GDAL whatever their values.
             known = (("*", "*", "type"),)
         case(compare_schemas(f"export-schema-{path.name}", terrio_schema(t, path), gdal_schema(path), known))
+    # GeoJSON properties GDAL types as lists (and the JSON and scalars around them), from the
+    # repository's fixtures, and their values after a conversion by terrio, read back by GDAL.
+    for path in sorted(LISTS.glob("cases.geojson*")):
+        case(compare_schemas(f"export-schema-lists-{path.name}", terrio_schema(t, path), gdal_schema(path)))
+        out = work / f"lists-{path.name}"
+        out.unlink(missing_ok=True)
+        run([t, "convert", path, out])
+        case(compare_features(f"convert-lists-{path.name}", read_fields(out), read_fields(path)))
 
     # -- create ------------------------------------------------------------------------------
     # GDAL 3.13's gdal vector create when this GDAL has it; otherwise ogr2ogr -limit 0 and

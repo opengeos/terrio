@@ -666,6 +666,18 @@ CRS definitions, such as GeoPackage. RFC 7946 output reprojects to WGS 84 and
 omits the `crs` member. The pyogrio facade uses the same naming/refusal policy
 and retains its explicit OGC CRS84 spelling for WGS 84.
 
+GeoJSON and GeoJSON text sequence properties holding arrays are typed as GDAL's GeoJSON
+reader types them: `IntegerList`, `Integer64List`, `RealList`, `StringList`, or `IntegerList`
+of the `Boolean` subtype, by the arrays' elements and the values around them in feature order
+(an integer and an integer list make an integer list, an empty array keeps a list's type); an
+empty array alone, an array with a null or mixed elements, and an object are JSON. A list field
+holds each value as a JSON array of its type, converted as GDAL converts it (a scalar becomes a
+list of one, a boolean in a number list 0 or 1), and `VectorDataset.ogr_type` (Rust),
+the streamed layers' `ogr_type`, and `export-schema` report its OGR type. The types and values
+are GDAL 3.13.2's, except that the reals of a string list are written as terrio formats reals,
+not as the file spells them. Fields are not changed to or created as lists, and the lists of
+other formats (and of the GDAL fallback) are still JSON text of type `String(JSON)`.
+
 A local vector file whose name points to no driver (`data`, `data.txt`, `data.xml`) is identified
 by its first 16 KiB. A JSON root `type` of `FeatureCollection`, `Feature` or a geometry type is
 read as GeoJSON, and an XML root element `FeatureCollection` as GML, as a remote response under

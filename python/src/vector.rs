@@ -87,7 +87,8 @@ impl PyLayer {
 
 /// Layers with each `@id` style reference replaced by its definition in a style table.
 fn resolve_styles(layers: Vec<Layer>, table: &[(String, String)]) -> Vec<Layer> {
-    VectorDataset { layers, driver: terrio::formats::VectorDriver::GeoJSON, style_table: table.to_vec() }.into_resolved_layers()
+    VectorDataset { style_table: table.to_vec(), ..VectorDataset::new(layers, terrio::formats::VectorDriver::GeoJSON) }
+        .into_resolved_layers()
 }
 
 /// A vector dataset: one or more layers.
