@@ -1329,6 +1329,10 @@ Terrio's chunk-dependent source windows of kernels other than `sum` also reach a
 source's CRS inside or beside their chunk, which the points sampled along the chunk's edges do not
 bound, so that a grid holding a pole is written up to it. Values in such a chunk can therefore
 differ from those of a window bounded by those points alone.
+With the 3.12 kernel scales, a chunk of a source covering one longitude turn whose sampled points
+cross the 180° meridian takes its scale from the arc of longitudes those points span across the
+meridian, when it is shorter than half a turn, rather than from their least and greatest
+longitudes, which lie the long way round: chunks mirrored across the meridian get mirrored kernels.
 Both kernel-version selectors apply Terrio's periodic global-source boundaries and the
 pole-window extension described above; these policies can differ from GDAL's finite-edge
 or edge-only window planning even with chunk-dependent sampling selected.
