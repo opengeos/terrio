@@ -100,7 +100,9 @@ pub(crate) enum Step {
     Cart { ell: Ell, inv: bool },
     /// A Helmert transformation of geocentric coordinates, about a pivot point for
     /// Molodensky-Badekas, and with rates of change for a time-dependent one.
-    Helmert { t: [f64; 3], r: [[f64; 3]; 3], scale: f64, pivot: [f64; 3], inv: bool, rates: Option<Box<Rates>> },
+    /// `seven` keeps its parameters as `+towgs84` carries them (metres, arc-seconds in the
+    /// position vector convention, ppm), unless its rotations are exact.
+    Helmert { t: [f64; 3], r: [[f64; 3]; 3], scale: f64, pivot: [f64; 3], inv: bool, rates: Option<Box<Rates>>, seven: Option<[f64; 7]> },
     /// Offsets in radians added to the longitude and latitude, and in metres to the height.
     GeogOffset { dlon: f64, dlat: f64, dh: f64, inv: bool },
     /// EPSG's Vertical Offset and Slope (PROJ's `vertoffset`): heights plus an offset varying
@@ -220,7 +222,9 @@ fn rotation(rot: [f64; 3], position_vector: bool, exact: bool) -> [[f64; 3]; 3] 
 
 /// A Helmert step from its seven parameters (metres, arc-seconds and ppm).
 pub(crate) fn helmert(t: [f64; 3], rot: [f64; 3], s: f64, position_vector: bool, exact: bool, pivot: [f64; 3]) -> Step {
-    Step::Helmert { t, r: rotation(rot, position_vector, exact), scale: 1.0 + s * 1e-6, pivot, inv: false, rates: None }
+    let sign = if position_vector { 1.0 } else { -1.0 };
+    let seven = (!exact).then_some([t[0], t[1], t[2], sign * rot[0], sign * rot[1], sign * rot[2], s]);
+    Step::Helmert { t, r: rotation(rot, position_vector, exact), scale: 1.0 + s * 1e-6, pivot, inv: false, rates: None, seven }
 }
 
 /// The steps of a `+towgs84=` shift (position vector convention) from an ellipsoid to WGS 84.
@@ -458,7 +462,7 @@ impl Step {
                     Some(to_cart(ell, v[0], lat, v[2]))
                 }
             }
-            Step::Helmert { t: tr, r, scale, pivot, inv, rates } => {
+            Step::Helmert { t: tr, r, scale, pivot, inv, rates, .. } => {
                 let inverse = *inv != reverse;
                 match rates {
                     Some(q) if t.is_some_and(|t| t != q.epoch) => {

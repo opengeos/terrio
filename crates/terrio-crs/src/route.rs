@@ -1390,7 +1390,7 @@ fn pipeline_steps(legs: &[(&Op, bool)]) -> usize {
     // The translation of a Helmert step with translations alone, as it runs.
     let translation = |item: &Item| match item {
         Item::Translation(t) => Some(*t),
-        Item::Step(Step::Helmert { t, r, scale, pivot, inv, rates: None }, inverted)
+        Item::Step(Step::Helmert { t, r, scale, pivot, inv, rates: None, .. }, inverted)
             if *scale == 1.0 && *pivot == [0.0; 3] && *r == [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] =>
         {
             let sign = if inv != inverted { -1.0 } else { 1.0 };

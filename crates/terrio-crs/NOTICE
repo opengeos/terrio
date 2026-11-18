@@ -171,6 +171,9 @@ crates/terrio-crs/tests/data/gdal_proj4_export.tsv and gdal_proj4_export_inputs.
 3.13.3's datum transformations to WGS 84 and geoid models of EPSG CRSs in their PROJ strings, and
 GDAL's WKT of them, by scripts/gen_gdal_towgs84.py) are derived
 from the same dataset, under the same terms.
+The test data crates/terrio-crs/tests/data/helmert_to_wgs84.tsv (PROJ 9.9.0's datum
+transformations to WGS 84 of EPSG geographic CRSs, by scripts/gen_helmert_to_wgs84.py) is derived
+from the same dataset, under the same terms.
 
 -------------------------------------------------------------------------------
 Esri projection engine data
