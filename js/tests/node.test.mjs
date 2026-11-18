@@ -111,7 +111,7 @@ test("version", () => {
 });
 
 test("the module's build and its formats", () => {
-  assert.ok(["flatgeobuf", "sqlite", "tiles", "lzma", "lerc"].every((f) => BUILT.includes(f)), BUILT.join());
+  assert.ok(["flatgeobuf", "sqlite", "tiles", "lzma", "lerc", "jxl"].every((f) => BUILT.includes(f)), BUILT.join());
   if (BUILD === "terrio-js/threads") assert.ok(terrio.features().threads > 1, "the thread pool is started");
   assert.ok(terrio.features().memory > 0);
   if (BUILD !== "terrio-js/core") {
@@ -236,6 +236,20 @@ test("JPEG 2000 to bytes and back", { skip: needs("jp2") }, () => {
   assert.equal(img.crs, "EPSG:4326");
   assert.deepEqual([...img.readBand(3)], [...rgb.slice(2 * 64 * 48)]);
   assert.throws(() => terrio.rasterFromArray(new Float32Array(4), 2, 2, [0, 1, 0, 2, 0, -1]).toBytes("f.jp2"), /8- and 16-bit integers/);
+});
+
+test("geometries as WKT, bounds or arrays read as GeoJSON does", () => {
+  const square = { type: "Polygon", coordinates: [[[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]]] };
+  const geometries = (v) => terrio.fromGeoJSON(v).toGeoJSON().features.map((f) => f.geometry);
+  const expected = geometries(square);
+  assert.deepEqual(geometries("POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))"), expected);
+  assert.deepEqual(geometries([0, 0, 2, 2]), expected);
+  assert.deepEqual(geometries([square, { type: "Feature", properties: {}, geometry: square }]), [...expected, ...expected]);
+  terrio.takeWarnings();
+  const across = terrio.fromGeoJSON([170, 0, -170, 2]).toGeoJSON().features[0].geometry;
+  assert.equal(across.type, "MultiPolygon");
+  assert.ok(terrio.takeWarnings().some((w) => w.includes("antimeridian")));
+  assert.throws(() => terrio.fromGeoJSON("POLYGON ((0 0, 1 0"), /neither an existing file nor valid geometries/);
 });
 
 test("vector layers as Arrow IPC streams, and back", { skip: needs("parquet") }, () => {
@@ -3357,7 +3371,12 @@ test("HEALPix and rHEALPix match PROJ", () => {
 
 test("ISEA matches PROJ", () => {
   const reference = JSON.parse(readFileSync(new URL("../../crates/terrio-crs/tests/data/isea_reference.json", import.meta.url), "utf8"));
-  const near = (actual, [lon, lat]) => Math.abs(((actual[0] - lon + 540) % 360 - 180) * Math.cos(lat * Math.PI / 180)) <= 1e-8 && Math.abs(actual[1] - lat) <= 1e-8;
+  // 1e-5 within 0.001 degrees of a pole, where the latitude is the arcsine of a number near 1
+  // (crates/terrio-crs/tests/isea.rs).
+  const near = (actual, [lon, lat]) => {
+    const tolerance = Math.abs(lat) > 89.999 ? 1e-5 : 1e-8;
+    return Math.abs(((actual[0] - lon + 540) % 360 - 180) * Math.cos(lat * Math.PI / 180)) <= tolerance && Math.abs(actual[1] - lat) <= tolerance;
+  };
   for (const c of reference.cases) {
     const samples = c.samples;
     for (const target of [c.target, c.wkt2, c.wkt1, c.wkt1_esri]) {
@@ -3366,8 +3385,7 @@ test("ISEA matches PROJ", () => {
         assert.ok(Math.abs(result[j][i] - samples[i][2][j]) * c.metres_per_unit <= 0.001, `${c.name} forward ${i}/${j}`);
       }
     }
-    // PROJ's inverse, which is not the forward's on an ellipsoid and is refused outside its
-    // default grid. As in crates/terrio-crs/tests/isea.rs.
+    // PROJ's inverse, refused outside the unfolded net. As in crates/terrio-crs/tests/isea.rs.
     const pairs = samples.map(s => [s[2], s[3]]).concat(c.inverse_samples);
     const reversible = pairs.filter(([, e]) => e !== null);
     if (reversible.length > 0) {

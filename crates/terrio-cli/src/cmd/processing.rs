@@ -8,7 +8,8 @@ use terrio::{Error, Layer, Result};
 
 #[derive(clap::Args)]
 pub struct VectorInput {
-    /// The input vector dataset.
+    /// The input vector dataset, or geometries as text: GeoJSON, WKT (without a CRS) or a
+    /// `[xmin,ymin,xmax,ymax]` JSON box in WGS 84.
     pub(crate) input: String,
     /// Read only this layer (repeat to choose multiple layers). By default, every layer.
     #[arg(long = "layer", short = 'l')]
@@ -18,7 +19,10 @@ pub struct VectorInput {
 impl VectorInput {
     pub(crate) fn open(&self) -> Result<Vec<Layer>> {
         Ok(super::quiet(|| {
-            terrio::open_vector(&self.input, &terrio::VectorOpenOptions { layers: self.layers.clone(), ..Default::default() })
+            terrio::memory::open_vector_or_geometries(
+                &self.input,
+                &terrio::VectorOpenOptions { layers: self.layers.clone(), ..Default::default() },
+            )
         })?
         .into_resolved_layers())
     }

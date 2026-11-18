@@ -17,11 +17,6 @@ pub(crate) const NOTEBOOK_SIZE: usize = 512;
 // The default is written out, because Python shows a default that is not a literal as `...`.
 const _: () = assert!(draw::DEFAULT_MAX_SIZE == 1024);
 
-/// Whether `src` is a string of GeoJSON, an object, rather than a path.
-fn is_geojson_text(src: &Bound<'_, PyAny>) -> bool {
-    src.extract::<String>().is_ok_and(|s| s.trim_start().starts_with('{'))
-}
-
 /// Draws a raster or vector dataset as a PNG, reading as little of a raster as the size allows.
 ///
 /// A raster is read from its coarsest overview that still has the pixels needed, so a remote COG
@@ -79,8 +74,7 @@ fn render(
         let mut raster = raster.try_borrow_mut().map_err(|e| crate::invalid(e.to_string()))?;
         let inner = &mut raster.inner;
         crate::with_warnings(py, || draw::render_raster(inner, &options)?.to_png())?
-    } else if let Some(path) = src.extract::<std::path::PathBuf>().ok().filter(|_| !is_geojson_text(src)) {
-        let path = path.into_os_string().into_string().map_err(|_| crate::invalid("paths must be UTF-8"))?;
+    } else if let Some(path) = crate::vector::vector_path(src)? {
         let names = layers.clone().unwrap_or_default();
         crate::with_warnings(py, || match draw::open_source(&path, &names, vector_only)? {
             draw::Source::Raster(mut raster) => draw::render_raster(&mut raster, &options)?.to_png(),

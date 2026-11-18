@@ -123,6 +123,11 @@ classes = txr.rasterize("fields.gpkg", like=dem, attribute="crop_id")
 | Dataset `.terrio`, a `terrio.Layer` | `zonal_stats` (columns prefixed with the variables' names) |
 | `terrio.xarray` | `rasterize(src, like)`: vectors burnt on the grid of a DataArray or Dataset |
 
+Zones and vectors to burn may be any vector input of terrio's Python API (a path, a `Layer`, a
+GeoDataFrame, Shapely geometries, GeoJSON, WKT, bounds...; see
+[Vector inputs](python.md#vector-inputs)); geometries without a CRS of their own are in the
+array's CRS, as `clip` reads them.
+
 Arrays of two or three dimensions are supported; dask arrays are computed first. Pixels masked
 on read (`masked=True`) go back to terrio with the file's nodata value. Floating-point results
 come back masked, with the nodata value in the encoding.
@@ -220,8 +225,8 @@ quicklook (RPCs) images, every variable, coordinate and attribute, the GCPs and 
   HTTP, terrio does not read `.aux.xml` sidecar files.
 - terrio writes north-up or south-up grids, not rotated ones. Writers other than GeoTIFF do not
   store band scales and offsets: `to_raster` warns when it would lose them.
-- `clip` also takes a GeoDataFrame or GeoSeries, a vector file path or a terrio `Layer` (each
-  with its own CRS), a GeoJSON Feature or FeatureCollection, or a single geometry; rioxarray
-  takes an iterable of geometries.
+- `clip` also takes a GeoDataFrame or GeoSeries, a vector file path, Arrow data or a terrio
+  `Layer` (each with its own CRS), a GeoJSON Feature or FeatureCollection, a single geometry,
+  WKT, or `(xmin, ymin, xmax, ymax)` bounds; rioxarray takes an iterable of geometries.
 - `clip(from_disk=True)` of an overview clips in memory. `estimate_utm_crs` knows the WGS 84,
   NAD83 and NAD27 UTM zones. Complex data types are not supported.

@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-terrio = { path = "../crates/terrio", default-features = false, features = ["geotiff", "remote", "lerc", "lzma", "sqlite", "hecras", "osm", "netcdf-hdf5"] }
+terrio = { path = "../crates/terrio", default-features = false, features = ["geotiff", "remote", "lerc", "jxl", "lzma", "sqlite", "hecras", "osm", "netcdf-hdf5"] }
 
 # Not a member of terrio's workspace: built with a nightly toolchain by `cargo fuzz`.
 [workspace]

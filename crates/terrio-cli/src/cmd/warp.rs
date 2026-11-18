@@ -72,7 +72,7 @@ pub struct Args {
     /// The output data type (Byte, Int16, UInt16, Int32, UInt32, Float32, Float64...).
     #[arg(long)]
     ot: Option<String>,
-    /// A vector file whose polygons mask the sources.
+    /// Polygons masking the sources: a vector file, WKT (in the sources' CRS) or GeoJSON text.
     #[arg(long)]
     cutline: Option<String>,
     /// Set the output extent to the cutline's.

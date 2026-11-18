@@ -142,6 +142,76 @@ pub fn geographic_datum(geog: u32) -> Option<u32> {
     epsg::get(geog).map(|e| e.datum).filter(|d| *d != 0)
 }
 
+/// The datum shift to WGS 84 of an EPSG geographic 2D CRS, or of the base geographic CRS of an
+/// EPSG projected or compound CRS, as `+towgs84` carries it: that of the first transformation to
+/// WGS 84 (EPSG:4326) that needs no grid, in PROJ 9.9.0's order (pyproj's
+/// `TransformerGroup("EPSG:<code>", "EPSG:4326").transformers`), when PROJ runs it as a single
+/// Helmert transformation of 3 or 7 parameters. That includes a concatenation PROJ runs as one
+/// (a change of prime meridian or between geographic and geocentric coordinates around it, two
+/// geocentric translations through a datum on the same ellipsoid). When PROJ's ballpark comes
+/// first, it is the transformation PROJ's `proj_create_crs_to_crs` finds through another datum,
+/// as terrio's [`Transformer`] does (RD/83 through ETRS89 without its grid): terrio's EPSG table
+/// lists it before the ballpark.
+///
+/// The parameters are tx, ty, tz in metres, rx, ry, rz in arc-seconds and ds in ppm, in the
+/// position vector convention: a coordinate frame rotation's rotations are negated, and an
+/// inverted transformation's seven parameters are negated: the first-order inverse that
+/// `+towgs84` can carry, where PROJ inverts the step exactly (they differ at the second order,
+/// with rotations or a scale). A geocentric translation has zero rotations and scale; a
+/// transformation that shifts nothing (WGS 84's realizations, NAD83 to WGS 84 (1)) gives zeros,
+/// as `+towgs84=0,0,0`.
+///
+/// Every EPSG geographic 2D CRS other than WGS 84 is checked against PROJ 9.9.0
+/// (`tests/data/helmert_to_wgs84.tsv`, `scripts/gen_helmert_to_wgs84.py`).
+///
+/// `None` for WGS 84 itself, a code terrio's table does not have, and when that transformation
+/// is another one: a Molodensky-Badekas, a time-dependent or an exact-rotation Helmert
+/// transformation, a geographic offset, several Helmert transformations, or PROJ's ballpark
+/// (no transformation without a grid). Also for MGI (Ferro) (EPSG:4805), whose transformation
+/// turns longitudes by another Ferro meridian than the CRS's own.
+///
+/// Unlike [`SpatialRef::to_proj4_gdal`], which follows GDAL 3.13.3 and writes no `+towgs84` when a
+/// datum has several transformations to WGS 84, this gives the one PROJ picks without grids.
+///
+/// ```
+/// // ED50 to WGS 84 (1), also for ED50 / UTM zone 32N.
+/// assert_eq!(terrio_crs::helmert_to_wgs84(4230), Some([-87.0, -98.0, -121.0, 0.0, 0.0, 0.0, 0.0]));
+/// assert_eq!(terrio_crs::helmert_to_wgs84(23032), terrio_crs::helmert_to_wgs84(4230));
+/// assert_eq!(terrio_crs::helmert_to_wgs84(4326), None);
+/// ```
+pub fn helmert_to_wgs84(code: u32) -> Option<[f64; 7]> {
+    // A compound CRS's horizontal CRS.
+    let base = if epsg::get(code).is_some() { code } else { epsg::compound(code)?.horizontal };
+    let entry = epsg::get(base)?;
+    let geog = epsg::get(if entry.geog != 0 { entry.geog } else { base })?;
+    if geog.datum == 6326 {
+        return None;
+    }
+    let op = geog.ops.iter().find(|op| !op.needs_grids())?;
+    if op.ballpark {
+        return None;
+    }
+    // The datum shift PROJ runs, without the conversions to and from geocentric coordinates.
+    let mut shifts = op.steps.iter().filter(|s| !matches!(s, datum::Step::Cart { .. }));
+    match (shifts.next(), shifts.next()) {
+        (None, _) => Some([0.0; 7]),
+        (Some(datum::Step::Helmert { pivot: [0.0, 0.0, 0.0], rates: None, seven: datum::Seven(Some(p)), inv, .. }), None) => {
+            let p: &[f64; 7] = p;
+            // Without negative zeros, which a `+towgs84` written with `{}` would carry.
+            Some(p.map(|v| {
+                if v == 0.0 {
+                    0.0
+                } else if *inv {
+                    -v
+                } else {
+                    v
+                }
+            }))
+        }
+        _ => None,
+    }
+}
+
 /// The WKT GDAL writes for an EPSG code, from terrio's EPSG table.
 #[doc(hidden)]
 pub fn epsg_wkt(code: u32) -> Option<&'static str> {
@@ -808,6 +878,95 @@ impl SpatialRef {
     /// ```
     pub fn to_proj4(&self) -> Option<String> {
         proj_write::write(self)
+    }
+
+    /// The PROJ string GDAL writes for the CRS (`OSRExportToProj4`, GDAL 3.13.3 on PROJ 9.9.0):
+    /// [`Self::to_proj4`] without `+type=crs`, and for an EPSG or ESRI code's own definition (from
+    /// [`Self::from_epsg`] or [`Self::from_esri`]), with what GDAL adds to it: the datum
+    /// transformation to WGS 84 as `+towgs84`, when PROJ finds a single one for the CRS's area of
+    /// use (GDAL's default `OSR_ADD_TOWGS84_ON_EXPORT_TO_PROJ4=YES`), and a compound CRS's geoid
+    /// model as `+geoidgrids` and `+geoid_crs`. `None` where [`Self::to_proj4`] is.
+    ///
+    /// A WKT 1 or WKT 2 whose root `AUTHORITY` or `ID` names the code gets the same, as GDAL
+    /// binds a CRS by its root identifier, unless it has a datum shift of its own, which it keeps;
+    /// another CRS keeps its own `+towgs84`, if any. A deprecated code has its own definition's,
+    /// as GDAL with `OSR_USE_NON_DEPRECATED=NO`. `docs/crs.md` lists where terrio's string differs
+    /// from GDAL's (PROJJSON, `+init=epsg:N`, compound CRSs given by a definition).
+    ///
+    /// ```
+    /// use terrio_crs::SpatialRef;
+    ///
+    /// let gk3 = SpatialRef::from_epsg(31467)?;
+    /// assert_eq!(
+    ///     gk3.to_proj4_gdal().as_deref(),
+    ///     Some("+proj=tmerc +lat_0=0 +lon_0=9 +k=1 +x_0=3500000 +y_0=0 +ellps=bessel +towgs84=598.1,73.7,418.2,0.202,0.045,-2.455,6.7 +units=m +no_defs")
+    /// );
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
+    pub fn to_proj4_gdal(&self) -> Option<String> {
+        let proj = self.to_proj4()?;
+        let mut tokens: Vec<String> = proj_write::tokens(&proj, true).into_iter().filter(|t| t.replace('"', "") != "+type=crs").collect();
+        // The table first: rebuilding the code's own definition is the costlier check. A code's
+        // own PROJ string has no `+towgs84`, `+nadgrids` or `+geoidgrids` of its own where the
+        // table adds one (`a_registry_string_has_nothing_the_table_adds`); a WKT naming the code
+        // can, and keeps it, as in GDAL.
+        let Some((towgs84, geoid)) =
+            self.authority().and_then(|(authority, code)| epsg::gdal_additions(authority, code)).filter(|_| self.gdal_binds_to_wgs84())
+        else {
+            return Some(tokens.join(" "));
+        };
+        // After the ellipsoid, before the units and what follows them.
+        let has = |tokens: &[String], keys: &[&str]| tokens.iter().any(|t| keys.iter().any(|k| t.starts_with(k)));
+        if !towgs84.is_empty() && !has(&tokens, &["+towgs84=", "+nadgrids="]) {
+            let at = tokens
+                .iter()
+                .position(|t| {
+                    ["+units=", "+to_meter=", "+vunits=", "+nadgrids=", "+geoidgrids="].iter().any(|k| t.starts_with(k))
+                        || t == "+no_defs"
+                        || t == "+wktext"
+                })
+                .unwrap_or(tokens.len());
+            tokens.insert(at, format!("+towgs84={towgs84}"));
+        }
+        if !geoid.is_empty() && !has(&tokens, &["+geoidgrids="]) {
+            let geoid = geoid.split_whitespace().map(str::to_string);
+            if tokens.iter().any(|t| t == "+wktext") {
+                // A CRS PROJ writes through its PROJ4 extension (Web Mercator's): GDAL appends
+                // the geoid model after it, and the vertical unit last.
+                let vunits: Vec<String> = tokens.iter().filter(|t| t.starts_with("+vunits=")).cloned().collect();
+                tokens.retain(|t| !t.starts_with("+vunits="));
+                tokens.extend(geoid);
+                tokens.extend(vunits);
+            } else {
+                let at = tokens.iter().position(|t| t.starts_with("+vunits=") || t == "+no_defs").unwrap_or(tokens.len());
+                tokens.splice(at..at, geoid);
+            }
+        }
+        Some(tokens.join(" "))
+    }
+
+    /// Whether GDAL binds this CRS to WGS 84 by its code, as its PROJ string export does: a CRS
+    /// that is its EPSG or ESRI code's own definition (that of [`Self::from_epsg`] or
+    /// [`Self::from_esri`], or a bare code), or a WKT, without a PROJ string set over it, whose
+    /// root `AUTHORITY` or `ID` declares the code. A compound CRS's WKT does not count (GDAL's
+    /// results for those vary; the tests list them).
+    fn gdal_binds_to_wgs84(&self) -> bool {
+        let Some((authority, code)) = self.authority() else { return false };
+        // A bare code is the code's definition; a PROJ string set over a WKT is what is written.
+        if self.wkt.is_none() && self.proj4.is_none() {
+            return true;
+        }
+        if self.proj4.is_none()
+            && self.wkt.as_deref().and_then(gdal_root_identifier).is_some_and(|(a, c)| a.eq_ignore_ascii_case(authority) && c == code)
+        {
+            return true;
+        }
+        let own = match authority {
+            "EPSG" => Self::from_epsg(code),
+            "ESRI" => Self::from_esri(code),
+            _ => return false,
+        };
+        own.is_ok_and(|own| own.wkt == self.wkt && own.proj4 == self.proj4 && own.esri == self.esri)
     }
 
     /// The WKT definition, built from the EPSG (or ESRI) code or PROJ string when no WKT is
@@ -4224,5 +4383,60 @@ mod tests {
             let r = (x * (1.0 / 6378137.0)) % two_pi;
             assert!(!stuck.contains(&x) || lon == r || lon == r - two_pi.copysign(r), "easting {x:e}: {lon}, remainder {r}");
         }
+    }
+}
+
+/// The authority and code of a WKT's root `AUTHORITY` or `ID`, wherever it is among the root's
+/// children (WKT 2 can give a `REMARK` after it), but for a compound CRS's.
+fn gdal_root_identifier(wkt: &str) -> Option<(String, u32)> {
+    let root = wkt1::parse(wkt)?;
+    if ["COMPD_CS", "COMPOUNDCRS"].iter().any(|k| root.key.eq_ignore_ascii_case(k)) {
+        return None;
+    }
+    root.children("ID").chain(root.children("AUTHORITY")).find_map(|id| match (id.args.first()?, id.args.get(1)?) {
+        (wkt1::Arg::Str(authority), wkt1::Arg::Num(code)) if code.fract() == 0.0 && *code >= 0.0 && *code <= f64::from(u32::MAX) => {
+            Some((authority.clone(), *code as u32))
+        }
+        (wkt1::Arg::Str(authority), wkt1::Arg::Str(code)) => Some((authority.clone(), code.trim().parse().ok()?)),
+        _ => None,
+    })
+}
+
+#[cfg(test)]
+mod gdal_proj4_tests {
+    #[test]
+    fn a_registry_string_has_nothing_the_table_adds() {
+        // What `to_proj4_gdal` inserts is never already there: no EPSG or ESRI code GDAL adds a
+        // `+towgs84` to has a `+towgs84` or `+nadgrids` of its own, none it adds a geoid to has
+        // `+geoidgrids`.
+        let text = crate::epsg::decompress(include_bytes!("../data/gdal_towgs84.tsv.zst"));
+        let (mut checked, mut skipped) = (0, Vec::new());
+        for line in text.lines() {
+            let f: Vec<&str> = line.split('\t').collect();
+            let code = f[1].parse().unwrap();
+            let s = if f[0] == "EPSG" { crate::SpatialRef::from_epsg(code) } else { crate::SpatialRef::from_esri(code) };
+            let Some(proj) = s.ok().and_then(|s| s.to_proj4()) else {
+                skipped.push(format!("{}:{code}", f[0]));
+                continue;
+            };
+            // Every row is read into the table.
+            assert_eq!(crate::epsg::gdal_additions(f[0], code), Some((f[2], f[3])), "{}:{code}", f[0]);
+            assert!(f[2].is_empty() || !(proj.contains("+towgs84=") || proj.contains("+nadgrids=")), "{}:{code} {proj}", f[0]);
+            assert!(f[3].is_empty() || !proj.contains("+geoidgrids="), "{}:{code} {proj}", f[0]);
+            checked += 1;
+        }
+        // Two of PROJ 9.9.0's ESRI codes are not in terrio's ESRI table.
+        assert_eq!(skipped, ["ESRI:102151", "ESRI:102964"]);
+        assert_eq!(checked, 5128);
+    }
+
+    #[test]
+    fn quoted_values_keep_their_spaces() {
+        // `to_proj4_gdal` splits as PROJ strings are read and keeps values as written.
+        let tokens = crate::proj_write::tokens(r#"+proj=longlat  +geoidgrids="@my  ""grid"".gtx" +no_defs"#, true);
+        assert_eq!(tokens, ["+proj=longlat", r#"+geoidgrids="@my  ""grid"".gtx""#, "+no_defs"]);
+        // DMS seconds are no quoted value.
+        let tokens = crate::proj_write::tokens(r#"+proj=longlat +pm=2d20'14.025"E +type=crs"#, true);
+        assert_eq!(tokens, ["+proj=longlat", r#"+pm=2d20'14.025"E"#, "+type=crs"]);
     }
 }

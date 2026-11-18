@@ -828,11 +828,12 @@ impl LazyRaster {
         declared_allowed(Self::from_sparse_using::<true>(file, TiffReadLimits::from_config))
     }
 
-    /// [`LazyRaster::from_sparse`] with the CRS reduced to the EPSG code the GeoKeys name, without
-    /// the CRS engine: a build that opens GeoTIFFs only this way, reads them with
-    /// [`LazyRaster::read_geotiff_samples`] and asks for the CRS with
-    /// [`LazyRaster::geotiff_epsg`] leaves the engine out (terrio-js/cog). A user-defined or
-    /// vertical CRS is not read; [`LazyRaster::crs`] then has no CRS, or only the horizontal one.
+    /// [`LazyRaster::from_sparse`] with the CRS reduced to the EPSG code the GeoKeys name: opening
+    /// does not run the CRS engine. [`LazyRaster::crs`] still builds a spatial reference from that
+    /// code through the engine, so only a build that opens GeoTIFFs this way, reads them with
+    /// [`LazyRaster::read_geotiff_samples`] and asks for the CRS with [`LazyRaster::geotiff_epsg`]
+    /// alone leaves the engine out (terrio-js/cog). A user-defined or vertical CRS is not read;
+    /// [`LazyRaster::crs`] then has no CRS, or only the horizontal one.
     ///
     /// ```no_run
     /// use terrio::sparse::{SparseFile, read_with};

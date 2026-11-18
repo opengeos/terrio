@@ -714,12 +714,12 @@ fn convert(
 
 /// Opens the layers given to an operation: a path, or layers in memory.
 pub(crate) fn input_layers(py: Python<'_>, src: &Bound<'_, PyAny>, layers: Option<Vec<String>>) -> PyResult<Vec<terrio::Layer>> {
-    match src.extract::<String>() {
-        Ok(path) => {
+    match crate::vector::vector_path(src)? {
+        Some(path) => {
             let options = VectorOpenOptions { layers: layers.unwrap_or_default(), ..Default::default() };
             Ok(py.detach_result(|| terrio::open_vector(&path, &options)).py()?.into_resolved_layers())
         }
-        Err(_) => {
+        None => {
             let all = layers_from_object(src, None, None)?;
             Ok(match layers {
                 Some(names) => terrio::ops::vector_filter::select_layers(all, &names).py()?,
@@ -732,7 +732,8 @@ pub(crate) fn input_layers(py: Python<'_>, src: &Bound<'_, PyAny>, layers: Optio
 /// Runs a read-only OGR SQL subset query on vector layers.
 ///
 /// Args:
-///     src: A vector path, VectorDataset, Layer, list of layers or GeoJSON.
+///     src: Vector data: a path, a `Layer`, a GeoDataFrame, GeoJSON, WKT, Shapely geometries...
+///         (see "Vector inputs" in the Python guide).
 ///     query: SELECT statement, including computed columns, DISTINCT, grouped summaries,
 ///         LEFT JOIN or the documented spatial functions.
 ///     layers: Restrict the available input layers.
@@ -792,7 +793,8 @@ pub(crate) fn input_raster(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<A
 /// Burns vector geometries into a raster, like `terrio rasterize` (GDAL's `gdal_rasterize`).
 ///
 /// Args:
-///     src: The vector data: a path, a `Layer`, a `VectorDataset`, a list of layers, or GeoJSON.
+///     src: The vector data: a path, a `Layer`, a GeoDataFrame, GeoJSON, WKT, Shapely
+///         geometries... (see "Vector inputs" in the Python guide).
 ///     dst: Also write the raster to this path.
 ///     layers: The layers to burn, by name. Needed when the dataset has several.
 ///     sql: Burn the result of `SELECT fields FROM layer [WHERE ...]` instead of whole layers.
@@ -1453,8 +1455,8 @@ fn translate(
 ///     srcnodata: The sources' nodata: a number, one per band, or `"none"` to ignore theirs.
 ///     dstnodata: The output nodata, or `"none"`. By default, the sources'.
 ///     ot: The output data type.
-///     cutline: Polygons masking the sources: a vector path, a `Layer`, a `VectorDataset` or
-///         GeoJSON.
+///     cutline: Polygons masking the sources, as vector data (a path, a `Layer`, a GeoDataFrame,
+///         GeoJSON, WKT, Shapely geometries...; see "Vector inputs" in the Python guide).
 ///     crop_to_cutline: Set the output extent to the cutline's.
 ///     et: The maximum error of the approximate transformer, in pixels (0 for exact).
 ///         A `sum` transforms its output pixels' corners exactly, whatever the threshold.
@@ -1554,7 +1556,12 @@ fn warp(
     let cutline = match cutline {
         None => None,
         Some(c) => {
-            let layers = input_layers(py, c, None)?;
+            // Geometries as text are read as the CLI's --cutline reads them: WKT has no CRS, so
+            // it is in the sources' CRS; GeoJSON is in WGS 84.
+            let layers = match c.extract::<String>() {
+                Ok(text) if terrio::memory::is_geometry_text(&text) => vec![terrio::memory::parse_geometry_text(&text, "cutline").py()?],
+                _ => input_layers(py, c, None)?,
+            };
             let ds = terrio::VectorDataset::new(layers, VectorDriver::GeoJSON);
             Some(Cutline::from_vector(&ds).py()?)
         }

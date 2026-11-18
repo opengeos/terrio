@@ -60,7 +60,7 @@ pub(crate) fn requested(args: &[OsString]) -> Option<Value> {
         return None;
     }
     Some(json!({
-        "schema_version": "0.1.8",
+        "schema_version": "0.1.9",
         "unstable": true,
         "program": "terrio",
         "version": env!("CARGO_PKG_VERSION"),

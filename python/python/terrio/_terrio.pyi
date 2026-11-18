@@ -793,7 +793,7 @@ class PointCloud:
     ) -> PointCloud: ...
     def overlay(
         self,
-        datasource: str | Layer | VectorDataset,
+        datasource: _VectorSource,
         dimension: str,
         *,
         column: str | None = None,
@@ -905,14 +905,17 @@ class PointCloudFile:
         max_points: int | None = None,
     ) -> PointCloud: ...
 
-# Inputs taken by the operations. Paths are `str` only: `os.PathLike` is not accepted.
+# Inputs taken by the operations. Raster paths are `str` only; vector paths may be `os.PathLike`.
 _RasterSource: TypeAlias = str | Raster
 _Layers: TypeAlias = Layer | VectorDataset | list[Layer] | tuple[Layer, ...]
 _GeoJSON: TypeAlias = dict[str, Any] | _SupportsGeoInterface
-# A path to a vector dataset, or vector data in memory.
-_VectorSource: TypeAlias = str | _Layers | _GeoJSON
+# Geometries as data: GeoJSON (or WKT text, as `str`), a sequence of geometries or Features, or
+# `(xmin, ymin, xmax, ymax)` bounds.
+_Geometries: TypeAlias = _GeoJSON | Sequence[_GeoJSON] | tuple[float, float, float, float]
+# A path to a vector dataset (a `str` that is GeoJSON or WKT is data), or vector data in memory.
+_VectorSource: TypeAlias = str | os.PathLike[str] | _Layers | _Geometries | _ArrowData
 # Vector data in memory; a `str` is GeoJSON text, not a path.
-_VectorData: TypeAlias = _Layers | str | _GeoJSON | _ArrowData
+_VectorData: TypeAlias = _Layers | str | _Geometries | _ArrowData
 
 # Opening and writing.
 
@@ -1468,7 +1471,7 @@ def pixel_info(
     positions: Sequence[tuple[float, float] | tuple[float, float, str]] | None = None,
     *,
     position_crs: str | None = None,
-    position_dataset: str | Layer | VectorDataset | _GeoJSON | None = None,
+    position_dataset: _VectorSource | None = None,
     layer: str | None = None,
     include_fields: Sequence[str] | None = None,
     bands: Sequence[int] | None = None,
@@ -2263,7 +2266,7 @@ def update_raster(
     dst: str,
     *,
     resampling: str = "nearest",
-    geometry: str | None = None,
+    geometry: str | _GeoJSON | None = None,
     geometry_crs: str | None = None,
     no_update_overviews: bool = False,
     error_threshold: float | None = None,
@@ -2524,7 +2527,7 @@ def clip_vector(
     src: Any,
     *,
     bbox: Sequence[float] | None = None,
-    geometry: str | None = None,
+    geometry: str | _GeoJSON | None = None,
     like: Any = None,
     crs: str | None = None,
     layer: str | None = None,
@@ -2683,7 +2686,7 @@ def make_valid(src: Any, *, layer: str | None = None) -> Layer:
     ...
 
 def zonal_stats(
-    zones: Any,
+    zones: _VectorSource,
     rasters: str
     | os.PathLike[str]
     | Raster
@@ -2727,7 +2730,7 @@ class ZonalReducer:
 
     def __new__(
         cls,
-        zones: Any,
+        zones: _VectorSource,
         width: int,
         height: int,
         transform: Sequence[float],

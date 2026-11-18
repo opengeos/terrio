@@ -40,8 +40,7 @@ fn path_of(obj: &Bound<'_, PyAny>) -> Option<String> {
 /// The layers and driver of a source: a path (read), a `VectorDataset`, a `Layer`, a list of
 /// layers or GeoJSON.
 fn source(py: Python<'_>, src: &Bound<'_, PyAny>, layers: Option<Vec<String>>) -> PyResult<(Vec<terrio::Layer>, Option<VectorDriver>)> {
-    if let Ok(path) = src.extract::<std::path::PathBuf>() {
-        let path = path.into_os_string().into_string().map_err(|_| invalid("paths must be UTF-8"))?;
+    if let Some(path) = crate::vector::vector_path(src)? {
         let options = VectorOpenOptions { layers: layers.unwrap_or_default(), ..Default::default() };
         let ds = with_warnings(py, || terrio::open_vector(&path, &options))?;
         let driver = ds.driver;

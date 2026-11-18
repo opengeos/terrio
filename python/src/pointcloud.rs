@@ -1755,7 +1755,8 @@ impl PyPointCloud {
     /// the first feature whose polygon has it.
     ///
     /// Args:
-    ///     datasource: The polygons: a path, a `Layer` or a `VectorDataset`.
+    ///     datasource: The polygons: a path, a `Layer`, a `VectorDataset`, a GeoDataFrame, Arrow data,
+    ///         GeoJSON, WKT or Shapely geometries.
     ///     dimension: The dimension set, which the points must have.
     ///     column: The attribute. By default, the second, as PDAL takes it.
     ///     layer: The layer of a dataset. By default, the first.
@@ -1907,24 +1908,9 @@ fn raster_arg(py: Python<'_>, v: &Bound<'_, PyAny>) -> PyResult<terrio::RasterDa
     .py()
 }
 
-/// A vector layer given as a path (its layer `layer`, or the first), a `Layer` or a
-/// `VectorDataset` (its layer `layer`, or the first).
+/// A vector layer given as `crate::ops::input_layers` takes it: its layer `layer`, or the first.
 fn layer_arg(py: Python<'_>, v: &Bound<'_, PyAny>, layer: Option<String>) -> PyResult<terrio::Layer> {
-    let pick = |layers: Vec<terrio::Layer>| -> PyResult<terrio::Layer> {
-        match &layer {
-            Some(name) => layers.into_iter().find(|l| &l.name == name).ok_or_else(|| invalid(format!("no layer named '{name}'"))),
-            None => layers.into_iter().next().ok_or_else(|| invalid("the dataset has no layer")),
-        }
-    };
-    if let Ok(path) = v.extract::<String>() {
-        let options = terrio::VectorOpenOptions { layers: layer.iter().cloned().collect(), ..Default::default() };
-        return pick(py.detach_result(|| terrio::open_vector(&path, &options)).py()?.layers);
-    }
-    if let Ok(l) = v.extract::<PyRef<'_, crate::vector::PyLayer>>() {
-        return Ok(l.inner.clone());
-    }
-    let ds = v.extract::<PyRef<'_, crate::vector::PyVectorDataset>>()?;
-    pick(ds.layer_copies(py))
+    crate::ops::input_layers(py, v, layer.map(|l| vec![l]))?.into_iter().next().ok_or_else(|| invalid("the dataset has no layer"))
 }
 
 fn strings(v: Option<&Bound<'_, PyAny>>) -> PyResult<Vec<String>> {

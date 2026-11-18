@@ -1039,6 +1039,33 @@ the string leaves out what a PROJ string cannot hold, so keep the code or WKT to
 - a PROJ string's vertical unit (`+vunits`, `+vto_meter`) without a geoid model
   (`+geoidgrids`): PROJ writes it only with one.
 
+`SpatialRef::to_proj4_gdal` writes the PROJ string GDAL 3.13.3 writes (`OSRExportToProj4`): the
+same, without `+type=crs`, and for an EPSG or ESRI code's own definition, with what GDAL adds to it
+(`scripts/gen_gdal_towgs84.py`, 5,130 CRSs): the datum transformation to WGS 84 as `+towgs84`, where
+PROJ finds a single one for the CRS's area of use (EPSG:31467 has
+`+towgs84=598.1,73.7,418.2,0.202,0.045,-2.455,6.7`; EPSG:27700, with several, has none), and a
+compound CRS's geoid model (`+geoidgrids`, `+geoid_crs=WGS84`). Another CRS keeps its own
+`+towgs84`, if any. A WKT 1 or WKT 2 whose root `AUTHORITY` or `ID` names the code has the same
+additions, as GDAL binds a CRS by its root identifier, unless it has a datum shift of its own
+(`TOWGS84`, `+nadgrids`), which it keeps. A PROJ string or a WKT without a root identifier of a
+single CRS (an ESRI `.prj`'s) has none, as in GDAL. Unlike GDAL, a PROJJSON has none either, nor a
+WKT whose parameters are not those of the code it names; a compound CRS given by a WKT or PROJ
+string is not always written as GDAL writes it (GDAL's WKT 1 of one carries its geoid model in a
+`PROJ4_GRIDS` extension, its WKT 2 does not; `tests/gdal_proj4_export.rs` lists the cases), and
+`+init=epsg:2056`, the code itself to terrio, has its additions, which GDAL does not write. A
+deprecated code has its own definition's, as GDAL with `OSR_USE_NON_DEPRECATED=NO`.
+
+`terrio_crs::helmert_to_wgs84(code)` gives the datum shift to WGS 84 of an EPSG geographic CRS (of
+a projected or compound CRS's base geographic CRS) as `+towgs84` carries it, also where GDAL writes
+none: the first transformation PROJ 9.9.0 picks without grids, when PROJ runs it as a single Helmert
+transformation of 3 or 7 parameters (ED50 has `-87,-98,-121,0,0,0,0`, from ED50 to WGS 84 (1)).
+`None` otherwise: a Molodensky-Badekas, time-dependent or exact-rotation Helmert transformation, a
+geographic offset, several shifts, PROJ's ballpark. A transformation that shifts nothing (NAD83 to
+WGS 84 (1)) gives `Some` zeros, as `+towgs84=0,0,0`, unlike an unsupported one. MGI (Ferro),
+EPSG:4805, gives `None` where PROJ has a Helmert transformation: PROJ's MGI (Ferro) to WGS 84 (1)
+turns longitudes by MGI 1901's Ferro meridian, 13.98" from the CRS's own, which a `+towgs84` beside
+`+pm=ferro` would leave out. It is in the Rust crate only.
+
 A compound CRS (`EPSG:4326+5773`, a registry code, a WKT's `COMPD_CS`) is its horizontal CRS's
 string with the vertical unit (`+vunits=m`), and a WKT's geoid model (`+geoidgrids`). A CRS
 given by a PROJ string or a WKT without a code comes back as PROJ writes it:
@@ -1558,34 +1585,37 @@ projected and 1e-8 degrees inverse.
 
 ## Icosahedral Snyder Equal Area
 
-`+proj=isea` is computed as PROJ 9.8.1 does (`isea.cpp`): Snyder's equal-area projection of the
-sphere onto the 20 faces of an icosahedron, unfolded in the plane. `+orient=isea` (the default)
-places the poles on edge midpoints and makes the equator symmetric; `+orient=pole` places a
-vertex at each pole. As in PROJ, `+lon_0` and `+lat_0` set the icosahedron's orientation, and
-`+lon_0` is also the central meridian; `+azi` rotates it. `+units`, `+x_0` and `+y_0` apply.
-`+mode=plane` is the default; `+mode=di`, `dd` and `hex`, which give grid addresses rather than
-coordinates, are refused. Invalid `+orient`, `+mode`, `+resolution` and `+aperture` values are
-refused, as in PROJ.
+`+proj=isea` is computed as PROJ 9.9.0 does (its polyhedral projections,
+`src/projections/polyhedral.cpp`): Snyder's equal-area projection of the authalic sphere onto the
+faces of an icosahedron, each face split into six triangles from its centre, and unfolded into
+PROJ's strip of 4 × 5 faces. `+orient=isea` (the default) is Snyder's orientation, and
+`+orient=pole` places a vertex at each pole. `+orient_lat`, `+orient_lon` (the point brought to the
+pole, its latitude geodetic) and `+azi` set the orientation otherwise. `+lat_0` and `+lon_0` name
+the point projected to the origin, through the orientation; they do not move the central meridian.
+With `+dual`, the dodecahedron's net (`+net=dsea`, the default, `a5`, `crescent` or `flower`)
+carries the icosahedron's triangles, as PROJ's `isea +dual`. On an ellipsoid the latitude is
+authalic and the scale the authalic radius, so that the projection is equal-area, and the inverse
+returns the longitude and geodetic latitude that were projected. `+units`, `+x_0` and `+y_0` apply.
+`+mode`, `+resolution` and `+aperture` are ignored, as in PROJ 9.9.0.
 
-As in PROJ 9.8.1, the inverse is defined only for the default grid (`+resolution=4`,
-`+aperture=3`, no `+azi`) whose origin, after any `+lon_0` and `+lat_0`, is exactly the default
-orientation's (which `+lon_0=11.25` keeps) or the pole orientation's (which
-`+lat_0=90 +lon_0=0` gives), and refuses points outside the unfolded icosahedron; elsewhere it
-is refused. On an ellipsoid the forward takes the geodetic latitude on a sphere of the
-semi-major axis, while the inverse uses the authalic radius without the authalic latitude, so
-the inverse does not return the projected point: on WGS 84, (147, -42) projects and unprojects
-to (147.166, -41.969), in PROJ as in terrio.
+As PROJ 9.9.0 reads them, a parameter given as a number must be read whole as an angle (`+azi=30.5`
+and `+lat_0=30d30'` are read, `+azi=30x` is refused), one given as a word is read as 0 (`+azi=abc`),
+and `+dual` is true bare or with a value starting with `t` or `T`, false with one starting with `f`
+or `F`, and refused otherwise. In a WKT's `PROJ4` extension, which PROJ reads as a pipeline step, an
+angle is its readable start (`+lat_0=30x` is 30°). The inverse refuses points outside the unfolded
+net.
 
 GDAL's WKT1 (`custom_proj4`, which carries the PROJ string), ESRI's `PROJ_isea` (with
-`PROJ_isea_orient=pole` and other options in the method's name) and PROJ's WKT2 method
-`PROJ isea` (`PROJ isea orient=pole`) are read; terrio writes the WKT1 form, as GDAL does.
-PROJJSON export refuses `isea`, as for other projections without an EPSG method.
+`PROJ_isea_orient=pole`, `PROJ_isea_dual` and other options in the method's name) and PROJ's
+WKT2 method `PROJ isea` (`PROJ isea orient=pole`, `PROJ isea dual net=a5`) are read; terrio
+writes the WKT1 form, as GDAL does. PROJJSON export refuses `isea`, as for other projections
+without an EPSG method.
 
-Other PROJ versions differ: PROJ 9.4 has no inverse and a forward up to 2 mm different,
-and PROJ 9.9 replaced the method with a new implementation (another default origin, the
-authalic latitude on an ellipsoid, other parameters). The `method-isea` fixture, from PROJ
-9.9.0, is therefore not used. A PROJ 9.8.1 corpus covers 14 configurations and 7,784 samples
-(see Testing). Allowances are 1 mm projected and 1e-8 degrees inverse.
+PROJ 9.8 and earlier computed another method (`isea.cpp`: another orientation by `+lon_0`, the
+geodetic latitude on an ellipsoid, an inverse only for its default grid), which terrio computed
+before. On the default sphere the two agree within a millimetre. A PROJ 9.9.0 corpus covers 24
+configurations and 13,344 samples (see Testing). Allowances are 1 mm projected and 1e-8 degrees
+inverse (1e-5 within 0.001° of a pole, where the latitude is the arcsine of a number near 1).
 
 ## Two-point oblique Mercator
 

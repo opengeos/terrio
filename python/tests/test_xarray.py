@@ -312,6 +312,24 @@ def test_clip_takes_any_geometry_input(files, tmp_path, monkeypatch):
         da.terrio.clip(collection["features"][0]), da.terrio.clip(polys[:1])
     )
     xr.testing.assert_identical(da.terrio.clip(polys[0]), da.terrio.clip(polys[:1]))
+    # WKT and bounds, in the array's CRS like plain geometries.
+    wkt = "POLYGON ((503000 4093000, 506000 4093000, 503000 4096000, 503000 4093000))"
+    xr.testing.assert_identical(da.terrio.clip(wkt), da.terrio.clip(polys[:1]))
+    box = {
+        "type": "Polygon",
+        "coordinates": [
+            [
+                (503000, 4093000),
+                (506000, 4093000),
+                (506000, 4096000),
+                (503000, 4096000),
+                (503000, 4093000),
+            ]
+        ],
+    }
+    xr.testing.assert_identical(
+        da.terrio.clip((503000, 4093000, 506000, 4096000)), da.terrio.clip([box])
+    )
     # A file and GeoPandas objects carry their CRS: lon/lat here, the array's is UTM.
     lon_lat = terrio.Layer.from_geojson(collection, crs=da.terrio.crs.to_wkt()).to_crs("EPSG:4326")
     lon_lat_polys = [f["geometry"] for f in lon_lat.to_geojson()["features"]]

@@ -692,10 +692,10 @@ smaller WebAssembly module. A COG writer, say:
 terrio = { version = "0.9", default-features = false, features = ["geotiff"] }
 ```
 
-The core, always built, is GeoTIFF and COG (deflate, LZW, PackBits, ZSTD, WebP, JPEG and JPEG
-XL), the raw and ASCII rasters (AAIGrid, EHdr, ENVI, ERS, HFA, RST, SAGA, GSBG, XYZ...), PNG,
-JPEG, VRT, STAC, GeoJSON, TopoJSON, Shapefile, KML/KMZ, GML, GPX, CSV, MapInfo, the CRS engine,
-the operations and the streams. The other drivers are features:
+The core, always built, is GeoTIFF and COG (deflate, LZW, PackBits, ZSTD, WebP and JPEG), the
+raw and ASCII rasters (AAIGrid, EHdr, ENVI, ERS, HFA, RST, SAGA, GSBG, XYZ...), PNG, JPEG, VRT,
+STAC, GeoJSON, TopoJSON, Shapefile, KML/KMZ, GML, GPX, CSV, MapInfo, the CRS engine, the
+operations and the streams. The other drivers are features:
 
 | Feature | Default | What it adds |
 |---|---|---|
@@ -714,6 +714,7 @@ the operations and the streams. The other drivers are features:
 | `osm` | on | OpenStreetMap PBF and XML. |
 | `pointcloud` | on | LAS, LAZ, COPC, EPT, PLY and E57 (the `pointcloud` module). |
 | `lerc` | on | LERC-compressed GeoTIFFs, read and written. |
+| `jxl` | on | JPEG XL-compressed GeoTIFFs, read (writing needs no feature). |
 | `lzma` | on | LZMA-compressed GeoTIFFs. |
 | `hecras` | on | HEC-RAS geometry and plan HDF files as vector layers, read only (the `HECRAS` driver and the `hecras` module, through the `ras-commander-fast-hdf` engine; needs `netcdf-hdf5`). See [HEC-RAS](hecras.md). |
 | `gdal` | off | The optional GDAL backend: formats terrio has no driver for, through GDAL (needs GDAL installed). See [the GDAL backend](gdal.md#the-optional-gdal-backend). |
@@ -728,8 +729,9 @@ that belong to one feature (`terrio::arrow`, `terrio::pointcloud`, `terrio::http
 `terrio::s3`, `tiles::TileArchive`, `terrio::ndarray`, `RasterArrayExt`, `BandLayout`) exist
 only with it.
 
-The `geotiff` build still pulls the JPEG XL decoder and encoder (`jxl-oxide`, `zune-jpegxl`):
-`wbraster`, terrio's raster data model, depends on them through its GeoTIFF reader.
+The `geotiff` build, even without `jxl`, still pulls the JPEG XL decoder and encoder
+(`jxl-oxide`, `zune-jpegxl`): `wbraster`, terrio's raster data model, depends on them through its
+GeoTIFF reader.
 
 ## API stability
 

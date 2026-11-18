@@ -2186,15 +2186,14 @@ pub(crate) fn wkt_linear_unit(w: &str) -> Option<f64> {
     root.children("AXIS").find_map(|a| a.child("LENGTHUNIT")).and_then(|u| u.num(1))
 }
 
-/// Whether PROJ 9.8.1 leaves a parameter's value unchecked for a CRS's method, though terrio
-/// reads it: the methods its CRS parser keeps as PROJ strings (`murd2`, `tissot`, `isea`; terrio
+/// Whether PROJ 9.9.0 leaves a parameter's value unchecked for a CRS's method, though terrio
+/// reads it: the methods its CRS parser keeps as PROJ strings (`murd2`, `tissot`; terrio
 /// checks `tpers`'s itself), parameters outside the method's EPSG definition (`ortho`'s `alpha`, `ups`'s
 /// `lat_ts`), and `stere`'s `lat_ts` unless polar.
 fn unchecked(p: &Params, key: &str) -> bool {
     let polar = || p.str("lat_0").and_then(parse_dms).is_some_and(|l| l.abs() == 90.0);
     match p.str("proj").unwrap_or("") {
         "murd2" | "tissot" => matches!(key, "lat_1" | "lat_2"),
-        "isea" => key == "azi",
         "ortho" => key == "alpha",
         "ups" => key == "lat_ts",
         "stere" => key == "lat_ts" && !polar(),
@@ -2203,7 +2202,7 @@ fn unchecked(p: &Params, key: &str) -> bool {
 }
 
 /// The number a value starts with, as C's `atof` reads it (`0.5r` is 0.5); `None` without one.
-fn leading_number(v: &str) -> Option<f64> {
+pub(crate) fn leading_number(v: &str) -> Option<f64> {
     let v = v.trim_start();
     let b = v.as_bytes();
     let mut end = usize::from(matches!(b.first(), Some(b'+' | b'-')));

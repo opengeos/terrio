@@ -110,3 +110,18 @@ fn a_zoned_grid_system_in_feet_projects_as_proj_does() {
         assert!((lon - 0.065686575724).abs() < 1e-9 && (lat - 13.775800902269).abs() < 1e-9, "({lon}, {lat})");
     }
 }
+
+/// `+width` is an angle (`pj_param`'s `d`), read whole in a PROJ string, by its readable start in a
+/// WKT's PROJ4 extension, as PROJ 9.9.0 reads it (pyproj 3.8.0, network off: `+width=6x` refused
+/// in a PROJ string, (2000000.0000, 4984944.3780) for 9°E 45°N in the extension, as with 6).
+#[test]
+fn a_zone_width_is_read_as_proj_reads_an_angle() {
+    assert!(SpatialRef::from_proj4("+proj=tmerczoned +ellps=WGS84 +width=6x").is_err());
+    let wkt = r#"PROJCS["x",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],UNIT["metre",1],EXTENSION["PROJ4","+proj=tmerczoned +ellps=WGS84 +width=6x +units=m +no_defs"]]"#;
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    let (x, y) = Transformer::new(&wgs84, &SpatialRef::from_wkt(wkt)).unwrap().transform(9.0, 45.0).unwrap();
+    assert!((x - 2_000_000.0).abs() < 1e-3 && (y - 4_984_944.377_977_743).abs() < 1e-3, "({x}, {y})");
+    let dms = SpatialRef::from_proj4("+proj=tmerczoned +ellps=WGS84 +width=6d00'00\"").unwrap();
+    let (x, _) = Transformer::new(&wgs84, &dms).unwrap().transform(9.0, 45.0).unwrap();
+    assert!((x - 2_000_000.0).abs() < 1e-3, "{x}");
+}

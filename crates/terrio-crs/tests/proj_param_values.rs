@@ -21,7 +21,6 @@ fn unchecked_parameters_have_proj_accepted_fixture_rows() {
         "+proj=murd2 +lat_1=30 +lat_2=abc",
         "+proj=tissot +lat_2=50 +lat_1=abc",
         "+proj=tissot +lat_1=30 +lat_2=abc",
-        "+proj=isea +azi=abc",
         "+proj=ortho +alpha=abc",
         "+proj=ups +lat_ts=abc",
         "+proj=stere +lat_ts=abc",
@@ -37,8 +36,8 @@ fn unchecked_parameters_have_proj_accepted_fixture_rows() {
 ///   that starts with a number (`+x_0=0.5r`, a scale factor of `0.5r`) is still read as absent
 ///   where PROJ refuses it; likewise `+f`, `+es` and `+e` without `+a`, which PROJ
 ///   ignores when unreadable but for `etmerc`, `utm` and `ups`;
-/// - checks of terrio's own for methods PROJ keeps as PROJ strings (`isea`, `murd2`, `tissot`,
-///   `tpers`), and of a geocentric CRS's ellipsoid, which refuse an unreadable value PROJ ignores;
+/// - checks of terrio's own for methods PROJ keeps as PROJ strings (`murd2`, `tissot`, `tpers`), and
+///   of a geocentric CRS's ellipsoid, which refuse an unreadable value PROJ ignores;
 /// - Krovak's azimuth, which terrio does not read;
 /// - rotated-pole definitions keep terrio's strict check of `o_lat_p`, which PROJ's CRS parser
 ///   leaves unchecked.
@@ -48,7 +47,7 @@ fn known(definition: &str, proj_accepts: bool) -> bool {
     let lenient =
         matches!(key, "lat_0" | "lon_0" | "x_0" | "y_0" | "k_0" | "k") || (matches!(key, "f" | "es" | "e") && !own_ellipsoid(definition));
     let own = match method {
-        "isea" | "tpers" => matches!(key, "azi" | "lat_0" | "lon_0"),
+        "tpers" => matches!(key, "azi" | "lat_0" | "lon_0"),
         "murd2" | "tissot" => matches!(key, "lat_1" | "lat_2"),
         "geocent" => matches!(key, "f" | "es" | "e"),
         "ob_tran" => definition.contains("+o_lat_p=abc"),
@@ -76,7 +75,7 @@ fn unreadable_parameter_values_are_refused_as_proj_refuses_them() {
         }
     }
     // A change in the strings that still differ shows here.
-    assert_eq!(differing, 78, "strings that still differ from PROJ");
+    assert_eq!(differing, 77, "strings that still differ from PROJ");
     differences.sort_unstable();
     // Compare lines, not text: a Windows checkout may give the fixture CRLF line endings.
     let expected: Vec<&str> = include_str!("data/proj_param_value_differences.tsv").lines().collect();

@@ -51,7 +51,6 @@
 //     src/projections/healpix.cpp
 //     src/projections/igh.cpp
 //     src/projections/qsc.cpp
-//     src/projections/isea.cpp
 //     src/projections/aitoff.cpp
 //     src/projections/wink1.cpp
 //     src/projections/wink2.cpp
@@ -66,6 +65,7 @@
 //     src/aasincos.cpp
 //   PROJ 9.9.0:
 //     src/projections/tmerczoned.cpp
+//     (polyhedral.rs names the files of src/projections/polyhedral.cpp)
 //   PROJ 5fa31c29f0a806568ed7bc76c1a557604db4a804:
 //     src/projections/moll.cpp
 
@@ -85,6 +85,7 @@ use crate::{Error, Result};
 use std::f64::consts::PI;
 
 mod perspective;
+mod polyhedral;
 
 /// A map projection's forward and inverse formulas.
 pub(crate) trait Proj: Send + Sync + std::fmt::Debug {
@@ -193,7 +194,7 @@ pub(crate) fn build(name: &str, s: &mut Setup<'_>) -> Result<Option<Box<dyn Proj
         "rhealpix" => Box::new(Healpix::new(s, true)?),
         "igh" => Box::new(Igh::new()?),
         "qsc" => Box::new(Qsc::new(s)),
-        "isea" => Box::new(Isea::new(s)?),
+        "isea" => Box::new(polyhedral::Polyhedral::isea(s)?),
         "wintri" => Box::new(Wintri::new(s)?),
         "wink1" => Box::new(Wink1 { cosphi1: s.p.angle("lat_ts").unwrap_or(0.0).cos() }),
         "wink2" => Box::new(Wink2 { cosphi1: s.p.angle("lat_1").unwrap_or(0.0).cos() }),
@@ -539,7 +540,8 @@ impl Proj for Tmerc {
 // Transverse Mercator Zoned Grid System (EPSG method 9824, IOGP Guidance Note 7-2, 3.2.3.2), as
 // PROJ 9.9.0's `tmerczoned` (`src/projections/tmerczoned.cpp`): Transverse Mercator in zones of
 // `+width` degrees from `+lon_0` (the initial longitude), each zone's eastings offset by 1000 km
-// per zone number.
+// per zone number. As in PROJ, zones wider than about 9° (at scale 1) reach eastings of the next
+// zone, which the inverse then reads in that zone: such a grid system does not round-trip.
 
 #[derive(Debug)]
 struct Tmerczoned {
@@ -554,10 +556,10 @@ struct Tmerczoned {
 
 impl Tmerczoned {
     fn new(s: &Setup<'_>) -> Result<Self> {
-        // PROJ reads `+width` as a number of degrees (`pj_param(..., "dwidth")`); with a missing,
+        // PROJ reads `+width` as an angle in degrees (`pj_param(..., "dwidth")`); with a missing,
         // zero or negative width its result is undefined (an integer cast of an infinite zone
         // number), which terrio refuses.
-        let width = s.p.f64("width").unwrap_or(0.0).to_radians();
+        let width = s.p.degrees("width").unwrap_or(0.0).to_radians();
         if !(width.is_finite() && width > 0.0) {
             return Err(err("tmerczoned: +width should be a positive number of degrees"));
         }
@@ -3703,9 +3705,9 @@ enum HealpixRegion {
     Equatorial,
 }
 
-/// The authalic latitude as PROJ 9.8.1 computes it on an ellipsoid.
+/// The authalic latitude as PROJ computes it on an ellipsoid.
 #[derive(Debug)]
-struct HealpixAuthalic {
+struct Authalic {
     /// Geodetic to authalic (`C[xi,phi]`), used when |n| < 0.01.
     forward: Option<[f64; 6]>,
     /// Authalic to geodetic (`C[phi,xi]`).
@@ -3715,7 +3717,20 @@ struct HealpixAuthalic {
     qp: f64,
 }
 
-impl HealpixAuthalic {
+impl Authalic {
+    /// PROJ's authalic latitude on an ellipsoid; `None` on a sphere.
+    fn of(ell: Ell) -> Option<Self> {
+        if ell.es == 0.0 {
+            return None;
+        }
+        let (e, one_es) = (ell.e, ell.one_es);
+        let b = one_es.sqrt();
+        let n = (1.0 - b) / (1.0 + b);
+        let qp = qsfn(1.0, e, one_es);
+        let forward = (n.abs() < 0.01).then(|| authset_forward(ell.es));
+        Some(Self { forward, apa: authset(ell.es), e, one_es, qp })
+    }
+
     /// PROJ's `pj_authalic_lat`.
     fn forward(&self, phi: f64) -> f64 {
         match &self.forward {
@@ -3737,7 +3752,7 @@ struct Healpix {
     /// HEALPix's rotation of the image (`+rot_xy`), in radians.
     rot_xy: f64,
     /// `None` on a sphere.
-    authalic: Option<HealpixAuthalic>,
+    authalic: Option<Authalic>,
     /// The authalic radius on the unit semi-major axis (1 on a sphere).
     scale: f64,
 }
@@ -3758,16 +3773,8 @@ impl Healpix {
             None
         };
         let rot_xy = if rhealpix { 0.0 } else { s.p.angle("rot_xy").unwrap_or(0.0) };
-        let (authalic, scale) = if s.ell.es != 0.0 {
-            let (e, one_es) = (s.ell.e, s.ell.one_es);
-            let b = one_es.sqrt();
-            let n = (1.0 - b) / (1.0 + b);
-            let qp = qsfn(1.0, e, one_es);
-            let forward = (n.abs() < 0.01).then(|| authset_forward(s.ell.es));
-            (Some(HealpixAuthalic { forward, apa: authset(s.ell.es), e, one_es, qp }), (0.5 * qp).sqrt())
-        } else {
-            (None, 1.0)
-        };
+        let authalic = Authalic::of(s.ell);
+        let scale = authalic.as_ref().map_or(1.0, |a| (0.5 * a.qp).sqrt());
         Ok(Self { squares, rot_xy, authalic, scale })
     }
 
@@ -4264,423 +4271,6 @@ impl Proj for Qsc {
             lat = if lat < 0.0 { -phi } else { phi };
         }
         Some((lam, lat))
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
-// Icosahedral Snyder Equal Area, as PROJ's isea.cpp (Nathan Wagner's forward; the inverse by
-// Jerome Jacovella-St-Louis after Franz-Benjamin Mocnik's geogrid): the sphere on the 20 faces of
-// an icosahedron, unfolded in the plane. As in PROJ, the forward takes the geodetic latitude on
-// the unit sphere, while the inverse uses the authalic radius on an ellipsoid; the inverse is
-// defined only for PROJ's default grid (aperture 3, resolution 4, no azimuth) in its two
-// orientations.
-
-const ISEA_E_RAD: f64 = 0.91843818701052843323;
-const ISEA_F_RAD: f64 = 0.18871053078356206978;
-/// g: the spherical distance from a face centre to its vertices.
-const ISEA_SDC2VOS: f64 = 0.6523581397843681859886783;
-/// tan(g).
-const ISEA_TANG: f64 = 0.76393202250021030358019673567;
-const ISEA_TAN30: f64 = 0.57735026918962576450914878;
-const ISEA_COT_THETA: f64 = 1.0 / ISEA_TAN30;
-/// cos and sin of G (36 degrees), and cos(g).
-const ISEA_COS_G: f64 = 0.80901699437494742410229341718281905886;
-const ISEA_SIN_G: f64 = 0.587785252292473129168705954639072768597652;
-const ISEA_COS_SDC2VOS: f64 = 0.7946544722917661229596057297879189448539;
-const ISEA_SIN_G_COS_SDC2VOS: f64 = ISEA_SIN_G * ISEA_COS_SDC2VOS;
-const ISEA_SQRT3: f64 = 1.73205080756887729352744634150587236694280525381038;
-const ISEA_TABLE_G: f64 = ISEA_TANG * (ISEA_SQRT3 / 2.0);
-const ISEA_TABLE_H: f64 = 0.25 * ISEA_TANG;
-/// R' / R.
-const ISEA_RPRIME_OVER_R: f64 = 0.9103832815095032;
-const ISEA_STD_LAT: f64 = 1.01722196792335072101;
-const ISEA_STD_LONG: f64 = 0.19634954084936207740;
-const ISEA_DEG120: f64 = 2.09439510239319549229;
-const ISEA_D2R: f64 = PI / 180.0;
-
-/// The centres of the icosahedron's faces (latitude, longitude).
-const ISEA_FACES: [(f64, f64); 20] = [
-    (ISEA_E_RAD, ISEA_D2R * -144.0),
-    (ISEA_E_RAD, ISEA_D2R * -72.0),
-    (ISEA_E_RAD, ISEA_D2R * 0.0),
-    (ISEA_E_RAD, ISEA_D2R * 72.0),
-    (ISEA_E_RAD, ISEA_D2R * 144.0),
-    (ISEA_F_RAD, ISEA_D2R * -144.0),
-    (ISEA_F_RAD, ISEA_D2R * -72.0),
-    (ISEA_F_RAD, ISEA_D2R * 0.0),
-    (ISEA_F_RAD, ISEA_D2R * 72.0),
-    (ISEA_F_RAD, ISEA_D2R * 144.0),
-    (-ISEA_F_RAD, ISEA_D2R * -108.0),
-    (-ISEA_F_RAD, ISEA_D2R * -36.0),
-    (-ISEA_F_RAD, ISEA_D2R * 36.0),
-    (-ISEA_F_RAD, ISEA_D2R * 108.0),
-    (-ISEA_F_RAD, ISEA_D2R * 180.0),
-    (-ISEA_E_RAD, ISEA_D2R * -108.0),
-    (-ISEA_E_RAD, ISEA_D2R * -36.0),
-    (-ISEA_E_RAD, ISEA_D2R * 36.0),
-    (-ISEA_E_RAD, ISEA_D2R * 108.0),
-    (-ISEA_E_RAD, ISEA_D2R * 180.0),
-];
-
-/// PROJ's safeArcSin and safeArcCos.
-fn isea_asin(t: f64) -> f64 {
-    const E: f64 = 1e-15;
-    if t.abs() < E {
-        0.0
-    } else if (t - 1.0).abs() < E {
-        HALFPI
-    } else if (t + 1.0).abs() < E {
-        -HALFPI
-    } else {
-        t.asin()
-    }
-}
-
-fn isea_acos(t: f64) -> f64 {
-    const E: f64 = 1e-15;
-    if t.abs() < E {
-        HALFPI
-    } else if (t + 1.0).abs() < E {
-        PI
-    } else if (t - 1.0).abs() < E {
-        0.0
-    } else {
-        t.acos()
-    }
-}
-
-/// A longitude brought into [-pi, pi] as PROJ's isea does, strictly (`adjlon` keeps values within
-/// pi + 1e-12 as they are).
-fn isea_normalize_lon(lon: f64) -> f64 {
-    let mut lon = lon % (2.0 * PI);
-    while lon > PI {
-        lon -= 2.0 * PI;
-    }
-    while lon < -PI {
-        lon += 2.0 * PI;
-    }
-    lon
-}
-
-/// The planar frame of the inverse, for an icosahedron of radius R on the ellipsoid's authalic
-/// sphere (PROJ's pj_isea_data::initialize).
-#[derive(Debug)]
-struct IseaPlane {
-    /// The orientation reverted after the inverse: (latitude, longitude), and its latitude's
-    /// cosine and sine.
-    orientation: (f64, f64),
-    cos_lat: f64,
-    sin_lat: f64,
-    r2: f64,
-    rprime_2x: f64,
-    rprime_tang: f64,
-    rprime2_tan2g: f64,
-    center_to_base: f64,
-    tri_width: f64,
-    y_offsets: [f64; 4],
-    xo: f64,
-    yo: f64,
-    sx: f64,
-    sy: f64,
-}
-
-#[derive(Debug)]
-struct Isea {
-    o_lat: f64,
-    o_lon: f64,
-    o_az: f64,
-    face_sin_cos: [(f64, f64); 20],
-    /// The semi-major axis in metres, by which the inverse scales its input.
-    a: f64,
-    plane: Option<IseaPlane>,
-}
-
-impl Isea {
-    fn new(s: &Setup<'_>) -> Result<Self> {
-        let (mut o_lat, mut o_lon) = (ISEA_STD_LAT, ISEA_STD_LONG);
-        // A flag without a value is invalid, as in PROJ.
-        let option = |key: &str| s.p.has(key).then(|| s.p.str(key).unwrap_or(""));
-        match option("orient") {
-            None | Some("isea") => {}
-            Some("pole") => (o_lat, o_lon) = (HALFPI, 0.0),
-            Some(_) => return Err(err("isea: invalid orient, only isea or pole are supported")),
-        }
-        // PROJ refuses `+azi=30x` (and reads a bare `+azi` as 0).
-        if option("azi").is_some_and(|v| !v.is_empty()) && s.p.angle("azi").is_none() {
-            return Err(err("isea: invalid azi, it should be an angle"));
-        }
-        let o_az = s.p.angle("azi").unwrap_or(0.0);
-        // As in PROJ, `lon_0` both moves the central meridian and rotates the icosahedron.
-        if let Some(lon) = s.p.angle("lon_0") {
-            o_lon = lon;
-        }
-        if let Some(lat) = s.p.angle("lat_0") {
-            o_lat = lat;
-        }
-        match option("mode") {
-            None | Some("plane") => {}
-            // Grid addresses, not coordinates.
-            Some("di" | "dd" | "hex") => return Err(err("isea: only mode=plane is supported")),
-            Some(_) => return Err(err("isea: invalid mode, only plane, di, dd or hex are supported")),
-        }
-        let resolution = if s.p.has("resolution") { proj_int(s.p, "isea", "resolution")? } else { 4 };
-        let aperture = if s.p.has("aperture") { proj_int(s.p, "isea", "aperture")? } else { 3 };
-        // PROJ compares the orientation exactly: a tolerance would define an inverse PROJ refuses.
-        let orientation = if o_az != 0.0 || aperture != 3 || resolution != 4 {
-            None
-        } else if o_lat == ISEA_STD_LAT && o_lon == ISEA_STD_LONG {
-            // The poles on edge midpoints, the equator symmetric.
-            Some(((ISEA_E_RAD + ISEA_F_RAD) / 2.0, ISEA_D2R * -11.25))
-        } else if o_lat == HALFPI && o_lon == 0.0 {
-            Some((0.0, 0.0))
-        } else {
-            None
-        };
-        let a = s.ell.a;
-        let plane = orientation.map(|orientation| {
-            let (r2, rprime) = if s.ell.e > 0.0 {
-                let (a2, b) = (a * a, a * s.ell.one_es.sqrt());
-                let c2 = b * b;
-                let e = s.ell.e;
-                let surface = PI * (2.0 * a2 + c2 / e * ((1.0 + e) / (1.0 - e)).ln());
-                let r2 = surface / (4.0 * PI);
-                (r2, ISEA_RPRIME_OVER_R * r2.sqrt())
-            } else {
-                (a * a, ISEA_RPRIME_OVER_R * a)
-            };
-            let rprime_tang = rprime * ISEA_TANG;
-            let center_to_base = rprime_tang / 2.0;
-            let tri_width = rprime_tang * ISEA_SQRT3;
-            IseaPlane {
-                orientation,
-                cos_lat: orientation.0.cos(),
-                sin_lat: orientation.0.sin(),
-                r2,
-                rprime_2x: 2.0 * rprime,
-                rprime_tang,
-                rprime2_tan2g: rprime_tang * rprime_tang,
-                center_to_base,
-                tri_width,
-                y_offsets: [-2.0 * center_to_base, -4.0 * center_to_base, -5.0 * center_to_base, -7.0 * center_to_base],
-                xo: 2.5 * tri_width,
-                yo: -1.5 * center_to_base,
-                sx: 1.0 / tri_width,
-                sy: 1.0 / (3.0 * center_to_base),
-            }
-        });
-        Ok(Self { o_lat, o_lon, o_az, face_sin_cos: ISEA_FACES.map(|(lat, _)| (lat.sin(), lat.cos())), a, plane })
-    }
-
-    /// Snyder's forward on the face that holds the point (PROJ's isea_snyder_forward).
-    fn snyder_forward(&self, lat: f64, lon: f64) -> Option<(usize, f64, f64)> {
-        let (sin_lat, cos_lat) = lat.sin_cos();
-        for (i, &(_, center_lon)) in ISEA_FACES.iter().enumerate() {
-            let (sin_c, cos_c) = self.face_sin_cos[i];
-            let dlon = lon - center_lon;
-            let cos_lat_cos_lon = cos_lat * dlon.cos();
-            let z = isea_acos(sin_c * sin_lat + cos_c * cos_lat_cos_lon);
-            if z > ISEA_SDC2VOS + 0.000005 {
-                continue;
-            }
-            let mut az = (cos_lat * dlon.sin()).atan2(cos_c * sin_lat - sin_c * cos_lat_cos_lon);
-            az -= if (5..=9).contains(&i) || i == 15 || i == 16 {
-                PI
-            } else if i >= 17 {
-                -PI
-            } else {
-                0.0
-            };
-            if az < 0.0 {
-                az += 2.0 * PI;
-            }
-            let mut multiples = 0.0;
-            while az < 0.0 {
-                az += ISEA_DEG120;
-                multiples -= 1.0;
-            }
-            while az > ISEA_DEG120 + f64::EPSILON {
-                az -= ISEA_DEG120;
-                multiples += 1.0;
-            }
-            let (sin_az, cos_az) = az.sin_cos();
-            let q = ISEA_TANG.atan2(cos_az + sin_az * ISEA_COT_THETA);
-            if z > q + 0.000005 {
-                continue;
-            }
-            let h = (sin_az * ISEA_SIN_G_COS_SDC2VOS - cos_az * ISEA_COS_G).acos();
-            let ag = az + ISEA_D2R * 36.0 + h - PI;
-            let mut azprime = (2.0 * ag).atan2(ISEA_RPRIME_OVER_R * ISEA_RPRIME_OVER_R * ISEA_TANG * ISEA_TANG - 2.0 * ag * ISEA_COT_THETA);
-            let dprime = ISEA_RPRIME_OVER_R * ISEA_TANG / (azprime.cos() + azprime.sin() * ISEA_COT_THETA);
-            let f = dprime / (2.0 * ISEA_RPRIME_OVER_R * (q / 2.0).sin());
-            let rho = 2.0 * ISEA_RPRIME_OVER_R * f * (z / 2.0).sin();
-            azprime += ISEA_DEG120 * multiples;
-            return Some((i, rho * azprime.sin(), rho * azprime.cos()));
-        }
-        // PROJ exits here: no face holds the point.
-        None
-    }
-
-    /// The point in the frame of the icosahedron (PROJ's isea_ctran with Snyder's ctran).
-    fn rotate(&self, lat: f64, lon: f64) -> (f64, f64) {
-        let (alpha, beta) = (self.o_lat, self.o_lon + PI);
-        let dlambda = lon - beta;
-        let (sin_p, cos_p) = lat.sin_cos();
-        let (sin_a, cos_a) = alpha.sin_cos();
-        let (sin_dl, cos_dl) = dlambda.sin_cos();
-        let sin_phip = sin_a * sin_p - cos_a * cos_p * cos_dl;
-        let lp_b = (cos_p * sin_dl).atan2(sin_a * cos_p * cos_dl + cos_a * sin_p);
-        let lambdap = isea_normalize_lon(lp_b + beta);
-        let lon = isea_normalize_lon(lambdap - (-self.o_az + self.o_lon));
-        (isea_asin(sin_phip), lon)
-    }
-
-    /// Unprojects a point of the plane, in metres from the frame's origin (PROJ's
-    /// ISEAPlanarProjection::cartesianToGeo).
-    fn cartesian_to_geo(&self, g: &IseaPlane, x: f64, y: f64) -> Option<(f64, f64)> {
-        const EPSILON: f64 = 1e-11;
-        let (sr, cr) = (-(ISEA_SQRT3 / 2.0), 0.5);
-        let mut px = x;
-        if px < 0.0 || (px < g.tri_width / 2.0 && y < 0.0 && y * cr < px * sr) {
-            px += 5.0 * g.tri_width;
-        }
-        let yp = -(px * sr + y * cr);
-        let mut x = (px * cr - y * sr + yp * (1.0 / ISEA_SQRT3)) * g.sx;
-        let mut y_ = yp * g.sy;
-        if x < 0.0 || (y_ > x && x < 5.0 - EPSILON) {
-            x += EPSILON;
-        } else if x > 5.0 || (y_ < x && x > EPSILON) {
-            x -= EPSILON;
-        }
-        if y_ < 0.0 || (x > y_ && y_ < 6.0 - EPSILON) {
-            y_ += EPSILON;
-        } else if y_ > 6.0 || (x < y_ && y_ > EPSILON) {
-            y_ -= EPSILON;
-        }
-        if !((0.0..=5.0).contains(&x) && (0.0..=6.0).contains(&y_)) {
-            return None;
-        }
-        let ix = (x as i32).clamp(0, 4);
-        let iy = (y_ as i32).clamp(0, 5);
-        if iy != ix && iy != ix + 1 {
-            return None;
-        }
-        let top = x - ix as f64 > y_ - iy as f64;
-        let rhombus = ix + iy;
-        // The upper row of rhombi holds faces 0 to 4 and 5 to 9, the lower 10 to 14 and 15 to 19.
-        let column = (rhombus / 2) as usize;
-        let face = match (rhombus % 2 == 0, top) {
-            (true, true) => column,
-            (true, false) => column + 5,
-            (false, true) => column + 10,
-            (false, false) => column + 15,
-        };
-        let (fy, fx) = (face / 5, face % 5);
-        let rx = px - (2 * fx + fy / 2 + 1) as f64 * g.tri_width / 2.0;
-        let ry = y - (g.y_offsets[fy] + 3.0 * g.center_to_base);
-        let (lat, mut lon) = self.icosahedron_to_sphere(g, face, rx, ry)?;
-        if lon < -PI - EPSILON {
-            lon += 2.0 * PI;
-        } else if lon > PI + EPSILON {
-            lon -= 2.0 * PI;
-        }
-        Some((lat, lon))
-    }
-
-    /// PROJ's ISEAPlanarProjection::icosahedronToSphere.
-    fn icosahedron_to_sphere(&self, g: &IseaPlane, face: usize, x: f64, y: f64) -> Option<(f64, f64)> {
-        const PRECISION: f64 = ISEA_D2R * 1e-11;
-        const AZ_MAX: f64 = ISEA_D2R * 120.0;
-        const WEST_VERTEX_LON: f64 = ISEA_D2R * -144.0;
-        let mut az = x.atan2(y);
-        let rho = (x * x + y * y).sqrt();
-        let mut az_adjustment = if face <= 4 || (10..=14).contains(&face) { 0.0 } else { ISEA_D2R * 180.0 };
-        az += az_adjustment;
-        while az < 0.0 {
-            az_adjustment += AZ_MAX;
-            az += AZ_MAX;
-        }
-        while az > AZ_MAX {
-            az_adjustment -= AZ_MAX;
-            az -= AZ_MAX;
-        }
-        let (sin_az, cos_az) = az.sin_cos();
-        let cot_az = cos_az / sin_az;
-        let area = g.rprime2_tan2g / (2.0 * (cot_az + ISEA_COT_THETA));
-        let target = area / g.r2 - WEST_VERTEX_LON;
-        let mut delta = 10.0 * PRECISION;
-        let mut az_earth = az;
-        // Newton's method, as in PROJ; the cap only guards against a loop that does not end.
-        let mut iterations = 0;
-        while delta.abs() > PRECISION {
-            iterations += 1;
-            if iterations > 100 {
-                return None;
-            }
-            let (sin_e, cos_e) = az_earth.sin_cos();
-            let h = (sin_e * ISEA_SIN_G_COS_SDC2VOS - cos_e * ISEA_COS_G).acos();
-            let f = target - h - az_earth;
-            let f2 = (cos_e * ISEA_SIN_G_COS_SDC2VOS + sin_e * ISEA_COS_G) / h.sin() - 1.0;
-            delta = -f / f2;
-            az_earth += delta;
-        }
-        let (sin_e, cos_e) = az_earth.sin_cos();
-        let q = ISEA_TANG.atan2(cos_e + sin_e * ISEA_COT_THETA);
-        let d = g.rprime_tang / (cos_az + sin_az * ISEA_COT_THETA);
-        let f = d / (g.rprime_2x * (q / 2.0).sin());
-        let z = 2.0 * (rho / (g.rprime_2x * f)).asin();
-        az_earth -= az_adjustment;
-        let (sin_lat0, cos_lat0) = self.face_sin_cos[face];
-        let (sin_z, cos_z) = z.sin_cos();
-        let cos_lat0_sin_z = cos_lat0 * sin_z;
-        let lat = isea_asin(sin_lat0 * cos_z + cos_lat0_sin_z * az_earth.cos());
-        let lon = ISEA_FACES[face].1 + (az_earth.sin() * cos_lat0_sin_z).atan2(cos_z - sin_lat0 * lat.sin());
-        // PROJ's revertOrientation.
-        let precision_per_definition = ISEA_D2R * 1e-5;
-        let lon =
-            if lat < ISEA_D2R * -90.0 + precision_per_definition || lat > ISEA_D2R * 90.0 - precision_per_definition { 0.0 } else { lon };
-        let (o_lat, o_lon) = g.orientation;
-        if o_lat != 0.0 || o_lon != 0.0 {
-            let (sin_lat, cos_lat) = lat.sin_cos();
-            let (sin_lon, cos_lon) = lon.sin_cos();
-            let cos_lon_cos_lat = cos_lon * cos_lat;
-            Some((
-                (sin_lat * g.cos_lat - cos_lon_cos_lat * g.sin_lat).asin(),
-                (sin_lon * cos_lat).atan2(cos_lon_cos_lat * g.cos_lat + sin_lat * g.sin_lat) - o_lon,
-            ))
-        } else {
-            Some((lat, lon))
-        }
-    }
-}
-
-impl Proj for Isea {
-    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
-        let (lat, lon) = self.rotate(phi, lam);
-        let (tri, mut x, mut y) = self.snyder_forward(lat, lon)?;
-        // Faces 5 to 9 and 15 to 19 point down: turn them half a turn, then move the face to its
-        // place in the plane (PROJ's isea_tri_plane).
-        if (tri / 5) % 2 == 1 {
-            x = -x;
-            y = -y;
-        }
-        let mut cx = ISEA_TABLE_G * ((tri % 5) as f64 - 2.0) * 2.0;
-        if tri > 9 {
-            cx += ISEA_TABLE_G;
-        }
-        let cy = match tri / 5 {
-            0 => 5.0 * ISEA_TABLE_H,
-            1 => ISEA_TABLE_H,
-            2 => -ISEA_TABLE_H,
-            _ => -5.0 * ISEA_TABLE_H,
-        };
-        Some((x + cx * ISEA_RPRIME_OVER_R, y + cy * ISEA_RPRIME_OVER_R))
-    }
-
-    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
-        let g = self.plane.as_ref()?;
-        // The inverse's origin differs from the forward's.
-        let (lat, lon) = self.cartesian_to_geo(g, x * self.a + g.xo, y * self.a + g.yo)?;
-        Some((lon, lat))
     }
 }
 

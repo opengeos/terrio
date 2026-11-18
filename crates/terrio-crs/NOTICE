@@ -21,6 +21,7 @@ Terrio files derived from PROJ source files (each file's header names them):
   crates/terrio-crs/src/params.rs
   crates/terrio-crs/src/projections.rs
   crates/terrio-crs/src/projections/perspective.rs
+  crates/terrio-crs/src/projections/polyhedral.rs
   crates/terrio-crs/src/proj_write.rs
   crates/terrio-crs/src/rotation.rs
   crates/terrio-crs/src/route.rs
@@ -165,6 +166,18 @@ scripts/gen_proj_string_export.py and scripts/gen_wkt1_strict_export.py) and geo
 (GDAL 3.12.1's GeoKeys and WKT 1 of EPSG CRSs, by scripts/gen_geokeys_gdal.py) are derived from
 the same dataset, under the same terms, as are the EPSG rows of crs_accessors.tsv (PROJ 9.9.0's
 axis orders, ellipsoids and conversion parameters of EPSG CRSs, by scripts/gen_crs_accessors.py).
+The EPSG rows of crates/terrio-crs/data/gdal_towgs84.tsv.zst and of the test data
+crates/terrio-crs/tests/data/gdal_proj4_export.tsv and gdal_proj4_export_inputs.tsv (GDAL
+3.13.3's datum transformations to WGS 84 and geoid models of EPSG CRSs in their PROJ strings, and
+GDAL's WKT of them, by scripts/gen_gdal_towgs84.py) are derived
+from the same dataset, under the same terms.
+The EPSG rows of the test data crates/terrio-crs/tests/data/crs_list_changes.json (the names,
+deprecation, areas of use and bounds of EPSG CRSs added or changed between PROJ 9.8.1's and PROJ 9.9.0's
+databases, by scripts/gen_crs_list_changes.py) are derived from the same dataset, under the same
+terms.
+The test data crates/terrio-crs/tests/data/helmert_to_wgs84.tsv (PROJ 9.9.0's datum
+transformations to WGS 84 of EPSG geographic CRSs, by scripts/gen_helmert_to_wgs84.py) is derived
+from the same dataset, under the same terms.
 
 -------------------------------------------------------------------------------
 Esri projection engine data
@@ -182,6 +195,13 @@ wkt_datum_shift.json are derived from it through PROJ 9.9.0's database, as are t
 crates/terrio-crs/tests/data/proj_string_export.tsv and wkt1_strict_export.tsv (PROJ 9.9.0's
 PROJ strings and WKT 1 of ESRI CRSs), geokeys_gdal.tsv (GDAL 3.12.1's GeoKeys of ESRI CRSs) and
 crs_accessors.tsv (PROJ 9.9.0's axis orders, ellipsoids and conversion parameters of ESRI CRSs).
+So are the ESRI rows of crates/terrio-crs/data/gdal_towgs84.tsv.zst and of the test data
+crates/terrio-crs/tests/data/gdal_proj4_export.tsv and gdal_proj4_export_inputs.tsv (GDAL 3.13.3's
+datum transformations to WGS 84 of ESRI CRSs in their PROJ strings, and their WKT, by
+scripts/gen_gdal_towgs84.py).
+The ESRI rows of crs_list_changes.json (the names, deprecation, areas of use and bounds of
+ESRI CRSs that changed between PROJ 9.8.1's and PROJ 9.9.0's databases) are derived from it
+the same way.
 The ESRI celestial bodies and their semi-major axes in crates/terrio-crs/src/bodies.rs are derived
 from the same documentation, through PROJ 9.9.0's database (scripts/gen_celestial_bodies.py).
 The ESRI names in the test data crates/terrio-crs/tests/data/wkt1_proj_reads.json (Makassar /
@@ -191,6 +211,63 @@ same documentation.
   Copyright © 2010-2025 Esri
 
 Licensed under the Apache License, Version 2.0, reproduced at the end of this file.
+
+-------------------------------------------------------------------------------
+A5, DGGAL and gl-matrix (through PROJ's polyhedral projections)
+-------------------------------------------------------------------------------
+
+crates/terrio-crs/src/projections/polyhedral.rs is translated from PROJ 9.9.0's polyhedral
+Snyder equal-area projections (src/projections/polyhedral.cpp and the files it includes, by
+Felix Palmer), which are derived from A5 (https://github.com/felixpalmer/a5) and, in
+src/projections/polyhedral/snyder.h, from DGGAL (https://github.com/ecere/dggal), and in
+src/vec3.h from gl-matrix.
+
+  Copyright (c) A5 contributors
+
+Licensed under the Apache License, Version 2.0, reproduced at the end of this file.
+
+  Copyright (c) 2014-2025, Ecere Corporation
+
+Redistribution and use in source and binary forms, with or without modification, are permitted
+provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this list of
+   conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice, this list of
+   conditions and the following disclaimer in the documentation and/or other materials provided
+   with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its contributors may be used to
+   endorse or promote products derived from this software without specific prior written
+   permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR
+IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
+CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
+IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
+OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+  Copyright (c) 2015-2021, Brandon Jones, Colin MacKenzie IV (gl-matrix,
+  https://github.com/toji/gl-matrix, from which PROJ's src/vec3.h derives)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
+associated documentation files (the "Software"), to deal in the Software without restriction,
+including without limitation the rights to use, copy, modify, merge, publish, distribute,
+sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or
+substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT
+NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT
+OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 -------------------------------------------------------------------------------
 IAU_2015 definitions
@@ -221,7 +298,7 @@ LICENSES/LicenseRef-rust-proj-capability.txt in https://github.com/opengeos/terr
 Apache License, Version 2.0
 -------------------------------------------------------------------------------
 
-The license of the Apache-2.0 data credited above:
+The license of the Apache-2.0 data and code credited above:
 
 Apache License
 Version 2.0, January 2004

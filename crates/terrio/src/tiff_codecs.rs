@@ -7,9 +7,10 @@
 //     lerc-reader/src/lerc1.rs, lerc2.rs (header parsing)
 
 //! TIFF compressions the `tiff` crate does not decode, read as GDAL (libtiff) reads them: LERC
-//! (alone, or wrapped in Deflate or Zstandard), JPEG XL and LZMA, and Zstandard in every build
-//! (the crate is built without its Zstandard, zstd 0.13), Float16 samples (read as Float32, as GDAL's
-//! Float16) and WhiteIsZero ones (as stored) included. And JPEG, decoded as
+//! (alone, or wrapped in Deflate or Zstandard), JPEG XL (with the `jxl` feature, on by default),
+//! LZMA (with `lzma`), and Zstandard in every build (the crate is built without its Zstandard,
+//! zstd 0.13), Float16 samples (read as Float32, as GDAL's Float16) and WhiteIsZero ones (as
+//! stored) included. And JPEG, decoded as
 //! libjpeg decodes it for GDAL ([`crate::jpeg`]), YCbCr converted to RGB. And unsigned samples
 //! packed in 9 to 31 bits (GDAL's `NBITS`, as written for Sentinel-2's 15-bit bands), in any of the
 //! lossless compressions, read as UInt16 or UInt32 as GDAL reads them; and samples of 1 to 7 bits
@@ -255,7 +256,7 @@ fn invalid(msg: impl Into<String>) -> TiffError {
 }
 
 /// The error of a compression this build leaves out: terrio was built without `feature`.
-#[cfg(not(all(feature = "lerc", feature = "lzma")))]
+#[cfg(not(all(feature = "lerc", feature = "lzma", feature = "jxl")))]
 fn disabled(feature: &str) -> TiffError {
     TiffError::IoError(std::io::Error::new(std::io::ErrorKind::Unsupported, format!("built without the `{feature}` feature")))
 }
@@ -949,6 +950,7 @@ impl ChunkCodec {
 
     /// Decodes a JPEG XL codestream into native-endian samples: the colour channels, then the extra
     /// channels, interleaved by pixel, as libtiff's JPEG XL codec does.
+    #[cfg(feature = "jxl")]
     fn jxl(&self, raw: &[u8], w: usize, h: usize) -> TiffResult<Vec<u8>> {
         use jxl_oxide::image::BitDepth;
         // On terrio's thread pool: `jxl-oxide` decodes with rayon (see `par`).
@@ -995,6 +997,11 @@ impl ChunkCodec {
             }
         }
         self.to_bytes(&samples)
+    }
+
+    #[cfg(not(feature = "jxl"))]
+    fn jxl(&self, _raw: &[u8], _w: usize, _h: usize) -> TiffResult<Vec<u8>> {
+        Err(disabled("jxl"))
     }
 
     /// Decodes a JPEG chunk, its stream completed with the shared tables.

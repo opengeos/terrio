@@ -229,6 +229,7 @@
         feature = "flatgeobuf",
         feature = "jp2",
         feature = "lerc",
+        feature = "jxl",
         feature = "pointcloud",
         feature = "tiles",
         feature = "zarr",
