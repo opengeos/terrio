@@ -1040,6 +1040,15 @@ the string leaves out what a PROJ string cannot hold, so keep the code or WKT to
 - a PROJ string's vertical unit (`+vunits`, `+vto_meter`) without a geoid model
   (`+geoidgrids`): PROJ writes it only with one.
 
+`SpatialRef::to_proj4_gdal` writes the PROJ string GDAL 3.13.3 writes (`OSRExportToProj4`): the
+same, without `+type=crs`, and for an EPSG or ESRI code's own definition, with what GDAL adds to it
+(`scripts/gen_gdal_towgs84.py`, 5,141 CRSs): the datum transformation to WGS 84 as `+towgs84`,
+where PROJ finds a single one for the CRS's area of use (EPSG:31467 has
+`+towgs84=598.1,73.7,418.2,0.202,0.045,-2.455,6.7`; EPSG:27700, with several, has none), and a
+compound CRS's geoid model (`+geoidgrids`, `+geoid_crs=WGS84`). Another CRS keeps its own
+`+towgs84`, if any. A deprecated code has its own definition's, as GDAL with
+`OSR_USE_NON_DEPRECATED=NO`.
+
 A compound CRS (`EPSG:4326+5773`, a registry code, a WKT's `COMPD_CS`) is its horizontal CRS's
 string with the vertical unit (`+vunits=m`), and a WKT's geoid model (`+geoidgrids`). A CRS
 given by a PROJ string or a WKT without a code comes back as PROJ writes it:

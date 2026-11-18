@@ -816,6 +816,76 @@ impl SpatialRef {
         proj_write::write(self)
     }
 
+    /// The PROJ string GDAL writes for the CRS (`OSRExportToProj4`, GDAL 3.13.3 on PROJ 9.9.0):
+    /// [`Self::to_proj4`] without `+type=crs`, and for an EPSG or ESRI code's own definition (from
+    /// [`Self::from_epsg`] or [`Self::from_esri`]), with what GDAL adds to it: the datum
+    /// transformation to WGS 84 as `+towgs84`, when PROJ finds a single one for the CRS's area of
+    /// use (GDAL's default `OSR_ADD_TOWGS84_ON_EXPORT_TO_PROJ4=YES`), and a compound CRS's geoid
+    /// model as `+geoidgrids` and `+geoid_crs`. `None` where [`Self::to_proj4`] is.
+    ///
+    /// Another CRS (a PROJ string, a WKT, even one GDAL identifies with a code) keeps its own
+    /// `+towgs84`, if any: GDAL's addition to it depends on how GDAL reads it. A deprecated code
+    /// has its own definition's, as GDAL gives it with `OSR_USE_NON_DEPRECATED=NO`
+    /// ([`Self::from_epsg_non_deprecated`] has its replacement's, as GDAL's default).
+    ///
+    /// ```
+    /// use terrio_crs::SpatialRef;
+    ///
+    /// let gk3 = SpatialRef::from_epsg(31467)?;
+    /// assert_eq!(
+    ///     gk3.to_proj4_gdal().as_deref(),
+    ///     Some("+proj=tmerc +lat_0=0 +lon_0=9 +k=1 +x_0=3500000 +y_0=0 +ellps=bessel +towgs84=598.1,73.7,418.2,0.202,0.045,-2.455,6.7 +units=m +no_defs")
+    /// );
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
+    pub fn to_proj4_gdal(&self) -> Option<String> {
+        let proj = self.to_proj4()?;
+        let mut tokens: Vec<String> = proj.split_whitespace().filter(|t| *t != "+type=crs").map(str::to_string).collect();
+        let Some((towgs84, geoid)) = self.registry_definition().and_then(|(authority, code)| epsg::gdal_additions(authority, code)) else {
+            return Some(tokens.join(" "));
+        };
+        let has = |tokens: &[String], keys: &[&str]| tokens.iter().any(|t| keys.iter().any(|k| t.starts_with(k)));
+        // After the ellipsoid, before the units and what follows them.
+        if !towgs84.is_empty() && !has(&tokens, &["+towgs84=", "+nadgrids="]) {
+            let at = tokens
+                .iter()
+                .position(|t| {
+                    ["+units=", "+to_meter=", "+vunits=", "+nadgrids=", "+geoidgrids="].iter().any(|k| t.starts_with(k))
+                        || t == "+no_defs"
+                        || t == "+wktext"
+                })
+                .unwrap_or(tokens.len());
+            tokens.insert(at, format!("+towgs84={towgs84}"));
+        }
+        if !geoid.is_empty() && !has(&tokens, &["+geoidgrids="]) {
+            let geoid = geoid.split_whitespace().map(str::to_string);
+            if tokens.iter().any(|t| t == "+wktext") {
+                // A CRS PROJ writes through its PROJ4 extension (Web Mercator's): GDAL appends
+                // the geoid model after it, and the vertical unit last.
+                let vunits: Vec<String> = tokens.iter().filter(|t| t.starts_with("+vunits=")).cloned().collect();
+                tokens.retain(|t| !t.starts_with("+vunits="));
+                tokens.extend(geoid);
+                tokens.extend(vunits);
+            } else {
+                let at = tokens.iter().position(|t| t.starts_with("+vunits=") || t == "+no_defs").unwrap_or(tokens.len());
+                tokens.splice(at..at, geoid);
+            }
+        }
+        Some(tokens.join(" "))
+    }
+
+    /// The EPSG or ESRI code whose own definition this CRS is (that of [`Self::from_epsg`] or
+    /// [`Self::from_esri`]).
+    fn registry_definition(&self) -> Option<(&'static str, u32)> {
+        let (authority, code) = self.authority()?;
+        let own = match authority {
+            "EPSG" => Self::from_epsg(code).ok()?,
+            "ESRI" => Self::from_esri(code).ok()?,
+            _ => return None,
+        };
+        (own.wkt == self.wkt && own.proj4 == self.proj4 && own.esri == self.esri).then_some((authority, code))
+    }
+
     /// The WKT definition, built from the EPSG (or ESRI) code or PROJ string when no WKT is
     /// stored.
     pub fn to_wkt(&self) -> Option<String> {
