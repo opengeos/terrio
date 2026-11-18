@@ -362,6 +362,10 @@ jobs:
         env:
           RUSTFLAGS: -D warnings
         run: cargo hack check -p terrio --each-feature --no-dev-deps --exclude-features gdal
+      - name: NetCDF and HDF5 reads with and without HEC-RAS
+        run: |
+          cargo test -p terrio --no-default-features --features netcdf-hdf5 --test hdf_readers --locked
+          cargo test -p terrio --no-default-features --features hecras --test hdf_readers --locked
       # Separate invocations avoid feature unification with Terrio, which enables
       # the projection fallback for backward compatibility.
       - name: Standalone CRS configurations

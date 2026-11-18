@@ -3941,6 +3941,28 @@ eager opens may fall back to GDAL after a Rust error; the fallback keeps GDAL's
 admission behavior. Native eager rejection is checked directly in unit tests,
 and streamed GPKG reads continue to use the Rust reader in that build.
 
+## NetCDF and HDF5 reader compatibility
+
+The direct `netcdf-reader` and `hdf5-reader` dependencies share storage types and must use
+compatible release lines. The optional, default-enabled HEC-RAS engine owns a separate reader
+and may retain an older release. Check actual reads both with the default features and without
+HEC-RAS:
+
+```sh
+cargo test -p terrio --lib multidim::netcdf
+cargo test -p terrio --test hdf_readers
+cargo test -p terrio --no-default-features --features netcdf-hdf5 --test hdf_readers
+cargo test -p terrio --no-default-features --features hecras --test hdf_readers
+```
+
+The NetCDF regressions pass counted storage into `NcFile`, verify exact selected values and
+check that a window reads only a fraction of the array bytes. The `hdf_readers` integration tests
+check NetCDF raster values against the frozen GDAL 3.12.1-compatible expectations, selected
+byte-backed arrays, HDF5 subdatasets and engine vector reads alongside direct raster reads.
+Their dedicated CI target avoids unrelated full-feature unit-test modules in minimal builds.
+`cargo hack check --each-feature` also checks isolated library feature builds. The real-file
+HEC-RAS comparison remains `scripts/compare_hecras_with_h5py.py` on HEC-RAS 7.0.1 files.
+
 ## HDF5 resource limits
 
 HDF5 allocation regressions run with `cargo test -p terrio --lib drivers::hdf5::tests`.
