@@ -1373,8 +1373,11 @@ instructions of `crates/terrio/benches/instructions.rs` with main: warp (4326 to
 nearest, bilinear and cubic, GDAL's chunk-dependent grid, and a half-pixel shift), slope and
 hillshade, a DEFLATE + floating-point-predictor GeoTIFF read, and zonal statistics of 1024
 polygons, each on 1 M synthetic pixels. The `bench` workflow runs both commits under Valgrind
-(Callgrind) in the same job, and `bench comment` posts the table and sets the `perf-regression`
-label when a benchmark runs 10% or more instructions. Instruction counts of a commit repeat within
+(Callgrind) in the same job, and `bench comment` posts the table, with what each benchmark runs
+and its exact change, and sets the `perf-regression` label when a benchmark runs 10% or more
+instructions or estimated cycles. The Claude code review then adds, under the table, the likely
+cause of each slower benchmark in the diff; the regular code review leaves performance to this
+comment. Instruction counts of a commit repeat within
 0.01% between runs on one machine (both commits run on the same runner), where shared runners'
 timings vary by 10–30%. The check never fails a pull request.
 

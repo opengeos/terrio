@@ -16,7 +16,6 @@ import json
 import sys
 
 FLAG = 10.0  # percent
-NOTE = 2.0  # percent: smaller changes are written "≈"
 
 
 def summaries(text):
@@ -56,9 +55,26 @@ def count(n):
     return str(n)
 
 
+# What each benchmark runs (crates/terrio/benches/instructions.rs), for readers who don't know the
+# bench names. A benchmark missing here shows its name alone.
+WHAT = {
+    "warp_f32 reproject_near": "Reproject 1 M pixels, EPSG:4326 → UTM 31N, nearest",
+    "warp_f32 reproject_bilinear": "Reproject 1 M pixels, EPSG:4326 → UTM 31N, bilinear",
+    "warp_f32 reproject_cubic": "Reproject 1 M pixels, EPSG:4326 → UTM 31N, cubic",
+    "warp_f32 reproject_near_gdal_grid": "Reproject as above, nearest, with GDAL's chunk-dependent sampling",
+    "warp_f32 half_pixel_shift_near": "Shift 1 M pixels by half a pixel, no CRS change, nearest",
+    "dem_f32 slope": "Slope of a 1 M-pixel DEM",
+    "dem_f32 hillshade": "Hillshade of a 1 M-pixel DEM",
+    "read_geotiff_f32 deflate_predictor3": "Read a tiled DEFLATE GeoTIFF, floating-point predictor, 1 M pixels",
+    "zonal_stats_f32 octagons": "Zonal statistics of 1024 octagons over 1 M pixels",
+}
+
+
 def change(old, new):
+    """The change in percent, and as text: two decimals under 1%, so small drifts show."""
     pct = (new - old) / old * 100.0 if old else float("inf")
-    return pct, f"{pct:+.1f}%".replace("-", "−")
+    text = "0%" if pct == 0 else f"{pct:+.2f}%" if abs(pct) < 1 else f"{pct:+.1f}%"
+    return pct, text.replace("-", "−")
 
 
 def main():
@@ -70,51 +86,65 @@ def main():
     with open(args.summaries, encoding="utf-8") as f:
         rows = [(s["function_name"] + (f" {s['id']}" if s.get("id") else ""), *metrics(s)) for s in summaries(f.read())]
 
-    header = ["| | benchmark | instructions | change | est. cycles | change |", "|---|---|---:|---:|---:|---:|"]
-    flagged, unchanged, regression = [], [], False
-    for name, ir, cycles in rows:
-        if ir[0] is None:
-            unchanged.append(f"| 🆕 | {name} | {count(ir[1])} | new | {count(cycles[1]) if cycles else ''} | new |")
-            continue
-        cells, worst, best = [], 0.0, 0.0
+    table = []  # (sort key, mark, table line, label, largest change)
+    for n, (name, ir, cycles) in enumerate(rows):
+        cells, up, down, big = [], 0.0, 0.0, 0.0
         for pair in (ir, cycles):
-            if pair is None or pair[0] is None:
-                cells += ["", ""]
-                continue
-            pct, text = change(*pair)
-            worst, best = max(worst, pct), min(best, pct)
-            flag = abs(pct) >= FLAG
-            cells += [f"{count(pair[0])} → {count(pair[1])}", f"**{text}**" if flag else text if abs(pct) >= NOTE else "≈"]
-        line = f"| {{}} | {name} | {' | '.join(cells)} |"
-        if worst >= FLAG:
-            regression = True
-            flagged.append(line.format("⚠️"))
-        elif best <= -FLAG:
-            flagged.append(line.format("✅"))
-        else:
-            unchanged.append(line.format("🟢"))
+            if pair is None:
+                cells.append("")
+            elif pair[0] is None:
+                cells.append(f"{count(pair[1])} (new)")
+            else:
+                pct, text = change(*pair)
+                up, down, big = max(up, pct), min(down, pct), max(big, pct, key=abs)
+                cells.append(f"{count(pair[0])} → {count(pair[1])} ({f'**{text}**' if abs(pct) >= FLAG else text})")
+        mark = "🆕" if ir[0] is None else "⚠️" if up >= FLAG else "✅" if down <= -FLAG else "🟢"
+        what = WHAT.get(name)
+        label = f"{what}<br>`{name}`" if what else f"`{name}`"
+        # Slower, then faster, the largest change first; the others in bench order.
+        key = {"⚠️": (0, -up), "✅": (1, down)}.get(mark, (2, 0.0)) + (n,)
+        table.append((key, mark, f"| {mark} | {label} | {cells[0]} | {cells[1]} |", what or name, big))
+    table.sort(key=lambda r: r[0])
 
-    out = []
-    if regression:
-        out.append("<!-- terrio-bench: regression -->")
-    out += [
-        "### Performance vs main",
-        f"Under Valgrind, main `{args.base[:7]}` vs this PR `{args.head[:7]}`: CPU instructions, and estimated cycles",
-        "(instructions plus cache and RAM misses, a speed estimate). Both repeat within 0.01% between runs.",
-        f"Flagged at ±{FLAG:g}% on either. Informational: this check never fails.",
-        "",
-    ]
-    compared = sum(ir[0] is not None for _, ir, _ in rows)
-    ok = compared - len(flagged)
+    slower = [r for r in table if r[1] == "⚠️"]
+    faster = [r for r in table if r[1] == "✅"]
+    compared = sum(r[1] != "🆕" for r in table)
+
+    def listed(rs):
+        return "; ".join(f"{r[3]} {change(100, 100 + r[4])[1]}" for r in rs)
+
+    out = ["<!-- terrio-bench: regression -->"] if slower else []
+    out.append("### Performance vs main")
     if not compared:
-        out += ["main has no benchmarks yet: these are this PR's counts.", ""]
-    if flagged:
-        out += [*header, *flagged, ""]
-    elif compared:
-        out += [f"🟢 All {ok}/{compared} benchmarks within ±{FLAG:g}% of main.", ""]
-    if unchanged:
-        label = f"🟢 {ok}/{compared} within ±{FLAG:g}%" if compared else f"{len(unchanged)} benchmarks"
-        out += [f"<details><summary>{label}</summary>", "", *header, *unchanged, "</details>"]
+        out.append(f"🆕 main has no benchmarks yet: these are this PR's counts, {len(table)} benchmarks.")
+    if slower:
+        out.append(f"⚠️ **{len(slower)} of {compared} benchmarks are slower** than main: {listed(slower)}.")
+    if faster:
+        out.append(f"✅ **{len(faster)} of {compared} are faster**: {listed(faster)}.")
+    if compared and not slower and not faster:
+        top = max((r for r in table if r[1] != "🆕"), key=lambda r: abs(r[4]))
+        out.append(
+            f"🟢 **No slowdown.** All {compared} benchmarks are within ±{FLAG:g}% of main; "
+            f"the largest change is {change(100, 100 + top[4])[1]} ({top[3]})."
+        )
+    out += [
+        "",
+        "| | benchmark | CPU instructions | est. cycles |",
+        "|---|---|---:|---:|",
+        *(r[2] for r in table),
+        "",
+        "<details><summary>How to read this</summary>",
+        "",
+        (f"- Counted under Valgrind (Callgrind) for main `{args.base[:7]}` and this PR `{args.head[:7]}`, "
+         "with one worker thread, on synthetic inputs."),
+        ("- **CPU instructions**: the work done. **Est. cycles**: instructions plus cache and RAM misses, "
+         "an estimate of the time taken."),
+        "- Both repeat within 0.01% between runs, so a change beyond that comes from the code, not from noise.",
+        (f"- ⚠️ slower or ✅ faster by {FLAG:g}% or more on either; 🟢 within ±{FLAG:g}%. "
+         "Informational: this check never fails."),
+        "- Run them locally: `cargo bench -p terrio --bench instructions`.",
+        "</details>",
+    ]
     sys.stdout.write("\n".join(out) + "\n")
 
 
