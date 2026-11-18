@@ -50,7 +50,8 @@ def dump(path):
 def combine(old_path, new_path):
     """Write the fields that differ between the two dumps, and the codes added and removed."""
     old, new = (json.loads(Path(p).read_text(encoding="utf-8")) for p in (old_path, new_path))
-    assert (old["proj"], new["proj"]) == ("9.8.1", "9.9.0"), (old["proj"], new["proj"])
+    if (old["proj"], new["proj"]) != ("9.8.1", "9.9.0"):
+        raise ValueError(f"dumps of PROJ {old['proj']} and {new['proj']}, not PROJ 9.8.1 and 9.9.0")
     changes, added, removed = {}, {}, {}
     for authority in AUTHORITIES:
         a, b = old["entries"][authority], new["entries"][authority]

@@ -18,8 +18,8 @@ handled as follows; none is changed to agree with the older database:
 - **EPSG points** (`epsg_accuracy`, `epsg_accuracy_grids`): generated with GDAL 3.13.3 on PROJ
   9.9.0 (see the test data below).
 - **CRS listing** (`--only crs-list`, `scripts/compare_crs_list_with_gdal.py`): with GDAL on PROJ
-  9.8.1, the CRSs EPSG and ESRI added or changed since (a name, deprecation, an area of use or its
-  bounds) are compared with PROJ 9.9.0's values instead of GDAL's, and reported as "not compared"
+  9.8.1, the CRSs EPSG and ESRI added or changed since (in a name, deprecation, an area of use or
+  its bounds, for example) are compared with PROJ 9.9.0's values instead of GDAL's, and reported as "not compared"
   against GDAL: GDAL must have each changed field's PROJ 9.8.1 value and terrio its PROJ 9.9.0
   value, and an added CRS must match PROJ 9.9.0's entry
   (`crates/terrio-crs/tests/data/crs_list_changes.json`, regenerated with

@@ -117,10 +117,10 @@ def main():
             expected = reference.get(e["code"])
             added = changes["added"][authority].get(str(e["code"])) if changes else None
             registry = changes["changes"][authority].get(str(e["code"])) if changes else None
+            stale = []
             if expected is None and added is not None:
                 # A CRS the registry added since GDAL's PROJ: compared with the newer PROJ's entry.
                 expected = added
-                changed.append(e["code"])
             elif expected is None:
                 differs.append(f"{authority}:{e['code']} is not in GDAL's list")
                 continue
@@ -131,13 +131,15 @@ def main():
                 if stale:
                     differs.append(f"{authority}:{e['code']} GDAL's {', '.join(stale)} is not {changes['from']}'s")
                 expected = {k: registry[k][1] if k in registry else v for k, v in expected.items()}
-                changed.append(e["code"])
             fields = [k for k in expected if e.get(k) != expected[k]]
             if fields:
                 differs.append(f"{authority}:{e['code']} {', '.join(f'{k}: {e.get(k)!r} vs {expected[k]!r}' for k in fields)}")
+            elif (added is not None or registry is not None) and not stale:
+                # Only a CRS that passed every check is counted as the registry's change.
+                changed.append(e["code"])
         name = f"{authority}: {len(ours)} listed CRSs, every field"
         if changed:
-            name += f" (those the registry changed since {changes['from']} as {changes['to']} has them)"
+            name += f" (those the registry added or changed since {changes['from']} as {changes['to']} has them)"
         if differs:
             cases.append({"name": name, "status": "differs", "detail": f"{len(differs)} differ: " + "; ".join(differs[:5])})
         else:
@@ -148,7 +150,15 @@ def main():
             cases.append({"name": f"{authority}: {len(changed)} CRSs added or changed after {changes['from']}",
                           "status": "not compared", "detail": detail})
         codes = {e["code"] for e in ours}
-        left_out = Counter(e["kind"] for c, e in reference.items() if c not in codes)
+        # The CRSs the registry removed since GDAL's PROJ are no rejection of terrio's.
+        removed = set(changes["removed"][authority]) if changes else set()
+        left_out = Counter(e["kind"] for c, e in reference.items() if c not in codes and c not in removed)
+        if removed:
+            cases.append({"name": f"{authority}: {len(removed)} CRSs removed after {changes['from']}", "status": "not compared",
+                          "detail": f"GDAL's {changes['from']} lists them, {changes['to']} does not (crs_list_changes.json)"})
+        # The CRSs the registry added that terrio does not list are counted with the others it does
+        # not resolve, as against the newer PROJ (the pinned count catches a missing one).
+        left_out.update(e["kind"] for c, e in (changes["added"][authority] if changes else {}).items() if int(c) not in codes)
         if left_out:
             detail = ", ".join(f"{n} {k}" for k, n in sorted(left_out.items()))
             cases.append({"name": f"{authority}: {sum(left_out.values())} CRSs terrio does not resolve", "status": "expected rejection", "detail": detail})
