@@ -834,13 +834,17 @@ impl SpatialRef {
     /// ```
     pub fn to_proj4_gdal(&self) -> Option<String> {
         let proj = self.to_proj4()?;
-        let mut tokens: Vec<String> = proj.split_whitespace().filter(|t| *t != "+type=crs").map(str::to_string).collect();
-        let Some((towgs84, geoid)) = self.registry_definition().and_then(|(authority, code)| epsg::gdal_additions(authority, code)) else {
+        let mut tokens: Vec<String> = proj_tokens(&proj).filter(|t| *t != "+type=crs").map(str::to_string).collect();
+        // The table first: rebuilding the code's own definition is the costlier check. A code's
+        // own PROJ string has no `+towgs84`, `+nadgrids` or `+geoidgrids` of its own where the
+        // table adds one (`a_registry_string_has_nothing_the_table_adds`).
+        let Some((towgs84, geoid)) =
+            self.authority().and_then(|(authority, code)| epsg::gdal_additions(authority, code)).filter(|_| self.is_registry_definition())
+        else {
             return Some(tokens.join(" "));
         };
-        let has = |tokens: &[String], keys: &[&str]| tokens.iter().any(|t| keys.iter().any(|k| t.starts_with(k)));
         // After the ellipsoid, before the units and what follows them.
-        if !towgs84.is_empty() && !has(&tokens, &["+towgs84=", "+nadgrids="]) {
+        if !towgs84.is_empty() {
             let at = tokens
                 .iter()
                 .position(|t| {
@@ -851,7 +855,7 @@ impl SpatialRef {
                 .unwrap_or(tokens.len());
             tokens.insert(at, format!("+towgs84={towgs84}"));
         }
-        if !geoid.is_empty() && !has(&tokens, &["+geoidgrids="]) {
+        if !geoid.is_empty() {
             let geoid = geoid.split_whitespace().map(str::to_string);
             if tokens.iter().any(|t| t == "+wktext") {
                 // A CRS PROJ writes through its PROJ4 extension (Web Mercator's): GDAL appends
@@ -868,16 +872,15 @@ impl SpatialRef {
         Some(tokens.join(" "))
     }
 
-    /// The EPSG or ESRI code whose own definition this CRS is (that of [`Self::from_epsg`] or
+    /// Whether this CRS is its EPSG or ESRI code's own definition (that of [`Self::from_epsg`] or
     /// [`Self::from_esri`]).
-    fn registry_definition(&self) -> Option<(&'static str, u32)> {
-        let (authority, code) = self.authority()?;
-        let own = match authority {
-            "EPSG" => Self::from_epsg(code).ok()?,
-            "ESRI" => Self::from_esri(code).ok()?,
-            _ => return None,
+    fn is_registry_definition(&self) -> bool {
+        let own = match self.authority() {
+            Some(("EPSG", code)) => Self::from_epsg(code),
+            Some(("ESRI", code)) => Self::from_esri(code),
+            _ => return false,
         };
-        (own.wkt == self.wkt && own.proj4 == self.proj4 && own.esri == self.esri).then_some((authority, code))
+        own.is_ok_and(|own| own.wkt == self.wkt && own.proj4 == self.proj4 && own.esri == self.esri)
     }
 
     /// The WKT definition, built from the EPSG (or ESRI) code or PROJ string when no WKT is
@@ -4294,5 +4297,51 @@ mod tests {
             let r = (x * (1.0 / 6378137.0)) % two_pi;
             assert!(!stuck.contains(&x) || lon == r || lon == r - two_pi.copysign(r), "easting {x:e}: {lon}, remainder {r}");
         }
+    }
+}
+
+/// A PROJ string's `+key=value` tokens, split on whitespace outside double quotes (PROJ quotes a
+/// value with spaces, `+geoidgrids="my  grid.gtx"`), each as written.
+fn proj_tokens(s: &str) -> impl Iterator<Item = &str> {
+    let mut quoted = false;
+    s.split(move |c: char| {
+        if c == '"' {
+            quoted = !quoted;
+        }
+        c.is_whitespace() && !quoted
+    })
+    .filter(|t| !t.is_empty())
+}
+
+#[cfg(test)]
+mod gdal_proj4_tests {
+    #[test]
+    fn a_registry_string_has_nothing_the_table_adds() {
+        // What `to_proj4_gdal` inserts is never already there: no EPSG or ESRI code GDAL adds a
+        // `+towgs84` to has a `+towgs84` or `+nadgrids` of its own, none it adds a geoid to has
+        // `+geoidgrids`.
+        let text = crate::epsg::decompress(include_bytes!("../data/gdal_towgs84.tsv.zst"));
+        let (mut checked, mut skipped) = (0, Vec::new());
+        for line in text.lines() {
+            let f: Vec<&str> = line.split('\t').collect();
+            let code = f[1].parse().unwrap();
+            let s = if f[0] == "EPSG" { crate::SpatialRef::from_epsg(code) } else { crate::SpatialRef::from_esri(code) };
+            let Some(proj) = s.ok().and_then(|s| s.to_proj4()) else {
+                skipped.push(format!("{}:{code}", f[0]));
+                continue;
+            };
+            assert!(f[2].is_empty() || !(proj.contains("+towgs84=") || proj.contains("+nadgrids=")), "{}:{code} {proj}", f[0]);
+            assert!(f[3].is_empty() || !proj.contains("+geoidgrids="), "{}:{code} {proj}", f[0]);
+            checked += 1;
+        }
+        // Two of PROJ 9.9.0's ESRI codes are not in terrio's ESRI table.
+        assert_eq!(skipped, ["ESRI:102151", "ESRI:102964"]);
+        assert_eq!(checked, 5139);
+    }
+
+    #[test]
+    fn quoted_values_keep_their_spaces() {
+        let tokens: Vec<_> = super::proj_tokens(r#"+proj=longlat  +geoidgrids="@my  grid.gtx" +no_defs"#).collect();
+        assert_eq!(tokens, ["+proj=longlat", r#"+geoidgrids="@my  grid.gtx""#, "+no_defs"]);
     }
 }

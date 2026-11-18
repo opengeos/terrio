@@ -23,8 +23,6 @@ fn registry_crss_are_written_as_gdal_exports_them() {
     let (mut compared, mut unread) = (0, Vec::new());
     for line in include_str!("data/gdal_proj4_export.tsv").lines() {
         let (code, gdal) = line.split_once('\t').unwrap();
-        // The CRSs terrio does not carry or write: ESRI's CRSs of other bodies, and those PROJ has
-        // no PROJ string for.
         let Some(written) = registry(code).and_then(|s| s.to_proj4_gdal()) else {
             unread.push(code);
             continue;
@@ -33,7 +31,9 @@ fn registry_crss_are_written_as_gdal_exports_them() {
         compared += 1;
     }
     assert!(compared > 1250, "only {compared} compared");
-    assert!(unread.len() < 20, "not written: {unread:?}");
+    // The ESRI CRSs terrio does not carry: two whose methods it has no formulas for (natearth2,
+    // qua_aut), and geographic CRSs of other bodies.
+    assert_eq!(unread, ["ESRI:53078", "ESRI:54022", "ESRI:104916", "ESRI:104936", "ESRI:104956", "ESRI:104976", "ESRI:104996"]);
 }
 
 #[test]

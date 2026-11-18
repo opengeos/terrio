@@ -67,6 +67,7 @@ def main():
     osr.UseExceptions()
     osr.SetPROJEnableNetwork(False)
     gdal.SetConfigOption("OSR_USE_NON_DEPRECATED", "NO")
+    gdal.SetConfigOption("OSR_ADD_TOWGS84_ON_EXPORT_TO_PROJ4", "YES")
     rows, with_additions, others = [], [], []
     for authority in ("EPSG", "ESRI"):
         infos = [i for i in osr.GetCRSInfoListFromDatabase(authority) if i.type in KINDS]
@@ -86,7 +87,9 @@ def main():
     subprocess.run(["zstd", "-19", "-q", "-f", "-o", OUT], input=text.encode(), check=True)
     fixture = dict(with_additions[::5] + others[::20])
     for code in NAMED:
-        fixture[code] = export(code)
+        proj = export(code)
+        assert proj is not None, f"GDAL refuses {code}"
+        fixture[code] = proj
     with open(FIXTURE, "w") as f:
         for code, proj in sorted(fixture.items(), key=lambda c: (c[0].split(":")[0], int(c[0].split(":")[1]))):
             f.write(f"{code}\t{proj}\n")
