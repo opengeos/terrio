@@ -6273,6 +6273,15 @@ impl RegionWarp {
         self
     }
 
+    /// Re-targets the warp to another destination grid georeferenced by `gt`, keeping the source
+    /// and its transformer, as `GDALSetGenImgProjTransformerDstGeoTransform()` re-targets one:
+    /// the source windows ([`RegionWarp::source_window`]) and warps ([`RegionWarp::warp`]) of
+    /// regions of the new grid come out as a [`RegionWarp::new`] made with `gt` gives them.
+    pub fn set_dst_gt(&mut self, gt: [f64; 6]) {
+        self.t.set_dst_gt(gt);
+        self.translation = self.t.src_gcp.is_none() && self.t.ct.is_none() && is_pixel_translation(&self.t.src_gt, &gt);
+    }
+
     /// A warp of the bands of a source of `src_size` pixels, georeferenced by `src_gt` in
     /// `src_srs`, into a grid georeferenced by `dst_gt` in `dst_srs`. `src_nodata` has one value
     /// (or `None`) per band.
@@ -10074,6 +10083,58 @@ mod tests {
         }
         let (actual, _) = region().with_sum_scale(2.).warp((0, 0, 2, 2), (0, 0, 2, 2), &data, None, 0., false).unwrap();
         assert_eq!(actual.to_f64_vec(), vec![2.; 4]);
+    }
+
+    /// Re-targeting one `RegionWarp` to another grid (`set_dst_gt`, as
+    /// `GDALSetGenImgProjTransformerDstGeoTransform()` re-targets a transformer) gives the same
+    /// source windows and warps as a fresh `RegionWarp` for each grid: a reprojected grid, the
+    /// source's own grid, and one shifted from it by whole pixels (a pixel translation).
+    #[test]
+    fn region_warp_set_dst_gt_warps_as_a_fresh_warp() {
+        let (geographic, web) = (SpatialRef::from_epsg(4326).unwrap(), SpatialRef::from_epsg(3857).unwrap());
+        let src_gt = [-10.0, 0.01, 0.0, 50.0, 0.0, -0.01];
+        let size = (20, 20);
+        let value = |c: usize, r: usize| ((c * 3 + r * 17) % 251) as f64 + 0.5;
+        let src = raster(size.0, size.1, src_gt, 4326, value);
+        let (web_gt, web_w, web_h, _) = suggested_output(&src, &web).unwrap();
+        let shifted = [-9.98, 0.01, 0.0, 50.02, 0.0, -0.01];
+        let web_shifted = [web_gt[0] + web_gt[1], web_gt[1], 0.0, web_gt[3] + web_gt[5], 0.0, web_gt[5]];
+        // Each case re-targets a warp made for another grid (`initial`) to `gt`, and compares with
+        // a fresh warp for `gt`.
+        let check = |dst_srs: &SpatialRef, gt: [f64; 6], initial: [f64; 6], regions: &[(usize, usize, usize, usize)]| {
+            let mut reused = RegionWarp::new(
+                size,
+                src_gt,
+                &geographic,
+                dst_srs,
+                initial,
+                Resampling::Nearest,
+                0.125,
+                DataType::F64,
+                vec![None],
+                Some(0.0),
+            )
+            .unwrap();
+            reused.set_dst_gt(gt);
+            let fresh =
+                RegionWarp::new(size, src_gt, &geographic, dst_srs, gt, Resampling::Nearest, 0.125, DataType::F64, vec![None], Some(0.0))
+                    .unwrap();
+            for region in regions {
+                assert_eq!(reused.source_window(*region), fresh.source_window(*region), "region {region:?} gt {gt:?}");
+                let Some((sx, sy, sw, sh)) = reused.source_window(*region) else { continue };
+                if sw == 0 || sh == 0 {
+                    continue;
+                }
+                let data = RasterData::F64((0..sh).flat_map(|r| (0..sw).map(move |c| value(sx + c, sy + r))).collect());
+                let (a, va) = reused.warp(*region, (sx, sy, sw, sh), &data, None, 0.0, false).unwrap();
+                let (b, vb) = fresh.warp(*region, (sx, sy, sw, sh), &data, None, 0.0, false).unwrap();
+                assert_eq!(a.to_f64_vec(), b.to_f64_vec(), "region {region:?} gt {gt:?}");
+                assert_eq!(va, vb, "region {region:?} gt {gt:?}");
+            }
+        };
+        check(&geographic, src_gt, shifted, &[(0, 0, 20, 20), (5, 5, 10, 10)]);
+        check(&geographic, shifted, src_gt, &[(0, 0, 20, 20), (2, 2, 8, 8)]);
+        check(&web, web_gt, web_shifted, &[(0, 0, web_w.min(16), web_h.min(16)), (web_w / 2, web_h / 2, 8, 8)]);
     }
 
     /// The same warps' values, pinned: checksums of terrio's results in one chunk and in many
