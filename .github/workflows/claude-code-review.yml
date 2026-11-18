@@ -191,7 +191,7 @@ jobs:
 
     runs-on: ubuntu-latest
     # The wait for the bench (25 minutes at most) and the review.
-    timeout-minutes: 50
+    timeout-minutes: 60
     permissions:
       # To see whether the bench of the head is still running.
       actions: read
@@ -314,9 +314,10 @@ jobs:
       #
       # A regular review waits for that comment, a minute at a time, so that it
       # reviews measured results: until the comment reports the head, until
-      # the head has had no bench run for 3 minutes or its run has been over
-      # for 3 minutes without a comment (failed, or skipped the benchmarks),
-      # and for 25 minutes at most. A newer push cancels the wait with the run.
+      # the head has had no bench run for 3 minutes, its run failed or skipped
+      # the benchmarks 3 minutes ago, or succeeded 6 minutes ago (time for
+      # bench-comment.yml to post) without a comment, and for 25 minutes at
+      # most. A failed API call counts as "not yet". A newer push cancels the wait with the run.
       #
       # In performance-only mode this step does not wait, and also decides
       # whether the review runs (`run`). Best effort: on failure a regular
@@ -336,9 +337,8 @@ jobs:
           idle=0
           while :; do
             id="$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" \
-              --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- terrio-bench -->"))) | .id' | sed -n 1p)"
-            if [ -n "$id" ]; then
-              gh api "repos/$REPO/issues/comments/$id" --jq .body > "$RUNNER_TEMP/bench.md"
+              --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- terrio-bench -->"))) | .id' | sed -n 1p)" || id=""
+            if [ -n "$id" ] && gh api "repos/$REPO/issues/comments/$id" --jq .body > "$RUNNER_TEMP/bench.md"; then
               if grep -F "this PR \`${HEAD_SHA:0:7}\`" "$RUNNER_TEMP/bench.md" > /dev/null; then
                 # Where the numbers come from, written here and not by the PR, and
                 # before bench.md, so a failure here stages neither file:
@@ -367,12 +367,15 @@ jobs:
             fi
             # The bench run of this head: "queued" or "in_progress" while it is worth waiting.
             status="$(gh api "repos/$REPO/actions/workflows/bench.yml/runs?head_sha=$HEAD_SHA&per_page=1" \
-              --jq '.workflow_runs[0].status // "none"' 2> /dev/null || echo unknown)"
+              --jq '.workflow_runs[0] | (.status // "none") + " " + (.conclusion // "")' 2> /dev/null || echo unknown)"
             case "$status" in
-              queued | in_progress | waiting | requested | pending) idle=0 ;;
+              queued* | in_progress* | waiting* | requested* | pending*) idle=0 ;;
               *) idle=$((idle + 1)) ;;
             esac
-            if [ "$idle" -ge 3 ]; then
+            # A successful run's comment is posted by bench-comment.yml, a run of its own.
+            limit=3
+            [ "$status" = "completed success" ] && limit=6
+            if [ "$idle" -ge "$limit" ]; then
               echo "No bench results to wait for at $HEAD_SHA (bench run: $status)"
               break
             fi
