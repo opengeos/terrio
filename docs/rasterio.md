@@ -73,10 +73,12 @@ It needs only NumPy and [affine](https://github.com/rasterio/affine) (installed 
   still be decoded repeatedly. Streamed output is published only after writing succeeds, and
   copying onto a symlink or hardlink of the source is refused. An unrelated destination symlink
   is replaced with the completed output file; its former target is left unchanged.
-  A copy whose source has a dataset mask, or overviews a COG copies, or that is compressed with
-  JPEG, WebP, LERC or JPEG XL, holds the source's pixels until it is written, as a smaller
-  GeoTIFF does. A copy whose source fails to read leaves its destination as it was, held or
-  written in rows: an existing file keeps its content, and no file is left where there was none.
+  A source's dataset mask is read with its pixels, in the same rows, and written with them. A
+  copy whose source has overviews a COG copies, or that is compressed with JPEG, WebP, LERC or
+  JPEG XL, or whose mask goes to a `.msk` sidecar (`GDAL_TIFF_INTERNAL_MASK=NO`), holds the
+  source's pixels and mask until it is written, as a smaller GeoTIFF does. A copy whose source
+  fails to read leaves its destination as it was, held or written in rows: an existing file
+  keeps its content, and no file is left where there was none.
   GeoTIFFs are written with GDAL's
   layout for the profile: strips or tiles (`tiled`, `blockxsize`, `blockysize`), pixel or band
   interleaving, compression (`lzw`, `deflate`, `zstd`, `packbits`) with predictors 2 and 3,

@@ -42,7 +42,7 @@ from affine import Affine
 
 from terrio import _terrio
 from terrio._terrio import _redact_diagnostic_location as _redact
-from terrio.errors import ResourceLimitError, TerrioError
+from terrio.errors import ResourceLimitError, TerrioError, TerrioIOError
 from terrio.rio import _tiff
 from terrio.rio._resample import gdal_cast, is_nodata, raster_io
 from terrio.rio.coords import BoundingBox
@@ -2342,6 +2342,9 @@ class DatasetWriter(DatasetReader):
     # Whether the mask written is another dataset's mask band, as a copy's is (GDAL's CreateCopy
     # regenerates the overviews of its source's mask), rather than a MEM dataset's.
     _mask_has_dataset = False
+    # Whether a copy's mask is its source's dataset mask, read from the source (`_copy_of`) in
+    # the rows of its pixels as the file is written: the dataset then holds no mask either.
+    _copy_mask = False
     # A copy's source (`shutil.copy`), whose pixels the file is written from as it is written,
     # when it is written in rows: they are then not held (see `_streams_on_flush`).
     _copy_of: Any = None
@@ -2402,6 +2405,7 @@ class DatasetWriter(DatasetReader):
         gcps = kwargs.pop("gcps", None)
         rpcs = kwargs.pop("rpcs", None)
         copy_of = kwargs.pop("_copy_of", None)
+        copy_mask = bool(kwargs.pop("_copy_mask", False))
         complex_sample = kwargs.pop("_complex_dtype", None)
         if mode in ("w", "w+"):
             if not isinstance(driver, str):
@@ -2450,8 +2454,15 @@ class DatasetWriter(DatasetReader):
             self._options = self._creation_options(kwargs)
             shape = (count, height, width)
             storage_dtype = self._buffer_dtype
-            if copy_of is not None and self._streams_on_flush(self._streams(shape, storage_dtype)):
+            # A copy's mask read from its source is written into the file: a mask for a `.msk`
+            # sidecar is written from the dataset's, so that copy holds its pixels and mask.
+            if (
+                copy_of is not None
+                and not (copy_mask and self._mask_to_sidecar())
+                and self._streams_on_flush(self._streams(shape, storage_dtype))
+            ):
                 self._copy_of = copy_of
+                self._copy_mask = copy_mask
                 self._data = np.empty((0, 0, 0), storage_dtype)
             else:
                 fill = self._nodata if self._nodata is not None else 0
@@ -3142,8 +3153,9 @@ class DatasetWriter(DatasetReader):
         """Whether the file is written in rows of blocks (`_write_streaming`) rather than whole.
 
         A GeoTIFF is, when its pixels are held in a file (larger than the in-memory limit); a
-        COG is, without a mask, the source's overviews to copy, or overviews built, and with a
-        compression the row writers take.
+        COG is, without a mask written to the dataset, the source's overviews to copy, or
+        overviews built, and with a compression the row writers take. A copy's mask read from
+        its source (`_copy_mask`) is written in rows with its pixels.
 
         Args:
             file_backed: Whether the pixels are held in a file: by default, whether they are
@@ -3164,6 +3176,25 @@ class DatasetWriter(DatasetReader):
             and not self._overview_factors
             and str(self._options.get("COMPRESS", "NONE")).upper()
             in ("NONE", "LZW", "DEFLATE", "ZIP", "ZSTD", "PACKBITS")
+        )
+
+    def _mask_to_sidecar(self) -> bool:
+        """Whether the dataset's mask goes to a `.msk` sidecar rather than into its file.
+
+        It does in a format without internal masks, in a dataset opened in mode `w` with
+        `GDAL_TIFF_INTERNAL_MASK` off, and on update of a dataset whose mask was read from one.
+
+        Returns:
+            bool: True for a sidecar.
+        """
+        return (
+            self._mask_in_sidecar
+            or self._out_driver not in ("GTiff", "COG")
+            or (
+                self.mode == "w"
+                and os.environ.get("GDAL_TIFF_INTERNAL_MASK", "YES").strip().upper()
+                in ("NO", "FALSE", "OFF", "0")
+            )
         )
 
     def _flush(self) -> None:
@@ -3202,8 +3233,11 @@ class DatasetWriter(DatasetReader):
         streaming = self._streams_on_flush()
         if self._copy_of is not None and not streaming:
             # A copy given its source to write from no longer writes in rows (unreachable from
-            # `shutil.copy`, which gives none with a mask): its pixels, then, whole.
+            # `shutil.copy`, which writes nothing more to it): its pixels, then, whole, and its
+            # source's mask unless one was written to it.
             self._data = np.require(self._copy_of._read_for_copy(), dtype=self._buffer_dtype)
+            if self._copy_mask and self._mask is None:
+                self._mask = self._copy_of.dataset_mask()
             self._copy_of = None
         raster: Any = None
         if not streaming:
@@ -3270,15 +3304,7 @@ class DatasetWriter(DatasetReader):
         # GDAL writes a mask into the GeoTIFF, unless GDAL_TIFF_INTERNAL_MASK says no or the
         # format has no internal masks: then into a `.msk` sidecar.
         # On update, a mask stays where it was (GDAL keeps an internal mask internal).
-        sidecar_mask = self._mask is not None and (
-            self._mask_in_sidecar
-            or driver not in ("GTiff", "COG")
-            or (
-                self.mode == "w"
-                and os.environ.get("GDAL_TIFF_INTERNAL_MASK", "YES").strip().upper()
-                in ("NO", "FALSE", "OFF", "0")
-            )
-        )
+        sidecar_mask = self._mask is not None and self._mask_to_sidecar()
         if self._mask is not None and not streaming and not sidecar_mask:
             extra["mask"] = np.ascontiguousarray(self._mask, dtype=np.uint8)
             if driver == "COG" and self.mode in ("w", "w+") and not self._mask_has_dataset:
@@ -3439,16 +3465,14 @@ class DatasetWriter(DatasetReader):
             opts: Creation options.
             band_md: Band metadata.
             colormap: The color table.
-            extra: GCPs and RPCs (the mask is taken from the dataset).
+            extra: GCPs and RPCs (the mask is the dataset's, or a copy's source's).
             sidecar_mask: Whether the mask goes to a `.msk` sidecar rather than the file.
         """
         cog = self._out_driver == "COG"
         writer = _terrio.CogWriter if cog else _terrio.GeoTiffWriter
-        kw = (
-            {"overview_resampling": self._overview_resampling}
-            if cog
-            else {"mask": self._mask is not None and not sidecar_mask}
-        )
+        # A copy's mask is its source's, whose rows are read with the pixels'.
+        copy_mask = self._copy_of is not None and self._copy_mask
+        kw: dict[str, Any] = {"overview_resampling": self._overview_resampling} if cog else {}
         w = writer(
             target,
             self.width,
@@ -3465,6 +3489,7 @@ class DatasetWriter(DatasetReader):
             colormap=colormap,
             gcps=extra.get("gcps"),
             rpc=extra.get("rpc"),
+            mask=(self._mask is not None or copy_mask) and not sidecar_mask,
             **kw,
         )
         try:
@@ -3499,15 +3524,22 @@ class DatasetWriter(DatasetReader):
                     if self._mask is None or sidecar_mask
                     else np.ascontiguousarray(self._mask[y : y + n])
                 )
-                if m is None:
-                    if write_step:
-                        for start in range(0, n, write_step):
-                            w.write(np.ascontiguousarray(rows[:, start : start + write_step, :]))
-                    else:
-                        w.write(rows)
+                if m is None and copy_mask:
+                    try:
+                        m = source.dataset_mask(window=Window(0, y, self.width, n))
+                    except TerrioIOError as err:
+                        # The core's error, which the pixels' read wraps too.
+                        raise RasterioIOError(f"Read failed: {err}") from err
+                if write_step:
+                    # A COG copy, a row of tiles at a time, with its mask's rows.
+                    for start in range(0, n, write_step):
+                        stop = start + write_step
+                        w.write(
+                            np.ascontiguousarray(rows[:, start:stop, :]),
+                            None if m is None else m[start:stop],
+                        )
                 else:
-                    # A GeoTiffWriter: a COG streams only without a mask.
-                    w.write(rows, m)  # type: ignore[call-arg]
+                    w.write(rows, m)
                 del rows
                 if source is not None:
                     del part

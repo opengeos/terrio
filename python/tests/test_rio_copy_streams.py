@@ -2,12 +2,12 @@
 
 A copy wrote its source's pixels into the dataset it created, which held them until it was closed
 and its file written: the whole image, besides what the COG's writer holds. When the file is
-written in rows (a COG without a dataset mask, overviews of the source to copy, or a compression
-written whole; a GeoTIFF larger than the in-memory limit), the copy now reads the source as it
-writes, a row of a COG's tiles at a time. These tests check that the file is the one the copy
-holding the pixels writes, byte for byte, that the copy reads the source a row of tiles at a time
-and allocates no array of the whole image, and that what is not written in rows is copied as
-before.
+written in rows (a COG without overviews of the source to copy or a compression written whole; a
+GeoTIFF larger than the in-memory limit), the copy now reads the source as it writes, a row of a
+COG's tiles at a time, and the rows of the source's dataset mask with its pixels'. These tests
+check that the file is the one the copy holding the pixels and mask writes, byte for byte, that
+the copy reads the source a row of tiles at a time and allocates no array of the whole image, and
+that what is not written in rows is copied as before.
 """
 
 import filecmp
@@ -39,11 +39,26 @@ PROFILE = dict(
 )
 WINDOWS_SPOOL = re.compile(r"\.tmp[A-Za-z0-9]{6}")
 PALETTE = {0: (0, 0, 0, 255), 1: (200, 30, 30, 255), 2: (30, 200, 30, 255), 3: (30, 30, 200, 255)}
+# A dataset mask invalid in a corner and, across two rows of a COG's tiles, at every third pixel
+# along diagonals, so that its overviews weigh valid and invalid pixels.
+MASK = np.full((HEIGHT, WIDTH), 255, np.uint8)
+MASK[:700, :300] = 0
+MASK[1000:1100] = np.where(np.add.outer(np.arange(100), np.arange(WIDTH)) % 3, 255, 0)
 
 
-def source(path, pixels=RGB, nodata=None, metadata=None, colormap=None, **options):
+def source(
+    path,
+    pixels=RGB,
+    nodata=None,
+    metadata=None,
+    colormap=None,
+    mask=None,
+    overviews=None,
+    **options,
+):
     """A tiled GeoTIFF of `pixels` at `path`, with tags, a description, a unit, a scale and an
-    offset on band 1 when `metadata`, and a color table when `colormap`."""
+    offset on band 1 when `metadata`, a color table when `colormap`, a dataset mask when `mask`,
+    and the overviews of the factors `overviews`."""
     profile = dict(
         PROFILE, count=pixels.shape[0], dtype=pixels.dtype.name, nodata=nodata, **options
     )
@@ -58,17 +73,22 @@ def source(path, pixels=RGB, nodata=None, metadata=None, colormap=None, **option
             dst.offsets = (10.0,) + (0.0,) * (pixels.shape[0] - 1)
         if colormap:
             dst.write_colormap(1, colormap)
+        if mask is not None:
+            dst.write_mask(mask)
+        if overviews:
+            dst.build_overviews(overviews, Resampling.nearest)
     return str(path)
 
 
 class Recording(DatasetReader):
-    """A dataset that records the rows its pixels are read in, and the files of `directory` while
-    they are read."""
+    """A dataset that records the rows its pixels and its dataset mask are read in, and the files
+    of `directory` while they are read."""
 
     def __init__(self, path, directory):
         super().__init__(path)
         self.directory = directory
         self.windows = []
+        self.mask_windows = []
         self.seen = set()
 
     def read(self, *args, **kwargs):
@@ -76,6 +96,14 @@ class Recording(DatasetReader):
         self.windows.append(None if window is None else (int(window.row_off), int(window.height)))
         self.seen.update(p.name for p in self.directory.iterdir())
         return super().read(*args, **kwargs)
+
+    def dataset_mask(self, *args, **kwargs):
+        window = kwargs.get("window")
+        self.mask_windows.append(
+            None if window is None else (int(window.row_off), int(window.height))
+        )
+        self.seen.update(p.name for p in self.directory.iterdir())
+        return super().dataset_mask(*args, **kwargs)
 
 
 def traced_copy(src, out, **options):
@@ -89,11 +117,11 @@ def traced_copy(src, out, **options):
         tracemalloc.stop()
 
 
-@pytest.mark.parametrize("how", ["path", "dataset", "memoryfile", "vrt"])
+@pytest.mark.parametrize("how", ["path", "dataset", "memoryfile", "vrt", "masked"])
 def test_a_cog_copy_allocates_no_array_of_the_whole_image(tmp_path, how):
-    src = source(tmp_path / "src.tif")
+    src = source(tmp_path / "src.tif", mask=MASK if how == "masked" else None)
     out = str(tmp_path / "out.tif")
-    if how == "path":
+    if how in ("path", "masked"):
         peak = traced_copy(src, out, driver="COG", compress="deflate")
     elif how == "vrt":
         vrt = tmp_path / "src.vrt"
@@ -116,28 +144,34 @@ def test_a_cog_copy_allocates_no_array_of_the_whole_image(tmp_path, how):
     assert peak < RGB.nbytes / 2, f"{peak:,} bytes at the peak for an image of {RGB.nbytes:,}"
     with rio.open(out) as ds:
         assert np.array_equal(ds.read(), RGB)
+        if how == "masked":
+            assert np.array_equal(ds.dataset_mask(), MASK)
 
 
 @pytest.mark.parametrize(
-    "driver, options, limit, rows",
+    "driver, options, limit, rows, mask",
     [
-        ("COG", dict(compress="deflate"), None, 512),
-        ("COG", dict(compress="deflate", blocksize=256), None, 256),
+        ("COG", dict(compress="deflate"), None, 512, None),
+        ("COG", dict(compress="deflate", blocksize=256), None, 256, None),
         # A GeoTIFF over the in-memory limit is written in rows of about 16 MB, here the image.
-        ("GTiff", dict(compress="lzw"), "1", HEIGHT),
+        ("GTiff", dict(compress="lzw"), "1", HEIGHT, None),
+        # A dataset mask is read in the rows of the pixels.
+        ("COG", dict(compress="deflate"), None, 512, MASK),
+        ("GTiff", dict(compress="lzw"), "1", HEIGHT, MASK),
     ],
-    ids=["cog-512", "cog-256", "gtiff-over-the-limit"],
+    ids=["cog-512", "cog-256", "gtiff-over-the-limit", "masked-cog", "masked-gtiff-over-the-limit"],
 )
 def test_a_copy_written_in_rows_reads_its_source_a_row_at_a_time(
-    tmp_path, monkeypatch, driver, options, limit, rows
+    tmp_path, monkeypatch, driver, options, limit, rows, mask
 ):
     if limit:
         monkeypatch.setenv("TERRIO_RIO_IN_MEMORY_LIMIT", limit)
-    src = Recording(source(tmp_path / "src.tif"), tmp_path)
+    src = Recording(source(tmp_path / "src.tif", mask=mask), tmp_path)
     with src:
         rio_shutil.copy(src, str(tmp_path / "out.tif"), driver=driver, **options)
     assert src.windows == [(y, min(rows, HEIGHT - y)) for y in range(0, HEIGHT, rows)]
-    # Only the source and the output being written exist, with no pixel staging file.
+    assert src.mask_windows == ([] if mask is None else src.windows)
+    # Only the source and the output being written exist, with no pixel or mask staging file.
     assert "src.tif" in src.seen
     outputs = src.seen - {"src.tif"}
     if sys.platform == "win32":
@@ -176,9 +210,79 @@ COPIES = {
         dict(compress="lzw", tiled=True),
         "1",
     ),
+    # A source with a dataset mask, read in the rows of its pixels: partly valid, all valid; tiled,
+    # striped, or in blocks taller than a COG's tiles (read in slabs of two rows of tiles); of
+    # several data types with nodata; with or without the COG's overviews, its source's ignored.
+    "cog-masked-rgb-deflate": ("COG", dict(mask=MASK), dict(compress="deflate"), None),
+    "cog-masked-all-valid": (
+        "COG",
+        dict(mask=np.full_like(MASK, 255)),
+        dict(compress="deflate"),
+        None,
+    ),
+    "cog-masked-striped-source": (
+        "COG",
+        dict(mask=MASK, tiled=False),
+        dict(compress="deflate"),
+        None,
+    ),
+    "cog-masked-tall-source-blocks": (
+        "COG",
+        dict(mask=MASK, blockxsize=512, blockysize=768),
+        dict(compress="deflate"),
+        None,
+    ),
+    "cog-masked-float32-nodata-metadata-zstd": (
+        "COG",
+        dict(pixels=FLOAT, nodata=-9999.0, metadata=True, mask=MASK),
+        dict(compress="zstd", predictor=3),
+        None,
+    ),
+    "cog-masked-uint16-nodata-band-interleaved-uncompressed": (
+        "COG",
+        dict(pixels=RGB.astype("uint16") * 200, nodata=0, interleave="band", mask=MASK),
+        dict(),
+        None,
+    ),
+    "cog-masked-paletted": (
+        "COG",
+        dict(pixels=RGB[:1] % 4, colormap=PALETTE, mask=MASK),
+        dict(compress="deflate"),
+        None,
+    ),
+    "cog-masked-without-overviews": (
+        "COG",
+        dict(mask=MASK),
+        dict(compress="deflate", overviews="NONE"),
+        None,
+    ),
+    "cog-masked-ignoring-its-source-s-overviews": (
+        "COG",
+        dict(mask=MASK, overviews=[2, 4]),
+        dict(compress="deflate", overviews="IGNORE_EXISTING"),
+        None,
+    ),
+    "gtiff-masked-over-the-in-memory-limit": (
+        "GTiff",
+        dict(metadata=True, mask=MASK),
+        dict(compress="lzw", tiled=True),
+        "1",
+    ),
     # Not written in rows: the copy holds the pixels either way.
     "cog-jpeg-compressed": ("COG", dict(), dict(compress="jpeg"), None),
     "gtiff-below-the-in-memory-limit": ("GTiff", dict(), dict(compress="lzw", tiled=True), None),
+    "cog-masked-copying-its-source-s-overviews": (
+        "COG",
+        dict(mask=MASK, overviews=[2, 4]),
+        dict(compress="deflate"),
+        None,
+    ),
+    "gtiff-masked-below-the-in-memory-limit": (
+        "GTiff",
+        dict(mask=MASK),
+        dict(compress="lzw", tiled=True),
+        None,
+    ),
 }
 
 
@@ -225,8 +329,8 @@ def test_a_copy_keeps_its_source_s_overviews(tmp_path):
 
 
 def test_a_copy_s_writer_given_a_mask_after_all_writes_its_source_whole(tmp_path):
-    # `shutil.copy` gives no source to a copy with a mask; a writer given one and then a mask is
-    # no longer written in rows, so it reads its source whole when it is written.
+    # `shutil.copy` writes no mask to a dataset it gives its source to; a writer given one and
+    # then a mask is no longer written in rows, so it reads its source whole when it is written.
     src = source(tmp_path / "src.tif")
     mask = np.full((HEIGHT, WIDTH), 255, np.uint8)
     mask[:, :100] = 0
@@ -238,6 +342,39 @@ def test_a_copy_s_writer_given_a_mask_after_all_writes_its_source_whole(tmp_path
     with rio.open(out) as ds:
         assert np.array_equal(ds.dataset_mask(), mask)
         assert np.array_equal(ds.read()[:, :, 100:], RGB[:, :, 100:])
+
+
+def test_a_copy_s_writer_given_overviews_after_all_writes_its_source_s_mask_whole(tmp_path):
+    # A writer given a source and its mask (`_copy_mask`), and then overviews, is no longer
+    # written in rows: it reads its source's pixels and mask whole when it is written.
+    src = source(tmp_path / "src.tif", mask=MASK)
+    out = str(tmp_path / "out.tif")
+    profile = dict(PROFILE, driver="COG", count=3, dtype="uint8", compress="deflate")
+    with rio.open(src) as ds, rio.open(out, "w", **profile, _copy_of=ds, _copy_mask=True) as dst:
+        assert dst._copy_of is ds
+        dst.build_overviews([2], Resampling.nearest)
+    with rio.open(out) as ds:
+        assert np.array_equal(ds.dataset_mask(), MASK)
+        assert np.array_equal(ds.read(), RGB)
+
+
+@pytest.mark.parametrize("driver, limit", [("COG", None), ("GTiff", "1")])
+def test_a_copy_whose_mask_goes_to_a_sidecar_holds_it(tmp_path, monkeypatch, driver, limit):
+    """With `GDAL_TIFF_INTERNAL_MASK=NO`, a copy's mask goes to a `.msk` sidecar, written from the
+    dataset's mask: the copy holds its source's pixels and mask, and writes the files it writes
+    holding them. Read from the source as the file is written, the mask would go into it."""
+    src = source(tmp_path / "src.tif", mask=MASK)
+    monkeypatch.setenv("GDAL_TIFF_INTERNAL_MASK", "NO")
+    if limit:
+        monkeypatch.setenv("TERRIO_RIO_IN_MEMORY_LIMIT", limit)
+    copied, held = str(tmp_path / "copied.tif"), str(tmp_path / "held.tif")
+    rio_shutil.copy(src, copied, driver=driver, compress="deflate")
+    with rio.open(src) as ds:
+        rio_shutil._copy_dataset(ds, held, driver, dict(compress="deflate"), from_source=False)
+    for suffix in ("", ".msk"):
+        assert filecmp.cmp(copied + suffix, held + suffix, shallow=False), suffix
+    with rio.open(copied) as ds:
+        assert np.array_equal(ds.dataset_mask(), MASK)
 
 
 @pytest.mark.parametrize("driver", ["COG", "GTiff"])
@@ -390,30 +527,30 @@ COPIES_OF_A_FAILING_SOURCE = {
     "cog-webp": ("COG", dict(compress="webp"), None, None),
     "cog-lerc": ("COG", dict(compress="lerc"), None, None),
     "cog-jxl": ("COG", dict(compress="jxl"), None, None),
-    "cog-of-a-masked-source": ("COG", dict(compress="deflate"), None, "mask"),
-    "gtiff-over-the-limit-of-a-masked-source": ("GTiff", dict(compress="lzw"), "1", "mask"),
     "cog-copying-overviews": ("COG", dict(compress="deflate"), None, "overviews"),
     # Written in rows.
     "cog": ("COG", dict(compress="deflate"), None, None),
     "gtiff-over-the-in-memory-limit": ("GTiff", dict(compress="lzw", tiled=True), "1", None),
+    "cog-of-a-masked-source": ("COG", dict(compress="deflate"), None, "mask"),
+    "gtiff-over-the-limit-of-a-masked-source": ("GTiff", dict(compress="lzw"), "1", "mask"),
 }
 # Copies of a source whose full-resolution image reads, but whose mask or first overview has a
 # tile that cannot be read: the copy, the NewSubfileType of that image (4 a mask, 1 an
-# overview), and the error the copy raises. The mask is read block row by block row with the
-# pixels, and its read error is the core's (an `OSError`), not wrapped as a band's is; the
-# overviews a COG copies are read when the dataset is written, as it closes.
+# overview), and the error the copy raises. The mask is read in the rows of the pixels as the
+# file is written, and its read error is wrapped as a band's is ("Read failed", in the write's
+# error); the overviews a COG copies are read when the dataset is written, as it closes.
 COPIES_OF_A_SOURCE_WHOSE_MASK_OR_OVERVIEW_FAILS = {
     "cog-of-a-masked-source-whose-mask-fails": (
         "cog-of-a-masked-source",
         4,
-        OSError,
-        "corrupt deflate",
+        rio.errors.RasterioIOError,
+        "Write failed: Read failed: corrupt deflate",
     ),
     "gtiff-over-the-limit-of-a-masked-source-whose-mask-fails": (
         "gtiff-over-the-limit-of-a-masked-source",
         4,
-        OSError,
-        "corrupt deflate",
+        rio.errors.RasterioIOError,
+        "Write failed: Read failed: corrupt deflate",
     ),
     "cog-copying-overviews-whose-overview-fails": (
         "cog-copying-overviews",
