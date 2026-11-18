@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT
+
 """Generate crates/terrio-crs/tests/data/horizontal_root.json: the horizontal axes and the
 geographic CRS PROJ 9.9.0 reads in WKTs whose horizontal CRS is not their root, or whose base
 `GEOGCS` a text scan misses (opengeos/terrio#1012, item 60, and #1058 step 1b).

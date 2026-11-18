@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT
+
 """Generate crates/terrio-crs/tests/data/keyword_order.json: WKT 2 CRSs with two nodes where
 PROJ 9.9.0 reads one, which it takes in the CRS's own order whatever their keywords
 (opengeos/terrio#1058 step 1b): two datum nodes (`TRF`, `GEODETICDATUM` and `DATUM`), two

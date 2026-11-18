@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT
+
 """Generate crates/terrio-crs/tests/data/ellipsoid_units.json: the EPSG CRSs whose ellipsoid PROJ
 9.9.0's WKT 2 gives in a unit other than the metre (`ELLIPSOID["Clarke 1858",20926348,
 294.260676369261,LENGTHUNIT["Clarke's foot",0.3047972654]]`), with the ellipsoid PROJ reads in

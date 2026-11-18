@@ -1913,6 +1913,26 @@ South-orientated Transverse Mercator with a false easting and northing, which PR
 checked against EPSG method 9808 from its placement without them, in WKT 1, WKT 2, its strict WKT 1
 and GeoKeys (`--test south_orientated_offsets`).
 
+WKT read in full as PROJ 9.9.0 reads it (#1058 step 1b), each against values from pyproj 3.8.0
+with `PROJ_NETWORK=OFF`:
+- **Ellipsoids in another unit:** the 32 EPSG CRSs whose WKT 2 PROJ writes with an ellipsoid in
+  another unit (EPSG:4157's Clarke 1858 in Clarke's feet), with and without their root `ID`, give
+  PROJ's code, its semi-major axis in metres (`semi_major_axis`, `metres_per_unit`,
+  `projection_params`, the PROJJSON written) and its point within 1 mm; EPSG:3139 only with its
+  `ID`, since terrio refuses its method (Hyperbolic Cassini-Soldner, #1012 item 43) without it
+  (`--test ellipsoid_units`; `scripts/gen_ellipsoid_units.py`).
+- **ESRI's `VERTCS`:** alone, in a `COMPD_CS` and in ESRI's compound CRS (`GEOGCS[...],VERTCS[...]`),
+  with `Direction` -1, its declared code, PROJ's points from EPSG:9707, and the code PROJ identifies
+  for every EPSG vertical CRS ESRI writes, in ESRI's WKT and GDAL's WKT 1 without `AUTHORITY`
+  (`--test vertical_esri`; `scripts/gen_vertical_esri.py`; the names come from
+  `scripts/gen_vertical_names.py`).
+- **Bound CRS axes and the geographic CRS:** a `BOUNDCRS` has its source CRS's axes, and a WKT 1's
+  geographic CRS is read from its `GEOGCS` node in `(`/`)` brackets too, not from a name's text
+  (`--test horizontal_root`; `scripts/gen_horizontal_root.py`).
+- **Keyword order:** of two datum, ellipsoid or base CRS nodes, the first in the WKT's order
+  counts, whatever its keyword; British National Grid on such base CRSs places points as PROJ does
+  within 1 mm (`--test keyword_order`; `scripts/gen_keyword_order.py`).
+
 WKT that PROJ 9.9.0 reads, 26 CRSs (20 of which terrio refused), is read and places a point where
 PROJ does, within 1 mm (1e-9 degrees for geographic CRSs), with PROJ's PROJ string (values within a
 relative 1e-12) and PROJ's EPSG code where PROJ identifies one: ESRI's `Mercator_Variant_A` (EPSG

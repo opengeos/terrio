@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT
+
 """Generate crates/terrio-crs/tests/data/vertical_esri.json: ESRI's vertical CRS (`VERTCS`, with
 `PARAMETER["Direction",-1]` for an axis down) alone, in a `COMPD_CS`, and in ESRI's compound CRS
 (a `GEOGCS` or `PROJCS` followed by a `VERTCS`, as ESRI writes EPSG:9707), as PROJ 9.9.0 reads

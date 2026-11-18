@@ -4502,20 +4502,24 @@ fn gdal_root_identifier(wkt: &str) -> Option<(String, u32)> {
     if root.is(keywords::COMPOUND_CRS) {
         return None;
     }
-    root.ids().find_map(|id| match (id.args.first()?, id.args.get(1)?) {
+    // The first only: GDAL takes `AUTHORITY["EPSG","abc"]` before an `ID["EPSG",4258]` as the
+    // code `abc`, which is no code.
+    let id = root.ids().next()?;
+    match (id.args.first()?, id.args.get(1)?) {
         (wkt1::Arg::Str(authority), wkt1::Arg::Num(code)) if code.fract() == 0.0 && *code >= 0.0 && *code <= f64::from(u32::MAX) => {
             Some((authority.clone(), *code as u32))
         }
         (wkt1::Arg::Str(authority), wkt1::Arg::Str(code)) => Some((authority.clone(), code.trim().parse().ok()?)),
         _ => None,
-    })
+    }
 }
 
 #[cfg(test)]
 mod gdal_proj4_tests {
     /// GDAL 3.13.3 (PROJ 9.9.0) takes a WKT 2's first root identifier, `AUTHORITY` or `ID`:
     /// `osr.SpatialReference().ImportFromWkt(wkt)`, then `GetAuthorityCode(None)` gives 4326 with
-    /// `AUTHORITY["EPSG","4326"]` first, 4258 with `ID["EPSG",4258]` first.
+    /// `AUTHORITY["EPSG","4326"]` first, 4258 with `ID["EPSG",4258]` first, and `abc` (no code)
+    /// with `AUTHORITY["EPSG","abc"]` before `ID["EPSG",4258]`.
     #[test]
     fn the_first_root_identifier_is_gdals() {
         let wgs84 = r#"GEOGCRS["x",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],CS[ellipsoidal,2],AXIS["latitude",north,ANGLEUNIT["degree",0.0174532925199433]],AXIS["longitude",east,ANGLEUNIT["degree",0.0174532925199433]]"#;
@@ -4523,6 +4527,8 @@ mod gdal_proj4_tests {
         assert_eq!(super::gdal_root_identifier(&first), Some(("EPSG".into(), 4326)));
         let first = format!(r#"{wgs84},ID["EPSG",4258],AUTHORITY["EPSG","4326"]]"#);
         assert_eq!(super::gdal_root_identifier(&first), Some(("EPSG".into(), 4258)));
+        let unreadable = format!(r#"{wgs84},AUTHORITY["EPSG","abc"],ID["EPSG",4258]]"#);
+        assert_eq!(super::gdal_root_identifier(&unreadable), None);
     }
 
     #[test]
