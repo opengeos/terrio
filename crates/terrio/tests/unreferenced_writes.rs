@@ -307,3 +307,38 @@ fn vrt_without_a_transform_reports_absence_in_eager_and_lazy_reads() {
         assert_eq!(terrio::open_raster_lazy(path).unwrap().read().unwrap().geotransform_present, Some(referenced));
     }
 }
+
+/// `LazyRaster::geotransform_present` and `has_geo_transform` report whether the file carries a
+/// geotransform: false for a plain PNG or JPEG (no world file) and a TIFF without geo tags, true
+/// for a PNG with a world file (`.wld` or `.pgw`) and a GeoTIFF with tie points.
+#[test]
+fn lazy_readers_report_geotransform_presence_per_file() {
+    let dir = tempfile::tempdir().unwrap();
+    // A georeferenced raster, written with its georeferencing: GeoTIFF tie points, a PNG world file.
+    let mut referenced = raster(Some(32611));
+    referenced.set_geo_transform([440000.0, 10.0, 0.0, 4100000.0, 0.0, -10.0]);
+    let tif = dir.path().join("ref.tif").to_str().unwrap().to_string();
+    terrio::write_raster_dataset(&referenced, &tif, &Default::default()).unwrap();
+    let png = dir.path().join("ref.png").to_str().unwrap().to_string();
+    terrio::write_raster_dataset(&referenced, &png, &Default::default()).unwrap();
+    assert!(dir.path().join("ref.wld").exists(), "the writer's world file");
+
+    // A plain raster, written without georeferencing: no geo tags, no world file.
+    let plain = raster(None);
+    let plain_tif = dir.path().join("plain.tif").to_str().unwrap().to_string();
+    terrio::write_raster_dataset(&plain, &plain_tif, &unreferenced()).unwrap();
+    let plain_png = dir.path().join("plain.png").to_str().unwrap().to_string();
+    terrio::write_raster_dataset(&plain, &plain_png, &unreferenced()).unwrap();
+    let plain_jpg = dir.path().join("plain.jpg").to_str().unwrap().to_string();
+    terrio::write_raster_dataset(&plain, &plain_jpg, &unreferenced()).unwrap();
+    // A PNG with a `.pgw` world file, as another program writes it.
+    let pgw_png = dir.path().join("pgw.png").to_str().unwrap().to_string();
+    terrio::write_raster_dataset(&plain, &pgw_png, &unreferenced()).unwrap();
+    std::fs::write(dir.path().join("pgw.pgw"), "10.0\n0\n0\n-10.0\n440000.0\n4100000.0\n").unwrap();
+
+    for (path, present) in [(&tif, true), (&png, true), (&plain_tif, false), (&plain_png, false), (&plain_jpg, false), (&pgw_png, true)] {
+        let lazy = terrio::open_raster_lazy(path).unwrap();
+        assert_eq!(lazy.geotransform_present(), present, "{path}");
+        assert_eq!(lazy.has_geo_transform(), present, "{path}");
+    }
+}
