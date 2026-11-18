@@ -58,7 +58,7 @@ def main():
             reference.ImportFromWkt(case["wkt"])
             for entry in [CRS.from_wkt, CRS.from_user_input, CRS.from_string]:
                 actual = entry(case["wkt"])
-                require(actual.to_epsg() == case["epsg"], "wrong root authority code")
+                require(actual.to_epsg() == case.get("proj_epsg", case["epsg"]), "wrong root authority code")
                 restored = osr.SpatialReference()
                 restored.ImportFromWkt(actual.to_wkt())
                 require(restored.IsSame(reference), "CRS identity differs")
@@ -75,7 +75,7 @@ def main():
             require(raster.nodata == nodata, "nodata changed")
             require(raster.read(1).dtype == values.dtype, "pixel type changed")
             actual_crs = CRS.from_user_input(raster.crs_wkt or raster.crs)
-            require(actual_crs.to_epsg() == case["epsg"], "raster root authority differs")
+            require(actual_crs.to_epsg() == case.get("proj_epsg", case["epsg"]), "raster root authority differs")
             raster_srs = osr.SpatialReference()
             raster_srs.ImportFromWkt(actual_crs.to_wkt())
             require(raster_srs.IsSame(reference), "raster CRS identity differs")

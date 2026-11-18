@@ -25,7 +25,7 @@ def test_wkt_root_preserves_crs_identity(case, entry, gdal):
     """Preserve CRS kind and root authority through each constructor."""
     osr = pytest.importorskip("osgeo.osr")
     actual = getattr(CRS, entry)(case["wkt"])
-    assert actual.to_epsg() == case["epsg"]
+    assert actual.to_epsg() == case.get("proj_epsg", case["epsg"])
     reference, restored = osr.SpatialReference(), osr.SpatialReference()
     reference.ImportFromWkt(case["wkt"])
     restored.ImportFromWkt(actual.to_wkt())
@@ -42,7 +42,7 @@ def test_wkt_keywords_work_for_raster_and_layer_construction(case, gdal):
     reference.ImportFromWkt(case["wkt"])
     values = np.arange(6, dtype="uint8").reshape(2, 3)
     raster = terrio.Raster.from_array(values, (0, 1, 0, 2, 0, -1), crs=case["wkt"])
-    assert CRS.from_user_input(raster.crs).to_epsg() == case["epsg"]
+    assert CRS.from_user_input(raster.crs).to_epsg() == case.get("proj_epsg", case["epsg"])
     np.testing.assert_array_equal(raster.read(1), values)
     points = {
         "type": "FeatureCollection",
@@ -55,7 +55,7 @@ def test_wkt_keywords_work_for_raster_and_layer_construction(case, gdal):
         ],
     }
     layer = terrio.Layer.from_geojson(points, crs=case["wkt"])
-    assert CRS.from_user_input(layer.crs).to_epsg() == case["epsg"]
+    assert CRS.from_user_input(layer.crs).to_epsg() == case.get("proj_epsg", case["epsg"])
     for definition in (raster.crs, layer.crs):
         restored = osr.SpatialReference()
         restored.ImportFromWkt(CRS.from_user_input(definition).to_wkt())

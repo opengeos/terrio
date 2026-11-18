@@ -5,7 +5,8 @@ geographic CRS PROJ 9.9.0 reads in WKTs whose horizontal CRS is not their root, 
 Axes: PROJ's WKT 2 (2019) of a WKT 1 with `TOWGS84`, a `BOUNDCRS` whose source CRS has the axes
 (OSGB36, north then east; British National Grid, east then north), alone and in a
 `COMPOUNDCRS`. Each case holds PROJ's axis directions. Geographic CRS: a WKT 1 in `(`/`)`
-brackets, and one whose name holds `GEOGCS[`, with the code of PROJ's `geodetic_crs`.
+brackets, and one whose name holds `GEOGCS[`, both of no code (British National Grid with another
+false easting, without its `AUTHORITY`), with the code of PROJ's `geodetic_crs`.
 
 Usage: PROJ_NETWORK=OFF python scripts/gen_horizontal_root.py (needs pyproj 3.8.0)
 """
@@ -21,6 +22,12 @@ OUT = (
     / "crates/terrio-crs/tests/data/horizontal_root.json"
 )
 TOWGS84 = "TOWGS84[446.448,-125.157,542.06,0.15,0.247,0.842,-20.489],"
+
+
+def sub(wkt, old, new):
+    """`wkt` with `old`, which must occur once, replaced by `new`."""
+    assert wkt.count(old) == 1, old
+    return wkt.replace(old, new)
 
 
 def bound(code):
@@ -41,7 +48,14 @@ def main():
             f'COMPOUNDCRS["OSGB36 + ODN height",{bound(4277)},{height}]',
         ),
     ]
-    bng = CRS.from_epsg(27700).to_wkt("WKT1_GDAL")
+    # British National Grid with another false easting and without its code: a CRS of no code,
+    # whose geographic CRS is read from its `GEOGCS`, not from the registry.
+    bng = sub(
+        CRS.from_epsg(27700).to_wkt("WKT1_GDAL"), ',AUTHORITY["EPSG","27700"]]', "]"
+    )
+    bng = sub(
+        bng, 'PARAMETER["false_easting",400000]', 'PARAMETER["false_easting",400001]'
+    )
     geographic = [
         ("WKT 1 in brackets", bng.replace("[", "(").replace("]", ")")),
         (
@@ -59,6 +73,7 @@ def main():
     for name, wkt in geographic:
         if "(" not in wkt:
             crs = CRS.from_wkt(wkt)
+            assert crs.to_epsg() is None, name
             base = crs.geodetic_crs.to_epsg()
         else:
             # pyproj does not read `(`/`)` brackets; PROJ's projinfo does, with the same base.

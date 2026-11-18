@@ -2049,7 +2049,8 @@ pub(crate) fn vertical_from_wkt(w: &str) -> Option<Vertical> {
     }
     let (to_meter, down) = super::vertical_axis(w)?;
     Some(match grids {
-        Some(g) => Vertical::from_geoid_grids(&g, to_meter),
+        // Its own grids, in its direction (a depth CRS's, by `AXIS` or ESRI's `Direction`).
+        Some(g) => Vertical { down, ..Vertical::from_geoid_grids(&g, to_meter) },
         None => Vertical { code: declared, to_meter, down, models: Vec::new(), ballpark: true },
     })
 }
@@ -2514,5 +2515,11 @@ mod vertical_wkt_tests {
         // A declared code keeps its definition, as before.
         let declared = grids.replace("UP]]", r#"UP],AUTHORITY["EPSG","5773"]]"#);
         assert_eq!(super::vertical_from_wkt(&declared).and_then(|v| v.code), Some(5773));
+        // Its own grids keep its direction: an axis down, or ESRI's `Direction` -1.
+        assert!(super::vertical_from_wkt(&grids.replace("UP]", "DOWN]")).unwrap().down);
+        let esri = r#"VERTCS["x",VDATUM["y"],PARAMETER["Vertical_Shift",0.0],PARAMETER["Direction",-1.0],UNIT["Meter",1.0],EXTENSION["PROJ4_GRIDS","custom.gtx"]]"#;
+        let v = super::vertical_from_wkt(esri).unwrap();
+        assert!(v.down && v.models.len() == 1);
+        assert_eq!(v.to_metres(10.0), -10.0);
     }
 }

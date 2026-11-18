@@ -24,6 +24,8 @@ fn a_bound_crs_has_its_source_axes_and_a_geogcs_is_read_from_the_tree() {
             assert_eq!(crs.axis_order(), if north_east { AxisOrder::NorthEast } else { AxisOrder::EastNorth }, "{name}");
         }
         if let Some(code) = case["geographic"].as_u64() {
+            // Of no code: read from the tree, not the registry.
+            assert_eq!((crs.epsg, crs.esri), (None, None), "{name}");
             let geographic = crs.geographic_wkt().unwrap_or_else(|| panic!("{name}"));
             assert!(geographic.starts_with(r#"GEOGCS["OSGB36","#), "{name}: {geographic}");
             assert_eq!(SpatialRef::from_wkt(&geographic).epsg.map(u64::from), Some(code), "{name}: {geographic}");
