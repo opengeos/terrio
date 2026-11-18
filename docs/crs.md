@@ -1039,8 +1039,10 @@ the string leaves out what a PROJ string cannot hold, so keep the code or WKT to
 - a PROJ string's vertical unit (`+vunits`, `+vto_meter`) without a geoid model
   (`+geoidgrids`): PROJ writes it only with one.
 
-`SpatialRef::to_proj4_gdal` writes the PROJ string GDAL 3.13.3 writes (`OSRExportToProj4`; Python
-`terrio._terrio.crs_to_proj4_gdal(crs)`, JavaScript `crsToProj4Gdal(crs)`): the same, without `+type=crs`, and for an EPSG or ESRI code's own definition, with what GDAL adds to it
+`SpatialRef::to_proj4_gdal` writes the PROJ string GDAL 3.13.3 writes (`OSRExportToProj4`;
+`terrio crs CRS --proj4-gdal`, Python `terrio._terrio.crs_to_proj4_gdal(crs)`, JavaScript
+`crsToProj4Gdal(crs)`): the same, without `+type=crs`, and for an EPSG or ESRI code's own
+definition, with what GDAL adds to it
 (`scripts/gen_gdal_towgs84.py`, 5,130 CRSs): the datum transformation to WGS 84 as `+towgs84`, where
 PROJ finds a single one for the CRS's area of use (EPSG:31467 has
 `+towgs84=598.1,73.7,418.2,0.202,0.045,-2.455,6.7`; EPSG:27700, with several, has none), and a

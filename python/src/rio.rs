@@ -382,10 +382,13 @@ fn crs_to_proj4(crs: &str) -> PyResult<Option<String>> {
 /// ``ExportToProj4()``): ``crs_to_proj4``'s without ``+type=crs``, and for an EPSG or ESRI code
 /// (or a WKT whose root names one) with what GDAL adds: the datum transformation to WGS 84 as
 /// ``+towgs84``, where PROJ finds a single one for the CRS's area of use, and a compound CRS's
-/// geoid model as ``+geoidgrids`` and ``+geoid_crs``.
+/// geoid model as ``+geoidgrids`` and ``+geoid_crs``. A WKT with a datum shift of its own keeps
+/// it. ``docs/crs.md`` lists where it differs from GDAL (a PROJJSON, ``+init=epsg:N``, compound
+/// CRSs given by a definition).
 ///
 /// Returns:
-///     str | None: The PROJ string, or None for a CRS PROJ has none for (an engineering CRS).
+///     str | None: The PROJ string, or None for a CRS PROJ has none for (an engineering CRS,
+///     for which GDAL writes an empty string).
 ///
 /// Raises:
 ///     CRSError: If the CRS cannot be parsed.
