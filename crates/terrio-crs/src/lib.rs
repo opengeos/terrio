@@ -2083,12 +2083,13 @@ pub(crate) fn without_unfit_root_code(wkt: &str) -> Option<String> {
     }
 }
 
-/// A WKT definition without the code its root declares (see [`declared_epsg`]).
+/// A WKT definition without the codes its root declares (see [`declared_epsg`]), written again
+/// from its nodes; `None` when it declares none.
 pub(crate) fn strip_root_code(wkt: &str) -> Option<String> {
-    let body = wkt.trim_end().strip_suffix(']')?.trim_end().strip_suffix(']')?;
-    let start = body.rfind('[')?;
-    let comma = body[..start].rfind(',')?;
-    Some(format!("{}]", &body[..comma]))
+    let mut root = wkt1::parse(wkt)?;
+    let before = root.args.len();
+    root.args.retain(|a| !matches!(a, wkt1::Arg::Node(n) if n.is(keywords::ID)));
+    (root.args.len() < before).then(|| root.to_wkt())
 }
 
 /// The projection method (`+proj=tmerc`) of a WKT definition's conversion.
@@ -2122,30 +2123,30 @@ fn strip_authorities(wkt: &str) -> String {
     out
 }
 
-/// The EPSG code a WKT definition declares for itself: the `AUTHORITY["EPSG","4269"]` (WKT 1) or
-/// `ID["EPSG",4269]` (WKT 2) closing its outermost node, not those of its datum or units.
+/// The EPSG code a WKT definition declares for itself: the first `AUTHORITY` (WKT 1) or `ID`
+/// (WKT 2) among its outermost node's children, when it is `AUTHORITY["EPSG","4269"]` or
+/// `ID["EPSG",4269]`; not those of its datum or units. The identifier is read wherever it is among
+/// the children and whatever it holds (a `URI` or `CITATION`, a `REMARK` or `AXIS` after it), as
+/// PROJ 9.9.0 reads it. Only the first: PROJ checks a CRS against its first identifier too
+/// (`ID["IGNF","WGS84G"],ID["EPSG",4326]` and `ID["EPSG",4277],ID["EPSG",4326]` identify no
+/// code), though it moves on past one its database does not have, which terrio does not.
 pub(crate) fn declared_epsg(wkt: &str) -> Option<u32> {
     declared_code(wkt, "EPSG")
 }
 
 /// The code of an authority a WKT definition declares for itself, as [`declared_epsg`].
 fn declared_code(wkt: &str, authority: &str) -> Option<u32> {
-    let body = wkt.trim_end().strip_suffix(']')?.trim_end();
-    // The last child node must be the identifier itself, not a node holding one.
-    let body = body.strip_suffix(']')?;
-    if body.ends_with(']') {
+    let root = wkt1::parse(wkt)?;
+    let id = root.ids().next()?;
+    // Quoted or not: PROJ 9.9.0 reads `AUTHORITY[EPSG,4326]` as EPSG:4326 too.
+    let named = match id.args.first()? {
+        wkt1::Arg::Str(a) | wkt1::Arg::Ident(a) => a.eq_ignore_ascii_case(authority),
+        _ => false,
+    };
+    if !named {
         return None;
     }
-    let start = body.rfind('[')?;
-    let keyword = body[..start].trim_end().rsplit([',', '[']).next()?.trim();
-    if !keywords::is(keyword, keywords::ID) {
-        return None;
-    }
-    let mut parts = body[start + 1..].split(',').map(|p| p.trim().trim_matches('"'));
-    if !parts.next()?.eq_ignore_ascii_case(authority) {
-        return None;
-    }
-    parts.next()?.parse().ok()
+    id.code()
 }
 
 /// Whether a WKT's content is the ESRI CRS it declares, as [`declared_fits`] decides it for an
@@ -3669,6 +3670,16 @@ mod tests {
         assert_eq!(SpatialRef::from_wkt(nad83).epsg, Some(4269));
         assert_eq!(declared_epsg(r#"GEOGCRS["WGS 84",CS[ellipsoidal,2],ID["EPSG",4326]]"#), Some(4326));
         assert_eq!(declared_epsg(r#"GEOGCS["x",DATUM["d",SPHEROID["s",1,2]],UNIT["degree",0.01745,AUTHORITY["EPSG","9122"]]]"#), None);
+        // Brackets of either kind: `projinfo -o PROJJSON` (PROJ 9.9.0) gives this WKT the `id`
+        // EPSG 4326.
+        let parentheses = r#"GEOGCS("WGS 84",DATUM("WGS_1984",SPHEROID("WGS 84",6378137,298.257223563)),PRIMEM("Greenwich",0),UNIT("degree",0.0174532925199433),AUTHORITY("EPSG","4326"))"#;
+        assert_eq!(declared_epsg(parentheses), Some(4326));
+        assert_eq!(SpatialRef::from_wkt(parentheses).epsg, Some(4326));
+        assert_eq!(declared_epsg(r#"GEOGCS["x",UNIT["degree",0.0174532925199433],AUTHORITY[EPSG,4326]]"#), Some(4326));
+        // Without its root codes, written again from its nodes.
+        let stripped = strip_root_code(r#"GEOGCRS["x",CS[ellipsoidal,2],ID["EPSG",4326,URI["urn:ogc:def:crs:EPSG::4326"]],REMARK["r"]]"#);
+        assert_eq!(stripped.as_deref(), Some(r#"GEOGCRS["x",CS[ellipsoidal,2],REMARK["r"]]"#));
+        assert_eq!(strip_root_code(r#"GEOGCRS["x",CS[ellipsoidal,2]]"#), None);
         // Codes of a datum or prime meridian are not the CRS's (GDAL wrote this one in a
         // GeoPackage, from a GeoParquet file's CRS).
         let wgs84 = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["Degree",0.0174532925199433],AXIS["Longitude",EAST],AXIS["Latitude",NORTH]]"#;

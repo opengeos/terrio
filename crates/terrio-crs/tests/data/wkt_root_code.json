@@ -589,6 +589,159 @@
    "declared": null,
    "terrio_epsg": null,
    "terrio": null
+  },
+  {
+   "name": "WGS 84 on the datum unknown with its code before its axes",
+   "wkt": "GEOGCS[\"x\",DATUM[\"unknown\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433],AUTHORITY[\"EPSG\",\"4326\"],AXIS[\"Latitude\",NORTH],AXIS[\"Longitude\",EAST]]",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "proj": [
+    10.0,
+    50.0
+   ],
+   "epsg": 4326,
+   "esri": null,
+   "declared": null,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "WGS 84 on the datum unknown with its code, its ID with a URI",
+   "wkt": "GEOGCRS[\"x\",DATUM[\"unknown\",ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4326,URI[\"urn:ogc:def:crs:EPSG::4326\"]]]",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "proj": [
+    10.0,
+    50.0
+   ],
+   "epsg": 4326,
+   "esri": null,
+   "declared": null,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "WGS 84 on the datum unknown with its code, its ID with a citation",
+   "wkt": "GEOGCRS[\"x\",DATUM[\"unknown\",ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4326,CITATION[\"IOGP\"]]]",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "proj": [
+    10.0,
+    50.0
+   ],
+   "epsg": 4326,
+   "esri": null,
+   "declared": null,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "WGS 84 on the datum unknown with its code before a remark",
+   "wkt": "GEOGCRS[\"x\",DATUM[\"unknown\",ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4326],REMARK[\"A remark.\"]]",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "proj": [
+    10.0,
+    50.0
+   ],
+   "epsg": 4326,
+   "esri": null,
+   "declared": null,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "WGS 84 on the datum unknown with its code after another authority's",
+   "wkt": "GEOGCRS[\"x\",DATUM[\"unknown\",ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"IGNF\",\"WGS84G\"],ID[\"EPSG\",4326]]",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "proj": [
+    10.0,
+    50.0
+   ],
+   "epsg": null,
+   "esri": null,
+   "declared": null,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "WGS 84 on the datum unknown with its code before another authority's",
+   "wkt": "GEOGCRS[\"x\",DATUM[\"unknown\",ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4326],ID[\"IGNF\",\"WGS84G\"]]",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "proj": [
+    10.0,
+    50.0
+   ],
+   "epsg": 4326,
+   "esri": null,
+   "declared": null,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "WGS 84 on the datum unknown declaring OSGB36 before its code",
+   "wkt": "GEOGCRS[\"x\",DATUM[\"unknown\",ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4277],ID[\"EPSG\",4326]]",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "proj": [
+    10.0,
+    50.0
+   ],
+   "epsg": null,
+   "esri": null,
+   "declared": 4277,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "PROJ's WKT 2 of EPSG:4073, its ID before a remark",
+   "wkt": "GEODCRS[\"ETRS89-SRB [SREF98]\",DATUM[\"Serbian Reference Network 1998\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ANCHOREPOCH[1998.7]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[Cartesian,3],AXIS[\"(X)\",geocentricX,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(Y)\",geocentricY,ORDER[2],LENGTHUNIT[\"metre\",1]],AXIS[\"(Z)\",geocentricZ,ORDER[3],LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Geodesy.\"],AREA[\"Serbia including Vojvodina.\"],BBOX[42.23,18.81,46.19,23.01]],ID[\"EPSG\",4073],REMARK[\"Replaced by ETRS89-SRB [STRS00] (CRS code 8683).\"]]",
+   "point": [
+    20.5,
+    44.8
+   ],
+   "proj": [
+    4246196.878379755,
+    1587587.9589023928
+   ],
+   "epsg": 4073,
+   "esri": null,
+   "declared": null,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "ETRS89 declaring NAD83 by an ID with a URI",
+   "wkt": "GEOGCRS[\"ETRS89\",ENSEMBLE[\"European Terrestrial Reference System 1989 ensemble\",MEMBER[\"European Terrestrial Reference Frame 1989\"],MEMBER[\"European Terrestrial Reference Frame 1990\"],MEMBER[\"European Terrestrial Reference Frame 1991\"],MEMBER[\"European Terrestrial Reference Frame 1992\"],MEMBER[\"European Terrestrial Reference Frame 1993\"],MEMBER[\"European Terrestrial Reference Frame 1994\"],MEMBER[\"European Terrestrial Reference Frame 1996\"],MEMBER[\"European Terrestrial Reference Frame 1997\"],MEMBER[\"European Terrestrial Reference Frame 2000\"],MEMBER[\"European Terrestrial Reference Frame 2005\"],MEMBER[\"European Terrestrial Reference Frame 2014\"],MEMBER[\"European Terrestrial Reference Frame 2020\"],MEMBER[\"ETRS89-DNK\"],MEMBER[\"Estonia 1997\"],MEMBER[\"Albanian Geodetic Reference Frame 2008\"],MEMBER[\"Albanian Geodetic Reference Frame 2014\"],MEMBER[\"ETRS89-AUT [2002]\"],MEMBER[\"Belgian Reference Frame 2002\"],MEMBER[\"Belgian Reference Frame 2011\"],MEMBER[\"BH_ETRS89\"],MEMBER[\"Bulgaria Geodetic System 2005\"],MEMBER[\"Croatian Terrestrial Reference System 1996\"],MEMBER[\"AGRS2010 (ETRF2000)\"],MEMBER[\"CROPOS\"],MEMBER[\"ETRF2000 Poland\"],MEMBER[\"ETRS89/DREF91 Realization 2016\"],MEMBER[\"ETRS89/DREF91 Realization 2025\"],MEMBER[\"ETRS89-CZE [2007]\"],MEMBER[\"ETRS89-ESP [REGENTE]\"],MEMBER[\"ETRS89-ESP [ERGNSS]\"],MEMBER[\"ETRS89-FRO [2008]\"],MEMBER[\"Hellenic Terrestrial Reference System of 2007\"],MEMBER[\"ETRS89-HUN [ETRF2000]\"],MEMBER[\"ETRS89-IRE [ETRF2000]\"],MEMBER[\"ETRS89-MKD [EUREF-MAK2010]\"],MEMBER[\"EUREF89\"],MEMBER[\"ETRS89-PRT [1995]\"],MEMBER[\"ETRS89-ROU [ETRF2000]\"],MEMBER[\"ETRS89-SVK [SKTRF09]\"],MEMBER[\"ETRS89-SVK [SKTRF2022]\"],MEMBER[\"EUREF-FIN\"],MEMBER[\"Istituto Geografico Militare 1995\"],MEMBER[\"Kosovo Reference System 2001\"],MEMBER[\"Latvian geodetic coordinate system 1992\"],MEMBER[\"Latvian coordinate system 2020\"],MEMBER[\"Lithuania 1994 (ETRS89)\"],MEMBER[\"MOLDREF99\"],MEMBER[\"OSNet v2009\"],MEMBER[\"Reseau Geodesique Francais 1993 v1\"],MEMBER[\"Reseau Geodesique Francais 1993 v2\"],MEMBER[\"Reseau Geodesique Francais 1993 v2b\"],MEMBER[\"Rete Dinamica Nazionale 2008\"],MEMBER[\"Serbian Reference Network 1998\"],MEMBER[\"Serbian Spatial Reference System 2000\"],MEMBER[\"Slovenia Geodetic Datum 1996\"],MEMBER[\"SWEREF 99\"],MEMBER[\"ETRS89-LUX [2020]\"],MEMBER[\"Nordic Geodetic Commission ETRF14\"],MEMBER[\"ETRS89-LUX [2025]\"],MEMBER[\"Swiss Terrestrial Reference System 1995\"],ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ENSEMBLEACCURACY[0.1]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],USAGE[SCOPE[\"Spatial referencing.\"],AREA[\"Europe - onshore and offshore: Albania; Andorra; Austria; Belgium; Bosnia and Herzegovina; Bulgaria; Croatia; Czechia; Denmark; Estonia; Faroe Islands; Finland; France; Germany; Gibraltar; Greece; Hungary; Ireland; Italy; Kosovo; Latvia; Liechtenstein; Lithuania; Luxembourg; Malta; Moldova; Monaco; Montenegro; Netherlands; North Macedonia; Norway including Svalbard and Jan Mayen; Poland; Portugal - mainland; Romania; San Marino; Serbia; Slovakia; Slovenia; Spain - mainland and Balearic islands; Sweden; Switzerland; United Kingdom (UK) including Channel Islands and Isle of Man; Vatican City State.\"],BBOX[33.26,-16.1,84.73,38]],ID[\"EPSG\",4269,URI[\"urn:ogc:def:crs:EPSG::4269\"]],REMARK[\"Has been realized through ETRF89, ETRF90, ETRF91, ETRF92, ETRF93, ETRF94, ETRF96, ETRF97, ETRF2000, ETRF2005 and ETRF2014. This 'ensemble' covers any or all of these realizations without distinction.\"]]",
+   "point": [
+    -100.0,
+    40.0
+   ],
+   "proj": [
+    -100.0,
+    40.0
+   ],
+   "epsg": null,
+   "esri": null,
+   "declared": 4269,
+   "terrio_epsg": 4258,
+   "terrio": null
   }
  ]
 }

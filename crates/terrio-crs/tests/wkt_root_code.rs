@@ -3,7 +3,9 @@
 //! compound code's units and axes on a 2D CRS in degrees, a geographic code on a geocentric CRS, a
 //! code of another datum on the same ellipsoid. The declared code is kept only when the content is
 //! that CRS; an unknown method stays unusable rather than read as the code. An Esri CRS's name
-//! identifies its code only on its datum (ESRI's `D_` datum names included).
+//! identifies its code only on its datum (ESRI's `D_` datum names included). The root's first
+//! identifier is its code wherever it is among the root's children and whatever it holds (a `URI`,
+//! a `CITATION`, a `REMARK` or `AXIS` after it, opengeos/terrio#1012 items 31 and 57).
 //!
 //! `data/wkt_root_code.json` (`scripts/gen_wkt_root_code.py`, pyproj 3.8.0, `PROJ_NETWORK=OFF`, no
 //! grids installed) holds PROJ's point in each CRS from WGS 84 (`always_xy`), `null` where PROJ
@@ -32,7 +34,7 @@ fn read(case: &Value) -> (SpatialRef, terrio_crs::Result<(f64, f64)>) {
 #[test]
 fn a_wkt_is_read_by_its_nodes_not_its_root_code() {
     let cases = cases();
-    assert_eq!(cases.len(), 35);
+    assert_eq!(cases.len(), 44);
     for case in cases.iter().filter(|c| c["terrio"].is_null()) {
         let name = case["name"].as_str().unwrap();
         let (crs, got) = read(case);

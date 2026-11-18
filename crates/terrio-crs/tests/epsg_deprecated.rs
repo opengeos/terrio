@@ -198,10 +198,10 @@ fn geokeys_of_deprecated_codes_read_as_their_own_definition() {
             round_tripped += 1;
             let tolerance = if crs.is_geographic() { 1e-8 } else { 1e-3 };
             let same = (a.0 - b.0).abs() < tolerance && (a.1 - b.1).abs() < tolerance;
-            // EPSG:6986 (IGD05/12, 3D), written as WKT: terrio reads that WKT with a datum shift
-            // about 0.3 m from PROJ 9.9.0's ballpark, which it gives both the code and the WKT
-            // (opengeos/terrio#1012, item 19).
-            assert_eq!(same, code != 6986, "EPSG:{code}: {a:?} read back as {b:?}");
+            // EPSG:6986 (IGD05/12, 3D) is written as PROJ's WKT 2, whose root `ID` comes before a
+            // `REMARK`: read back by that code. (Its content alone is read with a datum shift
+            // about 0.3 m from PROJ 9.9.0's ballpark, opengeos/terrio#1012 item 19.)
+            assert!(same, "EPSG:{code}: {a:?} read back as {b:?}");
         }
     }
     assert!(written > 400 && round_tripped > 400, "{written} written, {round_tripped} round-tripped");
