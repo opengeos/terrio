@@ -1375,15 +1375,15 @@ mod tests {
         // Random streams: where both give the bytes asked for, they agree. `weezl` reads a code
         // ahead and refuses a bad one past those bytes; libtiff, as here, stops at them.
         let mut agreed = 0;
-        for _ in 0..5000 {
+        for _ in 0..20_000 {
             let raw: Vec<u8> = (0..rand() % 64).map(|_| rand() as u8).collect();
             let limit = (rand() % 64) as usize;
             if let (Some(ours), Some(theirs)) = (lzw_bytes(&raw, limit), weezl_first(&raw, limit)) {
                 assert_eq!(ours, theirs, "{raw:?}, {limit} bytes");
-                agreed += 1;
+                agreed += usize::from(limit > 0);
             }
         }
-        assert!(agreed > 50, "{agreed} random streams compared");
+        assert!(agreed > 100, "{agreed} random streams compared with a nonzero length");
     }
 
     /// A truncated LZW chunk is an error, and a header's chunk size overflowing is refused.
