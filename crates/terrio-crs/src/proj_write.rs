@@ -236,8 +236,7 @@ fn extension(s: &SpatialRef) -> Option<Vec<String>> {
 
 /// Whether a WKT is of an engineering CRS, which has no PROJ string.
 fn is_engineering(wkt: &str) -> bool {
-    let root = wkt.split(['[', '(']).next().unwrap_or_default().trim();
-    ["LOCAL_CS", "ENGCRS", "ENGINEERINGCRS"].iter().any(|key| root.eq_ignore_ascii_case(key))
+    crate::keywords::is(crate::keywords::root_key(wkt), crate::keywords::ENGINEERING_CRS)
 }
 
 /// Web Mercator, which PROJ writes on its sphere with `+nadgrids=@null +wktext`, not with its

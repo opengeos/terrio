@@ -24,7 +24,7 @@ use super::math::*;
 use super::params::{Params, parse_dms, parse_dms_prefix};
 use super::projections::{self, Proj, Setup};
 use super::rotation::{ObTran, Rotation};
-use super::{SpatialRef, epsg, grid, route, wkt1, wkt2};
+use super::{SpatialRef, epsg, grid, keywords, route, wkt1, wkt2};
 use crate::{Error, Result};
 use std::sync::Arc;
 
@@ -537,16 +537,15 @@ impl Def {
         // A retained engineering definition must not become an Earth CRS just because
         // its root carries a registered identifier. Keep explicit PROJ extensions handled
         // by the WKT path, before considering the authority registry.
-        if let Some(wkt) = &s.wkt {
-            let root = wkt.split(['[', '(']).next().unwrap_or_default().trim();
-            if ["LOCAL_CS", "ENGCRS", "ENGINEERINGCRS"].iter().any(|key| root.eq_ignore_ascii_case(key)) {
-                if let Some(proj) = &s.proj4 {
-                    let mut definition = Self::from_proj(proj)?;
-                    definition.tag_iau(s)?;
-                    return Ok(definition);
-                }
-                return Self::from_wkt(wkt);
+        if let Some(wkt) = &s.wkt
+            && keywords::is(keywords::root_key(wkt), keywords::ENGINEERING_CRS)
+        {
+            if let Some(proj) = &s.proj4 {
+                let mut definition = Self::from_proj(proj)?;
+                definition.tag_iau(s)?;
+                return Ok(definition);
             }
+            return Self::from_wkt(wkt);
         }
         if let Some(code) = s.epsg
             && let Some(c) = epsg::compound(code)
@@ -1313,7 +1312,7 @@ impl Def {
         let root = wkt1::parse(w).ok_or_else(|| Error::Crs("not a WKT definition GDAL reads".into()))?;
         // Engineering roots carry metadata, not an Earth projection. Do not send their IDs
         // through wbprojection's EPSG builder; its large frame can exhaust a WASM warp stack.
-        if ["LOCAL_CS", "ENGCRS", "ENGINEERINGCRS"].iter().any(|key| root.key.eq_ignore_ascii_case(key)) {
+        if root.is(keywords::ENGINEERING_CRS) {
             let kind = root.key.to_ascii_lowercase().replace('_', "");
             return Err(Error::Crs(format!("unsupported projection: unsupported WKT root '{kind}'")));
         }
@@ -1938,10 +1937,10 @@ fn proj_resolution(root: &wkt1::Node, code: Option<u32>, own_geog: Option<u32>, 
     };
     // A geographic 3D CRS, which PROJ looks up among those.
     let three_d = !projected && root.child("CS").and_then(|cs| cs.num(1)).is_some_and(|n| n == 3.0);
-    let base = if projected { ["GEOGCS", "BASEGEOGCRS", "BASEGEODCRS"].iter().find_map(|k| root.child(k))? } else { root };
-    let datum = ["DATUM", "TRF", "GEODETICDATUM", "ENSEMBLE"].iter().find_map(|k| base.child(k));
+    let base = if projected { root.child("GEOGCS").or_else(|| root.child_in(keywords::STANDARD_BASE_GEODETIC_CRS))? } else { root };
+    let datum = base.child_in(keywords::STANDARD_GEODETIC_DATUM);
     let datum_renamed = datum.is_some_and(|d| d.epsg().is_some_and(|c| d.name().is_none_or(|n| !epsg::datums_named(n).contains(&c))));
-    let has_id = |n: &wkt1::Node| n.child("AUTHORITY").or_else(|| n.child("ID")).is_some();
+    let has_id = |n: &wkt1::Node| n.ids().next().is_some();
     let gcs = |n: &wkt1::Node| is_wkt1 && n.name().is_some_and(|n| n.starts_with("GCS_"));
     let area = |c: Option<u32>| c.and_then(epsg::get).and_then(|e| e.area);
     // With an ID, resolved. PROJ skips an ID of an authority or code it does not know (looking
@@ -2027,23 +2026,8 @@ pub(crate) fn split_compound(w: &str) -> Option<(String, String)> {
         }
     }
     args.push(body[start..].trim());
-    let head = |a: &str| a.split(['[', '(']).next().unwrap_or("").trim().to_ascii_uppercase();
-    let horizontal = args.iter().find(|a| {
-        matches!(
-            head(a).as_str(),
-            "GEOGCS"
-                | "PROJCS"
-                | "GEOCCS"
-                | "GEOGCRS"
-                | "GEOGRAPHICCRS"
-                | "PROJCRS"
-                | "PROJECTEDCRS"
-                | "GEODCRS"
-                | "GEODETICCRS"
-                | "BOUNDCRS"
-        )
-    })?;
-    let vertical = args.iter().find(|a| matches!(head(a).as_str(), "VERT_CS" | "VERTCRS" | "VERTICALCRS"))?;
+    let horizontal = args.iter().find(|a| keywords::is(keywords::root_key(a), keywords::HORIZONTAL_CRS))?;
+    let vertical = args.iter().find(|a| keywords::is(keywords::root_key(a), keywords::VERTICAL_CRS_BUT_ESRI))?;
     Some((horizontal.to_string(), vertical.to_string()))
 }
 

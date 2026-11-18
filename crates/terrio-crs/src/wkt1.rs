@@ -62,6 +62,35 @@ impl Node {
         })
     }
 
+    /// Whether the node's keyword is one of `keys` (see [`crate::keywords`]).
+    pub fn is(&self, keys: &[&str]) -> bool {
+        crate::keywords::is(&self.key, keys)
+    }
+
+    /// The first child node with the first of `keys` the node has one with.
+    pub fn child_in(&self, keys: &[&str]) -> Option<&Node> {
+        keys.iter().find_map(|k| self.child(k))
+    }
+
+    /// The node itself or the first node below it, depth first, whose keyword is one of `keys`.
+    pub fn find(&self, keys: &[&str]) -> Option<&Node> {
+        if self.is(keys) {
+            return Some(self);
+        }
+        self.args.iter().find_map(|a| match a {
+            Arg::Node(c) => c.find(keys),
+            _ => None,
+        })
+    }
+
+    /// The node's identifiers (`AUTHORITY` and `ID` children).
+    pub fn ids(&self) -> impl Iterator<Item = &Node> {
+        self.args.iter().filter_map(|a| match a {
+            Arg::Node(n) if n.is(crate::keywords::ID) => Some(n),
+            _ => None,
+        })
+    }
+
     /// The node's name (its first argument, when a string).
     pub fn name(&self) -> Option<&str> {
         match self.args.first() {
