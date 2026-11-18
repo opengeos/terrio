@@ -55,6 +55,12 @@ def test_cycles_alone_flag_a_regression(tmp_path):
 def test_a_larger_drop_does_not_hide_a_regression(tmp_path):
     out = comment(tmp_path, summary("mixed", 1150, 1000, cycles=(500, 1000)))
     assert out.startswith("<!-- terrio-bench: regression -->\n")
+    assert "⚠️ **1 of 1 benchmarks are slower** than main: warp_f32 mixed +15.0%." in out
+
+
+def test_a_tiny_drop_reads_zero(tmp_path):
+    out = comment(tmp_path, summary("drift", 99_999, 100_000))
+    assert "| 🟢 | `warp_f32 drift` | 100 k → 100 k (0%) | 100 k → 100 k (0%) |" in out
 
 
 def test_improvement_alone_sets_no_label(tmp_path):

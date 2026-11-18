@@ -73,7 +73,7 @@ WHAT = {
 def change(old, new):
     """The change in percent, and as text: two decimals under 1%, so small drifts show."""
     pct = (new - old) / old * 100.0 if old else float("inf")
-    text = "0%" if pct == 0 else f"{pct:+.2f}%" if abs(pct) < 1 else f"{pct:+.1f}%"
+    text = "0%" if round(pct, 2) == 0 else f"{pct:+.2f}%" if abs(pct) < 1 else f"{pct:+.1f}%"
     return pct, text.replace("-", "−")
 
 
@@ -86,7 +86,7 @@ def main():
     with open(args.summaries, encoding="utf-8") as f:
         rows = [(s["function_name"] + (f" {s['id']}" if s.get("id") else ""), *metrics(s)) for s in summaries(f.read())]
 
-    table = []  # (sort key, mark, table line, label, largest change)
+    table = []  # (sort key, mark, table line, label, change named in the verdict)
     for n, (name, ir, cycles) in enumerate(rows):
         cells, up, down, big = [], 0.0, 0.0, 0.0
         for pair in (ir, cycles):
@@ -103,7 +103,9 @@ def main():
         label = f"{what}<br>`{name}`" if what else f"`{name}`"
         # Slower, then faster, the largest change first; the others in bench order.
         key = {"⚠️": (0, -up), "✅": (1, down)}.get(mark, (2, 0.0)) + (n,)
-        table.append((key, mark, f"| {mark} | {label} | {cells[0]} | {cells[1]} |", what or name, big))
+        # The verdict names the change that flagged the row: the rise of a slower one, the drop of a faster one.
+        shown = up if mark == "⚠️" else down if mark == "✅" else big
+        table.append((key, mark, f"| {mark} | {label} | {cells[0]} | {cells[1]} |", what or name, shown))
     table.sort(key=lambda r: r[0])
 
     slower = [r for r in table if r[1] == "⚠️"]
