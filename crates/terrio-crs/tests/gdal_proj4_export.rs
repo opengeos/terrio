@@ -31,12 +31,9 @@ fn registry_crss_are_written_as_gdal_exports_them() {
         compared += 1;
     }
     assert!(compared > 1250, "only {compared} compared");
-    // The ESRI CRSs terrio does not carry: geographic CRSs of other bodies, and without
-    // `wbprojection-fallback` two whose methods it has no formulas for (natearth2, qua_aut).
-    let mut expected = vec!["ESRI:104916", "ESRI:104936", "ESRI:104956", "ESRI:104976", "ESRI:104996"];
-    if cfg!(not(feature = "wbprojection-fallback")) {
-        expected.splice(0..0, ["ESRI:53078", "ESRI:54022"]);
-    }
+    // The ESRI CRSs terrio does not carry: CRSs of other bodies, and ESRI:102151, which is not
+    // in its ESRI table.
+    let expected = ["ESRI:102151", "ESRI:103880", "ESRI:104902", "ESRI:104922", "ESRI:104942", "ESRI:104962", "ESRI:104982"];
     assert_eq!(unread, expected);
 }
 
@@ -67,13 +64,14 @@ fn a_dms_prime_meridian_keeps_its_seconds_mark() {
 
 #[test]
 fn other_definitions_of_a_code_are_written_as_gdal_exports_them() {
-    // GDAL binds a CRS to WGS 84 by its root identifier: its WKT 1 and WKT 2 get the code's
-    // additions, but a WKT 1 with a datum shift of its own keeps its shift; the WKT without
-    // the identifier, ESRI's WKT and the PROJ string get none
-    // (`data/gdal_proj4_export_inputs.tsv`, `scripts/gen_gdal_towgs84.py`).
-    // Compound CRSs given by a definition, where GDAL adds a geoid model only to the code,
-    // binds a WKT 1 by its horizontal part's identifier and writes `+vunits` from ESRI's WKT; and
-    // EPSG:6871's PROJ string, which terrio writes on its sphere (`+R`), GDAL with `+wktext`.
+    // GDAL binds a single CRS to WGS 84 by its root identifier: its WKT 1 and WKT 2 get the
+    // code's additions, but a WKT 1 with a datum shift of its own keeps its shift; the WKT
+    // without the identifier, ESRI's WKT and the PROJ string get none
+    // (`data/gdal_proj4_export_inputs.tsv`, `scripts/gen_gdal_towgs84.py`). The known differences
+    // are compound CRSs given by a definition, which GDAL writes case by case (a WKT 1, rooted or
+    // not, with its horizontal part's `+towgs84` or its `PROJ4_GRIDS` geoid model; `+vunits` from
+    // ESRI's WKT), and EPSG:6871's PROJ string, which terrio writes on its sphere (`+R`), GDAL with
+    // `+wktext`.
     let known = [
         "EPSG:6871 wkt2",
         "EPSG:6871 wkt1-rootless",
@@ -92,9 +90,22 @@ fn other_definitions_of_a_code_are_written_as_gdal_exports_them() {
         if kind == "wkt1-towgs84" {
             assert_eq!(crs.authority_code().as_deref(), Some(code), "{code} {kind}");
         }
-        if crs.to_proj4_gdal().as_deref() != Some(gdal) {
-            differ.push(format!("{code} {kind}"));
+        match crs.to_proj4_gdal() {
+            Some(written) if written == gdal => {}
+            Some(_) => differ.push(format!("{code} {kind}")),
+            None => panic!("{code} {kind}: no PROJ string"),
         }
     }
     assert_eq!(differ, known);
+}
+
+#[test]
+fn a_bare_code_is_bound_and_a_proj_string_over_a_wkt_is_not() {
+    // A bare code is the code's definition. A PROJ string set over the code's WKT is what is
+    // written, so the code's datum shift is not added to it.
+    let bare = SpatialRef { epsg: Some(31467), ..Default::default() };
+    assert_eq!(bare.to_proj4_gdal(), SpatialRef::from_epsg(31467).unwrap().to_proj4_gdal());
+    let wkt = SpatialRef::from_epsg(31467).unwrap().to_wkt();
+    let over = SpatialRef { epsg: Some(31467), wkt, proj4: Some("+proj=longlat +datum=WGS84 +no_defs".into()), ..Default::default() };
+    assert_eq!(over.to_proj4_gdal().as_deref(), Some("+proj=longlat +datum=WGS84 +no_defs"));
 }

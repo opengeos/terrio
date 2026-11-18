@@ -7,8 +7,8 @@ GDAL's ``OSRExportToProj4`` writes PROJ's PROJ string of the CRS bound to WGS 84
 a single transformation for it (``OSR_ADD_TOWGS84_ON_EXPORT_TO_PROJ4=YES``, its default, and PROJ's
 ``createBoundCRSToWGS84IfPossible``): the Helmert transformation as ``+towgs84``, and for a
 compound CRS the geoid model as ``+geoidgrids`` and ``+geoid_crs``. terrio's own PROJ string
-(``SpatialRef::to_proj4``, PROJ's ``proj_as_proj_string``) has neither; the rest of the two strings
-is the same for every EPSG and ESRI CRS terrio carries.
+(``SpatialRef::to_proj4``, PROJ's ``proj_as_proj_string``) has neither; the test compares the rest
+of the two strings.
 
 Writes ``crates/terrio-crs/data/gdal_towgs84.tsv.zst``, a zstd-compressed text table with lines
 ``authority<TAB>code<TAB>towgs84<TAB>geoid``: the ``+towgs84`` values GDAL writes (empty for none)
@@ -54,7 +54,7 @@ KINDS = (
 NAMED = [
     "EPSG:31467", "EPSG:2056", "EPSG:28992", "EPSG:3405", "EPSG:4258",
     "EPSG:27700", "EPSG:4269", "EPSG:4267", "ESRI:102033", "ESRI:102453",
-    "EPSG:6871", "EPSG:3901",
+    "EPSG:6871", "EPSG:3901", "ESRI:102043",
 ]
 
 
@@ -77,9 +77,10 @@ def main():
     gdal.SetConfigOption("OSR_ADD_TOWGS84_ON_EXPORT_TO_PROJ4", "YES")
     rows, with_additions, others = [], [], []
     for authority in ("EPSG", "ESRI"):
-        infos = [i for i in osr.GetCRSInfoListFromDatabase(authority) if i.type in KINDS]
-        for info in sorted(infos, key=lambda i: int(i.code)):
-            code = f"{authority}:{info.code}"
+        # PROJ lists some codes twice (as more than one kind of CRS); each is exported once.
+        codes = sorted({int(i.code) for i in osr.GetCRSInfoListFromDatabase(authority) if i.type in KINDS})
+        for number in codes:
+            code = f"{authority}:{number}"
             proj = export(code)
             if proj is None:
                 continue
@@ -88,26 +89,28 @@ def main():
             assert '"' not in proj, f"{code}: a quoted value: {proj}"
             assert bool(geoid) == ("+geoidgrids=" in proj), f"{code}: a geoid model without its CRS: {proj}"
             if towgs84 or geoid:
-                rows.append((authority, info.code, towgs84.group(1) if towgs84 else "", geoid.group(1) if geoid else ""))
+                rows.append((authority, str(number), towgs84.group(1) if towgs84 else "", geoid.group(1) if geoid else ""))
                 with_additions.append((code, proj))
             else:
                 others.append((code, proj))
     text = "".join("\t".join(r) + "\n" for r in rows)
-    subprocess.run(["zstd", "-19", "-q", "-f", "-o", OUT], input=text.encode(), check=True)
+    # Each file is written beside its place and moved there only once all three are complete.
+    subprocess.run(["zstd", "-19", "-q", "-f", "-o", OUT + ".tmp"], input=text.encode(), check=True)
     fixture = dict(with_additions[::5] + others[::20])
     for code in NAMED:
         proj = export(code)
         assert proj is not None, f"GDAL refuses {code}"
         fixture[code] = proj
-    with open(FIXTURE, "w") as f:
+    with open(FIXTURE + ".tmp", "w") as f:
         for code, proj in sorted(fixture.items(), key=lambda c: (c[0].split(":")[0], int(c[0].split(":")[1]))):
             f.write(f"{code}\t{proj}\n")
     lines = 0
-    with open(INPUTS, "w") as f:
+    with open(INPUTS + ".tmp", "w") as f:
         for code in NAMED:
             srs = osr.SpatialReference()
             srs.SetFromUserInput(code)
-            wkt1 = srs.ExportToWkt()
+            # WKT 1 whatever OSR_WKT_FORMAT says, without the TOWGS84 GDAL may add to it.
+            wkt1 = srs.ExportToWkt(["FORMAT=WKT1_GDAL", "ADD_TOWGS84_ON_EXPORT_TO_WKT1=NO"])
             esri = srs.Clone()
             esri.MorphToESRI()
             root = re.search(r',AUTHORITY\["[A-Z]+","\d+"\]\]$', wkt1)
@@ -131,6 +134,8 @@ def main():
                 assert proj is not None and "\t" not in text and "\n" not in text, (code, kind)
                 f.write(f"{code}\t{kind}\t{text}\t{proj}\n")
                 lines += 1
+    for path in (OUT, FIXTURE, INPUTS):
+        os.replace(path + ".tmp", path)
     print(f"{len(rows)} CRSs with additions; {len(fixture)} in the fixture, {lines} inputs")
 
 
