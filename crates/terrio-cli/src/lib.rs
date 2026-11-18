@@ -155,7 +155,8 @@ enum Command {
     Contour(cmd::processing::ContourArgs),
     /// Compute per-polygon statistics of raster bands.
     ///
-    /// Handles multiple bands and CRS transformations.
+    /// Handles multiple bands and CRS transformations. An output ending in `.zarr` is a Zarr cube
+    /// of the statistics over (geometry, time, band, statistic) instead of a vector layer.
     #[command(visible_alias = "zonal")]
     ZonalStats(cmd::processing::ZonalArgs),
     /// Query vector layers with read-only SQL.

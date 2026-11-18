@@ -491,6 +491,26 @@ fn read_inputs(file: &str) -> Result<Vec<InputRow>> {
 
 pub fn zonal(a: ZonalArgs) -> Result<()> {
     use terrio::ops::zonal::{Statistic, ZonalBand, ZonalOptions, ZonalRaster, ZonalSource, ZonalWeight, zonal_stats};
+    // A `.zarr` output (or `-f Zarr`) is a cube of statistics, not a vector layer.
+    let out = &a.sources.output;
+    let cube = out.format.as_deref().map_or_else(
+        || out.output.trim_end_matches(['/', '\\']).to_ascii_lowercase().ends_with(".zarr"),
+        |f| f.eq_ignore_ascii_case("zarr"),
+    );
+    if cube {
+        let given = [
+            (a.sources.t_srs.is_some(), "--t-srs"),
+            (a.sources.decimal_places.is_some(), "--decimal-places"),
+            (out.nln.is_some(), "--nln"),
+            (out.append, "--append"),
+            (out.overwrite, "--overwrite"),
+        ];
+        if let Some((_, option)) = given.iter().find(|(set, _)| *set) {
+            return Err(Error::InvalidArgument(format!(
+                "{option} does not apply to a Zarr cube output, which keeps the zones' CRS and full precision"
+            )));
+        }
+    }
     let stats: Vec<_> = a.stats.iter().map(|s| Statistic::parse(s)).collect::<Result<_>>()?;
     let weights = a
         .weights
@@ -541,6 +561,23 @@ pub fn zonal(a: ZonalArgs) -> Result<()> {
                 plan.push((row.path, labelled));
             }
         }
+    }
+    if cube {
+        let layers = a.sources.input.open()?;
+        let [layer] = layers.as_slice() else {
+            return Err(Error::InvalidArgument(format!("a Zarr cube output takes one zone layer; the input has {}", layers.len())));
+        };
+        let output = &a.sources.output.output;
+        // Checked before any raster is read: the store is written once every statistic is done.
+        if std::path::Path::new(output).exists() {
+            return Err(Error::InvalidArgument(format!("{output} already exists")));
+        }
+        terrio::ops::zonal_cube::check_zones(layer)?;
+        let name = std::path::Path::new(output.trim_end_matches(['/', '\\'])).file_stem().and_then(|s| s.to_str()).unwrap_or("statistics");
+        let mut sources: Vec<ZonalSource> =
+            plan.into_iter().map(|(path, bands)| ZonalSource { raster: ZonalRaster::Path(path), bands }).collect();
+        let cube = super::quiet(|| terrio::ops::zonal_cube::zonal_cube(layer, &mut sources, &options, name))?;
+        return cube.write_zarr(output);
     }
     let columns: usize = plan.iter().map(|(_, b)| b.len()).sum::<usize>() * options.stats.len();
     // Every feature holds a value per column: a bound for every format (FlatGeobuf's own).
