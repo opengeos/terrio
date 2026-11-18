@@ -105,6 +105,26 @@ registered code of any kind. An ESRI code is read the same way, passing over EPS
 identifiers instead. A single identifier gives its code whatever it is. These forms
 work in Rust, CLI/MCP, Python and JavaScript. Parsing engineering metadata does not
 add transformations between arbitrary local grids and Earth-based CRSs.
+
+ESRI's vertical CRS, `VERTCS`, is read as `VERT_CS` is, as PROJ 9.9.0 reads it: its
+declared code is kept when its unit and direction are the code's, and
+`PARAMETER["Direction",-1]` (exactly -1) is an axis down unless an `AXIS` says otherwise.
+ESRI's compound CRS, a `GEOGCS` or `PROJCS` followed by a `VERTCS` (`GEOGCS[...],VERTCS[...]`,
+ESRI's WKT of EPSG:9707), is read as a `COMPD_CS` named after its two parts, and so written;
+after a `VERT_CS` or a WKT 2 root, a second node is ignored, as by PROJ. A vertical CRS
+without a code (`VERTCS`, `VERT_CS` or `VERTCRS`) is the EPSG CRS PROJ identifies by its name
+(an EPSG name or alias in any case, ESRI's `EGM96_height` included) on the datum its datum's name
+is, in the same unit and direction; it then has that CRS's geoid models. A compound CRS gets an
+EPSG code only from the code it declares, but its parts are known when its vertical CRS is
+identified.
+
+Where a WKT 2 CRS has two nodes PROJ reads one of, the first in its order counts, whatever its
+keyword, as in PROJ 9.9.0: of two datums (`DATUM`, `TRF`, `GEODETICDATUM`; a datum and an
+`ENSEMBLE`, which PROJ refuses, by the first too), two ellipsoids (`ELLIPSOID`, `SPHEROID`) or
+two base CRSs (`BASEGEOGCRS`, `BASEGEODCRS`). A WKT 2 ellipsoid is in its `LENGTHUNIT`
+(PROJ's WKT 2 of 32 EPSG CRSs, EPSG:4157 for one, gives it in feet). GDAL's root code, which
+binds a CRS to WGS 84 in its PROJ string export, is the root's first `AUTHORITY` or `ID`.
+
 GeoTIFF and COG writers retain engineering definitions, including root identifiers,
 as full WKT in an ESRI PE citation with user-defined model type 32767 and a general
 citation. Readers keep that definition even when its identifier is absent from
@@ -1334,8 +1354,8 @@ and the `Axis order`, `Body` and `Method` lines of `terrio crs CRS` (and its MCP
 
   Geocentric and vertical CRSs, Polar Stereographic (whose axes point along meridians, unless a
   WKT states others) and axes other than north and east (`northEast`, `south`) are `Other`.
-  `has_north_east_axis_order()` is unchanged: it goes by the CRS's WKT, for GML's authority
-  order.
+  `has_north_east_axis_order()` goes by the CRS's WKT instead, for GML's authority order (a
+  bound CRS's by its source CRS, as `axis_order()`).
 - `projection_params()` gives the method (the `+proj` name PROJ writes: `etmerc` is `tmerc`,
   `webmerc` `merc`, `latlong` `longlat`), `lon_0`, `lat_0`, `k_0`, `x_0`, `y_0`, the prime
   meridian, the ellipsoid's `a` and `b` and metres per unit. They are those of

@@ -72,6 +72,29 @@ impl Node {
         keys.iter().find_map(|k| self.child(k))
     }
 
+    /// The first child node, in the node's order, whose keyword is one of `keys`: PROJ 9.9.0 reads
+    /// the first of a CRS's datum nodes (`DATUM`, `TRF` or `GEODETICDATUM`), of a datum's
+    /// ellipsoid nodes and of a projected CRS's base CRS nodes, whatever their keyword.
+    pub fn first_in(&self, keys: &[&str]) -> Option<&Node> {
+        self.args.iter().find_map(|a| match a {
+            Arg::Node(n) if n.is(keys) => Some(n),
+            _ => None,
+        })
+    }
+
+    /// The geodetic datum or datum ensemble of a geodetic CRS node, the first in its order (see
+    /// [`Self::first_in`]; PROJ refuses a CRS with both a datum and an ensemble, which terrio
+    /// reads by the first).
+    pub fn datum(&self) -> Option<&Node> {
+        self.first_in(crate::keywords::GEODETIC_DATUM)
+    }
+
+    /// The base geodetic CRS of a projected (or derived) CRS node: WKT 1's `GEOGCS`, WKT 2's
+    /// `BASEGEOGCRS` or `BASEGEODCRS` (terrio's two included), the first in its order.
+    pub fn geodetic_base(&self) -> Option<&Node> {
+        self.first_in(crate::keywords::GEODETIC_BASE)
+    }
+
     /// The node itself or the first node below it, depth first, whose keyword is one of `keys`.
     pub fn find(&self, keys: &[&str]) -> Option<&Node> {
         if self.is(keys) {
@@ -118,6 +141,18 @@ impl Node {
         }
     }
 
+    /// The semi-major axis in metres and the inverse flattening (0 for a sphere) of an ellipsoid
+    /// node (`SPHEROID` or `ELLIPSOID`): its axis in its `LENGTHUNIT` (WKT 2, as PROJ reads
+    /// `LENGTHUNIT["Clarke's foot",0.3047972654]`), else in metres.
+    pub fn ellipsoid(&self) -> Option<(f64, f64)> {
+        let unit = match self.child_in(&["LENGTHUNIT", "UNIT"]) {
+            Some(u) => u.num(1).filter(|v| v.is_finite() && *v > 0.0)?,
+            None => 1.0,
+        };
+        let (a, rf) = (self.num(1)? * unit, self.num(2)?);
+        (a.is_finite() && a > 0.0 && rf.is_finite() && rf >= 0.0).then_some((a, rf))
+    }
+
     /// The EPSG code of the node's `AUTHORITY` or `ID`.
     pub fn epsg(&self) -> Option<u32> {
         let n = self.child_in(crate::keywords::ID)?;
@@ -149,6 +184,29 @@ pub(crate) fn parse(s: &str) -> Option<Node> {
     let b = s.as_bytes();
     let mut i = 0;
     node(b, &mut i, 0)
+}
+
+/// The horizontal and vertical CRS of ESRI's compound CRS, a WKT 1 `GEOGCS` or `PROJCS` followed
+/// by a `VERTCS` (`GEOGCS[...],VERTCS[...]`, as ESRI writes EPSG:9707), which PROJ 9.9.0 reads as
+/// a compound CRS; anything after the `VERTCS` is ignored, as by PROJ. `None` for another text.
+pub(crate) fn esri_compound(s: &str) -> Option<(Node, Node)> {
+    if s.len() > MAX_LEN {
+        return None;
+    }
+    let b = s.as_bytes();
+    let mut i = 0;
+    let horizontal = node(b, &mut i, 0)?;
+    if !["GEOGCS", "PROJCS"].iter().any(|k| horizontal.key.eq_ignore_ascii_case(k)) {
+        return None;
+    }
+    skip_ws(b, &mut i);
+    if b.get(i) != Some(&b',') {
+        return None;
+    }
+    i += 1;
+    skip_ws(b, &mut i);
+    let vertical = node(b, &mut i, 0)?;
+    vertical.key.eq_ignore_ascii_case("VERTCS").then_some((horizontal, vertical))
 }
 
 /// Whether `c` is a space as C's `isspace` reads it, which PROJ 9.8.1's parser skips: ASCII

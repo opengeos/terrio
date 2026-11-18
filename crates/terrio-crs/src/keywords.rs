@@ -106,17 +106,15 @@ const TERRIO_BASE_CRS: &[&str] = &["BASEGEOGRAPHICCRS", "BASEGEODETICCRS"];
 /// A geodetic datum or datum ensemble, terrio's `DATUMENSEMBLE` included.
 pub(crate) const GEODETIC_DATUM: &[&str] = &concat::<5>(&[GEODETIC_REFERENCE_FRAME, DATUM_ENSEMBLE, TERRIO_DATUM_ENSEMBLE]);
 
-/// A geodetic datum or datum ensemble of the standard ([`GEODETIC_DATUM`] without
-/// `DATUMENSEMBLE`), which the WKT 2 reader reads.
-pub(crate) const STANDARD_GEODETIC_DATUM: &[&str] = &concat::<4>(&[GEODETIC_REFERENCE_FRAME, DATUM_ENSEMBLE]);
+/// A datum ensemble, terrio's `DATUMENSEMBLE` included.
+pub(crate) const GEODETIC_DATUM_ENSEMBLE: &[&str] = &concat::<2>(&[DATUM_ENSEMBLE, TERRIO_DATUM_ENSEMBLE]);
 
 /// The base CRS of a WKT 2 projected or derived geographic CRS (9.2.1, 14.3.1), terrio's two
 /// included.
 pub(crate) const BASE_GEODETIC_CRS: &[&str] = &concat::<4>(&[BASE_GEOGRAPHIC, BASE_GEODETIC, TERRIO_BASE_CRS]);
 
-/// The base CRS keywords of the standard ([`BASE_GEODETIC_CRS`] without terrio's two), which the
-/// name resolution of [`crate::def`] reads.
-pub(crate) const STANDARD_BASE_GEODETIC_CRS: &[&str] = &concat::<2>(&[BASE_GEOGRAPHIC, BASE_GEODETIC]);
+/// The base geodetic CRS of a projected CRS of WKT 1 (`GEOGCS`) or WKT 2 ([`BASE_GEODETIC_CRS`]).
+pub(crate) const GEODETIC_BASE: &[&str] = &concat::<5>(&[WKT1_GEOGRAPHIC, BASE_GEOGRAPHIC, BASE_GEODETIC, TERRIO_BASE_CRS]);
 
 /// A WKT 2 geographic or geodetic CRS.
 pub(crate) const GEOGRAPHIC_OR_GEODETIC_CRS: &[&str] = &concat::<4>(&[GEOGRAPHIC, GEODETIC_CRS]);
@@ -128,10 +126,6 @@ pub(crate) const HORIZONTAL_CRS: &[&str] =
 
 /// A vertical CRS of WKT 1, WKT 2 or ESRI.
 pub(crate) const VERTICAL_CRS: &[&str] = &concat::<4>(&[WKT1_VERTICAL, VERTICAL, ESRI_VERTICAL]);
-
-/// [`VERTICAL_CRS`] without ESRI's `VERTCS`, which PROJ reads but the compound CRS splitter, the
-/// check of a declared code and the WKT sniffer do not (#1012 item 59).
-pub(crate) const VERTICAL_CRS_BUT_ESRI: &[&str] = &concat::<3>(&[WKT1_VERTICAL, VERTICAL]);
 
 /// A vertical datum of WKT 1 or WKT 2.
 pub(crate) const VERTICAL_DATUM: &[&str] = &concat::<4>(&[WKT1_VERTICAL_DATUM, VERTICAL_REFERENCE_FRAME]);
@@ -180,12 +174,11 @@ mod tests {
     #[test]
     fn the_lists_keep_the_keywords_and_order_the_readers_had() {
         assert_eq!(GEODETIC_DATUM, ["DATUM", "GEODETICDATUM", "TRF", "ENSEMBLE", "DATUMENSEMBLE"]);
-        assert_eq!(STANDARD_GEODETIC_DATUM, ["DATUM", "GEODETICDATUM", "TRF", "ENSEMBLE"]);
+        assert_eq!(GEODETIC_DATUM_ENSEMBLE, ["ENSEMBLE", "DATUMENSEMBLE"]);
         assert_eq!(BASE_GEODETIC_CRS, ["BASEGEOGCRS", "BASEGEODCRS", "BASEGEOGRAPHICCRS", "BASEGEODETICCRS"]);
-        assert_eq!(STANDARD_BASE_GEODETIC_CRS, ["BASEGEOGCRS", "BASEGEODCRS"]);
+        assert_eq!(GEODETIC_BASE, ["GEOGCS", "BASEGEOGCRS", "BASEGEODCRS", "BASEGEOGRAPHICCRS", "BASEGEODETICCRS"]);
         assert_eq!(GEOGRAPHIC_OR_GEODETIC_CRS, ["GEOGCRS", "GEOGRAPHICCRS", "GEODCRS", "GEODETICCRS"]);
         assert_eq!(VERTICAL_CRS, ["VERT_CS", "VERTCRS", "VERTICALCRS", "VERTCS"]);
-        assert_eq!(VERTICAL_CRS_BUT_ESRI, ["VERT_CS", "VERTCRS", "VERTICALCRS"]);
         assert_eq!(VERTICAL_DATUM, ["VERT_DATUM", "VDATUM", "VERTICALDATUM", "VRF"]);
         assert_eq!(ID, ["AUTHORITY", "ID"]);
         assert_eq!(ELLIPSOID, ["SPHEROID", "ELLIPSOID"]);
@@ -221,12 +214,22 @@ mod tests {
         let geogcs = root.child("GEOGCS").unwrap();
         assert_eq!(geogcs.ids().map(|n| n.key.as_str()).collect::<Vec<_>>(), ["AUTHORITY"]);
         assert_eq!(root.ids().map(|n| n.key.as_str()).collect::<Vec<_>>(), ["ID"]);
+        // The first child of the keywords, in the node's order (PROJ 9.9.0's datum, ellipsoid and
+        // base CRS): a `TRF` before a `DATUM`, a `SPHEROID` after an `ELLIPSOID`, a
+        // `BASEGEODCRS` before a `BASEGEOGCRS`.
+        let geodetic =
+            crate::wkt1::parse(r#"GEOGCRS["g",TRF["t",ELLIPSOID["e",2,0],SPHEROID["s",1,0]],DATUM["d",SPHEROID["s",1,0]]]"#).unwrap();
+        let datum = geodetic.datum().unwrap();
+        assert_eq!((datum.key.as_str(), datum.name()), ("TRF", Some("t")));
+        assert_eq!(datum.first_in(ELLIPSOID).map(|e| e.key.as_str()), Some("ELLIPSOID"));
+        let projected = crate::wkt1::parse(r#"PROJCRS["p",BASEGEODCRS["a",DATUM["d"]],BASEGEOGCRS["b",DATUM["d"]]]"#).unwrap();
+        assert_eq!(projected.geodetic_base().and_then(|b| b.name()), Some("a"));
+        assert_eq!(geodetic.geodetic_base(), None);
     }
 
     #[test]
     fn keywords_are_read_whatever_their_case_but_not_their_underscores() {
         assert!(is("vertcs", VERTICAL_CRS));
-        assert!(!is("VERTCS", VERTICAL_CRS_BUT_ESRI));
         assert!(!is("VERTCS", &["VERT_CS"]));
         assert_eq!(root_key(" GEOGCS [\"x\"]"), "GEOGCS");
         assert_eq!(root_key("VERT_CS(\"x\")"), "VERT_CS");

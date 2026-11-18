@@ -162,6 +162,24 @@ precedence = "override"
 SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright © 2010-2025 Esri", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
 SPDX-License-Identifier = "LicenseRef-EPSG AND Apache-2.0 AND MIT"
 
+# The EPSG names and aliases and the ESRI aliases of vertical CRSs and datums PROJ 9.9.0
+# identifies vertical CRSs by, with the EPSG codes they stand for, from PROJ 9.9.0's database
+# (scripts/gen_vertical_names.py).
+[[annotations]]
+path = "crates/terrio-crs/data/vertical_names.tsv.zst"
+precedence = "override"
+SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright © 2010-2025 Esri", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
+SPDX-License-Identifier = "LicenseRef-EPSG AND Apache-2.0 AND MIT"
+
+# PROJ 9.9.0's readings of EPSG and ESRI WKTs of EPSG CRSs: ellipsoids in feet, ESRI vertical
+# CRSs, bound CRS axes and keyword order (scripts/gen_ellipsoid_units.py, gen_vertical_esri.py,
+# gen_horizontal_root.py, gen_keyword_order.py).
+[[annotations]]
+path = ["crates/terrio-crs/tests/data/ellipsoid_units.json", "crates/terrio-crs/tests/data/vertical_esri.json", "crates/terrio-crs/tests/data/horizontal_root.json", "crates/terrio-crs/tests/data/keyword_order.json"]
+precedence = "override"
+SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright © 2010-2025 Esri", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
+SPDX-License-Identifier = "LicenseRef-EPSG AND Apache-2.0 AND MIT"
+
 # PROJ 9.9.0's placements of EPSG and ESRI WKTs of EPSG CRSs (scripts/gen_wkt_unresolved.py).
 [[annotations]]
 path = "crates/terrio-crs/tests/data/wkt_unresolved.json"

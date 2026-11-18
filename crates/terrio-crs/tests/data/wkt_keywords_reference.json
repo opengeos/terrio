@@ -1,5 +1,6 @@
 {
   "reference": "GDAL 3.13.3",
+  "proj_epsg_note": "PROJ 9.9.0's to_epsg() where it identifies a code GDAL's root authority (epsg) does not give: terrio's code",
   "cases": [
     {
       "name": "LOCAL_CS",
@@ -26,6 +27,7 @@
       "name": "VERTCRS-plain",
       "wkt": "VERTCRS[\"NAVD88 height\",VDATUM[\"North American Vertical Datum 1988\"],CS[vertical,1],AXIS[\"gravity-related height (H)\",up],LENGTHUNIT[\"metre\",1]]",
       "epsg": null,
+      "proj_epsg": 5703,
       "local": false,
       "vertical": true
     },
@@ -33,6 +35,7 @@
       "name": "VERTICALCRS-plain",
       "wkt": "VERTICALCRS[\"NAVD88 height\",VDATUM[\"North American Vertical Datum 1988\"],CS[vertical,1],AXIS[\"gravity-related height (H)\",up],LENGTHUNIT[\"metre\",1]]",
       "epsg": null,
+      "proj_epsg": 5703,
       "local": false,
       "vertical": true
     },

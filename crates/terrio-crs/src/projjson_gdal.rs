@@ -509,18 +509,13 @@ fn web_mercator(p: &str) -> bool {
 /// A WKT 2 geographic CRS (GDAL's WKT of EPSG's geographic 3D CRSs).
 fn geographic2(g: &Node) -> Result<Map<String, Value>> {
     let ids = g.child("ID").is_none();
-    let datum_node = g
-        .child("ENSEMBLE")
-        .or_else(|| g.child("DATUM"))
-        .or_else(|| g.child("TRF"))
-        .or_else(|| g.child("GEODETICDATUM"))
-        .ok_or_else(|| unsupported("a WKT 2 CRS without datum"))?;
+    let datum_node = g.datum().ok_or_else(|| unsupported("a WKT 2 CRS without datum"))?;
     if g.child("PRIMEM").and_then(|p| p.num(1)).is_some_and(|pm| pm != 0.0) {
         return Err(unsupported("a prime meridian other than Greenwich"));
     }
-    let e = datum_node.child("ELLIPSOID").ok_or_else(|| unsupported("a datum without ELLIPSOID"))?;
+    let e = datum_node.first_in(crate::keywords::ELLIPSOID).ok_or_else(|| unsupported("a datum without ELLIPSOID"))?;
     let (a, rf) = (e.num(1).ok_or_else(|| unsupported("an ELLIPSOID without axis"))?, e.num(2).unwrap_or(0.0));
-    if e.child("LENGTHUNIT").and_then(|u| u.num(1)).is_some_and(|f| f != 1.0) {
+    if e.child_in(&["LENGTHUNIT", "UNIT"]).and_then(|u| u.num(1)).is_some_and(|f| f != 1.0) {
         return Err(unsupported("an ellipsoid in another unit than metres"));
     }
     let mut ellipsoid = Map::new();
@@ -532,7 +527,7 @@ fn geographic2(g: &Node) -> Result<Map<String, Value>> {
         ellipsoid.insert("inverse_flattening".into(), num(rf));
     }
     let mut datum = Map::new();
-    let ensemble = datum_node.key.eq_ignore_ascii_case("ENSEMBLE");
+    let ensemble = datum_node.is(crate::keywords::GEODETIC_DATUM_ENSEMBLE);
     if !ensemble {
         datum.insert("type".into(), json!("GeodeticReferenceFrame"));
     }

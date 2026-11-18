@@ -26,7 +26,7 @@
 //! EPSG codes when the WKT gives them.
 
 use super::wkt1::{Arg, BoundTo, Converted, Helmert, Node, norm};
-use crate::keywords::{BASE_GEODETIC_CRS, GEOGRAPHIC_OR_GEODETIC_CRS, PROJECTED_CRS, STANDARD_GEODETIC_DATUM};
+use crate::keywords::{BASE_GEODETIC_CRS, ELLIPSOID, GEOGRAPHIC_OR_GEODETIC_CRS, PROJECTED_CRS};
 use crate::{Error, Result};
 
 /// Whether `root` is a WKT 2 CRS this reader converts.
@@ -74,7 +74,7 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
     if !projected && let Some(conv) = root.child("DERIVINGCONVERSION") {
         return derived(root, conv);
     }
-    let base = if projected { root.child_in(BASE_GEODETIC_CRS).ok_or_else(|| bad("a PROJCRS without its base CRS"))? } else { root };
+    let base = if projected { root.first_in(BASE_GEODETIC_CRS).ok_or_else(|| bad("a PROJCRS without its base CRS"))? } else { root };
     let geog = Geodetic::read(base, !projected)?;
     let mut tail = geog.tail();
     if !projected {
@@ -510,7 +510,7 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
 /// rotated-pole grid, in one of the three forms PROJ writes. Fails on any other conversion, which
 /// would otherwise be dropped.
 fn derived(root: &Node, conv: &Node) -> Result<Converted> {
-    let base = root.child_in(BASE_GEODETIC_CRS).ok_or_else(|| bad("a derived geographic CRS without its base CRS"))?;
+    let base = root.first_in(BASE_GEODETIC_CRS).ok_or_else(|| bad("a derived geographic CRS without its base CRS"))?;
     let geog = Geodetic::read(base, false)?;
     let method = conv.child("METHOD").ok_or_else(|| bad("a DERIVINGCONVERSION without its METHOD"))?;
     let method_name = method.name().unwrap_or("");
@@ -759,8 +759,8 @@ struct Geodetic {
 
 impl Geodetic {
     fn read(n: &Node, root: bool) -> Result<Self> {
-        let datum = n.child_in(STANDARD_GEODETIC_DATUM).ok_or_else(|| bad("a geodetic CRS without its datum"))?;
-        let ell = datum.child("ELLIPSOID").or_else(|| datum.child("SPHEROID")).ok_or_else(|| bad("a datum without its ellipsoid"))?;
+        let datum = n.datum().ok_or_else(|| bad("a geodetic CRS without its datum"))?;
+        let ell = datum.first_in(ELLIPSOID).ok_or_else(|| bad("a datum without its ellipsoid"))?;
         let ell_unit = ell.child("LENGTHUNIT").or_else(|| ell.child("UNIT")).and_then(|u| u.num(1)).unwrap_or(1.0);
         let a = ell.num(1).ok_or_else(|| bad("an ellipsoid without its semi-major axis"))? * ell_unit;
         let rf = ell.num(2).ok_or_else(|| bad("an ellipsoid without its inverse flattening"))?;
@@ -1042,10 +1042,7 @@ impl Params {
 fn bound_to_wgs84(root: &Node) -> bool {
     root.child("TARGETCRS").and_then(first_node).is_some_and(|t| {
         matches!(t.epsg(), Some(4326 | 4979))
-            || STANDARD_GEODETIC_DATUM
-                .iter()
-                .filter_map(|k| t.child(k))
-                .any(|d| d.epsg() == Some(6326) || norm(d.name().unwrap_or("")).starts_with("worldgeodeticsystem1984"))
+            || t.datum().is_some_and(|d| d.epsg() == Some(6326) || norm(d.name().unwrap_or("")).starts_with("worldgeodeticsystem1984"))
     })
 }
 

@@ -119,12 +119,12 @@ fn angular_unit(node: Option<&Node>) -> Value {
     }
 }
 
-/// The geographic (or geodetic) CRS node of a WKT tree: the root, or a projected CRS's base.
+/// The geographic (or geodetic) CRS node of a WKT tree: a projected CRS's base, the first in its
+/// order (see [`Node::geodetic_base`]), or the root.
 fn base_node(root: &Node) -> Option<&Node> {
-    ["GEOGCS", "BASEGEOGCRS", "BASEGEODCRS", "GEOGCRS", "GEODCRS", "GEOCCS"]
-        .iter()
-        .find_map(|k| root.child(k))
-        .or_else(|| ["GEOGCS", "GEOGCRS", "GEODCRS", "GEOCCS", "GEOGRAPHICCRS", "GEODETICCRS"].contains(&root.key.as_str()).then_some(root))
+    use crate::keywords::{GEOGRAPHIC_OR_GEODETIC_CRS, WKT1_GEOCENTRIC, WKT1_GEOGRAPHIC};
+    root.geodetic_base()
+        .or_else(|| [GEOGRAPHIC_OR_GEODETIC_CRS, WKT1_GEOGRAPHIC, WKT1_GEOCENTRIC].iter().any(|keys| root.is(keys)).then_some(root))
 }
 
 fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
@@ -153,7 +153,7 @@ fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
     }
     // Nor one on another figure than the WKT's ellipsoid, which this writer writes (PROJ 9.8.1
     // writes the WKT's, `+R=6400000` beside a WGS 84 `SPHEROID` as WGS 84).
-    let spheroid = base.child("DATUM").and_then(|d| d.child_in(crate::keywords::ELLIPSOID));
+    let spheroid = base.datum().and_then(|d| d.first_in(crate::keywords::ELLIPSOID));
     // But Web Mercator on its WGS 84 (GDAL's, GeoServer's EPSG:900913), which this writer writes
     // as Popular Visualisation Pseudo Mercator, as PROJ does.
     let web_mercator = pseudo_mercator(&Params::parse(&proj));
@@ -309,15 +309,16 @@ fn spherical_cs(root: &Node) -> bool {
 
 /// A geodetic reference frame, from the WKT's datum and ellipsoid nodes and the PROJ string.
 fn datum(base: &Node, p: &Params, def: &Def) -> Result<Value> {
-    let node = base.child("DATUM").or_else(|| base.child("ENSEMBLE"));
+    let node = base.datum();
     let code = node.and_then(Node::epsg);
     let name =
         code.and_then(epsg::datum_name).or_else(|| node.and_then(Node::name).map(str::to_string)).unwrap_or_else(|| "unknown".into());
-    let e = node.and_then(|d| d.child_in(crate::keywords::ELLIPSOID));
+    let e = node.and_then(|d| d.first_in(crate::keywords::ELLIPSOID));
     // The WKT's ellipsoid as written (EPSG:3857's datum is WGS 84, projected on a sphere), else
     // the PROJ string's.
     let es_rf = |es: f64| if es == 0.0 { 0.0 } else { 1.0 / (1.0 - (1.0 - es).sqrt()) };
-    let (a, rf) = match e.and_then(|e| Some((e.num(1)?, e.num(2)?))) {
+    // In metres, from its `LENGTHUNIT` (PROJ's WKT 2 of EPSG:4157 gives Clarke 1858 in feet).
+    let (a, rf) = match e.and_then(Node::ellipsoid) {
         Some((a, rf)) if a > 0.0 && (rf == 0.0 || rf > 1.0) => (a, rf),
         _ => (def.ell.a, es_rf(def.ell.es)),
     };

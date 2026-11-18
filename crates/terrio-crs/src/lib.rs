@@ -502,6 +502,9 @@ impl SpatialRef {
     /// [`Self::from_wkt`] of the whole text, uncut at a NUL: for stored WKT and WKT terrio
     /// built, whose names (a PROJJSON's) may keep one (see [`until_nul`]).
     pub(crate) fn from_wkt_text(wkt: &str) -> Self {
+        if let Some(compound) = esri_compound_wkt(wkt) {
+            return Self::from_wkt_text(&compound);
+        }
         // A WKT 1 extended with its PROJ string (`EXTENSION["PROJ4", ...]`, as GDAL writes CRSs
         // WKT 1 cannot describe) is that PROJ string, as GDAL reads it.
         // A registry CRS's own WKT with its PROJ string as an extension (`spherical_extension`,
@@ -775,9 +778,10 @@ impl SpatialRef {
     }
 
     /// The WKT of the geographic CRS this CRS is based on (its own when geographic): from the
-    /// EPSG table for an EPSG CRS, else the `GEOGCS` node of its WKT 1. `None` when neither is
-    /// known. Taken from the CRS's WKT, it has its names cut at a NUL ([`wkt_for_files`]), so
-    /// that it reads as a whole WKT with [`SpatialRef::from_wkt`], which ends text at a NUL.
+    /// EPSG table for an EPSG CRS, else the first `GEOGCS` node of its WKT 1 (written again from
+    /// its tree, in `[`/`]` brackets). `None` when neither is known. Taken from the CRS's WKT, it
+    /// has its names cut at a NUL ([`wkt_for_files`]), so that it reads as a whole WKT with
+    /// [`SpatialRef::from_wkt`], which ends text at a NUL.
     #[doc(hidden)]
     pub fn geographic_wkt(&self) -> Option<String> {
         if let Some(entry) = self.wkt.as_deref().and_then(|wkt| iau::identify(wkt, self.proj4.as_deref())).and_then(iau::get) {
@@ -788,22 +792,9 @@ impl SpatialRef {
         {
             return Some(g.wkt.clone());
         }
-        let wkt = self.to_wkt()?;
-        let start = wkt.find("GEOGCS[")?;
-        let mut depth = 0usize;
-        for (i, c) in wkt[start..].char_indices() {
-            match c {
-                '[' => depth += 1,
-                ']' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return Some(wkt_for_files(&wkt[start..=start + i]).into_owned());
-                    }
-                }
-                _ => {}
-            }
-        }
-        None
+        // The first `GEOGCS` of the tree (not a name's text, and in `(`/`)` brackets too).
+        let geogcs = wkt1::parse(&self.to_wkt()?)?.find(&["GEOGCS"])?.to_wkt();
+        Some(wkt_for_files(&geogcs).into_owned())
     }
 
     /// EPSG code of the geographic CRS underlying this definition, when known. For a WKT 1 CRS on a
@@ -1098,7 +1089,8 @@ impl SpatialRef {
         if let Some(c) = self.epsg.and_then(epsg::compound) {
             return Some((c.horizontal, c.vertical));
         }
-        let (horizontal, vertical) = def::split_compound(self.wkt.as_deref()?)?;
+        let wkt = self.wkt.as_deref()?;
+        let (horizontal, vertical) = def::split_compound(&esri_compound_wkt(wkt).unwrap_or_else(|| wkt.to_string()))?;
         // Its vertical CRS's code only of its unit and direction (not heights in feet as EPSG:5701).
         let vertical = def::vertical_code(&vertical)?;
         Some((identify_epsg(&horizontal)?, vertical))
@@ -1128,9 +1120,7 @@ impl SpatialRef {
     /// GML authority-order names need these axes swapped into traditional GIS XY order
     /// (GDAL 3.12.1 `EPSGTreatsAsLatLong` / `EPSGTreatsAsNorthingEasting`).
     pub fn has_north_east_axis_order(&self) -> bool {
-        let Some(wkt) = self.to_wkt() else { return false };
-        let horizontal = def::split_compound(&wkt).map(|(horizontal, _)| horizontal);
-        let Some(root) = wkt1::parse(horizontal.as_deref().unwrap_or(&wkt)) else { return false };
+        let Some(root) = self.to_wkt().as_deref().and_then(horizontal_root) else { return false };
         let mut axes = root.children("AXIS");
         let points = |axis: Option<&wkt1::Node>, direction: &str| {
             axis.is_some_and(|axis| matches!(axis.args.get(1), Some(wkt1::Arg::Ident(d)) if d.eq_ignore_ascii_case(direction)))
@@ -1186,17 +1176,7 @@ impl SpatialRef {
             let [first, second] = def.axis_directions();
             return if polar { AxisOrder::Other } else { order(first, second) };
         }
-        let Some(wkt) = self.to_wkt() else { return AxisOrder::Unknown };
-        let horizontal = def::split_compound(&wkt).map(|(horizontal, _)| horizontal);
-        let Some(root) = wkt1::parse(horizontal.as_deref().unwrap_or(&wkt)) else { return AxisOrder::Unknown };
-        // A bound CRS has the axes of its source CRS, as PROJ reads it.
-        let source = root.key.eq_ignore_ascii_case("BOUNDCRS").then(|| root.child("SOURCECRS")).flatten().and_then(|s| {
-            s.args.iter().find_map(|a| match a {
-                wkt1::Arg::Node(n) => Some(n.clone()),
-                _ => None,
-            })
-        });
-        let root = source.unwrap_or(root);
+        let Some(root) = self.to_wkt().as_deref().and_then(horizontal_root) else { return AxisOrder::Unknown };
         // Only the four directions count: `northEast` is another one.
         let direction = |axis: &wkt1::Node| match axis.args.get(1) {
             Some(wkt1::Arg::Ident(d)) if d.eq_ignore_ascii_case("north") => b'n',
@@ -1248,7 +1228,7 @@ impl SpatialRef {
         let mut params = def.params()?.clone();
         // A registry CRS is on the registry's ellipsoid, as PROJ reports it: the one its PROJ
         // string names may be rounded (Bessel Namibia's `bess_nam`, 0.28 m) or a sphere computed on
-        // (Web Mercator). The WKT's is taken in metres only (EPSG:3139's is in feet).
+        // (Web Mercator). The WKT's is taken in metres (EPSG:3139's is in feet).
         if let Some((a, b)) = self.registry_horizontal_wkt().and_then(wkt_ellipsoid).filter(|(a, _)| (a - params.a).abs() < 1.0) {
             (params.a, params.b) = (a, b);
         }
@@ -1618,24 +1598,29 @@ impl std::fmt::Display for SpatialRef {
 /// Datum realizations, which a WKT definition names when it means them.
 const REALIZATIONS: &[&str] = &["2011", "HARN", "NSRS", "CSRS", "CORS", "MA11", "PA11", "NAD83(", "ITRF", "GDA2020", "ETRF"];
 
-/// The semi-major axis of the first `SPHEROID` or `ELLIPSOID` of a WKT definition.
-#[doc(hidden)]
-pub fn semi_major_axis(wkt: &str) -> Option<f64> {
-    let upper = wkt.to_ascii_uppercase();
-    let start = upper.find("SPHEROID[").or_else(|| upper.find("ELLIPSOID["))?;
-    let body = &wkt[start..];
-    let rest = &body[body.find('[')? + 1..];
-    // Skip the quoted name, then read the number after it.
-    let after_name = rest.strip_prefix('"').and_then(|r| r.find('"').map(|i| &r[i + 1..]))?;
-    after_name.trim_start_matches([',', ' ']).split([',', ']']).next()?.trim().parse().ok()
+/// ESRI's compound CRS, a horizontal CRS followed by a `VERTCS`, as the `COMPD_CS` PROJ 9.9.0
+/// reads it as (EPSG:9707 in ESRI's WKT), named after its two parts as by PROJ. `None` for another
+/// WKT, and when the `COMPD_CS` would be longer than GDAL imports (the WKT is then read by its
+/// first node, as before). [`SpatialRef::from_wkt`], [`identify_epsg`] and `Def::from_wkt` read
+/// it so, for a `SpatialRef` built from a file's text too.
+pub(crate) fn esri_compound_wkt(wkt: &str) -> Option<String> {
+    let (horizontal, vertical) = wkt1::esri_compound(wkt)?;
+    let name = format!("{} + {}", horizontal.name().unwrap_or("unnamed"), vertical.name().unwrap_or("unnamed"));
+    let args = vec![wkt1::Arg::Str(name), wkt1::Arg::Node(horizontal), wkt1::Arg::Node(vertical)];
+    Some(wkt1::Node { key: "COMPD_CS".into(), args }.to_wkt()).filter(|w| w.len() <= wkt1::MAX_LEN)
 }
 
-/// The semi-major and semi-minor axes of the first `SPHEROID` or `ELLIPSOID` of a WKT
-/// definition, from its axis and inverse flattening (0 for a sphere), in the WKT's unit.
+/// The semi-major axis in metres of the first `SPHEROID` or `ELLIPSOID` of a WKT definition (in
+/// its `LENGTHUNIT`, as PROJ reads a WKT 2 ellipsoid in feet).
+#[doc(hidden)]
+pub fn semi_major_axis(wkt: &str) -> Option<f64> {
+    Some(wkt1::parse(wkt)?.find(keywords::ELLIPSOID)?.ellipsoid()?.0)
+}
+
+/// The semi-major and semi-minor axes in metres of the first `SPHEROID` or `ELLIPSOID` of a WKT
+/// definition, from its axis and inverse flattening (0 for a sphere).
 fn wkt_ellipsoid(wkt: &str) -> Option<(f64, f64)> {
-    let root = wkt1::parse(wkt)?;
-    let node = root.find(keywords::ELLIPSOID)?;
-    let (a, rf) = (node.num(1)?, node.num(2)?);
+    let (a, rf) = wkt1::parse(wkt)?.find(keywords::ELLIPSOID)?.ellipsoid()?;
     Some((a, if rf == 0.0 { a } else { a * (1.0 - 1.0 / rf) }))
 }
 
@@ -1718,6 +1703,9 @@ pub fn compound_code(horizontal: u32, vertical: u32, name: Option<&str>) -> Opti
 /// file must be cut at its first NUL by the caller ([`until_nul`]).
 #[doc(hidden)]
 pub fn identify_epsg(wkt: &str) -> Option<u32> {
+    if let Some(compound) = esri_compound_wkt(wkt) {
+        return identify_epsg(&compound);
+    }
     // A declared code only when the WKT's own content is that CRS, as PROJ 9.8.1 keeps the
     // content of a WKT whose root `ID` or `AUTHORITY` is wrong (a geographic code on a projected
     // CRS, a code that does not exist, a compound code's units); else the WKT is identified by its
@@ -1736,6 +1724,10 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
     // `SpatialRef::from_wkt`.
     if def::split_compound(wkt).is_some() {
         return None;
+    }
+    // A vertical CRS by its name, datum, unit and direction, as PROJ 9.9.0 identifies it.
+    if keywords::is(keywords::root_key(wkt), keywords::VERTICAL_CRS) {
+        return def::vertical_code(wkt);
     }
     let (datums, others) = wkt_datums_and_others(wkt);
     // No known datum (or no datum node, or WKT the reader cannot parse): no code, and on purpose
@@ -1952,11 +1944,11 @@ pub(crate) fn declared_fits_but_meridian(wkt: &str, code: u32) -> bool {
 /// names the code's own projection method.
 pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
     // Only a horizontal CRS's content is compared (not a vertical or engineering CRS's).
-    let horizontal_root = wkt1::parse(wkt).is_some_and(|r| r.is(keywords::HORIZONTAL_CRS) || r.is(keywords::COMPOUND_CRS));
+    let horizontal = wkt1::parse(wkt).is_some_and(|r| r.is(keywords::HORIZONTAL_CRS) || r.is(keywords::COMPOUND_CRS));
     // A vertical CRS's code only of its unit and direction; another root's (engineering, local)
     // not the code of a CRS terrio places (a vertical CRS declaring EPSG:4326 is not WGS 84).
-    if !horizontal_root {
-        let vertical = wkt1::parse(wkt).is_some_and(|r| r.is(keywords::VERTICAL_CRS_BUT_ESRI));
+    if !horizontal {
+        let vertical = wkt1::parse(wkt).is_some_and(|r| r.is(keywords::VERTICAL_CRS));
         return if vertical {
             def::vertical_code(wkt) == Some(code)
         } else {
@@ -2049,12 +2041,30 @@ pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
     }
 }
 
-/// The metres per unit of a vertical CRS's WKT (`VERT_CS`, `VERTCRS`), from its `UNIT` or its
-/// axis's, and whether its axis points down (depths).
+/// The node of a WKT whose axes are its horizontal axes, as PROJ 9.9.0 reads them: a compound
+/// CRS's horizontal CRS, and a bound CRS's source CRS (#1012 item 60); else its root.
+fn horizontal_root(wkt: &str) -> Option<wkt1::Node> {
+    let horizontal = def::split_compound(wkt).map(|(horizontal, _)| horizontal);
+    let root = wkt1::parse(horizontal.as_deref().unwrap_or(wkt))?;
+    let source = root.key.eq_ignore_ascii_case("BOUNDCRS").then(|| root.child("SOURCECRS")).flatten().and_then(|s| {
+        s.args.iter().find_map(|a| match a {
+            wkt1::Arg::Node(n) => Some(n.clone()),
+            _ => None,
+        })
+    });
+    Some(source.unwrap_or(root))
+}
+
+/// The metres per unit of a vertical CRS's WKT (`VERT_CS`, ESRI's `VERTCS`, `VERTCRS`), from its
+/// `UNIT` or its axis's, and whether its axis points down (depths): by its `AXIS`, else by ESRI's
+/// `PARAMETER["Direction",-1]` (PROJ 9.9.0 takes exactly -1 as down, and an `AXIS` before it).
 pub(crate) fn vertical_axis(wkt: &str) -> Option<(f64, bool)> {
     let root = wkt1::parse(wkt)?;
     let axis = root.child("AXIS");
-    let down = axis.is_some_and(|a| matches!(a.args.get(1), Some(wkt1::Arg::Ident(d)) if d.eq_ignore_ascii_case("down")));
+    let down = match axis {
+        Some(a) => matches!(a.args.get(1), Some(wkt1::Arg::Ident(d)) if d.eq_ignore_ascii_case("down")),
+        None => root.children("PARAMETER").any(|p| p.name().is_some_and(|n| n.eq_ignore_ascii_case("Direction")) && p.num(1) == Some(-1.0)),
+    };
     let unit = root
         .child("UNIT")
         .or_else(|| root.child("LENGTHUNIT"))
@@ -2365,7 +2375,7 @@ fn open_definition_file(path: &str) -> Option<std::fs::File> {
 
 fn looks_like_wkt(s: &str) -> bool {
     let head = keywords::root_key(s);
-    [keywords::HORIZONTAL_CRS, keywords::COMPOUND_CRS, keywords::VERTICAL_CRS_BUT_ESRI, keywords::ENGINEERING_CRS]
+    [keywords::HORIZONTAL_CRS, keywords::COMPOUND_CRS, keywords::VERTICAL_CRS, keywords::ENGINEERING_CRS]
         .iter()
         .any(|keys| keywords::is(head, keys))
 }
@@ -4484,24 +4494,43 @@ mod tests {
     }
 }
 
-/// The authority and code of a WKT's root `AUTHORITY` or `ID`, wherever it is among the root's
-/// children (WKT 2 can give a `REMARK` after it), but for a compound CRS's.
+/// The authority and code of a WKT's first root `AUTHORITY` or `ID` (as GDAL 3.13.3 takes it,
+/// whichever keyword comes first), wherever it is among the root's children (WKT 2 can give a
+/// `REMARK` after it), but for a compound CRS's.
 fn gdal_root_identifier(wkt: &str) -> Option<(String, u32)> {
     let root = wkt1::parse(wkt)?;
     if root.is(keywords::COMPOUND_CRS) {
         return None;
     }
-    root.children("ID").chain(root.children("AUTHORITY")).find_map(|id| match (id.args.first()?, id.args.get(1)?) {
+    // The first only: GDAL takes `AUTHORITY["EPSG","abc"]` before an `ID["EPSG",4258]` as the
+    // code `abc`, which is no code.
+    let id = root.ids().next()?;
+    match (id.args.first()?, id.args.get(1)?) {
         (wkt1::Arg::Str(authority), wkt1::Arg::Num(code)) if code.fract() == 0.0 && *code >= 0.0 && *code <= f64::from(u32::MAX) => {
             Some((authority.clone(), *code as u32))
         }
         (wkt1::Arg::Str(authority), wkt1::Arg::Str(code)) => Some((authority.clone(), code.trim().parse().ok()?)),
         _ => None,
-    })
+    }
 }
 
 #[cfg(test)]
 mod gdal_proj4_tests {
+    /// GDAL 3.13.3 (PROJ 9.9.0) takes a WKT 2's first root identifier, `AUTHORITY` or `ID`:
+    /// `osr.SpatialReference().ImportFromWkt(wkt)`, then `GetAuthorityCode(None)` gives 4326 with
+    /// `AUTHORITY["EPSG","4326"]` first, 4258 with `ID["EPSG",4258]` first, and `abc` (no code)
+    /// with `AUTHORITY["EPSG","abc"]` before `ID["EPSG",4258]`.
+    #[test]
+    fn the_first_root_identifier_is_gdals() {
+        let wgs84 = r#"GEOGCRS["x",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],CS[ellipsoidal,2],AXIS["latitude",north,ANGLEUNIT["degree",0.0174532925199433]],AXIS["longitude",east,ANGLEUNIT["degree",0.0174532925199433]]"#;
+        let first = format!(r#"{wgs84},AUTHORITY["EPSG","4326"],ID["EPSG",4258]]"#);
+        assert_eq!(super::gdal_root_identifier(&first), Some(("EPSG".into(), 4326)));
+        let first = format!(r#"{wgs84},ID["EPSG",4258],AUTHORITY["EPSG","4326"]]"#);
+        assert_eq!(super::gdal_root_identifier(&first), Some(("EPSG".into(), 4258)));
+        let unreadable = format!(r#"{wgs84},AUTHORITY["EPSG","abc"],ID["EPSG",4258]]"#);
+        assert_eq!(super::gdal_root_identifier(&unreadable), None);
+    }
+
     #[test]
     fn a_registry_string_has_nothing_the_table_adds() {
         // What `to_proj4_gdal` inserts is never already there: no EPSG or ESRI code GDAL adds a
