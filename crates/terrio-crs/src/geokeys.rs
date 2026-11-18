@@ -1392,8 +1392,7 @@ impl SpatialRef {
 
 /// Whether the retained WKT describes an engineering grid, independently of its root ID.
 fn engineering_cs(wkt: &str) -> bool {
-    let root = wkt.split(['[', '(']).next().unwrap_or_default().trim().to_ascii_uppercase();
-    matches!(root.as_str(), "LOCAL_CS" | "ENGCRS" | "ENGINEERINGCRS")
+    crate::keywords::is(crate::keywords::root_key(wkt), crate::keywords::ENGINEERING_CRS)
 }
 
 /// The EPSG code to write for an EPSG CRS, so that GDAL 3.12 reads it as that CRS. A deprecated

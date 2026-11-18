@@ -7,7 +7,9 @@
 //! compatibility. A WKT 2 reader ignores keywords it does not know (Annex B.2.3).
 //!
 //! The lists the readers use are built from these parts. Where a reader reads only part of a
-//! list, a constant names that part, so every reader keeps the keywords it reads.
+//! list, a constant names that part, so every reader keeps the keywords it reads. Each constant
+//! lists its keywords in the order the readers look for them (see [`crate::wkt1::Node::child_in`]),
+//! not always in the BNF's.
 //!
 //! Keywords are case-insensitive, but an underscore counts (Annex B.2.1): see [`is`].
 
@@ -61,7 +63,8 @@ pub(crate) const ELLIPSOID: &[&str] = &["SPHEROID", "ELLIPSOID"];
 
 // WKT 1 (OGC 01-009), as Annex C, Table C.2 maps it to WKT 2.
 
-/// `GEOGCS`, a geographic CRS (`GEOGCRS`), and a projected CRS's base CRS (`BASEGEODCRS`).
+/// `GEOGCS`, a geographic CRS (WKT 2's `GEOGCRS`), and in a `PROJCS` its base CRS (WKT 2's
+/// `BASEGEODCRS`).
 const WKT1_GEOGRAPHIC: &[&str] = &["GEOGCS"];
 
 /// `GEOCCS`, a geocentric CRS (`GEODCRS`).
@@ -105,7 +108,8 @@ pub(crate) const GEODETIC_DATUM: &[&str] = &concat::<5>(&[GEODETIC_REFERENCE_FRA
 /// `DATUMENSEMBLE`), which the WKT 2 reader and the name resolution of [`crate::def`] read.
 pub(crate) const STANDARD_GEODETIC_DATUM: &[&str] = &concat::<4>(&[GEODETIC_REFERENCE_FRAME, DATUM_ENSEMBLE]);
 
-/// The base CRS of a WKT 2 projected or derived geographic CRS, terrio's two included.
+/// The base CRS of a WKT 2 projected or derived geographic CRS (9.2.1, 14.3.1), terrio's two
+/// included.
 pub(crate) const BASE_GEODETIC_CRS: &[&str] = &concat::<4>(&[BASE_GEOGRAPHIC, BASE_GEODETIC, TERRIO_BASE_CRS]);
 
 /// The base CRS keywords of the standard ([`BASE_GEODETIC_CRS`] without terrio's two), which the
@@ -182,10 +186,43 @@ mod tests {
         assert_eq!(VERTICAL_CRS_BUT_ESRI, ["VERT_CS", "VERTCRS", "VERTICALCRS"]);
         assert_eq!(VERTICAL_DATUM, ["VERT_DATUM", "VDATUM", "VERTICALDATUM", "VRF"]);
         assert_eq!(ID, ["AUTHORITY", "ID"]);
+        assert_eq!(ELLIPSOID, ["SPHEROID", "ELLIPSOID"]);
+        assert_eq!(GEODETIC_CRS, ["GEODCRS", "GEODETICCRS"]);
+        assert_eq!(PROJECTED_CRS, ["PROJCRS", "PROJECTEDCRS"]);
+        assert_eq!(COMPOUND_CRS, ["COMPD_CS", "COMPOUNDCRS"]);
+        assert_eq!(ENGINEERING_CRS, ["LOCAL_CS", "ENGCRS", "ENGINEERINGCRS"]);
+        let mut horizontal = HORIZONTAL_CRS.to_vec();
+        horizontal.sort_unstable();
+        assert_eq!(
+            horizontal,
+            ["BOUNDCRS", "GEOCCS", "GEODCRS", "GEODETICCRS", "GEOGCRS", "GEOGCS", "GEOGRAPHICCRS", "PROJCRS", "PROJCS", "PROJECTEDCRS"]
+        );
     }
 
     #[test]
-    fn keywords_are_read_whatever_their_case() {
+    fn a_node_finds_its_children_by_keyword() {
+        let root = crate::wkt1::parse(
+            r#"COMPD_CS["c",GEOGCS["g",DATUM[D_X,SPHEROID["s",1,0]],AUTHORITY["EPSG","4326"]],VERT_CS["v",VERT_DATUM["d",2005]],ID["X","1"]]"#,
+        )
+        .unwrap();
+        assert!(root.is(COMPOUND_CRS));
+        // Depth first, the first datum whatever its name.
+        let datum = root.find(GEODETIC_DATUM).unwrap();
+        assert_eq!((datum.key.as_str(), datum.name()), ("DATUM", None));
+        assert_eq!(root.find(COMPOUND_CRS), Some(&root));
+        assert!(root.find(ENGINEERING_CRS).is_none());
+        // The first of the keywords the node has a child with, not the first child.
+        let vertical = root.child_in(&["VERT_CS", "GEOGCS"]).unwrap();
+        assert_eq!(vertical.key, "VERT_CS");
+        assert_eq!(root.child_in(VERTICAL_DATUM), None);
+        // Identifiers in the node's order, of either keyword.
+        let geogcs = root.child("GEOGCS").unwrap();
+        assert_eq!(geogcs.ids().map(|n| n.key.as_str()).collect::<Vec<_>>(), ["AUTHORITY"]);
+        assert_eq!(root.ids().map(|n| n.key.as_str()).collect::<Vec<_>>(), ["ID"]);
+    }
+
+    #[test]
+    fn keywords_are_read_whatever_their_case_but_not_their_underscores() {
         assert!(is("vertcs", VERTICAL_CRS));
         assert!(!is("VERTCS", VERTICAL_CRS_BUT_ESRI));
         assert!(!is("VERTCS", &["VERT_CS"]));

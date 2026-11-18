@@ -1154,7 +1154,7 @@ impl SpatialRef {
     /// # Ok::<(), terrio_crs::Error>(())
     /// ```
     pub fn axis_order(&self) -> AxisOrder {
-        // A vertical CRS, by its code or its WKT (`VERT_CS`, ESRI's `VERTCS`, `VERTCRS`), has a
+        // A vertical CRS, by its code or its WKT (`VERT_CS`, ESRI's `VERTCS`, `VERTCRS`, `VERTICALCRS`), has a
         // single axis.
         let vertical_wkt = self.wkt.as_deref().is_some_and(|w| keywords::is(keywords::root_key(w), keywords::VERTICAL_CRS));
         if self.epsg.and_then(epsg::vertical).is_some() || vertical_wkt {
@@ -2233,7 +2233,17 @@ fn esri_same_datum(wkt: &str, registered: &str) -> bool {
 /// ensemble, as [`wkt_datums_and_others`] finds it), its first one (a compound or bound CRS's
 /// horizontal or source CRS).
 fn datum_name(wkt: &str) -> Option<String> {
-    wkt1::parse(wkt)?.find(keywords::GEODETIC_DATUM)?.name().map(str::to_string)
+    // A datum node without a quoted name gives none, and the search goes on after it.
+    fn find(n: &wkt1::Node) -> Option<String> {
+        if n.is(keywords::GEODETIC_DATUM) {
+            return n.name().map(str::to_string);
+        }
+        n.args.iter().find_map(|a| match a {
+            wkt1::Arg::Node(c) => find(c),
+            _ => None,
+        })
+    }
+    find(&wkt1::parse(wkt)?)
 }
 
 /// The ESRI code of a reference such as `ESRI:54009` (whatever its case, as PROJ reads it),

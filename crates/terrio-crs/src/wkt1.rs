@@ -83,7 +83,7 @@ impl Node {
         })
     }
 
-    /// The node's identifiers (`AUTHORITY` and `ID` children).
+    /// The node's identifiers (its `AUTHORITY` and `ID` children), in the order the node has them.
     pub fn ids(&self) -> impl Iterator<Item = &Node> {
         self.args.iter().filter_map(|a| match a {
             Arg::Node(n) if n.is(crate::keywords::ID) => Some(n),
@@ -110,7 +110,7 @@ impl Node {
 
     /// The EPSG code of the node's `AUTHORITY` or `ID`.
     pub fn epsg(&self) -> Option<u32> {
-        let n = self.child("AUTHORITY").or_else(|| self.child("ID"))?;
+        let n = self.child_in(crate::keywords::ID)?;
         if !n.name()?.eq_ignore_ascii_case("EPSG") {
             return None;
         }
@@ -379,7 +379,7 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
         _ => return None,
     };
     let datum = geogcs.child("DATUM")?;
-    let sph = datum.child("SPHEROID").or_else(|| datum.child("ELLIPSOID"))?;
+    let sph = datum.child_in(crate::keywords::ELLIPSOID)?;
     let a = sph.num(1)?;
     let rf = sph.num(2)?;
     // Angular unit of the geographic CRS, in degrees.

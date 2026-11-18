@@ -656,7 +656,7 @@ impl Def {
             // A CRS identifier must not override an edited datum definition.
             let datum_node = |w: &str| {
                 let root = super::wkt1::parse(w)?;
-                let base = root.child("BASEGEOGCRS").or_else(|| root.child("BASEGEODCRS")).unwrap_or(&root);
+                let base = root.child_in(keywords::STANDARD_BASE_GEODETIC_CRS).unwrap_or(&root);
                 base.child("DATUM").cloned()
             };
             let base = super::iau::get(entry.base).ok_or_else(|| Error::Crs(format!("unknown IAU base CRS {}", entry.base)))?;
@@ -2005,8 +2005,7 @@ pub(crate) fn earth_sized(a: f64) -> bool {
 pub(crate) fn split_compound(w: &str) -> Option<(String, String)> {
     let w = w.trim();
     let open = w.find(['[', '('])?;
-    let key = w[..open].trim().to_ascii_uppercase();
-    if key != "COMPD_CS" && key != "COMPOUNDCRS" {
+    if !keywords::is(keywords::root_key(w), keywords::COMPOUND_CRS) {
         return None;
     }
     // The top-level arguments of the node.
