@@ -536,9 +536,10 @@ fn windows_of_an_uncompressed_strip_over_the_limit_read_by_rows() {
     }
 }
 
-/// Rows are read a few megabytes at a time, whatever the window's height.
+/// A window taller than one 8 MiB part of rows reads the same pixels (the parts themselves are
+/// not observable here).
 #[test]
-fn a_tall_window_of_an_uncompressed_strip_is_read_in_several_parts() {
+fn a_tall_window_of_an_uncompressed_strip_over_the_limit_reads_the_same_pixels() {
     // 4096 x 3000 UInt16 pixels: rows of 8,192 bytes, 2,400 of them (19.7 MB) under a 20 MB limit.
     let bytes = one_strip(4096, 3000, 1, "PIXEL");
     let w = Window::new(100, 300, 500, 2400);

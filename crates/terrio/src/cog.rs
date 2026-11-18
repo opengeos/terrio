@@ -2989,7 +2989,7 @@ impl TiffRaster {
                 let (offset, count) = tables.get(idx as usize)?;
                 let y0 = targets[&idx][0].1;
                 let (first, end) = (w.y.max(y0) - y0, (w.y + w.height).min(y0 + rows) - y0);
-                let held = count >= strip && offset.checked_add(strip).is_some_and(|end| end <= self.file_len);
+                let held = count >= strip && offset.checked_add(strip).is_some_and(|stop| stop <= self.file_len);
                 (strip > limit && held && (end - first) as u64 * row_bytes as u64 <= limit).then_some((first, end - first))
             };
             if let Some(row_bytes) = row_bytes
