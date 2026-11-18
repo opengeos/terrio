@@ -540,7 +540,8 @@ impl Proj for Tmerc {
 // Transverse Mercator Zoned Grid System (EPSG method 9824, IOGP Guidance Note 7-2, 3.2.3.2), as
 // PROJ 9.9.0's `tmerczoned` (`src/projections/tmerczoned.cpp`): Transverse Mercator in zones of
 // `+width` degrees from `+lon_0` (the initial longitude), each zone's eastings offset by 1000 km
-// per zone number.
+// per zone number. As in PROJ, zones wider than about 9° (at scale 1) reach eastings of the next
+// zone, which the inverse then reads in that zone: such a grid system does not round-trip.
 
 #[derive(Debug)]
 struct Tmerczoned {
@@ -555,10 +556,10 @@ struct Tmerczoned {
 
 impl Tmerczoned {
     fn new(s: &Setup<'_>) -> Result<Self> {
-        // PROJ reads `+width` as a number of degrees (`pj_param(..., "dwidth")`); with a missing,
+        // PROJ reads `+width` as an angle in degrees (`pj_param(..., "dwidth")`); with a missing,
         // zero or negative width its result is undefined (an integer cast of an infinite zone
         // number), which terrio refuses.
-        let width = s.p.f64("width").unwrap_or(0.0).to_radians();
+        let width = s.p.degrees("width").unwrap_or(0.0).to_radians();
         if !(width.is_finite() && width > 0.0) {
             return Err(err("tmerczoned: +width should be a positive number of degrees"));
         }

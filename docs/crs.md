@@ -1572,7 +1572,9 @@ equal-area and the inverse returns the projected point. `+units`, `+x_0` and `+y
 `+mode`, `+resolution` and `+aperture` are ignored, as in PROJ 9.9.0.
 
 As PROJ 9.9.0 reads them, a parameter given as a number must be a whole angle (`+azi=30x` is
-refused), one given as a word is read as 0 (`+azi=abc`), and `+dual` takes `t` or `f`. The
+refused), one given as a word is read as 0 (`+azi=abc`), and `+dual` takes `t` or `f`. In a
+WKT's `PROJ4` extension, which PROJ reads as a pipeline step, an angle is its readable start
+(`+lat_0=30x` is 30°). The
 inverse refuses points outside the unfolded net.
 
 GDAL's WKT1 (`custom_proj4`, which carries the PROJ string), ESRI's `PROJ_isea` (with

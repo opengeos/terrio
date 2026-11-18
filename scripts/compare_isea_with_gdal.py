@@ -24,7 +24,8 @@ def transformation(source, target):
 
 
 def same_isea(reference):
-    """Whether GDAL's PROJ computes isea as PROJ 9.9.0 does, which the corpus uses.
+    """Whether GDAL's PROJ computes isea as PROJ 9.9.0 does, which the corpus uses: not before
+    PROJ 9.9; from it on, an error when the first case does not match.
 
     PROJ 9.9 replaced the method of PROJ 9.8 and earlier (another origin, the authalic latitude
     on an ellipsoid); PROJ 9.4 has no inverse.
@@ -32,20 +33,21 @@ def same_isea(reference):
     # PROJ 9.8 and earlier agree with 9.9.0 on the default sphere, so the version decides first.
     if (osr.GetPROJVersionMajor(), osr.GetPROJVersionMinor()) < (9, 9):
         return False
+    # On PROJ 9.9, a probe that fails is an error, not another implementation.
     case = reference["cases"][0]
     source, target = transformation(case["source"], case["target"])
     try:
         forward = osr.CoordinateTransformation(source, target)
         inverse = osr.CoordinateTransformation(target, source)
-    except RuntimeError:
-        return False
+    except RuntimeError as e:
+        raise SystemExit(f"GDAL's PROJ refuses {case['name']}: {e}") from e
     for sample in case["samples"]:
         got = oracle(forward, sample[:2])
         if got is None or max(abs(a - b) for a, b in zip(got, sample[2], strict=True)) > 0.001:
-            return False
+            raise SystemExit(f"GDAL's PROJ projects {sample[:2]} of {case['name']} to {got}, not {sample[2]}")
         back = oracle(inverse, sample[2])
         if (back is None) != (sample[3] is None):
-            return False
+            raise SystemExit(f"GDAL's PROJ inverts {sample[2]} of {case['name']} to {back}, not {sample[3]}")
     return True
 
 
