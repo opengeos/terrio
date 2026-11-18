@@ -100,9 +100,8 @@ pub(crate) enum Step {
     Cart { ell: Ell, inv: bool },
     /// A Helmert transformation of geocentric coordinates, about a pivot point for
     /// Molodensky-Badekas, and with rates of change for a time-dependent one.
-    /// `seven` keeps its parameters as `+towgs84` carries them (metres, arc-seconds in the
-    /// position vector convention, ppm), unless its rotations are exact.
-    Helmert { t: [f64; 3], r: [[f64; 3]; 3], scale: f64, pivot: [f64; 3], inv: bool, rates: Option<Box<Rates>>, seven: Option<[f64; 7]> },
+    /// `seven` keeps its parameters as `+towgs84` carries them.
+    Helmert { t: [f64; 3], r: [[f64; 3]; 3], scale: f64, pivot: [f64; 3], inv: bool, rates: Option<Box<Rates>>, seven: Seven },
     /// Offsets in radians added to the longitude and latitude, and in metres to the height.
     GeogOffset { dlon: f64, dlat: f64, dh: f64, inv: bool },
     /// EPSG's Vertical Offset and Slope (PROJ's `vertoffset`): heights plus an offset varying
@@ -120,6 +119,20 @@ pub(crate) enum Step {
     XyzGridShift { grids: Grids, ell: Ell, input_ref: bool, multiplier: f64, inv: bool },
     /// A velocity grid applied over a time span (`deformation`).
     Deformation { grids: Grids, ell: Ell, dt: Option<f64>, epoch: f64, inv: bool },
+}
+
+/// The parameters of a Helmert step as `+towgs84` carries them (metres, arc-seconds in the
+/// position vector convention, ppm), `None` when its rotations are exact. Not part of the step's
+/// equality, which is that of the transformation it applies: two values of a parameter that
+/// differ in the last digits (6.7 and 6.699999999915107 ppm, read back from GeoKeys) apply the
+/// same scale.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Seven(pub Option<[f64; 7]>);
+
+impl PartialEq for Seven {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 /// A datum transformation to WGS 84, with the area where it applies and what PROJ ranks it by.
@@ -223,7 +236,7 @@ fn rotation(rot: [f64; 3], position_vector: bool, exact: bool) -> [[f64; 3]; 3] 
 /// A Helmert step from its seven parameters (metres, arc-seconds and ppm).
 pub(crate) fn helmert(t: [f64; 3], rot: [f64; 3], s: f64, position_vector: bool, exact: bool, pivot: [f64; 3]) -> Step {
     let sign = if position_vector { 1.0 } else { -1.0 };
-    let seven = (!exact).then_some([t[0], t[1], t[2], sign * rot[0], sign * rot[1], sign * rot[2], s]);
+    let seven = Seven((!exact).then_some([t[0], t[1], t[2], sign * rot[0], sign * rot[1], sign * rot[2], s]));
     Step::Helmert { t, r: rotation(rot, position_vector, exact), scale: 1.0 + s * 1e-6, pivot, inv: false, rates: None, seven }
 }
 

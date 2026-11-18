@@ -150,13 +150,19 @@ pub fn geographic_datum(geog: u32) -> Option<u32> {
 /// (a change of prime meridian or between geographic and geocentric coordinates around it, two
 /// geocentric translations through a datum on the same ellipsoid). When PROJ's ballpark comes
 /// first, it is the transformation PROJ's `proj_create_crs_to_crs` finds through another datum,
-/// as terrio's [`Transformer`] does (RD/83 through ETRS89 without its grid).
+/// as terrio's [`Transformer`] does (RD/83 through ETRS89 without its grid): terrio's EPSG table
+/// lists it before the ballpark.
 ///
 /// The parameters are tx, ty, tz in metres, rx, ry, rz in arc-seconds and ds in ppm, in the
 /// position vector convention: a coordinate frame rotation's rotations are negated, and an
-/// inverted transformation's seven parameters are negated, as PROJ inverts it. A geocentric
-/// translation has zero rotations and scale; a transformation that shifts nothing (WGS 84's
-/// realizations, NAD83 to WGS 84 (1)) gives zeros, as `+towgs84=0,0,0`.
+/// inverted transformation's seven parameters are negated: the first-order inverse that
+/// `+towgs84` can carry, where PROJ inverts the step exactly (they differ at the second order,
+/// with rotations or a scale). A geocentric translation has zero rotations and scale; a
+/// transformation that shifts nothing (WGS 84's realizations, NAD83 to WGS 84 (1)) gives zeros,
+/// as `+towgs84=0,0,0`.
+///
+/// Every EPSG geographic 2D CRS other than WGS 84 is checked against PROJ 9.9.0
+/// (`tests/data/helmert_to_wgs84.tsv`, `scripts/gen_helmert_to_wgs84.py`).
 ///
 /// `None` for WGS 84 itself, a code terrio's table does not have, and when that transformation
 /// is another one: a Molodensky-Badekas, a time-dependent or an exact-rotation Helmert
@@ -164,9 +170,7 @@ pub fn geographic_datum(geog: u32) -> Option<u32> {
 /// (no transformation without a grid). Also for MGI (Ferro) (EPSG:4805), whose transformation
 /// turns longitudes by another Ferro meridian than the CRS's own.
 ///
-/// Checked against PROJ 9.9.0 for every EPSG geographic 2D CRS
-/// (`tests/data/helmert_to_wgs84.tsv`, `scripts/gen_helmert_to_wgs84.py`). Unlike
-/// [`SpatialRef::to_proj4_gdal`], which follows GDAL 3.13.3 and writes no `+towgs84` when a
+/// Unlike [`SpatialRef::to_proj4_gdal`], which follows GDAL 3.13.3 and writes no `+towgs84` when a
 /// datum has several transformations to WGS 84, this gives the one PROJ picks without grids.
 ///
 /// ```no_run
@@ -176,7 +180,8 @@ pub fn geographic_datum(geog: u32) -> Option<u32> {
 /// assert_eq!(terrio_crs::helmert_to_wgs84(4326), None);
 /// ```
 pub fn helmert_to_wgs84(code: u32) -> Option<[f64; 7]> {
-    let entry = epsg::get(code)?;
+    // A compound CRS's horizontal CRS.
+    let entry = epsg::get(code).or_else(|| epsg::get(epsg::compound(code)?.horizontal))?;
     let geog = epsg::get(if entry.geog != 0 { entry.geog } else { code })?;
     if geog.datum == 6326 {
         return None;
@@ -189,8 +194,17 @@ pub fn helmert_to_wgs84(code: u32) -> Option<[f64; 7]> {
     let mut shifts = op.steps.iter().filter(|s| !matches!(s, datum::Step::Cart { .. }));
     match (shifts.next(), shifts.next()) {
         (None, _) => Some([0.0; 7]),
-        (Some(datum::Step::Helmert { pivot: [0.0, 0.0, 0.0], rates: None, seven: Some(p), inv, .. }), None) => {
-            Some(if *inv { p.map(|v| if v == 0.0 { 0.0 } else { -v }) } else { *p })
+        (Some(datum::Step::Helmert { pivot: [0.0, 0.0, 0.0], rates: None, seven: datum::Seven(Some(p)), inv, .. }), None) => {
+            // Without negative zeros, which a `+towgs84` written with `{}` would carry.
+            Some(p.map(|v| {
+                if v == 0.0 {
+                    0.0
+                } else if *inv {
+                    -v
+                } else {
+                    v
+                }
+            }))
         }
         _ => None,
     }

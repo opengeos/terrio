@@ -43,16 +43,25 @@ fn every_geographic_crs_has_proj_s_helmert_transformation() {
         }
     }
     assert!(wrong.is_empty(), "{} of {} differ:\n{}", wrong.len(), helmert + none, wrong.join("\n"));
+    // 717 CRSs other than WGS 84, MGI (Ferro) apart.
     assert_eq!((helmert, none), (474, 242));
 }
 
 #[test]
-fn a_projected_crs_has_its_geographic_crs_s() {
-    // ED50 / UTM zone 32N, OSGB 1936 / British National Grid, Monte Mario (Rome) / Italy zone 1.
-    for (projected, geographic) in [(23032, 4230), (27700, 4277), (26591, 4806)] {
+fn a_projected_or_compound_crs_has_its_geographic_crs_s() {
+    // ED50 / UTM zone 32N, OSGB 1936 / British National Grid, Monte Mario (Rome) / Italy zone 1,
+    // and the compound KKJ / Finland Uniform Coordinate System + N60 height.
+    for (projected, geographic) in [(23032, 4230), (27700, 4277), (26591, 4806), (3901, 4123)] {
         assert!(helmert_to_wgs84(geographic).is_some(), "{geographic}");
         assert_eq!(helmert_to_wgs84(projected), helmert_to_wgs84(geographic), "{projected}");
     }
+}
+
+#[test]
+fn a_coordinate_frame_rotation_of_zero_has_no_negative_zero() {
+    // PZ-90 to WGS 84 (2): coordinate frame, rx = ry = 0.
+    let p = helmert_to_wgs84(4740).unwrap();
+    assert!(p.iter().all(|v| *v != 0.0 || v.is_sign_positive()), "{p:?}");
 }
 
 #[test]
