@@ -308,7 +308,7 @@ year) use it for time-dependent transformations, and a point that cannot be tran
 [Writing PROJJSON](crs.md#writing-projjson)); it cannot be combined with `--to` or `--wkt`.
 `--proj4` prints only the PROJ string, as `projinfo -o PROJ` writes it, which leaves out the
 datum transformation of an EPSG CRS (see [Writing PROJ strings](crs.md#writing-proj-strings)).
-`--proj4-gdal` prints the PROJ string GDAL writes, which for an EPSG or ESRI code adds GDAL's
+`--proj4-gdal` prints the PROJ string GDAL 3.13.3 writes, which for an EPSG or ESRI code adds GDAL's
 `+towgs84` and a compound CRS's geoid model.
 `--wkt1-strict` prints only the WKT 1 without GDAL's PROJ4 extension, for a `.prj` file whose
 readers ignore it, and fails where WKT 1 needs the extension or PROJ writes none (see
