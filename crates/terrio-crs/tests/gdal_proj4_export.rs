@@ -51,3 +51,12 @@ fn what_gdal_adds_only_to_a_codes_own_definition() {
         assert!(!SpatialRef::from_epsg(code).unwrap().to_proj4_gdal().unwrap().contains("+towgs84"), "EPSG:{code}");
     }
 }
+
+#[test]
+fn a_dms_prime_meridian_keeps_its_seconds_mark() {
+    // A WKT's PROJ4 extension is written as given: a quote that does not follow `=` is DMS
+    // seconds, not a quoted value, and `+type=crs` is still dropped.
+    let wkt = r#"GEOGCS["unknown",DATUM["unknown",SPHEROID["clrk80ign",6378249.2,293.466021293627]],PRIMEM["Paris",2.33722917],UNIT["degree",0.0174532925199433],EXTENSION["PROJ4","+proj=longlat +ellps=clrk80ign +pm=2d20'14.025""E +no_defs +type=crs"]]"#;
+    let written = SpatialRef::from_wkt(wkt).to_proj4_gdal();
+    assert_eq!(written.as_deref(), Some(r#"+proj=longlat +ellps=clrk80ign +pm=2d20'14.025"E +no_defs"#));
+}

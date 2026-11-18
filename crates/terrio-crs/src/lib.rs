@@ -834,7 +834,7 @@ impl SpatialRef {
     /// ```
     pub fn to_proj4_gdal(&self) -> Option<String> {
         let proj = self.to_proj4()?;
-        let mut tokens: Vec<String> = proj_tokens(&proj).filter(|t| *t != "+type=crs").map(str::to_string).collect();
+        let mut tokens: Vec<String> = proj_tokens(&proj).into_iter().filter(|t| *t != "+type=crs").map(str::to_string).collect();
         // The table first: rebuilding the code's own definition is the costlier check. A code's
         // own PROJ string has no `+towgs84`, `+nadgrids` or `+geoidgrids` of its own where the
         // table adds one (`a_registry_string_has_nothing_the_table_adds`).
@@ -4300,17 +4300,29 @@ mod tests {
     }
 }
 
-/// A PROJ string's `+key=value` tokens, split on whitespace outside double quotes (PROJ quotes a
-/// value with spaces, `+geoidgrids="my  grid.gtx"`), each as written.
-fn proj_tokens(s: &str) -> impl Iterator<Item = &str> {
-    let mut quoted = false;
-    s.split(move |c: char| {
-        if c == '"' {
-            quoted = !quoted;
+/// A PROJ string's `+key=value` tokens, split on whitespace outside a quoted value, each as
+/// written. As PROJ string parsing (`params::tokens`), a quote right after `=` opens a value (PROJ
+/// quotes values with spaces, `+geoidgrids="my  grid.gtx"`), a doubled quote inside it is a
+/// quote, and a quote elsewhere is a character (DMS seconds, `+pm=2d20'14.025"E`).
+fn proj_tokens(s: &str) -> Vec<&str> {
+    let (mut out, mut start, mut quoted) = (Vec::new(), None, false);
+    let mut chars = s.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        if c.is_whitespace() && !quoted {
+            out.extend(start.take().map(|b| &s[b..i]));
+            continue;
         }
-        c.is_whitespace() && !quoted
-    })
-    .filter(|t| !t.is_empty())
+        let begin = *start.get_or_insert(i);
+        if c == '"' {
+            if quoted && chars.peek().is_some_and(|&(_, n)| n == '"') {
+                chars.next();
+            } else if quoted || s[begin..i].ends_with('=') {
+                quoted = !quoted;
+            }
+        }
+    }
+    out.extend(start.map(|b| &s[b..]));
+    out
 }
 
 #[cfg(test)]
@@ -4341,7 +4353,10 @@ mod gdal_proj4_tests {
 
     #[test]
     fn quoted_values_keep_their_spaces() {
-        let tokens: Vec<_> = super::proj_tokens(r#"+proj=longlat  +geoidgrids="@my  grid.gtx" +no_defs"#).collect();
-        assert_eq!(tokens, ["+proj=longlat", r#"+geoidgrids="@my  grid.gtx""#, "+no_defs"]);
+        let tokens = super::proj_tokens(r#"+proj=longlat  +geoidgrids="@my  ""grid"".gtx" +no_defs"#);
+        assert_eq!(tokens, ["+proj=longlat", r#"+geoidgrids="@my  ""grid"".gtx""#, "+no_defs"]);
+        // DMS seconds are no quoted value.
+        let tokens = super::proj_tokens(r#"+proj=longlat +pm=2d20'14.025"E +type=crs"#);
+        assert_eq!(tokens, ["+proj=longlat", r#"+pm=2d20'14.025"E"#, "+type=crs"]);
     }
 }
