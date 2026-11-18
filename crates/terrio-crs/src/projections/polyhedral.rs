@@ -550,11 +550,14 @@ impl Polyhedral {
                 Some("flower") => (NET_FLOWER.to_vec(), -36.0),
                 _ => return Err(err("isea: invalid +net (expected dsea, a5, crescent, or flower)")),
             };
+            // PROJ: orient_lat = atan((1+2A)/2) places V0 on the F1 axis.
             let orient_lat = ((1.0 + 2.0 * DODECAHEDRON_A) / 2.0).atan() * 180.0 / PI;
             let d = Defaults { orient_lat, orient_lon, azi: 240.0, origin: DefaultOrigin::FaceCentroid };
             (dodecahedron(), parents, d, true)
         } else {
-            // Snyder's orientation: V0 at the authalic latitude arctan(φ), φ the golden ratio.
+            // Snyder's orientation: V0 at the authalic latitude arctan(φ), φ the golden ratio
+            // (PROJ's 58.282525588539, geodetic); orient_lon 11.25° on a sphere and 11.20° on an
+            // ellipsoid, as PROJ, matches Snyder's Figure 12.
             let (mut orient_lat, mut orient_lon, mut azi) = (58.282525588539, if s.ell.es == 0.0 { 11.25 } else { 11.20 }, 0.0);
             if s.p.has("orient") {
                 match s.p.str("orient") {

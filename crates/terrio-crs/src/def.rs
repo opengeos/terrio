@@ -2186,7 +2186,7 @@ pub(crate) fn wkt_linear_unit(w: &str) -> Option<f64> {
     root.children("AXIS").find_map(|a| a.child("LENGTHUNIT")).and_then(|u| u.num(1))
 }
 
-/// Whether PROJ 9.8.1 leaves a parameter's value unchecked for a CRS's method, though terrio
+/// Whether PROJ 9.9.0 leaves a parameter's value unchecked for a CRS's method, though terrio
 /// reads it: the methods its CRS parser keeps as PROJ strings (`murd2`, `tissot`; terrio
 /// checks `tpers`'s itself), parameters outside the method's EPSG definition (`ortho`'s `alpha`, `ups`'s
 /// `lat_ts`), and `stere`'s `lat_ts` unless polar.
