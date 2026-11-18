@@ -83,3 +83,9 @@ def test_without_baseline_counts_are_listed(tmp_path):
     out = comment(tmp_path, summary("first", 2_000_000))
     assert "main has no benchmarks yet" in out
     assert "| 🆕 | `warp_f32 first` | 2 M (new) | 2 M (new) |" in out
+
+
+def test_from_zero_reads_new(tmp_path):
+    out = comment(tmp_path, summary("grew", 500, 0))
+    assert "| ⚠️ | `warp_f32 grew` | 0 → 500 (**new**) | 0 → 500 (**new**) |" in out
+    assert "inf" not in out

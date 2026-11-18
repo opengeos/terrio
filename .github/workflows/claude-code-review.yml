@@ -581,12 +581,21 @@ jobs:
           # once-per-head marker the bench staging step looks for, unless a
           # newer push has replaced the results meanwhile.
           id="$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" \
-            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- terrio-bench -->"))) | .id' | sed -n 1p)"
+            --jq '.[] | select(.user.login == "github-actions[bot]"
+              and (.body | startswith("<!-- terrio-bench -->"))) | .id' | sed -n 1p)"
           bench_file="$(mktemp "${RUNNER_TEMP}/bench-comment.XXXXXX")"
           [ -n "$id" ] && gh api "repos/$REPO/issues/comments/$id" --jq .body > "$bench_file"
           if [ -z "$id" ] || ! grep -F "this PR \`${HEAD_SHA:0:7}\`" "$bench_file" > /dev/null; then
             echo "The bench comment no longer reports $HEAD_SHA: nothing posted."
             exit 0
           fi
-          { cat "$bench_file"; echo; cat "$summary_file"; printf '\n<!-- claude-perf-review: %s -->\n' "$HEAD_SHA"; } > "$bench_file.new"
+          { cat "$bench_file"; echo; cat "$summary_file"
+            printf '\n<!-- claude-perf-review: %s -->\n' "$HEAD_SHA"; } > "$bench_file.new"
+          # Results for a newer head need that head pushed a whole bench run
+          # (~18 min) earlier, so while the PR head is still HEAD_SHA, the
+          # comment read above is the latest and the PATCH replaces nothing newer.
+          if [ "$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .head.sha)" != "$HEAD_SHA" ]; then
+            echo "The pull request moved past $HEAD_SHA: nothing posted."
+            exit 0
+          fi
           gh api -X PATCH "repos/$REPO/issues/comments/$id" -F body=@"$bench_file.new" > /dev/null

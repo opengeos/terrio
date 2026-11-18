@@ -7,10 +7,11 @@ name: bench comment
 # posted as text, without any line naming the performance review's marker.
 #
 # On a regression it also dispatches the performance-only review of claude-code-review.yml for the
-# pull request, which explains the slower benchmarks under the table of this comment, from a separate job that alone holds `actions: write`. A dispatch, because the label
-# added here with GITHUB_TOKEN starts no workflow. Only for the authors that review covers
-# automatically, so a first-time contributor's edited bench.yml cannot spend reviews; a maintainer
-# can still dispatch one, or add `perf-regression` by hand.
+# pull request, which explains the slower benchmarks under the table of this comment. It is
+# dispatched from a separate job that alone holds `actions: write`, because the label added here
+# with GITHUB_TOKEN starts no workflow. Only for the authors that review covers automatically, so
+# a first-time contributor's edited bench.yml cannot spend reviews; a maintainer can still
+# dispatch one, or add `perf-regression` by hand.
 
 on:
   workflow_run:
@@ -71,7 +72,9 @@ jobs:
           # A comment holds at most 65536 characters: 40000 here leaves room for the performance
           # review's explanation. Invalid UTF-8 from the cut is dropped, and so is any line naming
           # the review's once-per-head marker, which only claude-code-review.yml may write.
-          { echo "$marker"; head -c 40000 bench/bench.md | iconv -c -f UTF-8 -t UTF-8 | grep -v claude-perf-review || true; } > body.md
+          { echo "$marker"
+            head -c 40000 bench/bench.md | iconv -c -f UTF-8 -t UTF-8 | grep -v claude-perf-review || true
+          } > body.md
           id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$pr/comments" \
             -q ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" | head -n 1)
           if [ -n "$id" ]; then

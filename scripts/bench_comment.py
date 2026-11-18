@@ -70,11 +70,18 @@ WHAT = {
 }
 
 
-def change(old, new):
-    """The change in percent, and as text: two decimals under 1%, so small drifts show."""
-    pct = (new - old) / old * 100.0 if old else float("inf")
+def percent(pct):
+    """A change as text: two decimals under 1%, so small drifts show; "new" from nothing."""
+    if pct == float("inf"):
+        return "new"
     text = "0%" if round(pct, 2) == 0 else f"{pct:+.2f}%" if abs(pct) < 1 else f"{pct:+.1f}%"
-    return pct, text.replace("-", "−")
+    return text.replace("-", "−")
+
+
+def change(old, new):
+    """The change in percent, and as text."""
+    pct = (new - old) / old * 100.0 if old else float("inf") if new else 0.0
+    return pct, percent(pct)
 
 
 def main():
@@ -113,7 +120,7 @@ def main():
     compared = sum(r[1] != "🆕" for r in table)
 
     def listed(rs):
-        return "; ".join(f"{r[3]} {change(100, 100 + r[4])[1]}" for r in rs)
+        return "; ".join(f"{r[3]} {percent(r[4])}" for r in rs)
 
     out = ["<!-- terrio-bench: regression -->"] if slower else []
     out.append("### Performance vs main")
@@ -127,7 +134,7 @@ def main():
         top = max((r for r in table if r[1] != "🆕"), key=lambda r: abs(r[4]))
         out.append(
             f"🟢 **No slowdown.** All {compared} benchmarks are within ±{FLAG:g}% of main; "
-            f"the largest change is {change(100, 100 + top[4])[1]} ({top[3]})."
+            f"the largest change is {percent(top[4])} ({top[3]})."
         )
     out += [
         "",
