@@ -13,7 +13,11 @@ Usage:
     python scripts/compare_crs_list_with_gdal.py [--terrio target/release/terrio] [--json]
 
 Needs GDAL's Python bindings, with the PROJ version terrio's catalog was generated with
-(``scripts/gen_crs_catalog.py``) for identical results.
+(``scripts/gen_crs_catalog.py``, PROJ 9.9.0) for identical results. With GDAL on PROJ 9.8.1 (CI's
+reference, GDAL 3.12.2), the fields EPSG and ESRI changed between the two
+(``crates/terrio-crs/tests/data/crs_list_changes.json``, ``scripts/gen_crs_list_changes.py``) are
+reported as such: a field counts as changed only when GDAL has its PROJ 9.8.1 value and terrio its
+PROJ 9.9.0 value. Any other difference is reported as one.
 """
 
 import argparse
@@ -27,6 +31,7 @@ from osgeo import osr
 osr.UseExceptions()
 
 ROOT = Path(__file__).resolve().parents[1]
+CHANGES = ROOT / "crates" / "terrio-crs" / "tests" / "data" / "crs_list_changes.json"
 
 # Pinned catalog counts for the CLI's wbprojection-fallback build (PROJ 9.9.0 snapshot, EPSG
 # v13.102). Missing registry entries must fail even if a newer GDAL database lists additional
@@ -73,6 +78,13 @@ def gdal_entries(authority):
     return entries
 
 
+def registry_changes():
+    """What EPSG and ESRI changed since GDAL's PROJ, when it is the one the changes start from."""
+    proj = f"PROJ {osr.GetPROJVersionMajor()}.{osr.GetPROJVersionMinor()}.{osr.GetPROJVersionMicro()}"
+    changes = json.loads(CHANGES.read_text())
+    return changes if changes["from"] == proj else None
+
+
 def terrio_list(executable, *args):
     """Run ``terrio list-crs --include-deprecated --json`` with more arguments."""
     try:
@@ -90,11 +102,12 @@ def main():
     args = parser.parse_args()
     osr.SetPROJEnableNetwork(False)
     listed = terrio_list(args.terrio)
+    changes = registry_changes()
     cases = []
     for authority in ("EPSG", "ESRI", "IAU_2015"):
         reference = gdal_entries(authority)
         ours = [e for e in listed if e["authority"] == authority]
-        differs = []
+        differs, changed = [], []
         if len(ours) != EXPECTED_COUNTS[authority]:
             differs.append(f"catalog count {len(ours)} vs pinned {EXPECTED_COUNTS[authority]}")
         if len({e["code"] for e in ours}) != len(ours):
@@ -102,16 +115,29 @@ def main():
         for e in ours:
             expected = reference.get(e["code"])
             if expected is None:
-                differs.append(f"{authority}:{e['code']} is not in GDAL's list")
+                if changes and e["code"] in changes["added"][authority]:
+                    changed.append(e["code"])
+                else:
+                    differs.append(f"{authority}:{e['code']} is not in GDAL's list")
                 continue
             fields = [k for k in expected if e.get(k) != expected[k]]
-            if fields:
+            # A field the registry changed: GDAL's PROJ value before, terrio's after.
+            registry = changes["changes"][authority].get(str(e["code"]), {}) if changes else {}
+            if fields and all(registry.get(k) == [expected[k], e.get(k)] for k in fields):
+                changed.append(e["code"])
+            elif fields:
                 differs.append(f"{authority}:{e['code']} {', '.join(f'{k}: {e.get(k)!r} vs {expected[k]!r}' for k in fields)}")
         name = f"{authority}: {len(ours)} listed CRSs, every field"
         if differs:
             cases.append({"name": name, "status": "differs", "detail": f"{len(differs)} differ: " + "; ".join(differs[:5])})
         else:
-            cases.append({"name": name, "status": "identical", "detail": ""})
+            detail = f"but the {len(changed)} the registry changed since {changes['from']}, below" if changed else ""
+            cases.append({"name": name, "status": "identical", "detail": detail})
+        if changed:
+            detail = (f"{changes['to']} has them as terrio does; GDAL's {changes['from']} has them before {authority} "
+                      f"added or changed them (crs_list_changes.json), e.g. {authority}:{changed[0]}")
+            cases.append({"name": f"{authority}: {len(changed)} CRSs added or changed after {changes['from']}",
+                          "status": "not compared", "detail": detail})
         codes = {e["code"] for e in ours}
         left_out = Counter(e["kind"] for c, e in reference.items() if c not in codes)
         if left_out:

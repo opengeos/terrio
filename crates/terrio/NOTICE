@@ -1430,6 +1430,9 @@ scripts/gen_proj_string_export.py and scripts/gen_wkt1_strict_export.py) and geo
 (GDAL 3.12.1's GeoKeys and WKT 1 of EPSG CRSs, by scripts/gen_geokeys_gdal.py) are derived from
 the same dataset, under the same terms, as are the EPSG rows of crs_accessors.tsv (PROJ 9.9.0's
 axis orders, ellipsoids and conversion parameters of EPSG CRSs, by scripts/gen_crs_accessors.py).
+The EPSG rows of the test data crates/terrio-crs/tests/data/crs_list_changes.json (the names and
+areas of use of EPSG CRSs that changed between PROJ 9.8.1's and PROJ 9.9.0's databases, by
+scripts/gen_crs_list_changes.py) are derived from the same dataset, under the same terms.
 
 -------------------------------------------------------------------------------
 Esri projection engine data
@@ -1446,7 +1449,9 @@ crates/terrio-crs/tests/data/grads_and_prime_meridians.json, wkt_unresolved.json
 wkt_datum_shift.json are derived from it through PROJ 9.9.0's database, as are the ESRI rows of the test data
 crates/terrio-crs/tests/data/proj_string_export.tsv and wkt1_strict_export.tsv (PROJ 9.9.0's
 PROJ strings and WKT 1 of ESRI CRSs), geokeys_gdal.tsv (GDAL 3.12.1's GeoKeys of ESRI CRSs) and
-crs_accessors.tsv (PROJ 9.9.0's axis orders, ellipsoids and conversion parameters of ESRI CRSs).
+crs_accessors.tsv (PROJ 9.9.0's axis orders, ellipsoids and conversion parameters of ESRI CRSs),
+and the ESRI rows of crs_list_changes.json (the names and areas of use of ESRI CRSs that changed
+between PROJ 9.8.1's and PROJ 9.9.0's databases).
 The ESRI celestial bodies and their semi-major axes in crates/terrio-crs/src/bodies.rs are derived
 from the same documentation, through PROJ 9.9.0's database (scripts/gen_celestial_bodies.py).
 The ESRI names in the test data crates/terrio-crs/tests/data/wkt1_proj_reads.json (Makassar /
