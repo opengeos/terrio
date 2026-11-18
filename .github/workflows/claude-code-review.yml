@@ -48,18 +48,20 @@ name: Claude Code Review
 #     account an unbounded budget drain once opted in) — re-trigger by
 #     commenting again, or by removing and re-adding the label.
 #
+# A regular review waits for the bench of its head (~18 min; see the bench
+# staging step), so that its Performance findings are measured and the one
+# review of a push holds them.
+#
 # Performance-only mode (PERF_ONLY below): the same job, restricted to the
 # Performance category and the measured bench results in `pr-context/bench.md`.
-# A regular review usually runs before the bench (~18 min) has finished, so
-# when the bench flags a regression, bench-comment.yml dispatches this workflow
-# with the PR number. It must dispatch: the `perf-regression` label it sets is
-# added with GITHUB_TOKEN, and events caused by GITHUB_TOKEN start no workflow
-# runs except workflow_dispatch and repository_dispatch, so `labeled` would
-# never fire for it. A maintainer adding `perf-regression` by hand runs the
-# same mode. It posts at most one review per head SHA (a run that fails
-# before posting can be retried): it skips unless the bench
-# comment for the current head flags a regression, and when a performance
-# review for that head has already been posted. The action wires the inline
+# A maintainer runs it by adding the `perf-regression` label by hand or by
+# dispatching this workflow with the PR number (the label bench-comment.yml
+# sets is added with GITHUB_TOKEN, and events caused by GITHUB_TOKEN start no
+# workflow runs, so it does not start one). It is for a head whose regular
+# review went ahead without the bench. It posts at most one review per head
+# SHA (a run that fails before posting can be retried): it skips unless the
+# bench comment for the current head flags a regression, and when a
+# performance review for that head has already been posted. The action wires the inline
 # comment server only for PR events, so a dispatched run cites file:line in its
 # summary; the hand-labelled run can comment inline.
 on:
@@ -94,9 +96,9 @@ on:
 #     review isolated from every other label, while remove-and-re-add of
 #     `claude-review` still supersedes its own older run, which is what we want.)
 #   - performance-only review of PR N     -> claude-review-perf-N
-#     (the bench's workflow_dispatch and a maintainer's `perf-regression` label
-#     share it and never cancel: a second run waits, then skips at the
-#     once-per-head check once the first has posted)
+#     (a maintainer's workflow_dispatch and `perf-regression` label share it
+#     and never cancel: a second run waits, then skips at the once-per-head
+#     check once the first has posted)
 concurrency:
   group: claude-review-${{ (github.event_name == 'workflow_dispatch' || github.event.label.name == 'perf-regression') && format('perf-{0}', github.event.pull_request.number || inputs.pr) || format('{0}-{1}-{2}', github.event_name, github.event.pull_request.number || github.event.issue.number, github.event.comment.id || (github.event.action == 'labeled' && format('label-{0}', github.event.label.name)) || 'push') }}
   cancel-in-progress: ${{ !(github.event_name == 'workflow_dispatch' || github.event.label.name == 'perf-regression') }}
@@ -108,8 +110,7 @@ jobs:
     #  (b) a maintainer comments `/claude-review` on a PR,
     #  (c) a maintainer applies the `claude-review` label to a PR (or
     #      `perf-regression`, for a performance-only review), OR
-    #  (d) a performance-only review is dispatched. Dispatching needs write
-    #      access; bench-comment.yml dispatches only for the known authors of (a).
+    #  (d) a performance-only review is dispatched, which needs write access.
     # (b) and (c) are the opt-in paths for first-time-contributor PRs.
     #
     # author_association on the comment gates (b): only OWNER/MEMBER/COLLABORATOR
@@ -189,8 +190,11 @@ jobs:
       github.event_name == 'workflow_dispatch'
 
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The wait for the bench (25 minutes at most) and the review.
+    timeout-minutes: 50
     permissions:
+      # To see whether the bench of the head is still running.
+      actions: read
       contents: read
       pull-requests: write
       issues: write
@@ -306,10 +310,18 @@ jobs:
       # staged only when it reports the PR head, so the reviewer never reads
       # stale numbers. Its text was written by the PR's own code (a fork can
       # change bench.yml), so it is untrusted data: only written to a file and
-      # matched with grep, never interpolated into shell or an expression. In
-      # performance-only mode this step also decides whether the review runs
-      # (`run`). Best effort: on failure a regular review goes ahead without
-      # bench results, and a performance-only review does not run.
+      # matched with grep, never interpolated into shell or an expression.
+      #
+      # A regular review waits for that comment, a minute at a time, so that it
+      # reviews measured results: until the comment reports the head, until
+      # the head has had no bench run for 3 minutes or its run has been over
+      # for 3 minutes without a comment (failed, or skipped the benchmarks),
+      # and for 25 minutes at most. A newer push cancels the wait with the run.
+      #
+      # In performance-only mode this step does not wait, and also decides
+      # whether the review runs (`run`). Best effort: on failure a regular
+      # review goes ahead without bench results, and a performance-only review
+      # does not run.
       - name: Stage benchmark results for the reviewer
         id: bench
         continue-on-error: true
@@ -320,33 +332,53 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          id="$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" \
-            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- terrio-bench -->"))) | .id' | sed -n 1p)"
-          if [ -n "$id" ]; then
-            gh api "repos/$REPO/issues/comments/$id" --jq .body > "$RUNNER_TEMP/bench.md"
-            if grep -F "this PR \`${HEAD_SHA:0:7}\`" "$RUNNER_TEMP/bench.md" > /dev/null; then
-              # Where the numbers come from, written here and not by the PR, and
-              # before bench.md, so a failure here stages neither file:
-              # a fork's own code built and ran its bench, and a PR that
-              # changes the bench may not compare like with like.
-              head_repo="$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.head.repo.full_name // ""')"
-              bench_files="$(grep -E '^(\.github/workflows/bench(-comment)?\.yml|scripts/bench_comment\.py|crates/[^/]+/benches/)' pr-context/changed-files.txt || true)"
-              {
-                if [ "$head_repo" = "$REPO" ]; then
-                  echo "Source: this repository's branch."
-                else
-                  echo "Source: a fork. UNVERIFIED: the fork's own code built and ran this bench."
-                fi
-                if [ -n "$bench_files" ]; then
-                  echo "UNVERIFIED: this PR changes the bench itself:"
-                  # Every line indented, so a file name holding a newline
-                  # cannot pass for a header line.
-                  sed 's/^/  - /' <<< "$bench_files"
-                fi
-              } > pr-context/bench-source.txt
-              cp "$RUNNER_TEMP/bench.md" pr-context/bench.md
+          # Minutes the head has had no bench run, or a finished one, without a comment.
+          idle=0
+          while :; do
+            id="$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" \
+              --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- terrio-bench -->"))) | .id' | sed -n 1p)"
+            if [ -n "$id" ]; then
+              gh api "repos/$REPO/issues/comments/$id" --jq .body > "$RUNNER_TEMP/bench.md"
+              if grep -F "this PR \`${HEAD_SHA:0:7}\`" "$RUNNER_TEMP/bench.md" > /dev/null; then
+                # Where the numbers come from, written here and not by the PR, and
+                # before bench.md, so a failure here stages neither file:
+                # a fork's own code built and ran its bench, and a PR that
+                # changes the bench may not compare like with like.
+                head_repo="$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.head.repo.full_name // ""')"
+                bench_files="$(grep -E '^(\.github/workflows/bench(-comment)?\.yml|scripts/bench_comment\.py|crates/[^/]+/benches/)' pr-context/changed-files.txt || true)"
+                {
+                  if [ "$head_repo" = "$REPO" ]; then
+                    echo "Source: this repository's branch."
+                  else
+                    echo "Source: a fork. UNVERIFIED: the fork's own code built and ran this bench."
+                  fi
+                  if [ -n "$bench_files" ]; then
+                    echo "UNVERIFIED: this PR changes the bench itself:"
+                    # Every line indented, so a file name holding a newline
+                    # cannot pass for a header line.
+                    sed 's/^/  - /' <<< "$bench_files"
+                  fi
+                } > pr-context/bench-source.txt
+                cp "$RUNNER_TEMP/bench.md" pr-context/bench.md
+              fi
             fi
-          fi
+            if [ -f pr-context/bench.md ] || [ "$PERF_ONLY" = true ] || [ "$SECONDS" -ge 1500 ]; then
+              break
+            fi
+            # The bench run of this head: "queued" or "in_progress" while it is worth waiting.
+            status="$(gh api "repos/$REPO/actions/workflows/bench.yml/runs?head_sha=$HEAD_SHA&per_page=1" \
+              --jq '.workflow_runs[0].status // "none"' 2> /dev/null || echo unknown)"
+            case "$status" in
+              queued | in_progress | waiting | requested | pending) idle=0 ;;
+              *) idle=$((idle + 1)) ;;
+            esac
+            if [ "$idle" -ge 3 ]; then
+              echo "No bench results to wait for at $HEAD_SHA (bench run: $status)"
+              break
+            fi
+            echo "Waiting for the bench of $HEAD_SHA (bench run: $status, ${SECONDS}s)"
+            sleep 60
+          done
           if [ -f pr-context/bench.md ]; then
             echo "Staged pr-context/bench.md for $HEAD_SHA"
           else
@@ -467,10 +499,6 @@ jobs:
           # and posts comments with the minimal-scope GITHUB_TOKEN, never runs the
           # PR's code, and restricts tools via claude_args below.
           allowed_non_write_users: "*"
-          # A dispatched performance-only run is started by github-actions[bot]
-          # (bench-comment.yml), which the action refuses unless allowed here.
-          # Every other path keeps the human-only default.
-          allowed_bots: ${{ github.event_name == 'workflow_dispatch' && 'github-actions' || '' }}
           prompt: |
             Perform a thorough code review of pull request ${{ github.repository }}/pull/${{ steps.pr.outputs.number }}.
 

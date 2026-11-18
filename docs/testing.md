@@ -1354,6 +1354,11 @@ label when a benchmark runs 10% or more instructions. Instruction counts of a co
 0.01% between runs on one machine (both commits run on the same runner), where shared runners'
 timings vary by 10–30%. The check never fails a pull request.
 
+The automatic code review of a push waits for that comment, for 25 minutes at most, so that its
+Performance findings quote the measured rows; without a bench run to wait for (or past that
+time) it goes ahead and says the bench was pending. A maintainer can ask for a performance-only
+review of a flagged regression by adding the `perf-regression` label by hand.
+
 The counts cover every thread of the second of two runs of each operation (the first loads the
 EPSG table, starts the thread pool and fills caches), with one worker thread. To run them
 locally, install `valgrind` and the runner of the `gungraun` dev-dependency's version:
