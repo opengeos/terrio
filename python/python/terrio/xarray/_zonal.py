@@ -141,6 +141,8 @@ def zonal_cube(
     array computes each chunk once. Arrays on the same grid, dims and chunks are read in one
     dask computation, so what they share (a mask...) is computed once.
     """
+    if batch_bytes is not None and batch_bytes < 1:
+        raise ValueError(f"batch_bytes must be at least 1 byte, not {batch_bytes}")
     shapely = _shapely()
     prepared = [_prepared(da) for da in arrays]
     groups: dict = {}

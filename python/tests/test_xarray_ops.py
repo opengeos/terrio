@@ -336,6 +336,27 @@ def test_zonal_stats_of_a_cube_in_batches_and_strips_equals_one_pass(
         )  # fmt: skip
 
 
+@pytest.mark.parametrize("chunks", [None, {"time": 1, "y": 7, "x": 50}])
+@pytest.mark.parametrize(
+    "flip",
+    [
+        {"y": slice(None, None, -1)},
+        {"x": slice(None, None, -1)},
+        {"y": slice(None, None, -1), "x": slice(None, None, -1)},
+    ],
+    ids=["south-up", "east-to-west", "both"],
+)
+def test_zonal_stats_of_a_flipped_cube_equals_the_north_up_one(files, cube, chunks, flip):
+    """A cube whose rows run south-up or whose columns run east to west is read north-up,
+    lazily or in dask chunks, and gives the north-up result."""
+    pytest.importorskip("shapely")
+    stats = ["count", "mean", "median"]
+    north = cube.chunk(chunks) if chunks else cube
+    expected = north.terrio.zonal_stats(files["zones"], stats=stats)
+    got = north.isel(flip).terrio.zonal_stats(files["zones"], stats=stats)
+    xr.testing.assert_identical(got, expected)
+
+
 @pytest.mark.parametrize(
     ("y_chunks", "strip_rows"),
     [(7, 3), (2, 5), ((4, 6, 10, 100), 5), ((30, 45, 45), 50)],
@@ -386,6 +407,12 @@ def test_zonal_stats_of_a_cube_refuses_2d_only_options_by_name(files, cube):
     """Options of 2-D arrays only (bands, weights...) name themselves and the cube's options."""
     with pytest.raises(TypeError, match="bands: not available on arrays with dimensions"):
         cube.terrio.zonal_stats(files["zones"], bands=[1])
+
+
+def test_zonal_stats_of_a_cube_refuses_a_batch_below_one_byte(files, cube):
+    """`batch_bytes` below one byte would hold no batch at all: it is refused by name."""
+    with pytest.raises(ValueError, match="batch_bytes must be at least 1 byte"):
+        cube.terrio.zonal_stats(files["zones"], batch_bytes=0)
 
 
 def test_zonal_stats_of_a_cube_warns_for_its_largest_chunk(files, cube):
