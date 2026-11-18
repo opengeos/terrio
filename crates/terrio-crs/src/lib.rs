@@ -502,6 +502,13 @@ impl SpatialRef {
     /// [`Self::from_wkt`] of the whole text, uncut at a NUL: for stored WKT and WKT terrio
     /// built, whose names (a PROJJSON's) may keep one (see [`until_nul`]).
     pub(crate) fn from_wkt_text(wkt: &str) -> Self {
+        // ESRI's compound CRS, a horizontal CRS followed by a `VERTCS`, is that compound CRS, as
+        // PROJ 9.9.0 reads it (EPSG:9707 in ESRI's WKT), named after its two parts as by PROJ.
+        if let Some((horizontal, vertical)) = wkt1::esri_compound(wkt) {
+            let name = format!("{} + {}", horizontal.name().unwrap_or("unnamed"), vertical.name().unwrap_or("unnamed"));
+            let args = vec![wkt1::Arg::Str(name), wkt1::Arg::Node(horizontal), wkt1::Arg::Node(vertical)];
+            return Self::from_wkt_text(&wkt1::Node { key: "COMPD_CS".into(), args }.to_wkt());
+        }
         // A WKT 1 extended with its PROJ string (`EXTENSION["PROJ4", ...]`, as GDAL writes CRSs
         // WKT 1 cannot describe) is that PROJ string, as GDAL reads it.
         // A registry CRS's own WKT with its PROJ string as an extension (`spherical_extension`,
@@ -1949,7 +1956,7 @@ pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
     // A vertical CRS's code only of its unit and direction; another root's (engineering, local)
     // not the code of a CRS terrio places (a vertical CRS declaring EPSG:4326 is not WGS 84).
     if !horizontal_root {
-        let vertical = wkt1::parse(wkt).is_some_and(|r| r.is(keywords::VERTICAL_CRS_BUT_ESRI));
+        let vertical = wkt1::parse(wkt).is_some_and(|r| r.is(keywords::VERTICAL_CRS));
         return if vertical {
             def::vertical_code(wkt) == Some(code)
         } else {
@@ -2042,12 +2049,16 @@ pub(crate) fn declared_fits(wkt: &str, code: u32) -> bool {
     }
 }
 
-/// The metres per unit of a vertical CRS's WKT (`VERT_CS`, `VERTCRS`), from its `UNIT` or its
-/// axis's, and whether its axis points down (depths).
+/// The metres per unit of a vertical CRS's WKT (`VERT_CS`, ESRI's `VERTCS`, `VERTCRS`), from its
+/// `UNIT` or its axis's, and whether its axis points down (depths): by its `AXIS`, else by ESRI's
+/// `PARAMETER["Direction",-1]` (PROJ 9.9.0 takes exactly -1 as down, and an `AXIS` before it).
 pub(crate) fn vertical_axis(wkt: &str) -> Option<(f64, bool)> {
     let root = wkt1::parse(wkt)?;
     let axis = root.child("AXIS");
-    let down = axis.is_some_and(|a| matches!(a.args.get(1), Some(wkt1::Arg::Ident(d)) if d.eq_ignore_ascii_case("down")));
+    let down = match axis {
+        Some(a) => matches!(a.args.get(1), Some(wkt1::Arg::Ident(d)) if d.eq_ignore_ascii_case("down")),
+        None => root.children("PARAMETER").any(|p| p.name().is_some_and(|n| n.eq_ignore_ascii_case("Direction")) && p.num(1) == Some(-1.0)),
+    };
     let unit = root
         .child("UNIT")
         .or_else(|| root.child("LENGTHUNIT"))
@@ -2358,7 +2369,7 @@ fn open_definition_file(path: &str) -> Option<std::fs::File> {
 
 fn looks_like_wkt(s: &str) -> bool {
     let head = keywords::root_key(s);
-    [keywords::HORIZONTAL_CRS, keywords::COMPOUND_CRS, keywords::VERTICAL_CRS_BUT_ESRI, keywords::ENGINEERING_CRS]
+    [keywords::HORIZONTAL_CRS, keywords::COMPOUND_CRS, keywords::VERTICAL_CRS, keywords::ENGINEERING_CRS]
         .iter()
         .any(|keys| keywords::is(head, keys))
 }

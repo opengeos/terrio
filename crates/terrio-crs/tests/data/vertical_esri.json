@@ -1,0 +1,194 @@
+{
+ "proj": "9.9.0",
+ "point": [
+  8.5,
+  47.3,
+  10.0
+ ],
+ "cases": [
+  {
+   "name": "VERTCS of EGM96 height declaring it",
+   "wkt": "VERTCS[\"EGM96_height\",VDATUM[\"EGM96_Geoid\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0],AUTHORITY[\"EPSG\",\"5773\"]]",
+   "type": "Vertical CRS",
+   "epsg": 5773,
+   "axes": [
+    "up"
+   ]
+  },
+  {
+   "name": "VERTCS of MSL depth (Direction -1) declaring it",
+   "wkt": "VERTCS[\"MSL_Depth\",VDATUM[\"Mean_Sea_Level\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0],AUTHORITY[\"EPSG\",\"5715\"]]",
+   "type": "Vertical CRS",
+   "epsg": 5715,
+   "axes": [
+    "down"
+   ]
+  },
+  {
+   "name": "VERTCS of NAVD88 height (ftUS) declaring it",
+   "wkt": "VERTCS[\"NAVD88_height_(ftUS)\",VDATUM[\"North_American_Vertical_Datum_1988\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"US survey foot\",0.304800609601219],AUTHORITY[\"EPSG\",\"6360\"]]",
+   "type": "Vertical CRS",
+   "epsg": 6360,
+   "axes": [
+    "up"
+   ]
+  },
+  {
+   "name": "VERTCS of EGM96 height, Direction -1, declaring it",
+   "wkt": "VERTCS[\"EGM96_height\",VDATUM[\"EGM96_Geoid\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0],AUTHORITY[\"EPSG\",\"5773\"]]",
+   "type": "Vertical CRS",
+   "epsg": null,
+   "axes": [
+    "down"
+   ]
+  },
+  {
+   "name": "ESRI's WKT of EPSG:9707",
+   "wkt": "GEOGCS[\"GCS_WGS_1984\",DATUM[\"D_WGS_1984\",SPHEROID[\"WGS_1984\",6378137.0,298.257223563]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],VERTCS[\"EGM96_height\",VDATUM[\"EGM96_Geoid\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "type": "Compound CRS",
+   "epsg": 9707,
+   "axes": [
+    "east",
+    "north",
+    "up"
+   ],
+   "proj": [
+    8.5,
+    47.3,
+    10.0
+   ]
+  },
+  {
+   "name": "GEOGCS and VERTCS, Direction -1",
+   "wkt": "GEOGCS[\"GCS_WGS_1984\",DATUM[\"D_WGS_1984\",SPHEROID[\"WGS_1984\",6378137.0,298.257223563]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],VERTCS[\"EGM96_height\",VDATUM[\"EGM96_Geoid\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "type": "Compound CRS",
+   "epsg": null,
+   "axes": [
+    "east",
+    "north",
+    "down"
+   ],
+   "proj": [
+    8.5,
+    47.3,
+    -10.0
+   ]
+  },
+  {
+   "name": "GEOGCS and VERTCS with spaces between",
+   "wkt": "GEOGCS[\"GCS_WGS_1984\",DATUM[\"D_WGS_1984\",SPHEROID[\"WGS_1984\",6378137.0,298.257223563]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]] ,\n VERTCS[\"EGM96_height\",VDATUM[\"EGM96_Geoid\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "type": "Compound CRS",
+   "epsg": 9707,
+   "axes": [
+    "east",
+    "north",
+    "up"
+   ],
+   "proj": [
+    8.5,
+    47.3,
+    10.0
+   ]
+  },
+  {
+   "name": "GEOGCS and VERTCS declaring EPSG:5773",
+   "wkt": "GEOGCS[\"GCS_WGS_1984\",DATUM[\"D_WGS_1984\",SPHEROID[\"WGS_1984\",6378137.0,298.257223563]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],VERTCS[\"EGM96_height\",VDATUM[\"EGM96_Geoid\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0],AUTHORITY[\"EPSG\",\"5773\"]]",
+   "type": "Compound CRS",
+   "epsg": 9707,
+   "axes": [
+    "east",
+    "north",
+    "up"
+   ],
+   "proj": [
+    8.5,
+    47.3,
+    10.0
+   ]
+  },
+  {
+   "name": "GEOGCS, VERTCS and another VERTCS",
+   "wkt": "GEOGCS[\"GCS_WGS_1984\",DATUM[\"D_WGS_1984\",SPHEROID[\"WGS_1984\",6378137.0,298.257223563]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],VERTCS[\"EGM96_height\",VDATUM[\"EGM96_Geoid\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]],VERTCS[\"EGM96_height\",VDATUM[\"EGM96_Geoid\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]",
+   "type": "Compound CRS",
+   "epsg": 9707,
+   "axes": [
+    "east",
+    "north",
+    "up"
+   ],
+   "proj": [
+    8.5,
+    47.3,
+    10.0
+   ]
+  },
+  {
+   "name": "PROJCS and VERTCS",
+   "wkt": "PROJCS[\"WGS_1984_UTM_Zone_31N\",GEOGCS[\"GCS_WGS_1984\",DATUM[\"D_WGS_1984\",SPHEROID[\"WGS_1984\",6378137.0,298.257223563]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",3.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]],VERTCS[\"EGM96_height\",VDATUM[\"EGM96_Geoid\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "type": "Compound CRS",
+   "epsg": null,
+   "axes": [
+    "east",
+    "north",
+    "up"
+   ],
+   "proj": [
+    915743.1843903584,
+    5253189.323907216,
+    10.0
+   ]
+  },
+  {
+   "name": "COMPD_CS with a VERTCS",
+   "wkt": "COMPD_CS[\"WGS 84 + EGM96 height\",GEOGCS[\"GCS_WGS_1984\",DATUM[\"D_WGS_1984\",SPHEROID[\"WGS_1984\",6378137.0,298.257223563]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],VERTCS[\"EGM96_height\",VDATUM[\"EGM96_Geoid\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]]",
+   "type": "Compound CRS",
+   "epsg": 9707,
+   "axes": [
+    "east",
+    "north",
+    "up"
+   ],
+   "proj": [
+    8.5,
+    47.3,
+    10.0
+   ]
+  },
+  {
+   "name": "COMPD_CS with a VERTCS, Direction -1",
+   "wkt": "COMPD_CS[\"x\",GEOGCS[\"GCS_WGS_1984\",DATUM[\"D_WGS_1984\",SPHEROID[\"WGS_1984\",6378137.0,298.257223563]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],VERTCS[\"EGM96_height\",VDATUM[\"EGM96_Geoid\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",-1.0],UNIT[\"Meter\",1.0]]]",
+   "type": "Compound CRS",
+   "epsg": null,
+   "axes": [
+    "east",
+    "north",
+    "down"
+   ],
+   "proj": [
+    8.5,
+    47.3,
+    -10.0
+   ]
+  },
+  {
+   "name": "GDAL GEOGCS and VERT_CS (ignored)",
+   "wkt": "GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],VERT_CS[\"EGM96 height\",VERT_DATUM[\"EGM96 geoid\",2005,AUTHORITY[\"EPSG\",\"5171\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP],AUTHORITY[\"EPSG\",\"5773\"]]",
+   "type": "Geographic 2D CRS",
+   "epsg": 4326,
+   "axes": [
+    "north",
+    "east"
+   ]
+  },
+  {
+   "name": "WKT 2 GEOGCRS and VERTCS (ignored)",
+   "wkt": "GEOGCRS[\"WGS 84\",ENSEMBLE[\"World Geodetic System 1984 ensemble\",MEMBER[\"World Geodetic System 1984 (Transit)\"],MEMBER[\"World Geodetic System 1984 (G730)\"],MEMBER[\"World Geodetic System 1984 (G873)\"],MEMBER[\"World Geodetic System 1984 (G1150)\"],MEMBER[\"World Geodetic System 1984 (G1674)\"],MEMBER[\"World Geodetic System 1984 (G1762)\"],MEMBER[\"World Geodetic System 1984 (G2139)\"],MEMBER[\"World Geodetic System 1984 (G2296)\"],ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]],ENSEMBLEACCURACY[2.0]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],USAGE[SCOPE[\"Horizontal component of 3D system.\"],AREA[\"World.\"],BBOX[-90,-180,90,180]],ID[\"EPSG\",4326]],VERTCS[\"EGM96_height\",VDATUM[\"EGM96_Geoid\"],PARAMETER[\"Vertical_Shift\",0.0],PARAMETER[\"Direction\",1.0],UNIT[\"Meter\",1.0]]",
+   "type": "Geographic 2D CRS",
+   "epsg": 4326,
+   "axes": [
+    "north",
+    "east"
+   ]
+  }
+ ]
+}

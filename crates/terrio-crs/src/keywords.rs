@@ -129,10 +129,6 @@ pub(crate) const HORIZONTAL_CRS: &[&str] =
 /// A vertical CRS of WKT 1, WKT 2 or ESRI.
 pub(crate) const VERTICAL_CRS: &[&str] = &concat::<4>(&[WKT1_VERTICAL, VERTICAL, ESRI_VERTICAL]);
 
-/// [`VERTICAL_CRS`] without ESRI's `VERTCS`, which PROJ reads but the compound CRS splitter, the
-/// check of a declared code and the WKT sniffer do not (#1012 item 59).
-pub(crate) const VERTICAL_CRS_BUT_ESRI: &[&str] = &concat::<3>(&[WKT1_VERTICAL, VERTICAL]);
-
 /// A vertical datum of WKT 1 or WKT 2.
 pub(crate) const VERTICAL_DATUM: &[&str] = &concat::<4>(&[WKT1_VERTICAL_DATUM, VERTICAL_REFERENCE_FRAME]);
 
@@ -185,7 +181,6 @@ mod tests {
         assert_eq!(STANDARD_BASE_GEODETIC_CRS, ["BASEGEOGCRS", "BASEGEODCRS"]);
         assert_eq!(GEOGRAPHIC_OR_GEODETIC_CRS, ["GEOGCRS", "GEOGRAPHICCRS", "GEODCRS", "GEODETICCRS"]);
         assert_eq!(VERTICAL_CRS, ["VERT_CS", "VERTCRS", "VERTICALCRS", "VERTCS"]);
-        assert_eq!(VERTICAL_CRS_BUT_ESRI, ["VERT_CS", "VERTCRS", "VERTICALCRS"]);
         assert_eq!(VERTICAL_DATUM, ["VERT_DATUM", "VDATUM", "VERTICALDATUM", "VRF"]);
         assert_eq!(ID, ["AUTHORITY", "ID"]);
         assert_eq!(ELLIPSOID, ["SPHEROID", "ELLIPSOID"]);
@@ -226,7 +221,6 @@ mod tests {
     #[test]
     fn keywords_are_read_whatever_their_case_but_not_their_underscores() {
         assert!(is("vertcs", VERTICAL_CRS));
-        assert!(!is("VERTCS", VERTICAL_CRS_BUT_ESRI));
         assert!(!is("VERTCS", &["VERT_CS"]));
         assert_eq!(root_key(" GEOGCS [\"x\"]"), "GEOGCS");
         assert_eq!(root_key("VERT_CS(\"x\")"), "VERT_CS");

@@ -2027,7 +2027,7 @@ pub(crate) fn split_compound(w: &str) -> Option<(String, String)> {
     }
     args.push(body[start..].trim());
     let horizontal = args.iter().find(|a| keywords::is(keywords::root_key(a), keywords::HORIZONTAL_CRS))?;
-    let vertical = args.iter().find(|a| keywords::is(keywords::root_key(a), keywords::VERTICAL_CRS_BUT_ESRI))?;
+    let vertical = args.iter().find(|a| keywords::is(keywords::root_key(a), keywords::VERTICAL_CRS))?;
     Some((horizontal.to_string(), vertical.to_string()))
 }
 

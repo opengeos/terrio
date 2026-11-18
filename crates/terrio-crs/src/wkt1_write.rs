@@ -147,8 +147,8 @@ pub struct Described {
     pub towgs84: Option<Vec<f64>>,
 }
 
-/// The root keywords of WKT 1.
-const WKT1_ROOTS: [&str; 6] = ["GEOGCS", "PROJCS", "GEOCCS", "COMPD_CS", "VERT_CS", "LOCAL_CS"];
+/// The root keywords of WKT 1 (ESRI's `VERTCS` included).
+const WKT1_ROOTS: [&str; 7] = ["GEOGCS", "PROJCS", "GEOCCS", "COMPD_CS", "VERT_CS", "VERTCS", "LOCAL_CS"];
 
 /// The WKT 1 of a CRS that a reader ignoring `EXTENSION["PROJ4", ...]` reads as the CRS, as
 /// PROJ's `WKT1_GDAL` export: [`SpatialRef::to_wkt`] when it is such a WKT 1, a stored WKT 2

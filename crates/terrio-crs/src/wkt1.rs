@@ -163,6 +163,29 @@ pub(crate) fn parse(s: &str) -> Option<Node> {
     node(b, &mut i, 0)
 }
 
+/// The horizontal and vertical CRS of ESRI's compound CRS, a WKT 1 `GEOGCS` or `PROJCS` followed
+/// by a `VERTCS` (`GEOGCS[...],VERTCS[...]`, as ESRI writes EPSG:9707), which PROJ 9.9.0 reads as
+/// a compound CRS; anything after the `VERTCS` is ignored, as by PROJ. `None` for another text.
+pub(crate) fn esri_compound(s: &str) -> Option<(Node, Node)> {
+    if s.len() > MAX_LEN {
+        return None;
+    }
+    let b = s.as_bytes();
+    let mut i = 0;
+    let horizontal = node(b, &mut i, 0)?;
+    if !["GEOGCS", "PROJCS"].iter().any(|k| horizontal.key.eq_ignore_ascii_case(k)) {
+        return None;
+    }
+    skip_ws(b, &mut i);
+    if b.get(i) != Some(&b',') {
+        return None;
+    }
+    i += 1;
+    skip_ws(b, &mut i);
+    let vertical = node(b, &mut i, 0)?;
+    vertical.key.eq_ignore_ascii_case("VERTCS").then_some((horizontal, vertical))
+}
+
 /// Whether `c` is a space as C's `isspace` reads it, which PROJ 9.8.1's parser skips: ASCII
 /// whitespace and the vertical tab.
 fn space(c: u8) -> bool {
