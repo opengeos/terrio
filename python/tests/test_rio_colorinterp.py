@@ -1,4 +1,4 @@
-"""The color interpretation `terrio.rio` writes to a GeoTIFF or a COG (rasterio not needed).
+"""The color interpretation `terrio.rio` writes (rasterio not needed).
 
 A dataset's color interpretation, set with `colorinterp`, copied by `shutil.copy` or kept by an
 update, reads back as it was set. Given no `PHOTOMETRIC`, which a COG never takes and an update
@@ -8,6 +8,10 @@ WebP, the red, green and blue interpretation unless told otherwise, as it does w
 
 Such bands came back with red, green or blue on every band whose interpretation was not sent:
 `undefined` x 3 as `undefined, green, blue`, `gray, undefined, undefined` as RGB.
+
+The other writers take neither `PHOTOMETRIC` nor `ALPHA` and give the bands roles by their
+count (JPEG 2000, PNG, WebP, Zarr and GRIB each their own): a new dataset reports those, as its
+file reads back when none is set.
 """
 
 import numpy as np
@@ -208,3 +212,54 @@ def test_jpeg_ycbcr_bands_read_back_their_color_interpretation(tmp_path, colorin
     expected = (R, G, B) if colorinterp is None else colorinterp
     assert before == expected
     assert _read_back(path) == expected
+
+
+def _case(driver, extension, count, dtype="uint8", **options):
+    name = "-".join([driver, str(count), dtype, *(f"{k}-{v}" for k, v in options.items())])
+    return pytest.param(driver, extension, count, dtype, options, id=name)
+
+
+@pytest.mark.parametrize(
+    "driver, extension, count, dtype, options",
+    [
+        _case("JP2", "jp2", 1),
+        _case("JP2", "jp2", 2),
+        _case("JP2", "jp2", 3),
+        _case("JP2", "jp2", 3, "uint16"),
+        _case("JP2", "jp2", 4),
+        _case("JP2", "jp2", 5),
+        _case("JP2", "jp2", 4, alpha="yes"),
+        _case("PNG", "png", 2),
+        _case("PNG", "png", 3, photometric="minisblack"),
+        _case("PNG", "png", 4),
+        _case("WEBP", "webp", 3),
+        _case("WEBP", "webp", 4),
+        _case("Zarr", "zarr", 1),
+        _case("Zarr", "zarr", 3),
+        _case("GRIB", "grib2", 1),
+        _case("GRIB", "grib2", 3),
+        _case("ENVI", "envi", 3, photometric="rgb"),
+        _case("ENVI", "envi", 2, alpha="yes"),
+    ],
+)
+def test_a_new_dataset_reports_the_color_interpretation_its_file_reads_back(
+    tmp_path, driver, extension, count, dtype, options
+):
+    """Written with no interpretation set, the bands read back as the dataset reported them
+    before the file was written. A new dataset of another format than GeoTIFF reported gray,
+    then undefined, whatever its writer gives: JPEG 2000 files of three and four bands are sRGB,
+    PNGs and WebPs RGB or RGBA, and Zarr and GRIB bands undefined. It also took `photometric`
+    and `alpha`, which only the GeoTIFF writer takes."""
+    path = tmp_path / f"a.{extension}"
+    before = _write(path, driver, count=count, dtype=dtype, exact=False, **options)
+    assert before == _read_back(path)
+
+
+@pytest.mark.parametrize("colorinterp", NOT_RGB + COLORS, ids=lambda c: "-".join(i.name for i in c))
+def test_zarr_bands_read_back_the_color_interpretation_they_were_given(tmp_path, colorinterp):
+    """Bands of a Zarr array keep the interpretation set. Its writer makes several bands
+    undefined unless told otherwise, and the dataset took a gray first band for its default and
+    did not send it: `gray, undefined, undefined` came back undefined x 3."""
+    path = tmp_path / "a.zarr"
+    _write(path, "Zarr", colorinterp)
+    assert _read_back(path) == colorinterp
