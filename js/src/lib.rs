@@ -81,6 +81,7 @@ const FEATURES: &[(&str, bool)] = &[
     ("grib", cfg!(feature = "grib")),
     ("hecras", cfg!(feature = "hecras")),
     ("jp2", cfg!(feature = "jp2")),
+    ("jxl", cfg!(feature = "jxl")),
     ("lerc", cfg!(feature = "lerc")),
     ("lzma", cfg!(feature = "lzma")),
     ("netcdf-hdf5", cfg!(feature = "netcdf-hdf5")),

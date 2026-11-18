@@ -95,7 +95,7 @@ test("version", () => {
 });
 
 test("the module's build and its formats", () => {
-  assert.ok(["flatgeobuf", "sqlite", "tiles", "lzma", "lerc"].every((f) => BUILT.includes(f)), BUILT.join());
+  assert.ok(["flatgeobuf", "sqlite", "tiles", "lzma", "lerc", "jxl"].every((f) => BUILT.includes(f)), BUILT.join());
   if (BUILD === "terrio-js/threads") assert.ok(terrio.features().threads > 1, "the thread pool is started");
   assert.ok(terrio.features().memory > 0);
   if (BUILD !== "terrio-js/core") {
