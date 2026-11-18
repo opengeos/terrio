@@ -100,7 +100,7 @@ fn triple_product(a: Vec3, b: Vec3, c: Vec3) -> f64 {
     dot(a, cross(b, c))
 }
 
-/// dot(b, c × d) a - dot(a, c × d) b.
+/// dot(a, c × d) b - dot(b, c × d) a.
 fn quadruple_product(a: Vec3, b: Vec3, c: Vec3, d: Vec3) -> Vec3 {
     let cd = cross(c, d);
     sub(scale(b, dot(a, cd)), scale(a, dot(b, cd)))
@@ -593,9 +593,9 @@ impl Polyhedral {
         s.phi0 = 0.0;
         if lat_0.is_some() || lon_0.is_some() {
             let v = q.to_cart(lon_0.unwrap_or(0.0), lat_0.unwrap_or(0.0));
-            let i = q.find_triangle(v).ok_or_else(|| {
-                err("isea: +lat_0 / +lon_0 lies outside the polyhedron's coverage; cannot be used as projected origin")
-            })?;
+            let i = q
+                .find_triangle(v)
+                .ok_or_else(|| err("isea: +lat_0 / +lon_0 lies outside the polyhedron's coverage; cannot be used as projected origin"))?;
             (q.x_offset, q.y_offset) = snyder_fwd(v, &q.sph_tris[i], &q.face_tris[i]);
         } else {
             let root = parents.iter().position(|&p| p == 0).unwrap_or(0);

@@ -167,7 +167,8 @@ fn lat_0_and_lon_0_are_the_projected_origin() {
     // opengeos/terrio#1012 item 67: (10°, 20°) with `+lon_0=10` (PROJ 9.8.1 gave
     // (-1041822.44, 5435383.88)).
     let r = "+R=6371007.181";
-    let (lonlat, target) = (SpatialRef::parse(&format!("+proj=longlat {r}")).unwrap(), SpatialRef::parse(&format!("+proj=isea +lon_0=10 {r}")).unwrap());
+    let (lonlat, target) =
+        (SpatialRef::parse(&format!("+proj=longlat {r}")).unwrap(), SpatialRef::parse(&format!("+proj=isea +lon_0=10 {r}")).unwrap());
     let p = Transformer::new(&lonlat, &target).unwrap().transform(10.0, 20.0).unwrap();
     assert!((p.0 - 7863.091604233761).abs() < 1e-6 && (p.1 - 2111980.52214099).abs() < 1e-6, "{p:?}");
 }

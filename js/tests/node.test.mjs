@@ -3341,7 +3341,12 @@ test("HEALPix and rHEALPix match PROJ", () => {
 
 test("ISEA matches PROJ", () => {
   const reference = JSON.parse(readFileSync(new URL("../../crates/terrio-crs/tests/data/isea_reference.json", import.meta.url), "utf8"));
-  const near = (actual, [lon, lat]) => Math.abs(((actual[0] - lon + 540) % 360 - 180) * Math.cos(lat * Math.PI / 180)) <= 1e-8 && Math.abs(actual[1] - lat) <= 1e-8;
+  // 1e-5 within 0.001 degrees of a pole, where the latitude is the arcsine of a number near 1
+  // (crates/terrio-crs/tests/isea.rs).
+  const near = (actual, [lon, lat]) => {
+    const tolerance = Math.abs(lat) > 89.999 ? 1e-5 : 1e-8;
+    return Math.abs(((actual[0] - lon + 540) % 360 - 180) * Math.cos(lat * Math.PI / 180)) <= tolerance && Math.abs(actual[1] - lat) <= tolerance;
+  };
   for (const c of reference.cases) {
     const samples = c.samples;
     for (const target of [c.target, c.wkt2, c.wkt1, c.wkt1_esri]) {

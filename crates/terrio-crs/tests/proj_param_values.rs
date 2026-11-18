@@ -36,7 +36,8 @@ fn unchecked_parameters_have_proj_accepted_fixture_rows() {
 ///   that starts with a number (`+x_0=0.5r`, a scale factor of `0.5r`) is still read as absent
 ///   where PROJ refuses it; likewise `+f`, `+es` and `+e` without `+a`, which PROJ
 ///   ignores when unreadable but for `etmerc`, `utm` and `ups`;
-/// - checks of terrio's own for methods PROJ keeps as PROJ strings (`murd2`, `tissot`, `tpers`), and of a geocentric CRS's ellipsoid, which refuse an unreadable value PROJ ignores;
+/// - checks of terrio's own for methods PROJ keeps as PROJ strings (`murd2`, `tissot`, `tpers`), and
+///   of a geocentric CRS's ellipsoid, which refuse an unreadable value PROJ ignores;
 /// - Krovak's azimuth, which terrio does not read;
 /// - rotated-pole definitions keep terrio's strict check of `o_lat_p`, which PROJ's CRS parser
 ///   leaves unchecked.

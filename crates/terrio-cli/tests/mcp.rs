@@ -533,7 +533,8 @@ fn isea_coordinates_through_mcp() {
         ("OGC:CRS84", "+proj=isea +datum=WGS84 +units=m +no_defs", 11139011.780462181, -6164461.280222207),
     ] {
         let (xs, ys) = (x.to_string(), y.to_string());
-        let replies = session(&[call(1, "crs", &[source, "--to", target, "147", "-42"]), call(2, "crs", &[target, "--to", source, &xs, &ys])]);
+        let replies =
+            session(&[call(1, "crs", &[source, "--to", target, "147", "-42"]), call(2, "crs", &[target, "--to", source, &xs, &ys])]);
         let values = |id: u64| -> Vec<f64> {
             assert_eq!(replies[&id]["result"]["isError"], false);
             replies[&id]["result"]["content"][0]["text"].as_str().unwrap().split_whitespace().filter_map(|v| v.parse().ok()).collect()

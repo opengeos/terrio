@@ -1584,7 +1584,7 @@ without an EPSG method.
 
 PROJ 9.8 and earlier computed another method (`isea.cpp`: another orientation by `+lon_0`, the
 geodetic latitude on an ellipsoid, an inverse only for its default grid), which terrio computed
-before. On the default sphere the two agree. A PROJ 9.9.0 corpus covers 20 configurations and
+before. On the default sphere the two agree within a millimetre. A PROJ 9.9.0 corpus covers 20 configurations and
 11,120 samples (see Testing). Allowances are 1 mm projected and 1e-8 degrees inverse (1e-5
 within 0.001° of a pole, where the latitude is the arcsine of a number near 1).
 
