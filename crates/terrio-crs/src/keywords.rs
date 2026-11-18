@@ -33,7 +33,9 @@ const BASE_GEODETIC: &[&str] = &["BASEGEODCRS"];
 const GEOGRAPHIC: &[&str] = &["GEOGCRS", "GEOGRAPHICCRS"];
 
 /// `<geodetic crs keyword> ::= GEODCRS | GEODETICCRS` (8.1): a geodetic CRS with a Cartesian or
-/// spherical CS.
+/// spherical CS. One with an ellipsoidal CS, as the previous version of the standard allowed, is
+/// to be read but not written (8.3): it is a geographic CRS, written `GEOGCRS`, so the keyword alone
+/// does not tell the kind of CS.
 pub(crate) const GEODETIC_CRS: &[&str] = &["GEODCRS", "GEODETICCRS"];
 
 /// `<projected crs keyword> ::= PROJCRS | PROJECTEDCRS` (9.1).
@@ -105,7 +107,7 @@ const TERRIO_BASE_CRS: &[&str] = &["BASEGEOGRAPHICCRS", "BASEGEODETICCRS"];
 pub(crate) const GEODETIC_DATUM: &[&str] = &concat::<5>(&[GEODETIC_REFERENCE_FRAME, DATUM_ENSEMBLE, TERRIO_DATUM_ENSEMBLE]);
 
 /// A geodetic datum or datum ensemble of the standard ([`GEODETIC_DATUM`] without
-/// `DATUMENSEMBLE`), which the WKT 2 reader and the name resolution of [`crate::def`] read.
+/// `DATUMENSEMBLE`), which the WKT 2 reader reads.
 pub(crate) const STANDARD_GEODETIC_DATUM: &[&str] = &concat::<4>(&[GEODETIC_REFERENCE_FRAME, DATUM_ENSEMBLE]);
 
 /// The base CRS of a WKT 2 projected or derived geographic CRS (9.2.1, 14.3.1), terrio's two

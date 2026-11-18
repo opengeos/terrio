@@ -1938,7 +1938,9 @@ fn proj_resolution(root: &wkt1::Node, code: Option<u32>, own_geog: Option<u32>, 
     // A geographic 3D CRS, which PROJ looks up among those.
     let three_d = !projected && root.child("CS").and_then(|cs| cs.num(1)).is_some_and(|n| n == 3.0);
     let base = if projected { root.child("GEOGCS").or_else(|| root.child_in(keywords::STANDARD_BASE_GEODETIC_CRS))? } else { root };
-    let datum = base.child_in(keywords::STANDARD_GEODETIC_DATUM);
+    // In this order, not the keyword table's (`DATUM`, `GEODETICDATUM`, `TRF`): they differ for a
+    // CRS with two datum nodes. PROJ takes the first datum node in the CRS's own order (#1058 step 1b).
+    let datum = ["DATUM", "TRF", "GEODETICDATUM", "ENSEMBLE"].iter().find_map(|k| base.child(k));
     let datum_renamed = datum.is_some_and(|d| d.epsg().is_some_and(|c| d.name().is_none_or(|n| !epsg::datums_named(n).contains(&c))));
     let has_id = |n: &wkt1::Node| n.ids().next().is_some();
     let gcs = |n: &wkt1::Node| is_wkt1 && n.name().is_some_and(|n| n.starts_with("GCS_"));
