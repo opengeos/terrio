@@ -2726,6 +2726,18 @@ fn square_scales_above_half(p: [(f64, f64); 4]) -> bool {
 /// `WarpContext::guessed`): enough for the estimate's approximation to hold every tap mostly.
 const GUESS_PAD: usize = 2;
 
+/// The length of the shortest arc that holds every column of `columns` on a circle of `turn`
+/// columns, when it is shorter than half a turn: each column is moved by whole turns to the place
+/// nearest the first, which lays columns that fit in less than half a turn out along that arc.
+fn short_arc(columns: &[f64], turn: f64) -> Option<f64> {
+    let (&first, rest) = columns.split_first()?;
+    let (low, high) = rest.iter().fold((first, first), |(low, high), &x| {
+        let x = x - ((x - first) / turn).round() * turn;
+        (low.min(x), high.max(x))
+    });
+    (high - low < turn / 2.0 - 1e-7).then_some(high - low)
+}
+
 #[cfg(test)]
 thread_local! {
     /// Source pixels taken off every side of a guessed window, in tests.
@@ -3626,17 +3638,28 @@ impl WarpContext<'_> {
                 x1 = x1.max(xs[i]);
                 y1 = y1.max(ys[i]);
             }
-            (x0, y0, x1, y1, failed, xs.len(), cut)
+            // The columns of the samples that `cut` looks at, for the arc they span across the cut
+            // of a full-turn source (see `kernel_span` below).
+            let columns: Vec<f64> = if turn.is_some() && self.global_longitude_turn().is_some() {
+                (0..xs.len())
+                    .filter(|&i| ok[i] && regular.as_ref().is_none_or(|points| points[i]) && xs[i].is_finite() && ys[i].is_finite())
+                    .map(|i| xs[i])
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            (x0, y0, x1, y1, failed, xs.len(), cut, columns)
         };
         let mut r = run(false);
         let grid = r.4 > 0;
         if grid {
             // GDAL keeps the bounds of the edge points (its ComputeSourceWindowTransformPoints()
             // only grows them), and counts the grid's failures.
-            let g = run(true);
-            r = (r.0.min(g.0), r.1.min(g.1), r.2.max(g.2), r.3.max(g.3), g.4, g.5, r.6 || g.6);
+            let mut g = run(true);
+            g.7.append(&mut r.7);
+            r = (r.0.min(g.0), r.1.min(g.1), r.2.max(g.2), r.3.max(g.3), g.4, g.5, r.6 || g.6, g.7);
         }
-        let (mut x0, mut y0, mut x1, mut y1, failed, total, cut) = r;
+        let (mut x0, mut y0, mut x1, mut y1, failed, total, cut, columns) = r;
         if failed + 5 > total {
             return None;
         }
@@ -3800,6 +3823,14 @@ impl WarpContext<'_> {
             }
         }
         let raw_span = (x1 - x0).max(0.0);
+        // A chunk whose samples cross the longitude cut of a full-turn source (`cut`) has samples
+        // beside both of the cut's columns, so its least and greatest sampled columns are the long
+        // way round apart. Its kernel scale takes the arc of columns that its samples span across
+        // the cut instead, when that arc is shorter than half a turn: no step between adjacent
+        // samples, which `cut` takes to be shorter than half a turn, then passes outside it.
+        // Chunks mirrored across the cut so get mirrored kernels. The samples of a chunk around a
+        // pole span more than half a turn, and keep the distance between the least and greatest.
+        let kernel_span = self.global_longitude_turn().filter(|_| cut).and_then(|turn| short_arc(&columns, turn)).unwrap_or(raw_span);
         (x0, x1) = self.wrap_source_bounds(x0, x1);
         if x0 > sw || x1 < 0.0 || y0 > sh || y1 < 0.0 {
             return Some((0, 0, 0, 0, 0.0, 0.0, 0.0));
@@ -3837,7 +3868,7 @@ impl WarpContext<'_> {
             (sy, (ih - sy).min(maxyc - sy + yr).max(0))
         };
         let fill = (sws * shs) as f64 / ((x1 - x0 + 2.0 * xr as f64) * (y1 - y0 + 2.0 * yr as f64)).max(1.0);
-        let raw_w = if self.global_longitude_turn().is_some() { raw_span.min(sw) } else { (sw - minxc as f64).min(x1 - x0).max(0.0) };
+        let raw_w = if self.global_longitude_turn().is_some() { kernel_span.min(sw) } else { (sw - minxc as f64).min(x1 - x0).max(0.0) };
         let raw_h = (sh - minyc as f64).min(y1 - y0).max(0.0);
         Some((sx as usize, sy as usize, sws as usize, shs as usize, fill, raw_w, raw_h))
     }
@@ -7204,6 +7235,68 @@ mod tests {
         }
     }
 
+    /// Bilinear and cubic warps in the chunk-dependent sampling with the 3.12 kernel scales, with
+    /// exact transformations, of a world source of 1° pixels symmetric about the 180° meridian,
+    /// stored from 180° W or from 0°, into 64 x 64 windows of UPS North (EPSG:5041) 45° of
+    /// longitude wide on either side of that meridian, which runs up from the pole along
+    /// x = 2,000,000 m. The west window's points sampled on the meridian resolve to 180° E, so its
+    /// samples cross the source's longitude cut. Windows touching the meridian, and windows
+    /// reaching 1 km across it, give mirrored values. A column of ones at 179.5° W reaches the same
+    /// three columns of the west window reaching 1 km across the meridian as of the window 1 m
+    /// short of it, whose samples do not cross the cut, with a largest weight within 0.01.
+    #[test]
+    fn chunk_dependent_windows_mirrored_across_the_180th_meridian_get_mirrored_kernels() {
+        // 64 pixels of 128,443.43 m, from 8,220 km to 16,441 km above the pole.
+        let s = 8_220_379.675126;
+        let warp_window = |source: &RasterDataset, left: f64, resampling: Resampling| {
+            let options = WarpOptions {
+                dst_srs: Some(SpatialRef::from_epsg(5041).unwrap()),
+                dst_transform: Some([left, s / 64., 0., 2e6 + 2. * s, 0., -s / 64.]),
+                size: Some((64, 64)),
+                output_type: Some(DataType::F64),
+                dst_nodata: Nodata::Values(vec![-999.]),
+                resampling,
+                grid_invariant: false,
+                kernel_version: KernelVersion::Gdal312,
+                error_threshold: 0.,
+                ..Default::default()
+            };
+            warp(&[source], &options).unwrap().raster.data.to_f64_vec()
+        };
+        // The left edges of the windows `gap` metres from the meridian (across it when negative).
+        let (west, east) = (|gap: f64| 2e6 - gap - s, |gap: f64| 2e6 + gap);
+        for origin in [-180., 0.] {
+            // Stored from 180° W, column `c` mirrors column 359 - c.
+            let shift = if origin == 0. { 180 } else { 0 };
+            let source = raster(360, 180, [origin, 1., 0., 90., 0., -1.], 4326, |c, r| {
+                let c = (c + shift) % 360;
+                ((c.min(359 - c) * 7 + r * 13) % 17) as f64
+            });
+            for resampling in [Resampling::Bilinear, Resampling::Cubic] {
+                for gap in [0., -1000.] {
+                    let (w, e) = (warp_window(&source, west(gap), resampling), warp_window(&source, east(gap), resampling));
+                    for (row, (w, e)) in w.chunks(64).zip(e.chunks(64)).enumerate() {
+                        for (column, (a, b)) in w.iter().rev().zip(e).enumerate() {
+                            assert!(
+                                *b != -999. && (a - b).abs() < 1e-9,
+                                "stored from {origin}°, {resampling:?}, {gap} m: row {row}, column {column}: {a} mirrored, {b}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        let impulse = raster(360, 180, [-180., 1., 0., 90., 0., -1.], 4326, |c, _| if c == 0 { 1. } else { 0. });
+        let row = |gap: f64| warp_window(&impulse, west(gap), Resampling::Bilinear)[32 * 64..33 * 64].to_vec();
+        let (across, short) = (row(-1000.), row(1.));
+        assert!(across.iter().chain(&short).all(|v| *v >= 0.), "across: {across:?}, short of it: {short:?}");
+        let reached = |row: &[f64]| (0..64).filter(|&i| row[i] > 0.).collect::<Vec<_>>();
+        let largest = |row: &[f64]| row.iter().fold(0_f64, |a, b| a.max(*b));
+        assert_eq!(reached(&short).len(), 3, "short of it: {short:?}");
+        assert_eq!(reached(&across), reached(&short), "across: {across:?}, short of it: {short:?}");
+        assert!((largest(&across) - largest(&short)).abs() < 0.01, "across: {across:?}, short of it: {short:?}");
+    }
+
     /// Full-turn area footprints take both stored edges, including a cut at zero longitude.
     /// Regional and wider-than-one-turn sources retain their existing placement rules.
     #[test]
@@ -8682,7 +8775,9 @@ mod tests {
     /// from 80° N, short of the pole) to 30° N. Its source window reaches the pole's row (or the
     /// source's first) and every column, its bounds too, when the region holds the pole inside;
     /// with the pole on its corner, the pole's row, and not every column unless its quarter holds
-    /// the 180° meridian; a region away from the pole does not reach it.
+    /// the 180° meridian; a region away from the pole does not reach it. The kernel scale of that
+    /// quarter takes the 90 columns its samples span across the meridian, not the longitude its
+    /// point on the pole resolves to (45° W).
     #[test]
     fn a_source_window_reaches_a_pole_inside_its_region() {
         let geographic = SpatialRef::from_epsg(4326).unwrap();
@@ -8720,6 +8815,8 @@ mod tests {
                     "{north}° N, region {region:?}: rows from {sy}, {sw} columns"
                 );
             }
+            let (_, _, _, _, _, raw_w, _) = rw.context().source_window(54, 134, 100, 100).unwrap();
+            assert!((raw_w - 90.0).abs() < 1e-9, "{north}° N, the quarter holding the 180° meridian: {raw_w} columns");
             let (_, sy, _, _) = rw.source_window((0, 0, 100, 100)).unwrap();
             assert!(sy > 10, "{north}° N: a region away from the pole read from row {sy}");
         }
