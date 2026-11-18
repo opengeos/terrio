@@ -3350,8 +3350,7 @@ test("ISEA matches PROJ", () => {
         assert.ok(Math.abs(result[j][i] - samples[i][2][j]) * c.metres_per_unit <= 0.001, `${c.name} forward ${i}/${j}`);
       }
     }
-    // PROJ's inverse, which is not the forward's on an ellipsoid and is refused outside its
-    // default grid. As in crates/terrio-crs/tests/isea.rs.
+    // PROJ's inverse, refused outside the unfolded net. As in crates/terrio-crs/tests/isea.rs.
     const pairs = samples.map(s => [s[2], s[3]]).concat(c.inverse_samples);
     const reversible = pairs.filter(([, e]) => e !== null);
     if (reversible.length > 0) {

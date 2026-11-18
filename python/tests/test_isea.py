@@ -31,8 +31,7 @@ def test_isea_oracle(case):
             )
         )
         assert np.all(np.abs(actual - [s[2] for s in samples]) * case["metres_per_unit"] <= 0.001)
-    # PROJ's inverse, which is not the forward's on an ellipsoid and is refused outside its
-    # default grid. As in crates/terrio-crs/tests/isea.rs.
+    # PROJ's inverse, refused outside the unfolded net. As in crates/terrio-crs/tests/isea.rs.
     pairs = [(s[2], s[3]) for s in samples] + [tuple(s) for s in case["inverse_samples"]]
     accepted = [(p, e) for p, e in pairs if e is not None]
     if accepted:

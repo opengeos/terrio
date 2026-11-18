@@ -829,12 +829,18 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             out.push("+proj=isea".into());
             let mut keys: Vec<&str> = Vec::new();
             for flag in flags.split('_').skip(1) {
+                // ISEA's flag (`PROJ_isea_dual`), once.
+                if flag == "dual" && !keys.contains(&flag) {
+                    keys.push(flag);
+                    out.push("+dual".into());
+                    continue;
+                }
                 let (k, v) = flag.split_once('=')?;
                 if k.is_empty() || v.is_empty() || !k.bytes().chain(v.bytes()).all(|c| c.is_ascii_alphanumeric()) {
                     return None;
                 }
                 // ISEA's string-valued parameters, each once; the others are PARAMETERs.
-                if !matches!(k, "orient" | "mode") || keys.contains(&k) {
+                if !matches!(k, "orient" | "mode" | "net") || keys.contains(&k) {
                     return None;
                 }
                 keys.push(k);
@@ -846,6 +852,8 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             push(&mut out, "lon_0", angle(&["lon0"]));
             push(&mut out, "lat_0", angle(&["lat0"]));
             push(&mut out, "azi", angle(&["azi"]));
+            push(&mut out, "orient_lat", angle(&["orientlat"]));
+            push(&mut out, "orient_lon", angle(&["orientlon"]));
             push(&mut out, "resolution", get(&["resolution"]));
             push(&mut out, "aperture", get(&["aperture"]));
         }
