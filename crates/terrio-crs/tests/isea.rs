@@ -172,3 +172,22 @@ fn lat_0_and_lon_0_are_the_projected_origin() {
     let p = Transformer::new(&lonlat, &target).unwrap().transform(10.0, 20.0).unwrap();
     assert!((p.0 - 7863.091604233761).abs() < 1e-6 && (p.1 - 2111980.52214099).abs() < 1e-6, "{p:?}");
 }
+
+#[test]
+fn a_wkt_proj4_extension_reads_angles_as_a_pipeline_step() {
+    // PROJ's CRS parser refuses `+lat_0=30x` in a PROJ string, but reads a WKT's PROJ4
+    // extension as a pipeline step, whose `dmstor` takes the angle's readable start: 30°.
+    let lonlat = SpatialRef::parse("+proj=longlat +R=1").unwrap();
+    let wkt = |proj: &str| {
+        format!(
+            "PROJCS[\"unknown\",GEOGCS[\"unknown\",DATUM[\"unknown\",SPHEROID[\"unknown\",1,0]],PRIMEM[\"Greenwich\",0],\
+             UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"custom_proj4\"],UNIT[\"metre\",1],\
+             EXTENSION[\"PROJ4\",\"{proj} +wktext +no_defs\"]]"
+        )
+    };
+    let at = |crs: &str| SpatialRef::parse(crs).and_then(|t| Transformer::new(&lonlat, &t)).and_then(|t| t.transform(10.0, 20.0));
+    let thirty = at("+proj=isea +R=1 +lat_0=30").unwrap();
+    assert!(at("+proj=isea +R=1 +lat_0=30x").is_err());
+    assert_eq!(at(&wkt("+proj=isea +R=1 +lat_0=30")).unwrap(), thirty);
+    assert_eq!(at(&wkt("+proj=isea +R=1 +lat_0=30x")).unwrap(), thirty);
+}

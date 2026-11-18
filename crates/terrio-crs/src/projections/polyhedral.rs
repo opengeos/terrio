@@ -1,12 +1,13 @@
 // SPDX-FileCopyrightText: Copyright (c) A5 contributors
 // SPDX-FileCopyrightText: Copyright (c) 2014-2025, Ecere Corporation
+// SPDX-FileCopyrightText: Copyright (c) 2015-2021, Brandon Jones, Colin MacKenzie IV
 // SPDX-FileCopyrightText: PROJ contributors
 // SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: Apache-2.0 AND BSD-3-Clause AND MIT
 //
 // Derived from (translated to Rust and modified):
-//   PROJ 9.9.0 (Felix Palmer's polyhedral projections, derived from A5, Apache-2.0, and in
-//   snyder.h from DGGAL, BSD-3-Clause):
+//   PROJ 9.9.0 (Felix Palmer's polyhedral projections, derived from A5, Apache-2.0, in
+//   snyder.h from DGGAL, BSD-3-Clause, and in vec3.h from gl-matrix, MIT):
 //     src/projections/polyhedral.cpp
 //     src/projections/polyhedral/state.h
 //     src/projections/polyhedral/snyder.h
@@ -489,8 +490,10 @@ fn boolean(s: &Setup<'_>, key: &str) -> Result<bool> {
 
 /// Whether PROJ's CRS parser takes a value of a `PROJ isea` method: a string (from a letter), a
 /// flag, or else a whole angle (`dmstor`), so that `30x` and `1e400` are refused.
-fn readable(v: Option<&str>) -> bool {
+/// A WKT's `PROJ4` extension skips that parser: PROJ reads it as a pipeline step.
+fn readable(s: &Setup<'_>, v: Option<&str>) -> bool {
     match v {
+        _ if s.p.is_extension() => true,
         None | Some("") => true,
         Some(v) if v.starts_with(|c: char| c.is_ascii_alphabetic()) => true,
         Some(v) => crate::params::parse_dms(v).is_some(),
@@ -504,23 +507,30 @@ fn number(s: &Setup<'_>, key: &str) -> Result<Option<f64>> {
         return Ok(None);
     }
     let v = s.p.str(key);
-    if !readable(v) {
+    if !readable(s, v) {
         return Err(err(&format!("isea: invalid value for {key}")));
     }
     Ok(Some(v.and_then(crate::def::leading_number).unwrap_or(0.0)))
 }
 
 /// An angle the projection reads with `pj_param`'s `r` (`dmstor`), in radians; `None` without the
-/// parameter, 0 for a string.
+/// parameter, 0 for a string. In a WKT's `PROJ4` extension, its readable start (`30x` is 30°), as
+/// PROJ reads a pipeline step's.
 fn dms(s: &Setup<'_>, key: &str) -> Result<Option<f64>> {
     if !s.p.has(key) {
         return Ok(None);
     }
     let v = s.p.str(key);
-    if !readable(v) {
-        return Err(err(&format!("isea: invalid value for {key}")));
+    let invalid = || err(&format!("isea: invalid value for {key}"));
+    if !readable(s, v) {
+        return Err(invalid());
     }
-    Ok(Some(v.and_then(crate::params::parse_dms).unwrap_or(0.0) * DEG_TO_RAD))
+    let parse = if s.p.is_extension() { crate::params::parse_dms_prefix } else { crate::params::parse_dms };
+    let degrees = v.and_then(parse).unwrap_or(0.0);
+    if !degrees.is_finite() {
+        return Err(invalid());
+    }
+    Ok(Some(degrees * DEG_TO_RAD))
 }
 
 impl Polyhedral {
@@ -530,7 +540,8 @@ impl Polyhedral {
         let authalic = Authalic::of(s.ell);
         let rq = authalic.as_ref().map_or(1.0, |a| (0.5 * a.qp).sqrt());
         let (mesh, parents, defaults, dual): (Mesh, Vec<usize>, Defaults, bool) = if boolean(s, "dual")? {
-            // `dodecahedron_family_setup(P, true)`, with its `+net`.
+            // `dodecahedron_family_setup(P, true)`, with its `+net`. It does not read `+orient`,
+            // which PROJ then ignores, whatever its value.
             let (parents, orient_lon) = match s.p.str("net") {
                 _ if !s.p.has("net") => (NET_DSEA.to_vec(), -36.0),
                 Some("dsea") => (NET_DSEA.to_vec(), -36.0),

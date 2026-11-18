@@ -29,6 +29,9 @@ def same_isea(reference):
     PROJ 9.9 replaced the method of PROJ 9.8 and earlier (another origin, the authalic latitude
     on an ellipsoid); PROJ 9.4 has no inverse.
     """
+    # PROJ 9.8 and earlier agree with 9.9.0 on the default sphere, so the version decides first.
+    if (osr.GetPROJVersionMajor(), osr.GetPROJVersionMinor()) < (9, 9):
+        return False
     case = reference["cases"][0]
     source, target = transformation(case["source"], case["target"])
     try:

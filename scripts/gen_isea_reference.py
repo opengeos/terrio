@@ -28,6 +28,8 @@ CONFIGURATIONS = [
     ("+orient_lat=45 +orient_lon=-20 +azi=10", "m", 0, 0),
     ("+dual", "m", 0, 0),
     ("+dual +net=a5 +lat_0=-30", "km", 500, 0),
+    ("+dual +net=crescent", "m", 0, 0),
+    ("+dual +net=flower +orient=pole", "m", 0, 0),
 ]
 # Options PROJ refuses, which tests/isea.rs expects terrio to refuse too.
 REFUSED = [
