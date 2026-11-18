@@ -34,10 +34,12 @@
 use super::common;
 use super::zarr_store::{Node, Range};
 
+mod cube;
 mod multidim;
 use crate::formats::RasterDriver;
 use crate::memfs;
 use crate::{Error, RasterDataset, Result};
+pub(crate) use cube::write as write_cube;
 pub(crate) use multidim::{MdSource, md_open, md_write};
 use serde_json::{Value, json};
 use std::io::Read;

@@ -2707,6 +2707,24 @@ s3://bucket/S2A_20240701/B08.tif,2024-07-01,B08
 s3://bucket/S2B_20240711/B04.tif,2024-07-11,B04
 ```
 
+An output ending in `.zarr` (or `-f Zarr`) gets the statistics as a cube instead of a layer:
+a Zarr v3 store with one variable, named after the store (`ndvi.zarr` holds `ndvi`), of dims
+`(geometry, time, band, statistic)`:
+
+```sh
+terrio zonal-stats fields.gpkg ndvi.zarr --inputs s2.csv --stats mean,median
+```
+
+- `time` is present when the `--inputs` rows have times (then every row needs one), as CF times
+  when they are ISO 8601 dates; `band` when rows have labels or there are several bands. A date
+  without one of the bands holds NaN for it; two rows on the same time and label are an error.
+- The zones are stored as CF-1.8 polygon geometries with a CF grid mapping of their CRS, their
+  fields and FIDs (`feature_id`) as coordinates along `geometry`: xarray opens the store, and
+  cf_xarray and xvec decode the geometries. A zone without a polygon geometry is an error, as
+  CF cannot store it.
+- `--t-srs`, `--decimal-places`, `--nln`, `--append` and `--overwrite` do not apply, and the zones
+  input must have one layer.
+
 `zonal-stats` (alias `zonal`) adds statistics independently for each polygon or multipolygon.
 Repeat `--raster` for multiple rasters (or give `--raster @FILE`, a list of paths one per line)
 and use `--band` for comma-separated bands from each. `--inputs FILE` reads a CSV table with a
