@@ -17,7 +17,7 @@ const KNOWN_DIFFERENCES: [u32; 1] = [4805];
 
 /// The parameters within a relative 1e-12: PROJ converts microradians to arc-seconds.
 fn same(a: &[f64; 7], b: &[f64]) -> bool {
-    a.iter().zip(b).all(|(x, y)| (x - y).abs() <= 1e-12 * x.abs().max(1.0))
+    b.len() == 7 && a.iter().zip(b).all(|(x, y)| (x - y).abs() <= 1e-12 * x.abs().max(1.0))
 }
 
 #[test]

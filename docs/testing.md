@@ -2064,6 +2064,13 @@ which must still give a string (`cargo test -p terrio-crs --test gdal_proj4_expo
 table and both fixtures with `scripts/gen_gdal_towgs84.py`, GDAL 3.13.3 on PROJ 9.9.0 from
 conda-forge and the `zstd` command).
 
+The datum shift `terrio_crs::helmert_to_wgs84` gives is compared with PROJ 9.9.0's own pipelines
+(pyproj 3.8.0's `TransformerGroup`, and `Transformer.from_crs` where the ballpark comes first,
+network off, no grids) for the 717 EPSG geographic 2D CRSs other than WGS 84, deprecated ones too:
+474 Helmert or zero shifts within a relative 1e-12 and 242 without one; MGI (Ferro) is the one
+known difference (`cargo test -p terrio-crs --test helmert_to_wgs84`; regenerate with
+`scripts/gen_helmert_to_wgs84.py`, conda-forge `gdal=3.13.3 proj=9.9.0`).
+
 GeoTIFF GeoKeys (`SpatialRef::from_geokeys`, `SpatialRef::to_geokeys`) are compared with GDAL 3.12.1
 (rasterio 1.5.0) on 376 CRSs (every 20th EPSG projected and geographic 2D code, rule codes, PROJ
 strings of every method GeoTIFF names in other units and datums, ESRI codes, compound and geographic

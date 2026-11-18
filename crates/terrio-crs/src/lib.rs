@@ -173,7 +173,7 @@ pub fn geographic_datum(geog: u32) -> Option<u32> {
 /// Unlike [`SpatialRef::to_proj4_gdal`], which follows GDAL 3.13.3 and writes no `+towgs84` when a
 /// datum has several transformations to WGS 84, this gives the one PROJ picks without grids.
 ///
-/// ```no_run
+/// ```
 /// // ED50 to WGS 84 (1), also for ED50 / UTM zone 32N.
 /// assert_eq!(terrio_crs::helmert_to_wgs84(4230), Some([-87.0, -98.0, -121.0, 0.0, 0.0, 0.0, 0.0]));
 /// assert_eq!(terrio_crs::helmert_to_wgs84(23032), terrio_crs::helmert_to_wgs84(4230));

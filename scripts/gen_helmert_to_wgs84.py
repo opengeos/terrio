@@ -106,7 +106,7 @@ def main():
         encoding="utf-8",
     )
     tmp.replace(OUT)
-    print(f"{len(lines)} CRSs, {sum(not line.split(chr(9))[1].startswith('- ') for line in lines)} with a Helmert transformation or none")
+    print(f"{len(lines)} CRSs, {sum(not line.split(chr(9))[1].startswith('- ') for line in lines)} with a Helmert shift (zeros for none)")
 
 
 if __name__ == "__main__":

@@ -1055,6 +1055,13 @@ string is not always written as GDAL writes it (GDAL's WKT 1 of one carries its 
 `+init=epsg:2056`, the code itself to terrio, has its additions, which GDAL does not write. A
 deprecated code has its own definition's, as GDAL with `OSR_USE_NON_DEPRECATED=NO`.
 
+`terrio_crs::helmert_to_wgs84(code)` gives the datum shift to WGS 84 of an EPSG geographic CRS (of
+a projected or compound CRS's base geographic CRS) as `+towgs84` carries it, also where GDAL writes
+none: the first transformation PROJ 9.9.0 picks without grids, when PROJ runs it as a single Helmert
+transformation of 3 or 7 parameters (ED50 has `-87,-98,-121,0,0,0,0`, from ED50 to WGS 84 (1)).
+`None` otherwise: a Molodensky-Badekas, time-dependent or exact-rotation Helmert transformation, a
+geographic offset, several shifts, PROJ's ballpark. It is in the Rust crate only.
+
 A compound CRS (`EPSG:4326+5773`, a registry code, a WKT's `COMPD_CS`) is its horizontal CRS's
 string with the vertical unit (`+vunits=m`), and a WKT's geoid model (`+geoidgrids`). A CRS
 given by a PROJ string or a WKT without a code comes back as PROJ writes it:
