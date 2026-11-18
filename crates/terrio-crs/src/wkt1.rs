@@ -108,17 +108,23 @@ impl Node {
         }
     }
 
+    /// The code of an `ID` or `AUTHORITY` node: its second argument, a whole number or the text of
+    /// one.
+    pub fn code(&self) -> Option<u32> {
+        match self.args.get(1)? {
+            Arg::Num(v) if v.fract() == 0.0 && *v >= 0.0 && *v <= f64::from(u32::MAX) => Some(*v as u32),
+            Arg::Str(s) => s.trim().parse().ok(),
+            _ => None,
+        }
+    }
+
     /// The EPSG code of the node's `AUTHORITY` or `ID`.
     pub fn epsg(&self) -> Option<u32> {
         let n = self.child_in(crate::keywords::ID)?;
         if !n.name()?.eq_ignore_ascii_case("EPSG") {
             return None;
         }
-        match n.args.get(1)? {
-            Arg::Num(v) => Some(*v as u32),
-            Arg::Str(s) => s.trim().parse().ok(),
-            _ => None,
-        }
+        n.code()
     }
 }
 

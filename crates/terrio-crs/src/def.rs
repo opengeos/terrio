@@ -605,9 +605,9 @@ impl Def {
                 }
                 d.bound = bound.bound;
             }
-            // Not the registry's own WKT, nor one with the CRS's ID, which PROJ resolves: checked
-            // without parsing first, as `Def::new` runs often. Nor one with a PROJ4 extension,
-            // which GDAL hands PROJ as its PROJ string, so that no name is resolved.
+            // Not the registry's own WKT, nor one with the CRS's ID, which PROJ resolves. Nor one
+            // with a PROJ4 extension, which GDAL hands PROJ as its PROJ string, so that no name is
+            // resolved.
             if s.proj4.is_none()
                 && s.epsg.is_some()
                 && d.geog.is_some()
@@ -1402,8 +1402,9 @@ impl Def {
         // WKT 2 parameters and method names would be read wrongly, silently (#123).
         #[cfg(feature = "wbprojection-fallback")]
         {
-            // Without a root code that is not its content's, which wbprojection's parser would
-            // read as the CRS (an unknown method declaring EPSG:27700).
+            // Without a root code that is not its content's, nor root codes other than the one it
+            // declares, which wbprojection's parser would read as the CRS (an unknown method
+            // declaring EPSG:27700).
             let stripped = super::without_unfit_root_code(w);
             let crs = wbprojection::Crs::from_wkt(stripped.as_deref().unwrap_or(w)).map_err(|e| Error::Crs(format!("{e}")))?;
             let geographic = crs.is_geographic();

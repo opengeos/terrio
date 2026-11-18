@@ -67,13 +67,13 @@ pub(crate) const ELLIPSOID: &[&str] = &["SPHEROID", "ELLIPSOID"];
 
 /// `GEOGCS`, a geographic CRS (WKT 2's `GEOGCRS`), and in a `PROJCS` its base CRS (WKT 2's
 /// `BASEGEODCRS`).
-const WKT1_GEOGRAPHIC: &[&str] = &["GEOGCS"];
+pub(crate) const WKT1_GEOGRAPHIC: &[&str] = &["GEOGCS"];
 
 /// `GEOCCS`, a geocentric CRS (`GEODCRS`).
-const WKT1_GEOCENTRIC: &[&str] = &["GEOCCS"];
+pub(crate) const WKT1_GEOCENTRIC: &[&str] = &["GEOCCS"];
 
 /// `PROJCS`, a projected CRS (`PROJCRS`).
-const WKT1_PROJECTED: &[&str] = &["PROJCS"];
+pub(crate) const WKT1_PROJECTED: &[&str] = &["PROJCS"];
 
 /// `VERT_CS`, a vertical CRS (`VERTCRS`).
 const WKT1_VERTICAL: &[&str] = &["VERT_CS"];

@@ -1389,8 +1389,9 @@ impl SpatialRef {
             if wkt1::parse(w).is_none() {
                 return Err(Error::Crs("not a WKT definition GDAL reads".into()));
             }
-            // Without a root code that is not its content's, which wbprojection's parser reads
-            // as the CRS (an unknown method declaring EPSG:27700), as `Def` reads it.
+            // Without a root code that is not its content's, nor root codes other than the one
+            // it declares, which wbprojection's parser reads as the CRS (an unknown method
+            // declaring EPSG:27700), as `Def` reads it.
             return Ok(wbp::Crs::from_wkt(without_unfit_root_code(w).as_deref().unwrap_or(w))?);
         }
         Err(Error::Crs("the CRS is unknown".into()))
@@ -2072,23 +2073,40 @@ fn geographic_dimension_3d(wkt: &str) -> Option<bool> {
     (geodetic && ellipsoidal).then(|| cs.num(1) == Some(3.0))
 }
 
-/// A WKT definition without its root code when that code is not its content's (see
-/// [`declared_fits`]); `None` when it declares none or its own. For wbprojection's parser, which
-/// reads a WKT by its root code.
+/// A WKT definition with no root identifier wbprojection's parser would read as another CRS, as
+/// it reads a WKT by its root code (by its last, of several): without its root code when that code
+/// is not its content's (see [`declared_fits`]); of several root identifiers, with only the EPSG
+/// code it declares when that is its content's, else with none (see [`declared_epsg`]). `None` when
+/// it has one identifier that is its content's or no EPSG code.
 #[cfg(feature = "wbprojection-fallback")]
 pub(crate) fn without_unfit_root_code(wkt: &str) -> Option<String> {
-    match declared_epsg(wkt) {
-        Some(c) if !declared_fits(wkt, c) => strip_root_code(wkt),
-        _ => None,
+    let mut root = wkt1::parse(wkt)?;
+    if root.ids().count() < 2 {
+        return match declared_epsg(wkt) {
+            Some(c) if !declared_fits(wkt, c) => strip_root_code(wkt),
+            _ => None,
+        };
     }
+    // The declared identifier's place among the root's children, when it fits.
+    let keep = declared_id(&root, "EPSG")
+        .filter(|id| id.code().is_some_and(|c| declared_fits(wkt, c)))
+        .and_then(|id| root.args.iter().position(|a| matches!(a, wkt1::Arg::Node(n) if std::ptr::eq(n, id))));
+    let mut i = 0;
+    root.args.retain(|a| {
+        let kept = !matches!(a, wkt1::Arg::Node(n) if n.is(keywords::ID)) || Some(i) == keep;
+        i += 1;
+        kept
+    });
+    Some(root.to_wkt())
 }
 
-/// A WKT definition without the code its root declares (see [`declared_epsg`]).
+/// A WKT definition without its root's identifiers (all of them, of any authority; see
+/// [`declared_epsg`]), written again from its nodes; `None` when its root has none.
 pub(crate) fn strip_root_code(wkt: &str) -> Option<String> {
-    let body = wkt.trim_end().strip_suffix(']')?.trim_end().strip_suffix(']')?;
-    let start = body.rfind('[')?;
-    let comma = body[..start].rfind(',')?;
-    Some(format!("{}]", &body[..comma]))
+    let mut root = wkt1::parse(wkt)?;
+    let before = root.args.len();
+    root.args.retain(|a| !matches!(a, wkt1::Arg::Node(n) if n.is(keywords::ID)));
+    (root.args.len() < before).then(|| root.to_wkt())
 }
 
 /// The projection method (`+proj=tmerc`) of a WKT definition's conversion.
@@ -2122,30 +2140,103 @@ fn strip_authorities(wkt: &str) -> String {
     out
 }
 
-/// The EPSG code a WKT definition declares for itself: the `AUTHORITY["EPSG","4269"]` (WKT 1) or
-/// `ID["EPSG",4269]` (WKT 2) closing its outermost node, not those of its datum or units.
+/// The EPSG code a WKT definition declares for itself: its outermost node's `AUTHORITY["EPSG",
+/// "4269"]` (WKT 1) or `ID["EPSG",4269]` (WKT 2), not those of its datum or units. The identifier
+/// is read wherever it is among the root's children and whatever it holds (a `URI` or `CITATION`, a
+/// `REMARK` or `AXIS` after it), as PROJ 9.9.0 reads it.
+///
+/// Of several root identifiers, the one PROJ 9.9.0 identifies an EPSG code by (`to_epsg()`)
+/// counts: the first, passing over ESRI ones and EPSG ones whose code is no CRS of the root's kind
+/// (`ID["ESRI",104000],ID["EPSG",4326]` and `ID["EPSG",27700],ID["EPSG",4326]` declare EPSG:4326),
+/// but not another code of the root's kind (`ID["EPSG",4277],ID["EPSG",4326]` declares EPSG:4277,
+/// which is then not its content), and none when all are passed over
+/// (`ID["ESRI",102100],ID["EPSG",27700]` on a geographic CRS). terrio's registry stands in for
+/// PROJ's database; an identifier of another authority counts (`ID["IGNF","WGS84G"]` before
+/// EPSG:4326 declares no EPSG code, as in PROJ, which has IGNF:WGS84G). A single identifier is read
+/// whatever its code.
 pub(crate) fn declared_epsg(wkt: &str) -> Option<u32> {
     declared_code(wkt, "EPSG")
 }
 
-/// The code of an authority a WKT definition declares for itself, as [`declared_epsg`].
+/// The kind of CRS a root keyword is: the kind PROJ creates an identifier's code for
+/// (`createGeodeticCRS` for a geographic or geocentric CRS, …).
+#[derive(Clone, Copy, PartialEq)]
+enum RootKind {
+    Geodetic,
+    Projected,
+    Vertical,
+    Compound,
+    Other,
+}
+
+impl RootKind {
+    fn of(key: &str) -> Self {
+        if [keywords::GEOGRAPHIC_OR_GEODETIC_CRS, keywords::WKT1_GEOGRAPHIC, keywords::WKT1_GEOCENTRIC]
+            .iter()
+            .any(|keys| keywords::is(key, keys))
+        {
+            Self::Geodetic
+        } else if keywords::is(key, keywords::PROJECTED_CRS) || keywords::is(key, keywords::WKT1_PROJECTED) {
+            Self::Projected
+        } else if keywords::is(key, keywords::VERTICAL_CRS) {
+            Self::Vertical
+        } else if keywords::is(key, keywords::COMPOUND_CRS) {
+            Self::Compound
+        } else {
+            Self::Other
+        }
+    }
+}
+
+/// The authority of an `ID` or `AUTHORITY` node, quoted or not (PROJ 9.9.0 reads
+/// `AUTHORITY[EPSG,4326]` as EPSG:4326 too), in capitals.
+fn id_authority(id: &wkt1::Node) -> Option<String> {
+    match id.args.first() {
+        Some(wkt1::Arg::Str(a) | wkt1::Arg::Ident(a)) => Some(a.to_ascii_uppercase()),
+        _ => None,
+    }
+}
+
+/// Whether PROJ's identification for `wanted` (`EPSG`, `ESRI`) passes over a root identifier of a
+/// CRS of kind `own`: an ESRI identifier when EPSG is wanted (an EPSG one when ESRI is), an
+/// identifier whose code is not a number, and one whose code the registry has no CRS of the root's
+/// kind for (none at all, or a projected CRS's code on a geographic CRS). An identifier of any
+/// other authority (`IGNF`) is not passed over. A root of no kind the registry holds (an
+/// engineering or bound CRS, [`RootKind::Other`]) takes a registered code of any kind: only a code
+/// the registry does not have is passed over there.
+fn id_passed_over(id: &wkt1::Node, wanted: &str, own: RootKind) -> bool {
+    let theirs = id_authority(id);
+    let registered: Vec<&str> = match (theirs.as_deref(), id.code()) {
+        (Some(a @ ("EPSG" | "ESRI")), _) if a != wanted => return true,
+        (Some("EPSG"), Some(c)) => {
+            [epsg::get(c).map(|e| e.wkt.as_str()), epsg::vertical(c).map(|v| v.wkt.as_str()), epsg::compound(c).map(|v| v.wkt.as_str())]
+                .into_iter()
+                .flatten()
+                .collect()
+        }
+        (Some("ESRI"), Some(c)) => epsg::esri(c).map(|e| e.wkt.as_str()).into_iter().collect(),
+        // A code that is no number (`ID["EPSG","not-a-code"]`), which PROJ cannot create either.
+        (Some("EPSG" | "ESRI"), None) => return true,
+        _ => return false,
+    };
+    !registered.iter().any(|w| own == RootKind::Other || RootKind::of(keywords::root_key(w)) == own)
+}
+
+/// The code of an authority a WKT definition declares for itself, as [`declared_epsg`]. A single
+/// root identifier is read whatever its code; of several, none when all are passed over.
 fn declared_code(wkt: &str, authority: &str) -> Option<u32> {
-    let body = wkt.trim_end().strip_suffix(']')?.trim_end();
-    // The last child node must be the identifier itself, not a node holding one.
-    let body = body.strip_suffix(']')?;
-    if body.ends_with(']') {
-        return None;
-    }
-    let start = body.rfind('[')?;
-    let keyword = body[..start].trim_end().rsplit([',', '[']).next()?.trim();
-    if !keywords::is(keyword, keywords::ID) {
-        return None;
-    }
-    let mut parts = body[start + 1..].split(',').map(|p| p.trim().trim_matches('"'));
-    if !parts.next()?.eq_ignore_ascii_case(authority) {
-        return None;
-    }
-    parts.next()?.parse().ok()
+    declared_id(&wkt1::parse(wkt)?, authority)?.code()
+}
+
+/// The root identifier of `authority` a WKT's root declares its code by, as [`declared_code`].
+fn declared_id<'a>(root: &'a wkt1::Node, authority: &str) -> Option<&'a wkt1::Node> {
+    let (own, wanted) = (RootKind::of(&root.key), authority.to_ascii_uppercase());
+    let ids: Vec<&wkt1::Node> = root.ids().collect();
+    let id = match ids.as_slice() {
+        [id] => *id,
+        rest => rest.iter().copied().find(|id| !id_passed_over(id, &wanted, own))?,
+    };
+    (id_authority(id)? == wanted).then_some(id)
 }
 
 /// Whether a WKT's content is the ESRI CRS it declares, as [`declared_fits`] decides it for an
@@ -3662,6 +3753,32 @@ mod tests {
         assert_eq!(SpatialRef::from_wkt(&ed50).epsg, None);
     }
 
+    /// Root identifiers other than the one declared (see [`declared_epsg`]) do not reach
+    /// wbprojection, which would read the CRS by them: a geographic CRS declaring ESRI:102100 and
+    /// EPSG:27700 (no code, as PROJ 9.9.0), or EPSG:4326 then EPSG:27700, stays geographic.
+    #[cfg(feature = "wbprojection-fallback")]
+    #[test]
+    fn passed_over_root_codes_do_not_reach_wbprojection() {
+        let wgs84 = |ids: &str| {
+            format!(
+                r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],{ids}]"#
+            )
+        };
+        let all_passed_over = wgs84(r#"AUTHORITY["ESRI","102100"],AUTHORITY["EPSG","27700"]"#);
+        assert_eq!(declared_epsg(&all_passed_over), None);
+        // wbprojection reads the last of several root codes: only the declared one, which fits,
+        // reaches it.
+        let fitting_first = wgs84(r#"AUTHORITY["EPSG","4326"],AUTHORITY["EPSG","27700"]"#);
+        assert_eq!(declared_epsg(&fitting_first), Some(4326));
+        assert!(without_unfit_root_code(&fitting_first).is_some_and(|w| w.contains(r#"AUTHORITY["EPSG","4326"]"#) && !w.contains("27700")));
+        let fitting_last = wgs84(r#"AUTHORITY["EPSG","27700"],AUTHORITY["EPSG","4326"]"#);
+        assert_eq!(declared_epsg(&fitting_last), Some(4326));
+        for wkt in [all_passed_over, fitting_first, fitting_last] {
+            let s = SpatialRef { wkt: Some(wkt.clone()), ..Default::default() };
+            assert!(s.to_wbp().unwrap().is_geographic(), "{wkt}");
+        }
+    }
+
     #[test]
     fn declared_codes_win() {
         let nad83 = r#"GEOGCS["NAD83",DATUM["North_American_Datum_1983",SPHEROID["GRS 1980",6378137,298.257222101,AUTHORITY["EPSG","7019"]],AUTHORITY["EPSG","6269"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]],AXIS["Latitude",NORTH],AXIS["Longitude",EAST],AUTHORITY["EPSG","4269"]]"#;
@@ -3669,6 +3786,46 @@ mod tests {
         assert_eq!(SpatialRef::from_wkt(nad83).epsg, Some(4269));
         assert_eq!(declared_epsg(r#"GEOGCRS["WGS 84",CS[ellipsoidal,2],ID["EPSG",4326]]"#), Some(4326));
         assert_eq!(declared_epsg(r#"GEOGCS["x",DATUM["d",SPHEROID["s",1,2]],UNIT["degree",0.01745,AUTHORITY["EPSG","9122"]]]"#), None);
+        // Brackets of either kind: `projinfo -o PROJJSON` (PROJ 9.9.0) gives this WKT the `id`
+        // EPSG 4326.
+        let parentheses = r#"GEOGCS("WGS 84",DATUM("WGS_1984",SPHEROID("WGS 84",6378137,298.257223563)),PRIMEM("Greenwich",0),UNIT("degree",0.0174532925199433),AUTHORITY("EPSG","4326"))"#;
+        assert_eq!(declared_epsg(parentheses), Some(4326));
+        assert_eq!(SpatialRef::from_wkt(parentheses).epsg, Some(4326));
+        assert_eq!(declared_epsg(r#"GEOGCS["x",UNIT["degree",0.0174532925199433],AUTHORITY[EPSG,4326]]"#), Some(4326));
+        // The first identifier of the authority the registry has a CRS of the root's kind for, as
+        // PROJ: there is no EPSG:1, EPSG:27700 is projected, and ESRI codes are passed over for an
+        // EPSG one; another authority's identifier counts, and so does the last one.
+        let ids = |ids: &str| declared_epsg(&format!(r#"GEOGCRS["x",CS[ellipsoidal,2],{ids}]"#));
+        assert_eq!(ids(r#"ID["ESRI",4326],ID["EPSG",4326]"#), Some(4326));
+        assert_eq!(ids(r#"ID["EPSG",1],ID["EPSG",4326]"#), Some(4326));
+        assert_eq!(ids(r#"ID["EPSG","not-a-code"],ID["EPSG",4326]"#), Some(4326));
+        assert_eq!(ids(r#"ID["ESRI",102100],ID["EPSG",4326]"#), Some(4326));
+        assert_eq!(ids(r#"ID["EPSG",27700],ID["EPSG",4326]"#), Some(4326));
+        assert_eq!(ids(r#"ID["EPSG",4277],ID["EPSG",4326]"#), Some(4277));
+        assert_eq!(ids(r#"ID["ESRI",104000],ID["EPSG",4326]"#), Some(4326));
+        assert_eq!(declared_code(r#"GEOGCRS["x",CS[ellipsoidal,2],ID["EPSG",4326],ID["ESRI",104000]]"#, "ESRI"), Some(104000));
+        // ESRI's code first, as the ESRI path reads it (gated by `esri_fits` there); EPSG's code
+        // read past it.
+        let esri_first = r#"GEOGCRS["x",CS[ellipsoidal,2],ID["ESRI",104000],ID["EPSG",4326]]"#;
+        assert_eq!((declared_code(esri_first, "ESRI"), declared_epsg(esri_first)), (Some(104000), Some(4326)));
+        // An engineering root takes a registered code of any kind; a code the registry does not
+        // have is still passed over.
+        let local = |ids: &str| declared_epsg(&format!(r#"LOCAL_CS["x",LOCAL_DATUM["d",0],UNIT["metre",1],{ids}]"#));
+        assert_eq!(local(r#"AUTHORITY["EPSG","1"],AUTHORITY["EPSG","27700"]"#), Some(27700));
+        assert_eq!(local(r#"AUTHORITY["ESRI","102100"],AUTHORITY["EPSG","27700"]"#), Some(27700));
+        assert_eq!(local(r#"AUTHORITY["EPSG","1"],AUTHORITY["EPSG","2"]"#), None);
+        // All passed over: none, as PROJ (a projected code on a geographic CRS, after an ESRI one).
+        assert_eq!(ids(r#"ID["ESRI",102100],ID["EPSG",27700]"#), None);
+        assert_eq!(ids(r#"ID["IGNF","WGS84G"],ID["EPSG",4326]"#), None);
+        assert_eq!(ids(r#"ID["EPSG",4326],ID["ESRI",4326]"#), Some(4326));
+        assert_eq!(ids(r#"ID["EPSG",1]"#), Some(1));
+        // A code is a whole number: `Node::epsg` (datums, units) reads none from 6326.5 or -1.
+        let datum = |code: &str| wkt1::parse(&format!(r#"DATUM["d",SPHEROID["s",1,2],AUTHORITY["EPSG",{code}]]"#)).and_then(|d| d.epsg());
+        assert_eq!((datum("6326"), datum(r#""6326""#), datum("6326.5"), datum("-1")), (Some(6326), Some(6326), None, None));
+        // Without its root codes, written again from its nodes.
+        let stripped = strip_root_code(r#"GEOGCRS["x",CS[ellipsoidal,2],ID["EPSG",4326,URI["urn:ogc:def:crs:EPSG::4326"]],REMARK["r"]]"#);
+        assert_eq!(stripped.as_deref(), Some(r#"GEOGCRS["x",CS[ellipsoidal,2],REMARK["r"]]"#));
+        assert_eq!(strip_root_code(r#"GEOGCRS["x",CS[ellipsoidal,2]]"#), None);
         // Codes of a datum or prime meridian are not the CRS's (GDAL wrote this one in a
         // GeoPackage, from a GeoParquet file's CRS).
         let wgs84 = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["Degree",0.0174532925199433],AXIS["Longitude",EAST],AXIS["Latitude",NORTH]]"#;

@@ -98,6 +98,13 @@ LOCAL_GRS80 = (
 )
 
 
+def unknown_wkt2(identifier):
+    """PROJ's WKT 2 of WGS 84 on PROJ's placeholder datum `unknown`, its root `ID` replaced."""
+    return sub(
+        CRS.from_wkt(wgs84_on("unknown")).to_wkt(), 'ID["EPSG",4326]]', identifier + "]"
+    )
+
+
 def main():
     assert pyproj.__version__ == "3.8.0" and pyproj.proj_version_str == "9.9.0", (
         pyproj.proj_version_str
@@ -297,6 +304,96 @@ def main():
             CRS.from_epsg(4640).to_wkt("WKT1_ESRI")[:-1] + ',AUTHORITY["EPSG",4640]]',
             (-61.0, 16.0),
         ),
+        # Root identifiers anywhere among the root's children (opengeos/terrio#1012 items 31
+        # and 57), as PROJ reads them.
+        (
+            "WGS 84 on the datum unknown with its code before its axes",
+            sub(
+                wgs84_on("unknown"),
+                'AUTHORITY["EPSG","4326"]]',
+                'AUTHORITY["EPSG","4326"],AXIS["Latitude",NORTH],AXIS["Longitude",EAST]]',
+            ),
+            (10.0, 50.0),
+        ),
+        (
+            "WGS 84 on the datum unknown with its code, its ID with a URI",
+            unknown_wkt2('ID["EPSG",4326,URI["urn:ogc:def:crs:EPSG::4326"]]'),
+            (10.0, 50.0),
+        ),
+        (
+            "WGS 84 on the datum unknown with its code, its ID with a citation",
+            unknown_wkt2('ID["EPSG",4326,CITATION["IOGP"]]'),
+            (10.0, 50.0),
+        ),
+        (
+            "WGS 84 on the datum unknown with its code before a remark",
+            unknown_wkt2('ID["EPSG",4326],REMARK["A remark."]'),
+            (10.0, 50.0),
+        ),
+        (
+            "WGS 84 on the datum unknown with its code after another authority's",
+            unknown_wkt2('ID["IGNF","WGS84G"],ID["EPSG",4326]'),
+            (10.0, 50.0),
+        ),
+        (
+            "WGS 84 on the datum unknown with its code before another authority's",
+            unknown_wkt2('ID["EPSG",4326],ID["IGNF","WGS84G"]'),
+            (10.0, 50.0),
+        ),
+        (
+            "WGS 84 on the datum unknown with its code after an ESRI code that does not exist",
+            unknown_wkt2('ID["ESRI",4326],ID["EPSG",4326]'),
+            (10.0, 50.0),
+        ),
+        (
+            "WGS 84 on the datum unknown with its code after an EPSG code that does not exist",
+            unknown_wkt2('ID["EPSG",1],ID["EPSG",4326]'),
+            (10.0, 50.0),
+        ),
+        (
+            "WGS 84 on the datum unknown with its code after ESRI:102100",
+            unknown_wkt2('ID["ESRI",102100],ID["EPSG",4326]'),
+            (10.0, 50.0),
+        ),
+        (
+            "WGS 84 on the datum unknown with its code after an EPSG code that is no number",
+            unknown_wkt2('ID["EPSG","not-a-code"],ID["EPSG",4326]'),
+            (10.0, 50.0),
+        ),
+        (
+            "WGS 84 on the datum unknown with its code after a projected CRS's",
+            unknown_wkt2('ID["EPSG",27700],ID["EPSG",4326]'),
+            (10.0, 50.0),
+        ),
+        (
+            "WGS 84 on the datum unknown with its code after ESRI:104000",
+            unknown_wkt2('ID["ESRI",104000],ID["EPSG",4326]'),
+            (10.0, 50.0),
+        ),
+        (
+            "WGS 84 on the datum unknown declaring an ESRI and a projected code",
+            unknown_wkt2('ID["ESRI",102100],ID["EPSG",27700]'),
+            (10.0, 50.0),
+        ),
+        (
+            "WGS 84 on the datum unknown declaring OSGB36 before its code",
+            unknown_wkt2('ID["EPSG",4277],ID["EPSG",4326]'),
+            (10.0, 50.0),
+        ),
+        (
+            "PROJ's WKT 2 of EPSG:4073, its ID before a remark",
+            CRS.from_epsg(4073).to_wkt(),
+            (20.5, 44.8),
+        ),
+        (
+            "ETRS89 declaring NAD83 by an ID with a URI",
+            sub(
+                relabel(CRS.from_epsg(4258).to_wkt(), 4258, 4269),
+                'ID["EPSG",4269],',
+                'ID["EPSG",4269,URI["urn:ogc:def:crs:EPSG::4269"]],',
+            ),
+            (-100.0, 40.0),
+        ),
     ]
     # Declared codes that are not the CRS; a method terrio's WKT 2 reader does not know
     # (opengeos/terrio#1012 item 43) is refused under one, where PROJ reads its content.
@@ -322,6 +419,8 @@ def main():
         "WGS 84 on a datum named Unknown declaring EPSG:4326": 4326,
         "WGS 84 3D declaring EPSG:4326": 4326,
         "WGS 84 2D declaring EPSG:4979": 4979,
+        "ETRS89 declaring NAD83 by an ID with a URI": 4269,
+        "WGS 84 on the datum unknown declaring OSGB36 before its code": 4277,
     }
     # The code terrio identifies by the content where PROJ's `to_epsg` gives none: British
     # National Grid's `TOWGS84` makes it a bound CRS to PROJ, and PROJ identifies no WKT whose
@@ -333,6 +432,7 @@ def main():
         "ETRS89 declaring NAD83": 4258,
         "ETRS89 in WKT 1 declaring NAD83": 4258,
         "NAD83(HARN) by name declaring NAD83": 4152,
+        "ETRS89 declaring NAD83 by an ID with a URI": 4258,
     }
     refused = {"Belge 1972 / Belgian Lambert 72 declaring EPSG:27700"}
     out = []

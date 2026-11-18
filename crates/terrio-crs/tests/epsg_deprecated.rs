@@ -198,10 +198,10 @@ fn geokeys_of_deprecated_codes_read_as_their_own_definition() {
             round_tripped += 1;
             let tolerance = if crs.is_geographic() { 1e-8 } else { 1e-3 };
             let same = (a.0 - b.0).abs() < tolerance && (a.1 - b.1).abs() < tolerance;
-            // EPSG:6986 (IGD05/12, 3D), written as WKT: terrio reads that WKT with a datum shift
-            // about 0.3 m from PROJ 9.9.0's ballpark, which it gives both the code and the WKT
-            // (opengeos/terrio#1012, item 19).
-            assert_eq!(same, code != 6986, "EPSG:{code}: {a:?} read back as {b:?}");
+            // EPSG:6986 (IGD05/12, 3D) is written as PROJ's WKT 2, whose root `ID` comes before a
+            // `REMARK`: read back by that code. (Its content alone is read with a datum shift
+            // about 0.3 m from PROJ 9.9.0's ballpark, opengeos/terrio#1012 item 19.)
+            assert!(same, "EPSG:{code}: {a:?} read back as {b:?}");
         }
     }
     assert!(written > 400 && round_tripped > 400, "{written} written, {round_tripped} round-tripped");
@@ -218,6 +218,28 @@ fn geokeys_of_deprecated_codes_read_as_their_own_definition() {
     let (x, y) = Transformer::new(&wgs84, &back).unwrap().transform(5.2, 60.48).unwrap();
     // PROJ 9.9.0: (83503.1262, 7707590.2512), as in `ntm_zone_5_keeps_its_own_false_origin`.
     assert!((x - 83_503.126_2).abs() < 1e-3 && (y - 7_707_590.251_2).abs() < 1e-3, "({x}, {y})");
+}
+
+/// EPSG:6986 (IGD05/12, 3D) is written to GeoKeys as PROJ's WKT 2 in an ESRI PE citation, whose
+/// root `ID` comes before a `REMARK`: read back, it is EPSG:6986 again and places the case's point
+/// where PROJ 9.9.0 does (`data/epsg_deprecated.json`; 1e-8°).
+#[test]
+fn igd05_12_reads_back_from_geokeys_as_its_code() {
+    offline();
+    let case = cases().into_iter().find(|c| c["code"] == 6986).unwrap();
+    let crs = SpatialRef::from_epsg(6986).unwrap();
+    let keys = crs.to_geokeys().unwrap();
+    assert!(keys.ascii.iter().any(|(_, a)| a.contains("ESRI PE String") && a.contains("REMARK[")), "{keys:?}");
+    let tags = keys.encode().unwrap();
+    let back = SpatialRef::from_geokeys(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).unwrap();
+    assert_eq!(back.epsg, Some(6986), "{back:?}");
+    let (lon, lat) = (case["point"][0].as_f64().unwrap(), case["point"][1].as_f64().unwrap());
+    let (px, py) = (case["proj"][0].as_f64().unwrap(), case["proj"][1].as_f64().unwrap());
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    for c in [&crs, &back] {
+        let (x, y) = Transformer::new(&wgs84, c).and_then(|t| t.transform(lon, lat)).unwrap();
+        assert!((x - px).abs() < 1e-8 && (y - py).abs() < 1e-8, "({x}, {y}), PROJ ({px}, {py})");
+    }
 }
 
 /// GeoKeys giving a deprecated projected code read as GDAL 3.12 reads them by default: a single

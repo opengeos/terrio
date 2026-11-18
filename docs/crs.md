@@ -94,9 +94,15 @@ regular path was replaced by a FIFO.
 Engineering WKT roots (`LOCAL_CS`, `ENGCRS`, `ENGINEERINGCRS`) retain their local
 coordinate-system definitions without being assigned an unrelated EPSG code. Both
 `VERTCRS` and its long form `VERTICALCRS` read the identifier of the CRS itself;
-identifiers on its datum, coordinate system or unit do not replace it. The current
-identifier reader recognizes a root identifier only as the final child; a trailing
-`REMARK` retains the WKT but can leave the EPSG identity unset. These forms
+identifiers on its datum, coordinate system or unit do not replace it. The root's
+identifier is read wherever it is among the root's children: before a `REMARK` or
+`AXIS`, or with a `URI` or `CITATION` of its own. With several identifiers, the
+first that is not an ESRI identifier, nor an EPSG identifier whose code is not a
+number or not a CRS of the root's kind, gives the code, as PROJ's `to_epsg()` does;
+when all are passed over there is none. So an identifier of another authority placed
+before the EPSG one leaves no EPSG code. An engineering or bound root takes a
+registered code of any kind. An ESRI code is read the same way, passing over EPSG
+identifiers instead. A single identifier gives its code whatever it is. These forms
 work in Rust, CLI/MCP, Python and JavaScript. Parsing engineering metadata does not
 add transformations between arbitrary local grids and Earth-based CRSs.
 GeoTIFF and COG writers retain engineering definitions, including root identifiers,
