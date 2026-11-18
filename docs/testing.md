@@ -1784,7 +1784,7 @@ cargo check -p terrio --target wasm32-unknown-unknown --no-default-features --fe
 
 `projjson_corpus_epsg.jsonl.zst` and `projjson_corpus_esri.jsonl.zst` hold every CRS of terrio's EPSG table (geographic,
 geocentric, projected, vertical and compound) and ESRI table, as PROJ 9.9.0
-writes it in WKT 2 (`WKT2_2019`), GDAL WKT 1 and ESRI WKT 1: 30,932 texts, each
+writes it in WKT 2 (`WKT2_2019`), GDAL WKT 1 and ESRI WKT 1: 30,938 texts, each
 with the PROJJSON PROJ writes for it (pyproj 3.8.0, network off). The test reads
 each text with `SpatialRef::from_wkt`, writes it with `to_projjson`, and compares
 what the CRS is field by field: types, the IDs and names of CRSs, the names and
@@ -2057,7 +2057,7 @@ The PROJ string GDAL exports (`SpatialRef::to_proj4_gdal`) is compared with GDAL
 9.9.0 (`OSRExportToProj4`, `OSR_USE_NON_DEPRECATED=NO`, network off), character for character. The
 fixture holds GDAL's string of 1,298 EPSG and ESRI codes (every fifth of the 5,130 GDAL adds a
 `+towgs84` or geoid model to, every twentieth other one and those RustGIS named); all are compared
-but the 7 ESRI codes terrio does not carry, which the test lists. A second fixture holds 13 of them
+but the 6 ESRI codes terrio does not carry, which the test lists. A second fixture holds 13 of them
 given as GDAL's WKT 1 and WKT 2, the WKT 1 without its root identifier or with a datum shift of its
 own, ESRI's WKT and the PROJ string (76 cases); all are compared but 7 listed compound-CRS cases,
 which must still give a string (`cargo test -p terrio-crs --test gdal_proj4_export`; regenerate the

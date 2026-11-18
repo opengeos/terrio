@@ -4425,9 +4425,9 @@ mod gdal_proj4_tests {
             assert!(f[3].is_empty() || !proj.contains("+geoidgrids="), "{}:{code} {proj}", f[0]);
             checked += 1;
         }
-        // Two of PROJ 9.9.0's ESRI codes are not in terrio's ESRI table.
-        assert_eq!(skipped, ["ESRI:102151", "ESRI:102964"]);
-        assert_eq!(checked, 5128);
+        // Every one is in terrio's tables, ESRI:102151 and 102964 too.
+        assert!(skipped.is_empty(), "{skipped:?}");
+        assert_eq!(checked, 5130);
     }
 
     #[test]
