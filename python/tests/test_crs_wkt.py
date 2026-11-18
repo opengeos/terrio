@@ -138,8 +138,7 @@ CASES = {
     ),
     "to_meter": ("+proj=tmerc +lon_0=10 +R=6371000 +to_meter=2.5", (12.0, 48.0)),
     "towgs84 7": (
-        "+proj=tmerc +lon_0=10 +ellps=bessel +units=m"
-        " +towgs84=598.1,73.7,418.2,0.202,0.045,-2.455,6.7",
+        "+proj=tmerc +lon_0=10 +ellps=bessel +units=m +towgs84=598.1,73.7,418.2,0.202,0.045,-2.455,6.7",
         (12.0, 48.0),
     ),
     "pm number": ("+proj=tmerc +lon_0=10 +pm=3.5 +a=6378000 +rf=300 +units=m", (16.0, 48.0)),
@@ -193,9 +192,7 @@ def test_rasterio_reads_terrio_geotiff_as_the_proj_string(name, tmp_path):
         pytest.skip("a geographic CRS")
     p = CASES[name][0]
     path = tmp_path / "crs.tif"
-    profile = dict(
-        driver="GTiff", width=2, height=2, count=1, dtype="uint8", transform=from_origin(0, 0, 1, 1)
-    )
+    profile = dict(driver="GTiff", width=2, height=2, count=1, dtype="uint8", transform=from_origin(0, 0, 1, 1))
     with trio.open(path, "w", crs=trio.crs.CRS.from_string(p), **profile) as f:
         f.write(np.zeros((1, 2, 2), np.uint8))
     with rasterio.open(path) as f:
@@ -240,18 +237,9 @@ def test_crs_to_projjson():
 
 def test_crs_to_proj4_writes_proj_string():
     # PROJ 9.9.0's projinfo -o PROJ for the same CRSs.
-    assert (
-        terrio._terrio.crs_to_proj4("EPSG:32632")
-        == "+proj=utm +zone=32 +datum=WGS84 +units=m +no_defs +type=crs"
-    )
-    assert (
-        terrio._terrio.crs_to_proj4("EPSG:4807")
-        == "+proj=longlat +ellps=clrk80ign +pm=paris +no_defs +type=crs"
-    )
-    local = (
-        'LOCAL_CS["Engineering",LOCAL_DATUM["site",0],UNIT["metre",1],'
-        'AXIS["X",EAST],AXIS["Y",NORTH]]'
-    )
+    assert terrio._terrio.crs_to_proj4("EPSG:32632") == "+proj=utm +zone=32 +datum=WGS84 +units=m +no_defs +type=crs"
+    assert terrio._terrio.crs_to_proj4("EPSG:4807") == "+proj=longlat +ellps=clrk80ign +pm=paris +no_defs +type=crs"
+    local = 'LOCAL_CS["Engineering",LOCAL_DATUM["site",0],UNIT["metre",1],AXIS["X",EAST],AXIS["Y",NORTH]]'
     assert terrio._terrio.crs_to_proj4(local) is None
 
 
@@ -271,10 +259,7 @@ def test_crs_to_proj4_gdal_writes_what_gdal_exports():
         "+proj=utm +zone=32 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m "
         "+geoidgrids=no_kv_HREF2018B_NN2000_EUREF89.tif +geoid_crs=WGS84 +vunits=m +no_defs"
     )
-    local = (
-        'LOCAL_CS["Engineering",LOCAL_DATUM["site",0],UNIT["metre",1],'
-        'AXIS["X",EAST],AXIS["Y",NORTH]]'
-    )
+    local = 'LOCAL_CS["Engineering",LOCAL_DATUM["site",0],UNIT["metre",1],AXIS["X",EAST],AXIS["Y",NORTH]]'
     assert terrio._terrio.crs_to_proj4_gdal(local) is None
 
 
@@ -320,8 +305,7 @@ def test_convert_and_warp_coordinate_operation_controls(tmp_path):
     """Conversion and raster warping use the same horizontal policy as coordinates."""
     point = tmp_path / "point.geojson"
     point.write_text(
-        '{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},'
-        '"geometry":{"type":"Point","coordinates":[110,35]}}]}'
+        '{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[110,35]}}]}'
     )
     with pytest.raises(ValueError, match="unknown coordinate operation option"):
         terrio.convert(
@@ -375,10 +359,7 @@ def test_vector_conversion_promotes_existing_heights_and_preserves_2d(tmp_path):
             t_srs="EPSG:4979",
             ct_opt={"PROMOTE_TO_3D": "YES" if promote else "NO"},
         )
-        coordinates = [
-            feature["geometry"]["coordinates"]
-            for feature in json.loads(destination.read_text())["features"]
-        ]
+        coordinates = [feature["geometry"]["coordinates"] for feature in json.loads(destination.read_text())["features"]]
         expected = [43.57639261614531, 143.576799856499] if promote else [0, 100]
         for point, height in zip(coordinates[:2], expected, strict=True):
             assert abs(point[2] - height) < 0.001
