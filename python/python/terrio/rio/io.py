@@ -3553,8 +3553,10 @@ class DatasetWriter(DatasetReader):
             alpha = o.get("ALPHA", "").upper() in ("YES", "NON-PREMULTIPLIED", "PREMULTIPLIED")
         elif driver == "JP2":
             rgb = n in (3, 4)
-            if n == 2 or n > 4:
-                ci = [ColorInterp.gray if n == 2 else ColorInterp.undefined] * n
+            if n == 2:
+                ci = [ColorInterp.gray] * n
+            elif n > 4:
+                ci = [ColorInterp.undefined] * n
         elif driver in ("PNG", "WEBP"):
             rgb, alpha = n >= 3, n in (2, 4)
         elif driver == "GRIB" or (driver == "ZARR" and n > 1):
