@@ -10,6 +10,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2017-2019 Heidelberg University
 // SPDX-FileCopyrightText: Copyright (c) 2018, Even Rouault <even dot rouault at spatialys dot com>
 // SPDX-FileCopyrightText: Copyright (c) 2025 Javier Jimenez Shaw
+// SPDX-FileCopyrightText: Copyright (c) 2026 Weston James Renoud
 // SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
 //
@@ -63,6 +64,8 @@
 //     src/latitudes.cpp
 //     src/ell_set.cpp
 //     src/aasincos.cpp
+//   PROJ 9.9.0:
+//     src/projections/tmerczoned.cpp
 //   PROJ 5fa31c29f0a806568ed7bc76c1a557604db4a804:
 //     src/projections/moll.cpp
 
@@ -140,6 +143,7 @@ pub(crate) fn build(name: &str, s: &mut Setup<'_>) -> Result<Option<Box<dyn Proj
             s.y0 = if s.p.has("south") { 10000000.0 } else { 0.0 };
             Box::new(Tmerc::new(s.ell, s.k0, 0.0))
         }
+        "tmerczoned" => Box::new(Tmerczoned::new(s)?),
         "lcc" => Box::new(Lcc::new(s)?),
         "merc" => Box::new(Merc::new(s)?),
         // Web Mercator: the spherical formulas on the semi-major axis, with geodetic latitudes
@@ -529,6 +533,56 @@ impl Proj for Tmerc {
         let rr = sin_cn.hypot(modulus_ce);
         let cn = sin_cn.atan2(modulus_ce);
         Some((ce, auxlat_convert_sc(cn, sin_cn / rr, modulus_ce / rr, &self.cgb)))
+    }
+}
+
+// Transverse Mercator Zoned Grid System (EPSG method 9824, IOGP Guidance Note 7-2, 3.2.3.2), as
+// PROJ 9.9.0's `tmerczoned` (`src/projections/tmerczoned.cpp`): Transverse Mercator in zones of
+// `+width` degrees from `+lon_0` (the initial longitude), each zone's eastings offset by 1000 km
+// per zone number.
+
+#[derive(Debug)]
+struct Tmerczoned {
+    /// Transverse Mercator on the zone's central meridian, at latitude 0 (PROJ's inner `tmerc`
+    /// takes only the CRS's ellipsoid and scale).
+    tmerc: Tmerc,
+    /// The zone width, in radians.
+    width: f64,
+    /// 1000 km on the ellipsoid of semi-major axis 1.
+    offset: f64,
+}
+
+impl Tmerczoned {
+    fn new(s: &Setup<'_>) -> Result<Self> {
+        // PROJ reads `+width` as a number of degrees (`pj_param(..., "dwidth")`), and computes
+        // with a missing or zero width all the same; terrio refuses it.
+        let width = s.p.f64("width").unwrap_or(0.0).to_radians();
+        if !(width.is_finite() && width > 0.0) {
+            return Err(err("tmerczoned: +width should be a positive number of degrees"));
+        }
+        Ok(Self { tmerc: Tmerc::new(s.ell, s.k0, 0.0), width, offset: 1_000_000.0 / s.ell.a })
+    }
+
+    /// The central meridian of zone `zone` (from 1), from the initial longitude.
+    fn center(&self, zone: i32) -> f64 {
+        (f64::from(zone) - 0.5) * self.width
+    }
+}
+
+impl Proj for Tmerczoned {
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        let lam = if lam < 0.0 { lam + 2.0 * PI } else { lam };
+        // PROJ nudges the zone's lower bound in and its upper bound out.
+        let zone = (lam / self.width + 1e-12) as i32 + 1;
+        let (x, y) = self.tmerc.fwd(lam - self.center(zone), phi)?;
+        Some((x + f64::from(zone) * self.offset, y))
+    }
+
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        // C's truncation toward zero, as PROJ casts.
+        let zone = (x / self.offset + 0.5) as i32;
+        let (lam, phi) = self.tmerc.inv(x - f64::from(zone) * self.offset, y)?;
+        Some((lam + self.center(zone), phi))
     }
 }
 
