@@ -1819,6 +1819,25 @@ TERRIO_RECORD=1 cargo test --release -p terrio-crs --features wbprojection-fallb
   --test projjson_corpus
 ```
 
+The CRS model of #1058 step 2 (`src/model.rs`, read once from the WKT tree, used
+only in tests until step 3) is checked against the same corpus by the unit tests
+in `src/model/oracle_tests.rs`, which share the comparison
+(`tests/support/projjson_compare.rs`). Each text is read into the model and
+rendered as PROJJSON, without anything PROJ takes from its database. WKT 1
+methods and parameters are named as EPSG names them by GDAL's table
+(`projjson_gdal::method1`). CRS, datum and ellipsoid names stay as written. The
+differences are recorded in `projjson_model_diffs.tsv`, one file for both
+builds. A second test checks that the model reads every value at least as the
+PROJJSON writer does. It leaves out names and identifiers, and what PROJ takes
+from its database: a WKT 1 `GEOGCS`'s implicit axes and a substituted base
+datum. It also leaves out conversions PROJ computes otherwise: from a PROJ4
+extension, as another method, or under an ESRI method name GDAL's table lacks
+(for step 5a). Record a deliberate change with:
+
+```sh
+TERRIO_RECORD=1 cargo test --release -p terrio-crs --lib model::
+```
+
 ## PROJJSON parsing (#270)
 
 `projjson_benchmark.json` retains `form-27700-projjson` from rust-proj-capability
