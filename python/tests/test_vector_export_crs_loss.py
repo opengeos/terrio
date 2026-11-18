@@ -214,3 +214,23 @@ def test_declared_esri_datum_must_match_the_registry(tmp_path):
         points(definition).write(str(path))
     assert not path.exists()
     assert not path.with_suffix(".xsd").exists()
+
+
+def test_projected_crs_without_a_code_keeps_its_projection(tmp_path):
+    """A projected CRS without a code is not written as the geographic CRS it is based on.
+
+    Args:
+        tmp_path: Temporary dataset directory.
+    """
+    geographic = points("EPSG:4326").crs_wkt
+    definition = (
+        f'PROJCS["Albers on WGS 84",{geographic},PROJECTION["Albers_Conic_Equal_Area"],'
+        'PARAMETER["latitude_of_center",37.5],PARAMETER["longitude_of_center",-96],'
+        'PARAMETER["standard_parallel_1",29.5],PARAMETER["standard_parallel_2",45.5],'
+        'PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1]]'
+    )
+    path = tmp_path / "albers.shp"
+    points(definition).write(str(path))
+    prj = path.with_suffix(".prj").read_text()
+    assert prj.startswith("PROJCS["), prj
+    assert "Albers" in prj

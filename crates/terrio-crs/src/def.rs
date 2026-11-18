@@ -21,10 +21,10 @@
 
 use super::datum::{self, Op};
 use super::math::*;
-use super::params::{Params, parse_dms};
+use super::params::{Params, parse_dms, parse_dms_prefix};
 use super::projections::{self, Proj, Setup};
 use super::rotation::{ObTran, Rotation};
-use super::{SpatialRef, epsg, route, wkt1, wkt2};
+use super::{SpatialRef, epsg, grid, route, wkt1, wkt2};
 use crate::{Error, Result};
 use std::sync::Arc;
 
@@ -69,6 +69,12 @@ pub(crate) struct Def {
     datum: Option<u32>,
     /// The EPSG code of the geographic CRS, when known.
     geog: Option<u32>,
+    /// The EPSG geographic CRS that a CRS on a datum no CRS is on is identified as by its name
+    /// ([`Def::registered_datum`]). Its transformations are not those of that CRS.
+    named_geog: Option<u32>,
+    /// All the operations of a datum found by its name ([`Def::datum_by_name`]), those whose
+    /// grids are missing included, as `geog`'s registry entry gives them otherwise.
+    all_ops: Option<Vec<Arc<Op>>>,
     /// Whether it is a geographic 3D CRS (with ellipsoidal heights).
     three_d: bool,
     /// Whether it is a dynamic CRS (on a dynamic reference frame such as ITRF2014).
@@ -367,8 +373,11 @@ pub(crate) fn proj_ellipsoid(p: &Params, method: &str, extension: bool) -> std::
         Some("R_h") => 2.0 * r * b / (r + b),
         // The arithmetic or geometric mean of the radii of curvature at a latitude.
         Some(key @ ("R_lat_a" | "R_lat_g")) => {
-            let lat = p.str(key).and_then(parse_dms).unwrap_or(0.0).to_radians();
-            if lat.abs() > HALFPI {
+            // Read as a prefix, as PROJ 9.8.1's `ell_set` reads it (`40.5NS` is 40.5°); an empty
+            // value is refused, as by PROJ.
+            let value = p.str(key);
+            let lat = value.and_then(parse_dms_prefix).unwrap_or(0.0).to_radians();
+            if value.is_some_and(|v| v.trim().is_empty()) || lat.abs() > HALFPI {
                 return Err(format!("invalid value for {key}"));
             }
             let t = 1.0 - es * lat.sin().powi(2);
@@ -410,10 +419,121 @@ impl Proj for WbProj {
     }
 }
 
+/// The definitions built, by the hash of their CRS (taken before the lock) and then the CRS, while
+/// the grids found stay the same ([`grid::epoch`]), with the bytes they count against the memo's
+/// bound.
+#[derive(Default)]
+struct Memo {
+    epoch: (u64, u64),
+    defs: std::collections::HashMap<u64, Vec<(SpatialRef, Arc<Def>)>>,
+    bytes: usize,
+}
+
+/// The keys of the memo's hash, drawn once per process. Drawn after the host's `before_lock`,
+/// and by [`hold_for_fork`] before a fork, so that no child starts while they are being drawn.
+fn memo_keys() -> &'static std::collections::hash_map::RandomState {
+    MEMO_KEYS.get().unwrap_or_else(|| {
+        crate::host::before_lock();
+        MEMO_KEYS.get_or_init(Default::default)
+    })
+}
+
+static MEMO_KEYS: std::sync::OnceLock<std::collections::hash_map::RandomState> = std::sync::OnceLock::new();
+
+/// The hash of a CRS in the memo.
+fn memo_hash(s: &SpatialRef) -> u64 {
+    use std::hash::BuildHasher;
+    memo_keys().hash_one(s)
+}
+
+fn memo() -> &'static std::sync::Mutex<Memo> {
+    crate::host::before_lock();
+    static M: std::sync::OnceLock<std::sync::Mutex<Memo>> = std::sync::OnceLock::new();
+    M.get_or_init(Default::default)
+}
+
+/// Forgets the definitions built, for [`crate::reset_grid_cache`] and [`crate::register_grid`]:
+/// so that the grids they hold are let go, without waiting for the next definition built.
+/// Dropped after the lock is released.
+pub(crate) fn forget_definitions() {
+    let old = std::mem::take(&mut *memo().lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+    drop(old);
+}
+
+/// Holds the memo of definitions across a fork, for [`crate::host::hold_for_fork`], with its hash
+/// keys drawn first.
+#[cfg(all(unix, not(target_family = "wasm")))]
+pub(crate) fn hold_for_fork(held: &mut Vec<Box<dyn std::any::Any>>) {
+    memo_keys();
+    held.push(Box::new(memo().lock().unwrap_or_else(std::sync::PoisonError::into_inner)));
+}
+
 impl Def {
     /// The definition of a CRS: from the EPSG (or ESRI) table when it has a code there, else
-    /// from its PROJ string or WKT.
+    /// from its PROJ string or WKT. A copy of the one kept for the CRS ([`Def::shared`]).
     pub fn new(s: &SpatialRef) -> Result<Self> {
+        Self::shared(s).map(|d| (*d).clone())
+    }
+
+    /// The definition of a CRS, kept for the whole `SpatialRef`, as about 25 of its accessors
+    /// need it.
+    ///
+    /// It is built once while the grids found stay the same: until [`crate::reset_grid_cache`],
+    /// the settings that call it, or [`crate::register_grid`]. The transformations it holds
+    /// depend on those grids. A change of `TERRIO_NETWORK` or `PROJ_NETWORK` is seen at the next
+    /// reset, as by the grids' availability cache.
+    ///
+    /// The memo holds up to 1 MiB, counting the WKT and PROJ text, the definition's own size and
+    /// its lists of transformations. It does not count what definitions share (transformations,
+    /// projections) nor a projection's parameters. When full, it is emptied and fills again. A
+    /// definition larger than that, one built under `grid::without_grids` (where no grid counts
+    /// as found), and a failure are not kept.
+    pub(crate) fn shared(s: &SpatialRef) -> Result<Arc<Self>> {
+        if grid::without_grids_active() {
+            return Self::build(s).map(Arc::new);
+        }
+        let (epoch, hash) = (grid::epoch(), memo_hash(s));
+        {
+            let m = memo().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if m.epoch == epoch
+                && let Some((_, d)) = m.defs.get(&hash).and_then(|v| v.iter().find(|(k, _)| k == s))
+            {
+                return Ok(d.clone());
+            }
+        }
+        // Built without the lock: a definition may need others (a compound CRS's horizontal one).
+        let d = Arc::new(Self::build(s)?);
+        let ops = d.ops.len() + d.all_ops.as_ref().map_or(0, Vec::len);
+        let size = s.wkt.as_ref().map_or(0, String::len)
+            + s.proj4.as_ref().map_or(0, String::len)
+            + std::mem::size_of::<Self>()
+            + ops * std::mem::size_of::<Arc<Op>>();
+        if size > 1 << 20 {
+            return Ok(d);
+        }
+        // The definitions forgotten are dropped after the lock is released.
+        let mut forgotten = None;
+        {
+            let mut m = memo().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Not kept when the grids changed meanwhile: it may hold transformations they no
+            // longer give.
+            if epoch == grid::epoch() {
+                if m.epoch != epoch || m.bytes + size > 1 << 20 {
+                    forgotten = Some(std::mem::replace(&mut *m, Memo { epoch, ..Default::default() }));
+                }
+                let same = m.defs.entry(hash).or_default();
+                if !same.iter().any(|(k, _)| k == s) {
+                    same.push((s.clone(), d.clone()));
+                    m.bytes += size;
+                }
+            }
+        }
+        drop(forgotten);
+        Ok(d)
+    }
+
+    /// The definition of a CRS, built anew (see [`Def::new`]).
+    fn build(s: &SpatialRef) -> Result<Self> {
         // A retained engineering definition must not become an Earth CRS just because
         // its root carries a registered identifier. Keep explicit PROJ extensions handled
         // by the WKT path, before considering the authority registry.
@@ -451,10 +571,15 @@ impl Def {
             d.area = e.area;
             d.body = Some(399);
             // A WKT identified as this code but with its own TOWGS84: GDAL uses that shift (not
-            // over a PROJ4 extension, which describes the whole CRS).
+            // over a PROJ4 extension, which describes the whole CRS). Not over Web Mercator's
+            // `+nadgrids=@null` (its registry WKT's extension), which wins over `+towgs84` as in a
+            // PROJ string: PROJ 9.8.1 places ESRI's WGS_1984_Web_Mercator_Auxiliary_Sphere with a
+            // TOWGS84, zero or not, as EPSG:3857 (a shift on the projection's sphere put 45°N 30 km
+            // away).
             if s.proj4.is_none()
                 && let Some(w) = s.wkt.as_deref().filter(|w| *w != e.wkt && super::proj4_extension(w).is_none())
                 && let Some(t) = wkt_towgs84(w)
+                && !super::proj4_extension(&e.wkt).is_some_and(|p| p.split_whitespace().any(|t| t == "+nadgrids=@null"))
             {
                 d.ops = vec![Arc::new(Op::world(datum::towgs84_steps(d.ell, &t)))];
                 d.datum = None;
@@ -603,7 +728,7 @@ impl Def {
     /// eccentricity. An ellipsoid the step refuses (`+rf=abc` or `+rf=0`, read as 0, `+es=1`, a
     /// shape without a size) is refused, as PROJ refuses to transform with it.
     pub fn from_proj_extension(s: &str) -> Result<Self> {
-        Self::from_params(s, &Params::parse(s), true)
+        Self::from_params(s, &Params::parse_extension(s), true)
     }
 
     /// [`Self::from_proj`] of parsed parameters.
@@ -618,6 +743,43 @@ impl Def {
         }
         let name = p.str("proj").ok_or_else(|| Error::Crs(format!("no +proj in '{s}'")))?;
         let datum_name = p.str("datum");
+        // Names PROJ 9.8.1 does not know are refused, as it refuses them, in a WKT's `PROJ4`
+        // extension too, rather than read as a default: `+ellps=foo` is not WGS 84, nor
+        // `+units=feet` metres. Names are compared as written, so `wgs84`, `meter` and `M` are
+        // unknown, and a `+to_meter` beside an unknown `+units` does not help.
+        // Not with `+R`, which PROJ reads instead of `+ellps`.
+        if let Some(e) = p.str("ellps").filter(|e| Ell::named(e).is_none() && !p.has("R")) {
+            return Err(Error::Crs(format!("unknown ellipsoid {e} in '{s}'")));
+        }
+        if let Some(d) = datum_name.filter(|d| datum_ellps(d).is_none()) {
+            return Err(Error::Crs(format!("unknown datum {d} in '{s}'")));
+        }
+        for key in ["units", "vunits"] {
+            if let Some(u) = p.str(key).filter(|u| unit_to_meter(u).is_none()) {
+                return Err(Error::Crs(format!("invalid value for {key} ({u}) in '{s}'")));
+            }
+        }
+        // `+lat_0`, `+lon_0`, `+x_0` and `+y_0` that are not finite numbers (or angles) are
+        // refused for the methods PROJ 9.8.1's CRS parser maps them for, and ignored for the
+        // others: `+proj=tmerc +lat_0=abc` is refused, `+proj=robin +lat_0=abc` read without it.
+        // A WKT's `PROJ4` extension is not checked, as PROJ takes it as it is.
+        if !extension {
+            for key in ["lat_0", "lon_0", "x_0", "y_0"] {
+                let unreadable = p.str(key).is_some_and(|v| match key {
+                    "lat_0" | "lon_0" => parse_dms(v).is_none(),
+                    _ => v.trim().parse::<f64>().ok().is_none_or(|v| !v.is_finite()),
+                });
+                if unreadable && proj_maps_origin(name, key) {
+                    return Err(Error::Crs(format!("invalid value for {key} in '{s}'")));
+                }
+            }
+        }
+        // Without `+vunits`, `+vto_meter` gives the vertical unit and must be a positive number.
+        // A WKT's `PROJ4` extension may give it as a fraction (`1200/3937`), as PROJ's pipeline
+        // reads it; its CRS parser refuses one.
+        if !p.has("vunits") && p.has("vto_meter") && vto_meter(p, extension).is_none() {
+            return Err(Error::Crs(format!("invalid value for vto_meter in '{s}'")));
+        }
         if name == "geocent" {
             for key in ["a", "b", "rf", "f", "es", "e", "R"] {
                 if p.has(key) && p.f64(key).is_none_or(|v| !v.is_finite()) {
@@ -828,6 +990,8 @@ impl Def {
             ops: Vec::new(),
             datum: None,
             geog: None,
+            named_geog: None,
+            all_ops: None,
             three_d: false,
             dynamic: false,
             vertical: None,
@@ -904,13 +1068,8 @@ impl Def {
             d.dynamic = e.dynamic;
         }
         if let Some(g) = p.str("geoidgrids") {
-            // `+vunits` first, then a positive `+vto_meter`, as PROJ reads them.
-            let vunits = p.str("vunits").and_then(unit_to_meter);
-            let vto_meter = p.str("vto_meter").map(|v| v.parse::<f64>().ok().filter(|v| v.is_finite() && *v > 0.0));
-            if vunits.is_none() && p.has("vto_meter") && vto_meter.flatten().is_none() {
-                return Err(Error::Crs(format!("invalid value for vto_meter in '{s}'")));
-            }
-            let to_meter = vunits.or(vto_meter.flatten()).unwrap_or(1.0);
+            // `+vunits` first, then `+vto_meter` (both checked above), as PROJ reads them.
+            let to_meter = p.str("vunits").and_then(unit_to_meter).or_else(|| vto_meter(p, extension)).unwrap_or(1.0);
             d.vertical = Some(Arc::new(Vertical::from_geoid_grids(g, to_meter)));
         }
         Ok(d)
@@ -922,7 +1081,21 @@ impl Def {
         if !self.ops.is_empty() {
             return;
         }
-        let geog = c.geog.or_else(|| c.geogcs.epsg()).or_else(|| match &c.geogcs_wkt1 {
+        // The geographic CRS's own code only when its content is that CRS (a local datum under
+        // OSGB36's code does not get OSGB36's transformations), as a root code.
+        // WKT 2: its base CRS node, whose datum keeps its ID (`BASEGEOGCRS` read as `GEOGCRS`).
+        // Else the node as written back (a WKT 1 `geogcs` or `GEOGCS [` the text search misses):
+        // never no comparison at all.
+        let own = match geogcs_text {
+            Some(t) => Some(t.to_string()),
+            None => {
+                let t = c.geogcs.to_wkt();
+                Some(t.strip_prefix("BASE").map(str::to_string).unwrap_or(t))
+            }
+        };
+        // Or on its datum but another prime meridian, which the definition applies itself.
+        let fits = |g: &u32| own.as_deref().is_none_or(|t| super::declared_fits(t, *g) || super::declared_fits_but_meridian(t, *g));
+        let geog = c.geog.filter(fits).or_else(|| c.geogcs.epsg().filter(fits)).or_else(|| match &c.geogcs_wkt1 {
             // WKT 2: identified loosely, so on the same ellipsoid only.
             Some(text) => super::identify_epsg(text).filter(|g| wkt2::same_ellipsoid(*g, self.ell.a, self.ell.es)),
             None => super::identify_epsg(geogcs_text?),
@@ -935,7 +1108,98 @@ impl Def {
             self.datum = (e.datum != 0).then_some(e.datum);
             self.geog = if e.three_d { Some(e.geog) } else { geog };
             self.dynamic = e.dynamic;
+        } else if geog.is_none()
+            && let Some(own) = own.as_deref()
+        {
+            self.datum_by_name(own);
+            // A WKT 1 GEOGCS on a datum no CRS is on keeps its datum's transformations, but gives
+            // the CRS PROJ 9.8.1 identifies it as by name (ESRI's GCS_Greenland_1996, GR96) as its
+            // geographic CRS (`own`: the text as written, else the node as written back).
+            if c.geogcs_wkt1.is_none() {
+                self.named_geog = super::identify_by_shared_name(own);
+            }
         }
+    }
+
+    /// Takes the transformations of the datum a geographic CRS names when the CRS is on another
+    /// ellipsoid than the datum's, and runs them on the CRS's ellipsoid, as PROJ 9.8.1 does: it
+    /// finds Esri's `D_Monte_Mario` on an International 1924 ellipsoid of another axis by its name
+    /// and applies "Monte Mario to WGS 84 (4)" with its geocentric step on the file's ellipsoid.
+    ///
+    /// The datum is found as PROJ finds it: by its `ID`; by `D_` before any name of the datum,
+    /// spaces and former names included (`D_OSGB_1936`, `D_Monte Mario`); or, without `D_`, by a
+    /// name written with underscores that is the datum's official name or an EPSG alias once they
+    /// are spaces (`Monte_Mario`, `OSGB_1936`). Not by a name with spaces and no `D_` (`Monte
+    /// Mario`, `ED50`, as PROJ's own WKT writes them), which PROJ places by a ballpark on another
+    /// ellipsoid, nor by an ESRI name without its `D_` (`European_1950`).
+    ///
+    /// The transformations are a current geographic 2D CRS's of the datum on Greenwich (not
+    /// Monte Mario (Rome)'s on the Rome meridian): CRSs on another meridian keep the route's
+    /// search, which places them as PROJ does. Only those starting with a geocentric step on the
+    /// datum's ellipsoid are moved onto the CRS's, as PROJ replaces the first operation's source,
+    /// and a null transformation becomes the geocentric change from the CRS's ellipsoid to WGS 84's;
+    /// others (grids, a concatenation starting with an offset, one registered between geocentric
+    /// CRSs) are kept as registered.
+    fn datum_by_name(&mut self, geogcs: &str) {
+        if self.pm != 0.0 {
+            return;
+        }
+        let Some((name, code)) = super::wkt_datum_name_and_code(geogcs) else { return };
+        let by_name = if name.starts_with("D_") {
+            epsg::datum_name_rank(&name).is_some()
+        } else {
+            name.contains('_') && epsg::datum_name_rank(&name).is_some_and(|r| r <= 1)
+        };
+        // A name PROJ finds wins over the datum's ID: `Greenland_1996` with `AUTHORITY["EPSG",
+        // "1421"]` is the former Greenland 1996 datum (EPSG:6747), which no current CRS has, so
+        // PROJ places it by a ballpark; under a name it does not find, the ID's datum.
+        let datums = if by_name {
+            epsg::datums_named(&name)
+        } else if let Some(code) = code {
+            vec![code]
+        } else {
+            return;
+        };
+        let found = datums.iter().flat_map(|d| epsg::geographic_on(*d)).copied().filter(|g| !epsg::is_deprecated(*g)).find_map(|g| {
+            let e = epsg::get(g).filter(|e| e.proj.starts_with("+proj=longlat") && !e.three_d && !e.ops.is_empty())?;
+            let registered = Def::new(&SpatialRef { epsg: Some(g), ..Default::default() }).ok()?;
+            (registered.pm == 0.0).then_some((e, registered.ell))
+        });
+        let Some((e, registered)) = found else { return };
+        let same = |a: &Ell, b: &Ell| (a.a - b.a).abs() < 1e-3 && (a.es - b.es).abs() < 1e-9;
+        // The geographic CRS's own ellipsoid, which a projection may not use (Esri's
+        // `Mercator_Auxiliary_Sphere` projects on a sphere): on the datum's own, the CRS is
+        // identified by its content.
+        let Some(own) = Def::wkt_conversion(geogcs).map(|d| d.ell) else { return };
+        if same(&registered, &own) {
+            return;
+        }
+        // One registered between geocentric CRSs (ONGD14 to WGS 84 (1), NAD83(CSRS)v6 through
+        // NAD83(2011)) is kept: PROJ puts a ballpark into the datum's CRS before it, which keeps the
+        // point, and runs it on the datum's own ellipsoid.
+        let rebase = |op: &Arc<Op>| {
+            let mut op = (**op).clone();
+            if !op.geocentric {
+                if let Some(datum::Step::Cart { ell, inv: false }) = op.steps.first_mut()
+                    && same(ell, &registered)
+                {
+                    *ell = own;
+                } else if op.steps.is_empty() && !op.ballpark {
+                    // A null transformation ("TWD97 to WGS 84 (1)"), or a concatenation of them
+                    // (ETRF89 through ETRS89), is still geocentric: PROJ runs it from the file's
+                    // ellipsoid to WGS 84's, which moves latitudes, and keeps heights between 2D
+                    // CRSs around it.
+                    op.steps = vec![datum::Step::Cart { ell: own, inv: false }, datum::Step::Cart { ell: Ell::wgs84(), inv: true }];
+                    op.keeps_height = true;
+                }
+            }
+            Arc::new(op)
+        };
+        self.ops = epsg::usable(&e.ops, &e.grid_ops).iter().map(rebase).collect();
+        // Those with missing grids too, for the routes of every operation (`ONLY_BEST`).
+        self.all_ops = (!e.grid_ops.is_empty()).then(|| e.grid_ops.iter().map(rebase).collect());
+        self.datum = (e.datum != 0).then_some(e.datum);
+        self.dynamic = e.dynamic;
     }
 
     /// The coordinate conversion of a WKT definition (without its datum), when terrio reads it: that
@@ -1070,7 +1334,7 @@ impl Def {
                 // none, the source CRS's own, as PROJ uses them (else its ballpark to WGS 84).
                 let wkt1::BoundTo { target, shift } = &**bound;
                 let mut source = d.clone();
-                source.registered_datum(&c, geogcs_text(w));
+                source.registered_datum(&c, own_geogcs_text(w, &c));
                 // A target terrio cannot read is left out, as one it cannot convert is.
                 let Ok(mut t) = Self::from_proj(&target.proj) else {
                     return Ok(source);
@@ -1098,7 +1362,7 @@ impl Def {
                 if ops.is_empty() {
                     // The datum stays `None`: `Def::new` tells by it that a bound CRS over a code
                     // has the bound's transformations, and `on_bound_source` covers the source's.
-                    (d.ops, d.geog, d.dynamic) = (source.ops.clone(), source.geog, source.dynamic);
+                    (d.ops, d.geog, d.dynamic, d.all_ops) = (source.ops.clone(), source.geog, source.dynamic, source.all_ops.clone());
                 } else {
                     d.ops = ops;
                 }
@@ -1110,12 +1374,12 @@ impl Def {
                 // To WGS 84: the source CRS's own datum, into which PROJ applies no shift.
                 let mut source = d.clone();
                 source.ops.clear();
-                source.registered_datum(&c, geogcs_text(w));
+                source.registered_datum(&c, own_geogcs_text(w, &c));
                 d.bound = Some(Arc::new(Bound { source_datum: source.datum, target: None }));
                 return Ok(d);
             }
             if !c.proj.contains("+towgs84=") {
-                d.registered_datum(&c, geogcs_text(w));
+                d.registered_datum(&c, own_geogcs_text(w, &c));
             }
             return Ok(d);
         }
@@ -1128,12 +1392,21 @@ impl Def {
         {
             return Err(Error::Crs("an incomplete Polar Stereographic (variant C) WKT".into()));
         }
+        // Nor a polar stereographic WKT the reader refuses for its latitude (GDAL's without its
+        // latitude of origin, a latitude that is not finite), which wbprojection would read at the
+        // north pole (PROJ 9.8.1 refuses it).
+        if wkt1::polar_latitude_refused(&root) {
+            return Err(Error::Crs("a polar stereographic WKT without a finite latitude".into()));
+        }
         // Other kinds of WKT 2 CRS and WKT 1 projections the readers do not know: wbprojection's
         // parser. A WKT 2 geographic or projected CRS the reader refuses is not handed to it: its
         // WKT 2 parameters and method names would be read wrongly, silently (#123).
         #[cfg(feature = "wbprojection-fallback")]
         {
-            let crs = wbprojection::Crs::from_wkt(w).map_err(|e| Error::Crs(format!("{e}")))?;
+            // Without a root code that is not its content's, which wbprojection's parser would
+            // read as the CRS (an unknown method declaring EPSG:27700).
+            let stripped = super::without_unfit_root_code(w);
+            let crs = wbprojection::Crs::from_wkt(stripped.as_deref().unwrap_or(w)).map_err(|e| Error::Crs(format!("{e}")))?;
             let geographic = crs.is_geographic();
             let e = &crs.datum.ellipsoid;
             let ell = Ell::from_a_es(e.a, 2.0 * e.f - e.f * e.f);
@@ -1159,6 +1432,8 @@ impl Def {
                 ops: Vec::new(),
                 datum: None,
                 geog: None,
+                named_geog: None,
+                all_ops: None,
                 three_d: false,
                 dynamic: false,
                 vertical: None,
@@ -1191,6 +1466,14 @@ impl Def {
         let half = 180.0 / self.to_deg;
         let y = latitude.to_degrees() / self.to_deg;
         [self.axis(-half, y), self.axis(half, y)]
+    }
+    /// The prime meridian's longitude east of Greenwich, in radians.
+    pub(crate) fn pm(&self) -> f64 {
+        self.pm
+    }
+
+    pub(crate) fn set_pm(&mut self, pm: f64) {
+        self.pm = pm;
     }
 
     /// Whether this is a geographic CRS. A rotated-pole grid is not: its coordinates are in
@@ -1434,7 +1717,9 @@ impl Def {
     /// A definition with all registered grid operations, including unavailable grids.
     pub fn with_all_operations(&self) -> Self {
         let mut out = self.clone();
-        if let Some(e) = self.geog.and_then(epsg::get)
+        if let Some(all) = &self.all_ops {
+            out.ops = all.clone();
+        } else if let Some(e) = self.geog.and_then(epsg::get)
             && !e.grid_ops.is_empty()
         {
             out.ops = e.grid_ops.clone();
@@ -1472,6 +1757,12 @@ impl Def {
         self.geog
     }
 
+    /// The EPSG geographic CRS, also when only its name identifies it on a datum no CRS is on
+    /// (ESRI's GCS_Greenland_1996, GR96).
+    pub fn geographic_code(&self) -> Option<u32> {
+        self.geog.or(self.named_geog)
+    }
+
     /// Whether the CRS is on WGS 84 itself.
     pub fn is_wgs84(&self) -> bool {
         self.datum == Some(6326)
@@ -1482,6 +1773,11 @@ impl Def {
         if !self.geocentric && self.vertical.is_none() {
             self.three_d = true;
         }
+    }
+
+    /// Whether it is a geographic 3D or a geocentric CRS.
+    pub fn geodetic_3d(&self) -> bool {
+        self.three_d || self.geocentric
     }
 
     /// Whether coordinates have a height: a geographic 3D or a compound CRS.
@@ -1754,20 +2050,29 @@ pub(crate) fn split_compound(w: &str) -> Option<(String, String)> {
 /// The vertical CRS of a `VERT_CS` (or WKT 2 `VERTCRS`) definition: its EPSG code when it has
 /// one, else its unit and the geoid grids of GDAL's `PROJ4_GRIDS` extension.
 pub(crate) fn vertical_from_wkt(w: &str) -> Option<Vertical> {
-    let declared = super::declared_epsg(w);
+    let declared = vertical_code(w);
     if let Some(v) = declared.and_then(Vertical::from_epsg) {
         return Some(v);
     }
+    let (to_meter, down) = super::vertical_axis(w)?;
     let root = wkt1::parse(w)?;
-    let to_meter = root.child("UNIT").or_else(|| root.child("LENGTHUNIT")).and_then(|u| u.num(1)).unwrap_or(1.0);
     let grids = root.children("EXTENSION").find(|e| e.name() == Some("PROJ4_GRIDS")).and_then(|e| match e.args.get(1) {
         Some(wkt1::Arg::Str(s)) => Some(s.clone()),
         _ => None,
     });
     Some(match grids {
         Some(g) => Vertical::from_geoid_grids(&g, to_meter),
-        None => Vertical { code: declared, to_meter, down: false, models: Vec::new(), ballpark: true },
+        None => Vertical { code: declared, to_meter, down, models: Vec::new(), ballpark: true },
     })
+}
+
+/// The EPSG code a vertical CRS's WKT declares, when its unit and direction are the code's
+/// (heights in feet declaring EGM96 height in metres are not EGM96 height).
+pub(crate) fn vertical_code(w: &str) -> Option<u32> {
+    let code = super::declared_epsg(w)?;
+    let registered = Vertical::from_epsg(code)?;
+    let (to_meter, down) = super::vertical_axis(w)?;
+    ((to_meter - registered.to_meter).abs() <= 1e-9 * registered.to_meter && down == registered.down).then_some(code)
 }
 
 /// Whether a WKT is a WKT 2 `BOUNDCRS`.
@@ -1783,6 +2088,69 @@ fn wkt_towgs84(w: &str) -> Option<Vec<f64>> {
     let t = geogcs.child("DATUM")?.child("TOWGS84")?;
     let v: Vec<f64> = (0..t.args.len()).filter_map(|i| t.num(i)).collect();
     (v.len() == 3 || v.len() == 7).then_some(v)
+}
+
+/// A PROJ string's `+vto_meter`, a positive number: a fraction (`1200/3937`) only in a WKT's
+/// `PROJ4` extension, as PROJ 9.8.1's pipeline reads it (its CRS parser refuses one).
+fn vto_meter(p: &Params, extension: bool) -> Option<f64> {
+    let v = p.str("vto_meter")?.trim();
+    let value = match v.split_once('/').filter(|_| extension) {
+        Some((n, d)) => n.trim().parse::<f64>().ok()? / d.trim().parse::<f64>().ok()?,
+        None => v.parse::<f64>().ok()?,
+    };
+    (value.is_finite() && value > 0.0).then_some(value)
+}
+
+/// Whether PROJ 9.8.1 maps a PROJ string's `+lat_0`, `+lon_0`, `+x_0` or `+y_0` into the CRS of a
+/// method, and so refuses a value that is not a number: as probed with pyproj 3.8.0
+/// (`CRS("+proj=<method> ... +<key>=abc")` refused where the same string without it is read),
+/// and Laborde by `data/proj_param_values.tsv`; `tmerczoned`, new in PROJ 9.9.0, as PROJ 9.9.0
+/// with pyproj 3.8.0 maps them.
+fn proj_maps_origin(method: &str, key: &str) -> bool {
+    const ALL: [&str; 25] = [
+        "aea",
+        "aeqd",
+        "cass",
+        "col_urban",
+        "eqc",
+        "eqdc",
+        "etmerc",
+        "gnom",
+        "gstmerc",
+        "krovak",
+        "labrd",
+        "laea",
+        "lcc",
+        "mod_krovak",
+        "nsper",
+        "nzmg",
+        "ortho",
+        "poly",
+        "qsc",
+        "somerc",
+        "stere",
+        "sterea",
+        "tmerc",
+        "tmerczoned",
+        "webmerc",
+    ];
+    // Methods without a latitude of origin.
+    const NO_LATITUDE: [&str; 19] = [
+        "bonne", "cea", "eck4", "eqearth", "gall", "geos", "igh", "merc", "mill", "moll", "natearth", "robin", "sinu", "vandg", "wag4",
+        "wag5", "wink1", "wink2", "wintri",
+    ];
+    ALL.contains(&method)
+        || (NO_LATITUDE.contains(&method) && key != "lat_0")
+        // Hotine's longitude is `+lonc`.
+        || (method == "omerc" && key != "lon_0")
+}
+
+/// The text of a WKT 1 definition's own geographic CRS: none for a CRS read as WKT 2 (its
+/// `GEOGCRS` the text search does not find), whose search would find a WKT 1 `BOUNDCRS` target's
+/// `GEOGCS` instead (ED50 with its own `TOWGS84` under a Bessel source), so that its datum would
+/// be taken for the source's. The source's node is read then.
+fn own_geogcs_text<'a>(w: &'a str, c: &wkt1::Converted) -> Option<&'a str> {
+    geogcs_text(w).filter(|_| c.geogcs_wkt1.is_none())
 }
 
 /// The `GEOGCS[...]` part of a WKT 1 definition.
@@ -1807,12 +2175,12 @@ fn geogcs_text(w: &str) -> Option<&str> {
     None
 }
 
-/// The size in metres of a WKT definition's linear unit: the last `UNIT` (WKT 1) or
-/// `LENGTHUNIT` (WKT 2) that is not angular.
+/// The size in metres of a WKT definition's linear unit: the root's first `UNIT` (WKT 1, as PROJ
+/// 9.8.1 takes it) or last `LENGTHUNIT` (WKT 2).
 #[cfg(feature = "wbprojection-fallback")]
 pub(crate) fn wkt_linear_unit(w: &str) -> Option<f64> {
     let root = wkt1::parse(w)?;
-    if let Some(u) = root.children("UNIT").last().or_else(|| root.children("LENGTHUNIT").last()) {
+    if let Some(u) = root.children("UNIT").next().or_else(|| root.children("LENGTHUNIT").last()) {
         return u.num(1);
     }
     root.children("AXIS").find_map(|a| a.child("LENGTHUNIT")).and_then(|u| u.num(1))
@@ -2068,5 +2436,63 @@ mod resolution_tests {
         assert_eq!(resolution(&wgs84_3d, Some(4979)).map(|r| r.0), Some(true));
         let renamed_3d = wgs84_3d.replacen(r#"GEOGCRS["WGS 84""#, r#"GEOGCRS["Local""#, 1);
         assert_eq!(resolution(&renamed_3d, Some(4979)), Some((false, None, false)));
+    }
+}
+
+#[cfg(test)]
+mod memo_tests {
+    use super::*;
+
+    /// A CRS's definition is built once and shared, until the grids found may change: a reset of
+    /// the grid caches or a grid registered.
+    #[test]
+    fn a_definition_is_kept_until_the_grids_change() {
+        let s = SpatialRef { epsg: Some(4267), ..Default::default() };
+        // Kept within an epoch: tried again when another test changes the grids meanwhile.
+        assert!((0..100).any(|_| {
+            let epoch = grid::epoch();
+            let (a, b) = (Def::shared(&s).unwrap(), Def::shared(&s).unwrap());
+            Arc::ptr_eq(&a, &b) && epoch == grid::epoch()
+        }));
+        // The definition kept is the one built: the same transformations, in the same order.
+        assert!((0..100).any(|_| {
+            let epoch = grid::epoch();
+            let (kept, built) = (Def::shared(&s).unwrap(), Def::build(&s).unwrap());
+            let same = kept.ops.len() == built.ops.len() && kept.ops.iter().zip(&built.ops).all(|(a, b)| Arc::ptr_eq(a, b));
+            same && epoch == grid::epoch()
+        }));
+        let first = Def::shared(&s).unwrap();
+        crate::reset_grid_cache();
+        let after_reset = Def::shared(&s).unwrap();
+        assert!(!Arc::ptr_eq(&first, &after_reset));
+        // A name no CRS uses, so that no other test's grids change.
+        crate::register_grid("terrio-memo-test-unused.gsb", vec![0; 16]);
+        assert!(!Arc::ptr_eq(&after_reset, &Def::shared(&s).unwrap()));
+        // Not kept while no grid counts as found.
+        let kept = Def::shared(&s).unwrap();
+        grid::without_grids(|| assert!(!Arc::ptr_eq(&kept, &Def::shared(&s).unwrap())));
+    }
+
+    /// A definition larger than the memo's bound is built each time, not kept.
+    #[test]
+    fn a_definition_larger_than_the_bound_is_not_kept() {
+        let s = SpatialRef { proj4: Some(format!("+proj=longlat +datum=WGS84{}", " ".repeat(1 << 20))), ..Default::default() };
+        let first = Def::shared(&s).unwrap();
+        assert!(!Arc::ptr_eq(&first, &Def::shared(&s).unwrap()));
+    }
+
+    /// The memo's lock is one `host::hold_for_fork` takes across a fork, and its hash keys are
+    /// drawn before it.
+    #[cfg(all(unix, not(target_family = "wasm")))]
+    #[test]
+    fn hold_for_fork_takes_the_memo_lock() {
+        let mut held = Vec::new();
+        hold_for_fork(&mut held);
+        assert!(MEMO_KEYS.get().is_some());
+        drop(held);
+        crate::host::assert_held_for_fork("definitions", |wait| {
+            let _g = memo().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            wait();
+        });
     }
 }

@@ -1,4 +1,4 @@
-"""Generate crates/terrio-crs/tests/data/wkt_datum_shift.json: where PROJ 9.8.1 places points of
+"""Generate crates/terrio-crs/tests/data/wkt_datum_shift.json: where PROJ 9.9.0 places points of
 WKTs whose geographic CRS is not given by an EPSG code of its own, but whose datum is known by its
 EPSG ID or by its name (ESRI's `D_Monte_Mario`, `D_OSGB_1936`, ...), in WGS 84.
 
@@ -107,14 +107,18 @@ CODES = [
     4272,  # NZGD49
 ]
 # EPSG geographic CRSs whose ESRI WKT 1, as written, PROJ places otherwise than their EPSG code.
-# With the renamed ESRI WKT 1 of two CRSs of `CODES`, the geographic EPSG:4314 and the projected
-# EPSG:31467, they are `DIFFERENT`.
+# With the renamed ESRI WKT 1 of four CRSs of `CODES`, the geographic EPSG:4314 and 4289 and the
+# projected EPSG:31467 and 28992, they are `DIFFERENT`. (Amersfoort since EPSG v13: by its code,
+# PROJ 9.9.0 goes through Amersfoort to ETRS89-NLD [AGRS2010] (8); its renamed ESRI WKT 1 through
+# Amersfoort to WGS 84 (4).)
 DIFFERENCES = [4806, 5132, 7373]
 # Every case PROJ places otherwise than by its EPSG code: a PROJ change that moves a case in or out
 # stops the script.
 DIFFERENT = [
     "EPSG:4314, ESRI WKT 1, renamed",
     "EPSG:31467, ESRI WKT 1, renamed",
+    "EPSG:4289, ESRI WKT 1, renamed",
+    "EPSG:28992, ESRI WKT 1, renamed",
     *(f"EPSG:{code}, ESRI WKT 1" for code in DIFFERENCES),
 ]
 # Those PROJ places by its datum pivot, which terrio does not follow yet.
@@ -307,7 +311,7 @@ def installed_grids():
 
 
 def main():
-    check(pyproj.proj_version_str == "9.8.1", pyproj.proj_version_str)
+    check(pyproj.proj_version_str == "9.9.0", pyproj.proj_version_str)
     pyproj.network.set_network_enabled(False)
     # No grids, so the values don't depend on what is installed.
     found = installed_grids()

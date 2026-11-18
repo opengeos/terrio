@@ -240,6 +240,22 @@ fn node(b: &[u8], i: &mut usize, level: usize) -> Option<Node> {
     Some(Node { key, args })
 }
 
+/// Whether a WKT 1 is on a polar stereographic method the reader refuses for its latitude: GDAL's
+/// `Polar_Stereographic` without a finite `latitude_of_origin` (the first, as the reader takes
+/// it), which PROJ 9.8.1 refuses rather than read at the north pole, or EPSG's variant B with a
+/// standard parallel given that is not a finite number.
+pub(crate) fn polar_latitude_refused(root: &Node) -> bool {
+    // The first parameter of a name, as the reader takes it: `None` when absent, `Some(None)`
+    // when not a number.
+    let first = |name: &str| root.children("PARAMETER").find(|p| p.name().is_some_and(|n| norm(n) == name)).map(|p| p.num(1));
+    match root.child("PROJECTION").and_then(Node::name).map(norm).as_deref() {
+        Some("polarstereographic") => !first("latitudeoforigin").flatten().is_some_and(f64::is_finite),
+        // Given but not a finite number (PROJ 9.8.1 refuses "abc" too).
+        Some("polarstereographicvariantb") => first("latitudeofstandardparallel").is_some_and(|v| !v.is_some_and(f64::is_finite)),
+        _ => false,
+    }
+}
+
 pub(crate) fn norm(s: &str) -> String {
     s.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase()
 }
@@ -374,12 +390,30 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
         return Some(Converted { proj: out.join(" "), geogcs: geogcs.clone(), geog: None, geogcs_wkt1: None, bound: None, helmert: None });
     }
 
-    let to_meter = root.children("UNIT").last().and_then(|u| u.num(1)).unwrap_or(1.0);
+    // The first `UNIT`, as PROJ 9.8.1 and GDAL take it when a `PROJCS` has two.
+    let to_meter = root.children("UNIT").next().and_then(|u| u.num(1)).unwrap_or(1.0);
     let params: Vec<(String, f64)> = root.children("PARAMETER").filter_map(|p| Some((norm(p.name()?), p.num(1)?))).collect();
     let get = |names: &[&str]| names.iter().find_map(|n| params.iter().find(|(k, _)| k == n).map(|(_, v)| *v));
     let angle = |names: &[&str]| get(names).map(|v| v * ang);
-    let lon_0 = angle(&["centralmeridian", "longitudeofcenter", "longitudeoforigin", "longitudeofnaturalorigin", "longitudeofcentre"]);
-    let lat_0 = angle(&["latitudeoforigin", "latitudeofcenter", "latitudeofnaturalorigin", "latitudeofcentre"]);
+    // GDAL's WKT 1 names, else EPSG's (`Latitude of false origin`, `Longitude of projection
+    // centre`), which PROJ 9.8.1 also reads in WKT 1.
+    let lon_0 = angle(&[
+        "centralmeridian",
+        "longitudeofcenter",
+        "longitudeoforigin",
+        "longitudeofnaturalorigin",
+        "longitudeofcentre",
+        "longitudeoffalseorigin",
+        "longitudeofprojectioncentre",
+    ]);
+    let lat_0 = angle(&[
+        "latitudeoforigin",
+        "latitudeofcenter",
+        "latitudeofnaturalorigin",
+        "latitudeofcentre",
+        "latitudeoffalseorigin",
+        "latitudeofprojectioncentre",
+    ]);
     let k = get(&["scalefactor", "scalefactoratnaturalorigin", "scalefactoroninitialline"]);
     let sp1 = angle(&["standardparallel1", "standardparallel", "latitudeof1ststandardparallel"]);
     let sp2 = angle(&["standardparallel2", "latitudeof2ndstandardparallel"]);
@@ -403,6 +437,8 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
                     | "latitudeoforigin"
                     | "latitudeofnaturalorigin"
                     | "latitudeofcentre"
+                    | "latitudeoffalseorigin"
+                    | "latitudeofprojectioncentre"
                     | "scalefactor"
                     | "scalefactoratnaturalorigin"
                     | "scalefactoroninitialline"
@@ -428,7 +464,7 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
     let fe = easting.unwrap_or(0.0) * to_meter;
     let mut fn_ = northing.unwrap_or(0.0) * to_meter;
     let azimuth = angle(&["azimuth", "azimuthofinitialline"]);
-    let gamma = angle(&["rectifiedgridangle", "angleofrectifiedtoskewedgrid"]);
+    let gamma = angle(&["rectifiedgridangle", "angleofrectifiedtoskewedgrid", "anglefromrectifiedtoskewgrid"]);
     let push = |out: &mut Vec<String>, k: &str, v: Option<f64>| {
         if let Some(v) = v {
             out.push(format!("+{k}={v}"));
@@ -513,7 +549,18 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
         }
         "polarstereographic" | "polarstereographicvarianta" | "polarstereographicvariantb" => {
             out.push("+proj=stere".into());
-            let lat = lat_0.or(sp1).unwrap_or(90.0);
+            // EPSG's variant B gives its standard parallel as `Latitude of standard parallel`.
+            let parallel = if method == "polarstereographicvariantb" { angle(&["latitudeofstandardparallel"]) } else { None };
+            // GDAL's name gives its latitude only as `latitude_of_origin`; PROJ 9.8.1 refuses it
+            // without, rather than read it at the north pole.
+            if polar_latitude_refused(root) {
+                return None;
+            }
+            // Not a latitude of NaN, read at the north pole.
+            let lat = lat_0.or(sp1).or(parallel).unwrap_or(90.0);
+            if !lat.is_finite() {
+                return None;
+            }
             push(&mut out, "lat_0", Some(if lat < 0.0 { -90.0 } else { 90.0 }));
             if (lat.abs() - 90.0).abs() > 1e-9 {
                 push(&mut out, "lat_ts", Some(lat));
@@ -817,6 +864,9 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
         (_, Some([a, b])) if [a, b] != *b"ne" && [a, b] != *b"en" => out.push(format!("+axis={}{}u", a as char, b as char)),
         _ => {}
     }
+    // South-orientated Transverse Mercator's false easting and northing are subtracted (EPSG
+    // method 9808: W = FE - x, S = FN - y), where `+axis=wsu` negates `+x_0`/`+y_0` with x and y.
+    let (fe, fn_) = if method == "transversemercatorsouthorientated" { (negated(fe), negated(fn_)) } else { (fe, fn_) };
     out.push(format!("+x_0={fe}"));
     out.push(format!("+y_0={fn_}"));
     out.push(format!("+to_meter={to_meter}"));
@@ -857,6 +907,11 @@ pub(crate) fn variant_c_pole_northing(a: f64, rf: f64, lat_ts: f64, northing: f6
     let phi = lat_ts.to_radians();
     let rho_f = a * phi.cos() / (1.0 - es * phi.sin().powi(2)).sqrt();
     if lat_ts < 0.0 { northing - rho_f } else { northing + rho_f }
+}
+
+/// `-v`, without a negative zero.
+pub(crate) fn negated(v: f64) -> f64 {
+    if v == 0.0 { 0.0 } else { -v }
 }
 
 #[cfg(test)]

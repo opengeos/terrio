@@ -239,7 +239,7 @@ def test_crs_to_projjson():
 
 
 def test_crs_to_proj4_writes_proj_string():
-    # PROJ 9.8.1's projinfo -o PROJ for the same CRSs.
+    # PROJ 9.9.0's projinfo -o PROJ for the same CRSs.
     assert (
         terrio._terrio.crs_to_proj4("EPSG:32632")
         == "+proj=utm +zone=32 +datum=WGS84 +units=m +no_defs +type=crs"
@@ -256,7 +256,7 @@ def test_crs_to_proj4_writes_proj_string():
 
 
 def test_crs_to_wkt1_strict_writes_wkt1_without_the_extension():
-    # PROJ 9.8.1's WKT1_GDAL of EPSG:4326, with GDAL's axes (pyproj 3.8.0,
+    # PROJ 9.9.0's WKT1_GDAL of EPSG:4326, with GDAL's axes (pyproj 3.8.0,
     # to_wkt("WKT1_GDAL", output_axis_rule=True)).
     assert terrio._terrio.crs_to_wkt1_strict("EPSG:4326") == (
         'GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563,'

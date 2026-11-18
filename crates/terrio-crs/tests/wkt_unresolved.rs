@@ -1,4 +1,4 @@
-//! A WKT PROJ 9.8.1 does not resolve to the EPSG CRS terrio reads it as is placed as PROJ places
+//! A WKT PROJ 9.9.0 does not resolve to the EPSG CRS terrio reads it as is placed as PROJ places
 //! it. Such WKTs include an ESRI WKT 1 (no `AXIS`, so longitude first, unlike the EPSG CRS), a
 //! renamed CRS, and a projected CRS whose axis order differs. PROJ then also searches chains
 //! through an intermediate datum, and may rank one of them first: ESRI's `GCS_Monte_Mario_Rome`
@@ -14,11 +14,12 @@
 //! ETRS89 / UTM zone 32N. `by_code` is the same with the EPSG code in place of the WKT. Tolerance:
 //! 1 mm.
 //!
-//! `pending` cases are those PROJ places by two steps of its search that terrio does not follow
-//! yet, so it places them by the code. The first is PROJ's datum pivot through the datum's CRSs in
-//! order of code (ESRI's ONGD14, EPSG:7373, by "ONGD14 to WGS 84 (1)" between the geocentric CRSs).
-//! The second is its ballpark into a CRS of a renamed datum (`DATUM["Local datum",...,
-//! ID["EPSG",6806]]`), of unknown accuracy. ESRI's ATF (Paris) (EPSG:4901) is left out: PROJ
+//! PROJ's datum pivot through the source datum's other CRSs (ESRI's ONGD14, EPSG:7373, by "ONGD14
+//! to WGS 84 (1)" between the geocentric CRSs) is followed. `pending` cases are those PROJ places
+//! by two steps of its search that terrio does not follow yet, so it places them by the code: its
+//! ballpark into a CRS of a renamed datum (`DATUM["Local datum",..., ID["EPSG",6806]]`), of unknown
+//! accuracy, and its datum pivot into a CRS it cannot find by its name (ONGD14 renamed, as the
+//! target). ESRI's ATF (Paris) (EPSG:4901) is left out: PROJ
 //! applies the Paris prime meridian twice to it, 178 km from its own placement of EPSG:4901, and
 //! terrio does not follow that (`grads_and_prime_meridians.rs` checks it is placed as EPSG:4901).
 use serde_json::Value;
@@ -100,12 +101,13 @@ fn wkts_proj_does_not_resolve_are_placed_as_proj_does() {
     assert!(searched >= 90, "{searched} cases placed otherwise than by the code");
 }
 
-/// The cases of PROJ's datum pivot and of a renamed datum are placed by the code, not as PROJ
-/// does: until terrio follows those two steps too.
+/// The cases of a renamed datum, and of PROJ's datum pivot into a CRS it cannot find by its name,
+/// are placed by the code, not as PROJ does: until terrio follows those steps too. (From an
+/// unresolved CRS, terrio follows the datum pivot: those cases are compared with PROJ above.)
 #[test]
-fn datum_pivot_and_renamed_datums_are_placed_by_the_code() {
+fn renamed_datums_and_the_datum_pivot_into_them_are_placed_by_the_code() {
     let pending: Vec<_> = offsets().iter().filter(|(case, ..)| case["pending"].as_bool().unwrap()).collect();
-    assert_eq!(pending.len(), 26);
+    assert_eq!(pending.len(), 21);
     for (case, proj, by_code) in pending {
         let name = case["name"].as_str().unwrap();
         assert!(*by_code < 1e-3, "{name}: {by_code:.3} m from the code's placement");

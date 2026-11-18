@@ -503,6 +503,12 @@ pub(crate) fn datums_named(name: &str) -> Vec<u32> {
     datum_names().0.get(&datum_key(name)).map(|(_, c)| c.clone()).unwrap_or_default()
 }
 
+/// The best rank of a datum name in the table: 0 for an official name or GDAL's WKT 1 name, 1
+/// for an EPSG alias, 2 for PROJ's, 3 for ESRI's (`D_ETRS_1989`), 4 for a former name.
+pub(crate) fn datum_name_rank(name: &str) -> Option<u8> {
+    datum_names().0.get(&datum_key(name)).map(|(rank, _)| *rank)
+}
+
 /// The EPSG CRS PROJ 9.8.1 finds by the name of a geographic 2D or projected CRS without ID, when
 /// it finds a single CRS (`createObjectsFromName`, among the names and aliases of its database's
 /// CRSs, whatever the case of their ASCII letters); first, for an ESRI WKT 1 (`esri`), the CRS the
@@ -594,6 +600,12 @@ pub(crate) fn replacements(code: u32) -> &'static [u32] {
 /// (they are written as datums).
 pub(crate) fn datum_name(code: u32) -> Option<String> {
     datum_names().2.get(&code).map(|n| n.strip_suffix(" ensemble").unwrap_or(n).to_string())
+}
+
+/// Whether two EPSG datums have a name or alias in common in PROJ's database (`GR96` for
+/// Greenland 1996 and its ensemble).
+pub(crate) fn datums_share_a_name(a: u32, b: u32) -> bool {
+    a == b || datum_names().0.values().any(|(_, c)| c.contains(&a) && c.contains(&b))
 }
 
 /// The other EPSG datums whose CRSs ESRI writes with a datum name: ETRS89-NOR for
@@ -889,6 +901,15 @@ pub(crate) fn vertical_transformations(source: u32, target: u32) -> Vec<Vertical
     let chosen = usable(&arcs(ops), &arcs(grid_ops));
     let all: Vec<&VerticalOp> = grid_ops.iter().chain(ops.iter()).collect();
     chosen.iter().filter_map(|c| all.iter().find(|v| Arc::ptr_eq(&v.op, c)).map(|v| (*v).clone())).collect()
+}
+
+/// The transformations from a vertical CRS to another that PROJ lists when every grid can be
+/// found (see [`vertical_transformations`]).
+pub(crate) fn vertical_transformations_all(source: u32, target: u32) -> Vec<VerticalOp> {
+    let t = vertical_table();
+    let Some(lazy) = t.vertical_ops.get(&(source, target)) else { return Vec::new() };
+    let (ops, grid_ops) = lazy.get(&t.text, |ids| t.vertical_lists(ids));
+    if grid_ops.is_empty() { ops.clone() } else { grid_ops.clone() }
 }
 
 /// The publication date of an EPSG datum (`2007-01-01`), when it has one.

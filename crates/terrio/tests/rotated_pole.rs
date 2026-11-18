@@ -153,7 +153,7 @@ fn netcdf_cf_grid_mapping() {
 
 #[test]
 fn poles_given_by_a_centre_and_azimuth_or_by_two_equator_points_match_proj() {
-    // pyproj 3.8.0 / PROJ 9.8.1.
+    // pyproj 3.8.0 / PROJ 9.9.0.
     let sphere = SpatialRef::parse("+proj=longlat +R=6371229").unwrap();
     for (definition, expected) in [
         (

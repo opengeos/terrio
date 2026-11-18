@@ -242,7 +242,7 @@ fn geokeys_are_read_as_gdal_reads_them() {
 #[test]
 fn only_codes_outside_the_tables_are_not_written() {
     let skipped: Vec<String> = rows().into_iter().filter(|r| matches!(crs(&r.definition), Ok(None))).map(|r| r.definition).collect();
-    assert_eq!(skipped, ["EPSG:3053", "EPSG:32700"]);
+    assert_eq!(skipped, ["EPSG:3053"]);
 }
 
 #[test]

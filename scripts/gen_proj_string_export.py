@@ -1,6 +1,6 @@
 """Freeze PROJ's PROJ strings of CRSs for ``SpatialRef::to_proj4`` (``tests/proj_string_export.rs``).
 
-PROJ 9.8.1 (pyproj 3.8.0) writes each CRS with ``CRS.to_proj4()`` (``proj_as_proj_string`` with
+PROJ 9.9.0 (pyproj 3.8.0) writes each CRS with ``CRS.to_proj4()`` (``proj_as_proj_string`` with
 ``PJ_PROJ_4``, as ``projinfo -o PROJ``), with the network off. The rows are every 20th EPSG and
 ESRI code, the codes behind each rule of terrio's writer (named datums, prime meridians, axis
 orders, vertical and compound CRSs, Web Mercator, CRSs PROJ cannot write), custom definitions
@@ -470,7 +470,7 @@ def main():
     args = parser.parse_args()
     warnings.simplefilter("ignore")
     pyproj.network.set_network_enabled(False)
-    assert pyproj.proj_version_str == "9.8.1", pyproj.proj_version_str
+    assert pyproj.proj_version_str == "9.9.0", pyproj.proj_version_str
     if args.all:
         write_all(args.all)
         return

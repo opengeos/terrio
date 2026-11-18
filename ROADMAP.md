@@ -626,7 +626,9 @@ WebAssembly (the `terrio-js` npm package):
       whole-program LTO, the codecs optimized for speed and the rest for size, and wasm-opt -Oz:
       both decode GeoTIFFs and write COGs as fast in Node.js, and the full module decodes JPEG 2000.
       The separate `terrio-js/zarr` module reads Zarr arrays over HTTP by window and band,
-      retaining declared EPSG codes without including the CRS engine (#900).
+      retaining declared EPSG codes without including the CRS engine (#900). The separate
+      `terrio-js/cog` module reads GeoTIFFs and COGs over HTTP by window, band and overview the
+      same way, with the EPSG code of their GeoKeys.
 - [x] Datasets larger than 4 GB, with the 64-bit memory proposal (memory64) where runtimes support
       it. Done: a memory64 module, `terrio-js/memory64` (every format, up to 16 GB), which
       `load({ memory64: true })` picks where the runtime has 64-bit memories (Node.js 24+, Chrome
@@ -686,6 +688,10 @@ WebAssembly (the `terrio-js` npm package):
       727 of 732 points over 604 pairs (`scripts/compare_vertical_with_proj.py`); point motion
       operations between two epochs of a datum (the Canada velocity grids of NAD83(CSRS),
       NKG_RF17vel), PROJ's coordinates to 4 nm.
+- [ ] The grids a point's transformation needs, with where to get them, in the bindings: Rust has
+      `Transformer::best_operation_grids_at`, `GridUse` and `default_grid_search_paths` (#1075),
+      for applications that download grids themselves; Python and JavaScript (with
+      `registerGrid`) do not expose them yet, nor `Transformer::operation_at`.
     - [x] PROJ's chains through several intermediate datums. Done: between CRSs whose datums
           no transformation links directly, the transformations PROJ's database registers
           (concatenations of several among them included, NKG's too) chained through

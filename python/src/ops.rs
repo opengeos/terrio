@@ -1160,7 +1160,7 @@ fn set_network_enabled(enabled: Option<bool>) {
 
 /// Lists the CRSs of the registries terrio carries (EPSG, ESRI and IAU_2015), for searchable CRS
 /// pickers, without network or PROJ installation. They are described as GDAL's
-/// ``osr.GetCRSInfoListFromDatabase`` describes them, from PROJ 9.8.1's database (EPSG v12.029).
+/// ``osr.GetCRSInfoListFromDatabase`` describes them, from PROJ 9.9.0's database (EPSG v13.102).
 ///
 /// Every listed CRS resolves: ``f"{authority}:{code}"`` is a CRS terrio's functions take. ESRI
 /// CRSs on projections terrio does not compute are left out.

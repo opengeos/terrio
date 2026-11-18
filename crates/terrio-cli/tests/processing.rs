@@ -180,7 +180,7 @@ fn crs_prints_projjson() {
 
 #[test]
 fn crs_prints_axis_order_body_and_conversion_parameters() {
-    // As PROJ 9.8.1 reads EPSG:2056 (see terrio-crs's tests/crs_accessors.rs).
+    // As PROJ 9.9.0 reads EPSG:2056 (see terrio-crs's tests/crs_accessors.rs).
     let dir = tempfile::tempdir().unwrap();
     let output = run(&["crs", "EPSG:2056"], dir.path());
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
@@ -195,7 +195,7 @@ fn crs_prints_axis_order_body_and_conversion_parameters() {
 #[test]
 fn crs_prints_proj_string() {
     let dir = tempfile::tempdir().unwrap();
-    // PROJ 9.8.1's `projinfo -o PROJ EPSG:2056`: without its datum shift, as PROJ writes it.
+    // PROJ 9.9.0's `projinfo -o PROJ EPSG:2056`: without its datum shift, as PROJ writes it.
     let output = run(&["crs", "EPSG:2056", "--proj4"], dir.path());
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     assert_eq!(
@@ -214,7 +214,7 @@ fn crs_prints_proj_string() {
 #[test]
 fn crs_prints_strict_wkt1() {
     let dir = tempfile::tempdir().unwrap();
-    // PROJ 9.8.1's WKT1_GDAL of EPSG:4326, with GDAL's axes (pyproj 3.8.0,
+    // PROJ 9.9.0's WKT1_GDAL of EPSG:4326, with GDAL's axes (pyproj 3.8.0,
     // `to_wkt("WKT1_GDAL", output_axis_rule=True)`).
     let output = run(&["crs", "EPSG:4326", "--wkt1-strict"], dir.path());
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));

@@ -69,11 +69,14 @@ fn crs(s: &SpatialRef) -> Result<Value> {
     if let Some((h, v)) = crate::def::split_compound(&wkt) {
         // uncut: stored or built WKT
         let horizontal = crs(&SpatialRef::from_wkt_text(&h))?;
-        let code = wkt1::parse(&v).and_then(|n| n.epsg()).ok_or_else(|| unsupported("a vertical CRS without EPSG code"))?;
+        // Its EPSG code only when its unit and direction are the code's: not heights in feet as
+        // the code's metres.
+        let code =
+            crate::def::vertical_code(&v).ok_or_else(|| unsupported("a vertical CRS without an EPSG code of its unit and direction"))?;
         let name = wkt1::parse(&wkt).and_then(|n| n.name().map(str::to_string)).unwrap_or_else(|| "unknown".into());
         return Ok(with_id(
             json!({"type": "CompoundCRS", "name": name, "components": [horizontal, vertical(code)?]}),
-            crate::declared_epsg(&wkt),
+            crate::declared_epsg(&wkt).filter(|c| crate::declared_fits(&wkt, *c)),
         ));
     }
     horizontal(s, &wkt)
@@ -179,7 +182,8 @@ fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
         }
     }
     let name = root.name().unwrap_or("unknown").to_string();
-    let code = s.epsg.or_else(|| crate::declared_epsg(wkt));
+    // A root code only when it is the CRS's (`identify_epsg` refuses another's).
+    let code = s.epsg.or_else(|| crate::declared_epsg(wkt).filter(|c| crate::declared_fits(wkt, *c)));
     // A datum shift the definition gives (`+towgs84`, WKT's TOWGS84) makes a bound CRS, as PROJ
     // reads it; a CRS made from an EPSG code (its table WKT) is written as such, whatever that
     // WKT holds: its datum shift is EPSG's.
@@ -492,6 +496,8 @@ const FE_FALSE: Param = ("Easting at false origin", 8826, 'l');
 const FN_FALSE: Param = ("Northing at false origin", 8827, 'l');
 const LAT_TS: Param = ("Latitude of standard parallel", 8832, 'a');
 const LON_ORIGIN: Param = ("Longitude of origin", 8833, 'a');
+const LON_INITIAL: Param = ("Initial longitude", 8830, 'a');
+const ZONE_WIDTH: Param = ("Zone width", 8831, 'a');
 const CO_LAT: Param = ("Co-latitude of cone axis", 1036, 'a');
 const LAT_PSEUDO: Param = ("Latitude of pseudo standard parallel", 8818, 'a');
 const K_PSEUDO: Param = ("Scale factor on pseudo standard parallel", 8819, 's');
@@ -545,6 +551,28 @@ fn conversion(p: &Params) -> Result<(Value, Vec<&'static str>)> {
             let values =
                 vec![(LAT_NAT, 0.0), (LON_NAT, lon), (K_NAT, 0.9996), (FE, 500000.0), (FN, if south { 10_000_000.0 } else { 0.0 })];
             ("Transverse Mercator", 9807, values, &["zone", "south"])
+        }
+        // South-orientated (EPSG method 9808), whose false easting and northing the readers
+        // write negated under `+axis=wsu`. A difference from PROJ 9.8.1, which writes a typed
+        // `+axis=wsu +x_0=1000` with a false easting of 1000: that places its origin 2000 m away,
+        // where W = FE - x places it at the string's. South then west (`+axis=swu`, a north-east
+        // WKT 1) is Transverse Mercator on those axes, as PROJ writes it: PROJ reads method 9808
+        // west then south whatever its axes.
+        "tmerc" if p.str("axis") == Some("wsu") => {
+            let values = vec![(LAT_NAT, lat0), (LON_NAT, lon0), (K_NAT, k0), (FE, 0.0 - x0), (FN, 0.0 - y0)];
+            ("Transverse Mercator (South Orientated)", 9808, values, ORIGIN_K)
+        }
+        // PROJ 9.9.0's `tmerczoned`, whose `+lon_0` is the initial longitude.
+        "tmerczoned" => {
+            let width = num("width")
+                .filter(|w| w.is_finite() && *w > 0.0)
+                .ok_or_else(|| unsupported("a zoned grid system without a positive width"))?;
+            (
+                "Transverse Mercator Zoned Grid System",
+                9824,
+                vec![(LAT_NAT, lat0), (LON_INITIAL, lon0), (ZONE_WIDTH, width), (K_NAT, k0), (FE, x0), (FN, y0)],
+                &["lat_0", "lon_0", "width", "k", "k_0", "x_0", "y_0"],
+            )
         }
         "tmerc" => ("Transverse Mercator", 9807, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (K_NAT, k0), (FE, x0), (FN, y0)], ORIGIN_K),
         "lcc" => {

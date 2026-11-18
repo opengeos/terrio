@@ -66,13 +66,15 @@ pub(crate) fn before_lock() {
 }
 
 /// Takes the engine's process-wide locks, for a fork: the grids' (settings, grids registered in
-/// memory, files read, failed fetches, availability, grid sets built) and the grid transport's.
+/// memory, files read, failed fetches, availability, grid sets built), the memo of CRS
+/// definitions and the grid transport's.
 /// The forking thread holds the guards pushed to `held` while the process is copied, and drops
 /// them after, in the parent and in the child. Each lock is held for map operations only, never
 /// while another is taken, so any order is free of deadlocks.
 #[cfg(all(unix, not(target_family = "wasm")))]
 pub fn hold_for_fork(held: &mut Vec<Box<dyn std::any::Any>>) {
     crate::grid::hold_for_fork(held);
+    crate::def::hold_for_fork(held);
     #[cfg(remote)]
     crate::network::hold_for_fork(held);
 }

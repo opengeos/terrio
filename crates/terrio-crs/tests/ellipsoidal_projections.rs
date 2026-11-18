@@ -2,7 +2,7 @@
 //! Cylindrical (EPSG method 1028, PROJ 9.8 and later), Sinusoidal, Bonne and Gnomonic (Karney's
 //! ellipsoidal gnomonic), and Miller and Van der Grinten (spherical, on the sphere of the
 //! ellipsoid's area); and Cassini-Soldner far from its central meridian (#134). Each is checked
-//! on WGS 84 and on a sphere, forward and inverse, against pyproj (PROJ 9.8.1), from the
+//! on WGS 84 and on a sphere, forward and inverse, against pyproj (PROJ 9.9.0), from the
 //! geographic CRS on the same ellipsoid, so that no datum transformation is involved.
 
 use terrio_crs::{SpatialRef, Transformer};
@@ -144,7 +144,7 @@ fn cass_matches_proj() {
     assert!(r.as_ref().map_or(true, |p| !p.0.is_finite()), "inverse of a point PROJ refuses succeeded: {r:?}");
 }
 
-// The reference points, from pyproj 3.8.0 (PROJ 9.8.1).
+// The reference points, from pyproj 3.8.0 (PROJ 9.9.0).
 
 /// Points PROJ refuses beyond the horizon of the gnomonic centred at (-100°, 40°).
 const GNOM_HIDDEN: &[(f64, f64)] = &[(80.0, -40.0), (-100.0, -55.0), (0.0, 0.0)];

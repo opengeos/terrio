@@ -108,8 +108,11 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
             let units = axes
                 .iter()
                 .map(|a| {
+                    // Or the CS's, after the axes: `LENGTHUNIT`, or a bare `UNIT` as PROJ's
+                    // simplified WKT 2 writes it.
                     a.child("LENGTHUNIT")
                         .or_else(|| root.child("LENGTHUNIT"))
+                        .or_else(|| root.child("UNIT"))
                         .and_then(|u| u.num(1))
                         .ok_or_else(|| bad("geocentric axis needs a linear unit"))
                 })
@@ -211,6 +214,13 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         push("k", Some(p.get(K_NAT).unwrap_or(1.0)));
         south_orientated = true;
         "tmerc"
+    } else if is(&["transversemercatorzonedgridsystem"], &[9824]) {
+        // PROJ 9.9.0's `tmerczoned`, with its initial longitude as `+lon_0`.
+        push("lat_0", Some(lat_0().unwrap_or(0.0)));
+        push("lon_0", Some(p.get(LON_INITIAL).unwrap_or(0.0)));
+        push("width", p.get(ZONE_WIDTH));
+        push("k_0", Some(p.get(K_NAT).unwrap_or(1.0)));
+        "tmerczoned"
     } else if is(&["lambertconicconformal1sp"], &[9801]) {
         push("lat_1", lat_0());
         push("lat_0", lat_0());
@@ -436,6 +446,9 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         "wag3"
     } else if let Some(proj) = WORLD.iter().find(|(n, _)| *n == name).map(|(_, p)| *p) {
         push("lon_0", lon_0());
+        // A latitude of natural origin is ignored, as PROJ 9.8.1 ignores it (its mapping of these
+        // methods has none): Robinson and Sinusoidal with one are read.
+        p.ignore(LAT_NAT);
         proj
     } else if let Some((proj, parallel)) =
         [("winkeli", "wink1", "lat_ts"), ("winkelii", "wink2", "lat_1"), ("winkeltripel", "wintri", "lat_1")]
@@ -487,6 +500,11 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         proj_str.push(if north_east { "+axis=swu" } else { "+axis=wsu" }.into());
     } else if let Some(axis) = axis(&directions) {
         proj_str.push(format!("+axis={axis}"));
+    }
+    // EPSG method 9808 subtracts the false easting and northing (W = FE - x, S = FN - y), where
+    // `+axis=wsu` negates `+x_0`/`+y_0` with x and y.
+    if south_orientated {
+        (fe, fn_) = (super::wkt1::negated(fe), super::wkt1::negated(fn_));
     }
     proj_str.push(format!("+x_0={fe}"));
     proj_str.push(format!("+y_0={fn_}"));
@@ -884,6 +902,9 @@ const FN_FALSE: Param = (&["northingatfalseorigin"], 8827, Kind::Length);
 const LAT_TS: Param = (&["latitudeofstandardparallel"], 8832, Kind::Angle);
 const LON_ORIGIN: Param = (&["longitudeoforigin"], 8833, Kind::Angle);
 
+const LON_INITIAL: Param = (&["initiallongitude"], 8830, Kind::Angle);
+const ZONE_WIDTH: Param = (&["zonewidth"], 8831, Kind::Angle);
+
 const LAT_TOPO: Param = (&["latitudeoftopocentricorigin"], 8834, Kind::Angle);
 const LON_TOPO: Param = (&["longitudeoftopocentricorigin"], 8835, Kind::Angle);
 const HEIGHT_TOPO: Param = (&["ellipsoidalheightoftopocentricorigin"], 8836, Kind::Length);
@@ -901,7 +922,7 @@ const LAT_P2: Param = (&["latitudeof2ndpoint"], u32::MAX - 3, Kind::Angle);
 const LON_P2: Param = (&["longitudeof2ndpoint"], u32::MAX - 4, Kind::Angle);
 const LAT_TRUE_SCALE: Param = (&["latitudeoftruescale"], u32::MAX - 5, Kind::Angle);
 
-const PARAMS: [Param; 33] = [
+const PARAMS: [Param; 35] = [
     LAT_TOPO,
     LON_TOPO,
     HEIGHT_TOPO,
@@ -932,6 +953,8 @@ const PARAMS: [Param; 33] = [
     FN_FALSE,
     LAT_TS,
     LON_ORIGIN,
+    LON_INITIAL,
+    ZONE_WIDTH,
     CO_LAT_CONE,
     LAT_PSEUDO_SP,
     K_PSEUDO_SP,
@@ -1007,6 +1030,11 @@ impl Params {
         let v = self.values.iter().find(|v| v.0 == p.1)?;
         self.used.borrow_mut().push(p.1);
         Some(v.2)
+    }
+
+    /// Marks a parameter used without reading it: one PROJ ignores for the method.
+    fn ignore(&self, p: Param) {
+        self.used.borrow_mut().push(p.1);
     }
 
     /// The name of a parameter no method arm used, with a value that matters (not 0).

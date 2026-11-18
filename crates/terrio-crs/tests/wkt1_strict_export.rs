@@ -1,4 +1,4 @@
-//! `SpatialRef::to_wkt1_strict` against the WKT 1 PROJ 9.8.1 writes (pyproj 3.8.0's
+//! `SpatialRef::to_wkt1_strict` against the WKT 1 PROJ 9.9.0 writes (pyproj 3.8.0's
 //! `CRS.to_wkt("WKT1_GDAL", output_axis_rule=True)`, `proj_as_wkt` with `WKT1_GDAL` and the
 //! AXIS nodes GDAL writes), frozen in `data/wkt1_strict_export.tsv` by
 //! `scripts/gen_wkt1_strict_export.py`: every 20th EPSG and ESRI code, every registry code PROJ
@@ -334,7 +334,7 @@ fn a_stored_wkt1_needing_its_extension_has_none() {
 
 #[test]
 fn to_wkt_describes_without_the_extension() {
-    // What `to_wkt` now writes without the extension, as PROJ 9.8.1's WKT1_GDAL does: a
+    // What `to_wkt` now writes without the extension, as PROJ 9.9.0's WKT1_GDAL does: a
     // geocentric CRS, `+R_C` on a sphere, an ellipsoid of `+a` and `+es` or `+e`.
     for (proj, node) in [
         ("+proj=geocent +ellps=GRS80 +units=m", "GEOCCS[\"unknown\",DATUM[\"Unknown based on GRS 1980 ellipsoid\""),
@@ -361,14 +361,14 @@ fn to_wkt_describes_without_the_extension() {
     let geocentric = SpatialRef::from_proj4("+proj=geocent +ellps=GRS80 +units=m").unwrap();
     let back = SpatialRef::from_wkt(&geocentric.to_wkt().unwrap());
     assert_eq!(back.to_proj4(), geocentric.to_proj4());
-    // Beside `+b`, `+es` gives the shape, which comes first in PROJ 9.8.1's order of precedence.
+    // Beside `+b`, `+es` gives the shape, which comes first in PROJ 9.9.0's order of precedence.
     let w = SpatialRef::from_proj4("+proj=longlat +a=6378137 +b=6356752.314245179 +es=0.006").unwrap().to_wkt().unwrap();
     assert!(w.contains("SPHEROID[\"unknown\",6378137,332.832581074854]") && !w.contains("EXTENSION"), "{w}");
 }
 
 #[test]
 fn a_prime_meridian_in_degrees_minutes_and_seconds_is_read_and_written() {
-    // `+pm=2d20'14.025"E` is Paris, as PROJ 9.8.1 reads it: pyproj 3.8.0's
+    // `+pm=2d20'14.025"E` is Paris, as PROJ 9.9.0 reads it: pyproj 3.8.0's
     // `Transformer.from_crs("EPSG:4326", crs, always_xy=True)` gives 7.662770833333334 at 10°E.
     let crs = SpatialRef::from_proj4("+proj=longlat +ellps=GRS80 +pm=2d20'14.025\"E").unwrap();
     let (lon, lat) = Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &crs).unwrap().transform(10.0, 45.0).unwrap();

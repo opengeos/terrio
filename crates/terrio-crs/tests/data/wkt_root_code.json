@@ -1,0 +1,594 @@
+{
+ "proj": "9.9.0",
+ "cases": [
+  {
+   "name": "British National Grid with its own code",
+   "wkt": "PROJCS[\"OSGB 1936 / British National Grid\",GEOGCS[\"OSGB 1936\",DATUM[\"OSGB_1936\",SPHEROID[\"Airy 1830\",6377563.396,299.3249646,AUTHORITY[\"EPSG\",\"7001\"]],TOWGS84[446.448,-125.157,542.06,0.15,0.247,0.842,-20.489],AUTHORITY[\"EPSG\",\"6277\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4277\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",49],PARAMETER[\"central_meridian\",-2],PARAMETER[\"scale_factor\",0.9996012717],PARAMETER[\"false_easting\",400000],PARAMETER[\"false_northing\",-100000],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"27700\"]]",
+   "point": [
+    -2.0,
+    54.0
+   ],
+   "proj": [
+    400097.646389362,
+    455996.5031583572
+   ],
+   "epsg": null,
+   "esri": null,
+   "declared": null,
+   "terrio_epsg": 27700,
+   "terrio": null
+  },
+  {
+   "name": "British National Grid declaring EPSG:4277",
+   "wkt": "PROJCS[\"OSGB 1936 / British National Grid\",GEOGCS[\"OSGB 1936\",DATUM[\"OSGB_1936\",SPHEROID[\"Airy 1830\",6377563.396,299.3249646,AUTHORITY[\"EPSG\",\"7001\"]],TOWGS84[446.448,-125.157,542.06,0.15,0.247,0.842,-20.489],AUTHORITY[\"EPSG\",\"6277\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4277\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",49],PARAMETER[\"central_meridian\",-2],PARAMETER[\"scale_factor\",0.9996012717],PARAMETER[\"false_easting\",400000],PARAMETER[\"false_northing\",-100000],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"4277\"]]",
+   "point": [
+    -2.0,
+    54.0
+   ],
+   "proj": [
+    400097.646389362,
+    455996.5031583572
+   ],
+   "epsg": null,
+   "esri": null,
+   "declared": 4277,
+   "terrio_epsg": 27700,
+   "terrio": null
+  },
+  {
+   "name": "an unknown method declaring EPSG:27700",
+   "wkt": "PROJCS[\"OSGB 1936 / British National Grid\",GEOGCS[\"OSGB 1936\",DATUM[\"OSGB_1936\",SPHEROID[\"Airy 1830\",6377563.396,299.3249646,AUTHORITY[\"EPSG\",\"7001\"]],TOWGS84[375,-111,431,0,0,0,0],AUTHORITY[\"EPSG\",\"6277\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4277\"]],PROJECTION[\"Unheard_Of\"],PARAMETER[\"latitude_of_origin\",49],PARAMETER[\"central_meridian\",-2],PARAMETER[\"scale_factor\",0.9996012717],PARAMETER[\"false_easting\",400000],PARAMETER[\"false_northing\",-100000],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"27700\"]]",
+   "point": [
+    -2.0,
+    54.0
+   ],
+   "proj": null,
+   "epsg": null,
+   "esri": null,
+   "declared": 27700,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "Hartebeesthoek94 / Lo19 declaring EPSG:1",
+   "wkt": "PROJCRS[\"Hartebeesthoek94 / Lo19\",BASEGEOGCRS[\"Hartebeesthoek94\",DATUM[\"Hartebeesthoek94\",ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4148]],CONVERSION[\"South African Survey Grid zone 19\",METHOD[\"Transverse Mercator (South Orientated)\",ID[\"EPSG\",9808]],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8801]],PARAMETER[\"Longitude of natural origin\",19,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8802]],PARAMETER[\"Scale factor at natural origin\",1,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8805]],PARAMETER[\"False easting\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8806]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8807]]],CS[Cartesian,2],AXIS[\"westing (Y)\",west,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"southing (X)\",south,ORDER[2],LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Cadastre, engineering survey, topographic mapping (large and medium scale).\"],AREA[\"South Africa - onshore between 18\u00b0E and 20\u00b0E.\"],BBOX[-34.88,17.99,-28.38,20]],ID[\"EPSG\",1]]",
+   "point": [
+    18.5,
+    -33.9
+   ],
+   "proj": [
+    46246.67499191615,
+    3752681.842487887
+   ],
+   "epsg": 2048,
+   "esri": null,
+   "declared": 1,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "Hartebeesthoek94 / Lo19 with its own code",
+   "wkt": "PROJCRS[\"Hartebeesthoek94 / Lo19\",BASEGEOGCRS[\"Hartebeesthoek94\",DATUM[\"Hartebeesthoek94\",ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4148]],CONVERSION[\"South African Survey Grid zone 19\",METHOD[\"Transverse Mercator (South Orientated)\",ID[\"EPSG\",9808]],PARAMETER[\"Latitude of natural origin\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8801]],PARAMETER[\"Longitude of natural origin\",19,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8802]],PARAMETER[\"Scale factor at natural origin\",1,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8805]],PARAMETER[\"False easting\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8806]],PARAMETER[\"False northing\",0,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8807]]],CS[Cartesian,2],AXIS[\"westing (Y)\",west,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"southing (X)\",south,ORDER[2],LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Cadastre, engineering survey, topographic mapping (large and medium scale).\"],AREA[\"South Africa - onshore between 18\u00b0E and 20\u00b0E.\"],BBOX[-34.88,17.99,-28.38,20]],ID[\"EPSG\",2048]]",
+   "point": [
+    18.5,
+    -33.9
+   ],
+   "proj": [
+    46246.67499191615,
+    3752681.842487887
+   ],
+   "epsg": 2048,
+   "esri": null,
+   "declared": null,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "a 2D NTF (Paris) in degrees declaring EPSG:7400",
+   "wkt": "GEOGCS[\"unnamed ellipsoid\",DATUM[\"unknown\",SPHEROID[\"unnamed\",6378249.2,293.466021294],TOWGS84[-168,-60,320,0,0,0,0]],PRIMEM[\"Paris\",2.337229166666667],UNIT[\"degree\",0.0174532925199433],AUTHORITY[\"EPSG\",\"7400\"]]",
+   "point": [
+    2.35,
+    48.86
+   ],
+   "proj": [
+    0.013493934732394302,
+    48.86006929458865
+   ],
+   "epsg": null,
+   "esri": null,
+   "declared": 7400,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "Esri Monte_Mario_Italy_1",
+   "wkt": "PROJCS[\"Monte_Mario_Italy_1\",GEOGCS[\"GCS_Monte_Mario\",DATUM[\"D_Monte_Mario\",SPHEROID[\"International_1924\",6378388.0,297.0]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",1500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",9.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]",
+   "point": [
+    12.5,
+    41.9
+   ],
+   "proj": [
+    1790366.4715186497,
+    4644611.025881862
+   ],
+   "epsg": 3003,
+   "esri": null,
+   "declared": null,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "Esri Monte_Mario_Italy_1 on a datum renamed D_Local",
+   "wkt": "PROJCS[\"Monte_Mario_Italy_1\",GEOGCS[\"GCS_Monte_Mario\",DATUM[\"D_Local\",SPHEROID[\"International_1924\",6378388.0,297.0]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",1500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",9.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]",
+   "point": [
+    12.5,
+    41.9
+   ],
+   "proj": [
+    1790348.1042215184,
+    4644681.853456515
+   ],
+   "epsg": null,
+   "esri": null,
+   "declared": null,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "Esri USA_Contiguous_Albers_Equal_Area_Conic",
+   "wkt": "PROJCS[\"USA_Contiguous_Albers_Equal_Area_Conic\",GEOGCS[\"GCS_North_American_1983\",DATUM[\"D_North_American_1983\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Albers\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",-96.0],PARAMETER[\"Standard_Parallel_1\",29.5],PARAMETER[\"Standard_Parallel_2\",45.5],PARAMETER[\"Latitude_Of_Origin\",37.5],UNIT[\"Meter\",1.0]]",
+   "point": [
+    -96.0,
+    40.0
+   ],
+   "proj": [
+    0.0,
+    280191.3043214676
+   ],
+   "epsg": null,
+   "esri": 102003,
+   "declared": null,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "Belge 1972 / Belgian Lambert 72 with its own code",
+   "wkt": "PROJCRS[\"BD72 / Belge Lambert 72\",BASEGEOGCRS[\"BD72\",DATUM[\"Reseau National Belge 1972\",ELLIPSOID[\"International 1924\",6378388,297,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4313]],CONVERSION[\"Belge Lambert 72\",METHOD[\"Lambert Conic Conformal (2SP Belgium)\",ID[\"EPSG\",9803]],PARAMETER[\"Latitude of false origin\",90,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8821]],PARAMETER[\"Longitude of false origin\",4.35693972222222,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8822]],PARAMETER[\"Latitude of 1st standard parallel\",49.8333333333333,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8823]],PARAMETER[\"Latitude of 2nd standard parallel\",51.1666666666667,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8824]],PARAMETER[\"Easting at false origin\",150000.01256,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8826]],PARAMETER[\"Northing at false origin\",5400088.4378,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8827]]],CS[Cartesian,2],AXIS[\"easting (X)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing (Y)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Engineering survey, topographic mapping.\"],AREA[\"Belgium - onshore.\"],BBOX[49.5,2.5,51.51,6.4]],ID[\"EPSG\",31300]]",
+   "point": [
+    4.4,
+    50.8
+   ],
+   "proj": [
+    152946.41980783828,
+    165505.45808677655
+   ],
+   "epsg": 31300,
+   "esri": null,
+   "declared": null,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "Belge 1972 / Belgian Lambert 72 declaring EPSG:27700",
+   "wkt": "PROJCRS[\"BD72 / Belge Lambert 72\",BASEGEOGCRS[\"BD72\",DATUM[\"Reseau National Belge 1972\",ELLIPSOID[\"International 1924\",6378388,297,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4313]],CONVERSION[\"Belge Lambert 72\",METHOD[\"Lambert Conic Conformal (2SP Belgium)\",ID[\"EPSG\",9803]],PARAMETER[\"Latitude of false origin\",90,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8821]],PARAMETER[\"Longitude of false origin\",4.35693972222222,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8822]],PARAMETER[\"Latitude of 1st standard parallel\",49.8333333333333,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8823]],PARAMETER[\"Latitude of 2nd standard parallel\",51.1666666666667,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8824]],PARAMETER[\"Easting at false origin\",150000.01256,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8826]],PARAMETER[\"Northing at false origin\",5400088.4378,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8827]]],CS[Cartesian,2],AXIS[\"easting (X)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing (Y)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Engineering survey, topographic mapping.\"],AREA[\"Belgium - onshore.\"],BBOX[49.5,2.5,51.51,6.4]],ID[\"EPSG\",27700]]",
+   "point": [
+    4.4,
+    50.8
+   ],
+   "proj": [
+    152946.41980783828,
+    165505.45808677655
+   ],
+   "epsg": 31300,
+   "esri": null,
+   "declared": 27700,
+   "terrio_epsg": null,
+   "terrio": "refused"
+  },
+  {
+   "name": "WGS 84 geocentric in simplified WKT 2 with its own code",
+   "wkt": "GEODCRS[\"WGS 84\",ENSEMBLE[\"World Geodetic System 1984 ensemble\",MEMBER[\"World Geodetic System 1984 (Transit)\"],MEMBER[\"World Geodetic System 1984 (G730)\"],MEMBER[\"World Geodetic System 1984 (G873)\"],MEMBER[\"World Geodetic System 1984 (G1150)\"],MEMBER[\"World Geodetic System 1984 (G1674)\"],MEMBER[\"World Geodetic System 1984 (G1762)\"],MEMBER[\"World Geodetic System 1984 (G2139)\"],MEMBER[\"World Geodetic System 1984 (G2296)\"],ELLIPSOID[\"WGS 84\",6378137,298.257223563],ENSEMBLEACCURACY[2.0]],CS[Cartesian,3],AXIS[\"(X)\",geocentricX],AXIS[\"(Y)\",geocentricY],AXIS[\"(Z)\",geocentricZ],UNIT[\"metre\",1],USAGE[SCOPE[\"Geodesy. Navigation and positioning using GPS satellite system.\"],AREA[\"World.\"],BBOX[-90,-180,90,180]],ID[\"EPSG\",4978]]",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "proj": [
+    4045456.4053408885,
+    713323.1135414789
+   ],
+   "epsg": 4978,
+   "esri": null,
+   "declared": null,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "WGS 84 geocentric in simplified WKT 2 declaring EPSG:4326",
+   "wkt": "GEODCRS[\"WGS 84\",ENSEMBLE[\"World Geodetic System 1984 ensemble\",MEMBER[\"World Geodetic System 1984 (Transit)\"],MEMBER[\"World Geodetic System 1984 (G730)\"],MEMBER[\"World Geodetic System 1984 (G873)\"],MEMBER[\"World Geodetic System 1984 (G1150)\"],MEMBER[\"World Geodetic System 1984 (G1674)\"],MEMBER[\"World Geodetic System 1984 (G1762)\"],MEMBER[\"World Geodetic System 1984 (G2139)\"],MEMBER[\"World Geodetic System 1984 (G2296)\"],ELLIPSOID[\"WGS 84\",6378137,298.257223563],ENSEMBLEACCURACY[2.0]],CS[Cartesian,3],AXIS[\"(X)\",geocentricX],AXIS[\"(Y)\",geocentricY],AXIS[\"(Z)\",geocentricZ],UNIT[\"metre\",1],USAGE[SCOPE[\"Geodesy. Navigation and positioning using GPS satellite system.\"],AREA[\"World.\"],BBOX[-90,-180,90,180]],ID[\"EPSG\",4326]]",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "proj": [
+    4045456.4053408885,
+    713323.1135414789
+   ],
+   "epsg": null,
+   "esri": null,
+   "declared": 4326,
+   "terrio_epsg": 4978,
+   "terrio": null
+  },
+  {
+   "name": "ETRS89 declaring NAD83",
+   "wkt": "GEOGCRS[\"ETRS89\",ENSEMBLE[\"European Terrestrial Reference System 1989 ensemble\",MEMBER[\"European Terrestrial Reference Frame 1989\"],MEMBER[\"European Terrestrial Reference Frame 1990\"],MEMBER[\"European Terrestrial Reference Frame 1991\"],MEMBER[\"European Terrestrial Reference Frame 1992\"],MEMBER[\"European Terrestrial Reference Frame 1993\"],MEMBER[\"European Terrestrial Reference Frame 1994\"],MEMBER[\"European Terrestrial Reference Frame 1996\"],MEMBER[\"European Terrestrial Reference Frame 1997\"],MEMBER[\"European Terrestrial Reference Frame 2000\"],MEMBER[\"European Terrestrial Reference Frame 2005\"],MEMBER[\"European Terrestrial Reference Frame 2014\"],MEMBER[\"European Terrestrial Reference Frame 2020\"],MEMBER[\"ETRS89-DNK\"],MEMBER[\"Estonia 1997\"],MEMBER[\"Albanian Geodetic Reference Frame 2008\"],MEMBER[\"Albanian Geodetic Reference Frame 2014\"],MEMBER[\"ETRS89-AUT [2002]\"],MEMBER[\"Belgian Reference Frame 2002\"],MEMBER[\"Belgian Reference Frame 2011\"],MEMBER[\"BH_ETRS89\"],MEMBER[\"Bulgaria Geodetic System 2005\"],MEMBER[\"Croatian Terrestrial Reference System 1996\"],MEMBER[\"AGRS2010 (ETRF2000)\"],MEMBER[\"CROPOS\"],MEMBER[\"ETRF2000 Poland\"],MEMBER[\"ETRS89/DREF91 Realization 2016\"],MEMBER[\"ETRS89/DREF91 Realization 2025\"],MEMBER[\"ETRS89-CZE [2007]\"],MEMBER[\"ETRS89-ESP [REGENTE]\"],MEMBER[\"ETRS89-ESP [ERGNSS]\"],MEMBER[\"ETRS89-FRO [2008]\"],MEMBER[\"Hellenic Terrestrial Reference System of 2007\"],MEMBER[\"ETRS89-HUN [ETRF2000]\"],MEMBER[\"ETRS89-IRE [ETRF2000]\"],MEMBER[\"ETRS89-MKD [EUREF-MAK2010]\"],MEMBER[\"EUREF89\"],MEMBER[\"ETRS89-PRT [1995]\"],MEMBER[\"ETRS89-ROU [ETRF2000]\"],MEMBER[\"ETRS89-SVK [SKTRF09]\"],MEMBER[\"ETRS89-SVK [SKTRF2022]\"],MEMBER[\"EUREF-FIN\"],MEMBER[\"Istituto Geografico Militare 1995\"],MEMBER[\"Kosovo Reference System 2001\"],MEMBER[\"Latvian geodetic coordinate system 1992\"],MEMBER[\"Latvian coordinate system 2020\"],MEMBER[\"Lithuania 1994 (ETRS89)\"],MEMBER[\"MOLDREF99\"],MEMBER[\"OSNet v2009\"],MEMBER[\"Reseau Geodesique Francais 1993 v1\"],MEMBER[\"Reseau Geodesique Francais 1993 v2\"],MEMBER[\"Reseau Geodesique Francais 1993 v2b\"],MEMBER[\"Rete Dinamica Nazionale 2008\"],MEMBER[\"Serbian Reference Network 1998\"],MEMBER[\"Serbian Spatial Reference System 2000\"],MEMBER[\"Slovenia Geodetic Datum 1996\"],MEMBER[\"SWEREF 99\"],MEMBER[\"ETRS89-LUX [2020]\"],MEMBER[\"Nordic Geodetic Commission ETRF14\"],MEMBER[\"ETRS89-LUX [2025]\"],MEMBER[\"Swiss Terrestrial Reference System 1995\"],ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ENSEMBLEACCURACY[0.1]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],USAGE[SCOPE[\"Spatial referencing.\"],AREA[\"Europe - onshore and offshore: Albania; Andorra; Austria; Belgium; Bosnia and Herzegovina; Bulgaria; Croatia; Czechia; Denmark; Estonia; Faroe Islands; Finland; France; Germany; Gibraltar; Greece; Hungary; Ireland; Italy; Kosovo; Latvia; Liechtenstein; Lithuania; Luxembourg; Malta; Moldova; Monaco; Montenegro; Netherlands; North Macedonia; Norway including Svalbard and Jan Mayen; Poland; Portugal - mainland; Romania; San Marino; Serbia; Slovakia; Slovenia; Spain - mainland and Balearic islands; Sweden; Switzerland; United Kingdom (UK) including Channel Islands and Isle of Man; Vatican City State.\"],BBOX[33.26,-16.1,84.73,38]],ID[\"EPSG\",4269],REMARK[\"Has been realized through ETRF89, ETRF90, ETRF91, ETRF92, ETRF93, ETRF94, ETRF96, ETRF97, ETRF2000, ETRF2005 and ETRF2014. This 'ensemble' covers any or all of these realizations without distinction.\"]]",
+   "point": [
+    -100.0,
+    40.0
+   ],
+   "proj": [
+    -100.0,
+    40.0
+   ],
+   "epsg": null,
+   "esri": null,
+   "declared": 4269,
+   "terrio_epsg": 4258,
+   "terrio": null
+  },
+  {
+   "name": "ETRS89 in WKT 1 declaring NAD83",
+   "wkt": "GEOGCS[\"ETRS89\",DATUM[\"European_Terrestrial_Reference_System_1989\",SPHEROID[\"GRS 1980\",6378137,298.257222101,AUTHORITY[\"EPSG\",\"7019\"]],AUTHORITY[\"EPSG\",\"6258\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4269\"]]",
+   "point": [
+    -100.0,
+    40.0
+   ],
+   "proj": [
+    -100.0,
+    40.0
+   ],
+   "epsg": null,
+   "esri": null,
+   "declared": 4269,
+   "terrio_epsg": 4258,
+   "terrio": null
+  },
+  {
+   "name": "Greenland 1996 by name declaring ETRS89",
+   "wkt": "GEOGCS[\"GR96\",DATUM[\"Greenland_1996\",SPHEROID[\"GRS 1980\",6378137,298.257222101,AUTHORITY[\"EPSG\",\"7019\"]]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4258\"]]",
+   "point": [
+    -45.0,
+    65.0
+   ],
+   "proj": [
+    -45.0,
+    65.0
+   ],
+   "epsg": null,
+   "esri": null,
+   "declared": 4258,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "Greenland 1996 by name with its own code",
+   "wkt": "GEOGCS[\"GR96\",DATUM[\"Greenland_1996\",SPHEROID[\"GRS 1980\",6378137,298.257222101,AUTHORITY[\"EPSG\",\"7019\"]]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4747\"]]",
+   "point": [
+    -45.0,
+    65.0
+   ],
+   "proj": [
+    -45.0,
+    65.0
+   ],
+   "epsg": 4747,
+   "esri": null,
+   "declared": null,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "Greenland 1996 by name in WKT 1 declaring GR96 3D (EPSG:4909)",
+   "wkt": "GEOGCS[\"GR96\",DATUM[\"Greenland_1996\",SPHEROID[\"GRS 1980\",6378137,298.257222101,AUTHORITY[\"EPSG\",\"7019\"]]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4909\"]]",
+   "point": [
+    -45.0,
+    65.0
+   ],
+   "proj": [
+    -45.0,
+    65.0
+   ],
+   "epsg": 4909,
+   "esri": null,
+   "declared": null,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "Web Mercator and EGM96 height declaring EPSG:9707",
+   "wkt": "COMPD_CS[\"WGS 84 / Pseudo-Mercator + EGM96 height\",PROJCS[\"WGS 84 / Pseudo-Mercator\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],PROJECTION[\"Mercator_1SP\"],PARAMETER[\"central_meridian\",0],PARAMETER[\"scale_factor\",1],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],EXTENSION[\"PROJ4\",\"+proj=merc +a=6378137 +b=6378137 +lat_ts=0 +lon_0=0 +x_0=0 +y_0=0 +k=1 +units=m +nadgrids=@null +wktext +no_defs\"],AUTHORITY[\"EPSG\",\"3857\"]],VERT_CS[\"EGM96 height\",VERT_DATUM[\"EGM96 geoid\",2005,AUTHORITY[\"EPSG\",\"5171\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP],AUTHORITY[\"EPSG\",\"5773\"]],AUTHORITY[\"EPSG\",\"9707\"]]",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "proj": [
+    1113194.9079327357,
+    6446275.841017161
+   ],
+   "epsg": null,
+   "esri": null,
+   "declared": 9707,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "WGS 84 + EGM96 height with its own code",
+   "wkt": "COMPD_CS[\"WGS 84 + EGM96 height\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],VERT_CS[\"EGM96 height\",VERT_DATUM[\"EGM96 geoid\",2005,AUTHORITY[\"EPSG\",\"5171\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP],AUTHORITY[\"EPSG\",\"5773\"]],AUTHORITY[\"EPSG\",\"9707\"]]",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "proj": [
+    10.0,
+    50.0
+   ],
+   "epsg": 9707,
+   "esri": null,
+   "declared": null,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "WGS 84 + EGM96 height in US survey feet declaring EPSG:9707",
+   "wkt": "COMPD_CS[\"WGS 84 + EGM96 height\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],VERT_CS[\"EGM96 height\",VERT_DATUM[\"EGM96 geoid\",2005,AUTHORITY[\"EPSG\",\"5171\"]],UNIT[\"US survey foot\",0.304800609601219,AUTHORITY[\"EPSG\",\"9003\"]],AXIS[\"Gravity-related height\",UP],AUTHORITY[\"EPSG\",\"5773\"]],AUTHORITY[\"EPSG\",\"9707\"]]",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "proj": [
+    10.0,
+    50.0
+   ],
+   "epsg": null,
+   "esri": null,
+   "declared": 9707,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "WGS 84 + EGM96 depth declaring EPSG:9707",
+   "wkt": "COMPD_CS[\"WGS 84 + EGM96 height\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]],VERT_CS[\"EGM96 height\",VERT_DATUM[\"EGM96 geoid\",2005,AUTHORITY[\"EPSG\",\"5171\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related depth\",DOWN],AUTHORITY[\"EPSG\",\"5773\"]],AUTHORITY[\"EPSG\",\"9707\"]]",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "proj": [
+    10.0,
+    50.0
+   ],
+   "epsg": null,
+   "esri": null,
+   "declared": 9707,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "WGS 84 without a vertical CRS declaring EPSG:9707",
+   "wkt": "GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"9707\"]]",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "proj": [
+    10.0,
+    50.0
+   ],
+   "epsg": 4326,
+   "esri": null,
+   "declared": 9707,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "a local datum on Airy 1830 declaring OSGB36",
+   "wkt": "GEOGCS[\"x\",DATUM[\"My_Local\",SPHEROID[\"Airy 1830\",6377563.396,299.3249646]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433],AUTHORITY[\"EPSG\",\"4277\"]]",
+   "point": [
+    -2.0,
+    54.0
+   ],
+   "proj": [
+    -2.0,
+    54.0
+   ],
+   "epsg": null,
+   "esri": null,
+   "declared": 4277,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "British National Grid on a local datum with OSGB36's code inside",
+   "wkt": "PROJCS[\"OSGB36 / British National Grid\",GEOGCS[\"OSGB36\",DATUM[\"My_Local\",SPHEROID[\"Airy 1830\",6377563.396,299.3249646,AUTHORITY[\"EPSG\",\"7001\"]]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4277\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",49],PARAMETER[\"central_meridian\",-2],PARAMETER[\"scale_factor\",0.9996012717],PARAMETER[\"false_easting\",400000],PARAMETER[\"false_northing\",-100000],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"27700\"]]",
+   "point": [
+    -2.0,
+    54.0
+   ],
+   "proj": [
+    400000.0,
+    456017.69885104
+   ],
+   "epsg": null,
+   "esri": null,
+   "declared": 27700,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "British National Grid declaring ESRI:54009",
+   "wkt": "PROJCS[\"OSGB36 / British National Grid\",GEOGCS[\"OSGB36\",DATUM[\"Ordnance_Survey_of_Great_Britain_1936\",SPHEROID[\"Airy 1830\",6377563.396,299.3249646,AUTHORITY[\"EPSG\",\"7001\"]],AUTHORITY[\"EPSG\",\"6277\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4277\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",49],PARAMETER[\"central_meridian\",-2],PARAMETER[\"scale_factor\",0.9996012717],PARAMETER[\"false_easting\",400000],PARAMETER[\"false_northing\",-100000],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"ESRI\",\"54009\"]]",
+   "point": [
+    -2.0,
+    54.0
+   ],
+   "proj": [
+    400097.646389362,
+    455996.5031583572
+   ],
+   "epsg": 27700,
+   "esri": null,
+   "declared": null,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "OSGB36 + ODN height whose vertical CRS declares EPSG:5703",
+   "wkt": "COMPD_CS[\"OSGB36 / British National Grid + ODN height\",PROJCS[\"OSGB36 / British National Grid\",GEOGCS[\"OSGB36\",DATUM[\"Ordnance_Survey_of_Great_Britain_1936\",SPHEROID[\"Airy 1830\",6377563.396,299.3249646,AUTHORITY[\"EPSG\",\"7001\"]],AUTHORITY[\"EPSG\",\"6277\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4277\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",49],PARAMETER[\"central_meridian\",-2],PARAMETER[\"scale_factor\",0.9996012717],PARAMETER[\"false_easting\",400000],PARAMETER[\"false_northing\",-100000],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"27700\"]],VERT_CS[\"ODN height\",VERT_DATUM[\"Ordnance Datum Newlyn\",2005,AUTHORITY[\"EPSG\",\"5101\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP],AUTHORITY[\"EPSG\",\"5703\"]],AUTHORITY[\"EPSG\",\"7405\"]]",
+   "point": [
+    -2.0,
+    54.0
+   ],
+   "proj": [
+    400097.646389362,
+    455996.5031583572
+   ],
+   "epsg": 7405,
+   "esri": null,
+   "declared": null,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "NAD83(HARN) by name declaring NAD83",
+   "wkt": "GEOGCS[\"NAD83(HARN)\",DATUM[\"NAD83_High_Accuracy_Reference_Network\",SPHEROID[\"GRS 1980\",6378137,298.257222101]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433],AUTHORITY[\"EPSG\",\"4269\"]]",
+   "point": [
+    -100.0,
+    40.0
+   ],
+   "proj": [
+    -99.99999116896775,
+    39.99999318270061
+   ],
+   "epsg": null,
+   "esri": null,
+   "declared": 4269,
+   "terrio_epsg": 4152,
+   "terrio": null
+  },
+  {
+   "name": "an unknown method in a compound declaring EPSG:7405",
+   "wkt": "COMPD_CS[\"OSGB36 / British National Grid + ODN height\",PROJCS[\"OSGB36 / British National Grid\",GEOGCS[\"OSGB36\",DATUM[\"Ordnance_Survey_of_Great_Britain_1936\",SPHEROID[\"Airy 1830\",6377563.396,299.3249646,AUTHORITY[\"EPSG\",\"7001\"]],AUTHORITY[\"EPSG\",\"6277\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4277\"]],PROJECTION[\"Unheard_Of\"],PARAMETER[\"latitude_of_origin\",49],PARAMETER[\"central_meridian\",-2],PARAMETER[\"scale_factor\",0.9996012717],PARAMETER[\"false_easting\",400000],PARAMETER[\"false_northing\",-100000],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"27700\"]],VERT_CS[\"ODN height\",VERT_DATUM[\"Ordnance Datum Newlyn\",2005,AUTHORITY[\"EPSG\",\"5101\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Gravity-related height\",UP],AUTHORITY[\"EPSG\",\"5701\"]],AUTHORITY[\"EPSG\",\"7405\"]]",
+   "point": [
+    -2.0,
+    54.0
+   ],
+   "proj": null,
+   "epsg": null,
+   "esri": null,
+   "declared": 7405,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "a local datum on GRS 1980 declaring ETRS89",
+   "wkt": "GEOGCS[\"x\",DATUM[\"My_Local_Datum\",SPHEROID[\"GRS 1980\",6378137,298.257222101]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433],AUTHORITY[\"EPSG\",\"4258\"]]",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "proj": [
+    10.0,
+    50.0
+   ],
+   "epsg": null,
+   "esri": null,
+   "declared": 4258,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "WGS 84 on PROJ's placeholder datum unknown with its code",
+   "wkt": "GEOGCS[\"x\",DATUM[\"unknown\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433],AUTHORITY[\"EPSG\",\"4326\"]]",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "proj": [
+    10.0,
+    50.0
+   ],
+   "epsg": 4326,
+   "esri": null,
+   "declared": null,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "WGS 84 on a datum named Unknown declaring EPSG:4326",
+   "wkt": "GEOGCS[\"x\",DATUM[\"Unknown\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433],AUTHORITY[\"EPSG\",\"4326\"]]",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "proj": [
+    10.0,
+    50.0
+   ],
+   "epsg": null,
+   "esri": null,
+   "declared": 4326,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "WGS 84 3D declaring EPSG:4326",
+   "wkt": "GEOGCRS[\"WGS 84\",ENSEMBLE[\"World Geodetic System 1984 ensemble\",MEMBER[\"World Geodetic System 1984 (Transit)\"],MEMBER[\"World Geodetic System 1984 (G730)\"],MEMBER[\"World Geodetic System 1984 (G873)\"],MEMBER[\"World Geodetic System 1984 (G1150)\"],MEMBER[\"World Geodetic System 1984 (G1674)\"],MEMBER[\"World Geodetic System 1984 (G1762)\"],MEMBER[\"World Geodetic System 1984 (G2139)\"],MEMBER[\"World Geodetic System 1984 (G2296)\"],ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]],ENSEMBLEACCURACY[2.0]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,3],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"ellipsoidal height (h)\",up,ORDER[3],LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Geodesy. Navigation and positioning using GPS satellite system.\"],AREA[\"World.\"],BBOX[-90,-180,90,180]],ID[\"EPSG\",4326]]",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "proj": [
+    10.0,
+    50.0
+   ],
+   "epsg": 4979,
+   "esri": null,
+   "declared": 4326,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "WGS 84 2D declaring EPSG:4979",
+   "wkt": "GEOGCRS[\"WGS 84\",ENSEMBLE[\"World Geodetic System 1984 ensemble\",MEMBER[\"World Geodetic System 1984 (Transit)\"],MEMBER[\"World Geodetic System 1984 (G730)\"],MEMBER[\"World Geodetic System 1984 (G873)\"],MEMBER[\"World Geodetic System 1984 (G1150)\"],MEMBER[\"World Geodetic System 1984 (G1674)\"],MEMBER[\"World Geodetic System 1984 (G1762)\"],MEMBER[\"World Geodetic System 1984 (G2139)\"],MEMBER[\"World Geodetic System 1984 (G2296)\"],ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]],ENSEMBLEACCURACY[2.0]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],USAGE[SCOPE[\"Horizontal component of 3D system.\"],AREA[\"World.\"],BBOX[-90,-180,90,180]],ID[\"EPSG\",4979]]",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "proj": [
+    10.0,
+    50.0
+   ],
+   "epsg": 4326,
+   "esri": null,
+   "declared": 4979,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "Esri RRAF 1991 of the deprecated EPSG:4640 with its own code",
+   "wkt": "GEOGCS[\"GCS_RRAF_1991\",DATUM[\"D_RRAF_1991\",SPHEROID[\"WGS_1984\",6378137.0,298.257223563]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433],AUTHORITY[\"EPSG\",4640]]",
+   "point": [
+    -61.0,
+    16.0
+   ],
+   "proj": [
+    -61.0,
+    16.0
+   ],
+   "epsg": 4640,
+   "esri": null,
+   "declared": null,
+   "terrio_epsg": null,
+   "terrio": null
+  }
+ ]
+}

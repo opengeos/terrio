@@ -412,27 +412,33 @@ def test_init_mapping_non_switch_parameters_keep_authority(authority):
 
 
 def test_declared_projected_authority_exports_its_effective_spheroid():
-    """A conflicting WKT spheroid cannot change coordinates after a PROJ round trip."""
+    """A conflicting WKT spheroid cannot change coordinates after a PROJ round trip.
+
+    The declared code is not the CRS's, which PROJ 9.9.0 does not identify either.
+    """
     crs = CRS.from_wkt(CRS.from_epsg(32633).to_wkt().replace("6378137", "6379000"))
-    assert crs.to_epsg() == 32633
+    assert crs.to_epsg() is None
     expected = coordinates(crs, (16, 30))
     for back in [CRS.from_dict(crs.to_dict()), CRS.from_proj4(crs.to_proj4())]:
         np.testing.assert_allclose(coordinates(back, (16, 30)), expected, rtol=0, atol=1e-6)
 
 
 @pytest.mark.parametrize("method", ["to_dict", "to_proj4"])
-def test_authority_export_warns_when_projection_nodes_conflict(method):
-    """Report when an authority identity overrides edited projection parameters.
+def test_authority_export_follows_edited_projection_nodes(method):
+    """A declared code that is not the CRS's does not override edited projection parameters.
+
+    The WKT is identified by its content, as PROJ 9.9.0 identifies it (UTM zone 32N).
 
     Args:
         method: Public parameter export method.
     """
     wkt = CRS.from_epsg(32633).to_wkt().replace('"central_meridian",15', '"central_meridian",9')
     crs = CRS.from_wkt(wkt)
-    with pytest.warns(UserWarning, match="conflicting WKT parameters") as caught:
+    assert crs.to_epsg() == 32632
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
         result = getattr(crs, method)()
-    assert caught[0].filename == __file__
-    assert result == getattr(CRS.from_epsg(32633), method)()
+    assert result == getattr(CRS.from_epsg(32632), method)()
 
 
 @pytest.mark.parametrize("access", [lambda crs: crs["units"], len, list])
@@ -484,14 +490,17 @@ def test_registry_parameter_exports_reuse_native_lookup(monkeypatch):
 
 
 def test_unknown_declared_authority_has_safe_parameter_exports():
-    """An unregistered authority retains representable WKT parameter exports."""
+    """An unregistered authority retains representable WKT parameter exports.
+
+    The content is identified instead, as PROJ 9.9.0 identifies it.
+    """
     wkt = (
         CRS.from_epsg(32633)
         .to_wkt()
         .replace('AUTHORITY["EPSG","32633"]', 'AUTHORITY["EPSG","999999"]')
     )
     crs = CRS.from_wkt(wkt)
-    assert crs.to_epsg() == 999999
+    assert crs.to_epsg() == 32633
     expected = CRS.from_epsg(32633)
     assert crs.to_dict() == expected.to_dict()
     assert crs.to_proj4() == expected.to_proj4()
@@ -507,7 +516,7 @@ def test_equality_does_not_warn_about_registry_parameter_conflicts():
         .replace('"central_meridian",15', '"central_meridian",11')
         .replace("WGS 84 / UTM zone 33N", "custom")
     )
-    assert tagged.to_epsg() == 32633
+    assert tagged.to_epsg() == 32632
     assert untagged.to_epsg() is None
     with warnings.catch_warnings():
         warnings.simplefilter("error", UserWarning)

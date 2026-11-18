@@ -1,4 +1,4 @@
-"""Generate crates/terrio-crs/tests/data/wkt1_axes.json: where PROJ 9.8.1 places a point in
+"""Generate crates/terrio-crs/tests/data/wkt1_axes.json: where PROJ 9.9.0 places a point in
 projected CRSs given by WKT 1 whose `AXIS` nodes point in each direction and order.
 
 Each case is a WKT 1 (Transverse Mercator, south-orientated Transverse Mercator, Lambert
@@ -89,7 +89,7 @@ AXES = {
 
 def main():
     """Write coordinate and export-axis references from the pinned PROJ version."""
-    assert pyproj.proj_version_str == "9.8.1", pyproj.proj_version_str
+    assert pyproj.proj_version_str == "9.9.0", pyproj.proj_version_str
     cases = []
     for method, (geogcs, geographic, point, params) in METHODS.items():
         for name, axes in AXES.items():

@@ -1,7 +1,7 @@
 //! Point motion operations, coordinates moved between two epochs of one dynamic CRS by a
 //! velocity grid read from the PROJ CDN: `cargo test -p terrio --test crs_point_motion -- --ignored`.
 //!
-//! The expected values are PROJ 9.8.1's (`projinfo -s EPSG:8254@2010 -t EPSG:8254@2020`).
+//! The expected values are PROJ 9.9.0's (`projinfo -s EPSG:8254@2010 -t EPSG:8254@2020`).
 
 use terrio::crs::{SpatialRef, TransformOptions, Transformer};
 

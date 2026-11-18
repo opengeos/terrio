@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
 
-//! A deprecated EPSG code keeps its own definition, as PROJ 9.8.1 gives it (`CRS.from_epsg`), not
+//! A deprecated EPSG code keeps its own definition, as PROJ 9.9.0 gives it (`CRS.from_epsg`), not
 //! its replacement's, which GDAL substitutes by default (`OSR_USE_NON_DEPRECATED=YES`): EPSG:4855,
 //! the deprecated ETRS89 / NTM zone 5, has a false northing of 1,000,000 m and a latitude of origin
 //! of 0, where its replacement EPSG:5105 has 0 and 58°N, 6,431 km apart.
@@ -24,7 +24,7 @@ fn offline() {
 fn cases() -> Vec<Value> {
     let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/epsg_deprecated.json")).unwrap();
     let data: Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(data["proj_version"], "9.8.1");
+    assert_eq!(data["proj_version"], "9.9.0");
     data["cases"].as_array().unwrap().clone()
 }
 
@@ -43,7 +43,7 @@ fn deprecated_codes_are_placed_by_their_own_definition_as_proj_does() {
     offline();
     let wgs84 = SpatialRef::from_epsg(4326).unwrap();
     let cases = cases();
-    assert_eq!(cases.len(), 498);
+    assert_eq!(cases.len(), 509);
     let mut bad = Vec::new();
     let mut compared = 0;
     for case in &cases {
@@ -72,7 +72,7 @@ fn deprecated_codes_are_placed_by_their_own_definition_as_proj_does() {
             bad.push(format!("EPSG:{code}: ({x}, {y}, {z}), PROJ {proj:?}"));
         }
     }
-    assert_eq!(compared, 490);
+    assert_eq!(compared, 501);
     // The pending codes still differ: remove one from `PENDING` once it matches.
     let matching: Vec<u32> = PENDING.iter().copied().filter(|c| !bad.iter().any(|b| b.starts_with(&format!("EPSG:{c}:")))).collect();
     assert!(matching.is_empty(), "pending codes that now match PROJ: {matching:?}");
@@ -147,7 +147,7 @@ fn ntm_zone_5_keeps_its_own_false_origin() {
     let wgs84 = SpatialRef::from_epsg(4326).unwrap();
     let own = SpatialRef::from_epsg(4855).unwrap();
     let (x, y) = Transformer::new(&wgs84, &own).unwrap().transform(5.2, 60.48).unwrap();
-    // PROJ 9.8.1: (83503.1262, 7707590.2512).
+    // PROJ 9.9.0: (83503.1262, 7707590.2512).
     assert!((x - 83_503.126_2).abs() < 1e-3 && (y - 7_707_590.251_2).abs() < 1e-3, "({x}, {y})");
     let gdal = SpatialRef::from_epsg_non_deprecated(4855).unwrap();
     assert_eq!(gdal.epsg, Some(5105));
@@ -199,7 +199,7 @@ fn geokeys_of_deprecated_codes_read_as_their_own_definition() {
             let tolerance = if crs.is_geographic() { 1e-8 } else { 1e-3 };
             let same = (a.0 - b.0).abs() < tolerance && (a.1 - b.1).abs() < tolerance;
             // EPSG:6986 (IGD05/12, 3D), written as WKT: terrio reads that WKT with a datum shift
-            // about 0.3 m from PROJ 9.8.1's ballpark, which it gives both the code and the WKT
+            // about 0.3 m from PROJ 9.9.0's ballpark, which it gives both the code and the WKT
             // (opengeos/terrio#1012, item 19).
             assert_eq!(same, code != 6986, "EPSG:{code}: {a:?} read back as {b:?}");
         }
@@ -216,7 +216,7 @@ fn geokeys_of_deprecated_codes_read_as_their_own_definition() {
     let back = SpatialRef::from_geokeys(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).unwrap();
     let wgs84 = SpatialRef::from_epsg(4326).unwrap();
     let (x, y) = Transformer::new(&wgs84, &back).unwrap().transform(5.2, 60.48).unwrap();
-    // PROJ 9.8.1: (83503.1262, 7707590.2512), as in `ntm_zone_5_keeps_its_own_false_origin`.
+    // PROJ 9.9.0: (83503.1262, 7707590.2512), as in `ntm_zone_5_keeps_its_own_false_origin`.
     assert!((x - 83_503.126_2).abs() < 1e-3 && (y - 7_707_590.251_2).abs() < 1e-3, "({x}, {y})");
 }
 

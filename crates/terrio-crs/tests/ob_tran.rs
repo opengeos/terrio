@@ -34,7 +34,7 @@ use angular::angular_error;
 #[test]
 fn rotated_projections_pole_forms_figures_and_units_match_frozen_proj() {
     let data: serde_json::Value = serde_json::from_str(include_str!("data/ob_tran_reference.json")).unwrap();
-    assert_eq!(data["environment"]["proj"], "9.8.1");
+    assert_eq!(data["environment"]["proj"], "9.9.0");
     for case in data["cases"].as_array().unwrap() {
         let name = case["name"].as_str().unwrap();
         let source = SpatialRef::parse(case["source"].as_str().unwrap()).unwrap();

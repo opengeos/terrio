@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Freeze ISEA cases against pyproj 3.8.0 / PROJ 9.8.1."""
+"""Freeze ISEA cases against pyproj 3.8.0 / PROJ 9.8.1.
+
+Not PROJ 9.9.0, whose `isea` is a new method terrio does not compute yet (opengeos/terrio#1012,
+item 67).
+"""
 
 import json
 import math
