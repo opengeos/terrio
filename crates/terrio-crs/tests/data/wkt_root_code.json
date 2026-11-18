@@ -744,6 +744,23 @@
    "terrio": null
   },
   {
+   "name": "WGS 84 on the datum unknown with its code after an EPSG code that is no number",
+   "wkt": "GEOGCRS[\"x\",DATUM[\"unknown\",ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",\"not-a-code\"],ID[\"EPSG\",4326]]",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "proj": [
+    10.0,
+    50.0
+   ],
+   "epsg": 4326,
+   "esri": null,
+   "declared": null,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
    "name": "WGS 84 on the datum unknown with its code after a projected CRS's",
    "wkt": "GEOGCRS[\"x\",DATUM[\"unknown\",ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",27700],ID[\"EPSG\",4326]]",
    "point": [
@@ -772,6 +789,23 @@
     50.0
    ],
    "epsg": 4326,
+   "esri": null,
+   "declared": null,
+   "terrio_epsg": null,
+   "terrio": null
+  },
+  {
+   "name": "WGS 84 on the datum unknown declaring an ESRI and a projected code",
+   "wkt": "GEOGCRS[\"x\",DATUM[\"unknown\",ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"ESRI\",102100],ID[\"EPSG\",27700]]",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "proj": [
+    10.0,
+    50.0
+   ],
+   "epsg": null,
    "esri": null,
    "declared": null,
    "terrio_epsg": null,

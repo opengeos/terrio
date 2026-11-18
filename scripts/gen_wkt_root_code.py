@@ -356,6 +356,11 @@ def main():
             (10.0, 50.0),
         ),
         (
+            "WGS 84 on the datum unknown with its code after an EPSG code that is no number",
+            unknown_wkt2('ID["EPSG","not-a-code"],ID["EPSG",4326]'),
+            (10.0, 50.0),
+        ),
+        (
             "WGS 84 on the datum unknown with its code after a projected CRS's",
             unknown_wkt2('ID["EPSG",27700],ID["EPSG",4326]'),
             (10.0, 50.0),
@@ -363,6 +368,11 @@ def main():
         (
             "WGS 84 on the datum unknown with its code after ESRI:104000",
             unknown_wkt2('ID["ESRI",104000],ID["EPSG",4326]'),
+            (10.0, 50.0),
+        ),
+        (
+            "WGS 84 on the datum unknown declaring an ESRI and a projected code",
+            unknown_wkt2('ID["ESRI",102100],ID["EPSG",27700]'),
             (10.0, 50.0),
         ),
         (

@@ -96,11 +96,11 @@ coordinate-system definitions without being assigned an unrelated EPSG code. Bot
 `VERTCRS` and its long form `VERTICALCRS` read the identifier of the CRS itself;
 identifiers on its datum, coordinate system or unit do not replace it. The root's
 identifier is read wherever it is among the root's children: before a `REMARK` or
-`AXIS`, or with a `URI` or `CITATION` of its own. Of several, the first one counts
-that is neither an ESRI one nor an EPSG one whose code is no CRS of the root's kind,
-as PROJ's `to_epsg()` takes it, so an identifier of another authority before the
-EPSG one leaves no EPSG code. These forms
-work in Rust, CLI/MCP, Python and JavaScript. Parsing engineering metadata does not
+`AXIS`, or with a `URI` or `CITATION` of its own. With several identifiers, the
+first that is not an ESRI identifier, nor an EPSG identifier whose code is not a CRS
+of the root's kind, gives the code, as PROJ's `to_epsg()` does. So an identifier of
+another authority placed before the EPSG one leaves no EPSG code. These forms work in
+Rust, CLI/MCP, Python and JavaScript. Parsing engineering metadata does not
 add transformations between arbitrary local grids and Earth-based CRSs.
 GeoTIFF and COG writers retain engineering definitions, including root identifiers,
 as full WKT in an ESRI PE citation with user-defined model type 32767 and a general
