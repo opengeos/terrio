@@ -92,3 +92,14 @@ def test_from_zero_reads_new(tmp_path):
     out = comment(tmp_path, summary("grew", 500, 0))
     assert "| ⚠️ | `warp_f32 grew` | 0 → 500 (**new**) | 0 → 500 (**new**) |" in out
     assert "inf" not in out
+
+
+def test_just_under_the_threshold_is_not_shown_as_10(tmp_path):
+    out = comment(tmp_path, summary("close", 10_996, 10_000), summary("over", 10_999, 10_000))
+    assert "10 k → 11 k (+10.0%)" not in out
+    assert "**+10.0%**" in out
+
+
+def test_verdict_says_from_0(tmp_path):
+    out = comment(tmp_path, summary("grew", 500, 0))
+    assert "warp_f32 grew from 0." in out

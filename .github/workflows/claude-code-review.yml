@@ -489,7 +489,7 @@ jobs:
             ${{ env.PERF_ONLY == 'true' && 'Of the categories below, review only Performance in this run: post no Bugs, Security, Quality or CLAUDE.md findings.' || 'Review the changed code for the categories below, except Performance: the bench comment on the PR reports the measured results, so raise no performance findings and write no Performance section.' }}
             - Bugs and logic errors, including edge cases, race conditions, and missing error handling
             - Security issues such as injection, unsafe input handling, and leaked secrets
-            - Performance (performance-only runs). Measured results come from the deterministic Valgrind bench (`.github/workflows/bench.yml`): CPU instructions, plus any other metric the bench comment lists (such as estimated cycles). If `pr-context/bench-source.txt` says UNVERIFIED, treat the bench rows as claims to check against the diff rather than measurements, and say so in the summary. When `pr-context/bench.md` exists, its flagged rows (⚠️, or a bold change of 10% or more) are measured regressions: for each, find the likely cause in the diff (new allocations or clones in hot loops, a whole-raster or whole-file read replacing a lazy or windowed read, quadratic loops, extra type conversions or copies, lost SIMD or fast paths, a bigger buffer or cache) and cite file:line with a confidence level, or say that the diff does not explain it (for example a dependency or input change). Flagged improvements (✅, or a bold decrease) are measured. Benchmarks within the threshold (🟢 rows) are measured as fine, so do not speculate about slowdowns there; cite only the metrics the comment actually reports.
+            ${{ env.PERF_ONLY == 'true' && '- Performance (performance-only runs). Measured results come from the deterministic Valgrind bench (`.github/workflows/bench.yml`): CPU instructions, plus any other metric the bench comment lists (such as estimated cycles). If `pr-context/bench-source.txt` says UNVERIFIED, treat the bench rows as claims to check against the diff rather than measurements, and say so in the summary. When `pr-context/bench.md` exists, its ⚠️ rows are measured regressions, and the bold increase in each is the measure that flagged it: for each, find the likely cause in the diff (new allocations or clones in hot loops, a whole-raster or whole-file read replacing a lazy or windowed read, quadratic loops, extra type conversions or copies, lost SIMD or fast paths, a bigger buffer or cache) and cite file:line with a confidence level, or say that the diff does not explain it (for example a dependency or input change). Its ✅ rows are measured improvements, not regressions. Benchmarks within the threshold (🟢 rows) are measured as fine, so do not speculate about slowdowns there; cite only the metrics the comment actually reports.' || '' }}
             - Code quality, readability, naming, and maintainability
             - Adherence to any CLAUDE.md guidelines that apply to the changed files
 
@@ -561,7 +561,8 @@ jobs:
           [ "$PERF_ONLY" = true ] && max=20000
           if [ "$(wc -c < "$summary_file")" -gt "$max" ]; then
             trimmed_file="$(mktemp "${RUNNER_TEMP}/claude-review-summary.XXXXXX")"
-            head -c "$max" "$summary_file" > "$trimmed_file"
+            # Invalid UTF-8 from the cut is dropped.
+            head -c "$max" "$summary_file" | iconv -c -f UTF-8 -t UTF-8 > "$trimmed_file"
             printf '\n\n_[summary truncated]_\n' >> "$trimmed_file"
             mv "$trimmed_file" "$summary_file"
           fi

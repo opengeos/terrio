@@ -1376,10 +1376,11 @@ polygons, each on 1 M synthetic pixels. The `bench` workflow runs both commits u
 (Callgrind) in the same job, and `bench comment` posts the table, with what each benchmark runs
 and its exact change, and sets the `perf-regression` label when a benchmark runs 10% or more
 instructions or estimated cycles. The Claude code review then adds, under the table, the likely
-cause of each slower benchmark in the diff; the regular code review leaves performance to this
-comment. Instruction counts of a commit repeat within
-0.01% between runs on one machine (both commits run on the same runner), where shared runners'
-timings vary by 10–30%. The check never fails a pull request.
+cause of each slower benchmark in the diff, for the authors it reviews automatically; for a
+first-time contributor, a maintainer starts it by removing and adding the `perf-regression` label
+again. The regular code review leaves performance to this comment. Instruction counts of a commit
+repeat within 0.01% between runs, and estimated cycles within 0.1%, on one machine (both commits
+run on the same runner), where shared runners' timings vary by 10–30%. The check never fails a pull request.
 
 The counts cover every thread of the second of two runs of each operation (the first loads the
 EPSG table, starts the thread pool and fills caches), with one worker thread. To run them

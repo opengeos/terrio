@@ -79,8 +79,13 @@ def percent(pct):
 
 
 def change(old, new):
-    """The change in percent, and as text."""
-    pct = (new - old) / old * 100.0 if old else float("inf") if new else 0.0
+    """The change in percent, rounded as it is shown, so a row flagged at 10% reads 10.0% or more,
+    and as text."""
+    if not old:
+        pct = float("inf") if new else 0.0
+    else:
+        pct = (new - old) / old * 100.0
+        pct = round(pct, 2) if abs(pct) < 1 else round(pct, 1)
     return pct, percent(pct)
 
 
@@ -120,7 +125,7 @@ def main():
     compared = sum(r[1] != "🆕" for r in table)
 
     def listed(rs):
-        return "; ".join(f"{r[3]} {percent(r[4])}" for r in rs)
+        return "; ".join(f"{r[3]} {'from 0' if r[4] == float('inf') else percent(r[4])}" for r in rs)
 
     out = ["<!-- terrio-bench: regression -->"] if slower else []
     out.append("### Performance vs main")
@@ -154,7 +159,7 @@ def main():
          "with one worker thread, on synthetic inputs."),
         ("- **CPU instructions**: the work done. **Est. cycles**: instructions plus cache and RAM misses, "
          "an estimate of the time taken."),
-        "- Both repeat within 0.01% between runs, so a change beyond that comes from the code, not from noise.",
+        "- Instructions repeat within 0.01% between runs, est. cycles within 0.1%: a larger change comes from the code.",
         (f"- ⚠️ slower or ✅ faster by {FLAG:g}% or more on either; 🟢 within ±{FLAG:g}%. "
          "Informational: this check never fails."),
         "- Run them locally: `cargo bench -p terrio --bench instructions`.",
