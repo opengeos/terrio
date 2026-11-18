@@ -566,3 +566,79 @@ fn a_compressed_strip_over_the_limit_is_still_refused() {
     let e = r.read_window(Window::new(0, 0, 1, 1), &band1()).unwrap_err();
     assert!(matches!(e, terrio::Error::DecodedLimitExceeded { limit: 1280, .. }), "{e}");
 }
+
+/// A big-endian ("MM") one-band TIFF of `cols` x `rows` samples of `bits` bits and
+/// `SampleFormat` `format`, stored as one uncompressed strip holding `data`.
+fn big_endian_strip(cols: u32, rows: u32, bits: u16, format: u16, data: &[u8]) -> Vec<u8> {
+    // (tag, type, value): SHORT 3 (left-justified in the value field), LONG 4.
+    let entries: [(u16, u16, u32); 9] = [
+        (256, 4, cols),
+        (257, 4, rows),
+        (258, 3, u32::from(bits)),
+        (259, 3, 1),
+        (262, 3, 1),
+        (273, 4, 0), // StripOffsets, set below
+        (278, 4, rows),
+        (279, 4, data.len() as u32),
+        (339, 3, u32::from(format)),
+    ];
+    let data_offset = 8 + 2 + entries.len() * 12 + 4;
+    let mut out = b"MM\0*".to_vec();
+    out.extend_from_slice(&8u32.to_be_bytes());
+    out.extend_from_slice(&(entries.len() as u16).to_be_bytes());
+    for (tag, typ, value) in entries {
+        let value = if tag == 273 { data_offset as u32 } else { value };
+        out.extend_from_slice(&tag.to_be_bytes());
+        out.extend_from_slice(&typ.to_be_bytes());
+        out.extend_from_slice(&1u32.to_be_bytes());
+        if typ == 3 {
+            out.extend_from_slice(&(value as u16).to_be_bytes());
+            out.extend_from_slice(&[0, 0]);
+        } else {
+            out.extend_from_slice(&value.to_be_bytes());
+        }
+    }
+    out.extend_from_slice(&[0; 4]);
+    assert_eq!(out.len(), data_offset);
+    out.extend_from_slice(data);
+    out
+}
+
+/// The rows of a big-endian Int16 or Float32 strip over the limit are read as their native type,
+/// with their values: the byte order and sample format are applied on the row path too.
+#[test]
+fn rows_of_a_big_endian_strip_over_the_limit_keep_their_type_and_values() {
+    use terrio::raster::RasterData;
+    let (cols, rows) = (8usize, 6usize);
+    let ints: Vec<i16> = (0..cols * rows).map(|i| (i as i16 - 20) * 101).collect();
+    let floats: Vec<f32> = (0..cols * rows).map(|i| i as f32 * -1.25).collect();
+    let cases = [
+        (16, 2, ints.iter().flat_map(|v| v.to_be_bytes()).collect::<Vec<u8>>(), ints.iter().map(|v| f64::from(*v)).collect::<Vec<f64>>()),
+        (32, 3, floats.iter().flat_map(|v| v.to_be_bytes()).collect(), floats.iter().map(|v| f64::from(*v)).collect()),
+    ];
+    for (bits, format, data, values) in cases {
+        let bytes = big_endian_strip(cols as u32, rows as u32, bits, format, &data);
+        // Two rows fit the limit, the strip does not: the window's rows are read by themselves.
+        let limits = TiffReadLimits { chunk_bytes: 2 * cols * usize::from(bits / 8) };
+        let mut r = LazyRaster::from_tiff_bytes_with_limits(bytes, limits).unwrap().unwrap();
+        let ds = r.read_window(Window::new(1, 2, 5, 2), &band1()).unwrap();
+        match (&ds.raster.data, bits) {
+            (RasterData::I16(_), 16) | (RasterData::F32(_), 32) => {}
+            (other, _) => panic!("{bits}-bit samples read as {other:?}"),
+        }
+        let expected: Vec<f64> = (2..4).flat_map(|y| (1..6).map(move |x| (x, y))).map(|(x, y)| values[y * cols + x]).collect();
+        assert_eq!(ds.raster.data.to_f64_vec(), expected, "{bits}-bit samples");
+    }
+}
+
+/// A strip whose StripByteCounts runs past the end of the file is decoded whole, and so refused
+/// over the limit, even when the file holds all of its pixels: the row path reads only strips
+/// the file holds as declared.
+#[test]
+fn a_strip_declared_past_the_end_of_the_file_is_not_read_by_rows() {
+    // 4 x 4 Float64 pixels: 128 bytes stored, 2,176 declared; rows of 32 bytes.
+    let bytes = tiff(4, 4, 128 + 2048, 128, false);
+    let mut r = LazyRaster::from_tiff_bytes_with_limits(bytes, TiffReadLimits { chunk_bytes: 64 }).unwrap().unwrap();
+    let e = r.read_window(Window::new(0, 1, 4, 1), &band1()).unwrap_err();
+    assert!(matches!(e, terrio::Error::DecodedLimitExceeded { limit: 64, .. }), "{e}");
+}
