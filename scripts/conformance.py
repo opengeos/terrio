@@ -2262,11 +2262,13 @@ def suite_healpix(ctx):
 def suite_isea(ctx):
     """ISEA, as PROJ strings and as GDAL's and ESRI's WKT, and its inverse refusals."""
     suite = Suite("isea", "Icosahedral Snyder Equal Area", "GDAL/PROJ",
-                  "14 configurations on the authalic sphere of WGS 84 and on WGS 84 (both orientations, "
-                  "central meridians, lat_0, azi, resolution and aperture, units and false offsets) and "
-                  "7,784 geographic samples, as PROJ strings, WKT2, WKT1 and ESRI WKT1; PROJ's inverse and "
-                  "its refusals. Projected allowance 1 mm; inverse 1e-8 degrees, longitude weighted by "
-                  "cos(latitude). Not compared with a PROJ whose isea differs from PROJ 9.8.1's.")
+                  "24 configurations on the authalic sphere of WGS 84 and on WGS 84 (both orientations, "
+                  "the projected origin by lat_0 and lon_0, azi, orient_lat and orient_lon, the "
+                  "dodecahedral dual and its nets, ignored resolution and aperture, units and false "
+                  "offsets) and 13,344 geographic samples, as PROJ strings, WKT2, WKT1 and ESRI WKT1; "
+                  "PROJ's inverse and its refusals. Projected allowance 1 mm; inverse 1e-8 degrees "
+                  "(1e-5 within 0.001 degrees of a pole), longitude weighted by cos(latitude). Not "
+                  "compared with a PROJ whose isea differs from PROJ 9.9.0's.")
     if missing_modules("osgeo"):
         suite.skipped = "needs GDAL Python bindings"
         return suite
@@ -2603,7 +2605,7 @@ def suite_crs(ctx):
     s = Suite(
         "crs",
         "Coordinate transformations",
-        "GDAL 3.12 and PROJ (`gdaltransform`)",
+        "GDAL 3.13.3 and PROJ 9.9.0 (EPSG reference points), PROJ (`gdaltransform`)",
         "50 reference points per EPSG geographic and projected CRS (the centre of its area of use "
         "and random points of it), transformed from WGS 84 (forward), 50 more back (inverse), and "
         "50 between the CRS and another whose area holds them, compared with GDAL's results, "
@@ -3073,7 +3075,7 @@ def suite_crs_grids(ctx):
     s = Suite(
         "crs-grids",
         "Datum shift grids, geoid models and coordinate epochs",
-        "GDAL 3.12 and PROJ, with the same grids",
+        "GDAL 3.13.3 and PROJ 9.9.0 (EPSG reference points), GDAL 3.12 and PROJ, with the same grids",
         "The EPSG reference points again, GDAL and terrio both using the grids of "
         "`scripts/proj_grids.txt` (crates/terrio-crs/tests/epsg_accuracy_grids.rs); then random "
         "points through every horizontal shift grid (NTv2 and GeoTIFF, forward and inverse), "

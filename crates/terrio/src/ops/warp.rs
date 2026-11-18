@@ -128,9 +128,9 @@ impl Cutline {
         Ok(Self { polygons, srs })
     }
 
-    /// Reads a cutline from a vector file.
+    /// Reads a cutline from a vector file, or from WKT or GeoJSON text.
     pub fn open(path: &str) -> Result<Self> {
-        Self::from_vector(&crate::open_vector(path, &Default::default())?)
+        Self::from_vector(&crate::memory::open_vector_or_geometries(path, &Default::default())?)
     }
 
     fn map(&self, f: &dyn Fn(f64, f64) -> Option<(f64, f64)>) -> Result<Polygons> {
@@ -241,6 +241,12 @@ pub struct WarpOptions {
     /// Make coordinates and kernel footprints independent of windows and memory chunks.
     /// Enabled by default; `TERRIO_WARP_GRID=GDAL` selects GDAL's chunk-dependent reference behavior.
     pub grid_invariant: bool,
+    /// Treat an unrotated geographic source covering exactly one turn of longitude as periodic:
+    /// interpolation neighbors wrap across its stored edge. Enabled by default. `false` keeps
+    /// them inside the stored columns, as for a regional source, for fields that are not
+    /// continuous across that edge (longitudes, class codes, per-tile products). Area methods
+    /// and `sum` count both stored edges under a footprint across the cut either way.
+    pub periodic_longitude: bool,
     /// Coordinate operation selection controls.
     pub transform_options: crate::crs::TransformOptions,
     /// Require geolocation-array georeferencing (`-geoloc`). Arrays are used automatically
@@ -336,6 +342,7 @@ impl Default for WarpOptions {
         Self {
             kernel_version: KernelVersion::default(),
             grid_invariant: grid_invariant_configured(),
+            periodic_longitude: true,
             transform_options: Default::default(),
             geoloc: false,
             geolocation: None,
@@ -1652,6 +1659,7 @@ impl<'a> Plan<'a> {
         let mut ctx = WarpContext {
             kernel_version: o.kernel_version,
             grid_invariant: o.grid_invariant,
+            periodic_longitude: o.periodic_longitude,
             t,
             approx: Approx { base: t, max_error: o.error_threshold, check_aliasing: o.grid_invariant },
             src_w: s.grid.width,
@@ -2738,6 +2746,7 @@ struct SourceWrap {
 struct WarpContext<'a> {
     kernel_version: KernelVersion,
     grid_invariant: bool,
+    periodic_longitude: bool,
     t: &'a GenImgProj,
     approx: Approx<'a>,
     src_w: usize,
@@ -4274,8 +4283,12 @@ impl WarpContext<'_> {
     }
 
     /// Only a source covering exactly one turn has an unambiguous periodic column grid.
-    /// Regional right edges and sources covering multiple turns keep their existing rules.
+    /// Regional right edges and sources covering multiple turns keep their existing rules, and
+    /// so does a one-turn source without [`WarpOptions::periodic_longitude`].
     fn global_longitude_turn(&self) -> Option<f64> {
+        if !self.periodic_longitude {
+            return None;
+        }
         self.source_longitude_turn().filter(|turn| turn.is_finite() && *turn > 0.0 && (self.src_w as f64 - turn).abs() <= turn * 1e-10)
     }
 
@@ -6156,6 +6169,7 @@ pub struct RegionWarp {
     translation: bool,
     kernel_version: KernelVersion,
     grid_invariant: bool,
+    periodic_longitude: bool,
     sum_scale: f64,
 }
 
@@ -6170,6 +6184,13 @@ impl RegionWarp {
     /// Selects grid-invariant sampling, or GDAL's chunk-dependent reference sampling.
     pub fn with_grid_invariance(mut self, enabled: bool) -> Self {
         self.grid_invariant = enabled;
+        self
+    }
+
+    /// Selects periodic columns for a source covering one turn of longitude (the default), or
+    /// finite edges (see [`WarpOptions::periodic_longitude`]).
+    pub fn with_periodic_longitude(mut self, enabled: bool) -> Self {
+        self.periodic_longitude = enabled;
         self
     }
 
@@ -6216,6 +6237,7 @@ impl RegionWarp {
             translation,
             kernel_version: KernelVersion::configured(),
             grid_invariant: grid_invariant_configured(),
+            periodic_longitude: true,
             sum_scale: 1.0,
         })
     }
@@ -6252,6 +6274,7 @@ impl RegionWarp {
             translation: false,
             kernel_version: KernelVersion::configured(),
             grid_invariant: grid_invariant_configured(),
+            periodic_longitude: true,
             sum_scale: 1.0,
         })
     }
@@ -6291,6 +6314,7 @@ impl RegionWarp {
             translation: false,
             kernel_version: KernelVersion::configured(),
             grid_invariant: grid_invariant_configured(),
+            periodic_longitude: true,
             sum_scale: 1.0,
         })
     }
@@ -6319,6 +6343,7 @@ impl RegionWarp {
             unified_center: false,
             kernel_version: self.kernel_version,
             grid_invariant: self.grid_invariant,
+            periodic_longitude: self.periodic_longitude,
             // GDAL's defaults: no SOURCE_EXTRA, SAMPLE_STEPS not ALL.
             source_extra: None,
             sample_all: false,
@@ -7006,6 +7031,84 @@ mod tests {
                     let regional = warp(&[&east], &options).unwrap().raster.data.to_f64_vec();
                     assert_eq!(regional[10], -999., "regional edge: {crs}, {resampling:?}, invariant={grid_invariant}");
                 }
+            }
+        }
+    }
+
+    /// Without `periodic_longitude`, a full-turn source's stored edge is an edge: interpolation
+    /// does not blend the two edge columns of a field that is not continuous there.
+    #[test]
+    fn finite_longitude_edges_keep_interpolation_inside_the_stored_columns() {
+        // Each pixel holds its centre longitude: -179.5 and 179.5 meet at the stored edge.
+        let world = raster(360, 180, [-180., 1., 0., 90., 0., -1.], 4326, |x, _| x as f64 - 179.5);
+        let turn = |d: f64| ((d + 180.).rem_euclid(360.) - 180.).abs();
+        for (grid_invariant, memory_limit) in [(true, 2048.), (true, 64e6), (false, 2048.), (false, 64e6)] {
+            for (crs, transform) in [
+                ("+proj=longlat +datum=WGS84 +lon_0=180", [-10.5, 1., 0., 60., 0., -1.]),
+                ("EPSG:3995", [-262_500., 25_000., 0., 1_250_000., 0., -25_000.]),
+            ] {
+                let run = |resampling, periodic_longitude| {
+                    let options = WarpOptions {
+                        dst_srs: Some(SpatialRef::parse(crs).unwrap()),
+                        dst_transform: Some(transform),
+                        size: Some((21, 2)),
+                        output_type: Some(DataType::F64),
+                        dst_nodata: Nodata::Values(vec![-999.]),
+                        resampling,
+                        grid_invariant,
+                        periodic_longitude,
+                        memory_limit,
+                        ..Default::default()
+                    };
+                    warp(&[&world], &options).unwrap().raster.data.to_f64_vec()
+                };
+                let nearest = run(Resampling::Nearest, false);
+                assert_eq!(nearest, run(Resampling::Nearest, true), "{crs}: nearest reads the same pixels either way");
+                assert!(nearest.iter().all(|v| *v != -999.), "{crs}: {nearest:?}");
+                for resampling in [Resampling::Bilinear, Resampling::Cubic] {
+                    let label = format!("{crs}, {resampling:?}, invariant={grid_invariant}");
+                    let worst = |values: &[f64]| values.iter().zip(&nearest).map(|(v, n)| turn(v - n)).fold(0., f64::max);
+                    let finite = run(resampling, false);
+                    assert!(finite.iter().all(|v| *v != -999.), "{label}: {finite:?}");
+                    // Each value stays on its own side of the edge. GDAL's chunk-dependent grid
+                    // filters a window across the edge over more columns, on that side only.
+                    assert!(finite.iter().zip(&nearest).all(|(v, n)| v.signum() == n.signum() && v.abs() > 160.), "{label}: {finite:?}");
+                    if grid_invariant {
+                        assert!(worst(&finite) <= 1., "{label}: {finite:?} against {nearest:?}");
+                    }
+                    assert!(worst(&run(resampling, true)) > 90., "{label}: the periodic default blends the edge columns");
+                }
+            }
+        }
+    }
+
+    /// A footprint across the stored edge covers both edge columns: area methods and `sum`
+    /// count both whatever `periodic_longitude` is, so that `sum` loses nothing.
+    #[test]
+    fn area_methods_count_both_stored_edges_with_finite_longitude_edges() {
+        // Columns 359 and 0 hold 2 and 4; the others 1.
+        let world = raster(360, 180, [0., 1., 0., 90., 0., -1.], 4326, |x, _| match x {
+            359 => 2.,
+            0 => 4.,
+            _ => 1.,
+        });
+        // One output pixel from 0.25 W to 0.75 E: a quarter of column 359 and three of column 0.
+        let run = |resampling, periodic_longitude| {
+            let options = WarpOptions {
+                dst_srs: Some(SpatialRef::parse("+proj=longlat +datum=WGS84 +lon_0=180").unwrap()),
+                dst_transform: Some([179.75, 1., 0., 60., 0., -1.]),
+                size: Some((1, 1)),
+                output_type: Some(DataType::F64),
+                resampling,
+                periodic_longitude,
+                ..Default::default()
+            };
+            warp(&[&world], &options).unwrap().raster.data.to_f64_vec()[0]
+        };
+        for (resampling, expected) in [(Resampling::Average, 3.5), (Resampling::Sum, 3.5), (Resampling::Max, 4.), (Resampling::Min, 2.)] {
+            for periodic_longitude in [true, false] {
+                let value = run(resampling, periodic_longitude);
+                assert!((value - expected).abs() < 1e-9, "{resampling:?}, periodic {periodic_longitude}: {value}");
             }
         }
     }

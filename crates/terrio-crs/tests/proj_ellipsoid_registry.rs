@@ -1,4 +1,4 @@
-//! The PROJ strings of the EPSG and ESRI registries keep their ellipsoids under PROJ 9.8.1's
+//! The PROJ strings of the EPSG and ESRI registries keep their ellipsoids under PROJ 9.9.0's
 //! reading of ellipsoid parameters (`tests/proj_ellipsoid_shape.rs`). For every registry CRS with
 //! a PROJ string, the semi-major and semi-minor axes terrio reads from that string (as PROJ
 //! writes it, `to_proj4`) are those of the CRS's own WKT `SPHEROID`/`ELLIPSOID` within 1e-6 m (the
@@ -30,6 +30,7 @@ const KEPT_AXES: &[(&str, f64, f64)] = &[
     ("EPSG:29381", 6377483.865, 6356165.382966326),
     ("EPSG:29383", 6377483.865, 6356165.382966326),
     ("EPSG:29385", 6377483.865, 6356165.382966326),
+    ("ESRI:103989", 6377483.865, 6356165.382966326),
     // PROJ's `walbeck` and `clrk66` by their semi-minor axes, where ESRI's WKT rounds the
     // inverse flattening.
     ("ESRI:37007", 6376896.0, 6355834.8467),

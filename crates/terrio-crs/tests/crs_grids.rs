@@ -266,3 +266,36 @@ fn coordinate_epochs_match_gdal() {
     let p = t.transform_4d(10.0, 50.0, 0.0, 2020.0).unwrap();
     assert!(close(p, (10.000000015839479, 49.99999997488123, 0.001877542585135)), "{p:?}");
 }
+
+/// With the grids present, the grids listed for a point are those of the operation PROJ 9.9.0
+/// uses for it (pyproj 3.8.0, network off, these grid directories: `get_last_used_operation()`
+/// after `transform`), all available; and a PROJ string naming a grid as before PROJ 7
+/// (`+nadgrids=conus`) finds it under its current name, at PROJ's value.
+#[test]
+fn the_grids_listed_are_those_proj_uses() {
+    if grids().is_none() {
+        return;
+    }
+    for (src, dst, x, y, expected) in [
+        ("EPSG:4267", "EPSG:4326", -100.0, 40.0, &["us_noaa_conus.tif", "us_noaa_kshpgn.tif"][..]),
+        ("EPSG:4267", "EPSG:4326", -100.0, 50.0, &["ca_nrc_ntv2_0.tif"]),
+        ("EPSG:4267", "EPSG:4326", -150.0, 62.0, &["us_noaa_alaska.tif"]),
+        ("EPSG:4267", "EPSG:4269", -100.0, 40.0, &["us_noaa_nadcon5_nad27_nad83_1986_conus.tif"]),
+        ("EPSG:27700", "EPSG:4326", 400000.0, 300000.0, &["uk_os_OSTN15_NTv2_OSGBtoETRS.tif"]),
+        ("EPSG:4149", "EPSG:4258", 7.44, 46.95, &["ch_swisstopo_CHENyx06_ETRS.tif"]),
+        ("EPSG:4149", "EPSG:4326", 7.44, 46.95, &[]),
+    ] {
+        let uses = Transformer::new(&crs(src), &crs(dst)).unwrap().best_operation_grids_at(x, y, 0.0).unwrap();
+        let names: Vec<&str> = uses.iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(names, expected, "{src} to {dst} at ({x}, {y})");
+        assert!(uses.iter().all(|g| g.available), "{uses:?}");
+    }
+    // PROJ: `CRS("+proj=longlat +ellps=clrk66 +nadgrids=conus +type=crs")` to EPSG:4326.
+    check(
+        "+proj=longlat +ellps=clrk66 +nadgrids=conus",
+        "EPSG:4326",
+        (-100.0, 40.0, 0.0),
+        (-100.00040583667015, 40.00000589472259, 0.0),
+        1e-9,
+    );
+}

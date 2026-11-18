@@ -1,4 +1,4 @@
-"""Generate crates/terrio-crs/tests/data/wkt2_bound.json: where PROJ 9.8.1 places points of WKT 2
+"""Generate crates/terrio-crs/tests/data/wkt2_bound.json: where PROJ 9.9.0 places points of WKT 2
 `BOUNDCRS`s with a Helmert transformation, to WGS 84 and to other CRSs (ED50, OSGB36), whose own
 transformations to WGS 84 PROJ then applies.
 
@@ -397,7 +397,7 @@ CASES += [
 
 
 def main():
-    assert pyproj.proj_version_str == "9.8.1", pyproj.proj_version_str
+    assert pyproj.proj_version_str == "9.9.0", pyproj.proj_version_str
     pyproj.network.set_network_enabled(False)
     # No grids, so the values don't depend on what is installed.
     for d in pyproj.datadir.get_data_dir().split(os.pathsep) + [

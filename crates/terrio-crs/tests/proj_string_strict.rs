@@ -1,6 +1,6 @@
-//! PROJ strings read as PROJ 9.8.1 reads them (opengeos/terrio#1012 items 36 and 37): angles as
+//! PROJ strings read as PROJ 9.9.0 reads them (opengeos/terrio#1012 items 36 and 37): angles as
 //! its `dmstor` reads them, and names it does not know refused rather than read as a default.
-//! References from pyproj 3.8.0 (PROJ 9.8.1, network off): `Transformer.from_crs("EPSG:4326",
+//! References from pyproj 3.8.0 (PROJ 9.9.0, network off): `Transformer.from_crs("EPSG:4326",
 //! CRS(s), always_xy=True).transform(10, 45, errcheck=True)`, or the CRS refused. Tolerance 1 mm.
 
 use terrio_crs::{SpatialRef, Transformer};
@@ -108,7 +108,7 @@ fn names_proj_does_not_know_are_refused() {
     }
 }
 
-/// A WKT's `PROJ4` extension is read as PROJ 9.8.1 reads it, as a pipeline step: values it cannot
+/// A WKT's `PROJ4` extension is read as PROJ 9.9.0 reads it, as a pipeline step: values it cannot
 /// read are not refused (`+lat_0=abc` is 0, `+x_0=abc` 0), and an angle is read by its longest
 /// readable start (`9d-30` is 9°, `40.5NS` 40.5°). Names PROJ does not know are refused, as by PROJ.
 /// PROJ's points from WGS 84 (10, 45).
@@ -159,7 +159,7 @@ fn an_unknown_ellipsoid_is_ignored_beside_a_sphere_radius_only() {
     assert_places("+proj=tmerc +lon_0=9 +a=6378137 +ellps=foo", None);
 }
 
-/// An angle that overflows (`1e400`) is not an angle, as PROJ 9.8.1's `dmstor` gives `HUGE_VAL`
+/// An angle that overflows (`1e400`) is not an angle, as PROJ 9.9.0's `dmstor` gives `HUGE_VAL`
 /// ("Invalid value for lat_0"). A `PROJ4` extension's `+vto_meter` fraction is read beside
 /// `+geoidgrids` too, and a negative one refused there, as PROJ's pipeline does (an optional grid,
 /// `@egm96_15.gtx`, so that the string reads without it): WGS 84 (10, 45) is
@@ -198,7 +198,7 @@ fn an_overflowing_angle_is_refused_and_a_fraction_reads_beside_a_geoid() {
     assert!(place("-1").is_err());
 }
 
-/// `+R_lat_a` and `+R_lat_g` are read as their longest readable start, as PROJ 9.8.1's `ell_set`
+/// `+R_lat_a` and `+R_lat_g` are read as their longest readable start, as PROJ 9.9.0's `ell_set`
 /// reads them, in a PROJ string too: `40.5NS` is 40.5°, `40d.` 40° and `abc` none (0°), while
 /// `40d30d`, an overflow, a latitude past 90° and an empty value are refused. PROJ places WGS 84
 /// (10, 45) as given.

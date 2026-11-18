@@ -215,7 +215,7 @@ fn tags_of(path: &str) -> terrio::Result<Option<Ifds>> {
             read_ifds(&mut r)?
         }
         Location::Local(p) if p.is_file() => {
-            let mut f = std::io::BufReader::new(std::fs::File::open(p)?);
+            let mut f = terrio::vfs::NearSeek::new(std::fs::File::open(p)?);
             check_tiff(&mut f, path)?;
             read_ifds(&mut f)?
         }
@@ -224,7 +224,7 @@ fn tags_of(path: &str) -> terrio::Result<Option<Ifds>> {
         Location::Url(_) | Location::S3 { .. } => None,
         _ => {
             let local = terrio::vfs::resolve(path)?;
-            let mut f = std::io::BufReader::new(std::fs::File::open(local.path())?);
+            let mut f = terrio::vfs::NearSeek::new(std::fs::File::open(local.path())?);
             check_tiff(&mut f, path)?;
             read_ifds(&mut f)?
         }
@@ -363,7 +363,7 @@ fn crs_to_projjson(crs: &str) -> PyResult<String> {
     SpatialRef::parse_literal(crs).and_then(|s| s.to_projjson()).py()
 }
 
-/// The PROJ string of a CRS as PROJ 9.8.1 writes it (`projinfo -o PROJ`, pyproj's
+/// The PROJ string of a CRS as PROJ 9.9.0 writes it (`projinfo -o PROJ`, pyproj's
 /// `CRS.to_proj4()`). Like PROJ's, it leaves out the datum transformation of an EPSG CRS, the
 /// angular unit of a geographic CRS and most axis orders: keep the code or WKT to keep the CRS.
 ///
@@ -378,7 +378,7 @@ fn crs_to_proj4(crs: &str) -> PyResult<Option<String>> {
 }
 
 /// The WKT 1 of a CRS without GDAL's ``EXTENSION["PROJ4", ...]``, for formats whose readers
-/// ignore it (a ``.prj`` file), as PROJ 9.8.1 exports ``WKT1_GDAL``. Web Mercator (EPSG:3857)
+/// ignore it (a ``.prj`` file), as PROJ 9.9.0 exports ``WKT1_GDAL``. Web Mercator (EPSG:3857)
 /// keeps GDAL's extension under its code.
 ///
 /// Returns:

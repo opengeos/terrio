@@ -1,4 +1,4 @@
-"""Generate the IAU_2015 registry from PROJ 9.8.1, including celestial bodies.
+"""Generate the IAU_2015 registry from PROJ 9.9.0, including celestial bodies.
 
 The pinned source is PROJ's data/sql/iau.sql (Git blob
 900564ccf2e1f77fb708ddc2c8544843b29bc24a), generated from the IAU 2015 report:
@@ -26,8 +26,8 @@ def main():
     database = next(Path(p) / 'proj.db' for p in osr.GetPROJSearchPaths() if (Path(p) / 'proj.db').is_file())
     connection = sqlite3.connect(database)
     metadata = dict(connection.execute('SELECT key,value FROM metadata'))
-    if metadata['PROJ.VERSION'] != '9.8.1':
-        raise RuntimeError('Regenerate with the pinned PROJ 9.8.1 database')
+    if metadata['PROJ.VERSION'] != '9.9.0':
+        raise RuntimeError('Regenerate with the pinned PROJ 9.9.0 database')
     geodetic = connection.execute('''
         SELECT g.code, e.celestial_body_code, g.code, cs.type, e.semi_major_axis,
                e.semi_minor_axis, e.inv_flattening, g.datum_code
@@ -81,7 +81,7 @@ def main():
     destination = ROOT / 'crates/terrio-crs/data/iau.tsv.zst'
     destination.write_bytes(compressed)
     info = dict(authority=AUTHORITY, version=2015, proj=metadata['PROJ.VERSION'], gdal=gdal.VersionInfo('RELEASE_NAME'),
-                source='https://github.com/OSGeo/PROJ/blob/9.8.1/data/sql/iau.sql', source_git_blob='900564ccf2e1f77fb708ddc2c8544843b29bc24a',
+                source='https://github.com/OSGeo/PROJ/blob/9.9.0/data/sql/iau.sql', source_git_blob='900564ccf2e1f77fb708ddc2c8544843b29bc24a',
                 source_report='https://doi.org/10.1007/s10569-017-9805-5', entries=len(rows), kinds=kinds)
     destination.with_name('iau-source.json').write_text(json.dumps(info, indent=2) + '\n')
     print(f'{len(rows)} definitions ({kinds}), {len(compressed)} compressed bytes')

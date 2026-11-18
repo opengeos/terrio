@@ -26,7 +26,7 @@ CUSTOM = (
     'PARAMETER["false_easting",500000],UNIT["metre",1]]'
 )
 
-# OGC:AnsiDate, exported by PROJ 9.8.1; valid WKT2 that WKT1 cannot express.
+# OGC:AnsiDate, exported by PROJ 9.9.0; valid WKT2 that WKT1 cannot express.
 TEMPORAL = (
     'TIMECRS["Ansi Date",TDATUM["Epoch time for the ANSI date (1-Jan-1601, 00h00 UTC) '
     'as day 1.",CALENDAR["proleptic Gregorian"],TIMEORIGIN[1600-12-31T00:00:00Z]],'

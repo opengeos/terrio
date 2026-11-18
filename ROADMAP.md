@@ -688,6 +688,10 @@ WebAssembly (the `terrio-js` npm package):
       727 of 732 points over 604 pairs (`scripts/compare_vertical_with_proj.py`); point motion
       operations between two epochs of a datum (the Canada velocity grids of NAD83(CSRS),
       NKG_RF17vel), PROJ's coordinates to 4 nm.
+- [ ] The grids a point's transformation needs, with where to get them, in the bindings: Rust has
+      `Transformer::best_operation_grids_at`, `GridUse` and `default_grid_search_paths` (#1075),
+      for applications that download grids themselves; Python and JavaScript (with
+      `registerGrid`) do not expose them yet, nor `Transformer::operation_at`.
     - [x] PROJ's chains through several intermediate datums. Done: between CRSs whose datums
           no transformation links directly, the transformations PROJ's database registers
           (concatenations of several among them included, NKG's too) chained through

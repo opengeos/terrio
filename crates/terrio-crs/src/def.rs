@@ -24,7 +24,7 @@ use super::math::*;
 use super::params::{Params, parse_dms, parse_dms_prefix};
 use super::projections::{self, Proj, Setup};
 use super::rotation::{ObTran, Rotation};
-use super::{SpatialRef, epsg, route, wkt1, wkt2};
+use super::{SpatialRef, epsg, grid, route, wkt1, wkt2};
 use crate::{Error, Result};
 use std::sync::Arc;
 
@@ -419,10 +419,121 @@ impl Proj for WbProj {
     }
 }
 
+/// The definitions built, by the hash of their CRS (taken before the lock) and then the CRS, while
+/// the grids found stay the same ([`grid::epoch`]), with the bytes they count against the memo's
+/// bound.
+#[derive(Default)]
+struct Memo {
+    epoch: (u64, u64),
+    defs: std::collections::HashMap<u64, Vec<(SpatialRef, Arc<Def>)>>,
+    bytes: usize,
+}
+
+/// The keys of the memo's hash, drawn once per process. Drawn after the host's `before_lock`,
+/// and by [`hold_for_fork`] before a fork, so that no child starts while they are being drawn.
+fn memo_keys() -> &'static std::collections::hash_map::RandomState {
+    MEMO_KEYS.get().unwrap_or_else(|| {
+        crate::host::before_lock();
+        MEMO_KEYS.get_or_init(Default::default)
+    })
+}
+
+static MEMO_KEYS: std::sync::OnceLock<std::collections::hash_map::RandomState> = std::sync::OnceLock::new();
+
+/// The hash of a CRS in the memo.
+fn memo_hash(s: &SpatialRef) -> u64 {
+    use std::hash::BuildHasher;
+    memo_keys().hash_one(s)
+}
+
+fn memo() -> &'static std::sync::Mutex<Memo> {
+    crate::host::before_lock();
+    static M: std::sync::OnceLock<std::sync::Mutex<Memo>> = std::sync::OnceLock::new();
+    M.get_or_init(Default::default)
+}
+
+/// Forgets the definitions built, for [`crate::reset_grid_cache`] and [`crate::register_grid`]:
+/// so that the grids they hold are let go, without waiting for the next definition built.
+/// Dropped after the lock is released.
+pub(crate) fn forget_definitions() {
+    let old = std::mem::take(&mut *memo().lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+    drop(old);
+}
+
+/// Holds the memo of definitions across a fork, for [`crate::host::hold_for_fork`], with its hash
+/// keys drawn first.
+#[cfg(all(unix, not(target_family = "wasm")))]
+pub(crate) fn hold_for_fork(held: &mut Vec<Box<dyn std::any::Any>>) {
+    memo_keys();
+    held.push(Box::new(memo().lock().unwrap_or_else(std::sync::PoisonError::into_inner)));
+}
+
 impl Def {
     /// The definition of a CRS: from the EPSG (or ESRI) table when it has a code there, else
-    /// from its PROJ string or WKT.
+    /// from its PROJ string or WKT. A copy of the one kept for the CRS ([`Def::shared`]).
     pub fn new(s: &SpatialRef) -> Result<Self> {
+        Self::shared(s).map(|d| (*d).clone())
+    }
+
+    /// The definition of a CRS, kept for the whole `SpatialRef`, as about 25 of its accessors
+    /// need it.
+    ///
+    /// It is built once while the grids found stay the same: until [`crate::reset_grid_cache`],
+    /// the settings that call it, or [`crate::register_grid`]. The transformations it holds
+    /// depend on those grids. A change of `TERRIO_NETWORK` or `PROJ_NETWORK` is seen at the next
+    /// reset, as by the grids' availability cache.
+    ///
+    /// The memo holds up to 1 MiB, counting the WKT and PROJ text, the definition's own size and
+    /// its lists of transformations. It does not count what definitions share (transformations,
+    /// projections) nor a projection's parameters. When full, it is emptied and fills again. A
+    /// definition larger than that, one built under `grid::without_grids` (where no grid counts
+    /// as found), and a failure are not kept.
+    pub(crate) fn shared(s: &SpatialRef) -> Result<Arc<Self>> {
+        if grid::without_grids_active() {
+            return Self::build(s).map(Arc::new);
+        }
+        let (epoch, hash) = (grid::epoch(), memo_hash(s));
+        {
+            let m = memo().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if m.epoch == epoch
+                && let Some((_, d)) = m.defs.get(&hash).and_then(|v| v.iter().find(|(k, _)| k == s))
+            {
+                return Ok(d.clone());
+            }
+        }
+        // Built without the lock: a definition may need others (a compound CRS's horizontal one).
+        let d = Arc::new(Self::build(s)?);
+        let ops = d.ops.len() + d.all_ops.as_ref().map_or(0, Vec::len);
+        let size = s.wkt.as_ref().map_or(0, String::len)
+            + s.proj4.as_ref().map_or(0, String::len)
+            + std::mem::size_of::<Self>()
+            + ops * std::mem::size_of::<Arc<Op>>();
+        if size > 1 << 20 {
+            return Ok(d);
+        }
+        // The definitions forgotten are dropped after the lock is released.
+        let mut forgotten = None;
+        {
+            let mut m = memo().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Not kept when the grids changed meanwhile: it may hold transformations they no
+            // longer give.
+            if epoch == grid::epoch() {
+                if m.epoch != epoch || m.bytes + size > 1 << 20 {
+                    forgotten = Some(std::mem::replace(&mut *m, Memo { epoch, ..Default::default() }));
+                }
+                let same = m.defs.entry(hash).or_default();
+                if !same.iter().any(|(k, _)| k == s) {
+                    same.push((s.clone(), d.clone()));
+                    m.bytes += size;
+                }
+            }
+        }
+        drop(forgotten);
+        Ok(d)
+    }
+
+    /// The definition of a CRS, built anew (see [`Def::new`]).
+    fn build(s: &SpatialRef) -> Result<Self> {
         // A retained engineering definition must not become an Earth CRS just because
         // its root carries a registered identifier. Keep explicit PROJ extensions handled
         // by the WKT path, before considering the authority registry.
@@ -460,10 +571,15 @@ impl Def {
             d.area = e.area;
             d.body = Some(399);
             // A WKT identified as this code but with its own TOWGS84: GDAL uses that shift (not
-            // over a PROJ4 extension, which describes the whole CRS).
+            // over a PROJ4 extension, which describes the whole CRS). Not over Web Mercator's
+            // `+nadgrids=@null` (its registry WKT's extension), which wins over `+towgs84` as in a
+            // PROJ string: PROJ 9.8.1 places ESRI's WGS_1984_Web_Mercator_Auxiliary_Sphere with a
+            // TOWGS84, zero or not, as EPSG:3857 (a shift on the projection's sphere put 45°N 30 km
+            // away).
             if s.proj4.is_none()
                 && let Some(w) = s.wkt.as_deref().filter(|w| *w != e.wkt && super::proj4_extension(w).is_none())
                 && let Some(t) = wkt_towgs84(w)
+                && !super::proj4_extension(&e.wkt).is_some_and(|p| p.split_whitespace().any(|t| t == "+nadgrids=@null"))
             {
                 d.ops = vec![Arc::new(Op::world(datum::towgs84_steps(d.ell, &t)))];
                 d.datum = None;
@@ -1659,6 +1775,11 @@ impl Def {
         }
     }
 
+    /// Whether it is a geographic 3D or a geocentric CRS.
+    pub fn geodetic_3d(&self) -> bool {
+        self.three_d || self.geocentric
+    }
+
     /// Whether coordinates have a height: a geographic 3D or a compound CRS.
     pub fn has_height(&self) -> bool {
         self.three_d || self.geocentric || self.vertical.is_some()
@@ -1983,9 +2104,10 @@ fn vto_meter(p: &Params, extension: bool) -> Option<f64> {
 /// Whether PROJ 9.8.1 maps a PROJ string's `+lat_0`, `+lon_0`, `+x_0` or `+y_0` into the CRS of a
 /// method, and so refuses a value that is not a number: as probed with pyproj 3.8.0
 /// (`CRS("+proj=<method> ... +<key>=abc")` refused where the same string without it is read),
-/// and Laborde by `data/proj_param_values.tsv`.
+/// and Laborde by `data/proj_param_values.tsv`; `tmerczoned`, new in PROJ 9.9.0, as PROJ 9.9.0
+/// with pyproj 3.8.0 maps them.
 fn proj_maps_origin(method: &str, key: &str) -> bool {
-    const ALL: [&str; 24] = [
+    const ALL: [&str; 25] = [
         "aea",
         "aeqd",
         "cass",
@@ -2009,6 +2131,7 @@ fn proj_maps_origin(method: &str, key: &str) -> bool {
         "stere",
         "sterea",
         "tmerc",
+        "tmerczoned",
         "webmerc",
     ];
     // Methods without a latitude of origin.
@@ -2063,15 +2186,14 @@ pub(crate) fn wkt_linear_unit(w: &str) -> Option<f64> {
     root.children("AXIS").find_map(|a| a.child("LENGTHUNIT")).and_then(|u| u.num(1))
 }
 
-/// Whether PROJ 9.8.1 leaves a parameter's value unchecked for a CRS's method, though terrio
-/// reads it: the methods its CRS parser keeps as PROJ strings (`murd2`, `tissot`, `isea`; terrio
+/// Whether PROJ 9.9.0 leaves a parameter's value unchecked for a CRS's method, though terrio
+/// reads it: the methods its CRS parser keeps as PROJ strings (`murd2`, `tissot`; terrio
 /// checks `tpers`'s itself), parameters outside the method's EPSG definition (`ortho`'s `alpha`, `ups`'s
 /// `lat_ts`), and `stere`'s `lat_ts` unless polar.
 fn unchecked(p: &Params, key: &str) -> bool {
     let polar = || p.str("lat_0").and_then(parse_dms).is_some_and(|l| l.abs() == 90.0);
     match p.str("proj").unwrap_or("") {
         "murd2" | "tissot" => matches!(key, "lat_1" | "lat_2"),
-        "isea" => key == "azi",
         "ortho" => key == "alpha",
         "ups" => key == "lat_ts",
         "stere" => key == "lat_ts" && !polar(),
@@ -2080,7 +2202,7 @@ fn unchecked(p: &Params, key: &str) -> bool {
 }
 
 /// The number a value starts with, as C's `atof` reads it (`0.5r` is 0.5); `None` without one.
-fn leading_number(v: &str) -> Option<f64> {
+pub(crate) fn leading_number(v: &str) -> Option<f64> {
     let v = v.trim_start();
     let b = v.as_bytes();
     let mut end = usize::from(matches!(b.first(), Some(b'+' | b'-')));
@@ -2313,5 +2435,63 @@ mod resolution_tests {
         assert_eq!(resolution(&wgs84_3d, Some(4979)).map(|r| r.0), Some(true));
         let renamed_3d = wgs84_3d.replacen(r#"GEOGCRS["WGS 84""#, r#"GEOGCRS["Local""#, 1);
         assert_eq!(resolution(&renamed_3d, Some(4979)), Some((false, None, false)));
+    }
+}
+
+#[cfg(test)]
+mod memo_tests {
+    use super::*;
+
+    /// A CRS's definition is built once and shared, until the grids found may change: a reset of
+    /// the grid caches or a grid registered.
+    #[test]
+    fn a_definition_is_kept_until_the_grids_change() {
+        let s = SpatialRef { epsg: Some(4267), ..Default::default() };
+        // Kept within an epoch: tried again when another test changes the grids meanwhile.
+        assert!((0..100).any(|_| {
+            let epoch = grid::epoch();
+            let (a, b) = (Def::shared(&s).unwrap(), Def::shared(&s).unwrap());
+            Arc::ptr_eq(&a, &b) && epoch == grid::epoch()
+        }));
+        // The definition kept is the one built: the same transformations, in the same order.
+        assert!((0..100).any(|_| {
+            let epoch = grid::epoch();
+            let (kept, built) = (Def::shared(&s).unwrap(), Def::build(&s).unwrap());
+            let same = kept.ops.len() == built.ops.len() && kept.ops.iter().zip(&built.ops).all(|(a, b)| Arc::ptr_eq(a, b));
+            same && epoch == grid::epoch()
+        }));
+        let first = Def::shared(&s).unwrap();
+        crate::reset_grid_cache();
+        let after_reset = Def::shared(&s).unwrap();
+        assert!(!Arc::ptr_eq(&first, &after_reset));
+        // A name no CRS uses, so that no other test's grids change.
+        crate::register_grid("terrio-memo-test-unused.gsb", vec![0; 16]);
+        assert!(!Arc::ptr_eq(&after_reset, &Def::shared(&s).unwrap()));
+        // Not kept while no grid counts as found.
+        let kept = Def::shared(&s).unwrap();
+        grid::without_grids(|| assert!(!Arc::ptr_eq(&kept, &Def::shared(&s).unwrap())));
+    }
+
+    /// A definition larger than the memo's bound is built each time, not kept.
+    #[test]
+    fn a_definition_larger_than_the_bound_is_not_kept() {
+        let s = SpatialRef { proj4: Some(format!("+proj=longlat +datum=WGS84{}", " ".repeat(1 << 20))), ..Default::default() };
+        let first = Def::shared(&s).unwrap();
+        assert!(!Arc::ptr_eq(&first, &Def::shared(&s).unwrap()));
+    }
+
+    /// The memo's lock is one `host::hold_for_fork` takes across a fork, and its hash keys are
+    /// drawn before it.
+    #[cfg(all(unix, not(target_family = "wasm")))]
+    #[test]
+    fn hold_for_fork_takes_the_memo_lock() {
+        let mut held = Vec::new();
+        hold_for_fork(&mut held);
+        assert!(MEMO_KEYS.get().is_some());
+        drop(held);
+        crate::host::assert_held_for_fork("definitions", |wait| {
+            let _g = memo().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            wait();
+        });
     }
 }

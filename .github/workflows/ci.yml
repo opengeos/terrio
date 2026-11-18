@@ -85,12 +85,12 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
-      # With .cargo/audit.toml, which ignores five advisories of wbraster's dependencies.
+      # With .cargo/audit.toml, which ignores nine advisories of wbraster's dependencies.
       - run: cargo audit
       - run: cargo audit --no-fetch --file fuzz/Cargo.lock
       # cargo audit ignores an advisory by its ID, in every version of the crate. Without the
       # config (read from the working directory), the only vulnerabilities in either lockfile may be
-      # those five, in zip 8.6.0 and ruzstd 0.8.3: another crate or version, or a new advisory for
+      # those nine, in zip 8.6.0 and ruzstd 0.8.3: another crate or version, or a new advisory for
       # these two, fails.
       - name: The ignored advisories are only wbraster's
         working-directory: ${{ runner.temp }}
@@ -102,9 +102,9 @@ jobs:
             found=$(jq -r '.vulnerabilities.list[] | "\(.package.name)@\(.package.version) \(.advisory.id)"' audit.json)
             echo "$lock:"
             echo "$found"
-            unexpected=$(echo "$found" | grep -vxE 'zip@8\.6\.0 RUSTSEC-2026-0(367|368|369|429)|ruzstd@0\.8\.3 RUSTSEC-2026-0344' || true)
+            unexpected=$(echo "$found" | grep -vxE 'zip@8\.6\.0 RUSTSEC-2026-0(367|368|369|429|545|546|547|548)|ruzstd@0\.8\.3 RUSTSEC-2026-0344' || true)
             if [ -n "$unexpected" ]; then
-              echo "::error::$lock: vulnerabilities other than wbraster's five (zip 8.6.0, ruzstd 0.8.3): ${unexpected//$'\n'/, }"
+              echo "::error::$lock: vulnerabilities other than wbraster's nine (zip 8.6.0, ruzstd 0.8.3): ${unexpected//$'\n'/, }"
               failed=1
             fi
           done
@@ -505,22 +505,37 @@ jobs:
       - uses: mamba-org/setup-micromamba@v3
         with:
           environment-name: gdal
-          # The reference: the EPSG table and test points come from GDAL 3.12.2 and PROJ 9.8.1, and
-          # newer EPSG databases change some transformations. rasterio comes from pip (with its
-          # bundled GDAL), as conda-forge has none for GDAL 3.12.2 with PROJ 9.8.
+          # The reference for the raster and vector comparisons: GDAL 3.12.2 and PROJ 9.8.1 (the
+          # EPSG points come from GDAL 3.13.3 and PROJ 9.9.0, below). rasterio comes from pip (with
+          # its bundled GDAL), as conda-forge has none for GDAL 3.12.2 with PROJ 9.8.
           create-args: gdal=${{ env.GDAL_REFERENCE_VERSION }} libgdal-core=${{ env.GDAL_REFERENCE_VERSION }} proj=9.8.1 libgdal-arrow-parquet libgdal-jp2openjpeg libgdal-netcdf libgdal-hdf5 libgdal-grib numpy pip pytest maturin pyproj pdal laspy lazrs-python pyarrow geopandas shapely
           cache-environment: true
       - name: Benchmark harness regression tests
         shell: micromamba-shell {0}
         run: python -m pytest -v scripts/tests
       - uses: actions/cache@v6
+        id: terrio-data
         with:
           path: terrio-data
-          # Holds the datum shift and geoid grids of scripts/proj_grids.txt too (230 MB).
-          key: terrio-data-gdal${{ env.GDAL_REFERENCE_VERSION }}-proj9.8.1-${{ hashFiles('scripts/fetch_test_data.sh', 'scripts/gen_epsg_points.py', 'scripts/proj_grids.txt') }}
+          # Holds the datum shift and geoid grids of scripts/proj_grids.txt too (230 MB), and the
+          # EPSG reference points of GDAL 3.13.3 and PROJ 9.9.0.
+          key: terrio-data-gdal${{ env.GDAL_REFERENCE_VERSION }}-proj9.8.1-points-gdal3.13.3-proj9.9.0-${{ hashFiles('scripts/fetch_test_data.sh', 'scripts/gen_epsg_points.py', 'scripts/proj_grids.txt') }}
+      # terrio-crs's EPSG table comes from PROJ 9.9.0, and so do the points its transformations
+      # are checked against (epsg_accuracy): GDAL 3.13.3, the first GDAL conda-forge builds on
+      # PROJ 9.9, in an environment of their own, only to compute them.
+      - name: EPSG reference points environment
+        if: steps.terrio-data.outputs.cache-hit != 'true'
+        shell: micromamba-shell {0}
+        run: micromamba create -y -n epsg-points -c conda-forge gdal=3.13.3 proj=9.9.0 pyproj numpy
       - name: Fetch test data
         shell: micromamba-shell {0}
-        run: scripts/fetch_test_data.sh terrio-data
+        env:
+          TERRIO_EPSG_POINTS_PYTHON: micromamba run -n epsg-points python
+        # The points must be there, or the EPSG tests would pass without checking, from a cache
+        # saved without them.
+        run: |
+          scripts/fetch_test_data.sh terrio-data
+          test -s terrio-data/epsg_points.tsv && test -s terrio-data/epsg_points_grids.tsv
       - name: Install rasterio, xarray, dask, rioxarray, zarr and scipy
         # With pip, on top of the cached environment: terrio.rio is compared with rasterio, and
         # terrio.xarray with rioxarray.

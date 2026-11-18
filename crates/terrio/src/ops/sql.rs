@@ -580,7 +580,7 @@ fn eval(e: &Expr, f: &Feature) -> Value {
     match e {
         Expr::Literal(v) => v.clone(),
         Expr::Index(i) => f.attributes.get(*i).map(Value::from_field).unwrap_or(Value::Null),
-        Expr::Fid => Value::Int(f.fid as i64),
+        Expr::Fid => Value::Int(crate::signed_fid(f)),
         Expr::Geometry => f.geometry.clone().map(|g| Value::Geometry(Box::new(g))).unwrap_or(Value::Null),
         Expr::Call(name, args) => spatial::evaluate(name, args, f),
         Expr::Transform(e, t) => t.evaluate(eval(e, f)),

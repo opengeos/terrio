@@ -68,10 +68,10 @@
   "4250 wkt1 datum authority": "GEOGCS[\"Leigon\",DATUM[\"Leigon\",SPHEROID[\"Clarke 1880 (RGS)\",6378249.145,293.465],AUTHORITY[\"EPSG\",\"6250\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
   "4258 esri": "GEOGCS[\"GCS_ETRS_1989\",DATUM[\"D_ETRS_1989\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
   "4258 esri gcs renamed": "GEOGCS[\"GCS_Local\",DATUM[\"D_ETRS_1989\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
-  "4258 wkt2 no ids": "GEOGCRS[\"ETRS89\",ENSEMBLE[\"European Terrestrial Reference System 1989 ensemble\",MEMBER[\"European Terrestrial Reference Frame 1989\"],MEMBER[\"European Terrestrial Reference Frame 1990\"],MEMBER[\"European Terrestrial Reference Frame 1991\"],MEMBER[\"European Terrestrial Reference Frame 1992\"],MEMBER[\"European Terrestrial Reference Frame 1993\"],MEMBER[\"European Terrestrial Reference Frame 1994\"],MEMBER[\"European Terrestrial Reference Frame 1996\"],MEMBER[\"European Terrestrial Reference Frame 1997\"],MEMBER[\"European Terrestrial Reference Frame 2000\"],MEMBER[\"European Terrestrial Reference Frame 2005\"],MEMBER[\"European Terrestrial Reference Frame 2014\"],MEMBER[\"European Terrestrial Reference Frame 2020\"],ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ENSEMBLEACCURACY[0.1]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Has been realized through ETRF89, ETRF90, ETRF91, ETRF92, ETRF93, ETRF94, ETRF96, ETRF97, ETRF2000, ETRF2005 and ETRF2014. This 'ensemble' covers any or all of these realizations without distinction.\"]]",
-  "4258 wkt2 ensemble id, renamed": "GEOGCRS[\"Local\",ENSEMBLE[\"European Terrestrial Reference System 1989 ensemble\",MEMBER[\"European Terrestrial Reference Frame 1989\"],MEMBER[\"European Terrestrial Reference Frame 1990\"],MEMBER[\"European Terrestrial Reference Frame 1991\"],MEMBER[\"European Terrestrial Reference Frame 1992\"],MEMBER[\"European Terrestrial Reference Frame 1993\"],MEMBER[\"European Terrestrial Reference Frame 1994\"],MEMBER[\"European Terrestrial Reference Frame 1996\"],MEMBER[\"European Terrestrial Reference Frame 1997\"],MEMBER[\"European Terrestrial Reference Frame 2000\"],MEMBER[\"European Terrestrial Reference Frame 2005\"],MEMBER[\"European Terrestrial Reference Frame 2014\"],MEMBER[\"European Terrestrial Reference Frame 2020\"],ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ENSEMBLEACCURACY[0.1],ID[\"EPSG\",6258]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Has been realized through ETRF89, ETRF90, ETRF91, ETRF92, ETRF93, ETRF94, ETRF96, ETRF97, ETRF2000, ETRF2005 and ETRF2014. This 'ensemble' covers any or all of these realizations without distinction.\"]]",
-  "4258 wkt2 datum id": "GEOGCRS[\"ETRS89\",ENSEMBLE[\"European Terrestrial Reference System 1989 ensemble\",MEMBER[\"European Terrestrial Reference Frame 1989\"],MEMBER[\"European Terrestrial Reference Frame 1990\"],MEMBER[\"European Terrestrial Reference Frame 1991\"],MEMBER[\"European Terrestrial Reference Frame 1992\"],MEMBER[\"European Terrestrial Reference Frame 1993\"],MEMBER[\"European Terrestrial Reference Frame 1994\"],MEMBER[\"European Terrestrial Reference Frame 1996\"],MEMBER[\"European Terrestrial Reference Frame 1997\"],MEMBER[\"European Terrestrial Reference Frame 2000\"],MEMBER[\"European Terrestrial Reference Frame 2005\"],MEMBER[\"European Terrestrial Reference Frame 2014\"],MEMBER[\"European Terrestrial Reference Frame 2020\"],ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ENSEMBLEACCURACY[0.1],ID[\"EPSG\",6258]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Has been realized through ETRF89, ETRF90, ETRF91, ETRF92, ETRF93, ETRF94, ETRF96, ETRF97, ETRF2000, ETRF2005 and ETRF2014. This 'ensemble' covers any or all of these realizations without distinction.\"]]",
-  "4258 wkt2 datum id, renamed": "GEOGCRS[\"Local\",ENSEMBLE[\"European Terrestrial Reference System 1989 ensemble\",MEMBER[\"European Terrestrial Reference Frame 1989\"],MEMBER[\"European Terrestrial Reference Frame 1990\"],MEMBER[\"European Terrestrial Reference Frame 1991\"],MEMBER[\"European Terrestrial Reference Frame 1992\"],MEMBER[\"European Terrestrial Reference Frame 1993\"],MEMBER[\"European Terrestrial Reference Frame 1994\"],MEMBER[\"European Terrestrial Reference Frame 1996\"],MEMBER[\"European Terrestrial Reference Frame 1997\"],MEMBER[\"European Terrestrial Reference Frame 2000\"],MEMBER[\"European Terrestrial Reference Frame 2005\"],MEMBER[\"European Terrestrial Reference Frame 2014\"],MEMBER[\"European Terrestrial Reference Frame 2020\"],ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ENSEMBLEACCURACY[0.1],ID[\"EPSG\",6258]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Has been realized through ETRF89, ETRF90, ETRF91, ETRF92, ETRF93, ETRF94, ETRF96, ETRF97, ETRF2000, ETRF2005 and ETRF2014. This 'ensemble' covers any or all of these realizations without distinction.\"]]",
+  "4258 wkt2 no ids": "GEOGCRS[\"ETRS89\",ENSEMBLE[\"European Terrestrial Reference System 1989 ensemble\",MEMBER[\"European Terrestrial Reference Frame 1989\"],MEMBER[\"European Terrestrial Reference Frame 1990\"],MEMBER[\"European Terrestrial Reference Frame 1991\"],MEMBER[\"European Terrestrial Reference Frame 1992\"],MEMBER[\"European Terrestrial Reference Frame 1993\"],MEMBER[\"European Terrestrial Reference Frame 1994\"],MEMBER[\"European Terrestrial Reference Frame 1996\"],MEMBER[\"European Terrestrial Reference Frame 1997\"],MEMBER[\"European Terrestrial Reference Frame 2000\"],MEMBER[\"European Terrestrial Reference Frame 2005\"],MEMBER[\"European Terrestrial Reference Frame 2014\"],MEMBER[\"European Terrestrial Reference Frame 2020\"],MEMBER[\"ETRS89-DNK\"],MEMBER[\"Estonia 1997\"],MEMBER[\"Albanian Geodetic Reference Frame 2008\"],MEMBER[\"Albanian Geodetic Reference Frame 2014\"],MEMBER[\"ETRS89-AUT [2002]\"],MEMBER[\"Belgian Reference Frame 2002\"],MEMBER[\"Belgian Reference Frame 2011\"],MEMBER[\"BH_ETRS89\"],MEMBER[\"Bulgaria Geodetic System 2005\"],MEMBER[\"Croatian Terrestrial Reference System 1996\"],MEMBER[\"AGRS2010 (ETRF2000)\"],MEMBER[\"CROPOS\"],MEMBER[\"ETRF2000 Poland\"],MEMBER[\"ETRS89/DREF91 Realization 2016\"],MEMBER[\"ETRS89/DREF91 Realization 2025\"],MEMBER[\"ETRS89-CZE [2007]\"],MEMBER[\"ETRS89-ESP [REGENTE]\"],MEMBER[\"ETRS89-ESP [ERGNSS]\"],MEMBER[\"ETRS89-FRO [2008]\"],MEMBER[\"Hellenic Terrestrial Reference System of 2007\"],MEMBER[\"ETRS89-HUN [ETRF2000]\"],MEMBER[\"ETRS89-IRE [ETRF2000]\"],MEMBER[\"ETRS89-MKD [EUREF-MAK2010]\"],MEMBER[\"EUREF89\"],MEMBER[\"ETRS89-PRT [1995]\"],MEMBER[\"ETRS89-ROU [ETRF2000]\"],MEMBER[\"ETRS89-SVK [SKTRF09]\"],MEMBER[\"ETRS89-SVK [SKTRF2022]\"],MEMBER[\"EUREF-FIN\"],MEMBER[\"Istituto Geografico Militare 1995\"],MEMBER[\"Kosovo Reference System 2001\"],MEMBER[\"Latvian geodetic coordinate system 1992\"],MEMBER[\"Latvian coordinate system 2020\"],MEMBER[\"Lithuania 1994 (ETRS89)\"],MEMBER[\"MOLDREF99\"],MEMBER[\"OSNet v2009\"],MEMBER[\"Reseau Geodesique Francais 1993 v1\"],MEMBER[\"Reseau Geodesique Francais 1993 v2\"],MEMBER[\"Reseau Geodesique Francais 1993 v2b\"],MEMBER[\"Rete Dinamica Nazionale 2008\"],MEMBER[\"Serbian Reference Network 1998\"],MEMBER[\"Serbian Spatial Reference System 2000\"],MEMBER[\"Slovenia Geodetic Datum 1996\"],MEMBER[\"SWEREF 99\"],MEMBER[\"ETRS89-LUX [2020]\"],MEMBER[\"Nordic Geodetic Commission ETRF14\"],MEMBER[\"ETRS89-LUX [2025]\"],MEMBER[\"Swiss Terrestrial Reference System 1995\"],ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ENSEMBLEACCURACY[0.1]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Has been realized through ETRF89, ETRF90, ETRF91, ETRF92, ETRF93, ETRF94, ETRF96, ETRF97, ETRF2000, ETRF2005 and ETRF2014. This 'ensemble' covers any or all of these realizations without distinction.\"]]",
+  "4258 wkt2 ensemble id, renamed": "GEOGCRS[\"Local\",ENSEMBLE[\"European Terrestrial Reference System 1989 ensemble\",MEMBER[\"European Terrestrial Reference Frame 1989\"],MEMBER[\"European Terrestrial Reference Frame 1990\"],MEMBER[\"European Terrestrial Reference Frame 1991\"],MEMBER[\"European Terrestrial Reference Frame 1992\"],MEMBER[\"European Terrestrial Reference Frame 1993\"],MEMBER[\"European Terrestrial Reference Frame 1994\"],MEMBER[\"European Terrestrial Reference Frame 1996\"],MEMBER[\"European Terrestrial Reference Frame 1997\"],MEMBER[\"European Terrestrial Reference Frame 2000\"],MEMBER[\"European Terrestrial Reference Frame 2005\"],MEMBER[\"European Terrestrial Reference Frame 2014\"],MEMBER[\"European Terrestrial Reference Frame 2020\"],MEMBER[\"ETRS89-DNK\"],MEMBER[\"Estonia 1997\"],MEMBER[\"Albanian Geodetic Reference Frame 2008\"],MEMBER[\"Albanian Geodetic Reference Frame 2014\"],MEMBER[\"ETRS89-AUT [2002]\"],MEMBER[\"Belgian Reference Frame 2002\"],MEMBER[\"Belgian Reference Frame 2011\"],MEMBER[\"BH_ETRS89\"],MEMBER[\"Bulgaria Geodetic System 2005\"],MEMBER[\"Croatian Terrestrial Reference System 1996\"],MEMBER[\"AGRS2010 (ETRF2000)\"],MEMBER[\"CROPOS\"],MEMBER[\"ETRF2000 Poland\"],MEMBER[\"ETRS89/DREF91 Realization 2016\"],MEMBER[\"ETRS89/DREF91 Realization 2025\"],MEMBER[\"ETRS89-CZE [2007]\"],MEMBER[\"ETRS89-ESP [REGENTE]\"],MEMBER[\"ETRS89-ESP [ERGNSS]\"],MEMBER[\"ETRS89-FRO [2008]\"],MEMBER[\"Hellenic Terrestrial Reference System of 2007\"],MEMBER[\"ETRS89-HUN [ETRF2000]\"],MEMBER[\"ETRS89-IRE [ETRF2000]\"],MEMBER[\"ETRS89-MKD [EUREF-MAK2010]\"],MEMBER[\"EUREF89\"],MEMBER[\"ETRS89-PRT [1995]\"],MEMBER[\"ETRS89-ROU [ETRF2000]\"],MEMBER[\"ETRS89-SVK [SKTRF09]\"],MEMBER[\"ETRS89-SVK [SKTRF2022]\"],MEMBER[\"EUREF-FIN\"],MEMBER[\"Istituto Geografico Militare 1995\"],MEMBER[\"Kosovo Reference System 2001\"],MEMBER[\"Latvian geodetic coordinate system 1992\"],MEMBER[\"Latvian coordinate system 2020\"],MEMBER[\"Lithuania 1994 (ETRS89)\"],MEMBER[\"MOLDREF99\"],MEMBER[\"OSNet v2009\"],MEMBER[\"Reseau Geodesique Francais 1993 v1\"],MEMBER[\"Reseau Geodesique Francais 1993 v2\"],MEMBER[\"Reseau Geodesique Francais 1993 v2b\"],MEMBER[\"Rete Dinamica Nazionale 2008\"],MEMBER[\"Serbian Reference Network 1998\"],MEMBER[\"Serbian Spatial Reference System 2000\"],MEMBER[\"Slovenia Geodetic Datum 1996\"],MEMBER[\"SWEREF 99\"],MEMBER[\"ETRS89-LUX [2020]\"],MEMBER[\"Nordic Geodetic Commission ETRF14\"],MEMBER[\"ETRS89-LUX [2025]\"],MEMBER[\"Swiss Terrestrial Reference System 1995\"],ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ENSEMBLEACCURACY[0.1],ID[\"EPSG\",6258]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Has been realized through ETRF89, ETRF90, ETRF91, ETRF92, ETRF93, ETRF94, ETRF96, ETRF97, ETRF2000, ETRF2005 and ETRF2014. This 'ensemble' covers any or all of these realizations without distinction.\"]]",
+  "4258 wkt2 datum id": "GEOGCRS[\"ETRS89\",ENSEMBLE[\"European Terrestrial Reference System 1989 ensemble\",MEMBER[\"European Terrestrial Reference Frame 1989\"],MEMBER[\"European Terrestrial Reference Frame 1990\"],MEMBER[\"European Terrestrial Reference Frame 1991\"],MEMBER[\"European Terrestrial Reference Frame 1992\"],MEMBER[\"European Terrestrial Reference Frame 1993\"],MEMBER[\"European Terrestrial Reference Frame 1994\"],MEMBER[\"European Terrestrial Reference Frame 1996\"],MEMBER[\"European Terrestrial Reference Frame 1997\"],MEMBER[\"European Terrestrial Reference Frame 2000\"],MEMBER[\"European Terrestrial Reference Frame 2005\"],MEMBER[\"European Terrestrial Reference Frame 2014\"],MEMBER[\"European Terrestrial Reference Frame 2020\"],MEMBER[\"ETRS89-DNK\"],MEMBER[\"Estonia 1997\"],MEMBER[\"Albanian Geodetic Reference Frame 2008\"],MEMBER[\"Albanian Geodetic Reference Frame 2014\"],MEMBER[\"ETRS89-AUT [2002]\"],MEMBER[\"Belgian Reference Frame 2002\"],MEMBER[\"Belgian Reference Frame 2011\"],MEMBER[\"BH_ETRS89\"],MEMBER[\"Bulgaria Geodetic System 2005\"],MEMBER[\"Croatian Terrestrial Reference System 1996\"],MEMBER[\"AGRS2010 (ETRF2000)\"],MEMBER[\"CROPOS\"],MEMBER[\"ETRF2000 Poland\"],MEMBER[\"ETRS89/DREF91 Realization 2016\"],MEMBER[\"ETRS89/DREF91 Realization 2025\"],MEMBER[\"ETRS89-CZE [2007]\"],MEMBER[\"ETRS89-ESP [REGENTE]\"],MEMBER[\"ETRS89-ESP [ERGNSS]\"],MEMBER[\"ETRS89-FRO [2008]\"],MEMBER[\"Hellenic Terrestrial Reference System of 2007\"],MEMBER[\"ETRS89-HUN [ETRF2000]\"],MEMBER[\"ETRS89-IRE [ETRF2000]\"],MEMBER[\"ETRS89-MKD [EUREF-MAK2010]\"],MEMBER[\"EUREF89\"],MEMBER[\"ETRS89-PRT [1995]\"],MEMBER[\"ETRS89-ROU [ETRF2000]\"],MEMBER[\"ETRS89-SVK [SKTRF09]\"],MEMBER[\"ETRS89-SVK [SKTRF2022]\"],MEMBER[\"EUREF-FIN\"],MEMBER[\"Istituto Geografico Militare 1995\"],MEMBER[\"Kosovo Reference System 2001\"],MEMBER[\"Latvian geodetic coordinate system 1992\"],MEMBER[\"Latvian coordinate system 2020\"],MEMBER[\"Lithuania 1994 (ETRS89)\"],MEMBER[\"MOLDREF99\"],MEMBER[\"OSNet v2009\"],MEMBER[\"Reseau Geodesique Francais 1993 v1\"],MEMBER[\"Reseau Geodesique Francais 1993 v2\"],MEMBER[\"Reseau Geodesique Francais 1993 v2b\"],MEMBER[\"Rete Dinamica Nazionale 2008\"],MEMBER[\"Serbian Reference Network 1998\"],MEMBER[\"Serbian Spatial Reference System 2000\"],MEMBER[\"Slovenia Geodetic Datum 1996\"],MEMBER[\"SWEREF 99\"],MEMBER[\"ETRS89-LUX [2020]\"],MEMBER[\"Nordic Geodetic Commission ETRF14\"],MEMBER[\"ETRS89-LUX [2025]\"],MEMBER[\"Swiss Terrestrial Reference System 1995\"],ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ENSEMBLEACCURACY[0.1],ID[\"EPSG\",6258]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Has been realized through ETRF89, ETRF90, ETRF91, ETRF92, ETRF93, ETRF94, ETRF96, ETRF97, ETRF2000, ETRF2005 and ETRF2014. This 'ensemble' covers any or all of these realizations without distinction.\"]]",
+  "4258 wkt2 datum id, renamed": "GEOGCRS[\"Local\",ENSEMBLE[\"European Terrestrial Reference System 1989 ensemble\",MEMBER[\"European Terrestrial Reference Frame 1989\"],MEMBER[\"European Terrestrial Reference Frame 1990\"],MEMBER[\"European Terrestrial Reference Frame 1991\"],MEMBER[\"European Terrestrial Reference Frame 1992\"],MEMBER[\"European Terrestrial Reference Frame 1993\"],MEMBER[\"European Terrestrial Reference Frame 1994\"],MEMBER[\"European Terrestrial Reference Frame 1996\"],MEMBER[\"European Terrestrial Reference Frame 1997\"],MEMBER[\"European Terrestrial Reference Frame 2000\"],MEMBER[\"European Terrestrial Reference Frame 2005\"],MEMBER[\"European Terrestrial Reference Frame 2014\"],MEMBER[\"European Terrestrial Reference Frame 2020\"],MEMBER[\"ETRS89-DNK\"],MEMBER[\"Estonia 1997\"],MEMBER[\"Albanian Geodetic Reference Frame 2008\"],MEMBER[\"Albanian Geodetic Reference Frame 2014\"],MEMBER[\"ETRS89-AUT [2002]\"],MEMBER[\"Belgian Reference Frame 2002\"],MEMBER[\"Belgian Reference Frame 2011\"],MEMBER[\"BH_ETRS89\"],MEMBER[\"Bulgaria Geodetic System 2005\"],MEMBER[\"Croatian Terrestrial Reference System 1996\"],MEMBER[\"AGRS2010 (ETRF2000)\"],MEMBER[\"CROPOS\"],MEMBER[\"ETRF2000 Poland\"],MEMBER[\"ETRS89/DREF91 Realization 2016\"],MEMBER[\"ETRS89/DREF91 Realization 2025\"],MEMBER[\"ETRS89-CZE [2007]\"],MEMBER[\"ETRS89-ESP [REGENTE]\"],MEMBER[\"ETRS89-ESP [ERGNSS]\"],MEMBER[\"ETRS89-FRO [2008]\"],MEMBER[\"Hellenic Terrestrial Reference System of 2007\"],MEMBER[\"ETRS89-HUN [ETRF2000]\"],MEMBER[\"ETRS89-IRE [ETRF2000]\"],MEMBER[\"ETRS89-MKD [EUREF-MAK2010]\"],MEMBER[\"EUREF89\"],MEMBER[\"ETRS89-PRT [1995]\"],MEMBER[\"ETRS89-ROU [ETRF2000]\"],MEMBER[\"ETRS89-SVK [SKTRF09]\"],MEMBER[\"ETRS89-SVK [SKTRF2022]\"],MEMBER[\"EUREF-FIN\"],MEMBER[\"Istituto Geografico Militare 1995\"],MEMBER[\"Kosovo Reference System 2001\"],MEMBER[\"Latvian geodetic coordinate system 1992\"],MEMBER[\"Latvian coordinate system 2020\"],MEMBER[\"Lithuania 1994 (ETRS89)\"],MEMBER[\"MOLDREF99\"],MEMBER[\"OSNet v2009\"],MEMBER[\"Reseau Geodesique Francais 1993 v1\"],MEMBER[\"Reseau Geodesique Francais 1993 v2\"],MEMBER[\"Reseau Geodesique Francais 1993 v2b\"],MEMBER[\"Rete Dinamica Nazionale 2008\"],MEMBER[\"Serbian Reference Network 1998\"],MEMBER[\"Serbian Spatial Reference System 2000\"],MEMBER[\"Slovenia Geodetic Datum 1996\"],MEMBER[\"SWEREF 99\"],MEMBER[\"ETRS89-LUX [2020]\"],MEMBER[\"Nordic Geodetic Commission ETRF14\"],MEMBER[\"ETRS89-LUX [2025]\"],MEMBER[\"Swiss Terrestrial Reference System 1995\"],ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ENSEMBLEACCURACY[0.1],ID[\"EPSG\",6258]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Has been realized through ETRF89, ETRF90, ETRF91, ETRF92, ETRF93, ETRF94, ETRF96, ETRF97, ETRF2000, ETRF2005 and ETRF2014. This 'ensemble' covers any or all of these realizations without distinction.\"]]",
   "4258 wkt1 datum authority": "GEOGCS[\"ETRS89\",DATUM[\"European_Terrestrial_Reference_System_1989\",SPHEROID[\"GRS 1980\",6378137,298.257222101],AUTHORITY[\"EPSG\",\"6258\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
   "4278 esri": "GEOGCS[\"GCS_OSGB_1970_SN\",DATUM[\"D_OSGB_1970_SN\",SPHEROID[\"Airy_1830\",6377563.396,299.3249646]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
   "4278 esri gcs renamed": "GEOGCS[\"GCS_Local\",DATUM[\"D_OSGB_1970_SN\",SPHEROID[\"Airy_1830\",6377563.396,299.3249646]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
@@ -274,10 +274,10 @@
   "6318 wkt2 alias name, renamed datum": "GEOGCRS[\"415\",DATUM[\"Local datum\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ANCHOREPOCH[2010],ID[\"EPSG\",1116]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Note: this CRS includes longitudes which are POSITIVE EAST. Replaces NAD83(CORS96) and NAD83(NSRS2007) (CRS codes 6783 and 4759).\"]]",
   "6668 esri": "GEOGCS[\"GCS_JGD_2011\",DATUM[\"D_JGD_2011\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
   "6668 esri gcs renamed": "GEOGCS[\"GCS_Local\",DATUM[\"D_JGD_2011\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
-  "6668 wkt2 no ids": "GEOGCRS[\"JGD2011\",DATUM[\"Japanese Geodetic Datum 2011\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaces JGD2000 (CRS code 4612) with effect from 21st October 2011.\"]]",
-  "6668 wkt2 datum id": "GEOGCRS[\"JGD2011\",DATUM[\"Japanese Geodetic Datum 2011\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",1128]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaces JGD2000 (CRS code 4612) with effect from 21st October 2011.\"]]",
-  "6668 wkt2 datum id, renamed": "GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",1128]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaces JGD2000 (CRS code 4612) with effect from 21st October 2011.\"]]",
-  "6668 wkt1 datum authority": "GEOGCS[\"JGD2011\",DATUM[\"Japanese_Geodetic_Datum_2011\",SPHEROID[\"GRS 1980\",6378137,298.257222101],AUTHORITY[\"EPSG\",\"1128\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+  "6668 wkt2 no ids": "GEOGCRS[\"JGD2024\",DATUM[\"Japanese Geodetic Datum 2024\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaces JGD2000 (CRS code 4612) with effect from 21st October 2011. On adoption of JGD2024 (vertical) with effect from 1st April 2025, the name of this geodetic CRS was changed from JGD2011 to JGD2024; there is no change of definition or of coordinate values.\"]]",
+  "6668 wkt2 datum id": "GEOGCRS[\"JGD2024\",DATUM[\"Japanese Geodetic Datum 2024\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",1128]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaces JGD2000 (CRS code 4612) with effect from 21st October 2011. On adoption of JGD2024 (vertical) with effect from 1st April 2025, the name of this geodetic CRS was changed from JGD2011 to JGD2024; there is no change of definition or of coordinate values.\"]]",
+  "6668 wkt2 datum id, renamed": "GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",1128]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaces JGD2000 (CRS code 4612) with effect from 21st October 2011. On adoption of JGD2024 (vertical) with effect from 1st April 2025, the name of this geodetic CRS was changed from JGD2011 to JGD2024; there is no change of definition or of coordinate values.\"]]",
+  "6668 wkt1 datum authority": "GEOGCS[\"JGD2024\",DATUM[\"Japanese_Geodetic_Datum_2024\",SPHEROID[\"GRS 1980\",6378137,298.257222101],AUTHORITY[\"EPSG\",\"1128\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
   "7373 esri": "GEOGCS[\"ONGD14\",DATUM[\"Oman_National_Geodetic_Datum_2014\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
   "7373 esri gcs renamed": "GEOGCS[\"GCS_Local\",DATUM[\"Oman_National_Geodetic_Datum_2014\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
   "7373 wkt2 no ids": "GEOGCRS[\"ONGD14\",DATUM[\"Oman National Geodetic Datum 2014\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"In Oman replaces usage of WGS 84 (G873) from 2014. Replaced by ONGD17 (CRS code 9294) from March 2019.\"]]",
@@ -300,18 +300,18 @@
   "8907 wkt2 datum id": "GEOGCRS[\"CR-SIRGAS epoch 2014.59\",DATUM[\"CR-SIRGAS epoch 2014.59\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ANCHOREPOCH[2014.59],ID[\"EPSG\",1225]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaces CR05 (CRS code 5365) from April 2018.\"]]",
   "8907 wkt2 datum id, renamed": "GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ANCHOREPOCH[2014.59],ID[\"EPSG\",1225]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaces CR05 (CRS code 5365) from April 2018.\"]]",
   "8907 wkt1 datum authority": "GEOGCS[\"CR-SIRGAS epoch 2014.59\",DATUM[\"CR-SIRGAS_epoch_2014_59\",SPHEROID[\"GRS 1980\",6378137,298.257222101],AUTHORITY[\"EPSG\",\"1225\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
-  "8995 esri": "GEOGCS[\"GCS_ITRF_1996\",DATUM[\"D_ITRF_1996\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
-  "8995 esri gcs renamed": "GEOGCS[\"GCS_Local\",DATUM[\"D_ITRF_1996\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
-  "8995 wkt2 no ids": "GEOGCRS[\"ITRF96\",DYNAMIC[FRAMEEPOCH[1997]],DATUM[\"International Terrestrial Reference Frame 1996\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaces ITRF94 (code 8994). Replaced by ITRF97 (code 8996).\"]]",
-  "8995 wkt2 datum id": "GEOGCRS[\"ITRF96\",DYNAMIC[FRAMEEPOCH[1997]],DATUM[\"International Terrestrial Reference Frame 1996\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6654]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaces ITRF94 (code 8994). Replaced by ITRF97 (code 8996).\"]]",
-  "8995 wkt2 datum id, renamed": "GEOGCRS[\"Local\",DYNAMIC[FRAMEEPOCH[1997]],DATUM[\"Local datum\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6654]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaces ITRF94 (code 8994). Replaced by ITRF97 (code 8996).\"]]",
-  "8995 wkt1 datum authority": "GEOGCS[\"ITRF96\",DATUM[\"International_Terrestrial_Reference_Frame_1996\",SPHEROID[\"GRS 1980\",6378137,298.257222101],AUTHORITY[\"EPSG\",\"6654\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
-  "9066 esri": "GEOGCS[\"ETRF97\",DATUM[\"European_Terrestrial_Reference_Frame_1997\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
-  "9066 esri gcs renamed": "GEOGCS[\"GCS_Local\",DATUM[\"European_Terrestrial_Reference_Frame_1997\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
-  "9066 wkt2 no ids": "GEOGCRS[\"ETRF97\",DYNAMIC[FRAMEEPOCH[1989]],DATUM[\"European Terrestrial Reference Frame 1997\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaces ETRF96 (code 9065). Replaced by ETRF2000 (code 9067).\"]]",
-  "9066 wkt2 datum id": "GEOGCRS[\"ETRF97\",DYNAMIC[FRAMEEPOCH[1989]],DATUM[\"European Terrestrial Reference Frame 1997\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",1185]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaces ETRF96 (code 9065). Replaced by ETRF2000 (code 9067).\"]]",
-  "9066 wkt2 datum id, renamed": "GEOGCRS[\"Local\",DYNAMIC[FRAMEEPOCH[1989]],DATUM[\"Local datum\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",1185]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaces ETRF96 (code 9065). Replaced by ETRF2000 (code 9067).\"]]",
-  "9066 wkt1 datum authority": "GEOGCS[\"ETRF97\",DATUM[\"European_Terrestrial_Reference_Frame_1997\",SPHEROID[\"GRS 1980\",6378137,298.257222101],AUTHORITY[\"EPSG\",\"1185\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+  "8996 esri": "GEOGCS[\"GCS_ITRF_1997\",DATUM[\"D_ITRF_1997\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+  "8996 esri gcs renamed": "GEOGCS[\"GCS_Local\",DATUM[\"D_ITRF_1997\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+  "8996 wkt2 no ids": "GEOGCRS[\"ITRF97\",DYNAMIC[FRAMEEPOCH[1997]],DATUM[\"International Terrestrial Reference Frame 1997\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaces ITRF96 (code 8995). Replaced by ITRF2000 (code 8997).\"]]",
+  "8996 wkt2 datum id": "GEOGCRS[\"ITRF97\",DYNAMIC[FRAMEEPOCH[1997]],DATUM[\"International Terrestrial Reference Frame 1997\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6655]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaces ITRF96 (code 8995). Replaced by ITRF2000 (code 8997).\"]]",
+  "8996 wkt2 datum id, renamed": "GEOGCRS[\"Local\",DYNAMIC[FRAMEEPOCH[1997]],DATUM[\"Local datum\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6655]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaces ITRF96 (code 8995). Replaced by ITRF2000 (code 8997).\"]]",
+  "8996 wkt1 datum authority": "GEOGCS[\"ITRF97\",DATUM[\"International_Terrestrial_Reference_Frame_1997\",SPHEROID[\"GRS 1980\",6378137,298.257222101],AUTHORITY[\"EPSG\",\"6655\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+  "9067 esri": "GEOGCS[\"ETRF2000\",DATUM[\"European_Terrestrial_Reference_Frame_2000\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+  "9067 esri gcs renamed": "GEOGCS[\"GCS_Local\",DATUM[\"European_Terrestrial_Reference_Frame_2000\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+  "9067 wkt2 no ids": "GEOGCRS[\"ETRF2000\",DYNAMIC[FRAMEEPOCH[1989]],DATUM[\"European Terrestrial Reference Frame 2000\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaces ETRF97 (code 9066). On the publication of ETRF2005 the EUREF Technical Working Group recommended ETRF2000 be the realization of ETRS89. ETRF2014 and ETRF2020 (codes 9069 and 10571) are technically superior to all earlier realizations of ETRS89.\"]]",
+  "9067 wkt2 datum id": "GEOGCRS[\"ETRF2000\",DYNAMIC[FRAMEEPOCH[1989]],DATUM[\"European Terrestrial Reference Frame 2000\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",1186]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaces ETRF97 (code 9066). On the publication of ETRF2005 the EUREF Technical Working Group recommended ETRF2000 be the realization of ETRS89. ETRF2014 and ETRF2020 (codes 9069 and 10571) are technically superior to all earlier realizations of ETRS89.\"]]",
+  "9067 wkt2 datum id, renamed": "GEOGCRS[\"Local\",DYNAMIC[FRAMEEPOCH[1989]],DATUM[\"Local datum\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",1186]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaces ETRF97 (code 9066). On the publication of ETRF2005 the EUREF Technical Working Group recommended ETRF2000 be the realization of ETRS89. ETRF2014 and ETRF2020 (codes 9069 and 10571) are technically superior to all earlier realizations of ETRS89.\"]]",
+  "9067 wkt1 datum authority": "GEOGCS[\"ETRF2000\",DATUM[\"European_Terrestrial_Reference_Frame_2000\",SPHEROID[\"GRS 1980\",6378137,298.257222101],AUTHORITY[\"EPSG\",\"1186\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
   "9309 esri": "GEOGCS[\"ATRF2014\",DATUM[\"Australian_Terrestrial_Reference_Frame_2014\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
   "9309 esri gcs renamed": "GEOGCS[\"GCS_Local\",DATUM[\"Australian_Terrestrial_Reference_Frame_2014\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
   "9309 wkt2 no ids": "GEOGCRS[\"ATRF2014\",DYNAMIC[FRAMEEPOCH[2020]],DATUM[\"Australian Terrestrial Reference Frame 2014\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
@@ -322,24 +322,24 @@
   "9309 wkt2 datum id, datum renamed": "GEOGCRS[\"ATRF2014\",DYNAMIC[FRAMEEPOCH[2020]],DATUM[\"Local datum\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",1291]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
   "9309 wkt2 datum id, renamed": "GEOGCRS[\"Local\",DYNAMIC[FRAMEEPOCH[2020]],DATUM[\"Local datum\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",1291]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
   "9309 wkt1 datum authority": "GEOGCS[\"ATRF2014\",DATUM[\"Australian_Terrestrial_Reference_Frame_2014\",SPHEROID[\"GRS 1980\",6378137,298.257222101],AUTHORITY[\"EPSG\",\"1291\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
-  "9547 esri": "GEOGCS[\"LTF2004(G)\",DATUM[\"Lyon_Turin_Ferroviaire_2004\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
-  "9547 esri gcs renamed": "GEOGCS[\"GCS_Local\",DATUM[\"Lyon_Turin_Ferroviaire_2004\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
-  "9547 wkt2 no ids": "GEOGCRS[\"LTF2004(G)\",DATUM[\"Lyon Turin Ferroviaire 2004\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
-  "9547 wkt2 datum id": "GEOGCRS[\"LTF2004(G)\",DATUM[\"Lyon Turin Ferroviaire 2004\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",1295]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
-  "9547 wkt2 datum id, renamed": "GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",1295]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
-  "9547 wkt1 datum authority": "GEOGCS[\"LTF2004(G)\",DATUM[\"Lyon_Turin_Ferroviaire_2004\",SPHEROID[\"GRS 1980\",6378137,298.257222101],AUTHORITY[\"EPSG\",\"1295\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
-  "10209 esri": "GEOGCS[\"GWPBS22-IRF\",DATUM[\"GWPBS22_Intermediate_Reference_Frame\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
-  "10209 esri gcs renamed": "GEOGCS[\"GCS_Local\",DATUM[\"GWPBS22_Intermediate_Reference_Frame\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
-  "10209 wkt2 no ids": "GEOGCRS[\"GWPBS22-IRF\",DATUM[\"GWPBS22 Intermediate Reference Frame\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Intermediate CRS created in 2022 to assist the emulation of the ETRS89 / GWPBS22 SnakeGrid projected CRS through transformation ETRS89 to GWPBS22-IRF (1) (code 10210) used in conjunction with the GW22-LCC map projection (code 10211).\"]]",
-  "10209 wkt2 datum id": "GEOGCRS[\"GWPBS22-IRF\",DATUM[\"GWPBS22 Intermediate Reference Frame\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",1340]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Intermediate CRS created in 2022 to assist the emulation of the ETRS89 / GWPBS22 SnakeGrid projected CRS through transformation ETRS89 to GWPBS22-IRF (1) (code 10210) used in conjunction with the GW22-LCC map projection (code 10211).\"]]",
-  "10209 wkt2 datum id, renamed": "GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",1340]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Intermediate CRS created in 2022 to assist the emulation of the ETRS89 / GWPBS22 SnakeGrid projected CRS through transformation ETRS89 to GWPBS22-IRF (1) (code 10210) used in conjunction with the GW22-LCC map projection (code 10211).\"]]",
-  "10209 wkt1 datum authority": "GEOGCS[\"GWPBS22-IRF\",DATUM[\"GWPBS22_Intermediate_Reference_Frame\",SPHEROID[\"GRS 1980\",6378137,298.257222101],AUTHORITY[\"EPSG\",\"1340\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
-  "10475 esri": "GEOGCS[\"BBT2000\",DATUM[\"Brenner_Base_Tunnel_2000\",SPHEROID[\"WGS_1984\",6378137.0,298.257223563]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
-  "10475 esri gcs renamed": "GEOGCS[\"GCS_Local\",DATUM[\"Brenner_Base_Tunnel_2000\",SPHEROID[\"WGS_1984\",6378137.0,298.257223563]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
-  "10475 wkt2 no ids": "GEOGCRS[\"BBT2000\",DATUM[\"Brenner Base Tunnel 2000\",ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
-  "10475 wkt2 datum id": "GEOGCRS[\"BBT2000\",DATUM[\"Brenner Base Tunnel 2000\",ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",1367]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
-  "10475 wkt2 datum id, renamed": "GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",1367]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
-  "10475 wkt1 datum authority": "GEOGCS[\"BBT2000\",DATUM[\"Brenner_Base_Tunnel_2000\",SPHEROID[\"WGS 84\",6378137,298.257223563],AUTHORITY[\"EPSG\",\"1367\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+  "9696 esri": "GEOGCS[\"REDGEOMIN\",DATUM[\"Red_Geodesica_Para_Mineria_en_Chile\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+  "9696 esri gcs renamed": "GEOGCS[\"GCS_Local\",DATUM[\"Red_Geodesica_Para_Mineria_en_Chile\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+  "9696 wkt2 no ids": "GEOGCRS[\"REDGEOMIN\",DYNAMIC[FRAMEEPOCH[2024]],DATUM[\"Red Geodesica Para Mineria en Chile\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"REDGEOMIN coordinates are updated on a biannual basis identified using syntax \"\"REDGEOMIN([frame]@[epoch]\"\", e.g. REDGEOMIN(IGS20@2024.0), REDGEOMIN(IGS20@2024.5), etc. This EPSG record references any of these updates without distinction. Users should include the update used in the metadata of  their spatial data metadata. Data should be reduced to this epoch using the ADELA deformation model.\"]]",
+  "9696 wkt2 datum id": "GEOGCRS[\"REDGEOMIN\",DYNAMIC[FRAMEEPOCH[2024]],DATUM[\"Red Geodesica Para Mineria en Chile\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",1304]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"REDGEOMIN coordinates are updated on a biannual basis identified using syntax \"\"REDGEOMIN([frame]@[epoch]\"\", e.g. REDGEOMIN(IGS20@2024.0), REDGEOMIN(IGS20@2024.5), etc. This EPSG record references any of these updates without distinction. Users should include the update used in the metadata of  their spatial data metadata. Data should be reduced to this epoch using the ADELA deformation model.\"]]",
+  "9696 wkt2 datum id, renamed": "GEOGCRS[\"Local\",DYNAMIC[FRAMEEPOCH[2024]],DATUM[\"Local datum\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",1304]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"REDGEOMIN coordinates are updated on a biannual basis identified using syntax \"\"REDGEOMIN([frame]@[epoch]\"\", e.g. REDGEOMIN(IGS20@2024.0), REDGEOMIN(IGS20@2024.5), etc. This EPSG record references any of these updates without distinction. Users should include the update used in the metadata of  their spatial data metadata. Data should be reduced to this epoch using the ADELA deformation model.\"]]",
+  "9696 wkt1 datum authority": "GEOGCS[\"REDGEOMIN\",DATUM[\"Red_Geodesica_Para_Mineria_en_Chile\",SPHEROID[\"GRS 1980\",6378137,298.257222101],AUTHORITY[\"EPSG\",\"1304\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+  "10214 esri": "GEOGCS[\"GWWAB22-IRF\",DATUM[\"GWWAB22_Intermediate_Reference_Frame\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+  "10214 esri gcs renamed": "GEOGCS[\"GCS_Local\",DATUM[\"GWWAB22_Intermediate_Reference_Frame\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+  "10214 wkt2 no ids": "GEOGCRS[\"GWWAB22-IRF\",DATUM[\"GWWAB22 Intermediate Reference Frame\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Intermediate CRS created in 2022 to assist the emulation of the ETRS89 / GWWAB22 SnakeGrid projected CRS through transformation ETRS89-GBR [OSNet v2009] to GWWAB22-IRF (1) (code 10215) used in conjunction with the GW22-LCC map projection (code 10211).\"]]",
+  "10214 wkt2 datum id": "GEOGCRS[\"GWWAB22-IRF\",DATUM[\"GWWAB22 Intermediate Reference Frame\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",1341]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Intermediate CRS created in 2022 to assist the emulation of the ETRS89 / GWWAB22 SnakeGrid projected CRS through transformation ETRS89-GBR [OSNet v2009] to GWWAB22-IRF (1) (code 10215) used in conjunction with the GW22-LCC map projection (code 10211).\"]]",
+  "10214 wkt2 datum id, renamed": "GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",1341]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Intermediate CRS created in 2022 to assist the emulation of the ETRS89 / GWWAB22 SnakeGrid projected CRS through transformation ETRS89-GBR [OSNet v2009] to GWWAB22-IRF (1) (code 10215) used in conjunction with the GW22-LCC map projection (code 10211).\"]]",
+  "10214 wkt1 datum authority": "GEOGCS[\"GWWAB22-IRF\",DATUM[\"GWWAB22_Intermediate_Reference_Frame\",SPHEROID[\"GRS 1980\",6378137,298.257222101],AUTHORITY[\"EPSG\",\"1341\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+  "10571 esri": "GEOGCS[\"ETRF2020\",DATUM[\"European_Terrestrial_Reference_Frame_2020\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+  "10571 esri gcs renamed": "GEOGCS[\"GCS_Local\",DATUM[\"European_Terrestrial_Reference_Frame_2020\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+  "10571 wkt2 no ids": "GEOGCRS[\"ETRF2020\",DYNAMIC[FRAMEEPOCH[1989]],DATUM[\"European Terrestrial Reference Frame 2020\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaces ETRF2014 (code 9069). ETRF2020 is technically superior to ETRF2000 but ETRF2000 and other previous realizations may be preferred for backward compatibility reasons. Differences between ETRF2020 and ETRF2000 can reach 7cm.\"]]",
+  "10571 wkt2 datum id": "GEOGCRS[\"ETRF2020\",DYNAMIC[FRAMEEPOCH[1989]],DATUM[\"European Terrestrial Reference Frame 2020\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",1382]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaces ETRF2014 (code 9069). ETRF2020 is technically superior to ETRF2000 but ETRF2000 and other previous realizations may be preferred for backward compatibility reasons. Differences between ETRF2020 and ETRF2000 can reach 7cm.\"]]",
+  "10571 wkt2 datum id, renamed": "GEOGCRS[\"Local\",DYNAMIC[FRAMEEPOCH[1989]],DATUM[\"Local datum\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",1382]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Replaces ETRF2014 (code 9069). ETRF2020 is technically superior to ETRF2000 but ETRF2000 and other previous realizations may be preferred for backward compatibility reasons. Differences between ETRF2020 and ETRF2000 can reach 7cm.\"]]",
+  "10571 wkt1 datum authority": "GEOGCS[\"ETRF2020\",DATUM[\"European_Terrestrial_Reference_Frame_2020\",SPHEROID[\"GRS 1980\",6378137,298.257222101],AUTHORITY[\"EPSG\",\"1382\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
   "10831 esri": "GEOGCS[\"GGD\",DATUM[\"Georgia_Geodetic_Datum\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
   "10831 esri gcs renamed": "GEOGCS[\"GCS_Local\",DATUM[\"Georgia_Geodetic_Datum\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
   "10831 wkt2 no ids": "GEOGCRS[\"Georgia Geodetic Datum\",DATUM[\"Georgia Geodetic Datum\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
@@ -350,12 +350,18 @@
   "10831 wkt2 datum id, datum renamed": "GEOGCRS[\"Georgia Geodetic Datum\",DATUM[\"Local datum\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",1404]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
   "10831 wkt2 datum id, renamed": "GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",1404]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]",
   "10831 wkt1 datum authority": "GEOGCS[\"Georgia Geodetic Datum\",DATUM[\"Georgia_Geodetic_Datum\",SPHEROID[\"GRS 1980\",6378137,298.257222101],AUTHORITY[\"EPSG\",\"1404\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
-  "10898 esri": "GEOGCS[\"Asse_2025\",DATUM[\"Asse_geodetic_datum_2025\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
-  "10898 esri gcs renamed": "GEOGCS[\"GCS_Local\",DATUM[\"Asse_geodetic_datum_2025\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
-  "10898 wkt2 no ids": "GEOGCRS[\"Asse 2025\",DATUM[\"Asse geodetic datum 2025\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Defined through 3-dimensional transformation from ETRS89/DREF91 Realization 2016 (see CT 10905). Coordinate values are close to but not identical to DHDN.\"]]",
-  "10898 wkt2 datum id": "GEOGCRS[\"Asse 2025\",DATUM[\"Asse geodetic datum 2025\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",1413]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Defined through 3-dimensional transformation from ETRS89/DREF91 Realization 2016 (see CT 10905). Coordinate values are close to but not identical to DHDN.\"]]",
-  "10898 wkt2 datum id, renamed": "GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",1413]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Defined through 3-dimensional transformation from ETRS89/DREF91 Realization 2016 (see CT 10905). Coordinate values are close to but not identical to DHDN.\"]]",
-  "10898 wkt1 datum authority": "GEOGCS[\"Asse 2025\",DATUM[\"Asse_geodetic_datum_2025\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128],AUTHORITY[\"EPSG\",\"1413\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+  "10952 esri": "GEOGCS[\"CSRN_epoch_2025.0_(ITRF2020)\",DATUM[\"California_Spatial_Reference_Network_epoch_2025.0_(ITRF2020)\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+  "10952 esri gcs renamed": "GEOGCS[\"GCS_Local\",DATUM[\"California_Spatial_Reference_Network_epoch_2025.0_(ITRF2020)\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+  "10952 wkt2 no ids": "GEOGCRS[\"CSRN epoch 2025.0 (ITRF2020)\",DATUM[\"California Spatial Reference Network epoch 2025.0 (ITRF2020) \",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ANCHOREPOCH[2025]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Californian 'snapshot' of ITRF2020 taking into account local tectonic plate movement and deformation. Supersedes CSRS epoch 2017.5 (ITRF2014) from 2025-06-15.\"]]",
+  "10952 wkt2 datum id": "GEOGCRS[\"CSRN epoch 2025.0 (ITRF2020)\",DATUM[\"California Spatial Reference Network epoch 2025.0 (ITRF2020) \",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ANCHOREPOCH[2025],ID[\"EPSG\",1418]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Californian 'snapshot' of ITRF2020 taking into account local tectonic plate movement and deformation. Supersedes CSRS epoch 2017.5 (ITRF2014) from 2025-06-15.\"]]",
+  "10952 wkt2 datum id, renamed": "GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ANCHOREPOCH[2025],ID[\"EPSG\",1418]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"Californian 'snapshot' of ITRF2020 taking into account local tectonic plate movement and deformation. Supersedes CSRS epoch 2017.5 (ITRF2014) from 2025-06-15.\"]]",
+  "10952 wkt1 datum authority": "GEOGCS[\"CSRN epoch 2025.0 (ITRF2020)\",DATUM[\"California_Spatial_Reference_Network_epoch_2025_0_ITRF2020\",SPHEROID[\"GRS 1980\",6378137,298.257222101],AUTHORITY[\"EPSG\",\"1418\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+  "11199 esri": "GEOGCS[\"GCS_ETRS89-DEU_ETRS89_DREF91_2025\",DATUM[\"D_ETRS89_DREF91_Realization_2025\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+  "11199 esri gcs renamed": "GEOGCS[\"GCS_Local\",DATUM[\"D_ETRS89_DREF91_Realization_2025\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+  "11199 wkt2 no ids": "GEOGCRS[\"ETRS89-DEU [ETRS89/DREF91/2025]\",DATUM[\"ETRS89/DREF91 Realization 2025\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ANCHOREPOCH[2021.48]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"German national realization of ETRS89. Replaces ETRS89/DREF91 Realization 2025 from 2025-07-01.\"]]",
+  "11199 wkt2 datum id": "GEOGCRS[\"ETRS89-DEU [ETRS89/DREF91/2025]\",DATUM[\"ETRS89/DREF91 Realization 2025\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ANCHOREPOCH[2021.48],ID[\"EPSG\",1446]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"German national realization of ETRS89. Replaces ETRS89/DREF91 Realization 2025 from 2025-07-01.\"]]",
+  "11199 wkt2 datum id, renamed": "GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]],ANCHOREPOCH[2021.48],ID[\"EPSG\",1446]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"geodetic latitude (Lat)\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"geodetic longitude (Lon)\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],REMARK[\"German national realization of ETRS89. Replaces ETRS89/DREF91 Realization 2025 from 2025-07-01.\"]]",
+  "11199 wkt1 datum authority": "GEOGCS[\"ETRS89-DEU [ETRS89/DREF91/2025]\",DATUM[\"ETRS89_DREF91_Realization_2025\",SPHEROID[\"GRS 1980\",6378137,298.257222101],AUTHORITY[\"EPSG\",\"1446\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
   "3003 projected esri": "PROJCS[\"Monte_Mario_Italy_1\",GEOGCS[\"GCS_Monte_Mario\",DATUM[\"D_Monte_Mario\",SPHEROID[\"International_1924\",6378388.0,297.0]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",1500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",9.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]",
   "3003 projected esri gcs renamed": "PROJCS[\"Monte_Mario_Italy_1\",GEOGCS[\"GCS_Local\",DATUM[\"D_Monte_Mario\",SPHEROID[\"International_1924\",6378388.0,297.0]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",1500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",9.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]",
   "31467 projected esri": "PROJCS[\"DHDN_3_Degree_Gauss_Zone_3\",GEOGCS[\"GCS_Deutsches_Hauptdreiecksnetz\",DATUM[\"D_Deutsches_Hauptdreiecksnetz\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Gauss_Kruger\"],PARAMETER[\"False_Easting\",3500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",9.0],PARAMETER[\"Scale_Factor\",1.0],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]",
@@ -4112,15 +4118,15 @@
    "other": 4326,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
@@ -4132,15 +4138,15 @@
    "other": 4326,
    "reverse": true,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
@@ -4152,15 +4158,15 @@
    "other": 4258,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
@@ -4172,15 +4178,15 @@
    "other": 4269,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
@@ -4192,16 +4198,16 @@
    "other": 25832,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    612325.3249372818,
-    6541138.044296611
+    612038.1000001242,
+    6541129.651595213
    ],
    "by_code": [
-    612325.3249372818,
-    6541138.044296611
+    612038.1000001242,
+    6541129.651595213
    ],
    "geographic": false,
    "pending": false
@@ -4212,15 +4218,15 @@
    "other": 4326,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
@@ -4232,15 +4238,15 @@
    "other": 4326,
    "reverse": true,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
@@ -4252,15 +4258,15 @@
    "other": 4258,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
@@ -4272,15 +4278,15 @@
    "other": 4269,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
@@ -4292,16 +4298,16 @@
    "other": 25832,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    612325.3249372818,
-    6541138.044296611
+    612038.1000001242,
+    6541129.651595213
    ],
    "by_code": [
-    612325.3249372818,
-    6541138.044296611
+    612038.1000001242,
+    6541129.651595213
    ],
    "geographic": false,
    "pending": false
@@ -4312,15 +4318,15 @@
    "other": 4326,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
@@ -4332,15 +4338,15 @@
    "other": 4326,
    "reverse": true,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
@@ -4352,15 +4358,15 @@
    "other": 4258,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
@@ -4372,15 +4378,15 @@
    "other": 4269,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
@@ -4392,16 +4398,16 @@
    "other": 25832,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    612325.3249372818,
-    6541138.044296611
+    612038.1000001242,
+    6541129.651595213
    ],
    "by_code": [
-    612325.3249372818,
-    6541138.044296611
+    612038.1000001242,
+    6541129.651595213
    ],
    "geographic": false,
    "pending": false
@@ -4412,15 +4418,15 @@
    "other": 4326,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
@@ -4432,15 +4438,15 @@
    "other": 4326,
    "reverse": true,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
@@ -4452,15 +4458,15 @@
    "other": 4258,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
@@ -4472,15 +4478,15 @@
    "other": 4269,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
@@ -4492,16 +4498,16 @@
    "other": 25832,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    612325.3249372818,
-    6541138.044296611
+    612038.1000001242,
+    6541129.651595213
    ],
    "by_code": [
-    612325.3249372818,
-    6541138.044296611
+    612038.1000001242,
+    6541129.651595213
    ],
    "geographic": false,
    "pending": false
@@ -4512,15 +4518,15 @@
    "other": 4326,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
@@ -4532,15 +4538,15 @@
    "other": 4326,
    "reverse": true,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
@@ -4552,15 +4558,15 @@
    "other": 4326,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
@@ -4572,15 +4578,15 @@
    "other": 4326,
    "reverse": true,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
@@ -4592,15 +4598,15 @@
    "other": 4326,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
@@ -4612,15 +4618,15 @@
    "other": 4326,
    "reverse": true,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
@@ -17067,8 +17073,8 @@
    "pending": false
   },
   {
-   "name": "8995 esri -> 4326",
-   "wkt": "8995 esri",
+   "name": "8996 esri -> 4326",
+   "wkt": "8996 esri",
    "other": 4326,
    "reverse": false,
    "point": [
@@ -17087,8 +17093,8 @@
    "pending": false
   },
   {
-   "name": "8995 esri <- 4326",
-   "wkt": "8995 esri",
+   "name": "8996 esri <- 4326",
+   "wkt": "8996 esri",
    "other": 4326,
    "reverse": true,
    "point": [
@@ -17107,8 +17113,8 @@
    "pending": false
   },
   {
-   "name": "8995 esri -> 4258",
-   "wkt": "8995 esri",
+   "name": "8996 esri -> 4258",
+   "wkt": "8996 esri",
    "other": 4258,
    "reverse": false,
    "point": [
@@ -17127,8 +17133,8 @@
    "pending": false
   },
   {
-   "name": "8995 esri -> 4269",
-   "wkt": "8995 esri",
+   "name": "8996 esri -> 4269",
+   "wkt": "8996 esri",
    "other": 4269,
    "reverse": false,
    "point": [
@@ -17147,8 +17153,8 @@
    "pending": false
   },
   {
-   "name": "8995 esri -> 25832",
-   "wkt": "8995 esri",
+   "name": "8996 esri -> 25832",
+   "wkt": "8996 esri",
    "other": 25832,
    "reverse": false,
    "point": [
@@ -17167,8 +17173,8 @@
    "pending": false
   },
   {
-   "name": "8995 esri gcs renamed -> 4326",
-   "wkt": "8995 esri gcs renamed",
+   "name": "8996 esri gcs renamed -> 4326",
+   "wkt": "8996 esri gcs renamed",
    "other": 4326,
    "reverse": false,
    "point": [
@@ -17187,8 +17193,8 @@
    "pending": false
   },
   {
-   "name": "8995 esri gcs renamed <- 4326",
-   "wkt": "8995 esri gcs renamed",
+   "name": "8996 esri gcs renamed <- 4326",
+   "wkt": "8996 esri gcs renamed",
    "other": 4326,
    "reverse": true,
    "point": [
@@ -17207,8 +17213,8 @@
    "pending": false
   },
   {
-   "name": "8995 esri gcs renamed -> 4258",
-   "wkt": "8995 esri gcs renamed",
+   "name": "8996 esri gcs renamed -> 4258",
+   "wkt": "8996 esri gcs renamed",
    "other": 4258,
    "reverse": false,
    "point": [
@@ -17227,8 +17233,8 @@
    "pending": false
   },
   {
-   "name": "8995 esri gcs renamed -> 4269",
-   "wkt": "8995 esri gcs renamed",
+   "name": "8996 esri gcs renamed -> 4269",
+   "wkt": "8996 esri gcs renamed",
    "other": 4269,
    "reverse": false,
    "point": [
@@ -17247,8 +17253,8 @@
    "pending": false
   },
   {
-   "name": "8995 esri gcs renamed -> 25832",
-   "wkt": "8995 esri gcs renamed",
+   "name": "8996 esri gcs renamed -> 25832",
+   "wkt": "8996 esri gcs renamed",
    "other": 25832,
    "reverse": false,
    "point": [
@@ -17267,8 +17273,8 @@
    "pending": false
   },
   {
-   "name": "8995 wkt2 no ids -> 4326",
-   "wkt": "8995 wkt2 no ids",
+   "name": "8996 wkt2 no ids -> 4326",
+   "wkt": "8996 wkt2 no ids",
    "other": 4326,
    "reverse": false,
    "point": [
@@ -17287,8 +17293,8 @@
    "pending": false
   },
   {
-   "name": "8995 wkt2 no ids <- 4326",
-   "wkt": "8995 wkt2 no ids",
+   "name": "8996 wkt2 no ids <- 4326",
+   "wkt": "8996 wkt2 no ids",
    "other": 4326,
    "reverse": true,
    "point": [
@@ -17307,8 +17313,8 @@
    "pending": false
   },
   {
-   "name": "8995 wkt2 no ids -> 4258",
-   "wkt": "8995 wkt2 no ids",
+   "name": "8996 wkt2 no ids -> 4258",
+   "wkt": "8996 wkt2 no ids",
    "other": 4258,
    "reverse": false,
    "point": [
@@ -17327,8 +17333,8 @@
    "pending": false
   },
   {
-   "name": "8995 wkt2 no ids -> 4269",
-   "wkt": "8995 wkt2 no ids",
+   "name": "8996 wkt2 no ids -> 4269",
+   "wkt": "8996 wkt2 no ids",
    "other": 4269,
    "reverse": false,
    "point": [
@@ -17347,8 +17353,8 @@
    "pending": false
   },
   {
-   "name": "8995 wkt2 no ids -> 25832",
-   "wkt": "8995 wkt2 no ids",
+   "name": "8996 wkt2 no ids -> 25832",
+   "wkt": "8996 wkt2 no ids",
    "other": 25832,
    "reverse": false,
    "point": [
@@ -17367,8 +17373,8 @@
    "pending": false
   },
   {
-   "name": "8995 wkt2 datum id -> 4326",
-   "wkt": "8995 wkt2 datum id",
+   "name": "8996 wkt2 datum id -> 4326",
+   "wkt": "8996 wkt2 datum id",
    "other": 4326,
    "reverse": false,
    "point": [
@@ -17387,8 +17393,8 @@
    "pending": false
   },
   {
-   "name": "8995 wkt2 datum id <- 4326",
-   "wkt": "8995 wkt2 datum id",
+   "name": "8996 wkt2 datum id <- 4326",
+   "wkt": "8996 wkt2 datum id",
    "other": 4326,
    "reverse": true,
    "point": [
@@ -17407,8 +17413,8 @@
    "pending": false
   },
   {
-   "name": "8995 wkt2 datum id, renamed -> 4326",
-   "wkt": "8995 wkt2 datum id, renamed",
+   "name": "8996 wkt2 datum id, renamed -> 4326",
+   "wkt": "8996 wkt2 datum id, renamed",
    "other": 4326,
    "reverse": false,
    "point": [
@@ -17427,8 +17433,8 @@
    "pending": false
   },
   {
-   "name": "8995 wkt2 datum id, renamed <- 4326",
-   "wkt": "8995 wkt2 datum id, renamed",
+   "name": "8996 wkt2 datum id, renamed <- 4326",
+   "wkt": "8996 wkt2 datum id, renamed",
    "other": 4326,
    "reverse": true,
    "point": [
@@ -17447,8 +17453,8 @@
    "pending": false
   },
   {
-   "name": "8995 wkt1 datum authority -> 4326",
-   "wkt": "8995 wkt1 datum authority",
+   "name": "8996 wkt1 datum authority -> 4326",
+   "wkt": "8996 wkt1 datum authority",
    "other": 4326,
    "reverse": false,
    "point": [
@@ -17467,8 +17473,8 @@
    "pending": false
   },
   {
-   "name": "8995 wkt1 datum authority <- 4326",
-   "wkt": "8995 wkt1 datum authority",
+   "name": "8996 wkt1 datum authority <- 4326",
+   "wkt": "8996 wkt1 datum authority",
    "other": 4326,
    "reverse": true,
    "point": [
@@ -17487,420 +17493,420 @@
    "pending": false
   },
   {
-   "name": "9066 esri -> 4326",
-   "wkt": "9066 esri",
+   "name": "9067 esri -> 4326",
+   "wkt": "9067 esri",
    "other": 4326,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9066 esri <- 4326",
-   "wkt": "9066 esri",
+   "name": "9067 esri <- 4326",
+   "wkt": "9067 esri",
    "other": 4326,
    "reverse": true,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9066 esri -> 4258",
-   "wkt": "9066 esri",
+   "name": "9067 esri -> 4258",
+   "wkt": "9067 esri",
    "other": 4258,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9066 esri -> 4269",
-   "wkt": "9066 esri",
+   "name": "9067 esri -> 4269",
+   "wkt": "9067 esri",
    "other": 4269,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9066 esri -> 25832",
-   "wkt": "9066 esri",
+   "name": "9067 esri -> 25832",
+   "wkt": "9067 esri",
    "other": 25832,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    612325.3249372818,
-    6541138.044296611
+    612038.1000001242,
+    6541129.651595213
    ],
    "by_code": [
-    612325.3249372818,
-    6541138.044296611
+    612038.1000001242,
+    6541129.651595213
    ],
    "geographic": false,
    "pending": false
   },
   {
-   "name": "9066 esri gcs renamed -> 4326",
-   "wkt": "9066 esri gcs renamed",
+   "name": "9067 esri gcs renamed -> 4326",
+   "wkt": "9067 esri gcs renamed",
    "other": 4326,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9066 esri gcs renamed <- 4326",
-   "wkt": "9066 esri gcs renamed",
+   "name": "9067 esri gcs renamed <- 4326",
+   "wkt": "9067 esri gcs renamed",
    "other": 4326,
    "reverse": true,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9066 esri gcs renamed -> 4258",
-   "wkt": "9066 esri gcs renamed",
+   "name": "9067 esri gcs renamed -> 4258",
+   "wkt": "9067 esri gcs renamed",
    "other": 4258,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9066 esri gcs renamed -> 4269",
-   "wkt": "9066 esri gcs renamed",
+   "name": "9067 esri gcs renamed -> 4269",
+   "wkt": "9067 esri gcs renamed",
    "other": 4269,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9066 esri gcs renamed -> 25832",
-   "wkt": "9066 esri gcs renamed",
+   "name": "9067 esri gcs renamed -> 25832",
+   "wkt": "9067 esri gcs renamed",
    "other": 25832,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    612325.3249372818,
-    6541138.044296611
+    612038.1000001242,
+    6541129.651595213
    ],
    "by_code": [
-    612325.3249372818,
-    6541138.044296611
+    612038.1000001242,
+    6541129.651595213
    ],
    "geographic": false,
    "pending": false
   },
   {
-   "name": "9066 wkt2 no ids -> 4326",
-   "wkt": "9066 wkt2 no ids",
+   "name": "9067 wkt2 no ids -> 4326",
+   "wkt": "9067 wkt2 no ids",
    "other": 4326,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9066 wkt2 no ids <- 4326",
-   "wkt": "9066 wkt2 no ids",
+   "name": "9067 wkt2 no ids <- 4326",
+   "wkt": "9067 wkt2 no ids",
    "other": 4326,
    "reverse": true,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9066 wkt2 no ids -> 4258",
-   "wkt": "9066 wkt2 no ids",
+   "name": "9067 wkt2 no ids -> 4258",
+   "wkt": "9067 wkt2 no ids",
    "other": 4258,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9066 wkt2 no ids -> 4269",
-   "wkt": "9066 wkt2 no ids",
+   "name": "9067 wkt2 no ids -> 4269",
+   "wkt": "9067 wkt2 no ids",
    "other": 4269,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9066 wkt2 no ids -> 25832",
-   "wkt": "9066 wkt2 no ids",
+   "name": "9067 wkt2 no ids -> 25832",
+   "wkt": "9067 wkt2 no ids",
    "other": 25832,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    612325.3249372818,
-    6541138.044296611
+    612038.1000001242,
+    6541129.651595213
    ],
    "by_code": [
-    612325.3249372818,
-    6541138.044296611
+    612038.1000001242,
+    6541129.651595213
    ],
    "geographic": false,
    "pending": false
   },
   {
-   "name": "9066 wkt2 datum id -> 4326",
-   "wkt": "9066 wkt2 datum id",
+   "name": "9067 wkt2 datum id -> 4326",
+   "wkt": "9067 wkt2 datum id",
    "other": 4326,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9066 wkt2 datum id <- 4326",
-   "wkt": "9066 wkt2 datum id",
+   "name": "9067 wkt2 datum id <- 4326",
+   "wkt": "9067 wkt2 datum id",
    "other": 4326,
    "reverse": true,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9066 wkt2 datum id, renamed -> 4326",
-   "wkt": "9066 wkt2 datum id, renamed",
+   "name": "9067 wkt2 datum id, renamed -> 4326",
+   "wkt": "9067 wkt2 datum id, renamed",
    "other": 4326,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9066 wkt2 datum id, renamed <- 4326",
-   "wkt": "9066 wkt2 datum id, renamed",
+   "name": "9067 wkt2 datum id, renamed <- 4326",
+   "wkt": "9067 wkt2 datum id, renamed",
    "other": 4326,
    "reverse": true,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9066 wkt1 datum authority -> 4326",
-   "wkt": "9066 wkt1 datum authority",
+   "name": "9067 wkt1 datum authority -> 4326",
+   "wkt": "9067 wkt1 datum authority",
    "other": 4326,
    "reverse": false,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9066 wkt1 datum authority <- 4326",
-   "wkt": "9066 wkt1 datum authority",
+   "name": "9067 wkt1 datum authority <- 4326",
+   "wkt": "9067 wkt1 datum authority",
    "other": 4326,
    "reverse": true,
    "point": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "proj": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "by_code": [
-    10.954999999999998,
+    10.95,
     58.995000000000005
    ],
    "geographic": true,
@@ -18487,1261 +18493,1261 @@
    "pending": false
   },
   {
-   "name": "9547 esri -> 4326",
-   "wkt": "9547 esri",
+   "name": "9696 esri -> 4326",
+   "wkt": "9696 esri",
    "other": 4326,
    "reverse": false,
    "point": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "proj": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "by_code": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9547 esri <- 4326",
-   "wkt": "9547 esri",
+   "name": "9696 esri <- 4326",
+   "wkt": "9696 esri",
    "other": 4326,
    "reverse": true,
    "point": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "proj": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "by_code": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9547 esri -> 4258",
-   "wkt": "9547 esri",
+   "name": "9696 esri -> 4258",
+   "wkt": "9696 esri",
    "other": 4258,
    "reverse": false,
    "point": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "proj": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "by_code": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9547 esri -> 4269",
-   "wkt": "9547 esri",
+   "name": "9696 esri -> 4269",
+   "wkt": "9696 esri",
    "other": 4269,
    "reverse": false,
    "point": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "proj": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "by_code": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9547 esri -> 25832",
-   "wkt": "9547 esri",
+   "name": "9696 esri -> 25832",
+   "wkt": "9696 esri",
    "other": 25832,
    "reverse": false,
    "point": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "proj": [
-    285870.7459917248,
-    5028804.076027219
+    -6039922.76447184,
+    -11155278.12330179
    ],
    "by_code": [
-    285870.7459917248,
-    5028804.076027219
+    -6039922.76447184,
+    -11155278.12330179
    ],
    "geographic": false,
    "pending": false
   },
   {
-   "name": "9547 esri gcs renamed -> 4326",
-   "wkt": "9547 esri gcs renamed",
+   "name": "9696 esri gcs renamed -> 4326",
+   "wkt": "9696 esri gcs renamed",
    "other": 4326,
    "reverse": false,
    "point": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "proj": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "by_code": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9547 esri gcs renamed <- 4326",
-   "wkt": "9547 esri gcs renamed",
+   "name": "9696 esri gcs renamed <- 4326",
+   "wkt": "9696 esri gcs renamed",
    "other": 4326,
    "reverse": true,
    "point": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "proj": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "by_code": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9547 esri gcs renamed -> 4258",
-   "wkt": "9547 esri gcs renamed",
+   "name": "9696 esri gcs renamed -> 4258",
+   "wkt": "9696 esri gcs renamed",
    "other": 4258,
    "reverse": false,
    "point": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "proj": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "by_code": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9547 esri gcs renamed -> 4269",
-   "wkt": "9547 esri gcs renamed",
+   "name": "9696 esri gcs renamed -> 4269",
+   "wkt": "9696 esri gcs renamed",
    "other": 4269,
    "reverse": false,
    "point": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "proj": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "by_code": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9547 esri gcs renamed -> 25832",
-   "wkt": "9547 esri gcs renamed",
+   "name": "9696 esri gcs renamed -> 25832",
+   "wkt": "9696 esri gcs renamed",
    "other": 25832,
    "reverse": false,
    "point": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "proj": [
-    285870.7459917248,
-    5028804.076027219
+    -6039922.76447184,
+    -11155278.12330179
    ],
    "by_code": [
-    285870.7459917248,
-    5028804.076027219
+    -6039922.76447184,
+    -11155278.12330179
    ],
    "geographic": false,
    "pending": false
   },
   {
-   "name": "9547 wkt2 no ids -> 4326",
-   "wkt": "9547 wkt2 no ids",
+   "name": "9696 wkt2 no ids -> 4326",
+   "wkt": "9696 wkt2 no ids",
    "other": 4326,
    "reverse": false,
    "point": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "proj": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "by_code": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9547 wkt2 no ids <- 4326",
-   "wkt": "9547 wkt2 no ids",
+   "name": "9696 wkt2 no ids <- 4326",
+   "wkt": "9696 wkt2 no ids",
    "other": 4326,
    "reverse": true,
    "point": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "proj": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "by_code": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9547 wkt2 no ids -> 4258",
-   "wkt": "9547 wkt2 no ids",
+   "name": "9696 wkt2 no ids -> 4258",
+   "wkt": "9696 wkt2 no ids",
    "other": 4258,
    "reverse": false,
    "point": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "proj": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "by_code": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9547 wkt2 no ids -> 4269",
-   "wkt": "9547 wkt2 no ids",
+   "name": "9696 wkt2 no ids -> 4269",
+   "wkt": "9696 wkt2 no ids",
    "other": 4269,
    "reverse": false,
    "point": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "proj": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "by_code": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9547 wkt2 no ids -> 25832",
-   "wkt": "9547 wkt2 no ids",
+   "name": "9696 wkt2 no ids -> 25832",
+   "wkt": "9696 wkt2 no ids",
    "other": 25832,
    "reverse": false,
    "point": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "proj": [
-    285870.7459917248,
-    5028804.076027219
+    -6039922.76447184,
+    -11155278.12330179
    ],
    "by_code": [
-    285870.7459917248,
-    5028804.076027219
+    -6039922.76447184,
+    -11155278.12330179
    ],
    "geographic": false,
    "pending": false
   },
   {
-   "name": "9547 wkt2 datum id -> 4326",
-   "wkt": "9547 wkt2 datum id",
+   "name": "9696 wkt2 datum id -> 4326",
+   "wkt": "9696 wkt2 datum id",
    "other": 4326,
    "reverse": false,
    "point": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "proj": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "by_code": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9547 wkt2 datum id <- 4326",
-   "wkt": "9547 wkt2 datum id",
+   "name": "9696 wkt2 datum id <- 4326",
+   "wkt": "9696 wkt2 datum id",
    "other": 4326,
    "reverse": true,
    "point": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "proj": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "by_code": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9547 wkt2 datum id, renamed -> 4326",
-   "wkt": "9547 wkt2 datum id, renamed",
+   "name": "9696 wkt2 datum id, renamed -> 4326",
+   "wkt": "9696 wkt2 datum id, renamed",
    "other": 4326,
    "reverse": false,
    "point": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "proj": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "by_code": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9547 wkt2 datum id, renamed <- 4326",
-   "wkt": "9547 wkt2 datum id, renamed",
+   "name": "9696 wkt2 datum id, renamed <- 4326",
+   "wkt": "9696 wkt2 datum id, renamed",
    "other": 4326,
    "reverse": true,
    "point": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "proj": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "by_code": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9547 wkt1 datum authority -> 4326",
-   "wkt": "9547 wkt1 datum authority",
+   "name": "9696 wkt1 datum authority -> 4326",
+   "wkt": "9696 wkt1 datum authority",
    "other": 4326,
    "reverse": false,
    "point": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "proj": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "by_code": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "9547 wkt1 datum authority <- 4326",
-   "wkt": "9547 wkt1 datum authority",
+   "name": "9696 wkt1 datum authority <- 4326",
+   "wkt": "9696 wkt1 datum authority",
    "other": 4326,
    "reverse": true,
    "point": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "proj": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "by_code": [
-    6.265000000000001,
-    45.379999999999995
+    -89.465,
+    -38.685
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10209 esri -> 4326",
-   "wkt": "10209 esri",
+   "name": "10214 esri -> 4326",
+   "wkt": "10214 esri",
    "other": 4326,
    "reverse": false,
    "point": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "proj": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "by_code": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10209 esri <- 4326",
-   "wkt": "10209 esri",
+   "name": "10214 esri <- 4326",
+   "wkt": "10214 esri",
    "other": 4326,
    "reverse": true,
    "point": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "proj": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "by_code": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10209 esri -> 4258",
-   "wkt": "10209 esri",
+   "name": "10214 esri -> 4258",
+   "wkt": "10214 esri",
    "other": 4258,
    "reverse": false,
    "point": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "proj": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "by_code": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10209 esri -> 4269",
-   "wkt": "10209 esri",
+   "name": "10214 esri -> 4269",
+   "wkt": "10214 esri",
    "other": 4269,
    "reverse": false,
    "point": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "proj": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "by_code": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10209 esri -> 25832",
-   "wkt": "10209 esri",
+   "name": "10214 esri -> 25832",
+   "wkt": "10214 esri",
    "other": 25832,
    "reverse": false,
    "point": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "proj": [
-    -272244.4259887695,
-    5782093.147706717
+    -354883.6049909004,
+    5787071.4428387005
    ],
    "by_code": [
-    -272244.4259887695,
-    5782093.147706717
+    -354883.6049909004,
+    5787071.4428387005
    ],
    "geographic": false,
    "pending": false
   },
   {
-   "name": "10209 esri gcs renamed -> 4326",
-   "wkt": "10209 esri gcs renamed",
+   "name": "10214 esri gcs renamed -> 4326",
+   "wkt": "10214 esri gcs renamed",
    "other": 4326,
    "reverse": false,
    "point": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "proj": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "by_code": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10209 esri gcs renamed <- 4326",
-   "wkt": "10209 esri gcs renamed",
+   "name": "10214 esri gcs renamed <- 4326",
+   "wkt": "10214 esri gcs renamed",
    "other": 4326,
    "reverse": true,
    "point": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "proj": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "by_code": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10209 esri gcs renamed -> 4258",
-   "wkt": "10209 esri gcs renamed",
+   "name": "10214 esri gcs renamed -> 4258",
+   "wkt": "10214 esri gcs renamed",
    "other": 4258,
    "reverse": false,
    "point": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "proj": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "by_code": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10209 esri gcs renamed -> 4269",
-   "wkt": "10209 esri gcs renamed",
+   "name": "10214 esri gcs renamed -> 4269",
+   "wkt": "10214 esri gcs renamed",
    "other": 4269,
    "reverse": false,
    "point": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "proj": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "by_code": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10209 esri gcs renamed -> 25832",
-   "wkt": "10209 esri gcs renamed",
+   "name": "10214 esri gcs renamed -> 25832",
+   "wkt": "10214 esri gcs renamed",
    "other": 25832,
    "reverse": false,
    "point": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "proj": [
-    -272244.4259887695,
-    5782093.147706717
+    -354883.6049909004,
+    5787071.4428387005
    ],
    "by_code": [
-    -272244.4259887695,
-    5782093.147706717
+    -354883.6049909004,
+    5787071.4428387005
    ],
    "geographic": false,
    "pending": false
   },
   {
-   "name": "10209 wkt2 no ids -> 4326",
-   "wkt": "10209 wkt2 no ids",
+   "name": "10214 wkt2 no ids -> 4326",
+   "wkt": "10214 wkt2 no ids",
    "other": 4326,
    "reverse": false,
    "point": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "proj": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "by_code": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10209 wkt2 no ids <- 4326",
-   "wkt": "10209 wkt2 no ids",
+   "name": "10214 wkt2 no ids <- 4326",
+   "wkt": "10214 wkt2 no ids",
    "other": 4326,
    "reverse": true,
    "point": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "proj": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "by_code": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10209 wkt2 no ids -> 4258",
-   "wkt": "10209 wkt2 no ids",
+   "name": "10214 wkt2 no ids -> 4258",
+   "wkt": "10214 wkt2 no ids",
    "other": 4258,
    "reverse": false,
    "point": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "proj": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "by_code": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10209 wkt2 no ids -> 4269",
-   "wkt": "10209 wkt2 no ids",
+   "name": "10214 wkt2 no ids -> 4269",
+   "wkt": "10214 wkt2 no ids",
    "other": 4269,
    "reverse": false,
    "point": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "proj": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "by_code": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10209 wkt2 no ids -> 25832",
-   "wkt": "10209 wkt2 no ids",
+   "name": "10214 wkt2 no ids -> 25832",
+   "wkt": "10214 wkt2 no ids",
    "other": 25832,
    "reverse": false,
    "point": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "proj": [
-    -272244.4259887695,
-    5782093.147706717
+    -354883.6049909004,
+    5787071.4428387005
    ],
    "by_code": [
-    -272244.4259887695,
-    5782093.147706717
+    -354883.6049909004,
+    5787071.4428387005
    ],
    "geographic": false,
    "pending": false
   },
   {
-   "name": "10209 wkt2 datum id -> 4326",
-   "wkt": "10209 wkt2 datum id",
+   "name": "10214 wkt2 datum id -> 4326",
+   "wkt": "10214 wkt2 datum id",
    "other": 4326,
    "reverse": false,
    "point": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "proj": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "by_code": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10209 wkt2 datum id <- 4326",
-   "wkt": "10209 wkt2 datum id",
+   "name": "10214 wkt2 datum id <- 4326",
+   "wkt": "10214 wkt2 datum id",
    "other": 4326,
    "reverse": true,
    "point": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "proj": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "by_code": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10209 wkt2 datum id, renamed -> 4326",
-   "wkt": "10209 wkt2 datum id, renamed",
+   "name": "10214 wkt2 datum id, renamed -> 4326",
+   "wkt": "10214 wkt2 datum id, renamed",
    "other": 4326,
    "reverse": false,
    "point": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "proj": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "by_code": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10209 wkt2 datum id, renamed <- 4326",
-   "wkt": "10209 wkt2 datum id, renamed",
+   "name": "10214 wkt2 datum id, renamed <- 4326",
+   "wkt": "10214 wkt2 datum id, renamed",
    "other": 4326,
    "reverse": true,
    "point": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "proj": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "by_code": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10209 wkt1 datum authority -> 4326",
-   "wkt": "10209 wkt1 datum authority",
+   "name": "10214 wkt1 datum authority -> 4326",
+   "wkt": "10214 wkt1 datum authority",
    "other": 4326,
    "reverse": false,
    "point": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "proj": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "by_code": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10209 wkt1 datum authority <- 4326",
-   "wkt": "10209 wkt1 datum authority",
+   "name": "10214 wkt1 datum authority <- 4326",
+   "wkt": "10214 wkt1 datum authority",
    "other": 4326,
    "reverse": true,
    "point": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "proj": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "by_code": [
-    -2.1799999999999997,
-    51.655
+    -3.3600000000000003,
+    51.58
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10475 esri -> 4326",
-   "wkt": "10475 esri",
+   "name": "10571 esri -> 4326",
+   "wkt": "10571 esri",
    "other": 4326,
    "reverse": false,
    "point": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "proj": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "by_code": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10475 esri <- 4326",
-   "wkt": "10475 esri",
+   "name": "10571 esri <- 4326",
+   "wkt": "10571 esri",
    "other": 4326,
    "reverse": true,
    "point": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "proj": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "by_code": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10475 esri -> 4258",
-   "wkt": "10475 esri",
+   "name": "10571 esri -> 4258",
+   "wkt": "10571 esri",
    "other": 4258,
    "reverse": false,
    "point": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "proj": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "by_code": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10475 esri -> 4269",
-   "wkt": "10475 esri",
+   "name": "10571 esri -> 4269",
+   "wkt": "10571 esri",
    "other": 4269,
    "reverse": false,
    "point": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "proj": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "by_code": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10475 esri -> 25832",
-   "wkt": "10475 esri",
+   "name": "10571 esri -> 25832",
+   "wkt": "10571 esri",
    "other": 25832,
    "reverse": false,
    "point": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "proj": [
-    688545.3340488763,
-    5195914.170654183
+    612038.1000001242,
+    6541129.651595213
    ],
    "by_code": [
-    688545.3340488763,
-    5195914.170654183
+    612038.1000001242,
+    6541129.651595213
    ],
    "geographic": false,
    "pending": false
   },
   {
-   "name": "10475 esri gcs renamed -> 4326",
-   "wkt": "10475 esri gcs renamed",
+   "name": "10571 esri gcs renamed -> 4326",
+   "wkt": "10571 esri gcs renamed",
    "other": 4326,
    "reverse": false,
    "point": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "proj": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "by_code": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10475 esri gcs renamed <- 4326",
-   "wkt": "10475 esri gcs renamed",
+   "name": "10571 esri gcs renamed <- 4326",
+   "wkt": "10571 esri gcs renamed",
    "other": 4326,
    "reverse": true,
    "point": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "proj": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "by_code": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10475 esri gcs renamed -> 4258",
-   "wkt": "10475 esri gcs renamed",
+   "name": "10571 esri gcs renamed -> 4258",
+   "wkt": "10571 esri gcs renamed",
    "other": 4258,
    "reverse": false,
    "point": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "proj": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "by_code": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10475 esri gcs renamed -> 4269",
-   "wkt": "10475 esri gcs renamed",
+   "name": "10571 esri gcs renamed -> 4269",
+   "wkt": "10571 esri gcs renamed",
    "other": 4269,
    "reverse": false,
    "point": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "proj": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "by_code": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10475 esri gcs renamed -> 25832",
-   "wkt": "10475 esri gcs renamed",
+   "name": "10571 esri gcs renamed -> 25832",
+   "wkt": "10571 esri gcs renamed",
    "other": 25832,
    "reverse": false,
    "point": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "proj": [
-    688545.3340488763,
-    5195914.170654183
+    612038.1000001242,
+    6541129.651595213
    ],
    "by_code": [
-    688545.3340488763,
-    5195914.170654183
+    612038.1000001242,
+    6541129.651595213
    ],
    "geographic": false,
    "pending": false
   },
   {
-   "name": "10475 wkt2 no ids -> 4326",
-   "wkt": "10475 wkt2 no ids",
+   "name": "10571 wkt2 no ids -> 4326",
+   "wkt": "10571 wkt2 no ids",
    "other": 4326,
    "reverse": false,
    "point": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "proj": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "by_code": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10475 wkt2 no ids <- 4326",
-   "wkt": "10475 wkt2 no ids",
+   "name": "10571 wkt2 no ids <- 4326",
+   "wkt": "10571 wkt2 no ids",
    "other": 4326,
    "reverse": true,
    "point": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "proj": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "by_code": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10475 wkt2 no ids -> 4258",
-   "wkt": "10475 wkt2 no ids",
+   "name": "10571 wkt2 no ids -> 4258",
+   "wkt": "10571 wkt2 no ids",
    "other": 4258,
    "reverse": false,
    "point": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "proj": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "by_code": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10475 wkt2 no ids -> 4269",
-   "wkt": "10475 wkt2 no ids",
+   "name": "10571 wkt2 no ids -> 4269",
+   "wkt": "10571 wkt2 no ids",
    "other": 4269,
    "reverse": false,
    "point": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "proj": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "by_code": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10475 wkt2 no ids -> 25832",
-   "wkt": "10475 wkt2 no ids",
+   "name": "10571 wkt2 no ids -> 25832",
+   "wkt": "10571 wkt2 no ids",
    "other": 25832,
    "reverse": false,
    "point": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "proj": [
-    688545.3340488763,
-    5195914.170654183
+    612038.1000001242,
+    6541129.651595213
    ],
    "by_code": [
-    688545.3340488763,
-    5195914.170654183
+    612038.1000001242,
+    6541129.651595213
    ],
    "geographic": false,
    "pending": false
   },
   {
-   "name": "10475 wkt2 datum id -> 4326",
-   "wkt": "10475 wkt2 datum id",
+   "name": "10571 wkt2 datum id -> 4326",
+   "wkt": "10571 wkt2 datum id",
    "other": 4326,
    "reverse": false,
    "point": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "proj": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "by_code": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10475 wkt2 datum id <- 4326",
-   "wkt": "10475 wkt2 datum id",
+   "name": "10571 wkt2 datum id <- 4326",
+   "wkt": "10571 wkt2 datum id",
    "other": 4326,
    "reverse": true,
    "point": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "proj": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "by_code": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10475 wkt2 datum id, renamed -> 4326",
-   "wkt": "10475 wkt2 datum id, renamed",
+   "name": "10571 wkt2 datum id, renamed -> 4326",
+   "wkt": "10571 wkt2 datum id, renamed",
    "other": 4326,
    "reverse": false,
    "point": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "proj": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "by_code": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10475 wkt2 datum id, renamed <- 4326",
-   "wkt": "10475 wkt2 datum id, renamed",
+   "name": "10571 wkt2 datum id, renamed <- 4326",
+   "wkt": "10571 wkt2 datum id, renamed",
    "other": 4326,
    "reverse": true,
    "point": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "proj": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "by_code": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10475 wkt1 datum authority -> 4326",
-   "wkt": "10475 wkt1 datum authority",
+   "name": "10571 wkt1 datum authority -> 4326",
+   "wkt": "10571 wkt1 datum authority",
    "other": 4326,
    "reverse": false,
    "point": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "proj": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "by_code": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10475 wkt1 datum authority <- 4326",
-   "wkt": "10475 wkt1 datum authority",
+   "name": "10571 wkt1 datum authority <- 4326",
+   "wkt": "10571 wkt1 datum authority",
    "other": 4326,
    "reverse": true,
    "point": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "proj": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "by_code": [
-    11.475,
-    46.89
+    10.95,
+    58.995000000000005
    ],
    "geographic": true,
    "pending": false
@@ -20327,421 +20333,841 @@
    "pending": false
   },
   {
-   "name": "10898 esri -> 4326",
-   "wkt": "10898 esri",
+   "name": "10952 esri -> 4326",
+   "wkt": "10952 esri",
    "other": 4326,
    "reverse": false,
    "point": [
-    10.649999999999999,
-    52.135
+    -119.28501705928241,
+    37.27000209378676
    ],
    "proj": [
-    10.649999999999999,
-    52.135
+    -119.28500000000213,
+    37.27000000000091
    ],
    "by_code": [
-    10.649999999999999,
-    52.135
+    -119.28500000000213,
+    37.27000000000091
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10898 esri <- 4326",
-   "wkt": "10898 esri",
+   "name": "10952 esri <- 4326",
+   "wkt": "10952 esri",
    "other": 4326,
    "reverse": true,
    "point": [
-    10.649999999999999,
-    52.135
+    -119.28500000000213,
+    37.27000000000091
    ],
    "proj": [
-    10.649999999999999,
-    52.135
+    -119.28501705928453,
+    37.270002093787674
    ],
    "by_code": [
-    10.649999999999999,
-    52.135
+    -119.28501705928453,
+    37.270002093787674
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10898 esri -> 4258",
-   "wkt": "10898 esri",
+   "name": "10952 esri -> 4258",
+   "wkt": "10952 esri",
    "other": 4258,
    "reverse": false,
    "point": [
-    10.649999999999999,
-    52.135
+    -119.28501705928241,
+    37.27000209378676
    ],
    "proj": [
-    10.649999999999999,
-    52.135
+    -119.28501705928241,
+    37.27000209378676
    ],
    "by_code": [
-    10.649999999999999,
-    52.135
+    -119.28501705928241,
+    37.27000209378676
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10898 esri -> 4269",
-   "wkt": "10898 esri",
+   "name": "10952 esri -> 4269",
+   "wkt": "10952 esri",
    "other": 4269,
    "reverse": false,
    "point": [
-    10.649999999999999,
-    52.135
+    -119.28501705928241,
+    37.27000209378676
    ],
    "proj": [
-    10.649999999999999,
-    52.135
+    -119.28501705928241,
+    37.27000209378676
    ],
    "by_code": [
-    10.649999999999999,
-    52.135
+    -119.28501705928241,
+    37.27000209378676
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10898 esri -> 25832",
-   "wkt": "10898 esri",
+   "name": "10952 esri -> 25832",
+   "wkt": "10952 esri",
    "other": 25832,
    "reverse": false,
    "point": [
-    10.649999999999999,
-    52.135
+    -119.28501705928241,
+    37.27000209378676
    ],
    "proj": [
-    612928.5085535591,
-    5777337.3290050505
+    -4176688.0063878894,
+    14356302.879896343
    ],
    "by_code": [
-    612928.5085535591,
-    5777337.3290050505
+    -4176688.0063878894,
+    14356302.879896343
    ],
    "geographic": false,
    "pending": false
   },
   {
-   "name": "10898 esri gcs renamed -> 4326",
-   "wkt": "10898 esri gcs renamed",
+   "name": "10952 esri gcs renamed -> 4326",
+   "wkt": "10952 esri gcs renamed",
    "other": 4326,
    "reverse": false,
    "point": [
-    10.649999999999999,
-    52.135
+    -119.28501705928241,
+    37.27000209378676
    ],
    "proj": [
-    10.649999999999999,
-    52.135
+    -119.28500000000213,
+    37.27000000000091
    ],
    "by_code": [
-    10.649999999999999,
-    52.135
+    -119.28500000000213,
+    37.27000000000091
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10898 esri gcs renamed <- 4326",
-   "wkt": "10898 esri gcs renamed",
+   "name": "10952 esri gcs renamed <- 4326",
+   "wkt": "10952 esri gcs renamed",
    "other": 4326,
    "reverse": true,
    "point": [
-    10.649999999999999,
-    52.135
+    -119.28500000000213,
+    37.27000000000091
    ],
    "proj": [
-    10.649999999999999,
-    52.135
+    -119.28501705928453,
+    37.270002093787674
    ],
    "by_code": [
-    10.649999999999999,
-    52.135
+    -119.28501705928453,
+    37.270002093787674
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10898 esri gcs renamed -> 4258",
-   "wkt": "10898 esri gcs renamed",
+   "name": "10952 esri gcs renamed -> 4258",
+   "wkt": "10952 esri gcs renamed",
    "other": 4258,
    "reverse": false,
    "point": [
-    10.649999999999999,
-    52.135
+    -119.28501705928241,
+    37.27000209378676
    ],
    "proj": [
-    10.649999999999999,
-    52.135
+    -119.28501705928241,
+    37.27000209378676
    ],
    "by_code": [
-    10.649999999999999,
-    52.135
+    -119.28501705928241,
+    37.27000209378676
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10898 esri gcs renamed -> 4269",
-   "wkt": "10898 esri gcs renamed",
+   "name": "10952 esri gcs renamed -> 4269",
+   "wkt": "10952 esri gcs renamed",
    "other": 4269,
    "reverse": false,
    "point": [
-    10.649999999999999,
-    52.135
+    -119.28501705928241,
+    37.27000209378676
    ],
    "proj": [
-    10.649999999999999,
-    52.135
+    -119.28501705928241,
+    37.27000209378676
    ],
    "by_code": [
-    10.649999999999999,
-    52.135
+    -119.28501705928241,
+    37.27000209378676
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10898 esri gcs renamed -> 25832",
-   "wkt": "10898 esri gcs renamed",
+   "name": "10952 esri gcs renamed -> 25832",
+   "wkt": "10952 esri gcs renamed",
    "other": 25832,
    "reverse": false,
    "point": [
-    10.649999999999999,
-    52.135
+    -119.28501705928241,
+    37.27000209378676
    ],
    "proj": [
-    612928.5085535591,
-    5777337.3290050505
+    -4176688.0063878894,
+    14356302.879896343
    ],
    "by_code": [
-    612928.5085535591,
-    5777337.3290050505
+    -4176688.0063878894,
+    14356302.879896343
    ],
    "geographic": false,
    "pending": false
   },
   {
-   "name": "10898 wkt2 no ids -> 4326",
-   "wkt": "10898 wkt2 no ids",
+   "name": "10952 wkt2 no ids -> 4326",
+   "wkt": "10952 wkt2 no ids",
    "other": 4326,
    "reverse": false,
    "point": [
-    10.649999999999999,
-    52.135
+    -119.28501705928241,
+    37.27000209378676
    ],
    "proj": [
-    10.649999999999999,
-    52.135
+    -119.28500000000213,
+    37.27000000000091
    ],
    "by_code": [
-    10.649999999999999,
-    52.135
+    -119.28500000000213,
+    37.27000000000091
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10898 wkt2 no ids <- 4326",
-   "wkt": "10898 wkt2 no ids",
+   "name": "10952 wkt2 no ids <- 4326",
+   "wkt": "10952 wkt2 no ids",
    "other": 4326,
    "reverse": true,
    "point": [
-    10.649999999999999,
-    52.135
+    -119.28500000000213,
+    37.27000000000091
    ],
    "proj": [
-    10.649999999999999,
-    52.135
+    -119.28501705928453,
+    37.270002093787674
    ],
    "by_code": [
-    10.649999999999999,
-    52.135
+    -119.28501705928453,
+    37.270002093787674
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10898 wkt2 no ids -> 4258",
-   "wkt": "10898 wkt2 no ids",
+   "name": "10952 wkt2 no ids -> 4258",
+   "wkt": "10952 wkt2 no ids",
    "other": 4258,
    "reverse": false,
    "point": [
-    10.649999999999999,
-    52.135
+    -119.28501705928241,
+    37.27000209378676
    ],
    "proj": [
-    10.649999999999999,
-    52.135
+    -119.28501705928241,
+    37.27000209378676
    ],
    "by_code": [
-    10.649999999999999,
-    52.135
+    -119.28501705928241,
+    37.27000209378676
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10898 wkt2 no ids -> 4269",
-   "wkt": "10898 wkt2 no ids",
+   "name": "10952 wkt2 no ids -> 4269",
+   "wkt": "10952 wkt2 no ids",
    "other": 4269,
    "reverse": false,
    "point": [
-    10.649999999999999,
-    52.135
+    -119.28501705928241,
+    37.27000209378676
    ],
    "proj": [
-    10.649999999999999,
-    52.135
+    -119.28501705928241,
+    37.27000209378676
    ],
    "by_code": [
-    10.649999999999999,
-    52.135
+    -119.28501705928241,
+    37.27000209378676
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10898 wkt2 no ids -> 25832",
-   "wkt": "10898 wkt2 no ids",
+   "name": "10952 wkt2 no ids -> 25832",
+   "wkt": "10952 wkt2 no ids",
    "other": 25832,
    "reverse": false,
    "point": [
-    10.649999999999999,
-    52.135
+    -119.28501705928241,
+    37.27000209378676
    ],
    "proj": [
-    612928.5085535591,
-    5777337.3290050505
+    -4176688.0063878894,
+    14356302.879896343
    ],
    "by_code": [
-    612928.5085535591,
-    5777337.3290050505
+    -4176688.0063878894,
+    14356302.879896343
    ],
    "geographic": false,
    "pending": false
   },
   {
-   "name": "10898 wkt2 datum id -> 4326",
-   "wkt": "10898 wkt2 datum id",
+   "name": "10952 wkt2 datum id -> 4326",
+   "wkt": "10952 wkt2 datum id",
    "other": 4326,
    "reverse": false,
    "point": [
-    10.649999999999999,
-    52.135
+    -119.28501705928241,
+    37.27000209378676
    ],
    "proj": [
-    10.649999999999999,
-    52.135
+    -119.28500000000213,
+    37.27000000000091
    ],
    "by_code": [
-    10.649999999999999,
-    52.135
+    -119.28500000000213,
+    37.27000000000091
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10898 wkt2 datum id <- 4326",
-   "wkt": "10898 wkt2 datum id",
+   "name": "10952 wkt2 datum id <- 4326",
+   "wkt": "10952 wkt2 datum id",
    "other": 4326,
    "reverse": true,
    "point": [
-    10.649999999999999,
-    52.135
+    -119.28500000000213,
+    37.27000000000091
    ],
    "proj": [
-    10.649999999999999,
-    52.135
+    -119.28501705928453,
+    37.270002093787674
    ],
    "by_code": [
-    10.649999999999999,
-    52.135
+    -119.28501705928453,
+    37.270002093787674
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10898 wkt2 datum id, renamed -> 4326",
-   "wkt": "10898 wkt2 datum id, renamed",
+   "name": "10952 wkt2 datum id, renamed -> 4326",
+   "wkt": "10952 wkt2 datum id, renamed",
    "other": 4326,
    "reverse": false,
    "point": [
-    10.649999999999999,
-    52.135
+    -119.28501705928241,
+    37.27000209378676
    ],
    "proj": [
-    10.649999999999999,
-    52.135
+    -119.28500000000213,
+    37.27000000000091
    ],
    "by_code": [
-    10.649999999999999,
-    52.135
+    -119.28500000000213,
+    37.27000000000091
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10898 wkt2 datum id, renamed <- 4326",
-   "wkt": "10898 wkt2 datum id, renamed",
+   "name": "10952 wkt2 datum id, renamed <- 4326",
+   "wkt": "10952 wkt2 datum id, renamed",
    "other": 4326,
    "reverse": true,
    "point": [
-    10.649999999999999,
-    52.135
+    -119.28500000000213,
+    37.27000000000091
    ],
    "proj": [
-    10.649999999999999,
-    52.135
+    -119.28501705928453,
+    37.270002093787674
    ],
    "by_code": [
-    10.649999999999999,
-    52.135
+    -119.28501705928453,
+    37.270002093787674
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10898 wkt1 datum authority -> 4326",
-   "wkt": "10898 wkt1 datum authority",
+   "name": "10952 wkt1 datum authority -> 4326",
+   "wkt": "10952 wkt1 datum authority",
    "other": 4326,
    "reverse": false,
    "point": [
-    10.649999999999999,
-    52.135
+    -119.28501705928241,
+    37.27000209378676
    ],
    "proj": [
-    10.649999999999999,
-    52.135
+    -119.28500000000213,
+    37.27000000000091
    ],
    "by_code": [
-    10.649999999999999,
-    52.135
+    -119.28500000000213,
+    37.27000000000091
    ],
    "geographic": true,
    "pending": false
   },
   {
-   "name": "10898 wkt1 datum authority <- 4326",
-   "wkt": "10898 wkt1 datum authority",
+   "name": "10952 wkt1 datum authority <- 4326",
+   "wkt": "10952 wkt1 datum authority",
    "other": 4326,
    "reverse": true,
    "point": [
-    10.649999999999999,
-    52.135
+    -119.28500000000213,
+    37.27000000000091
    ],
    "proj": [
-    10.649999999999999,
-    52.135
+    -119.28501705928453,
+    37.270002093787674
    ],
    "by_code": [
-    10.649999999999999,
-    52.135
+    -119.28501705928453,
+    37.270002093787674
+   ],
+   "geographic": true,
+   "pending": false
+  },
+  {
+   "name": "11199 esri -> 4326",
+   "wkt": "11199 esri",
+   "other": 4326,
+   "reverse": false,
+   "point": [
+    9.19,
+    51.595
+   ],
+   "proj": [
+    9.19,
+    51.595
+   ],
+   "by_code": [
+    9.19,
+    51.595
+   ],
+   "geographic": true,
+   "pending": false
+  },
+  {
+   "name": "11199 esri <- 4326",
+   "wkt": "11199 esri",
+   "other": 4326,
+   "reverse": true,
+   "point": [
+    9.19,
+    51.595
+   ],
+   "proj": [
+    9.19,
+    51.595
+   ],
+   "by_code": [
+    9.19,
+    51.595
+   ],
+   "geographic": true,
+   "pending": false
+  },
+  {
+   "name": "11199 esri -> 4258",
+   "wkt": "11199 esri",
+   "other": 4258,
+   "reverse": false,
+   "point": [
+    9.19,
+    51.595
+   ],
+   "proj": [
+    9.19,
+    51.595
+   ],
+   "by_code": [
+    9.19,
+    51.595
+   ],
+   "geographic": true,
+   "pending": false
+  },
+  {
+   "name": "11199 esri -> 4269",
+   "wkt": "11199 esri",
+   "other": 4269,
+   "reverse": false,
+   "point": [
+    9.19,
+    51.595
+   ],
+   "proj": [
+    9.19,
+    51.595
+   ],
+   "by_code": [
+    9.19,
+    51.595
+   ],
+   "geographic": true,
+   "pending": false
+  },
+  {
+   "name": "11199 esri -> 25832",
+   "wkt": "11199 esri",
+   "other": 25832,
+   "reverse": false,
+   "point": [
+    9.19,
+    51.595
+   ],
+   "proj": [
+    513160.97764644236,
+    5716011.619465348
+   ],
+   "by_code": [
+    513160.97764644236,
+    5716011.619465348
+   ],
+   "geographic": false,
+   "pending": false
+  },
+  {
+   "name": "11199 esri gcs renamed -> 4326",
+   "wkt": "11199 esri gcs renamed",
+   "other": 4326,
+   "reverse": false,
+   "point": [
+    9.19,
+    51.595
+   ],
+   "proj": [
+    9.19,
+    51.595
+   ],
+   "by_code": [
+    9.19,
+    51.595
+   ],
+   "geographic": true,
+   "pending": false
+  },
+  {
+   "name": "11199 esri gcs renamed <- 4326",
+   "wkt": "11199 esri gcs renamed",
+   "other": 4326,
+   "reverse": true,
+   "point": [
+    9.19,
+    51.595
+   ],
+   "proj": [
+    9.19,
+    51.595
+   ],
+   "by_code": [
+    9.19,
+    51.595
+   ],
+   "geographic": true,
+   "pending": false
+  },
+  {
+   "name": "11199 esri gcs renamed -> 4258",
+   "wkt": "11199 esri gcs renamed",
+   "other": 4258,
+   "reverse": false,
+   "point": [
+    9.19,
+    51.595
+   ],
+   "proj": [
+    9.19,
+    51.595
+   ],
+   "by_code": [
+    9.19,
+    51.595
+   ],
+   "geographic": true,
+   "pending": false
+  },
+  {
+   "name": "11199 esri gcs renamed -> 4269",
+   "wkt": "11199 esri gcs renamed",
+   "other": 4269,
+   "reverse": false,
+   "point": [
+    9.19,
+    51.595
+   ],
+   "proj": [
+    9.19,
+    51.595
+   ],
+   "by_code": [
+    9.19,
+    51.595
+   ],
+   "geographic": true,
+   "pending": false
+  },
+  {
+   "name": "11199 esri gcs renamed -> 25832",
+   "wkt": "11199 esri gcs renamed",
+   "other": 25832,
+   "reverse": false,
+   "point": [
+    9.19,
+    51.595
+   ],
+   "proj": [
+    513160.97764644236,
+    5716011.619465348
+   ],
+   "by_code": [
+    513160.97764644236,
+    5716011.619465348
+   ],
+   "geographic": false,
+   "pending": false
+  },
+  {
+   "name": "11199 wkt2 no ids -> 4326",
+   "wkt": "11199 wkt2 no ids",
+   "other": 4326,
+   "reverse": false,
+   "point": [
+    9.19,
+    51.595
+   ],
+   "proj": [
+    9.19,
+    51.595
+   ],
+   "by_code": [
+    9.19,
+    51.595
+   ],
+   "geographic": true,
+   "pending": false
+  },
+  {
+   "name": "11199 wkt2 no ids <- 4326",
+   "wkt": "11199 wkt2 no ids",
+   "other": 4326,
+   "reverse": true,
+   "point": [
+    9.19,
+    51.595
+   ],
+   "proj": [
+    9.19,
+    51.595
+   ],
+   "by_code": [
+    9.19,
+    51.595
+   ],
+   "geographic": true,
+   "pending": false
+  },
+  {
+   "name": "11199 wkt2 no ids -> 4258",
+   "wkt": "11199 wkt2 no ids",
+   "other": 4258,
+   "reverse": false,
+   "point": [
+    9.19,
+    51.595
+   ],
+   "proj": [
+    9.19,
+    51.595
+   ],
+   "by_code": [
+    9.19,
+    51.595
+   ],
+   "geographic": true,
+   "pending": false
+  },
+  {
+   "name": "11199 wkt2 no ids -> 4269",
+   "wkt": "11199 wkt2 no ids",
+   "other": 4269,
+   "reverse": false,
+   "point": [
+    9.19,
+    51.595
+   ],
+   "proj": [
+    9.19,
+    51.595
+   ],
+   "by_code": [
+    9.19,
+    51.595
+   ],
+   "geographic": true,
+   "pending": false
+  },
+  {
+   "name": "11199 wkt2 no ids -> 25832",
+   "wkt": "11199 wkt2 no ids",
+   "other": 25832,
+   "reverse": false,
+   "point": [
+    9.19,
+    51.595
+   ],
+   "proj": [
+    513160.97764644236,
+    5716011.619465348
+   ],
+   "by_code": [
+    513160.97764644236,
+    5716011.619465348
+   ],
+   "geographic": false,
+   "pending": false
+  },
+  {
+   "name": "11199 wkt2 datum id -> 4326",
+   "wkt": "11199 wkt2 datum id",
+   "other": 4326,
+   "reverse": false,
+   "point": [
+    9.19,
+    51.595
+   ],
+   "proj": [
+    9.19,
+    51.595
+   ],
+   "by_code": [
+    9.19,
+    51.595
+   ],
+   "geographic": true,
+   "pending": false
+  },
+  {
+   "name": "11199 wkt2 datum id <- 4326",
+   "wkt": "11199 wkt2 datum id",
+   "other": 4326,
+   "reverse": true,
+   "point": [
+    9.19,
+    51.595
+   ],
+   "proj": [
+    9.19,
+    51.595
+   ],
+   "by_code": [
+    9.19,
+    51.595
+   ],
+   "geographic": true,
+   "pending": false
+  },
+  {
+   "name": "11199 wkt2 datum id, renamed -> 4326",
+   "wkt": "11199 wkt2 datum id, renamed",
+   "other": 4326,
+   "reverse": false,
+   "point": [
+    9.19,
+    51.595
+   ],
+   "proj": [
+    9.19,
+    51.595
+   ],
+   "by_code": [
+    9.19,
+    51.595
+   ],
+   "geographic": true,
+   "pending": false
+  },
+  {
+   "name": "11199 wkt2 datum id, renamed <- 4326",
+   "wkt": "11199 wkt2 datum id, renamed",
+   "other": 4326,
+   "reverse": true,
+   "point": [
+    9.19,
+    51.595
+   ],
+   "proj": [
+    9.19,
+    51.595
+   ],
+   "by_code": [
+    9.19,
+    51.595
+   ],
+   "geographic": true,
+   "pending": false
+  },
+  {
+   "name": "11199 wkt1 datum authority -> 4326",
+   "wkt": "11199 wkt1 datum authority",
+   "other": 4326,
+   "reverse": false,
+   "point": [
+    9.19,
+    51.595
+   ],
+   "proj": [
+    9.19,
+    51.595
+   ],
+   "by_code": [
+    9.19,
+    51.595
+   ],
+   "geographic": true,
+   "pending": false
+  },
+  {
+   "name": "11199 wkt1 datum authority <- 4326",
+   "wkt": "11199 wkt1 datum authority",
+   "other": 4326,
+   "reverse": true,
+   "point": [
+    9.19,
+    51.595
+   ],
+   "proj": [
+    9.19,
+    51.595
+   ],
+   "by_code": [
+    9.19,
+    51.595
    ],
    "geographic": true,
    "pending": false
@@ -21516,12 +21942,12 @@
     -1144001.6436666416
    ],
    "proj": [
-    17.324986703630724,
-    49.39500231984502
+    17.324999965845997,
+    49.395000047554156
    ],
    "by_code": [
-    17.324986703630724,
-    49.39500231984502
+    17.324999965845997,
+    49.395000047554156
    ],
    "geographic": true,
    "pending": false
@@ -21576,12 +22002,12 @@
     -1144001.6436666416
    ],
    "proj": [
-    17.324986703630724,
-    49.39500231984502
+    17.324999965845997,
+    49.395000047554156
    ],
    "by_code": [
-    17.324986703630724,
-    49.39500231984502
+    17.324999965845997,
+    49.395000047554156
    ],
    "geographic": true,
    "pending": false
@@ -21713,15 +22139,15 @@
    "reverse": false,
    "point": [
     499999.9999999982,
-    5614796.648512568
+    5615352.637460245
    ],
    "proj": [
     -116.54000000000003,
-    50.684999999999995
+    50.68999999999999
    ],
    "by_code": [
     -116.54000000000003,
-    50.684999999999995
+    50.68999999999999
    ],
    "geographic": true,
    "pending": false
@@ -21733,15 +22159,15 @@
    "reverse": true,
    "point": [
     -116.54000000000002,
-    50.685
+    50.69
    ],
    "proj": [
     499999.9999999982,
-    5614796.648512568
+    5615352.637460245
    ],
    "by_code": [
     499999.9999999982,
-    5614796.648512568
+    5615352.637460245
    ],
    "geographic": false,
    "pending": false
@@ -21753,15 +22179,15 @@
    "reverse": false,
    "point": [
     499999.9999999982,
-    5614796.648512568
+    5615352.637460245
    ],
    "proj": [
     -116.54000000000003,
-    50.684999999999995
+    50.68999999999999
    ],
    "by_code": [
     -116.54000000000003,
-    50.684999999999995
+    50.68999999999999
    ],
    "geographic": true,
    "pending": false
@@ -21773,15 +22199,15 @@
    "reverse": false,
    "point": [
     499999.9999999982,
-    5614796.648512568
+    5615352.637460245
    ],
    "proj": [
     -116.54000000000003,
-    50.684999999999995
+    50.68999999999999
    ],
    "by_code": [
     -116.54000000000003,
-    50.684999999999995
+    50.68999999999999
    ],
    "geographic": true,
    "pending": false
@@ -21793,15 +22219,15 @@
    "reverse": true,
    "point": [
     -116.54000000000002,
-    50.685
+    50.69
    ],
    "proj": [
     499999.9999999982,
-    5614796.648512568
+    5615352.637460245
    ],
    "by_code": [
     499999.9999999982,
-    5614796.648512568
+    5615352.637460245
    ],
    "geographic": false,
    "pending": false
@@ -21813,15 +22239,15 @@
    "reverse": false,
    "point": [
     499999.9999999982,
-    5614796.648512568
+    5615352.637460245
    ],
    "proj": [
     -116.54000000000003,
-    50.684999999999995
+    50.68999999999999
    ],
    "by_code": [
     -116.54000000000003,
-    50.684999999999995
+    50.68999999999999
    ],
    "geographic": true,
    "pending": false

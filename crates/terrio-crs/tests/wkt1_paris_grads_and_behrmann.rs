@@ -1,5 +1,5 @@
 //! WKT 1 quirks PROJ reads: Paris's longitude written in degrees in a CRS in grads, and ESRI's
-//! Behrmann projection. The WKTs are PROJ 9.8.1's (pyproj 3.8.0, `CRS.to_wkt("WKT1_ESRI")` and
+//! Behrmann projection. The WKTs are PROJ 9.9.0's (pyproj 3.8.0, `CRS.to_wkt("WKT1_ESRI")` and
 //! `"WKT1_GDAL"` without `AUTHORITY`) with their CRS and datum names replaced, so that terrio
 //! reads them rather than identifying their codes. Reference values are PROJ's
 //! `Transformer.from_crs(source, crs, always_xy=True)`, network off, no grids; GDAL 3.10.3's

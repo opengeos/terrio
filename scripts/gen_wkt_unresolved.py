@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 # SPDX-License-Identifier: MIT
 
-"""Generate crates/terrio-crs/tests/data/wkt_unresolved.json: where PROJ 9.8.1 places points of WKTs
+"""Generate crates/terrio-crs/tests/data/wkt_unresolved.json: where PROJ 9.9.0 places points of WKTs
 it does not resolve to their EPSG CRS, and of WKTs it does, as a guard.
 
 PROJ resolves a WKT without the CRS's ID by its name, and only when the WKT matches the CRS of
@@ -319,7 +319,7 @@ def place(src, dst, point):
 
 def main():
     """Write the cases."""
-    assert pyproj.proj_version_str == "9.8.1", pyproj.proj_version_str
+    assert pyproj.proj_version_str == "9.9.0", pyproj.proj_version_str
     pyproj.network.set_network_enabled(False)
     assert os.environ.get("PROJ_NETWORK") == "OFF"
     # No grids, so the values don't depend on what is installed: no file PROJ's database names

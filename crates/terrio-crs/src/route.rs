@@ -281,16 +281,26 @@ impl Route {
     fn build(src: &Def, dst: &Def, all: bool) -> Self {
         let aoi = area_of_interest(src, dst);
         let keep = |op: &Op| relevant(op, src, dst, aoi.as_ref());
+        // Unless both CRSs are 3D (geographic 3D or geocentric), PROJ makes a concatenation
+        // through a transformation its database registers between geocentric CRSs only where no
+        // transformation of the area links the datums directly (PROJ filters the direct ones by
+        // area before it tries the pivot): from 2D WGS 84, PROJ 9.9.0 places the deprecated
+        // GDA94 (3D) (EPSG:4347) by GDA94 to WGS 84 (1), from 3D WGS 84 through WGS 84 (G1762);
+        // ITRF90 (geocentric) (EPSG:4332), which none links directly, through WGS 84 (Transit)
+        // from both.
+        let dimensions = src.geodetic_3d() && dst.geodetic_3d();
+        let pivoted = |op: &Op| op.geocentric && op.concatenated;
         // Between projected CRSs, PROJ concatenates the transformations with the projections,
         // which gives a concatenation its database registers the accuracy and area of its
         // steps (NAD83 to NAD83(NSRS2007) (NADCON5, Alaska) between British Columbia Albers
         // and UTM).
         let concatenated = !src.is_geographic() || !dst.is_geographic();
         let list = |ops: &[Arc<Op>], reverse: bool| -> Kind {
+            let direct = ops.iter().any(|op| !op.concatenated && !op.ballpark && keep(op));
             Kind::List(
                 legs(ops, reverse)
                     .into_iter()
-                    .filter(|l| keep(&l.op))
+                    .filter(|l| keep(&l.op) && (dimensions || !direct || !pivoted(&l.op)))
                     .map(|l| {
                         let flat = concatenated && (l.op.chain_accuracy != l.op.accuracy || l.op.chain_bounds != l.op.bounds);
                         if flat { Leg { op: Arc::new(l.op.as_concatenated()), reverse: l.reverse } } else { l }
@@ -586,6 +596,78 @@ impl Route {
                     }
                     // No transformation (or an unknown datum): no shift, as PROJ's ballpark.
                     _ => report(Some(p), None, false, false),
+                }
+            }
+        }
+    }
+}
+
+impl Route {
+    /// The transformations whose grids a point needs, as [`Route::apply_reporting`] tries them:
+    /// the best one for the point, and while it does not apply (the point is outside its grid),
+    /// the next best, up to three. The first whose grid is missing, else the one that applies.
+    /// With the grids found that way present, the point goes through the transformation PROJ
+    /// picks with every grid present (asking again after each grid is added). Empty when the
+    /// transformation the point goes through needs no grid.
+    pub fn grid_operations_at<'a>(&'a self, src: &Def, x: f64, y: f64, p: Point) -> Vec<&'a Op> {
+        let (dlon, dlat) = src.source_degrees(x, y).unwrap_or((p.lon.to_degrees(), p.lat.to_degrees()));
+        let wrapped = if (-180.0..=180.0).contains(&dlon) { dlon } else { (dlon + 180.0).rem_euclid(360.0) - 180.0 };
+        let inside = |op: &Op, boxes: Option<&Vec<[f64; 4]>>| match boxes {
+            Some(b) if !b.is_empty() => b.iter().any(|b| x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3]),
+            _ => op.contains(dlon, dlat) || op.contains(wrapped, dlat),
+        };
+        match &self.kind {
+            Kind::Same => Vec::new(),
+            Kind::List(list) => {
+                let boxes = self.boxes.get_or_init(|| list.iter().map(|l| src.areas(&l.op)).collect());
+                let ops: Vec<&Op> = list.iter().map(|l| l.op.as_ref()).collect();
+                let mut excluded = Vec::new();
+                for _ in 0..3 {
+                    let Some(i) = datum::pick_index(&ops, &excluded, |op, i| inside(op, boxes.get(i))) else { break };
+                    // A grid the network did not give, before or by this run, stops the point there, as
+                    // in `apply_reporting`.
+                    if !ops[i].available() || datum::run_op(ops[i], p, list[i].reverse, false).is_some() || ops[i].network_failed() {
+                        return vec![ops[i]];
+                    }
+                    excluded.push(i);
+                }
+                // Then the point goes through the first transformation that needs no grid, so no
+                // grid is returned.
+                Vec::new()
+            }
+            Kind::Chains { chains, ballpark } => {
+                let legs = |c: &'a Chain| c.legs.iter().map(|l| l.op.as_ref()).collect::<Vec<_>>();
+                if chains.len() == 1 && ballpark.is_none() {
+                    return legs(&chains[0]);
+                }
+                let boxes = self.boxes.get_or_init(|| chains.iter().map(|c| src.areas(&c.rank)).collect());
+                let ranks: Vec<&Op> = chains.iter().map(|c| &c.rank).chain(ballpark.as_ref()).collect();
+                let mut excluded = Vec::new();
+                for _ in 0..3 {
+                    let Some(i) = datum::pick_index(&ranks, &excluded, |op, i| op.ballpark || inside(op, boxes.get(i))) else { break };
+                    let Some(chain) = chains.get(i) else { return Vec::new() };
+                    if chain.legs.iter().any(|l| !l.op.available())
+                        || chain.run(p).is_some()
+                        || chain.legs.iter().any(|l| l.op.network_failed())
+                    {
+                        return legs(chain);
+                    }
+                    excluded.push(i);
+                }
+                Vec::new()
+            }
+            Kind::Hub => {
+                let (sb, db) = self.hub_boxes.get_or_init(|| {
+                    let areas = |ops: &[Arc<Op>]| ops.iter().map(|o| src.areas(o)).collect();
+                    (areas(&self.src_ops), areas(&self.dst_ops))
+                });
+                let single = |op: &Op| !op.ballpark && !op.concatenated;
+                let s = datum::pick_in(&self.src_ops, |op, i| single(op) && inside(op, sb.get(i)));
+                let d = datum::pick_in(&self.dst_ops, |op, i| single(op) && inside(op, db.get(i)));
+                // Both, or the ballpark (no shift).
+                match (s, d) {
+                    (Some(s), Some(d)) => vec![s, d],
+                    _ => Vec::new(),
                 }
             }
         }
@@ -1308,7 +1390,7 @@ fn pipeline_steps(legs: &[(&Op, bool)]) -> usize {
     // The translation of a Helmert step with translations alone, as it runs.
     let translation = |item: &Item| match item {
         Item::Translation(t) => Some(*t),
-        Item::Step(Step::Helmert { t, r, scale, pivot, inv, rates: None }, inverted)
+        Item::Step(Step::Helmert { t, r, scale, pivot, inv, rates: None, .. }, inverted)
             if *scale == 1.0 && *pivot == [0.0; 3] && *r == [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] =>
         {
             let sign = if inv != inverted { -1.0 } else { 1.0 };

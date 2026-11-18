@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Freeze ISEA cases against pyproj 3.8.0 / PROJ 9.8.1."""
+"""Freeze ISEA cases against PROJ 9.9.0 (pyproj 3.8.0 built on conda-forge's PROJ 9.9.0).
+
+PROJ 9.9.0's `isea` is its polyhedral Snyder equal-area projection (src/projections/polyhedral.cpp):
+the icosahedron, or with `+dual` the dodecahedron's net, oriented by `+orient`, `+orient_lat`,
+`+orient_lon` and `+azi`, with `+lat_0`/`+lon_0` the point projected to the origin. It ignores
+`+mode`, `+resolution` and `+aperture`.
+"""
 
 import json
 import math
@@ -10,28 +16,45 @@ from pyproj import CRS, Transformer
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# Method parameters, units, false origin, and whether PROJ's inverse is defined: only for the
-# default grid in its two orientations, without a central meridian of its own (+lon_0=11.25 is
-# the default orientation's).
+# Method parameters, units and false origin.
 CONFIGURATIONS = [
-    ("", "m", 0, 0, True),
-    ("+orient=pole", "km", 12345, -6789, True),
-    ("+lon_0=10", "m", 0, 0, False),
-    ("+orient=pole +lon_0=-40 +lat_0=60", "us-ft", -8765, 3456, False),
-    ("+azi=30", "m", 1000, 2000, False),
-    ("+resolution=5 +aperture=4", "m", 0, 0, False),
-    ("+lon_0=11.25", "m", 0, 0, True),
+    ("", "m", 0, 0),
+    ("+orient=pole", "km", 12345, -6789),
+    ("+lon_0=10", "m", 0, 0),
+    ("+orient=pole +lon_0=-40 +lat_0=60", "us-ft", -8765, 3456),
+    ("+azi=30", "m", 1000, 2000),
+    ("+resolution=5 +aperture=4", "m", 0, 0),
+    ("+lon_0=11.25", "m", 0, 0),
+    ("+orient_lat=45 +orient_lon=-20 +azi=10", "m", 0, 0),
+    ("+dual", "m", 0, 0),
+    ("+dual +net=a5 +lat_0=-30", "km", 500, 0),
+    ("+dual +net=crescent", "m", 0, 0),
+    ("+dual +net=flower +orient=pole", "m", 0, 0),
 ]
 # Options PROJ refuses, which tests/isea.rs expects terrio to refuse too.
 REFUSED = [
     "+orient=foo",
     "+orient",
+    "+azi=30x",
+    "+orient_lat=1e400",
+    "+orient_lon=30x",
+    "+lat_0=30x",
+    "+lat_0=95",
+    "+dual=1",
+    "+dual=yes",
+    "+dual +net=foo",
+]
+# Options PROJ reads, which tests/isea.rs expects terrio to read too.
+READ = [
     "+mode=foo",
-    "+mode",
+    "+mode=hex",
     "+resolution=4.0",
     "+aperture=-3",
-    "+resolution=99999999999999999999x",
-    "+azi=30x",
+    "+azi=abc",
+    "+azi",
+    "+dual=foo",
+    "+dual=t",
+    "+net=foo",
 ]
 # The authalic sphere of WGS 84, and WGS 84: PROJ's forward takes the geodetic latitude on the
 # unit sphere and scales it by the semi-major axis, its inverse uses the authalic radius.
@@ -63,14 +86,16 @@ def scattered(count):
 
 
 def main():
-    assert pyproj.__version__ == "3.8.0" and pyproj.proj_version_str == "9.8.1"
+    assert pyproj.__version__ == "3.8.0" and pyproj.proj_version_str == "9.9.0"
     pyproj.network.set_network_enabled(False)
     for option in REFUSED:
         try:
-            CRS(f"+proj=isea +R=1 {option}")
-        except pyproj.exceptions.CRSError:
+            Transformer.from_crs("+proj=longlat +R=1", CRS(f"+proj=isea +R=1 {option}"))
+        except pyproj.exceptions.ProjError:
             continue
         raise AssertionError(f"PROJ accepts {option}")
+    for option in READ:
+        Transformer.from_crs("+proj=longlat +R=1", CRS(f"+proj=isea +R=1 {option}"))
     # The face centres' latitudes, and their vertices' (the icosahedron in the default
     # orientation has vertices at +-26.565 and +-90 degrees of its own frame).
     e_lat = math.degrees(math.atan((3 + math.sqrt(5)) / 4))
@@ -80,7 +105,7 @@ def main():
     grid = [[lon, lat] for lon in range(-180, 180, 15) for lat in latitudes]
     cases = []
     for figure in FIGURES:
-        for method, units, x0, y0, invertible in CONFIGURATIONS:
+        for method, units, x0, y0 in CONFIGURATIONS:
             source = "+proj=longlat " + figure
             target = f"+proj=isea {method} {figure} +units={units} +x_0={x0} +y_0={y0}".replace("  ", " ")
             source_crs, target_crs = CRS(source), CRS(target)
@@ -97,21 +122,12 @@ def main():
                 assert projected is not None, (target, point)
                 assert agree(projected, transformed(operation, point), factor, 1e-6), (target, point)
                 samples.append([*point, projected, transformed(inverse, projected)])
-            # PROJ's inverse is defined exactly in the expected configurations: on the sphere at every
-            # sample, poles included. On the ellipsoid the forward takes the semi-major axis and the
-            # inverse the authalic radius, so some projected points fall outside the triangles and
-            # are refused; the others are not.
-            defined = [s[3] is not None for s in samples]
-            if not invertible:
-                assert not any(defined), target
-            elif figure.startswith("+R="):
-                assert all(defined), target
-            else:
-                assert sum(defined) > len(defined) // 2, target
-            # Points of the plane in units of the radius, inside the unfolded icosahedron, on its
-            # edges and outside it; fewer where PROJ refuses them all.
+            # PROJ's inverse is defined at every sample, poles included.
+            assert all(s[3] is not None for s in samples), target
+            # Points of the plane in units of the radius, inside the unfolded net, on its edges and
+            # outside it.
             radius = target_crs.ellipsoid.semi_major_metre
-            step = 4 if invertible else 2
+            step = 4
             x_max, y_max = 14 * step // 4, 6 * step // 4
             unit = [(x / step, y / step) for x in range(-x_max, x_max + 1) for y in range(-y_max, y_max + 1)]
             inverse_points = [[(x0 + x * radius) / factor, (y0 + y * radius) / factor] for x, y in unit]

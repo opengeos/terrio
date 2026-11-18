@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 """Generate crates/terrio-crs/tests/data/projjson_corpus_{epsg,esri}.jsonl.zst: every CRS of terrio's EPSG table
-(geographic, geocentric, projected, vertical and compound) and ESRI table, as PROJ 9.8.1 writes it
+(geographic, geocentric, projected, vertical and compound) and ESRI table, as PROJ 9.9.0 writes it
 in WKT 2 (`WKT2_2019`), GDAL WKT 1 (`WKT1_GDAL`) and ESRI WKT 1 (`WKT1_ESRI`), each with the
 PROJJSON PROJ writes for that text (`CRS.from_wkt(text).to_json_dict()`), without the fields the
 test leaves out. A form PROJ cannot write is left out. One JSON array per line:
@@ -58,7 +58,7 @@ def strip(value, field=""):
 
 
 def main():
-    assert pyproj.proj_version_str == "9.8.1", pyproj.proj_version_str
+    assert pyproj.proj_version_str == "9.9.0", pyproj.proj_version_str
     assert pyproj.__version__ == "3.8.0", pyproj.__version__
     pyproj.network.set_network_enabled(False)
     assert os.environ.get("PROJ_NETWORK") == "OFF"

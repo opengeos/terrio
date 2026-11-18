@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Freeze HEALPix and rHEALPix cases against pyproj 3.8.0 / PROJ 9.8.1."""
+"""Freeze HEALPix and rHEALPix cases against pyproj 3.8.0 / PROJ 9.9.0."""
 
 import json
 import math
@@ -53,7 +53,7 @@ def agree(a, b, factor, tolerance):
 
 
 def main():
-    assert pyproj.__version__ == "3.8.0" and pyproj.proj_version_str == "9.8.1"
+    assert pyproj.__version__ == "3.8.0" and pyproj.proj_version_str == "9.9.0"
     pyproj.network.set_network_enabled(False)
     configurations = [
         (f"+proj=healpix +lon_0={lon_0} +rot_xy={rot}", lon_0, units, x0, y0)

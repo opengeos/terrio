@@ -279,7 +279,7 @@ fn web_mercator_keeps_its_origin_and_false_origin() {
     }
 }
 
-/// PROJ 9.8.1 / pyproj 3.8.0 resolve the versioned references to EPSG:4326.
+/// PROJ 9.9.0 / pyproj 3.8.0 resolve the versioned references to EPSG:4326.
 #[test]
 fn versioned_authority_references_match_proj() {
     for reference in [

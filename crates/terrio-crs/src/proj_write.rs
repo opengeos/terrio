@@ -733,7 +733,7 @@ fn strip_suffix(proj: &str) -> Vec<String> {
 /// grid.gtx"`), as the reader splits them: a quote opens a value right after `=` and closes it,
 /// `""` in it is a quote, and elsewhere a quote is a character (DMS seconds, `52d30'10"N`).
 /// Quoted values are unquoted, or `keep` as they are written.
-fn tokens(proj: &str, keep: bool) -> Vec<String> {
+pub(crate) fn tokens(proj: &str, keep: bool) -> Vec<String> {
     let (mut tokens, mut token, mut quoted) = (Vec::new(), String::new(), false);
     let mut chars = proj.chars().peekable();
     while let Some(c) = chars.next() {

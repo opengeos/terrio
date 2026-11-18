@@ -781,7 +781,9 @@ enum StreamSource {
 impl StreamSource {
     fn open(&self) -> Result<Box<dyn codec::ReadSeek>> {
         Ok(match self {
-            Self::File(p) => Box::new(std::io::BufReader::with_capacity(1 << 16, std::fs::File::open(p)?)),
+            // Small: a window read visits each tile part's header, a few bytes far from the last,
+            // and a read of a tile's data, larger than this, goes straight to the file.
+            Self::File(p) => Box::new(crate::vfs::NearSeek::with_capacity(1 << 12, std::fs::File::open(p)?)),
             Self::Bytes(b) => Box::new(std::io::Cursor::new(b.clone())),
             #[cfg(remote)]
             Self::Http(r) => Box::new(r.clone()),
@@ -1041,29 +1043,53 @@ fn reversibility(r: &mut dyn codec::ReadSeek, len: u64, j2k: bool) -> Result<Opt
             }
         }
     }
-    // The main header and the first tile-part header, up to its data (SOD): small.
-    let n = (len - start).min(1 << 20) as usize;
-    let mut cs = vec![0u8; n];
-    r.seek(SeekFrom::Start(start))?;
-    r.read_exact(&mut cs)?;
-    let (mut transformation, mut comment) = (None, None);
-    let mut pos = 2;
-    while pos + 4 <= cs.len() && cs[pos] == 0xff {
-        let marker = cs[pos + 1];
-        if marker == 0x93 || marker == 0xd9 {
+    // The main header and the first tile-part header, up to its data (SOD): small, so a few
+    // kilobytes are read, and more (up to 1 MiB, as before) only when the markers run past them.
+    let most = (len - start).min(1 << 20) as usize;
+    let mut cs: Vec<u8> = Vec::new();
+    let (mut transformation, mut comment): (Option<u8>, Option<String>);
+    let mut n = most.min(1 << 14);
+    loop {
+        let held = cs.len();
+        cs.resize(n, 0);
+        r.seek(SeekFrom::Start(start + held as u64))?;
+        r.read_exact(&mut cs[held..])?;
+        (transformation, comment) = (None, None);
+        let mut pos = 2;
+        // Whether the markers ended (SOD, EOC or a malformed one) inside the bytes read.
+        let mut ended = false;
+        while pos + 2 <= cs.len() && cs[pos] == 0xff {
+            let marker = cs[pos + 1];
+            if marker == 0x93 || marker == 0xd9 {
+                ended = true;
+                break;
+            }
+            if pos + 4 > cs.len() {
+                // A segment length cut by the end of what was read.
+                break;
+            }
+            let seg = u16::from_be_bytes([cs[pos + 2], cs[pos + 3]]) as usize;
+            if pos + 2 + seg > cs.len() && n < most {
+                // A segment cut by the end of what was read: read more before reading it.
+                break;
+            }
+            let body = cs.get(pos + 4..pos + 2 + seg).unwrap_or_default();
+            match marker {
+                0x52 => transformation = body.get(9).copied(),
+                0x64 => comment = body.get(2..).map(|t| String::from_utf8_lossy(t).into_owned()),
+                _ => {}
+            }
+            if seg < 2 {
+                ended = true;
+                break;
+            }
+            pos += 2 + seg;
+        }
+        ended |= pos < cs.len() && cs[pos] != 0xff;
+        if ended || n == most {
             break;
         }
-        let seg = u16::from_be_bytes([cs[pos + 2], cs[pos + 3]]) as usize;
-        let body = cs.get(pos + 4..pos + 2 + seg).unwrap_or_default();
-        match marker {
-            0x52 => transformation = body.get(9).copied(),
-            0x64 => comment = body.get(2..).map(|t| String::from_utf8_lossy(t).into_owned()),
-            _ => {}
-        }
-        if seg < 2 {
-            break;
-        }
-        pos += 2 + seg;
+        n = (n * 4).min(most);
     }
     Ok(match transformation {
         Some(0) => Some("LOSSY"),
@@ -1597,6 +1623,41 @@ mod tests {
         options.push(("REVERSIBLE".into(), "YES".into()));
         let explicit = EncodingOptions::from_creation_options(&options).unwrap();
         assert!(explicit.reversible && !explicit.lossless());
+    }
+
+    /// A raw codestream: SOC, a COM segment holding `comment`, a COD whose transformation is 5-3
+    /// (reversible), then SOD.
+    fn codestream_with_comment(comment: &[u8]) -> Vec<u8> {
+        let mut cs = vec![0xff, 0x4f, 0xff, 0x64];
+        cs.extend_from_slice(&(4 + comment.len() as u16).to_be_bytes());
+        cs.extend_from_slice(&[0, 1]);
+        cs.extend_from_slice(comment);
+        cs.extend_from_slice(&[0xff, 0x52, 0, 12, 0, 0, 0, 1, 0, 5, 4, 4, 0, 1]);
+        cs.extend_from_slice(&[0xff, 0x93]);
+        cs
+    }
+
+    #[test]
+    fn reversibility_reads_past_a_comment_longer_than_the_first_read() {
+        let text = b"Created by OpenJPEG version 2.5.0, LOSSY settings used";
+        let mut long = text.to_vec();
+        long.resize(20_000, b' ');
+        for comment in [&text[..], &long[..]] {
+            let cs = codestream_with_comment(comment);
+            let len = cs.len() as u64;
+            let got = reversibility(&mut std::io::Cursor::new(cs), len, true).unwrap();
+            assert_eq!(got, Some("LOSSY"), "comment of {} bytes", comment.len());
+        }
+    }
+
+    #[test]
+    fn reversibility_stops_at_a_start_of_data_in_the_last_two_bytes_read() {
+        // SOD ends exactly at 16 KiB, the first read. The stream holds nothing after it, so a
+        // second read past it would fail.
+        let cs = codestream_with_comment(&vec![b' '; (1 << 14) - 24]);
+        assert_eq!(cs.len(), 1 << 14);
+        let got = reversibility(&mut std::io::Cursor::new(cs), 1 << 20, true).unwrap();
+        assert_eq!(got, Some("LOSSLESS (possibly)"));
     }
 
     #[test]

@@ -923,6 +923,41 @@ pub fn user_defined_keys(crs: &SpatialRef, name: &str) -> Option<GeoKeyValues> {
     wbprojection_keys(crs, name)
 }
 
+/// The `+towgs84` (3 or 7 values) of a CRS's own definition: its PROJ string, else its WKT's (a
+/// `TOWGS84` or a `BOUNDCRS` Helmert). Not one the registry's WKT of its code carries (the
+/// deprecated EPSG:3785's), nor a zero shift on WGS 84 itself, for which GDAL 3.10.3 writes a CRS's
+/// code alone (ESRI's WGS_1984_UTM_Zone_33N with `TOWGS84[0,0,0,0,0,0,0]` as 32633). For keys
+/// without a code it only decides whether a code is written: user-defined keys write the PROJ
+/// string's shift, a zero one included.
+fn own_towgs84(crs: &SpatialRef) -> Option<Vec<f64>> {
+    // The registry's WKT as `from_epsg` gives it, with a spherical CRS's PROJ extension.
+    let registry = |w: &str| crs.epsg.is_some_and(|c| crate::epsg_wkt(c).is_some_and(|r| r == w) || crate::is_registry_extension(w, c));
+    let proj = match (&crs.proj4, crs.wkt.as_deref()) {
+        (Some(p), _) => p.clone(),
+        (None, Some(w)) if !registry(w) => crate::wkt_proj(w)?,
+        _ => return None,
+    };
+    let values = proj.split_whitespace().find_map(|t| t.strip_prefix("+towgs84="))?;
+    let t: Vec<f64> = values.split(',').map(|x| x.parse().ok().filter(|v: &f64| v.is_finite())).collect::<Option<_>>()?;
+    // On WGS 84: its datum or ellipsoid by name, or the ellipsoid's axis and flattening.
+    let has = |token: &str| proj.split_whitespace().any(|t| t == token);
+    let wgs84 = has("+datum=WGS84") || has("+ellps=WGS84") || (has("+a=6378137") && has("+rf=298.257223563"));
+    (matches!(t.len(), 3 | 7) && !(wgs84 && t.iter().all(|x| *x == 0.0))).then_some(t)
+}
+
+/// Whether a CRS is a WKT 2 `BOUNDCRS` whose Helmert transformation its `+towgs84` only
+/// approximates: the reader keeps the exact operation beside it (a Molodensky-Badekas evaluation
+/// point, a full rotation matrix).
+fn bound_beyond_towgs84(crs: &SpatialRef) -> bool {
+    crs.wkt
+        .as_deref()
+        .filter(|w| crate::def::is_bound_crs(w))
+        .and_then(crate::wkt1::parse)
+        .filter(crate::wkt2::handles)
+        .and_then(|root| crate::wkt2::to_proj(&root).ok())
+        .is_some_and(|c| c.helmert.is_some())
+}
+
 /// GeoKeys from wbprojection's model of a CRS, when terrio is built with it.
 #[cfg(feature = "wbprojection-fallback")]
 fn wbprojection_keys(crs: &SpatialRef, name: &str) -> Option<GeoKeyValues> {
@@ -1233,6 +1268,12 @@ impl SpatialRef {
     /// - a compound CRS of EPSG CRSs by its horizontal and vertical codes, and its name;
     /// - a CRS without an EPSG code by its projection method and parameters (see
     ///   [`user_defined_keys`]);
+    /// - a horizontal CRS with a datum shift of its own (a WKT's `TOWGS84` or `BOUNDCRS` to WGS
+    ///   84, a PROJ string's `+towgs84`) with GeogTOWGS84GeoKey: with the code its WKT declares,
+    ///   else by its method and parameters on a user-defined datum, never as a code it is only
+    ///   identified as. GDAL 3.10.3 writes the same keys but names the EPSG datum, and then reads
+    ///   its own file back without the shift; on a user-defined datum it keeps it. Not yet for a
+    ///   compound CRS, written by its codes;
     /// - else (an engineering CRS, a method GeoTIFF has no code for, a CRS whose code is not a
     ///   horizontal one), GDAL's fallback: its WKT in an ESRI PE citation (`ESRI PE String =`),
     ///   with a user-defined model type.
@@ -1263,7 +1304,18 @@ impl SpatialRef {
         }
         let mut v = GeoKeyValues::default();
         let engineering = self.wkt.as_deref().is_some_and(engineering_cs);
-        let registered = self.epsg.filter(|_| !engineering).and_then(horizontal_geokey);
+        // The datum shift the definition carries itself (a WKT's `TOWGS84` or `BOUNDCRS`, a PROJ
+        // string's `+towgs84`), as GDAL 3.10.3 writes it: with the code a WKT declares, else as
+        // user-defined keys, but never the code alone, which would read as the code's own
+        // transformations (ESRI's British_National_Grid with `TOWGS84[375,-111,431,0,0,0,0]`,
+        // identified as EPSG:27700, is 3.1 m from it).
+        let shift = own_towgs84(self);
+        // A WKT 2 `BOUNDCRS` whose transformation `+towgs84` only approximates (Molodensky-Badekas,
+        // a full rotation matrix): neither its code nor GeogTOWGS84GeoKey, but its WKT.
+        let exact = bound_beyond_towgs84(self);
+        let declared = self.wkt.as_deref().and_then(crate::declared_epsg);
+        let registered =
+            self.epsg.filter(|c| !engineering && !exact && (shift.is_none() || declared == Some(*c))).and_then(horizontal_geokey);
         // A compound CRS of EPSG CRSs: its horizontal CRS's keys, its vertical CRS's and its name,
         // in GeoTIFF 1.1 as GDAL 3.12.1 writes them (`GTIFSetFromOGISDefnEx`); a compound code in
         // a horizontal key reads as another CRS.
@@ -1287,6 +1339,9 @@ impl SpatialRef {
                     }
                     None => v.shorts.push((if geographic { 2048 } else { 3072 }, code)),
                 }
+                if let Some(t) = &shift {
+                    v.doubles.extend(t.iter().map(|x| (2062, *x)));
+                }
             }
             (None, None) => {
                 let name = self.name().unwrap_or_else(|| "unnamed".into());
@@ -1295,7 +1350,14 @@ impl SpatialRef {
                 // Every coded CRS not written by its code, a code GDAL would read as another CRS
                 // (`gdal_code`) among them, is written as WKT, which keeps its datum
                 // transformations and height.
-                let user = if engineering || self.epsg.is_some() { None } else { user_defined_keys(self, &name) };
+                // A code with its own datum shift is written as user-defined keys with that shift,
+                // which is the CRS's transformation.
+                let user = match (self.epsg, &shift) {
+                    _ if engineering || exact => None,
+                    (Some(_), None) => None,
+                    (Some(_), Some(_)) => user_defined_keys(&SpatialRef { epsg: None, ..self.clone() }, &name),
+                    (None, _) => user_defined_keys(self, &name),
+                };
                 match user {
                     Some(keys) => v = keys,
                     None => {

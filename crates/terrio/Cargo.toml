@@ -75,7 +75,7 @@ lerc-core = { workspace = true, optional = true }
 lerc-writer = { workspace = true, optional = true }
 zune-jpegxl.workspace = true
 zune-core.workspace = true
-jxl-oxide.workspace = true
+jxl-oxide = { workspace = true, optional = true }
 # Data parallelism: natively, and in WebAssembly built with threads (`atomics`), where the host
 # starts the pool; WebAssembly without threads runs the same loops in sequence (see `par`).
 rayon.workspace = true
@@ -102,7 +102,7 @@ ndarray = { workspace = true, optional = true }
 # Disabled drivers stay in the API (`RasterDriver`, `VectorDriver`) and fail with "built without
 # the `...` feature".
 [features]
-default = ["cad", "geotiff", "parquet", "remote", "avif", "netcdf-hdf5", "osm", "lzma", "flatgeobuf", "jp2", "lerc", "pointcloud", "tiles", "zarr", "sqlite", "grib", "hecras", "xlsx"]
+default = ["cad", "geotiff", "parquet", "remote", "avif", "netcdf-hdf5", "osm", "lzma", "flatgeobuf", "jp2", "lerc", "jxl", "pointcloud", "tiles", "zarr", "sqlite", "grib", "hecras", "xlsx"]
 ## GeoTIFF and COG reading and writing. Always built (it is the core): the feature exists so that
 ## `features = ["geotiff"]` states what a build needs.
 geotiff = []
@@ -135,6 +135,8 @@ jp2 = ["dep:openjp2"]
 grib = ["dep:rust-aec"]
 ## LERC-compressed GeoTIFFs (read and written).
 lerc = ["dep:lerc-reader", "dep:lerc-core", "dep:lerc-writer"]
+## JPEG XL-compressed GeoTIFFs, read with jxl-oxide (writing them needs no feature).
+jxl = ["dep:jxl-oxide"]
 ## Point clouds: LAS, LAZ, COPC, EPT, E57, PLY (the `pointcloud` module).
 pointcloud = ["dep:laz", "dep:e57", "dep:delaunator"]
 ## Raster and vector tiles: MBTiles, PMTiles and MVT (the `tiles` module).

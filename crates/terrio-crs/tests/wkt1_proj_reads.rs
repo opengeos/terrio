@@ -1,4 +1,4 @@
-//! WKT that PROJ 9.8.1 reads is read, and places points where PROJ does: ESRI's
+//! WKT that PROJ 9.9.0 reads is read, and places points where PROJ does: ESRI's
 //! `Mercator_Variant_A` (EPSG Guidance Note 7-2's Makassar / NEIEZ example, EPSG:3002, as an
 //! ESRI `.prj` names its method) and EPSG's `Mercator (variant A)` in WKT 1, as PROJ's Mercator
 //! (1SP), and WKT 1 and WKT 2 with a node of an unknown keyword (`rustgis:unapplied`, `a-b`,
@@ -168,7 +168,7 @@ fn mercator_variant_a_with_a_latitude_of_origin_is_refused_as_in_proj() {
 }
 
 /// A NUL (`\u0000`) in a PROJJSON name is part of the name: EPSG:32631's PROJJSON with one is
-/// read as EPSG:32631 and places a point as PROJ does. A raw NUL ends the text, as PROJ 9.8.1's
+/// read as EPSG:32631 and places a point as PROJ does. A raw NUL ends the text, as PROJ 9.9.0's
 /// `proj_create` reads it (checked through its C API: text after the NUL is ignored, and a NUL
 /// inside the JSON leaves it unclosed and refused).
 #[test]
@@ -386,7 +386,7 @@ fn a_bound_projjson_with_a_nul_in_its_name_keeps_its_shift() {
 }
 
 /// A stored WKT 1 with `TOWGS84` and a NUL in its quoted name (as a PROJJSON name gives one) is
-/// written to PROJJSON as the `BoundCRS` PROJ 9.8.1 writes for it, with the same shift.
+/// written to PROJJSON as the `BoundCRS` PROJ 9.9.0 writes for it, with the same shift.
 #[test]
 fn a_stored_wkt_with_a_nul_in_its_name_is_written_with_its_shift() {
     offline();
@@ -419,7 +419,7 @@ fn stored_wkt_with_a_nul_in_a_name_is_read_whole() {
 }
 
 /// A stored WKT with a NUL in a name is written for files with the name cut at the NUL, as PROJ
-/// 9.8.1 gives such a name (`CRS.name` of PROJJSON's `"WGS\u0000 84 / UTM zone 31N"` is `WGS`):
+/// 9.9.0 gives such a name (`CRS.name` of PROJJSON's `"WGS\u0000 84 / UTM zone 31N"` is `WGS`):
 /// a whole WKT that reads as the CRS. A doubled quote and a NUL outside quotes are handled; WKT
 /// without a NUL is returned as it is.
 #[test]
@@ -439,7 +439,7 @@ fn a_stored_wkt_is_written_for_files_with_names_cut_at_a_nul() {
     // A doubled quote after the cut is part of what is cut.
     assert_eq!(terrio_crs::wkt_for_files("A[\"ab\0c\"\"d\",x]"), r#"A["ab",x]"#);
     // A NUL right after the opening quote leaves an empty name, which reads: Mollweide's PROJ
-    // 9.8.1 PROJJSON named `"\u0000weide"` is written `PROJCRS["",...]` and reads as Mollweide.
+    // 9.9.0 PROJJSON named `"\u0000weide"` is written `PROJCRS["",...]` and reads as Mollweide.
     let case = &data["mollweide_projjson"];
     let empty = case["projjson"].as_str().unwrap().replace(r"Moll\u0000weide", r"\u0000weide");
     let crs = SpatialRef::from_projjson(&empty).unwrap();

@@ -85,8 +85,8 @@ pub(crate) fn input_rasters(v: &JsValue) -> Result<Vec<RasterDataset>, JsError> 
     Ok(out)
 }
 
-/// Vector layers given to an operation: a `Dataset`, a file's bytes, or GeoJSON (an object or a
-/// string).
+/// Vector layers given to an operation: a `Dataset`, a file's bytes, or geometries as
+/// [`crate::from_geojson`] takes them (GeoJSON, an array of geometries, bounds or WKT).
 pub(crate) fn input_layers(v: &JsValue) -> Result<Vec<Layer>, JsError> {
     if let Some(inner) = Dataset::lookup(v) {
         return match &*inner.borrow() {
@@ -107,7 +107,7 @@ pub(crate) fn input_layers(v: &JsValue) -> Result<Vec<Layer>, JsError> {
             return Ok(layers.clone());
         }
     }
-    Err(invalid("expected vector data: a Dataset, a Uint8Array, { bytes, filename } or GeoJSON"))
+    Err(invalid("expected vector data: a Dataset, a Uint8Array, { bytes, filename }, GeoJSON, WKT or bounds"))
 }
 
 /// Select file layers while their source name and complete inventory are still available.
@@ -255,6 +255,7 @@ struct WarpArgs {
     only_best: bool,
     kernel_version: Option<String>,
     grid_invariant: Option<bool>,
+    periodic_longitude: Option<bool>,
     geoloc: bool,
     s_srs: Option<String>,
     t_srs: Option<String>,
@@ -301,6 +302,7 @@ pub fn warp(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
         transform_options: terrio::crs::TransformOptions { allow_ballpark: a.allow_ballpark, only_best: a.only_best, ..Default::default() },
         kernel_version: terrio::ops::warp::KernelVersion::parse_or_configured(a.kernel_version.as_deref()).map_err(js_err)?,
         grid_invariant: a.grid_invariant.unwrap_or_else(|| WarpOptions::default().grid_invariant),
+        periodic_longitude: a.periodic_longitude.unwrap_or_else(|| WarpOptions::default().periodic_longitude),
         geoloc: a.geoloc,
         src_srs: srs(a.s_srs.as_deref())?,
         dst_srs: srs(a.t_srs.as_deref())?,

@@ -1,5 +1,5 @@
 //! A WKT whose geographic CRS has no EPSG code of its own gets the datum transformations of the
-//! EPSG datum it names, as PROJ 9.8.1 transforms it to WGS 84: a datum known by its ID alone
+//! EPSG datum it names, as PROJ 9.9.0 transforms it to WGS 84: a datum known by its ID alone
 //! (WKT 2 `DATUM[...,ID["EPSG",6277]]`, WKT 1 `AUTHORITY["EPSG","6277"]` on the `DATUM`), under
 //! another CRS and datum name too, by its name in a WKT 2 without IDs, or by ESRI's name
 //! (`D_Monte_Mario`, `D_OSGB_1936`), with or without the datum's or the CRS's code. The two cases
@@ -13,8 +13,8 @@
 //! Tolerance: 1 mm.
 //!
 //! Without grids, PROJ uses its best transformation that needs none, a datum transformation in
-//! every case (none is its no-shift ballpark). For OSGB36, DHDN, NZGD49 and some CH1903 cases a
-//! better one needs a grid (OSTN15, BETA2007, CHENyx06, the NZGD2000 grids; `best_grid_missing`):
+//! every case (none is its no-shift ballpark). For OSGB36, DHDN and some CH1903 cases a better
+//! one needs a grid (OSTN15, BETA2007, CHENyx06; `best_grid_missing`):
 //! with those grids installed, PROJ may place these points otherwise, which this test doesn't
 //! cover.
 //!
@@ -66,7 +66,7 @@ fn datums_known_by_id_or_esri_name_are_shifted_as_proj_does() {
     offline();
     let data = data();
     let cases = data["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 180);
+    assert_eq!(cases.len(), 178);
     let mut bad = vec![];
     for case in cases {
         let (got, operation) = place(case);
@@ -88,7 +88,7 @@ fn datums_known_by_id_or_esri_name_are_shifted_as_proj_does() {
 fn differences(pending: bool) -> Vec<Value> {
     let data = data();
     let all = data["differences"].as_array().unwrap();
-    assert_eq!(all.len(), 5);
+    assert_eq!(all.len(), 7);
     all.iter().filter(|case| case["pending"].as_bool().unwrap() == pending).cloned().collect()
 }
 
@@ -98,7 +98,7 @@ fn differences(pending: bool) -> Vec<Value> {
 fn wkts_proj_does_not_resolve_are_placed_through_other_datums_as_proj_does() {
     offline();
     let cases = differences(false);
-    assert_eq!(cases.len(), 4);
+    assert_eq!(cases.len(), 6);
     for case in &cases {
         let (got, _) = place(case);
         let (proj, by_code) = (pair(&case["proj"]), pair(&case["by_code"]));

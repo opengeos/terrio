@@ -789,6 +789,28 @@ mod tests {
         }
     }
 
+    /// A negative rowid survives the unsigned `Feature::fid` and reads back signed.
+    #[test]
+    fn negative_rowid_reads_back_through_signed_fid() {
+        use super::super::sqlite as writer;
+        let table = |name: &str, sql: &str, rows| writer::Table { name: name.into(), sql: sql.into(), rows, autoindexes: vec![] };
+        let text = |s: &str| writer::Value::Text(s.into());
+        let contents = table(
+            "gpkg_contents",
+            "CREATE TABLE gpkg_contents(table_name TEXT,data_type TEXT,description TEXT)",
+            vec![(1, vec![text("features"), text("attributes"), text("")])],
+        );
+        let features = table(
+            "features",
+            "CREATE TABLE features(fid INTEGER PRIMARY KEY,name TEXT)",
+            vec![(-1, vec![writer::Value::Null, text("negative")])],
+        );
+        let db = Db::new(writer::write_database(&[contents, features], &[], 0, 0).unwrap()).unwrap();
+        let read = read_db_named(&db, &Default::default(), None).unwrap();
+        assert_eq!(read[0].features[0].fid, u64::MAX);
+        assert_eq!(crate::signed_fid(&read[0].features[0]), -1);
+    }
+
     /// Without an R-tree, count only matching geometries before skipping features.
     #[test]
     fn spatial_pages_decode_only_selected_attributes_with_or_without_an_index() {

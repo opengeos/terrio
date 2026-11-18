@@ -1,11 +1,12 @@
-//! EPSG's null transformations to WGS 84 are reported by their names, as PROJ 9.8.1 reports
+//! EPSG's null transformations to WGS 84 are reported by their names, as PROJ 9.9.0 reports
 //! them, not as ballparks: they are transformations, with an accuracy, that move no point.
 
 use terrio_crs::{SpatialRef, Transformer};
 
-/// PROJ 9.8.1 (pyproj 3.8.0, network off): `Transformer.from_crs(CRS, "EPSG:4326")` at a point of
-/// each CRS uses EPSG's null transformation ("SWEREF99 to WGS 84 (1)", "ETRS89 to WGS 84 (1)",
-/// "NZGD2000 to WGS 84 (1)", "REGVEN to WGS 84 (1)"), and its inverse the other way. RustGIS
+/// PROJ 9.9.0 (pyproj 3.8.0, network off): `Transformer.from_crs(CRS, "EPSG:4326")` at a point of
+/// each CRS uses EPSG's null transformation ("ETRS89 to WGS 84 (1)", "NZGD2000 to WGS 84 (1)",
+/// "REGVEN to WGS 84 (1)", and "ETRS89-SWE [SWEREF 99] to WGS 84 (1)", as PROJ 9.9.0 names it
+/// since EPSG v13.102), and its inverse the other way. RustGIS
 /// reads `ballpark` as "no transformation to WGS 84".
 #[test]
 fn null_transformations_are_named_not_ballparks() {
@@ -13,7 +14,7 @@ fn null_transformations_are_named_not_ballparks() {
     terrio_crs::set_network_enabled(Some(false));
     let wgs84 = SpatialRef::from_epsg(4326).unwrap();
     for (code, x, y, name) in [
-        (3006, 609_924.0, 6_877_630.0, "SWEREF99 to WGS 84 (1)"),
+        (3006, 609_924.0, 6_877_630.0, "ETRS89-SWE [SWEREF 99] to WGS 84 (1)"),
         (4258, 10.0, 50.0, "ETRS89 to WGS 84 (1)"),
         (4167, 174.0, -41.0, "NZGD2000 to WGS 84 (1)"),
         (4189, -66.0, 8.0, "REGVEN to WGS 84 (1)"),
@@ -44,9 +45,9 @@ fn a_wkt2_projected_crs_on_a_null_transformation_datum_is_not_a_ballpark() {
     let (crs, wgs84) = (SpatialRef::from_wkt(wkt), SpatialRef::from_epsg(4326).unwrap());
     let t = Transformer::new(&crs, &wgs84).unwrap();
     let op = t.operation_at(609_924.0, 6_877_630.0, 0.0).unwrap().unwrap();
-    assert_eq!((op.name.as_str(), op.ballpark), ("SWEREF99 to WGS 84 (1)", false));
+    assert_eq!((op.name.as_str(), op.ballpark), ("ETRS89-SWE [SWEREF 99] to WGS 84 (1)", false));
     // From WGS 84, the inverse; terrio leaves the projection unnamed.
     let (lon, lat) = t.transform(609_924.0, 6_877_630.0).unwrap();
     let back = Transformer::new(&wgs84, &crs).unwrap().operation_at(lon, lat, 0.0).unwrap().unwrap();
-    assert_eq!((back.name.as_str(), back.ballpark), ("Inverse of SWEREF99 to WGS 84 (1)", false));
+    assert_eq!((back.name.as_str(), back.ballpark), ("Inverse of ETRS89-SWE [SWEREF 99] to WGS 84 (1)", false));
 }

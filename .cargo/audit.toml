@@ -5,7 +5,7 @@
 [advisories]
 # wbraster 0.2.1, its latest release, requires zip 8.6.0 and ruzstd 0.8.3, and no compatible release
 # fixes them. Remove these when a wbraster release depends on zip >= 9 and ruzstd >= 0.9.1. An ID is
-# ignored in every version of its crate: the audit job checks, without this file, that these five
+# ignored in every version of its crate: the audit job checks, without this file, that these nine
 # are the only vulnerabilities, and only in zip 8.6.0 and ruzstd 0.8.3.
 ignore = [
     # zip 8.6.0: `ZipArchive::extract` and `ZipStreamReader::extract`, which neither terrio nor
@@ -15,6 +15,14 @@ ignore = [
     "RUSTSEC-2026-0367",
     "RUSTSEC-2026-0368",
     "RUSTSEC-2026-0369",
+    # zip 8.6.0: `ZipArchive::extract` through symlinks, and `ZipStreamReader`'s local-header names,
+    # neither of which terrio nor wbraster calls (as above).
+    "RUSTSEC-2026-0546",
+    "RUSTSEC-2026-0548",
+    # zip 8.6.0: WinZip AES entries (the `aes-crypto` feature) and the Shrink, Reduce and Implode
+    # decoders (`legacy-zip`). wbraster enables only `deflate`, so neither is compiled in.
+    "RUSTSEC-2026-0545",
+    "RUSTSEC-2026-0547",
     # ruzstd 0.8.3: wbraster's Zarr reader, which terrio reaches only with
     # TERRIO_WBRASTER_FALLBACK=YES in builds without the `zarr` feature. terrio's own readers decode
     # Zstandard with ruzstd 0.9 (or zstd 0.14, with `libzstd`).

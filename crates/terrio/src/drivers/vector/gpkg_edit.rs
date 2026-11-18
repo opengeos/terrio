@@ -702,7 +702,7 @@ pub(crate) fn update_features(d: &mut Database, name: &str, src: &Layer, keys: &
     let existing: HashMap<i64, &Vec<w::Value>> = t.rows.iter().map(|(id, v)| (*id, v)).collect();
     for f in &src.features {
         let target = if key_cols.is_empty() {
-            let id = f.fid as i64;
+            let id = crate::signed_fid(f);
             rowids.contains(&id).then_some(id)
         } else {
             let key: Option<Vec<KeyValue>> = key_cols.iter().map(|(si, _)| f.attributes.get(*si).and_then(key_of_field)).collect();

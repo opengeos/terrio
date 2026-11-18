@@ -115,6 +115,20 @@ def test_zonal_stats_matches_terrio(files):
         np.testing.assert_allclose(got[k], expected[k])
 
 
+def test_zonal_stats_plain_geometries_are_in_the_arrays_crs(files):
+    """Zones without a CRS of their own (GeoJSON, WKT, bounds) are in the array's CRS, not
+    EPSG:4326."""
+    da = txr.open_rasterio(files["dem"], masked=True).squeeze("band", drop=True)
+    expected = da.terrio.zonal_stats(files["zones"], stats=["mean"]).columns()["raster1_b1_mean"]
+    geometries = [f["geometry"] for f in files["zones"].to_geojson()["features"]]
+    got = da.terrio.zonal_stats(geometries, stats=["mean"]).columns()["raster1_b1_mean"]
+    np.testing.assert_allclose(got, expected)
+    first = files["zones"].to_geojson()["features"][0]["geometry"]["coordinates"][0]
+    (x0, y1), (x1, _), (_, y0) = first[0], first[1], first[2]
+    by_bounds = da.terrio.zonal_stats((x0, y0, x1, y1), stats=["mean"]).columns()
+    np.testing.assert_allclose(by_bounds["raster1_b1_mean"], expected[:1])
+
+
 def test_dataset_zonal_stats_prefixes_variables(files):
     da = txr.open_rasterio(files["dem"], masked=True).squeeze("band", drop=True)
     ds = xr.Dataset({"a": da, "b": da})

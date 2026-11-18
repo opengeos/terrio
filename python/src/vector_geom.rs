@@ -53,7 +53,8 @@ fn run(py: Python<'_>, src: &Bound<'_, PyAny>, layer: Option<String>, op: Geomet
 /// TopologyPreservingSimplifier) does.
 ///
 /// Args:
-///     src: A vector path, VectorDataset, Layer, list of layers or GeoJSON.
+///     src: Vector data: a path, a `Layer`, a GeoDataFrame, GeoJSON, WKT, Shapely geometries...
+///         (see "Vector inputs" in the Python guide).
 ///     tolerance: The distance tolerance, in CRS units (degrees for geographic CRSs).
 ///     layer: The layer to use, when the input has several.
 ///
@@ -68,7 +69,8 @@ fn simplify(py: Python<'_>, src: &Bound<'_, PyAny>, tolerance: f64, layer: Optio
 /// Adds vertices so that no segment is longer than `max_length`, as `gdal vector segmentize`.
 ///
 /// Args:
-///     src: A vector path, VectorDataset, Layer, list of layers or GeoJSON.
+///     src: Vector data: a path, a `Layer`, a GeoDataFrame, GeoJSON, WKT, Shapely geometries...
+///         (see "Vector inputs" in the Python guide).
 ///     max_length: The maximum segment length, in CRS units.
 ///     layer: The layer to use, when the input has several.
 ///
@@ -83,7 +85,8 @@ fn segmentize(py: Python<'_>, src: &Bound<'_, PyAny>, max_length: f64, layer: Op
 /// The convex hull of each geometry, as `gdal vector convex-hull`.
 ///
 /// Args:
-///     src: A vector path, VectorDataset, Layer, list of layers or GeoJSON.
+///     src: Vector data: a path, a `Layer`, a GeoDataFrame, GeoJSON, WKT, Shapely geometries...
+///         (see "Vector inputs" in the Python guide).
 ///     layer: The layer to use, when the input has several.
 ///
 /// Returns:
@@ -98,7 +101,8 @@ fn convex_hull(py: Python<'_>, src: &Bound<'_, PyAny>, layer: Option<String>) ->
 /// concave-hull`.
 ///
 /// Args:
-///     src: A vector path, VectorDataset, Layer, list of layers or GeoJSON.
+///     src: Vector data: a path, a `Layer`, a GeoDataFrame, GeoJSON, WKT, Shapely geometries...
+///         (see "Vector inputs" in the Python guide).
 ///     ratio: The concavity, from 0 (most concave) to 1 (the convex hull).
 ///     allow_holes: Whether hulls may have holes.
 ///     tight: For polygons, whether the hull follows the polygons' outer boundaries.
@@ -122,7 +126,8 @@ fn concave_hull(
 /// Swaps the X and Y coordinates of every geometry, as `gdal vector swap-xy`.
 ///
 /// Args:
-///     src: A vector path, VectorDataset, Layer, list of layers or GeoJSON.
+///     src: Vector data: a path, a `Layer`, a GeoDataFrame, GeoJSON, WKT, Shapely geometries...
+///         (see "Vector inputs" in the Python guide).
 ///     layer: The layer to use, when the input has several.
 ///
 /// Returns:
@@ -136,7 +141,8 @@ fn swap_xy(py: Python<'_>, src: &Bound<'_, PyAny>, layer: Option<String>) -> PyR
 /// Changes geometry types and dimensions, as `gdal vector set-geom-type`.
 ///
 /// Args:
-///     src: A vector path, VectorDataset, Layer, list of layers or GeoJSON.
+///     src: Vector data: a path, a `Layer`, a GeoDataFrame, GeoJSON, WKT, Shapely geometries...
+///         (see "Vector inputs" in the Python guide).
 ///     geometry_type: Force this type (`"MULTIPOLYGON"`, `"POINTZ"`, `"GEOMETRY"`...).
 ///     multi: Make single-part types multi-part.
 ///     single: Make multi-part types single-part.
@@ -182,7 +188,8 @@ fn set_geom_type(
 /// Combines geometries into collections, by groups of field values, as `gdal vector combine`.
 ///
 /// Args:
-///     src: A vector path, VectorDataset, Layer, list of layers or GeoJSON.
+///     src: Vector data: a path, a `Layer`, a GeoDataFrame, GeoJSON, WKT, Shapely geometries...
+///         (see "Vector inputs" in the Python guide).
 ///     group_by: Group by these fields. By default, the layer becomes one feature.
 ///     keep_nested: Add multi-part geometries whole, as members of a geometry collection.
 ///     add_extra_fields: `"no"`, `"sometimes-identical"` or `"always-identical"`.
@@ -213,7 +220,8 @@ fn combine(
 /// Sorts features by the position of their geometries, as `gdal vector sort`.
 ///
 /// Args:
-///     src: A vector path, VectorDataset, Layer, list of layers or GeoJSON.
+///     src: Vector data: a path, a `Layer`, a GeoDataFrame, GeoJSON, WKT, Shapely geometries...
+///         (see "Vector inputs" in the Python guide).
 ///     method: `"hilbert"` (Hilbert codes of bounding box centres) or `"strtree"`.
 ///     layer: The layer to use, when the input has several.
 ///
@@ -233,7 +241,8 @@ fn sort(py: Python<'_>, src: &Bound<'_, PyAny>, method: &str, layer: Option<Stri
 /// Args:
 ///     src: Vector path, Layer, VectorDataset or GeoJSON; choose one layer with layer.
 ///     bbox: xmin,ymin,xmax,ymax in the input CRS unless crs is supplied.
-///     geometry: Polygon/multipolygon WKT or GeoJSON text. GeoJSON defaults to WGS84.
+///     geometry: A polygon or multipolygon: WKT or GeoJSON text, a GeoJSON mapping or a Shapely
+///         geometry. GeoJSON defaults to WGS84, WKT and Shapely to the input's CRS.
 ///     like: Vector/raster path, a Raster, or in-memory vector data. Polygon features
 ///         are unioned; raster bounds use metadata without reading lazy raster pixels.
 ///     crs: CRS of bbox/geometry, transforming the clip region rather than input data.
@@ -252,7 +261,7 @@ fn clip_vector(
     py: Python<'_>,
     src: &Bound<'_, PyAny>,
     bbox: Option<[f64; 4]>,
-    geometry: Option<String>,
+    geometry: Option<&Bound<'_, PyAny>>,
     like: Option<&Bound<'_, PyAny>>,
     crs: Option<String>,
     layer: Option<String>,
@@ -274,8 +283,8 @@ fn clip_vector(
     let template = ClipTemplateOptions { layer: like_layer, where_clause: like_where, sql: like_sql };
     let region = if let Some(bbox) = bbox {
         ClipRegion::bbox(bbox, crs).py()?
-    } else if let Some(text) = geometry {
-        ClipRegion::parse(&text, crs).py()?
+    } else if let Some(geometry) = geometry {
+        ClipRegion::parse(&crate::vector::geometry_text(geometry)?, crs).py()?
     } else {
         let like = like.unwrap();
         if let Ok(raster) = like.cast::<crate::raster::PyRaster>() {
@@ -285,9 +294,8 @@ fn clip_vector(
             ClipRegion::from_raster(&raster.borrow().inner.header()).py()?
         } else if let Some(layers) = clip_inline_geojson(like) {
             ClipRegion::from_layers(&layers?, &template).py()?
-        } else if let Ok(path) = like.extract::<std::path::PathBuf>() {
-            let path = path.to_str().ok_or_else(|| invalid("template path must be UTF-8"))?;
-            native_clip_template(py, path, &template)?
+        } else if let Some(path) = crate::vector::vector_path(like)? {
+            native_clip_template(py, &path, &template)?
         } else {
             ClipRegion::from_layers(&input_layers(py, like, None)?, &template).py()?
         }

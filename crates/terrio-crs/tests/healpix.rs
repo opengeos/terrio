@@ -38,7 +38,7 @@ use angular::angular_error;
 #[test]
 fn every_configuration_figure_and_unit_matches_frozen_proj() {
     let data: serde_json::Value = serde_json::from_str(include_str!("data/healpix_reference.json")).unwrap();
-    assert_eq!(data["environment"]["proj"], "9.8.1");
+    assert_eq!(data["environment"]["proj"], "9.9.0");
     for case in data["cases"].as_array().unwrap() {
         let name = case["name"].as_str().unwrap();
         let source = SpatialRef::parse(case["source"].as_str().unwrap()).unwrap();
@@ -60,7 +60,7 @@ fn every_configuration_figure_and_unit_matches_frozen_proj() {
                 let actual = inverse.transform(expected.0, expected.1);
                 // On the edge of the image (a pole, the antimeridian, a polar cap's edge), the
                 // last bit of the coordinates moves the point in or out of the image: the
-                // platform's libm, and the US survey foot (PROJ 9.8.1 takes it in these methods'
+                // platform's libm, and the US survey foot (PROJ 9.9.0 takes it in these methods'
                 // own +units as 0.304800609601219, terrio, as PROJ's unitconvert for other
                 // methods, as 1200/3937), decide it. There either is right, and a point terrio
                 // unprojects must be the projected one.
@@ -94,7 +94,7 @@ fn every_configuration_figure_and_unit_matches_frozen_proj() {
 
 #[test]
 fn polar_squares_outside_zero_to_three_are_refused() {
-    // PROJ 9.8.1 takes digits only, then atoi: a C long, saturating, cast to int.
+    // PROJ 9.9.0 takes digits only, then atoi: a C long, saturating, cast to int.
     let bad = [
         "+north_square=4",
         "+south_square=-1",

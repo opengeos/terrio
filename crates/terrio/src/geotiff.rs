@@ -194,7 +194,7 @@ const MAX_IFDS: usize = 1024;
 /// Reads the georeferencing tags of a TIFF file's first image. Returns `None` when the file is not
 /// a TIFF.
 pub(crate) fn read_geo_tags(path: &std::path::Path) -> Option<GeoTags> {
-    read_geo_tags_from(std::io::BufReader::new(std::fs::File::open(path).ok()?))
+    read_geo_tags_from(crate::vfs::NearSeek::new(std::fs::File::open(path).ok()?))
 }
 
 /// Refuses a file whose first bytes show a TIFF when the process-wide raster allow-list leaves out
@@ -237,7 +237,7 @@ pub(crate) fn read_first_geo_tags_from<R: Read + Seek>(f: R) -> std::io::Result<
 
 /// Comparison-only TIFF metadata; ordinary lazy opens avoid its out-of-line reads.
 pub(crate) fn read_compare_geo_tags(path: &std::path::Path) -> Option<GeoTags> {
-    read_geo_tags_impl::<true, _>(std::io::BufReader::new(std::fs::File::open(path).ok()?), true, ImageScope::BestEffort).ok().flatten()
+    read_geo_tags_impl::<true, _>(crate::vfs::NearSeek::new(std::fs::File::open(path).ok()?), true, ImageScope::BestEffort).ok().flatten()
 }
 
 enum ImageScope {
@@ -894,7 +894,7 @@ impl Seek for FileCursor {
 }
 
 /// A TIFF decoder over a local file.
-pub(crate) type FileDecoder = tiff::decoder::Decoder<PatchedReader<std::io::BufReader<FileCursor>>>;
+pub(crate) type FileDecoder = tiff::decoder::Decoder<PatchedReader<crate::vfs::NearSeek<FileCursor>>>;
 
 fn file_decoder(
     mut file: FileCursor,
@@ -904,7 +904,7 @@ fn file_decoder(
 ) -> crate::Result<FileDecoder> {
     let len = file.len()?;
     file.seek(SeekFrom::Start(0))?;
-    let file = PatchedReader::new(std::io::BufReader::new(file), tags);
+    let file = PatchedReader::new(crate::vfs::NearSeek::new(file), tags);
     let dec = tiff::decoder::Decoder::new(file).map_err(|e| match e {
         tiff::TiffError::LimitsExceeded => limits.error()(e),
         tiff::TiffError::IoError(e) if e.kind() == std::io::ErrorKind::OutOfMemory => crate::Error::Io(e),
@@ -1611,7 +1611,7 @@ pub(crate) fn read_geotiff_with_limits(path: &std::path::Path, limits: crate::co
         e => Error::InvalidData(format!("{}: {e}", path.display())),
     };
     let mut file = FileCursor::new(std::fs::File::open(path)?);
-    let mut tags = read_geo_tags_from(std::io::BufReader::new(&mut file)).unwrap_or_default();
+    let mut tags = read_geo_tags_from(crate::vfs::NearSeek::new(&mut file)).unwrap_or_default();
     tags.check_structure()?;
     tags.apply_sidecar_crs(path);
     tags.warn_unreadable(&path.display().to_string());

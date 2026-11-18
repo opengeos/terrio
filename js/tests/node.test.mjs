@@ -52,6 +52,22 @@ const SQUARES = {
   ],
 };
 
+test("periodicLongitude: false keeps bilinear inside a full-turn source's stored columns", () => {
+  // Each pixel holds its centre longitude: -179.5 and 179.5 meet at the stored edge.
+  const values = Float64Array.from({length: 360 * 180}, (_, i) => (i % 360) - 179.5);
+  const source = terrio.rasterFromArray(values, 360, 180, [-180, 1, 0, 90, 0, -1], "EPSG:4326");
+  const options = {tSrs: "+proj=longlat +datum=WGS84 +lon_0=180", te: [-10.5, 58, 10.5, 60], ts: [21, 2], ot: "Float64"};
+  const turn = (d) => Math.abs((((d + 180) % 360) + 360) % 360 - 180);
+  const nearest = terrio.warp(source, {...options, resampling: "near"}).readBand(1);
+  const worst = (extra, difference) => {
+    const out = terrio.warp(source, {...options, resampling: "bilinear", ...extra}).readBand(1);
+    return Math.max(...Array.from(out, (v, i) => difference(v - nearest[i])));
+  };
+  assert.ok(worst({}, turn) > 90, "the periodic default blends the two edge columns");
+  // The plain difference: a value from the other stored edge would be 359 away.
+  assert.ok(worst({periodicLongitude: false}, Math.abs) <= 1);
+});
+
 test("wider-source area footprints use two nonduplicated placements", () => {
   const values = Float64Array.from({length: 3610}, (_, i) => ({0: 2, 1: 4, 359: 8, 360: 1000})[i % 361] ?? 1);
   const source = terrio.rasterFromArray(values, 361, 10, [-180.5, 1, 0, 10, 0, -1], "EPSG:4326");
@@ -95,7 +111,7 @@ test("version", () => {
 });
 
 test("the module's build and its formats", () => {
-  assert.ok(["flatgeobuf", "sqlite", "tiles", "lzma", "lerc"].every((f) => BUILT.includes(f)), BUILT.join());
+  assert.ok(["flatgeobuf", "sqlite", "tiles", "lzma", "lerc", "jxl"].every((f) => BUILT.includes(f)), BUILT.join());
   if (BUILD === "terrio-js/threads") assert.ok(terrio.features().threads > 1, "the thread pool is started");
   assert.ok(terrio.features().memory > 0);
   if (BUILD !== "terrio-js/core") {
@@ -220,6 +236,20 @@ test("JPEG 2000 to bytes and back", { skip: needs("jp2") }, () => {
   assert.equal(img.crs, "EPSG:4326");
   assert.deepEqual([...img.readBand(3)], [...rgb.slice(2 * 64 * 48)]);
   assert.throws(() => terrio.rasterFromArray(new Float32Array(4), 2, 2, [0, 1, 0, 2, 0, -1]).toBytes("f.jp2"), /8- and 16-bit integers/);
+});
+
+test("geometries as WKT, bounds or arrays read as GeoJSON does", () => {
+  const square = { type: "Polygon", coordinates: [[[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]]] };
+  const geometries = (v) => terrio.fromGeoJSON(v).toGeoJSON().features.map((f) => f.geometry);
+  const expected = geometries(square);
+  assert.deepEqual(geometries("POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))"), expected);
+  assert.deepEqual(geometries([0, 0, 2, 2]), expected);
+  assert.deepEqual(geometries([square, { type: "Feature", properties: {}, geometry: square }]), [...expected, ...expected]);
+  terrio.takeWarnings();
+  const across = terrio.fromGeoJSON([170, 0, -170, 2]).toGeoJSON().features[0].geometry;
+  assert.equal(across.type, "MultiPolygon");
+  assert.ok(terrio.takeWarnings().some((w) => w.includes("antimeridian")));
+  assert.throws(() => terrio.fromGeoJSON("POLYGON ((0 0, 1 0"), /neither an existing file nor valid geometries/);
 });
 
 test("vector layers as Arrow IPC streams, and back", { skip: needs("parquet") }, () => {
@@ -612,16 +642,16 @@ test("CRS transforms", () => {
   assert.equal(crs.epsg, 32633);
   assert.equal(JSON.parse(terrio.crsToProjjson("EPSG:32633")).conversion.name, "UTM zone 33N");
   assert.throws(() => terrio.crsToProjjson("+proj=longlat +lon_0=10 +datum=WGS84"), /lon_0/);
-  // PROJ 9.8.1's projinfo -o PROJ.
+  // PROJ 9.9.0's projinfo -o PROJ.
   assert.equal(terrio.crsToProj4("EPSG:32633"), "+proj=utm +zone=33 +datum=WGS84 +units=m +no_defs +type=crs");
-  // PROJ 9.8.1's WKT1_GDAL with GDAL's axes; none where it needs the PROJ4 extension, or PROJ
+  // PROJ 9.9.0's WKT1_GDAL with GDAL's axes; none where it needs the PROJ4 extension, or PROJ
   // writes no WKT 1 (geographic 3D).
   assert.match(terrio.crsToWkt1Strict("EPSG:32633"), /^PROJCS\["WGS 84 \/ UTM zone 33N",.*AUTHORITY\["EPSG","32633"\]\]$/);
   assert.equal(terrio.crsToWkt1Strict("+proj=longlat +ellps=clrk66 +nadgrids=conus +no_defs"), undefined);
   assert.equal(terrio.crsToWkt1Strict("EPSG:4979"), undefined);
   assert.match(crs.name, /UTM zone 33N/);
   assert.equal(crs.geographic, false);
-  // PROJ 9.8.1 resolves the authority version separately from the EPSG code.
+  // PROJ 9.9.0 resolves the authority version separately from the EPSG code.
   for (const reference of [
     "urn:ogc:def:crs:EPSG:6.6:4326",
     "urn:ogc:def:crs:EPSG:9.9:4326",
@@ -3313,7 +3343,7 @@ test("HEALPix and rHEALPix match PROJ", () => {
       }
     }
     // On the edge of the image the last bit moves the point in or out of it (the platform's
-    // libm, and PROJ 9.8.1's US survey foot in these methods' own +units, 0.304800609601219,
+    // libm, and PROJ 9.9.0's US survey foot in these methods' own +units, 0.304800609601219,
     // where terrio has 1200/3937): there either is right, and a point terrio unprojects must be
     // the projected one. As in crates/terrio-crs/tests/healpix.rs.
     const edge = new Set(c.edge_samples);
@@ -3341,7 +3371,12 @@ test("HEALPix and rHEALPix match PROJ", () => {
 
 test("ISEA matches PROJ", () => {
   const reference = JSON.parse(readFileSync(new URL("../../crates/terrio-crs/tests/data/isea_reference.json", import.meta.url), "utf8"));
-  const near = (actual, [lon, lat]) => Math.abs(((actual[0] - lon + 540) % 360 - 180) * Math.cos(lat * Math.PI / 180)) <= 1e-8 && Math.abs(actual[1] - lat) <= 1e-8;
+  // 1e-5 within 0.001 degrees of a pole, where the latitude is the arcsine of a number near 1
+  // (crates/terrio-crs/tests/isea.rs).
+  const near = (actual, [lon, lat]) => {
+    const tolerance = Math.abs(lat) > 89.999 ? 1e-5 : 1e-8;
+    return Math.abs(((actual[0] - lon + 540) % 360 - 180) * Math.cos(lat * Math.PI / 180)) <= tolerance && Math.abs(actual[1] - lat) <= tolerance;
+  };
   for (const c of reference.cases) {
     const samples = c.samples;
     for (const target of [c.target, c.wkt2, c.wkt1, c.wkt1_esri]) {
@@ -3350,8 +3385,7 @@ test("ISEA matches PROJ", () => {
         assert.ok(Math.abs(result[j][i] - samples[i][2][j]) * c.metres_per_unit <= 0.001, `${c.name} forward ${i}/${j}`);
       }
     }
-    // PROJ's inverse, which is not the forward's on an ellipsoid and is refused outside its
-    // default grid. As in crates/terrio-crs/tests/isea.rs.
+    // PROJ's inverse, refused outside the unfolded net. As in crates/terrio-crs/tests/isea.rs.
     const pairs = samples.map(s => [s[2], s[3]]).concat(c.inverse_samples);
     const reversible = pairs.filter(([, e]) => e !== null);
     if (reversible.length > 0) {

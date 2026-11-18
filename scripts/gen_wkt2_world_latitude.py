@@ -1,5 +1,5 @@
 """Generate crates/terrio-crs/tests/data/wkt2_world_latitude.json: WKT 2 world projections with a
-latitude of natural origin their method has no use for, which PROJ 9.8.1 ignores
+latitude of natural origin their method has no use for, which PROJ 9.9.0 ignores
 (opengeos/terrio#1012, item 20): its PROJ string and where it places a point from WGS 84
 (`always_xy`).
 
@@ -37,7 +37,7 @@ def wkt(method, ellipsoid):
 
 
 def main():
-    assert pyproj.__version__ == "3.8.0" and pyproj.proj_version_str == "9.8.1", (
+    assert pyproj.__version__ == "3.8.0" and pyproj.proj_version_str == "9.9.0", (
         pyproj.proj_version_str
     )
     assert os.environ.get("PROJ_NETWORK") == "OFF"
