@@ -2031,44 +2031,58 @@ pub(crate) fn split_compound(w: &str) -> Option<(String, String)> {
     Some((horizontal.to_string(), vertical.to_string()))
 }
 
-/// The geoid grids of a vertical CRS's own GDAL `PROJ4_GRIDS` extension: in its vertical datum,
-/// where GDAL writes it, or at its root.
-fn own_geoid_grids(root: &wkt1::Node) -> Option<String> {
-    fn extension(n: &wkt1::Node) -> Option<&wkt1::Node> {
-        n.children("EXTENSION").find(|e| e.name() == Some("PROJ4_GRIDS"))
-    }
-    let e = extension(root).or_else(|| root.first_in(keywords::VERTICAL_DATUM).and_then(extension))?;
+/// The geoid grids of a node's GDAL `PROJ4_GRIDS` extension.
+fn grids_extension(n: &wkt1::Node) -> Option<String> {
+    let e = n.children("EXTENSION").find(|e| e.name() == Some("PROJ4_GRIDS"))?;
     match e.args.get(1) {
         Some(wkt1::Arg::Str(s)) => Some(s.clone()),
         _ => None,
     }
 }
 
-/// The vertical CRS of a `VERT_CS` (ESRI's `VERTCS`, WKT 2's `VERTCRS`) definition: its EPSG code
-/// when it has one or is identified ([`vertical_code`]), else its unit and the geoid grids of
-/// GDAL's `PROJ4_GRIDS` extension, which its PROJ string writes (`+geoidgrids`).
-pub(crate) fn vertical_from_wkt(w: &str) -> Option<Vertical> {
+/// The geoid grids of a vertical CRS's vertical datum (GDAL's `PROJ4_GRIDS`, where GDAL writes
+/// it), which PROJ 9.9.0 reads as a bound CRS of no code, a declared code or not.
+fn datum_geoid_grids(root: &wkt1::Node) -> Option<String> {
+    root.first_in(keywords::VERTICAL_DATUM).and_then(grids_extension)
+}
+
+/// The geoid grids a vertical CRS's WKT is of, as its definition and PROJ string read them: those
+/// of its vertical datum, else (as terrio read them before; PROJ ignores them) those at its root
+/// when it has no code. A vertical CRS with a code (declared, or identified by its name) has its
+/// code's geoid models instead.
+pub(crate) fn wkt_geoid_grids(w: &str) -> Option<String> {
     let root = wkt1::parse(w)?;
-    let grids = own_geoid_grids(&root);
-    // A declared code's definition (a CRS with grids of its own is not identified by its name).
-    let declared = vertical_code(w);
-    if let Some(v) = declared.and_then(Vertical::from_epsg) {
+    datum_geoid_grids(&root).or_else(|| if vertical_code(w).is_none() { grids_extension(&root) } else { None })
+}
+
+/// The vertical CRS of a `VERT_CS` (ESRI's `VERTCS`, WKT 2's `VERTCRS`) definition: its EPSG code
+/// when it has one or is identified ([`vertical_code`]), else its unit and its geoid grids
+/// ([`wkt_geoid_grids`]), which its PROJ string writes (`+geoidgrids`).
+pub(crate) fn vertical_from_wkt(w: &str) -> Option<Vertical> {
+    // A declared or identified code's definition.
+    let code = vertical_code(w);
+    if let Some(v) = code.and_then(Vertical::from_epsg) {
         return Some(v);
     }
     let (to_meter, down) = super::vertical_axis(w)?;
-    Some(match grids {
+    Some(match wkt_geoid_grids(w) {
         // Its own grids, in its direction (a depth CRS's, by `AXIS` or ESRI's `Direction`).
         Some(g) => Vertical { down, ..Vertical::from_geoid_grids(&g, to_meter) },
-        None => Vertical { code: declared, to_meter, down, models: Vec::new(), ballpark: true },
+        None => Vertical { code, to_meter, down, models: Vec::new(), ballpark: true },
     })
 }
 
 /// The EPSG code a vertical CRS's WKT declares, when its unit and direction are the code's
 /// (heights in feet declaring EGM96 height in metres are not EGM96 height); without one, the code
-/// PROJ 9.9.0 identifies by its name, datum, unit and direction, unless it has geoid grids of its
-/// own (GDAL's `PROJ4_GRIDS`), which PROJ reads as a bound CRS of no code.
+/// PROJ 9.9.0 identifies by its name, datum, unit and direction. None when its vertical datum has
+/// geoid grids of its own (GDAL's `PROJ4_GRIDS`), which PROJ reads as a bound CRS of no code even
+/// with a declared code; nor, without a declared code, when its root has (as terrio read them).
 pub(crate) fn vertical_code(w: &str) -> Option<u32> {
     let (to_meter, down) = super::vertical_axis(w)?;
+    let root = wkt1::parse(w);
+    if root.as_ref().and_then(datum_geoid_grids).is_some() {
+        return None;
+    }
     let fits = |code: u32| epsg::vertical(code).is_some_and(|r| (to_meter - r.to_meter).abs() <= 1e-9 * r.to_meter && down == r.down);
     if let Some(code) = super::declared_epsg(w) {
         return fits(code).then_some(code);
@@ -2076,8 +2090,8 @@ pub(crate) fn vertical_code(w: &str) -> Option<u32> {
     // Without a code, the CRS its name finds on the datum its datum's name is, as PROJ 9.9.0
     // identifies it (`VerticalCRS::identify`): ESRI's `VERTCS["EGM96_height",
     // VDATUM["EGM96_Geoid"],...]` is EPSG:5773. Only a single such CRS.
-    let root = wkt1::parse(w)?;
-    if !root.is(keywords::VERTICAL_CRS) || own_geoid_grids(&root).is_some() {
+    let root = root?;
+    if !root.is(keywords::VERTICAL_CRS) || grids_extension(&root).is_some() {
         return None;
     }
     let esri = root.key.eq_ignore_ascii_case("VERTCS");
