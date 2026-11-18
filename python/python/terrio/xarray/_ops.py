@@ -7,6 +7,8 @@ DataArray on the input's grid, or a `terrio.Layer` for vector results. Dask arra
 
 from __future__ import annotations
 
+import os
+import re
 from collections.abc import Callable, Hashable, Sequence
 from typing import Any, NamedTuple
 
@@ -165,6 +167,100 @@ def raster_op(
     return out
 
 
+# GeoJSON or WKT text rather than a path, as terrio's bindings tell them apart.
+_GEOMETRY_TEXT = re.compile(
+    r"\s*([{\[]|(SRID=\d+;\s*)?(MULTI)?(POINT|LINESTRING|POLYGON|GEOMETRYCOLLECTION)"
+    r"\s*(Z|M|ZM)?\s*(\(|EMPTY))",
+    re.IGNORECASE,
+)
+
+
+def _is_bounds(obj: Any) -> bool:
+    """Whether `obj` is `(xmin, ymin, xmax, ymax)`."""
+    return (
+        isinstance(obj, (tuple, list, np.ndarray))
+        and len(obj) == 4
+        and all(isinstance(v, (int, float, np.number)) for v in obj)
+    )
+
+
+def _is_path(obj: Any) -> bool:
+    return isinstance(obj, os.PathLike) or (
+        isinstance(obj, str) and (not _GEOMETRY_TEXT.match(obj) or os.path.exists(obj))
+    )
+
+
+def in_crs(src: Any, crs: CRS | None) -> Any:
+    """Vector data as terrio's operations take it, plain geometries as a `Layer` in `crs`.
+
+    Geometries without a CRS of their own (GeoJSON, WKT, Shapely geometries, bounds...) would
+    otherwise be read in EPSG:4326.
+    """
+    own = (
+        _is_path(src)
+        or isinstance(src, (_terrio.Layer, _terrio.VectorDataset))
+        or getattr(src, "crs", None) is not None  # GeoPandas
+        # Arrow data, but not GeoPandas without a CRS (a GeoDataFrame is Arrow data too)
+        or (
+            not hasattr(src, "__geo_interface__")
+            and (hasattr(src, "__arrow_c_stream__") or hasattr(src, "__arrow_c_array__"))
+        )
+        or (isinstance(src, (list, tuple)) and any(isinstance(i, _terrio.Layer) for i in src))
+    )
+    if own or crs is None:
+        return src
+    return _terrio.Layer.from_geojson(
+        src if isinstance(src, str) else getattr(src, "__geo_interface__", src), crs=crs.to_wkt()
+    )
+
+
+def geometry_input(geometries: Any, crs: str | None = None) -> Any:
+    """`clip`'s geometries as a terrio `Layer` or a list of GeoJSON-like geometries.
+
+    A vector file path, a one-layer `VectorDataset`, a GeoDataFrame/GeoSeries (its active
+    geometry column) or Arrow data becomes a `Layer` with its CRS; WKT, GeoJSON text and
+    `(xmin, ymin, xmax, ymax)` bounds a `Layer` in `crs`; a GeoJSON FeatureCollection, a Feature
+    or a single geometry a list of geometries; other inputs are returned as given.
+    """
+    if isinstance(geometries, _terrio.Layer):
+        return geometries
+    if _is_path(geometries) or isinstance(geometries, _terrio.VectorDataset):
+        dataset = (
+            geometries
+            if isinstance(geometries, _terrio.VectorDataset)
+            else _terrio.open_vector(os.fspath(geometries))
+        )
+        if len(dataset) != 1:
+            raise ValueError(
+                f"the vector dataset has {len(dataset)} layers {dataset.layer_names}; pass one "
+                "as terrio.open_vector(path)[name]"
+            )
+        return dataset[0]
+    if isinstance(geometries, str) or _is_bounds(geometries):
+        return _terrio.Layer.from_geojson(geometries, crs=crs)
+    if hasattr(geometries, "__geo_interface__") and hasattr(geometries, "crs"):
+        # GeoPandas: the active geometry column only (a GeoSeries is its own), with its CRS
+        series = geometries.geometry
+        if hasattr(series, "to_arrow"):  # GeoPandas 1.0: through Arrow, without GeoJSON
+            try:
+                return _terrio.Layer.from_arrow(series.to_frame(name="geometry"))
+            except ImportError:  # no pyarrow
+                pass
+        if series.crs is None:  # plain geometries, in `crs=` or the array's (GeoJSON means 4326)
+            return [f["geometry"] for f in series.__geo_interface__["features"]]
+        return _terrio.Layer.from_geojson(series.__geo_interface__, crs=series.crs.to_wkt())
+    if hasattr(geometries, "__arrow_c_stream__") or hasattr(geometries, "__arrow_c_array__"):
+        return _terrio.Layer.from_arrow(geometries)
+    gi = getattr(geometries, "__geo_interface__", geometries)
+    if isinstance(gi, dict):
+        if gi.get("type") == "FeatureCollection":
+            return [f["geometry"] for f in gi["features"]]
+        if gi.get("type") == "Feature":
+            return [gi["geometry"]]
+        return [gi]
+    return geometries
+
+
 def rasterize(src: Any, like: xarray.DataArray | xarray.Dataset, **kwargs: Any) -> xarray.DataArray:
     """`terrio.rasterize` of `src` on the grid of `like`, as a DataArray.
 
@@ -176,7 +272,7 @@ def rasterize(src: Any, like: xarray.DataArray | xarray.Dataset, **kwargs: Any) 
         dims=(g.y, g.x),
         coords={g.y: like[g.y], g.x: like[g.x]},
     )
-    raster = _terrio.rasterize(src, like=to_raster(grid, g), **kwargs)
+    raster = _terrio.rasterize(in_crs(src, like.terrio.crs), like=to_raster(grid, g), **kwargs)
     out = from_raster(raster, grid, g)
     out.name = None
     return out

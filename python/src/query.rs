@@ -141,8 +141,8 @@ fn open_or_borrow<'py>(py: Python<'py>, src: &Bound<'py, PyAny>) -> PyResult<Hel
 ///         `position_crs`.
 ///     position_crs: `"pixel"` (the default), `"dataset"` (the raster's CRS) or a CRS, X being
 ///         the longitude or easting. For `position_dataset`, the layer's CRS by default.
-///     position_dataset: Query at the points (or centroids) of a vector dataset instead: a path,
-///         `Layer` or `VectorDataset`.
+///     position_dataset: Query at the points (or centroids) of vector data instead (see "Vector
+///         inputs" in the Python guide).
 ///     layer: The layer of `position_dataset`, when it has several.
 ///     include_fields: Fields of `position_dataset` to copy: names, or `"ALL"` (the default) or
 ///         `"NONE"`.

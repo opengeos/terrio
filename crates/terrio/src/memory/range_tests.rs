@@ -110,3 +110,21 @@ fn filesystem_free_readers_refuse_service_options_before_dispatch() {
         }
     }
 }
+
+#[test]
+fn inline_geometries_take_the_layer_and_feature_range_options() {
+    use crate::VectorOpenOptions;
+    let none = VectorOpenOptions { max_features: Some(0), ..Default::default() };
+    assert_eq!(super::open_vector_or_geometries("POINT (1 2)", &none).unwrap().layers[0].features.len(), 0);
+    let missing = VectorOpenOptions { layers: vec!["missing".into()], ..Default::default() };
+    assert!(super::open_vector_or_geometries("POINT (1 2)", &missing).is_err());
+    let named = VectorOpenOptions { layers: vec!["geometries".into()], ..Default::default() };
+    assert_eq!(super::open_vector_or_geometries("POINT (1 2)", &named).unwrap().layers[0].features.len(), 1);
+}
+
+#[test]
+fn lists_take_wkt_strings() {
+    let layer = super::parse_geometries(r#"["POINT (1 2)", {"type": "Point", "coordinates": [3, 4]}]"#, "g").unwrap();
+    assert_eq!(layer.features.len(), 2);
+    assert_eq!(layer.features[0].geometry, Some(wbvector::Geometry::point(1.0, 2.0)));
+}

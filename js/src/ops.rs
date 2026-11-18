@@ -85,8 +85,8 @@ pub(crate) fn input_rasters(v: &JsValue) -> Result<Vec<RasterDataset>, JsError> 
     Ok(out)
 }
 
-/// Vector layers given to an operation: a `Dataset`, a file's bytes, or GeoJSON (an object or a
-/// string).
+/// Vector layers given to an operation: a `Dataset`, a file's bytes, or geometries as
+/// [`crate::from_geojson`] takes them (GeoJSON, an array of geometries, bounds or WKT).
 pub(crate) fn input_layers(v: &JsValue) -> Result<Vec<Layer>, JsError> {
     if let Some(inner) = Dataset::lookup(v) {
         return match &*inner.borrow() {
@@ -107,7 +107,7 @@ pub(crate) fn input_layers(v: &JsValue) -> Result<Vec<Layer>, JsError> {
             return Ok(layers.clone());
         }
     }
-    Err(invalid("expected vector data: a Dataset, a Uint8Array, { bytes, filename } or GeoJSON"))
+    Err(invalid("expected vector data: a Dataset, a Uint8Array, { bytes, filename }, GeoJSON, WKT or bounds"))
 }
 
 /// Select file layers while their source name and complete inventory are still available.

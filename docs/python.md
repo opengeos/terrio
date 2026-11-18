@@ -144,6 +144,31 @@ plan = terrio.open_vector(
 terrio.info("BaldEagleDamBrk.p03.hdf", layers=["mesh_cells"], options={"CELL_ATTRIBUTES": "MINIMUM_ELEVATION"})
 ```
 
+### Vector inputs
+
+Every operation that takes vector data (`zonal_stats` zones, `warp`'s `cutline`, `rasterize`,
+`clip_vector`, `pixel_info`'s `position_dataset`, `PointCloud.overlay`, the vector operations...)
+takes it in any of these forms:
+
+```python
+"fields.gpkg"; pathlib.Path("fields.gpkg")      # a file (a URL only as str: pathlib mangles //)
+layer; dataset; [layer1, layer2]                # terrio Layers and VectorDatasets
+gdf; gdf.geometry; pyarrow_table                # GeoPandas objects, Arrow data (GeoArrow, WKB)
+shapely.box(0, 0, 1, 1); [geom1, geom2]         # Shapely geometries, alone or in a sequence
+{"type": "Polygon", ...}; '{"type": ...}'       # GeoJSON geometries, Features, FeatureCollections
+"POLYGON ((0 0, 1 0, 1 1, 0 0))"                # WKT (or EWKT)
+(0, 0, 1, 1)                                    # (xmin, ymin, xmax, ymax) bounds
+```
+
+A `str` is a path unless it has the shape of JSON (`{`, `[`) or WKT and is no existing file; text
+of that shape that does not parse is an error naming both readings. Bounds out of order are put
+in order with a warning: `xmin > xmax` longitudes cross the antimeridian (two boxes split at
+±180°, as GeoJSON reads such a `bbox`), other values and `ymin > ymax` are swapped.
+
+Files, Layers, GeoPandas objects and Arrow data carry their CRS; geometries given alone are in
+EPSG:4326, as GeoJSON's are, unless the operation says otherwise (`clip_vector`'s `geometry`
+takes WKT and Shapely geometries in the input's CRS).
+
 ### Layer selection
 
 An empty `layers` request keeps all layers. Duplicate requests do not duplicate
