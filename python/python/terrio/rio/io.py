@@ -3522,11 +3522,21 @@ class DatasetWriter(DatasetReader):
     def _new_structure_defaults(self) -> list[ColorInterp]:
         """The color interpretations the writer gives the bands when it is not told otherwise.
 
-        For a GeoTIFF or a COG they are the GeoTIFF writer's. `PHOTOMETRIC=RGB` or `YCBCR` makes
-        the first three bands red, green and blue. Without `PHOTOMETRIC`, so do three Byte bands,
+        A new dataset reports them, and a file written without any set reads them back unless it
+        has another number of bands: a WebP leaves out an alpha band that is opaque everywhere,
+        an MBTiles archive reads back as four bands, and a PMTiles archive as the bands of its
+        tiles, which carry an alpha band. For a
+        GeoTIFF or a COG they are the GeoTIFF writer's. `PHOTOMETRIC=RGB` or `YCBCR` makes the
+        first three bands red, green and blue. Without `PHOTOMETRIC`, so do three Byte bands,
         or four compressed with WebP: a COG takes none (`_creation_options` drops it), and an
-        update passes one only for an RGB file. `ALPHA` makes the last band alpha. `_flush` sends
-        the writer each band's interpretation that differs from these.
+        update passes one only for an RGB file. `ALPHA` makes the last band alpha. The other
+        writers take neither option. A JPEG 2000 file is sRGB for three or four bands (red,
+        green and blue, then undefined) and grayscale otherwise, which reads back gray for one
+        or two bands and undefined for more. A PNG is gray, gray and alpha, RGB or RGBA, and a
+        WebP RGB or RGBA. Zarr bands are undefined but a single one, gray; GRIB bands are
+        undefined; other formats' are gray, then undefined. `_flush` sends the writer each
+        band's interpretation that differs from these (a JPEG 2000 writer every band's, once
+        any is set).
 
         Returns:
             list: One per band.
@@ -3534,17 +3544,29 @@ class DatasetWriter(DatasetReader):
         n = self._count
         ci = [ColorInterp.gray] + [ColorInterp.undefined] * (n - 1)
         o = self._options
-        photometric = o.get("PHOTOMETRIC", "").upper()
-        rgb = photometric == "RGB"
-        if self._out_driver.upper() in ("GTIFF", "COG"):
+        driver = _terrio.canonical_driver_name(self._out_driver)
+        rgb = alpha = False
+        if driver in ("GTIFF", "COG"):
+            photometric = o.get("PHOTOMETRIC", "").upper()
             if photometric:
                 rgb = photometric in ("RGB", "YCBCR")
             else:
                 webp = o.get("COMPRESS", "").upper() == "WEBP"
                 rgb = self._dtype == "uint8" and (n == 3 or (n == 4 and webp))
+            alpha = o.get("ALPHA", "").upper() in ("YES", "NON-PREMULTIPLIED", "PREMULTIPLIED")
+        elif driver == "JP2":
+            rgb = n in (3, 4)
+            if n == 2:
+                ci = [ColorInterp.gray] * n
+            elif n > 4:
+                ci = [ColorInterp.undefined] * n
+        elif driver in ("PNG", "WEBP"):
+            rgb, alpha = n >= 3, n in (2, 4)
+        elif driver == "GRIB" or (driver == "ZARR" and n > 1):
+            ci = [ColorInterp.undefined] * n
         if rgb and n >= 3:
             ci[:3] = [ColorInterp.red, ColorInterp.green, ColorInterp.blue]
-        if o.get("ALPHA", "").upper() in ("YES", "NON-PREMULTIPLIED", "PREMULTIPLIED") and n > 1:
+        if alpha and n > 1:
             ci[-1] = ColorInterp.alpha
         return ci
 

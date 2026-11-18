@@ -311,6 +311,11 @@ One- and two-band RGB subsets write as grayscale. Larger RGB colour sets require
 exactly one red, green and blue channel; incomplete or duplicate sets are rejected.
 When any roles are supplied, omitted entries are unspecified. When none are supplied,
 the existing band-count defaults apply (RGB for three or four components).
+A new `terrio.rio` dataset reports these defaults before it is written, as the file reads
+back: red, green and blue for three or four components (the fourth undefined), gray for one
+or two, and undefined for more. Supplied back as reported, three or four components stay sRGB;
+with the last of four made alpha, the file is sRGB with an opacity channel. Red, green and
+alpha on three components are an incomplete RGB set and are rejected.
 Decoding preserves stored component order,
 as GDAL 3.13.3 does, instead of permuting BGR or ARGB samples into RGB order. Palette
 decoding keeps its existing expansion. As with GDAL, grayscale images of one or two

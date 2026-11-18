@@ -96,6 +96,18 @@ It needs only NumPy and [affine](https://github.com/rasterio/affine) (installed 
   interpretation set on the dataset, or copied by `shutil.copy`, is kept, as it is by an `r+`
   update.
   `cubic`, `nearest` for paletted rasters).
+  A new dataset reports the color interpretation its file reads back when none is set, unless the
+  file has another number of bands: a four-band WebP whose alpha band is opaque everywhere is
+  written, and reads back, as three-band RGB; an MBTiles archive reads back as four bands, and a
+  PMTiles archive as the bands of its tiles, which carry an alpha band. For a
+  GeoTIFF or a COG it is the GeoTIFF writer's, which `photometric` and `alpha` change; the other
+  writers take neither option and go by the number of bands. A JPEG 2000 file of three or four
+  bands is red, green and blue (the fourth undefined), of one or two gray, and of more undefined;
+  a PNG is gray, gray and alpha, RGB or RGBA, and a WebP RGB or RGBA; Zarr bands are undefined
+  but a single one, gray, and GRIB bands undefined; other formats are gray, then undefined.
+  Setting the reported interpretation back keeps the file's color space: a JPEG 2000 file of
+  three or four bands stays sRGB, and with the last of four bands made alpha it is sRGB with an
+  opacity channel.
 - **Raster type.** A GeoTIFF's raster type is read as the `AREA_OR_POINT` tag and written back:
   a PixelIsPoint raster (`AREA_OR_POINT=Point`, read from a file or set with `update_tags`) stays
   PixelIsPoint in every GeoTIFF and COG write, `shutil.copy` and `r+` update, its tie point the
