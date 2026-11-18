@@ -594,3 +594,39 @@ def test_zonal_reducer_stream_is_finished_once():
         stream.finish()
     with pytest.raises(terrio.InvalidArgumentError, match="the stream is finished"):
         stream.add(0, np.ones((1, 1)))
+
+
+@pytest.mark.parametrize("fractional", [False, True])
+@pytest.mark.parametrize("overlap", [False, True])
+def test_stream_storage_estimate_counts_only_concurrent_zones(fractional, overlap):
+    """Count complete zones open together, with sorting workspace and zero for a mean."""
+    from shapely.geometry import box
+
+    zones = terrio.Layer.from_geojson(
+        {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {},
+                    "geometry": box(0, y, 10, y + 4).__geo_interface__,
+                }
+                for y in (0, 0 if overlap else 10)
+            ],
+        },
+        crs="EPSG:3857",
+    )
+    for stat in ("mean", "median"):
+        reducer = terrio.ZonalReducer(
+            zones,
+            10,
+            20,
+            (0, 1, 0, 20, 0, -1),
+            "EPSG:3857",
+            stats=[stat],
+            fractional=fractional,
+            strip_rows=2,
+        )
+        assert reducer.retained_bytes == (
+            40 * (2 if overlap else 1) * 32 if stat == "median" else 0
+        )

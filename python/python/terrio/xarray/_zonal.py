@@ -27,8 +27,6 @@ _STRIP_PIXELS = 2**20
 # Bytes held by default: the pixels read, the batch read ahead and the values sorted
 # statistics keep.
 BATCH_BYTES = 512 * 2**20
-# Statistics that keep a zone's values until it is complete.
-_SORTED = ("median", "mode", "majority", "minority", "variety")
 
 
 def _outside_level() -> int:
@@ -169,7 +167,6 @@ def zonal_cube(
             shape,
             [prepared[i][3] for i in members],
             reducer,
-            fractional,
             BATCH_BYTES if batch_bytes is None else batch_bytes,
         )
         for i, out in zip(members, outs, strict=True):
@@ -179,8 +176,8 @@ def zonal_cube(
     columns = zones.columns()
     # One naming of the attributes for every array, so the variables of a Dataset agree on it.
     reserved = {"geometry", "statistic", "spatial_ref"}  # the grid mapping coordinate
-    for _, other, coords, _, _ in prepared:
-        reserved |= {*other, *coords}
+    for da, other, coords, _, _ in prepared:
+        reserved |= {da.name, *other, *coords}
     attributes = _attributes(columns, reserved)
     results = []
     for (da, other, coords, _, _), out in zip(prepared, values, strict=True):
@@ -263,7 +260,7 @@ def _blocks(array: xarray.DataArray, windows: list) -> list[tuple]:
     return out
 
 
-def _reduce(arrays, other, shape, fills, reducer, fractional, budget) -> list[np.ndarray]:
+def _reduce(arrays, other, shape, fills, reducer, budget) -> list[np.ndarray]:
     """The (..., zone, statistic) values of `arrays`, holding about `budget` bytes at once.
 
     The arrays share a grid, dims and chunks.
@@ -272,67 +269,72 @@ def _reduce(arrays, other, shape, fills, reducer, fractional, budget) -> list[np
     n = reducer.feature_count
     windows = reducer.windows()
     blocks = _blocks(arrays[0], windows)
-    # float32 in, float32 out (as xarray reduces), else float64: the result is a big part of
-    # the memory of a long season of many fields.
+    # Preserve float32 reductions when possible; integer statistics need float64 to
+    # preserve counts above 2**24 in the shared statistic axis.
     outs = [
         np.full(
             (*shape, n, len(stats)),
             np.nan,
-            np.float32 if a.dtype == np.float32 else np.float64,
+            np.float32
+            if a.dtype == np.float32 and not {"count", "variety"} & set(stats)
+            else np.float64,
         )
         for a in arrays
     ]
     everything = list(range(len(arrays)))
-    if other:
-        # Bytes held for one index of the first dim of each array: its largest read (a dask
-        # chunk is computed whole, so its full height and the array's width) and the zone values
-        # a sorted statistic keeps, about twice the largest strip's (zones open across a strip
-        # boundary).
-        def read_pixels(rows: slice, cols: slice) -> int:
-            if arrays[0].chunks is not None:
-                ends = np.cumsum(arrays[0].chunks[-2])
-                first = int(np.searchsorted(ends, rows.start, side="right"))
-                last = int(np.searchsorted(ends, rows.stop - 1, side="right"))
-                return int(ends[last] - (ends[first - 1] if first else 0)) * arrays[0].shape[-1]
-            return (rows.stop - rows.start) * (cols.stop - cols.start)
+    # Rust counts complete zones simultaneously open across strips, including overlaps.
+    kept = reducer.retained_bytes
 
-        largest = max((read_pixels(r, c) for r, c, _ in blocks), default=0)
-        kept = 2 * max((w * h for _, _, w, h in windows), default=0)
-        kept *= (16 if fractional else 8) * any(
-            s in _SORTED or s.startswith("quantile") for s in stats
+    def read_pixels(rows: slice, cols: slice) -> int:
+        """Count decoded pixels, including whole spatial chunks for Dask reads.
+
+        Args:
+            rows: Rows requested by the block.
+            cols: Columns requested by the block.
+
+        Returns:
+            The number of decoded pixels per spatial slice.
+        """
+        if arrays[0].chunks is not None:
+            ends = np.cumsum(arrays[0].chunks[-2])
+            first = int(np.searchsorted(ends, rows.start, side="right"))
+            last = int(np.searchsorted(ends, rows.stop - 1, side="right"))
+            return int(ends[last] - (ends[first - 1] if first else 0)) * arrays[0].shape[-1]
+        return (rows.stop - rows.start) * (cols.stop - cols.start)
+
+    largest = max((read_pixels(r, c) for r, c, _ in blocks), default=0)
+    per = math.prod(shape[1:]) if other else 1
+    pixels = [per * largest * a.dtype.itemsize for a in arrays]
+    size = [p + per * kept for p in pixels]
+    chunk = max(arrays[0].chunksizes.get(other[0]) or (1,)) if other and arrays[0].chunks else 1
+    # The next batch is read while one is reduced when two fit the budget.
+    ahead = bool(other) and 2 * max(size) * chunk <= budget
+    budget = budget // 2 if ahead else budget
+    if max(size) * chunk > budget:
+        v = size.index(max(size))
+        mib = 2**20
+        warnings.warn(
+            f"zonal_stats holds about {size[v] * chunk / mib:.0f} MiB for one chunk of "
+            f"{arrays[v].name!r}, more than batch_bytes ({budget / mib:.0f} MiB), "
+            f"{pixels[v] * chunk / mib:.0f} MiB of it pixels: smaller chunks hold fewer",
+            RuntimeWarning,
+            stacklevel=_outside_level(),
         )
-        per = math.prod(shape[1:])
-        pixels = [per * largest * a.dtype.itemsize for a in arrays]
-        size = [p + per * kept for p in pixels]
-        chunk = max(arrays[0].chunksizes.get(other[0]) or (1,)) if arrays[0].chunks else 1
-        # The next batch is read while one is reduced when two fit the budget.
-        ahead = 2 * max(size) * chunk <= budget
-        budget = budget // 2 if ahead else budget
-        if max(size) * chunk > budget:
-            v = size.index(max(size))
-            mib = 2**20
-            warnings.warn(
-                f"zonal_stats holds about {size[v] * chunk / mib:.0f} MiB for one chunk of "
-                f"{arrays[v].name!r}, more than batch_bytes ({budget / mib:.0f} MiB), "
-                f"{pixels[v] * chunk / mib:.0f} MiB of it pixels: smaller chunks hold fewer",
-                RuntimeWarning,
-                stacklevel=_outside_level(),
-            )
-        # Arrays read together: as many as a whole chunk of each fits the budget, at least one.
-        sets: list[list[int]] = [[]]
-        used = 0
-        for v in everything:
-            if sets[-1] and used + size[v] * chunk > budget:
-                sets, used = [*sets, []], 0
-            sets[-1].append(v)
-            used += size[v] * chunk
-        batches: list[tuple[list[int], tuple[int, int] | None]] = [
-            (vs, batch)
-            for vs in sets
-            for batch in _batches(arrays[0], other[0], sum(size[v] for v in vs), budget)
-        ]
-    else:
-        batches, ahead = [(everything, None)], False  # 2-D arrays are one batch
+    # Pack 2-D variables as well as cubes; a single variable/chunk always runs.
+    sets: list[list[int]] = [[]]
+    used = 0
+    for v in everything:
+        if sets[-1] and used + size[v] * chunk > budget:
+            sets, used = [*sets, []], 0
+        sets[-1].append(v)
+        used += size[v] * chunk
+    batches: list[tuple[list[int], tuple[int, int] | None]] = [
+        (vs, batch)
+        for vs in sets
+        for batch in (
+            _batches(arrays[0], other[0], sum(size[v] for v in vs), budget) if other else [None]
+        )
+    ]
 
     def read(vs: list, batch: tuple[int, int] | None, block: tuple) -> list:
         rows, cols, _ = block

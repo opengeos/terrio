@@ -1062,7 +1062,8 @@ class XRasterBase:
             raise TypeError(
                 f"{', '.join(sorted(unsupported))}: not available on arrays with dimensions "
                 "besides y and x, which take stats, all_touched, fractional, layer and "
-                "batch_bytes; reduce each 2-D slice for the others"
+                "batch_bytes; reduce each 2-D slice for the others (for a single band, use "
+                'da.squeeze("band", drop=True) to retain the Layer output)'
             )
         layer = _zonal.zones_layer(zones, self.crs, kwargs.pop("layer", None))
         return _zonal.zonal_cube(arrays, layer, **kwargs)
@@ -1912,7 +1913,8 @@ class TerrioArray(XRasterBase):
         row per zone, indexed by its Shapely geometry in the zones' CRS (written as the grid
         mapping, `.terrio.crs`), the array's other dimensions, and one column per statistic.
         The zones' attributes are coordinates along `geometry`. The values are float32 for
-        float32 data, float64 otherwise.
+        float32 data unless count or variety is requested; those results use float64
+        to preserve counts above 2**24 (exact through 2**53). Other data uses float64.
 
         A cube is reduced a few slices at a time (whole dask chunks of its first other
         dimension), holding about `batch_bytes`: the pixels read, the batch read ahead, and

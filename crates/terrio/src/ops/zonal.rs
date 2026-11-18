@@ -802,6 +802,7 @@ struct Reducer {
     fractional: bool,
     fids: Vec<u64>,
     windows: Vec<Window>,
+    strip_rows: usize,
 }
 
 impl Reducer {
@@ -847,12 +848,27 @@ impl ZonalReducer {
         let fids = zones.features.iter().map(|f| f.fid).collect();
         let strip_rows = strip_rows.unwrap_or_else(|| super::strips::small_strip_rows(cols, 1, std::mem::size_of::<f64>(), None));
         let windows = reduce::strip_windows(&index, strip_rows);
-        Ok(Self { inner: Arc::new(Reducer { index, stats: options.stats.clone(), fractional: options.fractional, fids, windows }) })
+        Ok(Self {
+            inner: Arc::new(Reducer { index, stats: options.stats.clone(), fractional: options.fractional, fids, windows, strip_rows }),
+        })
     }
 
     /// The windows to supply, in order.
     pub fn windows(&self) -> &[Window] {
         &self.inner.windows
+    }
+
+    /// Estimated peak bytes of retained zone values per stream, including overlapping zones.
+    ///
+    /// Zero for statistics that do not retain values. Uses f64 lists as a conservative bound
+    /// for integer histograms, and includes temporary bins, ranks and fractional sorting pairs.
+    /// Excludes input pixels, result columns, zone indexes and allocator overhead.
+    pub fn retained_bytes(&self) -> usize {
+        if !self.inner.stats.iter().any(|s| s.needs_values()) {
+            return 0;
+        }
+        let pixels = reduce::open_pixels_peak(&self.inner.index, self.inner.strip_rows, usize::MAX);
+        pixels.saturating_mul(32)
     }
 
     /// The number of features of the zone layer.

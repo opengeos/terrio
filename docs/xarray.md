@@ -145,23 +145,33 @@ too, so it no longer gives a `Layer` with `bands=`. Squeeze the dimension first
 
 - `geometry`: the zones' Shapely geometries, in their own CRS (written as the grid mapping), with
   the zones' attributes as coordinates along it. An attribute named like one of the result's
-  coordinates gets `_2`, `_3`...
+  coordinates or Dataset variables gets `_2`, `_3`... Duplicate zone geometries remain
+  separate rows with a non-unique geometry index; select by position to distinguish them.
 - Then the array's other dimensions, and `statistic`, one entry per statistic.
-- float32 for float32 data, float64 otherwise; NaN where a zone has no valid pixel.
+- float32 for float32 data unless `count` or `variety` is requested, then float64
+  for every statistic to preserve integer counts above 2**24 (exact through 2**53);
+  float64 for other input types. NaN where a zone has no valid pixel.
 - A Dataset gives one such variable per spatial variable, sharing `geometry`.
 
 Options: `stats`, `all_touched`, `fractional`, `layer` and `batch_bytes`. The cube is reduced a
 few slices at a time (whole dask chunks of its first other dimension), holding about
 `batch_bytes` (512 MiB by default): only the strips holding zone pixels are read, and each dask
 chunk is computed once. Variables of a Dataset on one grid are read in one dask computation.
-A chunk larger than `batch_bytes` warns.
+A chunk larger than `batch_bytes` warns. Sorted statistics budget the complete values of
+zones open at the same time,
+including overlapping zones, temporary bins, ranks and fractional sorting pairs.
+Input reads and retained values are estimates, excluding the result, zone index and
+allocator overhead; `batch_bytes` is not a hard process memory limit.
+The same budget applies to 2-D variables in mixed Datasets.
 
 Limits: the zones are rasterized once per grid and strip height, and their geometries held
-in memory; the result is held in memory (zones × slices × statistics); strips never cross a dask chunk edge, so chunks
+in memory; the result is held in memory (zones × slices × statistics); strips never cross a
+dask chunk edge, so chunks
 of very uneven heights (or a prime common height) give strips of a few rows, which reads the
 same data in more, smaller pieces. Weighted statistics are not available on cubes.
 
-Arrays of two or three dimensions are supported; dask arrays are computed first. Pixels masked
+The other raster operations support two or three dimensions and compute dask arrays first;
+`zonal_stats` also supports cubes with any number of dimensions. Pixels masked
 on read (`masked=True`) go back to terrio with the file's nodata value. Floating-point results
 come back masked, with the nodata value in the encoding.
 

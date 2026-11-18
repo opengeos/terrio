@@ -289,7 +289,7 @@ def test_zonal_stats_of_a_cube_matches_each_slice(files, cube, chunks):
     stats = ["count", "mean", "median"]
     out = (cube.chunk(chunks) if chunks else cube).terrio.zonal_stats(files["zones"], stats=stats)
     assert out.dims == ("geometry", "time", "statistic")
-    assert out.dtype == np.float32
+    assert out.dtype == np.float64
     assert out.statistic.values.tolist() == stats
     assert out.id.dims == ("geometry",) and out.id.values.tolist() == [0, 1, 2]
     assert out.terrio.crs == "EPSG:32611"
@@ -299,9 +299,7 @@ def test_zonal_stats_of_a_cube_matches_each_slice(files, cube, chunks):
         columns = cube.isel(time=i).terrio.zonal_stats(files["zones"], stats=stats).columns()
         for s in stats:
             expected = np.array([np.nan if v is None else v for v in columns[f"raster1_b1_{s}"]])
-            np.testing.assert_array_equal(
-                out.isel(time=i).sel(statistic=s).values, expected.astype(np.float32)
-            )
+            np.testing.assert_array_equal(out.isel(time=i).sel(statistic=s).values, expected)
 
 
 @pytest.mark.parametrize("chunks", [None, {"time": 1}, {"band": 1, "time": 2, "y": 7}])
@@ -491,3 +489,207 @@ def test_zonal_stats_of_a_dataset_names_attributes_alike_for_every_variable(file
     assert out["a"]["time_2"].dims == ("geometry",)
     assert out["dem"]["time_2"].dims == ("geometry",)
     assert "time" not in out["dem"].coords
+
+
+def test_zonal_stats_reserves_dataset_variable_names(files, cube):
+    """Keep a zone attribute whose name matches another result variable."""
+    zones = _zones_with_property(files, "b", "plot")
+    ds = xr.Dataset({"a": cube, "b": cube * 2})
+    out = ds.terrio.zonal_stats(zones, stats=["mean"])
+    assert set(out.data_vars) == {"a", "b"}
+    assert set(out.b_2.values) == {"plot"}
+    np.testing.assert_array_equal(out.b.values, out.a.values * 2)
+
+
+def test_zonal_stats_preserves_counts_above_float32_precision():
+    """Return an exact count above 2**24 from real float32 pixels."""
+    height, width = 4097, 4097
+    data = xr.DataArray(
+        np.broadcast_to(np.float32(1), (1, height, width)),
+        dims=("time", "y", "x"),
+        coords={"x": np.arange(width) + 0.5, "y": height - np.arange(height) - 0.5},
+    ).terrio.write_crs("EPSG:3857")
+    out = data.terrio.zonal_stats((0, 0, width, height), stats=["count", "mean"])
+    assert out.dtype == np.float64
+    assert out.sel(statistic="count").item() == height * width
+    assert out.sel(statistic="mean").item() == 1
+
+
+@pytest.mark.parametrize("fractional", [False, True])
+def test_zonal_stats_budgets_complete_overlapping_zones(files, cube, monkeypatch, fractional):
+    """Limit concurrent streams using complete retained zones, across many strips."""
+    from terrio.xarray import _zonal
+
+    monkeypatch.setattr(_zonal, "_STRIP_PIXELS", 3 * W)
+    bounds = cube.terrio.bounds()
+    zone = terrio.Layer.from_geojson(
+        {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {},
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [
+                            [
+                                [bounds[0], bounds[1]],
+                                [bounds[2], bounds[1]],
+                                [bounds[2], bounds[3]],
+                                [bounds[0], bounds[3]],
+                                [bounds[0], bounds[1]],
+                            ]
+                        ],
+                    },
+                }
+                for _ in range(2)
+            ],
+        },
+        crs="EPSG:32611",
+    )
+    expected = cube.terrio.zonal_stats(zone, stats=["median"], fractional=fractional)
+    real = _zonal._terrio.ZonalReducer
+    live, peak = 0, 0
+
+    class Stream:
+        """Count simultaneously retained streams around the real reducer."""
+
+        def __init__(self, wrapped):
+            """Record a live stream.
+
+            Args:
+                wrapped: The native stream to delegate to.
+            """
+            nonlocal live, peak
+            self.wrapped = wrapped
+            live += 1
+            peak = max(peak, live)
+
+        def add(self, *args):
+            """Reduce a window.
+
+            Args:
+                *args: Native window arguments.
+            """
+            return self.wrapped.add(*args)
+
+        def finish(self):
+            """Finish the stream and release its retained values.
+
+            Returns:
+                The native statistic columns.
+            """
+            nonlocal live
+            live -= 1
+            return self.wrapped.finish()
+
+    class Reducer:
+        """Delegate native reduction while observing peak stream count."""
+
+        def __init__(self, *args, **kwargs):
+            """Create the native reducer.
+
+            Args:
+                *args: Native positional arguments.
+                **kwargs: Native keyword arguments.
+            """
+            self.wrapped = real(*args, **kwargs)
+
+        def __getattr__(self, name):
+            """Read native metadata.
+
+            Args:
+                name: Attribute name.
+
+            Returns:
+                The native attribute value.
+            """
+            return getattr(self.wrapped, name)
+
+        def stream(self, fill):
+            """Observe one new native stream.
+
+            Args:
+                fill: The nodata value.
+
+            Returns:
+                A counted stream.
+            """
+            return Stream(self.wrapped.stream(fill))
+
+    monkeypatch.setattr(_zonal._terrio, "ZonalReducer", Reducer)
+    # One full pair of zones fits, two do not. The old two-strip estimate packs all times.
+    held = H * W * 2 * 32
+    got = cube.terrio.zonal_stats(
+        zone, stats=["median"], fractional=fractional, batch_bytes=held + 3 * W * 4
+    )
+    assert peak == 1
+    xr.testing.assert_identical(got, expected)
+
+
+def test_zonal_stats_budgets_2d_variables_in_mixed_datasets(files, cube, monkeypatch):
+    """Pack spatial-only variables separately when their reads exceed the budget."""
+    import dask
+
+    data = cube.chunk(time=1, y=H, x=W)
+    ds = xr.Dataset({"cube": data, **{f"v{i}": data.isel(time=0, drop=True) + i for i in range(8)}})
+    expected = ds.terrio.zonal_stats(files["zones"], stats=["mean"])
+    real = dask.compute
+    calls = []
+
+    def compute(*args, **kwargs):
+        """Observe the bytes requested together.
+
+        Args:
+            *args: Dask arrays.
+            **kwargs: Compute options.
+
+        Returns:
+            Computed arrays.
+        """
+        calls.append(sum(a.nbytes for a in args))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(dask, "compute", compute)
+    budget = 2 * H * W * data.dtype.itemsize
+    got = ds.terrio.zonal_stats(files["zones"], stats=["mean"], batch_bytes=budget)
+    assert calls and max(calls) <= budget
+    xr.testing.assert_identical(got, expected)
+    with pytest.warns(RuntimeWarning, match="more than batch_bytes"):
+        ds.terrio.zonal_stats(files["zones"], stats=["mean"], batch_bytes=1)
+
+
+def test_zonal_stats_reads_only_lazy_zone_windows(files, monkeypatch, record_property):
+    """Measure decoded bytes from the lazy backend for a zone covering part of a grid."""
+    from terrio.xarray import _io, _zonal
+
+    real = _io._Source.read
+    reads = []
+
+    def read(source, bands, window):
+        """Measure a native window read.
+
+        Args:
+            source: The lazy raster source.
+            bands: The requested bands.
+            window: Requested row and column intervals.
+
+        Returns:
+            The native pixel array.
+        """
+        values = real(source, bands, window)
+        reads.append(values.nbytes)
+        return values
+
+    monkeypatch.setattr(_io._Source, "read", read)
+    monkeypatch.setattr(_zonal, "_STRIP_PIXELS", 3 * W)
+    data = txr.open_rasterio(files["dem"])
+    # Keep the length-one band dimension so it uses the cube reducer, with no eager concat.
+    bounds = (500300, 4099400, 500600, 4099700)
+    out = data.terrio.zonal_stats(bounds, stats=["mean"])
+    assert np.isfinite(out.values).all()
+    record_property("decoded_bytes", sum(reads))
+    record_property("full_grid_bytes", H * W * data.dtype.itemsize)
+    record_property("window_reads", len(reads))
+    assert reads and sum(reads) <= 4 * 10 * 12
+    assert sum(reads) < H * W * data.dtype.itemsize

@@ -2754,6 +2754,14 @@ class ZonalReducer:
         """
         ...
     @property
+    def retained_bytes(self) -> int:
+        """Estimate peak retained bytes per stream, including overlaps and fractional sorting.
+
+        Returns:
+            int: Retained value storage, excluding pixels, results, indexes and allocator overhead.
+        """
+        ...
+    @property
     def feature_count(self) -> int: ...
     @property
     def stats(self) -> list[str]: ...

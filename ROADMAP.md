@@ -569,6 +569,10 @@ Python:
       `polygonize`, `contour`, `footprint` and `zonal_stats` (a `terrio.Layer`), and
       `terrio.xarray.rasterize` on an array's grid; the same pixels as the terrio functions on
       the array written to a file.
+- [ ] Move xarray zonal cube strip planning, batching, read-ahead and chunk accounting
+      onto the shared Rust zonal cube engine from [#1071](https://github.com/opengeos/terrio/pull/1071),
+      preserving the xarray dimensions, coordinates, lazy reads and byte-budget behavior
+      introduced in [#1068](https://github.com/opengeos/terrio/pull/1068).
 - [x] Wheels with the GDAL backend as an optional extra, for the formats terrio doesn't read itself.
       Done: the Python package's `gdal` feature, built from source against an installed GDAL
       (`maturin build --features gdal`).
