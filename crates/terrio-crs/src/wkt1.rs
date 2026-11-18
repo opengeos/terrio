@@ -124,11 +124,7 @@ impl Node {
         if !n.name()?.eq_ignore_ascii_case("EPSG") {
             return None;
         }
-        match n.args.get(1)? {
-            Arg::Num(v) => Some(*v as u32),
-            Arg::Str(s) => s.trim().parse().ok(),
-            _ => None,
-        }
+        n.code()
     }
 }
 

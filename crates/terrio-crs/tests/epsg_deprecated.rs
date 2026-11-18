@@ -220,6 +220,28 @@ fn geokeys_of_deprecated_codes_read_as_their_own_definition() {
     assert!((x - 83_503.126_2).abs() < 1e-3 && (y - 7_707_590.251_2).abs() < 1e-3, "({x}, {y})");
 }
 
+/// EPSG:6986 (IGD05/12, 3D) is written to GeoKeys as PROJ's WKT 2 in an ESRI PE citation, whose
+/// root `ID` comes before a `REMARK`: read back, it is EPSG:6986 again and places the case's point
+/// where PROJ 9.9.0 does (`data/epsg_deprecated.json`; 1e-8°).
+#[test]
+fn igd05_12_reads_back_from_geokeys_as_its_code() {
+    offline();
+    let case = cases().into_iter().find(|c| c["code"] == 6986).unwrap();
+    let crs = SpatialRef::from_epsg(6986).unwrap();
+    let keys = crs.to_geokeys().unwrap();
+    assert!(keys.ascii.iter().any(|(_, a)| a.contains("ESRI PE String") && a.contains("REMARK[")), "{keys:?}");
+    let tags = keys.encode().unwrap();
+    let back = SpatialRef::from_geokeys(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).unwrap();
+    assert_eq!(back.epsg, Some(6986), "{back:?}");
+    let (lon, lat) = (case["point"][0].as_f64().unwrap(), case["point"][1].as_f64().unwrap());
+    let (px, py) = (case["proj"][0].as_f64().unwrap(), case["proj"][1].as_f64().unwrap());
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    for c in [&crs, &back] {
+        let (x, y) = Transformer::new(&wgs84, c).and_then(|t| t.transform(lon, lat)).unwrap();
+        assert!((x - px).abs() < 1e-8 && (y - py).abs() < 1e-8, "({x}, {y}), PROJ ({px}, {py})");
+    }
+}
+
 /// GeoKeys giving a deprecated projected code read as GDAL 3.12 reads them by default: a single
 /// replacement's CRS (EPSG:4855 as 5105, 3752, which terrio does not carry, as 3994), any other
 /// code its own (EPSG:2191, two replacements). GDAL 3.12.2 reads a GeoTIFF keyed 4855 as EPSG:5105

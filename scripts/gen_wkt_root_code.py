@@ -341,6 +341,31 @@ def main():
             (10.0, 50.0),
         ),
         (
+            "WGS 84 on the datum unknown with its code after an ESRI code that does not exist",
+            unknown_wkt2('ID["ESRI",4326],ID["EPSG",4326]'),
+            (10.0, 50.0),
+        ),
+        (
+            "WGS 84 on the datum unknown with its code after an EPSG code that does not exist",
+            unknown_wkt2('ID["EPSG",1],ID["EPSG",4326]'),
+            (10.0, 50.0),
+        ),
+        (
+            "WGS 84 on the datum unknown with its code after ESRI:102100",
+            unknown_wkt2('ID["ESRI",102100],ID["EPSG",4326]'),
+            (10.0, 50.0),
+        ),
+        (
+            "WGS 84 on the datum unknown with its code after a projected CRS's",
+            unknown_wkt2('ID["EPSG",27700],ID["EPSG",4326]'),
+            (10.0, 50.0),
+        ),
+        (
+            "WGS 84 on the datum unknown with its code after ESRI:104000",
+            unknown_wkt2('ID["ESRI",104000],ID["EPSG",4326]'),
+            (10.0, 50.0),
+        ),
+        (
             "WGS 84 on the datum unknown declaring OSGB36 before its code",
             unknown_wkt2('ID["EPSG",4277],ID["EPSG",4326]'),
             (10.0, 50.0),

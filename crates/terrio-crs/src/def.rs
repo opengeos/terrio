@@ -606,8 +606,8 @@ impl Def {
                 d.bound = bound.bound;
             }
             // Not the registry's own WKT, nor one with the CRS's ID, which PROJ resolves. Nor one
-            // with a PROJ4 extension,
-            // which GDAL hands PROJ as its PROJ string, so that no name is resolved.
+            // with a PROJ4 extension, which GDAL hands PROJ as its PROJ string, so that no name is
+            // resolved.
             if s.proj4.is_none()
                 && s.epsg.is_some()
                 && d.geog.is_some()
