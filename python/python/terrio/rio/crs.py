@@ -544,10 +544,11 @@ class CRS(Mapping[str, Any]):
         code = self._info.get("epsg")
         # A compound reference (`urn:ogc:def:crs,crs:EPSG::2154,crs:EPSG::5720`) keeps its
         # components' WKT; its code is the compound's, as PROJ identifies it and a layer reports.
-        compound = self.wkt.lstrip().upper().startswith(("COMPD_CS", "COMPOUNDCRS"))
-        if code is None and (self._info.get("proj4") or compound) and self.wkt:
+        wkt = self.wkt
+        compound = wkt.lstrip().upper().startswith(("COMPD_CS", "COMPOUNDCRS"))
+        if code is None and (self._info.get("proj4") or compound) and wkt:
             try:
-                code = _terrio.crs_info(self.wkt).get("epsg")
+                code = _terrio.crs_info(wkt).get("epsg")
             except Exception:
                 code = None
         return int(code) if code is not None else None
@@ -889,12 +890,13 @@ class CRS(Mapping[str, Any]):
         return bool(da) and da == db
 
     def __hash__(self) -> int:
-        """The hash of the WKT.
+        """The hash of the EPSG code, else of the WKT, as `__eq__` compares them.
 
         Returns:
             int: The hash.
         """
-        return hash(self.to_wkt())
+        code = self.to_epsg()
+        return hash(("EPSG", code)) if code is not None else hash(self.to_wkt())
 
     def __bool__(self) -> bool:
         """Whether the CRS is defined.

@@ -58,6 +58,9 @@ def test_compound_crs_and_layer_argument_keep_components(horizontal, vertical, p
     actual = CRS.from_user_input(name)
     compound = COMPOUND.get((horizontal, vertical))
     assert actual.to_epsg() == (int(compound.split(":")[1]) if compound else None)
+    if compound:
+        assert actual == CRS.from_user_input(compound)
+        assert hash(actual) == hash(CRS.from_user_input(compound))
     assert actual.to_wkt() == expected.to_wkt()
     assert actual.to_dict(projjson=True)["type"] == "CompoundCRS"
     layer = terrio.Layer.from_geojson(
