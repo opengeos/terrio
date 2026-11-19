@@ -2068,6 +2068,7 @@ impl GeoTiffWriter {
                         .len()
                         .checked_mul(writer.data_type.size_bytes())
                         .and_then(|n| n.checked_add(build.mask.capacity()))
+                        .and_then(|n| n.checked_add(build.held()))
                         .and_then(|n| n.checked_add(total))
                 });
                 let retained = retained.and_then(|retained| {
@@ -2638,18 +2639,35 @@ struct CogMask {
 type CogImages = (Image, Option<Image>);
 
 /// An overview level of a [`CogWriter`] being computed from the level it is resampled from: the
-/// rows of that level its next blocks need (`buf_rows` rows from `buf_row0`, band after band),
-/// and its next row.
+/// rows of that level its next blocks need (`buf_rows` rows from `buf_row0`, band after band;
+/// shared with the block rows being computed from them), and its next row.
 struct CogBuild {
     level: usize,
     src: usize,
     plan: gdal_overview::Plan,
-    buf: RasterData,
+    buf: std::sync::Arc<RasterData>,
     buf_row0: usize,
     buf_rows: usize,
     next_y: usize,
     mask: Vec<u8>,
     mask_plan: gdal_overview::Plan,
+    /// Block rows being computed on the thread pool (a COG with a mask's), in order: their rows,
+    /// the bytes their job holds, and the block row (and its mask) to come.
+    #[cfg(not(target_family = "wasm"))]
+    in_flight: std::collections::VecDeque<(usize, usize, std::sync::mpsc::Receiver<OverviewRows>)>,
+}
+
+/// An overview block row: its rows of every band, and of its mask when the COG has one.
+type OverviewRows = (RasterData, Option<Vec<u8>>);
+
+impl CogBuild {
+    /// The bytes held by the block rows being computed: the rows each is resampled from.
+    fn held(&self) -> usize {
+        #[cfg(not(target_family = "wasm"))]
+        return self.in_flight.iter().map(|(_, held, _)| held).sum();
+        #[cfg(target_family = "wasm")]
+        0
+    }
 }
 
 /// A COG written a few rows at a time, from the top, so that the raster is never held whole. Each
@@ -2686,6 +2704,13 @@ pub(crate) struct CogWriter {
 #[cfg(not(target_family = "wasm"))]
 const COG_IN_FLIGHT: usize = 3;
 
+/// The most block rows of one overview level a [`CogWriter`] with a mask computes at once on the
+/// thread pool, while the calling thread gives the next rows and the other levels compute theirs.
+/// Each holds the rows it is resampled from and its working buffers, which more at once would
+/// multiply for little time saved.
+#[cfg(not(target_family = "wasm"))]
+const COG_BLOCK_ROWS_IN_FLIGHT: usize = 1;
+
 impl CogWriter {
     /// Creates the file, for a raster described by `raster` (its pixels are not read). `opts` are
     /// a COG's. `opts.mask` enables a mask supplied with each row slab.
@@ -2707,9 +2732,21 @@ impl CogWriter {
                 // As GDAL does, each overview is computed from the previous one when it is larger.
                 let src = if sizes[level - 1].0 > sizes[level].0 { level - 1 } else { 0 };
                 let plan = gdal_overview::Plan::new(method, sizes[src], sizes[level], raster.bands, block, raster.data_type);
-                let buf = RasterData::new_filled(raster.data_type, 0, 0.0);
+                let buf = std::sync::Arc::new(RasterData::new_filled(raster.data_type, 0, 0.0));
                 let mask_plan = gdal_overview::Plan::new(method, sizes[src], sizes[level], 1, block, DataType::U8);
-                CogBuild { level, src, plan, buf, buf_row0: 0, buf_rows: 0, next_y: 0, mask: Vec::new(), mask_plan }
+                CogBuild {
+                    level,
+                    src,
+                    plan,
+                    buf,
+                    buf_row0: 0,
+                    buf_rows: 0,
+                    next_y: 0,
+                    mask: Vec::new(),
+                    mask_plan,
+                    #[cfg(not(target_family = "wasm"))]
+                    in_flight: Default::default(),
+                }
             })
             .collect();
         let dir = spool_dir(path);
@@ -2788,11 +2825,20 @@ impl CogWriter {
         }
         // As the whole writer reads a mask: any nonzero value is valid, weighted as 255.
         let mask: Option<Vec<u8>> = mask.map(|m| m.into_iter().map(|v| if v != 0 { 255 } else { 0 }).collect());
-        if rows > 0 { self.push(0, data, rows, mask) } else { Ok(()) }
+        if rows > 0 {
+            self.push(0, data, rows, mask)?;
+        }
+        // The overview block rows computed meanwhile go on to their levels.
+        #[cfg(not(target_family = "wasm"))]
+        for b in 0..self.builds.len() {
+            while self.land_block_row(b, false)? {}
+        }
+        Ok(())
     }
 
     /// Adds `rows` rows to level `i`: resampled into the levels computed from it as soon as their
-    /// next blocks' rows are in, and compressed by rows of tiles.
+    /// next blocks' rows are in (with a mask, on the thread pool, alongside the next rows and the
+    /// other levels' block rows, each added to its level in turn), and compressed by rows of tiles.
     fn push(&mut self, i: usize, data: RasterData, rows: usize, mask: Option<Vec<u8>>) -> Result<()> {
         let bands = self.bands;
         let (cols, done) = {
@@ -2806,7 +2852,8 @@ impl CogWriter {
                 continue;
             }
             let bd = &mut self.builds[b];
-            bd.buf = if bd.buf_rows == 0 { data.clone() } else { append_rows(&bd.buf, bd.buf_rows, &data, rows, cols, bands)? };
+            let appended = if bd.buf_rows == 0 { data.clone() } else { append_rows(&bd.buf, bd.buf_rows, &data, rows, cols, bands)? };
+            bd.buf = std::sync::Arc::new(appended);
             if let Some(mask) = &mask {
                 bd.mask.extend_from_slice(mask);
             }
@@ -2820,51 +2867,47 @@ impl CogWriter {
                 if need.end > received && !done {
                     break;
                 }
-                let weights = gdal_overview::Weights {
-                    alpha: self.alpha.0,
-                    alpha_masks: self.alpha.1,
-                    mask: mask.as_ref().map(|_| bd.mask.as_slice()),
+                let (held, compute) = self.block_row(b, mask.is_some());
+                // With a mask, a block row is about three times the work (the image's weighted by the
+                // mask, and the mask's own): on the thread pool, while the next rows are given. Without
+                // one, the calling thread keeps up with it here, before its rows are dropped, as before.
+                #[cfg(not(target_family = "wasm"))]
+                let here = if mask.is_some() {
+                    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+                    crate::par::spawn(move || {
+                        let _ = tx.send(compute());
+                    });
+                    self.builds[b].in_flight.push_back((n, held, rx));
+                    None
+                } else {
+                    Some(compute())
                 };
-                let out = gdal_overview::block_row(&bd.plan, &bd.buf, bd.buf_row0, bd.buf_rows, bands, self.nodata, weights, bd.next_y);
-                let next_mask = mask.as_ref().map(|_| {
-                    let bd = &mut self.builds[b];
-                    let own = !self.mask_without_dataset || bd.src == 0;
-                    let all_valid = if own { Vec::new() } else { vec![255; bd.mask.len()] };
-                    // Lent to `block_row` as `RasterData`, then put back, rather than copied per block row.
-                    let buffered = RasterData::U8(std::mem::take(&mut bd.mask));
-                    let weights = gdal_overview::Weights {
-                        alpha: own.then_some(0),
-                        alpha_masks: false,
-                        mask: (!own).then_some(all_valid.as_slice()),
-                    };
-                    let RasterData::U8(mut values) =
-                        gdal_overview::block_row(&bd.mask_plan, &buffered, bd.buf_row0, bd.buf_rows, 1, None, weights, bd.next_y)
-                    else {
-                        unreachable!("a Byte mask")
-                    };
-                    if let RasterData::U8(buffered) = buffered {
-                        bd.mask = buffered;
-                    }
-                    if !self.mask_without_dataset {
-                        values.iter_mut().for_each(|v| *v = if *v != 0 { 255 } else { 0 });
-                    }
-                    values
-                });
+                #[cfg(target_family = "wasm")]
+                let here = {
+                    let _ = held;
+                    Some(compute())
+                };
                 let bd = &mut self.builds[b];
                 bd.next_y += n;
                 // The rows no later block reads.
                 let keep = bd.plan.first_row(bd.next_y).clamp(bd.buf_row0, bd.buf_row0 + bd.buf_rows);
                 if keep > bd.buf_row0 {
                     let drop = keep - bd.buf_row0;
-                    bd.buf = slice_rows(&bd.buf, bd.buf_rows, drop..bd.buf_rows, cols, bands);
+                    bd.buf = std::sync::Arc::new(slice_rows(&bd.buf, bd.buf_rows, drop..bd.buf_rows, cols, bands));
                     if mask.is_some() {
                         bd.mask.drain(..drop * cols);
                     }
                     bd.buf_rows -= drop;
                     bd.buf_row0 = keep;
                 }
-                let level = bd.level;
-                self.push(level, out, n, next_mask)?;
+                if let Some((out, next_mask)) = here {
+                    let level = self.builds[b].level;
+                    self.push(level, out, n, next_mask)?;
+                }
+                #[cfg(not(target_family = "wasm"))]
+                while self.builds[b].in_flight.len() > COG_BLOCK_ROWS_IN_FLIGHT {
+                    self.land_block_row(b, true)?;
+                }
             }
         }
         // Whole rows of tiles, and the level's last rows.
@@ -2894,6 +2937,72 @@ impl CogWriter {
             self.compress(i, slab, ready, mask)?;
         }
         Ok(())
+    }
+
+    /// The next block row of build `b` as a job, from the rows the build holds (shared) and a copy
+    /// of their mask: the bytes the job holds, and the job, which computes the block row and, when
+    /// `masked`, the mask's, side by side, as `push` computed them.
+    fn block_row(&self, b: usize, masked: bool) -> (usize, impl FnOnce() -> OverviewRows + Send + 'static) {
+        let bd = &self.builds[b];
+        let (plan, mask_plan) = (bd.plan.clone(), bd.mask_plan.clone());
+        let (buf, row0, rows, y) = (bd.buf.clone(), bd.buf_row0, bd.buf_rows, bd.next_y);
+        let mask = masked.then(|| RasterData::U8(bd.mask.clone()));
+        let (bands, nodata, alpha, mask_without_dataset) = (self.bands, self.nodata, self.alpha, self.mask_without_dataset);
+        let own = !mask_without_dataset || bd.src == 0;
+        let held = buf.len() * self.data_type.size_bytes() + if masked { bd.mask.len() } else { 0 };
+        let compute = move || {
+            let values = match &mask {
+                Some(RasterData::U8(values)) => Some(values.as_slice()),
+                _ => None,
+            };
+            let all_valid = if own { Vec::new() } else { vec![255; values.map_or(0, <[u8]>::len)] };
+            let mut parts = crate::par::map_range(1 + usize::from(values.is_some()), |k| match (k, &mask) {
+                (0, _) => {
+                    let weights = gdal_overview::Weights { alpha: alpha.0, alpha_masks: alpha.1, mask: values };
+                    gdal_overview::block_row(&plan, &buf, row0, rows, bands, nodata, weights, y)
+                }
+                (_, Some(m)) => {
+                    let weights = gdal_overview::Weights {
+                        alpha: own.then_some(0),
+                        alpha_masks: false,
+                        mask: (!own).then_some(all_valid.as_slice()),
+                    };
+                    gdal_overview::block_row(&mask_plan, m, row0, rows, 1, None, weights, y)
+                }
+                (_, None) => unreachable!("a mask's block row without a mask"),
+            });
+            let next_mask = (parts.len() == 2).then(|| {
+                let Some(RasterData::U8(mut values)) = parts.pop() else { unreachable!("a Byte mask") };
+                if !mask_without_dataset {
+                    values.iter_mut().for_each(|v| *v = if *v != 0 { 255 } else { 0 });
+                }
+                values
+            });
+            let Some(out) = parts.pop() else { unreachable!("a block row") };
+            (out, next_mask)
+        };
+        (held, compute)
+    }
+
+    /// Adds the oldest block row of build `b` being computed to its level, waiting for it when
+    /// `wait`; whether one was added.
+    #[cfg(not(target_family = "wasm"))]
+    fn land_block_row(&mut self, b: usize, wait: bool) -> Result<bool> {
+        let Some((_, _, rx)) = self.builds[b].in_flight.front() else { return Ok(false) };
+        let stopped = || Error::InvalidData("a COG overview computation stopped".into());
+        let (out, next_mask) = if wait {
+            rx.recv().map_err(|_| stopped())?
+        } else {
+            match rx.try_recv() {
+                Ok(rows) => rows,
+                Err(std::sync::mpsc::TryRecvError::Empty) => return Ok(false),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => return Err(stopped()),
+            }
+        };
+        let Some((n, _, _)) = self.builds[b].in_flight.pop_front() else { return Ok(false) };
+        let level = self.builds[b].level;
+        self.push(level, out, n, next_mask)?;
+        Ok(true)
     }
 
     /// Compresses rows of tiles of level `i` (in parallel, on the thread pool, while the next rows
@@ -2972,6 +3081,11 @@ impl CogWriter {
         let (got, rows) = (self.levels[0].received, self.levels[0].rows);
         if got != rows {
             return Err(Error::InvalidArgument(format!("{got} rows written of {rows}")));
+        }
+        // The last block rows of each level, which give the next level its last rows.
+        #[cfg(not(target_family = "wasm"))]
+        for b in 0..self.builds.len() {
+            while self.land_block_row(b, true)? {}
         }
         #[cfg(not(target_family = "wasm"))]
         while !self.in_flight.is_empty() {
@@ -3610,6 +3724,42 @@ mod tests {
             writer.finish().unwrap();
             assert_eq!(std::fs::read(path).unwrap(), encode(&raster, &opts).unwrap(), "{method:?}");
         }
+    }
+
+    /// The rows the overview block rows of a COG with a mask being computed on the thread pool hold
+    /// count in the memory its next rows are checked against. Nothing else shows it: without them
+    /// the check passes.
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn cog_block_rows_being_computed_count_in_the_memory_check() {
+        fn in_flight(w: &mut GeoTiffWriter) -> &mut std::collections::VecDeque<(usize, usize, std::sync::mpsc::Receiver<OverviewRows>)> {
+            match &mut w.inner {
+                RowWriter::Cog(c) => &mut c.get_mut().unwrap().builds[0].in_flight,
+                RowWriter::Tiff(_) => unreachable!("a COG written in rows"),
+            }
+        }
+        let raster = overview_fixture(1, DataType::U8, RasterData::U8((0..65 * 35).map(|i| (i % 251) as u8).collect()));
+        let mut header = crate::RasterDataset::new(raster.clone(), false);
+        header.raster.data = RasterData::U8(Vec::new());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("held.tif");
+        let options = crate::RasterWriteOptions {
+            driver: Some(crate::formats::RasterDriver::Cog),
+            tile_size: Some(16),
+            mask: Some(Vec::new()),
+            ..Default::default()
+        };
+        let valid = vec![255u8; 65 * 35];
+        let mut w = GeoTiffWriter::create(path.to_str().unwrap(), &header, &options).unwrap();
+        w.write_rows(&slice_rows(&raster.data, 35, 0..16, 65, 1), 16, Some(&valid[..65 * 16])).unwrap();
+        // A block row holding more than the address space, whose job is gone (nothing waits for it).
+        let (_, rx) = std::sync::mpsc::sync_channel(1);
+        in_flight(&mut w).push_back((0, usize::MAX / 2, rx));
+        let rest = slice_rows(&raster.data, 35, 16..35, 65, 1);
+        assert!(matches!(w.write_rows(&rest, 19, Some(&valid[65 * 16..])), Err(Error::ResourceLimit(_))));
+        in_flight(&mut w).pop_back();
+        w.write_rows(&rest, 19, Some(&valid[65 * 16..])).unwrap();
+        w.finish().unwrap();
     }
 
     /// A COG's chunks wait next to the output, on its drive, not in the system's temporary
