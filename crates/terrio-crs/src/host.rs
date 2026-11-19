@@ -75,6 +75,7 @@ pub(crate) fn before_lock() {
 pub fn hold_for_fork(held: &mut Vec<Box<dyn std::any::Any>>) {
     crate::grid::hold_for_fork(held);
     crate::def::hold_for_fork(held);
+    crate::parsed::hold_for_fork(held);
     #[cfg(remote)]
     crate::network::hold_for_fork(held);
 }

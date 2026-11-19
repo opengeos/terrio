@@ -105,7 +105,7 @@ pub(crate) fn declared(wkt: &str) -> Option<u32> {
     if !wkt.to_ascii_uppercase().contains("\"IAU") {
         return None;
     }
-    let root = wkt1::parse(wkt)?;
+    let root = crate::parsed::tree(wkt)?;
     declared_node(&root)
 }
 
@@ -133,7 +133,7 @@ pub(crate) fn identify(wkt: &str, proj: Option<&str>) -> Option<u32> {
     if !wkt.to_ascii_uppercase().contains("\"IAU") {
         return None;
     }
-    let mut root = wkt1::parse(wkt)?;
+    let mut root = crate::parsed::tree(wkt)?.as_ref().clone();
     let code = declared_node(&root)?;
     let entry = get(code)?;
     if proj.is_some_and(|p| p != entry.proj) {
@@ -147,7 +147,7 @@ pub(crate) fn identify(wkt: &str, proj: Option<&str>) -> Option<u32> {
     };
     remove_root_id(&mut root);
     let canonical = entry.normalized_wkt.get_or_init(|| {
-        let mut root = wkt1::parse(&entry.wkt)?;
+        let mut root = crate::parsed::tree(&entry.wkt)?.as_ref().clone();
         remove_root_id(&mut root);
         Some(root)
     });

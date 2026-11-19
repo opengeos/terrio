@@ -210,7 +210,7 @@ pub(crate) fn datum_ellps(name: &str) -> Option<&'static str> {
 
 /// The semi-major axis and inverse flattening of a WKT 1's `SPHEROID` (of its geographic CRS).
 fn wkt_spheroid(w: &str) -> Option<(f64, f64)> {
-    let root = wkt1::parse(w)?;
+    let root = crate::parsed::tree(w)?;
     let geodetic = ["GEOGCS", "GEOCCS"].iter().any(|k| root.key.eq_ignore_ascii_case(k));
     let geog = if geodetic { &root } else { root.child("GEOGCS")? };
     geog.child("DATUM")?.child("SPHEROID")?.ellipsoid()
@@ -429,7 +429,7 @@ struct Memo {
 
 /// The keys of the memo's hash, drawn once per process. Drawn after the host's `before_lock`,
 /// and by [`hold_for_fork`] before a fork, so that no child starts while they are being drawn.
-fn memo_keys() -> &'static std::collections::hash_map::RandomState {
+pub(crate) fn memo_keys() -> &'static std::collections::hash_map::RandomState {
     MEMO_KEYS.get().unwrap_or_else(|| {
         crate::host::before_lock();
         MEMO_KEYS.get_or_init(Default::default)
@@ -653,7 +653,7 @@ impl Def {
             }
             // A CRS identifier must not override an edited datum definition.
             let datum_node = |w: &str| {
-                let root = super::wkt1::parse(w)?;
+                let root = crate::parsed::tree(w)?;
                 root.geodetic_base().unwrap_or(&root).datum().cloned()
             };
             let base = super::iau::get(entry.base).ok_or_else(|| Error::Crs(format!("unknown IAU base CRS {}", entry.base)))?;
@@ -1208,7 +1208,7 @@ impl Def {
                 Err(_) => return None,
             }
         }
-        let root = wkt1::parse(w)?;
+        let root = crate::parsed::tree(w)?;
         let c = if wkt2::handles(&root) { wkt2::to_proj(&root).ok()? } else { wkt1::to_proj(&root)? };
         Self::from_proj(&c.proj).ok()
     }
@@ -1309,7 +1309,7 @@ impl Def {
         }
         // Text the WKT reader refuses (not WKT, nested deeper or longer than GDAL reads) is not
         // handed to wbprojection's parser either, whose recursion has no bound.
-        let root = wkt1::parse(w).ok_or_else(|| Error::Crs("not a WKT definition GDAL reads".into()))?;
+        let root = crate::parsed::tree(w).ok_or_else(|| Error::Crs("not a WKT definition GDAL reads".into()))?;
         // Engineering roots carry metadata, not an Earth projection. Do not send their IDs
         // through wbprojection's EPSG builder; its large frame can exhaust a WASM warp stack.
         if root.is(keywords::ENGINEERING_CRS) {
@@ -1855,7 +1855,7 @@ impl Def {
                         && self.datum == f.datum
                 })
             };
-            let r = wkt1::parse(w).and_then(|root| proj_resolution(&root, code, self.geog, &alike));
+            let r = crate::parsed::tree(w).and_then(|root| proj_resolution(&root, code, self.geog, &alike));
             let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
             let seen = seen.get_or_insert_with(Default::default);
             // At most 1 MiB of WKT text kept.
@@ -1902,7 +1902,7 @@ fn registered_axes(code: u32) -> Option<Vec<String>> {
     let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
     seen.get_or_insert_with(Default::default)
         .entry(code)
-        .or_insert_with(|| epsg::get(code).and_then(|e| wkt1::parse(&e.wkt)).map(|r| axis_directions(&r, false)))
+        .or_insert_with(|| epsg::get(code).and_then(|e| crate::parsed::tree(&e.wkt)).map(|r| axis_directions(&r, false)))
         .clone()
 }
 
@@ -2051,12 +2051,12 @@ fn datum_geoid_grids(root: &wkt1::Node) -> Option<String> {
 /// name, with that code's geoid models; else its root's grids, as terrio read them before (PROJ
 /// ignores them, and identifies the CRS by its name).
 fn code_and_grids(w: &str) -> (Option<u32>, Option<String>) {
-    let root = wkt1::parse(w);
-    if let Some(grids) = root.as_ref().and_then(datum_geoid_grids) {
+    let root = crate::parsed::tree(w);
+    if let Some(grids) = root.as_deref().and_then(datum_geoid_grids) {
         return (None, Some(grids));
     }
-    let code = code_of(w, root.as_ref());
-    let grids = if code.is_none() { root.as_ref().and_then(grids_extension) } else { None };
+    let code = code_of(w, root.as_deref());
+    let grids = if code.is_none() { root.as_deref().and_then(grids_extension) } else { None };
     (code, grids)
 }
 
@@ -2122,7 +2122,7 @@ pub(crate) fn is_bound_crs(w: &str) -> bool {
 
 /// The `TOWGS84` parameters of a WKT 1 definition, when they shift.
 fn wkt_towgs84(w: &str) -> Option<Vec<f64>> {
-    let root = wkt1::parse(w)?;
+    let root = crate::parsed::tree(w)?;
     let geogcs =
         if root.key.eq_ignore_ascii_case("GEOGCS") || root.key.eq_ignore_ascii_case("GEOCCS") { &root } else { root.child("GEOGCS")? };
     let t = geogcs.child("DATUM")?.child("TOWGS84")?;
@@ -2219,7 +2219,7 @@ fn geogcs_text(w: &str) -> Option<&str> {
 /// 9.8.1 takes it) or last `LENGTHUNIT` (WKT 2).
 #[cfg(feature = "wbprojection-fallback")]
 pub(crate) fn wkt_linear_unit(w: &str) -> Option<f64> {
-    let root = wkt1::parse(w)?;
+    let root = crate::parsed::tree(w)?;
     if let Some(u) = root.children("UNIT").next().or_else(|| root.children("LENGTHUNIT").last()) {
         return u.num(1);
     }
