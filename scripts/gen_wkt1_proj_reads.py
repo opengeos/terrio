@@ -183,6 +183,15 @@ READ = [
         (-79.0, 44.0),
     ),
     ("Hotine_Oblique_Mercator at 90° and 0°", hotine_a(0), (-79.0, 44.0)),
+    (
+        "Hotine_Oblique_Mercator_Azimuth_Natural_Origin, ESRI's name, at 90°",
+        f'PROJCS["h",{nad27()},PROJECTION["Hotine_Oblique_Mercator_Azimuth_Natural_Origin"],'
+        'PARAMETER["False_Easting",500000],PARAMETER["False_Northing",200000],'
+        'PARAMETER["Scale_Factor",0.9999],PARAMETER["Azimuth",90],'
+        'PARAMETER["Longitude_Of_Center",-80],PARAMETER["Latitude_Of_Center",43],'
+        'UNIT["Meter",1.0]]',
+        (-79.0, 44.0),
+    ),
     # GDAL's Mercator_1SP with a latitude of origin and a scale of 1: Mercator (variant B) with
     # that latitude as its standard parallel (GDAL #3026, opengeos/terrio#1012 item 24).
     (

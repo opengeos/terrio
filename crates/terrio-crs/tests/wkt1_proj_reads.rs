@@ -45,7 +45,7 @@ fn wkt_read_by_proj_places_points_as_proj_does() {
     offline();
     let data = data();
     let cases = data["read"].as_array().unwrap();
-    assert_eq!(cases.len(), 31);
+    assert_eq!(cases.len(), 32);
     let mut bad = vec![];
     for case in cases {
         let name = case["name"].as_str().unwrap();
