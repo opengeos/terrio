@@ -1860,13 +1860,17 @@ test("remote files read with range requests", async () => {
     assert.ok(fgb.stats().bytes - before < fgb.size / 4);
 
     const pq = parquet && (await terrio.openUrl(server.url + "cells.parquet"));
-    let small;
+    let small, misnamed;
     if (pq) {
       // Opened from its end, where the footer is: one request, not the first block and then the end.
       const requests = server.stats.requests;
       small = await terrio.openUrl(server.url + "cells.parquet", { blockSize: 4096 });
       assert.equal(server.stats.requests - requests, 1);
       assert.deepEqual(small.info().rowGroups, pq.info().rowGroups);
+      // Another format under a GeoParquet name: found by its first bytes, as before.
+      writeFileSync(join(dir, "dem.parquet"), readFileSync(join(dir, "dem.tif")));
+      misnamed = await terrio.openUrl(server.url + "dem.parquet");
+      assert.deepEqual([misnamed.kind, misnamed.width], ["raster", 1500]);
       const groups = pq.info().rowGroups;
       assert.equal(groups.reduce((s, g) => s + g.rows, 0), 1500);
       const last = await pq.read({ rowGroups: [groups.length - 1] });
@@ -1902,7 +1906,7 @@ test("remote files read with range requests", async () => {
 
     await assert.rejects(terrio.openUrl(server.url + "missing.tif"), /404/);
     // The requests the server saw are those terrio counted.
-    const counted = [cog, busy, fgb, pq, small, tiles, copc].filter(Boolean).reduce((s, d) => s + d.stats().bytes, 0);
+    const counted = [cog, busy, fgb, pq, small, misnamed, tiles, copc].filter(Boolean).reduce((s, d) => s + d.stats().bytes, 0);
     assert.equal(counted, server.stats.bytes);
   } finally {
     server.close();

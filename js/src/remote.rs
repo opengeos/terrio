@@ -193,9 +193,16 @@ pub async fn open_url(url: String, options: JsValue) -> Result<RemoteDataset, Js
     }
     let name = path.rsplit('/').next().filter(|n| !n.is_empty()).unwrap_or("remote").to_string();
     // GeoParquet, as the URL or the options tell it: opened from the end, where its footer is.
-    let parquet = detect(&name, &[], o.format.as_deref()).is_ok_and(|f| f == "Parquet");
-    let (file, early) = if parquet {
-        (fetcher.open_file_tail(o.block_size).await?, None)
+    // A file whose end isn't Parquet's (`PAR1`) is opened from its start, as other formats are.
+    let tail = if detect(&name, &[], o.format.as_deref()).is_ok_and(|f| f == "Parquet") {
+        Some(fetcher.open_file_tail(o.block_size).await?)
+            .filter(|f| f.len() >= 4 && f.read_exact_at(f.len() - 4, 4).is_ok_and(|end| end == b"PAR1"))
+    } else {
+        None
+    };
+    let parquet = tail.is_some();
+    let (file, early) = if let Some(file) = tail {
+        (file, None)
     } else {
         // Other formats from the start of the first block, as it arrives: the header of a GeoTIFF,
         // PMTiles archive, COPC or FlatGeobuf file is its first bytes. A GeoParquet file the URL
