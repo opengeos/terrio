@@ -81,6 +81,8 @@ mod grid;
 mod iau;
 mod keywords;
 mod math;
+#[cfg(test)]
+mod model;
 mod params;
 mod proj_write;
 mod projections;

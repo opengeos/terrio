@@ -859,7 +859,7 @@ pub(crate) fn same_ellipsoid(code: u32, a: f64, es: f64) -> bool {
 
 /// The size of an angular unit given in radians, in degrees, with WKT's rounded degree and grad
 /// made exact.
-fn degrees(radians: f64) -> f64 {
+pub(crate) fn degrees(radians: f64) -> f64 {
     let d = radians.to_degrees();
     [1.0, 0.9, 1.0 / 3600.0].into_iter().find(|u| (d - u).abs() < 1e-9 * u).unwrap_or(d)
 }

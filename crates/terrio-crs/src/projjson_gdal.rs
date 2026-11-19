@@ -367,7 +367,7 @@ const LAT_SP: Param = ("Latitude of standard parallel", 8832, 'a');
 const LON_ORIGIN: Param = ("Longitude of origin", 8833, 'a');
 
 /// GDAL's WKT 1 parameter names (normalized) for an EPSG parameter.
-fn wkt1_names(code: u32) -> &'static [&'static str] {
+pub(crate) fn wkt1_names(code: u32) -> &'static [&'static str] {
     match code {
         8801 | 8821 | 8811 => &["latitudeoforigin", "latitudeofcenter"],
         8802 | 8822 | 8812 | 8833 => &["centralmeridian", "longitudeofcenter", "longitudeoforigin"],
@@ -384,7 +384,7 @@ fn wkt1_names(code: u32) -> &'static [&'static str] {
 }
 
 /// The EPSG method (name and code, 0 for PROJ's own) and parameters of a WKT 1 projection.
-fn method1(name: &str, param: &dyn Fn(&[&str]) -> Option<f64>) -> Option<(&'static str, u32, &'static [Param])> {
+pub(crate) fn method1(name: &str, param: &dyn Fn(&[&str]) -> Option<f64>) -> Option<(&'static str, u32, &'static [Param])> {
     const NAT: &[Param] = &[LAT_NAT, LON_NAT, K_NAT, FE, FN];
     const FO: &[Param] = &[LAT_FO, LON_FO, SP1, SP2, E_FO, N_FO];
     const AZ: &[Param] = &[LAT_NAT, LON_NAT, FE, FN];
