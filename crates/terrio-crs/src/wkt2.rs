@@ -661,7 +661,8 @@ fn proj_method(conv: &Node, method: &Node, ang: f64, to_meter: f64) -> Result<Op
 
 /// The axis order of a projected CS as PROJ's `+axis`, when not east then north. As GDAL's
 /// traditional GIS order, north-east is read east-north. Other direction pairs retain their
-/// declared order, including north-west and south-east.
+/// declared order, including north-west and south-east. A CS with an axis along neither
+/// (`south, up`) is read east-north, as PROJ 9.9.0 reads it.
 fn axis(directions: &[String]) -> Option<String> {
     let letter = |d: &str| match d {
         "east" => Some('e'),
@@ -677,6 +678,13 @@ fn axis(directions: &[String]) -> Option<String> {
         && matches!(a, 'e' | 'w') != matches!(b, 'e' | 'w')
     {
         return (!matches!((a, b), ('e', 'n') | ('n', 'e'))).then(|| format!("{a}{b}u"));
+    }
+    // Two axes along one line, east and west or north and south, which PROJ 9.9.0 refuses: west or
+    // south, as terrio read them before. Other axes (`up`, `northNorthEast`, one direction twice)
+    // are read east then north, as PROJ 9.9.0 reads them.
+    let [a, b] = directions.get(..2).unwrap_or_default() else { return None };
+    if a == b || letter(a).is_none() || letter(b).is_none() {
+        return None;
     }
     let has = |d: &str| directions.iter().any(|x| x == d);
     let (e, n) = (if has("west") { 'w' } else { 'e' }, if has("south") { 's' } else { 'n' });
