@@ -48,7 +48,7 @@ def summaries(text):
         out.extend(value if isinstance(value, list) else [value])
 
 
-def with_main(found, main):
+def with_main(found, main_summaries):
     """`found` with each metric's `old` value replaced by the `new` value of the same benchmark
     (module path and id) in `main`, and removed where main lacks it."""
 
@@ -56,9 +56,10 @@ def with_main(found, main):
         return s.get("module_path"), s["function_name"], s.get("id")
 
     def values(s):
+        # A metric without `values` gets a throwaway dict: metrics() reads it as not reported.
         return {(p["tool"], k): v.get("values") or {} for p in s["profiles"] for k, v in p["data"]["total"]["metrics"].items()}
 
-    on_main = {key(m): values(m) for m in main}
+    on_main = {key(m): values(m) for m in main_summaries}
     for s in found:
         old = on_main.get(key(s), {})
         for (tool, k), v in values(s).items():

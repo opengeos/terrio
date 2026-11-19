@@ -85,7 +85,9 @@ jobs:
         id: saved
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/out/main.json
+          path: |
+            ${{ runner.temp }}/out/main.json
+            ${{ runner.temp }}/out/main.cpu
           key: bench-main-${{ steps.commit.outputs.sha }}
       - if: steps.saved.outputs.cache-hit != 'true'
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master; toolchain set by input
@@ -110,19 +112,26 @@ jobs:
           cargo bench -p terrio-cli --bench commands --no-run
           # Three Valgrind runs at once on the runner's 4 cores (counts do not depend on it): the
           # library, and the commands split by the first letter of their name, about half each.
+          # Callgrind simulates fixed caches, not the host's, so that the estimated cycles of main
+          # and the pull request compare across runners.
+          export GUNGRAUN_CALLGRIND_ARGS='--I1=32768,8,64 --D1=32768,8,64 --LL=8388608,16,64'
           out=$RUNNER_TEMP/out
           mkdir -p "$out"
           pids=()
           cargo bench -p terrio --bench instructions -- --output-format=json > "$out/lib.part" & pids+=($!)
-          cargo bench -p terrio-cli --bench commands -- '*::cli::[a-q]*' --output-format=json > "$out/aq.part" & pids+=($!)
+          cargo bench -p terrio-cli --bench commands -- '*::cli::[!r-z]*' --output-format=json > "$out/aq.part" & pids+=($!)
           cargo bench -p terrio-cli --bench commands -- '*::cli::[r-z]*' --output-format=json > "$out/rz.part" & pids+=($!)
           for pid in "${pids[@]}"; do wait "$pid"; done
           cat "$out"/*.part > "$out/$SIDE.json"
           rm "$out"/*.part
+          # The CPU, which picks run-time dispatched (AVX2) code paths: the comment notes a mismatch.
+          grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- > "$out/$SIDE.cpu"
       - if: github.event_name == 'push'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/out/main.json
+          path: |
+            ${{ runner.temp }}/out/main.json
+            ${{ runner.temp }}/out/main.cpu
           key: bench-main-${{ steps.commit.outputs.sha }}
       - if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -153,6 +162,11 @@ jobs:
           base=$(git rev-parse HEAD^1)
           mkdir -p "$RUNNER_TEMP/bench"
           python3 scripts/bench_comment.py "$RUNNER_TEMP/in/pr.json" --main "$RUNNER_TEMP/in/main.json" --base "$base" --head "$HEAD_SHA" > "$RUNNER_TEMP/bench/bench.md"
+          dir=$RUNNER_TEMP/in
+          if ! cmp -s "$dir/main.cpu" "$dir/pr.cpu"; then
+            printf '\n<sub>main ran on%s, the pull request on%s: code dispatched by CPU features may count differently.</sub>\n' \
+              "$(cat "$dir/main.cpu" 2>/dev/null)" "$(cat "$dir/pr.cpu")" >> "$RUNNER_TEMP/bench/bench.md"
+          fi
           echo "$PR" > "$RUNNER_TEMP/bench/pr-number.txt"
           cat "$RUNNER_TEMP/bench/bench.md" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
