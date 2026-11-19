@@ -3639,7 +3639,7 @@ impl WarpContext<'_> {
                 y1 = y1.max(ys[i]);
             }
             // The columns of the samples that `cut` looks at, for the arc they span across the cut
-            // of a full-turn source (see `kernel_span` below).
+            // of a periodic full-turn source (see `kernel_span` below).
             let columns: Vec<f64> = if turn.is_some() && self.global_longitude_turn().is_some() {
                 (0..xs.len())
                     .filter(|&i| ok[i] && regular.as_ref().is_none_or(|points| points[i]) && xs[i].is_finite() && ys[i].is_finite())
@@ -3823,13 +3823,16 @@ impl WarpContext<'_> {
             }
         }
         let raw_span = (x1 - x0).max(0.0);
-        // A chunk whose samples cross the longitude cut of a full-turn source (`cut`) has samples
-        // beside both of the cut's columns, so its least and greatest sampled columns are the long
-        // way round apart. Its kernel scale takes the arc of columns that its samples span across
-        // the cut instead, when that arc is shorter than half a turn: no step between adjacent
-        // samples, which `cut` takes to be shorter than half a turn, then passes outside it.
-        // Chunks mirrored across the cut so get mirrored kernels. The samples of a chunk around a
-        // pole span more than half a turn, and keep the distance between the least and greatest.
+        // A chunk whose samples cross the longitude cut of a periodic full-turn source
+        // ([`Self::global_longitude_turn`]; `cut`) has samples beside both of the cut's columns,
+        // so its least and greatest sampled columns are the long way round apart. Its kernel scale
+        // takes the arc of columns that its samples span across the cut instead, when that arc is
+        // shorter than half a turn: no step between adjacent samples, which `cut` takes to be
+        // shorter than half a turn, then passes outside it. Chunks mirrored across the cut so get
+        // mirrored kernels. The samples of a chunk around a pole span more than half a turn, and
+        // keep the distance between the least and greatest. Without `periodic_longitude`, the
+        // stored edges are a regional source's, which interpolation does not cross: the span
+        // between them stays.
         let kernel_span = self.global_longitude_turn().filter(|_| cut).and_then(|turn| short_arc(&columns, turn)).unwrap_or(raw_span);
         (x0, x1) = self.wrap_source_bounds(x0, x1);
         if x0 > sw || x1 < 0.0 || y0 > sh || y1 < 0.0 {
