@@ -6,6 +6,8 @@ where it places points in them.
   and a standard parallel, which PROJ leaves out of this method;
 - GDAL's `Mercator_1SP` with a latitude of origin other than 0 and a scale of 1, which PROJ reads
   as Mercator (variant B) with that latitude as its standard parallel;
+- GDAL's `Lambert_Conformal_Conic_2SP` (and `_Belgium`) with a `scale_factor`, which PROJ
+  ignores, and ESRI's `Lambert_Conformal_Conic` with a `Scale_Factor`, which PROJ applies;
 - WKT 1 with a node of an unknown keyword (`rustgis:unapplied`, as RustGIS marks a WKT 2
   `BOUNDCRS` it converts to WKT 1, `a-b`, `a.b`, `1x`, an empty one), on a datum and at the root
   of a `GEOGCS` and a `PROJCS`, which PROJ skips whatever its keyword;
@@ -75,6 +77,11 @@ def utm17(mark="", root_mark=""):
     )
 
 
+LCC = (
+    'PARAMETER["standard_parallel_1",33],PARAMETER["standard_parallel_2",45],'
+    'PARAMETER["latitude_of_origin",23],PARAMETER["central_meridian",-96],'
+    'PARAMETER["false_easting",1000000],PARAMETER["false_northing",500000]'
+)
 UNAPPLIED = ',rustgis:unapplied["NTv2 transformation to WGS 84 (ntv2_0.gsb)"]'
 UNTRANSFORMED = ',rustgis:untransformed["WGS 84"]'
 
@@ -160,6 +167,26 @@ READ = [
             "MERCATOR_VARIANT_A", VARIANT_A + ',PARAMETER["Latitude_Of_Origin",5]'
         ),
         (120.0, -3.0),
+    ),
+    # GDAL's LCC 2SP methods have no scale: PROJ ignores a scale_factor given with them; ESRI's
+    # Lambert_Conformal_Conic applies its Scale_Factor (opengeos/terrio#1012 item 29).
+    (
+        "Lambert_Conformal_Conic_2SP with a scale factor",
+        f'PROJCS["l",{nad27()},PROJECTION["Lambert_Conformal_Conic_2SP"],{LCC},'
+        'PARAMETER["scale_factor",0.99],UNIT["metre",1]]',
+        (-96.0, 40.0),
+    ),
+    (
+        "Lambert_Conformal_Conic_2SP_Belgium with a scale factor",
+        f'PROJCS["l",{nad27()},PROJECTION["Lambert_Conformal_Conic_2SP_Belgium"],{LCC},'
+        'PARAMETER["scale_factor",0.99],UNIT["metre",1]]',
+        (-96.0, 40.0),
+    ),
+    (
+        "Lambert_Conformal_Conic, ESRI's name, with a scale factor",
+        f'PROJCS["l",{nad27()},PROJECTION["Lambert_Conformal_Conic"],{LCC},'
+        'PARAMETER["Scale_Factor",0.99],UNIT["Meter",1.0]]',
+        (-96.0, 40.0),
     ),
     # GDAL's Mercator_1SP with a latitude of origin and a scale of 1: Mercator (variant B) with
     # that latitude as its standard parallel (GDAL #3026, opengeos/terrio#1012 item 24).

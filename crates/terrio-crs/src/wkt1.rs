@@ -634,7 +634,10 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             }
             push(&mut out, "lat_0", lat_0);
             push(&mut out, "lon_0", lon_0);
-            push(&mut out, "k_0", k);
+            // GDAL's 2SP methods have no scale: PROJ 9.9.0 ignores a `scale_factor` given with them
+            // (`parammappings.cpp`, opengeos/terrio#1012 item 29). ESRI's `Lambert_Conformal_Conic`
+            // applies its `Scale_Factor` (2SP Michigan).
+            push(&mut out, "k_0", k.filter(|_| method == "lambertconformalconic"));
         }
         "albersconicequalarea" | "albers" | "albersequalarea" => {
             out.push("+proj=aea".into());
