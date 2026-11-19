@@ -2009,7 +2009,7 @@ pub(crate) fn split_compound(w: &str) -> Option<(String, String)> {
         return None;
     }
     // The top-level arguments of the node.
-    let body = &w[open + 1..w.len().checked_sub(1)?];
+    let body = w.get(open + 1..w.len().checked_sub(1)?)?;
     let mut args = Vec::new();
     let (mut depth, mut start, mut quoted) = (0i32, 0usize, false);
     for (i, c) in body.char_indices() {

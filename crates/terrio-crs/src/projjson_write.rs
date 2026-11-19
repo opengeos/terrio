@@ -54,7 +54,10 @@ fn with_id(mut v: Value, code: Option<u32>) -> Value {
 
 fn crs(s: &SpatialRef) -> Result<Value> {
     if let Some(code) = s.epsg {
-        if let Some(c) = epsg::compound(code) {
+        // A compound code, given or declared, by the registry; a compound CRS identified by its
+        // parts (opengeos/terrio#1012 item 47) by its own text below, as PROJ 9.9.0 writes it.
+        let declared = s.wkt.as_deref().is_none_or(|w| crate::declared_epsg(w) == Some(code));
+        if let Some(c) = epsg::compound(code).filter(|_| declared) {
             let horizontal = crs(&SpatialRef::from_epsg(c.horizontal)?)?;
             return Ok(with_id(
                 json!({"type": "CompoundCRS", "name": c.name, "components": [horizontal, vertical(c.vertical)?]}),

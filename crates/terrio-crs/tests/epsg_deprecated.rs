@@ -199,8 +199,8 @@ fn geokeys_of_deprecated_codes_read_as_their_own_definition() {
             let tolerance = if crs.is_geographic() { 1e-8 } else { 1e-3 };
             let same = (a.0 - b.0).abs() < tolerance && (a.1 - b.1).abs() < tolerance;
             // EPSG:6986 (IGD05/12, 3D) is written as PROJ's WKT 2, whose root `ID` comes before a
-            // `REMARK`: read back by that code. (Its content alone is read with a datum shift
-            // about 0.3 m from PROJ 9.9.0's ballpark, opengeos/terrio#1012 item 19.)
+            // `REMARK`: read back by that code. (Its content alone, on GRS 1980, is not EPSG:7138
+            // on WGS 84: placed by PROJ 9.9.0's ballpark too, `identified_as_proj_identifies.rs`.)
             assert!(same, "EPSG:{code}: {a:?} read back as {b:?}");
         }
     }

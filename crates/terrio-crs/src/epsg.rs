@@ -916,11 +916,23 @@ pub(crate) fn compound(code: u32) -> Option<&'static Compound> {
 /// the one of several named `name` (the table keeps deprecated entries: 7412, of 27572 and 5719
 /// as 7411 is, but named otherwise). `None` when there is none, or no single one.
 pub(crate) fn compound_of(horizontal: u32, vertical: u32, name: Option<&str>) -> Option<u32> {
+    compound_among(horizontal, vertical, name, false)
+}
+
+/// The current EPSG compound CRS of a horizontal and a vertical EPSG CRS, as PROJ 9.9.0 identifies
+/// a compound CRS by its parts (`createCompoundCRSFromExisting` leaves deprecated ones out): of
+/// 27572 and 5719, EPSG:7411, not the deprecated 7412.
+pub(crate) fn current_compound_of(horizontal: u32, vertical: u32, name: Option<&str>) -> Option<u32> {
+    compound_among(horizontal, vertical, name, true)
+}
+
+fn compound_among(horizontal: u32, vertical: u32, name: Option<&str>, current: bool) -> Option<u32> {
     let mut codes: Vec<u32> = table()
         .compounds
         .keys()
         .copied()
         .filter(|code| compound(*code).is_some_and(|c| (c.horizontal, c.vertical) == (horizontal, vertical)))
+        .filter(|code| !current || !is_deprecated(*code))
         .collect();
     codes.sort_unstable();
     match codes[..] {

@@ -661,7 +661,8 @@ impl SpatialRef {
         projjson_write::write(self)
     }
 
-    /// Parses the supported PROJJSON v0.7 geographic, projected or bound CRS subset.
+    /// Parses the supported PROJJSON v0.7 geographic, projected, bound, vertical or compound CRS
+    /// subset.
     /// Unsupported coordinate systems, datum models and operations return errors.
     pub fn from_projjson(text: &str) -> Result<Self> {
         // The text ends at its first NUL, as PROJ's `proj_create` reads it; a NUL a JSON string
@@ -1679,10 +1680,12 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
         Def::wkt_conversion(wkt)?;
         return strip_root_code(wkt).and_then(|w| identify_epsg(&w));
     }
-    // A compound CRS is not its horizontal CRS: only the code it declares identifies it, as in
-    // `SpatialRef::from_wkt`.
-    if def::split_compound(wkt).is_some() {
-        return None;
+    // A compound CRS is not its horizontal CRS: the registry's compound CRS of its horizontal and
+    // vertical CRSs, identified each, as PROJ 9.9.0 identifies EPSG:7405's WKT without its codes
+    // (#1012 item 47); a current one, and of several, the one of its name.
+    if let Some((horizontal, vertical)) = def::split_compound(wkt) {
+        let (h, v) = (identify_epsg(&horizontal)?, def::vertical_code(&vertical)?);
+        return epsg::current_compound_of(h, v, wkt_name(wkt).as_deref()).filter(|c| declared_fits(wkt, *c));
     }
     // A vertical CRS by its name, datum, unit and direction, as PROJ 9.9.0 identifies it.
     if keywords::is(keywords::root_key(wkt), keywords::VERTICAL_CRS) {
@@ -1779,10 +1782,7 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
             // projection on MODIS's sphere is not ESRI's World Sinusoidal on WGS 84).
             let Some(own) = &own else {
                 let candidate = registry_wkt(code);
-                return match (semi_major_axis(wkt), candidate.as_deref().and_then(semi_major_axis)) {
-                    (Some(a), Some(b)) => fits::same_semi_major_axis(a, b),
-                    _ => true,
-                };
+                return candidate.as_deref().and_then(|c| fits::same_wkt_figure(wkt, c)).is_none_or(|same| same);
             };
             same(own, code)
         };
@@ -2055,11 +2055,12 @@ fn identify_esri(wkt: &str) -> Option<u32> {
     // The WKT's conversion, through wbprojection for projections terrio's WKT reader does not map;
     // a name alone does not identify a CRS.
     let own = Def::wkt_conversion(wkt).or_else(|| Def::new(&SpatialRef { wkt: Some(wkt.to_string()), ..Default::default() }).ok())?;
-    let a = semi_major_axis(wkt);
     candidates.into_iter().find(|code| {
         let Some(e) = epsg::esri(*code) else { return false };
         let Ok(registered) = Def::from_proj(&e.proj) else { return false };
-        if !a.is_none_or(|a| fits::same_semi_major_axis(a, registered.ell.a)) {
+        // The WKT's ellipsoid, whole, by the registry WKT's (see `Fit::esri`); one it cannot read
+        // is not the registry's.
+        if !fits::same_wkt_figure(wkt, &e.wkt).unwrap_or_else(|| fits::wkt_figure(&e.wkt).is_none()) {
             return false;
         }
         esri_same_datum(wkt, &e.wkt) && own.same_conversion(&registered)
@@ -4083,11 +4084,12 @@ mod tests {
         assert_eq!(c.epsg, None);
         assert_eq!(c.name().unwrap(), "WGS 84 + EGM96 height");
         assert!(c.to_wkt().unwrap().starts_with("COMPD_CS[\"WGS 84 + EGM96 height\",GEOGCS[\"WGS 84\""));
-        // Its WKT is not identified as EPSG:4326, which has no heights, read back or identified.
+        // Its WKT is not identified as EPSG:4326, which has no heights, but as EPSG:9707, the
+        // compound CRS of its parts, as PROJ 9.9.0 and GDAL 3.13.3 identify it (100%).
         let wkt = c.to_wkt().unwrap();
-        assert_eq!(identify_epsg(&wkt), None);
+        assert_eq!(identify_epsg(&wkt), Some(9707));
         let read = SpatialRef::from_wkt(&wkt);
-        assert_eq!((read.epsg, read.name().as_deref()), (None, Some("WGS 84 + EGM96 height")));
+        assert_eq!((read.epsg, read.name().as_deref()), (Some(9707), Some("WGS 84 + EGM96 height")));
         // A compound WKT declaring its code keeps it.
         let declared = format!("{},AUTHORITY[\"EPSG\",\"9707\"]]", wkt.strip_suffix(']').unwrap());
         assert_eq!(SpatialRef::from_wkt(&declared).epsg, Some(9707));

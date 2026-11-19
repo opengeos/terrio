@@ -119,8 +119,9 @@ extension in its vertical datum, where GDAL writes it, makes it its grids, of no
 a declared code, as PROJ reads it (a bound CRS); one at its root, which PROJ ignores, is ignored
 beside a declared code of its unit and direction, and otherwise read as before (no code, its
 grids, where PROJ identifies the CRS by its name). Its PROJ string's `+geoidgrids` are the same
-grids. A compound CRS gets an EPSG code only from the code it declares, but its parts are known
-when its vertical CRS is identified.
+grids. A compound CRS gets the EPSG code it declares when its content fits it; without a code
+of its own, it is identified by its parts (see Identification). Its parts are known when its
+vertical CRS is identified.
 
 Where a WKT 2 CRS has two nodes PROJ reads one of, the first in its order counts, whatever its
 keyword, as in PROJ 9.9.0: of two datums (`DATUM`, `TRF`, `GEODETICDATUM`; a datum and an
@@ -310,6 +311,13 @@ its own has a name in common, by the name of its `GEOGCS`: ESRI's `GCS_Greenland
 `D_Greenland_1996` (Greenland 1996), and the projected CRSs on it, are on GR96, EPSG:4747, on the
 GR96 ensemble. Under another name, or in WKT 2, there is none, as in PROJ.
 
+Ellipsoids are compared as PROJ 9.9.0 compares them: the semi-major axis, the semi-minor axis and
+the inverse flattening each within 1e-10. GRS 1980 is not WGS 84, so EPSG:6986's WKT (IGD05/12 on
+GRS 1980) is not EPSG:7138 (IGD05/12 on WGS 84). A compound CRS without a code of its own is the
+registry's compound CRS of its horizontal and vertical CRSs, each identified: EPSG:7405's WKT
+without its codes is EPSG:7405, and ESRI's `GEOGCS[…],VERTCS[…]` of WGS 84 and EGM96 height is
+EPSG:9707, as PROJ and GDAL identify them.
+
 A code the WKT declares at its root (`AUTHORITY["EPSG","27700"]`, `ID["EPSG",27700]`) is kept only
 when the WKT's content is that CRS: the same conversion, units and axes included, on the same
 ellipsoid and datum, and of the same kind. The datum is compared by its EPSG code, from the WKT's
@@ -321,7 +329,9 @@ local CRS keeps no code terrio places. Otherwise the WKT is read and identified 
 CRS declaring a geographic code, a code that does not exist, or a 2D CRS in degrees declaring a
 compound code in grads is not that code. When terrio cannot read the content (a method only the
 registry has), the code is kept if the WKT names the code's own projection method; an unknown method
-stays unusable. An ESRI CRS is identified by its name only on its datum: ESRI's
+stays unusable. A declared ESRI code is kept only on the code's ellipsoid, all of it (an
+altered flattening is not ESRI:54009, as PROJ matches it at 25%). An ESRI CRS is identified by its
+name only on its datum and ellipsoid: ESRI's
 `Monte_Mario_Italy_1` on a datum renamed `D_Local` has no code, and PROJ places it by a ballpark.
 
 A datum terrio does not know by name and without `TOWGS84` (`Unknown based on Bessel 1841
@@ -1001,6 +1011,8 @@ serialize a language object with `json.dumps` or `JSON.stringify`.
 | `GeographicCRS`, `GeodeticCRS` | Two-dimensional ellipsoidal coordinates on a static geodetic reference frame or datum ensemble; longitude/latitude in GIS order |
 | `ProjectedCRS` | A supported geographic base (whose `type` is optional) and WKT2 projection conversion, two Cartesian axes, including north-first and west/south orientations |
 | `BoundCRS` | A geographic/projected source, a Greenwich WGS 84 geographic target, and a complete three- or seven-parameter Helmert transformation, identified by EPSG codes or standard names |
+| `VerticalCRS` | A vertical reference frame and one axis, up or down, in a length unit; identified by its name, datum, unit and direction |
+| `CompoundCRS` | A geographic or projected CRS and a vertical CRS, as PROJ writes EPSG:7405; identified by its parts |
 
 Geographic axes must span east and north; projected axes may use west and south.
 Both axes need the same explicit unit. Standard unit strings include `metre`,
