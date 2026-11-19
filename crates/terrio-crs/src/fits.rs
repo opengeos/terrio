@@ -17,15 +17,36 @@ use crate::{SpatialRef, catalog, epsg, keywords, wkt1};
 #[cfg(test)]
 mod baseline_tests;
 
-/// Whether two semi-major axes are the same, in metres: within a millimetre.
-pub(crate) fn same_semi_major_axis(a: f64, b: f64) -> bool {
-    (a - b).abs() < 1e-3
+/// Whether two lengths are the same as PROJ 9.9.0 compares measures (`Measure::_isEquivalentTo`,
+/// `DEFAULT_MAX_REL_ERROR`): within 1e-10 of the first.
+fn same_measure(x: f64, y: f64) -> bool {
+    (x - y).abs() <= 1e-10 * x.abs()
 }
 
-/// Whether two ellipsoids are the same: the semi-major axis within a millimetre, the
-/// eccentricity squared within 1e-9.
+/// Whether two ellipsoids are the same, as PROJ 9.9.0 compares them (`Ellipsoid::_isEquivalentTo`):
+/// the semi-major axis, the semi-minor axis and, of two ellipsoids that are not spheres, the
+/// inverse flattening, each within 1e-10. GRS 1980 is not WGS 84 (EPSG:6986 is not EPSG:7138).
 pub(crate) fn same_figure(a: f64, es: f64, other_a: f64, other_es: f64) -> bool {
-    same_semi_major_axis(a, other_a) && (es - other_es).abs() < 1e-9
+    let b = |a: f64, es: f64| a * (1.0 - es).sqrt();
+    let rf = |es: f64| 1.0 / (1.0 - (1.0 - es).sqrt());
+    same_measure(a, other_a)
+        && same_measure(b(a, es), b(other_a, other_es))
+        && (es == 0.0 || other_es == 0.0 || same_measure(rf(es), rf(other_es)))
+}
+
+/// The semi-major axis in metres and the eccentricity squared of the first `SPHEROID` or
+/// `ELLIPSOID` of a WKT definition (in its `LENGTHUNIT`).
+pub(crate) fn wkt_figure(wkt: &str) -> Option<(f64, f64)> {
+    let (a, rf) = wkt1::parse(wkt)?.find(keywords::ELLIPSOID)?.ellipsoid()?;
+    let f = if rf == 0.0 { 0.0 } else { 1.0 / rf };
+    Some((a, f * (2.0 - f)))
+}
+
+/// Whether two WKT definitions' first ellipsoids are the same (see [`same_figure`]); `None` when
+/// either has none.
+pub(crate) fn same_wkt_figure(wkt: &str, other: &str) -> Option<bool> {
+    let ((a, es), (b, other_es)) = (wkt_figure(wkt)?, wkt_figure(other)?);
+    Some(same_figure(a, es, b, other_es))
 }
 
 /// Whether two ellipsoids are the same (see [`same_figure`]).
@@ -303,9 +324,10 @@ impl Fit {
         if fit.datum == Some(Match::Different) {
             return fit;
         }
-        // The datum's ellipsoid by the registry WKT's (in metres in an Esri WKT 1), not the
-        // definition's: a spherical method's `+R_A` sphere (ESRI:54003, Miller on WGS 84).
-        let a = crate::semi_major_axis(&e.wkt);
+        // The datum's ellipsoid, the WKT's by the registry WKT's (in metres in an Esri WKT 1), not
+        // the definitions': a spherical method's `+R_A` sphere (ESRI:54003, Miller on WGS 84).
+        // Whole, as PROJ 9.9.0 compares it: an altered flattening is not the code's.
+        let same_ellipsoid = same_wkt_figure(w, &e.wkt).is_none_or(|same| same);
         let Some(own) = Def::wkt_conversion(w) else {
             let method = |w: &str| {
                 let root = wkt1::parse(w)?;
@@ -322,14 +344,11 @@ impl Fit {
             };
             // On the registry's ellipsoid too: the definition terrio builds is the registry's,
             // not the WKT's.
-            let same_ellipsoid = a.is_none_or(|a| crate::semi_major_axis(w).is_some_and(|own| same_semi_major_axis(own, a)));
             fit.content = Some(same_ellipsoid && (m == r || m == format!("{r}spherical") || (r == "equirectangular" && id == Some(1029))));
             return fit;
         };
-        fit.content = Some(
-            Def::new(&SpatialRef { esri: Some(code), ..Default::default() })
-                .is_ok_and(|r| own.same_conversion(&r) && a.is_none_or(|a| same_semi_major_axis(own.ell.a, a))),
-        );
+        fit.content =
+            Some(Def::new(&SpatialRef { esri: Some(code), ..Default::default() }).is_ok_and(|r| own.same_conversion(&r) && same_ellipsoid));
         fit
     }
 }
@@ -377,7 +396,7 @@ fn unread_content_fits(wkt: &str, code: u32, theirs: &Def) -> bool {
         let geocentric = root.key.eq_ignore_ascii_case("GEOCCS") || (root.is(keywords::GEODETIC_CRS) && cartesian);
         return !converted
             && geocentric == theirs.is_geocentric()
-            && crate::semi_major_axis(wkt).is_some_and(|a| same_semi_major_axis(a, theirs.ell.a));
+            && wkt_figure(wkt).is_some_and(|(a, es)| same_figure(a, es, theirs.ell.a, theirs.ell.es));
     };
     let registered = epsg::get(code)
         .map(|e| e.wkt.clone())

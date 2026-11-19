@@ -1779,10 +1779,7 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
             // projection on MODIS's sphere is not ESRI's World Sinusoidal on WGS 84).
             let Some(own) = &own else {
                 let candidate = registry_wkt(code);
-                return match (semi_major_axis(wkt), candidate.as_deref().and_then(semi_major_axis)) {
-                    (Some(a), Some(b)) => fits::same_semi_major_axis(a, b),
-                    _ => true,
-                };
+                return candidate.as_deref().and_then(|c| fits::same_wkt_figure(wkt, c)).is_none_or(|same| same);
             };
             same(own, code)
         };
@@ -2055,11 +2052,11 @@ fn identify_esri(wkt: &str) -> Option<u32> {
     // The WKT's conversion, through wbprojection for projections terrio's WKT reader does not map;
     // a name alone does not identify a CRS.
     let own = Def::wkt_conversion(wkt).or_else(|| Def::new(&SpatialRef { wkt: Some(wkt.to_string()), ..Default::default() }).ok())?;
-    let a = semi_major_axis(wkt);
     candidates.into_iter().find(|code| {
         let Some(e) = epsg::esri(*code) else { return false };
         let Ok(registered) = Def::from_proj(&e.proj) else { return false };
-        if !a.is_none_or(|a| fits::same_semi_major_axis(a, registered.ell.a)) {
+        // The WKT's ellipsoid, whole, by the registry WKT's (see `Fit::esri`).
+        if fits::same_wkt_figure(wkt, &e.wkt) == Some(false) {
             return false;
         }
         esri_same_datum(wkt, &e.wkt) && own.same_conversion(&registered)
