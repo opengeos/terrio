@@ -103,6 +103,8 @@ path = [
     "crates/terrio-crs/tests/data/projjson_corpus_diffs.tsv",
     "crates/terrio-crs/tests/data/projjson_corpus_diffs_fallback.tsv",
     "crates/terrio-crs/tests/data/projjson_model_diffs.tsv",
+    "crates/terrio-crs/tests/data/fits_baseline.tsv",
+    "crates/terrio-crs/tests/data/fits_baseline_wbprojection.tsv",
 ]
 precedence = "override"
 SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright © 2010-2025 Esri", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]

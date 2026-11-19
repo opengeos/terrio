@@ -76,6 +76,7 @@ mod catalog;
 mod datum;
 mod def;
 mod epsg;
+mod fits;
 pub mod geokeys;
 mod grid;
 mod iau;
