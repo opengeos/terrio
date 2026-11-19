@@ -4,6 +4,8 @@ where it places points in them.
 - ESRI's `Mercator_Variant_A` (EPSG Guidance Note 7-2's example of Mercator (variant A),
   EPSG:3002 Makassar / NEIEZ, as an ESRI `.prj` names it), and the same with a latitude of origin
   and a standard parallel, which PROJ leaves out of this method;
+- GDAL's `Mercator_1SP` with a latitude of origin other than 0 and a scale of 1, which PROJ reads
+  as Mercator (variant B) with that latitude as its standard parallel;
 - GDAL's `Lambert_Conformal_Conic_2SP` (and `_Belgium`) with a `scale_factor`, which PROJ
   ignores, and ESRI's `Lambert_Conformal_Conic` with a `Scale_Factor`, which PROJ applies;
 - WKT 1 with a node of an unknown keyword (`rustgis:unapplied`, as RustGIS marks a WKT 2
@@ -185,6 +187,25 @@ READ = [
         f'PROJCS["l",{nad27()},PROJECTION["Lambert_Conformal_Conic"],{LCC},'
         'PARAMETER["Scale_Factor",0.99],UNIT["Meter",1.0]]',
         (-96.0, 40.0),
+    ),
+    # GDAL's Mercator_1SP with a latitude of origin and a scale of 1: Mercator (variant B) with
+    # that latitude as its standard parallel (GDAL #3026, opengeos/terrio#1012 item 24).
+    (
+        "Mercator_1SP, GDAL's name, with a latitude of origin",
+        makassar(
+            "Mercator_1SP",
+            VARIANT_A.replace("0.997", "1") + ',PARAMETER["latitude_of_origin",30]',
+        ),
+        (120.0, -3.0),
+    ),
+    (
+        "Mercator_1SP with a southern latitude of origin and no scale",
+        makassar(
+            "Mercator_1SP",
+            VARIANT_A.replace(',PARAMETER["Scale_Factor",0.997]', "")
+            + ',PARAMETER["latitude_of_origin",-30]',
+        ),
+        (120.0, -3.0),
     ),
 ]
 
