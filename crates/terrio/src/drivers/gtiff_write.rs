@@ -5381,10 +5381,10 @@ mod tests {
 
     /// `SPARSE_OK` leaves out of a GeoTIFF, written whole or in rows, tiled or striped, by pixel
     /// or by band, the blocks of its full-resolution image whose samples are all nodata (or 0
-    /// without nodata), bit for bit: their offset and byte count are 0, and the file reads back,
-    /// eagerly and lazily, as the same raster written without the option does. Overviews are
-    /// written whole, and so is every block when the samples cannot hold nodata. A COG writes
-    /// every tile, and warns.
+    /// without nodata), bit for bit, and only those: their offset and byte count are 0, and the
+    /// file reads back, eagerly and lazily, as the same raster written without the option does,
+    /// which stores every block. Overviews are written whole, and so is every block when the
+    /// samples cannot hold nodata. A COG writes every tile, and warns.
     #[test]
     fn sparse_ok_leaves_out_the_blocks_of_nodata() {
         let (cols, rows) = (100, 70);
@@ -5402,13 +5402,16 @@ mod tests {
             (DataType::U16, Some(7.5), false),
             (DataType::U16, Some(70000.0), false),
         ] {
-            // Nodata (or 0) but for a pixel of the first band, and, without nodata, one of the
-            // second band that is -0.0: its block is kept.
+            // Nodata (or 0) but for pixels of the first band, each alone in its block: in a
+            // block's last row and column, its first row and column, the image's last row and
+            // column (an edge block), and a strip's first column; and, without nodata, one of the
+            // second band that is -0.0. Their blocks are kept.
             let fill = nodata.unwrap_or(0.0);
             let mut values = vec![fill; 2 * cols * rows];
-            values[20 * cols + 10] = 1.0;
-            if nodata.is_none() {
-                values[cols * rows + 50 * cols + 60] = -0.0;
+            let pixels = [(0, 31, 47), (0, 32, 48), (0, 69, 99), (0, 40, 0), (1, 50, 60)];
+            let pixels = &pixels[..if nodata.is_none() { 5 } else { 4 }];
+            for &(b, y, x) in pixels {
+                values[b * cols * rows + y * cols + x] = if b == 0 { 1.0 } else { -0.0 };
             }
             let data = match t {
                 DataType::U16 => RasterData::U16(values.iter().map(|v| v.round() as u16).collect()),
@@ -5431,16 +5434,18 @@ mod tests {
                 write(&raster, dense.to_str().unwrap(), &opts).unwrap();
                 let expected = lazy(&dense);
                 let (across, per_plane) = (cols.div_ceil(bw), rows.div_ceil(bh) * cols.div_ceil(bw));
+                let every: Vec<usize> = (0..if planar { 2 * per_plane } else { per_plane }).collect();
                 let kept: Vec<usize> = if sparse {
-                    [(0, 20, 10), (1, 50, 60)][..if nodata.is_none() { 2 } else { 1 }]
-                        .iter()
-                        .map(|(b, y, x)| if planar { b * per_plane } else { 0 } + y / bh * across + x / bw)
-                        .collect()
+                    let mut kept: Vec<usize> =
+                        pixels.iter().map(|(b, y, x)| if planar { b * per_plane } else { 0 } + y / bh * across + x / bw).collect();
+                    kept.sort_unstable();
+                    kept.dedup();
+                    kept
                 } else {
-                    (0..if planar { 2 * per_plane } else { per_plane }).collect()
+                    every.clone()
                 };
-                for whole in [true, false] {
-                    let options = options("YES", if whole { vec![2] } else { Vec::new() });
+                for (whole, sparse_ok) in [(true, "NO"), (false, "NO"), (true, "YES"), (false, "YES")] {
+                    let options = options(sparse_ok, if whole { vec![2] } else { Vec::new() });
                     if whole {
                         let opts = TiffOptions::from_write_options(&options, false, nodata).unwrap().unwrap();
                         write(&raster, path.to_str().unwrap(), &opts).unwrap();
@@ -5449,11 +5454,11 @@ mod tests {
                         w.write_rows(&raster.data, rows, None).unwrap();
                         w.finish().unwrap();
                     }
-                    let case = format!("{t:?}, nodata {nodata:?}, {layout:?}, whole {whole}");
+                    let case = format!("{t:?}, nodata {nodata:?}, {layout:?}, whole {whole}, SPARSE_OK {sparse_ok}");
                     let mut dec = tiff::decoder::Decoder::new(std::fs::File::open(&path).unwrap()).unwrap();
                     let tables = crate::geotiff::ChunkTables::read(&mut dec).unwrap();
                     let written: Vec<usize> = (0..tables.counts.len()).filter(|&i| tables.counts[i] > 0).collect();
-                    assert_eq!(written, kept, "{case}");
+                    assert_eq!(&written, if sparse_ok == "YES" { &kept } else { &every }, "{case}");
                     assert!(tables.offsets.iter().zip(&tables.counts).all(|(o, n)| (*o == 0) == (*n == 0)), "{case}");
                     if whole {
                         dec.next_image().unwrap();
