@@ -550,6 +550,9 @@ impl Fetcher {
             return Ok((file, None));
         };
         let expected = block.min(len);
+        // Counted now, so that a failed open (a refused Content-Range or a body error) is in
+        // `stats()`; bytes are added where the body ends or fails.
+        self.requests.set(self.requests.get() + 1);
         // The bytes' position is checked before any of them is opened.
         if let Some(header) = content_range.as_deref()
             && !valid_content_range(header, ObjectRange::At(0, expected), expected, Some(len))
@@ -560,10 +563,13 @@ impl Fetcher {
         let file = SparseFile::with_block_size(len, block);
         let mut data = Vec::new();
         let opened = loop {
-            if let Some(chunk) = next_chunk(&reader).await? {
-                append(&mut data, &chunk);
-            } else {
-                break None;
+            match next_chunk(&reader).await {
+                Ok(Some(chunk)) => append(&mut data, &chunk),
+                Ok(None) => break None,
+                Err(e) => {
+                    self.bytes.set(self.bytes.get() + data.len() as u64);
+                    return Err(e);
+                }
             }
             // The whole block: read to the body's end, where `finish_first` checks its length.
             if data.len() as u64 >= expected || data.len() > ARRIVING_OPEN_MAX {
@@ -577,7 +583,6 @@ impl Fetcher {
                 break Some(value);
             }
         };
-        self.requests.set(self.requests.get() + 1);
         let Some(value) = opened else {
             self.bytes.set(self.bytes.get() + data.len() as u64);
             if let Err(e) = finish_first(&file, &data, expected, content_range.as_deref(), len) {
