@@ -2,7 +2,8 @@
 //! `Mercator_Variant_A` (EPSG Guidance Note 7-2's Makassar / NEIEZ example, EPSG:3002, as an
 //! ESRI `.prj` names its method) and EPSG's `Mercator (variant A)` in WKT 1, as PROJ's Mercator
 //! (1SP), GDAL's `Mercator_1SP` with a latitude of origin (and a scale of 1) as Mercator (variant
-//! B) with that latitude as its standard parallel, and WKT 1 and WKT 2 with a node of an unknown keyword (`rustgis:unapplied`, `a-b`,
+//! B) with that latitude as its standard parallel, Hotine variant A (in WKT 2 too) at an
+//! azimuth and grid angle of 90° as the Swiss oblique Mercator, and WKT 1 and WKT 2 with a node of an unknown keyword (`rustgis:unapplied`, `a-b`,
 //! `a"b c"`, an empty one), which PROJ skips whatever its keyword. A keyword with a space, a
 //! vertical tab, a NUL or an unclosed quote in it is refused, as PROJ refuses it, and so is
 //! EPSG's `Mercator (variant A)` with a latitude of origin other than 0, which PROJ reads but
@@ -44,7 +45,7 @@ fn wkt_read_by_proj_places_points_as_proj_does() {
     offline();
     let data = data();
     let cases = data["read"].as_array().unwrap();
-    assert_eq!(cases.len(), 28);
+    assert_eq!(cases.len(), 31);
     let mut bad = vec![];
     for case in cases {
         let name = case["name"].as_str().unwrap();
@@ -458,4 +459,33 @@ fn mercator_1sp_with_a_latitude_of_origin_and_a_scale_keeps_its_scale() {
     let wkt = r#"PROJCS["m",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Mercator_1SP"],PARAMETER["latitude_of_origin",30],PARAMETER["central_meridian",10],PARAMETER["scale_factor",0.99],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1]]"#;
     let proj = SpatialRef::from_wkt(wkt).to_proj4().unwrap();
     assert!(proj.contains("+k=0.99") && !proj.contains("lat_ts"), "{proj}");
+}
+
+/// Hotine variant A in WKT 2 (EPSG method 9812) with an azimuth and a rectified grid angle of 90° is
+/// the Swiss oblique Mercator, as in WKT 1: PROJ 9.9.0 reads it as the same PROJ string as the
+/// WKT 1 case `Hotine_Oblique_Mercator at 90° and 90°`, with the false origin at variant A's
+/// natural origin. It places that case's point where PROJ does.
+#[test]
+fn hotine_variant_a_at_90_degrees_in_wkt2_is_the_swiss_oblique_mercator() {
+    offline();
+    let wkt2 = concat!(
+        r#"PROJCRS["unknown",BASEGEOGCRS["NAD27",DATUM["North American Datum 1927",ELLIPSOID["Clarke 1866",6378206.4,294.978698213898,LENGTHUNIT["metre",1]]],"#,
+        r#"PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.0174532925199433]]],CONVERSION["unknown",METHOD["Hotine Oblique Mercator (variant A)",ID["EPSG",9812]],"#,
+        r#"PARAMETER["Latitude of projection centre",43,ANGLEUNIT["degree",0.0174532925199433],ID["EPSG",8811]],"#,
+        r#"PARAMETER["Longitude of projection centre",-80,ANGLEUNIT["degree",0.0174532925199433],ID["EPSG",8812]],"#,
+        r#"PARAMETER["Azimuth at projection centre",90,ANGLEUNIT["degree",0.0174532925199433],ID["EPSG",8813]],"#,
+        r#"PARAMETER["Angle from Rectified to Skew Grid",90,ANGLEUNIT["degree",0.0174532925199433],ID["EPSG",8814]],"#,
+        r#"PARAMETER["Scale factor at projection centre",0.9999,SCALEUNIT["unity",1],ID["EPSG",8815]],"#,
+        r#"PARAMETER["False easting",500000,LENGTHUNIT["metre",1],ID["EPSG",8806]],PARAMETER["False northing",200000,LENGTHUNIT["metre",1],ID["EPSG",8807]]],"#,
+        r#"CS[Cartesian,2],AXIS["(E)",east,ORDER[1],LENGTHUNIT["metre",1]],AXIS["(N)",north,ORDER[2],LENGTHUNIT["metre",1]]]"#
+    );
+    let data = data();
+    let case = data["read"].as_array().unwrap().iter().find(|c| c["name"] == "Hotine_Oblique_Mercator at 90° and 90°").unwrap();
+    let crs = SpatialRef::from_wkt(wkt2);
+    let proj = crs.to_proj4().unwrap();
+    assert!(same_proj(&proj, case["proj4"].as_str().unwrap()), "{proj}");
+    let geog = SpatialRef::from_wkt(case["wkt"].as_str().unwrap()).geographic_wkt().map(|w| SpatialRef::from_wkt(&w)).unwrap();
+    let num = |v: &Value, i: usize| v[i].as_f64().unwrap();
+    let (x, y) = Transformer::new(&geog, &crs).unwrap().transform(num(&case["point"], 0), num(&case["point"], 1)).unwrap();
+    assert!((x - num(&case["proj"], 0)).abs() < 1e-3 && (y - num(&case["proj"], 1)).abs() < 1e-3, "({x}, {y})");
 }

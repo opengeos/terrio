@@ -751,6 +751,21 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             push(&mut out, "lon_2", angle(&["longitudeofpoint2", "longitudeof2ndpoint"]));
             push(&mut out, "k", k.or(Some(1.0)));
         }
+        // With an azimuth (and a rectified grid angle, a missing one being the azimuth) of 90°, the
+        // Swiss oblique Mercator, as PROJ 9.9.0 reads variant A as well as B (`conversion.cpp`,
+        // opengeos/terrio#1012 item 28).
+        "hotineobliquemercator"
+        | "hotineobliquemercatorazimuthnaturalorigin"
+        | "hotineobliquemercatorvarianta"
+        | "hotineobliquemercatorazimuthcenter"
+        | "hotineobliquemercatorvariantb"
+            if azimuth.is_some_and(|a| (a - 90.0).abs() < 1e-9) && gamma.is_none_or(|g| (g - 90.0).abs() < 1e-9) =>
+        {
+            out.push("+proj=somerc".into());
+            push(&mut out, "lat_0", lat_0);
+            push(&mut out, "lon_0", lon_0);
+            push(&mut out, "k_0", k.or(Some(1.0)));
+        }
         "hotineobliquemercator" | "hotineobliquemercatorazimuthnaturalorigin" | "hotineobliquemercatorvarianta" => {
             out.push("+proj=omerc +no_uoff".into());
             push(&mut out, "lat_0", lat_0);
@@ -758,16 +773,6 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             push(&mut out, "alpha", azimuth);
             push(&mut out, "gamma", gamma.or(azimuth));
             push(&mut out, "k", k.or(Some(1.0)));
-        }
-        // With an azimuth (and a rectified grid angle, ESRI's being the azimuth) of 90°, the Swiss
-        // oblique Mercator, as PROJ reads it (and writes it, from `+proj=somerc`).
-        "hotineobliquemercatorazimuthcenter" | "hotineobliquemercatorvariantb"
-            if azimuth.is_some_and(|a| (a - 90.0).abs() < 1e-9) && gamma.is_none_or(|g| (g - 90.0).abs() < 1e-9) =>
-        {
-            out.push("+proj=somerc".into());
-            push(&mut out, "lat_0", lat_0);
-            push(&mut out, "lon_0", lon_0);
-            push(&mut out, "k_0", k.or(Some(1.0)));
         }
         "hotineobliquemercatorazimuthcenter" | "obliquemercator" | "hotineobliquemercatorvariantb" => {
             out.push("+proj=omerc".into());
