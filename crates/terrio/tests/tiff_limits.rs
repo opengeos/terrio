@@ -550,58 +550,434 @@ fn a_tall_window_of_an_uncompressed_strip_over_the_limit_reads_the_same_pixels()
     assert_eq!(read(TiffReadLimits { chunk_bytes: 20 << 20 }), read(TiffReadLimits::unlimited()));
 }
 
-/// A compressed strip over the limit is still refused: it is decoded whole.
-#[test]
-fn a_compressed_strip_over_the_limit_is_still_refused() {
+/// A raster of `bands` bands of `data_type` (UInt16 or Float32), written by terrio as one strip per
+/// plane under `compress` with `predictor` (pixel-interleaved, or one plane per band).
+fn compressed_strip(
+    (cols, rows, bands): (usize, usize, usize),
+    data_type: terrio::DataType,
+    (compress, predictor): (&str, u16),
+    interleave: &str,
+    overviews: Vec<usize>,
+) -> Vec<u8> {
     use terrio::raster::RasterData;
-    let cfg = terrio::RasterConfig { cols: 64, rows: 48, bands: 1, data_type: terrio::DataType::U16, ..Default::default() };
-    let ds = terrio::RasterDataset::new(terrio::Raster::from_data_native(cfg, RasterData::U16(vec![7; 64 * 48])).unwrap(), true);
+    let n = bands * cols * rows;
+    let data = match data_type {
+        terrio::DataType::U16 => RasterData::U16((0..n).map(|i| (i * 7 % 65_521) as u16).collect()),
+        terrio::DataType::F32 => RasterData::F32((0..n).map(|i| ((i % 977) as f32 - 400.0) * 0.37).collect()),
+        other => panic!("{other:?}"),
+    };
+    let cfg = terrio::RasterConfig { cols, rows, bands, data_type, ..Default::default() };
+    let ds = terrio::RasterDataset::new(terrio::Raster::from_data_native(cfg, data).unwrap(), true);
+    let creation = [("BLOCKYSIZE", rows.to_string()), ("INTERLEAVE", interleave.to_string()), ("PREDICTOR", predictor.to_string())];
     let options = terrio::RasterWriteOptions {
-        compression: Some("DEFLATE".into()),
-        creation_options: [("BLOCKYSIZE".to_string(), "48".to_string())].into_iter().collect(),
+        compression: Some(compress.into()),
+        creation_options: creation.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
+        overviews,
         ..Default::default()
     };
-    let bytes = terrio::memory::write_raster_bytes(&ds, "strip.tif", &options).unwrap();
-    let mut r = LazyRaster::from_tiff_bytes_with_limits(bytes, TiffReadLimits { chunk_bytes: 1280 }).unwrap().unwrap();
-    let e = r.read_window(Window::new(0, 0, 1, 1), &band1()).unwrap_err();
-    assert!(matches!(e, terrio::Error::DecodedLimitExceeded { limit: 1280, .. }), "{e}");
+    terrio::memory::write_raster_bytes(&ds, "strip.tif", &options).unwrap()
 }
 
-/// A big-endian ("MM") one-band TIFF of `cols` x `rows` samples of `bits` bits and
-/// `SampleFormat` `format`, stored as one uncompressed strip holding `data`.
-fn big_endian_strip(cols: u32, rows: u32, bits: u16, format: u16, data: &[u8]) -> Vec<u8> {
-    // (tag, type, value): SHORT 3 (left-justified in the value field), LONG 4.
-    let entries: [(u16, u16, u32); 9] = [
-        (256, 4, cols),
-        (257, 4, rows),
-        (258, 3, u32::from(bits)),
-        (259, 3, 1),
-        (262, 3, 1),
-        (273, 4, 0), // StripOffsets, set below
-        (278, 4, rows),
-        (279, 4, data.len() as u32),
-        (339, 3, u32::from(format)),
+/// A TIFF, big-endian ("MM") or little-endian ("II"), of `cols` x `rows` pixels of `spp` (at
+/// most 2) samples of `bits` bits and `SampleFormat` `format`, stored as one strip holding `data`
+/// under `compression` with `predictor`.
+fn strip_tiff(
+    big: bool,
+    (cols, rows, spp): (u32, u32, u16),
+    (bits, format): (u16, u16),
+    (compression, predictor): (u16, u16),
+    data: &[u8],
+) -> Vec<u8> {
+    // (tag, SHORT values, or a LONG value)
+    let samples = |v: u16| Ok(vec![v; usize::from(spp)]);
+    let entries: [(u16, Result<Vec<u16>, u32>); 11] = [
+        (256, Err(cols)),
+        (257, Err(rows)),
+        (258, samples(bits)),
+        (259, Ok(vec![compression])),
+        (262, Ok(vec![1])),
+        (273, Err(0)), // StripOffsets, set below
+        (277, Ok(vec![spp])),
+        (278, Err(rows)),
+        (279, Err(data.len() as u32)),
+        (317, Ok(vec![predictor])),
+        (339, samples(format)),
     ];
     let data_offset = 8 + 2 + entries.len() * 12 + 4;
-    let mut out = b"MM\0*".to_vec();
-    out.extend_from_slice(&8u32.to_be_bytes());
-    out.extend_from_slice(&(entries.len() as u16).to_be_bytes());
-    for (tag, typ, value) in entries {
-        let value = if tag == 273 { data_offset as u32 } else { value };
-        out.extend_from_slice(&tag.to_be_bytes());
-        out.extend_from_slice(&typ.to_be_bytes());
-        out.extend_from_slice(&1u32.to_be_bytes());
-        if typ == 3 {
-            out.extend_from_slice(&(value as u16).to_be_bytes());
-            out.extend_from_slice(&[0, 0]);
-        } else {
-            out.extend_from_slice(&value.to_be_bytes());
+    let short = |v: u16| if big { v.to_be_bytes() } else { v.to_le_bytes() };
+    let long = |v: u32| if big { v.to_be_bytes() } else { v.to_le_bytes() };
+    let mut out = if big { b"MM\0*".to_vec() } else { b"II*\0".to_vec() };
+    out.extend(long(8));
+    out.extend(short(entries.len() as u16));
+    for (tag, value) in entries {
+        out.extend(short(tag));
+        match value {
+            Ok(shorts) => {
+                assert!(shorts.len() <= 2);
+                out.extend(short(3));
+                out.extend(long(shorts.len() as u32));
+                let mut field: Vec<u8> = shorts.iter().flat_map(|v| short(*v)).collect();
+                field.resize(4, 0);
+                out.extend(field);
+            }
+            Err(value) => {
+                out.extend(short(4));
+                out.extend(long(1));
+                out.extend(long(if tag == 273 { data_offset as u32 } else { value }));
+            }
         }
     }
-    out.extend_from_slice(&[0; 4]);
+    out.extend([0; 4]);
     assert_eq!(out.len(), data_offset);
     out.extend_from_slice(data);
     out
+}
+
+/// A big-endian one-band TIFF of `cols` x `rows` samples of `bits` bits and `SampleFormat`
+/// `format`, stored as one uncompressed strip holding `data`.
+fn big_endian_strip(cols: u32, rows: u32, bits: u16, format: u16, data: &[u8]) -> Vec<u8> {
+    strip_tiff(true, (cols, rows, 1), (bits, format), (1, 1), data)
+}
+
+/// `data` compressed as TIFF's `compression` stores it: Deflate (zlib), LZW (TIFF's), Zstandard, or
+/// PackBits (runs of three bytes or more repeated, literal bytes otherwise).
+fn encode(compression: u16, data: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    match compression {
+        8 => {
+            let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            z.write_all(data).unwrap();
+            z.finish().unwrap()
+        }
+        5 => weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8).encode(data).unwrap(),
+        50000 => ruzstd::encoding::compress_to_vec(data, ruzstd::encoding::CompressionLevel::Fastest),
+        32773 => {
+            let mut out = Vec::new();
+            let mut i = 0;
+            while i < data.len() {
+                let run = data[i..].iter().take(128).take_while(|b| **b == data[i]).count();
+                if run >= 3 {
+                    out.extend([(1 - run as i32) as u8, data[i]]);
+                    i += run;
+                    continue;
+                }
+                let mut j = i + 1;
+                while j < data.len() && j - i < 128 && !(j + 2 < data.len() && data[j] == data[j + 1] && data[j] == data[j + 2]) {
+                    j += 1;
+                }
+                out.push((j - i - 1) as u8);
+                out.extend_from_slice(&data[i..j]);
+                i = j;
+            }
+            out
+        }
+        other => panic!("compression {other}"),
+    }
+}
+
+/// Values that compress little: a multiplicative hash of their index.
+fn scattered(n: usize) -> Vec<u16> {
+    (0..n).map(|i| ((i as u32).wrapping_mul(2_654_435_761) >> 16) as u16).collect()
+}
+
+/// A compressed strip over the limit is read by the rows a window needs, decoded from the start
+/// of the strip up to the window's last row, with Deflate, LZW, Zstandard and PackBits, and with
+/// horizontal differencing and the floating-point predictor: the values a whole decode gives,
+/// pixel-interleaved and band-separate, at full resolution and in an overview stored as one strip.
+/// So are PackBits runs that cross rows, and Zstandard frames one after another with a skippable
+/// frame between them.
+#[test]
+fn windows_of_a_compressed_strip_over_the_limit_read_by_decoding_its_rows() {
+    use terrio::DataType::{F32, U16};
+    let (cols, rows, bands) = (64, 48, 3);
+    let cases = [
+        ("DEFLATE", U16, 1),
+        ("DEFLATE", U16, 2),
+        ("DEFLATE", F32, 3),
+        ("LZW", U16, 1),
+        ("LZW", U16, 2),
+        ("LZW", F32, 3),
+        ("ZSTD", U16, 1),
+        ("ZSTD", U16, 2),
+        ("ZSTD", F32, 3),
+        ("PACKBITS", U16, 1),
+        ("PACKBITS", F32, 1),
+    ];
+    for (compress, data_type, predictor) in cases {
+        for interleave in ["PIXEL", "BAND"] {
+            let case = format!("{compress}, {data_type:?}, predictor {predictor}, {interleave}");
+            let bytes = compressed_strip((cols, rows, bands), data_type, (compress, predictor), interleave, vec![2]);
+            let read = |limits, w: Window, bands: &[usize], overview| {
+                let mut r = LazyRaster::from_tiff_bytes_with_limits(bytes.clone(), limits).unwrap().unwrap();
+                assert_eq!(r.block_size(), Some((cols, rows)), "{case}: one strip");
+                assert_eq!(r.overviews(), [(cols / 2, rows / 2)], "{case}");
+                r.read_window(w, &WindowOptions { bands: bands.to_vec(), overview }).map(|ds| ds.raster.data.to_f64_vec())
+            };
+            // Ten rows of a plane's strip: 384 bytes a row pixel-interleaved, 128 a band's.
+            let row_bytes = cols * data_type.size_bytes() * if interleave == "PIXEL" { bands } else { 1 };
+            let limits = TiffReadLimits { chunk_bytes: 10 * row_bytes };
+            for (w, selected, overview) in [
+                (Window::new(0, 0, 1, 1), &[1usize][..], None),
+                (Window::new(0, 0, cols, 4), &[1, 2, 3], None),
+                (Window::new(5, 17, 20, 9), &[3, 1], None),
+                (Window::new(0, 38, cols, 10), &[2, 3, 1], None),
+                (Window::new(cols - 1, rows - 1, 1, 1), &[2], None),
+                // The overview's rows are half as long: twenty fit the limit.
+                (Window::new(3, 4, 20, 20), &[1, 3], Some(0)),
+            ] {
+                let expected = read(TiffReadLimits::unlimited(), w, selected, overview).unwrap();
+                assert_eq!(read(limits, w, selected, overview).unwrap(), expected, "{case}: {w:?}, bands {selected:?}, {overview:?}");
+            }
+            // The strips, over the limit, are refused read whole, and so is a window of eleven rows.
+            for (w, overview) in
+                [(Window::full(cols, rows), None), (Window::full(cols / 2, rows / 2), Some(0)), (Window::new(0, 20, 4, 11), None)]
+            {
+                let e = read(limits, w, &[1], overview).unwrap_err();
+                assert!(matches!(e, terrio::Error::DecodedLimitExceeded { limit, .. } if limit == 10 * row_bytes), "{case}: {w:?}: {e}");
+            }
+        }
+    }
+    // 50 x 40 bytes in runs of 37: PackBits runs cross rows, and parts of rows read or dropped.
+    let (cols, rows) = (50usize, 40usize);
+    let raw: Vec<u8> = (0..cols * rows).map(|i| (i / 37 % 5) as u8).collect();
+    let packbits = strip_tiff(false, (cols as u32, rows as u32, 1), (8, 1), (32773, 1), &encode(32773, &raw));
+    // 25 x 40 UInt16 pixels in two Zstandard frames, a skippable frame of 4 bytes between them.
+    let half = raw.len() / 2;
+    let mut zstd = encode(50000, &raw[..half]);
+    zstd.extend([0x50, 0x2a, 0x4d, 0x18, 4, 0, 0, 0, 1, 2, 3, 4]);
+    zstd.extend(encode(50000, &raw[half..]));
+    let zstd = strip_tiff(false, (cols as u32 / 2, rows as u32, 1), (16, 1), (50000, 1), &zstd);
+    for (bytes, w) in [
+        (&packbits, Window::new(3, 7, 20, 9)),
+        (&packbits, Window::new(0, 30, cols, 10)),
+        (&zstd, Window::new(2, 15, 20, 10)),
+        (&zstd, Window::new(0, 30, cols / 2, 10)),
+    ] {
+        let read = |limits| {
+            let mut r = LazyRaster::from_tiff_bytes_with_limits(bytes.clone(), limits).unwrap().unwrap();
+            r.read_window(w, &band1()).unwrap().raster.data.to_f64_vec()
+        };
+        assert_eq!(read(TiffReadLimits { chunk_bytes: 10 * cols }), read(TiffReadLimits::unlimited()), "{w:?}");
+    }
+}
+
+/// A window over the last rows of a compressed strip, taller than a batch of rows (8 MiB), of
+/// values that compress little: the rows before it are decoded and dropped through many parts of
+/// stored bytes, then its rows are decoded in two batches, each with its values.
+#[test]
+fn a_tall_window_at_the_end_of_a_compressed_strip_reads_its_pixels() {
+    use terrio::raster::RasterData;
+    // 2048 x 2400 UInt16 pixels: rows of 4,096 bytes; the last 2,100 (8.6 MB) under a 9 MiB limit.
+    let (cols, rows) = (2048, 2400);
+    let values = scattered(cols * rows);
+    let cfg = terrio::RasterConfig { cols, rows, bands: 1, data_type: terrio::DataType::U16, ..Default::default() };
+    let ds = terrio::RasterDataset::new(terrio::Raster::from_data_native(cfg, RasterData::U16(values.clone())).unwrap(), true);
+    let w = Window::new(100, 300, 1500, 2100);
+    let expected: Vec<f64> =
+        (300..rows).flat_map(|y| (100..1600).map(move |x| (x, y))).map(|(x, y)| f64::from(values[y * cols + x])).collect();
+    for compress in ["DEFLATE", "LZW", "ZSTD", "PACKBITS"] {
+        let options = terrio::RasterWriteOptions {
+            compression: Some(compress.into()),
+            creation_options: vec![("BLOCKYSIZE".into(), rows.to_string())],
+            ..Default::default()
+        };
+        let bytes = terrio::memory::write_raster_bytes(&ds, "strip.tif", &options).unwrap();
+        let mut r = LazyRaster::from_tiff_bytes_with_limits(bytes, TiffReadLimits { chunk_bytes: 9 << 20 }).unwrap().unwrap();
+        assert_eq!(r.read_window(w, &band1()).unwrap().raster.data.to_f64_vec(), expected, "{compress}");
+    }
+}
+
+/// The rows of a strip over the limit are read from a file whose bytes the caller fetches: the
+/// stored bytes are fetched as decoding reaches them, a part at a time, for every compression
+/// (Zstandard's decoder reads its input itself), so a window at the top of the strip fetches few.
+#[test]
+fn a_window_of_a_compressed_strip_over_the_limit_reads_from_a_sparse_file() {
+    // 1024 x 2400 UInt16 pixels (4.9 MB) that compress little; a window of the last 50 rows.
+    let (cols, rows) = (1024usize, 2400usize);
+    let values = scattered(cols * rows);
+    let raw: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let w = Window::new(10, 2350, 1000, 50);
+    let expected: Vec<f64> =
+        (2350..rows).flat_map(|y| (10..1010).map(move |x| (x, y))).map(|(x, y)| f64::from(values[y * cols + x])).collect();
+    for compression in [8u16, 5, 50000, 32773] {
+        let bytes = strip_tiff(false, (cols as u32, rows as u32, 1), (16, 1), (compression, 1), &encode(compression, &raw));
+        let file = SparseFile::new(bytes.len() as u64);
+        let fetch = |o: u64, n: u64| Ok(bytes[o as usize..(o + n) as usize].to_vec());
+        let limits = TiffReadLimits { chunk_bytes: 64 * cols * 2 };
+        let mut r = read_with(&file, 64, fetch, || Ok(LazyRaster::from_sparse_with_limits(file.clone(), limits)?.unwrap())).unwrap();
+        let (opened, _) = file.fetched();
+        let top = read_with(&file, 64, fetch, || r.read_window(Window::new(0, 0, 4, 2), &band1())).unwrap();
+        assert_eq!(top.raster.data.to_f64_vec(), [0, 1, 2, 3, cols, cols + 1, cols + 2, cols + 3].map(|i| f64::from(values[i])));
+        let stored = (bytes.len() - 200) as u64;
+        assert!(file.fetched().0 - opened < stored / 3, "compression {compression}: {:?} of {stored} stored bytes", file.fetched());
+        let got = read_with(&file, 64, fetch, || r.read_window(w, &band1())).unwrap();
+        assert_eq!(got.raster.data.to_f64_vec(), expected, "compression {compression}");
+    }
+}
+
+/// Big-endian Deflate strips with horizontal differencing (Int16, two samples a pixel) and the
+/// floating-point predictor (Float32, Float64): their rows decode to their values on the row path,
+/// as a whole decode gives them.
+#[test]
+fn rows_of_big_endian_strips_with_predictors_keep_their_values() {
+    let (cols, rows) = (9usize, 7usize);
+    // Int16 pairs, differenced along each row, sample by sample.
+    let ints: Vec<i16> = (0..cols * rows * 2).map(|i| ((i * 37 % 101) as i16 - 50) * 300).collect();
+    let mut diffs = ints.clone();
+    for row in diffs.chunks_exact_mut(cols * 2) {
+        for i in (2..cols * 2).rev() {
+            row[i] = row[i].wrapping_sub(row[i - 2]);
+        }
+    }
+    let int_bytes: Vec<u8> = diffs.iter().flat_map(|v| v.to_be_bytes()).collect();
+    // Floating-point samples: each row's bytes as planes, most significant first, differenced.
+    fn planes<const N: usize>(rows: &[[u8; N]], cols: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        for row in rows.chunks_exact(cols) {
+            let mut p: Vec<u8> = (0..N).flat_map(|b| row.iter().map(move |v| v[b])).collect();
+            for i in (1..p.len()).rev() {
+                p[i] = p[i].wrapping_sub(p[i - 1]);
+            }
+            out.extend(p);
+        }
+        out
+    }
+    let f32s: Vec<f32> = (0..cols * rows).map(|i| (i as f32 - 30.0) * 1.375e3).collect();
+    let f64s: Vec<f64> = (0..cols * rows).map(|i| (i as f64 - 25.0) * -7.25e-5).collect();
+    let f32_planes = planes(&f32s.iter().map(|v| v.to_be_bytes()).collect::<Vec<_>>(), cols);
+    let f64_planes = planes(&f64s.iter().map(|v| v.to_be_bytes()).collect::<Vec<_>>(), cols);
+    // (samples a pixel, bits, SampleFormat, predictor, the strip's bytes, its values)
+    let cases = [
+        (2u16, 16u16, 2u16, 2u16, int_bytes, ints.iter().map(|v| f64::from(*v)).collect::<Vec<f64>>()),
+        (1, 32, 3, 3, f32_planes, f32s.iter().map(|v| f64::from(*v)).collect()),
+        (1, 64, 3, 3, f64_planes, f64s.clone()),
+    ];
+    for (spp, bits, format, predictor, data, values) in cases {
+        let bytes = strip_tiff(true, (cols as u32, rows as u32, spp), (bits, format), (8, predictor), &encode(8, &data));
+        let row_bytes = cols * usize::from(spp) * usize::from(bits / 8);
+        let read = |limits, w: Window| {
+            let mut r = LazyRaster::from_tiff_bytes_with_limits(bytes.clone(), limits).unwrap().unwrap();
+            let bands: Vec<usize> = (1..=usize::from(spp)).collect();
+            r.read_window(w, &WindowOptions { bands, overview: None }).unwrap().raster.data.to_f64_vec()
+        };
+        // Two rows fit the limit, the strip does not.
+        let limits = TiffReadLimits { chunk_bytes: 2 * row_bytes };
+        let w = Window::new(2, 4, 6, 2);
+        let spp = usize::from(spp);
+        let expected: Vec<f64> =
+            (0..spp).flat_map(|s| (4..6).flat_map(move |y| (2..8).map(move |x| (y * cols + x) * spp + s))).map(|i| values[i]).collect();
+        assert_eq!(read(limits, w), expected, "{bits}-bit samples, predictor {predictor}");
+        assert_eq!(read(TiffReadLimits::unlimited(), w), expected, "{bits}-bit samples, predictor {predictor}: a whole decode");
+    }
+}
+
+/// A compressed stream cut short, within the bytes the file holds: the windows before the cut read,
+/// and one reaching past it is refused as invalid data, as a whole decode of the strip is. So is a
+/// stream that is not valid where a window starts reading it (a Deflate stream's zlib header), and
+/// a Deflate stream whose Adler-32 is wrong once a window reaches the strip's last row (the
+/// Adler-32 in the next part of stored bytes read, after the samples), while one cut in its
+/// Adler-32 reads, as whole. A file cut short after it was opened is an I/O error, whatever the
+/// compression.
+#[test]
+fn a_compressed_strip_cut_short_is_invalid_where_a_window_reaches_the_cut() {
+    // 256 x 600 UInt16 pixels (307 KB) that compress little, cut in their last eighth: Zstandard
+    // codes them in three blocks, and its decoder hands out bytes once they leave its 128 KiB
+    // window, so the cut is in the third.
+    let (cols, rows) = (256usize, 600usize);
+    let values = scattered(cols * rows);
+    let raw: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let limits = TiffReadLimits { chunk_bytes: 10 * cols * 2 };
+    let read = |bytes: &[u8], limits, w: Window| {
+        let mut r = LazyRaster::from_tiff_bytes_with_limits(bytes.to_vec(), limits).unwrap().unwrap();
+        r.read_window(w, &band1()).map(|ds| ds.raster.data.to_f64_vec())
+    };
+    for compression in [8u16, 5, 50000, 32773] {
+        let stream = encode(compression, &raw);
+        let cut = strip_tiff(false, (cols as u32, rows as u32, 1), (16, 1), (compression, 1), &stream[..stream.len() * 7 / 8]);
+        let top = read(&cut, limits, Window::new(0, 0, cols, 2)).unwrap();
+        assert_eq!(top, values[..2 * cols].iter().map(|v| f64::from(*v)).collect::<Vec<_>>(), "compression {compression}");
+        let e = read(&cut, limits, Window::new(0, rows - 5, 3, 5)).unwrap_err();
+        assert!(matches!(e, terrio::Error::InvalidData(_)), "compression {compression}: {e}");
+        let e = read(&cut, TiffReadLimits::unlimited(), Window::new(0, rows - 5, 3, 5)).unwrap_err();
+        assert!(matches!(e, terrio::Error::InvalidData(_)), "compression {compression}, a whole decode: {e}");
+    }
+    let mut header = encode(8, &raw);
+    header[0] = 0x79; // not Deflate: the zlib header's method must be 8
+    let header = strip_tiff(false, (cols as u32, rows as u32, 1), (16, 1), (8, 1), &header);
+    for limits in [limits, TiffReadLimits::unlimited()] {
+        let e = read(&header, limits, Window::new(0, 0, 1, 1)).unwrap_err();
+        assert!(matches!(e, terrio::Error::InvalidData(_)), "{limits:?}: {e}");
+    }
+    // One stored Deflate block of 809 x 81 bytes: the stream's first 65,536 bytes (the first part
+    // read) end with the samples, its Adler-32 is in the next.
+    let (width, height) = (809usize, 81usize);
+    let data: Vec<u8> = (0..width * height).map(|i| (i % 251) as u8).collect();
+    let (mut a, mut b) = (1u32, 0u32);
+    for &x in &data {
+        a = (a + u32::from(x)) % 65_521;
+        b = (b + a) % 65_521;
+    }
+    let len = data.len() as u16;
+    let mut stream = vec![0x78, 0x01, 0x01];
+    stream.extend(len.to_le_bytes());
+    stream.extend((!len).to_le_bytes());
+    stream.extend(&data);
+    assert_eq!(stream.len(), 65_536);
+    stream.extend((b << 16 | a).to_be_bytes());
+    let mut adler = stream.clone();
+    *adler.last_mut().unwrap() ^= 1;
+    let file = |stream: &[u8]| strip_tiff(false, (width as u32, height as u32, 1), (8, 1), (8, 1), stream);
+    let (top, end) = (Window::new(0, 0, 3, 1), Window::new(0, height - 2, width, 2));
+    let pixels =
+        |w: Window| -> Vec<f64> { (w.y..w.y + w.height).flat_map(|y| data[y * width..][..w.width].to_vec()).map(f64::from).collect() };
+    for limits in [TiffReadLimits { chunk_bytes: 10 * width }, TiffReadLimits::unlimited()] {
+        assert_eq!(read(&file(&stream), limits, end).unwrap(), pixels(end), "{limits:?}");
+        let e = read(&file(&adler), limits, end).unwrap_err();
+        assert!(matches!(e, terrio::Error::InvalidData(_)), "{limits:?}: {e}");
+        assert_eq!(read(&file(&stream[..stream.len() - 2]), limits, end).unwrap(), pixels(end), "{limits:?}");
+    }
+    assert_eq!(read(&file(&adler), TiffReadLimits { chunk_bytes: 10 * width }, top).unwrap(), pixels(top));
+    let end = Window::new(cols - 3, rows - 1, 3, 1);
+    let dir = tempfile::tempdir().unwrap();
+    for compression in [8u16, 5, 50000, 32773] {
+        let path = dir.path().join(format!("{compression}.tif"));
+        std::fs::write(&path, strip_tiff(false, (cols as u32, rows as u32, 1), (16, 1), (compression, 1), &encode(compression, &raw)))
+            .unwrap();
+        let mut r = LazyRaster::open_tiff_with_limits(path.to_str().unwrap(), limits).unwrap().unwrap();
+        // The first part of the stored bytes (64 KiB) is in the file, the next is not: Zstandard's
+        // decoder reads past it itself.
+        std::fs::OpenOptions::new().write(true).open(&path).unwrap().set_len(70_000).unwrap();
+        let e = r.read_window(end, &band1()).unwrap_err();
+        assert!(matches!(e, terrio::Error::Io(_)), "compression {compression}: {e}");
+    }
+}
+
+/// Deflate streams at their limits read by rows: the bound on what a stored byte can decode to
+/// refuses no valid stream (a strip of zeros, compressed as far as Deflate goes, about 1,030 bytes
+/// from one), and matches reaching back almost 32 KiB, the farthest Deflate refers, are decoded
+/// across the parts the stream is inflated in (rows of 30,000 bytes, each the one before it).
+#[test]
+fn deflate_streams_at_their_limits_read_by_rows() {
+    use std::io::Write;
+    let deflate = |data: &[u8]| {
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        z.write_all(data).unwrap();
+        z.finish().unwrap()
+    };
+    let (cols, rows) = (8192usize, 4096usize);
+    let zeros = deflate(&vec![0u8; cols * rows]);
+    assert!(zeros.len() * 1000 < cols * rows, "{} bytes for {}", zeros.len(), cols * rows);
+    let row: Vec<u8> = scattered(15_000).iter().flat_map(|v| v.to_le_bytes()).collect();
+    let repeated = deflate(&row.repeat(400));
+    for (bytes, (cols, rows)) in [
+        (strip_tiff(false, (cols as u32, rows as u32, 1), (8, 1), (8, 1), &zeros), (cols, rows)),
+        (strip_tiff(false, (30_000, 400, 1), (8, 1), (8, 1), &repeated), (30_000, 400)),
+    ] {
+        let mut r = LazyRaster::from_tiff_bytes_with_limits(bytes, TiffReadLimits { chunk_bytes: 1 << 20 }).unwrap().unwrap();
+        let got = r.read_window(Window::new(0, rows - 2, cols, 2), &band1()).unwrap().raster.data.to_f64_vec();
+        let expected: Vec<f64> = if cols == 30_000 { row.repeat(2).iter().map(|v| f64::from(*v)).collect() } else { vec![0.0; 2 * cols] };
+        assert!(got == expected, "{cols} x {rows}");
+    }
 }
 
 /// The rows of a big-endian Int16 or Float32 strip over the limit are read as their native type,

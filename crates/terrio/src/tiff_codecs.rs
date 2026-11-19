@@ -806,82 +806,7 @@ impl ChunkCodec {
 
     /// Undoes a predictor on native-endian samples, row by row.
     fn unpredict(&self, data: &mut [u8], w: usize) {
-        let (size, spp) = (self.sample.size(), self.spp);
-        let row = w * spp * size;
-        if row == 0 {
-            return;
-        }
-        match self.predictor {
-            2 => {
-                for r in data.chunks_exact_mut(row) {
-                    macro_rules! acc {
-                        ($t:ty) => {{
-                            for i in spp..w * spp {
-                                let (a, b) = (i * size, (i - spp) * size);
-                                let prev = <$t>::from_ne_bytes(r[b..b + size].try_into().unwrap());
-                                let cur = <$t>::from_ne_bytes(r[a..a + size].try_into().unwrap());
-                                r[a..a + size].copy_from_slice(&cur.wrapping_add(prev).to_ne_bytes());
-                            }
-                        }};
-                    }
-                    match size {
-                        1 => acc!(u8),
-                        2 => acc!(u16),
-                        4 => acc!(u32),
-                        _ => acc!(u64),
-                    }
-                }
-            }
-            3 => {
-                // Byte planes, most significant first, differenced along the row.
-                let wc = w * spp;
-                let mut tmp = vec![0u8; row];
-                for r in data.chunks_exact_mut(row) {
-                    // The sums along the row, into `tmp`.
-                    if spp == 1 {
-                        let mut sum = 0u8;
-                        for (t, &x) in tmp.iter_mut().zip(r.iter()) {
-                            sum = sum.wrapping_add(x);
-                            *t = sum;
-                        }
-                    } else {
-                        tmp[..spp].copy_from_slice(&r[..spp]);
-                        for i in spp..row {
-                            tmp[i] = r[i].wrapping_add(tmp[i - spp]);
-                        }
-                    }
-                    // Each sample from its bytes, one in each plane: most significant first, so
-                    // big-endian, in native-endian order.
-                    macro_rules! join {
-                        ($n:literal, $t:ty) => {{
-                            let planes: [&[u8]; $n] = std::array::from_fn(|b| &tmp[b * wc..(b + 1) * wc]);
-                            for (v, out) in r.as_chunks_mut::<$n>().0.iter_mut().enumerate() {
-                                *out = <$t>::from_be_bytes(std::array::from_fn(|b| planes[b][v])).to_ne_bytes();
-                            }
-                        }};
-                    }
-                    match size {
-                        2 => join!(2, u16),
-                        4 => join!(4, u32),
-                        8 => join!(8, u64),
-                        _ => {
-                            for v in 0..wc {
-                                let mut be = [0u8; 8];
-                                for (b, byte) in be[..size].iter_mut().enumerate() {
-                                    *byte = tmp[b * wc + v];
-                                }
-                                let out = &mut r[v * size..(v + 1) * size];
-                                out.copy_from_slice(&be[..size]);
-                                if cfg!(target_endian = "little") {
-                                    out.reverse();
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
+        unpredict(data, w, self.spp, self.sample.size(), self.predictor);
     }
 
     /// Bound each LERC header before allowing mask or pixel inspection.
@@ -1216,6 +1141,87 @@ impl ChunkCodec {
             Sample::F32 => typed!(F32, f32),
             Sample::F64 => typed!(F64, f64),
         })
+    }
+}
+
+/// Undoes a predictor on rows of `w` pixels of `spp` samples of `size` bytes, native-endian:
+/// horizontal differencing (2) or the floating-point predictor (3), whose byte planes give
+/// native-endian samples whatever the file's byte order. Other predictors leave `data` as it is.
+pub(crate) fn unpredict(data: &mut [u8], w: usize, spp: usize, size: usize, predictor: u16) {
+    let row = w * spp * size;
+    if row == 0 {
+        return;
+    }
+    match predictor {
+        2 => {
+            for r in data.chunks_exact_mut(row) {
+                macro_rules! acc {
+                    ($t:ty) => {{
+                        for i in spp..w * spp {
+                            let (a, b) = (i * size, (i - spp) * size);
+                            let prev = <$t>::from_ne_bytes(r[b..b + size].try_into().unwrap());
+                            let cur = <$t>::from_ne_bytes(r[a..a + size].try_into().unwrap());
+                            r[a..a + size].copy_from_slice(&cur.wrapping_add(prev).to_ne_bytes());
+                        }
+                    }};
+                }
+                match size {
+                    1 => acc!(u8),
+                    2 => acc!(u16),
+                    4 => acc!(u32),
+                    _ => acc!(u64),
+                }
+            }
+        }
+        3 => {
+            // Byte planes, most significant first, differenced along the row.
+            let wc = w * spp;
+            let mut tmp = vec![0u8; row];
+            for r in data.chunks_exact_mut(row) {
+                // The sums along the row, into `tmp`.
+                if spp == 1 {
+                    let mut sum = 0u8;
+                    for (t, &x) in tmp.iter_mut().zip(r.iter()) {
+                        sum = sum.wrapping_add(x);
+                        *t = sum;
+                    }
+                } else {
+                    tmp[..spp].copy_from_slice(&r[..spp]);
+                    for i in spp..row {
+                        tmp[i] = r[i].wrapping_add(tmp[i - spp]);
+                    }
+                }
+                // Each sample from its bytes, one in each plane: most significant first, so
+                // big-endian, in native-endian order.
+                macro_rules! join {
+                    ($n:literal, $t:ty) => {{
+                        let planes: [&[u8]; $n] = std::array::from_fn(|b| &tmp[b * wc..(b + 1) * wc]);
+                        for (v, out) in r.as_chunks_mut::<$n>().0.iter_mut().enumerate() {
+                            *out = <$t>::from_be_bytes(std::array::from_fn(|b| planes[b][v])).to_ne_bytes();
+                        }
+                    }};
+                }
+                match size {
+                    2 => join!(2, u16),
+                    4 => join!(4, u32),
+                    8 => join!(8, u64),
+                    _ => {
+                        for v in 0..wc {
+                            let mut be = [0u8; 8];
+                            for (b, byte) in be[..size].iter_mut().enumerate() {
+                                *byte = tmp[b * wc + v];
+                            }
+                            let out = &mut r[v * size..(v + 1) * size];
+                            out.copy_from_slice(&be[..size]);
+                            if cfg!(target_endian = "little") {
+                                out.reverse();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
     }
 }
 

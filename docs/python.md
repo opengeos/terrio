@@ -1066,6 +1066,11 @@ with Env(TERRIO_TIFF_MAX_CHUNK_BYTES=str(1 << 30)):
     da = terrio.xarray.open_rasterio("pixel_interleaved_1488_bands.tif")
 ```
 
+An image stored as one strip larger than the limit is read by the rows a window needs, when
+those rows fit the limit: uncompressed, or Deflate, LZW, Zstandard and PackBits strips,
+decoded from the start of the strip to the window's last row. Reading the whole strip is still
+refused (see [Rasters](formats.md#rasters)).
+
 A GeoTIFF read whole or by window (`terrio.open_raster`, `Raster.read`, `terrio.rio`'s `read`)
 raises `ResourceLimitError` before its buffer is allocated when the process cannot hold it (more
 than the physical memory, or than the limit of its cgroup or its address space), and so does

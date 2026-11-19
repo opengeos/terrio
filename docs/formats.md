@@ -104,6 +104,18 @@ also bounds LERC Deflate/Zstandard inflation and the decoded size declared by
 embedded LERC and JPEG headers, before mask or pixel decoding. It is not a cap
 on total process memory or the codec's working buffers.
 
+An image stored as one strip (TIFF 6.0 allows it, and an image without `RowsPerStrip` is
+one) can decode to more than the limit. A window of such a strip is read by the rows it
+needs, when those rows, at the strip's full width, fit the limit: uncompressed rows at their
+offsets in the file, and a Deflate, LZW, Zstandard or PackBits strip (with horizontal
+differencing or the floating-point predictor) decoded from its start to the window's last
+row, the rows before the window dropped as they are decoded. The read then holds the window
+and about 17 MiB of working buffers (plus a Zstandard frame's window, at most 128 MiB),
+whatever the strip's size; a window near the end of a compressed strip takes the time of
+decoding the rows before it. A read of the whole strip, a window whose rows do not fit the
+limit, a strip whose stored bytes cannot decode to its rows, and a strip of another
+compression are refused as before.
+
 TIFF masks follow the image's own `NewSubfileType` reduced-resolution flag, including a
 reduced first image with a reduced mask (flag 5) or a unique legacy mask (flag 4).
 GDAL 3.13.3 ignores a first-image flag-5 mask; Terrio deliberately honors it, so masked
