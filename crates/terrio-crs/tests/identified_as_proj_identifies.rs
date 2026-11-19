@@ -78,8 +78,32 @@ fn compound_and_vertical_projjson_read_back() {
         let back = SpatialRef::from_projjson(&json).unwrap_or_else(|e| panic!("EPSG:{code}: {e}\n{json}"));
         assert_eq!(back.epsg, Some(code), "{json}");
     }
+    // `components` belongs to a compound CRS only; a bound CRS's source is horizontal.
+    let geographic = SpatialRef::from_epsg(4326).unwrap().to_projjson().unwrap();
+    assert!(SpatialRef::from_projjson(&geographic.replacen('{', r#"{"components":[1,2],"#, 1)).is_err());
+    let compound = SpatialRef::from_epsg(7405).unwrap().to_projjson().unwrap();
+    let bound = format!(
+        r#"{{"type":"BoundCRS","source_crs":{compound},"target_crs":{geographic},"transformation":{{"name":"t","method":{{"name":"Geocentric translations (geog2D domain)","id":{{"authority":"EPSG","code":9603}}}},"parameters":[]}}}}"#
+    );
+    let error = SpatialRef::from_projjson(&bound).unwrap_err().to_string();
+    assert!(error.contains("bound source must be a geographic or projected CRS"), "{error}");
     // A vertical CRS needs one axis, up or down, in a length unit.
     let json = SpatialRef::from_epsg(5701).unwrap().to_projjson().unwrap();
     assert!(SpatialRef::from_projjson(&json.replace("\"up\"", "\"north\"")).is_err());
     assert!(SpatialRef::from_projjson(&json.replace(r#""subtype":"vertical""#, r#""subtype":"Cartesian""#)).is_err());
+}
+
+/// Of a horizontal and a vertical CRS with a current and a deprecated compound CRS, the current
+/// one, as PROJ 9.9.0 leaves deprecated CRSs out: NTF (Paris) / Lambert zone II and NGF-IGN69
+/// height are EPSG:7411 (PROJ: 70%), not the deprecated 7412, under another name.
+#[test]
+fn a_compound_crs_is_its_parts_current_code() {
+    let h = SpatialRef::from_epsg(27572).unwrap().to_wkt().unwrap();
+    let v = SpatialRef::from_epsg(5719).unwrap().to_wkt().unwrap();
+    assert_eq!(identify_epsg(&format!(r#"COMPD_CS["Lambert II and heights",{h},{v}]"#)), Some(7411));
+    // Truncated or cut in a character, a compound CRS's WKT is no CRS, not a panic.
+    for wkt in ["COMPD_CS[", "COMPD_CS(", "COMPD_CS[é"] {
+        assert_eq!(identify_epsg(wkt), None);
+        assert_eq!(SpatialRef::from_wkt(wkt).epsg, None);
+    }
 }

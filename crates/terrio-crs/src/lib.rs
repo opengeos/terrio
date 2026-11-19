@@ -1682,10 +1682,10 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
     }
     // A compound CRS is not its horizontal CRS: the registry's compound CRS of its horizontal and
     // vertical CRSs, identified each, as PROJ 9.9.0 identifies EPSG:7405's WKT without its codes
-    // (#1012 item 47); of several, the one of its name.
+    // (#1012 item 47); a current one, and of several, the one of its name.
     if let Some((horizontal, vertical)) = def::split_compound(wkt) {
         let (h, v) = (identify_epsg(&horizontal)?, def::vertical_code(&vertical)?);
-        return epsg::compound_of(h, v, wkt_name(wkt).as_deref()).filter(|c| declared_fits(wkt, *c));
+        return epsg::current_compound_of(h, v, wkt_name(wkt).as_deref()).filter(|c| declared_fits(wkt, *c));
     }
     // A vertical CRS by its name, datum, unit and direction, as PROJ 9.9.0 identifies it.
     if keywords::is(keywords::root_key(wkt), keywords::VERTICAL_CRS) {

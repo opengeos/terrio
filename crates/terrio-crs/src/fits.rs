@@ -25,7 +25,8 @@ fn same_measure(x: f64, y: f64) -> bool {
 /// inverse flattening, each within 1e-10. GRS 1980 is not WGS 84 (EPSG:6986 is not EPSG:7138).
 pub(crate) fn same_figure(a: f64, es: f64, other_a: f64, other_es: f64) -> bool {
     let b = |a: f64, es: f64| a * (1.0 - es).sqrt();
-    let rf = |es: f64| 1.0 / (1.0 - (1.0 - es).sqrt());
+    // 1 / (1 - sqrt(1 - es)), without its cancellation.
+    let rf = |es: f64| (1.0 + (1.0 - es).sqrt()) / es;
     same_measure(a, other_a)
         && same_measure(b(a, es), b(other_a, other_es))
         && (es == 0.0 || other_es == 0.0 || same_measure(rf(es), rf(other_es)))
@@ -35,6 +36,10 @@ pub(crate) fn same_figure(a: f64, es: f64, other_a: f64, other_es: f64) -> bool 
 /// `ELLIPSOID` of a WKT definition (in its `LENGTHUNIT`).
 pub(crate) fn wkt_figure(wkt: &str) -> Option<(f64, f64)> {
     let (a, rf) = wkt1::parse(wkt)?.find(keywords::ELLIPSOID)?.ellipsoid()?;
+    // A sphere, or an ellipsoid of an inverse flattening of at least 1, as PROJ reads one.
+    if rf != 0.0 && rf < 1.0 {
+        return None;
+    }
     let f = if rf == 0.0 { 0.0 } else { 1.0 / rf };
     Some((a, f * (2.0 - f)))
 }

@@ -389,7 +389,7 @@ fn crs(value: &Value, base: bool, depth: usize) -> Result<String> {
     let mut args;
     let key = match kind {
         "GeographicCRS" | "GeodeticCRS" => {
-            if ["base_crs", "conversion", "source_crs", "target_crs", "transformation"].iter().any(|k| o.contains_key(*k)) {
+            if ["base_crs", "conversion", "source_crs", "target_crs", "transformation", "components"].iter().any(|k| o.contains_key(*k)) {
                 return Err(bad("unexpected geographic CRS components"));
             }
             let d = match (o.get("datum"), o.get("datum_ensemble")) {
@@ -415,7 +415,7 @@ fn crs(value: &Value, base: bool, depth: usize) -> Result<String> {
             if base { "BASEGEOGCRS" } else { "GEOGCRS" }
         }
         "ProjectedCRS" if !base => {
-            if ["datum", "datum_ensemble", "source_crs", "target_crs", "transformation"].iter().any(|k| o.contains_key(*k)) {
+            if ["datum", "datum_ensemble", "source_crs", "target_crs", "transformation", "components"].iter().any(|k| o.contains_key(*k)) {
                 return Err(bad("unexpected projected CRS components"));
             }
             args = vec![crs(required(o, "base_crs")?, true, depth + 1)?, operation(required(o, "conversion")?, false)?];
@@ -423,11 +423,17 @@ fn crs(value: &Value, base: bool, depth: usize) -> Result<String> {
             "PROJCRS"
         }
         "BoundCRS" if !base => {
-            if ["datum", "datum_ensemble", "coordinate_system", "base_crs", "conversion"].iter().any(|k| o.contains_key(*k)) {
+            if ["datum", "datum_ensemble", "coordinate_system", "base_crs", "conversion", "components"].iter().any(|k| o.contains_key(*k)) {
                 return Err(bad("unexpected bound CRS components"));
             }
             if required(o, "source_crs")?.get("type").and_then(Value::as_str) == Some("BoundCRS") {
                 return Err(bad("nested bound sources are unsupported"));
+            }
+            if !matches!(
+                required(o, "source_crs")?.get("type").and_then(Value::as_str),
+                Some("GeographicCRS" | "GeodeticCRS" | "ProjectedCRS")
+            ) {
+                return Err(bad("bound source must be a geographic or projected CRS"));
             }
             let source = crs(required(o, "source_crs")?, false, depth + 1)?;
             let target_value = required(o, "target_crs")?;
