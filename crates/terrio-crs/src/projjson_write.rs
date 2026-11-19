@@ -477,9 +477,9 @@ fn projected_cs(root: &Node, to_meter: f64, axis: Option<&str>) -> Value {
 }
 
 use crate::methods::{
-    AZIMUTH, CO_LAT_CONE as CO_LAT, FE, FE_CENTRE, FE_FALSE, FN, FN_CENTRE, FN_FALSE, GAMMA, K_CENTRE, K_ELLIPSOID, K_NAT,
-    K_PSEUDO_SP as K_PSEUDO, Kind, LAT_CENTRE, LAT_FALSE, LAT_NAT, LAT_PSEUDO_SP as LAT_PSEUDO, LAT_TS, LON_CENTRE, LON_FALSE, LON_INITIAL,
-    LON_NAT, LON_ORIGIN, Param, SP1, SP2, ZONE_WIDTH,
+    AZIMUTH, CO_LAT_CONE, FE, FE_CENTRE, FE_FALSE, FN, FN_CENTRE, FN_FALSE, GAMMA, K_CENTRE, K_ELLIPSOID, K_NAT, K_PSEUDO_SP, Kind,
+    LAT_CENTRE, LAT_FALSE, LAT_NAT, LAT_PSEUDO_SP, LAT_TS, LON_CENTRE, LON_FALSE, LON_INITIAL, LON_NAT, LON_ORIGIN, Param, SP1, SP2,
+    ZONE_WIDTH,
 };
 
 /// Whether a PROJ string gives a sphere by its own parameters (`+R`, or `+a` and `+b` equal).
@@ -678,9 +678,9 @@ fn conversion(p: &Params) -> Result<(Value, Vec<&'static str>)> {
             let values = vec![
                 (LAT_CENTRE, deg("lat_0").unwrap_or(49.5)),
                 (LON_ORIGIN, deg("lon_0").unwrap_or(24.0 + 50.0 / 60.0)),
-                (CO_LAT, 30.288_139_752_777_8),
-                (LAT_PSEUDO, 78.5),
-                (K_PSEUDO, num("k_0").or_else(|| num("k")).unwrap_or(0.9999)),
+                (CO_LAT_CONE, 30.288_139_752_777_8),
+                (LAT_PSEUDO_SP, 78.5),
+                (K_PSEUDO_SP, num("k_0").or_else(|| num("k")).unwrap_or(0.9999)),
                 (FE, x0),
                 (FN, y0),
             ];

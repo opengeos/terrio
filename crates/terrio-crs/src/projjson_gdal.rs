@@ -344,9 +344,8 @@ fn geographic1(g: &Node, outer_id: bool) -> Result<Map<String, Value>> {
 }
 
 use crate::methods::{
-    AZIMUTH, FE, FE_CENTRE as E_PC, FE_FALSE as E_FO, FN, FN_CENTRE as N_PC, FN_FALSE as N_FO, GAMMA, K_CENTRE as K_PC, K_NAT, Kind,
-    LAT_CENTRE as LAT_PC, LAT_FALSE as LAT_FO, LAT_NAT, LAT_TS as LAT_SP, LON_CENTRE as LON_PC, LON_FALSE as LON_FO, LON_NAT, LON_ORIGIN,
-    Param, SP1, SP2,
+    AZIMUTH, FE, FE_CENTRE, FE_FALSE, FN, FN_CENTRE, FN_FALSE, GAMMA, K_CENTRE, K_NAT, Kind, LAT_CENTRE, LAT_FALSE, LAT_NAT, LAT_TS,
+    LON_CENTRE, LON_FALSE, LON_NAT, LON_ORIGIN, Param, SP1, SP2,
 };
 
 /// GDAL's WKT 1 parameter names (normalized) for an EPSG parameter.
@@ -369,7 +368,7 @@ pub(crate) fn wkt1_names(code: u32) -> &'static [&'static str] {
 /// The EPSG method (name and code, 0 for PROJ's own) and parameters of a WKT 1 projection.
 pub(crate) fn method1(name: &str, param: &dyn Fn(&[&str]) -> Option<f64>) -> Option<(&'static str, u32, &'static [Param])> {
     const NAT: &[Param] = &[LAT_NAT, LON_NAT, K_NAT, FE, FN];
-    const FO: &[Param] = &[LAT_FO, LON_FO, SP1, SP2, E_FO, N_FO];
+    const FO: &[Param] = &[LAT_FALSE, LON_FALSE, SP1, SP2, FE_FALSE, FN_FALSE];
     const AZ: &[Param] = &[LAT_NAT, LON_NAT, FE, FN];
     const WORLD: &[Param] = &[LON_NAT, FE, FN];
     Some(match norm(name).as_str() {
@@ -384,12 +383,14 @@ pub(crate) fn method1(name: &str, param: &dyn Fn(&[&str]) -> Option<f64>) -> Opt
         "polarstereographic" if param(&["latitudeoforigin"]).is_some_and(|l| (l.abs() - 90.0).abs() < 1e-12) => {
             ("Polar Stereographic (variant A)", 9810, NAT)
         }
-        "polarstereographic" => ("Polar Stereographic (variant B)", 9829, &[LAT_SP, LON_ORIGIN, FE, FN]),
+        "polarstereographic" => ("Polar Stereographic (variant B)", 9829, &[LAT_TS, LON_ORIGIN, FE, FN]),
         "obliquestereographic" => ("Oblique Stereographic", 9809, NAT),
         "hotineobliquemercatorazimuthcenter" => {
-            ("Hotine Oblique Mercator (variant B)", 9815, &[LAT_PC, LON_PC, AZIMUTH, GAMMA, K_PC, E_PC, N_PC])
+            ("Hotine Oblique Mercator (variant B)", 9815, &[LAT_CENTRE, LON_CENTRE, AZIMUTH, GAMMA, K_CENTRE, FE_CENTRE, FN_CENTRE])
         }
-        "hotineobliquemercator" => ("Hotine Oblique Mercator (variant A)", 9812, &[LAT_PC, LON_PC, AZIMUTH, GAMMA, K_PC, FE, FN]),
+        "hotineobliquemercator" => {
+            ("Hotine Oblique Mercator (variant A)", 9812, &[LAT_CENTRE, LON_CENTRE, AZIMUTH, GAMMA, K_CENTRE, FE, FN])
+        }
         "cassinisoldner" => ("Cassini-Soldner", 9806, AZ),
         "cylindricalequalarea" => ("Lambert Cylindrical Equal Area", 9835, &[SP1, LON_NAT, FE, FN]),
         "mollweide" => ("Mollweide", 0, WORLD),

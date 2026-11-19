@@ -95,7 +95,7 @@ pub(crate) struct World {
     pub wkt1: Option<&'static str>,
 }
 
-/// The world projections, in the WKT 2 reader's order of old.
+/// The world projections: those the WKT 2 reader takes, in its order, then Equal Earth.
 pub(crate) const WORLD: [World; 28] = [
     World { proj: "moll", wkt2: Some("mollweide"), wkt1: Some("Mollweide") },
     World { proj: "robin", wkt2: Some("robinson"), wkt1: None },
