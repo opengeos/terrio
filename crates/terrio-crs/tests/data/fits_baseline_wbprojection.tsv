@@ -1090,249 +1090,278 @@ esri	fits:0;meridian:0;near:0;identify:-;esri:-;from_wkt:-/-;trusted:-;geographi
 esri	fits:0;meridian:0;near:0;identify:10345;esri:-;from_wkt:10345/-;trusted:-;geographic:10345;shared:-	EPSG:4054
 esri	fits:0;meridian:0;near:0;identify:9067;esri:-;from_wkt:9067/-;trusted:-;geographic:9067;shared:-	EPSG:11162
 esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:-;shared:-	EPSG:4808 EPSG:4819 EPSG:11394 EPSG:11446
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10175;shared:-	EPSG:10184
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10185;shared:-	EPSG:10189
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10191;shared:-	EPSG:10195
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10196;shared:-	EPSG:10200
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10204;shared:-	EPSG:10208
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10209;shared:-	EPSG:10213
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10214;shared:-	EPSG:10218
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10219;shared:-	EPSG:10223
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10224;shared:-	EPSG:10228
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10229;shared:-	EPSG:10236
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10237;shared:-	EPSG:10241
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10272;shared:-	EPSG:10276
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10277;shared:-	EPSG:10281
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10284;shared:-	EPSG:10293
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10305;shared:-	EPSG:10839
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10312;shared:-	EPSG:10318
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10468;shared:-	EPSG:10472
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10623;shared:-	EPSG:10627
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10636;shared:-	EPSG:10643 EPSG:10645
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10639;shared:-	EPSG:10644
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10671;shared:-	EPSG:11158 EPSG:12209
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10690;shared:-	EPSG:3902 EPSG:3903 EPSG:11169 EPSG:11170 EPSG:11171 EPSG:11172 EPSG:11173 EPSG:11174 EPSG:11175 EPSG:11176 EPSG:11177 EPSG:11178 EPSG:11179 EPSG:11180 EPSG:11181
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10736;shared:-	EPSG:10741 EPSG:10746 EPSG:10747
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10739;shared:-	EPSG:10742
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10758;shared:-	EPSG:10764
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10762;shared:-	EPSG:10765
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10849;shared:-	EPSG:10852
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10860;shared:-	EPSG:10864
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10875;shared:-	EPSG:5945 EPSG:5946 EPSG:5947 EPSG:5948 EPSG:5949 EPSG:5950 EPSG:5951 EPSG:5952 EPSG:5953 EPSG:5954 EPSG:5955 EPSG:5956 EPSG:5957 EPSG:5958 EPSG:5959 EPSG:5960 EPSG:5961 EPSG:5962 EPSG:5963 EPSG:5964 EPSG:5965 EPSG:5966 EPSG:5967 EPSG:5968 EPSG:5969 EPSG:5970 EPSG:6145 EPSG:6146 EPSG:6147 EPSG:6148 EPSG:6149 EPSG:6150 EPSG:6151 EPSG:6152 EPSG:6153 EPSG:6154 EPSG:6155 EPSG:6156 EPSG:6157 EPSG:6158 EPSG:6159 EPSG:6160 EPSG:6161 EPSG:6162 EPSG:6163 EPSG:6164 EPSG:6165 EPSG:6166 EPSG:6167 EPSG:6168 EPSG:6169 EPSG:6170 EPSG:11408 EPSG:11409 EPSG:11410 EPSG:11411 EPSG:11412 EPSG:11413 EPSG:11414 EPSG:11415 EPSG:11416 EPSG:11417 EPSG:11418 EPSG:11419 EPSG:11420 EPSG:11421 EPSG:11422 EPSG:11423 EPSG:11424 EPSG:11425 EPSG:11426 EPSG:11427 EPSG:11428 EPSG:11429 EPSG:11430 EPSG:11435 EPSG:11436 EPSG:11437
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10898;shared:-	EPSG:10904 EPSG:10906
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10910;shared:-	EPSG:10920
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10993;shared:-	EPSG:11006
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:11033;shared:-	EPSG:11274
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:11037;shared:-	EPSG:11484 EPSG:12215 EPSG:12216
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:11087;shared:-	EPSG:5318
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:11215;shared:-	EPSG:12293
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:11226;shared:-	EPSG:11383
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:11461;shared:-	EPSG:11465
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:11466;shared:-	EPSG:11470
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:20033;shared:-	EPSG:20003
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:20046;shared:-	EPSG:11895
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4081;shared:-	EPSG:9510 EPSG:9511 EPSG:9512 EPSG:9513 EPSG:9514 EPSG:9515 EPSG:9516
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4123;shared:-	EPSG:3901
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4124;shared:-	EPSG:7404
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4134;shared:-	EPSG:7410
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4152;shared:-	EPSG:5499
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4167;shared:-	EPSG:11460
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4173;shared:-	EPSG:9922 EPSG:12229 EPSG:12230
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4181;shared:-	EPSG:9897
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4237;shared:-	EPSG:10660
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4258;shared:-	EPSG:5554 EPSG:5555 EPSG:5556 EPSG:5942 EPSG:5971 EPSG:5972 EPSG:5973 EPSG:5974 EPSG:5975 EPSG:5976 EPSG:6144 EPSG:6171 EPSG:6172 EPSG:6173 EPSG:6174 EPSG:6175 EPSG:6176 EPSG:7409 EPSG:7416 EPSG:7417 EPSG:7418 EPSG:7419 EPSG:7420 EPSG:7423 EPSG:8360 EPSG:9286 EPSG:9289 EPSG:9290 EPSG:9422 EPSG:9423 EPSG:9424 EPSG:9425 EPSG:9426 EPSG:9427 EPSG:9428 EPSG:9429 EPSG:9430 EPSG:9449 EPSG:9450 EPSG:9452 EPSG:9500 EPSG:9505 EPSG:9506 EPSG:9507 EPSG:9508 EPSG:9509 EPSG:9723 EPSG:9724 EPSG:9725 EPSG:9883 EPSG:9907 EPSG:9924 EPSG:10156 EPSG:10157 EPSG:10355 EPSG:10356 EPSG:10357 EPSG:10486 EPSG:10487 EPSG:10488 EPSG:10545 EPSG:10553 EPSG:10554 EPSG:10555 EPSG:10556 EPSG:10679 EPSG:10997 EPSG:11000 EPSG:11120 EPSG:11311 EPSG:11312 EPSG:11314 EPSG:11399 EPSG:11400 EPSG:11403 EPSG:11404 EPSG:11405 EPSG:11406 EPSG:11407 EPSG:11499 EPSG:11500 EPSG:11511 EPSG:11512 EPSG:11558 EPSG:11560 EPSG:11563 EPSG:11565 EPSG:11579 EPSG:11584 EPSG:11585 EPSG:11586 EPSG:11587 EPSG:11588 EPSG:11589 EPSG:11590 EPSG:11591 EPSG:11819 EPSG:11820 EPSG:11821 EPSG:11822 EPSG:20001
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4267;shared:-	EPSG:7406 EPSG:7407
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:5498 EPSG:8700 EPSG:8701 EPSG:8702 EPSG:8703 EPSG:8704 EPSG:8705 EPSG:8706 EPSG:8707 EPSG:8708 EPSG:8709 EPSG:8710 EPSG:8711 EPSG:8801 EPSG:8802 EPSG:8803 EPSG:8804 EPSG:8805 EPSG:8806 EPSG:8807 EPSG:8808 EPSG:8809 EPSG:8810 EPSG:8811 EPSG:8812 EPSG:8813 EPSG:8814 EPSG:8815
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4277;shared:-	EPSG:7405 EPSG:9920
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4283;shared:-	EPSG:9464
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4289;shared:-	EPSG:7408 EPSG:7415
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4301;shared:-	EPSG:6700 EPSG:7414
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4312;shared:-	EPSG:9501
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4313;shared:-	EPSG:6190
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4326;shared:-	EPSG:6893 EPSG:9518 EPSG:9705 EPSG:9707
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4463;shared:-	EPSG:9541
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4558;shared:-	EPSG:9542
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4617;shared:-	EPSG:6649 EPSG:6650 EPSG:6651 EPSG:6652 EPSG:6653 EPSG:6654 EPSG:6655 EPSG:6656 EPSG:6660 EPSG:6661 EPSG:6662 EPSG:6663 EPSG:6664 EPSG:6665 EPSG:9711 EPSG:9714
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4619;shared:-	EPSG:5628 EPSG:5845 EPSG:5846 EPSG:5847 EPSG:5848 EPSG:5849 EPSG:5850 EPSG:5851 EPSG:5852 EPSG:5853 EPSG:5854 EPSG:5855 EPSG:5856 EPSG:5857
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4624;shared:-	EPSG:9530
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4659;shared:-	EPSG:9948 EPSG:9951
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4661;shared:-	EPSG:10826
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4710;shared:-	EPSG:7954
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4737;shared:-	EPSG:10365
+esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10690;shared:-	EPSG:3902
+esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:10875;shared:-	EPSG:11408 EPSG:11409 EPSG:11410 EPSG:11411 EPSG:11412 EPSG:11413 EPSG:11414 EPSG:11415 EPSG:11416 EPSG:11417 EPSG:11418 EPSG:11419 EPSG:11420 EPSG:11421 EPSG:11422 EPSG:11423 EPSG:11424 EPSG:11425 EPSG:11426 EPSG:11427 EPSG:11428 EPSG:11429 EPSG:11430 EPSG:11435 EPSG:11436 EPSG:11437
+esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4258;shared:-	EPSG:5971 EPSG:5972 EPSG:5973 EPSG:5974 EPSG:5975 EPSG:5976 EPSG:6171 EPSG:6172 EPSG:6173 EPSG:6174 EPSG:6175 EPSG:6176 EPSG:10997 EPSG:11000 EPSG:11120 EPSG:11399 EPSG:11400 EPSG:11403 EPSG:11404 EPSG:11405 EPSG:11406 EPSG:11407
 esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4747;shared:4747	EPSG:8349 EPSG:8350 EPSG:10651 EPSG:10652 EPSG:11452 EPSG:11453
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4749;shared:-	EPSG:9540
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4757;shared:-	EPSG:6917 EPSG:6927
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4759;shared:-	EPSG:5500
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4765;shared:-	EPSG:10245 EPSG:10246 EPSG:10686 EPSG:10687
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4807;shared:-	EPSG:5707 EPSG:5708 EPSG:7400 EPSG:7401 EPSG:7402 EPSG:7403 EPSG:7411 EPSG:7412 EPSG:7413 EPSG:7421 EPSG:7422
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:5340;shared:-	EPSG:9521
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:5489;shared:-	EPSG:9531 EPSG:9532 EPSG:9533 EPSG:9534 EPSG:9535 EPSG:9536 EPSG:9537 EPSG:10633
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:5593;shared:-	EPSG:5598 EPSG:9519
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:5681;shared:-	EPSG:5832 EPSG:5833 EPSG:5834 EPSG:5835 EPSG:9928 EPSG:9929 EPSG:9930 EPSG:9931 EPSG:9932 EPSG:9933 EPSG:9934 EPSG:9935
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:6135;shared:-	EPSG:9502 EPSG:9503 EPSG:9504
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:6365;shared:-	EPSG:11385
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:6706;shared:-	EPSG:12245 EPSG:12248
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:7844;shared:-	EPSG:9462 EPSG:9463
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:7881;shared:-	EPSG:7955
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:7886;shared:-	EPSG:7956 EPSG:9517
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:8086;shared:-	EPSG:9950 EPSG:9953
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:8240;shared:-	EPSG:20038
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:8246;shared:-	EPSG:20037
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:8252;shared:-	EPSG:9544
+esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:4807;shared:-	EPSG:7411 EPSG:7412
 esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:8900;shared:-	EPSG:11447
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:8907;shared:-	EPSG:8912
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:9299;shared:-	EPSG:9306
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:9333;shared:-	EPSG:9520
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:9364;shared:-	EPSG:9368
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:9372;shared:-	EPSG:9374
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:9384;shared:-	EPSG:9388
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:9453;shared:-	EPSG:9457
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:9470;shared:-	EPSG:9529 EPSG:20043
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:9702;shared:-	EPSG:9656 EPSG:9657
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:9739;shared:-	EPSG:9742
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:9758;shared:-	EPSG:9762
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:9763;shared:-	EPSG:9767
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:9777;shared:-	EPSG:9538 EPSG:9539 EPSG:10497 EPSG:10498
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:9782;shared:-	EPSG:9785 EPSG:10499 EPSG:10500 EPSG:10507
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:9866;shared:-	EPSG:9870
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:9871;shared:-	EPSG:9881
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:9939;shared:-	EPSG:9944
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:9964;shared:-	EPSG:9968
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:9969;shared:-	EPSG:9973
-esri	fits:0;meridian:0;near:;identify:-;esri:-;from_wkt:-/-;trusted:-;geographic:9974;shared:-	EPSG:9978
-esri	fits:0;meridian:0;near:;identify:-;esri:102100;from_wkt:-/-;trusted:-;geographic:4326;shared:-	EPSG:6871
-esri	fits:0;meridian:0;near:;identify:-;esri:102110;from_wkt:-/-;trusted:-;geographic:4171;shared:-	EPSG:5698 EPSG:5699
-esri	fits:0;meridian:0;near:;identify:-;esri:102139;from_wkt:-/-;trusted:-;geographic:10690;shared:-	EPSG:10774
-esri	fits:0;meridian:0;near:;identify:-;esri:102199;from_wkt:-/-;trusted:-;geographic:11063;shared:-	EPSG:8370
-esri	fits:0;meridian:0;near:;identify:-;esri:102234;from_wkt:-/-;trusted:-;geographic:4617;shared:-	EPSG:6657
-esri	fits:0;meridian:0;near:;identify:-;esri:102235;from_wkt:-/-;trusted:-;geographic:4617;shared:-	EPSG:6658 EPSG:9715
-esri	fits:0;meridian:0;near:;identify:-;esri:102236;from_wkt:-/-;trusted:-;geographic:4617;shared:-	EPSG:6659
-esri	fits:0;meridian:0;near:;identify:-;esri:102420;from_wkt:-/-;trusted:-;geographic:5324;shared:-	EPSG:9952
-esri	fits:0;meridian:0;near:;identify:-;esri:102610;from_wkt:-/-;trusted:-;geographic:6668;shared:-	EPSG:10162 EPSG:11319
-esri	fits:0;meridian:0;near:;identify:-;esri:102611;from_wkt:-/-;trusted:-;geographic:6668;shared:-	EPSG:10163 EPSG:11320
-esri	fits:0;meridian:0;near:;identify:-;esri:102612;from_wkt:-/-;trusted:-;geographic:6668;shared:-	EPSG:10164 EPSG:11321
-esri	fits:0;meridian:0;near:;identify:-;esri:102613;from_wkt:-/-;trusted:-;geographic:6668;shared:-	EPSG:10165 EPSG:11322
-esri	fits:0;meridian:0;near:;identify:-;esri:102614;from_wkt:-/-;trusted:-;geographic:6668;shared:-	EPSG:10166 EPSG:11323
-esri	fits:0;meridian:0;near:;identify:-;esri:102615;from_wkt:-/-;trusted:-;geographic:6668;shared:-	EPSG:10167 EPSG:11324
-esri	fits:0;meridian:0;near:;identify:-;esri:102616;from_wkt:-/-;trusted:-;geographic:6668;shared:-	EPSG:10168 EPSG:11325
-esri	fits:0;meridian:0;near:;identify:-;esri:102617;from_wkt:-/-;trusted:-;geographic:6668;shared:-	EPSG:10169 EPSG:11326
-esri	fits:0;meridian:0;near:;identify:-;esri:102618;from_wkt:-/-;trusted:-;geographic:6668;shared:-	EPSG:10170 EPSG:11327
-esri	fits:0;meridian:0;near:;identify:-;esri:102619;from_wkt:-/-;trusted:-;geographic:6668;shared:-	EPSG:10171 EPSG:11328
-esri	fits:0;meridian:0;near:;identify:-;esri:102620;from_wkt:-/-;trusted:-;geographic:6668;shared:-	EPSG:10172 EPSG:11329
-esri	fits:0;meridian:0;near:;identify:-;esri:102621;from_wkt:-/-;trusted:-;geographic:6668;shared:-	EPSG:10173 EPSG:11330
-esri	fits:0;meridian:0;near:;identify:-;esri:102622;from_wkt:-/-;trusted:-;geographic:6668;shared:-	EPSG:10174 EPSG:11333
-esri	fits:0;meridian:0;near:;identify:-;esri:102623;from_wkt:-/-;trusted:-;geographic:6668;shared:-	EPSG:11336
-esri	fits:0;meridian:0;near:;identify:-;esri:102624;from_wkt:-/-;trusted:-;geographic:6668;shared:-	EPSG:11434
-esri	fits:0;meridian:0;near:;identify:-;esri:102625;from_wkt:-/-;trusted:-;geographic:6668;shared:-	EPSG:11442
-esri	fits:0;meridian:0;near:;identify:-;esri:102626;from_wkt:-/-;trusted:-;geographic:6668;shared:-	EPSG:11443
-esri	fits:0;meridian:0;near:;identify:-;esri:102627;from_wkt:-/-;trusted:-;geographic:6668;shared:-	EPSG:11444
-esri	fits:0;meridian:0;near:;identify:-;esri:102628;from_wkt:-/-;trusted:-;geographic:6668;shared:-	EPSG:11445
-esri	fits:0;meridian:0;near:;identify:-;esri:102641;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8714
-esri	fits:0;meridian:0;near:;identify:-;esri:102642;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8715
-esri	fits:0;meridian:0;near:;identify:-;esri:102643;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8716
-esri	fits:0;meridian:0;near:;identify:-;esri:102644;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8717
-esri	fits:0;meridian:0;near:;identify:-;esri:102645;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8718
-esri	fits:0;meridian:0;near:;identify:-;esri:102646;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8719
-esri	fits:0;meridian:0;near:;identify:-;esri:102651;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8712
-esri	fits:0;meridian:0;near:;identify:-;esri:102652;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8713
-esri	fits:0;meridian:0;near:;identify:-;esri:102653;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8720
-esri	fits:0;meridian:0;near:;identify:-;esri:102654;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8721
-esri	fits:0;meridian:0;near:;identify:-;esri:102655;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8722
-esri	fits:0;meridian:0;near:;identify:-;esri:102656;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8723
-esri	fits:0;meridian:0;near:;identify:-;esri:102657;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8724
-esri	fits:0;meridian:0;near:;identify:-;esri:102658;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8726
-esri	fits:0;meridian:0;near:;identify:-;esri:102659;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8727
-esri	fits:0;meridian:0;near:;identify:-;esri:102660;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8725
-esri	fits:0;meridian:0;near:;identify:-;esri:102666;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8728
-esri	fits:0;meridian:0;near:;identify:-;esri:102667;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8729
-esri	fits:0;meridian:0;near:;identify:-;esri:102668;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8730
-esri	fits:0;meridian:0;near:;identify:-;esri:102669;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8731
-esri	fits:0;meridian:0;near:;identify:-;esri:102670;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8732
-esri	fits:0;meridian:0;near:;identify:-;esri:102671;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8733
-esri	fits:0;meridian:0;near:;identify:-;esri:102672;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8734
-esri	fits:0;meridian:0;near:;identify:-;esri:102673;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8735
-esri	fits:0;meridian:0;near:;identify:-;esri:102674;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8736
-esri	fits:0;meridian:0;near:;identify:-;esri:102675;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8737
-esri	fits:0;meridian:0;near:;identify:-;esri:102676;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8738
-esri	fits:0;meridian:0;near:;identify:-;esri:102677;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8739
-esri	fits:0;meridian:0;near:;identify:-;esri:102678;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8740
-esri	fits:0;meridian:0;near:;identify:-;esri:102679;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8741
-esri	fits:0;meridian:0;near:;identify:-;esri:102680;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8742
-esri	fits:0;meridian:0;near:;identify:-;esri:102681;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8743
-esri	fits:0;meridian:0;near:;identify:-;esri:102682;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8744
-esri	fits:0;meridian:0;near:;identify:-;esri:102683;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8745
-esri	fits:0;meridian:0;near:;identify:-;esri:102684;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8746
-esri	fits:0;meridian:0;near:;identify:-;esri:102685;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8747
-esri	fits:0;meridian:0;near:;identify:-;esri:102686;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8748
-esri	fits:0;meridian:0;near:;identify:-;esri:102687;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8749
-esri	fits:0;meridian:0;near:;identify:-;esri:102691;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8750
-esri	fits:0;meridian:0;near:;identify:-;esri:102692;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8751
-esri	fits:0;meridian:0;near:;identify:-;esri:102693;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8752
-esri	fits:0;meridian:0;near:;identify:-;esri:102694;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8753
-esri	fits:0;meridian:0;near:;identify:-;esri:102695;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8754
-esri	fits:0;meridian:0;near:;identify:-;esri:102704;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8755
-esri	fits:0;meridian:0;near:;identify:-;esri:102707;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8756
-esri	fits:0;meridian:0;near:;identify:-;esri:102708;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8757
-esri	fits:0;meridian:0;near:;identify:-;esri:102709;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8758
-esri	fits:0;meridian:0;near:;identify:-;esri:102710;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8759
-esri	fits:0;meridian:0;near:;identify:-;esri:102711;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8760
-esri	fits:0;meridian:0;near:;identify:-;esri:102712;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8761
-esri	fits:0;meridian:0;near:;identify:-;esri:102713;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8762
-esri	fits:0;meridian:0;near:;identify:-;esri:102714;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8763
-esri	fits:0;meridian:0;near:;identify:-;esri:102715;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8764
-esri	fits:0;meridian:0;near:;identify:-;esri:102716;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8765
-esri	fits:0;meridian:0;near:;identify:-;esri:102717;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8766
-esri	fits:0;meridian:0;near:;identify:-;esri:102718;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8767
-esri	fits:0;meridian:0;near:;identify:-;esri:102719;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8768
-esri	fits:0;meridian:0;near:;identify:-;esri:102722;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8769
-esri	fits:0;meridian:0;near:;identify:-;esri:102723;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8770
-esri	fits:0;meridian:0;near:;identify:-;esri:102724;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8771
-esri	fits:0;meridian:0;near:;identify:-;esri:102725;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8772
-esri	fits:0;meridian:0;near:;identify:-;esri:102728;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8773
-esri	fits:0;meridian:0;near:;identify:-;esri:102729;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8774
-esri	fits:0;meridian:0;near:;identify:-;esri:102730;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8775
-esri	fits:0;meridian:0;near:;identify:-;esri:102734;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8776
-esri	fits:0;meridian:0;near:;identify:-;esri:102735;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8777
-esri	fits:0;meridian:0;near:;identify:-;esri:102736;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8778
-esri	fits:0;meridian:0;near:;identify:-;esri:102737;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8779
-esri	fits:0;meridian:0;near:;identify:-;esri:102738;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8780
-esri	fits:0;meridian:0;near:;identify:-;esri:102739;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8781
-esri	fits:0;meridian:0;near:;identify:-;esri:102740;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8782
-esri	fits:0;meridian:0;near:;identify:-;esri:102741;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8783
-esri	fits:0;meridian:0;near:;identify:-;esri:102742;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8784
-esri	fits:0;meridian:0;near:;identify:-;esri:102743;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8785
-esri	fits:0;meridian:0;near:;identify:-;esri:102744;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8786
-esri	fits:0;meridian:0;near:;identify:-;esri:102745;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8787
-esri	fits:0;meridian:0;near:;identify:-;esri:102746;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8788
-esri	fits:0;meridian:0;near:;identify:-;esri:102747;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8789
-esri	fits:0;meridian:0;near:;identify:-;esri:102748;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8790
-esri	fits:0;meridian:0;near:;identify:-;esri:102749;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8791
-esri	fits:0;meridian:0;near:;identify:-;esri:102750;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8792
-esri	fits:0;meridian:0;near:;identify:-;esri:102751;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8793
-esri	fits:0;meridian:0;near:;identify:-;esri:102752;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8794
-esri	fits:0;meridian:0;near:;identify:-;esri:102753;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8795
-esri	fits:0;meridian:0;near:;identify:-;esri:102754;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8796
-esri	fits:0;meridian:0;near:;identify:-;esri:102755;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8797
-esri	fits:0;meridian:0;near:;identify:-;esri:102756;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8798
-esri	fits:0;meridian:0;near:;identify:-;esri:102757;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8799
-esri	fits:0;meridian:0;near:;identify:-;esri:102758;from_wkt:-/-;trusted:-;geographic:4269;shared:-	EPSG:8800
-esri	fits:0;meridian:0;near:;identify:-;esri:103216;from_wkt:-/-;trusted:-;geographic:4258;shared:-	EPSG:4097
-esri	fits:0;meridian:0;near:;identify:-;esri:103217;from_wkt:-/-;trusted:-;geographic:4258;shared:-	EPSG:4098
-esri	fits:0;meridian:0;near:;identify:-;esri:103218;from_wkt:-/-;trusted:-;geographic:4258;shared:-	EPSG:4099
-esri	fits:0;meridian:0;near:;identify:-;esri:103219;from_wkt:-/-;trusted:-;geographic:4258;shared:-	EPSG:4100
-esri	fits:0;meridian:0;near:;identify:-;esri:104020;from_wkt:-/-;trusted:-;geographic:6668;shared:-	EPSG:6697 EPSG:11318
-esri	fits:0;meridian:0;near:;identify:-;esri:104108;from_wkt:-/-;trusted:-;geographic:4167;shared:-	EPSG:9527 EPSG:9528
-esri	fits:0;meridian:0;near:;identify:-;esri:104111;from_wkt:-/-;trusted:-;geographic:4612;shared:-	EPSG:6696
-esri	fits:0;meridian:0;near:;identify:-;esri:104129;from_wkt:-/-;trusted:-;geographic:10690;shared:-	EPSG:10691 EPSG:10692
-esri	fits:0;meridian:0;near:;identify:-;esri:104141;from_wkt:-/-;trusted:-;geographic:6311;shared:-	EPSG:10865
-esri	fits:0;meridian:0;near:;identify:-;esri:104144;from_wkt:-/-;trusted:-;geographic:5324;shared:-	EPSG:9949
-esri	fits:0;meridian:0;near:;identify:-;esri:104145;from_wkt:-/-;trusted:-;geographic:6318;shared:-	EPSG:6349 EPSG:9522 EPSG:9523
-esri	fits:0;meridian:0;near:;identify:-;esri:104186;from_wkt:-/-;trusted:-;geographic:9067;shared:-	EPSG:10659 EPSG:11533
-esri	fits:0;meridian:0;near:;identify:-;esri:104286;from_wkt:-/-;trusted:-;geographic:6325;shared:-	EPSG:9524 EPSG:9525
-esri	fits:0;meridian:0;near:;identify:-;esri:104287;from_wkt:-/-;trusted:-;geographic:6322;shared:-	EPSG:9526
-esri	fits:0;meridian:0;near:;identify:-;esri:104896;from_wkt:-/-;trusted:-;geographic:8998;shared:-	EPSG:9543
+esri	fits:0;meridian:0;near:;identify:10355;esri:-;from_wkt:10355/-;trusted:-;geographic:4258;shared:-	EPSG:11587
+esri	fits:0;meridian:0;near:;identify:10356;esri:-;from_wkt:10356/-;trusted:-;geographic:4258;shared:-	EPSG:11584
+esri	fits:0;meridian:0;near:;identify:10357;esri:-;from_wkt:10357/-;trusted:-;geographic:4258;shared:-	EPSG:11590
+esri	fits:0;meridian:0;near:;identify:10545;esri:-;from_wkt:10545/-;trusted:-;geographic:4258;shared:-	EPSG:11579
+esri	fits:0;meridian:0;near:;identify:10659;esri:104186;from_wkt:10659/-;trusted:-;geographic:9067;shared:-	EPSG:11533
+esri	fits:0;meridian:0;near:;identify:10774;esri:-;from_wkt:10774/-;trusted:-;geographic:10690;shared:-	EPSG:3903
+esri	fits:0;meridian:0;near:;identify:20001;esri:-;from_wkt:20001/-;trusted:-;geographic:4258;shared:-	EPSG:11563
 esri	fits:0;meridian:0;near:;identify:5736;esri:-;from_wkt:5736/-;trusted:-;geographic:-;shared:-	EPSG:5704
+esri	fits:0;meridian:0;near:;identify:5942;esri:-;from_wkt:5942/-;trusted:-;geographic:4258;shared:-	EPSG:11558
+esri	fits:0;meridian:0;near:;identify:6144;esri:-;from_wkt:6144/-;trusted:-;geographic:4258;shared:-	EPSG:11560
+esri	fits:0;meridian:0;near:;identify:7423;esri:-;from_wkt:7423/-;trusted:-;geographic:4258;shared:-	EPSG:11314
+esri	fits:0;meridian:0;near:;identify:8360;esri:-;from_wkt:8360/-;trusted:-;geographic:4258;shared:-	EPSG:11311 EPSG:11312
+esri	fits:0;meridian:0;near:;identify:8764;esri:102711;from_wkt:8764/-;trusted:-;geographic:4269;shared:-	EPSG:8760
 esri	fits:0;meridian:0;near:;identify:9067;esri:104186;from_wkt:9067/-;trusted:-;geographic:9067;shared:-	EPSG:11163
+esri	fits:0;meridian:0;near:;identify:9424;esri:-;from_wkt:9424/-;trusted:-;geographic:4258;shared:-	EPSG:11819
+esri	fits:0;meridian:0;near:;identify:9426;esri:-;from_wkt:9426/-;trusted:-;geographic:4258;shared:-	EPSG:11820
+esri	fits:0;meridian:0;near:;identify:9427;esri:-;from_wkt:9427/-;trusted:-;geographic:4258;shared:-	EPSG:11511
+esri	fits:0;meridian:0;near:;identify:9428;esri:-;from_wkt:9428/-;trusted:-;geographic:4258;shared:-	EPSG:11822
+esri	fits:0;meridian:0;near:;identify:9429;esri:-;from_wkt:9429/-;trusted:-;geographic:4258;shared:-	EPSG:11499
+esri	fits:0;meridian:0;near:;identify:9430;esri:-;from_wkt:9430/-;trusted:-;geographic:4258;shared:-	EPSG:11821
+esri	fits:0;meridian:0;near:;identify:9500;esri:-;from_wkt:9500/-;trusted:-;geographic:4258;shared:-	EPSG:11500
+esri	fits:0;meridian:0;near:;identify:9505;esri:-;from_wkt:9505/-;trusted:-;geographic:4258;shared:-	EPSG:11585
+esri	fits:0;meridian:0;near:;identify:9506;esri:-;from_wkt:9506/-;trusted:-;geographic:4258;shared:-	EPSG:11586
+esri	fits:0;meridian:0;near:;identify:9507;esri:-;from_wkt:9507/-;trusted:-;geographic:4258;shared:-	EPSG:11588
+esri	fits:0;meridian:0;near:;identify:9508;esri:-;from_wkt:9508/-;trusted:-;geographic:4258;shared:-	EPSG:11589
+esri	fits:0;meridian:0;near:;identify:9509;esri:-;from_wkt:9509/-;trusted:-;geographic:4258;shared:-	EPSG:11591
+esri	fits:0;meridian:0;near:;identify:9883;esri:-;from_wkt:9883/-;trusted:-;geographic:4258;shared:-	EPSG:11565
+esri	fits:0;meridian:0;near:;identify:9907;esri:-;from_wkt:9907/-;trusted:-;geographic:4258;shared:-	EPSG:11512
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:10175;shared:-	EPSG:10184
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:10185;shared:-	EPSG:10189
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:10191;shared:-	EPSG:10195
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:10196;shared:-	EPSG:10200
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:10204;shared:-	EPSG:10208
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:10209;shared:-	EPSG:10213
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:10214;shared:-	EPSG:10218
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:10219;shared:-	EPSG:10223
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:10224;shared:-	EPSG:10228
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:10229;shared:-	EPSG:10236
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:10237;shared:-	EPSG:10241
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:10272;shared:-	EPSG:10276
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:10277;shared:-	EPSG:10281
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:10284;shared:-	EPSG:10293
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:10305;shared:-	EPSG:10839
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:10312;shared:-	EPSG:10318
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:10468;shared:-	EPSG:10472
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:10623;shared:-	EPSG:10627
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:10636;shared:-	EPSG:10643 EPSG:10645
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:10639;shared:-	EPSG:10644
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:10671;shared:-	EPSG:11158 EPSG:12209
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:10690;shared:-	EPSG:11169 EPSG:11170 EPSG:11171 EPSG:11172 EPSG:11173 EPSG:11174 EPSG:11175 EPSG:11176 EPSG:11177 EPSG:11178 EPSG:11179 EPSG:11180 EPSG:11181
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:10736;shared:-	EPSG:10741 EPSG:10746 EPSG:10747
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:10739;shared:-	EPSG:10742
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:10758;shared:-	EPSG:10764
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:10762;shared:-	EPSG:10765
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:10849;shared:-	EPSG:10852
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:10860;shared:-	EPSG:10864
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:10875;shared:-	EPSG:5945 EPSG:5946 EPSG:5947 EPSG:5948 EPSG:5949 EPSG:5950 EPSG:5951 EPSG:5952 EPSG:5953 EPSG:5954 EPSG:5955 EPSG:5956 EPSG:5957 EPSG:5958 EPSG:5959 EPSG:5960 EPSG:5961 EPSG:5962 EPSG:5963 EPSG:5964 EPSG:5965 EPSG:5966 EPSG:5967 EPSG:5968 EPSG:5969 EPSG:5970 EPSG:6145 EPSG:6146 EPSG:6147 EPSG:6148 EPSG:6149 EPSG:6150 EPSG:6151 EPSG:6152 EPSG:6153 EPSG:6154 EPSG:6155 EPSG:6156 EPSG:6157 EPSG:6158 EPSG:6159 EPSG:6160 EPSG:6161 EPSG:6162 EPSG:6163 EPSG:6164 EPSG:6165 EPSG:6166 EPSG:6167 EPSG:6168 EPSG:6169 EPSG:6170
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:10898;shared:-	EPSG:10904 EPSG:10906
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:10910;shared:-	EPSG:10920
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:10993;shared:-	EPSG:11006
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:11033;shared:-	EPSG:11274
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:11037;shared:-	EPSG:11484 EPSG:12215 EPSG:12216
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:11087;shared:-	EPSG:5318
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:11215;shared:-	EPSG:12293
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:11226;shared:-	EPSG:11383
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:11461;shared:-	EPSG:11465
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:11466;shared:-	EPSG:11470
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:20033;shared:-	EPSG:20003
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:20046;shared:-	EPSG:11895
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4081;shared:-	EPSG:9510 EPSG:9511 EPSG:9512 EPSG:9513 EPSG:9514 EPSG:9515 EPSG:9516
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4123;shared:-	EPSG:3901
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4124;shared:-	EPSG:7404
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4134;shared:-	EPSG:7410
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4152;shared:-	EPSG:5499
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4167;shared:-	EPSG:11460
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4173;shared:-	EPSG:9922 EPSG:12229 EPSG:12230
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4181;shared:-	EPSG:9897
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4237;shared:-	EPSG:10660
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4258;shared:-	EPSG:5554 EPSG:5555 EPSG:5556 EPSG:5942 EPSG:6144 EPSG:7409 EPSG:7416 EPSG:7417 EPSG:7418 EPSG:7419 EPSG:7420 EPSG:7423 EPSG:8360 EPSG:9286 EPSG:9289 EPSG:9290 EPSG:9422 EPSG:9423 EPSG:9424 EPSG:9425 EPSG:9426 EPSG:9427 EPSG:9428 EPSG:9429 EPSG:9430 EPSG:9449 EPSG:9450 EPSG:9452 EPSG:9500 EPSG:9505 EPSG:9506 EPSG:9507 EPSG:9508 EPSG:9509 EPSG:9723 EPSG:9724 EPSG:9725 EPSG:9883 EPSG:9907 EPSG:9924 EPSG:10156 EPSG:10157 EPSG:10355 EPSG:10356 EPSG:10357 EPSG:10486 EPSG:10487 EPSG:10488 EPSG:10545 EPSG:10553 EPSG:10554 EPSG:10555 EPSG:10556 EPSG:10679 EPSG:20001
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4267;shared:-	EPSG:7406 EPSG:7407
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:5498 EPSG:8700 EPSG:8701 EPSG:8702 EPSG:8703 EPSG:8704 EPSG:8705 EPSG:8706 EPSG:8707 EPSG:8708 EPSG:8709 EPSG:8710 EPSG:8711 EPSG:8801 EPSG:8802 EPSG:8803 EPSG:8804 EPSG:8805 EPSG:8806 EPSG:8807 EPSG:8808 EPSG:8809 EPSG:8810 EPSG:8811 EPSG:8812 EPSG:8813 EPSG:8814 EPSG:8815
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4277;shared:-	EPSG:7405 EPSG:9920
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4283;shared:-	EPSG:9464
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4289;shared:-	EPSG:7408 EPSG:7415
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4301;shared:-	EPSG:6700 EPSG:7414
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4312;shared:-	EPSG:9501
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4313;shared:-	EPSG:6190
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4326;shared:-	EPSG:6893 EPSG:9518 EPSG:9705 EPSG:9707
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4463;shared:-	EPSG:9541
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4558;shared:-	EPSG:9542
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4617;shared:-	EPSG:6649 EPSG:6650 EPSG:6651 EPSG:6652 EPSG:6653 EPSG:6654 EPSG:6655 EPSG:6656 EPSG:6660 EPSG:6661 EPSG:6662 EPSG:6663 EPSG:6664 EPSG:6665 EPSG:9711 EPSG:9714
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4619;shared:-	EPSG:5628 EPSG:5845 EPSG:5846 EPSG:5847 EPSG:5848 EPSG:5849 EPSG:5850 EPSG:5851 EPSG:5852 EPSG:5853 EPSG:5854 EPSG:5855 EPSG:5856 EPSG:5857
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4624;shared:-	EPSG:9530
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4659;shared:-	EPSG:9948 EPSG:9951
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4661;shared:-	EPSG:10826
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4710;shared:-	EPSG:7954
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4737;shared:-	EPSG:10365
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4749;shared:-	EPSG:9540
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4757;shared:-	EPSG:6917 EPSG:6927
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4759;shared:-	EPSG:5500
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4765;shared:-	EPSG:10245 EPSG:10246 EPSG:10686 EPSG:10687
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:4807;shared:-	EPSG:5707 EPSG:5708 EPSG:7400 EPSG:7401 EPSG:7402 EPSG:7403 EPSG:7413 EPSG:7421 EPSG:7422
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:5340;shared:-	EPSG:9521
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:5489;shared:-	EPSG:9531 EPSG:9532 EPSG:9533 EPSG:9534 EPSG:9535 EPSG:9536 EPSG:9537 EPSG:10633
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:5593;shared:-	EPSG:5598 EPSG:9519
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:5681;shared:-	EPSG:5832 EPSG:5833 EPSG:5834 EPSG:5835 EPSG:9928 EPSG:9929 EPSG:9930 EPSG:9931 EPSG:9932 EPSG:9933 EPSG:9934 EPSG:9935
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:6135;shared:-	EPSG:9502 EPSG:9503 EPSG:9504
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:6365;shared:-	EPSG:11385
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:6706;shared:-	EPSG:12245 EPSG:12248
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:7844;shared:-	EPSG:9462 EPSG:9463
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:7881;shared:-	EPSG:7955
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:7886;shared:-	EPSG:7956 EPSG:9517
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:8086;shared:-	EPSG:9950 EPSG:9953
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:8240;shared:-	EPSG:20038
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:8246;shared:-	EPSG:20037
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:8252;shared:-	EPSG:9544
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:8907;shared:-	EPSG:8912
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:9299;shared:-	EPSG:9306
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:9333;shared:-	EPSG:9520
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:9364;shared:-	EPSG:9368
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:9372;shared:-	EPSG:9374
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:9384;shared:-	EPSG:9388
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:9453;shared:-	EPSG:9457
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:9470;shared:-	EPSG:9529 EPSG:20043
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:9702;shared:-	EPSG:9656 EPSG:9657
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:9739;shared:-	EPSG:9742
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:9758;shared:-	EPSG:9762
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:9763;shared:-	EPSG:9767
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:9777;shared:-	EPSG:9538 EPSG:9539 EPSG:10497 EPSG:10498
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:9782;shared:-	EPSG:9785 EPSG:10499 EPSG:10500 EPSG:10507
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:9866;shared:-	EPSG:9870
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:9871;shared:-	EPSG:9881
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:9939;shared:-	EPSG:9944
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:9964;shared:-	EPSG:9968
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:9969;shared:-	EPSG:9973
+esri	fits:0;meridian:0;near:;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:9974;shared:-	EPSG:9978
+esri	fits:0;meridian:0;near:;identify:=;esri:102100;from_wkt:=/-;trusted:-;geographic:4326;shared:-	EPSG:6871
+esri	fits:0;meridian:0;near:;identify:=;esri:102110;from_wkt:=/-;trusted:-;geographic:4171;shared:-	EPSG:5698 EPSG:5699
+esri	fits:0;meridian:0;near:;identify:=;esri:102139;from_wkt:=/-;trusted:-;geographic:10690;shared:-	EPSG:10774
+esri	fits:0;meridian:0;near:;identify:=;esri:102199;from_wkt:=/-;trusted:-;geographic:11063;shared:-	EPSG:8370
+esri	fits:0;meridian:0;near:;identify:=;esri:102234;from_wkt:=/-;trusted:-;geographic:4617;shared:-	EPSG:6657
+esri	fits:0;meridian:0;near:;identify:=;esri:102235;from_wkt:=/-;trusted:-;geographic:4617;shared:-	EPSG:6658 EPSG:9715
+esri	fits:0;meridian:0;near:;identify:=;esri:102236;from_wkt:=/-;trusted:-;geographic:4617;shared:-	EPSG:6659
+esri	fits:0;meridian:0;near:;identify:=;esri:102420;from_wkt:=/-;trusted:-;geographic:5324;shared:-	EPSG:9952
+esri	fits:0;meridian:0;near:;identify:=;esri:102610;from_wkt:=/-;trusted:-;geographic:6668;shared:-	EPSG:10162 EPSG:11319
+esri	fits:0;meridian:0;near:;identify:=;esri:102611;from_wkt:=/-;trusted:-;geographic:6668;shared:-	EPSG:10163 EPSG:11320
+esri	fits:0;meridian:0;near:;identify:=;esri:102612;from_wkt:=/-;trusted:-;geographic:6668;shared:-	EPSG:10164 EPSG:11321
+esri	fits:0;meridian:0;near:;identify:=;esri:102613;from_wkt:=/-;trusted:-;geographic:6668;shared:-	EPSG:10165 EPSG:11322
+esri	fits:0;meridian:0;near:;identify:=;esri:102614;from_wkt:=/-;trusted:-;geographic:6668;shared:-	EPSG:10166 EPSG:11323
+esri	fits:0;meridian:0;near:;identify:=;esri:102615;from_wkt:=/-;trusted:-;geographic:6668;shared:-	EPSG:10167 EPSG:11324
+esri	fits:0;meridian:0;near:;identify:=;esri:102616;from_wkt:=/-;trusted:-;geographic:6668;shared:-	EPSG:10168 EPSG:11325
+esri	fits:0;meridian:0;near:;identify:=;esri:102617;from_wkt:=/-;trusted:-;geographic:6668;shared:-	EPSG:10169 EPSG:11326
+esri	fits:0;meridian:0;near:;identify:=;esri:102618;from_wkt:=/-;trusted:-;geographic:6668;shared:-	EPSG:10170 EPSG:11327
+esri	fits:0;meridian:0;near:;identify:=;esri:102619;from_wkt:=/-;trusted:-;geographic:6668;shared:-	EPSG:10171 EPSG:11328
+esri	fits:0;meridian:0;near:;identify:=;esri:102620;from_wkt:=/-;trusted:-;geographic:6668;shared:-	EPSG:10172 EPSG:11329
+esri	fits:0;meridian:0;near:;identify:=;esri:102621;from_wkt:=/-;trusted:-;geographic:6668;shared:-	EPSG:10173 EPSG:11330
+esri	fits:0;meridian:0;near:;identify:=;esri:102622;from_wkt:=/-;trusted:-;geographic:6668;shared:-	EPSG:10174 EPSG:11333
+esri	fits:0;meridian:0;near:;identify:=;esri:102623;from_wkt:=/-;trusted:-;geographic:6668;shared:-	EPSG:11336
+esri	fits:0;meridian:0;near:;identify:=;esri:102624;from_wkt:=/-;trusted:-;geographic:6668;shared:-	EPSG:11434
+esri	fits:0;meridian:0;near:;identify:=;esri:102625;from_wkt:=/-;trusted:-;geographic:6668;shared:-	EPSG:11442
+esri	fits:0;meridian:0;near:;identify:=;esri:102626;from_wkt:=/-;trusted:-;geographic:6668;shared:-	EPSG:11443
+esri	fits:0;meridian:0;near:;identify:=;esri:102627;from_wkt:=/-;trusted:-;geographic:6668;shared:-	EPSG:11444
+esri	fits:0;meridian:0;near:;identify:=;esri:102628;from_wkt:=/-;trusted:-;geographic:6668;shared:-	EPSG:11445
+esri	fits:0;meridian:0;near:;identify:=;esri:102641;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8714
+esri	fits:0;meridian:0;near:;identify:=;esri:102642;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8715
+esri	fits:0;meridian:0;near:;identify:=;esri:102643;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8716
+esri	fits:0;meridian:0;near:;identify:=;esri:102644;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8717
+esri	fits:0;meridian:0;near:;identify:=;esri:102645;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8718
+esri	fits:0;meridian:0;near:;identify:=;esri:102646;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8719
+esri	fits:0;meridian:0;near:;identify:=;esri:102651;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8712
+esri	fits:0;meridian:0;near:;identify:=;esri:102652;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8713
+esri	fits:0;meridian:0;near:;identify:=;esri:102653;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8720
+esri	fits:0;meridian:0;near:;identify:=;esri:102654;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8721
+esri	fits:0;meridian:0;near:;identify:=;esri:102655;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8722
+esri	fits:0;meridian:0;near:;identify:=;esri:102656;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8723
+esri	fits:0;meridian:0;near:;identify:=;esri:102657;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8724
+esri	fits:0;meridian:0;near:;identify:=;esri:102658;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8726
+esri	fits:0;meridian:0;near:;identify:=;esri:102659;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8727
+esri	fits:0;meridian:0;near:;identify:=;esri:102660;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8725
+esri	fits:0;meridian:0;near:;identify:=;esri:102666;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8728
+esri	fits:0;meridian:0;near:;identify:=;esri:102667;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8729
+esri	fits:0;meridian:0;near:;identify:=;esri:102668;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8730
+esri	fits:0;meridian:0;near:;identify:=;esri:102669;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8731
+esri	fits:0;meridian:0;near:;identify:=;esri:102670;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8732
+esri	fits:0;meridian:0;near:;identify:=;esri:102671;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8733
+esri	fits:0;meridian:0;near:;identify:=;esri:102672;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8734
+esri	fits:0;meridian:0;near:;identify:=;esri:102673;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8735
+esri	fits:0;meridian:0;near:;identify:=;esri:102674;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8736
+esri	fits:0;meridian:0;near:;identify:=;esri:102675;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8737
+esri	fits:0;meridian:0;near:;identify:=;esri:102676;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8738
+esri	fits:0;meridian:0;near:;identify:=;esri:102677;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8739
+esri	fits:0;meridian:0;near:;identify:=;esri:102678;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8740
+esri	fits:0;meridian:0;near:;identify:=;esri:102679;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8741
+esri	fits:0;meridian:0;near:;identify:=;esri:102680;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8742
+esri	fits:0;meridian:0;near:;identify:=;esri:102681;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8743
+esri	fits:0;meridian:0;near:;identify:=;esri:102682;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8744
+esri	fits:0;meridian:0;near:;identify:=;esri:102683;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8745
+esri	fits:0;meridian:0;near:;identify:=;esri:102684;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8746
+esri	fits:0;meridian:0;near:;identify:=;esri:102685;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8747
+esri	fits:0;meridian:0;near:;identify:=;esri:102686;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8748
+esri	fits:0;meridian:0;near:;identify:=;esri:102687;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8749
+esri	fits:0;meridian:0;near:;identify:=;esri:102691;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8750
+esri	fits:0;meridian:0;near:;identify:=;esri:102692;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8751
+esri	fits:0;meridian:0;near:;identify:=;esri:102693;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8752
+esri	fits:0;meridian:0;near:;identify:=;esri:102694;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8753
+esri	fits:0;meridian:0;near:;identify:=;esri:102695;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8754
+esri	fits:0;meridian:0;near:;identify:=;esri:102704;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8755
+esri	fits:0;meridian:0;near:;identify:=;esri:102707;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8756
+esri	fits:0;meridian:0;near:;identify:=;esri:102708;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8757
+esri	fits:0;meridian:0;near:;identify:=;esri:102709;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8758
+esri	fits:0;meridian:0;near:;identify:=;esri:102710;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8759
+esri	fits:0;meridian:0;near:;identify:=;esri:102712;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8761
+esri	fits:0;meridian:0;near:;identify:=;esri:102713;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8762
+esri	fits:0;meridian:0;near:;identify:=;esri:102714;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8763
+esri	fits:0;meridian:0;near:;identify:=;esri:102715;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8764
+esri	fits:0;meridian:0;near:;identify:=;esri:102716;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8765
+esri	fits:0;meridian:0;near:;identify:=;esri:102717;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8766
+esri	fits:0;meridian:0;near:;identify:=;esri:102718;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8767
+esri	fits:0;meridian:0;near:;identify:=;esri:102719;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8768
+esri	fits:0;meridian:0;near:;identify:=;esri:102722;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8769
+esri	fits:0;meridian:0;near:;identify:=;esri:102723;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8770
+esri	fits:0;meridian:0;near:;identify:=;esri:102724;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8771
+esri	fits:0;meridian:0;near:;identify:=;esri:102725;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8772
+esri	fits:0;meridian:0;near:;identify:=;esri:102728;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8773
+esri	fits:0;meridian:0;near:;identify:=;esri:102729;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8774
+esri	fits:0;meridian:0;near:;identify:=;esri:102730;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8775
+esri	fits:0;meridian:0;near:;identify:=;esri:102734;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8776
+esri	fits:0;meridian:0;near:;identify:=;esri:102735;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8777
+esri	fits:0;meridian:0;near:;identify:=;esri:102736;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8778
+esri	fits:0;meridian:0;near:;identify:=;esri:102737;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8779
+esri	fits:0;meridian:0;near:;identify:=;esri:102738;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8780
+esri	fits:0;meridian:0;near:;identify:=;esri:102739;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8781
+esri	fits:0;meridian:0;near:;identify:=;esri:102740;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8782
+esri	fits:0;meridian:0;near:;identify:=;esri:102741;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8783
+esri	fits:0;meridian:0;near:;identify:=;esri:102742;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8784
+esri	fits:0;meridian:0;near:;identify:=;esri:102743;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8785
+esri	fits:0;meridian:0;near:;identify:=;esri:102744;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8786
+esri	fits:0;meridian:0;near:;identify:=;esri:102745;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8787
+esri	fits:0;meridian:0;near:;identify:=;esri:102746;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8788
+esri	fits:0;meridian:0;near:;identify:=;esri:102747;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8789
+esri	fits:0;meridian:0;near:;identify:=;esri:102748;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8790
+esri	fits:0;meridian:0;near:;identify:=;esri:102749;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8791
+esri	fits:0;meridian:0;near:;identify:=;esri:102750;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8792
+esri	fits:0;meridian:0;near:;identify:=;esri:102751;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8793
+esri	fits:0;meridian:0;near:;identify:=;esri:102752;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8794
+esri	fits:0;meridian:0;near:;identify:=;esri:102753;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8795
+esri	fits:0;meridian:0;near:;identify:=;esri:102754;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8796
+esri	fits:0;meridian:0;near:;identify:=;esri:102755;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8797
+esri	fits:0;meridian:0;near:;identify:=;esri:102756;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8798
+esri	fits:0;meridian:0;near:;identify:=;esri:102757;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8799
+esri	fits:0;meridian:0;near:;identify:=;esri:102758;from_wkt:=/-;trusted:-;geographic:4269;shared:-	EPSG:8800
+esri	fits:0;meridian:0;near:;identify:=;esri:103216;from_wkt:=/-;trusted:-;geographic:4258;shared:-	EPSG:4097
+esri	fits:0;meridian:0;near:;identify:=;esri:103217;from_wkt:=/-;trusted:-;geographic:4258;shared:-	EPSG:4098
+esri	fits:0;meridian:0;near:;identify:=;esri:103218;from_wkt:=/-;trusted:-;geographic:4258;shared:-	EPSG:4099
+esri	fits:0;meridian:0;near:;identify:=;esri:103219;from_wkt:=/-;trusted:-;geographic:4258;shared:-	EPSG:4100
+esri	fits:0;meridian:0;near:;identify:=;esri:104020;from_wkt:=/-;trusted:-;geographic:6668;shared:-	EPSG:6697 EPSG:11318
+esri	fits:0;meridian:0;near:;identify:=;esri:104108;from_wkt:=/-;trusted:-;geographic:4167;shared:-	EPSG:9527 EPSG:9528
+esri	fits:0;meridian:0;near:;identify:=;esri:104111;from_wkt:=/-;trusted:-;geographic:4612;shared:-	EPSG:6696
+esri	fits:0;meridian:0;near:;identify:=;esri:104129;from_wkt:=/-;trusted:-;geographic:10690;shared:-	EPSG:10691 EPSG:10692
+esri	fits:0;meridian:0;near:;identify:=;esri:104141;from_wkt:=/-;trusted:-;geographic:6311;shared:-	EPSG:10865
+esri	fits:0;meridian:0;near:;identify:=;esri:104144;from_wkt:=/-;trusted:-;geographic:5324;shared:-	EPSG:9949
+esri	fits:0;meridian:0;near:;identify:=;esri:104145;from_wkt:=/-;trusted:-;geographic:6318;shared:-	EPSG:6349 EPSG:9522 EPSG:9523
+esri	fits:0;meridian:0;near:;identify:=;esri:104186;from_wkt:=/-;trusted:-;geographic:9067;shared:-	EPSG:10659
+esri	fits:0;meridian:0;near:;identify:=;esri:104286;from_wkt:=/-;trusted:-;geographic:6325;shared:-	EPSG:9524 EPSG:9525
+esri	fits:0;meridian:0;near:;identify:=;esri:104287;from_wkt:=/-;trusted:-;geographic:6322;shared:-	EPSG:9526
+esri	fits:0;meridian:0;near:;identify:=;esri:104896;from_wkt:=/-;trusted:-;geographic:8998;shared:-	EPSG:9543
 esri	fits:1;meridian:0;near:000000;identify:=;esri:-;from_wkt:=/-;trusted:-;geographic:g;shared:-	EPSG:7077 EPSG:7078 EPSG:7079 EPSG:7080 EPSG:7081 EPSG:8455 EPSG:8456
 esri	fits:1;meridian:0;near:00000;identify:2139;esri:-;from_wkt:2139/-;trusted:-;geographic:g;shared:-	EPSG:2944
 esri	fits:1;meridian:0;near:00000;identify:2945;esri:-;from_wkt:2945/-;trusted:-;geographic:4617;shared:-	EPSG:2140

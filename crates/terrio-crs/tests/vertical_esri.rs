@@ -7,8 +7,8 @@
 //!
 //! `data/vertical_esri.json` (`scripts/gen_vertical_esri.py`, pyproj 3.8.0, `PROJ_NETWORK=OFF`, no
 //! grids installed) holds the type, code and axes PROJ reads, and for a compound CRS the point PROJ
-//! places from EPSG:9707 (`always_xy`). A compound CRS has no code in terrio unless it declares
-//! one, where PROJ identifies EPSG:9707 by its parts (`SpatialRef::from_wkt`). Tolerance: 1 mm
+//! places from EPSG:9707 (`always_xy`). A compound CRS is identified by its parts, as PROJ
+//! identifies EPSG:9707 (opengeos/terrio#1012, item 47). Tolerance: 1 mm
 //! (1e-8° for a geographic CRS). A vertical CRS without a code is identified by its name, datum,
 //! unit and direction, as by PROJ, for every EPSG vertical CRS ESRI writes.
 
@@ -35,7 +35,7 @@ fn an_esri_vertcs_is_a_vertical_crs() {
                 assert!(!crs.has_height(), "{name}");
             }
             "Compound CRS" => {
-                assert_eq!(crs.epsg, None, "{name}");
+                assert_eq!(crs.epsg.map(u64::from), case["epsg"].as_u64(), "{name}");
                 assert!(crs.has_height(), "{name}");
                 assert_eq!(crs.axis_order(), AxisOrder::EastNorth, "{name}: {axes:?}");
                 let p = case["proj"].as_array().unwrap();
@@ -115,16 +115,20 @@ fn a_name_identifies_a_vertical_crs_only_on_its_datum_unit_and_direction() {
     }
 }
 
-/// ESRI's compound CRS is named after its parts, and written as a `COMPD_CS`.
+/// ESRI's compound CRS is named after its parts, and written as a `COMPD_CS`; on EGM96 height up,
+/// it is EPSG:9707, named so, as PROJ 9.9.0 and GDAL 3.13.3 identify it (100%).
 #[test]
 fn an_esri_compound_crs_is_a_compd_cs() {
     let g = r#"GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]"#;
-    let v = r#"VERTCS["EGM96_height",VDATUM["EGM96_Geoid"],PARAMETER["Vertical_Shift",0.0],PARAMETER["Direction",1.0],UNIT["Meter",1.0]]"#;
+    // Down (`Direction` -1), it is no EPSG CRS (PROJ identifies none).
+    let v = r#"VERTCS["EGM96_height",VDATUM["EGM96_Geoid"],PARAMETER["Vertical_Shift",0.0],PARAMETER["Direction",-1.0],UNIT["Meter",1.0]]"#;
     let crs = SpatialRef::from_wkt(&format!("{g},{v}"));
-    assert_eq!(crs.name().as_deref(), Some("GCS_WGS_1984 + EGM96_height"));
+    assert_eq!((crs.epsg, crs.name().as_deref()), (None, Some("GCS_WGS_1984 + EGM96_height")));
     let written = crs.to_wkt().unwrap();
     assert!(written.starts_with(r#"COMPD_CS["GCS_WGS_1984 + EGM96_height",GEOGCS["GCS_WGS_1984""#), "{written}");
     assert!(written.contains(r#"VERTCS["EGM96_height""#), "{written}");
+    let up = SpatialRef::from_wkt(&format!("{g},{}", v.replace("-1.0", "1.0")));
+    assert_eq!((up.epsg, up.name().as_deref()), (Some(9707), Some("WGS 84 + EGM96 height")));
 }
 
 /// A `SpatialRef` built from a file's text without `from_wkt` (as `terrio` builds a raster's or a
@@ -134,7 +138,7 @@ fn an_esri_compound_crs_is_compound_whatever_builds_it() {
     let g = r#"GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]"#;
     let v = r#"VERTCS["EGM96_height",VDATUM["EGM96_Geoid"],PARAMETER["Vertical_Shift",0.0],PARAMETER["Direction",1.0],UNIT["Meter",1.0]]"#;
     let wkt = format!("{g},{v}");
-    assert_eq!(terrio_crs::identify_epsg(&wkt), None);
+    assert_eq!(terrio_crs::identify_epsg(&wkt), Some(9707));
     let raw = SpatialRef { wkt: Some(wkt.clone()), ..Default::default() };
     assert!(raw.has_height());
     assert_eq!(raw.compound_parts(), Some((4326, 5773)));

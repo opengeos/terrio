@@ -1679,10 +1679,12 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
         Def::wkt_conversion(wkt)?;
         return strip_root_code(wkt).and_then(|w| identify_epsg(&w));
     }
-    // A compound CRS is not its horizontal CRS: only the code it declares identifies it, as in
-    // `SpatialRef::from_wkt`.
-    if def::split_compound(wkt).is_some() {
-        return None;
+    // A compound CRS is not its horizontal CRS: the registry's compound CRS of its horizontal and
+    // vertical CRSs, identified each, as PROJ 9.9.0 identifies EPSG:7405's WKT without its codes
+    // (#1012 item 47); of several, the one of its name.
+    if let Some((horizontal, vertical)) = def::split_compound(wkt) {
+        let (h, v) = (identify_epsg(&horizontal)?, def::vertical_code(&vertical)?);
+        return epsg::compound_of(h, v, wkt_name(wkt).as_deref()).filter(|c| declared_fits(wkt, *c));
     }
     // A vertical CRS by its name, datum, unit and direction, as PROJ 9.9.0 identifies it.
     if keywords::is(keywords::root_key(wkt), keywords::VERTICAL_CRS) {
@@ -4080,11 +4082,12 @@ mod tests {
         assert_eq!(c.epsg, None);
         assert_eq!(c.name().unwrap(), "WGS 84 + EGM96 height");
         assert!(c.to_wkt().unwrap().starts_with("COMPD_CS[\"WGS 84 + EGM96 height\",GEOGCS[\"WGS 84\""));
-        // Its WKT is not identified as EPSG:4326, which has no heights, read back or identified.
+        // Its WKT is not identified as EPSG:4326, which has no heights, but as EPSG:9707, the
+        // compound CRS of its parts, as PROJ 9.9.0 and GDAL 3.13.3 identify it (100%).
         let wkt = c.to_wkt().unwrap();
-        assert_eq!(identify_epsg(&wkt), None);
+        assert_eq!(identify_epsg(&wkt), Some(9707));
         let read = SpatialRef::from_wkt(&wkt);
-        assert_eq!((read.epsg, read.name().as_deref()), (None, Some("WGS 84 + EGM96 height")));
+        assert_eq!((read.epsg, read.name().as_deref()), (Some(9707), Some("WGS 84 + EGM96 height")));
         // A compound WKT declaring its code keeps it.
         let declared = format!("{},AUTHORITY[\"EPSG\",\"9707\"]]", wkt.strip_suffix(']').unwrap());
         assert_eq!(SpatialRef::from_wkt(&declared).epsg, Some(9707));
