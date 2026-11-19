@@ -854,7 +854,7 @@ impl Geodetic {
 pub(crate) fn same_ellipsoid(code: u32, a: f64, es: f64) -> bool {
     let Some(e) = super::epsg::get(code).filter(|e| e.proj.starts_with("+proj=longlat") && !e.three_d) else { return false };
     let Ok(d) = super::def::Def::from_proj(&e.proj) else { return false };
-    (d.ell.a - a).abs() < 1e-3 && (d.ell.es - es).abs() < 1e-9
+    crate::fits::same_figure(d.ell.a, d.ell.es, a, es)
 }
 
 /// The size of an angular unit given in radians, in degrees, with WKT's rounded degree and grad
