@@ -266,3 +266,67 @@ fn listed_differences_are_still_differences() {
         }
     }
 }
+
+/// A WKT that declares its code and has a datum shift of its own (ED50 / UTM zone 31N with
+/// `TOWGS84[-50,-60,-70,0,0,0,0]`, EPSG:23031 as GDAL 3.13.3 identifies it) is written with its
+/// code and GeogTOWGS84GeoKey, as GDAL writes it, and read back with the shift: the round trip
+/// places a point as the WKT does (GDAL reads its own file back without the shift; #1012 item 62).
+#[test]
+fn a_code_with_its_own_datum_shift_reads_back_with_it() {
+    let wkt = r#"PROJCS["ED50 / UTM zone 31N",GEOGCS["ED50",DATUM["European_Datum_1950",SPHEROID["International 1924",6378388,297],TOWGS84[-50,-60,-70,0,0,0,0],AUTHORITY["EPSG","6230"]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],AUTHORITY["EPSG","4230"]],PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",3],PARAMETER["scale_factor",0.9996],PARAMETER["false_easting",500000],PARAMETER["false_northing",0],UNIT["metre",1],AXIS["Easting",EAST],AXIS["Northing",NORTH],AUTHORITY["EPSG","23031"]]"#;
+    let crs = SpatialRef::from_wkt(wkt);
+    assert_eq!(crs.epsg, Some(23031));
+    let keys = crs.to_geokeys().unwrap();
+    assert!(keys.shorts.contains(&(3072, 23031)), "{keys:?}");
+    let tags = keys.encode().unwrap();
+    let back = SpatialRef::from_geokeys(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).unwrap();
+    assert_eq!(back.epsg, Some(23031));
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    let place = |c: &SpatialRef| Transformer::new(&wgs84, c).unwrap().transform(2.0, 48.0).unwrap();
+    let (x, y) = place(&back);
+    let (x0, y0) = place(&crs);
+    assert!((x - x0).abs() < 1e-6 && (y - y0).abs() < 1e-6, "({x}, {y}) against ({x0}, {y0})");
+    // EPSG:23031 itself is placed elsewhere (by ED50's own transformations): the shift is read.
+    let (x1, _) = place(&SpatialRef::from_epsg(23031).unwrap());
+    assert!((x1 - x0).abs() > 0.1, "{x1} {x0}");
+    let round_trip = |c: &SpatialRef| {
+        let tags = c.to_geokeys().unwrap().encode().unwrap();
+        SpatialRef::from_geokeys(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).unwrap()
+    };
+    // A geographic code with a shift of 3 values: ED50 (EPSG:4230).
+    let geographic = r#"GEOGCS["ED50",DATUM["European_Datum_1950",SPHEROID["International 1924",6378388,297],TOWGS84[-50,-60,-70],AUTHORITY["EPSG","6230"]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],AUTHORITY["EPSG","4230"]]"#;
+    let crs = SpatialRef::from_wkt(geographic);
+    let back = round_trip(&crs);
+    assert_eq!(back.epsg, Some(4230));
+    assert!(back.to_proj4().unwrap().contains("+towgs84=-50,-60,-70"), "{:?}", back.to_proj4());
+    // A zero shift on WGS 84 is no shift: written and read as the code alone.
+    let mut keys = SpatialRef::from_epsg(32633).unwrap().to_geokeys().unwrap();
+    keys.doubles.extend([0.0; 7].map(|v| (2062, v)));
+    let tags = keys.encode().unwrap();
+    let back = SpatialRef::from_geokeys(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).unwrap();
+    assert_eq!(back, SpatialRef::from_epsg(32633).unwrap());
+    // A key of another length than 3 or 7 is no shift: EPSG:23031 itself.
+    let mut keys = SpatialRef::from_epsg(23031).unwrap().to_geokeys().unwrap();
+    keys.doubles.extend([-50.0, -60.0, -70.0, 0.0].map(|v| (2062, v)));
+    let tags = keys.encode().unwrap();
+    let back = SpatialRef::from_geokeys(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).unwrap();
+    assert_eq!(back, SpatialRef::from_epsg(23031).unwrap());
+    // A user-defined CRS with a shift keeps its own reading: not a registered code it matches.
+    let user = SpatialRef::from_proj4("+proj=utm +zone=31 +ellps=intl +towgs84=-50,-60,-70,0,0,0,0 +units=m +no_defs").unwrap();
+    let back = round_trip(&user);
+    assert!(back.to_proj4().unwrap().contains("+towgs84=-50,-60,-70,0,0,0,0"), "{:?}", back.to_proj4());
+    let ((bx, by), (ux, uy)) = (place(&back), place(&user));
+    assert!((bx - ux).abs() < 1e-6 && (by - uy).abs() < 1e-6, "({bx}, {by}) against ({ux}, {uy})");
+    // A zero shift on another datum of the WGS 84 ellipsoid is a shift: VN-2000 (EPSG:4756) with
+    // `TOWGS84[0,0,0]` is placed as WGS 84, not by VN-2000's own transformations.
+    let mut keys = SpatialRef::from_epsg(4756).unwrap().to_geokeys().unwrap();
+    keys.doubles.extend([0.0; 3].map(|v| (2062, v)));
+    let tags = keys.encode().unwrap();
+    let back = SpatialRef::from_geokeys(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).unwrap();
+    assert_eq!(back.epsg, Some(4756));
+    assert!(back.to_proj4().unwrap().contains("+towgs84=0,0,0"), "{:?}", back.to_proj4());
+    // Written and read again, it keeps its zero shift.
+    let again = round_trip(&back);
+    assert_eq!(again.epsg, Some(4756));
+    assert!(again.to_proj4().unwrap().contains("+towgs84=0,0,0"), "{:?}", again.to_proj4());
+}
