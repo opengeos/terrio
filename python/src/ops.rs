@@ -810,6 +810,8 @@ pub(crate) fn input_raster(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<A
 ///         Use add=True with signed attributes to raise or lower elevations. Cannot be combined
 ///         with like, tr, ts, te, tap, ot, init, nodata or a_srs. Edits all bands. Separate
 ///         validity masks are not copied; nodata masks follow the edited values.
+///         With add=True, covered nodata samples also receive offsets: -9999 plus -2.5
+///         becomes -10001.5 and is marked valid. NaN remains NaN. Check voids before adding offsets.
 ///     ot: The output data type: `"Byte"`, `"Int16"`, `"UInt16"`, `"Int32"`, `"Float32"`,
 ///         `"Float64"` (the default)...
 ///     init: The initial pixel values (a number, or one per band). Defaults to nodata when set,

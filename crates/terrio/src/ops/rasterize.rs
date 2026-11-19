@@ -109,6 +109,8 @@ pub fn rasterize(layers: &[Layer], options: &RasterizeOptions) -> Result<RasterD
 /// All bands are edited. One burn value applies to every band; otherwise give one per band.
 /// Attribute values apply to every band. `MergeAlg::Add` adds signed offsets, including to
 /// nodata samples, as GDAL 3.13.3 does. Metadata and nodata declarations are retained.
+/// Adding to a finite nodata sentinel can turn a void into a valid sample: -9999 plus
+/// -2.5 becomes -10001.5, no longer nodata. NaN remains NaN. Check voids before adding offsets.
 /// Separate validity masks are not held by `RasterDataset`; nodata masks follow
 /// the edited values. The background is never mutated. Only north-up, real-valued affine rasters are
 /// supported; grid, initialization, type, nodata and CRS overrides are refused.

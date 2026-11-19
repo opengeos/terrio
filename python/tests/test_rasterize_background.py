@@ -103,7 +103,12 @@ def test_background_packing_preserves_edited_values(tmp_path, format, dtype, bit
 
 
 @pytest.mark.parametrize(
-    "geometry", ["LINESTRING (1 5, 5 1, 1 5)", "POLYGON ((1 1, 5 1, 5 5, 1 5, 1 1))"]
+    "geometry",
+    [
+        "LINESTRING (1 5, 5 1, 1 5)",
+        "POLYGON ((1 1, 5 1, 5 5, 1 5, 1 1))",
+        "MULTIPOINT ((1.1 5.1), (1.7 5.7))",
+    ],
 )
 @pytest.mark.parametrize("add", [False, True])
 @pytest.mark.parametrize("all_touched", [False, True])
@@ -112,7 +117,7 @@ def test_shapefile_elevation_preserves_dem(tmp_path, geometry, add, all_touched)
 
     Args:
         tmp_path: Scratch directory.
-        geometry: Line or polygon WKT.
+        geometry: Line, polygon or coincident-pixel MultiPoint WKT.
         add: Add offsets instead of replacing elevations.
         all_touched: Include every pixel touched by a shape.
     """
@@ -124,12 +129,13 @@ def test_shapefile_elevation_preserves_dem(tmp_path, geometry, add, all_touched)
     crs.ImportFromEPSG(32610)
     shp = tmp_path / "edits.shp"
     vectors = ogr.GetDriverByName("ESRI Shapefile").CreateDataSource(str(shp))
-    layer = vectors.CreateLayer("edits", crs, geom_type=ogr.wkbUnknown)
+    shape = ogr.CreateGeometryFromWkt(geometry)
+    layer = vectors.CreateLayer("edits", crs, geom_type=shape.GetGeometryType())
     layer.CreateField(ogr.FieldDefn("Elevation", ogr.OFTReal))
     for value in (2.5, -1.25):
         feature = ogr.Feature(layer.GetLayerDefn())
         feature.SetField("Elevation", value)
-        feature.SetGeometry(ogr.CreateGeometryFromWkt(geometry))
+        feature.SetGeometry(shape)
         layer.CreateFeature(feature)
     vectors = None
     values = np.arange(64, dtype="float32").reshape(8, 8) + 100
@@ -196,7 +202,7 @@ def test_shapefile_elevation_preserves_dem(tmp_path, geometry, add, all_touched)
 
 @pytest.mark.parametrize("features", [1, 2])
 def test_background_multipoint_adds_per_coordinate(features):
-    """Retain GDAL's per-coordinate additions within a MultiPoint.
+    """Add each coordinate within a MultiPoint and accumulate independent features.
 
     Args:
         features: Number of coincident MultiPoint features.

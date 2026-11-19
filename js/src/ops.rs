@@ -537,6 +537,8 @@ struct RasterizeArgs {
 /// whose grid to use), `ot`, `init`, `nodata`, `allTouched`, `add`, `aSrs`.
 /// `background` copies a raster's pixels and metadata, then edits all bands. Separate validity
 /// masks are not copied; nodata masks follow the edited values.
+/// With `add`, covered nodata samples also receive offsets: -9999 plus -2.5 becomes -10001.5
+/// and is marked valid. NaN remains NaN. Check voids before adding offsets.
 /// With `add`, signed values raise or lower elevations. Cannot be combined with grid, size,
 /// resolution, extent, alignment, type, initialization, nodata or CRS overrides.
 /// Without `init`, uncovered pixels start at `nodata` when set, otherwise 0, for every format.
