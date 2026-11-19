@@ -98,6 +98,28 @@ def test_blocks_never_written_are_left_out(tmp_path, monkeypatch, layout, nodata
     np.testing.assert_array_equal(terrio.open_raster(str(path), lazy=True).read(), expected)
 
 
+@pytest.mark.parametrize("limit", ["1000000000", "1000"], ids=["in-memory", "in-a-file"])
+def test_a_complex_block_is_left_out_only_if_both_parts_are_0(tmp_path, monkeypatch, limit):
+    """Catches a complex block left out on its real parts alone: one whose imaginary parts hold
+    data is kept. Complex samples (`complex64`, GDAL's CFloat32) are left out when both their
+    parts are 0, written whole or in rows."""
+    monkeypatch.setenv("TERRIO_RIO_IN_MEMORY_LIMIT", limit)
+    path = tmp_path / "out.tif"
+    expected = np.zeros((1, 64, 192), "complex64")
+    expected[0, 10, 70] = 1j
+    expected[0, 20, 140] = 1
+    profile = dict(driver="GTiff", width=192, height=64, count=1, dtype="complex64")
+    with rio.open(
+        path, "w", tiled=True, blockxsize=64, blockysize=64, sparse_ok=True, **profile
+    ) as dst:
+        dst.write(expected)
+    with rio.open(path) as src:
+        sizes = [src.get_tag_item(f"BLOCK_SIZE_{x}_0", "TIFF", bidx=1) for x in range(3)]
+        np.testing.assert_array_equal(src.read(), expected)
+    assert [size == "0" for size in sizes] == [True, False, False]
+    np.testing.assert_array_equal(terrio.open_raster(str(path)).read(), expected)
+
+
 @pytest.mark.parametrize("masked", [False, True], ids=["in-rows", "whole"])
 def test_a_cog_warns_once_that_it_writes_every_tile(tmp_path, masked):
     """Written in rows, or whole (with a mask)."""
