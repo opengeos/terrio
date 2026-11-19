@@ -14,9 +14,6 @@ use crate::def::{self, Def};
 use crate::math::Ell;
 use crate::{SpatialRef, catalog, epsg, keywords, wkt1};
 
-#[cfg(test)]
-mod baseline_tests;
-
 /// Whether two lengths are the same as PROJ 9.9.0 compares measures (`Measure::_isEquivalentTo`,
 /// `DEFAULT_MAX_REL_ERROR`): within 1e-10 of the first.
 fn same_measure(x: f64, y: f64) -> bool {
@@ -455,4 +452,23 @@ pub(crate) fn identify_by_shared_name(geogcs: &str) -> Option<u32> {
     let own = Def::wkt_conversion(geogcs)?;
     let theirs = Def::new(&SpatialRef { epsg: Some(code), ..Default::default() }).ok()?;
     same_content(&own, &theirs).then_some(code)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// PROJ 9.9.0's `Ellipsoid::_isEquivalentTo`: GRS 1980 (298.257222101) is not WGS 84
+    /// (298.257223563), though their eccentricities squared differ by 1.1e-11; a sphere is not an
+    /// ellipsoid of its radius; a rounded inverse flattening within 1e-10 is the same.
+    #[test]
+    fn ellipsoids_as_proj_compares_them() {
+        let es = |rf: f64| (2.0 - 1.0 / rf) / rf;
+        let (wgs84, grs80) = (es(298.257223563), es(298.257222101));
+        assert!(same_figure(6378137.0, wgs84, 6378137.0, wgs84));
+        assert!(!same_figure(6378137.0, wgs84, 6378137.0, grs80));
+        assert!(!same_figure(6378137.0, 0.0, 6378137.0, wgs84));
+        assert!(same_figure(6378137.0, wgs84, 6378137.0, es(298.2572235630001)));
+        assert!(!same_figure(6378137.0, wgs84, 6378137.001, wgs84));
+    }
 }

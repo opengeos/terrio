@@ -247,6 +247,39 @@ fn coordinate_system(value: &Value, geographic: bool) -> Result<(Vec<String>, St
     }
     Ok((out, units.remove(0).1))
 }
+/// A vertical reference frame, by its name and identifiers.
+fn vertical_datum(value: &Value) -> Result<String> {
+    let o = object(value, &["name"])?;
+    typed(o, "VerticalReferenceFrame")?;
+    let mut args = vec![];
+    id(o, &mut args)?;
+    Ok(named("VDATUM", string(o, "name")?, args))
+}
+
+/// A vertical coordinate system: one axis, up or down, in a length unit.
+fn vertical_coordinate_system(value: &Value) -> Result<Vec<String>> {
+    let o = object(value, &["subtype", "axis"])?;
+    typed(o, "CoordinateSystem")?;
+    if string(o, "subtype")? != "vertical" {
+        return Err(bad("unsupported coordinate-system subtype"));
+    }
+    let [axis] = required(o, "axis")?.as_array().ok_or_else(|| bad("axis must be an array"))?.as_slice() else {
+        return Err(bad("a vertical coordinate system has one axis"));
+    };
+    let a = object(axis, &["name", "abbreviation", "direction", "unit"])?;
+    typed(a, "Axis")?;
+    let direction = string(a, "direction")?;
+    if direction != "up" && direction != "down" {
+        return Err(bad("unsupported axis direction"));
+    }
+    let (kind, _, u) = unit(required(a, "unit")?)?;
+    if kind != "LENGTHUNIT" {
+        return Err(bad("axis has wrong unit type"));
+    }
+    let name = format!("{} ({})", string(a, "name")?, string(a, "abbreviation")?);
+    Ok(vec![node("CS", &["vertical".into(), "1".into()]), named("AXIS", &name, vec![direction.into(), u])])
+}
+
 fn operation(value: &Value, bound: bool) -> Result<String> {
     let o = object(value, &["name", "method", "parameters"])?;
     typed(o, if bound { "AbridgedTransformation" } else { "Conversion" })?;
@@ -337,7 +370,18 @@ fn crs(value: &Value, base: bool, depth: usize) -> Result<String> {
     }
     let o = object(
         value,
-        &["name", "datum", "datum_ensemble", "coordinate_system", "base_crs", "conversion", "source_crs", "target_crs", "transformation"],
+        &[
+            "name",
+            "datum",
+            "datum_ensemble",
+            "coordinate_system",
+            "base_crs",
+            "conversion",
+            "source_crs",
+            "target_crs",
+            "transformation",
+            "components",
+        ],
     )?;
     // PROJJSON v0.7 makes the geodetic base's type optional. Its position in a
     // ProjectedCRS already supplies that context; a root object still needs it.
@@ -449,6 +493,35 @@ fn crs(value: &Value, base: bool, depth: usize) -> Result<String> {
             }
             return Ok(node("BOUNDCRS", &[node("SOURCECRS", &[source]), node("TARGETCRS", &[target]), operation]));
         }
+        "VerticalCRS" if !base => {
+            if ["datum_ensemble", "base_crs", "conversion", "source_crs", "target_crs", "transformation", "components"]
+                .iter()
+                .any(|k| o.contains_key(*k))
+            {
+                return Err(bad("unexpected vertical CRS components"));
+            }
+            args = vec![vertical_datum(required(o, "datum")?)?];
+            args.extend(vertical_coordinate_system(required(o, "coordinate_system")?)?);
+            "VERTCRS"
+        }
+        // A horizontal CRS and a vertical CRS, as PROJ writes EPSG:7405.
+        "CompoundCRS" if !base => {
+            if ["datum", "datum_ensemble", "coordinate_system", "base_crs", "conversion", "source_crs", "target_crs", "transformation"]
+                .iter()
+                .any(|k| o.contains_key(*k))
+            {
+                return Err(bad("unexpected compound CRS components"));
+            }
+            let components = required(o, "components")?.as_array().ok_or_else(|| bad("components must be an array"))?;
+            let kind = |c: &Value| c.get("type").and_then(Value::as_str).unwrap_or("").to_string();
+            match components.as_slice() {
+                [h, v] if matches!(kind(h).as_str(), "GeographicCRS" | "GeodeticCRS" | "ProjectedCRS") && kind(v) == "VerticalCRS" => {
+                    args = vec![crs(h, false, depth + 1)?, crs(v, false, depth + 1)?];
+                }
+                _ => return Err(bad("a compound CRS must be a horizontal CRS and a vertical CRS")),
+            }
+            "COMPOUNDCRS"
+        }
         _ => return Err(bad(format!("unsupported CRS type '{kind}'"))),
     };
     let mut identifiers = vec![];
@@ -467,7 +540,10 @@ pub(crate) fn parse(text: &str) -> Result<SpatialRef> {
     let wkt = crs(&value, false, 0)?;
     // Parse the complete supplied definition before considering any authority IDs.
     // Root IDs were stripped during translation so they cannot replace caller parameters.
-    Def::from_wkt(&wkt)?;
+    // A vertical CRS is read by its unit and direction, which the translation checked.
+    if !wkt.starts_with("VERTCRS[") {
+        Def::from_wkt(&wkt)?;
+    }
     // The translated WKT has no root identifier, so this identifies the supplied
     // definition, never the JSON object's claimed authority code.
     // uncut: stored or built WKT

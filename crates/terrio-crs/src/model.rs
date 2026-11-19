@@ -25,7 +25,7 @@ use crate::keywords as kw;
 use crate::wkt1::{self, Arg, Node};
 
 #[cfg(test)]
-pub(crate) mod oracle_tests;
+mod oracle_tests;
 
 /// An identifier: WKT 1's `AUTHORITY`, WKT 2's `ID`.
 #[derive(Debug, Clone, PartialEq)]

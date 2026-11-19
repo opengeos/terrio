@@ -661,7 +661,8 @@ impl SpatialRef {
         projjson_write::write(self)
     }
 
-    /// Parses the supported PROJJSON v0.7 geographic, projected or bound CRS subset.
+    /// Parses the supported PROJJSON v0.7 geographic, projected, bound, vertical or compound CRS
+    /// subset.
     /// Unsupported coordinate systems, datum models and operations return errors.
     pub fn from_projjson(text: &str) -> Result<Self> {
         // The text ends at its first NUL, as PROJ's `proj_create` reads it; a NUL a JSON string
