@@ -325,4 +325,8 @@ fn a_code_with_its_own_datum_shift_reads_back_with_it() {
     let back = SpatialRef::from_geokeys(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).unwrap();
     assert_eq!(back.epsg, Some(4756));
     assert!(back.to_proj4().unwrap().contains("+towgs84=0,0,0"), "{:?}", back.to_proj4());
+    // Written and read again, it keeps its zero shift.
+    let again = round_trip(&back);
+    assert_eq!(again.epsg, Some(4756));
+    assert!(again.to_proj4().unwrap().contains("+towgs84=0,0,0"), "{:?}", again.to_proj4());
 }

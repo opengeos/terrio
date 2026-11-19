@@ -989,11 +989,18 @@ fn own_towgs84(crs: &SpatialRef) -> Option<Vec<f64>> {
     };
     let values = proj.split_whitespace().find_map(|t| t.strip_prefix("+towgs84="))?;
     let t: Vec<f64> = values.split(',').map(|x| x.parse().ok().filter(|v: &f64| v.is_finite())).collect::<Option<_>>()?;
-    (matches!(t.len(), 3 | 7) && !(on_wgs84(&proj) && t.iter().all(|x| *x == 0.0))).then_some(t)
+    // A zero shift on the WGS 84 datum is no shift: for a coded CRS by its registered datum (a zero
+    // shift on VN-2000, EPSG:4756, on WGS 84's ellipsoid, is kept, as the reader keeps it), else by
+    // its PROJ string's datum or ellipsoid.
+    let wgs84 = match crs.epsg.and_then(crate::epsg::get) {
+        Some(e) => e.datum == 6326,
+        None => on_wgs84(&proj),
+    };
+    (matches!(t.len(), 3 | 7) && !(wgs84 && t.iter().all(|x| *x == 0.0))).then_some(t)
 }
 
 /// Whether a PROJ string is on WGS 84: its datum or ellipsoid by name, or the ellipsoid's axis and
-/// flattening. A zero shift on it is no shift for the writer.
+/// flattening. A zero shift on it is no shift for the writer, for a CRS without a code.
 fn on_wgs84(proj: &str) -> bool {
     let has = |token: &str| proj.split_whitespace().any(|t| t == token);
     has("+datum=WGS84") || has("+ellps=WGS84") || (has("+a=6378137") && has("+rf=298.257223563"))
