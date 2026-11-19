@@ -460,7 +460,7 @@ fn projected1(p: &Node) -> Result<Map<String, Value>> {
             let north = fnorth == 0.0;
             conversion["name"] = json!(format!("UTM zone {}{}", zone as u32, if north { 'N' } else { 'S' }));
             if inner {
-                conversion["id"] = id("EPSG", if north { 16000 } else { 17000 } + zone as u32);
+                conversion["id"] = id("EPSG", if north { 16000 } else { 16100 } + zone as u32);
             }
         }
     }
@@ -725,6 +725,22 @@ mod tests {
         assert_eq!(db["coordinate_system"]["axis"][0]["abbreviation"], "E");
         assert_eq!(db["scope"], "Navigation and medium accuracy spatial referencing.");
         assert_eq!(db["bbox"], json!({"south_latitude": 0, "west_longitude": 12, "north_latitude": 84, "east_longitude": 18}));
+    }
+
+    #[test]
+    fn a_utm_zone_without_its_crs_code_has_its_conversion_code() {
+        // GDAL 3.13.3: `SetWellKnownGeogCS("WGS84")`, `SetUTM(zone, north)`, its WKT read back by
+        // `ExportToPROJJSON()`: EPSG:16133, 16033, 16101 and 16160 (16100 + zone in the south).
+        for (zone, south, code) in [(33, true, 16133), (33, false, 16033), (1, true, 16101), (60, true, 16160)] {
+            let wkt = format!(
+                r#"PROJCS["WGS 84 / UTM zone {zone}{h}",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563,AUTHORITY["EPSG","7030"]],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]],AXIS["Latitude",NORTH],AXIS["Longitude",EAST],AUTHORITY["EPSG","4326"]],PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",{lon}],PARAMETER["scale_factor",0.9996],PARAMETER["false_easting",500000],PARAMETER["false_northing",{fnorth}],UNIT["metre",1,AUTHORITY["EPSG","9001"]],AXIS["Easting",EAST],AXIS["Northing",NORTH]]"#,
+                h = if south { "S" } else { "N" },
+                lon = zone * 6 - 183,
+                fnorth = if south { 10_000_000 } else { 0 },
+            );
+            let v = pj(&SpatialRef::from_wkt(&wkt), false);
+            assert_eq!(v["conversion"]["id"], json!({"authority": "EPSG", "code": code}), "{zone} {south}");
+        }
     }
 
     #[test]
