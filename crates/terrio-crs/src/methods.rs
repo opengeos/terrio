@@ -83,6 +83,23 @@ pub(crate) const HEIGHT_TOPO: Param =
 pub(crate) const VIEW_HEIGHT: Param = param(8840, "Viewpoint height", "viewpointheight", &[], Length);
 pub(crate) const CO_LAT_CONE: Param = param(1036, "Co-latitude of cone axis", "colatitudeofconeaxis", &[], Angle);
 pub(crate) const K_ELLIPSOID: Param = param(1038, "Ellipsoid scaling factor", "ellipsoidscalingfactor", &[], Scale);
+pub(crate) const H_PLANE_ORIGIN: Param = param(1039, "Projection plane origin height", "projectionplaneoriginheight", &[], Length);
+// Krovak Modified's evaluation point and coefficients, which PROJ's `mod_krovak` fixes. Their
+// names are the EPSG registry's: PROJ 9.9.0's `proj.db` leaves them out of its conversions.
+pub(crate) const EVAL_1: Param = param(8617, "Ordinate 1 of evaluation point", "ordinate1ofevaluationpoint", &[], Length);
+pub(crate) const EVAL_2: Param = param(8618, "Ordinate 2 of evaluation point", "ordinate2ofevaluationpoint", &[], Length);
+pub(crate) const KROVAK_C: [Param; 10] = [
+    param(1026, "C1", "c1", &[], Scale),
+    param(1027, "C2", "c2", &[], Scale),
+    param(1028, "C3", "c3", &[], Scale),
+    param(1029, "C4", "c4", &[], Scale),
+    param(1030, "C5", "c5", &[], Scale),
+    param(1031, "C6", "c6", &[], Scale),
+    param(1032, "C7", "c7", &[], Scale),
+    param(1033, "C8", "c8", &[], Scale),
+    param(1034, "C9", "c9", &[], Scale),
+    param(1035, "C10", "c10", &[], Scale),
+];
 
 // PROJ's parameters without an EPSG code.
 pub(crate) const SAT_HEIGHT: Param = param(u32::MAX, "Satellite Height", "satelliteheight", &[], Length);
@@ -415,7 +432,7 @@ pub(crate) fn conversion_from_proj(p: &Params) -> Result<Conversion, String> {
 
 /// Every parameter of the table.
 #[cfg(test)]
-const ALL: [Param; 36] = [
+const ALL: [Param; 49] = [
     LAT_NAT,
     LON_NAT,
     K_NAT,
@@ -446,6 +463,19 @@ const ALL: [Param; 36] = [
     VIEW_HEIGHT,
     CO_LAT_CONE,
     K_ELLIPSOID,
+    H_PLANE_ORIGIN,
+    EVAL_1,
+    EVAL_2,
+    KROVAK_C[0],
+    KROVAK_C[1],
+    KROVAK_C[2],
+    KROVAK_C[3],
+    KROVAK_C[4],
+    KROVAK_C[5],
+    KROVAK_C[6],
+    KROVAK_C[7],
+    KROVAK_C[8],
+    KROVAK_C[9],
     SAT_HEIGHT,
     LAT_P1,
     LON_P1,
@@ -520,9 +550,17 @@ mod tests {
     /// names and codes are those of PROJ 9.9.0's `proj.db`, `conversion_param`.)
     #[test]
     fn the_parameter_table_is_consistent() {
-        // Every parameter constant of this file is in `ALL`, which the checks below go over.
-        let constants = include_str!("methods.rs").lines().filter(|l| l.starts_with("pub(crate) const ") && l.contains(": Param ="));
-        assert_eq!(constants.count(), ALL.len());
+        // Every parameter constant of this file (and of its arrays of them) is in `ALL`, which the
+        // checks below go over.
+        let constants: usize = include_str!("methods.rs")
+            .lines()
+            .filter(|l| l.starts_with("pub(crate) const "))
+            .map(|l| match l.split_once(": [Param; ") {
+                Some((_, n)) => n.split(']').next().and_then(|n| n.parse().ok()).unwrap(),
+                None => usize::from(l.contains(": Param =")),
+            })
+            .sum();
+        assert_eq!(constants, ALL.len());
         for p in ALL {
             assert_eq!(p.key, crate::wkt1::norm(p.name), "{p:?}");
             let same = |q: &&Param| q.code == p.code || q.named(p.key) || p.aliases.iter().any(|a| q.named(a));

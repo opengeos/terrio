@@ -1,0 +1,140 @@
+{
+ "proj_version": "9.9.0",
+ "cases": [
+  {
+   "name": "EPSG:3139 Vanua Levu 1915 / Vanua Levu Grid",
+   "wkt": "PROJCRS[\"Vanua Levu 1915 / Vanua Levu Grid\",BASEGEOGCRS[\"Vanua Levu 1915\",DATUM[\"Vanua Levu 1915\",ELLIPSOID[\"Clarke 1880 (international foot)\",20926202,293.466307655635,LENGTHUNIT[\"foot\",0.3048]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Vanua Levu Grid\",METHOD[\"Hyperbolic Cassini-Soldner\"],PARAMETER[\"Latitude of natural origin\",-16.25,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",179.333333333333,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"False easting\",1251331.8,LENGTHUNIT[\"link\",0.201168]],PARAMETER[\"False northing\",1662888.5,LENGTHUNIT[\"link\",0.201168]]],CS[Cartesian,2],AXIS[\"northing (X)\",north,ORDER[1],LENGTHUNIT[\"link\",0.201168]],AXIS[\"easting (Y)\",east,ORDER[2],LENGTHUNIT[\"link\",0.201168]]]",
+   "geographic": "+proj=longlat +a=6378306.3696 +rf=293.466307655635 +no_defs +type=crs",
+   "point": [
+    179.3,
+    -16.6
+   ],
+   "proj": [
+    1233649.656150524,
+    1470365.6972513762
+   ],
+   "proj4": "+proj=cass +hyperbolic +lat_0=-16.25 +lon_0=179.333333333333 +x_0=251727.9155424 +y_0=334519.953768 +a=6378306.3696 +rf=293.466307655635 +units=link +no_defs +type=crs",
+   "method_code": 9833
+  },
+  {
+   "name": "EPSG:3993 Guam 1963 / Guam SPCS",
+   "wkt": "PROJCRS[\"Guam 1963 / Guam SPCS\",BASEGEOGCRS[\"Guam 1963\",DATUM[\"Guam 1963\",ELLIPSOID[\"Clarke 1866\",6378206.4,294.978698213898,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Guam SPCS\",METHOD[\"Guam Projection\"],PARAMETER[\"Latitude of natural origin\",13.4724663527778,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",144.748750705556,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"False easting\",50000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",50000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"easting (X)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing (Y)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "geographic": "+proj=longlat +ellps=clrk66 +no_defs +type=crs",
+   "point": [
+    144.795,
+    13.44
+   ],
+   "proj": [
+    55008.42199885352,
+    46408.781283443444
+   ],
+   "proj4": "+proj=aeqd +guam +lat_0=13.4724663527778 +lon_0=144.748750705556 +x_0=50000 +y_0=50000 +ellps=clrk66 +units=m +no_defs +type=crs",
+   "method_code": 9831
+  },
+  {
+   "name": "EPSG:5224 S-JTSK/05 (Ferro) / Modified Krovak",
+   "wkt": "PROJCRS[\"S-JTSK/05 (Ferro) / Modified Krovak\",BASEGEOGCRS[\"S-JTSK/05 (Ferro)\",DATUM[\"System of the Unified Trigonometrical Cadastral Network/05 (Ferro)\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Ferro\",-17.6666666666667,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Modified Krovak\",METHOD[\"Krovak Modified\"],PARAMETER[\"Latitude of projection centre\",49.5,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of origin\",42.5,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Co-latitude of cone axis\",30.2881397222222,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Latitude of pseudo standard parallel\",78.5,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor on pseudo standard parallel\",0.9999,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",5000000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",5000000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"southing (X)\",south,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"westing (Y)\",west,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "geographic": "+proj=longlat +ellps=bessel +pm=ferro +no_defs +type=crs",
+   "point": [
+    15.475,
+    49.82
+   ],
+   "proj": [
+    5777020.279949017,
+    6904784.60921873
+   ],
+   "proj4": "+proj=mod_krovak +axis=swu +lat_0=49.5 +lon_0=42.5 +alpha=30.2881397222222 +k=0.9999 +x_0=5000000 +y_0=5000000 +ellps=bessel +pm=ferro +units=m +no_defs +type=crs",
+   "method_code": 1042
+  },
+  {
+   "name": "EPSG:5225 S-JTSK/05 (Ferro) / Modified Krovak East North",
+   "wkt": "PROJCRS[\"S-JTSK/05 (Ferro) / Modified Krovak East North\",BASEGEOGCRS[\"S-JTSK/05 (Ferro)\",DATUM[\"System of the Unified Trigonometrical Cadastral Network/05 (Ferro)\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Ferro\",-17.6666666666667,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Modified Krovak East North\",METHOD[\"Krovak Modified (North Orientated)\"],PARAMETER[\"Latitude of projection centre\",49.5,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of origin\",42.5,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Co-latitude of cone axis\",30.2881397222222,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Latitude of pseudo standard parallel\",78.5,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor on pseudo standard parallel\",0.9999,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",5000000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",5000000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"easting (X)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing (Y)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "geographic": "+proj=longlat +ellps=bessel +pm=ferro +no_defs +type=crs",
+   "point": [
+    15.475,
+    49.82
+   ],
+   "proj": [
+    -6904784.60921873,
+    -5777020.279949017
+   ],
+   "proj4": "+proj=mod_krovak +lat_0=49.5 +lon_0=42.5 +alpha=30.2881397222222 +k=0.9999 +x_0=5000000 +y_0=5000000 +ellps=bessel +pm=ferro +units=m +no_defs +type=crs",
+   "method_code": 1043
+  },
+  {
+   "name": "EPSG:5515 S-JTSK/05 / Modified Krovak",
+   "wkt": "PROJCRS[\"S-JTSK/05 / Modified Krovak\",BASEGEOGCRS[\"S-JTSK/05\",DATUM[\"System of the Unified Trigonometrical Cadastral Network/05\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Modified Krovak (Greenwich)\",METHOD[\"Krovak Modified\"],PARAMETER[\"Latitude of projection centre\",49.5,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of origin\",24.8333333333333,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Co-latitude of cone axis\",30.2881397222222,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Latitude of pseudo standard parallel\",78.5,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor on pseudo standard parallel\",0.9999,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",5000000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",5000000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"southing (X)\",south,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"westing (Y)\",west,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "geographic": "+proj=longlat +ellps=bessel +no_defs +type=crs",
+   "point": [
+    15.475,
+    49.82
+   ],
+   "proj": [
+    6082359.166271513,
+    5671775.905165402
+   ],
+   "proj4": "+proj=mod_krovak +axis=swu +lat_0=49.5 +lon_0=24.8333333333333 +alpha=30.2881397222222 +k=0.9999 +x_0=5000000 +y_0=5000000 +ellps=bessel +units=m +no_defs +type=crs",
+   "method_code": 1042
+  },
+  {
+   "name": "EPSG:5516 S-JTSK/05 / Modified Krovak East North",
+   "wkt": "PROJCRS[\"S-JTSK/05 / Modified Krovak East North\",BASEGEOGCRS[\"S-JTSK/05\",DATUM[\"System of the Unified Trigonometrical Cadastral Network/05\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Modified Krovak East North (Greenwich)\",METHOD[\"Krovak Modified (North Orientated)\"],PARAMETER[\"Latitude of projection centre\",49.5,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of origin\",24.8333333333333,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Co-latitude of cone axis\",30.2881397222222,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Latitude of pseudo standard parallel\",78.5,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor on pseudo standard parallel\",0.9999,SCALEUNIT[\"unity\",1]],PARAMETER[\"False easting\",5000000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",5000000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"easting (X)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"northing (Y)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "geographic": "+proj=longlat +ellps=bessel +no_defs +type=crs",
+   "point": [
+    15.475,
+    49.82
+   ],
+   "proj": [
+    -5671775.905165402,
+    -6082359.166271513
+   ],
+   "proj4": "+proj=mod_krovak +lat_0=49.5 +lon_0=24.8333333333333 +alpha=30.2881397222222 +k=0.9999 +x_0=5000000 +y_0=5000000 +ellps=bessel +units=m +no_defs +type=crs",
+   "method_code": 1043
+  },
+  {
+   "name": "EPSG:6201 NAD27 / Michigan Central",
+   "wkt": "PROJCRS[\"NAD27 / Michigan Central\",BASEGEOGCRS[\"NAD27\",DATUM[\"North American Datum 1927\",ELLIPSOID[\"Clarke 1866\",6378206.4,294.978698213898,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Michigan CS27 Central zone\",METHOD[\"Lambert Conic Conformal (2SP Michigan)\"],PARAMETER[\"Latitude of false origin\",43.3166666666667,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of false origin\",-84.3333333333333,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Latitude of 1st standard parallel\",44.1833333333333,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Latitude of 2nd standard parallel\",45.7,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Easting at false origin\",2000000,LENGTHUNIT[\"US survey foot\",0.304800609601219]],PARAMETER[\"Northing at false origin\",0,LENGTHUNIT[\"US survey foot\",0.304800609601219]],PARAMETER[\"Ellipsoid scaling factor\",1.0000382,SCALEUNIT[\"unity\",1]]],CS[Cartesian,2],AXIS[\"easting (X)\",east,ORDER[1],LENGTHUNIT[\"US survey foot\",0.304800609601219]],AXIS[\"northing (Y)\",north,ORDER[2],LENGTHUNIT[\"US survey foot\",0.304800609601219]]]",
+   "geographic": "+proj=longlat +datum=NAD27 +no_defs +type=crs",
+   "point": [
+    -84.665,
+    44.86
+   ],
+   "proj": [
+    1913996.5263179282,
+    562838.1772938652
+   ],
+   "proj4": "+proj=lcc +lat_0=43.3166666666667 +lon_0=-84.3333333333333 +lat_1=44.1833333333333 +lat_2=45.7 +x_0=609601.219202438 +y_0=0 +k_0=1.0000382 +datum=NAD27 +units=us-ft +no_defs +type=crs",
+   "method_code": 1051
+  },
+  {
+   "name": "EPSG:6247 MAGNA-SIRGAS / Bogota urban grid",
+   "wkt": "PROJCRS[\"MAGNA-SIRGAS / Bogota urban grid\",BASEGEOGCRS[\"MAGNA-SIRGAS\",DATUM[\"Marco Geocentrico Nacional de Referencia\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Bogota urban grid\",METHOD[\"Colombia Urban\"],PARAMETER[\"Latitude of natural origin\",4.68048611111111,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of natural origin\",-74.1465916666667,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"False easting\",92334.879,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",109320.965,LENGTHUNIT[\"metre\",1]],PARAMETER[\"Projection plane origin height\",2550,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"northing (N)\",north,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"easting (E)\",east,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "geographic": "+proj=longlat +ellps=GRS80 +no_defs +type=crs",
+   "point": [
+    -74.125,
+    4.65
+   ],
+   "proj": [
+    94731.55150151074,
+    105948.43998075461
+   ],
+   "proj4": "+proj=col_urban +lat_0=4.68048611111111 +lon_0=-74.1465916666667 +x_0=92334.879 +y_0=109320.965 +h_0=2550 +ellps=GRS80 +units=m +no_defs +type=crs",
+   "method_code": 1052
+  },
+  {
+   "name": "EPSG:5515 with its evaluation point and coefficients",
+   "wkt": "PROJCRS[\"S-JTSK/05 / Modified Krovak\",BASEGEOGCRS[\"S-JTSK/05\",DATUM[\"System of the Unified Trigonometrical Cadastral Network/05\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"Modified Krovak (Greenwich)\",METHOD[\"Krovak Modified\"],PARAMETER[\"Latitude of projection centre\",49.5,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Longitude of origin\",24.8333333333333,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Co-latitude of cone axis\",30.2881397222222,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Latitude of pseudo standard parallel\",78.5,ANGLEUNIT[\"degree\",0.0174532925199433]],PARAMETER[\"Scale factor on pseudo standard parallel\",0.9999,SCALEUNIT[\"unity\",1]],PARAMETER[\"Ordinate 1 of evaluation point\",1089000,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8617]],PARAMETER[\"Ordinate 2 of evaluation point\",654000,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8618]],PARAMETER[\"C1\",0.02946529277,SCALEUNIT[\"coefficient\",1],ID[\"EPSG\",1026]],PARAMETER[\"C2\",0.02515965696,SCALEUNIT[\"coefficient\",1],ID[\"EPSG\",1027]],PARAMETER[\"C3\",1.193845912e-07,SCALEUNIT[\"coefficient\",1],ID[\"EPSG\",1028]],PARAMETER[\"C4\",-4.668270147e-07,SCALEUNIT[\"coefficient\",1],ID[\"EPSG\",1029]],PARAMETER[\"C5\",9.233980362e-12,SCALEUNIT[\"coefficient\",1],ID[\"EPSG\",1030]],PARAMETER[\"C6\",1.523735715e-12,SCALEUNIT[\"coefficient\",1],ID[\"EPSG\",1031]],PARAMETER[\"C7\",1.696780024e-18,SCALEUNIT[\"coefficient\",1],ID[\"EPSG\",1032]],PARAMETER[\"C8\",4.408314235e-18,SCALEUNIT[\"coefficient\",1],ID[\"EPSG\",1033]],PARAMETER[\"C9\",-8.331083518e-24,SCALEUNIT[\"coefficient\",1],ID[\"EPSG\",1034]],PARAMETER[\"C10\",-3.689471323e-24,SCALEUNIT[\"coefficient\",1],ID[\"EPSG\",1035]],PARAMETER[\"False easting\",5000000,LENGTHUNIT[\"metre\",1]],PARAMETER[\"False northing\",5000000,LENGTHUNIT[\"metre\",1]]],CS[Cartesian,2],AXIS[\"southing (X)\",south,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"westing (Y)\",west,ORDER[2],LENGTHUNIT[\"metre\",1]]]",
+   "geographic": "+proj=longlat +ellps=bessel +no_defs +type=crs",
+   "point": [
+    15.475,
+    49.82
+   ],
+   "proj": [
+    6082359.166271513,
+    5671775.905165402
+   ],
+   "proj4": "+proj=mod_krovak +axis=swu +lat_0=49.5 +lon_0=24.8333333333333 +alpha=30.2881397222222 +k=0.9999 +x_0=5000000 +y_0=5000000 +ellps=bessel +units=m +no_defs +type=crs",
+   "method_code": 1042
+  }
+ ]
+}
