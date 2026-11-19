@@ -170,8 +170,8 @@ pub(crate) fn pseudo_mercator(p: &Params) -> bool {
         && k0 == 1.0
 }
 
-/// The conversion of a projected CRS's PROJ string, by its EPSG method, as PROJ decides it; or why
-/// there is none.
+/// The conversion of a projected CRS's PROJ string, by its EPSG method, as PROJ decides it (except
+/// where a branch notes a deliberate difference); or why there is none.
 ///
 /// It decides; it does not validate. The PROJ string must be one terrio reads as a CRS: a value
 /// it cannot parse is taken as absent here (`+lat_0=abc` as a latitude of origin of 0°). Nor does
@@ -199,7 +199,7 @@ pub(crate) fn conversion_from_proj(p: &Params) -> Result<Conversion, String> {
             }
             let south = p.has("south");
             name = Some(format!("UTM zone {zone}{}", if south { "S" } else { "N" }));
-            conversion_id = Some(if south { 17000 } else { 16000 } + zone);
+            conversion_id = Some(if south { 16100 } else { 16000 } + zone);
             let lon = f64::from(zone) * 6.0 - 183.0;
             let values =
                 vec![(LAT_NAT, 0.0), (LON_NAT, lon), (K_NAT, 0.9996), (FE, 500000.0), (FN, if south { 10_000_000.0 } else { 0.0 })];
@@ -465,7 +465,9 @@ mod tests {
         let south = conversion_from_proj(&Params::parse("+proj=tmerc +axis=wsu +lon_0=25 +x_0=1000 +y_0=2000 +ellps=WGS84")).unwrap();
         assert!(south.values.contains(&(FE, -1000.0)) && south.values.contains(&(FN, -2000.0)), "{:?}", south.values);
         let utm = conversion_from_proj(&Params::parse("+proj=utm +zone=33 +south +ellps=WGS84")).unwrap();
-        assert_eq!(utm.name.as_deref(), Some("UTM zone 33S"));
+        assert_eq!((utm.name.as_deref(), utm.conversion_code), (Some("UTM zone 33S"), Some(16133)));
+        let north = conversion_from_proj(&Params::parse("+proj=utm +zone=33 +ellps=WGS84")).unwrap();
+        assert_eq!((north.name.as_deref(), north.conversion_code), (Some("UTM zone 33N"), Some(16033)));
         assert_eq!(conversion_from_proj(&Params::parse("+proj=utm +ellps=WGS84")), Err("a UTM projection without zone".to_string()));
     }
 
