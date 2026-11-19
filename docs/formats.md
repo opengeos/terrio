@@ -354,6 +354,9 @@ Opened lazily (`terrio.rio.open`, `open_raster(..., lazy=True)`), only the bands
 as GDAL decodes them. Remote files are read by range, message by message as GDAL reads them, with
 no `.idx` or `.index` sidecar: at open one 16 KiB block per message for its section headers, then a
 band's message when the band is read; a server that ignores range requests is refused.
+Local files are read by position in the same way, without holding the file in memory: at open the
+section headers of each message (the whole message for a GRIB1 field whose nodata depends on its
+values), then a band's message when the band is read.
 
 Terrio's GRIB driver limits each field to 16,777,216 points by default, including constant and
 compressed fields. This is 128 MiB of decoded Float64 values; decoder buffers and multi-band reads

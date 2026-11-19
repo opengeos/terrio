@@ -54,8 +54,9 @@
 //! Supported GRIB2 data representations: simple packing (5.0), complex packing with and without
 //! spatial differencing (5.2, 5.3), IEEE floating point (5.4), JPEG 2000 (5.40, with the `jp2`
 //! feature), PNG (5.41) and CCSDS (5.42, with the pure-Rust `rust-aec` decoder). Remote files are
-//! read by range ([`remote`]). Every allocation sized by a header is fallible: a damaged or
-//! hostile file is an error, never an abort.
+//! read by range ([`remote`]) and local files by position ([`local`]): the headers of the messages
+//! when the file is opened, a band's message when the band is read. Every allocation sized by a
+//! header is fallible: a damaged or hostile file is an error, never an abort.
 
 use crate::formats::RasterDriver;
 use crate::{Error, RasterDataset, Result};
@@ -64,6 +65,7 @@ use wbraster::raster::RasterData;
 use wbraster::{CrsInfo, DataType};
 
 mod grib1;
+mod local;
 mod names;
 #[cfg(remote)]
 mod remote;
@@ -275,9 +277,9 @@ fn decode_band(b: &Band, i: usize, file_len: usize) -> Result<Decoded> {
 }
 
 /// Opens a GRIB file to be read band by band, as GDAL reads it: only the bands read are
-/// decoded. Local files are found by extension or content; remote ones by extension, and read
-/// by range (each message's header, then the messages of the bands read). `None` when `path` is
-/// not a GRIB file.
+/// decoded. Local files are found by extension or content, remote ones by extension; both are read
+/// in place (each message's header, then the messages of the bands read), local files by position
+/// and remote ones by range. `None` when `path` is not a GRIB file.
 pub(crate) fn open_lazy(path: &str) -> Option<Result<crate::LazyRaster>> {
     use crate::vfs::Location;
     let lower = path.to_ascii_lowercase();
@@ -309,7 +311,7 @@ pub(crate) fn open_lazy(path: &str) -> Option<Result<crate::LazyRaster>> {
             e => e,
         }));
     }
-    Some(crate::vfs::resolve(path).and_then(|local| open_lazy_bytes(std::fs::read(local.path())?)))
+    Some(crate::vfs::resolve(path).and_then(local::open))
 }
 
 /// Opens GRIB messages held in memory to be read band by band, keeping the bytes as they are given.
@@ -317,9 +319,7 @@ pub(crate) fn open_lazy_bytes(bytes: Vec<u8>) -> Result<crate::LazyRaster> {
     let normalize = normalize_units();
     let (header, split) = header(&bands(&bytes, normalize)?, bytes.len())?;
     let index = band_index(&bytes)?;
-    let (cols, rows) = (header.raster.cols, header.raster.rows);
-    let source = Source { store: Store::Bytes(bytes, index), cols, rows, split, normalize, cache: Vec::new() };
-    Ok(crate::LazyRaster::from_source(header, Box::new(source)))
+    Ok(Source::open(header, split, normalize, Store::Bytes(bytes, index)))
 }
 
 /// The bytes of decoded bands kept by a [`Source`], at least one band.
@@ -330,9 +330,43 @@ enum Store {
     /// The whole file, in memory, and where each band is: its message's offset and length, and
     /// its index among the message's bands.
     Bytes(Vec<u8>, Vec<(usize, usize, usize)>),
+    /// A local file, each band's message read when the band is read, and where each band is.
+    File(local::File, Vec<(usize, usize, usize)>),
     /// A remote file, each band's message fetched when the band is read.
     #[cfg(remote)]
     Remote(Box<remote::Messages>),
+}
+
+impl Store {
+    /// The length of the file.
+    fn file_len(&self) -> usize {
+        match self {
+            Store::Bytes(bytes, _) => bytes.len(),
+            Store::File(file, _) => file.len(),
+            #[cfg(remote)]
+            Store::Remote(messages) => messages.file_len(),
+        }
+    }
+
+    /// The message of band `b` (from 1), and the band's index among the message's bands.
+    fn message(&self, b: usize) -> Result<(std::borrow::Cow<'_, [u8]>, usize)> {
+        let out_of_range = || Error::InvalidArgument(format!("band {b} out of range"));
+        match self {
+            Store::Bytes(bytes, index) => {
+                let &(start, len, k) = index.get(b.wrapping_sub(1)).ok_or_else(out_of_range)?;
+                Ok((bytes[start..start + len].into(), k))
+            }
+            Store::File(file, index) => {
+                let &(start, len, k) = index.get(b.wrapping_sub(1)).ok_or_else(out_of_range)?;
+                Ok((file.read(start, len)?.into(), k))
+            }
+            #[cfg(remote)]
+            Store::Remote(messages) => {
+                let (message, k) = messages.band(b.wrapping_sub(1)).ok_or_else(out_of_range)?;
+                Ok((messages.fetch(message)?.into(), k))
+            }
+        }
+    }
 }
 
 /// A GRIB file read band by band: the bands read are decoded whole, as GDAL decodes them, and
@@ -359,19 +393,13 @@ fn band_index(b: &[u8]) -> Result<Vec<(usize, usize, usize)>> {
     Ok(out)
 }
 
-/// Band `b` (from 1) of a file held in memory, decoded and placed as the dataset's band.
-fn decode_placed(bytes: &[u8], at: (usize, usize, usize), b: usize, shape: (usize, usize, usize), normalize: bool) -> Result<Vec<f64>> {
-    let (start, len, k) = at;
-    let (cols, rows, split) = shape;
-    let bands = message_bands(&bytes[start..start + len], len, bytes.len(), normalize)?;
-    let band = bands.get(k).ok_or_else(|| Error::InvalidArgument(format!("band {b} out of range")))?;
-    let decoded = decode_band(band, b - 1, bytes.len())?;
-    let mut values = try_vec(cols * rows)?;
-    place_band(&decoded, cols, rows, split, &mut values);
-    Ok(values)
-}
-
 impl Source {
+    /// The dataset `header` of a GRIB file read band by band from `store`.
+    fn open(header: RasterDataset, split: usize, normalize: bool, store: Store) -> crate::LazyRaster {
+        let (cols, rows) = (header.raster.cols, header.raster.rows);
+        crate::LazyRaster::from_source(header, Box::new(Source { store, cols, rows, split, normalize, cache: Vec::new() }))
+    }
+
     fn cached(&mut self, b: usize) -> Option<std::sync::Arc<Vec<f64>>> {
         let i = self.cache.iter().position(|(k, _)| *k == b)?;
         let entry = self.cache.remove(i);
@@ -387,50 +415,46 @@ impl Source {
         self.cache.push((b, band));
     }
 
+    /// Band `b` (from 1), band `k` of `message`, decoded and placed as the dataset's band.
+    fn decode_placed(&self, message: &[u8], k: usize, b: usize) -> Result<Vec<f64>> {
+        let file_len = self.store.file_len();
+        let bands = message_bands(message, message.len(), file_len, self.normalize)?;
+        let band = bands.get(k).ok_or_else(|| Error::InvalidArgument(format!("band {b} out of range")))?;
+        let decoded = decode_band(band, b - 1, file_len)?;
+        let mut values = try_vec(self.cols * self.rows)?;
+        place_band(&decoded, self.cols, self.rows, self.split, &mut values);
+        Ok(values)
+    }
+
     fn band(&mut self, b: usize) -> Result<std::sync::Arc<Vec<f64>>> {
         if let Some(band) = self.cached(b) {
             return Ok(band);
         }
-        let out_of_range = || Error::InvalidArgument(format!("band {b} out of range"));
-        let values = match &self.store {
-            Store::Bytes(bytes, index) => {
-                let at = *index.get(b.wrapping_sub(1)).ok_or_else(out_of_range)?;
-                decode_placed(bytes, at, b, (self.cols, self.rows, self.split), self.normalize)?
-            }
-            #[cfg(remote)]
-            Store::Remote(messages) => {
-                let (message, k) = messages.band(b.wrapping_sub(1)).ok_or_else(out_of_range)?;
-                let bytes = messages.fetch(message)?;
-                let bands = message_bands(&bytes, bytes.len(), messages.file_len(), self.normalize)?;
-                let decoded = decode_band(bands.get(k).ok_or_else(out_of_range)?, b - 1, messages.file_len())?;
-                let mut values = try_vec(self.cols * self.rows)?;
-                place_band(&decoded, self.cols, self.rows, self.split, &mut values);
-                values
-            }
+        let band = {
+            let (message, k) = self.store.message(b)?;
+            std::sync::Arc::new(self.decode_placed(&message, k, b)?)
         };
-        let band = std::sync::Arc::new(values);
         self.keep(b, band.clone());
         Ok(band)
     }
 
-    /// Decodes the bands of `bands` not in the cache, in parallel (a file held in memory; a
-    /// remote file's bands are fetched one at a time by [`Source::band`]), into the cache.
+    /// Decodes the bands of `bands` not in the cache, in parallel, into the cache: a file in
+    /// memory, or a local file whose messages are read on this thread. A remote file's bands are
+    /// fetched one at a time by [`Source::band`].
     fn decode_missing(&mut self, bands: &[usize]) -> Result<()> {
-        // Irrefutable in builds without `remote` (WebAssembly's), which hold files in memory only.
-        #[allow(irrefutable_let_patterns)]
-        let Store::Bytes(bytes, index) = &self.store else { return Ok(()) };
+        #[cfg(remote)]
+        if matches!(self.store, Store::Remote(_)) {
+            return Ok(());
+        }
         let mut missing: Vec<usize> = bands.iter().copied().filter(|b| !self.cache.iter().any(|(k, _)| k == b)).collect();
         missing.sort_unstable();
         missing.dedup();
         if missing.len() < 2 {
             return Ok(());
         }
-        let ats: Vec<(usize, usize, usize)> = missing
-            .iter()
-            .map(|&b| index.get(b.wrapping_sub(1)).copied().ok_or_else(|| Error::InvalidArgument(format!("band {b} out of range"))))
-            .collect::<Result<_>>()?;
-        let (shape, normalize) = ((self.cols, self.rows, self.split), self.normalize);
-        let decoded = crate::par::map_range_coarse(missing.len(), |i| decode_placed(bytes, ats[i], missing[i], shape, normalize));
+        let messages = missing.iter().map(|&b| self.store.message(b)).collect::<Result<Vec<_>>>()?;
+        let decoded = crate::par::map_range_coarse(missing.len(), |i| self.decode_placed(&messages[i].0, messages[i].1, missing[i]));
+        drop(messages);
         for (b, d) in missing.into_iter().zip(decoded) {
             self.keep(b, std::sync::Arc::new(d?));
         }
@@ -526,26 +550,39 @@ fn bands(b: &[u8], normalize: bool) -> Result<Vec<Band<'_>>> {
 
 /// The offset and length of every message, in file order.
 fn message_spans(b: &[u8]) -> Result<Vec<(usize, usize)>> {
+    let find = |pos: usize| Ok(b[pos..].windows(4).position(|w| w == b"GRIB").map(|off| pos + off));
+    find_messages(b.len(), find, |at| Ok(b[at..at + 16].into()))
+}
+
+/// The offset and length of every message of a file of `len` bytes, in file order, given the
+/// offset of the first "GRIB" at or after an offset (`find`) and the 16 bytes at an offset
+/// (`start`): a message is "GRIB" followed by its edition, 1 or 2, and the next one is looked for
+/// past its end.
+fn find_messages<'a>(
+    len: usize,
+    mut find: impl FnMut(usize) -> Result<Option<usize>>,
+    mut start: impl FnMut(usize) -> Result<std::borrow::Cow<'a, [u8]>>,
+) -> Result<Vec<(usize, usize)>> {
     let mut out = Vec::new();
     let mut pos = 0;
-    while let Some(off) = b[pos..].windows(4).position(|w| w == b"GRIB") {
-        let start = pos + off;
-        if start + 16 > b.len() {
+    while let Some(at) = find(pos)? {
+        if at + 16 > len {
             break;
         }
-        let len = match b[start + 7] {
-            2 => be(&b[start + 8..start + 16]) as usize,
-            1 => grib1::message_len(&b[start..])?,
+        let head = start(at)?;
+        let n = match head[7] {
+            2 => be(&head[8..16]) as usize,
+            1 => grib1::message_len(&head)?,
             _ => {
-                pos = start + 4;
+                pos = at + 4;
                 continue;
             }
         };
-        if len < 16 || b.get(start..start.saturating_add(len)).is_none() {
-            return Err(Error::InvalidData(format!("GRIB message at offset {start} is truncated")));
+        if n < 16 || at.checked_add(n).is_none_or(|end| end > len) {
+            return Err(Error::InvalidData(format!("GRIB message at offset {at} is truncated")));
         }
-        out.push((start, len));
-        pos = start + len;
+        out.push((at, n));
+        pos = at + n;
     }
     Ok(out)
 }
@@ -563,16 +600,17 @@ fn message_bands(msg: &[u8], full_len: usize, file_len: usize, normalize: bool) 
     Ok(fields.into_iter().map(Band::Grib2).collect())
 }
 
-/// The fields of a GRIB2 message. When only the start of the message is at hand (`msg` shorter
-/// than `full_len`), its last section may be cut short: a bitmap or data section, not read.
-fn message_fields<'a>(msg: &'a [u8], full_len: usize, normalize: bool, out: &mut Vec<Field<'a>>) -> Result<()> {
+/// The fields of a GRIB2 message, and the offset its sections end at: that of its end marker, or
+/// past the bytes at hand. When only the start of the message is at hand (`msg` shorter than
+/// `full_len`), its last section may be cut short: a bitmap or data section, not read.
+fn message_fields<'a>(msg: &'a [u8], full_len: usize, normalize: bool, out: &mut Vec<Field<'a>>) -> Result<usize> {
     let discipline = msg[6];
     let mut pos = 16;
     let empty: &[u8] = &[];
     let (mut s1, mut s3, mut s4, mut s5, mut s6) = (empty, empty, empty, empty, empty);
     let mut last_bitmap: Option<&[u8]> = None;
     while pos + 4 <= msg.len() && &msg[pos..pos + 4] != b"7777" {
-        let bad = || Error::InvalidData(format!("invalid GRIB2 section at offset {pos} of a message"));
+        let bad = || bad_section(pos);
         if pos + 5 > msg.len() {
             return Err(bad());
         }
@@ -619,7 +657,12 @@ fn message_fields<'a>(msg: &'a [u8], full_len: usize, normalize: bool, out: &mut
         }
         pos += len;
     }
-    Ok(())
+    Ok(pos)
+}
+
+/// The error of a GRIB2 section that cannot be read, at offset `pos` of its message.
+fn bad_section(pos: usize) -> Error {
+    Error::InvalidData(format!("invalid GRIB2 section at offset {pos} of a message"))
 }
 
 /// How much of the start of a GRIB message of `full_len` bytes its header needs (every section's
@@ -652,6 +695,60 @@ fn header_needs(head: &[u8], full_len: usize) -> Option<usize> {
         pos += len;
     }
     None
+}
+
+/// The next part of a message's header to read, given the `head` at hand: `(offset, length)`
+/// from the message's start, the offset past the head when a GRIB1 bitmap's body is skipped.
+/// `None` when the head holds the header. GRIB2 headers are read whole ([`header_needs`]).
+fn next_part(head: &[u8], len: usize) -> Option<(usize, usize)> {
+    if head.len() >= 16 && head[7] == 1 {
+        return grib1_next_part(head, len);
+    }
+    header_needs(head, len).filter(|&n| n > head.len()).map(|n| (head.len(), n - head.len()))
+}
+
+/// [`next_part`] for GRIB1: the sections up to the bitmap's first 6 octets, then the data
+/// section's first 11 octets, past the bitmap's body. A header [`grib1::Message::parse`] would
+/// refuse ends here: parsing reports it.
+fn grib1_next_part(head: &[u8], len: usize) -> Option<(usize, usize)> {
+    // Contiguous bytes up to `n`.
+    let to = |n: usize| {
+        let n = n.min(len);
+        (n > head.len()).then(|| (head.len(), n - head.len()))
+    };
+    let u = |o: usize| be(&head[o..o + 3]) as usize;
+    if head.len() < 11 {
+        return to(11);
+    }
+    let pds_len = u(8);
+    if pds_len < 28 {
+        return None;
+    }
+    // Past the product definition section: the grid definition section's length.
+    let mut cur = 8 + pds_len;
+    if head.len() < cur + 6 {
+        return to(cur + 6);
+    }
+    let gds_len = u(cur);
+    if gds_len < 6 {
+        return None;
+    }
+    cur += gds_len;
+    if head[15] & 0x40 != 0 {
+        // The bitmap section's length, then the data section's first octets past its body.
+        if head.len() < cur + 6 {
+            return to(cur + 6);
+        }
+        let bds = cur.saturating_add(u(cur).max(6));
+        if bds.saturating_add(11) > len || head.len() >= bds + 11 {
+            return None;
+        }
+        if head.len() > bds {
+            return to(bds + 11);
+        }
+        return Some((bds, 11));
+    }
+    to(cur + 11)
 }
 
 /// Reads octets `o..o + n` (1-based, as the GRIB2 tables number them) of a section, unsigned.
