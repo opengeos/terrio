@@ -120,6 +120,7 @@ fn value_type(arg: &Arg, path: &[String]) -> &'static str {
                 | "destination"
                 | "cutline"
                 | "like"
+                | "background"
                 | "mask"
                 | "reference"
                 | "template"
@@ -416,6 +417,7 @@ mod tests {
         // The catalog lists both sides of each declared pair.
         let result = usage(&["terrio", "rasterize", "--json-usage"]).unwrap();
         let args = result["command"]["arguments"].as_array().unwrap();
+        assert_eq!(catalog_argument(args, "background")["type"], "path");
         assert_eq!(catalog_argument(args, "ts")["conflicts_with"], json!(["background", "like", "tr"]));
         assert_eq!(catalog_argument(args, "tr")["conflicts_with"], json!(["background", "like", "ts"]));
         assert_eq!(catalog_argument(args, "te")["conflicts_with"], json!(["background", "like"]));
