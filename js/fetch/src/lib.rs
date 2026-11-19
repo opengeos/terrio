@@ -44,8 +44,8 @@ pub struct Fetcher {
     pub allow_missing_metadata403: bool,
     /// Requests completed or rejected with an HTTP response.
     pub requests: Rc<Cell<u64>>,
-    /// Response-body bytes consumed by this fetcher, including those of a body still arriving
-    /// once it has ([`Fetcher::open_file_arriving`]).
+    /// Response-body bytes consumed by this fetcher, including those of a first block still
+    /// arriving ([`Fetcher::open_file_arriving`]), counted at the open.
     pub bytes: Rc<Cell<u64>>,
 }
 
@@ -583,23 +583,59 @@ impl Fetcher {
             return Ok((file, None));
         };
         // The rest of the block arrives in the background; a failure leaves it missing, fetched
-        // again by the read that needs it.
+        // again by the read that needs it. Counted now, so that stats taken after the open don't
+        // count it against a later read; what fails to arrive is taken back.
+        self.bytes.set(self.bytes.get() + expected);
         let (rest, bytes) = (file.clone(), self.bytes.clone());
         let done = wasm_bindgen_futures::future_to_promise(async move {
             let result: Result<(), JsError> = async {
                 while let Some(chunk) = next_chunk(&reader).await? {
                     append(&mut data, &chunk);
                 }
-                bytes.set(bytes.get() + data.len() as u64);
                 finish_first(&rest, &data, expected, content_range.as_deref(), len)
             }
             .await;
             if result.is_err() {
+                bytes.set((bytes.get() + data.len() as u64).saturating_sub(expected));
                 let _ = call(&reader, "cancel", &[]).map(settle);
             }
             Ok(JsValue::UNDEFINED)
         });
         Ok((file, Some((value, Arriving { done, end: expected }))))
+    }
+
+    /// As [`open_file`](Self::open_file), but from the file's last two blocks (a suffix range),
+    /// for a format whose header is at the end, as GeoParquet's footer is: their response tells
+    /// the file's length too, so the open saves the round trip of the first block. A server that
+    /// refuses suffix ranges (an error status) is asked for the first block instead.
+    pub async fn open_file_tail(&self, block: u64) -> Result<SparseFile, JsError> {
+        let block = block.clamp(512, 16 << 20);
+        // Two blocks: the file holds whole blocks, so at least one whole block of the end is kept
+        // besides the file's last, short one.
+        let tail = 2 * block;
+        let last = self.any_response(self.request_to(&self.url, Some(format!("bytes=-{tail}")), false)?).await?;
+        let len = match (last.status, last.total) {
+            (206, Some(total)) => total,
+            (206, None) => self.head_len().await?.ok_or_else(|| {
+                JsError::new(&format!(
+                    "{}: the server's response has no Content-Range (cross-origin servers must expose it) and no Content-Length",
+                    self.url.split(['?', '#']).next().unwrap_or(&self.url)
+                ))
+            })?,
+            (200..300, _) => last.data.len() as u64,
+            _ => return Ok(self.open_file(block).await?.0),
+        };
+        let file = SparseFile::with_block_size(len, block);
+        let n = last.data.len() as u64;
+        if last.status == 206 {
+            last.validate_content_range(ObjectRange::Suffix(tail), Some(len))?;
+            if n != tail.min(len) {
+                return Err(JsError::new("range response for the end of the file has an unexpected length"));
+            }
+        }
+        // Whole blocks of it are kept, and the file's last block.
+        file.insert(len - n, &last.data);
+        Ok(file)
     }
 
     /// The file of a first-block response, read whole: see [`open_file`](Self::open_file).
