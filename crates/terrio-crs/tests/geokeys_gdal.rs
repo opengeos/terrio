@@ -289,4 +289,20 @@ fn a_code_with_its_own_datum_shift_reads_back_with_it() {
     // EPSG:23031 itself is placed elsewhere (by ED50's own transformations): the shift is read.
     let (x1, _) = place(&SpatialRef::from_epsg(23031).unwrap());
     assert!((x1 - x0).abs() > 0.1, "{x1} {x0}");
+    let round_trip = |c: &SpatialRef| {
+        let tags = c.to_geokeys().unwrap().encode().unwrap();
+        SpatialRef::from_geokeys(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).unwrap()
+    };
+    // A geographic code with a shift of 3 values: ED50 (EPSG:4230).
+    let geographic = r#"GEOGCS["ED50",DATUM["European_Datum_1950",SPHEROID["International 1924",6378388,297],TOWGS84[-50,-60,-70],AUTHORITY["EPSG","6230"]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],AUTHORITY["EPSG","4230"]]"#;
+    let crs = SpatialRef::from_wkt(geographic);
+    let back = round_trip(&crs);
+    assert_eq!(back.epsg, Some(4230));
+    assert!(back.to_proj4().unwrap().contains("+towgs84=-50,-60,-70"), "{:?}", back.to_proj4());
+    // A zero shift on WGS 84 is no shift: written and read as the code alone.
+    let mut keys = SpatialRef::from_epsg(32633).unwrap().to_geokeys().unwrap();
+    keys.doubles.extend([0.0; 7].map(|v| (2062, v)));
+    let tags = keys.encode().unwrap();
+    let back = SpatialRef::from_geokeys(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).unwrap();
+    assert_eq!(back, SpatialRef::from_epsg(32633).unwrap());
 }

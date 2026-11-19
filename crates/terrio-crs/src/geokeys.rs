@@ -159,6 +159,9 @@ pub fn read(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> GeoKeysCrs {
         return GeoKeysCrs::default();
     }
     let k = GeoKeys { keys: directory, doubles, ascii };
+    // A registered code the file's ProjectedCSTypeGeoKey or GeographicTypeGeoKey states.
+    let keyed = |code: u16| code != 0 && code != USER_DEFINED;
+    let stated = matches!((k.short(1024), k.short(3072), k.short(2048)), (_, Some(c), _) | (Some(2), _, Some(c)) if keyed(c));
     let mut epsg = match (k.short(1024), k.short(3072), k.short(2048)) {
         // A deprecated projected code with a single replacement, as GDAL 3.12 reads it by default
         // (`OSR_USE_NON_DEPRECATED=YES`): EPSG:4855 as 5105, 3752 (which terrio does not carry)
@@ -232,7 +235,7 @@ pub fn read(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> GeoKeysCrs {
     // datum shift written beside it), else the PROJ string's.
     let crs = crs.or_else(|| {
         let code = epsg?;
-        Some(with_towgs84(&k, code).unwrap_or_else(|| SpatialRef {
+        Some(stated.then(|| with_towgs84(&k, code)).flatten().unwrap_or_else(|| SpatialRef {
             epsg: Some(code),
             wkt: SpatialRef::from_epsg(code).ok().and_then(|s| s.wkt),
             ..Default::default()
@@ -242,14 +245,22 @@ pub fn read(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> GeoKeysCrs {
     GeoKeysCrs { crs, unsupported_method }
 }
 
-/// A registered geographic or projected CRS with GeogTOWGS84GeoKey beside its code, as
-/// [`SpatialRef::to_geokeys`] writes a WKT that declares the code and has a datum shift of its own:
-/// the code's WKT 1 with that `TOWGS84` in its datum, so that the shift is read back (#1012 item
-/// 62). GDAL 3.13.3 writes the same keys and reads its own file back without the shift; terrio
-/// keeps it. `None` without a shift of 3 or 7 values, or for a code without a WKT 1.
+/// A registered geographic or projected CRS with GeogTOWGS84GeoKey beside the code its keys state,
+/// as [`SpatialRef::to_geokeys`] (and GDAL 3.13.3) writes a WKT that declares the code and has a
+/// datum shift of its own: the code's WKT 1 with that `TOWGS84` in its datum, so that the shift is
+/// read back (#1012 item 62). GDAL 3.13.3 reads such a file without the shift; terrio keeps it.
+/// `None` without a shift of 3 or 7 values, for a zero shift on WGS 84 (no shift), and for a code
+/// without a WKT 1.
 fn with_towgs84(k: &GeoKeys, code: u32) -> Option<SpatialRef> {
     let t = k.doubles(2062).filter(|t| matches!(t.len(), 3 | 7) && t.iter().all(|v| v.is_finite()))?;
-    let wkt = SpatialRef::from_epsg(code).ok()?.to_wkt1_strict()?;
+    let registered = SpatialRef::from_epsg(code).ok()?;
+    // A zero shift on WGS 84 is no shift, as the writer leaves it out (ESRI writes
+    // `TOWGS84[0,0,0,0,0,0,0]` for WGS 84 / UTM zone 33N, EPSG:32633).
+    let wgs84 = registered.to_proj4().is_some_and(|p| p.split_whitespace().any(|t| t == "+datum=WGS84" || t == "+ellps=WGS84"));
+    if wgs84 && t.iter().all(|v| *v == 0.0) {
+        return None;
+    }
+    let wkt = registered.to_wkt1_strict()?;
     let mut root = crate::wkt1::parse(&wkt)?;
     let datum = datum_node(&mut root)?;
     datum.args.retain(|a| !matches!(a, crate::wkt1::Arg::Node(n) if n.key.eq_ignore_ascii_case("TOWGS84")));
