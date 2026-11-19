@@ -95,6 +95,37 @@ impl Node {
         self.first_in(crate::keywords::GEODETIC_BASE)
     }
 
+    /// The geodetic CRS of a horizontal CRS node, where PROJ 9.9.0 reads it: the node itself (a
+    /// geographic or geocentric CRS with its datum), a projected or derived CRS's base CRS's (a
+    /// rotated pole's `BASEGEOGCRS`), a compound CRS's horizontal CRS's, or a bound CRS's source
+    /// CRS's. `None` for another node (a vertical CRS's).
+    pub fn horizontal_geodetic(&self) -> Option<&Node> {
+        use crate::keywords as kw;
+        let geodetic = [kw::WKT1_GEOGRAPHIC, kw::WKT1_GEOCENTRIC, kw::GEOGRAPHIC_OR_GEODETIC_CRS, kw::BASE_GEODETIC_CRS];
+        if geodetic.iter().any(|k| self.is(k)) && self.datum().is_some() {
+            return Some(self);
+        }
+        if self.is(kw::COMPOUND_CRS) {
+            return self.first_in(kw::HORIZONTAL_CRS)?.horizontal_geodetic();
+        }
+        if self.is(kw::BOUND) {
+            return crate::wkt2::first_node(self.child("SOURCECRS")?)?.horizontal_geodetic();
+        }
+        self.geodetic_base()?.horizontal_geodetic()
+    }
+
+    /// The geodetic datum (or datum ensemble) of a horizontal CRS node, at its place (see
+    /// [`Self::horizontal_geodetic`] and [`Self::datum`]).
+    pub fn horizontal_datum(&self) -> Option<&Node> {
+        self.horizontal_geodetic()?.datum()
+    }
+
+    /// The semi-major axis in metres and the inverse flattening (0 for a sphere) of a horizontal
+    /// CRS node's ellipsoid, at its place (see [`Self::horizontal_datum`]), as the model reads it.
+    pub fn horizontal_ellipsoid(&self) -> Option<(f64, f64)> {
+        self.horizontal_datum()?.first_in(crate::keywords::ELLIPSOID)?.ellipsoid()
+    }
+
     /// The node itself or the first node below it, depth first, whose keyword is one of `keys`.
     pub fn find(&self, keys: &[&str]) -> Option<&Node> {
         if self.is(keys) {
@@ -1019,7 +1050,51 @@ pub(crate) fn negated(v: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::{SpatialRef, Transformer};
+
     use std::time::Duration;
+
+    /// A horizontal CRS's geodetic CRS, datum and ellipsoid are read where PROJ reads them: a
+    /// projected CRS's base, a compound CRS's horizontal CRS, a bound CRS's source (not its
+    /// target, though either may come first); a vertical CRS has none, its datum ensemble too.
+    #[test]
+    fn horizontal_datums_are_read_at_their_place() {
+        let g = |datum: &str, a: f64| {
+            format!(
+                r#"GEOGCRS["g",DATUM["{datum}",ELLIPSOID["e",{a},300,LENGTHUNIT["metre",1]]],CS[ellipsoidal,2],AXIS["lat",north],AXIS["lon",east],ANGLEUNIT["degree",0.0174532925199433]]"#
+            )
+        };
+        let name = |w: &str| parse(w).unwrap().horizontal_datum().and_then(|d| d.name().map(str::to_string));
+        let src = g("source", 6378000.0);
+        let projected = r#"PROJCRS["p",BASEGEOGCRS["b",DATUM["base",ELLIPSOID["e",6378100,300,LENGTHUNIT["metre",1]]]],CONVERSION["c",METHOD["Mercator (variant A)"]]]"#;
+        assert_eq!(name(&src).as_deref(), Some("source"));
+        assert_eq!(name(projected).as_deref(), Some("base"));
+        assert_eq!(parse(projected).unwrap().horizontal_ellipsoid(), Some((6378100.0, 300.0)));
+        let vertical = r#"VERTCRS["v",VDATUM["vd"],CS[vertical,1],AXIS["h",up,LENGTHUNIT["metre",1]]]"#;
+        assert_eq!(name(&format!(r#"COMPOUNDCRS["c",{projected},{vertical}]"#)).as_deref(), Some("base"));
+        let bound = format!(r#"BOUNDCRS[TARGETCRS[{}],SOURCECRS[{src}],ABRIDGEDTRANSFORMATION["t",METHOD["m"]]]"#, g("target", 6378137.0));
+        assert_eq!(name(&bound).as_deref(), Some("source"));
+        assert_eq!(parse(&bound).unwrap().horizontal_ellipsoid(), Some((6378000.0, 300.0)));
+        let ensemble = r#"VERTCRS["DVR90",ENSEMBLE["Dansk Vertikal Reference 1990 ensemble",MEMBER["a"],ENSEMBLEACCURACY[0.1]],CS[vertical,1],AXIS["h",up,LENGTHUNIT["metre",1]]]"#;
+        assert_eq!(name(vertical), None);
+        assert_eq!(name(ensemble), None);
+        // PROJ 9.9.0 (pyproj 3.8.0) reads a bound CRS's source whichever comes first: NAD27's
+        // ellipsoid (6378206.4 m), not the WGS 84 target's that the first one found was.
+        let geog = |n: &str, a: &str, rf: &str| {
+            format!(
+                r#"GEOGCRS["{n}",DATUM["{n} datum",ELLIPSOID["e",{a},{rf},LENGTHUNIT["metre",1]]],CS[ellipsoidal,2],AXIS["lat",north,ANGLEUNIT["degree",0.0174532925199433]],AXIS["lon",east,ANGLEUNIT["degree",0.0174532925199433]]]"#
+            )
+        };
+        let target_first = format!(
+            r#"BOUNDCRS[TARGETCRS[{}],SOURCECRS[{}],ABRIDGEDTRANSFORMATION["t",METHOD["Geocentric translations (geog2D domain)",ID["EPSG",9603]],PARAMETER["X-axis translation",-8,ID["EPSG",8605]],PARAMETER["Y-axis translation",160,ID["EPSG",8606]],PARAMETER["Z-axis translation",176,ID["EPSG",8607]]]]"#,
+            geog("WGS 84", "6378137", "298.257223563"),
+            geog("NAD27", "6378206.4", "294.978698213898")
+        );
+        assert_eq!(crate::semi_major_axis(&target_first), Some(6378206.4));
+        assert_eq!(name(&target_first).as_deref(), Some("NAD27 datum"));
+        // A derived geographic CRS's datum is its base CRS's (a rotated pole).
+        let rotated = r#"GEOGCRS["r",BASEGEOGCRS["WGS 84",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]]],DERIVINGCONVERSION["p",METHOD["PROJ ob_tran o_proj=longlat"],PARAMETER["o_lon_p",0]],CS[ellipsoidal,2],AXIS["lon",east],AXIS["lat",north],ANGLEUNIT["degree",0.0174532925199433]]"#;
+        assert_eq!(name(rotated).as_deref(), Some("World Geodetic System 1984"));
+    }
 
     /// PROJ's two tables of named meridians agree on every name they share but Madrid, which
     /// `primeMeridiansDMS` has at 3°41'14.55"W and `proj_list_prime_meridians` at 16.58". Paris
