@@ -706,8 +706,9 @@ fn method(p: &Params, to_meter: f64) -> Option<Method> {
                 None if p.has("lat_0") => lat_1,
                 None => 0.0,
             };
-            // One parallel at the origin is 1SP; given twice (`lat_2`), 2SP, as PROJ 9.9.0 writes it.
-            if lat_1 == lat_2 && lat_0 == lat_1 && !p.has("lat_2") {
+            // One parallel at the origin is 1SP; given twice (`lat_2`), 2SP, as PROJ 9.9.0 writes
+            // it. With a scale too, PROJ has none (2SP Michigan); 1SP with the scale describes it.
+            if lat_1 == lat_2 && lat_0 == lat_1 && (!p.has("lat_2") || k != 1.0) {
                 m("Lambert_Conformal_Conic_1SP", tm(lat_0, lon_0, k, fe, fn_))
             } else if k == 1.0 {
                 m(
@@ -939,8 +940,8 @@ mod tests {
     }
 
     /// LCC as PROJ 9.9.0 writes it (`CRS(s).to_wkt("WKT1_GDAL")`): 1SP for one parallel at the
-    /// origin, 2SP for a second parallel given, even the same; none with a second parallel and a
-    /// scale.
+    /// origin, 2SP for a second parallel given, even the same. With a second parallel and a scale,
+    /// where PROJ has none, 1SP with the scale, as before.
     #[test]
     fn lcc_has_the_method_proj_writes() {
         let projection = |s: &str| from_proj(s).map(|w| w[w.find("PROJECTION[").unwrap()..].split(']').next().unwrap().to_string());
@@ -949,7 +950,9 @@ mod tests {
         assert_eq!(projection(&format!("{lcc} +lat_2=45")).as_deref(), Some("PROJECTION[\"Lambert_Conformal_Conic_2SP\""));
         let w = from_proj(&format!("{lcc} +lat_2=45 +x_0=700000 +y_0=6600000")).unwrap();
         assert!(w.contains("PARAMETER[\"standard_parallel_2\",45],PARAMETER[\"false_easting\",700000]"), "{w}");
-        assert!(from_proj(&format!("{lcc} +lat_2=45 +k=0.9999")).is_none_or(|w| w.contains("EXTENSION[")));
+        let w = from_proj(&format!("{lcc} +lat_2=45 +k=0.9999")).unwrap();
+        assert!(w.contains("PROJECTION[\"Lambert_Conformal_Conic_1SP\"]") && w.contains("PARAMETER[\"scale_factor\",0.9999]"), "{w}");
+        assert!(!w.contains("EXTENSION["), "{w}");
     }
 
     /// `describe` takes south-orientated Transverse Mercator by the axes `method` writes it for:
