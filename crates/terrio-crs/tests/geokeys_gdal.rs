@@ -305,4 +305,15 @@ fn a_code_with_its_own_datum_shift_reads_back_with_it() {
     let tags = keys.encode().unwrap();
     let back = SpatialRef::from_geokeys(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).unwrap();
     assert_eq!(back, SpatialRef::from_epsg(32633).unwrap());
+    // A key of another length than 3 or 7 is no shift: EPSG:23031 itself.
+    let mut keys = SpatialRef::from_epsg(23031).unwrap().to_geokeys().unwrap();
+    keys.doubles.extend([-50.0, -60.0, -70.0, 0.0].map(|v| (2062, v)));
+    let tags = keys.encode().unwrap();
+    let back = SpatialRef::from_geokeys(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).unwrap();
+    assert_eq!(back, SpatialRef::from_epsg(23031).unwrap());
+    // A user-defined CRS with a shift keeps its own reading: not a registered code it matches.
+    let user = SpatialRef::from_proj4("+proj=utm +zone=31 +ellps=intl +towgs84=-50,-60,-70,0,0,0,0 +units=m +no_defs").unwrap();
+    let back = round_trip(&user);
+    assert!(back.to_proj4().unwrap().contains("+towgs84=-50,-60,-70,0,0,0,0"), "{:?}", back.to_proj4());
+    assert_eq!(place(&back), place(&user));
 }

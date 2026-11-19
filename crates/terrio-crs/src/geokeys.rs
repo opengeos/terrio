@@ -166,11 +166,11 @@ pub fn read(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> GeoKeysCrs {
         // A deprecated projected code with a single replacement, as GDAL 3.12 reads it by default
         // (`OSR_USE_NON_DEPRECATED=YES`): EPSG:4855 as 5105, 3752 (which terrio does not carry)
         // as 3994. A geographic one GDAL keeps (EPSG:4140).
-        (_, Some(code), _) if code != 0 && code != USER_DEFINED => match crate::epsg_replacements(u32::from(code)) {
+        (_, Some(code), _) if keyed(code) => match crate::epsg_replacements(u32::from(code)) {
             [replacement] if SpatialRef::from_epsg(*replacement).is_ok() => Some(*replacement),
             _ => Some(u32::from(code)),
         },
-        (Some(2), _, Some(code)) if code != 0 && code != USER_DEFINED => Some(code as u32),
+        (Some(2), _, Some(code)) if keyed(code) => Some(code as u32),
         (Some(1), _, _) => {
             // A registered CRS only in the GeoKeys' linear unit: GDAL builds the CRS from the
             // keys (a ProjectionGeoKey's conversion in metres, in ProjLinearUnitsGeoKey's unit),
@@ -256,8 +256,7 @@ fn with_towgs84(k: &GeoKeys, code: u32) -> Option<SpatialRef> {
     let registered = SpatialRef::from_epsg(code).ok()?;
     // A zero shift on WGS 84 is no shift, as the writer leaves it out (ESRI writes
     // `TOWGS84[0,0,0,0,0,0,0]` for WGS 84 / UTM zone 33N, EPSG:32633).
-    let wgs84 = registered.to_proj4().is_some_and(|p| p.split_whitespace().any(|t| t == "+datum=WGS84" || t == "+ellps=WGS84"));
-    if wgs84 && t.iter().all(|v| *v == 0.0) {
+    if registered.to_proj4().is_some_and(|p| on_wgs84(&p)) && t.iter().all(|v| *v == 0.0) {
         return None;
     }
     let wkt = registered.to_wkt1_strict()?;
@@ -984,10 +983,14 @@ fn own_towgs84(crs: &SpatialRef) -> Option<Vec<f64>> {
     };
     let values = proj.split_whitespace().find_map(|t| t.strip_prefix("+towgs84="))?;
     let t: Vec<f64> = values.split(',').map(|x| x.parse().ok().filter(|v: &f64| v.is_finite())).collect::<Option<_>>()?;
-    // On WGS 84: its datum or ellipsoid by name, or the ellipsoid's axis and flattening.
+    (matches!(t.len(), 3 | 7) && !(on_wgs84(&proj) && t.iter().all(|x| *x == 0.0))).then_some(t)
+}
+
+/// Whether a PROJ string is on WGS 84: its datum or ellipsoid by name, or the ellipsoid's axis and
+/// flattening. A zero shift on it is no shift, for the writer and the reader alike.
+fn on_wgs84(proj: &str) -> bool {
     let has = |token: &str| proj.split_whitespace().any(|t| t == token);
-    let wgs84 = has("+datum=WGS84") || has("+ellps=WGS84") || (has("+a=6378137") && has("+rf=298.257223563"));
-    (matches!(t.len(), 3 | 7) && !(wgs84 && t.iter().all(|x| *x == 0.0))).then_some(t)
+    has("+datum=WGS84") || has("+ellps=WGS84") || (has("+a=6378137") && has("+rf=298.257223563"))
 }
 
 /// Whether a CRS is a WKT 2 `BOUNDCRS` whose Helmert transformation its `+towgs84` only
