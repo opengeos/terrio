@@ -7,7 +7,9 @@ nodata (or 0) without being read. Pixels never written read as nodata, as before
 """
 
 import json
+import mmap
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -17,6 +19,7 @@ import numpy as np
 import pytest
 
 import terrio.rio as rio
+from terrio.rio.io import DatasetWriter
 from terrio.rio.windows import Window
 
 linux = pytest.mark.skipif(
@@ -39,6 +42,18 @@ def held(directory):
         ):
             found[st.st_dev, st.st_ino] = (name, st.st_size, st.st_blocks * 512)
     return list(found.values())
+
+
+def mapped(name):
+    """The bytes of the file `name` (as /proc links it) mapped in this process and resident."""
+    total, inside = 0, False
+    with open("/proc/self/smaps") as f:
+        for line in f:
+            if re.match(r"[0-9a-f]+-[0-9a-f]+ ", line):
+                inside = line.rstrip("\n").split(maxsplit=5)[5:] == [name]
+            elif inside and line.startswith("Rss:"):
+                total += int(line.split()[1]) * 1024
+    return total
 
 
 @linux
@@ -143,3 +158,48 @@ def test_closing_reads_back_only_the_blocks_written(tmp_path):
     )
     grown = json.loads(out.stdout.splitlines()[-1])
     assert grown < (512 << 20) // 4, f"the peak RSS grew by {grown:,} bytes"
+
+
+@linux
+@pytest.mark.parametrize(
+    "layout",
+    [dict(blockysize=16), dict(tiled=True, blockxsize=64, blockysize=32)],
+    ids=["strips", "tiles"],
+)
+def test_a_window_allocates_and_maps_only_the_blocks_it_touches(tmp_path, monkeypatch, layout):
+    """Blocks that are not square, strips 16 rows tall or tiles 32 rows by 64 columns, with
+    nodata 7: one small window allocates in the temporary file only the pages of the output's
+    blocks it touches (which take nodata where it covers them in part), and once `close()` has
+    read back the rows, no other page of the file is mapped. The tests above measure pages with
+    square tiles only, the same whichever of a block's sides is taken for its rows."""
+    monkeypatch.setenv("TERRIO_RIO_IN_MEMORY_LIMIT", "1000000")
+    size, (y, x, h, w) = 2048, (40, 100, 20, 50)
+    resident = []
+    original = DatasetWriter._write_streaming
+
+    def measured(self, *args, **kwargs):
+        # Once the rows are written, before `close()` releases the file.
+        original(self, *args, **kwargs)
+        resident.append(mapped(name))
+
+    monkeypatch.setattr(DatasetWriter, "_write_streaming", measured)
+    with rio.open(
+        tmp_path / "out.tif",
+        "w",
+        driver="GTiff",
+        width=size,
+        height=size,
+        count=1,
+        dtype="uint16",
+        nodata=7,
+        **layout,
+    ) as dst:
+        bh = dst.block_shapes[0][0]
+        dst.write(np.ones((h, w), "uint16"), 1, window=Window(x, y, w, h))
+        [(name, _, allocated)] = held(tmp_path)
+    # The pages that hold the blocks touched are those of their rows: a row of the file (4 KiB)
+    # holds a row of every block across it.
+    top, bottom, row = y // bh * bh, min(-(-(y + h) // bh) * bh, size), size * 2
+    blocks = (-(-bottom * row // mmap.PAGESIZE) - top * row // mmap.PAGESIZE) * mmap.PAGESIZE
+    assert 0 < allocated <= blocks, f"{allocated:,} bytes allocated, {blocks:,} for the blocks"
+    assert len(resident) == 1 and 0 < resident[0] <= blocks, f"{resident} bytes mapped at close"
