@@ -826,7 +826,8 @@ fn method(p: &Params, to_meter: f64) -> Option<Method> {
                 ("latitude_of_center", deg("lat_0").unwrap_or(49.5)),
                 ("longitude_of_center", deg("lon_0").unwrap_or(24.833333333333332)),
                 ("azimuth", deg("alpha").unwrap_or(30.28813975277778)),
-                ("pseudo_standard_parallel_1", deg("lat_ts").unwrap_or(78.5)),
+                // Fixed, as terrio and PROJ 9.9.0 compute it: PROJ ignores `lat_ts` and writes 78.5.
+                ("pseudo_standard_parallel_1", 78.5),
                 ("scale_factor", p.f64("k_0").or_else(|| p.f64("k")).unwrap_or(0.9999)),
                 ("false_easting", fe),
                 ("false_northing", fn_),
