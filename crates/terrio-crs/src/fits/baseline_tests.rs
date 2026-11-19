@@ -27,20 +27,18 @@ fn neighbours(code: u32) -> Vec<u32> {
     geographic.chain(projected).filter(|c| *c != code).collect()
 }
 
-/// The results for one text of the corpus. A code is given relative to the text's own: `=` for
-/// it, `g` for its registered geographic CRS, `~` for another code of the same PROJ string, so
-/// that CRSs alike group together.
+/// The results for one text of the corpus. A code is given relative to the text's own where that
+/// is exact (`=` for it, `g` for its registered geographic CRS), so that CRSs alike group
+/// together; else as itself.
 fn outcomes(code: &str, text: &str) -> String {
     let own_epsg = code.strip_prefix("EPSG:").and_then(|c| c.parse::<u32>().ok());
     let own_esri = code.strip_prefix("ESRI:").and_then(|c| c.parse::<u32>().ok());
     let own = own_epsg.or(own_esri);
     let entry = own_epsg.and_then(epsg::get).or_else(|| own_esri.and_then(epsg::esri));
-    let proj_of = |c: u32| epsg::get(c).or_else(|| epsg::esri(c)).map(|e| e.proj.as_str());
     let rel = |c: Option<u32>| match c {
         None => "-".to_string(),
         Some(c) if Some(c) == own => "=".to_string(),
         Some(c) if entry.is_some_and(|e| e.geog == c) => "g".to_string(),
-        Some(c) if entry.is_some_and(|e| proj_of(c) == Some(e.proj.as_str())) => "~".to_string(),
         Some(c) => c.to_string(),
     };
     let mut out = Vec::new();
