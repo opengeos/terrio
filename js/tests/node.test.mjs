@@ -286,6 +286,27 @@ test("CityJSON late root type retains vertical XYZ and unknown CRS", () => {
   ds.free();
 });
 
+test("toGeoJSON returns every geometry type, heights, holes and null geometries", () => {
+  const geometries = [
+    { type: "Point", coordinates: [1, 2] },
+    { type: "Point", coordinates: [1, 2, 3] },
+    { type: "LineString", coordinates: [[0, 0], [1, 1, 5]] },
+    { type: "Polygon", coordinates: [[[0, 0], [4, 0], [4, 4], [0, 0]], [[1, 1], [2, 1], [2, 2], [1, 1]]] },
+    { type: "MultiPoint", coordinates: [[0, 0], [1, 1]] },
+    { type: "MultiLineString", coordinates: [[[0, 0], [1, 1]], [[2, 2], [3, 3]]] },
+    { type: "MultiPolygon", coordinates: [[[[0, 0], [1, 0], [1, 1], [0, 0]]], [[[5, 5], [6, 5], [6, 6], [5, 5]]]] },
+    { type: "GeometryCollection", geometries: [{ type: "Point", coordinates: [9, 9] }, { type: "LineString", coordinates: [[0, 0], [1, 1]] }] },
+    null,
+  ];
+  const ds = terrio.fromGeoJSON({ type: "FeatureCollection", features: geometries.map((geometry, i) => ({ type: "Feature", properties: { i }, geometry })) });
+  const fc = ds.toGeoJSON();
+  // In a list where only some positions have a height, the others get NaN.
+  geometries[2] = { type: "LineString", coordinates: [[0, 0, NaN], [1, 1, 5]] };
+  assert.deepStrictEqual(fc.features.map((f) => f.geometry), geometries);
+  assert.deepStrictEqual(fc.features.map((f) => f.properties.i), geometries.map((_, i) => i));
+  ds.free();
+});
+
 test("toGeoJSON escapes control characters and keeps feature order across parse chunks", () => {
   // The text is parsed in chunks of about 8 MB: the long second feature ends one.
   const props = [{ s: "a\u0001b\u001f\"q\"", n: 1.5 }, { s: "x".repeat(9 << 20), n: 2 }, { s: "last", n: -3 }];
