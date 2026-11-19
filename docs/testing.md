@@ -1967,9 +1967,13 @@ with `PROJ_NETWORK=OFF`:
 - **Ellipsoids in another unit:** the 32 EPSG CRSs whose WKT 2 PROJ writes with an ellipsoid in
   another unit (EPSG:4157's Clarke 1858 in Clarke's feet), with and without their root `ID`, give
   PROJ's code, its semi-major axis in metres (`semi_major_axis`, `metres_per_unit`,
-  `projection_params`, the PROJJSON written) and its point within 1 mm; EPSG:3139 only with its
-  `ID`, since terrio refuses its method (Hyperbolic Cassini-Soldner, #1012 item 43) without it
-  (`--test ellipsoid_units`; `scripts/gen_ellipsoid_units.py`).
+  `projection_params`, the PROJJSON written) and its point within 1 mm (`--test ellipsoid_units`;
+  `scripts/gen_ellipsoid_units.py`).
+- **Five more WKT 2 methods:** EPSG CRSs of Hyperbolic Cassini-Soldner (9833), Guam Projection
+  (9831), Krovak Modified (1042, 1043), Lambert Conic Conformal (2SP Michigan) (1051) and Colombia
+  Urban (1052), without their `ID`, and Krovak Modified with its evaluation point and
+  coefficients, by their method's name and by its code alone, give PROJ's method and flag and its
+  point within 1 mm (`--test wkt2_methods`; `scripts/gen_wkt2_methods.py`).
 - **ESRI's `VERTCS`:** alone, in a `COMPD_CS` and in ESRI's compound CRS (`GEOGCS[...],VERTCS[...]`),
   with `Direction` -1, its declared code, PROJ's points from EPSG:9707, and the code PROJ identifies
   for every EPSG vertical CRS ESRI writes, in ESRI's WKT and GDAL's WKT 1 without `AUTHORITY`
