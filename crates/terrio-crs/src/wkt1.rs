@@ -645,7 +645,10 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
         }
         // ESRI's `Mercator_Variant_A` and EPSG's `Mercator (variant A)` are Mercator (1SP), as
         // PROJ 9.8.1 reads them. PROJ leaves a latitude of origin out of ESRI's, and refuses EPSG's
-        // with one other than 0, which `+proj=merc` has no parameter for.
+        // with one other than 0, which `+proj=merc` has no parameter for. GDAL's `Mercator_1SP`
+        // with one other than 0 and a scale of 1 is Mercator (variant B) with that latitude as its
+        // standard parallel, as PROJ 9.9.0 reads it (GDAL #3026, opengeos/terrio#1012 item 24);
+        // with another scale too, which PROJ cannot transform, the scale is read, as before.
         "mercator1sp" | "mercatorvarianta" => {
             let origin = get(&["latitudeoforigin", "latitudeofnaturalorigin"]);
             let esri = projection.name().is_some_and(|n| n.eq_ignore_ascii_case("Mercator_Variant_A"));
@@ -653,8 +656,18 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
                 return None;
             }
             out.push("+proj=merc".into());
-            push(&mut out, "lon_0", lon_0);
-            push(&mut out, "k", k.or(Some(1.0)));
+            // The latitude of origin as the other methods read it (in degrees, whatever the unit).
+            let parallel = lat_0.filter(|v| method == "mercator1sp" && *v != 0.0 && k.is_none_or(|k| k == 1.0));
+            match parallel {
+                Some(parallel) => {
+                    push(&mut out, "lat_ts", Some(parallel));
+                    push(&mut out, "lon_0", lon_0);
+                }
+                None => {
+                    push(&mut out, "lon_0", lon_0);
+                    push(&mut out, "k", k.or(Some(1.0)));
+                }
+            }
         }
         "mercator2sp" | "mercator" => {
             out.push("+proj=merc".into());
