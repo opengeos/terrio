@@ -201,3 +201,12 @@ laz = { opt-level = 3 }
 rusty_av1d = { opt-level = 3 }
 image-webp = { opt-level = 3 }
 lz4_flex = { opt-level = 3 }
+
+# The Python wheels (release-build.yml, `maturin build --profile wheel`): without symbols, with one
+# codegen unit and whole-program LTO. Stripping alone takes the Linux x86_64 extension of 0.9.0
+# from 106 to 82 MB. The release profile, used by local and CI builds, stays fast to build.
+[profile.wheel]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+strip = true
