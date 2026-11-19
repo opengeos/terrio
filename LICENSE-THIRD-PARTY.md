@@ -6612,7 +6612,7 @@ Used by:
 - [jxl-render 0.12.4](https://github.com/tirr-c/jxl-oxide.git)
 - [jxl-threadpool 1.0.0](https://github.com/tirr-c/jxl-oxide.git)
 - [jxl-vardct 0.11.1](https://github.com/tirr-c/jxl-oxide.git)
-- [laz 0.13.0](https://github.com/tmontaigu/laz-rs)
+- [laz 0.14.0](https://github.com/tmontaigu/laz-rs)
 - [lerc-core 0.5.2](https://github.com/i-norden/lerc-rust)
 - [lerc-reader 0.5.2](https://github.com/i-norden/lerc-rust)
 - [lerc-writer 0.5.2](https://github.com/i-norden/lerc-rust)

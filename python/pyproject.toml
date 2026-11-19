@@ -25,8 +25,9 @@ geopandas = ["geopandas>=0.14"]
 test = ["pytest>=7", "jsonschema>=4.18"]
 # For terrio.rio.plot.
 plot = ["matplotlib>=3.5"]
-# For terrio.xarray (dask for chunked arrays); interpolate_na also needs scipy.
-xarray = ["xarray>=2024.1", "dask[array]>=2024.1"]
+# For terrio.xarray (dask for chunked arrays, shapely for zonal statistics of cubes);
+# interpolate_na also needs scipy.
+xarray = ["xarray>=2024.1", "dask[array]>=2024.1", "shapely>=2"]
 
 [project.scripts]
 terrio = "terrio.__main__:main"

@@ -40,7 +40,7 @@ from terrio.rio.crs import CRS
 from terrio.rio.enums import Resampling
 from terrio.rio.errors import WindowError
 from terrio.rio.io import MemoryFile, driver_from_extension
-from terrio.xarray import _ops
+from terrio.xarray import _ops, _zonal
 from terrio.xarray._crs import crs_from_cf, crs_from_user_input, crs_to_cf
 from terrio.xarray._options import EXPORT_GRID_MAPPING, SKIP_MISSING_SPATIAL_DIMS, get_option
 from terrio.xarray._spatial import (
@@ -1053,6 +1053,21 @@ class XRasterBase:
         except (KeyError, AttributeError):
             return None
 
+    def _zonal_cube(
+        self, arrays: list[xarray.DataArray], zones: Any, **kwargs: Any
+    ) -> list[xarray.DataArray]:
+        """`_zonal.zonal_cube` of `zones` (one layer, plain geometries in this CRS)."""
+        unsupported = set(kwargs) - {"stats", "all_touched", "fractional", "layer", "batch_bytes"}
+        if unsupported:
+            raise TypeError(
+                f"{', '.join(sorted(unsupported))}: not available on arrays with dimensions "
+                "besides y and x, which take stats, all_touched, fractional, layer and "
+                "batch_bytes; reduce each 2-D slice for the others (for a single band, use "
+                'da.squeeze("band", drop=True) to retain the Layer output)'
+            )
+        layer = _zonal.zones_layer(zones, self.crs, kwargs.pop("layer", None))
+        return _zonal.zonal_cube(arrays, layer, **kwargs)
+
 
 def _gcps_to_geojson(gcps: Iterable[Any]) -> dict[str, Any]:
     """Ground control points as rioxarray stores them: a GeoJSON FeatureCollection.
@@ -1890,19 +1905,36 @@ class TerrioArray(XRasterBase):
         """
         return _terrio.footprint(_ops.to_raster(self._obj), **kwargs)
 
-    def zonal_stats(self, zones: Any, **kwargs: Any) -> _terrio.Layer:
-        """Statistics of the pixels in each zone with `terrio.zonal_stats`.
+    def zonal_stats(self, zones: Any, **kwargs: Any) -> _terrio.Layer | xarray.DataArray:
+        """Statistics of the pixels in each zone, for a 2-D array or every 2-D slice of a cube.
+
+        A 2-D array gives `terrio.zonal_stats`'s `Layer`. An array with other dimensions
+        (`band`, `time`...) gives a DataArray of dims `(geometry, ..., statistic)`: one
+        row per zone, indexed by its Shapely geometry in the zones' CRS (written as the grid
+        mapping, `.terrio.crs`), the array's other dimensions, and one column per statistic.
+        The zones' attributes are coordinates along `geometry`. The values are float32 for
+        float32 data unless count or variety is requested; those results use float64
+        to preserve counts above 2**24 (exact through 2**53). Other data uses float64.
+
+        A cube is reduced a few slices at a time (whole dask chunks of its first other
+        dimension), holding about `batch_bytes`: the pixels read, the batch read ahead, and
+        the values a median or quantile keeps. Only the strips holding zone pixels are read,
+        and each dask chunk is computed once. A chunk larger than `batch_bytes` warns.
 
         Args:
             zones: The zones, as `terrio.zonal_stats` takes them (a path, a `Layer`,
                 a GeoDataFrame, Shapely geometries, GeoJSON, WKT, bounds...). Geometries
                 without a CRS of their own are in the array's.
             **kwargs: Options of `terrio.zonal_stats` (`stats`, `all_touched`, `fractional`,
-                `weights`, `bands`, ...).
+                `weights`, `bands`, ...). A cube takes `stats`, `all_touched`, `fractional`,
+                `layer` and `batch_bytes` (default 512 MiB).
 
         Returns:
-            terrio.Layer: The zones with a column per band and statistic.
+            terrio.Layer | xarray.DataArray: The zones with a column per band and statistic,
+            or the cube of statistics.
         """
+        if self._obj.ndim > 2:
+            return self._zonal_cube([self._obj], zones, **kwargs)[0]
         prefixes = kwargs.pop("prefixes", None)
         return _ops.zonal_stats([self._obj], _ops.in_crs(zones, self.crs), prefixes, **kwargs)
 
@@ -2279,18 +2311,24 @@ class TerrioDataset(XRasterBase):
         """`TerrioArray.viewshed` on each spatial variable."""
         return self._per_var(lambda da: da.terrio.viewshed(ox, oy, **kwargs))
 
-    def zonal_stats(self, zones: Any, **kwargs: Any) -> _terrio.Layer:
-        """Statistics of each spatial variable in each zone, with `terrio.zonal_stats`.
+    def zonal_stats(self, zones: Any, **kwargs: Any) -> _terrio.Layer | xarray.Dataset:
+        """Statistics of each spatial variable in each zone.
+
+        When every spatial variable is 2-D, `terrio.zonal_stats`'s `Layer`. Otherwise a
+        Dataset of `TerrioArray.zonal_stats`'s cubes, sharing the `geometry` dimension;
+        variables on one grid are read together, within `batch_bytes` for all of them, so
+        what they share (a mask...) is computed once.
 
         Args:
             zones: The zones, as `terrio.zonal_stats` takes them (a path, a `Layer`,
                 a GeoDataFrame, Shapely geometries, GeoJSON, WKT, bounds...). Geometries
                 without a CRS of their own are in the array's.
             **kwargs: Options of `terrio.zonal_stats`; `prefixes` defaults to the variables'
-                names.
+                names. Cubes take those of `TerrioArray.zonal_stats`.
 
         Returns:
-            terrio.Layer: The zones with a column per variable, band and statistic.
+            terrio.Layer | xarray.Dataset: The zones with a column per variable, band and
+            statistic, or the cubes of statistics.
         """
         names = [v for v in self.vars if has_spatial_dims(self._obj, var=v)]
         if not names:
@@ -2303,6 +2341,9 @@ class TerrioDataset(XRasterBase):
             da = self._obj[name]
             da.terrio.set_spatial_dims(x_dim=x_dim, y_dim=y_dim, inplace=True)
             arrays.append(da)
+        if any(da.ndim > 2 for da in arrays):
+            cubes = self._zonal_cube(arrays, zones, **kwargs)
+            return xarray.Dataset(dict(zip(names, cubes, strict=True)))
         prefixes = kwargs.pop("prefixes", None) or [str(n) for n in names]
         return _ops.zonal_stats(arrays, _ops.in_crs(zones, self.crs), prefixes, **kwargs)
 
