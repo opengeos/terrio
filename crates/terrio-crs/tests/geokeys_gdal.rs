@@ -330,3 +330,41 @@ fn a_code_with_its_own_datum_shift_reads_back_with_it() {
     assert_eq!(again.epsg, Some(4756));
     assert!(again.to_proj4().unwrap().contains("+towgs84=0,0,0"), "{:?}", again.to_proj4());
 }
+
+/// LCC is written by the WKT 1 method terrio describes it with: 2SP (ProjCoordTransGeoKey 8)
+/// with a second parallel given, even the first's, and 1SP (9) without one, with the parameters
+/// GDAL 3.13.3 writes for the same PROJ strings (a GeoTIFF from `SetSpatialRef`, its keys read
+/// back). South-orientated Transverse Mercator (27) is written for west-south axes with a height
+/// down (`+axis=wsd`) as for `wsu`, and reads back as the same 2D CRS. GDAL writes `wsd` as plain
+/// Transverse Mercator (1), dropping the axes, so its GeoTIFF places points mirrored: a deliberate
+/// difference.
+#[test]
+fn lcc_and_south_orientated_keys_are_written_by_their_method() {
+    let keys = |definition: &str| SpatialRef::from_proj4(definition).unwrap().to_geokeys().unwrap();
+    let method = |k: &terrio_crs::geokeys::GeoKeyValues| k.shorts.iter().find(|s| s.0 == 3075).map(|s| s.1);
+    let has = |k: &terrio_crs::geokeys::GeoKeyValues, id: u16, v: f64| k.doubles.iter().any(|d| d.0 == id && (d.1 - v).abs() < 1e-9);
+    let lcc = "+proj=lcc +lat_0=45 +lat_1=45 +lon_0=3 +x_0=700000 +y_0=6600000 +ellps=GRS80 +units=m";
+    // GDAL 3.13.3: 3075 = 8, 3078 = 3079 = 45, 3084 = 3, 3085 = 45, 3086 = 700000, 3087 = 6600000.
+    let two = keys(&format!("{lcc} +lat_2=45"));
+    assert_eq!(method(&two), Some(8), "{two:?}");
+    for (id, v) in [(3078, 45.0), (3079, 45.0), (3084, 3.0), (3085, 45.0), (3086, 700000.0), (3087, 6600000.0)] {
+        assert!(has(&two, id, v), "{id} {two:?}");
+    }
+    // GDAL 3.13.3: 3075 = 9, 3080 = 3, 3081 = 45, 3082 = 700000, 3083 = 6600000, 3092 = 1.
+    let one = keys(lcc);
+    assert_eq!(method(&one), Some(9), "{one:?}");
+    for (id, v) in [(3080, 3.0), (3081, 45.0), (3082, 700000.0), (3083, 6600000.0), (3092, 1.0)] {
+        assert!(has(&one, id, v), "{id} {one:?}");
+    }
+    let south = "+proj=tmerc +lon_0=25 +x_0=1000 +ellps=WGS84 +units=m";
+    let (wsu, wsd) = (keys(&format!("{south} +axis=wsu")), keys(&format!("{south} +axis=wsd")));
+    assert_eq!(method(&wsd), Some(27), "{wsd:?}");
+    assert_eq!((&wsd.shorts, &wsd.doubles), (&wsu.shorts, &wsu.doubles));
+    let crs = SpatialRef::from_proj4(&format!("{south} +axis=wsd")).unwrap();
+    let tags = wsd.encode().unwrap();
+    let back = SpatialRef::from_geokeys(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).unwrap();
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    let place = |c: &SpatialRef| Transformer::new(&wgs84, c).unwrap().transform(26.0, -30.0).unwrap();
+    let ((x, y), (x0, y0)) = (place(&back), place(&crs));
+    assert!((x - x0).abs() < 1e-6 && (y - y0).abs() < 1e-6, "({x}, {y}) against ({x0}, {y0})");
+}
