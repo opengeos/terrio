@@ -550,6 +550,13 @@ impl Fetcher {
             return Ok((file, None));
         };
         let expected = block.min(len);
+        // The bytes' position is checked before any of them is opened.
+        if let Some(header) = content_range.as_deref()
+            && !valid_content_range(header, ObjectRange::At(0, expected), expected, Some(len))
+        {
+            let _ = call(&reader, "cancel", &[]).map(settle);
+            return Err(JsError::new("range response has an unexpected Content-Range"));
+        }
         let file = SparseFile::with_block_size(len, block);
         let mut data = Vec::new();
         let opened = loop {
@@ -558,10 +565,8 @@ impl Fetcher {
             } else {
                 break None;
             }
-            if data.len() as u64 >= expected {
-                break None;
-            }
-            if data.len() > ARRIVING_OPEN_MAX {
+            // The whole block: read to the body's end, where `finish_first` checks its length.
+            if data.len() as u64 >= expected || data.len() > ARRIVING_OPEN_MAX {
                 continue;
             }
             file.insert_arriving(0, &data);
@@ -763,14 +768,19 @@ impl Remote {
                 }
                 return Ok(result);
             }
-            if let Some(o) = &self.objects {
-                self.fetcher.fetch_objects(o, &parts).await?;
+            let fetched = async {
+                if let Some(o) = &self.objects {
+                    self.fetcher.fetch_objects(o, &parts).await?;
+                }
+                self.fetcher.fetch_into(&self.file, &missing).await
             }
-            self.fetcher.fetch_into(&self.file, &missing).await?;
+            .await;
             if let Some(a) = arriving {
-                // Settles once the rest has arrived or failed (then requested again, next round).
+                // Settles once the rest has arrived or failed (then requested again, next round),
+                // waited for even when another fetch failed, so a retry doesn't request it again.
                 let _ = JsFuture::from(a.done).await;
             }
+            fetched?;
         }
         let name = self.fetcher.url.split(['?', '#']).next().unwrap_or("remote");
         Err(JsError::new(&format!("{name}: the read still needed more bytes after {MAX_ROUNDS} rounds of requests")))
