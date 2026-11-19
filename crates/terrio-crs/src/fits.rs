@@ -14,6 +14,9 @@ use crate::def::{self, Def};
 use crate::math::Ell;
 use crate::{SpatialRef, catalog, epsg, keywords, wkt1};
 
+#[cfg(test)]
+mod baseline_tests;
+
 /// Whether two lengths are the same as PROJ 9.9.0 compares measures (`Measure::_isEquivalentTo`,
 /// `DEFAULT_MAX_REL_ERROR`): within 1e-10 of the first.
 fn same_measure(x: f64, y: f64) -> bool {
