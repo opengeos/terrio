@@ -5,7 +5,7 @@ name: bench
 # (crates/terrio-cli/benches/commands.rs) under Valgrind, on
 # the pull request against main (the merge commit's first parent), in the same job. Instruction
 # counts repeat within 0.01% between runs, where timings on shared runners vary by 10–30%.
-# Informational: the job fails only when a build fails, never on a regression. bench-comment.yml
+# Informational: the job fails only when a build or a benchmarked command fails, never on a regression. bench-comment.yml
 # posts the results, which this job uploads as the `bench` artifact: a pull request from a fork gets
 # a read-only token here.
 
