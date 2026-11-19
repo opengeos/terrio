@@ -1,11 +1,13 @@
 """`sparse_ok=True`: a GeoTIFF leaves out its blocks whose pixels are all nodata (or 0).
 
 Such a block has an offset and a byte count of 0 (`BLOCK_OFFSET_x_y` and `BLOCK_SIZE_x_y` in the
-TIFF metadata domain), and terrio reads its pixels as nodata (or 0), whoever wrote the file. A COG
+TIFF metadata domain), and terrio reads its pixels as nodata (or 0), whoever wrote the file. A
+block is left out only if it reads the same with the file's `.aux.xml` as without it. A COG
 writes every tile, and warns that it does.
 """
 
 import struct
+import warnings
 
 import numpy as np
 import pytest
@@ -162,3 +164,126 @@ def test_blocks_left_out_of_an_overview_read_as_nodata(tmp_path):
         np.testing.assert_array_equal(src.read(out_shape=(1, 100, 150)), nodata)
     with rio.open(path, overview_level=0) as src:
         np.testing.assert_array_equal(src.read(), nodata)
+
+
+def _band_nodata_sidecar(path, values):
+    """Writes the `.aux.xml` beside `path` that gives band `i + 1` the nodata `values[i]`."""
+    bands = "".join(
+        f'<PAMRasterBand band="{b}"><NoDataValue>{v}</NoDataValue></PAMRasterBand>'
+        for b, v in enumerate(values, 1)
+        if v is not None
+    )
+    with open(f"{path}.aux.xml", "w") as f:
+        f.write(f"<PAMDataset>{bands}</PAMDataset>")
+
+
+def _reads(path, url, monkeypatch):
+    """`path` read with its `.aux.xml` (local reads), without it (sidecars disabled), and over
+    HTTP (by range, or downloaded whole)."""
+    reads = {}
+    for sidecar in ("", "EMPTY_DIR"):
+        with monkeypatch.context() as m:
+            if sidecar:
+                m.setenv("TERRIO_DISABLE_READDIR_ON_OPEN", sidecar)
+            with rio.open(path) as src:
+                reads[f"rio {sidecar}"] = src.read()
+                reads[f"rio window {sidecar}"] = src.read(window=Window(5, 3, 290, 190))
+            reads[f"eager {sidecar}"] = terrio.open_raster(str(path)).read()
+            reads[f"lazy {sidecar}"] = terrio.open_raster(str(path), lazy=True).read()
+    with rio.open(url) as src:
+        reads["rio, HTTP"] = src.read()
+    reads["lazy, HTTP"] = terrio.open_raster(url, lazy=True).read()
+    reads["eager, HTTP"] = terrio.open_raster(url).read()
+    return reads
+
+
+@pytest.mark.parametrize(
+    ("writer", "nodata", "sidecar", "left_out"),
+    [
+        ("dataset", 7, ("source", [7, 9]), False),
+        ("dataset", None, ("source", [7, None]), False),
+        ("rio", 7, ("output", [9, 9]), True),
+        ("rio, rows", 7, ("output", [9, 9]), False),
+        ("rio, rows", 7, ("output", [7, 7]), True),
+        ("GeoTiffWriter", 7, ("output", [9, 9]), False),
+    ],
+    ids=[
+        "bands-7-9",
+        "bands-7-none",
+        "stale-sidecar-rewritten",
+        "stale-sidecar-kept-in-rows",
+        "sidecar-kept-in-rows-agrees",
+        "stale-sidecar-kept-by-GeoTiffWriter",
+    ],
+)
+def test_a_block_is_left_out_only_if_it_reads_the_same_with_the_sidecar(
+    tmp_path, monkeypatch, writer, nodata, sidecar, left_out
+):
+    """Catches a block left out that reads otherwise than the block written, on any read path.
+
+    A band's nodata from the `.aux.xml` fills its blocks left out on local reads; reads without
+    the sidecar fill the file's nodata tag (or 0). So `SPARSE_OK` writes every block, with a
+    warning, when the two differ for a band: bands of different nodata written by
+    `write_raster_dataset` (band 1 or band 2 of a left-out block reads 7, 9 or 0 for 0 or 7),
+    or a sidecar left beside the path by an earlier file, which writers in rows keep (the whole
+    writer rewrites its nodata). Blocks are still left out where the two agree."""
+    # Block (0, 0) holds 7 in both bands, block (1, 0) holds 0, the others 1.
+    values = np.ones((2, 200, 300), "uint16")
+    values[:, :64, :64] = 7
+    values[:, :64, 64:128] = 0
+    profile = dict(driver="GTiff", width=300, height=200, count=2, dtype="uint16", nodata=nodata)
+    blocks = dict(tiled=True, blockxsize=64, blockysize=64)
+    co = {"TILED": "YES", "BLOCKXSIZE": "64", "BLOCKYSIZE": "64"}
+    where, band_nodata = sidecar
+    if where == "source":
+        with rio.open(tmp_path / "src.tif", "w", **profile, **blocks) as dst:
+            dst.write(values)
+        _band_nodata_sidecar(tmp_path / "src.tif", band_nodata)
+    for sparse in (False, True):
+        path = tmp_path / ("sparse.tif" if sparse else "dense.tif")
+        if where == "output":
+            _band_nodata_sidecar(path, band_nodata)
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter("always")
+            if writer == "dataset":
+                source = terrio.open_raster(str(tmp_path / "src.tif"))
+                options = {**co, "SPARSE_OK": "YES"} if sparse else co
+                source.write(str(path), driver="GTiff", options=options)
+            elif writer == "GeoTiffWriter":
+                w = terrio.GeoTiffWriter(
+                    str(path),
+                    300,
+                    200,
+                    2,
+                    "uint16",
+                    (0.0, 1.0, 0.0, 0.0, 0.0, -1.0),
+                    nodata=nodata,
+                    options={**co, "SPARSE_OK": "YES"} if sparse else co,
+                )
+                w.write(values)
+                w.close()
+            else:
+                limit = "1000" if writer == "rio, rows" else "1000000000"
+                monkeypatch.setenv("TERRIO_RIO_IN_MEMORY_LIMIT", limit)
+                with rio.open(path, "w", sparse_ok=sparse, **profile, **blocks) as dst:
+                    dst.write(values)
+        ignored = [w for w in record if "SPARSE_OK is ignored" in str(w.message)]
+        assert len(ignored) == (1 if sparse and not left_out else 0)
+    with rio.open(tmp_path / "sparse.tif") as src:
+        sizes = {
+            (x, y): src.get_tag_item(f"BLOCK_SIZE_{x}_{y}", "TIFF", bidx=1)
+            for y in range(4)
+            for x in range(5)
+        }
+    candidate = (0, 0) if nodata == 7 else (1, 0)
+    assert {b for b, size in sizes.items() if size == "0"} == ({candidate} if left_out else set())
+    terrio.clear_http_cache()
+    server = Server(tmp_path)
+    try:
+        dense = _reads(tmp_path / "dense.tif", f"{server.url}/dense.tif", monkeypatch)
+        sparse = _reads(tmp_path / "sparse.tif", f"{server.url}/sparse.tif", monkeypatch)
+    finally:
+        server.close()
+        terrio.clear_http_cache()
+    for read in dense:
+        np.testing.assert_array_equal(sparse[read], dense[read], err_msg=read)

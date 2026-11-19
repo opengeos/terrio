@@ -1841,7 +1841,7 @@ pub fn read_gcps(path: &str) -> Result<Vec<Gcp>> {
 
 /// Writes a raster, declaring its nodata value.
 pub fn write_raster(raster: &Raster, path: &str, options: &RasterWriteOptions) -> Result<()> {
-    write_raster_with_nodata(raster, Some(raster.nodata), false, path, options)
+    write_raster_with_nodata(raster, Some(raster.nodata), false, path, options, None)
 }
 
 /// Writes a raster dataset, declaring a nodata value only when the dataset has one.
@@ -1881,12 +1881,12 @@ pub fn write_raster_dataset(ds: &RasterDataset, path: &str, options: &RasterWrit
     let options = options.inherited_from(ds, driver);
     let pam = needs_nodata_pam(ds) && matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog));
     let tag = if matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog)) { tiff_nodata(ds) } else { ds.nodata() };
-    write_raster_with_nodata(&ds.raster, tag, ds.complex, path, &options)?;
+    let values = if ds.band_nodata.is_empty() { vec![ds.nodata(); ds.raster.bands] } else { ds.band_nodata.clone() };
+    write_raster_with_nodata(&ds.raster, tag, ds.complex, path, &options, Some(&values))?;
     if matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog)) {
         let mut aux = std::ffi::OsString::from(path);
         aux.push(".aux.xml");
         if pam || crate::memfs::exists(Path::new(&aux)) {
-            let values = if ds.band_nodata.is_empty() { vec![ds.nodata(); ds.raster.bands] } else { ds.band_nodata.clone() };
             crate::drivers::common::write_band_nodata_pam(Path::new(path), &values)?;
         }
     }
@@ -1951,7 +1951,17 @@ pub(crate) fn color_options(ds: &RasterDataset, path: &str, options: &RasterWrit
     })
 }
 
-fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, complex: bool, path: &str, options: &RasterWriteOptions) -> Result<()> {
+/// Writes `raster`, declaring `nodata`. `sidecar`: the band nodata the caller then writes to a
+/// GeoTIFF's `.aux.xml`; `None` when the sidecar already there is kept (see
+/// `TiffOptions::sparse_unless_sidecar_differs`).
+fn write_raster_with_nodata(
+    raster: &Raster,
+    nodata: Option<f64>,
+    complex: bool,
+    path: &str,
+    options: &RasterWriteOptions,
+    sidecar: Option<&[Option<f64>]>,
+) -> Result<()> {
     ensure_writable_location(path)?;
     let driver = match options.driver.or_else(|| RasterDriver::for_extension(path)) {
         Some(d) => d,
@@ -1984,6 +1994,7 @@ fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, complex: bool,
         {
             // Complex bands as complex samples, as GDAL writes CInt16... CFloat64 GeoTIFFs.
             opts.complex = complex;
+            opts.sparse_unless_sidecar_differs(path, sidecar, raster.bands / if complex { 2 } else { 1 });
             return crate::drivers::gtiff_write::write(raster, path, &opts);
         }
     }
