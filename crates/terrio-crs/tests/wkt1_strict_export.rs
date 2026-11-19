@@ -386,3 +386,19 @@ fn defining_inverse_flattenings_are_written() {
     let w = SpatialRef::from_proj4("+proj=longlat +a=6378137 +rf=298.257223563 +towgs84=0,0,0").unwrap().to_wkt().unwrap();
     assert!(w.contains("SPHEROID[\"unknown\",6378137,298.257223563]") && !w.contains("EXTENSION"), "{w}");
 }
+
+/// Krovak's pseudo standard parallel is written 78.5 whatever `+lat_ts` says, as PROJ 9.9.0 writes
+/// it: PROJ and terrio compute Krovak on 78.5 and ignore `lat_ts`, and PROJ cannot transform a
+/// WKT 1 with another value.
+#[test]
+fn krovak_pseudo_standard_parallel_is_written_as_proj_writes_it() {
+    let input = "+proj=krovak +axis=swu +lat_ts=78 +ellps=bessel +units=m";
+    let row = rows().into_iter().find(|r| r.input == input).unwrap();
+    let proj = row.wkt.unwrap();
+    let ours = SpatialRef::from_proj4(input).unwrap().to_wkt1_strict().unwrap();
+    let parameter = |w: &str| {
+        w.split("PARAMETER[").find(|p| p.starts_with("\"pseudo_standard_parallel_1\"")).map(|p| p[..p.find(']').unwrap()].to_string())
+    };
+    assert_eq!(parameter(&proj).as_deref(), Some("\"pseudo_standard_parallel_1\",78.5"));
+    assert_eq!(parameter(&ours), parameter(&proj), "{ours}");
+}
