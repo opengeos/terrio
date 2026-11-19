@@ -96,23 +96,22 @@ impl Node {
     }
 
     /// The geodetic CRS of a horizontal CRS node, where PROJ 9.9.0 reads it: the node itself (a
-    /// geographic or geocentric CRS), a projected CRS's base CRS, a compound CRS's horizontal CRS's,
-    /// or a bound CRS's source CRS's. `None` for another node (a vertical CRS's).
+    /// geographic or geocentric CRS with its datum), a projected or derived CRS's base CRS's (a
+    /// rotated pole's `BASEGEOGCRS`), a compound CRS's horizontal CRS's, or a bound CRS's source
+    /// CRS's. `None` for another node (a vertical CRS's).
     pub fn horizontal_geodetic(&self) -> Option<&Node> {
         use crate::keywords as kw;
-        if [kw::WKT1_GEOGRAPHIC, kw::WKT1_GEOCENTRIC, kw::GEOGRAPHIC_OR_GEODETIC_CRS, kw::BASE_GEODETIC_CRS].iter().any(|k| self.is(k)) {
+        let geodetic = [kw::WKT1_GEOGRAPHIC, kw::WKT1_GEOCENTRIC, kw::GEOGRAPHIC_OR_GEODETIC_CRS, kw::BASE_GEODETIC_CRS];
+        if geodetic.iter().any(|k| self.is(k)) && self.datum().is_some() {
             return Some(self);
-        }
-        if self.is(kw::WKT1_PROJECTED) || self.is(kw::PROJECTED_CRS) {
-            return self.geodetic_base();
         }
         if self.is(kw::COMPOUND_CRS) {
             return self.first_in(kw::HORIZONTAL_CRS)?.horizontal_geodetic();
         }
-        if self.key.eq_ignore_ascii_case("BOUNDCRS") {
+        if self.is(kw::BOUND) {
             return crate::wkt2::first_node(self.child("SOURCECRS")?)?.horizontal_geodetic();
         }
-        None
+        self.geodetic_base()?.horizontal_geodetic()
     }
 
     /// The geodetic datum (or datum ensemble) of a horizontal CRS node, at its place (see
@@ -1052,6 +1051,8 @@ mod tests {
     use super::*;
     use crate::{SpatialRef, Transformer};
 
+    use std::time::Duration;
+
     /// A horizontal CRS's geodetic CRS, datum and ellipsoid are read where PROJ reads them: a
     /// projected CRS's base, a compound CRS's horizontal CRS, a bound CRS's source (not its
     /// target, though either may come first); a vertical CRS has none, its datum ensemble too.
@@ -1076,8 +1077,24 @@ mod tests {
         let ensemble = r#"VERTCRS["DVR90",ENSEMBLE["Dansk Vertikal Reference 1990 ensemble",MEMBER["a"],ENSEMBLEACCURACY[0.1]],CS[vertical,1],AXIS["h",up,LENGTHUNIT["metre",1]]]"#;
         assert_eq!(name(vertical), None);
         assert_eq!(name(ensemble), None);
+        // PROJ 9.9.0 (pyproj 3.8.0) reads a bound CRS's source whichever comes first: NAD27's
+        // ellipsoid (6378206.4 m), not the WGS 84 target's that the first one found was.
+        let geog = |n: &str, a: &str, rf: &str| {
+            format!(
+                r#"GEOGCRS["{n}",DATUM["{n} datum",ELLIPSOID["e",{a},{rf},LENGTHUNIT["metre",1]]],CS[ellipsoidal,2],AXIS["lat",north,ANGLEUNIT["degree",0.0174532925199433]],AXIS["lon",east,ANGLEUNIT["degree",0.0174532925199433]]]"#
+            )
+        };
+        let target_first = format!(
+            r#"BOUNDCRS[TARGETCRS[{}],SOURCECRS[{}],ABRIDGEDTRANSFORMATION["t",METHOD["Geocentric translations (geog2D domain)",ID["EPSG",9603]],PARAMETER["X-axis translation",-8,ID["EPSG",8605]],PARAMETER["Y-axis translation",160,ID["EPSG",8606]],PARAMETER["Z-axis translation",176,ID["EPSG",8607]]]]"#,
+            geog("WGS 84", "6378137", "298.257223563"),
+            geog("NAD27", "6378206.4", "294.978698213898")
+        );
+        assert_eq!(crate::semi_major_axis(&target_first), Some(6378206.4));
+        assert_eq!(name(&target_first).as_deref(), Some("NAD27 datum"));
+        // A derived geographic CRS's datum is its base CRS's (a rotated pole).
+        let rotated = r#"GEOGCRS["r",BASEGEOGCRS["WGS 84",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]]],DERIVINGCONVERSION["p",METHOD["PROJ ob_tran o_proj=longlat"],PARAMETER["o_lon_p",0]],CS[ellipsoidal,2],AXIS["lon",east],AXIS["lat",north],ANGLEUNIT["degree",0.0174532925199433]]"#;
+        assert_eq!(name(rotated).as_deref(), Some("World Geodetic System 1984"));
     }
-    use std::time::Duration;
 
     /// PROJ's two tables of named meridians agree on every name they share but Madrid, which
     /// `primeMeridiansDMS` has at 3°41'14.55"W and `proj_list_prime_meridians` at 16.58". Paris
