@@ -48,11 +48,12 @@ pub(crate) fn write(cube: &ZonalCube, path: &Path) -> Result<()> {
     for (i, field) in cube.zones.schema.fields().iter().enumerate() {
         let column = || cube.zones.features.iter().map(|f| f.attributes.get(i).unwrap_or(&FieldValue::Null));
         if field.field_type == FieldType::Integer
-            && column().any(|v| !matches!(v, FieldValue::Integer(_)))
+            && column().all(|v| matches!(v, FieldValue::Integer(_) | FieldValue::Null))
+            && column().any(|v| matches!(v, FieldValue::Null))
             && column().any(|v| matches!(v, FieldValue::Integer(i64::MIN)))
         {
             return Err(Error::InvalidArgument(format!(
-                "integer field '{}' has nulls and the value {}, which marks them in Zarr",
+                "integer field '{}' has nulls and the value {}, which Zarr uses as their fill value",
                 field.name,
                 i64::MIN
             )));
@@ -244,8 +245,8 @@ fn unique(name: &str, taken: &mut Vec<String>) -> String {
     out
 }
 
-/// A field, by its type: integers as int64 (null as the fill value, `i64::MIN`), floats as
-/// float64 (NaN for null), others as strings (null as "").
+/// A field, by its type: integers as int64 (null as the fill value, `i64::MIN`), floats, and
+/// integer fields holding other values, as float64 (NaN for null), others as strings (null as "").
 fn write_field(path: &Path, name: &str, field_type: FieldType, column: &[&FieldValue]) -> Result<()> {
     let dims = ["geometry"];
     let number = |v: &FieldValue| match v {
@@ -253,16 +254,16 @@ fn write_field(path: &Path, name: &str, field_type: FieldType, column: &[&FieldV
         FieldValue::Float(x) => Some(*x),
         _ => None,
     };
-    if field_type == FieldType::Integer {
+    if field_type == FieldType::Integer && column.iter().all(|v| matches!(v, FieldValue::Integer(_) | FieldValue::Null)) {
         let values: Vec<i64> = column.iter().map(|v| if let FieldValue::Integer(i) = v { *i } else { i64::MIN }).collect();
-        // A fill value only with nulls, so that every value of a full column reads as itself.
-        // and the CF `_FillValue` too: xarray masks Zarr v3 arrays by that attribute only.
-        let nulls = column.iter().any(|v| !matches!(v, FieldValue::Integer(_)));
+        // A fill value only with nulls, so that a full column reads every value as itself. The CF
+        // `_FillValue` attribute is needed too: xarray masks Zarr v3 arrays by that attribute only.
+        let nulls = column.iter().any(|v| matches!(v, FieldValue::Null));
         let attrs = if nulls { json!({"_FillValue": i64::MIN}) } else { json!({}) };
         let fill = nulls.then_some(i64::MIN as f64);
         return write_array_v3(path, name, &[values.len()], &dims, DataType::I64, &i64_bytes(&values), fill, attrs);
     }
-    if field_type == FieldType::Float {
+    if matches!(field_type, FieldType::Integer | FieldType::Float) {
         let values: Vec<f64> = column.iter().map(|v| number(v).unwrap_or(f64::NAN)).collect();
         return write_array_v3(path, name, &[values.len()], &dims, DataType::F64, &f64_bytes(&values), Some(f64::NAN), json!({}));
     }

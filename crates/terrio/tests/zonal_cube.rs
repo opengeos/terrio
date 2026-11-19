@@ -392,6 +392,17 @@ mod zarr {
         assert!(!path.exists(), "nothing written");
     }
 
+    /// An integer field holding a float, as some readers give, keeps every value as float64.
+    #[test]
+    fn integer_fields_holding_floats_stay_float64() {
+        let mut zones = zones();
+        zones.features[1].attributes[1] = FieldValue::Float(2.5);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.zarr");
+        cube(zones).write_zarr(path.to_str().unwrap()).unwrap();
+        assert_eq!(nums(read(path.to_str().unwrap(), "code").1), ("f64", vec![7.0, 2.5]));
+    }
+
     /// A field's type, not its values, decides its array type: an all-null float field is float64.
     #[test]
     fn all_null_number_fields_stay_numbers() {
