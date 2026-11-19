@@ -334,10 +334,11 @@ fn a_code_with_its_own_datum_shift_reads_back_with_it() {
 /// LCC is written by the WKT 1 method terrio describes it with: 2SP (ProjCoordTransGeoKey 8)
 /// with a second parallel given, even the first's, and 1SP (9) without one, with the parameters
 /// GDAL 3.13.3 writes for the same PROJ strings (a GeoTIFF from `SetSpatialRef`, its keys read
-/// back). South-orientated Transverse Mercator (27) is written for west-south axes with a height
+/// back; checked once and given here, not in the recorded GDAL 3.12.1 data, which these strings
+/// are not part of). South-orientated Transverse Mercator (27) is written for west-south axes with a height
 /// down (`+axis=wsd`) as for `wsu`, and reads back as the same 2D CRS. GDAL writes `wsd` as plain
 /// Transverse Mercator (1), dropping the axes, so its GeoTIFF places points mirrored: a deliberate
-/// difference.
+/// difference, checked the same way and not asserted here.
 #[test]
 fn lcc_and_south_orientated_keys_are_written_by_their_method() {
     let keys = |definition: &str| SpatialRef::from_proj4(definition).unwrap().to_geokeys().unwrap();
