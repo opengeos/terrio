@@ -11,8 +11,10 @@
 //! decompression on each read. With it, a chunk decoded by one window read is placed from memory by
 //! the next one that needs it. What is cached is the decoded samples of the chunks of lazy
 //! GeoTIFF reads, whether the TIFF is a local file, bytes in memory, a member of a zip archive or a
-//! remote object (HTTP, S3), and of the images of external `.ovr` overviews. Rasters read whole
-//! (formats other than GeoTIFF, [`crate::open_raster`]) and the other lazy drivers are not cached.
+//! remote object (HTTP, S3), and of the images of external `.ovr` overviews, and the bands of lazy
+//! GRIB reads, whole or, larger than a read's share of the cache, the rows the read needed and
+//! those nearest them. Rasters read whole (other formats, [`crate::open_raster`]) and the other lazy
+//! drivers are not cached.
 //!
 //! The cache holds at most [`max_bytes`] bytes of decoded samples (and a small fixed overhead per
 //! chunk), dropping the least recently used chunks first. A chunk larger than the cache is not
@@ -34,6 +36,14 @@
 //! drops its chunks when it is closed, and a file that is replaced (written anew and renamed over
 //! the original) while a reader holds it keeps being read as it was, as GDAL does, while a reader
 //! opened after the replacement never sees a chunk of the old file.
+//!
+//! The bands of a local GRIB file are keyed by the version of the file their readers read, so that
+//! the readers open at once of one version (a dataset and the readers Python opens to read it from
+//! several threads, or the same file opened twice) decode a band once: on Unix, the version is the
+//! file's device, inode, size and modification and change times, and how its values are decoded
+//! (`GRIB_NORMALIZE_UNITS`); elsewhere each reader keeps its own. A version's bands are dropped when
+//! its last reader is closed, and a file changed or replaced since is another version, whose
+//! readers never see them.
 //!
 //! ```no_run
 //! use terrio::{Window, WindowOptions};
@@ -145,13 +155,26 @@ pub fn clear() {
 }
 
 /// A decoded chunk: its samples as decoded (a half-float chunk is converted when it is placed)
-/// and the size `(width, height)` of the image data it holds.
+/// and the size `(width, height)` of the image data it holds, or of the image whose rows from
+/// `origin` on it holds (the part of a GRIB band a read keeps; `origin` is 0 otherwise).
 pub(crate) struct CachedChunk {
     pub samples: DecodingResult,
     pub dims: (usize, usize),
+    #[cfg(feature = "grib")]
+    pub origin: usize,
 }
 
 impl CachedChunk {
+    /// A chunk of image data of size `dims`.
+    fn new(samples: DecodingResult, dims: (usize, usize)) -> Self {
+        Self {
+            samples,
+            dims,
+            #[cfg(feature = "grib")]
+            origin: 0,
+        }
+    }
+
     /// The bytes the chunk takes in the cache.
     fn cost(&self) -> u64 {
         use std::mem::size_of;
@@ -191,12 +214,24 @@ struct Cache {
     tick: u64,
     /// The most bytes held; `None` until it is read from the environment.
     max: Option<u64>,
+    /// The handles the open readers of a file version share (see [`Handle::of_file`]), and how
+    /// many readers hold each.
+    #[cfg(feature = "grib")]
+    shared: BTreeMap<FileVersion, (u64, usize)>,
 }
 
 impl Cache {
     /// An empty cache whose size is not read yet.
     const fn new() -> Self {
-        Self { handles: BTreeMap::new(), order: BTreeMap::new(), bytes: 0, tick: 0, max: None }
+        Self {
+            handles: BTreeMap::new(),
+            order: BTreeMap::new(),
+            bytes: 0,
+            tick: 0,
+            max: None,
+            #[cfg(feature = "grib")]
+            shared: BTreeMap::new(),
+        }
     }
 
     /// Sets the size, evicts down to it and gives back the spare memory of the tables that survive.
@@ -280,6 +315,26 @@ impl Cache {
         self.order.clear();
         self.bytes = 0;
     }
+
+    /// The handle of a file version's readers, which one more reader holds now.
+    #[cfg(feature = "grib")]
+    fn share(&mut self, version: FileVersion) -> u64 {
+        let (handle, readers) = self.shared.entry(version).or_insert_with(|| (new_handle(), 0));
+        *readers += 1;
+        *handle
+    }
+
+    /// Gives back a reader's hold on a file version's handle: the last one drops its chunks.
+    #[cfg(feature = "grib")]
+    fn unshare(&mut self, version: &FileVersion) {
+        let Some((handle, readers)) = self.shared.get_mut(version) else { return };
+        *readers -= 1;
+        if *readers == 0 {
+            let handle = *handle;
+            self.shared.remove(version);
+            self.remove_handle(handle);
+        }
+    }
 }
 
 static CACHE: Mutex<Cache> = Mutex::new(Cache::new());
@@ -325,12 +380,108 @@ pub(crate) fn insert(handle: u64, ifd: usize, chunk: u32, samples: DecodingResul
     if max_bytes() == 0 {
         return;
     }
-    cache().insert(handle, ifd, chunk, CachedChunk { samples, dims });
+    cache().insert(handle, ifd, chunk, CachedChunk::new(samples, dims));
+}
+
+/// Caches the rows from `origin` on of a decoded image of size `dims`, as [`insert`] caches a chunk.
+#[cfg(feature = "grib")]
+pub(crate) fn insert_part(handle: u64, ifd: usize, chunk: u32, samples: DecodingResult, dims: (usize, usize), origin: usize) {
+    if max_bytes() == 0 {
+        return;
+    }
+    cache().insert(handle, ifd, chunk, CachedChunk { origin, ..CachedChunk::new(samples, dims) });
 }
 
 /// Drops the chunks of a reader that is closed.
 pub(crate) fn remove_handle(handle: u64) {
     cache().remove_handle(handle);
+}
+
+/// The bytes a chunk of `bytes` bytes of samples counts for in the cache, its entry included.
+#[cfg(feature = "grib")]
+pub(crate) fn entry_cost(bytes: u64) -> u64 {
+    bytes.saturating_add(ENTRY_OVERHEAD)
+}
+
+/// A version of a local file, and how a reader decodes it (`variant`): what the readers that share
+/// a [`Handle`] have in common.
+#[cfg(feature = "grib")]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(not(unix), allow(dead_code))]
+struct FileVersion {
+    device: u64,
+    inode: u64,
+    len: u64,
+    modified: (i64, i64),
+    changed: (i64, i64),
+    variant: u64,
+}
+
+#[cfg(feature = "grib")]
+impl FileVersion {
+    /// The version of the file whose metadata is `m` (of the file a reader opened), on Unix.
+    #[cfg(unix)]
+    fn of(m: &std::fs::Metadata, variant: u64) -> Option<Self> {
+        use std::os::unix::fs::MetadataExt;
+        Some(Self {
+            device: m.dev(),
+            inode: m.ino(),
+            len: m.size(),
+            modified: (m.mtime(), m.mtime_nsec()),
+            changed: (m.ctime(), m.ctime_nsec()),
+            variant,
+        })
+    }
+
+    /// Unknown elsewhere: the identity of a file is not in its metadata.
+    #[cfg(not(unix))]
+    fn of(_m: &std::fs::Metadata, _variant: u64) -> Option<Self> {
+        None
+    }
+}
+
+/// The identity of an open reader's chunks in the cache, given back when the reader drops it: its
+/// chunks are dropped then, unless other open readers share them ([`Handle::of_file`]).
+#[cfg(feature = "grib")]
+pub(crate) struct Handle {
+    id: u64,
+    shared: Option<FileVersion>,
+}
+
+#[cfg(feature = "grib")]
+impl Handle {
+    /// A handle of the reader's own.
+    pub(crate) fn new() -> Self {
+        Self { id: new_handle(), shared: None }
+    }
+
+    /// The handle the open readers of a version of a local file share, given the metadata of the
+    /// file a reader opened (so that the version is that of the file it reads) and how it decodes
+    /// it (`variant`): a version is the file's device, inode, size, and modification and change
+    /// times. A file changed or replaced since is another version. A handle of the reader's own
+    /// where the identity of a file is not known (other systems than Unix).
+    pub(crate) fn of_file(metadata: &std::fs::Metadata, variant: u64) -> Self {
+        match FileVersion::of(metadata, variant) {
+            Some(version) => Self { id: cache().share(version), shared: Some(version) },
+            None => Self::new(),
+        }
+    }
+
+    /// The handle's chunks are keyed by this.
+    pub(crate) fn id(&self) -> u64 {
+        self.id
+    }
+}
+
+#[cfg(feature = "grib")]
+impl Drop for Handle {
+    fn drop(&mut self) {
+        let mut cache = cache();
+        match &self.shared {
+            Some(version) => cache.unshare(version),
+            None => cache.remove_handle(self.id),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -403,7 +554,7 @@ pub(crate) mod tests {
 
     /// Stores a chunk of `n` bytes, each `fill`, in a private cache.
     fn put(c: &mut Cache, handle: u64, ifd: usize, index: u32, n: usize, fill: u8, dims: (usize, usize)) {
-        c.insert(handle, ifd, index, CachedChunk { samples: chunk(n, fill), dims });
+        c.insert(handle, ifd, index, CachedChunk::new(chunk(n, fill), dims));
     }
 
     #[test]
@@ -507,6 +658,37 @@ pub(crate) mod tests {
         put(&mut c, h, 0, 0, 50, 2, (1, 1));
         assert_eq!(c.bytes, cost(50));
         assert_eq!(first_byte(&c.get(h, 0, 0).unwrap()), 2);
+    }
+
+    /// Catches the chunks of a file's readers kept apart, dropped while another reader of the file
+    /// is open, or kept once none is: the open readers of one version of a file share a handle
+    /// until the last is dropped; the file decoded otherwise, or changed, is another version. A
+    /// reader's own handle takes its chunks with it when it is dropped.
+    #[cfg(all(unix, feature = "grib"))]
+    #[test]
+    fn the_readers_of_a_file_version_share_its_chunks_until_the_last_is_dropped() {
+        let _serial = cache_test_guard(10_000);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f");
+        std::fs::write(&path, b"one").unwrap();
+        let version = || std::fs::File::open(&path).unwrap().metadata().unwrap();
+        let (a, b) = (Handle::of_file(&version(), 0), Handle::of_file(&version(), 0));
+        assert_eq!(a.id(), b.id());
+        assert_ne!(Handle::of_file(&version(), 1).id(), a.id());
+        insert(a.id(), 0, 0, chunk(100, 1), (1, 1));
+        drop(a);
+        assert!(contains(b.id(), 0, 0), "a reader is left");
+        let id = b.id();
+        drop(b);
+        assert!(!contains(id, 0, 0), "no reader is left");
+        let c = Handle::of_file(&version(), 0);
+        std::fs::write(&path, b"other").unwrap();
+        assert_ne!(Handle::of_file(&version(), 0).id(), c.id());
+        let own = Handle::new();
+        insert(own.id(), 0, 0, chunk(100, 1), (1, 1));
+        let id = own.id();
+        drop(own);
+        assert!(!contains(id, 0, 0), "a reader's own handle");
     }
 
     #[test]

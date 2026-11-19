@@ -179,12 +179,14 @@ pub(super) fn open(local: crate::vfs::LocalPath) -> Result<crate::LazyRaster> {
     }
     let (ds, split) = header(&all, len)?;
     drop(all);
-    Ok(Source::open(ds, split, normalize, Store::File(f, index)))
+    let cache = crate::block_cache::Handle::of_file(&metadata, normalize as u64);
+    Ok(Source::open(ds, split, normalize, Store::File(f, index), cache))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::block_cache::tests::{cache_test_guard, take_lookups};
     use crate::{Window, WindowOptions};
 
     /// The bytes local GRIB files read so far on this thread.
@@ -220,10 +222,12 @@ mod tests {
 
     /// Catches a local GRIB file read whole, at open or when a band is read: opening reads two
     /// pages a message (its first octets, then its header with the previous message's end
-    /// marker) and one more, a read of a band its message and nothing else, and a band read again
-    /// nothing. The values of each window are those of the file read whole.
+    /// marker) and one more, a read of a band its message and nothing else, and a band in the
+    /// block cache nothing: another reader of the file finds it there too, with no miss. The
+    /// values of each window, decoded or from the cache, are those of the file read whole.
     #[test]
     fn a_local_file_is_read_by_message() {
+        let _serial = cache_test_guard(64 << 20);
         let dir = tempfile::tempdir().unwrap();
         let (path, bytes) = grib_file(dir.path(), 1024, 300, 3);
         let spans = super::super::message_spans(&bytes).unwrap();
@@ -244,7 +248,60 @@ mod tests {
         let rows = Window::new(7, 100, 1000, 180);
         let before = bytes_read();
         assert_eq!(window(&mut r, 2, rows), expected(rows));
-        assert_eq!(bytes_read() - before, 0, "band 2 kept");
+        assert_eq!(bytes_read() - before, 0, "band 2 from the block cache");
+        #[cfg(unix)]
+        {
+            let mut other = crate::LazyRaster::open(&path).unwrap();
+            take_lookups();
+            let before = bytes_read();
+            assert_eq!(window(&mut other, 2, rows), expected(rows));
+            assert_eq!((bytes_read() - before, take_lookups()), (0, (1, 0)), "another reader of the file shares band 2");
+        }
+    }
+
+    /// Catches the bands a read decodes at once pushing one another out of the block cache, or a
+    /// band kept in part read from other rows than those kept: each band is kept in an equal share
+    /// of the cache, its first 287 rows of 300 here, where the cache would hold one band whole but
+    /// not the four. The next window of those rows reads nothing; a window of the last rows decodes
+    /// the bands again. The values are those of the file read whole.
+    #[test]
+    fn the_bands_read_at_once_share_the_block_cache() {
+        let _serial = cache_test_guard(9 << 20);
+        let dir = tempfile::tempdir().unwrap();
+        let (path, bytes) = grib_file(dir.path(), 1024, 300, 4);
+        let spans = super::super::message_spans(&bytes).unwrap();
+        let whole = super::super::read_bytes(&bytes).unwrap();
+        let expected = |w: Window| -> Vec<f64> {
+            let at = |b: usize, r: usize, c: usize| whole.raster.data.get_f64((b * 300 + r) * 1024 + c);
+            (0..4).flat_map(|b| (w.y..w.y + w.height).flat_map(move |r| (w.x..w.x + w.width).map(move |c| at(b, r, c)))).collect()
+        };
+        let mut r = crate::LazyRaster::open(&path).unwrap();
+        let mut read = |w: Window| {
+            let before = bytes_read();
+            let values = r.read_window(w, &WindowOptions { bands: vec![1, 2, 3, 4], overview: None }).unwrap().raster.data.to_f64_vec();
+            assert_eq!(values, expected(w), "{w:?}");
+            bytes_read() - before
+        };
+        let messages: u64 = spans.iter().map(|&(_, len)| len as u64).sum();
+        assert_eq!(read(Window::new(0, 0, 100, 100)), messages);
+        assert_eq!(read(Window::new(500, 0, 100, 100)), 0, "the four bands from the block cache");
+        assert_eq!(read(Window::new(500, 290, 100, 10)), messages, "rows the cache does not hold");
+    }
+
+    /// Catches the readers of one file sharing its bands when they decode it otherwise: one opened
+    /// with `GRIB_NORMALIZE_UNITS=NO` reads Kelvin while another, open at once, reads Celsius.
+    #[test]
+    fn readers_that_decode_a_file_otherwise_keep_their_own_bands() {
+        let _serial = cache_test_guard(64 << 20);
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/grib/temperature.grib2");
+        let mut celsius = crate::LazyRaster::open(path).unwrap();
+        crate::config::push_scope([("GRIB_NORMALIZE_UNITS".to_string(), Some("NO".to_string()))].into());
+        let kelvin = crate::LazyRaster::open(path);
+        crate::config::pop_scope();
+        let mut kelvin = kelvin.unwrap();
+        let all = Window::full(celsius.width(), celsius.height());
+        let (c, k) = (window(&mut celsius, 1, all), window(&mut kelvin, 1, all));
+        assert!(c.iter().zip(&k).all(|(c, k)| (k - c - 273.15).abs() < 1e-6), "{c:?} {k:?}");
     }
 
     /// What reading a GRIB file gives, band by band: the dataset's description, then each band's

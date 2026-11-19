@@ -55,8 +55,9 @@
 //! spatial differencing (5.2, 5.3), IEEE floating point (5.4), JPEG 2000 (5.40, with the `jp2`
 //! feature), PNG (5.41) and CCSDS (5.42, with the pure-Rust `rust-aec` decoder). Remote files are
 //! read by range ([`remote`]) and local files by position ([`local`]): the headers of the messages
-//! when the file is opened, a band's message when the band is read. Every allocation sized by a
-//! header is fallible: a damaged or hostile file is an error, never an abort.
+//! when the file is opened, a band's message when the band is read. The bands read are kept in the
+//! process-wide [`crate::block_cache`]. Every allocation sized by a header is fallible: a damaged or
+//! hostile file is an error, never an abort.
 
 use crate::formats::RasterDriver;
 use crate::{Error, RasterDataset, Result};
@@ -134,11 +135,11 @@ pub(crate) fn read_bytes(bytes: &[u8]) -> Result<RasterDataset> {
     Ok(ds)
 }
 
-/// How many bands are decoded at once: two per thread of the pool, as many as the band cache of
-/// a [`Source`] keeps (at least one).
+/// How many bands are decoded at once: two per thread of the pool, within [`DECODE_BYTES`] of
+/// decoded values (at least one).
 fn decode_group(cols: usize, rows: usize) -> usize {
     let band_bytes = cols.saturating_mul(rows).saturating_mul(8).max(1);
-    (crate::par::threads().max(1) * 2).min(CACHE_BYTES / band_bytes).max(1)
+    (crate::par::threads().max(1) * 2).min(DECODE_BYTES / band_bytes).max(1)
 }
 
 /// An empty vector with room for `n` values, or an error when the memory cannot be had: sizes
@@ -319,11 +320,15 @@ pub(crate) fn open_lazy_bytes(bytes: Vec<u8>) -> Result<crate::LazyRaster> {
     let normalize = normalize_units();
     let (header, split) = header(&bands(&bytes, normalize)?, bytes.len())?;
     let index = band_index(&bytes)?;
-    Ok(Source::open(header, split, normalize, Store::Bytes(bytes, index)))
+    Ok(Source::open(header, split, normalize, Store::Bytes(bytes, index), crate::block_cache::Handle::new()))
 }
 
-/// The bytes of decoded bands kept by a [`Source`], at least one band.
-const CACHE_BYTES: usize = 256 << 20;
+/// The most bytes of decoded bands a read of several bands holds at once, at least one band: the
+/// bands it decodes in parallel.
+const DECODE_BYTES: usize = 256 << 20;
+
+/// The chunk of the block cache that holds a band, or the part of it a read keeps.
+const BAND_CHUNK: u32 = 0;
 
 /// Where a [`Source`]'s messages are.
 enum Store {
@@ -370,7 +375,11 @@ impl Store {
 }
 
 /// A GRIB file read band by band: the bands read are decoded whole, as GDAL decodes them, and
-/// the last ones kept.
+/// kept as decoded in the process-wide block cache ([`crate::block_cache`], `TERRIO_CACHEMAX`),
+/// one chunk a band, with the decoded chunks of other files. A read shares the cache equally among
+/// the bands it reads, and keeps of each band the rows it needed and as many of those after them
+/// (then before them) as its share holds: the whole band when it fits. A later read of rows the
+/// cache no longer holds decodes the band again.
 struct Source {
     store: Store,
     cols: usize,
@@ -378,8 +387,19 @@ struct Source {
     split: usize,
     /// `GRIB_NORMALIZE_UNITS` when the file was opened.
     normalize: bool,
-    /// Decoded bands (from 1), north up, the most recently read last.
-    cache: Vec<(usize, std::sync::Arc<Vec<f64>>)>,
+    /// The identity of the bands in the block cache: for a local file, that of the version of the
+    /// file every open reader of it shares.
+    cache: crate::block_cache::Handle,
+}
+
+/// The rows of a grid of `rows` rows (north up) that a read of the rows `wanted` keeps when it
+/// decodes the band and its share of the block cache holds `held` rows: the wanted ones (the last
+/// of them when it holds fewer), then the nearest after them, then the nearest before them.
+fn kept_rows(wanted: std::ops::Range<usize>, rows: usize, held: usize) -> std::ops::Range<usize> {
+    let wanted = wanted.start.max(wanted.end.saturating_sub(held))..wanted.end;
+    let after = (held - wanted.len()).min(rows - wanted.end);
+    let before = (held - wanted.len() - after).min(wanted.start);
+    wanted.start - before..wanted.end + after
 }
 
 /// Where each band of the messages in `b` is: `(message offset, message length, index of the
@@ -393,72 +413,88 @@ fn band_index(b: &[u8]) -> Result<Vec<(usize, usize, usize)>> {
     Ok(out)
 }
 
+/// The grid, or the part of it, that a chunk of a [`Source`] in the block cache holds: its size,
+/// the first of its rows the chunk holds (degrib's order, south to north) and their values.
+fn grid_of(chunk: &crate::block_cache::CachedChunk) -> Option<GridValues<'_>> {
+    let ((nx, ny), first) = (chunk.dims, chunk.origin);
+    let tiff::decoder::DecodingResult::F64(values) = &chunk.samples else { return None };
+    let held = values.len().checked_div(nx)?;
+    (held * nx == values.len() && first + held <= ny).then_some(GridValues { nx, ny, first, values })
+}
+
 impl Source {
     /// The dataset `header` of a GRIB file read band by band from `store`.
-    fn open(header: RasterDataset, split: usize, normalize: bool, store: Store) -> crate::LazyRaster {
+    fn open(header: RasterDataset, split: usize, normalize: bool, store: Store, cache: crate::block_cache::Handle) -> crate::LazyRaster {
         let (cols, rows) = (header.raster.cols, header.raster.rows);
-        crate::LazyRaster::from_source(header, Box::new(Source { store, cols, rows, split, normalize, cache: Vec::new() }))
+        crate::LazyRaster::from_source(header, Box::new(Source { store, cols, rows, split, normalize, cache }))
     }
 
-    fn cached(&mut self, b: usize) -> Option<std::sync::Arc<Vec<f64>>> {
-        let i = self.cache.iter().position(|(k, _)| *k == b)?;
-        let entry = self.cache.remove(i);
-        self.cache.push(entry.clone());
-        Some(entry.1)
-    }
-
-    fn keep(&mut self, b: usize, band: std::sync::Arc<Vec<f64>>) {
-        let band_bytes = self.cols * self.rows * 8;
-        while !self.cache.is_empty() && (self.cache.len() + 1) * band_bytes > CACHE_BYTES {
-            self.cache.remove(0);
+    /// Band `b` in the block cache, when it holds the band's rows `rows`.
+    fn cached(&self, b: usize, rows: std::ops::Range<usize>) -> Option<std::sync::Arc<crate::block_cache::CachedChunk>> {
+        if crate::block_cache::max_bytes() == 0 {
+            return None;
         }
-        self.cache.push((b, band));
+        crate::block_cache::get(self.cache.id(), b, BAND_CHUNK).filter(|c| grid_of(c).is_some_and(|g| g.holds(rows.clone())))
     }
 
-    /// Band `b` (from 1), band `k` of `message`, decoded and placed as the dataset's band.
-    fn decode_placed(&self, message: &[u8], k: usize, b: usize) -> Result<Vec<f64>> {
+    /// Band `b` (from 1), band `k` of `message`, decoded: the values of `window`, placed north up.
+    /// The rows of the band its `share` of the block cache holds go in it ([`kept_rows`]): moved to
+    /// the front of the decoded values, whose end is given back, so that keeping part of a band
+    /// takes no memory it did not have.
+    fn decode_window(&self, message: &[u8], k: usize, b: usize, window: crate::Window, share: u64) -> Result<Vec<f64>> {
         let file_len = self.store.file_len();
         let bands = message_bands(message, message.len(), file_len, self.normalize)?;
         let band = bands.get(k).ok_or_else(|| Error::InvalidArgument(format!("band {b} out of range")))?;
-        let decoded = decode_band(band, b - 1, file_len)?;
-        let mut values = try_vec(self.cols * self.rows)?;
-        place_band(&decoded, self.cols, self.rows, self.split, &mut values);
-        Ok(values)
-    }
-
-    fn band(&mut self, b: usize) -> Result<std::sync::Arc<Vec<f64>>> {
-        if let Some(band) = self.cached(b) {
-            return Ok(band);
+        let Decoded { nx, ny, mut values } = decode_band(band, b - 1, file_len)?;
+        let mut out = try_vec(window.width * window.height)?;
+        place(GridValues { nx, ny, first: 0, values: &values }, self.cols, self.split, window, &mut out);
+        // The most rows whose values, with the cache's entry, hold in `share`.
+        let row_bytes = (nx as u64).saturating_mul(8).max(1);
+        let held = usize::try_from(share.saturating_sub(crate::block_cache::entry_cost(0)) / row_bytes).unwrap_or(usize::MAX);
+        let wanted = window.y.min(ny)..(window.y + window.height).min(ny);
+        let rows = kept_rows(wanted, ny, held.min(ny));
+        if rows.is_empty() {
+            return Ok(out);
         }
-        let band = {
-            let (message, k) = self.store.message(b)?;
-            std::sync::Arc::new(self.decode_placed(&message, k, b)?)
-        };
-        self.keep(b, band.clone());
-        Ok(band)
+        // The grid's rows are south to north: the band's rows `rows` are its rows from `first`.
+        let first = ny - rows.end;
+        if first > 0 {
+            values.copy_within(first * nx..(first + rows.len()) * nx, 0);
+        }
+        values.truncate(rows.len() * nx);
+        values.shrink_to_fit();
+        crate::block_cache::insert_part(self.cache.id(), b, BAND_CHUNK, tiff::decoder::DecodingResult::F64(values), (nx, ny), first);
+        Ok(out)
     }
 
-    /// Decodes the bands of `bands` not in the cache, in parallel, into the cache: a file in
-    /// memory, or a local file whose messages are read on this thread. A remote file's bands are
-    /// fetched one at a time by [`Source::band`].
-    fn decode_missing(&mut self, bands: &[usize]) -> Result<()> {
+    /// Decodes the bands `missing` (from 1, each once): the values of `window` of each, each band
+    /// kept in the block cache in a `share` of it. A file's bands are decoded in parallel, the
+    /// first error in band order failing the read; a remote file's are fetched and decoded one at
+    /// a time, in the order asked.
+    fn decode(&self, mut missing: Vec<usize>, window: crate::Window, share: u64) -> Result<Vec<(usize, Vec<f64>)>> {
         #[cfg(remote)]
         if matches!(self.store, Store::Remote(_)) {
-            return Ok(());
+            return missing
+                .into_iter()
+                .map(|b| {
+                    let (message, k) = self.store.message(b)?;
+                    Ok((b, self.decode_window(&message, k, b, window, share)?))
+                })
+                .collect();
         }
-        let mut missing: Vec<usize> = bands.iter().copied().filter(|b| !self.cache.iter().any(|(k, _)| k == b)).collect();
         missing.sort_unstable();
-        missing.dedup();
-        if missing.len() < 2 {
-            return Ok(());
+        // A local file's messages are read on this thread, then decoded on the pool.
+        let messages: Vec<_> = missing.iter().map(|&b| self.store.message(b)).collect();
+        let decoded = crate::par::map_range_coarse(missing.len(), |i| match &messages[i] {
+            Ok((message, k)) => self.decode_window(message, *k, missing[i], window, share),
+            Err(_) => Ok(Vec::new()),
+        });
+        let mut out = Vec::with_capacity(missing.len());
+        for ((b, message), values) in missing.into_iter().zip(messages).zip(decoded) {
+            message?;
+            out.push((b, values?));
         }
-        let messages = missing.iter().map(|&b| self.store.message(b)).collect::<Result<Vec<_>>>()?;
-        let decoded = crate::par::map_range_coarse(missing.len(), |i| self.decode_placed(&messages[i].0, messages[i].1, missing[i]));
-        drop(messages);
-        for (b, d) in missing.into_iter().zip(decoded) {
-            self.keep(b, std::sync::Arc::new(d?));
-        }
-        Ok(())
+        Ok(out)
     }
 }
 
@@ -475,12 +511,31 @@ impl crate::cog::WindowSource for Source {
             return Err(Error::InvalidArgument("window outside the raster".into()));
         }
         let mut out = try_vec(window.width * window.height * bands.len())?;
+        let rows = window.y..window.y + window.height;
+        // The cache shared equally among the bands read at once, so that none of them pushes the
+        // others out.
+        let mut distinct = bands.to_vec();
+        distinct.sort_unstable();
+        distinct.dedup();
+        let share = crate::block_cache::max_bytes() / distinct.len().max(1) as u64;
         for group in bands.chunks(decode_group(self.cols, self.rows)) {
-            self.decode_missing(group)?;
+            let mut cached = Vec::new();
+            let mut missing = Vec::new();
             for &b in group {
-                let band = self.band(b)?;
-                for r in window.y..window.y + window.height {
-                    out.extend_from_slice(&band[r * self.cols + window.x..r * self.cols + window.x + window.width]);
+                if missing.contains(&b) || cached.iter().any(|(k, _)| *k == b) {
+                    continue;
+                }
+                match self.cached(b, rows.clone()) {
+                    Some(chunk) => cached.push((b, chunk)),
+                    None => missing.push(b),
+                }
+            }
+            let decoded = self.decode(missing, window, share)?;
+            for &b in group {
+                if let Some((_, values)) = decoded.iter().find(|(k, _)| *k == b) {
+                    out.extend_from_slice(values);
+                } else if let Some(grid) = cached.iter().find(|(k, _)| *k == b).and_then(|(_, c)| grid_of(c)) {
+                    place(grid, self.cols, self.split, window, &mut out);
                 }
             }
         }
@@ -492,19 +547,29 @@ impl crate::cog::WindowSource for Source {
 /// `GRIBRasterBand::IReadBlock` does: flipped north up, rotated by the antimeridian split column,
 /// and cropped or padded with zeros when the band's grid differs from the dataset's.
 fn place_band(d: &Decoded, cols: usize, rows: usize, split: usize, out: &mut Vec<f64>) {
-    let (gx, gy) = (d.nx, d.ny);
+    place(d.grid(), cols, split, crate::Window::full(cols, rows), out);
+}
+
+/// The values of `window` of the band of `cols` columns that [`place_band`] places from the grid
+/// `g`: in each row, the grid's columns from the split column on, then those before it, then zeros.
+/// `g` holds the grid's rows the window needs ([`GridValues::holds`]).
+fn place(g: GridValues<'_>, cols: usize, split: usize, window: crate::Window, out: &mut Vec<f64>) {
+    let (gx, gy) = (g.nx, g.ny);
     let split = if gx != cols { 0 } else { split };
     let copy = cols.min(gx);
-    for r in 0..rows {
-        let start = out.len();
-        out.resize(start + cols, 0.0);
+    // The band's columns before `wrap` come from the grid's past `split`.
+    let wrap = copy - split;
+    let (x0, x1) = (window.x, window.x + window.width);
+    for r in window.y..window.y + window.height {
         if r >= gy {
+            out.resize(out.len() + window.width, 0.0);
             continue;
         }
-        let src = &d.values[(gy - r - 1) * gx..(gy - r) * gx];
-        let row = &mut out[start..start + cols];
-        row[..copy - split].copy_from_slice(&src[split..copy]);
-        row[copy - split..copy].copy_from_slice(&src[..split]);
+        let at = gy - r - 1 - g.first;
+        let src = &g.values[at * gx..(at + 1) * gx];
+        out.extend_from_slice(&src[split + x0.min(wrap)..split + x1.min(wrap)]);
+        out.extend_from_slice(&src[x0.clamp(wrap, copy) - wrap..x1.clamp(wrap, copy) - wrap]);
+        out.resize(out.len() + x1.max(copy) - x0.max(copy), 0.0);
     }
 }
 
@@ -1553,6 +1618,33 @@ pub(crate) struct Decoded {
     pub values: Vec<f64>,
 }
 
+impl Decoded {
+    /// The grid's values.
+    fn grid(&self) -> GridValues<'_> {
+        GridValues { nx: self.nx, ny: self.ny, first: 0, values: &self.values }
+    }
+}
+
+/// The values of a decoded grid of `nx` x `ny` points, or of its rows from `first` on (degrib's
+/// order, south to north), as [`Decoded`] holds them or the block cache keeps them.
+#[derive(Clone, Copy)]
+struct GridValues<'a> {
+    nx: usize,
+    ny: usize,
+    first: usize,
+    values: &'a [f64],
+}
+
+impl GridValues<'_> {
+    /// Whether it holds the values of the band's rows `rows` (north up) that the grid has: the
+    /// others are zeros.
+    fn holds(&self, rows: std::ops::Range<usize>) -> bool {
+        let (start, end) = (rows.start.min(self.ny), rows.end.min(self.ny));
+        let held = self.values.len() / self.nx.max(1);
+        start >= end || (self.ny - self.first - held <= start && end <= self.ny - self.first)
+    }
+}
+
 /// Decodes a field of a file of `file_len` bytes as degrib's `ReadGrib2Record` does.
 fn decode_field(f: &Field, file_len: usize) -> Result<Decoded> {
     let grid = Grid::parse(f.sect3)?;
@@ -2412,6 +2504,46 @@ mod tests {
             assert!(lazy.read_window(crate::Window::new(0, 0, 2, 2), &band(1)).is_ok(), "{name}");
             let error = lazy.read_window(crate::Window::new(0, 0, 2, 2), &band(2)).err();
             assert!(matches!(&error, Some(Error::ResourceLimit(e)) if e.contains("TERRIO_GRIB_MAX_POINTS")), "{name}: {error:?}");
+        }
+    }
+
+    /// Catches a band larger than its share of the block cache keeping other rows than those a
+    /// read needs and the nearest after them (then before them), as many as the share holds: a
+    /// read of more rows than it holds keeps the last of them, and a share that holds none, none.
+    #[test]
+    fn a_band_larger_than_its_share_keeps_the_rows_read_and_those_after_them() {
+        assert_eq!(kept_rows(10..20, 100, 30), 10..40);
+        assert_eq!(kept_rows(80..95, 100, 30), 70..100);
+        assert_eq!(kept_rows(0..50, 100, 20), 30..50);
+        assert!(kept_rows(10..20, 100, 0).is_empty());
+    }
+
+    /// Catches a window placed otherwise than its band, cropped: windows starting past the
+    /// antimeridian split column or in the zeros that pad a grid narrower than the band, on grids
+    /// split, narrower, wider, shorter and taller than the band, from the whole grid and from the
+    /// part of it a band kept in part holds (its rows the window needs). The functional tests read
+    /// split grids whole or from their first columns.
+    #[test]
+    fn a_window_is_placed_as_its_band_cropped() {
+        let (cols, rows) = (6, 4);
+        for (nx, ny, split) in [(6, 4, 0), (6, 4, 2), (6, 4, 5), (4, 4, 2), (8, 3, 3), (6, 6, 0)] {
+            let d = Decoded { nx, ny, values: (0..nx * ny).map(|i| i as f64 + 1.0).collect() };
+            let mut band = Vec::new();
+            place_band(&d, cols, rows, split, &mut band);
+            for (x, y) in (0..cols).flat_map(|x| (0..rows).map(move |y| (x, y))) {
+                for (w, h) in (1..=cols - x).flat_map(|w| (1..=rows - y).map(move |h| (w, h))) {
+                    let window = crate::Window::new(x, y, w, h);
+                    let cropped: Vec<f64> = (y..y + h).flat_map(|r| band[r * cols + x..r * cols + x + w].to_vec()).collect();
+                    let first = ny - (y + h).min(ny);
+                    let part = GridValues { first, values: &d.values[first * nx..(ny - y.min(ny)) * nx], ..d.grid() };
+                    for g in [d.grid(), part] {
+                        assert!(g.holds(y..y + h));
+                        let mut placed = Vec::new();
+                        place(g, cols, split, window, &mut placed);
+                        assert_eq!(placed, cropped, "grid {nx} x {ny} from row {}, split {split}, {window:?}", g.first);
+                    }
+                }
+            }
         }
     }
 

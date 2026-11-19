@@ -356,7 +356,10 @@ no `.idx` or `.index` sidecar: at open one 16 KiB block per message for its sect
 band's message when the band is read; a server that ignores range requests is refused.
 Local files are read by position in the same way, without holding the file in memory: at open the
 section headers of each message (the whole message for a GRIB1 field whose nodata depends on its
-values), then a band's message when the band is read.
+values), then a band's message when the band is read. The bands read are kept in the process-wide
+[decoded block cache](remote-data.md#decoded-block-cache) (`TERRIO_CACHEMAX`), so a band read again
+is decoded again only when the cache no longer holds the rows read: when the bands one read asks
+for are larger than the cache.
 
 Terrio's GRIB driver limits each field to 16,777,216 points by default, including constant and
 compressed fields. This is 128 MiB of decoded Float64 values; decoder buffers and multi-band reads
