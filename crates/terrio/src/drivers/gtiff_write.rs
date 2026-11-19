@@ -5539,6 +5539,22 @@ mod tests {
         let read = u64s(crate::geotiff::read_geotiff(&path).unwrap().raster.data);
         assert_eq!((read[17 * 32], read[32 * 32 + 17 * 32]), (nodata + 1, 9));
         assert_eq!(read, u64s(crate::LazyRaster::open(path.to_str().unwrap()).unwrap().read().unwrap().raster.data));
+        // A 64-bit nodata reaches terrio's writer as a double, which its tag and the blocks left
+        // out both take: 2^53 + 1 asked for is 2^53 in both, so a block holding 2^53 + 1 is kept,
+        // and those of 2^53 left out read back as 2^53.
+        let mut values = vec![nodata; 32 * 32];
+        values[0] = nodata + 1;
+        let cfg = wbraster::RasterConfig { cols: 32, rows: 32, bands: 1, data_type: DataType::U64, ..Default::default() };
+        let raster = Raster::from_data_native(cfg, RasterData::U64(values.clone())).unwrap();
+        let opts = TiffOptions::from_write_options(&options, false, Some(9_007_199_254_740_993u64 as f64)).unwrap().unwrap();
+        let bytes = encode(&raster, &opts).unwrap();
+        assert!(bytes.windows(17).any(|w| w == b"9007199254740992\0"));
+        let tables = crate::geotiff::ChunkTables::read(&mut tiff::decoder::Decoder::new(std::io::Cursor::new(&bytes)).unwrap()).unwrap();
+        assert_eq!(tables.counts.iter().map(|n| *n > 0).collect::<Vec<_>>(), [true, false, false, false]);
+        let path = dir.path().join("u64.tif");
+        std::fs::write(&path, bytes).unwrap();
+        assert_eq!(u64s(crate::geotiff::read_geotiff(&path).unwrap().raster.data), values);
+        assert_eq!(u64s(crate::LazyRaster::open(path.to_str().unwrap()).unwrap().read().unwrap().raster.data), values);
         let _ = crate::warnings::take();
         let options = crate::RasterWriteOptions { creation_options: vec![("SPARSE_OK".into(), "YES".into())], ..Default::default() };
         assert!(!TiffOptions::from_write_options(&options, true, None).unwrap().unwrap().sparse);
