@@ -476,36 +476,11 @@ fn projected_cs(root: &Node, to_meter: f64, axis: Option<&str>) -> Value {
     json!({"subtype": "Cartesian", "axis": axis})
 }
 
-/// An EPSG operation parameter: its name, code, and whether it is an angle (degrees), a length
-/// (metres) or a scale.
-type Param = (&'static str, u32, char);
-
-const LAT_NAT: Param = ("Latitude of natural origin", 8801, 'a');
-const LON_NAT: Param = ("Longitude of natural origin", 8802, 'a');
-const K_NAT: Param = ("Scale factor at natural origin", 8805, 's');
-const FE: Param = ("False easting", 8806, 'l');
-const FN: Param = ("False northing", 8807, 'l');
-const LAT_CENTRE: Param = ("Latitude of projection centre", 8811, 'a');
-const LON_CENTRE: Param = ("Longitude of projection centre", 8812, 'a');
-const AZIMUTH: Param = ("Azimuth at projection centre", 8813, 'a');
-const GAMMA: Param = ("Angle from Rectified to Skew Grid", 8814, 'a');
-const K_CENTRE: Param = ("Scale factor at projection centre", 8815, 's');
-const FE_CENTRE: Param = ("Easting at projection centre", 8816, 'l');
-const FN_CENTRE: Param = ("Northing at projection centre", 8817, 'l');
-const LAT_FALSE: Param = ("Latitude of false origin", 8821, 'a');
-const LON_FALSE: Param = ("Longitude of false origin", 8822, 'a');
-const SP1: Param = ("Latitude of 1st standard parallel", 8823, 'a');
-const SP2: Param = ("Latitude of 2nd standard parallel", 8824, 'a');
-const FE_FALSE: Param = ("Easting at false origin", 8826, 'l');
-const FN_FALSE: Param = ("Northing at false origin", 8827, 'l');
-const LAT_TS: Param = ("Latitude of standard parallel", 8832, 'a');
-const LON_ORIGIN: Param = ("Longitude of origin", 8833, 'a');
-const LON_INITIAL: Param = ("Initial longitude", 8830, 'a');
-const ZONE_WIDTH: Param = ("Zone width", 8831, 'a');
-const CO_LAT: Param = ("Co-latitude of cone axis", 1036, 'a');
-const LAT_PSEUDO: Param = ("Latitude of pseudo standard parallel", 8818, 'a');
-const K_PSEUDO: Param = ("Scale factor on pseudo standard parallel", 8819, 's');
-const K_ELLIPSOID: Param = ("Ellipsoid scaling factor", 1038, 's');
+use crate::methods::{
+    AZIMUTH, CO_LAT_CONE as CO_LAT, FE, FE_CENTRE, FE_FALSE, FN, FN_CENTRE, FN_FALSE, GAMMA, K_CENTRE, K_ELLIPSOID, K_NAT,
+    K_PSEUDO_SP as K_PSEUDO, Kind, LAT_CENTRE, LAT_FALSE, LAT_NAT, LAT_PSEUDO_SP as LAT_PSEUDO, LAT_TS, LON_CENTRE, LON_FALSE, LON_INITIAL,
+    LON_NAT, LON_ORIGIN, Param, SP1, SP2, ZONE_WIDTH,
+};
 
 /// Whether a PROJ string gives a sphere by its own parameters (`+R`, or `+a` and `+b` equal).
 fn on_sphere(p: &Params) -> bool {
@@ -744,18 +719,18 @@ fn conversion(p: &Params) -> Result<(Value, Vec<&'static str>)> {
         other => return Err(unsupported(format!("the projection +proj={other}"))),
     };
     // `str::parse` reads `nan` and `inf`, which JSON cannot carry.
-    if let Some(((pname, ..), _)) = values.iter().find(|(_, v)| !v.is_finite()) {
-        return Err(unsupported(format!("a non-finite {}", pname.to_lowercase())));
+    if let Some((p, _)) = values.iter().find(|(_, v)| !v.is_finite()) {
+        return Err(unsupported(format!("a non-finite {}", p.name.to_lowercase())));
     }
     let parameters: Vec<Value> = values
         .into_iter()
-        .map(|((pname, pcode, kind), value)| {
-            let unit = match kind {
-                'a' => "degree",
-                'l' => "metre",
-                _ => "unity",
+        .map(|(p, value)| {
+            let unit = match p.kind {
+                Kind::Angle => "degree",
+                Kind::Length => "metre",
+                Kind::Scale => "unity",
             };
-            json!({"name": pname, "value": value, "unit": unit, "id": id(pcode)})
+            json!({"name": p.name, "value": value, "unit": unit, "id": id(p.code)})
         })
         .collect();
     Ok((
