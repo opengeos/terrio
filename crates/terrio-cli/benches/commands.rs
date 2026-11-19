@@ -13,7 +13,7 @@
 //! - `{zones_gpkg}`, `{zones_fgb}`, `{zones_parquet}`: 1024 wavy polygons in UTM zone 31N;
 //! - `{<raster>}` or `{<raster>_<format>}`: a raster of 512 x 512 pixels, `dem` (Float32 in UTM
 //!   zone 31N, with a nodata block), `dem4326` (the same in EPSG:4326), `int16` (the DEM in whole
-//!   metres), `classes` (Byte, 8 classes) or `rgb` (three Byte bands); as a tiled (256 x 256)
+//!   metres), `classes` (Byte, 4 classes: 1, 3, 5, 7) or `rgb` (three Byte bands); as a tiled (256 x 256)
 //!   GeoTIFF with a compression (`none` by default, `deflate`, `deflate_p2` for DEFLATE with
 //!   predictor 2...), or `zarr` or `nc`;
 //! - `{fresh_<input>}`: a copy of the input for each run, for commands that change their input.
@@ -118,7 +118,7 @@ fn client_request(request: usize, arg: usize) {
     let _ = (request, arg);
 }
 
-/// Pixels on a side of every raster input: 262 144 pixels.
+/// Pixels on a side of every raster input, 262 144 pixels in all.
 const SIDE: usize = 512;
 const NODATA: f64 = -9999.0;
 /// 30 m pixels in UTM zone 31N.
@@ -162,7 +162,7 @@ fn raster(name: &str) -> RasterDataset {
     let step = 1.0 / SIDE as f64;
     match name {
         "dem" => grid(DataType::F32, 1, Some(NODATA), 32631, UTM, |_, row, col| elevation(row, col)),
-        // One degree over France, in UTM zone 31N.
+        // One degree over France (2° to 3° E, 45° to 46° N), in EPSG:4326.
         "dem4326" => grid(DataType::F32, 1, Some(NODATA), 4326, [2.0, step, 0.0, 46.0, 0.0, -step], |_, row, col| elevation(row, col)),
         "int16" => grid(DataType::I16, 1, Some(NODATA), 32631, UTM, |_, row, col| elevation(row, col).round()),
         "classes" => grid(DataType::U8, 1, None, 32631, UTM, |_, row, col| {
