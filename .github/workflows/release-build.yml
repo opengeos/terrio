@@ -44,7 +44,7 @@ jobs:
           working-directory: python
           target: ${{ matrix.platform.target }}
           manylinux: ${{ matrix.platform.manylinux }}
-          args: --release --out dist
+          args: --profile wheel --out dist
       - name: Check that the wheel carries the license files
         shell: bash
         run: python .github/scripts/check-license-files.py python/dist/*.whl
