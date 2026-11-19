@@ -868,7 +868,10 @@ impl ZonalReducer {
             return 0;
         }
         let pixels = reduce::open_pixels_peak(&self.inner.index, self.inner.strip_rows, usize::MAX);
-        pixels.saturating_mul(32)
+        // Binary: value (1 f64), bins (2), ranks (1). Fractional: value and coverage
+        // (2 f64s), plus sorting pairs (2). This conservatively includes temporary buffers.
+        const BYTES_PER_OPEN_PIXEL: usize = 4 * std::mem::size_of::<f64>();
+        pixels.saturating_mul(BYTES_PER_OPEN_PIXEL)
     }
 
     /// The number of features of the zone layer.

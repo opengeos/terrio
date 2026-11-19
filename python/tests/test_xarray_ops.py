@@ -493,6 +493,7 @@ def test_zonal_stats_of_a_dataset_names_attributes_alike_for_every_variable(file
 
 def test_zonal_stats_reserves_dataset_variable_names(files, cube):
     """Keep a zone attribute whose name matches another result variable."""
+    pytest.importorskip("shapely")
     zones = _zones_with_property(files, "b", "plot")
     ds = xr.Dataset({"a": cube, "b": cube * 2})
     out = ds.terrio.zonal_stats(zones, stats=["mean"])
@@ -503,6 +504,7 @@ def test_zonal_stats_reserves_dataset_variable_names(files, cube):
 
 def test_zonal_stats_preserves_counts_above_float32_precision():
     """Return an exact count above 2**24 from real float32 pixels."""
+    pytest.importorskip("shapely")
     height, width = 4097, 4097
     data = xr.DataArray(
         np.broadcast_to(np.float32(1), (1, height, width)),
@@ -518,6 +520,7 @@ def test_zonal_stats_preserves_counts_above_float32_precision():
 @pytest.mark.parametrize("fractional", [False, True])
 def test_zonal_stats_budgets_complete_overlapping_zones(files, cube, monkeypatch, fractional):
     """Limit concurrent streams using complete retained zones, across many strips."""
+    pytest.importorskip("shapely")
     from terrio.xarray import _zonal
 
     monkeypatch.setattr(_zonal, "_STRIP_PIXELS", 3 * W)
@@ -629,6 +632,7 @@ def test_zonal_stats_budgets_complete_overlapping_zones(files, cube, monkeypatch
 
 def test_zonal_stats_budgets_2d_variables_in_mixed_datasets(files, cube, monkeypatch):
     """Pack spatial-only variables separately when their reads exceed the budget."""
+    pytest.importorskip("shapely")
     import dask
 
     data = cube.chunk(time=1, y=H, x=W)
@@ -661,6 +665,7 @@ def test_zonal_stats_budgets_2d_variables_in_mixed_datasets(files, cube, monkeyp
 
 def test_zonal_stats_reads_only_lazy_zone_windows(files, monkeypatch, record_property):
     """Measure decoded bytes from the lazy backend for a zone covering part of a grid."""
+    pytest.importorskip("shapely")
     from terrio.xarray import _io, _zonal
 
     real = _io._Source.read
@@ -691,5 +696,31 @@ def test_zonal_stats_reads_only_lazy_zone_windows(files, monkeypatch, record_pro
     record_property("decoded_bytes", sum(reads))
     record_property("full_grid_bytes", H * W * data.dtype.itemsize)
     record_property("window_reads", len(reads))
-    assert reads and sum(reads) <= 4 * 10 * 12
+    dx, dy = map(abs, data.terrio.resolution())
+    zone_pixels = int((bounds[2] - bounds[0]) / dx) * int((bounds[3] - bounds[1]) / dy)
+    assert reads and sum(reads) == zone_pixels * data.dtype.itemsize
     assert sum(reads) < H * W * data.dtype.itemsize
+
+
+def test_zonal_stats_uses_the_active_geodataframe_geometry(files, cube):
+    """Use a renamed active geometry after a secondary geometry, preserving attributes."""
+    gpd = pytest.importorskip("geopandas")
+    pytest.importorskip("pyarrow")
+    shapely = pytest.importorskip("shapely")
+    frame = files["zones"].to_geopandas().rename_geometry("fields")
+    frame.insert(
+        0, "secondary", gpd.GeoSeries([shapely.box(0, 0, 1, 1)] * len(frame), crs=frame.crs)
+    )
+    expected = cube.terrio.zonal_stats(files["zones"], stats=["mean"])
+    got = cube.terrio.zonal_stats(frame, stats=["mean"])
+    xr.testing.assert_identical(got, expected)
+
+
+@pytest.mark.parametrize("name", ["geometry", "statistic"])
+@pytest.mark.parametrize("dimension", [False, True])
+def test_zonal_stats_refuses_reserved_input_names(files, cube, name, dimension):
+    """Name collisions fail explicitly rather than losing an input coordinate."""
+    pytest.importorskip("shapely")
+    data = cube.rename(time=name) if dimension else cube.assign_coords({name: ("time", [1, 2, 3])})
+    with pytest.raises(ValueError, match="reserves result names"):
+        data.terrio.zonal_stats(files["zones"], stats=["mean"])

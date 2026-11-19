@@ -148,6 +148,7 @@ too, so it no longer gives a `Layer` with `bands=`. Squeeze the dimension first
   coordinates or Dataset variables gets `_2`, `_3`... Duplicate zone geometries remain
   separate rows with a non-unique geometry index; select by position to distinguish them.
 - Then the array's other dimensions, and `statistic`, one entry per statistic.
+  Input dimensions or coordinates named `geometry` or `statistic` must be renamed first.
 - float32 for float32 data unless `count` or `variety` is requested, then float64
   for every statistic to preserve integer counts above 2**24 (exact through 2**53);
   float64 for other input types. NaN where a zone has no valid pixel.

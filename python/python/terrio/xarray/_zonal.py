@@ -57,6 +57,10 @@ def zones_layer(zones: Any, crs: Any, layer: str | None = None) -> _terrio.Layer
     if getattr(src, "crs", None) is not None and hasattr(src, "geometry"):
         # GeoPandas, with its columns
         frame = src if hasattr(src, "columns") else src.to_frame(name="geometry")
+        # Arrow selects the first geometry field. Preserve attributes, with the active
+        # geometry first when a GeoDataFrame has several geometry columns.
+        active = frame.geometry.name
+        frame = frame[[active, *(name for name in frame.columns if name != active)]]
         try:
             return _terrio.Layer.from_arrow(frame)
         except ImportError:  # no pyarrow
@@ -85,6 +89,12 @@ def _prepared(da: xarray.DataArray) -> tuple:
         if set(c.dims) <= set(other)
         and not {"crs_wkt", "spatial_ref"} & set(c.attrs)  # not the grid mapping
     }
+    conflicts = {"geometry", "statistic"} & (set(other) | set(coords))
+    if conflicts:
+        raise ValueError(
+            f"zonal_stats reserves result names {sorted(conflicts)}; "
+            "rename the input dimensions or coordinates first"
+        )
     da = da.transpose(*other, g.y, g.x)
     if g.ascending:
         da = da.isel({g.y: slice(None, None, -1)})
@@ -288,6 +298,8 @@ def _reduce(arrays, other, shape, fills, reducer, budget) -> list[np.ndarray]:
     # Rust counts complete zones simultaneously open across strips, including overlaps.
     kept = reducer.retained_bytes
 
+    ends = np.cumsum(arrays[0].chunks[-2]) if arrays[0].chunks is not None else None
+
     def read_pixels(rows: slice, cols: slice) -> int:
         """Count decoded pixels, including whole spatial chunks for Dask reads.
 
@@ -298,8 +310,7 @@ def _reduce(arrays, other, shape, fills, reducer, budget) -> list[np.ndarray]:
         Returns:
             The number of decoded pixels per spatial slice.
         """
-        if arrays[0].chunks is not None:
-            ends = np.cumsum(arrays[0].chunks[-2])
+        if ends is not None:
             first = int(np.searchsorted(ends, rows.start, side="right"))
             last = int(np.searchsorted(ends, rows.stop - 1, side="right"))
             return int(ends[last] - (ends[first - 1] if first else 0)) * arrays[0].shape[-1]
