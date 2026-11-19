@@ -550,7 +550,8 @@ impl Fetcher {
             return Ok((file, None));
         };
         let expected = block.min(len);
-        // Counted now, with the bytes as they arrive, so that a failed open is in `stats()`.
+        // Counted now, so that a failed open (a refused Content-Range or a body error) is in
+        // `stats()`; bytes are added where the body ends or fails.
         self.requests.set(self.requests.get() + 1);
         // The bytes' position is checked before any of them is opened.
         if let Some(header) = content_range.as_deref()
