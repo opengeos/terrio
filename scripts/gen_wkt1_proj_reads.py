@@ -4,6 +4,8 @@ where it places points in them.
 - ESRI's `Mercator_Variant_A` (EPSG Guidance Note 7-2's example of Mercator (variant A),
   EPSG:3002 Makassar / NEIEZ, as an ESRI `.prj` names it), and the same with a latitude of origin
   and a standard parallel, which PROJ leaves out of this method;
+- ESRI's `Lambert_Conformal_Conic` with one `Standard_Parallel_1` other than its
+  `Latitude_Of_Origin`, which PROJ reads as 1SP at the latitude of origin;
 - WKT 1 with a node of an unknown keyword (`rustgis:unapplied`, as RustGIS marks a WKT 2
   `BOUNDCRS` it converts to WKT 1, `a-b`, `a.b`, `1x`, an empty one), on a datum and at the root
   of a `GEOGCS` and a `PROJCS`, which PROJ skips whatever its keyword;
@@ -158,6 +160,16 @@ READ = [
             "MERCATOR_VARIANT_A", VARIANT_A + ',PARAMETER["Latitude_Of_Origin",5]'
         ),
         (120.0, -3.0),
+    ),
+    # ESRI's Lambert_Conformal_Conic with one standard parallel: 1SP at the latitude of origin,
+    # Standard_Parallel_1 left out (opengeos/terrio#1012 item 30).
+    (
+        "Lambert_Conformal_Conic, ESRI's name, with one parallel other than the origin's",
+        f'PROJCS["l",{nad27()},PROJECTION["Lambert_Conformal_Conic"],'
+        'PARAMETER["False_Easting",1000000],PARAMETER["False_Northing",500000],'
+        'PARAMETER["Central_Meridian",-96],PARAMETER["Standard_Parallel_1",42],'
+        'PARAMETER["Scale_Factor",0.99],PARAMETER["Latitude_Of_Origin",40],UNIT["Meter",1.0]]',
+        (-90.0, 45.0),
     ),
 ]
 

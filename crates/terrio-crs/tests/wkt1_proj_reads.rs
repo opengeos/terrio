@@ -1,7 +1,8 @@
 //! WKT that PROJ 9.9.0 reads is read, and places points where PROJ does: ESRI's
 //! `Mercator_Variant_A` (EPSG Guidance Note 7-2's Makassar / NEIEZ example, EPSG:3002, as an
 //! ESRI `.prj` names its method) and EPSG's `Mercator (variant A)` in WKT 1, as PROJ's Mercator
-//! (1SP), and WKT 1 and WKT 2 with a node of an unknown keyword (`rustgis:unapplied`, `a-b`,
+//! (1SP), ESRI's `Lambert_Conformal_Conic` with one parallel as 1SP at its latitude of origin,
+//! and WKT 1 and WKT 2 with a node of an unknown keyword (`rustgis:unapplied`, `a-b`,
 //! `a"b c"`, an empty one), which PROJ skips whatever its keyword. A keyword with a space, a
 //! vertical tab, a NUL or an unclosed quote in it is refused, as PROJ refuses it, and so is
 //! EPSG's `Mercator (variant A)` with a latitude of origin other than 0, which PROJ reads but
@@ -43,7 +44,7 @@ fn wkt_read_by_proj_places_points_as_proj_does() {
     offline();
     let data = data();
     let cases = data["read"].as_array().unwrap();
-    assert_eq!(cases.len(), 26);
+    assert_eq!(cases.len(), 27);
     let mut bad = vec![];
     for case in cases {
         let name = case["name"].as_str().unwrap();
@@ -448,4 +449,14 @@ fn a_stored_wkt_is_written_for_files_with_names_cut_at_a_nul() {
     let back = SpatialRef::from_wkt(&written);
     assert!(same_proj(&back.to_proj4().unwrap(), case["proj4"].as_str().unwrap()));
     assert!(Transformer::new(&back, &SpatialRef::from_epsg(4326).unwrap()).is_ok());
+}
+
+/// ESRI's `Lambert_Conformal_Conic` with one `Standard_Parallel_1` and no `Latitude_Of_Origin`,
+/// which PROJ 9.9.0 reads at the equator but cannot transform, keeps terrio's reading: the
+/// parallel as `+lat_1`.
+#[test]
+fn esri_lcc_with_one_parallel_and_no_origin_keeps_its_parallel() {
+    let wkt = r#"PROJCS["l",GEOGCS["GCS_North_American_1927",DATUM["D_North_American_1927",SPHEROID["Clarke_1866",6378206.4,294.9786982]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Lambert_Conformal_Conic"],PARAMETER["False_Easting",1000000],PARAMETER["False_Northing",500000],PARAMETER["Central_Meridian",-96],PARAMETER["Standard_Parallel_1",42],PARAMETER["Scale_Factor",1.0],UNIT["Meter",1.0]]"#;
+    let proj = SpatialRef::from_wkt(wkt).to_proj4().unwrap();
+    assert!(proj.contains("+lat_1=42"), "{proj}");
 }
