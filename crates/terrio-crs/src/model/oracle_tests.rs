@@ -138,6 +138,12 @@ fn value_in(p: &Param, kind: char, c: &Conversion) -> f64 {
     if u.kind == UnitKind::Angle || (kind == 'a' && u.kind == UnitKind::Unknown) { p.value * u.degrees() } else { p.value * u.factor }
 }
 
+/// Whether a conversion is as WKT 1 writes it: its method and parameters without IDs, its
+/// parameters without units.
+fn is_wkt1(c: &Conversion) -> bool {
+    c.method.ids.is_empty() && c.params.iter().all(|p| p.ident.ids.is_empty() && p.unit.is_none())
+}
+
 fn conversion_json(c: &Conversion) -> Value {
     let quantity = |v: f64, kind: char| {
         let unit = match kind {
@@ -147,8 +153,6 @@ fn conversion_json(c: &Conversion) -> Value {
         };
         json!({"value": v, "unit": unit})
     };
-    // A method PROJ knows by an EPSG ID or name (WKT 2), or GDAL's WKT 1 name.
-    let wkt1 = c.method.ids.is_empty() && c.params.iter().all(|p| p.ident.ids.is_empty() && p.unit.is_none());
     // The latitude of origin, by which `method1` tells the polar stereographic variants, in degrees.
     let by_name = |names: &[&str]| {
         names.iter().find_map(|n| {
@@ -156,7 +160,10 @@ fn conversion_json(c: &Conversion) -> Value {
             Some(if *n == "latitudeoforigin" { value_in(p, 'a', c) } else { p.value })
         })
     };
-    if wkt1 && let Some((name, code, list)) = crate::projjson_gdal::method1(&c.method.name, &by_name) {
+    // A method PROJ knows by an EPSG ID or name (WKT 2), or GDAL's WKT 1 name.
+    if is_wkt1(c)
+        && let Some((name, code, list)) = crate::projjson_gdal::method1(&c.method.name, &by_name)
+    {
         let parameters: Vec<Value> = list
             .iter()
             .map(|&(pname, pcode, kind)| {
@@ -282,7 +289,8 @@ fn render(crs: &Crs) -> Value {
                 .params
                 .iter()
                 .map(|p| {
-                    let scale = p.ident.ids.iter().any(|i| i.code == "8611") || p.ident.name.eq_ignore_ascii_case("Scale difference");
+                    let scale = p.ident.ids.iter().any(|i| i.authority.eq_ignore_ascii_case("EPSG") && i.code == "8611")
+                        || p.ident.name.eq_ignore_ascii_case("Scale difference");
                     let unity = p.unit.as_ref().is_none_or(|u| u.kind == UnitKind::Scale && u.factor == 1.0);
                     if scale && unity { Param { value: p.value - 1.0, unit: Some(Unit::unity()), ..p.clone() } } else { p.clone() }
                 })
@@ -345,10 +353,7 @@ fn paths(d: &str) -> BTreeMap<String, Option<i32>> {
 /// will. Its conversion is rendered as written, so not compared.
 fn unnamed_method(crs: &Crs) -> bool {
     match crs {
-        Crs::Projected { conversion: c, .. } => {
-            let wkt1 = c.method.ids.is_empty() && c.params.iter().all(|p| p.ident.ids.is_empty() && p.unit.is_none());
-            wkt1 && crate::projjson_gdal::method1(&c.method.name, &|_| None).is_none()
-        }
+        Crs::Projected { conversion: c, .. } => is_wkt1(c) && crate::projjson_gdal::method1(&c.method.name, &|_| None).is_none(),
         Crs::Compound { parts, .. } => parts.iter().any(unnamed_method),
         Crs::Bound { source, .. } => unnamed_method(source),
         _ => false,

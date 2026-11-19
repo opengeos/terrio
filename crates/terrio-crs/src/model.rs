@@ -264,7 +264,8 @@ pub(crate) struct Model {
 
 /// The model of a WKT definition (WKT 1 GDAL, ESRI or WKT 2), or `None` when it is not one this
 /// model reads: text that is not WKT (see [`wkt1::parse`]), or a CRS without what it needs (a
-/// geodetic CRS without its datum or ellipsoid, a projected CRS without its base CRS).
+/// geodetic CRS without its datum or ellipsoid, a projected CRS without its base CRS or its
+/// method, which PROJ 9.9.0 refuses).
 pub(crate) fn read(text: &str) -> Option<Model> {
     // ESRI's compound CRS, `GEOGCS[...],VERTCS[...]`, as PROJ reads it: named after its parts.
     if let Some((h, v)) = wkt1::esri_compound(text) {
@@ -319,9 +320,10 @@ fn extensions(root: &Node) -> Vec<(String, String)> {
 const WKT1_ROOTS: [&str; 7] = ["GEOGCS", "PROJCS", "GEOCCS", "VERT_CS", "VERTCS", "COMPD_CS", "LOCAL_CS"];
 
 /// The dialect of a WKT, as PROJ 9.9.0 guesses it (`WKTParser::guessDialect`): WKT 1 by its root
-/// keyword; ESRI's for a `VERTCS`, or a WKT 1 with a `GEOGCS["GCS_` or, but for a `LOCAL_CS`,
-/// without any `AXIS[` or `AUTHORITY[`, unless it has a `rectified_grid_angle` parameter (GDAL's
-/// Hotine Oblique Mercator, which ESRI's has not).
+/// keyword. ESRI's for a `VERTCS`; for a WKT 1 with a `GEOGCS["GCS_`; and for a WKT 1 without
+/// `AXIS[` or `AUTHORITY[`, except a `LOCAL_CS` (GDAL's). In the last two cases, GDAL's instead
+/// when it has a `rectified_grid_angle` parameter (GDAL's Hotine Oblique Mercator, which ESRI's has
+/// not).
 pub(crate) fn dialect(text: &str, root: &Node) -> Dialect {
     if !WKT1_ROOTS.iter().any(|k| root.key.eq_ignore_ascii_case(k)) {
         return Dialect::Wkt2;
@@ -651,14 +653,14 @@ fn projected(n: &Node, d: Dialect) -> Option<Crs> {
     let conversion = match n.child("CONVERSION") {
         Some(c) => Conversion {
             ident: ident(c),
-            method: c.child("METHOD").or_else(|| c.child("PROJECTION")).map(ident).unwrap_or_default(),
+            method: ident(c.child("METHOD").or_else(|| c.child("PROJECTION"))?),
             params: params(c),
             angular,
             linear: linear.clone(),
         },
         None => Conversion {
             ident: Ident::default(),
-            method: n.child("PROJECTION").map(ident).unwrap_or_default(),
+            method: ident(n.child("PROJECTION")?),
             params: params(n),
             angular,
             linear: linear.clone(),
@@ -709,14 +711,13 @@ fn vertical(n: &Node, d: Dialect) -> Option<Crs> {
         .and_then(|u| unit(u, UnitKind::Length))
         .unwrap_or_else(Unit::metre);
     let down = esri_down(n);
-    let mut cs = cs(n, d, CsKind::Vertical, &[if down { "down" } else { "up" }], &length);
-    if d != Dialect::Wkt2 {
-        cs.kind = CsKind::Vertical;
-    }
+    let cs = cs(n, d, CsKind::Vertical, &[if down { "down" } else { "up" }], &length);
     let grids = |x: &Node| {
-        x.children("EXTENSION").find(|e| e.name() == Some("PROJ4_GRIDS")).and_then(|e| match e.args.get(1) {
-            Some(Arg::Str(s)) => Some(s.clone()),
-            _ => None,
+        x.children("EXTENSION").find(|e| e.name().is_some_and(|s| s.eq_ignore_ascii_case("PROJ4_GRIDS"))).and_then(|e| {
+            match e.args.get(1) {
+                Some(Arg::Str(s)) => Some(s.clone()),
+                _ => None,
+            }
         })
     };
     let anchor_epoch = datum.child("ANCHOREPOCH").and_then(|e| e.num(0));
@@ -890,6 +891,13 @@ mod tests {
         let Crs::Projected { cs, .. } = &m.crs else { panic!() };
         assert_eq!((m.dialect, cs.axes[0].direction.as_str()), (Dialect::Wkt1Gdal, "east"));
         assert!(read(r#"COMPD_CS["c",GEOGCS["g",PRIMEM["Greenwich",0]],VERT_CS["h",VERT_DATUM["d",2005],UNIT["metre",1]]]"#).is_none());
+        // Without a method, as PROJ 9.9.0 refuses it ("Invalid projection").
+        let g = r#"GEOGCS["g",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#;
+        assert!(read(&format!(r#"PROJCS["p",{g},PARAMETER["false_easting",0],UNIT["metre",1]]"#)).is_none());
+        assert!(read(r#"PROJCRS["p",BASEGEOGCRS["g",DATUM["WGS 84",ELLIPSOID["WGS 84",6378137,298.257223563]]],CONVERSION["c",PARAMETER["False easting",0]],CS[Cartesian,2],AXIS["E",east],AXIS["N",north],LENGTHUNIT["metre",1]]"#).is_none());
+        // GDAL's `PROJ4_GRIDS` in any case, as PROJ 9.9.0 reads it (a bound CRS).
+        let m = read(r#"VERT_CS["v",VERT_DATUM["d",2005,EXTENSION["proj4_grids","g.gtx"]],UNIT["metre",1]]"#).unwrap();
+        assert!(matches!(&m.crs, Crs::Vertical { grids: Some(g), .. } if g == "g.gtx"));
     }
 
     /// WKT 2's `PRIMEMERIDIAN` (PROJ 9.9.0: longitude 2), a compound CRS with a `TIMECRS` (which
