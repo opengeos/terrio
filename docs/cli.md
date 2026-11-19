@@ -3568,13 +3568,53 @@ separately supports preserving its input declaration.
 ## rasterize
 
 ```sh
-terrio rasterize INPUT OUTPUT (--burn VALUE | -a FIELD) (--tr X Y | --ts W H | --like RASTER) [options]
+terrio rasterize INPUT OUTPUT (--burn VALUE | -a FIELD) (--tr X Y | --ts W H | --like RASTER | --background RASTER) [options]
 ```
 
 `-l`, `--sql`, `--where`, `--te`, `--tap`, `--ot`, `--init`, `--a-nodata`, `--at` (all touched),
 `--add`, `--a-srs`. Points, lines and polygons are burned with GDAL's algorithms, pixel for pixel.
 
-Without `--init`, the background starts at `--a-nodata` when given, otherwise at 0.
+To edit a DEM with elevation attributes from a polyline or polygon shapefile, copy the DEM
+as the background. Uncovered pixels retain their original elevations over its full extent:
+
+```sh
+terrio rasterize edits.shp edited_dem.tif --background dem.tif --attribute Elevation
+# Raise or lower existing elevations by a signed attribute, rather than setting absolute heights:
+terrio rasterize edits.shp adjusted_dem.tif --background dem.tif --attribute Offset --add
+```
+
+`--like` copies only a raster's grid; `--background` copies its pixels, grid, type, metadata
+and nodata declarations. The input remains unchanged; the output is written
+as a whole new raster, not updated tile by tile. Background rasters are read into memory.
+Cached statistics are removed because the edits can change them.
+All bands are edited: a single burn or attribute value applies to each, or give one burn
+per band. Vectors are reprojected when both CRSs are known and different. If either CRS is
+unknown, coordinates are used as given; the caller must ensure they use the same CRS.
+North-up, real-valued affine rasters
+are supported. `--background` refuses `--like`, `--tr`, `--ts`, `--te`, `--tap`, `--ot`,
+`--init`, `--a-nodata` and `--a-srs`, which would redefine the background.
+> **Nodata and elevation offsets:** `--add` also adds to covered nodata samples, as GDAL does.
+> A void of -9999 plus -2.5 becomes -10001.5 and is then marked valid because it no longer
+> equals the nodata sentinel. NaN remains NaN. Check voids before using additive DEM edits.
+
+Separate internal or sidecar validity masks are not copied by this in-memory operation;
+output nodata masks follow the edited values. Overlapping features replace in input order or
+add once per line or polygon feature with `--add`; points add per coordinate, so multiple
+points within one pixel accumulate even in a single MultiPoint, as GDAL does.
+`--where` can select the edits. A packed background retains its `NBITS` width only when the
+edited values still fit; otherwise packing is dropped for the whole raster and output uses
+the full width of the sample type. The TIFF writer uses one stored width for all bands.
+
+Burn and add values use **stored sample units**; band scale and offset are retained but
+are not applied to the edits. Convert physical heights or height offsets to stored units
+first. For example, with scale 0.1 and offset 0, burning 100 stores 100 and represents a
+physical height of 10; burn 1000 to represent a physical height of 100.
+
+The same operation is `terrio.rasterize("edits.shp", background="dem.tif", attribute="Elevation")`
+in Python, `rasterize(edits, { background: dem, attribute: "Elevation" })` in JavaScript
+(datasets or bytes), and `ops::rasterize::rasterize_on` in Rust.
+
+For new rasters without `--background` or `--init`, pixels start at `--a-nodata` when given, otherwise at 0.
 Explicit `--init` values take precedence, including 0. This matches GDAL's new GeoTIFF
 background. Terrio uses this policy for all output formats and in-memory rasters; GDAL's
 initialization is driver-dependent (for example, its ENVI output defaults to 0).
@@ -4201,7 +4241,7 @@ for one command and its descendants. Required dataset arguments may be omitted;
 metadata requests open no datasets or output files. The Python package supports
 identical requests with `python -m terrio`.
 
-The payload has `schema_version: "0.1.11"`, `unstable: true`, the program/version,
+The payload has `schema_version: "0.1.12"`, `unstable: true`, the program/version,
 and a recursive `command` object. Each command records its canonical name/path,
 aliases, description, arguments and subcommands. Arguments include flags and
 aliases, positional index, type, raw default tokens, choices, required status,

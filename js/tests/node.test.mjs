@@ -1301,6 +1301,26 @@ test("operations on in-memory rasters and layers", () => {
   }
   const like = terrio.rasterize(SQUARES, { burn: [5], like: terrio.rasterize(SQUARES, { burn: 1, ts: [60, 20] }) });
   assert.deepEqual([like.width, like.height], [60, 20]);
+  const background = terrio.rasterize(SQUARES, { burn: 100, init: 100, tr: [1, 1], te: [0, 0, 30, 10], ot: "Float32" });
+  for (const input of [background, background.toBytes("dem.tif")]) {
+    const edited = terrio.rasterize(SQUARES, { attribute: "value", background: input });
+    assert.equal(edited.dtype, "float32");
+    assert.equal(edited.readBand(1)[0], 3);
+    assert.equal(edited.readBand(1)[15], 100);
+    assert.equal(edited.readBand(1)[29], 7);
+    const lowered = terrio.rasterize(SQUARES, { burn: -2.5, add: true, background: input });
+    assert.equal(lowered.readBand(1)[0], 97.5);
+    assert.equal(lowered.readBand(1)[15], 100);
+    assert.equal(background.readBand(1)[0], 100);
+  }
+  assert.throws(() => terrio.rasterize(SQUARES, { burn: 1, background, init: 0 }), /background cannot/);
+  assert.throws(() => terrio.rasterize(SQUARES, { burn: 1, background, like }), /background cannot/);
+  const packed = terrio.rasterize(SQUARES, { burn: 1, init: 1, like: background, ot: "Byte" })
+    .toBytes("packed.tif", { creationOptions: { NBITS: "1" } });
+  const unpacked = terrio.rasterize(SQUARES, { burn: 2, background: packed });
+  const writtenEdit = terrio.open(unpacked.toBytes("edited.tif"), "edited.tif");
+  assert.equal(writtenEdit.readBand(1)[0], 2);
+  assert.equal(writtenEdit.readBand(1)[15], 1);
   const cut = terrio.warp(terrio.rasterize(SQUARES, { burn: 1, tr: [1, 1], te: [0, 0, 30, 10], ot: "Byte", init: 9 }), {
     cutline: { type: "Polygon", coordinates: [[[0, 0], [5, 0], [5, 5], [0, 5], [0, 0]]] },
     cropToCutline: true,
