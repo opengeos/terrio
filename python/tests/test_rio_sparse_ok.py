@@ -120,6 +120,28 @@ def test_a_complex_block_is_left_out_only_if_both_parts_are_0(tmp_path, monkeypa
     np.testing.assert_array_equal(terrio.open_raster(str(path)).read(), expected)
 
 
+def test_a_complex_band_nodata_fills_both_parts_of_a_block_left_out(tmp_path):
+    """Catches a read by window filling the imaginary parts of a complex block left out with
+    something else than the whole read does: a band's nodata from the `.aux.xml` (here added
+    after writing, as another writer may) fills both parts of its samples, read by window
+    (`terrio.rio`, `open_raster(lazy=True)`) as read whole (`open_raster`)."""
+    path = tmp_path / "out.tif"
+    values = np.zeros((1, 64, 128), "complex64")
+    values[0, 10, 70] = 1 + 2j
+    profile = dict(driver="GTiff", width=128, height=64, count=1, dtype="complex64")
+    with rio.open(
+        path, "w", tiled=True, blockxsize=64, blockysize=64, sparse_ok=True, **profile
+    ) as dst:
+        dst.write(values)
+    _band_nodata_sidecar(path, [5])
+    whole = terrio.open_raster(str(path)).read()
+    assert whole[0, 0, 0] == 5 + 5j and whole[0, 10, 70] == 1 + 2j
+    with rio.open(path) as src:
+        np.testing.assert_array_equal(src.read(), whole)
+        np.testing.assert_array_equal(src.read(window=Window(0, 0, 64, 64)), whole[:, :64, :64])
+    np.testing.assert_array_equal(terrio.open_raster(str(path), lazy=True).read(), whole)
+
+
 @pytest.mark.parametrize("masked", [False, True], ids=["in-rows", "whole"])
 def test_a_cog_warns_once_that_it_writes_every_tile(tmp_path, masked):
     """Written in rows, or whole (with a mask)."""

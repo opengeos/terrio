@@ -2941,8 +2941,9 @@ impl TiffRaster {
                 _ => {}
             }
         }
+        // Each band's own nodata, from the `.aux.xml`: both parts of a complex band's samples.
         for (output_band, band) in bands.iter().enumerate() {
-            if let Some((_, nodata)) = self.tags.band_nodata.iter().find(|(b, _)| b == band) {
+            if let Some((_, nodata)) = self.tags.band_nodata.iter().find(|(b, _)| *b == (band - 1) / parts + 1) {
                 let plane = w.width * w.height;
                 crate::pixel::with_data!(&mut out, values => values[output_band * plane..(output_band + 1) * plane].fill(*nodata as _));
             }
