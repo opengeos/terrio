@@ -228,13 +228,47 @@ pub fn read(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> GeoKeysCrs {
         let c = registered.unwrap_or(c);
         return GeoKeysCrs { crs: Some(SpatialRef { wkt: c.to_wkt(), esri: None, ..c }), unsupported_method };
     }
-    // The CRS an identifier is a summary of: the retained definition, else the code's, else the
-    // PROJ string's.
+    // The CRS an identifier is a summary of: the retained definition, else the code's (with the
+    // datum shift written beside it), else the PROJ string's.
     let crs = crs.or_else(|| {
-        epsg.map(|code| SpatialRef { epsg: Some(code), wkt: SpatialRef::from_epsg(code).ok().and_then(|s| s.wkt), ..Default::default() })
+        let code = epsg?;
+        Some(with_towgs84(&k, code).unwrap_or_else(|| SpatialRef {
+            epsg: Some(code),
+            wkt: SpatialRef::from_epsg(code).ok().and_then(|s| s.wkt),
+            ..Default::default()
+        }))
     });
     let crs = crs.or_else(|| proj4.as_deref().and_then(|p| SpatialRef::from_proj4(p).ok()));
     GeoKeysCrs { crs, unsupported_method }
+}
+
+/// A registered geographic or projected CRS with GeogTOWGS84GeoKey beside its code, as
+/// [`SpatialRef::to_geokeys`] writes a WKT that declares the code and has a datum shift of its own:
+/// the code's WKT 1 with that `TOWGS84` in its datum, so that the shift is read back (#1012 item
+/// 62). GDAL 3.13.3 writes the same keys and reads its own file back without the shift; terrio
+/// keeps it. `None` without a shift of 3 or 7 values, or for a code without a WKT 1.
+fn with_towgs84(k: &GeoKeys, code: u32) -> Option<SpatialRef> {
+    let t = k.doubles(2062).filter(|t| matches!(t.len(), 3 | 7) && t.iter().all(|v| v.is_finite()))?;
+    let wkt = SpatialRef::from_epsg(code).ok()?.to_wkt1_strict()?;
+    let mut root = crate::wkt1::parse(&wkt)?;
+    let datum = datum_node(&mut root)?;
+    datum.args.retain(|a| !matches!(a, crate::wkt1::Arg::Node(n) if n.key.eq_ignore_ascii_case("TOWGS84")));
+    let at = datum.args.iter().position(|a| matches!(a, crate::wkt1::Arg::Node(n) if n.key.eq_ignore_ascii_case("SPHEROID")))? + 1;
+    let towgs84 = crate::wkt1::Node { key: "TOWGS84".into(), args: t.iter().map(|v| crate::wkt1::Arg::Num(*v)).collect() };
+    datum.args.insert(at, crate::wkt1::Arg::Node(towgs84));
+    let crs = SpatialRef::from_wkt(&root.to_wkt());
+    (crs.epsg == Some(code)).then_some(crs)
+}
+
+/// The `DATUM` node of a WKT 1 geographic or projected CRS, to edit.
+fn datum_node(n: &mut crate::wkt1::Node) -> Option<&mut crate::wkt1::Node> {
+    if n.key.eq_ignore_ascii_case("DATUM") {
+        return Some(n);
+    }
+    n.args.iter_mut().find_map(|a| match a {
+        crate::wkt1::Arg::Node(c) if ["GEOGCS", "DATUM"].iter().any(|k| c.key.eq_ignore_ascii_case(k)) => datum_node(c),
+        _ => None,
+    })
 }
 
 /// The geographic 2D CRS of an EPSG geographic 3D CRS: the one on its datum of the same name, as
@@ -1239,7 +1273,10 @@ pub struct GeoKeyTags {
 impl SpatialRef {
     /// The CRS of a GeoKey directory and its double and ASCII parameters, as GDAL reads them:
     /// see [`read`], whose CRS this is. Fails when the GeoKeys give no CRS terrio reads, naming an
-    /// unsupported projection method.
+    /// unsupported projection method. One difference from GDAL: a registered code with
+    /// GeogTOWGS84GeoKey beside it, which [`SpatialRef::to_geokeys`] and GDAL write for a WKT that
+    /// declares the code and has a datum shift of its own, is read with that shift (GDAL 3.13.3
+    /// drops it).
     ///
     /// ```
     /// use terrio_crs::SpatialRef;
@@ -1272,8 +1309,9 @@ impl SpatialRef {
     ///   84, a PROJ string's `+towgs84`) with GeogTOWGS84GeoKey: with the code its WKT declares,
     ///   else by its method and parameters on a user-defined datum, never as a code it is only
     ///   identified as. GDAL 3.10.3 writes the same keys but names the EPSG datum, and then reads
-    ///   its own file back without the shift; on a user-defined datum it keeps it. Not yet for a
-    ///   compound CRS, written by its codes;
+    ///   its own file back without the shift; on a user-defined datum it keeps it. terrio reads
+    ///   the code back with its shift (see [`SpatialRef::from_geokeys`]). Not yet for a compound
+    ///   CRS, written by its codes;
     /// - else (an engineering CRS, a method GeoTIFF has no code for, a CRS whose code is not a
     ///   horizontal one), GDAL's fallback: its WKT in an ESRI PE citation (`ESRI PE String =`),
     ///   with a user-defined model type.

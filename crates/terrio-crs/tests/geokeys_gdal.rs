@@ -266,3 +266,27 @@ fn listed_differences_are_still_differences() {
         }
     }
 }
+
+/// A WKT that declares its code and has a datum shift of its own (ED50 / UTM zone 31N with
+/// `TOWGS84[-50,-60,-70,0,0,0,0]`, EPSG:23031 as GDAL 3.13.3 identifies it) is written with its
+/// code and GeogTOWGS84GeoKey, as GDAL writes it, and read back with the shift: the round trip
+/// places a point as the WKT does (GDAL reads its own file back without the shift; #1012 item 62).
+#[test]
+fn a_code_with_its_own_datum_shift_reads_back_with_it() {
+    let wkt = r#"PROJCS["ED50 / UTM zone 31N",GEOGCS["ED50",DATUM["European_Datum_1950",SPHEROID["International 1924",6378388,297],TOWGS84[-50,-60,-70,0,0,0,0],AUTHORITY["EPSG","6230"]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],AUTHORITY["EPSG","4230"]],PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",3],PARAMETER["scale_factor",0.9996],PARAMETER["false_easting",500000],PARAMETER["false_northing",0],UNIT["metre",1],AXIS["Easting",EAST],AXIS["Northing",NORTH],AUTHORITY["EPSG","23031"]]"#;
+    let crs = SpatialRef::from_wkt(wkt);
+    assert_eq!(crs.epsg, Some(23031));
+    let keys = crs.to_geokeys().unwrap();
+    assert!(keys.shorts.contains(&(3072, 23031)), "{keys:?}");
+    let tags = keys.encode().unwrap();
+    let back = SpatialRef::from_geokeys(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).unwrap();
+    assert_eq!(back.epsg, Some(23031));
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    let place = |c: &SpatialRef| Transformer::new(&wgs84, c).unwrap().transform(2.0, 48.0).unwrap();
+    let (x, y) = place(&back);
+    let (x0, y0) = place(&crs);
+    assert!((x - x0).abs() < 1e-6 && (y - y0).abs() < 1e-6, "({x}, {y}) against ({x0}, {y0})");
+    // EPSG:23031 itself is placed elsewhere (by ED50's own transformations): the shift is read.
+    let (x1, _) = place(&SpatialRef::from_epsg(23031).unwrap());
+    assert!((x1 - x0).abs() > 0.1, "{x1} {x0}");
+}
