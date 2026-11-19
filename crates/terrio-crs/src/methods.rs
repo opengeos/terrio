@@ -172,6 +172,11 @@ pub(crate) fn pseudo_mercator(p: &Params) -> bool {
 
 /// The conversion of a projected CRS's PROJ string, by its EPSG method, as PROJ decides it; or why
 /// there is none.
+///
+/// It decides; it does not validate. The PROJ string must be one terrio reads as a CRS: a value
+/// it cannot parse is taken as absent here (`+lat_0=abc` as a latitude of origin of 0°). Nor does
+/// `Ok` mean the conversion carries every parameter of the string: a writer refuses the others
+/// itself (`projjson_write::refuse_unwritten`, by [`Conversion::written`]).
 pub(crate) fn conversion_from_proj(p: &Params) -> Result<Conversion, String> {
     let proj = p.str("proj").unwrap_or("");
     let deg = |k: &str| p.angle(k).map(f64::to_degrees);
@@ -444,7 +449,7 @@ mod tests {
     fn a_proj_string_has_the_method_proj_gives_it() {
         for (s, method, code) in [
             ("+proj=utm +zone=33 +south +ellps=WGS84", "Transverse Mercator", 9807),
-            ("+proj=tmerc +axis=wsu +lon_0=25 +ellps=WGS84", "Transverse Mercator (South Orientated)", 9808),
+            ("+proj=tmerc +axis=wsu +lon_0=25 +x_0=1000 +y_0=2000 +ellps=WGS84", "Transverse Mercator (South Orientated)", 9808),
             ("+proj=lcc +lat_0=45 +lat_1=45 +lon_0=3 +ellps=GRS80", "Lambert Conic Conformal (1SP)", 9801),
             ("+proj=lcc +lat_0=40 +lat_1=45 +lon_0=3 +ellps=GRS80", "Lambert Conic Conformal (1SP variant B)", 1102),
             ("+proj=lcc +lat_1=44 +lat_2=49 +lat_0=46.5 +lon_0=3 +ellps=GRS80", "Lambert Conic Conformal (2SP)", 9802),
@@ -456,6 +461,9 @@ mod tests {
             let c = conversion_from_proj(&Params::parse(s)).unwrap();
             assert_eq!((c.method, c.code), (method, code), "{s}");
         }
+        // Its false easting and northing negated, as terrio reads `+axis=wsu` (W = FE - x).
+        let south = conversion_from_proj(&Params::parse("+proj=tmerc +axis=wsu +lon_0=25 +x_0=1000 +y_0=2000 +ellps=WGS84")).unwrap();
+        assert!(south.values.contains(&(FE, -1000.0)) && south.values.contains(&(FN, -2000.0)), "{:?}", south.values);
         let utm = conversion_from_proj(&Params::parse("+proj=utm +zone=33 +south +ellps=WGS84")).unwrap();
         assert_eq!(utm.name.as_deref(), Some("UTM zone 33S"));
         assert_eq!(conversion_from_proj(&Params::parse("+proj=utm +ellps=WGS84")), Err("a UTM projection without zone".to_string()));
