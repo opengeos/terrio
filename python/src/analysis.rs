@@ -341,6 +341,17 @@ impl PyZonalReducer {
         self.inner.windows().iter().map(|w| (w.x, w.y, w.width, w.height)).collect()
     }
 
+    /// Estimated peak bytes retained by one stream, including overlapping zones and
+    /// fractional sorting pairs. Excludes input pixels, results, zone indexes and allocator
+    /// overhead; integer histograms may use less.
+    ///
+    /// Returns:
+    ///     int: Retained value storage, or zero for statistics that do not retain values.
+    #[getter]
+    fn retained_bytes(&self) -> usize {
+        self.inner.retained_bytes()
+    }
+
     /// The number of zone features.
     #[getter]
     fn feature_count(&self) -> usize {
