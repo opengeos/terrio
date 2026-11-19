@@ -539,6 +539,7 @@ struct RasterizeArgs {
 /// masks are not copied; nodata masks follow the edited values.
 /// With `add`, covered nodata samples also receive offsets: -9999 plus -2.5 becomes -10001.5
 /// and is marked valid. NaN remains NaN. Check voids before adding offsets.
+/// Burn and add values use stored sample units. Band scale/offset are retained, not applied.
 /// With `add`, signed values raise or lower elevations. Cannot be combined with grid, size,
 /// resolution, extent, alignment, type, initialization, nodata or CRS overrides.
 /// Without `init`, uncovered pixels start at `nodata` when set, otherwise 0, for every format.

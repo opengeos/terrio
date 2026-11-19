@@ -1919,6 +1919,8 @@ def suite_vector_ops(ctx):
                 s.cases.append(Case(section, name, status, "" if n == 0 else f"{n} of {m[2]} pixels differ (reprojected input)"))
     if not s.cases:
         s.error = tail(err or out)
+    elif _code and not any(case.status == DIFFERS for case in s.cases):
+        s.error = tail(err or out or "Vector comparison subprocess failed")
     return s
 
 

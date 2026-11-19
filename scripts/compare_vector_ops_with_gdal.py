@@ -562,8 +562,10 @@ def compare_rasterize_background(data: Path, work: Path, terrio: Path) -> list[s
                 problems.append("mask differs")
             if e.DataType != a.DataType or e.GetNoDataValue() != a.GetNoDataValue():
                 problems.append("type or nodata differs")
+            expected_crs, actual_crs = expected.GetSpatialRef(), actual.GetSpatialRef()
             if (expected.GetGeoTransform() != actual.GetGeoTransform()
-                    or not expected.GetSpatialRef().IsSame(actual.GetSpatialRef())):
+                    or expected_crs is None or actual_crs is None
+                    or not expected_crs.IsSame(actual_crs)):
                 problems.append("grid or CRS differs")
             changed = int(np.count_nonzero(ev != gdal.Open(str(background)).ReadAsArray()))
             if not changed:

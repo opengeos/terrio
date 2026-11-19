@@ -111,6 +111,7 @@ pub fn rasterize(layers: &[Layer], options: &RasterizeOptions) -> Result<RasterD
 /// nodata samples, as GDAL 3.13.3 does. Metadata and nodata declarations are retained.
 /// Adding to a finite nodata sentinel can turn a void into a valid sample: -9999 plus
 /// -2.5 becomes -10001.5, no longer nodata. NaN remains NaN. Check voids before adding offsets.
+/// Burn and add values use stored sample units; band scale/offset are retained but not applied.
 /// Separate validity masks are not held by `RasterDataset`; nodata masks follow
 /// the edited values. The background is never mutated. Only north-up, real-valued affine rasters are
 /// supported; grid, initialization, type, nodata and CRS overrides are refused.
@@ -170,7 +171,8 @@ pub fn rasterize_on(background: &RasterDataset, layers: &[Layer], options: &Rast
         band.items.retain(|(key, _)| !key.starts_with("STATISTICS_"));
     }
     // A packed source's declared width may no longer hold the edited samples. The TIFF
-    // writer trusts NBITS, so discard it when any band would otherwise be clipped.
+    // writer uses one stored width for every band and trusts NBITS, so discard it for
+    // the whole raster when any band would otherwise be clipped.
     let packing_overflow = matches!(dtype, DataType::U8 | DataType::U16 | DataType::U32)
         && crate::pixel::with_data!(&out.raster.data, samples => {
             samples.chunks_exact(n).enumerate().any(|(band, data)| {

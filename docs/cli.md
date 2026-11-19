@@ -3602,7 +3602,13 @@ output nodata masks follow the edited values. Overlapping features replace in in
 add once per line or polygon feature with `--add`; points add per coordinate, so multiple
 points within one pixel accumulate even in a single MultiPoint, as GDAL does.
 `--where` can select the edits. A packed background retains its `NBITS` width only when the
-edited values still fit; otherwise output uses the full width of the sample type.
+edited values still fit; otherwise packing is dropped for the whole raster and output uses
+the full width of the sample type. The TIFF writer uses one stored width for all bands.
+
+Burn and add values use **stored sample units**; band scale and offset are retained but
+are not applied to the edits. Convert physical heights or height offsets to stored units
+first. For example, with scale 0.1 and offset 0, burning 100 stores 100 and represents a
+physical height of 10; burn 1000 to represent a physical height of 100.
 
 The same operation is `terrio.rasterize("edits.shp", background="dem.tif", attribute="Elevation")`
 in Python, `rasterize(edits, { background: dem, attribute: "Elevation" })` in JavaScript

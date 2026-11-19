@@ -148,6 +148,8 @@ def test_shapefile_elevation_preserves_dem(tmp_path, geometry, add, all_touched)
     source.SetProjection(crs.ExportToWkt())
     source.SetMetadataItem("purpose", "elevation edits")
     source.GetRasterBand(1).SetNoDataValue(-9999)
+    source.GetRasterBand(1).SetScale(0.1)
+    source.GetRasterBand(1).SetOffset(1000)
     source.GetRasterBand(1).WriteArray(values)
     source = None
     expected = gdal.GetDriverByName("MEM").CreateCopy("", gdal.Open(str(background)))
@@ -178,6 +180,8 @@ def test_shapefile_elevation_preserves_dem(tmp_path, geometry, add, all_touched)
     assert written.GetSpatialRef().IsSame(crs)
     assert written.GetRasterBand(1).DataType == gdal.GDT_Float32
     assert written.GetRasterBand(1).GetNoDataValue() == -9999
+    assert written.GetRasterBand(1).GetScale() == 0.1
+    assert written.GetRasterBand(1).GetOffset() == 1000
     assert written.GetMetadataItem("purpose") == "elevation edits"
     cli_output = tmp_path / "cli-edited.tif"
     command = [
