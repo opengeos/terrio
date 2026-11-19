@@ -6,6 +6,9 @@ overlaps, replace/add and all-touched modes, exact samples, nodata masks, type, 
 geotransform and metadata. Native regressions retain untouched UInt64 samples above 2^53
 without floating-point conversion. The `vector-ops` conformance suite also compares background
 edits of real NLCD data with reprojected Tennessee counties.
+The Python comparison uses the installed GDAL (locally verified with 3.12.1, with 3.12.2 in
+CI); GDAL 3.13.3 is the shared rasterizer's algorithm reference. CLI background-retention
+and packed-output regressions run even when GDAL is not installed.
 
 GDAL is terrio's reference: drivers and operations are compared with GDAL on real-world files.
 The conformance suites run against GDAL 3.12.2 and PROJ 9.8.1 in `ci-extended.yml`, on every push

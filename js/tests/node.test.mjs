@@ -1315,6 +1315,12 @@ test("operations on in-memory rasters and layers", () => {
   }
   assert.throws(() => terrio.rasterize(SQUARES, { burn: 1, background, init: 0 }), /background cannot/);
   assert.throws(() => terrio.rasterize(SQUARES, { burn: 1, background, like }), /background cannot/);
+  const packed = terrio.rasterize(SQUARES, { burn: 1, init: 1, like: background, ot: "Byte" })
+    .toBytes("packed.tif", { creationOptions: { NBITS: "1" } });
+  const unpacked = terrio.rasterize(SQUARES, { burn: 2, background: packed });
+  const writtenEdit = terrio.open(unpacked.toBytes("edited.tif"), "edited.tif");
+  assert.equal(writtenEdit.readBand(1)[0], 2);
+  assert.equal(writtenEdit.readBand(1)[15], 1);
   const cut = terrio.warp(terrio.rasterize(SQUARES, { burn: 1, tr: [1, 1], te: [0, 0, 30, 10], ot: "Byte", init: 9 }), {
     cutline: { type: "Polygon", coordinates: [[[0, 0], [5, 0], [5, 5], [0, 5], [0, 0]]] },
     cropToCutline: true,

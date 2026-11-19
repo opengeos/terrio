@@ -60,7 +60,7 @@ pub(crate) fn requested(args: &[OsString]) -> Option<Value> {
         return None;
     }
     Some(json!({
-        "schema_version": "0.1.11",
+        "schema_version": "0.1.12",
         "unstable": true,
         "program": "terrio",
         "version": env!("CARGO_PKG_VERSION"),
@@ -412,14 +412,19 @@ mod tests {
     #[test]
     fn conflicts_with_lists_both_sides_of_a_declared_pair() {
         // `ts` declares `conflicts_with = "tr"` in clap; `like` declares `conflicts_with_all`
-        // over tr, ts and te. The catalog lists both sides of each declared pair.
+        // over tr, ts and te; `background` also conflicts with each grid/initialization override.
+        // The catalog lists both sides of each declared pair.
         let result = usage(&["terrio", "rasterize", "--json-usage"]).unwrap();
         let args = result["command"]["arguments"].as_array().unwrap();
-        assert_eq!(catalog_argument(args, "ts")["conflicts_with"], json!(["like", "tr"]));
-        assert_eq!(catalog_argument(args, "tr")["conflicts_with"], json!(["like", "ts"]));
-        assert_eq!(catalog_argument(args, "te")["conflicts_with"], json!(["like"]));
-        // `tap` declares only `requires = "tr"`; requires is deferred, so it lists no conflicts.
-        assert_eq!(catalog_argument(args, "tap")["conflicts_with"], json!([]));
+        assert_eq!(catalog_argument(args, "ts")["conflicts_with"], json!(["background", "like", "tr"]));
+        assert_eq!(catalog_argument(args, "tr")["conflicts_with"], json!(["background", "like", "ts"]));
+        assert_eq!(catalog_argument(args, "te")["conflicts_with"], json!(["background", "like"]));
+        // `tap` requires `tr` (requires is deferred) and conflicts with `background`.
+        assert_eq!(catalog_argument(args, "tap")["conflicts_with"], json!(["background"]));
+        assert_eq!(
+            catalog_argument(args, "background")["conflicts_with"],
+            json!(["a_nodata", "a_srs", "init", "like", "ot", "tap", "te", "tr", "ts"])
+        );
 
         // `vector-clip` groups `bbox`, `geometry` and `like` into an exclusive ArgGroup:
         // members mutually conflict pairwise even though no direct `conflicts_with` is declared on each Arg.

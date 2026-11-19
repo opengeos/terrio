@@ -525,7 +525,10 @@ def compare_rasterize_background(data: Path, work: Path, terrio: Path) -> list[s
         Exact pixel, mask, type and georeferencing comparison reports.
     """
     background = work / "background.tif"
-    run(["gdal_translate", "-q", "-a_srs", "EPSG:5070", data / "nlcd_knoxville.tif", background])
+    try:
+        run(["gdal_translate", "-q", "-a_srs", "EPSG:5070", data / "nlcd_knoxville.tif", background])
+    except (RuntimeError, OSError) as error:
+        return [f"background preparation   ERROR {error}"]
     lines = []
     for label, g_args, t_args in [
         ("background attribute", ["-a", "COUNTY_FIP"], ["-a", "COUNTY_FIP"]),
@@ -533,11 +536,17 @@ def compare_rasterize_background(data: Path, work: Path, terrio: Path) -> list[s
         ("background all touched", ["-burn", "5", "-at"], ["--burn", "5", "--at"]),
     ]:
         g_out, t_out = work / "background-gdal.tif", work / "background-terrio.tif"
-        shutil.copy(background, g_out)
         try:
+            shutil.copy(background, g_out)
             where = "COUNTY_FIP = '093'"
-            run(["gdal_rasterize", "-q", *g_args, "-where", where, data / "TN_Counties.geojson", g_out])
-            run([terrio, "rasterize", data / "TN_Counties.geojson", t_out, "--background", background, "--where", where, *t_args])
+            run([
+                "gdal_rasterize", "-q", *g_args, "-where", where,
+                data / "TN_Counties.geojson", g_out,
+            ])
+            run([
+                terrio, "rasterize", data / "TN_Counties.geojson", t_out,
+                "--background", background, "--where", where, *t_args,
+            ])
             expected, actual = gdal.Open(str(g_out)), gdal.Open(str(t_out))
             e, a = expected.GetRasterBand(1), actual.GetRasterBand(1)
             ev, av = e.ReadAsArray(), a.ReadAsArray()
@@ -553,7 +562,8 @@ def compare_rasterize_background(data: Path, work: Path, terrio: Path) -> list[s
                 problems.append("mask differs")
             if e.DataType != a.DataType or e.GetNoDataValue() != a.GetNoDataValue():
                 problems.append("type or nodata differs")
-            if expected.GetGeoTransform() != actual.GetGeoTransform() or not expected.GetSpatialRef().IsSame(actual.GetSpatialRef()):
+            if (expected.GetGeoTransform() != actual.GetGeoTransform()
+                    or not expected.GetSpatialRef().IsSame(actual.GetSpatialRef())):
                 problems.append("grid or CRS differs")
             changed = int(np.count_nonzero(ev != gdal.Open(str(background)).ReadAsArray()))
             if not changed:
@@ -561,7 +571,7 @@ def compare_rasterize_background(data: Path, work: Path, terrio: Path) -> list[s
             status = "DIFF " + "; ".join(problems) if problems else "OK"
             lines.append(f"{label:<24} {diff} of {ev.size} pixels differ ({changed} edited)  {status}")
             expected = actual = None
-        except RuntimeError as error:
+        except (RuntimeError, OSError) as error:
             lines.append(f"{label:<24} ERROR {error}")
     return lines
 
@@ -681,7 +691,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("data", type=Path, help="the test data directory")
     parser.add_argument("--terrio", type=Path, default=Path(__file__).resolve().parents[1] / "target/release/terrio")
-    parser.add_argument("--only", choices=["rasterize-nodata", "rasterize-background"], help="run only selected rasterization comparisons")
+    parser.add_argument(
+        "--only", choices=["rasterize-nodata", "rasterize-background"],
+        help="run only selected rasterization comparisons",
+    )
     args = parser.parse_args()
     lines = []
     with tempfile.TemporaryDirectory() as tmp:

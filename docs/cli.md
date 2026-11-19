@@ -3588,13 +3588,21 @@ and nodata declarations. The input remains unchanged; the output is written
 as a whole new raster, not updated tile by tile. Background rasters are read into memory.
 Cached statistics are removed because the edits can change them.
 All bands are edited: a single burn or attribute value applies to each, or give one burn
-per band. Vectors are reprojected to the background CRS. North-up, real-valued affine rasters
+per band. Vectors are reprojected when both CRSs are known and different. If either CRS is
+unknown, coordinates are used as given; the caller must ensure they use the same CRS.
+North-up, real-valued affine rasters
 are supported. `--background` refuses `--like`, `--tr`, `--ts`, `--te`, `--tap`, `--ot`,
 `--init`, `--a-nodata` and `--a-srs`, which would redefine the background.
-Covered nodata samples are burned too; additive burns use their numeric values (NaN remains
-NaN). Separate internal or sidecar validity masks are not copied by this in-memory operation;
+> **Nodata and elevation offsets:** `--add` also adds to covered nodata samples, as GDAL does.
+> A void of -9999 plus -2.5 becomes -10001.5 and is then marked valid because it no longer
+> equals the nodata sentinel. NaN remains NaN. Check voids before using additive DEM edits.
+
+Separate internal or sidecar validity masks are not copied by this in-memory operation;
 output nodata masks follow the edited values. Overlapping features replace in input order or
-add once per feature with `--add`; `--where` can select the edits.
+add once per line or polygon feature with `--add`; points add per coordinate, so multiple
+points within one pixel accumulate even in a single MultiPoint, as GDAL does.
+`--where` can select the edits. A packed background retains its `NBITS` width only when the
+edited values still fit; otherwise output uses the full width of the sample type.
 
 The same operation is `terrio.rasterize("edits.shp", background="dem.tif", attribute="Elevation")`
 in Python, `rasterize(edits, { background: dem, attribute: "Elevation" })` in JavaScript
@@ -4227,7 +4235,7 @@ for one command and its descendants. Required dataset arguments may be omitted;
 metadata requests open no datasets or output files. The Python package supports
 identical requests with `python -m terrio`.
 
-The payload has `schema_version: "0.1.11"`, `unstable: true`, the program/version,
+The payload has `schema_version: "0.1.12"`, `unstable: true`, the program/version,
 and a recursive `command` object. Each command records its canonical name/path,
 aliases, description, arguments and subcommands. Arguments include flags and
 aliases, positional index, type, raw default tokens, choices, required status,

@@ -34,7 +34,7 @@ pub enum MergeAlg {
     /// Replace the pixel value (the default).
     #[default]
     Replace,
-    /// Add to the pixel value; each geometry adds once to a pixel.
+    /// Add to the pixel value; lines and polygons add once per geometry, points per coordinate.
     Add,
 }
 
@@ -166,6 +166,19 @@ pub fn rasterize_on(background: &RasterDataset, layers: &[Layer], options: &Rast
     out.raster.metadata.retain(|(key, _)| !key.starts_with("STATISTICS_"));
     for band in &mut out.band_metadata {
         band.items.retain(|(key, _)| !key.starts_with("STATISTICS_"));
+    }
+    // A packed source's declared width may no longer hold the edited samples. The TIFF
+    // writer trusts NBITS, so discard it when any band would otherwise be clipped.
+    let packing_overflow = matches!(dtype, DataType::U8 | DataType::U16 | DataType::U32)
+        && crate::pixel::with_data!(&out.raster.data, samples => {
+            samples.chunks_exact(n).enumerate().any(|(band, data)| {
+                out.band_sample_bits(band)
+                    .filter(|&bits| bits > 0 && usize::from(bits) < dtype.size_bytes() * 8)
+                    .is_some_and(|bits| data.iter().any(|value| value.to_f64() > ((1_u64 << bits) - 1) as f64))
+            })
+        });
+    if packing_overflow {
+        out.set_sample_bits(0);
     }
     Ok(out)
 }
