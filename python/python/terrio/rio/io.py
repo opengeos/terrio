@@ -2452,6 +2452,8 @@ class _Spill:
         """
         height, width = self.array.shape[1:]
         if min(y, x, h, w) < 0:
+            # NumPy's slicing for a negative offset or size, at the cost of completing the file.
+            # No caller passes one: reads crop their windows to the raster.
             self.complete()
             return self.array[bands, y : y + h, x : x + w]
         h, w = max(0, min(h, height - y)), max(0, min(w, width - x))
@@ -2483,6 +2485,8 @@ class _Spill:
         """
         height, width = self.array.shape[1:]
         if min(y, x, h, w) < 0 or y + h > height or x + w > width:
+            # NumPy's slicing for a window reaching outside the raster, at the cost of completing
+            # the file. No caller passes one: `write` refuses it.
             self.complete()
             self.array[bands, y : y + h, x : x + w] = values
             return
