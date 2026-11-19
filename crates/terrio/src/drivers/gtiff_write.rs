@@ -1474,7 +1474,7 @@ impl<'a> Level<'a> {
         let band_len = self.cols * self.rows;
         let clipped = std::sync::atomic::AtomicBool::new(false);
         let packed_bits = layout.nbits.filter(|&bits| bits != (size * 8) as u16);
-        let empty = empty.filter(|&v| holds(t, v));
+        let empty = empty.filter(|&v| representable(t, v));
         let chunks = crate::par::map_range_coarse(planes * per_plane, |i| {
             let (plane, j) = (i / per_plane, i % per_plane);
             let (x0, y0) = ((j % across) * chunk_w, (j / across) * chunk_h);
@@ -1483,7 +1483,8 @@ impl<'a> Level<'a> {
             if let Some(v) = empty {
                 let (first, samples) = if layout.planar { (plane * parts * band_len, parts) } else { (0, spp * parts) };
                 let data = self.data.as_ref();
-                if with_data!(data, d => holds_only(&d[first..][..samples * band_len], self.cols, self.rows, x0, y0, chunk_w, h, v)) {
+                if with_data!(data, d => all_samples_equal(&d[first..][..samples * band_len], self.cols, self.rows, x0, y0, chunk_w, h, v))
+                {
                     return Ok(Vec::new());
                 }
             }
@@ -1647,7 +1648,7 @@ fn resample<T: Pixel>(
 
 /// Whether samples of type `t` hold `v` exactly: any value for floating-point samples (`F32`
 /// rounds it to single precision), an integer within the type's range otherwise.
-fn holds(t: DataType, v: f64) -> bool {
+fn representable(t: DataType, v: f64) -> bool {
     let (lo, hi): (i128, i128) = match t {
         DataType::F32 | DataType::F64 => return true,
         DataType::U8 => (0, u8::MAX.into()),
@@ -1665,7 +1666,7 @@ fn holds(t: DataType, v: f64) -> bool {
 /// Whether the samples of every band of band-major `data` (`cols` x `rows` pixels a band) in the
 /// chunk of `chunk_w` x `h` pixels at `(x0, y0)`, within the image, are all `v`, bit for bit.
 #[allow(clippy::too_many_arguments)]
-fn holds_only<T: Pixel>(data: &[T], cols: usize, rows: usize, x0: usize, y0: usize, chunk_w: usize, h: usize, v: f64) -> bool {
+fn all_samples_equal<T: Pixel>(data: &[T], cols: usize, rows: usize, x0: usize, y0: usize, chunk_w: usize, h: usize, v: f64) -> bool {
     let (mut want, mut got) = ([0u8; 8], [0u8; 8]);
     T::from_f64(v).put_le(&mut want[..T::SIZE]);
     let n = chunk_w.min(cols - x0);
