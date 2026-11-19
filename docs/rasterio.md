@@ -246,7 +246,8 @@ directory to keep the downloads).
 - Lossy GeoTIFF codecs: JPEG in YCbCr decodes as GDAL decodes it; LERC, LZMA and JPEG XL chunks
   are decoded, with parity against GDAL not measured.
 - `r+` rewrites the file (overviews are rebuilt from the updated pixels, where GDAL keeps the old
-  ones). COG writes stream row by row, except COGs with an internal mask, copied source overviews,
+  ones), every block of it: the blocks a sparse GeoTIFF left out are written, as nodata (or 0).
+  COG writes stream row by row, except COGs with an internal mask, copied source overviews,
   explicit overview factors, and compressions other than NONE, LZW, DEFLATE, ZSTD and PACKBITS,
   which are written from the whole raster, as are GeoTIFFs with overviews.
 - Band-level color tables only on band 1, as terrio's raster model holds them.
