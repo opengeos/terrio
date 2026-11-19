@@ -141,9 +141,10 @@ pub(crate) struct Conversion {
     pub name: Option<String>,
     /// Its EPSG code, when it has one (a UTM zone's).
     pub conversion_code: Option<u32>,
-    /// Its EPSG method's name and code.
+    /// Its method's name, and EPSG code (none for a method PROJ has without one, Miller
+    /// Cylindrical).
     pub method: &'static str,
-    pub method_code: u32,
+    pub method_code: Option<u32>,
     /// Its parameters' values, in degrees, metres and unity, in the order PROJ writes them.
     pub values: Vec<(Param, f64)>,
     /// The PROJ string's parameters it carries (others must have the value used when they are
@@ -184,7 +185,9 @@ pub(crate) fn conversion_from_proj(p: &Params) -> Result<Conversion, String> {
     let k0 = num("k_0").or_else(|| num("k")).unwrap_or(1.0);
     let (lat0, lon0) = (deg("lat_0").unwrap_or(0.0), deg("lon_0").unwrap_or(0.0));
     let (x0, y0) = (num("x_0").unwrap_or(0.0), num("y_0").unwrap_or(0.0));
-    let sphere = on_sphere(p);
+    // On a sphere, the spherical methods, as PROJ 9.9.0 writes them: whenever the CRS's figure is
+    // one (`+R`, which overrides `+ellps`, `+ellps=sphere`, `+a` = `+b`).
+    let sphere = crate::def::proj_ellipsoid(p, proj, false).map_or_else(|_| on_sphere(p), |e| e.crs.es == 0.0);
     let mut name = None;
     let mut conversion_id = None;
     // The parameters most methods carry.
@@ -282,10 +285,15 @@ pub(crate) fn conversion_from_proj(p: &Params) -> Result<Conversion, String> {
             let values = vec![(LAT_NAT, 0.0), (LON_NAT, lon0), (FE, x0), (FN, y0)];
             ("Popular Visualisation Pseudo Mercator", 1024, values, &["lat_ts", "lon_0", "x_0", "y_0"])
         }
-        "merc" => match deg("lat_ts").filter(|t| *t != 0.0) {
-            Some(ts) => {
-                ("Mercator (variant B)", 9805, vec![(SP1, ts), (LON_NAT, lon0), (FE, x0), (FN, y0)], &["lat_ts", "lon_0", "x_0", "y_0"])
-            }
+        // With `lat_ts`, 0 too, variant B, as PROJ 9.9.0 writes it; its scale is then the parallel's,
+        // and `k` changes nothing (in PROJ's `merc` and terrio's alike).
+        "merc" => match deg("lat_ts") {
+            Some(ts) => (
+                "Mercator (variant B)",
+                9805,
+                vec![(SP1, ts), (LON_NAT, lon0), (FE, x0), (FN, y0)],
+                &["lat_ts", "lon_0", "k", "k_0", "x_0", "y_0"],
+            ),
             None => {
                 let values = vec![(LAT_NAT, 0.0), (LON_NAT, lon0), (K_NAT, k0), (FE, x0), (FN, y0)];
                 ("Mercator (variant A)", 9804, values, &["lat_ts", "lon_0", "k", "k_0", "x_0", "y_0"])
@@ -318,8 +326,9 @@ pub(crate) fn conversion_from_proj(p: &Params) -> Result<Conversion, String> {
         "omerc" => {
             let alpha = deg("alpha").ok_or_else(|| "an oblique Mercator without azimuth".to_string())?;
             let gamma = deg("gamma").unwrap_or(alpha);
-            let lonc = deg("lonc").unwrap_or(lon0);
-            // `lon_0` is the centre's longitude only without `lonc`.
+            // Without `lonc`, the centre is on the prime meridian: PROJ's `omerc` (and terrio's)
+            // ignores `lon_0` with an azimuth, and PROJ 9.9.0 writes 0.
+            let lonc = deg("lonc").unwrap_or(0.0);
             let written: &[&str] = if p.has("lonc") {
                 &["lat_0", "lonc", "alpha", "gamma", "k", "k_0", "x_0", "y_0", "no_uoff", "no_off"]
             } else {
@@ -366,10 +375,12 @@ pub(crate) fn conversion_from_proj(p: &Params) -> Result<Conversion, String> {
             }
         }
         // Its latitude of origin changes nothing (PROJ writes none); a `k_0` without `lat_ts` is
-        // not written.
+        // not written. On a sphere, the spherical method, as PROJ 9.9.0 writes it.
         "cea" => {
             let values = vec![(SP1, deg("lat_ts").unwrap_or(0.0)), (LON_NAT, lon0), (FE, x0), (FN, y0)];
-            ("Lambert Cylindrical Equal Area", 9835, values, &["lat_0", "lat_ts", "lon_0", "x_0", "y_0"])
+            let (method, code) =
+                if sphere { ("Lambert Cylindrical Equal Area (Spherical)", 9834) } else { ("Lambert Cylindrical Equal Area", 9835) };
+            (method, code, values, &["lat_0", "lat_ts", "lon_0", "x_0", "y_0"])
         }
         "eqc" => {
             // Its latitude of origin as PROJ writes it: only when not 0.
@@ -377,8 +388,11 @@ pub(crate) fn conversion_from_proj(p: &Params) -> Result<Conversion, String> {
             if lat0 != 0.0 {
                 values.insert(1, (LAT_NAT, lat0));
             }
-            ("Equidistant Cylindrical", 1028, values, &["lat_0", "lat_ts", "lon_0", "x_0", "y_0"])
+            let (method, code) = if sphere { ("Equidistant Cylindrical (Spherical)", 1029) } else { ("Equidistant Cylindrical", 1028) };
+            (method, code, values, &["lat_0", "lat_ts", "lon_0", "x_0", "y_0"])
         }
+        // A method PROJ has without an EPSG code (0 here).
+        "mill" => ("Miller Cylindrical", 0, vec![(LON_NAT, lon0), (FE, x0), (FN, y0)], &["lon_0", "x_0", "y_0"]),
         "cass" => ("Cassini-Soldner", 9806, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], ORIGIN),
         "poly" => ("American Polyconic", 9818, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], ORIGIN),
         "nzmg" => ("New Zealand Map Grid", 9811, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], ORIGIN),
@@ -396,7 +410,7 @@ pub(crate) fn conversion_from_proj(p: &Params) -> Result<Conversion, String> {
     if let Some((param, _)) = values.iter().find(|(_, v)| !v.is_finite()) {
         return Err(format!("a non-finite {}", param.name.to_lowercase()));
     }
-    Ok(Conversion { name, conversion_code: conversion_id, method, method_code: code, values, written })
+    Ok(Conversion { name, conversion_code: conversion_id, method, method_code: (code != 0).then_some(code), values, written })
 }
 
 /// Every parameter of the table.
@@ -454,16 +468,34 @@ mod tests {
             ("+proj=lcc +lat_0=40 +lat_1=45 +lon_0=3 +ellps=GRS80", "Lambert Conic Conformal (1SP variant B)", 1102),
             ("+proj=lcc +lat_1=44 +lat_2=49 +lat_0=46.5 +lon_0=3 +ellps=GRS80", "Lambert Conic Conformal (2SP)", 9802),
             ("+proj=merc +lat_ts=30 +ellps=WGS84", "Mercator (variant B)", 9805),
+            ("+proj=merc +lat_ts=0 +k=0.99 +ellps=WGS84", "Mercator (variant B)", 9805),
+            ("+proj=merc +k=0.99 +ellps=WGS84", "Mercator (variant A)", 9804),
+            ("+proj=eqc +lat_ts=30 +R=6371000", "Equidistant Cylindrical (Spherical)", 1029),
+            ("+proj=eqc +lat_ts=30 +ellps=WGS84", "Equidistant Cylindrical", 1028),
+            ("+proj=cea +lat_ts=30 +a=6371000 +b=6371000", "Lambert Cylindrical Equal Area (Spherical)", 9834),
+            ("+proj=cea +lat_ts=30 +ellps=WGS84", "Lambert Cylindrical Equal Area", 9835),
+            ("+proj=cea +ellps=sphere", "Lambert Cylindrical Equal Area (Spherical)", 9834),
+            ("+proj=eqc +R=6371000 +ellps=WGS84", "Equidistant Cylindrical (Spherical)", 1029),
+            ("+proj=laea +ellps=sphere", "Lambert Azimuthal Equal Area (Spherical)", 1027),
             ("+proj=stere +lat_0=90 +lat_ts=70 +ellps=WGS84", "Polar Stereographic (variant B)", 9829),
             ("+proj=omerc +lat_0=4 +lonc=115 +alpha=53 +gamma=53.13 +no_uoff +ellps=GRS80", "Hotine Oblique Mercator (variant A)", 9812),
             ("+proj=krovak +ellps=bessel", "Krovak (North Orientated)", 1041),
         ] {
             let c = conversion_from_proj(&Params::parse(s)).unwrap();
-            assert_eq!((c.method, c.method_code), (method, code), "{s}");
+            assert_eq!((c.method, c.method_code), (method, Some(code)), "{s}");
         }
         // Its false easting and northing negated, as terrio reads `+axis=wsu` (W = FE - x).
         let south = conversion_from_proj(&Params::parse("+proj=tmerc +axis=wsu +lon_0=25 +x_0=1000 +y_0=2000 +ellps=WGS84")).unwrap();
         assert!(south.values.contains(&(FE, -1000.0)) && south.values.contains(&(FN, -2000.0)), "{:?}", south.values);
+        // Miller Cylindrical, which PROJ writes without an EPSG code.
+        let mill = conversion_from_proj(&Params::parse("+proj=mill +lon_0=10 +R=6371000")).unwrap();
+        assert_eq!((mill.method, mill.method_code, mill.values), ("Miller Cylindrical", None, vec![(LON_NAT, 10.0), (FE, 0.0), (FN, 0.0)]));
+        // An oblique Mercator without `lonc` is centred on the prime meridian, whatever `lon_0`.
+        let omerc = conversion_from_proj(&Params::parse("+proj=omerc +lat_0=4 +lon_0=115 +alpha=53 +k=0.99984 +ellps=GRS80")).unwrap();
+        assert!(omerc.values.contains(&(LON_CENTRE, 0.0)), "{:?}", omerc.values);
+        // Mercator with `lat_ts` 0: variant B, without the `k` it ignores.
+        let merc = conversion_from_proj(&Params::parse("+proj=merc +lat_ts=0 +k=0.99 +ellps=WGS84")).unwrap();
+        assert_eq!(merc.values, vec![(SP1, 0.0), (LON_NAT, 0.0), (FE, 0.0), (FN, 0.0)]);
         let utm = conversion_from_proj(&Params::parse("+proj=utm +zone=33 +south +ellps=WGS84")).unwrap();
         assert_eq!((utm.name.as_deref(), utm.conversion_code), (Some("UTM zone 33S"), Some(16133)));
         let north = conversion_from_proj(&Params::parse("+proj=utm +zone=33 +ellps=WGS84")).unwrap();

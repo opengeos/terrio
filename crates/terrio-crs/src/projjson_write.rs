@@ -506,7 +506,10 @@ fn conversion(p: &Params) -> Result<(Value, Vec<&'static str>)> {
         .collect();
     let name = c.name.unwrap_or_else(|| "unknown".to_string());
     Ok((
-        with_id(json!({"name": name, "method": {"name": c.method, "id": id(c.method_code)}, "parameters": parameters}), c.conversion_code),
+        with_id(
+            json!({"name": name, "method": with_id(json!({"name": c.method}), c.method_code), "parameters": parameters}),
+            c.conversion_code,
+        ),
         c.written.to_vec(),
     ))
 }
