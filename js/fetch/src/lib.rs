@@ -633,10 +633,11 @@ impl Fetcher {
         let file = SparseFile::with_block_size(len, block);
         let n = last.data.len() as u64;
         if last.status == 206 {
-            last.validate_content_range(ObjectRange::Suffix(tail), Some(len))?;
             if n != tail.min(len) {
                 return Err(JsError::new("range response for the end of the file has an unexpected length"));
             }
+            // Its position, from the file's length: a header without the total (`*`) says it too.
+            last.validate_content_range(ObjectRange::At(len - n, n), Some(len))?;
         }
         // Whole blocks of it are kept, and the file's last block.
         file.insert(len - n, &last.data);

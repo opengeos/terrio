@@ -193,14 +193,17 @@ pub async fn open_url(url: String, options: JsValue) -> Result<RemoteDataset, Js
     }
     let name = path.rsplit('/').next().filter(|n| !n.is_empty()).unwrap_or("remote").to_string();
     // GeoParquet, as the URL or the options tell it: opened from the end, where its footer is.
-    // A file whose end isn't Parquet's (`PAR1`) is opened from its start, as other formats are.
+    // The first bytes, when held: read quietly, as bytes not held aren't to be fetched for this.
+    let head = |f: &SparseFile| f.quiet().read_exact_at(0, f.len().min(8) as usize).ok();
+    // A file whose end isn't Parquet's (`PAR1`) is opened from its start, as other formats are,
+    // from the bytes already fetched when they hold it (a whole file, or a first block).
     let tail = if detect(&name, &[], o.format.as_deref()).is_ok_and(|f| f == "Parquet") {
-        Some(fetcher.open_file_tail(o.block_size).await?)
-            .filter(|f| f.len() >= 4 && f.read_exact_at(f.len() - 4, 4).is_ok_and(|end| end == b"PAR1"))
+        let file = fetcher.open_file_tail(o.block_size).await?;
+        let parquet = file.len() >= 4 && file.quiet().read_exact_at(file.len() - 4, 4).is_ok_and(|end| end == b"PAR1");
+        (parquet || head(&file).is_some()).then_some(file)
     } else {
         None
     };
-    let parquet = tail.is_some();
     let (file, early) = if let Some(file) = tail {
         (file, None)
     } else {
@@ -209,7 +212,7 @@ pub async fn open_url(url: String, options: JsValue) -> Result<RemoteDataset, Js
         // doesn't tell opens from the whole block.
         fetcher
             .open_file_arriving(o.block_size, |file| {
-                let head = file.read_exact_at(0, 8.min(file.len() as usize))?;
+                let head = file.read_exact_at(0, file.len().min(8) as usize)?;
                 match detect(&name, &head, o.format.as_deref()) {
                     Ok(format) if format != "Parquet" && check_built(format).is_ok() => open_reader(format, file, &name),
                     _ => Err(terrio::Error::InvalidData("opened from the whole first block".into())),
@@ -217,8 +220,8 @@ pub async fn open_url(url: String, options: JsValue) -> Result<RemoteDataset, Js
             })
             .await?
     };
-    // Its magic number: the first bytes, held unless opened from the end.
-    let head = if parquet { Vec::new() } else { file.read_exact_at(0, 8.min(file.len() as usize)).unwrap_or_default() };
+    // Its magic number, or, for a GeoParquet file opened from its end alone, its name.
+    let head = head(&file).unwrap_or_default();
     let format = detect(&name, &head, o.format.as_deref())?;
     check_built(format)?;
     let state = Rc::new(State { remote: Remote::new(file, None, fetcher, o.cache_size), name, format, reader: RefCell::new(None) });

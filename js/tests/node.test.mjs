@@ -1867,6 +1867,16 @@ test("remote files read with range requests", async () => {
       small = await terrio.openUrl(server.url + "cells.parquet", { blockSize: 4096 });
       assert.equal(server.stats.requests - requests, 1);
       assert.deepEqual(small.info().rowGroups, pq.info().rowGroups);
+      // The end asked for, answered with other bytes whose header hides the total: refused, not
+      // stored as the end.
+      const whole = readFileSync(join(dir, "cells.parquet"));
+      const misplaced = async (url, init) => {
+        if (init?.headers?.Range === "bytes=-8192") {
+          return new Response(whole.subarray(0, 8192), { status: 206, headers: { "Content-Range": "bytes 0-8191/*" } });
+        }
+        return fetch(url, init);
+      };
+      await assert.rejects(terrio.openUrl(server.url + "cells.parquet", { blockSize: 4096, fetch: misplaced }), /Content-Range/);
       // Another format under a GeoParquet name: found by its first bytes, as before.
       writeFileSync(join(dir, "dem.parquet"), readFileSync(join(dir, "dem.tif")));
       misnamed = await terrio.openUrl(server.url + "dem.parquet");
