@@ -495,7 +495,10 @@ fn conversion(p: &Params) -> Result<(Value, Vec<&'static str>)> {
         })
         .collect();
     let name = c.name.unwrap_or_else(|| "unknown".to_string());
-    Ok((with_id(json!({"name": name, "method": {"name": c.method, "id": id(c.code)}, "parameters": parameters}), c.id), c.written.to_vec()))
+    Ok((
+        with_id(json!({"name": name, "method": {"name": c.method, "id": id(c.method_code)}, "parameters": parameters}), c.conversion_code),
+        c.written.to_vec(),
+    ))
 }
 
 /// A bound CRS: `source` with its transformation to WGS 84, as PROJ writes `+towgs84`: in the

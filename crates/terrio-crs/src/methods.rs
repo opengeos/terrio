@@ -140,10 +140,10 @@ pub(crate) struct Conversion {
     /// Its name, when it has one (a UTM zone's); else it is unnamed, as PROJ names it `unknown`.
     pub name: Option<String>,
     /// Its EPSG code, when it has one (a UTM zone's).
-    pub id: Option<u32>,
+    pub conversion_code: Option<u32>,
     /// Its EPSG method's name and code.
     pub method: &'static str,
-    pub code: u32,
+    pub method_code: u32,
     /// Its parameters' values, in degrees, metres and unity, in the order PROJ writes them.
     pub values: Vec<(Param, f64)>,
     /// The PROJ string's parameters it carries (others must have the value used when they are
@@ -393,10 +393,10 @@ pub(crate) fn conversion_from_proj(p: &Params) -> Result<Conversion, String> {
         other => return Err(format!("the projection +proj={other}")),
     };
     // `str::parse` reads `nan` and `inf`, which JSON cannot carry.
-    if let Some((p, _)) = values.iter().find(|(_, v)| !v.is_finite()) {
-        return Err(format!("a non-finite {}", p.name.to_lowercase()));
+    if let Some((param, _)) = values.iter().find(|(_, v)| !v.is_finite()) {
+        return Err(format!("a non-finite {}", param.name.to_lowercase()));
     }
-    Ok(Conversion { name, id: conversion_id, method, code, values, written })
+    Ok(Conversion { name, conversion_code: conversion_id, method, method_code: code, values, written })
 }
 
 /// Every parameter of the table.
@@ -459,7 +459,7 @@ mod tests {
             ("+proj=krovak +ellps=bessel", "Krovak (North Orientated)", 1041),
         ] {
             let c = conversion_from_proj(&Params::parse(s)).unwrap();
-            assert_eq!((c.method, c.code), (method, code), "{s}");
+            assert_eq!((c.method, c.method_code), (method, code), "{s}");
         }
         // Its false easting and northing negated, as terrio reads `+axis=wsu` (W = FE - x).
         let south = conversion_from_proj(&Params::parse("+proj=tmerc +axis=wsu +lon_0=25 +x_0=1000 +y_0=2000 +ellps=WGS84")).unwrap();
