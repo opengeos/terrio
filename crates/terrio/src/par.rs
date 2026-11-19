@@ -432,9 +432,31 @@ pub(crate) fn with_waiting_workers<R>(cancel: std::sync::Arc<std::sync::atomic::
 #[cfg(threads)]
 struct Pool(&'static rayon::ThreadPool);
 
+/// Installs from threads outside the pool that are in flight. When one is, another outside call
+/// runs inline instead of queueing on the pool (see [`Pool::install`]).
+#[cfg(not(target_family = "wasm"))]
+static OUTSIDE_INSTALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 #[cfg(threads)]
 impl Pool {
     fn install<R: Send>(&self, f: impl FnOnce() -> R + Send) -> R {
+        #[cfg(not(target_family = "wasm"))]
+        {
+            // A call from a thread outside the pool while another such call is already served by
+            // the pool runs here instead: N threads outside the pool then scale as N threads of
+            // their own rather than as N callers queued on the pool (a tile warp from each of N
+            // server workers, say). The first call from outside, and any call from a pool thread,
+            // use the pool as before. Results never depend on where the work runs.
+            if self.0.current_thread_index().is_none() {
+                if OUTSIDE_INSTALLS.load(std::sync::atomic::Ordering::Relaxed) > 0 {
+                    return f();
+                }
+                OUTSIDE_INSTALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let r = self.0.install(f);
+                OUTSIDE_INSTALLS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                return r;
+            }
+        }
         self.0.install(f)
     }
 }
@@ -888,6 +910,37 @@ mod tests {
         let caller = std::thread::current().id();
         assert_eq!(map_range(1, |_| std::thread::current().id()), vec![caller]);
         assert!(map_range(64, |_| std::thread::current().id()).iter().all(|id| *id != caller));
+    }
+
+    /// While the pool serves an install from a thread outside it, another outside call runs
+    /// inline on its own thread, so N outside callers scale as N threads of their own instead of
+    /// queueing on the pool. The first outside call still uses the pool, and the counter is back
+    /// to zero when they are done.
+    #[test]
+    #[cfg(all(threads, not(target_family = "wasm")))]
+    fn an_outside_install_runs_inline_while_the_pool_serves_another() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Duration;
+        let busy = std::sync::Arc::new(AtomicBool::new(false));
+        let b = busy.clone();
+        let h = std::thread::spawn(move || {
+            Pool(native::pool()).install(|| {
+                b.store(true, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(300));
+            });
+        });
+        while !busy.load(Ordering::SeqCst) {
+            std::thread::yield_now();
+        }
+        let caller = std::thread::current().id();
+        let ran_on_caller = AtomicBool::new(false);
+        let r = Pool(native::pool()).install(|| {
+            ran_on_caller.store(std::thread::current().id() == caller, Ordering::SeqCst);
+            7
+        });
+        assert_eq!(r, 7);
+        assert!(ran_on_caller.load(Ordering::SeqCst), "the second outside install queued on the pool");
+        h.join().unwrap();
     }
 
     /// Every process-wide lock terrio's modules list for a fork is free in the child, even when
