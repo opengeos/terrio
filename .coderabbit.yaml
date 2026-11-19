@@ -1,0 +1,9 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+reviews:
+  auto_review:
+    enabled: true
+    # Review a pull request when it opens, not again on every push: incremental
+    # reviews exhaust the free OSS quota. Comment `@coderabbitai review` to re-review.
+    auto_incremental_review: false
+    drafts: false
+    ignore_title_keywords: ["Release"]
