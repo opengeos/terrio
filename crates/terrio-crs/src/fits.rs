@@ -3,8 +3,9 @@
 //! Whether a CRS fits a registered code, compared once (#1058 step 4), as PROJ 9.9.0 compares a
 //! CRS with its database's (`isEquivalentTo`, `identify()`): its kind, its vertical CRS, its
 //! datum, its dimension and its content (conversion and ellipsoid), each reported in a [`Fit`].
-//! The functions that keep a declared code ([`declared_fits`], [`esri_fits`]) or identify one
-//! ([`identify_by_shared_name`], and `identify_epsg`'s search) read that report, each by its rule.
+//! The functions that keep a declared code ([`declared_fits`], [`esri_fits`]) read that report,
+//! each by its rule; those that identify one ([`identify_by_shared_name`], and `identify_epsg`'s
+//! search) compare content by the same [`same_content`].
 //!
 //! The comparison is written to match PROJ's results, which are checked in tests; it is not a
 //! translation of PROJ's code.
@@ -68,8 +69,9 @@ pub(crate) struct Datums {
 
 impl Datums {
     pub(crate) fn of(wkt: &str) -> Self {
-        let name = datum_name(wkt);
-        let Some(datum) = crate::wkt_datum(wkt) else { return Self { name, ..Self::default() } };
+        let Some(root) = wkt1::parse(wkt) else { return Self::default() };
+        let name = first_datum_name(&root);
+        let Some(datum) = root.find(keywords::GEODETIC_DATUM) else { return Self { name, ..Self::default() } };
         if let Some(code) = datum.epsg() {
             return Self { codes: vec![code], by_id: true, others: &[], name };
         }
@@ -78,21 +80,17 @@ impl Datums {
     }
 }
 
-/// The name of a WKT definition's geodetic datum (`DATUM`, `GEODETICDATUM`, `TRF` or a datum
-/// ensemble, as [`Datums::of`] finds it), its first one (a compound or bound CRS's horizontal or
-/// source CRS).
-pub(crate) fn datum_name(wkt: &str) -> Option<String> {
-    // A datum node without a quoted name gives none, and the search goes on after it.
-    fn find(n: &wkt1::Node) -> Option<String> {
-        if n.is(keywords::GEODETIC_DATUM) {
-            return n.name().map(str::to_string);
-        }
-        n.args.iter().find_map(|a| match a {
-            wkt1::Arg::Node(c) => find(c),
-            _ => None,
-        })
+/// The name of the first geodetic datum under a node (`DATUM`, `GEODETICDATUM`, `TRF` or a datum
+/// ensemble, as [`Datums::of`] finds it: a compound or bound CRS's horizontal or source CRS's). A
+/// datum node without a quoted name gives none, and the search goes on after it.
+fn first_datum_name(n: &wkt1::Node) -> Option<String> {
+    if n.is(keywords::GEODETIC_DATUM) {
+        return n.name().map(str::to_string);
     }
-    find(&wkt1::parse(wkt)?)
+    n.args.iter().find_map(|a| match a {
+        wkt1::Arg::Node(c) => first_datum_name(c),
+        _ => None,
+    })
 }
 
 /// How a horizontal CRS's WKT is on the datum of the registry's CRS `code` (`theirs`), as
@@ -177,12 +175,13 @@ fn esri_datum(wkt: &str, registered: &str) -> Match {
     }
 }
 
-/// A WKT's fit to a code, component by component, compared in order: a component after one
-/// that does not fit is not compared (`None`).
+/// A WKT's fit to a code, component by component, in the order each constructor compares them:
+/// a component after one that does not fit is not compared (`None`).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Fit {
-    /// Of the code's kind: a horizontal or compound CRS against a code terrio builds, a vertical
-    /// CRS against its own vertical code.
+    /// Of the code's kind: a horizontal or compound CRS against a code terrio builds (or, content
+    /// terrio cannot read, against one it cannot build either), a vertical CRS against its own
+    /// vertical code.
     pub kind: Option<bool>,
     /// A compound CRS's vertical CRS is the code's (by code or datum name, unit and direction);
     /// a CRS without one is not a compound code.
@@ -353,7 +352,7 @@ fn compound_vertical_fits(v: &str, theirs: &Def) -> bool {
         return false;
     }
     let Some((to_meter, down)) = crate::vertical_axis(v) else { return false };
-    (to_meter - their_vertical.to_meter).abs() <= 1e-9 * their_vertical.to_meter && down == their_vertical.down
+    !((to_meter - their_vertical.to_meter).abs() > 1e-9 * their_vertical.to_meter || down != their_vertical.down)
 }
 
 /// Whether a horizontal CRS whose content terrio cannot read is the EPSG CRS `code`: by the

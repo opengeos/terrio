@@ -1632,7 +1632,7 @@ fn wkt_datums(wkt: &str) -> Vec<u32> {
 }
 
 /// The first geodetic datum (or datum ensemble) node of a WKT definition.
-pub(crate) fn wkt_datum(wkt: &str) -> Option<wkt1::Node> {
+fn wkt_datum(wkt: &str) -> Option<wkt1::Node> {
     wkt1::parse(wkt).and_then(|root| root.find(keywords::GEODETIC_DATUM).cloned())
 }
 
