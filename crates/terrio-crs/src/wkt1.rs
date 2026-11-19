@@ -656,10 +656,11 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
                 return None;
             }
             out.push("+proj=merc".into());
-            let parallel = origin.filter(|v| method == "mercator1sp" && *v != 0.0 && k.is_none_or(|k| k == 1.0));
+            // The latitude of origin as the other methods read it (in degrees, whatever the unit).
+            let parallel = lat_0.filter(|v| method == "mercator1sp" && *v != 0.0 && k.is_none_or(|k| k == 1.0));
             match parallel {
-                Some(_) => {
-                    push(&mut out, "lat_ts", lat_0);
+                Some(parallel) => {
+                    push(&mut out, "lat_ts", Some(parallel));
                     push(&mut out, "lon_0", lon_0);
                 }
                 None => {
