@@ -9,6 +9,10 @@
 //!   then easting as easting then northing), within 1 mm;
 //! - the `+axis` of PROJ's `to_proj4()`: none for a coordinate system's axes, those of
 //!   south-orientated Transverse Mercator (`wsu`) and of Krovak's south and west (`swu`).
+//!
+//! It also holds the WKT 2 of Transverse Mercator with a CS whose axes are not one along east-west
+//! and one along north-south (`south, up`, `northNorthEast`, one direction twice), which PROJ reads
+//! east then north, and PROJ's coordinates of a point in it.
 
 use serde_json::Value;
 use terrio_crs::{SpatialRef, Transformer};
@@ -80,4 +84,37 @@ fn wkt2_exports_follow_geographic_and_method_axis_rules() {
     assert!(custom.contains(r#"METHOD["custom",ID["EPSG",9808]]"#), "{custom}");
     let proj = SpatialRef::from_wkt(&custom).to_proj4().unwrap();
     assert!(proj.split_whitespace().any(|t| t == "+axis=wsu"), "{custom}: {proj}");
+}
+
+/// A WKT 2 projected CS with an axis along neither east-west nor north-south (`south, up`), or
+/// one direction twice, is read east then north, as PROJ 9.9.0 reads it, not as `+axis=esu`.
+/// East and west, or north and south, which PROJ refuses, keep terrio's reading: west or south.
+#[test]
+fn wkt2_axes_along_neither_line_are_read_east_north_as_proj_does() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let data: Value = serde_json::from_str(include_str!("data/wkt1_axes.json")).unwrap();
+    let cases = data["other_axes"].as_array().unwrap();
+    assert_eq!(cases.len(), 8);
+    let src = SpatialRef::from_proj4("+proj=longlat +datum=WGS84").unwrap();
+    let num = |v: &Value, i: usize| v[i].as_f64().unwrap();
+    for case in cases {
+        let wkt = case["wkt"].as_str().unwrap();
+        let crs = SpatialRef::from_wkt(wkt);
+        let proj = crs.to_proj4().unwrap();
+        let axis = proj.split_whitespace().find(|t| t.starts_with("+axis="));
+        assert_eq!(axis, case["proj4_axis"].as_str(), "{wkt}: {proj}");
+        let (lon, lat) = (num(&case["point"], 0), num(&case["point"], 1));
+        let (x, y) = Transformer::new(&src, &crs).unwrap().transform(lon, lat).unwrap();
+        let (ex, ey) = (num(&case["proj"], 0), num(&case["proj"], 1));
+        assert!((x - ex).abs() < 1e-3 && (y - ey).abs() < 1e-3, "{wkt}: ({x}, {y}), PROJ ({ex}, {ey})");
+    }
+    // East and west is read west then north, north and south east then south.
+    let (wkt, (ex, ey)) = (cases[0]["wkt"].as_str().unwrap(), (num(&cases[0]["proj"], 0), num(&cases[0]["proj"], 1)));
+    for ((a, b), (sx, sy)) in [(("east", "west"), (-1.0, 1.0)), (("north", "south"), (1.0, -1.0))] {
+        let line = wkt.replace(r#""a",south"#, &format!(r#""a",{a}"#)).replace(r#""b",up"#, &format!(r#""b",{b}"#));
+        let crs = SpatialRef::from_wkt(&line);
+        let (x, y) = Transformer::new(&src, &crs).unwrap().transform(18.5, -33.9).unwrap();
+        assert!((x - sx * ex).abs() < 1e-3 && (y - sy * ey).abs() < 1e-3, "{line}: ({x}, {y})");
+    }
 }
