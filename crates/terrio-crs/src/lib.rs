@@ -2104,9 +2104,8 @@ fn looks_like_wkt(s: &str) -> bool {
 
 /// The name in a WKT definition's outermost node.
 fn wkt_name(wkt: &str) -> Option<String> {
-    let start = wkt.find('"')? + 1;
-    let end = start + wkt[start..].find('"')?;
-    let name = &wkt[start..end];
+    let root = crate::parsed::tree(wkt)?;
+    let name = root.name()?;
     // Generated definitions append the code: `WGS 84 / UTM zone 33N (EPSG:32633)`.
     let name = match name.rfind(" (EPSG:") {
         Some(i) if name.ends_with(')') => &name[..i],
