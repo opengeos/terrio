@@ -70,6 +70,11 @@ STRICT_PROJ_STRINGS = [
     "+proj=eqearth +lon_0=150 +ellps=WGS84 +units=m",
     "+proj=eqearth +lon_0=150 +x_0=0 +y_0=0 +units=m +a=6378137.0 +rf=298.257223563",
     "+proj=lcc +lat_1=40 +lat_2=50 +k=0.99 +ellps=WGS84 +units=m",
+    # LCC with its parallel given twice is 2SP, with one at the origin 1SP (#1012 item 61).
+    "+proj=lcc +lat_0=45 +lat_1=45 +lat_2=45 +lon_0=3 +x_0=700000 +y_0=6600000 +ellps=GRS80 +units=m",
+    "+proj=lcc +lat_0=45 +lat_1=45 +lon_0=3 +x_0=700000 +y_0=6600000 +ellps=GRS80 +units=m",
+    # South-orientated axes with a height down: PROJ's WKT 1 has west and south axes.
+    "+proj=tmerc +lon_0=25 +x_0=1000 +ellps=WGS84 +axis=wsd +units=m",
     (
         "+proj=col_urban +lat_0=7.88893673611111 +lon_0=-72.50287095 +x_0=842805.406 +y_0=1364404.57 "
         "+h_0=308 +ellps=GRS80 +units=m"
