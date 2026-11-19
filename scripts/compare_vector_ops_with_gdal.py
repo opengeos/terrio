@@ -719,6 +719,7 @@ def main() -> int:
                 print(line, flush=True)
                 lines.append(line)
             print()
+    print("# vector comparisons complete", flush=True)
     return 1 if any(" DIFF " in l or " ERROR " in l for l in lines) else 0
 
 

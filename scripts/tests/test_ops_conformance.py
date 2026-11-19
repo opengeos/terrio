@@ -78,13 +78,17 @@ class VectorOpsReportTests(unittest.TestCase):
 
     def test_subprocess_failure_cannot_hide_behind_completed_cases(self):
         """Distinguish unexpected exits, reported differences and successful runs."""
-        for code, status, stderr, expected_error in [
-            (1, "OK", "unexpected comparison failure", True),
-            (1, "DIFF CRS differs", "", False),
-            (0, "OK", "", False),
+        for code, status, stderr, completed, expected_error in [
+            (1, "OK", "unexpected comparison failure", False, True),
+            (1, "DIFF CRS differs", "unexpected comparison failure", False, True),
+            (1, "DIFF CRS differs", "", True, False),
+            (0, "OK", "", True, False),
+            (0, "OK", "", False, True),
         ]:
             with self.subTest(code=code, status=status):
                 output = f"## rasterize background vs gdal_rasterize\ncase  {status}\n"
+                if completed:
+                    output += "# vector comparisons complete\n"
                 with patch.object(conformance, "run", return_value=(code, output, stderr)):
                     result = conformance.suite_vector_ops(SimpleNamespace(data="unused", terrio="unused"))
                 self.assertEqual(len(result.cases), 1)
