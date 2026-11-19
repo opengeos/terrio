@@ -84,6 +84,7 @@ mod grid;
 mod iau;
 mod keywords;
 mod math;
+mod methods;
 #[cfg(test)]
 mod model;
 mod params;

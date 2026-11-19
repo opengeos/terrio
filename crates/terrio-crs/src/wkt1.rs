@@ -983,7 +983,7 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
         }
         // World projections of a central meridian, as terrio writes them.
         m => {
-            let (proj, _) = super::wkt1_write::WORLD.iter().find(|(_, w)| norm(w) == m)?;
+            let proj = crate::methods::WORLD.iter().find(|w| w.wkt1.is_some_and(|n| norm(n) == m))?.proj;
             out.push(format!("+proj={proj}"));
             push(&mut out, "lon_0", lon_0);
         }

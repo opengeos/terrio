@@ -18,6 +18,7 @@ Terrio files derived from PROJ source files (each file's header names them):
   crates/terrio-crs/src/def.rs
   crates/terrio-crs/src/grid.rs
   crates/terrio-crs/src/math.rs
+  crates/terrio-crs/src/methods.rs
   crates/terrio-crs/src/params.rs
   crates/terrio-crs/src/projections.rs
   crates/terrio-crs/src/projections/perspective.rs
@@ -138,8 +139,8 @@ Geodetic Parameter Dataset (https://epsg.org), owned by the International Associ
 Gas Producers (IOGP), through PROJ's database and GDAL. They are redistributed under the EPSG
 Dataset Terms of Use (https://epsg.org/terms-of-use.html), with this attribution. They are not the EPSG Dataset itself, and
 terrio is not endorsed by IOGP. The EPSG method and parameter names and codes in
-crates/terrio-crs/src/projjson_write.rs and crates/terrio/src/drivers/vector/projjson.rs come
-from the same dataset.
+crates/terrio-crs/src/projjson_write.rs, crates/terrio-crs/src/methods.rs and
+crates/terrio/src/drivers/vector/projjson.rs come from the same dataset.
 crates/terrio-crs/src/projjson_db.tsv.zst is derived from the same dataset (EPSG v12.029), through
 PROJ 9.7.1's database, under the same terms; the EPSG method and parameter names and codes in
 crates/terrio-crs/src/projjson_gdal.rs come from it too.

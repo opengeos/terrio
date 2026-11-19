@@ -905,28 +905,11 @@ fn method(p: &Params, to_meter: f64) -> Option<Method> {
         "mill" => m("Miller_Cylindrical", lon_only("longitude_of_center")),
         "robin" => m("Robinson", lon_only("longitude_of_center")),
         name => {
-            let (_, method) = WORLD.iter().find(|(n, _)| *n == name)?;
+            let method = crate::methods::WORLD.iter().find(|w| w.proj == name)?.wkt1?;
             m(method, lon_only("central_meridian"))
         }
     })
 }
-
-/// World projections of a central meridian, by PROJ name, and their WKT 1 methods.
-pub(crate) const WORLD: [(&str, &str); 13] = [
-    ("vandg", "VanDerGrinten"),
-    ("eqearth", "Equal_Earth"),
-    ("moll", "Mollweide"),
-    ("eck1", "Eckert_I"),
-    ("eck2", "Eckert_II"),
-    ("eck3", "Eckert_III"),
-    ("eck4", "Eckert_IV"),
-    ("eck5", "Eckert_V"),
-    ("eck6", "Eckert_VI"),
-    ("gall", "Gall_Stereographic"),
-    ("aitoff", "Aitoff"),
-    ("natearth", "Natural_Earth"),
-    ("igh", "Interrupted_Goode_Homolosine"),
-];
 
 #[cfg(test)]
 mod tests {

@@ -343,28 +343,10 @@ fn geographic1(g: &Node, outer_id: bool) -> Result<Map<String, Value>> {
     Ok(m)
 }
 
-/// An EPSG parameter: name, code, and kind (`a`ngle, `l`ength or `s`cale).
-type Param = (&'static str, u32, char);
-const LAT_NAT: Param = ("Latitude of natural origin", 8801, 'a');
-const LON_NAT: Param = ("Longitude of natural origin", 8802, 'a');
-const K_NAT: Param = ("Scale factor at natural origin", 8805, 's');
-const FE: Param = ("False easting", 8806, 'l');
-const FN: Param = ("False northing", 8807, 'l');
-const LAT_FO: Param = ("Latitude of false origin", 8821, 'a');
-const LON_FO: Param = ("Longitude of false origin", 8822, 'a');
-const SP1: Param = ("Latitude of 1st standard parallel", 8823, 'a');
-const SP2: Param = ("Latitude of 2nd standard parallel", 8824, 'a');
-const E_FO: Param = ("Easting at false origin", 8826, 'l');
-const N_FO: Param = ("Northing at false origin", 8827, 'l');
-const LAT_PC: Param = ("Latitude of projection centre", 8811, 'a');
-const LON_PC: Param = ("Longitude of projection centre", 8812, 'a');
-const AZIMUTH: Param = ("Azimuth at projection centre", 8813, 'a');
-const GAMMA: Param = ("Angle from Rectified to Skew Grid", 8814, 'a');
-const K_PC: Param = ("Scale factor at projection centre", 8815, 's');
-const E_PC: Param = ("Easting at projection centre", 8816, 'l');
-const N_PC: Param = ("Northing at projection centre", 8817, 'l');
-const LAT_SP: Param = ("Latitude of standard parallel", 8832, 'a');
-const LON_ORIGIN: Param = ("Longitude of origin", 8833, 'a');
+use crate::methods::{
+    AZIMUTH, FE, FE_CENTRE, FE_FALSE, FN, FN_CENTRE, FN_FALSE, GAMMA, K_CENTRE, K_NAT, Kind, LAT_CENTRE, LAT_FALSE, LAT_NAT, LAT_TS,
+    LON_CENTRE, LON_FALSE, LON_NAT, LON_ORIGIN, Param, SP1, SP2,
+};
 
 /// GDAL's WKT 1 parameter names (normalized) for an EPSG parameter.
 pub(crate) fn wkt1_names(code: u32) -> &'static [&'static str] {
@@ -386,7 +368,7 @@ pub(crate) fn wkt1_names(code: u32) -> &'static [&'static str] {
 /// The EPSG method (name and code, 0 for PROJ's own) and parameters of a WKT 1 projection.
 pub(crate) fn method1(name: &str, param: &dyn Fn(&[&str]) -> Option<f64>) -> Option<(&'static str, u32, &'static [Param])> {
     const NAT: &[Param] = &[LAT_NAT, LON_NAT, K_NAT, FE, FN];
-    const FO: &[Param] = &[LAT_FO, LON_FO, SP1, SP2, E_FO, N_FO];
+    const FO: &[Param] = &[LAT_FALSE, LON_FALSE, SP1, SP2, FE_FALSE, FN_FALSE];
     const AZ: &[Param] = &[LAT_NAT, LON_NAT, FE, FN];
     const WORLD: &[Param] = &[LON_NAT, FE, FN];
     Some(match norm(name).as_str() {
@@ -401,12 +383,14 @@ pub(crate) fn method1(name: &str, param: &dyn Fn(&[&str]) -> Option<f64>) -> Opt
         "polarstereographic" if param(&["latitudeoforigin"]).is_some_and(|l| (l.abs() - 90.0).abs() < 1e-12) => {
             ("Polar Stereographic (variant A)", 9810, NAT)
         }
-        "polarstereographic" => ("Polar Stereographic (variant B)", 9829, &[LAT_SP, LON_ORIGIN, FE, FN]),
+        "polarstereographic" => ("Polar Stereographic (variant B)", 9829, &[LAT_TS, LON_ORIGIN, FE, FN]),
         "obliquestereographic" => ("Oblique Stereographic", 9809, NAT),
         "hotineobliquemercatorazimuthcenter" => {
-            ("Hotine Oblique Mercator (variant B)", 9815, &[LAT_PC, LON_PC, AZIMUTH, GAMMA, K_PC, E_PC, N_PC])
+            ("Hotine Oblique Mercator (variant B)", 9815, &[LAT_CENTRE, LON_CENTRE, AZIMUTH, GAMMA, K_CENTRE, FE_CENTRE, FN_CENTRE])
         }
-        "hotineobliquemercator" => ("Hotine Oblique Mercator (variant A)", 9812, &[LAT_PC, LON_PC, AZIMUTH, GAMMA, K_PC, FE, FN]),
+        "hotineobliquemercator" => {
+            ("Hotine Oblique Mercator (variant A)", 9812, &[LAT_CENTRE, LON_CENTRE, AZIMUTH, GAMMA, K_CENTRE, FE, FN])
+        }
         "cassinisoldner" => ("Cassini-Soldner", 9806, AZ),
         "cylindricalequalarea" => ("Lambert Cylindrical Equal Area", 9835, &[SP1, LON_NAT, FE, FN]),
         "mollweide" => ("Mollweide", 0, WORLD),
@@ -447,15 +431,15 @@ fn projected1(p: &Node) -> Result<Map<String, Value>> {
     };
     let mut values = Vec::new();
     let mut parameters = Vec::new();
-    for &(pname, pcode, kind) in list {
-        let v = param(wkt1_names(pcode)).unwrap_or(if kind == 's' { 1.0 } else { 0.0 });
+    for p in list {
+        let v = param(wkt1_names(p.code)).unwrap_or(if p.kind == Kind::Scale { 1.0 } else { 0.0 });
         values.push(v);
-        let unit = match kind {
-            'a' => angular.clone(),
-            's' => json!("unity"),
-            _ => linear.clone(),
+        let unit = match p.kind {
+            Kind::Angle => angular.clone(),
+            Kind::Scale => json!("unity"),
+            Kind::Length => linear.clone(),
         };
-        parameters.push(json!({"name": pname, "value": num(v), "unit": unit, "id": id("EPSG", pcode)}));
+        parameters.push(json!({"name": p.name, "value": num(v), "unit": unit, "id": id("EPSG", p.code)}));
     }
     let mut m = json!({"name": method});
     if mcode != 0 {

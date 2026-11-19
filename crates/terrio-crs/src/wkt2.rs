@@ -437,7 +437,7 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         push("lat_ts", p.get(LAT_TRUE_SCALE));
         push("lon_0", lon_0());
         "wag3"
-    } else if let Some(proj) = WORLD.iter().find(|(n, _)| *n == name).map(|(_, p)| *p) {
+    } else if let Some(proj) = crate::methods::WORLD.iter().find(|w| w.wkt2 == Some(name.as_ref())).map(|w| w.proj) {
         push("lon_0", lon_0());
         // A latitude of natural origin is ignored, as PROJ 9.8.1 ignores it (its mapping of these
         // methods has none): Robinson and Sinusoidal with one are read.
@@ -659,39 +659,6 @@ fn proj_method(conv: &Node, method: &Node, ang: f64, to_meter: f64) -> Result<Op
     Ok(Some((name, params)))
 }
 
-/// Pseudocylindrical and other world projections PROJ names without an EPSG method, which take a
-/// central meridian only.
-const WORLD: [(&str, &str); 27] = [
-    ("mollweide", "moll"),
-    ("robinson", "robin"),
-    ("sinusoidal", "sinu"),
-    ("eckerti", "eck1"),
-    ("eckertii", "eck2"),
-    ("eckertiii", "eck3"),
-    ("eckertiv", "eck4"),
-    ("eckertv", "eck5"),
-    ("eckertvi", "eck6"),
-    ("millercylindrical", "mill"),
-    ("vandergrinten", "vandg"),
-    ("naturalearth", "natearth"),
-    ("quarticauthalic", "qua_aut"),
-    // PROJ's uninterrupted goode, which terrio refuses; it is not igh.
-    ("goodehomolosine", "goode"),
-    ("interruptedgoodehomolosine", "igh"),
-    ("aitoff", "aitoff"),
-    ("crasterparabolic", "crast"),
-    ("naturalearthii", "natearth2"),
-    ("patterson", "patterson"),
-    ("times", "times"),
-    ("flatpolarquartic", "mbtfpq"),
-    ("wagneri", "wag1"),
-    ("wagnerii", "wag2"),
-    ("wagneriv", "wag4"),
-    ("wagnerv", "wag5"),
-    ("wagnervi", "wag6"),
-    ("gallstereographic", "gall"),
-];
-
 /// The axis order of a projected CS as PROJ's `+axis`, when not east then north. As GDAL's
 /// traditional GIS order, north-east is read east-north. Other direction pairs retain their
 /// declared order, including north-west and south-east.
@@ -864,58 +831,13 @@ pub(crate) fn degrees(radians: f64) -> f64 {
     [1.0, 0.9, 1.0 / 3600.0].into_iter().find(|u| (d - u).abs() < 1e-9 * u).unwrap_or(d)
 }
 
-/// The kind of a parameter's value.
-#[derive(Clone, Copy, PartialEq)]
-enum Kind {
-    Angle,
-    Length,
-    Scale,
-}
+use crate::methods::{
+    AZIMUTH, CO_LAT_CONE, FE, FE_CENTRE, FE_FALSE, FN, FN_CENTRE, FN_FALSE, GAMMA, HEIGHT_TOPO, K_CENTRE, K_NAT, K_PSEUDO_SP, Kind,
+    LAT_CENTRE, LAT_FALSE, LAT_NAT, LAT_P1, LAT_P2, LAT_PSEUDO_SP, LAT_TOPO, LAT_TRUE_SCALE, LAT_TS, LON_CENTRE, LON_FALSE, LON_INITIAL,
+    LON_NAT, LON_ORIGIN, LON_P1, LON_P2, LON_TOPO, Param, SAT_HEIGHT, SP1, SP2, VIEW_HEIGHT, ZONE_WIDTH,
+};
 
-/// A parameter: its normalised EPSG names and its EPSG code.
-type Param = (&'static [&'static str], u32, Kind);
-
-const LAT_NAT: Param = (&["latitudeofnaturalorigin", "latitudeoforigin"], 8801, Kind::Angle);
-const LON_NAT: Param = (&["longitudeofnaturalorigin", "centralmeridian"], 8802, Kind::Angle);
-const K_NAT: Param = (&["scalefactoratnaturalorigin"], 8805, Kind::Scale);
-const FE: Param = (&["falseeasting"], 8806, Kind::Length);
-const FN: Param = (&["falsenorthing"], 8807, Kind::Length);
-const LAT_CENTRE: Param = (&["latitudeofprojectioncentre"], 8811, Kind::Angle);
-const LON_CENTRE: Param = (&["longitudeofprojectioncentre"], 8812, Kind::Angle);
-const AZIMUTH: Param = (&["azimuthatprojectioncentre", "azimuthofinitialline"], 8813, Kind::Angle);
-const GAMMA: Param = (&["anglefromrectifiedtoskewgrid"], 8814, Kind::Angle);
-const K_CENTRE: Param = (&["scalefactoratprojectioncentre", "scalefactoroninitialline"], 8815, Kind::Scale);
-const FE_CENTRE: Param = (&["eastingatprojectioncentre"], 8816, Kind::Length);
-const FN_CENTRE: Param = (&["northingatprojectioncentre"], 8817, Kind::Length);
-const LAT_FALSE: Param = (&["latitudeoffalseorigin"], 8821, Kind::Angle);
-const LON_FALSE: Param = (&["longitudeoffalseorigin"], 8822, Kind::Angle);
-const SP1: Param = (&["latitudeof1ststandardparallel"], 8823, Kind::Angle);
-const SP2: Param = (&["latitudeof2ndstandardparallel"], 8824, Kind::Angle);
-const FE_FALSE: Param = (&["eastingatfalseorigin"], 8826, Kind::Length);
-const FN_FALSE: Param = (&["northingatfalseorigin"], 8827, Kind::Length);
-const LAT_TS: Param = (&["latitudeofstandardparallel"], 8832, Kind::Angle);
-const LON_ORIGIN: Param = (&["longitudeoforigin"], 8833, Kind::Angle);
-
-const LON_INITIAL: Param = (&["initiallongitude"], 8830, Kind::Angle);
-const ZONE_WIDTH: Param = (&["zonewidth"], 8831, Kind::Angle);
-
-const LAT_TOPO: Param = (&["latitudeoftopocentricorigin"], 8834, Kind::Angle);
-const LON_TOPO: Param = (&["longitudeoftopocentricorigin"], 8835, Kind::Angle);
-const HEIGHT_TOPO: Param = (&["ellipsoidalheightoftopocentricorigin"], 8836, Kind::Length);
-const VIEW_HEIGHT: Param = (&["viewpointheight"], 8840, Kind::Length);
-
-const CO_LAT_CONE: Param = (&["colatitudeofconeaxis"], 1036, Kind::Angle);
-const LAT_PSEUDO_SP: Param = (&["latitudeofpseudostandardparallel"], 8818, Kind::Angle);
-const K_PSEUDO_SP: Param = (&["scalefactoronpseudostandardparallel"], 8819, Kind::Scale);
-
-/// PROJ's parameters without an EPSG code: codes down from `u32::MAX`, which match no `ID`.
-const SAT_HEIGHT: Param = (&["satelliteheight"], u32::MAX, Kind::Length);
-const LAT_P1: Param = (&["latitudeof1stpoint"], u32::MAX - 1, Kind::Angle);
-const LON_P1: Param = (&["longitudeof1stpoint"], u32::MAX - 2, Kind::Angle);
-const LAT_P2: Param = (&["latitudeof2ndpoint"], u32::MAX - 3, Kind::Angle);
-const LON_P2: Param = (&["longitudeof2ndpoint"], u32::MAX - 4, Kind::Angle);
-const LAT_TRUE_SCALE: Param = (&["latitudeoftruescale"], u32::MAX - 5, Kind::Angle);
-
+/// The parameters the WKT 2 reader takes.
 const PARAMS: [Param; 35] = [
     LAT_TOPO,
     LON_TOPO,
@@ -964,20 +886,20 @@ struct Params {
 /// Canonical identity and SI unit kind of a supported projection parameter.
 pub(crate) fn parameter_info(name: &str, code: Option<u32>) -> Option<(u32, &'static str)> {
     let key = norm(name);
-    let by_name = PARAMS.iter().find(|(names, _, _)| names.contains(&key.as_str()));
-    let by_code = code.and_then(|c| PARAMS.iter().find(|(_, id, _)| *id == c));
+    let by_name = PARAMS.iter().find(|p| p.named(&key));
+    let by_code = code.and_then(|c| PARAMS.iter().find(|p| p.code == c));
     if let (Some(a), Some(b)) = (by_name, by_code)
-        && a.1 != b.1
+        && a.code != b.code
     {
         return None;
     }
-    let (_, id, kind) = by_code.or(by_name)?;
-    let id = if *id == FE_FALSE.1 {
-        FE.1
-    } else if *id == FN_FALSE.1 {
-        FN.1
+    let Param { code: id, kind, .. } = *by_code.or(by_name)?;
+    let id = if id == FE_FALSE.code {
+        FE.code
+    } else if id == FN_FALSE.code {
+        FN.code
     } else {
-        *id
+        id
     };
     Some((
         id,
@@ -995,25 +917,23 @@ impl Params {
         for n in conv.children("PARAMETER") {
             let name = n.name().unwrap_or("");
             let key = norm(name);
-            let param = PARAMS
-                .iter()
-                .find(|(names, code, _)| names.contains(&key.as_str()) || n.epsg() == Some(*code))
-                .ok_or_else(|| bad(&format!("parameter '{name}'")))?;
+            let param =
+                PARAMS.iter().find(|p| p.named(&key) || n.epsg() == Some(p.code)).ok_or_else(|| bad(&format!("parameter '{name}'")))?;
             let v = n.num(1).ok_or_else(|| bad(&format!("parameter '{name}' without a value")))?;
             let unit = ["ANGLEUNIT", "LENGTHUNIT", "SCALEUNIT", "UNIT"].iter().find_map(|k| n.child(k)).and_then(|u| u.num(1));
-            let v = match param.2 {
+            let v = match param.kind {
                 Kind::Angle => v * unit.map(degrees).unwrap_or(ang),
                 Kind::Length => v * unit.unwrap_or(to_meter),
                 Kind::Scale => v * unit.unwrap_or(1.0),
             };
-            values.push((param.1, name.to_string(), v));
+            values.push((param.code, name.to_string(), v));
         }
         // Easting and northing at the false origin are the false easting and northing.
         for v in &mut values {
-            if v.0 == FE_FALSE.1 {
-                v.0 = FE.1;
-            } else if v.0 == FN_FALSE.1 {
-                v.0 = FN.1;
+            if v.0 == FE_FALSE.code {
+                v.0 = FE.code;
+            } else if v.0 == FN_FALSE.code {
+                v.0 = FN.code;
             }
         }
         Ok(Self { values, used: Default::default() })
@@ -1021,14 +941,14 @@ impl Params {
 
     /// The value of a parameter, marked used.
     fn get(&self, p: Param) -> Option<f64> {
-        let v = self.values.iter().find(|v| v.0 == p.1)?;
-        self.used.borrow_mut().push(p.1);
+        let v = self.values.iter().find(|v| v.0 == p.code)?;
+        self.used.borrow_mut().push(p.code);
         Some(v.2)
     }
 
     /// Marks a parameter used without reading it: one PROJ ignores for the method.
     fn ignore(&self, p: Param) {
-        self.used.borrow_mut().push(p.1);
+        self.used.borrow_mut().push(p.code);
     }
 
     /// The name of a parameter no method arm used, with a value that matters (not 0).
