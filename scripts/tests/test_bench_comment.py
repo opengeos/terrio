@@ -1,8 +1,9 @@
-"""The bench workflow's comment flags 10% changes of instructions or estimated cycles, marks
-benchmarks within that range green, says what each one runs, and marks only regressions for
-the label."""
+"""The bench workflow's comment counts benchmarks worse, better or matching main in its heading,
+lists each flagged measure first, folds the rest by area, and marks only regressions for the
+label."""
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -32,70 +33,49 @@ def comment(tmp_path, *summaries):
     return subprocess.run(run, check=True, capture_output=True, text=True).stdout
 
 
-def test_regression_and_improvement_are_flagged_first(tmp_path):
+def flagged_rows(out):
+    """The rows of the flagged table: those with a measure column."""
+    return [line for line in out.split("<details>")[0].splitlines() if line.startswith("| ") and " → " in line and not line.startswith("| | benchmark")]
+
+
+def test_worse_then_better_are_listed_with_bars(tmp_path):
     out = comment(
         tmp_path,
         summary("same", 1001, 1000),
         summary("faster", 75, 100),
         summary("slower", 1_400_000_000, 1_000_000_000),
     )
-    assert out.startswith("<!-- terrio-bench: regression -->\n")
-    assert "⚠️ **1 of 3 benchmarks got worse** than main:\n- warp_f32 slower: **+40.0% CPU**, **+40.0% speed**" in out
-    assert "✅ **1 of 3 got better**:\n- warp_f32 faster: **−25.0% CPU**, **−25.0% speed**" in out
-    shown, folded = out.split("<details><summary>🟢 1 not flagged</summary>")
-    rows = [line for line in shown.splitlines() if line.startswith("| ") and "→" in line]
-    assert rows == [
-        "| ⚠️ | `warp_f32 slower` | 1 G → 1.4 G (**+40.0%**) | 1 G → 1.4 G (**+40.0%**) |  |",
-        "| ✅ | `warp_f32 faster` | 100 → 75 (**−25.0%**) | 100 → 75 (**−25.0%**) |  |",
+    assert out.startswith("<!-- terrio-bench: regression -->\n### ⚠️ Performance: 1 worse, 1 better · 1 match main\n")
+    assert flagged_rows(out) == [
+        "| ⚠️ | `warp_f32 slower`<br><sub>Reprojection</sub> | CPU | 1 G → 1.4 G | **+40.0%** | `██████████▒▒▒▒` |",
+        "| ⚠️ |  | speed | 1 G → 1.4 G | **+40.0%** | `██████████▒▒▒▒` |",
+        "| ✅ | `warp_f32 faster`<br><sub>Reprojection</sub> | CPU | 100 → 75 | **−25.0%** | `████████░░` |",
+        "| ✅ |  | speed | 100 → 75 | **−25.0%** | `████████░░` |",
     ]
-    assert "| 🟢 | `warp_f32 same` | 1 k → 1 k (+0.10%) | 1 k → 1 k (+0.10%) |  |" in folded
+    assert "| ⚠️ Reprojection | 3 | ⚠️ 1 worse · ✅ 1 better | ⚠️ 1 worse · ✅ 1 better |  |" in out
+
+
+def test_all_matching_main_says_it_holds(tmp_path):
+    out = comment(tmp_path, summary("same", 1001, 1000), summary("noted", 1050, 1000))
+    assert out.startswith("### 🟢 Performance holds: all 2 benchmarks match main\nCPU, speed and memory all match main.\n")
+    assert flagged_rows(out) == []
+    assert "| 🟢 | `warp_f32 noted`<br><sub>Reprojection</sub> | 1 k → 1.05 k (+5.0%) | 1 k → 1.05 k (+5.0%) |  |" in out
 
 
 def test_cycles_alone_flag_a_regression(tmp_path):
     out = comment(tmp_path, summary("misses", 1000, 1000, cycles=(1500, 1000)))
     assert out.startswith("<!-- terrio-bench: regression -->\n")
-    assert "| ⚠️ | `warp_f32 misses` | 1 k (0%) | 1 k → 1.5 k (**+50.0%**) |  |" in out
+    assert [r.split(" | ")[2] for r in flagged_rows(out)] == ["speed"]
 
 
 def test_a_larger_drop_does_not_hide_a_regression(tmp_path):
     out = comment(tmp_path, summary("mixed", 1150, 1000, cycles=(500, 1000)))
-    assert out.startswith("<!-- terrio-bench: regression -->\n")
-    assert "⚠️ **1 of 1 benchmarks got worse** than main:\n- warp_f32 mixed: **+15.0% CPU**" in out
-
-
-def test_a_tiny_drop_reads_zero(tmp_path):
-    out = comment(tmp_path, summary("drift", 99_999, 100_000))
-    assert "| 🟢 | `warp_f32 drift` | 100 k → 100 k (0%) | 100 k → 100 k (0%) |  |" in out
+    assert out.startswith("<!-- terrio-bench: regression -->\n### ⚠️ Performance: 1 worse\n")
 
 
 def test_improvement_alone_sets_no_label(tmp_path):
     out = comment(tmp_path, summary("faster", 50, 100), summary("noted", 1050, 1000))
-    assert "regression -->" not in out
-    assert "| 🟢 | `warp_f32 noted` | 1 k → 1.05 k (+5.0%) | 1 k → 1.05 k (+5.0%) |  |" in out
-
-
-def test_all_within_threshold_is_green_and_folded(tmp_path):
-    out = comment(tmp_path, summary("same", 1001, 1000), summary("noted", 1050, 1000))
-    assert "🟢 **As fast and as lean as main.** No benchmark is flagged on CPU, speed or memory; the largest change is +5.0% CPU (warp_f32 noted)." in out
-    shown = out.split("<details><summary>🟢 2 not flagged</summary>")[0]
-    assert "| 🟢 |" not in shown
-
-
-def test_known_benchmarks_say_what_they_run(tmp_path):
-    out = comment(tmp_path, summary("slope", 54, 54, function="dem_f32"))
-    assert "| 🟢 | Slope of a 1 M-pixel DEM<br>`dem_f32 slope` | 54 (0%) | 54 (0%) |  |" in out
-
-
-def test_without_baseline_counts_are_listed(tmp_path):
-    out = comment(tmp_path, summary("first", 2_000_000))
-    assert "main has no benchmarks yet" in out
-    assert "| 🆕 | `warp_f32 first` | 2 M (new) | 2 M (new) |  |" in out
-
-
-def test_from_zero_reads_new(tmp_path):
-    out = comment(tmp_path, summary("grew", 500, 0))
-    assert "| ⚠️ | `warp_f32 grew` | 0 → 500 (**new**) | 0 → 500 (**new**) |  |" in out
-    assert "inf" not in out
+    assert out.startswith("### ✅ Performance: 1 better · 1 match main\n")
 
 
 def test_memory_flags_at_10_percent_and_1_mb(tmp_path):
@@ -106,32 +86,48 @@ def test_memory_flags_at_10_percent_and_1_mb(tmp_path):
         summary("lean", 1000, 1000, memory=(4_000_000, 6_000_000)),
     )
     assert out.startswith("<!-- terrio-bench: regression -->\n")
-    assert "- warp_f32 doubled: **+100.0% memory**" in out
-    assert "| ⚠️ | `warp_f32 doubled` | 1 k (0%) | 1 k (0%) | 5 MB → 10 MB (**+100.0%**) |" in out
-    assert "| ✅ | `warp_f32 lean` | 1 k (0%) | 1 k (0%) | 6 MB → 4 MB (**−33.3%**) |" in out
+    assert flagged_rows(out) == [
+        "| ⚠️ | `warp_f32 doubled`<br><sub>Reprojection</sub> | memory | 5 MB → 10 MB | **+5 MB (+100.0%)** | `██████████▒▒▒▒▒▒▒▒▒▒` |",
+        "| ✅ | `warp_f32 lean`<br><sub>Reprojection</sub> | memory | 6 MB → 4 MB | **−2 MB (−33.3%)** | `███████░░░` |",
+    ]
     # +50% but only 100 kB: not flagged.
-    assert "| 🟢 | `warp_f32 small` | 1 k (0%) | 1 k (0%) | 200 kB → 300 kB (+50.0%) |" in out
+    assert "| 🟢 | `warp_f32 small`<br><sub>Reprojection</sub> | 1 k (0%) | 1 k (0%) | 200 kB → 300 kB (+50.0%) |" in out
 
 
-def test_memory_new_on_main_without_dhat(tmp_path):
-    out = comment(tmp_path, summary("first_mem", 1000, 1000, memory=(9_400_000, None)))
-    assert "| 🟢 | `warp_f32 first_mem` | 1 k (0%) | 1 k (0%) | 9.4 MB (new) |" in out
+def test_commands_show_their_command_line_and_section(tmp_path):
+    out = comment(tmp_path, summary("write_zstd_u8", 1200, 1000, function="cli"))
+    assert "| ⚠️ | `terrio translate --compress ZSTD`<br><sub>GeoTIFF encoding · `cli write_zstd_u8`</sub> | CPU |" in out
+    assert "| ⚠️ GeoTIFF encoding | 1 |" in out
+
+
+def test_known_benchmarks_say_what_they_run(tmp_path):
+    out = comment(tmp_path, summary("slope", 54, 30, function="dem_f32"))
+    assert "| ⚠️ | Slope of a 1 M-pixel DEM<br><sub>Terrain · `dem_f32 slope`</sub> | CPU |" in out
+
+
+def test_without_baseline_counts_are_listed(tmp_path):
+    out = comment(tmp_path, summary("first", 2_000_000))
+    assert out.startswith("### 🆕 Performance: 1 benchmark, none on main yet\n")
+    assert "| 🆕 | `warp_f32 first`<br><sub>Reprojection</sub> | 2 M (new) | 2 M (new) |  |" in out
+    assert "| 🆕 Reprojection | 1 (1 new) | 🆕 | 🆕 | 🆕 |" in out
+
+
+def test_new_benchmarks_beside_matching_ones(tmp_path):
+    out = comment(tmp_path, summary("same", 1000, 1000), summary("added", 500))
+    assert out.startswith("### 🟢 Performance holds: the benchmark matches main · 🆕 1 new\n")
+    assert "| 🟢 Reprojection | 2 (1 new) |" in out
+
+
+def test_from_zero_reads_new(tmp_path):
+    out = comment(tmp_path, summary("grew", 500, 0))
+    assert "| ⚠️ | `warp_f32 grew`<br><sub>Reprojection</sub> | CPU | 0 → 500 | **new** |  |" in out
+    assert not re.search(r"\binf\b", out)
 
 
 def test_a_change_that_rounds_to_10_is_flagged_as_shown(tmp_path):
     out = comment(tmp_path, summary("close", 10_996, 10_000), summary("over", 10_999, 10_000))
     assert "10 k → 11 k (+10.0%)" not in out
     assert "**+10.0%**" in out
-
-
-def test_verdict_says_from_0(tmp_path):
-    out = comment(tmp_path, summary("grew", 500, 0))
-    assert "- warp_f32 grew: **CPU from 0**, **speed from 0**" in out
-
-
-def test_fold_counts_green_and_new_apart(tmp_path):
-    out = comment(tmp_path, summary("same", 1000, 1000), summary("added", 500))
-    assert "<summary>🟢 1 not flagged · 🆕 1 new</summary>" in out
 
 
 def test_sizes_just_under_a_prefix_round_up(tmp_path):
@@ -144,4 +140,42 @@ def test_a_metric_only_main_has_is_left_blank(tmp_path):
     s = summary("gone", 1000, 1000, memory=(5, 5))
     del s["profiles"][1]["data"]["total"]["metrics"]["TotalUnits"]["values"]["new"]
     out = comment(tmp_path, s)
-    assert "| 🟢 | `warp_f32 gone` | 1 k (0%) | 1 k (0%) |  |" in out
+    assert "| 🟢 | `warp_f32 gone`<br><sub>Reprojection</sub> | 1 k (0%) | 1 k (0%) |  |" in out
+
+
+def test_footer_names_both_commits_last(tmp_path):
+    out = comment(tmp_path, summary("same", 1000, 1000))
+    assert out.rstrip().splitlines()[-1].startswith("<sub>main `aaaaaaa` → PR `bbbbbbb` ·")
+
+
+def test_each_flagged_row_is_marked_by_its_own_direction(tmp_path):
+    out = comment(tmp_path, summary("traded", 880, 1000, cycles=(1150, 1000)))
+    assert flagged_rows(out) == [
+        "| ✅ | `warp_f32 traded`<br><sub>Reprojection</sub> | CPU | 1 k → 880 | **−12.0%** | `█████████░` |",
+        "| ⚠️ |  | speed | 1 k → 1.15 k | **+15.0%** | `██████████▒▒` |",
+    ]
+
+
+def test_a_tiny_drop_reads_zero(tmp_path):
+    out = comment(tmp_path, summary("drift", 99_999, 100_000))
+    assert "| 100 k → 100 k (0%) | 100 k → 100 k (0%) |" in out
+
+
+def test_memory_new_on_main_without_dhat(tmp_path):
+    out = comment(tmp_path, summary("first_mem", 1000, 1000, memory=(9_400_000, None)))
+    assert "| 1 k (0%) | 1 k (0%) | 9.4 MB (new) |" in out
+
+
+def test_an_unmeasured_area_column_is_left_blank(tmp_path):
+    out = comment(tmp_path, summary("same", 1000, 1000))
+    assert "| 🟢 Reprojection | 1 | ✓ | ✓ |  |" in out
+
+
+def test_a_placeholder_after_a_name_reads_as_an_ellipsis(tmp_path):
+    out = comment(tmp_path, summary("calc", 1000, 1000, function="cli"))
+    assert "`terrio calc --input A=… --input B=… --calc A-B`<br><sub>Raster analysis · `cli calc`</sub>" in out
+
+
+def test_a_measure_main_lacks_is_not_ticked_in_its_area(tmp_path):
+    out = comment(tmp_path, summary("first_mem", 1000, 1000, memory=(9_400_000, None)))
+    assert "| 🟢 Reprojection | 1 | ✓ | ✓ |  |" in out

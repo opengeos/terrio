@@ -84,6 +84,7 @@ mod grid;
 mod iau;
 mod keywords;
 mod math;
+mod methods;
 #[cfg(test)]
 mod model;
 mod params;
@@ -1611,17 +1612,18 @@ pub(crate) fn esri_compound_wkt(wkt: &str) -> Option<String> {
     Some(wkt1::Node { key: "COMPD_CS".into(), args }.to_wkt()).filter(|w| w.len() <= wkt1::MAX_LEN)
 }
 
-/// The semi-major axis in metres of the first `SPHEROID` or `ELLIPSOID` of a WKT definition (in
-/// its `LENGTHUNIT`, as PROJ reads a WKT 2 ellipsoid in feet).
+/// The semi-major axis in metres of a WKT definition's ellipsoid, at its place (in its
+/// `LENGTHUNIT`, as PROJ reads a WKT 2 ellipsoid in feet): a projected CRS's base CRS's, a compound
+/// CRS's horizontal CRS's, a bound CRS's source CRS's.
 #[doc(hidden)]
 pub fn semi_major_axis(wkt: &str) -> Option<f64> {
-    Some(crate::parsed::tree(wkt)?.find(keywords::ELLIPSOID)?.ellipsoid()?.0)
+    Some(crate::parsed::tree(wkt)?.horizontal_ellipsoid()?.0)
 }
 
-/// The semi-major and semi-minor axes in metres of the first `SPHEROID` or `ELLIPSOID` of a WKT
-/// definition, from its axis and inverse flattening (0 for a sphere).
+/// The semi-major and semi-minor axes in metres of a WKT definition's ellipsoid, at its place (see
+/// [`wkt1::Node::horizontal_ellipsoid`]), from its axis and inverse flattening (0 for a sphere).
 fn wkt_ellipsoid(wkt: &str) -> Option<(f64, f64)> {
-    let (a, rf) = crate::parsed::tree(wkt)?.find(keywords::ELLIPSOID)?.ellipsoid()?;
+    let (a, rf) = crate::parsed::tree(wkt)?.horizontal_ellipsoid()?;
     Some((a, if rf == 0.0 { a } else { a * (1.0 - 1.0 / rf) }))
 }
 
@@ -1633,9 +1635,10 @@ fn wkt_datums(wkt: &str) -> Vec<u32> {
     Datums::of(wkt).codes
 }
 
-/// The first geodetic datum (or datum ensemble) node of a WKT definition.
+/// The geodetic datum (or datum ensemble) node of a WKT definition, at its place (see
+/// [`wkt1::Node::horizontal_datum`]).
 fn wkt_datum(wkt: &str) -> Option<wkt1::Node> {
-    crate::parsed::tree(wkt).and_then(|root| root.find(keywords::GEODETIC_DATUM).cloned())
+    crate::parsed::tree(wkt).and_then(|root| root.horizontal_datum().cloned())
 }
 
 /// The name and EPSG code (from its `ID` or `AUTHORITY`) of the first datum of a WKT definition.

@@ -166,7 +166,13 @@ fn conversion_json(c: &Conversion) -> Value {
     {
         let parameters: Vec<Value> = list
             .iter()
-            .map(|&(pname, pcode, kind)| {
+            .map(|p| {
+                let (pname, pcode) = (p.name, p.code);
+                let kind = match p.kind {
+                    crate::methods::Kind::Angle => 'a',
+                    crate::methods::Kind::Length => 'l',
+                    crate::methods::Kind::Scale => 's',
+                };
                 // By GDAL's WKT 1 names, else by EPSG's (ESRI writes some so).
                 let names = crate::projjson_gdal::wkt1_names(pcode);
                 let found = names

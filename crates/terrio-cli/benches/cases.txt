@@ -1,0 +1,68 @@
+# The cases of benches/commands.rs: `<name> <terrio arguments>`, one per line. The placeholders in
+# braces stand for synthetic inputs and outputs: see the documentation of commands.rs.
+
+# Reprojection, EPSG:4326 to UTM zone 31N.
+warp_near warp -r near --t-srs EPSG:32631 --tr 360 360 {dem4326} {out}.tif
+warp_bilinear warp -r bilinear --t-srs EPSG:32631 --tr 360 360 {dem4326} {out}.tif
+warp_cubic warp -r cubic --t-srs EPSG:32631 --tr 360 360 {dem4326} {out}.tif
+
+# Terrain.
+dem_slope dem slope {dem} {out}.tif
+dem_hillshade dem hillshade {dem} {out}.tif
+dem_aspect dem aspect {dem} {out}.tif
+dem_tri dem tri {dem} {out}.tif
+dem_tpi dem tpi {dem} {out}.tif
+dem_roughness dem roughness {dem} {out}.tif
+
+# Raster analysis.
+polygonize polygonize {classes} {out}.fgb
+rasterize rasterize --burn 1 --tr 30 30 {zones_fgb} {out}.tif
+proximity proximity --values 1 {classes} {out}.tif
+sieve sieve --st 50 {classes} {out}.tif
+fill_nodata fill-nodata {dem} {out}.tif
+contour contour -i 250 {dem} {out}.fgb
+overviews overviews -r average {fresh_dem} 2 4 8
+calc calc --input A={dem} --input B={int16} --calc A-B {out}.tif
+resample translate --outsize 50% 50% -r bilinear {dem} {out}.tif
+
+# GeoTIFF decoding: each compression to an uncompressed GeoTIFF.
+read_none_u8 translate {classes} {out}.tif
+read_deflate_u8 translate {classes_deflate} {out}.tif
+read_deflate_p2_i16 translate {int16_deflate_p2} {out}.tif
+read_deflate_p3_f32 translate {dem_deflate_p3} {out}.tif
+read_lzw_u8 translate {classes_lzw} {out}.tif
+read_zstd_u8 translate {classes_zstd} {out}.tif
+read_packbits_u8 translate {classes_packbits} {out}.tif
+read_lerc_f32 translate {dem_lerc} {out}.tif
+read_jpeg_u8 translate {classes_jpeg} {out}.tif
+read_webp_rgb translate {rgb_webp} {out}.tif
+read_jxl_u8 translate {classes_jxl} {out}.tif
+
+# GeoTIFF encoding: an uncompressed GeoTIFF to each compression.
+write_deflate_u8 translate --compress DEFLATE {classes} {out}.tif
+write_deflate_p2_i16 translate --compress DEFLATE --co PREDICTOR=2 {int16} {out}.tif
+write_deflate_p3_f32 translate --compress DEFLATE --co PREDICTOR=3 {dem} {out}.tif
+write_lzw_u8 translate --compress LZW {classes} {out}.tif
+write_zstd_u8 translate --compress ZSTD {classes} {out}.tif
+write_packbits_u8 translate --compress PACKBITS {classes} {out}.tif
+write_lerc_f32 translate --compress LERC {dem} {out}.tif
+write_jpeg_u8 translate --compress JPEG {classes} {out}.tif
+write_webp_rgb translate --compress WEBP --srcwin 0 0 512 256 {rgb} {out}.tif
+write_jxl_u8 translate --compress JXL {classes} {out}.tif
+cog_deflate translate -f COG --compress DEFLATE --tile-size 128 {dem} {out}.tif
+
+# Zarr and netCDF.
+zarr_write translate {dem} {out}.zarr
+zarr_read translate {dem_zarr} {out}.tif
+netcdf_write translate {dem} {out}.nc
+netcdf_read translate {dem_nc} {out}.tif
+
+# Vectors and zonal statistics.
+gpkg_to_fgb convert {zones_gpkg} {out}.fgb
+fgb_to_gpkg convert {zones_fgb} {out}.gpkg
+parquet_to_fgb convert {zones_parquet} {out}.fgb
+fgb_to_parquet convert {zones_fgb} {out}.parquet
+buffer buffer -d 20 --quad-segs 8 {zones_fgb} {out}.fgb
+simplify simplify --tolerance 20 {zones_fgb} {out}.fgb
+clip vector-clip --bbox 404000,5090000,410000,5096000 {zones_fgb} {out}.fgb
+zonal_stats zonal-stats --raster {dem} {zones_fgb} {out}.fgb

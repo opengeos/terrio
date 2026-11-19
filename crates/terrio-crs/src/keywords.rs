@@ -54,7 +54,7 @@ const COMPOUND: &[&str] = &["COMPOUNDCRS"];
 const ENGINEERING: &[&str] = &["ENGCRS", "ENGINEERINGCRS"];
 
 /// `<bound crs keyword> ::= BOUNDCRS` (20.1).
-const BOUND: &[&str] = &["BOUNDCRS"];
+pub(crate) const BOUND: &[&str] = &["BOUNDCRS"];
 
 /// `<identifier keyword> ::= ID` (7.3.3).
 const IDENTIFIER: &[&str] = &["ID"];
