@@ -26,7 +26,7 @@ env:
 jobs:
   # Only Rust sources, build scripts, manifests and build settings change instruction counts. When the file list is
   # unavailable, it runs.
-  changes:
+  files:
     runs-on: ubuntu-latest
     permissions:
       pull-requests: read
@@ -52,8 +52,8 @@ jobs:
   # main is the merge commit's first parent, as the pull request merges into it; `pr` is the merge
   # commit. Each prints the summaries without a baseline: the `comment` job pairs them.
   bench:
-    needs: changes
-    if: needs.changes.outputs.run == 'true'
+    needs: files
+    if: needs.files.outputs.run == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
