@@ -1902,7 +1902,7 @@ fn registered_axes(code: u32) -> Option<Vec<String>> {
     let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
     seen.get_or_insert_with(Default::default)
         .entry(code)
-        .or_insert_with(|| epsg::get(code).and_then(|e| crate::parsed::tree(&e.wkt)).map(|r| axis_directions(&r, false)))
+        .or_insert_with(|| epsg::get(code).and_then(|e| wkt1::parse(&e.wkt)).map(|r| axis_directions(&r, false)))
         .clone()
 }
 

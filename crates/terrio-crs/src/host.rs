@@ -67,7 +67,7 @@ pub(crate) fn before_lock() {
 
 /// Takes the engine's process-wide locks, for a fork: the grids' (settings, grids registered in
 /// memory, files read, failed fetches, availability, grid sets built), the memo of CRS
-/// definitions and the grid transport's.
+/// definitions, the memo of parsed WKT texts and the grid transport's.
 /// The forking thread holds the guards pushed to `held` while the process is copied, and drops
 /// them after, in the parent and in the child. Each lock is held for map operations only, never
 /// while another is taken, so any order is free of deadlocks.
