@@ -1369,10 +1369,16 @@ cargo update --manifest-path fuzz/Cargo.toml --workspace
 ## Performance on pull requests
 
 Each pull request that changes Rust sources or manifests gets one comment comparing CPU, speed
-and memory of the benchmarks of `crates/terrio/benches/instructions.rs` with main: warp (4326 to
-UTM with nearest, bilinear and cubic, GDAL's chunk-dependent grid, and a half-pixel shift), slope
-and hillshade, a DEFLATE + floating-point-predictor GeoTIFF read, and zonal statistics of 1024
-polygons, each on 1 M synthetic pixels. CPU is the instructions executed and speed the estimated
+and memory of two benchmark suites with main. `crates/terrio/benches/instructions.rs`: warp (4326
+to UTM with nearest, bilinear and cubic, GDAL's chunk-dependent grid, and a half-pixel shift),
+slope and hillshade, a DEFLATE + floating-point-predictor GeoTIFF read, and zonal statistics of
+1024 polygons, each on 1 M synthetic pixels. `crates/terrio-cli/benches/cases.txt`: terrio
+commands run in-process on 512 x 512 synthetic rasters and 1024 synthetic polygons
+(`cli <case>` in the comment): reprojection, terrain, raster analysis, GeoTIFF decoding and
+encoding in each compression, COG, Zarr and netCDF, vector conversions and geometry operations. A
+case is one line, `<name> <terrio arguments>`, whose placeholders (`{dem}`, `{classes_lzw}`,
+`{zones_fgb}`, `{out}`...) `crates/terrio-cli/benches/commands.rs` documents. CPU is the
+instructions executed and speed the estimated
 cycles (instructions plus cache and RAM misses), both from Callgrind; memory is the peak heap of the
 operation, the most heap memory it holds at once beyond its input, its output included (a counting
 allocator in the benchmark keeps it, and reports it to DHAT). The `bench`
@@ -1395,6 +1401,7 @@ locally, install `valgrind` and the runner of the `gungraun` dev-dependency's ve
 cargo install gungraun-runner --version 0.20.0 --locked
 cargo bench -p terrio --bench instructions -- --save-baseline=main   # on main
 cargo bench -p terrio --bench instructions -- --baseline=main        # on the branch
+cargo bench -p terrio-cli --bench commands                           # the commands, likewise
 ```
 
 Instructions are not time: memory stalls, SIMD width and contention are not counted. Confirm a

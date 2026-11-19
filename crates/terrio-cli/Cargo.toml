@@ -28,6 +28,11 @@ path = "src/lib.rs"
 name = "terrio"
 path = "src/main.rs"
 
+# CPU instructions, estimated cycles and peak heap of the commands of benches/cases.txt (the `bench` workflow).
+[[bench]]
+name = "commands"
+harness = false
+
 # `cargo binstall terrio-cli` installs the binaries attached to the GitHub release
 # (release-build.yml); Linux hosts get the static musl builds.
 [package.metadata.binstall]
@@ -61,3 +66,4 @@ windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 sha2.workspace = true
+gungraun.workspace = true
