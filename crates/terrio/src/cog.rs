@@ -1764,8 +1764,10 @@ impl LazyRaster {
     /// some bands, at full resolution or from an overview, as nearest-neighbour resampling picks
     /// them: `(bands, rows, cols)`, band-major, as stored. Read, as GDAL reads them, from the
     /// blocks that hold them alone, by the formats whose reader can (Zarr: one chunk at a time,
-    /// rather than a window spanning billions of columns); `None` for the others, whose callers
-    /// read the window spanning the pixels.
+    /// rather than a window spanning billions of columns; a GeoTIFF image stored as strips larger
+    /// than the chunk limit, [`TiffReadLimits::chunk_bytes`]: their sampled rows, each strip read
+    /// once and in order); `None` for the others, whose callers read the window spanning the
+    /// pixels.
     pub fn read_sampled(&mut self, cols: &[usize], rows: &[usize], options: &WindowOptions) -> Result<Option<RasterData>> {
         let _scope = self.asset_policy.as_ref().map(crate::stac::AssetReadPolicy::enter).transpose()?;
         let (lw, lh) = self.level_size(options.overview)?;
@@ -1778,7 +1780,8 @@ impl LazyRaster {
         let bands = read_bands(&options.bands, self.band_count())?;
         match &mut self.inner {
             Inner::Source(_, s) => s.read_sampled(options.overview.map_or(0, |i| i + 1), cols, rows, &bands),
-            Inner::Tiff(_) | Inner::Memory(_) => Ok(None),
+            Inner::Tiff(t) => t.read_sampled(options.overview.map_or(0, |i| i + 1), cols, rows, &bands),
+            Inner::Memory(_) => Ok(None),
         }
     }
 }
@@ -2872,37 +2875,13 @@ impl TiffRaster {
         crate::dataset::fallible::check_raster_buffer("a window", w.width, w.height, bands.len(), self.data_type)?;
         let tiff_err = self.limits.error();
         let ifd = self.levels[level].ifd;
+        let (Storage { planar, compression }, tables) = self.level_chunks(level)?;
         let dec = &mut self.decoder;
-        if self.current_ifd != ifd {
-            dec.seek_to_image(ifd).map_err(tiff_err)?;
-            self.current_ifd = ifd;
-        }
         let (lw, lh) = (self.levels[level].width, self.levels[level].height);
-        let Storage { planar, compression } = match self.levels[level].storage {
-            Some(storage) => storage,
-            None => {
-                let storage = Storage {
-                    planar: dec.find_tag_unsigned::<u16>(Tag::PlanarConfiguration).map_err(tiff_err)? == Some(2),
-                    compression: dec.find_tag_unsigned::<u16>(Tag::Compression).map_err(tiff_err)?.unwrap_or(1),
-                };
-                self.levels[level].storage = Some(storage);
-                storage
-            }
-        };
         let (cw, ch) = dec.chunk_dimensions();
         let (cw, ch) = (cw as usize, ch as usize);
         let across = lw.div_ceil(cw);
         let per_plane = across * lh.div_ceil(ch);
-        // The level's chunk tables list every chunk of the image, whatever the window: read by its
-        // first window read, then reused.
-        let tables = match &self.levels[level].tables {
-            Some(tables) => tables.clone(),
-            None => {
-                let tables = Arc::new(ChunkTables::read(dec).map_err(tiff_err)?);
-                self.levels[level].tables = Some(tables.clone());
-                tables
-            }
-        };
 
         // The chunks to read, with the output bands each one fills: (chunk, [(sample, out band)]).
         // A complex sample's parts are two consecutive samples of the chunk: band `b` (from 1)
@@ -3098,6 +3077,145 @@ impl TiffRaster {
         })?;
         Ok(out)
     }
+
+    /// Positions the decoder on a level's image, and gives how its chunks are stored and its chunk
+    /// tables, which list every chunk of the image whatever is read: both read by the level's
+    /// first read, then reused.
+    fn level_chunks(&mut self, level: usize) -> Result<(Storage, Arc<ChunkTables>)> {
+        let tiff_err = self.limits.error();
+        let ifd = self.levels[level].ifd;
+        let dec = &mut self.decoder;
+        if self.current_ifd != ifd {
+            dec.seek_to_image(ifd).map_err(tiff_err)?;
+            self.current_ifd = ifd;
+        }
+        let storage = match self.levels[level].storage {
+            Some(storage) => storage,
+            None => {
+                let storage = Storage {
+                    planar: dec.find_tag_unsigned::<u16>(Tag::PlanarConfiguration).map_err(tiff_err)? == Some(2),
+                    compression: dec.find_tag_unsigned::<u16>(Tag::Compression).map_err(tiff_err)?.unwrap_or(1),
+                };
+                self.levels[level].storage = Some(storage);
+                storage
+            }
+        };
+        let tables = match &self.levels[level].tables {
+            Some(tables) => tables.clone(),
+            None => {
+                let tables = Arc::new(ChunkTables::read(dec).map_err(tiff_err)?);
+                self.levels[level].tables = Some(tables.clone());
+                tables
+            }
+        };
+        Ok((storage, tables))
+    }
+
+    /// Reads the pixels at columns `cols` of rows `rows` of some samples (numbered from 1) of a
+    /// level, `(bands, rows, cols)`, as [`LazyRaster::read_sampled`] reads them, when some of those
+    /// rows lie in a strip over the chunk limit: each strip holding them is read by rows, as
+    /// [`TiffRaster::read_samples`] reads such a strip, once and in order, keeping the sampled
+    /// pixels of a row as it comes. Strips are read so only when each one is read by rows and the
+    /// rows sampled in each fit the limit; `None` otherwise, and for levels whose strips are all
+    /// within it, whose window spanning the pixels is read instead.
+    fn read_sampled(&mut self, level: usize, cols: &[usize], rows: &[usize], bands: &[usize]) -> Result<Option<RasterData>> {
+        if let Some(i) = self.levels[level].external
+            && let Some(ovr) = self.ovr.as_mut()
+        {
+            return ovr.read_sampled(i, cols, rows, bands);
+        }
+        // No chunk of the level is over the limit, whatever its samples: the window is read.
+        let limit = self.limits.chunk_bytes as u64;
+        let (lh, (bw, bh)) = (self.levels[level].height, self.levels[level].block);
+        let largest = [bw, bh.min(lh), self.samples, self.data_type.size_bytes()].iter().try_fold(1u64, |n, &d| n.checked_mul(d as u64));
+        if self.cmyk || self.complex || cols.is_empty() || rows.is_empty() || largest.is_some_and(|n| n <= limit) {
+            return Ok(None);
+        }
+        let tiff_err = self.limits.error();
+        let (Storage { planar, compression }, tables) = self.level_chunks(level)?;
+        let dec = &mut self.decoder;
+        if dec.get_chunk_type() != tiff::decoder::ChunkType::Strip {
+            return Ok(None);
+        }
+        let (cw, ch) = dec.chunk_dimensions();
+        let (cw, ch) = (cw as usize, ch as usize);
+        let per_plane = lh.div_ceil(ch);
+        let spp = if planar { 1 } else { self.samples };
+        let Some(row_bytes) = cw.checked_mul(spp).and_then(|n| n.checked_mul(self.data_type.size_bytes())).filter(|n| *n > 0) else {
+            return Ok(None);
+        };
+        let what = "the sampled rows";
+        // The output rows, in the order of the image rows they sample.
+        let mut order: Vec<usize> = Vec::new();
+        crate::dataset::fallible::reserve(&mut order, rows.len(), what)?;
+        order.extend(0..rows.len());
+        order.sort_by_key(|&o| rows[o]);
+        // The planes read, with the output band of each of their samples: (plane, [(sample, band)]).
+        let planes: Vec<(usize, Vec<(usize, usize)>)> = if planar {
+            bands.iter().enumerate().map(|(k, b)| (b - 1, vec![(0, k)])).collect()
+        } else {
+            vec![(0, bands.iter().enumerate().map(|(k, b)| (b - 1, k)).collect())]
+        };
+        // The strips holding the sampled rows: (strip in its plane, rows of the strip, distinct
+        // rows sampled in it).
+        let mut strips: Vec<(usize, usize, usize)> = Vec::new();
+        crate::dataset::fallible::reserve(&mut strips, rows.len().min(per_plane), what)?;
+        let mut last = None;
+        for &o in &order {
+            let r = rows[o];
+            if last.replace(r) == Some(r) {
+                continue;
+            }
+            match strips.last_mut() {
+                Some((s, _, n)) if *s == r / ch => *n += 1,
+                _ => strips.push((r / ch, ch.min(lh - r / ch * ch), 1)),
+            }
+        }
+        let Some(how) = crate::tiff_strip_rows::Rows::of(dec, self.data_type, compression).map_err(tiff_err)? else {
+            return Ok(None);
+        };
+        let mut over = false;
+        for (plane, _) in &planes {
+            for &(s, height, sampled) in &strips {
+                let strip = height as u64 * row_bytes as u64;
+                let read = tables.get(plane * per_plane + s).is_some_and(|stored| {
+                    stored.1 > 0 && how.holds(stored, strip, self.file_len) && sampled as u64 * row_bytes as u64 <= limit
+                });
+                if !read {
+                    return Ok(None);
+                }
+                over |= strip > limit;
+            }
+        }
+        if !over {
+            return Ok(None);
+        }
+        let len = crate::dataset::fallible::len(&[bands.len(), rows.len(), cols.len()], what)?;
+        let mut out = try_new_filled(self.data_type, len, 0.0)?;
+        crate::dataset::fallible::check_usable(Some(row_bytes), || "a TIFF strip row".into()).map_err(Error::ResourceLimit)?;
+        let mut samples = crate::tiff_strip_rows::samples(self.data_type, cw * spp)?;
+        let mut read_at = |at: u64, buf: &mut [u8]| read_stored(dec, at, buf);
+        for (plane, map) in &planes {
+            let mut strip: Option<(usize, crate::tiff_strip_rows::StripRows)> = None;
+            let mut held = None;
+            for &o in &order {
+                let r = rows[o];
+                if held != Some(r) {
+                    let s = r / ch;
+                    if strip.as_ref().is_none_or(|(at, _)| *at != s) {
+                        let stored = tables.get(plane * per_plane + s).ok_or_else(|| Error::InvalidData(format!("TIFF: no strip {s}")))?;
+                        strip = Some((s, how.strip(stored, cw, spp, ch.min(lh - s * ch))));
+                    }
+                    if let Some((_, strip_rows)) = strip.as_mut() {
+                        strip_rows.read(&mut read_at, r - s * ch, &mut samples)?;
+                    }
+                    held = Some(r);
+                }
+                pick_sampled(&mut out, &samples, map, spp, cols, (o, rows.len()))?;
+            }
+        }
+        Ok(Some(out))
+    }
 }
 
 /// The rows of a strip larger than the chunk limit read at a time: about this many bytes of them,
@@ -3109,6 +3227,35 @@ fn read_stored(dec: &mut Decoder<PatchedReader<Source>>, at: u64, buf: &mut [u8]
     dec.inner().get_ref().prefetch(&[(at, buf.len() as u64)])?;
     dec.inner().seek(SeekFrom::Start(at))?;
     dec.inner().read_exact(buf)?;
+    Ok(())
+}
+
+/// Copies the pixels at columns `cols` of an image row of samples `row` (`spp` a pixel) into output
+/// row `o` of `rows`, each sample of `map` into its band: `out` is `(bands, rows, cols)`.
+fn pick_sampled(
+    out: &mut RasterData,
+    row: &DecodingResult,
+    map: &[(usize, usize)],
+    spp: usize,
+    cols: &[usize],
+    (o, rows): (usize, usize),
+) -> Result<()> {
+    macro_rules! pick {
+        ($($variant:ident),*) => {
+            match (out, row) {
+                $((RasterData::$variant(out), DecodingResult::$variant(row)) => {
+                    for &(sample, band) in map {
+                        let start = (band * rows + o) * cols.len();
+                        for (v, &c) in out[start..start + cols.len()].iter_mut().zip(cols) {
+                            *v = row[c * spp + sample];
+                        }
+                    }
+                })*
+                _ => return Err(Error::InvalidData("TIFF rows differ in sample type".into())),
+            }
+        };
+    }
+    pick!(U8, I8, U16, I16, U32, I32, U64, I64, F32, F64);
     Ok(())
 }
 

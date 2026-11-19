@@ -1068,8 +1068,10 @@ with Env(TERRIO_TIFF_MAX_CHUNK_BYTES=str(1 << 30)):
 
 An image stored as one strip larger than the limit is read by the rows a window needs, when
 those rows fit the limit: uncompressed, or Deflate, LZW, Zstandard and PackBits strips,
-decoded from the start of the strip to the window's last row. Reading the whole strip is still
-refused (see [Rasters](formats.md#rasters)).
+decoded from the start of the strip to the window's last row. A nearest-neighbour
+`read_resampled` (or `terrio.rio`'s `read(out_shape=...)`) smaller than the image reads the
+rows it samples the same way. Reading the whole strip is still refused (see
+[Rasters](formats.md#rasters)).
 
 A GeoTIFF read whole or by window (`terrio.open_raster`, `Raster.read`, `terrio.rio`'s `read`)
 raises `ResourceLimitError` before its buffer is allocated when the process cannot hold it (more

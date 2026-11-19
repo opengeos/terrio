@@ -112,9 +112,10 @@ differencing or the floating-point predictor) decoded from its start to the wind
 row, the rows before the window dropped as they are decoded. The read then holds the window
 and about 17 MiB of working buffers (plus a Zstandard frame's window, at most 128 MiB),
 whatever the strip's size; a window near the end of a compressed strip takes the time of
-decoding the rows before it. A read of the whole strip, a window whose rows do not fit the
-limit, a strip whose stored bytes cannot decode to its rows, and a strip of another
-compression are refused as before.
+decoding the rows before it. A nearest-neighbour read smaller than the image reads the rows
+it samples the same way, the strip once. A read of the whole strip, a window or a sample
+whose rows do not fit the limit, a strip whose stored bytes cannot decode to its rows, and a
+strip of another compression are refused as before.
 
 TIFF masks follow the image's own `NewSubfileType` reduced-resolution flag, including a
 reduced first image with a reduced mask (flag 5) or a unique legacy mask (flag 4).

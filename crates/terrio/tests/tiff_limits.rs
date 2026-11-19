@@ -980,6 +980,44 @@ fn deflate_streams_at_their_limits_read_by_rows() {
     }
 }
 
+/// A nearest-neighbour read smaller than an image stored as one strip over the limit reads the
+/// rows it samples, the strip once and in order, compressed or not: the values it gives from a
+/// whole decode. Sampled rows that do not fit the limit are refused, as their window is.
+#[test]
+fn a_decimated_read_of_a_strip_over_the_limit_reads_its_sampled_rows() {
+    use terrio::ResampledReadOptions;
+    let (cols, rows, bands) = (64, 48, 3);
+    for (compress, interleave) in
+        [("DEFLATE", "PIXEL"), ("ZSTD", "BAND"), ("LZW", "PIXEL"), ("PACKBITS", "BAND"), ("NONE", "PIXEL"), ("NONE", "BAND")]
+    {
+        let case = format!("{compress}, {interleave}");
+        let bytes = compressed_strip((cols, rows, bands), terrio::DataType::U16, (compress, 1), interleave, Vec::new());
+        let row_bytes = cols * 2 * if interleave == "PIXEL" { bands } else { 1 };
+        let limits = TiffReadLimits { chunk_bytes: 10 * row_bytes };
+        let open = |limits| LazyRaster::from_tiff_bytes_with_limits(bytes.clone(), limits).unwrap().unwrap();
+        let resampled = |limits, size| {
+            let options = ResampledReadOptions { size, bands: vec![3, 1], ..Default::default() };
+            open(limits).read_resampled(&options).map(|ds| ds.raster.data.to_f64_vec())
+        };
+        assert_eq!(resampled(limits, (16, 8)).unwrap(), resampled(TiffReadLimits::unlimited(), (16, 8)).unwrap(), "{case}");
+        // Pixels picked in any order, rows repeated.
+        let (pick_cols, pick_rows) = ([63, 0, 5, 5], [47, 3, 3, 20, 0]);
+        let options = WindowOptions { bands: vec![2, 3], overview: None };
+        let got = open(limits).read_sampled(&pick_cols, &pick_rows, &options).unwrap().expect("read by rows").to_f64_vec();
+        let whole = open(TiffReadLimits::unlimited()).read_window(Window::full(cols, rows), &options).unwrap().raster.data.to_f64_vec();
+        let mut expected = Vec::new();
+        for b in 0..2 {
+            for y in pick_rows {
+                expected.extend(pick_cols.iter().map(|x| whole[(b * rows + y) * cols + x]));
+            }
+        }
+        assert_eq!(got, expected, "{case}");
+        // Twelve rows sampled: over the limit, refused.
+        let e = resampled(limits, (16, 12)).unwrap_err();
+        assert!(matches!(e, terrio::Error::DecodedLimitExceeded { .. }), "{case}: {e}");
+    }
+}
+
 /// The rows of a big-endian Int16 or Float32 strip over the limit are read as their native type,
 /// with their values: the byte order and sample format are applied on the row path too.
 #[test]
