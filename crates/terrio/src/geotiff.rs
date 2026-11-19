@@ -1664,9 +1664,11 @@ pub(crate) fn read_geotiff_with_limits(path: &std::path::Path, limits: crate::co
     let tables = if compression == 1 {
         let len = dec.inner().get_ref().get_ref().len()?;
         dec = dec.with_limits(tiff::decoder::Limits::default());
-        let tables = ChunkTables::read(&mut dec);
+        // Without the tables (unreadable, or beyond the default limits) no chunk is left out: all
+        // are read, as before the tables were read.
+        let tables = ChunkTables::read(&mut dec).unwrap_or_default();
         dec = dec.with_limits(limits.tiff_within(len));
-        tables
+        Ok(tables)
     } else {
         ChunkTables::read(&mut dec)
     }
