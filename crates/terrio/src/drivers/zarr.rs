@@ -2565,6 +2565,8 @@ fn fill_json(v: Option<f64>) -> Value {
         Some(x) if x == f64::INFINITY => json!("Infinity"),
         Some(x) if x == f64::NEG_INFINITY => json!("-Infinity"),
         Some(x) if x.fract() == 0.0 && x.abs() < 9.0e15 => json!(x as i64),
+        // An int64 null marker: exact as a float, but a JSON integer for an integer array.
+        Some(x) if x == i64::MIN as f64 => json!(i64::MIN),
         Some(x) => json!(x),
     }
 }

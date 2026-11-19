@@ -177,7 +177,7 @@ mod zarr {
         ZonalCube { zones, statistics: vec![Statistic::Mean, Statistic::Count], variables }
     }
 
-    /// The values as f64 (NaN-aware comparisons are done on their bits) and the type's name.
+    /// The values as f64 and the type's name.
     fn nums(data: RasterData) -> (&'static str, Vec<f64>) {
         match data {
             RasterData::I32(v) => ("i32", v.into_iter().map(f64::from).collect()),
@@ -186,10 +186,6 @@ mod zarr {
             RasterData::F64(v) => ("f64", v),
             other => panic!("unexpected type {other:?}"),
         }
-    }
-
-    fn bits(values: &[f64]) -> Vec<u64> {
-        values.iter().map(|v| if v.is_nan() { f64::NAN.to_bits() } else { v.to_bits() }).collect()
     }
 
     fn json(path: &std::path::Path) -> serde_json::Value {
@@ -246,8 +242,11 @@ mod zarr {
         assert_eq!(nums(read(store, "geometry_part_node_count").1), ("i32", vec![5.0, 5.0, 4.0, 4.0]));
         assert_eq!(nums(read(store, "geometry_interior_ring").1), ("i32", vec![0.0, 1.0, 0.0, 0.0]));
         assert_eq!(nums(read(store, "feature_id").1), ("i64", vec![10.0, 11.0]));
-        let (kind, code) = nums(read(store, "code").1);
-        assert_eq!((kind, bits(&code)), ("f64", bits(&[7.0, f64::NAN])), "an integer field with nulls");
+        match read(store, "code").1 {
+            RasterData::I64(code) => assert_eq!(code, [7, i64::MIN], "an integer field with nulls"),
+            other => panic!("code is {other:?}"),
+        }
+        assert_eq!(json(&path.join("code"))["fill_value"], i64::MIN);
         assert_eq!(strings(&path, "name"), ["north", "south"]);
         assert_eq!(strings(&path, "statistic"), ["mean", "count"]);
         assert_eq!(strings(&path, "band"), ["B04", "B08"]);
@@ -333,7 +332,7 @@ mod zarr {
     #[test]
     fn names_never_clash_or_leave_their_array() {
         let mut zones = zones();
-        for name in ["", "a/b", "geometry_node", "Time", "Land Use"] {
+        for name in ["", "a/b", "geometry_node", "Time", "Land Use", "ZARR.json", "__meta", ".."] {
             zones.schema.add_field(FieldDef::new(name, FieldType::Text));
             for f in &mut zones.features {
                 f.attributes.push(FieldValue::Text("x".into()));
@@ -347,12 +346,32 @@ mod zarr {
         assert_eq!(json(&path)["attributes"]["Conventions"], "CF-1.8", "the group's metadata is intact");
         let mut names: Vec<String> = std::fs::read_dir(&path).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
         names.sort();
-        for expected in ["band_2", "field", "a_b", "geometry_node_2", "Time_2", "Land_Use"] {
+        for expected in ["band_2", "field", "a_b", "geometry_node_2", "Time_2", "Land_Use", "ZARR.json_2", "field__meta", "field.."] {
             assert!(names.contains(&expected.to_string()), "{expected} not in {names:?}");
         }
         assert_eq!(strings(&path, "band"), ["B04", "B08"], "the band coordinate is untouched");
         let coordinates = json(&path.join("band_2"))["attributes"]["coordinates"].as_str().unwrap().to_string();
         assert!(coordinates.split_whitespace().any(|c| c == "Land_Use"), "{coordinates}");
+    }
+
+    /// Integers past 2^53 keep every digit next to nulls; `i64::MIN`, the nulls' marker, is refused
+    /// among nulls before anything is written.
+    #[test]
+    fn integer_fields_with_nulls_are_lossless() {
+        let mut zones = zones();
+        zones.features[0].attributes[1] = FieldValue::Integer(i64::MAX);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.zarr");
+        cube(zones.clone()).write_zarr(path.to_str().unwrap()).unwrap();
+        match read(path.to_str().unwrap(), "code").1 {
+            RasterData::I64(code) => assert_eq!(code, [i64::MAX, i64::MIN]),
+            other => panic!("code is {other:?}"),
+        }
+        zones.features[0].attributes[1] = FieldValue::Integer(i64::MIN);
+        let path = dir.path().join("min.zarr");
+        let err = cube(zones).write_zarr(path.to_str().unwrap()).unwrap_err().to_string();
+        assert!(err.contains("'code'"), "{err}");
+        assert!(!path.exists(), "nothing written");
     }
 
     /// A field's type, not its values, decides its array type: an all-null float field is float64.
