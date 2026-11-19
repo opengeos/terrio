@@ -10,11 +10,7 @@ use std::fmt::Write as _;
 
 use crate::{Def, SpatialRef, epsg};
 
-#[path = "../../tests/support/projjson_compare.rs"]
-#[allow(dead_code)]
-mod projjson_compare;
-
-use projjson_compare::{check_recorded, corpus};
+use crate::model::oracle_tests::projjson_compare::{check_recorded, corpus};
 
 /// One file per build: wbprojection's registry identifies more with `wbprojection-fallback`.
 #[cfg(not(feature = "wbprojection-fallback"))]

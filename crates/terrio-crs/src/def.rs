@@ -1162,7 +1162,7 @@ impl Def {
             (registered.pm == 0.0).then_some((e, registered.ell))
         });
         let Some((e, registered)) = found else { return };
-        let same = |a: &Ell, b: &Ell| (a.a - b.a).abs() < 1e-3 && (a.es - b.es).abs() < 1e-9;
+        let same = crate::fits::same_ellipsoid;
         // The geographic CRS's own ellipsoid, which a projection may not use (Esri's
         // `Mercator_Auxiliary_Sphere` projects on a sphere): on the datum's own, the CRS is
         // identified by its content.
@@ -1850,8 +1850,7 @@ impl Def {
             let alike = |found: u32| {
                 Def::new(&SpatialRef { epsg: Some(found), ..Default::default() }).is_ok_and(|f| {
                     self.same_conversion_within(&f, 1e-6)
-                        && (self.ell.a - f.ell.a).abs() < 1e-3
-                        && (self.ell.es - f.ell.es).abs() < 1e-9
+                        && crate::fits::same_ellipsoid(&self.ell, &f.ell)
                         && self.datum.is_some()
                         && self.datum == f.datum
                 })

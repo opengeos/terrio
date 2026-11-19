@@ -22,7 +22,7 @@ use super::*;
 
 #[path = "../../tests/support/projjson_compare.rs"]
 #[allow(dead_code)]
-mod projjson_compare;
+pub(crate) mod projjson_compare;
 
 use projjson_compare::{check_recorded, compare, corpus, grouped};
 
