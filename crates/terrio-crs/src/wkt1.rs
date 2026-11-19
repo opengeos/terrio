@@ -95,6 +95,38 @@ impl Node {
         self.first_in(crate::keywords::GEODETIC_BASE)
     }
 
+    /// The geodetic CRS of a horizontal CRS node, where PROJ 9.9.0 reads it: the node itself (a
+    /// geographic or geocentric CRS), a projected CRS's base CRS, a compound CRS's horizontal CRS's,
+    /// or a bound CRS's source CRS's. `None` for another node (a vertical CRS's).
+    pub fn horizontal_geodetic(&self) -> Option<&Node> {
+        use crate::keywords as kw;
+        if [kw::WKT1_GEOGRAPHIC, kw::WKT1_GEOCENTRIC, kw::GEOGRAPHIC_OR_GEODETIC_CRS, kw::BASE_GEODETIC_CRS].iter().any(|k| self.is(k)) {
+            return Some(self);
+        }
+        if self.is(kw::WKT1_PROJECTED) || self.is(kw::PROJECTED_CRS) {
+            return self.geodetic_base();
+        }
+        if self.is(kw::COMPOUND_CRS) {
+            return self.first_in(kw::HORIZONTAL_CRS)?.horizontal_geodetic();
+        }
+        if self.key.eq_ignore_ascii_case("BOUNDCRS") {
+            return crate::wkt2::first_node(self.child("SOURCECRS")?)?.horizontal_geodetic();
+        }
+        None
+    }
+
+    /// The geodetic datum (or datum ensemble) of a horizontal CRS node, at its place (see
+    /// [`Self::horizontal_geodetic`] and [`Self::datum`]).
+    pub fn horizontal_datum(&self) -> Option<&Node> {
+        self.horizontal_geodetic()?.datum()
+    }
+
+    /// The semi-major axis in metres and the inverse flattening (0 for a sphere) of a horizontal
+    /// CRS node's ellipsoid, at its place (see [`Self::horizontal_datum`]), as the model reads it.
+    pub fn horizontal_ellipsoid(&self) -> Option<(f64, f64)> {
+        self.horizontal_datum()?.first_in(crate::keywords::ELLIPSOID)?.ellipsoid()
+    }
+
     /// The node itself or the first node below it, depth first, whose keyword is one of `keys`.
     pub fn find(&self, keys: &[&str]) -> Option<&Node> {
         if self.is(keys) {
@@ -1019,6 +1051,32 @@ pub(crate) fn negated(v: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::{SpatialRef, Transformer};
+
+    /// A horizontal CRS's geodetic CRS, datum and ellipsoid are read where PROJ reads them: a
+    /// projected CRS's base, a compound CRS's horizontal CRS, a bound CRS's source (not its
+    /// target, though either may come first); a vertical CRS has none, its datum ensemble too.
+    #[test]
+    fn horizontal_datums_are_read_at_their_place() {
+        let g = |datum: &str, a: f64| {
+            format!(
+                r#"GEOGCRS["g",DATUM["{datum}",ELLIPSOID["e",{a},300,LENGTHUNIT["metre",1]]],CS[ellipsoidal,2],AXIS["lat",north],AXIS["lon",east],ANGLEUNIT["degree",0.0174532925199433]]"#
+            )
+        };
+        let name = |w: &str| parse(w).unwrap().horizontal_datum().and_then(|d| d.name().map(str::to_string));
+        let src = g("source", 6378000.0);
+        let projected = r#"PROJCRS["p",BASEGEOGCRS["b",DATUM["base",ELLIPSOID["e",6378100,300,LENGTHUNIT["metre",1]]]],CONVERSION["c",METHOD["Mercator (variant A)"]]]"#;
+        assert_eq!(name(&src).as_deref(), Some("source"));
+        assert_eq!(name(projected).as_deref(), Some("base"));
+        assert_eq!(parse(projected).unwrap().horizontal_ellipsoid(), Some((6378100.0, 300.0)));
+        let vertical = r#"VERTCRS["v",VDATUM["vd"],CS[vertical,1],AXIS["h",up,LENGTHUNIT["metre",1]]]"#;
+        assert_eq!(name(&format!(r#"COMPOUNDCRS["c",{projected},{vertical}]"#)).as_deref(), Some("base"));
+        let bound = format!(r#"BOUNDCRS[TARGETCRS[{}],SOURCECRS[{src}],ABRIDGEDTRANSFORMATION["t",METHOD["m"]]]"#, g("target", 6378137.0));
+        assert_eq!(name(&bound).as_deref(), Some("source"));
+        assert_eq!(parse(&bound).unwrap().horizontal_ellipsoid(), Some((6378000.0, 300.0)));
+        let ensemble = r#"VERTCRS["DVR90",ENSEMBLE["Dansk Vertikal Reference 1990 ensemble",MEMBER["a"],ENSEMBLEACCURACY[0.1]],CS[vertical,1],AXIS["h",up,LENGTHUNIT["metre",1]]]"#;
+        assert_eq!(name(vertical), None);
+        assert_eq!(name(ensemble), None);
+    }
     use std::time::Duration;
 
     /// PROJ's two tables of named meridians agree on every name they share but Madrid, which

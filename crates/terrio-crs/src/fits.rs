@@ -35,10 +35,10 @@ pub(crate) fn same_figure(a: f64, es: f64, other_a: f64, other_es: f64) -> bool 
         && (es == 0.0 || other_es == 0.0 || same_measure(rf(es), rf(other_es)))
 }
 
-/// The semi-major axis in metres and the eccentricity squared of the first `SPHEROID` or
-/// `ELLIPSOID` of a WKT definition (in its `LENGTHUNIT`).
+/// The semi-major axis in metres and the eccentricity squared of a WKT definition's ellipsoid, at
+/// its place (in its `LENGTHUNIT`; see [`wkt1::Node::horizontal_ellipsoid`]).
 pub(crate) fn wkt_figure(wkt: &str) -> Option<(f64, f64)> {
-    let (a, rf) = crate::parsed::tree(wkt)?.find(keywords::ELLIPSOID)?.ellipsoid()?;
+    let (a, rf) = crate::parsed::tree(wkt)?.horizontal_ellipsoid()?;
     // A sphere, or an ellipsoid of an inverse flattening of at least 1, as PROJ reads one.
     if rf != 0.0 && rf < 1.0 {
         return None;
@@ -96,27 +96,14 @@ pub(crate) struct Datums {
 impl Datums {
     pub(crate) fn of(wkt: &str) -> Self {
         let Some(root) = crate::parsed::tree(wkt) else { return Self::default() };
-        let name = first_datum_name(&root);
-        let Some(datum) = root.find(keywords::GEODETIC_DATUM) else { return Self { name, ..Self::default() } };
+        let Some(datum) = root.horizontal_datum() else { return Self::default() };
+        let name = datum.name().map(str::to_string);
         if let Some(code) = datum.epsg() {
             return Self { codes: vec![code], by_id: true, others: &[], name };
         }
         let written = datum.name().unwrap_or_default();
         Self { codes: epsg::datums_named(written), by_id: false, others: epsg::datums_written_as(written), name }
     }
-}
-
-/// The name of the first geodetic datum under a node (`DATUM`, `GEODETICDATUM`, `TRF` or a datum
-/// ensemble, as [`Datums::of`] finds it: a compound or bound CRS's horizontal or source CRS's). A
-/// datum node without a quoted name gives none, and the search goes on after it.
-fn first_datum_name(n: &wkt1::Node) -> Option<String> {
-    if n.is(keywords::GEODETIC_DATUM) {
-        return n.name().map(str::to_string);
-    }
-    n.args.iter().find_map(|a| match a {
-        wkt1::Arg::Node(c) => first_datum_name(c),
-        _ => None,
-    })
 }
 
 /// How a horizontal CRS's WKT is on the datum of the registry's CRS `code` (`theirs`), as
