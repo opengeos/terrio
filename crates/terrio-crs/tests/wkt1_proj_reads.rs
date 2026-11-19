@@ -1,19 +1,22 @@
 //! WKT that PROJ 9.9.0 reads is read, and places points where PROJ does: ESRI's
-//! `Mercator_Variant_A` (EPSG Guidance Note 7-2's Makassar / NEIEZ example, EPSG:3002, as an
-//! ESRI `.prj` names its method) and EPSG's `Mercator (variant A)` in WKT 1, as PROJ's Mercator
-//! (1SP), GDAL's `Mercator_1SP` with a latitude of origin (and a scale of 1) as Mercator (variant
-//! B) with that latitude as its standard parallel, Hotine variant A (in WKT 2 too) at an
-//! azimuth and grid angle of 90° as the Swiss oblique Mercator, and WKT 1 and WKT 2 with a node of an unknown keyword (`rustgis:unapplied`, `a-b`,
-//! `a"b c"`, an empty one), which PROJ skips whatever its keyword. A keyword with a space, a
-//! vertical tab, a NUL or an unclosed quote in it is refused, as PROJ refuses it, and so is
-//! EPSG's `Mercator (variant A)` with a latitude of origin other than 0, which PROJ reads but
-//! neither transforms nor writes as a PROJ string. A definition ends at its first NUL, as PROJ
-//! takes it as a C string, so a NUL in a keyword is refused; text after a complete WKT, NUL or
-//! not, was already ignored. A NUL a PROJJSON name gives (`\u0000`) is part of the name, as in
-//! PROJ: EPSG:32631's PROJJSON with one is still read. A quote in a value runs to the next quote,
-//! delimiters included, as in PROJ (`b"c,d"e` is one value), and a quote left unclosed refuses
-//! the WKT. GeoTIFF's GeoAsciiParamsTag ends at its first NUL, as GDAL 3.12.1 reads it, and a CRS
-//! with a NUL in a name is written to GeoKeys that read back as it, or refused where GDAL refuses it.
+//! `Mercator_Variant_A` (EPSG Guidance Note 7-2's Makassar / NEIEZ example, EPSG:3002, as an ESRI
+//! `.prj` names its method) and EPSG's `Mercator (variant A)` in WKT 1, as PROJ's Mercator (1SP),
+//! GDAL's `Mercator_1SP` with a latitude of origin (and a scale of 1) as Mercator (variant B) with
+//! that latitude as its standard parallel, GDAL's `Lambert_Conformal_Conic_2SP` with a
+//! `scale_factor` (ignored, as PROJ ignores it), ESRI's `Lambert_Conformal_Conic` with one
+//! (applied) and with one parallel as 1SP at its latitude of origin, Hotine variant A (in WKT 2
+//! too) at an azimuth and grid angle of 90° as the Swiss oblique Mercator, and WKT 1 and WKT 2 with
+//! a node of an unknown keyword (`rustgis:unapplied`, `a-b`, `a"b c"`, an empty one), which PROJ
+//! skips whatever its keyword. A keyword with a space, a vertical tab, a NUL or an unclosed quote
+//! in it is refused, as PROJ refuses it, and so is EPSG's `Mercator (variant A)` with a latitude of
+//! origin other than 0, which PROJ reads but neither transforms nor writes as a PROJ string. A
+//! definition ends at its first NUL, as PROJ takes it as a C string, so a NUL in a keyword is
+//! refused; text after a complete WKT, NUL or not, was already ignored. A NUL a PROJJSON name gives
+//! (`\u0000`) is part of the name, as in PROJ: EPSG:32631's PROJJSON with one is still read. A
+//! quote in a value runs to the next quote, delimiters included, as in PROJ (`b"c,d"e` is one
+//! value), and a quote left unclosed refuses the WKT. GeoTIFF's GeoAsciiParamsTag ends at its first
+//! NUL, as GDAL 3.12.1 reads it, and a CRS with a NUL in a name is written to GeoKeys that read
+//! back as it, or refused where GDAL refuses it.
 //!
 //! `data/wkt1_proj_reads.json` (`scripts/gen_wkt1_proj_reads.py`, pyproj 3.8.0, no grids,
 //! `PROJ_NETWORK=OFF`) holds, for each WKT, a point in its geographic CRS, the point in the
@@ -45,7 +48,7 @@ fn wkt_read_by_proj_places_points_as_proj_does() {
     offline();
     let data = data();
     let cases = data["read"].as_array().unwrap();
-    assert_eq!(cases.len(), 32);
+    assert_eq!(cases.len(), 36);
     let mut bad = vec![];
     for case in cases {
         let name = case["name"].as_str().unwrap();
@@ -74,8 +77,16 @@ fn wkt_read_by_proj_places_points_as_proj_does() {
 /// Whether two PROJ strings have the same parameters, their values within a relative 1e-12:
 /// PROJ writes the false easting of the US survey feet case as 1188722.37744476, terrio as
 /// 1188722.37744475 (3,900,000 m is 1,188,722.377444755 US survey feet).
+///
+/// In any order: terrio writes LCC's parallels before its origin (`+lat_1 +lat_2 +lat_0`), PROJ
+/// after it, which changes nothing.
 fn same_proj(a: &str, b: &str) -> bool {
-    let (a, b): (Vec<&str>, Vec<&str>) = (a.split_whitespace().collect(), b.split_whitespace().collect());
+    fn key(t: &str) -> &str {
+        t.split_once('=').map_or(t, |(k, _)| k)
+    }
+    let (mut a, mut b): (Vec<&str>, Vec<&str>) = (a.split_whitespace().collect(), b.split_whitespace().collect());
+    a.sort_by(|x, y| key(x).cmp(key(y)));
+    b.sort_by(|x, y| key(x).cmp(key(y)));
     a.len() == b.len()
         && a.iter().zip(&b).all(|(a, b)| {
             let (Some((ka, va)), Some((kb, vb))) = (a.split_once('='), b.split_once('=')) else { return a == b };
@@ -450,6 +461,16 @@ fn a_stored_wkt_is_written_for_files_with_names_cut_at_a_nul() {
     let back = SpatialRef::from_wkt(&written);
     assert!(same_proj(&back.to_proj4().unwrap(), case["proj4"].as_str().unwrap()));
     assert!(Transformer::new(&back, &SpatialRef::from_epsg(4326).unwrap()).is_ok());
+}
+
+/// ESRI's `Lambert_Conformal_Conic` with one `Standard_Parallel_1` and no `Latitude_Of_Origin`,
+/// which PROJ 9.9.0 reads at the equator but cannot transform, keeps terrio's reading: the
+/// parallel as `+lat_1`.
+#[test]
+fn esri_lcc_with_one_parallel_and_no_origin_keeps_its_parallel() {
+    let wkt = r#"PROJCS["l",GEOGCS["GCS_North_American_1927",DATUM["D_North_American_1927",SPHEROID["Clarke_1866",6378206.4,294.9786982]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Lambert_Conformal_Conic"],PARAMETER["False_Easting",1000000],PARAMETER["False_Northing",500000],PARAMETER["Central_Meridian",-96],PARAMETER["Standard_Parallel_1",42],PARAMETER["Scale_Factor",1.0],UNIT["Meter",1.0]]"#;
+    let proj = SpatialRef::from_wkt(wkt).to_proj4().unwrap();
+    assert!(proj.contains("+lat_1=42"), "{proj}");
 }
 
 /// GDAL's `Mercator_1SP` with a latitude of origin and a scale other than 1, which PROJ 9.9.0

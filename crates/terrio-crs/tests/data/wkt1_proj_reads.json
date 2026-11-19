@@ -422,6 +422,62 @@
    "epsg": null
   },
   {
+   "name": "Lambert_Conformal_Conic, ESRI's name, with one parallel other than the origin's",
+   "wkt": "PROJCS[\"l\",GEOGCS[\"unknown\",DATUM[\"North American Datum 1927\",SPHEROID[\"Clarke 1866\",6378206.4,294.978698213898]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Lambert_Conformal_Conic\"],PARAMETER[\"False_Easting\",1000000],PARAMETER[\"False_Northing\",500000],PARAMETER[\"Central_Meridian\",-96],PARAMETER[\"Standard_Parallel_1\",42],PARAMETER[\"Scale_Factor\",0.99],PARAMETER[\"Latitude_Of_Origin\",40],UNIT[\"Meter\",1.0]]",
+   "point": [
+    -90.0,
+    45.0
+   ],
+   "proj": [
+    1469837.9495900422,
+    1066383.2744172937
+   ],
+   "proj4": "+proj=lcc +lat_1=40 +lat_0=40 +lon_0=-96 +k_0=0.99 +x_0=1000000 +y_0=500000 +datum=NAD27 +units=m +no_defs +type=crs",
+   "epsg": null
+  },
+  {
+   "name": "Lambert_Conformal_Conic_2SP with a scale factor",
+   "wkt": "PROJCS[\"l\",GEOGCS[\"unknown\",DATUM[\"North American Datum 1927\",SPHEROID[\"Clarke 1866\",6378206.4,294.978698213898]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Lambert_Conformal_Conic_2SP\"],PARAMETER[\"standard_parallel_1\",33],PARAMETER[\"standard_parallel_2\",45],PARAMETER[\"latitude_of_origin\",23],PARAMETER[\"central_meridian\",-96],PARAMETER[\"false_easting\",1000000],PARAMETER[\"false_northing\",500000],PARAMETER[\"scale_factor\",0.99],UNIT[\"metre\",1]]",
+   "point": [
+    -96.0,
+    40.0
+   ],
+   "proj": [
+    1000000.0,
+    2397055.2289241124
+   ],
+   "proj4": "+proj=lcc +lat_0=23 +lon_0=-96 +lat_1=33 +lat_2=45 +x_0=1000000 +y_0=500000 +datum=NAD27 +units=m +no_defs +type=crs",
+   "epsg": null
+  },
+  {
+   "name": "Lambert_Conformal_Conic_2SP_Belgium with a scale factor",
+   "wkt": "PROJCS[\"l\",GEOGCS[\"unknown\",DATUM[\"North American Datum 1927\",SPHEROID[\"Clarke 1866\",6378206.4,294.978698213898]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Lambert_Conformal_Conic_2SP_Belgium\"],PARAMETER[\"standard_parallel_1\",33],PARAMETER[\"standard_parallel_2\",45],PARAMETER[\"latitude_of_origin\",23],PARAMETER[\"central_meridian\",-96],PARAMETER[\"false_easting\",1000000],PARAMETER[\"false_northing\",500000],PARAMETER[\"scale_factor\",0.99],UNIT[\"metre\",1]]",
+   "point": [
+    -96.0,
+    40.0
+   ],
+   "proj": [
+    1000000.0,
+    2397055.2289241124
+   ],
+   "proj4": "+proj=lcc +lat_0=23 +lon_0=-96 +lat_1=33 +lat_2=45 +x_0=1000000 +y_0=500000 +datum=NAD27 +units=m +no_defs +type=crs",
+   "epsg": null
+  },
+  {
+   "name": "Lambert_Conformal_Conic, ESRI's name, with a scale factor",
+   "wkt": "PROJCS[\"l\",GEOGCS[\"unknown\",DATUM[\"North American Datum 1927\",SPHEROID[\"Clarke 1866\",6378206.4,294.978698213898]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Lambert_Conformal_Conic\"],PARAMETER[\"standard_parallel_1\",33],PARAMETER[\"standard_parallel_2\",45],PARAMETER[\"latitude_of_origin\",23],PARAMETER[\"central_meridian\",-96],PARAMETER[\"false_easting\",1000000],PARAMETER[\"false_northing\",500000],PARAMETER[\"Scale_Factor\",0.99],UNIT[\"Meter\",1.0]]",
+   "point": [
+    -96.0,
+    40.0
+   ],
+   "proj": [
+    1000000.0,
+    2378084.676634871
+   ],
+   "proj4": "+proj=lcc +lat_0=23 +lon_0=-96 +lat_1=33 +lat_2=45 +x_0=1000000 +y_0=500000 +k_0=0.99 +datum=NAD27 +units=m +no_defs +type=crs",
+   "epsg": null
+  },
+  {
    "name": "Mercator_1SP, GDAL's name, with a latitude of origin",
    "wkt": "PROJCS[\"Makassar_NEIEZ\",GEOGCS[\"GCS_Makassar\",DATUM[\"D_Makassar\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Mercator_1SP\"],PARAMETER[\"False_Easting\",3900000.0],PARAMETER[\"False_Northing\",900000.0],PARAMETER[\"Central_Meridian\",110.0],PARAMETER[\"Scale_Factor\",1],PARAMETER[\"latitude_of_origin\",30],UNIT[\"Meter\",1.0]]",
    "point": [

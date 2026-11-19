@@ -623,8 +623,10 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
                     push(&mut out, "lat_1", Some(s1));
                     push(&mut out, "lat_2", Some(s2));
                 }
-                // ESRI's single-parallel form.
-                (Some(s1), None) if method == "lambertconformalconic" => push(&mut out, "lat_1", Some(s1)),
+                // ESRI's single-parallel form: 1SP at the latitude of origin, as PROJ 9.9.0 reads it,
+                // which leaves `Standard_Parallel_1` out (opengeos/terrio#1012 item 30). Without a
+                // latitude of origin, which PROJ cannot transform, the parallel is read, as before.
+                (Some(s1), None) if method == "lambertconformalconic" => push(&mut out, "lat_1", lat_0.or(Some(s1))),
                 // A 2SP method without its second parallel: 0, as GDAL reads it.
                 (Some(s1), None) => {
                     push(&mut out, "lat_1", Some(s1));
@@ -634,7 +636,10 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             }
             push(&mut out, "lat_0", lat_0);
             push(&mut out, "lon_0", lon_0);
-            push(&mut out, "k_0", k);
+            // GDAL's 2SP methods have no scale: PROJ 9.9.0 ignores a `scale_factor` given with them
+            // (`parammappings.cpp`, opengeos/terrio#1012 item 29). ESRI's `Lambert_Conformal_Conic`
+            // applies its `Scale_Factor` (2SP Michigan).
+            push(&mut out, "k_0", k.filter(|_| method == "lambertconformalconic"));
         }
         "albersconicequalarea" | "albers" | "albersequalarea" => {
             out.push("+proj=aea".into());
