@@ -4,6 +4,8 @@ where it places points in them.
 - ESRI's `Mercator_Variant_A` (EPSG Guidance Note 7-2's example of Mercator (variant A),
   EPSG:3002 Makassar / NEIEZ, as an ESRI `.prj` names it), and the same with a latitude of origin
   and a standard parallel, which PROJ leaves out of this method;
+- Hotine variant A (`Hotine_Oblique_Mercator`) with an azimuth and a rectified grid angle of 90°,
+  which PROJ reads as the Swiss oblique Mercator (`somerc`);
 - ESRI's `Lambert_Conformal_Conic` with one `Standard_Parallel_1` other than its
   `Latitude_Of_Origin`, which PROJ reads as 1SP at the latitude of origin;
 - GDAL's `Mercator_1SP` with a latitude of origin other than 0 and a scale of 1, which PROJ reads
@@ -76,6 +78,16 @@ def utm17(mark="", root_mark=""):
         'PARAMETER["Latitude_Of_Origin",0],PARAMETER["Central_Meridian",-81],'
         'PARAMETER["Scale_Factor",0.9996],PARAMETER["False_Easting",500000],'
         f'PARAMETER["False_Northing",0],UNIT["metre",1]{root_mark}]'
+    )
+
+
+def hotine_a(gamma):
+    grid = "" if gamma is None else f'PARAMETER["rectified_grid_angle",{gamma}],'
+    return (
+        f'PROJCS["unknown",{nad27()},PROJECTION["Hotine_Oblique_Mercator"],'
+        'PARAMETER["latitude_of_center",43],PARAMETER["longitude_of_center",-80],'
+        f'PARAMETER["azimuth",90],{grid}PARAMETER["scale_factor",0.9999],'
+        'PARAMETER["false_easting",500000],PARAMETER["false_northing",200000],UNIT["metre",1]]'
     )
 
 
@@ -169,6 +181,25 @@ READ = [
             "MERCATOR_VARIANT_A", VARIANT_A + ',PARAMETER["Latitude_Of_Origin",5]'
         ),
         (120.0, -3.0),
+    ),
+    # Hotine variant A with an azimuth and a rectified grid angle of 90° (a missing one being the
+    # azimuth) is the Swiss oblique Mercator, as variant B is; with another grid angle it is not
+    # (opengeos/terrio#1012 item 28).
+    ("Hotine_Oblique_Mercator at 90° and 90°", hotine_a(90), (-79.0, 44.0)),
+    (
+        "Hotine_Oblique_Mercator at 90° without a grid angle",
+        hotine_a(None),
+        (-79.0, 44.0),
+    ),
+    ("Hotine_Oblique_Mercator at 90° and 0°", hotine_a(0), (-79.0, 44.0)),
+    (
+        "Hotine_Oblique_Mercator_Azimuth_Natural_Origin, ESRI's name, at 90°",
+        f'PROJCS["h",{nad27()},PROJECTION["Hotine_Oblique_Mercator_Azimuth_Natural_Origin"],'
+        'PARAMETER["False_Easting",500000],PARAMETER["False_Northing",200000],'
+        'PARAMETER["Scale_Factor",0.9999],PARAMETER["Azimuth",90],'
+        'PARAMETER["Longitude_Of_Center",-80],PARAMETER["Latitude_Of_Center",43],'
+        'UNIT["Meter",1.0]]',
+        (-79.0, 44.0),
     ),
     # ESRI's Lambert_Conformal_Conic with one standard parallel: 1SP at the latitude of origin,
     # Standard_Parallel_1 left out (opengeos/terrio#1012 item 30).

@@ -369,3 +369,25 @@ fn lcc_and_south_orientated_keys_are_written_by_their_method() {
     let ((x, y), (x0, y0)) = (place(&back), place(&crs));
     assert!((x - x0).abs() < 1e-6 && (y - y0).abs() < 1e-6, "({x}, {y}) against ({x0}, {y0})");
 }
+
+/// Hotine variant A (ProjCoordTransGeoKey 3) with an azimuth and a rectified grid angle of 90° is
+/// the Swiss oblique Mercator, as GDAL 3.13.3 writes and reads it: its GeoTIFF of
+/// `Hotine_Oblique_Mercator` at 90°/90° (NAD27, centre (43°, -80°), scale 0.9999, false origin
+/// (500000, 200000)) has these keys and reads back as `+proj=somerc` with those parameters (keys
+/// checked once and given here). At another grid angle, variant A stays an oblique Mercator.
+#[test]
+fn hotine_variant_a_at_90_degrees_reads_as_the_swiss_oblique_mercator() {
+    let read = |grid_angle: f64| {
+        let mut keys = SpatialRef::from_epsg(26717).unwrap().to_geokeys().unwrap();
+        keys.shorts = vec![(1024, 1), (1025, 1), (2048, 4267), (3072, 32767), (3074, 32767), (3075, 3), (3076, 9001)];
+        keys.doubles =
+            vec![(3082, 500000.0), (3083, 200000.0), (3088, -80.0), (3089, 43.0), (3093, 0.9999), (3094, 90.0), (3096, grid_angle)];
+        keys.ascii.clear();
+        let tags = keys.encode().unwrap();
+        SpatialRef::from_geokeys(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).unwrap().to_proj4().unwrap()
+    };
+    let swiss = read(90.0);
+    assert!(swiss.contains("+proj=somerc +lat_0=43 +lon_0=-80 +k_0=0.9999 +x_0=500000 +y_0=200000"), "{swiss}");
+    let oblique = read(0.0);
+    assert!(oblique.contains("+proj=omerc") && oblique.contains("+no_uoff"), "{oblique}");
+}

@@ -118,8 +118,9 @@ pub struct GeoKeysCrs {
 ///   equivalent CRS of the citation's exact name: on keys with a datum of their own or none, the
 ///   code's definition can differ from theirs (see the CRS documentation);
 /// - user-defined geographic and projected CRSs, for the coordinate transformation codes 1, 3,
-///   7-28 and Hotine oblique Mercator variant B (9815, Swiss oblique Mercator among them), in
-///   any linear unit and on an EPSG datum, an EPSG ellipsoid or the GeoKeys' own;
+///   7-28 and Hotine oblique Mercator variant B (9815; at an azimuth and rectified grid angle of
+///   90°, it and variant A, 3, are the Swiss oblique Mercator), in any linear unit and on an EPSG
+///   datum, an EPSG ellipsoid or the GeoKeys' own;
 /// - ESRI PE citations (`ESRI PE String = <WKT>`), as GDAL writes a CRS GeoKeys cannot hold;
 /// - a vertical CRS (VerticalCSTypeGeoKey) on an EPSG horizontal CRS, as the compound CRS (the
 ///   registry's compound CRS of the two codes when there is one), and a geographic 3D CRS as its
@@ -718,12 +719,13 @@ fn projection(k: &GeoKeys, to_meter: f64) -> Option<String> {
     }
     Some(match k.short(3075)? {
         1 => format!("tmerc +lat_0={lat0} +lon_0={lon0} +k={scale} {false_xy}"),
-        // Hotine oblique Mercator: variant A (natural origin) and B (centre of projection).
-        3 => oblique_mercator(" +no_uoff")?,
-        // Swiss oblique Mercator, as GDAL writes it: variant B of azimuth 90°.
-        9815 if k.double(AZIMUTH) == Some(90.0) && grid_angle == 90.0 => {
+        // Swiss oblique Mercator, as GDAL writes it: variant B of azimuth 90°, and as GDAL 3.13.3
+        // reads variant A of azimuth and rectified grid angle 90° (opengeos/terrio#1012 item 28).
+        3 | 9815 if k.double(AZIMUTH) == Some(90.0) && grid_angle == 90.0 => {
             format!("somerc +lat_0={lat0} +lon_0={lon0} +k_0={scale} {false_xy}")
         }
+        // Hotine oblique Mercator: variant A (natural origin) and B (centre of projection).
+        3 => oblique_mercator(" +no_uoff")?,
         9815 => oblique_mercator("")?,
         // Mercator 2SP has its standard parallel in ProjStdParallel1GeoKey, 1SP a scale (with
         // which a zero standard parallel is taken as unused).

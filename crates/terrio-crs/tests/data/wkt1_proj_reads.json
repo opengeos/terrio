@@ -366,6 +366,62 @@
    "epsg": 3002
   },
   {
+   "name": "Hotine_Oblique_Mercator at 90° and 90°",
+   "wkt": "PROJCS[\"unknown\",GEOGCS[\"unknown\",DATUM[\"North American Datum 1927\",SPHEROID[\"Clarke 1866\",6378206.4,294.978698213898]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Hotine_Oblique_Mercator\"],PARAMETER[\"latitude_of_center\",43],PARAMETER[\"longitude_of_center\",-80],PARAMETER[\"azimuth\",90],PARAMETER[\"rectified_grid_angle\",90],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",200000],UNIT[\"metre\",1]]",
+   "point": [
+    -79.0,
+    44.0
+   ],
+   "proj": [
+    580210.8009763944,
+    311573.2321555719
+   ],
+   "proj4": "+proj=somerc +lat_0=43 +lon_0=-80 +k_0=0.9999 +x_0=500000 +y_0=200000 +datum=NAD27 +units=m +no_defs +type=crs",
+   "epsg": null
+  },
+  {
+   "name": "Hotine_Oblique_Mercator at 90° without a grid angle",
+   "wkt": "PROJCS[\"unknown\",GEOGCS[\"unknown\",DATUM[\"North American Datum 1927\",SPHEROID[\"Clarke 1866\",6378206.4,294.978698213898]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Hotine_Oblique_Mercator\"],PARAMETER[\"latitude_of_center\",43],PARAMETER[\"longitude_of_center\",-80],PARAMETER[\"azimuth\",90],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",200000],UNIT[\"metre\",1]]",
+   "point": [
+    -79.0,
+    44.0
+   ],
+   "proj": [
+    580210.8009763944,
+    311573.2321555719
+   ],
+   "proj4": "+proj=somerc +lat_0=43 +lon_0=-80 +k_0=0.9999 +x_0=500000 +y_0=200000 +datum=NAD27 +units=m +no_defs +type=crs",
+   "epsg": null
+  },
+  {
+   "name": "Hotine_Oblique_Mercator at 90° and 0°",
+   "wkt": "PROJCS[\"unknown\",GEOGCS[\"unknown\",DATUM[\"North American Datum 1927\",SPHEROID[\"Clarke 1866\",6378206.4,294.978698213898]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Hotine_Oblique_Mercator\"],PARAMETER[\"latitude_of_center\",43],PARAMETER[\"longitude_of_center\",-80],PARAMETER[\"azimuth\",90],PARAMETER[\"rectified_grid_angle\",0],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",200000],UNIT[\"metre\",1]]",
+   "point": [
+    -79.0,
+    44.0
+   ],
+   "proj": [
+    388426.76899624616,
+    10295641.78068847
+   ],
+   "proj4": "+proj=omerc +no_uoff +lat_0=43 +lonc=-80 +alpha=90 +gamma=0 +k=0.9999 +x_0=500000 +y_0=200000 +datum=NAD27 +units=m +no_defs +type=crs",
+   "epsg": null
+  },
+  {
+   "name": "Hotine_Oblique_Mercator_Azimuth_Natural_Origin, ESRI's name, at 90°",
+   "wkt": "PROJCS[\"h\",GEOGCS[\"unknown\",DATUM[\"North American Datum 1927\",SPHEROID[\"Clarke 1866\",6378206.4,294.978698213898]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Hotine_Oblique_Mercator_Azimuth_Natural_Origin\"],PARAMETER[\"False_Easting\",500000],PARAMETER[\"False_Northing\",200000],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",90],PARAMETER[\"Longitude_Of_Center\",-80],PARAMETER[\"Latitude_Of_Center\",43],UNIT[\"Meter\",1.0]]",
+   "point": [
+    -79.0,
+    44.0
+   ],
+   "proj": [
+    580210.8009763944,
+    311573.2321555719
+   ],
+   "proj4": "+proj=somerc +lat_0=43 +lon_0=-80 +k_0=0.9999 +x_0=500000 +y_0=200000 +datum=NAD27 +units=m +no_defs +type=crs",
+   "epsg": null
+  },
+  {
    "name": "Lambert_Conformal_Conic, ESRI's name, with one parallel other than the origin's",
    "wkt": "PROJCS[\"l\",GEOGCS[\"unknown\",DATUM[\"North American Datum 1927\",SPHEROID[\"Clarke 1866\",6378206.4,294.978698213898]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Lambert_Conformal_Conic\"],PARAMETER[\"False_Easting\",1000000],PARAMETER[\"False_Northing\",500000],PARAMETER[\"Central_Meridian\",-96],PARAMETER[\"Standard_Parallel_1\",42],PARAMETER[\"Scale_Factor\",0.99],PARAMETER[\"Latitude_Of_Origin\",40],UNIT[\"Meter\",1.0]]",
    "point": [

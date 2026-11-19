@@ -305,14 +305,17 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         push("lat_0", lat_0());
         push("lon_0", lon_0());
         "laea"
-    } else if is(&["hotineobliquemercatorvariantb"], &[9815])
+    } else if (is(&["hotineobliquemercatorvarianta"], &[9812]) || is(&["hotineobliquemercatorvariantb"], &[9815]))
         && p.get(AZIMUTH).is_some_and(|a| (a - 90.0).abs() < 1e-9)
         && p.get(GAMMA).is_some_and(|g| (g - 90.0).abs() < 1e-9)
     {
         // With an azimuth and a rectified grid angle of 90°, the Swiss oblique Mercator, as PROJ
-        // reads it (and writes it, from `+proj=somerc`).
-        fe = p.get(FE_CENTRE).unwrap_or(fe);
-        fn_ = p.get(FN_CENTRE).unwrap_or(fn_);
+        // 9.9.0 reads variant A as well as B (and writes it, from `+proj=somerc`; opengeos/terrio#1012
+        // item 28). Variant B's false origin is at the centre, variant A's at the natural origin.
+        if is(&["hotineobliquemercatorvariantb"], &[9815]) {
+            fe = p.get(FE_CENTRE).unwrap_or(fe);
+            fn_ = p.get(FN_CENTRE).unwrap_or(fn_);
+        }
         push("lat_0", p.get(LAT_CENTRE).or_else(lat_0));
         push("lon_0", p.get(LON_CENTRE).or_else(lon_0));
         push("k_0", Some(p.get(K_CENTRE).or_else(|| p.get(K_NAT)).unwrap_or(1.0)));
