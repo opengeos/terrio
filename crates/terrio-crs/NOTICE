@@ -18,6 +18,7 @@ Terrio files derived from PROJ source files (each file's header names them):
   crates/terrio-crs/src/def.rs
   crates/terrio-crs/src/grid.rs
   crates/terrio-crs/src/math.rs
+  crates/terrio-crs/src/methods.rs
   crates/terrio-crs/src/params.rs
   crates/terrio-crs/src/projections.rs
   crates/terrio-crs/src/projections/perspective.rs

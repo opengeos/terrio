@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: PROJ contributors
 // SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
 //! The projection parameters and world projections terrio reads and writes, once (#1058 step 5).
@@ -173,10 +174,26 @@ const ALL: [Param; 36] = [
 mod tests {
     use super::*;
 
+    /// Each world projection's PROJ name, WKT 2 name and WKT 1 method are its own, and its WKT 2
+    /// name is normalized as the reader compares it.
+    #[test]
+    fn the_world_table_is_consistent() {
+        for w in WORLD {
+            let same = |v: &&World| v.proj == w.proj || (w.wkt2.is_some() && v.wkt2 == w.wkt2) || (w.wkt1.is_some() && v.wkt1 == w.wkt1);
+            assert_eq!(WORLD.iter().filter(same).count(), 1, "{w:?}");
+            if let Some(k) = w.wkt2 {
+                assert_eq!(k, crate::wkt1::norm(k), "{w:?}");
+            }
+        }
+    }
+
     /// Each parameter's key is its name normalized, and its code and names are its own. (The EPSG
     /// names and codes are those of PROJ 9.9.0's `proj.db`, `conversion_param`.)
     #[test]
     fn the_parameter_table_is_consistent() {
+        // Every parameter constant of this file is in `ALL`, which the checks below go over.
+        let constants = include_str!("methods.rs").lines().filter(|l| l.starts_with("pub(crate) const ") && l.contains(": Param ="));
+        assert_eq!(constants.count(), ALL.len());
         for p in ALL {
             assert_eq!(p.key, crate::wkt1::norm(p.name), "{p:?}");
             let same = |q: &&Param| q.code == p.code || q.named(p.key) || p.aliases.iter().any(|a| q.named(a));
