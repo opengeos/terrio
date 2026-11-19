@@ -247,6 +247,7 @@ mod zarr {
             other => panic!("code is {other:?}"),
         }
         assert_eq!(json(&path.join("code"))["fill_value"], i64::MIN);
+        assert_eq!(json(&path.join("code"))["attributes"]["_FillValue"], i64::MIN, "CF readers mask by it");
         assert_eq!(strings(&path, "name"), ["north", "south"]);
         assert_eq!(strings(&path, "statistic"), ["mean", "count"]);
         assert_eq!(strings(&path, "band"), ["B04", "B08"]);
@@ -365,6 +366,23 @@ mod zarr {
         cube(zones.clone()).write_zarr(path.to_str().unwrap()).unwrap();
         match read(path.to_str().unwrap(), "code").1 {
             RasterData::I64(code) => assert_eq!(code, [i64::MAX, i64::MIN]),
+            other => panic!("code is {other:?}"),
+        }
+        // `i64::MIN` without nulls is a value like any other: no fill value.
+        zones.features[0].attributes[1] = FieldValue::Integer(i64::MIN);
+        zones.features[1].attributes[1] = FieldValue::Integer(1);
+        let path = dir.path().join("full.zarr");
+        cube(zones.clone()).write_zarr(path.to_str().unwrap()).unwrap();
+        assert_eq!(json(&path.join("code"))["fill_value"], 0, "no nulls: the writers' default fill");
+        // An all-null field: every value is the fill value.
+        for f in &mut zones.features {
+            f.attributes[1] = FieldValue::Null;
+        }
+        let path = dir.path().join("nulls.zarr");
+        cube(zones.clone()).write_zarr(path.to_str().unwrap()).unwrap();
+        assert_eq!(json(&path.join("code"))["fill_value"], i64::MIN);
+        match read(path.to_str().unwrap(), "code").1 {
+            RasterData::I64(code) => assert_eq!(code, [i64::MIN, i64::MIN]),
             other => panic!("code is {other:?}"),
         }
         zones.features[0].attributes[1] = FieldValue::Integer(i64::MIN);

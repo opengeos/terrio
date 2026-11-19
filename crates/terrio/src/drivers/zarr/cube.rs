@@ -256,8 +256,11 @@ fn write_field(path: &Path, name: &str, field_type: FieldType, column: &[&FieldV
     if field_type == FieldType::Integer {
         let values: Vec<i64> = column.iter().map(|v| if let FieldValue::Integer(i) = v { *i } else { i64::MIN }).collect();
         // A fill value only with nulls, so that every value of a full column reads as itself.
-        let fill = column.iter().any(|v| !matches!(v, FieldValue::Integer(_))).then_some(i64::MIN as f64);
-        return write_array_v3(path, name, &[values.len()], &dims, DataType::I64, &i64_bytes(&values), fill, json!({}));
+        // and the CF `_FillValue` too: xarray masks Zarr v3 arrays by that attribute only.
+        let nulls = column.iter().any(|v| !matches!(v, FieldValue::Integer(_)));
+        let attrs = if nulls { json!({"_FillValue": i64::MIN}) } else { json!({}) };
+        let fill = nulls.then_some(i64::MIN as f64);
+        return write_array_v3(path, name, &[values.len()], &dims, DataType::I64, &i64_bytes(&values), fill, attrs);
     }
     if field_type == FieldType::Float {
         let values: Vec<f64> = column.iter().map(|v| number(v).unwrap_or(f64::NAN)).collect();
