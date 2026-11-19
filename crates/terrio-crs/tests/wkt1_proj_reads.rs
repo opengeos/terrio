@@ -1,8 +1,9 @@
 //! WKT that PROJ 9.9.0 reads is read, and places points where PROJ does: ESRI's
 //! `Mercator_Variant_A` (EPSG Guidance Note 7-2's Makassar / NEIEZ example, EPSG:3002, as an
 //! ESRI `.prj` names its method) and EPSG's `Mercator (variant A)` in WKT 1, as PROJ's Mercator
-//! (1SP), GDAL's `Lambert_Conformal_Conic_2SP` with a `scale_factor` (ignored, as PROJ ignores it)
-//! and ESRI's `Lambert_Conformal_Conic` with one (applied), and WKT 1 and WKT 2 with a node of an unknown keyword (`rustgis:unapplied`, `a-b`,
+//! (1SP), GDAL's `Lambert_Conformal_Conic_2SP` with a `scale_factor` (ignored, as PROJ ignores
+//! it) and ESRI's `Lambert_Conformal_Conic` with one (applied), and WKT 1 and WKT 2 with a node of
+//! an unknown keyword (`rustgis:unapplied`, `a-b`,
 //! `a"b c"`, an empty one), which PROJ skips whatever its keyword. A keyword with a space, a
 //! vertical tab, a NUL or an unclosed quote in it is refused, as PROJ refuses it, and so is
 //! EPSG's `Mercator (variant A)` with a latitude of origin other than 0, which PROJ reads but
