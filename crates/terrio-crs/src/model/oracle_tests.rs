@@ -149,7 +149,13 @@ fn conversion_json(c: &Conversion) -> Value {
     };
     // A method PROJ knows by an EPSG ID or name (WKT 2), or GDAL's WKT 1 name.
     let wkt1 = c.method.ids.is_empty() && c.params.iter().all(|p| p.ident.ids.is_empty() && p.unit.is_none());
-    let by_name = |names: &[&str]| names.iter().find_map(|n| c.params.iter().find(|p| wkt1::norm(&p.ident.name) == *n).map(|p| p.value));
+    // The latitude of origin, by which `method1` tells the polar stereographic variants, in degrees.
+    let by_name = |names: &[&str]| {
+        names.iter().find_map(|n| {
+            let p = c.params.iter().find(|p| wkt1::norm(&p.ident.name) == *n)?;
+            Some(if *n == "latitudeoforigin" { value_in(p, 'a', c) } else { p.value })
+        })
+    };
     if wkt1 && let Some((name, code, list)) = crate::projjson_gdal::method1(&c.method.name, &by_name) {
         let parameters: Vec<Value> = list
             .iter()
@@ -239,8 +245,13 @@ fn render(crs: &Crs) -> Value {
             let mut o = Map::new();
             o.insert("type".into(), json!("VerticalCRS"));
             o.insert("name".into(), json!(ident.name));
-            if *ensemble {
-                o.insert("datum_ensemble".into(), json!({"name": datum.name}));
+            if let Some(e) = ensemble {
+                let members: Vec<Value> = e.members.iter().map(|m| json!({"name": m.name})).collect();
+                let mut x = json!({"name": datum.name, "members": members});
+                if let Some(a) = e.accuracy {
+                    x["accuracy"] = json!(a.to_string());
+                }
+                o.insert("datum_ensemble".into(), x);
             } else {
                 let kind = if frame_epoch.is_some() { "DynamicVerticalReferenceFrame" } else { "VerticalReferenceFrame" };
                 let mut d = json!({"type": kind, "name": datum.name});
@@ -265,15 +276,31 @@ fn render(crs: &Crs) -> Value {
             Value::Object(o)
         }
         Crs::Bound { source, transformation: t } => {
-            let c = Conversion {
-                ident: t.ident.clone(),
-                method: t.method.clone(),
-                params: t.params.clone(),
-                angular: Unit::degree(),
-                linear: Unit::metre(),
-            };
+            // An abridged transformation's scale difference in unity is a multiplier
+            // (`1.000007`), which PROJ 9.9.0 reads as the difference (7 ppm).
+            let params = t
+                .params
+                .iter()
+                .map(|p| {
+                    let scale = p.ident.ids.iter().any(|i| i.code == "8611") || p.ident.name.eq_ignore_ascii_case("Scale difference");
+                    let unity = p.unit.as_ref().is_none_or(|u| u.kind == UnitKind::Scale && u.factor == 1.0);
+                    if scale && unity { Param { value: p.value - 1.0, unit: Some(Unit::unity()), ..p.clone() } } else { p.clone() }
+                })
+                .collect();
+            let c = Conversion { ident: t.ident.clone(), method: t.method.clone(), params, angular: Unit::degree(), linear: Unit::metre() };
             let mut tr = conversion_json(&c);
             tr["name"] = json!(t.ident.name);
+            if let Some(list) = tr["parameters"].as_array_mut() {
+                for (ident, file) in &t.files {
+                    let mut f = json!({"name": ident.name, "value": file});
+                    let mut extra = Map::new();
+                    with_ids(&mut extra, ident);
+                    for (k, v) in extra {
+                        f[k] = v;
+                    }
+                    list.push(f);
+                }
+            }
             json!({"type": "BoundCRS", "source_crs": render(source), "target_crs": render(&t.target), "transformation": tr})
         }
         Crs::Other { ident, .. } => {
@@ -286,7 +313,7 @@ fn render(crs: &Crs) -> Value {
     }
 }
 
-/// The paths at which the model's PROJJSON differs from PROJ's, or `!` when it reads none.
+/// The paths at which the model's PROJJSON differs from PROJ's, or `!unread` when it reads none.
 fn differences(text: &str, proj: &Value) -> String {
     match read(text) {
         Some(m) => compare(&render(&m.crs), proj),
@@ -372,9 +399,41 @@ fn the_corpus() -> Vec<(String, String, String, Value)> {
     ])
 }
 
+/// What the corpus does not have, rendered as PROJ 9.9.0 renders it: a bound CRS's scale
+/// difference as a multiplier (7 ppm) and its `PARAMETERFILE`, and a GDAL polar stereographic with
+/// its latitude of origin in grads (variant A).
+#[test]
+fn scale_differences_files_and_grads_render_as_proj_reads_them() {
+    let g = r#"GEOGCRS["x",DATUM["WGS 84",ELLIPSOID["WGS 84",6378137,298.257223563,LENGTHUNIT["metre",1]]],CS[ellipsoidal,2],AXIS["lat",north,ORDER[1],ANGLEUNIT["degree",0.0174532925199433]],AXIS["lon",east,ORDER[2],ANGLEUNIT["degree",0.0174532925199433]]]"#;
+    let bound = |t: &str| {
+        let m = read(&format!(r#"BOUNDCRS[SOURCECRS[{g}],TARGETCRS[{g}],ABRIDGEDTRANSFORMATION["t",{t}]]"#)).unwrap();
+        render(&m.crs)["transformation"]["parameters"].as_array().unwrap().last().unwrap().clone()
+    };
+    let helmert = bound(
+        r#"METHOD["Position Vector transformation (geog2D domain)",ID["EPSG",9606]],PARAMETER["X-axis translation",1,ID["EPSG",8605]],PARAMETER["Scale difference",1.000007,ID["EPSG",8611]]"#,
+    );
+    let proj = json!({"name": "Scale difference", "value": 7.00000000009027, "unit": {"type": "ScaleUnit", "name": "parts per million", "conversion_factor": 1e-06}, "id": {"authority": "EPSG", "code": 8611}});
+    assert_eq!(compare(&helmert, &proj), "", "{helmert}");
+    let file =
+        bound(r#"METHOD["NTv2",ID["EPSG",9615]],PARAMETERFILE["Latitude and longitude difference file","ntv2_0.gsb",ID["EPSG",8656]]"#);
+    let proj = json!({"name": "Latitude and longitude difference file", "value": "ntv2_0.gsb", "id": {"authority": "EPSG", "code": 8656}});
+    assert_eq!(compare(&file, &proj), "", "{file}");
+    let polar = r#"PROJCS["p",GEOGCS["g",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["grad",0.015707963267949]],PROJECTION["Polar_Stereographic"],PARAMETER["latitude_of_origin",100],PARAMETER["central_meridian",0],PARAMETER["scale_factor",0.994],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1],AUTHORITY["EPSG","99999"]]"#;
+    let method = &render(&read(polar).unwrap().crs)["conversion"]["method"];
+    assert_eq!(
+        compare(method, &json!({"name": "Polar Stereographic (variant A)", "id": {"authority": "EPSG", "code": 9810}})),
+        "",
+        "{method}"
+    );
+}
+
 #[test]
 fn every_crs_reads_into_the_model_as_recorded_against_proj() {
-    check_recorded(DIFFS, &grouped(&the_corpus(), differences));
+    let found = grouped(&the_corpus(), differences);
+    // An unread text is a model bug, never a recorded difference.
+    let unread: Vec<&str> = found.lines().filter(|l| l.split('\t').nth(1) == Some("!unread")).collect();
+    assert!(unread.is_empty(), "texts the model does not read:\n{}", unread.join("\n"));
+    check_recorded(DIFFS, &found);
 }
 
 /// The model reads every value at least as terrio's PROJJSON writer does: where the writer's
@@ -412,8 +471,13 @@ fn the_model_reads_no_value_worse_than_the_writer() {
                             let worse: Vec<&String> = model
                                 .iter()
                                 .filter(|(p, decade)| match writer.get(*p) {
-                                    // Both off: worse only by a larger decade.
-                                    Some(w) => matches!((decade, w), (Some(a), Some(b)) if a > b),
+                                    // Both off: worse by a larger decade, or where the model has
+                                    // no number for one the writer has.
+                                    Some(w) => match (decade, w) {
+                                        (Some(a), Some(b)) => a > b,
+                                        (None, Some(_)) => true,
+                                        _ => false,
+                                    },
                                     None => true,
                                 })
                                 .map(|(p, _)| p)

@@ -190,7 +190,16 @@ pub(crate) struct Transformation {
     pub ident: Ident,
     pub method: Ident,
     pub params: Vec<Param>,
+    /// Its `PARAMETERFILE`s (an NTv2 grid's), by name and file name.
+    pub files: Vec<(Ident, String)>,
     pub target: Box<Crs>,
+}
+
+/// The members of a vertical datum ensemble, and its accuracy in metres.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Members {
+    pub members: Vec<Ident>,
+    pub accuracy: Option<f64>,
 }
 
 /// A CRS.
@@ -214,7 +223,8 @@ pub(crate) enum Crs {
     Vertical {
         ident: Ident,
         datum: Ident,
-        ensemble: bool,
+        /// A datum ensemble's members and accuracy.
+        ensemble: Option<Members>,
         anchor_epoch: Option<f64>,
         frame_epoch: Option<f64>,
         cs: Cs,
@@ -283,23 +293,26 @@ pub(crate) fn read(text: &str) -> Option<Model> {
                 Crs::Geodetic { cs, .. } => height(cs, length, direction),
                 _ => {}
             }
-            return Some(Model { crs, dialect: d, extensions: Vec::new() });
+            return Some(Model { crs, dialect: d, extensions: extensions(&h) });
         }
         let parts = vec![crs(&h, d)?, crs(&v, Dialect::Wkt1Esri)?];
         let name = format!("{} + {}", h.name().unwrap_or(""), v.name().unwrap_or(""));
         let crs = Crs::Compound { ident: Ident { name, ids: Vec::new() }, parts };
-        return Some(Model { crs, dialect: d, extensions: Vec::new() });
+        return Some(Model { crs, dialect: d, extensions: extensions(&h) });
     }
     let root = wkt1::parse(text)?;
     let d = dialect(text, &root);
-    let extensions = root
-        .children("EXTENSION")
+    Some(Model { crs: crs(&root, d)?, dialect: d, extensions: extensions(&root) })
+}
+
+/// The `EXTENSION`s of a root node (of ESRI's sequence, its horizontal CRS's), as written.
+fn extensions(root: &Node) -> Vec<(String, String)> {
+    root.children("EXTENSION")
         .filter_map(|e| match e.args.get(1) {
             Some(Arg::Str(s)) => Some((e.name()?.to_string(), s.clone())),
             _ => None,
         })
-        .collect();
-    Some(Model { crs: crs(&root, d)?, dialect: d, extensions })
+        .collect()
 }
 
 /// The WKT 1 root keywords.
@@ -332,9 +345,10 @@ fn crs(n: &Node, d: Dialect) -> Option<Crs> {
     } else if n.is(kw::VERTICAL_CRS) {
         vertical(n, d)
     } else if n.is(kw::COMPOUND_CRS) {
-        // Every component, or none: a component without what it needs leaves the compound CRS
-        // unread.
-        let parts = nodes(n).filter(|c| is_crs(c)).map(|c| crs(c, d)).collect::<Option<Vec<_>>>()?;
+        // Every component, or none: a component without what it needs, or of a kind the model does
+        // not read (WKT 2's `TIMECRS`), leaves the compound CRS unread.
+        let parts =
+            nodes(n).filter(|c| !METADATA.iter().any(|k| c.key.eq_ignore_ascii_case(k))).map(|c| crs(c, d)).collect::<Option<Vec<_>>>()?;
         Some(Crs::Compound { ident: ident(n), parts })
     } else if n.key.eq_ignore_ascii_case("BOUNDCRS") {
         bound(n, d)
@@ -345,9 +359,13 @@ fn crs(n: &Node, d: Dialect) -> Option<Crs> {
     }
 }
 
-/// Whether a node's keyword is a CRS's this model reads.
-fn is_crs(n: &Node) -> bool {
-    n.is(kw::HORIZONTAL_CRS) || n.is(kw::VERTICAL_CRS) || n.is(kw::COMPOUND_CRS) || n.is(kw::ENGINEERING_CRS)
+/// The keywords of a CRS's metadata (WKT 2's identifiers, usages and remarks, WKT 1's
+/// `AUTHORITY` and `EXTENSION`), which a compound CRS has beside its components.
+const METADATA: [&str; 10] = ["ID", "AUTHORITY", "EXTENSION", "USAGE", "SCOPE", "AREA", "BBOX", "VERTICALEXTENT", "TIMEEXTENT", "REMARK"];
+
+/// The prime meridian node of a geodetic CRS node: `PRIMEM`, or WKT 2's `PRIMEMERIDIAN`.
+fn prime_meridian_node(n: &Node) -> Option<&Node> {
+    n.child("PRIMEM").or_else(|| n.child("PRIMEMERIDIAN"))
 }
 
 /// Whether an ESRI `VERTCS` is down (`PARAMETER["Direction",-1]`), as PROJ 9.9.0 reads it.
@@ -411,7 +429,7 @@ fn angular_unit(n: &Node, d: Dialect) -> Unit {
         .or_else(
             || if d == Dialect::Wkt2 { n.children("AXIS").find_map(|a| a.child("ANGLEUNIT").or_else(|| a.child("UNIT"))) } else { None },
         )
-        .or_else(|| n.child("PRIMEM").and_then(|p| p.child("ANGLEUNIT").or_else(|| p.child("UNIT"))));
+        .or_else(|| prime_meridian_node(n).and_then(|p| p.child("ANGLEUNIT").or_else(|| p.child("UNIT"))));
     found.and_then(|u| unit(u, UnitKind::Angle)).unwrap_or_else(Unit::degree)
 }
 
@@ -481,7 +499,7 @@ fn geodetic(n: &Node, d: Dialect) -> Option<Crs> {
 /// `GEOGCS` unit), else degrees, with PROJ's corrections (`wkt1::prime_meridian_degrees`).
 /// Greenwich without one.
 fn prime_meridian(n: &Node, d: Dialect, geocentric: bool) -> PrimeMeridian {
-    let Some(p) = n.child("PRIMEM") else {
+    let Some(p) = prime_meridian_node(n) else {
         return PrimeMeridian { ident: Ident { name: "Greenwich".into(), ids: Vec::new() }, longitude: 0.0 };
     };
     let crs_unit = if geocentric {
@@ -680,7 +698,10 @@ fn vertical(n: &Node, d: Dialect) -> Option<Crs> {
         .first_in(kw::VERTICAL_DATUM)
         .or_else(|| n.first_in(kw::GEODETIC_DATUM_ENSEMBLE))
         .or_else(|| if n.key.eq_ignore_ascii_case("VERTCS") { n.child("DATUM") } else { None })?;
-    let ensemble = datum.is(kw::GEODETIC_DATUM_ENSEMBLE);
+    let ensemble = datum.is(kw::GEODETIC_DATUM_ENSEMBLE).then(|| Members {
+        members: datum.children("MEMBER").map(ident).collect(),
+        accuracy: datum.child("ENSEMBLEACCURACY").and_then(|a| a.num(0)),
+    });
     let length = n
         .child("UNIT")
         .or_else(|| n.child("LENGTHUNIT"))
@@ -718,6 +739,13 @@ fn bound(n: &Node, d: Dialect) -> Option<Crs> {
         ident: ident(t),
         method: t.child("METHOD").map(ident).unwrap_or_default(),
         params: params(t),
+        files: t
+            .children("PARAMETERFILE")
+            .filter_map(|p| match p.args.get(1) {
+                Some(Arg::Str(s)) => Some((ident(p), s.clone())),
+                _ => None,
+            })
+            .collect(),
         target: Box::new(target),
     };
     Some(Crs::Bound { source: Box::new(source), transformation })
@@ -862,5 +890,37 @@ mod tests {
         let Crs::Projected { cs, .. } = &m.crs else { panic!() };
         assert_eq!((m.dialect, cs.axes[0].direction.as_str()), (Dialect::Wkt1Gdal, "east"));
         assert!(read(r#"COMPD_CS["c",GEOGCS["g",PRIMEM["Greenwich",0]],VERT_CS["h",VERT_DATUM["d",2005],UNIT["metre",1]]]"#).is_none());
+    }
+
+    /// WKT 2's `PRIMEMERIDIAN` (PROJ 9.9.0: longitude 2), a compound CRS with a `TIMECRS` (which
+    /// the model does not read), the extensions of ESRI's sequence's horizontal CRS, a vertical
+    /// ensemble's members and accuracy, and a bound CRS's `PARAMETERFILE`.
+    #[test]
+    fn meridians_ensembles_files_and_unread_components() {
+        let g = r#"GEOGCRS["x",DATUM["WGS 84",ELLIPSOID["WGS 84",6378137,298.257223563,LENGTHUNIT["metre",1]]],%PM%CS[ellipsoidal,2],AXIS["lat",north,ORDER[1],ANGLEUNIT["degree",0.0174532925199433]],AXIS["lon",east,ORDER[2],ANGLEUNIT["degree",0.0174532925199433]]]"#;
+        let m = read(&g.replace("%PM%", r#"PRIMEMERIDIAN["Local",2,ANGLEUNIT["degree",0.0174532925199433]],"#)).unwrap();
+        let (_, datum, _) = geodetic_parts(&m);
+        assert_eq!((datum.prime_meridian().ident.name.as_str(), datum.prime_meridian().longitude), ("Local", 2.0));
+        let g = g.replace("%PM%", "");
+        let time = r#"TIMECRS["t",TDATUM["Gregorian",TIMEORIGIN[0000-01-01]],CS[TemporalDateTime,1],AXIS["time (T)",future]]"#;
+        assert!(read(&format!(r#"COMPOUNDCRS["c",{g},{time}]"#)).is_none());
+        let e = r#"GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433],EXTENSION["vendor","value"]]"#;
+        let v =
+            r#"VERTCS["EGM96_Geoid",VDATUM["EGM96_Geoid"],PARAMETER["Vertical_Shift",0.0],PARAMETER["Direction",1.0],UNIT["Meter",1.0]]"#;
+        let ellipsoidal = r#"VERTCS["WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PARAMETER["Vertical_Shift",0.0],PARAMETER["Direction",1.0],UNIT["Meter",1.0]]"#;
+        for text in [e.to_string(), format!("{e},{v}"), format!("{e},{ellipsoidal}")] {
+            assert_eq!(read(&text).unwrap().extensions, [("vendor".to_string(), "value".to_string())], "{text}");
+        }
+        let m = read(
+            r#"VERTCRS["v",ENSEMBLE["e",MEMBER["a"],MEMBER["b"],ENSEMBLEACCURACY[0.1]],CS[vertical,1],AXIS["H",up,LENGTHUNIT["metre",1]]]"#,
+        )
+        .unwrap();
+        let Crs::Vertical { ensemble: Some(e), .. } = &m.crs else { panic!("{m:?}") };
+        assert_eq!((e.members.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), e.accuracy), (vec!["a", "b"], Some(0.1)));
+        let ntv2 = format!(
+            r#"BOUNDCRS[SOURCECRS[{g}],TARGETCRS[{g}],ABRIDGEDTRANSFORMATION["t",METHOD["NTv2",ID["EPSG",9615]],PARAMETERFILE["Latitude and longitude difference file","ntv2_0.gsb",ID["EPSG",8656]]]]"#
+        );
+        let Crs::Bound { transformation: t, .. } = read(&ntv2).unwrap().crs else { panic!() };
+        assert_eq!((t.files[0].0.name.as_str(), t.files[0].1.as_str()), ("Latitude and longitude difference file", "ntv2_0.gsb"));
     }
 }
