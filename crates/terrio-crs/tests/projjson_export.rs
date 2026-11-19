@@ -84,6 +84,28 @@ fn planetographic_and_planetocentric_crss() {
     assert_eq!((e["semi_major_axis"].as_f64(), e["semi_minor_axis"].as_f64()), (Some(17000.0), Some(5500.0)));
 }
 
+/// What PROJ ignores is not written: an oblique Mercator without `lonc` is centred on the prime
+/// meridian whatever its `lon_0`, and Mercator with a `lat_ts` (0 too) ignores `k`. Each reads
+/// back where PROJ 9.9.0 places (5°, 6°) and (10°, 40°) in the PROJ string's CRS.
+#[test]
+fn what_proj_ignores_is_not_written() {
+    for (definition, (lon, lat), (x, y)) in [
+        ("+proj=omerc +lat_0=4 +lon_0=115 +alpha=53 +k=0.99984 +ellps=GRS80", (5.0, 6.0), (553558.8315597407, 223322.98147780626)),
+        ("+proj=merc +lat_ts=0 +k=0.99 +ellps=WGS84", (10.0, 40.0), (1113194.9079327357, 4838471.398061137)),
+    ] {
+        let crs = SpatialRef::parse(definition).unwrap();
+        let back = SpatialRef::from_projjson(&crs.to_projjson().unwrap()).unwrap();
+        let geographic = SpatialRef::parse("+proj=longlat +ellps=WGS84").unwrap();
+        let (bx, by) = Transformer::new(&geographic, &back).unwrap().transform(lon, lat).unwrap();
+        assert!((bx - x).abs() < 1e-6 && (by - y).abs() < 1e-6, "{definition}: ({bx}, {by})");
+    }
+    // Miller Cylindrical, which PROJ writes without an EPSG code, and the spherical methods.
+    let mill = export("+proj=mill +lon_0=10 +R=6371000");
+    assert_eq!(mill["conversion"]["method"], json!({"name": "Miller Cylindrical"}));
+    assert_eq!(export("+proj=eqc +R=6371000")["conversion"]["method"]["id"]["code"], 1029);
+    assert_eq!(export("+proj=cea +R=6371000")["conversion"]["method"]["id"]["code"], 9834);
+}
+
 #[test]
 fn methods_and_parameters_follow_proj() {
     // `$schema` first, as PROJ writes it.
