@@ -14,6 +14,9 @@ use crate::def::{self, Def};
 use crate::math::Ell;
 use crate::{SpatialRef, catalog, epsg, keywords, wkt1};
 
+#[cfg(test)]
+mod baseline_tests;
+
 /// Whether two lengths are the same as PROJ 9.9.0 compares measures (`Measure::_isEquivalentTo`,
 /// `DEFAULT_MAX_REL_ERROR`): within 1e-10 of the first.
 fn same_measure(x: f64, y: f64) -> bool {
@@ -35,7 +38,7 @@ pub(crate) fn same_figure(a: f64, es: f64, other_a: f64, other_es: f64) -> bool 
 /// The semi-major axis in metres and the eccentricity squared of the first `SPHEROID` or
 /// `ELLIPSOID` of a WKT definition (in its `LENGTHUNIT`).
 pub(crate) fn wkt_figure(wkt: &str) -> Option<(f64, f64)> {
-    let (a, rf) = wkt1::parse(wkt)?.find(keywords::ELLIPSOID)?.ellipsoid()?;
+    let (a, rf) = crate::parsed::tree(wkt)?.find(keywords::ELLIPSOID)?.ellipsoid()?;
     // A sphere, or an ellipsoid of an inverse flattening of at least 1, as PROJ reads one.
     if rf != 0.0 && rf < 1.0 {
         return None;
@@ -92,7 +95,7 @@ pub(crate) struct Datums {
 
 impl Datums {
     pub(crate) fn of(wkt: &str) -> Self {
-        let Some(root) = wkt1::parse(wkt) else { return Self::default() };
+        let Some(root) = crate::parsed::tree(wkt) else { return Self::default() };
         let name = first_datum_name(&root);
         let Some(datum) = root.find(keywords::GEODETIC_DATUM) else { return Self { name, ..Self::default() } };
         if let Some(code) = datum.epsg() {
@@ -234,11 +237,11 @@ impl Fit {
     pub(crate) fn declared(wkt: &str, code: u32) -> Self {
         let mut fit = Self::default();
         // Only a horizontal CRS's content is compared (not a vertical or engineering CRS's).
-        let horizontal = wkt1::parse(wkt).is_some_and(|r| r.is(keywords::HORIZONTAL_CRS) || r.is(keywords::COMPOUND_CRS));
+        let horizontal = crate::parsed::tree(wkt).is_some_and(|r| r.is(keywords::HORIZONTAL_CRS) || r.is(keywords::COMPOUND_CRS));
         // A vertical CRS's code only of its unit and direction; another root's (engineering, local)
         // not the code of a CRS terrio places (a vertical CRS declaring EPSG:4326 is not WGS 84).
         if !horizontal {
-            let vertical = wkt1::parse(wkt).is_some_and(|r| r.is(keywords::VERTICAL_CRS));
+            let vertical = crate::parsed::tree(wkt).is_some_and(|r| r.is(keywords::VERTICAL_CRS));
             fit.kind = Some(if vertical {
                 def::vertical_code(wkt) == Some(code)
             } else {
@@ -333,7 +336,7 @@ impl Fit {
         let same_ellipsoid = same_wkt_figure(w, &e.wkt).unwrap_or_else(|| wkt_figure(&e.wkt).is_none());
         let Some(own) = Def::wkt_conversion(w) else {
             let method = |w: &str| {
-                let root = wkt1::parse(w)?;
+                let root = crate::parsed::tree(w)?;
                 let node = root.child("PROJECTION").or_else(|| root.child("CONVERSION").and_then(|c| c.child("METHOD")))?.clone();
                 Some((node.name().map(wkt1::norm)?, node.epsg()))
             };
@@ -362,7 +365,7 @@ impl Fit {
 fn compound_vertical_fits(v: &str, theirs: &Def) -> bool {
     let Some(their_vertical) = theirs.vertical() else { return false };
     let vertical_datum = |w: &str| {
-        let root = wkt1::parse(w)?;
+        let root = crate::parsed::tree(w)?;
         let datum = root.child_in(keywords::VERTICAL_DATUM)?;
         datum.name().map(epsg::datum_key)
     };
@@ -383,7 +386,7 @@ fn compound_vertical_fits(v: &str, theirs: &Def) -> bool {
 /// another method (Belge 72 or an unknown method declaring EPSG:27700).
 fn unread_content_fits(wkt: &str, code: u32, theirs: &Def) -> bool {
     let method = |w: &str| {
-        let root = wkt1::parse(w)?;
+        let root = crate::parsed::tree(w)?;
         let node = root.child("PROJECTION").or_else(|| root.child("CONVERSION").and_then(|c| c.child("METHOD")))?.clone();
         Some(node)
     };
@@ -392,7 +395,7 @@ fn unread_content_fits(wkt: &str, code: u32, theirs: &Def) -> bool {
     // not a geographic code on its ellipsoid. A compound CRS by its horizontal CRS, the
     // registry's too.
     let Some(own) = method(wkt) else {
-        let Some(root) = wkt1::parse(wkt) else { return false };
+        let Some(root) = crate::parsed::tree(wkt) else { return false };
         let converted = root.child("PROJECTION").is_some() || root.child("CONVERSION").is_some();
         let cartesian =
             root.child("CS").is_some_and(|c| matches!(c.args.first(), Some(wkt1::Arg::Ident(t)) if t.eq_ignore_ascii_case("Cartesian")));
@@ -443,7 +446,7 @@ pub(crate) fn identify_by_shared_name(geogcs: &str) -> Option<u32> {
     if datums.is_empty() || !datums.iter().all(|d| epsg::geographic_on(*d).is_empty()) {
         return None;
     }
-    let root = wkt1::parse(geogcs)?;
+    let root = crate::parsed::tree(geogcs)?;
     if !root.key.eq_ignore_ascii_case("GEOGCS") || root.child("LINUNIT").is_some() {
         return None;
     }

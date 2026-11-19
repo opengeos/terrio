@@ -87,6 +87,7 @@ mod math;
 #[cfg(test)]
 mod model;
 mod params;
+mod parsed;
 mod proj_write;
 mod projections;
 mod projjson;
@@ -741,7 +742,7 @@ impl SpatialRef {
             // As GDAL's `importFromWkt`: WKT its reader refuses (unbalanced, nested deeper than
             // PROJ allows, over 100,000 bytes) is an error, not an opaque CRS.
             let head = || s.chars().take(80).collect::<String>();
-            let Some(root) = wkt1::parse(s) else {
+            let Some(root) = crate::parsed::tree(s) else {
                 return Err(Error::Crs(format!("not a WKT definition GDAL reads: '{}'", head())));
             };
             // Every WKT CRS production requires member nodes, such as a geographic CRS's datum
@@ -793,7 +794,7 @@ impl SpatialRef {
             return Some(g.wkt.clone());
         }
         // The first `GEOGCS` of the tree (not a name's text, and in `(`/`)` brackets too).
-        let geogcs = wkt1::parse(&self.to_wkt()?)?.find(&["GEOGCS"])?.to_wkt();
+        let geogcs = crate::parsed::tree(&self.to_wkt()?)?.find(&["GEOGCS"])?.to_wkt();
         Some(wkt_for_files(&geogcs).into_owned())
     }
 
@@ -1061,7 +1062,7 @@ impl SpatialRef {
             return semi_major_axis(&wkt).unwrap_or(6_378_137.0) * std::f64::consts::PI / 180.0;
         }
         // WKT 1's UNIT, or WKT 2's LENGTHUNIT (of the CRS, else of its first axis).
-        wkt1::parse(&wkt)
+        crate::parsed::tree(&wkt)
             .and_then(|root| {
                 let unit = root.child("UNIT").or_else(|| root.child("LENGTHUNIT"));
                 let unit = unit.or_else(|| root.children("AXIS").find_map(|a| a.child("LENGTHUNIT")));
@@ -1366,7 +1367,7 @@ impl SpatialRef {
         }
         if let Some(w) = &self.wkt {
             // Only WKT the reader accepts: wbprojection's parser does not bound its recursion.
-            if wkt1::parse(w).is_none() {
+            if crate::parsed::tree(w).is_none() {
                 return Err(Error::Crs("not a WKT definition GDAL reads".into()));
             }
             // Without a root code that is not its content's, nor root codes other than the one
@@ -1391,7 +1392,7 @@ pub(crate) fn is_variant_c(wkt: &str) -> bool {
             && (n.epsg() == Some(9830) || n.name().is_some_and(|m| wkt1::norm(m) == "polarstereographicvariantc")))
             || n.args.iter().any(|a| matches!(a, wkt1::Arg::Node(c) if names(c)))
     }
-    wkt1::parse(wkt).is_some_and(|root| names(&root))
+    crate::parsed::tree(wkt).is_some_and(|root| names(&root))
 }
 
 /// A CRS's stored WKT as it is written where its readers end text at its first NUL (a `.prj`,
@@ -1460,7 +1461,7 @@ pub fn wkt_proj(wkt: &str) -> Option<String> {
     if let Some(p) = proj4_extension(wkt) {
         return Some(p);
     }
-    let root = wkt1::parse(wkt)?;
+    let root = crate::parsed::tree(wkt)?;
     let c = if wkt2::handles(&root) { wkt2::to_proj(&root).ok()? } else { wkt1::to_proj(&root)? };
     Some(c.proj)
 }
@@ -1565,7 +1566,7 @@ pub fn has_proj4_extension(wkt: &str) -> bool {
 
 /// The PROJ string of a WKT 1's root `EXTENSION["PROJ4", ...]`.
 pub(crate) fn proj4_extension(wkt: &str) -> Option<String> {
-    let root = wkt1::parse(wkt)?;
+    let root = crate::parsed::tree(wkt)?;
     let ext = root.children("EXTENSION").find(|n| n.name().is_some_and(|k| k.eq_ignore_ascii_case("PROJ4")))?;
     match ext.args.get(1)? {
         wkt1::Arg::Str(p) if p.trim_start().starts_with('+') => Some(p.trim().to_string()),
@@ -1614,13 +1615,13 @@ pub(crate) fn esri_compound_wkt(wkt: &str) -> Option<String> {
 /// its `LENGTHUNIT`, as PROJ reads a WKT 2 ellipsoid in feet).
 #[doc(hidden)]
 pub fn semi_major_axis(wkt: &str) -> Option<f64> {
-    Some(wkt1::parse(wkt)?.find(keywords::ELLIPSOID)?.ellipsoid()?.0)
+    Some(crate::parsed::tree(wkt)?.find(keywords::ELLIPSOID)?.ellipsoid()?.0)
 }
 
 /// The semi-major and semi-minor axes in metres of the first `SPHEROID` or `ELLIPSOID` of a WKT
 /// definition, from its axis and inverse flattening (0 for a sphere).
 fn wkt_ellipsoid(wkt: &str) -> Option<(f64, f64)> {
-    let (a, rf) = wkt1::parse(wkt)?.find(keywords::ELLIPSOID)?.ellipsoid()?;
+    let (a, rf) = crate::parsed::tree(wkt)?.find(keywords::ELLIPSOID)?.ellipsoid()?;
     Some((a, if rf == 0.0 { a } else { a * (1.0 - 1.0 / rf) }))
 }
 
@@ -1634,7 +1635,7 @@ fn wkt_datums(wkt: &str) -> Vec<u32> {
 
 /// The first geodetic datum (or datum ensemble) node of a WKT definition.
 fn wkt_datum(wkt: &str) -> Option<wkt1::Node> {
-    wkt1::parse(wkt).and_then(|root| root.find(keywords::GEODETIC_DATUM).cloned())
+    crate::parsed::tree(wkt).and_then(|root| root.find(keywords::GEODETIC_DATUM).cloned())
 }
 
 /// The name and EPSG code (from its `ID` or `AUTHORITY`) of the first datum of a WKT definition.
@@ -1835,21 +1836,21 @@ pub(crate) fn is_registry_extension(wkt: &str, code: u32) -> bool {
 /// CRS's horizontal CRS, and a bound CRS's source CRS (#1012 item 60); else its root.
 fn horizontal_root(wkt: &str) -> Option<wkt1::Node> {
     let horizontal = def::split_compound(wkt).map(|(horizontal, _)| horizontal);
-    let root = wkt1::parse(horizontal.as_deref().unwrap_or(wkt))?;
+    let root = crate::parsed::tree(horizontal.as_deref().unwrap_or(wkt))?;
     let source = root.key.eq_ignore_ascii_case("BOUNDCRS").then(|| root.child("SOURCECRS")).flatten().and_then(|s| {
         s.args.iter().find_map(|a| match a {
             wkt1::Arg::Node(n) => Some(n.clone()),
             _ => None,
         })
     });
-    Some(source.unwrap_or(root))
+    Some(source.unwrap_or_else(|| root.as_ref().clone()))
 }
 
 /// The metres per unit of a vertical CRS's WKT (`VERT_CS`, ESRI's `VERTCS`, `VERTCRS`), from its
 /// `UNIT` or its axis's, and whether its axis points down (depths): by its `AXIS`, else by ESRI's
 /// `PARAMETER["Direction",-1]` (PROJ 9.9.0 takes exactly -1 as down, and an `AXIS` before it).
 pub(crate) fn vertical_axis(wkt: &str) -> Option<(f64, bool)> {
-    let root = wkt1::parse(wkt)?;
+    let root = crate::parsed::tree(wkt)?;
     let axis = root.child("AXIS");
     let down = match axis {
         Some(a) => matches!(a.args.get(1), Some(wkt1::Arg::Ident(d)) if d.eq_ignore_ascii_case("down")),
@@ -1866,7 +1867,7 @@ pub(crate) fn vertical_axis(wkt: &str) -> Option<(f64, bool)> {
 /// WKT 1 `GEOGCS` is either, as PROJ 9.8.1 keeps EPSG:4909 (GR96 3D) declared by one with two
 /// axes, and Esri's WKT 1 of a 3D CRS has none.
 pub(crate) fn geographic_dimension_3d(wkt: &str) -> Option<bool> {
-    let root = wkt1::parse(wkt)?;
+    let root = crate::parsed::tree(wkt)?;
     let cs = root.child("CS")?;
     let ellipsoidal = matches!(cs.args.first(), Some(wkt1::Arg::Ident(t)) if t.eq_ignore_ascii_case("ellipsoidal"));
     let geodetic = root.is(keywords::GEOGRAPHIC_OR_GEODETIC_CRS);
@@ -1880,7 +1881,7 @@ pub(crate) fn geographic_dimension_3d(wkt: &str) -> Option<bool> {
 /// it has one identifier that is its content's or no EPSG code.
 #[cfg(feature = "wbprojection-fallback")]
 pub(crate) fn without_unfit_root_code(wkt: &str) -> Option<String> {
-    let mut root = wkt1::parse(wkt)?;
+    let mut root = crate::parsed::tree(wkt)?.as_ref().clone();
     if root.ids().count() < 2 {
         return match declared_epsg(wkt) {
             Some(c) if !declared_fits(wkt, c) => strip_root_code(wkt),
@@ -1903,7 +1904,7 @@ pub(crate) fn without_unfit_root_code(wkt: &str) -> Option<String> {
 /// A WKT definition without its root's identifiers (all of them, of any authority; see
 /// [`declared_epsg`]), written again from its nodes; `None` when its root has none.
 pub(crate) fn strip_root_code(wkt: &str) -> Option<String> {
-    let mut root = wkt1::parse(wkt)?;
+    let mut root = crate::parsed::tree(wkt)?.as_ref().clone();
     let before = root.args.len();
     root.args.retain(|a| !matches!(a, wkt1::Arg::Node(n) if n.is(keywords::ID)));
     (root.args.len() < before).then(|| root.to_wkt())
@@ -1911,7 +1912,7 @@ pub(crate) fn strip_root_code(wkt: &str) -> Option<String> {
 
 /// The projection method (`+proj=tmerc`) of a WKT definition's conversion.
 fn conversion_method(wkt: &str) -> Option<String> {
-    let root = wkt1::parse(wkt)?;
+    let root = crate::parsed::tree(wkt)?;
     let c = if wkt2::handles(&root) { wkt2::to_proj(&root).ok()? } else { wkt1::to_proj(&root)? };
     c.proj.split_whitespace().next().map(str::to_string)
 }
@@ -1919,7 +1920,7 @@ fn conversion_method(wkt: &str) -> Option<String> {
 /// Whether the first axis of a WKT definition's coordinate system points north or south
 /// (northing, easting), rather than east (or is not given).
 fn north_first(wkt: &str) -> bool {
-    let first = wkt1::parse(wkt).and_then(|root| root.child("AXIS").and_then(|a| a.args.get(1).cloned()));
+    let first = crate::parsed::tree(wkt).and_then(|root| root.child("AXIS").and_then(|a| a.args.get(1).cloned()));
     matches!(first, Some(wkt1::Arg::Ident(d)) if ["north", "south"].iter().any(|n| d.eq_ignore_ascii_case(n)))
 }
 
@@ -2025,7 +2026,8 @@ fn id_passed_over(id: &wkt1::Node, wanted: &str, own: RootKind) -> bool {
 /// The code of an authority a WKT definition declares for itself, as [`declared_epsg`]. A single
 /// root identifier is read whatever its code; of several, none when all are passed over.
 fn declared_code(wkt: &str, authority: &str) -> Option<u32> {
-    declared_id(&wkt1::parse(wkt)?, authority)?.code()
+    let root = crate::parsed::tree(wkt)?;
+    declared_id(&root, authority)?.code()
 }
 
 /// The root identifier of `authority` a WKT's root declares its code by, as [`declared_code`].
@@ -4219,7 +4221,7 @@ mod tests {
 /// whichever keyword comes first), wherever it is among the root's children (WKT 2 can give a
 /// `REMARK` after it), but for a compound CRS's.
 fn gdal_root_identifier(wkt: &str) -> Option<(String, u32)> {
-    let root = wkt1::parse(wkt)?;
+    let root = crate::parsed::tree(wkt)?;
     if root.is(keywords::COMPOUND_CRS) {
         return None;
     }
