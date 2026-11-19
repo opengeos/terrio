@@ -596,14 +596,16 @@ impl Fetcher {
         // again by the read that needs it.
         let (rest, bytes) = (file.clone(), self.bytes.clone());
         let done = wasm_bindgen_futures::future_to_promise(async move {
-            let result: Result<(), JsError> = async {
+            let body: Result<(), JsError> = async {
                 while let Some(chunk) = next_chunk(&reader).await? {
                     append(&mut data, &chunk);
                 }
-                bytes.set(bytes.get() + data.len() as u64);
-                finish_first(&rest, &data, expected, content_range.as_deref(), len)
+                Ok(())
             }
             .await;
+            // Counted whether or not the body ends well.
+            bytes.set(bytes.get() + data.len() as u64);
+            let result = body.and_then(|()| finish_first(&rest, &data, expected, content_range.as_deref(), len));
             if result.is_err() {
                 let _ = call(&reader, "cancel", &[]).map(settle);
             }
