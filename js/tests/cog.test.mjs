@@ -138,7 +138,7 @@ for (const [name, open, readAll] of [
     const src = terrio.rasterFromArray(data, w, h, [500000, 10, 0, 4100000, 0, -10], "EPSG:32610", 0);
     const bytes = src.toBytes("a.tif", { format: "COG", compress: "DEFLATE", tileSize: 128 });
     // Bytes 0- arrive in two parts: the first 4 KiB (the header), the rest once released.
-    let release;
+    let release, timer;
     const held = new Promise((r) => (release = r));
     const firstBlock = [];
     const server = createServer(async (req, res) => {
@@ -157,7 +157,7 @@ for (const [name, open, readAll] of [
     await new Promise((r) => server.listen(0, "127.0.0.1", r));
     try {
       const url = `http://127.0.0.1:${server.address().port}/a.tif`;
-      const opened = await Promise.race([open(url), new Promise((r) => setTimeout(r, 5000, "timeout"))]);
+      const opened = await Promise.race([open(url), new Promise((r) => (timer = setTimeout(r, 5000, "timeout")))]);
       assert.notEqual(opened, "timeout", "the open waited for the whole first block");
       assert.deepEqual([opened.width, opened.height], [w, h]);
       // A read of every pixel needs the rest of the block: it waits for it, not a second request.
@@ -168,6 +168,7 @@ for (const [name, open, readAll] of [
       assert.deepEqual(firstBlock, ["bytes=0-65535"]);
       assert.ok(opened.stats().bytes >= Math.min(65536, bytes.length));
     } finally {
+      clearTimeout(timer);
       release();
       server.closeAllConnections();
       server.close();
@@ -175,3 +176,22 @@ for (const [name, open, readAll] of [
     }
   });
 }
+
+test("terrio-js/cog refuses a first block whose Content-Range is not where it asked", async () => {
+  const [w, h] = [600, 500];
+  const src = terrio.rasterFromArray(new Uint16Array(w * h), w, h, [500000, 10, 0, 4100000, 0, -10], "EPSG:32610", 0);
+  const bytes = src.toBytes("a.tif", { format: "COG", compress: "DEFLATE", tileSize: 128 });
+  // The bytes asked for, said to be from another position.
+  const server = createServer((req, res) => {
+    const m = /bytes=(\d+)-(\d+)/.exec(req.headers.range ?? "");
+    const [a, b] = m ? [+m[1], Math.min(+m[2], bytes.length - 1)] : [0, bytes.length - 1];
+    res.writeHead(206, { "Content-Range": `bytes ${a + 1}-${b + 1}/${bytes.length + 1}`, "Content-Length": b - a + 1 });
+    res.end(bytes.subarray(a, b + 1));
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  try {
+    await assert.rejects(cog.openCog(`http://127.0.0.1:${server.address().port}/a.tif`), /Content-Range/);
+  } finally {
+    server.close();
+  }
+});
