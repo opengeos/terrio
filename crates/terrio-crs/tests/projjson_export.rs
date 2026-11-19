@@ -92,6 +92,8 @@ fn what_proj_ignores_is_not_written() {
     for (definition, (lon, lat), (x, y)) in [
         ("+proj=omerc +lat_0=4 +lon_0=115 +alpha=53 +k=0.99984 +ellps=GRS80", (5.0, 6.0), (553558.8315597407, 223322.98147780626)),
         ("+proj=merc +lat_ts=0 +k=0.99 +ellps=WGS84", (10.0, 40.0), (1113194.9079327357, 4838471.398061137)),
+        // Miller on an ellipsoid, as PROJ computes it.
+        ("+proj=mill +ellps=WGS84", (10.0, 40.0), (1111950.5197809099, 4698879.749326175)),
     ] {
         let crs = SpatialRef::parse(definition).unwrap();
         let back = SpatialRef::from_projjson(&crs.to_projjson().unwrap()).unwrap();

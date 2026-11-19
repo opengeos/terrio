@@ -185,7 +185,9 @@ pub(crate) fn conversion_from_proj(p: &Params) -> Result<Conversion, String> {
     let k0 = num("k_0").or_else(|| num("k")).unwrap_or(1.0);
     let (lat0, lon0) = (deg("lat_0").unwrap_or(0.0), deg("lon_0").unwrap_or(0.0));
     let (x0, y0) = (num("x_0").unwrap_or(0.0), num("y_0").unwrap_or(0.0));
-    let sphere = on_sphere(p);
+    // On a sphere, the spherical methods, as PROJ 9.9.0 writes them: whenever the CRS's figure is
+    // one (`+R`, which overrides `+ellps`, `+ellps=sphere`, `+a` = `+b`).
+    let sphere = crate::def::proj_ellipsoid(p, proj, false).map_or_else(|_| on_sphere(p), |e| e.crs.es == 0.0);
     let mut name = None;
     let mut conversion_id = None;
     // The parameters most methods carry.
@@ -472,6 +474,9 @@ mod tests {
             ("+proj=eqc +lat_ts=30 +ellps=WGS84", "Equidistant Cylindrical", 1028),
             ("+proj=cea +lat_ts=30 +a=6371000 +b=6371000", "Lambert Cylindrical Equal Area (Spherical)", 9834),
             ("+proj=cea +lat_ts=30 +ellps=WGS84", "Lambert Cylindrical Equal Area", 9835),
+            ("+proj=cea +ellps=sphere", "Lambert Cylindrical Equal Area (Spherical)", 9834),
+            ("+proj=eqc +R=6371000 +ellps=WGS84", "Equidistant Cylindrical (Spherical)", 1029),
+            ("+proj=laea +ellps=sphere", "Lambert Azimuthal Equal Area (Spherical)", 1027),
             ("+proj=stere +lat_0=90 +lat_ts=70 +ellps=WGS84", "Polar Stereographic (variant B)", 9829),
             ("+proj=omerc +lat_0=4 +lonc=115 +alpha=53 +gamma=53.13 +no_uoff +ellps=GRS80", "Hotine Oblique Mercator (variant A)", 9812),
             ("+proj=krovak +ellps=bessel", "Krovak (North Orientated)", 1041),
