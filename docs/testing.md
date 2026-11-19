@@ -357,6 +357,19 @@ south latitude edge. Rust regressions also compare whole and small-memory
 chunks, reversed source columns, and a 400-grad longitude period. Regional and
 multi-turn source placement rules remain separate.
 
+`cargo test -p terrio --lib chunk_dependent_windows_` warps a world source
+symmetric about the 180° meridian, stored from 180° W and from 0°, into UPS North
+windows on either side of it, with chunk-dependent bilinear and cubic at the 3.12
+kernel scales and exact transformations. Windows touching the meridian, whose
+samples on it resolve to 180° E, and windows reaching 1 km across it give mirrored
+values within 1e-9. An impulse beside the meridian reaches the same three columns
+of the window across it as of the window 1 m short of it. With `periodic_longitude`
+off, the windows touching and crossing the meridian keep the stored span, and the
+impulse reaches more of their columns.
+`python -m pytest python/tests/test_warp_meridian_mirror_kernels.py` checks the
+mirror windows of a 0.25° source through `reproject` and the block reads of a
+`WarpedVRT`.
+
 `python scripts/conformance.py DATA --only longitude-period --strict` requires
 twelve real Natural Earth country-coverage comparisons. The same values stored
 from 0° and from 180° W agree within 1e-8. Nearest, average and chunk-dependent
