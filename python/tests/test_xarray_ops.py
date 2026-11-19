@@ -357,8 +357,8 @@ def test_zonal_stats_of_a_flipped_cube_equals_the_north_up_one(files, cube, chun
 
 @pytest.mark.parametrize(
     ("y_chunks", "strip_rows"),
-    [(7, 3), (2, 5), ((4, 6, 10, 100), 5), ((30, 45, 45), 50)],
-    ids=["strip-shorter", "strip-taller", "uneven", "uneven-taller"],
+    [(7, 3), (2, 5), ((4, 6, 10, 100), 5), ((30, 45, 45), 50), ((0, 0, H), 3), ((0, H, 0), 3)],
+    ids=["strip-shorter", "strip-taller", "uneven", "uneven-taller", "zero-leading", "zero-ends"],
 )
 def test_zonal_stats_of_a_cube_computes_each_dask_chunk_once(
     files, cube, monkeypatch, y_chunks, strip_rows

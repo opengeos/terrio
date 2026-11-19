@@ -600,8 +600,6 @@ def test_zonal_reducer_stream_is_finished_once():
 @pytest.mark.parametrize("overlap", [False, True])
 def test_stream_storage_estimate_counts_only_concurrent_zones(fractional, overlap):
     """Count complete zones open together, with sorting workspace and zero for a mean."""
-    from shapely.geometry import box
-
     zones = terrio.Layer.from_geojson(
         {
             "type": "FeatureCollection",
@@ -609,7 +607,10 @@ def test_stream_storage_estimate_counts_only_concurrent_zones(fractional, overla
                 {
                     "type": "Feature",
                     "properties": {},
-                    "geometry": box(0, y, 10, y + 4).__geo_interface__,
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[[0, y], [10, y], [10, y + 4], [0, y + 4], [0, y]]],
+                    },
                 }
                 for y in (0, 0 if overlap else 10)
             ],

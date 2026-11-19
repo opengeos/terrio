@@ -114,6 +114,9 @@ def _strip_rows(rows: int, y_chunks: Sequence[int]) -> int:
     chunk's own strips. Strips are then whole chunks (equal chunks, `rows` at least one chunk
     high) or divide every chunk (the largest divisor of the chunks' common height).
     """
+    y_chunks = tuple(height for height in y_chunks if height > 0)
+    if len(y_chunks) < 2:
+        return rows
     inner = y_chunks[:-1]  # the last chunk ends at the array's edge
     if len(set(inner)) == 1 and rows >= inner[0]:
         return rows - rows % inner[0]
@@ -383,7 +386,12 @@ def _reduce(arrays, other, shape, fills, reducer, budget) -> list[np.ndarray]:
                 x, y, w, h = windows[i]
                 x0 = x - (cols.start or 0)
                 cut = (slice(y - rows.start, y - rows.start + h), slice(x0, x0 + w))
-                list(pool.map(lambda j: j[2].add(i, data[j[0]][j[1]][cut]), streams))  # noqa: B023
+                list(
+                    pool.map(
+                        lambda j, i=i, data=data, cut=cut: j[2].add(i, data[j[0]][j[1]][cut]),
+                        streams,
+                    )
+                )
             if b == len(blocks) - 1:
                 put(0 if batch is None else batch[0], streams)
             data = {}  # not held while the next one is read
