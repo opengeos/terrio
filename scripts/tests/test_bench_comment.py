@@ -174,3 +174,8 @@ def test_an_unmeasured_area_column_is_left_blank(tmp_path):
 def test_a_placeholder_after_a_name_reads_as_an_ellipsis(tmp_path):
     out = comment(tmp_path, summary("calc", 1000, 1000, function="cli"))
     assert "`terrio calc --input A=… --input B=… --calc A-B`<br><sub>Raster analysis · `cli calc`</sub>" in out
+
+
+def test_a_measure_main_lacks_is_not_ticked_in_its_area(tmp_path):
+    out = comment(tmp_path, summary("first_mem", 1000, 1000, memory=(9_400_000, None)))
+    assert "| 🟢 Reprojection | 1 | ✓ | ✓ |  |" in out

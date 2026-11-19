@@ -229,7 +229,7 @@ def main():
             w = sum(b["cells"][i][5] > 0 for b in compared)
             g = sum(b["cells"][i][5] < 0 for b in compared)
             parts = ([f"⚠️ {w} worse"] if w else []) + ([f"✅ {g} better"] if g else [])
-            measured = any(b["cells"][i][2] is not None for b in compared)
+            measured = any(b["cells"][i][3] is not None for b in compared)  # compared with main
             cells.append(" · ".join(parts) or ("✓" if measured else "" if compared else "🆕"))
         state = min((b["state"] for b in compared), key=order.get, default="new")
         mark = {"worse": "⚠️", "better": "✅", "new": "🆕", "same": "🟢"}[state]
