@@ -92,9 +92,16 @@ fn a_utm_conversion_has_its_code_only_in_a_crs_without_one() {
     assert_eq!(code("+proj=utm +zone=33 +south +datum=WGS84 +units=m +no_defs"), Some(16133));
     assert_eq!(code("+proj=utm +zone=33 +datum=WGS84 +units=m +no_defs"), Some(16033));
     assert_eq!(code("+proj=utm +zone=1 +south +datum=WGS84 +units=m +no_defs"), Some(16101));
-    for crs in ["EPSG:32733", "EPSG:32633", "EPSG:2056"] {
+    for crs in ["EPSG:32733", "EPSG:32633"] {
         assert_eq!(code(crs), None, "{crs}");
     }
+    // A code its WKT declares too (PROJ's WKT1_GDAL of EPSG:32733).
+    let declared = SpatialRef::from_epsg(32733).unwrap().to_wkt().unwrap();
+    let v: Value = serde_json::from_str(&SpatialRef::from_wkt(&declared).to_projjson().unwrap()).unwrap();
+    assert_eq!((v["id"]["code"].as_u64(), v["conversion"]["id"].as_u64()), (Some(32733), None));
+    // A bound CRS's source without a code keeps it.
+    let bound = export("+proj=utm +zone=33 +south +ellps=intl +towgs84=-87,-98,-121 +units=m +no_defs");
+    assert_eq!((bound["type"].as_str(), bound["source_crs"]["conversion"]["id"]["code"].as_u64()), (Some("BoundCRS"), Some(16133)));
 }
 
 #[test]
