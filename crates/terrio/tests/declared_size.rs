@@ -9,6 +9,7 @@
 //!   is decoded where its reader reads a header first;
 //! - a whole read of a GeoTIFF that the process cannot hold is refused before its buffer is
 //!   allocated, while a window of it that fits is read;
+//! - GRIB bytes opened to be read by window are not copied (#1081);
 //! - the GeoTIFF and COG writers that operations stream to refuse a raster whose rows they would
 //!   hold cannot fit.
 //!
@@ -1095,6 +1096,22 @@ fn in_child(dir: &Path) {
         checked += 1;
     }
     assert!(checked > 20, "{checked} drivers checked");
+}
+
+// ─── What a lazy open allocates ─────────────────────────────────────────────────────────────────
+
+/// Catches GRIB bytes copied when they are opened to be read by window (#1081): memory that no read
+/// sees. The open's largest allocation is a small part of the file's 4 MiB of Float32 values.
+#[test]
+fn a_lazy_grib_open_allocates_nothing_the_size_of_its_file() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(dir.path(), "f.grib2", &raster(1024, 1024, 1, DataType::F32, 4326, (0.0, 60.0, 0.01)), Some(RasterDriver::GRIB));
+    let bytes = std::fs::read(&path).unwrap();
+    let len = bytes.len();
+    let (opened, largest) = largest_during(|| terrio::memory::open_raster_lazy_bytes(bytes, "f.grib2"));
+    assert_eq!(opened.unwrap().width(), 1024);
+    assert!(!COUNTED || largest < len / 16, "bytes in memory: an allocation of {largest} bytes, for {len}");
 }
 
 // ─── The writers operations stream to ───────────────────────────────────────────────────────────

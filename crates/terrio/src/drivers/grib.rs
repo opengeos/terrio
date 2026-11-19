@@ -309,11 +309,11 @@ pub(crate) fn open_lazy(path: &str) -> Option<Result<crate::LazyRaster>> {
             e => e,
         }));
     }
-    Some(crate::vfs::resolve(path).and_then(|local| open_lazy_bytes(std::fs::read(local.path())?.into())))
+    Some(crate::vfs::resolve(path).and_then(|local| open_lazy_bytes(std::fs::read(local.path())?)))
 }
 
-/// Opens GRIB messages held in memory to be read band by band.
-pub(crate) fn open_lazy_bytes(bytes: std::sync::Arc<[u8]>) -> Result<crate::LazyRaster> {
+/// Opens GRIB messages held in memory to be read band by band, keeping the bytes as they are given.
+pub(crate) fn open_lazy_bytes(bytes: Vec<u8>) -> Result<crate::LazyRaster> {
     let normalize = normalize_units();
     let (header, split) = header(&bands(&bytes, normalize)?, bytes.len())?;
     let index = band_index(&bytes)?;
@@ -329,7 +329,7 @@ const CACHE_BYTES: usize = 256 << 20;
 enum Store {
     /// The whole file, in memory, and where each band is: its message's offset and length, and
     /// its index among the message's bands.
-    Bytes(std::sync::Arc<[u8]>, Vec<(usize, usize, usize)>),
+    Bytes(Vec<u8>, Vec<(usize, usize, usize)>),
     /// A remote file, each band's message fetched when the band is read.
     #[cfg(remote)]
     Remote(Box<remote::Messages>),
@@ -429,8 +429,8 @@ impl Source {
             .iter()
             .map(|&b| index.get(b.wrapping_sub(1)).copied().ok_or_else(|| Error::InvalidArgument(format!("band {b} out of range"))))
             .collect::<Result<_>>()?;
-        let (bytes, shape, normalize) = (bytes.clone(), (self.cols, self.rows, self.split), self.normalize);
-        let decoded = crate::par::map_range_coarse(missing.len(), |i| decode_placed(&bytes, ats[i], missing[i], shape, normalize));
+        let (shape, normalize) = ((self.cols, self.rows, self.split), self.normalize);
+        let decoded = crate::par::map_range_coarse(missing.len(), |i| decode_placed(bytes, ats[i], missing[i], shape, normalize));
         for (b, d) in missing.into_iter().zip(decoded) {
             self.keep(b, std::sync::Arc::new(d?));
         }
