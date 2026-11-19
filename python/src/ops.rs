@@ -806,6 +806,10 @@ pub(crate) fn input_raster(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<A
 ///     te: The extent `(min_x, min_y, max_x, max_y)`. By default, that of the layers.
 ///     tap: Align the extent on multiples of the pixel size.
 ///     like: Use the grid of this raster (a path or a `Raster`).
+///     background: Copy this raster's pixels and metadata before burning (a path or a `Raster`).
+///         Use add=True with signed attributes to raise or lower elevations. Cannot be combined
+///         with like, tr, ts, te, tap, ot, init, nodata or a_srs. Edits all bands. Separate
+///         validity masks are not copied; nodata masks follow the edited values.
 ///     ot: The output data type: `"Byte"`, `"Int16"`, `"UInt16"`, `"Int32"`, `"Float32"`,
 ///         `"Float64"` (the default)...
 ///     init: The initial pixel values (a number, or one per band). Defaults to nodata when set,
@@ -827,7 +831,7 @@ pub(crate) fn input_raster(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<A
 #[pyo3(signature = (
     src, dst=None, *, layers=None, sql=None, burn=None, attribute=None, r#where=None, tr=None, ts=None, te=None,
     tap=false, like=None, ot=None, init=None, nodata=None, all_touched=false, add=false, a_srs=None, format=None,
-    compress=None, tile_size=None, bigtiff=false, options=None
+    compress=None, tile_size=None, bigtiff=false, options=None, background=None
 ))]
 #[allow(clippy::too_many_arguments)]
 fn rasterize(
@@ -855,6 +859,7 @@ fn rasterize(
     tile_size: Option<u32>,
     bigtiff: bool,
     options: Option<std::collections::BTreeMap<String, String>>,
+    background: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyRaster> {
     let creation_options = options;
     let numbers = |v: Option<&Bound<'_, PyAny>>| -> PyResult<Vec<f64>> {
@@ -884,6 +889,7 @@ fn rasterize(
         None => all,
     };
     let grid = like.map(|l| input_raster(py, l)).transpose()?.map(|r| Grid::like(&r));
+    let background = background.map(|r| input_raster(py, r)).transpose()?;
     let options = RasterizeOptions {
         burn_values,
         attribute,
@@ -904,7 +910,10 @@ fn rasterize(
         dst.map(|_| crate::raster::write_options_with_creation(format, compress, tile_size, bigtiff, creation_options)).transpose()?;
     let out = py
         .detach_result(|| -> terrio::Result<RasterDataset> {
-            let out = terrio::ops::rasterize::rasterize(&to_burn, &options)?;
+            let out = match &background {
+                Some(raster) => terrio::ops::rasterize::rasterize_on(raster, &to_burn, &options)?,
+                None => terrio::ops::rasterize::rasterize(&to_burn, &options)?,
+            };
             if let (Some(path), Some(o)) = (dst, &write) {
                 terrio::write_raster_dataset(&out, path, o)?;
             }

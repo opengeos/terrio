@@ -368,9 +368,9 @@ fn unfold(poly: &Mesh, parents: &[usize], up: Vec3) -> Mesh {
     let step = sub(up, scale(normal, dot(up, normal)));
     let offset_poly = if length(step) < 1e-12 { poly.vertices[poly.faces[root][0]] } else { add(origin_poly, step) };
     let to_plane = rigid_transform(normal, origin_poly, [0.0; 3], offset_poly, [0.0, 1.0, 0.0]);
-    for k in 0..nfv {
+    for (k, vertex) in faces[root].iter_mut().enumerate() {
         vertices.push(apply(&to_plane, poly.vertices[poly.faces[root][k]]));
-        faces[root][k] = vertices.len() - 1;
+        *vertex = vertices.len() - 1;
     }
 
     let mut queue: Vec<usize> = (0..nf).filter(|&i| parents[i] == root + 1).collect();
@@ -393,8 +393,8 @@ fn unfold(poly: &Mesh, parents: &[usize], up: Vec3) -> Mesh {
         let normal_c = normalize(face_centroid(&poly.vertices, &poly.faces[c]));
         let to_plane =
             rigid_transform(normal_c, poly.vertices[poly.faces[c][ia_c]], vertices[na], poly.vertices[poly.faces[c][ib_c]], vertices[nb]);
-        for k in 0..nfv {
-            faces[c][k] = if k == ia_c {
+        for (k, vertex) in faces[c].iter_mut().enumerate() {
+            *vertex = if k == ia_c {
                 na
             } else if k == ib_c {
                 nb

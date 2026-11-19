@@ -513,6 +513,59 @@ def compare_rasterize(data: Path, work: Path, terrio: Path, only_nodata: bool = 
     return lines
 
 
+def compare_rasterize_background(data: Path, work: Path, terrio: Path) -> list[str]:
+    """Compare edits over real NLCD pixels with GDAL's update rasterization.
+
+    Args:
+        data: Directory containing NLCD and Tennessee counties.
+        work: Scratch directory.
+        terrio: The terrio executable.
+
+    Returns:
+        Exact pixel, mask, type and georeferencing comparison reports.
+    """
+    background = work / "background.tif"
+    run(["gdal_translate", "-q", "-a_srs", "EPSG:5070", data / "nlcd_knoxville.tif", background])
+    lines = []
+    for label, g_args, t_args in [
+        ("background attribute", ["-a", "COUNTY_FIP"], ["-a", "COUNTY_FIP"]),
+        ("background lower", ["-burn", "-2", "-add"], ["--burn", "-2", "--add"]),
+        ("background all touched", ["-burn", "5", "-at"], ["--burn", "5", "--at"]),
+    ]:
+        g_out, t_out = work / "background-gdal.tif", work / "background-terrio.tif"
+        shutil.copy(background, g_out)
+        try:
+            where = "COUNTY_FIP = '093'"
+            run(["gdal_rasterize", "-q", *g_args, "-where", where, data / "TN_Counties.geojson", g_out])
+            run([terrio, "rasterize", data / "TN_Counties.geojson", t_out, "--background", background, "--where", where, *t_args])
+            expected, actual = gdal.Open(str(g_out)), gdal.Open(str(t_out))
+            e, a = expected.GetRasterBand(1), actual.GetRasterBand(1)
+            ev, av = e.ReadAsArray(), a.ReadAsArray()
+            if ev.shape != av.shape:
+                lines.append(f"{label:<24} DIFF size {av.shape} != {ev.shape}")
+                expected = actual = None
+                continue
+            problems = []
+            diff = int(np.count_nonzero(ev != av))
+            if diff:
+                problems.append(f"{diff} pixels differ")
+            if not np.array_equal(e.GetMaskBand().ReadAsArray(), a.GetMaskBand().ReadAsArray()):
+                problems.append("mask differs")
+            if e.DataType != a.DataType or e.GetNoDataValue() != a.GetNoDataValue():
+                problems.append("type or nodata differs")
+            if expected.GetGeoTransform() != actual.GetGeoTransform() or not expected.GetSpatialRef().IsSame(actual.GetSpatialRef()):
+                problems.append("grid or CRS differs")
+            changed = int(np.count_nonzero(ev != gdal.Open(str(background)).ReadAsArray()))
+            if not changed:
+                problems.append("no pixels edited")
+            status = "DIFF " + "; ".join(problems) if problems else "OK"
+            lines.append(f"{label:<24} {diff} of {ev.size} pixels differ ({changed} edited)  {status}")
+            expected = actual = None
+        except RuntimeError as error:
+            lines.append(f"{label:<24} ERROR {error}")
+    return lines
+
+
 def polygon_summary(path: Path, field: str = "DN") -> dict:
     """Summarizes polygonize output.
 
@@ -628,7 +681,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("data", type=Path, help="the test data directory")
     parser.add_argument("--terrio", type=Path, default=Path(__file__).resolve().parents[1] / "target/release/terrio")
-    parser.add_argument("--only", choices=["rasterize-nodata"], help="run only the nodata initialization comparisons")
+    parser.add_argument("--only", choices=["rasterize-nodata", "rasterize-background"], help="run only selected rasterization comparisons")
     args = parser.parse_args()
     lines = []
     with tempfile.TemporaryDirectory() as tmp:
@@ -638,10 +691,13 @@ def main() -> int:
             ("sql vs OGRSQL", compare_sql),
             ("convert --append/--overwrite vs ogr2ogr", compare_append),
             ("rasterize vs gdal_rasterize", compare_rasterize),
+            ("rasterize background vs gdal_rasterize", compare_rasterize_background),
             ("polygonize vs gdal_polygonize", compare_polygonize),
         ]
         if args.only == "rasterize-nodata":
             sections = [("rasterize nodata vs gdal_rasterize", partial(compare_rasterize, only_nodata=True))]
+        elif args.only == "rasterize-background":
+            sections = [("rasterize background vs gdal_rasterize", compare_rasterize_background)]
         for title, fn in sections:
             print(f"## {title}")
             for line in fn(args.data, work, args.terrio):

@@ -3568,13 +3568,39 @@ separately supports preserving its input declaration.
 ## rasterize
 
 ```sh
-terrio rasterize INPUT OUTPUT (--burn VALUE | -a FIELD) (--tr X Y | --ts W H | --like RASTER) [options]
+terrio rasterize INPUT OUTPUT (--burn VALUE | -a FIELD) (--tr X Y | --ts W H | --like RASTER | --background RASTER) [options]
 ```
 
 `-l`, `--sql`, `--where`, `--te`, `--tap`, `--ot`, `--init`, `--a-nodata`, `--at` (all touched),
 `--add`, `--a-srs`. Points, lines and polygons are burned with GDAL's algorithms, pixel for pixel.
 
-Without `--init`, the background starts at `--a-nodata` when given, otherwise at 0.
+To edit a DEM with elevation attributes from a polyline or polygon shapefile, copy the DEM
+as the background. Uncovered pixels retain their original elevations over its full extent:
+
+```sh
+terrio rasterize edits.shp edited_dem.tif --background dem.tif --attribute Elevation
+# Raise or lower existing elevations by a signed attribute, rather than setting absolute heights:
+terrio rasterize edits.shp adjusted_dem.tif --background dem.tif --attribute Offset --add
+```
+
+`--like` copies only a raster's grid; `--background` copies its pixels, grid, type, metadata
+and nodata declarations. The input remains unchanged; the output is written
+as a whole new raster, not updated tile by tile. Background rasters are read into memory.
+Cached statistics are removed because the edits can change them.
+All bands are edited: a single burn or attribute value applies to each, or give one burn
+per band. Vectors are reprojected to the background CRS. North-up, real-valued affine rasters
+are supported. `--background` refuses `--like`, `--tr`, `--ts`, `--te`, `--tap`, `--ot`,
+`--init`, `--a-nodata` and `--a-srs`, which would redefine the background.
+Covered nodata samples are burned too; additive burns use their numeric values (NaN remains
+NaN). Separate internal or sidecar validity masks are not copied by this in-memory operation;
+output nodata masks follow the edited values. Overlapping features replace in input order or
+add once per feature with `--add`; `--where` can select the edits.
+
+The same operation is `terrio.rasterize("edits.shp", background="dem.tif", attribute="Elevation")`
+in Python, `rasterize(edits, { background: dem, attribute: "Elevation" })` in JavaScript
+(datasets or bytes), and `ops::rasterize::rasterize_on` in Rust.
+
+For new rasters without `--background` or `--init`, pixels start at `--a-nodata` when given, otherwise at 0.
 Explicit `--init` values take precedence, including 0. This matches GDAL's new GeoTIFF
 background. Terrio uses this policy for all output formats and in-memory rasters; GDAL's
 initialization is driver-dependent (for example, its ENVI output defaults to 0).

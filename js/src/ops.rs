@@ -535,10 +535,14 @@ struct RasterizeArgs {
 /// `src`: vector data (a `Dataset`, bytes or GeoJSON). Options: `burn` (a value, or one per
 /// band) or `attribute`, `layers`, `sql`, `where`, `tr`, `ts`, `te`, `tap`, `like` (a raster
 /// whose grid to use), `ot`, `init`, `nodata`, `allTouched`, `add`, `aSrs`.
+/// `background` copies a raster's pixels and metadata, then edits all bands. Separate validity
+/// masks are not copied; nodata masks follow the edited values.
+/// With `add`, signed values raise or lower elevations. Cannot be combined with grid, size,
+/// resolution, extent, alignment, type, initialization, nodata or CRS overrides.
 /// Without `init`, uncovered pixels start at `nodata` when set, otherwise 0, for every format.
 #[wasm_bindgen]
 pub fn rasterize(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
-    let (rest, taken) = split_options(&options, &["like"])?;
+    let (rest, taken) = split_options(&options, &["like", "background"])?;
     let a: RasterizeArgs = parse_options(&rest)?;
     let burn_values = numbers(a.burn)?;
     if burn_values.is_empty() && a.attribute.is_none() {
@@ -577,7 +581,11 @@ pub fn rasterize(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
         merge: if a.add { MergeAlg::Add } else { MergeAlg::Replace },
         assign_srs: srs(a.a_srs.as_deref())?,
     };
-    Ok(Dataset::from_raster(terrio::ops::rasterize::rasterize(&to_burn, &o).map_err(js_err)?))
+    let out = match &taken[1] {
+        Some(raster) => terrio::ops::rasterize::rasterize_on(&input_raster(raster)?, &to_burn, &o),
+        None => terrio::ops::rasterize::rasterize(&to_burn, &o),
+    };
+    Ok(Dataset::from_raster(out.map_err(js_err)?))
 }
 
 /// Options of [`polygonize`].

@@ -1889,7 +1889,7 @@ def suite_vector_ops(ctx):
         "Vector operations",
         "`ogr2ogr`, `gdal_rasterize`, `gdal_polygonize.py`",
         "Conversions with `ogr2ogr`'s options (where, spat, select, sql, nlt...) compared feature "
-        "by feature; rasterized pixels compared exactly, including nodata backgrounds, masks, "
+        "by feature; rasterized pixels compared exactly, including edits over existing raster pixels, nodata backgrounds, masks, "
         "types and CRSs (ENVI uses a GDAL-converted GeoTIFF reference); polygons compared by count, holes and "
         "validity, and by rasterizing them back.",
     )

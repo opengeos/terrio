@@ -1,5 +1,12 @@
 # Testing Against GDAL
 
+`python -m pytest python/tests/test_rasterize_background.py` checks shapefile elevation edits
+over an existing DEM against GDAL's update rasterization: lines and polygons, signed values,
+overlaps, replace/add and all-touched modes, exact samples, nodata masks, type, CRS,
+geotransform and metadata. Native regressions retain untouched UInt64 samples above 2^53
+without floating-point conversion. The `vector-ops` conformance suite also compares background
+edits of real NLCD data with reprojected Tennessee counties.
+
 GDAL is terrio's reference: drivers and operations are compared with GDAL on real-world files.
 The conformance suites run against GDAL 3.12.2 and PROJ 9.8.1 in `ci-extended.yml`, on every push
 to `main` and on pull requests on demand (Run workflow, or a `ci:conformance` or `ci:all` label).
