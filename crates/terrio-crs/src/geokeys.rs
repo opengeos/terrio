@@ -159,9 +159,12 @@ pub fn read(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> GeoKeysCrs {
         return GeoKeysCrs::default();
     }
     let k = GeoKeys { keys: directory, doubles, ascii };
-    // A registered code the file's ProjectedCSTypeGeoKey or GeographicTypeGeoKey states.
+    // The registered code the file's ProjectedCSTypeGeoKey or GeographicTypeGeoKey states.
     let keyed = |code: u16| code != 0 && code != USER_DEFINED;
-    let stated = matches!((k.short(1024), k.short(3072), k.short(2048)), (_, Some(c), _) | (Some(2), _, Some(c)) if keyed(c));
+    let stated = match (k.short(1024), k.short(3072), k.short(2048)) {
+        (_, Some(c), _) | (Some(2), _, Some(c)) if keyed(c) => Some(u32::from(c)),
+        _ => None,
+    };
     let mut epsg = match (k.short(1024), k.short(3072), k.short(2048)) {
         // A deprecated projected code with a single replacement, as GDAL 3.12 reads it by default
         // (`OSR_USE_NON_DEPRECATED=YES`): EPSG:4855 as 5105, 3752 (which terrio does not carry)
@@ -235,7 +238,9 @@ pub fn read(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> GeoKeysCrs {
     // datum shift written beside it), else the PROJ string's.
     let crs = crs.or_else(|| {
         let code = epsg?;
-        Some(stated.then(|| with_towgs84(&k, code)).flatten().unwrap_or_else(|| SpatialRef {
+        // The shift beside the code the keys state, not beside a deprecated code read as its
+        // replacement, which may be on another datum.
+        Some((stated == Some(code)).then(|| with_towgs84(&k, code)).flatten().unwrap_or_else(|| SpatialRef {
             epsg: Some(code),
             wkt: SpatialRef::from_epsg(code).ok().and_then(|s| s.wkt),
             ..Default::default()
@@ -254,9 +259,10 @@ pub fn read(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> GeoKeysCrs {
 fn with_towgs84(k: &GeoKeys, code: u32) -> Option<SpatialRef> {
     let t = k.doubles(2062).filter(|t| matches!(t.len(), 3 | 7) && t.iter().all(|v| v.is_finite()))?;
     let registered = SpatialRef::from_epsg(code).ok()?;
-    // A zero shift on WGS 84 is no shift, as the writer leaves it out (ESRI writes
-    // `TOWGS84[0,0,0,0,0,0,0]` for WGS 84 / UTM zone 33N, EPSG:32633).
-    if registered.to_proj4().is_some_and(|p| on_wgs84(&p)) && t.iter().all(|v| *v == 0.0) {
+    // A zero shift on the WGS 84 datum is no shift, as the writer leaves it out (ESRI writes
+    // `TOWGS84[0,0,0,0,0,0,0]` for WGS 84 / UTM zone 33N, EPSG:32633). On another datum of the
+    // WGS 84 ellipsoid (VN-2000, EPSG:4756) it is a shift, and kept.
+    if crate::epsg::get(code).is_some_and(|e| e.datum == 6326) && t.iter().all(|v| *v == 0.0) {
         return None;
     }
     let wkt = registered.to_wkt1_strict()?;
@@ -987,7 +993,7 @@ fn own_towgs84(crs: &SpatialRef) -> Option<Vec<f64>> {
 }
 
 /// Whether a PROJ string is on WGS 84: its datum or ellipsoid by name, or the ellipsoid's axis and
-/// flattening. A zero shift on it is no shift, for the writer and the reader alike.
+/// flattening. A zero shift on it is no shift for the writer.
 fn on_wgs84(proj: &str) -> bool {
     let has = |token: &str| proj.split_whitespace().any(|t| t == token);
     has("+datum=WGS84") || has("+ellps=WGS84") || (has("+a=6378137") && has("+rf=298.257223563"))

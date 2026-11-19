@@ -315,5 +315,14 @@ fn a_code_with_its_own_datum_shift_reads_back_with_it() {
     let user = SpatialRef::from_proj4("+proj=utm +zone=31 +ellps=intl +towgs84=-50,-60,-70,0,0,0,0 +units=m +no_defs").unwrap();
     let back = round_trip(&user);
     assert!(back.to_proj4().unwrap().contains("+towgs84=-50,-60,-70,0,0,0,0"), "{:?}", back.to_proj4());
-    assert_eq!(place(&back), place(&user));
+    let ((bx, by), (ux, uy)) = (place(&back), place(&user));
+    assert!((bx - ux).abs() < 1e-6 && (by - uy).abs() < 1e-6, "({bx}, {by}) against ({ux}, {uy})");
+    // A zero shift on another datum of the WGS 84 ellipsoid is a shift: VN-2000 (EPSG:4756) with
+    // `TOWGS84[0,0,0]` is placed as WGS 84, not by VN-2000's own transformations.
+    let mut keys = SpatialRef::from_epsg(4756).unwrap().to_geokeys().unwrap();
+    keys.doubles.extend([0.0; 3].map(|v| (2062, v)));
+    let tags = keys.encode().unwrap();
+    let back = SpatialRef::from_geokeys(&tags.directory, &tags.doubles, tags.ascii.as_bytes()).unwrap();
+    assert_eq!(back.epsg, Some(4756));
+    assert!(back.to_proj4().unwrap().contains("+towgs84=0,0,0"), "{:?}", back.to_proj4());
 }

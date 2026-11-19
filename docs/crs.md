@@ -1316,7 +1316,7 @@ They read and write:
   file back without the shift; it keeps the shift of terrio's keys. A CRS identified by a code
   with a zero shift on WGS 84 is written by the code, as GDAL does. A code stated by the keys with
   GeogTOWGS84GeoKey next to it is read as the code's WKT 1 with that `TOWGS84` (but not a zero
-  shift on WGS 84, which is no shift), so that such a file, terrio's or GDAL's, reads back with its shift (the CRS keeps its
+  shift on the WGS 84 datum, which is no shift; on another datum of WGS 84's ellipsoid it is kept), so that such a file, terrio's or GDAL's, reads back with its shift (the CRS keeps its
   code; GDAL 3.13.3 reads it without the shift). A WKT 2 `BOUNDCRS` whose transformation
   `+towgs84` only approximates (a Molodensky-Badekas evaluation point, a full rotation matrix) is
   written as its WKT in an ESRI PE citation, which keeps it. Not yet: a compound CRS with a shift is
