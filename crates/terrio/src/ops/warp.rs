@@ -7235,36 +7235,38 @@ mod tests {
         }
     }
 
-    /// Bilinear and cubic warps in the chunk-dependent sampling with the 3.12 kernel scales, with
-    /// exact transformations, of a world source of 1° pixels symmetric about the 180° meridian,
-    /// stored from 180° W or from 0°, into 64 x 64 windows of UPS North (EPSG:5041) 45° of
-    /// longitude wide on either side of that meridian, which runs up from the pole along
-    /// x = 2,000,000 m. The west window's points sampled on the meridian resolve to 180° E, so its
-    /// samples cross the source's longitude cut. Windows touching the meridian, and windows
-    /// reaching 1 km across it, give mirrored values. A column of ones at 179.5° W reaches the same
-    /// three columns of the west window reaching 1 km across the meridian as of the window 1 m
-    /// short of it, whose samples do not cross the cut, with a largest weight within 0.01.
+    /// A 64 x 64 window of UPS North (EPSG:5041), of pixels of 128,443.43 m from 8,220 km to
+    /// 16,441 km above the pole, 45° of longitude wide west or east of the 180° meridian, which runs
+    /// up from the pole along x = 2,000,000 m, and `gap` metres from it (across it when negative),
+    /// warped from `source` in the chunk-dependent sampling with the 3.12 kernel scales and exact
+    /// transformations. The west window's points sampled on the meridian resolve to 180° E.
+    fn ups_north_window(source: &RasterDataset, west: bool, gap: f64, resampling: Resampling, periodic_longitude: bool) -> Vec<f64> {
+        let s = 8_220_379.675126;
+        let options = WarpOptions {
+            dst_srs: Some(SpatialRef::from_epsg(5041).unwrap()),
+            dst_transform: Some([if west { 2e6 - gap - s } else { 2e6 + gap }, s / 64., 0., 2e6 + 2. * s, 0., -s / 64.]),
+            size: Some((64, 64)),
+            output_type: Some(DataType::F64),
+            dst_nodata: Nodata::Values(vec![-999.]),
+            resampling,
+            grid_invariant: false,
+            kernel_version: KernelVersion::Gdal312,
+            periodic_longitude,
+            error_threshold: 0.,
+            ..Default::default()
+        };
+        warp(&[source], &options).unwrap().raster.data.to_f64_vec()
+    }
+
+    /// Bilinear and cubic warps of a world source of 1° pixels symmetric about the 180° meridian,
+    /// stored from 180° W or from 0°, into the windows of [`ups_north_window`] on either side of
+    /// that meridian. The west window's samples on the meridian cross the source's longitude cut.
+    /// Windows touching the meridian, and windows reaching 1 km across it, give mirrored values. A
+    /// column of ones at 179.5° W reaches the same three columns of the west window reaching 1 km
+    /// across the meridian as of the window 1 m short of it, whose samples do not cross the cut,
+    /// with a largest weight within 0.01.
     #[test]
     fn chunk_dependent_windows_mirrored_across_the_180th_meridian_get_mirrored_kernels() {
-        // 64 pixels of 128,443.43 m, from 8,220 km to 16,441 km above the pole.
-        let s = 8_220_379.675126;
-        let warp_window = |source: &RasterDataset, left: f64, resampling: Resampling| {
-            let options = WarpOptions {
-                dst_srs: Some(SpatialRef::from_epsg(5041).unwrap()),
-                dst_transform: Some([left, s / 64., 0., 2e6 + 2. * s, 0., -s / 64.]),
-                size: Some((64, 64)),
-                output_type: Some(DataType::F64),
-                dst_nodata: Nodata::Values(vec![-999.]),
-                resampling,
-                grid_invariant: false,
-                kernel_version: KernelVersion::Gdal312,
-                error_threshold: 0.,
-                ..Default::default()
-            };
-            warp(&[source], &options).unwrap().raster.data.to_f64_vec()
-        };
-        // The left edges of the windows `gap` metres from the meridian (across it when negative).
-        let (west, east) = (|gap: f64| 2e6 - gap - s, |gap: f64| 2e6 + gap);
         for origin in [-180., 0.] {
             // Stored from 180° W, column `c` mirrors column 359 - c.
             let shift = if origin == 0. { 180 } else { 0 };
@@ -7274,7 +7276,8 @@ mod tests {
             });
             for resampling in [Resampling::Bilinear, Resampling::Cubic] {
                 for gap in [0., -1000.] {
-                    let (w, e) = (warp_window(&source, west(gap), resampling), warp_window(&source, east(gap), resampling));
+                    let (w, e) =
+                        (ups_north_window(&source, true, gap, resampling, true), ups_north_window(&source, false, gap, resampling, true));
                     for (row, (w, e)) in w.chunks(64).zip(e.chunks(64)).enumerate() {
                         for (column, (a, b)) in w.iter().rev().zip(e).enumerate() {
                             assert!(
@@ -7287,7 +7290,7 @@ mod tests {
             }
         }
         let impulse = raster(360, 180, [-180., 1., 0., 90., 0., -1.], 4326, |c, _| if c == 0 { 1. } else { 0. });
-        let row = |gap: f64| warp_window(&impulse, west(gap), Resampling::Bilinear)[32 * 64..33 * 64].to_vec();
+        let row = |gap: f64| ups_north_window(&impulse, true, gap, Resampling::Bilinear, true)[32 * 64..33 * 64].to_vec();
         let (across, short) = (row(-1000.), row(1.));
         assert!(across.iter().chain(&short).all(|v| *v >= 0.), "across: {across:?}, short of it: {short:?}");
         let reached = |row: &[f64]| (0..64).filter(|&i| row[i] > 0.).collect::<Vec<_>>();
@@ -7295,6 +7298,25 @@ mod tests {
         assert_eq!(reached(&short).len(), 3, "short of it: {short:?}");
         assert_eq!(reached(&across), reached(&short), "across: {across:?}, short of it: {short:?}");
         assert!((largest(&across) - largest(&short)).abs() < 0.01, "across: {across:?}, short of it: {short:?}");
+    }
+
+    /// Without `periodic_longitude`, a source covering one turn has the stored edges of a regional
+    /// source, which interpolation does not cross: the samples of the west window of
+    /// [`ups_north_window`] touching the 180° meridian, or reaching 1 km across it, reach both
+    /// stored edges, and its kernel scale keeps the columns between them. A column of ones at
+    /// 179.5° W then reaches more columns of that window than of the window 1 m short of the
+    /// meridian, whose samples do not cross the cut.
+    #[test]
+    fn chunk_dependent_windows_across_the_180th_meridian_keep_the_stored_span_without_periodic_longitude() {
+        let impulse = raster(360, 180, [-180., 1., 0., 90., 0., -1.], 4326, |c, _| if c == 0 { 1. } else { 0. });
+        let reached = |gap: f64| {
+            ups_north_window(&impulse, true, gap, Resampling::Bilinear, false)[32 * 64..33 * 64].iter().filter(|v| **v > 0.).count()
+        };
+        let short = reached(1.);
+        assert_eq!(short, 3, "1 m short of the meridian");
+        for gap in [0., -1000.] {
+            assert!(reached(gap) > short, "{gap} m from the meridian: {} columns, {short} 1 m short of it", reached(gap));
+        }
     }
 
     /// Full-turn area footprints take both stored edges, including a cut at zero longitude.
@@ -8777,7 +8799,8 @@ mod tests {
     /// with the pole on its corner, the pole's row, and not every column unless its quarter holds
     /// the 180° meridian; a region away from the pole does not reach it. The kernel scale of that
     /// quarter takes the 90 columns its samples span across the meridian, not the longitude its
-    /// point on the pole resolves to (45° W).
+    /// point on the pole resolves to (45° W); the other quarters', whose samples do not cross the
+    /// meridian, take the columns their windows read, that point included.
     #[test]
     fn a_source_window_reaches_a_pole_inside_its_region() {
         let geographic = SpatialRef::from_epsg(4326).unwrap();
@@ -8814,6 +8837,11 @@ mod tests {
                     sy == 0 && (sw < 360 || region == (54, 134, 100, 100)),
                     "{north}° N, region {region:?}: rows from {sy}, {sw} columns"
                 );
+                if region != (54, 134, 100, 100) {
+                    // Nearest pads none: the window is the sampled columns, rounded out.
+                    let (_, _, _, _, _, raw_w, _) = rw.context().source_window(region.0, region.1, region.2, region.3).unwrap();
+                    assert!(raw_w <= sw as f64 && raw_w > sw as f64 - 2.0, "{north}° N, region {region:?}: {raw_w} of {sw} columns");
+                }
             }
             let (_, _, _, _, _, raw_w, _) = rw.context().source_window(54, 134, 100, 100).unwrap();
             assert!((raw_w - 90.0).abs() < 1e-9, "{north}° N, the quarter holding the 180° meridian: {raw_w} columns");
