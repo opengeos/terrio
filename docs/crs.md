@@ -119,8 +119,9 @@ extension in its vertical datum, where GDAL writes it, makes it its grids, of no
 a declared code, as PROJ reads it (a bound CRS); one at its root, which PROJ ignores, is ignored
 beside a declared code of its unit and direction, and otherwise read as before (no code, its
 grids, where PROJ identifies the CRS by its name). Its PROJ string's `+geoidgrids` are the same
-grids. A compound CRS gets an EPSG code only from the code it declares, but its parts are known
-when its vertical CRS is identified.
+grids. A compound CRS gets the EPSG code it declares when its content fits it; without a code
+of its own, it is identified by its parts (see Identification). Its parts are known when its
+vertical CRS is identified.
 
 Where a WKT 2 CRS has two nodes PROJ reads one of, the first in its order counts, whatever its
 keyword, as in PROJ 9.9.0: of two datums (`DATUM`, `TRF`, `GEODETICDATUM`; a datum and an
