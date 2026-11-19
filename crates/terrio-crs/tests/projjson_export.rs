@@ -108,6 +108,27 @@ fn what_proj_ignores_is_not_written() {
     assert_eq!(export("+proj=cea +R=6371000")["conversion"]["method"]["id"]["code"], 9834);
 }
 
+/// A UTM zone's conversion has its EPSG code (16000 + zone in the north, 16100 + zone in the
+/// south) only in a CRS without one, as PROJ 9.9.0 writes them (`CRS(...).to_json()`).
+#[test]
+fn a_utm_conversion_has_its_code_only_in_a_crs_without_one() {
+    let code = |definition: &str| export(definition)["conversion"]["id"]["code"].as_u64();
+    assert_eq!(code("+proj=utm +zone=33 +south +datum=WGS84 +units=m +no_defs"), Some(16133));
+    assert_eq!(code("+proj=utm +zone=33 +datum=WGS84 +units=m +no_defs"), Some(16033));
+    assert_eq!(code("+proj=utm +zone=1 +south +datum=WGS84 +units=m +no_defs"), Some(16101));
+    for crs in ["EPSG:32733", "EPSG:32633"] {
+        assert_eq!(code(crs), None, "{crs}");
+    }
+    // A code its WKT declares too (PROJ's WKT1_GDAL of EPSG:32733).
+    let declared = SpatialRef::from_epsg(32733).unwrap().to_wkt().unwrap();
+    let v: Value = serde_json::from_str(&SpatialRef::from_wkt(&declared).to_projjson().unwrap()).unwrap();
+    assert_eq!(v["id"]["code"].as_u64(), Some(32733));
+    assert!(v["conversion"].get("id").is_none(), "{}", v["conversion"]);
+    // A bound CRS's source without a code keeps it.
+    let bound = export("+proj=utm +zone=33 +south +ellps=intl +towgs84=-87,-98,-121 +units=m +no_defs");
+    assert_eq!((bound["type"].as_str(), bound["source_crs"]["conversion"]["id"]["code"].as_u64()), (Some("BoundCRS"), Some(16133)));
+}
+
 #[test]
 fn methods_and_parameters_follow_proj() {
     // `$schema` first, as PROJ writes it.

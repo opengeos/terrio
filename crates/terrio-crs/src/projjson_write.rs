@@ -205,12 +205,22 @@ fn horizontal(s: &SpatialRef, wkt: &str) -> Result<Value> {
         (None, Some(("IAU_2015", n))) => Some(json!({"authority": "IAU", "code": n, "version": 2015})),
         _ => None,
     };
-    let with_code = |mut o: Value| match &iau {
-        Some(id) => {
-            o["id"] = id.clone();
-            o
+    let with_code = |mut o: Value| {
+        let mut o = match &iau {
+            Some(id) => {
+                o["id"] = id.clone();
+                o
+            }
+            None => with_id(o, code),
+        };
+        // A conversion's own code (a UTM zone's) only in a CRS without one, as PROJ 9.9.0 writes
+        // it: EPSG:32733's conversion has none, `+proj=utm +zone=33 +south`'s is EPSG:16133.
+        if o.get("id").is_some()
+            && let Some(c) = o.get_mut("conversion").and_then(Value::as_object_mut)
+        {
+            c.remove("id");
         }
-        None => with_id(o, code),
+        o
     };
 
     let out = if def.is_geocentric() {
