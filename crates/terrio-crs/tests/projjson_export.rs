@@ -84,6 +84,19 @@ fn planetographic_and_planetocentric_crss() {
     assert_eq!((e["semi_major_axis"].as_f64(), e["semi_minor_axis"].as_f64()), (Some(17000.0), Some(5500.0)));
 }
 
+/// A UTM zone's conversion has its EPSG code (16000 + zone in the north, 16100 + zone in the
+/// south) only in a CRS without one, as PROJ 9.9.0 writes them (`CRS(...).to_json()`).
+#[test]
+fn a_utm_conversion_has_its_code_only_in_a_crs_without_one() {
+    let code = |definition: &str| export(definition)["conversion"]["id"]["code"].as_u64();
+    assert_eq!(code("+proj=utm +zone=33 +south +datum=WGS84 +units=m +no_defs"), Some(16133));
+    assert_eq!(code("+proj=utm +zone=33 +datum=WGS84 +units=m +no_defs"), Some(16033));
+    assert_eq!(code("+proj=utm +zone=1 +south +datum=WGS84 +units=m +no_defs"), Some(16101));
+    for crs in ["EPSG:32733", "EPSG:32633", "EPSG:2056"] {
+        assert_eq!(code(crs), None, "{crs}");
+    }
+}
+
 #[test]
 fn methods_and_parameters_follow_proj() {
     // `$schema` first, as PROJ writes it.
