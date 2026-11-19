@@ -114,7 +114,7 @@ def change(old, new):
 
 def commands():
     """{case: (area, command)} of CASES: the area is the first words of the case's section comment,
-    the command its `terrio` arguments without the input and output paths (in braces)."""
+    the command its `terrio` arguments, a path in braces dropped, or shown as … after `A=`."""
     out, area = {}, "Commands"
     try:
         text = CASES.read_text(encoding="utf-8")
@@ -125,7 +125,8 @@ def commands():
             area = re.split(r"[,.:]", line[2:], maxsplit=1)[0]
         elif line and not line.startswith("#"):
             name, _, args = line.partition(" ")
-            out[name] = (area, " ".join(["terrio", *(a for a in args.split() if "{" not in a)]))
+            shown = (re.sub(r"\{[^}]*\}\S*", "…", a) for a in args.split() if not a.startswith("{"))
+            out[name] = (area, " ".join(["terrio", *shown]))
     return out
 
 
@@ -137,6 +138,10 @@ def bar(old, new):
     if tenths >= 10:
         return "`" + "█" * 10 + "▒" * min(tenths - 10, 20) + ("…" if tenths > 30 else "") + "`"
     return "`" + "█" * tenths + "░" * (10 - tenths) + "`"
+
+
+def benchmarks(k):
+    return f"{k} benchmark" + ("" if k == 1 else "s")
 
 
 def signed(n, unit):
@@ -183,13 +188,16 @@ def main():
     out = ["<!-- terrio-bench: regression -->"] if n["worse"] else []
     if n["worse"] or n["better"]:
         moved = ", ".join(f"{n[k]} {k}" for k in ("worse", "better") if n[k])
-        out.append(f"### {'⚠️' if n['worse'] else '✅'} Performance: {moved} · {n['same']} match main{new}")
+        same = f" · {n['same']} match main" if n["same"] else ""
+        out.append(f"### {'⚠️' if n['worse'] else '✅'} Performance: {moved}{same}{new}")
     elif n["same"]:
-        out += [f"### 🟢 Performance holds: all {n['same']} benchmarks match main{new}", "CPU, speed and memory all match main."]
+        holds = f"all {benchmarks(n['same'])} match main" if n["same"] > 1 else "the benchmark matches main"
+        out += [f"### 🟢 Performance holds: {holds}{new}", "CPU, speed and memory all match main."]
     else:
-        out.append(f"### 🆕 Performance: {n['new']} new benchmarks, none on main yet")
+        out.append(f"### 🆕 Performance: {benchmarks(n['new'])}, none on main yet")
 
-    # Each flagged measure, worse first, the largest change first.
+    # The benchmarks with a flagged measure, worse first, the largest change first; each row marked
+    # by its own direction.
     flagged = sorted(
         (b for b in benches if b["state"] in ("worse", "better")),
         key=lambda b: (0, -b["key"][0]) if b["state"] == "worse" else (1, b["key"][1]),
@@ -204,7 +212,7 @@ def main():
                 old, new_value = pair
                 if column == "memory" and pct != float("inf"):
                     text = f"{signed(new_value - old, unit)} ({text})"
-                lead = f"| {'⚠️' if b['state'] == 'worse' else '✅'} | {b['label']} |" if first else "| | |"
+                lead = f"| {'⚠️' if flag > 0 else '✅'} | {b['label'] if first else ''} |"
                 first = False
                 out.append(f"{lead} {column} | {count(old, unit)} → {count(new_value, unit)} | **{text}** | {bar(old, new_value)} |")
 
@@ -221,7 +229,8 @@ def main():
             w = sum(b["cells"][i][5] > 0 for b in compared)
             g = sum(b["cells"][i][5] < 0 for b in compared)
             parts = ([f"⚠️ {w} worse"] if w else []) + ([f"✅ {g} better"] if g else [])
-            cells.append(" · ".join(parts) or ("✓" if compared else "🆕"))
+            measured = any(b["cells"][i][2] is not None for b in compared)
+            cells.append(" · ".join(parts) or ("✓" if measured else "" if compared else "🆕"))
         state = min((b["state"] for b in compared), key=order.get, default="new")
         mark = {"worse": "⚠️", "better": "✅", "new": "🆕", "same": "🟢"}[state]
         k = len(bs) - len(compared)
@@ -253,7 +262,7 @@ def main():
         "",
         "| | benchmark | CPU (instructions) | speed (est. cycles) | memory (peak heap) |",
         "|---|---|---:|---:|---:|",
-        *(f"| {marks[b['state']]} | `{b['name']}` | {' | '.join(value(*c) for c in b['cells'])} |" for b in benches),
+        *(f"| {marks[b['state']]} | {b['label']} | {' | '.join(value(*c) for c in b['cells'])} |" for b in benches),
         "</details>",
         "",
         "<details><summary>How to read this</summary>",
