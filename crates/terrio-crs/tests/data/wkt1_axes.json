@@ -1028,6 +1028,1328 @@
    "proj4_axis_wkt2": null
   }
  ],
+ "krovak_dialects": [
+  {
+   "wkt": "PROJCS[\"Krovak ESRI no plane none\",GEOGCS[\"GCS_S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],UNIT[\"Meter\",1.0]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI no plane east north\",GEOGCS[\"GCS_S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],UNIT[\"Meter\",1.0],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI no plane north east\",GEOGCS[\"GCS_S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],UNIT[\"Meter\",1.0],AXIS[\"Northing\",NORTH],AXIS[\"Easting\",EAST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    744215.0965425548,
+    1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI no plane west south\",GEOGCS[\"GCS_S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],UNIT[\"Meter\",1.0],AXIS[\"Y\",WEST],AXIS[\"X\",SOUTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    744215.0965425548,
+    1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI no plane south west\",GEOGCS[\"GCS_S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],UNIT[\"Meter\",1.0],AXIS[\"X\",SOUTH],AXIS[\"Y\",WEST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI no plane west north\",GEOGCS[\"GCS_S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],UNIT[\"Meter\",1.0],AXIS[\"W\",WEST],AXIS[\"N\",NORTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI no plane east south\",GEOGCS[\"GCS_S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],UNIT[\"Meter\",1.0],AXIS[\"E\",EAST],AXIS[\"S\",SOUTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI no plane north west\",GEOGCS[\"GCS_S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],UNIT[\"Meter\",1.0],AXIS[\"N\",NORTH],AXIS[\"W\",WEST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI no plane south east\",GEOGCS[\"GCS_S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],UNIT[\"Meter\",1.0],AXIS[\"S\",SOUTH],AXIS[\"E\",EAST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI no plane east up\",GEOGCS[\"GCS_S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],UNIT[\"Meter\",1.0],AXIS[\"E\",EAST],AXIS[\"U\",UP]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI plane 1 0 none\",GEOGCS[\"GCS_S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"Meter\",1.0]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI plane 1 0 east north\",GEOGCS[\"GCS_S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"Meter\",1.0],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI plane 1 0 north east\",GEOGCS[\"GCS_S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"Meter\",1.0],AXIS[\"Northing\",NORTH],AXIS[\"Easting\",EAST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    744215.0965425548,
+    1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI plane 1 0 west south\",GEOGCS[\"GCS_S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"Meter\",1.0],AXIS[\"Y\",WEST],AXIS[\"X\",SOUTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    744215.0965425548,
+    1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI plane 1 0 south west\",GEOGCS[\"GCS_S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"Meter\",1.0],AXIS[\"X\",SOUTH],AXIS[\"Y\",WEST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI plane 1 0 west north\",GEOGCS[\"GCS_S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"Meter\",1.0],AXIS[\"W\",WEST],AXIS[\"N\",NORTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI plane 1 0 east south\",GEOGCS[\"GCS_S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"Meter\",1.0],AXIS[\"E\",EAST],AXIS[\"S\",SOUTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI plane 1 0 north west\",GEOGCS[\"GCS_S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"Meter\",1.0],AXIS[\"N\",NORTH],AXIS[\"W\",WEST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI plane 1 0 south east\",GEOGCS[\"GCS_S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"Meter\",1.0],AXIS[\"S\",SOUTH],AXIS[\"E\",EAST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI plane 1 0 east up\",GEOGCS[\"GCS_S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"Meter\",1.0],AXIS[\"E\",EAST],AXIS[\"U\",UP]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI plane -1 90 none\",GEOGCS[\"GCS_S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"Meter\",1.0]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -744215.0965425548,
+    -1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI plane -1 90 east north\",GEOGCS[\"GCS_S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"Meter\",1.0],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -744215.0965425548,
+    -1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI plane -1 90 north east\",GEOGCS[\"GCS_S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"Meter\",1.0],AXIS[\"Northing\",NORTH],AXIS[\"Easting\",EAST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -744215.0965425548,
+    -1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI plane -1 90 west south\",GEOGCS[\"GCS_S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"Meter\",1.0],AXIS[\"Y\",WEST],AXIS[\"X\",SOUTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    744215.0965425548,
+    1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI plane -1 90 south west\",GEOGCS[\"GCS_S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"Meter\",1.0],AXIS[\"X\",SOUTH],AXIS[\"Y\",WEST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI plane -1 90 west north\",GEOGCS[\"GCS_S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"Meter\",1.0],AXIS[\"W\",WEST],AXIS[\"N\",NORTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    744215.0965425548,
+    -1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI plane -1 90 east south\",GEOGCS[\"GCS_S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"Meter\",1.0],AXIS[\"E\",EAST],AXIS[\"S\",SOUTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -744215.0965425548,
+    1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI plane -1 90 north west\",GEOGCS[\"GCS_S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"Meter\",1.0],AXIS[\"N\",NORTH],AXIS[\"W\",WEST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI plane -1 90 south east\",GEOGCS[\"GCS_S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"Meter\",1.0],AXIS[\"S\",SOUTH],AXIS[\"E\",EAST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    -744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI plane -1 90 east up\",GEOGCS[\"GCS_S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"Meter\",1.0],AXIS[\"E\",EAST],AXIS[\"U\",UP]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -744215.0965425548,
+    -1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak GDAL no plane none\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1.0]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak GDAL no plane east north\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1.0],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -744215.0965425548,
+    -1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak GDAL no plane north east\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1.0],AXIS[\"Northing\",NORTH],AXIS[\"Easting\",EAST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -744215.0965425548,
+    -1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak GDAL no plane west south\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1.0],AXIS[\"Y\",WEST],AXIS[\"X\",SOUTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    744215.0965425548,
+    1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak GDAL no plane south west\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1.0],AXIS[\"X\",SOUTH],AXIS[\"Y\",WEST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak GDAL no plane west north\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1.0],AXIS[\"W\",WEST],AXIS[\"N\",NORTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    744215.0965425548,
+    -1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak GDAL no plane east south\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1.0],AXIS[\"E\",EAST],AXIS[\"S\",SOUTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -744215.0965425548,
+    1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak GDAL no plane north west\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1.0],AXIS[\"N\",NORTH],AXIS[\"W\",WEST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak GDAL no plane south east\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1.0],AXIS[\"S\",SOUTH],AXIS[\"E\",EAST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    -744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak GDAL no plane east up\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1.0],AXIS[\"E\",EAST],AXIS[\"U\",UP]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -744215.0965425548,
+    -1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak GDAL plane 1 0 none\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"metre\",1.0]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak GDAL plane 1 0 east north\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"metre\",1.0],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -744215.0965425548,
+    -1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak GDAL plane 1 0 north east\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"metre\",1.0],AXIS[\"Northing\",NORTH],AXIS[\"Easting\",EAST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -744215.0965425548,
+    -1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak GDAL plane 1 0 west south\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"metre\",1.0],AXIS[\"Y\",WEST],AXIS[\"X\",SOUTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    744215.0965425548,
+    1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak GDAL plane 1 0 south west\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"metre\",1.0],AXIS[\"X\",SOUTH],AXIS[\"Y\",WEST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak GDAL plane 1 0 west north\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"metre\",1.0],AXIS[\"W\",WEST],AXIS[\"N\",NORTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    744215.0965425548,
+    -1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak GDAL plane 1 0 east south\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"metre\",1.0],AXIS[\"E\",EAST],AXIS[\"S\",SOUTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -744215.0965425548,
+    1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak GDAL plane 1 0 north west\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"metre\",1.0],AXIS[\"N\",NORTH],AXIS[\"W\",WEST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak GDAL plane 1 0 south east\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"metre\",1.0],AXIS[\"S\",SOUTH],AXIS[\"E\",EAST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    -744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak GDAL plane 1 0 east up\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"metre\",1.0],AXIS[\"E\",EAST],AXIS[\"U\",UP]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -744215.0965425548,
+    -1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak GDAL plane -1 90 none\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"metre\",1.0]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -744215.0965425548,
+    -1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak GDAL plane -1 90 east north\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"metre\",1.0],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -744215.0965425548,
+    -1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak GDAL plane -1 90 north east\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"metre\",1.0],AXIS[\"Northing\",NORTH],AXIS[\"Easting\",EAST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -744215.0965425548,
+    -1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak GDAL plane -1 90 west south\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"metre\",1.0],AXIS[\"Y\",WEST],AXIS[\"X\",SOUTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    744215.0965425548,
+    1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak GDAL plane -1 90 south west\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"metre\",1.0],AXIS[\"X\",SOUTH],AXIS[\"Y\",WEST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak GDAL plane -1 90 west north\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"metre\",1.0],AXIS[\"W\",WEST],AXIS[\"N\",NORTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    744215.0965425548,
+    -1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak GDAL plane -1 90 east south\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"metre\",1.0],AXIS[\"E\",EAST],AXIS[\"S\",SOUTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -744215.0965425548,
+    1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak GDAL plane -1 90 north west\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"metre\",1.0],AXIS[\"N\",NORTH],AXIS[\"W\",WEST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak GDAL plane -1 90 south east\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"metre\",1.0],AXIS[\"S\",SOUTH],AXIS[\"E\",EAST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    -744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak GDAL plane -1 90 east up\",GEOGCS[\"S-JTSK\",DATUM[\"System_Jednotne_Trigonometricke_Site_Katastralni\",SPHEROID[\"Bessel 1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"latitude_of_center\",49.5],PARAMETER[\"longitude_of_center\",24.83333333333333],PARAMETER[\"azimuth\",30.28813972222222],PARAMETER[\"pseudo_standard_parallel_1\",78.5],PARAMETER[\"scale_factor\",0.9999],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"metre\",1.0],AXIS[\"E\",EAST],AXIS[\"U\",UP]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -744215.0965425548,
+    -1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI datum no plane none\",GEOGCS[\"S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],UNIT[\"Meter\",1.0]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI datum no plane east north\",GEOGCS[\"S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],UNIT[\"Meter\",1.0],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI datum no plane north east\",GEOGCS[\"S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],UNIT[\"Meter\",1.0],AXIS[\"Northing\",NORTH],AXIS[\"Easting\",EAST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    744215.0965425548,
+    1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI datum no plane west south\",GEOGCS[\"S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],UNIT[\"Meter\",1.0],AXIS[\"Y\",WEST],AXIS[\"X\",SOUTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    744215.0965425548,
+    1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI datum no plane south west\",GEOGCS[\"S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],UNIT[\"Meter\",1.0],AXIS[\"X\",SOUTH],AXIS[\"Y\",WEST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI datum no plane west north\",GEOGCS[\"S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],UNIT[\"Meter\",1.0],AXIS[\"W\",WEST],AXIS[\"N\",NORTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI datum no plane east south\",GEOGCS[\"S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],UNIT[\"Meter\",1.0],AXIS[\"E\",EAST],AXIS[\"S\",SOUTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI datum no plane north west\",GEOGCS[\"S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],UNIT[\"Meter\",1.0],AXIS[\"N\",NORTH],AXIS[\"W\",WEST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI datum no plane south east\",GEOGCS[\"S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],UNIT[\"Meter\",1.0],AXIS[\"S\",SOUTH],AXIS[\"E\",EAST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI datum no plane east up\",GEOGCS[\"S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],UNIT[\"Meter\",1.0],AXIS[\"E\",EAST],AXIS[\"U\",UP]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI datum plane 1 0 none\",GEOGCS[\"S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"Meter\",1.0]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI datum plane 1 0 east north\",GEOGCS[\"S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"Meter\",1.0],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI datum plane 1 0 north east\",GEOGCS[\"S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"Meter\",1.0],AXIS[\"Northing\",NORTH],AXIS[\"Easting\",EAST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    744215.0965425548,
+    1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI datum plane 1 0 west south\",GEOGCS[\"S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"Meter\",1.0],AXIS[\"Y\",WEST],AXIS[\"X\",SOUTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    744215.0965425548,
+    1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI datum plane 1 0 south west\",GEOGCS[\"S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"Meter\",1.0],AXIS[\"X\",SOUTH],AXIS[\"Y\",WEST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI datum plane 1 0 west north\",GEOGCS[\"S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"Meter\",1.0],AXIS[\"W\",WEST],AXIS[\"N\",NORTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI datum plane 1 0 east south\",GEOGCS[\"S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"Meter\",1.0],AXIS[\"E\",EAST],AXIS[\"S\",SOUTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI datum plane 1 0 north west\",GEOGCS[\"S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"Meter\",1.0],AXIS[\"N\",NORTH],AXIS[\"W\",WEST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI datum plane 1 0 south east\",GEOGCS[\"S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"Meter\",1.0],AXIS[\"S\",SOUTH],AXIS[\"E\",EAST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI datum plane 1 0 east up\",GEOGCS[\"S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"Meter\",1.0],AXIS[\"E\",EAST],AXIS[\"U\",UP]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI datum plane -1 90 none\",GEOGCS[\"S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"Meter\",1.0]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -744215.0965425548,
+    -1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI datum plane -1 90 east north\",GEOGCS[\"S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"Meter\",1.0],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -744215.0965425548,
+    -1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI datum plane -1 90 north east\",GEOGCS[\"S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"Meter\",1.0],AXIS[\"Northing\",NORTH],AXIS[\"Easting\",EAST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -744215.0965425548,
+    -1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI datum plane -1 90 west south\",GEOGCS[\"S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"Meter\",1.0],AXIS[\"Y\",WEST],AXIS[\"X\",SOUTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    744215.0965425548,
+    1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI datum plane -1 90 south west\",GEOGCS[\"S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"Meter\",1.0],AXIS[\"X\",SOUTH],AXIS[\"Y\",WEST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI datum plane -1 90 west north\",GEOGCS[\"S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"Meter\",1.0],AXIS[\"W\",WEST],AXIS[\"N\",NORTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    744215.0965425548,
+    -1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI datum plane -1 90 east south\",GEOGCS[\"S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"Meter\",1.0],AXIS[\"E\",EAST],AXIS[\"S\",SOUTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -744215.0965425548,
+    1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI datum plane -1 90 north west\",GEOGCS[\"S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"Meter\",1.0],AXIS[\"N\",NORTH],AXIS[\"W\",WEST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI datum plane -1 90 south east\",GEOGCS[\"S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"Meter\",1.0],AXIS[\"S\",SOUTH],AXIS[\"E\",EAST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    -744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI datum plane -1 90 east up\",GEOGCS[\"S_JTSK\",DATUM[\"D_S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"Meter\",1.0],AXIS[\"E\",EAST],AXIS[\"U\",UP]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -744215.0965425548,
+    -1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI lower-case no plane none\",GEOGCS[\"gcs_S_JTSK\",DATUM[\"S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],UNIT[\"Meter\",1.0]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI lower-case no plane east north\",GEOGCS[\"gcs_S_JTSK\",DATUM[\"S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],UNIT[\"Meter\",1.0],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI lower-case no plane north east\",GEOGCS[\"gcs_S_JTSK\",DATUM[\"S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],UNIT[\"Meter\",1.0],AXIS[\"Northing\",NORTH],AXIS[\"Easting\",EAST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    744215.0965425548,
+    1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI lower-case no plane west south\",GEOGCS[\"gcs_S_JTSK\",DATUM[\"S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],UNIT[\"Meter\",1.0],AXIS[\"Y\",WEST],AXIS[\"X\",SOUTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    744215.0965425548,
+    1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI lower-case no plane south west\",GEOGCS[\"gcs_S_JTSK\",DATUM[\"S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],UNIT[\"Meter\",1.0],AXIS[\"X\",SOUTH],AXIS[\"Y\",WEST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI lower-case no plane west north\",GEOGCS[\"gcs_S_JTSK\",DATUM[\"S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],UNIT[\"Meter\",1.0],AXIS[\"W\",WEST],AXIS[\"N\",NORTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI lower-case no plane east south\",GEOGCS[\"gcs_S_JTSK\",DATUM[\"S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],UNIT[\"Meter\",1.0],AXIS[\"E\",EAST],AXIS[\"S\",SOUTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI lower-case no plane north west\",GEOGCS[\"gcs_S_JTSK\",DATUM[\"S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],UNIT[\"Meter\",1.0],AXIS[\"N\",NORTH],AXIS[\"W\",WEST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI lower-case no plane south east\",GEOGCS[\"gcs_S_JTSK\",DATUM[\"S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],UNIT[\"Meter\",1.0],AXIS[\"S\",SOUTH],AXIS[\"E\",EAST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI lower-case no plane east up\",GEOGCS[\"gcs_S_JTSK\",DATUM[\"S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],UNIT[\"Meter\",1.0],AXIS[\"E\",EAST],AXIS[\"U\",UP]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI lower-case plane 1 0 none\",GEOGCS[\"gcs_S_JTSK\",DATUM[\"S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"Meter\",1.0]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI lower-case plane 1 0 east north\",GEOGCS[\"gcs_S_JTSK\",DATUM[\"S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"Meter\",1.0],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI lower-case plane 1 0 north east\",GEOGCS[\"gcs_S_JTSK\",DATUM[\"S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"Meter\",1.0],AXIS[\"Northing\",NORTH],AXIS[\"Easting\",EAST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    744215.0965425548,
+    1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI lower-case plane 1 0 west south\",GEOGCS[\"gcs_S_JTSK\",DATUM[\"S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"Meter\",1.0],AXIS[\"Y\",WEST],AXIS[\"X\",SOUTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    744215.0965425548,
+    1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI lower-case plane 1 0 south west\",GEOGCS[\"gcs_S_JTSK\",DATUM[\"S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"Meter\",1.0],AXIS[\"X\",SOUTH],AXIS[\"Y\",WEST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI lower-case plane 1 0 west north\",GEOGCS[\"gcs_S_JTSK\",DATUM[\"S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"Meter\",1.0],AXIS[\"W\",WEST],AXIS[\"N\",NORTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI lower-case plane 1 0 east south\",GEOGCS[\"gcs_S_JTSK\",DATUM[\"S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"Meter\",1.0],AXIS[\"E\",EAST],AXIS[\"S\",SOUTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI lower-case plane 1 0 north west\",GEOGCS[\"gcs_S_JTSK\",DATUM[\"S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"Meter\",1.0],AXIS[\"N\",NORTH],AXIS[\"W\",WEST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI lower-case plane 1 0 south east\",GEOGCS[\"gcs_S_JTSK\",DATUM[\"S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"Meter\",1.0],AXIS[\"S\",SOUTH],AXIS[\"E\",EAST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI lower-case plane 1 0 east up\",GEOGCS[\"gcs_S_JTSK\",DATUM[\"S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",0.0],UNIT[\"Meter\",1.0],AXIS[\"E\",EAST],AXIS[\"U\",UP]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI lower-case plane -1 90 none\",GEOGCS[\"gcs_S_JTSK\",DATUM[\"S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"Meter\",1.0]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -744215.0965425548,
+    -1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI lower-case plane -1 90 east north\",GEOGCS[\"gcs_S_JTSK\",DATUM[\"S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"Meter\",1.0],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -744215.0965425548,
+    -1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI lower-case plane -1 90 north east\",GEOGCS[\"gcs_S_JTSK\",DATUM[\"S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"Meter\",1.0],AXIS[\"Northing\",NORTH],AXIS[\"Easting\",EAST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -744215.0965425548,
+    -1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI lower-case plane -1 90 west south\",GEOGCS[\"gcs_S_JTSK\",DATUM[\"S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"Meter\",1.0],AXIS[\"Y\",WEST],AXIS[\"X\",SOUTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    744215.0965425548,
+    1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI lower-case plane -1 90 south west\",GEOGCS[\"gcs_S_JTSK\",DATUM[\"S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"Meter\",1.0],AXIS[\"X\",SOUTH],AXIS[\"Y\",WEST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI lower-case plane -1 90 west north\",GEOGCS[\"gcs_S_JTSK\",DATUM[\"S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"Meter\",1.0],AXIS[\"W\",WEST],AXIS[\"N\",NORTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    744215.0965425548,
+    -1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI lower-case plane -1 90 east south\",GEOGCS[\"gcs_S_JTSK\",DATUM[\"S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"Meter\",1.0],AXIS[\"E\",EAST],AXIS[\"S\",SOUTH]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -744215.0965425548,
+    1041500.0768568564
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI lower-case plane -1 90 north west\",GEOGCS[\"gcs_S_JTSK\",DATUM[\"S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"Meter\",1.0],AXIS[\"N\",NORTH],AXIS[\"W\",WEST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -1041500.0768568564,
+    744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI lower-case plane -1 90 south east\",GEOGCS[\"gcs_S_JTSK\",DATUM[\"S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"Meter\",1.0],AXIS[\"S\",SOUTH],AXIS[\"E\",EAST]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    1041500.0768568564,
+    -744215.0965425548
+   ]
+  },
+  {
+   "wkt": "PROJCS[\"Krovak ESRI lower-case plane -1 90 east up\",GEOGCS[\"gcs_S_JTSK\",DATUM[\"S_JTSK\",SPHEROID[\"Bessel_1841\",6377397.155,299.1528128]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Krovak\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Pseudo_Standard_Parallel_1\",78.5],PARAMETER[\"Scale_Factor\",0.9999],PARAMETER[\"Azimuth\",30.28813972222222],PARAMETER[\"Longitude_Of_Center\",24.83333333333333],PARAMETER[\"Latitude_Of_Center\",49.5],PARAMETER[\"X_Scale\",-1.0],PARAMETER[\"Y_Scale\",1.0],PARAMETER[\"XY_Plane_Rotation\",90.0],UNIT[\"Meter\",1.0],AXIS[\"E\",EAST],AXIS[\"U\",UP]]",
+   "point": [
+    14.4,
+    50.1
+   ],
+   "proj": [
+    -744215.0965425548,
+    -1041500.0768568564
+   ]
+  }
+ ],
  "geographic_exports": [
   {
    "wkt": "GEOGCRS[\"unknown\",DATUM[\"Unknown based on GRS 1980 ellipsoid\",ELLIPSOID[\"GRS 1980\",6378137,298.257222101,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",7019]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8901]],CS[ellipsoidal,2],AXIS[\"longitude\",east,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433,ID[\"EPSG\",9122]]],AXIS[\"latitude\",north,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433,ID[\"EPSG\",9122]]]]",

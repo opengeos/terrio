@@ -787,19 +787,29 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             push(&mut out, "k_0", k.or(Some(1.0)));
         }
         "krovak" => {
-            // Its axes: ESRI's scale and rotation of the plane (-1 and 90° for east-north, else
-            // south-west; the rotation in the CRS's angular unit, 100 grads for 90°), else the
-            // WKT's, south-west without them, as GDAL 3.10 and PROJ 9.8.1 read them (northing then
-            // easting read as easting then northing).
-            let axes = match (get(&["xscale"]), angle(&["xyplanerotation"])) {
-                (Some(sx), Some(rot)) => {
-                    if sx < 0.0 && (rot - 90.0).abs() < 1e-10 {
-                        *b"en"
+            // Its axes, as PROJ 9.9.0 reads them (northing then easting read as easting then
+            // northing). ESRI's scale and rotation of the plane, -1 and 90° (the rotation in the
+            // CRS's angular unit, 100 grads for 90°), make it east-north. In ESRI's dialect without
+            // them (a `GEOGCS` named `GCS_…` or a `DATUM` named `D_…`, as PROJ guesses it), it is
+            // south-west whatever its `AXIS` nodes, but north-east and west-south are west-south.
+            // Otherwise its `AXIS` nodes decide, east-north when they are not along east-west and
+            // north-south; without them, it is south-west.
+            let east_north =
+                get(&["xscale"]).is_some_and(|sx| sx < 0.0) && angle(&["xyplanerotation"]).is_some_and(|rot| (rot - 90.0).abs() < 1e-10);
+            let esri = geogcs.name().is_some_and(|n| n.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("gcs_")))
+                || datum.name().is_some_and(|n| n.get(..2).is_some_and(|p| p.eq_ignore_ascii_case("d_")));
+            let axes = match projected_axes(root) {
+                Some(ax) if esri && !east_north => {
+                    if ax == *b"ne" || ax == *b"ws" {
+                        *b"ws"
                     } else {
                         *b"sw"
                     }
                 }
-                _ => projected_axes(root).unwrap_or(*b"sw"),
+                _ if esri && !east_north => *b"sw",
+                Some(ax) => ax,
+                None if root.child("AXIS").is_some() || east_north => *b"en",
+                None => *b"sw",
             };
             out.push(match axes {
                 [b'e', b'n'] | [b'n', b'e'] => "+proj=krovak".into(),
