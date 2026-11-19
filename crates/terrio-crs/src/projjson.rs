@@ -546,8 +546,11 @@ pub(crate) fn parse(text: &str) -> Result<SpatialRef> {
     let wkt = crs(&value, false, 0)?;
     // Parse the complete supplied definition before considering any authority IDs.
     // Root IDs were stripped during translation so they cannot replace caller parameters.
-    // A vertical CRS is read by its unit and direction, which the translation checked.
-    if !wkt.starts_with("VERTCRS[") {
+    // A `Def` describes a horizontal CRS (a compound CRS's too): a vertical CRS is read by the
+    // vertical reader, its unit and direction.
+    if wkt.starts_with("VERTCRS[") {
+        crate::vertical_axis(&wkt).ok_or_else(|| bad("unreadable vertical CRS"))?;
+    } else {
         Def::from_wkt(&wkt)?;
     }
     // The translated WKT has no root identifier, so this identifies the supplied
