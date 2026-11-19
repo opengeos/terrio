@@ -1382,7 +1382,7 @@ instructions executed and speed the estimated
 cycles (instructions plus cache and RAM misses), both from Callgrind; memory is the peak heap of the
 operation, the most heap memory it holds at once beyond its input, its output included (a counting
 allocator in the benchmark keeps it, and reports it to DHAT). The `bench`
-workflow runs both commits under Valgrind in the same job, and `bench comment` posts the table,
+workflow runs both commits under Valgrind in two parallel jobs, and `bench comment` posts the table,
 with what each benchmark runs and its exact change, and sets the `perf-regression` label when a
 benchmark runs 10% or more instructions or estimated cycles, or needs 10% and 1 MB or more peak
 heap. The Claude code review then adds, under the table, the likely cause of each flagged
