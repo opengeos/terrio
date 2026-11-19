@@ -1886,8 +1886,12 @@ impl LazyRaster {
         if let Some(alpha) = self.alpha_band()
             && alpha != band
         {
-            let ds = self.read_window(window, &WindowOptions { bands: vec![alpha], overview })?;
-            return Ok(ds.raster.data.iter_f64().map(|v| if v == 0.0 { 0 } else { 255 }).collect());
+            let opts = WindowOptions { bands: vec![alpha], overview };
+            // The mask needs the alpha samples only: for a GeoTIFF, read them without the
+            // dataset read_window builds around its result.
+            let is_tiff = matches!(&self.inner, Inner::Tiff(_));
+            let data = if is_tiff { self.read_geotiff_samples(window, &opts)? } else { self.read_window(window, &opts)?.raster.data };
+            return Ok(data.iter_f64().map(|v| if v == 0.0 { 0 } else { 255 }).collect());
         }
         Ok(vec![255; window.width * window.height])
     }
