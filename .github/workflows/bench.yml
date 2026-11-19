@@ -24,14 +24,15 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
-  bench:
+  # Only Rust sources, build scripts, manifests and build settings change instruction counts. When the file list is
+  # unavailable, it runs.
+  changes:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
       pull-requests: read
+    outputs:
+      run: ${{ steps.changes.outputs.run }}
     steps:
-      # Only Rust sources, build scripts, manifests and build settings change instruction counts. When the file list is
-      # unavailable, it runs.
       - id: changes
         env:
           GH_TOKEN: ${{ github.token }}
@@ -47,68 +48,80 @@ jobs:
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "Benchmarks skipped: no Rust source or manifest changed."
           fi
-      - if: steps.changes.outputs.run == 'true'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+  # main is the merge commit's first parent, as the pull request merges into it; `pr` is the merge
+  # commit. Each prints the summaries without a baseline: the `comment` job pairs them.
+  bench:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        side: [main, pr]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 2
           persist-credentials: false
-      - if: steps.changes.outputs.run == 'true'
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master; toolchain set by input
+      - if: matrix.side == 'main'
+        run: git checkout -q --detach HEAD^1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master; toolchain set by input
         with:
           toolchain: stable
-      - if: steps.changes.outputs.run == 'true'
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - if: steps.changes.outputs.run == 'true'
-        uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ matrix.side }}
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
         with:
           # The version of the gungraun dev-dependency (Cargo.toml).
           tool: gungraun-runner@0.20.0
-      - if: steps.changes.outputs.run == 'true'
-        run: sudo apt-get update -q && sudo apt-get install -yq valgrind
-      # The merge commit's first parent is main as the pull request merges into it. The base is
-      # built and run first and saved as the `main` baseline, unless it has no benchmarks yet.
-      - if: steps.changes.outputs.run == 'true'
-        name: Benchmark main
+      - run: sudo apt-get update -q && sudo apt-get install -yq valgrind
+      - name: Benchmark ${{ matrix.side }}
         env:
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          SIDE: ${{ matrix.side }}
         run: |
-          head=$(git rev-parse HEAD)
-          base=$(git rev-parse HEAD^1)
-          echo "HEAD_SHA=$PR_HEAD_SHA" >> "$GITHUB_ENV"
-          echo "BASE_SHA=$base" >> "$GITHUB_ENV"
-          echo "MERGE_SHA=$head" >> "$GITHUB_ENV"
-          git checkout -q --detach "$base"
-          # Each benchmark as crate/name: crates/<crate>/benches/<name>.rs.
+          mkdir -p "$RUNNER_TEMP/out"
+          # Each benchmark as crate/name: crates/<crate>/benches/<name>.rs. Concatenated summaries,
+          # which bench_comment.py reads; empty when main has no benchmarks yet.
           for bench in terrio/instructions terrio-cli/commands; do
             crate=${bench%/*} name=${bench#*/}
             if [ -f "crates/$crate/benches/$name.rs" ]; then
-              cargo bench -p "$crate" --bench "$name" -- --save-baseline=main --output-format=json > "$RUNNER_TEMP/main-$name.json"
+              cargo bench -p "$crate" --bench "$name" -- --output-format=json >> "$RUNNER_TEMP/out/$SIDE.json"
             else
-              echo "main has no $name benchmarks yet: the pull request's counts are reported alone."
+              echo "$SIDE has no $name benchmarks yet."
             fi
           done
-          git checkout -q --detach "$head"
-      - if: steps.changes.outputs.run == 'true'
-        name: Benchmark the pull request
-        run: |
-          # Concatenated summaries, which bench_comment.py reads.
-          for bench in terrio/instructions terrio-cli/commands; do
-            crate=${bench%/*} name=${bench#*/}
-            baseline=()
-            [ -s "$RUNNER_TEMP/main-$name.json" ] && baseline=(--baseline=main)
-            cargo bench -p "$crate" --bench "$name" -- "${baseline[@]}" --output-format=json >> "$RUNNER_TEMP/pr.json"
-          done
-      - if: steps.changes.outputs.run == 'true'
-        name: Write the comment
+          touch "$RUNNER_TEMP/out/$SIDE.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bench-${{ matrix.side }}
+          path: ${{ runner.temp }}/out
+          retention-days: 1
+
+  comment:
+    needs: bench
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: bench-*
+          path: ${{ runner.temp }}/in
+          merge-multiple: true
+      - name: Write the comment
         env:
           PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          base=$(git rev-parse HEAD^1)
           mkdir -p "$RUNNER_TEMP/bench"
-          python3 scripts/bench_comment.py "$RUNNER_TEMP/pr.json" --base "$BASE_SHA" --head "$HEAD_SHA" > "$RUNNER_TEMP/bench/bench.md"
+          python3 scripts/bench_comment.py "$RUNNER_TEMP/in/pr.json" --main "$RUNNER_TEMP/in/main.json" --base "$base" --head "$HEAD_SHA" > "$RUNNER_TEMP/bench/bench.md"
           echo "$PR" > "$RUNNER_TEMP/bench/pr-number.txt"
           cat "$RUNNER_TEMP/bench/bench.md" >> "$GITHUB_STEP_SUMMARY"
-      - if: steps.changes.outputs.run == 'true'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bench
           path: ${{ runner.temp }}/bench

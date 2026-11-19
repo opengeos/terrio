@@ -179,3 +179,13 @@ def test_a_placeholder_after_a_name_reads_as_an_ellipsis(tmp_path):
 def test_a_measure_main_lacks_is_not_ticked_in_its_area(tmp_path):
     out = comment(tmp_path, summary("first_mem", 1000, 1000, memory=(9_400_000, None)))
     assert "| 🟢 Reprojection | 1 | ✓ | ✓ |  |" in out
+
+
+def test_main_from_a_separate_run_supplies_old_values(tmp_path):
+    (tmp_path / "main.json").write_text(json.dumps([summary("slower", 100, memory=(5_000_000, None)), summary("gone", 7)]))
+    path = tmp_path / "pr.json"
+    path.write_text(json.dumps([summary("slower", 150, old=1, memory=(5_000_000, None)), summary("added", 9, old=3)]))
+    run = [sys.executable, str(SCRIPT), str(path), "--main", str(tmp_path / "main.json"), "--base", "a" * 40, "--head", "b" * 40]
+    out = subprocess.run(run, check=True, capture_output=True, text=True).stdout
+    assert "| ⚠️ | `warp_f32 slower`<br><sub>Reprojection</sub> | CPU | 100 → 150 | **+50.0%** |" in out
+    assert "🆕 1 new" in out

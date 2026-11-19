@@ -16,6 +16,11 @@ each flagged measure with a bar, and folds the rest into a table by area: a `ter
 area is its section of `crates/terrio-cli/benches/cases.txt`.
 
     python3 scripts/bench_comment.py pr.json --base <sha> --head <sha>
+
+With `--main main.json`, the summaries of a separate run on main (without a baseline) supply the
+`old` values instead: bench.yml runs main and the pull request in parallel jobs.
+
+    python3 scripts/bench_comment.py pr.json --main main.json --base <sha> --head <sha>
 """
 
 import argparse
@@ -41,6 +46,26 @@ def summaries(text):
             return out
         value, i = decoder.raw_decode(text, i)
         out.extend(value if isinstance(value, list) else [value])
+
+
+def with_main(found, main):
+    """`found` with each metric's `old` value replaced by the `new` value of the same benchmark
+    (module path and id) in `main`, and removed where main lacks it."""
+
+    def key(s):
+        return s.get("module_path"), s["function_name"], s.get("id")
+
+    def values(s):
+        return {(p["tool"], k): v.get("values") or {} for p in s["profiles"] for k, v in p["data"]["total"]["metrics"].items()}
+
+    on_main = {key(m): values(m) for m in main}
+    for s in found:
+        old = on_main.get(key(s), {})
+        for (tool, k), v in values(s).items():
+            v.pop("old", None)
+            if old.get((tool, k), {}).get("new") is not None:
+                v["old"] = old[(tool, k)]["new"]
+    return found
 
 
 def metrics(summary):
@@ -151,11 +176,14 @@ def signed(n, unit):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("summaries", help="the JSON output of the pull request's run")
+    parser.add_argument("--main", help="the JSON output of main's run, when it ran separately")
     parser.add_argument("--base", required=True, help="main's commit")
     parser.add_argument("--head", required=True, help="the pull request's commit")
     args = parser.parse_args()
     with open(args.summaries, encoding="utf-8") as f:
         found = summaries(f.read())
+    if args.main:
+        found = with_main(found, summaries(Path(args.main).read_text(encoding="utf-8")))
     cases = commands()
 
     benches = []
