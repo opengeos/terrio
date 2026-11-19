@@ -1660,17 +1660,16 @@ pub(crate) fn read_geotiff_with_limits(path: &std::path::Path, limits: crate::co
     // Read once: the codec below keeps them rather than decoding the tags again. An uncompressed
     // image needs them only to find its chunks left out: they are read under the limits the `tiff`
     // crate opened the file with (it read them then), so that the chunk limit bounds the chunks
-    // decoded, not the tables.
+    // decoded, not the tables; tables it cannot read leave every chunk decoded, as before.
     let tables = if compression == 1 {
         let len = dec.inner().get_ref().get_ref().len()?;
         dec = dec.with_limits(tiff::decoder::Limits::default());
-        let tables = ChunkTables::read(&mut dec);
+        let tables = ChunkTables::read(&mut dec).unwrap_or_default();
         dec = dec.with_limits(limits.tiff_within(len));
         tables
     } else {
-        ChunkTables::read(&mut dec)
-    }
-    .map_err(tiff_err)?;
+        ChunkTables::read(&mut dec).map_err(tiff_err)?
+    };
     // Chunks without bytes (left out of a sparse file) are not decoded: see `data` below.
     chunks.extend((0..chunk_count).filter(|i| tables.counts.get(*i).is_none_or(|n| *n > 0)).map(|i| i as u32));
     let tables = if compression != 1 {
