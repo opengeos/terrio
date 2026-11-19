@@ -40,6 +40,8 @@ fn an_esri_code_is_its_whole_ellipsoids() {
     let mollweide = r#"PROJCS["World_Mollweide",GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Mollweide"],PARAMETER["False_Easting",0.0],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",0.0],UNIT["Meter",1.0],AUTHORITY["ESRI","54009"]]"#;
     assert_eq!(SpatialRef::from_wkt(mollweide).esri, Some(54009));
     assert_eq!(SpatialRef::from_wkt(&mollweide.replace("298.257223563", "290.0")).esri, None);
+    // Nor on an ellipsoid terrio cannot read (an inverse flattening below 1).
+    assert_eq!(SpatialRef::from_wkt(&mollweide.replace("298.257223563", "0.5")).esri, None);
     let miller = r#"PROJCS["World_Miller_Cylindrical",GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Miller_Cylindrical"],PARAMETER["False_Easting",0.0],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",0.0],UNIT["Meter",1.0]]"#;
     assert_eq!(SpatialRef::from_wkt(miller).esri, Some(54003));
 }

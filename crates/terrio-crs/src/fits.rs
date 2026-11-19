@@ -45,7 +45,7 @@ pub(crate) fn wkt_figure(wkt: &str) -> Option<(f64, f64)> {
 }
 
 /// Whether two WKT definitions' first ellipsoids are the same (see [`same_figure`]); `None` when
-/// either has none.
+/// either has none that [`wkt_figure`] reads (an inverse flattening in (0, 1) included).
 pub(crate) fn same_wkt_figure(wkt: &str, other: &str) -> Option<bool> {
     let ((a, es), (b, other_es)) = (wkt_figure(wkt)?, wkt_figure(other)?);
     Some(same_figure(a, es, b, other_es))
@@ -329,7 +329,8 @@ impl Fit {
         // The datum's ellipsoid, the WKT's by the registry WKT's (in metres in an Esri WKT 1), not
         // the definitions': a spherical method's `+R_A` sphere (ESRI:54003, Miller on WGS 84).
         // Whole, as PROJ 9.9.0 compares it: an altered flattening is not the code's.
-        let same_ellipsoid = same_wkt_figure(w, &e.wkt).is_none_or(|same| same);
+        // A WKT whose ellipsoid cannot be read is not on the registry's, when that has one.
+        let same_ellipsoid = same_wkt_figure(w, &e.wkt).unwrap_or_else(|| wkt_figure(&e.wkt).is_none());
         let Some(own) = Def::wkt_conversion(w) else {
             let method = |w: &str| {
                 let root = wkt1::parse(w)?;

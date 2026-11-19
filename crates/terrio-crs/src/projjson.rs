@@ -247,6 +247,7 @@ fn coordinate_system(value: &Value, geographic: bool) -> Result<(Vec<String>, St
     }
     Ok((out, units.remove(0).1))
 }
+
 /// A vertical reference frame, by its name and identifiers.
 fn vertical_datum(value: &Value) -> Result<String> {
     let o = object(value, &["name"])?;

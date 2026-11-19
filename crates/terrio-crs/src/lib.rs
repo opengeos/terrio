@@ -2058,8 +2058,9 @@ fn identify_esri(wkt: &str) -> Option<u32> {
     candidates.into_iter().find(|code| {
         let Some(e) = epsg::esri(*code) else { return false };
         let Ok(registered) = Def::from_proj(&e.proj) else { return false };
-        // The WKT's ellipsoid, whole, by the registry WKT's (see `Fit::esri`).
-        if fits::same_wkt_figure(wkt, &e.wkt) == Some(false) {
+        // The WKT's ellipsoid, whole, by the registry WKT's (see `Fit::esri`); one it cannot read
+        // is not the registry's.
+        if !fits::same_wkt_figure(wkt, &e.wkt).unwrap_or_else(|| fits::wkt_figure(&e.wkt).is_none()) {
             return false;
         }
         esri_same_datum(wkt, &e.wkt) && own.same_conversion(&registered)
