@@ -210,11 +210,17 @@ chunks are compressed at the one level their encoder has. A level out of range i
 whatever the compression.
 
 `SPARSE_OK=YES` leaves out of a GeoTIFF the blocks of its full-resolution image whose samples are
-all nodata, or 0 without nodata, bit for bit: their offset and byte count are 0. The overviews and
-the mask are written whole, and so is every block when nodata is not a value of the samples (a
-fraction or a value out of range for integers). A COG writes every tile, and warns that it does.
-terrio reads the pixels of a block left out of a GeoTIFF as nodata (or 0), whichever writer left it
-out: read whole or by window, from an overview, or over HTTP.
+all nodata in every band, or 0 without nodata, bit for bit: their offset and byte count are 0. The
+overviews and the mask are written whole. Every block is written when nodata is not a value of the
+samples (a fraction or a value out of range for integers), and, with a warning, when a band's
+nodata in the file's `.aux.xml` sidecar differs from the file's nodata: bands of different nodata,
+or a sidecar of an earlier file that the writer keeps. A COG writes every tile, and warns that it
+does.
+
+terrio reads the pixels of a block left out of a GeoTIFF as nodata, or 0, whichever writer left it
+out: read whole or by window, from an overview, or over HTTP. That nodata is the file's (exactly,
+for 64-bit integer samples) or, in local reads, a band's own from the `.aux.xml` sidecar, as the
+double terrio holds it.
 
 `NBITS` writes unsigned samples packed into 1–8 bits for Byte, 9–16 bits for
 UInt16 and 17–32 bits for UInt32. Rows begin on byte boundaries; bits are stored
