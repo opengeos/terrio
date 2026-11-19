@@ -8,7 +8,7 @@ use serde_json::ser::{CompactFormatter, Formatter};
 use wasm_bindgen::prelude::*;
 use wbvector::{Coord, Feature, FieldValue, Geometry, Layer, Ring};
 
-/// The length of the text parsed at once.
+/// The length of the text parsed at once, and the bytes of coordinates given to JavaScript at once.
 const CHUNK: usize = 8 << 20;
 
 /// `{ type: "FeatureCollection", features }`, as `wbvector::geojson::to_string` writes it, with
@@ -17,13 +17,16 @@ pub(crate) fn feature_collection(layer: &Layer) -> Result<JsValue, JsError> {
     let keys: Vec<Vec<u8>> = layer.schema.fields().iter().map(|f| string(&f.name)).collect();
     let chunks = js_sys::Array::new();
     let mut s = Vec::with_capacity(CHUNK + (CHUNK >> 4));
-    let mut first = 0;
+    let mut g = Geometries::default();
     for (n, f) in layer.features.iter().enumerate() {
         s.push(if s.is_empty() { b'[' } else { b',' });
         feature(&mut s, f, &keys);
-        if s.len() >= CHUNK || n + 1 == layer.features.len() {
-            chunks.push(&parse(&mut s, &layer.features[first..=n])?);
-            first = n + 1;
+        match &f.geometry {
+            Some(geometry) => g.geometry(geometry),
+            None => g.shape.push(0),
+        }
+        if s.len() >= CHUNK || g.coords.len() >= CHUNK / 8 || n + 1 == layer.features.len() {
+            chunks.push(&parse(&mut s, &mut g)?);
         }
     }
     let fc = js_sys::Object::new();
@@ -32,22 +35,18 @@ pub(crate) fn feature_collection(layer: &Layer) -> Result<JsValue, JsError> {
     Ok(fc.into())
 }
 
-/// The features written so far, as an array, given the geometries of `features`; `s` is emptied.
-fn parse(s: &mut Vec<u8>, features: &[Feature]) -> Result<JsValue, JsError> {
+/// The features written so far, as an array, with their geometries `g`; `s` and `g` are emptied.
+fn parse(s: &mut Vec<u8>, g: &mut Geometries) -> Result<JsValue, JsError> {
     s.push(b']');
     let text = std::str::from_utf8(s).map_err(|e| JsError::new(&e.to_string()))?;
     let parsed = js_sys::JSON::parse(text).map_err(|_| JsError::new("invalid GeoJSON"))?;
     s.clear();
-    let mut g = Geometries::default();
-    for f in features {
-        match &f.geometry {
-            Some(geometry) => g.geometry(geometry),
-            None => g.shape.push(0),
-        }
-    }
     set_geometries(&parsed, &g.coords, &g.shape);
+    g.coords.clear();
+    g.shape.clear();
     Ok(parsed)
 }
+
 fn string(v: &str) -> Vec<u8> {
     let mut s = Vec::with_capacity(v.len() + 2);
     text(&mut s, v);

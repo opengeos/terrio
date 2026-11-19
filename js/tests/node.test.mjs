@@ -305,6 +305,11 @@ test("toGeoJSON returns every geometry type, heights, holes and null geometries"
   assert.deepStrictEqual(fc.features.map((f) => f.geometry), geometries);
   assert.deepStrictEqual(fc.features.map((f) => f.properties.i), geometries.map((_, i) => i));
   ds.free();
+  // Coordinates also end a chunk, at 8 MB of numbers: 3 lines of 300,000 positions cross one.
+  const lines = [0, 1, 2].map((i) => ({ type: "LineString", coordinates: Array.from({ length: 300000 }, (_, k) => [i, k]) }));
+  const long = terrio.fromGeoJSON({ type: "FeatureCollection", features: lines.map((geometry, i) => ({ type: "Feature", properties: { i }, geometry })) });
+  assert.deepStrictEqual(long.toGeoJSON().features.map((f) => f.geometry), lines);
+  long.free();
 });
 
 test("toGeoJSON escapes control characters and keeps feature order across parse chunks", () => {
