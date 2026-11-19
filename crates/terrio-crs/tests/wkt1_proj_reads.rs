@@ -1,7 +1,8 @@
 //! WKT that PROJ 9.9.0 reads is read, and places points where PROJ does: ESRI's
 //! `Mercator_Variant_A` (EPSG Guidance Note 7-2's Makassar / NEIEZ example, EPSG:3002, as an
 //! ESRI `.prj` names its method) and EPSG's `Mercator (variant A)` in WKT 1, as PROJ's Mercator
-//! (1SP), and WKT 1 and WKT 2 with a node of an unknown keyword (`rustgis:unapplied`, `a-b`,
+//! (1SP), GDAL's `Mercator_1SP` with a latitude of origin (and a scale of 1) as Mercator (variant
+//! B) with that latitude as its standard parallel, and WKT 1 and WKT 2 with a node of an unknown keyword (`rustgis:unapplied`, `a-b`,
 //! `a"b c"`, an empty one), which PROJ skips whatever its keyword. A keyword with a space, a
 //! vertical tab, a NUL or an unclosed quote in it is refused, as PROJ refuses it, and so is
 //! EPSG's `Mercator (variant A)` with a latitude of origin other than 0, which PROJ reads but
@@ -43,7 +44,7 @@ fn wkt_read_by_proj_places_points_as_proj_does() {
     offline();
     let data = data();
     let cases = data["read"].as_array().unwrap();
-    assert_eq!(cases.len(), 26);
+    assert_eq!(cases.len(), 28);
     let mut bad = vec![];
     for case in cases {
         let name = case["name"].as_str().unwrap();
@@ -448,4 +449,13 @@ fn a_stored_wkt_is_written_for_files_with_names_cut_at_a_nul() {
     let back = SpatialRef::from_wkt(&written);
     assert!(same_proj(&back.to_proj4().unwrap(), case["proj4"].as_str().unwrap()));
     assert!(Transformer::new(&back, &SpatialRef::from_epsg(4326).unwrap()).is_ok());
+}
+
+/// GDAL's `Mercator_1SP` with a latitude of origin and a scale other than 1, which PROJ 9.9.0
+/// reads but cannot transform, keeps terrio's reading: the scale, without the latitude.
+#[test]
+fn mercator_1sp_with_a_latitude_of_origin_and_a_scale_keeps_its_scale() {
+    let wkt = r#"PROJCS["m",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Mercator_1SP"],PARAMETER["latitude_of_origin",30],PARAMETER["central_meridian",10],PARAMETER["scale_factor",0.99],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1]]"#;
+    let proj = SpatialRef::from_wkt(wkt).to_proj4().unwrap();
+    assert!(proj.contains("+k=0.99") && !proj.contains("lat_ts"), "{proj}");
 }
