@@ -347,7 +347,7 @@ mod zarr {
         assert_eq!(json(&path)["attributes"]["Conventions"], "CF-1.8", "the group's metadata is intact");
         let mut names: Vec<String> = std::fs::read_dir(&path).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
         names.sort();
-        for expected in ["band_2", "field", "a_b", "geometry_node_2", "Time_2", "Land_Use", "ZARR.json_2", "field__meta", "field.."] {
+        for expected in ["band_2", "field", "a_b", "geometry_node_2", "Time_2", "Land_Use", "ZARR.json_2", "field__meta", "field.._"] {
             assert!(names.contains(&expected.to_string()), "{expected} not in {names:?}");
         }
         assert_eq!(strings(&path, "band"), ["B04", "B08"], "the band coordinate is untouched");
