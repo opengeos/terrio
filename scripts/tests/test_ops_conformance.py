@@ -84,6 +84,7 @@ class VectorOpsReportTests(unittest.TestCase):
             (1, "DIFF CRS differs", "", True, False),
             (0, "OK", "", True, False),
             (0, "OK", "", False, True),
+            (1, "OK", "Warning 1: ignored warning", False, True),
         ]:
             with self.subTest(code=code, status=status):
                 output = f"## rasterize background vs gdal_rasterize\ncase  {status}\n"
@@ -93,8 +94,10 @@ class VectorOpsReportTests(unittest.TestCase):
                     result = conformance.suite_vector_ops(SimpleNamespace(data="unused", terrio="unused"))
                 self.assertEqual(len(result.cases), 1)
                 self.assertEqual(bool(result.error), expected_error)
-                if expected_error:
+                if expected_error and not stderr.startswith("Warning 1:"):
                     self.assertIn(stderr, result.error)
+                if stderr.startswith("Warning 1:"):
+                    self.assertEqual(result.error, "Vector comparison subprocess did not complete")
 
     @unittest.skipUnless(importlib.util.find_spec("osgeo"), "GDAL Python bindings are unavailable")
     def test_missing_output_crs_is_reported_as_a_difference(self):

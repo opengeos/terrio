@@ -1918,11 +1918,11 @@ def suite_vector_ops(ctx):
                 status = IDENTICAL if n == 0 else TOLERANCE
                 s.cases.append(Case(section, name, status, "" if n == 0 else f"{n} of {m[2]} pixels differ (reprojected input)"))
     if not s.cases:
-        s.error = tail(err or out)
+        s.error = tail(err or out) or "Vector comparison subprocess produced no cases"
     elif "# vector comparisons complete" not in out.splitlines():
-        s.error = tail(err or "Vector comparison subprocess did not complete")
+        s.error = tail(err) or "Vector comparison subprocess did not complete"
     elif _code and not any(case.status == DIFFERS for case in s.cases):
-        s.error = tail(err or out or "Vector comparison subprocess failed")
+        s.error = tail(err or out) or "Vector comparison subprocess failed"
     return s
 
 
