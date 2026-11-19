@@ -7,6 +7,11 @@
 //! `projjson_gdal`) share them, as PROJ shares its `paramMappings` (`parammappings.cpp`). A world
 //! projection has its PROJ name and the names the WKT 1 and WKT 2 readers and the WKT 1 writer
 //! take for it.
+//!
+//! [`conversion_from_proj`] decides a PROJ string's EPSG method and parameter values once, as PROJ
+//! decides them; the PROJJSON writer (`projjson_write`) writes it.
+
+use crate::params::Params;
 
 /// The kind of a parameter's value: an angle (in degrees), a length (in metres) or a scale.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -129,6 +134,271 @@ pub(crate) const WORLD: [World; 28] = [
     World { proj: "eqearth", wkt2: None, wkt1: Some("Equal_Earth") },
 ];
 
+/// A projected CRS's conversion: its EPSG method and parameter values.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Conversion {
+    /// Its name, when it has one (a UTM zone's); else it is unnamed, as PROJ names it `unknown`.
+    pub name: Option<String>,
+    /// Its EPSG code, when it has one (a UTM zone's).
+    pub conversion_code: Option<u32>,
+    /// Its EPSG method's name and code.
+    pub method: &'static str,
+    pub method_code: u32,
+    /// Its parameters' values, in degrees, metres and unity, in the order PROJ writes them.
+    pub values: Vec<(Param, f64)>,
+    /// The PROJ string's parameters it carries (others must have the value used when they are
+    /// absent to be written: `projjson_write::refuse_unwritten`).
+    pub written: &'static [&'static str],
+}
+
+/// Whether a PROJ string gives a sphere by its own parameters (`+R`, or `+a` and `+b` equal).
+pub(crate) fn on_sphere(p: &Params) -> bool {
+    !p.has("ellps") && !p.has("datum") && (p.has("R") || (p.has("a") && p.f64("a") == p.f64("b")))
+}
+
+/// Whether [`conversion_from_proj`] gives a PROJ string as Popular Visualisation Pseudo Mercator (EPSG
+/// method 1024): Mercator on the sphere of WGS 84's semi-major axis (`+a=6378137 +b=6378137`),
+/// with a null standard parallel and a scale of 1.
+pub(crate) fn pseudo_mercator(p: &Params) -> bool {
+    let k0 = p.f64("k_0").or_else(|| p.f64("k")).unwrap_or(1.0);
+    // `+R` wins over `+a`: a sphere of another radius is not Web Mercator's.
+    p.str("proj") == Some("merc")
+        && !p.has("R")
+        && on_sphere(p)
+        && p.f64("a") == Some(6378137.0)
+        && p.angle("lat_ts").map(f64::to_degrees).unwrap_or(0.0) == 0.0
+        && k0 == 1.0
+}
+
+/// The conversion of a projected CRS's PROJ string, by its EPSG method, as PROJ decides it; or why
+/// there is none.
+///
+/// It decides; it does not validate. The PROJ string must be one terrio reads as a CRS: a value
+/// it cannot parse is taken as absent here (`+lat_0=abc` as a latitude of origin of 0°). Nor does
+/// `Ok` mean the conversion carries every parameter of the string: a writer refuses the others
+/// itself (`projjson_write::refuse_unwritten`, by [`Conversion::written`]).
+pub(crate) fn conversion_from_proj(p: &Params) -> Result<Conversion, String> {
+    let proj = p.str("proj").unwrap_or("");
+    let deg = |k: &str| p.angle(k).map(f64::to_degrees);
+    let num = |k: &str| p.f64(k);
+    let k0 = num("k_0").or_else(|| num("k")).unwrap_or(1.0);
+    let (lat0, lon0) = (deg("lat_0").unwrap_or(0.0), deg("lon_0").unwrap_or(0.0));
+    let (x0, y0) = (num("x_0").unwrap_or(0.0), num("y_0").unwrap_or(0.0));
+    let sphere = on_sphere(p);
+    let mut name = None;
+    let mut conversion_id = None;
+    // The parameters most methods carry.
+    const ORIGIN: &[&str] = &["lat_0", "lon_0", "x_0", "y_0"];
+    const ORIGIN_K: &[&str] = &["lat_0", "lon_0", "k", "k_0", "x_0", "y_0"];
+    const CONIC: &[&str] = &["lat_0", "lon_0", "lat_1", "lat_2", "x_0", "y_0"];
+    let (method, code, values, written): (&str, u32, Vec<(Param, f64)>, &[&str]) = match proj {
+        "utm" => {
+            let zone = num("zone").ok_or_else(|| "a UTM projection without zone".to_string())? as u32;
+            if !(1..=60).contains(&zone) {
+                return Err(format!("a UTM projection of zone {zone}"));
+            }
+            let south = p.has("south");
+            name = Some(format!("UTM zone {zone}{}", if south { "S" } else { "N" }));
+            conversion_id = Some(if south { 17000 } else { 16000 } + zone);
+            let lon = f64::from(zone) * 6.0 - 183.0;
+            let values =
+                vec![(LAT_NAT, 0.0), (LON_NAT, lon), (K_NAT, 0.9996), (FE, 500000.0), (FN, if south { 10_000_000.0 } else { 0.0 })];
+            ("Transverse Mercator", 9807, values, &["zone", "south"])
+        }
+        // South-orientated (EPSG method 9808), whose false easting and northing the readers
+        // write negated under `+axis=wsu`. A difference from PROJ 9.8.1, which writes a typed
+        // `+axis=wsu +x_0=1000` with a false easting of 1000: that places its origin 2000 m away,
+        // where W = FE - x places it at the string's. South then west (`+axis=swu`, a north-east
+        // WKT 1) is Transverse Mercator on those axes, as PROJ writes it: PROJ reads method 9808
+        // west then south whatever its axes.
+        "tmerc" if p.str("axis") == Some("wsu") => {
+            let values = vec![(LAT_NAT, lat0), (LON_NAT, lon0), (K_NAT, k0), (FE, 0.0 - x0), (FN, 0.0 - y0)];
+            ("Transverse Mercator (South Orientated)", 9808, values, ORIGIN_K)
+        }
+        // PROJ 9.9.0's `tmerczoned`, whose `+lon_0` is the initial longitude.
+        "tmerczoned" => {
+            let width = num("width")
+                .filter(|w| w.is_finite() && *w > 0.0)
+                .ok_or_else(|| "a zoned grid system without a positive width".to_string())?;
+            (
+                "Transverse Mercator Zoned Grid System",
+                9824,
+                vec![(LAT_NAT, lat0), (LON_INITIAL, lon0), (ZONE_WIDTH, width), (K_NAT, k0), (FE, x0), (FN, y0)],
+                &["lat_0", "lon_0", "width", "k", "k_0", "x_0", "y_0"],
+            )
+        }
+        "tmerc" => ("Transverse Mercator", 9807, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (K_NAT, k0), (FE, x0), (FN, y0)], ORIGIN_K),
+        "lcc" => {
+            // As PROJ (and terrio) read the CRS: with `lat_0` and no `lat_2`, one standard parallel
+            // (1SP, or variant B away from the origin); else two, the second on the equator
+            // without `lat_2` (2SP, or 2SP Michigan with a scale).
+            let sp1 = deg("lat_1").unwrap_or(0.0);
+            let one = !p.has("lat_2") && p.has("lat_0");
+            if one && lat0 == sp1 {
+                let values = vec![(LAT_NAT, sp1), (LON_NAT, lon0), (K_NAT, k0), (FE, x0), (FN, y0)];
+                ("Lambert Conic Conformal (1SP)", 9801, values, &["lat_0", "lat_1", "lon_0", "k", "k_0", "x_0", "y_0"])
+            } else if one {
+                let values = vec![(LAT_NAT, sp1), (K_NAT, k0), (LAT_FALSE, lat0), (LON_FALSE, lon0), (FE_FALSE, x0), (FN_FALSE, y0)];
+                ("Lambert Conic Conformal (1SP variant B)", 1102, values, &["lat_0", "lat_1", "lon_0", "k", "k_0", "x_0", "y_0"])
+            } else {
+                let mut values = vec![
+                    (LAT_FALSE, lat0),
+                    (LON_FALSE, lon0),
+                    (SP1, sp1),
+                    (SP2, deg("lat_2").unwrap_or(0.0)),
+                    (FE_FALSE, x0),
+                    (FN_FALSE, y0),
+                ];
+                if k0 == 1.0 {
+                    ("Lambert Conic Conformal (2SP)", 9802, values, &["lat_0", "lat_1", "lat_2", "lon_0", "k", "k_0", "x_0", "y_0"])
+                } else {
+                    values.push((K_ELLIPSOID, k0));
+                    (
+                        "Lambert Conic Conformal (2SP Michigan)",
+                        1051,
+                        values,
+                        &["lat_0", "lat_1", "lat_2", "lon_0", "k", "k_0", "x_0", "y_0"],
+                    )
+                }
+            }
+        }
+        "aea" | "eqdc" => {
+            let values = vec![
+                (LAT_FALSE, lat0),
+                (LON_FALSE, lon0),
+                (SP1, deg("lat_1").unwrap_or(0.0)),
+                (SP2, deg("lat_2").unwrap_or(0.0)),
+                (FE_FALSE, x0),
+                (FN_FALSE, y0),
+            ];
+            if proj == "aea" { ("Albers Equal Area", 9822, values, CONIC) } else { ("Equidistant Conic", 1119, values, CONIC) }
+        }
+        "laea" if sphere => {
+            ("Lambert Azimuthal Equal Area (Spherical)", 1027, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], ORIGIN)
+        }
+        "laea" => ("Lambert Azimuthal Equal Area", 9820, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], ORIGIN),
+        // EPSG:3857: WGS 84 coordinates projected on its semi-major axis's sphere.
+        "merc" if pseudo_mercator(p) => {
+            let values = vec![(LAT_NAT, 0.0), (LON_NAT, lon0), (FE, x0), (FN, y0)];
+            ("Popular Visualisation Pseudo Mercator", 1024, values, &["lat_ts", "lon_0", "x_0", "y_0"])
+        }
+        "merc" => match deg("lat_ts").filter(|t| *t != 0.0) {
+            Some(ts) => {
+                ("Mercator (variant B)", 9805, vec![(SP1, ts), (LON_NAT, lon0), (FE, x0), (FN, y0)], &["lat_ts", "lon_0", "x_0", "y_0"])
+            }
+            None => {
+                let values = vec![(LAT_NAT, 0.0), (LON_NAT, lon0), (K_NAT, k0), (FE, x0), (FN, y0)];
+                ("Mercator (variant A)", 9804, values, &["lat_ts", "lon_0", "k", "k_0", "x_0", "y_0"])
+            }
+        },
+        "stere" if lat0.abs() == 90.0 => match deg("lat_ts").filter(|_| !p.has("k") && !p.has("k_0")) {
+            Some(ts) => (
+                "Polar Stereographic (variant B)",
+                9829,
+                vec![(LAT_TS, ts), (LON_ORIGIN, lon0), (FE, x0), (FN, y0)],
+                &["lat_0", "lat_ts", "lon_0", "x_0", "y_0"],
+            ),
+            None => {
+                ("Polar Stereographic (variant A)", 9810, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (K_NAT, k0), (FE, x0), (FN, y0)], ORIGIN_K)
+            }
+        },
+        "sterea" => ("Oblique Stereographic", 9809, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (K_NAT, k0), (FE, x0), (FN, y0)], ORIGIN_K),
+        "somerc" => {
+            let values = vec![
+                (LAT_CENTRE, lat0),
+                (LON_CENTRE, lon0),
+                (AZIMUTH, 90.0),
+                (GAMMA, 90.0),
+                (K_CENTRE, k0),
+                (FE_CENTRE, x0),
+                (FN_CENTRE, y0),
+            ];
+            ("Hotine Oblique Mercator (variant B)", 9815, values, ORIGIN_K)
+        }
+        "omerc" => {
+            let alpha = deg("alpha").ok_or_else(|| "an oblique Mercator without azimuth".to_string())?;
+            let gamma = deg("gamma").unwrap_or(alpha);
+            let lonc = deg("lonc").unwrap_or(lon0);
+            // `lon_0` is the centre's longitude only without `lonc`.
+            let written: &[&str] = if p.has("lonc") {
+                &["lat_0", "lonc", "alpha", "gamma", "k", "k_0", "x_0", "y_0", "no_uoff", "no_off"]
+            } else {
+                &["lat_0", "lon_0", "alpha", "gamma", "k", "k_0", "x_0", "y_0", "no_uoff", "no_off"]
+            };
+            if p.has("no_uoff") || p.has("no_off") {
+                let values =
+                    vec![(LAT_CENTRE, lat0), (LON_CENTRE, lonc), (AZIMUTH, alpha), (GAMMA, gamma), (K_CENTRE, k0), (FE, x0), (FN, y0)];
+                ("Hotine Oblique Mercator (variant A)", 9812, values, written)
+            } else {
+                let values = vec![
+                    (LAT_CENTRE, lat0),
+                    (LON_CENTRE, lonc),
+                    (AZIMUTH, alpha),
+                    (GAMMA, gamma),
+                    (K_CENTRE, k0),
+                    (FE_CENTRE, x0),
+                    (FN_CENTRE, y0),
+                ];
+                ("Hotine Oblique Mercator (variant B)", 9815, values, written)
+            }
+        }
+        "krovak" => {
+            // As terrio and PROJ compute it: their defaults, and the pseudo standard parallel fixed
+            // (PROJ ignores `lat_1` and `lat_ts`). The co-latitude of the cone axis is fixed too:
+            // another `alpha` (which PROJ reads) is refused.
+            if let Some(alpha) = deg("alpha").filter(|a| (a - 30.288_139_752_777_8).abs() > 1e-6) {
+                return Err(format!("a Krovak projection with +alpha={alpha}"));
+            }
+            let values = vec![
+                (LAT_CENTRE, deg("lat_0").unwrap_or(49.5)),
+                (LON_ORIGIN, deg("lon_0").unwrap_or(24.0 + 50.0 / 60.0)),
+                (CO_LAT_CONE, 30.288_139_752_777_8),
+                (LAT_PSEUDO_SP, 78.5),
+                (K_PSEUDO_SP, num("k_0").or_else(|| num("k")).unwrap_or(0.9999)),
+                (FE, x0),
+                (FN, y0),
+            ];
+            let written: &[&str] = &["lat_0", "lon_0", "alpha", "lat_1", "lat_ts", "k", "k_0", "x_0", "y_0"];
+            if p.str("axis") == Some("swu") {
+                ("Krovak", 9819, values, written)
+            } else {
+                ("Krovak (North Orientated)", 1041, values, written)
+            }
+        }
+        // Its latitude of origin changes nothing (PROJ writes none); a `k_0` without `lat_ts` is
+        // not written.
+        "cea" => {
+            let values = vec![(SP1, deg("lat_ts").unwrap_or(0.0)), (LON_NAT, lon0), (FE, x0), (FN, y0)];
+            ("Lambert Cylindrical Equal Area", 9835, values, &["lat_0", "lat_ts", "lon_0", "x_0", "y_0"])
+        }
+        "eqc" => {
+            // Its latitude of origin as PROJ writes it: only when not 0.
+            let mut values = vec![(SP1, deg("lat_ts").unwrap_or(0.0)), (LON_NAT, lon0), (FE, x0), (FN, y0)];
+            if lat0 != 0.0 {
+                values.insert(1, (LAT_NAT, lat0));
+            }
+            ("Equidistant Cylindrical", 1028, values, &["lat_0", "lat_ts", "lon_0", "x_0", "y_0"])
+        }
+        "cass" => ("Cassini-Soldner", 9806, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], ORIGIN),
+        "poly" => ("American Polyconic", 9818, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], ORIGIN),
+        "nzmg" => ("New Zealand Map Grid", 9811, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], ORIGIN),
+        "aeqd" => ("Azimuthal Equidistant", 1125, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], ORIGIN),
+        "ortho" => ("Orthographic", 9840, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], ORIGIN),
+        "eqearth" => ("Equal Earth", 1078, vec![(LON_NAT, lon0), (FE, x0), (FN, y0)], &["lon_0", "x_0", "y_0"]),
+        "bonne" => {
+            // Its parallel is `lat_1`; `lat_0` changes nothing then.
+            let values = vec![(LAT_NAT, deg("lat_1").unwrap_or(lat0)), (LON_NAT, lon0), (FE, x0), (FN, y0)];
+            ("Bonne", 9827, values, if p.has("lat_1") { &["lat_0", "lat_1", "lon_0", "x_0", "y_0"] } else { ORIGIN })
+        }
+        other => return Err(format!("the projection +proj={other}")),
+    };
+    // `str::parse` reads `nan` and `inf`, which JSON cannot carry.
+    if let Some((param, _)) = values.iter().find(|(_, v)| !v.is_finite()) {
+        return Err(format!("a non-finite {}", param.name.to_lowercase()));
+    }
+    Ok(Conversion { name, conversion_code: conversion_id, method, method_code: code, values, written })
+}
+
 /// Every parameter of the table.
 #[cfg(test)]
 const ALL: [Param; 36] = [
@@ -173,6 +443,31 @@ const ALL: [Param; 36] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A PROJ string's method, as PROJ 9.9.0 writes it in PROJJSON (`CRS(s).to_json()`).
+    #[test]
+    fn a_proj_string_has_the_method_proj_gives_it() {
+        for (s, method, code) in [
+            ("+proj=utm +zone=33 +south +ellps=WGS84", "Transverse Mercator", 9807),
+            ("+proj=tmerc +axis=wsu +lon_0=25 +x_0=1000 +y_0=2000 +ellps=WGS84", "Transverse Mercator (South Orientated)", 9808),
+            ("+proj=lcc +lat_0=45 +lat_1=45 +lon_0=3 +ellps=GRS80", "Lambert Conic Conformal (1SP)", 9801),
+            ("+proj=lcc +lat_0=40 +lat_1=45 +lon_0=3 +ellps=GRS80", "Lambert Conic Conformal (1SP variant B)", 1102),
+            ("+proj=lcc +lat_1=44 +lat_2=49 +lat_0=46.5 +lon_0=3 +ellps=GRS80", "Lambert Conic Conformal (2SP)", 9802),
+            ("+proj=merc +lat_ts=30 +ellps=WGS84", "Mercator (variant B)", 9805),
+            ("+proj=stere +lat_0=90 +lat_ts=70 +ellps=WGS84", "Polar Stereographic (variant B)", 9829),
+            ("+proj=omerc +lat_0=4 +lonc=115 +alpha=53 +gamma=53.13 +no_uoff +ellps=GRS80", "Hotine Oblique Mercator (variant A)", 9812),
+            ("+proj=krovak +ellps=bessel", "Krovak (North Orientated)", 1041),
+        ] {
+            let c = conversion_from_proj(&Params::parse(s)).unwrap();
+            assert_eq!((c.method, c.method_code), (method, code), "{s}");
+        }
+        // Its false easting and northing negated, as terrio reads `+axis=wsu` (W = FE - x).
+        let south = conversion_from_proj(&Params::parse("+proj=tmerc +axis=wsu +lon_0=25 +x_0=1000 +y_0=2000 +ellps=WGS84")).unwrap();
+        assert!(south.values.contains(&(FE, -1000.0)) && south.values.contains(&(FN, -2000.0)), "{:?}", south.values);
+        let utm = conversion_from_proj(&Params::parse("+proj=utm +zone=33 +south +ellps=WGS84")).unwrap();
+        assert_eq!(utm.name.as_deref(), Some("UTM zone 33S"));
+        assert_eq!(conversion_from_proj(&Params::parse("+proj=utm +ellps=WGS84")), Err("a UTM projection without zone".to_string()));
+    }
 
     /// Each world projection's PROJ name, WKT 2 name and WKT 1 method are its own, and its WKT 2
     /// name is normalized as the reader compares it.
