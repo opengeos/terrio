@@ -433,9 +433,13 @@ unsafe impl std::alloc::GlobalAlloc for NullSafeAllocator {
 /// The pages of 64 KiB of WebAssembly memory 0; 0 elsewhere.
 fn heap_pages() -> usize {
     #[cfg(target_arch = "wasm32")]
-    return core::arch::wasm32::memory_size::<0>();
+    {
+        core::arch::wasm32::memory_size::<0>()
+    }
     #[cfg(not(target_arch = "wasm32"))]
-    0
+    {
+        0
+    }
 }
 
 /// After an allocation grew the WebAssembly memory, grows it by a quarter more at once.
@@ -450,15 +454,19 @@ fn grow_heap_ahead(pages_before: usize) {
     let pages = heap_pages();
     // At most 1 GiB: 65,536 pages of 64 KiB fill wasm32's 4 GiB.
     let size = pages / 4 * 65536;
-    if pages > pages_before && size > 0 {
-        let layout = std::alloc::Layout::from_size_align(size, 1).expect("at most 1 GiB");
-        // SAFETY: a nonzero size, and the block is released with the layout it was allocated
-        // with. A null block (the memory can't grow that far) is not released.
-        unsafe {
-            let block = std::alloc::System.alloc(layout);
-            if !block.is_null() {
-                std::alloc::System.dealloc(block, layout);
-            }
+    if pages <= pages_before || size == 0 {
+        return;
+    }
+    // No `expect`: a panic in the allocator would allocate. The size is at most 1 GiB anyway.
+    let Ok(layout) = std::alloc::Layout::from_size_align(size, 1) else {
+        return;
+    };
+    // SAFETY: a nonzero size, and the block is released with the layout it was allocated
+    // with. A null block (the memory can't grow that far) is not released.
+    unsafe {
+        let block = std::alloc::System.alloc(layout);
+        if !block.is_null() {
+            std::alloc::System.dealloc(block, layout);
         }
     }
 }
