@@ -6276,6 +6276,18 @@ pub struct RegionWarp {
     grid_invariant: bool,
     periodic_longitude: bool,
     sum_scale: f64,
+    /// The last source window [`RegionWarp::source_window`] computed, with the region and
+    /// destination grid it was computed for, so that [`RegionWarp::warp`] reuses it instead of
+    /// transforming the region's pixels again: one region at a time, the last one asked for.
+    window_cache: std::sync::Mutex<Option<WindowCache>>,
+}
+
+/// A cached [`RegionWarp::source_window`] result: the region, the destination geotransform, and
+/// the full window `(x, y, width, height, _, raw_w, raw_h)` the context computes.
+struct WindowCache {
+    region: (usize, usize, usize, usize),
+    dst_gt: [f64; 6],
+    full: (usize, usize, usize, usize, f64, f64, f64),
 }
 
 impl RegionWarp {
@@ -6367,6 +6379,7 @@ impl RegionWarp {
             grid_invariant: grid_invariant_configured(),
             periodic_longitude: true,
             sum_scale: 1.0,
+            window_cache: std::sync::Mutex::new(None),
         })
     }
 
@@ -6404,6 +6417,7 @@ impl RegionWarp {
             grid_invariant: grid_invariant_configured(),
             periodic_longitude: true,
             sum_scale: 1.0,
+            window_cache: std::sync::Mutex::new(None),
         })
     }
 
@@ -6448,6 +6462,7 @@ impl RegionWarp {
             grid_invariant: grid_invariant_configured(),
             periodic_longitude: true,
             sum_scale: 1.0,
+            window_cache: std::sync::Mutex::new(None),
         })
     }
 
@@ -6498,7 +6513,39 @@ impl RegionWarp {
         if dw == 0 || dh == 0 {
             return Some((0, 0, 0, 0));
         }
-        self.context().source_window(dx, dy, dw, dh).map(|(sx, sy, sw, sh, ..)| (sx, sy, sw, sh))
+        let full = self.context().source_window(dx, dy, dw, dh);
+        if let Some(full) = &full {
+            *self.window_cache.lock().unwrap_or_else(|e| e.into_inner()) = Some(WindowCache { region, dst_gt: self.t.dst_gt, full: *full });
+        }
+        full.map(|(sx, sy, sw, sh, ..)| (sx, sy, sw, sh))
+    }
+
+    /// The full source window `(x, y, width, height, _, raw_w, raw_h)` of `region`, from the
+    /// cache of the last [`RegionWarp::source_window`] call when it was for this region under the
+    /// current destination grid, else computed now (and cached).
+    fn source_window_full(
+        &self,
+        ctx: &WarpContext<'_>,
+        region: (usize, usize, usize, usize),
+    ) -> Option<(usize, usize, usize, usize, f64, f64, f64)> {
+        let (dx, dy, dw, dh) = region;
+        if dw == 0 || dh == 0 {
+            return Some((0, 0, 0, 0, 0.0, 0.0, 0.0));
+        }
+        {
+            let cache = self.window_cache.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(c) = &*cache
+                && c.region == region
+                && c.dst_gt == self.t.dst_gt
+            {
+                return Some(c.full);
+            }
+        }
+        let full = ctx.source_window(dx, dy, dw, dh);
+        if let Some(full) = &full {
+            *self.window_cache.lock().unwrap_or_else(|e| e.into_inner()) = Some(WindowCache { region, dst_gt: self.t.dst_gt, full: *full });
+        }
+        full
     }
 
     /// Warps a region of the grid. `data` holds the bands of the source window
@@ -6545,7 +6592,7 @@ impl RegionWarp {
         let n = dw * dh;
         let mut ctx = self.context();
         let mut staged: Vec<Vec<f64>> = vec![vec![f64::from_bits(UNWRITTEN); n]; bands];
-        if let Some((sx, sy, sw, sh, _, raw_w, raw_h)) = ctx.source_window(dx, dy, dw, dh)
+        if let Some((sx, sy, sw, sh, _, raw_w, raw_h)) = self.source_window_full(&ctx, region)
             && sw > 0
             && sh > 0
         {
@@ -10394,6 +10441,42 @@ mod tests {
         assert!(is_pixel_translation(&src, &[103.0, 1.0, 0.0, 198.0, 0.0, -1.0]));
         assert!(!is_pixel_translation(&src, &[103.0, 1.0, 0.25, 198.0, 0.0, -1.0]));
         assert!(!is_pixel_translation(&src, &[103.0, 1.0, 0.0, 198.0, 0.25, -1.0]));
+    }
+
+    /// `source_window` records what it computed and `warp` reuses it for the same region under the
+    /// same destination grid instead of transforming the region's pixels again, while still
+    /// rejecting a window that does not match — also when another region's window was cached last
+    /// (the cache holds one region, so the earlier region's warp recomputes and validates).
+    #[test]
+    fn region_warp_reuses_and_still_validates_the_cached_source_window() {
+        let srs = SpatialRef::from_epsg(4326).unwrap();
+        let gt = [-10.0, 0.01, 0.0, 50.0, 0.0, -0.01];
+        let mk =
+            || RegionWarp::new((40, 30), gt, &srs, &srs, gt, Resampling::Bilinear, 0.125, DataType::F64, vec![None], Some(0.0)).unwrap();
+        let rw = mk();
+        let r1 = (0, 0, 10, 10);
+        let w1 = rw.source_window(r1).unwrap();
+        // Another region cached last: the first region's warp recomputes and still validates.
+        let r2 = (5, 5, 10, 10);
+        let _w2 = rw.source_window(r2).unwrap();
+        let value = |c: usize, r: usize| (c * 3 + r * 17) as f64 + 0.5;
+        let data = |w: (usize, usize, usize, usize)| {
+            RasterData::F64((0..w.3).flat_map(|r| (0..w.2).map(move |c| value(w.0 + c, w.1 + r))).collect())
+        };
+        let (a, va) = rw.warp(r1, w1, &data(w1), None, 0.0, false).unwrap();
+        // A cache hit (same region asked again) gives the same warp as a fresh one.
+        let w1_again = rw.source_window(r1).unwrap();
+        assert_eq!(w1_again, w1);
+        let (c, vc) = rw.warp(r1, w1_again, &data(w1_again), None, 0.0, false).unwrap();
+        let fresh = mk();
+        let (b, vb) = fresh.warp(r1, w1, &data(w1), None, 0.0, false).unwrap();
+        assert_eq!(a.to_f64_vec(), b.to_f64_vec());
+        assert_eq!(va, vb);
+        assert_eq!(c.to_f64_vec(), b.to_f64_vec());
+        assert_eq!(vc, vb);
+        // A window that does not match the region's is still rejected.
+        let wrong = (w1.0, w1.1, w1.2 + 1, w1.3);
+        assert!(rw.warp(r1, wrong, &data(wrong), None, 0.0, false).is_err());
     }
 
     /// The same warps' values, pinned: checksums of terrio's results in one chunk and in many
