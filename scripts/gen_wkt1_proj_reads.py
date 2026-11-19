@@ -4,6 +4,8 @@ where it places points in them.
 - ESRI's `Mercator_Variant_A` (EPSG Guidance Note 7-2's example of Mercator (variant A),
   EPSG:3002 Makassar / NEIEZ, as an ESRI `.prj` names it), and the same with a latitude of origin
   and a standard parallel, which PROJ leaves out of this method;
+- ESRI's `Lambert_Conformal_Conic` with one `Standard_Parallel_1` other than its
+  `Latitude_Of_Origin`, which PROJ reads as 1SP at the latitude of origin;
 - GDAL's `Mercator_1SP` with a latitude of origin other than 0 and a scale of 1, which PROJ reads
   as Mercator (variant B) with that latitude as its standard parallel;
 - GDAL's `Lambert_Conformal_Conic_2SP` (and `_Belgium`) with a `scale_factor`, which PROJ
@@ -167,6 +169,16 @@ READ = [
             "MERCATOR_VARIANT_A", VARIANT_A + ',PARAMETER["Latitude_Of_Origin",5]'
         ),
         (120.0, -3.0),
+    ),
+    # ESRI's Lambert_Conformal_Conic with one standard parallel: 1SP at the latitude of origin,
+    # Standard_Parallel_1 left out (opengeos/terrio#1012 item 30).
+    (
+        "Lambert_Conformal_Conic, ESRI's name, with one parallel other than the origin's",
+        f'PROJCS["l",{nad27()},PROJECTION["Lambert_Conformal_Conic"],'
+        'PARAMETER["False_Easting",1000000],PARAMETER["False_Northing",500000],'
+        'PARAMETER["Central_Meridian",-96],PARAMETER["Standard_Parallel_1",42],'
+        'PARAMETER["Scale_Factor",0.99],PARAMETER["Latitude_Of_Origin",40],UNIT["Meter",1.0]]',
+        (-90.0, 45.0),
     ),
     # GDAL's LCC 2SP methods have no scale: PROJ ignores a scale_factor given with them; ESRI's
     # Lambert_Conformal_Conic applies its Scale_Factor (opengeos/terrio#1012 item 29).

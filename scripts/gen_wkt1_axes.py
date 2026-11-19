@@ -7,11 +7,15 @@ axis), its WKT 2 as PROJ writes it, a geographic point, the point's coordinates 
 `Transformer.from_crs(geographic, wkt, always_xy=True)` (as GDAL 3.10's `gdaltransform`, in
 traditional GIS order, gives them too), and the `+axis` of both WKTs' `to_proj4()`.
 
+`other_axes`: the WKT 2 of Transverse Mercator with a CS whose axes are not one along east-west
+and one along north-south (`south, up`, `northNorthEast`, one direction twice), which PROJ reads
+east then north, and the point's coordinates in it.
+
 `krovak_dialects`: Krovak in WKT 1 with ESRI's parameters and names (`GCS_S_JTSK`, `D_S_JTSK`,
 which make PROJ read it as ESRI's dialect, as does either alone, `gcs_` in lower case too) and with
-GDAL's, without ESRI's scale and rotation of
-the plane, with 1 and 0°, and with -1 and 90° (east-north), each without `AXIS` and with each
-order of axes and with east and up, and the point's coordinates in it.
+GDAL's, without ESRI's scale and rotation of the plane, with 1 and 0°, and with -1 and 90°
+(east-north), each without `AXIS` and with each order of axes and with east and up, and the
+point's coordinates in it.
 
 Usage: PROJ_NETWORK=OFF python scripts/gen_wkt1_axes.py (needs pyproj 3.8.0)
 """
@@ -91,6 +95,44 @@ AXES = {
     "north west": [("N", "NORTH"), ("W", "WEST")],
     "south east": [("S", "SOUTH"), ("E", "EAST")],
 }
+
+
+OTHER_AXES = [
+    ("south", "up"),
+    ("up", "south"),
+    ("west", "up"),
+    ("south", "down"),
+    ("west", "geocentricX"),
+    ("northNorthEast", "eastSouthEast"),
+    ("south", "south"),
+    ("west", "west"),
+]
+
+
+def other_axes():
+    """PROJCRS of Transverse Mercator whose CS has an axis along neither east-west nor
+    north-south, or one direction twice, and where PROJ places a point in it."""
+    base = CRS(METHODS["Transverse_Mercator"][1] + " +type=crs")
+    tm = CRS(
+        f'PROJCS["t",{WGS84},PROJECTION["Transverse_Mercator"],'
+        f'{METHODS["Transverse_Mercator"][3]},{ORIGIN},UNIT["metre",1]]'
+    ).to_wkt("WKT2_2019")
+    cs = tm[tm.index("CS[Cartesian,2]") :]
+    cases = []
+    for a, b in OTHER_AXES:
+        wkt = tm.replace(
+            cs,
+            f'CS[Cartesian,2],AXIS["a",{a},LENGTHUNIT["metre",1]],'
+            f'AXIS["b",{b},LENGTHUNIT["metre",1]]]',
+        )
+        crs = CRS(wkt)
+        point = METHODS["Transverse_Mercator"][2]
+        x, y = Transformer.from_crs(base, crs, always_xy=True).transform(
+            *point, errcheck=True
+        )
+        axis = next((t for t in crs.to_proj4().split() if t.startswith("+axis=")), None)
+        cases.append({"wkt": wkt, "point": point, "proj": [x, y], "proj4_axis": axis})
+    return cases
 
 
 ESRI_SJTSK = (
@@ -207,6 +249,7 @@ def main():
             {
                 "proj_version": pyproj.proj_version_str,
                 "cases": cases,
+                "other_axes": other_axes(),
                 "krovak_dialects": krovak_dialects(),
                 "geographic_exports": exports,
             },
