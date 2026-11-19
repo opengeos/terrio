@@ -41,6 +41,37 @@ fn raster(cols: usize, rows: usize) -> terrio::RasterDataset {
     terrio::RasterDataset::new(r, true)
 }
 
+/// A COG opens from the start of its first block while the rest of the block still arrives:
+/// reads past the bytes arrived are missing (not an end of file), and the open needs no fetch
+/// once the header has arrived.
+#[test]
+fn cog_opens_from_a_block_still_arriving() {
+    let ds = raster(2000, 1500);
+    let options = terrio::RasterWriteOptions { driver: Some(terrio::formats::RasterDriver::Cog), ..Default::default() };
+    let bytes = terrio::memory::write_raster_bytes(&ds, "c.tif", &options).unwrap();
+    let file = SparseFile::new(bytes.len() as u64);
+    let block = file.block_size() as usize;
+    // Too few bytes for the header: the open misses the rest of block 0, and nothing else.
+    file.insert_arriving(0, &bytes[..16]);
+    assert!(terrio::LazyRaster::from_sparse(file.clone()).is_err());
+    assert_eq!(file.missing(), vec![(0, block as u64)]);
+    // The header and more, still short of the block: the open needs nothing.
+    file.insert_arriving(0, &bytes[..block / 2]);
+    let r = terrio::LazyRaster::from_sparse(file.clone()).unwrap().unwrap();
+    assert!(file.missing().is_empty());
+    assert_eq!((r.width(), r.height()), (2000, 1500));
+    // An earlier, shorter body does not replace a longer one; nor is anything counted as fetched.
+    file.insert_arriving(0, &bytes[..64]);
+    assert_eq!(file.read_exact_at(0, block / 2).unwrap(), bytes[..block / 2]);
+    assert_eq!(file.fetched(), (0, 0));
+    // A read past the bytes arrived is missing until the block arrives whole.
+    assert!(file.read_exact_at(0, block).is_err());
+    assert_eq!(file.missing(), vec![(0, block as u64)]);
+    file.insert(0, &bytes[..block]);
+    assert_eq!(file.read_exact_at(0, block).unwrap(), bytes[..block]);
+    assert!(file.missing().is_empty());
+}
+
 #[test]
 fn cog_by_window_and_overview() {
     let ds = raster(2000, 1500);

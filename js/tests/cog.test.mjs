@@ -125,3 +125,67 @@ test("terrio-js/cog leaves JPEG XL out and says so", async () => {
     rmSync(dir, { recursive: true });
   }
 });
+
+test("terrio-js/cog opens from the first bytes of a block still arriving", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "terrio-cog-"));
+  const [w, h] = [600, 500];
+  const data = new Uint16Array(w * h).map((_, i) => i % 7919);
+  const src = terrio.rasterFromArray(data, w, h, [500000, 10, 0, 4100000, 0, -10], "EPSG:32610", 0);
+  const bytes = src.toBytes("a.tif", { format: "COG", compress: "DEFLATE", tileSize: 128 });
+  // Bytes 0- arrive in two parts: the first 4 KiB (the header), the rest once released.
+  let release, timer;
+  const held = new Promise((r) => (release = r));
+  const firstBlock = [];
+  const server = createServer(async (req, res) => {
+    const [, a, b] = /bytes=(\d+)-(\d+)/.exec(req.headers.range).map(Number);
+    const end = Math.min(b, bytes.length - 1);
+    if (a === 0) firstBlock.push(req.headers.range);
+    res.writeHead(206, { "Content-Range": `bytes ${a}-${end}/${bytes.length}`, "Content-Length": end - a + 1 });
+    if (a === 0) {
+      res.write(bytes.subarray(0, 4096));
+      await held;
+      res.end(bytes.subarray(4096, end + 1));
+    } else {
+      res.end(bytes.subarray(a, end + 1));
+    }
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  try {
+    const url = `http://127.0.0.1:${server.address().port}/a.tif`;
+    const opened = await Promise.race([cog.openCog(url), new Promise((r) => (timer = setTimeout(r, 5000, "timeout")))]);
+    assert.notEqual(opened, "timeout", "the open waited for the whole first block");
+    assert.deepEqual([opened.width, opened.height, opened.epsg], [w, h, 32610]);
+    // A read of every pixel needs the rest of the block: it waits for it, not a second request.
+    const read = opened.read({ bands: [1] });
+    setTimeout(release, 50);
+    const [band] = await read;
+    assert.deepEqual([...band], [...src.readBand(1)]);
+    assert.deepEqual(firstBlock, ["bytes=0-65535"]);
+    assert.ok(opened.stats().bytes >= Math.min(65536, bytes.length));
+  } finally {
+    clearTimeout(timer);
+    release();
+    server.closeAllConnections();
+    server.close();
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test("terrio-js/cog refuses a first block whose Content-Range is not where it asked", async () => {
+  const [w, h] = [600, 500];
+  const src = terrio.rasterFromArray(new Uint16Array(w * h), w, h, [500000, 10, 0, 4100000, 0, -10], "EPSG:32610", 0);
+  const bytes = src.toBytes("a.tif", { format: "COG", compress: "DEFLATE", tileSize: 128 });
+  // The bytes asked for, said to be from another position.
+  const server = createServer((req, res) => {
+    const m = /bytes=(\d+)-(\d+)/.exec(req.headers.range ?? "");
+    const [a, b] = m ? [+m[1], Math.min(+m[2], bytes.length - 1)] : [0, bytes.length - 1];
+    res.writeHead(206, { "Content-Range": `bytes ${a + 1}-${b + 1}/${bytes.length + 1}`, "Content-Length": b - a + 1 });
+    res.end(bytes.subarray(a, b + 1));
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  try {
+    await assert.rejects(cog.openCog(`http://127.0.0.1:${server.address().port}/a.tif`), /Content-Range/);
+  } finally {
+    server.close();
+  }
+});
