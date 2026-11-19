@@ -1,7 +1,8 @@
 name: bench
 
 # CPU instructions, estimated cycles (Callgrind) and peak heap (DHAT) of
-# crates/terrio/benches/instructions.rs under Valgrind, on
+# crates/terrio/benches/instructions.rs and of the terrio commands of crates/terrio-cli/benches/cases.txt
+# (crates/terrio-cli/benches/commands.rs) under Valgrind, on
 # the pull request against main (the merge commit's first parent), in the same job. Instruction
 # counts repeat within 0.01% between runs, where timings on shared runners vary by 10–30%.
 # Informational: the job fails only when a build fails, never on a regression. bench-comment.yml
@@ -77,18 +78,26 @@ jobs:
           echo "BASE_SHA=$base" >> "$GITHUB_ENV"
           echo "MERGE_SHA=$head" >> "$GITHUB_ENV"
           git checkout -q --detach "$base"
-          if [ -f crates/terrio/benches/instructions.rs ]; then
-            cargo bench -p terrio --bench instructions -- --save-baseline=main --output-format=json > "$RUNNER_TEMP/main.json"
-          else
-            echo "main has no benchmarks yet: the pull request's counts are reported alone."
-          fi
+          # Each benchmark as crate/name: crates/<crate>/benches/<name>.rs.
+          for bench in terrio/instructions terrio-cli/commands; do
+            crate=${bench%/*} name=${bench#*/}
+            if [ -f "crates/$crate/benches/$name.rs" ]; then
+              cargo bench -p "$crate" --bench "$name" -- --save-baseline=main --output-format=json > "$RUNNER_TEMP/main-$name.json"
+            else
+              echo "main has no $name benchmarks yet: the pull request's counts are reported alone."
+            fi
+          done
           git checkout -q --detach "$head"
       - if: steps.changes.outputs.run == 'true'
         name: Benchmark the pull request
         run: |
-          baseline=()
-          [ -s "$RUNNER_TEMP/main.json" ] && baseline=(--baseline=main)
-          cargo bench -p terrio --bench instructions -- "${baseline[@]}" --output-format=json > "$RUNNER_TEMP/pr.json"
+          # Concatenated summaries, which bench_comment.py reads.
+          for bench in terrio/instructions terrio-cli/commands; do
+            crate=${bench%/*} name=${bench#*/}
+            baseline=()
+            [ -s "$RUNNER_TEMP/main-$name.json" ] && baseline=(--baseline=main)
+            cargo bench -p "$crate" --bench "$name" -- "${baseline[@]}" --output-format=json >> "$RUNNER_TEMP/pr.json"
+          done
       - if: steps.changes.outputs.run == 'true'
         name: Write the comment
         env:
