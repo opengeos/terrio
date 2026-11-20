@@ -3337,6 +3337,35 @@ impl WarpContext<'_> {
         self.resampling.is_area_based() && self.resampling != Resampling::Sum && self.longitude_turn().is_some() && self.t.ct.is_some()
     }
 
+    /// The tap bounds of a region's point kernels in an affine warp, from its four corner pixels,
+    /// when their centres map inside the source; else None. The source points of the region's
+    /// pixel centres are then an affine image of the region inside the (convex) source, all
+    /// accepted as the corners are, and each bound of [`Self::tap_box`], which grows with the
+    /// point, is a corner's: the bounds [`Self::source_window`] finds pixel by pixel.
+    fn affine_corner_taps(&self, dx: usize, dy: usize, dw: usize, dh: usize, nearest: bool) -> Option<(f64, f64, f64, f64)> {
+        if self.t.ct.is_some() || self.t.src_gcp.is_some() {
+            return None;
+        }
+        let (left, right) = (dx as f64 + 0.5, (dx + dw - 1) as f64 + 0.5);
+        let (top, bottom) = (dy as f64 + 0.5, (dy + dh - 1) as f64 + 0.5);
+        let (mut xs, mut ys, mut ok) = ([left, right, left, right], [top, top, bottom, bottom], [false; 4]);
+        self.t.transform(true, &mut xs, &mut ys, &mut ok);
+        let (w, h) = (self.src_w as f64, self.src_h as f64);
+        // `source_point`'s test, which rejects NaN too.
+        if !(0..4).all(|k| ok[k] && xs[k] >= 0.0 && ys[k] >= 0.0 && xs[k] + 1e-10 <= w && ys[k] + 1e-10 <= h) {
+            return None;
+        }
+        // An affine warp's pixels all have the same kernel scales.
+        let scale = (!nearest).then(|| self.pixel_scales_row(dx, dy, 1)[0]);
+        Some(
+            (0..4)
+                .map(|k| self.tap_box(xs[k], ys[k], scale))
+                .fold((f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY), |a, b| {
+                    (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3))
+                }),
+        )
+    }
+
     /// Bounds the actual point kernels or area footprints. Geometry buffers are one row wide;
     /// no source pixels are read while planning. `sum` retains its exact polygon planner.
     /// Scales are recomputed after the source read rather than retaining a chunk-sized matrix.
@@ -3355,14 +3384,21 @@ impl WarpContext<'_> {
         let mut transformed = false;
         let area = self.resampling.is_area_based();
         let nearest = self.resampling == Resampling::Nearest || self.src_w == 1 || self.src_h == 1;
+        let wrap = self.source_wrap();
+        let corners =
+            (!area && !wrap.global && wrap.regional_turn.is_none()).then(|| self.affine_corner_taps(dx, dy, dw, dh, nearest)).flatten();
+        if let Some(bounds) = corners {
+            (x0, y0, x1, y1) = bounds;
+            transformed = true;
+        }
+        let rows = if corners.is_some() { 0..0 } else { dy..dy + dh };
         let mut xs = vec![0.0; dw];
         let mut ys = vec![0.0; dw];
         let mut ok = vec![false; dw];
         let mut bx = vec![0.0; if area { dw } else { 0 }];
         let mut by = bx.clone();
         let mut bok = vec![false; bx.len()];
-        let wrap = self.source_wrap();
-        for row in dy..dy + dh {
+        for row in rows {
             for i in 0..dw {
                 xs[i] = (dx + i) as f64 + if area { 0.0 } else { 0.5 };
                 ys[i] = row as f64 + if area { 0.0 } else { 0.5 };
@@ -10611,6 +10647,43 @@ mod tests {
             });
             holder.join().is_ok() && exit == Some(0)
         });
+    }
+
+    /// An affine warp's source window from the corners of a region inside the source is the one
+    /// found by bounding every pixel's taps, at any scale, rotation and point kernel.
+    #[test]
+    fn affine_source_window_from_corners() {
+        let utm = SpatialRef::from_epsg(32633).unwrap();
+        let src_gt = [600000.0, 20.0, 0.0, 5000000.0, 0.0, -20.0];
+        let grids = [
+            [600110.0, 10.0, 0.0, 4999890.0, 0.0, -10.0],
+            [600333.3, 7.3, 0.0, 4999701.7, 0.0, -7.3],
+            [600040.0, 45.0, 0.0, 4999960.0, 0.0, -45.0],
+            [601500.0, 9.0, 3.0, 4998500.0, 2.5, -9.5],
+        ];
+        let kernels = [Resampling::Nearest, Resampling::Bilinear, Resampling::Cubic, Resampling::CubicSpline, Resampling::Lanczos];
+        for (dst_gt, resampling) in grids.iter().flat_map(|g| kernels.iter().map(move |r| (*g, *r))) {
+            let rw = RegionWarp::new((500, 400), src_gt, &utm, &utm, dst_gt, resampling, 0.125, DataType::U16, vec![Some(0.0)], Some(0.0))
+                .unwrap();
+            let ctx = rw.context();
+            let nearest = resampling == Resampling::Nearest;
+            for (dx, dy, dw, dh) in [(0, 0, 30, 20), (3, 5, 64, 48), (10, 2, 1, 1), (7, 9, 40, 1)] {
+                let fast = ctx.affine_corner_taps(dx, dy, dw, dh, nearest).expect("the region is inside the source");
+                let scale = (!nearest).then(|| ctx.pixel_scales_row(dx, dy, 1)[0]);
+                let mut all = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+                for (i, j) in (0..dw).flat_map(|i| (0..dh).map(move |j| (i, j))) {
+                    let (px, py) = ((dx + i) as f64 + 0.5, (dy + j) as f64 + 0.5);
+                    let (mut x, mut y, mut ok) = ([px], [py], [false]);
+                    ctx.t.transform(true, &mut x, &mut y, &mut ok);
+                    let p = ctx.source_point(ctx.source_wrap(), ok[0].then_some((x[0], y[0])), px, py, (0, 0, 500, 400)).unwrap();
+                    let b = ctx.tap_box(p.0, p.1, scale);
+                    all = (all.0.min(b.0), all.1.min(b.1), all.2.max(b.2), all.3.max(b.3));
+                }
+                assert_eq!(fast, all, "{resampling:?} {dst_gt:?} region {:?}", (dx, dy, dw, dh));
+            }
+            // A region over the source's edge is bounded pixel by pixel.
+            assert!(ctx.affine_corner_taps(0, 0, 4000, 10, nearest).is_none());
+        }
     }
 }
 
