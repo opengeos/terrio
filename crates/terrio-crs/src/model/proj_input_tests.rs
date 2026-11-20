@@ -241,6 +241,7 @@ fn unusual_wkt2_gives_its_proj_string_the_tree_s_input() {
             ),
             false,
         ),
+        (geog(&pm, &format!(r#"CS[spherical,3],AXIS["lat",north,ORDER[1],{DEG}],AXIS["lon",east,ORDER[2],{DEG}]"#)), false),
         (geog(&pm, &format!(r#"CS[affine,2],AXIS["lat",north,ORDER[1],{DEG}],AXIS["lon",east,ORDER[2],{DEG}]"#)), false),
         // A prime meridian's unit without its size.
         (geog(r#"PRIMEM["p",2,ANGLEUNIT["grad"]]"#, &lat_lon), false),

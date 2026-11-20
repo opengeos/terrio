@@ -91,7 +91,7 @@ pub(crate) struct Wkt2Input {
 /// What the reader takes from a geodetic CRS.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Wkt2Geodetic {
-    /// The CRS's name and EPSG code, its datum's and its ellipsoid's name and code, as written.
+    /// The CRS's name and EPSG code, its datum's name and code, and its ellipsoid's name, as written.
     pub name: Option<String>,
     pub epsg: Option<u32>,
     pub datum_name: Option<String>,

@@ -213,7 +213,7 @@ pub(crate) enum Crs {
         ident: Ident,
         datum: Datum,
         cs: Cs,
-        /// The CRS's angular unit, as `wkt2::Geodetic::read` takes it (degrees for a WKT 1
+        /// The CRS's angular unit, as `wkt2::Wkt2Geodetic::read` takes it (degrees for a WKT 1
         /// `GEOCCS`), whatever its axes' own.
         angular: Unit,
         frame_epoch: Option<f64>,
@@ -347,7 +347,8 @@ pub(crate) fn wkt1_input(m: &Model, root: &Node) -> Option<wkt1::Wkt1Input> {
     };
     let Crs::Geodetic { ident: base_ident, datum, angular: base_angular, .. } = base else { return None };
     let ellipsoid = datum.ellipsoid();
-    // The EPSG code of an object's first identifier, as `Node::epsg` reads it.
+    // The EPSG code of an object's first identifier, its code trimmed (`Node::epsg` reads its first
+    // `AUTHORITY` before any `ID`, a known difference on malformed input).
     let epsg =
         |i: &Ident| i.ids.first().filter(|id| id.authority.eq_ignore_ascii_case("EPSG")).and_then(|id| id.code.trim().parse::<u32>().ok());
     // The angular unit as WKT 1 rounds it (a degree and a grad, within 1e-9).
@@ -419,7 +420,8 @@ pub(crate) fn wkt2_input(m: &Model, root: &Node) -> Option<wkt2::Wkt2Input> {
     if m.dialect != Dialect::Wkt2 || root.child("DERIVINGCONVERSION").is_some() {
         return None;
     }
-    // The EPSG code of an object's first identifier, as `Node::epsg` reads it.
+    // The EPSG code of an object's first identifier, its code trimmed (`Node::epsg` reads its first
+    // `AUTHORITY` before any `ID`, a known difference on malformed input).
     let epsg =
         |i: &Ident| i.ids.first().filter(|id| id.authority.eq_ignore_ascii_case("EPSG")).and_then(|id| id.code.trim().parse::<u32>().ok());
     let geodetic = |crs: &Crs| {
@@ -623,7 +625,7 @@ fn unit_node(n: &Node) -> Option<&Node> {
     n.first_in(&["LENGTHUNIT", "ANGLEUNIT", "SCALEUNIT", "TIMEUNIT", "UNIT"])
 }
 
-/// The angular unit of a geodetic CRS node, as `wkt2::Geodetic::read` takes it: its own
+/// The angular unit of a geodetic CRS node, as `wkt2::Wkt2Geodetic::read` takes it: its own
 /// `ANGLEUNIT` or `UNIT`, else (a WKT 2 CRS) its axes', else its prime meridian's, else degrees.
 fn angular_unit(n: &Node, d: Dialect) -> Unit {
     let own = n.child("ANGLEUNIT").or_else(|| n.child("UNIT"));
@@ -684,6 +686,16 @@ fn geodetic(n: &Node, d: Dialect) -> Option<Crs> {
         } else {
             ang.clone()
         };
+        // A WKT 2 CS of another dimension than its axes, which PROJ 9.9.0 refuses (the WKT 2 reader
+        // refuses a spherical one that is not two-dimensional, and the Cartesian one below).
+        if d == Dialect::Wkt2
+            && let Some(c) = n.child("CS")
+            && let count = n.children("AXIS").count()
+            && count > 0
+            && c.num(1) != Some(count as f64)
+        {
+            return None;
+        }
         // A WKT 2 Cartesian CS that is not three axes, X, Y and Z in that order, each in a length
         // unit, one for all, which PROJ 9.9.0 and the WKT 2 reader refuse.
         if d == Dialect::Wkt2
@@ -704,7 +716,7 @@ fn geodetic(n: &Node, d: Dialect) -> Option<Crs> {
     Some(Crs::Geodetic { ident: ident(n), datum, cs, angular: ang, frame_epoch })
 }
 
-/// The prime meridian of a geodetic CRS node, as `wkt2::Geodetic::read` reads it: in its own unit,
+/// The prime meridian of a geodetic CRS node, as `wkt2::Wkt2Geodetic::read` reads it: in its own unit,
 /// else the CRS's (its `ANGLEUNIT`, or a `UNIT` named `degree` or `grad` in WKT 2; WKT 1's
 /// `GEOGCS` unit), else degrees, with PROJ's corrections (`wkt1::prime_meridian_degrees`).
 /// Greenwich without one. `None` for a WKT 2 prime meridian's unit without its size, which PROJ
