@@ -128,3 +128,28 @@ fn a_code_with_its_own_shift_goes_into_its_own_datum_without_it() {
     let op = Transformer::new(&crs, &SpatialRef::from_epsg(4326).unwrap()).unwrap().operation_at(x, y, 0.0).unwrap().unwrap();
     assert_eq!(op.name, "Transformation to WGS 84");
 }
+
+/// Likewise into the code's datum for other codes, as PROJ 9.7.1 (pyproj 3.7.2) goes: WGS 84 / UTM
+/// zone 33N with `TOWGS84[10,20,30,0,0,0,0]` into WGS 84 (EPSG:4326) is "Inverse of UTM zone 33N +
+/// axis order change (2D)", where EPSG:32633 places (500000, 5000000); OSGB36 / British National
+/// Grid with `TOWGS84[375,-111,431,0,0,0,0]` into EPSG:27700 leaves (400000, 300000) where it is.
+#[test]
+fn other_codes_with_their_own_shift_go_into_their_own_datum_without_it() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let utm = SpatialRef::from_wkt(
+        r#"PROJCS["WGS 84 / UTM zone 33N",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563],TOWGS84[10,20,30,0,0,0,0],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],AUTHORITY["EPSG","4326"]],PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",15],PARAMETER["scale_factor",0.9996],PARAMETER["false_easting",500000],PARAMETER["false_northing",0],UNIT["metre",1],AXIS["Easting",EAST],AXIS["Northing",NORTH],AUTHORITY["EPSG","32633"]]"#,
+    );
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    let t = Transformer::new(&utm, &wgs84).unwrap();
+    assert!(t.operation_at(500_000.0, 5_000_000.0, 0.0).unwrap().is_none(), "no datum transformation into WGS 84");
+    let plain = Transformer::new(&SpatialRef::from_epsg(32633).unwrap(), &wgs84).unwrap().transform(500_000.0, 5_000_000.0).unwrap();
+    assert_eq!(t.transform(500_000.0, 5_000_000.0).unwrap(), plain);
+    let bng = SpatialRef::from_wkt(
+        r#"PROJCS["OSGB36 / British National Grid",GEOGCS["OSGB36",DATUM["Ordnance_Survey_of_Great_Britain_1936",SPHEROID["Airy 1830",6377563.396,299.3249646],TOWGS84[375,-111,431,0,0,0,0],AUTHORITY["EPSG","6277"]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],AUTHORITY["EPSG","4277"]],PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",49],PARAMETER["central_meridian",-2],PARAMETER["scale_factor",0.9996012717],PARAMETER["false_easting",400000],PARAMETER["false_northing",-100000],UNIT["metre",1],AXIS["Easting",EAST],AXIS["Northing",NORTH],AUTHORITY["EPSG","27700"]]"#,
+    );
+    let t = Transformer::new(&bng, &SpatialRef::from_epsg(27700).unwrap()).unwrap();
+    assert!(t.operation_at(400_000.0, 300_000.0, 0.0).unwrap().is_none(), "no datum transformation into OSGB36");
+    let (x, y) = t.transform(400_000.0, 300_000.0).unwrap();
+    assert!((x - 400_000.0).abs() < 1e-6 && (y - 300_000.0).abs() < 1e-6, "({x}, {y})");
+}

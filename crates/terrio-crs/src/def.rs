@@ -86,7 +86,8 @@ pub(crate) struct Def {
     /// The parameters of the PROJ string the definition was read from; `None` for a WKT only
     /// wbprojection reads.
     params: Option<Arc<crate::ProjParams>>,
-    /// What a WKT 2 `BOUNDCRS` with a Helmert transformation is bound to.
+    /// What a WKT 2 `BOUNDCRS` with a Helmert transformation, or a coded CRS with a `TOWGS84` of
+    /// its own (which PROJ reads as one), is bound to.
     bound: Option<Arc<Bound>>,
     /// Set for a WKT whose CRS PROJ does not resolve to the EPSG CRS terrio reads it as.
     unresolved: Option<Unresolved>,
@@ -105,7 +106,7 @@ pub(crate) struct Unresolved {
     pub datum_renamed: bool,
 }
 
-/// A WKT 2 `BOUNDCRS` with a Helmert transformation.
+/// A WKT 2 `BOUNDCRS` with a Helmert transformation, or a coded CRS with a `TOWGS84` of its own.
 #[derive(Debug)]
 struct Bound {
     /// The EPSG code of the source CRS's own datum, when terrio identifies it: into a CRS on it,
@@ -582,8 +583,12 @@ impl Def {
                 // PROJ reads it as a `BOUNDCRS` to WGS 84 over the code's datum, into which it
                 // applies no shift: NAD83 / UTM zone 16N with `TOWGS84[0,0,0]` to NAD83
                 // (EPSG:4269) is the inverse projection alone in PROJ 9.7.1, not a way through
-                // WGS 84 that may pick a grid (us_noaa_ohhpgn.tif, 0.2 m in Ohio).
-                d.bound = Some(Arc::new(Bound { source_datum: d.datum, target: None }));
+                // WGS 84 that may pick a grid (us_noaa_ohhpgn.tif, 0.2 m in Ohio). Likewise on WGS
+                // 84 itself into EPSG:4326, and OSGB36 into EPSG:27700. A code without a datum has
+                // no source datum to go into.
+                if d.datum.is_some() {
+                    d.bound = Some(Arc::new(Bound { source_datum: d.datum, target: None }));
+                }
                 d.datum = None;
                 d.geog = None;
             }
