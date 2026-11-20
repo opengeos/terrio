@@ -1692,16 +1692,13 @@ impl Mosaic {
         Ok(())
     }
 
-    /// The output buffer of `samples` values, filled with the nodata value (0 without one), once
-    /// its bytes and those of its conversion to the mosaic's type are known to fit.
-    fn output(&self, samples: usize, what: &str) -> Result<(Vec<f64>, usize)> {
-        let output_bytes = crate::dataset::fallible::len(&[samples, std::mem::size_of::<f64>()], what)?;
-        let conversion_bytes = if self.data_type == DataType::F64 { Some(0) } else { samples.checked_mul(self.data_type.size_bytes()) };
-        crate::dataset::fallible::check_usable(conversion_bytes.and_then(|bytes| bytes.checked_add(output_bytes)), || {
-            format!("{what} conversion buffers are too large to allocate")
-        })
-        .map_err(Error::ResourceLimit)?;
-        Ok((crate::dataset::fallible::filled(samples, self.nodata.unwrap_or(0.0), what)?, output_bytes))
+    /// The output buffer of `pixels` values of each of `bands` bands, in the mosaic's type,
+    /// filled with the nodata value (0 without one), once its bytes are known to fit.
+    fn output(&self, pixels: usize, bands: usize, what: &str) -> Result<(RasterData, usize)> {
+        let output_bytes = crate::dataset::fallible::len(&[pixels, bands, self.data_type.size_bytes()], what)?;
+        crate::dataset::fallible::check_usable(Some(output_bytes), || format!("{what} buffers are too large to allocate"))
+            .map_err(Error::ResourceLimit)?;
+        Ok((crate::resampled_read::filled_bands(self.data_type, pixels, &vec![self.nodata; bands])?, output_bytes))
     }
 }
 
@@ -1715,10 +1712,9 @@ impl WindowSource for Mosaic {
         let gt = self.geo_transform;
         let what = "a STAC mosaic window";
         let pixels = crate::dataset::fallible::len(&[dw, dh], what)?;
-        let samples = crate::dataset::fallible::len(&[pixels, bands.len()], what)?;
-        let (mut out, output_bytes) = self.output(samples, what)?;
+        let (mut out, output_bytes) = self.output(pixels, bands.len(), what)?;
         if pixels == 0 || bands.is_empty() {
-            return Ok(RasterData::from_f64_vec(self.data_type, out));
+            return Ok(out);
         }
         let jobs: Vec<(usize, Cover)> =
             self.items.iter().enumerate().filter_map(|(i, (item, _))| cover(item, gt, w).map(|c| (i, c))).collect();
@@ -1749,7 +1745,7 @@ impl WindowSource for Mosaic {
         let draw = |c: &Cover, item: &AssetItem, sub: RasterDataset| {
             let (sw, sh) = (c.src.width, c.src.height);
             let source_bytes = crate::dataset::fallible::len(&[sub.raster.data.len(), sub.raster.data_type.size_bytes()], what)?;
-            for (bi, buf) in out.chunks_mut(pixels).enumerate() {
+            crate::pixel::with_data!(&mut out, out => for (bi, buf) in out.chunks_mut(pixels).enumerate() {
                 let values = crate::ops::BandView::of(&sub.raster, bi);
                 let retained = output_bytes
                     .checked_sub(std::mem::size_of_val(buf))
@@ -1769,12 +1765,13 @@ impl WindowSource for Mosaic {
                     invalid_value: None,
                     within_rects: false,
                 };
-                req.read_with_retained(dw, dh, buf, retained, |v| v)?;
-            }
+                // As the values were read into Float64 and cast to the mosaic's type.
+                req.read_with_retained(dw, dh, buf, retained, |v| v as _)?;
+            });
             Ok(())
         };
         self.read_items(&jobs, at_once, read, draw)?;
-        Ok(RasterData::from_f64_vec(self.data_type, out))
+        Ok(out)
     }
 
     /// As GDAL's STACIT mosaic (a virtual dataset of a source per item) reads a window into a
@@ -1791,10 +1788,9 @@ impl WindowSource for Mosaic {
         let (rx, ry) = (gt[1], -gt[5]);
         let what = "a resampled STAC mosaic window";
         let pixels = crate::dataset::fallible::len(&[bw, bh], what)?;
-        let samples = crate::dataset::fallible::len(&[pixels, bands.len()], what)?;
-        let (mut out, output_bytes) = self.output(samples, what)?;
+        let (mut out, output_bytes) = self.output(pixels, bands.len(), what)?;
         if pixels == 0 || bands.is_empty() {
-            return Ok(Some(RasterData::from_f64_vec(self.data_type, out)));
+            return Ok(Some(out));
         }
         let nearest = o.resampling == crate::ops::Resampling::Nearest;
         let jobs: Vec<(usize, crate::ops::vrt::Window)> = self
@@ -1841,22 +1837,22 @@ impl WindowSource for Mosaic {
         let nodata = self.nodata;
         let draw = |win: &crate::ops::vrt::Window, _: &AssetItem, sub: RasterDataset| {
             let ((ox, oy), (ow, oh)) = (win.out_off, win.out_size);
-            for (bi, buf) in out.chunks_mut(pixels).enumerate() {
+            crate::pixel::with_data!(&mut out, out => for (bi, buf) in out.chunks_mut(pixels).enumerate() {
                 let values = crate::ops::BandView::of(&sub.raster, bi);
                 for r in 0..oh {
                     let line = &mut buf[(oy + r) * bw + ox..][..ow];
                     for (c, v) in line.iter_mut().enumerate() {
                         let value = values.get(r * ow + c);
                         if nodata.is_none_or(|nd| !(value == nd || (nd.is_nan() && value.is_nan()))) {
-                            *v = value;
+                            *v = value as _;
                         }
                     }
                 }
-            }
+            });
             Ok(())
         };
         self.read_items(&jobs, at_once, read, draw)?;
-        Ok(Some(RasterData::from_f64_vec(self.data_type, out)))
+        Ok(Some(out))
     }
 }
 
