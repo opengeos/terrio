@@ -155,13 +155,14 @@ pub fn clear() {
 }
 
 /// A decoded chunk: its samples as decoded (a half-float chunk is converted when it is placed)
-/// and the size `(width, height)` of the image data it holds, or of the image whose rows from
-/// `origin` on it holds (the part of a GRIB band a read keeps; `origin` is 0 otherwise).
+/// and the size `(width, height)` of the image data it holds. The part of a GRIB band a read
+/// keeps is a chunk of the band's rows from `first_row` on, with the whole band's size.
 pub(crate) struct CachedChunk {
     pub samples: DecodingResult,
     pub dims: (usize, usize),
+    /// The first of a GRIB band's rows the chunk holds: 0 for a band kept whole.
     #[cfg(feature = "grib")]
-    pub origin: usize,
+    pub first_row: usize,
 }
 
 impl CachedChunk {
@@ -171,7 +172,7 @@ impl CachedChunk {
             samples,
             dims,
             #[cfg(feature = "grib")]
-            origin: 0,
+            first_row: 0,
         }
     }
 
@@ -383,13 +384,14 @@ pub(crate) fn insert(handle: u64, ifd: usize, chunk: u32, samples: DecodingResul
     cache().insert(handle, ifd, chunk, CachedChunk::new(samples, dims));
 }
 
-/// Caches the rows from `origin` on of a decoded image of size `dims`, as [`insert`] caches a chunk.
+/// Caches the rows from `first_row` on of a decoded image of size `dims`, as [`insert`] caches a
+/// chunk.
 #[cfg(feature = "grib")]
-pub(crate) fn insert_part(handle: u64, ifd: usize, chunk: u32, samples: DecodingResult, dims: (usize, usize), origin: usize) {
+pub(crate) fn insert_part(handle: u64, ifd: usize, chunk: u32, samples: DecodingResult, dims: (usize, usize), first_row: usize) {
     if max_bytes() == 0 {
         return;
     }
-    cache().insert(handle, ifd, chunk, CachedChunk { origin, ..CachedChunk::new(samples, dims) });
+    cache().insert(handle, ifd, chunk, CachedChunk { first_row, ..CachedChunk::new(samples, dims) });
 }
 
 /// Drops the chunks of a reader that is closed.

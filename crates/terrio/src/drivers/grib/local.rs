@@ -179,8 +179,8 @@ pub(super) fn open(local: crate::vfs::LocalPath) -> Result<crate::LazyRaster> {
     }
     let (ds, split) = header(&all, len)?;
     drop(all);
-    let cache = crate::block_cache::Handle::of_file(&metadata, normalize as u64);
-    Ok(Source::open(ds, split, normalize, Store::File(f, index), cache))
+    let handle = crate::block_cache::Handle::of_file(&metadata, normalize as u64);
+    Ok(Source::open(ds, split, normalize, Store::File(f, index), handle))
 }
 
 #[cfg(test)]

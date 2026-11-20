@@ -389,7 +389,7 @@ struct Source {
     normalize: bool,
     /// The identity of the bands in the block cache: for a local file, that of the version of the
     /// file every open reader of it shares.
-    cache: crate::block_cache::Handle,
+    handle: crate::block_cache::Handle,
 }
 
 /// The rows of a grid of `rows` rows (north up) that a read of the rows `wanted` keeps when it
@@ -416,7 +416,7 @@ fn band_index(b: &[u8]) -> Result<Vec<(usize, usize, usize)>> {
 /// The grid, or the part of it, that a chunk of a [`Source`] in the block cache holds: its size,
 /// the first of its rows the chunk holds (degrib's order, south to north) and their values.
 fn grid_of(chunk: &crate::block_cache::CachedChunk) -> Option<GridValues<'_>> {
-    let ((nx, ny), first) = (chunk.dims, chunk.origin);
+    let ((nx, ny), first) = (chunk.dims, chunk.first_row);
     let tiff::decoder::DecodingResult::F64(values) = &chunk.samples else { return None };
     let held = values.len().checked_div(nx)?;
     (held * nx == values.len() && first + held <= ny).then_some(GridValues { nx, ny, first, values })
@@ -424,9 +424,9 @@ fn grid_of(chunk: &crate::block_cache::CachedChunk) -> Option<GridValues<'_>> {
 
 impl Source {
     /// The dataset `header` of a GRIB file read band by band from `store`.
-    fn open(header: RasterDataset, split: usize, normalize: bool, store: Store, cache: crate::block_cache::Handle) -> crate::LazyRaster {
+    fn open(header: RasterDataset, split: usize, normalize: bool, store: Store, handle: crate::block_cache::Handle) -> crate::LazyRaster {
         let (cols, rows) = (header.raster.cols, header.raster.rows);
-        crate::LazyRaster::from_source(header, Box::new(Source { store, cols, rows, split, normalize, cache }))
+        crate::LazyRaster::from_source(header, Box::new(Source { store, cols, rows, split, normalize, handle }))
     }
 
     /// Band `b` in the block cache, when it holds the band's rows `rows`.
@@ -434,7 +434,7 @@ impl Source {
         if crate::block_cache::max_bytes() == 0 {
             return None;
         }
-        crate::block_cache::get(self.cache.id(), b, BAND_CHUNK).filter(|c| grid_of(c).is_some_and(|g| g.holds(rows.clone())))
+        crate::block_cache::get(self.handle.id(), b, BAND_CHUNK).filter(|c| grid_of(c).is_some_and(|g| g.holds(rows.clone())))
     }
 
     /// Band `b` (from 1), band `k` of `message`, decoded: the values of `window`, placed north up.
@@ -463,7 +463,7 @@ impl Source {
         }
         values.truncate(rows.len() * nx);
         values.shrink_to_fit();
-        crate::block_cache::insert_part(self.cache.id(), b, BAND_CHUNK, tiff::decoder::DecodingResult::F64(values), (nx, ny), first);
+        crate::block_cache::insert_part(self.handle.id(), b, BAND_CHUNK, tiff::decoder::DecodingResult::F64(values), (nx, ny), first);
         Ok(out)
     }
 
