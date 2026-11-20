@@ -1589,7 +1589,7 @@ fn items_at_once<'a>(mut hrefs: impl Iterator<Item = &'a str>) -> usize {
 }
 
 /// How many items' windows of `per_item` bytes each are read at once: at most `most`, and as many
-/// as fit in half of the `usable` memory (1 GiB when unknown) beside the output's `output_bytes`,
+/// as fit in half of the `usable` memory, or in 1 GiB when it is unknown, beside the output's `output_bytes`,
 /// but at least one.
 fn batch_size(per_item: usize, output_bytes: usize, usable: Option<u64>, most: usize) -> usize {
     let budget = usable.map_or(1 << 30, |m| m / 2).saturating_sub(output_bytes as u64);
@@ -1704,14 +1704,24 @@ impl WindowSource for Mosaic {
         // The items' windows are fetched `at_once` at a time, fewer when their buffers would take more
         // than half of the usable memory (beside the output), then drawn one after another in
         // datetime order.
-        // An item's type is known once its file is open: each is counted at the largest's size.
+        // Counted at Float64 and the largest window, as no item's type is known before its file is
+        // opened, and with a decoded tile of an open item (a read decodes each tile it meets whole):
+        // the items of a collection share a layout. Without a known tile, one item at a time.
         let validity = usize::from(self.nodata.is_some());
-        let per_item = covers
+        let window = covers
             .iter()
             .map(|c| c.src.width.saturating_mul(c.src.height).saturating_mul(bands.len() * std::mem::size_of::<f64>() + validity))
             .max()
             .unwrap_or(0);
-        let at_once = batch_size(per_item, output_bytes, crate::dataset::fallible::usable_memory(), self.at_once);
+        let tile = self.items.iter().find_map(|(_, r)| {
+            let r = r.as_ref()?;
+            let (w, h) = r.block_size()?;
+            Some(w.saturating_mul(h).saturating_mul(r.band_count()).saturating_mul(r.data_type().size_bytes()))
+        });
+        let at_once = match tile {
+            Some(tile) => batch_size(window.saturating_add(tile), output_bytes, crate::dataset::fallible::usable_memory(), self.at_once),
+            None => 1,
+        };
         for batch in covers.chunks(at_once) {
             let slots: Vec<std::sync::Mutex<Option<LazyRaster>>> =
                 batch.iter().map(|c| std::sync::Mutex::new(self.items[c.index].1.take())).collect();
@@ -2290,7 +2300,8 @@ mod tests {
         let (_, mut sorted) = group.by_crs.into_iter().next().unwrap();
         sorted.sort_by(|a, b| a.datetime.cmp(&b.datetime));
         let read = |at_once: usize| {
-            let items = sorted.iter().map(|i| (i.clone(), None)).collect();
+            // The first item open, as `open_mosaic` leaves it: its tiles size the batches.
+            let items = sorted.iter().enumerate().map(|(k, i)| (i.clone(), (k == 0).then(|| i.open().unwrap()))).collect();
             let gt = [500000.0, 10.0, 0.0, 4400000.0, 0.0, -10.0];
             let mut m = Mosaic { items, at_once, geo_transform: gt, data_type: DataType::U16, nodata: Some(0.0) };
             m.read(0, Window::new(0, 0, 14, 4), &[1]).unwrap().to_f64_vec()
