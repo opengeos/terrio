@@ -127,6 +127,37 @@ def _in_memory_limit() -> int:
         return _IN_MEMORY_LIMIT
 
 
+def _tile_rows_decoded_once(source: Any, rows: int, unit: int = 1) -> int:
+    """The rows of a slab of a copy's source, so that a JPEG 2000 source decodes each tile once.
+
+    A JPEG 2000 read decodes every tile its window crosses and keeps none of them for the next
+    read, where the block cache keeps a GeoTIFF's decoded blocks: a slab ending inside a row of
+    tiles leaves the next slab to decode those tiles again. For a JPEG 2000 read by window,
+    `rows` is made a multiple of a whole row of its tiles (and of `unit`): rounded down when it
+    holds one, raised to one when that row's decoded pixels hold no more bytes than the block
+    cache (`TERRIO_CACHEMAX`), the decoded blocks a GeoTIFF source keeps between reads.
+    Otherwise `rows` is kept.
+
+    Args:
+        source: The dataset the slabs are read from.
+        rows: The rows of a slab otherwise, a multiple of `unit`.
+        unit: The rows the slabs are a multiple of: the output's block height.
+
+    Returns:
+        int: The rows of a slab.
+    """
+    raster = getattr(source, "_raster", None)
+    if getattr(raster, "driver", None) != "JP2":
+        return rows
+    whole = math.lcm(unit, *(shape[0] for shape in source.block_shapes))
+    if rows >= whole:
+        return rows - rows % whole
+    row_bytes = source.width * source.count * max(np.dtype(t).itemsize for t in source.dtypes)
+    if min(whole, source.height) * row_bytes <= _terrio.block_cache_max():
+        return whole
+    return rows
+
+
 # Resampling names for overviews.
 _OVERVIEW_RESAMPLING = {
     Resampling.nearest: "nearest",
@@ -3693,6 +3724,7 @@ class DatasetWriter(DatasetReader):
             # Read taller source blocks together within a 16 MiB slab budget (or one output
             # tile row), then feed the COG writer a tile row at a time. A whole-image strip
             # taller than a tile row is split in half or smaller. Small images can fit in one slab.
+            # A JPEG 2000 is read a whole row of its tiles at a time (`_tile_rows_decoded_once`).
             write_step = self.structure.block_shape[0] if cog and source is not None else 0
             step = write_step
             if step and source is not None:
@@ -3704,6 +3736,7 @@ class DatasetWriter(DatasetReader):
                     if block_rows >= self.height:
                         wanted = max(step, (self.height // 2 // step) * step)
                     step = min(wanted, budget_rows)
+                step = _tile_rows_decoded_once(source, step, write_step)
             slabs = (
                 ((y, min(step, self.height - y)) for y in range(0, self.height, step))
                 if step
