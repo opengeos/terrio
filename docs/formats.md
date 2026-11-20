@@ -104,20 +104,29 @@ also bounds LERC Deflate/Zstandard inflation and the decoded size declared by
 embedded LERC and JPEG headers, before mask or pixel decoding. It is not a cap
 on total process memory or the codec's working buffers.
 
-An image stored as one strip (TIFF 6.0 allows it, and an image without `RowsPerStrip` is
-one) can decode to more than the limit. A window of such a strip is read by the rows it
-needs, when those rows, at the strip's full width, fit the limit: uncompressed rows at their
-offsets in the file, and a Deflate, LZW, Zstandard or PackBits strip (with horizontal
-differencing or the floating-point predictor) decoded from its start to the window's last
-row, the rows before the window dropped as they are decoded. The read then holds the window
-and about 17 MiB of working buffers (plus a Zstandard frame's window, at most 128 MiB),
-whatever the strip's size; a window near the end of a compressed strip takes the time of
-decoding the rows before it. A nearest-neighbour read smaller than the image reads the rows
-it samples the same way, the strip once, holding one row at a time (a row must fit the limit);
-it decodes a strip within the limit to its end, as a window does, and reads a strip that a
-sparse file leaves out as nodata. A read of the whole strip, a window whose rows do not fit
-the limit, a strip whose stored bytes cannot decode to its rows, and a strip of another
-compression are refused as before.
+An image stored as one strip (TIFF 6.0 allows it, and an image without `RowsPerStrip` is one)
+can decode to more than the limit. A window of such a strip is read by the rows it needs, when
+those rows, at the strip's full width and with all of its samples, fit the limit, and the strip
+stores whole-byte samples of its type, most significant bit first, as BlackIsZero, RGB or a
+palette. Uncompressed rows are read at their offsets in the file. A Deflate, LZW, Zstandard or
+PackBits strip is decoded from its start to the window's last row (a Zstandard stream to a
+frame window past it: its decoder hands out bytes once they leave that window), the rows before
+the window dropped as they are decoded; Deflate, LZW and Zstandard strips may use horizontal
+differencing on integer samples or the floating-point predictor on floating-point ones. The
+read then holds the window, up to 8 MiB of stored bytes, 8 MiB of rows (or one row, when a row
+is larger) and the decoder's state: about 17 MiB, whatever the strip's size; a row more with
+the floating-point predictor, and the frame's window (at most 128 MiB) with Zstandard. The
+limit bounds what the read holds, not the time it takes: a window near the end of a compressed
+strip decodes the rows before it, up to the strip's declared size, which can be 32,768 times
+its stored bytes for Zstandard (1,032 for Deflate). For files you do not trust,
+`TERRIO_MAX_DECLARED_BYTES` (below) bounds what a raster declares, and so that work. A
+nearest-neighbour read smaller than the image reads the rows it samples the same way, the strip
+once, holding one row at a time (a row must fit the limit); it decodes a strip within the limit
+to its end, as a window does, and reads a strip that a sparse file leaves out as nodata. A read
+of the whole strip, a window whose rows do not fit the limit, a strip whose stored bytes cannot
+decode to its rows, and a strip of another compression or layout (WhiteIsZero, YCbCr, CMYK,
+samples of less than a byte, complex or Float16 samples, or `FillOrder` 2) are decoded whole,
+and refused over the limit, as before.
 
 TIFF masks follow the image's own `NewSubfileType` reduced-resolution flag, including a
 reduced first image with a reduced mask (flag 5) or a unique legacy mask (flag 4).
