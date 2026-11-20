@@ -496,26 +496,27 @@ impl Source {
         missing.sort_unstable();
         // A local file's messages are read on this thread, each once for all the bands of it to
         // decode, then the bands are decoded on the pool.
-        let mut messages: Vec<(usize, Result<(std::borrow::Cow<'_, [u8]>, usize)>)> = Vec::new();
+        let (mut ids, mut messages): (Vec<usize>, Vec<_>) = (Vec::new(), Vec::new());
         let located: Vec<Result<(usize, usize)>> = missing
             .iter()
             .map(|&b| {
                 let (id, k) = self.store.locate(b)?;
-                let at = messages.iter().position(|(m, _)| *m == id).unwrap_or_else(|| {
-                    messages.push((id, self.store.message(b)));
+                let at = ids.iter().position(|&m| m == id).unwrap_or_else(|| {
+                    ids.push(id);
+                    messages.push(self.store.message(b));
                     messages.len() - 1
                 });
                 Ok((at, k))
             })
             .collect();
         let decoded = crate::par::map_range_coarse(missing.len(), |i| match &located[i] {
-            Ok((at, k)) => match &messages[*at].1 {
+            Ok((at, k)) => match &messages[*at] {
                 Ok((message, _)) => self.decode_window(message, *k, missing[i], window, share),
                 Err(_) => Ok(Vec::new()),
             },
             Err(_) => Ok(Vec::new()),
         });
-        let mut errors: Vec<Option<Error>> = messages.into_iter().map(|(_, message)| message.err()).collect();
+        let mut errors: Vec<Option<Error>> = messages.into_iter().map(Result::err).collect();
         let mut out = Vec::with_capacity(missing.len());
         for ((b, located), values) in missing.into_iter().zip(located).zip(decoded) {
             let (at, _) = located?;
