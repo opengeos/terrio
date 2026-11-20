@@ -146,4 +146,16 @@ fn where_the_model_reads_unusual_wkt1_otherwise() {
     assert_eq!((tree.method_epsg, model.method_epsg), (None, Some(9807)));
     let (tree, model) = input(&tm(r#"ID["x","1"],AUTHORITY["EPSG","9807"]"#));
     assert_eq!((tree.method_epsg, model.method_epsg), (Some(9807), None));
+    // WKT 2's `CONVERSION` inside a `PROJCS` with its own `PROJECTION` and `PARAMETER`s: PROJ
+    // `+lon_0=30 +k=1` (the model's, the `CONVERSION`'s), the tree the `PARAMETER`s, 9 and 0.9996.
+    let both = format!(
+        r#"PROJCS["x",{},PROJECTION["Transverse_Mercator"],PARAMETER["central_meridian",9],PARAMETER["scale_factor",0.9996],CONVERSION["c",METHOD["Transverse Mercator"],PARAMETER["central_meridian",30],PARAMETER["scale_factor",1]],UNIT["metre",1]]"#,
+        geogcs(wgs84, "")
+    );
+    let (tree, model) = input(&both);
+    let param = |i: &wkt1::Wkt1Input, name: &str| i.params.iter().find(|(k, _)| k == name).map(|(_, v)| *v);
+    assert_eq!(
+        (param(&tree, "centralmeridian"), param(&tree, "scalefactor"), param(&model, "centralmeridian"), param(&model, "scalefactor")),
+        (Some(9.0), Some(0.9996), Some(30.0), Some(1.0))
+    );
 }

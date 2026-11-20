@@ -319,7 +319,9 @@ pub(crate) fn read(text: &str) -> Option<Model> {
 }
 
 /// A WKT 1 CRS's input to its PROJ string, read from its model (#1058 step 6): what
-/// [`wkt1::Wkt1Input::read`] reads from its tree (`root`, the horizontal CRS's of ESRI's compound).
+/// [`wkt1::Wkt1Input::read`] reads from its tree (`root`, the horizontal CRS's of ESRI's compound),
+/// but for the unusual WKT 1 `where_the_model_reads_unusual_wkt1_otherwise` pins, to settle in step
+/// 6d as PROJ reads it.
 pub(crate) fn wkt1_input(m: &Model, root: &Node) -> Option<wkt1::Wkt1Input> {
     use wkt1::{Wkt1Input, Wkt1Kind};
     if m.dialect == Dialect::Wkt2 {
