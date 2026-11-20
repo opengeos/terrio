@@ -1103,8 +1103,9 @@ fn in_child(dir: &Path) {
 
 /// Catches a local GRIB file read whole, or GRIB bytes copied, when they are opened to be read by
 /// window (#1081): memory that no read sees. The largest allocation of either open is a small part
-/// of the file's 4 MiB of Float32 values.
-#[cfg(feature = "grib")]
+/// of the file's 4 MiB of Float32 values. Allocations are counted on Unix only (see [`Counting`]):
+/// elsewhere the test is not built, rather than passing without a check.
+#[cfg(all(unix, feature = "grib"))]
 #[test]
 fn a_lazy_grib_open_allocates_nothing_the_size_of_its_file() {
     let _serial = serial();
@@ -1114,10 +1115,10 @@ fn a_lazy_grib_open_allocates_nothing_the_size_of_its_file() {
     let len = bytes.len();
     let (opened, largest) = largest_during(|| terrio::LazyRaster::open(&path));
     assert_eq!(opened.unwrap().width(), 1024);
-    assert!(!COUNTED || largest < len / 16, "a local file: an allocation of {largest} bytes, for {len}");
+    assert!(largest < len / 16, "a local file: an allocation of {largest} bytes, for {len}");
     let (opened, largest) = largest_during(|| terrio::memory::open_raster_lazy_bytes(bytes, "f.grib2"));
     assert_eq!(opened.unwrap().width(), 1024);
-    assert!(!COUNTED || largest < len / 16, "bytes in memory: an allocation of {largest} bytes, for {len}");
+    assert!(largest < len / 16, "bytes in memory: an allocation of {largest} bytes, for {len}");
 }
 
 // ─── The writers operations stream to ───────────────────────────────────────────────────────────
