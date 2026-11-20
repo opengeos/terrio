@@ -936,6 +936,92 @@ def test_reproject_of_a_band_reads_only_the_source_it_needs(dem, crs, transform,
         assert np.array_equal(out, expected)
 
 
+def _reproject_band_and_array(path, out_shape, dtype="float32", **kw):
+    """`reproject` of a dataset's band, and of its pixels read whole, into arrays of a shape."""
+    with rio.open(path) as ds:
+        whole = np.zeros(out_shape, dtype)
+        src_crs = kw.pop("array_src_crs", ds.crs)
+        warp.reproject(ds.read(1), whole, src_transform=ds.transform, src_crs=src_crs, **kw)
+        band = np.zeros(out_shape, dtype)
+        warp.reproject(rio.band(ds, 1), band, **kw)
+    return band, whole
+
+
+def test_reproject_of_a_band_without_a_crs_or_a_dst_crs(dem, tmp_path):
+    """A georeferenced band without a CRS is warped in the destination CRS, and a band warped
+    into a dataset's band without `dst_crs` into that dataset's CRS, as rasterio does."""
+    path, _ = dem
+    t = Affine(10, 0, 503010, 0, -10, 4097020)
+    plain = str(tmp_path / "nocrs.tif")
+    with rio.open(path) as ds:
+        profile = dict(ds.profile, crs=None, count=1)
+        with rio.open(plain, "w", **profile) as dst:
+            dst.write(ds.read(1), 1)
+    band, whole = _reproject_band_and_array(
+        plain,
+        (40, 50),
+        dst_transform=t,
+        dst_crs="EPSG:32611",
+        array_src_crs="EPSG:32611",
+        resampling=Resampling.bilinear,
+    )
+    assert np.array_equal(band, whole)
+
+    # It was warped into the source's CRS, where the geographic grid covers nothing.
+    gt = Affine(0.0002, 0, -116.96, 0, -0.0002, 37.03)
+    profile = dict(driver="GTiff", width=60, height=50, count=1, dtype="float32")
+    target = str(tmp_path / "geographic.tif")
+    with rio.open(target, "w", crs="EPSG:4326", transform=gt, **profile):
+        pass
+    with rio.open(path) as ds:
+        expected = np.zeros((50, 60), "float32")
+        warp.reproject(
+            ds.read(1),
+            expected,
+            src_transform=ds.transform,
+            src_crs=ds.crs,
+            src_nodata=ds.nodata,
+            dst_transform=gt,
+            dst_crs="EPSG:4326",
+            resampling=Resampling.cubic,
+        )
+        with rio.open(target, "r+") as dst:
+            warp.reproject(rio.band(ds, 1), rio.band(dst, 1), resampling=Resampling.cubic)
+    with rio.open(target) as dst:
+        assert np.array_equal(dst.read(1), expected)
+    assert np.count_nonzero(expected != ds.nodata) > 0
+
+
+@pytest.mark.parametrize("periodic", [None, False, True])
+@pytest.mark.parametrize("resampling", [Resampling.bilinear, Resampling.cubic])
+def test_reproject_of_a_global_band_across_the_antimeridian(tmp_path, periodic, resampling):
+    """A band of a full-turn geographic source warped across its stored edge reads the window
+    the warp's `periodic_longitude` needs."""
+    path = str(tmp_path / "global.tif")
+    yy, xx = np.mgrid[0:180, 0:360]
+    with rio.open(
+        path,
+        "w",
+        driver="GTiff",
+        width=360,
+        height=180,
+        count=1,
+        dtype="float32",
+        crs="EPSG:4326",
+        transform=Affine(1, 0, -180, 0, -1, 90),
+    ) as dst:
+        dst.write((xx * 7 + yy * 3).astype("float32"), 1)
+    band, whole = _reproject_band_and_array(
+        path,
+        (20, 40),
+        dst_transform=Affine(0.25, 0, 175, 0, -0.25, 10),
+        dst_crs="EPSG:4326",
+        resampling=resampling,
+        periodic_longitude=periodic,
+    )
+    assert np.array_equal(band, whole)
+
+
 def test_env_and_session():
     import os
 

@@ -686,11 +686,12 @@ def _band_source_window(
     rpcs: Any,
     kwargs: Mapping[str, Any],
     grid_invariant: bool | None,
+    periodic_longitude: bool | None,
 ) -> tuple[int, int, int, int] | None:
     """The window of a band that a warp into a known grid reads, or None to read the whole band.
 
-    Only for an affine source warped into a given destination grid, without `sum` and the
-    warp options that widen the source (`SOURCE_EXTRA`, `SAMPLE_STEPS`).
+    Only for an affine source with a CRS warped into a given destination grid, without `sum`
+    and the warp options that widen the source (`SOURCE_EXTRA`, `SAMPLE_STEPS`).
 
     Returns:
         tuple: `(col_off, row_off, width, height)`, at least 1x1, or None.
@@ -698,8 +699,12 @@ def _band_source_window(
     from terrio.rio import Band
 
     ds = band.ds
+    if dst_crs is None and isinstance(destination, Band):
+        # The warp's destination CRS: the destination dataset's.
+        dst_crs = destination.ds.crs
     if (
-        dst_transform is None
+        not src_crs
+        or dst_transform is None
         or destination is None
         or rs == Resampling.sum
         or gcps is not None
@@ -723,6 +728,7 @@ def _band_source_window(
         _gdal_typename(np.dtype(band.dtype).name),
         [None if nodata is None else float(nodata)] * count,
         grid_invariant=grid_invariant,
+        periodic_longitude=periodic_longitude,
     )
     win = rw.source_window((0, 0, int(dst_w), int(dst_h)))
     if win is None:
@@ -867,6 +873,7 @@ def reproject(
             rpcs,
             kwargs,
             grid_invariant,
+            periodic_longitude,
         )
         if win is None:
             arr = ds.read(bidx)
@@ -921,6 +928,9 @@ def reproject(
             src_crs = destination.ds.crs
     if src_crs is None:
         raise CRSError("A source CRS is required")
+    if dst_crs is None and isinstance(destination, Band):
+        # As rasterio: a dataset's band is warped into that dataset's CRS.
+        dst_crs = destination.ds.crs or None
     if dst_crs is None:
         dst_crs = src_crs
 
