@@ -815,14 +815,18 @@ impl TiffOptions {
     /// could read otherwise with the `.aux.xml` sidecar beside it than without. Without it, every
     /// band reads as the nodata tag, or 0. With it, a band reads as its nodata there, else as the
     /// tag (or the sidecar's dataset nodata), else 0 (`GeoTags::apply_sidecar_crs`). `written`:
-    /// the band nodata the writer puts in the sidecar; `None` for the sidecar already there,
-    /// which the writer keeps. `bands`: the file's bands, of samples of type `t`.
+    /// the band nodata the writer puts in the sidecar, taken as readers read it back (a NaN of
+    /// any payload is written `nan`); `None` for the sidecar already there, which the writer
+    /// keeps. `bands`: the file's bands, of samples of type `t`.
     pub(crate) fn sparse_unless_sidecar_differs(&mut self, path: &str, written: Option<&[Option<f64>]>, bands: usize, t: DataType) {
         if !self.sparse {
             return;
         }
         let (band_nodata, dataset_nodata) = match written {
-            Some(values) => (values.iter().enumerate().filter_map(|(i, v)| v.map(|v| (i + 1, v))).collect(), None),
+            Some(values) => {
+                let as_read = |v: f64| super::common::parse_f64(&format_nodata(v));
+                (values.iter().enumerate().filter_map(|(i, v)| v.and_then(as_read).map(|v| (i + 1, v))).collect(), None)
+            }
             None => {
                 let mut aux = std::ffi::OsString::from(path);
                 aux.push(".aux.xml");
@@ -5632,11 +5636,11 @@ mod tests {
 
     /// Catches a block left out that reads otherwise than stored: a NaN nodata is written `nan`,
     /// which readers read as `f64::NAN`, so a block of a NaN with another payload is kept, and one
-    /// of `f64::NAN` is left out, whole and in rows; both read back bit for bit as written.
+    /// of `f64::NAN` is left out, whole, in rows, and by `write_raster_dataset`, whose `.aux.xml`
+    /// gives the band that nodata, also written `nan` (no warning); all read back bit for bit.
     #[test]
     fn sparse_ok_compares_blocks_with_the_nodata_as_read() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("out.tif");
         let co = [("SPARSE_OK", "YES"), ("TILED", "YES"), ("BLOCKXSIZE", "16"), ("BLOCKYSIZE", "16")];
         let options = crate::RasterWriteOptions {
             creation_options: co.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
@@ -5659,20 +5663,28 @@ mod tests {
             let cfg = wbraster::RasterConfig { cols: 32, rows: 32, bands: 1, data_type: t, nodata, ..Default::default() };
             let raster = Raster::from_data_native(cfg, data).unwrap();
             let header = crate::RasterDataset::new(raster.clone(), true);
-            for whole in [true, false] {
-                if whole {
-                    write(
-                        &raster,
-                        path.to_str().unwrap(),
-                        &TiffOptions::from_write_options(&options, false, Some(nodata)).unwrap().unwrap(),
-                    )
-                    .unwrap();
-                } else {
-                    let mut w = GeoTiffWriter::create(path.to_str().unwrap(), &header, &options).unwrap();
-                    w.write_rows(&raster.data, 32, None).unwrap();
-                    w.finish().unwrap();
+            for writer in ["whole", "rows", "dataset"] {
+                let path = dir.path().join(format!("{writer}.tif"));
+                let p = path.to_str().unwrap();
+                let _ = crate::warnings::take();
+                match writer {
+                    "whole" => {
+                        write(&raster, p, &TiffOptions::from_write_options(&options, false, Some(nodata)).unwrap().unwrap()).unwrap()
+                    }
+                    "rows" => {
+                        let mut w = GeoTiffWriter::create(p, &header, &options).unwrap();
+                        w.write_rows(&raster.data, 32, None).unwrap();
+                        w.finish().unwrap();
+                    }
+                    _ => {
+                        // A sidecar beside the path, which the writer rewrites with the band nodata.
+                        std::fs::write(format!("{p}.aux.xml"), "<PAMDataset/>").unwrap();
+                        crate::write_raster_dataset(&header, p, &options).unwrap();
+                        assert!(std::fs::read_to_string(format!("{p}.aux.xml")).unwrap().contains("<NoDataValue>nan</NoDataValue>"));
+                    }
                 }
-                let case = format!("{t:?}, whole {whole}");
+                let case = format!("{t:?}, {writer}");
+                assert_eq!(crate::warnings::take(), Vec::<String>::new(), "{case}");
                 let mut dec = tiff::decoder::Decoder::new(std::fs::File::open(&path).unwrap()).unwrap();
                 let tables = crate::geotiff::ChunkTables::read(&mut dec).unwrap();
                 assert_eq!(tables.counts.iter().map(|n| *n > 0).collect::<Vec<_>>(), [true, false, true, true], "{case}");
