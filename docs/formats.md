@@ -118,8 +118,8 @@ is larger) and the decoder's state: about 17 MiB, whatever the strip's size; a r
 the floating-point predictor, and the frame's window (at most 128 MiB) with Zstandard. A window
 near the end of a compressed strip decodes the rows before it, so a compressed strip is read by
 rows only when it declares at most four times the limit (1 GiB at the default 256 MiB), as much
-as a window over four chunks at the limit decodes: that bounds the decoding a read does,
-however few bytes the strip stores: at the default limit, a read of the last pixel of a 1 GiB
+as a window over four chunks at the limit decodes. That bounds the decoding a read does,
+however few bytes the strip stores. At the default limit, a read of the last pixel of a 1 GiB
 strip of zeros, stored in 1 MB of Deflate or 33 KB of Zstandard, takes 0.2 to 0.4 s. A larger
 compressed strip is refused at once, as before; raising the limit raises the bound. An
 uncompressed strip is read by rows whatever its size, as nothing of it is decoded. For files
