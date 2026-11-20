@@ -131,8 +131,10 @@ impl PyCogWriter {
     ///     mask: The mask's rows.
     ///
     /// Raises:
-    ///     InvalidArgumentError: If the shapes or dtype do not match, a mask is given to a writer
-    ///         without one or none to a writer with one, or the writer is closed.
+    ///     InvalidArgumentError: If the array's shape or dtype, or the mask's shape, is not the
+    ///         writer's, a mask is given to a writer without one or none to a writer with one, or
+    ///         the writer is closed.
+    ///     TypeError: If the mask is not a 2-D uint8 array.
     #[pyo3(signature = (array, mask=None))]
     fn write(&mut self, py: Python<'_>, array: &Bound<'_, PyUntypedArray>, mask: Option<numpy::PyReadonlyArray2<'_, u8>>) -> PyResult<()> {
         let shape = array.shape().to_vec();
@@ -148,7 +150,14 @@ impl PyCogWriter {
         if complex != self.complex || data.data_type() != self.data_type {
             return Err(invalid("the array's dtype is not the writer's"));
         }
-        let mask: Option<Vec<u8>> = mask.map(|m| m.as_array().iter().copied().collect());
+        // Flattened, a mask of the same size in another shape would mask other pixels.
+        let mask: Option<Vec<u8>> = match mask {
+            Some(m) if m.shape() != [rows, cols].as_slice() => {
+                return Err(invalid(format!("expected a mask of {rows} rows of {cols} columns, got one of shape {:?}", m.shape())));
+            }
+            Some(m) => Some(m.as_array().iter().copied().collect()),
+            None => None,
+        };
         let w = self.inner.as_mut().ok_or_else(|| invalid("the writer is closed"))?;
         with_warnings(py, || w.write_rows(&data, rows, mask.as_deref()))
     }

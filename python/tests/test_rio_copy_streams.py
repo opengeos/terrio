@@ -358,6 +358,28 @@ def test_a_copy_s_writer_given_overviews_after_all_writes_its_source_s_mask_whol
         assert np.array_equal(ds.read(), RGB)
 
 
+def test_a_cog_writer_refuses_a_mask_of_its_rows_size_in_another_shape(tmp_path):
+    """A mask is the `(rows, width)` of the pixels it masks: flattened, one of the same size in
+    another shape (its rows and columns swapped, or one row) would mask other pixels."""
+    from terrio import _terrio
+    from terrio.errors import InvalidArgumentError
+
+    rows, width = 2, 4
+    pixels = np.arange(rows * width, dtype="uint8").reshape(rows, width)
+    mask = np.array([[255, 0, 255, 255], [0, 255, 255, 0]], np.uint8)
+    out = str(tmp_path / "masked.tif")
+    writer = _terrio.CogWriter(out, width, 2 * rows, 1, "uint8", T.to_gdal(), mask=True)
+    for other in (mask.T, mask.reshape(1, rows * width)):
+        with pytest.raises(InvalidArgumentError, match="expected a mask of 2 rows of 4 columns"):
+            writer.write(pixels, other)
+    assert writer.rows_written == 0
+    writer.write(pixels, mask)
+    writer.write(pixels, mask[::-1])
+    writer.close()
+    with rio.open(out) as ds:
+        assert np.array_equal(ds.dataset_mask(), np.vstack([mask, mask[::-1]]))
+
+
 @pytest.mark.parametrize("driver, limit", [("COG", None), ("GTiff", "1")])
 def test_a_copy_whose_mask_goes_to_a_sidecar_holds_it(tmp_path, monkeypatch, driver, limit):
     """With `GDAL_TIFF_INTERNAL_MASK=NO`, a copy's mask goes to a `.msk` sidecar, written from the
