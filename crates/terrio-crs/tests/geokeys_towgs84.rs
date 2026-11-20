@@ -153,3 +153,26 @@ fn other_codes_with_their_own_shift_go_into_their_own_datum_without_it() {
     let (x, y) = t.transform(400_000.0, 300_000.0).unwrap();
     assert!((x - 400_000.0).abs() < 1e-6 && (y - 300_000.0).abs() < 1e-6, "({x}, {y})");
 }
+
+/// A WKT 1 with `TOWGS84` and no `AUTHORITY` goes into the CRS on the datum its name identifies
+/// without the shift, as PROJ 9.6.0 goes: a Transverse Mercator on NAD83 that no EPSG code
+/// identifies, with `TOWGS84[100,0,0,0,0,0,0]`, places (809327.68, 4324249.48) in NAD83
+/// (EPSG:4269) at (-82.927597805866498, 39.012599069068621) by the inverse projection alone
+/// (`cs2cs`; into WGS 84 the shift applies). On a datum whose name resolves to none, PROJ goes
+/// through WGS 84 with the shift.
+#[test]
+fn a_codeless_wkt1_with_its_own_shift_goes_into_its_own_datum_without_it() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let wkt = r#"PROJCS["Custom TM",GEOGCS["NAD83",DATUM["North_American_Datum_1983",SPHEROID["GRS 1980",6378137,298.257222101],TOWGS84[100,0,0,0,0,0,0]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",-86.5],PARAMETER["scale_factor",0.9996],PARAMETER["false_easting",500000],PARAMETER["false_northing",0],UNIT["metre",1]]"#;
+    let (x, y) = (809_327.68, 4_324_249.48);
+    let nad83 = SpatialRef::from_epsg(4269).unwrap();
+    let t = Transformer::new(&SpatialRef::from_wkt(wkt), &nad83).unwrap();
+    assert!(t.operation_at(x, y, 0.0).unwrap().is_none(), "no datum transformation into NAD83");
+    let (lon, lat) = t.transform(x, y).unwrap();
+    assert!((lon + 82.927_597_805_866_5).abs() < 1e-11 && (lat - 39.012_599_069_068_62).abs() < 1e-11, "({lon}, {lat})");
+    // A datum named as none: the shift applies.
+    let foo = wkt.replace("North_American_Datum_1983", "Foo_Datum").replace(r#""NAD83""#, r#""Foo""#);
+    let (lon, _) = Transformer::new(&SpatialRef::from_wkt(&foo), &nad83).unwrap().transform(x, y).unwrap();
+    assert!((lon + 82.927_597_805_866_5).abs() > 1e-4, "{lon}");
+}
