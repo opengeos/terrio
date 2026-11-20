@@ -1093,6 +1093,10 @@ fn may_follow(from: &str, url: &str) -> bool {
         && (crate::vfs::url_origin(url) == crate::vfs::url_origin(from) || option_on("TERRIO_STAC_FOLLOW_CROSS_ORIGIN"))
 }
 
+/// How many item documents a catalog's or collection's `item` links are fetched at once: each
+/// fetch waits on the server.
+const ITEM_LINKS_AT_ONCE: usize = 16;
+
 /// [`load_items`] of the response to a request (whose next pages may be `POST` requests too).
 fn load_items_from(doc: Value, request: &Request, max_items: usize) -> Result<Items> {
     let loc = request.url.as_str();
@@ -1104,7 +1108,11 @@ fn load_items_from(doc: Value, request: &Request, max_items: usize) -> Result<It
         Some(Kind::Collection | Kind::Catalog) => {
             let mut queue = vec![(doc, loc.to_string(), 0usize)];
             while let Some((doc, base, depth)) = queue.pop() {
-                for link in doc["links"].as_array().into_iter().flatten() {
+                // The documents of the item links, fetched ahead in runs of consecutive item links,
+                // `ITEM_LINKS_AT_ONCE` at a time, and taken in link order.
+                let links: Vec<&Value> = doc["links"].as_array().into_iter().flatten().collect();
+                let mut fetched = std::collections::VecDeque::new();
+                for (i, link) in links.iter().enumerate() {
                     if full(&out) {
                         out.truncated = true;
                         return Ok(out);
@@ -1122,7 +1130,19 @@ fn load_items_from(doc: Value, request: &Request, max_items: usize) -> Result<It
                     }
                     match link["rel"].as_str() {
                         Some("item") => {
-                            let (item, href) = fetch_link_document(&href, true)?;
+                            if fetched.is_empty() {
+                                let run: Vec<String> = links[i..]
+                                    .iter()
+                                    .take_while(|l| l["rel"] == "item")
+                                    .filter_map(|l| l["href"].as_str())
+                                    .map(|h| resolve_href(&base, h))
+                                    .filter(|h| may_follow(&base, h))
+                                    .take(ITEM_LINKS_AT_ONCE)
+                                    .collect();
+                                let docs = crate::par::map_waiting(run.len(), ITEM_LINKS_AT_ONCE, |k| fetch_link_document(&run[k], true))?;
+                                fetched.extend(docs);
+                            }
+                            let (item, href) = fetched.pop_front().ok_or_else(|| bad("unreachable"))?;
                             if kind(&item) == Some(Kind::Item) {
                                 out.items.push((item, href));
                             }
@@ -3543,6 +3563,39 @@ mod tests {
         let _ = open(&format!("{base}/collection.json"));
         assert_eq!(seen.lock().unwrap().len(), 2, "a same-origin item link is followed");
         assert!(internal_seen.lock().unwrap().is_empty(), "another origin was requested: {:?}", internal_seen.lock().unwrap());
+    }
+
+    /// A collection's item links, fetched several at once, give their items in link order; a link
+    /// without an href and one to another origin are skipped as before, and `max_items` still
+    /// truncates.
+    #[cfg(remote)]
+    #[test]
+    fn collection_item_links_fetched_at_once_keep_their_order() {
+        let item = |k: usize| {
+            serde_json::to_vec(&json!({"type": "Feature", "stac_version": "1.0.0", "id": format!("i{k}"),
+                "geometry": null, "properties": {"datetime": "2023-07-01T00:00:00Z"}, "assets": {}, "links": []}))
+            .unwrap()
+        };
+        let mut links: Vec<Value> = (0..40).map(|k| json!({"rel": "item", "href": format!("i{k}.json")})).collect();
+        links.insert(5, json!({"rel": "item"}));
+        links.insert(20, json!({"rel": "item", "href": "https://other.example/x.json"}));
+        let collection = json!({"type": "Collection", "stac_version": "1.0.0", "id": "c", "description": "d", "license": "x",
+            "extent": {"spatial": {"bbox": [[0, 0, 1, 1]]}, "temporal": {"interval": [[null, null]]}}, "links": links});
+        let routes = (0..40).map(|k| (format!("/i{k}.json"), 200, Vec::new(), item(k))).collect();
+        let (base, seen) = crate::http::test_routes(routes);
+        let ids = |max: usize| {
+            crate::config::with_options(&[("TERRIO_STAC_FOLLOW_CROSS_ORIGIN", "NO")], || {
+                let items = load_items(collection.clone(), &format!("{base}/collection.json"), max).unwrap();
+                (items.items.iter().map(|(i, _)| i["id"].as_str().unwrap().to_string()).collect::<Vec<_>>(), items.truncated)
+            })
+        };
+        let (all, truncated) = ids(0);
+        assert_eq!(all, (0..40).map(|k| format!("i{k}")).collect::<Vec<_>>());
+        assert!(!truncated);
+        assert_eq!(seen.lock().unwrap().len(), 40, "each item fetched once, the other origin never");
+        let (first, truncated) = ids(25);
+        assert_eq!(first, all[..25]);
+        assert!(truncated);
     }
 
     /// Both rejected pagination paths name the host without credentials or queries.
