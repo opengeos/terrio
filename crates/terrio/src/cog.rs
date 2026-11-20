@@ -419,6 +419,9 @@ impl WindowSource for SharedRaster {
     fn shared_clone(&self) -> Option<Box<dyn WindowSource>> {
         Some(Box::new(self.clone()))
     }
+    fn read_resampled(&mut self, options: &crate::ResampledReadOptions) -> Result<Option<RasterData>> {
+        self.lock()?.source_read_resampled(options)
+    }
     fn alpha_band(&self) -> Option<usize> {
         self.alpha
     }
