@@ -1899,7 +1899,15 @@ fn warp_data_masked(
     let mut ds = output_dataset(grid, out, bands, p.dst_nodata, &p.dst_srs)?;
     ds.raster.metadata = p.srcs[0].ds.raster.metadata.iter().filter(|(k, _)| k == "AREA_OR_POINT").cloned().collect();
     ds.band_nodata = p.dst_nodata_all.clone();
+    ds.color_table = inherited_color_table(p.srcs[0].ds, out_type);
     Ok(ds)
+}
+
+/// The first source's color table, which `gdalwarp` copies to the output's first band (as GDAL
+/// 3.12 does). A GeoTIFF stores a color table only for Byte and UInt16 bands, so an output of
+/// another type has none.
+fn inherited_color_table(src: &RasterDataset, out_type: DataType) -> Vec<[u8; 4]> {
+    if matches!(out_type, DataType::U8 | DataType::U16) { src.color_table.clone() } else { Vec::new() }
 }
 
 /// Metadata for a window-readable warp source. Pixels may remain unloaded.
@@ -2124,6 +2132,7 @@ fn warp_reader_selected(
     let mut ds = output_dataset(grid, out, bands, p.dst_nodata, &p.dst_srs)?;
     ds.raster.metadata = p.srcs[0].ds.raster.metadata.iter().filter(|(k, _)| k == "AREA_OR_POINT").cloned().collect();
     ds.band_nodata = p.dst_nodata_all.clone();
+    ds.color_table = inherited_color_table(p.srcs[0].ds, out_type);
     Ok(ds)
 }
 
@@ -2327,6 +2336,7 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
     let mut header = super::raster_header(stored, out_type, bands, p.dst_nodata, &p.dst_srs)?;
     header.raster.metadata = p.srcs[0].ds.raster.metadata.iter().filter(|(k, _)| k == "AREA_OR_POINT").cloned().collect();
     header.band_nodata = p.dst_nodata_all.clone();
+    header.color_table = inherited_color_table(p.srcs[0].ds, out_type);
     if let Some(gt) = gt {
         header.set_geo_transform(gt);
     }
@@ -6718,6 +6728,30 @@ mod tests {
         let out = crate::open_raster(output.to_str().unwrap()).unwrap();
         assert!(out.raster.metadata.iter().any(|(k, v)| k == "AREA_OR_POINT" && v == "Point"));
         assert!(!out.raster.metadata.iter().any(|(k, _)| k == "STATISTICS_MINIMUM"));
+    }
+
+    /// A paletted source (ESA WorldCover's layout, #1189) keeps its color table through every warp
+    /// path, as `gdalwarp` copies it; an output type a GeoTIFF palette cannot hold drops it.
+    #[test]
+    fn color_table_survives_memory_lazy_and_streamed_warp() {
+        let mut source = typed_raster(DataType::U8, 8, 8, [-1.5, 0.05, 0.0, 52.5, 0.0, -0.05], 4326, |x, y| ((x + y) % 3 + 1) as f64);
+        let table = vec![[0, 0, 0, 255], [0, 100, 0, 255], [255, 187, 34, 255], [250, 0, 0, 255]];
+        source.color_table = table.clone();
+        let options = WarpOptions { dst_srs: Some(SpatialRef::parse("EPSG:27700").unwrap()), ..Default::default() };
+        assert_eq!(warp(&[&source], &options).unwrap().color_table, table);
+        let float = WarpOptions { output_type: Some(DataType::F32), ..options.clone() };
+        assert!(warp(&[&source], &float).unwrap().color_table.is_empty());
+
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.tif");
+        let output = dir.path().join("out.tif");
+        crate::write_raster_dataset(&source, input.to_str().unwrap(), &Default::default()).unwrap();
+        let mut lazy = crate::open_raster_lazy(input.to_str().unwrap()).unwrap();
+        assert_eq!(warp_lazy(&mut lazy, &options).unwrap().color_table[..4], table[..]);
+        warp_to_path(&[input.to_str().unwrap().into()], &options, output.to_str().unwrap(), &Default::default()).unwrap();
+        let out = crate::open_raster(output.to_str().unwrap()).unwrap();
+        assert_eq!(out.color_table[..4], table[..]);
+        assert_eq!(out.band_color_interp(1), "Palette");
     }
 
     fn raster(cols: usize, rows: usize, gt: [f64; 6], epsg: u32, f: impl Fn(usize, usize) -> f64) -> RasterDataset {
