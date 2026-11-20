@@ -2222,7 +2222,8 @@ struct WindowState {
     next: usize,
     /// How many more requests may be taken before one in flight is answered.
     places: usize,
-    /// Set once a request failed: no other is taken, and those in flight go on.
+    /// Set once a request failed or a whole file came back: no other is taken, and those in
+    /// flight go on.
     closed: bool,
 }
 
@@ -2694,13 +2695,15 @@ impl Shared {
                         let _cancellation = cancellation.enter();
                         while let Some((run, from, last)) = window.take(requests) {
                             let fetched = context.enter().and_then(|_scope| client.fetch(Some((from, last))));
-                            let with_range = matches!(&fetched, Ok(f) if f.status == 206);
+                            // The range in full, as storing takes it; anything else closes the
+                            // window before it is stored.
+                            let with_range = matches!(&fetched, Ok(f) if f.status == 206 && f.data.len() as u64 == last - from + 1);
+                            window.answered(with_range);
                             // A copy of the client for the storing thread to take back (its URLs and
                             // S3 state): a small cost next to the request's.
                             if sender.send((run, client.clone(), fetched)).is_err() {
                                 break;
                             }
-                            window.answered(with_range);
                         }
                     });
                     // A thread that cannot be had: the others send the requests.
@@ -3463,7 +3466,9 @@ mod tests {
                         // answer sees it out.
                         gate.seen.lock().unwrap().in_flight -= 1;
                         gate.changed.notify_all();
-                        let sent = if status == 206 {
+                        // SHORT_206: a 206 whose body, and length, stop short of the range.
+                        let b = if status == SHORT_206 { a + (b - a) / 2 } else { b };
+                        let sent = if status == 206 || status == SHORT_206 {
                             let head = format!(
                                 "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {a}-{b}/{}\r\n\r\n",
                                 b - a + 1,
@@ -3482,6 +3487,9 @@ mod tests {
         });
         (url, gate)
     }
+
+    /// A stand-in status for [`serve_gated`]: a `206` with less than the range asked.
+    const SHORT_206: u16 = 1206;
 
     /// The prefetch ranges of `n` runs of blocks far apart (none at the start of the file).
     fn separate_runs(n: u64) -> Vec<(u64, u64)> {
@@ -3719,24 +3727,27 @@ mod tests {
 
     #[test]
     fn a_failed_run_behind_a_slow_one_starts_no_other_request() {
-        // The fourth of nine runs fails at once while the first is slow and the others answer a
-        // little later: no request starts after the failure, though the first is not stored yet.
-        let data = test_data();
-        let runs = separate_runs(9);
-        let (slow, failed) = (runs[0].0 as usize, runs[3].0 as usize);
-        let (url, gate) = serve_gated(data, move |first, _| match first {
-            0 => 206,
-            first if first == failed => 416,
-            first => {
-                std::thread::sleep(Duration::from_millis(if first == slow { 500 } else { 200 }));
-                206
-            }
-        });
-        let r = RangeReader::open_with(&Remote::Url(url), options()).unwrap();
-        assert!(r.prefetch(&runs).is_err());
-        let asked = gate.ranges_asked();
-        assert!(asked.contains(&failed), "{asked:?}");
-        assert!(!asked.contains(&(runs[8].0 as usize)), "none sent after the failure: {asked:?}");
+        // The fourth of nine runs fails at once (refused, or a range answered short) while the
+        // first is slow and the others answer a little later: no request starts after the
+        // failure, though the first is not stored yet.
+        for failure in [416, SHORT_206] {
+            let data = test_data();
+            let runs = separate_runs(9);
+            let (slow, failed) = (runs[0].0 as usize, runs[3].0 as usize);
+            let (url, gate) = serve_gated(data, move |first, _| match first {
+                0 => 206,
+                first if first == failed => failure,
+                first => {
+                    std::thread::sleep(Duration::from_millis(if first == slow { 500 } else { 200 }));
+                    206
+                }
+            });
+            let r = RangeReader::open_with(&Remote::Url(url), options()).unwrap();
+            assert!(r.prefetch(&runs).is_err(), "{failure}");
+            let asked = gate.ranges_asked();
+            assert!(asked.contains(&failed), "{failure}: {asked:?}");
+            assert!(!asked.contains(&(runs[8].0 as usize)), "{failure}: none sent after the failure: {asked:?}");
+        }
     }
 
     #[test]
