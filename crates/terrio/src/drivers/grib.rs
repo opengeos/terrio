@@ -462,7 +462,7 @@ impl Source {
     /// The rows of the band its `share` of the block cache holds go in it ([`kept_rows`]): moved to
     /// the front of the decoded values, whose end is given back, so that keeping part of a band
     /// takes no memory it did not have.
-    fn decode_window(&self, message: &[u8], k: usize, b: usize, window: crate::Window, share: u64) -> Result<Vec<f64>> {
+    fn decode_and_keep(&self, message: &[u8], k: usize, b: usize, window: crate::Window, share: u64) -> Result<Vec<f64>> {
         let file_len = self.store.file_len();
         let bands = message_bands(message, message.len(), file_len, self.normalize)?;
         let band = bands.get(k).ok_or_else(|| Error::InvalidArgument(format!("band {b} out of range")))?;
@@ -507,7 +507,7 @@ impl Source {
                         self.store.message(b)?.0
                     }
                 };
-                out.push((b, self.decode_window(&message, k, b, window, share)?));
+                out.push((b, self.decode_and_keep(&message, k, b, window, share)?));
                 last = Some((id, message));
             }
             return Ok(out);
@@ -530,7 +530,7 @@ impl Source {
             .collect();
         let decoded = crate::par::map_range_coarse(missing.len(), |i| match &located[i] {
             Ok((at, k)) => match &messages[*at] {
-                Ok((message, _)) => self.decode_window(message, *k, missing[i], window, share),
+                Ok((message, _)) => self.decode_and_keep(message, *k, missing[i], window, share),
                 Err(_) => Ok(Vec::new()),
             },
             Err(_) => Ok(Vec::new()),
