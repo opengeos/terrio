@@ -127,21 +127,23 @@ def _in_memory_limit() -> int:
         return _IN_MEMORY_LIMIT
 
 
-def _tile_rows_decoded_once(source: Any, rows: int, unit: int = 1) -> int:
+def _tile_rows_decoded_once(source: Any, rows: int, unit: int = 1, itemsize: int = 1) -> int:
     """The rows of a slab of a copy's source, so that a JPEG 2000 source decodes each tile once.
 
     A JPEG 2000 read decodes every tile its window crosses and keeps none of them for the next
     read, where the block cache keeps a GeoTIFF's decoded blocks: a slab ending inside a row of
     tiles leaves the next slab to decode those tiles again. For a JPEG 2000 read by window,
     `rows` is made a multiple of a whole row of its tiles (and of `unit`): rounded down when it
-    holds one, raised to one when that row's decoded pixels hold no more bytes than the block
-    cache (`TERRIO_CACHEMAX`), the decoded blocks a GeoTIFF source keeps between reads.
+    holds one, raised to one when that row's pixels hold no more bytes than the block cache
+    (`TERRIO_CACHEMAX`), the decoded blocks a GeoTIFF source keeps between reads, counted in the
+    source's type or the one the copy holds them in (`itemsize`), whichever is wider.
     Otherwise `rows` is kept.
 
     Args:
         source: The dataset the slabs are read from.
         rows: The rows of a slab otherwise, a multiple of `unit`.
         unit: The rows the slabs are a multiple of: the output's block height.
+        itemsize: The bytes of a value of the type the copy holds the rows in: the output's.
 
     Returns:
         int: The rows of a slab.
@@ -152,7 +154,8 @@ def _tile_rows_decoded_once(source: Any, rows: int, unit: int = 1) -> int:
     whole = math.lcm(unit, *(shape[0] for shape in source.block_shapes))
     if rows >= whole:
         return rows - rows % whole
-    row_bytes = source.width * source.count * max(np.dtype(t).itemsize for t in source.dtypes)
+    value_bytes = max(itemsize, *(np.dtype(t).itemsize for t in source.dtypes))
+    row_bytes = source.width * source.count * value_bytes
     if min(whole, source.height) * row_bytes <= _terrio.block_cache_max():
         return whole
     return rows
@@ -2756,12 +2759,13 @@ class DatasetWriter(DatasetReader):
         Yields:
             tuple: `(first row, number of rows)`.
         """
-        row = max(1, self.width * max(self._count, 1) * np.dtype(self._buffer_dtype).itemsize)
+        itemsize = np.dtype(self._buffer_dtype).itemsize
+        row = max(1, self.width * max(self._count, 1) * itemsize)
         n = max(1, (16 << 20) // row)
         block = self.structure.block_shape[0] if self._structure is not None else 1
         n = max(block, n - n % max(block, 1))
         if source is not None:
-            n = _tile_rows_decoded_once(source, n, max(block, 1))
+            n = _tile_rows_decoded_once(source, n, max(block, 1), itemsize)
         for y in range(0, self.height, n):
             yield y, min(n, self.height - y)
 
@@ -3742,7 +3746,8 @@ class DatasetWriter(DatasetReader):
                     if block_rows >= self.height:
                         wanted = max(step, (self.height // 2 // step) * step)
                     step = min(wanted, budget_rows)
-                step = _tile_rows_decoded_once(source, step, write_step)
+                itemsize = np.dtype(self._buffer_dtype).itemsize
+                step = _tile_rows_decoded_once(source, step, write_step, itemsize)
             slabs = (
                 ((y, min(step, self.height - y)) for y in range(0, self.height, step))
                 if step

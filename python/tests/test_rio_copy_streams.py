@@ -394,6 +394,40 @@ def test_a_copy_reads_a_jpeg_2000_a_row_of_its_tiles_at_a_time(
         assert np.array_equal(ds.read(), pixels)
 
 
+@pytest.mark.parametrize(
+    "driver, limit, dtype, rows",
+    [
+        # 16,793,600 bytes of UInt16 fit a 32 MiB block cache: a whole row of tiles.
+        ("COG", None, "uint16", 1024),
+        # 67,174,400 bytes of Float64 do not: the rows read before (512 for the COG's 16 MiB
+        # budget, 1,023 held, 255 over the in-memory limit).
+        ("COG", None, "float64", 512),
+        ("GTiff", None, "float64", 1023),
+        ("GTiff", "1", "float64", 255),
+    ],
+    ids=["cog-uint16", "cog-float64", "gtiff-held-float64", "gtiff-over-the-limit-float64"],
+)
+def test_a_jpeg_2000_copy_counts_a_row_of_tiles_in_the_type_it_holds_it_in(
+    tmp_path, monkeypatch, wide_sources, block_cache_size, driver, limit, dtype, rows
+):
+    """A copy to another type holds its rows in that type: a row of tiles is read whole when it
+    fits in the block cache in the wider of the two types."""
+    if limit:
+        monkeypatch.setenv("TERRIO_RIO_IN_MEMORY_LIMIT", limit)
+    terrio.set_block_cache_max(32 << 20)
+    path, pixels = wide_sources["jp2"]
+    height = pixels.shape[1]
+    src = Recording(path, tmp_path)
+    with src:
+        rio_shutil.copy(
+            src, str(tmp_path / "out.tif"), driver=driver, compress="deflate", dtype=dtype
+        )
+    assert src.windows == [(y, min(rows, height - y)) for y in range(0, height, rows)]
+    with rio.open(tmp_path / "out.tif") as ds:
+        assert ds.dtypes[0] == dtype
+        assert np.array_equal(ds.read(), pixels)
+
+
 def test_a_cog_copy_reads_a_jpeg_2000_of_one_tile_at_once(tmp_path, block_cache_size):
     """A source block as tall as the image was read in two halves, each decoding the tile. It is
     now read at once when the image's rows fit in the block cache (720,000 bytes here, in 1 MiB),
