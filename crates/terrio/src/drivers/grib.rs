@@ -231,27 +231,29 @@ impl Band<'_> {
 /// the sections, without decoding the data, as GDAL's `FindNoDataGrib2`), and the antimeridian
 /// split column.
 fn header(bands: &[Band], file_len: usize) -> Result<(RasterDataset, usize)> {
-    header_with(bands, file_len, |_, band| band.nodata())
+    header_with(bands.first().map(Band::grid), bands.len(), bands.iter().map(Band::nodata), bands.iter().map(Band::metadata), file_len)
 }
 
-/// [`header`], each band's nodata given by `nodata_of` (from the band's index, from 0, and the
-/// band), in band order, its first error failing the header where the band's own would.
+/// [`header`] from what it needs of the bands: the first band's grid (`None` without a band),
+/// their count, and each band's nodata, then each band's metadata, in band order. The first error
+/// among them is the header's, as [`header`] meets it.
 fn header_with(
-    bands: &[Band],
+    first_grid: Option<Result<Grid>>,
+    count: usize,
+    nodata: impl Iterator<Item = Result<Option<f64>>>,
+    metadata: impl Iterator<Item = Result<crate::BandMetadata>>,
     file_len: usize,
-    mut nodata_of: impl FnMut(usize, &Band) -> Result<Option<f64>>,
 ) -> Result<(RasterDataset, usize)> {
-    let first = bands.first().ok_or_else(|| Error::InvalidData("no GRIB message found".into()))?;
-    let grid = first.grid()?;
+    let grid = first_grid.ok_or_else(|| Error::InvalidData("no GRIB message found".into()))??;
     let georef = georeference(&grid);
     let (cols, rows) = (grid.nx as usize, grid.ny as usize);
     point_count(cols, rows, file_len)?;
-    let band_nodata: Vec<Option<f64>> = bands.iter().enumerate().map(|(i, band)| nodata_of(i, band)).collect::<Result<_>>()?;
+    let band_nodata: Vec<Option<f64>> = nodata.collect::<Result<_>>()?;
     let nodata = band_nodata[0];
     let raster = wbraster::Raster {
         cols,
         rows,
-        bands: bands.len(),
+        bands: count,
         x_min: 0.0,
         y_min: 0.0,
         cell_size_x: 1.0,
@@ -264,7 +266,7 @@ fn header_with(
     };
     let mut ds = RasterDataset::with_driver(raster, RasterDriver::GRIB, nodata.is_some());
     ds.set_geo_transform(georef.gt);
-    ds.band_metadata = bands.iter().map(Band::metadata).collect::<Result<_>>()?;
+    ds.band_metadata = metadata.collect::<Result<_>>()?;
     // Each band's items in the dataset's metadata too, as `BAND_<n>#<key>`, as the GRIB driver of
     // #232 gave them (and as the netCDF driver gives its bands').
     ds.raster.metadata = ds

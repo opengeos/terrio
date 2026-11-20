@@ -358,14 +358,15 @@ Local files are read by position in the same way, without holding the file in me
 section headers of each message (the whole message for a GRIB1 field whose nodata depends on its
 values, one such message at a time; in a GRIB2 message of several fields, a field's headers come
 after the data of the fields before it, which the open reads too), then a band's message when the
-band is read. Nothing read at open is kept once the file is open. The bands read are kept in the
-process-wide [decoded block cache](remote-data.md#decoded-block-cache) (`TERRIO_CACHEMAX`), with the
-decoded chunks of other files: a band is decoded anew when a read needs rows of it that the cache no
-longer holds, because the bands one read asks for are larger than the cache, or because other reads
-have since taken their place. A local file changed in place after it is opened is not snapshotted
-(see the [decoded block cache](remote-data.md#decoded-block-cache)): a read may combine bands
-decoded before the change with bands decoded from the new bytes, or fail, so close its readers
-before changing it in place and open them again afterwards.
+band is read. The open holds one message's header at a time, and nothing it read is kept once the
+file is open. The bands read are kept in the process-wide
+[decoded block cache](remote-data.md#decoded-block-cache) (`TERRIO_CACHEMAX`), with the decoded
+chunks of other files: a band is decoded anew when a read needs rows of it that the cache no longer
+holds, because the bands one read asks for are larger than the cache, or because other reads have
+since taken their place. A local file changed in place after it is opened is not snapshotted (see
+the [decoded block cache](remote-data.md#decoded-block-cache)): a read may combine bands decoded
+before the change with bands decoded from the new bytes, or fail, so close its readers before
+changing it in place and open them again afterwards.
 
 Terrio's GRIB driver limits each field to 16,777,216 points by default, including constant and
 compressed fields. This is 128 MiB of decoded Float64 values; decoder buffers and multi-band reads

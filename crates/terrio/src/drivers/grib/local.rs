@@ -4,11 +4,13 @@
 //! when the band is read. The bytes between messages are read only where a message does not start
 //! where the previous one ends, to look for the next one. A GRIB1 message whose nodata depends on
 //! its data is read whole at open, when its nodata is worked out once the headers are read, and
-//! dropped then: the open holds one such message at a time. The last 4 bytes of each message, its
-//! end marker, which the walk of a GRIB2 message's sections checks, are read at open too. The reads
-//! of the headers go in file order through one buffer that a seek inside it keeps
-//! ([`crate::vfs::NearSeek`]): a message's end marker and the next message's first octets and
-//! header come from one read of the file, as a rule.
+//! dropped then: the open holds one such message at a time. Each message's header is dropped once
+//! what the dataset's header needs of its bands is taken from it, before the next one is read: the
+//! header of a GRIB2 message of several fields holds the data of the fields before the last, whose
+//! sections come after it. The last 4 bytes of each message, its end marker, which the walk of a
+//! GRIB2 message's sections checks, are read at open too. The reads of the headers go in file order
+//! through one buffer that a seek inside it keeps ([`crate::vfs::NearSeek`]): a message's end
+//! marker and the next message's first octets and header come from one read of the file, as a rule.
 //!
 //! The messages are found, and their headers read, as in the bytes of a whole file in memory
 //! ([`super::open_lazy_bytes`]): a file gives the same bands, metadata and errors read either way.
@@ -136,6 +138,13 @@ fn grib1_nodata_needs_data(head: &[u8], file_len: usize, normalize: bool) -> boo
     })
 }
 
+/// A band's nodata as its message's header gives it, or where its message is, to be read whole for
+/// it: a GRIB1 message whose nodata depends on its values.
+enum Nodata {
+    Known(Result<Option<f64>>),
+    InMessage(usize, usize),
+}
+
 /// The nodata of the GRIB1 message `msg`, read whole, as its band gives it.
 fn grib1_nodata(msg: &[u8], file_len: usize, normalize: bool) -> Result<Option<f64>> {
     let mut m = grib1::Message::parse(msg, file_len)?;
@@ -169,30 +178,31 @@ pub(super) fn open(local: crate::vfs::LocalPath) -> Result<crate::LazyRaster> {
     let scan = std::cell::RefCell::new(Scan { reader: crate::vfs::NearSeek::with_capacity(SCAN_BUFFER, f.cursor.clone()), len });
     let spans = find_messages(len, |pos| scan.borrow_mut().find(pos), |at| Ok(scan.borrow_mut().read(at, 16)?.into()))?;
     let mut scan = scan.into_inner();
-    let mut heads = Vec::with_capacity(spans.len());
+    // What the dataset's header needs of each band, from its message's header, which is dropped
+    // before the next message's is read: the first band's grid, each band's metadata, and its
+    // nodata or, when that depends on its values, where its message is, read whole for it when the
+    // dataset's header is built, and dropped then. The open holds one message's header at a time.
+    let (mut first_grid, mut index, mut band_metadata, mut band_nodata) = (None, Vec::new(), Vec::new(), Vec::new());
     for &(start, n) in &spans {
         let head = scan.head(start, n)?;
         let read_whole = head.get(7) == Some(&1) && head.len() < n && grib1_nodata_needs_data(&head, len, normalize);
         // Messages are at least 16 bytes long (`find_messages`).
         let end_marker = scan.read(start + n - 4, 4)?;
-        heads.push((head, end_marker, read_whole));
+        let bands = bands_of(&head, &end_marker, n, len, normalize)?;
+        if first_grid.is_none() {
+            first_grid = bands.first().map(Band::grid);
+        }
+        for (k, band) in bands.iter().enumerate() {
+            index.push((start, n, k));
+            band_metadata.push(band.metadata());
+            band_nodata.push(if read_whole { Nodata::InMessage(start, n) } else { Nodata::Known(band.nodata()) });
+        }
     }
-    let mut all = Vec::new();
-    let mut index = Vec::new();
-    // The message of each band whose nodata depends on its values: read whole when its nodata is
-    // worked out, and dropped then, so that the open holds one such message at a time.
-    let mut whole = Vec::new();
-    for ((head, end_marker, read_whole), &(start, n)) in heads.iter().zip(&spans) {
-        let bands = bands_of(head, end_marker, n, len, normalize)?;
-        index.extend((0..bands.len()).map(|k| (start, n, k)));
-        whole.extend(std::iter::repeat_n(read_whole.then_some((start, n)), bands.len()));
-        all.extend(bands);
-    }
-    let (ds, split) = header_with(&all, len, |i, band| match whole[i] {
-        Some((start, n)) => grib1_nodata(&f.read(start, n)?, len, normalize),
-        None => band.nodata(),
-    })?;
-    drop(all);
+    let nodata = band_nodata.into_iter().map(|nodata| match nodata {
+        Nodata::Known(nodata) => nodata,
+        Nodata::InMessage(start, n) => grib1_nodata(&f.read(start, n)?, len, normalize),
+    });
+    let (ds, split) = header_with(first_grid, index.len(), nodata, band_metadata.into_iter(), len)?;
     let handle = crate::block_cache::Handle::of_file(&metadata, normalize as u64);
     Ok(Source::open(ds, split, normalize, Store::File(f, index), handle))
 }

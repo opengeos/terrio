@@ -1167,6 +1167,60 @@ fn a_lazy_grib_open_allocates_nothing_the_size_of_its_file() {
     assert!(largest < len / 16, "bytes in memory: an allocation of {largest} bytes, for {len}");
 }
 
+/// The GRIB2 messages `bytes` (of one field each), every `fields` of them in a row made one
+/// message of that many fields: sections 4 to 7 of each after the first's sections 1 to 3.
+#[cfg(all(unix, feature = "grib"))]
+fn fields_in_one_message(bytes: &[u8], fields: usize) -> Vec<u8> {
+    let be = |b: &[u8]| b.iter().fold(0usize, |v, &x| (v << 8) | x as usize);
+    let mut messages = Vec::new();
+    let mut at = 0;
+    while at + 16 <= bytes.len() {
+        let len = be(&bytes[at + 8..at + 16]);
+        messages.push(&bytes[at..at + len]);
+        at += len;
+    }
+    let sections = |m: &[u8], numbers: std::ops::RangeInclusive<u8>| {
+        let (mut out, mut at) = (Vec::new(), 16);
+        while &m[at..at + 4] != b"7777" {
+            let len = be(&m[at..at + 4]);
+            if numbers.contains(&m[at + 4]) {
+                out.extend_from_slice(&m[at..at + len]);
+            }
+            at += len;
+        }
+        out
+    };
+    messages
+        .chunks(fields)
+        .flat_map(|group| {
+            let body: Vec<u8> = [sections(group[0], 1..=3)].into_iter().chain(group.iter().map(|m| sections(m, 4..=7))).flatten().collect();
+            [&group[0][..8], &((16 + body.len() + 4) as u64).to_be_bytes()[..], &body, b"7777"].concat()
+        })
+        .collect()
+}
+
+/// Catches a local GRIB file of messages of several fields held while it is opened (#1081): a
+/// field's sections come after the data of the field before it, so a message's header holds the
+/// data of its fields before the last, and the open drops each message's header before it reads
+/// the next one's. Of a file of 16 messages of 4 fields of 128 x 128 Float32 values, the open
+/// holds at most a small part at once.
+#[cfg(all(unix, feature = "grib"))]
+#[test]
+fn a_lazy_grib_open_holds_one_message_header_at_a_time() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let fields = write(dir.path(), "fields.grib2", &raster(128, 128, 64, DataType::F32, 4326, (0.0, 60.0, 0.01)), Some(RasterDriver::GRIB));
+    let bytes = fields_in_one_message(&std::fs::read(fields).unwrap(), 4);
+    let path = dir.path().join("f.grib2");
+    std::fs::write(&path, &bytes).unwrap();
+    let len = bytes.len();
+    // terrio's one-time state from a first open, as in the GRIB1 test: the second is measured.
+    drop(terrio::LazyRaster::open(path.to_str().unwrap()).unwrap());
+    let (opened, peak) = peak_during(|| terrio::LazyRaster::open(path.to_str().unwrap()));
+    assert_eq!(opened.unwrap().band_count(), 64);
+    assert!(peak < len / 4, "{peak} bytes held at once, for a file of {len}");
+}
+
 /// A GRIB1 file of `count` messages of `nx` x `ny` points on a latitude/longitude grid, each with
 /// a bitmap masking every seventh point and 32-bit values packed from 0: the packing's range holds
 /// 9999, so each message's nodata depends on its values.
