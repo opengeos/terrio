@@ -101,3 +101,30 @@ fn a_bound_crs_beyond_towgs84_is_written_as_its_wkt() {
         .unwrap();
     assert_eq!(towgs84(&keys).len(), 7, "{:?}", keys.doubles);
 }
+
+/// PDAL's test_utm16.las (PDAL 2.10.2 test data) states NAD83 / UTM zone 16N (EPSG:26916) with
+/// GeogTOWGS84GeoKey 0, 0, 0, which terrio reads with its shift. PROJ 9.7.1 reads that WKT as a
+/// bound CRS over NAD83 and takes it into NAD83 (EPSG:4269) by the inverse projection alone
+/// (`Transformer.from_crs(CRS.from_wkt(wkt), "EPSG:4269", always_xy=True)` is "Inverse of UTM
+/// zone 16N + axis order change (2D)"), placing (809327.68, 4324249.48) at
+/// (-83.42759780586651, 39.01259906906862). Through WGS 84 instead, with the Ohio HPGN grid
+/// (us_noaa_ohhpgn.tif) available, NAD83 to WGS 84 moved it 0.2 m.
+#[test]
+fn a_code_with_its_own_shift_goes_into_its_own_datum_without_it() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let directory: [u16; 36] = [
+        1, 1, 0, 8, 1024, 0, 1, 1, 1025, 0, 1, 1, 1026, 34737, 21, 0, 2049, 34737, 6, 21, 2054, 0, 1, 9102, 2062, 34736, 3, 0, 3072, 0, 1,
+        26916, 3076, 0, 1, 9001,
+    ];
+    let crs = SpatialRef::from_geokeys(&directory, &[0.0, 0.0, 0.0], b"NAD83 / UTM zone 16N|NAD83|\0").unwrap();
+    assert!(crs.wkt.as_deref().is_some_and(|w| w.contains("TOWGS84[0,0,0]")), "{:?}", crs.wkt);
+    let (x, y) = (809_327.68, 4_324_249.48);
+    let nad83 = Transformer::new(&crs, &SpatialRef::from_epsg(4269).unwrap()).unwrap();
+    assert!(nad83.operation_at(x, y, 0.0).unwrap().is_none(), "no datum transformation into NAD83");
+    let (lon, lat) = nad83.transform(x, y).unwrap();
+    assert!((lon + 83.42759780586651).abs() < 1e-11 && (lat - 39.01259906906862).abs() < 1e-11, "({lon}, {lat})");
+    // Into WGS 84, the shift is still the bound's.
+    let op = Transformer::new(&crs, &SpatialRef::from_epsg(4326).unwrap()).unwrap().operation_at(x, y, 0.0).unwrap().unwrap();
+    assert_eq!(op.name, "Transformation to WGS 84");
+}

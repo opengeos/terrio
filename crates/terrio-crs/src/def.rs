@@ -579,6 +579,11 @@ impl Def {
                 && !super::proj4_extension(&e.wkt).is_some_and(|p| p.split_whitespace().any(|t| t == "+nadgrids=@null"))
             {
                 d.ops = vec![Arc::new(Op::world(datum::towgs84_steps(d.ell, &t)))];
+                // PROJ reads it as a `BOUNDCRS` to WGS 84 over the code's datum, into which it
+                // applies no shift: NAD83 / UTM zone 16N with `TOWGS84[0,0,0]` to NAD83
+                // (EPSG:4269) is the inverse projection alone in PROJ 9.7.1, not a way through
+                // WGS 84 that may pick a grid (us_noaa_ohhpgn.tif, 0.2 m in Ohio).
+                d.bound = Some(Arc::new(Bound { source_datum: d.datum, target: None }));
                 d.datum = None;
                 d.geog = None;
             }
