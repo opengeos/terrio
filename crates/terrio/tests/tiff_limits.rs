@@ -680,6 +680,49 @@ fn scattered(n: usize) -> Vec<u16> {
     (0..n).map(|i| ((i as u32).wrapping_mul(2_654_435_761) >> 16) as u16).collect()
 }
 
+/// `cols` x 40 UInt16 pixels of nodata 7 (none of them 7) written by terrio under `compress` in
+/// strips of 16 rows, the last of 8: the values, and the file.
+fn strips_of_16_rows(cols: usize, compress: &str) -> (Vec<u16>, Vec<u8>) {
+    use terrio::raster::RasterData;
+    let rows = 40;
+    let values: Vec<u16> = (0..cols * rows).map(|i| (i * 7 % 997 + 8) as u16).collect();
+    let cfg = terrio::RasterConfig { cols, rows, bands: 1, data_type: terrio::DataType::U16, nodata: 7.0, ..Default::default() };
+    let ds = terrio::RasterDataset::new(terrio::Raster::from_data_native(cfg, RasterData::U16(values.clone())).unwrap(), true);
+    let options = terrio::RasterWriteOptions {
+        compression: Some(compress.into()),
+        creation_options: vec![("BLOCKYSIZE".into(), "16".into())],
+        ..Default::default()
+    };
+    (values, terrio::memory::write_raster_bytes(&ds, "strips.tif", &options).unwrap())
+}
+
+/// `bytes`, a little-endian classic TIFF, with the `(offset, byte count)` of strip `strip` of its
+/// first image replaced by what `f` gives for them: `(0, 0)` leaves it out, as a sparse file does.
+fn with_strip(mut bytes: Vec<u8>, strip: usize, f: impl FnOnce(u32, u32) -> (u32, u32)) -> Vec<u8> {
+    let at = |b: &[u8], o: usize, n: usize| b[o..o + n].iter().rev().fold(0usize, |v, x| v << 8 | usize::from(*x));
+    assert_eq!(&bytes[..4], b"II*\0");
+    let ifd = at(&bytes, 4, 4);
+    // Where the strip's offset and byte count are, and their sizes.
+    let mut fields = [(0, 0); 2];
+    for e in 0..at(&bytes, ifd, 2) {
+        let entry = ifd + 2 + e * 12;
+        let k = match at(&bytes, entry, 2) {
+            273 => 0,
+            279 => 1,
+            _ => continue,
+        };
+        let size = if at(&bytes, entry + 2, 2) == 3 { 2 } else { 4 };
+        let values = if at(&bytes, entry + 4, 4) * size <= 4 { entry + 8 } else { at(&bytes, entry + 8, 4) };
+        fields[k] = (values + strip * size, size);
+    }
+    let [(offset_at, offset_size), (count_at, count_size)] = fields;
+    assert!(offset_size > 0 && count_size > 0);
+    let (offset, count) = f(at(&bytes, offset_at, offset_size) as u32, at(&bytes, count_at, count_size) as u32);
+    bytes[offset_at..offset_at + offset_size].copy_from_slice(&offset.to_le_bytes()[..offset_size]);
+    bytes[count_at..count_at + count_size].copy_from_slice(&count.to_le_bytes()[..count_size]);
+    bytes
+}
+
 /// A compressed strip over the limit is read by the rows a window needs, decoded from the start
 /// of the strip up to the window's last row, with Deflate, LZW, Zstandard and PackBits, and with
 /// horizontal differencing and the floating-point predictor: the values a whole decode gives,
@@ -982,7 +1025,7 @@ fn deflate_streams_at_their_limits_read_by_rows() {
 
 /// A nearest-neighbour read smaller than an image stored as one strip over the limit reads the
 /// rows it samples, the strip once and in order, compressed or not: the values it gives from a
-/// whole decode. Sampled rows that do not fit the limit are refused, as their window is.
+/// whole decode. It holds a row at a time: more rows sampled than fit the limit are read too.
 #[test]
 fn a_decimated_read_of_a_strip_over_the_limit_reads_its_sampled_rows() {
     use terrio::ResampledReadOptions;
@@ -1012,9 +1055,43 @@ fn a_decimated_read_of_a_strip_over_the_limit_reads_its_sampled_rows() {
             }
         }
         assert_eq!(got, expected, "{case}");
-        // Twelve rows sampled: over the limit, refused.
-        let e = resampled(limits, (16, 12)).unwrap_err();
-        assert!(matches!(e, terrio::Error::DecodedLimitExceeded { .. }), "{case}: {e}");
+        // Twelve rows sampled, more than fit the limit.
+        assert_eq!(resampled(limits, (16, 12)).unwrap(), resampled(TiffReadLimits::unlimited(), (16, 12)).unwrap(), "{case}");
+    }
+}
+
+/// A decimated read of strips over the limit holds one row at a time, and reads a strip left out
+/// (offset and byte count 0, as a sparse file leaves it) as nodata: more rows sampled in a strip
+/// than fit the limit are read, with the values of a whole read; a row over the limit is not read
+/// by rows.
+#[test]
+fn a_decimated_read_holds_a_row_at_a_time_and_reads_a_strip_left_out_as_nodata() {
+    use terrio::ResampledReadOptions;
+    // Rows of 4,096 bytes: half a row, the limit that refuses one, still holds the file's tag
+    // values (the limit bounds those too).
+    let cols = 2048usize;
+    for compress in ["DEFLATE", "LZW", "ZSTD", "PACKBITS", "NONE"] {
+        let (values, bytes) = strips_of_16_rows(cols, compress);
+        let bytes = with_strip(bytes, 1, |_, _| (0, 0));
+        let open = |limits| LazyRaster::from_tiff_bytes_with_limits(bytes.clone(), limits).unwrap().unwrap();
+        // Ten rows fit the limit, a strip of 16 does not: eleven rows are sampled in the first
+        // strip, two in the one left out and one in the last.
+        let limits = TiffReadLimits { chunk_bytes: 10 * cols * 2 };
+        let (pick_cols, pick_rows) = ([63, 0, 9], [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 17, 30, 35]);
+        let got = open(limits).read_sampled(&pick_cols, &pick_rows, &band1()).unwrap().expect("read by rows").to_f64_vec();
+        let v = &values;
+        let expected: Vec<f64> = pick_rows
+            .iter()
+            .flat_map(|&y| pick_cols.iter().map(move |&x| if (16..32).contains(&y) { 7.0 } else { f64::from(v[y * cols + x]) }))
+            .collect();
+        assert_eq!(got, expected, "{compress}");
+        let resampled = |limits| {
+            let options = ResampledReadOptions { size: (16, 20), bands: vec![1], ..Default::default() };
+            open(limits).read_resampled(&options).map(|ds| ds.raster.data.to_f64_vec())
+        };
+        assert_eq!(resampled(limits).unwrap(), resampled(TiffReadLimits::unlimited()).unwrap(), "{compress}");
+        let half_a_row = TiffReadLimits { chunk_bytes: cols };
+        assert!(matches!(open(half_a_row).read_sampled(&pick_cols, &pick_rows, &band1()), Ok(None)), "{compress}");
     }
 }
 

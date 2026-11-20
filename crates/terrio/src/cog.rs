@@ -2912,20 +2912,7 @@ impl TiffRaster {
         drop(ranges);
 
         // Missing (sparse) chunks read as nodata, or 0, as in GDAL.
-        let mut out = try_new_filled(self.data_type, len, self.tags.nodata.unwrap_or(0.0))?;
-        if let Some(nodata) = self.tags.integer_nodata {
-            match &mut out {
-                RasterData::U64(values) => values.fill(nodata as u64),
-                RasterData::I64(values) => values.fill(nodata as i64),
-                _ => {}
-            }
-        }
-        for (output_band, band) in bands.iter().enumerate() {
-            if let Some((_, nodata)) = self.tags.band_nodata.iter().find(|(b, _)| b == band) {
-                let plane = w.width * w.height;
-                crate::pixel::with_data!(&mut out, values => values[output_band * plane..(output_band + 1) * plane].fill(*nodata as _));
-            }
-        }
+        let mut out = nodata_filled(&self.tags, self.data_type, bands, w.width * w.height, len)?;
         let spp = if planar { parts } else { self.samples * parts };
         // Chunks with data, and where they go.
         let mut wanted: Vec<u32> = Vec::new();
@@ -3115,9 +3102,10 @@ impl TiffRaster {
     /// level, `(bands, rows, cols)`, as [`LazyRaster::read_sampled`] reads them, when some of those
     /// rows lie in a strip over the chunk limit: each strip holding them is read by rows, as
     /// [`TiffRaster::read_samples`] reads such a strip, once and in order, keeping the sampled
-    /// pixels of a row as it comes. Strips are read so only when each one is read by rows and the
-    /// rows sampled in each fit the limit; `None` otherwise, and for levels whose strips are all
-    /// within it, whose window spanning the pixels is read instead.
+    /// pixels of a row as it comes: the read holds one row at a time, which must fit the limit. A
+    /// strip left out (a sparse file's) reads as nodata, as in a window. `None` when a strip holding
+    /// sampled rows is not read by rows, or none read is over the limit: the window spanning the
+    /// pixels is read instead.
     fn read_sampled(&mut self, level: usize, cols: &[usize], rows: &[usize], bands: &[usize]) -> Result<Option<RasterData>> {
         if let Some(i) = self.levels[level].external
             && let Some(ovr) = self.ovr.as_mut()
@@ -3144,6 +3132,9 @@ impl TiffRaster {
         let Some(row_bytes) = cw.checked_mul(spp).and_then(|n| n.checked_mul(self.data_type.size_bytes())).filter(|n| *n > 0) else {
             return Ok(None);
         };
+        if row_bytes as u64 > limit {
+            return Ok(None);
+        }
         let what = "the sampled rows";
         // The output rows, in the order of the image rows they sample.
         let mut order: Vec<usize> = Vec::new();
@@ -3156,19 +3147,13 @@ impl TiffRaster {
         } else {
             vec![(0, bands.iter().enumerate().map(|(k, b)| (b - 1, k)).collect())]
         };
-        // The strips holding the sampled rows: (strip in its plane, rows of the strip, distinct
-        // rows sampled in it).
-        let mut strips: Vec<(usize, usize, usize)> = Vec::new();
+        // The strips holding the sampled rows: (strip in its plane, rows of the strip).
+        let mut strips: Vec<(usize, usize)> = Vec::new();
         crate::dataset::fallible::reserve(&mut strips, rows.len().min(per_plane), what)?;
-        let mut last = None;
         for &o in &order {
-            let r = rows[o];
-            if last.replace(r) == Some(r) {
-                continue;
-            }
-            match strips.last_mut() {
-                Some((s, _, n)) if *s == r / ch => *n += 1,
-                _ => strips.push((r / ch, ch.min(lh - r / ch * ch), 1)),
+            let s = rows[o] / ch;
+            if strips.last().is_none_or(|(last, _)| *last != s) {
+                strips.push((s, ch.min(lh - s * ch)));
             }
         }
         let Some(how) = crate::tiff_strip_rows::Rows::of(dec, self.data_type, compression).map_err(tiff_err)? else {
@@ -3176,23 +3161,21 @@ impl TiffRaster {
         };
         let mut over = false;
         for (plane, _) in &planes {
-            for &(s, height, sampled) in &strips {
+            for &(s, height) in &strips {
                 // Saturated: a strip of more bytes than 64 bits count is not read by rows.
                 let strip = (height as u64).saturating_mul(row_bytes as u64);
-                let read = tables.get(plane * per_plane + s).is_some_and(|stored| {
-                    stored.1 > 0 && how.holds(stored, strip, self.file_len) && (sampled as u64).saturating_mul(row_bytes as u64) <= limit
-                });
-                if !read {
-                    return Ok(None);
+                match tables.get(plane * per_plane + s) {
+                    Some((_, 0)) => {}
+                    Some(stored) if how.holds(stored, strip, self.file_len) => over |= strip > limit,
+                    _ => return Ok(None),
                 }
-                over |= strip > limit;
             }
         }
         if !over {
             return Ok(None);
         }
         let len = crate::dataset::fallible::len(&[bands.len(), rows.len(), cols.len()], what)?;
-        let mut out = try_new_filled(self.data_type, len, 0.0)?;
+        let mut out = nodata_filled(&self.tags, self.data_type, bands, rows.len() * cols.len(), len)?;
         crate::dataset::fallible::check_usable(Some(row_bytes), || "a TIFF strip row".into()).map_err(Error::ResourceLimit)?;
         let mut samples = crate::tiff_strip_rows::samples(self.data_type, cw * spp)?;
         let mut read_at = |at: u64, buf: &mut [u8]| read_stored(dec, at, buf);
@@ -3201,10 +3184,14 @@ impl TiffRaster {
             let mut held = None;
             for &o in &order {
                 let r = rows[o];
+                let s = r / ch;
+                let stored = tables.get(plane * per_plane + s).ok_or_else(|| Error::InvalidData(format!("TIFF: no strip {s}")))?;
+                // The pixels of a strip left out stay nodata.
+                if stored.1 == 0 {
+                    continue;
+                }
                 if held != Some(r) {
-                    let s = r / ch;
                     if strip.as_ref().is_none_or(|(at, _)| *at != s) {
-                        let stored = tables.get(plane * per_plane + s).ok_or_else(|| Error::InvalidData(format!("TIFF: no strip {s}")))?;
                         strip = Some((s, how.strip(stored, cw, spp, ch.min(lh - s * ch))));
                     }
                     if let Some((_, strip_rows)) = strip.as_mut() {
@@ -3222,6 +3209,25 @@ impl TiffRaster {
 /// The rows of a strip larger than the chunk limit read at a time: about this many bytes of them,
 /// or one row when a row is larger.
 const STRIP_ROWS_BYTES: usize = 8 << 20;
+
+/// `len` samples of `data_type` in `bands.len()` bands of `plane` samples each, every band filled
+/// with its nodata (0 without one): the pixels of a chunk that a sparse file leaves out.
+fn nodata_filled(tags: &GeoTags, data_type: DataType, bands: &[usize], plane: usize, len: usize) -> Result<RasterData> {
+    let mut out = try_new_filled(data_type, len, tags.nodata.unwrap_or(0.0))?;
+    if let Some(nodata) = tags.integer_nodata {
+        match &mut out {
+            RasterData::U64(values) => values.fill(nodata as u64),
+            RasterData::I64(values) => values.fill(nodata as i64),
+            _ => {}
+        }
+    }
+    for (output_band, band) in bands.iter().enumerate() {
+        if let Some((_, nodata)) = tags.band_nodata.iter().find(|(b, _)| b == band) {
+            crate::pixel::with_data!(&mut out, values => values[output_band * plane..(output_band + 1) * plane].fill(*nodata as _));
+        }
+    }
+    Ok(out)
+}
 
 /// Reads the TIFF's bytes at `at` into `buf`, whole, fetching them first from a remote file.
 fn read_stored(dec: &mut Decoder<PatchedReader<Source>>, at: u64, buf: &mut [u8]) -> Result<()> {
