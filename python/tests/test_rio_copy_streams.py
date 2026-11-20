@@ -362,8 +362,6 @@ def block_cache_size():
         ("jp2", "COG", None, None, 1024),
         # A row of tiles holding more than the block cache is read within the budget, as before.
         ("jp2", "COG", None, 1 << 20, 512),
-        # A GeoTIFF's decoded tiles stay in the block cache between slabs within the budget.
-        ("tif", "COG", None, None, 512),
         # Over the in-memory limit, a GeoTIFF is read in rows of about 16 MB, 1,023 here: raised
         # to a row of tiles.
         ("jp2", "GTiff", "1", None, 1024),
@@ -379,7 +377,6 @@ def block_cache_size():
     ids=[
         "jp2-cog",
         "jp2-over-the-cache",
-        "gtiff",
         "jp2-gtiff-over-the-limit",
         "jp2-gtiff-held",
         "jp2-rows-of-16-mb",
@@ -399,6 +396,18 @@ def test_a_copy_reads_a_jpeg_2000_a_row_of_its_tiles_at_a_time(
     with src:
         rio_shutil.copy(src, str(tmp_path / "out.tif"), driver=driver, compress="deflate")
     assert src.windows == [(y, min(rows, height - y)) for y in range(0, height, rows)]
+    with rio.open(tmp_path / "out.tif") as ds:
+        assert np.array_equal(ds.read(), pixels)
+
+
+def test_a_cog_copy_reads_a_geotiff_of_tall_tiles_within_the_slab_budget(tmp_path, wide_sources):
+    """A GeoTIFF's decoded tiles stay in the block cache between reads: its copy reads rows of
+    the 16 MiB budget, 512, though they cut its 1024-row tiles."""
+    path, pixels = wide_sources["tif"]
+    src = Recording(path, tmp_path)
+    with src:
+        rio_shutil.copy(src, str(tmp_path / "out.tif"), driver="COG", compress="deflate")
+    assert src.windows == [(0, 512), (512, 512), (1024, 6)]
     with rio.open(tmp_path / "out.tif") as ds:
         assert np.array_equal(ds.read(), pixels)
 
@@ -492,7 +501,7 @@ def test_a_cog_copy_reads_384_row_jpeg_2000_tiles_a_row_of_tiles_at_a_time(tmp_p
 
 
 @pytest.mark.parametrize("writer", ["terrio", "rasterio"])
-def test_a_copy_reading_a_whole_jpeg_2000_at_once_still_does(tmp_path, writer):
+def test_a_held_copy_reads_a_whole_jpeg_2000_in_one_read(tmp_path, writer):
     """A held copy reads a 2000 x 2000 image at once; rounding those rows down to whole rows of
     its 1024-row blocks read it in two parts. terrio writes the image in 1024 x 1024 tiles;
     rasterio here in one tile, which terrio reads in 1024-row blocks, so two reads decoded that
