@@ -78,7 +78,8 @@ It needs only NumPy and [affine](https://github.com/rasterio/affine) (installed 
   rows, so that each tile is decoded once, when that row holds no more than the block cache
   (`TERRIO_CACHEMAX`, 64 MiB by default) in the source's type or the copy's, whichever is wider:
   a larger block cache lets a copy hold a larger row of tiles. Other blocks or row alignments
-  exceeding the slab budget, and rows of JPEG 2000 tiles larger than the block cache, may
+  exceeding the slab budget, rows of JPEG 2000 tiles larger than the block cache, and a JPEG 2000
+  of one tile larger than 1024 pixels, which reports blocks of at most 1024 x 1024 pixels, may
   still be decoded repeatedly. Streamed output is published only after writing succeeds, and
   copying onto a symlink or hardlink of the source is refused. An unrelated destination symlink
   is replaced with the completed output file; its former target is left unchanged.
