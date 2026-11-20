@@ -143,9 +143,10 @@ impl Rows {
             && (self.codec == Codec::Stored || strip <= limit.saturating_mul(LIMITS_DECODED))
     }
 
-    /// The bytes a read of `rows` rows of `row_bytes` at a time holds: the rows, and the row the
-    /// floating-point predictor is undone in. `None` when they are more than the address space holds.
-    pub(crate) fn held(&self, rows: usize, row_bytes: usize) -> Option<usize> {
+    /// The working bytes of a read of `rows` rows of `row_bytes` at a time: the rows, and the row
+    /// the floating-point predictor is undone in. `None` when they are more than the address space
+    /// holds.
+    pub(crate) fn working_bytes(&self, rows: usize, row_bytes: usize) -> Option<usize> {
         rows.checked_mul(row_bytes)?.checked_add(if self.predictor == 3 { row_bytes } else { 0 })
     }
 
