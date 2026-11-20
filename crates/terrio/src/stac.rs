@@ -1589,7 +1589,7 @@ fn items_at_once<'a>(mut hrefs: impl Iterator<Item = &'a str>) -> usize {
 }
 
 /// How many items' windows of `per_item` bytes each are read at once: at most `most`, and as many
-/// as fit in half of the `usable` memory (1 GiB when unknown) beside the output's `output_bytes`,
+/// as fit in half of the `usable` memory (in 1 GiB when it is unknown) beside the output's `output_bytes`,
 /// but at least one.
 fn batch_size(per_item: usize, output_bytes: usize, usable: Option<u64>, most: usize) -> usize {
     let budget = usable.map_or(1 << 30, |m| m / 2).saturating_sub(output_bytes as u64);
@@ -1695,10 +1695,11 @@ impl Mosaic {
     /// The output buffer of `pixels` values of each of `bands` bands, in the mosaic's type,
     /// filled with the nodata value (0 without one), once its bytes are known to fit.
     fn output(&self, pixels: usize, bands: usize, what: &str) -> Result<(RasterData, usize)> {
-        let output_bytes = crate::dataset::fallible::len(&[pixels, bands, self.data_type.size_bytes()], what)?;
+        let samples = crate::dataset::fallible::len(&[pixels, bands], what)?;
+        let output_bytes = crate::dataset::fallible::len(&[samples, self.data_type.size_bytes()], what)?;
         crate::dataset::fallible::check_usable(Some(output_bytes), || format!("{what} buffers are too large to allocate"))
             .map_err(Error::ResourceLimit)?;
-        Ok((crate::resampled_read::filled_bands(self.data_type, pixels, &vec![self.nodata; bands])?, output_bytes))
+        Ok((crate::dataset::fallible::raster_data(self.data_type, samples, self.nodata.unwrap_or(0.0), what)?, output_bytes))
     }
 }
 
@@ -1777,7 +1778,7 @@ impl WindowSource for Mosaic {
     /// As GDAL's STACIT mosaic (a virtual dataset of a source per item) reads a window into a
     /// smaller or larger buffer: each item read for its part of the buffer
     /// (`VRTSimpleSource::GetSrcDstWindow()`), from the overview it chooses, and drawn over the
-    /// earlier ones but where it holds the nodata value (`VRTComplexSource`). Reference: GDAL 3.13.3.
+    /// earlier ones except where it holds the nodata value (`VRTComplexSource`). Reference: GDAL 3.13.3.
     fn read_resampled(&mut self, o: &crate::ResampledReadOptions) -> Result<Option<RasterData>> {
         let Some(request) = o.window else {
             return Ok(None);

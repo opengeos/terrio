@@ -1324,7 +1324,7 @@ fn resample(
 /// Fill selected bands directly in the output type, preserving the empty-window nodata
 /// policy without a full Float64 temporary. Casts match RasterData::from_f64_vec.
 /// Reference: GDAL 3.13.3 RasterIO empty-window nodata fills.
-pub(crate) fn filled_bands(data_type: DataType, n: usize, nodata: &[Option<f64>]) -> Result<RasterData> {
+fn filled_bands(data_type: DataType, n: usize, nodata: &[Option<f64>]) -> Result<RasterData> {
     let what = "an empty resampled window";
     let len = fallible::len(&[n, nodata.len()], what)?;
     macro_rules! fill {
