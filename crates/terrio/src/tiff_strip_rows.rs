@@ -157,7 +157,7 @@ impl Rows {
 }
 
 /// A buffer of `len` samples of `data_type`, allocated fallibly.
-pub(crate) fn samples(data_type: DataType, len: usize) -> Result<DecodingResult> {
+pub(crate) fn sample_buffer(data_type: DataType, len: usize) -> Result<DecodingResult> {
     let what = "TIFF strip rows";
     Ok(match data_type {
         DataType::U8 => DecodingResult::U8(fallible::filled_now(len, 0, what)?),
@@ -384,11 +384,11 @@ enum Stream {
 impl Stream {
     /// The stream of a strip of `strip` decoded bytes.
     fn new(codec: Codec, strip: u64) -> Result<Self> {
-        let drop = || fallible::filled_now(DROP_BYTES, 0u8, "a TIFF strip's dropped rows");
+        let spare = || fallible::filled_now(DROP_BYTES, 0u8, "a TIFF strip's dropped rows");
         Ok(match codec {
             Codec::Deflate => Stream::Deflate(Box::new(Inflate::new(strip)?)),
-            Codec::Lzw => Stream::Lzw(Box::new(weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8)), drop()?),
-            Codec::Zstd => Stream::Zstd(Box::new(Zstd { frame: ruzstd::decoding::FrameDecoder::new(), in_frame: false }), drop()?),
+            Codec::Lzw => Stream::Lzw(Box::new(weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8)), spare()?),
+            Codec::Zstd => Stream::Zstd(Box::new(Zstd { frame: ruzstd::decoding::FrameDecoder::new(), in_frame: false }), spare()?),
             Codec::PackBits => Stream::PackBits(PackBits::Count),
             Codec::Stored => unreachable!("uncompressed rows are read at their offsets"),
         })
@@ -416,8 +416,8 @@ impl Stream {
         match self {
             Stream::Deflate(z) => z.take(parts, read_at, None, n),
             Stream::PackBits(p) => p.take(parts, read_at, None, n),
-            Stream::Lzw(z, drop) => drop_into(drop, n, |buf| lzw(z, parts, read_at, buf)),
-            Stream::Zstd(z, drop) => drop_into(drop, n, |buf| z.read(parts, read_at, buf)),
+            Stream::Lzw(z, spare) => drop_into(spare, n, |buf| lzw(z, parts, read_at, buf)),
+            Stream::Zstd(z, spare) => drop_into(spare, n, |buf| z.read(parts, read_at, buf)),
         }
     }
 
@@ -434,13 +434,13 @@ impl Stream {
     }
 }
 
-/// Decodes `n` bytes with `decode` into `drop`, a part at a time, and drops them: fewer when the
+/// Decodes `n` bytes with `decode` into `spare`, a part at a time, and drops them: fewer when the
 /// stream ends.
-fn drop_into(drop: &mut [u8], n: u64, mut decode: impl FnMut(&mut [u8]) -> Result<usize>) -> Result<u64> {
+fn drop_into(spare: &mut [u8], n: u64, mut decode: impl FnMut(&mut [u8]) -> Result<usize>) -> Result<u64> {
     let mut done = 0u64;
     while done < n {
-        let k = (n - done).min(drop.len() as u64) as usize;
-        let got = decode(&mut drop[..k])?;
+        let k = (n - done).min(spare.len() as u64) as usize;
+        let got = decode(&mut spare[..k])?;
         done += got as u64;
         if got < k {
             break;

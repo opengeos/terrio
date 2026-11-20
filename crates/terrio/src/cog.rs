@@ -2986,7 +2986,7 @@ impl TiffRaster {
                     let most = batch.min(rows);
                     crate::dataset::fallible::check_usable(how.held(most, row_bytes), || "a TIFF strip row".into())
                         .map_err(Error::ResourceLimit)?;
-                    let mut samples = crate::tiff_strip_rows::samples(self.data_type, most * cw * spp)?;
+                    let mut samples = crate::tiff_strip_rows::sample_buffer(self.data_type, most * cw * spp)?;
                     let mut strip_rows = how.strip(stored, cw, spp, height);
                     let mut row = first;
                     while row < first + rows {
@@ -3183,7 +3183,7 @@ impl TiffRaster {
         let len = crate::dataset::fallible::len(&[bands.len(), rows.len(), cols.len()], what)?;
         let mut out = nodata_filled(&self.tags, self.data_type, bands, rows.len() * cols.len(), len)?;
         crate::dataset::fallible::check_usable(how.held(1, row_bytes), || "a TIFF strip row".into()).map_err(Error::ResourceLimit)?;
-        let mut samples = crate::tiff_strip_rows::samples(self.data_type, cw * spp)?;
+        let mut samples = crate::tiff_strip_rows::sample_buffer(self.data_type, cw * spp)?;
         let mut read_at = |at: u64, buf: &mut [u8]| read_stored(dec, at, buf);
         for (plane, map) in &planes {
             let mut strip: Option<(usize, crate::tiff_strip_rows::StripRows)> = None;
