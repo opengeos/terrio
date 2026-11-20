@@ -1043,13 +1043,13 @@ fn a_decimated_read_of_a_strip_over_the_limit_reads_its_sampled_rows() {
             open(limits).read_resampled(&options).map(|ds| ds.raster.data.to_f64_vec())
         };
         assert_eq!(resampled(limits, (16, 8)).unwrap(), resampled(TiffReadLimits::unlimited(), (16, 8)).unwrap(), "{case}");
-        // Pixels picked in any order, rows repeated.
+        // Pixels picked in any order, rows repeated, a band twice.
         let (pick_cols, pick_rows) = ([63, 0, 5, 5], [47, 3, 3, 20, 0]);
-        let options = WindowOptions { bands: vec![2, 3], overview: None };
+        let options = WindowOptions { bands: vec![2, 3, 2], overview: None };
         let got = open(limits).read_sampled(&pick_cols, &pick_rows, &options).unwrap().expect("read by rows").to_f64_vec();
         let whole = open(TiffReadLimits::unlimited()).read_window(Window::full(cols, rows), &options).unwrap().raster.data.to_f64_vec();
         let mut expected = Vec::new();
-        for b in 0..2 {
+        for b in 0..3 {
             for y in pick_rows {
                 expected.extend(pick_cols.iter().map(|x| whole[(b * rows + y) * cols + x]));
             }

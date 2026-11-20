@@ -3142,12 +3142,16 @@ impl TiffRaster {
         crate::dataset::fallible::reserve(&mut order, rows.len(), what)?;
         order.extend(0..rows.len());
         order.sort_by_key(|&o| rows[o]);
-        // The planes read, with the output band of each of their samples: (plane, [(sample, band)]).
-        let planes: Vec<(usize, Vec<(usize, usize)>)> = if planar {
-            bands.iter().enumerate().map(|(k, b)| (b - 1, vec![(0, k)])).collect()
-        } else {
-            vec![(0, bands.iter().enumerate().map(|(k, b)| (b - 1, k)).collect())]
-        };
+        // The planes read, each once, with the output band of each of their samples: (plane,
+        // [(sample, band)]). A band asked for twice fills two output bands from one decode.
+        let mut planes: Vec<(usize, Vec<(usize, usize)>)> = Vec::new();
+        for (k, &b) in bands.iter().enumerate() {
+            let (plane, sample) = if planar { (b - 1, 0) } else { (0, b - 1) };
+            match planes.iter_mut().find(|(p, _)| *p == plane) {
+                Some((_, map)) => map.push((sample, k)),
+                None => planes.push((plane, vec![(sample, k)])),
+            }
+        }
         // The strips holding the sampled rows: (strip in its plane, rows of the strip).
         let mut strips: Vec<(usize, usize)> = Vec::new();
         crate::dataset::fallible::reserve(&mut strips, rows.len().min(per_plane), what)?;
