@@ -1094,6 +1094,9 @@ fn adjust_max_and_nice_len(max_len: &mut u32, nice_len: &mut u32, remaining: usi
     }
 }
 
+/// The bytes of the scratch ([`SCRATCH`]) a thread keeps once it has compressed a chunk.
+pub(crate) const SCRATCH_BYTES: usize = MF_SIZE * std::mem::size_of::<i16>() + (SEQ_STORE_LENGTH + 1) * std::mem::size_of::<Sequence>();
+
 thread_local! {
     /// The matchfinder (256 KiB) and sequence store (up to 400 KiB), kept per thread:
     /// allocating them for every call costs page faults. The sequence store is reserved, not
