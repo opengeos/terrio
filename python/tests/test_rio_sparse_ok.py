@@ -324,10 +324,10 @@ def test_a_block_is_left_out_only_if_it_reads_the_same_with_the_sidecar(
     terrio.clear_http_cache()
     server = Server(tmp_path)
     try:
-        dense = _reads(tmp_path / "dense.tif", f"{server.url}/dense.tif", monkeypatch)
-        sparse = _reads(tmp_path / "sparse.tif", f"{server.url}/sparse.tif", monkeypatch)
+        dense_reads = _reads(tmp_path / "dense.tif", f"{server.url}/dense.tif", monkeypatch)
+        sparse_reads = _reads(tmp_path / "sparse.tif", f"{server.url}/sparse.tif", monkeypatch)
     finally:
         server.close()
         terrio.clear_http_cache()
-    for read in dense:
-        np.testing.assert_array_equal(sparse[read], dense[read], err_msg=read)
+    for read in dense_reads:
+        np.testing.assert_array_equal(sparse_reads[read], dense_reads[read], err_msg=read)
