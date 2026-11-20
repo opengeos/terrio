@@ -1109,7 +1109,9 @@ fn load_items_from(doc: Value, request: &Request, max_items: usize) -> Result<It
             let mut queue = vec![(doc, loc.to_string(), 0usize)];
             while let Some((doc, base, depth)) = queue.pop() {
                 // The documents of the item links, fetched ahead in runs of consecutive item links,
-                // `ITEM_LINKS_AT_ONCE` at a time, and taken in link order.
+                // `ITEM_LINKS_AT_ONCE` at a time but no more than the items still wanted (a document
+                // past `max_items` is not requested, as one at a time it was not), and taken in link
+                // order.
                 let links: Vec<&Value> = doc["links"].as_array().into_iter().flatten().collect();
                 let mut fetched = std::collections::VecDeque::new();
                 for (i, link) in links.iter().enumerate() {
@@ -1137,7 +1139,11 @@ fn load_items_from(doc: Value, request: &Request, max_items: usize) -> Result<It
                                     .filter_map(|l| l["href"].as_str())
                                     .map(|h| resolve_href(&base, h))
                                     .filter(|h| may_follow(&base, h))
-                                    .take(ITEM_LINKS_AT_ONCE)
+                                    .take(if max_items > 0 {
+                                        ITEM_LINKS_AT_ONCE.min(max_items - out.items.len())
+                                    } else {
+                                        ITEM_LINKS_AT_ONCE
+                                    })
                                     .collect();
                                 let docs = crate::par::map_waiting(run.len(), ITEM_LINKS_AT_ONCE, |k| fetch_link_document(&run[k], true))?;
                                 fetched.extend(docs);
@@ -3600,6 +3606,19 @@ mod tests {
         let (first, truncated) = ids(25);
         assert_eq!(first, all[..25]);
         assert!(truncated);
+
+        // A run broken by another link, and a missing document past max_items, which is never
+        // requested (one at a time, it was not either).
+        let links = json!([{"rel": "item", "href": "i0.json"}, {"rel": "license", "href": "l.txt"},
+            {"rel": "item", "href": "i1.json"}, {"rel": "item", "href": "i2.json"}, {"rel": "item", "href": "missing.json"}]);
+        let collection = json!({"type": "Collection", "stac_version": "1.0.0", "id": "c", "description": "d", "license": "x",
+            "extent": {"spatial": {"bbox": [[0, 0, 1, 1]]}, "temporal": {"interval": [[null, null]]}}, "links": links});
+        let (base, _) = crate::http::test_routes((0..3).map(|k| (format!("/i{k}.json"), 200, Vec::new(), item(k))).collect());
+        let items = load_items(collection.clone(), &format!("{base}/collection.json"), 3).unwrap();
+        let ids: Vec<&str> = items.items.iter().map(|(i, _)| i["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["i0", "i1", "i2"]);
+        assert!(items.truncated);
+        assert!(load_items(collection, &format!("{base}/collection.json"), 0).is_err(), "the missing document fails a full walk");
     }
 
     /// Both rejected pagination paths name the host without credentials or queries.
