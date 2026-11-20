@@ -30,7 +30,12 @@ pub(crate) fn open(path: &Path) -> Result<common::RawRaster> {
     if b.len() < 56 || &b[..4] != b"DSBB" {
         return Err(Error::InvalidData(format!("{}: not a Surfer 6 binary grid", path.display())));
     }
-    let (nx, ny) = (i16::from_le_bytes([b[4], b[5]]) as usize, i16::from_le_bytes([b[6], b[7]]) as usize);
+    let (nx, ny) = (i16::from_le_bytes([b[4], b[5]]), i16::from_le_bytes([b[6], b[7]]));
+    // The sizes are signed: a negative one is refused, as GDAL refuses it.
+    if nx <= 0 || ny <= 0 {
+        return Err(Error::InvalidData(format!("{}: a Surfer 6 grid of {nx} x {ny} cells", path.display())));
+    }
+    let (nx, ny) = (nx as usize, ny as usize);
     let f = |i: usize| f64::from_le_bytes(b[8 + 8 * i..16 + 8 * i].try_into().unwrap_or_default());
     let (xlo, xhi, ylo, yhi) = (f(0), f(1), f(2), f(3));
     let layout = common::Layout {

@@ -243,7 +243,7 @@ fn conversion_json(c: &Conversion) -> Value {
 /// The model as PROJJSON, in PROJ 9.9.0's shape.
 fn render(crs: &Crs) -> Value {
     match crs {
-        Crs::Geodetic { ident, datum, cs, frame_epoch } => geodetic_json(ident, datum, cs, *frame_epoch),
+        Crs::Geodetic { ident, datum, cs, frame_epoch, .. } => geodetic_json(ident, datum, cs, *frame_epoch),
         Crs::Projected { ident, base, conversion, cs } => {
             let mut o = Map::new();
             o.insert("type".into(), json!("ProjectedCRS"));
