@@ -772,137 +772,151 @@ impl SourceRead<'_> {
 
     /// `VRTSimpleSource::GetSrcDstWindow()` for a request covering the whole destination.
     fn window(&self, xsize: f64, ysize: f64, buf_w: usize, buf_h: usize) -> Option<Window> {
-        let [sxo, syo, sxs, sys] = self.src_rect;
-        let [dxo, dyo, dxs, dys] = self.dst_rect;
-        if sxs == 0.0 || sys == 0.0 || dxs == 0.0 || dys == 0.0 {
-            return None;
-        }
-        let (xoff, yoff) = (0.0, 0.0);
-        if xoff >= dxo + dxs || yoff >= dyo + dys || xoff + xsize <= dxo || yoff + ysize <= dyo {
-            return None;
-        }
-        let (mut rxo, mut ryo, mut rxs, mut rys) = (xoff, yoff, xsize, ysize);
-        let (mut mod_x, mut mod_y) = (false, false);
-        if rxo < dxo {
-            rxs = rxs + rxo - dxo;
-            rxo = dxo;
-            mod_x = true;
-        }
-        if ryo < dyo {
-            rys = rys + ryo - dyo;
-            ryo = dyo;
-            mod_y = true;
-        }
-        if rxo + rxs > dxo + dxs {
-            rxs = dxo + dxs - rxo;
-            mod_x = true;
-        }
-        if ryo + rys > dyo + dys {
-            rys = dyo + dys - ryo;
-            mod_y = true;
-        }
-        let (scx, scy) = (sxs / dxs, sys / dys);
-        let mut fxo = (rxo - dxo) * scx + sxo;
-        let mut fyo = (ryo - dyo) * scy + syo;
-        let mut fxs = rxs * scx;
-        let mut fys = rys * scy;
-        if !(fxo.is_finite() && fyo.is_finite() && fxs >= 0.0 && fys >= 0.0) {
-            return None;
-        }
-        if fxo < 0.0 {
-            fxs += fxo;
-            fxo = 0.0;
-            mod_x = true;
-        }
-        if fyo < 0.0 {
-            fys += fyo;
-            fyo = 0.0;
-            mod_y = true;
-        }
-        const EPSILON: f64 = 1e-10;
-        let fractional = [sxo, syo, dxo, dyo].iter().any(|v| (v - v.round()).abs() > EPSILON);
-        let (mut ixo, mut iyo) = if self.resampling == Resampling::Nearest && fractional {
-            ((fxo + 0.5 + EPSILON) as i64, (fyo + 0.5 + EPSILON) as i64)
-        } else {
-            (fxo as i64, fyo as i64)
-        };
-        if fxo - ixo as f64 > 1.0 - 1e-3 {
-            ixo += 1;
-            fxo = ixo as f64;
-        }
-        if fyo - iyo as f64 > 1.0 - 1e-3 {
-            iyo += 1;
-            fyo = iyo as f64;
-        }
-        let mut ixs = ((fxs + 0.5).floor() as i64).max(1);
-        let mut iys = ((fys + 0.5).floor() as i64).max(1);
-        let (w, h) = (self.width as i64, self.height as i64);
-        if ixo + ixs > w {
-            ixs = w - ixo;
-            mod_x = true;
-        }
-        if fxo + fxs > w as f64 {
-            fxs = w as f64 - fxo;
-            mod_x = true;
-        }
-        if iyo + iys > h {
-            iys = h - iyo;
-            mod_y = true;
-        }
-        if fyo + fys > h as f64 {
-            fys = h as f64 - fyo;
-            mod_y = true;
-        }
-        if ixo >= w || iyo >= h || ixs <= 0 || iys <= 0 {
-            return None;
-        }
-        let (mut oxo, mut oyo, mut oxs, mut oys) = (0i64, 0i64, buf_w as i64, buf_h as i64);
-        const EPS: f64 = 1e-3;
-        let src_to_dst = |x: f64, y: f64| ((x - sxo) * dxs / sxs + dxo, (y - syo) * dys / sys + dyo);
-        let (ulx, uly) = src_to_dst(fxo, fyo);
-        let (lrx, lry) = src_to_dst(fxo + fxs, fyo + fys);
-        if mod_x {
-            let scale = buf_w as f64 / xsize;
-            let out_xo = (ulx - xoff) * scale;
-            oxo = if out_xo <= 0.0 { 0 } else { (out_xo + EPS) as i64 };
-            let delta = (out_xo - oxo as f64) / scale / dxs * sxs;
-            fxo -= delta;
-            fxs += delta;
-            let out_right = (lrx - xoff) * scale;
-            if out_right < out_xo {
-                return None;
-            }
-            let right = (out_right - EPS).ceil() as i64;
-            oxs = (right - oxo).min(buf_w as i64 - oxo);
-            fxs += (right as f64 - out_right) / scale / dxs * sxs;
-        }
-        if mod_y {
-            let scale = buf_h as f64 / ysize;
-            let out_yo = (uly - yoff) * scale;
-            oyo = if out_yo <= 0.0 { 0 } else { (out_yo + EPS) as i64 };
-            let delta = (out_yo - oyo as f64) / scale / dys * sys;
-            fyo -= delta;
-            fys += delta;
-            let out_bottom = (lry - yoff) * scale;
-            if out_bottom < out_yo {
-                return None;
-            }
-            let bottom = (out_bottom - EPS).ceil() as i64;
-            oys = (bottom - oyo).min(buf_h as i64 - oyo);
-            fys += (bottom as f64 - out_bottom) / scale / dys * sys;
-        }
-        if oxs <= 0 || oys <= 0 {
-            return None;
-        }
-        Some(Window {
-            req_off: (ixo as usize, iyo as usize),
-            req_size: (ixs as usize, iys as usize),
-            dreq_off: (fxo, fyo),
-            dreq_size: (fxs, fys),
-            out_off: (oxo as usize, oyo as usize),
-            out_size: (oxs as usize, oys as usize),
-        })
+        let nearest = self.resampling == Resampling::Nearest;
+        src_dst_window(self.src_rect, self.dst_rect, (self.width, self.height), nearest, (0.0, 0.0, xsize, ysize), (buf_w, buf_h))
     }
+}
+
+/// `VRTSimpleSource::GetSrcDstWindow()`: the window of a source of `size` (`(width, height)`)
+/// placed by `src_rect` and `dst_rect` that a request `(xoff, yoff, xsize, ysize)` of the
+/// destination read into a buffer of `buf` pixels covers, and where it goes in the buffer; `None`
+/// when it covers none. `nearest`: the request resamples by nearest neighbour.
+pub(crate) fn src_dst_window(
+    src_rect: [f64; 4],
+    dst_rect: [f64; 4],
+    size: (usize, usize),
+    nearest: bool,
+    request: (f64, f64, f64, f64),
+    buf: (usize, usize),
+) -> Option<Window> {
+    let [sxo, syo, sxs, sys] = src_rect;
+    let [dxo, dyo, dxs, dys] = dst_rect;
+    let (xoff, yoff, xsize, ysize) = request;
+    let (buf_w, buf_h) = buf;
+    if sxs == 0.0 || sys == 0.0 || dxs == 0.0 || dys == 0.0 {
+        return None;
+    }
+    if xoff >= dxo + dxs || yoff >= dyo + dys || xoff + xsize <= dxo || yoff + ysize <= dyo {
+        return None;
+    }
+    let (mut rxo, mut ryo, mut rxs, mut rys) = (xoff, yoff, xsize, ysize);
+    let (mut mod_x, mut mod_y) = (false, false);
+    if rxo < dxo {
+        rxs = rxs + rxo - dxo;
+        rxo = dxo;
+        mod_x = true;
+    }
+    if ryo < dyo {
+        rys = rys + ryo - dyo;
+        ryo = dyo;
+        mod_y = true;
+    }
+    if rxo + rxs > dxo + dxs {
+        rxs = dxo + dxs - rxo;
+        mod_x = true;
+    }
+    if ryo + rys > dyo + dys {
+        rys = dyo + dys - ryo;
+        mod_y = true;
+    }
+    let (scx, scy) = (sxs / dxs, sys / dys);
+    let mut fxo = (rxo - dxo) * scx + sxo;
+    let mut fyo = (ryo - dyo) * scy + syo;
+    let mut fxs = rxs * scx;
+    let mut fys = rys * scy;
+    if !(fxo.is_finite() && fyo.is_finite() && fxs >= 0.0 && fys >= 0.0) {
+        return None;
+    }
+    if fxo < 0.0 {
+        fxs += fxo;
+        fxo = 0.0;
+        mod_x = true;
+    }
+    if fyo < 0.0 {
+        fys += fyo;
+        fyo = 0.0;
+        mod_y = true;
+    }
+    const EPSILON: f64 = 1e-10;
+    let fractional = [sxo, syo, dxo, dyo].iter().any(|v| (v - v.round()).abs() > EPSILON);
+    let (mut ixo, mut iyo) =
+        if nearest && fractional { ((fxo + 0.5 + EPSILON) as i64, (fyo + 0.5 + EPSILON) as i64) } else { (fxo as i64, fyo as i64) };
+    if fxo - ixo as f64 > 1.0 - 1e-3 {
+        ixo += 1;
+        fxo = ixo as f64;
+    }
+    if fyo - iyo as f64 > 1.0 - 1e-3 {
+        iyo += 1;
+        fyo = iyo as f64;
+    }
+    let mut ixs = ((fxs + 0.5).floor() as i64).max(1);
+    let mut iys = ((fys + 0.5).floor() as i64).max(1);
+    let (w, h) = (size.0 as i64, size.1 as i64);
+    if ixo + ixs > w {
+        ixs = w - ixo;
+        mod_x = true;
+    }
+    if fxo + fxs > w as f64 {
+        fxs = w as f64 - fxo;
+        mod_x = true;
+    }
+    if iyo + iys > h {
+        iys = h - iyo;
+        mod_y = true;
+    }
+    if fyo + fys > h as f64 {
+        fys = h as f64 - fyo;
+        mod_y = true;
+    }
+    if ixo >= w || iyo >= h || ixs <= 0 || iys <= 0 {
+        return None;
+    }
+    let (mut oxo, mut oyo, mut oxs, mut oys) = (0i64, 0i64, buf_w as i64, buf_h as i64);
+    const EPS: f64 = 1e-3;
+    let src_to_dst = |x: f64, y: f64| ((x - sxo) * dxs / sxs + dxo, (y - syo) * dys / sys + dyo);
+    let (ulx, uly) = src_to_dst(fxo, fyo);
+    let (lrx, lry) = src_to_dst(fxo + fxs, fyo + fys);
+    if mod_x {
+        let scale = buf_w as f64 / xsize;
+        let out_xo = (ulx - xoff) * scale;
+        oxo = if out_xo <= 0.0 { 0 } else { (out_xo + EPS) as i64 };
+        let delta = (out_xo - oxo as f64) / scale / dxs * sxs;
+        fxo -= delta;
+        fxs += delta;
+        let out_right = (lrx - xoff) * scale;
+        if out_right < out_xo {
+            return None;
+        }
+        let right = (out_right - EPS).ceil() as i64;
+        oxs = (right - oxo).min(buf_w as i64 - oxo);
+        fxs += (right as f64 - out_right) / scale / dxs * sxs;
+    }
+    if mod_y {
+        let scale = buf_h as f64 / ysize;
+        let out_yo = (uly - yoff) * scale;
+        oyo = if out_yo <= 0.0 { 0 } else { (out_yo + EPS) as i64 };
+        let delta = (out_yo - oyo as f64) / scale / dys * sys;
+        fyo -= delta;
+        fys += delta;
+        let out_bottom = (lry - yoff) * scale;
+        if out_bottom < out_yo {
+            return None;
+        }
+        let bottom = (out_bottom - EPS).ceil() as i64;
+        oys = (bottom - oyo).min(buf_h as i64 - oyo);
+        fys += (bottom as f64 - out_bottom) / scale / dys * sys;
+    }
+    if oxs <= 0 || oys <= 0 {
+        return None;
+    }
+    Some(Window {
+        req_off: (ixo as usize, iyo as usize),
+        req_size: (ixs as usize, iys as usize),
+        dreq_off: (fxo, fyo),
+        dreq_size: (fxs, fys),
+        out_off: (oxo as usize, oyo as usize),
+        out_size: (oxs as usize, oys as usize),
+    })
 }
 
 /// A read of source pixels one for one ([`SourceRead::plain_copy`]): source pixel
@@ -916,13 +930,16 @@ pub(crate) struct PlainCopy {
     pub dst_rows: std::ops::Range<usize>,
 }
 
-struct Window {
-    req_off: (usize, usize),
-    req_size: (usize, usize),
-    dreq_off: (f64, f64),
-    dreq_size: (f64, f64),
-    out_off: (usize, usize),
-    out_size: (usize, usize),
+pub(crate) struct Window {
+    /// The integer source window GDAL is given: its offset and size.
+    pub(crate) req_off: (usize, usize),
+    pub(crate) req_size: (usize, usize),
+    /// The floating-point source window: its offset and size.
+    pub(crate) dreq_off: (f64, f64),
+    pub(crate) dreq_size: (f64, f64),
+    /// Where the source's pixels go in the buffer: their offset and size.
+    pub(crate) out_off: (usize, usize),
+    pub(crate) out_size: (usize, usize),
 }
 
 /// The type GDAL resamples a source type in (`GDALGetOvrWorkDataType()`) for the averaging and

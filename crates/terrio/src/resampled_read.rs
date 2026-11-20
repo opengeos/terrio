@@ -47,9 +47,9 @@ pub struct ResampledReadOptions {
     /// The source window in full-resolution pixels, `(x_off, y_off, x_size, y_size)`, possibly
     /// fractional, within the raster; `None` for the whole raster. GDAL is given it with the
     /// integer window rasterio gives: its offsets and sizes truncated, sizes at least 1. It may
-    /// end past the raster's right or bottom edge by less than an output pixel, as GDAL's virtual
-    /// datasets request a window of which the source covers the last output pixels in part: its
-    /// integer window is then clamped to the raster.
+    /// start before or end past the raster's edges by less than an output pixel, as GDAL's
+    /// virtual datasets request a window of which the source covers the first or last output
+    /// pixels in part: its integer window is then clamped to the raster.
     pub window: Option<(f64, f64, f64, f64)>,
     /// The output `(width, height)`.
     pub size: (usize, usize),
@@ -168,7 +168,7 @@ struct Read {
 
 /// The source read into memory at once, at most: kernels resample rows of blocks of the buffer
 /// from strips of the source of about this size.
-const STRIP_BYTES: usize = 64 << 20;
+pub(crate) const STRIP_BYTES: usize = 64 << 20;
 
 /// The rows a source without blocks (a raster in memory) is sampled by nearest neighbour in.
 const SAMPLE_ROWS: usize = 256;
@@ -280,8 +280,21 @@ impl LazyRaster {
     /// GDAL's virtual datasets read bands that are not the dataset's first ones in order: never
     /// resampled together.
     pub(crate) fn read_resampled_by_band(&mut self, options: &ResampledReadOptions) -> Result<RasterDataset> {
+        self.read_resampled_by_band_in(options, None)
+    }
+
+    /// [`LazyRaster::read_resampled_by_band`] given also the integer window, which chooses the
+    /// overview, as a virtual dataset's source is given both (`VRTSimpleSource::RasterIO()`).
+    pub(crate) fn read_resampled_by_band_in(
+        &mut self,
+        options: &ResampledReadOptions,
+        window: Option<(usize, usize, usize, usize)>,
+    ) -> Result<RasterDataset> {
         let _scope = self.enter_asset_read()?;
-        let read = self.check_resampled(options, true)?;
+        let mut read = self.check_resampled(options, true)?;
+        if let Some(window) = window {
+            read.full.window = window;
+        }
         let kinds = self.mask_kinds(&read.bands);
         let n = read.buf.0 * read.buf.1;
         let mut data: Option<RasterData> = None;
@@ -333,11 +346,13 @@ impl LazyRaster {
         let (w, h) = (self.width(), self.height());
         let fwindow = o.window.unwrap_or((0.0, 0.0, w as f64, h as f64));
         let (x, y, xs, ys) = fwindow;
-        // Past the right or bottom edge by less than an output pixel at most.
+        // Past an edge by less than an output pixel at most, as the window GDAL's virtual datasets
+        // give a source whose edge falls within an output pixel (`VRTSimpleSource`).
         let ends = |off: f64, len: f64, n: usize, buf: usize| off + len <= n as f64 || off + len - (n as f64) < len / buf as f64;
+        let starts = |off: f64, len: f64, buf: usize| off >= 0.0 || -off < len / buf as f64;
         let inside = [x, y, xs, ys].iter().all(|v| v.is_finite())
-            && x >= 0.0
-            && y >= 0.0
+            && starts(x, xs, bw)
+            && starts(y, ys, bh)
             && xs > 0.0
             && ys > 0.0
             && x < w as f64
@@ -347,8 +362,9 @@ impl LazyRaster {
         if !inside {
             return Err(Error::InvalidArgument(format!("the window {fwindow:?} is empty or not within the {w}x{h} raster")));
         }
-        // The integer window rasterio gives GDAL with the floating-point one, within the raster.
-        let (xi, yi) = (x as usize, y as usize);
+        // The integer window rasterio gives GDAL with the floating-point one, within the raster
+        // (a negative offset as 0).
+        let (xi, yi) = (x.max(0.0) as usize, y.max(0.0) as usize);
         let window = (xi, yi, (xs.max(1.0) as usize).min(w - xi), (ys.max(1.0) as usize).min(h - yi));
         let full = Request { level: None, size: (w, h), window, fwindow };
         let fixed = fixed_level(o.overview, &self.overviews(), bw);
@@ -440,6 +456,19 @@ impl LazyRaster {
 
     /// The pixels of a read, `(bands, rows, cols)`.
     fn resample_bands(&mut self, read: &Read, kinds: &[MaskKind]) -> Result<RasterData> {
+        // A source of several files (a STAC mosaic) reads each from the overview it chooses.
+        if read.fixed.is_none() && !read.full.is_copy(read.buf) {
+            let options = ResampledReadOptions {
+                bands: read.bands.clone(),
+                window: Some(read.full.fwindow),
+                size: read.buf,
+                resampling: read.resampling,
+                overview: OverviewSelection::Auto,
+            };
+            if let Some(data) = self.source_read_resampled(&options)? {
+                return Ok(data);
+            }
+        }
         let parts = self.plan(read, kinds);
         let n = read.buf.0 * read.buf.1;
         let mut out: Option<RasterData> = None;
@@ -1452,6 +1481,22 @@ mod tests {
         LazyRaster::from(ds)
     }
 
+    /// A window may start before the raster by less than an output pixel, as GDAL's virtual
+    /// datasets give one to a source whose edge falls within an output pixel: its pixels are
+    /// sampled where GDAL samples them, the first ones clamped to the raster.
+    #[test]
+    fn windows_start_before_the_raster_by_less_than_an_output_pixel() {
+        let mut source = raster(RasterData::U8((0..100).map(|i| (i % 10) as u8).collect()), 10, 10, 1, None);
+        let read = |source: &mut LazyRaster, x: f64| {
+            source.read_resampled(&ResampledReadOptions { window: Some((x, 0.0, 10.5, 10.0)), size: (5, 5), ..Default::default() })
+        };
+        // Columns sampled at (i + 0.5) * 2.1 - 0.5: 0.55, 2.65, 4.75, 6.85, 8.95.
+        let ds = read(&mut source, -0.5).unwrap();
+        assert_eq!(ds.raster.data.to_f64_vec()[..5], [0.0, 2.0, 4.0, 6.0, 8.0]);
+        // More than an output pixel (2.1 source pixels) before it: refused.
+        assert!(read(&mut source, -2.2).is_err());
+    }
+
     /// GDAL 3.13.3 preserves in-memory NBITS through an AUTO RasterIO copy.
     #[test]
     fn auto_memory_reads_retain_packed_metadata() {
@@ -1638,13 +1683,14 @@ mod tests {
         assert!(read(&mut r, ResampledReadOptions { size: (0, 2), ..o.clone() }).contains("empty"));
         assert!(read(&mut r, ResampledReadOptions { bands: vec![2], ..o.clone() }).contains("no band 2"));
         // Windows past the raster, and empty ones.
-        for window in [(3.0, 0.0, 2.0, 2.0), (-0.5, 0.0, 2.0, 2.0), (0.0, 0.0, 0.0, 2.0), (0.0, 0.0, f64::NAN, 1.0)] {
+        for window in [(3.0, 0.0, 2.0, 2.0), (-1.0, 0.0, 2.0, 2.0), (0.0, 0.0, 0.0, 2.0), (0.0, 0.0, f64::NAN, 1.0)] {
             assert!(read(&mut r, ResampledReadOptions { window: Some(window), ..o.clone() }).contains("not within"), "{window:?}");
         }
         assert!(read(&mut r, ResampledReadOptions { resampling: Resampling::Max, ..o.clone() }).contains("warps"));
-        // Past the edge by less than an output pixel (half the window's width here): read, as
+        // Past an edge by less than an output pixel (half the window's width here): read, as
         // GDAL's virtual datasets request it; by a whole one, refused.
         assert!(r.read_resampled(&ResampledReadOptions { window: Some((0.0, 0.0, 7.5, 4.0)), ..o.clone() }).is_ok());
+        assert!(r.read_resampled(&ResampledReadOptions { window: Some((-0.5, 0.0, 2.0, 2.0)), ..o.clone() }).is_ok());
         assert!(read(&mut r, ResampledReadOptions { window: Some((0.0, 0.0, 8.0, 4.0)), ..o.clone() }).contains("not within"));
         // GDAL averages the colors of a paletted band at full resolution.
         let mut ds = RasterDataset::new(

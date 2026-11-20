@@ -357,6 +357,13 @@ pub(crate) trait WindowSource: Send + Sync {
     /// Reads a window of some bands (numbered from 1) of a level (0 for full resolution, `i + 1`
     /// for overview `i`), band after band.
     fn read(&mut self, level: usize, window: Window, bands: &[usize]) -> Result<RasterData>;
+    /// Reads a window of some bands resampled to another size (from overviews `RasterIO`
+    /// chooses), as GDAL reads a virtual dataset of several sources: each source read for its
+    /// part of the output, from the overview it chooses itself. `None` for a source without such
+    /// a read, whose levels [`LazyRaster::read_resampled`] resamples.
+    fn read_resampled(&mut self, _options: &crate::ResampledReadOptions) -> Result<Option<RasterData>> {
+        Ok(None)
+    }
     /// Reads the pixels at columns `cols` of rows `rows` of a level (see
     /// [`LazyRaster::read_sampled`]), when the source reads them from the blocks that hold them
     /// alone; `None` for a source that would read the window spanning them.
@@ -2032,6 +2039,14 @@ impl LazyRaster {
         })()?;
         t.levels[overview + 1].resampling = Some(value.clone());
         value
+    }
+
+    /// [`WindowSource::read_resampled`] of a raster another driver reads; `None` for others.
+    pub(crate) fn source_read_resampled(&mut self, options: &crate::ResampledReadOptions) -> Result<Option<RasterData>> {
+        match &mut self.inner {
+            Inner::Source(_, source) => source.read_resampled(options),
+            _ => Ok(None),
+        }
     }
 
     /// A raster read by window by `source`, described by `header` (a dataset without pixels).
