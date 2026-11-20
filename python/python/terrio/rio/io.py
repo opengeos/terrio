@@ -127,7 +127,9 @@ def _in_memory_limit() -> int:
         return _IN_MEMORY_LIMIT
 
 
-def _tile_rows_decoded_once(source: Any, rows: int, unit: int = 1, itemsize: int = 1) -> int:
+def _tile_rows_decoded_once(
+    source: DatasetReader, rows: int, unit: int = 1, itemsize: int = 1
+) -> int:
     """The rows of a slab of a copy's source, so that a JPEG 2000 source decodes each tile once.
 
     A JPEG 2000 read decodes every tile its window crosses and keeps none of them for the next
@@ -2751,12 +2753,15 @@ class DatasetWriter(DatasetReader):
             else self._dtype
         )
 
-    def _slabs(self, source: Any = None) -> Iterator[tuple[int, int]]:
-        """Rows of blocks of about 16 MB.
+    def _slabs(self, source: DatasetReader | None = None) -> Iterator[tuple[int, int]]:
+        """Rows of blocks of about 16 MB, or whole rows of a JPEG 2000 source's tiles.
+
+        A copy from a JPEG 2000, which keeps none of the tiles it decodes, reads a whole row of
+        its tiles at a time, within the block cache's size rather than 16 MB
+        (`_tile_rows_decoded_once`).
 
         Args:
-            source: The dataset a copy reads them from, whose JPEG 2000 tiles are then read a
-                whole row at a time (`_tile_rows_decoded_once`); None otherwise.
+            source: The dataset a copy reads the rows from; None otherwise.
 
         Yields:
             tuple: `(first row, number of rows)`.
@@ -3736,7 +3741,9 @@ class DatasetWriter(DatasetReader):
             # Read taller source blocks together within a 16 MiB slab budget (or one output
             # tile row), then feed the COG writer a tile row at a time. A whole-image strip
             # taller than a tile row is split in half or smaller. Small images can fit in one slab.
-            # A JPEG 2000 is read a whole row of its tiles at a time (`_tile_rows_decoded_once`).
+            # A JPEG 2000, which keeps none of the tiles it decodes, is read instead a whole row
+            # of its tiles at a time, within the block cache's size rather than the 16 MiB budget
+            # (`_tile_rows_decoded_once`).
             write_step = self.structure.block_shape[0] if cog and source is not None else 0
             step = write_step
             if step and source is not None:

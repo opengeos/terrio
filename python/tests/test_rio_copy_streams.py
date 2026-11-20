@@ -358,11 +358,14 @@ def block_cache_size():
         ("jp2", "COG", None, 1 << 20, 512),
         # A GeoTIFF's decoded tiles stay in the block cache between slabs within the budget.
         ("tif", "COG", None, None, 512),
-        # Over the in-memory limit, a GeoTIFF is written in rows of about 16 MB (1,023 here).
+        # Over the in-memory limit, a GeoTIFF is read in rows of about 16 MB, 1,023 here: raised
+        # to a row of tiles.
         ("jp2", "GTiff", "1", None, 1024),
-        # Below it, a GeoTIFF is held, read in rows of about 64 MB of 8-byte values (1,023 here).
+        # Below it, a GeoTIFF is held, read in rows of 64 MB of 8-byte values, 1,023 here: raised
+        # to a row of tiles.
         ("jp2", "GTiff", None, None, 1024),
-        # Rows of about 16 MB holding more than a row of tiles (1,398 here) hold a whole number.
+        # Rows of about 16 MB holding more than a row of tiles, 1,398 here: rounded down to a
+        # whole number of rows of tiles.
         ("jp2-rgb", "GTiff", "1", None, 1024),
         # A row of tiles counts every band: 12,288,000 bytes, more than this block cache.
         ("jp2-rgb", "GTiff", None, 8 << 20, 699),
