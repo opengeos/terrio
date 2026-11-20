@@ -379,7 +379,9 @@ mod tests {
     }
 
     /// Catches a GRIB path that is no regular file read by position: a FIFO has no length to read
-    /// it by, so it is read whole, and gives what the bytes it is fed give in memory.
+    /// it by, so it is read whole, and gives what the bytes it is fed give in memory. Opened through
+    /// the GRIB driver: a public open tries other drivers first, which read the first bytes of a
+    /// FIFO fed once, before the GRIB driver can.
     #[cfg(unix)]
     #[test]
     fn a_fifo_is_read_whole() {
@@ -393,7 +395,7 @@ mod tests {
         };
         let (done, opened) = std::sync::mpsc::channel();
         let path = fifo.to_str().unwrap().to_string();
-        std::thread::spawn(move || done.send(outcome(crate::LazyRaster::open(&path))));
+        std::thread::spawn(move || done.send(outcome(super::super::open_lazy(&path).expect("a GRIB name"))));
         let read = opened.recv_timeout(std::time::Duration::from_secs(10)).expect("the open did not end");
         let _ = writer.join();
         assert_eq!(read, outcome(super::super::open_lazy_bytes(bytes)));
