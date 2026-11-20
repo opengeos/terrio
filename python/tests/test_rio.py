@@ -882,6 +882,60 @@ def test_warped_vrt_reads_only_the_source_it_needs(dem):
         assert np.array_equal(vrt.read(), expected)
 
 
+@pytest.mark.parametrize(
+    "crs, transform, size",
+    [
+        ("EPSG:32611", Affine(10, 0, 503010, 0, -10, 4097020), (50, 40)),  # upsampled inside
+        ("EPSG:32611", Affine(60, 0, 501000, 0, -60, 4099000), (40, 30)),  # downsampled
+        ("EPSG:32611", Affine(10, 0, 508500, 0, -10, 4094100), (90, 70)),  # over the edges
+        ("EPSG:32611", Affine(10, 0, 600000, 0, -10, 4000000), (20, 20)),  # outside
+        ("EPSG:4326", Affine(0.0002, 0, -116.96, 0, -0.0002, 37.03), (60, 50)),
+        ("EPSG:32612", Affine(25, 0, -31000, 0, -25, 4115000), (60, 50)),  # the next zone
+    ],
+)
+@pytest.mark.parametrize(
+    "resampling",
+    [
+        Resampling.nearest,
+        Resampling.bilinear,
+        Resampling.cubic,
+        Resampling.lanczos,
+        Resampling.average,
+        Resampling.mode,
+        Resampling.max,
+    ],
+)
+def test_reproject_of_a_band_reads_only_the_source_it_needs(dem, crs, transform, size, resampling):
+    """A band warped into a given grid reads only its source window, as GDAL's warper does,
+    and gives what warping the whole band in memory gives."""
+    path, _ = dem
+    w, h = size
+    with rio.open(path) as ds:
+        expected = np.zeros((2, h, w), "int16")
+        warp.reproject(
+            ds.read(),
+            expected,
+            src_transform=ds.transform,
+            src_crs=ds.crs,
+            src_nodata=ds.nodata,
+            dst_transform=transform,
+            dst_crs=crs,
+            resampling=resampling,
+        )
+        full_read = ds.read
+
+        def window_read(*args, **kwargs):
+            assert kwargs.get("window") is not None, "the whole band was read"
+            return full_read(*args, **kwargs)
+
+        ds.read = window_read
+        out = np.zeros((2, h, w), "int16")
+        warp.reproject(
+            rio.band(ds, [1, 2]), out, dst_transform=transform, dst_crs=crs, resampling=resampling
+        )
+        assert np.array_equal(out, expected)
+
+
 def test_env_and_session():
     import os
 
