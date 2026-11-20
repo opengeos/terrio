@@ -214,7 +214,7 @@ def _copy_dataset(
     from terrio import _terrio
     from terrio.rio import open as rio_open
     from terrio.rio.dtypes import _getnpdtype
-    from terrio.rio.io import _tile_rows_decoded_once
+    from terrio.rio.io import _copy_dataset_mask, _tile_rows_decoded_once
     from terrio.rio.windows import Window
 
     src._check_open()
@@ -323,7 +323,7 @@ def _copy_dataset(
             w = Window(0, y, src.width, min(rows, src.height - y))
             dst.write(src._read_for_copy(window=w), window=w)
             if per_dataset_mask:
-                dst.write_mask(src.dataset_mask(window=w), window=w)
+                dst.write_mask(_copy_dataset_mask(src, w), window=w)
 
 
 def copyfiles(src: Any, dst: Any) -> None:

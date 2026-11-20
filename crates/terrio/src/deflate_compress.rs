@@ -1094,8 +1094,12 @@ fn adjust_max_and_nice_len(max_len: &mut u32, nice_len: &mut u32, remaining: usi
     }
 }
 
-/// The bytes of the scratch ([`SCRATCH`]) a thread keeps once it has compressed a chunk.
-pub(crate) const SCRATCH_BYTES: usize = MF_SIZE * std::mem::size_of::<i16>() + (SEQ_STORE_LENGTH + 1) * std::mem::size_of::<Sequence>();
+/// The sequences [`SCRATCH`]'s store is reserved for.
+const SEQ_CAPACITY: usize = SEQ_STORE_LENGTH + 1;
+
+/// The bytes of the scratch ([`SCRATCH`]) a thread keeps once it has compressed a chunk: its
+/// matchfinder and its sequence store's reserve.
+pub(crate) const SCRATCH_BYTES: usize = std::mem::size_of::<Matchfinder>() + SEQ_CAPACITY * std::mem::size_of::<Sequence>();
 
 thread_local! {
     /// The matchfinder (256 KiB) and sequence store (up to 400 KiB), kept per thread:
@@ -1111,7 +1115,7 @@ thread_local! {
 fn scratch() -> (Box<Matchfinder>, Vec<Sequence>) {
     let (mut tab, seqs) = SCRATCH.take().unwrap_or_else(|| {
         let tab = vec![MF_INITVAL; MF_SIZE].into_boxed_slice().try_into().unwrap();
-        (tab, Vec::with_capacity(SEQ_STORE_LENGTH + 1))
+        (tab, Vec::with_capacity(SEQ_CAPACITY))
     });
     tab.fill(MF_INITVAL);
     (tab, seqs)
@@ -1347,6 +1351,17 @@ pub(crate) fn zlib_compress_rows(input: &[u8], row_len: usize, level: Level) -> 
 #[cfg(test)]
 mod tests {
     use super::{Level, zlib_compress, zlib_compress_rows};
+
+    /// What a thread keeps once it has compressed ([`super::SCRATCH`]) is [`super::SCRATCH_BYTES`],
+    /// which the COG writer's memory check counts for each thread of the pool: a change to the
+    /// scratch's types or reserve that the constant does not follow fails here.
+    #[test]
+    fn a_thread_keeps_scratch_bytes_once_it_has_compressed() {
+        let _ = zlib_compress(&lcg(1 << 20, 3, 4), Level::DEFAULT);
+        let (tab, seqs) = super::SCRATCH.take().expect("the scratch is kept");
+        let kept = std::mem::size_of_val(&*tab) + seqs.capacity() * std::mem::size_of::<super::Sequence>();
+        assert_eq!(kept, super::SCRATCH_BYTES);
+    }
 
     /// The output equals libdeflate's at level 6 (`libdeflate_zlib_compress`), given by its length
     /// and CRC-32: text, incompressible bytes (stored blocks), a smooth Int16 tile of 512 KiB (several

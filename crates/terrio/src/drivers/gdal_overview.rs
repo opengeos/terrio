@@ -265,7 +265,9 @@ impl Plan {
     /// The most bytes [`block_row`] holds at once for a block row of `bands` bands of `t` samples:
     /// for each of its blocks (the thread pool may compute all of them at once), the source window,
     /// its weights and its copy in the work type, the kernel's passes and values; then the blocks'
-    /// values and the block row they are copied into.
+    /// values and the block row they are copied into. A block computed in two pieces of its rows
+    /// ([`row_pieces`]) shares these: each piece copies only its kernel's scratch for a row (a row's
+    /// weights).
     pub(crate) fn block_row_bytes(&self, bands: usize, t: DataType) -> usize {
         let (size, work) = (t.size_bytes(), work_size(self.method, t) as usize);
         let (dw, n) = (self.dst.0, self.chunk.1.min(self.dst.1));
@@ -276,9 +278,10 @@ impl Plan {
         let blocks = (0..dw).step_by(self.chunk.0.max(1)).fold(0usize, |total, x0| {
             let s = self.span(x0, self.chunk.0.min(dw - x0), self.rx, self.src.0, self.dst.0);
             let (window, columns) = ((s.qn as usize).saturating_mul(ny), s.dst_n);
-            // The window, its weights and work-type copy, and its row ranges; the horizontal pass
-            // (`f64`) with its weights (`u8`); the column weights; the vertical pass (`f64`) and the
-            // values.
+            // The window, its weights and work-type copy, and its row ranges (two `usize` a row); the
+            // horizontal pass (`f64`) with its weights (`u8`); the columns' weights and spans
+            // (`convolution`'s `taps` weights and 16-byte span, or `average`'s 40-byte span, a
+            // column); the vertical pass (`f64`) and the values.
             let bytes = [
                 window.saturating_mul(size + 1 + work),
                 ny.saturating_mul(16),

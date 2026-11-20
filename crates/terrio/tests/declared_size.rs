@@ -2137,8 +2137,9 @@ fn a_masked_cog_call_is_checked_for_the_most_it_allocates() {
 /// Writes `raster` as a COG with a mask at `path` with `options`, in calls of `step` rows (`slab`:
 /// the values and mask of rows `y0..y1`), measuring each call's peak: the most bytes alive at once,
 /// beyond those alive once the writer was created, from the call (the rows of tiles compressed
-/// before it spooled first) until the next call spools those compressed meanwhile, or, for the last,
-/// until the file is finished, its rows held until then. Then writes it again, giving each call
+/// before it spooled first) until the next call's rows are made (the block rows and tiles it left
+/// being computed meanwhile included), or, for the last, until the file is finished, its rows held
+/// until then. Then writes it again, giving each call
 /// first with a byte less of usable memory than its peak, which must refuse it (the first call before
 /// any allocation of 1 MiB; at later ones, block rows of earlier calls may be allocating), then, to
 /// go on to the next call and to the end, with the limit lifted.
@@ -2158,10 +2159,11 @@ fn checked_for_their_peaks(
         let mut peaks = Vec::new();
         for (call, y0) in (0..rows).step_by(step).enumerate() {
             let y1 = (y0 + step).min(rows);
-            let (values, mask) = slab(y0, y1);
+            // The last call's peak, read before this call's rows are made.
             if call > 0 {
                 peaks.push(PEAK.load(Ordering::Relaxed) - before);
             }
+            let (values, mask) = slab(y0, y1);
             let w = writer.as_mut().unwrap();
             w.write_rows(&none, 0, Some(&[])).unwrap();
             if let Some(peak) = limits.map(|peaks| peaks[call]) {
@@ -2176,7 +2178,10 @@ fn checked_for_their_peaks(
                     return peaks;
                 }
             }
-            PEAK.store(LIVE.load(Ordering::Relaxed), Ordering::Relaxed);
+            // The peak from here: what is alive, without losing what a block row or row of tiles still
+            // being computed allocates meanwhile (zeroed first, then raised to what is alive).
+            PEAK.store(0, Ordering::Relaxed);
+            PEAK.fetch_max(LIVE.load(Ordering::Relaxed), Ordering::Relaxed);
             w.write_rows(&values, y1 - y0, Some(&mask)).unwrap();
             if y1 == rows {
                 writer.take().unwrap().finish().unwrap();

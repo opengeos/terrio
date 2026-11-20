@@ -809,12 +809,15 @@ COPIES_OF_A_FAILING_SOURCE = {
     "gtiff-over-the-in-memory-limit": ("GTiff", dict(compress="lzw", tiled=True), "1", None),
     "cog-of-a-masked-source": ("COG", dict(compress="deflate"), None, "mask"),
     "gtiff-over-the-limit-of-a-masked-source": ("GTiff", dict(compress="lzw"), "1", "mask"),
+    # Held, its mask read in rows into the dataset.
+    "gtiff-below-the-limit-of-a-masked-source": ("GTiff", dict(compress="lzw"), None, "mask"),
 }
 # Copies of a source whose full-resolution image reads, but whose mask or first overview has a
 # tile that cannot be read: the copy, the NewSubfileType of that image (4 a mask, 1 an
-# overview), and the error the copy raises. The mask is read in the rows of the pixels as the
-# file is written, and its read error is wrapped as a band's is ("Read failed", in the write's
-# error); the overviews a COG copies are read when the dataset is written, as it closes.
+# overview), and the error the copy raises. The mask's read error is wrapped as a band's is
+# ("Read failed"): read in the rows of the pixels as the file is written, in the write's error;
+# read into a held copy, as it is. The overviews a COG copies are read when the dataset is
+# written, as it closes.
 COPIES_OF_A_SOURCE_WHOSE_MASK_OR_OVERVIEW_FAILS = {
     "cog-of-a-masked-source-whose-mask-fails": (
         "cog-of-a-masked-source",
@@ -827,6 +830,12 @@ COPIES_OF_A_SOURCE_WHOSE_MASK_OR_OVERVIEW_FAILS = {
         4,
         rio.errors.RasterioIOError,
         "Write failed: Read failed: corrupt deflate",
+    ),
+    "gtiff-below-the-limit-of-a-masked-source-whose-mask-fails": (
+        "gtiff-below-the-limit-of-a-masked-source",
+        4,
+        rio.errors.RasterioIOError,
+        "^Read failed: corrupt deflate",
     ),
     "cog-copying-overviews-whose-overview-fails": (
         "cog-copying-overviews",
@@ -895,6 +904,43 @@ def test_a_copy_whose_source_fails_leaves_its_destination_as_it_was(
         assert existing.read_bytes() == before
     if onto == "a-symlink":
         assert out.is_symlink() and out.resolve() == target.resolve()
+
+
+@pytest.mark.parametrize("resampled", [False, True], ids=["plain", "resampled"])
+def test_a_dataset_mask_that_fails_to_read_raises_rasterioioerror(tmp_path, resampled):
+    """A mask tile that cannot be read raises `RasterioIOError` ("Read failed"), as a pixel tile
+    does, whether the mask is read as it is stored or resampled."""
+    src = failing_source(tmp_path / "src.tif", "mask", 4)
+    options = dict(out_shape=(HEIGHT // 2, WIDTH // 2), resampling=Resampling.average)
+    with rio.open(src) as ds, pytest.raises(rio.errors.RasterioIOError, match="^Read failed"):
+        ds.dataset_mask(**(options if resampled else {}))
+
+
+class MaskReadFails(DatasetReader):
+    """A dataset whose dataset mask fails to read with the core's I/O error."""
+
+    def dataset_mask(self, *args, **kwargs):
+        raise terrio.errors.TerrioIOError("the mask cannot be read")
+
+
+@pytest.mark.parametrize("route", ["cog-rows", "gtiff-rows", "gtiff-held", "writer-held"])
+def test_a_copy_s_mask_that_fails_to_read_raises_rasterioioerror(tmp_path, monkeypatch, route):
+    """Wherever a copy reads its source's mask, in the rows of the pixels it writes (a COG, a
+    GeoTIFF over the in-memory limit), in rows into the dataset that holds them (a GeoTIFF below
+    the limit), or whole when a writer given its source no longer writes in rows, a mask that fails
+    to read raises `RasterioIOError` ("Read failed"), as pixels that fail to read do."""
+    src, out = source(tmp_path / "src.tif", mask=MASK), str(tmp_path / "out.tif")
+    if route == "gtiff-rows":
+        monkeypatch.setenv("TERRIO_RIO_IN_MEMORY_LIMIT", "1")
+    with MaskReadFails(src) as ds, pytest.raises(rio.errors.RasterioIOError) as raised:
+        if route == "writer-held":
+            profile = dict(PROFILE, driver="COG", count=3, dtype="uint8", compress="deflate")
+            with rio.open(out, "w", **profile, _copy_of=ds, _copy_mask=True) as dst:
+                dst.build_overviews([2], Resampling.nearest)
+        else:
+            driver = "COG" if route == "cog-rows" else "GTiff"
+            rio_shutil.copy(ds, out, driver=driver, compress="deflate", tiled=True)
+    assert "Read failed: the mask cannot be read" in str(raised.value)
 
 
 def test_an_interrupted_held_copy_writes_nothing(tmp_path):

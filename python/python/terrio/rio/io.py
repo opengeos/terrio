@@ -164,6 +164,28 @@ def _tile_rows_decoded_once(source: DatasetReader, rows: int, itemsize: int = 1)
     return rows
 
 
+def _copy_dataset_mask(source: DatasetReader, window: Window | None = None) -> np.ndarray:
+    """A copy's source's dataset mask, in `window`.
+
+    A mask that fails to read raises as pixels that fail to read do, whatever the source and
+    wherever the copy reads it (whole, or in the rows of its pixels).
+
+    Args:
+        source: The dataset copied.
+        window: The window, or None for the whole raster.
+
+    Returns:
+        numpy.ndarray: The 2-D mask, uint8.
+
+    Raises:
+        RasterioIOError: If the mask cannot be read.
+    """
+    try:
+        return source.dataset_mask(window=window)
+    except TerrioIOError as err:
+        raise RasterioIOError(f"Read failed: {err}") from err
+
+
 # Resampling names for overviews.
 _OVERVIEW_RESAMPLING = {
     Resampling.nearest: "nearest",
@@ -1899,11 +1921,20 @@ class DatasetReader(DatasetBase):
 
         Returns:
             numpy.ndarray: The mask, 0 or 255 (or between, resampled).
+
+        Raises:
+            RasterioIOError: If the mask cannot be read.
         """
         raster = self._raster
 
         def read(bands: Sequence[int], w: tuple[int, int, int, int], level: int | None) -> Any:
-            m = raster.read_mask(window=w, overview=level)
+            # A mask that fails to read raises as pixels that fail to read do (`_read_level`).
+            try:
+                m = raster.read_mask(window=w, overview=level)
+            except ResourceLimitError:
+                raise
+            except Exception as err:
+                raise RasterioIOError(f"Read failed: {err}") from err
             if m is None:
                 return np.full((1, w[3], w[2]), 255, np.uint8)
             return np.asarray(m)[np.newaxis]
@@ -2219,6 +2250,7 @@ class DatasetReader(DatasetBase):
 
         Raises:
             ValueError: If `out` and `out_shape` are both given or do not fit.
+            RasterioIOError: If a mask, or the pixels it is computed from, cannot be read.
         """
         self._readable()
         idx, return2d, win, win_shape = self._prepare(indexes, window, boundless)
@@ -2264,6 +2296,9 @@ class DatasetReader(DatasetBase):
 
         Returns:
             numpy.ndarray: The 2-D mask, uint8.
+
+        Raises:
+            RasterioIOError: If the mask, or the pixels it is computed from, cannot be read.
         """
         kwargs: dict[str, Any] = {
             "out": out,
@@ -3503,7 +3538,7 @@ class DatasetWriter(DatasetReader):
             # source's mask unless one was written to it.
             self._data = np.require(self._copy_of._read_for_copy(), dtype=self._buffer_dtype)
             if self._copy_mask and self._mask is None:
-                self._mask = self._copy_of.dataset_mask()
+                self._mask = _copy_dataset_mask(self._copy_of)
             self._copy_of = None
         raster: Any = None
         if not streaming:
@@ -3798,11 +3833,7 @@ class DatasetWriter(DatasetReader):
                     else np.ascontiguousarray(self._mask[y : y + n])
                 )
                 if m is None and copy_mask:
-                    try:
-                        m = source.dataset_mask(window=Window(0, y, self.width, n))
-                    except TerrioIOError as err:
-                        # The core's error, which the pixels' read wraps too.
-                        raise RasterioIOError(f"Read failed: {err}") from err
+                    m = _copy_dataset_mask(source, Window(0, y, self.width, n))
                 if write_step:
                     # A COG copy, a row of tiles at a time, with its mask's rows. Each tile row
                     # as a view of the slab: the writer copies it (a band-strided view through a
