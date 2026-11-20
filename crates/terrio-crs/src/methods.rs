@@ -368,28 +368,35 @@ pub(crate) fn conversion_from_proj(p: &Params) -> Result<Conversion, String> {
                 ("Hotine Oblique Mercator (variant B)", 9815, values, written)
             }
         }
-        "krovak" => {
+        // Krovak Modified shares Krovak's constants; PROJ 9.9.0 writes neither its evaluation point
+        // nor its coefficients.
+        "krovak" | "mod_krovak" => {
             // As terrio and PROJ compute it: their defaults, and the pseudo standard parallel fixed
             // (PROJ ignores `lat_1` and `lat_ts`). The co-latitude of the cone axis is fixed too:
             // another `alpha` (which PROJ reads) is refused.
-            if let Some(alpha) = deg("alpha").filter(|a| (a - 30.288_139_752_777_8).abs() > 1e-6) {
-                return Err(format!("a Krovak projection with +alpha={alpha}"));
+            let modified = proj == "mod_krovak";
+            let alpha = deg("alpha").unwrap_or(30.288_139_752_777_8);
+            if (alpha - 30.288_139_752_777_8).abs() > 1e-6 {
+                return Err(format!("a {} projection with +alpha={alpha}", if modified { "Krovak Modified" } else { "Krovak" }));
             }
             let values = vec![
                 (LAT_CENTRE, deg("lat_0").unwrap_or(49.5)),
                 (LON_ORIGIN, deg("lon_0").unwrap_or(24.0 + 50.0 / 60.0)),
-                (CO_LAT_CONE, 30.288_139_752_777_8),
+                // Krovak Modified's as given, as PROJ 9.9.0 writes it.
+                (CO_LAT_CONE, if modified { alpha } else { 30.288_139_752_777_8 }),
                 (LAT_PSEUDO_SP, 78.5),
                 (K_PSEUDO_SP, num("k_0").or_else(|| num("k")).unwrap_or(0.9999)),
                 (FE, x0),
                 (FN, y0),
             ];
             let written: &[&str] = &["lat_0", "lon_0", "alpha", "lat_1", "lat_ts", "k", "k_0", "x_0", "y_0"];
-            if p.str("axis") == Some("swu") {
-                ("Krovak", 9819, values, written)
-            } else {
-                ("Krovak (North Orientated)", 1041, values, written)
-            }
+            let (name, code) = match (modified, p.str("axis") == Some("swu")) {
+                (false, true) => ("Krovak", 9819),
+                (false, false) => ("Krovak (North Orientated)", 1041),
+                (true, true) => ("Krovak Modified", 1042),
+                (true, false) => ("Krovak Modified (North Orientated)", 1043),
+            };
+            (name, code, values, written)
         }
         // Its latitude of origin changes nothing (PROJ writes none); a `k_0` without `lat_ts` is
         // not written. On a sphere, the spherical method, as PROJ 9.9.0 writes it.
@@ -410,9 +417,25 @@ pub(crate) fn conversion_from_proj(p: &Params) -> Result<Conversion, String> {
         }
         // A method PROJ has without an EPSG code (0 here).
         "mill" => ("Miller Cylindrical", 0, vec![(LON_NAT, lon0), (FE, x0), (FN, y0)], &["lon_0", "x_0", "y_0"]),
+        // On a sphere, PROJ 9.9.0 ignores `+hyperbolic` and writes Cassini-Soldner.
+        "cass" if p.has("hyperbolic") => {
+            let (name, code) = if sphere { ("Cassini-Soldner", 9806) } else { ("Hyperbolic Cassini-Soldner", 9833) };
+            (name, code, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], &["lat_0", "lon_0", "x_0", "y_0", "hyperbolic"])
+        }
         "cass" => ("Cassini-Soldner", 9806, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], ORIGIN),
         "poly" => ("American Polyconic", 9818, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], ORIGIN),
         "nzmg" => ("New Zealand Map Grid", 9811, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], ORIGIN),
+        // On a sphere, PROJ 9.9.0 ignores `+guam` and writes Azimuthal Equidistant.
+        "aeqd" if p.has("guam") => {
+            let (name, code) = if sphere { ("Azimuthal Equidistant", 1125) } else { ("Guam Projection", 9831) };
+            (name, code, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], &["lat_0", "lon_0", "x_0", "y_0", "guam"])
+        }
+        "col_urban" => (
+            "Colombia Urban",
+            1052,
+            vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0), (H_PLANE_ORIGIN, num("h_0").unwrap_or(0.0))],
+            &["lat_0", "lon_0", "x_0", "y_0", "h_0"],
+        ),
         "aeqd" => ("Azimuthal Equidistant", 1125, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], ORIGIN),
         "ortho" => ("Orthographic", 9840, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], ORIGIN),
         "eqearth" => ("Equal Earth", 1078, vec![(LON_NAT, lon0), (FE, x0), (FN, y0)], &["lon_0", "x_0", "y_0"]),

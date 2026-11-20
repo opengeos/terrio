@@ -607,6 +607,51 @@ struct Args<'a> {
     /// The overview's size (`nOvrXSize`, `nOvrYSize`): the buffer's, past its virtual offset, in
     /// `RasterIOResampled`.
     ovr: (i64, i64),
+    /// The pieces of work the block's rows are split into, computed on the thread pool when there
+    /// are several (see [`rows_in_pieces`]); 1 computes them on the calling thread.
+    pieces: usize,
+}
+
+/// Computes the rows of `out` (`width` values each) with `f(scratch, row, values)`, the rows
+/// numbered from 0: in `pieces` runs of consecutive rows on the thread pool, each run with a copy
+/// of `scratch` of its own, or all of them on the calling thread. Each row is computed alone, so
+/// the values do not depend on the runs.
+fn rows_in_pieces<V: Send, S: Clone + Sync, F: Fn(&mut S, usize, &mut [V]) + Sync + Send>(
+    out: &mut [V],
+    width: usize,
+    pieces: usize,
+    scratch: S,
+    f: F,
+) {
+    let width = width.max(1);
+    let rows = out.len() / width;
+    let per = rows.div_ceil(pieces.max(1)).max(1);
+    if per >= rows {
+        rows_from(0, out, width, &scratch, &f);
+    } else {
+        crate::par::chunks_mut(out, per * width, |k, values| rows_from(k * per, values, width, &scratch, &f));
+    }
+}
+
+/// The rows of `values` from row `first`, for [`rows_in_pieces`]. Never inlined, so that rows
+/// computed in pieces and in one run through the same instructions: where an addition meets two
+/// NaN values, which one it keeps (its sign) depends on how the compiler orders the operands,
+/// which an inlined copy at each call could order differently.
+#[inline(never)]
+fn rows_from<V, S: Clone, F: Fn(&mut S, usize, &mut [V])>(first: usize, values: &mut [V], width: usize, scratch: &S, f: &F) {
+    let mut s = scratch.clone();
+    for (i, row) in values.chunks_mut(width).enumerate() {
+        f(&mut s, first + i, row);
+    }
+}
+
+/// [`rows_from`] for the convolution's horizontal pass, which filters each source row into `out`
+/// and, with a mask, its validity into `flags` (empty without one).
+#[inline(never)]
+fn filtered_rows_from<F: Fn(usize, &mut [f64], &mut [u8])>(first: usize, out: &mut [f64], flags: &mut [u8], width: usize, f: &F) {
+    for (i, o) in out.chunks_mut(width.max(1)).enumerate() {
+        f(first + i, o, flags.get_mut(i * width..(i + 1) * width).unwrap_or_default());
+    }
 }
 
 // The kernels of `GWKGetFilterFunc` and `GWKGetFilterFunc4Values` (alg/gdalwarpkernel.cpp and
@@ -968,14 +1013,13 @@ fn convolution<T: ConvSrc>(method: Method, a: &Args, chunk: &[T]) -> Vec<f64> {
     let nan = a.nan_aware && T::FLOAT && a.mask.is_some() && chunk.iter().any(|v| v.d().is_nan());
     let mut hf = vec![0.0f64; ny * dst_w];
     let mut hm = if a.mask.is_some() { vec![0u8; ny * dst_w] } else { Vec::new() };
-    let mut w = vec![0.0f64; (4.0 + 2.0 * x_rad.max(y_rad)) as usize + 8];
+    let taps = (4.0 + 2.0 * x_rad.max(y_rad)) as usize + 8;
 
     // First pass: horizontal filter. The weights of each destination column are computed as
     // GDAL computes them, then applied row by row (GDAL loops over columns, then rows: each
     // value is computed alike either way).
     let right = a.cx0 + a.cxn;
     let less8 = x_rad < 4.0;
-    let taps = w.len();
     let mut cols: Vec<(usize, usize)> = Vec::with_capacity(dst_w);
     let mut weights = vec![0.0f64; dst_w * taps];
     for xd in a.dx0..a.dx1 {
@@ -1022,9 +1066,9 @@ fn convolution<T: ConvSrc>(method: Method, a: &Args, chunk: &[T]) -> Vec<f64> {
     }
     // GDAL's SSE2 code filters rows three at a time, then the last ones alone.
     let triples = ny / 3 * 3;
-    for r in 0..ny {
+    // Filters source row `r` into `out` and, with a mask, its validity into `hrow`.
+    let filter_row = |r: usize, out: &mut [f64], hrow: &mut [u8]| {
         let row = &chunk[r * xn..(r + 1) * xn];
-        let out = &mut hf[r * dst_w..(r + 1) * dst_w];
         match a.mask {
             None => {
                 for (col, (o, &(off, n))) in out.iter_mut().zip(&cols).enumerate() {
@@ -1045,7 +1089,6 @@ fn convolution<T: ConvSrc>(method: Method, a: &Args, chunk: &[T]) -> Vec<f64> {
             }
             Some(mask) => {
                 let mrow = &mask[r * xn..(r + 1) * xn];
-                let hrow = &mut hm[r * dst_w..(r + 1) * dst_w];
                 for (col, ((o, valid), &(off, n))) in out.iter_mut().zip(hrow.iter_mut()).zip(&cols).enumerate() {
                     let m = &mrow[off..off + n];
                     if neg && longest_valid(m.iter().map(|v| *v != 0)) < n as i64 / 2 {
@@ -1064,6 +1107,15 @@ fn convolution<T: ConvSrc>(method: Method, a: &Args, chunk: &[T]) -> Vec<f64> {
                 }
             }
         }
+    };
+    // The source rows in pieces as the destination rows are (see `rows_in_pieces`).
+    let per = ny.div_ceil(a.pieces.max(1)).max(1);
+    if per >= ny || dst_w == 0 {
+        filtered_rows_from(0, &mut hf, &mut hm, dst_w, &filter_row);
+    } else {
+        let flags = hm.chunks_mut(per * dst_w).map(Some).chain(std::iter::repeat_with(|| None));
+        let runs: Vec<_> = hf.chunks_mut(per * dst_w).zip(flags).collect();
+        crate::par::for_each_owned(runs, |k, (out, flags)| filtered_rows_from(k * per, out, flags.unwrap_or_default(), dst_w, &filter_row));
     }
 
     // Second pass: vertical filter.
@@ -1072,7 +1124,8 @@ fn convolution<T: ConvSrc>(method: Method, a: &Args, chunk: &[T]) -> Vec<f64> {
     // The SSE2 code of 8 columns (`GDALResampleConvolutionVertical_8cols`) for a work type of
     // `float`, unless the source is `float` and its sums are rescaled.
     let eight = T::SINGLE && (!rescale || T::SSE);
-    for yd in a.dy0..a.dy1 {
+    rows_in_pieces(&mut out, dst_w, a.pieces, vec![0.0f64; taps], |w, i, row| {
+        let yd = a.dy0 + i as i64;
         let c = (yd as f64 + 0.5) * a.ry + a.sdy;
         let mut s0 = (c - y_rad + 0.5).floor() as i64;
         let mut s1 = (c + y_rad + 0.5) as i64;
@@ -1102,7 +1155,6 @@ fn convolution<T: ConvSrc>(method: Method, a: &Args, chunk: &[T]) -> Vec<f64> {
             k += 1;
             y += y_sw;
         }
-        let row = &mut out[(yd - a.dy0) as usize * dst_w..][..dst_w];
         let base = (s0 - a.cy0) as usize * dst_w;
         if a.mask.is_none() {
             if sum != 0.0 {
@@ -1126,12 +1178,12 @@ fn convolution<T: ConvSrc>(method: Method, a: &Args, chunk: &[T]) -> Vec<f64> {
                     col += 8;
                 }
                 for (k, o) in row.iter_mut().enumerate().skip(col) {
-                    *o = replace.apply(v_generic(&hf, base + k, dst_w, &w, n) as f32 as f64);
+                    *o = replace.apply(v_generic(&hf, base + k, dst_w, w, n) as f32 as f64);
                 }
             } else {
                 let lim = if T::SINGLE { f32::MAX as f64 } else { f64::MAX };
                 for (k, o) in row.iter_mut().enumerate() {
-                    let mut v = v_generic(&hf, base + k, dst_w, &w, n);
+                    let mut v = v_generic(&hf, base + k, dst_w, w, n);
                     if v.is_finite() {
                         v = v.clamp(-lim / mul, lim / mul) * mul;
                     } else if neg && v.is_nan() {
@@ -1178,7 +1230,7 @@ fn convolution<T: ConvSrc>(method: Method, a: &Args, chunk: &[T]) -> Vec<f64> {
                 *o = if ws > 0.0 { replace.apply(twork(v / ws, T::SINGLE)) } else { twork(nodata, T::SINGLE) };
             }
         }
-    }
+    });
     out
 }
 
@@ -1337,7 +1389,8 @@ fn average<T: AvgSrc>(rms: bool, a: &Args, chunk: &[T]) -> Vec<f64> {
     }
     let sq = |v: f64| v * v;
     let mut out = vec![0.0f64; dst_h * dst_w];
-    for yd in a.dy0..a.dy1 {
+    rows_in_pieces(&mut out, dst_w, a.pieces, (), |_, i, row| {
+        let yd = a.dy0 + i as i64;
         let f0 = a.sdy + yd as f64 * a.ry;
         let mut s0 = (f0 + 1e-8) as i64;
         if s0 < a.cy0 {
@@ -1351,7 +1404,6 @@ fn average<T: AvgSrc>(rms: bool, a: &Args, chunk: &[T]) -> Vec<f64> {
         if s1 > bottom {
             s1 = bottom;
         }
-        let row = &mut out[(yd - a.dy0) as usize * dst_w..][..dst_w];
         if two && s1 == s0 + 2 && a.mask.is_none() {
             // A factor of 2 with regular spacing and no nodata: GDAL's optimized cases.
             let base = (s0 - a.cy0) as usize * xn + xs[0].0;
@@ -1391,7 +1443,7 @@ fn average<T: AvgSrc>(rms: bool, a: &Args, chunk: &[T]) -> Vec<f64> {
                     }
                 };
             }
-            continue;
+            return;
         }
         let bottom_w = if s0 + 1 == s1 { 1.0 } else { 1.0 - (f0 - s0 as f64) };
         let top_w = 1.0 - (s1 as f64 - f1);
@@ -1501,7 +1553,7 @@ fn average<T: AvgSrc>(rms: bool, a: &Args, chunk: &[T]) -> Vec<f64> {
             };
             *o = if has_nd && v == nd_t { rep_t.d() } else { v.d() };
         }
-    }
+    });
     out
 }
 
@@ -1526,13 +1578,13 @@ fn mode<T: Sample>(a: &Args, chunk: &[T]) -> Vec<T> {
         ((s0 - c0) as usize, (s1 - c0) as usize)
     };
     let byte = T::DT == DataType::U8;
-    let mut out = Vec::with_capacity(((a.dx1 - a.dx0) * (a.dy1 - a.dy0)) as usize);
-    let mut vals: Vec<T> = Vec::new();
-    let mut counts: Vec<u32> = Vec::new();
-    let mut hist = [0u32; 256];
-    for yd in a.dy0..a.dy1 {
+    let dst_w = (a.dx1 - a.dx0) as usize;
+    let mut out = vec![T::default(); dst_w * (a.dy1 - a.dy0) as usize];
+    let scratch = (Vec::<T>::new(), Vec::<u32>::new(), [0u32; 256]);
+    rows_in_pieces(&mut out, dst_w, a.pieces, scratch, |(vals, counts, hist), y, row| {
+        let yd = a.dy0 + y as i64;
         let (y0, y1) = window(yd, a.ry, a.sdy, a.cy0, bottom);
-        for xd in a.dx0..a.dx1 {
+        for (o, xd) in row.iter_mut().zip(a.dx0..a.dx1) {
             let (x0, x1) = window(xd, a.rx, a.sdx, a.cx0, right);
             if byte {
                 hist.fill(0);
@@ -1549,7 +1601,7 @@ fn mode<T: Sample>(a: &Args, chunk: &[T]) -> Vec<T> {
                         }
                     }
                 }
-                out.push(best.unwrap_or(nd_t));
+                *o = best.unwrap_or(nd_t);
             } else {
                 vals.clear();
                 counts.clear();
@@ -1577,10 +1629,10 @@ fn mode<T: Sample>(a: &Args, chunk: &[T]) -> Vec<T> {
                         }
                     }
                 }
-                out.push(if vals.is_empty() { nd_t } else { vals[i_max] });
+                *o = if vals.is_empty() { nd_t } else { vals[i_max] };
             }
         }
-    }
+    });
     out
 }
 
@@ -1626,10 +1678,12 @@ fn gauss(a: &Args, chunk: &[f64]) -> Vec<f64> {
         }
         (s0, s1, shift)
     };
-    let mut out = Vec::with_capacity(((a.dx1 - a.dx0) * (a.dy1 - a.dy0)) as usize);
-    for dy in a.dy0..a.dy1 {
+    let dst_w = (a.dx1 - a.dx0) as usize;
+    let mut out = vec![0.0f64; dst_w * (a.dy1 - a.dy0) as usize];
+    rows_in_pieces(&mut out, dst_w, a.pieces, (), |_, r, row| {
+        let dy = a.dy0 + r as i64;
         let (y0, y1, sy) = span(dy, a.ry, a.cy0, a.cy0 + a.cyn, dy == a.ovr.1 - 1);
-        for dx in a.dx0..a.dx1 {
+        for (o, dx) in row.iter_mut().zip(a.dx0..a.dx1) {
             let (x0, x1, sx) = span(dx, a.rx, a.cx0, a.cx0 + a.cxn, dx == a.ovr.0 - 1);
             let mut total = 0.0f64;
             let mut count: i64 = 0;
@@ -1644,21 +1698,23 @@ fn gauss(a: &Args, chunk: &[f64]) -> Vec<f64> {
                     }
                 }
             }
-            out.push(if count == 0 { nodata } else { total / count as f64 });
+            *o = if count == 0 { nodata } else { total / count as f64 };
         }
-    }
+    });
     out
 }
 
-fn near<T: Copy>(a: &Args, chunk: &[T]) -> Vec<T> {
+fn near<T: Copy + Default + Send + Sync>(a: &Args, chunk: &[T]) -> Vec<T> {
     let xn = a.cxn as usize;
     let xs: Vec<usize> = (a.dx0..a.dx1).map(|x| ((0.5 + x as f64 * a.rx) as i64).max(a.cx0) as usize - a.cx0 as usize).collect();
-    let mut out = Vec::with_capacity(xs.len() * (a.dy1 - a.dy0) as usize);
-    for y in a.dy0..a.dy1 {
-        let sy = ((0.5 + y as f64 * a.ry) as i64).max(a.cy0) as usize - a.cy0 as usize;
-        let row = &chunk[sy * xn..];
-        out.extend(xs.iter().map(|x| row[*x]));
-    }
+    let mut out = vec![T::default(); xs.len() * (a.dy1 - a.dy0) as usize];
+    rows_in_pieces(&mut out, xs.len(), a.pieces, (), |_, y, row| {
+        let sy = ((0.5 + (a.dy0 + y as i64) as f64 * a.ry) as i64).max(a.cy0) as usize - a.cy0 as usize;
+        let src = &chunk[sy * xn..];
+        for (o, x) in row.iter_mut().zip(&xs) {
+            *o = src[*x];
+        }
+    });
     out
 }
 
@@ -1779,7 +1835,9 @@ fn rescaled_alpha<T: Sample>(v: T) -> u8 {
 /// Computes one row of destination blocks of `plan.dst`, from `y0`: its rows, band after band.
 /// `src` holds `rows` rows of every band of the level before it (band after band, all its
 /// columns) from row `row0`, which must include [`Plan::rows`]; `weights.mask`, when given, the
-/// same rows.
+/// same rows. The blocks are computed in parallel on the thread pool; a row of a single block (a
+/// band one block wide) in two pieces of its rows ([`row_pieces`]), so that it is computed there
+/// too. Each value is computed alone, so it does not depend on the pieces.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn block_row(
     plan: &Plan,
@@ -1791,7 +1849,31 @@ pub(crate) fn block_row(
     weights: Weights,
     y0: usize,
 ) -> RasterData {
-    crate::pixel::map_data!(src, v => block_row_t(plan, v, row0, rows, bands, nodata, weights, y0))
+    crate::pixel::map_data!(src, v => block_row_t(plan, v, row0, rows, bands, nodata, weights, y0, Pieces::Pool))
+}
+
+/// The pieces of work each block of a row of blocks is computed in.
+#[derive(Debug, Clone, Copy)]
+enum Pieces {
+    /// One: the rows of blocks of a whole level are computed in parallel.
+    One,
+    /// Those of [`row_pieces`], for the thread pool.
+    Pool,
+    #[cfg(test)]
+    Exactly(usize),
+}
+
+/// The fewest destination pixels a piece of a block's rows is given.
+const PIECE_PIXELS: usize = 1 << 14;
+
+/// The pieces of work, each of consecutive rows, that each block of `pixels` destination pixels
+/// in a row of `blocks` blocks is computed in, with `threads` threads: two for a row of a single
+/// block, of at least [`PIECE_PIXELS`] pixels each, which would otherwise be computed on the
+/// calling thread; one for a row of several blocks, which already run on the thread pool. More
+/// pieces cost more processor time than they save: each takes a thread of the pool, which waits for
+/// work once done, and on cores running two threads each runs slower.
+fn row_pieces(blocks: usize, pixels: usize, threads: usize) -> usize {
+    if blocks == 1 && threads > 1 && pixels >= 2 * PIECE_PIXELS { 2 } else { 1 }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1804,13 +1886,16 @@ fn block_row_t<T: Sample>(
     nodata: Option<f64>,
     weights: Weights,
     y0: usize,
+    pieces: Pieces,
 ) -> Vec<T> {
     let ys = plan.y_span(y0);
     let (sw, dw) = (plan.src.0, plan.dst.0);
     let xs: Vec<Span> =
         (0..dw).step_by(plan.chunk.0).map(|x0| plan.span(x0, plan.chunk.0.min(dw - x0), plan.rx, plan.src.0, plan.dst.0)).collect();
     let kinds = weights.kinds::<T>(plan.method, bands, nodata);
-    let parts = crate::par::map_range(bands * xs.len(), |j| {
+    let blocks = bands * xs.len();
+    let threads = if matches!(pieces, Pieces::Pool) { crate::par::threads() } else { 1 };
+    let parts = crate::par::map_range(blocks, |j| {
         let (b, xsp) = (j / xs.len(), xs[j % xs.len()]);
         let band_rows = |b: usize| &src[b * sw * rows..(b + 1) * sw * rows];
         let band = band_rows(b);
@@ -1860,6 +1945,12 @@ fn block_row_t<T: Sample>(
             max: None,
             nan_aware: plan.nan_aware,
             ovr: (plan.dst.0 as i64, plan.dst.1 as i64),
+            pieces: match pieces {
+                Pieces::One => 1,
+                Pieces::Pool => row_pieces(blocks, xsp.dst_n * ys.dst_n, threads),
+                #[cfg(test)]
+                Pieces::Exactly(n) => n,
+            },
         };
         resample_block(plan.method, &args, &win)
     });
@@ -1891,7 +1982,8 @@ pub(crate) fn mask_level(method: Method, src: &[u8], from: (usize, usize), to: (
 fn level_t<T: Sample>(plan: &Plan, src: &[T], bands: usize, nodata: Option<f64>, weights: Weights) -> Vec<T> {
     let (dw, total) = plan.dst;
     let starts: Vec<usize> = (0..total).step_by(plan.chunk.1).collect();
-    let rows = crate::par::map_range(starts.len(), |i| block_row_t(plan, src, 0, plan.src.1, bands, nodata, weights, starts[i]));
+    let rows =
+        crate::par::map_range(starts.len(), |i| block_row_t(plan, src, 0, plan.src.1, bands, nodata, weights, starts[i], Pieces::One));
     let mut out = vec![T::default(); bands * dw * total];
     for (y0, r) in starts.iter().zip(&rows) {
         let n = plan.chunk.1.min(total - y0);
@@ -2143,6 +2235,7 @@ impl ResampledRead {
                 max: self.max,
                 nan_aware: self.nan_aware,
                 ovr: (g.vx.unwrap_or(0) + bw as i64, g.vy.unwrap_or(0) + bh as i64),
+                pieces: 1,
             };
             resample_block(self.method, &args, &win)
         });
@@ -2209,5 +2302,83 @@ mod tests {
         assert_eq!(nodata_mask(&RasterData::F64(vec![f64::NAN, 0.0]), f64::NAN), Some(vec![0, 255]));
         // About 0, only 0 is the nodata value.
         assert_eq!(nodata_mask(&RasterData::F64(vec![0.0, 1e-300, -0.0]), 0.0), Some(vec![0, 255, 0]));
+    }
+
+    /// A row of blocks computed in pieces of its rows on the thread pool is the one computed in
+    /// one piece, value for value: every method and work type, unweighted or weighted by a mask,
+    /// a nodata value or an alpha band, 1 to 3 bands, a block or several wide, NaN and infinite
+    /// values (masked NaN values weighted or not), and pieces of uneven rows or of one row each.
+    /// The writers' tests never split a block, theirs being too small.
+    #[test]
+    fn block_rows_computed_in_pieces_are_those_computed_in_one() {
+        fn bytes<T: Sample>(v: &[T]) -> Vec<u8> {
+            let mut out = vec![0; v.len() * T::SIZE];
+            v.iter().zip(out.chunks_mut(T::SIZE)).for_each(|(x, o)| x.put_le(o));
+            out
+        }
+        fn check<T: Sample>(value: impl Fn(usize) -> f64) {
+            use Method::*;
+            // An exact factor of 2 (average's regular case), and a factor of about 3 in blocks of 16
+            // columns, one of whose rows of blocks is a single row.
+            for (src, dst, chunk) in [((130, 52), (65, 26), None), ((131, 53), (43, 17), Some(16))] {
+                let mask: Vec<u8> = (0..src.0 * src.1).map(|i| if (i % src.0 / 5 + i / src.0 / 3) % 4 == 0 { 0 } else { 255 }).collect();
+                for bands in 1..=3 {
+                    let data: Vec<T> = (0..src.0 * src.1 * bands).map(|i| T::from_f64(value(i))).collect();
+                    let weighted = [
+                        (Weights::default(), None),
+                        (Weights { mask: Some(&mask), ..Weights::default() }, None),
+                        (Weights::default(), Some(value(3))),
+                        (Weights { alpha: Some(bands - 1), alpha_masks: bands % 2 == 0, mask: None }, None),
+                    ];
+                    for method in [Nearest, Average, Rms, Bilinear, Cubic, CubicSpline, Lanczos, Mode, Gauss] {
+                        let mut plan = Plan::new(method, src, dst, bands, 16, T::DT);
+                        if let Some(width) = chunk {
+                            plan.chunk.0 = width;
+                            plan.nan_aware = true;
+                        }
+                        for (k, (weights, nodata)) in weighted.into_iter().enumerate() {
+                            for y0 in (0..dst.1).step_by(16) {
+                                let one = block_row_t(&plan, &data, 0, src.1, bands, nodata, weights, y0, Pieces::One);
+                                for n in [3, 1000] {
+                                    let split = block_row_t(&plan, &data, 0, src.1, bands, nodata, weights, y0, Pieces::Exactly(n));
+                                    assert!(
+                                        bytes(&split) == bytes(&one),
+                                        "{:?} {method:?} {src:?} to {dst:?}, {bands} bands, weights {k}, rows from {y0} in {n} pieces",
+                                        T::DT
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let float = |i: usize| match i % 97 {
+            0 => f64::NAN,
+            1 => f64::INFINITY,
+            2 => f64::NEG_INFINITY,
+            k => k as f64 * 0.37 - 15.0,
+        };
+        // One type of each work type (i16 data is resampled as f32, u32 as f64).
+        check::<u8>(|i| (i * 7 % 251) as f64);
+        check::<u16>(|i| (i * 7919 % 65521) as f64);
+        check::<f32>(float);
+        check::<f64>(float);
+    }
+
+    /// A row of a single block (a band one block wide: the first overview of a band 10,980 pixels
+    /// wide is one block of 5,490 x 128) is split in two, so that the thread pool computes it;
+    /// rows of several blocks, which the pool computes already, blocks under two pieces' pixels,
+    /// and a pool of one thread are not. Nothing else shows the split: the values are the same
+    /// either way (see the test above), only the time differs.
+    #[test]
+    fn a_row_of_a_single_block_is_split_in_two() {
+        assert_eq!(row_pieces(1, 5490 * 128, 16), 2);
+        assert_eq!(row_pieces(1, 5490 * 128, 2), 2);
+        assert_eq!(row_pieces(1, 2 * PIECE_PIXELS, 4), 2);
+        assert_eq!(row_pieces(1, 2 * PIECE_PIXELS - 1, 4), 1);
+        assert_eq!(row_pieces(2, 5490 * 128, 16), 1);
+        assert_eq!(row_pieces(3, 5490 * 128, 16), 1);
+        assert_eq!(row_pieces(1, 5490 * 128, 1), 1);
     }
 }

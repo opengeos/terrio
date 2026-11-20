@@ -8,8 +8,9 @@ Michigan) (1051) or Colombia Urban (1052), as PROJ writes it, without its `ID` a
 point and coefficients EPSG's method defines (illustrative values), which PROJ's `mod_krovak`
 fixes and ignores. For each: the PROJ string of
 its geographic CRS, a point in it, the point's coordinates by
-`Transformer.from_crs(crs.geodetic_crs, crs, always_xy=True)`, `CRS.to_proj4()`, and its
-method's EPSG code.
+`Transformer.from_crs(crs.geodetic_crs, crs, always_xy=True)`, `CRS.to_proj4()`, its method's
+EPSG code, and the method and parameters (lengths in metres) of the PROJJSON conversion PROJ
+writes for that PROJ string.
 
 Usage: PROJ_NETWORK=OFF python scripts/gen_wkt2_methods.py (needs pyproj 3.8.0)
 """
@@ -67,6 +68,19 @@ def without_ids(wkt):
     return re.sub(r',ID\["EPSG",\d+\]', "", wkt)
 
 
+def conversion(crs):
+    """The method code and `[parameter code, value]`s of a CRS's PROJJSON conversion, lengths in
+    metres."""
+    conv = json.loads(crs.to_json())["conversion"]
+    params = []
+    for p in conv["parameters"]:
+        unit = p.get("unit")
+        linear = isinstance(unit, dict) and unit.get("type") == "LinearUnit"
+        factor = unit["conversion_factor"] if linear else 1.0
+        params.append([p["id"]["code"], p["value"] * factor])
+    return {"method": conv["method"]["id"]["code"], "parameters": params}
+
+
 def case(name, wkt, point, method_code):
     crs = CRS(wkt)
     x, y = Transformer.from_crs(crs.geodetic_crs, crs, always_xy=True).transform(
@@ -80,6 +94,7 @@ def case(name, wkt, point, method_code):
         "proj": [x, y],
         "proj4": crs.to_proj4(),
         "method_code": int(method_code),
+        "projjson": conversion(CRS(crs.to_proj4())),
     }
 
 

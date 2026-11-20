@@ -1093,6 +1093,10 @@ fn may_follow(from: &str, url: &str) -> bool {
         && (crate::vfs::url_origin(url) == crate::vfs::url_origin(from) || option_on("TERRIO_STAC_FOLLOW_CROSS_ORIGIN"))
 }
 
+/// How many item documents a catalog's or collection's `item` links are fetched at once: each
+/// fetch waits on the server.
+const ITEM_LINKS_AT_ONCE: usize = 16;
+
 /// [`load_items`] of the response to a request (whose next pages may be `POST` requests too).
 fn load_items_from(doc: Value, request: &Request, max_items: usize) -> Result<Items> {
     let loc = request.url.as_str();
@@ -1104,7 +1108,13 @@ fn load_items_from(doc: Value, request: &Request, max_items: usize) -> Result<It
         Some(Kind::Collection | Kind::Catalog) => {
             let mut queue = vec![(doc, loc.to_string(), 0usize)];
             while let Some((doc, base, depth)) = queue.pop() {
-                for link in doc["links"].as_array().into_iter().flatten() {
+                // The documents of the item links, fetched ahead in runs of consecutive item links,
+                // `ITEM_LINKS_AT_ONCE` at a time but no more than the items still wanted (a document
+                // past `max_items` is not requested, as one at a time it was not), and taken in link
+                // order.
+                let links: Vec<&Value> = doc["links"].as_array().into_iter().flatten().collect();
+                let mut fetched = std::collections::VecDeque::new();
+                for (i, link) in links.iter().enumerate() {
                     if full(&out) {
                         out.truncated = true;
                         return Ok(out);
@@ -1122,7 +1132,23 @@ fn load_items_from(doc: Value, request: &Request, max_items: usize) -> Result<It
                     }
                     match link["rel"].as_str() {
                         Some("item") => {
-                            let (item, href) = fetch_link_document(&href, true)?;
+                            if fetched.is_empty() {
+                                let run: Vec<String> = links[i..]
+                                    .iter()
+                                    .take_while(|l| l["rel"] == "item")
+                                    .filter_map(|l| l["href"].as_str())
+                                    .map(|h| resolve_href(&base, h))
+                                    .filter(|h| may_follow(&base, h))
+                                    .take(if max_items > 0 {
+                                        ITEM_LINKS_AT_ONCE.min(max_items - out.items.len())
+                                    } else {
+                                        ITEM_LINKS_AT_ONCE
+                                    })
+                                    .collect();
+                                let docs = crate::par::map_waiting(run.len(), ITEM_LINKS_AT_ONCE, |k| fetch_link_document(&run[k], true))?;
+                                fetched.extend(docs);
+                            }
+                            let (item, href) = fetched.pop_front().ok_or_else(|| bad("unreachable"))?;
                             if kind(&item) == Some(Kind::Item) {
                                 out.items.push((item, href));
                             }
@@ -1588,6 +1614,27 @@ fn items_at_once<'a>(mut hrefs: impl Iterator<Item = &'a str>) -> usize {
     if hrefs.all(|href| !local_backed(&crate::vfs::Location::parse(href))) { REMOTE_AT_ONCE } else { 1 }
 }
 
+/// The most item files a mosaic keeps open: a quarter of the files the process may open (the
+/// soft limit of `/proc/self/limits`; an item may hold a second, its `.msk` sidecar), at least 16,
+/// so that a mosaic of more items than that still reads; no bound when it is unlimited, and 64
+/// where it is unknown (a quarter of macOS's default 256). GDAL bounds the datasets its virtual datasets keep open alike
+/// (`GDAL_MAX_DATASET_POOL_SIZE`; reference GDAL 3.13.3).
+fn max_open_items() -> usize {
+    open_items_within(&std::fs::read_to_string("/proc/self/limits").unwrap_or_default())
+}
+
+/// [`max_open_items`] of the text of `/proc/self/limits`.
+fn open_items_within(limits: &str) -> usize {
+    // "Max open files            1024                 524288               files": the soft limit;
+    // "unlimited", no bound.
+    let soft = limits.lines().find_map(|l| l.strip_prefix("Max open files")?.split_whitespace().next());
+    match soft {
+        Some("unlimited") => usize::MAX,
+        Some(n) => n.parse::<usize>().map_or(64, |n| (n / 4).max(16)),
+        None => 64,
+    }
+}
+
 /// How many items' windows of `per_item` bytes each are read at once: at most `most`, and as many
 /// as fit in half of the `usable` memory, or in 1 GiB when it is unknown, beside the output's `output_bytes`,
 /// but at least one.
@@ -1642,6 +1689,9 @@ struct Mosaic {
     items: Vec<(AssetItem, Option<LazyRaster>)>,
     /// How many items' files are read at once.
     at_once: usize,
+    /// The items whose files are open, least recently read first, and how many may be.
+    open: std::collections::VecDeque<usize>,
+    max_open: usize,
     geo_transform: [f64; 6],
     data_type: DataType,
     nodata: Option<f64>,
@@ -1684,6 +1734,19 @@ impl Mosaic {
             });
             for ((i, _), slot) in batch.iter().zip(slots) {
                 self.items[*i].1 = slot.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
+                self.open.retain(|j| j != i);
+                if self.items[*i].1.is_some() {
+                    self.open.push_back(*i);
+                }
+            }
+            // Beyond the bound, the file read most recently before this batch closes: every window
+            // reads its items in the same order, so the earliest read are the next needed, and those
+            // kept open stay the same from window to window. Never below a batch.
+            while self.open.len() > self.max_open.max(at_once) {
+                let k = self.open.len() - batch.len() - 1;
+                if let Some(j) = self.open.remove(k) {
+                    self.items[j].1 = None;
+                }
             }
             for ((i, job), value) in batch.iter().zip(fetched?) {
                 draw(job, &self.items[*i].0, value)?;
@@ -1958,7 +2021,9 @@ fn open_mosaic(source: &str, groups: Groups, resolution: Option<&str>, kept: &st
         slot.1 = Some(first);
     }
     let at_once = items_at_once(items.iter().map(|(i, _)| i.href.as_str()));
-    let mosaic = Mosaic { items, at_once, geo_transform: [xmin, rx, 0.0, ymax, 0.0, -ry], data_type, nodata };
+    let open = items.iter().position(|(_, r)| r.is_some()).into_iter().collect();
+    let geo_transform = [xmin, rx, 0.0, ymax, 0.0, -ry];
+    let mosaic = Mosaic { items, at_once, open, max_open: max_open_items(), geo_transform, data_type, nodata };
     Ok(LazyRaster::from_source(header, Box::new(mosaic)))
 }
 
@@ -2340,8 +2405,15 @@ mod tests {
 
     #[test]
     fn mosaic_windows_refuse_unrepresentable_working_buffers() {
-        let mut mosaic =
-            Mosaic { items: Vec::new(), at_once: 1, geo_transform: [0.0, 1.0, 0.0, 0.0, 0.0, -1.0], data_type: DataType::U8, nodata: None };
+        let mut mosaic = Mosaic {
+            items: Vec::new(),
+            at_once: 1,
+            open: Default::default(),
+            max_open: 1,
+            geo_transform: [0.0, 1.0, 0.0, 0.0, 0.0, -1.0],
+            data_type: DataType::U8,
+            nodata: None,
+        };
         let result = mosaic.read(0, Window::new(0, 0, usize::MAX, 2), &[1]);
         assert!(result.is_err_and(|error| error.is_resource_refusal()));
     }
@@ -2408,13 +2480,26 @@ mod tests {
         let (_, group) = assets.pop_first().unwrap();
         let (_, mut sorted) = group.by_crs.into_iter().next().unwrap();
         sorted.sort_by(|a, b| a.datetime.cmp(&b.datetime));
-        let read = |at_once: usize| {
+        let read_kept_open = |at_once: usize, max_open: usize| {
             // The first item open, as `open_mosaic` leaves it: its tiles size the batches.
             let items = sorted.iter().enumerate().map(|(k, i)| (i.clone(), (k == 0).then(|| i.open().unwrap()))).collect();
             let gt = [500000.0, 10.0, 0.0, 4400000.0, 0.0, -10.0];
-            let mut m = Mosaic { items, at_once, geo_transform: gt, data_type: DataType::U16, nodata: Some(0.0) };
-            m.read(0, Window::new(0, 0, 14, 4), &[1]).unwrap().to_f64_vec()
+            let open = Default::default();
+            let mut m = Mosaic { items, at_once, open, max_open, geo_transform: gt, data_type: DataType::U16, nodata: Some(0.0) };
+            let v = m.read(0, Window::new(0, 0, 14, 4), &[1]).unwrap().to_f64_vec();
+            // Twice: the second read reopens what the first closed.
+            assert_eq!(m.read(0, Window::new(0, 0, 14, 4), &[1]).unwrap().to_f64_vec(), v);
+            let open = m.items.iter().filter(|(_, r)| r.is_some()).count();
+            assert_eq!(open, max_open.max(at_once).min(4), "{at_once} at once, {max_open} kept open");
+            v
         };
+        let read = |at_once: usize| read_kept_open(at_once, 100);
+        // The bound from the process's limit: a quarter of the soft one, 64 when unknown.
+        let limits = "Max open files            1024                 524288               files\n";
+        assert_eq!(open_items_within(limits), 256);
+        assert_eq!(open_items_within("Max open files            40   40   files\n"), 16);
+        assert_eq!(open_items_within("Max open files            unlimited   unlimited   files\n"), usize::MAX);
+        assert_eq!(open_items_within(""), 64);
         let one = read(1);
         // The newest item (0) on top, but for its nodata column 7, where item 1 shows through; the
         // oldest (3) only where no other item reaches.
@@ -2422,6 +2507,9 @@ mod tests {
         assert_eq!(row, [100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0, 205.0, 206.0, 207.0, 306.0, 307.0, 406.0, 407.0]);
         assert_eq!(read(3), one);
         assert_eq!(read(8), one);
+        // Fewer files kept open than items: the least recently read close, and the mosaic is the same.
+        assert_eq!(read_kept_open(1, 2), one);
+        assert_eq!(read_kept_open(3, 2), one);
     }
 
     /// Cached native clients retain credentials; changing current configuration cannot revoke
@@ -3485,6 +3573,52 @@ mod tests {
         let _ = open(&format!("{base}/collection.json"));
         assert_eq!(seen.lock().unwrap().len(), 2, "a same-origin item link is followed");
         assert!(internal_seen.lock().unwrap().is_empty(), "another origin was requested: {:?}", internal_seen.lock().unwrap());
+    }
+
+    /// A collection's item links, fetched several at once, give their items in link order; a link
+    /// without an href and one to another origin are skipped as before, and `max_items` still
+    /// truncates.
+    #[cfg(remote)]
+    #[test]
+    fn collection_item_links_fetched_at_once_keep_their_order() {
+        let item = |k: usize| {
+            serde_json::to_vec(&json!({"type": "Feature", "stac_version": "1.0.0", "id": format!("i{k}"),
+                "geometry": null, "properties": {"datetime": "2023-07-01T00:00:00Z"}, "assets": {}, "links": []}))
+            .unwrap()
+        };
+        let mut links: Vec<Value> = (0..40).map(|k| json!({"rel": "item", "href": format!("i{k}.json")})).collect();
+        links.insert(5, json!({"rel": "item"}));
+        links.insert(20, json!({"rel": "item", "href": "https://other.example/x.json"}));
+        let collection = json!({"type": "Collection", "stac_version": "1.0.0", "id": "c", "description": "d", "license": "x",
+            "extent": {"spatial": {"bbox": [[0, 0, 1, 1]]}, "temporal": {"interval": [[null, null]]}}, "links": links});
+        let routes = (0..40).map(|k| (format!("/i{k}.json"), 200, Vec::new(), item(k))).collect();
+        let (base, seen) = crate::http::test_routes(routes);
+        let ids = |max: usize| {
+            crate::config::with_options(&[("TERRIO_STAC_FOLLOW_CROSS_ORIGIN", "NO")], || {
+                let items = load_items(collection.clone(), &format!("{base}/collection.json"), max).unwrap();
+                (items.items.iter().map(|(i, _)| i["id"].as_str().unwrap().to_string()).collect::<Vec<_>>(), items.truncated)
+            })
+        };
+        let (all, truncated) = ids(0);
+        assert_eq!(all, (0..40).map(|k| format!("i{k}")).collect::<Vec<_>>());
+        assert!(!truncated);
+        assert_eq!(seen.lock().unwrap().len(), 40, "each item fetched once, the other origin never");
+        let (first, truncated) = ids(25);
+        assert_eq!(first, all[..25]);
+        assert!(truncated);
+
+        // A run broken by another link, and a missing document past max_items, which is never
+        // requested (one at a time, it was not either).
+        let links = json!([{"rel": "item", "href": "i0.json"}, {"rel": "license", "href": "l.txt"},
+            {"rel": "item", "href": "i1.json"}, {"rel": "item", "href": "i2.json"}, {"rel": "item", "href": "missing.json"}]);
+        let collection = json!({"type": "Collection", "stac_version": "1.0.0", "id": "c", "description": "d", "license": "x",
+            "extent": {"spatial": {"bbox": [[0, 0, 1, 1]]}, "temporal": {"interval": [[null, null]]}}, "links": links});
+        let (base, _) = crate::http::test_routes((0..3).map(|k| (format!("/i{k}.json"), 200, Vec::new(), item(k))).collect());
+        let items = load_items(collection.clone(), &format!("{base}/collection.json"), 3).unwrap();
+        let ids: Vec<&str> = items.items.iter().map(|(i, _)| i["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["i0", "i1", "i2"]);
+        assert!(items.truncated);
+        assert!(load_items(collection, &format!("{base}/collection.json"), 0).is_err(), "the missing document fails a full walk");
     }
 
     /// Both rejected pagination paths name the host without credentials or queries.
