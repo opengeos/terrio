@@ -417,17 +417,18 @@ pub(crate) fn conversion_from_proj(p: &Params) -> Result<Conversion, String> {
         }
         // A method PROJ has without an EPSG code (0 here).
         "mill" => ("Miller Cylindrical", 0, vec![(LON_NAT, lon0), (FE, x0), (FN, y0)], &["lon_0", "x_0", "y_0"]),
-        "cass" if p.has("hyperbolic") => (
-            "Hyperbolic Cassini-Soldner",
-            9833,
-            vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)],
-            &["lat_0", "lon_0", "x_0", "y_0", "hyperbolic"],
-        ),
+        // On a sphere, PROJ 9.9.0 ignores `+hyperbolic` and writes Cassini-Soldner.
+        "cass" if p.has("hyperbolic") => {
+            let (name, code) = if sphere { ("Cassini-Soldner", 9806) } else { ("Hyperbolic Cassini-Soldner", 9833) };
+            (name, code, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], &["lat_0", "lon_0", "x_0", "y_0", "hyperbolic"])
+        }
         "cass" => ("Cassini-Soldner", 9806, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], ORIGIN),
         "poly" => ("American Polyconic", 9818, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], ORIGIN),
         "nzmg" => ("New Zealand Map Grid", 9811, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], ORIGIN),
+        // On a sphere, PROJ 9.9.0 ignores `+guam` and writes Azimuthal Equidistant.
         "aeqd" if p.has("guam") => {
-            ("Guam Projection", 9831, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], &["lat_0", "lon_0", "x_0", "y_0", "guam"])
+            let (name, code) = if sphere { ("Azimuthal Equidistant", 1125) } else { ("Guam Projection", 9831) };
+            (name, code, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], &["lat_0", "lon_0", "x_0", "y_0", "guam"])
         }
         "col_urban" => (
             "Colombia Urban",

@@ -1973,7 +1973,8 @@ with `PROJ_NETWORK=OFF`:
   (9831), Krovak Modified (1042, 1043), Lambert Conic Conformal (2SP Michigan) (1051) and Colombia
   Urban (1052), without their `ID`, and Krovak Modified with its evaluation point and
   coefficients, by their method's name and by its code alone, give PROJ's method and flag and its
-  point within 1 mm (`--test wkt2_methods`; `scripts/gen_wkt2_methods.py`).
+  point within 1 mm; the PROJJSON of each one's PROJ string has PROJ's method and parameters
+  (`--test wkt2_methods`; `scripts/gen_wkt2_methods.py`).
 - **ESRI's `VERTCS`:** alone, in a `COMPD_CS` and in ESRI's compound CRS (`GEOGCS[...],VERTCS[...]`),
   with `Direction` -1, its declared code, PROJ's points from EPSG:9707, and the code PROJ identifies
   for every EPSG vertical CRS ESRI writes, in ESRI's WKT and GDAL's WKT 1 without `AUTHORITY`

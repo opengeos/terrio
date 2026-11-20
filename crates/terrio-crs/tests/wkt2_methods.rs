@@ -98,3 +98,25 @@ fn wkt2_methods_are_written_to_projjson_as_proj_writes_them() {
     }
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
+
+/// On a sphere, PROJ 9.9.0 ignores `+guam` and `+hyperbolic` and writes the plain method.
+#[test]
+fn spherical_guam_and_hyperbolic_cassini_are_written_as_proj_writes_them() {
+    // pyproj 3.8.0: `CRS(proj).to_json()`'s conversion.
+    let cases = [
+        (
+            "+proj=aeqd +guam +lat_0=13.47 +lon_0=144.75 +x_0=50000 +y_0=50000 +R=6371000 +units=m +type=crs",
+            1125,
+            vec![(8801, 13.47), (8802, 144.75), (8806, 50000.0), (8807, 50000.0)],
+        ),
+        (
+            "+proj=cass +hyperbolic +lat_0=-16.25 +lon_0=179.33 +x_0=251727.9 +y_0=334519.95 +R=6371000 +units=m +type=crs",
+            9806,
+            vec![(8801, -16.25), (8802, 179.33), (8806, 251727.9), (8807, 334519.95)],
+        ),
+    ];
+    for (proj, method, params) in cases {
+        let written: Value = serde_json::from_str(&SpatialRef::from_proj4(proj).unwrap().to_projjson().unwrap()).unwrap();
+        assert_eq!(conversion(&written["conversion"]), (method, params), "{proj}");
+    }
+}
