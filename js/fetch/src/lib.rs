@@ -174,9 +174,9 @@ impl Fetcher {
         let init = js_sys::Object::new();
         if let Some(range) = range {
             js_sys::Reflect::set(&headers, &"Range".into(), &range.into()).map_err(js_error)?;
-            // A browser's HTTP cache sends requests for one URL one at a time, a range waiting for
-            // the one before (Chrome's cache lock): past it, ranges go out together. Blocks read
-            // are kept in memory (`cacheSize`).
+            // Chrome's HTTP cache sends requests for one URL one at a time, a range waiting for
+            // the one before (its cache lock): past it, ranges go out together. Blocks read are
+            // kept in memory (`cacheSize`).
             if !server_runtime() {
                 js_sys::Reflect::set(&init, &"cache".into(), &"no-store".into()).map_err(js_error)?;
             }

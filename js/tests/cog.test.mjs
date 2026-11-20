@@ -108,7 +108,7 @@ test("terrio-js/cog range requests skip a browser's HTTP cache, not a server run
   try {
     for (const browser of [false, true]) {
       const modes = [];
-      const fetch = (url, init) => (modes.push(init.cache), globalThis.fetch(url, init));
+      const fetch = (url, init) => (init.headers?.Range && modes.push(init.cache), globalThis.fetch(url, init));
       if (browser) Object.defineProperty(globalThis, "document", { configurable: true, value: {} });
       await cog.openCog(server.url + "small.tif", { fetch });
       if (document) Object.defineProperty(globalThis, "document", document);
