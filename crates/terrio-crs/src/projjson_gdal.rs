@@ -426,13 +426,21 @@ fn projected1(p: &Node) -> Result<Map<String, Value>> {
         Some(_) => return Err(unsupported("a WKT 1 extended with a PROJ string")),
         None => {
             let name = p.child("PROJECTION").and_then(Node::name).ok_or_else(|| unsupported("a PROJCS without PROJECTION"))?;
+            // A polar stereographic `from_wkt` refuses for its latitude. PROJ 9.9.0 maps it to no EPSG
+            // method and writes GDAL's method and parameter names as given, which this writer has no
+            // form for: refused, as `from_wkt` refuses it.
+            if crate::wkt1::polar_latitude_refused(p) {
+                return Err(unsupported(&format!("the {name} projection with its latitude refused")));
+            }
             method1(name, &param).ok_or_else(|| unsupported(&format!("the {name} projection")))?
         }
     };
     let mut values = Vec::new();
     let mut parameters = Vec::new();
     for p in list {
-        let v = param(wkt1_names(p.code)).unwrap_or(if p.kind == Kind::Scale { 1.0 } else { 0.0 });
+        // GDAL's name, else EPSG's or an older EPSG name, which PROJ also reads in WKT 1.
+        let default = if p.kind == Kind::Scale { 1.0 } else { 0.0 };
+        let v = param(wkt1_names(p.code)).or_else(|| param(&[p.key])).or_else(|| param(p.aliases)).unwrap_or(default);
         values.push(v);
         let unit = match p.kind {
             Kind::Angle => angular.clone(),
@@ -770,6 +778,71 @@ mod tests {
         assert_eq!(j["base_crs"]["datum"]["ellipsoid"]["inverse_flattening"], json!(294.978698213911));
         assert_eq!(j["conversion"]["id"], json!({"authority": "EPSG", "code": 16011}));
         assert_eq!(j["conversion"]["parameters"][3]["value"], json!(500000));
+    }
+
+    #[test]
+    fn wkt1_parameters_under_epsg_names_are_written_as_proj_reads_them() {
+        // PROJ 9.9.0 (pyproj 3.8.0), `CRS(wkt).to_json()`: each value as given, under its EPSG
+        // name or an older one.
+        const G: &str = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#;
+        let wkt = |projection: &str, params: &[(&str, f64)]| {
+            let params: Vec<String> = params.iter().map(|(k, v)| format!(r#"PARAMETER["{k}",{v}]"#)).collect();
+            format!(r#"PROJCS["x",{G},PROJECTION["{projection}"],{},UNIT["metre",1]]"#, params.join(","))
+        };
+        let values = |w: &str| -> Vec<(u64, f64)> {
+            let j = pj(&SpatialRef::from_wkt(w), false);
+            j["conversion"]["parameters"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| (p["id"]["code"].as_u64().unwrap(), p["value"].as_f64().unwrap()))
+                .collect()
+        };
+        let albers = wkt(
+            "Albers_Conic_Equal_Area",
+            &[
+                ("Latitude of false origin", 40.0),
+                ("longitude_of_center", -96.0),
+                ("standard_parallel_1", 29.5),
+                ("standard_parallel_2", 45.5),
+            ],
+        );
+        assert_eq!(values(&albers)[..4], [(8821, 40.0), (8822, -96.0), (8823, 29.5), (8824, 45.5)]);
+        let hotine = wkt(
+            "Hotine_Oblique_Mercator",
+            &[
+                ("Latitude of projection centre", 4.0),
+                ("Longitude of projection centre", 115.0),
+                ("Azimuth of initial line", 53.3),
+                ("Angle from Rectified to Skew Grid", 53.13),
+                ("Scale factor on initial line", 0.99984),
+            ],
+        );
+        assert_eq!(values(&hotine)[..5], [(8811, 4.0), (8812, 115.0), (8813, 53.3), (8814, 53.13), (8815, 0.99984)]);
+        let lcc = wkt(
+            "Lambert_Conformal_Conic_2SP",
+            &[
+                ("Latitude of false origin", 40.0),
+                ("Longitude of false origin", 10.0),
+                ("Latitude of 1st standard parallel", 45.0),
+                ("Latitude of 2nd standard parallel", 35.0),
+                ("Easting at false origin", 7.0),
+                ("Northing at false origin", 8.0),
+            ],
+        );
+        assert_eq!(values(&lcc), [(8821, 40.0), (8822, 10.0), (8823, 45.0), (8824, 35.0), (8826, 7.0), (8827, 8.0)]);
+        // PROJ maps GDAL's `Polar_Stereographic` with only a standard parallel to no EPSG method
+        // ("Polar_Stereographic"), and `from_wkt` refuses it: refused.
+        let polar = SpatialRef::from_wkt(&wkt("Polar_Stereographic", &[("standard_parallel_1", -71.0), ("central_meridian", 0.0)]));
+        let error = polar.to_gdal_projjson(false).unwrap_err().to_string();
+        assert!(error.contains("Polar_Stereographic projection with its latitude refused"), "{error}");
+        // And one with EPSG's `Latitude of natural origin` 90, which PROJ also maps to no EPSG method.
+        let polar = SpatialRef::from_wkt(&wkt(
+            "Polar_Stereographic",
+            &[("Latitude of natural origin", 90.0), ("central_meridian", 0.0), ("scale_factor", 0.994)],
+        ));
+        let error = polar.to_gdal_projjson(false).unwrap_err().to_string();
+        assert!(error.contains("Polar_Stereographic projection with its latitude refused"), "{error}");
     }
 
     #[test]
