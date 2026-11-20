@@ -73,8 +73,15 @@ It needs only NumPy and [affine](https://github.com/rasterio/affine) (installed 
   Taller source blocks are read in slabs of up to 16 MiB (at least one output tile row), aligned
   to source and output rows when that fits, then fed to the COG writer one tile row at a time.
   Whole-image strips taller than an output tile row are split into at least two reads; smaller
-  images can fit in one bounded slab. Blocks or row alignments exceeding the
-  slab budget may
+  images can fit in one bounded slab. A JPEG 2000 source, whose reads keep none of the tiles
+  they decode, is read in whole rows of its tiles by every copy, held or written in rows, so
+  that each tile is decoded once. When the slab budget holds less than a row of tiles, a copy
+  reads one row at a time if that row holds no more than the block cache (`TERRIO_CACHEMAX`,
+  64 MiB by default) in the source's type or the copy's, whichever is wider: a larger block
+  cache lets a copy hold a larger row of tiles, never more than one. Other blocks or row
+  alignments exceeding the slab budget, rows of JPEG 2000 tiles larger than the block cache,
+  and a JPEG 2000 of one tile larger than 1024 pixels, which reports blocks of at most
+  1024 x 1024 pixels, may
   still be decoded repeatedly. Streamed output is published only after writing succeeds, and
   copying onto a symlink or hardlink of the source is refused. An unrelated destination symlink
   is replaced with the completed output file; its former target is left unchanged.

@@ -20,6 +20,7 @@ import tracemalloc
 import numpy as np
 import pytest
 
+import terrio
 import terrio.rio as rio
 from terrio.rio import shutil as rio_shutil
 from terrio.rio.enums import Resampling
@@ -65,8 +66,8 @@ class Recording(DatasetReader):
     """A dataset that records the rows its pixels are read in, and the files of `directory` while
     they are read."""
 
-    def __init__(self, path, directory):
-        super().__init__(path)
+    def __init__(self, path, directory, **kwargs):
+        super().__init__(path, **kwargs)
         self.directory = directory
         self.windows = []
         self.seen = set()
@@ -306,6 +307,259 @@ def test_cog_copy_reads_tall_source_blocks_in_bounded_slabs(tmp_path, block_rows
     assert src.windows == [(y, min(slab_rows, HEIGHT - y)) for y in range(0, HEIGHT, slab_rows)]
     with rio.open(tmp_path / "out.tif") as ds:
         np.testing.assert_array_equal(ds.read(), RGB)
+
+
+def wide_pixels(rows=1030, cols=8200):
+    """A UInt16 band of `rows` x `cols`, made when a test needs it."""
+    return (np.add.outer(np.arange(rows) * 5, np.arange(cols)) % 4093).astype("uint16")
+
+
+@pytest.fixture(scope="module")
+def wide_sources(tmp_path_factory):
+    """`{name: (path, pixels)}`: images in rows of 1024 x 1024 tiles (terrio's JPEG 2000 tiles),
+    each row of tiles holding less than the block cache's 64 MiB, made for the tests that use them:
+
+    - "jp2": a UInt16 band (`wide_pixels`), a row of tiles and 6 rows of the next, whose row of
+      tiles holds 16,793,600 bytes, more than a copy's 16 MiB slab budget;
+    - "tif": the same band, a GeoTIFF of 512 x 1024 tiles;
+    - "jp2-rgb": three Byte bands of 12,000 bytes a row, whose 16 MB of rows hold a row of tiles
+      and a part of the next.
+    """
+    folder = tmp_path_factory.mktemp("wide")
+    tiles = dict(tiled=True, blockxsize=512, blockysize=1024)
+    band = wide_pixels()[None]
+    rgb = (np.add.outer(np.arange(1400) * 3, np.arange(4000)) % 251).astype("uint8")
+    rgb = np.stack([rgb, rgb[::-1], rgb[:, ::-1]])
+    sources = {
+        "jp2": (band, dict(driver="JP2OpenJPEG")),
+        "tif": (band, dict(driver="GTiff", **tiles)),
+        "jp2-rgb": (rgb, dict(driver="JP2OpenJPEG")),
+    }
+    out = {}
+    for name, (pixels, options) in sources.items():
+        path = str(folder / (name + (".tif" if name == "tif" else ".jp2")))
+        count, height, width = pixels.shape
+        profile = dict(width=width, height=height, count=count, dtype=pixels.dtype.name)
+        with rio.open(path, "w", crs="EPSG:32611", transform=T, **profile, **options) as dst:
+            dst.write(pixels)
+        out[name] = (path, pixels)
+    return out
+
+
+@pytest.fixture
+def block_cache_size():
+    """Gives the block cache its size back after a test that changes it."""
+    size = terrio.block_cache_max()
+    yield
+    terrio.set_block_cache_max(size)
+
+
+@pytest.mark.parametrize(
+    "name, driver, limit, cache, rows",
+    [
+        # A JPEG 2000 read decodes every tile its window crosses and keeps none: a whole row of
+        # tiles at a time, each tile is decoded once.
+        ("jp2", "COG", None, None, 1024),
+        # A row of tiles holding more than the block cache is read within the budget, as before.
+        ("jp2", "COG", None, 1 << 20, 512),
+        # Over the in-memory limit, a GeoTIFF is read in rows of about 16 MB, 1,023 here: raised
+        # to a row of tiles.
+        ("jp2", "GTiff", "1", None, 1024),
+        # Below it, a GeoTIFF is held, read in rows of 64 MB of 8-byte values, 1,023 here: raised
+        # to a row of tiles.
+        ("jp2", "GTiff", None, None, 1024),
+        # Rows of about 16 MB holding more than a row of tiles, 1,398 here: rounded down to a
+        # whole number of rows of tiles.
+        ("jp2-rgb", "GTiff", "1", None, 1024),
+        # A row of tiles counts every band: 12,288,000 bytes, more than this block cache.
+        ("jp2-rgb", "GTiff", None, 8 << 20, 699),
+    ],
+    ids=[
+        "jp2-cog",
+        "jp2-over-the-cache",
+        "jp2-gtiff-over-the-limit",
+        "jp2-gtiff-held",
+        "jp2-rows-of-16-mb",
+        "jp2-bands-over-the-cache",
+    ],
+)
+def test_a_copy_reads_a_jpeg_2000_a_row_of_its_tiles_at_a_time(
+    tmp_path, monkeypatch, wide_sources, block_cache_size, name, driver, limit, cache, rows
+):
+    if limit:
+        monkeypatch.setenv("TERRIO_RIO_IN_MEMORY_LIMIT", limit)
+    if cache:
+        terrio.set_block_cache_max(cache)
+    path, pixels = wide_sources[name]
+    height = pixels.shape[1]
+    src = Recording(path, tmp_path)
+    with src:
+        rio_shutil.copy(src, str(tmp_path / "out.tif"), driver=driver, compress="deflate")
+    assert src.windows == [(y, min(rows, height - y)) for y in range(0, height, rows)]
+    with rio.open(tmp_path / "out.tif") as ds:
+        assert np.array_equal(ds.read(), pixels)
+
+
+def test_a_cog_copy_reads_a_geotiff_of_tall_tiles_within_the_slab_budget(tmp_path, wide_sources):
+    """A GeoTIFF's decoded tiles stay in the block cache between reads: its copy reads rows of
+    the 16 MiB budget, 512, though they cut its 1024-row tiles."""
+    path, pixels = wide_sources["tif"]
+    src = Recording(path, tmp_path)
+    with src:
+        rio_shutil.copy(src, str(tmp_path / "out.tif"), driver="COG", compress="deflate")
+    assert src.windows == [(0, 512), (512, 512), (1024, 6)]
+    with rio.open(tmp_path / "out.tif") as ds:
+        assert np.array_equal(ds.read(), pixels)
+
+
+@pytest.mark.parametrize(
+    "driver, limit, dtype, cache, rows",
+    [
+        # 16,793,600 bytes of UInt16 fit a 32 MiB block cache: a whole row of tiles.
+        ("COG", None, "uint16", 32 << 20, 1024),
+        # 67,174,400 bytes of Float64 do not: the rows read before (512 for the COG's 16 MiB
+        # budget, 1,023 held, 255 over the in-memory limit).
+        ("COG", None, "float64", 32 << 20, 512),
+        ("GTiff", None, "float64", 32 << 20, 1023),
+        ("GTiff", "1", "float64", 32 << 20, 255),
+        # A copy to a narrower type reads its rows in the source's: 16,793,600 bytes of UInt16,
+        # more than this block cache, though 8,396,800 of Byte are less.
+        ("GTiff", None, "uint8", 16 << 20, 1023),
+    ],
+    ids=[
+        "cog-uint16",
+        "cog-float64",
+        "gtiff-held-float64",
+        "gtiff-over-the-limit-float64",
+        "gtiff-held-uint8",
+    ],
+)
+def test_a_jpeg_2000_copy_counts_a_row_of_tiles_in_the_type_it_holds_it_in(
+    tmp_path, monkeypatch, wide_sources, block_cache_size, driver, limit, dtype, cache, rows
+):
+    """A copy to another type holds its rows in both types: a row of tiles is read whole when it
+    fits in the block cache in the wider of the two."""
+    if limit:
+        monkeypatch.setenv("TERRIO_RIO_IN_MEMORY_LIMIT", limit)
+    terrio.set_block_cache_max(cache)
+    path, pixels = wide_sources["jp2"]
+    height = pixels.shape[1]
+    src = Recording(path, tmp_path)
+    with src:
+        rio_shutil.copy(
+            src, str(tmp_path / "out.tif"), driver=driver, compress="deflate", dtype=dtype
+        )
+    assert src.windows == [(y, min(rows, height - y)) for y in range(0, height, rows)]
+    with rio.open(tmp_path / "out.tif") as ds:
+        assert ds.dtypes[0] == dtype
+        assert np.array_equal(ds.read(), pixels.astype(dtype))
+
+
+def test_a_copy_reads_an_overview_level_of_a_jpeg_2000_in_rows_of_its_tiles(
+    tmp_path, monkeypatch, wide_sources
+):
+    """An overview level of a JPEG 2000 is read by window as the image is: copied to Float64 over
+    the in-memory limit, its 515 rows are read at once, where rows of about 16 MB (511) ended
+    inside its first row of tiles."""
+    monkeypatch.setenv("TERRIO_RIO_IN_MEMORY_LIMIT", "1")
+    path = wide_sources["jp2"][0]
+    with rio.open(path, overview_level=0) as ds:
+        pixels = ds.read()
+    src = Recording(path, tmp_path, overview_level=0)
+    with src:
+        assert (src.height, src.block_shapes) == (515, [(1024, 1024)])
+        out = str(tmp_path / "out.tif")
+        rio_shutil.copy(src, out, driver="GTiff", compress="deflate", dtype="float64")
+    assert src.windows == [(0, 515)]
+    with rio.open(out) as ds:
+        assert np.array_equal(ds.read(), pixels.astype("float64"))
+
+
+def test_a_cog_copy_reads_a_jpeg_2000_of_one_row_of_tiles_at_once(tmp_path, block_cache_size):
+    """A row of tiles taller than the image was read in two parts, each decoding every tile. It
+    is now read at once when the image's rows fit in the block cache (1,320,000 bytes here, in
+    1.5 MiB), though the 1024 rows of its tiles would not."""
+    terrio.set_block_cache_max(3 << 19)
+    path = str(tmp_path / "one.jp2")
+    pixels = wide_pixels(600, 1100)
+    profile = dict(width=1100, height=600, count=1, dtype="uint16", crs="EPSG:32611")
+    with rio.open(path, "w", driver="JP2OpenJPEG", transform=T, **profile) as dst:
+        dst.write(pixels, 1)
+    src = Recording(path, tmp_path)
+    with src:
+        assert src.block_shapes == [(1024, 1024)]
+        rio_shutil.copy(src, str(tmp_path / "out.tif"), driver="COG", compress="deflate")
+    assert src.windows == [(0, 600)]
+    with rio.open(tmp_path / "out.tif") as ds:
+        assert np.array_equal(ds.read(1), pixels)
+
+
+def test_a_cog_copy_reads_384_row_jpeg_2000_tiles_a_row_of_tiles_at_a_time(tmp_path):
+    """Rows of 384-row tiles, which the COG's 512-row tiles cut, are read one at a time, not in
+    rows of both tile heights (1,536): the writer takes rows in any number, and the file is the
+    one written whole from the pixels held. Read 512 rows at a time, two rows of tiles in three
+    were decoded twice."""
+    rasterio = pytest.importorskip("rasterio")
+    path = str(tmp_path / "tiles.jp2")
+    pixels = wide_pixels(1000, 1300)
+    pixels = np.vstack([pixels, pixels])
+    profile = dict(width=1300, height=2000, count=1, dtype="uint16", crs="EPSG:32611")
+    options = dict(blockxsize=640, blockysize=384, quality=100, reversible="yes")
+    with rasterio.open(path, "w", driver="JP2OpenJPEG", transform=T, **profile, **options) as dst:
+        dst.write(pixels, 1)
+    src = Recording(path, tmp_path)
+    with src:
+        assert src.block_shapes == [(384, 640)]
+        rio_shutil.copy(src, str(tmp_path / "out.tif"), driver="COG", compress="deflate")
+    assert src.windows == [(y, min(384, 2000 - y)) for y in range(0, 2000, 384)]
+    held = str(tmp_path / "held.tif")
+    with rio.open(path) as ds:
+        rio_shutil._copy_dataset(ds, held, "COG", {"compress": "deflate"}, from_source=False)
+    assert filecmp.cmp(str(tmp_path / "out.tif"), held, shallow=False)
+    with rio.open(tmp_path / "out.tif") as ds:
+        assert np.array_equal(ds.read(1), pixels)
+
+
+@pytest.mark.parametrize("writer", ["terrio", "rasterio"])
+def test_a_held_copy_reads_a_whole_jpeg_2000_in_one_read(tmp_path, writer):
+    """A held copy reads a 2000 x 2000 image at once; rounding those rows down to whole rows of
+    its 1024-row blocks read it in two parts. terrio writes the image in 1024 x 1024 tiles;
+    rasterio here in one tile, which terrio reads in 1024-row blocks, so two reads decoded that
+    tile in two passes."""
+    pixels = np.vstack([wide_pixels(1000, 2000)] * 2)
+    path = str(tmp_path / "src.jp2")
+    profile = dict(width=2000, height=2000, count=1, dtype="uint16", crs="EPSG:32611", transform=T)
+    if writer == "terrio":
+        with rio.open(path, "w", driver="JP2OpenJPEG", **profile) as dst:
+            dst.write(pixels, 1)
+    else:
+        rasterio = pytest.importorskip("rasterio")
+        options = dict(blockxsize=2000, blockysize=2000, quality=100, reversible="yes")
+        with rasterio.open(path, "w", driver="JP2OpenJPEG", **profile, **options) as dst:
+            dst.write(pixels, 1)
+    src = Recording(path, tmp_path)
+    with src:
+        assert src.block_shapes == [(1024, 1024)]
+        rio_shutil.copy(src, str(tmp_path / "out.tif"), driver="GTiff", compress="deflate")
+    assert src.windows == [(0, 2000)]
+    with rio.open(tmp_path / "out.tif") as ds:
+        assert np.array_equal(ds.read(1), pixels)
+
+
+def test_a_jpeg_2000_copy_is_the_same_file_whatever_rows_it_reads_at_a_time(
+    tmp_path, wide_sources, block_cache_size
+):
+    """The COG of a JPEG 2000 read a row of tiles at a time is the one read in half rows, and
+    the one written whole from the pixels held."""
+    path = wide_sources["jp2"][0]
+    by_rows, by_half_rows, held = (str(tmp_path / f"{name}.tif") for name in "abc")
+    rio_shutil.copy(path, by_rows, driver="COG", compress="deflate")
+    with rio.open(path) as ds:
+        rio_shutil._copy_dataset(ds, held, "COG", {"compress": "deflate"}, from_source=False)
+    terrio.set_block_cache_max(1 << 20)
+    rio_shutil.copy(path, by_half_rows, driver="COG", compress="deflate")
+    assert filecmp.cmp(by_rows, by_half_rows, shallow=False)
+    assert filecmp.cmp(by_rows, held, shallow=False)
 
 
 @pytest.mark.parametrize("driver", ["COG", "GTiff"])

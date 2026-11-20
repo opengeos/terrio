@@ -207,9 +207,12 @@ def _copy_dataset(
         from_source: Whether a file written in rows is written from the source; otherwise the
             copy holds the source's pixels until it is written, whatever its format.
     """
+    import numpy as np
+
     from terrio import _terrio
     from terrio.rio import open as rio_open
     from terrio.rio.dtypes import _getnpdtype
+    from terrio.rio.io import _tile_rows_decoded_once
     from terrio.rio.windows import Window
 
     src._check_open()
@@ -309,6 +312,9 @@ def _copy_dataset(
             return
         itemsize = 16 if sample in ("CInt16", "CInt32", "CFloat64") else 8
         rows = max(1, min(src.height, (64 << 20) // max(1, src.width * src.count * itemsize)))
+        # A JPEG 2000 is read a whole row of its tiles at a time, each tile decoded once; `write`
+        # holds each read in the dataset's type.
+        rows = _tile_rows_decoded_once(src, rows, itemsize=np.dtype(dst._buffer_dtype).itemsize)
         for y in range(0, src.height, rows):
             w = Window(0, y, src.width, min(rows, src.height - y))
             dst.write(src._read_for_copy(window=w), window=w)
