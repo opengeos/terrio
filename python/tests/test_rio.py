@@ -913,6 +913,7 @@ def test_defenv_starts_a_default_environment_once():
     def run():
         # odc-stac starts one per read thread: rasterio.env.defenv(), then hasenv()/getenv().
         assert not rio.env.hasenv()
+        before = _terrio.config_get("GDAL_HTTP_TIMEOUT")
         rio.env.defenv(GDAL_HTTP_TIMEOUT=17)
         assert rio.env.hasenv()
         assert _terrio.config_get("GDAL_HTTP_TIMEOUT") == "17"
@@ -920,7 +921,7 @@ def test_defenv_starts_a_default_environment_once():
         assert rio.env.getenv() == {"GDAL_HTTP_TIMEOUT": 17}
         rio.env.delenv()
         assert not rio.env.hasenv()
-        assert _terrio.config_get("GDAL_HTTP_TIMEOUT") != "17"
+        assert _terrio.config_get("GDAL_HTTP_TIMEOUT") == before
 
     with ThreadPoolExecutor(1) as pool:
         pool.submit(run).result()
