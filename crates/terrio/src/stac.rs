@@ -1589,7 +1589,7 @@ fn items_at_once<'a>(mut hrefs: impl Iterator<Item = &'a str>) -> usize {
 }
 
 /// How many items' windows of `per_item` bytes each are read at once: at most `most`, and as many
-/// as fit in half of the `usable` memory (in 1 GiB when it is unknown) beside the output's `output_bytes`,
+/// as fit in half of the `usable` memory, or in 1 GiB when it is unknown, beside the output's `output_bytes`,
 /// but at least one.
 fn batch_size(per_item: usize, output_bytes: usize, usable: Option<u64>, most: usize) -> usize {
     let budget = usable.map_or(1 << 30, |m| m / 2).saturating_sub(output_bytes as u64);
@@ -1692,6 +1692,17 @@ impl Mosaic {
         Ok(())
     }
 
+    /// The bytes of a decoded tile of an open item (a read decodes each tile it meets whole), for
+    /// every item: the items of a collection share a layout. `None` without an open tiled item,
+    /// whose items are then read one at a time.
+    fn tile_bytes(&self) -> Option<usize> {
+        self.items.iter().find_map(|(_, r)| {
+            let r = r.as_ref()?;
+            let (w, h) = r.block_size()?;
+            Some(w.saturating_mul(h).saturating_mul(r.band_count()).saturating_mul(r.data_type().size_bytes()))
+        })
+    }
+
     /// The output buffer of `pixels` values of each of `bands` bands, in the mosaic's type,
     /// filled with the nodata value (0 without one), once its bytes are known to fit.
     fn output(&self, pixels: usize, bands: usize, what: &str) -> Result<(RasterData, usize)> {
@@ -1719,14 +1730,18 @@ impl WindowSource for Mosaic {
         }
         let jobs: Vec<(usize, Cover)> =
             self.items.iter().enumerate().filter_map(|(i, (item, _))| cover(item, gt, w).map(|c| (i, c))).collect();
-        // An item's type is known once its file is open: each is counted at the largest's size.
+        // Counted at Float64 and the largest window, as no item's type is known before its file is
+        // opened, and with a decoded tile (see `Mosaic::tile_bytes`).
         let validity = usize::from(self.nodata.is_some());
-        let per_item = jobs
+        let window = jobs
             .iter()
             .map(|(_, c)| c.src.width.saturating_mul(c.src.height).saturating_mul(bands.len() * std::mem::size_of::<f64>() + validity))
             .max()
             .unwrap_or(0);
-        let at_once = batch_size(per_item, output_bytes, crate::dataset::fallible::usable_memory(), self.at_once);
+        let at_once = match self.tile_bytes() {
+            Some(tile) => batch_size(window.saturating_add(tile), output_bytes, crate::dataset::fallible::usable_memory(), self.at_once),
+            None => 1,
+        };
         let nodata = self.nodata;
         let read = |c: &Cover, item: &AssetItem, r: &mut LazyRaster| {
             let src = c.src;
@@ -1805,8 +1820,8 @@ impl WindowSource for Mosaic {
                 crate::ops::vrt::src_dst_window(src, dst, (item.width, item.height), nearest, request, (bw, bh)).map(|win| (i, win))
             })
             .collect();
-        // An item's output, and the source it reads it from: at most a strip when it has no
-        // overview to read.
+        // An item's output, the source it reads it from (at most a strip when it has no overview to
+        // read), and a decoded tile (see `Mosaic::tile_bytes`).
         let sample = bands.len() * std::mem::size_of::<f64>();
         let per_item = jobs
             .iter()
@@ -1820,7 +1835,10 @@ impl WindowSource for Mosaic {
             })
             .max()
             .unwrap_or(0);
-        let at_once = batch_size(per_item, output_bytes, crate::dataset::fallible::usable_memory(), self.at_once);
+        let at_once = match self.tile_bytes() {
+            Some(tile) => batch_size(per_item.saturating_add(tile), output_bytes, crate::dataset::fallible::usable_memory(), self.at_once),
+            None => 1,
+        };
         let read = |win: &crate::ops::vrt::Window, item: &AssetItem, r: &mut LazyRaster| {
             if item.width > r.width() || item.height > r.height() {
                 return Err(smaller_than_declared(item, r));
@@ -2391,7 +2409,8 @@ mod tests {
         let (_, mut sorted) = group.by_crs.into_iter().next().unwrap();
         sorted.sort_by(|a, b| a.datetime.cmp(&b.datetime));
         let read = |at_once: usize| {
-            let items = sorted.iter().map(|i| (i.clone(), None)).collect();
+            // The first item open, as `open_mosaic` leaves it: its tiles size the batches.
+            let items = sorted.iter().enumerate().map(|(k, i)| (i.clone(), (k == 0).then(|| i.open().unwrap()))).collect();
             let gt = [500000.0, 10.0, 0.0, 4400000.0, 0.0, -10.0];
             let mut m = Mosaic { items, at_once, geo_transform: gt, data_type: DataType::U16, nodata: Some(0.0) };
             m.read(0, Window::new(0, 0, 14, 4), &[1]).unwrap().to_f64_vec()
