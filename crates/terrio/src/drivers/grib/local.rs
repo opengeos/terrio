@@ -308,9 +308,10 @@ mod tests {
         assert!(values.len() == whole.len() && values.iter().zip(&whole).all(|(a, b)| a.to_bits() == b.to_bits()));
     }
 
-    /// Catches a band's message that cannot be read taken for a band without values, or the errors
-    /// of a read of several bands reported out of band order: the file changed after open, band 1's
-    /// message damaged and band 2's cut off, a read of both fails with band 1's error.
+    /// Catches a band's message that cannot be read reported otherwise than by the read's error, or
+    /// the errors of a read of several bands reported out of band order: the file changed after
+    /// open, band 1's message damaged and band 2's cut off, a read of band 2 fails with the end of
+    /// the file, and a read of both with band 1's error.
     #[test]
     fn a_read_fails_with_the_error_of_its_first_band_that_fails() {
         let _serial = cache_test_guard(0);
@@ -321,14 +322,12 @@ mod tests {
         let mut changed = bytes[..spans[1].0 + 20].to_vec();
         changed[spans[0].0 + 16..spans[0].0 + 20].copy_from_slice(&[0, 0, 0, 1]);
         std::fs::write(&path, &changed).unwrap();
-        let mut error = |bands: Vec<usize>| match r.read_window(Window::new(0, 0, 40, 30), &WindowOptions { bands, overview: None }) {
-            Ok(_) => "read".to_string(),
-            Err(e) => e.to_string(),
-        };
-        let (first, second) = (error(vec![1]), error(vec![2]));
+        let mut read = |bands: Vec<usize>| r.read_window(Window::new(0, 0, 40, 30), &WindowOptions { bands, overview: None }).map(|_| ());
+        let first = read(vec![1]).unwrap_err().to_string();
         assert!(first.contains("invalid GRIB2 section at offset 16"), "{first}");
-        assert!(second != "read" && second != first, "{second}");
-        assert_eq!(error(vec![1, 2]), first);
+        let second = read(vec![2]);
+        assert!(matches!(&second, Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof), "{second:?}");
+        assert_eq!(read(vec![1, 2]).unwrap_err().to_string(), first);
     }
 
     /// Catches the readers of one file sharing its bands when they decode it otherwise: one opened
