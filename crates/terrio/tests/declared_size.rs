@@ -1104,6 +1104,7 @@ fn in_child(dir: &Path) {
 /// Catches a local GRIB file read whole, or GRIB bytes copied, when they are opened to be read by
 /// window (#1081): memory that no read sees. The largest allocation of either open is a small part
 /// of the file's 4 MiB of Float32 values.
+#[cfg(feature = "grib")]
 #[test]
 fn a_lazy_grib_open_allocates_nothing_the_size_of_its_file() {
     let _serial = serial();
