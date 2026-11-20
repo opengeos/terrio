@@ -781,6 +781,7 @@ impl SourceRead<'_> {
 /// placed by `src_rect` and `dst_rect` that a request `(xoff, yoff, xsize, ysize)` of the
 /// destination read into a buffer of `buf` pixels covers, and where it goes in the buffer; `None`
 /// when it covers none. `nearest`: the request resamples by nearest neighbour.
+/// Reference: GDAL 3.13.3.
 pub(crate) fn src_dst_window(
     src_rect: [f64; 4],
     dst_rect: [f64; 4],
