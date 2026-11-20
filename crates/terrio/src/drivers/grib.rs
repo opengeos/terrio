@@ -231,12 +231,22 @@ impl Band<'_> {
 /// the sections, without decoding the data, as GDAL's `FindNoDataGrib2`), and the antimeridian
 /// split column.
 fn header(bands: &[Band], file_len: usize) -> Result<(RasterDataset, usize)> {
+    header_with(bands, file_len, |_, band| band.nodata())
+}
+
+/// [`header`], each band's nodata given by `nodata_of` (from the band's index, from 0, and the
+/// band), in band order, its first error failing the header where the band's own would.
+fn header_with(
+    bands: &[Band],
+    file_len: usize,
+    mut nodata_of: impl FnMut(usize, &Band) -> Result<Option<f64>>,
+) -> Result<(RasterDataset, usize)> {
     let first = bands.first().ok_or_else(|| Error::InvalidData("no GRIB message found".into()))?;
     let grid = first.grid()?;
     let georef = georeference(&grid);
     let (cols, rows) = (grid.nx as usize, grid.ny as usize);
     point_count(cols, rows, file_len)?;
-    let band_nodata: Vec<Option<f64>> = bands.iter().map(Band::nodata).collect::<Result<_>>()?;
+    let band_nodata: Vec<Option<f64>> = bands.iter().enumerate().map(|(i, band)| nodata_of(i, band)).collect::<Result<_>>()?;
     let nodata = band_nodata[0];
     let raster = wbraster::Raster {
         cols,

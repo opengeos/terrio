@@ -1,17 +1,19 @@
-//! Local GRIB files read by position, so that an open dataset holds where its bands are rather
-//! than the file: at open, the first octets of each message, to find the next one, and its header
-//! (its sections up to the first octets of its data, [`super::next_part`]); a band's message is read
+//! Local GRIB files read by position, so that an open dataset holds where its bands are rather than
+//! the file: at open, the first octets of each message, to find the next one, and its header (its
+//! sections up to the first octets of its data, [`super::next_part`]); a band's message is read
 //! when the band is read. The bytes between messages are read only where a message does not start
 //! where the previous one ends, to look for the next one. A GRIB1 message whose nodata depends on
-//! its data is read whole at open. The last 4 bytes of each message, its end marker, which the walk
-//! of a GRIB2 message's sections checks, are read at open too. The reads at open go in file order
-//! through one buffer that a seek inside it keeps ([`crate::vfs::NearSeek`]): a message's end marker
-//! and the next message's first octets and header come from one read of the file, as a rule.
+//! its data is read whole at open, when its nodata is worked out once the headers are read, and
+//! dropped then: the open holds one such message at a time. The last 4 bytes of each message, its
+//! end marker, which the walk of a GRIB2 message's sections checks, are read at open too. The reads
+//! of the headers go in file order through one buffer that a seek inside it keeps
+//! ([`crate::vfs::NearSeek`]): a message's end marker and the next message's first octets and
+//! header come from one read of the file, as a rule.
 //!
 //! The messages are found, and their headers read, as in the bytes of a whole file in memory
 //! ([`super::open_lazy_bytes`]): a file gives the same bands, metadata and errors read either way.
 
-use super::{Band, Source, Store, bad_section, find_messages, grib1, header, message_bands, message_fields, next_part, try_filled};
+use super::{Band, Source, Store, bad_section, find_messages, grib1, header_with, message_bands, message_fields, next_part, try_filled};
 use crate::{Error, Result};
 use std::io::{Read, Seek, SeekFrom};
 
@@ -134,6 +136,13 @@ fn grib1_nodata_needs_data(head: &[u8], file_len: usize, normalize: bool) -> boo
     })
 }
 
+/// The nodata of the GRIB1 message `msg`, read whole, as its band gives it.
+fn grib1_nodata(msg: &[u8], file_len: usize, normalize: bool) -> Result<Option<f64>> {
+    let mut m = grib1::Message::parse(msg, file_len)?;
+    m.normalize = normalize;
+    m.nodata()
+}
+
 /// The bands of a message of `len` bytes of a file of `file_len`, from its header `head` and its
 /// last 4 bytes `end_marker`, as the whole message gives them: a GRIB2 message whose sections the
 /// header holds until its end marker's place has that marker checked, as the whole message's
@@ -162,22 +171,27 @@ pub(super) fn open(local: crate::vfs::LocalPath) -> Result<crate::LazyRaster> {
     let mut scan = scan.into_inner();
     let mut heads = Vec::with_capacity(spans.len());
     for &(start, n) in &spans {
-        let mut head = scan.head(start, n)?;
-        if head.get(7) == Some(&1) && head.len() < n && grib1_nodata_needs_data(&head, len, normalize) {
-            head = scan.read(start, n)?;
-        }
+        let head = scan.head(start, n)?;
+        let read_whole = head.get(7) == Some(&1) && head.len() < n && grib1_nodata_needs_data(&head, len, normalize);
         // Messages are at least 16 bytes long (`find_messages`).
         let end_marker = scan.read(start + n - 4, 4)?;
-        heads.push((head, end_marker));
+        heads.push((head, end_marker, read_whole));
     }
     let mut all = Vec::new();
     let mut index = Vec::new();
-    for ((head, end_marker), &(start, n)) in heads.iter().zip(&spans) {
+    // The message of each band whose nodata depends on its values: read whole when its nodata is
+    // worked out, and dropped then, so that the open holds one such message at a time.
+    let mut whole = Vec::new();
+    for ((head, end_marker, read_whole), &(start, n)) in heads.iter().zip(&spans) {
         let bands = bands_of(head, end_marker, n, len, normalize)?;
         index.extend((0..bands.len()).map(|k| (start, n, k)));
+        whole.extend(std::iter::repeat_n(read_whole.then_some((start, n)), bands.len()));
         all.extend(bands);
     }
-    let (ds, split) = header(&all, len)?;
+    let (ds, split) = header_with(&all, len, |i, band| match whole[i] {
+        Some((start, n)) => grib1_nodata(&f.read(start, n)?, len, normalize),
+        None => band.nodata(),
+    })?;
     drop(all);
     let handle = crate::block_cache::Handle::of_file(&metadata, normalize as u64);
     Ok(Source::open(ds, split, normalize, Store::File(f, index), handle))

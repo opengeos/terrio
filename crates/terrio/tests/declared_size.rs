@@ -32,7 +32,8 @@ use terrio::{DataType, RasterConfig, RasterDataset, RasterWriteOptions};
 mod stacta_common;
 
 /// The global allocator, recording the largest allocation asked for since [`largest_during`] last
-/// reset it. On Unix it is the C allocator, as `std::alloc::System` is there, called directly:
+/// reset it, and the bytes allocated and not yet freed (see [`peak_during`]). On Unix it is the C
+/// allocator, as `std::alloc::System` is there, called directly:
 /// Rust 1.99's debug check of `System`'s `GlobalAlloc` methods (a zero-size layout) aborts on a
 /// block `openjp2` frees with one when its codec is dropped, which the default allocator path does
 /// not check. Elsewhere the default allocator is kept, and allocations are not counted.
@@ -41,6 +42,24 @@ struct Counting;
 
 /// The largest allocation asked for since the last reset, on any thread.
 static LARGEST: AtomicUsize = AtomicUsize::new(0);
+
+/// The bytes allocated and not yet freed, on any thread, and the most of them since
+/// [`peak_during`] last reset it.
+#[cfg(unix)]
+static LIVE: AtomicUsize = AtomicUsize::new(0);
+#[cfg(unix)]
+static PEAK: AtomicUsize = AtomicUsize::new(0);
+
+/// Counts `n` bytes allocated, or freed.
+#[cfg(unix)]
+fn allocated(n: usize) {
+    let live = LIVE.fetch_add(n, Ordering::Relaxed) + n;
+    PEAK.fetch_max(live, Ordering::Relaxed);
+}
+#[cfg(unix)]
+fn freed(n: usize) {
+    LIVE.fetch_sub(n, Ordering::Relaxed);
+}
 
 /// Injection used only by the isolated index-reservation failure regression.
 #[cfg(unix)]
@@ -59,11 +78,16 @@ unsafe impl GlobalAlloc for Counting {
         if layout.size() >= REFUSE_FROM.load(Ordering::Relaxed) {
             return std::ptr::null_mut();
         }
-        if layout.align() <= MIN_ALIGN && layout.align() <= layout.size() {
+        let ptr = if layout.align() <= MIN_ALIGN && layout.align() <= layout.size() {
             // SAFETY: a plain C allocation.
-            return unsafe { libc::malloc(layout.size()) }.cast();
+            unsafe { libc::malloc(layout.size()) }.cast()
+        } else {
+            aligned(layout)
+        };
+        if !ptr.is_null() {
+            allocated(layout.size());
         }
-        aligned(layout)
+        ptr
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
@@ -73,12 +97,17 @@ unsafe impl GlobalAlloc for Counting {
         }
         if layout.align() <= MIN_ALIGN && layout.align() <= layout.size() {
             // SAFETY: a plain C allocation.
-            return unsafe { libc::calloc(layout.size(), 1) }.cast();
+            let ptr: *mut u8 = unsafe { libc::calloc(layout.size(), 1) }.cast();
+            if !ptr.is_null() {
+                allocated(layout.size());
+            }
+            return ptr;
         }
         let ptr = aligned(layout);
         if !ptr.is_null() {
             // SAFETY: `ptr` holds `layout.size()` bytes.
             unsafe { std::ptr::write_bytes(ptr, 0, layout.size()) };
+            allocated(layout.size());
         }
         ptr
     }
@@ -88,23 +117,30 @@ unsafe impl GlobalAlloc for Counting {
         if new_size >= REFUSE_FROM.load(Ordering::Relaxed) {
             return std::ptr::null_mut();
         }
-        if layout.align() <= MIN_ALIGN && layout.align() <= new_size {
+        let new: *mut u8 = if layout.align() <= MIN_ALIGN && layout.align() <= new_size {
             // SAFETY: `ptr` came from this allocator, whose blocks are the C allocator's.
-            return unsafe { libc::realloc(ptr.cast(), new_size) }.cast();
-        }
-        // SAFETY: the caller's contract: `new_size` rounded up to the alignment fits `isize`.
-        let new = aligned(unsafe { Layout::from_size_align_unchecked(new_size, layout.align()) });
-        if !new.is_null() {
-            // SAFETY: both blocks hold at least the bytes copied, and are distinct.
-            unsafe {
-                std::ptr::copy_nonoverlapping(ptr, new, layout.size().min(new_size));
-                libc::free(ptr.cast());
+            unsafe { libc::realloc(ptr.cast(), new_size) }.cast()
+        } else {
+            // SAFETY: the caller's contract: `new_size` rounded up to the alignment fits `isize`.
+            let new = aligned(unsafe { Layout::from_size_align_unchecked(new_size, layout.align()) });
+            if !new.is_null() {
+                // SAFETY: both blocks hold at least the bytes copied, and are distinct.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(ptr, new, layout.size().min(new_size));
+                    libc::free(ptr.cast());
+                }
             }
+            new
+        };
+        if !new.is_null() {
+            allocated(new_size);
+            freed(layout.size());
         }
         new
     }
 
-    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        freed(layout.size());
         // SAFETY: `ptr` came from this allocator, whose blocks are the C allocator's.
         unsafe { libc::free(ptr.cast()) }
     }
@@ -140,6 +176,16 @@ fn largest_during<T>(f: impl FnOnce() -> T) -> (T, usize) {
     LARGEST.store(0, Ordering::Relaxed);
     let out = f();
     (out, LARGEST.load(Ordering::Relaxed))
+}
+
+/// What `f` returns, and the most bytes it held allocated at once while it ran, on any thread,
+/// past those allocated before it.
+#[cfg(all(unix, feature = "grib"))]
+fn peak_during<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = LIVE.load(Ordering::Relaxed);
+    PEAK.store(before, Ordering::Relaxed);
+    let out = f();
+    (out, PEAK.load(Ordering::Relaxed).saturating_sub(before))
 }
 
 /// `f` with `options` set on the calling thread, as Python's `terrio.rio.Env` sets them.
@@ -1119,6 +1165,74 @@ fn a_lazy_grib_open_allocates_nothing_the_size_of_its_file() {
     let (opened, largest) = largest_during(|| terrio::memory::open_raster_lazy_bytes(bytes, "f.grib2"));
     assert_eq!(opened.unwrap().width(), 1024);
     assert!(largest < len / 16, "bytes in memory: an allocation of {largest} bytes, for {len}");
+}
+
+/// A GRIB1 file of `count` messages of `nx` x `ny` points on a latitude/longitude grid, each with
+/// a bitmap masking every seventh point and 32-bit values packed from 0: the packing's range holds
+/// 9999, so each message's nodata depends on its values.
+#[cfg(all(unix, feature = "grib"))]
+fn grib1_file(nx: usize, ny: usize, count: usize) -> Vec<u8> {
+    let section = |body: &[u8]| [&((body.len() + 3) as u32).to_be_bytes()[1..], body].concat();
+    let sign_magnitude = |v: i32| {
+        let m = v.unsigned_abs() | if v < 0 { 0x80_0000 } else { 0 };
+        [(m >> 16) as u8, (m >> 8) as u8, m as u8]
+    };
+    // Table 2, centre 7, process 96, a grid and a bitmap: geopotential height at 500 hPa,
+    // 2024-05-17 06:00, a decimal scale of 0.
+    let pds = section(&[2, 7, 96, 255, 0xc0, 7, 100, 1, 244, 24, 5, 17, 6, 0, 1, 0, 0, 0, 0, 0, 0, 21, 0, 0, 0]);
+    let (nx16, ny16, last_lat, last_lon) = (nx as u16, ny as u16, 60000 - 500 * (ny as i32 - 1), -20000 + 500 * (nx as i32 - 1));
+    let gds = section(
+        &[
+            &[0, 255, 0][..],
+            &nx16.to_be_bytes(),
+            &ny16.to_be_bytes(),
+            &sign_magnitude(60000),
+            &sign_magnitude(-20000),
+            &[0x80],
+            &sign_magnitude(last_lat),
+            &sign_magnitude(last_lon),
+            &500u16.to_be_bytes(),
+            &500u16.to_be_bytes(),
+            &[0, 0, 0, 0, 0],
+        ]
+        .concat(),
+    );
+    let points = nx * ny;
+    let mut bitmap = vec![0u8; points.div_ceil(8)];
+    let kept: Vec<usize> = (0..points).filter(|i| i % 7 != 0).collect();
+    for &i in &kept {
+        bitmap[i / 8] |= 0x80 >> (i % 8);
+    }
+    let bms = section(&[&[(bitmap.len() * 8 - points) as u8, 0, 0][..], &bitmap].concat());
+    let mut data: Vec<u8> = kept.iter().flat_map(|&i| (i as u32).wrapping_mul(2_654_435_761).to_be_bytes()).collect();
+    if (11 + data.len()) % 2 == 1 {
+        data.push(0);
+    }
+    let unused = (data.len() - kept.len() * 4) as u8 * 8;
+    let bds = section(&[&[unused, 0, 0, 0, 0, 0, 0, 32][..], &data].concat());
+    let body = [pds, gds, bms, bds].concat();
+    let message = [&b"GRIB"[..], &((body.len() + 12) as u32).to_be_bytes()[1..], &[1], &body, b"7777"].concat();
+    message.repeat(count)
+}
+
+/// Catches a local GRIB1 file whose messages' nodata depends on their values held whole while it
+/// is opened (#1081): each such message is read whole to work out its nodata, and dropped before
+/// the next one is read. Of a file of 64 messages of 200 x 100 points, the open holds at most a
+/// small part at once.
+#[cfg(all(unix, feature = "grib"))]
+#[test]
+fn a_lazy_grib1_open_holds_one_message_read_whole_at_a_time() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("f.grb");
+    let bytes = grib1_file(200, 100, 64);
+    std::fs::write(&path, &bytes).unwrap();
+    let len = bytes.len();
+    let (opened, peak) = peak_during(|| terrio::LazyRaster::open(path.to_str().unwrap()));
+    let opened = opened.unwrap();
+    // The nodata of a message whose values hold 9999 and more, worked out from them.
+    assert_eq!((opened.band_count(), opened.band_nodata(64)), (64, Some(9.999e20)));
+    assert!(peak < len / 4, "{peak} bytes held at once, for a file of {len}");
 }
 
 // ─── The writers operations stream to ───────────────────────────────────────────────────────────
