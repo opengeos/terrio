@@ -136,8 +136,10 @@ def _tile_rows_decoded_once(source: Any, rows: int, unit: int = 1, itemsize: int
     `rows` is made a multiple of a whole row of its tiles (and of `unit`): rounded down when it
     holds one, raised to one when that row's pixels hold no more bytes than the block cache
     (`TERRIO_CACHEMAX`), the decoded blocks a GeoTIFF source keeps between reads, counted in the
-    source's type or the one the copy holds them in (`itemsize`), whichever is wider.
-    Otherwise `rows` is kept.
+    source's type or the one the copy holds them in (`itemsize`), whichever is wider. `rows` is
+    kept otherwise, and when it holds the whole image already: one read decodes each tile once,
+    whatever blocks are reported, and a JPEG 2000 of one tile larger than 1024 pixels reports
+    1024-row blocks, parts of that tile, which rounding down would read in two passes.
 
     Args:
         source: The dataset the slabs are read from.
@@ -149,7 +151,7 @@ def _tile_rows_decoded_once(source: Any, rows: int, unit: int = 1, itemsize: int
         int: The rows of a slab.
     """
     raster = getattr(source, "_raster", None)
-    if getattr(raster, "driver", None) != "JP2":
+    if getattr(raster, "driver", None) != "JP2" or rows >= source.height:
         return rows
     whole = math.lcm(unit, *(shape[0] for shape in source.block_shapes))
     if rows >= whole:

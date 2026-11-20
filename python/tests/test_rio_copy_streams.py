@@ -467,6 +467,32 @@ def test_a_cog_copy_reads_rows_of_384_row_jpeg_2000_tiles_three_at_a_time(tmp_pa
         assert np.array_equal(ds.read(1), pixels)
 
 
+@pytest.mark.parametrize("writer", ["terrio", "rasterio"])
+def test_a_copy_reading_a_whole_jpeg_2000_at_once_still_does(tmp_path, writer):
+    """A held copy reads a 2000 x 2000 image at once; rounding those rows down to whole rows of
+    its 1024-row blocks read it in two parts. terrio writes the image in 1024 x 1024 tiles;
+    rasterio here in one tile, which terrio reads in 1024-row blocks, so two reads decoded that
+    tile in two passes."""
+    pixels = np.vstack([WIDE[0, :1000, :2000]] * 2)
+    path = str(tmp_path / "src.jp2")
+    profile = dict(width=2000, height=2000, count=1, dtype="uint16", crs="EPSG:32611", transform=T)
+    if writer == "terrio":
+        with rio.open(path, "w", driver="JP2OpenJPEG", **profile) as dst:
+            dst.write(pixels, 1)
+    else:
+        rasterio = pytest.importorskip("rasterio")
+        options = dict(blockxsize=2000, blockysize=2000, quality=100, reversible="yes")
+        with rasterio.open(path, "w", driver="JP2OpenJPEG", **profile, **options) as dst:
+            dst.write(pixels, 1)
+    src = Recording(path, tmp_path)
+    with src:
+        assert src.block_shapes == [(1024, 1024)]
+        rio_shutil.copy(src, str(tmp_path / "out.tif"), driver="GTiff", compress="deflate")
+    assert src.windows == [(0, 2000)]
+    with rio.open(tmp_path / "out.tif") as ds:
+        assert np.array_equal(ds.read(1), pixels)
+
+
 def test_a_jpeg_2000_copy_is_the_same_file_whatever_rows_it_reads_at_a_time(
     tmp_path, wide_sources, block_cache_size
 ):
