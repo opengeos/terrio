@@ -16,9 +16,9 @@
 //! compression is decoded whole: JPEG, WebP, LERC and JPEG XL code an image rather than a stream
 //! of rows, and an LZMA stream needs a dictionary as large as the stream declares.
 //!
-//! A compressed strip is read so only when it declares at most [`LIMITS_DECODED`] times the chunk
-//! limit: a read of its rows then decodes no more than a window over that many chunks at the limit
-//! decodes whole, however few bytes the strip stores.
+//! A compressed strip is read by rows only when it declares at most [`LIMITS_DECODED`] times the
+//! chunk limit: a read of its rows then decodes no more than a window over that many chunks at the
+//! limit decodes whole, however few bytes the strip stores.
 
 use std::io::{Read, Seek};
 use tiff::decoder::{Decoder, DecodingResult};
