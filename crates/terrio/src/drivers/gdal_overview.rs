@@ -612,12 +612,14 @@ struct Args<'a> {
     pieces: usize,
 }
 
-/// Computes the rows of `out` (`width` values each) with `f(scratch, row, values)`, the rows
-/// numbered from 0: in `pieces` runs of consecutive rows on the thread pool, each run with a copy
-/// of `scratch` of its own, or all of them on the calling thread. Each row is computed alone, so
-/// the values do not depend on the runs.
-fn rows_in_pieces<V: Send, S: Clone + Sync, F: Fn(&mut S, usize, &mut [V]) + Sync + Send>(
+/// Computes the rows of `out` (`width` values each) with `f(scratch, row, values, flags)`, the
+/// rows numbered from 0, `flags` being the row's `width` flags in `flags` when given: in `pieces`
+/// runs of consecutive rows on the thread pool, each run with a copy of `scratch` of its own, or
+/// all of them on the calling thread. Each row is computed alone, so the values do not depend on
+/// the runs.
+fn rows_in_pieces<V: Send, S: Clone + Sync, F: Fn(&mut S, usize, &mut [V], Option<&mut [u8]>) + Sync + Send>(
     out: &mut [V],
+    flags: Option<&mut [u8]>,
     width: usize,
     pieces: usize,
     scratch: S,
@@ -627,30 +629,33 @@ fn rows_in_pieces<V: Send, S: Clone + Sync, F: Fn(&mut S, usize, &mut [V]) + Syn
     let rows = out.len() / width;
     let per = rows.div_ceil(pieces.max(1)).max(1);
     if per >= rows {
-        rows_from(0, out, width, &scratch, &f);
+        rows_from(0, out, flags, width, &scratch, &f);
     } else {
-        crate::par::chunks_mut(out, per * width, |k, values| rows_from(k * per, values, width, &scratch, &f));
+        let mut flags = flags.map(|m| m.chunks_mut(per * width));
+        let runs: Vec<_> = out.chunks_mut(per * width).map(|v| (v, flags.as_mut().and_then(Iterator::next))).collect();
+        crate::par::for_each_owned(runs, |k, (values, flags)| rows_from(k * per, values, flags, width, &scratch, &f));
     }
 }
 
-/// The rows of `values` from row `first`, for [`rows_in_pieces`]. Never inlined, so that rows
-/// computed in pieces and in one run through the same instructions: where an addition meets two
-/// NaN values, which one it keeps (its sign) depends on how the compiler orders the operands,
-/// which an inlined copy at each call could order differently.
+/// The rows of `values` (and of `flags`) from row `first`, for [`rows_in_pieces`]. Never inlined
+/// (`#[inline(never)]`, which rustc passes to LLVM as `noinline`), so that rows computed in
+/// pieces and in one run call the same compiled function, and run the same instructions within a
+/// build. That matters where an addition meets two NaN values: which one it keeps (its sign)
+/// depends on how the compiler orders the operands, which an inlined copy at each call could order
+/// differently. Rust does not specify that sign, so it can differ between builds.
 #[inline(never)]
-fn rows_from<V, S: Clone, F: Fn(&mut S, usize, &mut [V])>(first: usize, values: &mut [V], width: usize, scratch: &S, f: &F) {
+fn rows_from<V, S: Clone, F: Fn(&mut S, usize, &mut [V], Option<&mut [u8]>)>(
+    first: usize,
+    values: &mut [V],
+    flags: Option<&mut [u8]>,
+    width: usize,
+    scratch: &S,
+    f: &F,
+) {
     let mut s = scratch.clone();
+    let mut flags = flags.map(|m| m.chunks_mut(width));
     for (i, row) in values.chunks_mut(width).enumerate() {
-        f(&mut s, first + i, row);
-    }
-}
-
-/// [`rows_from`] for the convolution's horizontal pass, which filters each source row into `out`
-/// and, with a mask, its validity into `flags` (empty without one).
-#[inline(never)]
-fn filtered_rows_from<F: Fn(usize, &mut [f64], &mut [u8])>(first: usize, out: &mut [f64], flags: &mut [u8], width: usize, f: &F) {
-    for (i, o) in out.chunks_mut(width.max(1)).enumerate() {
-        f(first + i, o, flags.get_mut(i * width..(i + 1) * width).unwrap_or_default());
+        f(&mut s, first + i, row, flags.as_mut().and_then(Iterator::next));
     }
 }
 
@@ -1066,10 +1071,10 @@ fn convolution<T: ConvSrc>(method: Method, a: &Args, chunk: &[T]) -> Vec<f64> {
     }
     // GDAL's SSE2 code filters rows three at a time, then the last ones alone.
     let triples = ny / 3 * 3;
-    // Filters source row `r` into `out` and, with a mask, its validity into `hrow`.
-    let filter_row = |r: usize, out: &mut [f64], hrow: &mut [u8]| {
+    // Each source row `r` filtered into `out` and, with a mask, its validity into `hrow`.
+    rows_in_pieces(&mut hf, a.mask.map(|_| hm.as_mut_slice()), dst_w, a.pieces, (), |_, r, out, hrow| {
         let row = &chunk[r * xn..(r + 1) * xn];
-        match a.mask {
+        match a.mask.zip(hrow) {
             None => {
                 for (col, (o, &(off, n))) in out.iter_mut().zip(&cols).enumerate() {
                     let w = &weights[col * taps..][..taps];
@@ -1087,7 +1092,7 @@ fn convolution<T: ConvSrc>(method: Method, a: &Args, chunk: &[T]) -> Vec<f64> {
                     };
                 }
             }
-            Some(mask) => {
+            Some((mask, hrow)) => {
                 let mrow = &mask[r * xn..(r + 1) * xn];
                 for (col, ((o, valid), &(off, n))) in out.iter_mut().zip(hrow.iter_mut()).zip(&cols).enumerate() {
                     let m = &mrow[off..off + n];
@@ -1107,16 +1112,7 @@ fn convolution<T: ConvSrc>(method: Method, a: &Args, chunk: &[T]) -> Vec<f64> {
                 }
             }
         }
-    };
-    // The source rows in pieces as the destination rows are (see `rows_in_pieces`).
-    let per = ny.div_ceil(a.pieces.max(1)).max(1);
-    if per >= ny || dst_w == 0 {
-        filtered_rows_from(0, &mut hf, &mut hm, dst_w, &filter_row);
-    } else {
-        let flags = hm.chunks_mut(per * dst_w).map(Some).chain(std::iter::repeat_with(|| None));
-        let runs: Vec<_> = hf.chunks_mut(per * dst_w).zip(flags).collect();
-        crate::par::for_each_owned(runs, |k, (out, flags)| filtered_rows_from(k * per, out, flags.unwrap_or_default(), dst_w, &filter_row));
-    }
+    });
 
     // Second pass: vertical filter.
     let mut out = vec![0.0f64; dst_h * dst_w];
@@ -1124,7 +1120,7 @@ fn convolution<T: ConvSrc>(method: Method, a: &Args, chunk: &[T]) -> Vec<f64> {
     // The SSE2 code of 8 columns (`GDALResampleConvolutionVertical_8cols`) for a work type of
     // `float`, unless the source is `float` and its sums are rescaled.
     let eight = T::SINGLE && (!rescale || T::SSE);
-    rows_in_pieces(&mut out, dst_w, a.pieces, vec![0.0f64; taps], |w, i, row| {
+    rows_in_pieces(&mut out, None, dst_w, a.pieces, vec![0.0f64; taps], |w, i, row, _| {
         let yd = a.dy0 + i as i64;
         let c = (yd as f64 + 0.5) * a.ry + a.sdy;
         let mut s0 = (c - y_rad + 0.5).floor() as i64;
@@ -1389,7 +1385,7 @@ fn average<T: AvgSrc>(rms: bool, a: &Args, chunk: &[T]) -> Vec<f64> {
     }
     let sq = |v: f64| v * v;
     let mut out = vec![0.0f64; dst_h * dst_w];
-    rows_in_pieces(&mut out, dst_w, a.pieces, (), |_, i, row| {
+    rows_in_pieces(&mut out, None, dst_w, a.pieces, (), |_, i, row, _| {
         let yd = a.dy0 + i as i64;
         let f0 = a.sdy + yd as f64 * a.ry;
         let mut s0 = (f0 + 1e-8) as i64;
@@ -1581,7 +1577,7 @@ fn mode<T: Sample>(a: &Args, chunk: &[T]) -> Vec<T> {
     let dst_w = (a.dx1 - a.dx0) as usize;
     let mut out = vec![T::default(); dst_w * (a.dy1 - a.dy0) as usize];
     let scratch = (Vec::<T>::new(), Vec::<u32>::new(), [0u32; 256]);
-    rows_in_pieces(&mut out, dst_w, a.pieces, scratch, |(vals, counts, hist), y, row| {
+    rows_in_pieces(&mut out, None, dst_w, a.pieces, scratch, |(vals, counts, hist), y, row, _| {
         let yd = a.dy0 + y as i64;
         let (y0, y1) = window(yd, a.ry, a.sdy, a.cy0, bottom);
         for (o, xd) in row.iter_mut().zip(a.dx0..a.dx1) {
@@ -1680,7 +1676,7 @@ fn gauss(a: &Args, chunk: &[f64]) -> Vec<f64> {
     };
     let dst_w = (a.dx1 - a.dx0) as usize;
     let mut out = vec![0.0f64; dst_w * (a.dy1 - a.dy0) as usize];
-    rows_in_pieces(&mut out, dst_w, a.pieces, (), |_, r, row| {
+    rows_in_pieces(&mut out, None, dst_w, a.pieces, (), |_, r, row, _| {
         let dy = a.dy0 + r as i64;
         let (y0, y1, sy) = span(dy, a.ry, a.cy0, a.cy0 + a.cyn, dy == a.ovr.1 - 1);
         for (o, dx) in row.iter_mut().zip(a.dx0..a.dx1) {
@@ -1708,7 +1704,7 @@ fn near<T: Copy + Default + Send + Sync>(a: &Args, chunk: &[T]) -> Vec<T> {
     let xn = a.cxn as usize;
     let xs: Vec<usize> = (a.dx0..a.dx1).map(|x| ((0.5 + x as f64 * a.rx) as i64).max(a.cx0) as usize - a.cx0 as usize).collect();
     let mut out = vec![T::default(); xs.len() * (a.dy1 - a.dy0) as usize];
-    rows_in_pieces(&mut out, xs.len(), a.pieces, (), |_, y, row| {
+    rows_in_pieces(&mut out, None, xs.len(), a.pieces, (), |_, y, row, _| {
         let sy = ((0.5 + (a.dy0 + y as i64) as f64 * a.ry) as i64).max(a.cy0) as usize - a.cy0 as usize;
         let src = &chunk[sy * xn..];
         for (o, x) in row.iter_mut().zip(&xs) {
@@ -1855,9 +1851,10 @@ pub(crate) fn block_row(
 /// The pieces of work each block of a row of blocks is computed in.
 #[derive(Debug, Clone, Copy)]
 enum Pieces {
-    /// One: the rows of blocks of a whole level are computed in parallel.
+    /// One, for whole levels, whose rows of blocks are computed in parallel (`level_t`).
     One,
-    /// Those of [`row_pieces`], for the thread pool.
+    /// As many as [`row_pieces`] gives for the thread pool's threads: two for a row of a single
+    /// block, one otherwise. The row writer's (`block_row`).
     Pool,
     #[cfg(test)]
     Exactly(usize),
