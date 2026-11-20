@@ -1588,9 +1588,9 @@ fn items_at_once<'a>(mut hrefs: impl Iterator<Item = &'a str>) -> usize {
     if hrefs.all(|href| !local_backed(&crate::vfs::Location::parse(href))) { REMOTE_AT_ONCE } else { 1 }
 }
 
-/// The most item files a mosaic keeps open: half of the files the process may open (its soft
-/// `RLIMIT_NOFILE`), at least 16, so that a mosaic of more items than that still reads; 512
-/// where the limit is unknown. GDAL bounds the datasets its virtual datasets keep open alike
+/// The most item files a mosaic keeps open: a quarter of the files the process may open (its soft
+/// `RLIMIT_NOFILE`; an item may hold a second, its `.msk` sidecar), at least 16, so that a mosaic
+/// of more items than that still reads; 256 where the limit is unknown. GDAL bounds the datasets its virtual datasets keep open alike
 /// (`GDAL_MAX_DATASET_POOL_SIZE`; reference GDAL 3.13.3).
 fn max_open_items() -> usize {
     #[cfg(unix)]
@@ -1598,10 +1598,10 @@ fn max_open_items() -> usize {
         let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
         // SAFETY: `getrlimit` writes the limit into the struct it is given.
         if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } == 0 {
-            return usize::try_from(limit.rlim_cur / 2).unwrap_or(usize::MAX).max(16);
+            return usize::try_from(limit.rlim_cur / 4).unwrap_or(usize::MAX).max(16);
         }
     }
-    512
+    256
 }
 
 /// How many items' windows of `per_item` bytes each are read at once: at most `most`, and as many
