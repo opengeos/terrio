@@ -905,6 +905,29 @@ def test_env_and_session():
     }
 
 
+def test_defenv_starts_a_default_environment_once():
+    from concurrent.futures import ThreadPoolExecutor
+
+    from terrio import _terrio
+
+    def run():
+        # odc-stac starts one per read thread: rasterio.env.defenv(), then hasenv()/getenv().
+        assert not rio.env.hasenv()
+        before = _terrio.config_get("GDAL_HTTP_TIMEOUT")
+        rio.env.defenv(GDAL_HTTP_TIMEOUT=17)
+        assert rio.env.hasenv()
+        assert _terrio.config_get("GDAL_HTTP_TIMEOUT") == "17"
+        rio.env.defenv(GDAL_HTTP_TIMEOUT=99)  # an existing environment is kept, as in rasterio
+        assert rio.env.getenv() == {"GDAL_HTTP_TIMEOUT": 17}
+        rio.env.delenv()
+        assert not rio.env.hasenv()
+        assert _terrio.config_get("GDAL_HTTP_TIMEOUT") == before
+
+    with ThreadPoolExecutor(1) as pool:
+        pool.submit(run).result()
+    assert not rio.env.hasenv()
+
+
 def test_plot(dem):
     plt = pytest.importorskip("matplotlib.pyplot")
     import matplotlib
