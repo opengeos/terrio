@@ -542,9 +542,13 @@ class CRS(Mapping[str, Any]):
             int | None: The code.
         """
         code = self._info.get("epsg")
-        if code is None and self._info.get("proj4") and self.wkt:
+        # A compound reference (`urn:ogc:def:crs,crs:EPSG::2154,crs:EPSG::5720`) keeps its
+        # components' WKT; its code is the compound's, as PROJ identifies it and a layer reports.
+        wkt = self.wkt
+        compound = wkt.lstrip().upper().startswith(("COMPD_CS", "COMPOUNDCRS"))
+        if code is None and (self._info.get("proj4") or compound) and wkt:
             try:
-                code = _terrio.crs_info(self.wkt).get("epsg")
+                code = _terrio.crs_info(wkt).get("epsg")
             except Exception:
                 code = None
         return int(code) if code is not None else None

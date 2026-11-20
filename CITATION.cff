@@ -9,10 +9,15 @@ authors:
     email: giswqs@gmail.com
     affiliation: "University of Tennessee, Knoxville, USA"
     orcid: "https://orcid.org/0000-0001-5437-4073"
-  - given-names: Mavrick
-    family-names: Fitzgerald
+  - given-names: Dominik
+    family-names: Strebel
+    orcid: "https://orcid.org/0000-0002-3529-1798"
   - given-names: Guillermo
     family-names: Morales Sanchez
+  - given-names: Nicolas
+    family-names: Karasiak
+  - given-names: Mavrick
+    family-names: Fitzgerald
 version: 0.9.0
 date-released: 2026-11-14
 doi: "10.5281/zenodo.23642204"

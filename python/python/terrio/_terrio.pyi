@@ -1070,6 +1070,7 @@ def rasterize(
     te: _Bounds | None = None,
     tap: bool = False,
     like: _RasterSource | None = None,
+    background: _RasterSource | None = None,
     ot: str | None = None,
     init: float | Sequence[float] | None = None,
     nodata: float | None = None,

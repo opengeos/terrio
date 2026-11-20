@@ -4,6 +4,14 @@ where it places points in them.
 - ESRI's `Mercator_Variant_A` (EPSG Guidance Note 7-2's example of Mercator (variant A),
   EPSG:3002 Makassar / NEIEZ, as an ESRI `.prj` names it), and the same with a latitude of origin
   and a standard parallel, which PROJ leaves out of this method;
+- Hotine variant A (`Hotine_Oblique_Mercator`) with an azimuth and a rectified grid angle of 90°,
+  which PROJ reads as the Swiss oblique Mercator (`somerc`);
+- ESRI's `Lambert_Conformal_Conic` with one `Standard_Parallel_1` other than its
+  `Latitude_Of_Origin`, which PROJ reads as 1SP at the latitude of origin;
+- GDAL's `Mercator_1SP` with a latitude of origin other than 0 and a scale of 1, which PROJ reads
+  as Mercator (variant B) with that latitude as its standard parallel;
+- GDAL's `Lambert_Conformal_Conic_2SP` (and `_Belgium`) with a `scale_factor`, which PROJ
+  ignores, and ESRI's `Lambert_Conformal_Conic` with a `Scale_Factor`, which PROJ applies;
 - WKT 1 with a node of an unknown keyword (`rustgis:unapplied`, as RustGIS marks a WKT 2
   `BOUNDCRS` it converts to WKT 1, `a-b`, `a.b`, `1x`, an empty one), on a datum and at the root
   of a `GEOGCS` and a `PROJCS`, which PROJ skips whatever its keyword;
@@ -73,6 +81,21 @@ def utm17(mark="", root_mark=""):
     )
 
 
+def hotine_a(gamma):
+    grid = "" if gamma is None else f'PARAMETER["rectified_grid_angle",{gamma}],'
+    return (
+        f'PROJCS["unknown",{nad27()},PROJECTION["Hotine_Oblique_Mercator"],'
+        'PARAMETER["latitude_of_center",43],PARAMETER["longitude_of_center",-80],'
+        f'PARAMETER["azimuth",90],{grid}PARAMETER["scale_factor",0.9999],'
+        'PARAMETER["false_easting",500000],PARAMETER["false_northing",200000],UNIT["metre",1]]'
+    )
+
+
+LCC = (
+    'PARAMETER["standard_parallel_1",33],PARAMETER["standard_parallel_2",45],'
+    'PARAMETER["latitude_of_origin",23],PARAMETER["central_meridian",-96],'
+    'PARAMETER["false_easting",1000000],PARAMETER["false_northing",500000]'
+)
 UNAPPLIED = ',rustgis:unapplied["NTv2 transformation to WGS 84 (ntv2_0.gsb)"]'
 UNTRANSFORMED = ',rustgis:untransformed["WGS 84"]'
 
@@ -156,6 +179,74 @@ READ = [
         "MERCATOR_VARIANT_A, ESRI's name in capitals, with a latitude of origin",
         makassar(
             "MERCATOR_VARIANT_A", VARIANT_A + ',PARAMETER["Latitude_Of_Origin",5]'
+        ),
+        (120.0, -3.0),
+    ),
+    # Hotine variant A with an azimuth and a rectified grid angle of 90° (a missing one being the
+    # azimuth) is the Swiss oblique Mercator, as variant B is; with another grid angle it is not
+    # (opengeos/terrio#1012 item 28).
+    ("Hotine_Oblique_Mercator at 90° and 90°", hotine_a(90), (-79.0, 44.0)),
+    (
+        "Hotine_Oblique_Mercator at 90° without a grid angle",
+        hotine_a(None),
+        (-79.0, 44.0),
+    ),
+    ("Hotine_Oblique_Mercator at 90° and 0°", hotine_a(0), (-79.0, 44.0)),
+    (
+        "Hotine_Oblique_Mercator_Azimuth_Natural_Origin, ESRI's name, at 90°",
+        f'PROJCS["h",{nad27()},PROJECTION["Hotine_Oblique_Mercator_Azimuth_Natural_Origin"],'
+        'PARAMETER["False_Easting",500000],PARAMETER["False_Northing",200000],'
+        'PARAMETER["Scale_Factor",0.9999],PARAMETER["Azimuth",90],'
+        'PARAMETER["Longitude_Of_Center",-80],PARAMETER["Latitude_Of_Center",43],'
+        'UNIT["Meter",1.0]]',
+        (-79.0, 44.0),
+    ),
+    # ESRI's Lambert_Conformal_Conic with one standard parallel: 1SP at the latitude of origin,
+    # Standard_Parallel_1 left out (opengeos/terrio#1012 item 30).
+    (
+        "Lambert_Conformal_Conic, ESRI's name, with one parallel other than the origin's",
+        f'PROJCS["l",{nad27()},PROJECTION["Lambert_Conformal_Conic"],'
+        'PARAMETER["False_Easting",1000000],PARAMETER["False_Northing",500000],'
+        'PARAMETER["Central_Meridian",-96],PARAMETER["Standard_Parallel_1",42],'
+        'PARAMETER["Scale_Factor",0.99],PARAMETER["Latitude_Of_Origin",40],UNIT["Meter",1.0]]',
+        (-90.0, 45.0),
+    ),
+    # GDAL's LCC 2SP methods have no scale: PROJ ignores a scale_factor given with them; ESRI's
+    # Lambert_Conformal_Conic applies its Scale_Factor (opengeos/terrio#1012 item 29).
+    (
+        "Lambert_Conformal_Conic_2SP with a scale factor",
+        f'PROJCS["l",{nad27()},PROJECTION["Lambert_Conformal_Conic_2SP"],{LCC},'
+        'PARAMETER["scale_factor",0.99],UNIT["metre",1]]',
+        (-96.0, 40.0),
+    ),
+    (
+        "Lambert_Conformal_Conic_2SP_Belgium with a scale factor",
+        f'PROJCS["l",{nad27()},PROJECTION["Lambert_Conformal_Conic_2SP_Belgium"],{LCC},'
+        'PARAMETER["scale_factor",0.99],UNIT["metre",1]]',
+        (-96.0, 40.0),
+    ),
+    (
+        "Lambert_Conformal_Conic, ESRI's name, with a scale factor",
+        f'PROJCS["l",{nad27()},PROJECTION["Lambert_Conformal_Conic"],{LCC},'
+        'PARAMETER["Scale_Factor",0.99],UNIT["Meter",1.0]]',
+        (-96.0, 40.0),
+    ),
+    # GDAL's Mercator_1SP with a latitude of origin and a scale of 1: Mercator (variant B) with
+    # that latitude as its standard parallel (GDAL #3026, opengeos/terrio#1012 item 24).
+    (
+        "Mercator_1SP, GDAL's name, with a latitude of origin",
+        makassar(
+            "Mercator_1SP",
+            VARIANT_A.replace("0.997", "1") + ',PARAMETER["latitude_of_origin",30]',
+        ),
+        (120.0, -3.0),
+    ),
+    (
+        "Mercator_1SP with a southern latitude of origin and no scale",
+        makassar(
+            "Mercator_1SP",
+            VARIANT_A.replace(',PARAMETER["Scale_Factor",0.997]', "")
+            + ',PARAMETER["latitude_of_origin",-30]',
         ),
         (120.0, -3.0),
     ),

@@ -127,6 +127,43 @@ def _in_memory_limit() -> int:
         return _IN_MEMORY_LIMIT
 
 
+def _tile_rows_decoded_once(source: DatasetReader, rows: int, itemsize: int = 1) -> int:
+    """The rows of a slab of a copy's source, so that a JPEG 2000 source decodes each tile once.
+
+    A JPEG 2000 read decodes every tile its window crosses and keeps none of them for the next
+    read, where the block cache keeps a GeoTIFF's decoded blocks: a slab ending inside a row of
+    tiles leaves the next slab to decode those tiles again. For a JPEG 2000 read by window,
+    `rows` is made a whole number of rows of its tiles: rounded down when it holds one, raised to
+    one when that row's pixels hold no more bytes than the block cache (`TERRIO_CACHEMAX`), the
+    decoded blocks a GeoTIFF source keeps between reads, counted in the source's type or the one
+    the copy holds them in (`itemsize`), whichever is wider. A slab is raised to one row of tiles,
+    never more, whatever the block cache's size, and need not be a multiple of the output's
+    blocks: the writers take rows in any number. `rows` is kept otherwise, and when it holds the
+    whole image already: one read decodes each tile once, whatever blocks are reported, and a
+    JPEG 2000 of one tile larger than 1024 pixels reports 1024-row blocks, parts of that tile,
+    which rounding down would read in two passes.
+
+    Args:
+        source: The dataset the slabs are read from.
+        rows: The rows of a slab otherwise.
+        itemsize: The bytes of a value of the type the copy holds the rows in: the output's.
+
+    Returns:
+        int: The rows of a slab.
+    """
+    raster = getattr(source, "_raster", None)
+    if getattr(raster, "driver", None) != "JP2" or rows >= source.height:
+        return rows
+    whole = math.lcm(*(shape[0] for shape in source.block_shapes))
+    if rows >= whole:
+        return rows - rows % whole
+    value_bytes = max(itemsize, *(np.dtype(t).itemsize for t in source.dtypes))
+    row_bytes = source.width * source.count * value_bytes
+    if min(whole, source.height) * row_bytes <= _terrio.block_cache_max():
+        return whole
+    return rows
+
+
 # Resampling names for overviews.
 _OVERVIEW_RESAMPLING = {
     Resampling.nearest: "nearest",
@@ -2332,6 +2369,201 @@ class Statistics:
         return f"Statistics(min={self.min}, max={self.max}, mean={self.mean}, std={self.std})"
 
 
+def _runs(flags: np.ndarray) -> list[tuple[int, int]]:
+    """The runs of True values of a 1-D boolean array.
+
+    Args:
+        flags: The array.
+
+    Returns:
+        list: `(start, stop)` of each run.
+    """
+    edges = np.flatnonzero(np.diff(np.concatenate(([0], flags.astype(np.int8), [0]))))
+    return list(zip(edges[::2].tolist(), edges[1::2].tolist(), strict=True))
+
+
+def _rectangles(grid: np.ndarray) -> list[tuple[int, int, int, int]]:
+    """The True cells of a 2-D boolean array, as rectangles.
+
+    Consecutive rows that are True throughout make one rectangle; any other row, one per run.
+
+    Args:
+        grid: The array.
+
+    Returns:
+        list: `(first row, row after, first column, column after)` of each rectangle.
+    """
+    full = grid.all(axis=1)
+    rects = [(r0, r1, 0, grid.shape[1]) for r0, r1 in _runs(full)]
+    for r in np.flatnonzero(grid.any(axis=1) & ~full).tolist():
+        rects += [(r, r + 1, c0, c1) for c0, c1 in _runs(grid[r])]
+    return rects
+
+
+class _Spill:
+    """An array of a writer in a temporary file mapped in memory, and the blocks written to it.
+
+    The file is created beside the output without a name (or unlinked as soon as it is created,
+    where the system cannot create it so; on Windows, opened to be deleted once closed), so that
+    it goes with the process however that ends. It is created at the array's size without being
+    written, its pages allocated as pixels are written to them. The pixels of a block (of the
+    output's blocks, per band) never written are `fill`, neither written to the file nor read
+    from it.
+    """
+
+    def __init__(
+        self,
+        path: str,
+        shape: tuple[int, int, int],
+        dtype: Any,
+        fill: Any,
+        block: tuple[int, int],
+    ) -> None:
+        """Creates the file.
+
+        Args:
+            path: The output's path, beside which the file is created.
+            shape: The array's shape, `(bands, rows, columns)`.
+            dtype: Its data type.
+            fill: The value of the pixels never written.
+            block: The output's block shape, `(rows, columns)`.
+        """
+        self._file = tempfile.TemporaryFile(
+            dir=os.path.dirname(path) or ".",
+            prefix=os.path.basename(path) + ".terrio-",
+            suffix=".tmp",
+        )
+        try:
+            os.ftruncate(self._file.fileno(), int(np.prod(shape)) * np.dtype(dtype).itemsize)
+            self.array: np.ndarray = np.memmap(self._file, dtype=dtype, mode="r+", shape=shape)
+        except BaseException:
+            self._file.close()
+            raise
+        with np.errstate(invalid="ignore"):
+            self.fill = np.full((), fill, dtype)
+        # The file reads as zero bytes where it was never written.
+        self._zero = not any(self.fill.tobytes())
+        self.block = (max(1, block[0]), max(1, block[1]))
+        rows, cols = -(-shape[1] // self.block[0]), -(-shape[2] // self.block[1])
+        self.written = np.zeros((shape[0], rows, cols), bool)
+
+    def _blocks(self, y: int, x: int, h: int, w: int) -> tuple[slice, slice]:
+        """The rows and columns of blocks a window touches.
+
+        Args:
+            y: The window's first row.
+            x: Its first column.
+            h: Its height.
+            w: Its width.
+
+        Returns:
+            tuple: Two slices of block indices.
+        """
+        bh, bw = self.block
+        return slice(y // bh, -(-(y + h) // bh)), slice(x // bw, -(-(x + w) // bw))
+
+    def _bands(self, bands: list[int] | slice) -> list[int]:
+        """Band indices, from a list or a slice of them.
+
+        Args:
+            bands: The bands, from 0.
+
+        Returns:
+            list: The bands, from 0.
+        """
+        return list(range(self.array.shape[0])[bands]) if isinstance(bands, slice) else bands
+
+    def window(self, bands: list[int] | slice, y: int, x: int, h: int, w: int) -> np.ndarray:
+        """Reads a window, as `array[bands, y : y + h, x : x + w]`, `fill` where never written.
+
+        Args:
+            bands: The bands, from 0.
+            y: The window's first row.
+            x: Its first column.
+            h: Its height.
+            w: Its width.
+
+        Returns:
+            numpy.ndarray: That of the array when every block it touches was written (a view
+            for a slice of bands), else a new array, read from the file in the blocks written.
+        """
+        height, width = self.array.shape[1:]
+        if min(y, x, h, w) < 0:
+            # NumPy's slicing for a negative offset or size, at the cost of completing the file.
+            # No caller passes one: reads crop their windows to the raster.
+            self.complete()
+            return self.array[bands, y : y + h, x : x + w]
+        h, w = max(0, min(h, height - y)), max(0, min(w, width - x))
+        rows, cols = self._blocks(y, x, h, w)
+        if not h or not w or self.written[bands, rows, cols].all():
+            return self.array[bands, y : y + h, x : x + w]
+        indices = self._bands(bands)
+        out = np.full((len(indices), h, w), self.fill, self.array.dtype)
+        bh, bw = self.block
+        for i, band in enumerate(indices):
+            for r0, r1, c0, c1 in _rectangles(self.written[band, rows, cols]):
+                y0, y1 = max(y, (rows.start + r0) * bh), min(y + h, (rows.start + r1) * bh)
+                x0, x1 = max(x, (cols.start + c0) * bw), min(x + w, (cols.start + c1) * bw)
+                out[i, y0 - y : y1 - y, x0 - x : x1 - x] = self.array[band, y0:y1, x0:x1]
+        return out
+
+    def store(self, bands: list[int] | slice, y: int, x: int, h: int, w: int, values: Any) -> None:
+        """Writes a window, as `array[bands, y : y + h, x : x + w] = values`.
+
+        The blocks the window covers in part that were never written take `fill` first.
+
+        Args:
+            bands: The bands, from 0.
+            y: The window's first row.
+            x: Its first column.
+            h: Its height.
+            w: Its width.
+            values: The pixels.
+        """
+        height, width = self.array.shape[1:]
+        if min(y, x, h, w) < 0 or y + h > height or x + w > width:
+            # NumPy's slicing for a window reaching outside the raster, at the cost of completing
+            # the file. No caller passes one: `write` refuses it.
+            self.complete()
+            self.array[bands, y : y + h, x : x + w] = values
+            return
+        if not h or not w:
+            self.array[bands, y : y + h, x : x + w] = values
+            return
+        rows, cols = self._blocks(y, x, h, w)
+        bh, bw = self.block
+        # The sides of the window that cut through blocks.
+        top, bottom = y > rows.start * bh, y + h < min(rows.stop * bh, height)
+        left, right = x > cols.start * bw, x + w < min(cols.stop * bw, width)
+        if not self._zero and (top or bottom or left or right):
+            part = np.zeros((rows.stop - rows.start, cols.stop - cols.start), bool)
+            part[0] |= top
+            part[-1] |= bottom
+            part[:, 0] |= left
+            part[:, -1] |= right
+            for band in self._bands(bands):
+                for r0, r1, c0, c1 in _rectangles(part & ~self.written[band, rows, cols]):
+                    r0, r1 = (rows.start + r0) * bh, (rows.start + r1) * bh
+                    c0, c1 = (cols.start + c0) * bw, (cols.start + c1) * bw
+                    self.array[band, r0:r1, c0:c1] = self.fill
+        self.array[bands, y : y + h, x : x + w] = values
+        self.written[bands, rows, cols] = True
+
+    def complete(self) -> None:
+        """Writes `fill` to the blocks never written, so that the file holds every pixel."""
+        if not self._zero:
+            bh, bw = self.block
+            for band in range(self.written.shape[0]):
+                for r0, r1, c0, c1 in _rectangles(~self.written[band]):
+                    self.array[band, r0 * bh : r1 * bh, c0 * bw : c1 * bw] = self.fill
+        self.written[...] = True
+
+    def close(self) -> None:
+        """Unmaps and closes the file, which goes with it."""
+        self.array._mmap.close()  # type: ignore[attr-defined]
+        self._file.close()
+
+
 class DatasetWriter(DatasetReader):
     """A dataset opened for writing (`w`, `w+`) or updating (`r+`).
 
@@ -2348,6 +2580,8 @@ class DatasetWriter(DatasetReader):
     # A copy's source (`shutil.copy`), whose pixels the file is written from as it is written,
     # when it is written in rows: they are then not held (see `_streams_on_flush`).
     _copy_of: Any = None
+    # The temporary file that holds the pixels, above the in-memory limit.
+    _data_spill: _Spill | None = None
 
     def __init__(
         self,
@@ -2398,7 +2632,7 @@ class DatasetWriter(DatasetReader):
         self._overview_resampling: str | None = None
         self._mask: np.ndarray | None = None
         self._mask_in_sidecar = False
-        self._spill: list[str] = []
+        self._spill: list[_Spill] = []
         kwargs = {k.lower(): v for k, v in kwargs.items()}
         kwargs.pop("sharing", None)
         kwargs.pop("thread_safe", None)
@@ -2452,6 +2686,8 @@ class DatasetWriter(DatasetReader):
             )
             self._complex_int = self._complex_sample == "CInt16"
             self._options = self._creation_options(kwargs)
+            # Before the pixels: a temporary file holding them records the blocks written.
+            self._structure = self._new_structure()
             shape = (count, height, width)
             storage_dtype = self._buffer_dtype
             # A copy's mask read from its source is written into the file: a mask for a `.msk`
@@ -2467,8 +2703,7 @@ class DatasetWriter(DatasetReader):
             else:
                 fill = self._nodata if self._nodata is not None else 0
                 with np.errstate(invalid="ignore"):
-                    self._data = self._allocate(shape, storage_dtype, fill)
-            self._structure = self._new_structure()
+                    self._data, self._data_spill = self._allocate(shape, storage_dtype, fill)
             if transform is not None:
                 self._transform = guard_transform(transform)
             if crs is not None:
@@ -2496,28 +2731,28 @@ class DatasetWriter(DatasetReader):
         size = int(np.prod(shape)) * np.dtype(dtype).itemsize
         return self.driver in ("GTiff", "COG") and size > _in_memory_limit()
 
-    def _allocate(self, shape: tuple[int, ...], dtype: Any, fill: Any) -> np.ndarray:
+    def _allocate(
+        self, shape: tuple[int, ...], dtype: Any, fill: Any
+    ) -> tuple[np.ndarray, _Spill | None]:
         """An array for pixels, in memory or mapped from a temporary file.
 
-        The file, beside the output, is used when the array is larger than the in-memory limit.
+        The file, beside the output, is used when the array is larger than the in-memory limit
+        (see `_Spill`): it is not filled, its blocks never written being read as `fill`.
 
         Args:
-            shape: The shape.
+            shape: The shape: `(bands, rows, columns)`, or `(rows, columns)`.
             dtype: The data type.
             fill: The initial value.
 
         Returns:
-            numpy.ndarray: The array.
+            tuple: The array, and the `_Spill` it is mapped from (None in memory).
         """
         if not self._streams(shape, dtype):
-            return np.full(shape, fill, dtype=dtype)
-        spill = self._path + f".terrio-{uuid.uuid4().hex}.tmp"
+            return np.full(shape, fill, dtype=dtype), None
+        bands, rows, cols = (1, *shape) if len(shape) == 2 else shape
+        spill = _Spill(self._path, (bands, rows, cols), dtype, fill, self.structure.block_shape)
         self._spill.append(spill)
-        arr = np.memmap(spill, dtype=dtype, mode="w+", shape=shape)
-        if fill != 0:
-            for y, n in self._slabs():
-                arr[..., y : y + n, :] = fill
-        return arr
+        return (spill.array if len(shape) == 3 else spill.array[0]), spill
 
     @property
     def _buffer_dtype(self) -> str:
@@ -2528,33 +2763,50 @@ class DatasetWriter(DatasetReader):
             else self._dtype
         )
 
-    def _slabs(self) -> Iterator[tuple[int, int]]:
-        """Rows of blocks of about 16 MB.
+    def _slabs(self, source: DatasetReader | None = None) -> Iterator[tuple[int, int]]:
+        """Rows of blocks of about 16 MB, or whole rows of a JPEG 2000 source's tiles.
+
+        A copy from a JPEG 2000, which keeps none of the tiles it decodes, reads whole rows of its
+        tiles instead: one row at least, when that row fits in the block cache
+        (`_tile_rows_decoded_once`).
+
+        Args:
+            source: The dataset a copy reads the rows from; None otherwise.
 
         Yields:
             tuple: `(first row, number of rows)`.
         """
-        row = max(1, self.width * max(self._count, 1) * np.dtype(self._buffer_dtype).itemsize)
+        itemsize = np.dtype(self._buffer_dtype).itemsize
+        row = max(1, self.width * max(self._count, 1) * itemsize)
         n = max(1, (16 << 20) // row)
         block = self.structure.block_shape[0] if self._structure is not None else 1
         n = max(block, n - n % max(block, 1))
+        if source is not None:
+            n = _tile_rows_decoded_once(source, n, itemsize)
         for y in range(0, self.height, n):
             yield y, min(n, self.height - y)
 
+    def _rows(self, y: int, n: int) -> np.ndarray:
+        """Rows of every band, as `_data[:, y : y + n, :]`.
+
+        Args:
+            y: The first row.
+            n: The number of rows.
+
+        Returns:
+            numpy.ndarray: The rows, read from a temporary file in the blocks written to it.
+        """
+        if self._data_spill is None:
+            return self._data[:, y : y + n, :]
+        return self._data_spill.window(slice(None), y, 0, n, self.width)
+
     def _release_spill(self) -> None:
-        """Deletes the temporary files of file-backed arrays."""
-        data = getattr(self, "_data", None)
-        if isinstance(data, np.memmap):
-            data._mmap.close()  # type: ignore[attr-defined]
-        if isinstance(self._mask, np.memmap):
-            self._mask._mmap.close()  # type: ignore[attr-defined]
+        """Closes the temporary files of file-backed arrays, which go with them."""
         self._data = np.empty((0, 0, 0), self._dtype)
         self._mask = None
-        for f in self._spill:
-            try:
-                os.remove(f)
-            except OSError:
-                pass
+        self._data_spill = None
+        for spill in self._spill:
+            spill.close()
         self._spill = []
 
     def _creation_options(self, kwargs: dict[str, Any]) -> dict[str, str]:
@@ -2688,10 +2940,16 @@ class DatasetWriter(DatasetReader):
             )
             if self._streams(shape, storage_dtype):
                 # Copied into a file-backed array, block row by block row.
-                self._data = self._allocate(shape, storage_dtype, 0)
+                self._data, self._data_spill = self._allocate(shape, storage_dtype, 0)
+                assert self._data_spill is not None
                 for y, n in self._slabs():
-                    self._data[:, y : y + n, :] = np.asarray(
-                        raster.read(window=(0, y, self.width, n), **read_options)
+                    self._data_spill.store(
+                        slice(None),
+                        y,
+                        0,
+                        n,
+                        self.width,
+                        np.asarray(raster.read(window=(0, y, self.width, n), **read_options)),
                     )
             else:
                 self._data = np.asarray(raster.read(**read_options))
@@ -2768,6 +3026,8 @@ class DatasetWriter(DatasetReader):
         """
         self._check_open()
         x, y, w, h = window
+        if self._data_spill is not None:
+            return self._data_spill.window([b - 1 for b in bands], y, x, h, w)
         return self._data[[b - 1 for b in bands], y : y + h, x : x + w]
 
     def _masks_from(
@@ -2990,7 +3250,10 @@ class DatasetWriter(DatasetReader):
             window: The window to write.
         """
         if self._mask is None:
-            self._mask = self._allocate((self.height, self.width), np.uint8, 255)
+            self._mask, spill = self._allocate((self.height, self.width), np.uint8, 255)
+            if spill is not None:
+                # Filled now: the mask is read whole when the dataset is written.
+                spill.complete()
         if mask_array is True or mask_array is np.True_:
             vals: Any = 255
         elif mask_array is False or mask_array is np.False_:
@@ -3066,7 +3329,10 @@ class DatasetWriter(DatasetReader):
             if arr.shape[1] < h or arr.shape[2] < w:
                 raise ValueError(f"Source shape {arr.shape} does not match the window {h}x{w}")
             arr = arr[:, :h, :w]
-        self._data[[b - 1 for b in idx], y : y + h, x : x + w] = arr
+        if self._data_spill is not None:
+            self._data_spill.store([b - 1 for b in idx], y, x, h, w, arr)
+        else:
+            self._data[[b - 1 for b in idx], y : y + h, x : x + w] = arr
         self._dirty = True
 
     def write_band(self, bidx: int, src: Any, window: Any = None) -> None:
@@ -3241,6 +3507,8 @@ class DatasetWriter(DatasetReader):
             self._copy_of = None
         raster: Any = None
         if not streaming:
+            if self._data_spill is not None:
+                self._data_spill.complete()
             try:
                 raster = _terrio.Raster.from_array(
                     np.asarray(self._data),
@@ -3497,6 +3765,9 @@ class DatasetWriter(DatasetReader):
             # Read taller source blocks together within a 16 MiB slab budget (or one output
             # tile row), then feed the COG writer a tile row at a time. A whole-image strip
             # taller than a tile row is split in half or smaller. Small images can fit in one slab.
+            # A JPEG 2000, which keeps none of the tiles it decodes, is read in whole rows of its
+            # tiles instead: one row at least, when that row fits in the block cache
+            # (`_tile_rows_decoded_once`).
             write_step = self.structure.block_shape[0] if cog and source is not None else 0
             step = write_step
             if step and source is not None:
@@ -3508,14 +3779,16 @@ class DatasetWriter(DatasetReader):
                     if block_rows >= self.height:
                         wanted = max(step, (self.height // 2 // step) * step)
                     step = min(wanted, budget_rows)
+                itemsize = np.dtype(self._buffer_dtype).itemsize
+                step = _tile_rows_decoded_once(source, step, itemsize)
             slabs = (
                 ((y, min(step, self.height - y)) for y in range(0, self.height, step))
                 if step
-                else self._slabs()
+                else self._slabs(source)
             )
             for y, n in slabs:
                 if source is None:
-                    rows = np.ascontiguousarray(self._data[:, y : y + n, :])
+                    rows = np.ascontiguousarray(self._rows(y, n))
                 else:
                     part = source._read_for_copy(window=Window(0, y, self.width, n))
                     rows = np.ascontiguousarray(np.require(part, dtype=self._buffer_dtype))
@@ -3531,13 +3804,12 @@ class DatasetWriter(DatasetReader):
                         # The core's error, which the pixels' read wraps too.
                         raise RasterioIOError(f"Read failed: {err}") from err
                 if write_step:
-                    # A COG copy, a row of tiles at a time, with its mask's rows.
+                    # A COG copy, a row of tiles at a time, with its mask's rows. Each tile row
+                    # as a view of the slab: the writer copies it (a band-strided view through a
+                    # contiguous copy it frees before writing the rows).
                     for start in range(0, n, write_step):
                         stop = start + write_step
-                        w.write(
-                            np.ascontiguousarray(rows[:, start:stop, :]),
-                            None if m is None else m[start:stop],
-                        )
+                        w.write(rows[:, start:stop, :], None if m is None else m[start:stop])
                 else:
                     w.write(rows, m)
                 del rows

@@ -1,5 +1,15 @@
 # Testing Against GDAL
 
+`python -m pytest python/tests/test_rasterize_background.py` checks shapefile elevation edits
+over an existing DEM against GDAL's update rasterization: lines and polygons, signed values,
+overlaps, replace/add and all-touched modes, exact samples, nodata masks, type, CRS,
+geotransform and metadata. Native regressions retain untouched UInt64 samples above 2^53
+without floating-point conversion. The `vector-ops` conformance suite also compares background
+edits of real NLCD data with reprojected Tennessee counties.
+The Python comparison uses the installed GDAL (locally verified with 3.12.1, with 3.12.2 in
+CI); GDAL 3.13.3 is the shared rasterizer's algorithm reference. CLI background-retention
+and packed-output regressions run even when GDAL is not installed.
+
 GDAL is terrio's reference: drivers and operations are compared with GDAL on real-world files.
 The conformance suites run against GDAL 3.12.2 and PROJ 9.8.1 in `ci-extended.yml`, on every push
 to `main` and on pull requests on demand (Run workflow, or a `ci:conformance` or `ci:all` label).
@@ -346,6 +356,19 @@ policies, four destination CRSs, nodata, polar meridian pixels and the excluded
 south latitude edge. Rust regressions also compare whole and small-memory
 chunks, reversed source columns, and a 400-grad longitude period. Regional and
 multi-turn source placement rules remain separate.
+
+`cargo test -p terrio --lib chunk_dependent_windows_` warps a world source
+symmetric about the 180° meridian, stored from 180° W and from 0°, into UPS North
+windows on either side of it, with chunk-dependent bilinear and cubic at the 3.12
+kernel scales and exact transformations. Windows touching the meridian, whose
+samples on it resolve to 180° E, and windows reaching 1 km across it give mirrored
+values within 1e-9. An impulse beside the meridian reaches the same three columns
+of the window across it as of the window 1 m short of it. With `periodic_longitude`
+off, the windows touching and crossing the meridian keep the stored span, and the
+impulse reaches more of their columns.
+`python -m pytest python/tests/test_warp_meridian_mirror_kernels.py` checks the
+mirror windows of a 0.25° source through `reproject` and the block reads of a
+`WarpedVRT`.
 
 `python scripts/conformance.py DATA --only longitude-period --strict` requires
 twelve real Natural Earth country-coverage comparisons. The same values stored
@@ -1382,7 +1405,7 @@ instructions executed and speed the estimated
 cycles (instructions plus cache and RAM misses), both from Callgrind; memory is the peak heap of the
 operation, the most heap memory it holds at once beyond its input, its output included (a counting
 allocator in the benchmark keeps it, and reports it to DHAT). The `bench`
-workflow runs both commits under Valgrind in the same job, and `bench comment` posts the table,
+workflow runs both commits under Valgrind in two parallel jobs, and `bench comment` posts the table,
 with what each benchmark runs and its exact change, and sets the `perf-regression` label when a
 benchmark runs 10% or more instructions or estimated cycles, or needs 10% and 1 MB or more peak
 heap. The Claude code review then adds, under the table, the likely cause of each flagged
@@ -1845,6 +1868,13 @@ extension, as another method, or under an ESRI method name GDAL's table lacks
 TERRIO_RECORD=1 cargo test --release -p terrio-crs --lib model::
 ```
 
+For #1058 step 6, `src/model/proj_input_tests.rs` checks that the model gives a
+WKT 1 CRS's PROJ string the same input as the WKT 1 reader reads from its tree
+(`model::wkt1_input` against `wkt1::Wkt1Input::read`). It covers every WKT 1
+text of the corpus, and malformed and unusual input the corpus lacks: refusals,
+grads and Paris, ESRI's compound CRS, a geocentric CRS, parameters without a name
+or a number. It is removed once the reader takes its input from the model.
+
 ## PROJJSON parsing (#270)
 
 `projjson_benchmark.json` retains `form-27700-projjson` from rust-proj-capability
@@ -1944,9 +1974,14 @@ with `PROJ_NETWORK=OFF`:
 - **Ellipsoids in another unit:** the 32 EPSG CRSs whose WKT 2 PROJ writes with an ellipsoid in
   another unit (EPSG:4157's Clarke 1858 in Clarke's feet), with and without their root `ID`, give
   PROJ's code, its semi-major axis in metres (`semi_major_axis`, `metres_per_unit`,
-  `projection_params`, the PROJJSON written) and its point within 1 mm; EPSG:3139 only with its
-  `ID`, since terrio refuses its method (Hyperbolic Cassini-Soldner, #1012 item 43) without it
-  (`--test ellipsoid_units`; `scripts/gen_ellipsoid_units.py`).
+  `projection_params`, the PROJJSON written) and its point within 1 mm (`--test ellipsoid_units`;
+  `scripts/gen_ellipsoid_units.py`).
+- **Five more WKT 2 methods:** EPSG CRSs of Hyperbolic Cassini-Soldner (9833), Guam Projection
+  (9831), Krovak Modified (1042, 1043), Lambert Conic Conformal (2SP Michigan) (1051) and Colombia
+  Urban (1052), without their `ID`, and Krovak Modified with its evaluation point and
+  coefficients, by their method's name and by its code alone, give PROJ's method and flag and its
+  point within 1 mm; the PROJJSON of each one's PROJ string has PROJ's method and parameters
+  (`--test wkt2_methods`; `scripts/gen_wkt2_methods.py`).
 - **ESRI's `VERTCS`:** alone, in a `COMPD_CS` and in ESRI's compound CRS (`GEOGCS[...],VERTCS[...]`),
   with `Direction` -1, its declared code, PROJ's points from EPSG:9707, and the code PROJ identifies
   for every EPSG vertical CRS ESRI writes, in ESRI's WKT and GDAL's WKT 1 without `AUTHORITY`

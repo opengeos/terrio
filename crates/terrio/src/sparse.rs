@@ -84,6 +84,12 @@ impl std::fmt::Debug for SparseFile {
     }
 }
 
+/// Whether block `b` of a file of `len` bytes is held whole, not only the start of it
+/// ([`SparseFile::insert_arriving`]).
+fn held_whole(s: &Shared, b: u64, len: u64) -> bool {
+    s.blocks.get(&b).is_some_and(|block| block.len() as u64 >= (len - b * s.block_size).min(s.block_size))
+}
+
 struct Shared {
     block_size: u64,
     blocks: HashMap<u64, Vec<u8>>,
@@ -148,17 +154,42 @@ impl SparseFile {
     /// kept (and the file's last block, which may be short); a partial block at the end of a
     /// short response is dropped, so callers check that they got the bytes they asked for.
     pub fn insert(&self, offset: u64, data: &[u8]) {
+        self.store(offset, data, false);
+    }
+
+    /// Stores the bytes of a response still arriving, `data` from byte `offset` (a block's start)
+    /// on: as [`insert`](Self::insert), and the start of a block not arrived whole, which serves
+    /// reads of its bytes; reads past them are missing, as if nothing of that block were held, until
+    /// the rest arrives. Call it again with more of the body, and [`insert`](Self::insert) it whole
+    /// at the end. It counts no fetch.
+    pub fn insert_arriving(&self, offset: u64, data: &[u8]) {
+        self.store(offset, data, true);
+    }
+
+    fn store(&self, offset: u64, data: &[u8], arriving: bool) {
         let mut s = self.lock();
         let bs = s.block_size;
-        s.bytes += data.len() as u64;
-        s.inserts += 1;
+        if !arriving {
+            s.bytes += data.len() as u64;
+            s.inserts += 1;
+        }
+        let end_of_data = offset + data.len() as u64;
         let mut b = offset.div_ceil(bs);
         loop {
             let start = b * bs;
             let end = (start + bs).min(self.len);
-            if start >= self.len || end > offset + data.len() as u64 {
+            if start >= self.len || start >= end_of_data {
                 break;
             }
+            let end = if end > end_of_data {
+                // The start of a block still arriving: kept only while longer than what is held.
+                if !arriving || s.blocks.get(&b).is_some_and(|held| held.len() as u64 >= end_of_data - start) {
+                    break;
+                }
+                end_of_data
+            } else {
+                end
+            };
             let chunk = data[(start - offset) as usize..(end - offset) as usize].to_vec();
             if s.blocks.insert(b, chunk).is_none() {
                 s.order.push_back(b);
@@ -180,7 +211,7 @@ impl SparseFile {
         let mut blocks = std::mem::take(&mut s.missing);
         blocks.sort_unstable();
         blocks.dedup();
-        blocks.retain(|b| !s.blocks.contains_key(b));
+        blocks.retain(|&b| !held_whole(&s, b, self.len));
         let bs = s.block_size;
         let mut out = Vec::new();
         let mut i = 0;
@@ -210,7 +241,7 @@ impl SparseFile {
             }
             let end = off.saturating_add(len).min(self.len);
             for b in off / bs..=(end - 1) / bs {
-                if !s.blocks.contains_key(&b) {
+                if !held_whole(&s, b, self.len) {
                     s.missing.push(b);
                     first_missing.get_or_insert(b * bs);
                 }
@@ -256,6 +287,10 @@ impl SparseFile {
             let off = (at - b * bs) as usize;
             let n = ((end - at) as usize).min(block.len().saturating_sub(off));
             if n == 0 {
+                if !held_whole(&s, b, self.len) {
+                    // Past the bytes of a block still arriving: missing, as below.
+                    break;
+                }
                 return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "short block"));
             }
             let dst = (at - pos) as usize;
@@ -267,7 +302,7 @@ impl SparseFile {
         }
         // Nothing held at `pos`: record every block of the read, not only the first.
         if !self.quiet {
-            let missing: Vec<u64> = (pos / bs..=(end - 1) / bs).filter(|b| !s.blocks.contains_key(b)).collect();
+            let missing: Vec<u64> = (pos / bs..=(end - 1) / bs).filter(|&b| !held_whole(&s, b, self.len)).collect();
             s.missing.extend(missing);
         }
         Err(io::Error::other(NotFetched { offset: pos }))

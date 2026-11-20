@@ -67,7 +67,8 @@ impl ZonalCube {
     /// - each variable over `(geometry, dims..., statistic)`, NaN where there is no value;
     /// - the zones as CF-1.8 polygon geometries (`geometry_container`; exterior rings
     ///   anticlockwise, holes clockwise) with a CF grid mapping (`spatial_ref`) of their CRS, and
-    ///   their fields and FIDs (`feature_id`) as coordinates along `geometry`;
+    ///   their fields and FIDs (`feature_id`) as coordinates along `geometry`: integer fields as
+    ///   int64, with the fill value `i64::MIN` for nulls when they have any;
     /// - `time` labels that all are ISO 8601 dates or date-times as CF times, other labels and
     ///   the statistics' names as strings;
     /// - the zones' CRS and extent as `proj:` and `spatial:` group attributes.
@@ -75,8 +76,10 @@ impl ZonalCube {
     /// # Errors
     ///
     /// [`Error::InvalidArgument`] when `path` exists, or a zone has no geometry, an empty one or
-    /// one that is not a polygon (CF cannot store it), naming it, or a variable whose values do not
-    /// match its shape; I/O errors. Nothing is written when one of these is found.
+    /// one that is not a polygon (CF cannot store it), naming it, a variable whose values do not
+    /// match its shape, or an integer field with both nulls and the value `i64::MIN`; nothing is
+    /// written then. I/O errors, which can leave a partial store at `path`: remove it before
+    /// writing again.
     ///
     /// See [`zonal_cube`] for an example.
     pub fn write_zarr(&self, path: &str) -> Result<()> {

@@ -286,6 +286,32 @@ test("CityJSON late root type retains vertical XYZ and unknown CRS", () => {
   ds.free();
 });
 
+test("toGeoJSON returns every geometry type, heights, holes and null geometries", () => {
+  const geometries = [
+    { type: "Point", coordinates: [1, 2] },
+    { type: "Point", coordinates: [1, 2, 3] },
+    { type: "LineString", coordinates: [[0, 0], [1, 1, 5]] },
+    { type: "Polygon", coordinates: [[[0, 0], [4, 0], [4, 4], [0, 0]], [[1, 1], [2, 1], [2, 2], [1, 1]]] },
+    { type: "MultiPoint", coordinates: [[0, 0], [1, 1]] },
+    { type: "MultiLineString", coordinates: [[[0, 0], [1, 1]], [[2, 2], [3, 3]]] },
+    { type: "MultiPolygon", coordinates: [[[[0, 0], [1, 0], [1, 1], [0, 0]]], [[[5, 5], [6, 5], [6, 6], [5, 5]]]] },
+    { type: "GeometryCollection", geometries: [{ type: "Point", coordinates: [9, 9] }, { type: "LineString", coordinates: [[0, 0], [1, 1]] }] },
+    null,
+  ];
+  const ds = terrio.fromGeoJSON({ type: "FeatureCollection", features: geometries.map((geometry, i) => ({ type: "Feature", properties: { i }, geometry })) });
+  const fc = ds.toGeoJSON();
+  // In a list where only some positions have a height, the others get NaN.
+  geometries[2] = { type: "LineString", coordinates: [[0, 0, NaN], [1, 1, 5]] };
+  assert.deepStrictEqual(fc.features.map((f) => f.geometry), geometries);
+  assert.deepStrictEqual(fc.features.map((f) => f.properties.i), geometries.map((_, i) => i));
+  ds.free();
+  // Coordinates also end a chunk, at 8 MB of numbers: 3 lines of 300,000 positions cross one.
+  const lines = [0, 1, 2].map((i) => ({ type: "LineString", coordinates: Array.from({ length: 300000 }, (_, k) => [i, k]) }));
+  const long = terrio.fromGeoJSON({ type: "FeatureCollection", features: lines.map((geometry, i) => ({ type: "Feature", properties: { i }, geometry })) });
+  assert.deepStrictEqual(long.toGeoJSON().features.map((f) => f.geometry), lines);
+  long.free();
+});
+
 test("toGeoJSON escapes control characters and keeps feature order across parse chunks", () => {
   // The text is parsed in chunks of about 8 MB: the long second feature ends one.
   const props = [{ s: "a\u0001b\u001f\"q\"", n: 1.5 }, { s: "x".repeat(9 << 20), n: 2 }, { s: "last", n: -3 }];
@@ -1301,6 +1327,26 @@ test("operations on in-memory rasters and layers", () => {
   }
   const like = terrio.rasterize(SQUARES, { burn: [5], like: terrio.rasterize(SQUARES, { burn: 1, ts: [60, 20] }) });
   assert.deepEqual([like.width, like.height], [60, 20]);
+  const background = terrio.rasterize(SQUARES, { burn: 100, init: 100, tr: [1, 1], te: [0, 0, 30, 10], ot: "Float32" });
+  for (const input of [background, background.toBytes("dem.tif")]) {
+    const edited = terrio.rasterize(SQUARES, { attribute: "value", background: input });
+    assert.equal(edited.dtype, "float32");
+    assert.equal(edited.readBand(1)[0], 3);
+    assert.equal(edited.readBand(1)[15], 100);
+    assert.equal(edited.readBand(1)[29], 7);
+    const lowered = terrio.rasterize(SQUARES, { burn: -2.5, add: true, background: input });
+    assert.equal(lowered.readBand(1)[0], 97.5);
+    assert.equal(lowered.readBand(1)[15], 100);
+    assert.equal(background.readBand(1)[0], 100);
+  }
+  assert.throws(() => terrio.rasterize(SQUARES, { burn: 1, background, init: 0 }), /background cannot/);
+  assert.throws(() => terrio.rasterize(SQUARES, { burn: 1, background, like }), /background cannot/);
+  const packed = terrio.rasterize(SQUARES, { burn: 1, init: 1, like: background, ot: "Byte" })
+    .toBytes("packed.tif", { creationOptions: { NBITS: "1" } });
+  const unpacked = terrio.rasterize(SQUARES, { burn: 2, background: packed });
+  const writtenEdit = terrio.open(unpacked.toBytes("edited.tif"), "edited.tif");
+  assert.equal(writtenEdit.readBand(1)[0], 2);
+  assert.equal(writtenEdit.readBand(1)[15], 1);
   const cut = terrio.warp(terrio.rasterize(SQUARES, { burn: 1, tr: [1, 1], te: [0, 0, 30, 10], ot: "Byte", init: 9 }), {
     cutline: { type: "Polygon", coordinates: [[[0, 0], [5, 0], [5, 5], [0, 5], [0, 0]]] },
     cropToCutline: true,
@@ -1860,7 +1906,27 @@ test("remote files read with range requests", async () => {
     assert.ok(fgb.stats().bytes - before < fgb.size / 4);
 
     const pq = parquet && (await terrio.openUrl(server.url + "cells.parquet"));
+    let small, misnamed;
     if (pq) {
+      // Opened from its end, where the footer is: one request, not the first block and then the end.
+      const requests = server.stats.requests;
+      small = await terrio.openUrl(server.url + "cells.parquet", { blockSize: 4096 });
+      assert.equal(server.stats.requests - requests, 1);
+      assert.deepEqual(small.info().rowGroups, pq.info().rowGroups);
+      // The end asked for, answered with other bytes whose header hides the total: refused, not
+      // stored as the end.
+      const whole = readFileSync(join(dir, "cells.parquet"));
+      const misplaced = async (url, init) => {
+        if (init?.headers?.Range === "bytes=-8192") {
+          return new Response(whole.subarray(0, 8192), { status: 206, headers: { "Content-Range": "bytes 0-8191/*" } });
+        }
+        return fetch(url, init);
+      };
+      await assert.rejects(terrio.openUrl(server.url + "cells.parquet", { blockSize: 4096, fetch: misplaced }), /Content-Range/);
+      // Another format under a GeoParquet name: found by its first bytes, as before.
+      writeFileSync(join(dir, "dem.parquet"), readFileSync(join(dir, "dem.tif")));
+      misnamed = await terrio.openUrl(server.url + "dem.parquet");
+      assert.deepEqual([misnamed.kind, misnamed.width], ["raster", 1500]);
       const groups = pq.info().rowGroups;
       assert.equal(groups.reduce((s, g) => s + g.rows, 0), 1500);
       const last = await pq.read({ rowGroups: [groups.length - 1] });
@@ -1896,7 +1962,7 @@ test("remote files read with range requests", async () => {
 
     await assert.rejects(terrio.openUrl(server.url + "missing.tif"), /404/);
     // The requests the server saw are those terrio counted.
-    const counted = [cog, busy, fgb, pq, tiles, copc].filter(Boolean).reduce((s, d) => s + d.stats().bytes, 0);
+    const counted = [cog, busy, fgb, pq, small, misnamed, tiles, copc].filter(Boolean).reduce((s, d) => s + d.stats().bytes, 0);
     assert.equal(counted, server.stats.bytes);
   } finally {
     server.close();

@@ -45,6 +45,20 @@ pub(crate) fn write(cube: &ZonalCube, path: &Path) -> Result<()> {
         }
     }
     let polygons = polygons(cube)?;
+    for (i, field) in cube.zones.schema.fields().iter().enumerate() {
+        let column = || cube.zones.features.iter().map(|f| f.attributes.get(i).unwrap_or(&FieldValue::Null));
+        if field.field_type == FieldType::Integer
+            && column().all(|v| matches!(v, FieldValue::Integer(_) | FieldValue::Null))
+            && column().any(|v| matches!(v, FieldValue::Null))
+            && column().any(|v| matches!(v, FieldValue::Integer(i64::MIN)))
+        {
+            return Err(Error::InvalidArgument(format!(
+                "integer field '{}' has nulls and the value {}, which Zarr uses as their fill value",
+                field.name,
+                i64::MIN
+            )));
+        }
+    }
     let srs = crate::crs::SpatialRef::from_layer(&cube.zones);
 
     // The geometries: nodes, then one entry per ring.
@@ -212,16 +226,22 @@ fn count(n: usize) -> Result<i32> {
     i32::try_from(n).map_err(|_| Error::InvalidArgument("too many vertices for a Zarr cube's CF geometries".into()))
 }
 
-/// `name` as an array name of its own: a path separator or whitespace becomes `_`, no name `field`, and
-/// `_2`, `_3`... is added when it is taken, ignoring case (for case-insensitive file systems).
+/// `name` as an array name of its own: a path separator, whitespace or trailing period (which
+/// Windows drops from a path) becomes `_`, no name `field`,
+/// a name Zarr v3 reserves (starting with `__`) is prefixed with `field`, and
+/// `_2`, `_3`... is added when it is taken, ignoring case (for case-insensitive file systems), or
+/// is the group's `zarr.json`.
 fn unique(name: &str, taken: &mut Vec<String>) -> String {
     // CF lists coordinates separated by whitespace: a name holds none.
     let base: String = name.chars().map(|c| if c == '/' || c == '\\' || c.is_whitespace() { '_' } else { c }).collect();
-    let base = if base.is_empty() { "field".to_string() } else { base };
-    let clash = |n: &str, taken: &[String]| taken.iter().any(|t| t.eq_ignore_ascii_case(n));
+    // Windows drops trailing periods from a path component, so `x..` would name the array `x`.
+    let kept = base.trim_end_matches('.').len();
+    let base = format!("{}{}", &base[..kept], "_".repeat(base.len() - kept));
+    let base = if base.is_empty() || base.starts_with("__") || base.chars().all(|c| c == '.') { format!("field{base}") } else { base };
+    let clash = |n: &str, taken: &[String]| n.eq_ignore_ascii_case("zarr.json") || taken.iter().any(|t| t.eq_ignore_ascii_case(n));
     let mut out = base.clone();
     let mut k = 2;
-    while clash(&out, taken) || out == "." || out == ".." {
+    while clash(&out, taken) {
         out = format!("{base}_{k}");
         k += 1;
     }
@@ -229,8 +249,8 @@ fn unique(name: &str, taken: &mut Vec<String>) -> String {
     out
 }
 
-/// A field, by its type: integers as int64 (float64 with NaN when one is null), floats as
-/// float64 (NaN for null), others as strings (null as "").
+/// A field, by its type: integers as int64 (null as the fill value, `i64::MIN`), floats, and
+/// integer fields holding other values, as float64 (NaN for null), others as strings (null as "").
 fn write_field(path: &Path, name: &str, field_type: FieldType, column: &[&FieldValue]) -> Result<()> {
     let dims = ["geometry"];
     let number = |v: &FieldValue| match v {
@@ -238,11 +258,14 @@ fn write_field(path: &Path, name: &str, field_type: FieldType, column: &[&FieldV
         FieldValue::Float(x) => Some(*x),
         _ => None,
     };
-    if field_type == FieldType::Integer
-        && let Some(values) =
-            column.iter().map(|v| if let FieldValue::Integer(i) = v { Some(*i) } else { None }).collect::<Option<Vec<i64>>>()
-    {
-        return numeric(path, name, &dims, DataType::I64, &i64_bytes(&values), json!({}));
+    if field_type == FieldType::Integer && column.iter().all(|v| matches!(v, FieldValue::Integer(_) | FieldValue::Null)) {
+        let values: Vec<i64> = column.iter().map(|v| if let FieldValue::Integer(i) = v { *i } else { i64::MIN }).collect();
+        // A fill value only with nulls, so that a full column reads every value as itself. The CF
+        // `_FillValue` attribute is needed too: xarray masks Zarr v3 arrays by that attribute only.
+        let nulls = column.iter().any(|v| matches!(v, FieldValue::Null));
+        let attrs = if nulls { json!({"_FillValue": i64::MIN}) } else { json!({}) };
+        let fill = nulls.then_some(i64::MIN as f64);
+        return write_array_v3(path, name, &[values.len()], &dims, DataType::I64, &i64_bytes(&values), fill, attrs);
     }
     if matches!(field_type, FieldType::Integer | FieldType::Float) {
         let values: Vec<f64> = column.iter().map(|v| number(v).unwrap_or(f64::NAN)).collect();

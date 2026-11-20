@@ -83,6 +83,23 @@ pub(crate) const HEIGHT_TOPO: Param =
 pub(crate) const VIEW_HEIGHT: Param = param(8840, "Viewpoint height", "viewpointheight", &[], Length);
 pub(crate) const CO_LAT_CONE: Param = param(1036, "Co-latitude of cone axis", "colatitudeofconeaxis", &[], Angle);
 pub(crate) const K_ELLIPSOID: Param = param(1038, "Ellipsoid scaling factor", "ellipsoidscalingfactor", &[], Scale);
+pub(crate) const H_PLANE_ORIGIN: Param = param(1039, "Projection plane origin height", "projectionplaneoriginheight", &[], Length);
+// Krovak Modified's evaluation point and coefficients, which PROJ's `mod_krovak` fixes. Their
+// names are the EPSG registry's: PROJ 9.9.0's `proj.db` leaves them out of its conversions.
+pub(crate) const EVAL_1: Param = param(8617, "Ordinate 1 of evaluation point", "ordinate1ofevaluationpoint", &[], Length);
+pub(crate) const EVAL_2: Param = param(8618, "Ordinate 2 of evaluation point", "ordinate2ofevaluationpoint", &[], Length);
+pub(crate) const KROVAK_C: [Param; 10] = [
+    param(1026, "C1", "c1", &[], Scale),
+    param(1027, "C2", "c2", &[], Scale),
+    param(1028, "C3", "c3", &[], Scale),
+    param(1029, "C4", "c4", &[], Scale),
+    param(1030, "C5", "c5", &[], Scale),
+    param(1031, "C6", "c6", &[], Scale),
+    param(1032, "C7", "c7", &[], Scale),
+    param(1033, "C8", "c8", &[], Scale),
+    param(1034, "C9", "c9", &[], Scale),
+    param(1035, "C10", "c10", &[], Scale),
+];
 
 // PROJ's parameters without an EPSG code.
 pub(crate) const SAT_HEIGHT: Param = param(u32::MAX, "Satellite Height", "satelliteheight", &[], Length);
@@ -351,28 +368,35 @@ pub(crate) fn conversion_from_proj(p: &Params) -> Result<Conversion, String> {
                 ("Hotine Oblique Mercator (variant B)", 9815, values, written)
             }
         }
-        "krovak" => {
+        // Krovak Modified shares Krovak's constants; PROJ 9.9.0 writes neither its evaluation point
+        // nor its coefficients.
+        "krovak" | "mod_krovak" => {
             // As terrio and PROJ compute it: their defaults, and the pseudo standard parallel fixed
             // (PROJ ignores `lat_1` and `lat_ts`). The co-latitude of the cone axis is fixed too:
             // another `alpha` (which PROJ reads) is refused.
-            if let Some(alpha) = deg("alpha").filter(|a| (a - 30.288_139_752_777_8).abs() > 1e-6) {
-                return Err(format!("a Krovak projection with +alpha={alpha}"));
+            let modified = proj == "mod_krovak";
+            let alpha = deg("alpha").unwrap_or(30.288_139_752_777_8);
+            if (alpha - 30.288_139_752_777_8).abs() > 1e-6 {
+                return Err(format!("a {} projection with +alpha={alpha}", if modified { "Krovak Modified" } else { "Krovak" }));
             }
             let values = vec![
                 (LAT_CENTRE, deg("lat_0").unwrap_or(49.5)),
                 (LON_ORIGIN, deg("lon_0").unwrap_or(24.0 + 50.0 / 60.0)),
-                (CO_LAT_CONE, 30.288_139_752_777_8),
+                // Krovak Modified's as given, as PROJ 9.9.0 writes it.
+                (CO_LAT_CONE, if modified { alpha } else { 30.288_139_752_777_8 }),
                 (LAT_PSEUDO_SP, 78.5),
                 (K_PSEUDO_SP, num("k_0").or_else(|| num("k")).unwrap_or(0.9999)),
                 (FE, x0),
                 (FN, y0),
             ];
             let written: &[&str] = &["lat_0", "lon_0", "alpha", "lat_1", "lat_ts", "k", "k_0", "x_0", "y_0"];
-            if p.str("axis") == Some("swu") {
-                ("Krovak", 9819, values, written)
-            } else {
-                ("Krovak (North Orientated)", 1041, values, written)
-            }
+            let (name, code) = match (modified, p.str("axis") == Some("swu")) {
+                (false, true) => ("Krovak", 9819),
+                (false, false) => ("Krovak (North Orientated)", 1041),
+                (true, true) => ("Krovak Modified", 1042),
+                (true, false) => ("Krovak Modified (North Orientated)", 1043),
+            };
+            (name, code, values, written)
         }
         // Its latitude of origin changes nothing (PROJ writes none); a `k_0` without `lat_ts` is
         // not written. On a sphere, the spherical method, as PROJ 9.9.0 writes it.
@@ -393,9 +417,25 @@ pub(crate) fn conversion_from_proj(p: &Params) -> Result<Conversion, String> {
         }
         // A method PROJ has without an EPSG code (0 here).
         "mill" => ("Miller Cylindrical", 0, vec![(LON_NAT, lon0), (FE, x0), (FN, y0)], &["lon_0", "x_0", "y_0"]),
+        // On a sphere, PROJ 9.9.0 ignores `+hyperbolic` and writes Cassini-Soldner.
+        "cass" if p.has("hyperbolic") => {
+            let (name, code) = if sphere { ("Cassini-Soldner", 9806) } else { ("Hyperbolic Cassini-Soldner", 9833) };
+            (name, code, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], &["lat_0", "lon_0", "x_0", "y_0", "hyperbolic"])
+        }
         "cass" => ("Cassini-Soldner", 9806, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], ORIGIN),
         "poly" => ("American Polyconic", 9818, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], ORIGIN),
         "nzmg" => ("New Zealand Map Grid", 9811, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], ORIGIN),
+        // On a sphere, PROJ 9.9.0 ignores `+guam` and writes Azimuthal Equidistant.
+        "aeqd" if p.has("guam") => {
+            let (name, code) = if sphere { ("Azimuthal Equidistant", 1125) } else { ("Guam Projection", 9831) };
+            (name, code, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], &["lat_0", "lon_0", "x_0", "y_0", "guam"])
+        }
+        "col_urban" => (
+            "Colombia Urban",
+            1052,
+            vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0), (H_PLANE_ORIGIN, num("h_0").unwrap_or(0.0))],
+            &["lat_0", "lon_0", "x_0", "y_0", "h_0"],
+        ),
         "aeqd" => ("Azimuthal Equidistant", 1125, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], ORIGIN),
         "ortho" => ("Orthographic", 9840, vec![(LAT_NAT, lat0), (LON_NAT, lon0), (FE, x0), (FN, y0)], ORIGIN),
         "eqearth" => ("Equal Earth", 1078, vec![(LON_NAT, lon0), (FE, x0), (FN, y0)], &["lon_0", "x_0", "y_0"]),
@@ -415,7 +455,7 @@ pub(crate) fn conversion_from_proj(p: &Params) -> Result<Conversion, String> {
 
 /// Every parameter of the table.
 #[cfg(test)]
-const ALL: [Param; 36] = [
+const ALL: [Param; 49] = [
     LAT_NAT,
     LON_NAT,
     K_NAT,
@@ -446,6 +486,19 @@ const ALL: [Param; 36] = [
     VIEW_HEIGHT,
     CO_LAT_CONE,
     K_ELLIPSOID,
+    H_PLANE_ORIGIN,
+    EVAL_1,
+    EVAL_2,
+    KROVAK_C[0],
+    KROVAK_C[1],
+    KROVAK_C[2],
+    KROVAK_C[3],
+    KROVAK_C[4],
+    KROVAK_C[5],
+    KROVAK_C[6],
+    KROVAK_C[7],
+    KROVAK_C[8],
+    KROVAK_C[9],
     SAT_HEIGHT,
     LAT_P1,
     LON_P1,
@@ -520,9 +573,17 @@ mod tests {
     /// names and codes are those of PROJ 9.9.0's `proj.db`, `conversion_param`.)
     #[test]
     fn the_parameter_table_is_consistent() {
-        // Every parameter constant of this file is in `ALL`, which the checks below go over.
-        let constants = include_str!("methods.rs").lines().filter(|l| l.starts_with("pub(crate) const ") && l.contains(": Param ="));
-        assert_eq!(constants.count(), ALL.len());
+        // Every parameter constant of this file (and of its arrays of them) is in `ALL`, which the
+        // checks below go over.
+        let constants: usize = include_str!("methods.rs")
+            .lines()
+            .filter(|l| l.starts_with("pub(crate) const "))
+            .map(|l| match l.split_once(": [Param; ") {
+                Some((_, n)) => n.split(']').next().and_then(|n| n.parse().ok()).unwrap(),
+                None => usize::from(l.contains(": Param =")),
+            })
+            .sum();
+        assert_eq!(constants, ALL.len());
         for p in ALL {
             assert_eq!(p.key, crate::wkt1::norm(p.name), "{p:?}");
             let same = |q: &&Param| q.code == p.code || q.named(p.key) || p.aliases.iter().any(|a| q.named(a));

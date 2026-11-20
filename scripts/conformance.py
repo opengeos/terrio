@@ -1889,7 +1889,8 @@ def suite_vector_ops(ctx):
         "Vector operations",
         "`ogr2ogr`, `gdal_rasterize`, `gdal_polygonize.py`",
         "Conversions with `ogr2ogr`'s options (where, spat, select, sql, nlt...) compared feature "
-        "by feature; rasterized pixels compared exactly, including nodata backgrounds, masks, "
+        "by feature; rasterized pixels compared exactly, including edits over existing raster "
+        "pixels, nodata backgrounds, masks, "
         "types and CRSs (ENVI uses a GDAL-converted GeoTIFF reference); polygons compared by count, holes and "
         "validity, and by rasterizing them back.",
     )
@@ -1917,7 +1918,11 @@ def suite_vector_ops(ctx):
                 status = IDENTICAL if n == 0 else TOLERANCE
                 s.cases.append(Case(section, name, status, "" if n == 0 else f"{n} of {m[2]} pixels differ (reprojected input)"))
     if not s.cases:
-        s.error = tail(err or out)
+        s.error = tail(err or out) or "Vector comparison subprocess produced no cases"
+    elif "# vector comparisons complete" not in out.splitlines():
+        s.error = tail(err) or "Vector comparison subprocess did not complete"
+    elif _code and not any(case.status == DIFFERS for case in s.cases):
+        s.error = tail(err or out) or "Vector comparison subprocess failed"
     return s
 
 

@@ -350,6 +350,7 @@ pub(crate) fn common_type(types: impl IntoIterator<Item = DataType>) -> DataType
 
 /// Converts a value to a data type as GDAL's `GDALCopyWords` does: integers are rounded half away
 /// from zero and clamped to the type's range, NaN becomes 0, and `Float32` keeps single precision.
+#[inline]
 pub(crate) fn convert_value(v: f64, dt: DataType) -> f64 {
     match dt {
         DataType::F64 => v,

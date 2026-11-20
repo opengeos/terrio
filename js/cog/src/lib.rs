@@ -63,10 +63,19 @@ pub async fn open_cog(url: String, options: JsValue) -> Result<CogRaster, JsErro
     };
     let block = bytes("blockSize", terrio::sparse::DEFAULT_BLOCK_SIZE)?;
     let cache_size = bytes("cacheSize", 256 << 20)?;
-    let (file, _) = fetcher.open_file(block).await?;
-    let remote = Remote::new(file, None, fetcher, cache_size);
-    let opened = RefCell::new(None);
     let name = url.split(['?', '#']).next().unwrap_or(&url).to_string();
+    // Opened from the start of the first block, as it arrives: a COG's header is its first bytes.
+    let (file, early) = fetcher
+        .open_file_arriving(block, |file| {
+            LazyRaster::from_sparse_epsg_only(file.clone())?.ok_or_else(|| terrio::Error::InvalidData(format!("'{name}' is not a TIFF")))
+        })
+        .await?;
+    let remote = Remote::new(file, None, fetcher, cache_size);
+    if let Some((raster, arriving)) = early {
+        remote.wait_for_arriving(arriving);
+        return Ok(CogRaster { inner: Rc::new(Inner { remote, raster: RefCell::new(raster) }) });
+    }
+    let opened = RefCell::new(None);
     remote
         .run(
             || opened.borrow().is_none(),

@@ -5,6 +5,7 @@
 //! again until it misses nothing. No WebAssembly exports: the modules export their own.
 
 use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::sync::Arc;
 use terrio::raster::RasterData;
 use terrio::sparse::{self, ObjectRange, SparseFile, SparseObjects};
@@ -19,6 +20,11 @@ pub fn js_error(e: JsValue) -> JsError {
 
 /// The most a request made while a file opens grows to (`sparse::grow_ranges`).
 pub const OPEN_GROWTH_MAX: u64 = 4 << 20;
+
+/// The most bytes of a first block still arriving that an open is tried on
+/// ([`Fetcher::open_file_arriving`]): a COG's header is a few kilobytes, and each try stores the
+/// bytes arrived so far again.
+const ARRIVING_OPEN_MAX: usize = 1 << 20;
 
 /// The most rounds of fetches a read may take.
 pub const MAX_ROUNDS: usize = 64;
@@ -37,9 +43,10 @@ pub struct Fetcher {
     /// Whether absent metadata probes may treat HTTP 403 as missing.
     pub allow_missing_metadata403: bool,
     /// Requests completed or rejected with an HTTP response.
-    pub requests: Cell<u64>,
-    /// Response-body bytes consumed by this fetcher.
-    pub bytes: Cell<u64>,
+    pub requests: Rc<Cell<u64>>,
+    /// Response-body bytes consumed by this fetcher, including those of a first block still
+    /// arriving ([`Fetcher::open_file_arriving`]), counted at the open.
+    pub bytes: Rc<Cell<u64>>,
 }
 
 /// What a range request returned.
@@ -501,7 +508,7 @@ impl Fetcher {
             get(&js_sys::global(), "fetch").dyn_into().map_err(|_| JsError::new("no fetch function: pass one as options.fetch"))?
         };
         let fetcher =
-            Self { url: url.to_string(), fetch, headers, allow_missing_metadata403: false, requests: Cell::new(0), bytes: Cell::new(0) };
+            Self { url: url.to_string(), fetch, headers, allow_missing_metadata403: false, requests: Rc::default(), bytes: Rc::default() };
         Ok((fetcher, rest))
     }
 
@@ -511,7 +518,140 @@ impl Fetcher {
     /// held, and nothing more is requested.
     pub async fn open_file(&self, block: u64) -> Result<(SparseFile, Vec<u8>), JsError> {
         let block = block.clamp(512, 16 << 20);
-        let first = self.response(self.request(Some((0, block - 1)), false)?).await?;
+        let response = JsFuture::from(self.request(Some((0, block - 1)), false)?).await.map_err(js_error)?;
+        self.open_from(response, block).await
+    }
+
+    /// As [`open_file`](Self::open_file), but opens the file with `open` while its first block
+    /// arrives: after each piece of the body, `open` runs on the bytes arrived so far, and once it
+    /// succeeds without missing any, the file is returned with its result, the rest of the block
+    /// still arriving into the file (see [`Remote::wait_for_arriving`]). A COG's header is a few
+    /// kilobytes at the start of its first block: the open then takes the time to the first bytes
+    /// rather than to the whole block. Without a stream body, or when `open` needs more than the
+    /// block, the block is read whole and the result is `None`: open the file with [`Remote::run`].
+    pub async fn open_file_arriving<T>(
+        &self,
+        block: u64,
+        mut open: impl FnMut(&SparseFile) -> terrio::Result<T>,
+    ) -> Result<(SparseFile, Option<(T, Arriving)>), JsError> {
+        let block = block.clamp(512, 16 << 20);
+        let response = JsFuture::from(self.request(Some((0, block - 1)), false)?).await.map_err(js_error)?;
+        let status = get(&response, "status").as_f64().unwrap_or(0.0) as u16;
+        let content_range = range_header(&response);
+        let total: Option<u64> = content_range.as_deref().and_then(|r| r.rsplit('/').next()?.trim().parse().ok());
+        let body = get(&response, "body");
+        // The reader locks the body: taken only to stream it.
+        let streamed = status == 206 && total.is_some() && !body.is_null() && !body.is_undefined();
+        let reader = if streamed { call(&body, "getReader", &[]).ok() } else { None };
+        let (Some(len), Some(reader)) = (total, reader) else {
+            // A whole file (200), an error, no exposed length, or no stream: as `open_file`,
+            // from this response.
+            let (file, _) = self.open_from(response, block).await?;
+            return Ok((file, None));
+        };
+        let expected = block.min(len);
+        // Counted now, so that a failed open (a refused Content-Range or a body error) is in
+        // `stats()`; bytes are added where the body ends or fails.
+        self.requests.set(self.requests.get() + 1);
+        // The bytes' position is checked before any of them is opened.
+        if let Some(header) = content_range.as_deref()
+            && !valid_content_range(header, ObjectRange::At(0, expected), expected, Some(len))
+        {
+            let _ = call(&reader, "cancel", &[]).map(settle);
+            return Err(JsError::new("range response has an unexpected Content-Range"));
+        }
+        let file = SparseFile::with_block_size(len, block);
+        let mut data = Vec::new();
+        let opened = loop {
+            match next_chunk(&reader).await {
+                Ok(Some(chunk)) => append(&mut data, &chunk),
+                Ok(None) => break None,
+                Err(e) => {
+                    self.bytes.set(self.bytes.get() + data.len() as u64);
+                    return Err(e);
+                }
+            }
+            // The whole block: read to the body's end, where `finish_first` checks its length.
+            if data.len() as u64 >= expected || data.len() > ARRIVING_OPEN_MAX {
+                continue;
+            }
+            file.insert_arriving(0, &data);
+            let result = open(&file);
+            if file.missing().is_empty()
+                && let Ok(value) = result
+            {
+                break Some(value);
+            }
+        };
+        let Some(value) = opened else {
+            self.bytes.set(self.bytes.get() + data.len() as u64);
+            if let Err(e) = finish_first(&file, &data, expected, content_range.as_deref(), len) {
+                // A body longer than asked: released, not read on.
+                let _ = call(&reader, "cancel", &[]).map(settle);
+                return Err(e);
+            }
+            return Ok((file, None));
+        };
+        // The rest of the block arrives in the background; a failure leaves it missing, fetched
+        // again by the read that needs it. Counted now, so that stats taken after the open don't
+        // count it against a later read; what fails to arrive is taken back.
+        self.bytes.set(self.bytes.get() + expected);
+        let (rest, bytes) = (file.clone(), self.bytes.clone());
+        let done = wasm_bindgen_futures::future_to_promise(async move {
+            let result: Result<(), JsError> = async {
+                while let Some(chunk) = next_chunk(&reader).await? {
+                    append(&mut data, &chunk);
+                }
+                finish_first(&rest, &data, expected, content_range.as_deref(), len)
+            }
+            .await;
+            if result.is_err() {
+                bytes.set((bytes.get() + data.len() as u64).saturating_sub(expected));
+                let _ = call(&reader, "cancel", &[]).map(settle);
+            }
+            Ok(JsValue::UNDEFINED)
+        });
+        Ok((file, Some((value, Arriving { done, end: expected }))))
+    }
+
+    /// As [`open_file`](Self::open_file), but from the file's last two blocks (a suffix range),
+    /// for a format whose header is at the end, as GeoParquet's footer is: their response tells
+    /// the file's length too, so the open saves the round trip of the first block. A server that
+    /// refuses suffix ranges (an error status) is asked for the first block instead.
+    pub async fn open_file_tail(&self, block: u64) -> Result<SparseFile, JsError> {
+        let block = block.clamp(512, 16 << 20);
+        // Two blocks: the file holds whole blocks, so at least one whole block of the end is kept
+        // besides the file's last, short one.
+        let tail = 2 * block;
+        let last = self.any_response(self.request_to(&self.url, Some(format!("bytes=-{tail}")), false)?).await?;
+        let len = match (last.status, last.total) {
+            (206, Some(total)) => total,
+            (206, None) => self.head_len().await?.ok_or_else(|| {
+                JsError::new(&format!(
+                    "{}: the server's response has no Content-Range (cross-origin servers must expose it) and no Content-Length",
+                    self.url.split(['?', '#']).next().unwrap_or(&self.url)
+                ))
+            })?,
+            (200..300, _) => last.data.len() as u64,
+            _ => return Ok(self.open_file(block).await?.0),
+        };
+        let file = SparseFile::with_block_size(len, block);
+        let n = last.data.len() as u64;
+        if last.status == 206 {
+            if n != tail.min(len) {
+                return Err(JsError::new("range response for the end of the file has an unexpected length"));
+            }
+            // Its position, from the file's length: a header without the total (`*`) says it too.
+            last.validate_content_range(ObjectRange::At(len - n, n), Some(len))?;
+        }
+        // Whole blocks of it are kept, and the file's last block.
+        file.insert(len - n, &last.data);
+        Ok(file)
+    }
+
+    /// The file of a first-block response, read whole: see [`open_file`](Self::open_file).
+    async fn open_from(&self, response: JsValue, block: u64) -> Result<(SparseFile, Vec<u8>), JsError> {
+        let first = self.response(js_sys::Promise::resolve(&response)).await?;
         let len = match (first.status, first.total) {
             (206, Some(total)) => total,
             (206, None) => match self.head_len().await? {
@@ -539,6 +679,40 @@ impl Fetcher {
     }
 }
 
+/// The rest of a first block still arriving ([`Fetcher::open_file_arriving`]): a promise that
+/// settles once it has arrived or failed, and the end of the bytes it brings.
+pub struct Arriving {
+    done: js_sys::Promise,
+    end: u64,
+}
+
+/// The next piece of a body from its stream reader, or `None` at its end.
+async fn next_chunk(reader: &JsValue) -> Result<Option<js_sys::Uint8Array>, JsError> {
+    let promise = call(reader, "read", &[])?.dyn_into::<js_sys::Promise>().map_err(|_| JsError::new("no body"))?;
+    let chunk = JsFuture::from(promise).await.map_err(js_error)?;
+    Ok((!get(&chunk, "done").is_truthy()).then(|| js_sys::Uint8Array::new(&get(&chunk, "value"))))
+}
+
+fn append(data: &mut Vec<u8>, chunk: &js_sys::Uint8Array) {
+    let start = data.len();
+    data.resize(start + chunk.length() as usize, 0);
+    chunk.copy_to(&mut data[start..]);
+}
+
+/// Checks a first block arrived whole (`expected` bytes of a file of `len`) and stores it.
+fn finish_first(file: &SparseFile, data: &[u8], expected: u64, content_range: Option<&str>, len: u64) -> Result<(), JsError> {
+    if data.len() as u64 != expected {
+        return Err(JsError::new("initial range response has an unexpected length"));
+    }
+    if let Some(header) = content_range
+        && !valid_content_range(header, ObjectRange::At(0, expected), expected, Some(len))
+    {
+        return Err(JsError::new("range response has an unexpected Content-Range"));
+    }
+    file.insert(0, data);
+    Ok(())
+}
+
 /// A remote file or store read by terrio's synchronous readers: the blocks or objects fetched,
 /// kept up to a cache size between reads, and the reads queued, which run one at a time as they
 /// share them.
@@ -553,6 +727,8 @@ pub struct Remote {
     pub cache_size: u64,
     /// The end of the last read queued.
     queue: RefCell<js_sys::Promise>,
+    /// The rest of the first block, while it arrives.
+    arriving: RefCell<Option<Arriving>>,
 }
 
 /// A read's turn, which lets the next queued read run when dropped.
@@ -567,7 +743,19 @@ impl Drop for Turn {
 impl Remote {
     /// Creates a queued reader over a file or object store with the given byte-cache budget.
     pub fn new(file: SparseFile, objects: Option<Arc<SparseObjects>>, fetcher: Fetcher, cache_size: u64) -> Self {
-        Self { file, objects, fetcher, cache_size, queue: RefCell::new(js_sys::Promise::resolve(&JsValue::UNDEFINED)) }
+        Self {
+            file,
+            objects,
+            fetcher,
+            cache_size,
+            queue: RefCell::new(js_sys::Promise::resolve(&JsValue::UNDEFINED)),
+            arriving: RefCell::new(None),
+        }
+    }
+
+    /// Lets reads wait for the rest of a first block still arriving, rather than request it again.
+    pub fn wait_for_arriving(&self, arriving: Arriving) {
+        *self.arriving.borrow_mut() = Some(arriving);
     }
 
     /// Waits for the reads queued before this one to finish.
@@ -602,18 +790,39 @@ impl Remote {
             {
                 missing = pieces;
             }
+            // Bytes still arriving are waited for, not requested again.
+            let arriving = if missing.iter().any(|&(o, _)| self.arriving.borrow().as_ref().is_some_and(|a| o < a.end)) {
+                self.arriving.borrow_mut().take()
+            } else {
+                None
+            };
+            if let Some(a) = &arriving {
+                missing = missing
+                    .into_iter()
+                    .filter_map(|(o, n)| if o >= a.end { Some((o, n)) } else { (o + n > a.end).then(|| (a.end, o + n - a.end)) })
+                    .collect();
+            }
             let parts = self.objects.as_ref().map(|o| o.missing()).unwrap_or_default();
-            if missing.is_empty() && parts.is_empty() {
+            if missing.is_empty() && parts.is_empty() && arriving.is_none() {
                 self.file.trim(self.cache_size);
                 if let Some(o) = &self.objects {
                     o.trim(self.cache_size);
                 }
                 return Ok(result);
             }
-            if let Some(o) = &self.objects {
-                self.fetcher.fetch_objects(o, &parts).await?;
+            let fetched = async {
+                if let Some(o) = &self.objects {
+                    self.fetcher.fetch_objects(o, &parts).await?;
+                }
+                self.fetcher.fetch_into(&self.file, &missing).await
             }
-            self.fetcher.fetch_into(&self.file, &missing).await?;
+            .await;
+            if let Some(a) = arriving {
+                // Settles once the rest has arrived or failed (then requested again, next round),
+                // waited for even when another fetch failed, so a retry doesn't request it again.
+                let _ = JsFuture::from(a.done).await;
+            }
+            fetched?;
         }
         let name = self.fetcher.url.split(['?', '#']).next().unwrap_or("remote");
         Err(JsError::new(&format!("{name}: the read still needed more bytes after {MAX_ROUNDS} rounds of requests")))

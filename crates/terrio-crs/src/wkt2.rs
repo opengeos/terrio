@@ -196,6 +196,8 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
     let mut no_uoff = false;
     let mut conformal_sphere = false;
     let mut sweep = None;
+    // A flag of the PROJ method (`+hyperbolic`, `+guam`), written after it as PROJ writes it.
+    let mut flag = None;
     let proj = if is(&["transversemercator"], &[9807]) {
         push("lat_0", Some(lat_0().unwrap_or(0.0)));
         push("lon_0", lon_0());
@@ -305,14 +307,17 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         push("lat_0", lat_0());
         push("lon_0", lon_0());
         "laea"
-    } else if is(&["hotineobliquemercatorvariantb"], &[9815])
+    } else if (is(&["hotineobliquemercatorvarianta"], &[9812]) || is(&["hotineobliquemercatorvariantb"], &[9815]))
         && p.get(AZIMUTH).is_some_and(|a| (a - 90.0).abs() < 1e-9)
         && p.get(GAMMA).is_some_and(|g| (g - 90.0).abs() < 1e-9)
     {
         // With an azimuth and a rectified grid angle of 90°, the Swiss oblique Mercator, as PROJ
-        // reads it (and writes it, from `+proj=somerc`).
-        fe = p.get(FE_CENTRE).unwrap_or(fe);
-        fn_ = p.get(FN_CENTRE).unwrap_or(fn_);
+        // 9.9.0 reads variant A as well as B (and writes it, from `+proj=somerc`; opengeos/terrio#1012
+        // item 28). Variant B's false origin is at the centre, variant A's at the natural origin.
+        if is(&["hotineobliquemercatorvariantb"], &[9815]) {
+            fe = p.get(FE_CENTRE).unwrap_or(fe);
+            fn_ = p.get(FN_CENTRE).unwrap_or(fn_);
+        }
         push("lat_0", p.get(LAT_CENTRE).or_else(lat_0));
         push("lon_0", p.get(LON_CENTRE).or_else(lon_0));
         push("k_0", Some(p.get(K_CENTRE).or_else(|| p.get(K_NAT)).unwrap_or(1.0)));
@@ -347,6 +352,29 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         push("lat_0", lat_0());
         push("lon_0", lon_0());
         "cass"
+    } else if is(&["hyperboliccassinisoldner"], &[9833]) {
+        push("lat_0", lat_0());
+        push("lon_0", lon_0());
+        flag = Some("+hyperbolic");
+        "cass"
+    } else if is(&["guamprojection"], &[9831]) {
+        push("lat_0", lat_0());
+        push("lon_0", lon_0());
+        flag = Some("+guam");
+        "aeqd"
+    } else if is(&["lambertconicconformal2spmichigan"], &[1051]) {
+        // Its ellipsoid scaling factor is PROJ's `k_0`.
+        push("lat_0", lat_0());
+        push("lon_0", lon_0());
+        push("lat_1", p.get(SP1));
+        push("lat_2", Some(p.get(SP2).unwrap_or(0.0)));
+        push("k_0", Some(p.get(K_ELLIPSOID).unwrap_or(1.0)));
+        "lcc"
+    } else if is(&["colombiaurban"], &[1052]) {
+        push("lat_0", lat_0());
+        push("lon_0", lon_0());
+        push("h_0", p.get(H_PLANE_ORIGIN));
+        "col_urban"
     } else if is(&["americanpolyconic"], &[9818]) {
         push("lat_0", lat_0());
         push("lon_0", lon_0());
@@ -417,6 +445,17 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         push("alpha", p.get(CO_LAT_CONE));
         push("k", Some(p.get(K_PSEUDO_SP).or_else(|| p.get(K_NAT)).unwrap_or(0.9999)));
         "krovak"
+    } else if is(&["krovakmodifiednorthorientated", "krovakmodified"], &[1043, 1042]) {
+        // As PROJ's `mod_krovak`, which fixes the pseudo standard parallel, the evaluation point
+        // and the coefficients, and ignores them. Its axes, as Krovak's, the CS gives.
+        for fixed in [LAT_PSEUDO_SP, EVAL_1, EVAL_2].iter().chain(&KROVAK_C) {
+            p.ignore(*fixed);
+        }
+        push("lat_0", p.get(LAT_CENTRE).or_else(lat_0));
+        push("lon_0", lon_0());
+        push("alpha", p.get(CO_LAT_CONE));
+        push("k", Some(p.get(K_PSEUDO_SP).or_else(|| p.get(K_NAT)).unwrap_or(0.9999)));
+        "mod_krovak"
     } else if is(&["loximuthal"], &[]) {
         // PROJ's `lat_1` is the latitude of natural origin.
         push("lat_1", lat_0());
@@ -476,6 +515,7 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         return Err(bad(&format!("parameter '{unused}' of the method '{}'", method.name().unwrap_or(""))));
     }
     let mut proj_str = vec![format!("+proj={proj}")];
+    proj_str.extend(flag.map(String::from));
     if conformal_sphere {
         proj_str.push("+R_C".into());
     }
@@ -661,7 +701,8 @@ fn proj_method(conv: &Node, method: &Node, ang: f64, to_meter: f64) -> Result<Op
 
 /// The axis order of a projected CS as PROJ's `+axis`, when not east then north. As GDAL's
 /// traditional GIS order, north-east is read east-north. Other direction pairs retain their
-/// declared order, including north-west and south-east.
+/// declared order, including north-west and south-east. A CS with an axis along neither
+/// (`south, up`) is read east-north, as PROJ 9.9.0 reads it.
 fn axis(directions: &[String]) -> Option<String> {
     let letter = |d: &str| match d {
         "east" => Some('e'),
@@ -677,6 +718,13 @@ fn axis(directions: &[String]) -> Option<String> {
         && matches!(a, 'e' | 'w') != matches!(b, 'e' | 'w')
     {
         return (!matches!((a, b), ('e', 'n') | ('n', 'e'))).then(|| format!("{a}{b}u"));
+    }
+    // Two axes along one line, east and west or north and south, which PROJ 9.9.0 refuses: west or
+    // south, as terrio read them before. Other axes (`up`, `northNorthEast`, one direction twice)
+    // are read east then north, as PROJ 9.9.0 reads them.
+    let [a, b] = directions.get(..2).unwrap_or_default() else { return None };
+    if a == b || letter(a).is_none() || letter(b).is_none() {
+        return None;
     }
     let has = |d: &str| directions.iter().any(|x| x == d);
     let (e, n) = (if has("west") { 'w' } else { 'e' }, if has("south") { 's' } else { 'n' });
@@ -832,13 +880,14 @@ pub(crate) fn degrees(radians: f64) -> f64 {
 }
 
 use crate::methods::{
-    AZIMUTH, CO_LAT_CONE, FE, FE_CENTRE, FE_FALSE, FN, FN_CENTRE, FN_FALSE, GAMMA, HEIGHT_TOPO, K_CENTRE, K_NAT, K_PSEUDO_SP, Kind,
-    LAT_CENTRE, LAT_FALSE, LAT_NAT, LAT_P1, LAT_P2, LAT_PSEUDO_SP, LAT_TOPO, LAT_TRUE_SCALE, LAT_TS, LON_CENTRE, LON_FALSE, LON_INITIAL,
-    LON_NAT, LON_ORIGIN, LON_P1, LON_P2, LON_TOPO, Param, SAT_HEIGHT, SP1, SP2, VIEW_HEIGHT, ZONE_WIDTH,
+    AZIMUTH, CO_LAT_CONE, EVAL_1, EVAL_2, FE, FE_CENTRE, FE_FALSE, FN, FN_CENTRE, FN_FALSE, GAMMA, H_PLANE_ORIGIN, HEIGHT_TOPO, K_CENTRE,
+    K_ELLIPSOID, K_NAT, K_PSEUDO_SP, KROVAK_C, Kind, LAT_CENTRE, LAT_FALSE, LAT_NAT, LAT_P1, LAT_P2, LAT_PSEUDO_SP, LAT_TOPO,
+    LAT_TRUE_SCALE, LAT_TS, LON_CENTRE, LON_FALSE, LON_INITIAL, LON_NAT, LON_ORIGIN, LON_P1, LON_P2, LON_TOPO, Param, SAT_HEIGHT, SP1, SP2,
+    VIEW_HEIGHT, ZONE_WIDTH,
 };
 
 /// The parameters the WKT 2 reader takes.
-const PARAMS: [Param; 35] = [
+const PARAMS: [Param; 49] = [
     LAT_TOPO,
     LON_TOPO,
     HEIGHT_TOPO,
@@ -874,6 +923,20 @@ const PARAMS: [Param; 35] = [
     CO_LAT_CONE,
     LAT_PSEUDO_SP,
     K_PSEUDO_SP,
+    K_ELLIPSOID,
+    H_PLANE_ORIGIN,
+    EVAL_1,
+    EVAL_2,
+    KROVAK_C[0],
+    KROVAK_C[1],
+    KROVAK_C[2],
+    KROVAK_C[3],
+    KROVAK_C[4],
+    KROVAK_C[5],
+    KROVAK_C[6],
+    KROVAK_C[7],
+    KROVAK_C[8],
+    KROVAK_C[9],
 ];
 
 /// A conversion's parameters, in degrees, metres and unity, and which were used.

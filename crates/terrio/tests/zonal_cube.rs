@@ -177,7 +177,7 @@ mod zarr {
         ZonalCube { zones, statistics: vec![Statistic::Mean, Statistic::Count], variables }
     }
 
-    /// The values as f64 (NaN-aware comparisons are done on their bits) and the type's name.
+    /// The values as f64 and the type's name.
     fn nums(data: RasterData) -> (&'static str, Vec<f64>) {
         match data {
             RasterData::I32(v) => ("i32", v.into_iter().map(f64::from).collect()),
@@ -186,10 +186,6 @@ mod zarr {
             RasterData::F64(v) => ("f64", v),
             other => panic!("unexpected type {other:?}"),
         }
-    }
-
-    fn bits(values: &[f64]) -> Vec<u64> {
-        values.iter().map(|v| if v.is_nan() { f64::NAN.to_bits() } else { v.to_bits() }).collect()
     }
 
     fn json(path: &std::path::Path) -> serde_json::Value {
@@ -246,8 +242,12 @@ mod zarr {
         assert_eq!(nums(read(store, "geometry_part_node_count").1), ("i32", vec![5.0, 5.0, 4.0, 4.0]));
         assert_eq!(nums(read(store, "geometry_interior_ring").1), ("i32", vec![0.0, 1.0, 0.0, 0.0]));
         assert_eq!(nums(read(store, "feature_id").1), ("i64", vec![10.0, 11.0]));
-        let (kind, code) = nums(read(store, "code").1);
-        assert_eq!((kind, bits(&code)), ("f64", bits(&[7.0, f64::NAN])), "an integer field with nulls");
+        match read(store, "code").1 {
+            RasterData::I64(code) => assert_eq!(code, [7, i64::MIN], "an integer field with nulls"),
+            other => panic!("code is {other:?}"),
+        }
+        assert_eq!(json(&path.join("code"))["fill_value"], i64::MIN);
+        assert_eq!(json(&path.join("code"))["attributes"]["_FillValue"], i64::MIN, "CF readers mask by it");
         assert_eq!(strings(&path, "name"), ["north", "south"]);
         assert_eq!(strings(&path, "statistic"), ["mean", "count"]);
         assert_eq!(strings(&path, "band"), ["B04", "B08"]);
@@ -333,7 +333,7 @@ mod zarr {
     #[test]
     fn names_never_clash_or_leave_their_array() {
         let mut zones = zones();
-        for name in ["", "a/b", "geometry_node", "Time", "Land Use"] {
+        for name in ["", "a/b", "geometry_node", "Time", "Land Use", "ZARR.json", "__meta", "..", "ends."] {
             zones.schema.add_field(FieldDef::new(name, FieldType::Text));
             for f in &mut zones.features {
                 f.attributes.push(FieldValue::Text("x".into()));
@@ -347,12 +347,62 @@ mod zarr {
         assert_eq!(json(&path)["attributes"]["Conventions"], "CF-1.8", "the group's metadata is intact");
         let mut names: Vec<String> = std::fs::read_dir(&path).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
         names.sort();
-        for expected in ["band_2", "field", "a_b", "geometry_node_2", "Time_2", "Land_Use"] {
+        for expected in
+            ["band_2", "field", "a_b", "geometry_node_2", "Time_2", "Land_Use", "ZARR.json_2", "field__meta", "field__", "ends_"]
+        {
             assert!(names.contains(&expected.to_string()), "{expected} not in {names:?}");
         }
         assert_eq!(strings(&path, "band"), ["B04", "B08"], "the band coordinate is untouched");
         let coordinates = json(&path.join("band_2"))["attributes"]["coordinates"].as_str().unwrap().to_string();
         assert!(coordinates.split_whitespace().any(|c| c == "Land_Use"), "{coordinates}");
+    }
+
+    /// Integers past 2^53 keep every digit next to nulls; `i64::MIN`, the nulls' marker, is refused
+    /// among nulls before anything is written.
+    #[test]
+    fn integer_fields_with_nulls_are_lossless() {
+        let mut zones = zones();
+        zones.features[0].attributes[1] = FieldValue::Integer(i64::MAX);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.zarr");
+        cube(zones.clone()).write_zarr(path.to_str().unwrap()).unwrap();
+        match read(path.to_str().unwrap(), "code").1 {
+            RasterData::I64(code) => assert_eq!(code, [i64::MAX, i64::MIN]),
+            other => panic!("code is {other:?}"),
+        }
+        // `i64::MIN` without nulls is a value like any other: no fill value.
+        zones.features[0].attributes[1] = FieldValue::Integer(i64::MIN);
+        zones.features[1].attributes[1] = FieldValue::Integer(1);
+        let path = dir.path().join("full.zarr");
+        cube(zones.clone()).write_zarr(path.to_str().unwrap()).unwrap();
+        assert_eq!(json(&path.join("code"))["fill_value"], 0, "no nulls: the writers' default fill");
+        // An all-null field: every value is the fill value.
+        for f in &mut zones.features {
+            f.attributes[1] = FieldValue::Null;
+        }
+        let path = dir.path().join("nulls.zarr");
+        cube(zones.clone()).write_zarr(path.to_str().unwrap()).unwrap();
+        assert_eq!(json(&path.join("code"))["fill_value"], i64::MIN);
+        match read(path.to_str().unwrap(), "code").1 {
+            RasterData::I64(code) => assert_eq!(code, [i64::MIN, i64::MIN]),
+            other => panic!("code is {other:?}"),
+        }
+        zones.features[0].attributes[1] = FieldValue::Integer(i64::MIN);
+        let path = dir.path().join("min.zarr");
+        let err = cube(zones).write_zarr(path.to_str().unwrap()).unwrap_err().to_string();
+        assert!(err.contains("'code'"), "{err}");
+        assert!(!path.exists(), "nothing written");
+    }
+
+    /// An integer field holding a float, as some readers give, keeps every value as float64.
+    #[test]
+    fn integer_fields_holding_floats_stay_float64() {
+        let mut zones = zones();
+        zones.features[1].attributes[1] = FieldValue::Float(2.5);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.zarr");
+        cube(zones).write_zarr(path.to_str().unwrap()).unwrap();
+        assert_eq!(nums(read(path.to_str().unwrap(), "code").1), ("f64", vec![7.0, 2.5]));
     }
 
     /// A field's type, not its values, decides its array type: an all-null float field is float64.

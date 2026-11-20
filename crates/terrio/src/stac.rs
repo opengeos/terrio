@@ -1576,12 +1576,179 @@ fn crs_of(s: &str) -> SpatialRef {
     SpatialRef::parse_literal(s).unwrap_or_default()
 }
 
+/// The most files of a mosaic of remote items read at once: each read waits on the server, and
+/// keeps several requests in flight itself (more than 8 at once gained nothing on Sentinel-2 COGs
+/// of Earth Search).
+const REMOTE_AT_ONCE: usize = 8;
+
+/// How many items' files of a mosaic are read at once: [`REMOTE_AT_ONCE`] when every item is
+/// remote, else one at a time, as each read of a local file (or of a member of a local archive)
+/// already decodes its tiles on every core, and more at once were slower.
+fn items_at_once<'a>(mut hrefs: impl Iterator<Item = &'a str>) -> usize {
+    if hrefs.all(|href| !local_backed(&crate::vfs::Location::parse(href))) { REMOTE_AT_ONCE } else { 1 }
+}
+
+/// The most item files a mosaic keeps open: a quarter of the files the process may open (the
+/// soft limit of `/proc/self/limits`; an item may hold a second, its `.msk` sidecar), at least 16,
+/// so that a mosaic of more items than that still reads; no bound when it is unlimited, and 64
+/// where it is unknown (a quarter of macOS's default 256). GDAL bounds the datasets its virtual datasets keep open alike
+/// (`GDAL_MAX_DATASET_POOL_SIZE`; reference GDAL 3.13.3).
+fn max_open_items() -> usize {
+    open_items_within(&std::fs::read_to_string("/proc/self/limits").unwrap_or_default())
+}
+
+/// [`max_open_items`] of the text of `/proc/self/limits`.
+fn open_items_within(limits: &str) -> usize {
+    // "Max open files            1024                 524288               files": the soft limit;
+    // "unlimited", no bound.
+    let soft = limits.lines().find_map(|l| l.strip_prefix("Max open files")?.split_whitespace().next());
+    match soft {
+        Some("unlimited") => usize::MAX,
+        Some(n) => n.parse::<usize>().map_or(64, |n| (n / 4).max(16)),
+        None => 64,
+    }
+}
+
+/// How many items' windows of `per_item` bytes each are read at once: at most `most`, and as many
+/// as fit in half of the `usable` memory, or in 1 GiB when it is unknown, beside the output's `output_bytes`,
+/// but at least one.
+fn batch_size(per_item: usize, output_bytes: usize, usable: Option<u64>, most: usize) -> usize {
+    let budget = usable.map_or(1 << 30, |m| m / 2).saturating_sub(output_bytes as u64);
+    usize::try_from(budget / per_item.max(1) as u64).unwrap_or(usize::MAX).clamp(1, most.max(1))
+}
+
+/// An item a mosaic window covers: the window of its file to read, and where the whole file falls
+/// in the mosaic window (`x`, `y`, width and height in its pixels).
+struct Cover {
+    src: Window,
+    dst_rect: [f64; 4],
+}
+
+/// Where an item falls in window `w` of a mosaic of geotransform `gt`: `None` when it does not.
+/// The source window is one pixel wider on each side, for the nearest pixel at its edges.
+fn cover(item: &AssetItem, gt: [f64; 6], w: Window) -> Option<Cover> {
+    let (rx, ry) = (gt[1], -gt[5]);
+    let [xmin, ymin, xmax, ymax] = item.bounds;
+    let (dxo, dxs) = ((xmin - gt[0]) / rx, (xmax - xmin) / rx);
+    let (dyo, dys) = ((gt[3] - ymax) / ry, (ymax - ymin) / ry);
+    let (x0, x1) = (dxo.max(w.x as f64), (dxo + dxs).min((w.x + w.width) as f64));
+    let (y0, y1) = (dyo.max(w.y as f64), (dyo + dys).min((w.y + w.height) as f64));
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    let (scx, scy) = (item.width as f64 / dxs, item.height as f64 / dys);
+    let clamp = |v: f64, max: usize| (v.max(0.0) as usize).min(max);
+    let sx0 = clamp(((x0 - dxo) * scx).floor() - 1.0, item.width);
+    let sx1 = clamp(((x1 - dxo) * scx).ceil() + 1.0, item.width);
+    let sy0 = clamp(((y0 - dyo) * scy).floor() - 1.0, item.height);
+    let sy1 = clamp(((y1 - dyo) * scy).ceil() + 1.0, item.height);
+    if sx1 <= sx0 || sy1 <= sy0 {
+        return None;
+    }
+    Some(Cover { src: Window::new(sx0, sy0, sx1 - sx0, sy1 - sy0), dst_rect: [dxo - w.x as f64, dyo - w.y as f64, dxs, dys] })
+}
+
+/// The error of an item's file smaller than its STAC metadata says.
+fn smaller_than_declared(item: &AssetItem, r: &LazyRaster) -> Error {
+    bad(format!(
+        "{} is {}x{}, smaller than its STAC metadata says",
+        crate::vsi::redact_diagnostic_location(&item.href),
+        r.width(),
+        r.height()
+    ))
+}
+
 /// A mosaic of the files of a STACIT subdataset, read by window.
 struct Mosaic {
     items: Vec<(AssetItem, Option<LazyRaster>)>,
+    /// How many items' files are read at once.
+    at_once: usize,
+    /// The items whose files are open, least recently read first, and how many may be.
+    open: std::collections::VecDeque<usize>,
+    max_open: usize,
     geo_transform: [f64; 6],
     data_type: DataType,
     nodata: Option<f64>,
+}
+
+impl Mosaic {
+    /// Reads the items of `jobs` (an item's index and what to read of it, in drawing order) with
+    /// `read`, `at_once` at a time, and hands each result to `draw` in that order. A file is
+    /// opened at its first read and stays open for the next windows, whether or not its batch
+    /// failed.
+    fn read_items<J: Sync, T: Send>(
+        &mut self,
+        jobs: &[(usize, J)],
+        at_once: usize,
+        read: impl Fn(&J, &AssetItem, &mut LazyRaster) -> Result<T> + Sync,
+        mut draw: impl FnMut(&J, &AssetItem, T) -> Result<()>,
+    ) -> Result<()> {
+        let at_once = at_once.max(1);
+        for batch in jobs.chunks(at_once) {
+            let slots: Vec<std::sync::Mutex<Option<LazyRaster>>> =
+                batch.iter().map(|(i, _)| std::sync::Mutex::new(self.items[*i].1.take())).collect();
+            let items = &self.items;
+            let fetched = crate::par::map_waiting(batch.len(), at_once, |k| {
+                let (i, job) = &batch[k];
+                let item = &items[*i].0;
+                let mut slot = slots[k].lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if slot.is_none() {
+                    *slot = Some(item.open()?);
+                }
+                let r = slot.as_mut().ok_or_else(|| bad("unreachable"))?;
+                match read(job, item, r) {
+                    // A signed URL whose token expired since the file was opened: open it again,
+                    // signed anew, and read once more.
+                    Err(Error::Http(_)) if item.sign => {
+                        *r = item.open()?;
+                        read(job, item, r)
+                    }
+                    result => result,
+                }
+            });
+            for ((i, _), slot) in batch.iter().zip(slots) {
+                self.items[*i].1 = slot.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
+                self.open.retain(|j| j != i);
+                if self.items[*i].1.is_some() {
+                    self.open.push_back(*i);
+                }
+            }
+            // Beyond the bound, the file read most recently before this batch closes: every window
+            // reads its items in the same order, so the earliest read are the next needed, and those
+            // kept open stay the same from window to window. Never below a batch.
+            while self.open.len() > self.max_open.max(at_once) {
+                let k = self.open.len() - batch.len() - 1;
+                if let Some(j) = self.open.remove(k) {
+                    self.items[j].1 = None;
+                }
+            }
+            for ((i, job), value) in batch.iter().zip(fetched?) {
+                draw(job, &self.items[*i].0, value)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The bytes of a decoded tile of an open item (a read decodes each tile it meets whole), for
+    /// every item: the items of a collection share a layout. `None` without an open tiled item,
+    /// whose items are then read one at a time.
+    fn tile_bytes(&self) -> Option<usize> {
+        self.items.iter().find_map(|(_, r)| {
+            let r = r.as_ref()?;
+            let (w, h) = r.block_size()?;
+            Some(w.saturating_mul(h).saturating_mul(r.band_count()).saturating_mul(r.data_type().size_bytes()))
+        })
+    }
+
+    /// The output buffer of `pixels` values of each of `bands` bands, in the mosaic's type,
+    /// filled with the nodata value (0 without one), once its bytes are known to fit.
+    fn output(&self, pixels: usize, bands: usize, what: &str) -> Result<(RasterData, usize)> {
+        let samples = crate::dataset::fallible::len(&[pixels, bands], what)?;
+        let output_bytes = crate::dataset::fallible::len(&[samples, self.data_type.size_bytes()], what)?;
+        crate::dataset::fallible::check_usable(Some(output_bytes), || format!("{what} buffers are too large to allocate"))
+            .map_err(Error::ResourceLimit)?;
+        Ok((crate::dataset::fallible::raster_data(self.data_type, samples, self.nodata.unwrap_or(0.0), what)?, output_bytes))
+    }
 }
 
 impl WindowSource for Mosaic {
@@ -1592,93 +1759,156 @@ impl WindowSource for Mosaic {
     fn read(&mut self, _level: usize, w: Window, bands: &[usize]) -> Result<RasterData> {
         let (dw, dh) = (w.width, w.height);
         let gt = self.geo_transform;
-        let (rx, ry) = (gt[1], -gt[5]);
         let what = "a STAC mosaic window";
         let pixels = crate::dataset::fallible::len(&[dw, dh], what)?;
-        let samples = crate::dataset::fallible::len(&[pixels, bands.len()], what)?;
-        let output_bytes = crate::dataset::fallible::len(&[samples, std::mem::size_of::<f64>()], what)?;
-        let conversion_bytes = if self.data_type == DataType::F64 { Some(0) } else { samples.checked_mul(self.data_type.size_bytes()) };
-        crate::dataset::fallible::check_usable(conversion_bytes.and_then(|bytes| bytes.checked_add(output_bytes)), || {
-            format!("{what} conversion buffers are too large to allocate")
-        })
-        .map_err(Error::ResourceLimit)?;
-        let mut out = crate::dataset::fallible::filled(samples, self.nodata.unwrap_or(0.0), what)?;
+        let (mut out, output_bytes) = self.output(pixels, bands.len(), what)?;
         if pixels == 0 || bands.is_empty() {
-            return Ok(RasterData::from_f64_vec(self.data_type, out));
+            return Ok(out);
         }
-        for (item, raster) in &mut self.items {
-            let [xmin, ymin, xmax, ymax] = item.bounds;
-            let (dxo, dxs) = ((xmin - gt[0]) / rx, (xmax - xmin) / rx);
-            let (dyo, dys) = ((gt[3] - ymax) / ry, (ymax - ymin) / ry);
-            let (x0, x1) = (dxo.max(w.x as f64), (dxo + dxs).min((w.x + dw) as f64));
-            let (y0, y1) = (dyo.max(w.y as f64), (dyo + dys).min((w.y + dh) as f64));
-            if x1 <= x0 || y1 <= y0 {
-                continue;
+        let jobs: Vec<(usize, Cover)> =
+            self.items.iter().enumerate().filter_map(|(i, (item, _))| cover(item, gt, w).map(|c| (i, c))).collect();
+        // Counted at Float64 and the largest window, as no item's type is known before its file is
+        // opened, and with a decoded tile (see `Mosaic::tile_bytes`).
+        let validity = usize::from(self.nodata.is_some());
+        let window = jobs
+            .iter()
+            .map(|(_, c)| c.src.width.saturating_mul(c.src.height).saturating_mul(bands.len() * std::mem::size_of::<f64>() + validity))
+            .max()
+            .unwrap_or(0);
+        let at_once = match self.tile_bytes() {
+            Some(tile) => batch_size(window.saturating_add(tile), output_bytes, crate::dataset::fallible::usable_memory(), self.at_once),
+            None => 1,
+        };
+        let nodata = self.nodata;
+        let read = |c: &Cover, item: &AssetItem, r: &mut LazyRaster| {
+            let src = c.src;
+            if src.x + src.width > r.width() || src.y + src.height > r.height() {
+                return Err(smaller_than_declared(item, r));
             }
-            let (scx, scy) = (item.width as f64 / dxs, item.height as f64 / dys);
-            let clamp = |v: f64, max: usize| (v.max(0.0) as usize).min(max);
-            let sx0 = clamp(((x0 - dxo) * scx).floor() - 1.0, item.width);
-            let sx1 = clamp(((x1 - dxo) * scx).ceil() + 1.0, item.width);
-            let sy0 = clamp(((y0 - dyo) * scy).floor() - 1.0, item.height);
-            let sy1 = clamp(((y1 - dyo) * scy).ceil() + 1.0, item.height);
-            if sx1 <= sx0 || sy1 <= sy0 {
-                continue;
-            }
-            if raster.is_none() {
-                *raster = Some(item.open()?);
-            }
-            let r = raster.as_mut().ok_or_else(|| bad("unreachable"))?;
-            let (sw, sh) = (sx1 - sx0, sy1 - sy0);
-            if sx1 > r.width() || sy1 > r.height() {
-                return Err(bad(format!(
-                    "{} is {}x{}, smaller than its STAC metadata says",
-                    crate::vsi::redact_diagnostic_location(&item.href),
-                    r.width(),
-                    r.height()
-                )));
-            }
-            let source_bytes = [sw, sh, bands.len(), r.data_type().size_bytes()].iter().try_fold(1usize, |n, &size| n.checked_mul(size));
-            let validity_bytes = if self.nodata.is_some() { sw.checked_mul(sh) } else { Some(0) };
+            let source_bytes =
+                [src.width, src.height, bands.len(), r.data_type().size_bytes()].iter().try_fold(1usize, |n, &size| n.checked_mul(size));
+            let validity_bytes = if nodata.is_some() { src.width.checked_mul(src.height) } else { Some(0) };
             let peak = source_bytes
                 .and_then(|bytes| bytes.checked_add(output_bytes))
                 .and_then(|bytes| validity_bytes.and_then(|mask| bytes.checked_add(mask)));
             crate::dataset::fallible::check_usable(peak, || format!("{what} source buffers are too large to allocate"))
                 .map_err(Error::ResourceLimit)?;
-            let (window, options) = (Window::new(sx0, sy0, sw, sh), WindowOptions { bands: bands.to_vec(), overview: None });
-            let sub = match r.read_window(window, &options) {
-                // A signed URL whose token expired since the file was opened: open it again,
-                // signed anew, and read once more.
-                Err(Error::Http(_)) if item.sign => {
-                    *r = item.open()?;
-                    r.read_window(window, &options)?
-                }
-                result => result?,
-            };
+            r.read_window(src, &WindowOptions { bands: bands.to_vec(), overview: None })
+        };
+        let draw = |c: &Cover, item: &AssetItem, sub: RasterDataset| {
+            let (sw, sh) = (c.src.width, c.src.height);
             let source_bytes = crate::dataset::fallible::len(&[sub.raster.data.len(), sub.raster.data_type.size_bytes()], what)?;
-            for (bi, buf) in out.chunks_mut(pixels).enumerate() {
+            crate::pixel::with_data!(&mut out, out => for (bi, buf) in out.chunks_mut(pixels).enumerate() {
                 let values = crate::ops::BandView::of(&sub.raster, bi);
                 let retained = output_bytes
                     .checked_sub(std::mem::size_of_val(buf))
                     .and_then(|bytes| bytes.checked_add(source_bytes.saturating_sub(values.byte_len())))
                     .ok_or_else(|| Error::ResourceLimit(format!("{what} retained buffers exceed the address space")))?;
-                let valid: Option<Vec<bool>> = self.nodata.map(|nd| values.valid(nd));
+                let valid: Option<Vec<bool>> = nodata.map(|nd| values.valid(nd));
                 let req = SourceRead {
                     values,
                     valid: valid.as_deref(),
                     width: sw,
                     height: sh,
                     src_type: sub.raster.data_type,
-                    src_rect: [-(sx0 as f64), -(sy0 as f64), item.width as f64, item.height as f64],
-                    dst_rect: [dxo - w.x as f64, dyo - w.y as f64, dxs, dys],
+                    src_rect: [-(c.src.x as f64), -(c.src.y as f64), item.width as f64, item.height as f64],
+                    dst_rect: c.dst_rect,
                     resampling: crate::ops::Resampling::Nearest,
-                    working_float: self.nodata.is_some(),
+                    working_float: nodata.is_some(),
                     invalid_value: None,
                     within_rects: false,
                 };
-                req.read_with_retained(dw, dh, buf, retained, |v| v)?;
-            }
+                // As the values were read into Float64 and cast to the mosaic's type.
+                req.read_with_retained(dw, dh, buf, retained, |v| v as _)?;
+            });
+            Ok(())
+        };
+        self.read_items(&jobs, at_once, read, draw)?;
+        Ok(out)
+    }
+
+    /// As GDAL's STACIT mosaic (a virtual dataset of a source per item) reads a window into a
+    /// smaller or larger buffer: each item read for its part of the buffer
+    /// (`VRTSimpleSource::GetSrcDstWindow()`), from the overview it chooses, and drawn over the
+    /// earlier ones except where it holds the nodata value (`VRTComplexSource`). Reference: GDAL 3.13.3.
+    fn read_resampled(&mut self, o: &crate::ResampledReadOptions) -> Result<Option<RasterData>> {
+        let Some(request) = o.window else {
+            return Ok(None);
+        };
+        let (bw, bh) = o.size;
+        let bands = &o.bands;
+        let gt = self.geo_transform;
+        let (rx, ry) = (gt[1], -gt[5]);
+        let what = "a resampled STAC mosaic window";
+        let pixels = crate::dataset::fallible::len(&[bw, bh], what)?;
+        let (mut out, output_bytes) = self.output(pixels, bands.len(), what)?;
+        if pixels == 0 || bands.is_empty() {
+            return Ok(Some(out));
         }
-        Ok(RasterData::from_f64_vec(self.data_type, out))
+        let nearest = o.resampling == crate::ops::Resampling::Nearest;
+        let jobs: Vec<(usize, crate::ops::vrt::Window)> = self
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (item, _))| {
+                let [xmin, ymin, xmax, ymax] = item.bounds;
+                let dst = [(xmin - gt[0]) / rx, (gt[3] - ymax) / ry, (xmax - xmin) / rx, (ymax - ymin) / ry];
+                let src = [0.0, 0.0, item.width as f64, item.height as f64];
+                crate::ops::vrt::src_dst_window(src, dst, (item.width, item.height), nearest, request, (bw, bh)).map(|win| (i, win))
+            })
+            .collect();
+        // An item's output, the source it reads it from (at most a strip when it has no overview to
+        // read), and a decoded tile (see `Mosaic::tile_bytes`).
+        let sample = bands.len() * std::mem::size_of::<f64>();
+        let per_item = jobs
+            .iter()
+            .map(|(_, win)| {
+                let source = win.req_size.0.saturating_mul(win.req_size.1).saturating_mul(sample);
+                win.out_size
+                    .0
+                    .saturating_mul(win.out_size.1)
+                    .saturating_mul(sample)
+                    .saturating_add(source.min(crate::resampled_read::STRIP_BYTES))
+            })
+            .max()
+            .unwrap_or(0);
+        let at_once = match self.tile_bytes() {
+            Some(tile) => batch_size(per_item.saturating_add(tile), output_bytes, crate::dataset::fallible::usable_memory(), self.at_once),
+            None => 1,
+        };
+        let read = |win: &crate::ops::vrt::Window, item: &AssetItem, r: &mut LazyRaster| {
+            if item.width > r.width() || item.height > r.height() {
+                return Err(smaller_than_declared(item, r));
+            }
+            let options = crate::ResampledReadOptions {
+                bands: bands.clone(),
+                window: Some((win.dreq_off.0, win.dreq_off.1, win.dreq_size.0, win.dreq_size.1)),
+                size: win.out_size,
+                resampling: o.resampling,
+                overview: crate::ops::overview::OverviewSelection::Auto,
+            };
+            let window = (win.req_off.0, win.req_off.1, win.req_size.0, win.req_size.1);
+            r.read_resampled_by_band_in(&options, Some(window))
+        };
+        let nodata = self.nodata;
+        let draw = |win: &crate::ops::vrt::Window, _: &AssetItem, sub: RasterDataset| {
+            let ((ox, oy), (ow, oh)) = (win.out_off, win.out_size);
+            crate::pixel::with_data!(&mut out, out => for (bi, buf) in out.chunks_mut(pixels).enumerate() {
+                let values = crate::ops::BandView::of(&sub.raster, bi);
+                for r in 0..oh {
+                    let line = &mut buf[(oy + r) * bw + ox..][..ow];
+                    for (c, v) in line.iter_mut().enumerate() {
+                        let value = values.get(r * ow + c);
+                        if nodata.is_none_or(|nd| !crate::ops::is_nodata(value, nd)) {
+                            *v = value as _;
+                        }
+                    }
+                }
+            });
+            Ok(())
+        };
+        self.read_items(&jobs, at_once, read, draw)?;
+        Ok(Some(out))
     }
 }
 
@@ -1764,7 +1994,10 @@ fn open_mosaic(source: &str, groups: Groups, resolution: Option<&str>, kept: &st
     if let Some(slot) = items.iter_mut().find(|(i, _)| i.href == first_href) {
         slot.1 = Some(first);
     }
-    let mosaic = Mosaic { items, geo_transform: [xmin, rx, 0.0, ymax, 0.0, -ry], data_type, nodata };
+    let at_once = items_at_once(items.iter().map(|(i, _)| i.href.as_str()));
+    let open = items.iter().position(|(_, r)| r.is_some()).into_iter().collect();
+    let geo_transform = [xmin, rx, 0.0, ymax, 0.0, -ry];
+    let mosaic = Mosaic { items, at_once, open, max_open: max_open_items(), geo_transform, data_type, nodata };
     Ok(LazyRaster::from_source(header, Box::new(mosaic)))
 }
 
@@ -2146,10 +2379,111 @@ mod tests {
 
     #[test]
     fn mosaic_windows_refuse_unrepresentable_working_buffers() {
-        let mut mosaic =
-            Mosaic { items: Vec::new(), geo_transform: [0.0, 1.0, 0.0, 0.0, 0.0, -1.0], data_type: DataType::U8, nodata: None };
+        let mut mosaic = Mosaic {
+            items: Vec::new(),
+            at_once: 1,
+            open: Default::default(),
+            max_open: 1,
+            geo_transform: [0.0, 1.0, 0.0, 0.0, 0.0, -1.0],
+            data_type: DataType::U8,
+            nodata: None,
+        };
         let result = mosaic.read(0, Window::new(0, 0, usize::MAX, 2), &[1]);
         assert!(result.is_err_and(|error| error.is_resource_refusal()));
+    }
+
+    /// Items are read several at a time only when all are remote, and as many as fit in half of
+    /// the usable memory.
+    #[test]
+    fn mosaic_items_read_at_once_when_remote_and_within_memory() {
+        let local = std::env::temp_dir().join("a.tif").to_string_lossy().into_owned();
+        let zipped = format!("/vsizip/{}/a.tif", std::env::temp_dir().join("a.zip").display());
+        let remote = "https://example.com/a.tif";
+        assert_eq!(
+            items_at_once([remote, "s3://bucket/a.tif", "/vsizip//vsicurl/https://example.com/a.zip/a.tif"].into_iter()),
+            REMOTE_AT_ONCE
+        );
+        assert_eq!(items_at_once([local.as_str()].into_iter()), 1);
+        assert_eq!(items_at_once([zipped.as_str()].into_iter()), 1);
+        assert_eq!(items_at_once([remote, local.as_str()].into_iter()), 1);
+        // 100 MiB windows beside a 10 MiB output: 5 fit in half of 1 GiB, 1 in half of 300 MiB, and
+        // at least 1 always.
+        let mib = 1 << 20;
+        assert_eq!(batch_size(100 * mib, 10 * mib, Some(1 << 30), 8), 5);
+        assert_eq!(batch_size(100 * mib, 10 * mib, Some(300 << 20), 8), 1);
+        assert_eq!(batch_size(100 * mib, 10 * mib, Some(10 << 20), 8), 1);
+        assert_eq!(batch_size(mib, 0, None, 8), 8);
+    }
+
+    /// Items read several at a time are drawn in datetime order, as one at a time: a later item
+    /// over an earlier one, except where it has nodata.
+    #[test]
+    fn mosaic_items_read_at_once_are_drawn_in_datetime_order() {
+        let dir = tempfile::tempdir().unwrap();
+        // Four 8 x 4 UInt16 tiles 20 m apart, each `base + column` with nodata (0) in column `hole`.
+        let mut items = Vec::new();
+        for (k, (base, hole)) in [(100, 7), (200, 2), (300, 5), (400, 1)].into_iter().enumerate() {
+            let x0 = 500000.0 + 20.0 * k as f64;
+            let cfg = wbraster::RasterConfig {
+                cols: 8,
+                rows: 4,
+                bands: 1,
+                x_min: x0,
+                y_min: 4399960.0,
+                cell_size: 10.0,
+                nodata: 0.0,
+                data_type: DataType::U16,
+                crs: wbraster::CrsInfo::from_epsg(32613),
+                ..Default::default()
+            };
+            let values = (0..32).map(|i| if i % 8 == hole { 0.0 } else { (base + i % 8) as f64 }).collect();
+            let raster = wbraster::Raster::from_data_native(cfg, RasterData::from_f64_vec(DataType::U16, values)).unwrap();
+            let path = dir.path().join(format!("{k}.tif")).to_string_lossy().into_owned();
+            crate::write_raster_dataset(&RasterDataset::new(raster, true), &path, &Default::default()).unwrap();
+            let item = json!({
+                "type": "Feature", "stac_version": "1.0.0", "id": k.to_string(), "stac_extensions": ["proj"],
+                // Newest first, as STAC APIs sort them.
+                "properties": {"datetime": format!("2023-07-0{}T00:00:00Z", 9 - k), "proj:epsg": 32613,
+                               "proj:shape": [4, 8], "proj:transform": [10.0, 0.0, x0, 0.0, -10.0, 4400000.0]},
+                "assets": {"data": {"href": path}},
+            });
+            items.push((item, dir.path().join("items.json").to_string_lossy().into_owned()));
+        }
+        let groups = group_assets(&items, &Filters::default());
+        let (_, mut assets) = groups.into_iter().next().unwrap();
+        let (_, group) = assets.pop_first().unwrap();
+        let (_, mut sorted) = group.by_crs.into_iter().next().unwrap();
+        sorted.sort_by(|a, b| a.datetime.cmp(&b.datetime));
+        let read_kept_open = |at_once: usize, max_open: usize| {
+            // The first item open, as `open_mosaic` leaves it: its tiles size the batches.
+            let items = sorted.iter().enumerate().map(|(k, i)| (i.clone(), (k == 0).then(|| i.open().unwrap()))).collect();
+            let gt = [500000.0, 10.0, 0.0, 4400000.0, 0.0, -10.0];
+            let open = Default::default();
+            let mut m = Mosaic { items, at_once, open, max_open, geo_transform: gt, data_type: DataType::U16, nodata: Some(0.0) };
+            let v = m.read(0, Window::new(0, 0, 14, 4), &[1]).unwrap().to_f64_vec();
+            // Twice: the second read reopens what the first closed.
+            assert_eq!(m.read(0, Window::new(0, 0, 14, 4), &[1]).unwrap().to_f64_vec(), v);
+            let open = m.items.iter().filter(|(_, r)| r.is_some()).count();
+            assert_eq!(open, max_open.max(at_once).min(4), "{at_once} at once, {max_open} kept open");
+            v
+        };
+        let read = |at_once: usize| read_kept_open(at_once, 100);
+        // The bound from the process's limit: a quarter of the soft one, 64 when unknown.
+        let limits = "Max open files            1024                 524288               files\n";
+        assert_eq!(open_items_within(limits), 256);
+        assert_eq!(open_items_within("Max open files            40   40   files\n"), 16);
+        assert_eq!(open_items_within("Max open files            unlimited   unlimited   files\n"), usize::MAX);
+        assert_eq!(open_items_within(""), 64);
+        let one = read(1);
+        // The newest item (0) on top, but for its nodata column 7, where item 1 shows through; the
+        // oldest (3) only where no other item reaches.
+        let row: Vec<f64> = one[14..28].to_vec();
+        assert_eq!(row, [100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0, 205.0, 206.0, 207.0, 306.0, 307.0, 406.0, 407.0]);
+        assert_eq!(read(3), one);
+        assert_eq!(read(8), one);
+        // Fewer files kept open than items: the least recently read close, and the mosaic is the same.
+        assert_eq!(read_kept_open(1, 2), one);
+        assert_eq!(read_kept_open(3, 2), one);
     }
 
     /// Cached native clients retain credentials; changing current configuration cannot revoke
