@@ -1777,7 +1777,7 @@ impl WindowSource for Mosaic {
     /// As GDAL's STACIT mosaic (a virtual dataset of a source per item) reads a window into a
     /// smaller or larger buffer: each item read for its part of the buffer
     /// (`VRTSimpleSource::GetSrcDstWindow()`), from the overview it chooses, and drawn over the
-    /// earlier ones but where it holds the nodata value (`VRTComplexSource`).
+    /// earlier ones but where it holds the nodata value (`VRTComplexSource`). Reference: GDAL 3.13.3.
     fn read_resampled(&mut self, o: &crate::ResampledReadOptions) -> Result<Option<RasterData>> {
         let Some(request) = o.window else {
             return Ok(None);
@@ -1843,7 +1843,7 @@ impl WindowSource for Mosaic {
                     let line = &mut buf[(oy + r) * bw + ox..][..ow];
                     for (c, v) in line.iter_mut().enumerate() {
                         let value = values.get(r * ow + c);
-                        if nodata.is_none_or(|nd| !(value == nd || (nd.is_nan() && value.is_nan()))) {
+                        if nodata.is_none_or(|nd| !crate::ops::is_nodata(value, nd)) {
                             *v = value as _;
                         }
                     }

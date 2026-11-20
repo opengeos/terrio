@@ -360,7 +360,7 @@ pub(crate) trait WindowSource: Send + Sync {
     /// Reads a window of some bands resampled to another size (from overviews `RasterIO`
     /// chooses), as GDAL reads a virtual dataset of several sources: each source read for its
     /// part of the output, from the overview it chooses itself. `None` for a source without such
-    /// a read, whose levels [`LazyRaster::read_resampled`] resamples.
+    /// a read, whose levels [`LazyRaster::read_resampled`] resamples. Reference: GDAL 3.13.3.
     fn read_resampled(&mut self, _options: &crate::ResampledReadOptions) -> Result<Option<RasterData>> {
         Ok(None)
     }
