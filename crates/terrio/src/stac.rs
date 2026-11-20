@@ -1808,9 +1808,19 @@ impl WindowSource for Mosaic {
                 crate::ops::vrt::src_dst_window(src, dst, (item.width, item.height), nearest, request, (bw, bh)).map(|win| (i, win))
             })
             .collect();
+        // An item's output, and the source it reads it from: at most a strip when it has no
+        // overview to read.
+        let sample = bands.len() * std::mem::size_of::<f64>();
         let per_item = jobs
             .iter()
-            .map(|(_, win)| win.out_size.0.saturating_mul(win.out_size.1).saturating_mul(bands.len() * std::mem::size_of::<f64>()))
+            .map(|(_, win)| {
+                let source = win.req_size.0.saturating_mul(win.req_size.1).saturating_mul(sample);
+                win.out_size
+                    .0
+                    .saturating_mul(win.out_size.1)
+                    .saturating_mul(sample)
+                    .saturating_add(source.min(crate::resampled_read::STRIP_BYTES))
+            })
             .max()
             .unwrap_or(0);
         let at_once = batch_size(per_item, output_bytes, crate::dataset::fallible::usable_memory(), self.at_once);
@@ -1818,13 +1828,15 @@ impl WindowSource for Mosaic {
             if item.width > r.width() || item.height > r.height() {
                 return Err(smaller_than_declared(item, r));
             }
-            r.read_resampled_by_band(&crate::ResampledReadOptions {
+            let options = crate::ResampledReadOptions {
                 bands: bands.clone(),
                 window: Some((win.dreq_off.0, win.dreq_off.1, win.dreq_size.0, win.dreq_size.1)),
                 size: win.out_size,
                 resampling: o.resampling,
                 overview: crate::ops::overview::OverviewSelection::Auto,
-            })
+            };
+            let window = (win.req_off.0, win.req_off.1, win.req_size.0, win.req_size.1);
+            r.read_resampled_by_band_in(&options, Some(window))
         };
         let nodata = self.nodata;
         let draw = |win: &crate::ops::vrt::Window, _: &AssetItem, sub: RasterDataset| {

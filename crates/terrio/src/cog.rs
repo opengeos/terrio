@@ -2041,7 +2041,6 @@ impl LazyRaster {
         value
     }
 
-    /// A raster read by window by `source`, described by `header` (a dataset without pixels).
     /// [`WindowSource::read_resampled`] of a raster another driver reads; `None` for others.
     pub(crate) fn source_read_resampled(&mut self, options: &crate::ResampledReadOptions) -> Result<Option<RasterData>> {
         match &mut self.inner {
@@ -2050,6 +2049,7 @@ impl LazyRaster {
         }
     }
 
+    /// A raster read by window by `source`, described by `header` (a dataset without pixels).
     pub(crate) fn from_source(header: RasterDataset, source: Box<dyn WindowSource>) -> Self {
         Self { inner: Inner::Source(Arc::new(header), source), sidecar_mask: None, asset_policy: crate::stac::AssetReadPolicy::current() }
     }

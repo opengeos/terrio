@@ -166,6 +166,11 @@ fn stacit_reduced_reads_take_the_items_overviews() {
     let half = r.read_resampled(&terrio::ResampledReadOptions { size: (12, 4), ..Default::default() }).unwrap();
     let row: Vec<f64> = (0..12).map(|c| half.raster.get(0, 1, c)).collect();
     assert_eq!(row, [115.0, 115.0, 115.0, 115.0, 115.0, 115.0, 215.0, 215.0, 215.0, 215.0, 215.0, 215.0]);
+    // A window of 3.5 x 4 pixels is given to the item as 4 x 4, which takes the overview into 2 x 2;
+    // truncated to 3 x 4, it would sample full resolution (120).
+    let window = Some((0.0, 0.0, 3.5, 4.0));
+    let part = r.read_resampled(&terrio::ResampledReadOptions { window, size: (2, 2), ..Default::default() }).unwrap();
+    assert_eq!(part.raster.get(0, 0, 0), 115.0);
 }
 
 #[test]

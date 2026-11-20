@@ -168,7 +168,7 @@ struct Read {
 
 /// The source read into memory at once, at most: kernels resample rows of blocks of the buffer
 /// from strips of the source of about this size.
-const STRIP_BYTES: usize = 64 << 20;
+pub(crate) const STRIP_BYTES: usize = 64 << 20;
 
 /// The rows a source without blocks (a raster in memory) is sampled by nearest neighbour in.
 const SAMPLE_ROWS: usize = 256;
@@ -280,8 +280,21 @@ impl LazyRaster {
     /// GDAL's virtual datasets read bands that are not the dataset's first ones in order: never
     /// resampled together.
     pub(crate) fn read_resampled_by_band(&mut self, options: &ResampledReadOptions) -> Result<RasterDataset> {
+        self.read_resampled_by_band_in(options, None)
+    }
+
+    /// [`LazyRaster::read_resampled_by_band`] given also the integer window, which chooses the
+    /// overview, as a virtual dataset's source is given both (`VRTSimpleSource::RasterIO()`).
+    pub(crate) fn read_resampled_by_band_in(
+        &mut self,
+        options: &ResampledReadOptions,
+        window: Option<(usize, usize, usize, usize)>,
+    ) -> Result<RasterDataset> {
         let _scope = self.enter_asset_read()?;
-        let read = self.check_resampled(options, true)?;
+        let mut read = self.check_resampled(options, true)?;
+        if let Some(window) = window {
+            read.full.window = window;
+        }
         let kinds = self.mask_kinds(&read.bands);
         let n = read.buf.0 * read.buf.1;
         let mut data: Option<RasterData> = None;
