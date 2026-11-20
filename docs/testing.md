@@ -1873,7 +1873,11 @@ WKT 1 CRS's PROJ string the same input as the WKT 1 reader reads from its tree
 (`model::wkt1_input` against `wkt1::Wkt1Input::read`). It covers every WKT 1
 text of the corpus, and malformed and unusual input the corpus lacks: refusals,
 grads and Paris, ESRI's compound CRS, a geocentric CRS, parameters without a name
-or a number. It is removed once the reader takes its input from the model.
+or a number. It does the same for WKT 2 geographic, geocentric and projected CRSs
+(`model::wkt2_input` against `wkt2::Wkt2Input::read`), over every such WKT 2 text of
+the corpus and unusual input: refusals, planetary and polar axes, geocentric CSs,
+PROJ's own methods. It is removed once the readers take their input from the
+model.
 
 ## PROJJSON parsing (#270)
 
