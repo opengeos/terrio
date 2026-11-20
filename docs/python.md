@@ -1072,9 +1072,11 @@ samples, whatever width and bands the window returns. Uncompressed, Deflate, LZW
 and PackBits strips of the sample layouts [Rasters](formats.md#rasters) lists are read so,
 decoded from the start of the strip to the window's last row. A nearest-neighbour
 `read_resampled` (or `terrio.rio`'s `read(out_shape=...)`) smaller than the image reads the
-rows it samples the same way, a row at a time. Reading the whole strip is still refused. The
-limit bounds what these reads hold, not the time they take, which grows with the rows decoded
-before the window (see [Rasters](formats.md#rasters)).
+rows it samples the same way, a row at a time. Reading the whole strip is still refused, and
+so is reading a compressed strip that declares more than four times the limit (1 GiB by
+default), which bounds the decoding a read does; an uncompressed strip is read by rows
+whatever its size. For files you do not trust, `TERRIO_MAX_DECLARED_BYTES` (below) bounds
+them further (see [Rasters](formats.md#rasters)).
 
 A GeoTIFF read whole or by window (`terrio.open_raster`, `Raster.read`, `terrio.rio`'s `read`)
 raises `ResourceLimitError` before its buffer is allocated when the process cannot hold it (more

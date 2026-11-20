@@ -2949,8 +2949,9 @@ impl TiffRaster {
         // limit: the limit then bounds what the read holds, not what the strip declares.
         // Uncompressed rows are read at their offsets in the file; a compressed strip is decoded
         // from its start to the window's last row, the rows before the window dropped as they
-        // are decoded ([`crate::tiff_strip_rows`]). Only for a strip the file holds whole, and
-        // whose stored bytes hold its rows (or can decode to them); any other is decoded whole,
+        // are decoded ([`crate::tiff_strip_rows`]). Only for a strip the file holds whole, whose
+        // stored bytes hold its rows (or can decode to them), and, compressed, that declares at
+        // most four times the limit, which bounds what a read decodes; any other is decoded whole,
         // and refused, as any chunk.
         if !self.complex && dec.get_chunk_type() == tiff::decoder::ChunkType::Strip {
             let limit = self.limits.chunk_bytes as u64;
@@ -2975,7 +2976,7 @@ impl TiffRaster {
                 for &idx in &misses {
                     let Some(((first, rows, height, _), stored)) = wanted(idx, row_bytes)
                         .zip(tables.get(idx as usize))
-                        .filter(|((.., strip), stored)| how.holds(*stored, *strip, self.file_len))
+                        .filter(|((.., strip), stored)| how.holds(*stored, *strip, self.file_len, limit))
                     else {
                         whole.push(idx);
                         continue;
@@ -3172,7 +3173,7 @@ impl TiffRaster {
                 let strip = (height as u64).saturating_mul(row_bytes as u64);
                 match tables.get(plane * per_plane + s) {
                     Some((_, 0)) => {}
-                    Some(stored) if how.holds(stored, strip, self.file_len) => over |= strip > limit,
+                    Some(stored) if how.holds(stored, strip, self.file_len, limit) => over |= strip > limit,
                     _ => return Ok(None),
                 }
             }
