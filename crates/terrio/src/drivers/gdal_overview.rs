@@ -633,8 +633,16 @@ fn rows_in_pieces<V: Send, S: Clone + Sync, F: Fn(&mut S, usize, &mut [V], Optio
     } else {
         let mut flags = flags.map(|m| m.chunks_mut(per * width));
         let runs: Vec<_> = out.chunks_mut(per * width).map(|v| (v, flags.as_mut().and_then(Iterator::next))).collect();
+        #[cfg(test)]
+        RUNS.set(RUNS.get() + runs.len());
         crate::par::for_each_owned(runs, |k, (values, flags)| rows_from(k * per, values, flags, width, &scratch, &f));
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The runs [`rows_in_pieces`] has split rows into on this thread, for the tests.
+    static RUNS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// The rows of `values` (and of `flags`) from row `first`, for [`rows_in_pieces`]. Never inlined
@@ -2366,10 +2374,23 @@ mod tests {
     /// A row of a single block (a band one block wide: the first overview of a band 10,980 pixels
     /// wide is one block of 5,490 x 128) is split in two, so that the thread pool computes it;
     /// rows of several blocks, which the pool computes already, blocks under two pieces' pixels,
-    /// and a pool of one thread are not. Nothing else shows the split: the values are the same
-    /// either way (see the test above), only the time differs.
+    /// and a pool of one thread are not. The values are the same either way (see the test above),
+    /// so the split is shown by the runs `rows_in_pieces` records: through `block_row`, as the row
+    /// writer calls it, for each kernel (the convolution splits both its passes). That needs a pool
+    /// of several threads (`RAYON_NUM_THREADS`, else one a core); with one, nothing is split.
     #[test]
     fn a_row_of_a_single_block_is_split_in_two() {
+        // A level of 256 x 128 pixels: one block, of two pieces' pixels.
+        let (src, dst) = ((512, 256), (256, 128));
+        let data = RasterData::U16((0..src.0 * src.1).map(|i| (i * 7919 % 65521) as u16).collect());
+        let several = crate::par::threads() > 1;
+        for (method, passes) in [(Method::Nearest, 1), (Method::Average, 1), (Method::Bilinear, 2), (Method::Mode, 1), (Method::Gauss, 1)] {
+            let plan = Plan::new(method, src, dst, 1, 128, DataType::U16);
+            assert_eq!(plan.chunk.0, dst.0, "{method:?}: one block wide");
+            RUNS.set(0);
+            block_row(&plan, &data, 0, src.1, 1, None, Weights::default(), 0);
+            assert_eq!(RUNS.get(), if several { 2 * passes } else { 0 }, "{method:?}");
+        }
         assert_eq!(row_pieces(1, 5490 * 128, 16), 2);
         assert_eq!(row_pieces(1, 5490 * 128, 2), 2);
         assert_eq!(row_pieces(1, 2 * PIECE_PIXELS, 4), 2);
