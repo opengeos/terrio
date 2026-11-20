@@ -127,26 +127,25 @@ def _in_memory_limit() -> int:
         return _IN_MEMORY_LIMIT
 
 
-def _tile_rows_decoded_once(
-    source: DatasetReader, rows: int, unit: int = 1, itemsize: int = 1
-) -> int:
+def _tile_rows_decoded_once(source: DatasetReader, rows: int, itemsize: int = 1) -> int:
     """The rows of a slab of a copy's source, so that a JPEG 2000 source decodes each tile once.
 
     A JPEG 2000 read decodes every tile its window crosses and keeps none of them for the next
     read, where the block cache keeps a GeoTIFF's decoded blocks: a slab ending inside a row of
     tiles leaves the next slab to decode those tiles again. For a JPEG 2000 read by window,
-    `rows` is made a multiple of a whole row of its tiles (and of `unit`): rounded down when it
-    holds one, raised to one when that row's pixels hold no more bytes than the block cache
-    (`TERRIO_CACHEMAX`), the decoded blocks a GeoTIFF source keeps between reads, counted in the
-    source's type or the one the copy holds them in (`itemsize`), whichever is wider. `rows` is
-    kept otherwise, and when it holds the whole image already: one read decodes each tile once,
-    whatever blocks are reported, and a JPEG 2000 of one tile larger than 1024 pixels reports
-    1024-row blocks, parts of that tile, which rounding down would read in two passes.
+    `rows` is made a whole number of rows of its tiles: rounded down when it holds one, raised to
+    one when that row's pixels hold no more bytes than the block cache (`TERRIO_CACHEMAX`), the
+    decoded blocks a GeoTIFF source keeps between reads, counted in the source's type or the one
+    the copy holds them in (`itemsize`), whichever is wider. A slab is raised to one row of tiles,
+    never more, whatever the block cache's size, and need not be a multiple of the output's
+    blocks: the writers take rows in any number. `rows` is kept otherwise, and when it holds the
+    whole image already: one read decodes each tile once, whatever blocks are reported, and a
+    JPEG 2000 of one tile larger than 1024 pixels reports 1024-row blocks, parts of that tile,
+    which rounding down would read in two passes.
 
     Args:
         source: The dataset the slabs are read from.
-        rows: The rows of a slab otherwise, a multiple of `unit`.
-        unit: The rows the slabs are a multiple of: the output's block height.
+        rows: The rows of a slab otherwise.
         itemsize: The bytes of a value of the type the copy holds the rows in: the output's.
 
     Returns:
@@ -155,7 +154,7 @@ def _tile_rows_decoded_once(
     raster = getattr(source, "_raster", None)
     if getattr(raster, "driver", None) != "JP2" or rows >= source.height:
         return rows
-    whole = math.lcm(unit, *(shape[0] for shape in source.block_shapes))
+    whole = math.lcm(*(shape[0] for shape in source.block_shapes))
     if rows >= whole:
         return rows - rows % whole
     value_bytes = max(itemsize, *(np.dtype(t).itemsize for t in source.dtypes))
@@ -2756,8 +2755,8 @@ class DatasetWriter(DatasetReader):
     def _slabs(self, source: DatasetReader | None = None) -> Iterator[tuple[int, int]]:
         """Rows of blocks of about 16 MB, or whole rows of a JPEG 2000 source's tiles.
 
-        A copy from a JPEG 2000, which keeps none of the tiles it decodes, reads a whole row of
-        its tiles at a time, within the block cache's size rather than 16 MB
+        A copy from a JPEG 2000, which keeps none of the tiles it decodes, reads whole rows of its
+        tiles instead: one row at least, when that row fits in the block cache
         (`_tile_rows_decoded_once`).
 
         Args:
@@ -2772,7 +2771,7 @@ class DatasetWriter(DatasetReader):
         block = self.structure.block_shape[0] if self._structure is not None else 1
         n = max(block, n - n % max(block, 1))
         if source is not None:
-            n = _tile_rows_decoded_once(source, n, max(block, 1), itemsize)
+            n = _tile_rows_decoded_once(source, n, itemsize)
         for y in range(0, self.height, n):
             yield y, min(n, self.height - y)
 
@@ -3741,8 +3740,8 @@ class DatasetWriter(DatasetReader):
             # Read taller source blocks together within a 16 MiB slab budget (or one output
             # tile row), then feed the COG writer a tile row at a time. A whole-image strip
             # taller than a tile row is split in half or smaller. Small images can fit in one slab.
-            # A JPEG 2000, which keeps none of the tiles it decodes, is read instead a whole row
-            # of its tiles at a time, within the block cache's size rather than the 16 MiB budget
+            # A JPEG 2000, which keeps none of the tiles it decodes, is read in whole rows of its
+            # tiles instead: one row at least, when that row fits in the block cache
             # (`_tile_rows_decoded_once`).
             write_step = self.structure.block_shape[0] if cog and source is not None else 0
             step = write_step
@@ -3756,7 +3755,7 @@ class DatasetWriter(DatasetReader):
                         wanted = max(step, (self.height // 2 // step) * step)
                     step = min(wanted, budget_rows)
                 itemsize = np.dtype(self._buffer_dtype).itemsize
-                step = _tile_rows_decoded_once(source, step, write_step, itemsize)
+                step = _tile_rows_decoded_once(source, step, itemsize)
             slabs = (
                 ((y, min(step, self.height - y)) for y in range(0, self.height, step))
                 if step

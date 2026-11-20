@@ -440,28 +440,30 @@ def test_a_jpeg_2000_copy_counts_a_row_of_tiles_in_the_type_it_holds_it_in(
         assert np.array_equal(ds.read(), pixels.astype(dtype))
 
 
-def test_a_cog_copy_reads_a_jpeg_2000_of_one_tile_at_once(tmp_path, block_cache_size):
-    """A source block as tall as the image was read in two halves, each decoding the tile. It is
-    now read at once when the image's rows fit in the block cache (720,000 bytes here, in 1 MiB),
-    though 38,400 rows, a multiple of both tile heights, would not."""
-    terrio.set_block_cache_max(1 << 20)
+def test_a_cog_copy_reads_a_jpeg_2000_of_one_row_of_tiles_at_once(tmp_path, block_cache_size):
+    """A row of tiles taller than the image was read in two parts, each decoding every tile. It
+    is now read at once when the image's rows fit in the block cache (1,320,000 bytes here, in
+    1.5 MiB), though the 1024 rows of its tiles would not."""
+    terrio.set_block_cache_max(3 << 19)
     path = str(tmp_path / "one.jp2")
-    pixels = WIDE[0, :600, :600]
-    profile = dict(width=600, height=600, count=1, dtype="uint16", crs="EPSG:32611")
+    pixels = WIDE[0, :600, :1100]
+    profile = dict(width=1100, height=600, count=1, dtype="uint16", crs="EPSG:32611")
     with rio.open(path, "w", driver="JP2OpenJPEG", transform=T, **profile) as dst:
         dst.write(pixels, 1)
     src = Recording(path, tmp_path)
     with src:
-        assert src.block_shapes == [(600, 600)]
+        assert src.block_shapes == [(1024, 1024)]
         rio_shutil.copy(src, str(tmp_path / "out.tif"), driver="COG", compress="deflate")
     assert src.windows == [(0, 600)]
     with rio.open(tmp_path / "out.tif") as ds:
         assert np.array_equal(ds.read(1), pixels)
 
 
-def test_a_cog_copy_reads_rows_of_384_row_jpeg_2000_tiles_three_at_a_time(tmp_path):
-    """Rows of 384-row tiles, which the COG's 512-row tiles split, are read three at a time
-    (1,536 rows): read 512 rows at a time, two rows of tiles in three were decoded twice."""
+def test_a_cog_copy_reads_384_row_jpeg_2000_tiles_a_row_of_tiles_at_a_time(tmp_path):
+    """Rows of 384-row tiles, which the COG's 512-row tiles cut, are read one at a time, not in
+    rows of both tile heights (1,536): the writer takes rows in any number, and the file is the
+    one written whole from the pixels held. Read 512 rows at a time, two rows of tiles in three
+    were decoded twice."""
     rasterio = pytest.importorskip("rasterio")
     path = str(tmp_path / "tiles.jp2")
     pixels = WIDE[0, :1000, :1300]
@@ -474,7 +476,11 @@ def test_a_cog_copy_reads_rows_of_384_row_jpeg_2000_tiles_three_at_a_time(tmp_pa
     with src:
         assert src.block_shapes == [(384, 640)]
         rio_shutil.copy(src, str(tmp_path / "out.tif"), driver="COG", compress="deflate")
-    assert src.windows == [(0, 1536), (1536, 464)]
+    assert src.windows == [(y, min(384, 2000 - y)) for y in range(0, 2000, 384)]
+    held = str(tmp_path / "held.tif")
+    with rio.open(path) as ds:
+        rio_shutil._copy_dataset(ds, held, "COG", {"compress": "deflate"}, from_source=False)
+    assert filecmp.cmp(str(tmp_path / "out.tif"), held, shallow=False)
     with rio.open(tmp_path / "out.tif") as ds:
         assert np.array_equal(ds.read(1), pixels)
 
