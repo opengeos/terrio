@@ -1228,6 +1228,9 @@ fn a_lazy_grib1_open_holds_one_message_read_whole_at_a_time() {
     let bytes = grib1_file(200, 100, 64);
     std::fs::write(&path, &bytes).unwrap();
     let len = bytes.len();
+    // A first open builds terrio's one-time state, the GRIB1 parameter tables among it (megabytes
+    // the process keeps): the second is measured.
+    drop(terrio::LazyRaster::open(path.to_str().unwrap()).unwrap());
     let (opened, peak) = peak_during(|| terrio::LazyRaster::open(path.to_str().unwrap()));
     let opened = opened.unwrap();
     // The nodata of a message whose values hold 9999 and more, worked out from them.
