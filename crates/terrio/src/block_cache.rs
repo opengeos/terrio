@@ -39,11 +39,12 @@
 //!
 //! The bands of a local GRIB file are keyed by the version of the file their readers read, so that
 //! the readers open at once of one version (a dataset and the readers Python opens to read it from
-//! several threads, or the same file opened twice) decode a band once: on Unix, the version is the
-//! file's device, inode, size and modification and change times, and how its values are decoded
-//! (`GRIB_NORMALIZE_UNITS`); elsewhere each reader keeps its own. A version's bands are dropped when
-//! its last reader is closed, and a file changed or replaced since is another version, whose
-//! readers never see them.
+//! several threads, or the same file opened twice) read the rows of a band that one of them decoded
+//! from the cache, rather than decode the band again (readers that miss it at the same time each
+//! decode it): on Unix, the version is the file's device, inode, size and modification and change
+//! times, and how its values are decoded (`GRIB_NORMALIZE_UNITS`); elsewhere each reader keeps its
+//! own. A version's bands are dropped when its last reader is closed, and a file changed or
+//! replaced since is another version, whose readers never see them.
 //!
 //! ```no_run
 //! use terrio::{Window, WindowOptions};

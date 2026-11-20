@@ -394,16 +394,18 @@ process-wide, as GDAL's block cache keeps the blocks it decodes. A window read a
 the chunks no longer in the cache: the least recently used are dropped first when the cache is
 full, a chunk larger than the cache is never kept, and a size of 0 keeps none.
 
-Lazy GRIB reads keep the bands they decode in the same cache, which a read shares equally among the
-bands it asks for. Of each band it decodes, a read keeps the rows it needs and as many of those
-after them (then before them) as its share holds, as decoded and in one piece: the whole band when
-its Float64 values (8 bytes a point) fit. A band is decoded once for any number of window reads
-while the cache holds the rows they need. Read window by window, a band larger than its share is
-decoded again whenever the windows reach rows the cache no longer holds. This happens only when the
-Float64 values of a band, or of the bands one read asks for together, exceed `TERRIO_CACHEMAX`. With
-the default 64 MiB, a 7200 x 3601 field (198 MiB as Float64) read as 512 x 512 windows is decoded 4
-times in rows of windows and 60 times in columns, and the four 3600 x 1801 fields (50 MiB each) of a
-file read together, 16 and 128 times; read one after the other, each is decoded once. A
+Lazy GRIB reads keep the bands they decode in the same cache, where they and the chunks of other
+files make room for one another, the least recently used first, whatever their format. A read shares
+the cache equally among the bands it asks for. Of each band it decodes, a read keeps the rows it
+needs and as many of those after them (then before them) as its share holds, as decoded and in one
+piece: the whole band when its Float64 values (8 bytes a point), with the small overhead the cache
+counts for each chunk, fit. A later read of rows the cache still holds decodes nothing; a read of
+rows it no longer holds decodes the band again. That happens to any band once later reads have taken
+its place in the cache, and, read window by window, to a band whose Float64 values, or those of the
+bands one read asks for together, exceed `TERRIO_CACHEMAX`. With the default 64 MiB, a 7200 x 3601
+field (198 MiB as Float64) read as 512 x 512 windows is decoded 4 times in rows of windows and 60
+times in columns, and the four 3600 x 1801 fields (50 MiB each) of a file read together, 16 and 128
+times; read one after the other, with nothing else read meanwhile, each is decoded once. A
 `TERRIO_CACHEMAX` larger than those values keeps them whole.
 
 | Variable | GDAL equivalent | Default |
