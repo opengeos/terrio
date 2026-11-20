@@ -1265,8 +1265,8 @@ Refused rather than written wrongly: dynamic CRSs (their frame epochs; by EPSG c
 EPSG method (`+proj=robin`), engineering CRSs, projections on an auxiliary sphere of an
 ellipsoid (`+R_C`, `+R_A`; 19 IAU_2015 CRSs), planetocentric latitudes with heights, a
 `+towgs84` of other than 3 or 7 values, a prime meridian it cannot read (`+pm=foo`), non-finite
-values, a Krovak projection with another `+alpha` than its default (PROJ ignores its `+lat_1` and
-`+lat_ts`, so they are not written), and any parameter of the PROJ definition the PROJJSON would
+values, a Krovak or Krovak Modified projection with another `+alpha` than its default (PROJ
+ignores its `+lat_1` and `+lat_ts`, so they are not written), and any parameter of the PROJ definition the PROJJSON would
 not carry (named in the error), unless it has the value used when it is absent (`+lat_0=0`,
 `+k=1`...). A CRS made from an EPSG code is written unbound (its datum shift is EPSG's); a
 `+towgs84` or `TOWGS84` the definition gives makes a `BoundCRS`, to WGS 84's geographic 2D or 3D

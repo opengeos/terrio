@@ -11,6 +11,9 @@
 //! WKT's CRS by `Transformer.from_crs(crs.geodetic_crs, crs, always_xy=True)`, and
 //! `CRS.to_proj4()`, and its method's EPSG code. Each WKT is also read with its method given by that
 //! code alone (`METHOD["custom",ID["EPSG",9833]]`).
+//!
+//! The PROJJSON of each one's PROJ string has the conversion PROJ writes for it: its method code
+//! and its parameters' codes and values, lengths in metres (`projjson`).
 
 use serde_json::Value;
 use terrio_crs::{SpatialRef, Transformer};
@@ -55,4 +58,65 @@ fn wkt2_methods_are_read_and_place_points_as_proj_does() {
         }
     }
     assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
+/// The method code and `(parameter code, value)`s of a PROJJSON conversion, lengths in metres.
+fn conversion(c: &Value) -> (u64, Vec<(u64, f64)>) {
+    let value = |p: &Value| {
+        let unit = &p["unit"];
+        let factor = if unit["type"] == "LinearUnit" { unit["conversion_factor"].as_f64().unwrap() } else { 1.0 };
+        p["value"].as_f64().unwrap() * factor
+    };
+    let params = c["parameters"].as_array().unwrap().iter().map(|p| (p["id"]["code"].as_u64().unwrap(), value(p)));
+    (c["method"]["id"]["code"].as_u64().unwrap(), params.collect())
+}
+
+/// The PROJJSON of each method's PROJ string has PROJ 9.9.0's conversion.
+#[test]
+fn wkt2_methods_are_written_to_projjson_as_proj_writes_them() {
+    let data: Value = serde_json::from_str(include_str!("data/wkt2_methods.json")).unwrap();
+    let mut bad = vec![];
+    for case in data["cases"].as_array().unwrap() {
+        let (name, proj) = (case["name"].as_str().unwrap(), case["proj4"].as_str().unwrap());
+        let written = match SpatialRef::from_proj4(proj).unwrap().to_projjson() {
+            Ok(j) => serde_json::from_str::<Value>(&j).unwrap(),
+            Err(e) => {
+                bad.push(format!("{name}: {e}"));
+                continue;
+            }
+        };
+        let (code, params) = conversion(&written["conversion"]);
+        let expected = &case["projjson"];
+        let expected_params: Vec<(u64, f64)> =
+            expected["parameters"].as_array().unwrap().iter().map(|p| (p[0].as_u64().unwrap(), p[1].as_f64().unwrap())).collect();
+        let same = code == expected["method"].as_u64().unwrap()
+            && params.len() == expected_params.len()
+            && params.iter().zip(&expected_params).all(|(a, b)| a.0 == b.0 && (a.1 - b.1).abs() < 1e-6);
+        if !same {
+            bad.push(format!("{name}: {code} {params:?}, PROJ {expected}"));
+        }
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
+/// On a sphere, PROJ 9.9.0 ignores `+guam` and `+hyperbolic` and writes the plain method.
+#[test]
+fn spherical_guam_and_hyperbolic_cassini_are_written_as_proj_writes_them() {
+    // pyproj 3.8.0: `CRS(proj).to_json()`'s conversion.
+    let cases = [
+        (
+            "+proj=aeqd +guam +lat_0=13.47 +lon_0=144.75 +x_0=50000 +y_0=50000 +R=6371000 +units=m +type=crs",
+            1125,
+            vec![(8801, 13.47), (8802, 144.75), (8806, 50000.0), (8807, 50000.0)],
+        ),
+        (
+            "+proj=cass +hyperbolic +lat_0=-16.25 +lon_0=179.33 +x_0=251727.9 +y_0=334519.95 +R=6371000 +units=m +type=crs",
+            9806,
+            vec![(8801, -16.25), (8802, 179.33), (8806, 251727.9), (8807, 334519.95)],
+        ),
+    ];
+    for (proj, method, params) in cases {
+        let written: Value = serde_json::from_str(&SpatialRef::from_proj4(proj).unwrap().to_projjson().unwrap()).unwrap();
+        assert_eq!(conversion(&written["conversion"]), (method, params), "{proj}");
+    }
 }
