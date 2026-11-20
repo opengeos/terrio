@@ -2145,7 +2145,10 @@ fn warp_reader_selected(
     let mut ds = output_dataset(grid, out, bands, p.dst_nodata, &p.dst_srs)?;
     ds.raster.metadata = p.srcs[0].ds.raster.metadata.iter().filter(|(k, _)| k == "AREA_OR_POINT").cloned().collect();
     ds.band_nodata = p.dst_nodata_all.clone();
-    inherit_color_table(&mut ds, p.srcs[0].ds, o);
+    // The table belongs to the source's first band: another selected band keeps none.
+    if selection.is_none_or(|bands| bands[0] == 1) {
+        inherit_color_table(&mut ds, p.srcs[0].ds, o);
+    }
     Ok(ds)
 }
 
@@ -6756,7 +6759,7 @@ mod tests {
         assert_eq!(out.band_color_interp(1), "Palette");
         let float = WarpOptions { output_type: Some(DataType::F32), ..options.clone() };
         assert!(warp(&[&source], &float).unwrap().color_table.is_empty());
-        // The GeoTIFF writer refuses a palette on more than one band: two bands keep none.
+        // Two bands keep no table: a GeoTIFF palette is one band, so `inherit_color_table` skips them.
         let cfg = RasterConfig {
             cols: 8,
             rows: 8,
@@ -6773,6 +6776,12 @@ mod tests {
         let mut two_bands = RasterDataset::new(Raster::from_data(cfg, vec![1.0; 128]).unwrap(), false);
         two_bands.color_table = table.clone();
         assert!(warp(&[&two_bands], &options).unwrap().color_table.is_empty());
+        // A selected band other than the first does not take the first band's table.
+        let mut two_lazy = crate::LazyRaster::from(two_bands);
+        let first = warp_lazy_bands_working(&mut two_lazy, &[1], &options, None, false, None, None).unwrap();
+        assert_eq!(first.color_table, table);
+        let second = warp_lazy_bands_working(&mut two_lazy, &[2], &options, None, false, None, None).unwrap();
+        assert!(second.color_table.is_empty());
         let _ = crate::warnings::take();
         let bilinear = WarpOptions { resampling: Resampling::Bilinear, ..options.clone() };
         assert_eq!(warp(&[&source], &bilinear).unwrap().color_table, table);
