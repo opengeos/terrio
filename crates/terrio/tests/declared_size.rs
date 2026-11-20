@@ -191,6 +191,19 @@ fn too_many_bands(bands: usize, limit: usize) -> String {
 /// the first) or, with `block`, pixel-interleaved tiles of that size; every strip or tile points
 /// to the same deflated block of zeros.
 fn declaring_tiff(width: u32, height: u32, bands: u16, bits: u16, sample_format: u16, block: Option<(u32, u32)>) -> Vec<u8> {
+    declaring_tiff_with(width, height, bands, bits, sample_format, block, &[])
+}
+
+/// [`declaring_tiff`] with `extra` tags, `(tag, type, values)`.
+fn declaring_tiff_with(
+    width: u32,
+    height: u32,
+    bands: u16,
+    bits: u16,
+    sample_format: u16,
+    block: Option<(u32, u32)>,
+    extra: &[(u16, u16, Vec<f64>)],
+) -> Vec<u8> {
     let (bw, bh) = block.unwrap_or((width, height));
     let per_band = match block {
         None => 1,
@@ -229,6 +242,7 @@ fn declaring_tiff(width: u32, height: u32, bands: u16, bits: u16, sample_format:
     };
     tags.push((offsets, 4, vec![8.0; count]));
     tags.push((counts, 4, vec![data.len() as f64; count]));
+    tags.extend(extra.iter().cloned());
     tags.sort_by_key(|t| t.0);
     let ifd_at = 8 + data.len() + (data.len() & 1);
     let extra_at = ifd_at + 2 + 12 * tags.len() + 4;
@@ -1659,6 +1673,50 @@ fn tiny_windows_refuse_unusable_decoded_chunks_with_unlimited_limits() {
         let mut source = terrio::LazyRaster::from_tiff_bytes_with_limits(bytes, limits).unwrap().unwrap();
         let result = source.read_window(terrio::Window::full(1, 1), &Default::default());
         assert!(matches!(result, Err(terrio::Error::DecodedLimitExceeded { limit, .. }) if limit == 64 << 20), "{result:?}");
+    }
+}
+
+/// A strip over the limit read by rows with the floating-point predictor holds a row of samples
+/// and the row its predictor is undone in: both count against the memory the process can use.
+/// Rows of 20 MiB under 32 MiB usable: one fits, two do not, and the read is refused.
+#[test]
+#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+fn rows_read_with_the_floating_point_predictor_count_its_working_row() {
+    const CHILD: &str = "TERRIO_TEST_PREDICTOR_ROW_MEMORY_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "rows_read_with_the_floating_point_predictor_count_its_working_row"])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&child.stdout);
+        assert!(child.status.success() && stdout.contains("1 passed"), "{stdout}\n{}", String::from_utf8_lossy(&child.stderr));
+        return;
+    }
+    let _serial = serial();
+    let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: both calls use a valid rlimit pointer and change only this child process's policy.
+    unsafe {
+        assert_eq!(libc::getrlimit(libc::RLIMIT_RSS, &mut limit), 0);
+        limit.rlim_cur = limit.rlim_max.min(32 << 20);
+        assert_eq!(libc::setrlimit(libc::RLIMIT_RSS, &limit), 0);
+    }
+    assert!(terrio::usable_memory().is_some_and(|m| m <= 32 << 20));
+    // 5,242,880 x 2 Float32 zeros in one Deflate strip: rows of 20 MiB, the limit one row.
+    let limits = terrio::TiffReadLimits { chunk_bytes: 20 << 20 };
+    let options = terrio::WindowOptions { bands: vec![1], overview: None };
+    for predictor in [1u16, 3] {
+        let bytes = declaring_tiff_with(5 << 20, 2, 1, 32, 3, None, &[(317, 3, vec![f64::from(predictor)])]);
+        let mut r = terrio::LazyRaster::from_tiff_bytes_with_limits(bytes, limits).unwrap().unwrap();
+        let window = r.read_window(terrio::Window::new(7, 1, 2, 1), &options).map(|ds| ds.raster.data.to_f64_vec());
+        let sampled = r.read_sampled(&[3, 7], &[1], &options).map(|data| data.map(|d| d.to_f64_vec()));
+        if predictor == 1 {
+            assert_eq!(window.unwrap(), [0.0; 2]);
+            assert_eq!(sampled.unwrap(), Some(vec![0.0; 2]));
+        } else {
+            assert!(matches!(window, Err(terrio::Error::ResourceLimit(_))), "{window:?}");
+            assert!(matches!(sampled, Err(terrio::Error::ResourceLimit(_))), "{sampled:?}");
+        }
     }
 }
 

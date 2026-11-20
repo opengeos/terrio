@@ -694,7 +694,7 @@ impl ChunkCodec {
             }
             acc!(U8, I8, U16, I16, U32, I32, U64, I64);
         } else if self.predictor == 3 {
-            self.unpredict(res.as_buffer(0).as_bytes_mut(), w);
+            self.unpredict(res.as_buffer(0).as_bytes_mut(), w)?;
         }
         if (dw, dh) == (w, h) {
             return Ok(res);
@@ -743,7 +743,7 @@ impl ChunkCodec {
                 v.reverse();
             }
         }
-        self.unpredict(&mut out, w);
+        self.unpredict(&mut out, w)?;
         Ok(out)
     }
 
@@ -805,8 +805,8 @@ impl ChunkCodec {
     }
 
     /// Undoes a predictor on native-endian samples, row by row.
-    fn unpredict(&self, data: &mut [u8], w: usize) {
-        unpredict(data, w, self.spp, self.sample.size(), self.predictor);
+    fn unpredict(&self, data: &mut [u8], w: usize) -> std::io::Result<()> {
+        unpredict(data, w, self.spp, self.sample.size(), self.predictor)
     }
 
     /// Bound each LERC header before allowing mask or pixel inspection.
@@ -1146,11 +1146,12 @@ impl ChunkCodec {
 
 /// Undoes a predictor on rows of `w` pixels of `spp` samples of `size` bytes, native-endian:
 /// horizontal differencing (2) or the floating-point predictor (3), whose byte planes give
-/// native-endian samples whatever the file's byte order. Other predictors leave `data` as it is.
-pub(crate) fn unpredict(data: &mut [u8], w: usize, spp: usize, size: usize, predictor: u16) {
+/// native-endian samples whatever the file's byte order, through a row of its own, allocated
+/// fallibly. Other predictors leave `data` as it is.
+pub(crate) fn unpredict(data: &mut [u8], w: usize, spp: usize, size: usize, predictor: u16) -> std::io::Result<()> {
     let row = w * spp * size;
     if row == 0 {
-        return;
+        return Ok(());
     }
     match predictor {
         2 => {
@@ -1176,7 +1177,7 @@ pub(crate) fn unpredict(data: &mut [u8], w: usize, spp: usize, size: usize, pred
         3 => {
             // Byte planes, most significant first, differenced along the row.
             let wc = w * spp;
-            let mut tmp = vec![0u8; row];
+            let mut tmp = fallible::filled_now(row, 0u8, "a TIFF row of the floating-point predictor")?;
             for r in data.chunks_exact_mut(row) {
                 // The sums along the row, into `tmp`.
                 if spp == 1 {
@@ -1223,6 +1224,7 @@ pub(crate) fn unpredict(data: &mut [u8], w: usize, spp: usize, size: usize, pred
         }
         _ => {}
     }
+    Ok(())
 }
 
 /// LERC samples as `f64`, which holds every type LERC codes exactly.
@@ -2053,7 +2055,7 @@ mod tests {
                     expected.extend(if cfg!(target_endian = "little") { v.iter().rev().copied().collect::<Vec<u8>>() } else { v.clone() });
                 }
             }
-            codec.unpredict(&mut stored, w);
+            codec.unpredict(&mut stored, w).unwrap();
             assert_eq!(stored, expected, "{sample:?} with {spp} samples");
         }
     }
@@ -2082,7 +2084,7 @@ mod tests {
         let (a, b) = (1.5f32.to_be_bytes(), (-2.0f32).to_be_bytes());
         let planes = [a[0], b[0], a[1], b[1], a[2], b[2], a[3], b[3]];
         let mut row: Vec<u8> = (0..8).map(|i| if i == 0 { planes[0] } else { planes[i].wrapping_sub(planes[i - 1]) }).collect();
-        codec.unpredict(&mut row, 2);
+        codec.unpredict(&mut row, 2).unwrap();
         let values: Vec<f32> = row.as_chunks::<4>().0.iter().map(|c| f32::from_ne_bytes(*c)).collect();
         assert_eq!(values, [1.5, -2.0]);
     }

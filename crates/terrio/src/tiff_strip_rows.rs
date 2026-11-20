@@ -132,6 +132,12 @@ impl Rows {
         offset.checked_add(count).is_some_and(|end| end <= len) && count.saturating_mul(self.codec.most_per_byte()) >= strip
     }
 
+    /// The bytes a read of `rows` rows of `row_bytes` at a time holds: the rows, and the row the
+    /// floating-point predictor is undone in. `None` when they are more than the address space holds.
+    pub(crate) fn held(&self, rows: usize, row_bytes: usize) -> Option<usize> {
+        rows.checked_mul(row_bytes)?.checked_add(if self.predictor == 3 { row_bytes } else { 0 })
+    }
+
     /// The rows of the strip stored as `(offset, byte count)`, of `height` rows of `width` pixels
     /// of `spp` samples.
     pub(crate) fn strip(&self, (offset, count): (u64, u64), width: usize, spp: usize, height: usize) -> StripRows {
@@ -228,7 +234,7 @@ impl StripRows {
                 sample.reverse();
             }
         }
-        crate::tiff_codecs::unpredict(bytes, self.width, self.spp, size, predictor);
+        crate::tiff_codecs::unpredict(bytes, self.width, self.spp, size, predictor)?;
         Ok(())
     }
 
