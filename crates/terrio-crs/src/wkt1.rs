@@ -530,6 +530,16 @@ pub(crate) const HOTINE_TWO_POINT_CHECKED: [&str; 23] = [
     "northingatprojectioncentre",
 ];
 
+/// Whether a Hotine Oblique Mercator (two point) `PROJCS` is refused for its parameters: one
+/// without a name, or one of [`HOTINE_TWO_POINT_CHECKED`] whose value is not a finite number (a
+/// present but malformed value must not be dropped and replaced by a zero default).
+pub(crate) fn hotine_two_point_refused(root: &Node) -> bool {
+    root.children("PARAMETER").any(|p| match p.name() {
+        None => true,
+        Some(s) => HOTINE_TWO_POINT_CHECKED.contains(&norm(s).as_str()) && !p.num(1).is_some_and(f64::is_finite),
+    })
+}
+
 /// The normalized method of a WKT 1 projection: EPSG's Polar Stereographic (variant C) by its code,
 /// else its name.
 pub(crate) fn wkt1_method(name: Option<&str>, epsg: Option<u32>) -> Option<String> {
@@ -596,14 +606,8 @@ impl Wkt1Input {
         input.method = projection.name().filter(|n| !n.is_empty()).map(str::to_string);
         input.method_epsg = projection.epsg();
         let method = wkt1_method(input.method.as_deref(), input.method_epsg)?;
-        if method == "hotineobliquemercatortwopointnaturalorigin" {
-            // A present but malformed value must not be dropped and replaced by a zero default.
-            for parameter in root.children("PARAMETER") {
-                let name = norm(parameter.name()?);
-                if HOTINE_TWO_POINT_CHECKED.contains(&name.as_str()) && !parameter.num(1)?.is_finite() {
-                    return None;
-                }
-            }
+        if method == "hotineobliquemercatortwopointnaturalorigin" && hotine_two_point_refused(root) {
+            return None;
         }
         // GDAL's name gives its latitude only as `latitude_of_origin`; PROJ 9.8.1 refuses it
         // without, rather than read it at the north pole.

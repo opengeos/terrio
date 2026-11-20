@@ -26,16 +26,19 @@ fn every_wkt1_corpus_text_gives_its_proj_string_the_tree_s_input() {
         &include_bytes!("../../tests/data/projjson_corpus_epsg.jsonl.zst")[..],
         &include_bytes!("../../tests/data/projjson_corpus_esri.jsonl.zst")[..],
     ]);
-    let (mut compared, mut differ) = (0, Vec::new());
+    let (mut compared, mut read_by_both, mut differ) = (0, 0, Vec::new());
     // GDAL's and ESRI's WKT 1 (`wkt1` and `esri` rows), each of which parses.
     for (code, kind, text, _) in corpus.iter().filter(|(_, kind, _, _)| kind != "wkt2") {
         let (tree, model) = inputs(text).unwrap_or_else(|| panic!("{code} {kind} does not parse as WKT 1"));
         compared += 1;
+        if tree != "None" && model != "None" {
+            read_by_both += 1;
+        }
         if tree != model {
             differ.push(format!("{code} {kind}\n  tree  {tree}\n  model {model}"));
         }
     }
-    assert!(compared > 15_000, "{compared} WKT 1 texts");
+    assert!(compared > 15_000 && read_by_both > 13_000, "{compared} WKT 1 texts, {read_by_both} read");
     assert!(differ.is_empty(), "{} of {compared} differ:\n{}", differ.len(), differ[..differ.len().min(10)].join("\n"));
 }
 
@@ -83,6 +86,9 @@ fn unusual_wkt1_gives_its_proj_string_the_tree_s_input() {
         (r#"GEOCCS["g",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0],UNIT["foot",0.3048]]"#.into(), true),
         (format!(r#"{},VERTCS["NAVD88",VDATUM["North_American_Vertical_Datum_1988"],PARAMETER["Vertical_Shift",0.0],PARAMETER["Direction",1.0],UNIT["Meter",1.0]]"#, projcs("Transverse_Mercator", "", "")), true),
         (format!("{}{esri_3d}", projcs("Transverse_Mercator", "", r#",AXIS["W",WEST],AXIS["N",NORTH]"#)), true),
+        (format!("{}{}", projcs("Transverse_Mercator", "", r#",AXIS["W",WEST],AXIS["N",NORTH]"#), esri_3d.replace(r#""Direction",1.0"#, r#""Direction",-1.0"#)), true),
+        // A third axis the WKT declares, unnamed: no `+axis` pair in either.
+        (projcs("Transverse_Mercator", "", r#",AXIS["N",NORTH],AXIS["E",EAST],AXIS["",UP]"#), true),
     ];
     for (text, read) in &cases {
         let (tree, model) = inputs(text).unwrap();
@@ -125,4 +131,19 @@ fn where_the_model_reads_unusual_wkt1_otherwise() {
     assert_eq!((tree.axes, model.axes), (None, Some(*b"wn")));
     let (tree, model) = input(&projcs(r#"UNIT["metre",1]"#, r#",AXIS["x",WEST,ORDER[2]],AXIS["y",NORTH,ORDER[1]]"#));
     assert_eq!((tree.axes, model.axes), (Some(*b"wn"), Some(*b"nw")));
+    // A projection's identifiers when malformed: a first `AUTHORITY` without its code, and an
+    // `ID` before the `AUTHORITY`. The tree reads no EPSG code for the first and the `AUTHORITY`'s
+    // for the second (it reads the first `AUTHORITY`, before any `ID`), the model its first
+    // well-formed identifier. The code matters only where it decides the method, Polar
+    // Stereographic (variant C), where PROJ refuses both forms.
+    let tm = |ids: &str| {
+        format!(
+            r#"PROJCS["x",{},PROJECTION["Transverse_Mercator",{ids}],PARAMETER["central_meridian",9],UNIT["metre",1]]"#,
+            geogcs(wgs84, "")
+        )
+    };
+    let (tree, model) = input(&tm(r#"AUTHORITY["vendor"],AUTHORITY["EPSG","9807"]"#));
+    assert_eq!((tree.method_epsg, model.method_epsg), (None, Some(9807)));
+    let (tree, model) = input(&tm(r#"ID["x","1"],AUTHORITY["EPSG","9807"]"#));
+    assert_eq!((tree.method_epsg, model.method_epsg), (Some(9807), None));
 }

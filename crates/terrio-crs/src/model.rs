@@ -265,6 +265,10 @@ pub(crate) struct Model {
     pub crs: Crs,
     pub dialect: Dialect,
     pub extensions: Vec<(String, String)>,
+    /// Whether the CRS's last axis is the ellipsoidal height of ESRI's compound CRS on a geodetic
+    /// `DATUM` (read as a 3D CRS), which its horizontal CRS's WKT does not declare (its base CRS's
+    /// own height, of a projected CRS, is not counted).
+    pub height_added: bool,
 }
 
 /// The model of a WKT definition (WKT 1 GDAL, ESRI or WKT 2), or `None` when it is not one this
@@ -284,31 +288,34 @@ pub(crate) fn read(text: &str) -> Option<Model> {
             let length = v.child("UNIT").and_then(|u| unit(u, UnitKind::Length)).unwrap_or_else(Unit::metre);
             let direction = if esri_down(&v) { "down" } else { "up" };
             let mut crs = crs(&h, d)?;
+            // Whether the height was added (to a CS of two axes).
             let height = |cs: &mut Cs, unit: Unit, direction: &str| {
-                if cs.axes.len() == 2 {
+                let two = cs.axes.len() == 2;
+                if two {
                     cs.axes.push(Axis { name: String::new(), direction: direction.into(), unit: Some(unit), meridian: None });
                 }
+                two
             };
-            match &mut crs {
+            let height_added = match &mut crs {
                 Crs::Projected { base, cs, .. } => {
-                    height(cs, length, direction);
                     if let Crs::Geodetic { cs, .. } = base.as_mut() {
                         height(cs, Unit::metre(), "up");
                     }
+                    height(cs, length, direction)
                 }
                 Crs::Geodetic { cs, .. } => height(cs, length, direction),
-                _ => {}
-            }
-            return Some(Model { crs, dialect: d, extensions: extensions(&h) });
+                _ => false,
+            };
+            return Some(Model { crs, dialect: d, extensions: extensions(&h), height_added });
         }
         let parts = vec![crs(&h, d)?, crs(&v, Dialect::Wkt1Esri)?];
         let name = format!("{} + {}", h.name().unwrap_or(""), v.name().unwrap_or(""));
         let crs = Crs::Compound { ident: Ident { name, ids: Vec::new() }, parts };
-        return Some(Model { crs, dialect: d, extensions: extensions(&h) });
+        return Some(Model { crs, dialect: d, extensions: extensions(&h), height_added: false });
     }
     let root = wkt1::parse(text)?;
     let d = dialect(text, &root);
-    Some(Model { crs: crs(&root, d)?, dialect: d, extensions: extensions(&root) })
+    Some(Model { crs: crs(&root, d)?, dialect: d, extensions: extensions(&root), height_added: false })
 }
 
 /// A WKT 1 CRS's input to its PROJ string, read from its model (#1058 step 6): what
@@ -335,7 +342,7 @@ pub(crate) fn wkt1_input(m: &Model, root: &Node) -> Option<wkt1::Wkt1Input> {
         Crs::Projected { base, conversion, cs, .. } if kind == Wkt1Kind::Projected => (base.as_ref(), Some(conversion), cs),
         _ => return None,
     };
-    let Crs::Geodetic { ident: base_ident, datum, angular, .. } = base else { return None };
+    let Crs::Geodetic { ident: base_ident, datum, angular: base_angular, .. } = base else { return None };
     let ellipsoid = datum.ellipsoid();
     // The EPSG code of an object's first identifier, as `Node::epsg` reads it.
     let epsg =
@@ -344,7 +351,7 @@ pub(crate) fn wkt1_input(m: &Model, root: &Node) -> Option<wkt1::Wkt1Input> {
     let angular = match (kind, conversion) {
         (Wkt1Kind::Geocentric, _) => None,
         (_, Some(c)) => Some(&c.angular),
-        _ => Some(angular),
+        _ => Some(base_angular),
     };
     let ang = angular.map_or(1.0, |u| u.factor.to_degrees());
     let ang = [1.0, 0.9].into_iter().find(|u| (ang - u).abs() < 1e-9).unwrap_or(ang);
@@ -382,9 +389,8 @@ pub(crate) fn wkt1_input(m: &Model, root: &Node) -> Option<wkt1::Wkt1Input> {
     // A projection without a name, unless EPSG's variant C by its code.
     wkt1::wkt1_method(input.method.as_deref(), input.method_epsg)?;
     if cs.explicit {
-        // Not the ellipsoidal height ESRI's 3D compound CRS adds (an unnamed `up` third axis).
-        let promoted = cs.axes.len() == 3 && cs.axes[2].name.is_empty() && cs.axes[2].direction == "up";
-        let axes = if promoted { &cs.axes[..2] } else { &cs.axes[..] };
+        // Not the ellipsoidal height ESRI's 3D compound CRS adds.
+        let axes = if m.height_added { &cs.axes[..cs.axes.len() - 1] } else { &cs.axes[..] };
         let letter = |a: &Axis| match a.direction.as_str() {
             "east" => Some(b'e'),
             "west" => Some(b'w'),
@@ -769,13 +775,7 @@ fn projected(n: &Node, d: Dialect) -> Option<Crs> {
         && let Some(projection) = n.child("PROJECTION")
         && let Some(method) = wkt1::wkt1_method(projection.name(), projection.epsg())
     {
-        if method == "hotineobliquemercatortwopointnaturalorigin"
-            && n.children("PARAMETER").any(|p| match p.name() {
-                // The reader stops at a parameter without a name.
-                None => true,
-                Some(s) => wkt1::HOTINE_TWO_POINT_CHECKED.contains(&wkt1::norm(s).as_str()) && !p.num(1).is_some_and(f64::is_finite),
-            })
-        {
+        if method == "hotineobliquemercatortwopointnaturalorigin" && wkt1::hotine_two_point_refused(n) {
             return None;
         }
         if matches!(method.as_str(), "polarstereographic" | "polarstereographicvarianta" | "polarstereographicvariantb")
@@ -905,7 +905,7 @@ mod tests {
     fn terrio_extensions_and_brackets() {
         let m = read(r#"PROJCRS("x",BASEGEOGRAPHICCRS("WGS 84",DATUMENSEMBLE("World Geodetic System 1984 ensemble",MEMBER("World Geodetic System 1984 (G2296)"),ELLIPSOID("WGS 84",6378137,298.257223563)),PRIMEM("Greenwich",0)),CONVERSION("UTM zone 31N",METHOD("Transverse Mercator",ID("EPSG",9807)),PARAMETER("Longitude of natural origin",3,ANGLEUNIT("degree",0.0174532925199433),ID("EPSG",8802))),CS(Cartesian,2),AXIS("E",east),AXIS("N",north),LENGTHUNIT("metre",1))"#).unwrap();
         let Crs::Projected { base, conversion, cs, .. } = &m.crs else { panic!("{m:?}") };
-        let base = Model { crs: (**base).clone(), dialect: Dialect::Wkt2, extensions: Vec::new() };
+        let base = Model { crs: (**base).clone(), dialect: Dialect::Wkt2, extensions: Vec::new(), height_added: false };
         let (_, datum, _) = geodetic_parts(&base);
         assert!(matches!(datum, Datum::Ensemble { members, .. } if members.len() == 1));
         assert_eq!(conversion.method.ids[0].code, "9807");
