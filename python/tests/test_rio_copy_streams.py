@@ -309,21 +309,25 @@ def test_cog_copy_reads_tall_source_blocks_in_bounded_slabs(tmp_path, block_rows
         np.testing.assert_array_equal(ds.read(), RGB)
 
 
-# An image in rows of 1024 x 1024 tiles (terrio's JPEG 2000 tiles), each row of tiles holding less
+# Images in rows of 1024 x 1024 tiles (terrio's JPEG 2000 tiles), each row of tiles holding less
 # than the block cache's 64 MiB: a UInt16 band, a row of tiles and 6 rows of the next, whose row
-# of tiles holds 16,793,600 bytes, more than a copy's 16 MiB slab budget.
+# of tiles holds 16,793,600 bytes, more than a copy's 16 MiB slab budget; and three Byte bands of
+# 12,000 bytes a row, whose 16 MB of rows hold a row of tiles and a part of the next.
 WIDE = (np.add.outer(np.arange(1030) * 5, np.arange(8200)) % 4093).astype("uint16")[None]
+RGB_WIDE = (np.add.outer(np.arange(1400) * 3, np.arange(4000)) % 251).astype("uint8")
+RGB_WIDE = np.stack([RGB_WIDE, RGB_WIDE[::-1], RGB_WIDE[:, ::-1]])
 
 
 @pytest.fixture(scope="module")
 def wide_sources(tmp_path_factory):
     """`{name: (path, pixels)}`: `WIDE` as a JPEG 2000 ("jp2") and as a GeoTIFF of 512 x 1024
-    tiles ("tif")."""
+    tiles ("tif"), and `RGB_WIDE` as a JPEG 2000 ("jp2-rgb")."""
     folder = tmp_path_factory.mktemp("wide")
     tiles = dict(tiled=True, blockxsize=512, blockysize=1024)
     sources = {
         "jp2": (WIDE, dict(driver="JP2OpenJPEG")),
         "tif": (WIDE, dict(driver="GTiff", **tiles)),
+        "jp2-rgb": (RGB_WIDE, dict(driver="JP2OpenJPEG")),
     }
     out = {}
     for name, (pixels, options) in sources.items():
@@ -354,11 +358,23 @@ def block_cache_size():
         ("jp2", "COG", None, 1 << 20, 512),
         # A GeoTIFF's decoded tiles stay in the block cache between slabs within the budget.
         ("tif", "COG", None, None, 512),
+        # Over the in-memory limit, a GeoTIFF is written in rows of about 16 MB (1,023 here).
+        ("jp2", "GTiff", "1", None, 1024),
+        # Below it, a GeoTIFF is held, read in rows of about 64 MB of 8-byte values (1,023 here).
+        ("jp2", "GTiff", None, None, 1024),
+        # Rows of about 16 MB holding more than a row of tiles (1,398 here) hold a whole number.
+        ("jp2-rgb", "GTiff", "1", None, 1024),
+        # A row of tiles counts every band: 12,288,000 bytes, more than this block cache.
+        ("jp2-rgb", "GTiff", None, 8 << 20, 699),
     ],
     ids=[
         "jp2-cog",
         "jp2-over-the-cache",
         "gtiff",
+        "jp2-gtiff-over-the-limit",
+        "jp2-gtiff-held",
+        "jp2-rows-of-16-mb",
+        "jp2-bands-over-the-cache",
     ],
 )
 def test_a_copy_reads_a_jpeg_2000_a_row_of_its_tiles_at_a_time(

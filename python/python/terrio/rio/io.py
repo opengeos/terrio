@@ -2746,8 +2746,12 @@ class DatasetWriter(DatasetReader):
             else self._dtype
         )
 
-    def _slabs(self) -> Iterator[tuple[int, int]]:
+    def _slabs(self, source: Any = None) -> Iterator[tuple[int, int]]:
         """Rows of blocks of about 16 MB.
+
+        Args:
+            source: The dataset a copy reads them from, whose JPEG 2000 tiles are then read a
+                whole row at a time (`_tile_rows_decoded_once`); None otherwise.
 
         Yields:
             tuple: `(first row, number of rows)`.
@@ -2756,6 +2760,8 @@ class DatasetWriter(DatasetReader):
         n = max(1, (16 << 20) // row)
         block = self.structure.block_shape[0] if self._structure is not None else 1
         n = max(block, n - n % max(block, 1))
+        if source is not None:
+            n = _tile_rows_decoded_once(source, n, max(block, 1))
         for y in range(0, self.height, n):
             yield y, min(n, self.height - y)
 
@@ -3740,7 +3746,7 @@ class DatasetWriter(DatasetReader):
             slabs = (
                 ((y, min(step, self.height - y)) for y in range(0, self.height, step))
                 if step
-                else self._slabs()
+                else self._slabs(source)
             )
             for y, n in slabs:
                 if source is None:
