@@ -99,6 +99,49 @@ test("terrio-js/cog reads windows, bands and overviews as terrio-js does", async
   }
 });
 
+test("terrio-js/cog runs reads awaited together at once, within twelve requests, and fetches a block once", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "terrio-cog-"));
+  // 64 tiles of 64 KB: a read of one tile is a request of its own.
+  const [w, h] = [2048, 2048];
+  const src = terrio.rasterFromArray(new Uint8Array(w * h).map((_, i) => i % 251), w, h, [0, 1, 0, h, 0, -1], "EPSG:4326");
+  writeFileSync(join(dir, "tiles.tif"), src.toBytes("tiles.tif", { format: "COG", compress: "NONE", tileSize: 256 }));
+  const server = await serve(dir);
+  let active = 0;
+  let peak = 0;
+  // Each response comes 50 ms late: reads queued one after another never overlap theirs.
+  const fetch = async (url, init) => {
+    peak = Math.max(peak, ++active);
+    await new Promise((r) => setTimeout(r, 50));
+    try {
+      return await globalThis.fetch(url, init);
+    } finally {
+      active--;
+    }
+  };
+  try {
+    const r = await cog.openCog(server.url + "tiles.tif", { fetch });
+    peak = 0;
+    // A window in each of sixteen tiles, read together.
+    const windows = Array.from({ length: 16 }, (_, i) => [1034 + (i % 4) * 256, 1034 + Math.floor(i / 4) * 256, 64, 64]);
+    const out = await Promise.all(windows.map((window) => r.read({ window })));
+    windows.forEach((window, i) => assert.deepEqual([...out[i][0]], [...src.readBand(1, window)]));
+    // Together, and within the twelve requests a remote keeps in flight.
+    assert.ok(peak >= 2 && peak <= 12, `reads awaited together send their requests together, saw ${peak} at once`);
+    // Two reads of the same tile together: its bytes are requested once, as for one read.
+    const one = await cog.openCog(server.url + "tiles.tif", { fetch });
+    const two = await cog.openCog(server.url + "tiles.tif", { fetch });
+    const [oneOpened, opened] = [one.stats().requests, two.stats().requests];
+    await one.read({ window: windows[0] });
+    const [a, b] = await Promise.all([two.read({ window: windows[0] }), two.read({ window: windows[0] })]);
+    assert.deepEqual([...a[0]], [...b[0]]);
+    assert.equal(two.stats().requests - opened, one.stats().requests - oneOpened);
+    assert.equal(two.stats().bytes, one.stats().bytes);
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true });
+  }
+});
+
 test("terrio-js/cog refuses unknown options and options of the wrong type", async () => {
   for (const options of ["x", 5, true]) {
     await assert.rejects(cog.openCog("http://127.0.0.1:9/a.tif", options), /options must be an object/);
