@@ -1868,6 +1868,13 @@ extension, as another method, or under an ESRI method name GDAL's table lacks
 TERRIO_RECORD=1 cargo test --release -p terrio-crs --lib model::
 ```
 
+For #1058 step 6, `src/model/proj_input_tests.rs` checks that the model gives a
+WKT 1 CRS's PROJ string the same input as the WKT 1 reader reads from its tree
+(`model::wkt1_input` against `wkt1::Wkt1Input::read`). It covers every WKT 1
+text of the corpus, and malformed and unusual input the corpus lacks: refusals,
+grads and Paris, ESRI's compound CRS, a geocentric CRS, parameters without a name
+or a number. It is removed once the reader takes its input from the model.
+
 ## PROJJSON parsing (#270)
 
 `projjson_benchmark.json` retains `form-27700-projjson` from rust-proj-capability
