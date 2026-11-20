@@ -789,6 +789,18 @@ impl TiffOptions {
         if !o.color_table.is_empty() && o.photometric.is_none() {
             o.photometric = Some(3);
         }
+        // A lossy codec stores a block of nodata only approximately, where a block left out reads
+        // as nodata exactly: left out, it would read otherwise than stored.
+        let lossy = match o.compression {
+            Compression::Jpeg => true,
+            Compression::WebP => !o.codec.webp_lossless,
+            Compression::Lerc | Compression::LercDeflate | Compression::LercZstd => o.codec.max_z_error > 0.0,
+            _ => false,
+        };
+        if o.sparse && lossy {
+            crate::warnings::warn("SPARSE_OK is ignored with a lossy compression: every block is written".into());
+            o.sparse = false;
+        }
         Ok(Some(o))
     }
 
@@ -5668,6 +5680,29 @@ mod tests {
                 let lazy = crate::LazyRaster::open(path.to_str().unwrap()).unwrap().read().unwrap();
                 assert_eq!(bits(&lazy.raster.data), bits(&raster.data), "{case}");
             }
+        }
+    }
+
+    /// Catches blocks left out under a lossy compression, which stores a block of nodata only
+    /// approximately, so that a block left out would read otherwise than stored: `SPARSE_OK` is
+    /// then ignored, with a warning. Lossless WebP, and LERC without an error, leave blocks out.
+    #[test]
+    fn sparse_ok_is_ignored_with_a_lossy_compression() {
+        let co = |extra: &[(&str, &str)]| crate::RasterWriteOptions {
+            creation_options: [("SPARSE_OK", "YES")].iter().chain(extra).map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            ..Default::default()
+        };
+        let mut cases = vec![(vec![("COMPRESS", "JPEG")], true), (vec![("COMPRESS", "WEBP")], true)];
+        cases.push((vec![("COMPRESS", "WEBP"), ("WEBP_LOSSLESS", "YES")], false));
+        if cfg!(feature = "lerc") {
+            cases.extend([(vec![("COMPRESS", "LERC"), ("MAX_Z_ERROR", "0.5")], true), (vec![("COMPRESS", "LERC")], false)]);
+        }
+        for (extra, lossy) in cases {
+            let _ = crate::warnings::take();
+            let opts = TiffOptions::from_write_options(&co(&extra), false, Some(7.0)).unwrap().unwrap();
+            assert_eq!(opts.sparse, !lossy, "{extra:?}");
+            let warned: &[&str] = if lossy { &["SPARSE_OK is ignored with a lossy compression: every block is written"] } else { &[] };
+            assert_eq!(crate::warnings::take(), warned, "{extra:?}");
         }
     }
 }
