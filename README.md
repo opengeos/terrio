@@ -382,7 +382,7 @@ If you use terrio in your work, please cite it. terrio is archived on [Zenodo](h
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23642204.svg)](https://doi.org/10.5281/zenodo.23642204)
 
-> Wu, Q., Fitzgerald, M., & Morales Sanchez, G. (2026). terrio: Pure-Rust geospatial raster, vector and point cloud data I/O. Zenodo. <https://doi.org/10.5281/zenodo.23642204>
+> Wu, Q., Strebel, D., Morales Sanchez, G., Karasiak, N., & Fitzgerald, M. (2026). terrio: Pure-Rust geospatial raster, vector and point cloud data I/O. Zenodo. <https://doi.org/10.5281/zenodo.23642204>
 
 You can also use GitHub's **"Cite this repository"** button (which reads [`CITATION.cff`](CITATION.cff)) to copy a ready-made APA or BibTeX entry. See the [How to Cite](https://terrio.dev/citation/) page for more formats.
 

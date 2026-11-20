@@ -1588,13 +1588,24 @@ fn items_at_once<'a>(mut hrefs: impl Iterator<Item = &'a str>) -> usize {
     if hrefs.all(|href| !local_backed(&crate::vfs::Location::parse(href))) { REMOTE_AT_ONCE } else { 1 }
 }
 
-/// The most item files a mosaic keeps open, as GDAL's pool of datasets its virtual datasets
-/// open (`GDAL_MAX_DATASET_POOL_SIZE`, 100 by default; reference GDAL 3.13.3): the least recently
-/// read closes first, so a mosaic of more items than the process may open files still reads.
-const MAX_OPEN_ITEMS: usize = 100;
+/// The most item files a mosaic keeps open: half of the files the process may open (its soft
+/// `RLIMIT_NOFILE`), at least 16, so that a mosaic of more items than that still reads; 512
+/// where the limit is unknown. GDAL bounds the datasets its virtual datasets keep open alike
+/// (`GDAL_MAX_DATASET_POOL_SIZE`; reference GDAL 3.13.3).
+fn max_open_items() -> usize {
+    #[cfg(unix)]
+    {
+        let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+        // SAFETY: `getrlimit` writes the limit into the struct it is given.
+        if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } == 0 {
+            return usize::try_from(limit.rlim_cur / 2).unwrap_or(usize::MAX).max(16);
+        }
+    }
+    512
+}
 
 /// How many items' windows of `per_item` bytes each are read at once: at most `most`, and as many
-/// as fit in half of the `usable` memory (in 1 GiB when it is unknown) beside the output's `output_bytes`,
+/// as fit in half of the `usable` memory, or in 1 GiB when it is unknown, beside the output's `output_bytes`,
 /// but at least one.
 fn batch_size(per_item: usize, output_bytes: usize, usable: Option<u64>, most: usize) -> usize {
     let budget = usable.map_or(1 << 30, |m| m / 2).saturating_sub(output_bytes as u64);
@@ -1697,9 +1708,12 @@ impl Mosaic {
                     self.open.push_back(*i);
                 }
             }
-            // Never below a batch: the batch's own files are the most recent.
+            // Beyond the bound, the file read most recently before this batch closes: every window
+            // reads its items in the same order, so the earliest read are the next needed, and those
+            // kept open stay the same from window to window. Never below a batch.
             while self.open.len() > self.max_open.max(at_once) {
-                if let Some(j) = self.open.pop_front() {
+                let k = self.open.len() - batch.len() - 1;
+                if let Some(j) = self.open.remove(k) {
                     self.items[j].1 = None;
                 }
             }
@@ -1708,6 +1722,17 @@ impl Mosaic {
             }
         }
         Ok(())
+    }
+
+    /// The bytes of a decoded tile of an open item (a read decodes each tile it meets whole), for
+    /// every item: the items of a collection share a layout. `None` without an open tiled item,
+    /// whose items are then read one at a time.
+    fn tile_bytes(&self) -> Option<usize> {
+        self.items.iter().find_map(|(_, r)| {
+            let r = r.as_ref()?;
+            let (w, h) = r.block_size()?;
+            Some(w.saturating_mul(h).saturating_mul(r.band_count()).saturating_mul(r.data_type().size_bytes()))
+        })
     }
 
     /// The output buffer of `pixels` values of each of `bands` bands, in the mosaic's type,
@@ -1737,14 +1762,18 @@ impl WindowSource for Mosaic {
         }
         let jobs: Vec<(usize, Cover)> =
             self.items.iter().enumerate().filter_map(|(i, (item, _))| cover(item, gt, w).map(|c| (i, c))).collect();
-        // An item's type is known once its file is open: each is counted at the largest's size.
+        // Counted at Float64 and the largest window, as no item's type is known before its file is
+        // opened, and with a decoded tile (see `Mosaic::tile_bytes`).
         let validity = usize::from(self.nodata.is_some());
-        let per_item = jobs
+        let window = jobs
             .iter()
             .map(|(_, c)| c.src.width.saturating_mul(c.src.height).saturating_mul(bands.len() * std::mem::size_of::<f64>() + validity))
             .max()
             .unwrap_or(0);
-        let at_once = batch_size(per_item, output_bytes, crate::dataset::fallible::usable_memory(), self.at_once);
+        let at_once = match self.tile_bytes() {
+            Some(tile) => batch_size(window.saturating_add(tile), output_bytes, crate::dataset::fallible::usable_memory(), self.at_once),
+            None => 1,
+        };
         let nodata = self.nodata;
         let read = |c: &Cover, item: &AssetItem, r: &mut LazyRaster| {
             let src = c.src;
@@ -1823,8 +1852,8 @@ impl WindowSource for Mosaic {
                 crate::ops::vrt::src_dst_window(src, dst, (item.width, item.height), nearest, request, (bw, bh)).map(|win| (i, win))
             })
             .collect();
-        // An item's output, and the source it reads it from: at most a strip when it has no
-        // overview to read.
+        // An item's output, the source it reads it from (at most a strip when it has no overview to
+        // read), and a decoded tile (see `Mosaic::tile_bytes`).
         let sample = bands.len() * std::mem::size_of::<f64>();
         let per_item = jobs
             .iter()
@@ -1838,7 +1867,10 @@ impl WindowSource for Mosaic {
             })
             .max()
             .unwrap_or(0);
-        let at_once = batch_size(per_item, output_bytes, crate::dataset::fallible::usable_memory(), self.at_once);
+        let at_once = match self.tile_bytes() {
+            Some(tile) => batch_size(per_item.saturating_add(tile), output_bytes, crate::dataset::fallible::usable_memory(), self.at_once),
+            None => 1,
+        };
         let read = |win: &crate::ops::vrt::Window, item: &AssetItem, r: &mut LazyRaster| {
             if item.width > r.width() || item.height > r.height() {
                 return Err(smaller_than_declared(item, r));
@@ -1960,7 +1992,7 @@ fn open_mosaic(source: &str, groups: Groups, resolution: Option<&str>, kept: &st
     let at_once = items_at_once(items.iter().map(|(i, _)| i.href.as_str()));
     let open = items.iter().position(|(_, r)| r.is_some()).into_iter().collect();
     let geo_transform = [xmin, rx, 0.0, ymax, 0.0, -ry];
-    let mosaic = Mosaic { items, at_once, open, max_open: MAX_OPEN_ITEMS, geo_transform, data_type, nodata };
+    let mosaic = Mosaic { items, at_once, open, max_open: max_open_items(), geo_transform, data_type, nodata };
     Ok(LazyRaster::from_source(header, Box::new(mosaic)))
 }
 
@@ -2418,7 +2450,8 @@ mod tests {
         let (_, mut sorted) = group.by_crs.into_iter().next().unwrap();
         sorted.sort_by(|a, b| a.datetime.cmp(&b.datetime));
         let read_kept_open = |at_once: usize, max_open: usize| {
-            let items = sorted.iter().map(|i| (i.clone(), None)).collect();
+            // The first item open, as `open_mosaic` leaves it: its tiles size the batches.
+            let items = sorted.iter().enumerate().map(|(k, i)| (i.clone(), (k == 0).then(|| i.open().unwrap()))).collect();
             let gt = [500000.0, 10.0, 0.0, 4400000.0, 0.0, -10.0];
             let open = Default::default();
             let mut m = Mosaic { items, at_once, open, max_open, geo_transform: gt, data_type: DataType::U16, nodata: Some(0.0) };
@@ -2429,7 +2462,7 @@ mod tests {
             assert_eq!(open, max_open.max(at_once).min(4), "{at_once} at once, {max_open} kept open");
             v
         };
-        let read = |at_once: usize| read_kept_open(at_once, MAX_OPEN_ITEMS);
+        let read = |at_once: usize| read_kept_open(at_once, 100);
         let one = read(1);
         // The newest item (0) on top, but for its nodata column 7, where item 1 shows through; the
         // oldest (3) only where no other item reaches.
