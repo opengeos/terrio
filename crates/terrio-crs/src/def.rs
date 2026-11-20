@@ -1379,12 +1379,16 @@ impl Def {
                 d.bound = Some(Arc::new(Bound { source_datum: source.datum, target: Some((t, helmert)) }));
                 return Ok(d);
             }
-            if is_bound_crs(w) && c.proj.contains("+towgs84=") {
-                // To WGS 84: the source CRS's own datum, into which PROJ applies no shift.
+            if c.proj.contains("+towgs84=") {
+                // To WGS 84 (a `BOUNDCRS`, or a WKT 1 `TOWGS84`, which PROJ reads as one): the
+                // source CRS's own datum, into which PROJ applies no shift. A WKT 1 whose datum
+                // resolves to none keeps the shift into every CRS.
                 let mut source = d.clone();
                 source.ops.clear();
                 source.registered_datum(&c, own_geogcs_text(w, &c));
-                d.bound = Some(Arc::new(Bound { source_datum: source.datum, target: None }));
+                if is_bound_crs(w) || source.datum.is_some() {
+                    d.bound = Some(Arc::new(Bound { source_datum: source.datum, target: None }));
+                }
                 return Ok(d);
             }
             if !c.proj.contains("+towgs84=") {
