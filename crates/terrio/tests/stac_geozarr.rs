@@ -127,6 +127,47 @@ fn stacit_mosaics_items_by_datetime() {
     assert_eq!(v.layers[0].len(), 2);
 }
 
+/// A mosaic read at a reduced size reads each item from its overviews, as GDAL's STACIT does (its
+/// sources each choose their overview): the newer item over the older, but where its overview
+/// holds nodata.
+#[test]
+fn stacit_reduced_reads_take_the_items_overviews() {
+    let dir = tempfile::tempdir().unwrap();
+    // 16 x 8 UInt16 tiles of `base + 10 * (column % 2) + 20 * (row % 2)`: their average overviews
+    // hold `base + 15`, where sampling full resolution would give `base + 30`. The newer tile, 8
+    // pixels east, has nodata (0) in its first 4 columns.
+    let write = |name: &str, x0: f64, base: u16, holes: usize| {
+        let cfg = RasterConfig {
+            cols: 16,
+            rows: 8,
+            bands: 1,
+            x_min: x0,
+            y_min: 4400000.0 - 80.0,
+            cell_size: 10.0,
+            nodata: 0.0,
+            data_type: DataType::U16,
+            crs: wbraster::CrsInfo::from_epsg(32613),
+            ..Default::default()
+        };
+        let values =
+            (0..128).map(|i| if i % 16 < holes { 0.0 } else { (base as usize + 10 * (i % 2) + 20 * (i / 16 % 2)) as f64 }).collect();
+        let raster = Raster::from_data_native(cfg, wbraster::raster::RasterData::from_f64_vec(DataType::U16, values)).unwrap();
+        let options = RasterWriteOptions { overviews: vec![2], overview_resampling: Some("average".into()), ..Default::default() };
+        terrio::write_raster_dataset(&RasterDataset::new(raster, true), dir.path().join(name).to_str().unwrap(), &options).unwrap();
+    };
+    write("a.tif", 500000.0, 100, 0);
+    write("b.tif", 500080.0, 200, 4);
+    let a = item("a", "2023-07-01T00:00:00Z", 500000.0, 4400000.0, 16, 8, "a.tif");
+    let b = item("b", "2023-07-05T00:00:00Z", 500080.0, 4400000.0, 16, 8, "b.tif");
+    let fc_path = dir.path().join("items.json");
+    std::fs::write(&fc_path, serde_json::to_vec(&json!({"type": "FeatureCollection", "features": [b, a], "links": []})).unwrap()).unwrap();
+    let mut r = terrio::open_raster_lazy(&format!("STACIT:\"{}\":asset=data", fc_path.display())).unwrap();
+    assert_eq!((r.width(), r.height()), (24, 8));
+    let half = r.read_resampled(&terrio::ResampledReadOptions { size: (12, 4), ..Default::default() }).unwrap();
+    let row: Vec<f64> = (0..12).map(|c| half.raster.get(0, 1, c)).collect();
+    assert_eq!(row, [115.0, 115.0, 115.0, 115.0, 115.0, 115.0, 215.0, 215.0, 215.0, 215.0, 215.0, 215.0]);
+}
+
 #[test]
 #[ignore = "queries Earth Search and reads Sentinel-2 COGs on AWS"]
 fn earth_search_mosaic_matches_gdal_stacit() {

@@ -1599,14 +1599,13 @@ fn batch_size(per_item: usize, output_bytes: usize, usable: Option<u64>, most: u
 /// An item a mosaic window covers: the window of its file to read, and where the whole file falls
 /// in the mosaic window (`x`, `y`, width and height in its pixels).
 struct Cover {
-    index: usize,
     src: Window,
     dst_rect: [f64; 4],
 }
 
-/// Where item `index` falls in window `w` of a mosaic of geotransform `gt`: `None` when it does
-/// not. The source window is one pixel wider on each side, for the nearest pixel at its edges.
-fn cover(index: usize, item: &AssetItem, gt: [f64; 6], w: Window) -> Option<Cover> {
+/// Where an item falls in window `w` of a mosaic of geotransform `gt`: `None` when it does not.
+/// The source window is one pixel wider on each side, for the nearest pixel at its edges.
+fn cover(item: &AssetItem, gt: [f64; 6], w: Window) -> Option<Cover> {
     let (rx, ry) = (gt[1], -gt[5]);
     let [xmin, ymin, xmax, ymax] = item.bounds;
     let (dxo, dxs) = ((xmin - gt[0]) / rx, (xmax - xmin) / rx);
@@ -1625,48 +1624,17 @@ fn cover(index: usize, item: &AssetItem, gt: [f64; 6], w: Window) -> Option<Cove
     if sx1 <= sx0 || sy1 <= sy0 {
         return None;
     }
-    Some(Cover { index, src: Window::new(sx0, sy0, sx1 - sx0, sy1 - sy0), dst_rect: [dxo - w.x as f64, dyo - w.y as f64, dxs, dys] })
+    Some(Cover { src: Window::new(sx0, sy0, sx1 - sx0, sy1 - sy0), dst_rect: [dxo - w.x as f64, dyo - w.y as f64, dxs, dys] })
 }
 
-/// Reads window `src` of an item's file, opening it first if `raster` holds none.
-fn read_item_window(
-    item: &AssetItem,
-    raster: &mut Option<LazyRaster>,
-    src: Window,
-    bands: &[usize],
-    output_bytes: usize,
-    nodata: Option<f64>,
-) -> Result<RasterDataset> {
-    if raster.is_none() {
-        *raster = Some(item.open()?);
-    }
-    let r = raster.as_mut().ok_or_else(|| bad("unreachable"))?;
-    if src.x + src.width > r.width() || src.y + src.height > r.height() {
-        return Err(bad(format!(
-            "{} is {}x{}, smaller than its STAC metadata says",
-            crate::vsi::redact_diagnostic_location(&item.href),
-            r.width(),
-            r.height()
-        )));
-    }
-    let source_bytes =
-        [src.width, src.height, bands.len(), r.data_type().size_bytes()].iter().try_fold(1usize, |n, &size| n.checked_mul(size));
-    let validity_bytes = if nodata.is_some() { src.width.checked_mul(src.height) } else { Some(0) };
-    let peak = source_bytes
-        .and_then(|bytes| bytes.checked_add(output_bytes))
-        .and_then(|bytes| validity_bytes.and_then(|mask| bytes.checked_add(mask)));
-    crate::dataset::fallible::check_usable(peak, || "a STAC mosaic window source buffers are too large to allocate".to_string())
-        .map_err(Error::ResourceLimit)?;
-    let options = WindowOptions { bands: bands.to_vec(), overview: None };
-    match r.read_window(src, &options) {
-        // A signed URL whose token expired since the file was opened: open it again, signed
-        // anew, and read once more.
-        Err(Error::Http(_)) if item.sign => {
-            *r = item.open()?;
-            r.read_window(src, &options)
-        }
-        result => result,
-    }
+/// The error of an item's file smaller than its STAC metadata says.
+fn smaller_than_declared(item: &AssetItem, r: &LazyRaster) -> Error {
+    bad(format!(
+        "{} is {}x{}, smaller than its STAC metadata says",
+        crate::vsi::redact_diagnostic_location(&item.href),
+        r.width(),
+        r.height()
+    ))
 }
 
 /// A mosaic of the files of a STACIT subdataset, read by window.
@@ -1677,6 +1645,64 @@ struct Mosaic {
     geo_transform: [f64; 6],
     data_type: DataType,
     nodata: Option<f64>,
+}
+
+impl Mosaic {
+    /// Reads the items of `jobs` (an item's index and what to read of it, in drawing order) with
+    /// `read`, `at_once` at a time, and hands each result to `draw` in that order. A file is
+    /// opened at its first read and stays open for the next windows, whether or not its batch
+    /// failed.
+    fn read_items<J: Sync, T: Send>(
+        &mut self,
+        jobs: &[(usize, J)],
+        at_once: usize,
+        read: impl Fn(&J, &AssetItem, &mut LazyRaster) -> Result<T> + Sync,
+        mut draw: impl FnMut(&J, &AssetItem, T) -> Result<()>,
+    ) -> Result<()> {
+        let at_once = at_once.max(1);
+        for batch in jobs.chunks(at_once) {
+            let slots: Vec<std::sync::Mutex<Option<LazyRaster>>> =
+                batch.iter().map(|(i, _)| std::sync::Mutex::new(self.items[*i].1.take())).collect();
+            let items = &self.items;
+            let fetched = crate::par::map_waiting(batch.len(), at_once, |k| {
+                let (i, job) = &batch[k];
+                let item = &items[*i].0;
+                let mut slot = slots[k].lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if slot.is_none() {
+                    *slot = Some(item.open()?);
+                }
+                let r = slot.as_mut().ok_or_else(|| bad("unreachable"))?;
+                match read(job, item, r) {
+                    // A signed URL whose token expired since the file was opened: open it again,
+                    // signed anew, and read once more.
+                    Err(Error::Http(_)) if item.sign => {
+                        *r = item.open()?;
+                        read(job, item, r)
+                    }
+                    result => result,
+                }
+            });
+            for ((i, _), slot) in batch.iter().zip(slots) {
+                self.items[*i].1 = slot.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+            for ((i, job), value) in batch.iter().zip(fetched?) {
+                draw(job, &self.items[*i].0, value)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The output buffer of `samples` values, filled with the nodata value (0 without one), once
+    /// its bytes and those of its conversion to the mosaic's type are known to fit.
+    fn output(&self, samples: usize, what: &str) -> Result<(Vec<f64>, usize)> {
+        let output_bytes = crate::dataset::fallible::len(&[samples, std::mem::size_of::<f64>()], what)?;
+        let conversion_bytes = if self.data_type == DataType::F64 { Some(0) } else { samples.checked_mul(self.data_type.size_bytes()) };
+        crate::dataset::fallible::check_usable(conversion_bytes.and_then(|bytes| bytes.checked_add(output_bytes)), || {
+            format!("{what} conversion buffers are too large to allocate")
+        })
+        .map_err(Error::ResourceLimit)?;
+        Ok((crate::dataset::fallible::filled(samples, self.nodata.unwrap_or(0.0), what)?, output_bytes))
+    }
 }
 
 impl WindowSource for Mosaic {
@@ -1690,69 +1716,135 @@ impl WindowSource for Mosaic {
         let what = "a STAC mosaic window";
         let pixels = crate::dataset::fallible::len(&[dw, dh], what)?;
         let samples = crate::dataset::fallible::len(&[pixels, bands.len()], what)?;
-        let output_bytes = crate::dataset::fallible::len(&[samples, std::mem::size_of::<f64>()], what)?;
-        let conversion_bytes = if self.data_type == DataType::F64 { Some(0) } else { samples.checked_mul(self.data_type.size_bytes()) };
-        crate::dataset::fallible::check_usable(conversion_bytes.and_then(|bytes| bytes.checked_add(output_bytes)), || {
-            format!("{what} conversion buffers are too large to allocate")
-        })
-        .map_err(Error::ResourceLimit)?;
-        let mut out = crate::dataset::fallible::filled(samples, self.nodata.unwrap_or(0.0), what)?;
+        let (mut out, output_bytes) = self.output(samples, what)?;
         if pixels == 0 || bands.is_empty() {
             return Ok(RasterData::from_f64_vec(self.data_type, out));
         }
-        let covers: Vec<Cover> = self.items.iter().enumerate().filter_map(|(i, (item, _))| cover(i, item, gt, w)).collect();
-        // The items' windows are fetched `at_once` at a time, fewer when their buffers would take more
-        // than half of the usable memory (beside the output), then drawn one after another in
-        // datetime order.
+        let jobs: Vec<(usize, Cover)> =
+            self.items.iter().enumerate().filter_map(|(i, (item, _))| cover(item, gt, w).map(|c| (i, c))).collect();
         // An item's type is known once its file is open: each is counted at the largest's size.
         let validity = usize::from(self.nodata.is_some());
-        let per_item = covers
+        let per_item = jobs
             .iter()
-            .map(|c| c.src.width.saturating_mul(c.src.height).saturating_mul(bands.len() * std::mem::size_of::<f64>() + validity))
+            .map(|(_, c)| c.src.width.saturating_mul(c.src.height).saturating_mul(bands.len() * std::mem::size_of::<f64>() + validity))
             .max()
             .unwrap_or(0);
         let at_once = batch_size(per_item, output_bytes, crate::dataset::fallible::usable_memory(), self.at_once);
-        for batch in covers.chunks(at_once) {
-            let slots: Vec<std::sync::Mutex<Option<LazyRaster>>> =
-                batch.iter().map(|c| std::sync::Mutex::new(self.items[c.index].1.take())).collect();
-            let (items, nodata) = (&self.items, self.nodata);
-            let fetched = crate::par::map_waiting(batch.len(), at_once, |k| {
-                let mut raster = slots[k].lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                read_item_window(&items[batch[k].index].0, &mut raster, batch[k].src, bands, output_bytes, nodata)
-            });
-            // The files opened stay open for the next windows, whether or not the batch failed.
-            for (c, slot) in batch.iter().zip(slots) {
-                self.items[c.index].1 = slot.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let nodata = self.nodata;
+        let read = |c: &Cover, item: &AssetItem, r: &mut LazyRaster| {
+            let src = c.src;
+            if src.x + src.width > r.width() || src.y + src.height > r.height() {
+                return Err(smaller_than_declared(item, r));
             }
-            for (c, sub) in batch.iter().zip(fetched?) {
-                let item = &self.items[c.index].0;
-                let (sw, sh) = (c.src.width, c.src.height);
-                let source_bytes = crate::dataset::fallible::len(&[sub.raster.data.len(), sub.raster.data_type.size_bytes()], what)?;
-                for (bi, buf) in out.chunks_mut(pixels).enumerate() {
-                    let values = crate::ops::BandView::of(&sub.raster, bi);
-                    let retained = output_bytes
-                        .checked_sub(std::mem::size_of_val(buf))
-                        .and_then(|bytes| bytes.checked_add(source_bytes.saturating_sub(values.byte_len())))
-                        .ok_or_else(|| Error::ResourceLimit(format!("{what} retained buffers exceed the address space")))?;
-                    let valid: Option<Vec<bool>> = self.nodata.map(|nd| values.valid(nd));
-                    let req = SourceRead {
-                        values,
-                        valid: valid.as_deref(),
-                        width: sw,
-                        height: sh,
-                        src_type: sub.raster.data_type,
-                        src_rect: [-(c.src.x as f64), -(c.src.y as f64), item.width as f64, item.height as f64],
-                        dst_rect: c.dst_rect,
-                        resampling: crate::ops::Resampling::Nearest,
-                        working_float: self.nodata.is_some(),
-                        invalid_value: None,
-                        within_rects: false,
-                    };
-                    req.read_with_retained(dw, dh, buf, retained, |v| v)?;
+            let source_bytes =
+                [src.width, src.height, bands.len(), r.data_type().size_bytes()].iter().try_fold(1usize, |n, &size| n.checked_mul(size));
+            let validity_bytes = if nodata.is_some() { src.width.checked_mul(src.height) } else { Some(0) };
+            let peak = source_bytes
+                .and_then(|bytes| bytes.checked_add(output_bytes))
+                .and_then(|bytes| validity_bytes.and_then(|mask| bytes.checked_add(mask)));
+            crate::dataset::fallible::check_usable(peak, || format!("{what} source buffers are too large to allocate"))
+                .map_err(Error::ResourceLimit)?;
+            r.read_window(src, &WindowOptions { bands: bands.to_vec(), overview: None })
+        };
+        let draw = |c: &Cover, item: &AssetItem, sub: RasterDataset| {
+            let (sw, sh) = (c.src.width, c.src.height);
+            let source_bytes = crate::dataset::fallible::len(&[sub.raster.data.len(), sub.raster.data_type.size_bytes()], what)?;
+            for (bi, buf) in out.chunks_mut(pixels).enumerate() {
+                let values = crate::ops::BandView::of(&sub.raster, bi);
+                let retained = output_bytes
+                    .checked_sub(std::mem::size_of_val(buf))
+                    .and_then(|bytes| bytes.checked_add(source_bytes.saturating_sub(values.byte_len())))
+                    .ok_or_else(|| Error::ResourceLimit(format!("{what} retained buffers exceed the address space")))?;
+                let valid: Option<Vec<bool>> = nodata.map(|nd| values.valid(nd));
+                let req = SourceRead {
+                    values,
+                    valid: valid.as_deref(),
+                    width: sw,
+                    height: sh,
+                    src_type: sub.raster.data_type,
+                    src_rect: [-(c.src.x as f64), -(c.src.y as f64), item.width as f64, item.height as f64],
+                    dst_rect: c.dst_rect,
+                    resampling: crate::ops::Resampling::Nearest,
+                    working_float: nodata.is_some(),
+                    invalid_value: None,
+                    within_rects: false,
+                };
+                req.read_with_retained(dw, dh, buf, retained, |v| v)?;
+            }
+            Ok(())
+        };
+        self.read_items(&jobs, at_once, read, draw)?;
+        Ok(RasterData::from_f64_vec(self.data_type, out))
+    }
+
+    /// As GDAL's STACIT mosaic (a virtual dataset of a source per item) reads a window into a
+    /// smaller or larger buffer: each item read for its part of the buffer
+    /// (`VRTSimpleSource::GetSrcDstWindow()`), from the overview it chooses, and drawn over the
+    /// earlier ones but where it holds the nodata value (`VRTComplexSource`).
+    fn read_resampled(&mut self, o: &crate::ResampledReadOptions) -> Result<Option<RasterData>> {
+        let Some(request) = o.window else {
+            return Ok(None);
+        };
+        let (bw, bh) = o.size;
+        let bands = &o.bands;
+        let gt = self.geo_transform;
+        let (rx, ry) = (gt[1], -gt[5]);
+        let what = "a resampled STAC mosaic window";
+        let pixels = crate::dataset::fallible::len(&[bw, bh], what)?;
+        let samples = crate::dataset::fallible::len(&[pixels, bands.len()], what)?;
+        let (mut out, output_bytes) = self.output(samples, what)?;
+        if pixels == 0 || bands.is_empty() {
+            return Ok(Some(RasterData::from_f64_vec(self.data_type, out)));
+        }
+        let nearest = o.resampling == crate::ops::Resampling::Nearest;
+        let jobs: Vec<(usize, crate::ops::vrt::Window)> = self
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (item, _))| {
+                let [xmin, ymin, xmax, ymax] = item.bounds;
+                let dst = [(xmin - gt[0]) / rx, (gt[3] - ymax) / ry, (xmax - xmin) / rx, (ymax - ymin) / ry];
+                let src = [0.0, 0.0, item.width as f64, item.height as f64];
+                crate::ops::vrt::src_dst_window(src, dst, (item.width, item.height), nearest, request, (bw, bh)).map(|win| (i, win))
+            })
+            .collect();
+        let per_item = jobs
+            .iter()
+            .map(|(_, win)| win.out_size.0.saturating_mul(win.out_size.1).saturating_mul(bands.len() * std::mem::size_of::<f64>()))
+            .max()
+            .unwrap_or(0);
+        let at_once = batch_size(per_item, output_bytes, crate::dataset::fallible::usable_memory(), self.at_once);
+        let read = |win: &crate::ops::vrt::Window, item: &AssetItem, r: &mut LazyRaster| {
+            if item.width > r.width() || item.height > r.height() {
+                return Err(smaller_than_declared(item, r));
+            }
+            r.read_resampled_by_band(&crate::ResampledReadOptions {
+                bands: bands.clone(),
+                window: Some((win.dreq_off.0, win.dreq_off.1, win.dreq_size.0, win.dreq_size.1)),
+                size: win.out_size,
+                resampling: o.resampling,
+                overview: crate::ops::overview::OverviewSelection::Auto,
+            })
+        };
+        let nodata = self.nodata;
+        let draw = |win: &crate::ops::vrt::Window, _: &AssetItem, sub: RasterDataset| {
+            let ((ox, oy), (ow, oh)) = (win.out_off, win.out_size);
+            for (bi, buf) in out.chunks_mut(pixels).enumerate() {
+                let values = crate::ops::BandView::of(&sub.raster, bi);
+                for r in 0..oh {
+                    let line = &mut buf[(oy + r) * bw + ox..][..ow];
+                    for (c, v) in line.iter_mut().enumerate() {
+                        let value = values.get(r * ow + c);
+                        if nodata.is_none_or(|nd| !(value == nd || (nd.is_nan() && value.is_nan()))) {
+                            *v = value;
+                        }
+                    }
                 }
             }
-        }
-        Ok(RasterData::from_f64_vec(self.data_type, out))
+            Ok(())
+        };
+        self.read_items(&jobs, at_once, read, draw)?;
+        Ok(Some(RasterData::from_f64_vec(self.data_type, out)))
     }
 }
 

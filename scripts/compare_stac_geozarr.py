@@ -9,8 +9,9 @@ Usage:
 ``stac`` queries Earth Search (Sentinel-2 L2A over Colorado: four MGRS tiles in one UTM zone,
 and, paged one item at a time, tiles in two UTM zones) and checks that ``terrio info`` lists the
 subdatasets GDAL's STACIT driver lists, that the mosaics have GDAL's size, geotransform and CRS,
-that windows read from them (where tiles meet) hold GDAL's pixels, and that the item collection's
-footprints have the fields ``ogrinfo`` reads from the same GeoJSON.
+that windows read from them (where tiles meet) and the whole mosaics read at an eighth of their
+size (by nearest neighbour, from the items' overviews) hold GDAL's pixels, and that
+the item collection's footprints have the fields ``ogrinfo`` reads from the same GeoJSON.
 
 ``stacta`` reads STAC items with tiled assets: GDAL's own STACTA test data (fetched from GDAL's
 repository) and pyramids GDAL's ``gdal raster tile --webviewer stac`` writes from DATA_DIR's
@@ -121,6 +122,14 @@ def compare_stac():
                 a = gdal.Open(out).ReadAsArray()
                 b = g.ReadAsArray(x, y, w, w)
                 check(np.array_equal(a, b), f"{sub[-40:]}: window {w}x{w} at ({x}, {y}) identical")
+                # The whole mosaic at an eighth of its size: each item read from its overviews.
+                # By nearest neighbour: an average read at a size that is not an overview's own
+                # differs from GDAL's, even of one file (opengeos/terrio#1181).
+                ow, oh = max(1, g.RasterXSize // 8), max(1, g.RasterYSize // 8)
+                terrio("translate", "--outsize", str(ow), str(oh), sub, out)
+                a = gdal.Open(out).ReadAsArray()
+                b = gdal.Translate("", g, format="MEM", width=ow, height=oh).ReadAsArray()
+                check(np.array_equal(a, b), f"{sub[-40:]}: {ow}x{oh} read identical")
         # Footprints and fields, against ogrinfo on the same GeoJSON.
         path = os.path.join(tmp, "items.json")
         with urllib.request.urlopen(QUERIES[0]) as r, open(path, "wb") as f:
