@@ -210,12 +210,18 @@ chunks are compressed at the one level their encoder has. A level out of range i
 whatever the compression.
 
 `SPARSE_OK=YES` leaves out of a GeoTIFF the blocks of its full-resolution image whose samples are
-all nodata in every band, or 0 without nodata, bit for bit: their offset and byte count are 0. The
-overviews and the mask are written whole. Every block is written when nodata is not a value of the
-samples (a fraction or a value out of range for integers), and, with a warning, when a band's
-nodata in the file's `.aux.xml` sidecar differs from the file's nodata: bands of different nodata,
-or a sidecar of an earlier file that the writer keeps. A COG writes every tile, and warns that it
-does.
+all nodata in every band, or 0 without nodata: their offset and byte count are 0. The samples
+must equal, bit for bit, the nodata that readers read from the file's tag. A NaN nodata is
+written `nan`, so a block of a NaN with another sign or payload is kept. The overviews and the
+mask are written whole. Every block is written when nodata is not a value of the samples (a
+fraction or a value out of range for integers). Every block is also written, with a warning:
+
+- with a lossy compression (JPEG, WebP unless lossless, LERC with a `MAX_Z_ERROR` above 0),
+  which stores a block of nodata only approximately;
+- when a band's nodata in the file's `.aux.xml` sidecar differs from the file's nodata: bands of
+  different nodata, or a sidecar of an earlier file that the writer keeps.
+
+A COG writes every tile, and warns that it does.
 
 terrio reads the pixels of a block left out of a GeoTIFF as nodata, or 0, whichever writer left it
 out: read whole or by window, from an overview, or over HTTP. That nodata is the file's (exactly,

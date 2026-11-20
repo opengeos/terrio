@@ -97,8 +97,9 @@ It needs only NumPy and [affine](https://github.com/rasterio/affine) (installed 
   update. With `sparse_ok=True`, a GeoTIFF leaves out each block whose pixels are all nodata in
   every band (or 0 without nodata): its offset and byte count are 0, and it reads as nodata (or
   0). Above the in-memory limit, an `.aux.xml` left beside the path by an earlier file is kept:
-  when it gives a band another nodata, every block is written, with a warning. A COG writes every
-  tile, and warns that it does.
+  when it gives a band another nodata, every block is written, with a warning, as it is with a
+  lossy compression (JPEG, WebP unless lossless, LERC with a `MAX_Z_ERROR` above 0). A COG writes
+  every tile, and warns that it does.
   A new dataset reports the color interpretation its file reads back when none is set, unless the
   file has another number of bands: a four-band WebP whose alpha band is opaque everywhere is
   written, and reads back, as three-band RGB; an MBTiles archive reads back as four bands, and a
