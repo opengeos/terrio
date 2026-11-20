@@ -1095,6 +1095,26 @@ fn a_decimated_read_holds_a_row_at_a_time_and_reads_a_strip_left_out_as_nodata()
     }
 }
 
+/// A decimated read of strips over the limit decodes a strip within the limit to its end: one cut
+/// short is refused, as a window of it is, even where the rows sampled in it come before the cut.
+#[test]
+fn a_decimated_read_refuses_a_strip_within_the_limit_cut_short() {
+    let cols = 64usize;
+    for compress in ["DEFLATE", "LZW", "ZSTD", "PACKBITS"] {
+        let (values, bytes) = strips_of_16_rows(cols, compress);
+        // The last strip, of 8 rows (1,024 bytes, within the limit), cut to half its stored bytes.
+        let bytes = with_strip(bytes, 2, |offset, count| (offset, count / 2));
+        let open = |limits| LazyRaster::from_tiff_bytes_with_limits(bytes.clone(), limits).unwrap().unwrap();
+        let limits = TiffReadLimits { chunk_bytes: 10 * cols * 2 };
+        let e = open(limits).read_window(Window::new(0, 32, 1, 1), &band1()).unwrap_err();
+        assert!(matches!(e, terrio::Error::InvalidData(_)), "{compress}: {e}");
+        let e = open(limits).read_sampled(&[0, 5], &[3, 32], &band1()).unwrap_err();
+        assert!(matches!(e, terrio::Error::InvalidData(_)), "{compress}: {e}");
+        let got = open(limits).read_sampled(&[0, 5], &[3, 20], &band1()).unwrap().expect("read by rows").to_f64_vec();
+        assert_eq!(got, [3 * cols, 3 * cols + 5, 20 * cols, 20 * cols + 5].map(|i| f64::from(values[i])), "{compress}");
+    }
+}
+
 /// A strip whose bytes are more than 64 bits count (2^31 x 2^32 - 1 UInt64 pixels in one strip,
 /// declared in a header of a few bytes) is not sampled by rows, rather than its size wrapping. No
 /// limit: a row of 2^34 bytes fits it, so the strip's size is computed.

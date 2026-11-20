@@ -114,9 +114,10 @@ and about 17 MiB of working buffers (plus a Zstandard frame's window, at most 12
 whatever the strip's size; a window near the end of a compressed strip takes the time of
 decoding the rows before it. A nearest-neighbour read smaller than the image reads the rows
 it samples the same way, the strip once, holding one row at a time (a row must fit the limit);
-a strip that a sparse file leaves out reads as nodata, as in a window. A read of the whole
-strip, a window whose rows do not fit the limit, a strip whose stored bytes cannot decode to
-its rows, and a strip of another compression are refused as before.
+it decodes a strip within the limit to its end, as a window does, and reads a strip that a
+sparse file leaves out as nodata. A read of the whole strip, a window whose rows do not fit
+the limit, a strip whose stored bytes cannot decode to its rows, and a strip of another
+compression are refused as before.
 
 TIFF masks follow the image's own `NewSubfileType` reduced-resolution flag, including a
 reduced first image with a reduced mask (flag 5) or a unique legacy mask (flag 4).

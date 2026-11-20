@@ -3103,9 +3103,10 @@ impl TiffRaster {
     /// rows lie in a strip over the chunk limit: each strip holding them is read by rows, as
     /// [`TiffRaster::read_samples`] reads such a strip, once and in order, keeping the sampled
     /// pixels of a row as it comes: the read holds one row at a time, which must fit the limit. A
-    /// strip left out (a sparse file's) reads as nodata, as in a window. `None` when a strip holding
-    /// sampled rows is not read by rows, or none read is over the limit: the window spanning the
-    /// pixels is read instead.
+    /// strip within the limit is decoded to its end, as a window decodes it whole, and a strip left
+    /// out (a sparse file's) reads as nodata, as in a window. `None` when a strip holding sampled
+    /// rows is not read by rows, or none read is over the limit: the window spanning the pixels is
+    /// read instead.
     fn read_sampled(&mut self, level: usize, cols: &[usize], rows: &[usize], bands: &[usize]) -> Result<Option<RasterData>> {
         if let Some(i) = self.levels[level].external
             && let Some(ovr) = self.ovr.as_mut()
@@ -3191,15 +3192,21 @@ impl TiffRaster {
                     continue;
                 }
                 if held != Some(r) {
-                    if strip.as_ref().is_none_or(|(at, _)| *at != s) {
-                        strip = Some((s, how.strip(stored, cw, spp, ch.min(lh - s * ch))));
-                    }
-                    if let Some((_, strip_rows)) = strip.as_mut() {
-                        strip_rows.read(&mut read_at, r - s * ch, &mut samples)?;
-                    }
+                    let current = match strip.take() {
+                        Some(same) if same.0 == s => strip.insert(same),
+                        _ => strip.insert((s, how.strip(stored, cw, spp, ch.min(lh - s * ch)))),
+                    };
+                    current.1.read(&mut read_at, r - s * ch, &mut samples)?;
                     held = Some(r);
                 }
                 pick_sampled(&mut out, &samples, map, spp, cols, (o, rows.len()))?;
+            }
+            // The image's last strip, shorter than the others, can be within the limit: it is then
+            // decoded to its end, as a window decodes it whole, and refused when cut short.
+            if let Some((s, mut last)) = strip
+                && (ch.min(lh - s * ch) as u64).saturating_mul(row_bytes as u64) <= limit
+            {
+                last.finish(&mut read_at)?;
             }
         }
         Ok(Some(out))
