@@ -1576,11 +1576,25 @@ fn crs_of(s: &str) -> SpatialRef {
     SpatialRef::parse_literal(s).unwrap_or_default()
 }
 
-/// The most remote files of a mosaic read at once. Each read keeps several requests in flight
-/// itself; on 8 Sentinel-2 COGs of Earth Search (a 2048 x 2048 window, from Europe), 1 at a time
-/// took 33 s, 2: 27 s, 4: 23 s, 8: 13 s. Local files are read one at a time: each read already
-/// decodes its tiles on every core, and more at once were slower.
+/// The most files of a mosaic of remote items read at once: each read waits on the server, and
+/// keeps several requests in flight itself (more than 8 at once gained nothing on Sentinel-2 COGs
+/// of Earth Search).
 const REMOTE_AT_ONCE: usize = 8;
+
+/// How many items' files of a mosaic are read at once: [`REMOTE_AT_ONCE`] when every item is
+/// remote, else one at a time, as each read of a local file (or of a member of a local archive)
+/// already decodes its tiles on every core, and more at once were slower.
+fn items_at_once<'a>(mut hrefs: impl Iterator<Item = &'a str>) -> usize {
+    if hrefs.all(|href| !local_backed(&crate::vfs::Location::parse(href))) { REMOTE_AT_ONCE } else { 1 }
+}
+
+/// How many items' windows of `per_item` bytes each are read at once: at most `most`, and as many
+/// as fit in half of the `usable` memory (1 GiB when unknown) beside the output's `output_bytes`,
+/// but at least one.
+fn batch_size(per_item: usize, output_bytes: usize, usable: Option<u64>, most: usize) -> usize {
+    let budget = usable.map_or(1 << 30, |m| m / 2).saturating_sub(output_bytes as u64);
+    usize::try_from(budget / per_item.max(1) as u64).unwrap_or(usize::MAX).clamp(1, most.max(1))
+}
 
 /// An item a mosaic window covers: the window of its file to read, and where the whole file falls
 /// in the mosaic window (`x`, `y`, width and height in its pixels).
@@ -1690,14 +1704,14 @@ impl WindowSource for Mosaic {
         // The items' windows are fetched `at_once` at a time, fewer when their buffers would take more
         // than half of the usable memory (beside the output), then drawn one after another in
         // datetime order.
+        // An item's type is known once its file is open: each is counted at the largest's size.
         let validity = usize::from(self.nodata.is_some());
         let per_item = covers
             .iter()
-            .map(|c| c.src.width.saturating_mul(c.src.height).saturating_mul(bands.len() * self.data_type.size_bytes() + validity))
+            .map(|c| c.src.width.saturating_mul(c.src.height).saturating_mul(bands.len() * std::mem::size_of::<f64>() + validity))
             .max()
             .unwrap_or(0);
-        let budget = crate::dataset::fallible::usable_memory().map_or(1 << 30, |m| m / 2).saturating_sub(output_bytes as u64);
-        let at_once = usize::try_from(budget / per_item.max(1) as u64).unwrap_or(usize::MAX).clamp(1, self.at_once.max(1));
+        let at_once = batch_size(per_item, output_bytes, crate::dataset::fallible::usable_memory(), self.at_once);
         for batch in covers.chunks(at_once) {
             let slots: Vec<std::sync::Mutex<Option<LazyRaster>>> =
                 batch.iter().map(|c| std::sync::Mutex::new(self.items[c.index].1.take())).collect();
@@ -1824,8 +1838,7 @@ fn open_mosaic(source: &str, groups: Groups, resolution: Option<&str>, kept: &st
     if let Some(slot) = items.iter_mut().find(|(i, _)| i.href == first_href) {
         slot.1 = Some(first);
     }
-    let remote = items.iter().any(|(i, _)| !crate::vfs::Location::parse(&i.href).is_local());
-    let at_once = if remote { REMOTE_AT_ONCE } else { 1 };
+    let at_once = items_at_once(items.iter().map(|(i, _)| i.href.as_str()));
     let mosaic = Mosaic { items, at_once, geo_transform: [xmin, rx, 0.0, ymax, 0.0, -ry], data_type, nodata };
     Ok(LazyRaster::from_source(header, Box::new(mosaic)))
 }
@@ -2212,6 +2225,29 @@ mod tests {
             Mosaic { items: Vec::new(), at_once: 1, geo_transform: [0.0, 1.0, 0.0, 0.0, 0.0, -1.0], data_type: DataType::U8, nodata: None };
         let result = mosaic.read(0, Window::new(0, 0, usize::MAX, 2), &[1]);
         assert!(result.is_err_and(|error| error.is_resource_refusal()));
+    }
+
+    /// Items are read several at a time only when all are remote, and as many as fit in half of
+    /// the usable memory.
+    #[test]
+    fn mosaic_items_read_at_once_when_remote_and_within_memory() {
+        let local = std::env::temp_dir().join("a.tif").to_string_lossy().into_owned();
+        let zipped = format!("/vsizip/{}/a.tif", std::env::temp_dir().join("a.zip").display());
+        let remote = "https://example.com/a.tif";
+        assert_eq!(
+            items_at_once([remote, "s3://bucket/a.tif", "/vsizip//vsicurl/https://example.com/a.zip/a.tif"].into_iter()),
+            REMOTE_AT_ONCE
+        );
+        assert_eq!(items_at_once([local.as_str()].into_iter()), 1);
+        assert_eq!(items_at_once([zipped.as_str()].into_iter()), 1);
+        assert_eq!(items_at_once([remote, local.as_str()].into_iter()), 1);
+        // 100 MiB windows beside a 10 MiB output: 5 fit in half of 1 GiB, 1 in half of 300 MiB, and
+        // at least 1 always.
+        let mib = 1 << 20;
+        assert_eq!(batch_size(100 * mib, 10 * mib, Some(1 << 30), 8), 5);
+        assert_eq!(batch_size(100 * mib, 10 * mib, Some(300 << 20), 8), 1);
+        assert_eq!(batch_size(100 * mib, 10 * mib, Some(10 << 20), 8), 1);
+        assert_eq!(batch_size(mib, 0, None, 8), 8);
     }
 
     /// Items read several at a time are drawn in datetime order, as one at a time: a later item
