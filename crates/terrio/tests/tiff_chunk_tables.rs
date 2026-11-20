@@ -4,6 +4,9 @@
 //! chunks. Shown with sparse files whose blocks of metadata are dropped after the first read, and
 //! with the bytes each thread allocates. Opening, and the `tiff` crate's own reading of an image's
 //! directory when reads move to another level, are not covered: they still read the tables.
+//!
+//! The bytes a thread allocates also show that a read by rows of a Zstandard strip over the chunk
+//! limit allocates the window a frame declares only as the frame decodes into it.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -526,4 +529,62 @@ fn sparse_chunks_use_each_bands_pam_nodata() {
         assert!(raw.raster.data.to_f64_vec()[256..512].iter().all(|v| *v == 7.0));
         assert!(source.read_window_f64(Window::full(16, 16), &options).unwrap().iter().all(|v| v.is_nan()));
     }
+}
+
+/// A Zstandard frame of `n` zero bytes in RLE blocks of at most 128 KiB, declaring a window of
+/// 2^`log` bytes.
+fn zstd_zeros(n: usize, log: u8) -> Vec<u8> {
+    let mut out = vec![0x28, 0xb5, 0x2f, 0xfd, 0, (log - 10) << 3];
+    let mut left = n;
+    while left > 0 {
+        let size = left.min(128 << 10);
+        left -= size;
+        let header = u32::from(left == 0) | 1 << 1 | (size as u32) << 3;
+        out.extend_from_slice(&header.to_le_bytes()[..3]);
+        out.push(0);
+    }
+    out
+}
+
+/// A little-endian TIFF of `cols` x `rows` Byte pixels, BlackIsZero, stored as one Zstandard strip.
+fn zstd_strip(cols: u32, rows: u32, stream: &[u8]) -> Vec<u8> {
+    let entries: [(u16, u16, u32); 9] = [
+        (256, 4, cols),
+        (257, 4, rows),
+        (258, 3, 8),
+        (259, 3, 50000),
+        (262, 3, 1),
+        (273, 4, 8 + 2 + 9 * 12 + 4),
+        (277, 3, 1),
+        (278, 4, rows),
+        (279, 4, stream.len() as u32),
+    ];
+    let mut bytes = b"II*\0".to_vec();
+    bytes.extend_from_slice(&8u32.to_le_bytes());
+    bytes.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+    for (tag, typ, value) in entries {
+        bytes.extend_from_slice(&tag.to_le_bytes());
+        bytes.extend_from_slice(&typ.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(stream);
+    bytes
+}
+
+/// A read by rows of a Zstandard strip over the chunk limit allocates the window each frame
+/// declares as the frame decodes into it, as a whole decode does: a strip of two frames of
+/// 512 KiB, each declaring a 128 MiB window, is read allocating a few MiB. A decoder kept from the
+/// first frame reserved the second's whole window at its header.
+#[test]
+fn zstandard_frames_read_by_rows_allocate_their_window_as_they_decode() {
+    let (cols, rows) = (1024usize, 1024usize);
+    let half = cols * rows / 2;
+    let bytes = zstd_strip(cols as u32, rows as u32, &[zstd_zeros(half, 27), zstd_zeros(half, 27)].concat());
+    // The strip, of 1 MiB, is twice the limit: read by rows.
+    let mut r = LazyRaster::from_tiff_bytes_with_limits(bytes, TiffReadLimits { chunk_bytes: half }).unwrap().unwrap();
+    let (got, allocated, _) = allocations(|| read(&mut r, Window::new(0, rows - 1, 4, 1), &[1], None));
+    assert_eq!(got, [0.0; 4]);
+    assert!(allocated < 32 << 20, "a read by rows allocated {allocated} bytes");
 }

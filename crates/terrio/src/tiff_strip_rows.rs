@@ -582,7 +582,7 @@ where
 }
 
 /// A Zstandard stream decoded with `ruzstd`: its frames one after another, skippable frames
-/// skipped, each decoded a block at a time.
+/// skipped, each decoded a block at a time by a decoder of its own.
 struct Zstd {
     frame: ruzstd::decoding::FrameDecoder,
     /// A frame is being decoded.
@@ -605,6 +605,10 @@ impl Zstd {
                 if src.parts.held().is_empty() {
                     break;
                 }
+                // A new decoder, as a whole decode has for each frame: one reused from an earlier
+                // frame reserves the window the next declares (up to 128 MiB) at its header,
+                // where a new one grows it only as the frame decodes into it.
+                self.frame = ruzstd::decoding::FrameDecoder::new();
                 match self.frame.init(&mut src) {
                     Ok(()) => self.in_frame = true,
                     Err(FrameDecoderError::ReadFrameHeaderError(ReadFrameHeaderError::SkipFrame { length, .. })) => {
