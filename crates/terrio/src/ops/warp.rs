@@ -5712,15 +5712,24 @@ impl<'a, T: crate::pixel::Pixel> Kernel<'a, T> {
             ry = 1.0;
             last_y = 0;
         }
+        // The taps' indexes from one base, instead of `index()` per tap per check: with `row0`
+        // the index of `(ix, iy)`, tap `(x, iy + dy)` is `row0 + dy * width + x`.
+        let band = self.src.bands[b];
+        let mask = self.src.valid[b].as_ref();
+        let width = self.src.width as i64;
+        let row0 = (self.win.sy as i64 + iy - self.src.origin.1 as i64) * width + self.win.sx as i64 - self.src.origin.0 as i64;
         let (mut acc, mut div) = (0.0, 0.0);
         for (dx, dy, m) in [(0, 0, rx * ry), (1, 0, (1.0 - rx) * ry), (0, 1, rx * (1.0 - ry)), (1, 1, (1.0 - rx) * (1.0 - ry))] {
             if dx > last_x || dy > last_y {
                 continue;
             }
             let (x, y) = (self.column(ix + dx), iy + dy);
-            if x >= 0 && x < w && y >= 0 && y < h && self.valid(b, x as usize, y as usize) {
-                div += m;
-                acc += self.value(b, x as usize, y as usize) * m;
+            if x >= 0 && x < w && y >= 0 && y < h {
+                let i = (row0 + dy * width + x) as usize;
+                if mask.is_none_or(|m| m[i]) {
+                    div += m;
+                    acc += crate::pixel::Pixel::to_f64(band[i]) * m;
+                }
             }
         }
         if div == 1.0 {
