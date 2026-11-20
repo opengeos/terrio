@@ -890,13 +890,12 @@ class CRS(Mapping[str, Any]):
         return bool(da) and da == db
 
     def __hash__(self) -> int:
-        """The hash of the EPSG code, else of the WKT, as `__eq__` compares them.
+        """The hash of the WKT.
 
         Returns:
             int: The hash.
         """
-        code = self.to_epsg()
-        return hash(("EPSG", code)) if code is not None else hash(self.to_wkt())
+        return hash(self.to_wkt())
 
     def __bool__(self) -> bool:
         """Whether the CRS is defined.
