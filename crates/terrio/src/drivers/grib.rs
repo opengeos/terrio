@@ -353,6 +353,17 @@ impl Store {
         }
     }
 
+    /// Where band `b` (from 1) is: an identity of its message, the same for every band of the
+    /// message, and the band's index among the message's bands.
+    fn locate(&self, b: usize) -> Result<(usize, usize)> {
+        let found = match self {
+            Store::Bytes(_, index) | Store::File(_, index) => index.get(b.wrapping_sub(1)).map(|&(start, _, k)| (start, k)),
+            #[cfg(remote)]
+            Store::Remote(messages) => messages.band(b.wrapping_sub(1)),
+        };
+        found.ok_or_else(|| Error::InvalidArgument(format!("band {b} out of range")))
+    }
+
     /// The message of band `b` (from 1), and the band's index among the message's bands.
     fn message(&self, b: usize) -> Result<(std::borrow::Cow<'_, [u8]>, usize)> {
         let out_of_range = || Error::InvalidArgument(format!("band {b} out of range"));
@@ -483,15 +494,34 @@ impl Source {
                 .collect();
         }
         missing.sort_unstable();
-        // A local file's messages are read on this thread, then decoded on the pool.
-        let messages: Vec<_> = missing.iter().map(|&b| self.store.message(b)).collect();
-        let decoded = crate::par::map_range_coarse(missing.len(), |i| match &messages[i] {
-            Ok((message, k)) => self.decode_window(message, *k, missing[i], window, share),
+        // A local file's messages are read on this thread, each once for all the bands of it to
+        // decode, then the bands are decoded on the pool.
+        let mut messages: Vec<(usize, Result<(std::borrow::Cow<'_, [u8]>, usize)>)> = Vec::new();
+        let located: Vec<Result<(usize, usize)>> = missing
+            .iter()
+            .map(|&b| {
+                let (id, k) = self.store.locate(b)?;
+                let at = messages.iter().position(|(m, _)| *m == id).unwrap_or_else(|| {
+                    messages.push((id, self.store.message(b)));
+                    messages.len() - 1
+                });
+                Ok((at, k))
+            })
+            .collect();
+        let decoded = crate::par::map_range_coarse(missing.len(), |i| match &located[i] {
+            Ok((at, k)) => match &messages[*at].1 {
+                Ok((message, _)) => self.decode_window(message, *k, missing[i], window, share),
+                Err(_) => Ok(Vec::new()),
+            },
             Err(_) => Ok(Vec::new()),
         });
+        let mut errors: Vec<Option<Error>> = messages.into_iter().map(|(_, message)| message.err()).collect();
         let mut out = Vec::with_capacity(missing.len());
-        for ((b, message), values) in missing.into_iter().zip(messages).zip(decoded) {
-            message?;
+        for ((b, located), values) in missing.into_iter().zip(located).zip(decoded) {
+            let (at, _) = located?;
+            if let Some(e) = errors[at].take() {
+                return Err(e);
+            }
             out.push((b, values?));
         }
         Ok(out)

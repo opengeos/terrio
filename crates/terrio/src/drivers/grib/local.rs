@@ -288,6 +288,49 @@ mod tests {
         assert_eq!(read(Window::new(500, 290, 100, 10)), messages, "rows the cache does not hold");
     }
 
+    /// Catches a message read once for each of its fields that a read decodes: the two fields of
+    /// the one message of `subgrids_reuse_bitmap.grib2`, read together with nothing cached, read the
+    /// message once and give the values of the file read whole.
+    #[test]
+    fn the_fields_of_one_message_read_together_read_it_once() {
+        let _serial = cache_test_guard(0);
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/grib/subgrids_reuse_bitmap.grib2");
+        let bytes = std::fs::read(path).unwrap();
+        let spans = super::super::message_spans(&bytes).unwrap();
+        assert_eq!(spans.len(), 1);
+        let whole = super::super::read_bytes(&bytes).unwrap().raster.data.to_f64_vec();
+        let mut r = crate::LazyRaster::open(path).unwrap();
+        assert_eq!(r.band_count(), 2);
+        let all = Window::full(r.width(), r.height());
+        let before = bytes_read();
+        let values = r.read_window(all, &WindowOptions { bands: vec![1, 2], overview: None }).unwrap().raster.data.to_f64_vec();
+        assert_eq!(bytes_read() - before, spans[0].1 as u64, "the message read once");
+        assert!(values.len() == whole.len() && values.iter().zip(&whole).all(|(a, b)| a.to_bits() == b.to_bits()));
+    }
+
+    /// Catches a band's message that cannot be read taken for a band without values, or the errors
+    /// of a read of several bands reported out of band order: the file changed after open, band 1's
+    /// message damaged and band 2's cut off, a read of both fails with band 1's error.
+    #[test]
+    fn a_read_fails_with_the_error_of_its_first_band_that_fails() {
+        let _serial = cache_test_guard(0);
+        let dir = tempfile::tempdir().unwrap();
+        let (path, bytes) = grib_file(dir.path(), 40, 30, 2);
+        let spans = super::super::message_spans(&bytes).unwrap();
+        let mut r = crate::LazyRaster::open(&path).unwrap();
+        let mut changed = bytes[..spans[1].0 + 20].to_vec();
+        changed[spans[0].0 + 16..spans[0].0 + 20].copy_from_slice(&[0, 0, 0, 1]);
+        std::fs::write(&path, &changed).unwrap();
+        let mut error = |bands: Vec<usize>| match r.read_window(Window::new(0, 0, 40, 30), &WindowOptions { bands, overview: None }) {
+            Ok(_) => "read".to_string(),
+            Err(e) => e.to_string(),
+        };
+        let (first, second) = (error(vec![1]), error(vec![2]));
+        assert!(first.contains("invalid GRIB2 section at offset 16"), "{first}");
+        assert!(second != "read" && second != first, "{second}");
+        assert_eq!(error(vec![1, 2]), first);
+    }
+
     /// Catches the readers of one file sharing its bands when they decode it otherwise: one opened
     /// with `GRIB_NORMALIZE_UNITS=NO` reads Kelvin while another, open at once, reads Celsius.
     #[test]
