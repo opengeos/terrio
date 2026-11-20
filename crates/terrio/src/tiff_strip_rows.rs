@@ -467,8 +467,8 @@ impl Inflate {
         Ok(Self { z: fdeflate::Decompressor::new(), window, end: 0, given: 0, left: strip })
     }
 
-    /// Inflates more bytes past `given`: `false` when the stream ends first.
-    fn inflate<F>(&mut self, parts: &mut Parts, read_at: &mut F) -> Result<bool>
+    /// Inflates more bytes past `given`, at most `want`: `false` when the stream ends first.
+    fn inflate<F>(&mut self, parts: &mut Parts, read_at: &mut F, want: u64) -> Result<bool>
     where
         F: FnMut(u64, &mut [u8]) -> Result<()>,
     {
@@ -480,7 +480,9 @@ impl Inflate {
             self.window.copy_within(self.end - keep..self.end, 0);
             (self.end, self.given) = (keep, keep);
         }
-        let stop = self.window.len().min(self.end.saturating_add(usize::try_from(self.left).unwrap_or(usize::MAX)));
+        // No further than the read needs: inflating on to the end of the stream would check its
+        // Adler-32 for a read that stops before the strip's last row (`end` checks it).
+        let stop = self.window.len().min(self.end.saturating_add(usize::try_from(self.left.min(want)).unwrap_or(usize::MAX)));
         loop {
             parts.load(read_at)?;
             // At the end of the stored bytes, a stream that has not ended is cut short: fdeflate
@@ -507,7 +509,7 @@ impl Inflate {
     {
         let mut done = 0u64;
         while done < n {
-            if self.given == self.end && !self.inflate(parts, read_at)? {
+            if self.given == self.end && !self.inflate(parts, read_at, n - done)? {
                 break;
             }
             let k = ((self.end - self.given) as u64).min(n - done) as usize;

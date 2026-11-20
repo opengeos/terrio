@@ -917,10 +917,10 @@ fn rows_of_big_endian_strips_with_predictors_keep_their_values() {
 /// A compressed stream cut short, within the bytes the file holds: the windows before the cut read,
 /// and one reaching past it is refused as invalid data, as a whole decode of the strip is. So is a
 /// stream that is not valid where a window starts reading it (a Deflate stream's zlib header), and
-/// a Deflate stream whose Adler-32 is wrong once a window reaches the strip's last row (the
-/// Adler-32 in the next part of stored bytes read, after the samples), while one cut in its
-/// Adler-32 reads, as whole. A file cut short after it was opened is an I/O error, whatever the
-/// compression.
+/// a Deflate stream whose Adler-32 is wrong once a window reaches the strip's last row, and only
+/// then, whether the Adler-32 is in the first part of stored bytes read or in the next, while one
+/// cut in its Adler-32 reads, as whole. A file cut short after it was opened is an I/O error,
+/// whatever the compression.
 #[test]
 fn a_compressed_strip_cut_short_is_invalid_where_a_window_reaches_the_cut() {
     // 256 x 600 UInt16 pixels (307 KB) that compress little, cut in their last eighth: Zstandard
@@ -951,35 +951,37 @@ fn a_compressed_strip_cut_short_is_invalid_where_a_window_reaches_the_cut() {
         let e = read(&header, limits, Window::new(0, 0, 1, 1)).unwrap_err();
         assert!(matches!(e, terrio::Error::InvalidData(_)), "{limits:?}: {e}");
     }
-    // One stored Deflate block of 809 x 81 bytes: the stream's first 65,536 bytes (the first part
-    // read) end with the samples, its Adler-32 is in the next.
-    let (width, height) = (809usize, 81usize);
-    let data: Vec<u8> = (0..width * height).map(|i| (i % 251) as u8).collect();
-    let (mut a, mut b) = (1u32, 0u32);
-    for &x in &data {
-        a = (a + u32::from(x)) % 65_521;
-        b = (b + a) % 65_521;
+    // One stored Deflate block of `width` x `height` bytes: 809 x 81 end the stream's first 65,536
+    // bytes (the first part read) with the samples, its Adler-32 in the next; 100 x 81 hold the
+    // whole stream, its Adler-32 too, in the first part.
+    for (width, height) in [(809usize, 81usize), (100, 81)] {
+        let data: Vec<u8> = (0..width * height).map(|i| (i % 251) as u8).collect();
+        let (mut a, mut b) = (1u32, 0u32);
+        for &x in &data {
+            a = (a + u32::from(x)) % 65_521;
+            b = (b + a) % 65_521;
+        }
+        let len = data.len() as u16;
+        let mut stream = vec![0x78, 0x01, 0x01];
+        stream.extend(len.to_le_bytes());
+        stream.extend((!len).to_le_bytes());
+        stream.extend(&data);
+        assert!(width != 809 || stream.len() == 65_536);
+        stream.extend((b << 16 | a).to_be_bytes());
+        let mut adler = stream.clone();
+        *adler.last_mut().unwrap() ^= 1;
+        let file = |stream: &[u8]| strip_tiff(false, (width as u32, height as u32, 1), (8, 1), (8, 1), stream);
+        let (top, end) = (Window::new(0, 0, 3, 1), Window::new(0, height - 2, width, 2));
+        let pixels =
+            |w: Window| -> Vec<f64> { (w.y..w.y + w.height).flat_map(|y| data[y * width..][..w.width].to_vec()).map(f64::from).collect() };
+        for limits in [TiffReadLimits { chunk_bytes: 10 * width }, TiffReadLimits::unlimited()] {
+            assert_eq!(read(&file(&stream), limits, end).unwrap(), pixels(end), "{width}: {limits:?}");
+            let e = read(&file(&adler), limits, end).unwrap_err();
+            assert!(matches!(e, terrio::Error::InvalidData(_)), "{width}: {limits:?}: {e}");
+            assert_eq!(read(&file(&stream[..stream.len() - 2]), limits, end).unwrap(), pixels(end), "{width}: {limits:?}");
+        }
+        assert_eq!(read(&file(&adler), TiffReadLimits { chunk_bytes: 10 * width }, top).unwrap(), pixels(top), "{width}");
     }
-    let len = data.len() as u16;
-    let mut stream = vec![0x78, 0x01, 0x01];
-    stream.extend(len.to_le_bytes());
-    stream.extend((!len).to_le_bytes());
-    stream.extend(&data);
-    assert_eq!(stream.len(), 65_536);
-    stream.extend((b << 16 | a).to_be_bytes());
-    let mut adler = stream.clone();
-    *adler.last_mut().unwrap() ^= 1;
-    let file = |stream: &[u8]| strip_tiff(false, (width as u32, height as u32, 1), (8, 1), (8, 1), stream);
-    let (top, end) = (Window::new(0, 0, 3, 1), Window::new(0, height - 2, width, 2));
-    let pixels =
-        |w: Window| -> Vec<f64> { (w.y..w.y + w.height).flat_map(|y| data[y * width..][..w.width].to_vec()).map(f64::from).collect() };
-    for limits in [TiffReadLimits { chunk_bytes: 10 * width }, TiffReadLimits::unlimited()] {
-        assert_eq!(read(&file(&stream), limits, end).unwrap(), pixels(end), "{limits:?}");
-        let e = read(&file(&adler), limits, end).unwrap_err();
-        assert!(matches!(e, terrio::Error::InvalidData(_)), "{limits:?}: {e}");
-        assert_eq!(read(&file(&stream[..stream.len() - 2]), limits, end).unwrap(), pixels(end), "{limits:?}");
-    }
-    assert_eq!(read(&file(&adler), TiffReadLimits { chunk_bytes: 10 * width }, top).unwrap(), pixels(top));
     let end = Window::new(cols - 3, rows - 1, 3, 1);
     let dir = tempfile::tempdir().unwrap();
     for compression in [8u16, 5, 50000, 32773] {
