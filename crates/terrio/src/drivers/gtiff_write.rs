@@ -2049,39 +2049,20 @@ impl GeoTiffWriter {
     /// rows go past the raster's height, the file has a mask and `mask` does not hold its rows, a
     /// mask is given for a COG without one, or the file cannot be written. A GeoTIFF other than a
     /// COG refuses any call once a block row failed to be written, and otherwise checks only the
-    /// data type when `rows` is zero.
+    /// data type when `rows` is zero. A COG refuses a call, before it starts, with
+    /// [`Error::ResourceLimit`] when the bytes it counts for it (with a mask, the most the call can
+    /// have allocated at once) are more than the memory the process can use
+    /// ([`crate::usable_memory`]).
     pub fn write_rows(&mut self, data: &RasterData, rows: usize, mask: Option<&[u8]>) -> Result<()> {
         match &mut self.inner {
             RowWriter::Tiff(t) => t.write_rows(data, rows, mask),
             RowWriter::Cog(c) => {
                 let writer = c.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner);
-                // The caller, owned slab and (when built) overview source buffer coexist.
-                let copies = if writer.builds.iter().any(|build| build.src == 0) { 3 } else { 2 };
-                let bytes = data
-                    .len()
-                    .checked_mul(data.data_type().size_bytes())
-                    .and_then(|n| n.checked_add(mask.map_or(0, <[u8]>::len)))
-                    .and_then(|n| n.checked_mul(copies));
-                let retained = writer.builds.iter().try_fold(0usize, |total, build| {
-                    build
-                        .buf
-                        .len()
-                        .checked_mul(writer.data_type.size_bytes())
-                        .and_then(|n| n.checked_add(build.mask.capacity()))
-                        .and_then(|n| n.checked_add(build.held()))
-                        .and_then(|n| n.checked_add(total))
-                });
-                let retained = retained.and_then(|retained| {
-                    writer.levels.iter().try_fold(retained, |total, level| {
-                        level
-                            .pending
-                            .len()
-                            .checked_mul(writer.data_type.size_bytes())
-                            .and_then(|n| n.checked_add(level.mask.as_ref().map_or(0, |mask| mask.pending.capacity())))
-                            .and_then(|n| n.checked_add(total))
-                    })
-                });
-                let bytes = bytes.and_then(|n| retained.and_then(|held| held.checked_mul(2)).and_then(|held| n.checked_add(held)));
+                // The rows of tiles compressed since are spooled first: they no longer count.
+                #[cfg(not(target_family = "wasm"))]
+                writer.land_compressed()?;
+                let bytes = data.len().checked_mul(data.data_type().size_bytes());
+                let bytes = bytes.and_then(|bytes| writer.call_bytes(bytes, mask.map_or(0, <[u8]>::len), rows));
                 crate::dataset::fallible::check_usable(bytes, || {
                     "a COG input slab and overview working copies are too large to allocate".into()
                 })
@@ -2339,7 +2320,7 @@ impl TiffRows {
         let data_type = self.data_type;
         let empty = || RasterData::new_filled(data_type, 0, 0.0);
         let all = if old > 0 {
-            let joined = append_rows(&self.pending, old, data, rows, cols, bands)?;
+            let joined = append_rows(&self.pending, old, 0, data, rows, cols, bands)?;
             // Freed once copied.
             self.pending = empty();
             std::borrow::Cow::Owned(joined)
@@ -2542,15 +2523,24 @@ fn check_rows_held(r: &Raster, block_rows: usize) -> Result<()> {
     .map_err(Error::ResourceLimit)
 }
 
-/// The `a_rows` rows of `a` followed by the `b_rows` rows of `b`, band after band.
-fn append_rows(a: &RasterData, a_rows: usize, b: &RasterData, b_rows: usize, cols: usize, bands: usize) -> Result<RasterData> {
+/// The rows of `a` (`a_rows` rows) from `a_from` on, followed by the `b_rows` rows of `b`, band
+/// after band.
+fn append_rows(
+    a: &RasterData,
+    a_rows: usize,
+    a_from: usize,
+    b: &RasterData,
+    b_rows: usize,
+    cols: usize,
+    bands: usize,
+) -> Result<RasterData> {
     macro_rules! join {
         ($($v:ident),*) => {
             match (a, b) {
                 $((RasterData::$v(a), RasterData::$v(b)) => {
-                    let mut out = Vec::with_capacity(cols * (a_rows + b_rows) * bands);
+                    let mut out = Vec::with_capacity(cols * (a_rows - a_from + b_rows) * bands);
                     for band in 0..bands {
-                        out.extend_from_slice(&a[band * cols * a_rows..(band + 1) * cols * a_rows]);
+                        out.extend_from_slice(&a[(band * a_rows + a_from) * cols..(band + 1) * cols * a_rows]);
                         out.extend_from_slice(&b[band * cols * b_rows..(band + 1) * cols * b_rows]);
                     }
                     Ok(RasterData::$v(out))
@@ -2639,8 +2629,10 @@ struct CogMask {
 type CogImages = (Image, Option<Image>);
 
 /// An overview level of a [`CogWriter`] being computed from the level it is resampled from: the
-/// rows of that level its next blocks need (`buf_rows` rows from `buf_row0`, band after band;
-/// shared with the block rows being computed from them), and its next row.
+/// rows of that level its next blocks need (`buf_rows` rows from `buf_row0`, band after band, and
+/// their mask when the COG has one), and its next row. With a mask, the rows and the mask are
+/// shared with the block rows being computed from them, and the first `spent` rows, which no later
+/// block reads, are left out when rows are next appended.
 struct CogBuild {
     level: usize,
     src: usize,
@@ -2648,23 +2640,44 @@ struct CogBuild {
     buf: std::sync::Arc<RasterData>,
     buf_row0: usize,
     buf_rows: usize,
+    spent: usize,
     next_y: usize,
-    mask: Vec<u8>,
+    /// The mask of the rows (`RasterData::U8`, empty without a mask).
+    mask: std::sync::Arc<RasterData>,
     mask_plan: gdal_overview::Plan,
-    /// Block rows being computed on the thread pool (a COG with a mask's), in order: their rows,
-    /// the bytes their job holds, and the block row (and its mask) to come.
+    /// Block rows being computed on the thread pool (a COG with a mask's), in order.
     #[cfg(not(target_family = "wasm"))]
-    in_flight: std::collections::VecDeque<(usize, usize, std::sync::mpsc::Receiver<OverviewRows>)>,
+    in_flight: std::collections::VecDeque<BlockRowJob>,
 }
 
 /// An overview block row: its rows of every band, and of its mask when the COG has one.
 type OverviewRows = (RasterData, Option<Vec<u8>>);
 
+/// A block row being computed on the thread pool: its rows, the block row (and its mask) to come,
+/// and the rows and mask it is resampled from, which it holds until it is done, with their bytes.
+#[cfg(not(target_family = "wasm"))]
+struct BlockRowJob {
+    rows: usize,
+    result: std::sync::mpsc::Receiver<OverviewRows>,
+    holds: [(std::sync::Weak<RasterData>, usize); 2],
+}
+
 impl CogBuild {
-    /// The bytes held by the block rows being computed: the rows each is resampled from.
-    fn held(&self) -> usize {
+    /// The bytes the block rows being computed keep alive besides the build's own rows and mask:
+    /// rows and masks the build has replaced since (appending to them), each counted once.
+    fn kept(&self) -> usize {
         #[cfg(not(target_family = "wasm"))]
-        return self.in_flight.iter().map(|(_, held, _)| held).sum();
+        {
+            let mut counted = vec![std::sync::Arc::as_ptr(&self.buf), std::sync::Arc::as_ptr(&self.mask)];
+            let mut bytes = 0usize;
+            for (held, size) in self.in_flight.iter().flat_map(|job| &job.holds) {
+                if held.strong_count() > 0 && !counted.contains(&held.as_ptr()) {
+                    counted.push(held.as_ptr());
+                    bytes = bytes.saturating_add(*size);
+                }
+            }
+            bytes
+        }
         #[cfg(target_family = "wasm")]
         0
     }
@@ -2741,8 +2754,9 @@ impl CogWriter {
                     buf,
                     buf_row0: 0,
                     buf_rows: 0,
+                    spent: 0,
                     next_y: 0,
-                    mask: Vec::new(),
+                    mask: std::sync::Arc::new(RasterData::U8(Vec::new())),
                     mask_plan,
                     #[cfg(not(target_family = "wasm"))]
                     in_flight: Default::default(),
@@ -2852,12 +2866,20 @@ impl CogWriter {
                 continue;
             }
             let bd = &mut self.builds[b];
-            let appended = if bd.buf_rows == 0 { data.clone() } else { append_rows(&bd.buf, bd.buf_rows, &data, rows, cols, bands)? };
+            // The rows held that later blocks read, then the new ones (without a mask, every row held).
+            let live = bd.buf_rows - bd.spent;
+            let appended = if live == 0 { data.clone() } else { append_rows(&bd.buf, bd.buf_rows, bd.spent, &data, rows, cols, bands)? };
             bd.buf = std::sync::Arc::new(appended);
             if let Some(mask) = &mask {
-                bd.mask.extend_from_slice(mask);
+                let RasterData::U8(held) = &*bd.mask else { unreachable!("a Byte mask") };
+                let mut appended = Vec::with_capacity((live + rows) * cols);
+                appended.extend_from_slice(&held[bd.spent * cols..]);
+                appended.extend_from_slice(mask);
+                bd.mask = std::sync::Arc::new(RasterData::U8(appended));
             }
-            bd.buf_rows += rows;
+            bd.buf_row0 += bd.spent;
+            bd.buf_rows = live + rows;
+            bd.spent = 0;
             loop {
                 let bd = &self.builds[b];
                 if bd.next_y >= bd.plan.dst.1 {
@@ -2867,36 +2889,38 @@ impl CogWriter {
                 if need.end > received && !done {
                     break;
                 }
-                let (held, compute) = self.block_row(b, mask.is_some());
+                let compute = self.block_row_job(b, mask.is_some());
                 // With a mask, a block row is about three times the work (the image's weighted by the
                 // mask, and the mask's own): on the thread pool, while the next rows are given. Without
                 // one, the calling thread keeps up with it here, before its rows are dropped, as before.
                 #[cfg(not(target_family = "wasm"))]
                 let here = if mask.is_some() {
+                    let bd = &self.builds[b];
+                    let holds = [
+                        (std::sync::Arc::downgrade(&bd.buf), bd.buf.len() * self.data_type.size_bytes()),
+                        (std::sync::Arc::downgrade(&bd.mask), bd.mask.len()),
+                    ];
                     let (tx, rx) = std::sync::mpsc::sync_channel(1);
                     crate::par::spawn(move || {
                         let _ = tx.send(compute());
                     });
-                    self.builds[b].in_flight.push_back((n, held, rx));
+                    self.builds[b].in_flight.push_back(BlockRowJob { rows: n, result: rx, holds });
                     None
                 } else {
                     Some(compute())
                 };
                 #[cfg(target_family = "wasm")]
-                let here = {
-                    let _ = held;
-                    Some(compute())
-                };
+                let here = Some(compute());
                 let bd = &mut self.builds[b];
                 bd.next_y += n;
-                // The rows no later block reads.
+                // The rows no later block reads: with a mask, left out when rows are next appended (a
+                // block row being computed may still read the rows held); without, dropped now.
                 let keep = bd.plan.first_row(bd.next_y).clamp(bd.buf_row0, bd.buf_row0 + bd.buf_rows);
-                if keep > bd.buf_row0 {
+                if mask.is_some() {
+                    bd.spent = keep - bd.buf_row0;
+                } else if keep > bd.buf_row0 {
                     let drop = keep - bd.buf_row0;
                     bd.buf = std::sync::Arc::new(slice_rows(&bd.buf, bd.buf_rows, drop..bd.buf_rows, cols, bands));
-                    if mask.is_some() {
-                        bd.mask.drain(..drop * cols);
-                    }
                     bd.buf_rows -= drop;
                     bd.buf_row0 = keep;
                 }
@@ -2915,11 +2939,15 @@ impl CogWriter {
         if l.pending_rows == 0 {
             l.pending = data;
         } else {
-            l.pending = append_rows(&l.pending, l.pending_rows, &data, rows, cols, bands)?;
+            l.pending = append_rows(&l.pending, l.pending_rows, 0, &data, rows, cols, bands)?;
         }
         l.pending_rows += rows;
         if let (Some(pending), Some(mask)) = (&mut l.mask, mask) {
-            pending.pending.extend(mask);
+            if pending.pending.is_empty() {
+                pending.pending = mask;
+            } else {
+                pending.pending.extend(mask);
+            }
         }
         let total = l.pending_rows;
         let ready = if done { total } else { total / self.tile * self.tile };
@@ -2933,25 +2961,27 @@ impl CogWriter {
                 l.pending = rest;
             }
             l.pending_rows = total - ready;
-            let mask = l.mask.as_mut().map(|m| m.pending.drain(..ready * cols).collect());
+            let mask = l
+                .mask
+                .as_mut()
+                .map(|m| if ready == total { std::mem::take(&mut m.pending) } else { m.pending.drain(..ready * cols).collect() });
             self.compress(i, slab, ready, mask)?;
         }
         Ok(())
     }
 
-    /// The next block row of build `b` as a job, from the rows the build holds (shared) and a copy
-    /// of their mask: the bytes the job holds, and the job, which computes the block row and, when
-    /// `masked`, the mask's, side by side, as `push` computed them.
-    fn block_row(&self, b: usize, masked: bool) -> (usize, impl FnOnce() -> OverviewRows + Send + 'static) {
+    /// The next block row of build `b` as a job, from the rows the build holds and, when `masked`,
+    /// their mask (both shared): it computes the block row and the mask's, side by side, as `push`
+    /// computed them.
+    fn block_row_job(&self, b: usize, masked: bool) -> impl FnOnce() -> OverviewRows + Send + 'static {
         let bd = &self.builds[b];
         let (plan, mask_plan) = (bd.plan.clone(), bd.mask_plan.clone());
         let (buf, row0, rows, y) = (bd.buf.clone(), bd.buf_row0, bd.buf_rows, bd.next_y);
-        let mask = masked.then(|| RasterData::U8(bd.mask.clone()));
+        let mask = masked.then(|| bd.mask.clone());
         let (bands, nodata, alpha, mask_without_dataset) = (self.bands, self.nodata, self.alpha, self.mask_without_dataset);
         let own = !mask_without_dataset || bd.src == 0;
-        let held = buf.len() * self.data_type.size_bytes() + if masked { bd.mask.len() } else { 0 };
-        let compute = move || {
-            let values = match &mask {
+        move || {
+            let values = match mask.as_deref() {
                 Some(RasterData::U8(values)) => Some(values.as_slice()),
                 _ => None,
             };
@@ -2980,28 +3010,27 @@ impl CogWriter {
             });
             let Some(out) = parts.pop() else { unreachable!("a block row") };
             (out, next_mask)
-        };
-        (held, compute)
+        }
     }
 
     /// Adds the oldest block row of build `b` being computed to its level, waiting for it when
     /// `wait`; whether one was added.
     #[cfg(not(target_family = "wasm"))]
     fn land_block_row(&mut self, b: usize, wait: bool) -> Result<bool> {
-        let Some((_, _, rx)) = self.builds[b].in_flight.front() else { return Ok(false) };
+        let Some(job) = self.builds[b].in_flight.front() else { return Ok(false) };
         let stopped = || Error::InvalidData("a COG overview computation stopped".into());
         let (out, next_mask) = if wait {
-            rx.recv().map_err(|_| stopped())?
+            job.result.recv().map_err(|_| stopped())?
         } else {
-            match rx.try_recv() {
+            match job.result.try_recv() {
                 Ok(rows) => rows,
                 Err(std::sync::mpsc::TryRecvError::Empty) => return Ok(false),
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => return Err(stopped()),
             }
         };
-        let Some((n, _, _)) = self.builds[b].in_flight.pop_front() else { return Ok(false) };
+        let Some(job) = self.builds[b].in_flight.pop_front() else { return Ok(false) };
         let level = self.builds[b].level;
-        self.push(level, out, n, next_mask)?;
+        self.push(level, out, job.rows, next_mask)?;
         Ok(true)
     }
 
@@ -3040,21 +3069,128 @@ impl CogWriter {
         self.add(i, rows, img)
     }
 
+    /// Adds the rows of tiles already compressed, oldest first, to their level's spools.
+    #[cfg(not(target_family = "wasm"))]
+    fn land_compressed(&mut self) -> Result<()> {
+        while let Some((_, _, rx)) = self.in_flight.front() {
+            let img = match rx.try_recv() {
+                Ok(img) => img?,
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    return Err(Error::InvalidData("a COG tile compression stopped".into()));
+                }
+            };
+            if let Some((i, rows, _)) = self.in_flight.pop_front() {
+                self.add(i, rows, img)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The most bytes the compressed tiles of `rows` rows of level `i` take: the rows padded to
+    /// whole tiles, compressed (LZW can make bytes it cannot compress half as large again, the
+    /// others less than 1/64 larger), and their mask's tiles (a bit a pixel, deflated).
+    fn encoded_bytes(&self, i: usize, rows: usize) -> usize {
+        let t = self.tile;
+        let tiles = self.levels[i].cols.div_ceil(t).saturating_mul(rows.div_ceil(t));
+        let raw = tiles.saturating_mul(t * t).saturating_mul(self.bands * self.data_type.size_bytes());
+        let image = match self.encoding.0 {
+            Compression::None => raw,
+            Compression::Lzw => raw.saturating_add(raw / 2 + raw / 1024),
+            _ => raw.saturating_add(raw / 64),
+        };
+        let mask = if self.levels[i].mask.is_some() { tiles.saturating_mul(t.div_ceil(8) * t * 65 / 64) } else { 0 };
+        // Each chunk's headers.
+        let headers = tiles.saturating_mul(self.bands + 1).saturating_mul(64);
+        image.saturating_add(mask).saturating_add(headers)
+    }
+
+    /// The bytes [`GeoTiffWriter::write_rows`] checks against the memory the process can use before
+    /// a call giving `rows` rows (`data` bytes, and `mask` bytes of their mask), `None` for more
+    /// than the address space holds: the caller's rows, the writer's copy of them, and each
+    /// overview build's, while the rows each build and level holds are replaced by copies (twice).
+    /// With a mask, the block rows are computed on the thread pool while the next rows are given,
+    /// and the most the call can have allocated at once also counts what they hold: the rows they
+    /// keep that the builds no longer do, their working buffers, the block rows added to the next
+    /// levels, the rows cut into rows of tiles, and the rows of tiles being compressed with their
+    /// compressed tiles.
+    fn call_bytes(&self, data: usize, mask: usize, rows: usize) -> Option<usize> {
+        // Saturating: a term at `usize::MAX` is more than the address space holds.
+        let sum = |parts: &[usize]| parts.iter().fold(0usize, |total, n| total.saturating_add(*n));
+        let size = self.data_type.size_bytes();
+        let new = data.saturating_add(mask);
+        let held = |b: &CogBuild| b.buf.len().saturating_mul(size).saturating_add(b.mask.len());
+        let pending =
+            |l: &CogLevel| l.pending.len().saturating_mul(size).saturating_add(l.mask.as_ref().map_or(0, |m| m.pending.capacity()));
+        let (built, waiting): (Vec<_>, Vec<_>) = (self.builds.iter().map(held).collect(), self.levels.iter().map(pending).collect());
+        let copies = 2 + self.builds.iter().filter(|b| b.src == 0).count();
+        let mut terms = vec![new.saturating_mul(copies), sum(&built).saturating_mul(2), sum(&waiting).saturating_mul(2)];
+        let l0 = &self.levels[0];
+        if l0.mask.is_some() {
+            // Rows (with those pending) that are not whole rows of tiles are joined, then cut in two:
+            // the rows pending are held a third time.
+            let cut = l0.pending_rows > 0 || (!rows.is_multiple_of(self.tile) && l0.received + rows < l0.rows);
+            terms.extend([new.saturating_mul(2 * usize::from(cut)), sum(&waiting)]);
+            // A block row of a level: its rows of every band, and of the mask.
+            let output = |b: &CogBuild| b.plan.rows(0).0.saturating_mul(b.plan.dst.0).saturating_mul(self.bands * size + 1);
+            let mut work = Vec::new();
+            for b in &self.builds {
+                terms.push(b.kept());
+                // The block rows of the level the build reads, added to it: copied, joined and cut.
+                if let Some(from) = self.builds.iter().find(|f| f.level == b.src) {
+                    terms.push(output(from).saturating_mul(3));
+                }
+                let own = !self.mask_without_dataset || b.src == 0;
+                work.push(sum(&[
+                    b.plan.block_row_bytes(self.bands, self.data_type),
+                    b.mask_plan.block_row_bytes(1, DataType::U8),
+                    if own { 0 } else { b.mask.len() },
+                ]));
+            }
+            // A block row of each level being computed, and a second of the level waiting for one.
+            terms.extend([sum(&work), work.iter().copied().max().unwrap_or(0)]);
+            // The rows of tiles being compressed (`COG_IN_FLIGHT` + 1 at most at once; on WebAssembly,
+            // one), each with its rows and its tiles: those still compressed at the call, the rows given
+            // (their tiles: the rows are counted above), and the overviews' (a row of tiles, or a block
+            // row and a row of tiles when block rows do not make whole rows of tiles).
+            #[cfg(not(target_family = "wasm"))]
+            let at_once = COG_IN_FLIGHT + 1;
+            #[cfg(target_family = "wasm")]
+            let at_once = 1;
+            let compressed = |i: usize, r: usize| {
+                r.saturating_mul(self.levels[i].cols).saturating_mul(self.bands * size + 1).saturating_add(self.encoded_bytes(i, r))
+            };
+            let mut entries = vec![self.encoded_bytes(0, l0.pending_rows.saturating_add(rows))];
+            #[cfg(not(target_family = "wasm"))]
+            entries.extend(self.in_flight.iter().map(|(i, r, _)| compressed(*i, *r)));
+            let overview = self.builds.iter().map(|b| {
+                let n = b.plan.rows(0).0;
+                compressed(b.level, if self.tile.is_multiple_of(n) { self.tile } else { n + self.tile })
+            });
+            entries.extend(std::iter::repeat_n(overview.max().unwrap_or(0), at_once));
+            entries.sort_unstable_by(|a, b| b.cmp(a));
+            terms.push(sum(&entries[..at_once]));
+        }
+        Some(sum(&terms)).filter(|&bytes| bytes < usize::MAX)
+    }
+
     /// Adds compressed rows of tiles of level `i` to its spools.
     fn add(&mut self, i: usize, rows: usize, (img, mask): CogImages) -> Result<()> {
         img.report_clipping();
         let l = &mut self.levels[i];
         let per_plane = l.cols.div_ceil(self.tile) * rows.div_ceil(self.tile);
-        let mut framed = vec![Vec::new(); l.spools.len()];
-        for (k, c) in img.chunks.iter().enumerate() {
-            let plane = k / per_plane;
-            framed[plane].extend_from_slice(&chunk_leader(c));
-            framed[plane].extend_from_slice(c);
-            framed[plane].extend_from_slice(&chunk_trailer(c));
-            l.sizes[plane].push(c.len() as u64);
-        }
-        for (spool, bytes) in l.spools.iter_mut().zip(framed) {
-            spool.write_all(&bytes)?;
+        // Each plane's chunks (in plane order), framed by their leaders and trailers as they are
+        // written, not copied whole first.
+        let mut chunks = img.chunks.iter();
+        for (plane, spool) in l.spools.iter_mut().enumerate() {
+            let mut out = std::io::BufWriter::with_capacity(1 << 16, spool);
+            for c in chunks.by_ref().take(per_plane) {
+                out.write_all(&chunk_leader(c))?;
+                out.write_all(c)?;
+                out.write_all(&chunk_trailer(c))?;
+                l.sizes[plane].push(c.len() as u64);
+            }
+            out.into_inner().map_err(std::io::IntoInnerError::into_error)?;
         }
         if l.tags.is_empty() {
             l.tags = img.tags;
@@ -3726,18 +3862,13 @@ mod tests {
         }
     }
 
-    /// The rows the overview block rows of a COG with a mask being computed on the thread pool hold
-    /// count in the memory its next rows are checked against. Nothing else shows it: without them
-    /// the check passes.
+    /// What the overview block rows of a COG with a mask being computed on the thread pool keep
+    /// counts once in the memory its next rows are checked against: the rows and mask the build
+    /// still holds count as its own, not again for the block rows reading them (a call that fits is
+    /// not refused for them); rows it has replaced since count while a block row keeps them.
     #[test]
     #[cfg(not(target_family = "wasm"))]
-    fn cog_block_rows_being_computed_count_in_the_memory_check() {
-        fn in_flight(w: &mut GeoTiffWriter) -> &mut std::collections::VecDeque<(usize, usize, std::sync::mpsc::Receiver<OverviewRows>)> {
-            match &mut w.inner {
-                RowWriter::Cog(c) => &mut c.get_mut().unwrap().builds[0].in_flight,
-                RowWriter::Tiff(_) => unreachable!("a COG written in rows"),
-            }
-        }
+    fn cog_block_rows_being_computed_count_what_they_keep_once() {
         let raster = overview_fixture(1, DataType::U8, RasterData::U8((0..65 * 35).map(|i| (i % 251) as u8).collect()));
         let mut header = crate::RasterDataset::new(raster.clone(), false);
         header.raster.data = RasterData::U8(Vec::new());
@@ -3752,12 +3883,38 @@ mod tests {
         let valid = vec![255u8; 65 * 35];
         let mut w = GeoTiffWriter::create(path.to_str().unwrap(), &header, &options).unwrap();
         w.write_rows(&slice_rows(&raster.data, 35, 0..16, 65, 1), 16, Some(&valid[..65 * 16])).unwrap();
-        // A block row holding more than the address space, whose job is gone (nothing waits for it).
-        let (_, rx) = std::sync::mpsc::sync_channel(1);
-        in_flight(&mut w).push_back((0, usize::MAX / 2, rx));
         let rest = slice_rows(&raster.data, 35, 16..35, 65, 1);
+        let job = |holds| BlockRowJob { rows: 0, result: std::sync::mpsc::sync_channel(1).1, holds };
+        let huge = std::sync::Arc::new(RasterData::U8(Vec::new()));
+        {
+            let RowWriter::Cog(c) = &mut w.inner else { unreachable!("a COG written in rows") };
+            let cog = c.get_mut().unwrap();
+            for b in 0..cog.builds.len() {
+                while cog.land_block_row(b, true).unwrap() {}
+            }
+            let before = cog.call_bytes(65 * 19, 65 * 19, 19);
+            let bd = &cog.builds[0];
+            let shared = [(std::sync::Arc::downgrade(&bd.buf), bd.buf.len()), (std::sync::Arc::downgrade(&bd.mask), bd.mask.len())];
+            cog.builds[0].in_flight.push_back(job(shared));
+            assert_eq!(cog.call_bytes(65 * 19, 65 * 19, 19), before, "the build's own rows and mask counted again");
+            // Rows the build has replaced, kept by two block rows: counted once, until they are done.
+            let old = std::sync::Arc::new(RasterData::U8(vec![0; 1000]));
+            let kept = || (std::sync::Arc::downgrade(&old), 1000);
+            cog.builds[0].in_flight.push_back(job([kept(), kept()]));
+            cog.builds[0].in_flight.push_back(job([kept(), kept()]));
+            assert_eq!(cog.call_bytes(65 * 19, 65 * 19, 19), before.map(|b| b + 1000));
+            drop(old);
+            assert_eq!(cog.call_bytes(65 * 19, 65 * 19, 19), before);
+            // Kept rows more than the address space holds refuse the call.
+            let weak = std::sync::Arc::downgrade(&huge);
+            cog.builds[0].in_flight.push_back(job([(weak.clone(), usize::MAX), (weak, 0)]));
+        }
         assert!(matches!(w.write_rows(&rest, 19, Some(&valid[65 * 16..])), Err(Error::ResourceLimit(_))));
-        in_flight(&mut w).pop_back();
+        drop(huge);
+        {
+            let RowWriter::Cog(c) = &mut w.inner else { unreachable!("a COG written in rows") };
+            c.get_mut().unwrap().builds[0].in_flight.clear();
+        }
         w.write_rows(&rest, 19, Some(&valid[65 * 16..])).unwrap();
         w.finish().unwrap();
     }

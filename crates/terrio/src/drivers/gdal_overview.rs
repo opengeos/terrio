@@ -261,6 +261,35 @@ impl Plan {
     pub(crate) fn first_row(&self, y0: usize) -> usize {
         if y0 >= self.dst.1 { self.src.1 } else { self.rows(y0).1.start }
     }
+
+    /// The most bytes [`block_row`] holds at once for a block row of `bands` bands of `t` samples:
+    /// for each of its blocks (the thread pool may compute all of them at once), the source window,
+    /// its weights and its copy in the work type, the kernel's passes and values; then the blocks'
+    /// values and the block row they are copied into.
+    pub(crate) fn block_row_bytes(&self, bands: usize, t: DataType) -> usize {
+        let (size, work) = (t.size_bytes(), work_size(self.method, t) as usize);
+        let (dw, n) = (self.dst.0, self.chunk.1.min(self.dst.1));
+        // The most source rows a block reads (`span`): its rows scaled, one more, and the margins.
+        let ny = ((n as f64 * self.ry).ceil() as usize).saturating_add(1 + 2 * self.margin as usize).min(self.src.1);
+        // `convolution`'s weights per destination column (`average` keeps fewer).
+        let taps = (4.0 + 2.0 * self.method.radius() as f64 * self.rx.max(self.ry).max(1.0)) as usize + 8;
+        let blocks = (0..dw).step_by(self.chunk.0.max(1)).fold(0usize, |total, x0| {
+            let s = self.span(x0, self.chunk.0.min(dw - x0), self.rx, self.src.0, self.dst.0);
+            let (window, columns) = ((s.qn as usize).saturating_mul(ny), s.dst_n);
+            // The window, its weights and work-type copy, and its row ranges; the horizontal pass
+            // (`f64`) with its weights (`u8`); the column weights; the vertical pass (`f64`) and the
+            // values.
+            let bytes = [
+                window.saturating_mul(size + 1 + work),
+                ny.saturating_mul(16),
+                columns.saturating_mul(ny).saturating_mul(9),
+                columns.saturating_mul(taps * 8 + 40),
+                columns.saturating_mul(n).saturating_mul(8 + size),
+            ];
+            bytes.iter().fold(total, |sum, b| sum.saturating_add(*b))
+        });
+        bands.saturating_mul(blocks).saturating_add(bands.saturating_mul(n).saturating_mul(dw).saturating_mul(2 * size))
+    }
 }
 
 /// The nodata handling of the destination: `replaceValIfNodata` in
