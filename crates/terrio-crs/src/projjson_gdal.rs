@@ -426,8 +426,9 @@ fn projected1(p: &Node) -> Result<Map<String, Value>> {
         Some(_) => return Err(unsupported("a WKT 1 extended with a PROJ string")),
         None => {
             let name = p.child("PROJECTION").and_then(Node::name).ok_or_else(|| unsupported("a PROJCS without PROJECTION"))?;
-            // A polar stereographic `from_wkt` refuses for its latitude, as PROJ 9.9.0 maps it to no
-            // EPSG method.
+            // A polar stereographic `from_wkt` refuses for its latitude. PROJ 9.9.0 maps it to no EPSG
+            // method and writes GDAL's method and parameter names as given, which this writer has no
+            // form for: refused, as `from_wkt` refuses it.
             if crate::wkt1::polar_latitude_refused(p) {
                 return Err(unsupported(&format!("the {name} projection with its latitude refused")));
             }
@@ -833,6 +834,13 @@ mod tests {
         // PROJ maps GDAL's `Polar_Stereographic` with only a standard parallel to no EPSG method
         // ("Polar_Stereographic"), and `from_wkt` refuses it: refused.
         let polar = SpatialRef::from_wkt(&wkt("Polar_Stereographic", &[("standard_parallel_1", -71.0), ("central_meridian", 0.0)]));
+        let error = polar.to_gdal_projjson(false).unwrap_err().to_string();
+        assert!(error.contains("Polar_Stereographic projection with its latitude refused"), "{error}");
+        // And one with EPSG's `Latitude of natural origin` 90, which PROJ also maps to no EPSG method.
+        let polar = SpatialRef::from_wkt(&wkt(
+            "Polar_Stereographic",
+            &[("Latitude of natural origin", 90.0), ("central_meridian", 0.0), ("scale_factor", 0.994)],
+        ));
         let error = polar.to_gdal_projjson(false).unwrap_err().to_string();
         assert!(error.contains("Polar_Stereographic projection with its latitude refused"), "{error}");
     }
