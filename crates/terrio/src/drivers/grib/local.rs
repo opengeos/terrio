@@ -168,10 +168,18 @@ fn bands_of<'a>(head: &'a [u8], end_marker: &[u8], len: usize, file_len: usize, 
     Ok(fields.into_iter().map(Band::Grib2).collect())
 }
 
-/// Opens a local GRIB file, or an archive member's extracted copy, to be read band by band.
+/// Opens a local GRIB file, or an archive member's extracted copy, to be read band by band. A path
+/// that is no regular file (a FIFO, a device) is read whole, into memory.
 pub(super) fn open(local: crate::vfs::LocalPath) -> Result<crate::LazyRaster> {
-    let file = std::fs::File::open(local.path())?;
+    let mut file = std::fs::File::open(local.path())?;
     let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        // A FIFO, a device, or a file whose size its file system does not report: there is no
+        // length to read it by position with, so it is read whole, into memory.
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        return super::open_lazy_bytes(bytes);
+    }
     let len = usize::try_from(metadata.len()).map_err(|_| Error::ResourceLimit("GRIB file larger than this platform's memory".into()))?;
     let f = File { cursor: Cursor(crate::geotiff::FileCursor::new(file)), len, _local: local };
     let normalize = super::normalize_units();
@@ -368,6 +376,27 @@ mod tests {
         let all = Window::full(celsius.width(), celsius.height());
         let (c, k) = (window(&mut celsius, 1, all), window(&mut kelvin, 1, all));
         assert!(c.iter().zip(&k).all(|(c, k)| (k - c - 273.15).abs() < 1e-6), "{c:?} {k:?}");
+    }
+
+    /// Catches a GRIB path that is no regular file read by position: a FIFO has no length to read
+    /// it by, so it is read whole, and gives what the bytes it is fed give in memory.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_is_read_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_, bytes) = grib_file(dir.path(), 40, 30, 2);
+        let fifo = dir.path().join("fifo.grib2");
+        assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+        let writer = {
+            let (fifo, bytes) = (fifo.clone(), bytes.clone());
+            std::thread::spawn(move || std::fs::write(fifo, bytes))
+        };
+        let (done, opened) = std::sync::mpsc::channel();
+        let path = fifo.to_str().unwrap().to_string();
+        std::thread::spawn(move || done.send(outcome(crate::LazyRaster::open(&path))));
+        let read = opened.recv_timeout(std::time::Duration::from_secs(10)).expect("the open did not end");
+        let _ = writer.join();
+        assert_eq!(read, outcome(super::super::open_lazy_bytes(bytes)));
     }
 
     /// What reading a GRIB file gives, band by band: the dataset's description, then each band's
