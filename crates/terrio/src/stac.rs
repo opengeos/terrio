@@ -1590,8 +1590,8 @@ fn items_at_once<'a>(mut hrefs: impl Iterator<Item = &'a str>) -> usize {
 
 /// The most item files a mosaic keeps open: a quarter of the files the process may open (the
 /// soft limit of `/proc/self/limits`; an item may hold a second, its `.msk` sidecar), at least 16,
-/// so that a mosaic of more items than that still reads; 64 where the limit is unknown (a quarter
-/// of macOS's default 256). GDAL bounds the datasets its virtual datasets keep open alike
+/// so that a mosaic of more items than that still reads; no bound when it is unlimited, and 64
+/// where it is unknown (a quarter of macOS's default 256). GDAL bounds the datasets its virtual datasets keep open alike
 /// (`GDAL_MAX_DATASET_POOL_SIZE`; reference GDAL 3.13.3).
 fn max_open_items() -> usize {
     open_items_within(&std::fs::read_to_string("/proc/self/limits").unwrap_or_default())
@@ -1599,10 +1599,14 @@ fn max_open_items() -> usize {
 
 /// [`max_open_items`] of the text of `/proc/self/limits`.
 fn open_items_within(limits: &str) -> usize {
-    // "Max open files            1024                 524288               files": the soft limit,
-    // unless unlimited.
-    let soft = limits.lines().find_map(|l| l.strip_prefix("Max open files")?.split_whitespace().next()?.parse::<usize>().ok());
-    soft.map_or(64, |n| (n / 4).max(16))
+    // "Max open files            1024                 524288               files": the soft limit;
+    // "unlimited", no bound.
+    let soft = limits.lines().find_map(|l| l.strip_prefix("Max open files")?.split_whitespace().next());
+    match soft {
+        Some("unlimited") => usize::MAX,
+        Some(n) => n.parse::<usize>().map_or(64, |n| (n / 4).max(16)),
+        None => 64,
+    }
 }
 
 /// How many items' windows of `per_item` bytes each are read at once: at most `most`, and as many
@@ -2468,7 +2472,7 @@ mod tests {
         let limits = "Max open files            1024                 524288               files\n";
         assert_eq!(open_items_within(limits), 256);
         assert_eq!(open_items_within("Max open files            40   40   files\n"), 16);
-        assert_eq!(open_items_within("Max open files            unlimited   unlimited   files\n"), 64);
+        assert_eq!(open_items_within("Max open files            unlimited   unlimited   files\n"), usize::MAX);
         assert_eq!(open_items_within(""), 64);
         let one = read(1);
         // The newest item (0) on top, but for its nodata column 7, where item 1 shows through; the
