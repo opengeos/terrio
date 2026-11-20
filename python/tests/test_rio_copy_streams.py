@@ -66,8 +66,8 @@ class Recording(DatasetReader):
     """A dataset that records the rows its pixels are read in, and the files of `directory` while
     they are read."""
 
-    def __init__(self, path, directory):
-        super().__init__(path)
+    def __init__(self, path, directory, **kwargs):
+        super().__init__(path, **kwargs)
         self.directory = directory
         self.windows = []
         self.seen = set()
@@ -453,6 +453,26 @@ def test_a_jpeg_2000_copy_counts_a_row_of_tiles_in_the_type_it_holds_it_in(
     with rio.open(tmp_path / "out.tif") as ds:
         assert ds.dtypes[0] == dtype
         assert np.array_equal(ds.read(), pixels.astype(dtype))
+
+
+def test_a_copy_reads_an_overview_level_of_a_jpeg_2000_in_rows_of_its_tiles(
+    tmp_path, monkeypatch, wide_sources
+):
+    """An overview level of a JPEG 2000 is read by window as the image is: copied to Float64 over
+    the in-memory limit, its 515 rows are read at once, where rows of about 16 MB (511) ended
+    inside its first row of tiles."""
+    monkeypatch.setenv("TERRIO_RIO_IN_MEMORY_LIMIT", "1")
+    path = wide_sources["jp2"][0]
+    with rio.open(path, overview_level=0) as ds:
+        pixels = ds.read()
+    src = Recording(path, tmp_path, overview_level=0)
+    with src:
+        assert (src.height, src.block_shapes) == (515, [(1024, 1024)])
+        out = str(tmp_path / "out.tif")
+        rio_shutil.copy(src, out, driver="GTiff", compress="deflate", dtype="float64")
+    assert src.windows == [(0, 515)]
+    with rio.open(out) as ds:
+        assert np.array_equal(ds.read(), pixels.astype("float64"))
 
 
 def test_a_cog_copy_reads_a_jpeg_2000_of_one_row_of_tiles_at_once(tmp_path, block_cache_size):
