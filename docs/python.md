@@ -1074,9 +1074,10 @@ decoded from the start of the strip to the window's last row. A nearest-neighbou
 `read_resampled` (or `terrio.rio`'s `read(out_shape=...)`) smaller than the image reads the
 rows it samples the same way, a row at a time. Reading the whole strip is still refused, and
 so is reading a compressed strip that declares more than four times the limit (1 GiB by
-default), which bounds the decoding a read does; an uncompressed strip is read by rows
-whatever its size. For files you do not trust, `TERRIO_MAX_DECLARED_BYTES` (below) bounds
-them further (see [Rasters](formats.md#rasters)).
+default), which bounds the decoding a read does (a read of the last pixel of a 1 GiB strip
+of zeros takes 0.2 to 0.4 s); an uncompressed strip is read by rows whatever its size. For
+files you do not trust, `TERRIO_MAX_DECLARED_BYTES` (below) bounds what a raster declares
+further (see [Rasters](formats.md#rasters)).
 
 A GeoTIFF read whole or by window (`terrio.open_raster`, `Raster.read`, `terrio.rio`'s `read`)
 raises `ResourceLimitError` before its buffer is allocated when the process cannot hold it (more
