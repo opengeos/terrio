@@ -1018,6 +1018,16 @@ fn a_decimated_read_of_a_strip_over_the_limit_reads_its_sampled_rows() {
     }
 }
 
+/// A strip whose bytes are more than 64 bits count (2^31 x 2^32 - 1 UInt64 pixels in one strip,
+/// declared in a header of a few bytes) is not sampled by rows, rather than its size wrapping. No
+/// limit: a row of 2^34 bytes fits it, so the strip's size is computed.
+#[test]
+fn a_strip_of_more_bytes_than_64_bits_count_is_not_sampled_by_rows() {
+    let bytes = strip_tiff(false, (1 << 31, u32::MAX, 1), (64, 1), (1, 1), &[0; 16]);
+    let mut r = LazyRaster::from_tiff_bytes_with_limits(bytes, TiffReadLimits::unlimited()).unwrap().unwrap();
+    assert!(matches!(r.read_sampled(&[0, 1], &[0, 1], &band1()), Ok(None)));
+}
+
 /// The rows of a big-endian Int16 or Float32 strip over the limit are read as their native type,
 /// with their values: the byte order and sample format are applied on the row path too.
 #[test]

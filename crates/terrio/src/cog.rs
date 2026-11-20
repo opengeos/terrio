@@ -3177,9 +3177,10 @@ impl TiffRaster {
         let mut over = false;
         for (plane, _) in &planes {
             for &(s, height, sampled) in &strips {
-                let strip = height as u64 * row_bytes as u64;
+                // Saturated: a strip of more bytes than 64 bits count is not read by rows.
+                let strip = (height as u64).saturating_mul(row_bytes as u64);
                 let read = tables.get(plane * per_plane + s).is_some_and(|stored| {
-                    stored.1 > 0 && how.holds(stored, strip, self.file_len) && sampled as u64 * row_bytes as u64 <= limit
+                    stored.1 > 0 && how.holds(stored, strip, self.file_len) && (sampled as u64).saturating_mul(row_bytes as u64) <= limit
                 });
                 if !read {
                     return Ok(None);

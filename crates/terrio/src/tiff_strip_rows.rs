@@ -214,25 +214,27 @@ impl StripRows {
     {
         let mut buffer = out.as_buffer(0);
         let bytes = buffer.as_bytes_mut();
+        // Saturating: a strip `Rows::holds` passes fits in 64 bits, and no size here wraps.
+        let row_bytes = self.row_bytes as u64;
         if self.rows.codec == Codec::Stored {
-            read_at(self.offset + first as u64 * self.row_bytes as u64, bytes)?;
+            read_at(self.offset.saturating_add((first as u64).saturating_mul(row_bytes)), bytes)?;
         } else {
             if first < self.next {
                 return Err(Error::InvalidArgument(format!("TIFF strip row {first} read after row {}", self.next)));
             }
             let stream = match &mut self.stream {
                 Some(stream) => stream,
-                None => self.stream.insert(Stream::new(self.rows.codec, self.height as u64 * self.row_bytes as u64)?),
+                None => self.stream.insert(Stream::new(self.rows.codec, (self.height as u64).saturating_mul(row_bytes))?),
             };
-            let skip = (first - self.next) as u64 * self.row_bytes as u64;
+            let skip = ((first - self.next) as u64).saturating_mul(row_bytes);
             let dropped = stream.drop_bytes(&mut self.parts, read_at, skip)?;
             let read = if dropped == skip { stream.read(&mut self.parts, read_at, bytes)? } else { 0 };
             if dropped < skip || read < bytes.len() {
-                let decoded = self.next as u64 * self.row_bytes as u64 + dropped + read as u64;
+                let decoded = (self.next as u64).saturating_mul(row_bytes).saturating_add(dropped).saturating_add(read as u64);
                 return Err(Error::InvalidData(format!(
                     "TIFF: {}: the strip ends after {} of its {} rows",
                     self.rows.codec.name(),
-                    decoded / self.row_bytes as u64,
+                    decoded / row_bytes,
                     self.height
                 )));
             }
