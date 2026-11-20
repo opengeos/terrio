@@ -99,6 +99,31 @@ test("terrio-js/cog reads windows, bands and overviews as terrio-js does", async
   }
 });
 
+test("terrio-js/cog range requests skip a browser's HTTP cache, not a server runtime's", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "terrio-cog-"));
+  const src = terrio.rasterFromArray(new Uint8Array(64 * 64), 64, 64, [0, 1, 0, 64, 0, -1], "EPSG:4326");
+  writeFileSync(join(dir, "small.tif"), src.toBytes("small.tif", { format: "GTiff" }));
+  const server = await serve(dir);
+  const document = Object.getOwnPropertyDescriptor(globalThis, "document");
+  try {
+    for (const browser of [false, true]) {
+      const modes = [];
+      const fetch = (url, init) => (modes.push(init.cache), globalThis.fetch(url, init));
+      if (browser) Object.defineProperty(globalThis, "document", { configurable: true, value: {} });
+      await cog.openCog(server.url + "small.tif", { fetch });
+      if (document) Object.defineProperty(globalThis, "document", document);
+      else delete globalThis.document;
+      assert.ok(modes.length > 0);
+      assert.deepEqual(new Set(modes), new Set([browser ? "no-store" : undefined]));
+    }
+  } finally {
+    if (document) Object.defineProperty(globalThis, "document", document);
+    else delete globalThis.document;
+    server.close();
+    rmSync(dir, { recursive: true });
+  }
+});
+
 test("terrio-js/cog refuses unknown options and options of the wrong type", async () => {
   for (const options of ["x", 5, true]) {
     await assert.rejects(cog.openCog("http://127.0.0.1:9/a.tif", options), /options must be an object/);

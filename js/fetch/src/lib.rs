@@ -171,10 +171,16 @@ impl Fetcher {
             };
             js_sys::Object::assign(&headers, &given);
         }
+        let init = js_sys::Object::new();
         if let Some(range) = range {
             js_sys::Reflect::set(&headers, &"Range".into(), &range.into()).map_err(js_error)?;
+            // A browser's HTTP cache sends requests for one URL one at a time, a range waiting for
+            // the one before (Chrome's cache lock): past it, ranges go out together. Blocks read
+            // are kept in memory (`cacheSize`).
+            if !server_runtime() {
+                js_sys::Reflect::set(&init, &"cache".into(), &"no-store".into()).map_err(js_error)?;
+            }
         }
-        let init = js_sys::Object::new();
         js_sys::Reflect::set(&init, &"headers".into(), &headers).map_err(js_error)?;
         if head {
             js_sys::Reflect::set(&init, &"method".into(), &"HEAD".into()).map_err(js_error)?;
