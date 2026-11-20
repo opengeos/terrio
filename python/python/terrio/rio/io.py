@@ -3761,8 +3761,10 @@ class DatasetWriter(DatasetReader):
                 )
                 if m is None:
                     if write_step:
+                        # Each tile row as a view of the slab: the writer copies it (a band-strided
+                        # view through a contiguous copy it frees before writing the rows).
                         for start in range(0, n, write_step):
-                            w.write(np.ascontiguousarray(rows[:, start : start + write_step, :]))
+                            w.write(rows[:, start : start + write_step, :])
                     else:
                         w.write(rows)
                 else:
