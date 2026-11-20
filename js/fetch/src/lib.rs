@@ -34,7 +34,8 @@ pub const MAX_ROUNDS: usize = 64;
 pub const MAX_PARALLEL: usize = terrio::sparse::PARALLEL_REQUESTS;
 
 /// The places of the requests in flight of a [`Fetcher`], whichever read sends them: at most
-/// [`MAX_PARALLEL`].
+/// [`MAX_PARALLEL`]. A waiter is woken once and must not be dropped before then: the reads
+/// await [`Slots::take`] to the end.
 #[derive(Default)]
 struct Slots {
     taken: Cell<usize>,

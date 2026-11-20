@@ -130,11 +130,11 @@ test("terrio-js/cog runs reads awaited together at once, within twelve requests,
     // Two reads of the same tile together: its bytes are requested once, as for one read.
     const one = await cog.openCog(server.url + "tiles.tif", { fetch });
     const two = await cog.openCog(server.url + "tiles.tif", { fetch });
-    const opened = two.stats().requests;
+    const [oneOpened, opened] = [one.stats().requests, two.stats().requests];
     await one.read({ window: windows[0] });
     const [a, b] = await Promise.all([two.read({ window: windows[0] }), two.read({ window: windows[0] })]);
     assert.deepEqual([...a[0]], [...b[0]]);
-    assert.equal(two.stats().requests - opened, one.stats().requests - opened);
+    assert.equal(two.stats().requests - opened, one.stats().requests - oneOpened);
     assert.equal(two.stats().bytes, one.stats().bytes);
   } finally {
     server.close();
