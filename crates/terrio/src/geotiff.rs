@@ -1663,22 +1663,22 @@ pub(crate) fn read_geotiff_with_limits(path: &std::path::Path, limits: crate::co
     // the chunk limit, which bounds the chunks decoded, not the tables, so this read cannot fail
     // for a file that opened. Were it to fail, the file is refused: decoding every chunk instead
     // would read the chunks left out from offset 0.
-    let tables = if compression == 1 {
+    let chunk_tables = if compression == 1 {
         let len = dec.inner().get_ref().get_ref().len()?;
         dec = dec.with_limits(tiff::decoder::Limits::default());
-        let tables = ChunkTables::read(&mut dec);
+        let read = ChunkTables::read(&mut dec);
         dec = dec.with_limits(limits.tiff_within(len));
-        tables
+        read
     } else {
         ChunkTables::read(&mut dec)
     }
     .map_err(tiff_err)?;
     // Chunks without bytes (left out of a sparse file) are not decoded: see `data` below.
-    chunks.extend((0..chunk_count).filter(|i| tables.counts.get(*i).is_none_or(|n| *n > 0)).map(|i| i as u32));
-    let tables = if compression != 1 {
-        let stored = tables.offsets.iter().copied().zip(tables.counts.iter().copied());
+    chunks.extend((0..chunk_count).filter(|i| chunk_tables.counts.get(*i).is_none_or(|n| *n > 0)).map(|i| i as u32));
+    let codec_tables = if compression != 1 {
+        let stored = chunk_tables.offsets.iter().copied().zip(chunk_tables.counts.iter().copied());
         check_stored_chunks(compression, stored, dec.inner().get_ref().get_ref().len()?)?;
-        Some(std::sync::Arc::new(tables))
+        Some(std::sync::Arc::new(chunk_tables))
     } else {
         None
     };
@@ -1703,7 +1703,7 @@ pub(crate) fn read_geotiff_with_limits(path: &std::path::Path, limits: crate::co
     let file = dec.inner().get_ref().get_ref().clone();
     let reopen = || file_decoder(file.clone(), &tags, limits, path);
     // The compressions the `tiff` crate does not decode (alone), with the same limit.
-    let codec = crate::tiff_codecs::ChunkCodec::new(&mut dec, limits.chunk_bytes, tables).map_err(tiff_err)?;
+    let codec = crate::tiff_codecs::ChunkCodec::new(&mut dec, limits.chunk_bytes, codec_tables).map_err(tiff_err)?;
     decode_chunks(&mut dec, Some(&reopen), None, 0, &chunks, codec.as_ref(), limits.chunk_bytes, &tiff_err, |(idx, chunk, (dw, dh))| {
         let idx = idx as usize;
         let (plane, rest) = (idx / per_plane, idx % per_plane);
