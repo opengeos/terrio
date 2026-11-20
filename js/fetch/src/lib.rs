@@ -208,10 +208,17 @@ impl Fetcher {
             };
             js_sys::Object::assign(&headers, &given);
         }
+        let init = js_sys::Object::new();
         if let Some(range) = range {
             js_sys::Reflect::set(&headers, &"Range".into(), &range.into()).map_err(js_error)?;
+            // Chrome's HTTP cache sends requests for one URL one at a time, a range waiting for
+            // the one before (its cache lock): past it, ranges go out together. Blocks read are
+            // kept in memory (`cacheSize`). Browsers only: other runtimes, such as Cloudflare
+            // Workers before its `cache_option_enabled` date, refuse the option.
+            if browser() {
+                js_sys::Reflect::set(&init, &"cache".into(), &"no-store".into()).map_err(js_error)?;
+            }
         }
-        let init = js_sys::Object::new();
         js_sys::Reflect::set(&init, &"headers".into(), &headers).map_err(js_error)?;
         if head {
             js_sys::Reflect::set(&init, &"method".into(), &"HEAD".into()).map_err(js_error)?;
@@ -503,6 +510,12 @@ pub fn server_runtime() -> bool {
     let global = js_sys::global();
     (get(&get(&get(&global, "process"), "versions"), "node").is_string() || !get(&global, "Deno").is_undefined())
         && get(&global, "document").is_undefined()
+}
+
+/// Whether this runs in a browser (a page or a web worker), whose user agent says `Mozilla/`:
+/// Node, Deno, Bun and Cloudflare Workers name themselves.
+pub fn browser() -> bool {
+    get(&get(&js_sys::global(), "navigator"), "userAgent").as_string().is_some_and(|ua| ua.starts_with("Mozilla/"))
 }
 
 /// Pixels of `bands` bands, band after band, as one typed array of their type per band.
