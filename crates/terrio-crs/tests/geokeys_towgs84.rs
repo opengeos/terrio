@@ -171,7 +171,7 @@ fn a_codeless_wkt1_with_its_own_shift_goes_into_its_own_datum_without_it() {
     assert!(t.operation_at(x, y, 0.0).unwrap().is_none(), "no datum transformation into NAD83");
     let (lon, lat) = t.transform(x, y).unwrap();
     assert!((lon + 82.927_597_805_866_5).abs() < 1e-11 && (lat - 39.012_599_069_068_62).abs() < 1e-11, "({lon}, {lat})");
-    // A datum named as none: the shift applies.
+    // A datum named as none: the shift applies (only its presence is checked).
     let foo = wkt.replace("North_American_Datum_1983", "Foo_Datum").replace(r#""NAD83""#, r#""Foo""#);
     let (lon, _) = Transformer::new(&SpatialRef::from_wkt(&foo), &nad83).unwrap().transform(x, y).unwrap();
     assert!((lon + 82.927_597_805_866_5).abs() > 1e-4, "{lon}");

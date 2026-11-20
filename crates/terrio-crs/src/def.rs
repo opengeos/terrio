@@ -1381,8 +1381,8 @@ impl Def {
             }
             if c.proj.contains("+towgs84=") {
                 // To WGS 84 (a `BOUNDCRS`, or a WKT 1 `TOWGS84`, which PROJ reads as one): the
-                // source CRS's own datum, into which PROJ applies no shift. A WKT 1 on a datum
-                // whose name resolves to none keeps the shift into every CRS.
+                // source CRS's own datum, into which PROJ applies no shift. A WKT 1 whose datum
+                // resolves to none keeps the shift into every CRS.
                 let mut source = d.clone();
                 source.ops.clear();
                 source.registered_datum(&c, own_geogcs_text(w, &c));
