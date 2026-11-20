@@ -2694,9 +2694,9 @@ impl Shared {
                         let _cancellation = cancellation.enter();
                         while let Some((run, from, last)) = window.take(requests) {
                             let fetched = context.enter().and_then(|_scope| client.fetch(Some((from, last))));
+                            let with_range = matches!(&fetched, Ok(f) if f.status == 206);
                             // A copy of the client for the storing thread to take back (its URLs and
                             // S3 state): a small cost next to the request's.
-                            let with_range = matches!(&fetched, Ok(f) if f.status == 206);
                             if sender.send((run, client.clone(), fetched)).is_err() {
                                 break;
                             }
