@@ -530,6 +530,8 @@ impl Source {
                 Ok((at, k))
             })
             .collect();
+        // A band whose message was not located or read has no values: its error, below, fails the
+        // read before them, in band order.
         let decoded = crate::par::map_range_coarse(missing.len(), |i| match &located[i] {
             Ok((at, k)) => match &messages[*at] {
                 Ok((message, _)) => self.decode_and_keep(message, *k, missing[i], window, share),
