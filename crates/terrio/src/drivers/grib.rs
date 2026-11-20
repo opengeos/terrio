@@ -480,18 +480,27 @@ impl Source {
 
     /// Decodes the bands `missing` (from 1, each once): the values of `window` of each, each band
     /// kept in the block cache in a `share` of it. A file's bands are decoded in parallel, the
-    /// first error in band order failing the read; a remote file's are fetched and decoded one at
-    /// a time, in the order asked.
+    /// first error in band order failing the read; a remote file's are decoded one at a time, in
+    /// the order asked, each message fetched once for the bands of it asked one after the other.
     fn decode(&self, mut missing: Vec<usize>, window: crate::Window, share: u64) -> Result<Vec<(usize, Vec<f64>)>> {
         #[cfg(remote)]
         if matches!(self.store, Store::Remote(_)) {
-            return missing
-                .into_iter()
-                .map(|b| {
-                    let (message, k) = self.store.message(b)?;
-                    Ok((b, self.decode_window(&message, k, b, window, share)?))
-                })
-                .collect();
+            let mut out = Vec::with_capacity(missing.len());
+            // The message last fetched, kept while the bands asked are of it: one held at a time.
+            let mut last: Option<(usize, std::borrow::Cow<'_, [u8]>)> = None;
+            for b in missing {
+                let (id, k) = self.store.locate(b)?;
+                let message = match last.take() {
+                    Some((m, message)) if m == id => message,
+                    previous => {
+                        drop(previous);
+                        self.store.message(b)?.0
+                    }
+                };
+                out.push((b, self.decode_window(&message, k, b, window, share)?));
+                last = Some((id, message));
+            }
+            return Ok(out);
         }
         missing.sort_unstable();
         // A local file's messages are read on this thread, each once for all the bands of it to
