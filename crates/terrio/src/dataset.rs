@@ -1994,7 +1994,7 @@ fn write_raster_with_nodata(
         {
             // Complex bands as complex samples, as GDAL writes CInt16... CFloat64 GeoTIFFs.
             opts.complex = complex;
-            opts.sparse_unless_sidecar_differs(path, sidecar, raster.bands / if complex { 2 } else { 1 });
+            opts.sparse_unless_sidecar_differs(path, sidecar, raster.bands / if complex { 2 } else { 1 }, raster.data_type);
             return crate::drivers::gtiff_write::write(raster, path, &opts);
         }
     }

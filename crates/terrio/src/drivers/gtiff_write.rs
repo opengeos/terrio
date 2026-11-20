@@ -792,13 +792,20 @@ impl TiffOptions {
         Ok(Some(o))
     }
 
+    /// The nodata tag written for samples of type `t` as readers parse it, which the blocks left
+    /// out (`SPARSE_OK`) read as: a NaN of any sign or payload is written `nan`, read as
+    /// `f64::NAN`; any other value reads back as written.
+    pub(crate) fn nodata_as_read(&self, t: DataType) -> Option<f64> {
+        self.nodata.and_then(|nd| crate::geotiff::parse_nodata(&format_nodata_for(nd, t)))
+    }
+
     /// Turns `SPARSE_OK` off, with a warning, when a block left out of the GeoTIFF at `path`
     /// could read otherwise with the `.aux.xml` sidecar beside it than without. Without it, every
     /// band reads as the nodata tag, or 0. With it, a band reads as its nodata there, else as the
     /// tag (or the sidecar's dataset nodata), else 0 (`GeoTags::apply_sidecar_crs`). `written`:
     /// the band nodata the writer puts in the sidecar; `None` for the sidecar already there,
-    /// which the writer keeps. `bands`: the file's bands.
-    pub(crate) fn sparse_unless_sidecar_differs(&mut self, path: &str, written: Option<&[Option<f64>]>, bands: usize) {
+    /// which the writer keeps. `bands`: the file's bands, of samples of type `t`.
+    pub(crate) fn sparse_unless_sidecar_differs(&mut self, path: &str, written: Option<&[Option<f64>]>, bands: usize, t: DataType) {
         if !self.sparse {
             return;
         }
@@ -814,9 +821,10 @@ impl TiffOptions {
                 (pam.band_nodata, pam.dataset_nodata)
             }
         };
-        let fill = self.nodata.unwrap_or(0.0);
+        let tag = self.nodata_as_read(t);
+        let fill = tag.unwrap_or(0.0);
         let same = (1..=bands).all(|band| {
-            let with = band_nodata.iter().find(|(b, _)| *b == band).map(|(_, v)| *v).or(self.nodata).or(dataset_nodata);
+            let with = band_nodata.iter().find(|(b, _)| *b == band).map(|(_, v)| *v).or(tag).or(dataset_nodata);
             with.unwrap_or(0.0).to_bits() == fill.to_bits()
         });
         if !same {
@@ -1213,7 +1221,7 @@ fn prepare(raster: &Raster, opts: &TiffOptions) -> Result<Prepared> {
     let mut images = Vec::with_capacity(levels.len());
     for (i, level) in levels.iter().enumerate() {
         // `SPARSE_OK` leaves out blocks of the full-resolution image only.
-        let empty = (opts.sparse && i == 0).then(|| opts.nodata.unwrap_or(0.0));
+        let empty = (opts.sparse && i == 0).then(|| opts.nodata_as_read(raster.data_type).unwrap_or(0.0));
         let mut img = level.sparse_image(raster.data_type, opts.compression, &opts.codec, &layout, empty)?;
         img.report_clipping();
         if i > 0 {
@@ -2263,7 +2271,12 @@ impl TiffRows {
         // `terrio.rio` writes beside a temporary name, then moves the file to `@FINAL_PATH`.
         let final_path =
             options.creation_options.iter().rev().find(|(k, _)| k.eq_ignore_ascii_case("@FINAL_PATH")).map_or(path, |(_, v)| v.as_str());
-        opts.sparse_unless_sidecar_differs(final_path, None, header.raster.bands / if header.complex { 2 } else { 1 });
+        opts.sparse_unless_sidecar_differs(
+            final_path,
+            None,
+            header.raster.bands / if header.complex { 2 } else { 1 },
+            header.raster.data_type,
+        );
         let r = &header.raster;
         let plan = plan(r, &opts)?;
         let (cols, rows, bands) = (r.cols, r.rows, r.bands);
@@ -2338,7 +2351,7 @@ impl TiffRows {
             failed: false,
             tags,
             mask: with_mask.then(|| (Vec::new(), Vec::new())),
-            empty: opts.sparse.then(|| opts.nodata.unwrap_or(0.0)),
+            empty: opts.sparse.then(|| opts.nodata_as_read(r.data_type).unwrap_or(0.0)),
         })
     }
 
@@ -5602,6 +5615,59 @@ mod tests {
             let tables = crate::geotiff::ChunkTables::read(&mut dec).unwrap();
             assert_eq!(tables.counts.iter().filter(|n| **n > 0).count(), stored, "{sidecar}");
             assert_eq!(warned.len(), usize::from(stored > 0), "{sidecar}: {warned:?}");
+        }
+    }
+
+    /// Catches a block left out that reads otherwise than stored: a NaN nodata is written `nan`,
+    /// which readers read as `f64::NAN`, so a block of a NaN with another payload is kept, and one
+    /// of `f64::NAN` is left out, whole and in rows; both read back bit for bit as written.
+    #[test]
+    fn sparse_ok_compares_blocks_with_the_nodata_as_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.tif");
+        let co = [("SPARSE_OK", "YES"), ("TILED", "YES"), ("BLOCKXSIZE", "16"), ("BLOCKYSIZE", "16")];
+        let options = crate::RasterWriteOptions {
+            creation_options: co.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            ..Default::default()
+        };
+        let bits = |d: &RasterData| d.to_f64_vec().iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        // Tile 0 holds the nodata, a NaN with a payload; tile 1 `f64::NAN`; tiles 2 and 3 data.
+        for (t, nodata) in [(DataType::F64, 0x7ff8_0000_0000_0001u64), (DataType::F32, 0x7ff8_0000_2000_0000)] {
+            let nodata = f64::from_bits(nodata);
+            let mut values = vec![1.0; 32 * 32];
+            for y in 0..16 {
+                for x in 0..16 {
+                    (values[y * 32 + x], values[y * 32 + 16 + x]) = (nodata, f64::NAN);
+                }
+            }
+            let data = match t {
+                DataType::F64 => RasterData::F64(values),
+                _ => RasterData::F32(values.iter().map(|v| *v as f32).collect()),
+            };
+            let cfg = wbraster::RasterConfig { cols: 32, rows: 32, bands: 1, data_type: t, nodata, ..Default::default() };
+            let raster = Raster::from_data_native(cfg, data).unwrap();
+            let header = crate::RasterDataset::new(raster.clone(), true);
+            for whole in [true, false] {
+                if whole {
+                    write(
+                        &raster,
+                        path.to_str().unwrap(),
+                        &TiffOptions::from_write_options(&options, false, Some(nodata)).unwrap().unwrap(),
+                    )
+                    .unwrap();
+                } else {
+                    let mut w = GeoTiffWriter::create(path.to_str().unwrap(), &header, &options).unwrap();
+                    w.write_rows(&raster.data, 32, None).unwrap();
+                    w.finish().unwrap();
+                }
+                let case = format!("{t:?}, whole {whole}");
+                let mut dec = tiff::decoder::Decoder::new(std::fs::File::open(&path).unwrap()).unwrap();
+                let tables = crate::geotiff::ChunkTables::read(&mut dec).unwrap();
+                assert_eq!(tables.counts.iter().map(|n| *n > 0).collect::<Vec<_>>(), [true, false, true, true], "{case}");
+                assert_eq!(bits(&crate::geotiff::read_geotiff(&path).unwrap().raster.data), bits(&raster.data), "{case}");
+                let lazy = crate::LazyRaster::open(path.to_str().unwrap()).unwrap().read().unwrap();
+                assert_eq!(bits(&lazy.raster.data), bits(&raster.data), "{case}");
+            }
         }
     }
 }

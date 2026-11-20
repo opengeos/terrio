@@ -795,7 +795,7 @@ fn palette_offset_in_ifd<R: Read + Seek>(f: &mut R, offset: u64, big: bool, le: 
     read_offset(f, big, le)
 }
 
-fn parse_nodata(s: &str) -> Option<f64> {
+pub(crate) fn parse_nodata(s: &str) -> Option<f64> {
     match s.to_ascii_lowercase().as_str() {
         "nan" => Some(f64::NAN),
         "inf" | "+inf" => Some(f64::INFINITY),
