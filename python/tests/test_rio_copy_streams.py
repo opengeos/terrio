@@ -309,25 +309,31 @@ def test_cog_copy_reads_tall_source_blocks_in_bounded_slabs(tmp_path, block_rows
         np.testing.assert_array_equal(ds.read(), RGB)
 
 
-# Images in rows of 1024 x 1024 tiles (terrio's JPEG 2000 tiles), each row of tiles holding less
-# than the block cache's 64 MiB: a UInt16 band, a row of tiles and 6 rows of the next, whose row
-# of tiles holds 16,793,600 bytes, more than a copy's 16 MiB slab budget; and three Byte bands of
-# 12,000 bytes a row, whose 16 MB of rows hold a row of tiles and a part of the next.
-WIDE = (np.add.outer(np.arange(1030) * 5, np.arange(8200)) % 4093).astype("uint16")[None]
-RGB_WIDE = (np.add.outer(np.arange(1400) * 3, np.arange(4000)) % 251).astype("uint8")
-RGB_WIDE = np.stack([RGB_WIDE, RGB_WIDE[::-1], RGB_WIDE[:, ::-1]])
+def wide_pixels(rows=1030, cols=8200):
+    """A UInt16 band of `rows` x `cols`, made when a test needs it."""
+    return (np.add.outer(np.arange(rows) * 5, np.arange(cols)) % 4093).astype("uint16")
 
 
 @pytest.fixture(scope="module")
 def wide_sources(tmp_path_factory):
-    """`{name: (path, pixels)}`: `WIDE` as a JPEG 2000 ("jp2") and as a GeoTIFF of 512 x 1024
-    tiles ("tif"), and `RGB_WIDE` as a JPEG 2000 ("jp2-rgb")."""
+    """`{name: (path, pixels)}`: images in rows of 1024 x 1024 tiles (terrio's JPEG 2000 tiles),
+    each row of tiles holding less than the block cache's 64 MiB, made for the tests that use them:
+
+    - "jp2": a UInt16 band (`wide_pixels`), a row of tiles and 6 rows of the next, whose row of
+      tiles holds 16,793,600 bytes, more than a copy's 16 MiB slab budget;
+    - "tif": the same band, a GeoTIFF of 512 x 1024 tiles;
+    - "jp2-rgb": three Byte bands of 12,000 bytes a row, whose 16 MB of rows hold a row of tiles
+      and a part of the next.
+    """
     folder = tmp_path_factory.mktemp("wide")
     tiles = dict(tiled=True, blockxsize=512, blockysize=1024)
+    band = wide_pixels()[None]
+    rgb = (np.add.outer(np.arange(1400) * 3, np.arange(4000)) % 251).astype("uint8")
+    rgb = np.stack([rgb, rgb[::-1], rgb[:, ::-1]])
     sources = {
-        "jp2": (WIDE, dict(driver="JP2OpenJPEG")),
-        "tif": (WIDE, dict(driver="GTiff", **tiles)),
-        "jp2-rgb": (RGB_WIDE, dict(driver="JP2OpenJPEG")),
+        "jp2": (band, dict(driver="JP2OpenJPEG")),
+        "tif": (band, dict(driver="GTiff", **tiles)),
+        "jp2-rgb": (rgb, dict(driver="JP2OpenJPEG")),
     }
     out = {}
     for name, (pixels, options) in sources.items():
@@ -446,7 +452,7 @@ def test_a_cog_copy_reads_a_jpeg_2000_of_one_row_of_tiles_at_once(tmp_path, bloc
     1.5 MiB), though the 1024 rows of its tiles would not."""
     terrio.set_block_cache_max(3 << 19)
     path = str(tmp_path / "one.jp2")
-    pixels = WIDE[0, :600, :1100]
+    pixels = wide_pixels(600, 1100)
     profile = dict(width=1100, height=600, count=1, dtype="uint16", crs="EPSG:32611")
     with rio.open(path, "w", driver="JP2OpenJPEG", transform=T, **profile) as dst:
         dst.write(pixels, 1)
@@ -466,7 +472,7 @@ def test_a_cog_copy_reads_384_row_jpeg_2000_tiles_a_row_of_tiles_at_a_time(tmp_p
     were decoded twice."""
     rasterio = pytest.importorskip("rasterio")
     path = str(tmp_path / "tiles.jp2")
-    pixels = WIDE[0, :1000, :1300]
+    pixels = wide_pixels(1000, 1300)
     pixels = np.vstack([pixels, pixels])
     profile = dict(width=1300, height=2000, count=1, dtype="uint16", crs="EPSG:32611")
     options = dict(blockxsize=640, blockysize=384, quality=100, reversible="yes")
@@ -491,7 +497,7 @@ def test_a_copy_reading_a_whole_jpeg_2000_at_once_still_does(tmp_path, writer):
     its 1024-row blocks read it in two parts. terrio writes the image in 1024 x 1024 tiles;
     rasterio here in one tile, which terrio reads in 1024-row blocks, so two reads decoded that
     tile in two passes."""
-    pixels = np.vstack([WIDE[0, :1000, :2000]] * 2)
+    pixels = np.vstack([wide_pixels(1000, 2000)] * 2)
     path = str(tmp_path / "src.jp2")
     profile = dict(width=2000, height=2000, count=1, dtype="uint16", crs="EPSG:32611", transform=T)
     if writer == "terrio":
