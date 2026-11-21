@@ -2177,7 +2177,7 @@ impl std::fmt::Debug for RangeReader {
     }
 }
 
-/// The most requests a parallel fetch has in flight (and responses it holds) at once.
+/// The most requests a parallel fetch has in flight at once.
 // ponytail: a thread per request slot, spawned per fetch; a pool of request threads if spawning
 // ever shows next to a request's latency
 const PARALLEL_RUNS: usize = 8;
@@ -2207,8 +2207,8 @@ impl Run {
     }
 }
 
-/// The requests of a parallel fetch the threads take in order, at most `free` more than the
-/// runs stored so far, until the fetch stops them (see [`Shared::fetch_runs_in_parallel`]).
+/// The requests of a parallel fetch the threads take in order, at most `places` in flight,
+/// until the fetch stops them (see [`Shared::fetch_runs_in_parallel`]).
 struct RequestWindow {
     state: Mutex<WindowState>,
     changed: std::sync::Condvar,
@@ -2220,8 +2220,11 @@ struct RequestWindow {
 struct WindowState {
     /// The index of the next request to take.
     next: usize,
-    /// How many more requests may be taken before a run is stored.
+    /// How many more requests may be taken before one in flight is answered.
     places: usize,
+    /// Set once a request failed or a whole file came back: no other is taken, and those in
+    /// flight go on.
+    closed: bool,
 }
 
 /// Stops a [`RequestWindow`] when the thread holding it panics.
@@ -2238,7 +2241,7 @@ impl Drop for StopOnPanic<'_> {
 impl RequestWindow {
     fn new(places: usize) -> Self {
         Self {
-            state: Mutex::new(WindowState { next: 0, places }),
+            state: Mutex::new(WindowState { next: 0, places, closed: false }),
             changed: std::sync::Condvar::new(),
             cancel: Arc::new(AtomicBool::new(false)),
         }
@@ -2249,7 +2252,7 @@ impl RequestWindow {
     fn take<T: Copy>(&self, requests: &[T]) -> Option<T> {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         loop {
-            if self.cancel.load(Ordering::SeqCst) || state.next >= requests.len() {
+            if self.cancel.load(Ordering::SeqCst) || state.closed || state.next >= requests.len() {
                 return None;
             }
             if state.places > 0 {
@@ -2261,10 +2264,17 @@ impl RequestWindow {
         }
     }
 
-    /// Gives back the place of a request whose run is stored.
-    fn release(&self) {
-        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).places += 1;
-        self.changed.notify_one();
+    /// Gives back the place of a request answered with its range, or takes no other request
+    /// after one that was not: a failure, or a whole file, ends the fetch once stored.
+    fn answered(&self, with_range: bool) {
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if with_range {
+            state.places += 1;
+        } else {
+            state.closed = true;
+        }
+        drop(state);
+        self.changed.notify_all();
     }
 
     /// Stops the fetch: no other request is taken, and the retries of those in flight end.
@@ -2648,11 +2658,11 @@ impl Shared {
 
     /// Fetches `runs` with up to [`PARALLEL_RUNS`] requests in flight, each sent by a thread of
     /// its own through a copy of the client (and a connection of the shared pool), with the
-    /// caller's options and STAC asset policy. The runs are stored in order, each as soon as it
-    /// and the runs before it are in, and a new request starts only when a run is stored: at most
-    /// [`PARALLEL_RUNS`] responses are held at once, outside the cache. A fetch's runs span at
-    /// most half the cache's blocks ([`Shared::fetch_planned`]), so they are within the cache's
-    /// size together.
+    /// caller's options and STAC asset policy. A new request starts as soon as one is answered, so
+    /// a slow response holds up its own run, not the requests after it; the runs are stored in
+    /// order, each as soon as it and the runs before it are in. Responses wait for those before
+    /// them outside the cache: a fetch's runs span at most half the cache's blocks
+    /// ([`Shared::fetch_planned`]), so they are within the cache's size together.
     ///
     /// A failed run (or a whole file a server sent instead) ends the fetch as the serial one
     /// would: no request starts after it, and those in flight are abandoned, their retries
@@ -2685,6 +2695,10 @@ impl Shared {
                         let _cancellation = cancellation.enter();
                         while let Some((run, from, last)) = window.take(requests) {
                             let fetched = context.enter().and_then(|_scope| client.fetch(Some((from, last))));
+                            // The range in full, as storing takes it; anything else closes the
+                            // window before it is stored.
+                            let with_range = matches!(&fetched, Ok(f) if f.status == 206 && f.data.len() as u64 == last - from + 1);
+                            window.answered(with_range);
                             // A copy of the client for the storing thread to take back (its URLs and
                             // S3 state): a small cost next to the request's.
                             if sender.send((run, client.clone(), fetched)).is_err() {
@@ -2709,8 +2723,7 @@ impl Shared {
         })
     }
 
-    /// Stores `runs` in order as their `responses` come in, giving `window` back a request's place
-    /// as each run is stored. See [`Shared::fetch_runs_in_parallel`].
+    /// Stores `runs` in order as their `responses` come in. See [`Shared::fetch_runs_in_parallel`].
     fn store_runs_in_order(
         &mut self,
         runs: Vec<Run>,
@@ -2736,12 +2749,8 @@ impl Shared {
             } else {
                 None
             };
-            let requested = run.requests();
             if self.store_run(run, fetched)? {
                 return Ok(());
-            }
-            if requested {
-                window.release();
             }
         }
         Ok(())
@@ -3457,7 +3466,9 @@ mod tests {
                         // answer sees it out.
                         gate.seen.lock().unwrap().in_flight -= 1;
                         gate.changed.notify_all();
-                        let sent = if status == 206 {
+                        // SHORT_206: a 206 whose body, and length, stop short of the range.
+                        let b = if status == SHORT_206 { a + (b - a) / 2 } else { b };
+                        let sent = if status == 206 || status == SHORT_206 {
                             let head = format!(
                                 "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {a}-{b}/{}\r\n\r\n",
                                 b - a + 1,
@@ -3476,6 +3487,9 @@ mod tests {
         });
         (url, gate)
     }
+
+    /// A stand-in status for [`serve_gated`]: a `206` with less than the range asked.
+    const SHORT_206: u16 = 1206;
 
     /// The prefetch ranges of `n` runs of blocks far apart (none at the start of the file).
     fn separate_runs(n: u64) -> Vec<(u64, u64)> {
@@ -3688,6 +3702,52 @@ mod tests {
             assert_eq!(gate.ranges_asked().len(), 4, "two abandoned requests and two recovered requests");
             exit == Some(0)
         });
+    }
+
+    #[test]
+    fn a_slow_run_does_not_hold_up_the_requests_after_it() {
+        // Nine runs, eight places: the first run is answered only once the ninth is asked, which
+        // happens as soon as another run is answered, not once the first is stored.
+        let data = test_data();
+        let runs = separate_runs(9);
+        let (slow, ninth) = (runs[0].0 as usize, runs[8].0 as usize);
+        let (url, gate) = serve_gated(data.clone(), move |first, gate| {
+            if first == slow {
+                gate.wait_until(|seen| seen.firsts.contains(&ninth), Duration::from_secs(10));
+            }
+            206
+        });
+        let mut r = RangeReader::open_with(&Remote::Url(url), options()).unwrap();
+        let started = std::time::Instant::now();
+        r.prefetch(&runs).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(5), "the ninth run waited for the first: {:?}", started.elapsed());
+        assert_eq!(gate.ranges_asked().len(), 9);
+        assert_eq!(read_range(&mut r, runs[8].0, 100), data[runs[8].0 as usize..runs[8].0 as usize + 100]);
+    }
+
+    #[test]
+    fn a_failed_run_behind_a_slow_one_starts_no_other_request() {
+        // The fourth of nine runs fails at once (refused, or a range answered short) while the
+        // first is slow and the others answer a little later: no request starts after the
+        // failure, though the first is not stored yet.
+        for failure in [416, SHORT_206] {
+            let data = test_data();
+            let runs = separate_runs(9);
+            let (slow, failed) = (runs[0].0 as usize, runs[3].0 as usize);
+            let (url, gate) = serve_gated(data, move |first, _| match first {
+                0 => 206,
+                first if first == failed => failure,
+                first => {
+                    std::thread::sleep(Duration::from_millis(if first == slow { 500 } else { 200 }));
+                    206
+                }
+            });
+            let r = RangeReader::open_with(&Remote::Url(url), options()).unwrap();
+            assert!(r.prefetch(&runs).is_err(), "{failure}");
+            let asked = gate.ranges_asked();
+            assert!(asked.contains(&failed), "{failure}: {asked:?}");
+            assert!(!asked.contains(&(runs[8].0 as usize)), "{failure}: none sent after the failure: {asked:?}");
+        }
     }
 
     #[test]
