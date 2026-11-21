@@ -613,11 +613,13 @@ struct Args<'a> {
 }
 
 /// Computes the rows of `out` (`width` values each) with `f(scratch, row, values, flags)`, the
-/// rows numbered from 0, `flags` being the row's `width` flags in `flags` when given: in `pieces`
-/// runs of consecutive rows on the thread pool, each run with a copy of `scratch` of its own, or
-/// all of them on the calling thread. Each row is computed alone, so the values do not depend on
-/// the runs. The kernels pass closures that hold what they read by value (`move`): through
-/// references to the kernel's locals, the compiler loads those values again inside the loops.
+/// rows numbered from 0, where `flags` are the row's `width` entries of `flags` when given: in
+/// `pieces` runs of consecutive rows on the thread pool, each run with a copy of `scratch` of its
+/// own, or all of them on the calling thread. Each row is computed alone, so the values do not
+/// depend on the runs. The kernels pass closures that hold what they read by value (`move`):
+/// through references to the kernel's locals, the compiler loads those values again inside the
+/// loops. When given, `flags` must have an entry for each value of `out`, or this panics: past the
+/// end of shorter flags, rows would be computed without theirs, as if unmasked.
 fn rows_in_pieces<V: Send, S: Clone + Sync, F: Fn(&mut S, usize, &mut [V], Option<&mut [u8]>) + Sync + Send>(
     out: &mut [V],
     flags: Option<&mut [u8]>,
@@ -626,6 +628,7 @@ fn rows_in_pieces<V: Send, S: Clone + Sync, F: Fn(&mut S, usize, &mut [V], Optio
     scratch: S,
     f: F,
 ) {
+    assert!(flags.as_deref().is_none_or(|m| m.len() == out.len()), "the mask flags must be one per value");
     let width = width.max(1);
     let rows = out.len() / width;
     let per = rows.div_ceil(pieces.max(1)).max(1);
@@ -1865,21 +1868,24 @@ enum Pieces {
     /// One, for whole levels, whose rows of blocks are computed in parallel (`level_t`).
     One,
     /// As many as [`row_pieces`] gives for the thread pool's threads: two for a row of a single
-    /// block, one otherwise. The row writer's (`block_row`).
+    /// block of at least twice [`PIECE_PIXELS`] destination pixels, with a pool of several threads;
+    /// one otherwise. The row writer's (`block_row`).
     Pool,
     #[cfg(test)]
     Exactly(usize),
 }
 
-/// The fewest destination pixels a piece of a block's rows is given.
+/// A row of a single block is split in two from twice this many destination pixels, so that each
+/// piece gets about this many ([`row_pieces`]).
 const PIECE_PIXELS: usize = 1 << 14;
 
 /// The pieces of work, each of consecutive rows, that each block of `pixels` destination pixels
 /// in a row of `blocks` blocks is computed in, with `threads` threads: two for a row of a single
-/// block, of at least [`PIECE_PIXELS`] pixels each, which would otherwise be computed on the
-/// calling thread; one for a row of several blocks, which already run on the thread pool. More
-/// pieces cost more processor time than they save: each takes a thread of the pool, which waits for
-/// work once done, and on cores running two threads each runs slower.
+/// block (which would otherwise be computed on the calling thread) of at least twice
+/// [`PIECE_PIXELS`] pixels, when there are several threads; one otherwise, as for a row of several
+/// blocks, which already run on the thread pool. More pieces cost more processor time than they
+/// save: each takes a thread of the pool, which waits for work once done, and on cores running two
+/// threads each runs slower.
 fn row_pieces(blocks: usize, pixels: usize, threads: usize) -> usize {
     if blocks == 1 && threads > 1 && pixels >= 2 * PIECE_PIXELS { 2 } else { 1 }
 }
@@ -2401,5 +2407,20 @@ mod tests {
         assert_eq!(row_pieces(2, 5490 * 128, 16), 1);
         assert_eq!(row_pieces(3, 5490 * 128, 16), 1);
         assert_eq!(row_pieces(1, 5490 * 128, 1), 1);
+    }
+
+    /// `rows_in_pieces` refuses mask flags that are not one per value. Every kernel passes one per
+    /// value, so nothing else would fail if a caller did not: past the end of shorter flags, rows
+    /// would be computed as if unmasked, and longer flags would not be the rows' own.
+    #[test]
+    fn mask_flags_that_are_not_one_per_value_are_refused() {
+        // 3 rows of 4 values: 8 flags, the rows split in two; 16 flags, in one run.
+        for (flags, pieces) in [(8, 2), (16, 1)] {
+            let refused = std::panic::catch_unwind(|| {
+                rows_in_pieces(&mut [0.0f64; 12], Some(vec![255u8; flags].as_mut_slice()), 4, pieces, (), |_, _, _, _| {})
+            });
+            let message = refused.err().and_then(|p| p.downcast_ref::<&str>().map(|m| m.to_string()));
+            assert_eq!(message.as_deref(), Some("the mask flags must be one per value"), "{flags} flags for 12 values in {pieces} pieces");
+        }
     }
 }
