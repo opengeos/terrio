@@ -2097,9 +2097,6 @@ impl GeoTiffWriter {
             RowWriter::Tiff(t) => t.write_rows(data, rows, mask),
             RowWriter::Cog(c) => {
                 let writer = c.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner);
-                // The rows of tiles compressed since are spooled first: they no longer count.
-                #[cfg(not(target_family = "wasm"))]
-                writer.land_compressed()?;
                 // Checked before the writer copies the caller's rows.
                 writer.admit(data, rows, mask, true)?;
                 writer.take_admitted(data.clone(), rows, mask.map(<[u8]>::to_vec))
@@ -2891,15 +2888,22 @@ impl CogWriter {
     /// [`Error::InvalidArgument`] when the rows are not of the raster's data type and shape or go
     /// past its height; and with [`Error::ResourceLimit`] when the bytes [`Self::call_bytes`] counts
     /// for it are more than the memory the process can use (`borrowed`: the writer copies the
-    /// caller's rows first). A refused call takes no rows, and can be made again.
-    fn admit(&self, data: &RasterData, rows: usize, mask: Option<&[u8]>, borrowed: bool) -> Result<()> {
+    /// caller's rows first), once the rows of tiles compressed since the last call are added to
+    /// their spools ([`Self::land_compressed`]): they no longer count. A refused call takes no rows,
+    /// and can be made again.
+    fn admit(&mut self, data: &RasterData, rows: usize, mask: Option<&[u8]>, borrowed: bool) -> Result<()> {
         self.refuse_failed()?;
         if data.data_type() != self.data_type {
             return Err(Error::InvalidArgument("the rows are not of the raster's data type".into()));
         }
         let l = &self.levels[0];
-        if l.mask.is_some() != mask.is_some() || mask.is_some_and(|m| l.cols.checked_mul(rows) != Some(m.len())) {
-            return Err(Error::InvalidArgument("give one mask value per pixel when the COG has a mask".into()));
+        match (&l.mask, mask) {
+            (None, Some(_)) => return Err(Error::InvalidArgument("the COG has no mask: give its rows without one".into())),
+            (Some(_), None) => return Err(Error::InvalidArgument("the COG has a mask: give its rows".into())),
+            (Some(_), Some(m)) if l.cols.checked_mul(rows) != Some(m.len()) => {
+                return Err(Error::InvalidArgument(format!("{} mask values for {rows} rows of {} columns", m.len(), l.cols)));
+            }
+            _ => {}
         }
         if rows > l.rows - l.received {
             return Err(Error::InvalidArgument(format!("{} rows past the raster's {}", l.received.saturating_add(rows), l.rows)));
@@ -2912,6 +2916,8 @@ impl CogWriter {
                 l.cols
             )));
         }
+        #[cfg(not(target_family = "wasm"))]
+        self.land_compressed()?;
         let bytes = data.len().checked_mul(self.data_type.size_bytes());
         let bytes = bytes.and_then(|bytes| self.call_bytes(bytes, mask.map_or(0, <[u8]>::len), rows, borrowed));
         crate::dataset::fallible::check_usable(bytes, || "a COG input slab and overview working copies are too large to allocate".into())
@@ -4200,9 +4206,10 @@ mod tests {
     /// with rows or none, and `finish` are refused, before any is checked for memory, and no file
     /// missing those tiles is laid out: the output is left empty. A call refused for memory before,
     /// which takes no rows, is no failure: made again, it is taken. The failure is found by a call
-    /// polling the rows of tiles compressed, or by one waiting for the oldest when a fourth would be
-    /// compressed. (JPEG XL is written for Byte and UInt16 samples: the writer of a Float32 COG takes
-    /// it, and each of its tiles refuses it.)
+    /// polling the rows of tiles compressed before it is checked, or by the rows taken once one is
+    /// admitted waiting for the oldest when a fourth would be compressed. (JPEG XL is written for
+    /// Byte and UInt16 samples: the writer of a Float32 COG takes it, and each of its tiles refuses
+    /// it.)
     #[test]
     #[cfg(not(target_family = "wasm"))]
     fn a_tile_compression_that_fails_fails_the_writer() {
@@ -4254,9 +4261,10 @@ mod tests {
         assert_eq!(w.rows_written(), 16);
         assert!(refused(w.finish()));
         assert_eq!(std::fs::metadata(&path).unwrap().len(), 0, "the output is not left empty");
-        // Rows given without polling: the call that waits for the oldest row of tiles finds it.
+        // Rows taken without polling (as a call takes them once admitted, while the rows of tiles
+        // before are still being compressed): the call that waits for the oldest row of tiles finds it.
         let mut w = GeoTiffWriter::create(path.to_str().unwrap(), &header, &options).unwrap();
-        let failed = (0..rows / 16).find_map(|_| cog(&mut w).write_rows_masked(slab(), 16, Some(valid.clone())).err());
+        let failed = (0..rows / 16).find_map(|_| cog(&mut w).take_admitted(slab(), 16, Some(valid.clone())).err());
         let failed = failed.expect("a fourth row of tiles waits for the first");
         assert!(failed.to_string().contains("JPEG XL is written for Byte and UInt16 data"), "{failed}");
         assert!(refused(cog(&mut w).write_rows_masked(none.clone(), 0, Some(Vec::new()))));
@@ -4330,6 +4338,58 @@ mod tests {
         cog.write_rows_masked(rest, 19, Some(rest_mask)).unwrap();
         cog.finish().unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), encode(&raster, &opts).unwrap());
+    }
+
+    /// A call giving the writer its rows is checked once the rows of tiles compressed since the last
+    /// call are spooled, as a call lending them is: they no longer count. Counted, they refused a call
+    /// that fits once they are, and each time it was made again, as nothing spooled them: an 8192 x
+    /// 2048 masked Byte COG in 512-pixel tiles, uncompressed and without overviews, given four slabs
+    /// of 512 rows, the first three compressed by the time the fourth is given, under memory between
+    /// the bytes counted with and without them. The file is the one written whole.
+    #[test]
+    #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+    fn a_cog_row_call_giving_its_rows_is_checked_once_the_tiles_compressed_are_spooled() {
+        crate::par::alone(120, || {
+            let (cols, rows, slab) = (8192, 2048, 512);
+            let values: Vec<u8> = (0..cols * rows).map(|i| (i % 251) as u8).collect();
+            let mask: Vec<u8> = (0..cols * rows).map(|i| if i % 7 == 0 { 0 } else { 255 }).collect();
+            let config = wbraster::RasterConfig { cols, rows, bands: 1, data_type: DataType::U8, ..Default::default() };
+            let raster = Raster::from_data_native(config, RasterData::U8(values.clone())).unwrap();
+            let opts =
+                TiffOptions { cog: true, tile_size: Some(512), overview_count: Some(0), mask: Some(mask.clone()), ..Default::default() };
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("spooled.tif");
+            let mut cog = CogWriter::create(path.to_str().unwrap(), &raster, &opts).unwrap();
+            let n = slab * cols;
+            let give = |k: usize| (RasterData::U8(values[k * n..(k + 1) * n].to_vec()), Some(mask[k * n..(k + 1) * n].to_vec()));
+            // The first three slabs, taken as calls take them once admitted; their rows of tiles are
+            // compressed, not yet spooled.
+            for k in 0..3 {
+                let (data, m) = give(k);
+                cog.take_admitted(data, slab, m).unwrap();
+            }
+            assert_eq!(cog.in_flight.len(), 3);
+            for (_, _, result) in &mut cog.in_flight {
+                let compressed = result.recv().unwrap();
+                let (tx, rx) = std::sync::mpsc::sync_channel(1);
+                tx.send(compressed).unwrap();
+                *result = rx;
+            }
+            let counted = cog.call_bytes(n, n, slab, false).unwrap();
+            let queued = std::mem::take(&mut cog.in_flight);
+            let spooled = cog.call_bytes(n, n, slab, false).unwrap();
+            cog.in_flight = queued;
+            let limit = spooled + (counted - spooled) / 2;
+            assert!(counted > limit && limit > 16 << 20, "{counted} bytes counted with the rows of tiles compressed, {spooled} without");
+            crate::vsi::tests::set_limit(libc::RLIMIT_RSS, limit as u64);
+            let (data, m) = give(3);
+            cog.write_rows_masked(data, slab, m).unwrap();
+            crate::vsi::tests::set_limit(libc::RLIMIT_RSS, libc::RLIM_INFINITY);
+            assert_eq!(cog.in_flight.len(), 1, "the three rows of tiles compressed are spooled, the fourth's is being compressed");
+            cog.finish().unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), encode(&raster, &opts).unwrap());
+            true
+        });
     }
 
     /// A call of more rows than the raster has left, however many, is refused as invalid

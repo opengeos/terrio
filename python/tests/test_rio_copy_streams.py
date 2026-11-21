@@ -392,6 +392,32 @@ def test_a_cog_writer_refuses_a_mask_of_its_rows_size_in_another_shape(tmp_path)
         assert np.array_equal(ds.dataset_mask(), np.vstack([mask, mask[::-1]]))
 
 
+def test_a_cog_writer_refuses_a_mask_it_has_not_and_rows_without_the_one_it_has(tmp_path):
+    """A mask given to a writer created without one, or none to a writer created with one, is
+    refused before the writer takes the rows, each with a message saying what to give instead: the
+    writers then take their rows as they should be given."""
+    from terrio import _terrio
+    from terrio.errors import InvalidArgumentError
+
+    rows, width = 2, 4
+    pixels = np.arange(rows * width, dtype="uint8").reshape(rows, width)
+    mask = np.array([[255, 0, 255, 255], [0, 255, 255, 0]], np.uint8)
+    out = str(tmp_path / "masked.tif")
+    plain = _terrio.CogWriter(str(tmp_path / "plain.tif"), width, rows, 1, "uint8", T.to_gdal())
+    masked = _terrio.CogWriter(out, width, rows, 1, "uint8", T.to_gdal(), mask=True)
+    with pytest.raises(InvalidArgumentError, match="the COG has no mask: give its rows without"):
+        plain.write(pixels, mask)
+    with pytest.raises(InvalidArgumentError, match="the COG has a mask: give its rows"):
+        masked.write(pixels)
+    assert plain.rows_written == masked.rows_written == 0
+    plain.write(pixels)
+    masked.write(pixels, mask)
+    plain.close()
+    masked.close()
+    with rio.open(out) as ds:
+        assert np.array_equal(ds.dataset_mask(), mask)
+
+
 @pytest.mark.parametrize("driver, limit", [("COG", None), ("GTiff", "1")])
 def test_a_copy_whose_mask_goes_to_a_sidecar_holds_it(tmp_path, monkeypatch, driver, limit):
     """With `GDAL_TIFF_INTERNAL_MASK=NO`, a copy's mask goes to a `.msk` sidecar, written from the
