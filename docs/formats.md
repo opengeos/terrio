@@ -374,8 +374,9 @@ compressed fields. This is 128 MiB of decoded Float64 values; decoder buffers an
 use additional memory. To allow larger fields, set the environment variable `TERRIO_GRIB_MAX_POINTS`
 to a larger positive integer. The limit bounds what a decode allocates: it is checked on the
 raster's grid (the first field's) when a file is opened, and on each field before it is decoded, for
-local, remote and in-memory files. A band read from the block cache is not decoded again, so it is
-not checked again either.
+local, remote and in-memory files. The variable is read from the process environment each time, and
+a band in the block cache is checked again before a read takes it from there: a band decoded before
+the limit was lowered, by any reader of the file, is refused as its decode would be.
 A resource-limit or allocation refusal is not retried with GDAL, including when `open` detects a file by its content.
 
 GRIB2 is written as GDAL's GRIB driver writes it (`terrio.rio.open(path, "w", driver="GRIB")`,

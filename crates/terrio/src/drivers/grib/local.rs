@@ -362,6 +362,44 @@ mod tests {
         assert_eq!(read(vec![1, 2]).unwrap_err().to_string(), first);
     }
 
+    /// Catches a band in the block cache served beyond `TERRIO_GRIB_MAX_POINTS`, which is read from
+    /// the process environment each time it is checked: once the limit is lowered, a band decoded
+    /// before is refused, as its decode is, to the reader that decoded it and to the other readers
+    /// of the file, opened before or after. The file's second field has a larger grid than its
+    /// first, which is the one its open checks. In a process of its own, where no other test reads
+    /// the variable while this one changes it.
+    #[cfg(unix)]
+    #[test]
+    fn a_band_in_the_block_cache_is_refused_beyond_the_point_limit() {
+        crate::par::alone(60, || {
+            // SAFETY: in the test's own process, on its one test thread, while no other thread
+            // reads the environment.
+            unsafe { std::env::set_var("TERRIO_GRIB_MAX_POINTS", "1200") };
+            let _serial = cache_test_guard(64 << 20);
+            let dir = tempfile::tempdir().unwrap();
+            let (_, small) = grib_file(dir.path(), 20, 10, 1);
+            let (_, large) = grib_file(dir.path(), 40, 30, 1);
+            let path = dir.path().join("two.grib2");
+            std::fs::write(&path, [small, large].concat()).unwrap();
+            let path = path.to_str().unwrap();
+            let all = Window::full(20, 10);
+            let early = crate::LazyRaster::open(path).unwrap();
+            let mut first = crate::LazyRaster::open(path).unwrap();
+            window(&mut first, 2, all);
+            // SAFETY: as above.
+            unsafe { std::env::set_var("TERRIO_GRIB_MAX_POINTS", "1000") };
+            let late = crate::LazyRaster::open(path).unwrap();
+            for (name, mut r) in [("early", early), ("first", first), ("late", late)] {
+                let read = r.read_window(all, &WindowOptions { bands: vec![2], overview: None }).map(|_| ());
+                let refused =
+                    |e: &Error| matches!(e, Error::ResourceLimit(m) if m == "GRIB grid of 1200 points exceeds TERRIO_GRIB_MAX_POINTS=1000");
+                assert!(read.as_ref().is_err_and(refused), "{name}: {read:?}");
+                assert_eq!(window(&mut r, 1, all).len(), 200, "{name}: band 1, within the limit");
+            }
+            true
+        });
+    }
+
     /// Catches the readers of one file sharing its bands when they decode it otherwise: one opened
     /// with `GRIB_NORMALIZE_UNITS=NO` reads Kelvin while another, open at once, reads Celsius.
     #[test]

@@ -452,12 +452,17 @@ impl Source {
         crate::LazyRaster::from_source(header, Box::new(Source { store, cols, rows, split, normalize, handle }))
     }
 
-    /// Band `b` in the block cache, when it holds the band's rows `rows`.
+    /// Band `b` in the block cache, when it holds the band's rows `rows` and its grid is within
+    /// `TERRIO_GRIB_MAX_POINTS` now: the limit is read from the process environment each time, and
+    /// the band may have been decoded under a larger one, by this reader or another reader of the
+    /// file. A band beyond it is decoded again instead, which refuses it.
     fn cached(&self, b: usize, rows: std::ops::Range<usize>) -> Option<std::sync::Arc<crate::block_cache::CachedChunk>> {
         if crate::block_cache::max_bytes() == 0 {
             return None;
         }
-        crate::block_cache::get(self.handle.id(), b, BAND_CHUNK).filter(|c| grid_of(c).is_some_and(|g| g.holds(rows.clone())))
+        let file_len = self.store.file_len();
+        crate::block_cache::get(self.handle.id(), b, BAND_CHUNK)
+            .filter(|c| grid_of(c).is_some_and(|g| g.holds(rows.clone())) && point_count(c.dims.0, c.dims.1, file_len).is_ok())
     }
 
     /// Band `b` (from 1), band `k` of `message`, decoded: the values of `window`, placed north up.
