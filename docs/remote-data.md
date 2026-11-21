@@ -394,6 +394,21 @@ process-wide, as GDAL's block cache keeps the blocks it decodes. A window read a
 the chunks no longer in the cache: the least recently used are dropped first when the cache is
 full, a chunk larger than the cache is never kept, and a size of 0 keeps none.
 
+Lazy GRIB reads keep the bands they decode in the same cache, alongside the decoded chunks of other
+formats and files: they all make room for one another, the least recently used first. A read shares
+the cache equally among the bands it asks for. Of each band it decodes, a read keeps the rows it
+needs and as many of those after them (then before them) as its share holds, as decoded and in one
+piece: the whole band when its Float64 values (8 bytes a point), with the small overhead the cache
+counts for each chunk, fit. A read that needs none of a band's rows, as a window below a grid
+shorter than the dataset does, keeps none. A later read of rows the cache still holds decodes
+nothing; a read of rows it no longer holds decodes the band again. That happens to any band once
+later reads have taken its place in the cache, and, read window by window, to a band whose Float64
+values, or those of the bands one read asks for together, exceed `TERRIO_CACHEMAX`. With the default
+64 MiB, a 7200 x 3601 field (198 MiB as Float64) read as 512 x 512 windows is decoded 4 times in
+rows of windows and 60 times in columns, and the four 3600 x 1801 fields (50 MiB each) of a file
+read together, 16 and 128 times; read one after the other, with nothing else read meanwhile, each is
+decoded once. A `TERRIO_CACHEMAX` larger than those values keeps them whole.
+
 | Variable | GDAL equivalent | Default |
 |---|---|---|
 | `TERRIO_CACHEMAX` (bytes; `K`, `M`, `G` suffixes; 0 turns the cache off) | `GDAL_CACHEMAX` (a plain integer below 100000 is megabytes; a `%` value is ignored) | 64 MiB |
@@ -402,10 +417,16 @@ The size is read from the process environment at first use. Options set for one 
 `terrio.Env`) do not change it.
 
 `terrio::block_cache::set_max_bytes` and `clear` change the size and empty the cache at run time.
-The chunks belong to the open reader that decoded them. When another file is renamed over a local
+The chunks belong to the open reader that decoded them. On Unix, a local GRIB file's bands belong
+to the version of the file read (its device, inode, size, and modification and change times) and
+to how its values are decoded (`GRIB_NORMALIZE_UNITS`): the readers of that version open at once
+(such as those Python opens to read a raster from several threads) share them until the last is
+closed. When another file is renamed over a local
 file's path, an open reader goes on reading the original and a reader opened afterwards reads the
 replacement. A file changed in place is not snapshotted: a read may combine cached chunks of the
-old pixels with chunks decoded from the new ones, so close its readers before changing it in place
+old pixels with chunks decoded from the new ones, and a GRIB reader opened after the change, while
+another is open, may be given bands of the old bytes when the file's size and times do not show the
+change (times of a coarse resolution may not). So close its readers before changing it in place
 and open them again afterwards. A remote file
 opened again decodes its chunks anew, but from the bytes the HTTP cache above may still hold for its
 URL: `terrio::http::clear_cache` (Python: `terrio.clear_http_cache()`) drops them.

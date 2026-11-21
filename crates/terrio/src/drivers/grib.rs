@@ -54,7 +54,9 @@
 //! Supported GRIB2 data representations: simple packing (5.0), complex packing with and without
 //! spatial differencing (5.2, 5.3), IEEE floating point (5.4), JPEG 2000 (5.40, with the `jp2`
 //! feature), PNG (5.41) and CCSDS (5.42, with the pure-Rust `rust-aec` decoder). Remote files are
-//! read by range ([`remote`]). Every allocation sized by a header is fallible: a damaged or
+//! read by range ([`remote`]) and local files by position ([`local`]): the headers of the messages
+//! when the file is opened, a band's message when the band is read. The bands read are kept in the
+//! process-wide [`crate::block_cache`]. Every allocation sized by a header is fallible: a damaged or
 //! hostile file is an error, never an abort.
 
 use crate::formats::RasterDriver;
@@ -64,6 +66,7 @@ use wbraster::raster::RasterData;
 use wbraster::{CrsInfo, DataType};
 
 mod grib1;
+mod local;
 mod names;
 #[cfg(remote)]
 mod remote;
@@ -132,11 +135,11 @@ pub(crate) fn read_bytes(bytes: &[u8]) -> Result<RasterDataset> {
     Ok(ds)
 }
 
-/// How many bands are decoded at once: two per thread of the pool, as many as the band cache of
-/// a [`Source`] keeps (at least one).
+/// How many bands are decoded at once: two per thread of the pool, within [`DECODE_BYTES`] of
+/// decoded values (at least one).
 fn decode_group(cols: usize, rows: usize) -> usize {
     let band_bytes = cols.saturating_mul(rows).saturating_mul(8).max(1);
-    (crate::par::threads().max(1) * 2).min(CACHE_BYTES / band_bytes).max(1)
+    (crate::par::threads().max(1) * 2).min(DECODE_BYTES / band_bytes).max(1)
 }
 
 /// An empty vector with room for `n` values, or an error when the memory cannot be had: sizes
@@ -228,17 +231,29 @@ impl Band<'_> {
 /// the sections, without decoding the data, as GDAL's `FindNoDataGrib2`), and the antimeridian
 /// split column.
 fn header(bands: &[Band], file_len: usize) -> Result<(RasterDataset, usize)> {
-    let first = bands.first().ok_or_else(|| Error::InvalidData("no GRIB message found".into()))?;
-    let grid = first.grid()?;
+    header_with(bands.first().map(Band::grid), bands.len(), bands.iter().map(Band::nodata), bands.iter().map(Band::metadata), file_len)
+}
+
+/// [`header`] from what it needs of the bands: the first band's grid (`None` without a band),
+/// their count, and each band's nodata, then each band's metadata, in band order. The first error
+/// among them is the header's, as [`header`] meets it.
+fn header_with(
+    first_grid: Option<Result<Grid>>,
+    count: usize,
+    nodata: impl Iterator<Item = Result<Option<f64>>>,
+    metadata: impl Iterator<Item = Result<crate::BandMetadata>>,
+    file_len: usize,
+) -> Result<(RasterDataset, usize)> {
+    let grid = first_grid.ok_or_else(|| Error::InvalidData("no GRIB message found".into()))??;
     let georef = georeference(&grid);
     let (cols, rows) = (grid.nx as usize, grid.ny as usize);
     point_count(cols, rows, file_len)?;
-    let band_nodata: Vec<Option<f64>> = bands.iter().map(Band::nodata).collect::<Result<_>>()?;
+    let band_nodata: Vec<Option<f64>> = nodata.collect::<Result<_>>()?;
     let nodata = band_nodata[0];
     let raster = wbraster::Raster {
         cols,
         rows,
-        bands: bands.len(),
+        bands: count,
         x_min: 0.0,
         y_min: 0.0,
         cell_size_x: 1.0,
@@ -251,7 +266,7 @@ fn header(bands: &[Band], file_len: usize) -> Result<(RasterDataset, usize)> {
     };
     let mut ds = RasterDataset::with_driver(raster, RasterDriver::GRIB, nodata.is_some());
     ds.set_geo_transform(georef.gt);
-    ds.band_metadata = bands.iter().map(Band::metadata).collect::<Result<_>>()?;
+    ds.band_metadata = metadata.collect::<Result<_>>()?;
     // Each band's items in the dataset's metadata too, as `BAND_<n>#<key>`, as the GRIB driver of
     // #232 gave them (and as the netCDF driver gives its bands').
     ds.raster.metadata = ds
@@ -275,9 +290,9 @@ fn decode_band(b: &Band, i: usize, file_len: usize) -> Result<Decoded> {
 }
 
 /// Opens a GRIB file to be read band by band, as GDAL reads it: only the bands read are
-/// decoded. Local files are found by extension or content; remote ones by extension, and read
-/// by range (each message's header, then the messages of the bands read). `None` when `path` is
-/// not a GRIB file.
+/// decoded. Local files are found by extension or content, remote ones by extension; both are read
+/// in place (each message's header, then the messages of the bands read), local files by position
+/// and remote ones by range. `None` when `path` is not a GRIB file.
 pub(crate) fn open_lazy(path: &str) -> Option<Result<crate::LazyRaster>> {
     use crate::vfs::Location;
     let lower = path.to_ascii_lowercase();
@@ -309,34 +324,110 @@ pub(crate) fn open_lazy(path: &str) -> Option<Result<crate::LazyRaster>> {
             e => e,
         }));
     }
-    Some(crate::vfs::resolve(path).and_then(|local| open_lazy_bytes(std::fs::read(local.path())?.into())))
+    Some(crate::vfs::resolve(path).and_then(local::open))
 }
 
-/// Opens GRIB messages held in memory to be read band by band.
-pub(crate) fn open_lazy_bytes(bytes: std::sync::Arc<[u8]>) -> Result<crate::LazyRaster> {
+/// Opens GRIB messages held in memory to be read band by band, keeping the bytes as they are given.
+pub(crate) fn open_lazy_bytes(bytes: Vec<u8>) -> Result<crate::LazyRaster> {
+    bytes_source(bytes).map(Source::lazy)
+}
+
+/// The dataset of GRIB messages held in memory, and the source that reads its bands from them.
+fn bytes_source(bytes: Vec<u8>) -> Result<(RasterDataset, Source)> {
     let normalize = normalize_units();
     let (header, split) = header(&bands(&bytes, normalize)?, bytes.len())?;
     let index = band_index(&bytes)?;
-    let (cols, rows) = (header.raster.cols, header.raster.rows);
-    let source = Source { store: Store::Bytes(bytes, index), cols, rows, split, normalize, cache: Vec::new() };
-    Ok(crate::LazyRaster::from_source(header, Box::new(source)))
+    Ok(Source::new(header, split, normalize, Store::Bytes(bytes, index), crate::block_cache::Handle::new()))
 }
 
-/// The bytes of decoded bands kept by a [`Source`], at least one band.
-const CACHE_BYTES: usize = 256 << 20;
+/// The most bytes a read of several bands decodes them with at once, at least one band: the decoded
+/// values of the bands it decodes in parallel and, for a local file, the messages read for them.
+const DECODE_BYTES: usize = 256 << 20;
+
+/// The chunk of the block cache that holds a band, or the part of it a read keeps.
+const BAND_CHUNK: u32 = 0;
+
+/// Where a band of a file is, and the points of its grid.
+#[derive(Clone, Copy)]
+struct BandAt {
+    /// The offset of its message.
+    start: usize,
+    /// The length of its message.
+    len: usize,
+    /// Its index among the message's bands.
+    k: usize,
+    /// The points of its grid, whose decoded Float64 values take 8 bytes each: 0 when the grid
+    /// cannot be read, which the band's decode then reports.
+    points: usize,
+}
+
+impl BandAt {
+    fn of(start: usize, len: usize, k: usize, band: &Band) -> BandAt {
+        let points = band.grid().map_or(0, |g| (g.nx as usize).saturating_mul(g.ny as usize));
+        BandAt { start, len, k, points }
+    }
+}
 
 /// Where a [`Source`]'s messages are.
 enum Store {
-    /// The whole file, in memory, and where each band is: its message's offset and length, and
-    /// its index among the message's bands.
-    Bytes(std::sync::Arc<[u8]>, Vec<(usize, usize, usize)>),
+    /// The whole file, in memory, and where each band is.
+    Bytes(Vec<u8>, Vec<BandAt>),
+    /// A local file, each band's message read when the band is read, and where each band is.
+    File(local::LocalFile, Vec<BandAt>),
     /// A remote file, each band's message fetched when the band is read.
     #[cfg(remote)]
     Remote(Box<remote::Messages>),
 }
 
+impl Store {
+    /// The length of the file.
+    fn file_len(&self) -> usize {
+        match self {
+            Store::Bytes(bytes, _) => bytes.len(),
+            Store::File(file, _) => file.len(),
+            #[cfg(remote)]
+            Store::Remote(messages) => messages.file_len(),
+        }
+    }
+
+    /// Where band `b` (from 1) is: an identity of its message, the same for every band of the
+    /// message, and the band's index among the message's bands.
+    fn locate(&self, b: usize) -> Result<(usize, usize)> {
+        let found = match self {
+            Store::Bytes(_, index) | Store::File(_, index) => index.get(b.wrapping_sub(1)).map(|at| (at.start, at.k)),
+            #[cfg(remote)]
+            Store::Remote(messages) => messages.band(b.wrapping_sub(1)),
+        };
+        found.ok_or_else(|| Error::InvalidArgument(format!("band {b} out of range")))
+    }
+
+    /// The message of band `b` (from 1), and the band's index among the message's bands.
+    fn message(&self, b: usize) -> Result<(std::borrow::Cow<'_, [u8]>, usize)> {
+        let out_of_range = || Error::InvalidArgument(format!("band {b} out of range"));
+        match self {
+            Store::Bytes(bytes, index) => {
+                let at = index.get(b.wrapping_sub(1)).ok_or_else(out_of_range)?;
+                Ok((bytes[at.start..at.start + at.len].into(), at.k))
+            }
+            Store::File(file, index) => {
+                let at = index.get(b.wrapping_sub(1)).ok_or_else(out_of_range)?;
+                Ok((file.read(at.start, at.len)?.into(), at.k))
+            }
+            #[cfg(remote)]
+            Store::Remote(messages) => {
+                let (message, k) = messages.band(b.wrapping_sub(1)).ok_or_else(out_of_range)?;
+                Ok((messages.fetch(message)?.into(), k))
+            }
+        }
+    }
+}
+
 /// A GRIB file read band by band: the bands read are decoded whole, as GDAL decodes them, and
-/// the last ones kept.
+/// kept as decoded in the process-wide block cache ([`crate::block_cache`], `TERRIO_CACHEMAX`),
+/// one chunk a band, with the decoded chunks of other files. A read shares the cache equally among
+/// the bands it reads, and keeps of each band the rows it needed and as many of those after them
+/// (then before them) as its share holds: the whole band when it fits. A later read of rows the
+/// cache no longer holds decodes the band again.
 struct Source {
     store: Store,
     cols: usize,
@@ -344,97 +435,212 @@ struct Source {
     split: usize,
     /// `GRIB_NORMALIZE_UNITS` when the file was opened.
     normalize: bool,
-    /// Decoded bands (from 1), north up, the most recently read last.
-    cache: Vec<(usize, std::sync::Arc<Vec<f64>>)>,
+    /// The identity of the bands in the block cache: for a local file, that of the version of the
+    /// file every open reader of it shares.
+    handle: crate::block_cache::Handle,
 }
 
-/// Where each band of the messages in `b` is: `(message offset, message length, index of the
-/// band among the message's bands)`, in band order, as [`bands`] finds them.
-fn band_index(b: &[u8]) -> Result<Vec<(usize, usize, usize)>> {
+/// The rows of a grid of `rows` rows (north up) that a read of the rows `wanted` keeps when it
+/// decodes the band and its share of the block cache holds `held` rows: the wanted ones (the last
+/// of them when it holds fewer), then the nearest after them, then the nearest before them. It is
+/// empty when it wants none, as a window below a grid shorter than its band does.
+fn kept_rows(wanted: std::ops::Range<usize>, rows: usize, held: usize) -> std::ops::Range<usize> {
+    if wanted.is_empty() {
+        return wanted;
+    }
+    let wanted = wanted.start.max(wanted.end.saturating_sub(held))..wanted.end;
+    let after = (held - wanted.len()).min(rows - wanted.end);
+    let before = (held - wanted.len() - after).min(wanted.start);
+    wanted.start - before..wanted.end + after
+}
+
+/// Where each band of the messages in `b` is, in band order, as [`bands`] finds them.
+fn band_index(b: &[u8]) -> Result<Vec<BandAt>> {
     let mut out = Vec::new();
     for (start, len) in message_spans(b)? {
-        let n = message_bands(&b[start..start + len], len, b.len(), true)?.len();
-        out.extend((0..n).map(|k| (start, len, k)));
+        let bands = message_bands(&b[start..start + len], len, b.len(), true)?;
+        out.extend(bands.iter().enumerate().map(|(k, band)| BandAt::of(start, len, k, band)));
     }
     Ok(out)
 }
 
-/// Band `b` (from 1) of a file held in memory, decoded and placed as the dataset's band.
-fn decode_placed(bytes: &[u8], at: (usize, usize, usize), b: usize, shape: (usize, usize, usize), normalize: bool) -> Result<Vec<f64>> {
-    let (start, len, k) = at;
-    let (cols, rows, split) = shape;
-    let bands = message_bands(&bytes[start..start + len], len, bytes.len(), normalize)?;
-    let band = bands.get(k).ok_or_else(|| Error::InvalidArgument(format!("band {b} out of range")))?;
-    let decoded = decode_band(band, b - 1, bytes.len())?;
-    let mut values = try_vec(cols * rows)?;
-    place_band(&decoded, cols, rows, split, &mut values);
-    Ok(values)
+/// The grid, or the part of it, that a chunk of a [`Source`] in the block cache holds: its size,
+/// the first of its rows the chunk holds (degrib's order, south to north) and their values.
+fn grid_of(chunk: &crate::block_cache::CachedChunk) -> Option<GridValues<'_>> {
+    let ((nx, ny), first) = (chunk.dims, chunk.first_row);
+    let tiff::decoder::DecodingResult::F64(values) = &chunk.samples else { return None };
+    let held = values.len().checked_div(nx)?;
+    (held * nx == values.len() && first + held <= ny).then_some(GridValues { nx, ny, first, values })
 }
 
 impl Source {
-    fn cached(&mut self, b: usize) -> Option<std::sync::Arc<Vec<f64>>> {
-        let i = self.cache.iter().position(|(k, _)| *k == b)?;
-        let entry = self.cache.remove(i);
-        self.cache.push(entry.clone());
-        Some(entry.1)
+    /// The dataset `header` of a GRIB file, and the source that reads its bands from `store`.
+    fn new(
+        header: RasterDataset,
+        split: usize,
+        normalize: bool,
+        store: Store,
+        handle: crate::block_cache::Handle,
+    ) -> (RasterDataset, Source) {
+        let (cols, rows) = (header.raster.cols, header.raster.rows);
+        (header, Source { store, cols, rows, split, normalize, handle })
     }
 
-    fn keep(&mut self, b: usize, band: std::sync::Arc<Vec<f64>>) {
-        let band_bytes = self.cols * self.rows * 8;
-        while !self.cache.is_empty() && (self.cache.len() + 1) * band_bytes > CACHE_BYTES {
-            self.cache.remove(0);
+    /// The raster of a dataset whose bands `source` reads.
+    fn lazy((header, source): (RasterDataset, Source)) -> crate::LazyRaster {
+        crate::LazyRaster::from_source(header, Box::new(source))
+    }
+
+    /// Band `b` in the block cache, when it holds the band's rows `rows` and its grid is within
+    /// `TERRIO_GRIB_MAX_POINTS` now: the limit is read from the process environment each time, and
+    /// the band may have been decoded under a larger one, by this reader or another reader of the
+    /// file. A band beyond it is decoded again instead, which refuses it.
+    fn cached(&self, b: usize, rows: std::ops::Range<usize>) -> Option<std::sync::Arc<crate::block_cache::CachedChunk>> {
+        if crate::block_cache::max_bytes() == 0 {
+            return None;
         }
-        self.cache.push((b, band));
+        let file_len = self.store.file_len();
+        crate::block_cache::get(self.handle.id(), b, BAND_CHUNK)
+            .filter(|c| grid_of(c).is_some_and(|g| g.holds(rows.clone())) && point_count(c.dims.0, c.dims.1, file_len).is_ok())
     }
 
-    fn band(&mut self, b: usize) -> Result<std::sync::Arc<Vec<f64>>> {
-        if let Some(band) = self.cached(b) {
-            return Ok(band);
+    /// Band `b` (from 1), band `k` of `message`, decoded: the values of `window`, placed north up.
+    /// The rows of the band its `share` of the block cache holds go in it ([`kept_rows`]): moved to
+    /// the front of the decoded values, whose end is given back, so that keeping part of a band
+    /// takes no memory it did not have.
+    fn decode_and_keep(&self, message: &[u8], k: usize, b: usize, window: crate::Window, share: u64) -> Result<Vec<f64>> {
+        let file_len = self.store.file_len();
+        let bands = message_bands(message, message.len(), file_len, self.normalize)?;
+        let band = bands.get(k).ok_or_else(|| Error::InvalidArgument(format!("band {b} out of range")))?;
+        let Decoded { nx, ny, mut values } = decode_band(band, b - 1, file_len)?;
+        let mut out = try_vec(window.width * window.height)?;
+        place(GridValues { nx, ny, first: 0, values: &values }, self.cols, self.split, window, &mut out);
+        // The most rows whose values, with the cache's entry, hold in `share`.
+        let row_bytes = (nx as u64).saturating_mul(8).max(1);
+        let held = usize::try_from(share.saturating_sub(crate::block_cache::entry_cost(0)) / row_bytes).unwrap_or(usize::MAX);
+        let wanted = window.y.min(ny)..(window.y + window.height).min(ny);
+        let rows = kept_rows(wanted.clone(), ny, held.min(ny));
+        // A window below a grid shorter than its band keeps no row but the grid's size, which
+        // serves the windows below it.
+        if rows.is_empty() && !wanted.is_empty() {
+            return Ok(out);
         }
-        let out_of_range = || Error::InvalidArgument(format!("band {b} out of range"));
-        let values = match &self.store {
-            Store::Bytes(bytes, index) => {
-                let at = *index.get(b.wrapping_sub(1)).ok_or_else(out_of_range)?;
-                decode_placed(bytes, at, b, (self.cols, self.rows, self.split), self.normalize)?
-            }
-            #[cfg(remote)]
-            Store::Remote(messages) => {
-                let (message, k) = messages.band(b.wrapping_sub(1)).ok_or_else(out_of_range)?;
-                let bytes = messages.fetch(message)?;
-                let bands = message_bands(&bytes, bytes.len(), messages.file_len(), self.normalize)?;
-                let decoded = decode_band(bands.get(k).ok_or_else(out_of_range)?, b - 1, messages.file_len())?;
-                let mut values = try_vec(self.cols * self.rows)?;
-                place_band(&decoded, self.cols, self.rows, self.split, &mut values);
-                values
-            }
-        };
-        let band = std::sync::Arc::new(values);
-        self.keep(b, band.clone());
-        Ok(band)
+        // The grid's rows are south to north: the band's rows `rows` are its rows from `first`.
+        let first = ny - rows.end;
+        if first > 0 {
+            values.copy_within(first * nx..(first + rows.len()) * nx, 0);
+        }
+        values.truncate(rows.len() * nx);
+        values.shrink_to_fit();
+        crate::block_cache::insert_part(self.handle.id(), b, BAND_CHUNK, tiff::decoder::DecodingResult::F64(values), (nx, ny), first);
+        Ok(out)
     }
 
-    /// Decodes the bands of `bands` not in the cache, in parallel (a file held in memory; a
-    /// remote file's bands are fetched one at a time by [`Source::band`]), into the cache.
-    fn decode_missing(&mut self, bands: &[usize]) -> Result<()> {
-        // Irrefutable in builds without `remote` (WebAssembly's), which hold files in memory only.
-        #[allow(irrefutable_let_patterns)]
-        let Store::Bytes(bytes, index) = &self.store else { return Ok(()) };
-        let mut missing: Vec<usize> = bands.iter().copied().filter(|b| !self.cache.iter().any(|(k, _)| k == b)).collect();
+    /// Decodes the bands `missing` (from 1, each once) of a decode group: the values of `window` of
+    /// each, each band kept in the block cache in a `share` of it. A file's bands are decoded in
+    /// parallel, the first error in band order failing the read: those of a local file as many at
+    /// once as hold, with the messages read for them, in [`DECODE_BYTES`] ([`Source::at_once`]). A
+    /// remote file's are decoded one at a time, in the order asked, each message fetched once for
+    /// the bands of it asked one after the other in the group: a read's groups are decoded one
+    /// after the other, so a message whose bands fall in two groups is fetched once in each.
+    fn decode(&self, mut missing: Vec<usize>, window: crate::Window, share: u64) -> Result<Vec<(usize, Vec<f64>)>> {
+        #[cfg(remote)]
+        if matches!(self.store, Store::Remote(_)) {
+            let mut out = Vec::with_capacity(missing.len());
+            // The message last fetched, kept while the bands asked are of it: one held at a time.
+            let mut last: Option<(usize, std::borrow::Cow<'_, [u8]>)> = None;
+            for b in missing {
+                let (id, k) = self.store.locate(b)?;
+                let message = match last.take() {
+                    Some((m, message)) if m == id => message,
+                    previous => {
+                        drop(previous);
+                        self.store.message(b)?.0
+                    }
+                };
+                out.push((b, self.decode_and_keep(&message, k, b, window, share)?));
+                last = Some((id, message));
+            }
+            return Ok(out);
+        }
         missing.sort_unstable();
-        missing.dedup();
-        if missing.len() < 2 {
-            return Ok(());
+        let mut out = Vec::with_capacity(missing.len());
+        let mut rest = missing.as_slice();
+        while !rest.is_empty() {
+            let (now, later) = rest.split_at(self.at_once(rest));
+            out.extend(self.decode_together(now, window, share)?);
+            rest = later;
         }
-        let ats: Vec<(usize, usize, usize)> = missing
+        Ok(out)
+    }
+
+    /// How many of the bands `missing` (from 1, sorted), from the first, are decoded at once: the
+    /// first, then as many as hold in [`DECODE_BYTES`] with it, counting the decoded values of each
+    /// band's own grid and, for a local file, the messages read for them, which are held until they
+    /// are all decoded.
+    fn at_once(&self, missing: &[usize]) -> usize {
+        let index = match &self.store {
+            Store::Bytes(_, index) | Store::File(_, index) => index,
+            #[cfg(remote)]
+            Store::Remote(_) => return missing.len(),
+        };
+        let read = matches!(self.store, Store::File(..));
+        let mut last = None;
+        let mut bytes = 0usize;
+        let mut fits = |b: usize| {
+            if let Some(at) = index.get(b.wrapping_sub(1)) {
+                // A message's bands are numbered one after the other: it is read once for them.
+                let message = if read && last != Some(at.start) {
+                    last = Some(at.start);
+                    at.len
+                } else {
+                    0
+                };
+                bytes = bytes.saturating_add(at.points.saturating_mul(8)).saturating_add(message);
+            }
+            bytes <= DECODE_BYTES
+        };
+        let Some((&first, more)) = missing.split_first() else { return 0 };
+        fits(first);
+        1 + more.iter().take_while(|&&b| fits(b)).count()
+    }
+
+    /// Decodes the bands `missing` (from 1, sorted, each once) of a file in memory or a local file
+    /// in parallel, as [`Source::decode`]: each message read once, on this thread, for all the
+    /// bands of it, then the bands decoded on the pool.
+    fn decode_together(&self, missing: &[usize], window: crate::Window, share: u64) -> Result<Vec<(usize, Vec<f64>)>> {
+        let (mut ids, mut messages): (Vec<usize>, Vec<_>) = (Vec::new(), Vec::new());
+        let located: Vec<Result<(usize, usize)>> = missing
             .iter()
-            .map(|&b| index.get(b.wrapping_sub(1)).copied().ok_or_else(|| Error::InvalidArgument(format!("band {b} out of range"))))
-            .collect::<Result<_>>()?;
-        let (bytes, shape, normalize) = (bytes.clone(), (self.cols, self.rows, self.split), self.normalize);
-        let decoded = crate::par::map_range_coarse(missing.len(), |i| decode_placed(&bytes, ats[i], missing[i], shape, normalize));
-        for (b, d) in missing.into_iter().zip(decoded) {
-            self.keep(b, std::sync::Arc::new(d?));
+            .map(|&b| {
+                let (id, k) = self.store.locate(b)?;
+                let at = ids.iter().position(|&m| m == id).unwrap_or_else(|| {
+                    ids.push(id);
+                    messages.push(self.store.message(b));
+                    messages.len() - 1
+                });
+                Ok((at, k))
+            })
+            .collect();
+        // A band whose message was not located or read has no values: its error, below, fails the
+        // read before them, in band order.
+        let decoded = crate::par::map_range_coarse(missing.len(), |i| match &located[i] {
+            Ok((at, k)) => match &messages[*at] {
+                Ok((message, _)) => self.decode_and_keep(message, *k, missing[i], window, share),
+                Err(_) => Ok(Vec::new()),
+            },
+            Err(_) => Ok(Vec::new()),
+        });
+        let mut errors: Vec<Option<Error>> = messages.into_iter().map(Result::err).collect();
+        let mut out = Vec::with_capacity(missing.len());
+        for ((&b, located), values) in missing.iter().zip(located).zip(decoded) {
+            let (at, _) = located?;
+            if let Some(e) = errors[at].take() {
+                return Err(e);
+            }
+            out.push((b, values?));
         }
-        Ok(())
+        Ok(out)
     }
 }
 
@@ -451,12 +657,35 @@ impl crate::cog::WindowSource for Source {
             return Err(Error::InvalidArgument("window outside the raster".into()));
         }
         let mut out = try_vec(window.width * window.height * bands.len())?;
+        let rows = window.y..window.y + window.height;
+        // The cache shared equally among the bands read at once, so that none of them pushes the
+        // others out.
+        let mut distinct = bands.to_vec();
+        distinct.sort_unstable();
+        distinct.dedup();
+        let share = crate::block_cache::max_bytes() / distinct.len().max(1) as u64;
         for group in bands.chunks(decode_group(self.cols, self.rows)) {
-            self.decode_missing(group)?;
+            let mut cached = Vec::new();
+            let mut missing = Vec::new();
             for &b in group {
-                let band = self.band(b)?;
-                for r in window.y..window.y + window.height {
-                    out.extend_from_slice(&band[r * self.cols + window.x..r * self.cols + window.x + window.width]);
+                if missing.contains(&b) || cached.iter().any(|(k, _)| *k == b) {
+                    continue;
+                }
+                match self.cached(b, rows.clone()) {
+                    Some(chunk) => cached.push((b, chunk)),
+                    None => missing.push(b),
+                }
+            }
+            let decoded = self.decode(missing, window, share)?;
+            for &b in group {
+                if let Some((_, values)) = decoded.iter().find(|(k, _)| *k == b) {
+                    out.extend_from_slice(values);
+                } else if let Some(grid) = cached.iter().find(|(k, _)| *k == b).and_then(|(_, c)| grid_of(c)) {
+                    place(grid, self.cols, self.split, window, &mut out);
+                } else {
+                    // Not reached: each band of the group is decoded, or found in the cache with a
+                    // grid. Should that change, the read fails rather than return fewer values.
+                    return Err(Error::InvalidData(format!("GRIB band {b}: neither decoded nor in the block cache")));
                 }
             }
         }
@@ -468,19 +697,29 @@ impl crate::cog::WindowSource for Source {
 /// `GRIBRasterBand::IReadBlock` does: flipped north up, rotated by the antimeridian split column,
 /// and cropped or padded with zeros when the band's grid differs from the dataset's.
 fn place_band(d: &Decoded, cols: usize, rows: usize, split: usize, out: &mut Vec<f64>) {
-    let (gx, gy) = (d.nx, d.ny);
+    place(d.grid(), cols, split, crate::Window::full(cols, rows), out);
+}
+
+/// The values of `window` of the band of `cols` columns that [`place_band`] places from the grid
+/// `g`: in each row, the grid's columns from the split column on, then those before it, then zeros.
+/// `g` holds the grid's rows the window needs ([`GridValues::holds`]).
+fn place(g: GridValues<'_>, cols: usize, split: usize, window: crate::Window, out: &mut Vec<f64>) {
+    let (gx, gy) = (g.nx, g.ny);
     let split = if gx != cols { 0 } else { split };
     let copy = cols.min(gx);
-    for r in 0..rows {
-        let start = out.len();
-        out.resize(start + cols, 0.0);
+    // The band's columns before `wrap` come from the grid's past `split`.
+    let wrap = copy - split;
+    let (x0, x1) = (window.x, window.x + window.width);
+    for r in window.y..window.y + window.height {
         if r >= gy {
+            out.resize(out.len() + window.width, 0.0);
             continue;
         }
-        let src = &d.values[(gy - r - 1) * gx..(gy - r) * gx];
-        let row = &mut out[start..start + cols];
-        row[..copy - split].copy_from_slice(&src[split..copy]);
-        row[copy - split..copy].copy_from_slice(&src[..split]);
+        let at = gy - r - 1 - g.first;
+        let src = &g.values[at * gx..(at + 1) * gx];
+        out.extend_from_slice(&src[split + x0.min(wrap)..split + x1.min(wrap)]);
+        out.extend_from_slice(&src[x0.clamp(wrap, copy) - wrap..x1.clamp(wrap, copy) - wrap]);
+        out.resize(out.len() + x1.max(copy) - x0.max(copy), 0.0);
     }
 }
 
@@ -526,26 +765,39 @@ fn bands(b: &[u8], normalize: bool) -> Result<Vec<Band<'_>>> {
 
 /// The offset and length of every message, in file order.
 fn message_spans(b: &[u8]) -> Result<Vec<(usize, usize)>> {
+    let find = |pos: usize| Ok(b[pos..].windows(4).position(|w| w == b"GRIB").map(|off| pos + off));
+    find_messages(b.len(), find, |at| Ok(b[at..at + 16].into()))
+}
+
+/// The offset and length of every message of a file of `len` bytes, in file order, given the
+/// offset of the first "GRIB" at or after an offset (`find`) and the 16 bytes at an offset
+/// (`start`): a message is "GRIB" followed by its edition, 1 or 2, and the next one is looked for
+/// past its end.
+fn find_messages<'a>(
+    len: usize,
+    mut find: impl FnMut(usize) -> Result<Option<usize>>,
+    mut start: impl FnMut(usize) -> Result<std::borrow::Cow<'a, [u8]>>,
+) -> Result<Vec<(usize, usize)>> {
     let mut out = Vec::new();
     let mut pos = 0;
-    while let Some(off) = b[pos..].windows(4).position(|w| w == b"GRIB") {
-        let start = pos + off;
-        if start + 16 > b.len() {
+    while let Some(at) = find(pos)? {
+        if at + 16 > len {
             break;
         }
-        let len = match b[start + 7] {
-            2 => be(&b[start + 8..start + 16]) as usize,
-            1 => grib1::message_len(&b[start..])?,
+        let head = start(at)?;
+        let n = match head[7] {
+            2 => be(&head[8..16]) as usize,
+            1 => grib1::message_len(&head)?,
             _ => {
-                pos = start + 4;
+                pos = at + 4;
                 continue;
             }
         };
-        if len < 16 || b.get(start..start.saturating_add(len)).is_none() {
-            return Err(Error::InvalidData(format!("GRIB message at offset {start} is truncated")));
+        if n < 16 || at.checked_add(n).is_none_or(|end| end > len) {
+            return Err(Error::InvalidData(format!("GRIB message at offset {at} is truncated")));
         }
-        out.push((start, len));
-        pos = start + len;
+        out.push((at, n));
+        pos = at + n;
     }
     Ok(out)
 }
@@ -563,16 +815,17 @@ fn message_bands(msg: &[u8], full_len: usize, file_len: usize, normalize: bool) 
     Ok(fields.into_iter().map(Band::Grib2).collect())
 }
 
-/// The fields of a GRIB2 message. When only the start of the message is at hand (`msg` shorter
-/// than `full_len`), its last section may be cut short: a bitmap or data section, not read.
-fn message_fields<'a>(msg: &'a [u8], full_len: usize, normalize: bool, out: &mut Vec<Field<'a>>) -> Result<()> {
+/// The fields of a GRIB2 message, and the offset its sections end at: that of its end marker, or
+/// past the bytes at hand. When only the start of the message is at hand (`msg` shorter than
+/// `full_len`), its last section may be cut short: a bitmap or data section, not read.
+fn message_fields<'a>(msg: &'a [u8], full_len: usize, normalize: bool, out: &mut Vec<Field<'a>>) -> Result<usize> {
     let discipline = msg[6];
     let mut pos = 16;
     let empty: &[u8] = &[];
     let (mut s1, mut s3, mut s4, mut s5, mut s6) = (empty, empty, empty, empty, empty);
     let mut last_bitmap: Option<&[u8]> = None;
     while pos + 4 <= msg.len() && &msg[pos..pos + 4] != b"7777" {
-        let bad = || Error::InvalidData(format!("invalid GRIB2 section at offset {pos} of a message"));
+        let bad = || bad_section(pos);
         if pos + 5 > msg.len() {
             return Err(bad());
         }
@@ -619,7 +872,12 @@ fn message_fields<'a>(msg: &'a [u8], full_len: usize, normalize: bool, out: &mut
         }
         pos += len;
     }
-    Ok(())
+    Ok(pos)
+}
+
+/// The error of a GRIB2 section that cannot be read, at offset `pos` of its message.
+fn bad_section(pos: usize) -> Error {
+    Error::InvalidData(format!("invalid GRIB2 section at offset {pos} of a message"))
 }
 
 /// How much of the start of a GRIB message of `full_len` bytes its header needs (every section's
@@ -652,6 +910,82 @@ fn header_needs(head: &[u8], full_len: usize) -> Option<usize> {
         pos += len;
     }
     None
+}
+
+/// Completes `head`, the first bytes of a message of `len` bytes, with the parts its header needs
+/// ([`next_part`]), each read by `read(at, n)`: `n` bytes at `at` from the message's start. A
+/// GRIB1 bitmap's body, which is skipped, is left as zeros: where they start, or the head's length
+/// when there are none.
+fn complete_head(head: &mut Vec<u8>, len: usize, mut read: impl FnMut(usize, usize) -> Result<Vec<u8>>) -> Result<usize> {
+    let mut prefix = None;
+    while let Some((at, n)) = next_part(head, len).filter(|&(at, n)| n > 0 && at >= head.len() && at + n <= len) {
+        if at > head.len() {
+            prefix.get_or_insert(head.len());
+        }
+        head.try_reserve_exact(at + n - head.len()).map_err(|_| out_of_memory(at + n))?;
+        head.resize(at, 0);
+        head.extend_from_slice(&read(at, n)?);
+    }
+    Ok(prefix.unwrap_or(head.len()))
+}
+
+/// The error of `n` bytes that cannot be allocated.
+fn out_of_memory(n: usize) -> Error {
+    Error::Io(std::io::Error::new(std::io::ErrorKind::OutOfMemory, format!("GRIB: cannot allocate {n} bytes")))
+}
+
+/// The next part of a message's header to read, given the `head` at hand: `(offset, length)`
+/// from the message's start, the offset past the head when a GRIB1 bitmap's body is skipped.
+/// `None` when the head holds the header. GRIB2 headers are read whole ([`header_needs`]).
+fn next_part(head: &[u8], len: usize) -> Option<(usize, usize)> {
+    if head.len() >= 16 && head[7] == 1 {
+        return grib1_next_part(head, len);
+    }
+    header_needs(head, len).filter(|&n| n > head.len()).map(|n| (head.len(), n - head.len()))
+}
+
+/// [`next_part`] for GRIB1: the sections up to the bitmap's first 6 octets, then the data
+/// section's first 11 octets, past the bitmap's body. A header [`grib1::Message::parse`] would
+/// refuse ends here: parsing reports it.
+fn grib1_next_part(head: &[u8], len: usize) -> Option<(usize, usize)> {
+    // Contiguous bytes up to `n`.
+    let to = |n: usize| {
+        let n = n.min(len);
+        (n > head.len()).then(|| (head.len(), n - head.len()))
+    };
+    let u = |o: usize| be(&head[o..o + 3]) as usize;
+    if head.len() < 11 {
+        return to(11);
+    }
+    let pds_len = u(8);
+    if pds_len < 28 {
+        return None;
+    }
+    // Past the product definition section: the grid definition section's length.
+    let mut cur = 8 + pds_len;
+    if head.len() < cur + 6 {
+        return to(cur + 6);
+    }
+    let gds_len = u(cur);
+    if gds_len < 6 {
+        return None;
+    }
+    cur += gds_len;
+    if head[15] & 0x40 != 0 {
+        // The bitmap section's length, then the data section's first octets past its body.
+        if head.len() < cur + 6 {
+            return to(cur + 6);
+        }
+        let bds = cur.saturating_add(u(cur).max(6));
+        if bds.saturating_add(11) > len || head.len() >= bds + 11 {
+            return None;
+        }
+        if head.len() > bds {
+            return to(bds + 11);
+        }
+        return Some((bds, 11));
+    }
+    to(cur + 11)
 }
 
 /// Reads octets `o..o + n` (1-based, as the GRIB2 tables number them) of a section, unsigned.
@@ -1454,6 +1788,33 @@ pub(crate) struct Decoded {
     pub nx: usize,
     pub ny: usize,
     pub values: Vec<f64>,
+}
+
+impl Decoded {
+    /// The grid's values.
+    fn grid(&self) -> GridValues<'_> {
+        GridValues { nx: self.nx, ny: self.ny, first: 0, values: &self.values }
+    }
+}
+
+/// The values of a decoded grid of `nx` x `ny` points, or of its rows from `first` on (degrib's
+/// order, south to north), as [`Decoded`] holds them or the block cache keeps them.
+#[derive(Clone, Copy)]
+struct GridValues<'a> {
+    nx: usize,
+    ny: usize,
+    first: usize,
+    values: &'a [f64],
+}
+
+impl GridValues<'_> {
+    /// Whether it holds the values of the band's rows `rows` (north up) that the grid has: the
+    /// others are zeros.
+    fn holds(&self, rows: std::ops::Range<usize>) -> bool {
+        let (start, end) = (rows.start.min(self.ny), rows.end.min(self.ny));
+        let held = self.values.len() / self.nx.max(1);
+        start >= end || (self.ny - self.first - held <= start && end <= self.ny - self.first)
+    }
 }
 
 /// Decodes a field of a file of `file_len` bytes as degrib's `ReadGrib2Record` does.
@@ -2315,6 +2676,48 @@ mod tests {
             assert!(lazy.read_window(crate::Window::new(0, 0, 2, 2), &band(1)).is_ok(), "{name}");
             let error = lazy.read_window(crate::Window::new(0, 0, 2, 2), &band(2)).err();
             assert!(matches!(&error, Some(Error::ResourceLimit(e)) if e.contains("TERRIO_GRIB_MAX_POINTS")), "{name}: {error:?}");
+        }
+    }
+
+    /// Catches a band larger than its share of the block cache keeping other rows than those a
+    /// read needs and the nearest after them (then before them), as many as the share holds: a
+    /// read of more rows than it holds keeps the last of them, a share that holds none, none, and
+    /// a read that needs none of the grid's rows (a window below a shorter grid), none.
+    #[test]
+    fn a_band_larger_than_its_share_keeps_the_rows_read_and_those_after_them() {
+        assert_eq!(kept_rows(10..20, 100, 30), 10..40);
+        assert_eq!(kept_rows(80..95, 100, 30), 70..100);
+        assert_eq!(kept_rows(0..50, 100, 20), 30..50);
+        assert!(kept_rows(10..20, 100, 0).is_empty());
+        assert!(kept_rows(100..100, 100, 30).is_empty());
+    }
+
+    /// Catches a window placed otherwise than its band, cropped: windows starting past the
+    /// antimeridian split column or in the zeros that pad a grid narrower than the band, on grids
+    /// split, narrower, wider, shorter and taller than the band, from the whole grid and from the
+    /// part of it a band kept in part holds (its rows the window needs). The functional tests read
+    /// split grids whole or from their first columns.
+    #[test]
+    fn a_window_is_placed_as_its_band_cropped() {
+        let (cols, rows) = (6, 4);
+        for (nx, ny, split) in [(6, 4, 0), (6, 4, 2), (6, 4, 5), (4, 4, 2), (8, 3, 3), (6, 6, 0)] {
+            let d = Decoded { nx, ny, values: (0..nx * ny).map(|i| i as f64 + 1.0).collect() };
+            let mut band = Vec::new();
+            place_band(&d, cols, rows, split, &mut band);
+            for (x, y) in (0..cols).flat_map(|x| (0..rows).map(move |y| (x, y))) {
+                for (w, h) in (1..=cols - x).flat_map(|w| (1..=rows - y).map(move |h| (w, h))) {
+                    let window = crate::Window::new(x, y, w, h);
+                    let cropped: Vec<f64> = (y..y + h).flat_map(|r| band[r * cols + x..r * cols + x + w].to_vec()).collect();
+                    let first = ny - (y + h).min(ny);
+                    let part = GridValues { first, values: &d.values[first * nx..(ny - y.min(ny)) * nx], ..d.grid() };
+                    for g in [d.grid(), part] {
+                        assert!(g.holds(y..y + h));
+                        let mut placed = Vec::new();
+                        place(g, cols, split, window, &mut placed);
+                        assert_eq!(placed, cropped, "grid {nx} x {ny} from row {}, split {split}, {window:?}", g.first);
+                    }
+                }
+            }
         }
     }
 
