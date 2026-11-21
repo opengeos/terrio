@@ -193,5 +193,5 @@ pub(crate) fn open(remote: &Remote) -> Result<crate::LazyRaster> {
     let (ds, split) = header(&all, file_len)?;
     drop(all);
     let store = Store::Remote(Box::new(Messages { fetch, file_len, messages, bands }));
-    Ok(Source::open(ds, split, normalize, store, crate::block_cache::Handle::new()))
+    Ok(Source::lazy(Source::new(ds, split, normalize, store, crate::block_cache::Handle::new())))
 }

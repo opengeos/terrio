@@ -173,6 +173,11 @@ fn bands_of<'a>(head: &'a [u8], end_marker: &[u8], len: usize, file_len: usize, 
 /// Opens a local GRIB file, or an archive member's extracted copy, to be read band by band. A path
 /// that is no regular file (a FIFO, a device) is read whole, into memory.
 pub(super) fn open(local: crate::vfs::LocalPath) -> Result<crate::LazyRaster> {
+    source(local).map(Source::lazy)
+}
+
+/// The dataset of a local GRIB file, and the source that reads its bands: see [`open`].
+fn source(local: crate::vfs::LocalPath) -> Result<(crate::RasterDataset, Source)> {
     let mut file = std::fs::File::open(local.path())?;
     let metadata = file.metadata()?;
     if !metadata.is_file() || metadata.len() == 0 {
@@ -180,7 +185,7 @@ pub(super) fn open(local: crate::vfs::LocalPath) -> Result<crate::LazyRaster> {
         // length to read it by position with, so it is read whole, into memory.
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
-        return super::open_lazy_bytes(bytes);
+        return super::bytes_source(bytes);
     }
     let len = usize::try_from(metadata.len()).map_err(|_| Error::ResourceLimit("GRIB file larger than this platform's memory".into()))?;
     let f = File { cursor: Cursor(crate::geotiff::FileCursor::new(file)), len, _local: local };
@@ -214,7 +219,7 @@ pub(super) fn open(local: crate::vfs::LocalPath) -> Result<crate::LazyRaster> {
     });
     let (ds, split) = header_with(first_grid, index.len(), nodata, band_metadata.into_iter(), len)?;
     let handle = crate::block_cache::Handle::of_file(&metadata, normalize as u64);
-    Ok(Source::open(ds, split, normalize, Store::File(f, index), handle))
+    Ok(Source::new(ds, split, normalize, Store::File(f, index), handle))
 }
 
 #[cfg(test)]
@@ -362,6 +367,60 @@ mod tests {
         let second = read(vec![2]);
         assert!(matches!(&second, Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof), "{second:?}");
         assert_eq!(read(vec![1, 2]).unwrap_err().to_string(), first);
+    }
+
+    /// Catches an open storing a band's points otherwise than its own grid's, from a path or from
+    /// bytes, or a read's batch charging its bands otherwise: a batch charges each band the Float64
+    /// values of its grid, and a local file's messages too. A file of a 16 x 16 field then three
+    /// constant fields of 4096 x 4096 points (128 MiB each as Float64, a few bytes each in the file),
+    /// opened both ways: a batch of the four takes the first two; one of the last two takes both
+    /// from the bytes (256 MiB exactly), and one from the path, which reads their messages too.
+    #[test]
+    fn both_opens_charge_each_band_at_its_own_grid() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_, first) = grib_file(dir.path(), 16, 16, 1);
+        let large = constant_field(dir.path(), 4096, 4096);
+        let bytes = [first, large.clone(), large.clone(), large].concat();
+        let path = dir.path().join("mixed.grib2");
+        std::fs::write(&path, &bytes).unwrap();
+        let (_, local) = source(crate::vfs::resolve(path.to_str().unwrap()).unwrap()).unwrap();
+        let (_, memory) = super::super::bytes_source(bytes).unwrap();
+        assert_eq!((local.at_once(&[1, 2, 3, 4]), memory.at_once(&[1, 2, 3, 4])), (2, 2));
+        assert_eq!((local.at_once(&[3, 4]), memory.at_once(&[3, 4])), (1, 2));
+    }
+
+    /// A GRIB2 message of one constant field of `nx` x `ny` points: one of 16 x 16 points that
+    /// terrio writes (simple packing of 0 bits, no data), its grid's sizes and points set.
+    fn constant_field(dir: &std::path::Path, nx: u32, ny: u32) -> Vec<u8> {
+        let cfg = wbraster::RasterConfig {
+            cols: 16,
+            rows: 16,
+            bands: 1,
+            cell_size: 0.01,
+            data_type: wbraster::DataType::U8,
+            crs: crate::crs::SpatialRef::from_epsg(4326).unwrap().to_crs_info(),
+            ..Default::default()
+        };
+        let data = wbraster::raster::RasterData::from_f64_vec(wbraster::DataType::U8, vec![7.0; 256]);
+        let path = dir.join("constant.grib2");
+        crate::write_raster(&wbraster::Raster::from_data_native(cfg, data).unwrap(), path.to_str().unwrap(), &Default::default()).unwrap();
+        let mut m = std::fs::read(&path).unwrap();
+        // The number of points of sections 3 and 5, and the grid's Ni and Nj (template 3.0).
+        let mut at = 16;
+        while &m[at..at + 4] != b"7777" {
+            let len = u32::from_be_bytes(m[at..at + 4].try_into().unwrap()) as usize;
+            match m[at + 4] {
+                3 => {
+                    m[at + 6..at + 10].copy_from_slice(&(nx * ny).to_be_bytes());
+                    m[at + 30..at + 34].copy_from_slice(&nx.to_be_bytes());
+                    m[at + 34..at + 38].copy_from_slice(&ny.to_be_bytes());
+                }
+                5 => m[at + 5..at + 9].copy_from_slice(&(nx * ny).to_be_bytes()),
+                _ => {}
+            }
+            at += len;
+        }
+        m
     }
 
     /// Catches a band in the block cache served beyond `TERRIO_GRIB_MAX_POINTS`, which is read from

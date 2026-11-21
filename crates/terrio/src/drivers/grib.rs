@@ -329,10 +329,15 @@ pub(crate) fn open_lazy(path: &str) -> Option<Result<crate::LazyRaster>> {
 
 /// Opens GRIB messages held in memory to be read band by band, keeping the bytes as they are given.
 pub(crate) fn open_lazy_bytes(bytes: Vec<u8>) -> Result<crate::LazyRaster> {
+    bytes_source(bytes).map(Source::lazy)
+}
+
+/// The dataset of GRIB messages held in memory, and the source that reads its bands from them.
+fn bytes_source(bytes: Vec<u8>) -> Result<(RasterDataset, Source)> {
     let normalize = normalize_units();
     let (header, split) = header(&bands(&bytes, normalize)?, bytes.len())?;
     let index = band_index(&bytes)?;
-    Ok(Source::open(header, split, normalize, Store::Bytes(bytes, index), crate::block_cache::Handle::new()))
+    Ok(Source::new(header, split, normalize, Store::Bytes(bytes, index), crate::block_cache::Handle::new()))
 }
 
 /// The most bytes a read of several bands decodes them with at once, at least one band: the decoded
@@ -465,10 +470,21 @@ fn grid_of(chunk: &crate::block_cache::CachedChunk) -> Option<GridValues<'_>> {
 }
 
 impl Source {
-    /// The dataset `header` of a GRIB file read band by band from `store`.
-    fn open(header: RasterDataset, split: usize, normalize: bool, store: Store, handle: crate::block_cache::Handle) -> crate::LazyRaster {
+    /// The dataset `header` of a GRIB file, and the source that reads its bands from `store`.
+    fn new(
+        header: RasterDataset,
+        split: usize,
+        normalize: bool,
+        store: Store,
+        handle: crate::block_cache::Handle,
+    ) -> (RasterDataset, Source) {
         let (cols, rows) = (header.raster.cols, header.raster.rows);
-        crate::LazyRaster::from_source(header, Box::new(Source { store, cols, rows, split, normalize, handle }))
+        (header, Source { store, cols, rows, split, normalize, handle })
+    }
+
+    /// The raster of a dataset whose bands `source` reads.
+    fn lazy((header, source): (RasterDataset, Source)) -> crate::LazyRaster {
+        crate::LazyRaster::from_source(header, Box::new(source))
     }
 
     /// Band `b` in the block cache, when it holds the band's rows `rows` and its grid is within
@@ -2643,28 +2659,6 @@ mod tests {
         assert_eq!(kept_rows(80..95, 100, 30), 70..100);
         assert_eq!(kept_rows(0..50, 100, 20), 30..50);
         assert!(kept_rows(10..20, 100, 0).is_empty());
-    }
-
-    /// Catches a read's batch charging its bands at the raster's grid, the first field's, rather
-    /// than at their own: after a field of 16 x 16 points, fields of 4096 x 4096 points take
-    /// 128 MiB each as Float64, so a batch of the four takes the first two, and one of the last two
-    /// takes both, which hold in 256 MiB exactly. A measure of a read's peak would depend on how many
-    /// threads decode at once.
-    #[test]
-    fn a_batch_counts_each_band_at_its_own_grid() {
-        let at = |points| BandAt { start: 0, len: 0, k: 0, points };
-        let large = 4096 * 4096;
-        let index = vec![at(16 * 16), at(large), at(large), at(large)];
-        let source = Source {
-            store: Store::Bytes(Vec::new(), index),
-            cols: 16,
-            rows: 16,
-            split: 0,
-            normalize: true,
-            handle: crate::block_cache::Handle::new(),
-        };
-        assert_eq!(source.at_once(&[1, 2, 3, 4]), 2);
-        assert_eq!(source.at_once(&[3, 4]), 2);
     }
 
     /// Catches a window placed otherwise than its band, cropped: windows starting past the
