@@ -2976,7 +2976,7 @@ impl TiffRaster {
                 let by_rows = |idx: u32| {
                     strip_rows_of(idx, row_bytes)
                         .zip(tables.get(idx as usize))
-                        .filter(|((.., strip), stored)| how.holds(*stored, *strip, self.file_len, limit))
+                        .filter(|((.., strip), stored)| how.reads_by_rows(*stored, *strip, self.file_len, limit))
                 };
                 let decoded = misses
                     .iter()
@@ -3189,7 +3189,7 @@ impl TiffRaster {
                 let strip = (height as u64).saturating_mul(row_bytes as u64);
                 match tables.get(plane * per_plane + s) {
                     Some((_, 0)) => {}
-                    Some(stored) if how.holds(stored, strip, self.file_len, limit) => {
+                    Some(stored) if how.reads_by_rows(stored, strip, self.file_len, limit) => {
                         over |= strip > limit;
                         let to = if strip > limit { sampled } else { height };
                         decoded = decoded.saturating_add((to as u64).saturating_mul(row_bytes as u64));

@@ -140,7 +140,7 @@ impl Rows {
     /// bytes per stored byte, [`Codec::most_per_byte`]), and a compressed strip declares at most
     /// [`DECODED_LIMIT_FACTOR`] times the limit. Any other strip is decoded whole, and so refused
     /// over the limit, as before.
-    pub(crate) fn holds(&self, (offset, count): (u64, u64), strip: u64, len: u64, limit: u64) -> bool {
+    pub(crate) fn reads_by_rows(&self, (offset, count): (u64, u64), strip: u64, len: u64, limit: u64) -> bool {
         offset.checked_add(count).is_some_and(|end| end <= len)
             && count.saturating_mul(self.codec.most_per_byte()) >= strip
             && self.decodes_within(strip, limit)
@@ -243,7 +243,7 @@ impl StripRows {
         let mut buffer = out.as_buffer(0);
         let bytes = buffer.as_bytes_mut();
         if self.rows.codec == Codec::Stored {
-            // Saturating: a strip `Rows::holds` passes fits in 64 bits, and no size here wraps.
+            // Saturating: a strip `Rows::reads_by_rows` passes fits in 64 bits, and no size here wraps.
             read_at(self.offset.saturating_add((first as u64).saturating_mul(self.row_bytes as u64)), bytes)?;
         } else {
             self.decode(read_at, first, bytes)?;
@@ -285,7 +285,7 @@ impl StripRows {
         if first < self.next {
             return Err(Error::InvalidArgument(format!("TIFF strip row {first} read after row {}", self.next)));
         }
-        // Saturating: a strip `Rows::holds` passes fits in 64 bits, and no size here wraps.
+        // Saturating: a strip `Rows::reads_by_rows` passes fits in 64 bits, and no size here wraps.
         let row_bytes = self.row_bytes as u64;
         let stream = match &mut self.stream {
             Some(stream) => stream,
