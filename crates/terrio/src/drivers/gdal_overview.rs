@@ -2411,11 +2411,13 @@ mod tests {
 
     /// `rows_in_pieces` refuses mask flags that are not one per value. Every kernel passes one per
     /// value, so nothing else would fail if a caller did not: past the end of shorter flags, rows
-    /// would be computed as if unmasked, and longer flags would not be the rows' own.
+    /// would be computed as if unmasked (all of them with an empty slice, which once stood for "no
+    /// mask"), and longer flags would not be the rows' own.
     #[test]
     fn mask_flags_that_are_not_one_per_value_are_refused() {
-        // 3 rows of 4 values: 8 flags, the rows split in two; 16 flags, in one run.
-        for (flags, pieces) in [(8, 2), (16, 1)] {
+        // 3 rows of 4 values: no flags (an empty slice), the rows split in two and in one run; 8
+        // flags, split in two; 16 flags, in one run.
+        for (flags, pieces) in [(0, 2), (0, 1), (8, 2), (16, 1)] {
             let refused = std::panic::catch_unwind(|| {
                 rows_in_pieces(&mut [0.0f64; 12], Some(vec![255u8; flags].as_mut_slice()), 4, pieces, (), |_, _, _, _| {})
             });
