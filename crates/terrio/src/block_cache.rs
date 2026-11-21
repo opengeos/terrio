@@ -13,8 +13,8 @@
 //! GeoTIFF reads, whether the TIFF is a local file, bytes in memory, a member of a zip archive or a
 //! remote object (HTTP, S3), and of the images of external `.ovr` overviews, and the bands of lazy
 //! GRIB reads, whole or, larger than a read's share of the cache, the rows the read needed and
-//! those nearest them. Rasters read whole (other formats, [`crate::open_raster`]) and the other lazy
-//! drivers are not cached.
+//! those nearest them; a read that needed no row of a band keeps none. Rasters read whole (other
+//! formats, [`crate::open_raster`]) and the other lazy drivers are not cached.
 //!
 //! The cache holds at most [`max_bytes`] bytes of decoded samples (and a small fixed overhead per
 //! chunk), dropping the least recently used chunks first. A chunk larger than the cache is not

@@ -399,14 +399,15 @@ formats and files: they all make room for one another, the least recently used f
 the cache equally among the bands it asks for. Of each band it decodes, a read keeps the rows it
 needs and as many of those after them (then before them) as its share holds, as decoded and in one
 piece: the whole band when its Float64 values (8 bytes a point), with the small overhead the cache
-counts for each chunk, fit. A later read of rows the cache still holds decodes nothing; a read of
-rows it no longer holds decodes the band again. That happens to any band once later reads have taken
-its place in the cache, and, read window by window, to a band whose Float64 values, or those of the
-bands one read asks for together, exceed `TERRIO_CACHEMAX`. With the default 64 MiB, a 7200 x 3601
-field (198 MiB as Float64) read as 512 x 512 windows is decoded 4 times in rows of windows and 60
-times in columns, and the four 3600 x 1801 fields (50 MiB each) of a file read together, 16 and 128
-times; read one after the other, with nothing else read meanwhile, each is decoded once. A
-`TERRIO_CACHEMAX` larger than those values keeps them whole.
+counts for each chunk, fit. A read that needs none of a band's rows, as a window below a grid
+shorter than the dataset does, keeps none. A later read of rows the cache still holds decodes
+nothing; a read of rows it no longer holds decodes the band again. That happens to any band once
+later reads have taken its place in the cache, and, read window by window, to a band whose Float64
+values, or those of the bands one read asks for together, exceed `TERRIO_CACHEMAX`. With the default
+64 MiB, a 7200 x 3601 field (198 MiB as Float64) read as 512 x 512 windows is decoded 4 times in
+rows of windows and 60 times in columns, and the four 3600 x 1801 fields (50 MiB each) of a file
+read together, 16 and 128 times; read one after the other, with nothing else read meanwhile, each is
+decoded once. A `TERRIO_CACHEMAX` larger than those values keeps them whole.
 
 | Variable | GDAL equivalent | Default |
 |---|---|---|
