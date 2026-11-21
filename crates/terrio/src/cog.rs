@@ -1003,10 +1003,11 @@ impl LazyRaster {
         }
     }
 
-    /// The last alpha sample, when a TIFF explicitly tags one (or a PNG has alpha).
-    /// Uses the already open reader, including remote and sparse TIFFs.
-    pub(crate) fn alpha_band(&mut self) -> Option<usize> {
-        match &mut self.inner {
+    /// The band (numbered from 1) that is the explicitly tagged alpha sample — the last band of a
+    /// TIFF with an alpha extra sample, or of a two- or four-band PNG (GDAL's `GMF_ALPHA` band) —
+    /// when the raster has one. Uses the already open reader, including remote and sparse TIFFs.
+    pub fn alpha_band(&self) -> Option<usize> {
+        match &self.inner {
             Inner::Tiff(t) => t.alpha,
             Inner::Memory(ds) | Inner::Source(ds, _) if ds.driver == RasterDriver::PNG && matches!(ds.raster.bands, 2 | 4) => {
                 Some(ds.raster.bands)
@@ -1867,6 +1868,32 @@ impl LazyRaster {
         }
         let Inner::Tiff(t) = &mut self.inner else { return Ok(None) };
         read_tiff_mask(t, window, overview.map_or(0, |i| i + 1))
+    }
+
+    /// Reads a window of the mask of band `band` (numbered from 1) as GDAL's `GetMaskBand()` gives
+    /// it, at full resolution or of an overview: the per-dataset mask when the raster has one
+    /// ([`LazyRaster::read_mask`]), else the alpha band's when the raster has one
+    /// ([`LazyRaster::alpha_band`]) and `band` is not it — 255 where the alpha sample of the same
+    /// level is not 0, 0 where it is (GDAL's `GMF_ALPHA`) — else all valid.
+    pub fn read_band_mask(&mut self, band: usize, window: Window, overview: Option<usize>) -> Result<Vec<u8>> {
+        let count = self.band_count();
+        if band == 0 || band > count {
+            return Err(Error::InvalidArgument(format!("no band {band}: the raster has {count} band(s)")));
+        }
+        if let Some(mask) = self.read_mask(window, overview)? {
+            return Ok(mask);
+        }
+        if let Some(alpha) = self.alpha_band()
+            && alpha != band
+        {
+            let opts = WindowOptions { bands: vec![alpha], overview };
+            // The mask needs the alpha samples only: for a GeoTIFF, read them without the
+            // dataset read_window builds around its result.
+            let is_tiff = matches!(&self.inner, Inner::Tiff(_));
+            let data = if is_tiff { self.read_geotiff_samples(window, &opts)? } else { self.read_window(window, &opts)?.raster.data };
+            return Ok(data.iter_f64().map(|v| if v == 0.0 { 0 } else { 255 }).collect());
+        }
+        Ok(vec![255; window.width * window.height])
     }
 
     /// Whether overview `overview` (from 0) has a mask image of its own (GDAL's internal mask

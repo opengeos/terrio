@@ -190,7 +190,7 @@ pub(super) fn preserve_reference(source: LazyRaster, referenced: bool) -> Result
 pub(super) fn view(source: LazyRaster, bands: Vec<usize>, crop: Option<Window>) -> Result<LazyRaster> {
     view_inner(source, bands, crop, None)
 }
-fn view_inner(mut source: LazyRaster, bands: Vec<usize>, crop: Option<Window>, reference: Option<bool>) -> Result<LazyRaster> {
+fn view_inner(source: LazyRaster, bands: Vec<usize>, crop: Option<Window>, reference: Option<bool>) -> Result<LazyRaster> {
     let referenced = reference.unwrap_or_else(|| source.geotransform_present());
     let full_size = (source.width(), source.height());
     let crop = crop.unwrap_or_else(|| Window::full(full_size.0, full_size.1));

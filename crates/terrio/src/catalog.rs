@@ -537,7 +537,7 @@ impl RasterCatalog {
             if self.cache.len() >= self.options.cache_size.unwrap_or(32) {
                 self.cache.pop_front();
             }
-            let mut source = if let Some(memory) = &mut self.memory {
+            let source = if let Some(memory) = &mut self.memory {
                 memory.get_mut(location).ok_or_else(|| bad(format!("source '{location}' is missing")))?.open()?
             } else {
                 let path = if Path::new(location).is_absolute() || location.contains("://") || location.starts_with("/vsi") {
