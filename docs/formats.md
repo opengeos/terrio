@@ -210,11 +210,13 @@ chunks are compressed at the one level their encoder has. A level out of range i
 whatever the compression.
 
 `SPARSE_OK=YES` leaves out of a GeoTIFF the blocks of its full-resolution image whose samples are
-all nodata in every band, or 0 without nodata: their offset and byte count are 0. The samples
-must equal, bit for bit, the nodata that readers read from the file's tag. A NaN nodata is
-written `nan`, so a block of a NaN with another sign or payload is kept. The overviews and the
-mask are written whole. Every block is written when nodata is not a value of the samples (a
-fraction or a value out of range for integers). Every block is also written, with a warning:
+all nodata, or 0 without nodata, in every band the block holds: every band of the file, or, with
+`INTERLEAVE=BAND`, only the block's own band, so that each band's blocks are left out on their own.
+Their offset and byte count are 0. The samples must equal, bit for bit, the nodata that readers read
+from the file's tag. A NaN nodata is written `nan`, so a block of a NaN with another sign or payload
+is kept. The overviews and the mask are written whole. Every block is written when nodata is not a
+value of the samples (a fraction or a value out of range for integers). Every block is also written,
+with a warning:
 
 - with a lossy compression (JPEG, WebP unless lossless, LERC with a `MAX_Z_ERROR` above 0),
   which stores a block of nodata only approximately;

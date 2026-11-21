@@ -94,12 +94,12 @@ It needs only NumPy and [affine](https://github.com/rasterio/affine) (installed 
   `cubic`, `nearest` for paletted rasters). A COG takes no `photometric` option: three Byte bands,
   or four compressed with WebP, are red, green and blue by default, and any other color
   interpretation set on the dataset, or copied by `shutil.copy`, is kept, as it is by an `r+`
-  update. With `sparse_ok=True`, a GeoTIFF leaves out each block whose pixels are all nodata in
-  every band (or 0 without nodata): its offset and byte count are 0, and it reads as nodata (or
-  0). Above the in-memory limit, an `.aux.xml` left beside the path by an earlier file is kept:
-  when it gives a band another nodata, every block is written, with a warning, as it is with a
-  lossy compression (JPEG, WebP unless lossless, LERC with a `MAX_Z_ERROR` above 0). A COG writes
-  every tile, and warns that it does.
+  update. With `sparse_ok=True`, a GeoTIFF leaves out each block whose pixels are all nodata (or 0
+  without nodata) in every band the block holds: every band, or, with `interleave="band"`, its own.
+  Its offset and byte count are 0, and it reads as nodata (or 0). Above the in-memory limit, an
+  `.aux.xml` left beside the path by an earlier file is kept: when it gives a band another nodata,
+  every block is written, with a warning, as it is with a lossy compression (JPEG, WebP unless
+  lossless, LERC with a `MAX_Z_ERROR` above 0). A COG writes every tile, and warns that it does.
   A new dataset reports the color interpretation its file reads back when none is set, unless the
   file has another number of bands: a four-band WebP whose alpha band is opaque everywhere is
   written, and reads back, as three-band RGB; an MBTiles archive reads back as four bands, and a
