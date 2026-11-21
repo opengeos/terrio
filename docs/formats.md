@@ -109,19 +109,21 @@ can decode to more than the limit. A window of such a strip is read by the rows 
 those rows, at the strip's full width and with all of its samples, fit the limit, and the strip
 stores whole-byte samples of its type, most significant bit first, as BlackIsZero, RGB or a
 palette. Uncompressed rows are read at their offsets in the file. A Deflate, LZW, Zstandard or
-PackBits strip is decoded from its start to the window's last row (a Zstandard stream to a
-frame window past it: its decoder hands out bytes once they leave that window), the rows before
-the window dropped as they are decoded; Deflate, LZW and Zstandard strips may use horizontal
-differencing on integer samples or the floating-point predictor on floating-point ones. The
-read then holds the window, up to 8 MiB of stored bytes, 8 MiB of rows (or one row, when a row
-is larger) and the decoder's state: about 17 MiB, whatever the strip's size; a row more with
-the floating-point predictor, and the frame's window (at most 128 MiB) with Zstandard. A window
-near the end of a compressed strip decodes the rows before it, so a compressed strip is read by
-rows only when it declares at most four times the limit (1 GiB at the default 256 MiB), as much
-as a window over four chunks at the limit decodes. That bounds the decoding a read does,
-however few bytes the strip stores. At the default limit, a read of the last pixel of a 1 GiB
-strip of zeros, stored in 1 MB of Deflate or 33 KB of Zstandard, takes 0.2 to 0.4 s. A larger
-compressed strip is refused at once, as before; raising the limit raises the bound. An
+PackBits strip is decoded from its start to the window's last row, the rows before the window
+dropped as they are decoded. A Zstandard stream is decoded up to its frame's window further, or
+to the end of the frame when that comes first, since its decoder hands out bytes only once they
+leave that window. Deflate, LZW and Zstandard strips may use horizontal differencing on integer
+samples or the floating-point predictor on floating-point ones. The read then holds the window,
+up to 8 MiB of stored bytes, 8 MiB of rows (or one row, when a row is larger) and the decoder's
+state: about 17 MiB, whatever the strip's size; a row more with the floating-point predictor,
+and the frame's window (at most 128 MiB) with Zstandard.
+
+A window near the end of a compressed strip decodes the rows before it, so a compressed strip
+is read by rows only when it declares at most four times the limit (1 GiB at the default 256
+MiB), as much as a window over four chunks at the limit decodes. That bounds the decoding a
+read does, however few bytes the strip stores. At the default limit, a read of the last pixel
+of a 1 GiB strip of zeros, stored in 1 MB of Deflate or 33 KB of Zstandard, takes 0.2 to 0.4 s.
+A larger compressed strip is refused at once, as before; raising the limit raises the bound. An
 uncompressed strip is read by rows whatever its size, as nothing of it is decoded. For files
 you do not trust, `TERRIO_MAX_DECLARED_BYTES` (below) bounds what a raster declares further. A
 nearest-neighbour read smaller than the image reads the rows it samples the same way, the strip
