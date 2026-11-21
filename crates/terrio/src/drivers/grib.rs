@@ -373,7 +373,7 @@ enum Store {
     /// The whole file, in memory, and where each band is.
     Bytes(Vec<u8>, Vec<BandAt>),
     /// A local file, each band's message read when the band is read, and where each band is.
-    File(local::File, Vec<BandAt>),
+    File(local::LocalFile, Vec<BandAt>),
     /// A remote file, each band's message fetched when the band is read.
     #[cfg(remote)]
     Remote(Box<remote::Messages>),

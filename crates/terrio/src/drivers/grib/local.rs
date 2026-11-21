@@ -66,14 +66,14 @@ fn read_at(r: &mut (impl Read + Seek), at: usize, n: usize) -> Result<Vec<u8>> {
 }
 
 /// A local GRIB file, read by position.
-pub(crate) struct File {
+pub(crate) struct LocalFile {
     cursor: Cursor,
     len: usize,
     /// The extracted copy of an archive's member is kept as long as it is read.
     _local: crate::vfs::LocalPath,
 }
 
-impl File {
+impl LocalFile {
     /// The length of the file when it was opened.
     pub(crate) fn len(&self) -> usize {
         self.len
@@ -188,7 +188,7 @@ fn source(local: crate::vfs::LocalPath) -> Result<(crate::RasterDataset, Source)
         return super::bytes_source(bytes);
     }
     let len = usize::try_from(metadata.len()).map_err(|_| Error::ResourceLimit("GRIB file larger than this platform's memory".into()))?;
-    let f = File { cursor: Cursor(crate::geotiff::FileCursor::new(file)), len, _local: local };
+    let f = LocalFile { cursor: Cursor(crate::geotiff::FileCursor::new(file)), len, _local: local };
     let normalize = super::normalize_units();
     let scan = std::cell::RefCell::new(Scan { reader: crate::vfs::NearSeek::with_capacity(SCAN_BUFFER, f.cursor.clone()), len });
     let spans = find_messages(len, |pos| scan.borrow_mut().find(pos), |at| Ok(scan.borrow_mut().read(at, 16)?.into()))?;
