@@ -2951,8 +2951,9 @@ impl TiffRaster {
         // from its start to the window's last row, the rows before the window dropped as they
         // are decoded ([`crate::tiff_strip_rows`]). Only for a strip the file holds whole, whose
         // stored bytes hold its rows (or can decode to them), and, compressed, that declares at
-        // most four times the limit, which bounds what a read decodes; any other is decoded whole,
-        // and refused, as any chunk.
+        // most four times the limit; and only while the read decodes at most that much by rows,
+        // summed over its strips and planes, which bounds what a read decodes. Any other strip is
+        // decoded whole, and refused, as any chunk.
         if !self.complex && dec.get_chunk_type() == tiff::decoder::ChunkType::Strip {
             let limit = self.limits.chunk_bytes as u64;
             let row_bytes = cw.checked_mul(spp).and_then(|n| n.checked_mul(self.data_type.size_bytes())).filter(|n| *n > 0);
@@ -2969,15 +2970,25 @@ impl TiffRaster {
                 && misses.iter().any(|idx| strip_rows_of(*idx, row_bytes).is_some())
                 && let Some(how) = crate::tiff_strip_rows::Rows::of(dec, self.data_type, compression).map_err(tiff_err)?
             {
+                // The strips read by rows, and what they decode, each from its start to the
+                // window's last row in it, summed over the window's strips and planes: over the
+                // bound, none is read by rows.
+                let by_rows = |idx: u32| {
+                    strip_rows_of(idx, row_bytes)
+                        .zip(tables.get(idx as usize))
+                        .filter(|((.., strip), stored)| how.holds(*stored, *strip, self.file_len, limit))
+                };
+                let decoded = misses
+                    .iter()
+                    .filter_map(|&idx| by_rows(idx))
+                    .fold(0u64, |n, ((first, rows, ..), _)| n.saturating_add(((first + rows) as u64).saturating_mul(row_bytes as u64)));
+                let within = how.decodes_within(decoded, limit);
                 let batch = (STRIP_ROWS_BYTES / row_bytes).max(1);
                 let mut whole: Vec<u32> = Vec::new();
                 crate::dataset::fallible::reserve(&mut whole, misses.len(), what)?;
                 let mut read_at = |at: u64, buf: &mut [u8]| read_stored(dec, at, buf);
                 for &idx in &misses {
-                    let Some(((first, rows, height, _), stored)) = strip_rows_of(idx, row_bytes)
-                        .zip(tables.get(idx as usize))
-                        .filter(|((.., strip), stored)| how.holds(*stored, *strip, self.file_len, limit))
-                    else {
+                    let Some(((first, rows, height, _), stored)) = by_rows(idx).filter(|_| within) else {
                         whole.push(idx);
                         continue;
                     };
@@ -3108,7 +3119,8 @@ impl TiffRaster {
     /// strip within the limit is decoded to its end, as a window decodes it whole, and a strip left
     /// out (a sparse file's) reads as nodata, as in a window. `None` when a strip holding sampled
     /// rows is not read by rows, or none read is over the limit: the window spanning the pixels is
-    /// read instead.
+    /// read instead. Refused, as such a window is, when what the read would decode, summed over its
+    /// strips and planes, is over what a read by rows may decode.
     fn read_sampled(&mut self, level: usize, cols: &[usize], rows: &[usize], bands: &[usize]) -> Result<Option<RasterData>> {
         if let Some(i) = self.levels[level].external
             && let Some(ovr) = self.ovr.as_mut()
@@ -3154,32 +3166,45 @@ impl TiffRaster {
                 None => planes.push((plane, vec![(sample, k)])),
             }
         }
-        // The strips holding the sampled rows: (strip in its plane, rows of the strip).
-        let mut strips: Vec<(usize, usize)> = Vec::new();
+        // The strips holding the sampled rows: (strip in its plane, rows of the strip, rows to its
+        // last sampled row).
+        let mut strips: Vec<(usize, usize, usize)> = Vec::new();
         crate::dataset::fallible::reserve(&mut strips, rows.len().min(per_plane), what)?;
         for &o in &order {
-            let s = rows[o] / ch;
-            if strips.last().is_none_or(|(last, _)| *last != s) {
-                strips.push((s, ch.min(lh - s * ch)));
+            let (s, to) = (rows[o] / ch, rows[o] % ch + 1);
+            match strips.last_mut() {
+                Some((last, _, sampled)) if *last == s => *sampled = to,
+                _ => strips.push((s, ch.min(lh - s * ch), to)),
             }
         }
         let Some(how) = crate::tiff_strip_rows::Rows::of(dec, self.data_type, compression).map_err(tiff_err)? else {
             return Ok(None);
         };
-        let mut over = false;
+        // What the read decodes: each strip from its start to its last sampled row, or to its end
+        // when it is within the limit (below), summed over the strips and planes.
+        let (mut over, mut decoded) = (false, 0u64);
         for (plane, _) in &planes {
-            for &(s, height) in &strips {
+            for &(s, height, sampled) in &strips {
                 // Saturated: a strip of more bytes than 64 bits count is not read by rows.
                 let strip = (height as u64).saturating_mul(row_bytes as u64);
                 match tables.get(plane * per_plane + s) {
                     Some((_, 0)) => {}
-                    Some(stored) if how.holds(stored, strip, self.file_len, limit) => over |= strip > limit,
+                    Some(stored) if how.holds(stored, strip, self.file_len, limit) => {
+                        over |= strip > limit;
+                        let to = if strip > limit { sampled } else { height };
+                        decoded = decoded.saturating_add((to as u64).saturating_mul(row_bytes as u64));
+                    }
                     _ => return Ok(None),
                 }
             }
         }
         if !over {
             return Ok(None);
+        }
+        // Over the bound, the read is refused, as before: windows read instead would each read a
+        // strip by rows within it, together decoding as much.
+        if !how.decodes_within(decoded, limit) {
+            return Err(tiff_err(tiff::TiffError::LimitsExceeded));
         }
         let len = crate::dataset::fallible::len(&[bands.len(), rows.len(), cols.len()], what)?;
         let mut out = nodata_filled(&self.tags, self.data_type, bands, rows.len() * cols.len(), len)?;

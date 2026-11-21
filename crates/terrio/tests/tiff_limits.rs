@@ -756,12 +756,14 @@ fn windows_of_a_compressed_strip_over_the_limit_read_by_decoding_its_rows() {
                 assert_eq!(r.overviews(), [(cols / 2, rows / 2)], "{case}");
                 r.read_window(w, &WindowOptions { bands: bands.to_vec(), overview }).map(|ds| ds.raster.data.to_f64_vec())
             };
-            // Twelve rows of a plane's strip, 384 bytes a row pixel-interleaved, 128 a band's: the
-            // strip is four times the limit, the most read by rows. The overview's strip, of rows
-            // half as long, is a quarter of the strip: under a limit of six rows, twice the limit,
-            // and twelve of its rows fit.
+            // Rows of 384 bytes pixel-interleaved, 128 a band's. Pixel-interleaved, a limit of twelve
+            // rows: the strip is four times it, the most a read decodes by rows. Band-separate, of
+            // 36: a window of the three bands decodes their three strips, four times the limit.
+            // The overview's strip, of rows half as long, is a quarter of the strip: under a limit
+            // of six rows, twice the limit, and twelve of its rows fit.
             let row_bytes = cols * data_type.size_bytes() * if interleave == "PIXEL" { bands } else { 1 };
-            let limits = TiffReadLimits { chunk_bytes: 12 * row_bytes };
+            let fit = if interleave == "PIXEL" { 12 } else { 36 };
+            let limits = TiffReadLimits { chunk_bytes: fit * row_bytes };
             let overview_limits = TiffReadLimits { chunk_bytes: 6 * row_bytes };
             for (w, selected, overview, limits) in [
                 (Window::new(0, 0, 1, 1), &[1usize][..], None, limits),
@@ -774,11 +776,12 @@ fn windows_of_a_compressed_strip_over_the_limit_read_by_decoding_its_rows() {
                 let expected = read(TiffReadLimits::unlimited(), w, selected, overview).unwrap();
                 assert_eq!(read(limits, w, selected, overview).unwrap(), expected, "{case}: {w:?}, bands {selected:?}, {overview:?}");
             }
-            // The strips, over the limit, are refused read whole, and so is a window of thirteen rows.
+            // The strips, over the limit, are refused read whole, and so is a window of a row more
+            // than fit.
             for (w, overview, limits) in [
                 (Window::full(cols, rows), None, limits),
                 (Window::full(cols / 2, rows / 2), Some(0), overview_limits),
-                (Window::new(0, 20, 4, 13), None, limits),
+                (Window::new(0, 10, 4, fit + 1), None, limits),
             ] {
                 let e = read(limits, w, &[1], overview).unwrap_err();
                 assert!(
@@ -1076,6 +1079,81 @@ fn a_compressed_strip_is_read_by_rows_when_it_declares_at_most_four_times_the_li
     }
 }
 
+/// What a read decodes by rows is summed over its strips and planes, each strip from its start to
+/// the last row the read needs there, and bounded as one strip is, at four times the limit: a
+/// window or a sampled read over the bound is refused, as before, though each strip alone is within
+/// it. Uncompressed strips are read by rows whatever the sum: nothing of them is decoded. UInt16
+/// pixels, 512 x 96 in two bands stored band-separate, each in two strips of 48 rows (of 1,024
+/// bytes), under a limit of 16 rows: a read decodes at most 64 rows.
+#[test]
+fn a_read_by_rows_decodes_at_most_four_times_the_limit_over_its_strips_and_planes() {
+    use terrio::ResampledReadOptions;
+    use terrio::raster::RasterData;
+    let (cols, rows) = (512usize, 96usize);
+    let values: Vec<u16> = (0..2 * cols * rows).map(|i| (i * 7 % 65_521) as u16).collect();
+    let cfg = terrio::RasterConfig { cols, rows, bands: 2, data_type: terrio::DataType::U16, ..Default::default() };
+    let ds = terrio::RasterDataset::new(terrio::Raster::from_data_native(cfg, RasterData::U16(values.clone())).unwrap(), true);
+    let pixel = |band: usize, y: usize, x: usize| f64::from(values[((band - 1) * rows + y) * cols + x]);
+    let limits = TiffReadLimits { chunk_bytes: 16 * cols * 2 };
+    let refused = |e: &terrio::Error| matches!(e, terrio::Error::DecodedLimitExceeded { limit, .. } if *limit == limits.chunk_bytes);
+    for compress in ["DEFLATE", "LZW", "ZSTD", "PACKBITS", "NONE"] {
+        let options = terrio::RasterWriteOptions {
+            compression: Some(compress.into()),
+            creation_options: vec![("BLOCKYSIZE".into(), "48".into()), ("INTERLEAVE".into(), "BAND".into())],
+            ..Default::default()
+        };
+        let bytes = terrio::memory::write_raster_bytes(&ds, "planes.tif", &options).unwrap();
+        let open = || LazyRaster::from_tiff_bytes_with_limits(bytes.clone(), limits).unwrap().unwrap();
+        // (window, bands, rows it decodes): to row 31 of both bands' first strips, 64; to row 32,
+        // 66; across band 1's two strips, 48 + 1; and band 2's, 98.
+        for (w, bands, decoded) in [
+            (Window::new(0, 31, 4, 1), vec![1, 2], 64),
+            (Window::new(0, 32, 4, 1), vec![1, 2], 66),
+            (Window::new(0, 47, 4, 2), vec![1], 49),
+            (Window::new(0, 47, 4, 2), vec![1, 2], 98),
+        ] {
+            let case = format!("{compress}: {w:?} of bands {bands:?}");
+            let got = open().read_window(w, &WindowOptions { bands: bands.clone(), overview: None });
+            if decoded <= 64 || compress == "NONE" {
+                let expected: Vec<f64> = bands
+                    .iter()
+                    .flat_map(|&b| (w.y..w.y + w.height).flat_map(move |y| (w.x..w.x + w.width).map(move |x| pixel(b, y, x))))
+                    .collect();
+                assert_eq!(got.unwrap().raster.data.to_f64_vec(), expected, "{case}");
+            } else {
+                assert!(got.as_ref().is_err_and(refused), "{case}: {:?}", got.map(|_| ()));
+            }
+        }
+        // (rows sampled, bands, rows the read decodes): to rows 31 and 79 of band 1's strips,
+        // 32 + 32; to 31 and 80, 32 + 33; to row 47, 48 of band 1, 96 of both; a row of each strip
+        // of both bands, 4.
+        for (sampled, bands, decoded) in [
+            (vec![31, 79], vec![1], 64),
+            (vec![31, 80], vec![1], 65),
+            (vec![47], vec![1], 48),
+            (vec![47], vec![1, 2], 96),
+            (vec![0, 48], vec![2, 1], 4),
+        ] {
+            let case = format!("{compress}: rows {sampled:?} of bands {bands:?}");
+            let got = open().read_sampled(&[0, cols - 1], &sampled, &WindowOptions { bands: bands.clone(), overview: None });
+            if decoded <= 64 || compress == "NONE" {
+                let expected: Vec<f64> =
+                    bands.iter().flat_map(|&b| sampled.iter().flat_map(move |&y| [pixel(b, y, 0), pixel(b, y, cols - 1)])).collect();
+                assert_eq!(got.unwrap().expect("read by rows").to_f64_vec(), expected, "{case}");
+            } else {
+                assert!(got.as_ref().is_err_and(refused), "{case}: {:?}", got.map(|_| ()));
+            }
+        }
+        // A thumbnail of band 1 samples rows to near the end of both of its strips: 46 + 46.
+        let thumbnail = open().read_resampled(&ResampledReadOptions { size: (16, 16), bands: vec![1], ..Default::default() });
+        if compress == "NONE" {
+            assert!(thumbnail.is_ok(), "{compress}");
+        } else {
+            assert!(thumbnail.as_ref().is_err_and(refused), "{compress}: {:?}", thumbnail.map(|_| ()));
+        }
+    }
+}
+
 /// A nearest-neighbour read smaller than an image stored as one strip over the limit reads the
 /// rows it samples, the strip once and in order, compressed or not: the values it gives from a
 /// whole decode. It holds a row at a time: more rows sampled than fit the limit are read too.
@@ -1088,9 +1166,11 @@ fn a_decimated_read_of_a_strip_over_the_limit_reads_its_sampled_rows() {
     {
         let case = format!("{compress}, {interleave}");
         let bytes = compressed_strip((cols, rows, bands), terrio::DataType::U16, (compress, 1), interleave, Vec::new());
-        // Twelve rows: the strip is four times the limit.
+        // Pixel-interleaved, twelve rows: the strip is four times the limit. Band-separate, 24: two
+        // bands sampled to their last rows decode two strips, four times the limit.
         let row_bytes = cols * 2 * if interleave == "PIXEL" { bands } else { 1 };
-        let limits = TiffReadLimits { chunk_bytes: 12 * row_bytes };
+        let fit = if interleave == "PIXEL" { 12 } else { 24 };
+        let limits = TiffReadLimits { chunk_bytes: fit * row_bytes };
         let open = |limits| LazyRaster::from_tiff_bytes_with_limits(bytes.clone(), limits).unwrap().unwrap();
         let resampled = |limits, size| {
             let options = ResampledReadOptions { size, bands: vec![3, 1], ..Default::default() };
@@ -1109,8 +1189,9 @@ fn a_decimated_read_of_a_strip_over_the_limit_reads_its_sampled_rows() {
             }
         }
         assert_eq!(got, expected, "{case}");
-        // Sixteen rows sampled, more than fit the limit.
-        assert_eq!(resampled(limits, (16, 16)).unwrap(), resampled(TiffReadLimits::unlimited(), (16, 16)).unwrap(), "{case}");
+        // More rows sampled than fit the limit.
+        let size = (16, fit + 4);
+        assert_eq!(resampled(limits, size).unwrap(), resampled(TiffReadLimits::unlimited(), size).unwrap(), "{case}");
     }
 }
 

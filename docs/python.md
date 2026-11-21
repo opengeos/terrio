@@ -1073,11 +1073,13 @@ and PackBits strips of the sample layouts [Rasters](formats.md#rasters) lists ar
 decoded from the start of the strip to the window's last row. A nearest-neighbour
 `read_resampled` (or `terrio.rio`'s `read(out_shape=...)`) smaller than the image reads the
 rows it samples the same way, a row at a time. Reading the whole strip is still refused, and
-so is reading a compressed strip that declares more than four times the limit (1 GiB by
-default), which bounds the decoding a read does (a read of the last pixel of a 1 GiB strip
-of zeros takes 0.2 to 0.4 s); an uncompressed strip is read by rows whatever its size. For
-files you do not trust, `TERRIO_MAX_DECLARED_BYTES` (below) bounds what a raster declares
-further (see [Rasters](formats.md#rasters)).
+so is a read that would decode more than four times the limit (1 GiB by default) by rows,
+summed over the compressed strips and bands it reads, each from its start to the last row it
+needs there, or a compressed strip that declares more: that bounds the decoding a read does
+(a read of the last pixel of a 1 GiB strip of zeros takes 0.2 to 0.4 s). An uncompressed
+strip is read by rows whatever its size. For files you do not trust,
+`TERRIO_MAX_DECLARED_BYTES` (below) bounds what a raster declares further (see
+[Rasters](formats.md#rasters)).
 
 A GeoTIFF read whole or by window (`terrio.open_raster`, `Raster.read`, `terrio.rio`'s `read`)
 raises `ResourceLimitError` before its buffer is allocated when the process cannot hold it (more
@@ -1088,7 +1090,9 @@ through open, read, resampled read and mask reads, so callers can distinguish a 
 from an ordinary `RasterioIOError`. For files you do not trust, `TERRIO_MAX_DECLARED_BYTES` (width x height x bands x bytes
 per sample) and `TERRIO_MAX_BANDS`, positive integers in the environment or an `Env`, refuse a
 raster that declares more when it is opened, whatever its format, with `ResourceLimitError`
-naming the option. See [Rasters](formats.md#rasters) for declaration checks and reader details:
+naming the option. No read decodes more than its raster declares, so
+`TERRIO_MAX_DECLARED_BYTES` also bounds what a read of strips over the chunk limit decodes by
+rows. See [Rasters](formats.md#rasters) for declaration checks and reader details:
 
 ```python
 with Env(TERRIO_MAX_DECLARED_BYTES=str(1 << 30), TERRIO_MAX_BANDS="64"):

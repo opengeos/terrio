@@ -17,8 +17,10 @@
 //! of rows, and an LZMA stream needs a dictionary as large as the stream declares.
 //!
 //! A compressed strip is read by rows only when it declares at most [`DECODED_LIMIT_FACTOR`] times
-//! the chunk limit: a read of its rows then decodes no more than a window over that many chunks at
-//! the limit decodes whole, however few bytes the strip stores.
+//! the chunk limit, and only by a read that decodes at most that much in all, summed over the
+//! compressed strips it reads, each from its start to the last row the read needs there: a read
+//! then decodes no more than a window over that many chunks at the limit decodes whole, however
+//! few bytes the strips store.
 
 use std::io::{Read, Seek};
 use tiff::decoder::{Decoder, DecodingResult};
@@ -41,8 +43,9 @@ const INFLATE_SPAN: usize = 1 << 20;
 /// read).
 const DROP_BYTES: usize = 64 << 10;
 
-/// A compressed strip read by rows declares at most this many times the chunk limit (1 GiB at
-/// the default 256 MiB): a read decodes the rows before the ones it wants, up to the whole strip.
+/// What a read by rows decodes, summed over its compressed strips, and what one of them declares,
+/// at most, in chunk limits (1 GiB at the default 256 MiB): a read decodes the rows before the ones
+/// it wants in each strip.
 const DECODED_LIMIT_FACTOR: u64 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,7 +143,14 @@ impl Rows {
     pub(crate) fn holds(&self, (offset, count): (u64, u64), strip: u64, len: u64, limit: u64) -> bool {
         offset.checked_add(count).is_some_and(|end| end <= len)
             && count.saturating_mul(self.codec.most_per_byte()) >= strip
-            && (self.codec == Codec::Stored || strip <= limit.saturating_mul(DECODED_LIMIT_FACTOR))
+            && self.decodes_within(strip, limit)
+    }
+
+    /// Whether a read by rows may decode `bytes` of rows under the chunk limit `limit`: at most
+    /// [`DECODED_LIMIT_FACTOR`] times it, for one strip and for a read summed over its strips. An
+    /// uncompressed strip's rows are read, not decoded.
+    pub(crate) fn decodes_within(&self, bytes: u64, limit: u64) -> bool {
+        self.codec == Codec::Stored || bytes <= limit.saturating_mul(DECODED_LIMIT_FACTOR)
     }
 
     /// The working bytes of a read of `rows` rows of `row_bytes` at a time: the rows, and the row
