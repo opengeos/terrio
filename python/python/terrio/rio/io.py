@@ -2826,6 +2826,12 @@ class DatasetWriter(DatasetReader):
             # writes COGs through a MEM dataset): the colour interpretation decides, as in
             # `shutil.copy`.
             out.pop("PHOTOMETRIC", None)
+            if out.pop("SPARSE_OK", "NO").upper() in ("YES", "TRUE", "ON", "1"):
+                warnings.warn(
+                    "SPARSE_OK is not supported for COGs: every tile is written",
+                    UserWarning,
+                    stacklevel=4,
+                )
         if (
             self._out_driver.upper() == "COG"
             and self._count > 1
@@ -3728,7 +3734,8 @@ class DatasetWriter(DatasetReader):
             self._nodata,
             tags,
             compress=compress,
-            options=opts,
+            # The `.aux.xml` the file is read with is beside its path, not beside `target`.
+            options={**opts, "@FINAL_PATH": self._path},
             band_metadata=band_md if any(band_md) else None,
             colormap=colormap,
             gcps=extra.get("gcps"),

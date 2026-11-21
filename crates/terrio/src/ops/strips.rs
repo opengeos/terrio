@@ -137,11 +137,13 @@ impl StripWriter {
         let options = &inherited;
         let r = &header.raster;
         let (rows, bands, width) = (r.rows, r.bands, r.cols);
-        if let Some(tiff) = Tiff::create(header, path, options, source_mask)? {
-            let mut aux = std::ffi::OsString::from(path);
-            aux.push(".aux.xml");
-            let nodata_pam = (crate::dataset::needs_nodata_pam(header) || crate::memfs::exists(std::path::Path::new(&aux)))
-                .then(|| (1..=bands).map(|b| header.band_nodata(b)).collect());
+        // The band nodata `finish` writes to the `.aux.xml`, which `SPARSE_OK` is checked against
+        // when the writer is created.
+        let mut aux = std::ffi::OsString::from(path);
+        aux.push(".aux.xml");
+        let pam = crate::dataset::needs_nodata_pam(header) || crate::memfs::exists(std::path::Path::new(&aux));
+        let nodata_pam: Option<Vec<Option<f64>>> = pam.then(|| (1..=bands).map(|b| header.band_nodata(b)).collect());
+        if let Some(tiff) = Tiff::create(header, path, options, source_mask, nodata_pam.as_deref())? {
             let inner = {
                 #[cfg(not(target_family = "wasm"))]
                 {
@@ -294,8 +296,15 @@ enum Tiff {
 impl Tiff {
     /// The writer of `path`, when it is a GeoTIFF or COG terrio's writer streams (without
     /// explicit overview factors, in a compression it encodes); `None` for other outputs. Invalid
-    /// options fail here, before any work.
-    fn create(header: &RasterDataset, path: &str, options: &RasterWriteOptions, source_mask: bool) -> Result<Option<Self>> {
+    /// options fail here, before any work. `sidecar`: the band nodata written to the `.aux.xml`
+    /// once the file is finished, if any.
+    fn create(
+        header: &RasterDataset,
+        path: &str,
+        options: &RasterWriteOptions,
+        source_mask: bool,
+        sidecar: Option<&[Option<f64>]>,
+    ) -> Result<Option<Self>> {
         let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
         let cog = driver == Some(RasterDriver::Cog);
         if !(cog || driver == Some(RasterDriver::GTiff)) || (options.mask.is_some() && !source_mask) || !options.overviews.is_empty() {
@@ -309,7 +318,7 @@ impl Tiff {
         }
         crate::dataset::ensure_writable_location(path)?;
         if !cog {
-            return Ok(Some(Self::GeoTiff(GeoTiffWriter::create(path, header, options)?)));
+            return Ok(Some(Self::GeoTiff(GeoTiffWriter::create_with_sidecar(path, header, options, sidecar)?)));
         }
         // As `crate::write_raster_dataset` writes it.
         if opts.geo_transform.is_none() {
@@ -784,8 +793,8 @@ mod tests {
             creation_options: vec![("@COPY_SRC_OVERVIEWS".into(), "source.tif".into())],
             ..Default::default()
         };
-        assert!(Tiff::create(&header(DataType::U8), "out.tif", &options, false).unwrap().is_none());
-        assert!(Tiff::create(&header(DataType::U8), "out.tif", &options, true).unwrap().is_none());
+        assert!(Tiff::create(&header(DataType::U8), "out.tif", &options, false, None).unwrap().is_none());
+        assert!(Tiff::create(&header(DataType::U8), "out.tif", &options, true, None).unwrap().is_none());
     }
 
     /// A raster of 300 x 200 Float32 values with nodata and metadata, in UTM.
@@ -901,6 +910,61 @@ mod tests {
         let path = dir.path().join("out.tif");
         let options = RasterWriteOptions { compression: Some("JPEG".into()), ..Default::default() };
         assert!(StripWriter::create(&header(DataType::F32), path.to_str().unwrap(), &options).is_err());
+    }
+
+    /// Catches blocks left out of a GeoTIFF written in strips, whose `.aux.xml` is written once
+    /// the file is finished, that read otherwise than stored: band 2's nodata there is 9, the
+    /// tag's 7. `SPARSE_OK` is turned off, with a warning, when the writer is created, whether no
+    /// sidecar is beside the path or one of an earlier file that agrees with the tag, which
+    /// `finish` rewrites. Every block is stored, and the file reads as the one written without it.
+    #[test]
+    fn sparse_ok_is_checked_against_the_sidecar_written_once_the_strips_are() {
+        let dir = tempfile::tempdir().unwrap();
+        // Two uint16 bands of nodata 7 everywhere but one 16 x 16 tile.
+        let mut values = vec![vec![7.0; 32 * 32]; 2];
+        for band in &mut values {
+            for y in 16..32 {
+                band[y * 32 + 16..][..16].fill(1.0);
+            }
+        }
+        let grid = crate::ops::Grid { width: 32, height: 32, geo_transform: [0., 1., 0., 32., 0., -1.] };
+        let mut source =
+            crate::ops::build_raster(grid, values, DataType::U16, Some(7.0), &Default::default(), crate::ops::convert_value).unwrap();
+        source.band_nodata = vec![Some(7.0), Some(9.0)];
+        let write = |path: &std::path::Path, sparse_ok: &str| {
+            let co = [("TILED", "YES"), ("BLOCKXSIZE", "16"), ("BLOCKYSIZE", "16"), ("SPARSE_OK", sparse_ok)];
+            let options = RasterWriteOptions {
+                creation_options: co.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+                ..Default::default()
+            };
+            let _ = crate::warnings::take();
+            let mut writer = StripWriter::create(&source, path.to_str().unwrap(), &options).unwrap();
+            writer.write(source.raster.data.clone(), 32).unwrap();
+            writer.finish().unwrap();
+            crate::warnings::take()
+        };
+        let read = |path: &std::path::Path| {
+            let lazy = crate::LazyRaster::open(path.to_str().unwrap()).unwrap().read().unwrap();
+            (crate::geotiff::read_geotiff(path).unwrap().raster.data.to_f64_vec(), lazy.raster.data.to_f64_vec())
+        };
+        let dense = dir.path().join("dense.tif");
+        assert_eq!(write(&dense, "NO"), Vec::<String>::new());
+        let earlier = "<PAMDataset><PAMRasterBand band=\"2\"><NoDataValue>7</NoDataValue></PAMRasterBand></PAMDataset>";
+        for (case, sidecar) in [("no sidecar", None), ("an earlier sidecar", Some(earlier))] {
+            let path = dir.path().join(format!("{}.tif", case.replace(' ', "-")));
+            if let Some(xml) = sidecar {
+                std::fs::write(format!("{}.aux.xml", path.display()), xml).unwrap();
+            }
+            let warned = write(&path, "YES");
+            let ignored =
+                "SPARSE_OK is ignored: the .aux.xml sidecar gives a band a nodata other than the file's, so every block is written";
+            assert_eq!(warned, [ignored], "{case}");
+            let mut dec = tiff::decoder::Decoder::new(std::fs::File::open(&path).unwrap()).unwrap();
+            let tables = crate::geotiff::ChunkTables::read(&mut dec).unwrap();
+            assert!(tables.counts.iter().all(|n| *n > 0), "{case}: {:?}", tables.counts);
+            assert_eq!(crate::open_raster_lazy(path.to_str().unwrap()).unwrap().read().unwrap().band_nodata, source.band_nodata, "{case}");
+            assert_eq!(read(&path), read(&dense), "{case}");
+        }
     }
 
     #[test]

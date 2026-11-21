@@ -1378,6 +1378,7 @@ impl PyGeoTiffWriter {
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
+        py: Python<'_>,
         path: &str,
         width: usize,
         height: usize,
@@ -1429,7 +1430,7 @@ impl PyGeoTiffWriter {
         if mask {
             o.mask = Some(Vec::new());
         }
-        let inner = terrio::GeoTiffWriter::create(path, &header, &o).py()?;
+        let inner = crate::with_warnings(py, || terrio::GeoTiffWriter::create(path, &header, &o))?;
         Ok(Self { inner: Some(inner), width, count, data_type, complex })
     }
 

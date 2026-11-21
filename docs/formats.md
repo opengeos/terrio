@@ -209,6 +209,27 @@ with the `libzstd` feature: without it, as in the default build and in WebAssemb
 chunks are compressed at the one level their encoder has. A level out of range is refused,
 whatever the compression.
 
+`SPARSE_OK=YES` leaves out of a GeoTIFF the blocks of its full-resolution image whose samples are
+all nodata, or 0 without nodata, in every band the block holds: every band of the file, or, with
+`INTERLEAVE=BAND`, only the block's own band, so that each band's blocks are left out on their own.
+Their offset and byte count are 0. The samples must equal, bit for bit, the nodata that readers read
+from the file's tag. A NaN nodata is written `nan`, so a block of a NaN with another sign or payload
+is kept. The overviews and the mask are written whole. Every block is written when nodata is not a
+value of the samples (a fraction or a value out of range for integers). Every block is also written,
+with a warning:
+
+- with a lossy compression (JPEG, WebP unless lossless, LERC with a `MAX_Z_ERROR` above 0),
+  which stores a block of nodata only approximately;
+- when a band's nodata in the file's `.aux.xml` sidecar differs from the file's nodata: bands of
+  different nodata, or a sidecar of an earlier file that the writer keeps.
+
+A COG writes every tile, and warns that it does.
+
+terrio reads the pixels of a block left out of a GeoTIFF as nodata, or 0, whichever writer left it
+out: read whole or by window, from an overview, or over HTTP. That nodata is the file's (exactly,
+for 64-bit integer samples) or, in local reads, a band's own from the `.aux.xml` sidecar, as the
+double terrio holds it.
+
 `NBITS` writes unsigned samples packed into 1–8 bits for Byte, 9–16 bits for
 UInt16 and 17–32 bits for UInt32. Rows begin on byte boundaries; bits are stored
 most significant first. GTiff supports strips or tiles and COG is tiled. Both support pixel/band
