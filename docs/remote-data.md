@@ -423,7 +423,9 @@ to how its values are decoded (`GRIB_NORMALIZE_UNITS`): the readers of that vers
 closed. When another file is renamed over a local
 file's path, an open reader goes on reading the original and a reader opened afterwards reads the
 replacement. A file changed in place is not snapshotted: a read may combine cached chunks of the
-old pixels with chunks decoded from the new ones, so close its readers before changing it in place
+old pixels with chunks decoded from the new ones, and a GRIB reader opened after the change, while
+another is open, may be given bands of the old bytes when the file's size and times do not show the
+change (times of a coarse resolution may not). So close its readers before changing it in place
 and open them again afterwards. A remote file
 opened again decodes its chunks anew, but from the bytes the HTTP cache above may still hold for its
 URL: `terrio::http::clear_cache` (Python: `terrio.clear_http_cache()`) drops them.

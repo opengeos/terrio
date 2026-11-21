@@ -43,8 +43,10 @@
 //! from the cache, rather than decode the band again (readers that miss it at the same time each
 //! decode it): on Unix, the version is the file's device, inode, size and modification and change
 //! times, and how its values are decoded (`GRIB_NORMALIZE_UNITS`); elsewhere each reader keeps its
-//! own. A version's bands are dropped when its last reader is closed, and a file changed or
-//! replaced since is another version, whose readers never see them.
+//! own. A version's bands are dropped when its last reader is closed. A file replaced since is
+//! another version, whose readers never see them, and so is a file changed in place whose size or
+//! times show the change (times of a coarse resolution may not): close the readers of a file before
+//! changing it in place.
 //!
 //! ```no_run
 //! use terrio::{Window, WindowOptions};
@@ -461,8 +463,9 @@ impl Handle {
     /// The handle the open readers of a version of a local file share, given the metadata of the
     /// file a reader opened (so that the version is that of the file it reads) and how it decodes
     /// it (`variant`): a version is the file's device, inode, size, and modification and change
-    /// times. A file changed or replaced since is another version. A handle of the reader's own
-    /// where the identity of a file is not known (other systems than Unix).
+    /// times. A file replaced since is another version, and so is a file changed in place whose
+    /// size or times show the change (see the module's documentation). A handle of the reader's
+    /// own where the identity of a file is not known (other systems than Unix).
     pub(crate) fn of_file(metadata: &std::fs::Metadata, variant: u64) -> Self {
         match FileVersion::of(metadata, variant) {
             Some(version) => Self { id: cache().share(version), shared: Some(version) },
@@ -665,8 +668,8 @@ pub(crate) mod tests {
 
     /// Catches the chunks of a file's readers kept apart, dropped while another reader of the file
     /// is open, or kept once none is: the open readers of one version of a file share a handle
-    /// until the last is dropped; the file decoded otherwise, or changed, is another version. A
-    /// reader's own handle takes its chunks with it when it is dropped.
+    /// until the last is dropped; the file decoded otherwise, or changed to another size, is
+    /// another version. A reader's own handle takes its chunks with it when it is dropped.
     #[cfg(all(unix, feature = "grib"))]
     #[test]
     fn the_readers_of_a_file_version_share_its_chunks_until_the_last_is_dropped() {
