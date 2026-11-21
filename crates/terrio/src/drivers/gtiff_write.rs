@@ -5483,8 +5483,17 @@ mod tests {
             for &(b, y, x) in pixels {
                 values[b * cols * rows + y * cols + x] = if b == 0 { 1.0 } else { -0.0 };
             }
+            // Integer samples are rounded in the first 32 rows and truncated below, so that whole
+            // blocks of every layout hold a fractional nodata as either conversion gives it: 7.5
+            // as 8 above and as 7 below. None of them is left out.
             let data = match t {
-                DataType::U16 => RasterData::U16(values.iter().map(|v| v.round() as u16).collect()),
+                DataType::U16 => RasterData::U16(
+                    values
+                        .iter()
+                        .enumerate()
+                        .map(|(i, v)| (if i % (cols * rows) < 32 * cols { v.round() } else { v.trunc() }) as u16)
+                        .collect(),
+                ),
                 _ => RasterData::F32(values.iter().map(|v| *v as f32).collect()),
             };
             let cfg = wbraster::RasterConfig { cols, rows, bands: 2, data_type: t, nodata: fill, ..Default::default() };
