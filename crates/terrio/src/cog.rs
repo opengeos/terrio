@@ -2958,7 +2958,7 @@ impl TiffRaster {
             let row_bytes = cw.checked_mul(spp).and_then(|n| n.checked_mul(self.data_type.size_bytes())).filter(|n| *n > 0);
             // (first row, rows, rows of the strip, its bytes) of a strip over the limit whose
             // rows the window needs fit it.
-            let wanted = |idx: u32, row_bytes: usize| -> Option<(usize, usize, usize, u64)> {
+            let strip_rows_of = |idx: u32, row_bytes: usize| -> Option<(usize, usize, usize, u64)> {
                 let rows = ch.min(lh - (idx as usize % per_plane) * ch);
                 let strip = (rows as u64).checked_mul(row_bytes as u64)?;
                 let y0 = targets[&idx][0].1;
@@ -2966,7 +2966,7 @@ impl TiffRaster {
                 (strip > limit && (end - first) as u64 * row_bytes as u64 <= limit).then_some((first, end - first, rows, strip))
             };
             if let Some(row_bytes) = row_bytes
-                && misses.iter().any(|idx| wanted(*idx, row_bytes).is_some())
+                && misses.iter().any(|idx| strip_rows_of(*idx, row_bytes).is_some())
                 && let Some(how) = crate::tiff_strip_rows::Rows::of(dec, self.data_type, compression).map_err(tiff_err)?
             {
                 let batch = (STRIP_ROWS_BYTES / row_bytes).max(1);
@@ -2974,7 +2974,7 @@ impl TiffRaster {
                 crate::dataset::fallible::reserve(&mut whole, misses.len(), what)?;
                 let mut read_at = |at: u64, buf: &mut [u8]| read_stored(dec, at, buf);
                 for &idx in &misses {
-                    let Some(((first, rows, height, _), stored)) = wanted(idx, row_bytes)
+                    let Some(((first, rows, height, _), stored)) = strip_rows_of(idx, row_bytes)
                         .zip(tables.get(idx as usize))
                         .filter(|((.., strip), stored)| how.holds(*stored, *strip, self.file_len, limit))
                     else {
