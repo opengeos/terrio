@@ -169,8 +169,8 @@ For files you do not trust, two options bound what a raster may declare, whateve
 | `TERRIO_MAX_BANDS` | this many bands (a complex band counts once) |
 
 No read decodes more than its raster declares, so `TERRIO_MAX_DECLARED_BYTES` also bounds what a
-read of GeoTIFF strips over the chunk limit decodes by rows, at most four times that limit by
-default (above).
+read of GeoTIFF strips over the chunk limit decodes by rows, which is at most four times the chunk
+limit, `TERRIO_TIFF_MAX_CHUNK_BYTES`, in any case (above).
 
 The CLI and MCP take these limits from the process environment; MCP operators set
 them on the server process, so the same admission policy covers every tool call.
