@@ -3134,7 +3134,7 @@ impl TiffRaster {
         if self.cmyk || self.complex || cols.is_empty() || rows.is_empty() || largest.is_some_and(|n| n <= limit) {
             return Ok(None);
         }
-        let tiff_err = self.limits.error();
+        let limit_err = self.limits.error();
         let (Storage { planar, compression }, tables) = self.level_chunks(level)?;
         let dec = &mut self.decoder;
         if dec.get_chunk_type() != tiff::decoder::ChunkType::Strip {
@@ -3177,7 +3177,7 @@ impl TiffRaster {
                 _ => strips.push((s, ch.min(lh - s * ch), to)),
             }
         }
-        let Some(how) = crate::tiff_strip_rows::Rows::of(dec, self.data_type, compression).map_err(tiff_err)? else {
+        let Some(how) = crate::tiff_strip_rows::Rows::of(dec, self.data_type, compression).map_err(limit_err)? else {
             return Ok(None);
         };
         // What the read decodes: each strip from its start to its last sampled row, or to its end
@@ -3204,7 +3204,7 @@ impl TiffRaster {
         // Over the bound, the read is refused, as before: windows read instead would each read a
         // strip by rows within it, together decoding as much.
         if !how.decodes_within(decoded, limit) {
-            return Err(tiff_err(tiff::TiffError::LimitsExceeded));
+            return Err(limit_err(tiff::TiffError::LimitsExceeded));
         }
         let len = crate::dataset::fallible::len(&[bands.len(), rows.len(), cols.len()], what)?;
         let mut out = nodata_filled(&self.tags, self.data_type, bands, rows.len() * cols.len(), len)?;
