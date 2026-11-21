@@ -40,6 +40,22 @@ struct Counting;
 /// The largest allocation asked for since the last reset, on any thread.
 static LARGEST: AtomicUsize = AtomicUsize::new(0);
 
+/// The bytes allocated and not yet freed, on any thread, and the most since [`PEAK`] was last set.
+/// A block a `realloc` moves counts twice until the old one is freed.
+#[cfg(unix)]
+static LIVE: AtomicUsize = AtomicUsize::new(0);
+#[cfg(unix)]
+static PEAK: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(unix)]
+fn allocated(ptr: *mut u8, bytes: usize) -> *mut u8 {
+    if !ptr.is_null() {
+        let live = LIVE.fetch_add(bytes, Ordering::Relaxed) + bytes;
+        PEAK.fetch_max(live, Ordering::Relaxed);
+    }
+    ptr
+}
+
 /// Injection used only by the isolated index-reservation failure regression.
 #[cfg(unix)]
 static REFUSE_FROM: AtomicUsize = AtomicUsize::new(usize::MAX);
@@ -59,9 +75,9 @@ unsafe impl GlobalAlloc for Counting {
         }
         if layout.align() <= MIN_ALIGN && layout.align() <= layout.size() {
             // SAFETY: a plain C allocation.
-            return unsafe { libc::malloc(layout.size()) }.cast();
+            return allocated(unsafe { libc::malloc(layout.size()) }.cast(), layout.size());
         }
-        aligned(layout)
+        allocated(aligned(layout), layout.size())
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
@@ -71,14 +87,14 @@ unsafe impl GlobalAlloc for Counting {
         }
         if layout.align() <= MIN_ALIGN && layout.align() <= layout.size() {
             // SAFETY: a plain C allocation.
-            return unsafe { libc::calloc(layout.size(), 1) }.cast();
+            return allocated(unsafe { libc::calloc(layout.size(), 1) }.cast(), layout.size());
         }
         let ptr = aligned(layout);
         if !ptr.is_null() {
             // SAFETY: `ptr` holds `layout.size()` bytes.
             unsafe { std::ptr::write_bytes(ptr, 0, layout.size()) };
         }
-        ptr
+        allocated(ptr, layout.size())
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
@@ -86,23 +102,29 @@ unsafe impl GlobalAlloc for Counting {
         if new_size >= REFUSE_FROM.load(Ordering::Relaxed) {
             return std::ptr::null_mut();
         }
-        if layout.align() <= MIN_ALIGN && layout.align() <= new_size {
+        let new = if layout.align() <= MIN_ALIGN && layout.align() <= new_size {
             // SAFETY: `ptr` came from this allocator, whose blocks are the C allocator's.
-            return unsafe { libc::realloc(ptr.cast(), new_size) }.cast();
-        }
-        // SAFETY: the caller's contract: `new_size` rounded up to the alignment fits `isize`.
-        let new = aligned(unsafe { Layout::from_size_align_unchecked(new_size, layout.align()) });
-        if !new.is_null() {
-            // SAFETY: both blocks hold at least the bytes copied, and are distinct.
-            unsafe {
-                std::ptr::copy_nonoverlapping(ptr, new, layout.size().min(new_size));
-                libc::free(ptr.cast());
+            allocated(unsafe { libc::realloc(ptr.cast(), new_size) }.cast(), new_size)
+        } else {
+            // SAFETY: the caller's contract: `new_size` rounded up to the alignment fits `isize`.
+            let new = allocated(aligned(unsafe { Layout::from_size_align_unchecked(new_size, layout.align()) }), new_size);
+            if !new.is_null() {
+                // SAFETY: both blocks hold at least the bytes copied, and are distinct.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(ptr, new, layout.size().min(new_size));
+                    libc::free(ptr.cast());
+                }
             }
+            new
+        };
+        if !new.is_null() {
+            LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
         }
         new
     }
 
-    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
         // SAFETY: `ptr` came from this allocator, whose blocks are the C allocator's.
         unsafe { libc::free(ptr.cast()) }
     }
@@ -2045,6 +2067,144 @@ fn large_row_calls_keep_encoded_work_bounded() {
     );
     assert!(matches!(result, Err(terrio::Error::ResourceLimit(_))));
     assert!(!path.exists());
+}
+
+/// COGs with a mask written in rows: each call is checked, before it starts, for at least the most
+/// it has allocated at once (the caller's rows and mask, what the writer holds, and what the call,
+/// the overview block rows still being computed on the thread pool and the tiles being compressed
+/// there allocate meanwhile), as measured here in a child process with a pool of 16 threads: an
+/// 8192 x 8192 Byte slab with its mask in one call; a 2048 x 2048 RGB raster in rows of 256 (tiles
+/// of 256, PackBits), half of whose calls peak above what they would be checked for without the
+/// block rows' working buffers; and one 2048 x 2048 tile of UInt64 samples PackBits cannot compress,
+/// without overviews, whose copy out of its rows the encoder holds while it writes as many bytes
+/// again.
+#[test]
+#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+fn a_masked_cog_call_is_checked_for_the_most_it_allocates() {
+    const CHILD: &str = "TERRIO_TEST_MASKED_COG_CALL_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "a_masked_cog_call_is_checked_for_the_most_it_allocates"])
+            .env(CHILD, "1")
+            // As many blocks and tiles computed at once as on 16 cores, however many this machine has.
+            .env("RAYON_NUM_THREADS", "16")
+            .env_remove("TERRIO_MAX_DECLARED_BYTES")
+            .env_remove("TERRIO_MAX_BANDS")
+            .output()
+            .unwrap();
+        assert!(child.status.success(), "{}\n{}", String::from_utf8_lossy(&child.stdout), String::from_utf8_lossy(&child.stderr));
+        return;
+    }
+    let _serial = serial();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("rows.cog.tif");
+    let cog = |compression: Option<&str>, tile: Option<u32>, overviews: bool| RasterWriteOptions {
+        driver: Some(RasterDriver::Cog),
+        mask: Some(Vec::new()),
+        compression: compression.map(str::to_string),
+        tile_size: tile,
+        creation_options: if overviews { Vec::new() } else { vec![("OVERVIEW_COUNT".into(), "0".into())] },
+        ..Default::default()
+    };
+    // Values in a corner, valid there only.
+    let corner = |_: usize, _: usize| {
+        let (mut values, mut mask) = (vec![0u8; 8192 * 8192], vec![0u8; 8192 * 8192]);
+        for y in 0..512 {
+            values[y * 8192..][..512].fill(7);
+            mask[y * 8192..][..512].fill(255);
+        }
+        (RasterData::U8(values), mask)
+    };
+    checked_for_their_peaks(&path, &header(8192, 8192, 1), &cog(None, None, true), 8192, &corner);
+    // Varied values in each band, invalid in the left third and at every third pixel of 600 rows.
+    let (columns, rows) = (2048, 2048);
+    let varied = |y0: usize, y1: usize| {
+        let pixels = y0 * columns..y1 * columns;
+        let values = (0..3).flat_map(|b| pixels.clone().map(move |i| ((i % columns * (3 + 2 * b) + i / columns * (7 + b)) % 251) as u8));
+        let invalid = |(y, x): (usize, usize)| x < columns / 3 || ((rows / 2..rows / 2 + 600).contains(&y) && (x + y) % 3 == 0);
+        let mask = pixels.clone().map(|i| if invalid((i / columns, i % columns)) { 0 } else { 255 });
+        (RasterData::U8(values.collect()), mask.collect())
+    };
+    checked_for_their_peaks(&path, &header(columns, rows, 3), &cog(Some("PACKBITS"), Some(256), true), 256, &varied);
+    // Samples without a run of three equal bytes, valid.
+    let mut tile = header(2048, 2048, 1);
+    tile.raster.data_type = DataType::U64;
+    tile.raster.data = RasterData::new_filled(DataType::U64, 0, 0.0);
+    let runless = |_: usize, _: usize| (RasterData::U64(vec![0x0706_0504_0302_0100; 2048 * 2048]), vec![255; 2048 * 2048]);
+    checked_for_their_peaks(&path, &tile, &cog(Some("PACKBITS"), Some(2048), false), 2048, &runless);
+}
+
+/// Writes `raster` as a COG with a mask at `path` with `options`, in calls of `step` rows (`slab`:
+/// the values and mask of rows `y0..y1`), measuring each call's peak: the most bytes alive at once,
+/// beyond those alive once the writer was created, from the call (the rows of tiles compressed
+/// before it spooled first) until the next call's rows are made (the block rows and tiles it left
+/// being computed meanwhile included), or, for the last, until the file is finished, its rows held
+/// until then. Then writes it again, giving each call
+/// first with a byte less of usable memory than its peak, which must refuse it (the first call before
+/// any allocation of 1 MiB; at later ones, block rows of earlier calls may be allocating), then, to
+/// go on to the next call and to the end, with the limit lifted.
+#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+fn checked_for_their_peaks(
+    path: &Path,
+    raster: &RasterDataset,
+    options: &RasterWriteOptions,
+    step: usize,
+    slab: &dyn Fn(usize, usize) -> (RasterData, Vec<u8>),
+) {
+    let rows = raster.raster.rows;
+    let none = RasterData::new_filled(raster.raster.data_type, 0, 0.0);
+    let write = |limits: Option<&[usize]>| {
+        let mut writer = Some(terrio::GeoTiffWriter::create(path.to_str().unwrap(), raster, options).unwrap());
+        let before = LIVE.load(Ordering::Relaxed);
+        let mut peaks = Vec::new();
+        for (call, y0) in (0..rows).step_by(step).enumerate() {
+            let y1 = (y0 + step).min(rows);
+            // The last call's peak, read before this call's rows are made.
+            if call > 0 {
+                peaks.push(PEAK.load(Ordering::Relaxed) - before);
+            }
+            let (values, mask) = slab(y0, y1);
+            let w = writer.as_mut().unwrap();
+            w.write_rows(&none, 0, Some(&[])).unwrap();
+            if let Some(peak) = limits.map(|peaks| peaks[call]) {
+                rss_limit(Some(peak as u64 - 1));
+                let (refused, largest) = largest_during(|| w.write_rows(&values, y1 - y0, Some(&mask)));
+                rss_limit(None);
+                assert!(matches!(refused, Err(terrio::Error::ResourceLimit(_))), "call {call}: {peak} bytes at once, then {refused:?}");
+                assert!(call > 0 || largest < 1 << 20, "{largest} bytes asked for at once before the refusal");
+                // A refused first call has started nothing; after others, the block rows and tiles they
+                // started are finished below, not left to free their memory while the next case is measured.
+                if call == 0 && y1 == rows {
+                    return peaks;
+                }
+            }
+            // The peak from here: what is alive, without losing what a block row or row of tiles still
+            // being computed allocates meanwhile (zeroed first, then raised to what is alive).
+            PEAK.store(0, Ordering::Relaxed);
+            PEAK.fetch_max(LIVE.load(Ordering::Relaxed), Ordering::Relaxed);
+            w.write_rows(&values, y1 - y0, Some(&mask)).unwrap();
+            if y1 == rows {
+                writer.take().unwrap().finish().unwrap();
+                peaks.push(PEAK.load(Ordering::Relaxed) - before);
+            }
+        }
+        peaks
+    };
+    let peaks = write(None);
+    write(Some(&peaks));
+}
+
+/// Sets this process's resident-set limit, which [`terrio::usable_memory`] reads (Linux does not
+/// enforce it), to `bytes`, or back to its hard limit.
+#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+fn rss_limit(bytes: Option<u64>) {
+    let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: valid pointers, changing the policy only in this child process.
+    unsafe {
+        assert_eq!(libc::getrlimit(libc::RLIMIT_RSS, &mut limit), 0);
+        limit.rlim_cur = bytes.unwrap_or(limit.rlim_max);
+        assert_eq!(libc::setrlimit(libc::RLIMIT_RSS, &limit), 0);
+    }
 }
 
 /// A failed chunk-index reservation preserves an existing destination (GDAL 3.13.3 reference).
