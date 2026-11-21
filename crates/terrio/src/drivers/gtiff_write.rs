@@ -2156,10 +2156,22 @@ impl GeoTiffWriter {
     /// the writer holds, a row of its blocks of every band (twice while rows are appended to
     /// it), cannot fit in the memory the process can use ([`crate::usable_memory`]).
     pub fn create(path: &str, header: &crate::RasterDataset, options: &crate::RasterWriteOptions) -> Result<Self> {
+        Self::create_with_sidecar(path, header, options, None)
+    }
+
+    /// [`GeoTiffWriter::create`], for a caller that writes the GeoTIFF's `.aux.xml` once the
+    /// file is finished: `sidecar` is the band nodata it then writes there, which `SPARSE_OK`
+    /// is checked against instead of the sidecar beside the path (`None`: that one, kept).
+    pub(crate) fn create_with_sidecar(
+        path: &str,
+        header: &crate::RasterDataset,
+        options: &crate::RasterWriteOptions,
+        sidecar: Option<&[Option<f64>]>,
+    ) -> Result<Self> {
         let inner = if options.driver == Some(crate::formats::RasterDriver::Cog) {
             RowWriter::Cog(Box::new(std::sync::Mutex::new(cog_rows(path, header, options)?)))
         } else {
-            RowWriter::Tiff(Box::new(TiffRows::create(path, header, options)?))
+            RowWriter::Tiff(Box::new(TiffRows::create(path, header, options, sidecar)?))
         };
         Ok(Self { inner })
     }
@@ -2265,12 +2277,18 @@ impl TiffRows {
     /// Creates the file. `header` describes the raster (its size, bands, data type,
     /// georeferencing, CRS, nodata and metadata); its pixels are not read. `options` are those of
     /// [`crate::write_raster_dataset`] for GeoTIFFs; `options.mask` is ignored: masks are given
-    /// with the rows.
+    /// with the rows. `sidecar`: the band nodata the caller writes to the `.aux.xml` once the
+    /// file is finished; `None` when it keeps the sidecar beside the path.
     ///
     /// # Errors
     /// For COGs, overviews and compressions terrio's own writer does not encode (WEBP...), which
     /// need the whole raster, and when the file cannot be created.
-    pub fn create(path: &str, header: &crate::RasterDataset, options: &crate::RasterWriteOptions) -> Result<Self> {
+    pub fn create(
+        path: &str,
+        header: &crate::RasterDataset,
+        options: &crate::RasterWriteOptions,
+        sidecar: Option<&[Option<f64>]>,
+    ) -> Result<Self> {
         if matches!(options.driver, Some(d) if d != crate::formats::RasterDriver::GTiff) {
             return Err(Error::Unsupported("rasters are written in rows as GeoTIFFs only".into()));
         }
@@ -2289,7 +2307,7 @@ impl TiffRows {
             options.creation_options.iter().rev().find(|(k, _)| k.eq_ignore_ascii_case("@FINAL_PATH")).map_or(path, |(_, v)| v.as_str());
         opts.sparse_unless_sidecar_differs(
             final_path,
-            None,
+            sidecar,
             header.raster.bands / if header.complex { 2 } else { 1 },
             header.raster.data_type,
         );
@@ -3722,7 +3740,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("failed.tif");
         let options = crate::RasterWriteOptions { creation_options: vec![("BLOCKYSIZE".into(), "16".into())], ..Default::default() };
-        let mut w = TiffRows::create(path.to_str().unwrap(), &header, &options).unwrap();
+        let mut w = TiffRows::create(path.to_str().unwrap(), &header, &options, None).unwrap();
         w.write_rows(&slice_rows(&raster.data, 35, 0..10, 65, 1), 10, None).unwrap();
         // Past what a classic TIFF addresses: the block row is refused once written.
         let pos = std::mem::replace(&mut w.pos, u64::from(u32::MAX));
@@ -3734,7 +3752,7 @@ mod tests {
         assert_eq!(w.rows_written(), 16);
         drop(w);
         // A later block row fails before consuming the last three rows of the caller slab.
-        let mut w = TiffRows::create(path.to_str().unwrap(), &header, &options).unwrap();
+        let mut w = TiffRows::create(path.to_str().unwrap(), &header, &options, None).unwrap();
         w.write_rows(&slice_rows(&raster.data, 35, 0..16, 65, 1), 16, None).unwrap();
         w.pos = u64::from(u32::MAX);
         assert!(w.write_rows(&slice_rows(&raster.data, 35, 16..35, 65, 1), 19, None).is_err());
