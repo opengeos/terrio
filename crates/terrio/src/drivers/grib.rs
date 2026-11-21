@@ -530,12 +530,13 @@ impl Source {
         Ok(out)
     }
 
-    /// Decodes the bands `missing` (from 1, each once): the values of `window` of each, each band
-    /// kept in the block cache in a `share` of it. A file's bands are decoded in parallel, the
-    /// first error in band order failing the read: those of a local file as many at once as hold,
-    /// with the messages read for them, in [`DECODE_BYTES`] ([`Source::at_once`]). A remote file's
-    /// are decoded one at a time, in the order asked, each message fetched once for the bands of it
-    /// asked one after the other.
+    /// Decodes the bands `missing` (from 1, each once) of a decode group: the values of `window` of
+    /// each, each band kept in the block cache in a `share` of it. A file's bands are decoded in
+    /// parallel, the first error in band order failing the read: those of a local file as many at
+    /// once as hold, with the messages read for them, in [`DECODE_BYTES`] ([`Source::at_once`]). A
+    /// remote file's are decoded one at a time, in the order asked, each message fetched once for
+    /// the bands of it asked one after the other in the group: a read's groups are decoded one
+    /// after the other, so a message whose bands fall in two groups is fetched once in each.
     fn decode(&self, mut missing: Vec<usize>, window: crate::Window, share: u64) -> Result<Vec<(usize, Vec<f64>)>> {
         #[cfg(remote)]
         if matches!(self.store, Store::Remote(_)) {
