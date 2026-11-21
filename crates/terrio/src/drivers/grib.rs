@@ -905,6 +905,28 @@ fn header_needs(head: &[u8], full_len: usize) -> Option<usize> {
     None
 }
 
+/// Completes `head`, the first bytes of a message of `len` bytes, with the parts its header needs
+/// ([`next_part`]), each read by `read(at, n)`: `n` bytes at `at` from the message's start. A
+/// GRIB1 bitmap's body, which is skipped, is left as zeros: where they start, or the head's length
+/// when there are none.
+fn complete_head(head: &mut Vec<u8>, len: usize, mut read: impl FnMut(usize, usize) -> Result<Vec<u8>>) -> Result<usize> {
+    let mut prefix = None;
+    while let Some((at, n)) = next_part(head, len).filter(|&(at, n)| n > 0 && at >= head.len() && at + n <= len) {
+        if at > head.len() {
+            prefix.get_or_insert(head.len());
+        }
+        head.try_reserve_exact(at + n - head.len()).map_err(|_| out_of_memory(at + n))?;
+        head.resize(at, 0);
+        head.extend_from_slice(&read(at, n)?);
+    }
+    Ok(prefix.unwrap_or(head.len()))
+}
+
+/// The error of `n` bytes that cannot be allocated.
+fn out_of_memory(n: usize) -> Error {
+    Error::Io(std::io::Error::new(std::io::ErrorKind::OutOfMemory, format!("GRIB: cannot allocate {n} bytes")))
+}
+
 /// The next part of a message's header to read, given the `head` at hand: `(offset, length)`
 /// from the message's start, the offset past the head when a GRIB1 bitmap's body is skipped.
 /// `None` when the head holds the header. GRIB2 headers are read whole ([`header_needs`]).

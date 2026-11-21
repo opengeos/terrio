@@ -16,7 +16,7 @@
 //! ([`super::open_lazy_bytes`]): a file gives the same bands, metadata and errors read either way.
 
 use super::{
-    Band, BandAt, Source, Store, bad_section, find_messages, grib1, header_with, message_bands, message_fields, next_part, try_filled,
+    Band, BandAt, Source, Store, bad_section, complete_head, find_messages, grib1, header_with, message_bands, message_fields, try_filled,
 };
 use crate::{Error, Result};
 use std::io::{Read, Seek, SeekFrom};
@@ -113,22 +113,13 @@ impl Scan {
         Ok(None)
     }
 
-    /// The start of the message at `start` of `len` bytes that its header needs (see
-    /// [`next_part`]), a GRIB1 bitmap's body left as zeros.
+    /// The start of the message at `start` of `len` bytes that its header needs, a GRIB1 bitmap's
+    /// body left as zeros ([`complete_head`]).
     fn head(&mut self, start: usize, len: usize) -> Result<Vec<u8>> {
         let mut head = self.read(start, HEAD_MIN.min(len))?;
-        while let Some((at, n)) = next_part(&head, len).filter(|&(at, n)| n > 0 && at >= head.len() && at + n <= len) {
-            head.try_reserve_exact(at + n - head.len()).map_err(|_| out_of_memory(at + n))?;
-            head.resize(at, 0);
-            head.extend_from_slice(&self.read(start + at, n)?);
-        }
+        complete_head(&mut head, len, |at, n| self.read(start + at, n))?;
         Ok(head)
     }
-}
-
-/// The error of `n` bytes that cannot be allocated.
-fn out_of_memory(n: usize) -> Error {
-    Error::Io(std::io::Error::new(std::io::ErrorKind::OutOfMemory, format!("GRIB: cannot allocate {n} bytes")))
 }
 
 /// Whether the nodata of the GRIB1 message whose header is `head` depends on its data. A header

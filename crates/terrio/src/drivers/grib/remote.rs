@@ -15,7 +15,7 @@
 //! ignores ranges is read only if the file came whole with the first request (a small file):
 //! the rest of the reads are then served from it.
 
-use super::{Band, Source, Store, be, grib1, header, message_bands, next_part, normalize_units, try_vec};
+use super::{Band, Source, Store, be, complete_head, grib1, header, message_bands, normalize_units, try_vec};
 use crate::http::{ByteRange, HttpOptions, ObjectFetcher, RangeReader, Remote};
 use crate::{Error, Result};
 use std::io::{Read, Seek, SeekFrom};
@@ -153,15 +153,7 @@ pub(crate) fn open(remote: &Remote) -> Result<crate::LazyRaster> {
             carry = head.split_off(len);
         }
         // The rest of the header; a skipped GRIB1 bitmap body stays zeros, past the prefix.
-        let mut prefix = None;
-        while let Some((at, n)) = next_part(&head, len).filter(|&(at, n)| n > 0 && at >= head.len() && at + n <= len) {
-            if at > head.len() {
-                prefix.get_or_insert(head.len());
-                head.resize(at, 0);
-            }
-            head.extend_from_slice(&fetch.get(start + at, n)?);
-        }
-        let prefix = prefix.unwrap_or(head.len());
+        let prefix = complete_head(&mut head, len, |at, n| fetch.get(start + at, n))?;
         // The next message's header is likely the size of this one's (GRIB2), or short (GRIB1,
         // whose bitmap is skipped).
         guess = if head[7] == 2 { prefix.clamp(HEAD_MIN, BLOCK) } else { HEAD_MIN };
