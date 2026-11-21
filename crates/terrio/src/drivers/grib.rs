@@ -629,6 +629,10 @@ impl crate::cog::WindowSource for Source {
                     out.extend_from_slice(values);
                 } else if let Some(grid) = cached.iter().find(|(k, _)| *k == b).and_then(|(_, c)| grid_of(c)) {
                     place(grid, self.cols, self.split, window, &mut out);
+                } else {
+                    // Not reached: each band of the group is decoded, or found in the cache with a
+                    // grid. Should that change, the read fails rather than return fewer values.
+                    return Err(Error::InvalidData(format!("GRIB band {b}: neither decoded nor in the block cache")));
                 }
             }
         }
