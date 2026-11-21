@@ -99,6 +99,32 @@ test("terrio-js/cog reads windows, bands and overviews as terrio-js does", async
   }
 });
 
+test("terrio-js/cog range requests skip a browser's HTTP cache, not another runtime's", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "terrio-cog-"));
+  const src = terrio.rasterFromArray(new Uint8Array(64 * 64), 64, 64, [0, 1, 0, 64, 0, -1], "EPSG:4326");
+  writeFileSync(join(dir, "small.tif"), src.toBytes("small.tif", { format: "GTiff" }));
+  const server = await serve(dir);
+  const navigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  try {
+    for (const browser of [false, true]) {
+      const modes = [];
+      const fetch = (url, init) => (init.headers?.Range && modes.push(init.cache), globalThis.fetch(url, init));
+      const userAgent = browser ? "Mozilla/5.0 (X11; Linux x86_64)" : "Cloudflare-Workers";
+      Object.defineProperty(globalThis, "navigator", { configurable: true, value: { userAgent } });
+      await cog.openCog(server.url + "small.tif", { fetch });
+      if (navigator) Object.defineProperty(globalThis, "navigator", navigator);
+      else delete globalThis.navigator;
+      assert.ok(modes.length > 0);
+      assert.deepEqual(new Set(modes), new Set([browser ? "no-store" : undefined]));
+    }
+  } finally {
+    if (navigator) Object.defineProperty(globalThis, "navigator", navigator);
+    else delete globalThis.navigator;
+    server.close();
+    rmSync(dir, { recursive: true });
+  }
+});
+
 test("terrio-js/cog runs reads awaited together at once, within twelve requests, and fetches a block once", async () => {
   const dir = mkdtempSync(join(tmpdir(), "terrio-cog-"));
   // 64 tiles of 64 KB: a read of one tile is a request of its own.

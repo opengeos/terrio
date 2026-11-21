@@ -296,6 +296,7 @@ mod resampled_read;
 pub mod s3;
 pub mod sparse;
 mod tiff_codecs;
+mod tiff_strip_rows;
 pub mod tiles;
 pub mod vector;
 mod zstandard;
