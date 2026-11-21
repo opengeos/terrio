@@ -281,6 +281,14 @@ fn unusual_wkt2_gives_its_proj_string_the_tree_s_input() {
         ),
         // Projected: east-north, north-east in feet, a polar CS, south-orientated axes.
         (projected(tm, &lon, en), true),
+        // A base CRS's CS in grads, its parameters without units: PROJ 9.9.0 and the reader read
+        // them in degrees, not in the base CS's unit.
+        (
+            format!(
+                r#"PROJCRS["p",BASEGEOGCRS["g",{datum},PRIMEM["Greenwich",0],CS[ellipsoidal,2],AXIS["lat",north,ANGLEUNIT["grad",0.015707963267949]],AXIS["lon",east,ANGLEUNIT["grad",0.015707963267949]]],CONVERSION["c",METHOD[{tm}],PARAMETER["Longitude of natural origin",9,ID["EPSG",8802]]],{en}]"#
+            ),
+            true,
+        ),
         // A base CRS's spherical CS of three dimensions: PROJ 9.9.0 refuses it, the reader reads
         // the base CRS without its CS.
         (format!(r#"PROJCRS["p",BASEGEOGCRS["g",{datum},{pm},CS[spherical,3],{DEG}],CONVERSION["c",METHOD[{tm}]{lon}],{en}]"#), true),

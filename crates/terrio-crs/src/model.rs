@@ -623,13 +623,19 @@ fn unit_node(n: &Node) -> Option<&Node> {
 }
 
 /// The angular unit of a geodetic CRS node, as `wkt2::Wkt2Geodetic::read` takes it: its own
-/// `ANGLEUNIT` or `UNIT`, else (a WKT 2 CRS) its axes', else its prime meridian's, else degrees.
+/// `ANGLEUNIT` or `UNIT`, else (a WKT 2 CRS, not a base CRS) its axes', else its prime meridian's, else degrees.
 fn angular_unit(n: &Node, d: Dialect) -> Unit {
     let own = n.child("ANGLEUNIT").or_else(|| n.child("UNIT"));
+    // A WKT 2 geographic CRS's axes, not a base CRS's: PROJ 9.9.0 and the WKT 2 reader read a
+    // projected CRS's parameters in degrees beside a base CS in grads.
     let found = own
-        .or_else(
-            || if d == Dialect::Wkt2 { n.children("AXIS").find_map(|a| a.child("ANGLEUNIT").or_else(|| a.child("UNIT"))) } else { None },
-        )
+        .or_else(|| {
+            if d == Dialect::Wkt2 && !n.is(kw::BASE_GEODETIC_CRS) {
+                n.children("AXIS").find_map(|a| a.child("ANGLEUNIT").or_else(|| a.child("UNIT")))
+            } else {
+                None
+            }
+        })
         .or_else(|| prime_meridian_node(n).and_then(|p| p.child("ANGLEUNIT").or_else(|| p.child("UNIT"))));
     found.and_then(|u| unit(u, UnitKind::Angle)).unwrap_or_else(Unit::degree)
 }
