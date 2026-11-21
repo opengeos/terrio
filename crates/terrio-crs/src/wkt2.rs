@@ -40,9 +40,9 @@ pub(crate) fn handles(root: &Node) -> bool {
 }
 
 /// Converts a WKT 2 geographic, projected or derived geographic CRS, or a `BOUNDCRS` of one, into a
-/// PROJ string, with a `BOUNDCRS`'s Helmert transformation as `+towgs84` when it is to WGS 84, else as
-/// [`Converted::bound`]. Fails on what it cannot convert faithfully: an unknown method, or an
-/// unknown parameter.
+/// PROJ string, with a `BOUNDCRS`'s Helmert transformation as `+towgs84` when it is to WGS 84,
+/// else as [`Converted::bound`]. Fails on what it cannot convert faithfully: an unknown method, or
+/// an unknown parameter.
 pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
     convert_root(&Wkt2Root::read(root)?, root)
 }
@@ -191,9 +191,9 @@ pub(crate) fn convert_root(input: &Wkt2Root, root: &Node) -> Result<Converted> {
     Ok(c)
 }
 
-/// What a WKT 2 geographic, geocentric, projected or derived geographic CRS gives its PROJ string: read from its tree
-/// ([`Wkt2Input::read`]) or from its model (`model::wkt2_input`), which agree but for the known
-/// differences `model::proj_input_tests` pins (#1058 step 6).
+/// What a WKT 2 geographic, geocentric, projected or derived geographic CRS gives its PROJ string:
+/// read from its tree ([`Wkt2Input::read`]) or from its model (`model::wkt2_input`), which agree
+/// but for the known differences `model::proj_input_tests` pins (#1058 step 6).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Wkt2Input {
     /// The geodetic CRS: the CRS itself, or a projected or derived CRS's base CRS.
@@ -234,7 +234,8 @@ pub(crate) enum Wkt2Kind {
     Derived { method: Wkt2Method, grid_ang: f64 },
 }
 
-/// A projected or derived CRS's conversion: its method's name as written and EPSG code, and its parameters.
+/// A projected or derived CRS's conversion: its method's name as written and EPSG code, and its
+/// parameters.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Wkt2Method {
     pub name: String,

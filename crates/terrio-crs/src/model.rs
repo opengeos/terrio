@@ -195,8 +195,9 @@ pub(crate) struct Transformation {
     pub params: Vec<Param>,
     /// Its `PARAMETERFILE`s (an NTv2 grid's), by name and file name.
     pub files: Vec<(Ident, String)>,
-    /// Its target CRS; `None` for one the model does not read, without which the WKT 2 reader reads
-    /// the bound CRS too (PROJ 9.9.0 refuses one without its datum).
+    /// Its target CRS; `None` when the model does not read it. The bound CRS is still read, as the
+    /// WKT 2 reader reads it, without the shift to that target, though PROJ 9.9.0 refuses a bound
+    /// CRS whose target has no datum.
     pub target: Option<Box<Crs>>,
 }
 
@@ -227,7 +228,7 @@ pub(crate) enum Crs {
         cs: Cs,
     },
     /// A derived geographic CRS (WKT 2's geographic CRS with a `DERIVINGCONVERSION`): a rotated
-    /// pole, its conversion's parameters without a unit of their own in its base CRS's angular unit.
+    /// pole. A conversion parameter without a unit of its own is in its base CRS's angular unit.
     DerivedGeographic {
         ident: Ident,
         base: Box<Crs>,
@@ -474,7 +475,6 @@ fn root_input(crs: &Crs, root: &Node) -> Option<wkt2::Wkt2Root> {
     } else {
         Wkt2Source::Wkt2(root_input(source, source_node)?)
     };
-    let key = |u: &Unit| unit_key(u);
     let transformation = Wkt2Transformation {
         method: t.method.name.clone(),
         epsg: first_epsg(&t.method),
@@ -485,7 +485,7 @@ fn root_input(crs: &Crs, root: &Node) -> Option<wkt2::Wkt2Root> {
                 name: p.ident.name.clone(),
                 epsg: first_epsg(&p.ident),
                 value: Some(p.value),
-                units: p.unit.iter().map(|u| (key(u), Some(u.factor))).collect(),
+                units: p.unit.iter().map(|u| (unit_key(u), Some(u.factor))).collect(),
             })
             .collect(),
         files: t.files.len(),
@@ -540,7 +540,6 @@ fn wkt2_crs_input(crs: &Crs) -> Option<wkt2::Wkt2Input> {
     let lower = |a: &Axis| a.direction.to_ascii_lowercase();
     // A conversion's method and parameters, each with the keyword of its unit's kind.
     let method = |conversion: &Conversion| {
-        let key = unit_key;
         let params = conversion
             .params
             .iter()
@@ -548,7 +547,7 @@ fn wkt2_crs_input(crs: &Crs) -> Option<wkt2::Wkt2Input> {
                 name: p.ident.name.clone(),
                 epsg: first_epsg(&p.ident),
                 value: p.value,
-                units: p.unit.iter().map(|u| (key(u), Some(u.factor))).collect(),
+                units: p.unit.iter().map(|u| (unit_key(u), Some(u.factor))).collect(),
             })
             .collect();
         Wkt2Method { name: conversion.method.name.clone(), epsg: first_epsg(&conversion.method), params }

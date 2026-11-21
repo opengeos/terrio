@@ -182,9 +182,9 @@ fn every_wkt2_corpus_text_gives_its_proj_string_the_tree_s_input() {
         &include_bytes!("../../tests/data/projjson_corpus_esri.jsonl.zst")[..],
     ]);
     let (mut compared, mut read_by_both, mut differ) = (0, 0, Vec::new());
-    // PROJ's WKT 2 of every EPSG and ESRI CRS (`wkt2` rows), but for those another step reads
-    // (bound CRSs, #1058 step 6c-2b) and those the reader does not convert (vertical,
-    // compound).
+    // PROJ's WKT 2 of every EPSG and ESRI CRS (`wkt2` rows), but for those the reader does not
+    // convert (vertical, compound). The corpus has no derived or bound CRS: the tests below
+    // compare those.
     for (code, kind, text, _) in corpus.iter().filter(|(_, kind, _, _)| kind == "wkt2") {
         let Some((tree, model)) = wkt2_inputs(text) else { continue };
         compared += 1;
