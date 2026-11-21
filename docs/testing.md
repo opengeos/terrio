@@ -1882,10 +1882,14 @@ texts of the three conventions (`PROJ ob_tran`, netCDF CF, GRIB) in WKT 2:2019 a
 2015, simplified or not, and unusual input. For bound CRSs, which the corpus lacks too
 (`model::wkt2_root_input` against `wkt2::Wkt2Root::read`), it compares each kind of
 Helmert transformation, a grid's, WGS 84 and other targets, GDAL's WKT 1 and derived
-source CRSs, and refusals. The texts the model
-reads otherwise than the tree are pinned in `where_the_model_reads_unusual_wkt1_otherwise`
-and `where_the_model_reads_unusual_wkt2_otherwise`, each with PROJ 9.9.0's reading, for
-step 6d. The file is removed once the readers take their input from the model.
+source CRSs, and refusals. Malformed texts that PROJ 9.9.0
+refuses or reads as the tree does are read by the model as the tree reads them, so that
+their PROJ string does not change (`malformed_wkt1_the_model_reads_as_the_tree`,
+`malformed_wkt2_the_model_reads_as_the_tree`, step 6d-1). The texts the model still reads
+otherwise, as PROJ reads them, are pinned in `where_the_model_reads_unusual_wkt1_otherwise`
+and `where_the_model_reads_unusual_wkt2_otherwise`, each with PROJ 9.9.0's reading: their
+PROJ string changes to PROJ's in step 6d-2. The file is removed once the readers take their
+input from the model.
 
 ## PROJJSON parsing (#270)
 
