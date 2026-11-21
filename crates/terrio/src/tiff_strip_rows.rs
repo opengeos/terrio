@@ -16,9 +16,9 @@
 //! compression is decoded whole: JPEG, WebP, LERC and JPEG XL code an image rather than a stream
 //! of rows, and an LZMA stream needs a dictionary as large as the stream declares.
 //!
-//! A compressed strip is read by rows only when it declares at most [`LIMITS_DECODED`] times the
-//! chunk limit: a read of its rows then decodes no more than a window over that many chunks at the
-//! limit decodes whole, however few bytes the strip stores.
+//! A compressed strip is read by rows only when it declares at most [`DECODED_LIMIT_FACTOR`] times
+//! the chunk limit: a read of its rows then decodes no more than a window over that many chunks at
+//! the limit decodes whole, however few bytes the strip stores.
 
 use std::io::{Read, Seek};
 use tiff::decoder::{Decoder, DecodingResult};
@@ -43,7 +43,7 @@ const DROP_BYTES: usize = 64 << 10;
 
 /// A compressed strip read by rows declares at most this many times the chunk limit (1 GiB at
 /// the default 256 MiB): a read decodes the rows before the ones it wants, up to the whole strip.
-const LIMITS_DECODED: u64 = 4;
+const DECODED_LIMIT_FACTOR: u64 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Codec {
@@ -135,12 +135,12 @@ impl Rows {
     /// `len` bytes, is read by rows under the chunk limit `limit`: the file holds its stored bytes,
     /// and they hold its rows (uncompressed) or can decode to them (compressed: at most so many
     /// bytes per stored byte, [`Codec::most_per_byte`]), and a compressed strip declares at most
-    /// [`LIMITS_DECODED`] times the limit. Any other strip is decoded whole, and so refused over
-    /// the limit, as before.
+    /// [`DECODED_LIMIT_FACTOR`] times the limit. Any other strip is decoded whole, and so refused
+    /// over the limit, as before.
     pub(crate) fn holds(&self, (offset, count): (u64, u64), strip: u64, len: u64, limit: u64) -> bool {
         offset.checked_add(count).is_some_and(|end| end <= len)
             && count.saturating_mul(self.codec.most_per_byte()) >= strip
-            && (self.codec == Codec::Stored || strip <= limit.saturating_mul(LIMITS_DECODED))
+            && (self.codec == Codec::Stored || strip <= limit.saturating_mul(DECODED_LIMIT_FACTOR))
     }
 
     /// The working bytes of a read of `rows` rows of `row_bytes` at a time: the rows, and the row
