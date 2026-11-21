@@ -289,6 +289,57 @@ mod tests {
         }
     }
 
+    /// Catches the header of a GRIB1 message read with its bitmap's body, which it does not need, or
+    /// with its data section's first octets elsewhere than at their offset: the loop completing a
+    /// header reads them once, past the body, which it leaves as zeros; and two messages of 1000 x
+    /// 500 points, each with a bitmap of 62,500 bytes (constant fields, whose nodata their headers
+    /// give), are opened reading two pages each and one more. The reads by position and in memory
+    /// give the same bands either way, so the header and the reads are checked themselves.
+    #[test]
+    fn a_grib1_header_skips_the_bitmap() {
+        let message = grib1_with_bitmap(1000, 500);
+        let (body_end, len) = (68 + 6 + 62_500, message.len());
+        let mut reads = Vec::new();
+        let mut head = message[..512].to_vec();
+        let prefix = super::super::complete_head(&mut head, len, |at, n| {
+            reads.push((at, n));
+            Ok(message[at..at + n].to_vec())
+        })
+        .unwrap();
+        let mut expected = message[..body_end + 11].to_vec();
+        expected[512..body_end].fill(0);
+        assert_eq!((reads, prefix), (vec![(body_end, 11)], 512));
+        assert!(head == expected, "the header of a message with a bitmap");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bitmaps.grb");
+        std::fs::write(&path, message.repeat(2)).unwrap();
+        let before = bytes_read();
+        let r = crate::LazyRaster::open(path.to_str().unwrap()).unwrap();
+        let read = bytes_read() - before;
+        assert_eq!((r.band_count(), r.width(), r.height()), (2, 1000, 500));
+        assert!(read <= (2 * 2 + 1) * SCAN_BUFFER as u64, "{read} bytes read at open");
+    }
+
+    /// A GRIB1 message of a constant field on an `nx` x `ny` grid, with a bitmap of every point:
+    /// `Sample_QuikSCAT.grb`'s first sections, its grid's size set.
+    fn grib1_with_bitmap(nx: u16, ny: u16) -> Vec<u8> {
+        let valid = include_bytes!("../../../tests/data/grib/Sample_QuikSCAT.grb");
+        let mut m = valid[..68].to_vec();
+        m[15] = 0xc0; // A grid definition and a bitmap.
+        m[42..44].copy_from_slice(&nx.to_be_bytes());
+        m[44..46].copy_from_slice(&ny.to_be_bytes());
+        let points = nx as usize * ny as usize;
+        let bitmap = points.div_ceil(8);
+        m.extend_from_slice(&((6 + bitmap) as u32).to_be_bytes()[1..]);
+        m.extend_from_slice(&[(bitmap * 8 - points) as u8, 0, 0]);
+        m.extend(std::iter::repeat_n(0xff, bitmap));
+        m.extend_from_slice(&[0, 0, 11, 0, 0, 0, 0, 0, 0, 0, 0]);
+        m.extend_from_slice(b"7777");
+        let len = m.len() as u32;
+        m[4..7].copy_from_slice(&len.to_be_bytes()[1..]);
+        m
+    }
+
     /// Catches the bands a read decodes at once pushing one another out of the block cache, or a
     /// band kept in part read from other rows than those kept: each band is kept in an equal share
     /// of the cache, its first 287 rows of 300 here, where the cache would hold one band whole but
