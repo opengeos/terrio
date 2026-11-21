@@ -4158,7 +4158,9 @@ mod tests {
     /// What `push` records for a block row it starts on the thread pool (the rows and mask it reads,
     /// with their bytes) is what the next call's check counts once the level has replaced them by
     /// appending rows, while the block row is still being computed (held here until the check is
-    /// read). The test above gives the check block rows it makes itself.
+    /// read). The test above gives the check block rows it makes itself. A thread holds the block
+    /// rows, and lets them go after 60 s at most: a call that waits for the one held fails the test
+    /// rather than hanging it.
     #[test]
     #[cfg(not(target_family = "wasm"))]
     fn a_block_row_being_computed_counts_the_rows_it_keeps_in_the_next_call() {
@@ -4180,7 +4182,15 @@ mod tests {
         let (n, first) = plan.rows(0);
         let second = plan.rows(n).1;
         let hold = cog.hold.clone();
-        let held = hold.write().unwrap();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let (locked, is_locked) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _held = hold.write().unwrap();
+            locked.send(()).unwrap();
+            // Whether the block rows were let go because the test did not release them in time.
+            matches!(released.recv_timeout(std::time::Duration::from_secs(60)), Err(std::sync::mpsc::RecvTimeoutError::Timeout))
+        });
+        is_locked.recv().unwrap();
         // The first block row starts, reading the level's rows, then the level appends the next ones
         // to the rows later blocks read, in a new buffer: the block row keeps the first rows alone.
         give(&mut cog, 0..first.end);
@@ -4193,8 +4203,10 @@ mod tests {
         let jobs = std::mem::take(&mut cog.builds[0].in_flight);
         let without = check(&cog);
         cog.builds[0].in_flight = jobs;
+        // Released, unless the thread holding the block rows already let them go.
+        let _ = release.send(());
+        assert!(!holder.join().unwrap(), "a call waited for the block row held, let go after 60 s");
         assert_eq!(with, without.map(|bytes| bytes + kept), "{} rows of values and mask kept", first.end);
-        drop(held);
         give(&mut cog, second.end - 1..rows);
         cog.finish().unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), encode(&raster, &opts).unwrap());

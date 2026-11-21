@@ -137,6 +137,7 @@ impl PyCogWriter {
     ///     TypeError: If the mask is not a 2-D uint8 array.
     #[pyo3(signature = (array, mask=None))]
     fn write(&mut self, py: Python<'_>, array: &Bound<'_, PyUntypedArray>, mask: Option<numpy::PyReadonlyArray2<'_, u8>>) -> PyResult<()> {
+        let w = self.inner.as_mut().ok_or_else(|| invalid("the writer is closed"))?;
         let shape = array.shape().to_vec();
         let (bands, rows, cols) = match shape[..] {
             [r, c] => (1, r, c),
@@ -158,7 +159,6 @@ impl PyCogWriter {
             Some(m) => Some(m.as_array().iter().copied().collect()),
             None => None,
         };
-        let w = self.inner.as_mut().ok_or_else(|| invalid("the writer is closed"))?;
         with_warnings(py, || w.write_rows(&data, rows, mask.as_deref()))
     }
 

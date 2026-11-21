@@ -388,6 +388,8 @@ def test_a_cog_writer_refuses_a_mask_of_its_rows_size_in_another_shape(tmp_path)
     writer.write(pixels, mask)
     writer.write(pixels, mask[::-1])
     writer.close()
+    with pytest.raises(InvalidArgumentError, match="the writer is closed"):
+        writer.write(pixels, mask.T)
     with rio.open(out) as ds:
         assert np.array_equal(ds.dataset_mask(), np.vstack([mask, mask[::-1]]))
 
