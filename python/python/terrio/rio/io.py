@@ -168,10 +168,11 @@ def _copy_dataset_mask(source: DatasetReader, window: Window | None = None) -> n
     """A copy's source's dataset mask, in `window`.
 
     A mask that fails to read raises `RasterioIOError`, as pixels that fail to read do, wherever
-    the copy reads it (whole, or in the rows of its pixels): terrio's reads of a mask raise it
-    themselves, and the core's I/O error (`TerrioIOError`), raised by any other read of the mask,
-    becomes one here. Other errors are raised as they are, as those of a source's own pixel reads
-    are.
+    the copy reads it (whole, or in the rows of its pixels). terrio's reads of a mask raise it
+    themselves: like `_read_level` for pixels, they wrap every error but `ResourceLimitError`.
+    Here, only the core's I/O error (`TerrioIOError`), raised by any other read of the mask,
+    becomes one; every other error is raised as `dataset_mask` raised it, since that call also
+    checks its window and buffer, whose errors are not read failures.
 
     Args:
         source: The dataset copied.
