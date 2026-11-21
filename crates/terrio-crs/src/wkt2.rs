@@ -80,7 +80,8 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
 }
 
 /// What a WKT 2 geographic, geocentric or projected CRS gives its PROJ string: read from its tree
-/// ([`Wkt2Input::read`]) or from its model (`model::wkt2_input`), which must agree (#1058 step 6).
+/// ([`Wkt2Input::read`]) or from its model (`model::wkt2_input`), which agree but for the known
+/// differences `model::proj_input_tests` pins (#1058 step 6).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Wkt2Input {
     /// The geodetic CRS: the CRS itself, or a projected CRS's base CRS.
@@ -127,7 +128,7 @@ pub(crate) struct Wkt2Method {
 }
 
 /// A conversion's parameter: its name as written, its EPSG code, its value (as written, in its
-/// unit), and its unit nodes' sizes (in radians, metres or unity), by keyword (`ANGLEUNIT`, `LENGTHUNIT`, `SCALEUNIT`,
+/// unit), and its unit nodes' sizes as written (radians, metres, unity or a unit's own), by keyword (`ANGLEUNIT`, `LENGTHUNIT`, `SCALEUNIT`,
 /// `UNIT`), the first of each.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Wkt2Param {

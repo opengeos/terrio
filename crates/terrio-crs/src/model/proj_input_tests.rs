@@ -194,7 +194,7 @@ fn every_wkt2_corpus_text_gives_its_proj_string_the_tree_s_input() {
             differ.push(format!("{code} {kind}\n  tree  {tree}\n  model {model}"));
         }
     }
-    assert!(compared > 9_500 && read_by_both > 9_500, "{compared} WKT 2 texts, {read_by_both} read");
+    assert_eq!((compared, read_by_both), (9_659, 9_659), "WKT 2 texts compared, read by both");
     assert!(differ.is_empty(), "{} of {compared} differ:\n{}", differ.len(), differ[..differ.len().min(10)].join("\n"));
 }
 
@@ -286,6 +286,14 @@ fn unusual_wkt2_gives_its_proj_string_the_tree_s_input() {
         (
             format!(
                 r#"PROJCRS["p",BASEGEOGCRS["g",{datum},PRIMEM["Greenwich",0],CS[ellipsoidal,2],AXIS["lat",north,ANGLEUNIT["grad",0.015707963267949]],AXIS["lon",east,ANGLEUNIT["grad",0.015707963267949]]],CONVERSION["c",METHOD[{tm}],PARAMETER["Longitude of natural origin",9,ID["EPSG",8802]]],{en}]"#
+            ),
+            true,
+        ),
+        // A base CRS's Cartesian CS: PROJ 9.9.0 refuses it, the reader reads the base CRS
+        // without its CS.
+        (
+            format!(
+                r#"PROJCRS["p",BASEGEOGCRS["g",{datum},{pm},CS[Cartesian,2],AXIS["x",east,LENGTHUNIT["metre",1]],AXIS["y",north,LENGTHUNIT["metre",1]]],CONVERSION["c",METHOD[{tm}]{lon}],{en}]"#
             ),
             true,
         ),

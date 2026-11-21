@@ -701,9 +701,11 @@ fn geodetic(n: &Node, d: Dialect) -> Option<Crs> {
         {
             return None;
         }
-        // A WKT 2 Cartesian CS that is not three axes, X, Y and Z in that order, each in a length
-        // unit, one for all, which PROJ 9.9.0 and the WKT 2 reader refuse.
+        // A WKT 2 geodetic CRS's Cartesian CS that is not three axes, X, Y and Z in that order,
+        // each in a length unit, one for all, which PROJ 9.9.0 and the WKT 2 reader refuse. The
+        // reader reads any base CRS's CS, so the model does too (backward compatibility).
         if d == Dialect::Wkt2
+            && !n.is(kw::BASE_GEODETIC_CRS)
             && let Some(c) = n.child("CS").filter(|_| cartesian)
             && wkt2::geocentric_unit(n, c).is_err()
         {
