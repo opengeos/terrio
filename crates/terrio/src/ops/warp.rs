@@ -2538,11 +2538,14 @@ pub fn with_file_gcps<'a>(o: &'a WarpOptions, path: &str, ds: &RasterDataset) ->
     Ok(std::borrow::Cow::Owned(WarpOptions { gcps, ..o.clone() }))
 }
 
-/// Whether the destination grid is the source grid shifted by whole pixels.
+/// Whether the destination grid is the source grid shifted by whole pixels. As GDAL 3.12's
+/// `GDALTransformIsTranslationOnPixelBoundaries()`, a grid rotated from the source is not.
 fn is_pixel_translation(src: &[f64; 6], dst: &[f64; 6]) -> bool {
     let near_int = |v: f64| (v - v.round()).abs() < 1e-8;
     src[2] == 0.0
         && src[4] == 0.0
+        && dst[2] == 0.0
+        && dst[4] == 0.0
         && (src[1] - dst[1]).abs() < 1e-12 * src[1].abs()
         && (src[5] - dst[5]).abs() < 1e-12 * src[5].abs()
         && near_int((dst[0] - src[0]) / src[1])
@@ -6297,6 +6300,16 @@ impl RegionWarp {
     pub fn with_sum_scale(mut self, scale: f64) -> Self {
         self.sum_scale = scale;
         self
+    }
+
+    /// Re-targets the warp to another destination grid georeferenced by `gt`, keeping the source
+    /// and its transformer, as GDAL 3.12's `GDALSetGenImgProjTransformerDstGeoTransform()`
+    /// re-targets one:
+    /// the source windows ([`RegionWarp::source_window`]) and warps ([`RegionWarp::warp`]) of
+    /// regions of the new grid come out as a [`RegionWarp::new`] made with `gt` gives them.
+    pub fn set_dst_gt(&mut self, gt: [f64; 6]) {
+        self.t.set_dst_gt(gt);
+        self.translation = self.t.src_gcp.is_none() && self.t.ct.is_none() && is_pixel_translation(&self.t.src_gt, &gt);
     }
 
     /// A warp of the bands of a source of `src_size` pixels, georeferenced by `src_gt` in
@@ -10155,6 +10168,68 @@ mod tests {
         }
         let (actual, _) = region().with_sum_scale(2.).warp((0, 0, 2, 2), (0, 0, 2, 2), &data, None, 0., false).unwrap();
         assert_eq!(actual.to_f64_vec(), vec![2.; 4]);
+    }
+
+    /// Re-targeting one `RegionWarp` to another grid (`set_dst_gt`, as
+    /// `GDALSetGenImgProjTransformerDstGeoTransform()` re-targets a transformer) gives the same
+    /// source windows and warps as a fresh `RegionWarp` for each grid: a reprojected grid, the
+    /// source's own grid, one shifted from it by whole pixels (a pixel translation), and
+    /// re-targets between a pixel translation and a grid shifted by half a pixel (not one), which
+    /// a stale translation flag would warp with nearest neighbour and other source windows.
+    #[test]
+    fn region_warp_set_dst_gt_warps_as_a_fresh_warp() {
+        let (geographic, web) = (SpatialRef::from_epsg(4326).unwrap(), SpatialRef::from_epsg(3857).unwrap());
+        let src_gt = [-10.0, 0.01, 0.0, 50.0, 0.0, -0.01];
+        let size = (20, 20);
+        let value = |c: usize, r: usize| ((c * 3 + r * 17) % 251) as f64 + 0.5;
+        let src = raster(size.0, size.1, src_gt, 4326, value);
+        let (web_gt, web_w, web_h, _) = suggested_output(&src, &web).unwrap();
+        let shifted = [-9.98, 0.01, 0.0, 50.02, 0.0, -0.01];
+        let web_shifted = [web_gt[0] + web_gt[1], web_gt[1], 0.0, web_gt[3] + web_gt[5], 0.0, web_gt[5]];
+        // Each case re-targets a warp made for another grid (`initial`) to `gt`, and compares with
+        // a fresh warp for `gt`.
+        let half = [-9.975, 0.01, 0.0, 50.025, 0.0, -0.01];
+        let check_with =
+            |resampling: Resampling, dst_srs: &SpatialRef, gt: [f64; 6], initial: [f64; 6], regions: &[(usize, usize, usize, usize)]| {
+                let warp = |dst_gt: [f64; 6]| {
+                    RegionWarp::new(size, src_gt, &geographic, dst_srs, dst_gt, resampling, 0.125, DataType::F64, vec![None], Some(0.0))
+                        .unwrap()
+                        .with_grid_invariance(false)
+                };
+                let mut reused = warp(initial);
+                reused.set_dst_gt(gt);
+                let fresh = warp(gt);
+                assert_eq!(reused.translation, fresh.translation, "gt {gt:?}");
+                for region in regions {
+                    assert_eq!(reused.source_window(*region), fresh.source_window(*region), "region {region:?} gt {gt:?}");
+                    let Some((sx, sy, sw, sh)) = reused.source_window(*region) else { continue };
+                    if sw == 0 || sh == 0 {
+                        continue;
+                    }
+                    let data = RasterData::F64((0..sh).flat_map(|r| (0..sw).map(move |c| value(sx + c, sy + r))).collect());
+                    let (a, va) = reused.warp(*region, (sx, sy, sw, sh), &data, None, 0.0, false).unwrap();
+                    let (b, vb) = fresh.warp(*region, (sx, sy, sw, sh), &data, None, 0.0, false).unwrap();
+                    assert_eq!(a.to_f64_vec(), b.to_f64_vec(), "region {region:?} gt {gt:?}");
+                    assert_eq!(va, vb, "region {region:?} gt {gt:?}");
+                }
+            };
+        let check = |dst_srs: &SpatialRef, gt, initial, regions: &[_]| check_with(Resampling::Nearest, dst_srs, gt, initial, regions);
+        check(&geographic, src_gt, shifted, &[(0, 0, 20, 20), (5, 5, 10, 10)]);
+        check(&geographic, shifted, src_gt, &[(0, 0, 20, 20), (2, 2, 8, 8)]);
+        check(&web, web_gt, web_shifted, &[(0, 0, web_w.min(16), web_h.min(16)), (web_w / 2, web_h / 2, 8, 8)]);
+        check_with(Resampling::Bilinear, &geographic, half, shifted, &[(0, 0, 20, 20), (3, 3, 8, 8)]);
+        check_with(Resampling::Bilinear, &geographic, shifted, half, &[(0, 0, 20, 20), (3, 3, 8, 8)]);
+    }
+
+    /// A destination grid rotated from an unrotated source is not a pixel translation, even with
+    /// the source's pixel sizes and a whole-pixel origin, as in GDAL 3.12's
+    /// `GDALTransformIsTranslationOnPixelBoundaries()`.
+    #[test]
+    fn rotated_destination_is_not_a_pixel_translation() {
+        let src = [100.0, 1.0, 0.0, 200.0, 0.0, -1.0];
+        assert!(is_pixel_translation(&src, &[103.0, 1.0, 0.0, 198.0, 0.0, -1.0]));
+        assert!(!is_pixel_translation(&src, &[103.0, 1.0, 0.25, 198.0, 0.0, -1.0]));
+        assert!(!is_pixel_translation(&src, &[103.0, 1.0, 0.0, 198.0, 0.25, -1.0]));
     }
 
     /// The same warps' values, pinned: checksums of terrio's results in one chunk and in many
