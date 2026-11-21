@@ -369,11 +369,15 @@ fn packbits(data: &[u8]) -> Vec<u8> {
 /// What the encoder of `compression` allocates for a chunk of `raw` bytes of samples: the buffer
 /// the chunk is written in, at its largest, and what it holds besides while it writes it.
 fn encoder_bytes(compression: Compression, raw: usize) -> (usize, usize) {
-    // The others write less than 1/64 more than their samples, into a buffer that doubles as it
-    // fills (less than twice what it holds, and 8 KiB for the buffer it starts as), and that frees
-    // the one it outgrew once it is copied.
+    // The others write into a buffer that doubles as it fills (less than twice what it holds, and
+    // 8 KiB for the buffer it starts as), and that frees the one it outgrew once it is copied: less
+    // than 1/64 more than their samples, but JPEG and JPEG XL (below).
+    let doubling = |written: usize| written.saturating_mul(2).saturating_add(8 << 10);
     let most = raw.saturating_add(raw / 64);
-    let doubled = most.saturating_mul(2).saturating_add(8 << 10);
+    let doubled = doubling(most);
+    // As measured on tiles of 256 to 1024 pixels of samples no codec compresses: WebP's encoder
+    // holds up to 4.9 times a tile's bytes besides its output (LERC, JPEG and JPEG XL less).
+    let measured = raw.saturating_mul(5).saturating_add(2 << 20);
     match compression {
         Compression::None => (raw, 0),
         // `packbits` allocates the most it can write.
@@ -387,11 +391,15 @@ fn encoder_bytes(compression: Compression, raw: usize) -> (usize, usize) {
         }
         // Deflate's match finder and sequences are each thread's ([`crate::deflate_compress::SCRATCH_BYTES`]).
         Compression::Deflate => (doubled, most),
-        // As measured on tiles of 256 to 1024 pixels of samples no codec compresses: Zstandard's
-        // encoder holds up to 3.5 MiB besides its output, and WebP's up to 4.9 times a tile's bytes
-        // (LERC, JPEG and JPEG XL less).
+        // As measured: Zstandard's encoder holds up to 3.5 MiB besides its output (`ruzstd`'s, at its
+        // only level; with the `libzstd` feature, the C library's context grows with `ZSTD_LEVEL` and
+        // the tile, and is not counted).
         Compression::Zstd => (doubled, most.saturating_add(raw).saturating_add(2 << 20)),
-        _ => (doubled, raw.saturating_mul(5).saturating_add(2 << 20)),
+        // As measured on chunks of samples none compresses: JPEG writes up to 1.6 times its samples
+        // (at quality 100; less at lower ones), and JPEG XL up to 1.13 times.
+        Compression::Jpeg => (doubling(raw.saturating_mul(2)), measured),
+        Compression::Jxl => (doubling(raw.saturating_add(raw / 4)), measured),
+        _ => (doubled, measured),
     }
 }
 
@@ -2092,13 +2100,9 @@ impl GeoTiffWriter {
                 // The rows of tiles compressed since are spooled first: they no longer count.
                 #[cfg(not(target_family = "wasm"))]
                 writer.land_compressed()?;
-                let bytes = data.len().checked_mul(data.data_type().size_bytes());
-                let bytes = bytes.and_then(|bytes| writer.call_bytes(bytes, mask.map_or(0, <[u8]>::len), rows));
-                crate::dataset::fallible::check_usable(bytes, || {
-                    "a COG input slab and overview working copies are too large to allocate".into()
-                })
-                .map_err(Error::ResourceLimit)?;
-                writer.write_rows_masked(data.clone(), rows, mask.map(<[u8]>::to_vec))
+                // Checked before the writer copies the caller's rows.
+                writer.admit(data, rows, mask, true)?;
+                writer.take_admitted(data.clone(), rows, mask.map(<[u8]>::to_vec))
             }
         }
     }
@@ -2867,25 +2871,40 @@ impl CogWriter {
     /// data type).
     ///
     /// # Errors
-    /// Rejects a sample-type or shape mismatch before consuming rows or changing overview state.
-    /// Once rows failed to be written, refuses every call ([`Self::refuse_failed`]).
+    /// Rejects a sample-type or shape mismatch, or rows past the raster's height, before consuming
+    /// rows or changing overview state, and refuses a call whose bytes are more than the memory the
+    /// process can use ([`Self::admit`]). Once rows failed to be written, refuses every call
+    /// ([`Self::refuse_failed`]).
     pub(crate) fn write_rows(&mut self, data: RasterData, rows: usize) -> Result<()> {
         self.write_rows_masked(data, rows, None)
     }
 
+    /// [`Self::write_rows`], with the rows' mask when the COG has one. The rows and mask are the
+    /// writer's: checked as they are, not copied.
     pub(crate) fn write_rows_masked(&mut self, data: RasterData, rows: usize, mask: Option<Vec<u8>>) -> Result<()> {
+        self.admit(&data, rows, mask.as_deref(), false)?;
+        self.take_admitted(data, rows, mask)
+    }
+
+    /// Checks a call giving `rows` rows (`data`, and `mask` when the COG has a mask) before it
+    /// takes any: refused once rows failed to be written ([`Self::refuse_failed`]); with
+    /// [`Error::InvalidArgument`] when the rows are not of the raster's data type and shape or go
+    /// past its height; and with [`Error::ResourceLimit`] when the bytes [`Self::call_bytes`] counts
+    /// for it are more than the memory the process can use (`borrowed`: the writer copies the
+    /// caller's rows first). A refused call takes no rows, and can be made again.
+    fn admit(&self, data: &RasterData, rows: usize, mask: Option<&[u8]>, borrowed: bool) -> Result<()> {
         self.refuse_failed()?;
         if data.data_type() != self.data_type {
             return Err(Error::InvalidArgument("the rows are not of the raster's data type".into()));
         }
         let l = &self.levels[0];
-        if l.mask.is_some() != mask.is_some() || mask.as_ref().is_some_and(|m| m.len() != l.cols * rows) {
+        if l.mask.is_some() != mask.is_some() || mask.is_some_and(|m| l.cols.checked_mul(rows) != Some(m.len())) {
             return Err(Error::InvalidArgument("give one mask value per pixel when the COG has a mask".into()));
         }
-        if l.received + rows > l.rows {
-            return Err(Error::InvalidArgument(format!("{} rows past the raster's {}", l.received + rows, l.rows)));
+        if rows > l.rows - l.received {
+            return Err(Error::InvalidArgument(format!("{} rows past the raster's {}", l.received.saturating_add(rows), l.rows)));
         }
-        if data.len() != l.cols * rows * self.bands {
+        if l.cols.checked_mul(rows).and_then(|n| n.checked_mul(self.bands)) != Some(data.len()) {
             return Err(Error::InvalidArgument(format!(
                 "{} values for {rows} rows of {} bands of {} columns",
                 data.len(),
@@ -2893,14 +2912,24 @@ impl CogWriter {
                 l.cols
             )));
         }
+        let bytes = data.len().checked_mul(self.data_type.size_bytes());
+        let bytes = bytes.and_then(|bytes| self.call_bytes(bytes, mask.map_or(0, <[u8]>::len), rows, borrowed));
+        crate::dataset::fallible::check_usable(bytes, || "a COG input slab and overview working copies are too large to allocate".into())
+            .map_err(Error::ResourceLimit)?;
+        Ok(())
+    }
+
+    /// Takes the rows of a call [`Self::admit`] admitted; a failure is the writer's
+    /// ([`Self::failed`]).
+    fn take_admitted(&mut self, data: RasterData, rows: usize, mask: Option<Vec<u8>>) -> Result<()> {
         // As the whole writer reads a mask: any nonzero value is valid, weighted as 255.
         let mask: Option<Vec<u8>> = mask.map(|m| m.into_iter().map(|v| if v != 0 { 255 } else { 0 }).collect());
         let taken = self.take_rows(data, rows, mask);
         self.fail_on(taken)
     }
 
-    /// The rows of [`Self::write_rows_masked`], once checked: added to the full resolution, then the
-    /// overview block rows computed meanwhile added to their levels.
+    /// The rows of a call, once admitted: added to the full resolution, then the overview block
+    /// rows computed meanwhile added to their levels.
     fn take_rows(&mut self, data: RasterData, rows: usize, mask: Option<Vec<u8>>) -> Result<()> {
         if rows > 0 {
             self.push(0, data, rows, mask)?;
@@ -3213,17 +3242,18 @@ impl CogWriter {
         (raw.saturating_add(packed).saturating_add(encoder_bytes(*compression, raw).1), bits + encoder_bytes(Compression::Deflate, bits).1)
     }
 
-    /// The bytes [`GeoTiffWriter::write_rows`] checks against the memory the process can use before
-    /// a call giving `rows` rows (`data` bytes, and `mask` bytes of their mask), `None` for more
-    /// than the address space holds: the caller's rows, the writer's copy of them, and each
-    /// overview build's, while the rows each build and level holds are replaced by copies (twice).
+    /// The bytes [`Self::admit`] checks against the memory the process can use before a call giving
+    /// `rows` rows (`data` bytes, and `mask` bytes of their mask), `None` for more than the address
+    /// space holds: the rows given, the writer's copy of them when the caller only lends them
+    /// (`borrowed`), and each overview build's, while the rows each build and level holds are
+    /// replaced by copies (twice).
     /// With a mask, the block rows are computed on the thread pool while the next rows are given,
     /// and the most the call can have allocated at once also counts what they hold: the rows they
     /// keep that the builds no longer do, their working buffers, the block rows added to the next
     /// levels, the rows cut into rows of tiles, and the rows of tiles being compressed: their
     /// compressed chunks, the chunks being compressed with their encoders' memory, and the scratch each
     /// thread that deflates keeps.
-    fn call_bytes(&self, data: usize, mask: usize, rows: usize) -> Option<usize> {
+    fn call_bytes(&self, data: usize, mask: usize, rows: usize, borrowed: bool) -> Option<usize> {
         // Saturating: a term at `usize::MAX` is more than the address space holds.
         let sum = |parts: &[usize]| parts.iter().fold(0usize, |total, n| total.saturating_add(*n));
         let size = self.data_type.size_bytes();
@@ -3232,15 +3262,15 @@ impl CogWriter {
         let pending =
             |l: &CogLevel| l.pending.len().saturating_mul(size).saturating_add(l.mask.as_ref().map_or(0, |m| m.pending.capacity()));
         let (built, waiting): (Vec<_>, Vec<_>) = (self.builds.iter().map(held).collect(), self.levels.iter().map(pending).collect());
-        // The caller's rows, the writer's copy of them, and a copy for each overview build that reads
-        // the full resolution (each appends them to the rows it holds).
-        let copies = 2 + self.builds.iter().filter(|b| b.src == 0).count();
+        // The rows given, the writer's copy of them when they are lent, and a copy for each overview
+        // build that reads the full resolution (each appends them to the rows it holds).
+        let copies = 1 + usize::from(borrowed) + self.builds.iter().filter(|b| b.src == 0).count();
         let mut terms = vec![new.saturating_mul(copies), sum(&built).saturating_mul(2), sum(&waiting).saturating_mul(2)];
         let l0 = &self.levels[0];
         if l0.mask.is_some() {
             // Rows (with those pending) that are not whole rows of tiles are joined, then cut in two:
             // the rows pending are held a third time.
-            let cut = l0.pending_rows > 0 || (!rows.is_multiple_of(self.tile) && l0.received + rows < l0.rows);
+            let cut = l0.pending_rows > 0 || (!rows.is_multiple_of(self.tile) && l0.received.saturating_add(rows) < l0.rows);
             terms.extend([new.saturating_mul(2 * usize::from(cut)), sum(&waiting)]);
             // A block row of a level: its rows of every band, and of the mask.
             let output = |b: &CogBuild| b.plan.rows(0).0.saturating_mul(b.plan.dst.0).saturating_mul(self.bands * size + 1);
@@ -3901,8 +3931,9 @@ mod tests {
     }
 
     /// Each encoder writes a chunk in no larger a buffer than `encoder_bytes` counts for it (the
-    /// check of a COG's row calls): samples none compresses, and zeros, in chunks of a power of two
-    /// of bytes and of three times one.
+    /// check of a COG's row calls): samples none compresses, and zeros, in chunks of 256 columns and
+    /// a power of two of rows or three times one, in each band count and sample type the encoder
+    /// writes, at its default settings and, for JPEG and WebP, at quality 100.
     #[test]
     fn encoders_write_chunks_in_the_buffers_counted_for_them() {
         let mix = |i: u64| {
@@ -3910,16 +3941,47 @@ mod tests {
             let z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
             ((z ^ (z >> 31)) >> 56) as u8
         };
-        for raw in [64 << 10, 192 << 10, 512 << 10, 768 << 10] {
-            let noise: Vec<u8> = (0..raw as u64).map(|i| mix(i.wrapping_add(0x9E37_79B9_7F4A_7C15))).collect();
-            for data in [noise, vec![0u8; raw]] {
-                for compression in [Compression::None, Compression::PackBits, Compression::Lzw, Compression::Deflate, Compression::Zstd] {
-                    let chunk = ChunkInfo { w: 256, h: raw / 256, spp: 1, t: DataType::U8 };
-                    let out = compression.compress(data.clone(), &chunk, &CodecParams::default()).unwrap();
+        let lossless_webp = CodecParams { webp_lossless: true, ..Default::default() };
+        let ycbcr = CodecParams { jpeg_ycbcr: true, ..Default::default() };
+        let finest = CodecParams { jpeg_quality: 100, webp_quality: 100, ..Default::default() };
+        let plain = CodecParams::default();
+        let (large, small): (&[usize], &[usize]) = (&[256, 768, 2048, 3072], &[64, 192, 512, 768]);
+        let mut cases = vec![
+            (Compression::None, 1, DataType::U8, plain, large),
+            (Compression::PackBits, 1, DataType::U8, plain, large),
+            (Compression::Lzw, 1, DataType::U8, plain, large),
+            (Compression::Deflate, 1, DataType::U8, plain, large),
+            (Compression::Zstd, 1, DataType::U8, plain, large),
+            (Compression::Jpeg, 1, DataType::U8, plain, small),
+            (Compression::Jpeg, 3, DataType::U8, plain, small),
+            (Compression::Jpeg, 3, DataType::U8, ycbcr, small),
+            (Compression::Jpeg, 1, DataType::U8, finest, small),
+            (Compression::Jpeg, 3, DataType::U8, finest, small),
+            (Compression::WebP, 3, DataType::U8, plain, small),
+            (Compression::WebP, 4, DataType::U8, plain, small),
+            (Compression::WebP, 4, DataType::U8, finest, small),
+            (Compression::WebP, 3, DataType::U8, lossless_webp, small),
+            (Compression::WebP, 4, DataType::U8, lossless_webp, small),
+            (Compression::Jxl, 1, DataType::U8, plain, small),
+            (Compression::Jxl, 3, DataType::U8, plain, small),
+            (Compression::Jxl, 1, DataType::U16, plain, small),
+        ];
+        if cfg!(feature = "lerc") {
+            cases.extend([(Compression::Lerc, 1, DataType::U8, plain, small), (Compression::Lerc, 1, DataType::U16, plain, small)]);
+        }
+        for (compression, spp, t, params, heights) in cases {
+            for &h in heights {
+                let raw = 256 * h * spp * t.size_bytes();
+                let noise: Vec<u8> = (0..raw as u64).map(|i| mix(i.wrapping_add(0x9E37_79B9_7F4A_7C15))).collect();
+                // JPEG XL's encoder panics on UInt16 samples none compresses: zeros only.
+                let skip = usize::from(compression == Compression::Jxl && t == DataType::U16);
+                for data in [noise, vec![0u8; raw]].into_iter().skip(skip) {
+                    let chunk = ChunkInfo { w: 256, h, spp, t };
+                    let out = compression.compress(data, &chunk, &params).unwrap();
                     let counted = encoder_bytes(compression, raw).0;
                     assert!(
                         out.capacity() <= counted,
-                        "{compression:?}, {raw} bytes: a buffer of {} bytes, {counted} counted",
+                        "{compression:?}, {spp} x {t:?}, {params:?}, {raw} bytes: a buffer of {} bytes, {counted} counted",
                         out.capacity()
                     );
                 }
@@ -4022,6 +4084,8 @@ mod tests {
             writer.write_rows(slice_rows(&raster.data, 35, 0..16, 65, 1), 16).unwrap();
             assert!(matches!(writer.write_rows(RasterData::F32(vec![1.0; 65]), 1), Err(Error::InvalidArgument(_))));
             assert!(matches!(writer.write_rows(RasterData::F32(Vec::new()), 0), Err(Error::InvalidArgument(_))));
+            // More rows than the raster has left, however many.
+            assert!(matches!(writer.write_rows(RasterData::U8(Vec::new()), usize::MAX), Err(Error::InvalidArgument(_))));
             writer.write_rows(slice_rows(&raster.data, 35, 16..35, 65, 1), 19).unwrap();
             writer.finish().unwrap();
             assert_eq!(std::fs::read(path).unwrap(), encode(&raster, &opts).unwrap(), "{method:?}");
@@ -4058,19 +4122,19 @@ mod tests {
             for b in 0..cog.builds.len() {
                 while cog.land_block_row(b, true).unwrap() {}
             }
-            let before = cog.call_bytes(65 * 19, 65 * 19, 19);
+            let before = cog.call_bytes(65 * 19, 65 * 19, 19, true);
             let bd = &cog.builds[0];
             let shared = [(std::sync::Arc::downgrade(&bd.buf), bd.buf.len()), (std::sync::Arc::downgrade(&bd.mask), bd.mask.len())];
             cog.builds[0].in_flight.push_back(job(shared));
-            assert_eq!(cog.call_bytes(65 * 19, 65 * 19, 19), before, "the build's own rows and mask counted again");
+            assert_eq!(cog.call_bytes(65 * 19, 65 * 19, 19, true), before, "the build's own rows and mask counted again");
             // Rows the build has replaced, kept by two block rows: counted once, until they are done.
             let old = std::sync::Arc::new(RasterData::U8(vec![0; 1000]));
             let kept = || (std::sync::Arc::downgrade(&old), 1000);
             cog.builds[0].in_flight.push_back(job([kept(), kept()]));
             cog.builds[0].in_flight.push_back(job([kept(), kept()]));
-            assert_eq!(cog.call_bytes(65 * 19, 65 * 19, 19), before.map(|b| b + 1000));
+            assert_eq!(cog.call_bytes(65 * 19, 65 * 19, 19, true), before.map(|b| b + 1000));
             drop(old);
-            assert_eq!(cog.call_bytes(65 * 19, 65 * 19, 19), before);
+            assert_eq!(cog.call_bytes(65 * 19, 65 * 19, 19, true), before);
             // Kept rows more than the address space holds refuse the call.
             let weak = std::sync::Arc::downgrade(&huge);
             cog.builds[0].in_flight.push_back(job([(weak.clone(), usize::MAX), (weak, 0)]));
@@ -4118,7 +4182,7 @@ mod tests {
         assert_eq!(cog.builds[0].in_flight.len(), 1);
         let kept = first.end * cols * (2 + 1);
         let next = rows - (second.end - 1);
-        let check = |cog: &CogWriter| cog.call_bytes(next * cols * 2, next * cols, next);
+        let check = |cog: &CogWriter| cog.call_bytes(next * cols * 2, next * cols, next, false);
         let with = check(&cog);
         let jobs = std::mem::take(&mut cog.builds[0].in_flight);
         let without = check(&cog);
@@ -4133,12 +4197,12 @@ mod tests {
     /// A row of tiles that fails to compress fails the writer, as a block row that fails to be
     /// written fails a GeoTIFF's: the call that finds it returns its error (JPEG XL's, its row of
     /// tiles taken from the queue, not "a COG tile compression stopped"), then every later call,
-    /// with rows or none, and `finish` are refused, and no file missing those tiles is laid out:
-    /// the output is left empty. A call refused for memory before, which takes no rows, is no
-    /// failure: made again, it is taken. The failure is found by a call polling the rows of tiles
-    /// compressed, or by one waiting for the oldest when a fourth would be compressed. (JPEG XL is
-    /// written for Byte and UInt16 samples: the writer of a Float32 COG takes it, and each of its
-    /// tiles refuses it.)
+    /// with rows or none, and `finish` are refused, before any is checked for memory, and no file
+    /// missing those tiles is laid out: the output is left empty. A call refused for memory before,
+    /// which takes no rows, is no failure: made again, it is taken. The failure is found by a call
+    /// polling the rows of tiles compressed, or by one waiting for the oldest when a fourth would be
+    /// compressed. (JPEG XL is written for Byte and UInt16 samples: the writer of a Float32 COG takes
+    /// it, and each of its tiles refuses it.)
     #[test]
     #[cfg(not(target_family = "wasm"))]
     fn a_tile_compression_that_fails_fails_the_writer() {
@@ -4196,6 +4260,12 @@ mod tests {
         let failed = failed.expect("a fourth row of tiles waits for the first");
         assert!(failed.to_string().contains("JPEG XL is written for Byte and UInt16 data"), "{failed}");
         assert!(refused(cog(&mut w).write_rows_masked(none.clone(), 0, Some(Vec::new()))));
+        // Refused as failed before it is checked for memory, on every target: not for the kept rows
+        // of more than the address space holds.
+        let weak = std::sync::Arc::downgrade(&huge);
+        let job = BlockRowJob { rows: 0, result: std::sync::mpsc::sync_channel(1).1, holds: [(weak.clone(), usize::MAX), (weak, 0)] };
+        cog(&mut w).builds[0].in_flight.push_back(job);
+        assert!(refused(cog(&mut w).write_rows_masked(slab(), 16, Some(valid.clone()))));
         assert!(refused(w.finish()));
         assert_eq!(std::fs::metadata(&path).unwrap().len(), 0, "the output is not left empty");
     }
@@ -4214,13 +4284,84 @@ mod tests {
         let path = dir.path().join("column.tif");
         let mut cog = CogWriter::create(path.to_str().unwrap(), &raster, &opts).unwrap();
         let tile = 4096 * 4096;
-        let first = cog.call_bytes(1, 1, 1).unwrap();
+        let first = cog.call_bytes(1, 1, 1, false).unwrap();
         cog.write_rows_masked(RasterData::U8(vec![7; rows - 1]), rows - 1, Some(vec![255; rows - 1])).unwrap();
-        let last = cog.call_bytes(1, 1, 1).unwrap();
+        let last = cog.call_bytes(1, 1, 1, false).unwrap();
         assert!(last >= first + 2 * tile, "the first row checked for {first} bytes, the last for {last}");
         cog.write_rows_masked(RasterData::U8(vec![7]), 1, Some(vec![255])).unwrap();
         cog.finish().unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), encode(&raster, &opts).unwrap());
+    }
+
+    /// A call giving the writer its rows, as the operations writing a COG strip by strip give
+    /// theirs, is checked before it takes them, as a call lending them is: refused for memory
+    /// (`ResourceLimit`), it takes no rows, and made again, it is taken. It is checked for the bytes
+    /// a call lending the same rows is, less the copy of them that call makes, which the writer of
+    /// given rows does not (the peak test of `declared_size.rs` measures the lending calls): each byte
+    /// given counts for the rows and for the overview build's copy of them. (Measured, giving calls
+    /// whose rows were not counted exceeded their check.)
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn a_cog_row_call_giving_its_rows_is_checked_before_it_takes_them() {
+        let raster = overview_fixture(1, DataType::U8, RasterData::U8((0..65 * 35).map(|i| (i % 251) as u8).collect()));
+        let mask: Vec<u8> = (0..65 * 35).map(|i| if i % 7 == 0 { 0 } else { 255 }).collect();
+        let opts = TiffOptions { cog: true, tile_size: Some(16), mask: Some(mask.clone()), ..Default::default() };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("given.tif");
+        let mut cog = CogWriter::create(path.to_str().unwrap(), &raster, &opts).unwrap();
+        let give = |r: std::ops::Range<usize>| (slice_rows(&raster.data, 35, r.clone(), 65, 1), mask[r.start * 65..r.end * 65].to_vec());
+        let (rows, rows_mask) = give(0..16);
+        cog.write_rows_masked(rows, 16, Some(rows_mask)).unwrap();
+        let (values, masks) = (65 * 19, 65 * 19);
+        let given = cog.call_bytes(values, masks, 19, false).unwrap();
+        assert_eq!(cog.call_bytes(values, masks, 19, true), Some(given + values + masks));
+        // Each byte of the rows given counts for the rows and for the copy the overview build reading
+        // them makes.
+        assert_eq!(cog.call_bytes(2 * values, 2 * masks, 19, false), Some(given + 2 * (values + masks)));
+        // Kept rows of more than the address space holds refuse the next call.
+        let huge = std::sync::Arc::new(RasterData::U8(Vec::new()));
+        let weak = std::sync::Arc::downgrade(&huge);
+        let job = BlockRowJob { rows: 0, result: std::sync::mpsc::sync_channel(1).1, holds: [(weak.clone(), usize::MAX), (weak, 0)] };
+        cog.builds[0].in_flight.push_back(job);
+        let (rest, rest_mask) = give(16..35);
+        assert!(matches!(cog.write_rows_masked(rest.clone(), 19, Some(rest_mask.clone())), Err(Error::ResourceLimit(_))));
+        assert_eq!(cog.rows_written(), 16);
+        cog.builds[0].in_flight.pop_back();
+        cog.write_rows_masked(rest, 19, Some(rest_mask)).unwrap();
+        cog.finish().unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), encode(&raster, &opts).unwrap());
+    }
+
+    /// A call of more rows than the raster has left, however many, is refused as invalid
+    /// (`InvalidArgument`) before it is checked for memory, and the count of the bytes such a call
+    /// would take does not overflow: more than the address space holds. The writer takes the next
+    /// rows.
+    #[test]
+    fn a_cog_row_call_past_the_raster_is_refused_as_invalid() {
+        let raster = overview_fixture(1, DataType::U8, RasterData::U8((0..65 * 35).map(|i| (i % 251) as u8).collect()));
+        let mut header = crate::RasterDataset::new(raster.clone(), false);
+        header.raster.data = RasterData::U8(Vec::new());
+        let options = crate::RasterWriteOptions {
+            driver: Some(crate::formats::RasterDriver::Cog),
+            tile_size: Some(16),
+            mask: Some(Vec::new()),
+            ..Default::default()
+        };
+        let valid = vec![255u8; 65 * 35];
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("past.tif");
+        let mut w = GeoTiffWriter::create(path.to_str().unwrap(), &header, &options).unwrap();
+        w.write_rows(&slice_rows(&raster.data, 35, 0..16, 65, 1), 16, Some(&valid[..65 * 16])).unwrap();
+        let invalid = |r: Result<()>| matches!(r, Err(Error::InvalidArgument(_)));
+        assert!(invalid(w.write_rows(&RasterData::U8(vec![7; 65 * 20]), 20, Some(&valid[..65 * 20]))));
+        assert!(invalid(w.write_rows(&RasterData::U8(Vec::new()), usize::MAX, Some(&[]))));
+        {
+            let RowWriter::Cog(c) = &mut w.inner else { unreachable!("a COG written in rows") };
+            assert_eq!(c.get_mut().unwrap().call_bytes(0, 0, usize::MAX, true), None);
+        }
+        assert_eq!(w.rows_written(), 16);
+        w.write_rows(&slice_rows(&raster.data, 35, 16..35, 65, 1), 19, Some(&valid[65 * 16..])).unwrap();
+        w.finish().unwrap();
     }
 
     /// A COG's chunks wait next to the output, on its drive, not in the system's temporary

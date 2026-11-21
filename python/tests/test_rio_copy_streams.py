@@ -185,6 +185,8 @@ def test_a_copy_written_in_rows_reads_its_source_a_row_at_a_time(
 
 
 FLOAT = (RGB[:1].astype("float32") - 100.0) / 3.0
+# An alpha band transparent where MASK is invalid.
+RGBA = np.concatenate([RGB, MASK[None]])
 COPIES = {
     "cog-byte-rgb-deflate": ("COG", dict(), dict(compress="deflate"), None),
     "cog-float32-nodata-metadata-zstd": (
@@ -210,6 +212,15 @@ COPIES = {
         dict(metadata=True),
         dict(compress="lzw", tiled=True),
         "1",
+    ),
+    # An alpha band is no dataset mask: the color bands' mask is the alpha band's, the alpha
+    # band's own all valid. The copy is written in rows without a mask, the alpha band weighing
+    # the overviews' averages.
+    "cog-rgba-alpha-average": (
+        "COG",
+        dict(pixels=RGBA, photometric="RGB", alpha="YES"),
+        dict(compress="deflate", overview_resampling="average"),
+        None,
     ),
     # A source with a dataset mask, read in the rows of its pixels: partly valid, all valid; tiled,
     # striped, or in blocks taller than a COG's tiles (read in slabs of two rows of tiles); of
@@ -957,5 +968,38 @@ def test_an_interrupted_held_copy_writes_nothing(tmp_path):
 
     with Interrupted(src) as ds, pytest.raises(KeyboardInterrupt):
         rio_shutil.copy(ds, str(out), driver="GTiff", compress="lzw", tiled=True)
+    assert out.read_bytes() == before
+    assert sorted(p.name for p in tmp_path.glob("out.tif*")) == ["out.tif"]
+
+
+@pytest.mark.parametrize(
+    "mask, read",
+    [(None, "pixels"), (MASK, "pixels"), (MASK, "mask")],
+    ids=["pixels-of-an-unmasked-source", "pixels-of-a-masked-source", "mask"],
+)
+def test_an_interrupted_copy_written_in_rows_leaves_no_temporary_file(tmp_path, mask, read):
+    """A copy written in rows, interrupted while it reads its source's pixels or mask for a later
+    row of tiles, raises the interruption as it is, and leaves its destination as it was without
+    the temporary file it was writing."""
+    src, out = source(tmp_path / "src.tif", mask=mask), tmp_path / "out.tif"
+    with rio.open(out, "w", driver="GTiff", width=10, height=10, count=1, dtype="uint8") as ds:
+        ds.write(np.full((1, 10, 10), 7, np.uint8))
+    before = out.read_bytes()
+
+    class Interrupted(DatasetReader):
+        def read(self, *args, **kwargs):
+            window = kwargs.get("window")
+            if read == "pixels" and window is not None and window.row_off > 0:
+                raise KeyboardInterrupt
+            return super().read(*args, **kwargs)
+
+        def dataset_mask(self, *args, **kwargs):
+            window = kwargs.get("window")
+            if read == "mask" and window is not None and window.row_off > 0:
+                raise KeyboardInterrupt
+            return super().dataset_mask(*args, **kwargs)
+
+    with Interrupted(src) as ds, pytest.raises(KeyboardInterrupt):
+        rio_shutil.copy(ds, str(out), driver="COG", compress="deflate")
     assert out.read_bytes() == before
     assert sorted(p.name for p in tmp_path.glob("out.tif*")) == ["out.tif"]

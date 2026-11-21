@@ -167,8 +167,11 @@ def _tile_rows_decoded_once(source: DatasetReader, rows: int, itemsize: int = 1)
 def _copy_dataset_mask(source: DatasetReader, window: Window | None = None) -> np.ndarray:
     """A copy's source's dataset mask, in `window`.
 
-    A mask that fails to read raises as pixels that fail to read do, whatever the source and
-    wherever the copy reads it (whole, or in the rows of its pixels).
+    A mask that fails to read raises `RasterioIOError`, as pixels that fail to read do, wherever
+    the copy reads it (whole, or in the rows of its pixels): terrio's reads of a mask raise it
+    themselves, and the core's I/O error (`TerrioIOError`), raised by any other read of the mask,
+    becomes one here. Other errors are raised as they are, as those of a source's own pixel reads
+    are.
 
     Args:
         source: The dataset copied.
@@ -3628,11 +3631,13 @@ class DatasetWriter(DatasetReader):
                     target, gt, crs, tags, compress, opts, band_md, colormap, extra, sidecar_mask
                 )
                 self._put_in_place(target, msk_tmp)
-            except Exception as err:
+            except BaseException as err:
+                # An interruption (a source's mask or pixels read in a later row) leaves no
+                # temporary file either, and is raised as it is.
                 for leftover in (tmp, msk_tmp):
                     if leftover and os.path.exists(leftover):
                         os.remove(leftover)
-                if isinstance(err, ResourceLimitError):
+                if not isinstance(err, Exception) or isinstance(err, ResourceLimitError):
                     raise
                 raise RasterioIOError(f"Write failed: {err}") from err
             self._dirty = False
