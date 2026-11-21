@@ -13,6 +13,12 @@
 //! It also holds the WKT 2 of Transverse Mercator with a CS whose axes are not one along east-west
 //! and one along north-south (`south, up`, `northNorthEast`, one direction twice), which PROJ reads
 //! east then north, and PROJ's coordinates of a point in it.
+//!
+//! It also holds Krovak in ESRI's dialect (`GCS_S_JTSK`, `D_S_JTSK`) and in GDAL's, without
+//! ESRI's scale and rotation of the plane, with 1 and 0°, and with -1 and 90°, each without `AXIS`
+//! and with each order of axes, and PROJ's coordinates of a point in it. In ESRI's dialect without
+//! -1 and 90°, PROJ reads it south-west whatever its `AXIS` nodes (west-south for north-east and
+//! west-south); otherwise its `AXIS` nodes decide.
 
 use serde_json::Value;
 use terrio_crs::{SpatialRef, Transformer};
@@ -117,4 +123,28 @@ fn wkt2_axes_along_neither_line_are_read_east_north_as_proj_does() {
         let (x, y) = Transformer::new(&src, &crs).unwrap().transform(18.5, -33.9).unwrap();
         assert!((x - sx * ex).abs() < 1e-3 && (y - sy * ey).abs() < 1e-3, "{line}: ({x}, {y})");
     }
+}
+
+/// Krovak's axes are read as PROJ 9.9.0 reads them in ESRI's dialect and in GDAL's, with and
+/// without ESRI's scale and rotation of the plane.
+#[test]
+fn krovak_axes_are_read_as_proj_does_in_each_dialect() {
+    terrio_crs::set_grid_search_paths(Some(vec![]));
+    terrio_crs::set_network_enabled(Some(false));
+    let data: Value = serde_json::from_str(include_str!("data/wkt1_axes.json")).unwrap();
+    let cases = data["krovak_dialects"].as_array().unwrap();
+    assert_eq!(cases.len(), 120);
+    let src = SpatialRef::from_proj4("+proj=longlat +ellps=bessel").unwrap();
+    let num = |v: &Value, i: usize| v[i].as_f64().unwrap();
+    let mut bad = vec![];
+    for case in cases {
+        let wkt = case["wkt"].as_str().unwrap();
+        let (x, y) =
+            Transformer::new(&src, &SpatialRef::from_wkt(wkt)).unwrap().transform(num(&case["point"], 0), num(&case["point"], 1)).unwrap();
+        let (ex, ey) = (num(&case["proj"], 0), num(&case["proj"], 1));
+        if (x - ex).abs() > 1e-3 || (y - ey).abs() > 1e-3 {
+            bad.push(format!("{}: ({x:.3}, {y:.3}), PROJ ({ex:.3}, {ey:.3})", &wkt[8..8 + wkt[8..].find('"').unwrap()]));
+        }
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
 }

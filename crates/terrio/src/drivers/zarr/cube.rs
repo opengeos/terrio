@@ -226,13 +226,17 @@ fn count(n: usize) -> Result<i32> {
     i32::try_from(n).map_err(|_| Error::InvalidArgument("too many vertices for a Zarr cube's CF geometries".into()))
 }
 
-/// `name` as an array name of its own: a path separator or whitespace becomes `_`, no name `field`,
-/// a name Zarr v3 reserves (starting with `__`, or only periods) is prefixed with `field`, and
+/// `name` as an array name of its own: a path separator, whitespace or trailing period (which
+/// Windows drops from a path) becomes `_`, no name `field`,
+/// a name Zarr v3 reserves (starting with `__`) is prefixed with `field`, and
 /// `_2`, `_3`... is added when it is taken, ignoring case (for case-insensitive file systems), or
 /// is the group's `zarr.json`.
 fn unique(name: &str, taken: &mut Vec<String>) -> String {
     // CF lists coordinates separated by whitespace: a name holds none.
     let base: String = name.chars().map(|c| if c == '/' || c == '\\' || c.is_whitespace() { '_' } else { c }).collect();
+    // Windows drops trailing periods from a path component, so `x..` would name the array `x`.
+    let kept = base.trim_end_matches('.').len();
+    let base = format!("{}{}", &base[..kept], "_".repeat(base.len() - kept));
     let base = if base.is_empty() || base.starts_with("__") || base.chars().all(|c| c == '.') { format!("field{base}") } else { base };
     let clash = |n: &str, taken: &[String]| n.eq_ignore_ascii_case("zarr.json") || taken.iter().any(|t| t.eq_ignore_ascii_case(n));
     let mut out = base.clone();

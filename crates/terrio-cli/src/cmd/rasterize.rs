@@ -46,6 +46,9 @@ pub struct Args {
     /// Use the grid (size, georeferencing, CRS) of this raster.
     #[arg(long, value_name = "RASTER", conflicts_with_all = ["tr", "ts", "te"])]
     like: Option<String>,
+    /// Copy this raster's pixels and metadata, then burn over them. Use --add for signed offsets.
+    #[arg(long, value_name = "RASTER", conflicts_with_all = ["like", "tr", "ts", "te", "tap", "ot", "init", "a_nodata", "a_srs"])]
+    background: Option<String>,
     /// The output data type: Byte, Int8, UInt16, Int16, UInt32, Int32, UInt64, Int64, Float32 or
     /// Float64 (the default).
     #[arg(long, value_name = "TYPE")]
@@ -105,6 +108,9 @@ pub fn run(a: Args) -> terrio::Result<()> {
         merge: if a.add { MergeAlg::Add } else { MergeAlg::Replace },
         assign_srs: a.a_srs.as_deref().map(SpatialRef::parse).transpose()?,
     };
-    let out = terrio::ops::rasterize::rasterize(&layers, &options)?;
+    let out = match &a.background {
+        Some(path) => terrio::ops::rasterize::rasterize_on(&super::quiet(|| terrio::open_raster(path))?, &layers, &options)?,
+        None => terrio::ops::rasterize::rasterize(&layers, &options)?,
+    };
     a.out.write(&out, &a.output)
 }

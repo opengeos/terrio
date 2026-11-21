@@ -34,7 +34,7 @@ pub enum MergeAlg {
     /// Replace the pixel value (the default).
     #[default]
     Replace,
-    /// Add to the pixel value; each geometry adds once to a pixel.
+    /// Add to the pixel value; lines and polygons add once per geometry, points per coordinate.
     Add,
 }
 
@@ -100,6 +100,94 @@ pub struct RasterizeOptions {
 /// and the resolution or size. Its CRS is `assign_srs`, or the first layer's; geometries in
 /// another CRS than the grid's are reprojected, unless `assign_srs` is set.
 pub fn rasterize(layers: &[Layer], options: &RasterizeOptions) -> Result<RasterDataset> {
+    validate_values(layers, options)?;
+    rasterize_new(layers, options)
+}
+
+/// Burns geometries over a copy of an existing raster, retaining untouched samples exactly.
+///
+/// All bands are edited. One burn value applies to every band; otherwise give one per band.
+/// Attribute values apply to every band. `MergeAlg::Add` adds signed offsets, including to
+/// nodata samples, as GDAL 3.13.3 does. Metadata and nodata declarations are retained.
+/// Adding to a finite nodata sentinel can turn a void into a valid sample: -9999 plus
+/// -2.5 becomes -10001.5, no longer nodata. NaN remains NaN. Check voids before adding offsets.
+/// Burn and add values use stored sample units; band scale/offset are retained but not applied.
+/// Separate validity masks are not held by `RasterDataset`; nodata masks follow
+/// the edited values. The background is never mutated. Only north-up, real-valued affine rasters are
+/// supported; grid, initialization, type, nodata and CRS overrides are refused.
+pub fn rasterize_on(background: &RasterDataset, layers: &[Layer], options: &RasterizeOptions) -> Result<RasterDataset> {
+    validate_values(layers, options)?;
+    if options.grid.is_some()
+        || options.resolution.is_some()
+        || options.size.is_some()
+        || options.extent.is_some()
+        || options.target_aligned
+        || options.data_type.is_some()
+        || !options.init.is_empty()
+        || options.nodata.is_some()
+        || options.assign_srs.is_some()
+    {
+        return Err(Error::InvalidArgument(
+            "background cannot be combined with grid, size, resolution, extent, alignment, type, init, nodata or CRS overrides".into(),
+        ));
+    }
+    let grid = Grid::like(background);
+    let [_, dx, rx, _, ry, dy] = grid.geo_transform;
+    if background.complex
+        || !background.gcps.is_empty()
+        || background.geolocation.is_some()
+        || rx != 0.0
+        || ry != 0.0
+        || dx <= 0.0
+        || dy >= 0.0
+        || !grid.geo_transform.iter().all(|v| v.is_finite())
+    {
+        return Err(Error::Unsupported("background must be a north-up, real-valued affine raster".into()));
+    }
+    let bands = background.raster.bands;
+    if grid.cols == 0 || grid.rows == 0 || bands == 0 {
+        return Err(Error::InvalidArgument("background raster is empty".into()));
+    }
+    let mut options = options.clone();
+    if options.burn_values.len() == 1 {
+        options.burn_values.resize(bands, options.burn_values[0]);
+    } else if options.attribute.is_none() && options.burn_values.len() != bands {
+        return Err(Error::InvalidArgument("give one burn value or one per background band".into()));
+    }
+    let mut out = background.clone();
+    let dtype = background.raster.data_type;
+    let n = grid.cols * grid.rows;
+    crate::pixel::with_data!(&mut out.raster.data, samples => {
+        let mut bufs = if bands == 1 {
+            vec![std::mem::take(samples)]
+        } else {
+            samples.chunks_exact(n).map(<[_]>::to_vec).collect::<Vec<_>>()
+        };
+        burn_into(layers, &options, &grid, dtype, &mut bufs)?;
+        *samples = if bands == 1 { bufs.pop().unwrap_or_default() } else { bufs.concat() };
+    });
+    out.raster.metadata.retain(|(key, _)| !key.starts_with("STATISTICS_"));
+    for band in &mut out.band_metadata {
+        band.items.retain(|(key, _)| !key.starts_with("STATISTICS_"));
+    }
+    // A packed source's declared width may no longer hold the edited samples. The TIFF
+    // writer uses one stored width for every band and trusts NBITS, so discard it for
+    // the whole raster when any band would otherwise be clipped.
+    let packing_overflow = matches!(dtype, DataType::U8 | DataType::U16 | DataType::U32)
+        && crate::pixel::with_data!(&out.raster.data, samples => {
+            samples.chunks_exact(n).enumerate().any(|(band, data)| {
+                out.band_sample_bits(band)
+                    .filter(|&bits| bits > 0 && usize::from(bits) < dtype.size_bytes() * 8)
+                    .is_some_and(|bits| data.iter().any(|value| value.to_f64() > ((1_u64 << bits) - 1) as f64))
+            })
+        });
+    if packing_overflow {
+        out.set_sample_bits(0);
+    }
+    Ok(out)
+}
+
+fn validate_values(layers: &[Layer], options: &RasterizeOptions) -> Result<()> {
     if layers.is_empty() {
         return Err(Error::InvalidArgument("no layer to rasterize".into()));
     }
@@ -109,6 +197,10 @@ pub fn rasterize(layers: &[Layer], options: &RasterizeOptions) -> Result<RasterD
     if options.attribute.is_none() && options.burn_values.is_empty() {
         return Err(Error::InvalidArgument("give a burn value or an attribute to burn".into()));
     }
+    Ok(())
+}
+
+fn rasterize_new(layers: &[Layer], options: &RasterizeOptions) -> Result<RasterDataset> {
     let grid = match &options.grid {
         Some(g) => g.clone(),
         None => compute_grid(layers, options)?,
@@ -170,6 +262,12 @@ fn burn<T: Pixel>(layers: &[Layer], options: &RasterizeOptions, grid: &Grid, ban
             vec![T::from_f64(cast(init, dtype)); n]
         })
         .collect();
+    burn_into(layers, options, grid, dtype, &mut bufs)?;
+    Ok(if bands == 1 { bufs.pop().unwrap_or_default() } else { bufs.concat() })
+}
+
+fn burn_into<T: Pixel>(layers: &[Layer], options: &RasterizeOptions, grid: &Grid, dtype: DataType, bufs: &mut [Vec<T>]) -> Result<()> {
+    let bands = bufs.len();
     let [g0, g1, g2, g3, g4, g5] = grid.geo_transform;
     if g2 != 0.0 || g4 != 0.0 {
         return Err(Error::Unsupported("rotated grids are not supported".into()));
@@ -207,8 +305,8 @@ fn burn<T: Pixel>(layers: &[Layer], options: &RasterizeOptions, grid: &Grid, ban
             prepare_shape(g, options.merge, &inv, values.len() - 1, &mut shapes);
         }
     }
-    draw_shapes(&mut bufs, &values, &shapes, (grid.cols, grid.rows), dtype, options.merge, options.all_touched);
-    Ok(if bands == 1 { bufs.pop().unwrap_or_default() } else { bufs.concat() })
+    draw_shapes(bufs, &values, &shapes, (grid.cols, grid.rows), dtype, options.merge, options.all_touched);
+    Ok(())
 }
 
 /// Burns `geometries` with their values into a single `f64` band of `cols` by `rows` pixels on a
@@ -912,6 +1010,72 @@ mod tests {
 
     fn pixels(r: &RasterDataset) -> Vec<f64> {
         r.raster.band_to_vec_f64(0)
+    }
+
+    #[test]
+    fn background_retains_exact_integer_samples_and_metadata() {
+        let layers = [layer(vec![Geometry::multi_point(vec![Coord::xy(1.5, 1.5)])])];
+        let mut background = rasterize(
+            &layers,
+            &RasterizeOptions { burn_values: vec![1.0, 2.0], grid: Some(grid(4, 4)), data_type: Some(DataType::U64), ..Default::default() },
+        )
+        .unwrap();
+        let exact = (1_u64 << 60) + 1;
+        if let RasterData::U64(v) = &mut background.raster.data {
+            v.fill(exact);
+        }
+        background.raster.metadata.push(("purpose".into(), "elevation".into()));
+        background.raster.metadata.push(("STATISTICS_MINIMUM".into(), exact.to_string()));
+        background.band_metadata.push(crate::BandMetadata {
+            items: vec![("STATISTICS_MINIMUM".into(), exact.to_string()), ("SOURCE".into(), "dem".into())],
+            ..Default::default()
+        });
+        let out = rasterize_on(&background, &layers, &RasterizeOptions { attribute: Some("v".into()), ..Default::default() }).unwrap();
+        let RasterData::U64(v) = &out.raster.data else { panic!("type changed") };
+        for band in 0..2 {
+            for i in 0..16 {
+                assert_eq!(v[band * 16 + i], if i == 9 { 1 } else { exact });
+            }
+        }
+        assert_eq!(out.raster.metadata, vec![("purpose".into(), "elevation".into())]);
+        assert_eq!(out.band_metadata[0].items, vec![("SOURCE".into(), "dem".into())]);
+        assert_eq!(background.raster.metadata.len(), 2);
+        assert_eq!(out.geo_transform(), background.geo_transform());
+        assert_eq!(out.has_nodata, background.has_nodata);
+        let RasterData::U64(v) = &background.raster.data else { unreachable!() };
+        assert!(v.iter().all(|v| *v == exact));
+    }
+
+    #[test]
+    fn background_adds_signed_values_once_per_feature() {
+        let layers = [layer(vec![Geometry::line_string(vec![Coord::xy(0.5, 1.5), Coord::xy(3.5, 1.5), Coord::xy(0.5, 1.5)])])];
+        let background = rasterize(
+            &layers,
+            &RasterizeOptions {
+                burn_values: vec![10.0],
+                init: vec![10.0],
+                grid: Some(grid(4, 4)),
+                data_type: Some(DataType::F32),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let out =
+            rasterize_on(&background, &layers, &RasterizeOptions { burn_values: vec![-2.5], merge: MergeAlg::Add, ..Default::default() })
+                .unwrap();
+        assert_eq!(pixels(&out), [vec![10.0; 8], vec![7.5; 4], vec![10.0; 4]].concat());
+    }
+
+    #[test]
+    fn background_refuses_creation_options_and_rotated_grids() {
+        let layers = [layer(vec![Geometry::multi_point(vec![Coord::xy(1.5, 1.5)])])];
+        let mut background =
+            rasterize(&layers, &RasterizeOptions { burn_values: vec![1.0], grid: Some(grid(4, 4)), ..Default::default() }).unwrap();
+        let options = RasterizeOptions { burn_values: vec![1.0], ..Default::default() };
+        assert!(rasterize_on(&background, &layers, &RasterizeOptions { init: vec![0.0], ..options.clone() }).is_err());
+        assert!(rasterize_on(&background, &layers, &RasterizeOptions { burn_values: vec![1.0, 2.0], ..options.clone() }).is_err());
+        background.set_geo_transform([0.0, 1.0, 0.1, 4.0, 0.0, -1.0]);
+        assert!(rasterize_on(&background, &layers, &options).is_err());
     }
 
     /// GDAL 3.13.3's GeoTIFF background is nodata unless -init overrides it.

@@ -73,6 +73,9 @@ STRICT_PROJ_STRINGS = [
     # LCC with its parallel given twice is 2SP, with one at the origin 1SP (#1012 item 61).
     "+proj=lcc +lat_0=45 +lat_1=45 +lat_2=45 +lon_0=3 +x_0=700000 +y_0=6600000 +ellps=GRS80 +units=m",
     "+proj=lcc +lat_0=45 +lat_1=45 +lon_0=3 +x_0=700000 +y_0=6600000 +ellps=GRS80 +units=m",
+    # Krovak's pseudo standard parallel is fixed: PROJ ignores `lat_ts` and writes 78.5 (#1012
+    # item 31).
+    "+proj=krovak +axis=swu +lat_ts=78 +ellps=bessel +units=m",
     # South-orientated axes with a height down: PROJ's WKT 1 has west and south axes.
     "+proj=tmerc +lon_0=25 +x_0=1000 +ellps=WGS84 +axis=wsd +units=m",
     (

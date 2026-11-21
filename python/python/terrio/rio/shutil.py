@@ -84,12 +84,14 @@ def copy(
     interpretation and color table, and the dataset mask. A COG is written a row of its tiles at
     a time from the source, its overviews computed as the rows come, so that the source's pixels
     are not held. Taller source blocks are read in bounded slabs, then written one tile row
-    at a time. A source with a dataset mask, overviews the COG copies, or compression written
-    whole (JPEG, WebP, LERC, JPEG XL) is held until it is written. A GeoTIFF larger than the
-    in-memory limit (`TERRIO_RIO_IN_MEMORY_LIMIT`) is also copied directly from its source,
-    in rows of blocks, without a dataset mask; a smaller one is held and written whole. A copy
-    whose source fails to read leaves its destination as it was: an existing file keeps its
-    content, and no file is left where there was none.
+    at a time. A source's dataset mask is read with its pixels, in the same rows. A source with
+    overviews the COG copies, or compression written whole (JPEG, WebP, LERC, JPEG XL), is held
+    until it is written, and so is a dataset mask written to a `.msk` sidecar
+    (`GDAL_TIFF_INTERNAL_MASK=NO`). A GeoTIFF larger than the in-memory limit
+    (`TERRIO_RIO_IN_MEMORY_LIMIT`) is also copied directly from its source, in rows of blocks; a
+    smaller one is held and written whole. A copy whose source fails to read leaves its
+    destination as it was: an existing file keeps its content, and no file is left where there
+    was none.
 
     Args:
         src: A path, or a dataset opened for reading.
@@ -196,8 +198,8 @@ def _copy_dataset(
     """Writes an open dataset to a new file.
 
     A file written in rows (`DatasetWriter._streams_on_flush`) is written from the source as it is
-    written; another is written block row by block row into the dataset, written when it closes,
-    unless the copy raised (`_unwritten_on_error`).
+    written, the source's dataset mask with it; another is written block row by block row into
+    the dataset, written when it closes, unless the copy raised (`_unwritten_on_error`).
 
     Args:
         src: The dataset.
@@ -205,11 +207,14 @@ def _copy_dataset(
         driver: The output format.
         creation_options: Creation options.
         from_source: Whether a file written in rows is written from the source; otherwise the
-            copy holds the source's pixels until it is written, whatever its format.
+            copy holds the source's pixels and mask until it is written, whatever its format.
     """
+    import numpy as np
+
     from terrio import _terrio
     from terrio.rio import open as rio_open
     from terrio.rio.dtypes import _getnpdtype
+    from terrio.rio.io import _copy_dataset_mask, _tile_rows_decoded_once
     from terrio.rio.windows import Window
 
     src._check_open()
@@ -266,11 +271,13 @@ def _copy_dataset(
     per_dataset_mask = all(
         "per_dataset" in [f.name for f in flags] for flags in src.mask_flag_enums
     )
-    if from_source and not per_dataset_mask:
+    if from_source:
         # When the copy is written in rows (a COG without the source's overviews to copy, or a
         # GeoTIFF larger than the in-memory limit), it reads them from the source as it writes
-        # them, rather than holding the source's pixels until it is closed.
+        # them, with the rows of its dataset mask, rather than holding the source's pixels and
+        # mask until it is closed.
         profile["_copy_of"] = src
+        profile["_copy_mask"] = per_dataset_mask
     with rio_open(dst_path, "w", **profile) as dst, _unwritten_on_error(dst):
         dst._mask_has_dataset = True
         dst.update_tags(**src.tags())
@@ -309,11 +316,14 @@ def _copy_dataset(
             return
         itemsize = 16 if sample in ("CInt16", "CInt32", "CFloat64") else 8
         rows = max(1, min(src.height, (64 << 20) // max(1, src.width * src.count * itemsize)))
+        # A JPEG 2000 is read a whole row of its tiles at a time, each tile decoded once; `write`
+        # holds each read in the dataset's type.
+        rows = _tile_rows_decoded_once(src, rows, itemsize=np.dtype(dst._buffer_dtype).itemsize)
         for y in range(0, src.height, rows):
             w = Window(0, y, src.width, min(rows, src.height - y))
             dst.write(src._read_for_copy(window=w), window=w)
             if per_dataset_mask:
-                dst.write_mask(src.dataset_mask(window=w), window=w)
+                dst.write_mask(_copy_dataset_mask(src, w), window=w)
 
 
 def copyfiles(src: Any, dst: Any) -> None:

@@ -23,9 +23,12 @@
 
 use crate::keywords as kw;
 use crate::wkt1::{self, Arg, Node};
+use crate::wkt2;
 
 #[cfg(test)]
 pub(crate) mod oracle_tests;
+#[cfg(test)]
+mod proj_input_tests;
 
 /// An identifier: WKT 1's `AUTHORITY`, WKT 2's `ID`.
 #[derive(Debug, Clone, PartialEq)]
@@ -210,6 +213,9 @@ pub(crate) enum Crs {
         ident: Ident,
         datum: Datum,
         cs: Cs,
+        /// The CRS's angular unit, as `wkt2::Wkt2Geodetic::read` takes it (degrees for a WKT 1
+        /// `GEOCCS`), whatever its axes' own.
+        angular: Unit,
         frame_epoch: Option<f64>,
     },
     Projected {
@@ -260,6 +266,10 @@ pub(crate) struct Model {
     pub crs: Crs,
     pub dialect: Dialect,
     pub extensions: Vec<(String, String)>,
+    /// Whether the CRS's last axis is the ellipsoidal height of ESRI's compound CRS on a geodetic
+    /// `DATUM` (read as a 3D CRS), which its horizontal CRS's WKT does not declare (its base CRS's
+    /// own height, of a projected CRS, is not counted).
+    pub height_added: bool,
 }
 
 /// The model of a WKT definition (WKT 1 GDAL, ESRI or WKT 2), or `None` when it is not one this
@@ -279,31 +289,220 @@ pub(crate) fn read(text: &str) -> Option<Model> {
             let length = v.child("UNIT").and_then(|u| unit(u, UnitKind::Length)).unwrap_or_else(Unit::metre);
             let direction = if esri_down(&v) { "down" } else { "up" };
             let mut crs = crs(&h, d)?;
+            // Whether the height was added (to a CS of two axes).
             let height = |cs: &mut Cs, unit: Unit, direction: &str| {
-                if cs.axes.len() == 2 {
+                let two = cs.axes.len() == 2;
+                if two {
                     cs.axes.push(Axis { name: String::new(), direction: direction.into(), unit: Some(unit), meridian: None });
                 }
+                two
             };
-            match &mut crs {
+            let height_added = match &mut crs {
                 Crs::Projected { base, cs, .. } => {
-                    height(cs, length, direction);
                     if let Crs::Geodetic { cs, .. } = base.as_mut() {
                         height(cs, Unit::metre(), "up");
                     }
+                    height(cs, length, direction)
                 }
                 Crs::Geodetic { cs, .. } => height(cs, length, direction),
-                _ => {}
-            }
-            return Some(Model { crs, dialect: d, extensions: extensions(&h) });
+                _ => false,
+            };
+            return Some(Model { crs, dialect: d, extensions: extensions(&h), height_added });
         }
         let parts = vec![crs(&h, d)?, crs(&v, Dialect::Wkt1Esri)?];
         let name = format!("{} + {}", h.name().unwrap_or(""), v.name().unwrap_or(""));
         let crs = Crs::Compound { ident: Ident { name, ids: Vec::new() }, parts };
-        return Some(Model { crs, dialect: d, extensions: extensions(&h) });
+        return Some(Model { crs, dialect: d, extensions: extensions(&h), height_added: false });
     }
     let root = wkt1::parse(text)?;
     let d = dialect(text, &root);
-    Some(Model { crs: crs(&root, d)?, dialect: d, extensions: extensions(&root) })
+    Some(Model { crs: crs(&root, d)?, dialect: d, extensions: extensions(&root), height_added: false })
+}
+
+/// A WKT 1 CRS's input to its PROJ string, read from its model (#1058 step 6): what
+/// [`wkt1::Wkt1Input::read`] reads from its tree (`root`, the horizontal CRS's of ESRI's compound),
+/// but for the unusual WKT 1 `where_the_model_reads_unusual_wkt1_otherwise` pins, to settle in step
+/// 6d as PROJ reads it.
+pub(crate) fn wkt1_input(m: &Model, root: &Node) -> Option<wkt1::Wkt1Input> {
+    use wkt1::{Wkt1Input, Wkt1Kind};
+    if m.dialect == Dialect::Wkt2 {
+        return None;
+    }
+    // The kind by the root's keyword, as the tree reader takes it.
+    let kind = match root.key.to_ascii_uppercase().as_str() {
+        "GEOGCS" => Wkt1Kind::Geographic,
+        "GEOCCS" => Wkt1Kind::Geocentric,
+        "PROJCS" => Wkt1Kind::Projected,
+        _ => return None,
+    };
+    // ESRI's compound CRS, `GEOGCS[...],VERTCS[...]`: its horizontal CRS, which the tree's root is.
+    let crs = match &m.crs {
+        Crs::Compound { parts, .. } => parts.first()?,
+        crs => crs,
+    };
+    let (base, conversion, cs) = match crs {
+        Crs::Geodetic { cs, .. } if kind != Wkt1Kind::Projected => (crs, None, cs),
+        Crs::Projected { base, conversion, cs, .. } if kind == Wkt1Kind::Projected => (base.as_ref(), Some(conversion), cs),
+        _ => return None,
+    };
+    let Crs::Geodetic { ident: base_ident, datum, angular: base_angular, .. } = base else { return None };
+    let ellipsoid = datum.ellipsoid();
+    // The EPSG code of an object's first identifier, its code trimmed (`Node::epsg` reads its first
+    // `AUTHORITY` before any `ID`, a known difference on malformed input).
+    let epsg =
+        |i: &Ident| i.ids.first().filter(|id| id.authority.eq_ignore_ascii_case("EPSG")).and_then(|id| id.code.trim().parse::<u32>().ok());
+    // The angular unit as WKT 1 rounds it (a degree and a grad, within 1e-9).
+    let angular = match (kind, conversion) {
+        (Wkt1Kind::Geocentric, _) => None,
+        (_, Some(c)) => Some(&c.angular),
+        _ => Some(base_angular),
+    };
+    let ang = angular.map_or(1.0, |u| u.factor.to_degrees());
+    let ang = [1.0, 0.9].into_iter().find(|u| (ang - u).abs() < 1e-9).unwrap_or(ang);
+    let towgs84 = match datum {
+        Datum::Frame { towgs84, .. } => towgs84.clone(),
+        Datum::Ensemble { .. } => None,
+    };
+    let unit = match (kind, conversion) {
+        (Wkt1Kind::Geographic, _) => 1.0,
+        (_, Some(c)) => c.linear.factor,
+        _ => cs.axes.first().and_then(|a| a.unit.as_ref()).map_or(1.0, |u| u.factor),
+    };
+    let esri_names = base_ident.name.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("gcs_"))
+        || datum.ident().name.get(..2).is_some_and(|p| p.eq_ignore_ascii_case("d_"));
+    let mut input = Wkt1Input {
+        kind,
+        a: ellipsoid.a,
+        rf: ellipsoid.rf,
+        ang,
+        pm: datum.prime_meridian().longitude,
+        towgs84,
+        unit,
+        datum_epsg: epsg(datum.ident()),
+        params: Vec::new(),
+        method: None,
+        method_epsg: None,
+        esri_names,
+        axes: None,
+        has_axis: false,
+    };
+    let Some(c) = conversion else { return Some(input) };
+    input.params = c.params.iter().map(|p| (wkt1::norm(&p.ident.name), p.value)).filter(|(k, _)| !k.is_empty()).collect();
+    input.method = Some(c.method.name.clone()).filter(|n| !n.is_empty());
+    input.method_epsg = epsg(&c.method);
+    // A projection without a name, unless EPSG's variant C by its code.
+    wkt1::wkt1_method(input.method.as_deref(), input.method_epsg)?;
+    if cs.explicit {
+        // Not the ellipsoidal height ESRI's 3D compound CRS adds.
+        let axes = if m.height_added { &cs.axes[..cs.axes.len() - 1] } else { &cs.axes[..] };
+        let letter = |a: &Axis| match a.direction.as_str() {
+            "east" => Some(b'e'),
+            "west" => Some(b'w'),
+            "north" => Some(b'n'),
+            "south" => Some(b's'),
+            _ => None,
+        };
+        let letters: Option<Vec<u8>> = axes.iter().map(letter).collect();
+        input.axes = letters.and_then(|l| match l[..] {
+            [a, b] if matches!(a, b'e' | b'w') != matches!(b, b'e' | b'w') => Some([a, b]),
+            _ => None,
+        });
+    }
+    input.has_axis = cs.explicit;
+    Some(input)
+}
+
+/// A WKT 2 geographic, geocentric or projected CRS's input to its PROJ string, read from its model
+/// (#1058 step 6): what [`wkt2::Wkt2Input::read`] reads from its tree (`root`). `None` for what
+/// the reader refuses, and for a derived or bound CRS (#1058 step 6c-2).
+pub(crate) fn wkt2_input(m: &Model, root: &Node) -> Option<wkt2::Wkt2Input> {
+    use wkt2::{Wkt2Geodetic, Wkt2Input, Wkt2Kind, Wkt2Method, Wkt2Param};
+    if m.dialect != Dialect::Wkt2 || root.child("DERIVINGCONVERSION").is_some() {
+        return None;
+    }
+    // The EPSG code of an object's first identifier, its code trimmed (`Node::epsg` reads its first
+    // `AUTHORITY` before any `ID`, a known difference on malformed input).
+    let epsg =
+        |i: &Ident| i.ids.first().filter(|id| id.authority.eq_ignore_ascii_case("EPSG")).and_then(|id| id.code.trim().parse::<u32>().ok());
+    let geodetic = |crs: &Crs| {
+        let Crs::Geodetic { ident, datum, angular, .. } = crs else { return None };
+        let ellipsoid = datum.ellipsoid();
+        Some(Wkt2Geodetic {
+            name: Some(ident.name.clone()),
+            epsg: epsg(ident),
+            datum_name: Some(datum.ident().name.clone()),
+            datum_epsg: epsg(datum.ident()),
+            ellipsoid_name: Some(ellipsoid.ident.name.clone()),
+            a: ellipsoid.a,
+            rf: ellipsoid.rf,
+            ang: angular.degrees(),
+            pm: datum.prime_meridian().longitude,
+        })
+    };
+    let lower = |a: &Axis| a.direction.to_ascii_lowercase();
+    let (geodetic, kind) = match &m.crs {
+        crs @ Crs::Geodetic { cs, .. } => {
+            let kind = match cs.kind {
+                CsKind::Cartesian => {
+                    // Three axes, X, Y and Z in that order, in one length unit.
+                    let directions = ["geocentricX", "geocentricY", "geocentricZ"];
+                    let canonical = cs.explicit
+                        && cs.axes.len() == 3
+                        && cs.axes.iter().zip(directions).all(|(a, d)| a.direction.eq_ignore_ascii_case(d));
+                    let units: Vec<f64> = cs.axes.iter().map(|a| a.unit.as_ref().map(|u| u.factor)).collect::<Option<_>>()?;
+                    if !canonical || units.iter().any(|u| *u != units[0]) {
+                        return None;
+                    }
+                    Wkt2Kind::Geocentric { unit: units[0] }
+                }
+                CsKind::Ellipsoidal | CsKind::Spherical => {
+                    let spherical = cs.kind == CsKind::Spherical;
+                    // Two axes, one of them west or south: as `+axis` letters.
+                    let directions: Vec<String> = if cs.explicit { cs.axes.iter().take(2).map(lower).collect() } else { Vec::new() };
+                    let axes = if directions.len() == 2 && directions.iter().any(|d| d == "west" || d == "south") {
+                        let letter = |d: &String| match d.as_str() {
+                            "east" => Some('e'),
+                            "west" => Some('w'),
+                            "north" => Some('n'),
+                            "south" => Some('s'),
+                            _ => None,
+                        };
+                        Some(directions.iter().map(letter).collect::<Option<String>>()?)
+                    } else {
+                        None
+                    };
+                    Wkt2Kind::Geographic { spherical, axes }
+                }
+                _ => return None,
+            };
+            (geodetic(crs)?, kind)
+        }
+        Crs::Projected { base, conversion, cs, .. } => {
+            // A polar CS's axes, which run along meridians, give no directions.
+            let polar = cs.axes.iter().any(|a| a.meridian.is_some());
+            let directions = if cs.explicit && !polar { cs.axes.iter().map(lower).collect() } else { Vec::new() };
+            let key = |u: &Unit| match u.kind {
+                UnitKind::Angle => "ANGLEUNIT",
+                UnitKind::Length => "LENGTHUNIT",
+                UnitKind::Scale => "SCALEUNIT",
+                _ => "UNIT",
+            };
+            let params = conversion
+                .params
+                .iter()
+                .map(|p| Wkt2Param {
+                    name: p.ident.name.clone(),
+                    epsg: epsg(&p.ident),
+                    value: p.value,
+                    units: p.unit.iter().map(|u| (key(u), Some(u.factor))).collect(),
+                })
+                .collect();
+            let method = Wkt2Method { name: conversion.method.name.clone(), epsg: epsg(&conversion.method), params };
+            (geodetic(base)?, Wkt2Kind::Projected { to_meter: conversion.linear.factor, directions, method })
+        }
+        _ => return None,
+    };
+    Some(Wkt2Input { geodetic, kind })
 }
 
 /// The `EXTENSION`s of a root node (of ESRI's sequence, its horizontal CRS's), as written.
@@ -423,14 +622,20 @@ fn unit_node(n: &Node) -> Option<&Node> {
     n.first_in(&["LENGTHUNIT", "ANGLEUNIT", "SCALEUNIT", "TIMEUNIT", "UNIT"])
 }
 
-/// The angular unit of a geodetic CRS node, as `wkt2::Geodetic::read` takes it: its own
-/// `ANGLEUNIT` or `UNIT`, else (a WKT 2 CRS) its axes', else its prime meridian's, else degrees.
+/// The angular unit of a geodetic CRS node, as `wkt2::Wkt2Geodetic::read` takes it: its own
+/// `ANGLEUNIT` or `UNIT`, else (a WKT 2 CRS, not a base CRS) its axes', else its prime meridian's, else degrees.
 fn angular_unit(n: &Node, d: Dialect) -> Unit {
     let own = n.child("ANGLEUNIT").or_else(|| n.child("UNIT"));
+    // A WKT 2 geographic CRS's axes, not a base CRS's: PROJ 9.9.0 and the WKT 2 reader read a
+    // projected CRS's parameters in degrees beside a base CS in grads.
     let found = own
-        .or_else(
-            || if d == Dialect::Wkt2 { n.children("AXIS").find_map(|a| a.child("ANGLEUNIT").or_else(|| a.child("UNIT"))) } else { None },
-        )
+        .or_else(|| {
+            if d == Dialect::Wkt2 && !n.is(kw::BASE_GEODETIC_CRS) {
+                n.children("AXIS").find_map(|a| a.child("ANGLEUNIT").or_else(|| a.child("UNIT")))
+            } else {
+                None
+            }
+        })
         .or_else(|| prime_meridian_node(n).and_then(|p| p.child("ANGLEUNIT").or_else(|| p.child("UNIT"))));
     found.and_then(|u| unit(u, UnitKind::Angle)).unwrap_or_else(Unit::degree)
 }
@@ -446,7 +651,7 @@ fn geodetic(n: &Node, d: Dialect) -> Option<Crs> {
     // meridian is in degrees.
     let cartesian = n.child("CS").is_some_and(|c| matches!(c.args.first(), Some(Arg::Ident(k)) if k.eq_ignore_ascii_case("Cartesian")));
     let ang = if geocentric { Unit::degree() } else { angular_unit(n, d) };
-    let prime_meridian = prime_meridian(n, d, geocentric);
+    let prime_meridian = prime_meridian(n, d, geocentric)?;
     let datum = if datum_node.is(kw::GEODETIC_DATUM_ENSEMBLE) {
         Datum::Ensemble {
             ident: ident(datum_node),
@@ -484,6 +689,28 @@ fn geodetic(n: &Node, d: Dialect) -> Option<Crs> {
         } else {
             ang.clone()
         };
+        // A WKT 2 geographic CRS's spherical CS that is not two-dimensional, which PROJ 9.9.0 and
+        // the WKT 2 reader (`wkt2::geodetic_kind`) refuse. The reader reads an ellipsoidal CS of
+        // another dimension than its axes and ignores a base CRS's CS, where PROJ refuses both, so
+        // the model accepts them too (backward compatibility).
+        if d == Dialect::Wkt2
+            && !n.is(kw::BASE_GEODETIC_CRS)
+            && let Some(c) = n.child("CS")
+            && matches!(c.args.first(), Some(Arg::Ident(t)) if t.eq_ignore_ascii_case("spherical"))
+            && c.num(1) != Some(2.0)
+        {
+            return None;
+        }
+        // A WKT 2 geodetic CRS's Cartesian CS that is not three axes, X, Y and Z in that order,
+        // each in a length unit, one for all, which PROJ 9.9.0 and the WKT 2 reader refuse. The
+        // reader ignores a base CRS's CS, so the model accepts it (backward compatibility).
+        if d == Dialect::Wkt2
+            && !n.is(kw::BASE_GEODETIC_CRS)
+            && let Some(c) = n.child("CS").filter(|_| cartesian)
+            && wkt2::geocentric_unit(n, c).is_err()
+        {
+            return None;
+        }
         let mut cs = cs(n, d, CsKind::Ellipsoidal, &default, &default_unit);
         // ESRI's 3D geographic CRS: its `LINUNIT` is its ellipsoidal height's, as PROJ reads it.
         if !cs.explicit
@@ -493,16 +720,17 @@ fn geodetic(n: &Node, d: Dialect) -> Option<Crs> {
         }
         cs
     };
-    Some(Crs::Geodetic { ident: ident(n), datum, cs, frame_epoch })
+    Some(Crs::Geodetic { ident: ident(n), datum, cs, angular: ang, frame_epoch })
 }
 
-/// The prime meridian of a geodetic CRS node, as `wkt2::Geodetic::read` reads it: in its own unit,
+/// The prime meridian of a geodetic CRS node, as `wkt2::Wkt2Geodetic::read` reads it: in its own unit,
 /// else the CRS's (its `ANGLEUNIT`, or a `UNIT` named `degree` or `grad` in WKT 2; WKT 1's
 /// `GEOGCS` unit), else degrees, with PROJ's corrections (`wkt1::prime_meridian_degrees`).
-/// Greenwich without one.
-fn prime_meridian(n: &Node, d: Dialect, geocentric: bool) -> PrimeMeridian {
+/// Greenwich without one. `None` for a WKT 2 prime meridian's unit without its size, which PROJ
+/// 9.9.0 and the WKT 2 reader refuse.
+fn prime_meridian(n: &Node, d: Dialect, geocentric: bool) -> Option<PrimeMeridian> {
     let Some(p) = prime_meridian_node(n) else {
-        return PrimeMeridian { ident: Ident { name: "Greenwich".into(), ids: Vec::new() }, longitude: 0.0 };
+        return Some(PrimeMeridian { ident: Ident { name: "Greenwich".into(), ids: Vec::new() }, longitude: 0.0 });
     };
     let crs_unit = if geocentric {
         None
@@ -518,9 +746,12 @@ fn prime_meridian(n: &Node, d: Dialect, geocentric: bool) -> PrimeMeridian {
         n.child("UNIT")
     };
     let own = p.child("ANGLEUNIT").or_else(|| p.child("UNIT"));
+    if d == Dialect::Wkt2 && own.is_some_and(|u| u.num(1).is_none()) {
+        return None;
+    }
     let size = own.or(crs_unit).and_then(|u| unit(u, UnitKind::Angle)).map_or(1.0, |u| u.degrees());
     let longitude = wkt1::prime_meridian_degrees(p.name().unwrap_or(""), p.num(1).unwrap_or(0.0), size);
-    PrimeMeridian { ident: ident(p), longitude }
+    Some(PrimeMeridian { ident: ident(p), longitude })
 }
 
 /// The axis directions PROJ knows, as it spells them (ISO 19111, `AxisDirection`).
@@ -649,7 +880,15 @@ fn projected(n: &Node, d: Dialect) -> Option<Crs> {
     } else {
         n.child("UNIT")
     };
+    // A WKT 2 unit without its size, which PROJ 9.9.0 and the WKT 2 reader refuse.
+    if d == Dialect::Wkt2 && linear.is_some_and(|u| u.num(1).is_none()) {
+        return None;
+    }
     let linear = linear.and_then(|u| unit(u, UnitKind::Length)).unwrap_or_else(Unit::metre);
+    // A WKT 2 parameter without its value, which PROJ 9.9.0 and the WKT 2 reader refuse.
+    if d == Dialect::Wkt2 && n.child("CONVERSION").is_some_and(|c| c.children("PARAMETER").any(|p| p.num(1).is_none())) {
+        return None;
+    }
     let conversion = match n.child("CONVERSION") {
         Some(c) => Conversion {
             ident: ident(c),
@@ -666,6 +905,22 @@ fn projected(n: &Node, d: Dialect) -> Option<Crs> {
             linear: linear.clone(),
         },
     };
+    // What terrio's WKT 1 reader refuses: a Hotine Oblique Mercator (two point) parameter that
+    // is not a finite number, which would otherwise be dropped for a zero default, and a polar
+    // stereographic without the latitude it needs (`wkt1::polar_latitude_refused`).
+    if n.is(kw::WKT1_PROJECTED)
+        && let Some(projection) = n.child("PROJECTION")
+        && let Some(method) = wkt1::wkt1_method(projection.name(), projection.epsg())
+    {
+        if method == "hotineobliquemercatortwopointnaturalorigin" && wkt1::hotine_two_point_refused(n) {
+            return None;
+        }
+        if matches!(method.as_str(), "polarstereographic" | "polarstereographicvarianta" | "polarstereographicvariantb")
+            && wkt1::polar_latitude_refused(n)
+        {
+            return None;
+        }
+    }
     // Without `AXIS`, east and north, but as PROJ 9.9.0 reads a WKT 1 Transverse Mercator (South
     // Orientated), west and south, and ESRI's Krovak, south and west (east and north for its East
     // North form, `X_Scale` -1 and `XY_Plane_Rotation` 90).
@@ -787,7 +1042,7 @@ mod tests {
     fn terrio_extensions_and_brackets() {
         let m = read(r#"PROJCRS("x",BASEGEOGRAPHICCRS("WGS 84",DATUMENSEMBLE("World Geodetic System 1984 ensemble",MEMBER("World Geodetic System 1984 (G2296)"),ELLIPSOID("WGS 84",6378137,298.257223563)),PRIMEM("Greenwich",0)),CONVERSION("UTM zone 31N",METHOD("Transverse Mercator",ID("EPSG",9807)),PARAMETER("Longitude of natural origin",3,ANGLEUNIT("degree",0.0174532925199433),ID("EPSG",8802))),CS(Cartesian,2),AXIS("E",east),AXIS("N",north),LENGTHUNIT("metre",1))"#).unwrap();
         let Crs::Projected { base, conversion, cs, .. } = &m.crs else { panic!("{m:?}") };
-        let base = Model { crs: (**base).clone(), dialect: Dialect::Wkt2, extensions: Vec::new() };
+        let base = Model { crs: (**base).clone(), dialect: Dialect::Wkt2, extensions: Vec::new(), height_added: false };
         let (_, datum, _) = geodetic_parts(&base);
         assert!(matches!(datum, Datum::Ensemble { members, .. } if members.len() == 1));
         assert_eq!(conversion.method.ids[0].code, "9807");

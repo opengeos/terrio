@@ -201,6 +201,19 @@ def setenv(**options: Any) -> None:
         os.environ[k] = Env._value(v)
 
 
+def defenv(**options: Any) -> None:
+    """Starts this thread's default environment, unless one is active.
+
+    Like rasterio's `defenv`, the environment stays active until `delenv`, and an active one
+    keeps its options.
+
+    Args:
+        **options: GDAL configuration options of a new environment.
+    """
+    if not _stack():
+        Env(**options).__enter__()
+
+
 def delenv() -> None:
     """Restores the environment of the innermost active `Env`."""
     stack = _stack()
@@ -267,4 +280,4 @@ class GDALVersion:
         return (self.major, self.minor) >= (other.major, other.minor)
 
 
-__all__ = ["Env", "GDALVersion", "delenv", "ensure_env", "getenv", "hasenv", "setenv"]
+__all__ = ["Env", "GDALVersion", "defenv", "delenv", "ensure_env", "getenv", "hasenv", "setenv"]

@@ -104,6 +104,38 @@ also bounds LERC Deflate/Zstandard inflation and the decoded size declared by
 embedded LERC and JPEG headers, before mask or pixel decoding. It is not a cap
 on total process memory or the codec's working buffers.
 
+An image stored as one strip (TIFF 6.0 allows it, and an image without `RowsPerStrip` is one)
+can decode to more than the limit. A window of such a strip is read by the rows it needs, when
+those rows, at the strip's full width and with all of its samples, fit the limit, and the strip
+stores whole-byte samples of its type, most significant bit first, as BlackIsZero, RGB or a
+palette. Uncompressed rows are read at their offsets in the file. A Deflate, LZW, Zstandard or
+PackBits strip is decoded from its start to the window's last row, the rows before the window
+dropped as they are decoded. A Zstandard stream is decoded up to its frame's window further, or
+to the end of the frame when that comes first, since its decoder hands out bytes only once they
+leave that window. Deflate, LZW and Zstandard strips may use horizontal differencing on integer
+samples or the floating-point predictor on floating-point ones. The read then holds the window,
+up to 8 MiB of stored bytes, 8 MiB of rows (or one row, when a row is larger) and the decoder's
+state: about 17 MiB, whatever the strip's size; a row more with the floating-point predictor,
+and the frame's window (at most 128 MiB) with Zstandard.
+
+A window near the end of a compressed strip decodes the rows before it, so a compressed strip
+is read by rows only when it declares at most four times the limit (1 GiB at the default 256
+MiB), and only by a read that decodes at most that much in all, summed over the strips and
+bands it reads, each strip from its start to the last row the read needs there: as much as a
+window over four chunks at the limit decodes. That bounds the decoding a read does, however few
+bytes the strips store. At the default limit, a read of the last pixel of a 1 GiB strip of
+zeros, stored in 1 MB of Deflate or 33 KB of Zstandard, takes 0.2 to 0.4 s. A larger compressed
+strip, or a read that would decode more, is refused at once, as before; raising the limit
+raises the bound. An uncompressed strip is read by rows whatever its size, as nothing of it is
+decoded. For files you do not trust, `TERRIO_MAX_DECLARED_BYTES` (below) bounds what a raster
+declares further. A nearest-neighbour read smaller than the image reads the rows it samples the
+same way, the strip once, holding one row at a time (a row must fit the limit); it decodes a
+strip within the limit to its end, as a window does, and reads a strip that a sparse file
+leaves out as nodata. A read of the whole strip, a window whose rows do not fit the limit, a
+strip whose stored bytes cannot decode to its rows, and a strip of another compression or
+layout (WhiteIsZero, YCbCr, CMYK, samples of less than a byte, complex or Float16 samples, or
+`FillOrder` 2) are decoded whole, and refused over the limit, as before.
+
 TIFF masks follow the image's own `NewSubfileType` reduced-resolution flag, including a
 reduced first image with a reduced mask (flag 5) or a unique legacy mask (flag 4).
 GDAL 3.13.3 ignores a first-image flag-5 mask; Terrio deliberately honors it, so masked
@@ -135,6 +167,10 @@ For files you do not trust, two options bound what a raster may declare, whateve
 |---|---|
 | `TERRIO_MAX_DECLARED_BYTES` | this many bytes of pixels: width x height x bands x bytes per sample, in the type terrio reads the samples as (8 for GRIB's Float64 bands) |
 | `TERRIO_MAX_BANDS` | this many bands (a complex band counts once) |
+
+No read decodes more than its raster declares, so `TERRIO_MAX_DECLARED_BYTES` also bounds what a
+read of GeoTIFF strips over the chunk limit decodes by rows, which is at most four times the chunk
+limit, `TERRIO_TIFF_MAX_CHUNK_BYTES`, in any case (above).
 
 The CLI and MCP take these limits from the process environment; MCP operators set
 them on the server process, so the same admission policy covers every tool call.

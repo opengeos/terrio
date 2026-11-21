@@ -29,8 +29,43 @@ const ARRIVING_OPEN_MAX: usize = 1 << 20;
 /// The most rounds of fetches a read may take.
 pub const MAX_ROUNDS: usize = 64;
 
-/// The range requests sent at once: browsers queue more, and servers may rate-limit them.
+/// The range requests sent at once, by all the reads of a remote together: browsers queue
+/// more, and servers may rate-limit them.
 pub const MAX_PARALLEL: usize = terrio::sparse::PARALLEL_REQUESTS;
+
+/// The places of the requests in flight of a [`Fetcher`], whichever read sends them: at most
+/// [`MAX_PARALLEL`]. A waiter is woken once and must not be dropped before then: the reads
+/// await [`Slots::take`] to the end.
+#[derive(Default)]
+struct Slots {
+    taken: Cell<usize>,
+    waiting: RefCell<std::collections::VecDeque<js_sys::Function>>,
+}
+
+/// A request's place, given back when dropped.
+struct Slot<'a>(&'a Slots);
+
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        self.0.taken.set(self.0.taken.get() - 1);
+        if let Some(next) = self.0.waiting.borrow_mut().pop_front() {
+            let _ = next.call0(&JsValue::NULL);
+        }
+    }
+}
+
+impl Slots {
+    async fn take(&self) -> Slot<'_> {
+        while self.taken.get() >= MAX_PARALLEL {
+            let mut wake = None;
+            let freed = js_sys::Promise::new(&mut |res, _| wake = Some(res));
+            self.waiting.borrow_mut().push_back(wake.expect("a promise's executor runs at once"));
+            let _ = JsFuture::from(freed).await;
+        }
+        self.taken.set(self.taken.get() + 1);
+        Slot(self)
+    }
+}
 
 /// Sends range requests with `fetch`, counting them.
 pub struct Fetcher {
@@ -47,6 +82,8 @@ pub struct Fetcher {
     /// Response-body bytes consumed by this fetcher, including those of a first block still
     /// arriving ([`Fetcher::open_file_arriving`]), counted at the open.
     pub bytes: Rc<Cell<u64>>,
+    /// The places of the requests in flight.
+    slots: Slots,
 }
 
 /// What a range request returned.
@@ -171,10 +208,17 @@ impl Fetcher {
             };
             js_sys::Object::assign(&headers, &given);
         }
+        let init = js_sys::Object::new();
         if let Some(range) = range {
             js_sys::Reflect::set(&headers, &"Range".into(), &range.into()).map_err(js_error)?;
+            // Chrome's HTTP cache sends requests for one URL one at a time, a range waiting for
+            // the one before (its cache lock): past it, ranges go out together. Blocks read are
+            // kept in memory (`cacheSize`). Browsers only: other runtimes, such as Cloudflare
+            // Workers before its `cache_option_enabled` date, refuse the option.
+            if browser() {
+                js_sys::Reflect::set(&init, &"cache".into(), &"no-store".into()).map_err(js_error)?;
+            }
         }
-        let init = js_sys::Object::new();
         js_sys::Reflect::set(&init, &"headers".into(), &headers).map_err(js_error)?;
         if head {
             js_sys::Reflect::set(&init, &"method".into(), &"HEAD".into()).map_err(js_error)?;
@@ -231,6 +275,7 @@ impl Fetcher {
         let (whole, failed, readers) = (&whole, &failed, &readers);
         let cancel_readers = || cancel_all(readers);
         in_window(ranges, |&(offset, len)| async move {
+            let _slot = self.slots.take().await;
             if whole.get() || failed.get() {
                 return Ok(());
             }
@@ -303,6 +348,7 @@ impl Fetcher {
         let readers = RefCell::new(Vec::new());
         let (failed, readers) = (&failed, &readers);
         in_window(parts, |(key, range)| async move {
+            let _slot = self.slots.take().await;
             let result: Result<(), JsError> = async {
                 let header = match *range {
                     ObjectRange::Whole => None,
@@ -466,6 +512,12 @@ pub fn server_runtime() -> bool {
         && get(&global, "document").is_undefined()
 }
 
+/// Whether this runs in a browser (a page or a web worker), whose user agent says `Mozilla/`:
+/// Node, Deno, Bun and Cloudflare Workers name themselves.
+pub fn browser() -> bool {
+    get(&get(&js_sys::global(), "navigator"), "userAgent").as_string().is_some_and(|ua| ua.starts_with("Mozilla/"))
+}
+
 /// Pixels of `bands` bands, band after band, as one typed array of their type per band.
 pub fn typed_bands(data: RasterData, count: usize) -> js_sys::Array {
     macro_rules! split {
@@ -507,8 +559,15 @@ impl Fetcher {
         } else {
             get(&js_sys::global(), "fetch").dyn_into().map_err(|_| JsError::new("no fetch function: pass one as options.fetch"))?
         };
-        let fetcher =
-            Self { url: url.to_string(), fetch, headers, allow_missing_metadata403: false, requests: Rc::default(), bytes: Rc::default() };
+        let fetcher = Self {
+            url: url.to_string(),
+            fetch,
+            headers,
+            allow_missing_metadata403: false,
+            requests: Rc::default(),
+            bytes: Rc::default(),
+            slots: Slots::default(),
+        };
         Ok((fetcher, rest))
     }
 
@@ -550,6 +609,9 @@ impl Fetcher {
             return Ok((file, None));
         };
         let expected = block.min(len);
+        // Counted now, so that a failed open (a refused Content-Range or a body error) is in
+        // `stats()`; bytes are added where the body ends or fails.
+        self.requests.set(self.requests.get() + 1);
         // The bytes' position is checked before any of them is opened.
         if let Some(header) = content_range.as_deref()
             && !valid_content_range(header, ObjectRange::At(0, expected), expected, Some(len))
@@ -560,10 +622,13 @@ impl Fetcher {
         let file = SparseFile::with_block_size(len, block);
         let mut data = Vec::new();
         let opened = loop {
-            if let Some(chunk) = next_chunk(&reader).await? {
-                append(&mut data, &chunk);
-            } else {
-                break None;
+            match next_chunk(&reader).await {
+                Ok(Some(chunk)) => append(&mut data, &chunk),
+                Ok(None) => break None,
+                Err(e) => {
+                    self.bytes.set(self.bytes.get() + data.len() as u64);
+                    return Err(e);
+                }
             }
             // The whole block: read to the body's end, where `finish_first` checks its length.
             if data.len() as u64 >= expected || data.len() > ARRIVING_OPEN_MAX {
@@ -577,7 +642,6 @@ impl Fetcher {
                 break Some(value);
             }
         };
-        self.requests.set(self.requests.get() + 1);
         let Some(value) = opened else {
             self.bytes.set(self.bytes.get() + data.len() as u64);
             if let Err(e) = finish_first(&file, &data, expected, content_range.as_deref(), len) {
@@ -709,8 +773,7 @@ fn finish_first(file: &SparseFile, data: &[u8], expected: u64, content_range: Op
 }
 
 /// A remote file or store read by terrio's synchronous readers: the blocks or objects fetched,
-/// kept up to a cache size between reads, and the reads queued, which run one at a time as they
-/// share them.
+/// kept up to a cache size between reads, which run at the same time, each with its own requests.
 pub struct Remote {
     /// Sparse blocks of a remote file, empty for object stores.
     pub file: SparseFile,
@@ -720,32 +783,51 @@ pub struct Remote {
     pub fetcher: Fetcher,
     /// The bytes kept between reads.
     pub cache_size: u64,
-    /// The end of the last read queued.
-    queue: RefCell<js_sys::Promise>,
     /// The rest of the first block, while it arrives.
     arriving: RefCell<Option<Arriving>>,
+    /// What reads running are fetching: byte ranges `[start, end)` and parts of objects, each
+    /// with a promise that settles once its read's requests have.
+    in_flight: RefCell<InFlight>,
+    /// The reads running.
+    running: Cell<usize>,
 }
 
-/// A read's turn, which lets the next queued read run when dropped.
-struct Turn(js_sys::Function);
+#[derive(Default)]
+struct InFlight {
+    ranges: Vec<(u64, u64, js_sys::Promise)>,
+    parts: Vec<((String, ObjectRange), js_sys::Promise)>,
+}
 
-impl Drop for Turn {
+/// A read running, counted in [`Remote::running`] until dropped.
+struct Running<'a>(&'a Cell<usize>);
+
+impl Drop for Running<'_> {
     fn drop(&mut self) {
-        let _ = self.0.call0(&JsValue::NULL);
+        self.0.set(self.0.get() - 1);
+    }
+}
+
+/// A read's requests in flight, registered in [`Remote::in_flight`]: dropped, they are taken out
+/// and the reads waiting for them go on.
+struct Fetching<'a> {
+    in_flight: &'a RefCell<InFlight>,
+    done: js_sys::Promise,
+    resolve: js_sys::Function,
+}
+
+impl Drop for Fetching<'_> {
+    fn drop(&mut self) {
+        let mut f = self.in_flight.borrow_mut();
+        f.ranges.retain(|(_, _, p)| !js_sys::Object::is(p, &self.done));
+        f.parts.retain(|(_, p)| !js_sys::Object::is(p, &self.done));
+        let _ = self.resolve.call0(&JsValue::NULL);
     }
 }
 
 impl Remote {
-    /// Creates a queued reader over a file or object store with the given byte-cache budget.
+    /// Creates a reader over a file or object store with the given byte-cache budget.
     pub fn new(file: SparseFile, objects: Option<Arc<SparseObjects>>, fetcher: Fetcher, cache_size: u64) -> Self {
-        Self {
-            file,
-            objects,
-            fetcher,
-            cache_size,
-            queue: RefCell::new(js_sys::Promise::resolve(&JsValue::UNDEFINED)),
-            arriving: RefCell::new(None),
-        }
+        Self { file, objects, fetcher, cache_size, arriving: RefCell::new(None), in_flight: RefCell::default(), running: Cell::new(0) }
     }
 
     /// Lets reads wait for the rest of a first block still arriving, rather than request it again.
@@ -753,26 +835,19 @@ impl Remote {
         *self.arriving.borrow_mut() = Some(arriving);
     }
 
-    /// Waits for the reads queued before this one to finish.
-    async fn turn(&self) -> Turn {
-        let mut resolve = None;
-        let mine = js_sys::Promise::new(&mut |res, _| resolve = Some(res));
-        let previous = self.queue.replace(mine);
-        let _ = JsFuture::from(previous).await;
-        Turn(resolve.expect("a promise's executor runs at once"))
-    }
-
     /// Runs a read until it no longer misses blocks or objects, fetching them in between, and
     /// returns its result; an error when a request fails, or after [`MAX_ROUNDS`] rounds. While
     /// `opening()` (no reader yet), requests grow with the header read so far, so that a large
     /// header (a COG's IFDs and tile tables) takes a few requests rather than one per block. Reads
-    /// of one remote run one after another, even when their promises are awaited together.
+    /// of one remote awaited together run together, their requests in flight at once: each round
+    /// of a read is synchronous, so it takes the blocks it missed itself.
     pub async fn run<T>(
         &self,
         opening: impl Fn() -> bool,
         mut read: impl FnMut() -> terrio::Result<T>,
     ) -> Result<terrio::Result<T>, JsError> {
-        let _turn = self.turn().await;
+        self.running.set(self.running.get() + 1);
+        let _running = Running(&self.running);
         for _ in 0..MAX_ROUNDS {
             let result = read();
             let mut missing = self.file.missing();
@@ -781,6 +856,8 @@ impl Remote {
                 missing = sparse::grow_ranges(&missing, self.file.fetched().0.min(OPEN_GROWTH_MAX), block, self.file.len());
             } else if !missing.is_empty()
                 && server_runtime()
+                // Pieces fill the request slots of a read alone; reads together fill them already.
+                && self.running.get() == 1
                 && let Some(pieces) = sparse::parallel_ranges(&missing, self.file.block_size())
             {
                 missing = pieces;
@@ -797,14 +874,58 @@ impl Remote {
                     .filter_map(|(o, n)| if o >= a.end { Some((o, n)) } else { (o + n > a.end).then(|| (a.end, o + n - a.end)) })
                     .collect();
             }
-            let parts = self.objects.as_ref().map(|o| o.missing()).unwrap_or_default();
-            if missing.is_empty() && parts.is_empty() && arriving.is_none() {
-                self.file.trim(self.cache_size);
-                if let Some(o) = &self.objects {
-                    o.trim(self.cache_size);
+            let mut parts = self.objects.as_ref().map(|o| o.missing()).unwrap_or_default();
+            // What another read is fetching is waited for, not requested again.
+            let mut waits = Vec::new();
+            {
+                let f = self.in_flight.borrow();
+                for (start, end, done) in &f.ranges {
+                    let (start, end) = (*start, *end);
+                    if !missing.iter().any(|&(o, n)| o < end && o + n > start) {
+                        continue;
+                    }
+                    waits.push(done.clone());
+                    missing = missing
+                        .into_iter()
+                        .flat_map(|(o, n)| {
+                            let e = o + n;
+                            let outside = if e <= start || o >= end { vec![(o, e)] } else { vec![(o, start), (end, e)] };
+                            outside.into_iter().filter(|(a, b)| a < b).map(|(a, b)| (a, b - a))
+                        })
+                        .collect();
+                }
+                parts.retain(|part| match f.parts.iter().find(|(p, _)| p == part) {
+                    Some((_, done)) => {
+                        waits.push(done.clone());
+                        false
+                    }
+                    None => true,
+                });
+            }
+            if missing.is_empty() && parts.is_empty() && arriving.is_none() && waits.is_empty() {
+                // The last read running trims, so that none drops blocks another fetched and has
+                // yet to read.
+                // ponytail: reads that never stop overlapping keep their blocks past `cacheSize`;
+                // keep the blocks of the reads running and trim the rest, if that shows.
+                if self.running.get() == 1 {
+                    self.file.trim(self.cache_size);
+                    if let Some(o) = &self.objects {
+                        o.trim(self.cache_size);
+                    }
                 }
                 return Ok(result);
             }
+            let mut resolve = None;
+            let done = js_sys::Promise::new(&mut |res, _| resolve = Some(res));
+            {
+                let mut f = self.in_flight.borrow_mut();
+                f.ranges.extend(missing.iter().map(|&(o, n)| (o, o + n, done.clone())));
+                if let Some(a) = &arriving {
+                    f.ranges.push((0, a.end, done.clone()));
+                }
+                f.parts.extend(parts.iter().map(|p| (p.clone(), done.clone())));
+            }
+            let fetching = Fetching { in_flight: &self.in_flight, done, resolve: resolve.expect("a promise's executor runs at once") };
             let fetched = async {
                 if let Some(o) = &self.objects {
                     self.fetcher.fetch_objects(o, &parts).await?;
@@ -816,6 +937,11 @@ impl Remote {
                 // Settles once the rest has arrived or failed (then requested again, next round),
                 // waited for even when another fetch failed, so a retry doesn't request it again.
                 let _ = JsFuture::from(a.done).await;
+            }
+            drop(fetching);
+            // Those of other reads have arrived, or failed (then requested by this one, next round).
+            for w in waits {
+                let _ = JsFuture::from(w).await;
             }
             fetched?;
         }

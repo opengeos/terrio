@@ -11,6 +11,12 @@ traditional GIS order, gives them too), and the `+axis` of both WKTs' `to_proj4(
 and one along north-south (`south, up`, `northNorthEast`, one direction twice), which PROJ reads
 east then north, and the point's coordinates in it.
 
+`krovak_dialects`: Krovak in WKT 1 with ESRI's parameters and names (`GCS_S_JTSK`, `D_S_JTSK`,
+which make PROJ read it as ESRI's dialect, as does either alone, `gcs_` in lower case too) and with
+GDAL's, without ESRI's scale and rotation of the plane, with 1 and 0°, and with -1 and 90°
+(east-north), each without `AXIS` and with each order of axes and with east and up, and the
+point's coordinates in it.
+
 Usage: PROJ_NETWORK=OFF python scripts/gen_wkt1_axes.py (needs pyproj 3.8.0)
 """
 
@@ -129,6 +135,62 @@ def other_axes():
     return cases
 
 
+ESRI_SJTSK = (
+    'GEOGCS["GCS_S_JTSK",DATUM["D_S_JTSK",SPHEROID["Bessel_1841",6377397.155,299.1528128]],'
+    'PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]'
+)
+ESRI_KROVAK = (
+    'PARAMETER["False_Easting",0.0],PARAMETER["False_Northing",0.0],'
+    'PARAMETER["Pseudo_Standard_Parallel_1",78.5],PARAMETER["Scale_Factor",0.9999],'
+    'PARAMETER["Azimuth",30.28813972222222],PARAMETER["Longitude_Of_Center",24.83333333333333],'
+    'PARAMETER["Latitude_Of_Center",49.5]'
+)
+PLANE = {
+    "no plane": "",
+    "plane 1 0": ',PARAMETER["X_Scale",1.0],PARAMETER["Y_Scale",1.0],'
+    'PARAMETER["XY_Plane_Rotation",0.0]',
+    "plane -1 90": ',PARAMETER["X_Scale",-1.0],PARAMETER["Y_Scale",1.0],'
+    'PARAMETER["XY_Plane_Rotation",90.0]',
+}
+
+
+def krovak_dialects():
+    """Krovak in ESRI's and GDAL's WKT 1, with each scale and rotation of the plane and each
+    order of axes, and where PROJ places a point in it."""
+    source = CRS(METHODS["Krovak"][1] + " +type=crs")
+    point = METHODS["Krovak"][2]
+    dialects = {
+        "ESRI": (ESRI_SJTSK, ESRI_KROVAK, "Meter"),
+        "GDAL": (SJTSK, METHODS["Krovak"][3] + "," + ORIGIN, "metre"),
+        # ESRI's dialect by the datum's name alone, and by a lower-case `gcs_`.
+        "ESRI datum": (
+            ESRI_SJTSK.replace("GCS_S_JTSK", "S_JTSK"),
+            ESRI_KROVAK,
+            "Meter",
+        ),
+        "ESRI lower-case": (
+            ESRI_SJTSK.replace("GCS_", "gcs_").replace("D_S_JTSK", "S_JTSK"),
+            ESRI_KROVAK,
+            "Meter",
+        ),
+    }
+    axes = dict(AXES, **{"east up": [("E", "EAST"), ("U", "UP")]})
+    cases = []
+    for dialect, (geogcs, params, unit) in dialects.items():
+        for plane, extra in PLANE.items():
+            for name, nodes in axes.items():
+                nodes = "".join(f',AXIS["{n}",{d}]' for n, d in nodes)
+                wkt = (
+                    f'PROJCS["Krovak {dialect} {plane} {name}",{geogcs},'
+                    f'PROJECTION["Krovak"],{params}{extra},UNIT["{unit}",1.0]{nodes}]'
+                )
+                x, y = Transformer.from_crs(source, CRS(wkt), always_xy=True).transform(
+                    *point, errcheck=True
+                )
+                cases.append({"wkt": wkt, "point": point, "proj": [x, y]})
+    return cases
+
+
 def main():
     """Write coordinate and export-axis references from the pinned PROJ version."""
     assert pyproj.proj_version_str == "9.9.0", pyproj.proj_version_str
@@ -188,6 +250,7 @@ def main():
                 "proj_version": pyproj.proj_version_str,
                 "cases": cases,
                 "other_axes": other_axes(),
+                "krovak_dialects": krovak_dialects(),
                 "geographic_exports": exports,
             },
             indent=1,

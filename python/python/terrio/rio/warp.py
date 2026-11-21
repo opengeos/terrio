@@ -31,6 +31,7 @@ from terrio.rio.dtypes import _gdal_typename
 from terrio.rio.enums import Resampling
 from terrio.rio.errors import CRSError, RasterioDeprecationWarning, RPCError, TransformError
 from terrio.rio.transform import array_bounds, from_bounds
+from terrio.rio.windows import Window
 
 SUPPORTED_RESAMPLING = [
     Resampling.nearest,
@@ -672,6 +673,73 @@ def _sentinel(src3: np.ndarray, valid: np.ndarray) -> Any:
     raise ValueError("no value is free to mark transparent source pixels")
 
 
+def _band_source_window(
+    band: Any,
+    destination: Any,
+    src_crs: Any,
+    dst_crs: Any,
+    dst_transform: Any,
+    rs: Resampling,
+    tolerance: float,
+    src_nodata: Any,
+    gcps: Any,
+    rpcs: Any,
+    kwargs: Mapping[str, Any],
+    grid_invariant: bool | None,
+    periodic_longitude: bool | None,
+) -> tuple[int, int, int, int] | None:
+    """The window of a band that a warp into a known grid reads, or None to read the whole band.
+
+    Only for an affine source with a CRS warped into a given destination grid, without `sum`
+    and the warp options that widen the source (`SOURCE_EXTRA`, `SAMPLE_STEPS`).
+
+    Returns:
+        tuple: `(col_off, row_off, width, height)`, at least 1x1, or None.
+    """
+    from terrio.rio import Band
+
+    ds = band.ds
+    if dst_crs is None and isinstance(destination, Band):
+        # The warp's destination CRS: the destination dataset's.
+        dst_crs = destination.ds.crs
+    if (
+        not src_crs
+        or dst_transform is None
+        or destination is None
+        or rs == Resampling.sum
+        or gcps is not None
+        or rpcs
+        or kwargs
+        or not ds._georeferenced
+        or ds.gcps[0]
+    ):
+        return None
+    dst_h, dst_w = destination.shape if isinstance(destination, Band) else destination.shape[-2:]
+    count = len(band.bidx) if isinstance(band.bidx, (list, tuple)) else 1
+    nodata = ds.nodata if src_nodata is None else src_nodata
+    rw = _terrio.RegionWarp(
+        (ds.width, ds.height),
+        ds.transform.to_gdal(),
+        _crs_text(src_crs),
+        _crs_text(dst_crs if dst_crs is not None else src_crs),
+        Affine(*dst_transform[:6]).to_gdal(),
+        _WARP_NAMES[rs],
+        float(np.float32(tolerance)),
+        _gdal_typename(np.dtype(band.dtype).name),
+        [None if nodata is None else float(nodata)] * count,
+        grid_invariant=grid_invariant,
+        periodic_longitude=periodic_longitude,
+    )
+    win = rw.source_window((0, 0, int(dst_w), int(dst_h)))
+    if win is None:
+        return None
+    x, y, w, h = win
+    if w <= 0 or h <= 0:
+        # Outside the source: one pixel, which the warp leaves unused.
+        return (0, 0, 1, 1)
+    return (x, y, w, h)
+
+
 def reproject(
     source: Any,
     destination: Any = None,
@@ -790,9 +858,29 @@ def reproject(
             count = len(bidx) if isinstance(bidx, (list, tuple)) else 1
             _terrio._check_sum_window(ds.width * ds.height, np.dtype(source.dtype).itemsize * count)
             sum_scale = _sum_scale(ds, ds.width, ds.height)
-        arr = ds.read(bidx)
         src_transform = ds.transform
         src_crs = src_crs or ds.crs
+        win = _band_source_window(
+            source,
+            destination,
+            src_crs,
+            dst_crs,
+            dst_transform,
+            rs,
+            tolerance,
+            src_nodata,
+            gcps,
+            rpcs,
+            kwargs,
+            grid_invariant,
+            periodic_longitude,
+        )
+        if win is None:
+            arr = ds.read(bidx)
+        else:
+            # Only the pixels the destination needs, as GDAL's warper reads its source window.
+            arr = ds.read(bidx, window=Window(*win))
+            src_transform = src_transform @ Affine.translation(win[0], win[1])
         if rpcs:
             # The dataset's own RPCs, as GDAL warps a dataset with SRC_METHOD=RPC.
             rpcs = ds.rpcs or rpcs
@@ -840,6 +928,9 @@ def reproject(
             src_crs = destination.ds.crs
     if src_crs is None:
         raise CRSError("A source CRS is required")
+    if dst_crs is None and isinstance(destination, Band):
+        # As rasterio: a dataset's band is warped into that dataset's CRS.
+        dst_crs = destination.ds.crs or None
     if dst_crs is None:
         dst_crs = src_crs
 

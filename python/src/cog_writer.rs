@@ -13,8 +13,9 @@ use wbraster::raster::RasterData;
 /// each level's rows of tiles are compressed as they are complete (into temporary files), its
 /// overviews computed from the rows they need as GDAL's COG driver computes them, and the file
 /// laid out at the end, the same, byte for byte, as `Raster.write(..., driver="COG")` writes it.
-/// Masks, overview factors, a source's overviews to copy and compressions only the whole raster
-/// is encoded with are not written this way.
+/// With `mask`, `write` takes the rows of an internal mask with the pixels', and the file is the
+/// one `Raster.write(..., driver="COG", mask=...)` writes. Overview factors, a source's overviews
+/// to copy and compressions only the whole raster is encoded with are not written this way.
 ///
 /// Args:
 ///     path: The output path.
@@ -34,6 +35,7 @@ use wbraster::raster::RasterData;
 ///     gcps: Ground control points `(pixel, line, x, y, z)`, written instead of the transform.
 ///     rpc: The 92 RPC coefficients.
 ///     overview_resampling: The overviews' resampling when the options do not set it.
+///     mask: Write an internal mask, whose rows `write` then takes too.
 ///
 /// Raises:
 ///     TerrioError: If the options are not supported or the file cannot be created.
@@ -52,7 +54,7 @@ impl PyCogWriter {
     #[pyo3(signature = (
         path, width, height, count, dtype, transform, crs=None, nodata=None, metadata=None, *,
         compress=None, bigtiff=false, options=None, band_metadata=None, colormap=None, gcps=None,
-        rpc=None, overview_resampling=None
+        rpc=None, overview_resampling=None, mask=false
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -73,6 +75,7 @@ impl PyCogWriter {
         gcps: Option<Vec<GcpTuple>>,
         rpc: Option<Vec<f64>>,
         overview_resampling: Option<String>,
+        mask: bool,
     ) -> PyResult<Self> {
         if width == 0 || height == 0 || count == 0 {
             return Err(invalid("the raster is empty"));
@@ -104,6 +107,9 @@ impl PyCogWriter {
         o.gcps = parse_gcps(gcps);
         o.rpc = rpc.unwrap_or_default();
         o.overview_resampling = overview_resampling;
+        if mask {
+            o.mask = Some(Vec::new());
+        }
         let inner = terrio::GeoTiffWriter::create(path, &header, &o).py()?;
         Ok(Self { inner: Some(inner), width, count, data_type, complex })
     }
@@ -115,17 +121,23 @@ impl PyCogWriter {
     }
 
     /// Appends rows: a `(count, rows, width)` array (or `(rows, width)` for one band) of the
-    /// writer's dtype.
+    /// writer's dtype, and the mask's `(rows, width)` uint8 rows (0 for invalid) when it has one.
     ///
     /// Args:
     ///     array: The rows. Real output requires the matching NumPy dtype. Complex output
     ///         accepts complex64 or complex128 and converts components to the selected storage
     ///         type; integer components round and saturate as GDAL 3.13.3 does. Use complex128
     ///         input to avoid narrowing components before integer rounding.
+    ///     mask: The mask's rows.
     ///
     /// Raises:
-    ///     InvalidArgumentError: If the shapes or dtype do not match, or the writer is closed.
-    fn write(&mut self, py: Python<'_>, array: &Bound<'_, PyUntypedArray>) -> PyResult<()> {
+    ///     InvalidArgumentError: If the array's shape or dtype, or the mask's shape, is not the
+    ///         writer's, a mask is given to a writer without one or none to a writer with one, or
+    ///         the writer is closed.
+    ///     TypeError: If the mask is not a 2-D uint8 array.
+    #[pyo3(signature = (array, mask=None))]
+    fn write(&mut self, py: Python<'_>, array: &Bound<'_, PyUntypedArray>, mask: Option<numpy::PyReadonlyArray2<'_, u8>>) -> PyResult<()> {
+        let w = self.inner.as_mut().ok_or_else(|| invalid("the writer is closed"))?;
         let shape = array.shape().to_vec();
         let (bands, rows, cols) = match shape[..] {
             [r, c] => (1, r, c),
@@ -139,8 +151,15 @@ impl PyCogWriter {
         if complex != self.complex || data.data_type() != self.data_type {
             return Err(invalid("the array's dtype is not the writer's"));
         }
-        let w = self.inner.as_mut().ok_or_else(|| invalid("the writer is closed"))?;
-        with_warnings(py, || w.write_rows(&data, rows, None))
+        // Flattened, a mask of the same size in another shape would mask other pixels.
+        let mask: Option<Vec<u8>> = match mask {
+            Some(m) if m.shape() != [rows, cols].as_slice() => {
+                return Err(invalid(format!("expected a mask of {rows} rows of {cols} columns, got one of shape {:?}", m.shape())));
+            }
+            Some(m) => Some(m.as_array().iter().copied().collect()),
+            None => None,
+        };
+        with_warnings(py, || w.write_rows(&data, rows, mask.as_deref()))
     }
 
     /// Computes the last overview rows, lays the file out and closes it.

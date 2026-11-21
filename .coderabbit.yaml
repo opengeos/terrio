@@ -1,0 +1,15 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+reviews:
+  # Approve a pull request, or request changes for blocking findings. A repository
+  # file replaces the web settings, where this was on, and it is off by default.
+  # It approves only once the latest commit is reviewed: after a push, comment
+  # `@coderabbitai review`.
+  auto_approvals:
+    enabled: true
+  auto_review:
+    enabled: true
+    # Review a pull request when it opens, not again on every push: incremental
+    # reviews exhaust the free OSS quota. Comment `@coderabbitai review` to re-review.
+    auto_incremental_review: false
+    drafts: false
+    ignore_title_keywords: ["Release"]
