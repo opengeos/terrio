@@ -683,10 +683,12 @@ fn geodetic(n: &Node, d: Dialect) -> Option<Crs> {
         } else {
             ang.clone()
         };
-        // A WKT 2 spherical CS that is not two-dimensional, which PROJ 9.9.0 and the WKT 2 reader
-        // refuse. The reader reads another CS of a dimension other than its axes, which PROJ
-        // refuses, so the model does too (backward compatibility).
+        // A WKT 2 geographic CRS's spherical CS that is not two-dimensional, which PROJ 9.9.0 and
+        // the WKT 2 reader (`wkt2::geodetic_kind`) refuse. The reader reads an ellipsoidal CS of
+        // another dimension than its axes, and any base CRS's CS, which PROJ refuses, so the
+        // model reads them too (backward compatibility).
         if d == Dialect::Wkt2
+            && !n.is(kw::BASE_GEODETIC_CRS)
             && let Some(c) = n.child("CS")
             && matches!(c.args.first(), Some(Arg::Ident(t)) if t.eq_ignore_ascii_case("spherical"))
             && c.num(1) != Some(2.0)

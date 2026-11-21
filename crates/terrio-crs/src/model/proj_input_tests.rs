@@ -230,7 +230,7 @@ fn unusual_wkt2_gives_its_proj_string_the_tree_s_input() {
             ),
             true,
         ),
-        // Planetocentric, two axes only; a CS the reader does not convert.
+        // Planetocentric, two-dimensional only; then a CS the reader does not convert.
         (geog(&pm, &format!(r#"CS[spherical,2],AXIS["lat",north,ORDER[1],{DEG}],AXIS["lon",east,ORDER[2],{DEG}]"#)), true),
         (
             geog(
@@ -281,6 +281,9 @@ fn unusual_wkt2_gives_its_proj_string_the_tree_s_input() {
         ),
         // Projected: east-north, north-east in feet, a polar CS, south-orientated axes.
         (projected(tm, &lon, en), true),
+        // A base CRS's spherical CS of three dimensions: PROJ 9.9.0 refuses it, the reader reads
+        // the base CRS without its CS.
+        (format!(r#"PROJCRS["p",BASEGEOGCRS["g",{datum},{pm},CS[spherical,3],{DEG}],CONVERSION["c",METHOD[{tm}]{lon}],{en}]"#), true),
         (projected(tm, &lon, r#"CS[Cartesian,2],AXIS["(N)",north],AXIS["(E)",east],LENGTHUNIT["US survey foot",0.304800609601219]"#), true),
         (
             projected(
@@ -331,8 +334,8 @@ fn where_the_model_reads_unusual_wkt2_otherwise() {
         (crate::wkt2::Wkt2Input::read(&root).unwrap(), read(text).as_ref().and_then(|m| wkt2_input(m, &root)).unwrap())
     };
     // An `ID` and then an `AUTHORITY`, of other codes: the tree reads the `AUTHORITY` (it reads an
-    // `AUTHORITY` before any `ID`), the model the first. PROJ 9.9.0 reads the CRS, and identifies
-    // it as neither.
+    // `AUTHORITY` before any `ID`), the model the first. PROJ 9.9.0 reads the CRS, lists both
+    // codes, and identifies it as neither (`to_epsg()` None).
     let (tree, model) = input(
         r#"GEOGCRS["x",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],CS[ellipsoidal,2],AXIS["latitude",north,ANGLEUNIT["degree",0.0174532925199433]],AXIS["longitude",east,ANGLEUNIT["degree",0.0174532925199433]],ID["EPSG",4258],AUTHORITY["EPSG","4326"]]"#,
     );
