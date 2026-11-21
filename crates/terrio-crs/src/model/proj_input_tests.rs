@@ -242,6 +242,28 @@ fn unusual_wkt2_gives_its_proj_string_the_tree_s_input() {
             false,
         ),
         (geog(&pm, &format!(r#"CS[spherical,3],AXIS["lat",north,ORDER[1],{DEG}],AXIS["lon",east,ORDER[2],{DEG}]"#)), false),
+        (geog(&pm, &format!(r#"CS[spherical,3],{DEG}"#)), false),
+        // A spherical CS of three axes, or an ellipsoidal one of another dimension than its axes:
+        // PROJ 9.9.0 refuses them, the reader reads their first two axes.
+        (
+            geog(
+                &pm,
+                &format!(
+                    r#"CS[spherical,2],AXIS["lat",north,ORDER[1],{DEG}],AXIS["lon",east,ORDER[2],{DEG}],AXIS["r",up,ORDER[3],LENGTHUNIT["metre",1]]"#
+                ),
+            ),
+            true,
+        ),
+        (geog(&pm, &format!(r#"CS[ellipsoidal,3],AXIS["lat",north,ORDER[1],{DEG}],AXIS["lon",west,ORDER[2],{DEG}]"#)), true),
+        (
+            geog(
+                &pm,
+                &format!(
+                    r#"CS[ellipsoidal,2],AXIS["lat",north,ORDER[1],{DEG}],AXIS["lon",east,ORDER[2],{DEG}],AXIS["h",up,ORDER[3],LENGTHUNIT["metre",1]]"#
+                ),
+            ),
+            true,
+        ),
         (geog(&pm, &format!(r#"CS[affine,2],AXIS["lat",north,ORDER[1],{DEG}],AXIS["lon",east,ORDER[2],{DEG}]"#)), false),
         // A prime meridian's unit without its size.
         (geog(r#"PRIMEM["p",2,ANGLEUNIT["grad"]]"#, &lat_lon), false),
@@ -315,4 +337,52 @@ fn where_the_model_reads_unusual_wkt2_otherwise() {
         r#"GEOGCRS["x",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],CS[ellipsoidal,2],AXIS["latitude",north,ANGLEUNIT["degree",0.0174532925199433]],AXIS["longitude",east,ANGLEUNIT["degree",0.0174532925199433]],ID["EPSG",4258],AUTHORITY["EPSG","4326"]]"#,
     );
     assert_eq!((tree.geodetic.epsg, model.geodetic.epsg), (Some(4326), Some(4258)));
+
+    const DEG: &str = r#"ANGLEUNIT["degree",0.0174532925199433]"#;
+    let datum = r#"DATUM["d",ELLIPSOID["WGS 84",6378137,298.257223563,LENGTHUNIT["metre",1]]]"#;
+    let geog = |pm: &str, axes: &str| format!(r#"GEOGCRS["g",{datum},{pm},CS[ellipsoidal,2],{axes}]"#);
+    let pm = format!(r#"PRIMEM["Greenwich",0,{DEG}]"#);
+    let lat_lon = format!(r#"AXIS["lat",north,{DEG}],AXIS["lon",east,{DEG}]"#);
+    let projected = |param: &str, axes: &str| {
+        format!(
+            r#"PROJCRS["p",BASEGEOGCRS["g",{datum},{pm}],CONVERSION["c",METHOD["Transverse Mercator",ID["EPSG",9807]],PARAMETER["Longitude of natural origin",9,{param},ID["EPSG",8802]]],CS[Cartesian,2],{axes}]"#
+        )
+    };
+    let en = r#"AXIS["(E)",east,LENGTHUNIT["metre",1]],AXIS["(N)",north,LENGTHUNIT["metre",1]]"#;
+    let geographic = |i: &crate::wkt2::Wkt2Input| match &i.kind {
+        crate::wkt2::Wkt2Kind::Geographic { axes, .. } => axes.clone(),
+        _ => panic!("not geographic"),
+    };
+    let projection = |i: &crate::wkt2::Wkt2Input| match &i.kind {
+        crate::wkt2::Wkt2Kind::Projected { directions, method, .. } => (directions.clone(), method.params[0].units.clone()),
+        _ => panic!("not projected"),
+    };
+    // Axes out of their `ORDER`: the tree reads them as written, the model in their order. PROJ
+    // 9.9.0 refuses the CRS.
+    let (tree, model) = input(&geog(&pm, &format!(r#"AXIS["lon",west,ORDER[2],{DEG}],AXIS["lat",north,ORDER[1],{DEG}]"#)));
+    assert_eq!((geographic(&tree), geographic(&model)), (Some("wn".into()), Some("nw".into())));
+    let (tree, model) =
+        input(&projected(DEG, r#"AXIS["(N)",north,ORDER[2],LENGTHUNIT["metre",1]],AXIS["(E)",west,ORDER[1],LENGTHUNIT["metre",1]]"#));
+    assert_eq!(
+        (projection(&tree).0, projection(&model).0),
+        (vec!["north".to_string(), "west".into()], vec!["west".into(), "north".into()])
+    );
+    // An axis direction in quotes: the tree skips it, the model reads it. PROJ 9.9.0 refuses the
+    // CRS.
+    let (tree, model) = input(&geog(&pm, &format!(r#"AXIS["lon","west",{DEG}],AXIS["lat",north,{DEG}]"#)));
+    assert_eq!((geographic(&tree), geographic(&model)), (None, Some("wn".into())));
+    let (tree, model) = input(&projected(DEG, r#"AXIS["(E)","west",LENGTHUNIT["metre",1]],AXIS["(N)",north,LENGTHUNIT["metre",1]]"#));
+    assert_eq!((projection(&tree).0, projection(&model).0), (vec!["north".to_string()], vec!["west".into(), "north".into()]));
+    // WKT 2's long `PRIMEMERIDIAN` keyword: the tree reads no prime meridian, the model reads it.
+    // PROJ 9.9.0 reads it too (`+pm=2`).
+    let (tree, model) = input(&geog(&format!(r#"PRIMEMERIDIAN["Local",2,{DEG}]"#), &lat_lon));
+    assert_eq!((tree.geodetic.pm, model.geodetic.pm), (0.0, 2.0));
+    // A parameter's unit without its size: the tree keeps the unit, the model drops it; both
+    // give the parameter the CRS's unit. PROJ 9.9.0 refuses the CRS.
+    let (tree, model) = input(&projected(r#"ANGLEUNIT["degree"]"#, en));
+    assert_eq!((projection(&tree).1, projection(&model).1), (vec![("ANGLEUNIT", None)], vec![]));
+    // A parameter in a time unit: the tree skips the unit, the model reads it, as PROJ 9.9.0 does
+    // (it reads 9 seconds of longitude as 9 radians, `+lon_0=515.662015617741`).
+    let (tree, model) = input(&projected(r#"TIMEUNIT["second",1]"#, en));
+    assert_eq!((projection(&tree).1, projection(&model).1), (vec![], vec![("UNIT", Some(1.0))]));
 }

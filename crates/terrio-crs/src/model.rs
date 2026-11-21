@@ -457,9 +457,6 @@ pub(crate) fn wkt2_input(m: &Model, root: &Node) -> Option<wkt2::Wkt2Input> {
                 }
                 CsKind::Ellipsoidal | CsKind::Spherical => {
                     let spherical = cs.kind == CsKind::Spherical;
-                    if spherical && cs.axes.len() != 2 {
-                        return None;
-                    }
                     // Two axes, one of them west or south: as `+axis` letters.
                     let directions: Vec<String> = if cs.explicit { cs.axes.iter().take(2).map(lower).collect() } else { Vec::new() };
                     let axes = if directions.len() == 2 && directions.iter().any(|d| d == "west" || d == "south") {
@@ -686,13 +683,13 @@ fn geodetic(n: &Node, d: Dialect) -> Option<Crs> {
         } else {
             ang.clone()
         };
-        // A WKT 2 CS of another dimension than its axes, which PROJ 9.9.0 refuses (the WKT 2 reader
-        // refuses a spherical one that is not two-dimensional, and the Cartesian one below).
+        // A WKT 2 spherical CS that is not two-dimensional, which PROJ 9.9.0 and the WKT 2 reader
+        // refuse. The reader reads another CS of a dimension other than its axes, which PROJ
+        // refuses, so the model does too (backward compatibility).
         if d == Dialect::Wkt2
             && let Some(c) = n.child("CS")
-            && let count = n.children("AXIS").count()
-            && count > 0
-            && c.num(1) != Some(count as f64)
+            && matches!(c.args.first(), Some(Arg::Ident(t)) if t.eq_ignore_ascii_case("spherical"))
+            && c.num(1) != Some(2.0)
         {
             return None;
         }
