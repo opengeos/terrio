@@ -342,13 +342,33 @@ const DECODE_BYTES: usize = 256 << 20;
 /// The chunk of the block cache that holds a band, or the part of it a read keeps.
 const BAND_CHUNK: u32 = 0;
 
+/// Where a band of a file is, and the points of its grid.
+#[derive(Clone, Copy)]
+struct BandAt {
+    /// The offset of its message.
+    start: usize,
+    /// The length of its message.
+    len: usize,
+    /// Its index among the message's bands.
+    k: usize,
+    /// The points of its grid, whose decoded Float64 values take 8 bytes each: 0 when the grid
+    /// cannot be read, which the band's decode then reports.
+    points: usize,
+}
+
+impl BandAt {
+    fn of(start: usize, len: usize, k: usize, band: &Band) -> BandAt {
+        let points = band.grid().map_or(0, |g| (g.nx as usize).saturating_mul(g.ny as usize));
+        BandAt { start, len, k, points }
+    }
+}
+
 /// Where a [`Source`]'s messages are.
 enum Store {
-    /// The whole file, in memory, and where each band is: its message's offset and length, and
-    /// its index among the message's bands.
-    Bytes(Vec<u8>, Vec<(usize, usize, usize)>),
+    /// The whole file, in memory, and where each band is.
+    Bytes(Vec<u8>, Vec<BandAt>),
     /// A local file, each band's message read when the band is read, and where each band is.
-    File(local::File, Vec<(usize, usize, usize)>),
+    File(local::File, Vec<BandAt>),
     /// A remote file, each band's message fetched when the band is read.
     #[cfg(remote)]
     Remote(Box<remote::Messages>),
@@ -369,7 +389,7 @@ impl Store {
     /// message, and the band's index among the message's bands.
     fn locate(&self, b: usize) -> Result<(usize, usize)> {
         let found = match self {
-            Store::Bytes(_, index) | Store::File(_, index) => index.get(b.wrapping_sub(1)).map(|&(start, _, k)| (start, k)),
+            Store::Bytes(_, index) | Store::File(_, index) => index.get(b.wrapping_sub(1)).map(|at| (at.start, at.k)),
             #[cfg(remote)]
             Store::Remote(messages) => messages.band(b.wrapping_sub(1)),
         };
@@ -381,12 +401,12 @@ impl Store {
         let out_of_range = || Error::InvalidArgument(format!("band {b} out of range"));
         match self {
             Store::Bytes(bytes, index) => {
-                let &(start, len, k) = index.get(b.wrapping_sub(1)).ok_or_else(out_of_range)?;
-                Ok((bytes[start..start + len].into(), k))
+                let at = index.get(b.wrapping_sub(1)).ok_or_else(out_of_range)?;
+                Ok((bytes[at.start..at.start + at.len].into(), at.k))
             }
             Store::File(file, index) => {
-                let &(start, len, k) = index.get(b.wrapping_sub(1)).ok_or_else(out_of_range)?;
-                Ok((file.read(start, len)?.into(), k))
+                let at = index.get(b.wrapping_sub(1)).ok_or_else(out_of_range)?;
+                Ok((file.read(at.start, at.len)?.into(), at.k))
             }
             #[cfg(remote)]
             Store::Remote(messages) => {
@@ -425,13 +445,12 @@ fn kept_rows(wanted: std::ops::Range<usize>, rows: usize, held: usize) -> std::o
     wanted.start - before..wanted.end + after
 }
 
-/// Where each band of the messages in `b` is: `(message offset, message length, index of the
-/// band among the message's bands)`, in band order, as [`bands`] finds them.
-fn band_index(b: &[u8]) -> Result<Vec<(usize, usize, usize)>> {
+/// Where each band of the messages in `b` is, in band order, as [`bands`] finds them.
+fn band_index(b: &[u8]) -> Result<Vec<BandAt>> {
     let mut out = Vec::new();
     for (start, len) in message_spans(b)? {
-        let n = message_bands(&b[start..start + len], len, b.len(), true)?.len();
-        out.extend((0..n).map(|k| (start, len, k)));
+        let bands = message_bands(&b[start..start + len], len, b.len(), true)?;
+        out.extend(bands.iter().enumerate().map(|(k, band)| BandAt::of(start, len, k, band)));
     }
     Ok(out)
 }
@@ -533,23 +552,29 @@ impl Source {
     }
 
     /// How many of the bands `missing` (from 1, sorted), from the first, are decoded at once: the
-    /// first, then as many as hold in [`DECODE_BYTES`] with it, counting their decoded values and,
-    /// for a local file, the messages read for them, which are held until they are all decoded.
+    /// first, then as many as hold in [`DECODE_BYTES`] with it, counting the decoded values of each
+    /// band's own grid and, for a local file, the messages read for them, which are held until they
+    /// are all decoded.
     fn at_once(&self, missing: &[usize]) -> usize {
-        let Store::File(_, index) = &self.store else { return missing.len() };
-        let band_bytes = self.cols.saturating_mul(self.rows).saturating_mul(8);
+        let index = match &self.store {
+            Store::Bytes(_, index) | Store::File(_, index) => index,
+            #[cfg(remote)]
+            Store::Remote(_) => return missing.len(),
+        };
+        let read = matches!(self.store, Store::File(..));
         let mut last = None;
         let mut bytes = 0usize;
         let mut fits = |b: usize| {
-            // A message's bands are numbered one after the other: it is read once for them.
-            let message = match index.get(b.wrapping_sub(1)) {
-                Some(&(start, len, _)) if last != Some(start) => {
-                    last = Some(start);
-                    len
-                }
-                _ => 0,
-            };
-            bytes = bytes.saturating_add(band_bytes).saturating_add(message);
+            if let Some(at) = index.get(b.wrapping_sub(1)) {
+                // A message's bands are numbered one after the other: it is read once for them.
+                let message = if read && last != Some(at.start) {
+                    last = Some(at.start);
+                    at.len
+                } else {
+                    0
+                };
+                bytes = bytes.saturating_add(at.points.saturating_mul(8)).saturating_add(message);
+            }
             bytes <= DECODE_BYTES
         };
         let Some((&first, more)) = missing.split_first() else { return 0 };
@@ -2618,6 +2643,28 @@ mod tests {
         assert_eq!(kept_rows(80..95, 100, 30), 70..100);
         assert_eq!(kept_rows(0..50, 100, 20), 30..50);
         assert!(kept_rows(10..20, 100, 0).is_empty());
+    }
+
+    /// Catches a read's batch charging its bands at the raster's grid, the first field's, rather
+    /// than at their own: after a field of 16 x 16 points, fields of 4096 x 4096 points take
+    /// 128 MiB each as Float64, so a batch of the four takes the first two, and one of the last two
+    /// takes both, which hold in 256 MiB exactly. A measure of a read's peak would depend on how many
+    /// threads decode at once.
+    #[test]
+    fn a_batch_counts_each_band_at_its_own_grid() {
+        let at = |points| BandAt { start: 0, len: 0, k: 0, points };
+        let large = 4096 * 4096;
+        let index = vec![at(16 * 16), at(large), at(large), at(large)];
+        let source = Source {
+            store: Store::Bytes(Vec::new(), index),
+            cols: 16,
+            rows: 16,
+            split: 0,
+            normalize: true,
+            handle: crate::block_cache::Handle::new(),
+        };
+        assert_eq!(source.at_once(&[1, 2, 3, 4]), 2);
+        assert_eq!(source.at_once(&[3, 4]), 2);
     }
 
     /// Catches a window placed otherwise than its band, cropped: windows starting past the

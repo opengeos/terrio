@@ -15,7 +15,9 @@
 //! The messages are found, and their headers read, as in the bytes of a whole file in memory
 //! ([`super::open_lazy_bytes`]): a file gives the same bands, metadata and errors read either way.
 
-use super::{Band, Source, Store, bad_section, find_messages, grib1, header_with, message_bands, message_fields, next_part, try_filled};
+use super::{
+    Band, BandAt, Source, Store, bad_section, find_messages, grib1, header_with, message_bands, message_fields, next_part, try_filled,
+};
 use crate::{Error, Result};
 use std::io::{Read, Seek, SeekFrom};
 
@@ -201,7 +203,7 @@ pub(super) fn open(local: crate::vfs::LocalPath) -> Result<crate::LazyRaster> {
             first_grid = bands.first().map(Band::grid);
         }
         for (k, band) in bands.iter().enumerate() {
-            index.push((start, n, k));
+            index.push(BandAt::of(start, n, k, band));
             band_metadata.push(band.metadata());
             band_nodata.push(if read_whole { Nodata::InMessage(start, n) } else { Nodata::Known(band.nodata()) });
         }
