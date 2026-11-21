@@ -128,8 +128,8 @@ pub(crate) struct Wkt2Method {
 }
 
 /// A conversion's parameter: its name as written, its EPSG code, its value (as written, in its
-/// unit), and its unit nodes' sizes as written (radians, metres, unity or a unit's own), by keyword (`ANGLEUNIT`, `LENGTHUNIT`, `SCALEUNIT`,
-/// `UNIT`), the first of each.
+/// unit), and its unit nodes' sizes as written (in radians, metres or unity), by keyword
+/// (`ANGLEUNIT`, `LENGTHUNIT`, `SCALEUNIT`, `UNIT`), the first of each.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Wkt2Param {
     pub name: String,

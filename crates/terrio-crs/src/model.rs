@@ -691,8 +691,8 @@ fn geodetic(n: &Node, d: Dialect) -> Option<Crs> {
         };
         // A WKT 2 geographic CRS's spherical CS that is not two-dimensional, which PROJ 9.9.0 and
         // the WKT 2 reader (`wkt2::geodetic_kind`) refuse. The reader reads an ellipsoidal CS of
-        // another dimension than its axes, and any base CRS's CS, which PROJ refuses, so the
-        // model reads them too (backward compatibility).
+        // another dimension than its axes and ignores a base CRS's CS, where PROJ refuses both, so
+        // the model accepts them too (backward compatibility).
         if d == Dialect::Wkt2
             && !n.is(kw::BASE_GEODETIC_CRS)
             && let Some(c) = n.child("CS")
@@ -703,7 +703,7 @@ fn geodetic(n: &Node, d: Dialect) -> Option<Crs> {
         }
         // A WKT 2 geodetic CRS's Cartesian CS that is not three axes, X, Y and Z in that order,
         // each in a length unit, one for all, which PROJ 9.9.0 and the WKT 2 reader refuse. The
-        // reader reads any base CRS's CS, so the model does too (backward compatibility).
+        // reader ignores a base CRS's CS, so the model accepts it (backward compatibility).
         if d == Dialect::Wkt2
             && !n.is(kw::BASE_GEODETIC_CRS)
             && let Some(c) = n.child("CS").filter(|_| cartesian)
