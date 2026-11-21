@@ -1314,7 +1314,7 @@ impl Params {
 }
 
 /// Whether a `BOUNDCRS`'s target is WGS 84.
-fn bound_to_wgs84(root: &Node) -> bool {
+pub(crate) fn bound_to_wgs84(root: &Node) -> bool {
     root.child("TARGETCRS").and_then(first_node).is_some_and(|t| {
         matches!(t.epsg(), Some(4326 | 4979))
             || t.datum().is_some_and(|d| d.epsg() == Some(6326) || norm(d.name().unwrap_or("")).starts_with("worldgeodeticsystem1984"))

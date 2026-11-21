@@ -446,7 +446,8 @@ pub(crate) fn wkt2_input(m: &Model) -> Option<wkt2::Wkt2Input> {
 
 /// A WKT 2 CRS's input to its PROJ string, a `BOUNDCRS`'s too, read from its model: what
 /// [`wkt2::Wkt2Root::read`] reads from its tree (`root`). The tree gives what the model does not
-/// hold yet: whether a bound CRS's source or target is WKT 1, and its dialect.
+/// hold yet: whether a bound CRS's source or target is WKT 1, and its dialect, and whether a
+/// target the model does not read is WGS 84.
 pub(crate) fn wkt2_root_input(m: &Model, root: &Node) -> Option<wkt2::Wkt2Root> {
     if m.dialect != Dialect::Wkt2 {
         return None;
@@ -506,8 +507,14 @@ fn root_input(crs: &Crs, root: &Node) -> Option<wkt2::Wkt2Root> {
         ) => Some(ident),
         Some(Crs::Bound { .. }) | None => None,
     };
-    let to_wgs84 = matches!(ident.and_then(first_epsg), Some(4326 | 4979))
-        || datum.is_some_and(|d| first_epsg(d) == Some(6326) || wkt1::norm(&d.name).starts_with("worldgeodeticsystem1984"));
+    // A target the model does not read, which the reader reads the bound CRS without: whether it
+    // is WGS 84 by the reader's rule, on its tree (`wkt2::bound_to_wgs84`).
+    let to_wgs84 = if target.is_some() {
+        matches!(ident.and_then(first_epsg), Some(4326 | 4979))
+            || datum.is_some_and(|d| first_epsg(d) == Some(6326) || wkt1::norm(&d.name).starts_with("worldgeodeticsystem1984"))
+    } else {
+        wkt2::bound_to_wgs84(root)
+    };
     let target = node("TARGETCRS").filter(|n| wkt2::handles(n)).zip(target).and_then(|(n, t)| root_input(t, n));
     Some(Wkt2Root::Bound(Box::new(Wkt2Bound { source, transformation, to_wgs84, target })))
 }

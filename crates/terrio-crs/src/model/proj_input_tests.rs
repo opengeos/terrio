@@ -516,6 +516,26 @@ fn bound_wkt2_gives_its_proj_string_the_tree_s_input() {
             true,
         ),
         (bound(&osgb, &format!(r#"GEOGCRS["x",CS[ellipsoidal,2],AXIS["lat",north,{DEG}],AXIS["lon",east,{DEG}]]"#), &pv), true),
+        // An unreadable target that is WGS 84 by its code or its datum's name: the shift is to
+        // WGS 84 (`+towgs84`) all the same.
+        (
+            bound(
+                &osgb,
+                &format!(r#"GEOGCRS["WGS 84",CS[ellipsoidal,2],AXIS["lat",north,{DEG}],AXIS["lon",east,{DEG}],ID["EPSG",4326]]"#),
+                &transformation(r#""Geocentric translations (geog2D domain)",ID["EPSG",9603]"#, &three),
+            ),
+            true,
+        ),
+        (
+            bound(
+                &osgb,
+                &format!(
+                    r#"GEOGCRS["WGS 84",DATUM["World Geodetic System 1984"],CS[ellipsoidal,2],AXIS["lat",north,{DEG}],AXIS["lon",east,{DEG}]]"#
+                ),
+                &pv,
+            ),
+            true,
+        ),
         // GDAL's WKT 1 source CRSs, read without their `TOWGS84`; a rotated pole.
         (
             bound(
