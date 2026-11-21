@@ -531,7 +531,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (_, bytes) = grib_file(dir.path(), 40, 30, 2);
         let fifo = dir.path().join("fifo.grib2");
-        assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+        let c = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: `c` is a path without NUL, valid for the call.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "{}", std::io::Error::last_os_error());
         let writer = {
             let (fifo, bytes) = (fifo.clone(), bytes.clone());
             std::thread::spawn(move || std::fs::write(fifo, bytes))
