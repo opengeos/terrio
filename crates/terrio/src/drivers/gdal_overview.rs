@@ -613,13 +613,13 @@ struct Args<'a> {
 }
 
 /// Computes the rows of `out` (`width` values each) with `f(scratch, row, values, flags)`, the
-/// rows numbered from 0, where `flags` are the row's `width` entries of `flags` when given: in
+/// rows numbered from 0, where `flags`, when given, holds the `width` flags of each row: in
 /// `pieces` runs of consecutive rows on the thread pool, each run with a copy of `scratch` of its
 /// own, or all of them on the calling thread. Each row is computed alone, so the values do not
-/// depend on the runs. The kernels pass closures that hold what they read by value (`move`):
-/// through references to the kernel's locals, the compiler loads those values again inside the
-/// loops. When given, `flags` must have an entry for each value of `out`, or this panics: past the
-/// end of shorter flags, rows would be computed without theirs, as if unmasked.
+/// depend on the runs. The kernels pass closures that hold what they read by value (`move`), so
+/// that their loops do not read the kernel's locals through references. When given, `flags` must
+/// have an entry for each value of `out`, or this panics: past the end of shorter flags, rows would
+/// be computed without theirs, as if unmasked.
 fn rows_in_pieces<V: Send, S: Clone + Sync, F: Fn(&mut S, usize, &mut [V], Option<&mut [u8]>) + Sync + Send>(
     out: &mut [V],
     flags: Option<&mut [u8]>,
@@ -1414,8 +1414,8 @@ fn average<T: AvgSrc>(rms: bool, a: &Args, chunk: &[T]) -> Vec<f64> {
         }
         if two && s1 == s0 + 2 && a.mask.is_none() {
             // A factor of 2 with regular spacing and no nodata: GDAL's optimized cases. The two
-            // source rows are sliced to the row's columns first, which keeps the pixel loop free of
-            // bounds checks.
+            // source rows are sliced to the row's columns first, so that each index is checked
+            // against its row's slice.
             let base = (s0 - a.cy0) as usize * xn + xs[0].0;
             let n = 2 * row.len();
             let (upper, lower) = (&chunk[base..base + n], &chunk[base + xn..base + xn + n]);
@@ -1590,7 +1590,7 @@ fn mode<T: Sample>(a: &Args, chunk: &[T]) -> Vec<T> {
     let dst_w = (a.dx1 - a.dx0) as usize;
     let mut out = vec![T::default(); dst_w * (a.dy1 - a.dy0) as usize];
     let scratch = (Vec::<T>::new(), Vec::<u32>::new(), [0u32; 256]);
-    // Not `move`: holding its values, this closure's loops ran 5% more instructions.
+    // Not `move`: measured to run more instructions when it holds its values.
     rows_in_pieces(&mut out, None, dst_w, a.pieces, scratch, |(vals, counts, hist), y, row, _| {
         let yd = a.dy0 + y as i64;
         let (y0, y1) = window(yd, a.ry, a.sdy, a.cy0, bottom);
