@@ -442,8 +442,8 @@ struct Source {
 
 /// The rows of a grid of `rows` rows (north up) that a read of the rows `wanted` keeps when it
 /// decodes the band and its share of the block cache holds `held` rows: the wanted ones (the last
-/// of them when it holds fewer), then the nearest after them, then the nearest before them. None
-/// when it wants none, as a window below a grid shorter than its band does.
+/// of them when it holds fewer), then the nearest after them, then the nearest before them. It is
+/// empty when it wants none, as a window below a grid shorter than its band does.
 fn kept_rows(wanted: std::ops::Range<usize>, rows: usize, held: usize) -> std::ops::Range<usize> {
     if wanted.is_empty() {
         return wanted;
