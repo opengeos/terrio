@@ -316,7 +316,7 @@ fn render(crs: &Crs) -> Value {
                     list.push(f);
                 }
             }
-            json!({"type": "BoundCRS", "source_crs": render(source), "target_crs": render(&t.target), "transformation": tr})
+            json!({"type": "BoundCRS", "source_crs": render(source), "target_crs": t.target.as_deref().map_or(Value::Null, render), "transformation": tr})
         }
         Crs::Other { ident, .. } => {
             let mut o = Map::new();

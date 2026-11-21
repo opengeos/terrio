@@ -162,15 +162,16 @@ fn where_the_model_reads_unusual_wkt1_otherwise() {
     );
 }
 
-/// The tree's and the model's input of a WKT 2 geographic, geocentric, projected or derived
-/// geographic CRS (not a bound one), compared by their `Debug` form; `None` for another text.
+/// The tree's and the model's input of a WKT 2 CRS the reader converts (a geographic, geocentric,
+/// projected, derived geographic or bound CRS), compared by their `Debug` form; `None` for another
+/// text.
 fn wkt2_inputs(text: &str) -> Option<(String, String)> {
     let root = crate::parsed::tree(text)?;
-    if !crate::wkt2::handles(&root) || root.key.eq_ignore_ascii_case("BOUNDCRS") {
+    if !crate::wkt2::handles(&root) {
         return None;
     }
-    let tree = crate::wkt2::Wkt2Input::read(&root).ok();
-    let model = read(text).as_ref().and_then(wkt2_input);
+    let tree = crate::wkt2::Wkt2Root::read(&root).ok();
+    let model = read(text).as_ref().and_then(|m| wkt2_root_input(m, &root));
     Some((format!("{tree:?}"), format!("{model:?}")))
 }
 
@@ -423,6 +424,148 @@ fn derived_wkt2_gives_its_proj_string_the_tree_s_input() {
     assert!(differ.is_empty(), "{}", differ.join("\n"));
 }
 
+/// A bound CRS's input is the same from the tree and the model, which the corpus does not have:
+/// each kind of Helmert transformation, a grid's, WGS 84 or another target, WKT 1 and derived
+/// source CRSs, and refusals.
+#[test]
+fn bound_wkt2_gives_its_proj_string_the_tree_s_input() {
+    const DEG: &str = r#"ANGLEUNIT["degree",0.0174532925199433]"#;
+    const M: &str = r#"LENGTHUNIT["metre",1]"#;
+    let geog = |name: &str, datum: &str, ellipsoid: &str, id: &str| {
+        format!(
+            r#"GEOGCRS["{name}",DATUM["{datum}",ELLIPSOID[{ellipsoid},{M}]],PRIMEM["Greenwich",0,{DEG}],CS[ellipsoidal,2],AXIS["lat",north,ORDER[1],{DEG}],AXIS["lon",east,ORDER[2],{DEG}]{id}]"#
+        )
+    };
+    let osgb = geog("OSGB36", "Ordnance Survey of Great Britain 1936", r#""Airy 1830",6377563.396,299.3249646"#, r#",ID["EPSG",4277]"#);
+    let wgs84 = geog("WGS 84", "World Geodetic System 1984", r#""WGS 84",6378137,298.257223563"#, r#",ID["EPSG",4326]"#);
+    let etrs89 = geog("ETRS89", "European Terrestrial Reference System 1989", r#""GRS 1980",6378137,298.257222101"#, r#",ID["EPSG",4258]"#);
+    let bng = format!(
+        r#"PROJCRS["OSGB36 / British National Grid",BASEGEOGCRS["OSGB36",DATUM["Ordnance Survey of Great Britain 1936",ELLIPSOID["Airy 1830",6377563.396,299.3249646,{M}]],PRIMEM["Greenwich",0,{DEG}]],CONVERSION["British National Grid",METHOD["Transverse Mercator",ID["EPSG",9807]],PARAMETER["Latitude of natural origin",49,{DEG},ID["EPSG",8801]],PARAMETER["Longitude of natural origin",-2,{DEG},ID["EPSG",8802]],PARAMETER["Scale factor at natural origin",0.9996012717,SCALEUNIT["unity",1],ID["EPSG",8805]],PARAMETER["False easting",400000,{M},ID["EPSG",8806]],PARAMETER["False northing",-100000,{M},ID["EPSG",8807]]],CS[Cartesian,2],AXIS["(E)",east,ORDER[1],{M}],AXIS["(N)",north,ORDER[2],{M}],ID["EPSG",27700]]"#
+    );
+    let p = |name: &str, value: f64, unit: &str, code: u32| format!(r#"PARAMETER["{name}",{value},{unit},ID["EPSG",{code}]]"#);
+    let arc_second = r#"ANGLEUNIT["arc-second",4.84813681109536E-06]"#;
+    let three =
+        [p("X-axis translation", -87.0, M, 8605), p("Y-axis translation", -98.0, M, 8606), p("Z-axis translation", -121.0, M, 8607)]
+            .join(",");
+    let seven = [
+        p("X-axis translation", 446.448, M, 8605),
+        p("Y-axis translation", -125.157, M, 8606),
+        p("Z-axis translation", 542.06, M, 8607),
+        p("X-axis rotation", 0.15, arc_second, 8608),
+        p("Y-axis rotation", 0.247, arc_second, 8609),
+        p("Z-axis rotation", 0.842, arc_second, 8610),
+        p("Scale difference", -20.489, r#"SCALEUNIT["parts per million",1E-06]"#, 8611),
+    ]
+    .join(",");
+    let transformation = |method: &str, params: &str| format!(r#"ABRIDGEDTRANSFORMATION["t",METHOD[{method}],{params}]"#);
+    let bound = |source: &str, target: &str, t: &str| format!("BOUNDCRS[SOURCECRS[{source}],TARGETCRS[{target}],{t}]");
+    let pv = transformation(r#""Position Vector transformation (geog2D domain)",ID["EPSG",9606]"#, &seven);
+    let ntv2 = r#"ABRIDGEDTRANSFORMATION["t",METHOD["NTv2",ID["EPSG",9615]],PARAMETERFILE["Latitude and longitude difference file","OSTN15_NTv2_OSGBtoETRS.gsb"]]"#;
+    let towgs84 = "TOWGS84[446.448,-125.157,542.06,0.15,0.247,0.842,-20.489]";
+    let rotated = format!(
+        r#"GEOGCRS["r",BASEGEOGCRS["WGS 84",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0]],DERIVINGCONVERSION["p",METHOD["PROJ ob_tran o_proj=longlat"],PARAMETER["o_lat_p",39.25,{DEG}],PARAMETER["lon_0",18,{DEG}]],CS[ellipsoidal,2],AXIS["lon",east,{DEG}],AXIS["lat",north,{DEG}]]"#
+    );
+    let evaluation = [
+        p("Ordinate 1 of evaluation point", 3800000.0, M, 8617),
+        p("Ordinate 2 of evaluation point", -100000.0, M, 8618),
+        p("Ordinate 3 of evaluation point", 5100000.0, M, 8667),
+    ]
+    .join(",");
+    // Each text, and whether it is read.
+    let cases: Vec<(String, bool)> = vec![
+        // To WGS 84: position vector, of a geographic and a projected CRS; coordinate frame by its
+        // name alone; geocentric translations; coordinate frame's full matrix; Molodensky-Badekas.
+        (bound(&osgb, &wgs84, &pv), true),
+        (bound(&bng, &wgs84, &pv), true),
+        (bound(&osgb, &wgs84, &transformation(r#""Coordinate Frame rotation (geog2D domain)""#, &seven)), true),
+        (bound(&osgb, &wgs84, &transformation(r#""Geocentric translations (geog2D domain)",ID["EPSG",9603]"#, &three)), true),
+        (bound(&osgb, &wgs84, &transformation(r#""Coordinate Frame rotation full matrix (geog2D)",ID["EPSG",1133]"#, &seven)), true),
+        (
+            bound(
+                &osgb,
+                &wgs84,
+                &transformation(r#""Molodensky-Badekas (PV geog2D domain)",ID["EPSG",1063]"#, &format!("{seven},{evaluation}")),
+            ),
+            true,
+        ),
+        // WGS 84 by its datum's name; a WGS 84 ensemble.
+        (bound(&osgb, &wgs84.replace(r#",ID["EPSG",4326]"#, ""), &pv), true),
+        (
+            bound(
+                &osgb,
+                &format!(
+                    r#"GEOGCRS["WGS 84",ENSEMBLE["World Geodetic System 1984 ensemble",MEMBER["World Geodetic System 1984 (G2296)"],ELLIPSOID["WGS 84",6378137,298.257223563,{M}],ENSEMBLEACCURACY[2.0]],PRIMEM["Greenwich",0,{DEG}],CS[ellipsoidal,2],AXIS["lat",north,{DEG}],AXIS["lon",east,{DEG}]]"#
+                ),
+                &pv,
+            ),
+            true,
+        ),
+        // A grid's transformation; to ETRS89 or a projected CRS, which the reader converts too; to a
+        // vertical CRS, which it leaves out, as an unreadable target (PROJ 9.9.0 refuses that one).
+        (bound(&osgb, &wgs84, ntv2), true),
+        (bound(&osgb, &etrs89, &pv), true),
+        (bound(&osgb, &bng.replace("OSGB36 / British National Grid", "x"), &pv), true),
+        (
+            bound(
+                &osgb,
+                &format!(
+                    r#"VERTCRS["ODN height",VDATUM["Ordnance Datum Newlyn"],CS[vertical,1],AXIS["gravity-related height (H)",up,{M}]]"#
+                ),
+                &pv,
+            ),
+            true,
+        ),
+        (bound(&osgb, &format!(r#"GEOGCRS["x",CS[ellipsoidal,2],AXIS["lat",north,{DEG}],AXIS["lon",east,{DEG}]]"#), &pv), true),
+        // GDAL's WKT 1 source CRSs, read without their `TOWGS84`; a rotated pole.
+        (
+            bound(
+                &format!(
+                    r#"GEOGCS["OSGB 1936",DATUM["OSGB_1936",SPHEROID["Airy 1830",6377563.396,299.3249646],{towgs84},AUTHORITY["EPSG","6277"]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],AUTHORITY["EPSG","4277"]]"#
+                ),
+                &wgs84,
+                &pv,
+            ),
+            true,
+        ),
+        (
+            bound(
+                &format!(
+                    r#"PROJCS["OSGB 1936 / British National Grid",GEOGCS["OSGB 1936",DATUM["OSGB_1936",SPHEROID["Airy 1830",6377563.396,299.3249646],{towgs84}],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",49],PARAMETER["central_meridian",-2],PARAMETER["scale_factor",0.9996012717],PARAMETER["false_easting",400000],PARAMETER["false_northing",-100000],UNIT["metre",1],AXIS["Easting",EAST],AXIS["Northing",NORTH]]"#
+                ),
+                &wgs84,
+                &pv,
+            ),
+            true,
+        ),
+        (bound(&rotated, &wgs84, &transformation(r#""Geocentric translations (geog2D domain)",ID["EPSG",9603]"#, &three)), true),
+        // An unknown method or parameter (refused when converted).
+        (bound(&osgb, &wgs84, &transformation(r#""Something""#, &three)), true),
+        (
+            bound(
+                &osgb,
+                &wgs84,
+                &transformation(
+                    r#""Position Vector transformation (geog2D domain)",ID["EPSG",9606]"#,
+                    &format!(r#"{seven},PARAMETER["Other",1]"#),
+                ),
+            ),
+            true,
+        ),
+        // Refused, as PROJ 9.9.0 refuses them: without its transformation, or a WKT 1 source CRS
+        // the WKT 1 reader refuses.
+        (format!("BOUNDCRS[SOURCECRS[{osgb}],TARGETCRS[{wgs84}]]"), false),
+        (bound(r#"GEOGCS["x",DATUM["d"],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#, &wgs84, &pv), false),
+    ];
+    let mut differ = Vec::new();
+    for (text, read) in &cases {
+        let (tree, model) = wkt2_inputs(text).unwrap_or_else(|| panic!("not a WKT 2 CRS the reader converts: {text}"));
+        if tree != model || (tree != "None") != *read {
+            differ.push(format!("{text}\n  tree  {tree}\n  model {model}"));
+        }
+    }
+    assert!(differ.is_empty(), "{}", differ.join("\n"));
+}
+
 /// Where the model reads unusual WKT 2 otherwise than the tree reader, each with PROJ 9.9.0's
 /// reading, to settle in #1058 step 6d as PROJ reads it.
 #[test]
@@ -557,4 +700,39 @@ fn where_the_model_reads_unusual_wkt2_otherwise() {
         _ => panic!("not derived"),
     };
     assert_eq!((units(&tree), units(&model)), (vec![("ANGLEUNIT", Some(0.0))], vec![]));
+
+    // A bound CRS's transformation.
+    let bound = |t: &str| {
+        let text = format!(
+            r#"BOUNDCRS[SOURCECRS[GEOGCRS["g",{datum},{pm},CS[ellipsoidal,2],{lat_lon}]],TARGETCRS[GEOGCRS["WGS 84",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],{pm},CS[ellipsoidal,2],{lat_lon},ID["EPSG",4326]]],ABRIDGEDTRANSFORMATION["t",{t}]]"#
+        );
+        let root = crate::parsed::tree(&text).unwrap();
+        let input = |i: Option<crate::wkt2::Wkt2Root>| match i {
+            Some(crate::wkt2::Wkt2Root::Bound(b)) => b.transformation,
+            other => panic!("not a bound CRS: {other:?}"),
+        };
+        (input(crate::wkt2::Wkt2Root::read(&root).ok()), input(read(&text).as_ref().and_then(|m| wkt2_root_input(m, &root))))
+    };
+    let translation = r#"PARAMETER["X-axis translation",-87,LENGTHUNIT["metre",1],ID["EPSG",8605]]"#;
+    let values = |t: &crate::wkt2::Wkt2Transformation| t.params.iter().map(|p| (p.name.clone(), p.value)).collect::<Vec<_>>();
+    // A parameter without its value: the tree keeps it, and refuses it when converting a Helmert
+    // transformation, not a grid's; the model drops it, so it counts one parameter less (a
+    // Helmert method named without its code is told by its number of parameters). PROJ 9.9.0
+    // refuses both CRSs.
+    let (tree, model) = bound(&format!(
+        r#"METHOD["Geocentric translations (geog2D domain)",ID["EPSG",9603]],{translation},PARAMETER["Y-axis translation",LENGTHUNIT["metre",1]],{}"#,
+        translation.replace("X-axis", "Z-axis").replace("8605", "8607")
+    ));
+    assert_eq!((values(&tree).len(), values(&model).len()), (3, 2));
+    assert_eq!(values(&tree)[1], ("Y-axis translation".into(), None));
+    let (tree, model) =
+        bound(r#"METHOD["NTv2",ID["EPSG",9615]],PARAMETER["x"],PARAMETERFILE["Latitude and longitude difference file","g.gsb"]"#);
+    assert_eq!((values(&tree), values(&model)), (vec![("x".into(), None)], vec![]));
+    // A time-dependent transformation's reference epoch in a time unit: the tree skips the unit,
+    // the model reads it, as for a conversion's parameter. PROJ 9.9.0 writes no PROJ string for
+    // the CRS, nor does terrio.
+    let (tree, model) = bound(&format!(
+        r#"METHOD["Time-dependent Coordinate Frame rotation (geog2D)",ID["EPSG",1057]],{translation},PARAMETER["Parameter reference epoch",2010,TIMEUNIT["year",31556925.445],ID["EPSG",1049]]"#
+    ));
+    assert_eq!((tree.params[1].units.clone(), model.params[1].units.clone()), (vec![], vec![("UNIT", Some(31556925.445))]));
 }
