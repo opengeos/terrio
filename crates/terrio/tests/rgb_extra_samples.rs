@@ -114,3 +114,58 @@ fn rgb_with_extra_samples_reads_as_written() {
         }
     }
 }
+
+/// An RGBA GeoTIFF's bands 1-3 have the alpha band as their mask (GDAL's `GMF_ALPHA`):
+/// `read_band_mask` gives 255 where the alpha sample is not 0 and 0 where it is, read from the same
+/// level; the alpha band's own mask, and the mask of a raster without alpha, are all valid.
+#[test]
+fn an_rgba_geotiffs_band_masks_come_from_its_alpha_band() {
+    let dir = tempfile::tempdir().unwrap();
+    let (cols, rows) = (16, 12);
+    let n = cols * rows;
+    let alpha: Vec<u8> = (0..n).map(|i| if i % 3 == 0 { 0 } else { (i % 250 + 5) as u8 }).collect();
+    let mut data = Vec::with_capacity(4 * n);
+    for b in 0..3 {
+        for i in 0..n {
+            data.push(((i + b * 31) % 251) as u8);
+        }
+    }
+    data.extend_from_slice(&alpha);
+    let cfg = terrio::RasterConfig { cols, rows, bands: 4, data_type: DataType::U8, nodata: -9999.0, ..Default::default() };
+    let mut r = terrio::Raster::from_data_native(cfg, RasterData::U8(data)).unwrap();
+    r.x_min = 0.0;
+    r.y_min = 0.0;
+    r.cell_size_x = 1.0;
+    r.cell_size_y = 1.0;
+    let ds = terrio::RasterDataset::new(r, true);
+    let path = dir.path().join("rgba.tif").to_str().unwrap().to_string();
+    write(&ds, &path, "NONE", false, true, true);
+
+    let mut lazy = terrio::open_raster_lazy(&path).unwrap();
+    assert_eq!(lazy.band_count(), 4);
+    assert_eq!(lazy.alpha_band(), Some(4));
+    assert!(lazy.read_mask(Window::full(cols, rows), None).unwrap().is_none(), "no per-dataset mask");
+    let expected: Vec<u8> = alpha.iter().map(|a| if *a == 0 { 0 } else { 255 }).collect();
+    for band in [1, 2, 3] {
+        assert_eq!(lazy.read_band_mask(band, Window::full(cols, rows), None).unwrap(), expected, "band {band}");
+    }
+    assert_eq!(lazy.read_band_mask(4, Window::full(cols, rows), None).unwrap(), vec![255; n], "the alpha band's own mask is all valid");
+    let w = Window { x: 2, y: 3, width: 5, height: 4 };
+    let mut win_expected = Vec::new();
+    for y in 3..7 {
+        for x in 2..7 {
+            win_expected.push(expected[y * cols + x]);
+        }
+    }
+    assert_eq!(lazy.read_band_mask(1, w, None).unwrap(), win_expected, "a window");
+    assert!(lazy.read_band_mask(0, w, None).is_err());
+    assert!(lazy.read_band_mask(5, w, None).is_err());
+
+    // A three-band raster without alpha: every band's mask is all valid.
+    let rgb = raster(3, DataType::U8);
+    let rgb_path = dir.path().join("rgb.tif").to_str().unwrap().to_string();
+    write(&rgb, &rgb_path, "NONE", false, false, true);
+    let mut rgb_lazy = terrio::open_raster_lazy(&rgb_path).unwrap();
+    assert_eq!(rgb_lazy.alpha_band(), None);
+    assert_eq!(rgb_lazy.read_band_mask(1, Window::full(COLS, ROWS), None).unwrap(), vec![255; COLS * ROWS]);
+}
