@@ -1,10 +1,12 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
 //! The model gives a WKT's PROJ string what the WKT reader reads from its tree (#1058 step 6):
-//! [`super::wkt1_input`] against [`wkt1::Wkt1Input::read`], for every WKT 1 text of the #1066
-//! corpus (each EPSG and ESRI CRS's GDAL WKT 1 and ESRI WKT 1, as PROJ writes them) and for
-//! malformed and unusual input the corpus does not have. Until the reader takes its input from the
-//! model (#1058 step 6d), this keeps the two the same.
+//! [`super::wkt1_input`] against [`wkt1::Wkt1Input::read`] for every WKT 1 text of the #1066
+//! corpus (each EPSG and ESRI CRS's GDAL WKT 1 and ESRI WKT 1, as PROJ writes them), and
+//! [`super::wkt2_input`] against [`crate::wkt2::Wkt2Input::read`] for its WKT 2 geographic,
+//! geocentric and projected CRSs; and both for malformed and unusual input the corpus does not
+//! have. Until the readers take their input from the model (#1058 step 6d), this keeps the two the
+//! same.
 use super::oracle_tests::projjson_compare;
 use super::*;
 
@@ -157,5 +159,281 @@ fn where_the_model_reads_unusual_wkt1_otherwise() {
     assert_eq!(
         (param(&tree, "centralmeridian"), param(&tree, "scalefactor"), param(&model, "centralmeridian"), param(&model, "scalefactor")),
         (Some(9.0), Some(0.9996), Some(30.0), Some(1.0))
+    );
+}
+
+/// The tree's and the model's input of a WKT 2 geographic, geocentric or projected CRS (not a
+/// derived or bound one), compared by their `Debug` form; `None` for another text.
+fn wkt2_inputs(text: &str) -> Option<(String, String)> {
+    let root = crate::parsed::tree(text)?;
+    if !crate::wkt2::handles(&root) || root.key.eq_ignore_ascii_case("BOUNDCRS") || root.child("DERIVINGCONVERSION").is_some() {
+        return None;
+    }
+    let tree = crate::wkt2::Wkt2Input::read(&root).ok();
+    let model = read(text).as_ref().and_then(|m| wkt2_input(m, &root));
+    Some((format!("{tree:?}"), format!("{model:?}")))
+}
+
+#[test]
+fn every_wkt2_corpus_text_gives_its_proj_string_the_tree_s_input() {
+    let corpus = projjson_compare::corpus(&[
+        &include_bytes!("../../tests/data/projjson_corpus_epsg.jsonl.zst")[..],
+        &include_bytes!("../../tests/data/projjson_corpus_esri.jsonl.zst")[..],
+    ]);
+    let (mut compared, mut read_by_both, mut differ) = (0, 0, Vec::new());
+    // PROJ's WKT 2 of every EPSG and ESRI CRS (`wkt2` rows), but for those another step reads
+    // (derived and bound CRSs, #1058 step 6c-2) and those the reader does not convert (vertical,
+    // compound).
+    for (code, kind, text, _) in corpus.iter().filter(|(_, kind, _, _)| kind == "wkt2") {
+        let Some((tree, model)) = wkt2_inputs(text) else { continue };
+        compared += 1;
+        if tree != "None" && model != "None" {
+            read_by_both += 1;
+        }
+        if tree != model {
+            differ.push(format!("{code} {kind}\n  tree  {tree}\n  model {model}"));
+        }
+    }
+    assert_eq!((compared, read_by_both), (9_659, 9_659), "WKT 2 texts compared, read by both");
+    assert!(differ.is_empty(), "{} of {compared} differ:\n{}", differ.len(), differ[..differ.len().min(10)].join("\n"));
+}
+
+/// What the WKT 2 corpus does not have: refusals, planetary and polar axes, other units, PROJ's
+/// own methods, a geocentric CRS's CS.
+#[test]
+fn unusual_wkt2_gives_its_proj_string_the_tree_s_input() {
+    const DEG: &str = r#"ANGLEUNIT["degree",0.0174532925199433]"#;
+    let datum = r#"DATUM["d",ELLIPSOID["WGS 84",6378137,298.257223563,LENGTHUNIT["metre",1]]]"#;
+    let geog = |pm: &str, cs: &str| format!(r#"GEOGCRS["g",{datum},{pm},{cs}]"#);
+    let pm = format!(r#"PRIMEM["Greenwich",0,{DEG}]"#);
+    let lat_lon = format!(r#"CS[ellipsoidal,2],AXIS["lat",north,ORDER[1],{DEG}],AXIS["lon",east,ORDER[2],{DEG}]"#);
+    let geod = |cs: &str| format!(r#"GEODCRS["c",{datum},{pm},{cs}]"#);
+    let xyz = |z: &str| {
+        format!(
+            r#"CS[Cartesian,3],AXIS["(X)",geocentricX,ORDER[1],LENGTHUNIT["metre",1]],AXIS["(Y)",geocentricY,ORDER[2],LENGTHUNIT["metre",1]],{z}"#
+        )
+    };
+    let z = r#"AXIS["(Z)",geocentricZ,ORDER[3],LENGTHUNIT["metre",1]]"#;
+    let base = format!(r#"BASEGEOGCRS["g",{datum},{pm}]"#);
+    let projected = |method: &str, params: &str, cs: &str| format!(r#"PROJCRS["p",{base},CONVERSION["c",METHOD[{method}]{params}],{cs}]"#);
+    let en = r#"CS[Cartesian,2],AXIS["(E)",east,ORDER[1],LENGTHUNIT["metre",1]],AXIS["(N)",north,ORDER[2],LENGTHUNIT["metre",1]]"#;
+    let tm = r#""Transverse Mercator",ID["EPSG",9807]"#;
+    let lon = format!(r#",PARAMETER["Longitude of natural origin",9,{DEG},ID["EPSG",8802]]"#);
+    // Each text, and whether it is read.
+    let cases: Vec<(String, bool)> = vec![
+        (geog(&pm, &lat_lon), true),
+        // A planetary CRS, west-positive, in grads with its prime meridian in its own unit.
+        (
+            geog(
+                r#"PRIMEM["Paris",2.5969213,ANGLEUNIT["grad",0.015707963267949]]"#,
+                r#"CS[ellipsoidal,2],AXIS["lat",north,ORDER[1],ANGLEUNIT["grad",0.015707963267949]],AXIS["lon",west,ORDER[2],ANGLEUNIT["grad",0.015707963267949]]"#,
+            ),
+            true,
+        ),
+        // Planetocentric, two-dimensional only; then a CS the reader does not convert.
+        (geog(&pm, &format!(r#"CS[spherical,2],AXIS["lat",north,ORDER[1],{DEG}],AXIS["lon",east,ORDER[2],{DEG}]"#)), true),
+        (
+            geog(
+                &pm,
+                &format!(
+                    r#"CS[spherical,3],AXIS["lat",north,ORDER[1],{DEG}],AXIS["lon",east,ORDER[2],{DEG}],AXIS["r",up,ORDER[3],LENGTHUNIT["metre",1]]"#
+                ),
+            ),
+            false,
+        ),
+        (geog(&pm, &format!(r#"CS[spherical,3],AXIS["lat",north,ORDER[1],{DEG}],AXIS["lon",east,ORDER[2],{DEG}]"#)), false),
+        (geog(&pm, &format!(r#"CS[spherical,3],{DEG}"#)), false),
+        // A spherical CS of two dimensions with three axes, or an ellipsoidal CS of another
+        // dimension than its axes: PROJ 9.9.0 refuses them, the reader reads their first two axes.
+        (
+            geog(
+                &pm,
+                &format!(
+                    r#"CS[spherical,2],AXIS["lat",north,ORDER[1],{DEG}],AXIS["lon",east,ORDER[2],{DEG}],AXIS["r",up,ORDER[3],LENGTHUNIT["metre",1]]"#
+                ),
+            ),
+            true,
+        ),
+        (geog(&pm, &format!(r#"CS[ellipsoidal,3],AXIS["lat",north,ORDER[1],{DEG}],AXIS["lon",west,ORDER[2],{DEG}]"#)), true),
+        (
+            geog(
+                &pm,
+                &format!(
+                    r#"CS[ellipsoidal,2],AXIS["lat",north,ORDER[1],{DEG}],AXIS["lon",east,ORDER[2],{DEG}],AXIS["h",up,ORDER[3],LENGTHUNIT["metre",1]]"#
+                ),
+            ),
+            true,
+        ),
+        (geog(&pm, &format!(r#"CS[affine,2],AXIS["lat",north,ORDER[1],{DEG}],AXIS["lon",east,ORDER[2],{DEG}]"#)), false),
+        // A prime meridian's unit without its size.
+        (geog(r#"PRIMEM["p",2,ANGLEUNIT["grad"]]"#, &lat_lon), false),
+        // Geocentric: X, Y and Z in one unit, else refused.
+        (geod(&xyz(z)), true),
+        (geod(&xyz(z).replace("Cartesian,3", "Cartesian,2")), false),
+        (geod(&xyz(z).replace("ORDER[2]", "ORDER[3]")), false),
+        (geod(&xyz(r#"AXIS["(Z)",geocentricZ,ORDER[3]]"#)), false),
+        (geod(&xyz(r#"AXIS["(Z)",geocentricZ,ORDER[3],LENGTHUNIT["foot",0.3048]]"#)), false),
+        (geod(&xyz(r#"AXIS["(Z)",geocentricX,ORDER[3],LENGTHUNIT["metre",1]]"#)), false),
+        // The CS's unit after its axes.
+        (
+            geod(r#"CS[Cartesian,3],AXIS["(X)",geocentricX],AXIS["(Y)",geocentricY],AXIS["(Z)",geocentricZ],LENGTHUNIT["foot",0.3048]"#),
+            true,
+        ),
+        // Projected: east-north, north-east in feet, a polar CS, south-orientated axes.
+        (projected(tm, &lon, en), true),
+        // A base CRS's CS in grads, its parameters without units: PROJ 9.9.0 and the reader read
+        // them in degrees, not in the base CS's unit.
+        (
+            format!(
+                r#"PROJCRS["p",BASEGEOGCRS["g",{datum},PRIMEM["Greenwich",0],CS[ellipsoidal,2],AXIS["lat",north,ANGLEUNIT["grad",0.015707963267949]],AXIS["lon",east,ANGLEUNIT["grad",0.015707963267949]]],CONVERSION["c",METHOD[{tm}],PARAMETER["Longitude of natural origin",9,ID["EPSG",8802]]],{en}]"#
+            ),
+            true,
+        ),
+        // A base CRS's Cartesian CS: PROJ 9.9.0 refuses it, the reader reads the base CRS
+        // without its CS.
+        (
+            format!(
+                r#"PROJCRS["p",BASEGEOGCRS["g",{datum},{pm},CS[Cartesian,2],AXIS["x",east,LENGTHUNIT["metre",1]],AXIS["y",north,LENGTHUNIT["metre",1]]],CONVERSION["c",METHOD[{tm}]{lon}],{en}]"#
+            ),
+            true,
+        ),
+        // A base CRS's spherical CS of three dimensions: PROJ 9.9.0 refuses it, the reader reads
+        // the base CRS without its CS.
+        (format!(r#"PROJCRS["p",BASEGEOGCRS["g",{datum},{pm},CS[spherical,3],{DEG}],CONVERSION["c",METHOD[{tm}]{lon}],{en}]"#), true),
+        (projected(tm, &lon, r#"CS[Cartesian,2],AXIS["(N)",north],AXIS["(E)",east],LENGTHUNIT["US survey foot",0.304800609601219]"#), true),
+        (
+            projected(
+                r#""Polar Stereographic (variant A)",ID["EPSG",9810]"#,
+                &format!(r#",PARAMETER["Latitude of natural origin",90,{DEG}]"#),
+                r#"CS[Cartesian,2],AXIS["(E)",south,MERIDIAN[90,ANGLEUNIT["degree",0.0174532925199433]]],AXIS["(N)",south,MERIDIAN[180,ANGLEUNIT["degree",0.0174532925199433]]],LENGTHUNIT["metre",1]"#,
+            ),
+            true,
+        ),
+        (
+            projected(
+                r#""Transverse Mercator (South Orientated)",ID["EPSG",9808]"#,
+                &lon,
+                r#"CS[Cartesian,2],AXIS["(W)",west],AXIS["(S)",south],LENGTHUNIT["metre",1]"#,
+            ),
+            true,
+        ),
+        // A parameter by its code alone, in a scale unit; PROJ's own method, its parameters
+        // without units.
+        (projected(tm, r#",PARAMETER["k",0.9996,SCALEUNIT["unity",1],ID["EPSG",8805]]"#, en), true),
+        (projected(r#""PROJ ob_tran o_proj=moll""#, r#",PARAMETER["o_lat_p",45],PARAMETER["lon_0",10]"#, en), true),
+        // An unknown method or parameter (refused when converted).
+        (projected(r#""Unknown""#, &lon, en), true),
+        (projected(tm, r#",PARAMETER["Unknown",1]"#, en), true),
+        // A projected CRS without its conversion's method, or a CS unit without its size.
+        (format!(r#"PROJCRS["p",{base},CONVERSION["c"],{en}]"#), false),
+        (projected(tm, &lon, r#"CS[Cartesian,2],AXIS["(E)",east],AXIS["(N)",north],LENGTHUNIT["metre"]"#), false),
+        // A parameter without its value, of an EPSG method or PROJ's.
+        (projected(tm, r#",PARAMETER["Longitude of natural origin"]"#, en), false),
+        (projected(r#""PROJ ob_tran o_proj=moll""#, r#",PARAMETER["o_lat_p",ANGLEUNIT["degree",0.0174532925199433]]"#, en), false),
+    ];
+    let mut differ = Vec::new();
+    for (text, read) in &cases {
+        let (tree, model) = wkt2_inputs(text).unwrap_or_else(|| panic!("not a WKT 2 CRS the reader converts: {text}"));
+        if tree != model || (tree != "None") != *read {
+            differ.push(format!("{text}\n  tree  {tree}\n  model {model}"));
+        }
+    }
+    assert!(differ.is_empty(), "{}", differ.join("\n"));
+}
+
+/// Where the model reads unusual WKT 2 otherwise than the tree reader, each with PROJ 9.9.0's
+/// reading, to settle in #1058 step 6d as PROJ reads it.
+#[test]
+fn where_the_model_reads_unusual_wkt2_otherwise() {
+    let input = |text: &str| {
+        let root = crate::parsed::tree(text).unwrap();
+        (crate::wkt2::Wkt2Input::read(&root).unwrap(), read(text).as_ref().and_then(|m| wkt2_input(m, &root)).unwrap())
+    };
+    // An `ID` and then an `AUTHORITY`, of other codes: the tree reads the `AUTHORITY` (it reads an
+    // `AUTHORITY` before any `ID`), the model the first. PROJ 9.9.0 reads the CRS, lists both
+    // codes, and identifies it as neither (`to_epsg()` None).
+    let (tree, model) = input(
+        r#"GEOGCRS["x",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],CS[ellipsoidal,2],AXIS["latitude",north,ANGLEUNIT["degree",0.0174532925199433]],AXIS["longitude",east,ANGLEUNIT["degree",0.0174532925199433]],ID["EPSG",4258],AUTHORITY["EPSG","4326"]]"#,
+    );
+    assert_eq!((tree.geodetic.epsg, model.geodetic.epsg), (Some(4326), Some(4258)));
+
+    const DEG: &str = r#"ANGLEUNIT["degree",0.0174532925199433]"#;
+    let datum = r#"DATUM["d",ELLIPSOID["WGS 84",6378137,298.257223563,LENGTHUNIT["metre",1]]]"#;
+    let geog = |pm: &str, axes: &str| format!(r#"GEOGCRS["g",{datum},{pm},CS[ellipsoidal,2],{axes}]"#);
+    let pm = format!(r#"PRIMEM["Greenwich",0,{DEG}]"#);
+    let lat_lon = format!(r#"AXIS["lat",north,{DEG}],AXIS["lon",east,{DEG}]"#);
+    let projected = |param: &str, axes: &str| {
+        format!(
+            r#"PROJCRS["p",BASEGEOGCRS["g",{datum},{pm}],CONVERSION["c",METHOD["Transverse Mercator",ID["EPSG",9807]],PARAMETER["Longitude of natural origin",9,{param},ID["EPSG",8802]]],CS[Cartesian,2],{axes}]"#
+        )
+    };
+    let en = r#"AXIS["(E)",east,LENGTHUNIT["metre",1]],AXIS["(N)",north,LENGTHUNIT["metre",1]]"#;
+    let geographic = |i: &crate::wkt2::Wkt2Input| match &i.kind {
+        crate::wkt2::Wkt2Kind::Geographic { axes, .. } => axes.clone(),
+        _ => panic!("not geographic"),
+    };
+    let projection = |i: &crate::wkt2::Wkt2Input| match &i.kind {
+        crate::wkt2::Wkt2Kind::Projected { directions, method, .. } => (directions.clone(), method.params[0].units.clone()),
+        _ => panic!("not projected"),
+    };
+    // Axes out of their `ORDER`: the tree reads them as written, the model in their order. PROJ
+    // 9.9.0 refuses the CRS.
+    let (tree, model) = input(&geog(&pm, &format!(r#"AXIS["lon",west,ORDER[2],{DEG}],AXIS["lat",north,ORDER[1],{DEG}]"#)));
+    assert_eq!((geographic(&tree), geographic(&model)), (Some("wn".into()), Some("nw".into())));
+    let (tree, model) =
+        input(&projected(DEG, r#"AXIS["(N)",north,ORDER[2],LENGTHUNIT["metre",1]],AXIS["(E)",west,ORDER[1],LENGTHUNIT["metre",1]]"#));
+    assert_eq!(
+        (projection(&tree).0, projection(&model).0),
+        (vec!["north".to_string(), "west".into()], vec!["west".into(), "north".into()])
+    );
+    // An axis direction in quotes: the tree skips it, the model reads it. PROJ 9.9.0 refuses the
+    // CRS.
+    let (tree, model) = input(&geog(&pm, &format!(r#"AXIS["lon","west",{DEG}],AXIS["lat",north,{DEG}]"#)));
+    assert_eq!((geographic(&tree), geographic(&model)), (None, Some("wn".into())));
+    let (tree, model) = input(&projected(DEG, r#"AXIS["(E)","west",LENGTHUNIT["metre",1]],AXIS["(N)",north,LENGTHUNIT["metre",1]]"#));
+    assert_eq!((projection(&tree).0, projection(&model).0), (vec!["north".to_string()], vec!["west".into(), "north".into()]));
+    // WKT 2's long `PRIMEMERIDIAN` keyword: the tree reads no prime meridian, the model reads it.
+    // PROJ 9.9.0 reads it too (`+pm=2`).
+    let (tree, model) = input(&geog(&format!(r#"PRIMEMERIDIAN["Local",2,{DEG}]"#), &lat_lon));
+    assert_eq!((tree.geodetic.pm, model.geodetic.pm), (0.0, 2.0));
+    // A parameter's unit without its size: the tree keeps the unit, the model drops it; both
+    // give the parameter the CRS's unit. PROJ 9.9.0 refuses the CRS.
+    let (tree, model) = input(&projected(r#"ANGLEUNIT["degree"]"#, en));
+    assert_eq!((projection(&tree).1, projection(&model).1), (vec![("ANGLEUNIT", None)], vec![]));
+    // A parameter in a time unit: the tree skips the unit, the model reads it, as PROJ 9.9.0 does
+    // (it reads 9 seconds of longitude as 9 radians, `+lon_0=515.662015617741`).
+    let (tree, model) = input(&projected(r#"TIMEUNIT["second",1]"#, en));
+    assert_eq!((projection(&tree).1, projection(&model).1), (vec![], vec![("UNIT", Some(1.0))]));
+    // A parameter in a length unit and then an angle unit: the tree keeps both, in keyword order,
+    // and reads the angle unit (`+lon_0=8.1`); the model keeps one unit, the first in the text,
+    // the length unit, as PROJ 9.9.0 does (it takes 0.3048 for
+    // radians, `+lon_0=157.173782360287`).
+    let (tree, model) = input(&projected(r#"LENGTHUNIT["foot",0.3048],ANGLEUNIT["grad",0.015707963267949]"#, en));
+    assert_eq!(
+        (projection(&tree).1, projection(&model).1),
+        (vec![("ANGLEUNIT", Some(0.015707963267949)), ("LENGTHUNIT", Some(0.3048))], vec![("LENGTHUNIT", Some(0.3048))])
+    );
+    // An ESRI `ID` and then an EPSG `AUTHORITY`: the tree reads the EPSG code, the model the
+    // first identifier's, not an EPSG one. PROJ 9.9.0 identifies the CRS as EPSG:4326, as the
+    // tree does.
+    let (tree, model) = input(&geog(&pm, &format!(r#"{lat_lon},ID["ESRI",104000],AUTHORITY["EPSG","4326"]"#)));
+    assert_eq!((tree.geodetic.epsg, model.geodetic.epsg), (Some(4326), None));
+    // A polar CS whose `MERIDIAN`s have no number: the tree takes it for polar (no directions),
+    // the model does not. PROJ 9.9.0 refuses the CRS.
+    let polar = |m: &str| format!(r#"AXIS["(E)",south,MERIDIAN[{m},{DEG}]],AXIS["(N)",south,MERIDIAN[{m},{DEG}]],LENGTHUNIT["metre",1]"#);
+    let (tree, model) = input(&projected(DEG, &polar(r#""x""#)));
+    assert_eq!((projection(&tree).0, projection(&model).0), (vec![], vec!["south".to_string(), "south".into()]));
+    // WKT 1's `PROJECTION` and `PARAMETER`s in a WKT 2 `PROJCRS`: the tree refuses it (no
+    // `CONVERSION`), the model reads them. PROJ 9.9.0 reads them too (`+lon_0=9 +k=0.9996`).
+    let text = format!(
+        r#"PROJCRS["p",BASEGEOGCRS["g",{datum},{pm}],PROJECTION["Transverse_Mercator"],PARAMETER["central_meridian",9],PARAMETER["scale_factor",0.9996],CS[Cartesian,2],{en}]"#
+    );
+    let root = crate::parsed::tree(&text).unwrap();
+    assert!(crate::wkt2::Wkt2Input::read(&root).is_err());
+    let model = read(&text).as_ref().and_then(|m| wkt2_input(m, &root)).unwrap();
+    let crate::wkt2::Wkt2Kind::Projected { method, .. } = &model.kind else { panic!("not projected") };
+    assert_eq!(
+        (method.name.as_str(), method.params.iter().map(|p| (p.name.as_str(), p.value)).collect::<Vec<_>>()),
+        ("Transverse_Mercator", vec![("central_meridian", 9.0), ("scale_factor", 0.9996)])
     );
 }
