@@ -1036,7 +1036,7 @@ fn deflate_streams_at_their_limits_read_by_rows() {
         let mut r = LazyRaster::from_tiff_bytes_with_limits(bytes, TiffReadLimits { chunk_bytes: 8 << 20 }).unwrap().unwrap();
         let got = r.read_window(Window::new(0, rows - 2, cols, 2), &band1()).unwrap().raster.data.to_f64_vec();
         let expected: Vec<f64> = if cols == 30_000 { row.repeat(2).iter().map(|v| f64::from(*v)).collect() } else { vec![0.0; 2 * cols] };
-        assert!(got == expected, "{cols} x {rows}");
+        assert_eq!(got, expected, "{cols} x {rows}");
     }
 }
 
