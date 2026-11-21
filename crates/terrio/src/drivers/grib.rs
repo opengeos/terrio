@@ -442,8 +442,12 @@ struct Source {
 
 /// The rows of a grid of `rows` rows (north up) that a read of the rows `wanted` keeps when it
 /// decodes the band and its share of the block cache holds `held` rows: the wanted ones (the last
-/// of them when it holds fewer), then the nearest after them, then the nearest before them.
+/// of them when it holds fewer), then the nearest after them, then the nearest before them. None
+/// when it wants none, as a window below a grid shorter than its band does.
 fn kept_rows(wanted: std::ops::Range<usize>, rows: usize, held: usize) -> std::ops::Range<usize> {
+    if wanted.is_empty() {
+        return wanted;
+    }
     let wanted = wanted.start.max(wanted.end.saturating_sub(held))..wanted.end;
     let after = (held - wanted.len()).min(rows - wanted.end);
     let before = (held - wanted.len() - after).min(wanted.start);
@@ -515,8 +519,10 @@ impl Source {
         let row_bytes = (nx as u64).saturating_mul(8).max(1);
         let held = usize::try_from(share.saturating_sub(crate::block_cache::entry_cost(0)) / row_bytes).unwrap_or(usize::MAX);
         let wanted = window.y.min(ny)..(window.y + window.height).min(ny);
-        let rows = kept_rows(wanted, ny, held.min(ny));
-        if rows.is_empty() {
+        let rows = kept_rows(wanted.clone(), ny, held.min(ny));
+        // A window below a grid shorter than its band keeps no row but the grid's size, which
+        // serves the windows below it.
+        if rows.is_empty() && !wanted.is_empty() {
             return Ok(out);
         }
         // The grid's rows are south to north: the band's rows `rows` are its rows from `first`.
@@ -2675,13 +2681,15 @@ mod tests {
 
     /// Catches a band larger than its share of the block cache keeping other rows than those a
     /// read needs and the nearest after them (then before them), as many as the share holds: a
-    /// read of more rows than it holds keeps the last of them, and a share that holds none, none.
+    /// read of more rows than it holds keeps the last of them, a share that holds none, none, and
+    /// a read that needs none of the grid's rows (a window below a shorter grid), none.
     #[test]
     fn a_band_larger_than_its_share_keeps_the_rows_read_and_those_after_them() {
         assert_eq!(kept_rows(10..20, 100, 30), 10..40);
         assert_eq!(kept_rows(80..95, 100, 30), 70..100);
         assert_eq!(kept_rows(0..50, 100, 20), 30..50);
         assert!(kept_rows(10..20, 100, 0).is_empty());
+        assert!(kept_rows(100..100, 100, 30).is_empty());
     }
 
     /// Catches a window placed otherwise than its band, cropped: windows starting past the

@@ -340,6 +340,29 @@ mod tests {
         m
     }
 
+    /// Catches a window below a band's shorter grid decoding the band again at every such read: the
+    /// first keeps the grid's size, and no row of it (`kept_rows`), which serves the next from the
+    /// block cache, reading nothing.
+    #[test]
+    fn a_window_below_a_shorter_grid_is_read_from_the_cache_next_time() {
+        let _serial = cache_test_guard(64 << 20);
+        let dir = tempfile::tempdir().unwrap();
+        let (_, tall) = grib_file(dir.path(), 20, 10, 1);
+        let (_, short) = grib_file(dir.path(), 20, 4, 1);
+        let path = dir.path().join("shorter.grib2");
+        std::fs::write(&path, [tall, short].concat()).unwrap();
+        let mut r = crate::LazyRaster::open(path.to_str().unwrap()).unwrap();
+        let reads: Vec<u64> = [6, 5]
+            .into_iter()
+            .map(|y| {
+                let before = bytes_read();
+                assert_eq!(window(&mut r, 2, Window::new(0, y, 20, 4)), vec![0.0; 80]);
+                bytes_read() - before
+            })
+            .collect();
+        assert!(reads[0] > 0 && reads[1] == 0, "bytes read by two windows below the grid: {reads:?}");
+    }
+
     /// Catches the bands a read decodes at once pushing one another out of the block cache, or a
     /// band kept in part read from other rows than those kept: each band is kept in an equal share
     /// of the cache, its first 287 rows of 300 here, where the cache would hold one band whole but
