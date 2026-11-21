@@ -1876,7 +1876,13 @@ grads and Paris, ESRI's compound CRS, a geocentric CRS, parameters without a nam
 or a number. It does the same for WKT 2 geographic, geocentric and projected CRSs
 (`model::wkt2_input` against `wkt2::Wkt2Input::read`), over every such WKT 2 text of
 the corpus and unusual input: refusals, planetary and polar axes, geocentric CSs,
-PROJ's own methods, CSs of another dimension than their axes. The texts the model
+PROJ's own methods, CSs of another dimension than their axes. For derived
+geographic CRSs (rotated poles), which the corpus lacks, it compares PROJ 9.9.0's own
+texts of the three conventions (`PROJ ob_tran`, netCDF CF, GRIB) in WKT 2:2019 and
+2015, simplified or not, and unusual input. For bound CRSs, which the corpus lacks too
+(`model::wkt2_root_input` against `wkt2::Wkt2Root::read`), it compares each kind of
+Helmert transformation, a grid's, WGS 84 and other targets, GDAL's WKT 1 and derived
+source CRSs, and refusals. The texts the model
 reads otherwise than the tree are pinned in `where_the_model_reads_unusual_wkt1_otherwise`
 and `where_the_model_reads_unusual_wkt2_otherwise`, each with PROJ 9.9.0's reading, for
 step 6d. The file is removed once the readers take their input from the model.
