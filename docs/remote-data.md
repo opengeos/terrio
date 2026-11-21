@@ -394,8 +394,8 @@ process-wide, as GDAL's block cache keeps the blocks it decodes. A window read a
 the chunks no longer in the cache: the least recently used are dropped first when the cache is
 full, a chunk larger than the cache is never kept, and a size of 0 keeps none.
 
-Lazy GRIB reads keep the bands they decode in the same cache, where they and the chunks of other
-files make room for one another, the least recently used first, whatever their format. A read shares
+Lazy GRIB reads keep the bands they decode in the same cache, alongside the decoded chunks of other
+formats and files: they all make room for one another, the least recently used first. A read shares
 the cache equally among the bands it asks for. Of each band it decodes, a read keeps the rows it
 needs and as many of those after them (then before them) as its share holds, as decoded and in one
 piece: the whole band when its Float64 values (8 bytes a point), with the small overhead the cache
