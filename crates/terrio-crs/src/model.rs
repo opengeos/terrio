@@ -224,6 +224,14 @@ pub(crate) enum Crs {
         conversion: Conversion,
         cs: Cs,
     },
+    /// A derived geographic CRS (WKT 2's geographic CRS with a `DERIVINGCONVERSION`): a rotated
+    /// pole, its conversion's parameters without a unit of their own in its base CRS's angular unit.
+    DerivedGeographic {
+        ident: Ident,
+        base: Box<Crs>,
+        conversion: Conversion,
+        cs: Cs,
+    },
     /// A vertical CRS, with the geoid grids of GDAL's `PROJ4_GRIDS` extension (its datum's, else
     /// its own).
     Vertical {
@@ -412,12 +420,12 @@ pub(crate) fn wkt1_input(m: &Model, root: &Node) -> Option<wkt1::Wkt1Input> {
     Some(input)
 }
 
-/// A WKT 2 geographic, geocentric or projected CRS's input to its PROJ string, read from its model
-/// (#1058 step 6): what [`wkt2::Wkt2Input::read`] reads from its tree (`root`). `None` for what
-/// the reader refuses, and for a derived or bound CRS (#1058 step 6c-2).
-pub(crate) fn wkt2_input(m: &Model, root: &Node) -> Option<wkt2::Wkt2Input> {
+/// A WKT 2 geographic, geocentric, projected or derived geographic CRS's input to its PROJ string,
+/// read from its model (#1058 step 6): what [`wkt2::Wkt2Input::read`] reads from its tree. `None`
+/// for what the reader refuses, and for a bound CRS (#1058 step 6c-2).
+pub(crate) fn wkt2_input(m: &Model) -> Option<wkt2::Wkt2Input> {
     use wkt2::{Wkt2Geodetic, Wkt2Input, Wkt2Kind, Wkt2Method, Wkt2Param};
-    if m.dialect != Dialect::Wkt2 || root.child("DERIVINGCONVERSION").is_some() {
+    if m.dialect != Dialect::Wkt2 {
         return None;
     }
     // The EPSG code of an object's first identifier, its code trimmed (`Node::epsg` reads its first
@@ -440,6 +448,26 @@ pub(crate) fn wkt2_input(m: &Model, root: &Node) -> Option<wkt2::Wkt2Input> {
         })
     };
     let lower = |a: &Axis| a.direction.to_ascii_lowercase();
+    // A conversion's method and parameters, each with the keyword of its unit's kind.
+    let method = |conversion: &Conversion| {
+        let key = |u: &Unit| match u.kind {
+            UnitKind::Angle => "ANGLEUNIT",
+            UnitKind::Length => "LENGTHUNIT",
+            UnitKind::Scale => "SCALEUNIT",
+            _ => "UNIT",
+        };
+        let params = conversion
+            .params
+            .iter()
+            .map(|p| Wkt2Param {
+                name: p.ident.name.clone(),
+                epsg: epsg(&p.ident),
+                value: p.value,
+                units: p.unit.iter().map(|u| (key(u), Some(u.factor))).collect(),
+            })
+            .collect();
+        Wkt2Method { name: conversion.method.name.clone(), epsg: epsg(&conversion.method), params }
+    };
     let (geodetic, kind) = match &m.crs {
         crs @ Crs::Geodetic { cs, .. } => {
             let kind = match cs.kind {
@@ -481,24 +509,13 @@ pub(crate) fn wkt2_input(m: &Model, root: &Node) -> Option<wkt2::Wkt2Input> {
             // A polar CS's axes, which run along meridians, give no directions.
             let polar = cs.axes.iter().any(|a| a.meridian.is_some());
             let directions = if cs.explicit && !polar { cs.axes.iter().map(lower).collect() } else { Vec::new() };
-            let key = |u: &Unit| match u.kind {
-                UnitKind::Angle => "ANGLEUNIT",
-                UnitKind::Length => "LENGTHUNIT",
-                UnitKind::Scale => "SCALEUNIT",
-                _ => "UNIT",
-            };
-            let params = conversion
-                .params
-                .iter()
-                .map(|p| Wkt2Param {
-                    name: p.ident.name.clone(),
-                    epsg: epsg(&p.ident),
-                    value: p.value,
-                    units: p.unit.iter().map(|u| (key(u), Some(u.factor))).collect(),
-                })
-                .collect();
-            let method = Wkt2Method { name: conversion.method.name.clone(), epsg: epsg(&conversion.method), params };
-            (geodetic(base)?, Wkt2Kind::Projected { to_meter: conversion.linear.factor, directions, method })
+            (geodetic(base)?, Wkt2Kind::Projected { to_meter: conversion.linear.factor, directions, method: method(conversion) })
+        }
+        // The grid's angular unit: the first angular unit of its axes (the CS's, else degrees, for
+        // an axis without one), as the tree reads it.
+        Crs::DerivedGeographic { base, conversion, cs, .. } => {
+            let grid_ang = cs.axes.iter().find_map(|a| a.unit.as_ref().filter(|u| u.kind == UnitKind::Angle)).map_or(1.0, Unit::degrees);
+            (geodetic(base)?, Wkt2Kind::Derived { method: method(conversion), grid_ang })
         }
         _ => return None,
     };
@@ -540,6 +557,8 @@ pub(crate) fn dialect(text: &str, root: &Node) -> Dialect {
 fn crs(n: &Node, d: Dialect) -> Option<Crs> {
     if n.is(kw::WKT1_PROJECTED) || n.is(kw::PROJECTED_CRS) {
         projected(n, d)
+    } else if n.is(kw::GEOGRAPHIC_OR_GEODETIC_CRS) && n.child("DERIVINGCONVERSION").is_some() {
+        derived_geographic(n, d)
     } else if n.is(kw::WKT1_GEOGRAPHIC) || n.is(kw::WKT1_GEOCENTRIC) || n.is(kw::GEOGRAPHIC_OR_GEODETIC_CRS) || n.is(kw::BASE_GEODETIC_CRS)
     {
         geodetic(n, d)
@@ -853,6 +872,27 @@ fn cs(n: &Node, d: Dialect, kind: CsKind, default: &[&str], default_unit: &Unit)
     }
     axes.sort_by(|x, y| x.0.total_cmp(&y.0));
     Cs { kind, axes: axes.into_iter().map(|(_, a)| a).collect(), explicit: true }
+}
+
+/// A derived geographic CRS: its base CRS (WKT 2's `BASEGEOGCRS` or `BASEGEODCRS`), its deriving
+/// conversion, and its coordinate system, in degrees without a unit. Refused, as PROJ 9.9.0 and the
+/// WKT 2 reader refuse it, without its base CRS or method, or with a parameter without its value.
+fn derived_geographic(n: &Node, d: Dialect) -> Option<Crs> {
+    let base_node = n.first_in(kw::BASE_GEODETIC_CRS)?;
+    let base = geodetic(base_node, d)?;
+    let c = n.child("DERIVINGCONVERSION")?;
+    if c.children("PARAMETER").any(|p| p.num(1).is_none()) {
+        return None;
+    }
+    let conversion = Conversion {
+        ident: ident(c),
+        method: ident(c.child("METHOD")?),
+        params: params(c),
+        angular: angular_unit(base_node, d),
+        linear: Unit::metre(),
+    };
+    let cs = cs(n, d, CsKind::Ellipsoidal, &["north", "east"], &Unit::degree());
+    Some(Crs::DerivedGeographic { ident: ident(n), base: Box::new(base), conversion, cs })
 }
 
 /// The parameters of a conversion or transformation node, each with its own unit.

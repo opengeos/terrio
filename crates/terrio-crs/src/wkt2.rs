@@ -39,8 +39,8 @@ pub(crate) fn handles(root: &Node) -> bool {
     root.is(GEOGRAPHIC_OR_GEODETIC_CRS) || root.is(PROJECTED_CRS)
 }
 
-/// Converts a WKT 2 geographic or projected CRS, or a `BOUNDCRS` of one, into a PROJ string,
-/// with a `BOUNDCRS`'s Helmert transformation as `+towgs84` when it is to WGS 84, else as
+/// Converts a WKT 2 geographic, projected or derived geographic CRS, or a `BOUNDCRS` of one, into a
+/// PROJ string, with a `BOUNDCRS`'s Helmert transformation as `+towgs84` when it is to WGS 84, else as
 /// [`Converted::bound`]. Fails on what it cannot convert faithfully: an unknown method, or an
 /// unknown parameter.
 pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
@@ -70,21 +70,21 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         }
         return Ok(c);
     }
-    let projected = root.is(PROJECTED_CRS);
-    if !projected && let Some(conv) = root.child("DERIVINGCONVERSION") {
-        return derived(root, conv);
-    }
     let input = Wkt2Input::read(root)?;
-    let base = if projected { root.first_in(BASE_GEODETIC_CRS).ok_or_else(|| bad("a PROJCRS without its base CRS"))? } else { root };
+    let base = if matches!(input.kind, Wkt2Kind::Geographic { .. } | Wkt2Kind::Geocentric { .. }) {
+        root
+    } else {
+        root.first_in(BASE_GEODETIC_CRS).ok_or_else(|| bad("a CRS without its base CRS"))?
+    };
     convert(&input, base)
 }
 
-/// What a WKT 2 geographic, geocentric or projected CRS gives its PROJ string: read from its tree
+/// What a WKT 2 geographic, geocentric, projected or derived geographic CRS gives its PROJ string: read from its tree
 /// ([`Wkt2Input::read`]) or from its model (`model::wkt2_input`), which agree but for the known
 /// differences `model::proj_input_tests` pins (#1058 step 6).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Wkt2Input {
-    /// The geodetic CRS: the CRS itself, or a projected CRS's base CRS.
+    /// The geodetic CRS: the CRS itself, or a projected or derived CRS's base CRS.
     pub geodetic: Wkt2Geodetic,
     pub kind: Wkt2Kind,
 }
@@ -117,9 +117,12 @@ pub(crate) enum Wkt2Kind {
     /// A projected CRS: its CS's length unit (metres), its axes' directions in lower case (none for
     /// a polar CS, whose axes run along meridians), and its conversion.
     Projected { to_meter: f64, directions: Vec<String>, method: Wkt2Method },
+    /// A derived geographic CRS (a rotated pole): its deriving conversion, and its grid's angular
+    /// unit in degrees (the first unit its axes have, else degrees).
+    Derived { method: Wkt2Method, grid_ang: f64 },
 }
 
-/// A projected CRS's conversion: its method's name as written and EPSG code, and its parameters.
+/// A projected or derived CRS's conversion: its method's name as written and EPSG code, and its parameters.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Wkt2Method {
     pub name: String,
@@ -161,14 +164,24 @@ impl Wkt2Param {
 }
 
 impl Wkt2Input {
-    /// What a WKT 2 geographic, geocentric or projected CRS (not a derived one) gives its PROJ
-    /// string. Fails on what the reader refuses there: a CRS without its datum, ellipsoid,
-    /// conversion or method, a unit without its size, a geodetic CS or axes it cannot convert.
+    /// What a WKT 2 geographic, geocentric, projected or derived geographic CRS gives its PROJ
+    /// string. Fails on what the reader refuses there: a CRS without its base CRS, datum,
+    /// ellipsoid, conversion or method, a unit without its size, a parameter without its value, a
+    /// geodetic CS or axes it cannot convert.
     pub(crate) fn read(root: &Node) -> Result<Self> {
         let projected = root.is(PROJECTED_CRS);
-        let base = if projected { root.first_in(BASE_GEODETIC_CRS).ok_or_else(|| bad("a PROJCRS without its base CRS"))? } else { root };
-        let geodetic = Wkt2Geodetic::read(base, !projected)?;
-        let kind = if projected { projected_kind(root)? } else { geodetic_kind(root)? };
+        let deriving = if projected { None } else { root.child("DERIVINGCONVERSION") };
+        let base = match (projected, deriving) {
+            (true, _) => root.first_in(BASE_GEODETIC_CRS).ok_or_else(|| bad("a PROJCRS without its base CRS"))?,
+            (false, Some(_)) => root.first_in(BASE_GEODETIC_CRS).ok_or_else(|| bad("a derived geographic CRS without its base CRS"))?,
+            (false, None) => root,
+        };
+        let geodetic = Wkt2Geodetic::read(base, !projected && deriving.is_none())?;
+        let kind = match (projected, deriving) {
+            (true, _) => projected_kind(root)?,
+            (false, Some(conv)) => derived_kind(root, conv)?,
+            (false, None) => geodetic_kind(root)?,
+        };
         Ok(Self { geodetic, kind })
     }
 }
@@ -281,7 +294,21 @@ fn projected_kind(root: &Node) -> Result<Wkt2Kind> {
     Ok(Wkt2Kind::Projected { to_meter, directions, method })
 }
 
-/// The PROJ string of a WKT 2 geographic, geocentric or projected CRS, from what it gives it
+/// A derived geographic CRS's deriving conversion (`conv`) and grid unit: the first unit of its
+/// axes, whatever the CS, else degrees.
+fn derived_kind(root: &Node, conv: &Node) -> Result<Wkt2Kind> {
+    let method = conv.child("METHOD").ok_or_else(|| bad("a DERIVINGCONVERSION without its METHOD"))?;
+    let method = Wkt2Method {
+        name: method.name().unwrap_or("").to_string(),
+        epsg: method.epsg(),
+        params: conv.children("PARAMETER").map(Wkt2Param::read).collect::<Result<_>>()?,
+    };
+    let unit = root.children("AXIS").find_map(|a| a.child("ANGLEUNIT").or_else(|| a.child("UNIT"))).and_then(|u| u.num(1));
+    Ok(Wkt2Kind::Derived { method, grid_ang: unit.map(degrees).unwrap_or(1.0) })
+}
+
+/// The PROJ string of a WKT 2 geographic, geocentric, projected or derived geographic CRS, from
+/// what it gives it
 /// ([`Wkt2Input`]); `base` is the geodetic CRS's node. Fails on an unknown method or parameter, or
 /// a method's values PROJ refuses.
 pub(crate) fn convert(input: &Wkt2Input, base: &Node) -> Result<Converted> {
@@ -308,6 +335,7 @@ pub(crate) fn convert(input: &Wkt2Input, base: &Node) -> Result<Converted> {
             return Ok(geog.converted(out.join(" ")));
         }
         Wkt2Kind::Projected { to_meter, directions, method } => (*to_meter, directions, method),
+        Wkt2Kind::Derived { method, grid_ang } => return derived(geog, method, *grid_ang),
     };
     let generic = proj_method(method, geog.ang, to_meter)?;
     let p = if generic.is_some() { Params::default() } else { Params::read(&method.params, geog.ang, to_meter)? };
@@ -678,22 +706,17 @@ pub(crate) fn convert(input: &Wkt2Input, base: &Node) -> Result<Converted> {
     Ok(geog.converted(proj_str.join(" ")))
 }
 
-/// A derived geographic CRS (a `GEOGCRS` with a `DERIVINGCONVERSION`) as a PROJ string: a
-/// rotated-pole grid, in one of the three forms PROJ writes. Fails on any other conversion, which
-/// would otherwise be dropped.
-fn derived(root: &Node, conv: &Node) -> Result<Converted> {
-    let base = root.first_in(BASE_GEODETIC_CRS).ok_or_else(|| bad("a derived geographic CRS without its base CRS"))?;
-    let geog = Geodetic::new(&Wkt2Geodetic::read(base, false)?, base);
-    let method = conv.child("METHOD").ok_or_else(|| bad("a DERIVINGCONVERSION without its METHOD"))?;
-    let method_name = method.name().unwrap_or("");
+/// A derived geographic CRS (a `GEOGCRS` with a `DERIVINGCONVERSION`) as a PROJ string, from its
+/// base CRS (`geog`), its deriving conversion and grid unit: a rotated-pole grid, in one of the
+/// three forms PROJ writes. Fails on any other conversion, which would otherwise be dropped.
+fn derived(geog: Geodetic, method: &Wkt2Method, grid_ang: f64) -> Result<Converted> {
+    let method_name = method.name.as_str();
     // The parameters, in degrees, by normalised name.
-    let mut values = Vec::new();
-    for n in conv.children("PARAMETER") {
-        let name = n.name().unwrap_or("");
-        let v = n.num(1).ok_or_else(|| bad(&format!("parameter '{name}' without a value")))?;
-        let unit = n.child("ANGLEUNIT").or_else(|| n.child("UNIT")).and_then(|u| u.num(1));
-        values.push((norm(name), name.to_string(), v * unit.map(degrees).unwrap_or(geog.ang)));
-    }
+    let values: Vec<_> = method
+        .params
+        .iter()
+        .map(|p| (norm(&p.name), p.name.clone(), p.value * p.size(&["ANGLEUNIT", "UNIT"]).map(degrees).unwrap_or(geog.ang)))
+        .collect();
     let used = std::cell::RefCell::new(Vec::new());
     let get = |key: &str| {
         let v = values.iter().find(|v| v.0 == key)?;
@@ -723,9 +746,8 @@ fn derived(root: &Node, conv: &Node) -> Result<Converted> {
     }
     let mut out = vec![format!("+proj=ob_tran +o_proj=longlat +o_lat_p={lat_p} +o_lon_p={lon_p} +lon_0={lon_0}")];
     // The grid's angular unit: its CS axes'.
-    let unit = root.children("AXIS").find_map(|a| a.child("ANGLEUNIT").or_else(|| a.child("UNIT"))).and_then(|u| u.num(1));
-    if let Some(ang) = unit.map(degrees).filter(|a| (a - 1.0).abs() > 1e-12) {
-        out.push(format!("+to_deg={ang}"));
+    if (grid_ang - 1.0).abs() > 1e-12 {
+        out.push(format!("+to_deg={grid_ang}"));
     }
     out.append(&mut geog.tail());
     Ok(geog.converted(out.join(" ")))

@@ -244,9 +244,10 @@ fn conversion_json(c: &Conversion) -> Value {
 fn render(crs: &Crs) -> Value {
     match crs {
         Crs::Geodetic { ident, datum, cs, frame_epoch, .. } => geodetic_json(ident, datum, cs, *frame_epoch),
-        Crs::Projected { ident, base, conversion, cs } => {
+        Crs::Projected { ident, base, conversion, cs } | Crs::DerivedGeographic { ident, base, conversion, cs } => {
             let mut o = Map::new();
-            o.insert("type".into(), json!("ProjectedCRS"));
+            let kind = if matches!(crs, Crs::Projected { .. }) { "ProjectedCRS" } else { "DerivedGeographicCRS" };
+            o.insert("type".into(), json!(kind));
             o.insert("name".into(), json!(ident.name));
             o.insert("base_crs".into(), render(base));
             o.insert("conversion".into(), conversion_json(conversion));
@@ -376,7 +377,7 @@ fn database_axes(crs: &Crs, prefix: &str, esri: bool, out: &mut Vec<String>) {
         Crs::Geodetic { cs, ident, .. } if !cs.explicit && cs.kind == CsKind::Ellipsoidal && (esri || !ident.ids.is_empty()) => {
             out.push(at("coordinate_system"))
         }
-        Crs::Projected { base, .. } => database_axes(base, &at("base_crs"), esri, out),
+        Crs::Projected { base, .. } | Crs::DerivedGeographic { base, .. } => database_axes(base, &at("base_crs"), esri, out),
         Crs::Compound { parts, .. } => {
             for (i, p) in parts.iter().enumerate() {
                 database_axes(p, &format!("{}[{i}]", at("components")), esri, out);
