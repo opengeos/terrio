@@ -1292,6 +1292,55 @@ fn a_lazy_grib1_open_holds_one_message_read_whole_at_a_time() {
     assert!(peak < len / 4, "{peak} bytes held at once, for a file of {len}");
 }
 
+/// The GRIB2 messages `bytes` (of one field each) written to `path`, each with `pad` zero bytes
+/// after its data, which its section 7 and its length count: large messages whose values are those
+/// of `bytes`, and a sparse file where the file system allows it.
+#[cfg(all(unix, feature = "grib"))]
+fn padded_messages(bytes: &[u8], pad: u64, path: &Path) {
+    use std::io::{Seek, SeekFrom, Write};
+    let be = |b: &[u8]| b.iter().fold(0u64, |v, &x| (v << 8) | u64::from(x));
+    let mut f = std::fs::File::create(path).unwrap();
+    let mut at = 0;
+    while at + 16 <= bytes.len() {
+        let len = be(&bytes[at + 8..at + 16]) as usize;
+        let mut message = bytes[at..at + len - 4].to_vec();
+        // Section 7, the last before the end marker, and the message grow by `pad`.
+        let mut s = 16;
+        while message[s + 4] != 7 {
+            s += be(&message[s..s + 4]) as usize;
+        }
+        let s7 = u32::try_from(be(&message[s..s + 4]) + pad).unwrap();
+        message[s..s + 4].copy_from_slice(&s7.to_be_bytes());
+        message[8..16].copy_from_slice(&(len as u64 + pad).to_be_bytes());
+        f.write_all(&message).unwrap();
+        f.seek(SeekFrom::Current(i64::try_from(pad).unwrap())).unwrap();
+        f.write_all(b"7777").unwrap();
+        at += len;
+    }
+}
+
+/// Catches a read of a local GRIB file that holds the messages of all the bands it decodes at once
+/// (#1081): it decodes at once as many bands as hold, with the messages it reads for them, in
+/// 256 MiB. Two bands of 16 x 16 points take 4 KiB of values; their messages, padded to 160 MiB
+/// each, take more than 256 MiB together, so a read of both holds one at a time.
+#[cfg(all(unix, feature = "grib"))]
+#[test]
+fn a_lazy_grib_read_holds_its_messages_within_its_decode_budget() {
+    const PAD: u64 = 160 << 20;
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let fields = write(dir.path(), "fields.grib2", &raster(16, 16, 2, DataType::F32, 4326, (0.0, 60.0, 0.01)), Some(RasterDriver::GRIB));
+    let small = std::fs::read(fields).unwrap();
+    let path = dir.path().join("f.grib2");
+    padded_messages(&small, PAD, &path);
+    let (all, both) = (terrio::Window::full(16, 16), terrio::WindowOptions { bands: vec![1, 2], overview: None });
+    let mut r = terrio::LazyRaster::open(path.to_str().unwrap()).unwrap();
+    let (read, peak) = peak_during(|| r.read_window(all, &both));
+    let expected = terrio::memory::open_raster_lazy_bytes(small, "f.grib2").unwrap().read_window(all, &both).unwrap();
+    assert_eq!(read.unwrap().raster.data.to_f64_vec(), expected.raster.data.to_f64_vec());
+    assert!(peak < 256 << 20, "{peak} bytes held at once by a read of two messages of {PAD} bytes and more");
+}
+
 // ─── The writers operations stream to ───────────────────────────────────────────────────────────
 
 /// A raster of `bands` UInt8 bands of `cols` x `rows` pixels, without its pixels: what a writer is

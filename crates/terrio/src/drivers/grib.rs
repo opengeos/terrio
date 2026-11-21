@@ -335,8 +335,8 @@ pub(crate) fn open_lazy_bytes(bytes: Vec<u8>) -> Result<crate::LazyRaster> {
     Ok(Source::open(header, split, normalize, Store::Bytes(bytes, index), crate::block_cache::Handle::new()))
 }
 
-/// The most bytes of decoded bands a read of several bands holds at once, at least one band: the
-/// bands it decodes in parallel.
+/// The most bytes a read of several bands decodes them with at once, at least one band: the decoded
+/// values of the bands it decodes in parallel and, for a local file, the messages read for them.
 const DECODE_BYTES: usize = 256 << 20;
 
 /// The chunk of the block cache that holds a band, or the part of it a read keeps.
@@ -492,8 +492,10 @@ impl Source {
 
     /// Decodes the bands `missing` (from 1, each once): the values of `window` of each, each band
     /// kept in the block cache in a `share` of it. A file's bands are decoded in parallel, the
-    /// first error in band order failing the read; a remote file's are decoded one at a time, in
-    /// the order asked, each message fetched once for the bands of it asked one after the other.
+    /// first error in band order failing the read: those of a local file as many at once as hold,
+    /// with the messages read for them, in [`DECODE_BYTES`] ([`Source::at_once`]). A remote file's
+    /// are decoded one at a time, in the order asked, each message fetched once for the bands of it
+    /// asked one after the other.
     fn decode(&self, mut missing: Vec<usize>, window: crate::Window, share: u64) -> Result<Vec<(usize, Vec<f64>)>> {
         #[cfg(remote)]
         if matches!(self.store, Store::Remote(_)) {
@@ -515,8 +517,45 @@ impl Source {
             return Ok(out);
         }
         missing.sort_unstable();
-        // A local file's messages are read on this thread, each once for all the bands of it to
-        // decode, then the bands are decoded on the pool.
+        let mut out = Vec::with_capacity(missing.len());
+        let mut rest = missing.as_slice();
+        while !rest.is_empty() {
+            let (now, later) = rest.split_at(self.at_once(rest));
+            out.extend(self.decode_together(now, window, share)?);
+            rest = later;
+        }
+        Ok(out)
+    }
+
+    /// How many of the bands `missing` (from 1, sorted), from the first, are decoded at once: the
+    /// first, then as many as hold in [`DECODE_BYTES`] with it, counting their decoded values and,
+    /// for a local file, the messages read for them, which are held until they are all decoded.
+    fn at_once(&self, missing: &[usize]) -> usize {
+        let Store::File(_, index) = &self.store else { return missing.len() };
+        let band_bytes = self.cols.saturating_mul(self.rows).saturating_mul(8);
+        let mut last = None;
+        let mut bytes = 0usize;
+        let mut fits = |b: usize| {
+            // A message's bands are numbered one after the other: it is read once for them.
+            let message = match index.get(b.wrapping_sub(1)) {
+                Some(&(start, len, _)) if last != Some(start) => {
+                    last = Some(start);
+                    len
+                }
+                _ => 0,
+            };
+            bytes = bytes.saturating_add(band_bytes).saturating_add(message);
+            bytes <= DECODE_BYTES
+        };
+        let Some((&first, more)) = missing.split_first() else { return 0 };
+        fits(first);
+        1 + more.iter().take_while(|&&b| fits(b)).count()
+    }
+
+    /// Decodes the bands `missing` (from 1, sorted, each once) of a file in memory or a local file
+    /// in parallel, as [`Source::decode`]: each message read once, on this thread, for all the
+    /// bands of it, then the bands decoded on the pool.
+    fn decode_together(&self, missing: &[usize], window: crate::Window, share: u64) -> Result<Vec<(usize, Vec<f64>)>> {
         let (mut ids, mut messages): (Vec<usize>, Vec<_>) = (Vec::new(), Vec::new());
         let located: Vec<Result<(usize, usize)>> = missing
             .iter()
@@ -541,7 +580,7 @@ impl Source {
         });
         let mut errors: Vec<Option<Error>> = messages.into_iter().map(Result::err).collect();
         let mut out = Vec::with_capacity(missing.len());
-        for ((b, located), values) in missing.into_iter().zip(located).zip(decoded) {
+        for ((&b, located), values) in missing.iter().zip(located).zip(decoded) {
             let (at, _) = located?;
             if let Some(e) = errors[at].take() {
                 return Err(e);
