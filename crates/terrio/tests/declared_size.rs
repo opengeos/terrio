@@ -1320,9 +1320,11 @@ fn padded_messages(bytes: &[u8], pad: u64, path: &Path) {
 }
 
 /// Catches a read of a local GRIB file that holds the messages of all the bands it decodes at once
-/// (#1081): it decodes at once as many bands as hold, with the messages it reads for them, in
-/// 256 MiB. Two bands of 16 x 16 points take 4 KiB of values; their messages, padded to 160 MiB
-/// each, take more than 256 MiB together, so a read of both holds one at a time.
+/// (#1081), or that fails otherwise than with its first failing band once it decodes them a few at
+/// a time: it decodes at once as many bands as hold, with the messages it reads for them, in
+/// 256 MiB, in band order. Two bands of 16 x 16 points take 4 KiB of values; their messages, padded
+/// to 160 MiB each, take more than 256 MiB together, so a read of both holds one at a time; with
+/// band 1's message damaged and band 2's cut off after the open, it fails with band 1's error.
 #[cfg(all(unix, feature = "grib"))]
 #[test]
 fn a_lazy_grib_read_holds_its_messages_within_its_decode_budget() {
@@ -1336,9 +1338,27 @@ fn a_lazy_grib_read_holds_its_messages_within_its_decode_budget() {
     let (all, both) = (terrio::Window::full(16, 16), terrio::WindowOptions { bands: vec![1, 2], overview: None });
     let mut r = terrio::LazyRaster::open(path.to_str().unwrap()).unwrap();
     let (read, peak) = peak_during(|| r.read_window(all, &both));
-    let expected = terrio::memory::open_raster_lazy_bytes(small, "f.grib2").unwrap().read_window(all, &both).unwrap();
+    let expected = terrio::memory::open_raster_lazy_bytes(small.clone(), "f.grib2").unwrap().read_window(all, &both).unwrap();
     assert_eq!(read.unwrap().raster.data.to_f64_vec(), expected.raster.data.to_f64_vec());
     assert!(peak < 256 << 20, "{peak} bytes held at once by a read of two messages of {PAD} bytes and more");
+    // Another such file changed after it is opened, as the library's test of a read's first error
+    // changes one: band 1's first section given a length of 1, the file cut 20 bytes into band 2's
+    // message.
+    let path = dir.path().join("g.grib2");
+    padded_messages(&small, PAD, &path);
+    let mut r = terrio::LazyRaster::open(path.to_str().unwrap()).unwrap();
+    {
+        use std::io::{Read, Seek, SeekFrom, Write};
+        let mut f = std::fs::OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        let mut head = [0u8; 16];
+        f.read_exact(&mut head).unwrap();
+        let second = u64::from_be_bytes(head[8..16].try_into().unwrap());
+        f.seek(SeekFrom::Start(16)).unwrap();
+        f.write_all(&[0, 0, 0, 1]).unwrap();
+        f.set_len(second + 20).unwrap();
+    }
+    let failed = r.read_window(all, &terrio::WindowOptions { bands: vec![2, 1], overview: None }).map(|_| ());
+    assert!(failed.as_ref().is_err_and(|e| e.to_string().contains("invalid GRIB2 section at offset 16")), "{failed:?}");
 }
 
 // ─── The writers operations stream to ───────────────────────────────────────────────────────────
