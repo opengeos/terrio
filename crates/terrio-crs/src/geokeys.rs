@@ -1015,7 +1015,7 @@ fn bound_beyond_towgs84(crs: &SpatialRef) -> bool {
     let Some(w) = crs.wkt.as_deref().filter(|w| crate::def::is_bound_crs(w)) else { return false };
     crate::parsed::tree(w)
         .filter(|root| crate::wkt2::handles(root))
-        .and_then(|root| crate::model::wkt2_to_proj(w, &root).ok())
+        .and_then(|_| crate::model::wkt2_to_proj(w).ok())
         .is_some_and(|c| c.helmert.is_some())
 }
 

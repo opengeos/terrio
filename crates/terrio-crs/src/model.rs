@@ -349,22 +349,24 @@ pub(crate) fn read(text: &str) -> Option<Model> {
     Some(Model { crs: crs(&root, d)?, dialect: d, extensions: extensions(&root), height_added: false })
 }
 
-/// The PROJ string of a WKT 2 CRS the WKT 2 reader converts (`root`, the tree of `text`): from the
-/// CRS model's input (#1058 step 6d-2), else, for a text the model gives no input for, from the
-/// reader, which gives its refusal.
-pub(crate) fn wkt2_to_proj(text: &str, root: &Node) -> crate::Result<wkt1::Converted> {
-    match read(text).and_then(|m| wkt2_root_input(&m, root)) {
-        Some(input) => wkt2::convert_root(&input, root),
-        None => wkt2::to_proj(root),
+/// The PROJ string of a WKT 2 CRS the WKT 2 reader converts (`wkt2::handles`): from the CRS
+/// model's input (#1058 step 6d-2), else, for a text the model gives no input for, from the reader,
+/// which gives its refusal. Its tree is the memoized one ([`crate::parsed::tree`]).
+pub(crate) fn wkt2_to_proj(text: &str) -> crate::Result<wkt1::Converted> {
+    let root = crate::parsed::tree(text).ok_or_else(|| crate::Error::Crs("not a WKT definition GDAL reads".into()))?;
+    match read(text).and_then(|m| wkt2_root_input(&m, &root)) {
+        Some(input) => wkt2::convert_root(&input, &root),
+        None => wkt2::to_proj(&root),
     }
 }
 
-/// The PROJ string of a WKT 1 CRS (`root`, the tree of `text`): from the CRS model's input (#1058
-/// step 6d-2), else, for a text the model gives no input for, from the WKT 1 reader; `None` for one
-/// it does not convert.
-pub(crate) fn wkt1_to_proj(text: &str, root: &Node) -> Option<wkt1::Converted> {
-    let Some(input) = read(text).and_then(|m| wkt1_input(&m, root)) else { return wkt1::to_proj(root) };
-    let geogcs = if input.kind == wkt1::Wkt1Kind::Projected { root.child("GEOGCS")? } else { root };
+/// The PROJ string of a WKT 1 CRS: from the CRS model's input (#1058 step 6d-2), else, for a text
+/// the model gives no input for, from the WKT 1 reader; `None` for one it does not convert. Its
+/// tree is the memoized one ([`crate::parsed::tree`]).
+pub(crate) fn wkt1_to_proj(text: &str) -> Option<wkt1::Converted> {
+    let root = crate::parsed::tree(text)?;
+    let Some(input) = read(text).and_then(|m| wkt1_input(&m, &root)) else { return wkt1::to_proj(&root) };
+    let geogcs = if input.kind == wkt1::Wkt1Kind::Projected { root.child("GEOGCS")? } else { &root };
     wkt1::convert(&input, geogcs)
 }
 

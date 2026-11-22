@@ -1219,7 +1219,7 @@ impl Def {
             }
         }
         let root = crate::parsed::tree(w)?;
-        let c = if wkt2::handles(&root) { crate::model::wkt2_to_proj(w, &root).ok()? } else { crate::model::wkt1_to_proj(w, &root)? };
+        let c = if wkt2::handles(&root) { crate::model::wkt2_to_proj(w).ok()? } else { crate::model::wkt1_to_proj(w)? };
         Self::from_proj(&c.proj).ok()
     }
 
@@ -1326,8 +1326,7 @@ impl Def {
             let kind = root.key.to_ascii_lowercase().replace('_', "");
             return Err(Error::Crs(format!("unsupported projection: unsupported WKT root '{kind}'")));
         }
-        let converted =
-            if wkt2::handles(&root) { Some(crate::model::wkt2_to_proj(w, &root)?) } else { crate::model::wkt1_to_proj(w, &root) };
+        let converted = if wkt2::handles(&root) { Some(crate::model::wkt2_to_proj(w)?) } else { crate::model::wkt1_to_proj(w) };
         if let Some(c) = converted {
             let mut d = Self::from_proj(&c.proj)?;
             // A `BOUNDCRS`'s Helmert transformation that `+towgs84` cannot stand for (a full

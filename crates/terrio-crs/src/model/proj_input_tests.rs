@@ -102,8 +102,8 @@ fn unusual_wkt1_gives_its_proj_string_the_tree_s_input() {
 }
 
 /// Where the model reads unusual WKT 1 otherwise than terrio's tree reader, and PROJ 9.9.0 reads it
-/// as the model does (pyproj 3.8.0, `CRS(wkt).to_proj4()`): the PROJ string is the model's, PROJ's,
-/// since the readers take their input from the model (#1058 step 6d-2).
+/// as the model does (pyproj 3.8.0, `CRS(wkt).to_proj4()`): the PROJ string follows the model, as
+/// PROJ reads the text, since the readers take their input from the model (#1058 step 6d-2).
 #[test]
 fn where_the_model_reads_unusual_wkt1_otherwise() {
     let geogcs = |datum: &str, inner: &str| {
@@ -605,8 +605,8 @@ fn bound_wkt2_gives_its_proj_string_the_tree_s_input() {
 }
 
 /// Where the model reads unusual WKT 2 otherwise than the tree reader, and PROJ 9.9.0 reads it as
-/// the model does: the PROJ string is the model's, PROJ's, since the readers take their input from
-/// the model (#1058 step 6d-2).
+/// the model does: the PROJ string follows the model, as PROJ reads the text, since the readers take
+/// their input from the model (#1058 step 6d-2).
 #[test]
 fn where_the_model_reads_unusual_wkt2_otherwise() {
     let input = |text: &str| {
@@ -783,44 +783,50 @@ fn the_proj_string_is_read_as_proj_reads_it() {
             r#"PROJCRS["p",BASEGEOGCRS["g",{datum},{pm}],CONVERSION["c",METHOD["Transverse Mercator",ID["EPSG",9807]],PARAMETER["Longitude of natural origin",9,{param},ID["EPSG",8802]]],CS[Cartesian,2],AXIS["(E)",east,LENGTHUNIT["metre",1]],AXIS["(N)",north,LENGTHUNIT["metre",1]]]"#
         )
     };
-    // Each text, the tree reader's value, and PROJ's.
+    // Each text, its PROJ string from the tree reader, and from the model (PROJ 9.9.0's value in
+    // the comment).
+    let ll = "+proj=longlat +a=6378137 +rf=298.257223563";
+    let tm = |lon: &str| format!("+proj=tmerc +lat_0=0 +lon_0={lon} +k=1 +x_0=0 +y_0=0 +to_meter=1 +a=6378137 +rf=298.257223563");
+    let ob_tran =
+        |to_deg: &str| format!("+proj=ob_tran +o_proj=longlat +o_lat_p=39.25 +o_lon_p=0 +lon_0=0{to_deg} +a=6378137 +rf=298.257223563");
     let cases = [
-        // An ellipsoid, or a prime meridian, in its own unit.
+        // An ellipsoid in its own unit (PROJ `+a=6378137.001384`, rounded), or a prime meridian
+        // (`+pm=9`).
         (
             geogcs(r#"SPHEROID["local",20925646.33,298.257223563,UNIT["foot",0.3048]]"#, r#"PRIMEM["Greenwich",0]"#),
-            "+a=20925646.33",
-            "+a=6378137.0013",
+            "+proj=longlat +a=20925646.33 +rf=298.257223563".to_string(),
+            "+proj=longlat +a=6378137.001383999 +rf=298.257223563".to_string(),
         ),
-        (geogcs(wgs84, r#"PRIMEM["Local",10,UNIT["grad",0.01570796326794897]]"#), "+pm=10", "+pm=9"),
-        // WKT 2's long `PRIMEMERIDIAN` keyword.
+        (geogcs(wgs84, r#"PRIMEM["Local",10,UNIT["grad",0.01570796326794897]]"#), format!("{ll} +pm=10"), format!("{ll} +pm=9")),
+        // WKT 2's long `PRIMEMERIDIAN` keyword (`+pm=2`).
         (
             format!(
                 r#"GEOGCRS["g",{datum},PRIMEMERIDIAN["Local",2,{DEG}],CS[ellipsoidal,2],AXIS["lat",north,{DEG}],AXIS["lon",east,{DEG}]]"#
             ),
-            "+rf=298.257223563",
-            "+pm=2",
+            ll.to_string(),
+            format!("{ll} +pm=2"),
         ),
-        // A parameter in a time unit (PROJ reads 9 seconds of longitude as 9 radians), or in a
-        // length and then an angle unit (the first, its size read as radians).
-        (projected(r#"TIMEUNIT["second",1]"#), "+lon_0=9 ", "+lon_0=515.66201561774"),
-        (projected(r#"LENGTHUNIT["foot",0.3048],ANGLEUNIT["grad",0.015707963267949]"#), "+lon_0=8.1 ", "+lon_0=157.1737823602"),
+        // A parameter in a time unit (PROJ reads 9 seconds of longitude as 9 radians,
+        // `+lon_0=515.662015617741`), or in a length and then an angle unit (the first, its size
+        // read as radians: `+lon_0=157.173782360287`).
+        (projected(r#"TIMEUNIT["second",1]"#), tm("9"), tm("515.662015617741")),
+        (projected(r#"LENGTHUNIT["foot",0.3048],ANGLEUNIT["grad",0.015707963267949]"#), tm("8.1"), tm("157.17378236028745")),
         // A derived CRS's CS unit after its axes: its grid in grads, as PROJ gives its axes.
         (
             format!(
                 r#"GEOGCRS["r",BASEGEOGCRS["b",{datum},{pm}],DERIVINGCONVERSION["c",METHOD["PROJ ob_tran o_proj=longlat"],PARAMETER["o_lat_p",39.25,{DEG}]],CS[ellipsoidal,2],AXIS["lon",east],AXIS["lat",north],ANGLEUNIT["grad",0.015707963267949]]"#
             ),
-            "+lon_0=0 +a=",
-            "+to_deg=0.9",
+            ob_tran(""),
+            ob_tran(" +to_deg=0.9"),
         ),
     ];
-    for (text, tree, proj) in &cases {
+    for (text, tree, model) in &cases {
         let root = crate::parsed::tree(text).unwrap();
         let (old, new) = if crate::wkt2::handles(&root) {
-            (crate::wkt2::to_proj(&root).unwrap().proj, crate::model::wkt2_to_proj(text, &root).unwrap().proj)
+            (crate::wkt2::to_proj(&root).unwrap().proj, crate::model::wkt2_to_proj(text).unwrap().proj)
         } else {
-            (crate::wkt1::to_proj(&root).unwrap().proj, crate::model::wkt1_to_proj(text, &root).unwrap().proj)
+            (crate::wkt1::to_proj(&root).unwrap().proj, crate::model::wkt1_to_proj(text).unwrap().proj)
         };
-        assert!(old.contains(tree) && !old.contains(proj), "{text}\n  tree  {old}");
-        assert!(new.contains(proj), "{text}\n  model {new}");
+        assert_eq!((&old, &new), (tree, model), "{text}");
     }
 }
