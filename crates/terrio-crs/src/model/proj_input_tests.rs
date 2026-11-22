@@ -164,10 +164,15 @@ fn malformed_wkt1_the_model_reads_as_the_tree() {
         format!(
             r#"PROJCS["x",{geogcs},PROJECTION["Lambert_Conformal_Conic_2SP"],PARAMETER["standard_parallel_1",45],PARAMETER["standard_parallel_2",50],PARAMETER["central_meridian",9],CONVERSION["c",METHOD["Lambert Conic Conformal (2SP)",ID["EPSG",9802]],PARAMETER["Latitude of 1st standard parallel",45,ANGLEUNIT["degree",0.0174532925199433]],PARAMETER["Latitude of 2nd standard parallel",50,ANGLEUNIT["degree",0.0174532925199433]]],UNIT["metre",1]]"#
         ),
+        // A spheroid of axis 0 (PROJ refuses it: "Invalid ellipsoid parameters").
+        r#"GEOGCS["x",DATUM["d",SPHEROID["s",0,0]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#.to_string(),
+        // ESRI's compound CRS with a `VERTCS` without its datum: its horizontal CRS (PROJ refuses
+        // it: "Missing VDATUM or ENSEMBLE node").
+        format!(r#"{geogcs},VERTCS["x",UNIT["Meter",1.0]]"#),
     ];
     for text in &cases {
         let (tree, model) = inputs(text).unwrap_or_else(|| panic!("not a WKT 1 CRS: {text}"));
-        let refused = !text.contains("PROJECTION[");
+        let refused = !text.contains("PROJECTION[") && !text.starts_with("GEOGCS");
         assert!(tree == model && (tree == "None") == refused, "{text}\n  tree  {tree}\n  model {model}");
     }
 }
@@ -739,10 +744,19 @@ fn malformed_wkt2_the_model_reads_as_the_tree() {
             geog(&lat_lon)
         )
     };
+    let ellipsoid = |e: &str| format!(r#"GEOGCRS["g",DATUM["d",ELLIPSOID["e",{e}]],{pm},CS[ellipsoidal,2],{lat_lon}]"#);
     let translation = |axis: &str, code: u32| format!(r#"PARAMETER["{axis}-axis translation",-87,{M},ID["EPSG",{code}]]"#);
     let polar = |m: &str| format!(r#"AXIS["(E)",south,MERIDIAN[{m},{DEG}]],AXIS["(N)",south,MERIDIAN[{m},{DEG}]],{M}"#);
     // Each text, with PROJ 9.9.0's reading.
     let cases = [
+        // An ellipsoid of axis 0 or negative, of a negative inverse flattening, or in a unit of
+        // size 0, as written (PROJ refuses them: "Invalid ellipsoid parameters"); in a unit
+        // without its size, in metres (PROJ refuses it: "not enough children").
+        ellipsoid("0,0"),
+        ellipsoid("-6378137,298.257"),
+        ellipsoid("6378137,-1"),
+        ellipsoid(r#"6378137,298.257,LENGTHUNIT["metre",0]"#),
+        ellipsoid(r#"6378137,298.257,LENGTHUNIT["metre"]"#),
         // An `ID` and then an `AUTHORITY` of other codes, or an ESRI `ID` and then an EPSG
         // `AUTHORITY`: the `AUTHORITY`'s code. PROJ identifies the first as neither, the second as
         // EPSG:4326.

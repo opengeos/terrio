@@ -360,10 +360,14 @@ pub(crate) fn try_read(text: &str) -> Result<Model> {
             };
             return Ok(Model { crs, dialect: d, extensions: extensions(&h), height_added });
         }
-        let parts = vec![crs(&h, d)?, crs(&v, Dialect::Wkt1Esri)?];
-        let name = format!("{} + {}", h.name().unwrap_or(""), v.name().unwrap_or(""));
-        let crs = Crs::Compound { ident: Ident { name, ids: Vec::new(), epsg: None }, parts };
-        return Ok(Model { crs, dialect: d, extensions: extensions(&h), height_added: false });
+        // A `VERTCS` the model does not read (one without its datum, which PROJ 9.9.0 refuses):
+        // the horizontal CRS alone, as the WKT 1 reader reads the text (backward compatibility).
+        if let Ok(vertical) = crs(&v, Dialect::Wkt1Esri) {
+            let parts = vec![crs(&h, d)?, vertical];
+            let name = format!("{} + {}", h.name().unwrap_or(""), v.name().unwrap_or(""));
+            let crs = Crs::Compound { ident: Ident { name, ids: Vec::new(), epsg: None }, parts };
+            return Ok(Model { crs, dialect: d, extensions: extensions(&h), height_added: false });
+        }
     }
     let root = crate::parsed::tree(text).ok_or_else(not_wkt)?;
     let d = dialect(text, &root);
@@ -803,7 +807,17 @@ fn geodetic(n: &Node, d: Dialect) -> Result<Crs> {
     let ell = datum_node.first_in(kw::ELLIPSOID).ok_or_else(|| wkt2::bad("a datum without its ellipsoid"))?;
     ell.num(1).ok_or_else(|| wkt2::bad("an ellipsoid without its semi-major axis"))?;
     ell.num(2).ok_or_else(|| wkt2::bad("an ellipsoid without its inverse flattening"))?;
-    let (a, rf) = ell.ellipsoid().ok_or_else(|| wkt2::bad("an ellipsoid PROJ 9.9.0 refuses"))?;
+    let (a, rf) = match ell.ellipsoid() {
+        Some(figures) => figures,
+        // An ellipsoid PROJ 9.9.0 refuses (its semi-major axis or unit not positive, its inverse
+        // flattening negative): as the tree readers read it, WKT 2's axis in its unit (in metres
+        // without its size), WKT 1's as written (backward compatibility).
+        None => {
+            let (a, rf) = (ell.num(1).unwrap_or(f64::NAN), ell.num(2).unwrap_or(f64::NAN));
+            let unit = ell.child("LENGTHUNIT").or_else(|| ell.child("UNIT")).and_then(|u| u.num(1)).unwrap_or(1.0);
+            (if d == Dialect::Wkt2 { a * unit } else { a }, rf)
+        }
+    };
     let ellipsoid = Ellipsoid { ident: ident(ell), a, rf };
     // A WKT 1 `GEOCCS`'s `UNIT` is its length unit, and so is a WKT 2 Cartesian CS's; its prime
     // meridian is in degrees.
