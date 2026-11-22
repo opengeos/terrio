@@ -1003,10 +1003,11 @@ impl LazyRaster {
         }
     }
 
-    /// The last alpha sample, when a TIFF explicitly tags one (or a PNG has alpha).
-    /// Uses the already open reader, including remote and sparse TIFFs.
-    pub(crate) fn alpha_band(&mut self) -> Option<usize> {
-        match &mut self.inner {
+    /// The band (numbered from 1) that is the explicitly tagged alpha sample — the last band of a
+    /// TIFF with an alpha extra sample, or of a two- or four-band PNG (GDAL's `GMF_ALPHA` band) —
+    /// when the raster has one. Uses the already open reader, including remote and sparse TIFFs.
+    pub fn alpha_band(&self) -> Option<usize> {
+        match &self.inner {
             Inner::Tiff(t) => t.alpha,
             Inner::Memory(ds) | Inner::Source(ds, _) if ds.driver == RasterDriver::PNG && matches!(ds.raster.bands, 2 | 4) => {
                 Some(ds.raster.bands)
@@ -1279,7 +1280,7 @@ impl LazyRaster {
         Ok([gt[0], gt[1] * sx, gt[2] * sy, gt[3], gt[4] * sx, gt[5] * sy])
     }
 
-    fn level_size(&self, overview: Option<usize>) -> Result<(usize, usize)> {
+    pub(crate) fn level_size(&self, overview: Option<usize>) -> Result<(usize, usize)> {
         match overview {
             None => Ok((self.width(), self.height())),
             Some(i) => {
