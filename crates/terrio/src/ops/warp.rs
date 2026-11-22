@@ -6517,7 +6517,7 @@ impl RegionWarp {
             return Err(Error::InvalidArgument(format!("the sum scale must be a positive number, not {}", self.sum_scale)));
         }
         let (scale_x, scale_y) = self.t.src_scale;
-        if self.t.src_gcp.is_some() && !(scale_x.is_finite() && scale_x > 0.0 && scale_y.is_finite() && scale_y > 0.0) {
+        if !(scale_x.is_finite() && scale_x > 0.0 && scale_y.is_finite() && scale_y > 0.0) {
             return Err(Error::InvalidArgument(format!("the source scale must be positive and finite, not ({scale_x}, {scale_y})")));
         }
         let (dx, dy, dw, dh) = region;
@@ -10222,7 +10222,8 @@ mod tests {
             assert!((a as f64 - 2.0 * b as f64).abs() <= 2.0, "window {wf:?} vs {wo:?}");
         }
         // The overview holds the full-resolution pixel of twice its coordinates; a nearest warp of
-        // the same region then agrees with the full-resolution warp within a couple of source pixels.
+        // the same region then agrees with the full-resolution warp within one full-resolution pixel
+        // in each direction (0.5 a column and 0.25 a row on this ramp): the overview pixel covers 2 x 2.
         let value = |c: usize, r: usize| c as f64 * 0.5 + r as f64 * 0.25 + 1.0;
         let data = |w: (usize, usize, usize, usize), scale: usize| {
             RasterData::F64((0..w.3).flat_map(|r| (0..w.2).map(move |c| value((w.0 + c) * scale, (w.1 + r) * scale))).collect())
@@ -10234,7 +10235,7 @@ mod tests {
         for i in 0..av.len() {
             if va[i] && vb[i] {
                 both += 1;
-                assert!((av[i] - bv[i]).abs() <= 2.0, "pixel {i}: {} vs {}", av[i], bv[i]);
+                assert!((av[i] - bv[i]).abs() <= 0.75, "pixel {i}: {} vs {}", av[i], bv[i]);
             }
         }
         assert!(both > av.len() / 2, "{both} of {} pixels warped by both (windows {wf:?} and {wo:?})", av.len());
