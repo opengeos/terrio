@@ -13,7 +13,3 @@ reviews:
     auto_incremental_review: false
     drafts: false
     ignore_title_keywords: ["Release"]
-  # Approve a pull request once its review has no open comments. A repository file
-  # replaces the app's settings, which had approvals on, so this restores them.
-  auto_approvals:
-    enabled: true
