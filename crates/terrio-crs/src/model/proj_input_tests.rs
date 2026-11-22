@@ -742,6 +742,8 @@ fn malformed_wkt2_the_model_reads_as_the_tree() {
             translation("Z", 8607)
         )),
         bound(r#"METHOD["NTv2",ID["EPSG",9615]],PARAMETER["x"],PARAMETERFILE["Latitude and longitude difference file","g.gsb"]"#),
+        // A grid's `PARAMETERFILE` without its file name, counted as a file (PROJ refuses it).
+        bound(r#"METHOD["NTv2",ID["EPSG",9615]],PARAMETERFILE["Latitude and longitude difference file"]"#),
         // A transformation parameter written as `NaN`, a number to the readers (PROJ refuses it).
         bound(&format!(
             r#"METHOD["Geocentric translations (geog2D domain)",ID["EPSG",9603]],PARAMETER["X-axis translation",NaN,{M},ID["EPSG",8605]],{},{}"#,

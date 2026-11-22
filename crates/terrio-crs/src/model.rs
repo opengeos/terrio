@@ -208,8 +208,9 @@ pub(crate) struct Transformation {
     pub ident: Ident,
     pub method: Ident,
     pub params: Vec<TransformationParam>,
-    /// Its `PARAMETERFILE`s (an NTv2 grid's), by name and file name.
-    pub files: Vec<(Ident, String)>,
+    /// Its `PARAMETERFILE`s (an NTv2 grid's), by name and file name (`None` when not a string,
+    /// which PROJ refuses and terrio's reader counts as a file).
+    pub files: Vec<(Ident, Option<String>)>,
     /// Its target CRS; `None` when the model does not read it. The bound CRS is still read, as the
     /// WKT 2 reader reads it, without the shift to that target, though PROJ 9.9.0 refuses a bound
     /// CRS whose target has no datum.
@@ -1187,9 +1188,9 @@ fn bound(n: &Node, d: Dialect) -> Option<Crs> {
         params: transformation_params(t),
         files: t
             .children("PARAMETERFILE")
-            .filter_map(|p| match p.args.get(1) {
-                Some(Arg::Str(s)) => Some((ident(p), s.clone())),
-                _ => None,
+            .map(|p| match p.args.get(1) {
+                Some(Arg::Str(s)) => (ident(p), Some(s.clone())),
+                _ => (ident(p), None),
             })
             .collect(),
         target: target.map(Box::new),
@@ -1375,6 +1376,6 @@ mod tests {
             r#"BOUNDCRS[SOURCECRS[{g}],TARGETCRS[{g}],ABRIDGEDTRANSFORMATION["t",METHOD["NTv2",ID["EPSG",9615]],PARAMETERFILE["Latitude and longitude difference file","ntv2_0.gsb",ID["EPSG",8656]]]]"#
         );
         let Crs::Bound { transformation: t, .. } = read(&ntv2).unwrap().crs else { panic!() };
-        assert_eq!((t.files[0].0.name.as_str(), t.files[0].1.as_str()), ("Latitude and longitude difference file", "ntv2_0.gsb"));
+        assert_eq!((t.files[0].0.name.as_str(), t.files[0].1.as_deref()), ("Latitude and longitude difference file", Some("ntv2_0.gsb")));
     }
 }
