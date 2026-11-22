@@ -457,6 +457,12 @@ struct GenImgProj {
 const IDENTITY: [f64; 6] = [0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
 
 impl GenImgProj {
+    /// Whether the source scale is usable: both factors positive and finite.
+    fn src_scale_valid(&self) -> bool {
+        let (x, y) = self.src_scale;
+        x.is_finite() && x > 0.0 && y.is_finite() && y > 0.0
+    }
+
     fn new(src_gt: [f64; 6], src_srs: &SpatialRef, dst_srs: &SpatialRef) -> Result<Self> {
         Self::with_options(src_gt, src_srs, dst_srs, &Default::default())
     }
@@ -6302,6 +6308,19 @@ impl RegionWarp {
         self
     }
 
+    /// The full-resolution source pixels each pixel of the warped source stands for, `(W / w,
+    /// H / h)` for a `w` x `h` overview of a `W` x `H` raster: a GCP- or RPC-georeferenced source
+    /// scales its pixel coordinates by it before transforming, as the warp of an overview level
+    /// does. 1 by default; only GCP- and RPC-georeferenced sources use it. Each must be positive
+    /// and finite, whatever the source: [`Self::source_window`] gives `None` for an invalid scale and
+    /// [`Self::warp`] rejects it before allocating the output.
+    pub fn with_src_scale(mut self, scale: (f64, f64)) -> Self {
+        // The sums' cached corners were transformed at the previous scale.
+        self.t.sum_batches.get_mut().unwrap_or_else(|e| e.into_inner()).clear();
+        self.t.src_scale = scale;
+        self
+    }
+
     /// Re-targets the warp to another destination grid georeferenced by `gt`, keeping the source
     /// and its transformer, as GDAL 3.12's `GDALSetGenImgProjTransformerDstGeoTransform()`
     /// re-targets one:
@@ -6471,6 +6490,10 @@ impl RegionWarp {
     /// region cannot be transformed (GDAL then leaves it at its initial value); an empty window
     /// when it falls outside the source or either region dimension is zero.
     pub fn source_window(&self, region: (usize, usize, usize, usize)) -> Option<(usize, usize, usize, usize)> {
+        // An unusable source scale (see [`Self::with_src_scale`]) transforms nothing.
+        if !self.t.src_scale_valid() {
+            return None;
+        }
         let (dx, dy, dw, dh) = region;
         if dw == 0 || dh == 0 {
             return Some((0, 0, 0, 0));
@@ -6509,6 +6532,10 @@ impl RegionWarp {
         let data = data.into();
         if !(self.sum_scale.is_finite() && self.sum_scale > 0.0) {
             return Err(Error::InvalidArgument(format!("the sum scale must be a positive number, not {}", self.sum_scale)));
+        }
+        if !self.t.src_scale_valid() {
+            let (scale_x, scale_y) = self.t.src_scale;
+            return Err(Error::InvalidArgument(format!("the source scale must be positive and finite, not ({scale_x}, {scale_y})")));
         }
         let (dx, dy, dw, dh) = region;
         if dw == 0 || dh == 0 {
@@ -10240,6 +10267,70 @@ mod tests {
             let (out, valid) = rw.warp(region, window, &data, None, 0.0, false).unwrap();
             assert_eq!(out.to_f64_vec(), reference.to_f64_vec());
             assert_eq!(valid, reference_valid);
+        }
+    }
+
+    /// An RPC warp of an overview level (`with_src_scale`) transforms the overview's pixels as the
+    /// full-resolution pixels they stand for: its source window for a region is the
+    /// full-resolution warp's divided by the scale, within the RPCs' curvature over the region, and
+    /// its warp matches the full-resolution warp's. Invalid scales are rejected before any output
+    /// is allocated.
+    #[test]
+    fn region_warp_rpc_with_src_scale_warps_an_overview() {
+        use super::super::rpc::{RpcOptions, RpcTransformer};
+        let rpc = test_rpc();
+        let ro = RpcOptions { height: Some(800.0), ..Default::default() };
+        let geographic = SpatialRef::from_epsg(4326).unwrap();
+        // A grid over the RPCs' footprint (9.937..10.060 E, 44.950..45.051 N).
+        let dst_gt = [9.94, 0.0002, 0.0, 45.04, 0.0, -0.0002];
+        let mk = |size, scale| {
+            RegionWarp::with_rpc(
+                size,
+                RpcTransformer::new(&rpc, &ro).unwrap(),
+                &geographic,
+                &geographic,
+                dst_gt,
+                Resampling::Nearest,
+                0.0,
+                DataType::F64,
+                vec![None],
+                Some(0.0),
+            )
+            .unwrap()
+            .with_src_scale(scale)
+        };
+        let full = mk((120, 100), (1.0, 1.0));
+        let over = mk((60, 50), (2.0, 2.0));
+        let region = (0, 0, 60, 40);
+        let wf = full.source_window(region).unwrap();
+        let wo = over.source_window(region).unwrap();
+        for (a, b) in [(wf.0, wo.0), (wf.1, wo.1), (wf.2, wo.2), (wf.3, wo.3)] {
+            assert!((a as f64 - 2.0 * b as f64).abs() <= 2.0, "window {wf:?} vs {wo:?}");
+        }
+        // The overview holds the full-resolution pixel of twice its coordinates; a nearest warp of
+        // the same region then agrees with the full-resolution warp within 0.5 + 0.25 = 0.75 on this
+        // ramp (one column and one row together): the overview pixel covers 2 x 2.
+        let value = |c: usize, r: usize| c as f64 * 0.5 + r as f64 * 0.25 + 1.0;
+        let data = |w: (usize, usize, usize, usize), scale: usize| {
+            RasterData::F64((0..w.3).flat_map(|r| (0..w.2).map(move |c| value((w.0 + c) * scale, (w.1 + r) * scale))).collect())
+        };
+        let (a, va) = full.warp(region, wf, &data(wf, 1), None, 0.0, false).unwrap();
+        let (b, vb) = over.warp(region, wo, &data(wo, 2), None, 0.0, false).unwrap();
+        let (av, bv) = (a.to_f64_vec(), b.to_f64_vec());
+        let mut both = 0;
+        for i in 0..av.len() {
+            if va[i] && vb[i] {
+                both += 1;
+                assert!((av[i] - bv[i]).abs() <= 0.75, "pixel {i}: {} vs {}", av[i], bv[i]);
+            }
+        }
+        assert!(both > av.len() / 2, "{both} of {} pixels warped by both (windows {wf:?} and {wo:?})", av.len());
+        // Invalid scales are rejected.
+        for scale in [(0.0, 1.0), (1.0, -1.0), (f64::NAN, 1.0), (1.0, f64::INFINITY)] {
+            let rw = mk((60, 50), scale);
+            assert_eq!(rw.source_window(region), None, "scale {scale:?}");
+            let result = rw.warp(region, (0, 0, 1, 1), &RasterData::F64(vec![0.0]), None, 0.0, false);
+            assert!(matches!(result, Err(Error::InvalidArgument(_))), "scale {scale:?}: {result:?}");
         }
     }
 
