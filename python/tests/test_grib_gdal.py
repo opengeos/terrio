@@ -1061,23 +1061,29 @@ def grib1_remote_file(tmp_path):
 
 @pytest.mark.parametrize("band", [1, 4])
 def test_remote_grib1_by_range(tmp_path, band):
-    """Catches a remote GRIB1 file read beyond its ceiling: reading a band
-    receives at most its message plus one block per message, although every message has a
-    bitmap and three are read whole for their nodata; the nodata and pixels are GDAL's. The
-    whole file is larger than the ceiling, so downloading it whole is caught too."""
+    """Catches a remote GRIB1 file read beyond its ceiling: reading a band receives at most its
+    message, the three messages read whole at open for their nodata, and a block and a kilobyte
+    per message for the headers, although every message has a bitmap; the nodata and pixels are
+    GDAL's. Those three are not kept once their nodata is known (#1215): a read of band 1, the
+    first of them, fetches its message again, past the bytes the open read first, as for any other
+    band. The whole file is larger than the ceiling, so downloading it whole is caught too."""
     msgs, path = grib1_remote_file(tmp_path)
     raw = b"".join(msgs)
     spans = message_spans(raw)
-    ceiling = spans[band - 1][1] + len(spans) * BLOCK
+    whole = sum(spans[i][1] for i in (0, 2, 4))
+    ceiling = spans[band - 1][1] + whole + BLOCK + len(spans) * 1024
     assert len(raw) > ceiling
     server, url, log = serve(raw)
     try:
         with trio.open(f"{url}/r.grb") as t, rasterio.open(path) as g:
             assert t.nodatavals == g.nodatavals
             assert 9.999e20 in g.nodatavals and 9999.0 in g.nodatavals
+            opened = sum(n for _, n in log)
+            log.clear()
             assert np.array_equal(t.read(band), g.read(band))
-            received = sum(n for _, n in log)
-            assert received <= ceiling, (received, ceiling, len(raw), len(log))
+            read = sum(n for _, n in log)
+            assert opened + read <= ceiling, (opened, read, ceiling, len(raw))
+            assert read >= spans[band - 1][1] - BLOCK, (read, spans[band - 1])
             assert [t.tags(b)["GRIB_FORECAST_SECONDS"] for b in (1, 6)] == [
                 g.tags(b)["GRIB_FORECAST_SECONDS"] for b in (1, 6)
             ]
@@ -1107,11 +1113,12 @@ def grib1_bitmaps_larger_than_a_block(tmp_path):
 def test_remote_grib1_headers_skip_bitmaps(tmp_path, band):
     """Catches GRIB1 bitmap bodies read at open: here each is larger than the block per
     message the ceiling allows, so reading them breaks it; so does reading whole a message whose
-    nodata does not depend on its data. Pixels and nodata are GDAL's."""
+    nodata does not depend on its data. The ceiling counts the first message, read whole at open
+    for its nodata, once more. Pixels and nodata are GDAL's."""
     msgs, path = grib1_bitmaps_larger_than_a_block(tmp_path)
     raw = b"".join(msgs)
     spans = message_spans(raw)
-    ceiling = spans[band - 1][1] + len(spans) * BLOCK
+    ceiling = spans[band - 1][1] + spans[0][1] + len(spans) * BLOCK
     server, url, log = serve(raw)
     try:
         with trio.open(f"{url}/b.grb") as t, rasterio.open(path) as g:

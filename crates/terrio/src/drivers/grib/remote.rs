@@ -12,11 +12,12 @@
 //! requests (the sections before the bitmap, then the data section's first octets) rather than a
 //! block holding the bitmap, and each field of a GRIB2 message of several fields after the first a
 //! request of its sections rather than the data of the field before it. A GRIB1 message whose
-//! nodata depends on its data (degrib's `resetPrim`) is read whole at open. The open dataset keeps
-//! of each message the bytes read in a row from its start (those messages whole), which a read of
-//! its bands does not fetch again. Bytes received: the headers, those messages, and the messages of
-//! the bands read. A server that ignores ranges is read only if the file came whole with the first
-//! request (a small file): the rest of the reads are then served from it.
+//! nodata depends on its data (degrib's `resetPrim`) is read whole at open, and dropped once its
+//! nodata is worked out: a read of its band fetches it again. The open dataset keeps of each
+//! message the bytes read in a row from its start, which a read of its bands does not fetch again.
+//! Bytes received: the headers, those messages, and the messages of the bands read. A server that
+//! ignores ranges is read only if the file came whole with the first request (a small file): the
+//! rest of the reads are then served from it.
 
 use super::{Band, Head, Source, Store, be, grib1, header_with, normalize_units, read_head, try_vec};
 use crate::http::{ByteRange, HttpOptions, ObjectFetcher, RangeReader, Remote};
@@ -163,31 +164,39 @@ pub(crate) fn open(remote: &Remote) -> Result<crate::LazyRaster> {
         heads.push((start, len, head));
         pos = start + len;
     }
-    // A GRIB1 message's nodata may depend on its data's maximum: then it is read whole.
-    for (start, len, head) in heads.iter_mut() {
-        let Head::Grib1(bytes, prefix) = head else { continue };
-        if *prefix >= *len {
-            continue;
-        }
-        let mut m = grib1::Message::parse(bytes, file_len)?;
-        m.normalize = normalize;
-        if m.nodata_needs_data()? {
-            let rest = fetch.get(*start + *prefix, *len - *prefix)?;
-            bytes.truncate(*prefix);
-            bytes.extend_from_slice(&rest);
-            *prefix = *len;
-        }
+    // A GRIB1 message's nodata may depend on its data's maximum: then it is read whole to work it
+    // out, and dropped. One such message is held at a time.
+    let mut whole_nodata = Vec::with_capacity(heads.len());
+    for (start, len, head) in &heads {
+        let found = match head {
+            Head::Grib1(bytes, prefix) if *prefix < *len => {
+                let mut m = grib1::Message::parse(bytes, file_len)?;
+                m.normalize = normalize;
+                if m.nodata_needs_data()? {
+                    let rest = fetch.get(start + prefix, len - prefix)?;
+                    let message = [&bytes[..*prefix], &rest].concat();
+                    drop(rest);
+                    let mut m = grib1::Message::parse(&message, file_len)?;
+                    m.normalize = normalize;
+                    Some(m.nodata())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        whole_nodata.push(found);
     }
-    // What the dataset's header needs of each band.
+    // What the dataset's header needs of each band, as the whole messages give it.
     let (mut first_grid, mut band_nodata, mut band_metadata, mut bands) = (None, Vec::new(), Vec::new(), Vec::new());
-    for (m, (_, len, head)) in heads.iter().enumerate() {
+    for (m, ((_, len, head), mut whole)) in heads.iter().zip(whole_nodata).enumerate() {
         let (found, _) = head.bands(*len, file_len, normalize)?;
         if first_grid.is_none() {
             first_grid = found.first().map(Band::grid);
         }
         for (k, band) in found.iter().enumerate() {
             bands.push((m, k));
-            band_nodata.push(band.nodata());
+            band_nodata.push(whole.take().unwrap_or_else(|| band.nodata()));
             band_metadata.push(band.metadata());
         }
     }

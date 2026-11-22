@@ -393,7 +393,9 @@ band's message when the band is read; a server that ignores range requests is re
 message of several fields, each field after the first costs one more request of a few hundred
 bytes: its sections come after the data of the field before it, which the open skips. Reading the
 bands of such a message one at a time fetches the message for each; a read of several bands
-fetches it once for the bands it decodes at once.
+fetches it once for the bands it decodes at once. A GRIB1 message whose nodata depends on its
+values is read whole at open, and dropped once its nodata is known: reading its band fetches it
+again.
 Regular, nonempty local files are read by position in the same way, without holding the file in memory: at open the
 section headers of each message (the whole message for a GRIB1 field whose nodata depends on its
 values, one such message at a time; not the data of the fields of a GRIB2 message, which comes
