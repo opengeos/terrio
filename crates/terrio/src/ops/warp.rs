@@ -5726,7 +5726,8 @@ impl<'a, T: crate::pixel::Pixel> Kernel<'a, T> {
             let (x, y) = (self.column(ix + dx), iy + dy);
             if x >= 0 && x < w && y >= 0 && y < h {
                 let i = (row0 + dy * width + x) as usize;
-                if mask.is_none_or(|m| m[i]) {
+                debug_assert_eq!(i, self.index(x as usize, y as usize), "the hoisted tap index must match index()");
+                if mask.is_none_or(|valid| valid[i]) {
                     div += m;
                     acc += crate::pixel::Pixel::to_f64(band[i]) * m;
                 }
