@@ -25,6 +25,7 @@
 use crate::keywords as kw;
 use crate::wkt1::{self, Arg, Node};
 use crate::wkt2;
+use crate::{Error, Result};
 
 #[cfg(test)]
 pub(crate) mod oracle_tests;
@@ -315,10 +316,16 @@ pub(crate) struct Model {
 }
 
 /// The model of a WKT definition (WKT 1 GDAL, ESRI or WKT 2), or `None` when it is not one this
-/// model reads: text that is not WKT (see [`wkt1::parse`]), or a CRS without what it needs (a
-/// geodetic CRS without its datum or ellipsoid, a projected CRS without its base CRS or its
-/// method, which PROJ 9.9.0 refuses).
+/// model reads (see [`try_read`]).
 pub(crate) fn read(text: &str) -> Option<Model> {
+    try_read(text).ok()
+}
+
+/// The model of a WKT definition, or its refusal: text that is not WKT (see [`wkt1::parse`]), or
+/// a CRS without what it needs (a geodetic CRS without its datum or ellipsoid, a projected CRS
+/// without its base CRS or its method, which PROJ 9.9.0 refuses). A WKT 2 CRS the WKT 2 reader
+/// converts (`wkt2::handles`) is refused with the message that reader gave (#1058 step 6d-4).
+pub(crate) fn try_read(text: &str) -> Result<Model> {
     // ESRI's compound CRS, `GEOGCS[...],VERTCS[...]`, as PROJ reads it: named after its parts.
     // Tried only on a text with a `VERTCS`: its parse is not memoized.
     let vertcs = text.as_bytes().windows(6).any(|w| w.eq_ignore_ascii_case(b"VERTCS"));
@@ -351,35 +358,33 @@ pub(crate) fn read(text: &str) -> Option<Model> {
                 Crs::Geodetic { cs, .. } => height(cs, length, direction),
                 _ => false,
             };
-            return Some(Model { crs, dialect: d, extensions: extensions(&h), height_added });
+            return Ok(Model { crs, dialect: d, extensions: extensions(&h), height_added });
         }
         let parts = vec![crs(&h, d)?, crs(&v, Dialect::Wkt1Esri)?];
         let name = format!("{} + {}", h.name().unwrap_or(""), v.name().unwrap_or(""));
         let crs = Crs::Compound { ident: Ident { name, ids: Vec::new(), epsg: None }, parts };
-        return Some(Model { crs, dialect: d, extensions: extensions(&h), height_added: false });
+        return Ok(Model { crs, dialect: d, extensions: extensions(&h), height_added: false });
     }
-    let root = crate::parsed::tree(text)?;
+    let root = crate::parsed::tree(text).ok_or_else(not_wkt)?;
     let d = dialect(text, &root);
-    Some(Model { crs: crs(&root, d)?, dialect: d, extensions: extensions(&root), height_added: false })
+    Ok(Model { crs: crs(&root, d)?, dialect: d, extensions: extensions(&root), height_added: false })
 }
 
-/// The PROJ string of a WKT 2 CRS the WKT 2 reader converts (`wkt2::handles`): from the CRS
-/// model's input (#1058 step 6d-2), else, for a text the model gives no input for, from the reader,
-/// which gives its refusal. Its tree is the memoized one ([`crate::parsed::tree`]).
-pub(crate) fn wkt2_to_proj(text: &str) -> crate::Result<wkt1::Converted> {
-    let root = crate::parsed::tree(text).ok_or_else(|| crate::Error::Crs("not a WKT definition GDAL reads".into()))?;
-    match read(text).and_then(|m| wkt2_root_input(&m)) {
-        Some(input) => wkt2::convert_root(&input, &root),
-        None => wkt2::to_proj(&root),
-    }
+/// The PROJ string of a WKT 2 CRS the WKT 2 reader converts (`wkt2::handles`), from the CRS
+/// model's input (#1058 step 6d-2), or the model's refusal, which is the WKT 2 reader's (#1058
+/// step 6d-4). Its tree is the memoized one ([`crate::parsed::tree`]).
+pub(crate) fn wkt2_to_proj(text: &str) -> Result<wkt1::Converted> {
+    let root = crate::parsed::tree(text).ok_or_else(not_wkt)?;
+    let input = try_read(text).and_then(|m| wkt2_root_input(&m))?;
+    wkt2::convert_root(&input, &root)
 }
 
-/// The PROJ string of a WKT 1 CRS: from the CRS model's input (#1058 step 6d-2), else, for a text
-/// the model gives no input for, from the WKT 1 reader; `None` for one it does not convert. Its
-/// tree is the memoized one ([`crate::parsed::tree`]).
+/// The PROJ string of a WKT 1 CRS, from the CRS model's input (#1058 step 6d-2); `None` for one it
+/// does not convert, as the WKT 1 reader refuses it. Its tree is the memoized one
+/// ([`crate::parsed::tree`]).
 pub(crate) fn wkt1_to_proj(text: &str) -> Option<wkt1::Converted> {
     let root = crate::parsed::tree(text)?;
-    let Some(input) = read(text).and_then(|m| wkt1_input(&m, &root)) else { return wkt1::to_proj(&root) };
+    let input = read(text).and_then(|m| wkt1_input(&m, &root))?;
     let geogcs = if input.kind == wkt1::Wkt1Kind::Projected { root.child("GEOGCS")? } else { &root };
     wkt1::convert(&input, geogcs)
 }
@@ -502,22 +507,22 @@ pub(crate) fn wkt2_input(m: &Model) -> Option<wkt2::Wkt2Input> {
     if m.dialect != Dialect::Wkt2 {
         return None;
     }
-    wkt2_crs_input(&m.crs)
+    wkt2_crs_input(&m.crs).ok()
 }
 
 /// A WKT 2 CRS's input to its PROJ string, a `BOUNDCRS`'s too, read from its model: what
 /// [`wkt2::Wkt2Root::read`] reads from its tree.
-pub(crate) fn wkt2_root_input(m: &Model) -> Option<wkt2::Wkt2Root> {
+pub(crate) fn wkt2_root_input(m: &Model) -> Result<wkt2::Wkt2Root> {
     if m.dialect != Dialect::Wkt2 {
-        return None;
+        return Err(wkt2::bad("a CRS that is not WKT 2"));
     }
     root_input(&m.crs)
 }
 
-fn root_input(crs: &Crs) -> Option<wkt2::Wkt2Root> {
+fn root_input(crs: &Crs) -> Result<wkt2::Wkt2Root> {
     use wkt2::{Wkt2Bound, Wkt2Root, Wkt2Source, Wkt2Transformation, Wkt2TransformationParam};
     let Crs::Bound { source, source_dialect, source_wkt1, transformation: t } = crs else {
-        return Some(Wkt2Root::Crs(wkt2_crs_input(crs)?));
+        return Ok(Wkt2Root::Crs(wkt2_crs_input(crs)?));
     };
     // A WKT 1 source CRS (GDAL's `GEOGCS` or `PROJCS`), read without the `TOWGS84` of its datum,
     // as the tree reads it.
@@ -526,9 +531,9 @@ fn root_input(crs: &Crs) -> Option<wkt2::Wkt2Root> {
     } else {
         // Only a `GEOGCS` or `PROJCS`, as the WKT 2 reader takes a WKT 1 source, of the kind its
         // keyword gives it.
-        let kind = (*source_wkt1)?;
+        let kind = source_wkt1.ok_or_else(wkt2::wkt1_source_refused)?;
         let m = Model { crs: (**source).clone(), dialect: *source_dialect, extensions: Vec::new(), height_added: false };
-        let mut input = wkt1_kind_input(&m, kind)?;
+        let mut input = wkt1_kind_input(&m, kind).ok_or_else(wkt2::wkt1_source_refused)?;
         input.towgs84 = None;
         Wkt2Source::Wkt1(input)
     };
@@ -548,17 +553,17 @@ fn root_input(crs: &Crs) -> Option<wkt2::Wkt2Root> {
         files: t.files.len(),
     };
     // The target's input when the WKT 2 reader converts it.
-    let target = t.target.as_deref().filter(|_| t.target_converted).and_then(root_input);
-    Some(Wkt2Root::Bound(Box::new(Wkt2Bound { source, transformation, to_wgs84: t.to_wgs84, target })))
+    let target = t.target.as_deref().filter(|_| t.target_converted).and_then(|t| root_input(t).ok());
+    Ok(Wkt2Root::Bound(Box::new(Wkt2Bound { source, transformation, to_wgs84: t.to_wgs84, target })))
 }
 
-/// The input of a WKT 2 CRS that is not a bound one.
-fn wkt2_crs_input(crs: &Crs) -> Option<wkt2::Wkt2Input> {
+/// The input of a WKT 2 CRS that is not a bound one, or the WKT 2 reader's refusal.
+fn wkt2_crs_input(crs: &Crs) -> Result<wkt2::Wkt2Input> {
     use wkt2::{Wkt2Geodetic, Wkt2Input, Wkt2Kind, Wkt2Method, Wkt2Param};
     let geodetic = |crs: &Crs| {
-        let Crs::Geodetic { ident, datum, angular, .. } = crs else { return None };
+        let Crs::Geodetic { ident, datum, angular, .. } = crs else { return Err(wkt2::bad("a CRS without its base CRS")) };
         let ellipsoid = datum.ellipsoid();
-        Some(Wkt2Geodetic {
+        Ok(Wkt2Geodetic {
             name: Some(ident.name.clone()),
             epsg: first_epsg(ident),
             datum_name: Some(datum.ident().name.clone()),
@@ -594,9 +599,17 @@ fn wkt2_crs_input(crs: &Crs) -> Option<wkt2::Wkt2Input> {
                     let canonical = cs.explicit
                         && cs.axes.len() == 3
                         && cs.axes.iter().zip(directions).all(|(a, d)| a.direction.eq_ignore_ascii_case(d));
-                    let units: Vec<f64> = cs.axes.iter().map(|a| a.unit.as_ref().map(|u| u.factor)).collect::<Option<_>>()?;
-                    if !canonical || units.iter().any(|u| *u != units[0]) {
-                        return None;
+                    if !canonical {
+                        return Err(wkt2::bad("geocentric WKT axes must be canonical X/Y/Z"));
+                    }
+                    let units: Vec<f64> = cs
+                        .axes
+                        .iter()
+                        .map(|a| a.unit.as_ref().map(|u| u.factor))
+                        .collect::<Option<_>>()
+                        .ok_or_else(|| wkt2::bad("geocentric axis needs a linear unit"))?;
+                    if units.iter().any(|u| *u != units[0]) {
+                        return Err(wkt2::bad("geocentric axes must use one linear unit"));
                     }
                     Wkt2Kind::Geocentric { unit: units[0] }
                 }
@@ -613,13 +626,19 @@ fn wkt2_crs_input(crs: &Crs) -> Option<wkt2::Wkt2Input> {
                             "south" => Some('s'),
                             _ => None,
                         };
-                        Some(directions.iter().map(letter).collect::<Option<String>>()?)
+                        Some(
+                            directions
+                                .iter()
+                                .map(letter)
+                                .collect::<Option<String>>()
+                                .ok_or_else(|| wkt2::bad("invalid geographic axes"))?,
+                        )
                     } else {
                         None
                     };
                     Wkt2Kind::Geographic { spherical, axes }
                 }
-                _ => return None,
+                _ => return Err(wkt2::bad("unsupported geodetic coordinate system")),
             };
             (geodetic(crs)?, kind)
         }
@@ -633,9 +652,9 @@ fn wkt2_crs_input(crs: &Crs) -> Option<wkt2::Wkt2Input> {
         Crs::DerivedGeographic { base, conversion, grid_angle, .. } => {
             (geodetic(base)?, Wkt2Kind::Derived { method: method(conversion), grid_ang: *grid_angle })
         }
-        _ => return None,
+        _ => return Err(wkt2::bad("a CRS the WKT 2 reader does not convert")),
     };
-    Some(Wkt2Input { geodetic, kind })
+    Ok(Wkt2Input { geodetic, kind })
 }
 
 /// The `EXTENSION`s of a root node (of ESRI's sequence, its horizontal CRS's), as written.
@@ -669,8 +688,8 @@ pub(crate) fn dialect(text: &str, root: &Node) -> Dialect {
     if esri && !lower.contains("parameter[\"rectified_grid_angle") { Dialect::Wkt1Esri } else { Dialect::Wkt1Gdal }
 }
 
-/// The CRS of a node, `None` for a node that is not a CRS.
-fn crs(n: &Node, d: Dialect) -> Option<Crs> {
+/// The CRS of a node, refused for a node that is not a CRS.
+fn crs(n: &Node, d: Dialect) -> Result<Crs> {
     if n.is(kw::WKT1_PROJECTED) || n.is(kw::PROJECTED_CRS) {
         projected(n, d)
     } else if n.is(kw::GEOGRAPHIC_OR_GEODETIC_CRS) && n.child("DERIVINGCONVERSION").is_some() {
@@ -684,14 +703,14 @@ fn crs(n: &Node, d: Dialect) -> Option<Crs> {
         // Every component, or none: a component without what it needs, or of a kind the model does
         // not read (WKT 2's `TIMECRS`), leaves the compound CRS unread.
         let parts =
-            nodes(n).filter(|c| !METADATA.iter().any(|k| c.key.eq_ignore_ascii_case(k))).map(|c| crs(c, d)).collect::<Option<Vec<_>>>()?;
-        Some(Crs::Compound { ident: ident(n), parts })
+            nodes(n).filter(|c| !METADATA.iter().any(|k| c.key.eq_ignore_ascii_case(k))).map(|c| crs(c, d)).collect::<Result<Vec<_>>>()?;
+        Ok(Crs::Compound { ident: ident(n), parts })
     } else if n.key.eq_ignore_ascii_case("BOUNDCRS") {
         bound(n, d)
     } else if n.is(kw::ENGINEERING_CRS) {
-        Some(Crs::Other { ident: ident(n), key: n.key.to_ascii_uppercase() })
+        Ok(Crs::Other { ident: ident(n), key: n.key.to_ascii_uppercase() })
     } else {
-        None
+        Err(Error::Crs(format!("not a CRS the model reads: {}", n.key)))
     }
 }
 
@@ -778,11 +797,13 @@ fn angular_unit(n: &Node, d: Dialect) -> Unit {
 }
 
 /// A geodetic CRS: a geographic or geocentric CRS, or the base CRS of a projected CRS.
-fn geodetic(n: &Node, d: Dialect) -> Option<Crs> {
+fn geodetic(n: &Node, d: Dialect) -> Result<Crs> {
     let geocentric = n.is(kw::WKT1_GEOCENTRIC);
-    let datum_node = n.datum()?;
-    let ell = datum_node.first_in(kw::ELLIPSOID)?;
-    let (a, rf) = ell.ellipsoid()?;
+    let datum_node = n.datum().ok_or_else(|| wkt2::bad("a geodetic CRS without its datum"))?;
+    let ell = datum_node.first_in(kw::ELLIPSOID).ok_or_else(|| wkt2::bad("a datum without its ellipsoid"))?;
+    ell.num(1).ok_or_else(|| wkt2::bad("an ellipsoid without its semi-major axis"))?;
+    ell.num(2).ok_or_else(|| wkt2::bad("an ellipsoid without its inverse flattening"))?;
+    let (a, rf) = ell.ellipsoid().ok_or_else(|| wkt2::bad("an ellipsoid PROJ 9.9.0 refuses"))?;
     let ellipsoid = Ellipsoid { ident: ident(ell), a, rf };
     // A WKT 1 `GEOCCS`'s `UNIT` is its length unit, and so is a WKT 2 Cartesian CS's; its prime
     // meridian is in degrees.
@@ -836,7 +857,7 @@ fn geodetic(n: &Node, d: Dialect) -> Option<Crs> {
             && matches!(c.args.first(), Some(Arg::Ident(t)) if t.eq_ignore_ascii_case("spherical"))
             && c.num(1) != Some(2.0)
         {
-            return None;
+            return Err(wkt2::bad("planetocentric spherical CS must be two-dimensional"));
         }
         // A WKT 2 geodetic CRS's Cartesian CS that is not three axes, X, Y and Z in that order,
         // each in a length unit, one for all, which PROJ 9.9.0 and the WKT 2 reader refuse. The
@@ -844,9 +865,8 @@ fn geodetic(n: &Node, d: Dialect) -> Option<Crs> {
         if d == Dialect::Wkt2
             && !n.is(kw::BASE_GEODETIC_CRS)
             && let Some(c) = n.child("CS").filter(|_| cartesian)
-            && wkt2::geocentric_unit(n, c).is_err()
         {
-            return None;
+            wkt2::geocentric_unit(n, c)?;
         }
         let mut cs = cs(n, d, CsKind::Ellipsoidal, &default, &default_unit);
         // ESRI's 3D geographic CRS: its `LINUNIT` is its ellipsoidal height's, as PROJ reads it.
@@ -857,17 +877,17 @@ fn geodetic(n: &Node, d: Dialect) -> Option<Crs> {
         }
         cs
     };
-    Some(Crs::Geodetic { ident: ident(n), datum, cs, angular: ang, frame_epoch })
+    Ok(Crs::Geodetic { ident: ident(n), datum, cs, angular: ang, frame_epoch })
 }
 
 /// The prime meridian of a geodetic CRS node, as `wkt2::Wkt2Geodetic::read` reads it: in its own unit,
 /// else the CRS's (its `ANGLEUNIT`, or a `UNIT` named `degree` or `grad` in WKT 2; WKT 1's
 /// `GEOGCS` unit), else degrees, with PROJ's corrections (`wkt1::prime_meridian_degrees`).
-/// Greenwich without one. `None` for a WKT 2 prime meridian's unit without its size, which PROJ
+/// Greenwich without one. Refused for a WKT 2 prime meridian's unit without its size, which PROJ
 /// 9.9.0 and the WKT 2 reader refuse.
-fn prime_meridian(n: &Node, d: Dialect, geocentric: bool) -> Option<PrimeMeridian> {
+fn prime_meridian(n: &Node, d: Dialect, geocentric: bool) -> Result<PrimeMeridian> {
     let Some(p) = prime_meridian_node(n) else {
-        return Some(PrimeMeridian { ident: Ident { name: "Greenwich".into(), ids: Vec::new(), epsg: None }, longitude: 0.0 });
+        return Ok(PrimeMeridian { ident: Ident { name: "Greenwich".into(), ids: Vec::new(), epsg: None }, longitude: 0.0 });
     };
     let crs_unit = if geocentric {
         None
@@ -884,11 +904,11 @@ fn prime_meridian(n: &Node, d: Dialect, geocentric: bool) -> Option<PrimeMeridia
     };
     let own = p.child("ANGLEUNIT").or_else(|| p.child("UNIT"));
     if d == Dialect::Wkt2 && own.is_some_and(|u| u.num(1).is_none()) {
-        return None;
+        return Err(wkt2::bad("a prime meridian's unit without its size"));
     }
     let size = own.or(crs_unit).and_then(|u| unit(u, UnitKind::Angle)).map_or(1.0, |u| u.degrees());
     let longitude = wkt1::prime_meridian_degrees(p.name().unwrap_or(""), p.num(1).unwrap_or(0.0), size);
-    Some(PrimeMeridian { ident: ident(p), longitude })
+    Ok(PrimeMeridian { ident: ident(p), longitude })
 }
 
 /// The axis directions PROJ knows, as it spells them (ISO 19111, `AxisDirection`).
@@ -992,16 +1012,15 @@ fn cs(n: &Node, d: Dialect, kind: CsKind, default: &[&str], default_unit: &Unit)
 /// A derived geographic CRS: its base CRS (WKT 2's `BASEGEOGCRS` or `BASEGEODCRS`), its deriving
 /// conversion, and its coordinate system, in degrees without a unit. Refused, as PROJ 9.9.0 and the
 /// WKT 2 reader refuse it, without its base CRS or method, or with a parameter without its value.
-fn derived_geographic(n: &Node, d: Dialect) -> Option<Crs> {
-    let base_node = n.first_in(kw::BASE_GEODETIC_CRS)?;
+fn derived_geographic(n: &Node, d: Dialect) -> Result<Crs> {
+    let base_node = n.first_in(kw::BASE_GEODETIC_CRS).ok_or_else(|| wkt2::bad("a derived geographic CRS without its base CRS"))?;
     let base = geodetic(base_node, d)?;
-    let c = n.child("DERIVINGCONVERSION")?;
-    if c.children("PARAMETER").any(|p| p.num(1).is_none()) {
-        return None;
-    }
+    let c = n.child("DERIVINGCONVERSION").ok_or_else(|| wkt2::bad("a derived geographic CRS without its DERIVINGCONVERSION"))?;
+    let method = c.child("METHOD").ok_or_else(|| wkt2::bad("a DERIVINGCONVERSION without its METHOD"))?;
+    valued(c)?;
     let conversion = Conversion {
         ident: ident(c),
-        method: ident(c.child("METHOD")?),
+        method: ident(method),
         params: params(c),
         angular: angular_unit(base_node, d),
         linear: Unit::metre(),
@@ -1017,7 +1036,7 @@ fn derived_geographic(n: &Node, d: Dialect) -> Option<Crs> {
         }
         None => 1.0,
     };
-    Some(Crs::DerivedGeographic { ident: ident(n), base: Box::new(base), conversion, cs, grid_angle })
+    Ok(Crs::DerivedGeographic { ident: ident(n), base: Box::new(base), conversion, cs, grid_angle })
 }
 
 /// The parameters of a transformation node, each with its own unit.
@@ -1025,6 +1044,20 @@ fn transformation_params(n: &Node) -> Vec<TransformationParam> {
     n.children("PARAMETER")
         .map(|p| TransformationParam { ident: ident(p), value: p.num(1), unit: unit_node(p).and_then(|u| unit(u, UnitKind::Unknown)) })
         .collect()
+}
+
+/// Refuses a conversion node's first parameter without its value, as PROJ 9.9.0 and the WKT 2
+/// reader refuse it.
+fn valued(n: &Node) -> Result<()> {
+    match n.children("PARAMETER").find(|p| p.num(1).is_none()) {
+        Some(p) => Err(wkt2::bad(&format!("parameter '{}' without a value", p.name().unwrap_or("")))),
+        None => Ok(()),
+    }
+}
+
+/// The refusal of text that is not WKT.
+fn not_wkt() -> Error {
+    Error::Crs("not a WKT definition GDAL reads".into())
 }
 
 /// The parameters of a conversion node with a number, each with its own unit.
@@ -1039,8 +1072,8 @@ fn params(n: &Node) -> Vec<Param> {
 
 /// A projected CRS: its base CRS, its conversion (WKT 2's `CONVERSION`, WKT 1's `PROJECTION` and
 /// `PARAMETER`s), and its coordinate system.
-fn projected(n: &Node, d: Dialect) -> Option<Crs> {
-    let base_node = n.geodetic_base()?;
+fn projected(n: &Node, d: Dialect) -> Result<Crs> {
+    let base_node = n.geodetic_base().ok_or_else(|| wkt2::bad("a PROJCRS without its base CRS"))?;
     let base = geodetic(base_node, d)?;
     let angular = angular_unit(base_node, d);
     // Its length unit: WKT 1's first `UNIT`, as PROJ takes it; WKT 2's CS unit, after its axes,
@@ -1054,35 +1087,32 @@ fn projected(n: &Node, d: Dialect) -> Option<Crs> {
     };
     // A WKT 2 unit without its size, which PROJ 9.9.0 and the WKT 2 reader refuse.
     if d == Dialect::Wkt2 && linear.is_some_and(|u| u.num(1).is_none()) {
-        return None;
+        return Err(wkt2::bad("a unit without its size"));
     }
     let linear = linear.and_then(|u| unit(u, UnitKind::Length)).unwrap_or_else(Unit::metre);
-    // A WKT 2 parameter without its value, which PROJ 9.9.0 and the WKT 2 reader refuse.
-    if d == Dialect::Wkt2 && n.child("CONVERSION").is_some_and(|c| c.children("PARAMETER").any(|p| p.num(1).is_none())) {
-        return None;
-    }
     // A WKT 1 `PROJCS` with its own `PROJECTION`: its `PROJECTION` and `PARAMETER`s, as the WKT 1
     // reader takes them, not a WKT 2 `CONVERSION` beside them (PROJ 9.9.0 reads that one, with its
     // parameters' units and EPSG names, which the WKT 1 converter does not: #1012).
     let own = n.is(kw::WKT1_PROJECTED) && n.child("PROJECTION").is_some();
     // A WKT 1 `PROJCS` without its own `PROJECTION`, which the WKT 1 reader refuses.
     if n.is(kw::WKT1_PROJECTED) && !own {
-        return None;
+        return Err(Error::Crs("a WKT 1 PROJCS without its PROJECTION".into()));
     }
     let conversion = match n.child("CONVERSION").filter(|_| !own) {
-        Some(c) => Conversion {
-            ident: ident(c),
-            method: ident(c.child("METHOD").or_else(|| c.child("PROJECTION"))?),
-            params: params(c),
-            angular,
-            linear: linear.clone(),
-        },
+        Some(c) => {
+            let method = c.child("METHOD").or_else(|| c.child("PROJECTION")).ok_or_else(|| wkt2::bad("a CONVERSION without its METHOD"))?;
+            // A WKT 2 parameter without its value, which PROJ 9.9.0 and the WKT 2 reader refuse.
+            if d == Dialect::Wkt2 {
+                valued(c)?;
+            }
+            Conversion { ident: ident(c), method: ident(method), params: params(c), angular, linear: linear.clone() }
+        }
         // WKT 1's `PROJECTION` in a WKT 2 `PROJCRS`, which the WKT 2 reader refuses (PROJ 9.9.0
         // reads it, #1012).
-        None if d == Dialect::Wkt2 => return None,
+        None if d == Dialect::Wkt2 => return Err(wkt2::bad("a PROJCRS without its CONVERSION")),
         None => Conversion {
             ident: Ident::default(),
-            method: ident(n.child("PROJECTION")?),
+            method: ident(n.child("PROJECTION").ok_or_else(|| Error::Crs("a WKT 1 PROJCS without its PROJECTION".into()))?),
             params: params(n),
             angular,
             linear: linear.clone(),
@@ -1096,12 +1126,12 @@ fn projected(n: &Node, d: Dialect) -> Option<Crs> {
         && let Some(method) = wkt1::wkt1_method(projection.name(), projection.epsg())
     {
         if method == "hotineobliquemercatortwopointnaturalorigin" && wkt1::hotine_two_point_refused(n) {
-            return None;
+            return Err(Error::Crs("a Hotine Oblique Mercator (two point) parameter that is not a number".into()));
         }
         if matches!(method.as_str(), "polarstereographic" | "polarstereographicvarianta" | "polarstereographicvariantb")
             && wkt1::polar_latitude_refused(n)
         {
-            return None;
+            return Err(Error::Crs("a polar stereographic without the latitude it needs".into()));
         }
     }
     // Without `AXIS`, east and north, but as PROJ 9.9.0 reads a WKT 1 Transverse Mercator (South
@@ -1126,18 +1156,19 @@ fn projected(n: &Node, d: Dialect) -> Option<Crs> {
     {
         base_cs.axes.push(Axis { name: String::new(), direction: "up".into(), unit: Some(Unit::metre()), meridian: None });
     }
-    Some(Crs::Projected { ident: ident(n), base: Box::new(base), conversion, cs })
+    Ok(Crs::Projected { ident: ident(n), base: Box::new(base), conversion, cs })
 }
 
 /// A vertical CRS: WKT 1's `VERT_CS`, ESRI's `VERTCS` (down with its `Direction` -1, as PROJ
 /// reads it), WKT 2's `VERTCRS`.
-fn vertical(n: &Node, d: Dialect) -> Option<Crs> {
+fn vertical(n: &Node, d: Dialect) -> Result<Crs> {
     // Its vertical datum, or WKT 2's datum ensemble (DVR90's), or an ESRI `VERTCS`'s geodetic
     // `DATUM` (an ellipsoidal height, read alone as a vertical CRS on that datum, as by PROJ).
     let datum = n
         .first_in(kw::VERTICAL_DATUM)
         .or_else(|| n.first_in(kw::GEODETIC_DATUM_ENSEMBLE))
-        .or_else(|| if n.key.eq_ignore_ascii_case("VERTCS") { n.child("DATUM") } else { None })?;
+        .or_else(|| if n.key.eq_ignore_ascii_case("VERTCS") { n.child("DATUM") } else { None })
+        .ok_or_else(|| Error::Crs("a vertical CRS without its datum".into()))?;
     let ensemble = datum.is(kw::GEODETIC_DATUM_ENSEMBLE).then(|| Members {
         members: datum.children("MEMBER").map(ident).collect(),
         accuracy: datum.child("ENSEMBLEACCURACY").and_then(|a| a.num(0)),
@@ -1161,27 +1192,28 @@ fn vertical(n: &Node, d: Dialect) -> Option<Crs> {
     let anchor_epoch = datum.child("ANCHOREPOCH").and_then(|e| e.num(0));
     let frame_epoch = n.child("DYNAMIC").and_then(|dy| dy.child("FRAMEEPOCH")).and_then(|e| e.num(0));
     let grids = grids(datum).or_else(|| grids(n));
-    Some(Crs::Vertical { ident: ident(n), datum: ident(datum), ensemble, anchor_epoch, frame_epoch, cs, grids })
+    Ok(Crs::Vertical { ident: ident(n), datum: ident(datum), ensemble, anchor_epoch, frame_epoch, cs, grids })
 }
 
 /// A WKT 2 `BOUNDCRS`: its source and target CRSs and its abridged transformation.
-fn bound(n: &Node, d: Dialect) -> Option<Crs> {
+fn bound(n: &Node, d: Dialect) -> Result<Crs> {
     // A WKT 1 CRS inside a WKT 2 `BOUNDCRS` is read in its own dialect.
     let inner = |key: &str| {
         let c = crate::wkt2::first_node(n.child(key)?)?;
         let d = if WKT1_ROOTS.iter().any(|k| c.key.eq_ignore_ascii_case(k)) { dialect(&c.to_wkt(), c) } else { d };
-        Some((crs(c, d), d))
+        Some((c, crs(c, d), d))
     };
-    let (source, source_dialect) = inner("SOURCECRS")?;
-    let source = source?;
-    let source_wkt1 = crate::wkt2::first_node(n.child("SOURCECRS")?).and_then(|c| match c.key.to_ascii_uppercase().as_str() {
+    let (source_node, source, source_dialect) = inner("SOURCECRS").ok_or_else(|| wkt2::bad("a BOUNDCRS without its SOURCECRS"))?;
+    // A WKT 1 source the model does not read is refused as the WKT 2 reader refuses it.
+    let source = if source_dialect == Dialect::Wkt2 { source? } else { source.map_err(|_| wkt2::wkt1_source_refused())? };
+    let source_wkt1 = match source_node.key.to_ascii_uppercase().as_str() {
         "GEOGCS" => Some(wkt1::Wkt1Kind::Geographic),
         "PROJCS" => Some(wkt1::Wkt1Kind::Projected),
         _ => None,
-    });
-    let target = inner("TARGETCRS").and_then(|(c, _)| c);
+    };
+    let target = inner("TARGETCRS").and_then(|(_, c, _)| c.ok());
     let target_converted = n.child("TARGETCRS").and_then(crate::wkt2::first_node).is_some_and(crate::wkt2::handles);
-    let t = n.child("ABRIDGEDTRANSFORMATION")?;
+    let t = n.child("ABRIDGEDTRANSFORMATION").ok_or_else(|| wkt2::bad("a BOUNDCRS without its ABRIDGEDTRANSFORMATION"))?;
     let transformation = Transformation {
         ident: ident(t),
         method: t.child("METHOD").map(ident).unwrap_or_default(),
@@ -1197,7 +1229,7 @@ fn bound(n: &Node, d: Dialect) -> Option<Crs> {
         target_converted,
         to_wgs84: crate::wkt2::bound_to_wgs84(n),
     };
-    Some(Crs::Bound { source: Box::new(source), source_dialect, source_wkt1, transformation })
+    Ok(Crs::Bound { source: Box::new(source), source_dialect, source_wkt1, transformation })
 }
 
 #[cfg(test)]

@@ -552,6 +552,8 @@ impl Wkt1Input {
     /// The input of a WKT 1 root, read from its tree; `None` for another root, a CRS without
     /// what it needs, or one the reader refuses (a malformed Hotine two-point parameter, a polar
     /// stereographic latitude).
+    // Read only by the parity tests until #1058 step 6d-4b deletes the tree readers.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn read(root: &Node) -> Option<Self> {
         let kind = match root.key.to_ascii_uppercase().as_str() {
             "GEOGCS" => Wkt1Kind::Geographic,
@@ -626,6 +628,8 @@ impl Wkt1Input {
 
 /// Converts a WKT 1 `GEOGCS` or `PROJCS` (ESRI or OGC flavour) into a PROJ string. `None` for
 /// other kinds of CRS and projections terrio does not know.
+// Read only by the parity tests until #1058 step 6d-4b deletes the tree readers.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
     let input = Wkt1Input::read(root)?;
     let geogcs = if input.kind == Wkt1Kind::Projected { root.child("GEOGCS")? } else { root };
@@ -1148,6 +1152,8 @@ pub(crate) fn convert(input: &Wkt1Input, geogcs: &Node) -> Option<Converted> {
 
 /// The directions of a projected CRS's two `AXIS` nodes as PROJ's `+axis` letters (`e`, `w`,
 /// `n`, `s`), when it has two along east-west and north-south.
+// Read only by the parity tests until #1058 step 6d-4b deletes the tree readers.
+#[cfg_attr(not(test), allow(dead_code))]
 fn projected_axes(root: &Node) -> Option<[u8; 2]> {
     let letters: Vec<u8> = root
         .children("AXIS")
