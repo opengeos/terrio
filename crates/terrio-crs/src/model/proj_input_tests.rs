@@ -109,7 +109,6 @@ fn where_the_model_reads_unusual_wkt1_otherwise() {
     let geogcs = |datum: &str, inner: &str| {
         format!(r#"GEOGCS["g",DATUM["d",{datum}],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]{inner}]"#)
     };
-    let wgs84 = r#"SPHEROID["WGS 84",6378137,298.257223563]"#;
     let input = |text: &str| {
         let root = crate::parsed::tree(text).unwrap();
         (wkt1::Wkt1Input::read(&root).unwrap(), read(text).as_ref().and_then(|m| wkt1_input(m, &root)).unwrap())
@@ -123,18 +122,6 @@ fn where_the_model_reads_unusual_wkt1_otherwise() {
         r#"GEOGCS["g",DATUM["d",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Local",10,UNIT["grad",0.01570796326794897]],UNIT["degree",0.0174532925199433]]"#,
     );
     assert_eq!((tree.pm, model.pm), (10.0, 9.0));
-    // WKT 2's `CONVERSION` inside a `PROJCS` with its own `PROJECTION` and `PARAMETER`s: PROJ
-    // `+lon_0=30 +k=1` (the model's, the `CONVERSION`'s), the tree the `PARAMETER`s, 9 and 0.9996.
-    let both = format!(
-        r#"PROJCS["x",{},PROJECTION["Transverse_Mercator"],PARAMETER["central_meridian",9],PARAMETER["scale_factor",0.9996],CONVERSION["c",METHOD["Transverse Mercator"],PARAMETER["central_meridian",30],PARAMETER["scale_factor",1]],UNIT["metre",1]]"#,
-        geogcs(wgs84, "")
-    );
-    let (tree, model) = input(&both);
-    let param = |i: &wkt1::Wkt1Input, name: &str| i.params.iter().find(|(k, _)| k == name).map(|(_, v)| *v);
-    assert_eq!(
-        (param(&tree, "centralmeridian"), param(&tree, "scalefactor"), param(&model, "centralmeridian"), param(&model, "scalefactor")),
-        (Some(9.0), Some(0.9996), Some(30.0), Some(1.0))
-    );
 }
 
 /// Malformed WKT 1 that PROJ 9.9.0 refuses or reads as the tree does, which the model reads as
@@ -158,10 +145,30 @@ fn malformed_wkt1_the_model_reads_as_the_tree() {
         // Polar Stereographic (variant C), where PROJ refuses both forms.
         projcs(r#",AUTHORITY["vendor"],AUTHORITY["EPSG","9807"]"#, r#"UNIT["metre",1]"#),
         projcs(r#",ID["x","1"],AUTHORITY["EPSG","9807"]"#, r#"UNIT["metre",1]"#),
+        // WKT 2's `CONVERSION` inside a `PROJCS` with its own `PROJECTION` and `PARAMETER`s: those,
+        // whatever the `CONVERSION`'s units and method. PROJ reads the `CONVERSION` (`+lon_0=30
+        // +k=1`; `+lon_0=27` for 30 grads), which the WKT 1 converter does not (#1012).
+        projcs(
+            "",
+            r#"PARAMETER["scale_factor",0.9996],CONVERSION["c",METHOD["Transverse Mercator"],PARAMETER["central_meridian",30],PARAMETER["scale_factor",1]],UNIT["metre",1]"#,
+        ),
+        projcs(
+            "",
+            r#"CONVERSION["c",METHOD["Transverse Mercator",ID["EPSG",9807]],PARAMETER["Longitude of natural origin",30,ANGLEUNIT["grad",0.015707963267949],ID["EPSG",8802]]],UNIT["metre",1]"#,
+        ),
+        // A `PROJCS` with a `CONVERSION` and no `PROJECTION` of its own: refused, by both (PROJ
+        // reads it, `+lon_0=30 +k=1`).
+        format!(
+            r#"PROJCS["x",{geogcs},CONVERSION["c",METHOD["Transverse Mercator"],PARAMETER["central_meridian",30],PARAMETER["scale_factor",1]],UNIT["metre",1]]"#
+        ),
+        format!(
+            r#"PROJCS["x",{geogcs},PROJECTION["Lambert_Conformal_Conic_2SP"],PARAMETER["standard_parallel_1",45],PARAMETER["standard_parallel_2",50],PARAMETER["central_meridian",9],CONVERSION["c",METHOD["Lambert Conic Conformal (2SP)",ID["EPSG",9802]],PARAMETER["Latitude of 1st standard parallel",45,ANGLEUNIT["degree",0.0174532925199433]],PARAMETER["Latitude of 2nd standard parallel",50,ANGLEUNIT["degree",0.0174532925199433]]],UNIT["metre",1]]"#
+        ),
     ];
     for text in &cases {
         let (tree, model) = inputs(text).unwrap_or_else(|| panic!("not a WKT 1 CRS: {text}"));
-        assert!(tree == model && tree != "None", "{text}\n  tree  {tree}\n  model {model}");
+        let refused = !text.contains("PROJECTION[");
+        assert!(tree == model && (tree == "None") == refused, "{text}\n  tree  {tree}\n  model {model}");
     }
 }
 
@@ -785,15 +792,6 @@ fn the_proj_string_is_read_as_proj_reads_it() {
             "+a=6378137.0013",
         ),
         (geogcs(wgs84, r#"PRIMEM["Local",10,UNIT["grad",0.01570796326794897]]"#), "+pm=10", "+pm=9"),
-        // WKT 2's `CONVERSION` inside a `PROJCS` beside its own `PROJECTION` and `PARAMETER`s.
-        (
-            format!(
-                r#"PROJCS["x",{},PROJECTION["Transverse_Mercator"],PARAMETER["central_meridian",9],PARAMETER["scale_factor",0.9996],CONVERSION["c",METHOD["Transverse Mercator"],PARAMETER["central_meridian",30],PARAMETER["scale_factor",1]],UNIT["metre",1]]"#,
-                geogcs(wgs84, r#"PRIMEM["Greenwich",0]"#)
-            ),
-            "+lon_0=9 +k=0.9996",
-            "+lon_0=30 +k=1",
-        ),
         // WKT 2's long `PRIMEMERIDIAN` keyword.
         (
             format!(

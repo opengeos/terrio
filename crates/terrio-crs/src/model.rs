@@ -1066,7 +1066,15 @@ fn projected(n: &Node, d: Dialect) -> Option<Crs> {
     if d == Dialect::Wkt2 && n.child("CONVERSION").is_some_and(|c| c.children("PARAMETER").any(|p| p.num(1).is_none())) {
         return None;
     }
-    let conversion = match n.child("CONVERSION") {
+    // A WKT 1 `PROJCS` with its own `PROJECTION`: its `PROJECTION` and `PARAMETER`s, as the WKT 1
+    // reader takes them, not a WKT 2 `CONVERSION` beside them (PROJ 9.9.0 reads that one, with its
+    // parameters' units and EPSG names, which the WKT 1 converter does not: #1012).
+    let own = n.is(kw::WKT1_PROJECTED) && n.child("PROJECTION").is_some();
+    // A WKT 1 `PROJCS` without its own `PROJECTION`, which the WKT 1 reader refuses.
+    if n.is(kw::WKT1_PROJECTED) && !own {
+        return None;
+    }
+    let conversion = match n.child("CONVERSION").filter(|_| !own) {
         Some(c) => Conversion {
             ident: ident(c),
             method: ident(c.child("METHOD").or_else(|| c.child("PROJECTION"))?),
