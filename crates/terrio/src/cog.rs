@@ -556,7 +556,8 @@ impl LazyRaster {
     pub fn geotransform_present(&self) -> bool {
         match &self.inner {
             Inner::Tiff(t) => t.tags.geo_transform.is_some(),
-            Inner::Source(_, source) => source.geotransform_present().unwrap_or(true),
+            // A source that does not say (most windowed sources) falls back to its header's flag.
+            Inner::Source(ds, source) => source.geotransform_present().or(ds.geotransform_present).unwrap_or(true),
             Inner::Memory(ds) => ds.geotransform_present.unwrap_or(true),
         }
     }
