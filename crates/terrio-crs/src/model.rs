@@ -216,7 +216,8 @@ pub(crate) struct Transformation {
     /// CRS whose target has no datum.
     pub target: Option<Box<Crs>>,
     /// Whether terrio's WKT 2 reader converts its target (`wkt2::handles`: a WKT 2 geographic,
-    /// geodetic, projected or bound CRS), which it takes the shift to.
+    /// geodetic or projected CRS, or a `BOUNDCRS` whose source it takes), which it takes the shift
+    /// to.
     pub target_converted: bool,
     /// Whether its target is WGS 84, as terrio's WKT 2 reader tells it (`wkt2::bound_to_wgs84`: by
     /// its code, or its datum's code or name), read or not.
@@ -276,10 +277,13 @@ pub(crate) enum Crs {
         parts: Vec<Crs>,
     },
     /// A bound CRS: its source CRS, read in its own dialect (a WKT 1 CRS in a WKT 2 `BOUNDCRS`, as
-    /// GDAL writes a `GEOGCS` or `PROJCS`), and its transformation.
+    /// GDAL writes a `GEOGCS` or `PROJCS`), the kind its keyword gives a WKT 1 `GEOGCS` or `PROJCS`
+    /// source (the only WKT 1 sources the WKT 2 reader takes; `None` for any other), and its
+    /// transformation.
     Bound {
         source: Box<Crs>,
         source_dialect: Dialect,
+        source_wkt1: Option<wkt1::Wkt1Kind>,
         transformation: Transformation,
     },
     /// An engineering CRS, or another this model does not describe, by its keyword.
@@ -512,18 +516,17 @@ pub(crate) fn wkt2_root_input(m: &Model) -> Option<wkt2::Wkt2Root> {
 
 fn root_input(crs: &Crs) -> Option<wkt2::Wkt2Root> {
     use wkt2::{Wkt2Bound, Wkt2Root, Wkt2Source, Wkt2Transformation, Wkt2TransformationParam};
-    let Crs::Bound { source, source_dialect, transformation: t } = crs else { return Some(Wkt2Root::Crs(wkt2_crs_input(crs)?)) };
+    let Crs::Bound { source, source_dialect, source_wkt1, transformation: t } = crs else {
+        return Some(Wkt2Root::Crs(wkt2_crs_input(crs)?));
+    };
     // A WKT 1 source CRS (GDAL's `GEOGCS` or `PROJCS`), read without the `TOWGS84` of its datum,
     // as the tree reads it.
     let source = if *source_dialect == Dialect::Wkt2 {
         Wkt2Source::Wkt2(root_input(source)?)
     } else {
-        // Only a `GEOGCS` or `PROJCS`, as the WKT 2 reader takes a WKT 1 source.
-        let kind = match &**source {
-            Crs::Geodetic { cs, .. } if cs.kind != CsKind::Cartesian => wkt1::Wkt1Kind::Geographic,
-            Crs::Projected { .. } => wkt1::Wkt1Kind::Projected,
-            _ => return None,
-        };
+        // Only a `GEOGCS` or `PROJCS`, as the WKT 2 reader takes a WKT 1 source, of the kind its
+        // keyword gives it.
+        let kind = (*source_wkt1)?;
         let m = Model { crs: (**source).clone(), dialect: *source_dialect, extensions: Vec::new(), height_added: false };
         let mut input = wkt1_kind_input(&m, kind)?;
         input.towgs84 = None;
@@ -1171,6 +1174,11 @@ fn bound(n: &Node, d: Dialect) -> Option<Crs> {
     };
     let (source, source_dialect) = inner("SOURCECRS")?;
     let source = source?;
+    let source_wkt1 = crate::wkt2::first_node(n.child("SOURCECRS")?).and_then(|c| match c.key.to_ascii_uppercase().as_str() {
+        "GEOGCS" => Some(wkt1::Wkt1Kind::Geographic),
+        "PROJCS" => Some(wkt1::Wkt1Kind::Projected),
+        _ => None,
+    });
     let target = inner("TARGETCRS").and_then(|(c, _)| c);
     let target_converted = n.child("TARGETCRS").and_then(crate::wkt2::first_node).is_some_and(crate::wkt2::handles);
     let t = n.child("ABRIDGEDTRANSFORMATION")?;
@@ -1189,7 +1197,7 @@ fn bound(n: &Node, d: Dialect) -> Option<Crs> {
         target_converted,
         to_wgs84: crate::wkt2::bound_to_wgs84(n),
     };
-    Some(Crs::Bound { source: Box::new(source), source_dialect, transformation })
+    Some(Crs::Bound { source: Box::new(source), source_dialect, source_wkt1, transformation })
 }
 
 #[cfg(test)]

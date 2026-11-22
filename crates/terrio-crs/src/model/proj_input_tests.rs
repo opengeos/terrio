@@ -534,6 +534,15 @@ fn bound_wkt2_gives_its_proj_string_the_tree_s_input() {
             true,
         ),
         (bound(&osgb, &format!(r#"GEOGCRS["x",CS[ellipsoidal,2],AXIS["lat",north,{DEG}],AXIS["lon",east,{DEG}]]"#), &pv), true),
+        // A WKT 1 `GEOGCS` source with a WKT 2 Cartesian `CS`: read as a `GEOGCS`, by its keyword.
+        (
+            bound(
+                r#"GEOGCS["g",DATUM["d",SPHEROID["Airy 1830",6377563.396,299.3249646]],PRIMEM["Local",2],UNIT["degree",0.0174532925199433],CS[Cartesian,2]]"#,
+                &wgs84,
+                &pv,
+            ),
+            true,
+        ),
         // A base geographic CRS as the target, which the reader does not convert; a bound CRS as
         // the target whose source is a WKT 1 `GEOCCS`, which it does not read.
         (
