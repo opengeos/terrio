@@ -370,9 +370,11 @@ def test_a_copy_s_writer_given_overviews_after_all_writes_its_source_s_mask_whol
         assert np.array_equal(ds.read(), RGB)
 
 
-def test_a_cog_writer_refuses_a_mask_of_its_rows_size_in_another_shape(tmp_path):
+@pytest.mark.parametrize("writer", ["CogWriter", "GeoTiffWriter"])
+def test_a_row_writer_refuses_a_mask_of_its_rows_size_in_another_shape(tmp_path, writer):
     """A mask is the `(rows, width)` of the pixels it masks: flattened, one of the same size in
-    another shape (its rows and columns swapped, or one row) would mask other pixels."""
+    another shape (its rows and columns swapped, or one row) would mask other pixels. A closed
+    writer says that it is closed before it looks at the rows or the mask."""
     from terrio import _terrio
     from terrio.errors import InvalidArgumentError
 
@@ -380,7 +382,7 @@ def test_a_cog_writer_refuses_a_mask_of_its_rows_size_in_another_shape(tmp_path)
     pixels = np.arange(rows * width, dtype="uint8").reshape(rows, width)
     mask = np.array([[255, 0, 255, 255], [0, 255, 255, 0]], np.uint8)
     out = str(tmp_path / "masked.tif")
-    writer = _terrio.CogWriter(out, width, 2 * rows, 1, "uint8", T.to_gdal(), mask=True)
+    writer = getattr(_terrio, writer)(out, width, 2 * rows, 1, "uint8", T.to_gdal(), mask=True)
     for other in (mask.T, mask.reshape(1, rows * width)):
         with pytest.raises(InvalidArgumentError, match="expected a mask of 2 rows of 4 columns"):
             writer.write(pixels, other)
@@ -389,7 +391,7 @@ def test_a_cog_writer_refuses_a_mask_of_its_rows_size_in_another_shape(tmp_path)
     writer.write(pixels, mask[::-1])
     writer.close()
     with pytest.raises(InvalidArgumentError, match="the writer is closed"):
-        writer.write(pixels, mask.T)
+        writer.write(pixels[:, :3], mask.T)
     with rio.open(out) as ds:
         assert np.array_equal(ds.dataset_mask(), np.vstack([mask, mask[::-1]]))
 
