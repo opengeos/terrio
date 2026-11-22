@@ -2084,7 +2084,7 @@ impl GeoTiffWriter {
     /// # Errors
     /// When the data is not of the raster's data type or does not hold `rows` rows of every band,
     /// rows go past the raster's height, the file has a mask and `mask` does not hold its rows, a
-    /// mask is given for a COG without one, or the file cannot be written. Once a block row failed
+    /// mask is given for a file without one, or the file cannot be written. Once a block row failed
     /// to be written, or a COG's row of tiles failed to be compressed or written or its overview
     /// rows failed to be computed, the writer refuses every later call with
     /// [`Error::InvalidData`] (the call that found the failure returns its error). A GeoTIFF other
@@ -2256,7 +2256,8 @@ impl TiffRows {
     /// # Errors
     /// When a block row failed to be written, or the data is not of the raster's data type; with
     /// `rows` not zero, when it does not hold `rows` rows of every band, rows go past the raster's
-    /// height, the file has a mask and `mask` does not hold its rows, or the file cannot be written.
+    /// height, the file has a mask and `mask` does not hold its rows, a mask is given for a file
+    /// without one, or the file cannot be written.
     pub fn write_rows(&mut self, data: &RasterData, rows: usize, mask: Option<&[u8]>) -> Result<()> {
         if self.failed {
             return Err(Error::InvalidData("a block row of the GeoTIFF failed to be written".into()));
@@ -2280,7 +2281,8 @@ impl TiffRows {
             )));
         }
         let mask = match (&self.mask, mask) {
-            (None, _) => None,
+            (None, None) => None,
+            (None, Some(_)) => return Err(Error::InvalidArgument("the file has no mask: give its rows without one".into())),
             (Some(_), None) => return Err(Error::InvalidArgument("the file has a mask: give its rows".into())),
             (Some(_), Some(m)) if m.len() != n => {
                 return Err(Error::InvalidArgument(format!("{} mask values for {rows} rows of {} columns", m.len(), self.cols)));
