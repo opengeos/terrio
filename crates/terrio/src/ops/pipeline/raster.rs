@@ -381,6 +381,25 @@ mod tests {
         }
     }
 
+    /// A crop of an unreferenced raster (a plain PNG's layout) reports no geotransform through
+    /// either accessor, although the view's header holds the crop's unit-pixel grid.
+    #[test]
+    fn view_of_an_unreferenced_raster_has_no_geotransform() {
+        let cfg = crate::RasterConfig { cols: 8, rows: 6, bands: 1, data_type: DataType::U8, ..Default::default() };
+        let mut ds = RasterDataset::new(crate::Raster::from_data(cfg, vec![1.0; 48]).unwrap(), false);
+        ds.geotransform_present = Some(false);
+        let source = LazyRaster::from(ds);
+        assert!(!source.geotransform_present() && !source.has_geo_transform());
+        let cropped = view(source, vec![], Some(Window { x: 2, y: 1, width: 4, height: 3 })).unwrap();
+        assert!(!cropped.geotransform_present(), "geotransform_present");
+        assert!(!cropped.has_geo_transform(), "has_geo_transform");
+        // A source that does not say (`NestedSource`) takes its header's flag.
+        let mut header = cropped.header();
+        header.geotransform_present = Some(false);
+        let unsaid = LazyRaster::from_source(header, Box::new(NestedSource));
+        assert!(!unsaid.geotransform_present() && !unsaid.has_geo_transform(), "a source without its own flag");
+    }
+
     #[test]
     fn pipeline_view_keeps_nested_overviews_of_its_source() {
         let cfg = wbraster::RasterConfig { cols: 1024, rows: 1024, bands: 2, data_type: DataType::U8, ..Default::default() };

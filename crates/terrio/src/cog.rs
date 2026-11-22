@@ -548,10 +548,16 @@ impl LazyRaster {
         alias
     }
 
-    pub(crate) fn geotransform_present(&self) -> bool {
+    /// Whether the raster explicitly carries a geotransform, rather than falling back to the
+    /// unit-pixel grid [`geo_transform`](Self::geo_transform) gives: false for an unreferenced
+    /// image (a PNG or JPEG without a world file, a TIFF without geo tags), true for a
+    /// georeferenced one (a GeoTIFF with tie points, a PNG with a `.pgw` world file) or a source
+    /// whose driver always supplies one. A source that does not say is taken as referenced.
+    pub fn geotransform_present(&self) -> bool {
         match &self.inner {
             Inner::Tiff(t) => t.tags.geo_transform.is_some(),
-            Inner::Source(_, source) => source.geotransform_present().unwrap_or(true),
+            // A source that does not say (most windowed sources) falls back to its header's flag.
+            Inner::Source(ds, source) => source.geotransform_present().or(ds.geotransform_present).unwrap_or(true),
             Inner::Memory(ds) => ds.geotransform_present.unwrap_or(true),
         }
     }
@@ -1155,14 +1161,17 @@ impl LazyRaster {
         }
     }
 
-    /// Whether the file has a geotransform of its own: false for an unreferenced or GCP-only
-    /// GeoTIFF, whose [`geo_transform`](Self::geo_transform) is the unit-pixel fallback. An
-    /// in-memory dataset always carries a pixel grid, so only a GCP-only one without an affine
-    /// reports false.
+    /// Whether the file has a geotransform of its own: false for an unreferenced image (a GeoTIFF,
+    /// PNG or JPEG without geo tags or a world file) or a GCP-only one, whose
+    /// [`geo_transform`](Self::geo_transform) is the unit-pixel fallback. An in-memory or windowed
+    /// dataset without an explicit [`geotransform_present`](Self::geotransform_present) flag always
+    /// carries a pixel grid, so only a GCP-only one without an affine reports false.
     pub fn has_geo_transform(&self) -> bool {
         match &self.inner {
             Inner::Tiff(t) => t.tags.corner_geo_transform().is_some(),
-            Inner::Memory(ds) | Inner::Source(ds, _) => ds.gcps.is_empty() || ds.affine.is_some(),
+            // The flag comes from `geotransform_present`, which asks a source rather than its header:
+            // a pipeline view's header always holds its grid, referenced or not.
+            Inner::Memory(ds) | Inner::Source(ds, _) => self.geotransform_present() && (ds.gcps.is_empty() || ds.affine.is_some()),
         }
     }
 
