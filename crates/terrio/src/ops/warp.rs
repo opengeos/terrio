@@ -6315,6 +6315,8 @@ impl RegionWarp {
     /// and finite, whatever the source: [`Self::source_window`] gives `None` for an invalid scale and
     /// [`Self::warp`] rejects it before allocating the output.
     pub fn with_src_scale(mut self, scale: (f64, f64)) -> Self {
+        // The sums' cached corners were transformed at the previous scale.
+        self.t.sum_batches.get_mut().unwrap_or_else(|e| e.into_inner()).clear();
         self.t.src_scale = scale;
         self
     }
