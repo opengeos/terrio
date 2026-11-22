@@ -1167,9 +1167,9 @@ impl LazyRaster {
     pub fn has_geo_transform(&self) -> bool {
         match &self.inner {
             Inner::Tiff(t) => t.tags.corner_geo_transform().is_some(),
-            Inner::Memory(ds) | Inner::Source(ds, _) => {
-                ds.geotransform_present.unwrap_or(true) && (ds.gcps.is_empty() || ds.affine.is_some())
-            }
+            // The flag comes from `geotransform_present`, which asks a source rather than its header:
+            // a pipeline view's header always holds its grid, referenced or not.
+            Inner::Memory(ds) | Inner::Source(ds, _) => self.geotransform_present() && (ds.gcps.is_empty() || ds.affine.is_some()),
         }
     }
 
