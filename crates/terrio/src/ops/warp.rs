@@ -2761,16 +2761,17 @@ fn square_scales_above_half(p: [(f64, f64); 4]) -> bool {
 /// `WarpContext::guessed`): enough for the estimate's approximation to hold every tap mostly.
 const GUESS_PAD: usize = 2;
 
-/// The length of the shortest arc that holds every column of `columns` on a circle of `turn`
-/// columns, when it is shorter than half a turn: each column is moved by whole turns to the place
-/// nearest the first, which lays columns that fit in less than half a turn out along that arc.
-fn short_arc(columns: &[f64], turn: f64) -> Option<f64> {
+/// The least and greatest columns of the shortest arc that holds every column of `columns` on a
+/// circle of `turn` columns, when it is shorter than half a turn: each column is moved by whole
+/// turns to the place nearest the first, which lays columns that fit in less than half a turn out
+/// along that arc.
+fn short_arc(columns: &[f64], turn: f64) -> Option<(f64, f64)> {
     let (&first, rest) = columns.split_first()?;
     let (low, high) = rest.iter().fold((first, first), |(low, high), &x| {
         let x = x - ((x - first) / turn).round() * turn;
         (low.min(x), high.max(x))
     });
-    (high - low < turn / 2.0 - 1e-7).then_some(high - low)
+    (high - low < turn / 2.0 - 1e-7).then_some((low, high))
 }
 
 #[cfg(test)]
@@ -3710,8 +3711,8 @@ impl WarpContext<'_> {
                 y1 = y1.max(ys[i]);
             }
             // The columns of the samples that `cut` looks at, for the arc they span across the cut
-            // of a periodic full-turn source (see `kernel_span` below).
-            let columns: Vec<f64> = if turn.is_some() && self.global_longitude_turn().is_some() {
+            // (see `kernel_span` below).
+            let columns: Vec<f64> = if turn.is_some() && self.arc_turn().is_some() {
                 (0..xs.len())
                     .filter(|&i| ok[i] && regular.as_ref().is_none_or(|points| points[i]) && xs[i].is_finite() && ys[i].is_finite())
                     .map(|i| xs[i])
@@ -3894,17 +3895,22 @@ impl WarpContext<'_> {
             }
         }
         let raw_span = (x1 - x0).max(0.0);
-        // A chunk whose samples cross the longitude cut of a periodic full-turn source
-        // ([`Self::global_longitude_turn`]; `cut`) has samples beside both of the cut's columns,
-        // so its least and greatest sampled columns are the long way round apart. Its kernel scale
-        // takes the arc of columns that its samples span across the cut instead, when that arc is
-        // shorter than half a turn: no step between adjacent samples, which `cut` takes to be
-        // shorter than half a turn, then passes outside it. Chunks mirrored across the cut so get
-        // mirrored kernels. The samples of a chunk around a pole span more than half a turn, and
-        // keep the distance between the least and greatest. Without `periodic_longitude`, the
-        // stored edges are a regional source's, which interpolation does not cross: the span
-        // between them stays.
-        let kernel_span = self.global_longitude_turn().filter(|_| cut).and_then(|turn| short_arc(&columns, turn)).unwrap_or(raw_span);
+        // A chunk whose samples cross the longitude cut (`cut`) of a periodic full-turn source
+        // ([`Self::global_longitude_turn`]) or of a regional source narrower than a turn
+        // ([`Self::arc_turn`]) has samples beside both of the cut's columns, so its least and
+        // greatest sampled columns are the long way round apart. Its kernel scale takes the arc of
+        // columns that its samples span across the cut instead, when that arc is shorter than half
+        // a turn: no step between adjacent samples, which `cut` takes to be shorter than half a
+        // turn, then passes outside it. Chunks mirrored across the cut so get mirrored kernels. A
+        // regional source places the arc in its stored columns by whole turns and clips it to them,
+        // as it does a chunk's bounds (`kernel_bounds`): where the arc meets both stored edges, the
+        // span between them stays. The samples of a chunk around a pole span more than half a
+        // turn, and keep the distance between the least and greatest. Without
+        // `periodic_longitude`, the stored edges of a source covering one turn are a regional
+        // source's, which interpolation does not cross: the span between them stays.
+        let arc = self.arc_turn().filter(|_| cut).and_then(|turn| short_arc(&columns, turn));
+        let kernel_span = arc.map_or(raw_span, |(low, high)| high - low);
+        let kernel_bounds = arc.map(|(low, high)| self.wrap_source_bounds(low, high));
         (x0, x1) = self.wrap_source_bounds(x0, x1);
         if x0 > sw || x1 < 0.0 || y0 > sh || y1 < 0.0 {
             return Some((0, 0, 0, 0, 0.0, 0.0, 0.0));
@@ -3942,7 +3948,9 @@ impl WarpContext<'_> {
             (sy, (ih - sy).min(maxyc - sy + yr).max(0))
         };
         let fill = (sws * shs) as f64 / ((x1 - x0 + 2.0 * xr as f64) * (y1 - y0 + 2.0 * yr as f64)).max(1.0);
-        let raw_w = if self.global_longitude_turn().is_some() { kernel_span.min(sw) } else { (sw - minxc as f64).min(x1 - x0).max(0.0) };
+        let (kx0, kx1) = kernel_bounds.map_or((x0, x1), |(k0, k1)| (round_close(k0), round_close(k1)));
+        let raw_w =
+            if self.global_longitude_turn().is_some() { kernel_span.min(sw) } else { (sw - kx0.max(0.0).trunc()).min(kx1 - kx0).max(0.0) };
         let raw_h = (sh - minyc as f64).min(y1 - y0).max(0.0);
         Some((sx as usize, sy as usize, sws as usize, shs as usize, fill, raw_w, raw_h))
     }
@@ -4395,6 +4403,15 @@ impl WarpContext<'_> {
             return None;
         }
         self.source_longitude_turn().filter(|turn| turn.is_finite() && *turn > 0.0 && (self.src_w as f64 - turn).abs() <= turn * 1e-10)
+    }
+
+    /// Columns per turn of a source whose chunks across the longitude cut take the arc that their
+    /// samples span there for their 3.12 kernel scale ([`Self::estimate_source_window`]): a
+    /// periodic source covering one turn, or a regional source narrower than a turn. A source
+    /// covering one turn without [`WarpOptions::periodic_longitude`] keeps the span between its
+    /// stored edges.
+    fn arc_turn(&self) -> Option<f64> {
+        self.global_longitude_turn().or_else(|| self.longitude_turn().filter(|turn| (self.src_w as f64) < turn * (1.0 - 1e-10)))
     }
 
     /// Geographic footprints may use equivalent longitude numberings even without a CRS change.
@@ -7423,20 +7440,22 @@ mod tests {
     }
 
     /// Bilinear and cubic warps of a world source of 1° pixels symmetric about the 180° meridian,
-    /// stored from 180° W or from 0°, into the windows of [`ups_north_window`] on either side of
-    /// that meridian. The west window's samples on the meridian cross the source's longitude cut.
-    /// Windows touching the meridian, and windows reaching 1 km across it, give mirrored values. A
-    /// column of ones at 179.5° W reaches the same three columns of the west window reaching 1 km
-    /// across the meridian as of the window 1 m short of it, whose samples do not cross the cut,
-    /// with a largest weight within 0.01.
+    /// stored from 180° W or from 0°, and of a regional one from 120° E to 120° W, into the windows
+    /// of [`ups_north_window`] on either side of that meridian. The west window's samples on the
+    /// meridian cross the source's longitude cut. Windows touching the meridian, and windows
+    /// reaching 1 km across it, give mirrored values. A column of ones at 179.5° W, of the world
+    /// source or of the regional one, reaches the same three columns of the west window reaching
+    /// 1 km across the meridian as of the window 1 m short of it, whose samples do not cross the
+    /// cut, with a largest weight within 0.01.
     #[test]
     fn chunk_dependent_windows_mirrored_across_the_180th_meridian_get_mirrored_kernels() {
-        for origin in [-180., 0.] {
-            // Stored from 180° W, column `c` mirrors column 359 - c.
+        // Stored from 180° W, column `c` of the world source mirrors column 359 - c; column `c` of
+        // the regional one mirrors column 119 - c.
+        for (origin, width) in [(-180., 360), (0., 360), (120., 120)] {
             let shift = if origin == 0. { 180 } else { 0 };
-            let source = raster(360, 180, [origin, 1., 0., 90., 0., -1.], 4326, |c, r| {
-                let c = (c + shift) % 360;
-                ((c.min(359 - c) * 7 + r * 13) % 17) as f64
+            let source = raster(width, 180, [origin, 1., 0., 90., 0., -1.], 4326, |c, r| {
+                let c = (c + shift) % width;
+                ((c.min(width - 1 - c) * 7 + r * 13) % 17) as f64
             });
             for resampling in [Resampling::Bilinear, Resampling::Cubic] {
                 for gap in [0., -1000.] {
@@ -7453,15 +7472,17 @@ mod tests {
                 }
             }
         }
-        let impulse = raster(360, 180, [-180., 1., 0., 90., 0., -1.], 4326, |c, _| if c == 0 { 1. } else { 0. });
-        let row = |gap: f64| ups_north_window(&impulse, true, gap, Resampling::Bilinear, true)[32 * 64..33 * 64].to_vec();
-        let (across, short) = (row(-1000.), row(1.));
-        assert!(across.iter().chain(&short).all(|v| *v >= 0.), "across: {across:?}, short of it: {short:?}");
-        let reached = |row: &[f64]| (0..64).filter(|&i| row[i] > 0.).collect::<Vec<_>>();
-        let largest = |row: &[f64]| row.iter().fold(0_f64, |a, b| a.max(*b));
-        assert_eq!(reached(&short).len(), 3, "short of it: {short:?}");
-        assert_eq!(reached(&across), reached(&short), "across: {across:?}, short of it: {short:?}");
-        assert!((largest(&across) - largest(&short)).abs() < 0.01, "across: {across:?}, short of it: {short:?}");
+        for (origin, width, column) in [(-180., 360, 0), (120., 120, 60)] {
+            let impulse = raster(width, 180, [origin, 1., 0., 90., 0., -1.], 4326, |c, _| if c == column { 1. } else { 0. });
+            let row = |gap: f64| ups_north_window(&impulse, true, gap, Resampling::Bilinear, true)[32 * 64..33 * 64].to_vec();
+            let (across, short) = (row(-1000.), row(1.));
+            assert!(across.iter().chain(&short).all(|v| *v >= 0.), "stored from {origin}°: across: {across:?}, short of it: {short:?}");
+            let reached = |row: &[f64]| (0..64).filter(|&i| row[i] > 0.).collect::<Vec<_>>();
+            let largest = |row: &[f64]| row.iter().fold(0_f64, |a, b| a.max(*b));
+            assert_eq!(reached(&short).len(), 3, "stored from {origin}°: short of it: {short:?}");
+            assert_eq!(reached(&across), reached(&short), "stored from {origin}°: across: {across:?}, short of it: {short:?}");
+            assert!((largest(&across) - largest(&short)).abs() < 0.01, "stored from {origin}°: across: {across:?}, short of it: {short:?}");
+        }
     }
 
     /// Without `periodic_longitude`, a source covering one turn has the stored edges of a regional
@@ -7481,6 +7502,45 @@ mod tests {
         for gap in [0., -1000.] {
             assert!(reached(gap) > short, "{gap} m from the meridian: {} columns, {short} 1 m short of it", reached(gap));
         }
+    }
+
+    /// The source columns behind the 3.12 kernel scale (`raw_w`) of the west window of
+    /// [`ups_north_window`] from regional sources of 1° pixels. Touching the 180° meridian, or
+    /// reaching 1 mm or 1 km across it, the window takes the arc its samples span across the
+    /// meridian, placed in the stored columns a turn away, rounded and cut at the stored edges as
+    /// the window 1 m short of the meridian has its samples' columns. From 120° E to 160° W, the
+    /// east edge leaves 20 of the arc's 45 columns (21 from 1 km across the meridian, whose samples
+    /// reach into the column west of 180°): both scales upsample, so values do not show the cut.
+    /// From 160° W to 180° E, with a gap from 180° to 160° W, the arc keeps its 45 columns, until
+    /// from 1 km across the meridian it reaches both stored edges and keeps the 340 columns between
+    /// them.
+    #[test]
+    fn a_regional_chunk_across_the_180th_meridian_places_its_arc_in_the_stored_columns() {
+        let s = 8_220_379.675126;
+        let raw_w = |west: f64, width: usize, gap: f64| {
+            RegionWarp::new(
+                (width, 180),
+                [west, 1., 0., 90., 0., -1.],
+                &SpatialRef::from_epsg(4326).unwrap(),
+                &SpatialRef::from_epsg(5041).unwrap(),
+                [2e6 - gap - s, s / 64., 0., 2e6 + 2. * s, 0., -s / 64.],
+                Resampling::Bilinear,
+                0.,
+                DataType::F64,
+                vec![None],
+                None,
+            )
+            .unwrap()
+            .with_grid_invariance(false)
+            .context()
+            .source_window(0, 0, 64, 64)
+            .unwrap()
+            .5
+        };
+        let [short, touching, hair, across] = [1., 0., -0.001, -1000.].map(|gap| raw_w(120., 80, gap));
+        assert_eq!((short, touching, hair, across), (20., 20., 20., 21.), "from 120° E to 160° W");
+        let [short, touching, across] = [1., 0., -1000.].map(|gap| raw_w(-160., 340, gap));
+        assert!((short - 45.).abs() < 1e-3 && touching == 45. && across == 340., "from 160° W to 180° E: {short}, {touching}, {across}");
     }
 
     /// Full-turn area footprints take both stored edges, including a cut at zero longitude.
