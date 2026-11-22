@@ -10493,6 +10493,27 @@ mod tests {
         // A window that does not match the region's is still rejected.
         let wrong = (w1.0, w1.1, w1.2 + 1, w1.3);
         assert!(rw.warp(r1, wrong, &data(wrong), None, 0.0, false).is_err());
+        // Every window-affecting builder and set_dst_gt drop the cache, so the next call recomputes.
+        let builders: Vec<Box<dyn Fn(RegionWarp) -> RegionWarp>> = vec![
+            Box::new(|rw: RegionWarp| rw.with_kernel_version(KernelVersion::Gdal313)),
+            Box::new(|rw: RegionWarp| rw.with_grid_invariance(false)),
+            Box::new(|rw: RegionWarp| rw.with_periodic_longitude(false)),
+            Box::new(|rw: RegionWarp| rw.with_sum_scale(2.0)),
+            Box::new(|rw: RegionWarp| rw.with_src_scale((2.0, 2.0))),
+            Box::new(|mut rw: RegionWarp| {
+                // A different grid, so the dst_gt cache key is exercised too.
+                rw.set_dst_gt([gt[0] + gt[1], gt[1], 0.0, gt[3] + gt[5], 0.0, gt[5]]);
+                rw
+            }),
+        ];
+        for b in builders {
+            let rw = mk();
+            let _ = rw.source_window(r1).unwrap();
+            let before = WINDOW_COMPUTATIONS.with(std::cell::Cell::get);
+            let rw = b(rw);
+            let _ = rw.source_window(r1).unwrap();
+            assert_eq!(WINDOW_COMPUTATIONS.with(std::cell::Cell::get), before + 1, "the builder must drop the cached window");
+        }
     }
 
     /// The same warps' values, pinned: checksums of terrio's results in one chunk and in many
