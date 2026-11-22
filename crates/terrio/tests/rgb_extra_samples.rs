@@ -115,57 +115,75 @@ fn rgb_with_extra_samples_reads_as_written() {
     }
 }
 
-/// An RGBA GeoTIFF's bands 1-3 have the alpha band as their mask (GDAL's `GMF_ALPHA`):
-/// `read_band_mask` gives 255 where the alpha sample is not 0 and 0 where it is, read from the same
-/// level; the alpha band's own mask, and the mask of a raster without alpha, are all valid.
+/// An RGBA GeoTIFF's bands 1-3 have the alpha band as their mask band (GDAL 3.12's
+/// `GMF_ALPHA`): `read_band_mask` gives the alpha values, read from the same level. The alpha
+/// band's own mask is all valid, and so is every band's of a raster without alpha or of five bands
+/// with one. A nodata value the bands' type cannot hold (-9999 for Byte) leaves the alpha mask,
+/// while one it can hold masks its band instead.
 #[test]
 fn an_rgba_geotiffs_band_masks_come_from_its_alpha_band() {
     let dir = tempfile::tempdir().unwrap();
     let (cols, rows) = (16, 12);
     let n = cols * rows;
     let alpha: Vec<u8> = (0..n).map(|i| if i % 3 == 0 { 0 } else { (i % 250 + 5) as u8 }).collect();
-    let mut data = Vec::with_capacity(4 * n);
-    for b in 0..3 {
-        for i in 0..n {
-            data.push(((i + b * 31) % 251) as u8);
+    let rgba = |nodata: f64| {
+        let mut data = Vec::with_capacity(4 * n);
+        for b in 0..3 {
+            for i in 0..n {
+                data.push(((i + b * 31) % 251) as u8);
+            }
         }
-    }
-    data.extend_from_slice(&alpha);
-    let cfg = terrio::RasterConfig { cols, rows, bands: 4, data_type: DataType::U8, nodata: -9999.0, ..Default::default() };
-    let mut r = terrio::Raster::from_data_native(cfg, RasterData::U8(data)).unwrap();
-    r.x_min = 0.0;
-    r.y_min = 0.0;
-    r.cell_size_x = 1.0;
-    r.cell_size_y = 1.0;
-    let ds = terrio::RasterDataset::new(r, true);
+        data.extend_from_slice(&alpha);
+        let cfg = terrio::RasterConfig { cols, rows, bands: 4, data_type: DataType::U8, nodata, ..Default::default() };
+        let mut r = terrio::Raster::from_data_native(cfg, RasterData::U8(data)).unwrap();
+        r.x_min = 0.0;
+        r.y_min = 0.0;
+        r.cell_size_x = 1.0;
+        r.cell_size_y = 1.0;
+        terrio::RasterDataset::new(r, true)
+    };
     let path = dir.path().join("rgba.tif").to_str().unwrap().to_string();
-    write(&ds, &path, "NONE", false, true, true);
+    write(&rgba(-9999.0), &path, "NONE", false, true, true);
 
     let mut lazy = terrio::open_raster_lazy(&path).unwrap();
     assert_eq!(lazy.band_count(), 4);
     assert_eq!(lazy.alpha_band(), Some(4));
+    assert_eq!(lazy.band_nodata(1), Some(-9999.0), "a nodata value Byte cannot hold");
     assert!(lazy.read_mask(Window::full(cols, rows), None).unwrap().is_none(), "no per-dataset mask");
-    let expected: Vec<u8> = alpha.iter().map(|a| if *a == 0 { 0 } else { 255 }).collect();
     for band in [1, 2, 3] {
-        assert_eq!(lazy.read_band_mask(band, Window::full(cols, rows), None).unwrap(), expected, "band {band}");
+        assert_eq!(lazy.read_band_mask(band, Window::full(cols, rows), None).unwrap(), alpha, "band {band}");
     }
     assert_eq!(lazy.read_band_mask(4, Window::full(cols, rows), None).unwrap(), vec![255; n], "the alpha band's own mask is all valid");
     let w = Window { x: 2, y: 3, width: 5, height: 4 };
-    let mut win_expected = Vec::new();
-    for y in 3..7 {
-        for x in 2..7 {
-            win_expected.push(expected[y * cols + x]);
-        }
-    }
+    let win_expected: Vec<u8> = (3..7).flat_map(|y| (2..7).map(move |x| (y, x))).map(|(y, x)| alpha[y * cols + x]).collect();
     assert_eq!(lazy.read_band_mask(1, w, None).unwrap(), win_expected, "a window");
+    // An overview's mask is the same overview's alpha band.
+    for level in 0..lazy.overviews().len() {
+        let (ow, oh) = lazy.overviews()[level];
+        let full = Window::full(ow, oh);
+        let level_alpha = lazy.read_window(full, &WindowOptions { bands: vec![4], overview: Some(level) }).unwrap().raster.data;
+        let expected: Vec<u8> = level_alpha.iter_f64().map(|v| v as u8).collect();
+        assert_eq!(lazy.read_band_mask(2, full, Some(level)).unwrap(), expected, "overview {level}");
+    }
     assert!(lazy.read_band_mask(0, w, None).is_err());
     assert!(lazy.read_band_mask(5, w, None).is_err());
 
-    // A three-band raster without alpha: every band's mask is all valid.
-    let rgb = raster(3, DataType::U8);
-    let rgb_path = dir.path().join("rgb.tif").to_str().unwrap().to_string();
-    write(&rgb, &rgb_path, "NONE", false, false, true);
-    let mut rgb_lazy = terrio::open_raster_lazy(&rgb_path).unwrap();
-    assert_eq!(rgb_lazy.alpha_band(), None);
-    assert_eq!(rgb_lazy.read_band_mask(1, Window::full(COLS, ROWS), None).unwrap(), vec![255; COLS * ROWS]);
+    // A nodata value Byte holds masks each band by its own values, not by the alpha band.
+    let nodata_path = dir.path().join("rgba_nodata.tif").to_str().unwrap().to_string();
+    write(&rgba(0.0), &nodata_path, "NONE", false, true, true);
+    let mut nodata = terrio::open_raster_lazy(&nodata_path).unwrap();
+    let band1 = nodata.read_window(Window::full(cols, rows), &WindowOptions { bands: vec![1], overview: None }).unwrap().raster.data;
+    let expected: Vec<u8> = band1.iter_f64().map(|v| if v == 0.0 { 0 } else { 255 }).collect();
+    assert!(expected.contains(&0) && expected.contains(&255));
+    assert_eq!(nodata.read_band_mask(1, Window::full(cols, rows), None).unwrap(), expected);
+
+    // A three-band raster without alpha, and five bands of which the last is alpha (GDAL takes the
+    // alpha band for a mask with two or four bands only): every band's mask is all valid.
+    for (bands, alpha) in [(3, false), (5, true)] {
+        let path = dir.path().join(format!("rgb{bands}.tif")).to_str().unwrap().to_string();
+        write(&raster(bands, DataType::U8), &path, "NONE", false, alpha, true);
+        let mut lazy = terrio::open_raster_lazy(&path).unwrap();
+        assert_eq!(lazy.alpha_band(), alpha.then_some(bands), "{bands} bands");
+        assert_eq!(lazy.read_band_mask(1, Window::full(COLS, ROWS), None).unwrap(), vec![255; COLS * ROWS], "{bands} bands");
+    }
 }
