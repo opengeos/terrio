@@ -860,6 +860,54 @@ impl LazyRaster {
         Ok(out)
     }
 
+    /// Reads a window of the mask band of band `band` (numbered from 1), at full resolution or of
+    /// overview `overview`, as GDAL 3.12's `GetMaskBand()` of the band of that level chooses it
+    /// (see [`LazyRaster::read_resampled_masks`]): the dataset's mask, internal or a `.msk`
+    /// sidecar, of that level ([`LazyRaster::read_level_mask`]: an overview without a mask of its
+    /// own is all valid); else the band's nodata value at that level, 0 where the band holds it
+    /// and 255 elsewhere (nothing masked when the band's type cannot hold it); else, for bands 1
+    /// to 3 of four or band 1 of two, a Byte or UInt16 last band whose color interpretation is
+    /// alpha, as its values (a UInt16 one rescaled to 0-255 as `GDALRescaledAlphaBand` does);
+    /// else all valid (255).
+    ///
+    /// # Errors
+    ///
+    /// When `band` is not one of the raster's bands, `overview` not one of its overviews or
+    /// `window` not within that level, when the mask is too large to allocate, or as
+    /// [`LazyRaster::read_window`].
+    pub fn read_band_mask(&mut self, band: usize, window: Window, overview: Option<usize>) -> Result<Vec<u8>> {
+        let count = self.band_count();
+        if band == 0 || band > count {
+            return Err(Error::InvalidArgument(format!("no band {band}: the raster has {count} band(s)")));
+        }
+        let (level_width, level_height) = self.level_size(overview)?;
+        window.check(level_width, level_height)?;
+        let what = "band mask";
+        Self::check_resampled_buffer((window.width, window.height), 1, 1, what)?;
+        let n = window.width * window.height;
+        let all_valid = || -> Result<Vec<u8>> { Ok(fallible::filled(n, 255u8, what)?) };
+        // The dataset's mask is not read below, so a GeoTIFF's samples are read without the dataset
+        // read_window builds around them.
+        let samples = |source: &mut Self, b: usize| source.read_window_samples(window, &WindowOptions { bands: vec![b], overview });
+        if self.has_mask() {
+            return match self.read_level_mask(window, overview)? {
+                Some(mask) => Ok(mask),
+                None => all_valid(),
+            };
+        }
+        // A nodata value the band's type cannot hold is no nodata to GDAL (`IsNoDataInRange`):
+        // the alpha band, if any, is then the mask.
+        if let Some(nodata) = self.level_band_nodata(&[band], overview)[0]
+            && let Some(mask) = nodata_mask(&samples(self, band)?, 0, n, nodata)
+        {
+            return Ok(mask);
+        }
+        match self.mask_alpha() {
+            Some(alpha) if alpha != band => Ok(alpha_mask(&samples(self, alpha)?)),
+            _ => all_valid(),
+        }
+    }
+
     /// The dataset's mask band read as GDAL reads it into another size: a band of its own, all
     /// valid, from its own overviews chosen as for pixels.
     fn resampled_mask_band(&mut self, read: &Read) -> Result<Vec<u8>> {
