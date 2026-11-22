@@ -1868,32 +1868,23 @@ extension, as another method, or under an ESRI method name GDAL's table lacks
 TERRIO_RECORD=1 cargo test --release -p terrio-crs --lib model::
 ```
 
-For #1058 step 6, `src/model/proj_input_tests.rs` checks that the model gives a
-WKT 1 CRS's PROJ string the same input as the WKT 1 reader reads from its tree
-(`model::wkt1_input` against `wkt1::Wkt1Input::read`). It covers every WKT 1
-text of the corpus, and malformed and unusual input the corpus lacks: refusals,
-grads and Paris, ESRI's compound CRS, a geocentric CRS, parameters without a name
-or a number. It does the same for WKT 2 geographic, geocentric and projected CRSs
-(`model::wkt2_input` against `wkt2::Wkt2Input::read`), over every such WKT 2 text of
-the corpus and unusual input: refusals, planetary and polar axes, geocentric CSs,
-PROJ's own methods, CSs of another dimension than their axes. For derived
-geographic CRSs (rotated poles), which the corpus lacks, it compares PROJ 9.9.0's own
-texts of the three conventions (`PROJ ob_tran`, netCDF CF, GRIB) in WKT 2:2019 and
-2015, simplified or not, and unusual input. For bound CRSs, which the corpus lacks too
-(`model::wkt2_root_input` against `wkt2::Wkt2Root::read`), it compares each kind of
-Helmert transformation, a grid's, WGS 84 and other targets, GDAL's WKT 1 and derived
-source CRSs, and refusals. Malformed texts that PROJ 9.9.0
-refuses or reads as the tree does are read by the model as the tree reads them, so that
-their PROJ string does not change (`malformed_wkt1_the_model_reads_as_the_tree`,
-`malformed_wkt2_the_model_reads_as_the_tree`, step 6d-1). The texts the model still reads
-otherwise, as PROJ reads them, are pinned in `where_the_model_reads_unusual_wkt1_otherwise`
-and `where_the_model_reads_unusual_wkt2_otherwise`, each with PROJ 9.9.0's reading. Since step
-6d-2 the PROJ string comes from the model's input (`model::wkt1_to_proj`,
-`model::wkt2_to_proj`); `the_proj_string_is_read_as_proj_reads_it` checks the pinned texts' PROJ
-strings against PROJ's. Since step 6d-4 the model refuses a text itself, a WKT 2 one with the
-message the WKT 2 reader gave: the WKT 2 comparisons compare refusals by their message too, and
-`the_model_refuses_wkt2_with_the_reader_s_message` covers each refusal of the reader's input.
-The file is removed with the tree readers.
+For #1058 step 6, `src/model/proj_string_tests.rs` checks the PROJ string terrio gives
+WKT the corpus does not have (`model::wkt1_to_proj`, `model::wkt2_to_proj`): unusual WKT 1
+and WKT 2 (refusals, grads and Paris, ESRI's compound CRS, geocentric CRSs, planetary and
+polar axes, PROJ's own methods), malformed WKT, derived geographic CRSs (PROJ 9.9.0's own
+rotated poles of the three conventions, `PROJ ob_tran`, netCDF CF and GRIB, in WKT 2:2019
+and 2015, simplified or not) and bound CRSs (each kind of Helmert transformation, a grid's,
+WGS 84 and other targets, GDAL's WKT 1 and derived source CRSs). Each text's PROJ string, or
+its refusal, is recorded in `tests/data/wkt_proj_strings.tsv`, as terrio's tree readers gave
+it when the model took their place (step 6d-4b, after the model's input had been compared
+with theirs over the corpus and these texts since step 6a); re-record a deliberate change
+with `TERRIO_RECORD=1`. The corpus's own texts are checked through the PROJJSON they give
+(`projjson_corpus_diffs.tsv`). Malformed texts that PROJ 9.9.0 refuses or reads as the tree
+readers did keep their reading (step 6d-1, backward compatibility). Where the model reads a
+text as PROJ does and the tree readers did not, `where_the_model_reads_unusual_wkt1_otherwise`,
+`where_the_model_reads_unusual_wkt2_otherwise` and `the_proj_string_is_read_as_proj_reads_it`
+check PROJ 9.9.0's value. `the_model_refuses_wkt2_with_the_reader_s_message` checks each
+refusal of a WKT 2 CRS's input, with the message the tree reader gave (step 6d-4a).
 
 ## PROJJSON parsing (#270)
 
