@@ -1889,10 +1889,11 @@ their PROJ string does not change (`malformed_wkt1_the_model_reads_as_the_tree`,
 otherwise, as PROJ reads them, are pinned in `where_the_model_reads_unusual_wkt1_otherwise`
 and `where_the_model_reads_unusual_wkt2_otherwise`, each with PROJ 9.9.0's reading. Since step
 6d-2 the PROJ string comes from the model's input (`model::wkt1_to_proj`,
-`model::wkt2_to_proj`), and from the tree readers only for a text the model gives no input
-for, for their refusal; `the_proj_string_is_read_as_proj_reads_it` checks the pinned texts' PROJ
-strings against PROJ's. The file is removed once the model gives its refusals too and the tree
-readers go.
+`model::wkt2_to_proj`); `the_proj_string_is_read_as_proj_reads_it` checks the pinned texts' PROJ
+strings against PROJ's. Since step 6d-4 the model refuses a text itself, a WKT 2 one with the
+message the WKT 2 reader gave: the WKT 2 comparisons compare refusals by their message too, and
+`the_model_refuses_wkt2_with_the_reader_s_message` covers each refusal of the reader's input.
+The file is removed with the tree readers.
 
 ## PROJJSON parsing (#270)
 

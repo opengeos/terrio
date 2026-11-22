@@ -1462,7 +1462,7 @@ pub fn wkt_proj(wkt: &str) -> Option<String> {
         return Some(p);
     }
     let root = crate::parsed::tree(wkt)?;
-    let c = if wkt2::handles(&root) { wkt2::to_proj(&root).ok()? } else { wkt1::to_proj(&root)? };
+    let c = if wkt2::handles(&root) { model::wkt2_to_proj(wkt).ok()? } else { model::wkt1_to_proj(wkt)? };
     Some(c.proj)
 }
 
@@ -1915,7 +1915,7 @@ pub(crate) fn strip_root_code(wkt: &str) -> Option<String> {
 /// The projection method (`+proj=tmerc`) of a WKT definition's conversion.
 fn conversion_method(wkt: &str) -> Option<String> {
     let root = crate::parsed::tree(wkt)?;
-    let c = if wkt2::handles(&root) { wkt2::to_proj(&root).ok()? } else { wkt1::to_proj(&root)? };
+    let c = if wkt2::handles(&root) { model::wkt2_to_proj(wkt).ok()? } else { model::wkt1_to_proj(wkt)? };
     c.proj.split_whitespace().next().map(str::to_string)
 }
 

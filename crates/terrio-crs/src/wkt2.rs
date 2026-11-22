@@ -43,6 +43,8 @@ pub(crate) fn handles(root: &Node) -> bool {
 /// PROJ string, with a `BOUNDCRS`'s Helmert transformation as `+towgs84` when it is to WGS 84,
 /// else as [`Converted::bound`]. Fails on what it cannot convert faithfully: an unknown method, or
 /// an unknown parameter.
+// Read only by the parity tests until #1058 step 6d-4b deletes the tree readers.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
     convert_root(&Wkt2Root::read(root)?, root)
 }
@@ -98,6 +100,8 @@ pub(crate) struct Wkt2TransformationParam {
 impl Wkt2Root {
     /// What a WKT 2 CRS gives its PROJ string. Fails on what the reader refuses there (see
     /// [`Wkt2Input::read`] and [`Wkt2Bound::read`]).
+    // Read only by the parity tests until #1058 step 6d-4b deletes the tree readers.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn read(root: &Node) -> Result<Self> {
         if root.key.eq_ignore_ascii_case("BOUNDCRS") {
             return Ok(Self::Bound(Box::new(Wkt2Bound::read(root)?)));
@@ -1017,7 +1021,7 @@ fn wkt1_source(source: &Node) -> Node {
 }
 
 /// The refusal of a `BOUNDCRS` whose WKT 1 source CRS the WKT 1 reader refuses.
-fn wkt1_source_refused() -> Error {
+pub(crate) fn wkt1_source_refused() -> Error {
     bad("a BOUNDCRS whose WKT 1 source CRS terrio cannot read")
 }
 
@@ -1026,7 +1030,7 @@ pub(crate) fn first_node(n: &Node) -> Option<&Node> {
     n.args.iter().find_map(|a| if let Arg::Node(n) = a { Some(n) } else { None })
 }
 
-fn bad(what: &str) -> Error {
+pub(crate) fn bad(what: &str) -> Error {
     Error::Crs(format!("unsupported WKT 2: {what}"))
 }
 

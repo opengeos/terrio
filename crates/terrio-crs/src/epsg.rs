@@ -430,7 +430,7 @@ fn variant_c(code: u32) -> Option<&'static Entry> {
                     let wkt = format!(
                         r#"PROJCS["{name}",{geogcs},PROJECTION["Polar_Stereographic_(variant_C)"],PARAMETER["Latitude of standard parallel",{lat_ts}],PARAMETER["Longitude of origin",{lon_0}],PARAMETER["Easting at false origin",{fe}],PARAMETER["Northing at false origin",{fn_}],UNIT["metre",1,AUTHORITY["EPSG","9001"]],AUTHORITY["EPSG","{code}"]]"#
                     );
-                    let proj = super::wkt1::to_proj(&super::wkt1::parse(&wkt)?)?.proj;
+                    let proj = crate::model::wkt1_to_proj(&wkt)?.proj;
                     Some(Entry {
                         name: name.to_string(),
                         datum: g.datum,
