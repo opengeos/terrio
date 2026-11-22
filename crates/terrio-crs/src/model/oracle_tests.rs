@@ -289,7 +289,7 @@ fn render(crs: &Crs) -> Value {
             with_ids(&mut o, ident);
             Value::Object(o)
         }
-        Crs::Bound { source, transformation: t } => {
+        Crs::Bound { source, transformation: t, .. } => {
             // An abridged transformation's scale difference in unity is a multiplier
             // (`1.000007`), which PROJ 9.9.0 reads as the difference (7 ppm).
             // A parameter without its value (which PROJ refuses) left out.
