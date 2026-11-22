@@ -760,6 +760,15 @@ one, optional reference wheels retain their bundled databases. Networking and us
 caches are isolated in both cases, including for CLI subprocesses, before either reference
 library is imported. Grid-specific tests explicitly select their own directories instead.
 
+Rasterio's GDAL and pyproj also keep the objects their PROJ builds from its database per thread,
+so an earlier test can change how a later one builds a CRS from a code (#1218). A thread that has
+looked datum EPSG:6326 up as a single datum builds EPSG:4326, 3857 and the other WGS 84 codes on
+that datum, without the datum ensemble. Such a lookup comes with opening, through rasterio, a
+GeoTIFF on the WGS 84 ellipsoid without a datum code, and with writing as WKT 1 a CRS on WGS 84
+without an identifier, which `terrio.pyogrio` does through pyproj when it reads such a `.prj`. A
+test that compares the PROJJSON of CRSs built from codes builds both values with the
+`in_a_new_thread` fixture, in a thread of their own.
+
 Transformations in the real-data Rust test binaries must go through the `data()` helper first,
 which turns grid search and the network off. A test that transforms without calling `data()`
 can see the machine's grids, depending on test order. No current test does this.
