@@ -6394,9 +6394,9 @@ impl RegionWarp {
     /// gives positions in `src_srs`, WGS 84 longitudes and latitudes unless the caller says
     /// otherwise (`SRC_SRS`).
     ///
-    /// `rpc` is shared, not consumed: pass an `Arc<RpcTransformer>` to warp several regions or
-    /// grids with one transformer (and one loaded DEM), and a plain `RpcTransformer` to wrap it
-    /// in an `Arc` here.
+    /// `rpc` may be shared: pass an `Arc<RpcTransformer>` to warp several regions or grids with
+    /// one transformer (and one loaded DEM); a plain `RpcTransformer` is moved in and wrapped in
+    /// an `Arc` here.
     #[allow(clippy::too_many_arguments)]
     pub fn with_rpc(
         src_size: (usize, usize),
@@ -10186,7 +10186,11 @@ mod tests {
         // A grid over the RPCs' footprint (9.937..10.060 E, 44.950..45.051 N).
         let dst_gt = [9.94, 0.0002, 0.0, 45.04, 0.0, -0.0002];
         let shared = std::sync::Arc::new(RpcTransformer::new(&rpc, &ro).unwrap());
-        assert_eq!(std::sync::Arc::strong_count(&shared), 1);
+        // The transformer a warp holds.
+        let held = |rw: &RegionWarp| match &rw.t.src_gcp {
+            Some(Georef::Rpc(t)) => t.clone(),
+            _ => panic!("not an RPC warp"),
+        };
         let mk = |rpc: std::sync::Arc<RpcTransformer>| {
             RegionWarp::with_rpc(
                 (120, 100),
@@ -10204,7 +10208,10 @@ mod tests {
         };
         let a = mk(shared.clone());
         let b = mk(shared.clone());
-        assert_eq!(std::sync::Arc::strong_count(&shared), 3, "the two warps and this scope share one transformer");
+        assert!(
+            std::sync::Arc::ptr_eq(&held(&a), &shared) && std::sync::Arc::ptr_eq(&held(&b), &shared),
+            "the warps share one transformer"
+        );
         let by_value = RegionWarp::with_rpc(
             (120, 100),
             RpcTransformer::new(&rpc, &ro).unwrap(),
