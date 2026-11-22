@@ -1280,7 +1280,7 @@ impl LazyRaster {
         Ok([gt[0], gt[1] * sx, gt[2] * sy, gt[3], gt[4] * sx, gt[5] * sy])
     }
 
-    fn level_size(&self, overview: Option<usize>) -> Result<(usize, usize)> {
+    pub(crate) fn level_size(&self, overview: Option<usize>) -> Result<(usize, usize)> {
         match overview {
             None => Ok((self.width(), self.height())),
             Some(i) => {

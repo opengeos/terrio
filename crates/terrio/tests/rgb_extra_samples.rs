@@ -179,11 +179,14 @@ fn an_rgba_geotiffs_band_masks_come_from_its_alpha_band() {
 
     // A three-band raster without alpha, and five bands of which the last is alpha (GDAL takes the
     // alpha band for a mask with two or four bands only): every band's mask is all valid.
-    for (bands, alpha) in [(3, false), (5, true)] {
+    for (bands, with_alpha) in [(3, false), (5, true)] {
         let path = dir.path().join(format!("rgb{bands}.tif")).to_str().unwrap().to_string();
-        write(&raster(bands, DataType::U8), &path, "NONE", false, alpha, true);
+        write(&raster(bands, DataType::U8), &path, "NONE", false, with_alpha, true);
         let mut lazy = terrio::open_raster_lazy(&path).unwrap();
-        assert_eq!(lazy.alpha_band(), alpha.then_some(bands), "{bands} bands");
+        assert_eq!(lazy.alpha_band(), with_alpha.then_some(bands), "{bands} bands");
         assert_eq!(lazy.read_band_mask(1, Window::full(COLS, ROWS), None).unwrap(), vec![255; COLS * ROWS], "{bands} bands");
+        // An all-valid mask is still read from a window and a level of the raster.
+        assert!(lazy.read_band_mask(1, Window { x: COLS - 2, y: 0, width: 3, height: 1 }, None).is_err(), "{bands} bands");
+        assert!(lazy.read_band_mask(1, Window::full(1, 1), Some(lazy.overviews().len())).is_err(), "{bands} bands");
     }
 }
