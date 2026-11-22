@@ -552,7 +552,7 @@ impl LazyRaster {
     /// unit-pixel grid [`geo_transform`](Self::geo_transform) gives: false for an unreferenced
     /// image (a PNG or JPEG without a world file, a TIFF without geo tags), true for a
     /// georeferenced one (a GeoTIFF with tie points, a PNG with a `.pgw` world file) or a source
-    /// whose driver always supplies one.
+    /// whose driver always supplies one. A source that does not say is taken as referenced.
     pub fn geotransform_present(&self) -> bool {
         match &self.inner {
             Inner::Tiff(t) => t.tags.geo_transform.is_some(),
