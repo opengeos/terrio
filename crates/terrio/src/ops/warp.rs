@@ -6393,10 +6393,14 @@ impl RegionWarp {
     /// GCPs: GDAL's RPC transformer (`GDALCreateGenImgProjTransformer2()` with `SRC_METHOD=RPC`)
     /// gives positions in `src_srs`, WGS 84 longitudes and latitudes unless the caller says
     /// otherwise (`SRC_SRS`).
+    ///
+    /// `rpc` may be shared: pass an `Arc<RpcTransformer>` to warp several regions or grids with
+    /// one transformer (and one loaded DEM); a plain `RpcTransformer` is moved in and wrapped in
+    /// an `Arc` here.
     #[allow(clippy::too_many_arguments)]
     pub fn with_rpc(
         src_size: (usize, usize),
-        rpc: super::rpc::RpcTransformer,
+        rpc: impl Into<std::sync::Arc<super::rpc::RpcTransformer>>,
         src_srs: &SpatialRef,
         dst_srs: &SpatialRef,
         dst_gt: [f64; 6],
@@ -6409,7 +6413,7 @@ impl RegionWarp {
         if src_nodata.is_empty() {
             return Err(Error::InvalidArgument("no bands to warp".into()));
         }
-        let mut t = GenImgProj::with_georef(src_srs, dst_srs, Georef::Rpc(std::sync::Arc::new(rpc)))?;
+        let mut t = GenImgProj::with_georef(src_srs, dst_srs, Georef::Rpc(rpc.into()))?;
         t.set_dst_gt(dst_gt);
         Ok(Self {
             t,
@@ -10168,6 +10172,75 @@ mod tests {
         }
         let (actual, _) = region().with_sum_scale(2.).warp((0, 0, 2, 2), (0, 0, 2, 2), &data, None, 0., false).unwrap();
         assert_eq!(actual.to_f64_vec(), vec![2.; 4]);
+    }
+
+    /// Several `RegionWarp`s made from one `Arc<RpcTransformer>` share it (one loaded DEM) and warp
+    /// exactly as one made from a transformer of its own; a plain `RpcTransformer` is still
+    /// accepted, wrapped in an `Arc`.
+    #[test]
+    fn region_warp_with_rpc_shares_one_transformer() {
+        use super::super::rpc::{RpcOptions, RpcTransformer};
+        let rpc = test_rpc();
+        let ro = RpcOptions { height: Some(800.0), ..Default::default() };
+        let geographic = SpatialRef::from_epsg(4326).unwrap();
+        // A grid over the RPCs' footprint (9.937..10.060 E, 44.950..45.051 N).
+        let dst_gt = [9.94, 0.0002, 0.0, 45.04, 0.0, -0.0002];
+        let shared = std::sync::Arc::new(RpcTransformer::new(&rpc, &ro).unwrap());
+        // The transformer a warp holds.
+        let held = |rw: &RegionWarp| match &rw.t.src_gcp {
+            Some(Georef::Rpc(t)) => t.clone(),
+            _ => panic!("not an RPC warp"),
+        };
+        let mk = |rpc: std::sync::Arc<RpcTransformer>| {
+            RegionWarp::with_rpc(
+                (120, 100),
+                rpc,
+                &geographic,
+                &geographic,
+                dst_gt,
+                Resampling::Nearest,
+                0.0,
+                DataType::F64,
+                vec![None],
+                Some(0.0),
+            )
+            .unwrap()
+        };
+        let a = mk(shared.clone());
+        let b = mk(shared.clone());
+        assert!(
+            std::sync::Arc::ptr_eq(&held(&a), &shared) && std::sync::Arc::ptr_eq(&held(&b), &shared),
+            "the warps share one transformer"
+        );
+        let by_value = RegionWarp::with_rpc(
+            (120, 100),
+            RpcTransformer::new(&rpc, &ro).unwrap(),
+            &geographic,
+            &geographic,
+            dst_gt,
+            Resampling::Nearest,
+            0.0,
+            DataType::F64,
+            vec![None],
+            Some(0.0),
+        )
+        .unwrap();
+        let region = (0, 0, 60, 40);
+        let window = a.source_window(region);
+        assert_eq!(window, b.source_window(region));
+        assert_eq!(window, by_value.source_window(region));
+        let window = window.unwrap();
+        assert!(window.2 > 0 && window.3 > 0, "the region is outside the RPCs' footprint: {window:?}");
+        let (sx, sy, sw, sh) = window;
+        let value = |c: usize, r: usize| ((c + 1000 * r) % 977) as f64 + 1.0;
+        let data = RasterData::F64((0..sh).flat_map(|r| (0..sw).map(move |c| value(sx + c, sy + r))).collect());
+        let (reference, reference_valid) = a.warp(region, window, &data, None, 0.0, false).unwrap();
+        assert!(reference_valid.iter().any(|v| *v), "the region warps no pixels");
+        for rw in [&b, &by_value] {
+            let (out, valid) = rw.warp(region, window, &data, None, 0.0, false).unwrap();
+            assert_eq!(out.to_f64_vec(), reference.to_f64_vec());
+            assert_eq!(valid, reference_valid);
+        }
     }
 
     /// Re-targeting one `RegionWarp` to another grid (`set_dst_gt`, as
