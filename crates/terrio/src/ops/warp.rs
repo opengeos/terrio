@@ -6311,8 +6311,9 @@ impl RegionWarp {
     /// The full-resolution source pixels each pixel of the warped source stands for, `(W / w,
     /// H / h)` for a `w` x `h` overview of a `W` x `H` raster: a GCP- or RPC-georeferenced source
     /// scales its pixel coordinates by it before transforming, as the warp of an overview level
-    /// does. 1 by default; no effect on a geotransform source. Each must be positive and finite;
-    /// [`Self::warp`] rejects invalid scales before allocating the output.
+    /// does. 1 by default; only GCP- and RPC-georeferenced sources use it. Each must be positive
+    /// and finite, whatever the source: [`Self::source_window`] gives `None` for an invalid scale and
+    /// [`Self::warp`] rejects it before allocating the output.
     pub fn with_src_scale(mut self, scale: (f64, f64)) -> Self {
         self.t.src_scale = scale;
         self
