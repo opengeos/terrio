@@ -457,6 +457,12 @@ struct GenImgProj {
 const IDENTITY: [f64; 6] = [0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
 
 impl GenImgProj {
+    /// Whether the source scale is usable: both factors positive and finite.
+    fn src_scale_valid(&self) -> bool {
+        let (x, y) = self.src_scale;
+        x.is_finite() && x > 0.0 && y.is_finite() && y > 0.0
+    }
+
     fn new(src_gt: [f64; 6], src_srs: &SpatialRef, dst_srs: &SpatialRef) -> Result<Self> {
         Self::with_options(src_gt, src_srs, dst_srs, &Default::default())
     }
@@ -6485,6 +6491,10 @@ impl RegionWarp {
         if dw == 0 || dh == 0 {
             return Some((0, 0, 0, 0));
         }
+        // An unusable source scale (see [`Self::with_src_scale`]) transforms nothing.
+        if !self.t.src_scale_valid() {
+            return None;
+        }
         self.context().source_window(dx, dy, dw, dh).map(|(sx, sy, sw, sh, ..)| (sx, sy, sw, sh))
     }
 
@@ -6520,8 +6530,8 @@ impl RegionWarp {
         if !(self.sum_scale.is_finite() && self.sum_scale > 0.0) {
             return Err(Error::InvalidArgument(format!("the sum scale must be a positive number, not {}", self.sum_scale)));
         }
-        let (scale_x, scale_y) = self.t.src_scale;
-        if !(scale_x.is_finite() && scale_x > 0.0 && scale_y.is_finite() && scale_y > 0.0) {
+        if !self.t.src_scale_valid() {
+            let (scale_x, scale_y) = self.t.src_scale;
             return Err(Error::InvalidArgument(format!("the source scale must be positive and finite, not ({scale_x}, {scale_y})")));
         }
         let (dx, dy, dw, dh) = region;
@@ -10315,6 +10325,7 @@ mod tests {
         // Invalid scales are rejected.
         for scale in [(0.0, 1.0), (1.0, -1.0), (f64::NAN, 1.0), (1.0, f64::INFINITY)] {
             let rw = mk((60, 50), scale);
+            assert_eq!(rw.source_window(region), None, "scale {scale:?}");
             let result = rw.warp(region, (0, 0, 1, 1), &RasterData::F64(vec![0.0]), None, 0.0, false);
             assert!(matches!(result, Err(Error::InvalidArgument(_))), "scale {scale:?}: {result:?}");
         }
