@@ -6488,13 +6488,13 @@ impl RegionWarp {
     /// region cannot be transformed (GDAL then leaves it at its initial value); an empty window
     /// when it falls outside the source or either region dimension is zero.
     pub fn source_window(&self, region: (usize, usize, usize, usize)) -> Option<(usize, usize, usize, usize)> {
-        let (dx, dy, dw, dh) = region;
-        if dw == 0 || dh == 0 {
-            return Some((0, 0, 0, 0));
-        }
         // An unusable source scale (see [`Self::with_src_scale`]) transforms nothing.
         if !self.t.src_scale_valid() {
             return None;
+        }
+        let (dx, dy, dw, dh) = region;
+        if dw == 0 || dh == 0 {
+            return Some((0, 0, 0, 0));
         }
         self.context().source_window(dx, dy, dw, dh).map(|(sx, sy, sw, sh, ..)| (sx, sy, sw, sh))
     }
@@ -10306,8 +10306,8 @@ mod tests {
             assert!((a as f64 - 2.0 * b as f64).abs() <= 2.0, "window {wf:?} vs {wo:?}");
         }
         // The overview holds the full-resolution pixel of twice its coordinates; a nearest warp of
-        // the same region then agrees with the full-resolution warp within one full-resolution pixel
-        // in each direction (0.5 a column and 0.25 a row on this ramp): the overview pixel covers 2 x 2.
+        // the same region then agrees with the full-resolution warp within 0.5 + 0.25 = 0.75 on this
+        // ramp (one column and one row together): the overview pixel covers 2 x 2.
         let value = |c: usize, r: usize| c as f64 * 0.5 + r as f64 * 0.25 + 1.0;
         let data = |w: (usize, usize, usize, usize), scale: usize| {
             RasterData::F64((0..w.3).flat_map(|r| (0..w.2).map(move |c| value((w.0 + c) * scale, (w.1 + r) * scale))).collect())
