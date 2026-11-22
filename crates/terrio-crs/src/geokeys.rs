@@ -1012,12 +1012,10 @@ fn on_wgs84(proj: &str) -> bool {
 /// approximates: the reader keeps the exact operation beside it (a Molodensky-Badekas evaluation
 /// point, a full rotation matrix).
 fn bound_beyond_towgs84(crs: &SpatialRef) -> bool {
-    crs.wkt
-        .as_deref()
-        .filter(|w| crate::def::is_bound_crs(w))
-        .and_then(crate::wkt1::parse)
-        .filter(crate::wkt2::handles)
-        .and_then(|root| crate::wkt2::to_proj(&root).ok())
+    let Some(w) = crs.wkt.as_deref().filter(|w| crate::def::is_bound_crs(w)) else { return false };
+    crate::parsed::tree(w)
+        .filter(|root| crate::wkt2::handles(root))
+        .and_then(|root| crate::model::wkt2_to_proj(w, &root).ok())
         .is_some_and(|c| c.helmert.is_some())
 }
 

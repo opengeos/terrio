@@ -192,8 +192,9 @@ pub(crate) fn convert_root(input: &Wkt2Root, root: &Node) -> Result<Converted> {
 }
 
 /// What a WKT 2 geographic, geocentric, projected or derived geographic CRS gives its PROJ string:
-/// read from its tree ([`Wkt2Input::read`]) or from its model (`model::wkt2_input`), which agree
-/// but for the known differences `model::proj_input_tests` pins (#1058 step 6).
+/// read from its tree ([`Wkt2Input::read`]) or from its model (`model::wkt2_root_input`), which
+/// the PROJ string comes from (#1058 step 6d-2); the two agree but for the texts
+/// `model::proj_input_tests` pins, which the model reads as PROJ 9.9.0 does.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Wkt2Input {
     /// The geodetic CRS: the CRS itself, or a projected or derived CRS's base CRS.
