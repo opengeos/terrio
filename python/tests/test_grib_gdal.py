@@ -990,9 +990,9 @@ def test_remote_reads_by_range(tmp_path, band):
 def test_remote_fields_of_one_message_read_together_fetch_it_once(tmp_path):
     """Catches the fields of one remote message read together fetched once each: two fields
     moved into one message (sections 4 to 7 of two messages after the first's sections 1 to 3),
-    read at once, make one request (the rest of the message past its headers), and give the
-    values of the file read locally. Two fields, so that one thread decodes them together too: a
-    read decodes up to twice as many bands at once as the pool has threads."""
+    read at once, make one request (the rest of the message past the bytes the open read first),
+    and give the values of the file read locally. Two fields, so that one thread decodes them
+    together too: a read decodes up to twice as many bands at once as the pool has threads."""
     data = field(200, 250, bands=2, seed=47)
     path = write_grib(tmp_path / "f.grib2", data, DATA_ENCODING="IEEE_FLOATING_POINT", **LATLON)
     msgs = messages(open(path, "rb").read())
@@ -1008,6 +1008,33 @@ def test_remote_fields_of_one_message_read_together_fetch_it_once(tmp_path):
             log.clear()
             ours = t.read()
             assert len(log) == 1, log
+        with trio.open(str(one)) as local:
+            assert np.array_equal(ours, local.read())
+    finally:
+        server.shutdown()
+
+
+def test_remote_open_skips_the_data_of_a_message_s_fields(tmp_path):
+    """Catches the data of a remote message's fields fetched at open (#1215): a field's sections
+    come after the data of the field before it, which the open skips by its length. Four fields of
+    200 x 250 Float32 values (200,000 bytes each) moved into one message cost the first block, then
+    a request of a few hundred bytes for each field after the first; the bands are those of the
+    file read locally."""
+    data = field(200, 250, bands=4, seed=53)
+    path = write_grib(tmp_path / "f.grib2", data, DATA_ENCODING="IEEE_FLOATING_POINT", **LATLON)
+    msgs = messages(open(path, "rb").read())
+    secs = [s for n, s in sections(msgs[0]) if n in (1, 2, 3)]
+    secs += [s for m in msgs for n, s in sections(m) if n in (4, 5, 6, 7)]
+    raw = build(msgs[0][:16], secs)
+    one = tmp_path / "one.grib2"
+    one.write_bytes(raw)
+    server, url, log = serve(raw)
+    try:
+        with trio.open(f"{url}/one.grib2") as t:
+            assert t.count == 4
+            opened = sum(n for _, n in log)
+            assert opened <= BLOCK + 3 * 1024, (opened, len(raw), log)
+            ours = t.read()
         with trio.open(str(one)) as local:
             assert np.array_equal(ours, local.read())
     finally:

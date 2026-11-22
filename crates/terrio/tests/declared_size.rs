@@ -1213,11 +1213,11 @@ fn fields_in_one_message(bytes: &[u8], fields: usize) -> Vec<u8> {
         .collect()
 }
 
-/// Catches a local GRIB file of messages of several fields held while it is opened (#1081): a
-/// field's sections come after the data of the field before it, so a message's header holds the
-/// data of its fields before the last, and the open drops each message's header before it reads
-/// the next one's. Of a file of 16 messages of 4 fields of 128 x 128 Float32 values, the open
-/// holds at most a small part at once.
+/// Catches a local GRIB file of messages of several fields held while it is opened (#1081), or the
+/// data of their fields read at open (#1215): a field's sections come after the data of the field
+/// before it, which the open skips, and the open drops each message's header before it reads the
+/// next one's. Of a file of 16 messages of 4 fields of 128 x 128 Float32 values (64 KiB each), the
+/// open holds at most a small part at once, and allocates nothing the size of a field.
 #[cfg(all(unix, feature = "grib"))]
 #[test]
 fn a_lazy_grib_open_holds_one_message_header_at_a_time() {
@@ -1230,9 +1230,11 @@ fn a_lazy_grib_open_holds_one_message_header_at_a_time() {
     let len = bytes.len();
     // terrio's one-time state from a first open, as in the GRIB1 test: the second is measured.
     drop(terrio::LazyRaster::open(path.to_str().unwrap()).unwrap());
-    let (opened, peak) = peak_during(|| terrio::LazyRaster::open(path.to_str().unwrap()));
+    let ((opened, peak), largest) = largest_during(|| peak_during(|| terrio::LazyRaster::open(path.to_str().unwrap())));
     assert_eq!(opened.unwrap().band_count(), 64);
     assert!(peak < len / 4, "{peak} bytes held at once, for a file of {len}");
+    let field = 128 * 128 * 4;
+    assert!(largest < field, "an allocation of {largest} bytes, for fields of {field}");
 }
 
 /// A GRIB1 file of `count` messages of `nx` x `ny` points on a latitude/longitude grid, each with

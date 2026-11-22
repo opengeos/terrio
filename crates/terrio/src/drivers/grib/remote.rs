@@ -5,17 +5,20 @@
 // No code is translated from these sources.
 
 //! Remote GRIB files read by range, so that reading a band costs its message rather than the
-//! file: at open, the header of each message (its sections up to the first octets of its data)
-//! is read to find the next message and to describe its bands; a band's message is fetched whole
-//! when the band is read. A GRIB1 bitmap is not needed to describe a band, so it is skipped: its
-//! message's header costs two small requests (the sections before the bitmap, then the data
-//! section's first octets) rather than a block holding the bitmap. A GRIB1 message whose nodata
-//! depends on its data (degrib's `resetPrim`) is read whole at open, as GDAL reads it. Bytes
-//! received: the headers, those messages, and the messages of the bands read. A server that
-//! ignores ranges is read only if the file came whole with the first request (a small file):
-//! the rest of the reads are then served from it.
+//! file: at open, the header of each message (the first octets of each of its sections and its
+//! definitions, [`super::read_head`]) is read to find the next message and to describe its bands;
+//! a band's message is fetched whole when the band is read. The bodies of bitmap and data sections
+//! are not needed to describe a band, so they are skipped: a GRIB1 message's header costs two small
+//! requests (the sections before the bitmap, then the data section's first octets) rather than a
+//! block holding the bitmap, and each field of a GRIB2 message of several fields after the first a
+//! request of its sections rather than the data of the field before it. A GRIB1 message whose
+//! nodata depends on its data (degrib's `resetPrim`) is read whole at open. The open dataset keeps
+//! of each message the bytes read in a row from its start (those messages whole), which a read of
+//! its bands does not fetch again. Bytes received: the headers, those messages, and the messages of
+//! the bands read. A server that ignores ranges is read only if the file came whole with the first
+//! request (a small file): the rest of the reads are then served from it.
 
-use super::{Band, Source, Store, be, complete_head, grib1, header, message_bands, normalize_units, try_vec};
+use super::{Band, Head, Source, Store, be, grib1, header_with, normalize_units, read_head, try_vec};
 use crate::http::{ByteRange, HttpOptions, ObjectFetcher, RangeReader, Remote};
 use crate::{Error, Result};
 use std::io::{Read, Seek, SeekFrom};
@@ -54,21 +57,19 @@ impl Fetch {
     }
 }
 
-/// The header of a message: its offset and length, the bytes read from its start, and how many
-/// of them are the message's own bytes in a row (`prefix`); past it, the skipped body of a
-/// bitmap is zeros.
-struct Head {
+/// A message of a remote GRIB file: its offset and length, and the bytes from its start that the
+/// open read in a row, which a read of its bands does not fetch again.
+struct Message {
     start: usize,
     len: usize,
-    bytes: Vec<u8>,
-    prefix: usize,
+    prefix: Vec<u8>,
 }
 
 /// The messages of a remote GRIB file.
 pub(crate) struct Messages {
     fetch: Fetch,
     file_len: usize,
-    messages: Vec<Head>,
+    messages: Vec<Message>,
     /// Each band: its message, and its index among the message's bands.
     bands: Vec<(usize, usize)>,
 }
@@ -87,7 +88,7 @@ impl Messages {
     pub(crate) fn fetch(&self, m: usize) -> Result<Vec<u8>> {
         let h = &self.messages[m];
         let mut out = try_vec(h.len)?;
-        out.extend_from_slice(&h.bytes[..h.prefix.min(h.len)]);
+        out.extend_from_slice(&h.prefix[..h.prefix.len().min(h.len)]);
         if out.len() < h.len {
             out.extend_from_slice(&self.fetch.get(h.start + out.len(), h.len - out.len())?);
         }
@@ -116,7 +117,8 @@ pub(crate) fn open(remote: &Remote) -> Result<crate::LazyRaster> {
     reader.read_exact(&mut first)?;
     let fetch = Fetch { remote: remote.clone(), fetcher: ObjectFetcher::new(), reader: std::sync::Mutex::new(reader) };
     let find = |b: &[u8]| b.windows(8).position(|w| &w[..4] == b"GRIB" && (w[7] == 1 || w[7] == 2));
-    let mut messages: Vec<Head> = Vec::new();
+    // Each message's offset, length and header, held until the dataset's header is built.
+    let mut heads: Vec<(usize, usize, Head)> = Vec::new();
     let mut pos = 0;
     // Bytes read past the previous message: the start of the next.
     let mut carry: Vec<u8> = first;
@@ -131,7 +133,7 @@ pub(crate) fn open(remote: &Remote) -> Result<crate::LazyRaster> {
             at = find(&head);
         }
         let Some(off) = at else {
-            if messages.is_empty() {
+            if heads.is_empty() {
                 return Err(Error::InvalidData("no GRIB message in the first block".into()));
             }
             break;
@@ -152,38 +154,46 @@ pub(crate) fn open(remote: &Remote) -> Result<crate::LazyRaster> {
         if head.len() > len {
             carry = head.split_off(len);
         }
-        // The rest of the header; a skipped GRIB1 bitmap body stays zeros, past the prefix.
-        let prefix = complete_head(&mut head, len, |at, n| fetch.get(start + at, n))?;
+        // The rest of the header, each part of a GRIB2 one fetched with a few hundred bytes more,
+        // so that a field's definitions come in one request.
+        let head = read_head(head, len, HEAD_MIN, |at, n| fetch.get(start + at, n))?;
         // The next message's header is likely the size of this one's (GRIB2), or short (GRIB1,
         // whose bitmap is skipped).
-        guess = if head[7] == 2 { prefix.clamp(HEAD_MIN, BLOCK) } else { HEAD_MIN };
-        messages.push(Head { start, len, bytes: head, prefix });
+        guess = if let Head::Grib2(_, needed) = &head { (*needed).clamp(HEAD_MIN, BLOCK) } else { HEAD_MIN };
+        heads.push((start, len, head));
         pos = start + len;
     }
     // A GRIB1 message's nodata may depend on its data's maximum: then it is read whole.
-    for h in messages.iter_mut() {
-        if h.bytes.get(7) != Some(&1) || h.prefix >= h.len {
+    for (start, len, head) in heads.iter_mut() {
+        let Head::Grib1(bytes, prefix) = head else { continue };
+        if *prefix >= *len {
             continue;
         }
-        let mut m = grib1::Message::parse(&h.bytes, file_len)?;
+        let mut m = grib1::Message::parse(bytes, file_len)?;
         m.normalize = normalize;
         if m.nodata_needs_data()? {
-            let rest = fetch.get(h.start + h.prefix, h.len - h.prefix)?;
-            h.bytes.truncate(h.prefix);
-            h.bytes.extend_from_slice(&rest);
-            h.prefix = h.len;
+            let rest = fetch.get(*start + *prefix, *len - *prefix)?;
+            bytes.truncate(*prefix);
+            bytes.extend_from_slice(&rest);
+            *prefix = *len;
         }
     }
-    let mut all: Vec<Band> = Vec::new();
-    let mut bands = Vec::new();
-    for (m, h) in messages.iter().enumerate() {
-        for (k, b) in message_bands(&h.bytes, h.len, file_len, normalize)?.into_iter().enumerate() {
+    // What the dataset's header needs of each band.
+    let (mut first_grid, mut band_nodata, mut band_metadata, mut bands) = (None, Vec::new(), Vec::new(), Vec::new());
+    for (m, (_, len, head)) in heads.iter().enumerate() {
+        let (found, _) = head.bands(*len, file_len, normalize)?;
+        if first_grid.is_none() {
+            first_grid = found.first().map(Band::grid);
+        }
+        for (k, band) in found.iter().enumerate() {
             bands.push((m, k));
-            all.push(b);
+            band_nodata.push(band.nodata());
+            band_metadata.push(band.metadata());
         }
     }
-    let (ds, split) = header(&all, file_len)?;
-    drop(all);
+    let (ds, split) = header_with(first_grid, bands.len(), band_nodata.into_iter(), band_metadata.into_iter(), file_len)?;
+    // Of each header, the bytes read in a row from the message's start.
+    let messages = heads.into_iter().map(|(start, len, head)| Message { start, len, prefix: head.into_first() }).collect();
     let store = Store::Remote(Box::new(Messages { fetch, file_len, messages, bands }));
     Ok(Source::lazy(Source::new(ds, split, normalize, store, crate::block_cache::Handle::new())))
 }
