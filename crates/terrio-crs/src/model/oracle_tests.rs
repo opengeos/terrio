@@ -308,7 +308,8 @@ fn render(crs: &Crs) -> Value {
             let mut tr = conversion_json(&c);
             tr["name"] = json!(t.ident.name);
             if let Some(list) = tr["parameters"].as_array_mut() {
-                for (ident, file) in &t.files {
+                // A file without its name (which PROJ refuses) left out.
+                for (ident, file) in t.files.iter().filter_map(|(i, f)| Some((i, f.as_ref()?))) {
                     let mut f = json!({"name": ident.name, "value": file});
                     let mut extra = Map::new();
                     with_ids(&mut extra, ident);

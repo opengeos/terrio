@@ -18,8 +18,9 @@
 //! ESRI's and GDAL's spellings, a WKT 1 CRS's axes by its code, EPSG names of WKT 1 methods and
 //! parameters. Those are later steps of #1058 (4: identification, 5a: one method table).
 //!
-//! Until #1058 step 3 reads terrio's helpers from it, only tests use the model; its unit test
-//! checks it against PROJ 9.9.0's PROJJSON of the #1066 corpus (`oracle_tests.rs`).
+//! A WKT CRS's PROJ string comes from the model's input (`wkt1_to_proj`, `wkt2_to_proj`, #1058
+//! step 6d-2). Its unit test checks it against PROJ 9.9.0's PROJJSON of the #1066 corpus
+//! (`oracle_tests.rs`).
 
 use crate::keywords as kw;
 use crate::wkt1::{self, Arg, Node};
@@ -75,6 +76,7 @@ impl Unit {
         Self { name: "degree".into(), factor: std::f64::consts::PI / 180.0, kind: UnitKind::Angle }
     }
 
+    #[cfg(test)]
     pub fn unity() -> Self {
         Self { name: "unity".into(), factor: 1.0, kind: UnitKind::Scale }
     }
@@ -206,8 +208,9 @@ pub(crate) struct Transformation {
     pub ident: Ident,
     pub method: Ident,
     pub params: Vec<TransformationParam>,
-    /// Its `PARAMETERFILE`s (an NTv2 grid's), by name and file name.
-    pub files: Vec<(Ident, String)>,
+    /// Its `PARAMETERFILE`s (an NTv2 grid's), by name and file name (`None` when not a string,
+    /// which PROJ refuses and terrio's reader counts as a file).
+    pub files: Vec<(Ident, Option<String>)>,
     /// Its target CRS; `None` when the model does not read it. The bound CRS is still read, as the
     /// WKT 2 reader reads it, without the shift to that target, though PROJ 9.9.0 refuses a bound
     /// CRS whose target has no datum.
@@ -304,7 +307,9 @@ pub(crate) struct Model {
 /// method, which PROJ 9.9.0 refuses).
 pub(crate) fn read(text: &str) -> Option<Model> {
     // ESRI's compound CRS, `GEOGCS[...],VERTCS[...]`, as PROJ reads it: named after its parts.
-    if let Some((h, v)) = wkt1::esri_compound(text) {
+    // Tried only on a text with a `VERTCS`: its parse is not memoized.
+    let vertcs = text.as_bytes().windows(6).any(|w| w.eq_ignore_ascii_case(b"VERTCS"));
+    if let Some((h, v)) = vertcs.then(|| wkt1::esri_compound(text)).flatten() {
         // A `VERTCS` on a geodetic `DATUM` is an ellipsoidal height: PROJ 9.9.0 reads the two as
         // a 3D CRS (ESRI's LUREF / Luxembourg TM (3D), EPSG:9895), its base CRS 3D too.
         // The horizontal CRS's dialect as PROJ guesses it (a GDAL `PROJCS` with its `AUTHORITY`
@@ -340,15 +345,36 @@ pub(crate) fn read(text: &str) -> Option<Model> {
         let crs = Crs::Compound { ident: Ident { name, ids: Vec::new(), epsg: None }, parts };
         return Some(Model { crs, dialect: d, extensions: extensions(&h), height_added: false });
     }
-    let root = wkt1::parse(text)?;
+    let root = crate::parsed::tree(text)?;
     let d = dialect(text, &root);
     Some(Model { crs: crs(&root, d)?, dialect: d, extensions: extensions(&root), height_added: false })
 }
 
+/// The PROJ string of a WKT 2 CRS the WKT 2 reader converts (`wkt2::handles`): from the CRS
+/// model's input (#1058 step 6d-2), else, for a text the model gives no input for, from the reader,
+/// which gives its refusal. Its tree is the memoized one ([`crate::parsed::tree`]).
+pub(crate) fn wkt2_to_proj(text: &str) -> crate::Result<wkt1::Converted> {
+    let root = crate::parsed::tree(text).ok_or_else(|| crate::Error::Crs("not a WKT definition GDAL reads".into()))?;
+    match read(text).and_then(|m| wkt2_root_input(&m, &root)) {
+        Some(input) => wkt2::convert_root(&input, &root),
+        None => wkt2::to_proj(&root),
+    }
+}
+
+/// The PROJ string of a WKT 1 CRS: from the CRS model's input (#1058 step 6d-2), else, for a text
+/// the model gives no input for, from the WKT 1 reader; `None` for one it does not convert. Its
+/// tree is the memoized one ([`crate::parsed::tree`]).
+pub(crate) fn wkt1_to_proj(text: &str) -> Option<wkt1::Converted> {
+    let root = crate::parsed::tree(text)?;
+    let Some(input) = read(text).and_then(|m| wkt1_input(&m, &root)) else { return wkt1::to_proj(&root) };
+    let geogcs = if input.kind == wkt1::Wkt1Kind::Projected { root.child("GEOGCS")? } else { &root };
+    wkt1::convert(&input, geogcs)
+}
+
 /// A WKT 1 CRS's input to its PROJ string, read from its model (#1058 step 6): what
 /// [`wkt1::Wkt1Input::read`] reads from its tree (`root`, the horizontal CRS's of ESRI's compound),
-/// but for the unusual WKT 1 `where_the_model_reads_unusual_wkt1_otherwise` pins, to settle in step
-/// 6d as PROJ reads it.
+/// but for the unusual WKT 1 `where_the_model_reads_unusual_wkt1_otherwise` pins, which it reads
+/// as PROJ 9.9.0 does.
 pub(crate) fn wkt1_input(m: &Model, root: &Node) -> Option<wkt1::Wkt1Input> {
     use wkt1::{Wkt1Input, Wkt1Kind};
     if m.dialect == Dialect::Wkt2 {
@@ -452,6 +478,7 @@ fn first_epsg(i: &Ident) -> Option<u32> {
 /// A WKT 2 geographic, geocentric, projected or derived geographic CRS's input to its PROJ string,
 /// read from its model (#1058 step 6): what [`wkt2::Wkt2Input::read`] reads from its tree. `None`
 /// for what the reader refuses, and for a bound CRS (see [`wkt2_root_input`]).
+#[cfg(test)]
 pub(crate) fn wkt2_input(m: &Model) -> Option<wkt2::Wkt2Input> {
     if m.dialect != Dialect::Wkt2 {
         return None;
@@ -1042,7 +1069,15 @@ fn projected(n: &Node, d: Dialect) -> Option<Crs> {
     if d == Dialect::Wkt2 && n.child("CONVERSION").is_some_and(|c| c.children("PARAMETER").any(|p| p.num(1).is_none())) {
         return None;
     }
-    let conversion = match n.child("CONVERSION") {
+    // A WKT 1 `PROJCS` with its own `PROJECTION`: its `PROJECTION` and `PARAMETER`s, as the WKT 1
+    // reader takes them, not a WKT 2 `CONVERSION` beside them (PROJ 9.9.0 reads that one, with its
+    // parameters' units and EPSG names, which the WKT 1 converter does not: #1012).
+    let own = n.is(kw::WKT1_PROJECTED) && n.child("PROJECTION").is_some();
+    // A WKT 1 `PROJCS` without its own `PROJECTION`, which the WKT 1 reader refuses.
+    if n.is(kw::WKT1_PROJECTED) && !own {
+        return None;
+    }
+    let conversion = match n.child("CONVERSION").filter(|_| !own) {
         Some(c) => Conversion {
             ident: ident(c),
             method: ident(c.child("METHOD").or_else(|| c.child("PROJECTION"))?),
@@ -1050,6 +1085,9 @@ fn projected(n: &Node, d: Dialect) -> Option<Crs> {
             angular,
             linear: linear.clone(),
         },
+        // WKT 1's `PROJECTION` in a WKT 2 `PROJCRS`, which the WKT 2 reader refuses (PROJ 9.9.0
+        // reads it, #1012).
+        None if d == Dialect::Wkt2 => return None,
         None => Conversion {
             ident: Ident::default(),
             method: ident(n.child("PROJECTION")?),
@@ -1150,9 +1188,9 @@ fn bound(n: &Node, d: Dialect) -> Option<Crs> {
         params: transformation_params(t),
         files: t
             .children("PARAMETERFILE")
-            .filter_map(|p| match p.args.get(1) {
-                Some(Arg::Str(s)) => Some((ident(p), s.clone())),
-                _ => None,
+            .map(|p| match p.args.get(1) {
+                Some(Arg::Str(s)) => (ident(p), Some(s.clone())),
+                _ => (ident(p), None),
             })
             .collect(),
         target: target.map(Box::new),
@@ -1338,6 +1376,6 @@ mod tests {
             r#"BOUNDCRS[SOURCECRS[{g}],TARGETCRS[{g}],ABRIDGEDTRANSFORMATION["t",METHOD["NTv2",ID["EPSG",9615]],PARAMETERFILE["Latitude and longitude difference file","ntv2_0.gsb",ID["EPSG",8656]]]]"#
         );
         let Crs::Bound { transformation: t, .. } = read(&ntv2).unwrap().crs else { panic!() };
-        assert_eq!((t.files[0].0.name.as_str(), t.files[0].1.as_str()), ("Latitude and longitude difference file", "ntv2_0.gsb"));
+        assert_eq!((t.files[0].0.name.as_str(), t.files[0].1.as_deref()), ("Latitude and longitude difference file", Some("ntv2_0.gsb")));
     }
 }

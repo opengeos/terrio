@@ -465,7 +465,9 @@ pub(crate) struct BoundTo {
 }
 
 /// What a WKT 1 `GEOGCS`, `GEOCCS` or `PROJCS` gives its PROJ string: read from its tree
-/// ([`Wkt1Input::read`]) or from its model (`model::wkt1_input`), which must agree (#1058 step 6).
+/// ([`Wkt1Input::read`]) or from its model (`model::wkt1_input`), which the PROJ string comes from
+/// (#1058 step 6d-2); the two agree but for the texts `model::proj_input_tests` pins, which the
+/// model reads as PROJ 9.9.0 does.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Wkt1Input {
     pub kind: Wkt1Kind,
