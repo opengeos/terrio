@@ -441,6 +441,34 @@ def test_a_copy_whose_mask_goes_to_a_sidecar_holds_it(tmp_path, monkeypatch, dri
         assert np.array_equal(ds.dataset_mask(), MASK)
 
 
+def test_a_copy_written_in_rows_given_a_mask_for_a_sidecar_gives_its_writer_none(
+    tmp_path, monkeypatch
+):
+    """A GeoTIFF copy written in rows from its source and its mask (`_copy_mask`), then given a
+    mask of its own that goes to a `.msk` sidecar (`GDAL_TIFF_INTERNAL_MASK=NO` by the time it is
+    closed), writes the files a dataset given the same pixels and mask writes: the sidecar holds
+    the dataset's mask, which replaces the source's, and the file none. Its row writer, created
+    without a mask, is given none: it would refuse the source mask's rows."""
+    src = source(tmp_path / "src.tif", mask=MASK)
+    own = np.full((HEIGHT, WIDTH), 255, np.uint8)
+    own[:, :100] = 0
+    monkeypatch.setenv("TERRIO_RIO_IN_MEMORY_LIMIT", "1")
+    profile = dict(PROFILE, count=3, dtype="uint8", compress="deflate")
+    copied, written = str(tmp_path / "copied.tif"), str(tmp_path / "written.tif")
+    with rio.open(src) as ds:
+        with rio.open(copied, "w", **profile, _copy_of=ds, _copy_mask=True) as dst:
+            assert dst._copy_of is ds
+            dst.write_mask(own)
+            monkeypatch.setenv("GDAL_TIFF_INTERNAL_MASK", "NO")
+        with rio.open(written, "w", **profile) as dst:
+            dst.write(ds.read())
+            dst.write_mask(own)
+    for suffix in ("", ".msk"):
+        assert filecmp.cmp(copied + suffix, written + suffix, shallow=False), suffix
+    with rio.open(copied) as ds:
+        assert np.array_equal(ds.dataset_mask(), own)
+
+
 @pytest.mark.parametrize("driver", ["COG", "GTiff"])
 @pytest.mark.parametrize("link", ["symlink", "hardlink"])
 @pytest.mark.parametrize("opened", [False, True])
