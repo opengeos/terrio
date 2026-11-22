@@ -1632,6 +1632,16 @@ impl LazyRaster {
         Ok(dataset)
     }
 
+    /// The samples of a window of some bands, band after band, as [`LazyRaster::read_window`]
+    /// reads them: for a GeoTIFF without the dataset it builds around them
+    /// ([`LazyRaster::read_geotiff_samples`], which applies no mask), else from that dataset.
+    pub(crate) fn read_window_samples(&mut self, window: Window, options: &WindowOptions) -> Result<RasterData> {
+        if matches!(self.inner, Inner::Tiff(_)) {
+            return self.read_geotiff_samples(window, options);
+        }
+        Ok(self.read_window(window, options)?.raster.data)
+    }
+
     /// The samples of a window of some bands of a GeoTIFF, band after band, as
     /// [`LazyRaster::read_window`] reads them, without the dataset it builds around them: no mask
     /// is applied and no CRS resolved, so a build that reads only this way and with

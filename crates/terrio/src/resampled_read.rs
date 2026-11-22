@@ -886,8 +886,9 @@ impl LazyRaster {
         Self::check_resampled_buffer((window.width, window.height), 1, 1, what)?;
         let n = window.width * window.height;
         let all_valid = || -> Result<Vec<u8>> { Ok(fallible::filled(n, 255u8, what)?) };
-        let samples =
-            |source: &mut Self, b: usize| source.read_window(window, &WindowOptions { bands: vec![b], overview }).map(|ds| ds.raster.data);
+        // The dataset's mask is not read below, so a GeoTIFF's samples are read without the dataset
+        // read_window builds around them.
+        let samples = |source: &mut Self, b: usize| source.read_window_samples(window, &WindowOptions { bands: vec![b], overview });
         if self.has_mask() {
             return match self.read_level_mask(window, overview)? {
                 Some(mask) => Ok(mask),

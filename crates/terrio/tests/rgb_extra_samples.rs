@@ -191,6 +191,32 @@ fn an_rgba_geotiffs_band_masks_come_from_its_alpha_band() {
     }
 }
 
+/// A four-band PNG's alpha band masks its other bands the same way (the PNG is read whole, so
+/// the mask path falls back to a window read there).
+#[test]
+fn an_rgba_pngs_band_masks_come_from_its_alpha_band() {
+    let dir = tempfile::tempdir().unwrap();
+    let (cols, rows) = (16, 12);
+    let n = cols * rows;
+    let alpha: Vec<u8> = (0..n).map(|i| if i % 3 == 0 { 0 } else { (i % 250 + 5) as u8 }).collect();
+    let mut data = Vec::with_capacity(4 * n);
+    for b in 0..3 {
+        for i in 0..n {
+            data.push(((i + b * 31) % 251) as u8);
+        }
+    }
+    data.extend_from_slice(&alpha);
+    let cfg = terrio::RasterConfig { cols, rows, bands: 4, data_type: DataType::U8, nodata: -9999.0, ..Default::default() };
+    let ds = terrio::RasterDataset::new(terrio::Raster::from_data_native(cfg, RasterData::U8(data)).unwrap(), false);
+    let path = dir.path().join("rgba.png").to_str().unwrap().to_string();
+    terrio::write_raster_dataset(&ds, &path, &Default::default()).unwrap();
+    let mut lazy = terrio::open_raster_lazy(&path).unwrap();
+    assert_eq!(lazy.alpha_band(), Some(4));
+    for band in [1, 2, 3] {
+        assert_eq!(lazy.read_band_mask(band, Window::full(cols, rows), None).unwrap(), alpha, "band {band}");
+    }
+}
+
 /// A UInt16 alpha band masks the other bands rescaled to 0-255 as GDAL 3.12's
 /// `GDALRescaledAlphaBand` does (1 to 256 give 1, the others times 255 / 65535), and band 1 of a
 /// gray+alpha raster takes band 2 for its mask.
