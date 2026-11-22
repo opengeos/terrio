@@ -181,7 +181,7 @@ fn wkt2_inputs(text: &str) -> Option<(String, String)> {
         return None;
     }
     let tree = crate::wkt2::Wkt2Root::read(&root).ok();
-    let model = read(text).as_ref().and_then(|m| wkt2_root_input(m, &root));
+    let model = read(text).as_ref().and_then(wkt2_root_input);
     Some((format!("{tree:?}"), format!("{model:?}")))
 }
 
@@ -534,6 +534,30 @@ fn bound_wkt2_gives_its_proj_string_the_tree_s_input() {
             true,
         ),
         (bound(&osgb, &format!(r#"GEOGCRS["x",CS[ellipsoidal,2],AXIS["lat",north,{DEG}],AXIS["lon",east,{DEG}]]"#), &pv), true),
+        // A base geographic CRS as the target, which the reader does not convert; a bound CRS as
+        // the target whose source is a WKT 1 `GEOCCS`, which it does not read.
+        (
+            bound(
+                &osgb,
+                &format!(
+                    r#"BASEGEOGCRS["WGS 84",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563,{M}]],PRIMEM["Greenwich",0,{DEG}],ID["EPSG",4326]]"#
+                ),
+                &pv,
+            ),
+            true,
+        ),
+        (
+            bound(
+                &osgb,
+                &bound(
+                    r#"GEOCCS["g",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["metre",1]]"#,
+                    &wgs84,
+                    &pv,
+                ),
+                &pv,
+            ),
+            true,
+        ),
         // An unreadable target that is WGS 84 by its code or its datum's name: the shift is to
         // WGS 84 (`+towgs84`) all the same.
         (
@@ -666,10 +690,7 @@ fn where_the_model_reads_unusual_wkt2_otherwise() {
         other => panic!("not a bound CRS: {other:?}"),
     };
     assert_eq!(
-        (
-            transformation(crate::wkt2::Wkt2Root::read(&root).ok()),
-            transformation(read(&text).as_ref().and_then(|m| wkt2_root_input(m, &root)))
-        ),
+        (transformation(crate::wkt2::Wkt2Root::read(&root).ok()), transformation(read(&text).as_ref().and_then(wkt2_root_input))),
         (vec![], vec![("UNIT", Some(31556925.445))])
     );
 }

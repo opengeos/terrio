@@ -215,6 +215,12 @@ pub(crate) struct Transformation {
     /// WKT 2 reader reads it, without the shift to that target, though PROJ 9.9.0 refuses a bound
     /// CRS whose target has no datum.
     pub target: Option<Box<Crs>>,
+    /// Whether terrio's WKT 2 reader converts its target (`wkt2::handles`: a WKT 2 geographic,
+    /// geodetic, projected or bound CRS), which it takes the shift to.
+    pub target_converted: bool,
+    /// Whether its target is WGS 84, as terrio's WKT 2 reader tells it (`wkt2::bound_to_wgs84`: by
+    /// its code, or its datum's code or name), read or not.
+    pub to_wgs84: bool,
 }
 
 /// The members of a vertical datum ensemble, and its accuracy in metres.
@@ -269,8 +275,11 @@ pub(crate) enum Crs {
         ident: Ident,
         parts: Vec<Crs>,
     },
+    /// A bound CRS: its source CRS, read in its own dialect (a WKT 1 CRS in a WKT 2 `BOUNDCRS`, as
+    /// GDAL writes a `GEOGCS` or `PROJCS`), and its transformation.
     Bound {
         source: Box<Crs>,
+        source_dialect: Dialect,
         transformation: Transformation,
     },
     /// An engineering CRS, or another this model does not describe, by its keyword.
@@ -355,7 +364,7 @@ pub(crate) fn read(text: &str) -> Option<Model> {
 /// which gives its refusal. Its tree is the memoized one ([`crate::parsed::tree`]).
 pub(crate) fn wkt2_to_proj(text: &str) -> crate::Result<wkt1::Converted> {
     let root = crate::parsed::tree(text).ok_or_else(|| crate::Error::Crs("not a WKT definition GDAL reads".into()))?;
-    match read(text).and_then(|m| wkt2_root_input(&m, &root)) {
+    match read(text).and_then(|m| wkt2_root_input(&m)) {
         Some(input) => wkt2::convert_root(&input, &root),
         None => wkt2::to_proj(&root),
     }
@@ -376,10 +385,7 @@ pub(crate) fn wkt1_to_proj(text: &str) -> Option<wkt1::Converted> {
 /// but for the unusual WKT 1 `where_the_model_reads_unusual_wkt1_otherwise` pins, which it reads
 /// as PROJ 9.9.0 does.
 pub(crate) fn wkt1_input(m: &Model, root: &Node) -> Option<wkt1::Wkt1Input> {
-    use wkt1::{Wkt1Input, Wkt1Kind};
-    if m.dialect == Dialect::Wkt2 {
-        return None;
-    }
+    use wkt1::Wkt1Kind;
     // The kind by the root's keyword, as the tree reader takes it.
     let kind = match root.key.to_ascii_uppercase().as_str() {
         "GEOGCS" => Wkt1Kind::Geographic,
@@ -387,6 +393,15 @@ pub(crate) fn wkt1_input(m: &Model, root: &Node) -> Option<wkt1::Wkt1Input> {
         "PROJCS" => Wkt1Kind::Projected,
         _ => return None,
     };
+    wkt1_kind_input(m, kind)
+}
+
+/// A WKT 1 CRS's input to its PROJ string, read from its model, the CRS of a root of `kind`.
+fn wkt1_kind_input(m: &Model, kind: wkt1::Wkt1Kind) -> Option<wkt1::Wkt1Input> {
+    use wkt1::{Wkt1Input, Wkt1Kind};
+    if m.dialect == Dialect::Wkt2 {
+        return None;
+    }
     // ESRI's compound CRS, `GEOGCS[...],VERTCS[...]`: its horizontal CRS, which the tree's root is.
     let crs = match &m.crs {
         Crs::Compound { parts, .. } => parts.first()?,
@@ -487,34 +502,32 @@ pub(crate) fn wkt2_input(m: &Model) -> Option<wkt2::Wkt2Input> {
 }
 
 /// A WKT 2 CRS's input to its PROJ string, a `BOUNDCRS`'s too, read from its model: what
-/// [`wkt2::Wkt2Root::read`] reads from its tree (`root`). The tree gives what the model does not
-/// hold yet: whether a bound CRS's source or target is WKT 1, and its dialect, and whether a
-/// target the model does not read is WGS 84.
-pub(crate) fn wkt2_root_input(m: &Model, root: &Node) -> Option<wkt2::Wkt2Root> {
+/// [`wkt2::Wkt2Root::read`] reads from its tree.
+pub(crate) fn wkt2_root_input(m: &Model) -> Option<wkt2::Wkt2Root> {
     if m.dialect != Dialect::Wkt2 {
         return None;
     }
-    root_input(&m.crs, root)
+    root_input(&m.crs)
 }
 
-fn root_input(crs: &Crs, root: &Node) -> Option<wkt2::Wkt2Root> {
+fn root_input(crs: &Crs) -> Option<wkt2::Wkt2Root> {
     use wkt2::{Wkt2Bound, Wkt2Root, Wkt2Source, Wkt2Transformation, Wkt2TransformationParam};
-    let Crs::Bound { source, transformation: t } = crs else { return Some(Wkt2Root::Crs(wkt2_crs_input(crs)?)) };
-    let node = |key: &str| wkt2::first_node(root.child(key)?);
-    // A WKT 1 source CRS (GDAL's), read without the `TOWGS84` of its datum, as the tree reads it.
-    let source_node = node("SOURCECRS")?;
-    let source = if source_node.key.eq_ignore_ascii_case("GEOGCS") || source_node.key.eq_ignore_ascii_case("PROJCS") {
-        let m = Model {
-            crs: (**source).clone(),
-            dialect: dialect(&source_node.to_wkt(), source_node),
-            extensions: Vec::new(),
-            height_added: false,
+    let Crs::Bound { source, source_dialect, transformation: t } = crs else { return Some(Wkt2Root::Crs(wkt2_crs_input(crs)?)) };
+    // A WKT 1 source CRS (GDAL's `GEOGCS` or `PROJCS`), read without the `TOWGS84` of its datum,
+    // as the tree reads it.
+    let source = if *source_dialect == Dialect::Wkt2 {
+        Wkt2Source::Wkt2(root_input(source)?)
+    } else {
+        // Only a `GEOGCS` or `PROJCS`, as the WKT 2 reader takes a WKT 1 source.
+        let kind = match &**source {
+            Crs::Geodetic { cs, .. } if cs.kind != CsKind::Cartesian => wkt1::Wkt1Kind::Geographic,
+            Crs::Projected { .. } => wkt1::Wkt1Kind::Projected,
+            _ => return None,
         };
-        let mut input = wkt1_input(&m, source_node)?;
+        let m = Model { crs: (**source).clone(), dialect: *source_dialect, extensions: Vec::new(), height_added: false };
+        let mut input = wkt1_kind_input(&m, kind)?;
         input.towgs84 = None;
         Wkt2Source::Wkt1(input)
-    } else {
-        Wkt2Source::Wkt2(root_input(source, source_node)?)
     };
     let transformation = Wkt2Transformation {
         method: t.method.name.clone(),
@@ -531,33 +544,9 @@ fn root_input(crs: &Crs, root: &Node) -> Option<wkt2::Wkt2Root> {
             .collect(),
         files: t.files.len(),
     };
-    // WGS 84 by its code, or by its datum's code or name (a geographic CRS's own datum).
-    let target = t.target.as_deref();
-    let datum = match target {
-        Some(Crs::Geodetic { datum, .. }) => Some(datum.ident()),
-        _ => None,
-    };
-    let ident = match target {
-        Some(
-            Crs::Geodetic { ident, .. }
-            | Crs::Projected { ident, .. }
-            | Crs::DerivedGeographic { ident, .. }
-            | Crs::Compound { ident, .. }
-            | Crs::Vertical { ident, .. }
-            | Crs::Other { ident, .. },
-        ) => Some(ident),
-        Some(Crs::Bound { .. }) | None => None,
-    };
-    // A target the model does not read, which the reader reads the bound CRS without: whether it
-    // is WGS 84 by the reader's rule, on its tree (`wkt2::bound_to_wgs84`).
-    let to_wgs84 = if target.is_some() {
-        matches!(ident.and_then(first_epsg), Some(4326 | 4979))
-            || datum.is_some_and(|d| first_epsg(d) == Some(6326) || wkt1::norm(&d.name).starts_with("worldgeodeticsystem1984"))
-    } else {
-        wkt2::bound_to_wgs84(root)
-    };
-    let target = node("TARGETCRS").filter(|n| wkt2::handles(n)).zip(target).and_then(|(n, t)| root_input(t, n));
-    Some(Wkt2Root::Bound(Box::new(Wkt2Bound { source, transformation, to_wgs84, target })))
+    // The target's input when the WKT 2 reader converts it.
+    let target = t.target.as_deref().filter(|_| t.target_converted).and_then(root_input);
+    Some(Wkt2Root::Bound(Box::new(Wkt2Bound { source, transformation, to_wgs84: t.to_wgs84, target })))
 }
 
 /// The input of a WKT 2 CRS that is not a bound one.
@@ -1174,13 +1163,16 @@ fn vertical(n: &Node, d: Dialect) -> Option<Crs> {
 
 /// A WKT 2 `BOUNDCRS`: its source and target CRSs and its abridged transformation.
 fn bound(n: &Node, d: Dialect) -> Option<Crs> {
+    // A WKT 1 CRS inside a WKT 2 `BOUNDCRS` is read in its own dialect.
     let inner = |key: &str| {
         let c = crate::wkt2::first_node(n.child(key)?)?;
-        // A WKT 1 CRS inside a WKT 2 `BOUNDCRS` is read in its own dialect.
         let d = if WKT1_ROOTS.iter().any(|k| c.key.eq_ignore_ascii_case(k)) { dialect(&c.to_wkt(), c) } else { d };
-        crs(c, d)
+        Some((crs(c, d), d))
     };
-    let (source, target) = (inner("SOURCECRS")?, inner("TARGETCRS"));
+    let (source, source_dialect) = inner("SOURCECRS")?;
+    let source = source?;
+    let target = inner("TARGETCRS").and_then(|(c, _)| c);
+    let target_converted = n.child("TARGETCRS").and_then(crate::wkt2::first_node).is_some_and(crate::wkt2::handles);
     let t = n.child("ABRIDGEDTRANSFORMATION")?;
     let transformation = Transformation {
         ident: ident(t),
@@ -1194,8 +1186,10 @@ fn bound(n: &Node, d: Dialect) -> Option<Crs> {
             })
             .collect(),
         target: target.map(Box::new),
+        target_converted,
+        to_wgs84: crate::wkt2::bound_to_wgs84(n),
     };
-    Some(Crs::Bound { source: Box::new(source), transformation })
+    Some(Crs::Bound { source: Box::new(source), source_dialect, transformation })
 }
 
 #[cfg(test)]
@@ -1256,7 +1250,7 @@ mod tests {
             assert_eq!(m.dialect, Dialect::Wkt1Gdal);
         }
         let b = read(r#"BOUNDCRS[SOURCECRS[GEOGCS["OSGB 1936",DATUM["OSGB_1936",SPHEROID["Airy 1830",6377563.396,299.3249646]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]],TARGETCRS[GEOGCRS["WGS 84",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],CS[ellipsoidal,2],AXIS["lat",north],AXIS["lon",east],ANGLEUNIT["degree",0.0174532925199433],ID["EPSG",4326]]],ABRIDGEDTRANSFORMATION["OSGB36 to WGS 84",METHOD["Position Vector transformation (geog2D domain)",ID["EPSG",9606]],PARAMETER["X-axis translation",446.448,LENGTHUNIT["metre",1],ID["EPSG",8605]]]]"#).unwrap();
-        let Crs::Bound { source, transformation } = &b.crs else { panic!("{b:?}") };
+        let Crs::Bound { source, transformation, .. } = &b.crs else { panic!("{b:?}") };
         assert!(matches!(**source, Crs::Geodetic { ref cs, .. } if cs.axes[0].direction == "east"));
         assert!(matches!(transformation.target.as_deref(), Some(Crs::Geodetic { ident, .. }) if ident.ids[0].code == "4326"));
         assert_eq!((transformation.method.ids[0].code.as_str(), transformation.params.len()), ("9606", 1));
