@@ -244,9 +244,10 @@ fn conversion_json(c: &Conversion) -> Value {
 fn render(crs: &Crs) -> Value {
     match crs {
         Crs::Geodetic { ident, datum, cs, frame_epoch, .. } => geodetic_json(ident, datum, cs, *frame_epoch),
-        Crs::Projected { ident, base, conversion, cs } => {
+        Crs::Projected { ident, base, conversion, cs } | Crs::DerivedGeographic { ident, base, conversion, cs, .. } => {
             let mut o = Map::new();
-            o.insert("type".into(), json!("ProjectedCRS"));
+            let kind = if matches!(crs, Crs::Projected { .. }) { "ProjectedCRS" } else { "DerivedGeographicCRS" };
+            o.insert("type".into(), json!(kind));
             o.insert("name".into(), json!(ident.name));
             o.insert("base_crs".into(), render(base));
             o.insert("conversion".into(), conversion_json(conversion));
@@ -291,14 +292,16 @@ fn render(crs: &Crs) -> Value {
         Crs::Bound { source, transformation: t } => {
             // An abridged transformation's scale difference in unity is a multiplier
             // (`1.000007`), which PROJ 9.9.0 reads as the difference (7 ppm).
+            // A parameter without its value (which PROJ refuses) left out.
             let params = t
                 .params
                 .iter()
+                .filter_map(|p| Some(Param { ident: p.ident.clone(), value: p.value?, unit: p.unit.clone() }))
                 .map(|p| {
                     let scale = p.ident.ids.iter().any(|i| i.authority.eq_ignore_ascii_case("EPSG") && i.code == "8611")
                         || p.ident.name.eq_ignore_ascii_case("Scale difference");
                     let unity = p.unit.as_ref().is_none_or(|u| u.kind == UnitKind::Scale && u.factor == 1.0);
-                    if scale && unity { Param { value: p.value - 1.0, unit: Some(Unit::unity()), ..p.clone() } } else { p.clone() }
+                    if scale && unity { Param { value: p.value - 1.0, unit: Some(Unit::unity()), ..p } } else { p }
                 })
                 .collect();
             let c = Conversion { ident: t.ident.clone(), method: t.method.clone(), params, angular: Unit::degree(), linear: Unit::metre() };
@@ -315,7 +318,7 @@ fn render(crs: &Crs) -> Value {
                     list.push(f);
                 }
             }
-            json!({"type": "BoundCRS", "source_crs": render(source), "target_crs": render(&t.target), "transformation": tr})
+            json!({"type": "BoundCRS", "source_crs": render(source), "target_crs": t.target.as_deref().map_or(Value::Null, render), "transformation": tr})
         }
         Crs::Other { ident, .. } => {
             let mut o = Map::new();
@@ -376,7 +379,7 @@ fn database_axes(crs: &Crs, prefix: &str, esri: bool, out: &mut Vec<String>) {
         Crs::Geodetic { cs, ident, .. } if !cs.explicit && cs.kind == CsKind::Ellipsoidal && (esri || !ident.ids.is_empty()) => {
             out.push(at("coordinate_system"))
         }
-        Crs::Projected { base, .. } => database_axes(base, &at("base_crs"), esri, out),
+        Crs::Projected { base, .. } | Crs::DerivedGeographic { base, .. } => database_axes(base, &at("base_crs"), esri, out),
         Crs::Compound { parts, .. } => {
             for (i, p) in parts.iter().enumerate() {
                 database_axes(p, &format!("{}[{i}]", at("components")), esri, out);

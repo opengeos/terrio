@@ -1873,7 +1873,23 @@ WKT 1 CRS's PROJ string the same input as the WKT 1 reader reads from its tree
 (`model::wkt1_input` against `wkt1::Wkt1Input::read`). It covers every WKT 1
 text of the corpus, and malformed and unusual input the corpus lacks: refusals,
 grads and Paris, ESRI's compound CRS, a geocentric CRS, parameters without a name
-or a number. It is removed once the reader takes its input from the model.
+or a number. It does the same for WKT 2 geographic, geocentric and projected CRSs
+(`model::wkt2_input` against `wkt2::Wkt2Input::read`), over every such WKT 2 text of
+the corpus and unusual input: refusals, planetary and polar axes, geocentric CSs,
+PROJ's own methods, CSs of another dimension than their axes. For derived
+geographic CRSs (rotated poles), which the corpus lacks, it compares PROJ 9.9.0's own
+texts of the three conventions (`PROJ ob_tran`, netCDF CF, GRIB) in WKT 2:2019 and
+2015, simplified or not, and unusual input. For bound CRSs, which the corpus lacks too
+(`model::wkt2_root_input` against `wkt2::Wkt2Root::read`), it compares each kind of
+Helmert transformation, a grid's, WGS 84 and other targets, GDAL's WKT 1 and derived
+source CRSs, and refusals. Malformed texts that PROJ 9.9.0
+refuses or reads as the tree does are read by the model as the tree reads them, so that
+their PROJ string does not change (`malformed_wkt1_the_model_reads_as_the_tree`,
+`malformed_wkt2_the_model_reads_as_the_tree`, step 6d-1). The texts the model still reads
+otherwise, as PROJ reads them, are pinned in `where_the_model_reads_unusual_wkt1_otherwise`
+and `where_the_model_reads_unusual_wkt2_otherwise`, each with PROJ 9.9.0's reading: their
+PROJ string changes to PROJ's in step 6d-2. The file is removed once the readers take their
+input from the model.
 
 ## PROJJSON parsing (#270)
 

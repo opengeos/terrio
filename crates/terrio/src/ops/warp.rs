@@ -1899,7 +1899,28 @@ fn warp_data_masked(
     let mut ds = output_dataset(grid, out, bands, p.dst_nodata, &p.dst_srs)?;
     ds.raster.metadata = p.srcs[0].ds.raster.metadata.iter().filter(|(k, _)| k == "AREA_OR_POINT").cloned().collect();
     ds.band_nodata = p.dst_nodata_all.clone();
+    inherit_color_table(&mut ds, p.srcs[0].ds, o);
     Ok(ds)
+}
+
+/// Gives `out` the first source's color table and band 1 the `Palette` interpretation, as
+/// `gdalwarp` copies the table to the output's first band (GDAL 3.12). A GeoTIFF palette is a
+/// single Byte or UInt16 band, so another output keeps none. With a resampling other than nearest
+/// or mode, the palette's indices are mixed: GDAL's warning for that is given.
+fn inherit_color_table(out: &mut RasterDataset, src: &RasterDataset, o: &WarpOptions) {
+    if src.color_table.is_empty() || out.raster.bands != 1 || !matches!(out.raster.data_type, DataType::U8 | DataType::U16) {
+        return;
+    }
+    if !matches!(o.resampling, Resampling::Nearest | Resampling::Mode) {
+        crate::warnings::warn(
+            "the source has a color table, which will likely lead to bad results with a resampling other than nearest or mode".into(),
+        );
+    }
+    out.color_table = src.color_table.clone();
+    if out.band_metadata.is_empty() {
+        out.band_metadata.push(Default::default());
+    }
+    out.band_metadata[0].color_interp = Some("Palette".into());
 }
 
 /// Metadata for a window-readable warp source. Pixels may remain unloaded.
@@ -2124,6 +2145,10 @@ fn warp_reader_selected(
     let mut ds = output_dataset(grid, out, bands, p.dst_nodata, &p.dst_srs)?;
     ds.raster.metadata = p.srcs[0].ds.raster.metadata.iter().filter(|(k, _)| k == "AREA_OR_POINT").cloned().collect();
     ds.band_nodata = p.dst_nodata_all.clone();
+    // The table belongs to the source's first band: another selected band keeps none.
+    if selection.is_none_or(|bands| bands[0] == 1) {
+        inherit_color_table(&mut ds, p.srcs[0].ds, o);
+    }
     Ok(ds)
 }
 
@@ -2327,6 +2352,7 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
     let mut header = super::raster_header(stored, out_type, bands, p.dst_nodata, &p.dst_srs)?;
     header.raster.metadata = p.srcs[0].ds.raster.metadata.iter().filter(|(k, _)| k == "AREA_OR_POINT").cloned().collect();
     header.band_nodata = p.dst_nodata_all.clone();
+    inherit_color_table(&mut header, p.srcs[0].ds, o);
     if let Some(gt) = gt {
         header.set_geo_transform(gt);
     }
@@ -2512,11 +2538,14 @@ pub fn with_file_gcps<'a>(o: &'a WarpOptions, path: &str, ds: &RasterDataset) ->
     Ok(std::borrow::Cow::Owned(WarpOptions { gcps, ..o.clone() }))
 }
 
-/// Whether the destination grid is the source grid shifted by whole pixels.
+/// Whether the destination grid is the source grid shifted by whole pixels. As GDAL 3.12's
+/// `GDALTransformIsTranslationOnPixelBoundaries()`, a grid rotated from the source is not.
 fn is_pixel_translation(src: &[f64; 6], dst: &[f64; 6]) -> bool {
     let near_int = |v: f64| (v - v.round()).abs() < 1e-8;
     src[2] == 0.0
         && src[4] == 0.0
+        && dst[2] == 0.0
+        && dst[4] == 0.0
         && (src[1] - dst[1]).abs() < 1e-12 * src[1].abs()
         && (src[5] - dst[5]).abs() < 1e-12 * src[5].abs()
         && near_int((dst[0] - src[0]) / src[1])
@@ -6273,6 +6302,16 @@ impl RegionWarp {
         self
     }
 
+    /// Re-targets the warp to another destination grid georeferenced by `gt`, keeping the source
+    /// and its transformer, as GDAL 3.12's `GDALSetGenImgProjTransformerDstGeoTransform()`
+    /// re-targets one:
+    /// the source windows ([`RegionWarp::source_window`]) and warps ([`RegionWarp::warp`]) of
+    /// regions of the new grid come out as a [`RegionWarp::new`] made with `gt` gives them.
+    pub fn set_dst_gt(&mut self, gt: [f64; 6]) {
+        self.t.set_dst_gt(gt);
+        self.translation = self.t.src_gcp.is_none() && self.t.ct.is_none() && is_pixel_translation(&self.t.src_gt, &gt);
+    }
+
     /// A warp of the bands of a source of `src_size` pixels, georeferenced by `src_gt` in
     /// `src_srs`, into a grid georeferenced by `dst_gt` in `dst_srs`. `src_nodata` has one value
     /// (or `None`) per band.
@@ -6722,6 +6761,61 @@ mod tests {
         let out = crate::open_raster(output.to_str().unwrap()).unwrap();
         assert!(out.raster.metadata.iter().any(|(k, v)| k == "AREA_OR_POINT" && v == "Point"));
         assert!(!out.raster.metadata.iter().any(|(k, _)| k == "STATISTICS_MINIMUM"));
+    }
+
+    /// A paletted source (ESA WorldCover's layout, #1189) keeps its color table through every warp
+    /// path, as `gdalwarp` copies it; an output type a GeoTIFF palette cannot hold drops it.
+    #[test]
+    fn color_table_survives_memory_lazy_and_streamed_warp() {
+        let mut source = typed_raster(DataType::U8, 8, 8, [-1.5, 0.05, 0.0, 52.5, 0.0, -0.05], 4326, |x, y| ((x + y) % 3 + 1) as f64);
+        let table = vec![[0, 0, 0, 255], [0, 100, 0, 255], [255, 187, 34, 255], [250, 0, 0, 255]];
+        source.color_table = table.clone();
+        let options = WarpOptions { dst_srs: Some(SpatialRef::parse("EPSG:27700").unwrap()), ..Default::default() };
+        let out = warp(&[&source], &options).unwrap();
+        assert_eq!(out.color_table, table);
+        assert_eq!(out.band_color_interp(1), "Palette");
+        let float = WarpOptions { output_type: Some(DataType::F32), ..options.clone() };
+        assert!(warp(&[&source], &float).unwrap().color_table.is_empty());
+        // Two bands keep no table: a GeoTIFF palette is one band, so `inherit_color_table` skips them.
+        let cfg = RasterConfig {
+            cols: 8,
+            rows: 8,
+            bands: 2,
+            x_min: -1.5,
+            y_min: 52.1,
+            cell_size: 0.05,
+            cell_size_y: Some(0.05),
+            nodata: -9999.0,
+            data_type: DataType::U8,
+            crs: wbraster::CrsInfo::from_epsg(4326),
+            metadata: vec![],
+        };
+        let mut two_bands = RasterDataset::new(Raster::from_data(cfg, vec![1.0; 128]).unwrap(), false);
+        two_bands.color_table = table.clone();
+        assert!(warp(&[&two_bands], &options).unwrap().color_table.is_empty());
+        // A selected band other than the first does not take the first band's table.
+        let mut two_lazy = crate::LazyRaster::from(two_bands);
+        let first = warp_lazy_bands_working(&mut two_lazy, &[1], &options, None, false, None, None).unwrap();
+        assert_eq!(first.color_table, table);
+        let second = warp_lazy_bands_working(&mut two_lazy, &[2], &options, None, false, None, None).unwrap();
+        assert!(second.color_table.is_empty());
+        let _ = crate::warnings::take();
+        let bilinear = WarpOptions { resampling: Resampling::Bilinear, ..options.clone() };
+        assert_eq!(warp(&[&source], &bilinear).unwrap().color_table, table);
+        assert!(crate::warnings::take().iter().any(|w| w.contains("color table")));
+
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.tif");
+        let output = dir.path().join("out.tif");
+        crate::write_raster_dataset(&source, input.to_str().unwrap(), &Default::default()).unwrap();
+        let mut lazy = crate::open_raster_lazy(input.to_str().unwrap()).unwrap();
+        // A GeoTIFF ColorMap holds 2^bits entries: the reopened table is the source's, padded to 256.
+        let lazy_table = warp_lazy(&mut lazy, &options).unwrap().color_table;
+        assert_eq!((lazy_table.len(), &lazy_table[..4]), (256, &table[..]));
+        warp_to_path(&[input.to_str().unwrap().into()], &options, output.to_str().unwrap(), &Default::default()).unwrap();
+        let out = crate::open_raster(output.to_str().unwrap()).unwrap();
+        assert_eq!((out.color_table.len(), &out.color_table[..4]), (256, &table[..]));
+        assert_eq!(out.band_color_interp(1), "Palette");
     }
 
     fn raster(cols: usize, rows: usize, gt: [f64; 6], epsg: u32, f: impl Fn(usize, usize) -> f64) -> RasterDataset {
@@ -10140,6 +10234,68 @@ mod tests {
             assert_eq!(out.to_f64_vec(), reference.to_f64_vec());
             assert_eq!(valid, reference_valid);
         }
+    }
+
+    /// Re-targeting one `RegionWarp` to another grid (`set_dst_gt`, as
+    /// `GDALSetGenImgProjTransformerDstGeoTransform()` re-targets a transformer) gives the same
+    /// source windows and warps as a fresh `RegionWarp` for each grid: a reprojected grid, the
+    /// source's own grid, one shifted from it by whole pixels (a pixel translation), and
+    /// re-targets between a pixel translation and a grid shifted by half a pixel (not one), which
+    /// a stale translation flag would warp with nearest neighbour and other source windows.
+    #[test]
+    fn region_warp_set_dst_gt_warps_as_a_fresh_warp() {
+        let (geographic, web) = (SpatialRef::from_epsg(4326).unwrap(), SpatialRef::from_epsg(3857).unwrap());
+        let src_gt = [-10.0, 0.01, 0.0, 50.0, 0.0, -0.01];
+        let size = (20, 20);
+        let value = |c: usize, r: usize| ((c * 3 + r * 17) % 251) as f64 + 0.5;
+        let src = raster(size.0, size.1, src_gt, 4326, value);
+        let (web_gt, web_w, web_h, _) = suggested_output(&src, &web).unwrap();
+        let shifted = [-9.98, 0.01, 0.0, 50.02, 0.0, -0.01];
+        let web_shifted = [web_gt[0] + web_gt[1], web_gt[1], 0.0, web_gt[3] + web_gt[5], 0.0, web_gt[5]];
+        // Each case re-targets a warp made for another grid (`initial`) to `gt`, and compares with
+        // a fresh warp for `gt`.
+        let half = [-9.975, 0.01, 0.0, 50.025, 0.0, -0.01];
+        let check_with =
+            |resampling: Resampling, dst_srs: &SpatialRef, gt: [f64; 6], initial: [f64; 6], regions: &[(usize, usize, usize, usize)]| {
+                let warp = |dst_gt: [f64; 6]| {
+                    RegionWarp::new(size, src_gt, &geographic, dst_srs, dst_gt, resampling, 0.125, DataType::F64, vec![None], Some(0.0))
+                        .unwrap()
+                        .with_grid_invariance(false)
+                };
+                let mut reused = warp(initial);
+                reused.set_dst_gt(gt);
+                let fresh = warp(gt);
+                assert_eq!(reused.translation, fresh.translation, "gt {gt:?}");
+                for region in regions {
+                    assert_eq!(reused.source_window(*region), fresh.source_window(*region), "region {region:?} gt {gt:?}");
+                    let Some((sx, sy, sw, sh)) = reused.source_window(*region) else { continue };
+                    if sw == 0 || sh == 0 {
+                        continue;
+                    }
+                    let data = RasterData::F64((0..sh).flat_map(|r| (0..sw).map(move |c| value(sx + c, sy + r))).collect());
+                    let (a, va) = reused.warp(*region, (sx, sy, sw, sh), &data, None, 0.0, false).unwrap();
+                    let (b, vb) = fresh.warp(*region, (sx, sy, sw, sh), &data, None, 0.0, false).unwrap();
+                    assert_eq!(a.to_f64_vec(), b.to_f64_vec(), "region {region:?} gt {gt:?}");
+                    assert_eq!(va, vb, "region {region:?} gt {gt:?}");
+                }
+            };
+        let check = |dst_srs: &SpatialRef, gt, initial, regions: &[_]| check_with(Resampling::Nearest, dst_srs, gt, initial, regions);
+        check(&geographic, src_gt, shifted, &[(0, 0, 20, 20), (5, 5, 10, 10)]);
+        check(&geographic, shifted, src_gt, &[(0, 0, 20, 20), (2, 2, 8, 8)]);
+        check(&web, web_gt, web_shifted, &[(0, 0, web_w.min(16), web_h.min(16)), (web_w / 2, web_h / 2, 8, 8)]);
+        check_with(Resampling::Bilinear, &geographic, half, shifted, &[(0, 0, 20, 20), (3, 3, 8, 8)]);
+        check_with(Resampling::Bilinear, &geographic, shifted, half, &[(0, 0, 20, 20), (3, 3, 8, 8)]);
+    }
+
+    /// A destination grid rotated from an unrotated source is not a pixel translation, even with
+    /// the source's pixel sizes and a whole-pixel origin, as in GDAL 3.12's
+    /// `GDALTransformIsTranslationOnPixelBoundaries()`.
+    #[test]
+    fn rotated_destination_is_not_a_pixel_translation() {
+        let src = [100.0, 1.0, 0.0, 200.0, 0.0, -1.0];
+        assert!(is_pixel_translation(&src, &[103.0, 1.0, 0.0, 198.0, 0.0, -1.0]));
+        assert!(!is_pixel_translation(&src, &[103.0, 1.0, 0.25, 198.0, 0.0, -1.0]));
+        assert!(!is_pixel_translation(&src, &[103.0, 1.0, 0.0, 198.0, 0.25, -1.0]));
     }
 
     /// The same warps' values, pinned: checksums of terrio's results in one chunk and in many
