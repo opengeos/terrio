@@ -980,11 +980,30 @@ fn the_proj_string_is_read_as_proj_reads_it() {
             ob_tran(""),
             ob_tran(" +to_deg=0.9"),
         ),
+        // A projected CRS's `GEOGCS` before its `BASEGEOGCRS`: the first, as PROJ takes it (its
+        // International 1924, `+ellps=intl`).
+        (
+            format!(
+                r#"PROJCRS["p",GEOGCS["i",DATUM["i",SPHEROID["International 1924",6378388,297]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],{}"#,
+                projected(DEG).strip_prefix(r#"PROJCRS["p","#).unwrap()
+            ),
+            tm("9"),
+            tm("9").replace("+a=6378137 +rf=298.257223563", "+a=6378388 +rf=297"),
+        ),
+        // WKT 1's `PROJECTION` for a `CONVERSION`'s method: read, as PROJ reads it (`+lon_0=9`).
+        (
+            projected(DEG).replace(r#"METHOD["Transverse Mercator",ID["EPSG",9807]]"#, r#"PROJECTION["Transverse Mercator"]"#),
+            "refused: coordinate reference system: unsupported WKT 2: a CONVERSION without its METHOD".to_string(),
+            tm("9"),
+        ),
     ];
     for (text, tree, model) in &cases {
         let root = crate::parsed::tree(text).unwrap();
         let (old, new) = if crate::wkt2::handles(&root) {
-            (crate::wkt2::to_proj(&root).unwrap().proj, crate::model::wkt2_to_proj(text).unwrap().proj)
+            (
+                crate::wkt2::to_proj(&root).map_or_else(|e| format!("refused: {e}"), |c| c.proj),
+                crate::model::wkt2_to_proj(text).unwrap().proj,
+            )
         } else {
             (crate::wkt1::to_proj(&root).unwrap().proj, crate::model::wkt1_to_proj(text).unwrap().proj)
         };
