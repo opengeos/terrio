@@ -185,8 +185,43 @@ fn an_rgba_geotiffs_band_masks_come_from_its_alpha_band() {
         let mut lazy = terrio::open_raster_lazy(&path).unwrap();
         assert_eq!(lazy.alpha_band(), with_alpha.then_some(bands), "{bands} bands");
         assert_eq!(lazy.read_band_mask(1, Window::full(COLS, ROWS), None).unwrap(), vec![255; COLS * ROWS], "{bands} bands");
-        // An all-valid mask is still read from a window and a level of the raster.
+        // Windows past the edge and overviews the raster does not have are errors, all-valid or not.
         assert!(lazy.read_band_mask(1, Window { x: COLS - 2, y: 0, width: 3, height: 1 }, None).is_err(), "{bands} bands");
         assert!(lazy.read_band_mask(1, Window::full(1, 1), Some(lazy.overviews().len())).is_err(), "{bands} bands");
     }
+}
+
+/// A UInt16 alpha band masks the other bands rescaled to 0-255 as GDAL 3.12's
+/// `GDALRescaledAlphaBand` does (1 to 256 give 1, the others times 255 / 65535), and band 1 of a
+/// gray+alpha raster takes band 2 for its mask.
+#[test]
+fn uint16_and_gray_alpha_band_masks() {
+    let dir = tempfile::tempdir().unwrap();
+    let (cols, rows) = (5, 2);
+    let n = cols * rows;
+    let write_with = |bands: usize, data: RasterData, photometric: &str, name: &str| {
+        let cfg = terrio::RasterConfig { cols, rows, bands, data_type: data.data_type(), nodata: -9999.0, ..Default::default() };
+        let ds = terrio::RasterDataset::new(terrio::Raster::from_data_native(cfg, data).unwrap(), false);
+        let path = dir.path().join(name).to_str().unwrap().to_string();
+        let co = vec![("PHOTOMETRIC".to_string(), photometric.to_string()), ("ALPHA".to_string(), "YES".to_string())];
+        terrio::write_raster_dataset(&ds, &path, &RasterWriteOptions { creation_options: co, ..Default::default() }).unwrap();
+        terrio::open_raster_lazy(&path).unwrap()
+    };
+    let alpha16: Vec<u16> = [0, 1, 256, 257, 65535].repeat(2);
+    let mut rgba16: Vec<u16> = (0..3 * n).map(|i| i as u16 * 100 + 1).collect();
+    rgba16.extend_from_slice(&alpha16);
+    let mut lazy = write_with(4, RasterData::U16(rgba16), "RGB", "rgba16.tif");
+    assert_eq!(lazy.alpha_band(), Some(4));
+    let expected: Vec<u8> = [0, 1, 1, 1, 255].repeat(2);
+    for band in [1, 2, 3] {
+        assert_eq!(lazy.read_band_mask(band, Window::full(cols, rows), None).unwrap(), expected, "band {band}");
+    }
+
+    let alpha8: Vec<u8> = (0..n).map(|i| (i * 28) as u8).collect();
+    let mut gray_alpha: Vec<u8> = (0..n).map(|i| i as u8 + 1).collect();
+    gray_alpha.extend_from_slice(&alpha8);
+    let mut lazy = write_with(2, RasterData::U8(gray_alpha), "MINISBLACK", "gray_alpha.tif");
+    assert_eq!(lazy.alpha_band(), Some(2));
+    assert_eq!(lazy.read_band_mask(1, Window::full(cols, rows), None).unwrap(), alpha8);
+    assert_eq!(lazy.read_band_mask(2, Window::full(cols, rows), None).unwrap(), vec![255; n]);
 }
