@@ -490,9 +490,10 @@ impl Handle {
     /// own where the identity of a file is not known (other systems than Unix), and for a file
     /// changed less than [`SETTLE`] before the reader is opened: a second change within the same
     /// tick of its timestamps would keep its version, and a reader opened after it would be given
-    /// the bands its readers decoded before it.
-    pub(crate) fn of_file(metadata: &std::fs::Metadata, variant: u64) -> Self {
-        Self::of_version(FileVersion::of(metadata, variant).filter(|v| v.settled(std::time::SystemTime::now())))
+    /// the bands its readers decoded before it. `opened` is captured before reading metadata,
+    /// so time spent indexing cannot make a recently changed file eligible for sharing.
+    pub(crate) fn of_file(metadata: &std::fs::Metadata, variant: u64, opened: std::time::SystemTime) -> Self {
+        Self::of_version(FileVersion::of(metadata, variant).filter(|v| v.settled(opened)))
     }
 
     /// The handle the open readers of `version` share, or one of the reader's own without one.
@@ -743,7 +744,9 @@ pub(crate) mod tests {
         let path = dir.path().join("f");
         std::fs::write(&path, b"one").unwrap();
         let metadata = || std::fs::metadata(&path).unwrap();
-        let (a, b) = (Handle::of_file(&metadata(), 0), Handle::of_file(&metadata(), 0));
+        let m = metadata();
+        let now = UNIX_EPOCH + Duration::new(m.ctime() as u64, m.ctime_nsec() as u32);
+        let (a, b) = (Handle::of_file(&m, 0, now), Handle::of_file(&m, 0, now));
         assert_ne!(a.id(), b.id(), "written just now");
         let file = std::fs::File::options().write(true).open(&path).unwrap();
         file.set_modified(SystemTime::now() - Duration::from_secs(3600)).unwrap();
@@ -752,6 +755,9 @@ pub(crate) mod tests {
         let version = FileVersion::of(&m, 0).unwrap();
         assert!(!version.settled(changed + SETTLE - Duration::from_nanos(1)), "modified an hour back, changed now");
         assert!(version.settled(changed + SETTLE));
+        let (a, b) = (Handle::of_file(&m, 0, changed + SETTLE), Handle::of_file(&m, 0, changed + SETTLE));
+        assert_eq!(a.id(), b.id(), "settled exactly at the boundary");
+        assert_ne!(Handle::of_file(&m, 0, changed + SETTLE - Duration::from_nanos(1)).id(), a.id());
     }
 
     #[test]

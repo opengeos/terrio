@@ -101,7 +101,7 @@ impl Scan {
     /// message ends, as a rule.
     fn find(&mut self, mut pos: usize) -> Result<Option<usize>> {
         let mut n = 16;
-        while pos + 4 <= self.len {
+        while self.len.saturating_sub(pos) >= 4 {
             let bytes = self.read(pos, n.min(self.len - pos))?;
             if let Some(off) = bytes.windows(4).position(|w| w == b"GRIB") {
                 return Ok(Some(pos + off));
@@ -169,6 +169,7 @@ pub(super) fn open(local: crate::vfs::LocalPath) -> Result<crate::LazyRaster> {
 
 /// The dataset of a local GRIB file, and the source that reads its bands: see [`open`].
 fn source(local: crate::vfs::LocalPath) -> Result<(crate::RasterDataset, Source)> {
+    let opened = std::time::SystemTime::now();
     let mut file = std::fs::File::open(local.path())?;
     let metadata = file.metadata()?;
     if !metadata.is_file() || metadata.len() == 0 {
@@ -209,7 +210,7 @@ fn source(local: crate::vfs::LocalPath) -> Result<(crate::RasterDataset, Source)
         Nodata::InMessage(start, n) => grib1_nodata(&f.read(start, n)?, len, normalize),
     });
     let (ds, split) = header_with(first_grid, index.len(), nodata, band_metadata.into_iter(), len)?;
-    let handle = crate::block_cache::Handle::of_file(&metadata, normalize as u64);
+    let handle = crate::block_cache::Handle::of_file(&metadata, normalize as u64, opened);
     Ok(Source::new(ds, split, normalize, Store::File(f, index), handle))
 }
 
@@ -222,6 +223,17 @@ mod tests {
     /// The bytes local GRIB files read so far on this thread.
     fn bytes_read() -> u64 {
         BYTES_READ.with(|c| c.get())
+    }
+
+    /// End-of-file offsets near the platform limit stop without overflowing or reading.
+    #[test]
+    fn signature_scan_stops_with_fewer_than_four_bytes_remaining() {
+        let file = tempfile::tempfile().unwrap();
+        let cursor = Cursor(crate::geotiff::FileCursor::new(file));
+        let mut scan = Scan { reader: crate::vfs::NearSeek::with_capacity(SCAN_BUFFER, cursor), len: usize::MAX };
+        for remaining in 0..4 {
+            assert_eq!(scan.find(usize::MAX - remaining).unwrap(), None);
+        }
     }
 
     /// A GRIB2 file of `bands` messages of `cols` x `rows` Float32 values (IEEE packing) on a
@@ -386,6 +398,21 @@ mod tests {
             })
             .collect();
         assert!(reads[0] > 0 && reads[1] == 0, "bytes read by two windows below the grid: {reads:?}");
+    }
+
+    /// Empty grid entries must fit their band's share, including the cache entry overhead.
+    #[test]
+    fn empty_grid_entries_respect_the_band_cache_share() {
+        let _serial = cache_test_guard(64);
+        let dir = tempfile::tempdir().unwrap();
+        let (_, bytes) = grib_file(dir.path(), 20, 4, 1);
+        let (_, source) = super::super::bytes_source(bytes.clone()).unwrap();
+        let window = Window::new(0, 6, 20, 1);
+        for share in [32, 64] {
+            let values = source.decode_and_keep(&bytes, 0, 1, window, share).unwrap();
+            assert_eq!(values, vec![0.0; 20]);
+            assert_eq!(crate::block_cache::contains(source.handle.id(), 1, super::super::BAND_CHUNK), share == 64);
+        }
     }
 
     /// Catches the bands a read decodes at once pushing one another out of the block cache, or a
@@ -575,25 +602,28 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_fifo_is_read_whole() {
-        use std::os::unix::fs::OpenOptionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let (_, bytes) = grib_file(dir.path(), 40, 30, 2);
-        let fifo = dir.path().join("fifo.grib2");
-        let c = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
-        // SAFETY: `c` is a path without NUL, valid for the call.
-        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "{}", std::io::Error::last_os_error());
-        let writer = {
-            let (fifo, bytes) = (fifo.clone(), bytes.clone());
-            std::thread::spawn(move || std::fs::write(fifo, bytes))
-        };
-        let (done, opened) = std::sync::mpsc::channel();
-        let path = fifo.to_str().unwrap().to_string();
-        std::thread::spawn(move || done.send(outcome(super::super::open_lazy(&path).expect("a GRIB name"))));
-        let read = opened.recv_timeout(std::time::Duration::from_secs(10)).expect("the open did not end");
-        // A writer the open did not read, as when it fails first, still waits for a reader.
-        drop(std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(&fifo));
-        let _ = writer.join();
-        assert_eq!(read, outcome(super::super::open_lazy_bytes(bytes)));
+        crate::par::alone(30, || {
+            use std::os::unix::fs::OpenOptionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            let (_, bytes) = grib_file(dir.path(), 40, 30, 2);
+            let fifo = dir.path().join("fifo.grib2");
+            let c = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+            // SAFETY: `c` is a path without NUL, valid for the call.
+            assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "{}", std::io::Error::last_os_error());
+            let writer = {
+                let (fifo, bytes) = (fifo.clone(), bytes.clone());
+                std::thread::spawn(move || std::fs::write(fifo, bytes))
+            };
+            let (done, opened) = std::sync::mpsc::channel();
+            let path = fifo.to_str().unwrap().to_string();
+            std::thread::spawn(move || done.send(outcome(super::super::open_lazy(&path).expect("a GRIB name"))));
+            let read = opened.recv_timeout(std::time::Duration::from_secs(10)).expect("the open did not end");
+            // A writer the open did not read, as when it fails first, still waits for a reader.
+            drop(std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(&fifo));
+            let _ = writer.join();
+            assert_eq!(read, outcome(super::super::open_lazy_bytes(bytes)));
+            true
+        });
     }
 
     /// What reading a GRIB file gives, band by band: the dataset's description, then each band's

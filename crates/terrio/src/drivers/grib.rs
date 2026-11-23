@@ -522,7 +522,7 @@ impl Source {
         let rows = kept_rows(wanted.clone(), ny, held.min(ny));
         // A window below a grid shorter than its band keeps no row but the grid's size, which
         // serves the windows below it.
-        if rows.is_empty() && !wanted.is_empty() {
+        if share < crate::block_cache::entry_cost(0) || (rows.is_empty() && !wanted.is_empty()) {
             return Ok(out);
         }
         // The grid's rows are south to north: the band's rows `rows` are its rows from `first`.
