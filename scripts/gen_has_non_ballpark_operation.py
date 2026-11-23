@@ -7,9 +7,9 @@ For every EPSG geographic 2D CRS that is not deprecated, into WGS 84 (EPSG:4326)
 seventh of them into ETRS89 (EPSG:4258) and OSGB36 (EPSG:4277): whether PROJ's candidate
 operations (pyproj's ``TransformerGroup`` with ballparks allowed, its available operations and
 those whose grids are missing) hold one that is not PROJ's ballpark ("Ballpark geographic
-offset"). An operation whose grid is missing counts when every grid it lacks is on the PROJ CDN
-(direct download), as terrio's EPSG table lists operations as if those were installed; one whose
-grid the CDN does not serve (``HS2TN15_NTv2.gsb``) does not.
+offset"). An operation whose grid is missing counts when every grid it lacks has a direct-download
+URL in PROJ's catalog, including non-CDN URLs; one whose grid has no such URL
+(``HS2TN15_NTv2.gsb``) does not.
 
 Writes ``crates/terrio-crs/tests/data/has_non_ballpark_operation.tsv``, lines
 ``source<TAB>target<TAB>0 or 1``.
@@ -36,7 +36,14 @@ OUT = (
 
 
 def obtainable(op):
-    """Whether every grid an unavailable operation lacks is served by the PROJ CDN."""
+    """Check whether every missing grid has a direct-download catalog URL.
+
+    Args:
+        op: An unavailable PROJ coordinate operation.
+
+    Returns:
+        True if the operation has grids and each is available or directly downloadable.
+    """
     return bool(op.grids) and all(
         g.available or (g.direct_download and g.url) for g in op.grids
     )

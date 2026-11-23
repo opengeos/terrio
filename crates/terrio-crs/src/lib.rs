@@ -2969,11 +2969,15 @@ impl Transformer {
         self.transform_at(x, y, z, Some(t))
     }
 
-    /// Whether PROJ's candidate operations between the two CRSs (`proj_create_operations`, which
-    /// keeps those whose grids are missing) hold any that is not a ballpark, whatever its area of
-    /// use: false when only PROJ's ballpark ("Ballpark geographic offset") links their datums, so
-    /// that no datum transformation is known between them anywhere. True between CRSs of one
-    /// datum, which need none. The horizontal datums only, with every grid taken as present.
+    /// Whether PROJ 9.9.0's candidate operations between the two CRSs (`proj_create_operations`)
+    /// include a non-ballpark transformation whose area meets both CRSs' extents. No particular
+    /// point is selected. False when only PROJ's ballpark ("Ballpark geographic offset") links
+    /// their datums; true between CRSs of one datum, which need no transformation.
+    ///
+    /// Missing grids count when PROJ's grid catalog lists a direct-download URL, regardless of
+    /// whether networking is enabled. Locally available grids count too. The check covers the
+    /// horizontal datum, including geocentric, geographic 3D and compound CRSs; it does not
+    /// check vertical datum transformations or geoid models.
     ///
     /// ```
     /// use terrio_crs::{SpatialRef, Transformer};
@@ -2985,6 +2989,8 @@ impl Transformer {
     /// ```
     pub fn has_non_ballpark_operation(&self) -> bool {
         let route = route::Route::all(&self.src, &self.dst);
+        // Route::all restores registry operations with missing grids before comparing datums;
+        // the comparison is not necessarily between the original definitions' `ops` lists.
         // CRSs terrio takes as of one datum without knowing it (defined by their ellipsoids):
         // PROJ's null transformation on one ellipsoid, else its ballpark.
         if route.same_datum() && (self.src.datum_code().is_none() || self.dst.datum_code().is_none()) {

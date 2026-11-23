@@ -709,11 +709,15 @@ let op = t.operation_at(530000.0, 180000.0, 0.0)?;   // "OSGB36 to WGS 84 (9)", 
 ```
 
 `Transformer::has_non_ballpark_operation()` tells whether any transformation but PROJ's ballpark
-links the two CRSs, wherever its area of use, as PROJ's candidate operations
+links the two CRSs within their extents, as PROJ 9.9.0's candidate operations
 (`proj_create_operations`) do. It is false when only the ballpark does, so that no datum
-transformation is known between them: for a datum known by its ellipsoid alone, for example. It is
-true between CRSs of one datum. A transformation whose grid is missing counts when the PROJ CDN
-serves the grid, and not otherwise (SIRGAS-CON SIR17P01's `SIRGAS2000-to-SIRGAS-CONSIR17P01.gsb`).
+transformation is known between them in those extents: for a datum known by its ellipsoid alone,
+for example. It is true between CRSs of one datum. A transformation whose grid is missing counts
+when PROJ's catalog lists a direct-download URL, including non-CDN URLs, regardless of the network
+setting. Locally available grids count too; other missing grids do not (SIRGAS-CON SIR17P01's
+`SIRGAS2000-to-SIRGAS-CONSIR17P01.gsb`). This checks horizontal datums, including geocentric, 3D
+and compound CRSs, and excludes vertical transformations and geoid models. It is currently a
+standalone `terrio-crs` Rust API, intended for callers such as RustGIS.
 
 ### Datum shift grids
 

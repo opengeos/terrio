@@ -439,10 +439,11 @@ impl Route {
         }
     }
 
-    /// Whether any candidate is not a ballpark, whatever its area: a transformation between the
+    /// Whether any retained candidate is not a ballpark: a transformation between the
     /// datums whose grids can be had (see [`Op::obtainable`]), or none needed (one datum). False
     /// when only PROJ's ballpark links the CRSs (or the shift into a hub CRS with it, which PROJ
-    /// counts as one).
+    /// counts as one). Candidates have already been filtered by the CRSs' extents and area of
+    /// interest; this does not select a particular point within those areas.
     pub fn has_transformation(&self) -> bool {
         let usable = |op: &Op| !op.ballpark && op.obtainable();
         match &self.kind {

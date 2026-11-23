@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
 //! `Transformer::has_non_ballpark_operation` says, as PROJ 9.9.0's candidate operations do, whether
-//! any transformation but PROJ's ballpark links two CRSs, whatever its area (#1012 item 15).
+//! any transformation but PROJ's ballpark links two CRSs within their extents (#1012 item 15).
 //! `data/has_non_ballpark_operation.tsv` (`scripts/gen_has_non_ballpark_operation.py`, pyproj's
 //! `TransformerGroup` with the network off and no grids, counting operations whose grids the PROJ
-//! CDN serves) holds PROJ's answer for every EPSG geographic 2D CRS into WGS 84, and some into
+//! catalog lists for direct download) holds PROJ's answer for every EPSG geographic 2D CRS into WGS 84, and some into
 //! ETRS89 and OSGB36.
 
 use terrio_crs::{SpatialRef, Transformer};
@@ -41,7 +41,7 @@ fn every_geographic_crs_answers_as_proj() {
 /// grid the CDN does not serve (SIRGAS-CON SIR17P01, `SIRGAS2000-to-SIRGAS-CONSIR17P01.gsb`) has
 /// none. Geocentric, 3D and compound CRSs too.
 #[test]
-fn proj_strings_and_projected_crss_answer_as_proj() {
+fn proj_strings_and_other_crs_kinds_answer_as_proj() {
     offline();
     let parse = |s: &str| SpatialRef::parse(s).unwrap();
     let bessel = "+proj=longlat +ellps=bessel";

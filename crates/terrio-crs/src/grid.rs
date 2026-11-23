@@ -1136,9 +1136,10 @@ fn cdn_name(name: &str) -> Option<&str> {
 }
 
 /// Whether a grid can be had: `null`, which needs no file (as [`available`]), found locally, or
-/// served by the PROJ CDN (whether or not the network is enabled).
+/// listed for direct download in PROJ's grid catalog (whether or not the network is enabled).
+/// This includes non-CDN URLs and does not assume an unlisted `.tif` exists on the CDN.
 pub(crate) fn obtainable(name: &str) -> bool {
-    name == "null" || present_locally(name) || cdn_name(name).is_some()
+    name == "null" || present_locally(name) || catalog().get(name).is_some_and(|grid| grid.direct_download)
 }
 
 /// Whether a grid name is a single ordinary file component on this platform.
@@ -2651,5 +2652,20 @@ mod tests {
         }
         #[cfg(unix)]
         assert!(single_file_name("C:grid.tif"));
+    }
+
+    /// PROJ 9.9.0 counts missing grids with direct-download catalog URLs, including non-CDN
+    /// formats, but does not treat an arbitrary GeoTIFF name as proof of availability.
+    #[test]
+    fn obtainable_grids_follow_the_direct_download_catalog() {
+        set_grid_search_paths(Some(vec![]));
+        set_network_enabled(Some(false));
+        assert!(obtainable("null"));
+        assert!(obtainable("us_noaa_conus.tif"));
+        assert!(obtainable("conus"));
+        assert!(obtainable("naptrans2008.gtx"));
+        assert!(obtainable("rdtrans2008.gsb"));
+        assert!(!obtainable("unlisted_nonexistent_terrio_grid.tif"));
+        assert!(!obtainable("SIRGAS2000-to-SIRGAS-CONSIR17P01.gsb"));
     }
 }
