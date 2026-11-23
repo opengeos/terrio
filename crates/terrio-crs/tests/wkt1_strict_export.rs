@@ -181,8 +181,9 @@ fn reads_back(wkt: &str, s: &SpatialRef) -> bool {
     points.iter().all(|&(x, y)| t.transform(x, y).is_ok_and(|(u, v)| (u - x).abs() <= tolerance && (v - y).abs() <= tolerance))
 }
 
-/// Whether a CRS has an axis pointing west, as WKT 2 gives planetographic IAU_2015 CRSs: terrio
-/// writes WKT 2 without a code in WKT 1 through its PROJ string, which has no such axis.
+/// Whether a CRS has an axis pointing west, as WKT 2 gives planetographic IAU_2015 CRSs and the
+/// Transverse Mercator rows of westing axes: terrio writes WKT 2 without a code in WKT 1 through
+/// its PROJ string, which has no such axis.
 fn west_axis(s: &SpatialRef) -> bool {
     s.wkt.as_deref().is_some_and(|w| w.to_ascii_lowercase().contains(",west,"))
 }
