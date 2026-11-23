@@ -112,6 +112,7 @@ PROJ_STRINGS = [
     # (NAD27) too, which +ellps=clrk66 gives by its semi-minor axis (#1012 item 38).
     "+proj=longlat +datum=NAD27 +a=6378000",
     "+proj=utm +zone=15 +datum=NAD27 +a=6378000",
+    "+proj=longlat +datum=NAD27 +ellps=clrk66 +a=6378000",
     "+proj=longlat +datum=NAD27 +b=6356000",
     "+proj=longlat +datum=NAD27 +rf=300",
     "+proj=longlat +a=6378000 +b=6378000 +ellps=WGS84",
