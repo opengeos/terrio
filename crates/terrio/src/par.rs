@@ -35,6 +35,11 @@
 //! meanwhile are set aside, off the pool, and queued again when the last fork in progress is done:
 //! none of them holds a thread of the pool in the meantime.
 
+//! Data-parallel closures must use resolved, captured options and return diagnostics explicitly.
+//! Thread-local configuration and warnings stay on their originating thread. Contention can
+//! select serial execution on that thread instead of a worker, so closures that consult thread
+//! locals can observe different state; placement does not promise to propagate those locals.
+
 // The one place rayon is called directly: the methods clippy.toml disallows elsewhere.
 #![allow(clippy::disallowed_methods)]
 
@@ -360,7 +365,7 @@ mod native {
         release_locks();
         HELD_BACK.store(std::ptr::null_mut(), Ordering::SeqCst);
         GATE.store(0, Ordering::SeqCst);
-        // The guards that would count down OUTSIDE_WORK live on threads the child does not have.
+        // Other threads' guards are gone in the child; a surviving caller guard saturates on drop.
         super::OUTSIDE_WORK.store(0, Ordering::SeqCst);
         FORKS.fetch_add(1, Ordering::AcqRel);
     }
@@ -436,8 +441,8 @@ struct Pool(&'static rayon::ThreadPool);
 
 /// Calls from threads outside the pool whose parallel work is in flight, serial ones included.
 /// When one is, another outside call runs serially instead of queueing on the pool (see
-/// [`Pool::enter`]).
-#[cfg(not(target_family = "wasm"))]
+/// [`Pool::enter`]). A fork resets the count; a surviving guard must not underflow it.
+#[cfg(all(threads, not(target_family = "wasm")))]
 static OUTSIDE_WORK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// How a [`Pool`] call runs: on the pool, or serially on the calling thread (see [`Pool::enter`]).
@@ -457,7 +462,19 @@ struct OutsideGuard;
 #[cfg(all(threads, not(target_family = "wasm")))]
 impl Drop for OutsideGuard {
     fn drop(&mut self) {
-        OUTSIDE_WORK.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        // The forking thread can itself hold a guard when the child resets the count.
+        let mut count = OUTSIDE_WORK.load(std::sync::atomic::Ordering::Relaxed);
+        while count > 0 {
+            match OUTSIDE_WORK.compare_exchange_weak(
+                count,
+                count - 1,
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(current) => count = current,
+            }
+        }
     }
 }
 
@@ -467,18 +484,21 @@ impl Pool {
         self.0.install(f)
     }
 
-    /// How a call from this thread runs: on the pool, unless another thread outside the pool
-    /// already has parallel work in flight — then serially on the calling thread, so that N
-    /// threads outside the pool scale as N threads of their own rather than as N callers queued
-    /// on the pool (a tile warp from each of N server workers, say). Only the one outside thread
-    /// at work uses the pool, and only one does at a time, so the pool's threads are never split
-    /// among queued callers. The count spans the whole call, serial calls included, so short
-    /// calls (one per tile) are seen too; the serial arm must not use rayon, whose parallel
-    /// iterators would run on rayon's global pool from outside this one. A call from a pool
-    /// thread always uses the pool, nested, and is not counted. Results never depend on where
-    /// the work runs. Where it runs decides what thread-locals the work sees: the serial arm
-    /// runs on the calling thread (so it sees its `config` scopes and keeps its `warnings`),
-    /// the pool arm on a pool thread, which sees neither — as [`install`]'s doc says.
+    /// Applies placement and retains its outside-work guard until the call returns or unwinds.
+    fn run<R: Send>(&self, f: impl FnOnce(bool) -> R + Send) -> R {
+        match self.enter() {
+            Enter::Serial(_outside) => f(false),
+            Enter::Pool(_outside) => self.install(|| f(true)),
+        }
+    }
+
+    /// Uses the pool for its workers and the lone outside caller; overlapping outside
+    /// callers run serially, holding a guard for the whole call. Serial work must not use
+    /// rayon's iterators, which would enter its global pool.
+    ///
+    /// Thread-local configuration and warnings do not follow work to pool threads.
+    /// Serial fallback observes the caller's state, so that observation can depend on
+    /// contention. Capture resolved options and return warnings explicitly from worker work.
     fn enter(&self) -> Enter {
         #[cfg(not(target_family = "wasm"))]
         {
@@ -574,14 +594,7 @@ pub(crate) fn spawn(f: impl FnOnce() + Send + 'static) {
 fn map_range_on<const COARSE: bool, R: Send>(n: usize, f: impl Fn(usize) -> R + Sync + Send) -> Vec<R> {
     #[cfg(threads)]
     if let Some(p) = pool_for(COARSE, n, 2) {
-        return match p.enter() {
-            Enter::Serial(_) => (0..n).map(f).collect(),
-            Enter::Pool(g) => {
-                let r = p.install(|| (0..n).into_par_iter().map(f).collect());
-                drop(g);
-                r
-            }
-        };
+        return p.run(|parallel| if parallel { (0..n).into_par_iter().map(f).collect() } else { (0..n).map(f).collect() });
     }
     (0..n).map(f).collect()
 }
@@ -596,17 +609,14 @@ pub(crate) fn map_init<T: Sync, S, R: Send>(
 ) -> Vec<R> {
     #[cfg(threads)]
     if let Some(p) = pool_for(true, items.len(), 4) {
-        return match p.enter() {
-            Enter::Serial(_) => {
+        return p.run(|parallel| {
+            if parallel {
+                items.par_iter().with_min_len(2).map_init(init, |s, t| f(s, t)).collect()
+            } else {
                 let mut s = init();
                 items.iter().map(|t| f(&mut s, t)).collect()
             }
-            Enter::Pool(g) => {
-                let r = p.install(|| items.par_iter().with_min_len(2).map_init(init, |s, t| f(s, t)).collect());
-                drop(g);
-                r
-            }
-        };
+        });
     }
     let mut s = init();
     items.iter().map(|t| f(&mut s, t)).collect()
@@ -616,13 +626,13 @@ pub(crate) fn map_init<T: Sync, S, R: Send>(
 fn for_each_owned_on<const COARSE: bool, T: Send>(items: Vec<T>, f: impl Fn(usize, T) + Sync + Send) {
     #[cfg(threads)]
     if let Some(p) = pool_for(COARSE, items.len(), 2) {
-        return match p.enter() {
-            Enter::Serial(_) => items.into_iter().enumerate().for_each(|(i, t)| f(i, t)),
-            Enter::Pool(g) => {
-                p.install(|| items.into_par_iter().enumerate().for_each(|(i, t)| f(i, t)));
-                drop(g);
+        return p.run(|parallel| {
+            if parallel {
+                items.into_par_iter().enumerate().for_each(|(i, t)| f(i, t));
+            } else {
+                items.into_iter().enumerate().for_each(|(i, t)| f(i, t));
             }
-        };
+        });
     }
     items.into_iter().enumerate().for_each(|(i, t)| f(i, t));
 }
@@ -633,13 +643,13 @@ fn chunks_mut_on<const COARSE: bool, T: Send>(data: &mut [T], size: usize, f: im
     let size = size.max(1);
     #[cfg(threads)]
     if let Some(p) = pool_for(COARSE, data.len().div_ceil(size), 2) {
-        return match p.enter() {
-            Enter::Serial(_) => data.chunks_mut(size).enumerate().for_each(|(i, c)| f(i, c)),
-            Enter::Pool(g) => {
-                p.install(|| data.par_chunks_mut(size).enumerate().for_each(|(i, c)| f(i, c)));
-                drop(g);
+        return p.run(|parallel| {
+            if parallel {
+                data.par_chunks_mut(size).enumerate().for_each(|(i, c)| f(i, c));
+            } else {
+                data.chunks_mut(size).enumerate().for_each(|(i, c)| f(i, c));
             }
-        };
+        });
     }
     data.chunks_mut(size).enumerate().for_each(|(i, c)| f(i, c));
 }
@@ -837,7 +847,7 @@ pub(crate) fn in_child(secs: u64, child: impl FnOnce() -> bool) -> Option<i32> {
 /// threads, which hold locks of their own when the fork comes (the standard library's, for one,
 /// while a thread starts or ends): a child forked from the test process may wait for them
 /// forever. In a process of its own, a scenario's forks copy only the scenario's threads.
-#[cfg(all(test, unix))]
+#[cfg(all(test, not(target_family = "wasm")))]
 pub(crate) fn alone(secs: u64, scenario: impl FnOnce() -> bool) {
     const ALONE: &str = "TERRIO_TEST_ALONE";
     let name = std::thread::current().name().expect("a test thread is named after its test").to_string();
@@ -983,8 +993,41 @@ mod tests {
         assert!(ran.iter().all(|(id, name)| *id == caller || name.as_deref().is_some_and(|n| n.starts_with("terrio-par-"))), "{ran:?}");
     }
 
-    /// Serializes the tests that touch the process-wide `OUTSIDE_WORK` counter, so each sees
-    /// only its own outside work in flight.
+    /// Pool placement is checked alone, so unrelated modules cannot change the counter.
+    #[test]
+    #[cfg(all(threads, not(target_family = "wasm")))]
+    fn lone_outside_work_uses_terrios_pool() {
+        alone(30, || {
+            let caller = std::thread::current().id();
+            let p = Pool(native::pool());
+            let entry = p.enter();
+            assert!(matches!(entry, Enter::Pool(_)));
+            drop(entry);
+            map_range(64, |_| (std::thread::current().id(), std::thread::current().name().map(str::to_string)))
+                .iter()
+                .all(|(id, name)| *id != caller && name.as_deref().is_some_and(|n| n.starts_with("terrio-par-")))
+        });
+    }
+
+    /// The thread that forks can retain guards after the child resets the outside-work count.
+    #[test]
+    #[cfg(all(threads, unix))]
+    fn a_guard_surviving_fork_does_not_disable_later_pool_work() {
+        alone(30, || {
+            let first = Pool(native::pool()).enter();
+            assert!(matches!(first, Enter::Pool(_)));
+            let serial = Pool(native::pool()).enter();
+            assert!(matches!(serial, Enter::Serial(_)));
+            in_child(10, || {
+                drop(serial);
+                drop(first);
+                OUTSIDE_WORK.load(std::sync::atomic::Ordering::Relaxed) == 0 && matches!(Pool(native::pool()).enter(), Enter::Pool(_))
+            }) == Some(0)
+        });
+    }
+
+    /// Serializes these counter-specific tests. Other modules can still have outside work
+    /// in flight; strict lone-caller assertions therefore run in a separate test process.
     #[cfg(all(threads, not(target_family = "wasm")))]
     fn counter_test_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -998,30 +1041,23 @@ mod tests {
     #[cfg(all(threads, not(target_family = "wasm")))]
     fn an_outside_call_enters_serially_while_another_outside_call_is_in_flight() {
         use std::sync::atomic::{AtomicBool, Ordering};
-        use std::time::Duration;
         let _serial = counter_test_lock();
         let busy = std::sync::Arc::new(AtomicBool::new(false));
-        let b = busy.clone();
+        let release = std::sync::Arc::new(AtomicBool::new(false));
+        let (b, done) = (busy.clone(), release.clone());
         let h = std::thread::spawn(move || {
-            let p = Pool(native::pool());
-            match p.enter() {
-                Enter::Serial(_) => {
-                    b.store(true, Ordering::SeqCst);
-                    std::thread::sleep(Duration::from_millis(300));
-                }
-                Enter::Pool(_) => {
-                    p.install(|| {
-                        b.store(true, Ordering::SeqCst);
-                        std::thread::sleep(Duration::from_millis(300));
-                    });
-                }
-            }
+            Pool(native::pool()).run(|_| {
+                b.store(true, Ordering::SeqCst);
+                assert!(wait_for(&done, 10), "the observer did not release the first call");
+            });
         });
         assert!(wait_for(&busy, 10), "the first outside call did not start");
         let entered = Pool(native::pool()).enter();
-        assert!(matches!(entered, Enter::Serial(_)), "the second outside call queued on the pool");
+        let serial = matches!(entered, Enter::Serial(_));
         drop(entered);
+        release.store(true, Ordering::SeqCst);
         h.join().unwrap();
+        assert!(serial, "the second outside call queued on the pool");
     }
 
     /// An outside call that enters while only a serial outside call is still in flight (the
@@ -1342,7 +1378,7 @@ mod tests {
     }
 
     /// Waits for `flag`, for at most `secs` seconds: whether it was set.
-    #[cfg(unix)]
+    #[cfg(not(target_family = "wasm"))]
     fn wait_for(flag: &std::sync::atomic::AtomicBool, secs: u64) -> bool {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
         while !flag.load(std::sync::atomic::Ordering::Acquire) {
