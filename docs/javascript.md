@@ -499,6 +499,10 @@ writing files. `exportSchema` describes the layers read (GeoPackage column decla
 read only from files, by the command line, Python and Rust). See
 [Vector datasets](cli.md#vector-datasets) for the options and GDAL's rules.
 
+`dataset.toBytes("points.gpkg", { preserveFid: true })` writes feature IDs as
+GeoPackage primary keys. See the [GeoPackage write options](rust.md#writing) for
+signed IDs and matching or conflicting key attributes.
+
 ### Layer selection
 
 An empty `layers` request keeps all layers. Duplicate requests do not duplicate

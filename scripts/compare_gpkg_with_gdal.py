@@ -18,6 +18,9 @@ which SQLite must find the file intact, holding either all the features or none 
 Spatial filters: ``terrio convert --spat`` against ``ogr2ogr -spat`` on GeoPackages (feature
 ids and values), and the time both take on a large file with and without the R-tree.
 
+Feature IDs: ``terrio convert --preserve-fid`` against ``ogr2ogr -preserve_fid`` when
+creating and appending, including SQLite primary-key checks for the #1220 fixture.
+
 Usage::
 
     python scripts/compare_gpkg_with_gdal.py ../terrio-data [--terrio target/release/terrio]
@@ -26,6 +29,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import sqlite3
 import subprocess
@@ -235,6 +239,55 @@ def compare(a: Path, b: Path) -> list[str]:
         if [r[0] for r in ra] != [r[0] for r in rb]:
             diffs.append(f"{name}: -spat through the R-tree finds {len(ra)} features vs {len(rb)}")
     return diffs
+
+
+def preserved_fid_cases(data: Path, terrio: str, work: Path) -> list[tuple[str, list[str]]]:
+    """Compares explicit IDs on create and append with GDAL 3.13.2."""
+    src = work / "points.geojson"
+    a, b = work / "preserve-terrio.gpkg", work / "preserve-gdal.gpkg"
+    a.unlink(missing_ok=True)
+    b.unlink(missing_ok=True)
+
+    def source(ids):
+        src.write_text(json.dumps({
+            "type": "FeatureCollection",
+            "features": [
+                {"type": "Feature", "id": fid, "properties": {},
+                 "geometry": {"type": "Point", "coordinates": [i, i]}}
+                for i, fid in enumerate(ids)
+            ],
+        }), encoding="utf-8")
+
+    def check(expected):
+        diffs = compare(a, b)
+        for path in (a, b):
+            with sqlite3.connect(path) as conn:
+                key = conn.execute(
+                    "SELECT type, pk FROM pragma_table_info('points') WHERE name = 'fid'"
+                ).fetchall()
+                rows = conn.execute("SELECT rowid, fid FROM points ORDER BY fid").fetchall()
+            if key != [("INTEGER", 1)] or rows != [(fid, fid) for fid in expected]:
+                diffs.append(f"{path.name}: primary key {key}, rows {rows}")
+        return diffs
+
+    source([91, 205])
+    run([terrio, "convert", src, a, "--preserve-fid"])
+    run(["ogr2ogr", "-f", "GPKG", "-preserve_fid", b, src])
+    results = [("preserve-fid #1220 create", check([91, 205]))]
+    source([703, 7])
+    run([terrio, "convert", src, a, "--append", "--preserve-fid"])
+    run(["ogr2ogr", "-append", "-preserve_fid", b, src])
+    results.append(("preserve-fid #1220 append", check([7, 91, 205, 703])))
+
+    src = data / "countries.gpkg"
+    if src.is_file():
+        a.unlink()
+        b.unlink()
+        run([terrio, "convert", src, a, "--preserve-fid"])
+        run(["ogr2ogr", "-f", "GPKG", "-preserve_fid", b, src])
+        # Compare feature IDs, values and geometry. The writers can choose different declarations.
+        results.append(("preserve-fid countries", [] if features(a) == features(b) else ["different features"]))
+    return results
 
 
 def update_cases(data: Path, terrio: str, work: Path) -> list[tuple[str, list[str]]]:
@@ -630,8 +683,10 @@ def main() -> int:
     args = p.parse_args()
     work = args.work or Path(tempfile.mkdtemp(prefix="terrio_gpkg_"))
     work.mkdir(parents=True, exist_ok=True)
-    results = update_cases(args.data, args.terrio, work) + spatial_cases(
-        args.data, args.terrio, work
+    results = (
+        preserved_fid_cases(args.data, args.terrio, work)
+        + update_cases(args.data, args.terrio, work)
+        + spatial_cases(args.data, args.terrio, work)
     )
     bad = 0
     for name, diffs in results:

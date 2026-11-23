@@ -658,13 +658,9 @@ pub fn write_vector_with_mode(layers: &[Layer], path: &str, options: &VectorWrit
     crate::dataset::ensure_vector_options_apply(options, driver)?;
     #[cfg(feature = "sqlite")]
     if driver == Some(crate::formats::VectorDriver::GPKG) {
-        use crate::drivers::vector::gpkg_update::{UpdateMode, update};
+        use crate::drivers::vector::gpkg_update::{UpdateMode, update_with_options};
         let mode = if mode == WriteMode::Append { UpdateMode::Append } else { UpdateMode::Overwrite };
-        return if options.preserve_declared_geometry_type {
-            crate::drivers::vector::gpkg_update::update_with_geometry_types(path, layers, mode, true)
-        } else {
-            update(path, layers, mode)
-        };
+        return update_with_options(path, layers, mode, options);
     }
     // Tile archives get the layers' features added to their tiles.
     #[cfg(all(feature = "tiles", fs))]

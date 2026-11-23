@@ -73,39 +73,29 @@ fn real(v: &w::Value) -> Option<f64> {
 /// that exist. The file is changed in place, as SQLite changes it (only the pages that change
 /// are written, in a transaction protected by a rollback journal); files that cannot be changed
 /// that way are rewritten, the new file replacing the original once complete.
-pub fn update(path: &str, layers: &[Layer], mode: UpdateMode) -> Result<()> {
-    update_with_geometry_types(path, layers, mode, false)
-}
-
-/// Retains declarations for new/replaced layers through both transaction paths.
-pub fn update_with_geometry_types(path: &str, layers: &[Layer], mode: UpdateMode, preserve_declared_geometry_type: bool) -> Result<()> {
+pub(crate) fn update_with_options(path: &str, layers: &[Layer], mode: UpdateMode, options: &crate::VectorWriteOptions) -> Result<()> {
     let resolved = std::fs::canonicalize(path)?;
     // Reject pending WAL state before selecting the in-place or rewrite path.
     crate::drivers::sqlite_edit::ensure_no_wal(&resolved)?;
-    if preserve_declared_geometry_type {
-        if super::gpkg_inplace::update_in_place_with_geometry_types(&resolved, layers, mode, true)? {
-            return Ok(());
-        }
-        return rewrite_with_geometry_types(&resolved, layers, mode, true);
-    }
-    if super::gpkg_inplace::update_in_place(&resolved, layers, mode)? {
+    if super::gpkg_inplace::update_in_place_with_options(&resolved, layers, mode, options)? {
         return Ok(());
     }
-    rewrite(&resolved, layers, mode)
+    rewrite_with_options(&resolved, layers, mode, options)
 }
 
 /// Updates a GeoPackage file by writing it anew, the new file renamed over the original. A file
 /// with a hot rollback journal is left untouched, with an error: without SQLite's locks (where
 /// files are not changed in place) a transaction interrupted cannot be told from one under way,
 /// and the journal, left next to the new file, would be rolled back over it.
+#[cfg(test)]
 fn rewrite(path: impl AsRef<std::path::Path>, layers: &[Layer], mode: UpdateMode) -> Result<()> {
-    rewrite_with_geometry_types(path, layers, mode, false)
+    rewrite_with_options(path, layers, mode, &Default::default())
 }
-fn rewrite_with_geometry_types(
+fn rewrite_with_options(
     path: impl AsRef<std::path::Path>,
     layers: &[Layer],
     mode: UpdateMode,
-    preserve_declared_geometry_type: bool,
+    options: &crate::VectorWriteOptions,
 ) -> Result<()> {
     let path = path.as_ref();
     // Recheck at the rewrite boundary before reading only the main image.
@@ -117,11 +107,7 @@ fn rewrite_with_geometry_types(
             path.display()
         )));
     }
-    let bytes = if preserve_declared_geometry_type {
-        update_bytes_with_geometry_types(std::fs::read(path)?, layers, mode, true)?
-    } else {
-        update_bytes(std::fs::read(path)?, layers, mode)?
-    };
+    let bytes = update_bytes_with_options(std::fs::read(path)?, layers, mode, options)?;
     use std::io::Write;
     crate::vsi::write_local_atomic(path, |file| {
         file.write_all(&bytes)?;
@@ -129,30 +115,17 @@ fn rewrite_with_geometry_types(
     })
 }
 
-/// Updates a GeoPackage held in memory: see [`update`].
-pub fn update_bytes(bytes: Vec<u8>, layers: &[Layer], mode: UpdateMode) -> Result<Vec<u8>> {
-    update_bytes_with_geometry_types(bytes, layers, mode, false)
-}
-fn update_bytes_with_geometry_types(
-    bytes: Vec<u8>,
-    layers: &[Layer],
-    mode: UpdateMode,
-    preserve_declared_geometry_type: bool,
-) -> Result<Vec<u8>> {
+fn update_bytes_with_options(bytes: Vec<u8>, layers: &[Layer], mode: UpdateMode, options: &crate::VectorWriteOptions) -> Result<Vec<u8>> {
     let db = Db::new(bytes)?;
     let (existing, _) = super::gpkg_read::contents(&db)?;
     let mut d = Database::load(&db)?;
     drop(db);
     for layer in layers {
         match (existing.iter().find(|c| c.name.eq_ignore_ascii_case(&layer.name)), mode) {
-            (Some(c), UpdateMode::Append) => d.append(&c.name, layer)?,
+            (Some(c), UpdateMode::Append) => d.append(&c.name, layer, options.preserve_fid)?,
             (Some(c), UpdateMode::Overwrite) => {
                 d.remove_layer(&c.name);
-                if preserve_declared_geometry_type {
-                    d.add_layer_with_geometry_type(layer, true)?;
-                } else {
-                    d.add_layer(layer)?;
-                }
+                d.add_layer(layer, options)?;
             }
             (None, _) => {
                 if d.has(&layer.name) {
@@ -161,11 +134,7 @@ fn update_bytes_with_geometry_types(
                         layer.name
                     )));
                 }
-                if preserve_declared_geometry_type {
-                    d.add_layer_with_geometry_type(layer, true)?;
-                } else {
-                    d.add_layer(layer)?;
-                }
+                d.add_layer(layer, options)?;
             }
         }
     }
@@ -338,12 +307,9 @@ impl Database {
 
     /// Adds a layer, as a new file would hold it, its CRS reusing an entry of
     /// `gpkg_spatial_ref_sys` that matches.
-    pub(super) fn add_layer(&mut self, layer: &Layer) -> Result<()> {
-        self.add_layer_with_geometry_type(layer, false)
-    }
-    pub(super) fn add_layer_with_geometry_type(&mut self, layer: &Layer, preserve_declared_geometry_type: bool) -> Result<()> {
+    pub(super) fn add_layer(&mut self, layer: &Layer, options: &crate::VectorWriteOptions) -> Result<()> {
         let mut b = Builder::new();
-        b.add_layer_with_geometry_type(layer, preserve_declared_geometry_type)?;
+        b.add_layer_with_options(layer, options)?;
         let mut parts = b.into_layer_parts();
 
         let remap = self.merge_srs(&parts.srs)?;
@@ -474,13 +440,19 @@ impl Database {
     /// Adds the features of `layer` to the existing layer `name`, as `ogr2ogr -append` does:
     /// fields matched by name (ignoring case; others dropped), new feature ids, geometries
     /// as they are (in the layer's SRS id).
-    fn append(&mut self, name: &str, layer: &Layer) -> Result<()> {
+    fn append(&mut self, name: &str, layer: &Layer, preserve_fid: bool) -> Result<()> {
         let geometry = self.geometry_column(name);
         let t = self.table(name).ok_or_else(|| Error::InvalidData(format!("GeoPackage: no table '{name}'")))?;
         let sql = t.sql.clone();
-        let max_rowid = t.rows.iter().map(|(id, _)| *id).max().unwrap_or(0);
-        let next = self.sequence(name).max(max_rowid) + 1;
-        let enc = encode_append(&sql, geometry.as_ref(), layer, next);
+        let max_rowid = || Ok(self.sequence(name).max(t.rows.iter().map(|(id, _)| *id).max().unwrap_or(0)));
+        let enc = encode_append(&sql, geometry.as_ref(), layer, preserve_fid, max_rowid)?;
+        if preserve_fid {
+            for (id, _) in &t.rows {
+                if enc.rows.binary_search_by_key(id, |(rowid, _)| *rowid).is_ok() {
+                    return Err(existing_fid(name, *id));
+                }
+            }
+        }
         let geom_col = enc.geom_col;
         let total = {
             let t = self.table_mut(name).expect("the table exists");
@@ -595,14 +567,42 @@ pub(super) struct Encoded {
     pub missing_m: bool,
 }
 
-/// Encodes the features of `layer` as rows of the feature table created by `sql`, with ids
-/// from `first`: fields matched by name (ignoring case; others dropped), column defaults for
+pub(super) fn existing_fid(layer: &str, id: i64) -> Error {
+    Error::InvalidArgument(format!("GeoPackage layer '{layer}': feature ID {id} already exists"))
+}
+
+/// Encodes the features of `layer` as rows of the feature table created by `sql`, with IDs
+/// preserved or assigned above the destination maximum: fields matched by name (ignoring case; others dropped), column defaults for
 /// the others, geometries in the layer's SRS id (`geometry` is the table's geometry column,
 /// SRS id and `z` flag).
-pub(super) fn encode_append(sql: &str, geometry: Option<&(String, i64, i64)>, layer: &Layer, first: i64) -> Encoded {
+pub(super) fn encode_append(
+    sql: &str,
+    geometry: Option<&(String, i64, i64)>,
+    layer: &Layer,
+    preserve_fid: bool,
+    max_rowid: impl FnOnce() -> Result<i64>,
+) -> Result<Encoded> {
     let decls = r::column_types(sql);
     let defaults = r::column_defaults(sql);
     let ipk = r::rowid_column(sql);
+    let first = if preserve_fid {
+        let column = crate::gpkg_validation::rowid_alias(sql)?.filter(|&i| Some(i) == ipk).and_then(|i| decls.get(i)).ok_or_else(|| {
+            Error::Unsupported(format!("GeoPackage layer '{}': preserve_fid needs an INTEGER PRIMARY KEY rowid column", layer.name))
+        })?;
+        gw::validate_fids(layer, &column.0)?;
+        0
+    } else if layer.features.is_empty() {
+        0
+    } else {
+        let max = max_rowid()?;
+        if max.checked_add(layer.len() as i64).is_none() {
+            return Err(Error::InvalidArgument(format!(
+                "GeoPackage layer '{}': automatic feature IDs exceed SQLite's integer limit",
+                layer.name
+            )));
+        }
+        max + 1
+    };
     let geom_col = geometry.and_then(|(g, ..)| decls.iter().position(|(n, _)| n.eq_ignore_ascii_case(g)));
     let srs_id = geometry.map_or(0, |(_, s, _)| *s);
     let fields = layer.schema.fields();
@@ -648,7 +648,8 @@ pub(super) fn encode_append(sql: &str, geometry: Option<&(String, i64, i64)>, la
                 values[i] = convert(v, &decls[i].1);
             }
         }
-        (values, bbox, z, missing_z, m, missing_m)
+        let id = if preserve_fid { crate::signed_fid(f) } else { first + k as i64 };
+        (id, values, bbox, z, missing_z, m, missing_m)
     });
     let mut bounds: Option<[f64; 4]> = None;
     let mut has_z = false;
@@ -656,7 +657,7 @@ pub(super) fn encode_append(sql: &str, geometry: Option<&(String, i64, i64)>, la
     let mut has_m = false;
     let mut missing_m = false;
     let mut rows = Vec::with_capacity(encoded.len());
-    for ((values, bbox, z, no_z, m, no_m), id) in encoded.into_iter().zip(first..) {
+    for (id, values, bbox, z, no_z, m, no_m) in encoded {
         if let Some(b) = bbox {
             bounds = Some(match bounds {
                 None => [b.min_x, b.min_y, b.max_x, b.max_y],
@@ -669,7 +670,10 @@ pub(super) fn encode_append(sql: &str, geometry: Option<&(String, i64, i64)>, la
         missing_m |= no_m;
         rows.push((id, values));
     }
-    Encoded { rows, geom_col, bounds, has_z, missing_z, has_m, missing_m }
+    if preserve_fid {
+        rows.sort_by_key(|(id, _)| *id);
+    }
+    Ok(Encoded { rows, geom_col, bounds, has_z, missing_z, has_m, missing_m })
 }
 
 /// An envelope `[min_x, max_x, min_y, max_y]` as SQLite's R-tree stores it, rounded outwards to
@@ -753,6 +757,14 @@ mod tests {
     use super::*;
     use wbvector::{Coord, Feature, FieldDef, FieldType, Geometry};
 
+    fn update(path: &str, layers: &[Layer], mode: UpdateMode) -> Result<()> {
+        update_with_options(path, layers, mode, &Default::default())
+    }
+
+    fn update_bytes(bytes: Vec<u8>, layers: &[Layer], mode: UpdateMode) -> Result<Vec<u8>> {
+        update_bytes_with_options(bytes, layers, mode, &Default::default())
+    }
+
     fn layer(name: &str, n: u64, x0: f64) -> Layer {
         let mut l = Layer::new(name).with_epsg(32633);
         l.add_field(FieldDef::new("name", FieldType::Text));
@@ -767,6 +779,43 @@ mod tests {
             });
         }
         l
+    }
+
+    #[test]
+    fn rewrite_append_preserves_ids_and_checks_the_destination_key_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("custom.gpkg");
+        let path = path.to_str().unwrap();
+        gw::write_with_fid(&[layer("custom", 2, 0.0)], path, "feature_key").unwrap();
+        let bytes = std::fs::read(path).unwrap();
+        let mut add = layer("custom", 2, 20.0);
+        add.add_field(FieldDef::new("FEATURE_KEY", FieldType::Integer));
+        add.features[0].fid = 100;
+        add.features[0].attributes.push(FieldValue::Integer(100));
+        add.features[1].fid = (-10_i64) as u64;
+        let options = crate::VectorWriteOptions { preserve_fid: true, ..Default::default() };
+        let updated = update_bytes_with_options(bytes.clone(), std::slice::from_ref(&add), UpdateMode::Append, &options).unwrap();
+        let table = Db::new(updated).unwrap().table("custom").unwrap();
+        assert_eq!(table.rows.iter().map(|r| int(&to_w(r[0].clone())).unwrap()).collect::<Vec<_>>(), [-10, 1, 2, 100]);
+
+        add.features[1].fid = 2;
+        let err = update_bytes_with_options(bytes.clone(), std::slice::from_ref(&add), UpdateMode::Append, &options).unwrap_err();
+        assert!(err.to_string().contains("feature ID 2 already exists"));
+        add.features[0].attributes[2] = FieldValue::Integer(900);
+        let err = update_bytes_with_options(bytes, &[add], UpdateMode::Append, &options).unwrap_err();
+        assert!(err.to_string().contains("'FEATURE_KEY' value 900 conflicts with feature ID 100"));
+    }
+
+    #[test]
+    fn preserved_append_requires_a_real_rowid_alias() {
+        let add = layer("points", 1, 0.0);
+        for sql in [
+            "CREATE TABLE points (fid INTEGER PRIMARY KEY DESC)",
+            "CREATE TABLE points (fid INTEGER CHECK ('PRIMARY KEY' <> ''))",
+            "CREATE TABLE points (fid INTEGER PRIMARY KEY) WITHOUT ROWID",
+        ] {
+            assert!(matches!(encode_append(sql, None, &add, true, || unreachable!()), Err(Error::Unsupported(_))), "{sql}");
+        }
     }
 
     #[test]

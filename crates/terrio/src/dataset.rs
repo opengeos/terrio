@@ -2103,6 +2103,14 @@ pub struct VectorWriteOptions {
     /// Unknown declarations allow optional Z. Required/optional source dimensional
     /// hints are not represented by Layer and cannot be reproduced by this option.
     pub preserve_declared_geometry_type: bool,
+    /// GeoPackage: use [`crate::Feature::fid`] as the SQLite primary key, interpreted by
+    /// [`crate::signed_fid`]. IDs must be unique per layer and, when appending, unused
+    /// in the destination. A case-insensitive attribute matching the primary-key column
+    /// must be an integer field; its non-null values must equal their feature IDs.
+    /// The matching field is represented by the primary key. Missing or null attributes
+    /// leave the feature ID in effect. This preserves IDs already assigned by readers.
+    /// By default, the writer uses its existing attribute-based or sequential assignment.
+    pub preserve_fid: bool,
     /// How to write CSV files.
     pub csv: crate::drivers::vector::csv::CsvOptions,
     /// How to write GeoJSON files.
@@ -2157,12 +2165,11 @@ pub fn write_vector(layers: &[Layer], path: &str, options: &VectorWriteOptions) 
         (_, []) => Err(Error::InvalidArgument("no layers to write".into())),
         #[cfg(feature = "sqlite")]
         (VectorDriver::GPKG, _) => {
-            if options.preserve_declared_geometry_type {
-                std::fs::write(path, crate::drivers::vector::geopackage::to_bytes_with_geometry_types(layers, true)?)?;
-                Ok(())
-            } else {
-                crate::drivers::vector::geopackage::write(layers, path)
+            if !options.preserve_fid && !options.preserve_declared_geometry_type {
+                return crate::drivers::vector::geopackage::write(layers, path);
             }
+            std::fs::write(path, crate::drivers::vector::geopackage::to_bytes_with_options(layers, options)?)?;
+            Ok(())
         }
         #[cfg(feature = "cad")]
         (d @ (VectorDriver::DXF | VectorDriver::DWG), _) => {
@@ -2227,6 +2234,9 @@ pub(crate) fn ensure_vector_options_apply(options: &VectorWriteOptions, driver: 
     }
     if options.preserve_declared_geometry_type && driver != Some(VectorDriver::GPKG) {
         return Err(Error::InvalidArgument("preserve_declared_geometry_type applies to GPKG output".into()));
+    }
+    if options.preserve_fid && driver != Some(VectorDriver::GPKG) {
+        return Err(Error::InvalidArgument("preserve_fid applies to GPKG output".into()));
     }
     let xlsx = &options.xlsx;
     if (xlsx.geometry != crate::CsvGeometry::None || xlsx.macro_enabled || xlsx.has_layout()) && driver != Some(VectorDriver::XLSX) {

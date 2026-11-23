@@ -43,6 +43,15 @@ handled as follows; none is changed to agree with the older database:
 
 Moving all of terrio's GDAL reference to GDAL 3.13.3 on PROJ 9.9.0 is a separate, later decision.
 
+## GeoPackage feature ID preservation
+
+`cargo test -p terrio --test merged geopackage::` includes the #1220 GeoJSON
+fixture, default and opt-in readback, signed 64-bit IDs, spatial filtering,
+separate layers, buffered writes and atomic refusal of conflicting IDs.
+`python -m pytest python/tests/test_gpkg_preserve_fid.py` verifies the primary-key
+declaration, rowid aliases and R-tree integrity with SQLite. The `gpkg` conformance
+suite compares explicit feature IDs on create and append with `ogr2ogr -preserve_fid`.
+
 ## Grid confinement and diagnostics
 
 `python -m pytest python/tests/test_grid_policy.py` checks the Python confinement

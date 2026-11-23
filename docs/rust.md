@@ -112,6 +112,36 @@ The same codecs and creation options are available in WebAssembly.
 `ops::vector_filter::write_vector_with_mode` appends to or overwrites the layers of an existing
 output; GeoPackages are updated keeping their other tables.
 
+Set `VectorWriteOptions::preserve_fid` to copy `Feature::fid` into a GeoPackage's
+`INTEGER PRIMARY KEY` column, as `ogr2ogr -preserve_fid` does for explicit IDs.
+
+```rust,no_run
+let points = terrio::open_vector("points.geojson", &Default::default())?;
+let options = terrio::VectorWriteOptions { preserve_fid: true, ..Default::default() };
+terrio::write_vector(&points.layers, "points.gpkg", &options)?;
+# Ok::<(), terrio::Error>(())
+```
+
+IDs must be unique within each layer. Appends also reject IDs already in the
+destination layer and use its existing primary-key column name. `signed_fid`
+interprets the ID bits as a signed 64-bit SQLite integer, including zero, `-1`
+and both limits. GDAL reserves `-1` as its unset-ID sentinel, while Terrio can
+copy a stored GeoPackage row ID of `-1`.
+
+The feature ID supplies the key. A case-insensitive attribute with the same name
+as the key (`properties.fid` in a typical GeoJSON export) must be a single integer
+field. A matching value is represented by the key column. An absent or null value
+leaves the feature ID in effect. A different value, incompatible type or ambiguous
+field name is an error. Without the option, a newly written layer still uses an
+eligible integer `fid` attribute or assigns keys from one in feature order, and
+an append continues the existing sequence.
+
+The write option uses the IDs present on the `Feature` values. `Feature::fid`
+always holds a number, so the writer cannot distinguish reader-generated IDs from
+explicit source IDs. For example, the GeoJSON reader can assign numeric IDs
+when the input uses missing, string or negative IDs. Preservation buffers stream
+inputs so arbitrary ID order can be sorted and validated before writing.
+
 ## Streams
 
 `terrio::stream` reads and writes vector layers a chunk of features at a time, for layers larger

@@ -415,6 +415,7 @@ fn write_netcdf_groups(
 ///     append: Add the features to the layers of an existing output.
 ///     overwrite: Replace the layers of the same name in an existing output.
 ///     preserve_declared_geometry_type: GPKG: retain the declared base geometry type, including Unknown.
+///     preserve_fid: GPKG: use feature IDs as primary keys. Conflicting keys raise an error.
 ///     cityjson_version: CityJSON output: "1.1" or "2.0" (the default).
 ///     citygml_version: CityGML output: "2.0" or "3.0" (the default).
 ///     citygml_lod0_surface: CityGML 2.0 LoD 0 fallback: "footprint" or "roof-edge".
@@ -422,7 +423,7 @@ fn write_netcdf_groups(
 /// Raises:
 ///     InvalidArgumentError: If several layers go to a single-layer format.
 #[pyfunction]
-#[pyo3(signature = (data, path, driver=None, layer_name=None, crs=None, append=false, overwrite=false, *, preserve_declared_geometry_type=false, cityjson_version=None, citygml_version=None, citygml_lod0_surface=None))]
+#[pyo3(signature = (data, path, driver=None, layer_name=None, crs=None, append=false, overwrite=false, *, preserve_declared_geometry_type=false, preserve_fid=false, cityjson_version=None, citygml_version=None, citygml_lod0_surface=None))]
 #[allow(clippy::too_many_arguments)]
 fn write_vector(
     py: Python<'_>,
@@ -434,6 +435,7 @@ fn write_vector(
     append: bool,
     overwrite: bool,
     preserve_declared_geometry_type: bool,
+    preserve_fid: bool,
     cityjson_version: Option<&str>,
     citygml_version: Option<&str>,
     citygml_lod0_surface: Option<&str>,
@@ -442,6 +444,7 @@ fn write_vector(
     let layers = layers_from_object(data, Some(layer_name.unwrap_or(&stem)), crs)?;
     let mut options = vector_write_options(driver)?;
     options.preserve_declared_geometry_type = preserve_declared_geometry_type;
+    options.preserve_fid = preserve_fid;
     options.cityjson_version = parse_cityjson_version(cityjson_version)?;
     options.citygml_version = parse_citygml_version(citygml_version)?;
     options.citygml_lod0_surface = parse_citygml_lod0_surface(citygml_lod0_surface)?;
@@ -483,6 +486,7 @@ fn write_vector(
 ///     a_srs: Assign this CRS to the output, without reprojecting.
 ///     append: Add the features to the layers of an existing output.
 ///     overwrite: Replace the layers of the same name in an existing output.
+///     preserve_fid: GPKG: use feature IDs as primary keys. Conflicting keys raise an error.
 ///     options: Raster creation options, as GDAL names them (a mapping or `(key, value)` pairs),
 ///         such as COG `OVERVIEW_RESAMPLING`, `RESAMPLING` and `OVERVIEW_COUNT`.
 ///     cityjson_version: CityJSON output: "1.1" or "2.0" (the default).
@@ -499,7 +503,8 @@ fn write_vector(
     src, dst, *, format=None, layers=None, t_srs=None, compress=None, tile_size=None, bigtiff=false, srcwin=None,
     overview=None, r#where=None, spat=None, spat_srs=None, select=None, limit=None, sql=None, nln=None, nlt=None,
     explodecollections=false, simplify=None, segmentize=None, s_srs=None, a_srs=None, append=false, overwrite=false,
-    options=None, overview_resampling=None, ct_opt=None, cityjson_version=None, citygml_version=None, citygml_lod0_surface=None
+    options=None, overview_resampling=None, ct_opt=None, cityjson_version=None, citygml_version=None, citygml_lod0_surface=None,
+    preserve_fid=false
 ))]
 #[allow(clippy::too_many_arguments)]
 fn convert(
@@ -535,8 +540,12 @@ fn convert(
     cityjson_version: Option<&str>,
     citygml_version: Option<&str>,
     citygml_lod0_surface: Option<&str>,
+    preserve_fid: bool,
 ) -> PyResult<()> {
     use terrio::ops::vector_geom::GeometryOp;
+    if preserve_fid && format.map_or_else(|| VectorDriver::for_extension(dst), VectorDriver::from_name) != Some(VectorDriver::GPKG) {
+        return Err(invalid("preserve_fid applies to GPKG output"));
+    }
     if (citygml_version.is_some() || citygml_lod0_surface.is_some())
         && format.map_or_else(|| VectorDriver::for_extension(dst), VectorDriver::from_name) != Some(VectorDriver::CityGML)
     {
@@ -586,6 +595,7 @@ fn convert(
         || vector_options.assign_srs.is_some()
         || append
         || overwrite
+        || preserve_fid
         || cityjson_version.is_some()
         || citygml_version.is_some()
         || citygml_lod0_surface.is_some();
@@ -603,6 +613,7 @@ fn convert(
         Some(None) => None,
         _ => {
             let mut options = vector_write_options(format)?;
+            options.preserve_fid = preserve_fid;
             options.cityjson_version = parse_cityjson_version(cityjson_version)?;
             options.citygml_version = parse_citygml_version(citygml_version)?;
             options.citygml_lod0_surface = parse_citygml_lod0_surface(citygml_lod0_surface)?;

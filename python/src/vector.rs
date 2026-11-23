@@ -516,6 +516,7 @@ impl PyLayer {
     /// Args:
     ///     path: The output path. Its extension tells the format unless `driver` is given.
     ///     preserve_declared_geometry_type: GPKG: retain the declared type, including Unknown.
+    ///     preserve_fid: GPKG: use feature IDs as primary keys. Conflicting keys raise an error.
     ///     driver: The format's short name, such as `"GeoJSON"`, `"GPKG"` or `"ESRI Shapefile"`.
     ///     cityjson_version: CityJSON output: "1.1" or "2.0" (the default).
     ///     citygml_version: CityGML output: "2.0" or "3.0" (the default).
@@ -526,7 +527,7 @@ impl PyLayer {
     ///         features whose `OGR_STYLE` is `@id`. By default, the table of the dataset the layer
     ///         came from; other formats get each feature's style.
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (path, driver=None, *, kmz_resources=None, style_table=None, preserve_declared_geometry_type=false, cityjson_version=None, citygml_version=None, citygml_lod0_surface=None))]
+    #[pyo3(signature = (path, driver=None, *, kmz_resources=None, style_table=None, preserve_declared_geometry_type=false, preserve_fid=false, cityjson_version=None, citygml_version=None, citygml_lod0_surface=None))]
     fn write(
         &self,
         py: Python<'_>,
@@ -535,12 +536,14 @@ impl PyLayer {
         kmz_resources: Option<std::collections::BTreeMap<String, pyo3::pybacked::PyBackedBytes>>,
         style_table: Option<Vec<(String, String)>>,
         preserve_declared_geometry_type: bool,
+        preserve_fid: bool,
         cityjson_version: Option<&str>,
         citygml_version: Option<&str>,
         citygml_lod0_surface: Option<&str>,
     ) -> PyResult<()> {
         let mut options = crate::ops::vector_write_options(driver)?;
         options.preserve_declared_geometry_type = preserve_declared_geometry_type;
+        options.preserve_fid = preserve_fid;
         options.cityjson_version = crate::ops::parse_cityjson_version(cityjson_version)?;
         options.citygml_version = crate::ops::parse_citygml_version(citygml_version)?;
         options.citygml_lod0_surface = crate::ops::parse_citygml_lod0_surface(citygml_lod0_surface)?;
@@ -554,6 +557,7 @@ impl PyLayer {
     /// Args:
     ///     filename: A file name whose extension tells the format, such as `"out.fgb"`.
     ///     preserve_declared_geometry_type: GPKG: retain the declared type, including Unknown.
+    ///     preserve_fid: GPKG: use feature IDs as primary keys. Conflicting keys raise an error.
     ///     driver: The format's short name, overriding the extension.
     ///     cityjson_version: CityJSON output: "1.1" or "2.0" (the default).
     ///     citygml_version: CityGML output: "2.0" or "3.0" (the default).
@@ -571,7 +575,7 @@ impl PyLayer {
     ///     are not guaranteed. Use filesystem writing to retain the schema. Native MapInfo
     ///     output requires `.mif.zip` or `.tab.zip`; bare `.mif` and `.tab` are refused.
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (filename="layer.geojson", driver=None, *, kmz_resources=None, style_table=None, preserve_declared_geometry_type=false, cityjson_version=None, citygml_version=None, citygml_lod0_surface=None))]
+    #[pyo3(signature = (filename="layer.geojson", driver=None, *, kmz_resources=None, style_table=None, preserve_declared_geometry_type=false, preserve_fid=false, cityjson_version=None, citygml_version=None, citygml_lod0_surface=None))]
     fn to_bytes<'py>(
         &self,
         py: Python<'py>,
@@ -580,12 +584,14 @@ impl PyLayer {
         kmz_resources: Option<std::collections::BTreeMap<String, pyo3::pybacked::PyBackedBytes>>,
         style_table: Option<Vec<(String, String)>>,
         preserve_declared_geometry_type: bool,
+        preserve_fid: bool,
         cityjson_version: Option<&str>,
         citygml_version: Option<&str>,
         citygml_lod0_surface: Option<&str>,
     ) -> PyResult<Bound<'py, PyBytes>> {
         let mut options = crate::ops::vector_write_options(driver)?;
         options.preserve_declared_geometry_type = preserve_declared_geometry_type;
+        options.preserve_fid = preserve_fid;
         options.cityjson_version = crate::ops::parse_cityjson_version(cityjson_version)?;
         options.citygml_version = crate::ops::parse_citygml_version(citygml_version)?;
         options.citygml_lod0_surface = crate::ops::parse_citygml_lod0_surface(citygml_lod0_surface)?;
@@ -658,13 +664,14 @@ impl PyVectorDataset {
     /// Args:
     ///     path: The output path. Its extension tells the format unless `driver` is given.
     ///     driver: The format's short name.
+    ///     preserve_fid: GPKG: use feature IDs as primary keys. Conflicting keys raise an error.
     ///     cityjson_version: CityJSON output: "1.1" or "2.0" (the default).
     ///     citygml_version: CityGML output: "2.0" or "3.0" (the default).
     ///     citygml_lod0_surface: CityGML 2.0 LoD 0 fallback: "footprint" or "roof-edge".
     ///     kmz_resources: KMZ output: files packed into the archive, such as icon images, by the
     ///         relative path the styles refer to them with (`{"icons/pin.png": png_bytes}`).
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (path, driver=None, *, kmz_resources=None, preserve_declared_geometry_type=false, cityjson_version=None, citygml_version=None, citygml_lod0_surface=None))]
+    #[pyo3(signature = (path, driver=None, *, kmz_resources=None, preserve_declared_geometry_type=false, preserve_fid=false, cityjson_version=None, citygml_version=None, citygml_lod0_surface=None))]
     fn write(
         &self,
         py: Python<'_>,
@@ -672,12 +679,14 @@ impl PyVectorDataset {
         driver: Option<&str>,
         kmz_resources: Option<std::collections::BTreeMap<String, pyo3::pybacked::PyBackedBytes>>,
         preserve_declared_geometry_type: bool,
+        preserve_fid: bool,
         cityjson_version: Option<&str>,
         citygml_version: Option<&str>,
         citygml_lod0_surface: Option<&str>,
     ) -> PyResult<()> {
         let mut options = crate::ops::vector_write_options(driver)?;
         options.preserve_declared_geometry_type = preserve_declared_geometry_type;
+        options.preserve_fid = preserve_fid;
         options.cityjson_version = crate::ops::parse_cityjson_version(cityjson_version)?;
         options.citygml_version = crate::ops::parse_citygml_version(citygml_version)?;
         options.citygml_lod0_surface = crate::ops::parse_citygml_lod0_surface(citygml_lod0_surface)?;

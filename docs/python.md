@@ -119,6 +119,11 @@ terrio.write_vector(layer, "world.gpkg", append=True)
 terrio.convert("more.shp", "world.gpkg", nln="countries", overwrite=True)
 ```
 
+Use `preserve_fid=True` on `write_vector`, `convert`, `Layer.write`,
+`Layer.to_bytes` or `VectorDataset.write` to use feature IDs as GeoPackage
+primary keys. Conflicting key attributes and duplicate IDs raise an error.
+See the [GeoPackage write options](rust.md#writing) for precedence and signed IDs.
+
 The GeoPackage is changed in place, as SQLite changes it: only the pages that change are written (new
 rows, R-tree nodes, the tables describing the layer), in a transaction protected by a rollback
 journal, so appending to a large GeoPackage costs about as much as the features appended, and a
