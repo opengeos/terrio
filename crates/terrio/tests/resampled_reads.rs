@@ -12,10 +12,10 @@
 
 use std::io::Read;
 use std::path::PathBuf;
-use terrio::ResampledReadOptions;
 use terrio::ops::Resampling;
 use terrio::ops::overview::OverviewSelection;
 use terrio::raster::RasterData;
+use terrio::{ResampledReadOptions, WindowSampling};
 
 /// A read of a fixture and what GDAL reads.
 struct Case {
@@ -30,6 +30,29 @@ struct Case {
 }
 
 impl Case {
+    fn from_reference(c: &serde_json::Value) -> Self {
+        let numbers =
+            |v: &serde_json::Value| -> Vec<usize> { v.as_array().unwrap().iter().map(|n| n.as_u64().unwrap() as usize).collect() };
+        let window = c["window"].as_array().map(|w| {
+            let w: Vec<f64> = w.iter().map(|v| v.as_f64().unwrap()).collect();
+            (w[0], w[1], w[2], w[3])
+        });
+        let size = numbers(&c["size"]);
+        Self {
+            file: c["file"].as_str().unwrap().to_string(),
+            options: ResampledReadOptions {
+                bands: numbers(&c["bands"]),
+                window,
+                size: (size[0], size[1]),
+                resampling: Resampling::parse(c["resampling"].as_str().unwrap()).unwrap(),
+                overview: OverviewSelection::parse(c["overview"].as_str().unwrap()).unwrap(),
+            },
+            dtype: c["dtype"].as_str().unwrap().to_string(),
+            data: hex(c["data"].as_str().unwrap()),
+            masks: c["masks"].as_str().map(hex),
+        }
+    }
+
     fn path(&self) -> String {
         dir().join(&self.file).to_string_lossy().into_owned()
     }
@@ -75,7 +98,6 @@ fn cases() -> Vec<Case> {
         assert_eq!(raw_values.len(), control_values.len());
         assert_eq!(raw_values.iter().zip(&control_values).filter(|(a, b)| a != b).count(), 488);
     }
-    let numbers = |v: &serde_json::Value| -> Vec<usize> { v.as_array().unwrap().iter().map(|n| n.as_u64().unwrap() as usize).collect() };
     expected
         .as_array()
         .unwrap()
@@ -85,24 +107,7 @@ fn cases() -> Vec<Case> {
                 .iter()
                 .find(|control| ["file", "bands", "window", "size", "resampling", "overview"].iter().all(|&key| control[key] == raw[key]))
                 .unwrap_or(raw);
-            let window = c["window"].as_array().map(|w| {
-                let w: Vec<f64> = w.iter().map(|v| v.as_f64().unwrap()).collect();
-                (w[0], w[1], w[2], w[3])
-            });
-            let size = numbers(&c["size"]);
-            Case {
-                file: c["file"].as_str().unwrap().to_string(),
-                options: ResampledReadOptions {
-                    bands: numbers(&c["bands"]),
-                    window,
-                    size: (size[0], size[1]),
-                    resampling: Resampling::parse(c["resampling"].as_str().unwrap()).unwrap(),
-                    overview: OverviewSelection::parse(c["overview"].as_str().unwrap()).unwrap(),
-                },
-                dtype: c["dtype"].as_str().unwrap().to_string(),
-                data: hex(c["data"].as_str().unwrap()),
-                masks: c["masks"].as_str().map(hex),
-            }
+            Case::from_reference(c)
         })
         .collect()
 }
@@ -197,6 +202,75 @@ fn resampled_reads_are_gdal_reads() {
     }
     terrio::config::pop_scope();
     assert!(failures.is_empty(), "{} of {} cases differ from GDAL:\n{}", failures.len(), cases.len(), failures.join("\n"));
+}
+
+/// Exact nearest-neighbour pixels and masks from GDAL 3.13.2 RasterIO. The integer cases
+/// have no floating-point window and use band RasterIO, including for multi-band requests.
+#[test]
+fn integer_window_nearest_reads_are_gdal_reads() {
+    let file = std::fs::File::open(dir().join("expected_integer_windows.json.gz")).unwrap();
+    let references: Vec<serde_json::Value> = serde_json::from_reader(flate2::read::GzDecoder::new(file)).unwrap();
+    assert_eq!(references.len(), 23);
+    let sampling = WindowSampling::Integer;
+    for reference in &references {
+        let case = Case::from_reference(reference);
+        let o = &case.options;
+        let label = case.name();
+        let mut raster = terrio::open_raster_lazy(&case.path()).unwrap();
+        let (read, masks) = raster.read_resampled_with_masks_and_sampling(o, sampling).unwrap();
+        let expected = values(&case.data, &case.dtype);
+        assert_eq!((read.raster.cols, read.raster.rows), o.size, "{label}");
+        assert_eq!(read.raster.data_type, raster.data_type(), "{label}");
+        assert_eq!(difference(&read_values(&read.raster.data), &expected, false, &case), None, "{label}");
+        assert_eq!(&masks, case.masks.as_ref().unwrap(), "{label}");
+        assert_eq!(raster.read_resampled_masks_with_sampling(o, sampling).unwrap(), masks, "{label}");
+        let pixels = raster.read_resampled_with_sampling(o, sampling).unwrap();
+        assert_eq!(read_values(&pixels.raster.data), expected, "{label}");
+        if case.file == "integer_external.tif" {
+            let (shared, shared_masks) = raster.shared().read_resampled_with_masks_and_sampling(o, sampling).unwrap();
+            assert_eq!(read_values(&shared.raster.data), expected, "{label}");
+            assert_eq!(shared_masks, masks, "{label}");
+        }
+
+        if let Some(fractional) = reference["fractional_data"].as_str() {
+            let legacy = raster.read_resampled(o).unwrap();
+            let fractional = values(&hex(fractional), &case.dtype);
+            let differences = match o.size {
+                (17, 23) => 314,
+                (17, 1) => 5,
+                (1, 23) => 23,
+                _ => unreachable!(),
+            };
+            assert_eq!(read_values(&legacy.raster.data), fractional, "{label}");
+            assert_eq!(fractional.iter().zip(expected).filter(|(a, b)| **a != *b).count(), differences, "{label}");
+            assert_eq!(read.geo_transform(), legacy.geo_transform(), "{label}");
+        }
+
+        // A positive offset selects the same first image and must read it alone, too.
+        if case.file == "integer_external.tif" && o.overview == OverviewSelection::Level(0) {
+            let offset = ResampledReadOptions { overview: OverviewSelection::AutoOffset(1), ..o.clone() };
+            let actual = raster.read_resampled_with_sampling(&offset, sampling).unwrap();
+            assert_eq!(read_values(&actual.raster.data), read_values(&pixels.raster.data));
+        }
+    }
+}
+
+#[test]
+fn integer_window_sampling_requires_whole_in_bounds_nearest_requests() {
+    let mut raster = terrio::open_raster_lazy(dir().join("integer_internal.tif").to_str().unwrap()).unwrap();
+    let base = ResampledReadOptions { size: (17, 23), ..Default::default() };
+    let integer = WindowSampling::Integer;
+    for window in [(3.25, 5.0, 61.0, 47.0), (3.0, 5.0, 61.0, 47.25), (-1.0, 5.0, 61.0, 47.0), (3.0, 5.0, 95.0, 47.0)] {
+        let options = ResampledReadOptions { window: Some(window), ..base.clone() };
+        assert!(matches!(raster.read_resampled_with_sampling(&options, integer), Err(terrio::Error::InvalidArgument(_))), "{window:?}");
+        let (legacy, masks) = raster.read_resampled_with_masks(&options).unwrap();
+        let (fractional, fractional_masks) = raster.read_resampled_with_masks_and_sampling(&options, WindowSampling::default()).unwrap();
+        assert_eq!(read_values(&legacy.raster.data), read_values(&fractional.raster.data), "{window:?}");
+        assert_eq!(masks, fractional_masks, "{window:?}");
+    }
+    let average = ResampledReadOptions { resampling: Resampling::Average, ..base };
+    assert!(matches!(raster.read_resampled_with_sampling(&average, integer), Err(terrio::Error::InvalidArgument(_))));
+    assert!(raster.read_resampled(&average).is_ok());
 }
 
 /// Rasters read into memory first, without overviews or a mask of their own, read the same way.

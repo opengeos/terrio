@@ -2700,6 +2700,7 @@ cargo test -p terrio --test merged resampled_reads::
 cargo test -p terrio-cli --test translate_overviews
 python scripts/make_resampled_reads_fixtures.py                  # GDAL's Python bindings
 python scripts/make_resampled_reads_fixtures.py --check-rasterio # rasterio
+python scripts/make_resampled_reads_fixtures.py --integer-windows # GDAL 3.13.2
 python scripts/conformance.py ../terrio-data --only translate-overviews
 ```
 
@@ -2708,14 +2709,21 @@ file, bands, a window, an output size, a resampling, an overview selection), the
 bands GDAL 3.13.2 reads, frozen in `tests/data/resampled_reads/expected.json.gz`. Pixels of several
 bands are read through `GDALDatasetRasterIOEx`, a band alone through `GDALRasterIOEx`, and masks
 through the bands' `GetMaskBand()`, called through `ctypes` with the floating-point window always
-given, as rasterio calls them: GDAL's Python bindings give it only for windows that are not whole,
-and GDAL then samples an overview from the integer window rounded to it. Selections other than
+given, as rasterio calls them. GDAL's Python bindings omit the floating-point window for
+whole-pixel windows, so nearest neighbour samples from the integer window rounded to the overview.
+Selections other than
 `AUTO` are read as `gdal_translate -ovr` writes them. The rasters are Byte RGB with an internal
 mask and mask overviews, and the same with overviews built before the mask; UInt16 of odd size,
 Int16 and Float32 with nodata values (NaN included); Float32 with a `.ovr`; RGBA, and a UInt16
 alpha band; a paletted band; a `.msk` sidecar; and two bands all valid. Every method is read at
 whole and fractional windows, into smaller and larger outputs and outputs reduced on one axis,
 and at the selection thresholds; 36 cases are also read from the rasters read into memory.
+
+The separate integer-window nearest-neighbour cases use GDAL 3.13.2 band `RasterIO`
+without a floating-point window. They compare exact pixels and masks, including off-origin
+windows on odd-sized rasters with internal and external overviews, single-row and single-column
+outputs, and explicitly selected levels. The issue #1219 cases also pin the default fractional
+results using GDAL with its floating-point window set.
 
 The fixtures pin GDAL's behaviour where it is not obvious:
 

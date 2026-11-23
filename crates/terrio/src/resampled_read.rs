@@ -39,7 +39,8 @@ use wbraster::raster::RasterData;
 
 /// What [`LazyRaster::read_resampled`] reads: bands of a source window, into an output of a given
 /// size, as GDAL's `RasterIO` reads them, which `gdal_translate -outsize` and rasterio's
-/// `read(window=..., out_shape=..., resampling=...)` do.
+/// `read(window=..., out_shape=..., resampling=...)` do. Use
+/// [`LazyRaster::read_resampled_with_sampling`] to select integer-window nearest-neighbour sampling.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ResampledReadOptions {
     /// The bands, numbered from 1 as in GDAL. Empty means all bands.
@@ -65,11 +66,24 @@ pub struct ResampledReadOptions {
     /// among the `.ovr`'s other images, as GDAL's band of that level has them as overviews.
     /// `AutoOffset(n)` reads, alone, the level `n` finer than the first overview no wider than
     /// the output (`Auto` past full resolution; `AutoOffset(0)` is `Auto`), `None` full
-    /// resolution and `Level(i)` overview `i` (the last one when there are fewer). A level read
-    /// alone is read with the window scaled
-    /// to it as `gdal_translate`'s source requests it: values within 0.001 of a whole pixel are
-    /// rounded to it, and sizes are rounded rather than truncated.
+    /// resolution and `Level(i)` overview `i` (the last one when there are fewer). With
+    /// [`WindowSampling::Fractional`], a level read alone uses the window as `gdal_translate`'s
+    /// source requests it: values within 0.001 of a whole pixel are rounded to it, and sizes
+    /// are rounded rather than truncated.
     pub overview: OverviewSelection,
+}
+
+/// How a resampled read samples its source window.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WindowSampling {
+    /// Scale the fractional window to the chosen resolution, even for whole-pixel coordinates.
+    #[default]
+    Fractional,
+    /// Match GDAL 3.13 nearest-neighbour `RasterIO` with an integer window. The offset and size
+    /// must be whole pixels within the raster. At each overview, round and clamp them before
+    /// sampling or choosing another overview. An explicitly selected level is rounded the same
+    /// way and read alone. The output is georeferenced to the requested full-resolution window.
+    Integer,
 }
 
 /// Where a band's validity comes from: GDAL's mask band of the band (`GetMaskFlags`), in the
@@ -164,6 +178,20 @@ struct Read {
     buf: (usize, usize),
     resampling: Resampling,
     fixed: Option<Option<usize>>,
+    window_sampling: WindowSampling,
+}
+
+impl Read {
+    fn fixed_request(&self, level: Option<usize>, size: (usize, usize)) -> Request {
+        match self.window_sampling {
+            WindowSampling::Fractional => fixed_request(self.full, level, size),
+            WindowSampling::Integer => level.map_or(self.full, |i| overview_request(self.full, i, size, self.window_sampling)),
+        }
+    }
+
+    fn fixed_is_empty(&self, size: (usize, usize)) -> bool {
+        self.window_sampling == WindowSampling::Fractional && fixed_is_empty(self.full, size)
+    }
 }
 
 /// The source read into memory at once, at most: kernels resample rows of blocks of the buffer
@@ -211,8 +239,22 @@ impl LazyRaster {
     /// # Ok::<(), terrio::Error>(())
     /// ```
     pub fn read_resampled(&mut self, options: &ResampledReadOptions) -> Result<RasterDataset> {
+        self.read_resampled_with_sampling(options, WindowSampling::Fractional)
+    }
+
+    /// Reads as [`LazyRaster::read_resampled`] with the given [`WindowSampling`].
+    ///
+    /// # Errors
+    ///
+    /// As [`LazyRaster::read_resampled`]. Integer sampling also rejects fractional or
+    /// out-of-bounds windows and resampling other than nearest neighbour.
+    pub fn read_resampled_with_sampling(
+        &mut self,
+        options: &ResampledReadOptions,
+        window_sampling: WindowSampling,
+    ) -> Result<RasterDataset> {
         let _scope = self.enter_asset_read()?;
-        let read = self.check_resampled(options, true)?;
+        let read = self.check_resampled(options, window_sampling, true)?;
         let kinds = self.mask_kinds(&read.bands);
         let data = self.resample_bands(&read, &kinds)?;
         self.resampled_dataset(&read, data)
@@ -236,8 +278,21 @@ impl LazyRaster {
     ///
     /// As [`LazyRaster::read_resampled`].
     pub fn read_resampled_masks(&mut self, options: &ResampledReadOptions) -> Result<Vec<u8>> {
+        self.read_resampled_masks_with_sampling(options, WindowSampling::Fractional)
+    }
+
+    /// Reads as [`LazyRaster::read_resampled_masks`] with the given [`WindowSampling`].
+    ///
+    /// # Errors
+    ///
+    /// As [`LazyRaster::read_resampled_with_sampling`].
+    pub fn read_resampled_masks_with_sampling(
+        &mut self,
+        options: &ResampledReadOptions,
+        window_sampling: WindowSampling,
+    ) -> Result<Vec<u8>> {
         let _scope = self.enter_asset_read()?;
-        let read = self.check_resampled(options, false)?;
+        let read = self.check_resampled(options, window_sampling, false)?;
         let kinds = self.read_mask_kinds(&read);
         self.check_resampled_mask_buffers(&read, &kinds, false)?;
         // A nodata mask band reads its band band by band, as a read of that band alone does.
@@ -265,8 +320,21 @@ impl LazyRaster {
     ///
     /// As [`LazyRaster::read_resampled`].
     pub fn read_resampled_with_masks(&mut self, options: &ResampledReadOptions) -> Result<(RasterDataset, Vec<u8>)> {
+        self.read_resampled_with_masks_and_sampling(options, WindowSampling::Fractional)
+    }
+
+    /// Reads as [`LazyRaster::read_resampled_with_masks`] with the given [`WindowSampling`].
+    ///
+    /// # Errors
+    ///
+    /// As [`LazyRaster::read_resampled_with_sampling`].
+    pub fn read_resampled_with_masks_and_sampling(
+        &mut self,
+        options: &ResampledReadOptions,
+        window_sampling: WindowSampling,
+    ) -> Result<(RasterDataset, Vec<u8>)> {
         let _scope = self.enter_asset_read()?;
-        let read = self.check_resampled(options, false)?;
+        let read = self.check_resampled(options, window_sampling, false)?;
         let kinds = self.read_mask_kinds(&read);
         self.check_resampled_mask_buffers(&read, &kinds, true)?;
         let data = self.resample_bands(&read, &kinds)?;
@@ -291,7 +359,7 @@ impl LazyRaster {
         window: Option<(usize, usize, usize, usize)>,
     ) -> Result<RasterDataset> {
         let _scope = self.enter_asset_read()?;
-        let mut read = self.check_resampled(options, true)?;
+        let mut read = self.check_resampled(options, WindowSampling::Fractional, true)?;
         if let Some(window) = window {
             read.full.window = window;
         }
@@ -313,7 +381,7 @@ impl LazyRaster {
     }
 
     /// Checks a read and resolves its bands and windows.
-    fn check_resampled(&self, o: &ResampledReadOptions, pixels: bool) -> Result<Read> {
+    fn check_resampled(&self, o: &ResampledReadOptions, window_sampling: WindowSampling, pixels: bool) -> Result<Read> {
         let bands = read_bands(&o.bands, self.band_count())?;
         let (bw, bh) = o.size;
         if bw == 0 || bh == 0 {
@@ -346,19 +414,27 @@ impl LazyRaster {
         let (w, h) = (self.width(), self.height());
         let fwindow = o.window.unwrap_or((0.0, 0.0, w as f64, h as f64));
         let (x, y, xs, ys) = fwindow;
+        if window_sampling == WindowSampling::Integer {
+            if o.resampling != Resampling::Nearest {
+                return Err(Error::InvalidArgument("integer window sampling requires nearest-neighbour resampling".into()));
+            }
+            if [x, y, xs, ys].iter().any(|v| v.fract() != 0.0) {
+                return Err(Error::InvalidArgument(format!("integer window sampling requires whole-pixel offsets and sizes: {fwindow:?}")));
+            }
+        }
         // Past an edge by less than an output pixel at most, as the window GDAL's virtual datasets
         // give a source whose edge falls within an output pixel (`VRTSimpleSource`).
         let ends = |off: f64, len: f64, n: usize, buf: usize| off + len <= n as f64 || off + len - (n as f64) < len / buf as f64;
         let starts = |off: f64, len: f64, buf: usize| off >= 0.0 || -off < len / buf as f64;
         let inside = [x, y, xs, ys].iter().all(|v| v.is_finite())
-            && starts(x, xs, bw)
-            && starts(y, ys, bh)
             && xs > 0.0
             && ys > 0.0
             && x < w as f64
             && y < h as f64
-            && ends(x, xs, w, bw)
-            && ends(y, ys, h, bh);
+            && match window_sampling {
+                WindowSampling::Fractional => starts(x, xs, bw) && starts(y, ys, bh) && ends(x, xs, w, bw) && ends(y, ys, h, bh),
+                WindowSampling::Integer => x >= 0.0 && y >= 0.0 && xs as usize <= w - x as usize && ys as usize <= h - y as usize,
+            };
         if !inside {
             return Err(Error::InvalidArgument(format!("the window {fwindow:?} is empty or not within the {w}x{h} raster")));
         }
@@ -368,7 +444,7 @@ impl LazyRaster {
         let window = (xi, yi, (xs.max(1.0) as usize).min(w - xi), (ys.max(1.0) as usize).min(h - yi));
         let full = Request { level: None, size: (w, h), window, fwindow };
         let fixed = fixed_level(o.overview, &self.overviews(), bw);
-        Ok(Read { bands, full, buf: o.size, resampling: o.resampling, fixed })
+        Ok(Read { bands, full, buf: o.size, resampling: o.resampling, fixed, window_sampling })
     }
 
     /// The output masks and the buffers retained while producing them. All-valid masks
@@ -403,7 +479,7 @@ impl LazyRaster {
                     // UInt16 alpha is rescaled to bytes before resampling, then copied.
                     alpha_working = if self.band_data_type(band) == DataType::U8 {
                         1
-                    } else if read.full.is_copy(read.buf) {
+                    } else if self.rescaled_alpha_request(read).is_copy(read.buf) {
                         3
                     } else {
                         2
@@ -440,7 +516,16 @@ impl LazyRaster {
     fn read_mask_kinds(&mut self, read: &Read) -> Vec<MaskKind> {
         let kinds = self.mask_kinds(&read.bands);
         let level = read.fixed.flatten();
-        kinds.iter().zip(&read.bands).map(|(&k, &b)| self.kind_at(k, b, level)).collect()
+        // GDAL can attach the base dataset's sidecar mask overview to the corresponding
+        // external raster overview. A band read at that scale can use the attached mask.
+        let attached_mask = read.window_sampling == WindowSampling::Integer
+            && kinds.contains(&MaskKind::PerDataset)
+            && level.is_some_and(|i| self.mask_band_overviews().contains(&self.overviews()[i]));
+        kinds
+            .iter()
+            .zip(&read.bands)
+            .map(|(&k, &b)| if attached_mask && k == MaskKind::PerDataset { k } else { self.kind_at(k, b, level) })
+            .collect()
     }
 
     /// The alpha band GDAL takes as the other bands' mask band: band 2 of two or band 4 of four,
@@ -524,8 +609,8 @@ impl LazyRaster {
         let together = read.bands.len() > 1 && interpolates(read.resampling);
         if let Some(level) = read.fixed {
             let size = level.map_or(read.full.size, |i| self.overviews()[i]);
-            let request = fixed_request(read.full, level, size);
-            if fixed_is_empty(read.full, size) {
+            let request = read.fixed_request(level, size);
+            if read.fixed_is_empty(size) {
                 return vec![Part { bands: all, request, how: How::Fill }];
             }
             return self.at_level(read, kinds, all, request, together);
@@ -687,13 +772,13 @@ impl LazyRaster {
             return None;
         }
         let overviews = self.overviews();
-        let sizes: Vec<(usize, usize)> = levels.iter().map(|&i| overviews[i]).collect();
         let threshold = oversampling_threshold(read.resampling);
         // As GDAL 3.13.3 does, inspect metadata only when a candidate could improve the choice.
-        let k = best_overview_filtered(base.size, &sizes, base.window, read.buf, threshold, |k| {
-            !self.level_resampling(levels[k]).is_some_and(|r| r.to_ascii_uppercase().starts_with("AVERAGE_BIT2"))
+        let candidates = levels.iter().map(|&i| (i, overviews[i]));
+        let level = best_overview_filtered(base.size, candidates, base.window, read.buf, threshold, |i| {
+            !self.level_resampling(i).is_some_and(|r| r.to_ascii_uppercase().starts_with("AVERAGE_BIT2"))
         })?;
-        Some(overview_request(base, levels[k], sizes[k]))
+        Some(overview_request(base, level, overviews[level], read.window_sampling))
     }
 
     /// Reads a part of a read.
@@ -911,50 +996,82 @@ impl LazyRaster {
     /// The dataset's mask band read as GDAL reads it into another size: a band of its own, all
     /// valid, from its own overviews chosen as for pixels.
     fn resampled_mask_band(&mut self, read: &Read) -> Result<Vec<u8>> {
+        // A forced external level can have its own mask, independent of the base mask band.
+        let own_level = read
+            .fixed
+            .flatten()
+            .filter(|&i| read.window_sampling == WindowSampling::Integer && !self.level_keeps_mask_flags(i) && self.level_has_own_mask(i));
         let mask_overviews = self.mask_band_overviews();
         let request = match read.fixed {
             // A level of which nothing is read: no valid pixel.
-            Some(level) if fixed_is_empty(read.full, level.map_or(read.full.size, |i| self.overviews()[i])) => {
+            Some(level) if read.fixed_is_empty(level.map_or(read.full.size, |i| self.overviews()[i])) => {
                 return Ok(vec![0; read.buf.0 * read.buf.1]);
             }
             // A level read alone: its own mask, if any, else (in GDAL, an all-valid mask band)
             // nothing masked.
+            Some(Some(i)) if own_level == Some(i) => read.fixed_request(Some(i), self.overviews()[i]),
             Some(Some(i)) => {
                 let size = self.overviews()[i];
                 match mask_overviews.iter().position(|s| *s == size) {
-                    Some(j) => fixed_request(read.full, Some(j), size),
+                    Some(j) => read.fixed_request(Some(j), size),
                     None => return Ok(vec![255; read.buf.0 * read.buf.1]),
                 }
             }
-            Some(None) => fixed_request(read.full, None, read.full.size),
+            Some(None) => read.fixed_request(None, read.full.size),
             None if mask_overviews.is_empty() || !read.full.reduces(read.buf) => read.full,
             None => {
                 let threshold = oversampling_threshold(read.resampling);
-                match best_overview(read.full.size, &mask_overviews, read.full.window, read.buf, threshold) {
-                    Some(j) => overview_request(read.full, j, mask_overviews[j]),
-                    None => read.full,
+                let mut request = read.full;
+                let mut next = best_overview(request.size, &mask_overviews, request.window, read.buf, threshold);
+                while let Some(j) = next {
+                    request = overview_request(request, j, mask_overviews[j], read.window_sampling);
+                    if read.window_sampling == WindowSampling::Fractional || !request.reduces(read.buf) {
+                        break;
+                    }
+                    let levels = self.mask_band_nested_overviews(j);
+                    next = best_overview_filtered(
+                        request.size,
+                        levels.into_iter().map(|i| (i, mask_overviews[i])),
+                        request.window,
+                        read.buf,
+                        threshold,
+                        |_| true,
+                    );
                 }
+                request
             }
         };
         let (x, y, w, h) = request.window;
+        let sampling = read.window_sampling;
+        let read_mask = |r: &mut Self, w: Window| match own_level {
+            Some(i) => Ok(r.read_level_mask(w, Some(i))?.unwrap_or_else(|| vec![255; w.width * w.height])),
+            None => r.read_mask_band(w, request.level, sampling),
+        };
+        let prefetch = |r: &mut Self, windows: &[Window]| match own_level {
+            Some(i) => r.prefetch_own_level_mask_windows(windows, i),
+            None => r.prefetch_mask_band_windows(windows, request.level),
+        };
         if request.is_copy(read.buf) {
-            self.prefetch_mask_band_window(Window::new(x, y, w, h), request.level)?;
-            return self.read_mask_band(Window::new(x, y, w, h), request.level);
+            let window = Window::new(x, y, w, h);
+            prefetch(self, &[window])?;
+            return read_mask(self, window);
         }
         // The blocks of the level of the mask's size.
-        let level = request.level.and_then(|j| self.overviews().iter().position(|s| *s == mask_overviews[j]));
+        let level = own_level.or_else(|| request.level.and_then(|j| self.overviews().iter().position(|s| *s == mask_overviews[j])));
         let block = self.level_block_size(level).unwrap_or((request.size.0, SAMPLE_ROWS));
         let data = if read.resampling == Resampling::Nearest {
             let (cols, rows) = nearest_pixels(request.fwindow, read.buf, request.size, read.buf.0.checked_mul(read.buf.1))?;
             if let Some(windows) = nearest_prefetch_windows(&cols, &rows, block) {
-                self.prefetch_mask_band_windows(&windows, request.level)?;
+                prefetch(self, &windows)?;
             }
-            sample_by_blocks(&cols, &rows, block, &mut |w| Ok(RasterData::U8(self.read_mask_band(w, request.level)?)))?
+            sample_by_blocks(&cols, &rows, block, &mut |w| Ok(RasterData::U8(read_mask(self, w)?)))?
         } else {
             self.prefetch_mask_band_window(Window::new(x, y, w, h), request.level)?;
             let max = self.mask_band_bits().and_then(|bits| nbits_max(u32::from(bits), DataType::U8));
             let resampled = resampled_read(read, request, false, block.0, max);
-            resample(&resampled, &[None], None, 1, &mut |w| Ok((RasterData::U8(self.read_mask_band(w, request.level)?), vec![None])))?
+            resample(&resampled, &[None], None, 1, &mut |w| {
+                Ok((RasterData::U8(self.read_mask_band(w, request.level, sampling)?), vec![None]))
+            })?
         };
         match data {
             RasterData::U8(v) => Ok(v),
@@ -964,7 +1081,7 @@ impl LazyRaster {
 
     /// The alpha band `alpha` read as the mask band GDAL makes of it: a Byte band read as the
     /// other bands are, band by band, all valid; a UInt16 one rescaled to 0–255 as
-    /// `GDALRescaledAlphaBand` does, which has no overviews: from full resolution.
+    /// `GDALRescaledAlphaBand` does, which has no overviews of its own.
     fn resampled_alpha(&mut self, read: &Read, alpha: usize, retained: usize) -> Result<Vec<u8>> {
         let single = Read { bands: vec![alpha], ..read.clone() };
         if self.band_data_type(alpha) == DataType::U8 {
@@ -974,9 +1091,9 @@ impl LazyRaster {
                 other => Ok(alpha_mask(&other)),
             };
         }
-        let full = read.full;
-        let options = WindowOptions { bands: vec![alpha], overview: None };
-        let (x, y, w, h) = full.window;
+        let request = self.rescaled_alpha_request(read);
+        let options = WindowOptions { bands: vec![alpha], overview: request.level };
+        let (x, y, w, h) = request.window;
         let mut output_live = false;
         let mut rescaled = |source: &mut Self, window: Window| -> Result<RasterData> {
             check_alpha_window(window, read.buf, output_live, read.resampling != Resampling::Nearest, retained)?;
@@ -985,24 +1102,35 @@ impl LazyRaster {
             output_live = true;
             Ok(data)
         };
-        let data = if full.is_copy(read.buf) {
+        let data = if request.is_copy(read.buf) {
             self.prefetch_window(Window::new(x, y, w, h), &options)?;
             rescaled(self, Window::new(x, y, w, h))?
         } else if read.resampling == Resampling::Nearest {
             let output_bytes = read.buf.0.checked_mul(read.buf.1).and_then(|bytes| bytes.checked_add(retained));
-            let (cols, rows) = nearest_pixels(full.fwindow, read.buf, full.size, output_bytes)?;
-            let block = self.level_block_size(None).unwrap_or((full.size.0, SAMPLE_ROWS));
+            let (cols, rows) = nearest_pixels(request.fwindow, read.buf, request.size, output_bytes)?;
+            let block = self.level_block_size(request.level).unwrap_or((request.size.0, SAMPLE_ROWS));
             if let Some(windows) = nearest_prefetch_windows(&cols, &rows, block) {
                 self.prefetch_windows(&windows, &options)?;
             }
             sample_by_blocks(&cols, &rows, block, &mut |w| rescaled(self, w))?
         } else {
             self.prefetch_window(Window::new(x, y, w, h), &options)?;
-            let block_width = self.level_block_size(None).map_or(full.size.0, |b| b.0);
-            let resampled = resampled_read(read, full, false, block_width, None);
+            let block_width = self.level_block_size(request.level).map_or(request.size.0, |b| b.0);
+            let resampled = resampled_read(read, request, false, block_width, None);
             resample(&resampled, &[None], None, 1, &mut |w| Ok((rescaled(self, w)?, vec![None])))?
         };
         Ok(alpha_mask(&data))
+    }
+
+    /// An integer read of an explicit level uses that level's own rescaled alpha mask.
+    fn rescaled_alpha_request(&self, read: &Read) -> Request {
+        if read.window_sampling == WindowSampling::Integer
+            && let Some(i) = read.fixed.flatten()
+        {
+            read.fixed_request(Some(i), self.overviews()[i])
+        } else {
+            read.full
+        }
     }
 }
 
@@ -1089,14 +1217,14 @@ pub(crate) fn best_overview(
     (bw, bh): (usize, usize),
     threshold: f64,
 ) -> Option<usize> {
-    best_overview_filtered((w, h), overviews, window, (bw, bh), threshold, |_| true)
+    best_overview_filtered((w, h), overviews.iter().copied().enumerate(), window, (bw, bh), threshold, |_| true)
 }
 
-/// The same size rule as `best_overview`, with eligibility checked only for improving
-/// candidates. The callback receives a zero-based index into `overviews`, not a level number.
+/// The same size rule as `best_overview`, with eligibility checked only for improving candidates.
+/// Each candidate carries its level index.
 fn best_overview_filtered(
     (w, h): (usize, usize),
-    overviews: &[(usize, usize)],
+    overviews: impl Iterator<Item = (usize, (usize, usize))>,
     window: (usize, usize, usize, usize),
     (bw, bh): (usize, usize),
     threshold: f64,
@@ -1109,10 +1237,8 @@ fn best_overview_filtered(
     let mut best_ratio = 0.0;
     let candidates = std::iter::once((None, 1.0)).chain(
         overviews
-            .iter()
-            .enumerate()
             .filter(|(_, (ow, oh))| *ow <= w && *oh <= h)
-            .map(|(i, (ow, oh))| (Some(i), (w as f64 / *ow as f64).min(h as f64 / *oh as f64))),
+            .map(|(i, (ow, oh))| (Some(i), (w as f64 / ow as f64).min(h as f64 / oh as f64))),
     );
     for (level, ratio) in candidates {
         if ratio >= desired * threshold + EPSILON || ratio <= best_ratio {
@@ -1134,8 +1260,8 @@ fn best_overview_filtered(
 
 /// The request `GDALBandGetBestOverviewLevel2` makes of overview `level` of size `(ow, oh)` for a
 /// request `base` of another level: the integer window rounded to it and clamped, the
-/// floating-point window scaled.
-fn overview_request(base: Request, level: usize, (ow, oh): (usize, usize)) -> Request {
+/// floating-point window scaled if present (GDAL 3.13.3).
+fn overview_request(base: Request, level: usize, (ow, oh): (usize, usize), window_sampling: WindowSampling) -> Request {
     let (w, h) = base.size;
     let (xf, yf) = (w as f64 / ow as f64, h as f64 / oh as f64);
     let (x, y, xs, ys) = base.window;
@@ -1143,8 +1269,14 @@ fn overview_request(base: Request, level: usize, (ow, oh): (usize, usize)) -> Re
     let oy = ((y as f64 / yf + 0.5) as usize).min(oh - 1);
     let oxs = ((xs as f64 / xf + 0.5) as usize).max(1).min(ow - ox);
     let oys = ((ys as f64 / yf + 0.5) as usize).max(1).min(oh - oy);
-    let (fx, fy, fxs, fys) = base.fwindow;
-    Request { level: Some(level), size: (ow, oh), window: (ox, oy, oxs, oys), fwindow: (fx / xf, fy / yf, fxs / xf, fys / yf) }
+    let fwindow = match window_sampling {
+        WindowSampling::Fractional => {
+            let (fx, fy, fxs, fys) = base.fwindow;
+            (fx / xf, fy / yf, fxs / xf, fys / yf)
+        }
+        WindowSampling::Integer => (ox as f64, oy as f64, oxs as f64, oys as f64),
+    };
+    Request { level: Some(level), size: (ow, oh), window: (ox, oy, oxs, oys), fwindow }
 }
 
 /// The level `gdal_translate -ovr` reads alone, `Some(None)` for full resolution; `None` when
@@ -1620,7 +1752,7 @@ mod tests {
     fn overview_metadata_only_reads_improving_candidates() {
         let sizes = [(500, 400), (250, 200), (125, 100)];
         let mut looked_up = Vec::new();
-        let selected = best_overview_filtered((1000, 800), &sizes, (0, 0, 1000, 800), (500, 400), 1.2, |index| {
+        let selected = best_overview_filtered((1000, 800), sizes.into_iter().enumerate(), (0, 0, 1000, 800), (500, 400), 1.2, |index| {
             looked_up.push(index);
             false
         });

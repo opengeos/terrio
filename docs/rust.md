@@ -308,6 +308,28 @@ let small = cog.read_resampled(&options)?; // the 512 x 512 overview's tiles, ge
 # Ok::<(), terrio::Error>(())
 ```
 
+Use `WindowSampling::Integer` to match GDAL's nearest-neighbour `RasterIO` with an integer
+window. It requires whole-pixel offsets and sizes within the raster and rounds the window
+at each overview, including an explicitly selected level. The output georeferencing uses
+the requested full-resolution window. `WindowSampling::Fractional` is the default, even
+when all four window coordinates are whole numbers.
+
+```rust,no_run
+use terrio::{ResampledReadOptions, WindowSampling};
+
+let mut raster = terrio::open_raster_lazy("terrain.tif")?;
+let options = ResampledReadOptions {
+    window: Some((3.0, 5.0, 61.0, 47.0)),
+    size: (17, 23),
+    ..Default::default()
+};
+let pixels = raster.read_resampled_with_sampling(&options, WindowSampling::Integer)?;
+# Ok::<(), terrio::Error>(())
+```
+
+The mask methods also accept the mode through `read_resampled_masks_with_sampling` and
+`read_resampled_with_masks_and_sampling`.
+
 - `OverviewSelection::Auto` (the default) chooses as `GDALBandGetBestOverviewLevel2`: when the
   output is smaller than the window, the least reduced axis sets the desired reduction, and full
   resolution then each overview is a candidate below that times 1.2 for nearest neighbour or 1.0

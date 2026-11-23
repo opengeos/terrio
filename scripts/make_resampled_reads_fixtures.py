@@ -30,6 +30,8 @@ The `--mask-control` mode writes a separate GDAL 3.13.3 control for the masked e
 cubic 26×41 case. Only its first image/mask flags are normalized from 1/5 to 0/4,
 so GDAL uses the stored mask. Historical raw references are kept unchanged.
 
+The `--integer-windows` mode writes the GDAL 3.13.2 integer-window nearest-neighbour cases.
+
 Generation requires GDAL 3.13.3 and refreshes only the RGB, mixed-metadata and masked external
 fixtures plus the mixed internal fixture. Existing GDAL 3.13.2 cases and their TIFFs are kept
 unchanged. Every case records its oracle version; reproducing the historical cases requires
@@ -362,6 +364,20 @@ class RasterIO:
         assert err == 0, (window, size)
         return out
 
+    def read_integer_band(self, band: Any, window: tuple[int, int, int, int], size: tuple[int, int],
+                          only_this_scale: bool) -> np.ndarray:
+        """Read an integer window, optionally with overview selection disabled for this band."""
+        bw, bh = size
+        dtype = self.gdal_array_type(self.gdal.GetDataTypeName(band.DataType))
+        out = np.zeros((bh, bw), dtype)
+        extra = self.extra(window, self.gdal.GRIORA_NearestNeighbour)
+        extra.bFloatingPointWindowValidity = 0
+        extra.bUseOnlyThisScale = only_this_scale
+        err = self.lib.GDALRasterIOEx(int(band.this), 0, *window, out.ctypes.data_as(self.ctypes.c_void_p), bw, bh,
+                                      band.DataType, 0, 0, self.ctypes.byref(extra))
+        assert err == 0, (window, size)
+        return out
+
     @staticmethod
     def gdal_array_type(name: str) -> Any:
         return {"Byte": np.uint8, "UInt16": np.uint16, "Int16": np.int16, "Float32": np.float32}[name]
@@ -464,11 +480,82 @@ def write_mask_control(gdal: Any) -> None:
     (OUT / "expected_mask_control.json.gz").write_bytes(gzip.compress(text.encode(), mtime=0))
 
 
+def write_integer_windows(gdal: Any) -> None:
+    """Recreate #1219's rasters and freeze the results of integer-window RasterIO."""
+    expected = []
+    rasterio = RasterIO(gdal)
+    nearest = gdal.GRIORA_NearestNeighbour
+
+    def case(name, window, size, bands=(1,), overview="AUTO", level_window=None, compare_fractional=False):
+        with gdal.Open(str(OUT / name)) as ds:
+            source_window = window or (0, 0, ds.RasterXSize, ds.RasterYSize)
+            source_bands = [ds.GetRasterBand(b) for b in bands]
+            if overview not in ("AUTO", "NONE"):
+                source_bands = [b.GetOverview(int(overview)) for b in source_bands]
+            read = lambda b: rasterio.read_integer_band(b, level_window or source_window, size, overview != "AUTO")
+            data = np.stack([read(b) for b in source_bands])
+            masks = np.stack([read(b.GetMaskBand()) for b in source_bands])
+            result = dict(file=name, window=window, size=size, bands=bands, overview=overview, resampling="nearest",
+                          dtype=data.dtype.name, data=hexa(data), masks=hexa(masks), gdal_version=gdal.__version__)
+            if compare_fractional:
+                result["fractional_data"] = hexa(rasterio.read(ds, list(bands), source_window, size, nearest))
+            expected.append(result)
+
+    pixels = np.arange(97 * 83, dtype=np.float32).reshape(83, 97)
+    window = (3, 5, 61, 47)
+    with gdal.config_options({"COMPRESS_OVERVIEW": "DEFLATE", "GDAL_TIFF_OVR_BLOCKSIZE": "64"}):
+        for layout, access in [("internal", gdal.GA_Update), ("external", gdal.GA_ReadOnly)]:
+            name = f"integer_{layout}.tif"
+            path = OUT / name
+            for suffix in (".ovr", ".msk", ".msk.ovr"):
+                (OUT / (name + suffix)).unlink(missing_ok=True)
+            with gdal.GetDriverByName("GTiff").Create(str(path), 97, 83, 1, gdal.GDT_Float32, ["COMPRESS=DEFLATE"]) as ds:
+                ds.SetGeoTransform([500000.0, 30.0, 0.0, 4100000.0, 0.0, -30.0])
+                ds.GetRasterBand(1).WriteArray(pixels)
+            with gdal.Open(str(path), access) as ds:
+                ds.BuildOverviews("AVERAGE", [2, 4])
+            if layout == "external":
+                # Build an external pyramid for the independent dataset mask, too.
+                with gdal.config_option("GDAL_TIFF_INTERNAL_MASK", "NO"), gdal.Open(str(path), gdal.GA_Update) as ds:
+                    band = ds.GetRasterBand(1)
+                    band.CreateMaskBand(gdal.GMF_PER_DATASET)
+                    mask = np.full(pixels.shape, 255, dtype=np.uint8)
+                    mask[17:40, 10:55] = 0
+                    mask[45:75, 70:94] = 0
+                    band.GetMaskBand().WriteArray(mask)
+                with gdal.Open(str(path) + ".msk") as ds:
+                    ds.BuildOverviews("NEAREST", [2, 4])
+            for size in [(17, 23), (17, 1), (1, 23)]:
+                case(name, window, size, compare_fractional=True)
+            case(name, (1, 1, 85, 72), (27, 23))
+            case(name, None, (31, 27))
+
+    # Force the first image of an external .ovr, which would otherwise choose again.
+    case("integer_external.tif", (1, 1, 85, 72), (27, 23), overview="0", level_window=(1, 1, 43, 36))
+    case("masked_external_overviews.tif", window, (17, 23), overview="1", level_window=(1, 1, 16, 12))
+    # At the lower-right corner the offset and size clamp to the overview's last pixel.
+    case("integer_internal.tif", (96, 82, 1, 1), (3, 5), overview="1", level_window=(24, 20, 1, 1))
+    case("integer_internal.tif", window, (17, 23), overview="NONE")
+    case("integer_internal.tif", window, (31, 24))
+    case("rgb_mask.tif", (3, 5, 54, 38), (13, 9), bands=(3, 1))
+    case("rgb_mask.tif", (3, 5, 54, 38), (13, 9), overview="0", level_window=(2, 3, 27, 19))
+    case("sidecar_mask.tif", (3, 5, 45, 31), (11, 7), bands=(2, 1))
+    case("u16_nodata.tif", (31, 3, 34, 28), (11, 9))
+    case("rgba.tif", (3, 5, 42, 30), (10, 7), bands=(1, 4))
+    case("u16_alpha.tif", (3, 5, 35, 24), (16, 11), bands=(1, 2))
+    case("u16_alpha.tif", (3, 5, 35, 24), (16, 11), overview="0", level_window=(2, 3, 18, 12))
+    case("rgb_external_overviews.tif", (1, 1, 85, 72), (27, 23), bands=(3, 1, 2))
+    text = json.dumps(expected, separators=(",", ":")) + "\n"
+    (OUT / "expected_integer_windows.json.gz").write_bytes(gzip.compress(text.encode(), mtime=0))
+    print(f"{len(expected)} integer-window cases")
+
+
 def main() -> int:
     global OUT
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--check-rasterio", action="store_true")
     parser.add_argument("--mask-control", action="store_true")
+    parser.add_argument("--integer-windows", action="store_true")
     args = parser.parse_args()
     if args.check_rasterio:
         expected = json.loads(gzip.decompress((OUT / "expected.json.gz").read_bytes()))
@@ -478,6 +565,11 @@ def main() -> int:
     from osgeo import gdal
 
     gdal.UseExceptions()
+    if args.integer_windows:
+        if gdal.__version__ != "3.13.2":
+            parser.error(f"GDAL 3.13.2 is the pinned integer-window reference, not {gdal.__version__}")
+        write_integer_windows(gdal)
+        return 0
     if gdal.__version__ != "3.13.3":
         print(f"GDAL 3.13.3 is the pinned generator reference, not {gdal.__version__}", file=sys.stderr)
         return 1
