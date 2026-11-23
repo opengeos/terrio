@@ -655,9 +655,10 @@ fn unsupported_resampling(name: &str) -> Error {
     ))
 }
 
-/// Whether a creation option value means yes.
+/// The warning for a requested sparse COG, whose tiles are always written.
 pub(crate) const SPARSE_COG_WARNING: &str = "SPARSE_OK is not supported for COGs: every tile is written";
 
+/// Whether a creation option value means yes.
 pub(crate) fn yes(v: &str) -> bool {
     matches!(v.to_ascii_uppercase().as_str(), "YES" | "TRUE" | "ON" | "1")
 }
