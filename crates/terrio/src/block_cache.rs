@@ -43,10 +43,13 @@
 //! from the cache, rather than decode the band again (readers that miss it at the same time each
 //! decode it): on Unix, the version is the file's device, inode, size and modification and change
 //! times, and how its values are decoded (`GRIB_NORMALIZE_UNITS`); elsewhere each reader keeps its
-//! own. A version's bands are dropped when its last reader is closed. A file replaced since is
-//! another version, whose readers never see them, and so is a file changed in place whose size or
-//! times show the change (times of a coarse resolution may not): close the readers of a file before
-//! changing it in place.
+//! own. A reader opened less than 2 seconds after the file's last change keeps its own too: a
+//! second change within the same tick of the file's timestamps would leave its version as it was. A
+//! version's bands are dropped when its last reader is closed. A file replaced since is another
+//! version, whose readers never see them, and so is a file changed in place after its readers were
+//! opened, whose times then show the change (unless they come from a network file system's server
+//! whose clock is more than those 2 seconds behind the reader's): close the readers of a file
+//! before changing it in place, as they read it as it is when they read.
 //!
 //! ```no_run
 //! use terrio::{Window, WindowOptions};
@@ -408,6 +411,13 @@ pub(crate) fn entry_cost(bytes: u64) -> u64 {
     bytes.saturating_add(ENTRY_OVERHEAD)
 }
 
+/// How long a local file must have gone unchanged for its readers to share its chunks
+/// ([`Handle::of_file`]): two changes in place within one tick of a file system's timestamps (a
+/// clock tick, one or two seconds on some file systems, such as FAT's 2 s) leave the file's size and
+/// times, and so its version, as they were.
+#[cfg(feature = "grib")]
+const SETTLE: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// A version of a local file, and how a reader decodes it (`variant`): what the readers that share
 /// a [`Handle`] have in common.
 #[cfg(feature = "grib")]
@@ -443,6 +453,18 @@ impl FileVersion {
     fn of(_m: &std::fs::Metadata, _variant: u64) -> Option<Self> {
         None
     }
+
+    /// Whether the file's modification and change times are [`SETTLE`] or more before `now`, so
+    /// that any change to it from `now` on shows in its times: a later change in place keeps its
+    /// version only within one tick of the change that gave it.
+    fn settled(&self, now: std::time::SystemTime) -> bool {
+        let ns = |(s, n): (i64, i64)| i128::from(s) * 1_000_000_000 + i128::from(n);
+        let now = match now.duration_since(std::time::UNIX_EPOCH) {
+            Ok(after) => after.as_nanos() as i128,
+            Err(before) => -(before.duration().as_nanos() as i128),
+        };
+        now - ns(self.modified).max(ns(self.changed)) >= SETTLE.as_nanos() as i128
+    }
 }
 
 /// The identity of an open reader's chunks in the cache, given back when the reader drops it: its
@@ -465,9 +487,17 @@ impl Handle {
     /// it (`variant`): a version is the file's device, inode, size, and modification and change
     /// times. A file replaced since is another version, and so is a file changed in place whose
     /// size or times show the change (see the module's documentation). A handle of the reader's
-    /// own where the identity of a file is not known (other systems than Unix).
+    /// own where the identity of a file is not known (other systems than Unix), and for a file
+    /// changed less than [`SETTLE`] before the reader is opened: a second change within the same
+    /// tick of its timestamps would keep its version, and a reader opened after it would be given
+    /// the bands its readers decoded before it.
     pub(crate) fn of_file(metadata: &std::fs::Metadata, variant: u64) -> Self {
-        match FileVersion::of(metadata, variant) {
+        Self::of_version(FileVersion::of(metadata, variant).filter(|v| v.settled(std::time::SystemTime::now())))
+    }
+
+    /// The handle the open readers of `version` share, or one of the reader's own without one.
+    fn of_version(version: Option<FileVersion>) -> Self {
+        match version {
             Some(version) => Self { id: cache().share(version), shared: Some(version) },
             None => Self::new(),
         }
@@ -669,7 +699,8 @@ pub(crate) mod tests {
     /// Catches the chunks of a file's readers kept apart, dropped while another reader of the file
     /// is open, or kept once none is: the open readers of one version of a file share a handle
     /// until the last is dropped; the file decoded otherwise, or changed to another size, is
-    /// another version. A reader's own handle takes its chunks with it when it is dropped.
+    /// another version. A reader's own handle takes its chunks with it when it is dropped. (The
+    /// versions are shared here as they would be once settled; see the next test.)
     #[cfg(all(unix, feature = "grib"))]
     #[test]
     fn the_readers_of_a_file_version_share_its_chunks_until_the_last_is_dropped() {
@@ -677,24 +708,50 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("f");
         std::fs::write(&path, b"one").unwrap();
-        let version = || std::fs::File::open(&path).unwrap().metadata().unwrap();
-        let (a, b) = (Handle::of_file(&version(), 0), Handle::of_file(&version(), 0));
+        let version = |variant| FileVersion::of(&std::fs::File::open(&path).unwrap().metadata().unwrap(), variant);
+        let (a, b) = (Handle::of_version(version(0)), Handle::of_version(version(0)));
         assert_eq!(a.id(), b.id());
-        assert_ne!(Handle::of_file(&version(), 1).id(), a.id());
+        assert_ne!(Handle::of_version(version(1)).id(), a.id());
         insert(a.id(), 0, 0, chunk(100, 1), (1, 1));
         drop(a);
         assert!(contains(b.id(), 0, 0), "a reader is left");
         let id = b.id();
         drop(b);
         assert!(!contains(id, 0, 0), "no reader is left");
-        let c = Handle::of_file(&version(), 0);
+        let c = Handle::of_version(version(0));
         std::fs::write(&path, b"other").unwrap();
-        assert_ne!(Handle::of_file(&version(), 0).id(), c.id());
+        assert_ne!(Handle::of_version(version(0)).id(), c.id());
         let own = Handle::new();
         insert(own.id(), 0, 0, chunk(100, 1), (1, 1));
         let id = own.id();
         drop(own);
         assert!(!contains(id, 0, 0), "a reader's own handle");
+    }
+
+    /// Catches a file changed in place within one tick of its timestamps giving a reader opened
+    /// after the change the bands decoded before it: the readers of a file changed less than
+    /// `SETTLE` (2 s) before they are opened keep their own handles, and a version is settled
+    /// only once both its modification and change times are that far back, so a file whose
+    /// modification time is set an hour back, which changes it now, is not.
+    #[cfg(all(unix, feature = "grib"))]
+    #[test]
+    fn a_file_changed_less_than_two_seconds_ago_keeps_its_readers_apart() {
+        use std::os::unix::fs::MetadataExt;
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+        let _serial = cache_test_guard(10_000);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f");
+        std::fs::write(&path, b"one").unwrap();
+        let metadata = || std::fs::metadata(&path).unwrap();
+        let (a, b) = (Handle::of_file(&metadata(), 0), Handle::of_file(&metadata(), 0));
+        assert_ne!(a.id(), b.id(), "written just now");
+        let file = std::fs::File::options().write(true).open(&path).unwrap();
+        file.set_modified(SystemTime::now() - Duration::from_secs(3600)).unwrap();
+        let m = metadata();
+        let changed = UNIX_EPOCH + Duration::new(m.ctime() as u64, m.ctime_nsec() as u32);
+        let version = FileVersion::of(&m, 0).unwrap();
+        assert!(!version.settled(changed + SETTLE - Duration::from_nanos(1)), "modified an hour back, changed now");
+        assert!(version.settled(changed + SETTLE));
     }
 
     #[test]

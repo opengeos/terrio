@@ -421,12 +421,14 @@ The chunks belong to the open reader that decoded them. On Unix, a local GRIB fi
 to the version of the file read (its device, inode, size, and modification and change times) and
 to how its values are decoded (`GRIB_NORMALIZE_UNITS`): the readers of that version open at once
 (such as those Python opens to read a raster from several threads) share them until the last is
-closed. When another file is renamed over a local
+closed, once the file has gone unchanged for 2 seconds. A reader opened sooner after a change keeps
+its bands to itself, since a second change within the same tick of the file's timestamps would leave
+its version as it was. When another file is renamed over a local
 file's path, an open reader goes on reading the original and a reader opened afterwards reads the
 replacement. A file changed in place is not snapshotted: a read may combine cached chunks of the
-old pixels with chunks decoded from the new ones, and a GRIB reader opened after the change, while
-another is open, may be given bands of the old bytes when the file's size and times do not show the
-change (times of a coarse resolution may not). So close its readers before changing it in place
+old pixels with chunks decoded from the new ones. A GRIB reader opened after the change is not given
+bands of the old bytes, unless the file's times come from a network file system's server whose
+clock is more than 2 seconds behind the reader's. So close its readers before changing it in place
 and open them again afterwards. A remote file
 opened again decodes its chunks anew, but from the bytes the HTTP cache above may still hold for its
 URL: `terrio::http::clear_cache` (Python: `terrio.clear_http_cache()`) drops them.

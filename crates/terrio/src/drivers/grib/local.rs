@@ -253,8 +253,9 @@ mod tests {
     /// Catches a local GRIB file read whole, at open or when a band is read: opening reads two
     /// pages a message (its first octets, then its header with the previous message's end
     /// marker) and one more, a read of a band its message and nothing else, and a band in the
-    /// block cache nothing: another reader of the file finds it there too, with no miss. The
-    /// values of each window, decoded or from the cache, are those of the file read whole.
+    /// block cache nothing. Another reader, opened as the file was written less than 2 seconds
+    /// before, decodes the band itself (the next test shares it). The values of each window,
+    /// decoded or from the cache, are those of the file read whole.
     #[test]
     fn a_local_file_is_read_by_message() {
         let _serial = cache_test_guard(64 << 20);
@@ -285,8 +286,32 @@ mod tests {
             take_lookups();
             let before = bytes_read();
             assert_eq!(window(&mut other, 2, rows), expected(rows));
-            assert_eq!((bytes_read() - before, take_lookups()), (0, (1, 0)), "another reader of the file shares band 2");
+            let decoded = (spans[1].1 as u64, (0, 1));
+            assert_eq!((bytes_read() - before, take_lookups()), decoded, "a reader of a file changed just now keeps its own bands");
         }
+    }
+
+    /// Catches the readers of a local file that has gone unchanged for 2 seconds kept apart: of two
+    /// readers opened then, the second finds band 2 in the block cache as the first decoded it,
+    /// with no miss and nothing read.
+    #[cfg(unix)]
+    #[test]
+    fn the_readers_of_a_file_unchanged_for_two_seconds_share_its_bands() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, bytes) = grib_file(dir.path(), 1024, 300, 3);
+        std::thread::sleep(std::time::Duration::from_millis(2100));
+        let _serial = cache_test_guard(64 << 20);
+        let whole = super::super::read_bytes(&bytes).unwrap();
+        let rows = Window::new(7, 100, 1000, 180);
+        let at = |r: usize, c: usize| whole.raster.data.get_f64(1024 * 300 + r * 1024 + c);
+        let expected: Vec<f64> =
+            (rows.y..rows.y + rows.height).flat_map(|r| (rows.x..rows.x + rows.width).map(move |c| at(r, c))).collect();
+        let (mut first, mut second) = (crate::LazyRaster::open(&path).unwrap(), crate::LazyRaster::open(&path).unwrap());
+        assert_eq!(window(&mut first, 2, rows), expected);
+        take_lookups();
+        let before = bytes_read();
+        assert_eq!(window(&mut second, 2, rows), expected);
+        assert_eq!((bytes_read() - before, take_lookups()), (0, (1, 0)), "another reader of the file shares band 2");
     }
 
     /// Catches the header of a GRIB1 message read with its bitmap's body, which it does not need, or
