@@ -39,7 +39,8 @@ PMTiles tiles, FlatGeobuf features) prefetches them: when they fit in the block 
 (`TERRIO_HTTP_CACHE_SIZE`), they are requested together (8 requests in flight at a time while
 `TERRIO_HTTP_MULTIRANGE` is on, the default), wherever they are in the file, the oldest blocks
 outside them dropped to make room; a larger prefetch, and reads without one, are fetched in batches
-of half the cache as they are read.
+of half the cache as they are read. A reader that stops before reading all it prefetched has still
+downloaded it: up to the cache's size, where a batch of half the cache was the most before.
 
 A full lazy TIFF open reads the image-directory chain, including overview and mask metadata.
 An unreadable directory or required next-directory pointer fails the open with its read cause;
