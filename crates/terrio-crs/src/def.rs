@@ -1754,7 +1754,8 @@ impl Def {
         }
         match self.ops.as_slice() {
             [op] if !op.ballpark && !op.steps.is_empty() => {
-                let wgs84 = Def::new(&SpatialRef { epsg: Some(4326), ..Default::default() }).ok()?;
+                let mut wgs84 = Def::new(&SpatialRef { epsg: Some(4326), ..Default::default() }).ok()?;
+                wgs84.area = None;
                 Some((wgs84, op.clone()))
             }
             _ => None,

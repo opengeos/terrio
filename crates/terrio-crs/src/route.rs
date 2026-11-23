@@ -1368,7 +1368,8 @@ fn ballpark_op(src: &Def, dst: &Def) -> Op {
 /// PROJ's ballpark from the hub), which this search drops only when a transformation that needs
 /// no grid holds the area of interest, as PROJ does (a bound CRS to DHDN into ETRS89 keeps it,
 /// which the codes' own list drops). With no transformation from the hub but that ballpark, PROJ
-/// excludes it ("artificial transformations from the hub"): no shift. `None` when neither CRS alone is bound to a hub, or
+/// excludes it ("artificial transformations from the hub"): no shift, which ALLOW_BALLPARK=NO
+/// refuses as a ballpark. `None` when neither CRS alone is bound to a hub, or
 /// the search from the hub is not one of a list or chains.
 fn shifted(src: &Def, dst: &Def, all: bool) -> Option<Kind> {
     let (hub, shift, forward) = match (src.hub(), dst.hub()) {
