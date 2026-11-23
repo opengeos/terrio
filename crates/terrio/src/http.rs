@@ -54,6 +54,23 @@ use ureq::unversioned::transport::{Buffers, ConnectionDetails, Connector, Defaul
 pub(crate) mod store;
 mod tls;
 
+/// The request slots each run of a fetch may split into, from the runs' lengths: up to `slots`
+/// runs take one slot each and share the others by length, the slots a floor share leaves going
+/// to the largest remainders; more runs share all the slots by length (and are a piece each at
+/// least). The shares sum to at most `slots`.
+fn slot_shares(lens: &[u64], slots: u64) -> Vec<u64> {
+    let total = lens.iter().sum::<u64>().max(1);
+    let runs = lens.len() as u64;
+    let (base, spare) = if runs <= slots { (1, slots - runs) } else { (0, slots) };
+    let mut shares: Vec<u64> = lens.iter().map(|len| base + len * spare / total).collect();
+    let mut by_remainder: Vec<usize> = (0..lens.len()).collect();
+    by_remainder.sort_by_key(|&i| std::cmp::Reverse(lens[i] * spare % total));
+    for &i in by_remainder.iter().take(slots.saturating_sub(shares.iter().sum()) as usize) {
+        shares[i] += 1;
+    }
+    shares
+}
+
 /// Redirects followed before giving up.
 const MAX_REDIRECTS: u32 = 10;
 
@@ -2688,15 +2705,7 @@ impl Shared {
         if self.client.options.parallel_ranges {
             let slots = PARALLEL_RUNS as u64;
             let lens: Vec<u64> = spans.iter().map(|(start, end)| end - start + 1).collect();
-            let total: u64 = lens.iter().sum();
-            let runs = lens.len() as u64;
-            let (base, spare) = if runs <= slots { (1, slots - runs) } else { (0, slots) };
-            let mut shares: Vec<u64> = lens.iter().map(|len| base + len * spare / total.max(1)).collect();
-            let mut by_remainder: Vec<usize> = (0..lens.len()).collect();
-            by_remainder.sort_by_key(|&i| std::cmp::Reverse(lens[i] * spare % total.max(1)));
-            for &i in by_remainder.iter().take(slots.saturating_sub(shares.iter().sum()) as usize) {
-                shares[i] += 1;
-            }
+            let shares = slot_shares(&lens, slots);
             let least = SPLIT_RUN_BYTES.div_ceil(self.block_size).max(1);
             spans = spans
                 .into_iter()
@@ -2902,7 +2911,7 @@ impl Shared {
                 missing.retain(|b| !self.blocks.contains_key(b));
             }
             if self.whole.is_none() && !missing.is_empty() {
-                // Requests of at most half the cache's blocks, as a prefetch's batches are.
+                // Requests of at most half the cache's blocks, as a prefetch's later batches are.
                 let batch = (self.max_blocks / 2).max(1);
                 for chunk in missing.chunks(batch) {
                     self.fetch_blocks(chunk, 0)?;
@@ -4065,6 +4074,18 @@ mod tests {
             assert_eq!(read_range(&mut r, off, len as usize), data[off as usize..(off + len) as usize]);
         }
         assert_eq!(seen.lock().unwrap().len(), before + 3, "the reads needed no other request");
+    }
+
+    #[test]
+    fn slot_shares_give_each_run_a_slot_and_split_the_rest_by_length() {
+        assert_eq!(slot_shares(&[100], 8), [8]);
+        assert_eq!(slot_shares(&[10, 10, 10], 8), [3, 3, 2]);
+        assert_eq!(slot_shares(&[10240, 512], 8), [7, 1]);
+        assert_eq!(slot_shares(&[1; 8], 8), [1; 8]);
+        // More runs than slots: shares by length, some 0 (a piece each through the slots).
+        let many = slot_shares(&[50, 1, 1, 1, 1, 1, 1, 1, 1, 1], 8);
+        assert!(many.iter().sum::<u64>() <= 8 && many[0] >= 7, "{many:?}");
+        assert_eq!(slot_shares(&[], 8), Vec::<u64>::new());
     }
 
     // A run of 40 MiB and one of 2 MiB take 7 slots and 1: every run has its slot, so the pieces
