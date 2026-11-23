@@ -2442,7 +2442,7 @@ impl RangeReader {
             return Ok(());
         }
         s.plan = wanted.into();
-        s.fetch_planned(0, true)
+        s.fetch_planned(0, true) // the first batch
     }
 
     fn lock(&self) -> io::Result<std::sync::MutexGuard<'_, Shared>> {
@@ -2548,37 +2548,40 @@ impl Shared {
     }
 
     /// Fetches the next batch of the prefetch's blocks from its `from`th, those not cached: the
-    /// whole plan, when `whole` (a prefetch's first batch) and its requests fetch at most the
+    /// whole plan, when `first_batch` (a prefetch's first) and its requests fetch at most the
     /// cache's room left (at least half the cache), as no batch follows; otherwise those fetching
     /// at most half the cache's blocks, so that the batch being read stays while the next one is
     /// fetched. A batch counts the blocks its requests fetch, the gaps merged into them included,
     /// not the bytes between them: the rows of tiles of a window, far apart in the file, are
     /// fetched together. They leave the plan, so that a block read again once evicted is fetched
     /// alone.
-    fn fetch_planned(&mut self, from: usize, whole: bool) -> io::Result<()> {
+    fn fetch_planned(&mut self, from: usize, first_batch: bool) -> io::Result<()> {
         const GAP: u64 = 2;
         let half = (self.max_blocks / 2).max(1) as u64;
         // The room left in the cache, never less than the half-cache batch, so that the cache
         // holds at most its size and a half, as before a whole plan was fetched at once.
-        let all = if whole { self.max_blocks.saturating_sub(self.blocks.len()).max(half as usize) as u64 } else { half };
+        let budget = if first_batch { self.max_blocks.saturating_sub(self.blocks.len()).max(half as usize) as u64 } else { half };
         let (mut next, mut fetched, mut to) = (Vec::<u64>::new(), 0u64, from);
         // Where the first half-cache batch ends: (plan index, blocks of `next`).
         let mut half_batch = None;
         while let Some(&b) = self.plan.get(to) {
             if !self.blocks.contains_key(&b) {
                 // A block within GAP of the last one is fetched with the gap between them.
-                fetched += next.last().map_or(1, |&last| if b - last <= GAP + 1 { b - last } else { 1 });
+                fetched += match next.last() {
+                    Some(&last) if b - last <= GAP + 1 => b - last,
+                    _ => 1,
+                };
                 if fetched > half && half_batch.is_none() {
                     half_batch = Some((to, next.len()));
                 }
-                if fetched > all {
+                if fetched > budget {
                     break;
                 }
                 next.push(b);
             }
             to += 1;
         }
-        if fetched > all
+        if fetched > budget
             && let Some((end, blocks)) = half_batch
         {
             to = end;
@@ -2845,7 +2848,7 @@ impl Shared {
             let mut missing: Vec<u64> = (pos / bs..=(end - 1) / bs).filter(|b| !self.blocks.contains_key(b)).collect();
             // A block the prefetch asked for: its next batch, from there.
             if let Some(at) = missing.iter().find_map(|b| self.plan.binary_search(b).ok()) {
-                self.fetch_planned(at, false)?;
+                self.fetch_planned(at, false)?; // a next batch
                 missing.retain(|b| !self.blocks.contains_key(b));
             }
             if self.whole.is_none() && !missing.is_empty() {

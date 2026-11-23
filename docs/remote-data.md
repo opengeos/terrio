@@ -28,10 +28,10 @@ replace an earlier one. The optional GDAL backend does not retry these ambiguous
 GeoTIFFs and COGs are opened lazily: `terrio info` fetches the header only, and window or overview
 reads fetch only the tiles they touch, merging adjacent ranges into one request (including GeoTIFF
 members of seek-optimized ZIP archives, SOZip, over `/vsizip//vsicurl/`). The tiles of a read
-are requested together, up to 8 requests at once, wherever its rows of tiles are in the file, when
-they fit in the block cache (`TERRIO_HTTP_CACHE_SIZE`); a larger read is fetched in batches of half
-the cache as it is decoded. PMTiles archives, Zarr stores, JPEG 2000, GRIB, SRTM HGT, STAC tiled
-assets, COPC and EPT are read in place too
+are requested together, 8 requests in flight at a time, wherever its rows of tiles are in the
+file, when they fit in the block cache (`TERRIO_HTTP_CACHE_SIZE`); a larger read is fetched in
+batches of half the cache as it is decoded. PMTiles archives, Zarr stores, JPEG 2000, GRIB, SRTM
+HGT, STAC tiled assets, COPC and EPT are read in place too
 (below), and WFS (`WFS:`), OGC API Features (`OAPIF:`) and ArcGIS feature-service queries
 (`ESRIJSON`, `ESRIPBF`) are read page by page (see [Formats](formats.md#vectors)). Other formats are downloaded to a temporary
 directory first; a remote shapefile's `.shx`, `.dbf`, `.prj` and `.cpg`
