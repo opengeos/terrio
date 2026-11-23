@@ -27,16 +27,18 @@ replace an earlier one. The optional GDAL backend does not retry these ambiguous
 
 GeoTIFFs and COGs are opened lazily: `terrio info` fetches the header only, and window or overview
 reads fetch only the tiles they touch, merging adjacent ranges into one request (including GeoTIFF
-members of seek-optimized ZIP archives, SOZip, over `/vsizip//vsicurl/`). The tiles of a window
-are requested together, 8 requests in flight at a time, wherever its rows of tiles are in the
-file, when a prefetch of them fits in the block cache (`TERRIO_HTTP_CACHE_SIZE`), the oldest
-blocks outside its ranges dropped to make room; other reads are fetched in batches of half the
-cache as they are decoded. PMTiles archives, Zarr stores, JPEG 2000, GRIB, SRTM HGT, STAC tiled
-assets, COPC and EPT are read in place too
+members of seek-optimized ZIP archives, SOZip, over `/vsizip//vsicurl/`). PMTiles archives,
+Zarr stores, JPEG 2000, GRIB, SRTM HGT, STAC tiled assets, COPC and EPT are read in place too
 (below), and WFS (`WFS:`), OGC API Features (`OAPIF:`) and ArcGIS feature-service queries
 (`ESRIJSON`, `ESRIPBF`) are read page by page (see [Formats](formats.md#vectors)). Other formats are downloaded to a temporary
 directory first; a remote shapefile's `.shx`, `.dbf`, `.prj` and `.cpg`
 come with it.
+
+A reader that knows the ranges it will read (a COG window's tiles, a GeoParquet filter's
+columns, PMTiles tiles, FlatGeobuf features) prefetches them: when they fit in the block cache
+(`TERRIO_HTTP_CACHE_SIZE`), they are requested together, 8 requests in flight at a time,
+wherever they are in the file, the oldest blocks outside them dropped to make room; a larger
+prefetch, and reads without one, are fetched in batches of half the cache as they are read.
 
 A full lazy TIFF open reads the image-directory chain, including overview and mask metadata.
 An unreadable directory or required next-directory pointer fails the open with its read cause;
