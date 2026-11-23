@@ -2644,7 +2644,8 @@ impl Shared {
 
     /// Fetches the next batch of the prefetch's blocks from its `from`th, those not cached: the
     /// whole plan when its requests fetch at most `budget` blocks ([`Shared::fit_budget`] for a
-    /// prefetch's first batch, [`Shared::half_cache`] after), as no batch follows; otherwise a
+    /// prefetch's first batch, [`Shared::half_cache`] after; a smaller budget counts as half the
+    /// cache), as no batch follows; otherwise a
     /// batch of half the cache, even when `budget` is larger, so that the batch being read stays
     /// while the next one is fetched. A batch counts the blocks its requests fetch, the gaps
     /// merged into them included, not the bytes between them: the rows of tiles of a window, far
@@ -4117,6 +4118,24 @@ mod tests {
         let many = slot_shares(&[50, 1, 1, 1, 1, 1, 1, 1, 1, 1], 8);
         assert!(many.iter().sum::<u64>() <= 8 && many[0] >= 7, "{many:?}");
         assert_eq!(slot_shares(&[], 8), Vec::<u64>::new());
+    }
+
+    // A prefetch that cannot fit beside the cached blocks its ranges cover drops nothing to make
+    // room: its first batch is half the cache, as a larger plan's is.
+    #[test]
+    fn a_plan_that_cannot_fit_beside_its_cached_blocks_drops_nothing() {
+        let data = test_data();
+        let (url, _seen) = test_server(data.clone());
+        // 20 blocks of cache, full of blocks 10 to 29; the prefetch covers 15 of them and plans
+        // 10 new blocks: 25 do not fit in 20.
+        let opts = HttpOptions { cache_size: 20 * 4096, ..options() };
+        let mut r = RangeReader::open_with(&Remote::Url(format!("{url}/no-room.bin")), opts).unwrap();
+        assert_eq!(read_range(&mut r, 10 * 4096, 20 * 4096), data[10 * 4096..30 * 4096]);
+        r.prefetch(&[(15 * 4096, 15 * 4096), (40 * 4096, 10 * 4096)]).unwrap();
+        let s = r.lock().unwrap();
+        assert!((10..30).chain(40..50).all(|b| s.blocks.contains_key(&b)), "no block of the earlier read dropped, the new ones fetched");
+        drop(s);
+        assert_eq!(read_range(&mut r, 40 * 4096, 10 * 4096), data[40 * 4096..50 * 4096]);
     }
 
     // A run of 40 MiB and one of 2 MiB take 7 slots and 1: every run has its slot, so the pieces
