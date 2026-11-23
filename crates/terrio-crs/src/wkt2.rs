@@ -931,18 +931,38 @@ impl Geodetic {
     }
 
     fn converted(&self, proj: String) -> Converted {
-        // A WKT 1 `GEOGCS` of the datum, for identifying it by name when it has no code.
-        let q = |s: &str| s.replace('"', "\"\"");
-        let geogcs_wkt1 = format!(
-            "GEOGCS[\"{}\",DATUM[\"{}\",SPHEROID[\"{}\",{},{}]],PRIMEM[\"Greenwich\",{}],UNIT[\"degree\",0.0174532925199433]]",
-            q(self.name.as_deref().unwrap_or("unknown")),
-            q(&self.datum_name),
-            q(&self.ellipsoid_name),
-            self.a,
-            self.rf,
-            self.pm
-        );
-        Converted { proj, geogcs: self.node.clone(), geog: self.geog, geogcs_wkt1: Some(geogcs_wkt1), bound: None, helmert: None }
+        let datum = DatumOf {
+            crs_name: self.name.clone().unwrap_or_else(|| "unknown".into()),
+            datum_name: self.datum_name.clone(),
+            ellipsoid_name: self.ellipsoid_name.clone(),
+            a: self.a,
+            rf: self.rf,
+            pm: self.pm,
+        };
+        Converted { proj, geogcs: self.node.clone(), geog: self.geog, datum: Some(datum), bound: None, helmert: None }
+    }
+}
+
+/// A WKT 2 geodetic CRS's datum, as [`crate::identify_datum`] identifies it when it has no code:
+/// the CRS's, datum's and ellipsoid's names (`unknown` when unnamed), the ellipsoid, and the prime
+/// meridian in degrees.
+#[derive(Debug, Clone)]
+pub(crate) struct DatumOf {
+    pub crs_name: String,
+    pub datum_name: String,
+    pub ellipsoid_name: String,
+    pub a: f64,
+    /// The inverse flattening, 0 for a sphere.
+    pub rf: f64,
+    pub pm: f64,
+}
+
+impl DatumOf {
+    /// A geographic CRS in degrees on the datum, as a PROJ string.
+    pub(crate) fn proj(&self) -> String {
+        let shape = if self.rf == 0.0 { format!("+b={}", self.a) } else { format!("+rf={}", self.rf) };
+        let pm = if self.pm != 0.0 { format!(" +pm={}", self.pm) } else { String::new() };
+        format!("+proj=longlat +a={} {shape}{pm}", self.a)
     }
 }
 

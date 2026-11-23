@@ -1101,9 +1101,9 @@ impl Def {
         };
         // Or on its datum but another prime meridian, which the definition applies itself.
         let fits = |g: &u32| own.as_deref().is_none_or(|t| super::declared_fits(t, *g) || super::declared_fits_but_meridian(t, *g));
-        let geog = c.geog.filter(fits).or_else(|| c.geogcs.epsg().filter(fits)).or_else(|| match &c.geogcs_wkt1 {
+        let geog = c.geog.filter(fits).or_else(|| c.geogcs.epsg().filter(fits)).or_else(|| match &c.datum {
             // WKT 2: identified loosely, so on the same ellipsoid only.
-            Some(text) => super::identify_epsg(text).filter(|g| wkt2::same_ellipsoid(*g, self.ell.a, self.ell.es)),
+            Some(datum) => super::identify_datum(datum).filter(|g| wkt2::same_ellipsoid(*g, self.ell.a, self.ell.es)),
             None => super::identify_epsg(geogcs_text?),
         });
         let geog = geog.map(|g| epsg::get(g).filter(|e| e.proj.starts_with("+proj=geocent")).map_or(g, |e| e.geog));
@@ -1121,7 +1121,7 @@ impl Def {
             // A WKT 1 GEOGCS on a datum no CRS is on keeps its datum's transformations, but gives
             // the CRS PROJ 9.8.1 identifies it as by name (ESRI's GCS_Greenland_1996, GR96) as its
             // geographic CRS (`own`: the text as written, else the node as written back).
-            if c.geogcs_wkt1.is_none() {
+            if c.datum.is_none() {
                 self.named_geog = super::identify_by_shared_name(own);
             }
         }
@@ -2204,7 +2204,7 @@ fn proj_maps_origin(method: &str, key: &str) -> bool {
 /// `GEOGCS` instead (ED50 with its own `TOWGS84` under a Bessel source), so that its datum would
 /// be taken for the source's. The source's node is read then.
 fn own_geogcs_text<'a>(w: &'a str, c: &wkt1::Converted) -> Option<&'a str> {
-    geogcs_text(w).filter(|_| c.geogcs_wkt1.is_none())
+    geogcs_text(w).filter(|_| c.datum.is_none())
 }
 
 /// The `GEOGCS[...]` part of a WKT 1 definition.
