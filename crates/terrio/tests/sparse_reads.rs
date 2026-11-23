@@ -204,6 +204,10 @@ fn flatgeobuf_by_bbox() {
     let mut got = spat(std::slice::from_ref(&layer), inverted);
     got.sort_unstable();
     assert_eq!(got, want);
+    // A NaN corner matches nothing: the index search excludes every node.
+    let ((_, layer), _) =
+        sparse(&bytes, &file, || terrio::vector::read_flatgeobuf_sparse(&file, "s.fgb", Some((f64::NAN, 10.0, 22.0, 18.0))));
+    assert!(layer.features.is_empty());
     assert!(fetched < bytes.len() as u64 / 4, "{fetched} of {} bytes", bytes.len());
     // Every feature without a filter.
     let ((_, all), _) = sparse(&bytes, &file, || terrio::vector::read_flatgeobuf_sparse(&file, "s.fgb", None));

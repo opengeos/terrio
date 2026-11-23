@@ -112,7 +112,10 @@ fn an_inverted_spatial_filter_reads_its_corners_extent() {
     let directory = tempfile::tempdir().unwrap();
     let mut extensions = vec!["geojson", "csv", "shp", "kml", "gml"];
     if cfg!(feature = "sqlite") {
-        extensions.extend(["gpkg", "pmtiles"]);
+        extensions.push("gpkg");
+    }
+    if cfg!(feature = "tiles") {
+        extensions.push("pmtiles");
     }
     if cfg!(feature = "flatgeobuf") {
         extensions.push("fgb");
@@ -137,6 +140,7 @@ fn an_inverted_spatial_filter_reads_its_corners_extent() {
         }
         if extension != "pmtiles" {
             let streamed = terrio::stream::open_layers(path, &options(inverted), 3).unwrap();
+            assert_eq!(streamed.len(), expected.layers.len(), "{extension}, streamed");
             for (reader, b) in streamed.into_iter().zip(&expected.layers) {
                 assert_eq!(sequences(&reader.read_all().unwrap()), sequences(b), "{extension}, streamed");
             }

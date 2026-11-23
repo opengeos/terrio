@@ -678,13 +678,6 @@ mod tests {
         });
         let ids: Vec<i64> = got.iter().flat_map(|b| b.column(0).as_any().downcast_ref::<Int64Array>().unwrap().values().to_vec()).collect();
         assert_eq!(ids, (10..=99).collect::<Vec<_>>());
-        // An inverted rectangle reads the rows of its corners' extent.
-        let inverted = GeoParquetReadOptions { bbox: Some((99.5, 1.0, 10.0, -1.0)), ..options.clone() };
-        let again: Vec<RecordBatch> =
-            open_geoparquet(&format!("{base}/points_by_chunks.parquet"), &inverted).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
-        let inverted_ids: Vec<i64> =
-            again.iter().flat_map(|b| b.column(0).as_any().downcast_ref::<Int64Array>().unwrap().values().to_vec()).collect();
-        assert_eq!(inverted_ids, ids);
         assert_eq!(got[0].schema().fields().iter().map(|f| f.name().as_str()).collect::<Vec<_>>(), ["id", "geometry"]);
         let fetched = |seen: &[Option<String>]| -> usize {
             seen.iter()
@@ -700,6 +693,14 @@ mod tests {
             // the footer and one row group's id, covering and geometry chunks
             assert!(fetched(&seen) * 5 < data.len(), "{} of {} bytes fetched: {seen:?}", fetched(&seen), data.len());
         }
+        // An inverted rectangle reads the rows of its corners' extent (after the byte budget above,
+        // which counts the first read's requests only).
+        let inverted = GeoParquetReadOptions { bbox: Some((99.5, 1.0, 10.0, -1.0)), ..options.clone() };
+        let again: Vec<RecordBatch> =
+            open_geoparquet(&format!("{base}/points_by_chunks.parquet"), &inverted).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
+        let inverted_ids: Vec<i64> =
+            again.iter().flat_map(|b| b.column(0).as_any().downcast_ref::<Int64Array>().unwrap().values().to_vec()).collect();
+        assert_eq!(inverted_ids, ids);
 
         // `open_vector` and `open_stream` read a URL in place too, not downloaded whole.
         let url = format!("{base}/points_by_features.parquet");
