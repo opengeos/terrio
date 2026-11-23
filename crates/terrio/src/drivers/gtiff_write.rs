@@ -87,6 +87,7 @@ struct ChunkInfo {
     t: DataType,
     /// The width and height of the part of the chunk inside the image: less than `w` x `h` in a
     /// partial tile at the right or bottom edge, whose other pixels are padding.
+    #[cfg_attr(not(feature = "lerc"), allow(dead_code))]
     valid: (usize, usize),
 }
 
