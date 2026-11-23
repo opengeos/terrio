@@ -2711,8 +2711,7 @@ bands are read through `GDALDatasetRasterIOEx`, a band alone through `GDALRaster
 through the bands' `GetMaskBand()`, called through `ctypes` with the floating-point window always
 given, as rasterio calls them. GDAL's Python bindings omit the floating-point window for
 whole-pixel windows, so nearest neighbour samples from the integer window rounded to the overview.
-Selections other than
-`AUTO` are read as `gdal_translate -ovr` writes them. The rasters are Byte RGB with an internal
+Selections other than `AUTO` are read as `gdal_translate -ovr` writes them. The rasters are Byte RGB with an internal
 mask and mask overviews, and the same with overviews built before the mask; UInt16 of odd size,
 Int16 and Float32 with nodata values (NaN included); Float32 with a `.ovr`; RGBA, and a UInt16
 alpha band; a paletted band; a `.msk` sidecar; and two bands all valid. Every method is read at

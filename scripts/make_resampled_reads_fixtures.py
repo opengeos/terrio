@@ -505,7 +505,8 @@ def write_integer_windows(gdal: Any) -> None:
 
             data = np.stack([read(b) for b in source_bands])
             masks = np.stack([read(b.GetMaskBand()) for b in source_bands])
-            result = dict(file=name, window=window, size=size, bands=bands, overview=overview, resampling="nearest",
+            result = dict(file=name, window=window, gdal_window=level_window or source_window,
+                          size=size, bands=bands, overview=overview, resampling="nearest",
                           dtype=data.dtype.name, data=hexa(data), masks=hexa(masks), gdal_version=gdal.__version__)
             if compare_fractional:
                 result["fractional_data"] = hexa(rasterio.read(ds, list(bands), source_window, size, nearest))
@@ -543,7 +544,7 @@ def write_integer_windows(gdal: Any) -> None:
     # Force the first image of an external .ovr, which would otherwise choose again.
     case("integer_external.tif", (1, 1, 85, 72), (27, 23), overview="0", level_window=(1, 1, 43, 36))
     case("masked_external_overviews.tif", window, (17, 23), overview="1", level_window=(1, 1, 16, 12))
-    # At the lower-right corner the offset and size clamp to the overview's last pixel.
+    # Pass the precomputed last-pixel window at the lower-right corner of the selected overview.
     case("integer_internal.tif", (96, 82, 1, 1), (3, 5), overview="1", level_window=(24, 20, 1, 1))
     case("integer_internal.tif", window, (17, 23), overview="NONE")
     case("integer_internal.tif", window, (31, 24))

@@ -1067,6 +1067,9 @@ impl LazyRaster {
             }
             sample_by_blocks(&cols, &rows, block, &mut |w| Ok(RasterData::U8(read_mask(self, w)?)))?
         } else {
+            // check_resampled restricts Integer sampling to Nearest, the only mode that
+            // can select own_level rather than a mask-overview index.
+            debug_assert!(own_level.is_none());
             self.prefetch_mask_band_window(Window::new(x, y, w, h), request.level)?;
             let max = self.mask_band_bits().and_then(|bits| nbits_max(u32::from(bits), DataType::U8));
             let resampled = resampled_read(read, request, false, block.0, max);
@@ -1082,7 +1085,8 @@ impl LazyRaster {
 
     /// The alpha band `alpha` read as the mask band GDAL makes of it: a Byte band read as the
     /// other bands are, band by band, all valid; a UInt16 one rescaled to 0–255 as
-    /// `GDALRescaledAlphaBand` does, which has no overviews of its own.
+    /// `GDALRescaledAlphaBand` does. Automatic rescaled-alpha reads use full resolution;
+    /// an explicitly selected level uses that level's alpha instead.
     fn resampled_alpha(&mut self, read: &Read, alpha: usize, retained: usize) -> Result<Vec<u8>> {
         let single = Read { bands: vec![alpha], ..read.clone() };
         if self.band_data_type(alpha) == DataType::U8 {
