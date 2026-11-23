@@ -644,45 +644,62 @@ struct Args<'a> {
     pieces: usize,
 }
 
-/// Computes the rows of `out` (`width` values each) with `f(scratch, row, values)`, the rows
-/// numbered from 0: in `pieces` runs of consecutive rows on the thread pool, each run with a copy
-/// of `scratch` of its own, or all of them on the calling thread. Each row is computed alone, so
-/// the values do not depend on the runs.
-fn rows_in_pieces<V: Send, S: Clone + Sync, F: Fn(&mut S, usize, &mut [V]) + Sync + Send>(
+/// Computes the rows of `out` (`width` values each) with `f(scratch, row, values, flags)`, the
+/// rows numbered from 0, where `flags`, when given, holds the `width` flags of each row: in
+/// `pieces` runs of consecutive rows on the thread pool, each run with a copy of `scratch` of its
+/// own, or all of them on the calling thread. Each row is computed alone, so the values do not
+/// depend on the runs. The kernels pass closures that hold what they read by value (`move`), so
+/// that their loops do not read the kernel's locals through references. When given, `flags` must
+/// have an entry for each value of `out`, or this panics: past the end of shorter flags, rows would
+/// be computed without theirs, as if unmasked.
+fn rows_in_pieces<V: Send, S: Clone + Sync, F: Fn(&mut S, usize, &mut [V], Option<&mut [u8]>) + Sync + Send>(
     out: &mut [V],
+    flags: Option<&mut [u8]>,
     width: usize,
     pieces: usize,
     scratch: S,
     f: F,
 ) {
+    assert!(flags.as_deref().is_none_or(|m| m.len() == out.len()), "the mask flags must be one per value");
     let width = width.max(1);
     let rows = out.len() / width;
     let per = rows.div_ceil(pieces.max(1)).max(1);
     if per >= rows {
-        rows_from(0, out, width, &scratch, &f);
+        rows_from(0, out, flags, width, &scratch, &f);
     } else {
-        crate::par::chunks_mut(out, per * width, |k, values| rows_from(k * per, values, width, &scratch, &f));
+        let mut flags = flags.map(|m| m.chunks_mut(per * width));
+        let runs: Vec<_> = out.chunks_mut(per * width).map(|v| (v, flags.as_mut().and_then(Iterator::next))).collect();
+        #[cfg(test)]
+        RUNS.set(RUNS.get() + runs.len());
+        crate::par::for_each_owned(runs, |k, (values, flags)| rows_from(k * per, values, flags, width, &scratch, &f));
     }
 }
 
-/// The rows of `values` from row `first`, for [`rows_in_pieces`]. Never inlined, so that rows
-/// computed in pieces and in one run through the same instructions: where an addition meets two
-/// NaN values, which one it keeps (its sign) depends on how the compiler orders the operands,
-/// which an inlined copy at each call could order differently.
+#[cfg(test)]
+thread_local! {
+    /// The runs [`rows_in_pieces`] has split rows into on this thread, for the tests.
+    static RUNS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The rows of `values` (and of `flags`) from row `first`, for [`rows_in_pieces`]. Never inlined
+/// (`#[inline(never)]`, which rustc passes to LLVM as `noinline`), so that rows computed in
+/// pieces and in one run call the same compiled function, and run the same instructions within a
+/// build. That matters where an addition meets two NaN values: which one it keeps (its sign)
+/// depends on how the compiler orders the operands, which an inlined copy at each call could order
+/// differently. Rust does not specify that sign, so it can differ between builds.
 #[inline(never)]
-fn rows_from<V, S: Clone, F: Fn(&mut S, usize, &mut [V])>(first: usize, values: &mut [V], width: usize, scratch: &S, f: &F) {
+fn rows_from<V, S: Clone, F: Fn(&mut S, usize, &mut [V], Option<&mut [u8]>)>(
+    first: usize,
+    values: &mut [V],
+    flags: Option<&mut [u8]>,
+    width: usize,
+    scratch: &S,
+    f: &F,
+) {
     let mut s = scratch.clone();
+    let mut flags = flags.map(|m| m.chunks_mut(width));
     for (i, row) in values.chunks_mut(width).enumerate() {
-        f(&mut s, first + i, row);
-    }
-}
-
-/// [`rows_from`] for the convolution's horizontal pass, which filters each source row into `out`
-/// and, with a mask, its validity into `flags` (empty without one).
-#[inline(never)]
-fn filtered_rows_from<F: Fn(usize, &mut [f64], &mut [u8])>(first: usize, out: &mut [f64], flags: &mut [u8], width: usize, f: &F) {
-    for (i, o) in out.chunks_mut(width.max(1)).enumerate() {
-        f(first + i, o, flags.get_mut(i * width..(i + 1) * width).unwrap_or_default());
+        f(&mut s, first + i, row, flags.as_mut().and_then(Iterator::next));
     }
 }
 
@@ -1098,10 +1115,10 @@ fn convolution<T: ConvSrc>(method: Method, a: &Args, chunk: &[T]) -> Vec<f64> {
     }
     // GDAL's SSE2 code filters rows three at a time, then the last ones alone.
     let triples = ny / 3 * 3;
-    // Filters source row `r` into `out` and, with a mask, its validity into `hrow`.
-    let filter_row = |r: usize, out: &mut [f64], hrow: &mut [u8]| {
+    // Each source row `r` filtered into `out` and, with a mask, its validity into `hrow`.
+    rows_in_pieces(&mut hf, a.mask.map(|_| hm.as_mut_slice()), dst_w, a.pieces, (), move |_, r, out, hrow| {
         let row = &chunk[r * xn..(r + 1) * xn];
-        match a.mask {
+        match a.mask.zip(hrow) {
             None => {
                 for (col, (o, &(off, n))) in out.iter_mut().zip(&cols).enumerate() {
                     let w = &weights[col * taps..][..taps];
@@ -1119,7 +1136,7 @@ fn convolution<T: ConvSrc>(method: Method, a: &Args, chunk: &[T]) -> Vec<f64> {
                     };
                 }
             }
-            Some(mask) => {
+            Some((mask, hrow)) => {
                 let mrow = &mask[r * xn..(r + 1) * xn];
                 for (col, ((o, valid), &(off, n))) in out.iter_mut().zip(hrow.iter_mut()).zip(&cols).enumerate() {
                     let m = &mrow[off..off + n];
@@ -1139,16 +1156,7 @@ fn convolution<T: ConvSrc>(method: Method, a: &Args, chunk: &[T]) -> Vec<f64> {
                 }
             }
         }
-    };
-    // The source rows in pieces as the destination rows are (see `rows_in_pieces`).
-    let per = ny.div_ceil(a.pieces.max(1)).max(1);
-    if per >= ny || dst_w == 0 {
-        filtered_rows_from(0, &mut hf, &mut hm, dst_w, &filter_row);
-    } else {
-        let flags = hm.chunks_mut(per * dst_w).map(Some).chain(std::iter::repeat_with(|| None));
-        let runs: Vec<_> = hf.chunks_mut(per * dst_w).zip(flags).collect();
-        crate::par::for_each_owned(runs, |k, (out, flags)| filtered_rows_from(k * per, out, flags.unwrap_or_default(), dst_w, &filter_row));
-    }
+    });
 
     // Second pass: vertical filter.
     let mut out = vec![0.0f64; dst_h * dst_w];
@@ -1156,7 +1164,7 @@ fn convolution<T: ConvSrc>(method: Method, a: &Args, chunk: &[T]) -> Vec<f64> {
     // The SSE2 code of 8 columns (`GDALResampleConvolutionVertical_8cols`) for a work type of
     // `float`, unless the source is `float` and its sums are rescaled.
     let eight = T::SINGLE && (!rescale || T::SSE);
-    rows_in_pieces(&mut out, dst_w, a.pieces, vec![0.0f64; taps], |w, i, row| {
+    rows_in_pieces(&mut out, None, dst_w, a.pieces, vec![0.0f64; taps], move |w, i, row, _| {
         let yd = a.dy0 + i as i64;
         let c = (yd as f64 + 0.5) * a.ry + a.sdy;
         let mut s0 = (c - y_rad + 0.5).floor() as i64;
@@ -1421,7 +1429,7 @@ fn average<T: AvgSrc>(rms: bool, a: &Args, chunk: &[T]) -> Vec<f64> {
     }
     let sq = |v: f64| v * v;
     let mut out = vec![0.0f64; dst_h * dst_w];
-    rows_in_pieces(&mut out, dst_w, a.pieces, (), |_, i, row| {
+    rows_in_pieces(&mut out, None, dst_w, a.pieces, (), move |_, i, row, _| {
         let yd = a.dy0 + i as i64;
         let f0 = a.sdy + yd as f64 * a.ry;
         let mut s0 = (f0 + 1e-8) as i64;
@@ -1437,12 +1445,13 @@ fn average<T: AvgSrc>(rms: bool, a: &Args, chunk: &[T]) -> Vec<f64> {
             s1 = bottom;
         }
         if two && s1 == s0 + 2 && a.mask.is_none() {
-            // A factor of 2 with regular spacing and no nodata: GDAL's optimized cases.
+            // A factor of 2 with regular spacing and no nodata: GDAL's optimized cases. The two
+            // source rows are sliced to the row's columns first, so that each index is checked
+            // against its row's slice.
             let base = (s0 - a.cy0) as usize * xn + xs[0].0;
-            let px = |i: usize| -> [T; 4] {
-                let p = base + 2 * i;
-                [chunk[p], chunk[p + 1], chunk[p + xn], chunk[p + xn + 1]]
-            };
+            let n = 2 * row.len();
+            let (upper, lower) = (&chunk[base..base + n], &chunk[base + xn..base + xn + n]);
+            let px = |i: usize| -> [T; 4] { [upper[2 * i], upper[2 * i + 1], lower[2 * i], lower[2 * i + 1]] };
             for (i, o) in row.iter_mut().enumerate() {
                 let v = px(i);
                 *o = if T::INT {
@@ -1613,7 +1622,8 @@ fn mode<T: Sample>(a: &Args, chunk: &[T]) -> Vec<T> {
     let dst_w = (a.dx1 - a.dx0) as usize;
     let mut out = vec![T::default(); dst_w * (a.dy1 - a.dy0) as usize];
     let scratch = (Vec::<T>::new(), Vec::<u32>::new(), [0u32; 256]);
-    rows_in_pieces(&mut out, dst_w, a.pieces, scratch, |(vals, counts, hist), y, row| {
+    // Not `move`: measured to run more instructions when it holds its values.
+    rows_in_pieces(&mut out, None, dst_w, a.pieces, scratch, |(vals, counts, hist), y, row, _| {
         let yd = a.dy0 + y as i64;
         let (y0, y1) = window(yd, a.ry, a.sdy, a.cy0, bottom);
         for (o, xd) in row.iter_mut().zip(a.dx0..a.dx1) {
@@ -1712,7 +1722,7 @@ fn gauss(a: &Args, chunk: &[f64]) -> Vec<f64> {
     };
     let dst_w = (a.dx1 - a.dx0) as usize;
     let mut out = vec![0.0f64; dst_w * (a.dy1 - a.dy0) as usize];
-    rows_in_pieces(&mut out, dst_w, a.pieces, (), |_, r, row| {
+    rows_in_pieces(&mut out, None, dst_w, a.pieces, (), move |_, r, row, _| {
         let dy = a.dy0 + r as i64;
         let (y0, y1, sy) = span(dy, a.ry, a.cy0, a.cy0 + a.cyn, dy == a.ovr.1 - 1);
         for (o, dx) in row.iter_mut().zip(a.dx0..a.dx1) {
@@ -1740,7 +1750,7 @@ fn near<T: Copy + Default + Send + Sync>(a: &Args, chunk: &[T]) -> Vec<T> {
     let xn = a.cxn as usize;
     let xs: Vec<usize> = (a.dx0..a.dx1).map(|x| ((0.5 + x as f64 * a.rx) as i64).max(a.cx0) as usize - a.cx0 as usize).collect();
     let mut out = vec![T::default(); xs.len() * (a.dy1 - a.dy0) as usize];
-    rows_in_pieces(&mut out, xs.len(), a.pieces, (), |_, y, row| {
+    rows_in_pieces(&mut out, None, xs.len(), a.pieces, (), move |_, y, row, _| {
         let sy = ((0.5 + (a.dy0 + y as i64) as f64 * a.ry) as i64).max(a.cy0) as usize - a.cy0 as usize;
         let src = &chunk[sy * xn..];
         for (o, x) in row.iter_mut().zip(&xs) {
@@ -1887,23 +1897,27 @@ pub(crate) fn block_row(
 /// The pieces of work each block of a row of blocks is computed in.
 #[derive(Debug, Clone, Copy)]
 enum Pieces {
-    /// One: the rows of blocks of a whole level are computed in parallel.
+    /// One, for whole levels, whose rows of blocks are computed in parallel (`level_t`).
     One,
-    /// Those of [`row_pieces`], for the thread pool.
+    /// As many as [`row_pieces`] gives for the thread pool's threads: two for a row of a single
+    /// block of at least twice [`PIECE_PIXELS`] destination pixels, with a pool of several threads;
+    /// one otherwise. The row writer's (`block_row`).
     Pool,
     #[cfg(test)]
     Exactly(usize),
 }
 
-/// The fewest destination pixels a piece of a block's rows is given.
+/// A row of a single block is split in two from twice this many destination pixels, so that each
+/// piece gets about this many ([`row_pieces`]).
 const PIECE_PIXELS: usize = 1 << 14;
 
 /// The pieces of work, each of consecutive rows, that each block of `pixels` destination pixels
 /// in a row of `blocks` blocks is computed in, with `threads` threads: two for a row of a single
-/// block, of at least [`PIECE_PIXELS`] pixels each, which would otherwise be computed on the
-/// calling thread; one for a row of several blocks, which already run on the thread pool. More
-/// pieces cost more processor time than they save: each takes a thread of the pool, which waits for
-/// work once done, and on cores running two threads each runs slower.
+/// block (which would otherwise be computed on the calling thread) of at least twice
+/// [`PIECE_PIXELS`] pixels, when there are several threads; one otherwise, as for a row of several
+/// blocks, which already run on the thread pool. More pieces cost more processor time than they
+/// save: each takes a thread of the pool, which waits for work once done, and on cores running two
+/// threads each runs slower.
 fn row_pieces(blocks: usize, pixels: usize, threads: usize) -> usize {
     if blocks == 1 && threads > 1 && pixels >= 2 * PIECE_PIXELS { 2 } else { 1 }
 }
@@ -2401,10 +2415,23 @@ mod tests {
     /// A row of a single block (a band one block wide: the first overview of a band 10,980 pixels
     /// wide is one block of 5,490 x 128) is split in two, so that the thread pool computes it;
     /// rows of several blocks, which the pool computes already, blocks under two pieces' pixels,
-    /// and a pool of one thread are not. Nothing else shows the split: the values are the same
-    /// either way (see the test above), only the time differs.
+    /// and a pool of one thread are not. The values are the same either way (see the test above),
+    /// so the split is shown by the runs `rows_in_pieces` records: through `block_row`, as the row
+    /// writer calls it, for each kernel (the convolution splits both its passes). That needs a pool
+    /// of several threads (`RAYON_NUM_THREADS`, else one a core); with one, nothing is split.
     #[test]
     fn a_row_of_a_single_block_is_split_in_two() {
+        // A level of 256 x 128 pixels: one block, of two pieces' pixels.
+        let (src, dst) = ((512, 256), (256, 128));
+        let data = RasterData::U16((0..src.0 * src.1).map(|i| (i * 7919 % 65521) as u16).collect());
+        let several = crate::par::threads() > 1;
+        for (method, passes) in [(Method::Nearest, 1), (Method::Average, 1), (Method::Bilinear, 2), (Method::Mode, 1), (Method::Gauss, 1)] {
+            let plan = Plan::new(method, src, dst, 1, 128, DataType::U16);
+            assert_eq!(plan.chunk.0, dst.0, "{method:?}: one block wide");
+            RUNS.set(0);
+            block_row(&plan, &data, 0, src.1, 1, None, Weights::default(), 0);
+            assert_eq!(RUNS.get(), if several { 2 * passes } else { 0 }, "{method:?}");
+        }
         assert_eq!(row_pieces(1, 5490 * 128, 16), 2);
         assert_eq!(row_pieces(1, 5490 * 128, 2), 2);
         assert_eq!(row_pieces(1, 2 * PIECE_PIXELS, 4), 2);
@@ -2412,5 +2439,22 @@ mod tests {
         assert_eq!(row_pieces(2, 5490 * 128, 16), 1);
         assert_eq!(row_pieces(3, 5490 * 128, 16), 1);
         assert_eq!(row_pieces(1, 5490 * 128, 1), 1);
+    }
+
+    /// `rows_in_pieces` refuses mask flags that are not one per value. Every kernel passes one per
+    /// value, so nothing else would fail if a caller did not: past the end of shorter flags, rows
+    /// would be computed as if unmasked (all of them with an empty slice, which once stood for "no
+    /// mask"), and longer flags would not be the rows' own.
+    #[test]
+    fn mask_flags_that_are_not_one_per_value_are_refused() {
+        // 3 rows of 4 values: no flags (an empty slice), the rows split in two and in one run; 8
+        // flags, split in two; 16 flags, in one run.
+        for (flags, pieces) in [(0, 2), (0, 1), (8, 2), (16, 1)] {
+            let refused = std::panic::catch_unwind(|| {
+                rows_in_pieces(&mut [0.0f64; 12], Some(vec![255u8; flags].as_mut_slice()), 4, pieces, (), |_, _, _, _| {})
+            });
+            let message = refused.err().and_then(|p| p.downcast_ref::<&str>().map(|m| m.to_string()));
+            assert_eq!(message.as_deref(), Some("the mask flags must be one per value"), "{flags} flags for 12 values in {pieces} pieces");
+        }
     }
 }
