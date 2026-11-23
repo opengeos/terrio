@@ -1,8 +1,9 @@
 """The padding of partial edge tiles is GDAL's: zeros, masked in LERC blobs of one float sample.
 
-GDAL (rasterio) is the oracle. Each edge tile is read as stored (``BLOCK_OFFSET_*`` from GDAL's
-``TIFF`` metadata domain). Uncompressed tiles must hold GDAL's padding bytes; for LERC, the
-blob's mask (parsed from its Lerc2 header) must leave the same pixels valid as GDAL's.
+GDAL 3.12.2 (rasterio 1.5.2) is the reference. Each edge tile is read as stored
+(``BLOCK_OFFSET_*`` from GDAL's ``TIFF`` metadata domain). Uncompressed tiles must hold GDAL's
+padding bytes; for LERC, the blob's mask (parsed from its Lerc2 header) must leave the same
+pixels valid as GDAL's.
 """
 
 import struct
