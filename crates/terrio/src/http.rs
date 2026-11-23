@@ -2424,10 +2424,11 @@ impl RangeReader {
 
     /// Fetches the blocks covering the byte ranges `(offset, length)` that are not cached yet, in as
     /// few requests as it can: runs of missing blocks separated by at most two cached blocks are
-    /// fetched together. Ranges within the cache's size are fetched at once, wherever they are in
-    /// the file, the oldest blocks they do not cover dropped to make room; larger ones a batch of
-    /// half the cache at a time, the first now and the next ones as reads reach them, so that no
-    /// block is evicted before it is read and then fetched again.
+    /// fetched together. A plan whose requests (gaps included) fit in the cache beside the cached
+    /// blocks the ranges cover is fetched at once, wherever its blocks are in the file, the oldest
+    /// blocks the ranges do not cover dropped to make room; a larger one a batch of half the cache
+    /// at a time, the first now and the next ones as reads reach them, so that no block is evicted
+    /// before it is read and then fetched again.
     pub fn prefetch(&self, ranges: &[(u64, u64)]) -> io::Result<()> {
         let mut s = self.lock()?;
         if s.whole.is_some() {
@@ -2667,6 +2668,8 @@ impl Shared {
             }
             to += 1;
         }
+        // A plan over its budget passed half the cache first (the budget is at least that).
+        debug_assert!(fetched <= budget || half_batch.is_some(), "a plan over its budget has a half-cache batch");
         if fetched > budget
             && let Some((end, blocks)) = half_batch
         {
