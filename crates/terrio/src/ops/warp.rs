@@ -3911,7 +3911,7 @@ impl WarpContext<'_> {
         let arc = self.arc_turn().filter(|_| cut).and_then(|turn| {
             // A whole-turn footprint can have coincident endpoints on the circle. A collapsed
             // arc must not replace its continuous span with a zero-width kernel.
-            short_arc(&columns, turn).filter(|&(low, high)| high > low || raw_span < turn)
+            short_arc(&columns, turn).filter(|&(low, high)| high - low > 1e-7)
         });
         let kernel_span = arc.map_or(raw_span, |(low, high)| high - low);
         let kernel_bounds = arc.filter(|_| self.global_longitude_turn().is_none()).map(|(low, high)| self.wrap_source_bounds(low, high));
@@ -7553,10 +7553,10 @@ mod tests {
     #[test]
     fn a_whole_turn_pixel_keeps_its_kernel_span_with_endpoint_sampling() {
         let srs = SpatialRef::from_epsg(4326).unwrap();
-        for (west, width) in [(120., 120), (100., 100), (-180., 360)] {
+        for (west, width, step) in [(120., 120, 1.), (100., 100, 1.), (-180., 360, 1.), (100.1, 1000, 0.1), (-179.9, 3600, 0.1)] {
             let rw = RegionWarp::new(
-                (width, 10),
-                [west, 1., 0., 5., 0., -1.],
+                (width, 100),
+                [west, step, 0., 5., 0., -0.1],
                 &srs,
                 &srs,
                 [0., 360., 0., 5., 0., -5.],
@@ -7574,7 +7574,7 @@ mod tests {
                 ctx.sample_all = all;
                 // At least five perimeter samples are required before a window is planned.
                 let (sx, sy, sw, sh, _, raw_w, raw_h) = ctx.source_window(0, 0, 1, 2).unwrap();
-                assert_eq!(raw_w, width as f64, "source {west} + {width}, all {all}");
+                assert!((raw_w - width as f64).abs() < 1e-9, "source {west} + {width}, all {all}: {raw_w}");
                 let scales = ctx.scales(&Chunk { dx: 0, dy: 0, dw: 1, dh: 2, sx, sy, sw, sh, raw_w, raw_h });
                 assert!((scales.0 - 1. / width as f64).abs() < 1e-14, "source {west} + {width}, all {all}: {scales:?}");
             }
