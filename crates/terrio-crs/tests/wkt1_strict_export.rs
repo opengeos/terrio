@@ -11,9 +11,9 @@
 //! that terrio reads back as the same CRS. Web Mercator keeps GDAL's extension under its code.
 //!
 //! Known differences, listed in [`STRICTER`] and [`LAXER`]: PROJ describes a projected CRS of
-//! north-east axes, a cylindrical equal-area projection by its scale and a WKT 2 compound CRS
-//! without a code in WKT 1, terrio does not; PROJ keeps UPS in its extension, terrio writes it as
-//! Polar Stereographic. And a planetocentric IAU_2015 CRS on an ellipsoid, which PROJ writes as a
+//! other axes than east-north, a cylindrical equal-area projection by its scale and a WKT 2
+//! compound CRS without a code in WKT 1, terrio does not; PROJ keeps UPS in its extension, terrio
+//! writes it as Polar Stereographic. And a planetocentric IAU_2015 CRS on an ellipsoid, which PROJ writes as a
 //! `GEOGCS` its readers take for planetographic latitudes, has none, as a WKT 2 with a west axis
 //! (planetographic IAU_2015 CRSs). The projected CRSs of Halley and Eros are not read back, as
 //! PROJ's WKT 1 of them reads back as another CRS too. Left out of the data: EPSG
@@ -79,6 +79,10 @@ const STRICTER: &[&str] = &[
     "+proj=utm +zone=32 +datum=WGS84 +axis=neu",
     "+proj=tmerc +lat_0=0 +lon_0=9 +k=1 +x_0=0 +y_0=0 +ellps=bessel +axis=nwu +units=m",
     "+proj=tmerc +lon_0=9 +k=0.9996 +x_0=500000 +ellps=GRS80 +axis=neu +units=m",
+    "+proj=tmerc +lat_0=0 +lon_0=9 +k=1 +x_0=0 +y_0=0 +ellps=bessel +axis=wnu +units=m",
+    "+proj=tmerc +lat_0=0 +lon_0=9 +k=1 +x_0=0 +y_0=0 +ellps=bessel +axis=esu +units=m",
+    "PROJCRS[\"Transverse Mercator, east south\"",
+    "PROJCRS[\"Transverse Mercator (South Orientated), north east\"",
     // A cylindrical equal-area projection by its scale.
     "+proj=cea +k_0=0.9 +ellps=WGS84 +units=m",
     // A named datum changed by a prime meridian or a shift: PROJ writes its ellipsoid, terrio's
