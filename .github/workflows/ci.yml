@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The merge queue's commit: main's ruleset requires this workflow's checks on it.
+  merge_group:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -20,9 +22,9 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
-  # Whether the real-data job runs: on every push to main, and for pull requests unless they
-  # change only documentation, the npm package's JavaScript (js/, tested by the wasm job) or
-  # other workflows. When the file list is unavailable, it runs.
+  # Whether the real-data job runs: on every push to main and merge queue commit, and for pull
+  # requests unless they change only documentation, the npm package's JavaScript (js/, tested by
+  # the wasm job) or other workflows. When the file list is unavailable, it runs.
   changes:
     runs-on: ubuntu-latest
     permissions:
