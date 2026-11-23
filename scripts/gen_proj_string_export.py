@@ -114,6 +114,10 @@ PROJ_STRINGS = [
     "+proj=utm +zone=32 +datum=WGS84 +axis=neu",
     "+proj=tmerc +lat_0=0 +lon_0=9 +k=1 +x_0=0 +y_0=0 +ellps=bessel +axis=wsu +units=m",
     "+proj=tmerc +lat_0=0 +lon_0=9 +k=1 +x_0=0 +y_0=0 +ellps=bessel +axis=nwu +units=m",
+    # Numbers as PROJ writes them (formatToString): within 1e-8 of a tenth, that tenth; with 14
+    # significant digits where 15 give ten nines in a row.
+    "+proj=tmerc +lat_0=45.000000001 +lon_0=9.29999999999 +k=0.99999999999 +x_0=0 +y_0=0 +ellps=GRS80 +units=m",
+    "+proj=tmerc +lat_0=1.2349999999999 +lon_0=0 +k=1 +x_0=0.123456789012345 +y_0=0 +ellps=GRS80 +units=m",
     # Planetocentric latitudes: written on a sphere, not on an ellipsoid.
     "+proj=longlat +geoc +R=6371000",
     "+proj=longlat +geoc +datum=WGS84",
@@ -379,6 +383,11 @@ def bound_wkts():
     bng_wkt1 = shifted_wkt(27700, "446.448,-125.157,542.06,0.15,0.247,0.842,-20.489")
     return [
         bound_wkt(BNG_WKT2, PV, OSGB_7),
+        # A scale difference as a ratio, written in ppm as PROJ rounds it (#1012 item 45): 7, -10
+        # and 0.1, not 7.00000000009027, -9.99999999995449 and 0.100000000058387.
+        bound_wkt(BNG_WKT2, PV, OSGB_7[:6] + [1.000007]),
+        bound_wkt(BNG_WKT2, PV, OSGB_7[:6] + [0.99999]),
+        bound_wkt(BNG_WKT2, PV, OSGB_7[:6] + [1.0000001]),
         bound_wkt(BNG_WKT2, CF, OSGB_7),
         bound_wkt(BNG_WKT2, GT, OSGB_7[:3]),
         bound_wkt(BNG_WKT2, PV, OSGB_7[:3]),
