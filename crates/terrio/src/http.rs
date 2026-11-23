@@ -2549,15 +2549,18 @@ impl Shared {
 
     /// Fetches the next batch of the prefetch's blocks from its `from`th, those not cached: the
     /// whole plan, when `whole` (a prefetch's first batch) and its requests fetch at most the
-    /// cache's blocks, as no batch follows; otherwise those fetching at most half the cache's
-    /// blocks, so that the batch being read stays while the next one is fetched. A batch counts
-    /// the blocks its requests fetch, the gaps merged into them included, not the bytes between
-    /// them: the rows of tiles of a window, far apart in the file, are fetched together. They
-    /// leave the plan, so that a block read again once evicted is fetched alone.
+    /// cache's room left (at least half the cache), as no batch follows; otherwise those fetching
+    /// at most half the cache's blocks, so that the batch being read stays while the next one is
+    /// fetched. A batch counts the blocks its requests fetch, the gaps merged into them included,
+    /// not the bytes between them: the rows of tiles of a window, far apart in the file, are
+    /// fetched together. They leave the plan, so that a block read again once evicted is fetched
+    /// alone.
     fn fetch_planned(&mut self, from: usize, whole: bool) -> io::Result<()> {
         const GAP: u64 = 2;
         let half = (self.max_blocks / 2).max(1) as u64;
-        let all = if whole { self.max_blocks as u64 } else { half };
+        // The room left in the cache, never less than the half-cache batch, so that the cache
+        // holds at most its size and a half, as before a whole plan was fetched at once.
+        let all = if whole { self.max_blocks.saturating_sub(self.blocks.len()).max(half as usize) as u64 } else { half };
         let (mut next, mut fetched, mut to) = (Vec::<u64>::new(), 0u64, from);
         // Where the first half-cache batch ends: (plan index, blocks of `next`).
         let mut half_batch = None;
@@ -4028,7 +4031,7 @@ mod tests {
         // 4 MiB (1024 blocks) in 3 pieces: 342, 341 and 341 blocks; in 2: 512 each.
         assert_eq!(sizes, [341 * 4096, 342 * 4096, 512 * 4096].into(), "{asked:?}");
         for (off, len) in runs {
-            assert!(read_range(&mut r, off, len as usize) == data[off as usize..(off + len) as usize]);
+            assert_eq!(read_range(&mut r, off, len as usize), data[off as usize..(off + len) as usize]);
         }
         assert_eq!(seen.lock().unwrap().len(), before + PARALLEL_RUNS, "the reads needed no other request");
     }
