@@ -287,3 +287,89 @@ fn complex_samples_with_a_predictor_are_refused() {
         assert_eq!((v[1], v[9]), (re(0, 1), im(0, 1)), "{name}");
     }
 }
+
+/// The issue #1222 fixture: two `CFloat32` bands of 64 x 64 pixels, `x + y j` and
+/// `100 + 2x + (200 + 3y) j`, DEFLATE-compressed in 16-pixel tiles.
+fn two_band_cfloat32(path: &std::path::Path) {
+    let n = 64usize;
+    let plane = |f: &dyn Fn(f32, f32) -> f32| -> Vec<f32> { (0..n * n).map(|i| f((i % n) as f32, (i / n) as f32)).collect() };
+    let values = [plane(&|x, _| x), plane(&|_, y| y), plane(&|x, _| 100.0 + 2.0 * x), plane(&|_, y| 200.0 + 3.0 * y)].concat();
+    let config = terrio::RasterConfig { cols: n, rows: n, bands: 4, data_type: DataType::F32, ..Default::default() };
+    let raster = terrio::Raster::from_data_native(config, terrio::raster::RasterData::F32(values)).unwrap();
+    let mut dataset = terrio::RasterDataset::new(raster, false);
+    dataset.complex = true;
+    let options = RasterWriteOptions { tile_size: Some(16), compression: Some("DEFLATE".into()), ..Default::default() };
+    terrio::write_raster_dataset(&dataset, path.to_str().unwrap(), &options).unwrap();
+}
+
+/// GDAL 3.13.2's `gdaladdo -r average` averages the real and the imaginary parts of a complex
+/// band on their own (`GDALResampleChunkC32R`): overview pixel `(c, r)` of the fixture is
+/// `2c + 0.5 + (2r + 0.5) j` and `101 + 4c + (201.5 + 6r) j`.
+#[test]
+fn complex_average_overviews_average_each_part() {
+    use terrio::ops::Resampling;
+    use terrio::ops::overview::{OverviewOptions, RefreshOptions, add_overviews, refresh_overviews};
+    let dir = tempfile::tempdir().unwrap();
+    // The real and imaginary parts of each band at overview column `c`, row `r`.
+    let parts: [fn(f64, f64) -> f64; 4] = [|c, _| 2.0 * c + 0.5, |_, r| 2.0 * r + 0.5, |c, _| 101.0 + 4.0 * c, |_, r| 201.5 + 6.0 * r];
+    let expected: Vec<f64> = parts.iter().flat_map(|f| (0..32 * 32).map(move |i| f((i % 32) as f64, (i / 32) as f64))).collect();
+    for external in [true, false] {
+        let path = dir.path().join(format!("complex-{external}.tif"));
+        two_band_cfloat32(&path);
+        let path = path.to_str().unwrap();
+        let options = OverviewOptions {
+            external,
+            levels: vec![2],
+            resampling: Resampling::Average,
+            compression: Some("DEFLATE".into()),
+            ..Default::default()
+        };
+        assert_eq!(add_overviews(path, &options).unwrap(), vec![(32, 32)]);
+        let mut r = LazyRaster::open(path).unwrap();
+        assert_eq!(r.overviews(), vec![(32, 32)]);
+        let level = r.read_window(Window::new(0, 0, 32, 32), &WindowOptions { bands: vec![1, 2, 3, 4], overview: Some(0) }).unwrap();
+        assert!(level.complex, "external {external}");
+        assert_eq!(level.raster.data_type, DataType::F32);
+        assert_eq!(level.raster.data.to_f64_vec(), expected, "external {external}");
+        if external {
+            // The sidecar holds one CFloat32 image of the two complex bands.
+            let mut ovr = LazyRaster::open(&format!("{path}.ovr")).unwrap();
+            assert!(ovr.is_complex());
+            assert_eq!((ovr.width(), ovr.height(), ovr.band_count()), (32, 32, 4));
+            assert_eq!(ovr.read().unwrap().raster.data.to_f64_vec(), expected);
+        }
+        // A whole refresh recomputes the level with its stored average; a partial one is refused.
+        let gt = r.geo_transform();
+        drop(r);
+        let refresh = RefreshOptions { external, ..Default::default() };
+        assert_eq!(refresh_overviews(path, &refresh).unwrap(), vec![(32, 32)]);
+        let mut r = LazyRaster::open(path).unwrap();
+        let level = r.read_window(Window::new(0, 0, 32, 32), &WindowOptions { bands: vec![1, 2, 3, 4], overview: Some(0) }).unwrap();
+        assert_eq!(level.raster.data.to_f64_vec(), expected, "refreshed, external {external}");
+        let bbox = [gt[0], gt[3] + 8.0 * gt[5], gt[0] + 8.0 * gt[1], gt[3]];
+        let error = refresh_overviews(path, &RefreshOptions { bbox: vec![bbox], ..refresh }).unwrap_err();
+        assert!(error.to_string().contains("partial refreshes of complex"), "{error}");
+    }
+}
+
+/// GDAL computes only nearest, average, average of magnitude and phase and RMS overviews of
+/// complex bands; terrio's minimum, maximum and mode are refused for them.
+#[test]
+fn complex_overviews_refuse_other_methods() {
+    use terrio::ops::Resampling;
+    use terrio::ops::overview::{OverviewOptions, add_overviews};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("complex.tif");
+    two_band_cfloat32(&path);
+    for resampling in [Resampling::Min, Resampling::Max, Resampling::Mode] {
+        let options = OverviewOptions { external: true, levels: vec![2], resampling, ..Default::default() };
+        let error = add_overviews(path.to_str().unwrap(), &options).unwrap_err();
+        assert!(error.to_string().contains("overviews of complex bands are not supported"), "{resampling:?}: {error}");
+    }
+    assert!(!std::path::Path::new(&format!("{}.ovr", path.display())).exists());
+    let options = OverviewOptions { external: true, levels: vec![2], resampling: Resampling::Nearest, ..Default::default() };
+    add_overviews(path.to_str().unwrap(), &options).unwrap();
+    let mut r = LazyRaster::open(path.to_str().unwrap()).unwrap();
+    let first = r.read_window(Window::new(1, 1, 1, 1), &WindowOptions { bands: vec![1, 2, 3, 4], overview: Some(0) }).unwrap();
+    assert_eq!(first.raster.data.to_f64_vec(), vec![2.0, 2.0, 104.0, 206.0]);
+}

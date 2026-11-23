@@ -706,6 +706,8 @@ def suite_raster_manage(ctx):
                   "overview add/delete beside read-only GeoTIFFs (left unchanged), "
                   "two-band average overviews of an odd size (non-integer ratios), internal and external "
                   "(band-separate .ovr), "
+                  "complex (CInt16, CInt32, CFloat32, CFloat64) average and nearest overviews, internal and "
+                  "external, exact, "
                   "exact Landsat Byte/UInt16/Float32 mode on uneven levels, "
                   "internal mask overviews added, refreshed (whole and over an extent) and added again over "
                   "gdaladdo's, and real DEM subset updates: masks, mask blocks, type, nodata, CRS and "
