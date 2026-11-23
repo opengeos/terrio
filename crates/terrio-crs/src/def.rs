@@ -1739,6 +1739,29 @@ impl Def {
         self.bound.as_deref().is_some_and(|b| b.target.is_some())
     }
 
+    /// For a CRS PROJ reads as bound to a hub CRS (a WKT 2 `BOUNDCRS`, a `+towgs84` or
+    /// `+nadgrids` shift to WGS 84) and that has no geographic CRS of its own: the hub CRS, and the
+    /// shift into it. The hub has no area of its own, as PROJ gives the bound CRS none
+    /// (`getExtent`), so the search from it is for the other CRS's area.
+    pub fn hub(&self) -> Option<(Def, Arc<Op>)> {
+        if self.geog.is_some() {
+            return None;
+        }
+        if let Some((target, shift)) = self.bound.as_deref().and_then(|b| b.target.as_ref()) {
+            let mut hub = target.clone();
+            hub.area = None;
+            return Some((hub, shift.clone()));
+        }
+        match self.ops.as_slice() {
+            [op] if !op.ballpark && !op.steps.is_empty() => {
+                let mut wgs84 = Def::new(&SpatialRef { epsg: Some(4326), ..Default::default() }).ok()?;
+                wgs84.area = None;
+                Some((wgs84, op.clone()))
+            }
+            _ => None,
+        }
+    }
+
     /// The datum transformations to WGS 84, in the order they are tried.
     pub fn ops(&self) -> &[Arc<Op>] {
         &self.ops
