@@ -4121,7 +4121,7 @@ mod tests {
     }
 
     // A prefetch that cannot fit beside the cached blocks its ranges cover drops nothing to make
-    // room: its first batch is half the cache, as a larger plan's is.
+    // room: its 10 blocks fit the half-cache budget of a first batch, so they are fetched whole.
     #[test]
     fn a_plan_that_cannot_fit_beside_its_cached_blocks_drops_nothing() {
         let data = test_data();
