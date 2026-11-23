@@ -250,7 +250,15 @@ fn pseudo_area(a: &[f64; 4]) -> f64 {
 /// The area the transformations between two CRSs must intersect: the smaller of their areas of
 /// use, as PROJ's `SourceTargetCRSExtentUse::SMALLEST`.
 fn area_of_interest(src: &Def, dst: &Def) -> Option<[f64; 4]> {
-    smaller(src.area(), dst.area())
+    smaller(extent(src), extent(dst))
+}
+
+/// A CRS's area as PROJ takes it for its search: none for a WKT 2 `BOUNDCRS` to another CRS,
+/// which PROJ neither looks up by name nor gives an area beyond its base CRS's own `USAGE`
+/// (`getExtent`), and terrio reads no `USAGE`: the area of a code terrio identifies it as is not
+/// PROJ's (a bound CRS on Saba to ED50, placed by ED50's ballpark on the island as in PROJ).
+fn extent(d: &Def) -> Option<[f64; 4]> {
+    if d.bound_elsewhere() { None } else { d.area() }
 }
 
 /// The smaller of two areas, as PROJ measures them.
@@ -261,10 +269,22 @@ fn smaller(a: Option<[f64; 4]>, b: Option<[f64; 4]>) -> Option<[f64; 4]> {
     }
 }
 
+/// The transformations of a WKT 2 `BOUNDCRS` to another CRS (see [`Def::bound_elsewhere`]) as
+/// PROJ's nested search from that CRS gives them: when only its ballpark is left for the area of
+/// interest, PROJ excludes it ("artificial transformations from the hub", in
+/// `createOperationsBoundToGeog`) and applies no shift: between a bound CRS to CH1903 and UTM zone
+/// 33N, whose area CH1903's transformation does not reach.
+fn nested(def: &Def, kind: Kind) -> Kind {
+    match kind {
+        Kind::List(legs) if def.bound_elsewhere() && legs.iter().all(|l| l.op.ballpark) => Kind::List(Vec::new()),
+        kind => kind,
+    }
+}
+
 /// Whether PROJ considers a transformation between two CRSs: its area must intersect both CRSs'
 /// areas (as PROJ queries its database) and the area of interest.
 fn relevant(op: &Op, src: &Def, dst: &Def, aoi: Option<&[f64; 4]>) -> bool {
-    op.ballpark || [src.area().as_ref(), dst.area().as_ref(), aoi].into_iter().flatten().all(|a| intersects(&op.bounds, a))
+    op.ballpark || [extent(src).as_ref(), extent(dst).as_ref(), aoi].into_iter().flatten().all(|a| intersects(&op.bounds, a))
 }
 
 impl Route {
@@ -329,9 +349,9 @@ impl Route {
         } else if src.same_datum(dst) {
             Kind::Same
         } else if dst.is_wgs84() {
-            searched(list(src.ops(), false))
+            searched(nested(src, list(src.ops(), false)))
         } else if src.is_wgs84() {
-            searched(list(dst.ops(), true))
+            searched(nested(dst, list(dst.ops(), true)))
         } else {
             match (src.geog(), dst.geog()) {
                 (Some(a), Some(b)) => match if all { epsg::pair_all(a, b) } else { epsg::pair(a, b) } {

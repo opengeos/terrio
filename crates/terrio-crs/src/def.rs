@@ -1368,6 +1368,16 @@ impl Def {
                 // In PROJ's order, which decides between those of one area ("OSGB36 to WGS 84
                 // (3)" before "(2)").
                 route::sort_as_proj(&mut ops);
+                // Then the shift and PROJ's ballpark from the target CRS, which PROJ's nested
+                // search keeps even where its search from the target code drops it (DHDN, CH1903,
+                // Tokyo, NTF): it drops the ballpark only when a transformation needing no grid
+                // holds the area of interest, here the world (the bound CRS has no area in
+                // terrio). Where only that ballpark is left for the area of interest, the route
+                // drops it, as PROJ does (`route::nested`).
+                if !ops.is_empty() && !ops.iter().any(|op| op.ballpark) {
+                    let accuracy = -1.0;
+                    ops.push(Arc::new(Op { accuracy, chain_accuracy: accuracy, ballpark: true, ..Op::world(to_target.clone()) }));
+                }
                 if ops.is_empty() {
                     // The datum stays `None`: `Def::new` tells by it that a bound CRS over a code
                     // has the bound's transformations, and `on_bound_source` covers the source's.
@@ -1721,6 +1731,12 @@ impl Def {
     /// transforms into with no shift.
     pub fn on_bound_source(&self, other: &Def) -> bool {
         self.bound.as_deref().is_some_and(|b| b.source_datum.is_some() && b.source_datum == other.datum)
+    }
+
+    /// Whether this is a WKT 2 `BOUNDCRS` to a CRS other than WGS 84, whose transformations to
+    /// WGS 84 are its shift followed by each of that CRS's, then by that CRS's ballpark.
+    pub fn bound_elsewhere(&self) -> bool {
+        self.bound.as_deref().is_some_and(|b| b.target.is_some())
     }
 
     /// The datum transformations to WGS 84, in the order they are tried.
