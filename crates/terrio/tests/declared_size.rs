@@ -2171,7 +2171,7 @@ fn a_masked_cog_call_is_checked_for_the_most_it_allocates() {
             values[y * 8192..][..512].fill(7);
             mask[y * 8192..][..512].fill(255);
         }
-        (RasterData::U8(values), mask)
+        (RasterData::U8(values), Some(mask))
     };
     checked_for_their_peaks(&path, &header(8192, 8192, 1), &cog(None, None, true), 8192, &corner);
     // Varied values in each band, invalid in the left third and at every third pixel of 600 rows.
@@ -2181,36 +2181,94 @@ fn a_masked_cog_call_is_checked_for_the_most_it_allocates() {
         let values = (0..3).flat_map(|b| pixels.clone().map(move |i| ((i % columns * (3 + 2 * b) + i / columns * (7 + b)) % 251) as u8));
         let invalid = |(y, x): (usize, usize)| x < columns / 3 || ((rows / 2..rows / 2 + 600).contains(&y) && (x + y) % 3 == 0);
         let mask = pixels.clone().map(|i| if invalid((i / columns, i % columns)) { 0 } else { 255 });
-        (RasterData::U8(values.collect()), mask.collect())
+        (RasterData::U8(values.collect()), Some(mask.collect()))
     };
     checked_for_their_peaks(&path, &header(columns, rows, 3), &cog(Some("PACKBITS"), Some(256), true), 256, &varied);
     // Samples without a run of three equal bytes, valid.
     let mut tile = header(2048, 2048, 1);
     tile.raster.data_type = DataType::U64;
     tile.raster.data = RasterData::new_filled(DataType::U64, 0, 0.0);
-    let runless = |_: usize, _: usize| (RasterData::U64(vec![0x0706_0504_0302_0100; 2048 * 2048]), vec![255; 2048 * 2048]);
+    let runless = |_: usize, _: usize| (RasterData::U64(vec![0x0706_0504_0302_0100; 2048 * 2048]), Some(vec![255; 2048 * 2048]));
     checked_for_their_peaks(&path, &tile, &cog(Some("PACKBITS"), Some(2048), false), 2048, &runless);
 }
 
-/// Writes `raster` as a COG with a mask at `path` with `options`, in calls of `step` rows (`slab`:
-/// the values and mask of rows `y0..y1`), measuring each call's peak: the most bytes alive at once,
-/// beyond those alive once the writer was created, from the call (the rows of tiles compressed
-/// before it spooled first) until the next call's rows are made (the block rows and tiles it left
-/// being computed meanwhile included), or, for the last, until the file is finished, its rows held
-/// until then. Then writes it again, giving each call
-/// first with a byte less of usable memory than its peak, which must refuse it (the first call before
-/// any allocation of 1 MiB; at later ones, block rows of earlier calls may be allocating), then, to
-/// go on to the next call and to the end, with the limit lifted.
+/// COGs without a mask written in rows: each call is checked, before it starts, for at least the most
+/// it has allocated at once, as a call with a mask is, measured as above with 16 threads (#1213): the
+/// issue's 8192 x 8192 UInt16 raster in rows of 2048 (LZW and overviews, the defaults), whose rows of
+/// tiles are compressed while the next rows are given; a 4096 x 4096 one in rows of 700 (PackBits,
+/// without overviews), which are not whole rows of tiles and are joined and cut; the UInt64 tile
+/// above, without its mask, whose copy out of its rows, PackBits' buffer and the job compressing them
+/// peak within 4 KiB of its check; and a 4096 x 2048 UInt16 one in ZSTD rows of 512 (without
+/// overviews), several of whose rows of tiles are being compressed at once, each of their chunks with
+/// Zstandard's encoder memory.
+#[test]
+#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+fn an_unmasked_cog_call_is_checked_for_the_most_it_allocates() {
+    const CHILD: &str = "TERRIO_TEST_UNMASKED_COG_CALL_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "an_unmasked_cog_call_is_checked_for_the_most_it_allocates"])
+            .env(CHILD, "1")
+            // As many blocks and tiles computed at once as on 16 cores, however many this machine has.
+            .env("RAYON_NUM_THREADS", "16")
+            .env_remove("TERRIO_MAX_DECLARED_BYTES")
+            .env_remove("TERRIO_MAX_BANDS")
+            .output()
+            .unwrap();
+        assert!(child.status.success(), "{}\n{}", String::from_utf8_lossy(&child.stdout), String::from_utf8_lossy(&child.stderr));
+        return;
+    }
+    let _serial = serial();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("rows.cog.tif");
+    let cog = |compression: Option<&str>, tile: Option<u32>, overviews: bool| RasterWriteOptions {
+        driver: Some(RasterDriver::Cog),
+        compression: compression.map(str::to_string),
+        tile_size: tile,
+        creation_options: if overviews { Vec::new() } else { vec![("OVERVIEW_COUNT".into(), "0".into())] },
+        ..Default::default()
+    };
+    let raster = |columns: usize, rows: usize, data_type: DataType| {
+        let mut raster = header(columns, rows, 1);
+        raster.raster.data_type = data_type;
+        raster.raster.data = RasterData::new_filled(data_type, 0, 0.0);
+        raster
+    };
+    // Samples of a hash of their index: about as incompressible as samples get.
+    let hashed = |columns: usize| {
+        move |y0: usize, y1: usize| {
+            let values = (y0 * columns..y1 * columns).map(|i| ((i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 48) as u16);
+            (RasterData::U16(values.collect()), None::<Vec<u8>>)
+        }
+    };
+    checked_for_their_peaks(&path, &raster(8192, 8192, DataType::U16), &cog(None, None, true), 2048, &hashed(8192));
+    checked_for_their_peaks(&path, &raster(4096, 4096, DataType::U16), &cog(Some("PACKBITS"), None, false), 700, &hashed(4096));
+    // Samples without a run of three equal bytes.
+    let runless = |_: usize, _: usize| (RasterData::U64(vec![0x0706_0504_0302_0100; 2048 * 2048]), None::<Vec<u8>>);
+    checked_for_their_peaks(&path, &raster(2048, 2048, DataType::U64), &cog(Some("PACKBITS"), Some(2048), false), 2048, &runless);
+    checked_for_their_peaks(&path, &raster(4096, 2048, DataType::U16), &cog(Some("ZSTD"), None, false), 512, &hashed(4096));
+}
+
+/// Writes `raster` as a COG at `path` with `options`, in calls of `step` rows (`slab`: the values of
+/// rows `y0..y1`, and their mask when `options` give the COG one), measuring each call's peak: the
+/// most bytes alive at once, beyond those alive once the writer was created, from the call (the rows
+/// of tiles compressed before it spooled first) until the next call's rows are made (the block rows
+/// and tiles it left being computed meanwhile included), or, for the last, until the file is
+/// finished, its rows held until then. Then writes it again, giving each call first with a byte
+/// less of usable memory than its peak, which must refuse it (the first call before any allocation
+/// of 1 MiB; at later ones, block rows of earlier calls may be allocating), then, to go on to the
+/// next call and to the end, with the limit lifted.
 #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
 fn checked_for_their_peaks(
     path: &Path,
     raster: &RasterDataset,
     options: &RasterWriteOptions,
     step: usize,
-    slab: &dyn Fn(usize, usize) -> (RasterData, Vec<u8>),
+    slab: &dyn Fn(usize, usize) -> (RasterData, Option<Vec<u8>>),
 ) {
     let rows = raster.raster.rows;
     let none = RasterData::new_filled(raster.raster.data_type, 0, 0.0);
+    let no_rows = options.mask.as_ref().map(|_| &[][..]);
     let write = |limits: Option<&[usize]>| {
         let mut writer = Some(terrio::GeoTiffWriter::create(path.to_str().unwrap(), raster, options).unwrap());
         let before = LIVE.load(Ordering::Relaxed);
@@ -2223,10 +2281,10 @@ fn checked_for_their_peaks(
             }
             let (values, mask) = slab(y0, y1);
             let w = writer.as_mut().unwrap();
-            w.write_rows(&none, 0, Some(&[])).unwrap();
+            w.write_rows(&none, 0, no_rows).unwrap();
             if let Some(peak) = limits.map(|peaks| peaks[call]) {
                 rss_limit(Some(peak as u64 - 1));
-                let (refused, largest) = largest_during(|| w.write_rows(&values, y1 - y0, Some(&mask)));
+                let (refused, largest) = largest_during(|| w.write_rows(&values, y1 - y0, mask.as_deref()));
                 rss_limit(None);
                 assert!(matches!(refused, Err(terrio::Error::ResourceLimit(_))), "call {call}: {peak} bytes at once, then {refused:?}");
                 assert!(call > 0 || largest < 1 << 20, "{largest} bytes asked for at once before the refusal");
@@ -2240,7 +2298,7 @@ fn checked_for_their_peaks(
             // being computed allocates meanwhile (zeroed first, then raised to what is alive).
             PEAK.store(0, Ordering::Relaxed);
             PEAK.fetch_max(LIVE.load(Ordering::Relaxed), Ordering::Relaxed);
-            w.write_rows(&values, y1 - y0, Some(&mask)).unwrap();
+            w.write_rows(&values, y1 - y0, mask.as_deref()).unwrap();
             if y1 == rows {
                 writer.take().unwrap().finish().unwrap();
                 peaks.push(PEAK.load(Ordering::Relaxed) - before);

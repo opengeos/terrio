@@ -2089,9 +2089,9 @@ impl GeoTiffWriter {
     /// rows failed to be computed, the writer refuses every later call with
     /// [`Error::InvalidData`] (the call that found the failure returns its error). A GeoTIFF other
     /// than a COG otherwise checks only the data type when `rows` is zero. A COG refuses a call,
-    /// before it starts, with [`Error::ResourceLimit`] when the bytes it counts for it (with a mask,
-    /// the most the call can have allocated at once) are more than the memory the process can use
-    /// ([`crate::usable_memory`]): that call takes no rows, and can be made again.
+    /// before it starts, with [`Error::ResourceLimit`] when the bytes it counts for it (the most the
+    /// call can have allocated at once, with or without a mask) are more than the memory the process
+    /// can use ([`crate::usable_memory`]): that call takes no rows, and can be made again.
     pub fn write_rows(&mut self, data: &RasterData, rows: usize, mask: Option<&[u8]>) -> Result<()> {
         match &mut self.inner {
             RowWriter::Tiff(t) => t.write_rows(data, rows, mask),
@@ -2766,9 +2766,14 @@ const COG_IN_FLIGHT: usize = 3;
 #[cfg(not(target_family = "wasm"))]
 const COG_BLOCK_ROWS_IN_FLIGHT: usize = 1;
 
-/// A row of tiles a masked COG's call may have being compressed, as [`CogWriter::call_bytes`]
-/// counts it: the bytes it holds (its rows, unless counted elsewhere, and its compressed chunks),
-/// and the image's chunks and the mask's tiles compressed for it.
+/// The bytes a row of tiles being compressed takes besides its rows and its chunks' bytes, as
+/// [`CogWriter::call_bytes`] counts it: the job compressing it, the channel its tiles come back
+/// in, and their tags and list of chunks (measured: about 1 KiB for a band).
+const COG_JOB_BYTES: usize = 4 << 10;
+
+/// A row of tiles a COG's call may have being compressed, as [`CogWriter::call_bytes`] counts it:
+/// the bytes it holds (its rows, unless counted elsewhere, and its compressed chunks), and the
+/// image's chunks and the mask's tiles compressed for it.
 #[derive(Clone, Copy, Default)]
 struct Compressing {
     bytes: usize,
@@ -3209,7 +3214,8 @@ impl CogWriter {
 
     /// The most bytes the compressed tiles of `rows` rows of level `i` take: the rows padded to
     /// whole tiles, each chunk in the buffer its encoder wrote it in ([`encoder_bytes`]), and their
-    /// mask's tiles (a bit a pixel, deflated).
+    /// mask's tiles (a bit a pixel, deflated), with each chunk's headers and the job compressing
+    /// them ([`COG_JOB_BYTES`]).
     fn encoded_bytes(&self, i: usize, rows: usize) -> usize {
         let t = self.tile;
         let tiles = self.levels[i].cols.div_ceil(t).saturating_mul(rows.div_ceil(t));
@@ -3219,7 +3225,8 @@ impl CogWriter {
             if self.levels[i].mask.is_some() { tiles.saturating_mul(encoder_bytes(Compression::Deflate, t.div_ceil(8) * t).0) } else { 0 };
         // Each chunk's headers.
         let headers = tiles.saturating_mul(self.bands + 1).saturating_mul(64);
-        image.saturating_add(mask).saturating_add(headers)
+        let job = if tiles > 0 { COG_JOB_BYTES } else { 0 };
+        image.saturating_add(mask).saturating_add(headers).saturating_add(job)
     }
 
     /// The chunks of a tile (one, or one a plane), and the bytes of each chunk's samples.
@@ -3250,15 +3257,16 @@ impl CogWriter {
 
     /// The bytes [`Self::admit`] checks against the memory the process can use before a call giving
     /// `rows` rows (`data` bytes, and `mask` bytes of their mask), `None` for more than the address
-    /// space holds: the rows given, the writer's copy of them when the caller only lends them
-    /// (`borrowed`), and each overview build's, while the rows each build and level holds are
-    /// replaced by copies (twice).
-    /// With a mask, the block rows are computed on the thread pool while the next rows are given,
-    /// and the most the call can have allocated at once also counts what they hold: the rows they
-    /// keep that the builds no longer do, their working buffers, the block rows added to the next
-    /// levels, the rows cut into rows of tiles, and the rows of tiles being compressed: their
-    /// compressed chunks, the chunks being compressed with their encoders' memory, and the scratch each
-    /// thread that deflates keeps.
+    /// space holds: the most the call can have allocated at once. That is the rows given, the
+    /// writer's copy of them when the caller only lends them (`borrowed`), and each overview build's,
+    /// while the rows each build and level holds are replaced by copies (twice); the rows cut into
+    /// rows of tiles; the overview block rows computed meanwhile, with their working buffers, and
+    /// added to the next levels; and the rows of tiles being compressed: their compressed chunks, the
+    /// chunks being compressed with their encoders' memory, and the scratch each thread that deflates
+    /// keeps. With a mask, the block rows are computed on the thread pool while the next rows are
+    /// given, and the rows they keep that the builds no longer do count too. Without one, the calling
+    /// thread computes them one at a time, and each build copies the rows later blocks read after
+    /// each block row.
     fn call_bytes(&self, data: usize, mask: usize, rows: usize, borrowed: bool) -> Option<usize> {
         // Saturating: a term at `usize::MAX` is more than the address space holds.
         let sum = |parts: &[usize]| parts.iter().fold(0usize, |total, n| total.saturating_add(*n));
@@ -3273,77 +3281,89 @@ impl CogWriter {
         let copies = 1 + usize::from(borrowed) + self.builds.iter().filter(|b| b.src == 0).count();
         let mut terms = vec![new.saturating_mul(copies), sum(&built).saturating_mul(2), sum(&waiting).saturating_mul(2)];
         let l0 = &self.levels[0];
-        if l0.mask.is_some() {
-            // Rows (with those pending) that are not whole rows of tiles are joined, then cut in two:
-            // the rows pending are held a third time.
-            let cut = l0.pending_rows > 0 || (!rows.is_multiple_of(self.tile) && l0.received.saturating_add(rows) < l0.rows);
-            terms.extend([new.saturating_mul(2 * usize::from(cut)), sum(&waiting)]);
-            // A block row of a level: its rows of every band, and of the mask.
-            let output = |b: &CogBuild| b.plan.rows(0).0.saturating_mul(b.plan.dst.0).saturating_mul(self.bands * size + 1);
-            let mut work = Vec::new();
-            for b in &self.builds {
-                terms.push(b.kept());
-                // The block rows of the level the build reads, added to it: copied, joined and cut.
-                if let Some(from) = self.builds.iter().find(|f| f.level == b.src) {
-                    terms.push(output(from).saturating_mul(3));
-                }
-                let own = !self.mask_without_dataset || b.src == 0;
-                work.push(sum(&[
-                    b.plan.block_row_bytes(self.bands, self.data_type),
-                    b.mask_plan.block_row_bytes(1, DataType::U8),
-                    if own { 0 } else { b.mask.len() },
-                ]));
+        let masked = l0.mask.is_some();
+        // Rows (with those pending) that are not whole rows of tiles are joined, then cut in two:
+        // the rows pending are held a third time.
+        let cut = l0.pending_rows > 0 || (!rows.is_multiple_of(self.tile) && l0.received.saturating_add(rows) < l0.rows);
+        terms.extend([new.saturating_mul(2 * usize::from(cut)), sum(&waiting)]);
+        // A block row of a level: its rows of every band, and of the mask when the COG has one.
+        let output = |b: &CogBuild| b.plan.rows(0).0.saturating_mul(b.plan.dst.0).saturating_mul(self.bands * size + usize::from(masked));
+        let mut work = Vec::new();
+        // Without a mask, the most rows a build appends in the call: copied again after a block row,
+        // with the rows later blocks read (the build's own rows count above).
+        let mut appended = 0;
+        for b in &self.builds {
+            terms.push(b.kept());
+            // The block rows of the level the build reads, added to it: copied, joined and cut.
+            let from = self.builds.iter().find(|f| f.level == b.src);
+            if let Some(from) = from {
+                terms.push(output(from).saturating_mul(3));
             }
-            // A block row of each level being computed, and a second of the level waiting for one.
-            terms.extend([sum(&work), work.iter().copied().max().unwrap_or(0)]);
-            // The rows of tiles being compressed (`COG_IN_FLIGHT` + 1 at most at once; on WebAssembly,
-            // one), each with its rows and its tiles: those still compressed at the call, those of the
-            // rows given that `push` compresses (whole rows of tiles, or all of them with the last rows;
-            // the rows are counted above), and the overviews' (a row of tiles, or a block row and a row
-            // of tiles when block rows do not make whole rows of tiles).
-            #[cfg(not(target_family = "wasm"))]
-            let at_once = COG_IN_FLIGHT + 1;
-            #[cfg(target_family = "wasm")]
-            let at_once = 1;
-            let tiles = |i: usize, r: usize, bytes: usize| {
-                let (image_chunks, mask_tiles) = self.chunks(i, r);
-                Compressing { bytes: bytes.saturating_add(self.encoded_bytes(i, r)), image_chunks, mask_tiles }
-            };
-            let compressed = |i: usize, r: usize| tiles(i, r, r.saturating_mul(self.levels[i].cols).saturating_mul(self.bands * size + 1));
-            let given = l0.pending_rows.saturating_add(rows);
-            let ready = if l0.received.saturating_add(rows) >= l0.rows { given } else { given / self.tile * self.tile };
-            let mut entries = vec![tiles(0, ready, 0)];
-            #[cfg(not(target_family = "wasm"))]
-            entries.extend(self.in_flight.iter().map(|(i, r, _)| compressed(*i, *r)));
-            let overview = self.builds.iter().map(|b| {
-                let n = b.plan.rows(0).0;
-                compressed(b.level, if self.tile.is_multiple_of(n) { self.tile } else { n + self.tile })
+            appended = appended.max(from.map_or(new, output));
+            let image = b.plan.block_row_bytes(self.bands, self.data_type);
+            work.push(if masked {
+                let own = !self.mask_without_dataset || b.src == 0;
+                sum(&[image, b.mask_plan.block_row_bytes(1, DataType::U8), if own { 0 } else { b.mask.len() }])
+            } else {
+                image
             });
-            let largest = overview.fold(Compressing::default(), |a, b| Compressing {
-                bytes: a.bytes.max(b.bytes),
-                image_chunks: a.image_chunks.max(b.image_chunks),
-                mask_tiles: a.mask_tiles.max(b.mask_tiles),
-            });
-            entries.extend(std::iter::repeat_n(largest, at_once));
-            // The most of one measure the rows of tiles being compressed at once hold together: the
-            // sum of the `at_once` largest, each measure bounded on its own.
-            let most_at_once = |measure: fn(&Compressing) -> usize| {
-                let mut v: Vec<usize> = entries.iter().map(measure).collect();
-                v.sort_unstable_by(|a, b| b.cmp(a));
-                sum(&v[..at_once])
-            };
-            // Their chunks and their mask's tiles are compressed on the thread pool, each on one
-            // thread, which holds its samples and its encoder's memory meanwhile: as many at once as
-            // the pool has threads. Each thread that deflates (the mask's tiles) keeps Deflate's
-            // scratch for the next.
-            let (threads, (image, mask)) = (crate::par::threads(), self.chunk_work());
-            let working = [
-                image.saturating_mul(threads.min(most_at_once(|c| c.image_chunks))),
-                mask.saturating_mul(threads.min(most_at_once(|c| c.mask_tiles))),
-                threads.saturating_mul(crate::deflate_compress::SCRATCH_BYTES),
-            ];
-            terms.extend([most_at_once(|c| c.bytes), sum(&working)]);
         }
+        let largest_work = work.iter().copied().max().unwrap_or(0);
+        // With a mask, a block row of each level being computed, and a second of the level waiting for
+        // one; without, the block row the calling thread computes, and the rows a build copies after it.
+        terms.extend(if masked { [sum(&work), largest_work] } else { [largest_work, appended] });
+        // The rows of tiles being compressed (`COG_IN_FLIGHT` + 1 at most at once; on WebAssembly,
+        // one), each with its rows and its tiles: those still compressed at the call, those of the
+        // rows given that `push` compresses (whole rows of tiles, or all of them with the last rows;
+        // the rows are counted above), and the overviews' (a row of tiles, or a block row and a row
+        // of tiles when block rows do not make whole rows of tiles).
+        #[cfg(not(target_family = "wasm"))]
+        let at_once = COG_IN_FLIGHT + 1;
+        #[cfg(target_family = "wasm")]
+        let at_once = 1;
+        let tiles = |i: usize, r: usize, bytes: usize| {
+            let (image_chunks, mask_tiles) = self.chunks(i, r);
+            Compressing { bytes: bytes.saturating_add(self.encoded_bytes(i, r)), image_chunks, mask_tiles }
+        };
+        let compressed =
+            |i: usize, r: usize| tiles(i, r, r.saturating_mul(self.levels[i].cols).saturating_mul(self.bands * size + usize::from(masked)));
+        let given = l0.pending_rows.saturating_add(rows);
+        let ready = if l0.received.saturating_add(rows) >= l0.rows { given } else { given / self.tile * self.tile };
+        let mut entries = vec![tiles(0, ready, 0)];
+        #[cfg(not(target_family = "wasm"))]
+        entries.extend(self.in_flight.iter().map(|(i, r, _)| compressed(*i, *r)));
+        let overview = self.builds.iter().map(|b| {
+            let n = b.plan.rows(0).0;
+            compressed(b.level, if self.tile.is_multiple_of(n) { self.tile } else { n + self.tile })
+        });
+        let largest = overview.fold(Compressing::default(), |a, b| Compressing {
+            bytes: a.bytes.max(b.bytes),
+            image_chunks: a.image_chunks.max(b.image_chunks),
+            mask_tiles: a.mask_tiles.max(b.mask_tiles),
+        });
+        entries.extend(std::iter::repeat_n(largest, at_once));
+        // The most of one measure the rows of tiles being compressed at once hold together: the
+        // sum of the `at_once` largest, each measure bounded on its own.
+        let most_at_once = |measure: fn(&Compressing) -> usize| {
+            let mut v: Vec<usize> = entries.iter().map(measure).collect();
+            v.sort_unstable_by(|a, b| b.cmp(a));
+            sum(&v[..at_once])
+        };
+        // Their chunks and their mask's tiles are compressed on the thread pool, each on one
+        // thread, which holds its samples and its encoder's memory meanwhile: as many at once as
+        // the pool has threads. Each thread that deflates (the mask's tiles, or the chunks of a
+        // DEFLATE or LERC_DEFLATE COG) keeps Deflate's scratch for the next.
+        let (threads, (image, mask)) = (crate::par::threads(), self.chunk_work());
+        let working = [
+            image.saturating_mul(threads.min(most_at_once(|c| c.image_chunks))),
+            mask.saturating_mul(threads.min(most_at_once(|c| c.mask_tiles))),
+            if masked || matches!(self.encoding.0, Compression::Deflate | Compression::LercDeflate) {
+                threads.saturating_mul(crate::deflate_compress::SCRATCH_BYTES)
+            } else {
+                0
+            },
+        ];
+        terms.extend([most_at_once(|c| c.bytes), sum(&working)]);
         Some(sum(&terms)).filter(|&bytes| bytes < usize::MAX)
     }
 
