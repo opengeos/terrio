@@ -2731,7 +2731,8 @@ impl Shared {
         // are a piece each at least, through the 8 slots.
         if self.client.options.parallel_ranges {
             let slots = PARALLEL_RUNS as u64;
-            // A span the file's first bytes hold whole needs no request: it takes no slot.
+            // A span the file's first bytes hold whole needs no request: it is left out of the
+            // shares, and its share of 1 only makes it one piece, which requests nothing.
             let span_held = |end: u64| self.prefix.as_ref().is_some_and(|p| p.len() as u64 >= ((end + 1) * self.block_size).min(self.len));
             let lens: Vec<u64> = spans.iter().filter(|(_, end)| !span_held(*end)).map(|(start, end)| end - start + 1).collect();
             let mut by_len = slot_shares(&lens, slots).into_iter();
@@ -2942,7 +2943,7 @@ impl Shared {
             }
             if self.whole.is_none() && !missing.is_empty() {
                 // Requests of at most half the cache's blocks, as a prefetch's later batches are.
-                let batch = (self.max_blocks / 2).max(1);
+                let batch = self.half_cache() as usize;
                 for chunk in missing.chunks(batch) {
                     self.fetch_blocks(chunk, 0)?;
                     if self.whole.is_some() {

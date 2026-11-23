@@ -30,7 +30,7 @@ reads fetch only the tiles they touch, merging adjacent ranges into one request 
 members of seek-optimized ZIP archives, SOZip, over `/vsizip//vsicurl/`). The tiles of a window
 are requested together, 8 requests in flight at a time, wherever its rows of tiles are in the
 file, when a prefetch of them fits in the block cache (`TERRIO_HTTP_CACHE_SIZE`), the oldest
-blocks it does not need dropped to make room; other reads are fetched in batches of half the
+blocks outside its ranges dropped to make room; other reads are fetched in batches of half the
 cache as they are decoded. PMTiles archives, Zarr stores, JPEG 2000, GRIB, SRTM HGT, STAC tiled
 assets, COPC and EPT are read in place too
 (below), and WFS (`WFS:`), OGC API Features (`OAPIF:`) and ArcGIS feature-service queries
