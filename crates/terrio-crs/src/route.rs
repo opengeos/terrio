@@ -459,7 +459,7 @@ impl Route {
         match &self.kind {
             Kind::Same => true,
             Kind::List(list) => list.iter().any(|l| usable(&l.op)),
-            Kind::Chains { chains, .. } => chains.iter().any(|c| c.legs.iter().all(|l| l.op.obtainable())),
+            Kind::Chains { chains, .. } => chains.iter().any(|c| c.legs.iter().all(|l| usable(&l.op))),
             // Through WGS 84: a transformation on each side.
             Kind::Hub => [&self.src_ops, &self.dst_ops]
                 .iter()
@@ -1539,6 +1539,17 @@ mod tests {
         route.src_ops = vec![world];
         route.dst_ops = vec![outside];
         assert!(!route.has_transformation());
+    }
+
+    #[test]
+    fn ballpark_legs_are_excluded_from_list_and_chain_availability() {
+        for ballpark in [false, true] {
+            let leg = Leg { op: Arc::new(Op { ballpark, ..Op::world(Vec::new()) }), reverse: false };
+            let list = route_of(Kind::List(vec![leg.clone()]));
+            let chain = route_of(Kind::Chains { chains: vec![direct_chain(&leg, None).1], ballpark: None });
+            assert_eq!(list.has_transformation(), !ballpark);
+            assert_eq!(chain.has_transformation(), !ballpark);
+        }
     }
 
     #[test]

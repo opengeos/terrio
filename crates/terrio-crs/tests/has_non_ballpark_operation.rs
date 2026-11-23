@@ -5,7 +5,9 @@
 //! `data/has_non_ballpark_operation.tsv` (`scripts/gen_has_non_ballpark_operation.py`, pyproj's
 //! `TransformerGroup` with the network off and no grids, counting operations whose grids the PROJ
 //! catalog lists for direct download) holds PROJ's answer for every EPSG geographic 2D CRS into
-//! WGS 84, and some into ETRS89 and OSGB36.
+//! WGS 84, and some into ETRS89 and OSGB36. The generator conservatively requires every
+//! listed grid because pyproj exposes no optional flag; the frozen pairs do not exercise
+//! that distinction. The explicit optional-grid case below checks Terrio's fallback policy.
 
 use terrio_crs::{SpatialRef, Transformer};
 
@@ -33,6 +35,7 @@ fn obtainable_grids_follow_the_direct_download_catalog() {
         ("rdtrans2008.gsb", true),
         ("conus.las", false),
         ("unlisted_nonexistent_terrio_grid.tif", false),
+        ("@unlisted_nonexistent_terrio_grid.tif,null", true),
         ("SIRGAS2000-to-SIRGAS-CONSIR17P01.gsb", false),
     ] {
         // A named datum keeps an explicit null-grid operation, rather than the datumless
