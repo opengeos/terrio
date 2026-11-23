@@ -708,6 +708,13 @@ let t = terrio_crs::Transformer::new(&SpatialRef::parse("EPSG:27700")?, &Spatial
 let op = t.operation_at(530000.0, 180000.0, 0.0)?;   // "OSGB36 to WGS 84 (9)", 1 m, OSTN15
 ```
 
+`Transformer::has_non_ballpark_operation()` tells whether any transformation but PROJ's ballpark
+links the two CRSs, wherever its area of use, as PROJ's candidate operations
+(`proj_create_operations`) do. It is false when only the ballpark does, so that no datum
+transformation is known between them: for a datum known by its ellipsoid alone, for example. It is
+true between CRSs of one datum. A transformation whose grid is missing counts when the PROJ CDN
+serves the grid, and not otherwise (SIRGAS-CON SIR17P01's `SIRGAS2000-to-SIRGAS-CONSIR17P01.gsb`).
+
 ### Datum shift grids
 
 Many datum transformations interpolate shifts in a grid: NADCON and NADCON5 in the United

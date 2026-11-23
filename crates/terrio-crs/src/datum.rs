@@ -681,6 +681,12 @@ impl Op {
         self.grids().iter().all(|(name, optional)| *optional || grid::available(name))
     }
 
+    /// Whether every grid it requires can be had (see [`grid::obtainable`]): PROJ's candidate
+    /// lists keep those it knows on its CDN as if installed.
+    pub fn obtainable(&self) -> bool {
+        self.grids().iter().all(|(name, optional)| *optional || grid::obtainable(name))
+    }
+
     /// Whether a grid it requires was asked for on the network and not obtained.
     pub fn network_failed(&self) -> bool {
         self.grids().iter().any(|(name, optional)| !*optional && grid::fetch_failed(name))

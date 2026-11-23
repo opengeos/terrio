@@ -439,6 +439,21 @@ impl Route {
         }
     }
 
+    /// Whether any candidate is not a ballpark, whatever its area: a transformation between the
+    /// datums whose grids can be had (see [`Op::obtainable`]), or none needed (one datum). False
+    /// when only PROJ's ballpark links the CRSs (or the shift into a hub CRS with it, which PROJ
+    /// counts as one).
+    pub fn has_transformation(&self) -> bool {
+        let usable = |op: &Op| !op.ballpark && op.obtainable();
+        match &self.kind {
+            Kind::Same => true,
+            Kind::List(list) => list.iter().any(|l| usable(&l.op)),
+            Kind::Chains { chains, .. } => chains.iter().any(|c| !c.rank.ballpark && c.legs.iter().all(|l| l.op.obtainable())),
+            // Through WGS 84: a transformation on each side.
+            Kind::Hub => [&self.src_ops, &self.dst_ops].iter().all(|ops| ops.iter().any(|op| usable(op))),
+        }
+    }
+
     /// Whether this route represents an unchanged datum.
     pub fn same_datum(&self) -> bool {
         matches!(self.kind, Kind::Same)

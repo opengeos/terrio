@@ -2969,6 +2969,30 @@ impl Transformer {
         self.transform_at(x, y, z, Some(t))
     }
 
+    /// Whether PROJ's candidate operations between the two CRSs (`proj_create_operations`, which
+    /// keeps those whose grids are missing) hold any that is not a ballpark, whatever its area of
+    /// use: false when only PROJ's ballpark ("Ballpark geographic offset") links their datums, so
+    /// that no datum transformation is known between them anywhere. True between CRSs of one
+    /// datum, which need none. The horizontal datums only, with every grid taken as present.
+    ///
+    /// ```
+    /// use terrio_crs::{SpatialRef, Transformer};
+    /// let wgs84 = SpatialRef::from_epsg(4326)?;
+    /// assert!(Transformer::new(&SpatialRef::from_epsg(4230)?, &wgs84)?.has_non_ballpark_operation());
+    /// let bessel = SpatialRef::parse("+proj=longlat +ellps=bessel")?;
+    /// assert!(!Transformer::new(&bessel, &wgs84)?.has_non_ballpark_operation());
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
+    pub fn has_non_ballpark_operation(&self) -> bool {
+        let route = route::Route::all(&self.src, &self.dst);
+        // CRSs terrio takes as of one datum without knowing it (defined by their ellipsoids):
+        // PROJ's null transformation on one ellipsoid, else its ballpark.
+        if route.same_datum() && (self.src.datum_code().is_none() || self.dst.datum_code().is_none()) {
+            return fits::same_ellipsoid(&self.src.ell, &self.dst.ell);
+        }
+        route.has_transformation()
+    }
+
     /// The coordinate operation [`Transformer::transform_3d`] uses for a point: the
     /// transformations between datums and vertical CRSs it runs, as PROJ's
     /// `proj_trans_get_last_used_operation` gives them after transforming the point. `None` when
