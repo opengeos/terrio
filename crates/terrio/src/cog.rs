@@ -264,7 +264,7 @@ pub(crate) trait WindowSource: Send + Sync {
         None
     }
     /// A selected overview dataset's nodata, when it carries its own band metadata.
-    fn overview_band_nodata(&self, _overview: usize, _bands: &[usize]) -> Option<Vec<Option<f64>>> {
+    fn overview_band_nodata(&self, _overview: usize, _bands: &[usize], _base: &RasterDataset) -> Option<Vec<Option<f64>>> {
         None
     }
     /// Native TIFF overview identity: whether external, and the original IFD index (GDAL 3.13.3).
@@ -416,6 +416,9 @@ impl WindowSource for SharedRaster {
     }
     fn level_sample_bits(&self, overview: Option<usize>) -> Option<u16> {
         self.lock().ok()?.level_sample_bits(overview)
+    }
+    fn overview_band_nodata(&self, overview: usize, bands: &[usize], _base: &RasterDataset) -> Option<Vec<Option<f64>>> {
+        Some(self.lock().ok()?.level_band_nodata(bands, Some(overview)))
     }
     fn tiff_overview_ifd(&self, overview: usize) -> Option<(bool, usize)> {
         self.lock().ok()?.tiff_overview_ifd(overview)
@@ -1670,13 +1673,36 @@ impl LazyRaster {
             let tags = t.tags_at_level(overview.map_or(0, |i| i + 1));
             bands.iter().map(|b| tags.band_nodata.iter().find(|(i, _)| i == b).map(|(_, v)| *v).or(tags.nodata)).collect()
         } else {
-            if let (Inner::Source(_, source), Some(i)) = (&self.inner, overview)
-                && let Some(nodata) = source.overview_band_nodata(i, bands)
+            if let (Inner::Source(base, source), Some(i)) = (&self.inner, overview)
+                && let Some(nodata) = source.overview_band_nodata(i, bands, base)
             {
                 return nodata;
             }
             bands.iter().map(|b| self.band_nodata(*b)).collect()
         }
+    }
+
+    /// Inherits a raw dataset's per-band nodata unless its TIFF sidecar declares that band
+    /// explicitly. Shared TIFF nodata must not replace distinct PAM sentinels. GDAL 3.12.1
+    /// exposes the TIFF's shared value for all overview bands; this preserves the base metadata.
+    pub(crate) fn level_band_nodata_inheriting(&self, bands: &[usize], overview: Option<usize>, base: &RasterDataset) -> Vec<Option<f64>> {
+        let mut values = self.level_band_nodata(bands, overview);
+        if let Inner::Tiff(t) = &self.inner {
+            let tags = t.tags_at_level(overview.map_or(0, |i| i + 1));
+            for (&band, value) in bands.iter().zip(&mut values) {
+                if tags.band_nodata.iter().any(|(b, _)| *b == band) {
+                    continue;
+                }
+                let inherited = base.band_nodata(band);
+                if !base.band_nodata.is_empty() || value.is_none() {
+                    *value = inherited;
+                }
+                if self.data_type() == DataType::F32 {
+                    *value = value.map(|v| f64::from(v as f32));
+                }
+            }
+        }
+        values
     }
 
     /// The dataset of a read of some bands (numbered from 1): their pixels `data` on a grid of
@@ -2582,6 +2608,9 @@ pub(crate) fn open_ovr(
     crate::declared::check(first.width, first.height, ovr.bands, ovr.data_type, ovr.complex)?;
     ovr.file = Some(path.to_path_buf());
     ovr.files.push(path.to_string_lossy().into_owned());
+    if ovr.tags.apply_sidecar_crs(path) {
+        ovr.files.push(format!("{}.aux.xml", path.display()));
+    }
     Ok(Some(LazyRaster { inner: Inner::Tiff(Box::new(ovr)), sidecar_mask: None, asset_policy: crate::stac::AssetReadPolicy::current() }))
 }
 

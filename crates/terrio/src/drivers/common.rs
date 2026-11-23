@@ -413,9 +413,9 @@ impl crate::cog::WindowSource for RawWindow {
         ovr.reader.lock().ok()?.level_sample_bits(ovr.levels.get(overview?)?.1)
     }
 
-    fn overview_band_nodata(&self, overview: usize, bands: &[usize]) -> Option<Vec<Option<f64>>> {
+    fn overview_band_nodata(&self, overview: usize, bands: &[usize], base: &crate::RasterDataset) -> Option<Vec<Option<f64>>> {
         let ovr = self.overviews.as_ref()?;
-        Some(ovr.reader.lock().ok()?.level_band_nodata(bands, ovr.levels.get(overview)?.1))
+        Some(ovr.reader.lock().ok()?.level_band_nodata_inheriting(bands, ovr.levels.get(overview)?.1, base))
     }
 
     fn level_has_own_mask(&self, level: usize) -> bool {

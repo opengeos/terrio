@@ -291,5 +291,39 @@ fn averages_use_each_bands_float32_pam_nodata() {
         let mut source = LazyRaster::open(path.to_str().unwrap()).unwrap();
         let values = source.read_window(Window::full(1, 1), &WindowOptions { bands: vec![1, 2], overview: Some(0) }).unwrap();
         assert_eq!(values.raster.data.to_f64_vec(), vec![2., f64::from(expected)], "{name}");
+        assert_eq!(values.band_nodata(1), Some(-9999.), "{name}");
+        assert_eq!(values.band_nodata(2), Some(f64::from(-0.1_f32)), "{name}");
+        assert_eq!(source.level_band_nodata(&[2], Some(0)), vec![Some(f64::from(-0.1_f32))]);
+        assert_eq!(source.shared().level_band_nodata(&[2], Some(0)), vec![Some(f64::from(-0.1_f32))]);
+        std::fs::write(
+            format!("{}.ovr.aux.xml", path.display()),
+            "<PAMDataset><PAMRasterBand band=\"2\"><NoDataValue>-3</NoDataValue></PAMRasterBand></PAMDataset>",
+        )
+        .unwrap();
+        let source = LazyRaster::open(path.to_str().unwrap()).unwrap();
+        assert_eq!(source.level_band_nodata(&[2], Some(0)), vec![Some(-3.)], "explicit sidecar band metadata wins");
     }
+}
+
+/// A TIFF sidecar without a nodata tag inherits the raw header's Float32 sentinel.
+#[test]
+fn an_overview_without_nodata_inherits_the_base_header() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = grid(dir.path(), "inherited", DataType::F32, Some(-0.1));
+    let mut base = LazyRaster::open(path.to_str().unwrap()).unwrap();
+    let mut overview = base.read_window(Window::full(5, 4), &WindowOptions::default()).unwrap();
+    overview.has_nodata = false;
+    overview.band_nodata.clear();
+    let sidecar = format!("{}.ovr", path.display());
+    terrio::write_raster_dataset(
+        &overview,
+        &sidecar,
+        &terrio::RasterWriteOptions { driver: Some(terrio::formats::RasterDriver::GTiff), ..Default::default() },
+    )
+    .unwrap();
+    assert_eq!(LazyRaster::open(&sidecar).unwrap().nodata(), None);
+    let mut base = LazyRaster::open(path.to_str().unwrap()).unwrap();
+    assert_eq!(base.overviews(), vec![(5, 4)]);
+    let read = base.read_window(Window::full(5, 4), &WindowOptions { bands: vec![1], overview: Some(0) }).unwrap();
+    assert_eq!(read.nodata(), Some(f64::from(-0.1_f32)));
 }
