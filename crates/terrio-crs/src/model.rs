@@ -30,7 +30,7 @@ use crate::{Error, Result};
 #[cfg(test)]
 pub(crate) mod oracle_tests;
 #[cfg(test)]
-mod proj_input_tests;
+mod proj_string_tests;
 
 /// An identifier: WKT 1's `AUTHORITY`, WKT 2's `ID`.
 #[derive(Debug, Clone, PartialEq)]
@@ -240,7 +240,7 @@ pub(crate) enum Crs {
         ident: Ident,
         datum: Datum,
         cs: Cs,
-        /// The CRS's angular unit, as `wkt2::Wkt2Geodetic::read` takes it (degrees for a WKT 1
+        /// The CRS's angular unit, as terrio's WKT 2 reader took it (degrees for a WKT 1
         /// `GEOCCS`), whatever its axes' own.
         angular: Unit,
         frame_epoch: Option<f64>,
@@ -393,13 +393,13 @@ pub(crate) fn wkt1_to_proj(text: &str) -> Option<wkt1::Converted> {
     wkt1::convert(&input, geogcs)
 }
 
-/// A WKT 1 CRS's input to its PROJ string, read from its model (#1058 step 6): what
-/// [`wkt1::Wkt1Input::read`] reads from its tree (`root`, the horizontal CRS's of ESRI's compound),
-/// but for the unusual WKT 1 `where_the_model_reads_unusual_wkt1_otherwise` pins, which it reads
-/// as PROJ 9.9.0 does.
+/// A WKT 1 CRS's input to its PROJ string, read from its model (#1058 step 6), of the CRS whose
+/// tree is `root` (the horizontal CRS's of ESRI's compound): what terrio's WKT 1 reader read from
+/// the tree, but for the unusual WKT 1 `where_the_model_reads_unusual_wkt1_otherwise` pins, which
+/// it reads as PROJ 9.9.0 does.
 pub(crate) fn wkt1_input(m: &Model, root: &Node) -> Option<wkt1::Wkt1Input> {
     use wkt1::Wkt1Kind;
-    // The kind by the root's keyword, as the tree reader takes it.
+    // The kind by the root's keyword, as terrio's WKT 1 reader took it.
     let kind = match root.key.to_ascii_uppercase().as_str() {
         "GEOGCS" => Wkt1Kind::Geographic,
         "GEOCCS" => Wkt1Kind::Geocentric,
@@ -504,8 +504,8 @@ fn first_epsg(i: &Ident) -> Option<u32> {
 }
 
 /// A WKT 2 geographic, geocentric, projected or derived geographic CRS's input to its PROJ string,
-/// read from its model (#1058 step 6): what [`wkt2::Wkt2Input::read`] reads from its tree. `None`
-/// for what the reader refuses, and for a bound CRS (see [`wkt2_root_input`]).
+/// read from its model (#1058 step 6). `None` for what it refuses, and for a bound CRS (see
+/// [`wkt2_root_input`]).
 #[cfg(test)]
 pub(crate) fn wkt2_input(m: &Model) -> Option<wkt2::Wkt2Input> {
     if m.dialect != Dialect::Wkt2 {
@@ -514,8 +514,9 @@ pub(crate) fn wkt2_input(m: &Model) -> Option<wkt2::Wkt2Input> {
     wkt2_crs_input(&m.crs).ok()
 }
 
-/// A WKT 2 CRS's input to its PROJ string, a `BOUNDCRS`'s too, read from its model: what
-/// [`wkt2::Wkt2Root::read`] reads from its tree.
+/// A WKT 2 CRS's input to its PROJ string, a `BOUNDCRS`'s too, read from its model: what terrio's
+/// WKT 2 reader read from its tree, but for the texts `model::proj_string_tests` pins to PROJ
+/// 9.9.0's reading; or its refusal, with the message that reader gave.
 pub(crate) fn wkt2_root_input(m: &Model) -> Result<wkt2::Wkt2Root> {
     if m.dialect != Dialect::Wkt2 {
         return Err(wkt2::bad("a CRS that is not WKT 2"));
@@ -782,7 +783,7 @@ fn unit_node(n: &Node) -> Option<&Node> {
     n.first_in(&["LENGTHUNIT", "ANGLEUNIT", "SCALEUNIT", "TIMEUNIT", "UNIT"])
 }
 
-/// The angular unit of a geodetic CRS node, as `wkt2::Wkt2Geodetic::read` takes it: its own
+/// The angular unit of a geodetic CRS node, as terrio's WKT 2 reader took it: its own
 /// `ANGLEUNIT` or `UNIT`, else (a WKT 2 CRS, not a base CRS) its axes', else its prime meridian's, else degrees.
 fn angular_unit(n: &Node, d: Dialect) -> Unit {
     let own = n.child("ANGLEUNIT").or_else(|| n.child("UNIT"));
@@ -862,9 +863,9 @@ fn geodetic(n: &Node, d: Dialect) -> Result<Crs> {
             ang.clone()
         };
         // A WKT 2 geographic CRS's spherical CS that is not two-dimensional, which PROJ 9.9.0 and
-        // the WKT 2 reader (`wkt2::geodetic_kind`) refuse. The reader reads an ellipsoidal CS of
-        // another dimension than its axes and ignores a base CRS's CS, where PROJ refuses both, so
-        // the model accepts them too (backward compatibility).
+        // terrio's WKT 2 reader refused. The reader read an ellipsoidal CS of another dimension
+        // than its axes and ignored a base CRS's CS, where PROJ refuses both, so the model accepts
+        // them too (backward compatibility).
         if d == Dialect::Wkt2
             && !n.is(kw::BASE_GEODETIC_CRS)
             && let Some(c) = n.child("CS")
@@ -894,7 +895,7 @@ fn geodetic(n: &Node, d: Dialect) -> Result<Crs> {
     Ok(Crs::Geodetic { ident: ident(n), datum, cs, angular: ang, frame_epoch })
 }
 
-/// The prime meridian of a geodetic CRS node, as `wkt2::Wkt2Geodetic::read` reads it: in its own unit,
+/// The prime meridian of a geodetic CRS node, as terrio's WKT 2 reader read it: in its own unit,
 /// else the CRS's (its `ANGLEUNIT`, or a `UNIT` named `degree` or `grad` in WKT 2; WKT 1's
 /// `GEOGCS` unit), else degrees, with PROJ's corrections (`wkt1::prime_meridian_degrees`).
 /// Greenwich without one. Refused for a WKT 2 prime meridian's unit without its size, which PROJ

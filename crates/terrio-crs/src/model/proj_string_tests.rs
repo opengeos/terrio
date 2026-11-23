@@ -1,55 +1,85 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
-//! The model gives a WKT's PROJ string what the WKT reader reads from its tree (#1058 step 6), but
-//! for the pinned texts it reads as PROJ 9.9.0 does:
-//! [`super::wkt1_input`] against [`wkt1::Wkt1Input::read`] for every WKT 1 text of the #1066
-//! corpus (each EPSG and ESRI CRS's GDAL WKT 1 and ESRI WKT 1, as PROJ writes them), and
-//! [`super::wkt2_input`] against [`crate::wkt2::Wkt2Input::read`] for its WKT 2 geographic,
-//! geocentric and projected CRSs; and both for malformed and unusual input the corpus does not
-//! have. The PROJ string comes from the model's input (#1058 step 6d-2), and its refusal from the
-//! model too (step 6d-4): a WKT 2 one with the WKT 2 reader's message, which the WKT 2
-//! comparisons compare.
-use super::oracle_tests::projjson_compare;
+//! The PROJ string terrio gives WKT the #1066 corpus does not have (#1058 step 6): unusual,
+//! malformed, derived and bound CRSs, and refusals. Each text's PROJ string, or its refusal, is
+//! recorded in `tests/data/wkt_proj_strings.tsv`, as the tree readers gave it when the model took
+//! their place (#1058 step 6d-4b); re-record a deliberate change with `TERRIO_RECORD=1`. The
+//! corpus's own texts are checked through the PROJJSON they give (`projjson_corpus_diffs.tsv`).
+//! Where the model reads a text as PROJ 9.9.0 does and the tree readers did not, PROJ's value is
+//! checked here too.
 use super::*;
 
-/// The tree's and the model's input of a text, compared by their `Debug` form (a `NaN` value is
-/// then the same).
-fn inputs(text: &str) -> Option<(String, String)> {
-    let root = crate::parsed::tree(text)?;
-    if crate::wkt2::handles(&root) {
-        return None;
+/// The PROJ string terrio gives a WKT definition (`model::wkt1_to_proj`, `model::wkt2_to_proj`),
+/// or its refusal: `refused: ` and the message of a WKT 2 CRS the WKT 2 reader converts
+/// (`wkt2::handles`), `none` for another.
+fn proj_string(text: &str) -> String {
+    match crate::parsed::tree(text) {
+        Some(root) if crate::wkt2::handles(&root) => wkt2_to_proj(text).map_or_else(|e| format!("refused: {e}"), |c| c.proj),
+        Some(_) => wkt1_to_proj(text).map_or_else(|| "none".to_string(), |c| c.proj),
+        None => "not WKT".to_string(),
     }
-    let tree = wkt1::Wkt1Input::read(&root);
-    let model = read(text).as_ref().and_then(|m| wkt1_input(m, &root));
-    Some((format!("{tree:?}"), format!("{model:?}")))
 }
 
+/// Whether the model reads a text's input to its PROJ string (a refusal of its method or
+/// parameters comes after, when converted).
+fn input_read(text: &str) -> bool {
+    let root = crate::parsed::tree(text).unwrap_or_else(|| panic!("not WKT: {text}"));
+    if crate::wkt2::handles(&root) {
+        try_read(text).and_then(|m| wkt2_root_input(&m)).is_ok()
+    } else {
+        read(text).as_ref().and_then(|m| wkt1_input(m, &root)).is_some()
+    }
+}
+
+/// Each group's texts give the PROJ string, or refusal, recorded in `tests/data/wkt_proj_strings.tsv`
+/// (a line per text: its group, its index, its PROJ string and the text), and their input is read
+/// or refused as each group says.
 #[test]
-fn every_wkt1_corpus_text_gives_its_proj_string_the_tree_s_input() {
-    let corpus = projjson_compare::corpus(&[
-        &include_bytes!("../../tests/data/projjson_corpus_epsg.jsonl.zst")[..],
-        &include_bytes!("../../tests/data/projjson_corpus_esri.jsonl.zst")[..],
-    ]);
-    let (mut compared, mut read_by_both, mut differ) = (0, 0, Vec::new());
-    // GDAL's and ESRI's WKT 1 (`wkt1` and `esri` rows), each of which parses.
-    for (code, kind, text, _) in corpus.iter().filter(|(_, kind, _, _)| kind != "wkt2") {
-        let (tree, model) = inputs(text).unwrap_or_else(|| panic!("{code} {kind} does not parse as WKT 1"));
-        compared += 1;
-        if tree != "None" && model != "None" {
-            read_by_both += 1;
-        }
-        if tree != model {
-            differ.push(format!("{code} {kind}\n  tree  {tree}\n  model {model}"));
+fn proj_strings_are_as_recorded() {
+    let groups = [
+        ("unusual_wkt1", unusual_wkt1()),
+        ("malformed_wkt1", malformed_wkt1()),
+        ("unusual_wkt2", unusual_wkt2()),
+        ("derived_wkt2", derived_wkt2()),
+        ("bound_wkt2", bound_wkt2()),
+        ("malformed_wkt2", malformed_wkt2()),
+    ];
+    let mut found = String::new();
+    let mut misread = Vec::new();
+    for (group, cases) in &groups {
+        for (i, (text, read)) in cases.iter().enumerate() {
+            if input_read(text) != *read {
+                misread.push(format!("{group} {i}: read {}, expected {read}: {text}", !read));
+            }
+            found += &format!("{group}\t{i}\t{}\t{text}\n", proj_string(text));
         }
     }
-    assert!(compared > 15_000 && read_by_both > 13_000, "{compared} WKT 1 texts, {read_by_both} read");
-    assert!(differ.is_empty(), "{} of {compared} differ:\n{}", differ.len(), differ[..differ.len().min(10)].join("\n"));
+    assert!(misread.is_empty(), "{}", misread.join("\n"));
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/wkt_proj_strings.tsv");
+    if std::env::var("TERRIO_RECORD").as_deref() == Ok("1") {
+        std::fs::write(path, &found).unwrap();
+        return;
+    }
+    // Line by line, as a checkout may end lines with CRLF.
+    let recorded = std::fs::read_to_string(path).unwrap_or_default().replace("\r\n", "\n");
+    let changed: Vec<String> = found
+        .lines()
+        .zip(recorded.lines().chain(std::iter::repeat("")))
+        .filter(|(new, old)| new != old)
+        .map(|(new, old)| format!("recorded {old}\n   found {new}"))
+        .collect();
+    assert!(
+        changed.is_empty() && found.lines().count() == recorded.lines().count(),
+        "PROJ strings changed, {} texts recorded, {} found (record a deliberate change with TERRIO_RECORD=1):\n{}",
+        recorded.lines().count(),
+        found.lines().count(),
+        changed.join("\n")
+    );
 }
 
 /// What the corpus does not have: refusals, other units, prime meridians and axes, ESRI's
 /// compound CRS, a geocentric CRS, parameters without a name or a number.
-#[test]
-fn unusual_wkt1_gives_its_proj_string_the_tree_s_input() {
+fn unusual_wkt1() -> Vec<(String, bool)> {
     const G: &str = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563],TOWGS84[1,2,3]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#;
     let projcs = |projection: &str, params: &str, tail: &str| {
         format!(r#"PROJCS["x",{G},PROJECTION["{projection}"]{params},UNIT["US survey foot",0.304800609601219]{tail}]"#)
@@ -94,16 +124,11 @@ fn unusual_wkt1_gives_its_proj_string_the_tree_s_input() {
         // A third axis the WKT declares, unnamed: no `+axis` pair in either.
         (projcs("Transverse_Mercator", "", r#",AXIS["N",NORTH],AXIS["E",EAST],AXIS["",UP]"#), true),
     ];
-    for (text, read) in &cases {
-        let (tree, model) = inputs(text).unwrap();
-        assert_eq!(tree, model, "{text}");
-        assert_eq!(tree != "None", *read, "{text}");
-    }
+    cases
 }
 
-/// Where the model reads unusual WKT 1 otherwise than terrio's tree reader, and PROJ 9.9.0 reads it
-/// as the model does (pyproj 3.8.0, `CRS(wkt).to_proj4()`): the PROJ string follows the model, as
-/// PROJ reads the text, since the readers take their input from the model (#1058 step 6d-2).
+/// Where the model reads unusual WKT 1 otherwise than terrio's tree reader did, as PROJ 9.9.0 reads
+/// it (pyproj 3.8.0, `CRS(wkt).to_proj4()`; #1058 step 6d-2).
 #[test]
 fn where_the_model_reads_unusual_wkt1_otherwise() {
     let geogcs = |datum: &str, inner: &str| {
@@ -111,23 +136,22 @@ fn where_the_model_reads_unusual_wkt1_otherwise() {
     };
     let input = |text: &str| {
         let root = crate::parsed::tree(text).unwrap();
-        (wkt1::Wkt1Input::read(&root).unwrap(), read(text).as_ref().and_then(|m| wkt1_input(m, &root)).unwrap())
+        read(text).as_ref().and_then(|m| wkt1_input(m, &root)).unwrap()
     };
-    // An ellipsoid in its own unit: PROJ `+a=6378137.001384` (the model's, in metres), the tree
-    // the value as written.
-    let (tree, model) = input(&geogcs(r#"SPHEROID["local",20925646.33,298.257223563,UNIT["foot",0.3048]]"#, ""));
-    assert_eq!((tree.a, (model.a - 6_378_137.001_384).abs() < 1e-3), (20_925_646.33, true));
-    // A prime meridian in its own unit: PROJ `+pm=9` (the model's), the tree 10.
-    let (tree, model) = input(
+    // An ellipsoid in its own unit: PROJ `+a=6378137.001384`, in metres (the tree read the value
+    // as written).
+    let model = input(&geogcs(r#"SPHEROID["local",20925646.33,298.257223563,UNIT["foot",0.3048]]"#, ""));
+    assert!((model.a - 6_378_137.001_384).abs() < 1e-3, "{}", model.a);
+    // A prime meridian in its own unit: PROJ `+pm=9` (the tree read 10).
+    let model = input(
         r#"GEOGCS["g",DATUM["d",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Local",10,UNIT["grad",0.01570796326794897]],UNIT["degree",0.0174532925199433]]"#,
     );
-    assert_eq!((tree.pm, model.pm), (10.0, 9.0));
+    assert_eq!(model.pm, 9.0);
 }
 
-/// Malformed WKT 1 that PROJ 9.9.0 refuses or reads as the tree does, which the model reads as
-/// the tree, so that the PROJ string does not change (#1058 step 6d-1, backward compatibility).
-#[test]
-fn malformed_wkt1_the_model_reads_as_the_tree() {
+/// Malformed WKT 1 that PROJ 9.9.0 refuses or reads as the tree did, which the model reads as the
+/// tree did, so that the PROJ string does not change (#1058 step 6d-1, backward compatibility).
+fn malformed_wkt1() -> Vec<(String, bool)> {
     let geogcs =
         r#"GEOGCS["g",DATUM["d",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#;
     let projcs = |ids: &str, rest: &str| {
@@ -156,11 +180,6 @@ fn malformed_wkt1_the_model_reads_as_the_tree() {
             "",
             r#"CONVERSION["c",METHOD["Transverse Mercator",ID["EPSG",9807]],PARAMETER["Longitude of natural origin",30,ANGLEUNIT["grad",0.015707963267949],ID["EPSG",8802]]],UNIT["metre",1]"#,
         ),
-        // A `PROJCS` with a `CONVERSION` and no `PROJECTION` of its own: refused, by both (PROJ
-        // reads it, `+lon_0=30 +k=1`).
-        format!(
-            r#"PROJCS["x",{geogcs},CONVERSION["c",METHOD["Transverse Mercator"],PARAMETER["central_meridian",30],PARAMETER["scale_factor",1]],UNIT["metre",1]]"#
-        ),
         format!(
             r#"PROJCS["x",{geogcs},PROJECTION["Lambert_Conformal_Conic_2SP"],PARAMETER["standard_parallel_1",45],PARAMETER["standard_parallel_2",50],PARAMETER["central_meridian",9],CONVERSION["c",METHOD["Lambert Conic Conformal (2SP)",ID["EPSG",9802]],PARAMETER["Latitude of 1st standard parallel",45,ANGLEUNIT["degree",0.0174532925199433]],PARAMETER["Latitude of 2nd standard parallel",50,ANGLEUNIT["degree",0.0174532925199433]]],UNIT["metre",1]]"#
         ),
@@ -170,62 +189,21 @@ fn malformed_wkt1_the_model_reads_as_the_tree() {
         // it: "Missing VDATUM or ENSEMBLE node").
         format!(r#"{geogcs},VERTCS["x",UNIT["Meter",1.0]]"#),
     ];
-    for text in &cases {
-        let (tree, model) = inputs(text).unwrap_or_else(|| panic!("not a WKT 1 CRS: {text}"));
-        let refused = !text.contains("PROJECTION[") && !text.starts_with("GEOGCS");
-        assert!(tree == model && (tree == "None") == refused, "{text}\n  tree  {tree}\n  model {model}");
-    }
-}
-
-/// The tree's and the model's input of a WKT 2 CRS the reader converts (a geographic, geocentric,
-/// projected, derived geographic or bound CRS), compared by their `Debug` form, or their refusals
-/// (`refused: ` and the message, which is then the same too, #1058 step 6d-4); `None` for another
-/// text.
-fn wkt2_inputs(text: &str) -> Option<(String, String)> {
-    let root = crate::parsed::tree(text)?;
-    if !crate::wkt2::handles(&root) {
-        return None;
-    }
-    let show = |r: crate::Result<crate::wkt2::Wkt2Root>| match r {
-        Ok(input) => format!("{input:?}"),
-        Err(e) => format!("refused: {e}"),
-    };
-    Some((show(crate::wkt2::Wkt2Root::read(&root)), show(try_read(text).and_then(|m| wkt2_root_input(&m)))))
-}
-
-/// Whether a text's input (of [`wkt2_inputs`]) is a refusal.
-fn refused(input: &str) -> bool {
-    input.starts_with("refused: ")
-}
-
-#[test]
-fn every_wkt2_corpus_text_gives_its_proj_string_the_tree_s_input() {
-    let corpus = projjson_compare::corpus(&[
-        &include_bytes!("../../tests/data/projjson_corpus_epsg.jsonl.zst")[..],
-        &include_bytes!("../../tests/data/projjson_corpus_esri.jsonl.zst")[..],
-    ]);
-    let (mut compared, mut read_by_both, mut differ) = (0, 0, Vec::new());
-    // PROJ's WKT 2 of every EPSG and ESRI CRS (`wkt2` rows), but for those the reader does not
-    // convert (vertical, compound). The corpus has no derived or bound CRS: the tests below
-    // compare those.
-    for (code, kind, text, _) in corpus.iter().filter(|(_, kind, _, _)| kind == "wkt2") {
-        let Some((tree, model)) = wkt2_inputs(text) else { continue };
-        compared += 1;
-        if !refused(&tree) && !refused(&model) {
-            read_by_both += 1;
-        }
-        if tree != model {
-            differ.push(format!("{code} {kind}\n  tree  {tree}\n  model {model}"));
-        }
-    }
-    assert_eq!((compared, read_by_both), (9_659, 9_659), "WKT 2 texts compared, read by both");
-    assert!(differ.is_empty(), "{} of {compared} differ:\n{}", differ.len(), differ[..differ.len().min(10)].join("\n"));
+    // Each read; then a `PROJCS` with a `CONVERSION` and no `PROJECTION` of its own, refused, as
+    // the tree refused it (PROJ reads it, `+lon_0=30 +k=1`).
+    let mut cases: Vec<(String, bool)> = cases.into_iter().map(|text| (text, true)).collect();
+    cases.push((
+        format!(
+            r#"PROJCS["x",{geogcs},CONVERSION["c",METHOD["Transverse Mercator"],PARAMETER["central_meridian",30],PARAMETER["scale_factor",1]],UNIT["metre",1]]"#
+        ),
+        false,
+    ));
+    cases
 }
 
 /// What the WKT 2 corpus does not have: refusals, planetary and polar axes, other units, PROJ's
 /// own methods, a geocentric CRS's CS.
-#[test]
-fn unusual_wkt2_gives_its_proj_string_the_tree_s_input() {
+fn unusual_wkt2() -> Vec<(String, bool)> {
     const DEG: &str = r#"ANGLEUNIT["degree",0.0174532925199433]"#;
     let datum = r#"DATUM["d",ELLIPSOID["WGS 84",6378137,298.257223563,LENGTHUNIT["metre",1]]]"#;
     let geog = |pm: &str, cs: &str| format!(r#"GEOGCRS["g",{datum},{pm},{cs}]"#);
@@ -363,14 +341,7 @@ fn unusual_wkt2_gives_its_proj_string_the_tree_s_input() {
         (projected(tm, r#",PARAMETER["Longitude of natural origin"]"#, en), false),
         (projected(r#""PROJ ob_tran o_proj=moll""#, r#",PARAMETER["o_lat_p",ANGLEUNIT["degree",0.0174532925199433]]"#, en), false),
     ];
-    let mut differ = Vec::new();
-    for (text, read) in &cases {
-        let (tree, model) = wkt2_inputs(text).unwrap_or_else(|| panic!("not a WKT 2 CRS the reader converts: {text}"));
-        if tree != model || refused(&tree) == *read {
-            differ.push(format!("{text}\n  tree  {tree}\n  model {model}"));
-        }
-    }
-    assert!(differ.is_empty(), "{}", differ.join("\n"));
+    cases
 }
 
 /// Derived geographic CRSs (rotated poles) as PROJ 9.9.0 writes them, from PROJ strings, CF grid
@@ -396,10 +367,9 @@ const DERIVED: [&str; 9] = [
     r#"GEODCRS["Coordinate System imported from GRIB file",BASEGEODCRS["Coordinate System imported from GRIB file",DATUM["unnamed",ELLIPSOID["Sphere",6367470,0]]],DERIVINGCONVERSION["Pole rotation (GRIB convention)",METHOD["Pole rotation (GRIB convention)"],PARAMETER["Latitude of the southern pole (GRIB convention)",-30],PARAMETER["Longitude of the southern pole (GRIB convention)",-15],PARAMETER["Axis rotation (GRIB convention)",12.5]],CS[ellipsoidal,2],AXIS["latitude",north],AXIS["longitude",east],UNIT["degree",0.0174532925199433,ID["EPSG",9122]]]"#,
 ];
 
-/// A derived geographic CRS's input is the same from the tree and the model: PROJ 9.9.0's texts,
-/// and what they lack (refusals, other units and CSs).
-#[test]
-fn derived_wkt2_gives_its_proj_string_the_tree_s_input() {
+/// Derived geographic CRSs: PROJ 9.9.0's texts, and what they lack (refusals, other units and
+/// CSs).
+fn derived_wkt2() -> Vec<(String, bool)> {
     const DEG: &str = r#"ANGLEUNIT["degree",0.0174532925199433]"#;
     const GRAD: &str = r#"ANGLEUNIT["grad",0.015707963267949]"#;
     let base = r#"BASEGEOGCRS["b",DATUM["d",ELLIPSOID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0]]"#;
@@ -445,21 +415,12 @@ fn derived_wkt2_gives_its_proj_string_the_tree_s_input() {
         (derived(base, r#"DERIVINGCONVERSION["c",PARAMETER["o_lat_p",39.25]]"#, &lon_lat(DEG)), false),
         (derived(base, r#"DERIVINGCONVERSION["c",METHOD["PROJ ob_tran o_proj=longlat"],PARAMETER["o_lat_p"]]"#, &lon_lat(DEG)), false),
     ]);
-    let mut differ = Vec::new();
-    for (text, read) in &cases {
-        let (tree, model) = wkt2_inputs(text).unwrap_or_else(|| panic!("not a WKT 2 CRS the reader converts: {text}"));
-        if tree != model || refused(&tree) == *read {
-            differ.push(format!("{text}\n  tree  {tree}\n  model {model}"));
-        }
-    }
-    assert!(differ.is_empty(), "{}", differ.join("\n"));
+    cases
 }
 
-/// A bound CRS's input is the same from the tree and the model, which the corpus does not have:
-/// each kind of Helmert transformation, a grid's, WGS 84 or another target, WKT 1 and derived
-/// source CRSs, and refusals.
-#[test]
-fn bound_wkt2_gives_its_proj_string_the_tree_s_input() {
+/// Bound CRSs, which the corpus does not have: each kind of Helmert transformation, a grid's, WGS
+/// 84 or another target, WKT 1 and derived source CRSs, and refusals.
+fn bound_wkt2() -> Vec<(String, bool)> {
     const DEG: &str = r#"ANGLEUNIT["degree",0.0174532925199433]"#;
     const M: &str = r#"LENGTHUNIT["metre",1]"#;
     let geog = |name: &str, datum: &str, ellipsoid: &str, id: &str| {
@@ -640,25 +601,14 @@ fn bound_wkt2_gives_its_proj_string_the_tree_s_input() {
         (format!("BOUNDCRS[SOURCECRS[{osgb}],TARGETCRS[{wgs84}]]"), false),
         (bound(r#"GEOGCS["x",DATUM["d"],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#, &wgs84, &pv), false),
     ];
-    let mut differ = Vec::new();
-    for (text, read) in &cases {
-        let (tree, model) = wkt2_inputs(text).unwrap_or_else(|| panic!("not a WKT 2 CRS the reader converts: {text}"));
-        if tree != model || refused(&tree) == *read {
-            differ.push(format!("{text}\n  tree  {tree}\n  model {model}"));
-        }
-    }
-    assert!(differ.is_empty(), "{}", differ.join("\n"));
+    cases
 }
 
-/// Where the model reads unusual WKT 2 otherwise than the tree reader, and PROJ 9.9.0 reads it as
-/// the model does: the PROJ string follows the model, as PROJ reads the text, since the readers take
-/// their input from the model (#1058 step 6d-2).
+/// Where the model reads unusual WKT 2 otherwise than terrio's tree reader did, as PROJ 9.9.0 reads
+/// it (#1058 step 6d-2).
 #[test]
 fn where_the_model_reads_unusual_wkt2_otherwise() {
-    let input = |text: &str| {
-        let root = crate::parsed::tree(text).unwrap();
-        (crate::wkt2::Wkt2Input::read(&root).unwrap(), read(text).as_ref().and_then(wkt2_input).unwrap())
-    };
+    let input = |text: &str| read(text).as_ref().and_then(wkt2_input).unwrap();
     const DEG: &str = r#"ANGLEUNIT["degree",0.0174532925199433]"#;
     let datum = r#"DATUM["d",ELLIPSOID["WGS 84",6378137,298.257223563,LENGTHUNIT["metre",1]]]"#;
     let geog = |pm: &str, axes: &str| format!(r#"GEOGCRS["g",{datum},{pm},CS[ellipsoidal,2],{axes}]"#);
@@ -673,54 +623,45 @@ fn where_the_model_reads_unusual_wkt2_otherwise() {
         crate::wkt2::Wkt2Kind::Projected { method, .. } => method.params[0].units.clone(),
         _ => panic!("not projected"),
     };
-    // WKT 2's long `PRIMEMERIDIAN` keyword: the tree reads no prime meridian, the model reads it,
-    // as PROJ 9.9.0 does (`+pm=2`).
-    let (tree, model) = input(&geog(&format!(r#"PRIMEMERIDIAN["Local",2,{DEG}]"#), &lat_lon));
-    assert_eq!((tree.geodetic.pm, model.geodetic.pm), (0.0, 2.0));
-    // A parameter in a time unit: the tree skips the unit, the model reads it, as PROJ 9.9.0 does
-    // (it reads 9 seconds of longitude as 9 radians, `+lon_0=515.662015617741`).
-    let (tree, model) = input(&projected(r#"TIMEUNIT["second",1]"#));
-    assert_eq!((units(&tree), units(&model)), (vec![], vec![("UNIT", Some(1.0))]));
-    // A parameter in a length unit and then an angle unit: the tree keeps both, in keyword order,
-    // and reads the angle unit (`+lon_0=8.1`); the model keeps one unit, the first in the text,
-    // the length unit, as PROJ 9.9.0 does (it takes 0.3048 for radians, `+lon_0=157.173782360287`).
-    let (tree, model) = input(&projected(r#"LENGTHUNIT["foot",0.3048],ANGLEUNIT["grad",0.015707963267949]"#));
+    // WKT 2's long `PRIMEMERIDIAN` keyword, read as PROJ 9.9.0 reads it (`+pm=2`; the tree read
+    // no prime meridian).
+    assert_eq!(input(&geog(&format!(r#"PRIMEMERIDIAN["Local",2,{DEG}]"#), &lat_lon)).geodetic.pm, 2.0);
+    // A parameter in a time unit, read as PROJ 9.9.0 reads it (9 seconds of longitude as 9
+    // radians, `+lon_0=515.662015617741`; the tree skipped the unit).
+    assert_eq!(units(&input(&projected(r#"TIMEUNIT["second",1]"#))), vec![("UNIT", Some(1.0))]);
+    // A parameter in a length unit and then an angle unit: one unit, the first in the text, the
+    // length unit, as PROJ 9.9.0 reads it (0.3048 taken for radians, `+lon_0=157.173782360287`;
+    // the tree kept both and read the angle unit, `+lon_0=8.1`).
     assert_eq!(
-        (units(&tree), units(&model)),
-        (vec![("ANGLEUNIT", Some(0.015707963267949)), ("LENGTHUNIT", Some(0.3048))], vec![("LENGTHUNIT", Some(0.3048))])
+        units(&input(&projected(r#"LENGTHUNIT["foot",0.3048],ANGLEUNIT["grad",0.015707963267949]"#))),
+        vec![("LENGTHUNIT", Some(0.3048))]
     );
-    // A derived geographic CRS's CS unit after its axes: the tree reads degrees (its axes have
-    // none), the model the CS's grads, as PROJ 9.9.0 gives its axes.
-    let (tree, model) = input(&format!(
+    // A derived geographic CRS's CS unit after its axes: the CS's grads, as PROJ 9.9.0 gives its
+    // axes (the tree read degrees, its axes having none).
+    let model = input(&format!(
         r#"GEOGCRS["r",BASEGEOGCRS["b",{datum},{pm}],DERIVINGCONVERSION["c",METHOD["PROJ ob_tran o_proj=longlat"],PARAMETER["o_lat_p",39.25,{DEG}]],CS[ellipsoidal,2],AXIS["lon",east],AXIS["lat",north],ANGLEUNIT["grad",0.015707963267949]]"#
     ));
     let grid = |i: &crate::wkt2::Wkt2Input| match &i.kind {
         crate::wkt2::Wkt2Kind::Derived { grid_ang, .. } => *grid_ang,
         _ => panic!("not derived"),
     };
-    assert_eq!((grid(&tree), grid(&model)), (1.0, 0.9));
-    // A time-dependent transformation's reference epoch in a time unit: the tree skips the unit,
-    // the model reads it, as a conversion's parameter's. The epoch is not applied (PROJ 9.9.0
-    // writes no PROJ string for the CRS, nor does terrio).
+    assert_eq!(grid(&model), 0.9);
+    // A time-dependent transformation's reference epoch in a time unit, read as a conversion's
+    // parameter's (the tree skipped the unit). The epoch is not applied (PROJ 9.9.0 writes no PROJ
+    // string for the CRS, nor does terrio).
     let text = format!(
         r#"BOUNDCRS[SOURCECRS[{}],TARGETCRS[GEOGCRS["WGS 84",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],{pm},CS[ellipsoidal,2],{lat_lon},ID["EPSG",4326]]],ABRIDGEDTRANSFORMATION["t",METHOD["Time-dependent Coordinate Frame rotation (geog2D)",ID["EPSG",1057]],PARAMETER["X-axis translation",-87,LENGTHUNIT["metre",1],ID["EPSG",8605]],PARAMETER["Parameter reference epoch",2010,TIMEUNIT["year",31556925.445],ID["EPSG",1049]]]]"#,
         geog(&pm, &lat_lon)
     );
-    let root = crate::parsed::tree(&text).unwrap();
-    let transformation = |i: Option<crate::wkt2::Wkt2Root>| match i {
-        Some(crate::wkt2::Wkt2Root::Bound(b)) => b.transformation.params[1].units.clone(),
+    match try_read(&text).and_then(|m| wkt2_root_input(&m)) {
+        Ok(crate::wkt2::Wkt2Root::Bound(b)) => assert_eq!(b.transformation.params[1].units, vec![("UNIT", Some(31556925.445))]),
         other => panic!("not a bound CRS: {other:?}"),
-    };
-    assert_eq!(
-        (transformation(crate::wkt2::Wkt2Root::read(&root).ok()), transformation(try_read(&text).and_then(|m| wkt2_root_input(&m)).ok())),
-        (vec![], vec![("UNIT", Some(31556925.445))])
-    );
+    }
 }
 
-/// Malformed WKT 2 that PROJ 9.9.0 refuses or reads as the tree does, which the model reads as
-/// the tree, so that the PROJ string does not change (#1058 step 6d-1, backward compatibility).
-#[test]
-fn malformed_wkt2_the_model_reads_as_the_tree() {
+/// Malformed WKT 2 that PROJ 9.9.0 refuses or reads as the tree did, which the model reads as the
+/// tree did, so that the PROJ string does not change (#1058 step 6d-1, backward compatibility).
+fn malformed_wkt2() -> Vec<(String, bool)> {
     const DEG: &str = r#"ANGLEUNIT["degree",0.0174532925199433]"#;
     const GRAD: &str = r#"ANGLEUNIT["grad",0.015707963267949]"#;
     const M: &str = r#"LENGTHUNIT["metre",1]"#;
@@ -803,28 +744,16 @@ fn malformed_wkt2_the_model_reads_as_the_tree() {
             translation("Z", 8607)
         )),
     ];
-    let mut differ = Vec::new();
-    for text in &cases {
-        let (tree, model) = wkt2_inputs(text).unwrap_or_else(|| panic!("not a WKT 2 CRS the reader converts: {text}"));
-        if tree != model || refused(&tree) {
-            differ.push(format!("{text}\n  tree  {tree}\n  model {model}"));
-        }
-    }
-    assert!(differ.is_empty(), "{}", differ.join("\n"));
-    // A parameter's unit without its size, which PROJ refuses: the tree keeps the unit node, the
-    // model drops it, and both give the parameter the CRS's unit: the same PROJ string.
-    let text = projected(r#"ANGLEUNIT["degree"]"#, &format!(r#"AXIS["(E)",east,{M}],AXIS["(N)",north,{M}]"#));
-    let root = crate::parsed::tree(&text).unwrap();
-    let base = root.first_in(crate::keywords::BASE_GEODETIC_CRS).unwrap();
-    let proj = |i: &crate::wkt2::Wkt2Input| crate::wkt2::convert(i, base).unwrap().proj;
-    let (tree, model) = (crate::wkt2::Wkt2Input::read(&root).unwrap(), read(&text).as_ref().and_then(wkt2_input).unwrap());
-    assert_ne!(tree, model);
-    assert_eq!(proj(&tree), proj(&model));
+    // Each read; and a parameter's unit without its size, which PROJ refuses, read in the CRS's
+    // unit, as the tree read it.
+    let mut cases: Vec<(String, bool)> = cases.into_iter().map(|text| (text, true)).collect();
+    cases.push((projected(r#"ANGLEUNIT["degree"]"#, &format!(r#"AXIS["(E)",east,{M}],AXIS["(N)",north,{M}]"#)), true));
+    cases
 }
 
-/// The model refuses a WKT 2 CRS the reader converts with the message the reader refused it with
-/// (#1058 step 6d-4), for each refusal of its input, and for a text with two of them, the first
-/// the reader meets.
+/// The model refuses a WKT 2 CRS the WKT 2 reader converts (`wkt2::handles`) with the message
+/// terrio's tree reader refused it with (#1058 step 6d-4), for each refusal of its input, and for
+/// a text with two of them, the first the reader met.
 #[test]
 fn the_model_refuses_wkt2_with_the_reader_s_message() {
     const DEG: &str = r#"ANGLEUNIT["degree",0.0174532925199433]"#;
@@ -918,20 +847,18 @@ fn the_model_refuses_wkt2_with_the_reader_s_message() {
     ];
     let mut differ = Vec::new();
     for (text, message) in &cases {
-        let (tree, model) = wkt2_inputs(text).unwrap_or_else(|| panic!("not a WKT 2 CRS the reader converts: {text}"));
-        let expected = format!("refused: coordinate reference system: unsupported WKT 2: {message}");
-        if tree != expected || model != expected {
-            differ.push(format!("{text}\n  tree  {tree}\n  model {model}"));
+        assert!(crate::wkt2::handles(&crate::parsed::tree(text).unwrap()), "{text}");
+        let expected = format!("coordinate reference system: unsupported WKT 2: {message}");
+        let refusal = wkt2_to_proj(text).err().map(|e| e.to_string());
+        if refusal.as_deref() != Some(&expected) {
+            differ.push(format!("{text}\n  {refusal:?}"));
         }
-        // The PROJ string's refusal is the model's.
-        assert_eq!(wkt2_to_proj(text).err().map(|e| e.to_string()).as_deref(), Some(&expected["refused: ".len()..]), "{text}");
     }
     assert!(differ.is_empty(), "{}", differ.join("\n"));
 }
 
-/// Where the model reads unusual WKT otherwise than the tree readers, the PROJ string is the
-/// model's, as PROJ 9.9.0 reads the text (pyproj 3.8.0, `CRS(wkt).to_proj4()`), since the
-/// readers take their input from the model (#1058 step 6d-2).
+/// Where the model reads unusual WKT otherwise than terrio's tree readers did, the PROJ string is
+/// as PROJ 9.9.0 reads the text (pyproj 3.8.0, `CRS(wkt).to_proj4()`; #1058 step 6d-2).
 #[test]
 fn the_proj_string_is_read_as_proj_reads_it() {
     const DEG: &str = r#"ANGLEUNIT["degree",0.0174532925199433]"#;
@@ -944,69 +871,53 @@ fn the_proj_string_is_read_as_proj_reads_it() {
             r#"PROJCRS["p",BASEGEOGCRS["g",{datum},{pm}],CONVERSION["c",METHOD["Transverse Mercator",ID["EPSG",9807]],PARAMETER["Longitude of natural origin",9,{param},ID["EPSG",8802]]],CS[Cartesian,2],AXIS["(E)",east,LENGTHUNIT["metre",1]],AXIS["(N)",north,LENGTHUNIT["metre",1]]]"#
         )
     };
-    // Each text, its PROJ string from the tree reader, and from the model (PROJ 9.9.0's value in
-    // the comment).
+    // Each text and its PROJ string, with PROJ 9.9.0's value and the tree readers' in the comment.
     let ll = "+proj=longlat +a=6378137 +rf=298.257223563";
     let tm = |lon: &str| format!("+proj=tmerc +lat_0=0 +lon_0={lon} +k=1 +x_0=0 +y_0=0 +to_meter=1 +a=6378137 +rf=298.257223563");
     let ob_tran =
         |to_deg: &str| format!("+proj=ob_tran +o_proj=longlat +o_lat_p=39.25 +o_lon_p=0 +lon_0=0{to_deg} +a=6378137 +rf=298.257223563");
     let cases = [
-        // An ellipsoid in its own unit (PROJ `+a=6378137.001384`, rounded), or a prime meridian
-        // (`+pm=9`).
+        // An ellipsoid in its own unit (PROJ `+a=6378137.001384`, rounded; the tree `+a=20925646.33`),
+        // or a prime meridian (PROJ `+pm=9`; the tree `+pm=10`).
         (
             geogcs(r#"SPHEROID["local",20925646.33,298.257223563,UNIT["foot",0.3048]]"#, r#"PRIMEM["Greenwich",0]"#),
-            "+proj=longlat +a=20925646.33 +rf=298.257223563".to_string(),
             "+proj=longlat +a=6378137.001383999 +rf=298.257223563".to_string(),
         ),
-        (geogcs(wgs84, r#"PRIMEM["Local",10,UNIT["grad",0.01570796326794897]]"#), format!("{ll} +pm=10"), format!("{ll} +pm=9")),
-        // WKT 2's long `PRIMEMERIDIAN` keyword (`+pm=2`).
+        (geogcs(wgs84, r#"PRIMEM["Local",10,UNIT["grad",0.01570796326794897]]"#), format!("{ll} +pm=9")),
+        // WKT 2's long `PRIMEMERIDIAN` keyword (`+pm=2`; the tree none).
         (
             format!(
                 r#"GEOGCRS["g",{datum},PRIMEMERIDIAN["Local",2,{DEG}],CS[ellipsoidal,2],AXIS["lat",north,{DEG}],AXIS["lon",east,{DEG}]]"#
             ),
-            ll.to_string(),
             format!("{ll} +pm=2"),
         ),
         // A parameter in a time unit (PROJ reads 9 seconds of longitude as 9 radians,
-        // `+lon_0=515.662015617741`), or in a length and then an angle unit (the first, its size
-        // read as radians: `+lon_0=157.173782360287`).
-        (projected(r#"TIMEUNIT["second",1]"#), tm("9"), tm("515.662015617741")),
-        (projected(r#"LENGTHUNIT["foot",0.3048],ANGLEUNIT["grad",0.015707963267949]"#), tm("8.1"), tm("157.17378236028745")),
-        // A derived CRS's CS unit after its axes: its grid in grads, as PROJ gives its axes.
+        // `+lon_0=515.662015617741`; the tree `+lon_0=9`), or in a length and then an angle unit
+        // (the first, its size read as radians: `+lon_0=157.173782360287`; the tree `+lon_0=8.1`).
+        (projected(r#"TIMEUNIT["second",1]"#), tm("515.662015617741")),
+        (projected(r#"LENGTHUNIT["foot",0.3048],ANGLEUNIT["grad",0.015707963267949]"#), tm("157.17378236028745")),
+        // A derived CRS's CS unit after its axes: its grid in grads, as PROJ gives its axes (the
+        // tree in degrees).
         (
             format!(
                 r#"GEOGCRS["r",BASEGEOGCRS["b",{datum},{pm}],DERIVINGCONVERSION["c",METHOD["PROJ ob_tran o_proj=longlat"],PARAMETER["o_lat_p",39.25,{DEG}]],CS[ellipsoidal,2],AXIS["lon",east],AXIS["lat",north],ANGLEUNIT["grad",0.015707963267949]]"#
             ),
-            ob_tran(""),
             ob_tran(" +to_deg=0.9"),
         ),
         // A projected CRS's `GEOGCS` before its `BASEGEOGCRS`: the first, as PROJ takes it (its
-        // International 1924, `+ellps=intl`).
+        // International 1924, `+ellps=intl`; the tree took the `BASEGEOGCRS`).
         (
             format!(
                 r#"PROJCRS["p",GEOGCS["i",DATUM["i",SPHEROID["International 1924",6378388,297]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],{}"#,
                 projected(DEG).strip_prefix(r#"PROJCRS["p","#).unwrap()
             ),
-            tm("9"),
             tm("9").replace("+a=6378137 +rf=298.257223563", "+a=6378388 +rf=297"),
         ),
-        // WKT 1's `PROJECTION` for a `CONVERSION`'s method: read, as PROJ reads it (`+lon_0=9`).
-        (
-            projected(DEG).replace(r#"METHOD["Transverse Mercator",ID["EPSG",9807]]"#, r#"PROJECTION["Transverse Mercator"]"#),
-            "refused: coordinate reference system: unsupported WKT 2: a CONVERSION without its METHOD".to_string(),
-            tm("9"),
-        ),
+        // WKT 1's `PROJECTION` for a `CONVERSION`'s method: read, as PROJ reads it (`+lon_0=9`; the
+        // tree refused it, "a CONVERSION without its METHOD").
+        (projected(DEG).replace(r#"METHOD["Transverse Mercator",ID["EPSG",9807]]"#, r#"PROJECTION["Transverse Mercator"]"#), tm("9")),
     ];
-    for (text, tree, model) in &cases {
-        let root = crate::parsed::tree(text).unwrap();
-        let (old, new) = if crate::wkt2::handles(&root) {
-            (
-                crate::wkt2::to_proj(&root).map_or_else(|e| format!("refused: {e}"), |c| c.proj),
-                crate::model::wkt2_to_proj(text).unwrap().proj,
-            )
-        } else {
-            (crate::wkt1::to_proj(&root).unwrap().proj, crate::model::wkt1_to_proj(text).unwrap().proj)
-        };
-        assert_eq!((&old, &new), (tree, model), "{text}");
+    for (text, expected) in &cases {
+        assert_eq!(&proj_string(text), expected, "{text}");
     }
 }
