@@ -29,7 +29,8 @@ pub struct GeoParquetReadOptions {
     pub columns: Option<Vec<String>>,
     /// Only the rows whose bounding box intersects `(min_x, min_y, max_x, max_y)`, in the file's
     /// CRS: whole row groups are skipped by covering or native geometry statistics, and rows by covering
-    /// values (or by their geometries' bounding boxes without one).
+    /// values (or by their geometries' bounding boxes without one). An inverted rectangle (its
+    /// corners swapped) is taken by its corners' extent.
     pub bbox: Option<(f64, f64, f64, f64)>,
     /// The most rows in a batch.
     pub batch_size: usize,
@@ -195,6 +196,7 @@ impl GeoParquetBatches {
     /// Opens the file `input` holds; `prefetch` is told the column chunks of each window of row
     /// groups before they are decoded.
     pub(crate) fn open<R: ChunkReader + 'static>(input: R, options: &GeoParquetReadOptions, prefetch: Option<Prefetcher>) -> Result<Self> {
+        let bbox = options.bbox.map(super::corners_extent);
         let input = SharedInput(Arc::new(input));
         // With the page index, when the file has one: rows a filter leaves out skip whole pages.
         let reader_options = parquet::arrow::arrow_reader::ArrowReaderOptions::new()
@@ -245,7 +247,7 @@ impl GeoParquetBatches {
             })
             .collect();
         let geom_index = index(&primary).filter(|_| !geo.is_null());
-        let filter = options.bbox.map(|rect| match covering.clone().filter(|(c, _)| index(c).is_some()) {
+        let filter = bbox.map(|rect| match covering.clone().filter(|(c, _)| index(c).is_some()) {
             Some((c, members)) => (rect, Filter::Covering(c, members)),
             None => (rect, geom_index.map_or(Filter::None, |g| Filter::Geometry(file_schema.field(g).name().clone()))),
         });
@@ -300,7 +302,7 @@ impl GeoParquetBatches {
         let leaves = covering_leaves(&pmeta, &geo);
         let bboxes = group_bboxes(&pmeta, leaves);
         let groups: Vec<usize> = (0..pmeta.num_row_groups())
-            .filter(|&g| match (options.bbox, bboxes[g]) {
+            .filter(|&g| match (bbox, bboxes[g]) {
                 (Some((x0, y0, x1, y1)), Some(b)) => b[0] <= x1 && b[2] >= x0 && b[1] <= y1 && b[3] >= y0,
                 _ => true,
             })
@@ -676,6 +678,13 @@ mod tests {
         });
         let ids: Vec<i64> = got.iter().flat_map(|b| b.column(0).as_any().downcast_ref::<Int64Array>().unwrap().values().to_vec()).collect();
         assert_eq!(ids, (10..=99).collect::<Vec<_>>());
+        // An inverted rectangle reads the rows of its corners' extent.
+        let inverted = GeoParquetReadOptions { bbox: Some((99.5, 1.0, 10.0, -1.0)), ..options.clone() };
+        let again: Vec<RecordBatch> =
+            open_geoparquet(&format!("{base}/points_by_chunks.parquet"), &inverted).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
+        let inverted_ids: Vec<i64> =
+            again.iter().flat_map(|b| b.column(0).as_any().downcast_ref::<Int64Array>().unwrap().values().to_vec()).collect();
+        assert_eq!(inverted_ids, ids);
         assert_eq!(got[0].schema().fields().iter().map(|f| f.name().as_str()).collect::<Vec<_>>(), ["id", "geometry"]);
         let fetched = |seen: &[Option<String>]| -> usize {
             seen.iter()

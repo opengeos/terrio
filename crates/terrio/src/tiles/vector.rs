@@ -317,6 +317,7 @@ pub(crate) fn read_layers(
     wanted: &[String],
     filter: Option<(f64, f64, f64, f64)>,
 ) -> Result<Vec<Layer>> {
+    let filter = filter.map(crate::drivers::vector::corners_extent);
     let (min_z, max_z) = archive.zoom_range();
     let z = options.zoom_level.unwrap_or(max_z);
     if z < min_z || z > max_z {

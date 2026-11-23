@@ -8,6 +8,29 @@ pub(crate) fn document_error(format: &str, detail: impl std::fmt::Display) -> cr
     crate::Error::InvalidData(format!("{format}: {INVALID_DOCUMENT} {detail}"))
 }
 
+/// A rectangle `(min_x, min_y, max_x, max_y)` by its corners' extent: an inverted one (its corners
+/// swapped, such as `(10, 10, 0, 0)`) as the rectangle it spans, as `SpatialFilter` takes it. A NaN
+/// corner makes every side NaN, so the rectangle still matches nothing, as before.
+#[cfg_attr(not(any(feature = "parquet", feature = "flatgeobuf", feature = "sqlite")), allow(dead_code))]
+pub(crate) fn corners_extent((x0, y0, x1, y1): (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
+    if [x0, y0, x1, y1].iter().any(|v| v.is_nan()) {
+        return (f64::NAN, f64::NAN, f64::NAN, f64::NAN);
+    }
+    (x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1))
+}
+
+#[cfg(test)]
+mod corners_extent_tests {
+    #[test]
+    fn corners_extent_orders_corners_and_keeps_nan_matching_nothing() {
+        assert_eq!(super::corners_extent((10.0, 10.0, 0.0, 0.0)), (0.0, 0.0, 10.0, 10.0));
+        assert_eq!(super::corners_extent((0.0, 10.0, 10.0, 0.0)), (0.0, 0.0, 10.0, 10.0));
+        assert_eq!(super::corners_extent((1.0, 2.0, 3.0, 4.0)), (1.0, 2.0, 3.0, 4.0));
+        let (a, b, c, d) = super::corners_extent((f64::NAN, 0.0, 10.0, 10.0));
+        assert!([a, b, c, d].iter().all(|v| v.is_nan()));
+    }
+}
+
 /// These format refusals must not be retried as empty datasets by optional readers.
 #[cfg(any(test, feature = "gdal"))]
 pub(crate) fn is_document_error(error: &crate::Error) -> bool {
