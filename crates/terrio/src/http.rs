@@ -2406,9 +2406,10 @@ impl RangeReader {
 
     /// Fetches the blocks covering the byte ranges `(offset, length)` that are not cached yet, in as
     /// few requests as it can: runs of missing blocks separated by at most two cached blocks are
-    /// fetched together. Ranges within the cache are fetched at once, wherever they are in the
-    /// file; larger ones a batch of half the cache at a time, the first now and the next ones as
-    /// reads reach them, so that no block is evicted before it is read and then fetched again.
+    /// fetched together. Ranges within the cache's size are fetched at once, wherever they are in
+    /// the file, the oldest blocks they do not cover dropped to make room; larger ones a batch of
+    /// half the cache at a time, the first now and the next ones as reads reach them, so that no
+    /// block is evicted before it is read and then fetched again.
     pub fn prefetch(&self, ranges: &[(u64, u64)]) -> io::Result<()> {
         let mut s = self.lock()?;
         if s.whole.is_some() {
@@ -2668,17 +2669,21 @@ impl Shared {
         }
         // Fetched in parallel, a long run is split into near-equal pieces fetched together, as a
         // server sends each response at the pace of one connection. The fetch's runs share the
-        // request slots by length (the slots a floor share leaves go to the largest remainders),
-        // so that several long runs (the rows of tiles of a window) fill the slots once rather
-        // than queue pieces behind each other, each a round trip more. Each piece holds
-        // SPLIT_RUN_BYTES at least: a run under twice that stays whole.
+        // request slots: up to 8 runs take one slot each and share the others by length (the
+        // slots a floor share leaves go to the largest remainders), so that several long runs
+        // (the rows of tiles of a window) fill the slots once rather than queue pieces behind
+        // each other, each a round trip more. Each piece holds SPLIT_RUN_BYTES at least: a run
+        // under twice that stays whole, and its share's other slots stay idle. More than 8 runs
+        // are a piece each at least, through the 8 slots.
         if self.client.options.parallel_ranges {
             let slots = PARALLEL_RUNS as u64;
             let lens: Vec<u64> = spans.iter().map(|(start, end)| end - start + 1).collect();
             let total: u64 = lens.iter().sum();
-            let mut shares: Vec<u64> = lens.iter().map(|len| len * slots / total.max(1)).collect();
+            let runs = lens.len() as u64;
+            let (base, spare) = if runs <= slots { (1, slots - runs) } else { (0, slots) };
+            let mut shares: Vec<u64> = lens.iter().map(|len| base + len * spare / total.max(1)).collect();
             let mut by_remainder: Vec<usize> = (0..lens.len()).collect();
-            by_remainder.sort_by_key(|&i| std::cmp::Reverse(lens[i] * slots % total.max(1)));
+            by_remainder.sort_by_key(|&i| std::cmp::Reverse(lens[i] * spare % total.max(1)));
             for &i in by_remainder.iter().take(slots.saturating_sub(shares.iter().sum()) as usize) {
                 shares[i] += 1;
             }
@@ -4049,6 +4054,25 @@ mod tests {
             assert_eq!(read_range(&mut r, off, len as usize), data[off as usize..(off + len) as usize]);
         }
         assert_eq!(seen.lock().unwrap().len(), before + 3, "the reads needed no other request");
+    }
+
+    // A run of 40 MiB and one of 2 MiB take 7 slots and 1: every run has its slot, so the pieces
+    // fit in the slots (a share by length alone gave 8 and 0, 9 pieces through 8 slots).
+    #[test]
+    fn each_run_of_a_prefetch_has_a_request_slot() {
+        let data: Vec<u8> = (0..46u32 << 20).map(|i| (i * 7 % 251) as u8).collect();
+        let (url, seen) = test_server(data.clone());
+        let opts = HttpOptions { cache_size: 64 << 20, ..options() };
+        let mut r = RangeReader::open_with(&Remote::Url(format!("{url}/long-short.bin")), opts).unwrap();
+        let runs = [(1u64 << 20, 40u64 << 20), (43 << 20, 2 << 20)];
+        let before = seen.lock().unwrap().len();
+        r.prefetch(&runs).unwrap();
+        let asked = requested(&seen.lock().unwrap()[before..]);
+        assert_eq!(asked.len(), PARALLEL_RUNS, "{asked:?}");
+        assert!(asked.contains(&(43 << 20, (45 << 20) - 1)), "the short run in one piece: {asked:?}");
+        for (off, len) in runs {
+            assert_eq!(read_range(&mut r, off, len as usize), data[off as usize..(off + len) as usize]);
+        }
     }
 
     // A long-lived reader whose cache is full of earlier reads still fetches a plan that fits in
