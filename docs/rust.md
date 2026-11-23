@@ -99,6 +99,27 @@ per-dataset masks weighting the samples as in GDAL, and the masks given overview
 Row-streamed COG output computes the same pixels, whatever the input row chunk size, without
 retaining the whole source image.
 
+`area_matched`, and `area_matched_mode` for classes, are terrio's own (GDAL 3.13 has no
+equivalent): overviews of a raster with nodata whose valid cells cover the valid area of the
+full-resolution image, where `average` grows it at every level (see
+[Formats](formats.md#overviews-that-keep-the-valid-area)). They are written whole, never in rows,
+and each band's metadata records what its levels keep:
+
+```rust,no_run
+let ds = terrio::open_raster("depth.tif")?;
+let options = terrio::RasterWriteOptions {
+    driver: Some(terrio::formats::RasterDriver::Cog),
+    compression: Some("DEFLATE".into()),
+    overview_resampling: Some("area_matched".into()),
+    ..Default::default()
+};
+terrio::write_raster_dataset(&ds, "depth_cog.tif", &options)?;
+let written = terrio::open_raster("depth_cog.tif")?;
+let items = &written.band_metadata[0].items; // OVERVIEW_AREA_RATIOS, OVERVIEW_BASE_VALID_PIXELS
+# let _ = items;
+# Ok::<(), terrio::Error>(())
+```
+
 Native WebP TIFF output supports pixel-interleaved Byte RGB and RGBA.
 `WEBP_LOSSLESS=YES` preserves all samples, including transparent colors;
 `WEBP_LEVEL=0..100` controls lossy quality (default 75). Lossy RGBA retains alpha

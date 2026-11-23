@@ -1767,6 +1767,16 @@ pub struct RasterWriteOptions {
     /// overviews). GeoTIFF overviews default to `nearest`; COGs to GDAL's COG driver's default,
     /// `cubic` (`nearest` for paletted rasters), and also take the `OVERVIEW_RESAMPLING` and
     /// `RESAMPLING` creation options, which come first.
+    ///
+    /// terrio's `area_matched` (and `area_matched_mode` for categorical rasters), which GDAL
+    /// 3.12 and 3.13 do not have, builds GeoTIFF and COG overviews of GDAL's sizes whose valid
+    /// cells cover the valid area of the full-resolution image (to the nearest cell) rather than
+    /// growing it at every level as `average` does: the cells covering the most valid pixels
+    /// are kept and hold their mean (or mode). It needs a nodata value and is refused with a
+    /// per-dataset mask or an alpha band. Each band's metadata then records what its levels keep:
+    /// `OVERVIEW_AREA_RATIOS` (per level, the area kept over the valid full-resolution area,
+    /// comma-separated) and `OVERVIEW_BASE_VALID_PIXELS` (the valid full-resolution pixels),
+    /// default-domain items that GDAL's COG and GTiff drivers copy along with the band.
     pub overview_resampling: Option<String>,
     /// The geotransform to write in place of the raster's own: a rotated or south-up one, which
     /// GeoTIFFs store in a `ModelTransformationTag`, as GDAL writes them.

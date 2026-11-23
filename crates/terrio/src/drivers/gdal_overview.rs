@@ -309,7 +309,7 @@ struct Replace {
 }
 
 /// `GDALGetNoDataReplacementValue`.
-fn replacement_value(t: DataType, nodata: f64) -> f64 {
+pub(crate) fn replacement_value(t: DataType, nodata: f64) -> f64 {
     let int = |min: f64, max: f64| {
         if !(nodata >= min && nodata <= max) {
             0.0

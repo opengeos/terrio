@@ -2989,6 +2989,21 @@ Local, in-memory and decompressed ZIP member regressions check exact-limit
 success, oversized rejection and transport-error preservation. Malformed
 text/XML channels outside 0–255 are rejected rather than wrapped.
 
+## Area-matched COG overviews
+
+GDAL has no area-matched overview method, so the registered `cog-area-matched` suite
+(`scripts/compare_cog_area_matched_with_gdal.py`) uses GDAL as the reader and structural
+reference. Each real raster with nodata (Float32 with NaN and with -inf, Float64, a paletted Byte
+class raster) is written by `terrio convert -f COG --co OVERVIEW_RESAMPLING=AREA_MATCHED` (or
+`AREA_MATCHED_MODE`) and by GDAL's COG driver with `average` (`mode`) and `nearest`. As GDAL reads
+them, the overview sizes must equal GDAL's, the full-resolution band GDAL's, each level must keep
+exactly `round(valid * w * h / (cols * rows))` valid cells, the band items `OVERVIEW_AREA_RATIOS`
+and `OVERVIEW_BASE_VALID_PIXELS` must equal the values recomputed from the levels (ratios to
+1e-12), GDAL's COG validator must report no error, and GDAL's COG driver must keep the items when
+it converts the file again. Cases are reported within tolerance: the overview pixels differ from
+those of every GDAL method by design. `python/tests/test_cog_area_matched.py` makes the same checks
+through rasterio on a synthetic raster in the Python jobs.
+
 ## COG validation
 
 The registered `cog-validate` suite compares GDAL 3.13.3's unified COG validator
