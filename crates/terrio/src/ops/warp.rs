@@ -3406,8 +3406,7 @@ impl WarpContext<'_> {
     /// Bounds the actual point kernels or area footprints. Geometry buffers are one row wide;
     /// no source pixels are read while planning. `sum` retains its exact polygon planner.
     /// Scales are recomputed after the source read rather than retaining a chunk-sized matrix.
-    #[allow(clippy::type_complexity)]
-    fn source_window(&self, dx: usize, dy: usize, dw: usize, dh: usize) -> Option<(usize, usize, usize, usize, f64, f64, f64)> {
+    fn source_window(&self, dx: usize, dy: usize, dw: usize, dh: usize) -> Option<SourceWindow> {
         #[cfg(test)]
         WINDOW_COMPUTATIONS.with(|n| n.set(n.get() + 1));
         if (dw == 0 || dh == 0) && self.grid_invariant && self.resampling != Resampling::Sum {
@@ -6286,12 +6285,15 @@ pub struct RegionWarp {
     window_cache: std::sync::Mutex<Option<WindowCache>>,
 }
 
+/// A source window `(x, y, width, height, fill, raw_w, raw_h)`, as the context computes it.
+type SourceWindow = (usize, usize, usize, usize, f64, f64, f64);
+
 /// A cached [`RegionWarp::source_window`] result: the region, the destination geotransform, and
 /// the full window `(x, y, width, height, _, raw_w, raw_h)` the context computes.
 struct WindowCache {
     region: (usize, usize, usize, usize),
     dst_gt: [f64; 6],
-    full: (usize, usize, usize, usize, f64, f64, f64),
+    full: SourceWindow,
 }
 
 impl RegionWarp {
@@ -6531,13 +6533,10 @@ impl RegionWarp {
     /// The full source window `(x, y, width, height, _, raw_w, raw_h)` of `region`, from the
     /// cache of the last [`RegionWarp::source_window`] call when it was for this region under the
     /// current destination grid, else computed now (and cached).
-    fn source_window_full(
-        &self,
-        ctx: &WarpContext<'_>,
-        region: (usize, usize, usize, usize),
-    ) -> Option<(usize, usize, usize, usize, f64, f64, f64)> {
+    fn source_window_full(&self, ctx: &WarpContext<'_>, region: (usize, usize, usize, usize)) -> Option<SourceWindow> {
         let (dx, dy, dw, dh) = region;
         if dw == 0 || dh == 0 {
+            // Public source_window accepts empty regions; warp returns before using their raw sizes.
             return Some((0, 0, 0, 0, 0.0, 0.0, 0.0));
         }
         {
@@ -10501,7 +10500,7 @@ mod tests {
             Box::new(|rw: RegionWarp| rw.with_sum_scale(2.0)),
             Box::new(|rw: RegionWarp| rw.with_src_scale((2.0, 2.0))),
             Box::new(|mut rw: RegionWarp| {
-                // A different grid, so the dst_gt cache key is exercised too.
+                // A different grid: set_dst_gt drops the cache, so the next call recomputes.
                 rw.set_dst_gt([gt[0] + gt[1], gt[1], 0.0, gt[3] + gt[5], 0.0, gt[5]]);
                 rw
             }),
