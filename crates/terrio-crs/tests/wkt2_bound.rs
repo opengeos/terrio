@@ -2,7 +2,10 @@
 //! by that shift, and to another CRS (ED50, OSGB36) by that shift followed by the other CRS's own
 //! transformations to WGS 84, as PROJ concatenates them; into a CRS on the other CRS's datum, by
 //! the shift alone; into a CRS on the source CRS's own datum, with none. A shift a `BOUNDCRS`
-//! gives over a CRS terrio identifies as an EPSG code wins over the code's.
+//! gives over a CRS terrio identifies as an EPSG code wins over the code's. Outside the other
+//! CRS's transformations, the shift and that CRS's ballpark (DHDN, CH1903, Tokyo, NTF), unless
+//! the area of interest leaves only the ballpark, which PROJ excludes (into UTM zone 33N from a
+//! bound CRS to CH1903): no shift.
 //!
 //! `data/wkt2_bound.json` (`scripts/gen_wkt2_bound.py`, pyproj 3.8.0, `PROJ_NETWORK=OFF`, no
 //! grids installed) holds PROJ's coordinates (`always_xy`) in WGS 84, or in another CRS and back.
@@ -26,7 +29,7 @@ fn bound_crss_place_points_as_proj_does() {
     offline();
     let data: Value = serde_json::from_str(include_str!("data/wkt2_bound.json")).unwrap();
     let cases = data["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 83);
+    assert_eq!(cases.len(), 93);
     let mut bad = vec![];
     for case in cases {
         let num = |v: &Value, i: usize| v[i].as_f64().unwrap();

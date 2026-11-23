@@ -296,6 +296,66 @@ CASES = [
         (-0.1246, 51.5007),
     ),
 ]
+# To a CRS whose transformations to WGS 84 PROJ lists without its ballpark (#1012 item 22): its
+# nested search keeps the shift and the ballpark, which places points outside their areas; into
+# a CRS whose area none of them reaches, only the ballpark is left, which PROJ excludes: no shift.
+DHDN = geog(
+    "DHDN", "Deutsches Hauptdreiecksnetz", "Bessel 1841", 6377397.155, 299.1528128, 4314
+)
+CH1903 = geog("CH1903", "CH1903", "Bessel 1841", 6377397.155, 299.1528128, 4149)
+TOKYO = geog("Tokyo", "Tokyo", "Bessel 1841", 6377397.155, 299.1528128, 4301)
+NTF = geog(
+    "NTF",
+    "Nouvelle Triangulation Francaise",
+    "Clarke 1880 (IGN)",
+    6378249.2,
+    293.466021293627,
+    4275,
+)
+CASES += [
+    ("to DHDN outside its transformations", bound(BESSEL, DHDN, SHIFT), (14.1, 47.8)),
+    (
+        "to DHDN far outside its transformations",
+        bound(BESSEL, DHDN, SHIFT),
+        (-100.0, 40.0),
+    ),
+    ("to DHDN in Germany", bound(BESSEL, DHDN, SHIFT), (10.0, 51.0)),
+    (
+        "to CH1903 outside its transformation",
+        bound(BESSEL, CH1903, SHIFT),
+        (14.1, 47.8),
+    ),
+    (
+        "to Tokyo outside its transformations",
+        bound(BESSEL, TOKYO, SHIFT),
+        (-100.0, 40.0),
+    ),
+    ("to NTF outside its transformation", bound(BESSEL, NTF, SHIFT), (14.1, 47.8)),
+    (
+        "to DHDN outside its transformations, into Pseudo-Mercator",
+        bound(BESSEL, DHDN, SHIFT),
+        (14.1, 47.8),
+        "EPSG:3857",
+    ),
+    (
+        "to DHDN, into UTM 33N",
+        bound(BESSEL, DHDN, SHIFT),
+        (14.1, 47.8),
+        "EPSG:32633",
+    ),
+    (
+        "to CH1903, into UTM 33N",
+        bound(BESSEL, CH1903, SHIFT),
+        (14.1, 47.8),
+        "EPSG:32633",
+    ),
+    (
+        "to OSGB36, into UTM 33N",
+        bound(BESSEL, OSGB36, SHIFT),
+        (14.1, 47.8),
+        "EPSG:32633",
+    ),
+]
 # Each Helmert method PROJ applies (proj_constants.h), given by its EPSG code alone: geocentric
 # translations (which PROJ applies without the rotations and scale given), position vector and
 # coordinate frame in each domain, the time-dependent methods without their rates, coordinate
