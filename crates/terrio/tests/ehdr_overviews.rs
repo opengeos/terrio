@@ -79,6 +79,8 @@ fn builds_and_rebuilds_sidecar_without_changing_source() {
 
     let mut raster = LazyRaster::open(name).unwrap();
     assert_eq!(raster.overviews(), LEVELS);
+    // As GDAL's EHdr band (also checked with GDAL 3.12.1), the base reports the header's
+    // f64 declaration. Its Float32 pixels and the TIFF overview sentinel are rounded to f32.
     assert_eq!(raster.nodata(), Some(-0.1));
     assert!(raster.file_list().unwrap().contains(&sidecar.to_str().unwrap().to_owned()));
     let window = WindowOptions { overview: Some(0), ..Default::default() };
@@ -182,5 +184,112 @@ fn gdal_and_terrio_read_both_builders_overviews() {
         // Rebuild only the first level of the GDAL sidecar and keep the other level.
         assert_eq!(add_overviews(gd, &OverviewOptions { levels: vec![2], ..opts }).unwrap(), LEVELS);
         check_levels(gd, &mut built, nodata, tolerance);
+    }
+}
+
+#[test]
+fn attached_overviews_expose_internal_and_sidecar_masks_at_each_level() {
+    use terrio::raster::RasterData;
+    use terrio::{Raster, RasterConfig, RasterDataset, RasterWriteOptions};
+    let dir = tempfile::tempdir().unwrap();
+    for external_mask in [false, true] {
+        let path = grid(dir.path(), &format!("mask-{external_mask}"), DataType::F32, None);
+        let ovr = PathBuf::from(format!("{}.ovr", path.display()));
+        let config = RasterConfig { cols: 5, rows: 4, bands: 1, data_type: DataType::F32, ..Default::default() };
+        let data = Raster::from_data_native(config, RasterData::F32(vec![5.; 20])).unwrap();
+        let mask: Vec<u8> = (0..20).map(|i| if i % 3 == 0 { 0 } else { 255 }).collect();
+        terrio::write_raster_dataset(
+            &RasterDataset::new(data, false),
+            ovr.to_str().unwrap(),
+            &RasterWriteOptions {
+                driver: Some(terrio::formats::RasterDriver::GTiff),
+                mask: (!external_mask).then(|| mask.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let internal = OverviewOptions { levels: vec![2], resampling: Resampling::Nearest, ..Default::default() };
+        add_overviews(ovr.to_str().unwrap(), &internal).unwrap();
+        let mask_path = PathBuf::from(format!("{}.msk", ovr.display()));
+        if external_mask {
+            let config = RasterConfig { cols: 5, rows: 4, bands: 1, data_type: DataType::U8, ..Default::default() };
+            let raster = Raster::from_data_native(config, RasterData::U8(mask.clone())).unwrap();
+            terrio::write_raster_dataset(
+                &RasterDataset::new(raster, false),
+                mask_path.to_str().unwrap(),
+                &RasterWriteOptions { driver: Some(terrio::formats::RasterDriver::GTiff), ..Default::default() },
+            )
+            .unwrap();
+            add_overviews(mask_path.to_str().unwrap(), &internal).unwrap();
+        }
+        let mut source = LazyRaster::open(path.to_str().unwrap()).unwrap();
+        let mut reference = LazyRaster::open(ovr.to_str().unwrap()).unwrap();
+        assert!(!source.has_mask());
+        assert!(source.read_mask(Window::full(9, 7), None).unwrap().is_none());
+        if external_mask {
+            assert!(source.file_list().unwrap().contains(&mask_path.to_string_lossy().into_owned()));
+        }
+        assert_eq!(source.overviews(), LEVELS);
+        for (i, &(w, h)) in LEVELS.iter().enumerate() {
+            let window = Window::full(w, h);
+            let expected = reference.read_level_mask(window, i.checked_sub(1)).unwrap().unwrap();
+            if i == 0 {
+                assert_eq!(expected, mask);
+            }
+            assert!(source.level_has_own_mask(i));
+            assert_eq!(source.read_level_mask(window, Some(i)).unwrap(), Some(expected.clone()));
+            assert_eq!(source.read_mask(window, Some(i)).unwrap(), Some(expected));
+        }
+        // A full-resolution sidecar must not shadow the overview dataset's own masks.
+        let base_mask = PathBuf::from(format!("{}.msk", path.display()));
+        let config = RasterConfig { cols: 9, rows: 7, bands: 1, data_type: DataType::U8, ..Default::default() };
+        let raster = Raster::from_data_native(config, RasterData::U8(vec![0; 63])).unwrap();
+        terrio::write_raster_dataset(
+            &RasterDataset::new(raster, false),
+            base_mask.to_str().unwrap(),
+            &RasterWriteOptions { driver: Some(terrio::formats::RasterDriver::GTiff), ..Default::default() },
+        )
+        .unwrap();
+        let mut source = LazyRaster::open(path.to_str().unwrap()).unwrap();
+        assert_eq!(source.read_mask(Window::full(9, 7), None).unwrap(), Some(vec![0; 63]));
+        for (i, &(w, h)) in LEVELS.iter().enumerate() {
+            let window = Window::full(w, h);
+            let expected = reference.read_level_mask(window, i.checked_sub(1)).unwrap();
+            assert!(source.level_has_own_mask(i));
+            assert_eq!(source.read_level_mask(window, Some(i)).unwrap(), expected);
+            assert_eq!(source.read_mask(window, Some(i)).unwrap(), expected);
+        }
+    }
+}
+
+#[test]
+fn averages_use_each_bands_float32_pam_nodata() {
+    let dir = tempfile::tempdir().unwrap();
+    for (name, second, expected) in [("mixed", [-0.1_f32, 10., 10., 10.], 10.), ("empty", [-0.1_f32; 4], -0.1_f32)] {
+        let path = dir.path().join(format!("{name}.flt"));
+        std::fs::write(path.with_extension("hdr"), "NCOLS 2\nNROWS 2\nNBANDS 2\nNBITS 32\nPIXELTYPE FLOAT\nBYTEORDER I\nLAYOUT BIL\n")
+            .unwrap();
+        let first = [-9999_f32, 2., 2., 2.];
+        let mut bytes = Vec::new();
+        for row in 0..2 {
+            for band in [&first, &second] {
+                for value in &band[row * 2..row * 2 + 2] {
+                    bytes.extend(value.to_le_bytes());
+                }
+            }
+        }
+        std::fs::write(&path, bytes).unwrap();
+        std::fs::write(
+            format!("{}.aux.xml", path.display()),
+            "<PAMDataset><PAMRasterBand band=\"1\"><NoDataValue>-9999</NoDataValue></PAMRasterBand><PAMRasterBand band=\"2\"><NoDataValue>-0.1</NoDataValue></PAMRasterBand></PAMDataset>",
+        )
+        .unwrap();
+        let source = LazyRaster::open(path.to_str().unwrap()).unwrap();
+        assert_eq!(source.band_nodata(1), Some(-9999.));
+        assert_eq!(source.band_nodata(2), Some(-0.1));
+        add_overviews(path.to_str().unwrap(), &OverviewOptions { levels: vec![2], ..options() }).unwrap();
+        let mut source = LazyRaster::open(path.to_str().unwrap()).unwrap();
+        let values = source.read_window(Window::full(1, 1), &WindowOptions { bands: vec![1, 2], overview: Some(0) }).unwrap();
+        assert_eq!(values.raster.data.to_f64_vec(), vec![2., f64::from(expected)], "{name}");
     }
 }

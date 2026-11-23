@@ -245,7 +245,8 @@ impl RawRaster {
         }
         crate::declared::check_dataset(&self.header)?;
         let layout = &self.window.layout;
-        if let Some(reader) = crate::cog::open_ovr(&ovr, (layout.bands, layout.data_type, false), crate::TiffReadLimits::from_config)? {
+        if let Some(mut reader) = crate::cog::open_ovr(&ovr, (layout.bands, layout.data_type, false), crate::TiffReadLimits::from_config)? {
+            reader.find_sidecar_mask(&ovr.to_string_lossy())?;
             self.window.inputs.extend(reader.file_list()?);
             let mut levels: Vec<_> = std::iter::once((reader.width(), reader.height()))
                 .chain(reader.overviews())
@@ -415,6 +416,30 @@ impl crate::cog::WindowSource for RawWindow {
     fn overview_band_nodata(&self, overview: usize, bands: &[usize]) -> Option<Vec<Option<f64>>> {
         let ovr = self.overviews.as_ref()?;
         Some(ovr.reader.lock().ok()?.level_band_nodata(bands, ovr.levels.get(overview)?.1))
+    }
+
+    fn level_has_own_mask(&self, level: usize) -> bool {
+        let Some((ovr, index)) =
+            self.overviews.as_ref().and_then(|ovr| ovr.levels.get(level.checked_sub(1)?).map(|&(_, index)| (ovr, index)))
+        else {
+            return false;
+        };
+        ovr.reader.lock().is_ok_and(|reader| index.map_or_else(|| reader.has_mask(), |i| reader.level_has_own_mask(i)))
+    }
+
+    fn level_keeps_mask_flags(&self, level: usize) -> bool {
+        level == 0
+    }
+
+    fn read_mask(&mut self, level: usize, window: crate::Window) -> Result<Option<Vec<u8>>> {
+        let Some(i) = level.checked_sub(1) else { return Ok(None) };
+        let (ovr, overview) = self
+            .overviews
+            .as_ref()
+            .and_then(|ovr| ovr.levels.get(i).map(|&(_, index)| (ovr, index)))
+            .ok_or_else(|| Error::InvalidArgument(format!("no overview {i}")))?;
+        let mut reader = ovr.reader.lock().map_err(|_| Error::InvalidData("overview reader lock poisoned".into()))?;
+        reader.read_level_mask(window, overview)
     }
 
     /// A row, as GDAL's raw drivers' blocks.

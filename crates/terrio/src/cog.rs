@@ -635,7 +635,7 @@ impl LazyRaster {
     /// Attaches the `.msk` sidecar of a local file (`dem.tif.msk`, as GDAL writes it when
     /// `GDAL_TIFF_INTERNAL_MASK=NO` or for formats without internal masks) when the raster has
     /// no internal mask and the sidecar is a per-dataset mask of its size.
-    fn find_sidecar_mask(&mut self, path: &str) -> Result<()> {
+    pub(crate) fn find_sidecar_mask(&mut self, path: &str) -> Result<()> {
         // Not under `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`, where GDAL sees an empty directory
         // and reads no `.msk` (GDAL 3.12.1: the mask is then all valid), nor when the allow-list
         // refuses the sidecar, which GDAL cannot read with its GTiff driver de-registered.
@@ -1887,6 +1887,12 @@ impl LazyRaster {
         {
             return read_tiff_mask(t, window, overview.map_or(0, |i| i + 1));
         }
+        if let Inner::Source(_, source) = &mut self.inner
+            && let Some(i) = overview
+            && !source.level_keeps_mask_flags(i + 1)
+        {
+            return source.read_mask(i + 1, window);
+        }
         if let Some(m) = self.sidecar_mask.as_mut() {
             return read_sidecar_mask(m, window, (lw, lh)).map(Some);
         }
@@ -1922,6 +1928,11 @@ impl LazyRaster {
         {
             return read_tiff_own_mask(t, window, i + 1);
         }
+        if let Inner::Source(_, source) = &mut self.inner
+            && !source.level_keeps_mask_flags(i + 1)
+        {
+            return source.read_own_mask(i + 1, window);
+        }
         if let Some(m) = self.sidecar_mask.as_mut() {
             return read_sidecar_own_mask(m, window, (lw, lh));
         }
@@ -1937,6 +1948,11 @@ impl LazyRaster {
     /// [`LazyRaster::read_level_mask`] reads, rather than none.
     pub fn level_has_own_mask(&self, overview: usize) -> bool {
         let Some(&size) = self.overviews().get(overview) else { return false };
+        if let Inner::Source(_, source) = &self.inner
+            && !source.level_keeps_mask_flags(overview + 1)
+        {
+            return source.level_has_own_mask(overview + 1);
+        }
         if let Inner::Tiff(t) = &self.inner
             && let Some(i) = t.levels[overview + 1].external
         {

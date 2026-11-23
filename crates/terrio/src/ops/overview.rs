@@ -489,12 +489,12 @@ fn open_source(path: &str, allow_ehdr: bool) -> Result<LazyRaster> {
     Err(Error::Unsupported(format!("overview management for '{path}' requires a GeoTIFF or external overview creation on EHdr")))
 }
 
-/// TIFF tags for new overview images of a striped, grayscale EHdr raster.
+/// TIFF tags for new overview images of an EHdr raster.
 /// The shared writer supplies the default overview tile layout and sample format.
 fn ehdr_overview_template(src: &LazyRaster) -> Directory {
     let mut dir = Directory { entries: vec![Entry::new(258, &Value::Shorts(vec![(src.data_type().size_bytes() * 8) as u16]), false)] };
     if let Some(nodata) = src.nodata() {
-        dir.set(Entry::new(42113, &Value::Ascii(gw::format_nodata(nodata)), false));
+        dir.set(Entry::new(42113, &Value::Ascii(gw::format_nodata_for(nodata, src.data_type())), false));
     }
     dir
 }
@@ -955,7 +955,7 @@ fn compute(
 ) -> Result<Computed> {
     let full = (srcs.src.width(), srcs.src.height());
     let overviews = srcs.src.overviews();
-    let (bands, data_type, nodata) = (srcs.src.band_count(), srcs.src.data_type(), srcs.src.nodata());
+    let (bands, data_type) = (srcs.src.band_count(), srcs.src.data_type());
     // The mask's overview.
     let new_mask = match mask {
         Some(ms) => {
@@ -977,11 +977,12 @@ fn compute(
     let want_mask = masked && (mask.is_some() || (srcs.src.has_mask() && computed.is_none()));
     let (src_data, src_mask) = srcs.rows(level, dsize, drows.clone(), computed, want_mask)?;
     let n = dsize.0 * drows.len();
-    let t = kernel::Target { width: size.0, height: size.1, data_type, nodata, method };
     let alpha: Option<Vec<bool>> =
         srcs.alpha.filter(|_| masked && src_mask.is_none()).map(|a| band_values(&src_data, a, n).iter().map(|v| *v != 0.0).collect());
     let mut out = Vec::with_capacity(size.0 * rows.len() * bands);
     for b in 0..bands {
+        let nodata = overview_nodata(srcs.src, b + 1);
+        let t = kernel::Target { width: size.0, height: size.1, data_type, nodata, method };
         let values = band_values(&src_data, b, n);
         // GDAL's mask band: the per-dataset mask, else the alpha band, else the nodata value.
         let valid: Option<Vec<bool>> = match (&src_mask, &alpha, nodata) {
@@ -1216,6 +1217,16 @@ fn steps(
     }
 }
 
+/// A band's overview nodata comparison value. GDAL 3.13.2 compares Float32 EHdr
+/// declarations in the stored sample type, while the base header retains its f64 declaration.
+fn overview_nodata(src: &LazyRaster, band: usize) -> Option<f64> {
+    src.band_nodata(band).map(
+        |nd| {
+            if src.driver() == RasterDriver::EHdr && src.data_type() == DataType::F32 { nd as f32 as f64 } else { nd }
+        },
+    )
+}
+
 /// Computes `jobs` from `prev` (the previous level, of `src_size`), or from the full-resolution
 /// image when `prev` is `None`: their steps run in the order of their last source rows, so the
 /// image is read forward once and only the rows the current steps need are held. After each
@@ -1232,11 +1243,8 @@ fn run_jobs(
     if jobs.is_empty() {
         return Ok(());
     }
-    let (bands, data_type, mut nodata, has_mask) = (srcs.src.band_count(), srcs.src.data_type(), srcs.src.nodata(), srcs.src.has_mask());
-    // GDAL compares a Float32 EHdr nodata declaration in the stored sample type.
-    if srcs.src.driver() == RasterDriver::EHdr && data_type == DataType::F32 {
-        nodata = nodata.map(|nd| nd as f32 as f64);
-    }
+    let (bands, data_type, has_mask) = (srcs.src.band_count(), srcs.src.data_type(), srcs.src.has_mask());
+    let nodata: Vec<_> = (1..=bands).map(|b| overview_nodata(srcs.src, b)).collect();
     // GDAL's mask band for the data of a method other than nearest: the per-dataset mask (the
     // mask's overview for a previous level), else the alpha band, else the nodata value.
     let use_mask = |l: &WholeLevel| l.method != OverviewResampling::Nearest && (prev.is_some() || l.mask.is_some() || has_mask);
@@ -1311,14 +1319,14 @@ fn run_jobs(
             continue;
         }
         let src_mask = held.mask(&rows, w).filter(|_| use_mask(l));
-        let t = kernel::Target { width: l.size.0, height: l.size.1, data_type, nodata, method: l.method };
         // The mask's or the alpha band's validity, shared by the bands; else each band's nodata.
         let shared: Option<Vec<bool>> = match src_mask {
             _ if !masked => None,
             Some(m) => Some(m.iter().map(|v| *v != 0).collect()),
             None => srcs.alpha.map(|a| held.band(a, &rows, w).iter().map(|v| *v != 0.0).collect()),
         };
-        for b in 0..bands {
+        for (b, &nodata) in nodata.iter().enumerate() {
+            let t = kernel::Target { width: l.size.0, height: l.size.1, data_type, nodata, method: l.method };
             let values = held.band(b, &rows, w);
             let own: Option<Vec<bool>> = match (&shared, nodata) {
                 (None, Some(nd)) if masked => Some(values.iter().map(|v| !(*v == nd || (v.is_nan() && nd.is_nan()))).collect()),

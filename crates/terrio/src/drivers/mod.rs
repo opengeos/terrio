@@ -269,6 +269,7 @@ pub(crate) fn open_lazy(path: &str) -> Option<Result<crate::LazyRaster>> {
             if raw.header.driver == RasterDriver::EHdr
                 && let crate::vfs::Location::Local(p) = crate::vfs::Location::parse(path)
             {
+                nodata::apply_pam(path, &mut raw.header);
                 raw.attach_ovr(&p)?;
             }
             Ok(raw.into_lazy())
