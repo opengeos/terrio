@@ -345,6 +345,15 @@ jobs:
           # Without the CRS engine: none of its EPSG names (Pulkovo, which the full module's tables hold).
           grep -qaF Pulkovo js/pkg-node/terrio_bg.wasm || { echo "::error::the full module lacks the EPSG name the guard looks for"; exit 1; }
           if grep -qaF Pulkovo js/pkg-node/cog/terrio_bg.wasm; then echo "::error::terrio-js/cog links the CRS engine"; exit 1; fi
+      # The GeoParquet-only module, `terrio-js/geoparquet` (its own crate, js/geoparquet).
+      - name: Build and test terrio-js/geoparquet (Node.js)
+        run: |
+          wasm-pack build js/geoparquet --release --target nodejs --out-dir ../pkg-node/geoparquet --out-name terrio --no-pack
+          node --test js/tests/geoparquet.test.mjs
+          # Its GeoJSON glue is a wasm-bindgen snippet, which the package must ship (js/build.mjs).
+          test -d js/pkg-node/geoparquet/snippets || { echo "::error::terrio-js/geoparquet has no snippets/"; exit 1; }
+          # Without the CRS engine, as terrio-js/cog (the full module holds the name, checked above).
+          if grep -qaF Pulkovo js/pkg-node/geoparquet/terrio_bg.wasm; then echo "::error::terrio-js/geoparquet links the CRS engine"; exit 1; fi
 
   # The cargo features (see crates/terrio/Cargo.toml): each builds on its own, and so does the
   # core without them, natively and for WebAssembly.

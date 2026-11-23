@@ -632,7 +632,9 @@ WebAssembly (the `terrio-js` npm package):
       The separate `terrio-js/zarr` module reads Zarr arrays over HTTP by window and band,
       retaining declared EPSG codes without including the CRS engine (#900). The separate
       `terrio-js/cog` module reads GeoTIFFs and COGs over HTTP by window, band and overview the
-      same way, with the EPSG code of their GeoKeys.
+      same way, with the EPSG code of their GeoKeys, and the separate `terrio-js/geoparquet`
+      module reads GeoParquet files by row group, bounding box and column, out as GeoJSON, with
+      the EPSG code of their `crs`.
 - [x] Datasets larger than 4 GB, with the 64-bit memory proposal (memory64) where runtimes support
       it. Done: a memory64 module, `terrio-js/memory64` (every format, up to 16 GB), which
       `load({ memory64: true })` picks where the runtime has 64-bit memories (Node.js 24+, Chrome

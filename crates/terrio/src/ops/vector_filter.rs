@@ -366,8 +366,7 @@ impl SpatialFilter {
     /// `None`, the layer's CRS), for a layer in `layer_srs`. As `ogr2ogr` does, a rectangle in
     /// another CRS is densified every 10 km before being transformed.
     pub fn new(rect: (f64, f64, f64, f64), rect_srs: Option<&SpatialRef>, layer_srs: &SpatialRef) -> Result<Self> {
-        let (x0, y0, x1, y1) = rect;
-        let mut ring = vec![(x0, y0), (x0, y1), (x1, y1), (x1, y0), (x0, y0)];
+        let mut ring = Self::rect(rect).ring;
         if let Some(srs) = rect_srs
             && !layer_srs.is_unknown()
             && !srs.same_as(layer_srs)
@@ -391,6 +390,15 @@ impl SpatialFilter {
             (b.0.min(x), b.1.min(y), b.2.max(x), b.3.max(y))
         });
         Ok(Self { ring, bbox })
+    }
+
+    /// A filter on the rectangle `(min_x, min_y, max_x, max_y)`, in the layer's CRS, as
+    /// [`Self::new`] makes it without a rectangle CRS, and without the CRS engine. An inverted
+    /// rectangle is taken by its corners' extent.
+    pub fn rect(rect: (f64, f64, f64, f64)) -> Self {
+        let (x0, y0, x1, y1) = rect;
+        let ring = vec![(x0, y0), (x0, y1), (x1, y1), (x1, y0), (x0, y0)];
+        Self { ring, bbox: (x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)) }
     }
 
     /// Whether the geometry intersects the filter.
