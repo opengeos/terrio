@@ -2768,7 +2768,7 @@ const COG_BLOCK_ROWS_IN_FLIGHT: usize = 1;
 
 /// The bytes a row of tiles being compressed takes besides its rows and its chunks' bytes, as
 /// [`CogWriter::call_bytes`] counts it: the job compressing it, the channel its tiles come back
-/// in, and their tags and list of chunks (measured: about 1 KiB for a band).
+/// in, and their tags and list of chunks, per band (measured: about 1 KiB for a band).
 const COG_JOB_BYTES: usize = 4 << 10;
 
 /// A row of tiles a COG's call may have being compressed, as [`CogWriter::call_bytes`] counts it:
@@ -3225,7 +3225,7 @@ impl CogWriter {
             if self.levels[i].mask.is_some() { tiles.saturating_mul(encoder_bytes(Compression::Deflate, t.div_ceil(8) * t).0) } else { 0 };
         // Each chunk's headers.
         let headers = tiles.saturating_mul(self.bands + 1).saturating_mul(64);
-        let job = if tiles > 0 { COG_JOB_BYTES } else { 0 };
+        let job = if tiles > 0 { COG_JOB_BYTES.saturating_mul(self.bands) } else { 0 };
         image.saturating_add(mask).saturating_add(headers).saturating_add(job)
     }
 

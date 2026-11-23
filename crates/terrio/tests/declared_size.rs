@@ -2247,6 +2247,11 @@ fn an_unmasked_cog_call_is_checked_for_the_most_it_allocates() {
     let runless = |_: usize, _: usize| (RasterData::U64(vec![0x0706_0504_0302_0100; 2048 * 2048]), None::<Vec<u8>>);
     checked_for_their_peaks(&path, &raster(2048, 2048, DataType::U64), &cog(Some("PACKBITS"), Some(2048), false), 2048, &runless);
     checked_for_their_peaks(&path, &raster(4096, 2048, DataType::U16), &cog(Some("ZSTD"), None, false), 512, &hashed(4096));
+    // Bookkeeping grows with band count even when all bands share a single tile chunk.
+    let mut multiband = header(512, 512, 32);
+    multiband.raster.data_type = DataType::U16;
+    multiband.raster.data = RasterData::new_filled(DataType::U16, 0, 0.0);
+    checked_for_their_peaks(&path, &multiband, &cog(Some("PACKBITS"), Some(512), false), 512, &hashed(512 * 32));
 }
 
 /// Writes `raster` as a COG at `path` with `options`, in calls of `step` rows (`slab`: the values of
@@ -2255,9 +2260,10 @@ fn an_unmasked_cog_call_is_checked_for_the_most_it_allocates() {
 /// of tiles compressed before it spooled first) until the next call's rows are made (the block rows
 /// and tiles it left being computed meanwhile included), or, for the last, until the file is
 /// finished, its rows held until then. Then writes it again, giving each call first with a byte
-/// less of usable memory than its peak, which must refuse it (the first call before any allocation
-/// of 1 MiB; at later ones, block rows of earlier calls may be allocating), then, to go on to the
-/// next call and to the end, with the limit lifted.
+/// less of usable memory than its peak. A refusal of the first call must precede any allocation
+/// of 1 MiB (at later calls, earlier jobs may still allocate). If admitted, the call's own measured
+/// peak must fit that limit: the second run can have fewer jobs in flight than the first. Refused
+/// calls are retried with the limit lifted, to continue to the next call and to the end.
 #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
 fn checked_for_their_peaks(
     path: &Path,
@@ -2273,35 +2279,57 @@ fn checked_for_their_peaks(
         let mut writer = Some(terrio::GeoTiffWriter::create(path.to_str().unwrap(), raster, options).unwrap());
         let before = LIVE.load(Ordering::Relaxed);
         let mut peaks = Vec::new();
+        let mut admitted_limit = None;
         for (call, y0) in (0..rows).step_by(step).enumerate() {
             let y1 = (y0 + step).min(rows);
             // The last call's peak, read before this call's rows are made.
             if call > 0 {
-                peaks.push(PEAK.load(Ordering::Relaxed) - before);
+                let peak = PEAK.load(Ordering::Relaxed) - before;
+                if let Some(limit) = admitted_limit.take() {
+                    assert!(peak <= limit, "call {}: admitted under {limit} bytes, allocated {peak}", call - 1);
+                }
+                peaks.push(peak);
             }
             let (values, mask) = slab(y0, y1);
             let w = writer.as_mut().unwrap();
             w.write_rows(&none, 0, no_rows).unwrap();
+            let mut admitted = false;
             if let Some(peak) = limits.map(|peaks| peaks[call]) {
+                PEAK.store(0, Ordering::Relaxed);
+                PEAK.fetch_max(LIVE.load(Ordering::Relaxed), Ordering::Relaxed);
                 rss_limit(Some(peak as u64 - 1));
                 let (refused, largest) = largest_during(|| w.write_rows(&values, y1 - y0, mask.as_deref()));
                 rss_limit(None);
-                assert!(matches!(refused, Err(terrio::Error::ResourceLimit(_))), "call {call}: {peak} bytes at once, then {refused:?}");
-                assert!(call > 0 || largest < 1 << 20, "{largest} bytes asked for at once before the refusal");
+                match refused {
+                    Ok(()) => {
+                        admitted = true;
+                        admitted_limit = Some(peak - 1);
+                    }
+                    Err(terrio::Error::ResourceLimit(_)) => {
+                        assert!(call > 0 || largest < 1 << 20, "{largest} bytes asked for at once before the refusal");
+                    }
+                    Err(error) => panic!("call {call}: unexpected error: {error}"),
+                }
                 // A refused first call has started nothing; after others, the block rows and tiles they
                 // started are finished below, not left to free their memory while the next case is measured.
-                if call == 0 && y1 == rows {
+                if !admitted && call == 0 && y1 == rows {
                     return peaks;
                 }
             }
             // The peak from here: what is alive, without losing what a block row or row of tiles still
             // being computed allocates meanwhile (zeroed first, then raised to what is alive).
-            PEAK.store(0, Ordering::Relaxed);
-            PEAK.fetch_max(LIVE.load(Ordering::Relaxed), Ordering::Relaxed);
-            w.write_rows(&values, y1 - y0, mask.as_deref()).unwrap();
+            if !admitted {
+                PEAK.store(0, Ordering::Relaxed);
+                PEAK.fetch_max(LIVE.load(Ordering::Relaxed), Ordering::Relaxed);
+                w.write_rows(&values, y1 - y0, mask.as_deref()).unwrap();
+            }
             if y1 == rows {
                 writer.take().unwrap().finish().unwrap();
-                peaks.push(PEAK.load(Ordering::Relaxed) - before);
+                let peak = PEAK.load(Ordering::Relaxed) - before;
+                if let Some(limit) = admitted_limit.take() {
+                    assert!(peak <= limit, "call {call}: admitted under {limit} bytes, allocated {peak}");
+                }
+                peaks.push(peak);
             }
         }
         peaks
