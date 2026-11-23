@@ -293,22 +293,31 @@ fn vertical_unit(to_meter: f64) -> String {
     unit_name(to_meter).map_or_else(|| format!("+vto_meter={}", number(to_meter)), |n| format!("+vunits={n}"))
 }
 
-/// A number as PROJ writes it: with 15 significant digits, without trailing zeros, with an
-/// exponent below 1e-4 and from 1e15 (as C's `%.15g` formats them).
+/// A number as PROJ writes it (`formatToString`, `internal::toString`): within 1e-8 of a tenth,
+/// that tenth (7.00000000009 is 7); with 15 significant digits, or 14 where 15 give ten nines in
+/// a row; without trailing zeros, with an exponent below 1e-4 and from 1e15 (as C's `%g`).
 fn number(v: f64) -> String {
+    let tenths = (v * 10.0).round();
+    let v = if (v * 10.0 - tenths).abs() < 1e-8 { tenths / 10.0 } else { v };
+    let s = significant(v, 15);
+    if s.contains("9999999999") { significant(v, 14) } else { s }
+}
+
+/// A number with this many significant digits, as C's `%.*g` writes it.
+fn significant(v: f64, digits: i32) -> String {
     if v == 0.0 {
         return "0".into();
     }
-    let exponent = v.abs().log10().floor() as i32;
-    if !(-4..15).contains(&exponent) {
-        let s = format!("{v:.14e}");
+    // The exponent of the number once rounded to its digits (9.9999999999999999 is 1e+01).
+    let exponent = format!("{v:.*e}", (digits - 1) as usize).split_once('e').and_then(|(_, e)| e.parse::<i32>().ok()).unwrap_or_default();
+    if !(-4..digits).contains(&exponent) {
+        let s = format!("{v:.*e}", (digits - 1) as usize);
         let (mantissa, exponent) = s.split_once('e').unwrap_or((&s, "0"));
         let mantissa = if mantissa.contains('.') { mantissa.trim_end_matches('0').trim_end_matches('.') } else { mantissa };
         let exponent: i32 = exponent.parse().unwrap_or_default();
         return format!("{mantissa}e{}{:02}", if exponent < 0 { '-' } else { '+' }, exponent.abs());
     }
-    let digits = 15 - 1 - v.abs().log10().floor() as i32;
-    let s = format!("{:.*}", digits.max(0) as usize, v);
+    let s = format!("{:.*}", (digits - 1 - exponent).max(0) as usize, v);
     if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s }
 }
 
