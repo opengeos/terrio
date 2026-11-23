@@ -2558,8 +2558,11 @@ impl Shared {
     /// Before a prefetch whose plan fits in the cache beside the cached blocks its `ranges`
     /// cover: drops the oldest blocks the ranges do not cover until the plan fits, so that a
     /// long-lived reader whose cache is full still fetches the plan in one batch. Blocks the
-    /// ranges cover stay, and move to the newest end, to be read before they would be evicted.
-    /// When the plan cannot fit beside them, nothing is dropped for nothing.
+    /// ranges cover stay; those the scan reaches move to the newest end, to be read before they
+    /// would be evicted. When the plan cannot fit beside them, nothing is dropped for nothing.
+    /// The plan counts as its requests' blocks, the cached gaps they fetch again included (at
+    /// most `PLAN_GAP` a join): they are held while the responses are stored, and fetch_planned's
+    /// budget counts them the same way, so the plan made room for is fetched in one batch.
     fn make_room(&mut self, plan: &[u64], ranges: &[(u64, u64)]) {
         let bs = self.block_size;
         let covered = |b: u64| ranges.iter().any(|&(off, len)| len > 0 && b >= off / bs && b <= (off.saturating_add(len) - 1) / bs);
@@ -2599,7 +2602,6 @@ impl Shared {
     /// fetched together. They leave the plan, so that a block read again once evicted is fetched
     /// alone.
     fn fetch_planned(&mut self, from: usize, first_batch: bool) -> io::Result<()> {
-        const GAP: u64 = Shared::PLAN_GAP;
         let half = (self.max_blocks / 2).max(1) as u64;
         // The room left in the cache, never less than the half-cache batch, so that the cache
         // holds at most its size and a half, as before a whole plan was fetched at once.
@@ -2609,9 +2611,9 @@ impl Shared {
         let mut half_batch = None;
         while let Some(&b) = self.plan.get(to) {
             if !self.blocks.contains_key(&b) {
-                // A block within GAP of the last one is fetched with the gap between them.
+                // A block within PLAN_GAP of the last one is fetched with the gap between them.
                 fetched += match next.last() {
-                    Some(&last) if Self::joins(last, b, GAP) => b - last,
+                    Some(&last) if Self::joins(last, b, Self::PLAN_GAP) => b - last,
                     _ => 1,
                 };
                 if fetched > half && half_batch.is_none() {
@@ -2631,7 +2633,7 @@ impl Shared {
             next.truncate(blocks);
         }
         self.plan.drain(from..to);
-        self.fetch_blocks(&next, GAP)
+        self.fetch_blocks(&next, Self::PLAN_GAP)
     }
 
     fn store(&mut self, first_block: u64, data: Vec<u8>) {
