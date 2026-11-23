@@ -2406,9 +2406,9 @@ impl RangeReader {
 
     /// Fetches the blocks covering the byte ranges `(offset, length)` that are not cached yet, in as
     /// few requests as it can: runs of missing blocks separated by at most two cached blocks are
-    /// fetched together. Ranges larger than half the cache are fetched a batch at a time, the
-    /// first now and the next ones as reads reach them, so that no block is evicted before it is
-    /// read and then fetched again.
+    /// fetched together. Ranges within the cache are fetched at once, wherever they are in the
+    /// file; larger ones a batch of half the cache at a time, the first now and the next ones as
+    /// reads reach them, so that no block is evicted before it is read and then fetched again.
     pub fn prefetch(&self, ranges: &[(u64, u64)]) -> io::Result<()> {
         let mut s = self.lock()?;
         if s.whole.is_some() {
@@ -2442,7 +2442,7 @@ impl RangeReader {
             return Ok(());
         }
         s.plan = wanted.into();
-        s.fetch_planned(0)
+        s.fetch_planned(0, true)
     }
 
     fn lock(&self) -> io::Result<std::sync::MutexGuard<'_, Shared>> {
@@ -2547,24 +2547,42 @@ impl Shared {
         }
     }
 
-    /// Fetches the next batch of the prefetch's blocks from its `from`th: those not cached within
-    /// half the cache's blocks of the first (the gaps the batch's requests span included), so that
-    /// the batch being read stays while the next one is fetched. They leave the plan, so that a
-    /// block read again once evicted is fetched alone.
-    fn fetch_planned(&mut self, from: usize) -> io::Result<()> {
-        let batch = (self.max_blocks / 2).max(1) as u64;
-        let (mut next, mut to) = (Vec::<u64>::new(), from);
+    /// Fetches the next batch of the prefetch's blocks from its `from`th, those not cached: the
+    /// whole plan, when `whole` (a prefetch's first batch) and its requests fetch at most the
+    /// cache's blocks, as no batch follows; otherwise those fetching at most half the cache's
+    /// blocks, so that the batch being read stays while the next one is fetched. A batch counts
+    /// the blocks its requests fetch, the gaps merged into them included, not the bytes between
+    /// them: the rows of tiles of a window, far apart in the file, are fetched together. They
+    /// leave the plan, so that a block read again once evicted is fetched alone.
+    fn fetch_planned(&mut self, from: usize, whole: bool) -> io::Result<()> {
+        const GAP: u64 = 2;
+        let half = (self.max_blocks / 2).max(1) as u64;
+        let all = if whole { self.max_blocks as u64 } else { half };
+        let (mut next, mut fetched, mut to) = (Vec::<u64>::new(), 0u64, from);
+        // Where the first half-cache batch ends: (plan index, blocks of `next`).
+        let mut half_batch = None;
         while let Some(&b) = self.plan.get(to) {
-            if next.first().is_some_and(|&first| b >= first + batch) {
-                break;
-            }
             if !self.blocks.contains_key(&b) {
+                // A block within GAP of the last one is fetched with the gap between them.
+                fetched += next.last().map_or(1, |&last| if b - last <= GAP + 1 { b - last } else { 1 });
+                if fetched > half && half_batch.is_none() {
+                    half_batch = Some((to, next.len()));
+                }
+                if fetched > all {
+                    break;
+                }
                 next.push(b);
             }
             to += 1;
         }
+        if fetched > all
+            && let Some((end, blocks)) = half_batch
+        {
+            to = end;
+            next.truncate(blocks);
+        }
         self.plan.drain(from..to);
-        self.fetch_blocks(&next, 2)
+        self.fetch_blocks(&next, GAP)
     }
 
     fn store(&mut self, first_block: u64, data: Vec<u8>) {
@@ -2609,15 +2627,28 @@ impl Shared {
             spans.push((start, end));
         }
         // Fetched in parallel, a long run is split into near-equal pieces fetched together, as a
-        // server sends each response at the pace of one connection: as many as there are request
-        // slots, each of SPLIT_RUN_BYTES at least, so a run under twice that stays whole.
+        // server sends each response at the pace of one connection. The fetch's runs share the
+        // request slots by length (the slots a floor share leaves go to the largest remainders),
+        // so that several long runs (the rows of tiles of a window) fill the slots once rather
+        // than queue pieces behind each other, each a round trip more. Each piece holds
+        // SPLIT_RUN_BYTES at least: a run under twice that stays whole.
         if self.client.options.parallel_ranges {
+            let slots = PARALLEL_RUNS as u64;
+            let lens: Vec<u64> = spans.iter().map(|(start, end)| end - start + 1).collect();
+            let total: u64 = lens.iter().sum();
+            let mut shares: Vec<u64> = lens.iter().map(|len| len * slots / total.max(1)).collect();
+            let mut by_remainder: Vec<usize> = (0..lens.len()).collect();
+            by_remainder.sort_by_key(|&i| std::cmp::Reverse(lens[i] * slots % total.max(1)));
+            for &i in by_remainder.iter().take(slots.saturating_sub(shares.iter().sum()) as usize) {
+                shares[i] += 1;
+            }
             let least = SPLIT_RUN_BYTES.div_ceil(self.block_size).max(1);
             spans = spans
                 .into_iter()
-                .flat_map(|(start, end)| {
+                .zip(shares)
+                .flat_map(|((start, end), share)| {
                     let len = end - start + 1;
-                    let pieces = (len / least).clamp(1, PARALLEL_RUNS as u64);
+                    let pieces = (len / least).min(share).clamp(1, slots);
                     let (size, longer) = (len / pieces, len % pieces);
                     // the first `longer` pieces take one block more
                     (0..pieces).map(move |k| {
@@ -2661,7 +2692,7 @@ impl Shared {
     /// caller's options and STAC asset policy. A new request starts as soon as one is answered, so
     /// a slow response holds up its own run, not the requests after it; the runs are stored in
     /// order, each as soon as it and the runs before it are in. Responses wait for those before
-    /// them outside the cache: a fetch's runs span at most half the cache's blocks
+    /// them outside the cache: a fetch's runs hold at most the cache's blocks
     /// ([`Shared::fetch_planned`]), so they are within the cache's size together.
     ///
     /// A failed run (or a whole file a server sent instead) ends the fetch as the serial one
@@ -2811,7 +2842,7 @@ impl Shared {
             let mut missing: Vec<u64> = (pos / bs..=(end - 1) / bs).filter(|b| !self.blocks.contains_key(b)).collect();
             // A block the prefetch asked for: its next batch, from there.
             if let Some(at) = missing.iter().find_map(|b| self.plan.binary_search(b).ok()) {
-                self.fetch_planned(at)?;
+                self.fetch_planned(at, false)?;
                 missing.retain(|b| !self.blocks.contains_key(b));
             }
             if self.whole.is_none() && !missing.is_empty() {
@@ -3956,6 +3987,50 @@ mod tests {
             // The first batch: blocks 1, 4 and 7, within half the cache (8 blocks) of block 1.
             assert!(refetched <= if reverse { 3 } else { 0 }, "{name}: {refetched} blocks fetched twice in {ranges:?}");
         }
+    }
+
+    // A prefetch over half the cache but within it (the rows of tiles of a window, far apart in
+    // the file) is fetched at once by the prefetch: it was fetched a row at a time as reads
+    // reached each, one round of requests after another.
+    #[test]
+    fn a_prefetch_within_the_cache_fetches_its_far_apart_runs_at_once() {
+        let data = test_data();
+        let (url, seen) = test_server(data.clone());
+        // 32 blocks of cache; 27 blocks in three runs, each 20 blocks or more from the next.
+        let opts = HttpOptions { cache_size: 32 * 4096, ..options() };
+        let mut r = RangeReader::open_with(&Remote::Url(format!("{url}/rows.bin")), opts).unwrap();
+        let runs = [(4096, 9 * 4096), (30 * 4096, 9 * 4096), (60 * 4096, 9 * 4096)];
+        let before = seen.lock().unwrap().len();
+        r.prefetch(&runs).unwrap();
+        let mut asked = requested(&seen.lock().unwrap()[before..]);
+        asked.sort_unstable();
+        assert_eq!(asked, runs.map(|(off, len)| (off, off + len - 1)));
+        for (off, len) in runs {
+            assert_eq!(read_range(&mut r, off, len as usize), data[off as usize..(off + len) as usize]);
+        }
+        assert_eq!(seen.lock().unwrap().len(), before + 3, "the reads needed no other request");
+    }
+
+    // Long runs of one prefetch share the request slots: three runs of 4 MiB are fetched in 3, 3
+    // and 2 pieces (8 requests, one per slot), not four each (12 requests through 8 slots).
+    #[test]
+    fn long_runs_of_one_prefetch_share_the_request_slots() {
+        let data: Vec<u8> = (0..20u32 << 20).map(|i| (i * 7 % 251) as u8).collect();
+        let (url, seen) = test_server(data.clone());
+        let opts = HttpOptions { cache_size: 64 << 20, ..options() };
+        let mut r = RangeReader::open_with(&Remote::Url(format!("{url}/long-rows.bin")), opts).unwrap();
+        let runs = [(1u64 << 20, 4u64 << 20), (7 << 20, 4 << 20), (13 << 20, 4 << 20)];
+        let before = seen.lock().unwrap().len();
+        r.prefetch(&runs).unwrap();
+        let asked = requested(&seen.lock().unwrap()[before..]);
+        assert_eq!(asked.len(), PARALLEL_RUNS, "{asked:?}");
+        let sizes: std::collections::BTreeSet<u64> = asked.iter().map(|(a, b)| b - a + 1).collect();
+        // 4 MiB (1024 blocks) in 3 pieces: 342, 341 and 341 blocks; in 2: 512 each.
+        assert_eq!(sizes, [341 * 4096, 342 * 4096, 512 * 4096].into(), "{asked:?}");
+        for (off, len) in runs {
+            assert!(read_range(&mut r, off, len as usize) == data[off as usize..(off + len) as usize]);
+        }
+        assert_eq!(seen.lock().unwrap().len(), before + PARALLEL_RUNS, "the reads needed no other request");
     }
 
     /// A child forked while other threads read remote files reads remote files too: the locks of
