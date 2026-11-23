@@ -2542,21 +2542,31 @@ impl Shared {
         self.prefix = Some(data);
     }
 
-    /// The blocks the requests for `plan` (sorted) fetch, the gaps merged into them included.
-    fn fetched_blocks(plan: &[u64]) -> u64 {
-        plan.windows(2).map(|w| if w[1] - w[0] <= Self::PLAN_GAP + 1 { w[1] - w[0] } else { 1 }).sum::<u64>() + u64::from(!plan.is_empty())
+    /// Whether block `b`, after block `last` (`b > last`), is fetched by the same request: at
+    /// most `gap` cached blocks lie between them. The planner and the fetcher both count runs by it.
+    fn joins(last: u64, b: u64, gap: u64) -> bool {
+        b - last <= gap + 1
     }
 
-    /// Before a prefetch whose plan fits in the cache: drops the oldest blocks the prefetch's
-    /// `ranges` do not cover until the plan fits beside the others, so that a long-lived reader
-    /// whose cache is full still fetches the plan in one batch. Blocks the ranges cover stay.
+    /// The blocks the requests for `plan` (sorted) fetch, the gaps merged into them included.
+    fn fetched_blocks(plan: &[u64]) -> u64 {
+        debug_assert!(plan.is_sorted(), "a plan is sorted");
+        plan.windows(2).map(|w| if Self::joins(w[0], w[1], Self::PLAN_GAP) { w[1] - w[0] } else { 1 }).sum::<u64>()
+            + u64::from(!plan.is_empty())
+    }
+
+    /// Before a prefetch whose plan fits in the cache beside the cached blocks its `ranges`
+    /// cover: drops the oldest blocks the ranges do not cover until the plan fits, so that a
+    /// long-lived reader whose cache is full still fetches the plan in one batch. Blocks the
+    /// ranges cover stay, and move to the newest end, to be read before they would be evicted.
+    /// When the plan cannot fit beside them, nothing is dropped for nothing.
     fn make_room(&mut self, plan: &[u64], ranges: &[(u64, u64)]) {
-        let need = Self::fetched_blocks(plan) as usize;
-        if need > self.max_blocks {
-            return;
-        }
         let bs = self.block_size;
         let covered = |b: u64| ranges.iter().any(|&(off, len)| len > 0 && b >= off / bs && b <= (off.saturating_add(len) - 1) / bs);
+        let need = Self::fetched_blocks(plan) as usize;
+        if need + self.blocks.keys().filter(|&&b| covered(b)).count() > self.max_blocks {
+            return;
+        }
         let mut kept = Vec::new();
         while self.blocks.len() + need > self.max_blocks
             && let Some(old) = self.order.pop_front()
@@ -2567,9 +2577,7 @@ impl Shared {
                 self.blocks.remove(&old);
             }
         }
-        for b in kept.into_iter().rev() {
-            self.order.push_front(b);
-        }
+        self.order.extend(kept);
     }
 
     /// Drops the oldest blocks until the cache is within its size. Called before a read or a
@@ -2603,7 +2611,7 @@ impl Shared {
             if !self.blocks.contains_key(&b) {
                 // A block within GAP of the last one is fetched with the gap between them.
                 fetched += match next.last() {
-                    Some(&last) if b - last <= GAP + 1 => b - last,
+                    Some(&last) if Self::joins(last, b, GAP) => b - last,
                     _ => 1,
                 };
                 if fetched > half && half_batch.is_none() {
@@ -2660,7 +2668,7 @@ impl Shared {
         while i < blocks.len() {
             let start = blocks[i];
             let mut end = start;
-            while i + 1 < blocks.len() && blocks[i + 1] <= end + 1 + gap {
+            while i + 1 < blocks.len() && Self::joins(end, blocks[i + 1], gap) {
                 i += 1;
                 end = blocks[i];
             }
@@ -2737,8 +2745,9 @@ impl Shared {
     /// caller's options and STAC asset policy. A new request starts as soon as one is answered, so
     /// a slow response holds up its own run, not the requests after it; the runs are stored in
     /// order, each as soon as it and the runs before it are in. Responses wait for those before
-    /// them outside the cache: a fetch's runs hold at most the cache's blocks
-    /// ([`Shared::fetch_planned`]), so they are within the cache's size together.
+    /// them outside the cache: a fetch's runs hold at most one batch of
+    /// [`Shared::fetch_planned`] (the cache's room left, or half the cache), so the cache holds
+    /// at most its size and a half while they are stored.
     ///
     /// A failed run (or a whole file a server sent instead) ends the fetch as the serial one
     /// would: no request starts after it, and those in flight are abandoned, their retries
