@@ -2002,9 +2002,13 @@ fn write_raster_with_nodata(
             .iter()
             .rev()
             .find(|(key, _)| key.eq_ignore_ascii_case("SPARSE_OK"))
-            .is_some_and(|(_, value)| matches!(value.to_ascii_uppercase().as_str(), "YES" | "TRUE" | "ON" | "1"))
+            .is_some_and(|(_, value)| crate::drivers::gtiff_write::yes(value))
         {
-            return Err(Error::Unsupported("SPARSE_OK needs a compression handled by the native GeoTIFF writer".into()));
+            if driver == RasterDriver::Cog {
+                crate::warnings::warn(crate::drivers::gtiff_write::SPARSE_COG_WARNING.into());
+            } else {
+                return Err(Error::Unsupported("SPARSE_OK needs a compression handled by the native GeoTIFF writer".into()));
+            }
         }
     }
     // Complex samples: GeoTIFFs written above, and GDAL's HFA driver below.
@@ -2534,18 +2538,41 @@ mod tests {
         )
         .unwrap();
         let dir = tempfile::tempdir().unwrap();
-        for driver in [crate::formats::RasterDriver::GTiff, crate::formats::RasterDriver::Cog] {
-            let path = dir.path().join(format!("{driver:?}.tif"));
-            let options = super::RasterWriteOptions {
-                driver: Some(driver),
-                creation_options: vec![("COMPRESS".into(), "UNKNOWN".into()), ("SPARSE_OK".into(), "YES".into())],
-                ..Default::default()
-            };
-            let error = super::write_raster(&raster, path.to_str().unwrap(), &options).unwrap_err();
-            assert!(matches!(error, crate::Error::Unsupported(_)), "{error}");
-            assert!(error.to_string().contains("SPARSE_OK"), "{error}");
-            assert!(!path.exists(), "no dense file is published");
-        }
+        let path = dir.path().join("out.tif");
+        let options = super::RasterWriteOptions {
+            driver: Some(crate::formats::RasterDriver::GTiff),
+            creation_options: vec![("COMPRESS".into(), "UNKNOWN".into()), ("SPARSE_OK".into(), "YES".into())],
+            ..Default::default()
+        };
+        let error = super::write_raster(&raster, path.to_str().unwrap(), &options).unwrap_err();
+        assert!(matches!(error, crate::Error::Unsupported(_)), "{error}");
+        assert!(error.to_string().contains("SPARSE_OK"), "{error}");
+        assert!(!path.exists(), "no dense file is published");
+    }
+
+    /// COG fallback keeps the same warn-and-write contract as the native COG writer, including
+    /// when the native compression parser declines an option supplied through creation options.
+    #[test]
+    fn sparse_cog_fallback_warns_and_writes_every_tile() {
+        let raster = wbraster::Raster::from_data_native(
+            wbraster::RasterConfig { cols: 2, rows: 2, bands: 1, data_type: wbraster::DataType::U8, nodata: 0., ..Default::default() },
+            wbraster::raster::RasterData::U8(vec![0; 4]),
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.tif");
+        let options = super::RasterWriteOptions {
+            driver: Some(crate::formats::RasterDriver::Cog),
+            creation_options: vec![("COMPRESS".into(), "UNKNOWN".into()), ("SPARSE_OK".into(), "YES".into())],
+            ..Default::default()
+        };
+        let _ = crate::warnings::take();
+        super::write_raster(&raster, path.to_str().unwrap(), &options).unwrap();
+        assert_eq!(crate::warnings::take(), ["SPARSE_OK is not supported for COGs: every tile is written"]);
+        let mut decoder = tiff::decoder::Decoder::new(std::io::Cursor::new(std::fs::read(&path).unwrap())).unwrap();
+        let tables = crate::geotiff::ChunkTables::read(&mut decoder).unwrap();
+        assert!(!tables.counts.is_empty());
+        assert!(tables.counts.iter().all(|&count| count > 0), "every tile is stored");
     }
 
     /// A file no driver reads names its path once, with the fallback hint after the reason.

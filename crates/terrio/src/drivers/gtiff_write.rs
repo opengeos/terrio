@@ -656,7 +656,9 @@ fn unsupported_resampling(name: &str) -> Error {
 }
 
 /// Whether a creation option value means yes.
-fn yes(v: &str) -> bool {
+pub(crate) const SPARSE_COG_WARNING: &str = "SPARSE_OK is not supported for COGs: every tile is written";
+
+pub(crate) fn yes(v: &str) -> bool {
     matches!(v.to_ascii_uppercase().as_str(), "YES" | "TRUE" | "ON" | "1")
 }
 
@@ -715,7 +717,7 @@ impl TiffOptions {
             }
             o.source_block = options.source_block_size;
             if co("SPARSE_OK").is_some_and(yes) {
-                crate::warnings::warn("SPARSE_OK is not supported for COGs: every tile is written".into());
+                crate::warnings::warn(SPARSE_COG_WARNING.into());
             }
         } else {
             let (bx, by) = (size("BLOCKXSIZE")?, size("BLOCKYSIZE")?);
