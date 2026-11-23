@@ -14,7 +14,7 @@ import terrio
 
 rasterio = pytest.importorskip("rasterio")
 rasterio_shutil = pytest.importorskip("rasterio.shutil")
-MemoryFile = pytest.importorskip("rasterio.io").MemoryFile
+MemoryFile = rasterio.io.MemoryFile
 
 W, H, TILE = 300, 200, 128
 GT = (500000.0, 10.0, 0.0, 4000000.0, 0.0, -10.0)
@@ -122,14 +122,28 @@ def _edge_tiles(path):
 
 
 def _lerc_valid(blob):
-    """The valid-pixel mask (rows x columns) of a Lerc2 blob: None when every pixel is valid."""
+    """Read a Lerc2 blob's valid-pixel mask.
+
+    Args:
+        blob: Encoded Lerc2 bytes.
+
+    Returns:
+        A rows-by-columns boolean mask, or None when every pixel is valid.
+    """
     assert blob[:6] == b"Lerc2 "
     version = struct.unpack_from("<i", blob, 6)[0]
+    # Lerc2 header layout, as lerc-reader 0.5.2's lerc2::parse reads it:
+    # six-byte magic, int32 version, then uint32 checksum from Lerc2 v3 onward.
     pos = 10 + (4 if version >= 3 else 0)
     rows, cols = struct.unpack_from("<II", blob, pos)
+    # nRows and nCols; Lerc2 v4 adds the uint32 depth (values per pixel).
     pos += 8 + (4 if version >= 4 else 0)
     valid = struct.unpack_from("<I", blob, pos)[0]
+    # numValidPixel, microBlockSize, blobSize and imageType (four 32-bit fields).
+    # Lerc2 v6 adds nBlobsMore (int32) and four flag/reserved bytes.
     pos += 16 + (8 if version >= 6 else 0)
+    # maxZError, zMin and zMax (three doubles). Lerc2 v6 adds the encoded and
+    # original nodata values (two doubles). The mask byte count follows.
     pos += 24 + (16 if version >= 6 else 0)
     if valid == rows * cols:
         return None
@@ -184,7 +198,8 @@ def test_lerc_masks_the_padding_as_gdal(tmp_path, case, driver):
 
 @pytest.mark.parametrize("driver", ["GTiff", "COG"])
 @pytest.mark.parametrize("case", CASES, ids=lambda c: f"{c[0]}-{c[1]}-x{c[2]}-{c[3]}")
-def test_uncompressed_padding_is_gdal_s(tmp_path, case, driver):
+def test_uncompressed_padding_matches_gdal(tmp_path, case, driver):
+    """Check that uncompressed partial tiles use GDAL's zero padding."""
     gdal_path, terrio_path = _write_both(tmp_path, *case, driver, "NONE")
     gdal_tiles, terrio_tiles = _edge_tiles(gdal_path), _edge_tiles(terrio_path)
     assert [t[:4] for t in gdal_tiles] == [t[:4] for t in terrio_tiles]
