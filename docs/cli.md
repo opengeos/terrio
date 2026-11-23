@@ -3265,6 +3265,24 @@ simplify` on the conformance data. Z is kept and M dropped, as GDAL's GEOS conve
 `convert --simplify TOLERANCE` (`ogr2ogr -simplify`) applies the same operation before
 reprojection and keeps a geometry whose simplification fails.
 
+`simplify --method douglas-peucker` ports JTS 1.20.0's `DouglasPeuckerSimplifier` without its
+repair step (OGR's `OGRGeometry::Simplify` and shapely's `simplify(..., preserve_topology=False)`
+call GEOS's port of it): each line and ring on its own, a section flattened when no vertex is
+farther than the tolerance from the new segment (a distance equal to the tolerance flattens it)
+and otherwise split at its farthest vertex. Line endpoints stay; a ring may also lose its start
+point. It is faster than `preserve-topology`, but a ring may cross itself or a hole cross its
+shell at large tolerances, and invalid results are not rebuilt (JTS and GEOS rebuild them with a
+zero-width buffer). A ring left with fewer than four points keeps its vertices with
+`--collapse keep` (the default), so that no polygon or hole disappears; `--collapse drop` removes
+it as JTS does, and a polygon whose shell collapses becomes empty. A multi geometry keeps its type
+when one part is left (JTS and GEOS return the part). With `--collapse drop`, the vertices are
+those of OGR's `Simplify` (GDAL 3.13.3, GEOS 3.14.1) for every feature whose result is valid in
+both: all 95 Tennessee counties at 0.001 to 0.05 degrees and at 500 m and 5 km in EPSG:5070,
+3,201 of 3,221 US counties at 0.01 degrees, 173 to 175 of 176 or 177 countries at 0.01 to 1
+degree (the others are invalid), and all 78 Las Vegas roads.
+Python's `terrio.simplify_wkb` and JavaScript's `simplifyWkb` run it on WKB directly, in parallel
+over features, keeping each geometry's byte order, type code (ISO or EWKB, with SRID), Z and M.
+
 `segmentize --max-length` is OGR's `segmentize`: a segment of length L gets
 `floor(L / max - 0.01)` evenly spaced points (none when L is within a relative 1e-5 of the
 maximum). Lines are processed from the end with the larger X (then Y), so a line and its

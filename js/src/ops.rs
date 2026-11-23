@@ -1276,11 +1276,62 @@ fn vector_geom_op(src: &JsValue, op: terrio::ops::vector_geom::GeometryOp) -> Re
     Ok(Dataset::from_layers(out, VectorDriver::GeoJSON))
 }
 
-/// Topology-preserving simplification of every geometry (GEOS's TopologyPreservingSimplifier,
-/// as `gdal vector simplify`), with a tolerance in CRS units. Z is kept, M dropped.
+/// Options of [`simplify`].
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+struct SimplifyArgs {
+    method: Option<String>,
+    collapse: Option<String>,
+}
+
+/// Options of [`simplify_wkb`].
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+struct SimplifyWkbArgs {
+    collapse: Option<String>,
+}
+
+/// Simplification of every geometry, with a tolerance in CRS units: topology-preserving by
+/// default (JTS's TopologyPreservingSimplifier, as `gdal vector simplify`). Options: `method`,
+/// `"preserve-topology"` or `"douglas-peucker"` (JTS's DouglasPeuckerSimplifier without its
+/// repair step: faster, but rings may self-intersect at large tolerances), and with
+/// Douglas-Peucker `collapse`, `"keep"` (default: rings left with fewer than four points keep
+/// their vertices) or `"drop"` (as JTS). Z is kept, M dropped.
 #[wasm_bindgen]
-pub fn simplify(src: JsValue, tolerance: f64) -> Result<Dataset, JsError> {
-    vector_geom_op(&src, terrio::ops::vector_geom::GeometryOp::Simplify { tolerance })
+pub fn simplify(src: JsValue, tolerance: f64, options: JsValue) -> Result<Dataset, JsError> {
+    let a: SimplifyArgs = parse_options(&options)?;
+    let op = terrio::ops::vector_geom::GeometryOp::simplify(
+        tolerance,
+        a.method.as_deref().unwrap_or("preserve-topology"),
+        a.collapse.as_deref().unwrap_or("keep"),
+    )
+    .map_err(js_err)?;
+    vector_geom_op(&src, op)
+}
+
+/// Douglas-Peucker simplification of WKB geometries (an array of `Uint8Array`s, `null` for a
+/// null geometry), as Python's `terrio.simplify_wkb`: directly on the WKB, keeping each
+/// geometry's byte order, type code, Z and M. Options: `collapse`, as [`simplify`]'s. Returns an
+/// array of the same length.
+#[wasm_bindgen(js_name = simplifyWkb)]
+pub fn simplify_wkb(geometries: js_sys::Array, tolerance: f64, options: JsValue) -> Result<js_sys::Array, JsError> {
+    let a: SimplifyWkbArgs = parse_options(&options)?;
+    let o =
+        terrio::ops::simplify_dp::SimplifyOptions { tolerance, collapse: a.collapse.as_deref().unwrap_or("keep").parse().map_err(js_err)? };
+    let items = geometries
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            if v.is_null() || v.is_undefined() {
+                return Ok(None);
+            }
+            v.dyn_ref::<js_sys::Uint8Array>()
+                .map(|a| Some(a.to_vec()))
+                .ok_or_else(|| invalid(format!("geometry {i}: expected a Uint8Array of WKB or null")))
+        })
+        .collect::<Result<Vec<_>, JsError>>()?;
+    let (out, _) = terrio::ops::simplify_dp::simplify_wkb_many(&items, &o).map_err(js_err)?;
+    Ok(out.into_iter().map(|g| g.map_or(JsValue::NULL, |b| js_sys::Uint8Array::from(&b[..]).into())).collect())
 }
 
 /// Adds vertices so that no segment is longer than `maxLength` (CRS units), as `gdal vector

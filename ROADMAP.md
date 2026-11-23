@@ -226,7 +226,9 @@ Command-group progress:
 - [x] Vector geometry operations: simplify, segmentize, convex and concave hulls, swap XY,
       geometry-type conversion, grouped combine and spatial sort. Landed in
       [#306](https://github.com/opengeos/terrio/pull/306), through Rust, CLI/MCP, Python and
-      JavaScript, with GDAL/GEOS comparisons and documented tolerances.
+      JavaScript, with GDAL/GEOS comparisons and documented tolerances. Douglas-Peucker
+      simplification (JTS's `DouglasPeuckerSimplifier` without its repair step), also directly on
+      WKB arrays, compared with OGR's `Simplify`.
 - [x] Vector gridding and linear referencing: every `gdal_grid` algorithm (search ellipses,
       quadtree order, per-quadrant limits) as `terrio vector-grid`, and `ogrlineref` as
       `terrio lineref`. Landed in [#305](https://github.com/opengeos/terrio/pull/305), through Rust,

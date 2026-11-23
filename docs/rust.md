@@ -444,9 +444,11 @@ The commands are also available through the CLI and MCP. Python has `buffer`, `d
 to layers read and written as streams through `VectorTranslateOptions::geometry_op` (which is
 also `ogr2ogr`'s `-simplify`/`-segmentize`). `vector_geom::combine` (`CombineOptions`) and
 `vector_geom::sort` (`SortMethod`) take whole layers; `vector_geom::force_to` is OGR's `forceTo`.
-The single-geometry algorithms are `ops::simplify::{simplify_preserve_topology, segmentize}`
-and `ops::hull::{convex_hull, concave_hull, concave_hull_of_polygons}`. They are pure Rust and
-included in WebAssembly builds.
+The single-geometry algorithms are `ops::simplify::{simplify_preserve_topology, segmentize}`,
+`ops::simplify_dp::simplify_douglas_peucker` (`GeometryOp::SimplifyDouglasPeucker`) and
+`ops::hull::{convex_hull, concave_hull, concave_hull_of_polygons}`;
+`ops::simplify_dp::{simplify_wkb, simplify_wkb_many}` run Douglas-Peucker on WKB, the latter in
+parallel over features. They are pure Rust and included in WebAssembly builds.
 
 ```rust,no_run
 use terrio::ops::vector_geom::{self, CombineOptions, ConcaveHullOptions, GeometryOp, SortMethod};
