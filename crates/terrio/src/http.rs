@@ -2652,6 +2652,7 @@ impl Shared {
     /// once evicted is fetched alone.
     fn fetch_planned(&mut self, from: usize, budget: u64) -> io::Result<()> {
         let half = self.half_cache();
+        let budget = budget.max(half);
         let (mut next, mut fetched, mut to) = (Vec::<u64>::new(), 0u64, from);
         // Where the first half-cache batch ends: (plan index, blocks of `next`).
         let mut half_batch = None;
@@ -4091,7 +4092,7 @@ mod tests {
     fn a_prefetch_within_the_cache_fetches_its_far_apart_runs_at_once() {
         let data = test_data();
         let (url, seen) = test_server(data.clone());
-        // 32 blocks of cache; 27 blocks in three runs, each 20 blocks or more from the next.
+        // 32 blocks of cache; 27 blocks in three runs, 17 or more blocks apart.
         let opts = HttpOptions { cache_size: 32 * 4096, ..options() };
         let mut r = RangeReader::open_with(&Remote::Url(format!("{url}/rows.bin")), opts).unwrap();
         let runs = [(4096, 9 * 4096), (30 * 4096, 9 * 4096), (60 * 4096, 9 * 4096)];
