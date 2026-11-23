@@ -732,14 +732,14 @@ def suite_raster_manage(ctx):
         suite.cases.append(Case("raster management", result["name"], status, result["detail"]))
     if not results or (code and not any(case.status == DIFFERS for case in suite.cases)):
         suite.error = tail(err or out) or f"comparison exited {code} without complete results"
-    if all(shutil.which(t) for t in ("cargo", "gdalinfo", "gdal_translate")):
+    if all(shutil.which(t) for t in ("cargo", "gdaladdo", "gdalinfo", "gdal_translate")):
         code, out, err = run(["cargo", "test", "--release", "-p", "terrio", "--test", "ehdr_overviews", "--", "--ignored"])
         suite.cases.append(Case("raster management", "EHdr external overview round trips", TOLERANCE if code == 0 else DIFFERS,
                                 "Exact dimensions, data types, nodata, validity and integer samples; Float32 absolute tolerance 4e-6"
                                 if code == 0 else tail(out or err)))
     else:
         suite.cases.append(Case("raster management", "EHdr external overview round trips", NOT_COMPARED,
-                                "Needs cargo, gdalinfo and gdal_translate"))
+                                "Needs cargo, gdaladdo, gdalinfo and gdal_translate"))
     return suite
 
 
