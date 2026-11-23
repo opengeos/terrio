@@ -868,6 +868,13 @@ retains its platform limits; Terrio's frozen-reference check has no tolerance.
 The fixture README records inputs and regeneration instructions. These are
 decoder references, not assertions of encoder byte stability.
 
+LERC tiles are checked with `python scripts/conformance.py DATA --only lerc-writer --strict`,
+using current Python bindings, pytest and rasterio (no test data). `test_gtiff_padding.py` writes
+synthetic rasters whose right and bottom tiles are partial with GDAL and with Terrio, as GTiff and
+COG, and reads each stored edge tile: the valid-pixel mask of every LERC blob, padding included,
+and the padding bytes of uncompressed tiles must be GDAL's, at every level, and the pixels read
+back must be GDAL's exactly (reference: GDAL 3.12.2, rasterio 1.5.2).
+
 Standalone WebP creation options are checked with
 `python scripts/conformance.py DATA --only webp-writer --strict`, using the
 `landsat7.tif` downloaded by `scripts/fetch_test_data.sh`. Current Python bindings,

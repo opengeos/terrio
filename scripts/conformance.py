@@ -126,6 +126,7 @@ GDAL_FREE_SUITES = frozenset(
         "grib",
         "hecras",
         "jp2-writer",
+        "lerc-writer",
         "longitude-period",
         "pointclouds",
         "pyogrio-buffers",
@@ -4328,6 +4329,24 @@ def suite_jp2_writer(ctx):
     return suite
 
 
+def suite_lerc_writer(ctx):
+    code, version, _ = run([sys.executable, "-c", "import rasterio; print(rasterio.__gdal_version__)"])
+    reference = f"GDAL {version.strip()} (rasterio)" if code == 0 else "GDAL (rasterio unavailable)"
+    s = Suite("lerc-writer", "LERC GeoTIFF and COG tiles", reference,
+              "Synthetic 300 x 200 rasters in 128 x 128 tiles, so the right and bottom tiles are "
+              "partial: the valid-pixel mask of every stored LERC blob, padding included, and the "
+              "padding bytes of uncompressed tiles, at every COG level; the pixels read back are "
+              "GDAL's exactly.")
+    missing = missing_modules("rasterio", "pytest", "terrio", "numpy")
+    if missing:
+        s.skipped = "needs the Python modules " + ", ".join(missing)
+        return s
+    complete, detail = _pytest_module_conformance(ctx, "test_gtiff_padding.py", expected_count=36)
+    s.cases.append(Case("Edge-tile padding", "float, integer, band- and pixel-interleaved; GTiff and COG",
+                        IDENTICAL if complete else DIFFERS, detail))
+    return s
+
+
 def suite_webp_writer(ctx):
     code, version, _ = run([sys.executable, "-c", "import rasterio; print(rasterio.__gdal_version__)"])
     reference = f"GDAL {version.strip()} (rasterio)" if code == 0 else "GDAL (rasterio unavailable)"
@@ -4375,6 +4394,7 @@ SUITES = OrderedDict(
         ("raster-roundtrip", suite_raster_roundtrip),
         ("complex-writes", suite_complex_writes),
         ("jp2-writer", suite_jp2_writer),
+        ("lerc-writer", suite_lerc_writer),
         ("webp-writer", suite_webp_writer),
         ("deflate", suite_deflate),
         ("windows", suite_windows),
