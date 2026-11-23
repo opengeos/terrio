@@ -39,7 +39,7 @@ fn every_geographic_crs_answers_as_proj() {
 /// or a prime meridian's rotation), and have only the ballpark on two, or to a known datum; a
 /// `+towgs84` shift chains with OSGB36's transformations; one whose only transformation needs a
 /// grid the CDN does not serve (SIRGAS-CON SIR17P01, `SIRGAS2000-to-SIRGAS-CONSIR17P01.gsb`) has
-/// none.
+/// none. Geocentric, 3D and compound CRSs too.
 #[test]
 fn proj_strings_and_projected_crss_answer_as_proj() {
     offline();
@@ -55,6 +55,9 @@ fn proj_strings_and_projected_crss_answer_as_proj() {
         ("+proj=longlat +ellps=WGS84", "EPSG:4326", false),
         ("EPSG:27700", "EPSG:3857", true),
         ("EPSG:8987", "EPSG:4326", false),
+        ("EPSG:4978", "EPSG:4326", true),
+        ("EPSG:4936", "EPSG:4258", true),
+        ("EPSG:7415", "EPSG:4326", true),
     ] {
         assert_eq!(has(&parse(src), &parse(dst)), proj, "{src} -> {dst}");
     }
