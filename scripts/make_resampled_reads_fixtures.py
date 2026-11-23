@@ -492,7 +492,17 @@ def write_integer_windows(gdal: Any) -> None:
             source_bands = [ds.GetRasterBand(b) for b in bands]
             if overview not in ("AUTO", "NONE"):
                 source_bands = [b.GetOverview(int(overview)) for b in source_bands]
-            read = lambda b: rasterio.read_integer_band(b, level_window or source_window, size, overview != "AUTO")
+            def read(band):
+                """Read pixels or a mask using the selected integer window.
+
+                Args:
+                    band: GDAL data band or mask band to read.
+
+                Returns:
+                    Array of samples at the requested output size.
+                """
+                return rasterio.read_integer_band(band, level_window or source_window, size, overview != "AUTO")
+
             data = np.stack([read(b) for b in source_bands])
             masks = np.stack([read(b.GetMaskBand()) for b in source_bands])
             result = dict(file=name, window=window, size=size, bands=bands, overview=overview, resampling="nearest",

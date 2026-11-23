@@ -87,6 +87,9 @@ and drivers below.
       read but for what it does not cover: Gaussian resampling (not a core kernel), paletted and
       complex bands, datasets opened with `overview_level` and written datasets. Boundless reads
       are out of #429's scope.
+- [ ] Expose the integer-window nearest-neighbour sampling selector from
+      [#1224](https://github.com/opengeos/terrio/pull/1224) in CLI/MCP, Python and JavaScript.
+      The initial opt-in is Rust-only; existing surfaces retain fractional sampling.
 - [x] Geolocation-array warping: reproject swaths using the longitude/latitude arrays already
       exposed by the scientific-format drivers, including subsampled arrays and pixel-center
       conventions. Done in [#241](https://github.com/opengeos/terrio/pull/241);

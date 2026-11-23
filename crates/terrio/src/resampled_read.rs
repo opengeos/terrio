@@ -75,6 +75,7 @@ pub struct ResampledReadOptions {
 
 /// How a resampled read samples its source window.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum WindowSampling {
     /// Scale the fractional window to the chosen resolution, even for whole-pixel coordinates.
     #[default]
@@ -1260,7 +1261,7 @@ fn best_overview_filtered(
 
 /// The request `GDALBandGetBestOverviewLevel2` makes of overview `level` of size `(ow, oh)` for a
 /// request `base` of another level: the integer window rounded to it and clamped, the
-/// floating-point window scaled if present (GDAL 3.13.3).
+/// floating-point window scaled (GDAL 3.13.3), or with integer sampling, the rounded integer window.
 fn overview_request(base: Request, level: usize, (ow, oh): (usize, usize), window_sampling: WindowSampling) -> Request {
     let (w, h) = base.size;
     let (xf, yf) = (w as f64 / ow as f64, h as f64 / oh as f64);
