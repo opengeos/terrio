@@ -121,6 +121,9 @@ PROJ_STRINGS = [
     "+proj=utm +zone=32 +datum=WGS84 +axis=neu",
     "+proj=tmerc +lat_0=0 +lon_0=9 +k=1 +x_0=0 +y_0=0 +ellps=bessel +axis=wsu +units=m",
     "+proj=tmerc +lat_0=0 +lon_0=9 +k=1 +x_0=0 +y_0=0 +ellps=bessel +axis=nwu +units=m",
+    # Westing and northing, easting and southing (#1012 item 17): no +axis either.
+    "+proj=tmerc +lat_0=0 +lon_0=9 +k=1 +x_0=0 +y_0=0 +ellps=bessel +axis=wnu +units=m",
+    "+proj=tmerc +lat_0=0 +lon_0=9 +k=1 +x_0=0 +y_0=0 +ellps=bessel +axis=esu +units=m",
     # Planetocentric latitudes: written on a sphere, not on an ellipsoid.
     "+proj=longlat +geoc +R=6371000",
     "+proj=longlat +geoc +datum=WGS84",
@@ -326,6 +329,26 @@ WKTS = [
         'GEOGCS["sphere",DATUM["sphere",SPHEROID["sphere",6371000,0]],PRIMEM["Greenwich",0],'
         'UNIT["degree",0.0174532925199433]]'
     ),
+] + [
+    # A WKT's axes (#1012 item 17): Transverse Mercator with westing and northing, easting and
+    # southing, westing and southing, written without +axis; south-orientated Transverse
+    # Mercator with easting and northing, written +axis=wsu (the method's), whatever its CS.
+    (
+        'PROJCRS["x",BASEGEOGCRS["WGS 84",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,'
+        '298.257223563,LENGTHUNIT["metre",1]]],PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.0174532925199433]]],'
+        f'CONVERSION["c",METHOD["{method}",ID["EPSG",{code}]],PARAMETER["Latitude of natural origin",0,'
+        'ANGLEUNIT["degree",0.0174532925199433]],PARAMETER["Longitude of natural origin",9,ANGLEUNIT["degree",'
+        '0.0174532925199433]],PARAMETER["Scale factor at natural origin",1,SCALEUNIT["unity",1]],PARAMETER['
+        '"False easting",0,LENGTHUNIT["metre",1]],PARAMETER["False northing",0,LENGTHUNIT["metre",1]]],'
+        f'CS[Cartesian,2],AXIS["a",{first},ORDER[1],LENGTHUNIT["metre",1]],AXIS["b",{second},ORDER[2],'
+        'LENGTHUNIT["metre",1]]]'
+    )
+    for method, code, first, second in [
+        ("Transverse Mercator", 9807, "west", "north"),
+        ("Transverse Mercator", 9807, "east", "south"),
+        ("Transverse Mercator", 9807, "west", "south"),
+        ("Transverse Mercator (South Orientated)", 9808, "east", "north"),
+    ]
 ]
 
 # GDAL's WKT 1 of registry CRSs with a TOWGS84 shift (as GDAL 2 wrote them), which terrio
