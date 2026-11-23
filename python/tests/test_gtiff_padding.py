@@ -115,7 +115,7 @@ def _edge_tiles(path):
                         size = d.get_tag_item(f"BLOCK_SIZE_{tx}_{ty}", "TIFF", bidx=band)
                         f.seek(int(off))
                         out.append((level, band, tx, ty, f.read(int(size)), d.width, d.height))
-            if d.interleaving is not None and d.interleaving.name == "PIXEL":
+            if d.interleaving == rasterio.enums.Interleaving.pixel:
                 # One tile holds every band: keep the first band's.
                 out = [t for t in out if t[0] != level or t[1] == 1]
     return out
