@@ -91,7 +91,7 @@ pub struct Args {
     /// an existing file is taken whole, even with an `=`. Repeat it for several files.
     #[arg(long = "kmz-resource", value_name = "PATH[=FILE]")]
     kmz_resources: Vec<String>,
-    /// For GeoPackage vectors, use the source feature IDs as the primary key.
+    /// For GeoPackage vectors, use parsed feature IDs (including reader-generated IDs) as the primary key.
     #[arg(long)]
     preserve_fid: bool,
     /// CityJSON output version (default: 2.0).

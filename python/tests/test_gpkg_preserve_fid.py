@@ -93,16 +93,37 @@ def test_matching_case_insensitive_key_and_duplicates(tmp_path):
     assert output.read_bytes() == before
 
 
-def test_missing_and_out_of_range_geojson_ids(tmp_path):
+@pytest.mark.parametrize("first_id", [None, -10, 1.5, "named"])
+def test_preservation_uses_the_geojson_readers_assigned_ids(tmp_path, first_id):
+    """Preserve parsed IDs, without claiming original IDs for an unset feature.
+
+    Args:
+        tmp_path: Temporary directory for the source and GeoPackage.
+        first_id: Missing, negative, fractional or string source ID.
+    """
     source = tmp_path / "points.geojson"
     output = tmp_path / "points.gpkg"
-    data = points([0, 205])
-    del data["features"][0]["id"]
+    data = points([first_id, 205])
+    if first_id is None:
+        del data["features"][0]["id"]
     source.write_text(json.dumps(data), encoding="utf-8")
+    parsed = terrio.sql(
+        terrio.open_vector(str(source)), "SELECT FID AS source_id FROM points ORDER BY FID"
+    )
     terrio.convert(str(source), str(output), preserve_fid=True)
-    # The GeoJSON reader assigns a numeric ID before the GeoPackage writer sees the feature.
-    assert sqlite_ids(output) == [0, 205]
+    assert sqlite_ids(output) == list(parsed.columns()["source_id"])
 
+
+def test_out_of_range_geojson_ids_leave_the_destination_intact(tmp_path):
+    """Reject out-of-range IDs before replacing an existing destination.
+
+    Args:
+        tmp_path: Temporary directory for the source and GeoPackage.
+    """
+    source = tmp_path / "points.geojson"
+    output = tmp_path / "points.gpkg"
+    source.write_text(json.dumps(points([91, 205])), encoding="utf-8")
+    terrio.convert(str(source), str(output), preserve_fid=True)
     before = output.read_bytes()
     source.write_text(json.dumps(points([2**63, 205])), encoding="utf-8")
     with pytest.raises(ValueError, match="unrecognized number"):

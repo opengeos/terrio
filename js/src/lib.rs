@@ -278,7 +278,7 @@ pub(crate) fn raster_data(array: &JsValue) -> Result<RasterData, JsError> {
 struct WriteOptions {
     /// GPKG: retain the declared layer geometry type, including Unknown.
     preserve_declared_geometry_type: bool,
-    /// GPKG: use the source feature IDs as the primary key.
+    /// GPKG: use parsed feature IDs, including reader-generated IDs, as the primary key.
     preserve_fid: bool,
     /// CityJSON output version: "1.1" or "2.0" (default).
     cityjson_version: Option<String>,

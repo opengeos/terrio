@@ -138,8 +138,12 @@ an append continues the existing sequence.
 
 The write option uses the IDs present on the `Feature` values. `Feature::fid`
 always holds a number, so the writer cannot distinguish reader-generated IDs from
-explicit source IDs. For example, the GeoJSON reader can assign numeric IDs
-when the input uses missing, string or negative IDs. Preservation buffers stream
+explicit source IDs. The GeoJSON reader substitutes zero-based positions for missing, negative or
+non-integer IDs; if any feature has a string ID, every feature uses its position. This can differ
+from `ogr2ogr -preserve_fid`, lose explicit numeric IDs in a mixed collection, or produce a
+collision with another explicit ID. The writer does not recover those original IDs. To preserve
+original IDs, use a reader that exposes them numerically, or supply `Feature::fid` explicitly.
+Preservation buffers stream
 inputs so arbitrary ID order can be sorted and validated before writing.
 
 ## Streams

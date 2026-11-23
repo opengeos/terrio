@@ -584,9 +584,9 @@ pub(super) fn encode_append(
 ) -> Result<Encoded> {
     let decls = r::column_types(sql);
     let defaults = r::column_defaults(sql);
-    let ipk = r::rowid_column(sql);
+    let ipk = crate::gpkg_validation::rowid_alias(sql)?;
     let first = if preserve_fid {
-        let column = crate::gpkg_validation::rowid_alias(sql)?.filter(|&i| Some(i) == ipk).and_then(|i| decls.get(i)).ok_or_else(|| {
+        let column = ipk.and_then(|i| decls.get(i)).ok_or_else(|| {
             Error::Unsupported(format!("GeoPackage layer '{}': preserve_fid needs an INTEGER PRIMARY KEY rowid column", layer.name))
         })?;
         gw::validate_fids(layer, &column.0)?;
@@ -804,6 +804,23 @@ mod tests {
         add.features[0].attributes[2] = FieldValue::Integer(900);
         let err = update_bytes_with_options(bytes, &[add], UpdateMode::Append, &options).unwrap_err();
         assert!(err.to_string().contains("'FEATURE_KEY' value 900 conflicts with feature ID 100"));
+    }
+
+    #[test]
+    fn append_uses_the_parsed_rowid_alias_with_sql_whitespace() {
+        let mut add = layer("points", 1, 0.0);
+        add.features[0].fid = 91;
+        add.add_field(FieldDef::new("FID", FieldType::Integer));
+        add.features[0].attributes.push(FieldValue::Integer(91));
+        for primary in ["PRIMARY  KEY", "PRIMARY\nKEY"] {
+            let sql = format!("CREATE TABLE points (name TEXT, fid INTEGER {primary}, v INTEGER)");
+            for preserve in [false, true] {
+                let encoded = encode_append(&sql, None, &add, preserve, || Ok(100)).unwrap();
+                assert_eq!(encoded.rows[0].0, if preserve { 91 } else { 101 });
+                assert!(matches!(encoded.rows[0].1[1], w::Value::Null));
+                assert!(matches!(&encoded.rows[0].1[0], w::Value::Text(value) if value == "f0"));
+            }
+        }
     }
 
     #[test]

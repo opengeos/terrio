@@ -798,6 +798,7 @@ impl Builder {
         rows.sort_by_key(|(id, _)| *id);
         let mut max_fid = rows.last().map_or(0, |(id, _)| *id);
         if options.preserve_fid {
+            // Keep sqlite_sequence non-negative when every preserved ID is negative.
             max_fid = max_fid.max(0);
         }
         let count = layer.len();
