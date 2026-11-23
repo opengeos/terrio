@@ -2462,7 +2462,7 @@ impl RangeReader {
         }
         s.make_room(&wanted, ranges);
         s.plan = wanted.into();
-        let budget = s.first_batch();
+        let budget = s.fit_budget();
         s.fetch_planned(0, budget)
     }
 
@@ -2596,9 +2596,10 @@ impl Shared {
         (self.max_blocks / 2).max(1) as u64
     }
 
-    /// A prefetch's first batch: the room left in the cache, never less than half the cache, so
-    /// that the cache holds at most its size and a half while it is stored.
-    fn first_batch(&self) -> u64 {
+    /// The most blocks a prefetch's whole plan may fetch to be fetched in one batch: the room
+    /// left in the cache, never less than half the cache, so that the cache holds at most its
+    /// size and a half while the batch is stored.
+    fn fit_budget(&self) -> u64 {
         (self.max_blocks.saturating_sub(self.blocks.len()) as u64).max(self.half_cache())
     }
 
@@ -2640,13 +2641,14 @@ impl Shared {
         }
     }
 
-    /// Fetches the next batch of the prefetch's blocks from its `from`th, those not cached, their
-    /// requests fetching at most `budget` blocks ([`Shared::first_batch`] or
-    /// [`Shared::half_cache`]): the whole plan when it fits, as no batch follows; otherwise a
-    /// batch of half the cache. A batch counts the blocks its requests fetch, the gaps merged into
-    /// them included, not the bytes between them: the rows of tiles of a window, far apart in the
-    /// file, are fetched together. They leave the plan, so that a block read again once evicted is
-    /// fetched alone.
+    /// Fetches the next batch of the prefetch's blocks from its `from`th, those not cached: the
+    /// whole plan when its requests fetch at most `budget` blocks ([`Shared::fit_budget`] for a
+    /// prefetch's first batch, [`Shared::half_cache`] after), as no batch follows; otherwise a
+    /// batch of half the cache, even when `budget` is larger, so that the batch being read stays
+    /// while the next one is fetched. A batch counts the blocks its requests fetch, the gaps
+    /// merged into them included, not the bytes between them: the rows of tiles of a window, far
+    /// apart in the file, are fetched together. They leave the plan, so that a block read again
+    /// once evicted is fetched alone.
     fn fetch_planned(&mut self, from: usize, budget: u64) -> io::Result<()> {
         let half = self.half_cache();
         let (mut next, mut fetched, mut to) = (Vec::<u64>::new(), 0u64, from);
@@ -2726,8 +2728,11 @@ impl Shared {
         // are a piece each at least, through the 8 slots.
         if self.client.options.parallel_ranges {
             let slots = PARALLEL_RUNS as u64;
-            let lens: Vec<u64> = spans.iter().map(|(start, end)| end - start + 1).collect();
-            let shares = slot_shares(&lens, slots);
+            // A span the file's first bytes hold whole needs no request: it takes no slot.
+            let held = |end: u64| self.prefix.as_ref().is_some_and(|p| p.len() as u64 >= ((end + 1) * self.block_size).min(self.len));
+            let lens: Vec<u64> = spans.iter().filter(|(_, end)| !held(*end)).map(|(start, end)| end - start + 1).collect();
+            let mut shares = slot_shares(&lens, slots).into_iter();
+            let shares: Vec<u64> = spans.iter().map(|(_, end)| if held(*end) { 1 } else { shares.next().unwrap_or(1) }).collect();
             let least = SPLIT_RUN_BYTES.div_ceil(self.block_size).max(1);
             spans = spans
                 .into_iter()
