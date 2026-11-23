@@ -54,10 +54,11 @@ use ureq::unversioned::transport::{Buffers, ConnectionDetails, Connector, Defaul
 pub(crate) mod store;
 mod tls;
 
-/// The request slots each run of a fetch may split into, from the runs' lengths: up to `slots`
-/// runs take one slot each and share the others by length, the slots a floor share leaves going
-/// to the largest remainders; more runs share all the slots by length (and are a piece each at
-/// least). The shares sum to at most `slots`.
+/// The request slots each run of a fetch may split into, from the runs' lengths. When there are
+/// at most `slots` runs, each run gets one slot and the other slots are shared by length. When
+/// there are more, all the slots are shared by length, and a run whose share is 0 is still
+/// fetched in one piece. A share by length is the floor of the run's part of the slots; the slots
+/// left over go to the runs with the largest remainders. The shares sum to at most `slots`.
 fn slot_shares(lens: &[u64], slots: u64) -> Vec<u64> {
     let total = lens.iter().sum::<u64>().max(1);
     let runs = lens.len() as u64;
@@ -2461,7 +2462,8 @@ impl RangeReader {
         }
         s.make_room(&wanted, ranges);
         s.plan = wanted.into();
-        s.fetch_planned(0, true) // the first batch
+        let budget = s.first_batch();
+        s.fetch_planned(0, budget)
     }
 
     fn lock(&self) -> io::Result<std::sync::MutexGuard<'_, Shared>> {
@@ -2565,11 +2567,39 @@ impl Shared {
         b - last <= gap + 1
     }
 
+    /// The blocks a prefetch's requests fetch for block `b` after the plan's block `last`: the
+    /// gap between them when `b` joins `last`'s request, else `b` alone. fetched_blocks and
+    /// fetch_planned count by it, so that room made is the room a batch takes.
+    fn added_blocks(last: Option<u64>, b: u64) -> u64 {
+        match last {
+            Some(last) if Self::joins(last, b, Self::PLAN_GAP) => b - last,
+            _ => 1,
+        }
+    }
+
     /// The blocks the requests for `plan` (sorted) fetch, the gaps merged into them included.
     fn fetched_blocks(plan: &[u64]) -> u64 {
         debug_assert!(plan.is_sorted(), "a plan is sorted");
-        plan.windows(2).map(|w| if Self::joins(w[0], w[1], Self::PLAN_GAP) { w[1] - w[0] } else { 1 }).sum::<u64>()
-            + u64::from(!plan.is_empty())
+        let mut last = None;
+        plan.iter()
+            .map(|&b| {
+                let n = Self::added_blocks(last, b);
+                last = Some(b);
+                n
+            })
+            .sum()
+    }
+
+    /// A batch of a prefetch after its first, and the least a first batch may take: half the
+    /// cache's blocks, so that the batch being read stays while the next one is fetched.
+    fn half_cache(&self) -> u64 {
+        (self.max_blocks / 2).max(1) as u64
+    }
+
+    /// A prefetch's first batch: the room left in the cache, never less than half the cache, so
+    /// that the cache holds at most its size and a half while it is stored.
+    fn first_batch(&self) -> u64 {
+        (self.max_blocks.saturating_sub(self.blocks.len()) as u64).max(self.half_cache())
     }
 
     /// Before a prefetch whose plan fits in the cache beside the cached blocks its `ranges`
@@ -2610,29 +2640,21 @@ impl Shared {
         }
     }
 
-    /// Fetches the next batch of the prefetch's blocks from its `from`th, those not cached: the
-    /// whole plan, when `first_batch` (a prefetch's first) and its requests fetch at most the
-    /// cache's room left (at least half the cache), as no batch follows; otherwise those fetching
-    /// at most half the cache's blocks, so that the batch being read stays while the next one is
-    /// fetched. A batch counts the blocks its requests fetch, the gaps merged into them included,
-    /// not the bytes between them: the rows of tiles of a window, far apart in the file, are
-    /// fetched together. They leave the plan, so that a block read again once evicted is fetched
-    /// alone.
-    fn fetch_planned(&mut self, from: usize, first_batch: bool) -> io::Result<()> {
-        let half = (self.max_blocks / 2).max(1) as u64;
-        // The room left in the cache, never less than the half-cache batch, so that the cache
-        // holds at most its size and a half, as before a whole plan was fetched at once.
-        let budget = if first_batch { self.max_blocks.saturating_sub(self.blocks.len()).max(half as usize) as u64 } else { half };
+    /// Fetches the next batch of the prefetch's blocks from its `from`th, those not cached, their
+    /// requests fetching at most `budget` blocks ([`Shared::first_batch`] or
+    /// [`Shared::half_cache`]): the whole plan when it fits, as no batch follows; otherwise a
+    /// batch of half the cache. A batch counts the blocks its requests fetch, the gaps merged into
+    /// them included, not the bytes between them: the rows of tiles of a window, far apart in the
+    /// file, are fetched together. They leave the plan, so that a block read again once evicted is
+    /// fetched alone.
+    fn fetch_planned(&mut self, from: usize, budget: u64) -> io::Result<()> {
+        let half = self.half_cache();
         let (mut next, mut fetched, mut to) = (Vec::<u64>::new(), 0u64, from);
         // Where the first half-cache batch ends: (plan index, blocks of `next`).
         let mut half_batch = None;
         while let Some(&b) = self.plan.get(to) {
             if !self.blocks.contains_key(&b) {
-                // A block within PLAN_GAP of the last one is fetched with the gap between them.
-                fetched += match next.last() {
-                    Some(&last) if Self::joins(last, b, Self::PLAN_GAP) => b - last,
-                    _ => 1,
-                };
+                fetched += Self::added_blocks(next.last().copied(), b);
                 if fetched > half && half_batch.is_none() {
                     half_batch = Some((to, next.len()));
                 }
@@ -2907,7 +2929,7 @@ impl Shared {
             let mut missing: Vec<u64> = (pos / bs..=(end - 1) / bs).filter(|b| !self.blocks.contains_key(b)).collect();
             // A block the prefetch asked for: its next batch, from there.
             if let Some(at) = missing.iter().find_map(|b| self.plan.binary_search(b).ok()) {
-                self.fetch_planned(at, false)?; // a next batch
+                self.fetch_planned(at, self.half_cache())?;
                 missing.retain(|b| !self.blocks.contains_key(b));
             }
             if self.whole.is_none() && !missing.is_empty() {
@@ -4055,8 +4077,7 @@ mod tests {
     }
 
     // A prefetch over half the cache but within it (the rows of tiles of a window, far apart in
-    // the file) is fetched at once by the prefetch: it was fetched a row at a time as reads
-    // reached each, one round of requests after another.
+    // the file) is fetched at once by the prefetch, in one round of requests.
     #[test]
     fn a_prefetch_within_the_cache_fetches_its_far_apart_runs_at_once() {
         let data = test_data();
@@ -4089,7 +4110,7 @@ mod tests {
     }
 
     // A run of 40 MiB and one of 2 MiB take 7 slots and 1: every run has its slot, so the pieces
-    // fit in the slots (a share by length alone gave 8 and 0, 9 pieces through 8 slots).
+    // fit in the 8 slots.
     #[test]
     fn each_run_of_a_prefetch_has_a_request_slot() {
         let data: Vec<u8> = (0..46u32 << 20).map(|i| (i * 7 % 251) as u8).collect();
@@ -4132,7 +4153,7 @@ mod tests {
     }
 
     // Long runs of one prefetch share the request slots: three runs of 4 MiB are fetched in 3, 3
-    // and 2 pieces (8 requests, one per slot), not four each (12 requests through 8 slots).
+    // and 2 pieces, 8 requests, one per slot.
     #[test]
     fn long_runs_of_one_prefetch_share_the_request_slots() {
         let data: Vec<u8> = (0..20u32 << 20).map(|i| (i * 7 % 251) as u8).collect();
