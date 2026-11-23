@@ -527,6 +527,10 @@ proj	+proj=longlat +a=6378206.4 +b=6356583.8	+proj=longlat +ellps=clrk66 +no_def
 proj	+proj=longlat +ellps=clrk66 +a=6378000	+proj=longlat +a=6378000 +b=6356583.8 +no_defs +type=crs
 proj	+proj=longlat +ellps=bessel +rf=300	+proj=longlat +a=6377397.155 +rf=300 +no_defs +type=crs
 proj	+proj=longlat +ellps=bessel +b=6356000	+proj=longlat +a=6377397.155 +b=6356000 +no_defs +type=crs
+proj	+proj=longlat +datum=NAD27 +a=6378000	+proj=longlat +a=6378000 +rf=294.978698213898 +no_defs +type=crs
+proj	+proj=utm +zone=15 +datum=NAD27 +a=6378000	+proj=utm +zone=15 +a=6378000 +rf=294.978698213898 +units=m +no_defs +type=crs
+proj	+proj=longlat +datum=NAD27 +b=6356000	+proj=longlat +a=6378206.4 +b=6356000 +no_defs +type=crs
+proj	+proj=longlat +datum=NAD27 +rf=300	+proj=longlat +a=6378206.4 +rf=300 +no_defs +type=crs
 proj	+proj=longlat +a=6378000 +b=6378000 +ellps=WGS84	+proj=longlat +R=6378000 +no_defs +type=crs
 proj	+proj=longlat +datum=WGS84 +axis=neu	+proj=longlat +datum=WGS84 +no_defs +type=crs
 proj	+proj=utm +zone=32 +datum=WGS84 +axis=neu	+proj=utm +zone=32 +datum=WGS84 +units=m +no_defs +type=crs

@@ -520,12 +520,14 @@ fn gdal_web_mercator(proj: &str) -> Option<String> {
 }
 
 /// PROJ's datums (`proj_list_datums`) and their ellipsoids: PROJ writes the three it names
-/// (`datum_name`) by name, and the ellipsoid of the others.
+/// (`datum_name`) by name, and the ellipsoid of the others. A datum's ellipsoid is by its
+/// inverse flattening, as PROJ takes it, also Clarke 1866's (`+ellps=clrk66` gives its semi-minor
+/// axis): `+datum=NAD27 +a=6378000` keeps its flattening, `+rf=294.978698213898` (#1012 item 38).
 const DATUMS: [(&str, &str); 10] = [
     ("WGS84", "+a=6378137 +rf=298.257223563"),
     ("GGRS87", "+a=6378137 +rf=298.257222101"),
     ("NAD83", "+a=6378137 +rf=298.257222101"),
-    ("NAD27", "+a=6378206.4 +b=6356583.8"),
+    ("NAD27", "+a=6378206.4 +rf=294.978698213898"),
     ("potsdam", "+a=6377397.155 +rf=299.1528128"),
     ("carthage", "+a=6378249.2 +rf=293.4660212936269"),
     ("hermannskogel", "+a=6377397.155 +rf=299.1528128"),
