@@ -2729,10 +2729,10 @@ impl Shared {
         if self.client.options.parallel_ranges {
             let slots = PARALLEL_RUNS as u64;
             // A span the file's first bytes hold whole needs no request: it takes no slot.
-            let held = |end: u64| self.prefix.as_ref().is_some_and(|p| p.len() as u64 >= ((end + 1) * self.block_size).min(self.len));
-            let lens: Vec<u64> = spans.iter().filter(|(_, end)| !held(*end)).map(|(start, end)| end - start + 1).collect();
-            let mut shares = slot_shares(&lens, slots).into_iter();
-            let shares: Vec<u64> = spans.iter().map(|(_, end)| if held(*end) { 1 } else { shares.next().unwrap_or(1) }).collect();
+            let span_held = |end: u64| self.prefix.as_ref().is_some_and(|p| p.len() as u64 >= ((end + 1) * self.block_size).min(self.len));
+            let lens: Vec<u64> = spans.iter().filter(|(_, end)| !span_held(*end)).map(|(start, end)| end - start + 1).collect();
+            let mut by_len = slot_shares(&lens, slots).into_iter();
+            let shares: Vec<u64> = spans.iter().map(|(_, end)| if span_held(*end) { 1 } else { by_len.next().unwrap_or(1) }).collect();
             let least = SPLIT_RUN_BYTES.div_ceil(self.block_size).max(1);
             spans = spans
                 .into_iter()
