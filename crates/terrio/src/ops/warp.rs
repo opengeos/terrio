@@ -3908,18 +3908,22 @@ impl WarpContext<'_> {
         // half a turn and keep the distance between the least and greatest. Without
         // `periodic_longitude`, the stored edges of a source covering one turn are a regional
         // source's, which interpolation does not cross: the span between them stays.
+        let round_close = |v: f64| if (v.round() - v).abs() < 1e-6 { v.round() } else { v };
         let arc = self.arc_turn().filter(|_| cut).and_then(|turn| {
             // A whole-turn footprint can have coincident endpoints on the circle. A collapsed
             // arc must not replace its continuous span with a zero-width kernel.
             short_arc(&columns, turn).filter(|&(low, high)| high - low > 1e-7)
         });
-        let kernel_span = arc.map_or(raw_span, |(low, high)| high - low);
-        let kernel_bounds = arc.filter(|_| self.global_longitude_turn().is_none()).map(|(low, high)| self.wrap_source_bounds(low, high));
+        let kernel_bounds = arc
+            .filter(|_| self.global_longitude_turn().is_none())
+            .map(|(low, high)| self.wrap_source_bounds(low, high))
+            .map(|(low, high)| (round_close(low), round_close(high)))
+            // Rounding can collapse a small positive arc. Keep the continuous bounds then.
+            .filter(|(low, high)| high > low);
         (x0, x1) = self.wrap_source_bounds(x0, x1);
         if x0 > sw || x1 < 0.0 || y0 > sh || y1 < 0.0 {
             return Some((0, 0, 0, 0, 0.0, 0.0, 0.0));
         }
-        let round_close = |v: f64| if (v.round() - v).abs() < 1e-6 { v.round() } else { v };
         (x0, y0, x1, y1) = (round_close(x0), round_close(y0), round_close(x1), round_close(y1));
         let res_win = if self.translation { 0 } else { self.resampling.radius() };
         let xscale = (dwf / if self.global_longitude_turn().is_some() { raw_span } else { x1 - x0 }).max(1e-3);
@@ -3953,9 +3957,12 @@ impl WarpContext<'_> {
         };
         let fill = (sws * shs) as f64 / ((x1 - x0 + 2.0 * xr as f64) * (y1 - y0 + 2.0 * yr as f64)).max(1.0);
         // Without a separate arc, kx0.max(0).trunc() is the minxc column computed above.
-        let (kx0, kx1) = kernel_bounds.map_or((x0, x1), |(k0, k1)| (round_close(k0), round_close(k1)));
-        let raw_w =
-            if self.global_longitude_turn().is_some() { kernel_span.min(sw) } else { (sw - kx0.max(0.0).trunc()).min(kx1 - kx0).max(0.0) };
+        let (kx0, kx1) = kernel_bounds.unwrap_or((x0, x1));
+        let raw_w = if self.global_longitude_turn().is_some() {
+            arc.map_or(raw_span, |(low, high)| high - low).min(sw)
+        } else {
+            (sw - kx0.max(0.0).trunc()).min(kx1 - kx0).max(0.0)
+        };
         let raw_h = (sh - minyc as f64).min(y1 - y0).max(0.0);
         Some((sx as usize, sy as usize, sws as usize, shs as usize, fill, raw_w, raw_h))
     }
@@ -7553,7 +7560,9 @@ mod tests {
     #[test]
     fn a_whole_turn_pixel_keeps_its_kernel_span_with_endpoint_sampling() {
         let srs = SpatialRef::from_epsg(4326).unwrap();
-        for (west, width, step) in [(120., 120, 1.), (100., 100, 1.), (-180., 360, 1.), (100.1, 1000, 0.1), (-179.9, 3600, 0.1)] {
+        for (west, width, step) in
+            [(120., 120, 1.), (100., 100, 1.), (-180., 360, 1.), (100.1, 1000, 0.1), (-179.9, 3600, 0.1), (-1.0000002e-7, 1000, 1e-7)]
+        {
             let rw = RegionWarp::new(
                 (width, 100),
                 [west, step, 0., 5., 0., -0.1],
@@ -7581,8 +7590,8 @@ mod tests {
         }
     }
 
-    /// A regional source's east-side gap produces an empty window rather than a kernel with an
-    /// infinite scale; both sampling policies skip a destination wholly outside the source.
+    /// A regional source's east-side gap produces an empty window. Both sampling policies
+    /// skip a destination wholly outside the source before planning its kernel scale.
     #[test]
     fn a_window_beyond_the_regional_east_edge_is_empty() {
         let srs = SpatialRef::from_epsg(4326).unwrap();
