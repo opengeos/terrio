@@ -355,7 +355,11 @@ pub(crate) fn read_layers(
         _ => archive.tiles_at_zoom(z)?,
     };
     if let Some(f) = filter {
-        tiles.retain(|&(x, y)| clip::overlaps(TileFrame::new(z, x, y).rect(), f) || clip::contains(TileFrame::new(z, x, y).rect(), f));
+        // The empty rectangle (from a NaN corner) holds no tile, though `contains` holds for it.
+        let empty = f.0 > f.2 || f.1 > f.3;
+        tiles.retain(|&(x, y)| {
+            !empty && (clip::overlaps(TileFrame::new(z, x, y).rect(), f) || clip::contains(TileFrame::new(z, x, y).rect(), f))
+        });
     }
     // Remote archives whose bytes the caller fetches: every tile at once, in one round of
     // requests.

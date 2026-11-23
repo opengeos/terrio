@@ -314,6 +314,14 @@ fn pmtiles_vector_tiles_by_bbox() {
         assert_eq!(x.features.len(), y.features.len());
         assert!(x.features.iter().zip(&y.features).all(|(f, g)| f.geometry == g.geometry));
     }
+    // A NaN corner matches nothing in a local archive, which reads every tile of the zoom level.
+    let o = VectorOpenOptions { spatial_filter: Some((f64::NAN, 1_000_000.0, 3_000_000.0, 2_000_000.0)), ..Default::default() };
+    let terrio::Dataset::Vector(nan) =
+        terrio::tiles::TileArchive::from_bytes(bytes.clone()).unwrap().into_dataset("s.pmtiles", &o).unwrap()
+    else {
+        panic!("not vector")
+    };
+    assert!(nan.layers.iter().all(|l| l.features.is_empty()));
 }
 
 #[test]
