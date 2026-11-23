@@ -913,9 +913,11 @@ fn validate(tiff: Option<Tiff>, sidecar: Option<Tiff>, strict: bool, gdal: bool)
     let factors: Vec<usize> = overviews.iter().map(|o| (main.width as f64 / o.width.max(1) as f64).round_ties_even() as usize).collect();
     v.overview_factors = factors.clone();
     let (block_w, block_h) = main.block();
-    // GDAL's validation script checks images larger than 512 pixels on either side; rio-cogeo,
-    // those larger on both.
-    let large = |w: u64, h: u64| if gdal { w > 512 || h > 512 } else { w > 512 && h > 512 };
+    // Images larger than 512 pixels on either side are checked for tiling, the image and each
+    // overview: `width > 512 or height > 512` in rio-cogeo 7.0.4 (since 7.0.3; 5.0.0 to 7.0.2
+    // checked both sides) and in GDAL's validation script, whose strips up to 1024 wide pass as
+    // tiles.
+    let large = |w: u64, h: u64| w > 512 || h > 512;
     if large(main.width, main.height) {
         if block_w == main.width && (!gdal || block_w > 1024) {
             v.errors.push("The file is greater than 512xH or 512xW, but is not tiled".into());
@@ -1629,8 +1631,9 @@ mod tests {
     }
 
     #[test]
-    fn rio_cogeo_checks_tiling_of_images_larger_than_512_on_both_sides() {
-        // A 525 x 375 striped overview: larger than 512 on one side only.
+    fn rio_cogeo_checks_tiling_of_images_larger_than_512_on_either_side() {
+        // A 525 x 375 striped overview: larger than 512 on one side only, which rio-cogeo 7.0.4
+        // reports as not tiled.
         let main = tiled_ifd(8, 1050, 5000, 0);
         let mut overview =
             Ifd { offset: 300, width: 525, height: 375, subfile_type: 1, samples: 1, rows_per_strip: 1, ..Default::default() };
@@ -1638,8 +1641,8 @@ mod tests {
         overview.byte_counts = vec![100];
         let tiff = |overview: &Ifd| Tiff { ifds: vec![main.clone(), overview.clone()], ghost: None, expected_ifd_offset: 8, big: false };
         let not_tiled = "Overview of index 0 is not tiled".to_string();
-        assert!(!validate(Some(tiff(&overview)), None, false, false).errors.contains(&not_tiled));
-        // GDAL's script checks either side; its strips up to 1024 wide pass as tiles.
+        assert!(validate(Some(tiff(&overview)), None, false, false).errors.contains(&not_tiled));
+        // GDAL's script checks either side too; its strips up to 1024 wide pass as tiles.
         assert!(!validate(Some(tiff(&overview)), None, false, true).errors.contains(&not_tiled));
         overview.width = 1025;
         assert!(validate(Some(tiff(&overview)), None, false, true).errors.contains(&not_tiled));
