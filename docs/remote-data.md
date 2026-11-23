@@ -36,8 +36,8 @@ come with it.
 
 A reader that knows the ranges it will read (a COG window's tiles, a GeoParquet filter's
 columns, PMTiles tiles, FlatGeobuf features) prefetches them: when they fit in the block cache
-(`TERRIO_HTTP_CACHE_SIZE`), they are requested together, 8 requests in flight at a time,
-wherever they are in the file, the oldest blocks outside them dropped to make room; a larger
+(`TERRIO_HTTP_CACHE_SIZE`), they are requested together (8 requests in flight at a time while
+`TERRIO_HTTP_MULTIRANGE` is on, the default), wherever they are in the file, the oldest blocks outside them dropped to make room; a larger
 prefetch, and reads without one, are fetched in batches of half the cache as they are read.
 
 A full lazy TIFF open reads the image-directory chain, including overview and mask metadata.
