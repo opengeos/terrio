@@ -15,12 +15,12 @@
 //     gcore/overview.cpp (GDALResampleChunkC32R)
 //     gcore/gdal_priv_templates.hpp (sGDALCopyWord from float to signed integers)
 
-//! GDAL's overview resampling arithmetic (`gcore/overview.cpp`, GDAL 3.12): the source windows of
+//! Real-band overview arithmetic follows `gcore/overview.cpp` in GDAL 3.12.0: the source windows of
 //! each overview pixel, nearest neighbour at `0.5 + i * ratio`, the coverage-weighted average in
 //! GDAL's work data type (with its factor-of-two paths, the order of their additions included, and
 //! its replacement of averages equal to the nodata value), and the most frequent value. Terrio's
 //! minimum and maximum (which GDAL's `gdaladdo` does not offer) use the same windows. Complex bands
-//! average as GDAL 3.13's `GDALResampleChunkC32R`: an unweighted window, in `CFloat32`.
+//! average as GDAL 3.13.2's `GDALResampleChunkC32R`: an unweighted window, in `CFloat32`.
 //!
 //! The windows are clamped to the source chunk GDAL reads them from, so the per-band chunking of
 //! `GDALRegenerateOverviewsEx` (full-width chunks of source rows) is reproduced by computing each
@@ -262,6 +262,8 @@ fn complex_average(band: &Band, t: &Target, out_rows: std::ops::Range<usize>, ch
                     count += 1;
                 }
             }
+            // An empty overlap explicitly produces zero rather than dividing by zero.
+            // This also defines the result for a window clipped outside the source chunk.
             let mean = if count == 0 { 0.0f32 } else { (total / count as f64) as f32 };
             out.push(store_cfloat32(mean, t.data_type));
         }

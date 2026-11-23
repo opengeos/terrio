@@ -827,10 +827,10 @@ fn from_values(data_type: DataType, values: Vec<f64>) -> RasterData {
     }
 }
 
-/// Whether a level of width `width` scheduled with `sched` is computed from the previous level
-/// computed (of width `prev_width`), rather than from full resolution.
-fn cascades(sched: Schedule, prev_width: usize, width: usize) -> bool {
-    sched.from_prev && prev_width > width
+/// Whether a level scheduled with `sched` is computed from the previous, larger level
+/// rather than from full resolution. Reductions can change only the height.
+fn cascades(sched: Schedule, prev: (usize, usize), size: (usize, usize)) -> bool {
+    sched.from_prev && (prev.0 > size.0 || prev.1 > size.1)
 }
 
 /// What a level is computed from: the previous level (computed, or stored at `level`) or full
@@ -842,7 +842,7 @@ fn source_of<'c>(
     full: (usize, usize),
     overviews: &[(usize, usize)],
 ) -> ((usize, usize), Option<usize>, Option<&'c Computed>) {
-    match prev.filter(|p| cascades(sched, p.size.0, size.0)) {
+    match prev.filter(|p| cascades(sched, p.size, size)) {
         Some(p) => (p.size, overviews.iter().position(|s| *s == p.size), Some(p)),
         None => (full, None, None),
     }
@@ -1068,7 +1068,7 @@ fn whole_levels(
     let from_prev = |k: usize, mask: bool| {
         let l = &levels[k];
         let sched = if mask { l.mask } else { Some(l.data) };
-        k > 0 && sched.is_some_and(|s| cascades(s, levels[k - 1].size.0, l.size.0)) && (!mask || levels[k - 1].mask.is_some())
+        k > 0 && sched.is_some_and(|s| cascades(s, levels[k - 1].size, l.size)) && (!mask || levels[k - 1].mask.is_some())
     };
     let parts_of = |k: usize| [Some(false), levels[k].mask.map(|_| true)].into_iter().flatten().map(move |mask| Job { level: k, mask });
     let first: Vec<Job> = (0..levels.len()).flat_map(parts_of).filter(|j| !from_prev(j.level, j.mask)).collect();
@@ -1677,6 +1677,10 @@ pub(crate) fn replace_chunks<F: Write + Seek>(
             (gw::mask_image(&m, x1 - x0, rows_n, mask_block(chunk, rows_n, tiled))?, chunk)
         }
     };
+    // Replacement chunks and their decoding metadata must agree. In particular, complex
+    // whole refreshes encode without prediction even when the old overview used Predictor=2.
+    // Partial complex refreshes are refused by the public entry point.
+    let predictor = img.tags.iter().find(|(tag, _)| *tag == 317).map(|(_, value)| value.clone());
     let (cw, ch) = (chunk.0, chunk.1.min(h.max(1)));
     if !c.rows.start.is_multiple_of(ch) || (c.rows.end != h && !c.rows.end.is_multiple_of(ch)) {
         return Err(Error::InvalidData("refreshed overview rows are not aligned to its blocks".into()));
@@ -1704,6 +1708,10 @@ pub(crate) fn replace_chunks<F: Write + Seek>(
     }
     let mut out = dir.clone();
     let big = a.is_big();
+    match predictor {
+        Some(value) => out.set(Entry::new(317, &value, big)),
+        None => out.remove(317),
+    }
     let (o, cn) = if dir.tiled() { (324, 325) } else { (273, 279) };
     out.set(Entry::new(o, &Value::Offsets(offsets), big));
     out.set(Entry::new(cn, &Value::Offsets(counts), big));
@@ -1919,6 +1927,42 @@ fn invalid(value: &str) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn complex_refresh_replaces_the_stored_predictor_with_the_encoded_layout() {
+        // GDAL 3.13.2 permits Predictor=2 on CInt16 (32 bits per complex sample).
+        // Replacement does not decode the old chunks and must replace their predictor tag.
+        let raster = wbraster::Raster::from_data(
+            wbraster::RasterConfig { cols: 2, rows: 2, bands: 1, data_type: DataType::I16, ..Default::default() },
+            vec![1., 2., 3., 4.],
+        )
+        .unwrap();
+        let mut file = std::io::Cursor::new(gw::encode(&raster, &gw::TiffOptions::default()).unwrap());
+        let tiff = gtiff_update::parse(&mut file).unwrap();
+        let mut dir = tiff.dirs[0].clone();
+        dir.set(Entry::new(258, &Value::Shorts(vec![32]), tiff.big));
+        dir.set(Entry::new(339, &Value::Shorts(vec![5]), tiff.big));
+        dir.set(Entry::new(259, &Value::Shorts(vec![8]), tiff.big));
+        dir.set(Entry::new(317, &Value::Shorts(vec![2]), tiff.big));
+        let expected = vec![1i16, 2, 3, 4, -5, -6, -7, -8];
+        let computed = Computed { size: (2, 2), rows: 0..2, data: RasterData::I16(expected.clone()), mask: None };
+        let mut appender = Appender::new(&mut file, tiff.big).unwrap();
+        let out = replace_chunks(&mut appender, &dir, &computed, 0..2, DataType::I16, 2, None).unwrap();
+        assert_eq!(out.uint(317).unwrap_or(1), 1);
+        appender.finish(&[out]).unwrap();
+        let mut raster = LazyRaster::from_tiff_bytes(file.into_inner()).unwrap().unwrap();
+        assert!(raster.is_complex());
+        assert_eq!(raster.read().unwrap().raster.data.to_f64_vec(), expected.iter().map(|&v| f64::from(v)).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn average_cascades_when_only_the_height_decreases() {
+        let schedule = Schedule { from_prev: true, chunk_rows: None };
+        assert!(cascades(schedule, (1, 8), (1, 4)));
+        assert!(cascades(schedule, (8, 1), (4, 1)));
+        assert!(!cascades(schedule, (1, 4), (1, 4)));
+        assert!(!cascades(Schedule { from_prev: false, ..schedule }, (1, 8), (1, 4)));
+    }
 
     #[test]
     fn gdal_ratios_and_fallbacks() {
