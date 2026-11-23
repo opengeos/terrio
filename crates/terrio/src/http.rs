@@ -2569,8 +2569,8 @@ impl Shared {
     }
 
     /// The blocks a prefetch's requests fetch for block `b` after the plan's block `last`: the
-    /// gap between them when `b` joins `last`'s request, else `b` alone. fetched_blocks and
-    /// fetch_planned count by it, so that room made is the room a batch takes.
+    /// gap before `b` and `b` itself when `b` joins `last`'s request, else `b` alone.
+    /// fetched_blocks and fetch_planned count by it, so that room made is the room a batch takes.
     fn added_blocks(last: Option<u64>, b: u64) -> u64 {
         match last {
             Some(last) if Self::joins(last, b, Self::PLAN_GAP) => b - last,
