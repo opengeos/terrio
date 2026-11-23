@@ -263,6 +263,10 @@ pub(crate) trait WindowSource: Send + Sync {
     fn level_sample_bits(&self, _overview: Option<usize>) -> Option<u16> {
         None
     }
+    /// A selected overview dataset's nodata, when it carries its own band metadata.
+    fn overview_band_nodata(&self, _overview: usize, _bands: &[usize]) -> Option<Vec<Option<f64>>> {
+        None
+    }
     /// Native TIFF overview identity: whether external, and the original IFD index (GDAL 3.13.3).
     fn tiff_overview_ifd(&self, _overview: usize) -> Option<(bool, usize)> {
         None
@@ -669,9 +673,7 @@ impl LazyRaster {
     /// (`ops::overview`).
     pub(crate) fn attach_managed_ovr(&mut self, path: &str) -> Result<()> {
         if let (Inner::Tiff(t), Location::Local(p)) = (&mut self.inner, Location::parse(path)) {
-            let mut ovr = p.into_os_string();
-            ovr.push(".ovr");
-            t.attach_ovr(std::path::Path::new(&ovr))?;
+            t.attach_ovr(&ovr_path(&p))?;
         }
         Ok(())
     }
@@ -785,9 +787,7 @@ impl LazyRaster {
         if let Location::Local(p) = &loc
             && !crate::config::sidecars_disabled()
         {
-            let mut ovr = p.as_os_str().to_owned();
-            ovr.push(".ovr");
-            t.attach_ovr(std::path::Path::new(&ovr))?;
+            t.attach_ovr(&ovr_path(p))?;
         }
         Ok(Some(Self { inner: Inner::Tiff(Box::new(t)), sidecar_mask: None, asset_policy: crate::stac::AssetReadPolicy::current() }))
     }
@@ -1670,6 +1670,11 @@ impl LazyRaster {
             let tags = t.tags_at_level(overview.map_or(0, |i| i + 1));
             bands.iter().map(|b| tags.band_nodata.iter().find(|(i, _)| i == b).map(|(_, v)| *v).or(tags.nodata)).collect()
         } else {
+            if let (Inner::Source(_, source), Some(i)) = (&self.inner, overview)
+                && let Some(nodata) = source.overview_band_nodata(i, bands)
+            {
+                return nodata;
+            }
             bands.iter().map(|b| self.band_nodata(*b)).collect()
         }
     }
@@ -2531,6 +2536,39 @@ fn tiff_err(e: tiff::TiffError) -> Error {
     }
 }
 
+/// The external TIFF pyramid of a local raster (`dem.flt.ovr`, `dem.tif.ovr`).
+pub(crate) fn ovr_path(file: &std::path::Path) -> std::path::PathBuf {
+    let mut path = file.as_os_str().to_owned();
+    path.push(".ovr");
+    path.into()
+}
+
+/// Opens a matching TIFF overview sidecar without looking for another pyramid beside it.
+pub(crate) fn open_ovr(
+    path: &std::path::Path,
+    samples: (usize, DataType, bool),
+    limits: impl FnOnce() -> Result<TiffReadLimits>,
+) -> Result<Option<LazyRaster>> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let Ok(file) = std::fs::File::open(path) else { return Ok(None) };
+    let source = Source::File(crate::vfs::NearSeek::new(crate::geotiff::FileCursor::new(file)));
+    let mut ovr = match TiffRaster::new::<true>(source, None, limits()?) {
+        Ok(ovr) => ovr,
+        Err(error) if error.is_resource_refusal() => return Err(error),
+        Err(_) => return Ok(None),
+    };
+    if (ovr.bands, ovr.data_type, ovr.complex) != samples {
+        return Ok(None);
+    }
+    let first = &ovr.levels[0];
+    crate::declared::check(first.width, first.height, ovr.bands, ovr.data_type, ovr.complex)?;
+    ovr.file = Some(path.to_path_buf());
+    ovr.files.push(path.to_string_lossy().into_owned());
+    Ok(Some(LazyRaster { inner: Inner::Tiff(Box::new(ovr)), sidecar_mask: None, asset_policy: crate::stac::AssetReadPolicy::current() }))
+}
+
 impl TiffRaster {
     /// Opens a TIFF; without the CRS engine (`ENGINE` false), its CRS is only the EPSG code its
     /// GeoKeys name.
@@ -2659,25 +2697,14 @@ impl TiffRaster {
     /// Takes the images of a GDAL `.ovr` file as overviews, as GDAL does when the TIFF has none
     /// of its own, when they have the TIFF's bands and type.
     fn attach_ovr(&mut self, path: &std::path::Path) -> Result<()> {
-        if self.levels.len() > 1 || !path.is_file() {
+        if self.levels.len() > 1 {
             return Ok(());
         }
-        let Ok(file) = std::fs::File::open(path) else { return Ok(()) };
-        let mut ovr = match TiffRaster::new::<true>(
-            Source::File(crate::vfs::NearSeek::new(crate::geotiff::FileCursor::new(file))),
-            None,
-            self.limits,
-        ) {
-            Ok(ovr) => ovr,
-            Err(error) if error.is_resource_refusal() => return Err(error),
-            Err(_) => return Ok(()),
-        };
-        if ovr.bands != self.bands || ovr.data_type != self.data_type || ovr.complex != self.complex {
-            return Ok(());
-        }
-        let first = &ovr.levels[0];
-        crate::declared::check(first.width, first.height, ovr.bands, ovr.data_type, ovr.complex)?;
-        ovr.file = Some(path.to_path_buf());
+        let Some(mut view) = open_ovr(path, (self.bands, self.data_type, self.complex), || Ok(self.limits))? else { return Ok(()) };
+        // Probe `.ovr.msk` only when the pyramid was opened.
+        view.find_sidecar_mask(&path.to_string_lossy())?;
+        let files = view.file_list().unwrap_or_else(|_| vec![path.to_string_lossy().into_owned()]);
+        let Inner::Tiff(ovr) = view.inner else { unreachable!() };
         for (i, l) in ovr.levels.iter().enumerate() {
             // GDAL accepts all matching-band/type images, including irregular,
             // equal-sized and larger images; there is no reduction-factor gate.
@@ -2697,18 +2724,10 @@ impl TiffRaster {
             });
         }
         self.levels[1..].sort_by_key(|l| std::cmp::Reverse((l.width, l.height)));
-        // Use the same sidecar-mask policy as a local base TIFF. This probes
-        // `.ovr.msk` only when an external overview was actually opened.
-        ovr.files.push(path.to_string_lossy().into_owned());
-        let mut view =
-            LazyRaster { inner: Inner::Tiff(Box::new(ovr)), sidecar_mask: None, asset_policy: crate::stac::AssetReadPolicy::current() };
-        view.find_sidecar_mask(&path.to_string_lossy())?;
-        let files = view.file_list().unwrap_or_else(|_| vec![path.to_string_lossy().into_owned()]);
         // Listed after the TIFF, as GDAL lists it.
         let at = self.files.len().min(1);
         self.files.splice(at..at, files);
         self.ovr_mask = view.sidecar_mask;
-        let Inner::Tiff(ovr) = view.inner else { unreachable!() };
         self.ovr = Some(ovr);
         Ok(())
     }

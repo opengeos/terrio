@@ -13,8 +13,8 @@
 //     frmts/gtiff/gt_overview.cpp (the planar configuration of `.ovr` images)
 
 //! Overviews: their selection for warping, following GDAL's `-ovr` choices, and their management
-//! in GeoTIFFs as `gdaladdo` and `gdal raster overview add/delete/refresh` manage them
-//! ([`add_overviews`], [`delete_overviews`], [`refresh_overviews`]).
+//! in GeoTIFFs and EHdr rasters, following GDAL's `gdaladdo` and
+//! `gdal raster overview add/delete/refresh` ([`add_overviews`], [`delete_overviews`], [`refresh_overviews`]).
 //!
 //! Overviews are added to a GeoTIFF in place (internal overviews) or written to its `.ovr`
 //! sidecar (external overviews, which [`crate::LazyRaster`] reads as the raster's overviews when
@@ -29,8 +29,7 @@
 //! leave the GeoTIFF itself untouched, so it may be read-only, as with `gdaladdo -ro`.
 //! [`add_overviews_with_progress`] reports progress and can be cancelled.
 //!
-//! Overviews are managed for GeoTIFFs only: terrio reads an `.ovr` sidecar as the overviews of a
-//! GeoTIFF, not of other formats.
+//! EHdr rasters also support building and reading external TIFF overviews, such as `dem.flt.ovr`.
 //!
 //! ```no_run
 //! use terrio::ops::Resampling;
@@ -45,8 +44,10 @@
 //! # Ok::<(), terrio::Error>(())
 //! ```
 
+use crate::cog::ovr_path;
 use crate::drivers::gtiff_update::{self, Appender, Directory, Entry, Tiff};
 use crate::drivers::gtiff_write::{self as gw, AddOverviewsResampling as OverviewResampling, CodecParams, Compression, Layout, Value};
+use crate::formats::RasterDriver;
 use crate::ops::Resampling;
 use crate::ops::overview_kernel as kernel;
 use crate::{Error, LazyRaster, Result, Window, WindowOptions};
@@ -132,7 +133,7 @@ pub struct OverviewOptions {
     pub min_size: usize,
     /// The resampling: nearest (the default), average, min, max or mode.
     pub resampling: Resampling,
-    /// Write the overviews to the `.ovr` sidecar instead of into the file, which may then be
+    /// Write the overviews to the `.ovr` sidecar (required for EHdr) instead of into the file, which may then be
     /// read-only (`gdaladdo -ro`). A new sidecar is a BigTIFF when its images take more than
     /// about 4 GiB; an existing classic TIFF sidecar that would grow past 4 GiB is refused.
     pub external: bool,
@@ -225,9 +226,9 @@ fn matches_factor(overview: (usize, usize), full: (usize, usize), factor: usize)
     f == factor || f == adjusted
 }
 
-/// Adds (or rebuilds) overviews of a local GeoTIFF, in place or in its `.ovr` sidecar, as
-/// `gdaladdo` does. Existing overviews of the sizes asked for are recomputed; the others are
-/// kept. Returns the sizes of the raster's overviews afterwards, largest first.
+/// Adds (or rebuilds) overviews of a local GeoTIFF or, with `external`, an EHdr raster.
+/// Existing overviews of the sizes asked for are recomputed; the others are kept.
+/// Returns the sizes of the raster's overviews afterwards, largest first.
 ///
 /// Internal overviews need a writable file. External ones leave the file as it is, so it may be
 /// read-only (`gdaladdo -ro`): they need a writable directory, and a writable `.ovr` when one
@@ -270,16 +271,22 @@ type Report<'a> = dyn FnMut(f64) -> Result<()> + 'a;
 fn add_overviews_reporting(path: &str, options: &OverviewOptions, report: &mut Report<'_>) -> Result<Vec<(usize, usize)>> {
     // External overviews leave the file itself as it is (`gdaladdo -ro`).
     let file = if options.external { gtiff_update::local_file(path)? } else { gtiff_update::writable_local_file(path)? };
-    let mut src = open_source(path)?;
+    let mut src = open_source(path, options.external)?;
     let method = overview_method(options.resampling)?;
     let factors = factors(&src, &options.levels, options.min_size)?;
     report(0.0)?;
     if options.external {
         let ovr = ovr_path(std::path::Path::new(path));
-        let main = parse_file(&file)?;
-        if main.dirs.iter().any(Directory::is_overview) {
-            return Err(Error::InvalidArgument(format!("'{path}' has internal overviews: external ones cannot be added (as in GDAL)")));
-        }
+        let main_dir = if src.driver() == RasterDriver::EHdr {
+            ehdr_overview_template(&src)
+        } else {
+            let mut main = parse_file(&file)?;
+            if main.dirs.iter().any(Directory::is_overview) {
+                return Err(Error::InvalidArgument(format!("'{path}' has internal overviews: external ones cannot be added (as in GDAL)")));
+            }
+            let index = images(&main).main.unwrap_or(0);
+            main.dirs.swap_remove(index)
+        };
         let sizes: Vec<(usize, usize)> = factors.iter().map(|f| (src.width().div_ceil(*f), src.height().div_ceil(*f))).collect();
         let existing = if ovr.is_file() { Some(parse_file(&ovr)?) } else { None };
         if sizes.is_empty() {
@@ -290,12 +297,12 @@ fn add_overviews_reporting(path: &str, options: &OverviewOptions, report: &mut R
             gtiff_update::writable_local_file(&ovr.to_string_lossy())?;
         }
         let compression = options.compression.as_deref().unwrap_or("NONE");
-        let main_dir = &main.dirs[images(&main).main.unwrap_or(0)];
         let mut all_sizes = sizes.clone();
         // Open the same publication temporary before computing the pyramid: an unwritable
         // directory must fail before expensive work, without a separate preflight file.
         let build = |previous: Option<&[Directory]>| {
-            let levels = build_new_levels(&mut src, main_dir, &sizes, method, compression, options.compression.is_some(), previous, report);
+            let levels =
+                build_new_levels(&mut src, &main_dir, &sizes, method, compression, options.compression.is_some(), previous, report);
             drop(src);
             levels
         };
@@ -307,7 +314,7 @@ fn add_overviews_reporting(path: &str, options: &OverviewOptions, report: &mut R
                 let mut dirs = existing.dirs;
                 for img in levels {
                     let mut dir = a.image(img)?;
-                    shared_tags(main_dir, &mut dir);
+                    shared_tags(&main_dir, &mut dir);
                     match dirs.iter().position(|old| !old.is_mask() && old.size() == dir.size()) {
                         Some(i) => dirs[i] = dir,
                         None => dirs.push(dir),
@@ -317,7 +324,7 @@ fn add_overviews_reporting(path: &str, options: &OverviewOptions, report: &mut R
                 a.finish(&dirs)
             })?;
         } else {
-            gtiff_update::replace_file(&ovr, |f| write_ovr(f, build(None)?, main_dir))?;
+            gtiff_update::replace_file(&ovr, |f| write_ovr(f, build(None)?, &main_dir))?;
         }
         return Ok(sorted_sizes(all_sizes));
     }
@@ -393,7 +400,7 @@ pub fn delete_overviews_from_bytes(tiff: &[u8], options: &DeleteOptions) -> Resu
 /// `.ovr` sidecar leaves the GeoTIFF itself as it is: it may be read-only.
 pub fn refresh_overviews(path: &str, options: &RefreshOptions) -> Result<Vec<(usize, usize)>> {
     let file = if options.external { gtiff_update::local_file(path)? } else { gtiff_update::writable_local_file(path)? };
-    let mut src = open_source(path)?;
+    let mut src = open_source(path, false)?;
     let target = if options.external { ovr_path(std::path::Path::new(path)) } else { file };
     if options.external && !target.is_file() {
         return Err(Error::InvalidArgument(format!("'{}' has no external overviews ({} is missing)", path, target.display())));
@@ -469,25 +476,27 @@ pub fn like_bounds(path: &str, likes: &[String]) -> Result<Vec<[f64; 4]>> {
     likes.iter().map(|src| dataset_bounds(src, &crs)).collect()
 }
 
-/// The `.ovr` sidecar of a file.
-fn ovr_path(file: &std::path::Path) -> std::path::PathBuf {
-    let mut p = file.as_os_str().to_owned();
-    p.push(".ovr");
-    p.into()
-}
-
 fn parse_file(path: &std::path::Path) -> Result<Tiff> {
     gtiff_update::parse(&mut std::io::BufReader::new(std::fs::File::open(path)?))
 }
 
-/// Opens a GeoTIFF to compute overviews from (with its `.msk` and `.ovr` sidecars, as any open
-/// reads them).
-fn open_source(path: &str) -> Result<LazyRaster> {
+/// Opens the source to compute overviews from, with its `.msk` and `.ovr` sidecars.
+fn open_source(path: &str, allow_ehdr: bool) -> Result<LazyRaster> {
     let r = LazyRaster::open(path)?;
-    if r.driver() != crate::formats::RasterDriver::GTiff || !r.is_lazy() {
-        return Err(Error::Unsupported(format!("overviews are managed for GeoTIFFs only, not '{path}'")));
+    if r.is_lazy() && (r.driver() == RasterDriver::GTiff || (allow_ehdr && r.driver() == RasterDriver::EHdr)) {
+        return Ok(r);
     }
-    Ok(r)
+    Err(Error::Unsupported(format!("overview management for '{path}' requires a GeoTIFF or external overview creation on EHdr")))
+}
+
+/// TIFF tags for new overview images of a striped, grayscale EHdr raster.
+/// The shared writer supplies the default overview tile layout and sample format.
+fn ehdr_overview_template(src: &LazyRaster) -> Directory {
+    let mut dir = Directory { entries: vec![Entry::new(258, &Value::Shorts(vec![(src.data_type().size_bytes() * 8) as u16]), false)] };
+    if let Some(nodata) = src.nodata() {
+        dir.set(Entry::new(42113, &Value::Ascii(gw::format_nodata(nodata)), false));
+    }
+    dir
 }
 
 /// The overview method of a resampling.
@@ -1223,7 +1232,11 @@ fn run_jobs(
     if jobs.is_empty() {
         return Ok(());
     }
-    let (bands, data_type, nodata, has_mask) = (srcs.src.band_count(), srcs.src.data_type(), srcs.src.nodata(), srcs.src.has_mask());
+    let (bands, data_type, mut nodata, has_mask) = (srcs.src.band_count(), srcs.src.data_type(), srcs.src.nodata(), srcs.src.has_mask());
+    // GDAL compares a Float32 EHdr nodata declaration in the stored sample type.
+    if srcs.src.driver() == RasterDriver::EHdr && data_type == DataType::F32 {
+        nodata = nodata.map(|nd| nd as f32 as f64);
+    }
     // GDAL's mask band for the data of a method other than nearest: the per-dataset mask (the
     // mask's overview for a previous level), else the alpha band, else the nodata value.
     let use_mask = |l: &WholeLevel| l.method != OverviewResampling::Nearest && (prev.is_some() || l.mask.is_some() || has_mask);
