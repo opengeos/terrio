@@ -719,6 +719,193 @@
    ]
   },
   {
+   "name": "+towgs84, into OSGB36 outside its area",
+   "wkt": "+proj=longlat +ellps=bessel +towgs84=598.1,73.7,418.2,0.202,0.045,-2.455,6.7 +type=crs",
+   "dst": "EPSG:4277",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "proj": [
+    9.998813925294645,
+    49.99885726430581
+   ],
+   "proj_back": [
+    10.00000000337226,
+    50.0000000046652
+   ]
+  },
+  {
+   "name": "+towgs84, into OSGB36",
+   "wkt": "+proj=longlat +ellps=bessel +towgs84=598.1,73.7,418.2,0.202,0.045,-2.455,6.7 +type=crs",
+   "dst": "EPSG:4277",
+   "point": [
+    -1.0,
+    52.0
+   ],
+   "proj": [
+    -0.9980061302768336,
+    51.99821025911727
+   ],
+   "proj_back": [
+    -0.9999999974445811,
+    51.99999999438735
+   ]
+  },
+  {
+   "name": "+towgs84, into British National Grid",
+   "wkt": "+proj=longlat +ellps=bessel +towgs84=598.1,73.7,418.2,0.202,0.045,-2.455,6.7 +type=crs",
+   "dst": "EPSG:27700",
+   "point": [
+    -1.0,
+    52.0
+   ],
+   "proj": [
+    468782.7133136312,
+    233828.63891819702
+   ],
+   "proj_back": [
+    -0.9999999974445818,
+    51.999999994387345
+   ]
+  },
+  {
+   "name": "+towgs84, into NAD83",
+   "wkt": "+proj=longlat +ellps=bessel +towgs84=598.1,73.7,418.2,0.202,0.045,-2.455,6.7 +type=crs",
+   "dst": "EPSG:4269",
+   "point": [
+    -100.0,
+    40.0
+   ],
+   "proj": [
+    -99.99391484120929,
+    40.00444186328207
+   ],
+   "proj_back": [
+    -99.99999943304057,
+    40.00000037566651
+   ]
+  },
+  {
+   "name": "to WGS 84, into OSGB36",
+   "wkt": "BOUNDCRS[SOURCECRS[GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"lat\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"lon\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]],TARGETCRS[GEOGCRS[\"WGS 84\",DATUM[\"World Geodetic System 1984\",ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"lat\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"lon\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4326]]],ABRIDGEDTRANSFORMATION[\"t\",METHOD[\"Position Vector transformation (geog2D domain)\",ID[\"EPSG\",9606]],PARAMETER[\"X-axis translation\",598.1,ID[\"EPSG\",8605]],PARAMETER[\"Y-axis translation\",73.7,ID[\"EPSG\",8606]],PARAMETER[\"Z-axis translation\",418.2,ID[\"EPSG\",8607]],PARAMETER[\"X-axis rotation\",0.202,ID[\"EPSG\",8608]],PARAMETER[\"Y-axis rotation\",0.045,ID[\"EPSG\",8609]],PARAMETER[\"Z-axis rotation\",-2.455,ID[\"EPSG\",8610]],PARAMETER[\"Scale difference\",1.0000067,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8611]]]]",
+   "dst": "EPSG:4277",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "proj": [
+    9.998813925294645,
+    49.99885726430581
+   ],
+   "proj_back": [
+    10.00000000337226,
+    50.0000000046652
+   ]
+  },
+  {
+   "name": "to ED50, into OSGB36",
+   "wkt": "BOUNDCRS[SOURCECRS[GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"lat\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"lon\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]],TARGETCRS[GEOGCRS[\"ED50\",DATUM[\"European Datum 1950\",ELLIPSOID[\"International 1924\",6378388,297,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"lat\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"lon\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4230]]],ABRIDGEDTRANSFORMATION[\"t\",METHOD[\"Position Vector transformation (geog2D domain)\",ID[\"EPSG\",9606]],PARAMETER[\"X-axis translation\",598.1,ID[\"EPSG\",8605]],PARAMETER[\"Y-axis translation\",73.7,ID[\"EPSG\",8606]],PARAMETER[\"Z-axis translation\",418.2,ID[\"EPSG\",8607]],PARAMETER[\"X-axis rotation\",0.202,ID[\"EPSG\",8608]],PARAMETER[\"Y-axis rotation\",0.045,ID[\"EPSG\",8609]],PARAMETER[\"Z-axis rotation\",-2.455,ID[\"EPSG\",8610]],PARAMETER[\"Scale difference\",1.0000067,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8611]]]]",
+   "dst": "EPSG:4277",
+   "point": [
+    -1.0,
+    52.0
+   ],
+   "proj": [
+    -0.9994333453634321,
+    51.99815447582443
+   ],
+   "proj_back": [
+    -0.9999999639400965,
+    51.9999999505044
+   ]
+  },
+  {
+   "name": "to ED50, into British National Grid",
+   "wkt": "BOUNDCRS[SOURCECRS[GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"lat\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"lon\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]],TARGETCRS[GEOGCRS[\"ED50\",DATUM[\"European Datum 1950\",ELLIPSOID[\"International 1924\",6378388,297,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"lat\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"lon\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4230]]],ABRIDGEDTRANSFORMATION[\"t\",METHOD[\"Position Vector transformation (geog2D domain)\",ID[\"EPSG\",9606]],PARAMETER[\"X-axis translation\",598.1,ID[\"EPSG\",8605]],PARAMETER[\"Y-axis translation\",73.7,ID[\"EPSG\",8606]],PARAMETER[\"Z-axis translation\",418.2,ID[\"EPSG\",8607]],PARAMETER[\"X-axis rotation\",0.202,ID[\"EPSG\",8608]],PARAMETER[\"Y-axis rotation\",0.045,ID[\"EPSG\",8609]],PARAMETER[\"Z-axis rotation\",-2.455,ID[\"EPSG\",8610]],PARAMETER[\"Scale difference\",1.0000067,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8611]]]]",
+   "dst": "EPSG:27700",
+   "point": [
+    -1.0,
+    52.0
+   ],
+   "proj": [
+    468684.8287090395,
+    233821.08606253157
+   ],
+   "proj_back": [
+    -0.9999999639400959,
+    51.9999999505044
+   ]
+  },
+  {
+   "name": "to DHDN, into ETRS89",
+   "wkt": "BOUNDCRS[SOURCECRS[GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"lat\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"lon\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]],TARGETCRS[GEOGCRS[\"DHDN\",DATUM[\"Deutsches Hauptdreiecksnetz\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"lat\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"lon\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4314]]],ABRIDGEDTRANSFORMATION[\"t\",METHOD[\"Position Vector transformation (geog2D domain)\",ID[\"EPSG\",9606]],PARAMETER[\"X-axis translation\",598.1,ID[\"EPSG\",8605]],PARAMETER[\"Y-axis translation\",73.7,ID[\"EPSG\",8606]],PARAMETER[\"Z-axis translation\",418.2,ID[\"EPSG\",8607]],PARAMETER[\"X-axis rotation\",0.202,ID[\"EPSG\",8608]],PARAMETER[\"Y-axis rotation\",0.045,ID[\"EPSG\",8609]],PARAMETER[\"Z-axis rotation\",-2.455,ID[\"EPSG\",8610]],PARAMETER[\"Scale difference\",1.0000067,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8611]]]]",
+   "dst": "EPSG:4258",
+   "point": [
+    10.0,
+    51.0
+   ],
+   "proj": [
+    9.99759930106422,
+    50.99690281057265
+   ],
+   "proj_back": [
+    10.000000118053975,
+    51.00000037738531
+   ]
+  },
+  {
+   "name": "to DHDN, into ETRS89 outside its transformations",
+   "wkt": "BOUNDCRS[SOURCECRS[GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"lat\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"lon\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]],TARGETCRS[GEOGCRS[\"DHDN\",DATUM[\"Deutsches Hauptdreiecksnetz\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"lat\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"lon\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4314]]],ABRIDGEDTRANSFORMATION[\"t\",METHOD[\"Position Vector transformation (geog2D domain)\",ID[\"EPSG\",9606]],PARAMETER[\"X-axis translation\",598.1,ID[\"EPSG\",8605]],PARAMETER[\"Y-axis translation\",73.7,ID[\"EPSG\",8606]],PARAMETER[\"Z-axis translation\",418.2,ID[\"EPSG\",8607]],PARAMETER[\"X-axis rotation\",0.202,ID[\"EPSG\",8608]],PARAMETER[\"Y-axis rotation\",0.045,ID[\"EPSG\",8609]],PARAMETER[\"Z-axis rotation\",-2.455,ID[\"EPSG\",8610]],PARAMETER[\"Scale difference\",1.0000067,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8611]]]]",
+   "dst": "EPSG:4258",
+   "point": [
+    7.5,
+    46.9
+   ],
+   "proj": [
+    7.49919178043066,
+    46.898606104635626
+   ],
+   "proj_back": [
+    7.500000007800034,
+    46.900000161618486
+   ]
+  },
+  {
+   "name": "to DHDN, into UTM 32N on ETRS89",
+   "wkt": "BOUNDCRS[SOURCECRS[GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"lat\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"lon\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]],TARGETCRS[GEOGCRS[\"DHDN\",DATUM[\"Deutsches Hauptdreiecksnetz\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"lat\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"lon\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4314]]],ABRIDGEDTRANSFORMATION[\"t\",METHOD[\"Position Vector transformation (geog2D domain)\",ID[\"EPSG\",9606]],PARAMETER[\"X-axis translation\",598.1,ID[\"EPSG\",8605]],PARAMETER[\"Y-axis translation\",73.7,ID[\"EPSG\",8606]],PARAMETER[\"Z-axis translation\",418.2,ID[\"EPSG\",8607]],PARAMETER[\"X-axis rotation\",0.202,ID[\"EPSG\",8608]],PARAMETER[\"Y-axis rotation\",0.045,ID[\"EPSG\",8609]],PARAMETER[\"Z-axis rotation\",-2.455,ID[\"EPSG\",8610]],PARAMETER[\"Scale difference\",1.0000067,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8611]]]]",
+   "dst": "EPSG:25832",
+   "point": [
+    10.0,
+    51.0
+   ],
+   "proj": [
+    570005.0713523683,
+    5649954.0959349135
+   ],
+   "proj_back": [
+    10.000000118053975,
+    51.00000037738531
+   ]
+  },
+  {
+   "name": "to OSGB36, into ED50",
+   "wkt": "BOUNDCRS[SOURCECRS[GEOGCRS[\"Local\",DATUM[\"Local datum\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"lat\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"lon\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]]]],TARGETCRS[GEOGCRS[\"OSGB36\",DATUM[\"Ordnance Survey of Great Britain 1936\",ELLIPSOID[\"Airy 1830\",6377563.396,299.3249646,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"lat\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"lon\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4277]]],ABRIDGEDTRANSFORMATION[\"t\",METHOD[\"Position Vector transformation (geog2D domain)\",ID[\"EPSG\",9606]],PARAMETER[\"X-axis translation\",598.1,ID[\"EPSG\",8605]],PARAMETER[\"Y-axis translation\",73.7,ID[\"EPSG\",8606]],PARAMETER[\"Z-axis translation\",418.2,ID[\"EPSG\",8607]],PARAMETER[\"X-axis rotation\",0.202,ID[\"EPSG\",8608]],PARAMETER[\"Y-axis rotation\",0.045,ID[\"EPSG\",8609]],PARAMETER[\"Z-axis rotation\",-2.455,ID[\"EPSG\",8610]],PARAMETER[\"Scale difference\",1.0000067,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8611]]]]",
+   "dst": "EPSG:4230",
+   "point": [
+    10.0,
+    50.0
+   ],
+   "proj": [
+    9.998813925294643,
+    49.99816450218131
+   ],
+   "proj_back": [
+    10.000000039363337,
+    50.00000016181446
+   ]
+  },
+  {
    "name": "method EPSG:9603, to WGS 84",
    "wkt": "BOUNDCRS[SOURCECRS[PROJCRS[\"Local grid\",BASEGEOGCRS[\"Local OSGB\",DATUM[\"D_OSGB_1936\",ELLIPSOID[\"Airy 1830\",6377563.396,299.3249646,LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",6277]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]]],CONVERSION[\"British National Grid\",METHOD[\"Transverse Mercator\",ID[\"EPSG\",9807]],PARAMETER[\"Latitude of natural origin\",49,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8801]],PARAMETER[\"Longitude of natural origin\",-2,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8802]],PARAMETER[\"Scale factor at natural origin\",0.9996012717,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8805]],PARAMETER[\"False easting\",400000,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8806]],PARAMETER[\"False northing\",-100000,LENGTHUNIT[\"metre\",1],ID[\"EPSG\",8807]]],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(N)\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]],TARGETCRS[GEOGCRS[\"WGS 84\",DATUM[\"World Geodetic System 1984\",ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"lat\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"lon\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4326]]],ABRIDGEDTRANSFORMATION[\"t\",METHOD[\"m\",ID[\"EPSG\",9603]],PARAMETER[\"X-axis translation\",598.1,ID[\"EPSG\",8605]],PARAMETER[\"Y-axis translation\",73.7,ID[\"EPSG\",8606]],PARAMETER[\"Z-axis translation\",418.2,ID[\"EPSG\",8607]],PARAMETER[\"X-axis rotation\",0.202,ID[\"EPSG\",8608]],PARAMETER[\"Y-axis rotation\",0.045,ID[\"EPSG\",8609]],PARAMETER[\"Z-axis rotation\",-2.455,ID[\"EPSG\",8610]],PARAMETER[\"Scale difference\",1.0000067,SCALEUNIT[\"unity\",1],ID[\"EPSG\",8611]]]]",
    "dst": "EPSG:4326",

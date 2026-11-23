@@ -182,14 +182,24 @@ fn out_of_domain_points_do_not_poison_strict_transformers() {
     assert!(t.check_policy().is_ok());
 }
 
+/// Into a CRS bound to WGS 84 by `+towgs84`, PROJ chains each OSGB36 transformation with the
+/// shift; with ALLOW_BALLPARK=NO, a point outside all their areas goes through the first that
+/// needs no grid, as in PROJ 9.9.0 and GDAL 3.13.3 (`OGRCoordinateTransformationOptions::
+/// SetBallparkAllowed(false)`), not refused, and later points are unaffected.
 #[test]
-fn strict_hub_routes_reject_point_fallbacks_without_poisoning_later_points() {
+fn strict_hub_routes_fall_back_as_proj_does_without_poisoning_later_points() {
+    terrio::crs::set_grid_search_paths(Some(vec![]));
+    terrio::crs::set_network_enabled(Some(false));
     let src = SpatialRef::parse("EPSG:4277").unwrap();
     let dst = SpatialRef::parse("+proj=longlat +a=6371000 +b=6371000 +towgs84=1,2,3").unwrap();
     let options = TransformOptions { allow_ballpark: Some(false), ..Default::default() };
     let t = Transformer::with_options(&src, &dst, &options).unwrap();
-    assert!(t.transform(140.0, 30.0).unwrap_err().to_string().contains("ALLOW_BALLPARK"));
-    assert!(t.transform(-2.0, 52.0).is_ok());
+    for ((x, y), (lon, lat)) in
+        [((140.0, 30.0), (139.99840532938242, 29.839174094869808)), ((-2.0, 52.0), (-2.001456340682326, 51.81356323348634))]
+    {
+        let (a, b) = t.transform(x, y).unwrap();
+        assert!((a - lon).abs() < 1e-8 && (b - lat).abs() < 1e-8, "({x}, {y}): ({a}, {b}), PROJ ({lon}, {lat})");
+    }
     assert!(t.check_policy().is_ok());
 }
 

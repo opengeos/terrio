@@ -371,7 +371,7 @@ impl Route {
                     }
                     _ => chains(a, b, src, dst, aoi.as_ref(), all),
                 },
-                _ => Kind::Hub,
+                _ => shifted(src, dst, all).unwrap_or(Kind::Hub),
             }
         };
         Self { kind, boxes: OnceLock::new(), hub_boxes: OnceLock::new(), dst_ops: dst.ops().to_vec(), src_ops: src.ops().to_vec() }
@@ -387,6 +387,7 @@ impl Route {
             }
             Kind::Chains { chains, ballpark } => {
                 *ballpark = None;
+                chains.retain(|c| !c.rank.ballpark);
                 !chains.is_empty()
             }
             Kind::Hub => {
@@ -426,11 +427,14 @@ impl Route {
                 datum::run_op(op, p, leg.reverse, three_d).inspect(|_| note(Some(op), leg.reverse, OpKind::Datum))
             }
             Kind::Chains { chains, .. } => {
-                if op.ballpark {
+                // A shift and a ballpark is a chain (see `shifted`); the ballpark alone, no shift.
+                let Some(c) = chains.iter().find(|c| std::ptr::eq(&c.rank, op)) else {
+                    if !op.ballpark {
+                        return None;
+                    }
                     note(None, false, OpKind::Datum);
                     return Some(p);
-                }
-                let c = chains.iter().find(|c| std::ptr::eq(&c.rank, op))?;
+                };
                 let q = c.run(p)?;
                 note(Some(&c.rank), false, OpKind::Datum);
                 Some(if three_d || !c.rank.keeps_height { q } else { Point { h: p.h, ..q } })
@@ -1355,6 +1359,64 @@ fn datum_chains(reg: &epsg::Registry, a: &epsg::Geodetic, b: &epsg::Geodetic, ex
 fn ballpark_op(src: &Def, dst: &Def) -> Op {
     let accuracy = if src.rotation_only_to(dst) { 0.0 } else { -1.0 };
     Op { accuracy, chain_accuracy: accuracy, ballpark: true, ..Op::world(Vec::new()) }
+}
+
+/// The route between a CRS bound to a hub CRS (see [`Def::hub`]) and a CRS with its own
+/// transformations, as PROJ makes it (`createOperationsBoundToGeog`): the shift into the hub,
+/// then each of PROJ's transformations from the hub to the other CRS (the reverse the other way),
+/// each of unknown accuracy, sorted again for the other CRS's area; then the shift alone (with
+/// PROJ's ballpark from the hub), which this search drops only when a transformation that needs
+/// no grid holds the area of interest, as PROJ does (a bound CRS to DHDN into ETRS89 keeps it,
+/// which the codes' own list drops). With no transformation from the hub but that ballpark, PROJ
+/// excludes it ("artificial transformations from the hub"): no shift. `None` when neither CRS alone is bound to a hub, or
+/// the search from the hub is not one of a list or chains.
+fn shifted(src: &Def, dst: &Def, all: bool) -> Option<Kind> {
+    let (hub, shift, forward) = match (src.hub(), dst.hub()) {
+        (Some((hub, shift)), None) if dst.geog().is_some() => (hub, shift, true),
+        (None, Some((hub, shift))) if src.geog().is_some() => (hub, shift, false),
+        _ => return None,
+    };
+    let (inner, aoi) = if forward {
+        (Route::build(&hub, dst, all), area_of_interest(&hub, dst))
+    } else {
+        (Route::build(src, &hub, all), area_of_interest(src, &hub))
+    };
+    let shift = Leg { op: shift, reverse: !forward };
+    let mut found: Vec<(Vec<Leg>, Op)> = Vec::new();
+    match inner.kind {
+        Kind::List(list) => {
+            for l in list.iter().filter(|l| !l.op.ballpark) {
+                let (_, c) = direct_chain(l, aoi.as_ref());
+                found.push((c.legs, c.rank));
+            }
+        }
+        Kind::Chains { chains, .. } => found.extend(chains.into_iter().map(|c| (c.legs, c.rank))),
+        _ => return None,
+    }
+    if found.is_empty() {
+        return Some(Kind::List(Vec::new()));
+    }
+    let ballpark = !aoi.is_some_and(|a| found.iter().any(|(_, rank)| !rank.needs_grids() && contains(&rank.bounds, &a)));
+    let around = |legs: Vec<Leg>| -> Vec<Leg> {
+        let s = std::iter::once(shift.clone());
+        if forward { s.chain(legs).collect() } else { legs.into_iter().chain(s).collect() }
+    };
+    let unknown = |rank: Op| Op { accuracy: -1.0, chain_accuracy: -1.0, ..rank };
+    let mut out: Vec<(SortKey, Chain)> = found
+        .into_iter()
+        .map(|(legs, rank)| {
+            let legs = around(legs);
+            let rank = unknown(rank);
+            let steps = pipeline_steps(&legs.iter().map(|l| (l.op.as_ref(), l.reverse)).collect::<Vec<_>>());
+            (SortKey::new(&rank, rank.name.clone(), steps, aoi.as_ref()), Chain { legs, rank })
+        })
+        .collect();
+    out.sort_by(|x, y| x.0.cmp(&y.0));
+    let mut chains: Vec<Chain> = out.into_iter().map(|(_, c)| c).collect();
+    if ballpark {
+        chains.push(Chain { legs: vec![shift], rank: Op { ballpark: true, ..unknown(Op::world(Vec::new())) } });
+    }
+    Some(Kind::Chains { chains, ballpark: None })
 }
 
 /// What PROJ sorts a transformation by, in its order: known accuracy first (unknown ones with

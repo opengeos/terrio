@@ -1,6 +1,7 @@
 """Generate crates/terrio-crs/tests/data/wkt2_bound.json: where PROJ 9.9.0 places points of WKT 2
 `BOUNDCRS`s with a Helmert transformation, to WGS 84 and to other CRSs (ED50, OSGB36), whose own
-transformations to WGS 84 PROJ then applies.
+transformations to WGS 84 PROJ then applies, and of PROJ strings with `+towgs84`, which PROJ
+reads as bound to WGS 84.
 
 Each case is a bound CRS, a point in it, and the point in WGS 84, or in the
 target CRS's own system, by `Transformer.from_crs(wkt, dst, always_xy=True)`, and for the
@@ -355,6 +356,39 @@ CASES += [
         (14.1, 47.8),
         "EPSG:32633",
     ),
+]
+# Into a CRS with transformations of its own (#1012 item 21): PROJ concatenates the shift with
+# each of its transformations from the hub CRS (WGS 84 for a `+towgs84` shift, which PROJ reads
+# as a bound CRS to WGS 84), each of unknown accuracy, the shift and the ballpark last; inside
+# the target's area, a direct transformation from the hub (OSGB36 to ED50 (1)).
+TOWGS84 = "+proj=longlat +ellps=bessel +towgs84=598.1,73.7,418.2,0.202,0.045,-2.455,6.7 +type=crs"
+CASES += [
+    ("+towgs84, into OSGB36 outside its area", TOWGS84, (10.0, 50.0), "EPSG:4277"),
+    ("+towgs84, into OSGB36", TOWGS84, (-1.0, 52.0), "EPSG:4277"),
+    ("+towgs84, into British National Grid", TOWGS84, (-1.0, 52.0), "EPSG:27700"),
+    ("+towgs84, into NAD83", TOWGS84, (-100.0, 40.0), "EPSG:4269"),
+    ("to WGS 84, into OSGB36", bound(BESSEL, WGS84, SHIFT), (10.0, 50.0), "EPSG:4277"),
+    ("to ED50, into OSGB36", bound(BESSEL, ED50, SHIFT), (-1.0, 52.0), "EPSG:4277"),
+    (
+        "to ED50, into British National Grid",
+        bound(BESSEL, ED50, SHIFT),
+        (-1.0, 52.0),
+        "EPSG:27700",
+    ),
+    ("to DHDN, into ETRS89", bound(BESSEL, DHDN, SHIFT), (10.0, 51.0), "EPSG:4258"),
+    (
+        "to DHDN, into ETRS89 outside its transformations",
+        bound(BESSEL, DHDN, SHIFT),
+        (7.5, 46.9),
+        "EPSG:4258",
+    ),
+    (
+        "to DHDN, into UTM 32N on ETRS89",
+        bound(BESSEL, DHDN, SHIFT),
+        (10.0, 51.0),
+        "EPSG:25832",
+    ),
+    ("to OSGB36, into ED50", bound(BESSEL, OSGB36, SHIFT), (10.0, 50.0), "EPSG:4230"),
 ]
 # Each Helmert method PROJ applies (proj_constants.h), given by its EPSG code alone: geocentric
 # translations (which PROJ applies without the rotations and scale given), position vector and
