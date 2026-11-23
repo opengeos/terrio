@@ -1135,10 +1135,10 @@ fn cdn_name(name: &str) -> Option<&str> {
     catalog().opened_by(name).filter(|k| k.url.is_none() && k.name.ends_with(".tif")).map(|k| k.name)
 }
 
-/// Whether a grid can be had: found locally, or served by the PROJ CDN (whether or not the network
-/// is enabled).
+/// Whether a grid can be had: `null`, which needs no file (as [`available`]), found locally, or
+/// served by the PROJ CDN (whether or not the network is enabled).
 pub(crate) fn obtainable(name: &str) -> bool {
-    present_locally(name) || cdn_name(name).is_some()
+    name == "null" || present_locally(name) || cdn_name(name).is_some()
 }
 
 /// Whether a grid name is a single ordinary file component on this platform.
