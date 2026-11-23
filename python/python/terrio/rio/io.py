@@ -3779,8 +3779,10 @@ class DatasetWriter(DatasetReader):
         """
         cog = self._out_driver == "COG"
         writer = _terrio.CogWriter if cog else _terrio.GeoTiffWriter
-        # A copy's mask is its source's, whose rows are read with the pixels'.
-        copy_mask = self._copy_of is not None and self._copy_mask
+        # A copy's mask is its source's, whose rows are read with the pixels'. A mask the dataset
+        # was given replaces it, as in a copy written whole: into the file, or to a `.msk`
+        # sidecar, with no mask given to the writer.
+        copy_mask = self._copy_of is not None and self._copy_mask and self._mask is None
         kw: dict[str, Any] = {"overview_resampling": self._overview_resampling} if cog else {}
         w = writer(
             target,
