@@ -8,10 +8,10 @@ use std::collections::BTreeMap;
 use std::process::{Command, Stdio};
 
 /// Expected schema version of the CLI catalog.
-const EXPECTED_SCHEMA_VERSION: &str = "0.1.12";
+const EXPECTED_SCHEMA_VERSION: &str = "0.1.13";
 
 /// Digest of the canonical catalog for the current `schema_version`.
-const CATALOG_SHA256: &str = "06f08ba491340183e24f3d5d39390aa36fe0b646ffe9cf6ad67c130666057e1d";
+const CATALOG_SHA256: &str = "7dbf0cbdd7ae5425738168b213651b53c097bed2a3573f2166d3360367b1a221";
 
 /// Rebuilds every object with its keys sorted, so the digest does not depend on whether
 /// `serde_json`'s `preserve_order` feature is enabled by the crates built alongside this one.
