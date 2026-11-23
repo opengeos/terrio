@@ -1372,7 +1372,8 @@ impl Def {
                 // search keeps even where its search from the target code drops it (DHDN, CH1903,
                 // Tokyo, NTF): it drops the ballpark only when a transformation needing no grid
                 // holds the area of interest, here the world (the bound CRS has no area in
-                // terrio). Outside the target's transformations, the point is shifted alone.
+                // terrio). Where only that ballpark is left for the area of interest, the route
+                // drops it, as PROJ does (`route::nested`).
                 if !ops.is_empty() && !ops.iter().any(|op| op.ballpark) {
                     let accuracy = -1.0;
                     ops.push(Arc::new(Op { accuracy, chain_accuracy: accuracy, ballpark: true, ..Op::world(to_target.clone()) }));
@@ -1733,7 +1734,7 @@ impl Def {
     }
 
     /// Whether this is a WKT 2 `BOUNDCRS` to a CRS other than WGS 84, whose transformations to
-    /// WGS 84 are its shift followed by each of that CRS's.
+    /// WGS 84 are its shift followed by each of that CRS's, then by that CRS's ballpark.
     pub fn bound_elsewhere(&self) -> bool {
         self.bound.as_deref().is_some_and(|b| b.target.is_some())
     }
