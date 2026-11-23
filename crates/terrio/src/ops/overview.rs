@@ -828,9 +828,10 @@ fn from_values(data_type: DataType, values: Vec<f64>) -> RasterData {
 }
 
 /// Whether a level scheduled with `sched` is computed from the previous, larger level
-/// rather than from full resolution. Reductions can change only the height.
+/// rather than from full resolution. GDAL 3.13.2's per-band path cascades height-only
+/// reductions; its multiband path requires the width to decrease.
 fn cascades(sched: Schedule, prev: (usize, usize), size: (usize, usize)) -> bool {
-    sched.from_prev && (prev.0 > size.0 || prev.1 > size.1)
+    sched.from_prev && (prev.0 > size.0 || (sched.chunk_rows.is_some() && prev.1 > size.1))
 }
 
 /// What a level is computed from: the previous level (computed, or stored at `level`) or full
@@ -1957,8 +1958,9 @@ mod tests {
 
     #[test]
     fn average_cascades_when_only_the_height_decreases() {
-        let schedule = Schedule { from_prev: true, chunk_rows: None };
+        let schedule = Schedule { from_prev: true, chunk_rows: Some(8) };
         assert!(cascades(schedule, (1, 8), (1, 4)));
+        assert!(!cascades(Schedule { chunk_rows: None, ..schedule }, (1, 8), (1, 4)));
         assert!(cascades(schedule, (8, 1), (4, 1)));
         assert!(!cascades(schedule, (1, 4), (1, 4)));
         assert!(!cascades(Schedule { from_prev: false, ..schedule }, (1, 8), (1, 4)));

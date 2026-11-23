@@ -285,6 +285,10 @@ def main():
         for fixture, planes, data_types, levels in [
             ("odd size", complex_planes, ["CInt16", "CInt32", "CFloat32", "CFloat64"], [2, 4, 8, 16]),
             ("issue #1222", issue_planes, ["CFloat32"], [2]),
+            ("height-only complex", [np.arange(8).reshape(8, 1) * (1 + 2j),
+                                      np.arange(8).reshape(8, 1) * (3 + 4j)], ["CFloat32"], [2, 3]),
+            ("height-only real", [np.arange(8).reshape(8, 1),
+                                   np.arange(8).reshape(8, 1) * 2], ["Float32"], [2, 3]),
         ]:
             for data_type in data_types:
                 for external in [True, False]:
@@ -312,7 +316,7 @@ def main():
                                 run([args.terrio, "overviews", b, "-r", method, *levels])
                             status, detail = compare(a, b)
                             if status != "identical":
-                                raise AssertionError("complex overview parts must match exactly: " + detail)
+                                raise AssertionError("overview samples must match exactly: " + detail)
                             if external:
                                 # GDAL also reports LAYOUT=COG for sidecars whose levels fit in a
                                 # tile, which terrio does not write (whatever the band type).

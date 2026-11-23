@@ -373,3 +373,45 @@ fn complex_overviews_refuse_other_methods() {
     let first = r.read_window(Window::new(1, 1, 1, 1), &WindowOptions { bands: vec![1, 2, 3, 4], overview: Some(0) }).unwrap();
     assert_eq!(first.raster.data.to_f64_vec(), vec![2.0, 2.0, 104.0, 206.0]);
 }
+
+/// GDAL 3.13.2's per-band cascading and multiband width-only source selection differ on
+/// height-only reductions. Outputs also verified with GDAL 3.12.1 on this fixture.
+#[test]
+fn height_only_average_levels_follow_their_gdal_computation_path() {
+    use terrio::ops::Resampling;
+    use terrio::ops::overview::{OverviewOptions, add_overviews};
+    let dir = tempfile::tempdir().unwrap();
+    for complex in [false, true] {
+        for external in [false, true] {
+            let path = dir.path().join(format!("height-{complex}-{external}.tif"));
+            let bands = if complex { 2 } else { 1 };
+            let values: Vec<f64> = (0..bands).flat_map(|b| (0..8).map(move |i| (i * (b + 1)) as f64)).collect();
+            let config = terrio::RasterConfig { cols: 1, rows: 8, bands, data_type: DataType::F32, ..Default::default() };
+            let raster = terrio::Raster::from_data(config, values).unwrap();
+            let mut dataset = terrio::RasterDataset::new(raster, false);
+            dataset.complex = complex;
+            terrio::write_raster_dataset(
+                &dataset,
+                path.to_str().unwrap(),
+                &RasterWriteOptions { tile_size: Some(16), ..Default::default() },
+            )
+            .unwrap();
+            add_overviews(
+                path.to_str().unwrap(),
+                &OverviewOptions { external, levels: vec![2, 3], resampling: Resampling::Average, ..Default::default() },
+            )
+            .unwrap();
+            let mut raster = LazyRaster::open(path.to_str().unwrap()).unwrap();
+            let output =
+                raster.read_window(Window::full(1, 3), &WindowOptions { bands: (1..=bands).collect(), overview: Some(1) }).unwrap();
+            let expected = if complex {
+                vec![0.5, 3.5, 6.5, 1., 7., 13.]
+            } else if external {
+                vec![1., 3.5, 6.]
+            } else {
+                vec![0.875, 3.5, 6.125]
+            };
+            assert_eq!(output.raster.data.to_f64_vec(), expected, "complex {complex}, external {external}");
+        }
+    }
+}
