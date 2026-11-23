@@ -56,7 +56,9 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
   `TOWGS84` of a WKT 1 source CRS (GDAL's `GEOGCS` or `PROJCS` in `SOURCECRS`). Their PROJ
   string leaves out a shift to a CRS other than WGS 84, as PROJ's does. Their scale difference is a
   ratio in unity (`1.0000067`, as PROJ writes it) or in the unit given (parts per million, where
-  PROJ 9.9.0 misreads 6.7 ppm as the ratio 6.7, which terrio does not follow); an unknown WKT2
+  PROJ 9.9.0 misreads 6.7 ppm as the ratio 6.7, which terrio does not follow); without a unit, a
+  ratio within 0.01 of 1, and farther from 1 (`0.6`, `7`) an error, where PROJ 9.9.0 reads any
+  value as a ratio (`0.6` as -400000 ppm), since it may well be parts per million; an unknown WKT2
   projection method or parameter, or a Helmert transformation parameter, is an error rather than
   ignored (a target CRS terrio cannot convert is left out). A projected
   CRS's `AXIS` nodes give its axes in WKT 1 as in WKT 2, as GDAL and PROJ read them in GIS order:
