@@ -47,7 +47,7 @@ enum Codec {
     Lerc,
     Jxl,
     Lzma,
-    /// Zstandard, with the zstd C library natively with the `libzstd` feature, with `ruzstd`
+    /// Zstandard, with the zstd C library natively with the `libzstd` feature, with `zrip`
     /// otherwise ([`crate::zstandard::frames`]).
     Zstd,
     /// LZW of 8 to 64-bit samples, decoded whole: the `tiff` crate's reader fails on some chunks
@@ -914,10 +914,7 @@ impl ChunkCodec {
         let blob = match self.lerc_wrapper {
             0 => raw,
             1 => inflate(&mut flate2::read::ZlibDecoder::new(&raw[..]))?,
-            2 => {
-                let mut src = &raw[..];
-                inflate(&mut ruzstd::decoding::StreamingDecoder::new(&mut src).map_err(|e| invalid(format!("Zstandard: {e}")))?)?
-            }
+            2 => inflate(&mut zrip::FrameDecoder::new(&raw[..]))?,
             other => return Err(invalid(format!("unknown LERC compression wrapper {other}"))),
         };
         self.lerc_headers(&blob, w, h)?;
@@ -1352,7 +1349,7 @@ mod tests {
     }
 
     /// Zstandard chunks decode (with the zstd C library natively with the `libzstd` feature, with
-    /// `ruzstd` otherwise), whichever encoder wrote them.
+    /// `zrip` otherwise), whichever encoder wrote them.
     #[test]
     fn zstandard_chunks_decode_in_pure_rust() {
         let c = ChunkCodec { codec: Codec::Zstd, ..lzw(Sample::U16, 1, 2, false) };
@@ -1361,10 +1358,7 @@ mod tests {
             (0..4u16).flat_map(|r| (0..4u16).map(move |i| if i == 0 { r * 100 } else { 3 })).flat_map(u16::to_ne_bytes).collect();
         let want: Vec<u8> = (0..4u16).flat_map(|r| (0..4u16).map(move |i| r * 100 + 3 * i)).flat_map(u16::to_ne_bytes).collect();
         assert_eq!(c.lossless(crate::zstandard::compress(&rows, 9).unwrap(), 4, 4).unwrap(), want);
-        assert_eq!(
-            c.lossless(ruzstd::encoding::compress_to_vec(&rows[..], ruzstd::encoding::CompressionLevel::Fastest), 4, 4).unwrap(),
-            want
-        );
+        assert_eq!(c.lossless(zrip::compress(&rows, 1).unwrap(), 4, 4).unwrap(), want);
         // A short stream is an error.
         assert!(c.lossless(crate::zstandard::compress(&rows[..8], 9).unwrap(), 4, 4).is_err());
     }
@@ -1730,7 +1724,7 @@ mod tests {
             z.write_all(b).unwrap();
             z.finish().unwrap()
         };
-        let zstd = |b: &[u8]| ruzstd::encoding::compress_to_vec(b, ruzstd::encoding::CompressionLevel::Fastest);
+        let zstd = |b: &[u8]| zrip::compress(b, 1).unwrap();
         // 64 MiB of zeros in a few kilobytes.
         let bomb = vec![0u8; 64 << 20];
         for (wrapper, wrap) in [(1, &deflate as &dyn Fn(&[u8]) -> Vec<u8>), (2, &zstd)] {

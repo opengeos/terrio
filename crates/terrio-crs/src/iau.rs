@@ -1,6 +1,5 @@
 //! IAU_2015 definitions from PROJ 9.9.0; see data/iau-source.json and NOTICE.
 use std::collections::HashMap;
-use std::io::Read;
 use std::sync::OnceLock;
 
 use crate::{Error, Result, wkt1};
@@ -20,10 +19,8 @@ pub(crate) fn get(code: u32) -> Option<&'static Entry> {
     static TABLE: OnceLock<HashMap<u32, Entry>> = OnceLock::new();
     TABLE
         .get_or_init(|| {
-            let mut bytes = &include_bytes!("../data/iau.tsv.zst")[..];
-            let mut decoder = ruzstd::decoding::StreamingDecoder::new(&mut bytes).expect("bundled IAU table is zstd");
-            let mut text = String::new();
-            decoder.read_to_string(&mut text).expect("bundled IAU table is UTF-8");
+            let bytes = zrip::decompress(include_bytes!("../data/iau.tsv.zst")).expect("bundled IAU table is zstd");
+            let text = String::from_utf8(bytes).expect("bundled IAU table is UTF-8");
             text.lines()
                 .map(|line| {
                     let columns: Vec<_> = line.splitn(9, '\t').collect();

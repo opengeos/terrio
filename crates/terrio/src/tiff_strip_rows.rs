@@ -43,6 +43,9 @@ const INFLATE_SPAN: usize = 1 << 20;
 /// read).
 const DROP_BYTES: usize = 64 << 10;
 
+/// The largest window of a Zstandard frame decoded by rows: a larger one is refused.
+const ZSTD_WINDOW: u64 = 128 << 20;
+
 /// What a read by rows decodes, summed over its compressed strips, and what one of them declares,
 /// at most, in chunk limits (1 GiB at the default 256 MiB): a read decodes the rows before the ones
 /// it wants in each strip.
@@ -354,44 +357,6 @@ impl Parts {
     fn last(&self) -> bool {
         self.next >= self.end
     }
-
-    /// Skips `n` stored bytes (a skippable Zstandard frame).
-    fn skip(&mut self, n: u64) -> Result<()> {
-        let held = (self.buf.len() - self.pos) as u64;
-        if n <= held {
-            self.pos += n as usize;
-            return Ok(());
-        }
-        self.pos = self.buf.len();
-        let rest = n - held;
-        if rest > self.end - self.next {
-            return Err(Error::InvalidData("TIFF: Zstandard: truncated skippable frame".into()));
-        }
-        self.next += rest;
-        Ok(())
-    }
-}
-
-/// [`Parts`] as a reader, for a decoder that reads its input itself: an error reading the file is
-/// kept, and returned rather than the decoder's own.
-struct PartsReader<'a, F> {
-    parts: &'a mut Parts,
-    read_at: &'a mut F,
-    failed: Option<Error>,
-}
-
-impl<F: FnMut(u64, &mut [u8]) -> Result<()>> Read for PartsReader<'_, F> {
-    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
-        if let Err(e) = self.parts.load(self.read_at) {
-            self.failed = Some(e);
-            return Err(std::io::Error::other("the TIFF strip's stored bytes could not be read"));
-        }
-        let input = self.parts.held();
-        let n = input.len().min(out.len());
-        out[..n].copy_from_slice(&input[..n]);
-        self.parts.consume(n);
-        Ok(n)
-    }
 }
 
 /// A compressed strip's stream, decoded in order.
@@ -410,7 +375,7 @@ impl Stream {
         Ok(match codec {
             Codec::Deflate => Stream::Deflate(Box::new(Inflate::new(strip)?)),
             Codec::Lzw => Stream::Lzw(Box::new(weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8)), spare()?),
-            Codec::Zstd => Stream::Zstd(Box::new(Zstd { frame: ruzstd::decoding::FrameDecoder::new(), in_frame: false }), spare()?),
+            Codec::Zstd => Stream::Zstd(Box::new(Zstd(zrip::push::PushDecoder::new().max_window(ZSTD_WINDOW))), spare()?),
             Codec::PackBits => Stream::PackBits(PackBits::Count),
             Codec::Stored => unreachable!("uncompressed rows are read at their offsets"),
         })
@@ -591,13 +556,8 @@ where
     Ok(made)
 }
 
-/// A Zstandard stream decoded with `ruzstd`: its frames one after another, skippable frames
-/// skipped, each decoded a block at a time by a decoder of its own.
-struct Zstd {
-    frame: ruzstd::decoding::FrameDecoder,
-    /// A frame is being decoded.
-    in_frame: bool,
-}
+/// A Zstandard stream decoded with `zrip`: its frames one after another, skippable frames skipped.
+struct Zstd(zrip::push::PushDecoder);
 
 impl Zstd {
     /// Decodes the next bytes into `out`, as many as it holds: fewer when the stream ends.
@@ -605,45 +565,24 @@ impl Zstd {
     where
         F: FnMut(u64, &mut [u8]) -> Result<()>,
     {
-        use ruzstd::decoding::BlockDecodingStrategy;
-        use ruzstd::decoding::errors::{FrameDecoderError, ReadFrameHeaderError};
-        let mut src = PartsReader { parts, read_at, failed: None };
         let mut made = 0;
         while made < out.len() {
-            if !self.in_frame {
-                src.parts.load(src.read_at)?;
-                if src.parts.held().is_empty() {
-                    break;
-                }
-                // A new decoder, as a whole decode has for each frame: one reused from an earlier
-                // frame reserves the window the next declares (up to 128 MiB) at its header,
-                // where a new one grows it only as the frame decodes into it.
-                self.frame = ruzstd::decoding::FrameDecoder::new();
-                match self.frame.init(&mut src) {
-                    Ok(()) => self.in_frame = true,
-                    Err(FrameDecoderError::ReadFrameHeaderError(ReadFrameHeaderError::SkipFrame { length, .. })) => {
-                        src.parts.skip(u64::from(length))?;
-                        continue;
-                    }
-                    Err(e) => return Err(src.failed.take().unwrap_or_else(|| zstd_error(e))),
-                }
+            parts.load(read_at)?;
+            let held = parts.held();
+            if held.is_empty() && !self.0.has_pending_output() {
+                // The stored bytes are all decoded: a frame cut short is an error.
+                self.0.finish().map_err(zstd_error)?;
+                break;
             }
-            while self.frame.can_collect() == 0 && !self.frame.is_finished() {
-                if let Err(e) = self.frame.decode_blocks(&mut src, BlockDecodingStrategy::UptoBlocks(1)) {
-                    return Err(src.failed.take().unwrap_or_else(|| zstd_error(e)));
-                }
-            }
-            let n = self.frame.read(&mut out[made..]).map_err(|e| Error::InvalidData(format!("TIFF: Zstandard: {e}")))?;
-            made += n;
-            if n == 0 && self.frame.is_finished() {
-                self.in_frame = false;
-            }
+            let p = self.0.decode(held, &mut out[made..]).map_err(zstd_error)?;
+            parts.consume(p.consumed);
+            made += p.produced;
         }
         Ok(made)
     }
 }
 
-fn zstd_error(e: ruzstd::decoding::errors::FrameDecoderError) -> Error {
+fn zstd_error(e: zrip::DecompressError) -> Error {
     Error::InvalidData(format!("TIFF: Zstandard: {e}"))
 }
 

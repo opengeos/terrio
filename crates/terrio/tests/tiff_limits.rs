@@ -650,7 +650,7 @@ fn encode(compression: u16, data: &[u8]) -> Vec<u8> {
             z.finish().unwrap()
         }
         5 => weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8).encode(data).unwrap(),
-        50000 => ruzstd::encoding::compress_to_vec(data, ruzstd::encoding::CompressionLevel::Fastest),
+        50000 => zrip::compress(data, 1).unwrap(),
         32773 => {
             let mut out = Vec::new();
             let mut i = 0;

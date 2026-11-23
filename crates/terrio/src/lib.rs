@@ -196,8 +196,8 @@
 //! [`formats::VectorDriver`], listed as neither read nor written: opening or writing their files
 //! fails with [`Error::Unsupported`] ("built without the `zarr` feature").
 //!
-//! - `libzstd` (off by default): Zstandard through the zstd C library natively, for faster decoding
-//!   and higher compression levels than the default pure-Rust `ruzstd`.
+//! - `libzstd` (off by default): Zstandard through the zstd C library natively, for compression
+//!   levels above 4, which the default pure-Rust `zrip` writes at level 4.
 //! - `gdal` (off by default): the optional GDAL backend (`gdal_backend`), which opens the formats
 //!   terrio has no driver for through GDAL, and writes rasters with GDAL's drivers. It is the only
 //!   C dependency, opt-in: GDAL must be installed.

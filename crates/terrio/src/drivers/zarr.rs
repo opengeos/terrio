@@ -693,16 +693,10 @@ fn read_at_most(r: impl Read, most: usize, what: &str) -> Result<Vec<u8>> {
 /// Decompresses every frame of `b`, to at most `most` bytes: more is an error rather than an
 /// allocation of whatever a small chunk expands to.
 fn zstd_decode(b: &[u8], most: usize) -> Result<Vec<u8>> {
-    let mut out = codec_output(most)?;
-    let mut src = b;
-    while !src.is_empty() && out.len() <= most {
-        let d = ruzstd::decoding::StreamingDecoder::new(&mut src).map_err(|e| bad(format!("zstd: {e}")))?;
-        d.take(((most - out.len()) as u64).saturating_add(1)).read_to_end(&mut out)?;
-    }
-    if out.len() > most {
-        return Err(bad(format!("zstd: a chunk decompressing to more than {most} bytes")));
-    }
-    Ok(out)
+    zrip::decompress_with_limit(b, most).map_err(|e| match e {
+        zrip::DecompressError::OutputTooSmall => bad(format!("zstd: a chunk decompressing to more than {most} bytes")),
+        e => bad(format!("zstd: {e}")),
+    })
 }
 
 /// Decompresses a Blosc (version 1 format) buffer of at most `most` bytes: a header declaring more
@@ -2538,7 +2532,7 @@ fn compress(codec: &Option<Codec>, data: Vec<u8>) -> Result<Vec<u8>> {
             e.write_all(&data)?;
             e.finish()?
         }
-        Some(Codec::Zstd) => ruzstd::encoding::compress_to_vec(&data[..], ruzstd::encoding::CompressionLevel::Fastest),
+        Some(Codec::Zstd) => zrip::compress(&data, 1).map_err(|e| bad(format!("zstd: {e}")))?,
         _ => data,
     })
 }

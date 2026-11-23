@@ -17,7 +17,6 @@
 
 use super::datum::{Op, parse_steps};
 use std::collections::HashMap;
-use std::io::Read;
 use std::sync::{Arc, OnceLock};
 
 static DATA: &[u8] = include_bytes!("../data/epsg.tsv.zst");
@@ -172,11 +171,7 @@ impl<T> Lazy<T> {
 
 /// A table's decompressed text.
 pub(crate) fn decompress(data: &[u8]) -> String {
-    let mut text = String::new();
-    if let Ok(mut d) = ruzstd::decoding::StreamingDecoder::new(&mut &data[..]) {
-        let _ = d.read_to_string(&mut text);
-    }
-    text
+    zrip::decompress(data).ok().and_then(|bytes| String::from_utf8(bytes).ok()).unwrap_or_default()
 }
 
 fn table() -> &'static Table {

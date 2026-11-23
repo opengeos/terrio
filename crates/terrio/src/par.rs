@@ -150,7 +150,7 @@ mod native {
         // still give the panic to their caller. A job's result reaches its caller through a
         // channel or a lazily initialized value, so the caller sees a closed channel (an error) or
         // an uninitialized value (computed again on its own thread). Under memory pressure, a
-        // decoder that panics on a failed allocation (`ruzstd`'s ring buffer, in the EPSG table
+        // decoder that panics on a failed allocation (`ruzstd`'s ring buffer did, in the EPSG table
         // `crs::prefetch` loads) thus no longer aborts a process that would answer.
         let pool = rayon::ThreadPoolBuilder::new()
             .thread_name(|i| format!("terrio-par-{i}"))
