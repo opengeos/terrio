@@ -44,8 +44,11 @@ def obtainable(op):
     Returns:
         True if the operation has grids and each is available or directly downloadable.
     """
+    # pyproj's Grid exposes no optional flag. This reference conservatively requires
+    # every listed grid; Terrio ignores optional grids. No frozen pair exercises that
+    # distinction. A direct-download catalog flag is the policy, independent of URL text.
     return bool(op.grids) and all(
-        g.available or (g.direct_download and g.url) for g in op.grids
+        g.available or g.direct_download for g in op.grids
     )
 
 
