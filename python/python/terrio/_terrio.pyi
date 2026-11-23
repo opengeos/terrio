@@ -294,10 +294,11 @@ class CogWriter:
         gcps: Sequence[tuple[float, float, float, float, float]] | None = None,
         rpc: Sequence[float] | None = None,
         overview_resampling: str | None = None,
+        mask: bool = False,
     ) -> CogWriter: ...
     @property
     def rows_written(self) -> int: ...
-    def write(self, array: NDArray[Any]) -> None: ...
+    def write(self, array: NDArray[Any], mask: NDArray[Any] | None = None) -> None: ...
     def close(self) -> None: ...
 
 @final
@@ -1069,6 +1070,7 @@ def rasterize(
     te: _Bounds | None = None,
     tap: bool = False,
     like: _RasterSource | None = None,
+    background: _RasterSource | None = None,
     ot: str | None = None,
     init: float | Sequence[float] | None = None,
     nodata: float | None = None,

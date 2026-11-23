@@ -416,7 +416,7 @@ fn is_3d(root: &super::wkt1::Node) -> bool {
 }
 
 /// The description of a PROJ string whose WKT 1 describes it whole (without the PROJ4
-/// extension), with east-north axes (or south-orientated Transverse Mercator's, `+axis=wsu`).
+/// extension), with east-north axes (or south-orientated Transverse Mercator's, `+axis=wsu` or `wsd`).
 /// `None` otherwise.
 pub fn describe(s: &str) -> Option<Described> {
     let wkt = from_proj(s)?;
@@ -427,10 +427,10 @@ pub fn describe(s: &str) -> Option<Described> {
     let p = Params::parse(s);
     let method = match own.is_geographic() {
         true => None,
-        // East-north axes, or south-orientated Transverse Mercator's own (`+axis=wsu`).
+        // East-north axes, or south-orientated Transverse Mercator's own (`+axis=wsu`, `wsd`).
         false => Some(method(&p, own.to_meter()).filter(|m| {
-            let south_orientated = m.name == "Transverse_Mercator_South_Orientated";
-            m.axis_described && p.str("axis").is_none_or(|a| a.starts_with("en") || (south_orientated && a == "wsu"))
+            let south = m.name == "Transverse_Mercator_South_Orientated";
+            m.axis_described && p.str("axis").is_none_or(|a| a.starts_with("en") || (south && south_orientated(&p)))
         })?),
     };
     let ell = own.ell;
@@ -660,6 +660,13 @@ fn unit(p: &Params, to_meter: f64) -> String {
     }
 }
 
+/// Whether a PROJ string's axes are south-orientated Transverse Mercator's: west then south
+/// (`+axis=wsu`, or `wsd`, whose height axis a 2D CRS does not have). One rule for [`method`] and
+/// [`describe`].
+fn south_orientated(p: &Params) -> bool {
+    p.str("axis").is_some_and(|a| a.starts_with("ws"))
+}
+
 /// The WKT 1 method of a PROJ string's projection, with PROJ's defaults. `None` when WKT 1 has
 /// none, or when PROJ's CRSs read the PROJ string otherwise than PROJ's projection does.
 fn method(p: &Params, to_meter: f64) -> Option<Method> {
@@ -678,7 +685,7 @@ fn method(p: &Params, to_meter: f64) -> Option<Method> {
         vec![("latitude_of_origin", lat), ("central_meridian", lon), ("scale_factor", k), ("false_easting", fe), ("false_northing", fn_)]
     };
     Some(match p.str("proj")? {
-        "tmerc" | "etmerc" if axis == "ws" => {
+        "tmerc" | "etmerc" if south_orientated(p) => {
             // `+x_0`/`+y_0` negated with x and y: the method's false easting and northing,
             // which it subtracts (EPSG method 9808).
             let (fe, fn_) = (crate::wkt1::negated(fe), crate::wkt1::negated(fn_));
@@ -699,7 +706,9 @@ fn method(p: &Params, to_meter: f64) -> Option<Method> {
                 None if p.has("lat_0") => lat_1,
                 None => 0.0,
             };
-            if lat_1 == lat_2 && lat_0 == lat_1 {
+            // One parallel at the origin is 1SP; given twice (`lat_2`), 2SP, as PROJ 9.9.0 writes
+            // it. With a scale too, PROJ has none (2SP Michigan); 1SP with the scale describes it.
+            if lat_1 == lat_2 && lat_0 == lat_1 && (!p.has("lat_2") || k != 1.0) {
                 m("Lambert_Conformal_Conic_1SP", tm(lat_0, lon_0, k, fe, fn_))
             } else if k == 1.0 {
                 m(
@@ -817,7 +826,8 @@ fn method(p: &Params, to_meter: f64) -> Option<Method> {
                 ("latitude_of_center", deg("lat_0").unwrap_or(49.5)),
                 ("longitude_of_center", deg("lon_0").unwrap_or(24.833333333333332)),
                 ("azimuth", deg("alpha").unwrap_or(30.28813975277778)),
-                ("pseudo_standard_parallel_1", deg("lat_ts").unwrap_or(78.5)),
+                // Fixed, as terrio and PROJ 9.9.0 compute it: PROJ ignores `lat_ts` and writes 78.5.
+                ("pseudo_standard_parallel_1", 78.5),
                 ("scale_factor", p.f64("k_0").or_else(|| p.f64("k")).unwrap_or(0.9999)),
                 ("false_easting", fe),
                 ("false_northing", fn_),
@@ -905,28 +915,11 @@ fn method(p: &Params, to_meter: f64) -> Option<Method> {
         "mill" => m("Miller_Cylindrical", lon_only("longitude_of_center")),
         "robin" => m("Robinson", lon_only("longitude_of_center")),
         name => {
-            let (_, method) = WORLD.iter().find(|(n, _)| *n == name)?;
+            let method = crate::methods::WORLD.iter().find(|w| w.proj == name)?.wkt1?;
             m(method, lon_only("central_meridian"))
         }
     })
 }
-
-/// World projections of a central meridian, by PROJ name, and their WKT 1 methods.
-pub(crate) const WORLD: [(&str, &str); 13] = [
-    ("vandg", "VanDerGrinten"),
-    ("eqearth", "Equal_Earth"),
-    ("moll", "Mollweide"),
-    ("eck1", "Eckert_I"),
-    ("eck2", "Eckert_II"),
-    ("eck3", "Eckert_III"),
-    ("eck4", "Eckert_IV"),
-    ("eck5", "Eckert_V"),
-    ("eck6", "Eckert_VI"),
-    ("gall", "Gall_Stereographic"),
-    ("aitoff", "Aitoff"),
-    ("natearth", "Natural_Earth"),
-    ("igh", "Interrupted_Goode_Homolosine"),
-];
 
 #[cfg(test)]
 mod tests {
@@ -945,6 +938,33 @@ mod tests {
         let w = from_proj("+proj=tmerc +lon_0=-100 +ellps=WGS84 +towgs84=100,50,-30 +pm=ferro +units=us-ft").unwrap();
         assert!(w.contains("TOWGS84[100,50,-30,0,0,0,0]") && w.contains("PRIMEM[\"Ferro\",-17.6666666666667]"), "{w}");
         assert!(w.contains("UNIT[\"US survey foot\",0.304800609601219"), "{w}");
+    }
+
+    /// LCC as PROJ 9.9.0 writes it (`CRS(s).to_wkt("WKT1_GDAL")`): 1SP for one parallel at the
+    /// origin, 2SP for a second parallel given, even the same. With a second parallel and a scale,
+    /// where PROJ has none, 1SP with the scale, as before.
+    #[test]
+    fn lcc_has_the_method_proj_writes() {
+        let projection = |s: &str| from_proj(s).map(|w| w[w.find("PROJECTION[").unwrap()..].split(']').next().unwrap().to_string());
+        let lcc = "+proj=lcc +lat_0=45 +lat_1=45 +lon_0=3 +ellps=GRS80 +units=m";
+        assert_eq!(projection(lcc).as_deref(), Some("PROJECTION[\"Lambert_Conformal_Conic_1SP\""));
+        assert_eq!(projection(&format!("{lcc} +lat_2=45")).as_deref(), Some("PROJECTION[\"Lambert_Conformal_Conic_2SP\""));
+        let w = from_proj(&format!("{lcc} +lat_2=45 +x_0=700000 +y_0=6600000")).unwrap();
+        assert!(w.contains("PARAMETER[\"standard_parallel_2\",45],PARAMETER[\"false_easting\",700000]"), "{w}");
+        let w = from_proj(&format!("{lcc} +lat_2=45 +k=0.9999")).unwrap();
+        assert!(w.contains("PROJECTION[\"Lambert_Conformal_Conic_1SP\"]") && w.contains("PARAMETER[\"scale_factor\",0.9999]"), "{w}");
+        assert!(!w.contains("EXTENSION["), "{w}");
+    }
+
+    /// `describe` takes south-orientated Transverse Mercator by the axes `method` writes it for:
+    /// west then south, with a height up or down.
+    #[test]
+    fn south_orientated_axes_are_described_as_written() {
+        for axis in ["wsu", "wsd"] {
+            let d = describe(&format!("+proj=tmerc +lon_0=25 +x_0=1000 +ellps=WGS84 +axis={axis} +units=m")).unwrap();
+            assert_eq!(d.method, Some("Transverse_Mercator_South_Orientated"), "{axis}");
+        }
+        assert!(describe("+proj=tmerc +lon_0=25 +ellps=WGS84 +axis=swu +units=m").is_none());
     }
 
     #[test]

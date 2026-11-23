@@ -190,3 +190,23 @@ fn histograms_of_raw_rasters_list_the_dataset_metadata() {
     let read = terrio::open_raster_lazy(tif).unwrap().read().unwrap().raster.metadata;
     assert_eq!(metadata(info_path(tif, &hist).unwrap()), read);
 }
+
+/// A Surfer 6 grid declaring a negative or zero size is refused, on disk and as bytes: its signed
+/// sizes were once read as huge unsigned ones, and the open panicked (found by fuzzing).
+#[test]
+fn surfer_grids_of_nonpositive_sizes_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    for (nx, ny) in [(0i16, -1i16), (-26472, -26472), (10, 0)] {
+        let mut b = b"DSBB".to_vec();
+        b.extend_from_slice(&nx.to_le_bytes());
+        b.extend_from_slice(&ny.to_le_bytes());
+        b.resize(56 + 40, 0);
+        let path = dir.path().join("bad.grd");
+        std::fs::write(&path, &b).unwrap();
+        let Err(e) = terrio::LazyRaster::open(path.to_str().unwrap()) else { panic!("opened") };
+        let cells = format!("{nx} x {ny} cells");
+        assert!(e.to_string().contains(&cells), "{e}");
+        let Err(e) = terrio::memory::open_raster_bytes(b, "x.asc") else { panic!("opened as bytes") };
+        assert!(e.to_string().contains(&cells), "{e}");
+    }
+}

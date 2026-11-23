@@ -84,7 +84,7 @@ mod grid;
 mod iau;
 mod keywords;
 mod math;
-#[cfg(test)]
+mod methods;
 mod model;
 mod params;
 mod parsed;
@@ -1462,7 +1462,7 @@ pub fn wkt_proj(wkt: &str) -> Option<String> {
         return Some(p);
     }
     let root = crate::parsed::tree(wkt)?;
-    let c = if wkt2::handles(&root) { wkt2::to_proj(&root).ok()? } else { wkt1::to_proj(&root)? };
+    let c = if wkt2::handles(&root) { model::wkt2_to_proj(wkt).ok()? } else { model::wkt1_to_proj(wkt)? };
     Some(c.proj)
 }
 
@@ -1611,17 +1611,18 @@ pub(crate) fn esri_compound_wkt(wkt: &str) -> Option<String> {
     Some(wkt1::Node { key: "COMPD_CS".into(), args }.to_wkt()).filter(|w| w.len() <= wkt1::MAX_LEN)
 }
 
-/// The semi-major axis in metres of the first `SPHEROID` or `ELLIPSOID` of a WKT definition (in
-/// its `LENGTHUNIT`, as PROJ reads a WKT 2 ellipsoid in feet).
+/// The semi-major axis in metres of a WKT definition's ellipsoid, at its place (in its
+/// `LENGTHUNIT`, as PROJ reads a WKT 2 ellipsoid in feet): a projected CRS's base CRS's, a compound
+/// CRS's horizontal CRS's, a bound CRS's source CRS's.
 #[doc(hidden)]
 pub fn semi_major_axis(wkt: &str) -> Option<f64> {
-    Some(crate::parsed::tree(wkt)?.find(keywords::ELLIPSOID)?.ellipsoid()?.0)
+    Some(crate::parsed::tree(wkt)?.horizontal_ellipsoid()?.0)
 }
 
-/// The semi-major and semi-minor axes in metres of the first `SPHEROID` or `ELLIPSOID` of a WKT
-/// definition, from its axis and inverse flattening (0 for a sphere).
+/// The semi-major and semi-minor axes in metres of a WKT definition's ellipsoid, at its place (see
+/// [`wkt1::Node::horizontal_ellipsoid`]), from its axis and inverse flattening (0 for a sphere).
 fn wkt_ellipsoid(wkt: &str) -> Option<(f64, f64)> {
-    let (a, rf) = crate::parsed::tree(wkt)?.find(keywords::ELLIPSOID)?.ellipsoid()?;
+    let (a, rf) = crate::parsed::tree(wkt)?.horizontal_ellipsoid()?;
     Some((a, if rf == 0.0 { a } else { a * (1.0 - 1.0 / rf) }))
 }
 
@@ -1633,9 +1634,10 @@ fn wkt_datums(wkt: &str) -> Vec<u32> {
     Datums::of(wkt).codes
 }
 
-/// The first geodetic datum (or datum ensemble) node of a WKT definition.
+/// The geodetic datum (or datum ensemble) node of a WKT definition, at its place (see
+/// [`wkt1::Node::horizontal_datum`]).
 fn wkt_datum(wkt: &str) -> Option<wkt1::Node> {
-    crate::parsed::tree(wkt).and_then(|root| root.find(keywords::GEODETIC_DATUM).cloned())
+    crate::parsed::tree(wkt).and_then(|root| root.horizontal_datum().cloned())
 }
 
 /// The name and EPSG code (from its `ID` or `AUTHORITY`) of the first datum of a WKT definition.
@@ -1699,24 +1701,8 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
         return None;
     }
     let own = Def::wkt_conversion(wkt);
-    // The same conversion on the same ellipsoid.
-    let same = |own: &Def, code: u32| {
-        let registered = SpatialRef { epsg: Some(code), ..Default::default() };
-        Def::new(&registered).is_ok_and(|d| same_content(own, &d))
-    };
-    // Among CRSs that match, the one named as the WKT's CRS (`RGF93 v2 (lon-lat)`, ESRI's `GCS_`
-    // prefix aside), else a current one over a deprecated one (as PROJ ranks them), else the base
-    // datum over its later realizations (`NAD83`, which EPSG lists as an alias of NAD83(HARN) too)
-    // unless the WKT names one, else the lowest code.
-    let key = |n: &str| epsg::datum_key(n.strip_prefix("GCS_").unwrap_or(n));
-    let name = wkt_name(wkt).map(|n| key(&n));
-    let named = |c: u32| epsg::get(c).is_some_and(|e| Some(key(&e.name)) == name);
-    let upper = wkt.to_ascii_uppercase();
-    let wkt_names_realization = REALIZATIONS.iter().any(|r| upper.contains(r));
-    let realization = |code: u32| {
-        let name = registry_name(code).map(|name| name.to_ascii_uppercase()).unwrap_or_default();
-        !wkt_names_realization && REALIZATIONS.iter().any(|r| name.contains(r))
-    };
+    let rank = Ranking::new(wkt_name(wkt).as_deref(), wkt);
+    let (same, named, realization) = (same_registered, |c| rank.named(c), |c| rank.realization(c));
     // A CRS of the table on these datums with the WKT's conversion, as GDAL finds it.
     let search = |datums: &[u32]| {
         let own = own.as_ref()?;
@@ -1741,7 +1727,7 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
                 .min_by_key(|c| (!named(*c), *c));
         }
         if own.is_geographic() {
-            return geogs.filter(|c| same(own, *c)).min_by_key(|c| (!named(*c), epsg::is_deprecated(*c), realization(*c), *c));
+            return rank.geographic(geogs, own);
         }
         let method = conversion_method(wkt)?;
         let found = geogs.flat_map(epsg::projected_on).filter(|(c, m)| same_method(m, &method) && same(own, *c)).map(|(c, _)| *c);
@@ -1807,6 +1793,65 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
     }
     #[cfg(not(feature = "wbprojection-fallback"))]
     None
+}
+
+/// Whether a registry CRS has a definition's conversion on its ellipsoid.
+fn same_registered(own: &Def, code: u32) -> bool {
+    let registered = SpatialRef { epsg: Some(code), ..Default::default() };
+    Def::new(&registered).is_ok_and(|d| same_content(own, &d))
+}
+
+/// How [`identify_epsg`] ranks the CRSs that match a WKT: the one named as the WKT's CRS
+/// (`RGF93 v2 (lon-lat)`, ESRI's `GCS_` prefix aside), else a current one over a deprecated one
+/// (as PROJ ranks them), else the base datum over its later realizations (`NAD83`, which EPSG
+/// lists as an alias of NAD83(HARN) too) unless the WKT names one, else the lowest code.
+struct Ranking {
+    name: Option<String>,
+    names_realization: bool,
+}
+
+impl Ranking {
+    /// For a CRS of this name, whose WKT (or names) is `text`.
+    fn new(name: Option<&str>, text: &str) -> Self {
+        let upper = text.to_ascii_uppercase();
+        Self { name: name.map(Self::key), names_realization: REALIZATIONS.iter().any(|r| upper.contains(r)) }
+    }
+
+    fn key(n: &str) -> String {
+        epsg::datum_key(n.strip_prefix("GCS_").unwrap_or(n))
+    }
+
+    fn named(&self, code: u32) -> bool {
+        epsg::get(code).is_some_and(|e| Some(Self::key(&e.name)) == self.name)
+    }
+
+    fn realization(&self, code: u32) -> bool {
+        let name = registry_name(code).map(|name| name.to_ascii_uppercase()).unwrap_or_default();
+        !self.names_realization && REALIZATIONS.iter().any(|r| name.contains(r))
+    }
+
+    /// The first of these geographic CRSs with `own`'s content.
+    fn geographic(&self, geogs: impl Iterator<Item = u32>, own: &Def) -> Option<u32> {
+        geogs.filter(|c| same_registered(own, *c)).min_by_key(|c| (!self.named(*c), epsg::is_deprecated(*c), self.realization(*c), *c))
+    }
+}
+
+/// The EPSG geographic CRS of a WKT 2 geodetic CRS's datum without a code, by the datum's name
+/// (else those whose CRSs ESRI writes with its name), on the CRS's ellipsoid and prime meridian,
+/// whatever its CS: as [`identify_epsg`] identifies a geographic CRS in degrees of that datum, the
+/// CRS's name ranking those that match.
+pub(crate) fn identify_datum(datum: &wkt2::DatumOf) -> Option<u32> {
+    let datums = epsg::datums_named(&datum.datum_name);
+    if datums.is_empty() {
+        return None;
+    }
+    let own = Def::from_proj(&datum.proj()).ok()?;
+    let rank = Ranking::new(
+        Some(without_code(&datum.crs_name)),
+        &[&datum.crs_name, &datum.datum_name, &datum.ellipsoid_name].map(|s| s.as_str()).join(" "),
+    );
+    let on = |datums: &[u32]| rank.geographic(datums.iter().flat_map(|d| epsg::geographic_on(*d)).copied(), &own);
+    on(&datums).or_else(|| on(epsg::datums_written_as(&datum.datum_name)))
 }
 
 /// A registry CRS's WKT 1, with its PROJ string as an extension when it is on the authalic sphere
@@ -1913,7 +1958,7 @@ pub(crate) fn strip_root_code(wkt: &str) -> Option<String> {
 /// The projection method (`+proj=tmerc`) of a WKT definition's conversion.
 fn conversion_method(wkt: &str) -> Option<String> {
     let root = crate::parsed::tree(wkt)?;
-    let c = if wkt2::handles(&root) { wkt2::to_proj(&root).ok()? } else { wkt1::to_proj(&root)? };
+    let c = if wkt2::handles(&root) { model::wkt2_to_proj(wkt).ok()? } else { model::wkt1_to_proj(wkt)? };
     c.proj.split_whitespace().next().map(str::to_string)
 }
 
@@ -2106,13 +2151,16 @@ fn looks_like_wkt(s: &str) -> bool {
 fn wkt_name(wkt: &str) -> Option<String> {
     let start = wkt.find('"')? + 1;
     let end = start + wkt[start..].find('"')?;
-    let name = &wkt[start..end];
-    // Generated definitions append the code: `WGS 84 / UTM zone 33N (EPSG:32633)`.
-    let name = match name.rfind(" (EPSG:") {
+    Some(without_code(&wkt[start..end]).to_string())
+}
+
+/// A CRS's name without the code generated definitions append (`WGS 84 / UTM zone 33N
+/// (EPSG:32633)`).
+fn without_code(name: &str) -> &str {
+    match name.rfind(" (EPSG:") {
         Some(i) if name.ends_with(')') => &name[..i],
         _ => name,
-    };
-    Some(name.to_string())
+    }
 }
 
 /// Options of a [`Transformer`].

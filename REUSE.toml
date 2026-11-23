@@ -103,8 +103,6 @@ path = [
     "crates/terrio-crs/tests/data/projjson_corpus_diffs.tsv",
     "crates/terrio-crs/tests/data/projjson_corpus_diffs_fallback.tsv",
     "crates/terrio-crs/tests/data/projjson_model_diffs.tsv",
-    "crates/terrio-crs/tests/data/step3_baseline.tsv",
-    "crates/terrio-crs/tests/data/step3_baseline_wbprojection.tsv",
 ]
 precedence = "override"
 SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright © 2010-2025 Esri", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
@@ -207,12 +205,13 @@ SPDX-License-Identifier = "LicenseRef-EPSG AND Apache-2.0 AND MIT"
 
 # PROJ 9.9.0's readings of WKTs and PROJ strings, with EPSG CRSs, datums and transformations, and
 # its placements in deprecated EPSG CRSs (scripts/gen_wkt1_axes.py, gen_proj_ellipsoid_shape.py,
-# gen_epsg_deprecated.py).
+# gen_epsg_deprecated.py, gen_wkt2_methods.py).
 [[annotations]]
 path = [
     "crates/terrio-crs/tests/data/epsg_deprecated.json",
     "crates/terrio-crs/tests/data/proj_ellipsoid_shape.json",
     "crates/terrio-crs/tests/data/wkt1_axes.json",
+    "crates/terrio-crs/tests/data/wkt2_methods.json",
 ]
 precedence = "override"
 SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]

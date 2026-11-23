@@ -201,3 +201,13 @@ laz = { opt-level = 3 }
 rusty_av1d = { opt-level = 3 }
 image-webp = { opt-level = 3 }
 lz4_flex = { opt-level = 3 }
+
+# The Python wheels (release-build.yml, `maturin build --profile wheel`): without symbols, with one
+# codegen unit and whole-program LTO. The extension module installs 33% smaller on Linux x86_64
+# (114 to 76 MB), 35% on macOS arm64 (95 to 62 MB) and 7% on Windows x64 (95 to 88 MB), but builds
+# 1.6 to 3.5 times as long (Linux x86_64 12 to 19 min, Windows x64 15 to 32, macOS arm64 10 to 35). The release profile, used by local and CI builds, stays fast.
+[profile.wheel]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+strip = true

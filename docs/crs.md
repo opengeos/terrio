@@ -56,7 +56,9 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
   `TOWGS84` of a WKT 1 source CRS (GDAL's `GEOGCS` or `PROJCS` in `SOURCECRS`). Their PROJ
   string leaves out a shift to a CRS other than WGS 84, as PROJ's does. Their scale difference is a
   ratio in unity (`1.0000067`, as PROJ writes it) or in the unit given (parts per million, where
-  PROJ 9.9.0 misreads 6.7 ppm as the ratio 6.7, which terrio does not follow); an unknown WKT2
+  PROJ 9.9.0 misreads 6.7 ppm as the ratio 6.7, which terrio does not follow); without a unit, a
+  ratio within 0.01 of 1, and farther from 1 (`0.6`, `7`) an error, where PROJ 9.9.0 reads any
+  value as a ratio (`0.6` as -400000 ppm), since it may well be parts per million; an unknown WKT2
   projection method or parameter, or a Helmert transformation parameter, is an error rather than
   ignored (a target CRS terrio cannot convert is left out). A projected
   CRS's `AXIS` nodes give its axes in WKT 1 as in WKT 2, as GDAL and PROJ read them in GIS order:
@@ -1265,8 +1267,8 @@ Refused rather than written wrongly: dynamic CRSs (their frame epochs; by EPSG c
 EPSG method (`+proj=robin`), engineering CRSs, projections on an auxiliary sphere of an
 ellipsoid (`+R_C`, `+R_A`; 19 IAU_2015 CRSs), planetocentric latitudes with heights, a
 `+towgs84` of other than 3 or 7 values, a prime meridian it cannot read (`+pm=foo`), non-finite
-values, a Krovak projection with another `+alpha` than its default (PROJ ignores its `+lat_1` and
-`+lat_ts`, so they are not written), and any parameter of the PROJ definition the PROJJSON would
+values, a Krovak or Krovak Modified projection with another `+alpha` than its default (PROJ
+ignores its `+lat_1` and `+lat_ts`, so they are not written), and any parameter of the PROJ definition the PROJJSON would
 not carry (named in the error), unless it has the value used when it is absent (`+lat_0=0`,
 `+k=1`...). A CRS made from an EPSG code is written unbound (its datum shift is EPSG's); a
 `+towgs84` or `TOWGS84` the definition gives makes a `BoundCRS`, to WGS 84's geographic 2D or 3D
@@ -1314,8 +1316,10 @@ They read and write:
   with `TOWGS84[375,-111,431,0,0,0,0]`, EPSG:27700 alone, would read 3.1 m away). GDAL 3.10.3
   writes the same keys but names the EPSG datum (GeogGeodeticDatumGeoKey 6277), and reads that
   file back without the shift; it keeps the shift of terrio's keys. A CRS identified by a code
-  with a zero shift on WGS 84 is written by the code, as GDAL does. A code with GeogTOWGS84GeoKey next to it is read as
-  the code, without the shift, as GDAL reads it. A WKT 2 `BOUNDCRS` whose transformation
+  with a zero shift on WGS 84 is written by the code, as GDAL does. A code stated by the keys with
+  GeogTOWGS84GeoKey next to it is read as the code's WKT 1 with that `TOWGS84` (but not a zero
+  shift on the WGS 84 datum, which is no shift; on another datum of WGS 84's ellipsoid it is kept), so that such a file, terrio's or GDAL's, reads back with its shift (the CRS keeps its
+  code; GDAL 3.13.3 reads it without the shift). A WKT 2 `BOUNDCRS` whose transformation
   `+towgs84` only approximates (a Molodensky-Badekas evaluation point, a full rotation matrix) is
   written as its WKT in an ESRI PE citation, which keeps it. Not yet: a compound CRS with a shift is
   written by its codes, without it (#1012 item 62);

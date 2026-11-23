@@ -118,8 +118,9 @@ pub struct GeoKeysCrs {
 ///   equivalent CRS of the citation's exact name: on keys with a datum of their own or none, the
 ///   code's definition can differ from theirs (see the CRS documentation);
 /// - user-defined geographic and projected CRSs, for the coordinate transformation codes 1, 3,
-///   7-28 and Hotine oblique Mercator variant B (9815, Swiss oblique Mercator among them), in
-///   any linear unit and on an EPSG datum, an EPSG ellipsoid or the GeoKeys' own;
+///   7-28 and Hotine oblique Mercator variant B (9815; at an azimuth and rectified grid angle of
+///   90°, it and variant A, 3, are the Swiss oblique Mercator), in any linear unit and on an EPSG
+///   datum, an EPSG ellipsoid or the GeoKeys' own;
 /// - ESRI PE citations (`ESRI PE String = <WKT>`), as GDAL writes a CRS GeoKeys cannot hold;
 /// - a vertical CRS (VerticalCSTypeGeoKey) on an EPSG horizontal CRS, as the compound CRS (the
 ///   registry's compound CRS of the two codes when there is one), and a geographic 3D CRS as its
@@ -159,15 +160,21 @@ pub fn read(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> GeoKeysCrs {
         return GeoKeysCrs::default();
     }
     let k = GeoKeys { keys: directory, doubles, ascii };
+    // The registered code the file's ProjectedCSTypeGeoKey or GeographicTypeGeoKey states.
+    let keyed = |code: u16| code != 0 && code != USER_DEFINED;
+    let stated = match (k.short(1024), k.short(3072), k.short(2048)) {
+        (_, Some(c), _) | (Some(2), _, Some(c)) if keyed(c) => Some(u32::from(c)),
+        _ => None,
+    };
     let mut epsg = match (k.short(1024), k.short(3072), k.short(2048)) {
         // A deprecated projected code with a single replacement, as GDAL 3.12 reads it by default
         // (`OSR_USE_NON_DEPRECATED=YES`): EPSG:4855 as 5105, 3752 (which terrio does not carry)
         // as 3994. A geographic one GDAL keeps (EPSG:4140).
-        (_, Some(code), _) if code != 0 && code != USER_DEFINED => match crate::epsg_replacements(u32::from(code)) {
+        (_, Some(code), _) if keyed(code) => match crate::epsg_replacements(u32::from(code)) {
             [replacement] if SpatialRef::from_epsg(*replacement).is_ok() => Some(*replacement),
             _ => Some(u32::from(code)),
         },
-        (Some(2), _, Some(code)) if code != 0 && code != USER_DEFINED => Some(code as u32),
+        (Some(2), _, Some(code)) if keyed(code) => Some(code as u32),
         (Some(1), _, _) => {
             // A registered CRS only in the GeoKeys' linear unit: GDAL builds the CRS from the
             // keys (a ProjectionGeoKey's conversion in metres, in ProjLinearUnitsGeoKey's unit),
@@ -228,13 +235,57 @@ pub fn read(directory: &[u16], doubles: &[f64], ascii: &[u8]) -> GeoKeysCrs {
         let c = registered.unwrap_or(c);
         return GeoKeysCrs { crs: Some(SpatialRef { wkt: c.to_wkt(), esri: None, ..c }), unsupported_method };
     }
-    // The CRS an identifier is a summary of: the retained definition, else the code's, else the
-    // PROJ string's.
+    // The CRS an identifier is a summary of: the retained definition, else the code's (with the
+    // datum shift written beside it), else the PROJ string's.
     let crs = crs.or_else(|| {
-        epsg.map(|code| SpatialRef { epsg: Some(code), wkt: SpatialRef::from_epsg(code).ok().and_then(|s| s.wkt), ..Default::default() })
+        let code = epsg?;
+        // The shift beside the code the keys state, not beside a deprecated code read as its
+        // replacement, which may be on another datum.
+        Some((stated == Some(code)).then(|| with_towgs84(&k, code)).flatten().unwrap_or_else(|| SpatialRef {
+            epsg: Some(code),
+            wkt: SpatialRef::from_epsg(code).ok().and_then(|s| s.wkt),
+            ..Default::default()
+        }))
     });
     let crs = crs.or_else(|| proj4.as_deref().and_then(|p| SpatialRef::from_proj4(p).ok()));
     GeoKeysCrs { crs, unsupported_method }
+}
+
+/// A registered geographic or projected CRS with GeogTOWGS84GeoKey beside the code its keys state,
+/// as [`SpatialRef::to_geokeys`] (and GDAL 3.13.3) writes a WKT that declares the code and has a
+/// datum shift of its own: the code's WKT 1 with that `TOWGS84` in its datum, so that the shift is
+/// read back (#1012 item 62). GDAL 3.13.3 reads such a file without the shift; terrio keeps it.
+/// `None` without a shift of 3 or 7 values, for a zero shift on WGS 84 (no shift), and for a code
+/// without a WKT 1.
+fn with_towgs84(k: &GeoKeys, code: u32) -> Option<SpatialRef> {
+    let t = k.doubles(2062).filter(|t| matches!(t.len(), 3 | 7) && t.iter().all(|v| v.is_finite()))?;
+    let registered = SpatialRef::from_epsg(code).ok()?;
+    // A zero shift on the WGS 84 datum is no shift, as the writer leaves it out (ESRI writes
+    // `TOWGS84[0,0,0,0,0,0,0]` for WGS 84 / UTM zone 33N, EPSG:32633). On another datum of the
+    // WGS 84 ellipsoid (VN-2000, EPSG:4756) it is a shift, and kept.
+    if crate::epsg::get(code).is_some_and(|e| e.datum == 6326) && t.iter().all(|v| *v == 0.0) {
+        return None;
+    }
+    let wkt = registered.to_wkt1_strict()?;
+    let mut root = crate::wkt1::parse(&wkt)?;
+    let datum = datum_node(&mut root)?;
+    datum.args.retain(|a| !matches!(a, crate::wkt1::Arg::Node(n) if n.key.eq_ignore_ascii_case("TOWGS84")));
+    let at = datum.args.iter().position(|a| matches!(a, crate::wkt1::Arg::Node(n) if n.key.eq_ignore_ascii_case("SPHEROID")))? + 1;
+    let towgs84 = crate::wkt1::Node { key: "TOWGS84".into(), args: t.iter().map(|v| crate::wkt1::Arg::Num(*v)).collect() };
+    datum.args.insert(at, crate::wkt1::Arg::Node(towgs84));
+    let crs = SpatialRef::from_wkt(&root.to_wkt());
+    (crs.epsg == Some(code)).then_some(crs)
+}
+
+/// The `DATUM` node of a WKT 1 geographic or projected CRS, to edit.
+fn datum_node(n: &mut crate::wkt1::Node) -> Option<&mut crate::wkt1::Node> {
+    if n.key.eq_ignore_ascii_case("DATUM") {
+        return Some(n);
+    }
+    n.args.iter_mut().find_map(|a| match a {
+        crate::wkt1::Arg::Node(c) if ["GEOGCS", "DATUM"].iter().any(|k| c.key.eq_ignore_ascii_case(k)) => datum_node(c),
+        _ => None,
+    })
 }
 
 /// The geographic 2D CRS of an EPSG geographic 3D CRS: the one on its datum of the same name, as
@@ -668,12 +719,13 @@ fn projection(k: &GeoKeys, to_meter: f64) -> Option<String> {
     }
     Some(match k.short(3075)? {
         1 => format!("tmerc +lat_0={lat0} +lon_0={lon0} +k={scale} {false_xy}"),
-        // Hotine oblique Mercator: variant A (natural origin) and B (centre of projection).
-        3 => oblique_mercator(" +no_uoff")?,
-        // Swiss oblique Mercator, as GDAL writes it: variant B of azimuth 90°.
-        9815 if k.double(AZIMUTH) == Some(90.0) && grid_angle == 90.0 => {
+        // Swiss oblique Mercator, as GDAL writes it: variant B of azimuth 90°, and as GDAL 3.13.3
+        // reads variant A of azimuth and rectified grid angle 90° (opengeos/terrio#1012 item 28).
+        3 | 9815 if k.double(AZIMUTH) == Some(90.0) && grid_angle == 90.0 => {
             format!("somerc +lat_0={lat0} +lon_0={lon0} +k_0={scale} {false_xy}")
         }
+        // Hotine oblique Mercator: variant A (natural origin) and B (centre of projection).
+        3 => oblique_mercator(" +no_uoff")?,
         9815 => oblique_mercator("")?,
         // Mercator 2SP has its standard parallel in ProjStdParallel1GeoKey, 1SP a scale (with
         // which a zero standard parallel is taken as unused).
@@ -939,22 +991,31 @@ fn own_towgs84(crs: &SpatialRef) -> Option<Vec<f64>> {
     };
     let values = proj.split_whitespace().find_map(|t| t.strip_prefix("+towgs84="))?;
     let t: Vec<f64> = values.split(',').map(|x| x.parse().ok().filter(|v: &f64| v.is_finite())).collect::<Option<_>>()?;
-    // On WGS 84: its datum or ellipsoid by name, or the ellipsoid's axis and flattening.
-    let has = |token: &str| proj.split_whitespace().any(|t| t == token);
-    let wgs84 = has("+datum=WGS84") || has("+ellps=WGS84") || (has("+a=6378137") && has("+rf=298.257223563"));
+    // A zero shift on the WGS 84 datum is no shift: for a coded CRS by its registered datum (a zero
+    // shift on VN-2000, EPSG:4756, on WGS 84's ellipsoid, is kept, as the reader keeps it), else by
+    // its PROJ string's datum or ellipsoid.
+    let wgs84 = match crs.epsg.and_then(crate::epsg::get) {
+        Some(e) => e.datum == 6326,
+        None => on_wgs84(&proj),
+    };
     (matches!(t.len(), 3 | 7) && !(wgs84 && t.iter().all(|x| *x == 0.0))).then_some(t)
+}
+
+/// Whether a PROJ string is on WGS 84: its datum or ellipsoid by name, or the ellipsoid's axis and
+/// flattening. A zero shift on it is no shift for the writer, for a CRS without a code.
+fn on_wgs84(proj: &str) -> bool {
+    let has = |token: &str| proj.split_whitespace().any(|t| t == token);
+    has("+datum=WGS84") || has("+ellps=WGS84") || (has("+a=6378137") && has("+rf=298.257223563"))
 }
 
 /// Whether a CRS is a WKT 2 `BOUNDCRS` whose Helmert transformation its `+towgs84` only
 /// approximates: the reader keeps the exact operation beside it (a Molodensky-Badekas evaluation
 /// point, a full rotation matrix).
 fn bound_beyond_towgs84(crs: &SpatialRef) -> bool {
-    crs.wkt
-        .as_deref()
-        .filter(|w| crate::def::is_bound_crs(w))
-        .and_then(crate::wkt1::parse)
-        .filter(crate::wkt2::handles)
-        .and_then(|root| crate::wkt2::to_proj(&root).ok())
+    let Some(w) = crs.wkt.as_deref().filter(|w| crate::def::is_bound_crs(w)) else { return false };
+    crate::parsed::tree(w)
+        .filter(|root| crate::wkt2::handles(root))
+        .and_then(|_| crate::model::wkt2_to_proj(w).ok())
         .is_some_and(|c| c.helmert.is_some())
 }
 
@@ -1239,7 +1300,10 @@ pub struct GeoKeyTags {
 impl SpatialRef {
     /// The CRS of a GeoKey directory and its double and ASCII parameters, as GDAL reads them:
     /// see [`read`], whose CRS this is. Fails when the GeoKeys give no CRS terrio reads, naming an
-    /// unsupported projection method.
+    /// unsupported projection method. One difference from GDAL: a registered code with
+    /// GeogTOWGS84GeoKey beside it, which [`SpatialRef::to_geokeys`] and GDAL write for a WKT that
+    /// declares the code and has a datum shift of its own, is read with that shift (GDAL 3.13.3
+    /// drops it).
     ///
     /// ```
     /// use terrio_crs::SpatialRef;
@@ -1272,8 +1336,9 @@ impl SpatialRef {
     ///   84, a PROJ string's `+towgs84`) with GeogTOWGS84GeoKey: with the code its WKT declares,
     ///   else by its method and parameters on a user-defined datum, never as a code it is only
     ///   identified as. GDAL 3.10.3 writes the same keys but names the EPSG datum, and then reads
-    ///   its own file back without the shift; on a user-defined datum it keeps it. Not yet for a
-    ///   compound CRS, written by its codes;
+    ///   its own file back without the shift; on a user-defined datum it keeps it. terrio reads
+    ///   the code back with its shift (see [`SpatialRef::from_geokeys`]). Not yet for a compound
+    ///   CRS, written by its codes;
     /// - else (an engineering CRS, a method GeoTIFF has no code for, a CRS whose code is not a
     ///   horizontal one), GDAL's fallback: its WKT in an ESRI PE citation (`ESRI PE String =`),
     ///   with a user-defined model type.

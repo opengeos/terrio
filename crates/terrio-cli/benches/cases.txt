@@ -57,7 +57,7 @@ zarr_read translate {dem_zarr} {out}.tif
 netcdf_write translate {dem} {out}.nc
 netcdf_read translate {dem_nc} {out}.tif
 
-# Vectors.
+# Vectors and zonal statistics.
 gpkg_to_fgb convert {zones_gpkg} {out}.fgb
 fgb_to_gpkg convert {zones_fgb} {out}.gpkg
 parquet_to_fgb convert {zones_parquet} {out}.fgb

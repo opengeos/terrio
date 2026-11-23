@@ -84,6 +84,51 @@ fn planetographic_and_planetocentric_crss() {
     assert_eq!((e["semi_major_axis"].as_f64(), e["semi_minor_axis"].as_f64()), (Some(17000.0), Some(5500.0)));
 }
 
+/// What PROJ ignores is not written: an oblique Mercator without `lonc` is centred on the prime
+/// meridian whatever its `lon_0`, and Mercator with a `lat_ts` (0 too) ignores `k`. Each reads
+/// back where PROJ 9.9.0 places (5°, 6°) and (10°, 40°) in the PROJ string's CRS.
+#[test]
+fn what_proj_ignores_is_not_written() {
+    for (definition, (lon, lat), (x, y)) in [
+        ("+proj=omerc +lat_0=4 +lon_0=115 +alpha=53 +k=0.99984 +ellps=GRS80", (5.0, 6.0), (553558.8315597407, 223322.98147780626)),
+        ("+proj=merc +lat_ts=0 +k=0.99 +ellps=WGS84", (10.0, 40.0), (1113194.9079327357, 4838471.398061137)),
+        // Miller on an ellipsoid, as PROJ computes it.
+        ("+proj=mill +ellps=WGS84", (10.0, 40.0), (1111950.5197809099, 4698879.749326175)),
+    ] {
+        let crs = SpatialRef::parse(definition).unwrap();
+        let back = SpatialRef::from_projjson(&crs.to_projjson().unwrap()).unwrap();
+        let geographic = SpatialRef::parse("+proj=longlat +ellps=WGS84").unwrap();
+        let (bx, by) = Transformer::new(&geographic, &back).unwrap().transform(lon, lat).unwrap();
+        assert!((bx - x).abs() < 1e-6 && (by - y).abs() < 1e-6, "{definition}: ({bx}, {by})");
+    }
+    // Miller Cylindrical, which PROJ writes without an EPSG code, and the spherical methods.
+    let mill = export("+proj=mill +lon_0=10 +R=6371000");
+    assert_eq!(mill["conversion"]["method"], json!({"name": "Miller Cylindrical"}));
+    assert_eq!(export("+proj=eqc +R=6371000")["conversion"]["method"]["id"]["code"], 1029);
+    assert_eq!(export("+proj=cea +R=6371000")["conversion"]["method"]["id"]["code"], 9834);
+}
+
+/// A UTM zone's conversion has its EPSG code (16000 + zone in the north, 16100 + zone in the
+/// south) only in a CRS without one, as PROJ 9.9.0 writes them (`CRS(...).to_json()`).
+#[test]
+fn a_utm_conversion_has_its_code_only_in_a_crs_without_one() {
+    let code = |definition: &str| export(definition)["conversion"]["id"]["code"].as_u64();
+    assert_eq!(code("+proj=utm +zone=33 +south +datum=WGS84 +units=m +no_defs"), Some(16133));
+    assert_eq!(code("+proj=utm +zone=33 +datum=WGS84 +units=m +no_defs"), Some(16033));
+    assert_eq!(code("+proj=utm +zone=1 +south +datum=WGS84 +units=m +no_defs"), Some(16101));
+    for crs in ["EPSG:32733", "EPSG:32633"] {
+        assert_eq!(code(crs), None, "{crs}");
+    }
+    // A code its WKT declares too (PROJ's WKT1_GDAL of EPSG:32733).
+    let declared = SpatialRef::from_epsg(32733).unwrap().to_wkt().unwrap();
+    let v: Value = serde_json::from_str(&SpatialRef::from_wkt(&declared).to_projjson().unwrap()).unwrap();
+    assert_eq!(v["id"]["code"].as_u64(), Some(32733));
+    assert!(v["conversion"].get("id").is_none(), "{}", v["conversion"]);
+    // A bound CRS's source without a code keeps it.
+    let bound = export("+proj=utm +zone=33 +south +ellps=intl +towgs84=-87,-98,-121 +units=m +no_defs");
+    assert_eq!((bound["type"].as_str(), bound["source_crs"]["conversion"]["id"]["code"].as_u64()), (Some("BoundCRS"), Some(16133)));
+}
+
 #[test]
 fn methods_and_parameters_follow_proj() {
     // `$schema` first, as PROJ writes it.

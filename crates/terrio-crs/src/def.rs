@@ -86,7 +86,8 @@ pub(crate) struct Def {
     /// The parameters of the PROJ string the definition was read from; `None` for a WKT only
     /// wbprojection reads.
     params: Option<Arc<crate::ProjParams>>,
-    /// What a WKT 2 `BOUNDCRS` with a Helmert transformation is bound to.
+    /// What a WKT 2 `BOUNDCRS` with a Helmert transformation, or a coded CRS with a `TOWGS84` of
+    /// its own (which PROJ reads as one), is bound to.
     bound: Option<Arc<Bound>>,
     /// Set for a WKT whose CRS PROJ does not resolve to the EPSG CRS terrio reads it as.
     unresolved: Option<Unresolved>,
@@ -105,7 +106,7 @@ pub(crate) struct Unresolved {
     pub datum_renamed: bool,
 }
 
-/// A WKT 2 `BOUNDCRS` with a Helmert transformation.
+/// A WKT 2 `BOUNDCRS` with a Helmert transformation, or a coded CRS with a `TOWGS84` of its own.
 #[derive(Debug)]
 struct Bound {
     /// The EPSG code of the source CRS's own datum, when terrio identifies it: into a CRS on it,
@@ -579,6 +580,15 @@ impl Def {
                 && !super::proj4_extension(&e.wkt).is_some_and(|p| p.split_whitespace().any(|t| t == "+nadgrids=@null"))
             {
                 d.ops = vec![Arc::new(Op::world(datum::towgs84_steps(d.ell, &t)))];
+                // PROJ reads it as a `BOUNDCRS` to WGS 84 over the code's datum, into which it
+                // applies no shift: NAD83 / UTM zone 16N with `TOWGS84[0,0,0]` to NAD83
+                // (EPSG:4269) is the inverse projection alone in PROJ 9.7.1, not a way through
+                // WGS 84 that may pick a grid (us_noaa_ohhpgn.tif, 0.2 m in Ohio). Likewise on WGS
+                // 84 itself into EPSG:4326, and OSGB36 into EPSG:27700. A code without a datum has
+                // no source datum to go into.
+                if d.datum.is_some() {
+                    d.bound = Some(Arc::new(Bound { source_datum: d.datum, target: None }));
+                }
                 d.datum = None;
                 d.geog = None;
             }
@@ -1091,9 +1101,9 @@ impl Def {
         };
         // Or on its datum but another prime meridian, which the definition applies itself.
         let fits = |g: &u32| own.as_deref().is_none_or(|t| super::declared_fits(t, *g) || super::declared_fits_but_meridian(t, *g));
-        let geog = c.geog.filter(fits).or_else(|| c.geogcs.epsg().filter(fits)).or_else(|| match &c.geogcs_wkt1 {
+        let geog = c.geog.filter(fits).or_else(|| c.geogcs.epsg().filter(fits)).or_else(|| match &c.datum {
             // WKT 2: identified loosely, so on the same ellipsoid only.
-            Some(text) => super::identify_epsg(text).filter(|g| wkt2::same_ellipsoid(*g, self.ell.a, self.ell.es)),
+            Some(datum) => super::identify_datum(datum).filter(|g| wkt2::same_ellipsoid(*g, self.ell.a, self.ell.es)),
             None => super::identify_epsg(geogcs_text?),
         });
         let geog = geog.map(|g| epsg::get(g).filter(|e| e.proj.starts_with("+proj=geocent")).map_or(g, |e| e.geog));
@@ -1111,7 +1121,7 @@ impl Def {
             // A WKT 1 GEOGCS on a datum no CRS is on keeps its datum's transformations, but gives
             // the CRS PROJ 9.8.1 identifies it as by name (ESRI's GCS_Greenland_1996, GR96) as its
             // geographic CRS (`own`: the text as written, else the node as written back).
-            if c.geogcs_wkt1.is_none() {
+            if c.datum.is_none() {
                 self.named_geog = super::identify_by_shared_name(own);
             }
         }
@@ -1209,7 +1219,7 @@ impl Def {
             }
         }
         let root = crate::parsed::tree(w)?;
-        let c = if wkt2::handles(&root) { wkt2::to_proj(&root).ok()? } else { wkt1::to_proj(&root)? };
+        let c = if wkt2::handles(&root) { crate::model::wkt2_to_proj(w).ok()? } else { crate::model::wkt1_to_proj(w)? };
         Self::from_proj(&c.proj).ok()
     }
 
@@ -1316,7 +1326,7 @@ impl Def {
             let kind = root.key.to_ascii_lowercase().replace('_', "");
             return Err(Error::Crs(format!("unsupported projection: unsupported WKT root '{kind}'")));
         }
-        let converted = if wkt2::handles(&root) { Some(wkt2::to_proj(&root)?) } else { wkt1::to_proj(&root) };
+        let converted = if wkt2::handles(&root) { Some(crate::model::wkt2_to_proj(w)?) } else { crate::model::wkt1_to_proj(w) };
         if let Some(c) = converted {
             let mut d = Self::from_proj(&c.proj)?;
             // A `BOUNDCRS`'s Helmert transformation that `+towgs84` cannot stand for (a full
@@ -1358,6 +1368,16 @@ impl Def {
                 // In PROJ's order, which decides between those of one area ("OSGB36 to WGS 84
                 // (3)" before "(2)").
                 route::sort_as_proj(&mut ops);
+                // Then the shift and PROJ's ballpark from the target CRS, which PROJ's nested
+                // search keeps even where its search from the target code drops it (DHDN, CH1903,
+                // Tokyo, NTF): it drops the ballpark only when a transformation needing no grid
+                // holds the area of interest, here the world (the bound CRS has no area in
+                // terrio). Where only that ballpark is left for the area of interest, the route
+                // drops it, as PROJ does (`route::nested`).
+                if !ops.is_empty() && !ops.iter().any(|op| op.ballpark) {
+                    let accuracy = -1.0;
+                    ops.push(Arc::new(Op { accuracy, chain_accuracy: accuracy, ballpark: true, ..Op::world(to_target.clone()) }));
+                }
                 if ops.is_empty() {
                     // The datum stays `None`: `Def::new` tells by it that a bound CRS over a code
                     // has the bound's transformations, and `on_bound_source` covers the source's.
@@ -1369,12 +1389,16 @@ impl Def {
                 d.bound = Some(Arc::new(Bound { source_datum: source.datum, target: Some((t, helmert)) }));
                 return Ok(d);
             }
-            if is_bound_crs(w) && c.proj.contains("+towgs84=") {
-                // To WGS 84: the source CRS's own datum, into which PROJ applies no shift.
+            if c.proj.contains("+towgs84=") {
+                // To WGS 84 (a `BOUNDCRS`, or a WKT 1 `TOWGS84`, which PROJ reads as one): the
+                // source CRS's own datum, into which PROJ applies no shift. A WKT 1 whose datum
+                // resolves to none keeps the shift into every CRS.
                 let mut source = d.clone();
                 source.ops.clear();
                 source.registered_datum(&c, own_geogcs_text(w, &c));
-                d.bound = Some(Arc::new(Bound { source_datum: source.datum, target: None }));
+                if is_bound_crs(w) || source.datum.is_some() {
+                    d.bound = Some(Arc::new(Bound { source_datum: source.datum, target: None }));
+                }
                 return Ok(d);
             }
             if !c.proj.contains("+towgs84=") {
@@ -1707,6 +1731,12 @@ impl Def {
     /// transforms into with no shift.
     pub fn on_bound_source(&self, other: &Def) -> bool {
         self.bound.as_deref().is_some_and(|b| b.source_datum.is_some() && b.source_datum == other.datum)
+    }
+
+    /// Whether this is a WKT 2 `BOUNDCRS` to a CRS other than WGS 84, whose transformations to
+    /// WGS 84 are its shift followed by each of that CRS's, then by that CRS's ballpark.
+    pub fn bound_elsewhere(&self) -> bool {
+        self.bound.as_deref().is_some_and(|b| b.target.is_some())
     }
 
     /// The datum transformations to WGS 84, in the order they are tried.
@@ -2190,7 +2220,7 @@ fn proj_maps_origin(method: &str, key: &str) -> bool {
 /// `GEOGCS` instead (ED50 with its own `TOWGS84` under a Bessel source), so that its datum would
 /// be taken for the source's. The source's node is read then.
 fn own_geogcs_text<'a>(w: &'a str, c: &wkt1::Converted) -> Option<&'a str> {
-    geogcs_text(w).filter(|_| c.geogcs_wkt1.is_none())
+    geogcs_text(w).filter(|_| c.datum.is_none())
 }
 
 /// The `GEOGCS[...]` part of a WKT 1 definition.

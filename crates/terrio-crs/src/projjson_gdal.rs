@@ -343,28 +343,10 @@ fn geographic1(g: &Node, outer_id: bool) -> Result<Map<String, Value>> {
     Ok(m)
 }
 
-/// An EPSG parameter: name, code, and kind (`a`ngle, `l`ength or `s`cale).
-type Param = (&'static str, u32, char);
-const LAT_NAT: Param = ("Latitude of natural origin", 8801, 'a');
-const LON_NAT: Param = ("Longitude of natural origin", 8802, 'a');
-const K_NAT: Param = ("Scale factor at natural origin", 8805, 's');
-const FE: Param = ("False easting", 8806, 'l');
-const FN: Param = ("False northing", 8807, 'l');
-const LAT_FO: Param = ("Latitude of false origin", 8821, 'a');
-const LON_FO: Param = ("Longitude of false origin", 8822, 'a');
-const SP1: Param = ("Latitude of 1st standard parallel", 8823, 'a');
-const SP2: Param = ("Latitude of 2nd standard parallel", 8824, 'a');
-const E_FO: Param = ("Easting at false origin", 8826, 'l');
-const N_FO: Param = ("Northing at false origin", 8827, 'l');
-const LAT_PC: Param = ("Latitude of projection centre", 8811, 'a');
-const LON_PC: Param = ("Longitude of projection centre", 8812, 'a');
-const AZIMUTH: Param = ("Azimuth at projection centre", 8813, 'a');
-const GAMMA: Param = ("Angle from Rectified to Skew Grid", 8814, 'a');
-const K_PC: Param = ("Scale factor at projection centre", 8815, 's');
-const E_PC: Param = ("Easting at projection centre", 8816, 'l');
-const N_PC: Param = ("Northing at projection centre", 8817, 'l');
-const LAT_SP: Param = ("Latitude of standard parallel", 8832, 'a');
-const LON_ORIGIN: Param = ("Longitude of origin", 8833, 'a');
+use crate::methods::{
+    AZIMUTH, FE, FE_CENTRE, FE_FALSE, FN, FN_CENTRE, FN_FALSE, GAMMA, K_CENTRE, K_NAT, Kind, LAT_CENTRE, LAT_FALSE, LAT_NAT, LAT_TS,
+    LON_CENTRE, LON_FALSE, LON_NAT, LON_ORIGIN, Param, SP1, SP2,
+};
 
 /// GDAL's WKT 1 parameter names (normalized) for an EPSG parameter.
 pub(crate) fn wkt1_names(code: u32) -> &'static [&'static str] {
@@ -386,7 +368,7 @@ pub(crate) fn wkt1_names(code: u32) -> &'static [&'static str] {
 /// The EPSG method (name and code, 0 for PROJ's own) and parameters of a WKT 1 projection.
 pub(crate) fn method1(name: &str, param: &dyn Fn(&[&str]) -> Option<f64>) -> Option<(&'static str, u32, &'static [Param])> {
     const NAT: &[Param] = &[LAT_NAT, LON_NAT, K_NAT, FE, FN];
-    const FO: &[Param] = &[LAT_FO, LON_FO, SP1, SP2, E_FO, N_FO];
+    const FO: &[Param] = &[LAT_FALSE, LON_FALSE, SP1, SP2, FE_FALSE, FN_FALSE];
     const AZ: &[Param] = &[LAT_NAT, LON_NAT, FE, FN];
     const WORLD: &[Param] = &[LON_NAT, FE, FN];
     Some(match norm(name).as_str() {
@@ -401,12 +383,14 @@ pub(crate) fn method1(name: &str, param: &dyn Fn(&[&str]) -> Option<f64>) -> Opt
         "polarstereographic" if param(&["latitudeoforigin"]).is_some_and(|l| (l.abs() - 90.0).abs() < 1e-12) => {
             ("Polar Stereographic (variant A)", 9810, NAT)
         }
-        "polarstereographic" => ("Polar Stereographic (variant B)", 9829, &[LAT_SP, LON_ORIGIN, FE, FN]),
+        "polarstereographic" => ("Polar Stereographic (variant B)", 9829, &[LAT_TS, LON_ORIGIN, FE, FN]),
         "obliquestereographic" => ("Oblique Stereographic", 9809, NAT),
         "hotineobliquemercatorazimuthcenter" => {
-            ("Hotine Oblique Mercator (variant B)", 9815, &[LAT_PC, LON_PC, AZIMUTH, GAMMA, K_PC, E_PC, N_PC])
+            ("Hotine Oblique Mercator (variant B)", 9815, &[LAT_CENTRE, LON_CENTRE, AZIMUTH, GAMMA, K_CENTRE, FE_CENTRE, FN_CENTRE])
         }
-        "hotineobliquemercator" => ("Hotine Oblique Mercator (variant A)", 9812, &[LAT_PC, LON_PC, AZIMUTH, GAMMA, K_PC, FE, FN]),
+        "hotineobliquemercator" => {
+            ("Hotine Oblique Mercator (variant A)", 9812, &[LAT_CENTRE, LON_CENTRE, AZIMUTH, GAMMA, K_CENTRE, FE, FN])
+        }
         "cassinisoldner" => ("Cassini-Soldner", 9806, AZ),
         "cylindricalequalarea" => ("Lambert Cylindrical Equal Area", 9835, &[SP1, LON_NAT, FE, FN]),
         "mollweide" => ("Mollweide", 0, WORLD),
@@ -442,20 +426,28 @@ fn projected1(p: &Node) -> Result<Map<String, Value>> {
         Some(_) => return Err(unsupported("a WKT 1 extended with a PROJ string")),
         None => {
             let name = p.child("PROJECTION").and_then(Node::name).ok_or_else(|| unsupported("a PROJCS without PROJECTION"))?;
+            // A polar stereographic `from_wkt` refuses for its latitude. PROJ 9.9.0 maps it to no EPSG
+            // method and writes GDAL's method and parameter names as given, which this writer has no
+            // form for: refused, as `from_wkt` refuses it.
+            if crate::wkt1::polar_latitude_refused(p) {
+                return Err(unsupported(&format!("the {name} projection with its latitude refused")));
+            }
             method1(name, &param).ok_or_else(|| unsupported(&format!("the {name} projection")))?
         }
     };
     let mut values = Vec::new();
     let mut parameters = Vec::new();
-    for &(pname, pcode, kind) in list {
-        let v = param(wkt1_names(pcode)).unwrap_or(if kind == 's' { 1.0 } else { 0.0 });
+    for p in list {
+        // GDAL's name, else EPSG's or an older EPSG name, which PROJ also reads in WKT 1.
+        let default = if p.kind == Kind::Scale { 1.0 } else { 0.0 };
+        let v = param(wkt1_names(p.code)).or_else(|| param(&[p.key])).or_else(|| param(p.aliases)).unwrap_or(default);
         values.push(v);
-        let unit = match kind {
-            'a' => angular.clone(),
-            's' => json!("unity"),
-            _ => linear.clone(),
+        let unit = match p.kind {
+            Kind::Angle => angular.clone(),
+            Kind::Scale => json!("unity"),
+            Kind::Length => linear.clone(),
         };
-        parameters.push(json!({"name": pname, "value": num(v), "unit": unit, "id": id("EPSG", pcode)}));
+        parameters.push(json!({"name": p.name, "value": num(v), "unit": unit, "id": id("EPSG", p.code)}));
     }
     let mut m = json!({"name": method});
     if mcode != 0 {
@@ -476,7 +468,7 @@ fn projected1(p: &Node) -> Result<Map<String, Value>> {
             let north = fnorth == 0.0;
             conversion["name"] = json!(format!("UTM zone {}{}", zone as u32, if north { 'N' } else { 'S' }));
             if inner {
-                conversion["id"] = id("EPSG", if north { 16000 } else { 17000 } + zone as u32);
+                conversion["id"] = id("EPSG", if north { 16000 } else { 16100 } + zone as u32);
             }
         }
     }
@@ -744,6 +736,22 @@ mod tests {
     }
 
     #[test]
+    fn a_utm_zone_without_its_crs_code_has_its_conversion_code() {
+        // GDAL 3.13.3: `SetWellKnownGeogCS("WGS84")`, `SetUTM(zone, north)`, its WKT read back by
+        // `ExportToPROJJSON()`: EPSG:16133, 16033, 16101 and 16160 (16100 + zone in the south).
+        for (zone, south, code) in [(33, true, 16133), (33, false, 16033), (1, true, 16101), (60, true, 16160)] {
+            let wkt = format!(
+                r#"PROJCS["WGS 84 / UTM zone {zone}{h}",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563,AUTHORITY["EPSG","7030"]],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]],AXIS["Latitude",NORTH],AXIS["Longitude",EAST],AUTHORITY["EPSG","4326"]],PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",{lon}],PARAMETER["scale_factor",0.9996],PARAMETER["false_easting",500000],PARAMETER["false_northing",{fnorth}],UNIT["metre",1,AUTHORITY["EPSG","9001"]],AXIS["Easting",EAST],AXIS["Northing",NORTH]]"#,
+                h = if south { "S" } else { "N" },
+                lon = zone * 6 - 183,
+                fnorth = if south { 10_000_000 } else { 0 },
+            );
+            let v = pj(&SpatialRef::from_wkt(&wkt), false);
+            assert_eq!(v["conversion"]["id"], json!({"authority": "EPSG", "code": code}), "{zone} {south}");
+        }
+    }
+
+    #[test]
     fn the_database_form_holds_what_the_database_defines() {
         // rasterio 1.5.0's `CRS.from_epsg(...).to_dict(projjson=True)`.
         let nad27 = pj(&SpatialRef::from_epsg(4267).unwrap(), true);
@@ -770,6 +778,71 @@ mod tests {
         assert_eq!(j["base_crs"]["datum"]["ellipsoid"]["inverse_flattening"], json!(294.978698213911));
         assert_eq!(j["conversion"]["id"], json!({"authority": "EPSG", "code": 16011}));
         assert_eq!(j["conversion"]["parameters"][3]["value"], json!(500000));
+    }
+
+    #[test]
+    fn wkt1_parameters_under_epsg_names_are_written_as_proj_reads_them() {
+        // PROJ 9.9.0 (pyproj 3.8.0), `CRS(wkt).to_json()`: each value as given, under its EPSG
+        // name or an older one.
+        const G: &str = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#;
+        let wkt = |projection: &str, params: &[(&str, f64)]| {
+            let params: Vec<String> = params.iter().map(|(k, v)| format!(r#"PARAMETER["{k}",{v}]"#)).collect();
+            format!(r#"PROJCS["x",{G},PROJECTION["{projection}"],{},UNIT["metre",1]]"#, params.join(","))
+        };
+        let values = |w: &str| -> Vec<(u64, f64)> {
+            let j = pj(&SpatialRef::from_wkt(w), false);
+            j["conversion"]["parameters"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| (p["id"]["code"].as_u64().unwrap(), p["value"].as_f64().unwrap()))
+                .collect()
+        };
+        let albers = wkt(
+            "Albers_Conic_Equal_Area",
+            &[
+                ("Latitude of false origin", 40.0),
+                ("longitude_of_center", -96.0),
+                ("standard_parallel_1", 29.5),
+                ("standard_parallel_2", 45.5),
+            ],
+        );
+        assert_eq!(values(&albers)[..4], [(8821, 40.0), (8822, -96.0), (8823, 29.5), (8824, 45.5)]);
+        let hotine = wkt(
+            "Hotine_Oblique_Mercator",
+            &[
+                ("Latitude of projection centre", 4.0),
+                ("Longitude of projection centre", 115.0),
+                ("Azimuth of initial line", 53.3),
+                ("Angle from Rectified to Skew Grid", 53.13),
+                ("Scale factor on initial line", 0.99984),
+            ],
+        );
+        assert_eq!(values(&hotine)[..5], [(8811, 4.0), (8812, 115.0), (8813, 53.3), (8814, 53.13), (8815, 0.99984)]);
+        let lcc = wkt(
+            "Lambert_Conformal_Conic_2SP",
+            &[
+                ("Latitude of false origin", 40.0),
+                ("Longitude of false origin", 10.0),
+                ("Latitude of 1st standard parallel", 45.0),
+                ("Latitude of 2nd standard parallel", 35.0),
+                ("Easting at false origin", 7.0),
+                ("Northing at false origin", 8.0),
+            ],
+        );
+        assert_eq!(values(&lcc), [(8821, 40.0), (8822, 10.0), (8823, 45.0), (8824, 35.0), (8826, 7.0), (8827, 8.0)]);
+        // PROJ maps GDAL's `Polar_Stereographic` with only a standard parallel to no EPSG method
+        // ("Polar_Stereographic"), and `from_wkt` refuses it: refused.
+        let polar = SpatialRef::from_wkt(&wkt("Polar_Stereographic", &[("standard_parallel_1", -71.0), ("central_meridian", 0.0)]));
+        let error = polar.to_gdal_projjson(false).unwrap_err().to_string();
+        assert!(error.contains("Polar_Stereographic projection with its latitude refused"), "{error}");
+        // And one with EPSG's `Latitude of natural origin` 90, which PROJ also maps to no EPSG method.
+        let polar = SpatialRef::from_wkt(&wkt(
+            "Polar_Stereographic",
+            &[("Latitude of natural origin", 90.0), ("central_meridian", 0.0), ("scale_factor", 0.994)],
+        ));
+        let error = polar.to_gdal_projjson(false).unwrap_err().to_string();
+        assert!(error.contains("Polar_Stereographic projection with its latitude refused"), "{error}");
     }
 
     #[test]

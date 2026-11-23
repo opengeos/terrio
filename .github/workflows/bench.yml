@@ -3,7 +3,8 @@ name: bench
 # CPU instructions, estimated cycles (Callgrind) and peak heap (DHAT) of
 # crates/terrio/benches/instructions.rs and of the terrio commands of crates/terrio-cli/benches/cases.txt
 # (crates/terrio-cli/benches/commands.rs) under Valgrind, on
-# the pull request against main (the merge commit's first parent), in the same job. Instruction
+# the pull request and on main (the merge commit's first parent), in parallel jobs; see the `bench`
+# job for how main's side is saved and the runs are split to finish in about 10 minutes. Instruction
 # counts repeat within 0.01% between runs, where timings on shared runners vary by 10–30%.
 # Informational: the job fails only when a build or a benchmarked command fails, never on a regression. bench-comment.yml
 # posts the results, which this job uploads as the `bench` artifact: a pull request from a fork gets
@@ -11,10 +12,12 @@ name: bench
 
 on:
   pull_request:
+  push:
+    branches: [main]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -24,19 +27,25 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
-  bench:
+  # Only Rust sources, build scripts, manifests and build settings change instruction counts. When the file list is
+  # unavailable, it runs.
+  files:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
       pull-requests: read
+    outputs:
+      run: ${{ steps.changes.outputs.run }}
     steps:
-      # Only Rust sources, build scripts, manifests and build settings change instruction counts. When the file list is
-      # unavailable, it runs.
       - id: changes
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
+          EVENT: ${{ github.event_name }}
         run: |
+          if [ "$EVENT" = push ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if ! files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" -q '.[] | .filename, (.previous_filename // empty)'); then
             echo "run=true" >> "$GITHUB_OUTPUT"
             exit 0
@@ -47,68 +56,120 @@ jobs:
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "Benchmarks skipped: no Rust source or manifest changed."
           fi
-      - if: steps.changes.outputs.run == 'true'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+  # main is the merge commit's first parent, as the pull request merges into it; `pr` is the merge
+  # commit. Each prints the summaries without a baseline: the `comment` job pairs them. A push to
+  # main benchmarks it once and saves its summaries under its commit, so a pull request on that
+  # commit runs only its own side; the same run saves the dependency build for pull requests.
+  bench:
+    needs: files
+    if: needs.files.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        side: ${{ github.event_name == 'push' && fromJSON('["main"]') || fromJSON('["main", "pr"]') }}
+    env:
+      SIDE: ${{ matrix.side }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 2
           persist-credentials: false
-      - if: steps.changes.outputs.run == 'true'
+      - id: commit
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$SIDE" = main ] && [ "$EVENT" = pull_request ]; then git checkout -q --detach HEAD^1; fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - if: matrix.side == 'main' && github.event_name == 'pull_request'
+        id: saved
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/out/main.json
+            ${{ runner.temp }}/out/main.cpu
+          key: bench-main-${{ steps.commit.outputs.sha }}
+      - if: steps.saved.outputs.cache-hit != 'true'
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master; toolchain set by input
         with:
           toolchain: stable
-      - if: steps.changes.outputs.run == 'true'
+      - if: steps.saved.outputs.cache-hit != 'true'
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - if: steps.changes.outputs.run == 'true'
+        with:
+          shared-key: bench
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - if: steps.saved.outputs.cache-hit != 'true'
         uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
         with:
           # The version of the gungraun dev-dependency (Cargo.toml).
           tool: gungraun-runner@0.20.0
-      - if: steps.changes.outputs.run == 'true'
+      - if: steps.saved.outputs.cache-hit != 'true'
         run: sudo apt-get update -q && sudo apt-get install -yq valgrind
-      # The merge commit's first parent is main as the pull request merges into it. The base is
-      # built and run first and saved as the `main` baseline, unless it has no benchmarks yet.
-      - if: steps.changes.outputs.run == 'true'
-        name: Benchmark main
-        env:
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      - if: steps.saved.outputs.cache-hit != 'true'
+        name: Benchmark ${{ matrix.side }}
         run: |
-          head=$(git rev-parse HEAD)
-          base=$(git rev-parse HEAD^1)
-          echo "HEAD_SHA=$PR_HEAD_SHA" >> "$GITHUB_ENV"
-          echo "BASE_SHA=$base" >> "$GITHUB_ENV"
-          echo "MERGE_SHA=$head" >> "$GITHUB_ENV"
-          git checkout -q --detach "$base"
-          # Each benchmark as crate/name: crates/<crate>/benches/<name>.rs.
-          for bench in terrio/instructions terrio-cli/commands; do
-            crate=${bench%/*} name=${bench#*/}
-            if [ -f "crates/$crate/benches/$name.rs" ]; then
-              cargo bench -p "$crate" --bench "$name" -- --save-baseline=main --output-format=json > "$RUNNER_TEMP/main-$name.json"
-            else
-              echo "main has no $name benchmarks yet: the pull request's counts are reported alone."
-            fi
-          done
-          git checkout -q --detach "$head"
-      - if: steps.changes.outputs.run == 'true'
-        name: Benchmark the pull request
-        run: |
-          # Concatenated summaries, which bench_comment.py reads.
-          for bench in terrio/instructions terrio-cli/commands; do
-            crate=${bench%/*} name=${bench#*/}
-            baseline=()
-            [ -s "$RUNNER_TEMP/main-$name.json" ] && baseline=(--baseline=main)
-            cargo bench -p "$crate" --bench "$name" -- "${baseline[@]}" --output-format=json >> "$RUNNER_TEMP/pr.json"
-          done
-      - if: steps.changes.outputs.run == 'true'
-        name: Write the comment
+          cargo bench -p terrio --bench instructions --no-run
+          cargo bench -p terrio-cli --bench commands --no-run
+          # Three Valgrind runs at once on the runner's 4 cores (counts do not depend on it): the
+          # library, and the commands split by the first letter of their name, about half each.
+          # Callgrind simulates fixed caches, not the host's, so that the estimated cycles of main
+          # and the pull request compare across runners.
+          export GUNGRAUN_CALLGRIND_ARGS='--I1=32768,8,64 --D1=32768,8,64 --LL=8388608,16,64'
+          out=$RUNNER_TEMP/out
+          mkdir -p "$out"
+          pids=()
+          cargo bench -p terrio --bench instructions -- --output-format=json > "$out/lib.part" & pids+=($!)
+          cargo bench -p terrio-cli --bench commands -- '*::cli::[!r-z]*' --output-format=json > "$out/aq.part" & pids+=($!)
+          cargo bench -p terrio-cli --bench commands -- '*::cli::[r-z]*' --output-format=json > "$out/rz.part" & pids+=($!)
+          for pid in "${pids[@]}"; do wait "$pid"; done
+          cat "$out"/*.part > "$out/$SIDE.json"
+          rm "$out"/*.part
+          # The CPU, which picks run-time dispatched (AVX2) code paths: the comment notes a mismatch.
+          grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- > "$out/$SIDE.cpu"
+      - if: github.event_name == 'push'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/out/main.json
+            ${{ runner.temp }}/out/main.cpu
+          key: bench-main-${{ steps.commit.outputs.sha }}
+      - if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bench-${{ matrix.side }}
+          path: ${{ runner.temp }}/out
+          retention-days: 1
+
+  comment:
+    needs: bench
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: bench-*
+          path: ${{ runner.temp }}/in
+          merge-multiple: true
+      - name: Write the comment
         env:
           PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          base=$(git rev-parse HEAD^1)
           mkdir -p "$RUNNER_TEMP/bench"
-          python3 scripts/bench_comment.py "$RUNNER_TEMP/pr.json" --base "$BASE_SHA" --head "$HEAD_SHA" > "$RUNNER_TEMP/bench/bench.md"
+          python3 scripts/bench_comment.py "$RUNNER_TEMP/in/pr.json" --main "$RUNNER_TEMP/in/main.json" --base "$base" --head "$HEAD_SHA" > "$RUNNER_TEMP/bench/bench.md"
+          dir=$RUNNER_TEMP/in
+          if ! cmp -s "$dir/main.cpu" "$dir/pr.cpu"; then
+            printf '\n<sub>main ran on%s, the pull request on%s: code dispatched by CPU features may count differently.</sub>\n' \
+              "$(cat "$dir/main.cpu" 2>/dev/null)" "$(cat "$dir/pr.cpu")" >> "$RUNNER_TEMP/bench/bench.md"
+          fi
           echo "$PR" > "$RUNNER_TEMP/bench/pr-number.txt"
           cat "$RUNNER_TEMP/bench/bench.md" >> "$GITHUB_STEP_SUMMARY"
-      - if: steps.changes.outputs.run == 'true'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bench
           path: ${{ runner.temp }}/bench

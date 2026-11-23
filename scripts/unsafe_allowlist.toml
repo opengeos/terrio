@@ -53,9 +53,9 @@ origin = "existing"
 reason = "The optional GDAL backend's 17 baseline FFI blocks; two additions (#485) query a valid borrowed geometry size before budget charging and export into an exactly sized fallible buffer. The safe API exports infallibly allocated WKB. One addition (#740) reads DateTimeEx from a live borrowed feature into initialized stack outputs because the safe wrapper loses milliseconds and raw timezone flags."
 
 [files."crates/terrio/src/lib.rs"]
-count = 9
+count = 10
 origin = "existing"
-reason = "NullSafeAllocator, a GlobalAlloc forwarding to the system allocator: the unsafe impl, its 4 unsafe fns and their 4 blocks"
+reason = "NullSafeAllocator, a GlobalAlloc forwarding to the system allocator: the unsafe impl, its 4 unsafe fns and their 4 blocks; grow_heap_ahead's block, which allocates and releases its reserve"
 
 [files."crates/terrio/src/ops/dem.rs"]
 count = 2
