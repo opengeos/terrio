@@ -3902,15 +3902,19 @@ impl WarpContext<'_> {
         // columns that its samples span across the cut instead, when that arc is shorter than half
         // a turn: no step between adjacent samples, which `cut` takes to be shorter than half a
         // turn, then passes outside it. Chunks mirrored across the cut so get mirrored kernels. A
-        // regional source places the arc in its stored columns by whole turns and clips it to them,
-        // as it does a chunk's bounds (`kernel_bounds`): where the arc meets both stored edges, the
-        // span between them stays. The samples of a chunk around a pole span more than half a
-        // turn, and keep the distance between the least and greatest. Without
+        // regional source places the arc in its stored columns by whole turns, as it does a chunk's
+        // bounds (`wrap_source_bounds`, which keeps their off-source margins): where the arc meets
+        // both stored edges, the span between them stays. Samples around a pole span more than
+        // half a turn and keep the distance between the least and greatest. Without
         // `periodic_longitude`, the stored edges of a source covering one turn are a regional
         // source's, which interpolation does not cross: the span between them stays.
-        let arc = self.arc_turn().filter(|_| cut).and_then(|turn| short_arc(&columns, turn));
+        let arc = self.arc_turn().filter(|_| cut).and_then(|turn| {
+            // A whole-turn footprint can have coincident endpoints on the circle. A collapsed
+            // arc must not replace its continuous span with a zero-width kernel.
+            short_arc(&columns, turn).filter(|&(low, high)| high > low || raw_span < turn)
+        });
         let kernel_span = arc.map_or(raw_span, |(low, high)| high - low);
-        let kernel_bounds = arc.map(|(low, high)| self.wrap_source_bounds(low, high));
+        let kernel_bounds = arc.filter(|_| self.global_longitude_turn().is_none()).map(|(low, high)| self.wrap_source_bounds(low, high));
         (x0, x1) = self.wrap_source_bounds(x0, x1);
         if x0 > sw || x1 < 0.0 || y0 > sh || y1 < 0.0 {
             return Some((0, 0, 0, 0, 0.0, 0.0, 0.0));
@@ -3948,6 +3952,7 @@ impl WarpContext<'_> {
             (sy, (ih - sy).min(maxyc - sy + yr).max(0))
         };
         let fill = (sws * shs) as f64 / ((x1 - x0 + 2.0 * xr as f64) * (y1 - y0 + 2.0 * yr as f64)).max(1.0);
+        // Without a separate arc, kx0.max(0).trunc() is the minxc column computed above.
         let (kx0, kx1) = kernel_bounds.map_or((x0, x1), |(k0, k1)| (round_close(k0), round_close(k1)));
         let raw_w =
             if self.global_longitude_turn().is_some() { kernel_span.min(sw) } else { (sw - kx0.max(0.0).trunc()).min(kx1 - kx0).max(0.0) };
@@ -7541,6 +7546,66 @@ mod tests {
         assert_eq!((short, touching, hair, across), (20., 20., 20., 21.), "from 120° E to 160° W");
         let [short, touching, across] = [1., 0., -1000.].map(|gap| raw_w(-160., 340, gap));
         assert!((short - 45.).abs() < 1e-3 && touching == 45. && across == 340., "from 160° W to 180° E: {short}, {touching}, {across}");
+    }
+
+    /// GDAL 3.12's window-ratio kernel spans the stored columns when a single destination pixel
+    /// covers a full turn. Sampling its two endpoints must give the same scale as dense sampling.
+    #[test]
+    fn a_whole_turn_pixel_keeps_its_kernel_span_with_endpoint_sampling() {
+        let srs = SpatialRef::from_epsg(4326).unwrap();
+        for (west, width) in [(120., 120), (100., 100), (-180., 360)] {
+            let rw = RegionWarp::new(
+                (width, 10),
+                [west, 1., 0., 5., 0., -1.],
+                &srs,
+                &srs,
+                [0., 360., 0., 5., 0., -5.],
+                Resampling::Bilinear,
+                0.,
+                DataType::F64,
+                vec![None],
+                None,
+            )
+            .unwrap()
+            .with_grid_invariance(false)
+            .with_kernel_version(KernelVersion::Gdal312);
+            for all in [false, true] {
+                let mut ctx = rw.context();
+                ctx.sample_all = all;
+                // At least five perimeter samples are required before a window is planned.
+                let (sx, sy, sw, sh, _, raw_w, raw_h) = ctx.source_window(0, 0, 1, 2).unwrap();
+                assert_eq!(raw_w, width as f64, "source {west} + {width}, all {all}");
+                let scales = ctx.scales(&Chunk { dx: 0, dy: 0, dw: 1, dh: 2, sx, sy, sw, sh, raw_w, raw_h });
+                assert!((scales.0 - 1. / width as f64).abs() < 1e-14, "source {west} + {width}, all {all}: {scales:?}");
+            }
+        }
+    }
+
+    /// A regional source's east-side gap produces an empty window rather than a kernel with an
+    /// infinite scale; both sampling policies skip a destination wholly outside the source.
+    #[test]
+    fn a_window_beyond_the_regional_east_edge_is_empty() {
+        let srs = SpatialRef::from_epsg(4326).unwrap();
+        let rw = RegionWarp::new(
+            (120, 10),
+            [120., 1., 0., 5., 0., -1.],
+            &srs,
+            &srs,
+            [250., 10., 0., 5., 0., -5.],
+            Resampling::Bilinear,
+            0.,
+            DataType::F64,
+            vec![None],
+            None,
+        )
+        .unwrap()
+        .with_grid_invariance(false);
+        for all in [false, true] {
+            let mut ctx = rw.context();
+            ctx.sample_all = all;
+            let (_, _, width, height, ..) = ctx.source_window(0, 0, 1, 2).unwrap();
+            assert_eq!((width, height), (0, 0), "all {all}");
+        }
     }
 
     /// Full-turn area footprints take both stored edges, including a cut at zero longitude.
