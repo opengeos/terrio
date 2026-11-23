@@ -5712,8 +5712,8 @@ impl<'a, T: crate::pixel::Pixel> Kernel<'a, T> {
             ry = 1.0;
             last_y = 0;
         }
-        // The taps' indexes from one base, instead of `index()` per tap per check: with `row0`
-        // the index of `(ix, iy)`, tap `(x, iy + dy)` is `row0 + dy * width + x`.
+        // The taps' indexes from one base, instead of `index()` per tap per check: `row0` is the
+        // index of column 0 on row `iy`, so tap `(x, iy + dy)` is `row0 + dy * width + x`.
         let band = self.src.bands[b];
         let mask = self.src.valid[b].as_ref();
         let width = self.src.width as i64;
