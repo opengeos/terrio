@@ -478,6 +478,8 @@ pub(crate) struct TiffOptions {
     /// without nodata (`SPARSE_OK`, GeoTIFF only): their offset and byte count are 0, and they
     /// read as nodata (or 0). Turned off where the `.aux.xml` would read them otherwise
     /// (`TiffOptions::sparse_unless_sidecar_differs`).
+    /// GDAL 3.13.3 is the reference for block omission. Terrio warns and disables this option
+    /// for lossy codecs, conflicting sidecars and COGs rather than promising parity there.
     pub sparse: bool,
     /// Metadata domains other than the default one (`@METADATA_DOMAINS`), those GDAL writes.
     pub domains: Vec<MetadataDomain>,

@@ -1997,6 +1997,15 @@ fn write_raster_with_nodata(
             opts.sparse_unless_sidecar_differs(path, sidecar, raster.bands / if complex { 2 } else { 1 }, raster.data_type);
             return crate::drivers::gtiff_write::write(raster, path, &opts);
         }
+        if options
+            .creation_options
+            .iter()
+            .rev()
+            .find(|(key, _)| key.eq_ignore_ascii_case("SPARSE_OK"))
+            .is_some_and(|(_, value)| matches!(value.to_ascii_uppercase().as_str(), "YES" | "TRUE" | "ON" | "1"))
+        {
+            return Err(Error::Unsupported("SPARSE_OK needs a compression handled by the native GeoTIFF writer".into()));
+        }
     }
     // Complex samples: GeoTIFFs written above, and GDAL's HFA driver below.
     if complex && !(cfg!(feature = "gdal") && driver == RasterDriver::HFA) {
@@ -2515,6 +2524,30 @@ pub(crate) mod fallible {
 
 #[cfg(test)]
 mod tests {
+    /// A compression outside the native writer must not silently store every block when sparse
+    /// output was requested, even when COMPRESS is given only through creation options.
+    #[test]
+    fn sparse_writes_do_not_fall_back_to_a_dense_legacy_writer() {
+        let raster = wbraster::Raster::from_data_native(
+            wbraster::RasterConfig { cols: 2, rows: 2, bands: 1, data_type: wbraster::DataType::U8, ..Default::default() },
+            wbraster::raster::RasterData::U8(vec![0; 4]),
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        for driver in [crate::formats::RasterDriver::GTiff, crate::formats::RasterDriver::Cog] {
+            let path = dir.path().join(format!("{driver:?}.tif"));
+            let options = super::RasterWriteOptions {
+                driver: Some(driver),
+                creation_options: vec![("COMPRESS".into(), "UNKNOWN".into()), ("SPARSE_OK".into(), "YES".into())],
+                ..Default::default()
+            };
+            let error = super::write_raster(&raster, path.to_str().unwrap(), &options).unwrap_err();
+            assert!(matches!(error, crate::Error::Unsupported(_)), "{error}");
+            assert!(error.to_string().contains("SPARSE_OK"), "{error}");
+            assert!(!path.exists(), "no dense file is published");
+        }
+    }
+
     /// A file no driver reads names its path once, with the fallback hint after the reason.
     #[test]
     fn unrecognized_format_names_its_path_once() {

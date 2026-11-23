@@ -2876,12 +2876,6 @@ class DatasetWriter(DatasetReader):
             # writes COGs through a MEM dataset): the colour interpretation decides, as in
             # `shutil.copy`.
             out.pop("PHOTOMETRIC", None)
-            if out.pop("SPARSE_OK", "NO").upper() in ("YES", "TRUE", "ON", "1"):
-                warnings.warn(
-                    "SPARSE_OK is not supported for COGs: every tile is written",
-                    UserWarning,
-                    stacklevel=4,
-                )
         if (
             self._out_driver.upper() == "COG"
             and self._count > 1

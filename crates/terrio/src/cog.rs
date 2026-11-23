@@ -3292,7 +3292,14 @@ const STRIP_ROWS_BYTES: usize = 8 << 20;
 /// with its nodata (0 without one): the pixels of a chunk that a sparse file leaves out. `bands`
 /// are samples (numbered from 1), `parts` to a band: both parts of a complex band's samples take
 /// that band's nodata from the `.aux.xml`.
-fn nodata_filled(tags: &GeoTags, data_type: DataType, bands: &[usize], parts: usize, plane: usize, len: usize) -> Result<RasterData> {
+pub(crate) fn nodata_filled(
+    tags: &GeoTags,
+    data_type: DataType,
+    bands: &[usize],
+    parts: usize,
+    plane: usize,
+    len: usize,
+) -> Result<RasterData> {
     let mut out = try_new_filled(data_type, len, tags.nodata.unwrap_or(0.0))?;
     if let Some(nodata) = tags.integer_nodata {
         match &mut out {

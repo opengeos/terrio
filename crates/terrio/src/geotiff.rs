@@ -1688,18 +1688,8 @@ pub(crate) fn read_geotiff_with_limits(path: &std::path::Path, limits: crate::co
     // with nodata (each band's), or 0, which their pixels read as, as by window.
     let mut data: Option<RasterData> = None;
     if chunks.len() < chunk_count {
-        let mut out = crate::dataset::fallible::raster_data(data_type, raster_len, tags.nodata.unwrap_or(0.0), "the raster")?;
-        match (&mut out, tags.integer_nodata) {
-            (RasterData::U64(values), Some(nodata)) => values.fill(nodata as u64),
-            (RasterData::I64(values), Some(nodata)) => values.fill(nodata as i64),
-            _ => {}
-        }
-        for band in 0..samples * parts {
-            if let Some((_, nodata)) = tags.band_nodata.iter().find(|(b, _)| *b == band / parts + 1) {
-                crate::pixel::with_data!(&mut out, values => values[band * w * h..(band + 1) * w * h].fill(*nodata as _));
-            }
-        }
-        data = Some(out);
+        let bands: Vec<_> = (1..=samples * parts).collect();
+        data = Some(crate::cog::nodata_filled(&tags, data_type, &bands, parts, w * h, raster_len)?);
     }
     let file = dec.inner().get_ref().get_ref().clone();
     let reopen = || file_decoder(file.clone(), &tags, limits, path);
