@@ -4,8 +4,8 @@
 //! any transformation but PROJ's ballpark links two CRSs within their extents (#1012 item 15).
 //! `data/has_non_ballpark_operation.tsv` (`scripts/gen_has_non_ballpark_operation.py`, pyproj's
 //! `TransformerGroup` with the network off and no grids, counting operations whose grids the PROJ
-//! catalog lists for direct download) holds PROJ's answer for every EPSG geographic 2D CRS into WGS 84, and some into
-//! ETRS89 and OSGB36.
+//! catalog lists for direct download) holds PROJ's answer for every EPSG geographic 2D CRS into
+//! WGS 84, and some into ETRS89 and OSGB36.
 
 use terrio_crs::{SpatialRef, Transformer};
 
@@ -16,6 +16,30 @@ fn offline() {
 
 fn has(src: &SpatialRef, dst: &SpatialRef) -> bool {
     Transformer::new(src, dst).unwrap().has_non_ballpark_operation()
+}
+
+/// PROJ's grid catalog distinguishes names operations open from producer-only names. Missing
+/// grids count by the former's direct-download URL, including non-CDN GTX and GSB files. Keep
+/// grid policy changes in this isolated, uniformly offline integration binary, not unit tests.
+#[test]
+fn obtainable_grids_follow_the_direct_download_catalog() {
+    offline();
+    let dst = SpatialRef::from_epsg(4326).unwrap();
+    for (name, expected) in [
+        ("null", true),
+        ("us_noaa_conus.tif", true),
+        ("conus", true),
+        ("naptrans2008.gtx", true),
+        ("rdtrans2008.gsb", true),
+        ("conus.las", false),
+        ("unlisted_nonexistent_terrio_grid.tif", false),
+        ("SIRGAS2000-to-SIRGAS-CONSIR17P01.gsb", false),
+    ] {
+        // A named datum keeps an explicit null-grid operation, rather than the datumless
+        // ellipsoid-only case, which is a separate ballpark-policy test below.
+        let src = SpatialRef::parse(&format!("+proj=longlat +datum=NAD27 +nadgrids={name}")).unwrap();
+        assert_eq!(has(&src, &dst), expected, "{name}");
+    }
 }
 
 #[test]

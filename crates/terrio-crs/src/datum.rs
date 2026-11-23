@@ -682,7 +682,7 @@ impl Op {
     }
 
     /// Whether every grid it requires can be had (see [`grid::obtainable`]): PROJ's candidate
-    /// lists keep those it knows on its CDN as if installed.
+    /// lists keep those it lists for direct download (CDN or not) as if installed.
     pub fn obtainable(&self) -> bool {
         self.grids().iter().all(|(name, optional)| *optional || grid::obtainable(name))
     }
