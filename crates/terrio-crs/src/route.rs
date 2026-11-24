@@ -973,17 +973,25 @@ fn unresolved_search(list: Vec<Leg>, a: u32, b: u32, ctx: &OperationContext) -> 
         if same_name {
             let named = |c: &u32| reg.geodetic.get(c).is_some_and(|n| n.name == g.name);
             for code in codes.clone().filter(named) {
-                let found = if code == g.code { Vec::new() } else { from(code, other, source_side) };
-                if code == g.code && list.iter().any(|l: &Leg| !l.op.ballpark && !l.op.concatenated && !l.op.geocentric) {
-                    return;
+                // The CRS itself first in code order, with registered transformations of its own:
+                // those alone, the list as it is.
+                if code == g.code {
+                    if list.iter().any(|l: &Leg| !l.op.ballpark && !l.op.concatenated && !l.op.geocentric) {
+                        return;
+                    }
+                    continue;
                 }
+                // Another CRS of the name with transformations: its alone, without the list's.
+                let found = from(code, other, source_side);
                 if !found.is_empty() {
                     pivot.extend(found);
                     exclusive = true;
                     return;
                 }
             }
+            // None of the name has any: PROJ goes on through all the datum's CRSs.
         }
+        // Under another name, every other CRS of the datum, with the list.
         for code in codes.filter(|c| *c != g.code) {
             pivot.extend(from(code, other, source_side));
         }
@@ -996,9 +1004,10 @@ fn unresolved_search(list: Vec<Leg>, a: u32, b: u32, ctx: &OperationContext) -> 
     if let Some(u) = dst.unresolved().filter(|u| !u.named) {
         side(gb, ga.datum, u.same_name, false);
     }
-    // Another CRS's transformations alone: without those of the CRS itself.
+    // Another CRS's transformations alone: the list holds the CRS's own only so far (the pivot's
+    // join it below), so all of them go but the ballpark.
     if exclusive {
-        list.retain(|l| l.op.ballpark || l.op.concatenated || l.op.geocentric);
+        list.retain(|l| l.op.ballpark);
     }
     // Without those another of them replaces, and those the list has (by name: a list between
     // projected CRSs holds them flattened).

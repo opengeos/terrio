@@ -2029,8 +2029,9 @@ fn proj_resolution(root: &wkt1::Node, code: Option<u32>, own_geog: Option<u32>, 
     // the CRS up by its name instead), but then searches only among the CRSs of that authority
     // (`findsOpsInRegistryWithIntermediate`), so finds no chain through another datum: the CRS's
     // own transformations, as for a resolved CRS.
+    // `named` and `same_name` are read for an unresolved CRS only.
     if has_id(root) {
-        return Some(Resolution { resolved: true, area: area(code), datum_renamed, ballpark: false, named: true, same_name: true });
+        return Some(Resolution { resolved: true, area: area(code), datum_renamed, ballpark: false, named: false, same_name: false });
     }
     // ESRI's WKT reader maps a `PROJCS` name after a `GCS_` geographic CRS or a `D_` datum.
     let esri =
@@ -2064,28 +2065,29 @@ fn proj_resolution(root: &wkt1::Node, code: Option<u32>, own_geog: Option<u32>, 
                 })
         };
     // PROJ goes from the WKT into a CRS of its datum by a longitude rotation, not its ballpark,
-    // when their prime meridians differ in radians. Its WKT reader takes an angle unit near the
-    // degree for the degree (and a meridian it knows, as Rome's 12.4523333333333°, for its own),
-    // but keeps another unit's factor: a grad of 0.0157079632679489 rad is not its database's
-    // 0.01570796326794895 (the only other unit of a registered prime meridian), so the meridians
-    // then differ.
+    // when their prime meridians differ in radians: it compares them exactly (`getSIValue`).
+    // The registered meridian, as PROJ's database gives it: Paris in grads of
+    // 0.01570796326794895 rad (the only registered prime meridian not in degrees), the others in
+    // degrees (`proj_prime_meridian` gives a meridian of its table the table's value).
     let registered_pm = geog.and_then(epsg::get).map_or(0.0, |e| {
         let p = Params::parse(&e.proj);
-        p.str("pm").and_then(|v| v.parse::<f64>().ok().or_else(|| prime_meridian(v))).unwrap_or(0.0)
+        proj_prime_meridian(p.str("pm").and_then(|v| v.parse::<f64>().ok().or_else(|| prime_meridian(v))).unwrap_or(0.0))
     });
+    let registered_si =
+        if (registered_pm - 2.33722917).abs() < 1e-6 { 2.5969213 * 0.01570796326794895 } else { registered_pm.to_radians() };
     let pm_rotated = base.child("PRIMEM").is_some_and(|pm| {
         let unit = pm.child("ANGLEUNIT").or_else(|| base.child("UNIT")).and_then(|u| u.num(1)).unwrap_or(1f64.to_radians());
         let value = pm.num(1).unwrap_or(0.0);
         if (unit - 1f64.to_radians()).abs() <= 1e-10 * unit {
-            (proj_prime_meridian(value) - proj_prime_meridian(registered_pm)).abs() > 1e-10
-        } else if value == 0.0 && registered_pm == 0.0 {
-            false
-        } else if (unit - 0.01570796326794895).abs() <= 1e-10 * unit {
-            // Preserve the database grad-factor distinction without applying it to radians
-            // or other units. PROJ 9.9.0 compares the meridians' SI values directly.
-            unit != 0.01570796326794895 || (value * unit - registered_pm.to_radians()).abs() > 1e-12
+            // PROJ's WKT reader takes a unit within 1e-10 of the degree for the degree, and a
+            // meridian of its table for the table's (Rome's 12.4523333333333°): compared as
+            // `proj_prime_meridian` matches them, within 1e-10 rad.
+            (proj_prime_meridian(value) - registered_pm).to_radians().abs() > 1e-10
         } else {
-            value * unit != registered_pm.to_radians()
+            // Another unit keeps its factor, so the meridian's radians are compared exactly, as
+            // PROJ compares them: 0 rad is Greenwich, Paris's 2.5969213 grads of
+            // 0.0157079632679489 rad are not the database's (PROJ 9.9.0).
+            value * unit != registered_si
         }
     });
     // The name of the geographic CRS, for a projected one, which PROJ pivots through.
@@ -2564,14 +2566,17 @@ mod resolution_tests {
         // a longitude rotation too.
         let greenwich = rome.replacen(r#"PRIMEM["Rome",12.4523333333333"#, r#"PRIMEM["Greenwich",0"#, 1);
         assert_eq!(framing(&greenwich, 4806), (false, false, false));
-        let registered = Params::parse(&epsg::get(4806).unwrap().proj);
-        let registered = registered.str("pm").unwrap();
-        let registered = registered.parse::<f64>().ok().or_else(|| prime_meridian(registered)).unwrap();
-        let radian_rome = rome.replace(
-            r#"PRIMEM["Rome",12.4523333333333,ANGLEUNIT["degree",0.0174532925199433]]"#,
-            &format!(r#"PRIMEM["Rome",{},ANGLEUNIT["radian",1]]"#, registered.to_radians()),
-        );
-        assert_eq!(framing(&radian_rome, 4806), (true, false, false));
+        // In radians, compared exactly with PROJ's database's 12.452333333333332° (PROJ 9.9.0): by
+        // the ballpark at 0.2173342162225072 rad, by a longitude rotation at 12.4523333333333°'s
+        // 0.21733421622250665 rad.
+        let radian_rome = |radians: &str| {
+            rome.replace(
+                r#"PRIMEM["Rome",12.4523333333333,ANGLEUNIT["degree",0.0174532925199433]]"#,
+                &format!(r#"PRIMEM["Rome",{radians},ANGLEUNIT["radian",1]]"#),
+            )
+        };
+        assert_eq!(framing(&radian_rome("0.2173342162225072"), 4806), (true, false, false));
+        assert_eq!(framing(&radian_rome("0.21733421622250665"), 4806), (false, false, false));
         let tokyo: serde_json::Value = serde_json::from_str(include_str!("../tests/data/wkt_unresolved.json")).unwrap();
         let tokyo = tokyo["wkts"]["5132 wkt2 datum id, renamed"].as_str().unwrap();
         let radian_greenwich = tokyo
