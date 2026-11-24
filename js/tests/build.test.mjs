@@ -57,9 +57,9 @@ for (const target of ["web", "nodejs", "bundler"]) {
     assert.ok(!files.includes("core"));
   });
 }
-test("standard full/core/zarr/cog exports and loader remain available", () => {
+test("standard full/core/zarr/cog/geoparquet exports and loader remain available", () => {
   const { pkg, calls, files } = build(["--no-threads", "--no-memory64"]);
-  assert.equal(calls.length, 4);
+  assert.equal(calls.length, 5);
   assert.ok(pkg.exports["./core"]);
   // terrio-js/zarr: its own crate (js/zarr), built into `zarr/`.
   assert.deepEqual(pkg.exports["./zarr"], { types: "./zarr/terrio.d.ts", default: "./zarr/terrio.js" });
@@ -69,11 +69,17 @@ test("standard full/core/zarr/cog exports and loader remain available", () => {
   assert.deepEqual(pkg.exports["./cog"], { types: "./cog/terrio.d.ts", default: "./cog/terrio.js" });
   assert.match(calls[3][1], /[\\/]js[\\/]cog$/);
   for (const file of ["cog/terrio.js", "cog/terrio_bg.wasm", "cog/terrio.d.ts"]) assert.ok(pkg.files.includes(file), file);
+  // terrio-js/geoparquet: its own crate (js/geoparquet), built into `geoparquet/`.
+  assert.deepEqual(pkg.exports["./geoparquet"], { types: "./geoparquet/terrio.d.ts", default: "./geoparquet/terrio.js" });
+  assert.match(calls[4][1], /[\\/]js[\\/]geoparquet$/);
+  for (const file of ["geoparquet/terrio.js", "geoparquet/terrio_bg.wasm", "geoparquet/terrio.d.ts"]) assert.ok(pkg.files.includes(file), file);
   assert.ok(pkg.exports["./load"]);
   assert.ok(files.includes("load.d.ts"));
   // Each module's glue imports its own snippets.
   assert.ok(pkg.files.includes("snippets/"));
   assert.ok(pkg.files.includes("core/snippets/"));
+  // build.mjs lists terrio-js/geoparquet's snippets when wasm-pack writes them (CI checks it does).
+  assert.ok(pkg.files.includes("geoparquet/snippets/"));
 });
 test("selective output refuses stale assets", () => {
   assert.throws(() => build(["--no-default-features"], (crate) => fs.mkdirSync(join(crate, "pkg"))), /must not exist/);

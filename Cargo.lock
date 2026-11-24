@@ -2805,6 +2805,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "terrio-js-geoparquet"
+version = "0.9.0"
+dependencies = [
+ "js-sys",
+ "serde_json",
+ "terrio",
+ "terrio-js-fetch",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wbvector",
+]
+
+[[package]]
 name = "terrio-js-zarr"
 version = "0.9.0"
 dependencies = [

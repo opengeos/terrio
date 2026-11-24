@@ -2761,16 +2761,17 @@ fn square_scales_above_half(p: [(f64, f64); 4]) -> bool {
 /// `WarpContext::guessed`): enough for the estimate's approximation to hold every tap mostly.
 const GUESS_PAD: usize = 2;
 
-/// The length of the shortest arc that holds every column of `columns` on a circle of `turn`
-/// columns, when it is shorter than half a turn: each column is moved by whole turns to the place
-/// nearest the first, which lays columns that fit in less than half a turn out along that arc.
-fn short_arc(columns: &[f64], turn: f64) -> Option<f64> {
+/// The least and greatest columns of the shortest arc that holds every column of `columns` on a
+/// circle of `turn` columns, when it is shorter than half a turn: each column is moved by whole
+/// turns to the place nearest the first, which lays columns that fit in less than half a turn out
+/// along that arc.
+fn short_arc(columns: &[f64], turn: f64) -> Option<(f64, f64)> {
     let (&first, rest) = columns.split_first()?;
     let (low, high) = rest.iter().fold((first, first), |(low, high), &x| {
         let x = x - ((x - first) / turn).round() * turn;
         (low.min(x), high.max(x))
     });
-    (high - low < turn / 2.0 - 1e-7).then_some(high - low)
+    (high - low < turn / 2.0 - 1e-7).then_some((low, high))
 }
 
 #[cfg(test)]
@@ -2779,6 +2780,8 @@ thread_local! {
     static GUESS_SHRINK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// Chunks warped again from their exact window on this thread, in tests.
     static GUESS_RETRIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Source windows computed (not served from [`RegionWarp`]'s cache) on this thread, in tests.
+    static WINDOW_COMPUTATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Longitude facts of a warp's source, constant over the warp (see [`WarpContext::source_wrap`]).
@@ -3404,8 +3407,9 @@ impl WarpContext<'_> {
     /// Bounds the actual point kernels or area footprints. Geometry buffers are one row wide;
     /// no source pixels are read while planning. `sum` retains its exact polygon planner.
     /// Scales are recomputed after the source read rather than retaining a chunk-sized matrix.
-    #[allow(clippy::type_complexity)]
-    fn source_window(&self, dx: usize, dy: usize, dw: usize, dh: usize) -> Option<(usize, usize, usize, usize, f64, f64, f64)> {
+    fn source_window(&self, dx: usize, dy: usize, dw: usize, dh: usize) -> Option<SourceWindow> {
+        #[cfg(test)]
+        WINDOW_COMPUTATIONS.with(|n| n.set(n.get() + 1));
         if (dw == 0 || dh == 0) && self.grid_invariant && self.resampling != Resampling::Sum {
             return None;
         }
@@ -3710,8 +3714,8 @@ impl WarpContext<'_> {
                 y1 = y1.max(ys[i]);
             }
             // The columns of the samples that `cut` looks at, for the arc they span across the cut
-            // of a periodic full-turn source (see `kernel_span` below).
-            let columns: Vec<f64> = if turn.is_some() && self.global_longitude_turn().is_some() {
+            // (see `arc` below).
+            let columns: Vec<f64> = if turn.is_some() && self.arc_turn().is_some() {
                 (0..xs.len())
                     .filter(|&i| ok[i] && regular.as_ref().is_none_or(|points| points[i]) && xs[i].is_finite() && ys[i].is_finite())
                     .map(|i| xs[i])
@@ -3894,22 +3898,36 @@ impl WarpContext<'_> {
             }
         }
         let raw_span = (x1 - x0).max(0.0);
-        // A chunk whose samples cross the longitude cut of a periodic full-turn source
-        // ([`Self::global_longitude_turn`]; `cut`) has samples beside both of the cut's columns,
-        // so its least and greatest sampled columns are the long way round apart. Its kernel scale
-        // takes the arc of columns that its samples span across the cut instead, when that arc is
-        // shorter than half a turn: no step between adjacent samples, which `cut` takes to be
-        // shorter than half a turn, then passes outside it. Chunks mirrored across the cut so get
-        // mirrored kernels. The samples of a chunk around a pole span more than half a turn, and
-        // keep the distance between the least and greatest. Without `periodic_longitude`, the
-        // stored edges are a regional source's, which interpolation does not cross: the span
-        // between them stays.
-        let kernel_span = self.global_longitude_turn().filter(|_| cut).and_then(|turn| short_arc(&columns, turn)).unwrap_or(raw_span);
+        // A chunk whose samples cross the longitude cut (`cut`) of a periodic full-turn source
+        // ([`Self::global_longitude_turn`]) or of a regional source narrower than a turn
+        // ([`Self::arc_turn`]) has samples beside both of the cut's columns, so its least and
+        // greatest sampled columns are the long way round apart. Its kernel scale takes the arc of
+        // columns that its samples span across the cut instead, when that arc is shorter than half
+        // a turn: no step between adjacent samples, which `cut` takes to be shorter than half a
+        // turn, then passes outside it. Chunks mirrored across the cut so get mirrored kernels. A
+        // regional source places the arc in its stored columns by whole turns, as it does a chunk's
+        // bounds (`wrap_source_bounds`, which keeps their off-source margins): where the arc meets
+        // both stored edges, the span between them stays. Samples around a pole span more than
+        // half a turn and keep the distance between the least and greatest. Without
+        // `periodic_longitude`, the stored edges of a source covering one turn are a regional
+        // source's, which interpolation does not cross: the span between them stays.
+        let round_close = |v: f64| if (v.round() - v).abs() < 1e-6 { v.round() } else { v };
+        let arc = self.arc_turn().filter(|_| cut).and_then(|turn| {
+            // A whole-turn footprint can have coincident endpoints on the circle. A collapsed
+            // arc must not replace its continuous span with a zero-width kernel.
+            short_arc(&columns, turn).filter(|&(low, high)| high - low > 1e-7)
+        });
+        let kernel_bounds = arc
+            .filter(|_| self.global_longitude_turn().is_none())
+            .map(|(low, high)| self.wrap_source_bounds(low, high))
+            .map(|(low, high)| (round_close(low), round_close(high)))
+            // Near-coincident endpoints of a whole-turn footprint can leave a tiny arc.
+            // If rounding collapses it, fall back to the sampled bounds to keep that full span.
+            .filter(|(low, high)| high > low);
         (x0, x1) = self.wrap_source_bounds(x0, x1);
         if x0 > sw || x1 < 0.0 || y0 > sh || y1 < 0.0 {
             return Some((0, 0, 0, 0, 0.0, 0.0, 0.0));
         }
-        let round_close = |v: f64| if (v.round() - v).abs() < 1e-6 { v.round() } else { v };
         (x0, y0, x1, y1) = (round_close(x0), round_close(y0), round_close(x1), round_close(y1));
         let res_win = if self.translation { 0 } else { self.resampling.radius() };
         let xscale = (dwf / if self.global_longitude_turn().is_some() { raw_span } else { x1 - x0 }).max(1e-3);
@@ -3942,7 +3960,13 @@ impl WarpContext<'_> {
             (sy, (ih - sy).min(maxyc - sy + yr).max(0))
         };
         let fill = (sws * shs) as f64 / ((x1 - x0 + 2.0 * xr as f64) * (y1 - y0 + 2.0 * yr as f64)).max(1.0);
-        let raw_w = if self.global_longitude_turn().is_some() { kernel_span.min(sw) } else { (sw - minxc as f64).min(x1 - x0).max(0.0) };
+        // Without a separate arc, kx0.max(0).trunc() is the minxc column computed above.
+        let (kx0, kx1) = kernel_bounds.unwrap_or((x0, x1));
+        let raw_w = if self.global_longitude_turn().is_some() {
+            arc.map_or(raw_span, |(low, high)| high - low).min(sw)
+        } else {
+            (sw - kx0.max(0.0).trunc()).min(kx1 - kx0).max(0.0)
+        };
         let raw_h = (sh - minyc as f64).min(y1 - y0).max(0.0);
         Some((sx as usize, sy as usize, sws as usize, shs as usize, fill, raw_w, raw_h))
     }
@@ -4395,6 +4419,15 @@ impl WarpContext<'_> {
             return None;
         }
         self.source_longitude_turn().filter(|turn| turn.is_finite() && *turn > 0.0 && (self.src_w as f64 - turn).abs() <= turn * 1e-10)
+    }
+
+    /// Columns per turn of a source whose chunks across the longitude cut take the arc that their
+    /// samples span there for their 3.12 kernel scale ([`Self::estimate_source_window`]): a
+    /// periodic source covering one turn, or a regional source narrower than a turn. A source
+    /// covering one turn without [`WarpOptions::periodic_longitude`] keeps the span between its
+    /// stored edges.
+    fn arc_turn(&self) -> Option<f64> {
+        self.global_longitude_turn().or_else(|| self.longitude_turn().filter(|turn| (self.src_w as f64) < turn * (1.0 - 1e-10)))
     }
 
     /// Geographic footprints may use equivalent longitude numberings even without a CRS change.
@@ -6286,18 +6319,40 @@ pub struct RegionWarp {
     grid_invariant: bool,
     periodic_longitude: bool,
     sum_scale: f64,
+    /// The last source window [`RegionWarp::source_window`] computed, with the region and
+    /// destination grid it was computed for, so that [`RegionWarp::warp`] reuses it instead of
+    /// transforming the region's pixels again: one region at a time, the last one asked for.
+    window_cache: std::sync::Mutex<Option<WindowCache>>,
+}
+
+/// A source window `(x, y, width, height, fill, raw_w, raw_h)`, as the context computes it.
+type SourceWindow = (usize, usize, usize, usize, f64, f64, f64);
+
+/// A cached [`RegionWarp::source_window`] result: the region, the destination geotransform, and
+/// the full window `(x, y, width, height, _, raw_w, raw_h)` the context computes.
+struct WindowCache {
+    region: (usize, usize, usize, usize),
+    dst_gt: [f64; 6],
+    full: SourceWindow,
 }
 
 impl RegionWarp {
+    /// Drops the cached source window, for the builders that change how windows are computed.
+    fn clear_window_cache(&self) {
+        *self.window_cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
     /// Reproduces the resampling of another GDAL release than the configured one (see
     /// [`KernelVersion::configured`], read when the warp is created).
     pub fn with_kernel_version(mut self, kernel_version: KernelVersion) -> Self {
+        self.clear_window_cache();
         self.kernel_version = kernel_version;
         self
     }
 
     /// Selects grid-invariant sampling, or GDAL's chunk-dependent reference sampling.
     pub fn with_grid_invariance(mut self, enabled: bool) -> Self {
+        self.clear_window_cache();
         self.grid_invariant = enabled;
         self
     }
@@ -6305,6 +6360,7 @@ impl RegionWarp {
     /// Selects periodic columns for a source covering one turn of longitude (the default), or
     /// finite edges (see [`WarpOptions::periodic_longitude`]).
     pub fn with_periodic_longitude(mut self, enabled: bool) -> Self {
+        self.clear_window_cache();
         self.periodic_longitude = enabled;
         self
     }
@@ -6314,6 +6370,7 @@ impl RegionWarp {
     /// of a `W` x `H` raster. 1 by default. Must be positive and finite; [`Self::warp`]
     /// rejects invalid scales before allocating the output.
     pub fn with_sum_scale(mut self, scale: f64) -> Self {
+        self.clear_window_cache();
         self.sum_scale = scale;
         self
     }
@@ -6327,6 +6384,7 @@ impl RegionWarp {
     pub fn with_src_scale(mut self, scale: (f64, f64)) -> Self {
         // The sums' cached corners were transformed at the previous scale.
         self.t.sum_batches.get_mut().unwrap_or_else(|e| e.into_inner()).clear();
+        self.clear_window_cache();
         self.t.src_scale = scale;
         self
     }
@@ -6339,6 +6397,7 @@ impl RegionWarp {
     pub fn set_dst_gt(&mut self, gt: [f64; 6]) {
         self.t.set_dst_gt(gt);
         self.translation = self.t.src_gcp.is_none() && self.t.ct.is_none() && is_pixel_translation(&self.t.src_gt, &gt);
+        self.clear_window_cache();
     }
 
     /// A warp of the bands of a source of `src_size` pixels, georeferenced by `src_gt` in
@@ -6377,6 +6436,7 @@ impl RegionWarp {
             grid_invariant: grid_invariant_configured(),
             periodic_longitude: true,
             sum_scale: 1.0,
+            window_cache: std::sync::Mutex::new(None),
         })
     }
 
@@ -6414,6 +6474,7 @@ impl RegionWarp {
             grid_invariant: grid_invariant_configured(),
             periodic_longitude: true,
             sum_scale: 1.0,
+            window_cache: std::sync::Mutex::new(None),
         })
     }
 
@@ -6458,6 +6519,7 @@ impl RegionWarp {
             grid_invariant: grid_invariant_configured(),
             periodic_longitude: true,
             sum_scale: 1.0,
+            window_cache: std::sync::Mutex::new(None),
         })
     }
 
@@ -6504,11 +6566,33 @@ impl RegionWarp {
         if !self.t.src_scale_valid() {
             return None;
         }
+        let full = self.source_window_full(&self.context(), region);
+        full.map(|(sx, sy, sw, sh, ..)| (sx, sy, sw, sh))
+    }
+
+    /// The full source window `(x, y, width, height, _, raw_w, raw_h)` of `region`, from the
+    /// cache of the last [`RegionWarp::source_window`] call when it was for this region under the
+    /// current destination grid, else computed now (and cached).
+    fn source_window_full(&self, ctx: &WarpContext<'_>, region: (usize, usize, usize, usize)) -> Option<SourceWindow> {
         let (dx, dy, dw, dh) = region;
         if dw == 0 || dh == 0 {
-            return Some((0, 0, 0, 0));
+            // Public source_window accepts empty regions; warp returns before using their raw sizes.
+            return Some((0, 0, 0, 0, 0.0, 0.0, 0.0));
         }
-        self.context().source_window(dx, dy, dw, dh).map(|(sx, sy, sw, sh, ..)| (sx, sy, sw, sh))
+        {
+            let cache = self.window_cache.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(c) = &*cache
+                && c.region == region
+                && c.dst_gt == self.t.dst_gt
+            {
+                return Some(c.full);
+            }
+        }
+        let full = ctx.source_window(dx, dy, dw, dh);
+        if let Some(full) = &full {
+            *self.window_cache.lock().unwrap_or_else(|e| e.into_inner()) = Some(WindowCache { region, dst_gt: self.t.dst_gt, full: *full });
+        }
+        full
     }
 
     /// Warps a region of the grid. `data` holds the bands of the source window
@@ -6555,7 +6639,7 @@ impl RegionWarp {
         let n = dw * dh;
         let mut ctx = self.context();
         let mut staged: Vec<Vec<f64>> = vec![vec![f64::from_bits(UNWRITTEN); n]; bands];
-        if let Some((sx, sy, sw, sh, _, raw_w, raw_h)) = ctx.source_window(dx, dy, dw, dh)
+        if let Some((sx, sy, sw, sh, _, raw_w, raw_h)) = self.source_window_full(&ctx, region)
             && sw > 0
             && sh > 0
         {
@@ -7433,20 +7517,22 @@ mod tests {
     }
 
     /// Bilinear and cubic warps of a world source of 1° pixels symmetric about the 180° meridian,
-    /// stored from 180° W or from 0°, into the windows of [`ups_north_window`] on either side of
-    /// that meridian. The west window's samples on the meridian cross the source's longitude cut.
-    /// Windows touching the meridian, and windows reaching 1 km across it, give mirrored values. A
-    /// column of ones at 179.5° W reaches the same three columns of the west window reaching 1 km
-    /// across the meridian as of the window 1 m short of it, whose samples do not cross the cut,
-    /// with a largest weight within 0.01.
+    /// stored from 180° W or from 0°, and of a regional one from 120° E to 120° W, into the windows
+    /// of [`ups_north_window`] on either side of that meridian. The west window's samples on the
+    /// meridian cross the source's longitude cut. Windows touching the meridian, and windows
+    /// reaching 1 km across it, give mirrored values. A column of ones at 179.5° W, of the world
+    /// source or of the regional one, reaches the same three columns of the west window reaching
+    /// 1 km across the meridian as of the window 1 m short of it, whose samples do not cross the
+    /// cut, with a largest weight within 0.01.
     #[test]
     fn chunk_dependent_windows_mirrored_across_the_180th_meridian_get_mirrored_kernels() {
-        for origin in [-180., 0.] {
-            // Stored from 180° W, column `c` mirrors column 359 - c.
+        // Stored from 180° W, column `c` of the world source mirrors column 359 - c; column `c` of
+        // the regional one mirrors column 119 - c.
+        for (origin, width) in [(-180., 360), (0., 360), (120., 120)] {
             let shift = if origin == 0. { 180 } else { 0 };
-            let source = raster(360, 180, [origin, 1., 0., 90., 0., -1.], 4326, |c, r| {
-                let c = (c + shift) % 360;
-                ((c.min(359 - c) * 7 + r * 13) % 17) as f64
+            let source = raster(width, 180, [origin, 1., 0., 90., 0., -1.], 4326, |c, r| {
+                let c = (c + shift) % width;
+                ((c.min(width - 1 - c) * 7 + r * 13) % 17) as f64
             });
             for resampling in [Resampling::Bilinear, Resampling::Cubic] {
                 for gap in [0., -1000.] {
@@ -7463,15 +7549,17 @@ mod tests {
                 }
             }
         }
-        let impulse = raster(360, 180, [-180., 1., 0., 90., 0., -1.], 4326, |c, _| if c == 0 { 1. } else { 0. });
-        let row = |gap: f64| ups_north_window(&impulse, true, gap, Resampling::Bilinear, true)[32 * 64..33 * 64].to_vec();
-        let (across, short) = (row(-1000.), row(1.));
-        assert!(across.iter().chain(&short).all(|v| *v >= 0.), "across: {across:?}, short of it: {short:?}");
-        let reached = |row: &[f64]| (0..64).filter(|&i| row[i] > 0.).collect::<Vec<_>>();
-        let largest = |row: &[f64]| row.iter().fold(0_f64, |a, b| a.max(*b));
-        assert_eq!(reached(&short).len(), 3, "short of it: {short:?}");
-        assert_eq!(reached(&across), reached(&short), "across: {across:?}, short of it: {short:?}");
-        assert!((largest(&across) - largest(&short)).abs() < 0.01, "across: {across:?}, short of it: {short:?}");
+        for (origin, width, column) in [(-180., 360, 0), (120., 120, 60)] {
+            let impulse = raster(width, 180, [origin, 1., 0., 90., 0., -1.], 4326, |c, _| if c == column { 1. } else { 0. });
+            let row = |gap: f64| ups_north_window(&impulse, true, gap, Resampling::Bilinear, true)[32 * 64..33 * 64].to_vec();
+            let (across, short) = (row(-1000.), row(1.));
+            assert!(across.iter().chain(&short).all(|v| *v >= 0.), "stored from {origin}°: across: {across:?}, short of it: {short:?}");
+            let reached = |row: &[f64]| (0..64).filter(|&i| row[i] > 0.).collect::<Vec<_>>();
+            let largest = |row: &[f64]| row.iter().fold(0_f64, |a, b| a.max(*b));
+            assert_eq!(reached(&short).len(), 3, "stored from {origin}°: short of it: {short:?}");
+            assert_eq!(reached(&across), reached(&short), "stored from {origin}°: across: {across:?}, short of it: {short:?}");
+            assert!((largest(&across) - largest(&short)).abs() < 0.01, "stored from {origin}°: across: {across:?}, short of it: {short:?}");
+        }
     }
 
     /// Without `periodic_longitude`, a source covering one turn has the stored edges of a regional
@@ -7490,6 +7578,107 @@ mod tests {
         assert_eq!(short, 3, "1 m short of the meridian");
         for gap in [0., -1000.] {
             assert!(reached(gap) > short, "{gap} m from the meridian: {} columns, {short} 1 m short of it", reached(gap));
+        }
+    }
+
+    /// The source columns behind the 3.12 kernel scale (`raw_w`) of the west window of
+    /// [`ups_north_window`] from regional sources of 1° pixels. Touching the 180° meridian, or
+    /// reaching 1 mm or 1 km across it, the window takes the arc its samples span across the
+    /// meridian, placed in the stored columns a turn away, rounded and cut at the stored edges as
+    /// the window 1 m short of the meridian has its samples' columns. From 120° E to 160° W, the
+    /// east edge leaves 20 of the arc's 45 columns (21 from 1 km across the meridian, whose samples
+    /// reach into the column west of 180°): both scales upsample, so values do not show the cut.
+    /// From 160° W to 180° E, with a gap from 180° to 160° W, the arc keeps its 45 columns, until
+    /// from 1 km across the meridian it reaches both stored edges and keeps the 340 columns between
+    /// them.
+    #[test]
+    fn a_regional_chunk_across_the_180th_meridian_places_its_arc_in_the_stored_columns() {
+        let s = 8_220_379.675126;
+        let raw_w = |west: f64, width: usize, gap: f64| {
+            RegionWarp::new(
+                (width, 180),
+                [west, 1., 0., 90., 0., -1.],
+                &SpatialRef::from_epsg(4326).unwrap(),
+                &SpatialRef::from_epsg(5041).unwrap(),
+                [2e6 - gap - s, s / 64., 0., 2e6 + 2. * s, 0., -s / 64.],
+                Resampling::Bilinear,
+                0.,
+                DataType::F64,
+                vec![None],
+                None,
+            )
+            .unwrap()
+            .with_grid_invariance(false)
+            .context()
+            .source_window(0, 0, 64, 64)
+            .unwrap()
+            .5
+        };
+        let [short, touching, hair, across] = [1., 0., -0.001, -1000.].map(|gap| raw_w(120., 80, gap));
+        assert_eq!((short, touching, hair, across), (20., 20., 20., 21.), "from 120° E to 160° W");
+        let [short, touching, across] = [1., 0., -1000.].map(|gap| raw_w(-160., 340, gap));
+        assert!((short - 45.).abs() < 1e-3 && touching == 45. && across == 340., "from 160° W to 180° E: {short}, {touching}, {across}");
+    }
+
+    /// GDAL 3.12's window-ratio kernel spans the stored columns when a single destination pixel
+    /// covers a full turn. Sampling its two endpoints must give the same scale as dense sampling.
+    #[test]
+    fn a_whole_turn_pixel_keeps_its_kernel_span_with_endpoint_sampling() {
+        let srs = SpatialRef::from_epsg(4326).unwrap();
+        for (west, width, step) in
+            [(120., 120, 1.), (100., 100, 1.), (-180., 360, 1.), (100.1, 1000, 0.1), (-179.9, 3600, 0.1), (-1.0000002e-7, 1000, 1e-7)]
+        {
+            let rw = RegionWarp::new(
+                (width, 100),
+                [west, step, 0., 5., 0., -0.1],
+                &srs,
+                &srs,
+                [0., 360., 0., 5., 0., -5.],
+                Resampling::Bilinear,
+                0.,
+                DataType::F64,
+                vec![None],
+                None,
+            )
+            .unwrap()
+            .with_grid_invariance(false)
+            .with_kernel_version(KernelVersion::Gdal312);
+            for all in [false, true] {
+                let mut ctx = rw.context();
+                ctx.sample_all = all;
+                // At least five perimeter samples are required before a window is planned.
+                let (sx, sy, sw, sh, _, raw_w, raw_h) = ctx.source_window(0, 0, 1, 2).unwrap();
+                assert!((raw_w - width as f64).abs() < 1e-9, "source {west} + {width}, all {all}: {raw_w}");
+                let scales = ctx.scales(&Chunk { dx: 0, dy: 0, dw: 1, dh: 2, sx, sy, sw, sh, raw_w, raw_h });
+                assert!((scales.0 - 1. / width as f64).abs() < 1e-14, "source {west} + {width}, all {all}: {scales:?}");
+            }
+        }
+    }
+
+    /// A regional source's east-side gap produces an empty window. Both sampling policies
+    /// skip a destination wholly outside the source before planning its kernel scale.
+    #[test]
+    fn a_window_beyond_the_regional_east_edge_is_empty() {
+        let srs = SpatialRef::from_epsg(4326).unwrap();
+        let rw = RegionWarp::new(
+            (120, 10),
+            [120., 1., 0., 5., 0., -1.],
+            &srs,
+            &srs,
+            [250., 10., 0., 5., 0., -5.],
+            Resampling::Bilinear,
+            0.,
+            DataType::F64,
+            vec![None],
+            None,
+        )
+        .unwrap()
+        .with_grid_invariance(false);
+        for all in [false, true] {
+            let mut ctx = rw.context();
+            ctx.sample_all = all;
+            let (_, _, width, height, ..) = ctx.source_window(0, 0, 1, 2).unwrap();
+            assert_eq!((width, height), (0, 0), "all {all}");
         }
     }
 
@@ -10404,6 +10593,71 @@ mod tests {
         assert!(is_pixel_translation(&src, &[103.0, 1.0, 0.0, 198.0, 0.0, -1.0]));
         assert!(!is_pixel_translation(&src, &[103.0, 1.0, 0.25, 198.0, 0.0, -1.0]));
         assert!(!is_pixel_translation(&src, &[103.0, 1.0, 0.0, 198.0, 0.25, -1.0]));
+    }
+
+    /// `source_window` records what it computed and `warp` reuses it for the same region under the
+    /// same destination grid instead of transforming the region's pixels again, while still
+    /// rejecting a window that does not match — also when another region's window was cached last
+    /// (the cache holds one region, so the earlier region's warp recomputes and validates).
+    #[test]
+    fn region_warp_reuses_and_still_validates_the_cached_source_window() {
+        let srs = SpatialRef::from_epsg(4326).unwrap();
+        let gt = [-10.0, 0.01, 0.0, 50.0, 0.0, -0.01];
+        let mk =
+            || RegionWarp::new((40, 30), gt, &srs, &srs, gt, Resampling::Bilinear, 0.125, DataType::F64, vec![None], Some(0.0)).unwrap();
+        let rw = mk();
+        let r1 = (0, 0, 10, 10);
+        WINDOW_COMPUTATIONS.with(|n| n.set(0));
+        let w1 = rw.source_window(r1).unwrap();
+        assert_eq!(WINDOW_COMPUTATIONS.with(std::cell::Cell::get), 1, "the first call computes the window");
+        // A cache hit (same region asked again) does not recompute it.
+        let w1_again = rw.source_window(r1).unwrap();
+        assert_eq!(w1_again, w1);
+        assert_eq!(WINDOW_COMPUTATIONS.with(std::cell::Cell::get), 1, "the cached window was not recomputed");
+        // Another region cached last: the first region's warp recomputes and still validates.
+        let r2 = (5, 5, 10, 10);
+        let _w2 = rw.source_window(r2).unwrap();
+        assert_eq!(WINDOW_COMPUTATIONS.with(std::cell::Cell::get), 2);
+        let value = |c: usize, r: usize| (c * 3 + r * 17) as f64 + 0.5;
+        let data = |w: (usize, usize, usize, usize)| {
+            RasterData::F64((0..w.3).flat_map(|r| (0..w.2).map(move |c| value(w.0 + c, w.1 + r))).collect())
+        };
+        let (a, va) = rw.warp(r1, w1, &data(w1), None, 0.0, false).unwrap();
+        // The cache held the other region, so this warp recomputed (and re-cached) r1's window.
+        assert_eq!(WINDOW_COMPUTATIONS.with(std::cell::Cell::get), 3);
+        // A cache hit (same region asked again) gives the same warp as a fresh one.
+        let (c, vc) = rw.warp(r1, w1_again, &data(w1_again), None, 0.0, false).unwrap();
+        assert_eq!(WINDOW_COMPUTATIONS.with(std::cell::Cell::get), 3, "warp reuses the cached window");
+        let fresh = mk();
+        let (b, vb) = fresh.warp(r1, w1, &data(w1), None, 0.0, false).unwrap();
+        assert_eq!(a.to_f64_vec(), b.to_f64_vec());
+        assert_eq!(va, vb);
+        assert_eq!(c.to_f64_vec(), b.to_f64_vec());
+        assert_eq!(vc, vb);
+        // A window that does not match the region's is still rejected.
+        let wrong = (w1.0, w1.1, w1.2 + 1, w1.3);
+        assert!(rw.warp(r1, wrong, &data(wrong), None, 0.0, false).is_err());
+        // Every window-affecting builder and set_dst_gt drop the cache, so the next call recomputes.
+        let builders: Vec<Box<dyn Fn(RegionWarp) -> RegionWarp>> = vec![
+            Box::new(|rw: RegionWarp| rw.with_kernel_version(KernelVersion::Gdal313)),
+            Box::new(|rw: RegionWarp| rw.with_grid_invariance(false)),
+            Box::new(|rw: RegionWarp| rw.with_periodic_longitude(false)),
+            Box::new(|rw: RegionWarp| rw.with_sum_scale(2.0)),
+            Box::new(|rw: RegionWarp| rw.with_src_scale((2.0, 2.0))),
+            Box::new(|mut rw: RegionWarp| {
+                // A different grid: set_dst_gt drops the cache, so the next call recomputes.
+                rw.set_dst_gt([gt[0] + gt[1], gt[1], 0.0, gt[3] + gt[5], 0.0, gt[5]]);
+                rw
+            }),
+        ];
+        for b in builders {
+            let rw = mk();
+            let _ = rw.source_window(r1).unwrap();
+            let before = WINDOW_COMPUTATIONS.with(std::cell::Cell::get);
+            let rw = b(rw);
+            let _ = rw.source_window(r1).unwrap();
+            assert_eq!(WINDOW_COMPUTATIONS.with(std::cell::Cell::get), before + 1, "the builder must drop the cached window");
+        }
     }
 
     /// The same warps' values, pinned: checksums of terrio's results in one chunk and in many
