@@ -16,6 +16,10 @@ time ratios by axis, so a round of optimization starts from the slow areas, not 
     python scripts/perf_matrix.py run --format geotiff             # every case, 3 samples
     python scripts/perf_matrix.py run --format zarr --only v3_zstd --access window --quick
     python scripts/perf_matrix.py report RESULTS.jsonl             # the summary of a run again
+    python scripts/perf_matrix.py run --format zarr --base /tmp/terrio-main   # also time another build
+
+`--base DIR` times a second terrio build (`pip install --target DIR` of its wheel) in the same
+run, interleaved with this one and GDAL: the report then gives this build's time against the base.
 
 Formats: geotiff, zarr, geoparquet. Needs terrio's Python module (a release build: `maturin develop
 --release` in python/), GDAL's Python bindings, pyogrio (GeoParquet) and zarr-python 3 (Zarr
@@ -705,7 +709,9 @@ def worker(spec: dict) -> dict:
     fmt = FORMATS[spec["format"]]
     src, access = spec["src"], spec["access"]
     local = src.startswith("/")
-    open_, items, check, (warm_open, warm_read) = fmt.reader(spec["tool"], access, spec["meta"])
+    # `base` is another terrio build, found first on PYTHONPATH
+    tool = "terrio" if spec["tool"] == "base" else spec["tool"]
+    open_, items, check, (warm_open, warm_read) = fmt.reader(tool, access, spec["meta"])
     # A process's first open and read pays one-time costs (library initialization, thread pools):
     # measured on a tiny file apart from the case, as `init`.
     ti = time.perf_counter()
@@ -806,6 +812,16 @@ def run(args: argparse.Namespace) -> None:
     if "local" in sources and not PROC_IO.exists():
         sys.exit(f"local byte counts need {PROC_IO} (Linux): use --source http")
     head = machine()
+    tools = ["terrio", "gdal"]
+    envs = {"terrio": env, "gdal": env}
+    if args.base:
+        base_dir = args.base.expanduser().resolve()
+        envs["base"] = {**env, "PYTHONPATH": os.pathsep.join(filter(None, [str(base_dir), env.get("PYTHONPATH")]))}
+        tools.append("base")
+        version = subprocess.run([sys.executable, "-c", "import terrio; print(terrio.__file__, terrio.__version__)"], env=envs["base"], capture_output=True, text=True, check=True)
+        if not version.stdout.startswith(str(base_dir)):
+            sys.exit(f"--base {base_dir}: terrio is imported from {version.stdout.strip()}, not from it")
+        head["machine"]["base"] = version.stdout.strip()
     if head["machine"]["on_ac"] is False and not args.allow_battery:
         sys.exit("on battery, timings are slower and vary: plug in, or pass --allow-battery")
     try:
@@ -832,7 +848,7 @@ def run(args: argparse.Namespace) -> None:
         src = str(path) if source == "local" else base + path.name
         row = {"format": args.format, "fixture": name, "access": label, "source": source, "need_bytes": meta["need_bytes"], **fmt.axes(name)}
         for k in range(samples):
-            for tool in ["terrio", "gdal"] if k % 2 == 0 else ["gdal", "terrio"]:
+            for tool in tools[k % len(tools) :] + tools[: k % len(tools)]:  # each tool first in turn
                 if f"{tool}_error" in row:  # failed or timed out once: not again
                     continue
                 _settled_log()  # a killed worker's requests end before the log is cleared
@@ -841,7 +857,7 @@ def run(args: argparse.Namespace) -> None:
                 spec = {"format": args.format, "tool": tool, "src": src, "access": access, "meta": meta}
                 cmd = [sys.executable, __file__, "_worker", json.dumps(spec)]
                 try:
-                    p = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=args.timeout)
+                    p = subprocess.run(cmd, env=envs[tool], capture_output=True, text=True, timeout=args.timeout)
                 except subprocess.TimeoutExpired:
                     row[f"{tool}_error"] = f"timeout: over {args.timeout:.0f} s"
                     continue
@@ -870,7 +886,8 @@ def summarize(row: dict) -> dict:
     at its first failure); `values` is `same` only when every sample's sum and count equal GDAL's
     first, else the first that differs."""
     out = {k: v for k, v in row.items() if not isinstance(v, list)}
-    for tool in ("terrio", "gdal"):
+    tools = [t for t in ("terrio", "gdal", "base") if t in row]
+    for tool in tools:
         rs = row.get(tool)
         if not rs:
             continue
@@ -880,7 +897,9 @@ def summarize(row: dict) -> dict:
     if "terrio" in out and "gdal" in out and not _errors(row):
         out["time_ratio"] = out["terrio"]["total_s"] / out["gdal"]["total_s"]
         ref = row["gdal"][0]
-        differ = next(((t, r) for t in ("terrio", "gdal") for r in row[t] if r["n"] != ref["n"] or not math.isclose(r["sum"], ref["sum"], rel_tol=1e-6)), None)
+        if "base" in out:
+            out["base_ratio"] = out["terrio"]["total_s"] / out["base"]["total_s"]
+        differ = next(((t, r) for t in tools for r in row[t] if r["n"] != ref["n"] or not math.isclose(r["sum"], ref["sum"], rel_tol=1e-6)), None)
         out["values"] = "checksum_match" if differ is None else f"DIFFER: {differ[0]} n {differ[1]['n']} sum {differ[1]['sum']:.6g} vs gdal n {ref['n']} sum {ref['sum']:.6g}"
     return out
 
@@ -904,6 +923,8 @@ def fmt_row(r: dict) -> str:
         s += f" | req {t['requests']:4.0f}/{g['requests']:4.0f} rounds {t['rounds']:3.0f}/{g['rounds']:3.0f}"
     label = "checksum_match" if r["values"] in ("same", "checksum_match") else "DIFFER"
     s += f" | init {t['init_s'] * 1000:3.0f}/{g['init_s'] * 1000:3.0f} ms rss {t['rss_mb']:4.0f}/{g['rss_mb']:4.0f} MB {label}"
+    if "base_ratio" in r:
+        s += f" | base {r['base']['total_s'] * 1000:8.1f} ms x{r['base_ratio']:5.2f}"
     return s
 
 
@@ -919,10 +940,20 @@ def report(rows: list[dict]) -> str:
     computed = [r for r in rows if "time_ratio" in r]
     ok = [r for r in computed if r["values"] in ("same", "checksum_match")]
     differ = [r for r in computed if r["values"] not in ("same", "checksum_match")]
+    based = [r for r in ok if "base_ratio" in r]
+    if based:
+        gm = math.exp(statistics.fmean(math.log(r["base_ratio"]) for r in based))
+        lines.append(f"\n## This build against the base (terrio time / base time; geometric mean x{gm:.3f}, {len(based)} cases)\n")
+        for title, rs in (
+            ("slower by 10% or more", sorted((r for r in based if r["base_ratio"] >= 1.1), key=lambda r: -r["base_ratio"])),
+            ("faster by 10% or more", sorted((r for r in based if r["base_ratio"] <= 1 / 1.1), key=lambda r: r["base_ratio"])),
+        ):
+            lines.append(f"{title}: {len(rs)}")
+            lines += ["  " + fmt_row(r) for r in rs[:20]]
     lines.append("\n## Worst cases (terrio time / GDAL time)\n")
     lines += [fmt_row(r) for r in sorted(ok, key=lambda r: -r["time_ratio"])[:20]]
     lines.append("\n## Geometric mean of the time ratios by axis (>1: terrio slower; cases in brackets)\n")
-    for axis in ("access", "source", "codec", "dtype", "layout"):
+    for axis in ("format", "access", "source", "codec", "dtype", "layout"):
         groups: dict[str, list[float]] = {}
         for r in ok:
             groups.setdefault(r[axis], []).append(r["time_ratio"])
@@ -964,12 +995,13 @@ def main() -> None:
     r.add_argument("--quick", action="store_true", help="one sample per tool")
     r.add_argument("--timeout", type=float, default=120, help="seconds a read may take before it is reported as a timeout")
     r.add_argument("--out", type=Path, help="results JSONL, a new file (default: DIR/FORMAT/results-<time>.jsonl)")
+    r.add_argument("--base", type=Path, help="another terrio build to time too: a directory with its terrio package")
     r.add_argument("--allow-battery", action="store_true", help="run on battery power (timings slower and noisier)")
     rep = sub.add_parser("report")
-    rep.add_argument("results", type=Path)
+    rep.add_argument("results", type=Path, nargs="+", help="results files, one or several formats")
     a = p.parse_args()
     if a.cmd == "report":
-        print(report([json.loads(line) for line in a.results.read_text().splitlines() if line.strip()]))
+        print(report([json.loads(line) for f in a.results for line in f.read_text().splitlines() if line.strip()]))
         return
     if a.cmd == "run" and a.access and (bad := set(a.access) - set(FORMATS[a.format].ACCESS)):
         p.error(f"--access {' '.join(sorted(bad))}: {a.format} reads are {' '.join(FORMATS[a.format].ACCESS)}")

@@ -330,3 +330,15 @@ file whose first line describes the machine: CPU, CPUs and CPU quota, memory, OS
 and library versions. The time ratios hold on any machine, but absolute times are only that
 machine's: compare two terrio builds in the same session, and `report` warns when a file's runs
 come from different machines.
+
+`--base DIR` times a second terrio build in the same run, each case alternating this build, the
+base and GDAL: the report then lists the cases 10% or more slower or faster than the base. Install
+the base's wheel with `pip install --no-deps --target DIR terrio-*.whl`.
+
+On a pull request, a maintainer's comment `/perf-matrix` runs the matrix on a GitHub runner
+(`.github/workflows/perf-matrix.yml`): the pull request's terrio, its base branch's and GDAL
+3.13.3, with the base branch's harness, and posts the report. With no arguments it runs every
+format with one sample per tool; `/perf-matrix geoparquet --only geoarrow` runs one format with
+the options of `run`. Runner timings vary more than a quiet desktop's, but each comparison is
+made within one run on one runner. The Actions tab runs the same workflow for a pull request
+number.

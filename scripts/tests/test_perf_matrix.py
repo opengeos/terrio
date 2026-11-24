@@ -131,7 +131,7 @@ def test_metadata_errors_are_recorded_for_each_case(tmp_path, monkeypatch):
     monkeypatch.setattr(perf_matrix, "report", lambda _: "recorded")
     out = tmp_path / "results.jsonl"
     args = SimpleNamespace(format="fake", dir=tmp_path, latency_ms=0, threads=1, only=None,
-                           quick=True, samples=1, out=out, source=["http"], allow_battery=False, access=None)
+                           quick=True, samples=1, out=out, source=["http"], allow_battery=False, access=None, base=None)
     perf_matrix.run(args)
     rows = [json.loads(line) for line in out.read_text().splitlines()][1:]
     assert [row["fixture"] for row in rows] == ["a", "b"]
@@ -266,3 +266,11 @@ def test_interrupted_geoparquet_source_is_not_published_or_reused(tmp_path, monk
     for kind in ("polygon", "point", "line"):
         source = ogr.Open(str(tmp_path / f"_src_{kind}.fgb"))
         assert source.GetLayer(0).GetFeatureCount() == 2
+
+
+def test_a_base_build_gets_its_own_ratio_and_values_check():
+    row = summarize(_row(terrio=[_sample(2)], gdal=[_sample(1)], base=[_sample(4)]))
+    assert (row["time_ratio"], row["base_ratio"], row["values"]) == (2, 0.5, "checksum_match")
+    assert "faster by 10% or more: 1" in report([row])
+    # The base's values are checked too.
+    assert summarize(_row(terrio=[_sample(2)], gdal=[_sample(1)], base=[_sample(4, n=5)]))["values"].startswith("DIFFER: base")
