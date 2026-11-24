@@ -125,6 +125,57 @@ def test_optional_parser_unavailable_retains_metadata(tmp_path, monkeypatch):
     assert metadata["crs"] == INVALID[0]
 
 
+def test_known_stored_crs_is_validated_without_pyproj(tmp_path):
+    """Validate a stored PROJJSON that terrio identifies as an EPSG code without importing pyproj.
+
+    Importing pyproj was most of a process's first GeoParquet read.
+
+    Args:
+        tmp_path: Temporary file directory.
+    """
+    path = tmp_path / "points.parquet"
+    write_points(path, pyproj.CRS(32631).to_json_dict())
+    code = (
+        "import sys, terrio.pyogrio as p; "
+        f"meta, table = p.read_arrow({str(path)!r}); "
+        "print(meta['crs'], table.num_rows, 'pyproj' in sys.modules)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], text=True, capture_output=True, timeout=30, check=True
+    )
+    assert result.stdout.split() == ["EPSG:32631", "4", "False"]
+
+
+@pytest.mark.parametrize("kind", ["path", "malformed"])
+def test_stored_crs_is_not_trusted_beyond_its_definition(tmp_path, kind):
+    """Reject a stored CRS that only names a file, or only carries an EPSG id, as before.
+
+    A path to a `.prj` holding a known definition is not opened, and a PROJJSON whose body is
+    not a CRS is not accepted for its `id`: the stream drops both with a warning.
+
+    Args:
+        tmp_path: Temporary file directory.
+        kind: A path to a `.prj` file, or a PROJJSON with an EPSG id and no definition.
+    """
+    if kind == "path":
+        prj = tmp_path / "utm.prj"
+        prj.write_text(pyproj.CRS(32631).to_wkt("WKT1_GDAL"))
+        definition = str(prj)
+    else:
+        definition = {
+            "type": "ProjectedCRS",
+            "name": "x",
+            "id": {"authority": "EPSG", "code": 32631},
+        }
+    path = tmp_path / "points.parquet"
+    write_points(path, definition)
+    with pytest.warns(UserWarning, match="CRS definition cannot be parsed"):
+        reader = pa.RecordBatchReader.from_stream(terrio.open_stream(str(path)))
+    metadata = json.loads(reader.schema.field("geometry").metadata[b"ARROW:extension:metadata"])
+    assert "crs" not in metadata
+    assert reader.read_all().num_rows == 4
+
+
 def test_registered_type_keeps_validated_crs_decisions(tmp_path):
     """Isolate an opaque registered type and retain valid, null and rejected CRSs.
 

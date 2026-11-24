@@ -54,6 +54,7 @@ cog_deflate translate -f COG --compress DEFLATE --tile-size 128 {dem} {out}.tif
 # Zarr and netCDF.
 zarr_write translate {dem} {out}.zarr
 zarr_read translate {dem_zarr} {out}.tif
+zarr_window translate --srcwin 192 192 128 128 {dem_zarr} {out}.tif
 netcdf_write translate {dem} {out}.nc
 netcdf_read translate {dem_nc} {out}.tif
 
@@ -61,6 +62,8 @@ netcdf_read translate {dem_nc} {out}.tif
 gpkg_to_fgb convert {zones_gpkg} {out}.fgb
 fgb_to_gpkg convert {zones_fgb} {out}.gpkg
 parquet_to_fgb convert {zones_parquet} {out}.fgb
+parquet_bbox convert --spat 404000 5090000 410000 5096000 {zones_parquet} {out}.fgb
+geoarrow_bbox convert --spat 404000 5090000 410000 5096000 {zones_geoarrow} {out}.fgb
 fgb_to_parquet convert {zones_fgb} {out}.parquet
 buffer buffer -d 20 --quad-segs 8 {zones_fgb} {out}.fgb
 simplify simplify --tolerance 20 {zones_fgb} {out}.fgb

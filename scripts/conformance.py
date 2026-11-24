@@ -21,6 +21,7 @@ Suites:
     parquet-zstd      Zstandard GeoParquet pages read without the zstd C library vs GDAL
     catalogs          indexed real DEM mosaics and HTTP window I/O vs GDAL GTI
                       (compare_catalogs_with_gdal.py)
+    stac-metadata     local STAC mosaic band fields vs GDAL and declared raster metadata
     vrt               serialized warped/derived/kernel VRTs, masks and lazy windows
     jp2-colors        JPEG 2000 component roles and masks on real Landsat data
     overviews         source overview selection and HTTP COG bytes vs gdalwarp -ovr
@@ -3059,6 +3060,32 @@ PROJ_CASES = {
             "PROJ 9.9.0 (pyproj, no grids, allow_ballpark=False): within 1 mm, and no operation for the Georgia datum",
         ),
     },
+    "compound_heights": {
+        "compound_crss_are_placed_as_proj_places_them": (
+            "EPSG compound CRSs to and from WGS 84 (3D, geocentric, 2D) and between compound CRSs of one horizontal CRS, without grids (1,766 cases)",
+            IDENTICAL, "PROJ 9.9.0 (pyproj, no grids): within 1 mm, heights too; 2 cases pending: Belfast height to Malin Head height (1) outside its area, which PROJ runs as the only operation (opengeos/terrio#1012)",
+        ),
+        "heights_through_the_ballpark_make_every_transformation_of_unknown_accuracy": (
+            "EPSG:7405 from WGS 84 (3D) and (2D): the point, in 2D too, and the operation's accuracy and ballpark flag", IDENTICAL,
+            "PROJ 9.9.0 (pyproj, no grids): within 1 mm",
+        ),
+        "heights_through_the_ballpark_are_refused_with_it": (
+            "EPSG:7405 and EPSG:5707 from WGS 84 (3D) with ALLOW_BALLPARK=NO and ONLY_BEST=YES", IDENTICAL,
+            "PROJ 9.9.0 (pyproj, no grids): no operation, and no point",
+        ),
+        "a_compound_crs_on_a_datum_without_code_is_placed_by_the_ballpark": (
+            "British National Grid's projection on a datum without code, with ODN heights, from WGS 84 (3D) and (2D)", IDENTICAL,
+            "PROJ 9.9.0 (pyproj, no grids): within 1 mm, PROJ's ballparks",
+        ),
+        "registered_no_step_geoid_models_report_their_accuracy": (
+            "Saba's registered no-step geoid model reports its declared accuracy with and without ALLOW_BALLPARK=NO", IDENTICAL,
+            "EPSG operation 4679: 0.2 m accuracy, not ballpark; independently checked with PROJ 9.7.1",
+        ),
+        "only_best_keeps_ballpark_height_operation_order": (
+            "WGS 84 (3D) to British National Grid + Fao height retains the ballpark-height ordering with ONLY_BEST=YES", IDENTICAL,
+            "PROJ 9.7.1, no grids: OSGB36 to WGS 84 (3), within 1 mm, with or without ONLY_BEST=YES",
+        ),
+    },
     "null_transformations": {
         "null_transformations_are_named_not_ballparks": (
             "EPSG null transformations (SWEREF99, ETRS89, NZGD2000, REGVEN to WGS 84) and their concatenations: name, accuracy, ballpark flag",
@@ -4258,6 +4285,59 @@ def suite_coverage_clean(ctx):
     return suite
 
 
+def suite_stac_metadata(ctx):
+    """Compare local STAC band metadata with GDAL and declared STAC values.
+
+    Args:
+        ctx: Conformance context with the Terrio executable path.
+
+    Returns:
+        Suite: Shared-field comparisons and explicitly additional STAC metadata checks.
+    """
+    suite = Suite(
+        "stac-metadata",
+        "STAC mosaic band metadata",
+        "GDAL STACIT and STAC 1.1",
+        "Local two-band fixtures in STAC 1.0 and 1.1 form. Descriptions, colour interpretations, "
+        "shared metadata values, pixels, types, nodata and georeferencing agree "
+        "with GDAL. Additional raster metadata and warnings are checked against declared STAC "
+        "values; raster scale and offset remain metadata rather than applied pixel transforms. "
+        "Unset TIFF scale/offset and GDAL's explicit identity values 1/0 are normalized.",
+    )
+    if missing_modules("osgeo", "numpy"):
+        suite.skipped = "needs GDAL Python bindings and NumPy"
+        return suite
+    from osgeo import gdal
+
+    if gdal.GetDriverByName("STACIT") is None:
+        suite.skipped = "needs GDAL with the STACIT driver"
+        return suite
+    suite.reference = (
+        "GDAL " + gdal.VersionInfo("RELEASE_NAME") + " STACIT; STAC 1.1 raster metadata"
+    )
+    code, out, err = run(
+        [sys.executable, str(SCRIPTS / "compare_stac_geozarr.py"), "stac-metadata"],
+        {"TERRIO_BIN": ctx.terrio},
+    )
+    for line in out.splitlines():
+        if line.startswith(("ok   ", "FAIL ")):
+            suite.cases.append(
+                Case(
+                    "STACIT",
+                    line[5:],
+                    IDENTICAL if line.startswith("ok   ") else DIFFERS,
+                )
+            )
+    if len(suite.cases) != 14:
+        suite.error = (
+            f"expected 14 metadata comparisons, got {len(suite.cases)}: "
+            + tail(err or out)
+        )
+    elif code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or "STAC metadata comparison failed")
+    return suite
+
+
 def suite_wfs(ctx):
     """Local GML authority exports, axis controls and public WFS reads versus GDAL."""
     suite = Suite("wfs", "WFS services and extensionless responses", "GDAL WFS/GML/GeoJSON",
@@ -4482,6 +4562,7 @@ SUITES = OrderedDict(
         ("benchmark-metadata", suite_benchmark_metadata),
         ("benchmark-compat", suite_benchmark_compat),
         ("catalogs", suite_catalogs),
+        ("stac-metadata", suite_stac_metadata),
         ("vrt", suite_vrt),
         ("jp2-colors", suite_jp2_colors),
         ("overviews", suite_overviews),

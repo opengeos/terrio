@@ -4486,3 +4486,18 @@ remain independent of the hint. Never use timing or worker state to select it.
 `cargo test -p terrio` covers immediate enabling, complete backoff, successful
 late re-probing, short chunks and forced loop equivalence against weezl 0.2.1,
 alongside the existing differential/property and writer golden suites.
+
+## STAC mosaic band metadata
+
+`python scripts/conformance.py . --only stac-metadata --terrio target/debug/terrio`
+compares local two-band STAC 1.0 and 1.1 catalogs with the installed GDAL STACIT
+driver. It checks descriptions, colour interpretations, shared metadata values,
+pixels, data types, nodata, scale, offset and georeferencing. Additional raster
+metadata and the warning for an unplaced asset are checked against the declared
+STAC values. Raster scale and offset remain metadata items rather than applied
+pixel transforms. Unset TIFF scale/offset and GDAL's explicit identity values
+1/0 are treated as equivalent. The comparison uses generated local files and no network.
+
+`cargo test -p terrio --lib stac::` covers missing projection-extension declarations,
+invalid transforms, collection/asset/CRS filters, null band members and the
+unprefixed STAC 1.1 `statistics` field.
