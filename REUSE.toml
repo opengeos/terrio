@@ -139,9 +139,10 @@ SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOG
 SPDX-License-Identifier = "LicenseRef-EPSG AND Apache-2.0 AND MIT"
 
 # The datum transformations to WGS 84 PROJ 9.9.0 picks first without grids for EPSG geographic
-# CRSs (scripts/gen_helmert_to_wgs84.py).
+# CRSs (scripts/gen_helmert_to_wgs84.py), and its non-ballpark candidate availability answers
+# (scripts/gen_has_non_ballpark_operation.py).
 [[annotations]]
-path = "crates/terrio-crs/tests/data/helmert_to_wgs84.tsv"
+path = ["crates/terrio-crs/tests/data/helmert_to_wgs84.tsv", "crates/terrio-crs/tests/data/has_non_ballpark_operation.tsv"]
 precedence = "override"
 SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
 SPDX-License-Identifier = "LicenseRef-EPSG AND MIT"

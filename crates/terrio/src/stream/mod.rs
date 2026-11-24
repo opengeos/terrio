@@ -829,6 +829,7 @@ impl FeatureSource for FgbSource {
 
 #[cfg(feature = "flatgeobuf")]
 fn open_fgb(path: &str, batch: usize, bbox: Option<(f64, f64, f64, f64)>) -> Result<(Layer, Box<dyn FeatureSource>)> {
+    let bbox = bbox.map(crate::drivers::vector::corners_extent);
     let mut r = BufReader::with_capacity(1 << 20, File::open(path)?);
     let mut start = [0u8; 12];
     let n = read_full(&mut r, &mut start)?;

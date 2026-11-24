@@ -390,7 +390,7 @@ fn open_raster_lazy_bytes_unchecked(bytes: Vec<u8>, name: &str) -> Result<LazyRa
     if crate::drivers::grib::is_grib_bytes(&bytes) {
         // Found by its content whatever its name: read only if the GRIB driver is allowed.
         crate::drivers::check_recognised(RasterDriver::GRIB, name)?;
-        return crate::drivers::grib::open_lazy_bytes(bytes.into());
+        return crate::drivers::grib::open_lazy_bytes(bytes);
     }
     if codec::is_tiff(&bytes) {
         if let Some(r) = LazyRaster::from_tiff_bytes(bytes)? {

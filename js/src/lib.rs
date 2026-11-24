@@ -312,7 +312,8 @@ struct WriteOptions {
     tile_size: Option<u32>,
     /// Overview decimation factors to build when writing GeoTIFFs.
     overviews: Vec<usize>,
-    /// Overview resampling: nearest, average, min, max or mode.
+    /// Overview resampling: nearest, average, min, max, mode, or area_matched and
+    /// area_matched_mode (overviews that keep the valid area).
     overview_resampling: Option<String>,
     /// PMTiles, MBTiles: the lowest zoom level written.
     minzoom: Option<u8>,

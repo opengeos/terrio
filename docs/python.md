@@ -397,12 +397,20 @@ and `sort` run the [vector geometry commands](cli.md#vector-geometry-commands) (
 `gdal vector` commands of those names) and return a `Layer`. Inputs may be a vector path,
 `VectorDataset`, `Layer`, list of layers, or GeoJSON, with a single layer, or the one `layer=`
 names. `convert(..., simplify=TOLERANCE)` and `convert(..., segmentize=MAX_LENGTH)` are
-`ogr2ogr`'s `-simplify` and `-segmentize`.
+`ogr2ogr`'s `-simplify` and `-segmentize`. `simplify(..., method="douglas-peucker")` runs
+Douglas-Peucker instead of the topology-preserving simplifier (see
+[simplify](cli.md#vector-geometry-commands)), and `simplify_wkb` runs it directly on WKB: Arrow
+binary arrays (pyarrow `binary`, `large_binary`, `binary_view`, a ChunkedArray of one) or
+sequences of `bytes`, in parallel over features, returning the same kind of array (a
+`terrio.ArrowArray` when pyarrow is not installed) and, with `stats=True`, counts of vertices and
+collapsed rings.
 
 ```python
 groups = terrio.combine("places.gpkg", group_by=["adm0_a3"])
 hulls = terrio.concave_hull(groups, 0.3, allow_holes=True)
 simple = terrio.simplify("counties.gpkg", 0.01)
+fast = terrio.simplify("counties.gpkg", 0.01, method="douglas-peucker")
+wkb, counts = terrio.simplify_wkb(table["geometry"], 0.1, stats=True)  # a pyarrow binary column
 dense = terrio.segmentize(simple, 0.1)
 multi = terrio.set_geom_type("roads.gpkg", multi=True, dim="XYZ")
 ordered = terrio.sort(multi, method="strtree")
@@ -1029,7 +1037,7 @@ terrio.network_stats()  # {"request_count": 1, "received_bytes": 16384, "sent_by
 terrio.clear_http_cache()
 
 # The cache of decoded GeoTIFF/COG chunks (GDAL's GetCacheMax/SetCacheMax): TERRIO_CACHEMAX, else
-# GDAL_CACHEMAX, else 64 MiB; 0 turns it off.
+# GDAL_CACHEMAX, else 64 MiB; 0 turns it off. It also keeps the bands lazy GRIB reads decode.
 terrio.block_cache_max()  # 67108864
 terrio.set_block_cache_max(256 << 20)
 terrio.clear_block_cache()

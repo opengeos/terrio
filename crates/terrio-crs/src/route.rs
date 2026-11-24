@@ -151,6 +151,9 @@ pub(crate) struct Route {
     /// The target's transformations to WGS 84, for `Hub`.
     dst_ops: Vec<Arc<Op>>,
     src_ops: Vec<Arc<Op>>,
+    /// Candidate-area constraints for the hub availability query; point execution keeps its
+    /// existing per-point operation selection.
+    hub_areas: [Option<[f64; 4]>; 3],
 }
 
 fn legs(ops: &[Arc<Op>], reverse: bool) -> Vec<Leg> {
@@ -250,7 +253,15 @@ fn pseudo_area(a: &[f64; 4]) -> f64 {
 /// The area the transformations between two CRSs must intersect: the smaller of their areas of
 /// use, as PROJ's `SourceTargetCRSExtentUse::SMALLEST`.
 fn area_of_interest(src: &Def, dst: &Def) -> Option<[f64; 4]> {
-    smaller(src.area(), dst.area())
+    smaller(extent(src), extent(dst))
+}
+
+/// A CRS's area as PROJ takes it for its search: none for a WKT 2 `BOUNDCRS` to another CRS,
+/// which PROJ neither looks up by name nor gives an area beyond its base CRS's own `USAGE`
+/// (`getExtent`), and terrio reads no `USAGE`: the area of a code terrio identifies it as is not
+/// PROJ's (a bound CRS on Saba to ED50, placed by ED50's ballpark on the island as in PROJ).
+fn extent(d: &Def) -> Option<[f64; 4]> {
+    if d.bound_elsewhere() { None } else { d.area() }
 }
 
 /// The smaller of two areas, as PROJ measures them.
@@ -261,26 +272,71 @@ fn smaller(a: Option<[f64; 4]>, b: Option<[f64; 4]>) -> Option<[f64; 4]> {
     }
 }
 
+/// The transformations of a WKT 2 `BOUNDCRS` to another CRS (see [`Def::bound_elsewhere`]) as
+/// PROJ's nested search from that CRS gives them: when only its ballpark is left for the area of
+/// interest, PROJ excludes it ("artificial transformations from the hub", in
+/// `createOperationsBoundToGeog`) and applies no shift: between a bound CRS to CH1903 and UTM zone
+/// 33N, whose area CH1903's transformation does not reach.
+fn nested(def: &Def, kind: Kind) -> Kind {
+    match kind {
+        Kind::List(legs) if def.bound_elsewhere() && legs.iter().all(|l| l.op.ballpark) => Kind::List(Vec::new()),
+        kind => kind,
+    }
+}
+
 /// Whether PROJ considers a transformation between two CRSs: its area must intersect both CRSs'
 /// areas (as PROJ queries its database) and the area of interest.
 fn relevant(op: &Op, src: &Def, dst: &Def, aoi: Option<&[f64; 4]>) -> bool {
-    op.ballpark || [src.area().as_ref(), dst.area().as_ref(), aoi].into_iter().flatten().all(|a| intersects(&op.bounds, a))
+    op.ballpark || [extent(src).as_ref(), extent(dst).as_ref(), aoi].into_iter().flatten().all(|a| intersects(&op.bounds, a))
+}
+
+/// What a route between two CRSs is searched in (#1058 step 7c): the CRSs, PROJ's area of
+/// interest between them ([`area_of_interest`]), and whether every grid counts as present, as in
+/// PROJ's candidate list, which keeps the transformations whose grids are missing
+/// ([`Route::all`]), or only the grids found ([`Route::new`]).
+struct OperationContext<'a> {
+    src: &'a Def,
+    dst: &'a Def,
+    aoi: Option<[f64; 4]>,
+    all: bool,
+}
+
+impl<'a> OperationContext<'a> {
+    fn new(src: &'a Def, dst: &'a Def, all: bool) -> Self {
+        Self { src, dst, aoi: area_of_interest(src, dst), all }
+    }
+
+    fn aoi(&self) -> Option<&[f64; 4]> {
+        self.aoi.as_ref()
+    }
+
+    /// Whether PROJ considers a transformation between the CRSs ([`relevant`]).
+    fn keep(&self, op: &Op) -> bool {
+        relevant(op, self.src, self.dst, self.aoi())
+    }
+
+    /// The direct transformations between two EPSG geographic CRSs from GDAL's table, with those
+    /// whose grids are missing when every grid counts, and whether they run in reverse.
+    fn pair(&self, a: u32, b: u32) -> Option<(Vec<Arc<Op>>, bool)> {
+        if self.all { epsg::pair_all(a, b) } else { epsg::pair(a, b) }
+    }
 }
 
 impl Route {
     /// The route from `src` to `dst`.
     pub fn new(src: &Def, dst: &Def) -> Self {
-        Self::build(src, dst, false)
+        Self::build(&OperationContext::new(src, dst, false))
     }
 
     /// The route assuming all grids are available.
     pub fn all(src: &Def, dst: &Def) -> Self {
-        Self::build(&src.with_all_operations(), &dst.with_all_operations(), true)
+        let (src, dst) = (src.with_all_operations(), dst.with_all_operations());
+        Self::build(&OperationContext::new(&src, &dst, true))
     }
 
-    fn build(src: &Def, dst: &Def, all: bool) -> Self {
-        let aoi = area_of_interest(src, dst);
-        let keep = |op: &Op| relevant(op, src, dst, aoi.as_ref());
+    fn build(ctx: &OperationContext) -> Self {
+        let (src, dst, aoi) = (ctx.src, ctx.dst, ctx.aoi());
+        let keep = |op: &Op| ctx.keep(op);
         // Unless both CRSs are 3D (geographic 3D or geocentric), PROJ makes a concatenation
         // through a transformation its database registers between geocentric CRSs only where no
         // transformation of the area links the datums directly (PROJ filters the direct ones by
@@ -314,7 +370,7 @@ impl Route {
         let renamed_datum = [src, dst].iter().any(|d| d.unresolved().is_some_and(|u| u.datum_renamed));
         let searching = !renamed_datum && (src.unresolved().is_some() || dst.unresolved().is_some());
         let searched = |kind: Kind| match (kind, src.geog(), dst.geog()) {
-            (Kind::List(l), Some(a), Some(b)) if searching => unresolved_search(l, a, b, src, dst, aoi.as_ref(), all),
+            (Kind::List(l), Some(a), Some(b)) if searching => unresolved_search(l, a, b, ctx),
             (kind, ..) => kind,
         };
         let kind = if src.on_bound_source(dst) || dst.on_bound_source(src) {
@@ -329,12 +385,12 @@ impl Route {
         } else if src.same_datum(dst) {
             Kind::Same
         } else if dst.is_wgs84() {
-            searched(list(src.ops(), false))
+            searched(nested(src, list(src.ops(), false)))
         } else if src.is_wgs84() {
-            searched(list(dst.ops(), true))
+            searched(nested(dst, list(dst.ops(), true)))
         } else {
             match (src.geog(), dst.geog()) {
-                (Some(a), Some(b)) => match if all { epsg::pair_all(a, b) } else { epsg::pair(a, b) } {
+                (Some(a), Some(b)) => match ctx.pair(a, b) {
                     // PROJ looks for transformations through other datums when its database has
                     // none it can use between the two for the CRSs' areas (NAD83(CSRS) to NAD83
                     // between Arctic CRSs, outside the offshore area of their only one, or with
@@ -345,16 +401,23 @@ impl Route {
                         // area of interest, PROJ sorts the transformations for theirs.
                         // The search sorts the list itself, for a CRS PROJ does not resolve.
                         if !searching {
-                            resort(&mut kind, a, b, aoi.as_ref());
+                            resort(&mut kind, a, b, aoi);
                         }
                         searched(kind)
                     }
-                    _ => chains(a, b, src, dst, aoi.as_ref(), all),
+                    _ => chains(a, b, ctx),
                 },
-                _ => Kind::Hub,
+                _ => shifted(ctx).unwrap_or(Kind::Hub),
             }
         };
-        Self { kind, boxes: OnceLock::new(), hub_boxes: OnceLock::new(), dst_ops: dst.ops().to_vec(), src_ops: src.ops().to_vec() }
+        Self {
+            kind,
+            boxes: OnceLock::new(),
+            hub_boxes: OnceLock::new(),
+            dst_ops: dst.ops().to_vec(),
+            src_ops: src.ops().to_vec(),
+            hub_areas: [extent(src), extent(dst), ctx.aoi],
+        }
     }
 
     /// Refuse ballpark alternatives while retaining usable accurate operations.
@@ -367,6 +430,7 @@ impl Route {
             }
             Kind::Chains { chains, ballpark } => {
                 *ballpark = None;
+                chains.retain(|c| !c.rank.ballpark);
                 !chains.is_empty()
             }
             Kind::Hub => {
@@ -379,39 +443,21 @@ impl Route {
 
     /// The operation selected before evaluating its pipeline, and whether its area excludes the point.
     pub fn selected<'a>(&'a self, src: &Def, x: f64, y: f64, p: Point) -> (Option<&'a Op>, bool) {
-        let (lon, lat) = src.source_degrees(x, y).unwrap_or((p.lon.to_degrees(), p.lat.to_degrees()));
-        let inside = |op: &Op, boxes: Option<&Vec<[f64; 4]>>| match boxes {
-            Some(b) if !b.is_empty() => b.iter().any(|b| x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3]),
-            _ => op.contains(lon, lat) || op.contains((lon + 180.0).rem_euclid(360.0) - 180.0, lat),
-        };
-        let choose = |ops: Vec<&'a Op>, boxes: &Boxes| {
-            let i = datum::pick_index(&ops, &[], |op, i| op.ballpark || inside(op, boxes.get(i)))
-                .or_else(|| ops.iter().position(|op| !op.needs_grids()));
-            let op = i.map(|i| ops[i]);
-            (op, i.is_some_and(|i| !ops[i].ballpark && !inside(ops[i], boxes.get(i))))
+        // Longitudes are tried wrapped into [-180, 180[ here, 180 also as -180.
+        let at = At::new(src, x, y, p, true);
+        let choose = |c: Candidates<'a>| {
+            let i = c.best(&at, &[]).or_else(|| c.first_without_grids());
+            let op = i.map(|i| c.ops[i]);
+            (op, i.is_some_and(|i| !c.ops[i].ballpark && !c.inside(&at, i)))
         };
         match &self.kind {
             Kind::Same => (None, false),
-            Kind::List(list) => {
-                let boxes = self.boxes.get_or_init(|| list.iter().map(|l| src.areas(&l.op)).collect());
-                choose(list.iter().map(|l| l.op.as_ref()).collect(), boxes)
-            }
-            Kind::Chains { chains, ballpark } => {
-                let boxes = self.boxes.get_or_init(|| chains.iter().map(|c| src.areas(&c.rank)).collect());
-                choose(chains.iter().map(|c| &c.rank).chain(ballpark.as_ref()).collect(), boxes)
-            }
-            Kind::Hub => {
-                let (sb, db) = self.hub_boxes.get_or_init(|| {
-                    let areas = |ops: &[Arc<Op>]| ops.iter().map(|o| src.areas(o)).collect();
-                    (areas(&self.src_ops), areas(&self.dst_ops))
-                });
-                let single = |op: &Op| !op.ballpark && !op.concatenated;
-                let select = |ops: &'a [Arc<Op>], boxes: &Boxes| datum::pick_in(ops, |op, i| single(op) && inside(op, boxes.get(i)));
-                match (select(&self.src_ops, sb), select(&self.dst_ops, db)) {
-                    (Some(s), Some(d)) => (Some(if !s.available() { s } else { d }), false),
-                    _ => (None, false),
-                }
-            }
+            Kind::Hub => match self.hub_pick(src, &at) {
+                (Some(s), Some(d)) => (Some(if !s.available() { s } else { d }), false),
+                _ => (None, false),
+            },
+            // A list's ballpark holds every point here, as a chain's does.
+            _ => choose(self.candidates(src, true).expect("a list or chains")),
         }
     }
 
@@ -424,11 +470,14 @@ impl Route {
                 datum::run_op(op, p, leg.reverse, three_d).inspect(|_| note(Some(op), leg.reverse, OpKind::Datum))
             }
             Kind::Chains { chains, .. } => {
-                if op.ballpark {
+                // A shift and a ballpark is a chain (see `shifted`); the ballpark alone, no shift.
+                let Some(c) = chains.iter().find(|c| std::ptr::eq(&c.rank, op)) else {
+                    if !op.ballpark {
+                        return None;
+                    }
                     note(None, false, OpKind::Datum);
                     return Some(p);
-                }
-                let c = chains.iter().find(|c| std::ptr::eq(&c.rank, op))?;
+                };
                 let q = c.run(p)?;
                 note(Some(&c.rank), false, OpKind::Datum);
                 Some(if three_d || !c.rank.keeps_height { q } else { Point { h: p.h, ..q } })
@@ -437,44 +486,73 @@ impl Route {
         }
     }
 
+    /// Whether any retained candidate is not a ballpark: a transformation between the
+    /// datums whose grids can be had (see [`Op::obtainable`]), or none needed (one datum). False
+    /// when only PROJ's ballpark links the CRSs (or the shift into a hub CRS with it, which PROJ
+    /// counts as one). Candidates have already been filtered by the CRSs' extents and area of
+    /// interest; this does not select a particular point within those areas.
+    pub fn has_transformation(&self) -> bool {
+        let usable = |op: &Op| !op.ballpark && op.obtainable();
+        match &self.kind {
+            Kind::Same => true,
+            Kind::List(list) => list.iter().any(|l| usable(&l.op)),
+            Kind::Chains { chains, .. } => chains.iter().any(|c| c.legs.iter().all(|l| usable(&l.op))),
+            // Through WGS 84: a transformation on each side.
+            Kind::Hub => [&self.src_ops, &self.dst_ops]
+                .iter()
+                .all(|ops| ops.iter().any(|op| usable(op) && self.hub_areas.iter().flatten().all(|area| intersects(&op.bounds, area)))),
+        }
+    }
+
     /// Whether this route represents an unchanged datum.
     pub fn same_datum(&self) -> bool {
         matches!(self.kind, Kind::Same)
+    }
+
+    /// The candidates of a list, or the chains then their ballpark, with their areas in source
+    /// coordinates; `ballpark_holds`: whether a ballpark holds every point. `None` for the other
+    /// kinds.
+    fn candidates<'a>(&'a self, src: &Def, ballpark_holds: bool) -> Option<Candidates<'a>> {
+        let (ops, boxes) = match &self.kind {
+            Kind::List(list) => {
+                (list.iter().map(|l| l.op.as_ref()).collect(), self.boxes.get_or_init(|| list.iter().map(|l| src.areas(&l.op)).collect()))
+            }
+            Kind::Chains { chains, ballpark } => (
+                chains.iter().map(|c| &c.rank).chain(ballpark.as_ref()).collect(),
+                self.boxes.get_or_init(|| chains.iter().map(|c| src.areas(&c.rank)).collect()),
+            ),
+            _ => return None,
+        };
+        Some(Candidates { ops, boxes, ballpark_holds })
+    }
+
+    /// The source's and target's transformations to WGS 84 a `Hub` route picks for a point: the
+    /// single ones (no ballpark, no concatenation), as PROJ chains them, whose areas hold it.
+    fn hub_pick<'a>(&'a self, src: &Def, at: &At) -> (Option<&'a Op>, Option<&'a Op>) {
+        let (sb, db) = self.hub_boxes.get_or_init(|| {
+            let areas = |ops: &[Arc<Op>]| ops.iter().map(|o| src.areas(o)).collect();
+            (areas(&self.src_ops), areas(&self.dst_ops))
+        });
+        let single = |op: &Op| !op.ballpark && !op.concatenated;
+        let pick = |ops: &'a [Arc<Op>], boxes: &Boxes| datum::pick_in(ops, |op, i| single(op) && at.inside(op, boxes.get(i)));
+        (pick(&self.src_ops, sb), pick(&self.dst_ops, db))
     }
 
     /// The accuracy (metres) of the transformation [`Route::apply`] picks for a point, as PROJ
     /// adds it to the accuracy of a vertical transformation it chains with: 0 between CRSs of one
     /// datum, negative when unknown (a ballpark, or no transformation for the point).
     pub fn accuracy_at(&self, src: &Def, x: f64, y: f64, p: Point) -> f64 {
-        let (dlon, dlat) = src.source_degrees(x, y).unwrap_or((p.lon.to_degrees(), p.lat.to_degrees()));
-        let wrapped = if (-180.0..=180.0).contains(&dlon) { dlon } else { (dlon + 180.0).rem_euclid(360.0) - 180.0 };
-        let inside = |op: &Op, boxes: Option<&Vec<[f64; 4]>>| match boxes {
-            Some(b) if !b.is_empty() => b.iter().any(|b| x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3]),
-            _ => op.contains(dlon, dlat) || op.contains(wrapped, dlat),
-        };
-        let first_without_grids = |ops: &[&Op]| ops.iter().find(|o| !o.needs_grids()).map_or(-1.0, |o| o.accuracy);
+        let at = At::new(src, x, y, p, false);
         match &self.kind {
             Kind::Same => 0.0,
             Kind::List(list) if list.is_empty() => -1.0,
-            Kind::List(list) => {
-                let boxes = self.boxes.get_or_init(|| list.iter().map(|l| src.areas(&l.op)).collect());
-                let ops: Vec<&Op> = list.iter().map(|l| l.op.as_ref()).collect();
-                datum::pick_index(&ops, &[], |op, i| inside(op, boxes.get(i)))
-                    .map_or_else(|| first_without_grids(&ops), |i| ops[i].accuracy)
-            }
             Kind::Chains { chains, .. } if chains.is_empty() => -1.0,
-            Kind::Chains { chains, ballpark } => {
-                if chains.len() == 1 && ballpark.is_none() {
-                    return chains[0].rank.accuracy;
-                }
-                let boxes = self.boxes.get_or_init(|| chains.iter().map(|c| src.areas(&c.rank)).collect());
-                let ranks: Vec<&Op> = chains.iter().map(|c| &c.rank).chain(ballpark.as_ref()).collect();
-                match datum::pick_index(&ranks, &[], |op, i| op.ballpark || inside(op, boxes.get(i))) {
-                    Some(i) => ranks[i].accuracy,
-                    None => first_without_grids(&ranks),
-                }
-            }
+            Kind::Chains { chains, ballpark: None } if chains.len() == 1 => chains[0].rank.accuracy,
             Kind::Hub => -1.0,
+            _ => {
+                let c = self.candidates(src, matches!(self.kind, Kind::Chains { .. })).expect("a list or chains");
+                c.best(&at, &[]).or_else(|| c.first_without_grids()).map_or(-1.0, |i| c.ops[i].accuracy)
+            }
         }
     }
 
@@ -502,32 +580,23 @@ impl Route {
                 record(op, outside)
             })
         };
-        // PROJ compares the source coordinates with the areas: for a geographic source, its
-        // longitude and latitude as given, in degrees.
-        let (dlon, dlat) = src.source_degrees(x, y).unwrap_or((p.lon.to_degrees(), p.lat.to_degrees()));
-        // Longitudes out of [-180, 180] are also tried wrapped into it, as PROJ does.
-        let wrapped = if (-180.0..=180.0).contains(&dlon) { dlon } else { (dlon + 180.0).rem_euclid(360.0) - 180.0 };
-        let inside = |op: &Op, boxes: Option<&Vec<[f64; 4]>>| match boxes {
-            Some(b) if !b.is_empty() => b.iter().any(|b| x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3]),
-            _ => op.contains(dlon, dlat) || op.contains(wrapped, dlat),
-        };
+        let at = At::new(src, x, y, p, false);
         match &self.kind {
             Kind::Same => Some(p),
             // No transformation at all (a CRS of an unknown datum, defined by its ellipsoid alone):
             // no shift, PROJ's ballpark transformation.
             Kind::List(list) if list.is_empty() => report(Some(p), None, false, false),
             Kind::List(list) => {
-                let boxes = self.boxes.get_or_init(|| list.iter().map(|l| src.areas(&l.op)).collect());
-                let ops: Vec<&Op> = list.iter().map(|l| l.op.as_ref()).collect();
+                let c = self.candidates(src, false).expect("a list");
                 datum::transform_with(
-                    &ops,
-                    |op, i| inside(op, boxes.get(i)),
+                    &c.ops,
+                    |_, i| c.inside(&at, i),
                     |i| {
                         report(
                             datum::run_op(&list[i].op, p, list[i].reverse, three_d),
                             Some(&list[i].op),
                             list[i].reverse,
-                            !inside(&list[i].op, boxes.get(i)),
+                            !c.inside(&at, i),
                         )
                     },
                 )
@@ -542,28 +611,22 @@ impl Route {
                     let r = c.run(p)?;
                     Some(if three_d || !c.rank.keeps_height { r } else { Point { h: p.h, ..r } })
                 };
+                let c = self.candidates(src, true).expect("chains");
                 // A single operation is used for every point, whatever its area, as PROJ does.
                 if chains.len() == 1 && ballpark.is_none() {
-                    let chain = &chains[0];
-                    let boxes = self.boxes.get_or_init(|| chains.iter().map(|c| src.areas(&c.rank)).collect());
-                    return report(run(chain), Some(&chain.rank), false, !inside(&chain.rank, boxes.first()));
+                    return report(run(&chains[0]), Some(&chains[0].rank), false, !c.inside(&at, 0));
                 }
-                let boxes = self.boxes.get_or_init(|| chains.iter().map(|c| src.areas(&c.rank)).collect());
-                let ranks: Vec<&Op> = chains.iter().map(|c| &c.rank).chain(ballpark.as_ref()).collect();
-                let mut excluded = Vec::new();
-                for _ in 0..3 {
-                    let Some(i) = datum::pick_index(&ranks, &excluded, |op, i| op.ballpark || inside(op, boxes.get(i))) else { break };
+                for i in c.tries(&at) {
                     // The ballpark (more accurate than the chains between CRSs that differ by
                     // their prime meridians alone): no shift.
                     let Some(chain) = chains.get(i) else { return report(Some(p), None, false, false) };
                     if let Some(r) = run(chain) {
-                        return report(Some(r), Some(&chain.rank), false, !inside(&chain.rank, boxes.get(i)));
+                        return report(Some(r), Some(&chain.rank), false, !c.inside(&at, i));
                     }
                     // A grid the network did not give: PROJ stops on the network error.
                     if chain.legs.iter().any(|l| l.op.network_failed()) {
                         return None;
                     }
-                    excluded.push(i);
                 }
                 if ballpark.is_some() {
                     // The ballpark holds every point: no shift.
@@ -571,33 +634,23 @@ impl Route {
                 }
                 // No transformation for the point: the first that needs no grid, as PROJ's
                 // `proj_trans`.
-                let (i, first) = chains.iter().enumerate().find(|(_, c)| !c.rank.needs_grids())?;
-                report(run(first), Some(&first.rank), false, !inside(&first.rank, boxes.get(i)))
+                let i = c.first_without_grids()?;
+                report(run(&chains[i]), Some(&chains[i].rank), false, !c.inside(&at, i))
             }
-            Kind::Hub => {
-                let (sb, db) = self.hub_boxes.get_or_init(|| {
-                    let areas = |ops: &[Arc<Op>]| ops.iter().map(|o| src.areas(o)).collect();
-                    (areas(&self.src_ops), areas(&self.dst_ops))
-                });
-                // Single transformations only, as PROJ chains them.
-                let single = |op: &Op| !op.ballpark && !op.concatenated;
-                let s = datum::pick_in(&self.src_ops, |op, i| single(op) && inside(op, sb.get(i)));
-                let d = datum::pick_in(&self.dst_ops, |op, i| single(op) && inside(op, db.get(i)));
-                match (s, d) {
-                    (Some(s), Some(d)) => {
-                        // Heights go through both, as in PROJ's pipeline (see the chains).
-                        let r = datum::run(&s.steps, p, false, true).and_then(|q| datum::run(&d.steps, q, true, true))?;
-                        let result = Some(if three_d || !(s.keeps_height && d.keeps_height) { r } else { Point { h: p.h, ..r } });
-                        if result.is_some() {
-                            note(Some(s), false, OpKind::Datum);
-                        }
-                        record(Some(s), false);
-                        report(result, Some(d), true, false)
+            Kind::Hub => match self.hub_pick(src, &at) {
+                (Some(s), Some(d)) => {
+                    // Heights go through both, as in PROJ's pipeline (see the chains).
+                    let r = datum::run(&s.steps, p, false, true).and_then(|q| datum::run(&d.steps, q, true, true))?;
+                    let result = Some(if three_d || !(s.keeps_height && d.keeps_height) { r } else { Point { h: p.h, ..r } });
+                    if result.is_some() {
+                        note(Some(s), false, OpKind::Datum);
                     }
-                    // No transformation (or an unknown datum): no shift, as PROJ's ballpark.
-                    _ => report(Some(p), None, false, false),
+                    record(Some(s), false);
+                    report(result, Some(d), true, false)
                 }
-            }
+                // No transformation (or an unknown datum): no shift, as PROJ's ballpark.
+                _ => report(Some(p), None, false, false),
+            },
         }
     }
 }
@@ -610,26 +663,18 @@ impl Route {
     /// picks with every grid present (asking again after each grid is added). Empty when the
     /// transformation the point goes through needs no grid.
     pub fn grid_operations_at<'a>(&'a self, src: &Def, x: f64, y: f64, p: Point) -> Vec<&'a Op> {
-        let (dlon, dlat) = src.source_degrees(x, y).unwrap_or((p.lon.to_degrees(), p.lat.to_degrees()));
-        let wrapped = if (-180.0..=180.0).contains(&dlon) { dlon } else { (dlon + 180.0).rem_euclid(360.0) - 180.0 };
-        let inside = |op: &Op, boxes: Option<&Vec<[f64; 4]>>| match boxes {
-            Some(b) if !b.is_empty() => b.iter().any(|b| x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3]),
-            _ => op.contains(dlon, dlat) || op.contains(wrapped, dlat),
-        };
+        let at = At::new(src, x, y, p, false);
         match &self.kind {
             Kind::Same => Vec::new(),
             Kind::List(list) => {
-                let boxes = self.boxes.get_or_init(|| list.iter().map(|l| src.areas(&l.op)).collect());
-                let ops: Vec<&Op> = list.iter().map(|l| l.op.as_ref()).collect();
-                let mut excluded = Vec::new();
-                for _ in 0..3 {
-                    let Some(i) = datum::pick_index(&ops, &excluded, |op, i| inside(op, boxes.get(i))) else { break };
+                let c = self.candidates(src, false).expect("a list");
+                for i in c.tries(&at) {
+                    let op = c.ops[i];
                     // A grid the network did not give, before or by this run, stops the point there, as
                     // in `apply_reporting`.
-                    if !ops[i].available() || datum::run_op(ops[i], p, list[i].reverse, false).is_some() || ops[i].network_failed() {
-                        return vec![ops[i]];
+                    if !op.available() || datum::run_op(op, p, list[i].reverse, false).is_some() || op.network_failed() {
+                        return vec![op];
                     }
-                    excluded.push(i);
                 }
                 // Then the point goes through the first transformation that needs no grid, so no
                 // grid is returned.
@@ -640,11 +685,8 @@ impl Route {
                 if chains.len() == 1 && ballpark.is_none() {
                     return legs(&chains[0]);
                 }
-                let boxes = self.boxes.get_or_init(|| chains.iter().map(|c| src.areas(&c.rank)).collect());
-                let ranks: Vec<&Op> = chains.iter().map(|c| &c.rank).chain(ballpark.as_ref()).collect();
-                let mut excluded = Vec::new();
-                for _ in 0..3 {
-                    let Some(i) = datum::pick_index(&ranks, &excluded, |op, i| op.ballpark || inside(op, boxes.get(i))) else { break };
+                let c = self.candidates(src, true).expect("chains");
+                for i in c.tries(&at) {
                     let Some(chain) = chains.get(i) else { return Vec::new() };
                     if chain.legs.iter().any(|l| !l.op.available())
                         || chain.run(p).is_some()
@@ -652,25 +694,92 @@ impl Route {
                     {
                         return legs(chain);
                     }
-                    excluded.push(i);
                 }
                 Vec::new()
             }
-            Kind::Hub => {
-                let (sb, db) = self.hub_boxes.get_or_init(|| {
-                    let areas = |ops: &[Arc<Op>]| ops.iter().map(|o| src.areas(o)).collect();
-                    (areas(&self.src_ops), areas(&self.dst_ops))
-                });
-                let single = |op: &Op| !op.ballpark && !op.concatenated;
-                let s = datum::pick_in(&self.src_ops, |op, i| single(op) && inside(op, sb.get(i)));
-                let d = datum::pick_in(&self.dst_ops, |op, i| single(op) && inside(op, db.get(i)));
-                // Both, or the ballpark (no shift).
-                match (s, d) {
-                    (Some(s), Some(d)) => vec![s, d],
-                    _ => Vec::new(),
-                }
-            }
+            // Both, or the ballpark (no shift).
+            Kind::Hub => match self.hub_pick(src, &at) {
+                (Some(s), Some(d)) => vec![s, d],
+                _ => Vec::new(),
+            },
         }
+    }
+}
+
+/// A point as PROJ compares it with the areas of the operations: its source coordinates, against
+/// an operation's areas in source coordinates when it has them, else its longitude and latitude
+/// in degrees (for a geographic source as given), the longitude also wrapped into [-180, 180].
+struct At {
+    x: f64,
+    y: f64,
+    lon: f64,
+    lat: f64,
+    wrapped: f64,
+}
+
+impl At {
+    /// `wrap_all`: wrap every longitude (180 is also tried as -180), else only those out of
+    /// [-180, 180].
+    fn new(src: &Def, x: f64, y: f64, p: Point, wrap_all: bool) -> Self {
+        let (lon, lat) = src.source_degrees(x, y).unwrap_or((p.lon.to_degrees(), p.lat.to_degrees()));
+        let wrap = |lon: f64| (lon + 180.0).rem_euclid(360.0) - 180.0;
+        let wrapped = if wrap_all || !(-180.0..=180.0).contains(&lon) { wrap(lon) } else { lon };
+        Self { x, y, lon, lat, wrapped }
+    }
+
+    /// Whether an operation's area holds the point.
+    fn inside(&self, op: &Op, boxes: Option<&Vec<[f64; 4]>>) -> bool {
+        match boxes {
+            Some(b) if !b.is_empty() => b.iter().any(|b| self.x >= b[0] && self.x <= b[2] && self.y >= b[1] && self.y <= b[3]),
+            _ => op.contains(self.lon, self.lat) || op.contains(self.wrapped, self.lat),
+        }
+    }
+}
+
+/// The operations a route chooses from for a point, in PROJ's order, with their areas in source
+/// coordinates: a list's, or the chains' then their ballpark.
+struct Candidates<'a> {
+    ops: Vec<&'a Op>,
+    boxes: &'a Boxes,
+    /// Whether a ballpark holds every point, whatever its area.
+    ballpark_holds: bool,
+}
+
+impl Candidates<'_> {
+    /// Whether the `i`th operation's area holds the point (not counting a ballpark's).
+    fn inside(&self, at: &At, i: usize) -> bool {
+        at.inside(self.ops[i], self.boxes.get(i))
+    }
+
+    /// Whether the `i`th operation holds the point.
+    fn holds(&self, at: &At, i: usize) -> bool {
+        (self.ballpark_holds && self.ops[i].ballpark) || self.inside(at, i)
+    }
+
+    /// The operation PROJ picks for the point among those that hold it, but `excluded`: the most
+    /// accurate, then the one of the smallest area.
+    fn best(&self, at: &At, excluded: &[usize]) -> Option<usize> {
+        datum::pick_index(&self.ops, excluded, |_, i| self.holds(at, i))
+    }
+
+    /// The first operation that needs no grid, which PROJ's `proj_trans` uses when none holds
+    /// the point.
+    fn first_without_grids(&self) -> Option<usize> {
+        self.ops.iter().position(|op| !op.needs_grids())
+    }
+
+    /// The operations PROJ's `proj_trans` tries for the point, in turn while each fails: the
+    /// best, then the next best, up to three.
+    fn tries<'b>(&'b self, at: &'b At) -> impl Iterator<Item = usize> + 'b {
+        let mut excluded = Vec::new();
+        std::iter::from_fn(move || {
+            if excluded.len() == 3 {
+                return None;
+            }
+            let i = self.best(at, &excluded)?;
+            excluded.push(i);
+            Some(i)
+        })
     }
 }
 
@@ -733,7 +842,8 @@ const NULL_OFFSET: &str = "Null geographic offset";
 /// Transformations PROJ's database replaces by another it finds too are left out, as are those
 /// whose grids are missing. PROJ ends the list with its ballpark (no shift) unless a chain that
 /// needs no grid holds the area of interest.
-fn chains(a: u32, b: u32, src: &Def, dst: &Def, aoi: Option<&[f64; 4]>, all: bool) -> Kind {
+fn chains(a: u32, b: u32, ctx: &OperationContext) -> Kind {
+    let (src, dst, aoi, all) = (ctx.src, ctx.dst, ctx.aoi(), ctx.all);
     let reg = epsg::registry();
     let (Some(ga), Some(gb)) = (reg.geodetic.get(&a), reg.geodetic.get(&b)) else {
         return Kind::Chains { chains: Vec::new(), ballpark: Some(ballpark_op(src, dst)) };
@@ -762,7 +872,7 @@ fn chains(a: u32, b: u32, src: &Def, dst: &Def, aoi: Option<&[f64; 4]>, all: boo
     if reverse {
         found = found.into_iter().map(Found::reversed).collect();
     }
-    finish(ranked(reg, found, aoi), src, dst, aoi)
+    finish(ranked(reg, found, aoi), ctx)
 }
 
 /// The areas of two CRSs PROJ queries its database's transformations for: those it knows, but
@@ -791,10 +901,11 @@ fn crs_extents(src: &Def, dst: &Def) -> Vec<[f64; 4]> {
 /// follow yet (opengeos/terrio#1012): when either CRS has a renamed datum, `Route::build` does not
 /// search at all, for both sides, and that CRS keeps its code's area: the route is the one
 /// between the codes.
-fn unresolved_search(list: Vec<Leg>, a: u32, b: u32, src: &Def, dst: &Def, aoi: Option<&[f64; 4]>, all: bool) -> Kind {
+fn unresolved_search(list: Vec<Leg>, a: u32, b: u32, ctx: &OperationContext) -> Kind {
+    let (src, dst, aoi, all) = (ctx.src, ctx.dst, ctx.aoi(), ctx.all);
     let reg = epsg::registry();
     if !list.iter().any(|l| !l.op.ballpark) {
-        return chains(a, b, src, dst, aoi, all);
+        return chains(a, b, ctx);
     }
     // CRSs PROJ's registry of chainable CRSs lacks: their own list, sorted as when no search
     // follows (every path sorts once; the CRS-pair branch leaves the sorting to this function).
@@ -821,7 +932,7 @@ fn unresolved_search(list: Vec<Leg>, a: u32, b: u32, src: &Def, dst: &Def, aoi: 
                 if r.time_dependent || r.ensemble || !reg.geodetic.get(&end).is_some_and(|g| g.datum == gb.datum) {
                     continue;
                 }
-                if (!all && !r.op.available()) || !relevant(&r.op, src, dst, aoi) {
+                if (!all && !r.op.available()) || !ctx.keep(&r.op) {
                     continue;
                 }
                 // Run from the source CRS to the target: forward when the registered operation
@@ -871,7 +982,7 @@ fn unresolved_search(list: Vec<Leg>, a: u32, b: u32, src: &Def, dst: &Def, aoi: 
     }
     let mut out = ranked(reg, found, aoi);
     out.extend(direct.into_iter().map(|l| direct_chain(l, aoi)));
-    finish(out, src, dst, aoi)
+    finish(out, ctx)
 }
 
 /// The names of PROJ's null transformations between the WGS 84 ensemble and its realizations, and
@@ -970,13 +1081,14 @@ fn ranked(reg: &epsg::Registry, found: Vec<Found>, aoi: Option<&[f64; 4]>) -> Ve
 
 /// PROJ's list from the chains it found, sorted: then its ballpark, unless a chain that needs no
 /// grid holds the area of interest (even one it then drops itself).
-fn finish(mut out: Vec<(SortKey, Chain)>, src: &Def, dst: &Def, aoi: Option<&[f64; 4]>) -> Kind {
+fn finish(mut out: Vec<(SortKey, Chain)>, ctx: &OperationContext) -> Kind {
+    let aoi = ctx.aoi();
     out.sort_by(|x, y| x.0.cmp(&y.0));
     // PROJ drops its ballpark when a chain that needs no grid holds the area of interest, even
     // one it then drops itself.
     let ballpark = !aoi.is_some_and(|a| out.iter().any(|(_, c)| !c.rank.needs_grids() && contains(&c.rank.bounds, a)));
     let chains = remove_uninteresting(out.into_iter().map(|(_, c)| c).collect());
-    Kind::Chains { chains, ballpark: ballpark.then(|| ballpark_op(src, dst)) }
+    Kind::Chains { chains, ballpark: ballpark.then(|| ballpark_op(ctx.src, ctx.dst)) }
 }
 
 /// The chains PROJ keeps once sorted: without one that brings nothing over the previous one kept
@@ -1313,6 +1425,63 @@ fn ballpark_op(src: &Def, dst: &Def) -> Op {
     Op { accuracy, chain_accuracy: accuracy, ballpark: true, ..Op::world(Vec::new()) }
 }
 
+/// The route between a CRS bound to a hub CRS (see [`Def::hub`]) and a CRS with its own
+/// transformations, as PROJ makes it (`createOperationsBoundToGeog`): the shift into the hub,
+/// then each of PROJ's transformations from the hub to the other CRS (the reverse the other way),
+/// each of unknown accuracy, sorted again for the other CRS's area; then the shift alone (with
+/// PROJ's ballpark from the hub), which this search drops only when a transformation that needs
+/// no grid holds the area of interest, as PROJ does (a bound CRS to DHDN into ETRS89 keeps it,
+/// which the codes' own list drops). With no transformation from the hub but that ballpark, PROJ
+/// excludes it ("artificial transformations from the hub"): no shift, which ALLOW_BALLPARK=NO
+/// refuses as a ballpark. `None` when neither CRS alone is bound to a hub, or
+/// the search from the hub is not one of a list or chains.
+fn shifted(ctx: &OperationContext) -> Option<Kind> {
+    let (src, dst) = (ctx.src, ctx.dst);
+    let (hub, shift, forward) = match (src.hub(), dst.hub()) {
+        (Some((hub, shift)), None) if dst.geog().is_some() => (hub, shift, true),
+        (None, Some((hub, shift))) if src.geog().is_some() => (hub, shift, false),
+        _ => return None,
+    };
+    let hubbed = if forward { OperationContext::new(&hub, dst, ctx.all) } else { OperationContext::new(src, &hub, ctx.all) };
+    let (inner, aoi) = (Route::build(&hubbed), hubbed.aoi);
+    let shift = Leg { op: shift, reverse: !forward };
+    let mut found: Vec<(Vec<Leg>, Op)> = Vec::new();
+    match inner.kind {
+        Kind::List(list) => {
+            for l in list.iter().filter(|l| !l.op.ballpark) {
+                let (_, c) = direct_chain(l, aoi.as_ref());
+                found.push((c.legs, c.rank));
+            }
+        }
+        Kind::Chains { chains, .. } => found.extend(chains.into_iter().map(|c| (c.legs, c.rank))),
+        _ => return None,
+    }
+    if found.is_empty() {
+        return Some(Kind::List(Vec::new()));
+    }
+    let ballpark = !aoi.is_some_and(|a| found.iter().any(|(_, rank)| !rank.needs_grids() && contains(&rank.bounds, &a)));
+    let around = |legs: Vec<Leg>| -> Vec<Leg> {
+        let s = std::iter::once(shift.clone());
+        if forward { s.chain(legs).collect() } else { legs.into_iter().chain(s).collect() }
+    };
+    let unknown = |rank: Op| Op { accuracy: -1.0, chain_accuracy: -1.0, ..rank };
+    let mut out: Vec<(SortKey, Chain)> = found
+        .into_iter()
+        .map(|(legs, rank)| {
+            let legs = around(legs);
+            let rank = unknown(rank);
+            let steps = pipeline_steps(&legs.iter().map(|l| (l.op.as_ref(), l.reverse)).collect::<Vec<_>>());
+            (SortKey::new(&rank, rank.name.clone(), steps, aoi.as_ref()), Chain { legs, rank })
+        })
+        .collect();
+    out.sort_by(|x, y| x.0.cmp(&y.0));
+    let mut chains: Vec<Chain> = out.into_iter().map(|(_, c)| c).collect();
+    if ballpark {
+        chains.push(Chain { legs: vec![shift], rank: Op { ballpark: true, ..unknown(Op::world(Vec::new())) } });
+    }
+    Some(Kind::Chains { chains, ballpark: None })
+}
+
 /// What PROJ sorts a transformation by, in its order: known accuracy first (unknown ones with
 /// grids first), then decreasing area within the area of interest, then accuracy, those without
 /// grids first, then those of fewer steps, then of fewer pipeline steps, then of shorter name,
@@ -1452,6 +1621,35 @@ mod tests {
     use crate::{SpatialRef, Transformer};
 
     #[test]
+    fn hub_availability_excludes_operations_outside_the_crs_extents() {
+        let src = Def::new(&SpatialRef::from_epsg(27700).unwrap()).unwrap();
+        let dst = Def::new(&SpatialRef::from_epsg(2154).unwrap()).unwrap();
+        let mut route = Route::new(&src, &dst);
+        route.kind = Kind::Hub;
+        let world = Arc::new(Op::world(Vec::new()));
+        route.src_ops = vec![world.clone()];
+        route.dst_ops = vec![world.clone()];
+        assert!(route.has_transformation());
+        let outside = Arc::new(Op { bounds: [120., 20., 121., 21.], ..Op::world(Vec::new()) });
+        route.src_ops = vec![outside.clone()];
+        assert!(!route.has_transformation());
+        route.src_ops = vec![world];
+        route.dst_ops = vec![outside];
+        assert!(!route.has_transformation());
+    }
+
+    #[test]
+    fn ballpark_legs_are_excluded_from_list_and_chain_availability() {
+        for ballpark in [false, true] {
+            let leg = Leg { op: Arc::new(Op { ballpark, ..Op::world(Vec::new()) }), reverse: false };
+            let list = route_of(Kind::List(vec![leg.clone()]));
+            let chain = route_of(Kind::Chains { chains: vec![direct_chain(&leg, None).1], ballpark: None });
+            assert_eq!(list.has_transformation(), !ballpark);
+            assert_eq!(chain.has_transformation(), !ballpark);
+        }
+    }
+
+    #[test]
     fn recording_cleans_up_after_unwind() {
         assert!(
             std::panic::catch_unwind(|| recording(|| {
@@ -1498,6 +1696,7 @@ mod tests {
             hub_boxes: OnceLock::new(),
             src_ops: Vec::new(),
             dst_ops: Vec::new(),
+            hub_areas: [None; 3],
         };
         let p = Point { lon: 110_f64.to_radians(), lat: 35_f64.to_radians(), h: 0.0, t: None };
         let used_ballpark = std::cell::Cell::new(false);
@@ -1507,7 +1706,7 @@ mod tests {
 
     /// A route of one kind, for tests.
     fn route_of(kind: Kind) -> Route {
-        Route { kind, boxes: OnceLock::new(), hub_boxes: OnceLock::new(), src_ops: Vec::new(), dst_ops: Vec::new() }
+        Route { kind, boxes: OnceLock::new(), hub_boxes: OnceLock::new(), src_ops: Vec::new(), dst_ops: Vec::new(), hub_areas: [None; 3] }
     }
 
     #[test]

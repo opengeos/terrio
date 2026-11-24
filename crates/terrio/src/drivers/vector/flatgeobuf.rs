@@ -412,6 +412,7 @@ fn read_impl<R: std::io::Read + std::io::Seek>(
     prepared: Option<&PreparedIndex>,
 ) -> Result<(FlatGeobufInfo, Layer)> {
     use std::io::SeekFrom;
+    let bbox = bbox.map(super::corners_extent);
     let owned;
     let prepared = if let Some(prepared) = prepared {
         prepared

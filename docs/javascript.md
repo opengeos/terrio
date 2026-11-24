@@ -222,7 +222,7 @@ lock for all threads, and ran several times slower on more threads.
 `blockCacheMax()` returns the most bytes of decoded GeoTIFF/COG chunks the cache keeps (64 MiB by
 default, as WebAssembly reads no environment variables; GDAL's `GDALGetCacheMax64`),
 `setBlockCacheMax(bytes)` sets it (0 turns the cache off; it throws for a negative or non-integer
-value) and `clearBlockCache()` empties it.
+value) and `clearBlockCache()` empties it. The cache also keeps the bands lazy GRIB reads decode.
 
 ## Datasets larger than 4 GB: `terrio-js/memory64`
 
@@ -577,12 +577,14 @@ Raw GeoJSON inputs use the layer name `layer`; use `Layer.from_geojson(..., name
 
 ### Vector geometry operations
 
-`simplify(src, tolerance)`, `segmentize(src, maxLength)`, `convexHull(src)`,
+`simplify(src, tolerance, { method, collapse })`, `segmentize(src, maxLength)`, `convexHull(src)`,
 `concaveHull(src, ratio, { allowHoles, tight })`, `swapXy(src)`, `setGeomType(src, {
 geometryType, multi, single, linear, dim, layerOnly, featureOnly, skip })`, `combine(src, {
 groupBy, keepNested, addExtraFields })` and `sort(src, { method })` run the
 [vector geometry commands](cli.md#vector-geometry-commands) on every layer of a `Dataset`,
-file bytes or GeoJSON, and return a `Dataset`.
+file bytes or GeoJSON, and return a `Dataset`. `simplifyWkb(geometries, tolerance, {
+collapse })` runs Douglas-Peucker on an array of WKB `Uint8Array`s (or `null`) directly and returns
+an array of the same length.
 
 ```js
 const hulls = concaveHull(combine(places, { groupBy: ["adm0_a3"] }), 0.3, { allowHoles: true });

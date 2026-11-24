@@ -108,12 +108,24 @@ PROJ_STRINGS = [
     "+proj=longlat +ellps=clrk66 +a=6378000",
     "+proj=longlat +ellps=bessel +rf=300",
     "+proj=longlat +ellps=bessel +b=6356000",
+    # A datum's ellipsoid with another semi-major axis keeps its flattening, Clarke 1866's
+    # (NAD27) too, which +ellps=clrk66 gives by its semi-minor axis (#1012 item 38).
+    "+proj=longlat +datum=NAD27 +a=6378000",
+    "+proj=utm +zone=15 +datum=NAD27 +a=6378000",
+    "+proj=longlat +datum=NAD27 +ellps=clrk66 +a=6378000",
     "+proj=longlat +a=6378000 +b=6378000 +ellps=WGS84",
     # Axis orders: only south-orientated Transverse Mercator's and Krovak's are written.
     "+proj=longlat +datum=WGS84 +axis=neu",
     "+proj=utm +zone=32 +datum=WGS84 +axis=neu",
     "+proj=tmerc +lat_0=0 +lon_0=9 +k=1 +x_0=0 +y_0=0 +ellps=bessel +axis=wsu +units=m",
     "+proj=tmerc +lat_0=0 +lon_0=9 +k=1 +x_0=0 +y_0=0 +ellps=bessel +axis=nwu +units=m",
+    # Westing and northing, easting and southing (#1012 item 17): no +axis either.
+    "+proj=tmerc +lat_0=0 +lon_0=9 +k=1 +x_0=0 +y_0=0 +ellps=bessel +axis=wnu +units=m",
+    "+proj=tmerc +lat_0=0 +lon_0=9 +k=1 +x_0=0 +y_0=0 +ellps=bessel +axis=esu +units=m",
+    # Numbers as PROJ writes them (formatToString): within 1e-8 of a tenth, that tenth; with 14
+    # significant digits where 15 give ten nines in a row.
+    "+proj=tmerc +lat_0=45.000000001 +lon_0=9.29999999999 +k=0.99999999999 +x_0=0 +y_0=0 +ellps=GRS80 +units=m",
+    "+proj=tmerc +lat_0=1.2349999999999 +lon_0=0 +k=1 +x_0=0.123456789012345 +y_0=0 +ellps=GRS80 +units=m",
     # Planetocentric latitudes: written on a sphere, not on an ellipsoid.
     "+proj=longlat +geoc +R=6371000",
     "+proj=longlat +geoc +datum=WGS84",
@@ -319,6 +331,29 @@ WKTS = [
         'GEOGCS["sphere",DATUM["sphere",SPHEROID["sphere",6371000,0]],PRIMEM["Greenwich",0],'
         'UNIT["degree",0.0174532925199433]]'
     ),
+] + [
+    # A WKT's axes (#1012 item 17): Transverse Mercator with westing and northing, easting and
+    # southing, westing and southing, written without +axis; south-orientated Transverse
+    # Mercator with easting and northing, or northing and easting, written +axis=wsu (the
+    # method's), whatever its CS.
+    (
+        f'PROJCRS["{method}, {first} {second}",BASEGEOGCRS["WGS 84",DATUM["World Geodetic System 1984",'
+        'ELLIPSOID["WGS 84",6378137,'
+        '298.257223563,LENGTHUNIT["metre",1]]],PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.0174532925199433]]],'
+        f'CONVERSION["c",METHOD["{method}",ID["EPSG",{code}]],PARAMETER["Latitude of natural origin",0,'
+        'ANGLEUNIT["degree",0.0174532925199433]],PARAMETER["Longitude of natural origin",9,ANGLEUNIT["degree",'
+        '0.0174532925199433]],PARAMETER["Scale factor at natural origin",1,SCALEUNIT["unity",1]],PARAMETER['
+        '"False easting",0,LENGTHUNIT["metre",1]],PARAMETER["False northing",0,LENGTHUNIT["metre",1]]],'
+        f'CS[Cartesian,2],AXIS["a",{first},ORDER[1],LENGTHUNIT["metre",1]],AXIS["b",{second},ORDER[2],'
+        'LENGTHUNIT["metre",1]]]'
+    )
+    for method, code, first, second in [
+        ("Transverse Mercator", 9807, "west", "north"),
+        ("Transverse Mercator", 9807, "east", "south"),
+        ("Transverse Mercator", 9807, "west", "south"),
+        ("Transverse Mercator (South Orientated)", 9808, "east", "north"),
+        ("Transverse Mercator (South Orientated)", 9808, "north", "east"),
+    ]
 ]
 
 # GDAL's WKT 1 of registry CRSs with a TOWGS84 shift (as GDAL 2 wrote them), which terrio
@@ -379,6 +414,11 @@ def bound_wkts():
     bng_wkt1 = shifted_wkt(27700, "446.448,-125.157,542.06,0.15,0.247,0.842,-20.489")
     return [
         bound_wkt(BNG_WKT2, PV, OSGB_7),
+        # A scale difference as a ratio, written in ppm as PROJ rounds it (#1012 item 45): 7, -10
+        # and 0.1, not 7.00000000009027, -9.99999999995449 and 0.100000000058387.
+        bound_wkt(BNG_WKT2, PV, OSGB_7[:6] + [1.000007]),
+        bound_wkt(BNG_WKT2, PV, OSGB_7[:6] + [0.99999]),
+        bound_wkt(BNG_WKT2, PV, OSGB_7[:6] + [1.0000001]),
         bound_wkt(BNG_WKT2, CF, OSGB_7),
         bound_wkt(BNG_WKT2, GT, OSGB_7[:3]),
         bound_wkt(BNG_WKT2, PV, OSGB_7[:3]),

@@ -91,6 +91,9 @@ pub(crate) struct Def {
     bound: Option<Arc<Bound>>,
     /// Set for a WKT whose CRS PROJ does not resolve to the EPSG CRS terrio reads it as.
     unresolved: Option<Unresolved>,
+    /// Why a `BOUNDCRS`'s transformation is not applied, warned of by the transformers using it
+    /// (#1012 item 12).
+    unapplied: Option<Arc<str>>,
 }
 
 /// A WKT whose CRS PROJ 9.8.1 does not resolve to an EPSG CRS (`CRS::getResolvedCRS`,
@@ -600,6 +603,10 @@ impl Def {
                 Some(w) => Some(Self::from_wkt(w)?),
                 None => None,
             };
+            // Why its transformation is not applied, whatever replaces the code's (#1012 item 12).
+            if let Some(bound) = &bound {
+                d.unapplied = bound.unapplied.clone();
+            }
             if let Some(bound) = bound
                 && bound.datum.is_none()
             {
@@ -1005,6 +1012,7 @@ impl Def {
             params: Some(Arc::new(params)),
             bound: None,
             unresolved: None,
+            unapplied: None,
         };
         // The datum transformation.
         // A pipeline step's `+datum=` is the shift PROJ's `pj_datum_set` gives it, from WGS 84 to
@@ -1101,9 +1109,9 @@ impl Def {
         };
         // Or on its datum but another prime meridian, which the definition applies itself.
         let fits = |g: &u32| own.as_deref().is_none_or(|t| super::declared_fits(t, *g) || super::declared_fits_but_meridian(t, *g));
-        let geog = c.geog.filter(fits).or_else(|| c.geogcs.epsg().filter(fits)).or_else(|| match &c.geogcs_wkt1 {
+        let geog = c.geog.filter(fits).or_else(|| c.geogcs.epsg().filter(fits)).or_else(|| match &c.datum {
             // WKT 2: identified loosely, so on the same ellipsoid only.
-            Some(text) => super::identify_epsg(text).filter(|g| wkt2::same_ellipsoid(*g, self.ell.a, self.ell.es)),
+            Some(datum) => super::identify_datum(datum).filter(|g| wkt2::same_ellipsoid(*g, self.ell.a, self.ell.es)),
             None => super::identify_epsg(geogcs_text?),
         });
         let geog = geog.map(|g| epsg::get(g).filter(|e| e.proj.starts_with("+proj=geocent")).map_or(g, |e| e.geog));
@@ -1121,7 +1129,7 @@ impl Def {
             // A WKT 1 GEOGCS on a datum no CRS is on keeps its datum's transformations, but gives
             // the CRS PROJ 9.8.1 identifies it as by name (ESRI's GCS_Greenland_1996, GR96) as its
             // geographic CRS (`own`: the text as written, else the node as written back).
-            if c.geogcs_wkt1.is_none() {
+            if c.datum.is_none() {
                 self.named_geog = super::identify_by_shared_name(own);
             }
         }
@@ -1329,6 +1337,7 @@ impl Def {
         let converted = if wkt2::handles(&root) { Some(crate::model::wkt2_to_proj(w)?) } else { crate::model::wkt1_to_proj(w) };
         if let Some(c) = converted {
             let mut d = Self::from_proj(&c.proj)?;
+            d.unapplied = c.unapplied.as_deref().map(Arc::from);
             // A `BOUNDCRS`'s Helmert transformation that `+towgs84` cannot stand for (a full
             // rotation matrix, a Molodensky-Badekas evaluation point), as PROJ applies it.
             let helmert = c.helmert.as_ref().map(|h| datum::helmert(h.t, h.r, h.s, h.position_vector, h.exact, h.pivot));
@@ -1341,11 +1350,18 @@ impl Def {
                 // A WKT 2 `BOUNDCRS` to another CRS: its Helmert transformation to that CRS, then
                 // each of that CRS's transformations to WGS 84, as PROJ concatenates them. With
                 // none, the source CRS's own, as PROJ uses them (else its ballpark to WGS 84).
-                let wkt1::BoundTo { target, shift } = &**bound;
+                let wkt1::BoundTo { target, shift, name, target_name } = &**bound;
                 let mut source = d.clone();
                 source.registered_datum(&c, own_geogcs_text(w, &c));
                 // A target terrio cannot read is left out, as one it cannot convert is.
                 let Ok(mut t) = Self::from_proj(&target.proj) else {
+                    let why =
+                        format!("the BOUNDCRS transformation \"{name}\" is not applied: its target CRS \"{target_name}\" is not read");
+                    // Kept with a source `BOUNDCRS`'s own, as the reader keeps them.
+                    source.unapplied = Some(Arc::from(match source.unapplied.as_deref() {
+                        Some(inner) => format!("{inner}; {why}"),
+                        None => why,
+                    }));
                     return Ok(source);
                 };
                 t.registered_datum(target, None);
@@ -1368,6 +1384,16 @@ impl Def {
                 // In PROJ's order, which decides between those of one area ("OSGB36 to WGS 84
                 // (3)" before "(2)").
                 route::sort_as_proj(&mut ops);
+                // Then the shift and PROJ's ballpark from the target CRS, which PROJ's nested
+                // search keeps even where its search from the target code drops it (DHDN, CH1903,
+                // Tokyo, NTF): it drops the ballpark only when a transformation needing no grid
+                // holds the area of interest, here the world (the bound CRS has no area in
+                // terrio). Where only that ballpark is left for the area of interest, the route
+                // drops it, as PROJ does (`route::nested`).
+                if !ops.is_empty() && !ops.iter().any(|op| op.ballpark) {
+                    let accuracy = -1.0;
+                    ops.push(Arc::new(Op { accuracy, chain_accuracy: accuracy, ballpark: true, ..Op::world(to_target.clone()) }));
+                }
                 if ops.is_empty() {
                     // The datum stays `None`: `Def::new` tells by it that a bound CRS over a code
                     // has the bound's transformations, and `on_bound_source` covers the source's.
@@ -1455,6 +1481,7 @@ impl Def {
                 params: None,
                 bound: None,
                 unresolved: None,
+                unapplied: None,
             };
             if !geographic {
                 d.proj = Some(Arc::new(WbProj { crs, a: ell.a }));
@@ -1721,6 +1748,40 @@ impl Def {
     /// transforms into with no shift.
     pub fn on_bound_source(&self, other: &Def) -> bool {
         self.bound.as_deref().is_some_and(|b| b.source_datum.is_some() && b.source_datum == other.datum)
+    }
+
+    /// Why a `BOUNDCRS`'s transformation is not applied, if it is not.
+    pub(crate) fn unapplied(&self) -> Option<&str> {
+        self.unapplied.as_deref()
+    }
+
+    /// Whether this is a WKT 2 `BOUNDCRS` to a CRS other than WGS 84, whose transformations to
+    /// WGS 84 are its shift followed by each of that CRS's, then by that CRS's ballpark.
+    pub fn bound_elsewhere(&self) -> bool {
+        self.bound.as_deref().is_some_and(|b| b.target.is_some())
+    }
+
+    /// For a CRS PROJ reads as bound to a hub CRS (a WKT 2 `BOUNDCRS`, a `+towgs84` or
+    /// `+nadgrids` shift to WGS 84) and that has no geographic CRS of its own: the hub CRS, and the
+    /// shift into it. The hub has no area of its own, as PROJ gives the bound CRS none
+    /// (`getExtent`), so the search from it is for the other CRS's area.
+    pub fn hub(&self) -> Option<(Def, Arc<Op>)> {
+        if self.geog.is_some() {
+            return None;
+        }
+        if let Some((target, shift)) = self.bound.as_deref().and_then(|b| b.target.as_ref()) {
+            let mut hub = target.clone();
+            hub.area = None;
+            return Some((hub, shift.clone()));
+        }
+        match self.ops.as_slice() {
+            [op] if !op.ballpark && !op.steps.is_empty() => {
+                let mut wgs84 = Def::new(&SpatialRef { epsg: Some(4326), ..Default::default() }).ok()?;
+                wgs84.area = None;
+                Some((wgs84, op.clone()))
+            }
+            _ => None,
+        }
     }
 
     /// The datum transformations to WGS 84, in the order they are tried.
@@ -2204,7 +2265,7 @@ fn proj_maps_origin(method: &str, key: &str) -> bool {
 /// `GEOGCS` instead (ED50 with its own `TOWGS84` under a Bessel source), so that its datum would
 /// be taken for the source's. The source's node is read then.
 fn own_geogcs_text<'a>(w: &'a str, c: &wkt1::Converted) -> Option<&'a str> {
-    geogcs_text(w).filter(|_| c.geogcs_wkt1.is_none())
+    geogcs_text(w).filter(|_| c.datum.is_none())
 }
 
 /// The `GEOGCS[...]` part of a WKT 1 definition.

@@ -53,10 +53,18 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
   when terrio identifies it, the shift alone; into one on the source CRS's own datum, no shift,
   whatever the target; to a CRS without transformations, the source CRS's own, else PROJ's
   ballpark); such a shift wins over the EPSG code of a source CRS terrio identifies, and over the
-  `TOWGS84` of a WKT 1 source CRS (GDAL's `GEOGCS` or `PROJCS` in `SOURCECRS`). Their PROJ
+  `TOWGS84` of a WKT 1 source CRS (GDAL's `GEOGCS` or `PROJCS` in `SOURCECRS`). A target that is
+  bound itself (a `BOUNDCRS`) is not chained through, as PROJ does not chain through it, nor
+  through a WKT 1 target with its own `TOWGS84`; PROJ links such CRSs by its ballpark. When a
+  `BOUNDCRS`'s transformation is not applied (that case, a WKT 1 target, which terrio does not
+  read where PROJ does, or a grid's transformation), each transformer using the CRS warns
+  (`take_warnings`), and its points are placed without it (by the source CRS's own
+  transformations when terrio identifies it, else by the ballpark). Their PROJ
   string leaves out a shift to a CRS other than WGS 84, as PROJ's does. Their scale difference is a
   ratio in unity (`1.0000067`, as PROJ writes it) or in the unit given (parts per million, where
-  PROJ 9.9.0 misreads 6.7 ppm as the ratio 6.7, which terrio does not follow); an unknown WKT2
+  PROJ 9.9.0 misreads 6.7 ppm as the ratio 6.7, which terrio does not follow); without a unit, a
+  ratio within 0.01 of 1, and farther from 1 (`0.6`, `7`) an error, where PROJ 9.9.0 reads any
+  value as a ratio (`0.6` as -400000 ppm), since it may well be parts per million; an unknown WKT2
   projection method or parameter, or a Helmert transformation parameter, is an error rather than
   ignored (a target CRS terrio cannot convert is left out). A projected
   CRS's `AXIS` nodes give its axes in WKT 1 as in WKT 2, as GDAL and PROJ read them in GIS order:
@@ -705,6 +713,17 @@ Conversions (projections, units) are not named, and geoid models are named witho
 let t = terrio_crs::Transformer::new(&SpatialRef::parse("EPSG:27700")?, &SpatialRef::parse("EPSG:4326")?)?;
 let op = t.operation_at(530000.0, 180000.0, 0.0)?;   // "OSGB36 to WGS 84 (9)", 1 m, OSTN15
 ```
+
+`Transformer::has_non_ballpark_operation()` tells whether any transformation but PROJ's ballpark
+links the two CRSs within their extents, as PROJ 9.9.0's candidate operations
+(`proj_create_operations`) do. It is false when only the ballpark does, so that no datum
+transformation is known between them in those extents: for a datum known by its ellipsoid alone,
+for example. It is true between CRSs of one datum. A transformation whose grid is missing counts
+when PROJ's catalog lists a direct-download URL, including non-CDN URLs, regardless of the network
+setting. Locally available grids count too; other missing grids do not (SIRGAS-CON SIR17P01's
+`SIRGAS2000-to-SIRGAS-CONSIR17P01.gsb`). This checks horizontal datums, including geocentric, 3D
+and compound CRSs, and excludes vertical transformations and geoid models. It is currently a
+standalone `terrio-crs` Rust API, intended for callers such as RustGIS.
 
 ### Datum shift grids
 

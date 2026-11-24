@@ -9,6 +9,8 @@
 //!   is decoded where its reader reads a header first;
 //! - a whole read of a GeoTIFF that the process cannot hold is refused before its buffer is
 //!   allocated, while a window of it that fits is read;
+//! - a GRIB file opened to be read by window, local or in memory, is neither read whole nor
+//!   copied (#1081);
 //! - the GeoTIFF and COG writers that operations stream to refuse a raster whose rows they would
 //!   hold cannot fit.
 //!
@@ -30,7 +32,8 @@ use terrio::{DataType, RasterConfig, RasterDataset, RasterWriteOptions};
 mod stacta_common;
 
 /// The global allocator, recording the largest allocation asked for since [`largest_during`] last
-/// reset it. On Unix it is the C allocator, as `std::alloc::System` is there, called directly:
+/// reset it, and the bytes allocated and not yet freed (see [`peak_during`]). On Unix it is the C
+/// allocator, as `std::alloc::System` is there, called directly:
 /// Rust 1.99's debug check of `System`'s `GlobalAlloc` methods (a zero-size layout) aborts on a
 /// block `openjp2` frees with one when its codec is dropped, which the default allocator path does
 /// not check. Elsewhere the default allocator is kept, and allocations are not counted.
@@ -40,20 +43,22 @@ struct Counting;
 /// The largest allocation asked for since the last reset, on any thread.
 static LARGEST: AtomicUsize = AtomicUsize::new(0);
 
-/// The bytes allocated and not yet freed, on any thread, and the most since [`PEAK`] was last set.
-/// A block a `realloc` moves counts twice until the old one is freed.
+/// The bytes allocated and not yet freed, on any thread, and the most of them since
+/// [`peak_during`] last reset it. A block a `realloc` moves counts twice until the old one is freed.
 #[cfg(unix)]
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 #[cfg(unix)]
 static PEAK: AtomicUsize = AtomicUsize::new(0);
 
+/// Counts `n` bytes allocated, or freed.
 #[cfg(unix)]
-fn allocated(ptr: *mut u8, bytes: usize) -> *mut u8 {
-    if !ptr.is_null() {
-        let live = LIVE.fetch_add(bytes, Ordering::Relaxed) + bytes;
-        PEAK.fetch_max(live, Ordering::Relaxed);
-    }
-    ptr
+fn allocated(n: usize) {
+    let live = LIVE.fetch_add(n, Ordering::Relaxed) + n;
+    PEAK.fetch_max(live, Ordering::Relaxed);
+}
+#[cfg(unix)]
+fn freed(n: usize) {
+    LIVE.fetch_sub(n, Ordering::Relaxed);
 }
 
 /// Injection used only by the isolated index-reservation failure regression.
@@ -73,11 +78,16 @@ unsafe impl GlobalAlloc for Counting {
         if layout.size() >= REFUSE_FROM.load(Ordering::Relaxed) {
             return std::ptr::null_mut();
         }
-        if layout.align() <= MIN_ALIGN && layout.align() <= layout.size() {
+        let ptr = if layout.align() <= MIN_ALIGN && layout.align() <= layout.size() {
             // SAFETY: a plain C allocation.
-            return allocated(unsafe { libc::malloc(layout.size()) }.cast(), layout.size());
+            unsafe { libc::malloc(layout.size()) }.cast()
+        } else {
+            aligned(layout)
+        };
+        if !ptr.is_null() {
+            allocated(layout.size());
         }
-        allocated(aligned(layout), layout.size())
+        ptr
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
@@ -87,14 +97,19 @@ unsafe impl GlobalAlloc for Counting {
         }
         if layout.align() <= MIN_ALIGN && layout.align() <= layout.size() {
             // SAFETY: a plain C allocation.
-            return allocated(unsafe { libc::calloc(layout.size(), 1) }.cast(), layout.size());
+            let ptr: *mut u8 = unsafe { libc::calloc(layout.size(), 1) }.cast();
+            if !ptr.is_null() {
+                allocated(layout.size());
+            }
+            return ptr;
         }
         let ptr = aligned(layout);
         if !ptr.is_null() {
             // SAFETY: `ptr` holds `layout.size()` bytes.
             unsafe { std::ptr::write_bytes(ptr, 0, layout.size()) };
+            allocated(layout.size());
         }
-        allocated(ptr, layout.size())
+        ptr
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
@@ -102,12 +117,12 @@ unsafe impl GlobalAlloc for Counting {
         if new_size >= REFUSE_FROM.load(Ordering::Relaxed) {
             return std::ptr::null_mut();
         }
-        let new = if layout.align() <= MIN_ALIGN && layout.align() <= new_size {
+        let new: *mut u8 = if layout.align() <= MIN_ALIGN && layout.align() <= new_size {
             // SAFETY: `ptr` came from this allocator, whose blocks are the C allocator's.
-            allocated(unsafe { libc::realloc(ptr.cast(), new_size) }.cast(), new_size)
+            unsafe { libc::realloc(ptr.cast(), new_size) }.cast()
         } else {
             // SAFETY: the caller's contract: `new_size` rounded up to the alignment fits `isize`.
-            let new = allocated(aligned(unsafe { Layout::from_size_align_unchecked(new_size, layout.align()) }), new_size);
+            let new = aligned(unsafe { Layout::from_size_align_unchecked(new_size, layout.align()) });
             if !new.is_null() {
                 // SAFETY: both blocks hold at least the bytes copied, and are distinct.
                 unsafe {
@@ -118,13 +133,14 @@ unsafe impl GlobalAlloc for Counting {
             new
         };
         if !new.is_null() {
-            LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
+            allocated(new_size);
+            freed(layout.size());
         }
         new
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
+        freed(layout.size());
         // SAFETY: `ptr` came from this allocator, whose blocks are the C allocator's.
         unsafe { libc::free(ptr.cast()) }
     }
@@ -160,6 +176,16 @@ fn largest_during<T>(f: impl FnOnce() -> T) -> (T, usize) {
     LARGEST.store(0, Ordering::Relaxed);
     let out = f();
     (out, LARGEST.load(Ordering::Relaxed))
+}
+
+/// What `f` returns, and the most bytes it held allocated at once while it ran, on any thread,
+/// past those allocated before it.
+#[cfg(all(unix, feature = "grib"))]
+fn peak_during<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = LIVE.load(Ordering::Relaxed);
+    PEAK.store(before, Ordering::Relaxed);
+    let out = f();
+    (out, PEAK.load(Ordering::Relaxed).saturating_sub(before))
 }
 
 /// `f` with `options` set on the calling thread, as Python's `terrio.rio.Env` sets them.
@@ -1131,6 +1157,222 @@ fn in_child(dir: &Path) {
         checked += 1;
     }
     assert!(checked > 20, "{checked} drivers checked");
+}
+
+// ─── What a lazy open allocates ─────────────────────────────────────────────────────────────────
+
+/// Catches a local GRIB file read whole, or GRIB bytes copied, when they are opened to be read by
+/// window (#1081): memory that no read sees. The largest allocation of either open is a small part
+/// of the file's 4 MiB of Float32 values. Allocations are counted on Unix only (see [`Counting`]):
+/// elsewhere the test is not built, rather than passing without a check.
+#[cfg(all(unix, feature = "grib"))]
+#[test]
+fn a_lazy_grib_open_allocates_nothing_the_size_of_its_file() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(dir.path(), "f.grib2", &raster(1024, 1024, 1, DataType::F32, 4326, (0.0, 60.0, 0.01)), Some(RasterDriver::GRIB));
+    let bytes = std::fs::read(&path).unwrap();
+    let len = bytes.len();
+    let (opened, largest) = largest_during(|| terrio::LazyRaster::open(&path));
+    assert_eq!(opened.unwrap().width(), 1024);
+    assert!(largest < len / 16, "a local file: an allocation of {largest} bytes, for {len}");
+    let (opened, largest) = largest_during(|| terrio::memory::open_raster_lazy_bytes(bytes, "f.grib2"));
+    assert_eq!(opened.unwrap().width(), 1024);
+    assert!(largest < len / 16, "bytes in memory: an allocation of {largest} bytes, for {len}");
+}
+
+/// The GRIB2 messages `bytes` (of one field each), every `fields` of them in a row made one
+/// message of that many fields: sections 4 to 7 of each after the first's sections 1 to 3.
+#[cfg(all(unix, feature = "grib"))]
+fn fields_in_one_message(bytes: &[u8], fields: usize) -> Vec<u8> {
+    let be = |b: &[u8]| b.iter().fold(0usize, |v, &x| (v << 8) | x as usize);
+    let mut messages = Vec::new();
+    let mut at = 0;
+    while at + 16 <= bytes.len() {
+        let len = be(&bytes[at + 8..at + 16]);
+        messages.push(&bytes[at..at + len]);
+        at += len;
+    }
+    let sections = |m: &[u8], numbers: std::ops::RangeInclusive<u8>| {
+        let (mut out, mut at) = (Vec::new(), 16);
+        while &m[at..at + 4] != b"7777" {
+            let len = be(&m[at..at + 4]);
+            if numbers.contains(&m[at + 4]) {
+                out.extend_from_slice(&m[at..at + len]);
+            }
+            at += len;
+        }
+        out
+    };
+    messages
+        .chunks(fields)
+        .flat_map(|group| {
+            let body: Vec<u8> = [sections(group[0], 1..=3)].into_iter().chain(group.iter().map(|m| sections(m, 4..=7))).flatten().collect();
+            [&group[0][..8], &((16 + body.len() + 4) as u64).to_be_bytes()[..], &body, b"7777"].concat()
+        })
+        .collect()
+}
+
+/// Catches a local GRIB file of messages of several fields held while it is opened (#1081): a
+/// field's sections come after the data of the field before it, so a message's header holds the
+/// data of its fields before the last, and the open drops each message's header before it reads
+/// the next one's. Of a file of 16 messages of 4 fields of 128 x 128 Float32 values, the open
+/// holds at most a small part at once.
+#[cfg(all(unix, feature = "grib"))]
+#[test]
+fn a_lazy_grib_open_holds_one_message_header_at_a_time() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let fields = write(dir.path(), "fields.grib2", &raster(128, 128, 64, DataType::F32, 4326, (0.0, 60.0, 0.01)), Some(RasterDriver::GRIB));
+    let bytes = fields_in_one_message(&std::fs::read(fields).unwrap(), 4);
+    let path = dir.path().join("f.grib2");
+    std::fs::write(&path, &bytes).unwrap();
+    let len = bytes.len();
+    // terrio's one-time state from a first open, as in the GRIB1 test: the second is measured.
+    drop(terrio::LazyRaster::open(path.to_str().unwrap()).unwrap());
+    let (opened, peak) = peak_during(|| terrio::LazyRaster::open(path.to_str().unwrap()));
+    assert_eq!(opened.unwrap().band_count(), 64);
+    assert!(peak < len / 4, "{peak} bytes held at once, for a file of {len}");
+}
+
+/// A GRIB1 file of `count` messages of `nx` x `ny` points on a latitude/longitude grid, each with
+/// a bitmap masking every seventh point and 32-bit values packed from 0: the packing's range holds
+/// 9999, so each message's nodata depends on its values.
+#[cfg(all(unix, feature = "grib"))]
+fn grib1_file(nx: usize, ny: usize, count: usize) -> Vec<u8> {
+    let section = |body: &[u8]| [&((body.len() + 3) as u32).to_be_bytes()[1..], body].concat();
+    let sign_magnitude = |v: i32| {
+        let m = v.unsigned_abs() | if v < 0 { 0x80_0000 } else { 0 };
+        [(m >> 16) as u8, (m >> 8) as u8, m as u8]
+    };
+    // Table 2, centre 7, process 96, a grid and a bitmap: geopotential height at 500 hPa,
+    // 2024-05-17 06:00, a decimal scale of 0.
+    let pds = section(&[2, 7, 96, 255, 0xc0, 7, 100, 1, 244, 24, 5, 17, 6, 0, 1, 0, 0, 0, 0, 0, 0, 21, 0, 0, 0]);
+    let (nx16, ny16, last_lat, last_lon) = (nx as u16, ny as u16, 60000 - 500 * (ny as i32 - 1), -20000 + 500 * (nx as i32 - 1));
+    let gds = section(
+        &[
+            &[0, 255, 0][..],
+            &nx16.to_be_bytes(),
+            &ny16.to_be_bytes(),
+            &sign_magnitude(60000),
+            &sign_magnitude(-20000),
+            &[0x80],
+            &sign_magnitude(last_lat),
+            &sign_magnitude(last_lon),
+            &500u16.to_be_bytes(),
+            &500u16.to_be_bytes(),
+            &[0, 0, 0, 0, 0],
+        ]
+        .concat(),
+    );
+    let points = nx * ny;
+    let mut bitmap = vec![0u8; points.div_ceil(8)];
+    let kept: Vec<usize> = (0..points).filter(|i| i % 7 != 0).collect();
+    for &i in &kept {
+        bitmap[i / 8] |= 0x80 >> (i % 8);
+    }
+    let bms = section(&[&[(bitmap.len() * 8 - points) as u8, 0, 0][..], &bitmap].concat());
+    let mut data: Vec<u8> = kept.iter().flat_map(|&i| (i as u32).wrapping_mul(2_654_435_761).to_be_bytes()).collect();
+    if (11 + data.len()) % 2 == 1 {
+        data.push(0);
+    }
+    let unused = (data.len() - kept.len() * 4) as u8 * 8;
+    let bds = section(&[&[unused, 0, 0, 0, 0, 0, 0, 32][..], &data].concat());
+    let body = [pds, gds, bms, bds].concat();
+    let message = [&b"GRIB"[..], &((body.len() + 12) as u32).to_be_bytes()[1..], &[1], &body, b"7777"].concat();
+    message.repeat(count)
+}
+
+/// Catches a local GRIB1 file whose messages' nodata depends on their values held whole while it
+/// is opened (#1081): each such message is read whole to work out its nodata, and dropped before
+/// the next one is read. Of a file of 64 messages of 200 x 100 points, the open holds at most a
+/// small part at once.
+#[cfg(all(unix, feature = "grib"))]
+#[test]
+fn a_lazy_grib1_open_holds_one_message_read_whole_at_a_time() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("f.grb");
+    let bytes = grib1_file(200, 100, 64);
+    std::fs::write(&path, &bytes).unwrap();
+    let len = bytes.len();
+    // A first open builds terrio's one-time state, the GRIB1 parameter tables among it (megabytes
+    // the process keeps): the second is measured.
+    drop(terrio::LazyRaster::open(path.to_str().unwrap()).unwrap());
+    let (opened, peak) = peak_during(|| terrio::LazyRaster::open(path.to_str().unwrap()));
+    let opened = opened.unwrap();
+    // The nodata of a message whose values hold 9999 and more, worked out from them.
+    assert_eq!((opened.band_count(), opened.band_nodata(64)), (64, Some(9.999e20)));
+    assert!(peak < len / 4, "{peak} bytes held at once, for a file of {len}");
+}
+
+/// The GRIB2 messages `bytes` (of one field each) written to `path`, each with `pad` zero bytes
+/// after its data, which its section 7 and its length count: large messages whose values are those
+/// of `bytes`, and a sparse file where the file system allows it.
+#[cfg(all(unix, feature = "grib"))]
+fn padded_messages(bytes: &[u8], pad: u64, path: &Path) {
+    use std::io::{Seek, SeekFrom, Write};
+    let be = |b: &[u8]| b.iter().fold(0u64, |v, &x| (v << 8) | u64::from(x));
+    let mut f = std::fs::File::create(path).unwrap();
+    let mut at = 0;
+    while at + 16 <= bytes.len() {
+        let len = be(&bytes[at + 8..at + 16]) as usize;
+        let mut message = bytes[at..at + len - 4].to_vec();
+        // Section 7, the last before the end marker, and the message grow by `pad`.
+        let mut s = 16;
+        while message[s + 4] != 7 {
+            s += be(&message[s..s + 4]) as usize;
+        }
+        let s7 = u32::try_from(be(&message[s..s + 4]) + pad).unwrap();
+        message[s..s + 4].copy_from_slice(&s7.to_be_bytes());
+        message[8..16].copy_from_slice(&(len as u64 + pad).to_be_bytes());
+        f.write_all(&message).unwrap();
+        f.seek(SeekFrom::Current(i64::try_from(pad).unwrap())).unwrap();
+        f.write_all(b"7777").unwrap();
+        at += len;
+    }
+}
+
+/// Catches a read of a local GRIB file that holds the messages of all the bands it decodes at once
+/// (#1081), or that fails otherwise than with its first failing band once it decodes them a few at
+/// a time: it decodes at once as many bands as hold, with the messages it reads for them, in
+/// 256 MiB, in band order. Two bands of 16 x 16 points take 4 KiB of values; their messages, padded
+/// to 160 MiB each, take more than 256 MiB together, so a read of both holds one at a time; with
+/// band 1's message damaged and band 2's cut off after the open, it fails with band 1's error.
+#[cfg(all(unix, feature = "grib"))]
+#[test]
+fn a_lazy_grib_read_holds_its_messages_within_its_decode_budget() {
+    const PAD: u64 = 160 << 20;
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let fields = write(dir.path(), "fields.grib2", &raster(16, 16, 2, DataType::F32, 4326, (0.0, 60.0, 0.01)), Some(RasterDriver::GRIB));
+    let small = std::fs::read(fields).unwrap();
+    let path = dir.path().join("f.grib2");
+    padded_messages(&small, PAD, &path);
+    let (all, both) = (terrio::Window::full(16, 16), terrio::WindowOptions { bands: vec![1, 2], overview: None });
+    let mut r = terrio::LazyRaster::open(path.to_str().unwrap()).unwrap();
+    let (read, peak) = peak_during(|| r.read_window(all, &both));
+    let expected = terrio::memory::open_raster_lazy_bytes(small.clone(), "f.grib2").unwrap().read_window(all, &both).unwrap();
+    assert_eq!(read.unwrap().raster.data.to_f64_vec(), expected.raster.data.to_f64_vec());
+    assert!(peak < 256 << 20, "{peak} bytes held at once by a read of two messages of {PAD} bytes and more");
+    // Another such file changed after it is opened, as the library's test of a read's first error
+    // changes one: band 1's first section given a length of 1, the file cut 20 bytes into band 2's
+    // message.
+    let path = dir.path().join("g.grib2");
+    padded_messages(&small, PAD, &path);
+    let mut r = terrio::LazyRaster::open(path.to_str().unwrap()).unwrap();
+    {
+        use std::io::{Read, Seek, SeekFrom, Write};
+        let mut f = std::fs::OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        let mut head = [0u8; 16];
+        f.read_exact(&mut head).unwrap();
+        let second = u64::from_be_bytes(head[8..16].try_into().unwrap());
+        f.seek(SeekFrom::Start(16)).unwrap();
+        f.write_all(&[0, 0, 0, 1]).unwrap();
+        f.set_len(second + 20).unwrap();
+    }
+    let failed = r.read_window(all, &terrio::WindowOptions { bands: vec![2, 1], overview: None }).map(|_| ());
+    assert!(failed.as_ref().is_err_and(|e| e.to_string().contains("invalid GRIB2 section at offset 16")), "{failed:?}");
 }
 
 // ─── The writers operations stream to ───────────────────────────────────────────────────────────

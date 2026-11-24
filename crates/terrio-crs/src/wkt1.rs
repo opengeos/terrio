@@ -433,13 +433,15 @@ pub(crate) struct Converted {
     pub geogcs: Node,
     /// The EPSG geographic CRS, when the reader knows it.
     pub geog: Option<u32>,
-    /// A WKT 1 `GEOGCS` to identify the datum by, when the WKT has none of its own (WKT 2).
-    pub geogcs_wkt1: Option<String>,
+    /// A WKT 2 CRS's datum, to identify it by when it has no code; `None` for WKT 1.
+    pub datum: Option<crate::wkt2::DatumOf>,
     /// A WKT 2 `BOUNDCRS` to another CRS than WGS 84: that CRS and the shift to it.
     pub bound: Option<Box<BoundTo>>,
     /// A `BOUNDCRS`'s Helmert transformation that `+towgs84` cannot stand for: a full rotation
     /// matrix, or a Molodensky-Badekas evaluation point.
     pub helmert: Option<Helmert>,
+    /// Why a WKT 2 `BOUNDCRS`'s transformation is not applied, as a warning (#1012 item 12).
+    pub unapplied: Option<String>,
 }
 
 /// A Helmert transformation as PROJ's `helmert` and `molobadekas` steps take it: translations in
@@ -462,12 +464,13 @@ pub(crate) struct BoundTo {
     pub target: Converted,
     /// The 3 or 7 parameters of the Helmert transformation to it, as `+towgs84`'s.
     pub shift: Vec<f64>,
+    /// The transformation's name and its target CRS's, for a warning when it is not applied.
+    pub name: String,
+    pub target_name: String,
 }
 
-/// What a WKT 1 `GEOGCS`, `GEOCCS` or `PROJCS` gives its PROJ string: read from its tree
-/// ([`Wkt1Input::read`]) or from its model (`model::wkt1_input`), which the PROJ string comes from
-/// (#1058 step 6d-2); the two agree but for the texts `model::proj_input_tests` pins, which the
-/// model reads as PROJ 9.9.0 does.
+/// What a WKT 1 `GEOGCS`, `GEOCCS` or `PROJCS` gives its PROJ string, read from its model
+/// (`model::wkt1_input`, #1058 step 6).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Wkt1Input {
     pub kind: Wkt1Kind,
@@ -548,94 +551,6 @@ pub(crate) fn wkt1_method(name: Option<&str>, epsg: Option<u32>) -> Option<Strin
     if epsg == Some(9830) { Some("polarstereographicvariantc".to_string()) } else { Some(norm(name?)) }
 }
 
-impl Wkt1Input {
-    /// The input of a WKT 1 root, read from its tree; `None` for another root, a CRS without
-    /// what it needs, or one the reader refuses (a malformed Hotine two-point parameter, a polar
-    /// stereographic latitude).
-    // Read only by the parity tests until #1058 step 6d-4b deletes the tree readers.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn read(root: &Node) -> Option<Self> {
-        let kind = match root.key.to_ascii_uppercase().as_str() {
-            "GEOGCS" => Wkt1Kind::Geographic,
-            "GEOCCS" => Wkt1Kind::Geocentric,
-            "PROJCS" => Wkt1Kind::Projected,
-            _ => return None,
-        };
-        let geogcs = if kind == Wkt1Kind::Projected { root.child("GEOGCS")? } else { root };
-        let datum = geogcs.child("DATUM")?;
-        let sph = datum.child_in(crate::keywords::ELLIPSOID)?;
-        let a = sph.num(1)?;
-        let rf = sph.num(2)?;
-        // Angular unit of the geographic CRS, in degrees.
-        let ang = if kind == Wkt1Kind::Geocentric {
-            1.0
-        } else {
-            geogcs.child("UNIT").and_then(|u| u.num(1)).map(|r| r.to_degrees()).unwrap_or(1.0)
-        };
-        // WKT rounds the size of a degree (0.0174532925199433) and of a grad.
-        let ang = [1.0, 0.9].into_iter().find(|u| (ang - u).abs() < 1e-9).unwrap_or(ang);
-        let primem = geogcs.child("PRIMEM");
-        let pm = primem.and_then(|p| p.num(1)).unwrap_or(0.0);
-        let pm = prime_meridian_degrees(primem.and_then(Node::name).unwrap_or(""), pm, ang);
-        let towgs84 = datum.child("TOWGS84").map(|t| (0..t.args.len()).filter_map(|i| t.num(i)).collect());
-        let unit = match kind {
-            Wkt1Kind::Geographic => 1.0,
-            // The first `UNIT`, as PROJ 9.8.1 and GDAL take it when a `PROJCS` has two.
-            _ => root.children("UNIT").next().and_then(|u| u.num(1)).unwrap_or(1.0),
-        };
-        let esri_names = geogcs.name().is_some_and(|n| n.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("gcs_")))
-            || datum.name().is_some_and(|n| n.get(..2).is_some_and(|p| p.eq_ignore_ascii_case("d_")));
-        let mut input = Self {
-            kind,
-            a,
-            rf,
-            ang,
-            pm,
-            towgs84,
-            unit,
-            datum_epsg: datum.epsg(),
-            params: Vec::new(),
-            method: None,
-            method_epsg: None,
-            esri_names,
-            axes: None,
-            has_axis: false,
-        };
-        if kind != Wkt1Kind::Projected {
-            return Some(input);
-        }
-        input.params =
-            root.children("PARAMETER").filter_map(|p| Some((norm(p.name()?), p.num(1)?))).filter(|(k, _)| !k.is_empty()).collect();
-        let projection = root.child("PROJECTION")?;
-        input.method = projection.name().filter(|n| !n.is_empty()).map(str::to_string);
-        input.method_epsg = projection.epsg();
-        let method = wkt1_method(input.method.as_deref(), input.method_epsg)?;
-        if method == "hotineobliquemercatortwopointnaturalorigin" && hotine_two_point_refused(root) {
-            return None;
-        }
-        // GDAL's name gives its latitude only as `latitude_of_origin`; PROJ 9.8.1 refuses it
-        // without, rather than read it at the north pole.
-        if matches!(method.as_str(), "polarstereographic" | "polarstereographicvarianta" | "polarstereographicvariantb")
-            && polar_latitude_refused(root)
-        {
-            return None;
-        }
-        input.axes = projected_axes(root);
-        input.has_axis = root.child("AXIS").is_some();
-        Some(input)
-    }
-}
-
-/// Converts a WKT 1 `GEOGCS` or `PROJCS` (ESRI or OGC flavour) into a PROJ string. `None` for
-/// other kinds of CRS and projections terrio does not know.
-// Read only by the parity tests until #1058 step 6d-4b deletes the tree readers.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
-    let input = Wkt1Input::read(root)?;
-    let geogcs = if input.kind == Wkt1Kind::Projected { root.child("GEOGCS")? } else { root };
-    convert(&input, geogcs)
-}
-
 /// The PROJ string of a WKT 1 CRS's input, with the CRS's `GEOGCS` node for identifying the
 /// datum: the root of a `GEOGCS` or `GEOCCS`, a `PROJCS`'s child.
 pub(crate) fn convert(input: &Wkt1Input, geogcs: &Node) -> Option<Converted> {
@@ -658,7 +573,15 @@ pub(crate) fn convert(input: &Wkt1Input, geogcs: &Node) -> Option<Converted> {
         out.push(format!("+proj=geocent +to_meter={to_meter}"));
         out.extend(tail);
         let geog = input.datum_epsg.and_then(|d| super::epsg::geographic_on(d).iter().copied().find(|c| !super::epsg::is_deprecated(*c)));
-        return Some(Converted { proj: out.join(" "), geogcs: geogcs.clone(), geog, geogcs_wkt1: None, bound: None, helmert: None });
+        return Some(Converted {
+            proj: out.join(" "),
+            geogcs: geogcs.clone(),
+            geog,
+            datum: None,
+            bound: None,
+            helmert: None,
+            unapplied: None,
+        });
     }
     if input.kind == Wkt1Kind::Geographic {
         out.push("+proj=longlat".to_string());
@@ -666,7 +589,15 @@ pub(crate) fn convert(input: &Wkt1Input, geogcs: &Node) -> Option<Converted> {
             tail.push(format!("+to_deg={ang}"));
         }
         out.extend(tail);
-        return Some(Converted { proj: out.join(" "), geogcs: geogcs.clone(), geog: None, geogcs_wkt1: None, bound: None, helmert: None });
+        return Some(Converted {
+            proj: out.join(" "),
+            geogcs: geogcs.clone(),
+            geog: None,
+            datum: None,
+            bound: None,
+            helmert: None,
+            unapplied: None,
+        });
     }
 
     let params = &input.params;
@@ -1147,30 +1078,7 @@ pub(crate) fn convert(input: &Wkt1Input, geogcs: &Node) -> Option<Converted> {
     out.push(format!("+y_0={fn_}"));
     out.push(format!("+to_meter={to_meter}"));
     out.extend(tail);
-    Some(Converted { proj: out.join(" "), geogcs: geogcs.clone(), geog: None, geogcs_wkt1: None, bound: None, helmert: None })
-}
-
-/// The directions of a projected CRS's two `AXIS` nodes as PROJ's `+axis` letters (`e`, `w`,
-/// `n`, `s`), when it has two along east-west and north-south.
-// Read only by the parity tests until #1058 step 6d-4b deletes the tree readers.
-#[cfg_attr(not(test), allow(dead_code))]
-fn projected_axes(root: &Node) -> Option<[u8; 2]> {
-    let letters: Vec<u8> = root
-        .children("AXIS")
-        .map(|a| match a.args.get(1) {
-            Some(Arg::Ident(d)) => match d.to_ascii_lowercase().as_str() {
-                "east" => Some(b'e'),
-                "west" => Some(b'w'),
-                "north" => Some(b'n'),
-                "south" => Some(b's'),
-                _ => None,
-            },
-            _ => None,
-        })
-        .collect::<Option<_>>()?;
-    let [a, b] = letters[..] else { return None };
-    let east_west = |c: u8| matches!(c, b'e' | b'w');
-    (east_west(a) != east_west(b)).then_some([a, b])
+    Some(Converted { proj: out.join(" "), geogcs: geogcs.clone(), geog: None, datum: None, bound: None, helmert: None, unapplied: None })
 }
 
 /// The northing of the pole in Polar Stereographic (variant C), EPSG method 9830, whose false
@@ -1440,16 +1348,16 @@ mod tests {
     fn geocentric_geographic_parent_uses_datum_registry() {
         // GDA2020 datum 1168 is on geographic CRS 7844, without a numeric offset.
         let wkt = r#"GEOCCS["GDA2020",DATUM["Geocentric_Datum_of_Australia_2020",SPHEROID["GRS 1980",6378137,298.257222101],AUTHORITY["EPSG","1168"]],PRIMEM["Greenwich",0],UNIT["metre",1]]"#;
-        let c = to_proj(&parse(wkt).unwrap()).unwrap();
+        let c = crate::model::wkt1_to_proj(wkt).unwrap();
         assert_eq!(c.geog, Some(7844));
         let unknown = wkt.replace("1168", "999999");
-        assert_eq!(to_proj(&parse(&unknown).unwrap()).unwrap().geog, None);
+        assert_eq!(crate::model::wkt1_to_proj(&unknown).unwrap().geog, None);
     }
 
     #[test]
     fn converts_esri_feet() {
         let esri = r#"PROJCS["NAD_1983_StatePlane_New_York_Long_Island_FIPS_3104_Feet",GEOGCS["GCS_North_American_1983",DATUM["D_North_American_1983",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Lambert_Conformal_Conic"],PARAMETER["False_Easting",984250.0],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",-74.0],PARAMETER["Standard_Parallel_1",40.66666666666666],PARAMETER["Standard_Parallel_2",41.03333333333333],PARAMETER["Latitude_Of_Origin",40.16666666666666],UNIT["Foot_US",0.3048006096012192]]"#;
-        let c = to_proj(&parse(esri).unwrap()).unwrap();
+        let c = crate::model::wkt1_to_proj(esri).unwrap();
         assert!(c.proj.starts_with("+proj=lcc +lat_1=40.66666666666666 +lat_2=41.03333333333333"), "{}", c.proj);
         assert!(c.proj.contains("+to_meter=0.3048006096012192"), "{}", c.proj);
         assert_eq!(c.geogcs.name(), Some("GCS_North_American_1983"));

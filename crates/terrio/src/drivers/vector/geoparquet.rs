@@ -347,6 +347,7 @@ impl ParquetStream {
         prefetch: Prefetch<'_>,
         columns: Option<&[String]>,
     ) -> Result<Self> {
+        let bbox = bbox.map(super::corners_extent);
         let err = |e: &dyn std::fmt::Display| Error::InvalidData(format!("Parquet: {e}"));
         let input = SharedInput(Arc::new(open()?));
         let builder = ParquetRecordBatchReaderBuilder::try_new(input.clone()).map_err(|e| err(&e))?;
@@ -936,7 +937,7 @@ fn projjson_epsg(v: &Value) -> Option<u32> {
     if let Some(id) = id
         && id["authority"].as_str().is_some_and(|a| a.eq_ignore_ascii_case("EPSG"))
     {
-        return id["code"].as_u64().map(|c| c as u32).or_else(|| id["code"].as_str()?.parse().ok());
+        return id["code"].as_u64().and_then(|c| u32::try_from(c).ok()).or_else(|| id["code"].as_str()?.parse().ok());
     }
     if id.is_some_and(|id| id["authority"] == "OGC" && id["code"] == "CRS84") {
         return Some(4326);
@@ -1730,6 +1731,9 @@ mod tests {
             Some(4326)
         );
         assert_eq!(projjson_epsg(&json!({"type": "ProjectedCRS", "name": "x"})), None);
+        // 2^32 + 4326: out of range, not wrapped to 4326.
+        let wrapped = json!({"type": "GeographicCRS", "id": {"authority": "EPSG", "code": 4_294_971_622_u64}});
+        assert_eq!(projjson_epsg(&wrapped), None);
     }
 
     #[test]

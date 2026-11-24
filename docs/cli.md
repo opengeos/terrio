@@ -1595,6 +1595,12 @@ also matching those probes. Average updates between identical affine pixel grids
 their origin offsets are integer to within 1e-7 pixels; fractional offsets retain
 area-based resampling.
 Min/max overview methods are Terrio extensions; GDAL 3.13.3 gdaladdo refuses them.
+Complex bands (`CInt16`, `CInt32`, `CFloat32`, `CFloat64`) take nearest and average
+overviews, internal or external, uncompressed or LZW, DEFLATE, PACKBITS or ZSTD. As in
+GDAL 3.13 (`GDALResampleChunkC32R`), the average takes each part (real and imaginary) on
+its own: unweighted windows, no nodata or mask, computed in `CFloat32` (so `CFloat64` and
+`CInt32` parts round through `Float32`), and integer parts rounded half away from zero.
+Min, max and mode, and partial refreshes (`--bbox`), are refused for complex bands.
 
 Raster in-place edits copy the whole TIFF, including for metadata-only changes, and
 need free disk space for that copy. Symlink targets and mode bits are preserved;
@@ -3276,6 +3282,24 @@ simplify` on the conformance data. Z is kept and M dropped, as GDAL's GEOS conve
 `convert --simplify TOLERANCE` (`ogr2ogr -simplify`) applies the same operation before
 reprojection and keeps a geometry whose simplification fails.
 
+`simplify --method douglas-peucker` ports JTS 1.20.0's `DouglasPeuckerSimplifier` without its
+repair step (OGR's `OGRGeometry::Simplify` and shapely's `simplify(..., preserve_topology=False)`
+call GEOS's port of it): each line and ring on its own, a section flattened when no vertex is
+farther than the tolerance from the new segment (a distance equal to the tolerance flattens it)
+and otherwise split at its farthest vertex. Line endpoints stay; a ring may also lose its start
+point. It is faster than `preserve-topology`, but a ring may cross itself or a hole cross its
+shell at large tolerances, and invalid results are not rebuilt (JTS and GEOS rebuild them with a
+zero-width buffer). A ring left with fewer than four points keeps its vertices with
+`--collapse keep` (the default), so that no polygon or hole disappears; `--collapse drop` removes
+it as JTS does, and a polygon whose shell collapses becomes empty. A multi geometry keeps its type
+when one part is left (JTS and GEOS return the part). With `--collapse drop`, the vertices are
+those of OGR's `Simplify` (GDAL 3.13.3, GEOS 3.14.1) for every feature whose result is valid in
+both: all 95 Tennessee counties at 0.001 to 0.05 degrees and at 500 m and 5 km in EPSG:5070,
+3,201 of 3,221 US counties at 0.01 degrees, 173 to 175 of 176 or 177 countries at 0.01 to 1
+degree (the others are invalid), and all 78 Las Vegas roads.
+Python's `terrio.simplify_wkb` and JavaScript's `simplifyWkb` run it on WKB directly, in parallel
+over features, keeping each geometry's byte order, type code (ISO or EWKB, with SRID), Z and M.
+
 `segmentize --max-length` is OGR's `segmentize`: a segment of length L gets
 `floor(L / max - 0.01)` evenly spaced points (none when L is within a relative 1e-5 of the
 maximum). Lines are processed from the end with the larger X (then Y), so a line and its
@@ -4258,7 +4282,7 @@ for one command and its descendants. Required dataset arguments may be omitted;
 metadata requests open no datasets or output files. The Python package supports
 identical requests with `python -m terrio`.
 
-The payload has `schema_version: "0.1.13"`, `unstable: true`, the program/version,
+The payload has `schema_version: "0.1.14"`, `unstable: true`, the program/version,
 and a recursive `command` object. Each command records its canonical name/path,
 aliases, description, arguments and subcommands. Arguments include flags and
 aliases, positional index, type, raw default tokens, choices, required status,

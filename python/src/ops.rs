@@ -494,7 +494,8 @@ fn write_vector(
 ///     citygml_lod0_surface: CityGML 2.0 LoD 0 fallback: "footprint" or "roof-edge".
 ///     overview_resampling: The resampling of COG overviews (`"cubic"`, the default, as GDAL's
 ///         COG driver; `"nearest"`, `"average"`, `"rms"`, `"bilinear"`, `"cubicspline"`,
-///         `"lanczos"`, `"mode"`).
+///         `"lanczos"`, `"mode"`; terrio's `"area_matched"` and `"area_matched_mode"`, which keep
+///         the valid area of a raster with nodata).
 ///
 /// Raises:
 ///     InvalidArgumentError: If an option does not apply to the input.
