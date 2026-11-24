@@ -297,11 +297,11 @@ fn averages_use_each_bands_float32_pam_nodata() {
         assert_eq!(source.shared().level_band_nodata(&[2], Some(0)), vec![Some(f64::from(-0.1_f32))]);
         std::fs::write(
             format!("{}.ovr.aux.xml", path.display()),
-            "<PAMDataset><PAMRasterBand band=\"2\"><NoDataValue>-3</NoDataValue></PAMRasterBand></PAMDataset>",
+            "<PAMDataset><PAMRasterBand band=\"2\"><NoDataValue>-0.2</NoDataValue></PAMRasterBand></PAMDataset>",
         )
         .unwrap();
         let source = LazyRaster::open(path.to_str().unwrap()).unwrap();
-        assert_eq!(source.level_band_nodata(&[2], Some(0)), vec![Some(-3.)], "explicit sidecar band metadata wins");
+        assert_eq!(source.level_band_nodata(&[2], Some(0)), vec![Some(f64::from(-0.2_f32))], "explicit sidecar band metadata wins");
     }
 }
 

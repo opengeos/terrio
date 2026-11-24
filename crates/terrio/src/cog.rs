@@ -1682,20 +1682,19 @@ impl LazyRaster {
         }
     }
 
-    /// Inherits a raw dataset's per-band nodata unless its TIFF sidecar declares that band
-    /// explicitly. Shared TIFF nodata must not replace distinct PAM sentinels. GDAL 3.12.1
+    /// Explicit TIFF-sidecar band nodata wins; otherwise distinct base-band values win over a
+    /// shared TIFF tag. A scalar base sentinel is used when the sidecar has no nodata. GDAL 3.12.1
     /// exposes the TIFF's shared value for all overview bands; this preserves the base metadata.
     pub(crate) fn level_band_nodata_inheriting(&self, bands: &[usize], overview: Option<usize>, base: &RasterDataset) -> Vec<Option<f64>> {
         let mut values = self.level_band_nodata(bands, overview);
         if let Inner::Tiff(t) = &self.inner {
             let tags = t.tags_at_level(overview.map_or(0, |i| i + 1));
             for (&band, value) in bands.iter().zip(&mut values) {
-                if tags.band_nodata.iter().any(|(b, _)| *b == band) {
-                    continue;
-                }
-                let inherited = base.band_nodata(band);
-                if !base.band_nodata.is_empty() || value.is_none() {
-                    *value = inherited;
+                if !tags.band_nodata.iter().any(|(b, _)| *b == band) {
+                    let inherited = base.band_nodata(band);
+                    if !base.band_nodata.is_empty() || value.is_none() {
+                        *value = inherited;
+                    }
                 }
                 if self.data_type() == DataType::F32 {
                     *value = value.map(|v| f64::from(v as f32));
