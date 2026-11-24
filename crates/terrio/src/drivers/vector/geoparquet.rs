@@ -1409,6 +1409,8 @@ mod tests {
             (Arc::new(Field::new("x", DataType::Float64, true)), Arc::new(Float64Array::from(xs)) as ArrayRef),
             (Arc::new(Field::new("y", DataType::Float64, false)), Arc::new(Float64Array::from(ys)) as ArrayRef),
         ]);
+        // The values below are the same when each row decodes the whole column: the time is what
+        // this test guards. 10 s is far above the milliseconds it takes, even in a debug build.
         let start = std::time::Instant::now();
         for i in 0..n {
             let Some(Geometry::Point(c)) = geometry(&points, i, "point") else { panic!("row {i}") };
@@ -1421,14 +1423,18 @@ mod tests {
         assert_eq!((c.x, c.y), (102.0, -51.0));
     }
 
-    /// Float32 covering columns and other number types read as `f64`, nulls as NaN.
+    /// Float32 covering columns and other number types read as `f64`, nulls as NaN, infinities as infinite.
     #[test]
     fn number_arrays_read_as_f64() {
-        let f32s = arrow_array::Float32Array::from(vec![Some(1.5), None, Some(-2.25)]);
+        use arrow_array::Float32Array;
+        let f32s = Float32Array::from(vec![Some(1.5), None, Some(-2.25)]);
         let got = f64_values(&f32s);
         assert_eq!((got[0], got[2]), (1.5, -2.25));
         assert!(got[1].is_nan());
         assert_eq!(f64_values(&Int32Array::from(vec![3, -4])), vec![3.0, -4.0]);
+        // Infinities stay infinite (the JSON path made them NaN): a covering bbox reaching
+        // +inf contains every query box.
+        assert_eq!(f64_values(&Float32Array::from(vec![f32::INFINITY, f32::NEG_INFINITY])), vec![f64::INFINITY, f64::NEG_INFINITY]);
         assert_eq!(f64_values(&Float64Array::from(vec![1.0, 2.0]).slice(1, 1)), vec![2.0]);
     }
 
