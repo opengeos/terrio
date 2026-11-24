@@ -63,6 +63,7 @@ gpkg_to_fgb convert {zones_gpkg} {out}.fgb
 fgb_to_gpkg convert {zones_fgb} {out}.gpkg
 parquet_to_fgb convert {zones_parquet} {out}.fgb
 parquet_bbox convert --spat 404000 5090000 410000 5096000 {zones_parquet} {out}.fgb
+geoarrow_bbox convert --spat 404000 5090000 410000 5096000 {zones_geoarrow} {out}.fgb
 fgb_to_parquet convert {zones_fgb} {out}.parquet
 buffer buffer -d 20 --quad-segs 8 {zones_fgb} {out}.fgb
 simplify simplify --tolerance 20 {zones_fgb} {out}.fgb

@@ -2745,6 +2745,7 @@ dependencies = [
  "getrandom 0.4.3",
  "gungraun",
  "libc",
+ "parquet",
  "serde_json",
  "sha2",
  "tempfile",

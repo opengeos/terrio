@@ -11,6 +11,8 @@
 //!
 //! - `{out}`: an output path without extension (add one: `{out}.tif`), new for each run;
 //! - `{zones_gpkg}`, `{zones_fgb}`, `{zones_parquet}`: 1024 wavy polygons in UTM zone 31N;
+//!   `{zones_geoarrow}` is the GeoParquet with GeoArrow polygons (separated coordinates) in row groups
+//!   of 128, whose coordinate statistics a bbox read can skip by;
 //! - `{<raster>}` or `{<raster>_<format>}`: a raster of 512 x 512 pixels, `dem` (Float32 in UTM
 //!   zone 31N, with a nodata block), `dem4326` (the same in EPSG:4326), `int16` (the DEM in whole
 //!   metres), `classes` (Byte, 4 classes: 1, 3, 5, 7) or `rgb` (three Byte bands); as a tiled (256 x 256)
@@ -195,11 +197,34 @@ fn zones() -> Layer {
     zones
 }
 
+/// Writes `layer` as GeoParquet with GeoArrow geometries, which terrio's GeoParquet writer does not
+/// write (it writes WKB), in row groups of 128 rows.
+fn write_geoarrow(layer: &Layer, path: &Path) {
+    use terrio::arrow::{ArrowWriteOptions, GeometryEncoding, layer_to_arrow};
+    let options = ArrowWriteOptions { geometry_encoding: GeometryEncoding::GeoArrow, ..Default::default() };
+    let table = layer_to_arrow(layer, &options).expect("GeoArrow table");
+    let crs = terrio::crs::SpatialRef::from_epsg(32631).and_then(|s| s.to_projjson()).expect("PROJJSON");
+    let geo = format!(
+        r#"{{"version":"1.1.0","primary_column":"geometry","columns":{{"geometry":{{"encoding":"polygon","geometry_types":["Polygon"],"crs":{crs}}}}}}}"#
+    );
+    let props = parquet::file::properties::WriterProperties::builder()
+        .set_max_row_group_row_count(Some(128))
+        .set_key_value_metadata(Some(vec![parquet::file::metadata::KeyValue::new("geo".into(), geo)]))
+        .build();
+    let file = std::fs::File::create(path).expect("GeoArrow input");
+    let mut writer = parquet::arrow::ArrowWriter::try_new(file, table.schema, Some(props)).expect("Parquet writer");
+    for batch in &table.batches {
+        writer.write(batch).expect("GeoArrow batch");
+    }
+    writer.close().expect("GeoArrow input");
+}
+
 /// The path of input `name` in `dir`, written there the first time.
 fn input(dir: &Path, name: &str) -> PathBuf {
     let (base, format) = name.split_once('_').unwrap_or((name, "none"));
     let ext = match format {
         "gpkg" | "fgb" | "parquet" | "zarr" | "nc" => format,
+        "geoarrow" => "parquet",
         _ => "tif",
     };
     let path = dir.join(format!("{name}.{ext}"));
@@ -207,6 +232,10 @@ fn input(dir: &Path, name: &str) -> PathBuf {
         return path;
     }
     let text = path.to_str().expect("UTF-8 temporary path");
+    if base == "zones" && format == "geoarrow" {
+        write_geoarrow(&zones(), &path);
+        return path;
+    }
     if base == "zones" {
         terrio::write_vector(&[zones()], text, &Default::default()).expect("vector input");
         return path;
