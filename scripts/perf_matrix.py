@@ -18,7 +18,7 @@ time ratios by axis, so a round of optimization starts from the slow areas, not 
     python scripts/perf_matrix.py report RESULTS.jsonl             # the summary of a run again
 
 Formats: geotiff, zarr, geoparquet. Needs terrio's Python module (a release build: `maturin develop
---release` in python/), GDAL's Python bindings, pyogrio (GeoParquet) and zarr-python 3 (Zarr
+--release` in python/), GDAL's Python bindings, pyogrio and PyArrow (GeoParquet), and zarr-python 3 (Zarr
 fixtures) in one environment. Fixtures and results stay in --dir, out of the repository.
 docs/benchmarks.md describes the method.
 """
@@ -35,8 +35,11 @@ import statistics
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -72,8 +75,62 @@ def terrain(np, size: int, bands: int, dtype: str):
 
 
 def checksum(np, a) -> tuple[float, int]:
-    a = np.asarray(a, dtype="float64")
-    return float(a.sum()), int(a.size)
+    """Summarize raster samples without copying the array to Float64.
+
+    Args:
+        np: NumPy module.
+        a: Raster samples.
+
+    Returns:
+        Float64 sum and sample count.
+    """
+    a = np.asarray(a)
+    return float(a.sum(dtype=np.float64)), int(a.size)
+
+
+def result_check(result) -> dict:
+    """Describe returned values after the measurement has finished.
+
+    Args:
+        result: Raster array or Arrow table, optionally paired with metadata.
+
+    Returns:
+        Counts and numeric sums, plus categorical frequencies for vector data.
+    """
+    import numpy as np
+
+    table = result[1] if isinstance(result, tuple) else result
+    if hasattr(table, "column_names"):
+        numeric = {}
+        for name in ("id", "value", "year"):
+            if name in table.column_names:
+                column = table.column(name)
+                numeric[name] = {"sum": checksum(np, column.to_numpy())[0], "nulls": column.null_count}
+        classes = dict(sorted(Counter(table.column("class").to_pylist()).items(), key=lambda item: str(item[0]))) if "class" in table.column_names else {}
+        return {"n": table.num_rows, "sum": numeric.get("id", numeric.get("value", {"sum": 0.0}))["sum"], "numeric": numeric, "classes": classes}
+    total, count = checksum(np, table)
+    return {"sum": total, "n": count, "finite": int(np.count_nonzero(np.isfinite(table)))}
+
+
+def same_checks(a, b) -> bool:
+    """Compare validation summaries, allowing only numeric rounding differences.
+
+    Args:
+        a: First JSON-compatible summary.
+        b: Reference summary.
+
+    Returns:
+        Whether counts, categories and finite numeric sums agree.
+    """
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(same_checks(a[k], b[k]) for k in a)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(same_checks(x, y) for x, y in zip(a, b, strict=True))
+    if isinstance(a, int) and isinstance(b, int):
+        return a == b
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return math.isfinite(a) and math.isfinite(b) and math.isclose(a, b, rel_tol=1e-6, abs_tol=1e-9)
+    return a == b
 
 
 # =============================================================================================
@@ -174,8 +231,6 @@ class GeoTiff:
     @staticmethod
     def reader(tool: str, access: str, meta: dict):
         """(open(path), items): each item reads one part of an open dataset."""
-        import numpy as np
-
         size = meta["size"]
         if tool == "terrio":
             import terrio.rio as rio
@@ -211,9 +266,9 @@ class GeoTiff:
 
         n = {"window": 1, "windows16": 16, "threads4": 16}.get(access)
         if n:
-            items = [lambda ds, w=w: checksum(np, win(ds, w)) for w in windows(size, n)]
+            items = [lambda ds, w=w: win(ds, w) for w in windows(size, n)]
         else:
-            items = [lambda ds: checksum(np, (whole if access == "full" else decimated)(ds))]
+            items = [lambda ds: (whole if access == "full" else decimated)(ds)]
         warm = (open_, lambda ds: win(ds, (0, 0, 64, 64)))
         return open_, items, warm
 
@@ -286,18 +341,24 @@ class Zarr:
         for name, (fmt, dtype, bands, size, chunk, shard, comp) in Zarr.FIXTURES.items():
             path = out / f"{name}.zarr"
             if path.exists():
-                continue
+                if (path / ".terrio-matrix-complete").is_file():
+                    continue
+                raise ValueError(f"{path}: unmarked or incomplete fixture; choose a fresh --dir or inspect and remove it before regenerating")
             data = terrain(np, size, bands, dtype)
             if bands == 1:
                 data = data[0]
             chunks = (chunk, chunk) if isinstance(chunk, int) else chunk
             shards = (shard, shard) if shard else None
-            z = zarr.create_array(
-                str(path), shape=data.shape, chunks=chunks, shards=shards, dtype=dtype, zarr_format=fmt,
-                compressors=Zarr._codecs(fmt, comp), fill_value=0,
-                dimension_names=None if fmt == 2 else (["band", "y", "x"] if bands > 1 else ["y", "x"]),
-            )
-            z[:] = data
+            with tempfile.TemporaryDirectory(prefix=f".{name}-", dir=out) as staging:
+                staged = Path(staging) / path.name
+                z = zarr.create_array(
+                    str(staged), shape=data.shape, chunks=chunks, shards=shards, dtype=dtype, zarr_format=fmt,
+                    compressors=Zarr._codecs(fmt, comp), fill_value=0,
+                    dimension_names=None if fmt == 2 else (["band", "y", "x"] if bands > 1 else ["y", "x"]),
+                )
+                z[:] = data
+                (staged / ".terrio-matrix-complete").write_text("complete\n")
+                staged.rename(path)
             mb = sum(f.stat().st_size for f in path.rglob("*") if f.is_file()) >> 20
             print(f"{path.name}: {mb} MB", flush=True)
 
@@ -343,8 +404,6 @@ class Zarr:
 
     @staticmethod
     def reader(tool: str, access: str, meta: dict):
-        import numpy as np
-
         size = meta["size"]
         if tool == "terrio":
             import terrio
@@ -379,9 +438,9 @@ class Zarr:
 
         n = {"window": 1, "windows16": 16, "threads4": 16}.get(access)
         if n:
-            items = [lambda ds, w=w: checksum(np, win(ds, w)) for w in windows(size, n)]
+            items = [lambda ds, w=w: win(ds, w) for w in windows(size, n)]
         else:
-            items = [lambda ds: checksum(np, (whole if access == "full" else band)(ds))]
+            items = [lambda ds: (whole if access == "full" else band)(ds)]
         warm = (open_, lambda ds: win(ds, (0, 0, 64, 64)))
         return open_, items, warm
 
@@ -500,20 +559,22 @@ class GeoParquet:
         geo = json.loads(md.metadata[b"geo"])
         gcol = geo["primary_column"]
         names = [md.schema.column(i).path for i in range(md.num_columns)]
-        cover = "bbox" in pf.schema_arrow.names
+        cover = geo["columns"][gcol].get("covering", {}).get("bbox", {})
         boxes = GeoParquet.bboxes({"bbox": 1, "bbox16": 16, "threads4": 16}.get(access, 0))
         need = md.serialized_size + 8  # the footer
         for g in range(md.num_row_groups):
             rg = md.row_group(g)
             cols = {names[i]: rg.column(i) for i in range(md.num_columns)}
             if boxes and cover:
-                s = {k: (cols[f"bbox.{k}"].statistics.min, cols[f"bbox.{k}"].statistics.max) for k in ("xmin", "ymin", "xmax", "ymax")}
-                hits = sum(1 for bx0, by0, bx1, by1 in boxes if s["xmin"][0] <= bx1 and s["xmax"][1] >= bx0 and s["ymin"][0] <= by1 and s["ymax"][1] >= by0)
-                if not hits:
-                    continue
+                stats = {k: cols.get(".".join(cover.get(k, []))) for k in ("xmin", "ymin", "xmax", "ymax")}
+                if all(column is not None and column.statistics is not None and column.statistics.has_min_max for column in stats.values()):
+                    s = {k: (column.statistics.min, column.statistics.max) for k, column in stats.items()}
+                    hits = any(s["xmin"][0] <= bx1 and s["xmax"][1] >= bx0 and s["ymin"][0] <= by1 and s["ymax"][1] >= by0 for bx0, by0, bx1, by1 in boxes)
+                    if not hits:
+                        continue
             if access == "where":
                 st = cols["id"].statistics
-                if st.min >= 4000:
+                if st is not None and st.has_min_max and st.min >= 4000:
                     continue
             keep = [n for n in names if n.split(".")[0] in (gcol, *GeoParquet.COLUMNS)] if access == "columns" else names
             need += sum(cols[n].total_compressed_size for n in keep)
@@ -532,13 +593,8 @@ class GeoParquet:
             def open_(p):
                 return p if p.startswith("/") else "/vsicurl/" + p
 
-        def summary(res) -> tuple[float, int]:
-            table = res[1] if isinstance(res, tuple) else res
-            ids = table.column("id").to_numpy() if "id" in table.column_names else None
-            return (float(ids.sum()) if ids is not None else 0.0, table.num_rows)
-
         def read(p, **kw):
-            return summary(po.read_arrow(p, **kw))
+            return po.read_arrow(p, **kw)
 
         boxes = GeoParquet.bboxes({"bbox": 1, "bbox16": 16, "threads4": 16}.get(access, 0))
         if boxes:
@@ -551,7 +607,7 @@ class GeoParquet:
 
             def where(p):
                 layer = p.rsplit("/", 1)[-1].removesuffix(".parquet")
-                return summary(pa.table(terrio.sql(p, f"SELECT * FROM {layer} WHERE {GeoParquet.WHERE}")))
+                return pa.table(terrio.sql(p, f"SELECT * FROM {layer} WHERE {GeoParquet.WHERE}"))
 
             items = [where]
         elif access == "where":
@@ -568,7 +624,8 @@ FORMATS = {"geotiff": GeoTiff, "zarr": Zarr, "geoparquet": GeoParquet}
 # =============================================================================================
 # HTTP server with a simulated round-trip time, logging every request.
 
-_lock = threading.Lock()
+_lock = threading.Condition()
+_active = 0
 _log: list[tuple[float, float, int, str]] = []  # (start, end, bytes, path)
 
 
@@ -586,6 +643,10 @@ class _Handler(SimpleHTTPRequestHandler):
         self._serve(False)
 
     def _serve(self, head: bool) -> None:
+        global _active
+
+        with _lock:
+            _active += 1
         t0 = time.perf_counter()
         sent = 0
         try:
@@ -615,6 +676,30 @@ class _Handler(SimpleHTTPRequestHandler):
         finally:
             with _lock:
                 _log.append((t0, time.perf_counter(), sent, self.path))
+                _active -= 1
+                _lock.notify_all()
+
+
+def request_log(*, clear: bool = False, timeout: float = 10) -> list:
+    """Wait for request accounting to finish before reading or clearing it.
+
+    Args:
+        clear: Whether to clear the completed log after taking its snapshot.
+        timeout: Maximum seconds to wait for active handlers.
+
+    Returns:
+        A snapshot containing every completed request.
+
+    Raises:
+        TimeoutError: If a handler has not finished its accounting in time.
+    """
+    with _lock:
+        if not _lock.wait_for(lambda: _active == 0, timeout):
+            raise TimeoutError("HTTP handlers did not finish accounting")
+        result = list(_log)
+        if clear:
+            _log.clear()
+        return result
 
 
 def rounds(log: list[tuple[float, float, int, str]]) -> int:
@@ -646,38 +731,53 @@ def worker(spec: dict) -> dict:
     # A process's first open and read pays one-time costs (library initialization, thread pools):
     # measured on a tiny file apart from the case, as `init`.
     ti = time.perf_counter()
-    warm_read(warm_open(src.rsplit("/", 1)[0] + "/_warmup" + fmt.EXT))
-    r0 = _rchar()
+    warm_ds = warm_open(src.rsplit("/", 1)[0] + "/_warmup" + fmt.EXT)
+    warm_read(warm_ds)
+    del warm_ds
+    local = not src.startswith(("http://", "https://"))
+    counter = _rchar if local else lambda: 0
+    r0 = counter()
     t0 = time.perf_counter()
-    ds = open_(src)
+    ds = None if access == "threads4" else open_(src)
     t1 = time.perf_counter()
-    r1 = _rchar()
+    r1 = counter()
     if access == "threads4":
         out: list = [None] * len(items)
 
         def job(k):
-            d = open_(src)  # a handle per thread: GDAL datasets are not thread-safe
-            for i in range(k, len(items), 4):
-                out[i] = items[i](d)
+            """Read one thread's windows using its own dataset handle.
 
-        ts = [threading.Thread(target=job, args=(k,)) for k in range(4)]
-        for t in ts:
-            t.start()
-        for t in ts:
-            t.join()
+            Args:
+                k: Thread index.
+
+            Returns:
+                Indexed results, with reader exceptions propagated to the parent.
+            """
+            d = open_(src)  # a handle per thread: GDAL datasets are not thread-safe
+            return [(i, items[i](d)) for i in range(k, len(items), 4)]
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [pool.submit(job, k) for k in range(4)]
+            for future in futures:
+                for i, result in future.result():
+                    out[i] = result
     else:
         out = [item(ds) for item in items]
     t2 = time.perf_counter()
-    r2 = _rchar()
+    r2 = counter()
+    rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024**2 if sys.platform == "darwin" else 1024)
+    # Validation is outside both the timed interval and the recorded RSS high-water mark.
+    checks = [result_check(result) for result in out]
     return {
         "init_s": t0 - ti,
         "open_s": t1 - t0,
         "read_s": t2 - t1,
         "open_bytes": r1 - r0,
         "read_bytes": r2 - r1,
-        "rss_mb": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024,
-        "sum": sum(s for s, _ in out),
-        "n": sum(n for _, n in out),
+        "rss_mb": rss,
+        "checks": checks,
+        "sum": sum(check["sum"] for check in checks),
+        "n": sum(check["n"] for check in checks),
     }
 
 
@@ -686,14 +786,35 @@ def worker(spec: dict) -> dict:
 
 
 def run(args: argparse.Namespace) -> None:
-    fmt = FORMATS[args.format]
-    data = args.dir
-    _Handler.latency = args.latency_ms / 1000
-    server = ThreadingHTTPServer(("127.0.0.1", 0), lambda *a, **k: _Handler(*a, directory=str(data), **k))
-    server.daemon_threads = True
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    base = f"http://127.0.0.1:{server.server_address[1]}/"
+    """Measure selected cases and publish a new, independent results file.
 
+    Args:
+        args: Parsed matrix options.
+
+    Raises:
+        ValueError: If the access patterns or measurement options are invalid.
+        FileExistsError: If the requested results file already exists.
+        RuntimeError: If local byte accounting is unavailable.
+    """
+    fmt = FORMATS[args.format]
+    data = args.dir.expanduser().resolve()
+    accesses = args.access or fmt.ACCESS
+    unknown = set(accesses) - set(fmt.ACCESS)
+    if unknown:
+        raise ValueError(f"unsupported {args.format} access patterns: {', '.join(sorted(unknown))}")
+    if args.samples < 1 or args.threads < 1 or not math.isfinite(args.timeout) or args.timeout <= 0:
+        raise ValueError("samples, threads and timeout must be positive")
+    if not math.isfinite(args.latency_ms) or args.latency_ms < 0:
+        raise ValueError("latency-ms must be finite and nonnegative")
+    sources = args.source or ["local", "http"]
+    if "local" in sources and not Path("/proc/self/io").is_file():
+        raise RuntimeError("local byte accounting requires /proc/self/io; use --source http on this platform")
+    names = [f for f in fmt.FIXTURES if not args.only or any(o in f for o in args.only)]
+    if not names:
+        raise ValueError("no fixtures match --only")
+    samples = 1 if args.quick else args.samples
+    results = (args.out or data / f"results-{time.strftime('%Y%m%d-%H%M%S')}.jsonl").expanduser().resolve()
+    _Handler.latency = args.latency_ms / 1000
     env = dict(os.environ)
     env.update(
         RAYON_NUM_THREADS=str(args.threads),
@@ -702,62 +823,95 @@ def run(args: argparse.Namespace) -> None:
         GDAL_HTTP_MERGE_CONSECUTIVE_RANGES="YES",
         GDAL_CACHEMAX="512",
     )
-    names = [f for f in fmt.FIXTURES if not args.only or any(o in f for o in args.only)]
-    samples = 1 if args.quick else args.samples
-    results = args.out or data / f"results-{time.strftime('%Y%m%d-%H%M%S')}.jsonl"
     rows = []
-    for name, access, source in itertools.product(names, args.access or fmt.ACCESS, args.source or ["local", "http"]):
-        path = data / f"{name}{fmt.EXT}"
-        meta = fmt.meta(path, access)
-        if meta is None:
-            continue
-        src = str(path) if source == "local" else base + path.name
-        row = {"format": args.format, "fixture": name, "access": access, "source": source, "need_bytes": meta["need_bytes"], **fmt.axes(name)}
-        for k in range(samples):
-            for tool in ["terrio", "gdal"] if k % 2 == 0 else ["gdal", "terrio"]:
-                if f"{tool}_error" in row:  # failed or timed out once: not again
+    with open(results, "x") as output:
+        server = ThreadingHTTPServer(("127.0.0.1", 0), lambda *a, **k: _Handler(*a, directory=str(data), **k))
+        server.daemon_threads = True
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{server.server_address[1]}/"
+        try:
+            for name, access, source in itertools.product(names, accesses, sources):
+                path = data / f"{name}{fmt.EXT}"
+                if fmt is Zarr and not (path / ".terrio-matrix-complete").is_file():
+                    raise ValueError(f"{path}: missing completed-fixture marker; regenerate in a fresh --dir")
+                meta = fmt.meta(path, access)
+                if meta is None:
                     continue
-                with _lock:
-                    _log.clear()
-                spec = {"format": args.format, "tool": tool, "src": src, "access": access, "meta": meta}
-                cmd = [sys.executable, __file__, "_worker", json.dumps(spec)]
-                try:
-                    p = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=args.timeout)
-                except subprocess.TimeoutExpired:
-                    row[f"{tool}_error"] = f"timeout: over {args.timeout:.0f} s"
-                    continue
-                if p.returncode:
-                    err = p.stderr.strip().splitlines()
-                    row[f"{tool}_error"] = err[-1][:300] if err else f"exit {p.returncode}"
-                    continue
-                r = json.loads(p.stdout.strip().splitlines()[-1])
-                with _lock:  # this case's requests, not the warm-up's
-                    log = [x for x in _log if x[3].split("?")[0].startswith("/" + path.name)]
-                if source == "http":
-                    r["requests"], r["rounds"] = len(log), rounds(log)
-                    r["read_bytes"], r["open_bytes"] = sum(x[2] for x in log), 0  # transferred, open included
-                row.setdefault(tool, []).append(r)
-        rows.append(summarize(row))
-        print(fmt_row(rows[-1]), flush=True)
-        with open(results, "a") as f:
-            f.write(json.dumps(rows[-1]) + "\n")
+                src = str(path) if source == "local" else base + path.name
+                row = {"format": args.format, "fixture": name, "access": access, "source": source, "samples": samples, "need_bytes": meta["need_bytes"], **fmt.axes(name)}
+                for k in range(samples):
+                    for tool in ["terrio", "gdal"] if k % 2 == 0 else ["gdal", "terrio"]:
+                        if f"{tool}_error" in row:
+                            continue
+                        request_log(clear=True)
+                        spec = {"format": args.format, "tool": tool, "src": src, "access": access, "meta": meta}
+                        cmd = [sys.executable, __file__, "_worker", json.dumps(spec)]
+                        try:
+                            p = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=args.timeout)
+                        except subprocess.TimeoutExpired:
+                            request_log()
+                            row[f"{tool}_error"] = f"timeout: over {args.timeout:.0f} s"
+                            continue
+                        log = [x for x in request_log() if x[3].split("?")[0].startswith("/" + path.name)]
+                        if p.returncode:
+                            err = p.stderr.strip().splitlines()
+                            row[f"{tool}_error"] = err[-1][:300] if err else f"exit {p.returncode}"
+                            continue
+                        r = json.loads(p.stdout.strip().splitlines()[-1])
+                        if source == "http":
+                            r["requests"], r["rounds"] = len(log), rounds(log)
+                            r["read_bytes"], r["open_bytes"] = sum(x[2] for x in log), 0
+                        row.setdefault(tool, []).append(r)
+                rows.append(summarize(row))
+                print(fmt_row(rows[-1]), flush=True)
+                output.write(json.dumps(rows[-1]) + "\n")
+                output.flush()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
     print(f"\n{results}")
     print(report(rows))
 
 
 def summarize(row: dict) -> dict:
+    """Summarize samples, ranking only complete and validated comparisons.
+
+    Args:
+        row: Case metadata, per-tool samples and any recorded errors.
+
+    Returns:
+        Median metrics and diagnostics; a time ratio only for a valid case.
+    """
     out = {k: v for k, v in row.items() if not isinstance(v, list)}
+    expected = row.get("samples", max(len(row.get(tool, [])) for tool in ("terrio", "gdal")))
+    complete = True
     for tool in ("terrio", "gdal"):
         rs = row.get(tool)
+        if len(rs or []) != expected or f"{tool}_error" in row:
+            complete = False
+            out.setdefault(f"{tool}_error", f"incomplete: {len(rs or [])}/{expected} samples")
         if not rs:
+            complete = False
+            out.setdefault(f"{tool}_error", "no successful samples")
             continue
-        out[tool] = {k: statistics.median(r[k] for r in rs) for k in rs[0] if k not in ("sum", "n")}
+        out[tool] = {k: statistics.median(r[k] for r in rs) for k in rs[0] if k not in ("sum", "n", "checks")}
         out[tool]["total_s"] = statistics.median(r["open_s"] + r["read_s"] for r in rs)
         out[f"{tool}_sum"], out[f"{tool}_n"] = rs[0]["sum"], rs[0]["n"]
     if "terrio" in out and "gdal" in out:
-        out["time_ratio"] = out["terrio"]["total_s"] / out["gdal"]["total_s"]
-        same = out["terrio_n"] == out["gdal_n"] and math.isclose(out["terrio_sum"], out["gdal_sum"], rel_tol=1e-6)
+        reference = row["gdal"][0]
+        check = lambda r: r.get("checks", {"sum": r["sum"], "n": r["n"]})
+        same = all(same_checks(check(r), check(reference)) for tool in ("terrio", "gdal") for r in row[tool])
         out["values"] = "same" if same else "DIFFER"
+        if not same:
+            out["validation_error"] = "one or more samples differ from the GDAL reference"
+        if complete and same:
+            t, g = out["terrio"]["total_s"], out["gdal"]["total_s"]
+            if math.isfinite(t) and math.isfinite(g) and t > 0 and g > 0:
+                out["time_ratio"] = t / g
+            else:
+                out["validation_error"] = "nonpositive or nonfinite timing"
     return out
 
 
@@ -768,8 +922,8 @@ def _bytes(t: dict) -> int:
 def fmt_row(r: dict) -> str:
     t, g = r.get("terrio"), r.get("gdal")
     s = f"{r['fixture']:34} {r['access']:9} {r['source']:5}"
-    if not t or not g:
-        return s + f"  error: terrio {r.get('terrio_error', 'ok')} | gdal {r.get('gdal_error', 'ok')}"
+    if not t or not g or "time_ratio" not in r or r.get("values") != "same" or any(f"{tool}_error" in r for tool in ("terrio", "gdal")):
+        return s + f"  error: terrio {r.get('terrio_error', 'ok')} | gdal {r.get('gdal_error', 'ok')} | {r.get('validation_error', r.get('values', 'incomplete'))}"
     s += f" {t['total_s'] * 1000:8.1f} ms vs {g['total_s'] * 1000:8.1f} x{r['time_ratio']:5.2f}"
     s += f" | KiB {_bytes(t) >> 10:7} vs {_bytes(g) >> 10:7} need {r['need_bytes'] >> 10:7}"
     if "requests" in t:
@@ -782,7 +936,7 @@ def report(rows: list[dict]) -> str:
     for r in rows:  # results written before the axes were stored
         for k, v in FORMATS[r.get("format", "geotiff")].axes(r["fixture"]).items():
             r.setdefault(k, v)
-    ok = [r for r in rows if "time_ratio" in r]
+    ok = [r for r in rows if "time_ratio" in r and r.get("values") == "same" and not any(f"{tool}_error" in r for tool in ("terrio", "gdal"))]
     lines = ["\n## Worst cases (terrio time / GDAL time)\n"]
     lines += [fmt_row(r) for r in sorted(ok, key=lambda r: -r["time_ratio"])[:20]]
     lines.append("\n## Geometric mean of the time ratios by axis (>1: terrio slower; cases in brackets)\n")
@@ -802,8 +956,8 @@ def report(rows: list[dict]) -> str:
     lines += ["  " + fmt_row(r) for r in more_bytes]
     lines.append(f"more than 1.5x the bytes needed (+ 256 KiB): {len(over_need)}/{len(ok)}")
     lines += ["  " + fmt_row(r) for r in over_need]
-    errors = [r for r in rows if "time_ratio" not in r]
-    differ = [r for r in ok if r["values"] != "same"]
+    errors = [r for r in rows if r not in ok]
+    differ = [r for r in rows if r.get("values") == "DIFFER"]
     lines.append(f"\nvalues differ from GDAL: {len(differ)}" + "".join(f"\n  {r['fixture']}/{r['access']}/{r['source']}: n {r['terrio_n']} vs {r['gdal_n']}, sum {r['terrio_sum']:.6g} vs {r['gdal_sum']:.6g}" for r in differ))
     lines.append(f"errors: {len(errors)}" + "".join("\n  " + fmt_row(r) for r in errors))
     return "\n".join(lines)
@@ -835,7 +989,7 @@ def main() -> None:
     if a.cmd == "report":
         print(report([json.loads(line) for line in a.results.read_text().splitlines() if line.strip()]))
         return
-    a.dir = a.dir.expanduser() / a.format
+    a.dir = (a.dir.expanduser() / a.format).resolve()
     a.dir.mkdir(parents=True, exist_ok=True)
     if a.cmd == "fixtures":
         FORMATS[a.format].make(a.dir)
