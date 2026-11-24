@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
 //! Diagnostic: separates warm source-byte reads from in-memory TIFF decode.
 //! This reads complete sources; it is not an attribution of compose windows.
 use std::time::Instant;

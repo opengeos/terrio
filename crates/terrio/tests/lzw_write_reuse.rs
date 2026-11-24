@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
 //! Exact baseline file regressions, also run in fresh processes with one and three workers.
 use terrio::raster::RasterData;
 use terrio::{DataType, Raster, RasterConfig, RasterDataset, RasterWriteOptions};

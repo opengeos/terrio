@@ -4147,6 +4147,7 @@ mod tests {
         for raw in [64, 256, 4096, 16_384] {
             encoder.encode(&vec![0; raw]);
             assert!(encoder.allocated_scratch_bytes() > 64 << 10);
+            assert!(super::super::tiff_lzw::Encoder::SCRATCH_BYTES >= encoder.allocated_scratch_bytes());
             let (_, scratch) = encoder_bytes(Compression::Lzw, raw);
             assert!(scratch >= encoder.allocated_scratch_bytes(), "{raw}: {scratch} < {}", encoder.allocated_scratch_bytes());
         }
@@ -4202,7 +4203,7 @@ mod tests {
         // Alternate lengths, dictionary saturation/clears, empty and repeated data.
         for _ in 0..3 {
             for data in &cases {
-                let expected = Compression::Lzw.compress(data.clone(), &c, &p).unwrap();
+                let expected = weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8).encode(data).unwrap();
                 let actual = Compression::Lzw.compress_reusing(data.clone(), &c, &p, &mut scratch).unwrap();
                 assert_eq!(actual, expected);
                 assert_eq!(weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8).decode(&actual).unwrap(), *data);

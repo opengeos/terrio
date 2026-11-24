@@ -170,7 +170,8 @@ impl HashEncoder {
     }
 
     // The plain loop retains iterator traversal without witness bookkeeping.
-    // Keep LLVM from combining this hot loop with the much larger skip path.
+    // Width growth, clearing and EOI mirror Encoder::encode_chunk, with both paths
+    // checked against weezl in tests. Keep LLVM from combining the two hot loops.
     #[inline(never)]
     fn encode(&mut self, data: &[u8]) -> Vec<u8> {
         self.table.fill(0);

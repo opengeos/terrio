@@ -95,7 +95,8 @@ roughly 1620 probes per byte and 60 to 80 times slower encoding than weezl.
 This change documents that exposure without adding a hot-loop probe counter,
 salted layout, or fallback. No adversarial-throughput mitigation is claimed.
 
-`lzw_reused_streams_match_fresh_tiff_size_switch` compares two specialized paths;
-its independent weezl oracle comes from the library's `cfg(test)` checks.
+`lzw_reused_streams_match_fresh_tiff_size_switch` compares reused specialized
+scratch with a fresh weezl encoder. Both specialized paths also assert their
+independent weezl oracle in the library's `cfg(test)` checks.
 Integration tests compile the library without that oracle; `lzw_write_reuse`
 uses the 48 retained complete baseline TIFF fixtures instead.

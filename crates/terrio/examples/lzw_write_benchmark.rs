@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
 //! Deterministic strip-heavy write workload. No external data or GDAL required.
 use terrio::raster::RasterData;
 use terrio::{DataType, Raster, RasterConfig, RasterDataset, RasterWriteOptions};

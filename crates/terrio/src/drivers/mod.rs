@@ -49,6 +49,7 @@ pub(crate) mod sqlite;
 pub(crate) mod sqlite_edit;
 #[cfg(feature = "sqlite")]
 pub(crate) mod sqlite_repack;
+mod tiff_lzw;
 pub(crate) mod vector;
 pub(crate) mod webp;
 pub(crate) mod wkt;
@@ -729,5 +730,3 @@ mod content_allow_list_tests {
         assert_eq!(open(&format!("GeoJSON,{csf}")), Ok(csf));
     }
 }
-
-mod tiff_lzw;
