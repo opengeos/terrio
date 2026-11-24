@@ -1346,14 +1346,15 @@ impl Def {
                 // A WKT 2 `BOUNDCRS` to another CRS: its Helmert transformation to that CRS, then
                 // each of that CRS's transformations to WGS 84, as PROJ concatenates them. With
                 // none, the source CRS's own, as PROJ uses them (else its ballpark to WGS 84).
-                let wkt1::BoundTo { target, shift } = &**bound;
+                let wkt1::BoundTo { target, shift, name } = &**bound;
                 let mut source = d.clone();
                 source.registered_datum(&c, own_geogcs_text(w, &c));
                 // A target terrio cannot read is left out, as one it cannot convert is.
                 let Ok(mut t) = Self::from_proj(&target.proj) else {
-                    let name = target.geogcs.name().unwrap_or("");
-                    source.unapplied =
-                        Some(Arc::from(format!("the BOUNDCRS transformation is not applied: its target CRS \"{name}\" is not read")));
+                    let target_name = target.geogcs.name().unwrap_or("");
+                    source.unapplied = Some(Arc::from(format!(
+                        "the BOUNDCRS transformation \"{name}\" is not applied: its target CRS \"{target_name}\" is not read"
+                    )));
                     return Ok(source);
                 };
                 t.registered_datum(target, None);

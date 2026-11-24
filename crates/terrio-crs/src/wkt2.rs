@@ -160,7 +160,7 @@ pub(crate) fn convert_root(input: &Wkt2Root, root: &Node) -> Result<Converted> {
                 )),
                 Some((input, node)) => match convert_root(input, node) {
                     Ok(target) => {
-                        c.bound = Some(Box::new(BoundTo { target, shift: t }));
+                        c.bound = Some(Box::new(BoundTo { target, shift: t, name: name.clone() }));
                         c.helmert = helmert;
                     }
                     Err(_) => not_applied(format!("its target CRS \"{target_name}\" is not read")),
