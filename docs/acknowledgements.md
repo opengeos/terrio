@@ -200,7 +200,7 @@ terrio reads and writes its formats with these crates, among others:
 | [`rusty_av1d`](https://crates.io/crates/rusty_av1d) | AVIF, a port of [dav1d](https://code.videolan.org/videolan/dav1d) |
 | [`jxl-oxide`](https://crates.io/crates/jxl-oxide), [`zune-jpegxl`](https://crates.io/crates/zune-jpegxl) | JPEG XL |
 | [`lerc-reader`](https://crates.io/crates/lerc-reader), [`lerc-writer`](https://crates.io/crates/lerc-writer) | LERC |
-| [`flate2`](https://crates.io/crates/flate2), [`ruzstd`](https://crates.io/crates/ruzstd), [`zstd`](https://crates.io/crates/zstd), [`lz4_flex`](https://crates.io/crates/lz4_flex), [`lzma-rust2`](https://crates.io/crates/lzma-rust2), [`zip`](https://crates.io/crates/zip) | Compression and archives |
+| [`flate2`](https://crates.io/crates/flate2), [`zrip`](https://crates.io/crates/zrip), [`zstd`](https://crates.io/crates/zstd), [`lz4_flex`](https://crates.io/crates/lz4_flex), [`lzma-rust2`](https://crates.io/crates/lzma-rust2), [`zip`](https://crates.io/crates/zip) | Compression and archives |
 | [`flatgeobuf`](https://crates.io/crates/flatgeobuf) | FlatGeobuf |
 | [Apache Arrow and Parquet](https://github.com/apache/arrow-rs) | GeoParquet and Arrow |
 | [`netcdf-reader`](https://crates.io/crates/netcdf-reader), [`hdf5-reader`](https://crates.io/crates/hdf5-reader) | netCDF and HDF5 |

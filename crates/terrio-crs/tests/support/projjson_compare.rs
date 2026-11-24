@@ -160,8 +160,8 @@ pub fn compare(ours: &Value, proj: &Value) -> String {
 /// The corpus cases, `(code, form, text, PROJ's PROJJSON)`, from its zstd-compressed JSON lines.
 pub fn corpus(parts: &[&[u8]]) -> Vec<(String, String, String, Value)> {
     let mut text = String::new();
-    for mut bytes in parts.iter().copied() {
-        ruzstd::decoding::StreamingDecoder::new(&mut bytes).unwrap().read_to_string(&mut text).unwrap();
+    for bytes in parts.iter().copied() {
+        zrip::FrameDecoder::new(bytes).read_to_string(&mut text).unwrap();
     }
     text.lines()
         .map(|l| {

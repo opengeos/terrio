@@ -57,7 +57,7 @@ fdeflate.workspace = true
 weezl.workspace = true
 png.workspace = true
 lz4_flex = { workspace = true, optional = true }
-ruzstd.workspace = true
+zrip.workspace = true
 netcdf-reader = { workspace = true, optional = true }
 hdf5-reader = { workspace = true, optional = true }
 ras-commander-fast-hdf = { workspace = true, optional = true }
@@ -98,7 +98,7 @@ ndarray = { workspace = true, optional = true }
 # Every driver is on by default. A build with `default-features = false` keeps the core: GeoTIFF
 # and COG (deflate, LZW, PackBits, ZSTD, WebP, JPEG, JPEG XL), the raw and ASCII rasters (AAIGrid,
 # EHdr, ENVI, ERS, HFA, RST, SAGA, GSBG, XYZ...), PNG, JPEG, VRT, GeoJSON, Shapefile, KML/KMZ,
-# GML, GPX, CSV, MapInfo, the CRS engine and the operations, without C (Zstandard with `ruzstd`).
+# GML, GPX, CSV, MapInfo, the CRS engine and the operations, without C (Zstandard with `zrip`).
 # Disabled drivers stay in the API (`RasterDriver`, `VectorDriver`) and fail with "built without
 # the `...` feature".
 [features]
@@ -149,12 +149,12 @@ tiles = ["sqlite"]
 zarr = ["dep:lz4_flex"]
 ## GeoPackage (vector and raster tiles), SQLite/SpatiaLite and the SQLite store of MBTiles.
 sqlite = ["dep:memmap2"]
-## Zstandard (GeoTIFF chunks and EPT tiles) with the zstd C library, natively: it decodes faster
-## and compresses better than `ruzstd`, used without it and in WebAssembly, which writes at its
-## fastest level (about zstd's 1) whatever level is asked for. terrio decodes every ZSTD GeoTIFF
-## chunk itself, Float16, complex and WhiteIsZero samples included: the `tiff` crate is built
-## without its Zstandard (zstd 0.13, whose streaming decoder has known advisories), so ZSTD datum
-## grids, which terrio-crs reads with the crate, are not read (PROJ's are DEFLATE-compressed).
+## Zstandard (GeoTIFF chunks and EPT tiles) with the zstd C library, natively: it writes levels
+## above 4, which `zrip`, used without it and in WebAssembly, writes at level 4. terrio decodes
+## every ZSTD GeoTIFF chunk itself, Float16, complex and WhiteIsZero samples included: the `tiff`
+## crate is built without its Zstandard (zstd 0.13, whose streaming decoder has known advisories),
+## so ZSTD datum grids, which terrio-crs reads with the crate, are not read (PROJ's are
+## DEFLATE-compressed).
 libzstd = ["dep:zstd"]
 ## Open any format GDAL reads, through the same data model, when terrio has no driver for it.
 gdal = ["dep:gdal", "dep:gdal-sys", "dep:chrono"]
@@ -167,7 +167,7 @@ ndarray = ["dep:ndarray"]
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 # Memory-mapped reads of SQLite files (`sqlite`) and OSM PBF files (`osm`).
 memmap2 = { workspace = true, optional = true }
-# `libzstd`: EPT tiles' Zstandard, natively (without it, and in WebAssembly, `ruzstd`).
+# `libzstd`: EPT tiles' Zstandard, natively (without it, and in WebAssembly, `zrip`).
 zstd = { workspace = true, optional = true }
 tempfile.workspace = true
 # Listing and extracting tar archives (`terrio::vsi`).

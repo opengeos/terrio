@@ -309,10 +309,10 @@ fn decompress_with_limit(data: &[u8], codec: u8, limit: Option<usize>, resource:
             Ok(data.to_vec())
         }
         COMPRESSION_GZIP => read_decoded(flate2::read::GzDecoder::new(data), limit, resource),
-        COMPRESSION_ZSTD => {
-            let decoder = ruzstd::decoding::StreamingDecoder::new(data).map_err(|e| bad(format!("zstd: {e}")))?;
-            read_decoded(decoder, limit, resource)
-        }
+        COMPRESSION_ZSTD => zrip::decompress_with_limit(data, limit.unwrap_or(usize::MAX)).map_err(|e| match (e, limit) {
+            (zrip::DecompressError::OutputTooSmall, Some(limit)) => Error::DecodedLimitExceeded { resource, limit },
+            (e, _) => bad(format!("zstd: {e}")),
+        }),
         COMPRESSION_BROTLI => Err(Error::Unsupported("PMTiles: brotli compression is not supported".into())),
         c => Err(bad(format!("unknown compression {c}"))),
     }

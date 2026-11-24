@@ -49,7 +49,7 @@ A method requiring the feature returns an error naming the feature when it is
 disabled. Canonical authority references, including versioned EPSG URNs/URLs, use the same
 parser in both configurations. Permissive legacy authority fragments remain a
 fallback feature. Both configurations include the same EPSG/ESRI/IAU tables, native datum
-operations and local grid readers. Table decompression uses `ruzstd` on all
+operations and local grid readers. Table decompression uses `zrip` on all
 targets. The default crate has no C dependency: Zstandard TIFF grids are read only with the
 `libzstd` feature (PROJ's grids are DEFLATE-compressed).
 

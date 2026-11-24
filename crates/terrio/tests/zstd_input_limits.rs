@@ -101,7 +101,7 @@ fn the_test_stream_expands_as_described() {
     let small = bomb(9, 3);
     assert_eq!(small.len(), 6 + 4 * 3);
     let mut out = Vec::new();
-    std::io::Read::read_to_end(&mut ruzstd::decoding::StreamingDecoder::new(&small[..]).unwrap(), &mut out).unwrap();
+    std::io::Read::read_to_end(&mut zrip::FrameDecoder::new(&small[..]), &mut out).unwrap();
     assert_eq!((out.len(), out.iter().all(|b| *b == 9)), (3 * BLOCK as usize, true));
     assert_eq!(bomb(7, BLOCKS).len(), 6 + 4 * BLOCKS);
 }

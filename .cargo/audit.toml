@@ -25,6 +25,6 @@ ignore = [
     "RUSTSEC-2026-0547",
     # ruzstd 0.8.3: wbraster's Zarr reader, which terrio reaches only with
     # TERRIO_WBRASTER_FALLBACK=YES in builds without the `zarr` feature. terrio's own readers decode
-    # Zstandard with ruzstd 0.9 (or zstd 0.14, with `libzstd`).
+    # Zstandard with zrip (or zstd 0.14, with `libzstd`).
     "RUSTSEC-2026-0344",
 ]
