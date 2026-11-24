@@ -3534,22 +3534,24 @@ mod tests {
     /// GDAL 3.13.3 uses the same horizontal datum shift for this compound CRS.
     #[test]
     fn ballpark_height_warning_uses_destination_coordinates() {
-        let src = SpatialRef::from_epsg(4979).unwrap();
-        let dst = SpatialRef::from_epsg(7405).unwrap();
-        for covers_destination in [true, false] {
-            let t = Transformer::new(&src, &dst).unwrap();
-            assert!(t.ballpark_heights);
-            let (x, y, _) = t.transform_2d(-2.0, 54.0, 100.0, None).unwrap();
-            let (lon, lat) = t.dst.unproject(x, y).unwrap();
-            let destination = (lon.to_degrees(), lat.to_degrees());
-            assert!((destination.0 + 2.0).abs() > 1e-5);
-            let center = if covers_destination { destination } else { (-2.0, 54.0) };
-            let mut model = datum::Op::world(Vec::new());
-            model.bounds = [center.0 - 1e-7, center.1 - 1e-7, center.0 + 1e-7, center.1 + 1e-7];
-            assert!(t.dst_geoid_grids.set(vec![std::sync::Arc::new(model)]).is_ok());
-            t.transform_3d(-2.0, 54.0, 100.0).unwrap();
-            assert_eq!(t.diagnostics.load(std::sync::atomic::Ordering::Relaxed) & 8 != 0, covers_destination);
-        }
+        grid::without_grids(|| {
+            let src = SpatialRef::from_epsg(4979).unwrap();
+            let dst = SpatialRef::from_epsg(7405).unwrap();
+            for covers_destination in [true, false] {
+                let t = Transformer::new(&src, &dst).unwrap();
+                assert!(t.ballpark_heights);
+                let (x, y, _) = t.transform_2d(-2.0, 54.0, 100.0, None).unwrap();
+                let (lon, lat) = t.dst.unproject(x, y).unwrap();
+                let destination = (lon.to_degrees(), lat.to_degrees());
+                assert!((destination.0 + 2.0).abs() > 1e-5);
+                let center = if covers_destination { destination } else { (-2.0, 54.0) };
+                let mut model = datum::Op::world(Vec::new());
+                model.bounds = [center.0 - 1e-7, center.1 - 1e-7, center.0 + 1e-7, center.1 + 1e-7];
+                assert!(t.dst_geoid_grids.set(vec![std::sync::Arc::new(model)]).is_ok());
+                t.transform_3d(-2.0, 54.0, 100.0).unwrap();
+                assert_eq!(t.diagnostics.load(std::sync::atomic::Ordering::Relaxed) & 8 != 0, covers_destination);
+            }
+        });
     }
 
     /// Polar bounds from GDAL 3.12.1 include an interior pole and every longitude.

@@ -1878,7 +1878,7 @@ impl Def {
             ops.iter()
                 .map(|o| match o.name.is_empty() {
                     false => Arc::new(Op { keeps_height: false, keeps_wgs84_leg_height: true, ..(**o).clone() }),
-                    true if was_geocentric => Arc::new(Op { keeps_height: false, ..(**o).clone() }),
+                    true if was_geocentric && !o.ballpark => Arc::new(Op { keeps_height: false, ..(**o).clone() }),
                     true => o.clone(),
                 })
                 .collect()
@@ -1893,7 +1893,9 @@ impl Def {
     /// 9.9.0 and GDAL run it.
     pub fn beside_geocentric(&mut self) {
         fn move_own_shift_height(ops: &[Arc<Op>]) -> Vec<Arc<Op>> {
-            ops.iter().map(|o| if o.name.is_empty() { Arc::new(Op { keeps_height: false, ..(**o).clone() }) } else { o.clone() }).collect()
+            ops.iter()
+                .map(|o| if o.name.is_empty() && !o.ballpark { Arc::new(Op { keeps_height: false, ..(**o).clone() }) } else { o.clone() })
+                .collect()
         }
         self.ops = move_own_shift_height(&self.ops);
         self.all_ops = self.adjustable_all_ops().as_deref().map(move_own_shift_height);
@@ -2690,6 +2692,24 @@ mod resolution_tests {
 #[cfg(test)]
 mod endpoint_height_policy_tests {
     use super::*;
+
+    #[test]
+    fn unnamed_ballpark_keeps_height_beside_geocentric() {
+        let mut base = Def::new(&SpatialRef::from_epsg(4326).unwrap()).unwrap();
+        let own = Op::world(datum::helmert_steps(base.ell, base.ell, &[10.0, 0.0, 0.0]));
+        base.ops = vec![Arc::new(own.clone()), Arc::new(Op { ballpark: true, ..own })];
+        let point = datum::Point { lon: 0.0, lat: 0.0, h: 100.0, t: None };
+        for demote in [false, true] {
+            let mut adjusted = base.clone();
+            if demote {
+                adjusted.beside_2d(true);
+            } else {
+                adjusted.beside_geocentric();
+            }
+            assert!((datum::run_op(&adjusted.ops[0], point, false, false).unwrap().h - 110.0).abs() < 1e-6);
+            assert_eq!(datum::run_op(&adjusted.ops[1], point, false, false).unwrap().h, 100.0);
+        }
+    }
 
     #[test]
     fn height_policy_survives_expanding_registered_operations() {

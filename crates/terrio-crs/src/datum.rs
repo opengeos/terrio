@@ -753,12 +753,7 @@ pub(crate) fn run_op(op: &Op, p: Point, reverse: bool, three_d: bool) -> Option<
         // The leg at the WGS 84 end (the steps' end), after the last geographic point between
         // two legs, keeps the height; the legs before it, on geocentric coordinates, move it. A
         // transformation of one leg keeps it unless it runs between geocentric CRSs.
-        let boundary = op.steps.windows(2).rposition(|w| matches!(w, [Step::Cart { inv: true, .. }, Step::Cart { inv: false, .. }]));
-        let k = match boundary {
-            Some(i) => i + 1,
-            None if op.geocentric => op.steps.len(),
-            None => 0,
-        };
+        let k = wgs84_leg_boundary(op);
         let (rest, leg) = op.steps.split_at(k);
         return if reverse {
             let q = run(leg, p, true, false)?;
@@ -769,6 +764,15 @@ pub(crate) fn run_op(op: &Op, p: Point, reverse: bool, three_d: bool) -> Option<
         };
     }
     run(&op.steps, p, reverse, three_d || !op.keeps_height)
+}
+
+/// The start of an operation's WGS 84 leg, after its last intermediate geographic point.
+pub(crate) fn wgs84_leg_boundary(op: &Op) -> usize {
+    match op.steps.windows(2).rposition(|w| matches!(w, [Step::Cart { inv: true, .. }, Step::Cart { inv: false, .. }])) {
+        Some(i) => i + 1,
+        None if op.geocentric => op.steps.len(),
+        None => 0,
+    }
 }
 
 /// Whether `op` ranks before `best` for a point both hold, as PROJ's

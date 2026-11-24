@@ -125,9 +125,31 @@ struct Chain {
 }
 
 impl Chain {
-    /// Runs the chain's transformations on a point, heights through all of them.
-    fn run(&self, p: Point) -> Option<Point> {
-        self.legs.iter().try_fold(p, |q, l| datum::run(&l.op.steps, q, l.reverse, true))
+    /// Runs a chain, keeping height across its WGS 84 leg and an adjoining custom shift.
+    fn run(&self, p: Point, three_d: bool) -> Option<Point> {
+        run_chain(self.legs.iter().map(|l| (l.op.as_ref(), l.reverse)), p, three_d)
+    }
+}
+
+/// Runs raw legs, preserving height across the WGS 84 leg and the adjoining custom operations.
+fn run_chain<'a>(legs: impl Clone + Iterator<Item = (&'a Op, bool)>, p: Point, three_d: bool) -> Option<Point> {
+    fn run<'a>(mut legs: impl Iterator<Item = (&'a Op, bool)>, p: Point) -> Option<Point> {
+        legs.try_fold(p, |q, (op, reverse)| datum::run(&op.steps, q, reverse, true))
+    }
+    let Some((i, (marked, reverse))) = legs.clone().enumerate().find(|(_, (op, _))| !three_d && op.keeps_wgs84_leg_height) else {
+        return run(legs, p);
+    };
+    let (rest, wgs84) = marked.steps.split_at(datum::wgs84_leg_boundary(marked));
+    let q = run(legs.clone().take(i), p)?;
+    if reverse {
+        let q = datum::run(wgs84, q, true, true)?;
+        let q = datum::run(rest, Point { h: p.h, ..q }, true, true)?;
+        run(legs.skip(i + 1), q)
+    } else {
+        let q = datum::run(rest, q, false, true)?;
+        let height = q.h;
+        let q = datum::run(wgs84, q, false, true)?;
+        run(legs.skip(i + 1), q).map(|q| Point { h: height, ..q })
     }
 }
 
@@ -526,7 +548,7 @@ impl Route {
                     note(None, false, OpKind::Datum);
                     return Some(p);
                 };
-                let q = c.run(p)?;
+                let q = c.run(p, three_d)?;
                 note(Some(&c.rank), false, OpKind::Datum);
                 Some(if three_d || !c.rank.keeps_height { q } else { Point { h: p.h, ..q } })
             }
@@ -656,7 +678,7 @@ impl Route {
                 // conversion to geodetic coordinates and back between them cancelling out), and
                 // are restored after them when the chain keeps them.
                 let run = |c: &Chain| {
-                    let r = c.run(p)?;
+                    let r = c.run(p, three_d)?;
                     Some(if three_d || !c.rank.keeps_height { r } else { Point { h: p.h, ..r } })
                 };
                 let c = self.candidates(src, true).expect("chains");
@@ -688,7 +710,7 @@ impl Route {
             Kind::Hub => match self.hub_pick(src, &at) {
                 (Some(s), Some(d)) => {
                     // Heights go through both, as in PROJ's pipeline (see the chains).
-                    let r = datum::run(&s.steps, p, false, true).and_then(|q| datum::run(&d.steps, q, true, true))?;
+                    let r = run_chain([(s, false), (d, true)].into_iter(), p, three_d)?;
                     let result = Some(if three_d || !(s.keeps_height && d.keeps_height) { r } else { Point { h: p.h, ..r } });
                     if result.is_some() {
                         note(Some(s), false, OpKind::Datum);
@@ -737,7 +759,7 @@ impl Route {
                 for i in c.tries(&at) {
                     let Some(chain) = chains.get(i) else { return Vec::new() };
                     if chain.legs.iter().any(|l| !l.op.available())
-                        || chain.run(p).is_some()
+                        || chain.run(p, false).is_some()
                         || chain.legs.iter().any(|l| l.op.network_failed())
                     {
                         return legs(chain);

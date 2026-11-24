@@ -10,13 +10,62 @@
 //! coordinates. Into PZ-90 (geocentric) (EPSG:4922) at (0°, 0°, 0 m), X was 1 m off.
 //!
 //! `data/geodetic_3d.tsv` (`scripts/gen_geodetic_3d.py`, PROJ 9.9.0, no grids,
-//! `PROJ_NETWORK=OFF`): every EPSG geocentric and geographic 3D CRS that is not deprecated, from
+//! `PROJ_NETWORK=OFF`): every non-deprecated EPSG geocentric and geographic 3D CRS with an area
+//! of use that PROJ places, from
 //! WGS 84 (2D) and (3D) at the centre of its area at 100 m, and back into both. Tolerance: 1 mm.
 //!
 //! [`PENDING`] cases differ for other reasons, on main too: PROJ places GDA94 (geocentric) and
 //! ONGD14 (geographic 3D) by other transformations, PZ-90.11 from and into WGS 84 (3D) is 1 m off,
 //! and for LUREF terrio uses LUREF to WGS 84 (3) where PROJ uses (4), of the same accuracy (2 mm).
 use terrio_crs::{SpatialRef, Transformer};
+
+/// PROJ 9.7.1, offline: a custom 2D shift and the inverse PZ-90 shift keep height across the chain.
+#[test]
+fn custom_shift_beside_geocentric_keeps_chain_height() {
+    offline();
+    let custom = SpatialRef::from_proj4("+proj=longlat +ellps=clrk66 +towgs84=1,2,3 +type=crs").unwrap();
+    for (code, expected) in [
+        (4922, (4597854.011763361, 1673479.4756891793, 4077870.781259132)),
+        (7679, (4597850.361586562, 1673482.1963425174, 4077870.1710752933)),
+    ] {
+        let geocentric = SpatialRef::from_epsg(code).unwrap();
+        let actual = Transformer::new(&custom, &geocentric).unwrap().transform_3d(20.0, 40.0, 100.0).unwrap();
+        assert!(
+            (actual.0 - expected.0).abs() < 1e-3 && (actual.1 - expected.1).abs() < 1e-3 && (actual.2 - expected.2).abs() < 1e-3,
+            "{actual:?}"
+        );
+        let back = Transformer::new(&geocentric, &custom).unwrap().transform_3d(expected.0, expected.1, expected.2).unwrap();
+        assert!((back.0 - 20.0).abs() < 1e-8 && (back.1 - 40.0).abs() < 1e-8 && (back.2 - 100.0).abs() < 1e-3, "{back:?}");
+    }
+}
+
+/// PROJ 9.7.1 preserves the 2D endpoint's height through the two WGS 84 hub operations.
+#[test]
+fn custom_datum_beside_geocentric_keeps_hub_height() {
+    offline();
+    let custom = SpatialRef::from_wkt(
+        r#"GEOGCS["custom",DATUM["D_OSGB_1936",SPHEROID["custom",6377564.396,299.3249646]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#,
+    );
+    let geocentric = SpatialRef::from_epsg(4922).unwrap();
+    let geographic = SpatialRef::from_epsg(4923).unwrap();
+    let p = Transformer::new(&custom, &geocentric).unwrap().transform_3d(-2.0, 54.0, 100.0).unwrap();
+    let (_, _, height) = Transformer::new(&geocentric, &geographic).unwrap().transform_3d(p.0, p.1, p.2).unwrap();
+    assert!((height - 100.0).abs() < 1e-3, "{height}");
+    let (_, _, height) = Transformer::new(&geocentric, &custom).unwrap().transform_3d(p.0, p.1, p.2).unwrap();
+    assert!((height - 100.0).abs() < 1e-3, "{height}");
+}
+
+/// PROJ 9.7.1 keeps the height of a custom 2D CRS beside ETRS89 geographic 3D.
+#[test]
+fn custom_shift_beside_geographic_3d_keeps_chain_height() {
+    offline();
+    let custom = SpatialRef::from_proj4("+proj=longlat +ellps=clrk66 +towgs84=1,2,3 +type=crs").unwrap();
+    let geographic = SpatialRef::from_epsg(4937).unwrap();
+    let p = Transformer::new(&custom, &geographic).unwrap().transform_3d(20.0, 40.0, 100.0).unwrap();
+    assert!((p.2 - 100.0).abs() < 1e-3, "{p:?}");
+    let back = Transformer::new(&geographic, &custom).unwrap().transform_3d(p.0, p.1, p.2).unwrap();
+    assert!((back.2 - 100.0).abs() < 1e-3, "{back:?}");
+}
 
 fn offline() {
     terrio_crs::set_grid_search_paths(Some(vec![]));

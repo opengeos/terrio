@@ -3126,6 +3126,18 @@ PROJ_CASES = {
         ),
     },
     "geodetic_3d": {
+        "custom_shift_beside_geocentric_keeps_chain_height": (
+            "Custom 2D datum shift through WGS 84 into PZ-90 and PZ-90.11, forward and reverse", TOLERANCE,
+            "PROJ 9.7.1 (offline): within 1 mm; height kept across the WGS 84 chain before geocentric prelegs",
+        ),
+        "custom_datum_beside_geocentric_keeps_hub_height": (
+            "Custom OSGB datum through the WGS 84 hub into PZ-90, forward and reverse", TOLERANCE,
+            "PROJ 9.7.1 (offline): ellipsoidal height preserved within 1 mm",
+        ),
+        "custom_shift_beside_geographic_3d_keeps_chain_height": (
+            "Custom 2D datum shift through WGS 84 into ETRS89 geographic 3D, forward and reverse", TOLERANCE,
+            "PROJ 9.7.1 (offline): ellipsoidal height preserved within 1 mm",
+        ),
         "geodetic_3d_crss_are_placed_as_proj_places_them": (
             "EPSG geocentric and geographic 3D CRSs from and into WGS 84 (2D) and (3D) (2,068 cases)", TOLERANCE,
             "PROJ 9.9.0 (no grids): within 1 mm; heights kept through the datum shift beside WGS 84 (2D); 12 pending "
@@ -3138,14 +3150,14 @@ PROJ_CASES = {
     },
     "epsg_deprecated": {
         "deprecated_codes_are_placed_by_their_own_definition_as_proj_does": (
-            "Deprecated EPSG CRSs by their own definition (486 cases)", TOLERANCE,
+            "Deprecated EPSG CRSs by their own definition (501 cases)", TOLERANCE,
             "PROJ 9.9.0 (pyproj 3.8.0, no grids): within 1 mm (1e-8 degrees geographic); the 2 RGNC 1991 geocentric CRSs pending "
             "(another transformation)",
         ),
-        "replacements_are_those_proj_lists": "Deprecated EPSG CRSs: their replacements are PROJ 9.8.1's, GDAL's substitution of a single one",
+        "replacements_are_those_proj_lists": "Deprecated EPSG CRSs: their replacements are PROJ 9.9.0's, GDAL's substitution of a single one",
         "codes_proj_cannot_transform": (
             "Deprecated EPSG CRSs PROJ cannot transform (8 cases)", NOT_COMPARED,
-            "PROJ 9.8.1 refuses them; terrio refuses the 6 it cannot write as PROJ strings and transforms the RRAF 1991 "
+            "PROJ 9.9.0 refuses them; terrio refuses the 6 it cannot write as PROJ strings and transforms the RRAF 1991 "
             "geocentric CRSs (EPSG:4384, 4972) by their datum's ballpark",
         ),
         "geokeys_of_deprecated_codes_read_as_their_own_definition": (
