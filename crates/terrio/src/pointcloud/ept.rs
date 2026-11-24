@@ -845,7 +845,8 @@ mod tests {
 
         /// The nodes of a read are fetched as many at a time as terrio's pool has threads (at most
         /// the nine there are): the server answers a node once that many have been asked for.
-        /// On a one-thread pool a pass does not establish concurrency.
+        /// Isolated from other tests' pool work on every native platform. On a one-thread pool
+        /// a pass does not establish concurrency.
         #[test]
         fn the_nodes_of_a_read_are_fetched_as_many_at_a_time_as_the_pool_has_threads() {
             let scenario = || {
@@ -862,10 +863,7 @@ mod tests {
                 assert!(most >= at_once, "at most {most} node request(s) in flight at once, {at_once} expected");
                 true
             };
-            #[cfg(unix)]
             crate::par::alone(30, scenario);
-            #[cfg(not(unix))]
-            assert!(scenario());
         }
     }
 }

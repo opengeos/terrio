@@ -678,14 +678,18 @@ mod tests {
         std::fs::write(&first, b"old").unwrap();
         // A non-empty directory, which a file cannot be renamed over.
         let blocked = dir.path().join("blocked");
+        let stage = |path: &Path, bytes: &'static [u8]| stage_replace(path, |f| Ok(f.write_all(bytes)?)).unwrap().1;
+        // Stage before creating the directory: copying directory permissions onto a file is
+        // invalid on Windows, and this test must reach the publication failure and rollback.
+        let blocked_existing = stage(&blocked, b"new");
+        let blocked_fresh = stage(&blocked, b"new");
         std::fs::create_dir(&blocked).unwrap();
         std::fs::write(blocked.join("inside"), b"x").unwrap();
-        let stage = |path: &Path, bytes: &'static [u8]| stage_replace(path, |f| Ok(f.write_all(bytes)?)).unwrap().1;
-        let err = persist_both(stage(&first, b"new"), stage(&blocked, b"new"));
+        let err = persist_both(stage(&first, b"new"), blocked_existing);
         assert!(err.is_err());
         assert_eq!(std::fs::read(&first).unwrap(), b"old");
         let fresh = dir.path().join("fresh");
-        assert!(persist_both(stage(&fresh, b"new"), stage(&blocked, b"new")).is_err());
+        assert!(persist_both(stage(&fresh, b"new"), blocked_fresh).is_err());
         assert!(!fresh.exists());
         // Only the targets remain: no temporary is left behind.
         let mut names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
