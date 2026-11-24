@@ -894,7 +894,7 @@ fn list_json(a: &dyn Array) -> Value {
 }
 
 pub(super) fn geometry(a: &dyn Array, row: usize, encoding: &str) -> Option<Geometry> {
-    if a.is_null(row) {
+    if row >= a.len() || a.is_null(row) {
         return None;
     }
     match encoding {
@@ -941,7 +941,7 @@ fn polygon(rings: &dyn Array) -> Option<(Ring, Vec<Ring>)> {
 
 /// The values of a number array as `f64`, nulls as NaN. GeoArrow coordinates are Float64 and
 /// covering bbox columns Float32 or Float64: read directly; other types through their JSON value.
-fn f64_values(a: &dyn Array) -> Vec<f64> {
+pub(super) fn f64_values(a: &dyn Array) -> Vec<f64> {
     if let Some(p) = a.as_primitive_opt::<Float64Type>() {
         return if p.null_count() == 0 { p.values().to_vec() } else { p.iter().map(|v| v.unwrap_or(f64::NAN)).collect() };
     }
@@ -1421,6 +1421,17 @@ mod tests {
         let tail = points.slice(100, 5);
         let Some(Geometry::Point(c)) = geometry(&tail, 2, "point") else { panic!() };
         assert_eq!((c.x, c.y), (102.0, -51.0));
+        assert!(geometry(&tail, tail.len(), "point").is_none());
+        assert!(geometry(&tail, usize::MAX, "point").is_none());
+        let interleaved = arrow_array::FixedSizeListArray::new(
+            Arc::new(Field::new("xy", DataType::Float64, false)),
+            2,
+            Arc::new(Float64Array::from(vec![0., 1., 2., 3., 4., 5., 6., 7.])),
+            None,
+        );
+        let tail = interleaved.slice(1, 3);
+        let Some(Geometry::Point(c)) = geometry(&tail, 1, "point") else { panic!() };
+        assert_eq!((c.x, c.y), (4., 5.));
     }
 
     /// Float32 covering columns and other number types read as `f64`, nulls as NaN, infinities as infinite.

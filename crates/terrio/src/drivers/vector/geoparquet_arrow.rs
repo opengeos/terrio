@@ -11,7 +11,6 @@ use super::geoparquet::{covering_leaves, file_geo, group_bboxes, perr};
 use super::geoparquet_zstd::{self, SharedInput};
 use crate::{Error, Result};
 use arrow_array::cast::AsArray;
-use arrow_array::types::{Float32Type, Float64Type};
 use arrow_array::{Array, ArrayRef, BooleanArray, RecordBatch, RecordBatchReader};
 use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
 use parquet::arrow::ProjectionMask;
@@ -464,13 +463,10 @@ fn has_member(data_type: &DataType, path: &str) -> bool {
     })
 }
 
-/// The values of a covering member, as `f64`.
+/// The values of a covering member, as `f64`, with nulls as NaN in both read paths.
 fn floats(a: &dyn Array) -> Result<Vec<f64>> {
-    if let Some(a) = a.as_primitive_opt::<Float64Type>() {
-        return Ok(a.values().to_vec());
-    }
-    if let Some(a) = a.as_primitive_opt::<Float32Type>() {
-        return Ok(a.values().iter().map(|&v| v as f64).collect());
+    if matches!(a.data_type(), DataType::Float32 | DataType::Float64) {
+        return Ok(super::geoparquet::f64_values(a));
     }
     Err(perr(&format!("a covering member of type {}", a.data_type())))
 }
