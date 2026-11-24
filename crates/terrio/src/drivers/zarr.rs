@@ -690,13 +690,20 @@ fn read_at_most(r: impl Read, most: usize, what: &str) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// The bytes past a block's end that `zrip` keeps room for in its output, which a buffer it
+/// decodes into needs besides the output so that it does not grow.
+const ZRIP_SLACK: usize = 64;
+
 /// Decompresses every frame of `b`, to at most `most` bytes: more is an error rather than an
-/// allocation of whatever a small chunk expands to.
+/// allocation of whatever a small chunk expands to. The output is reserved at once, fallibly, as
+/// `codec_output`'s is.
 fn zstd_decode(b: &[u8], most: usize) -> Result<Vec<u8>> {
-    zrip::decompress_with_limit(b, most).map_err(|e| match e {
+    let mut out = buffer(most.saturating_add(ZRIP_SLACK), "a Zarr chunk's decoded bytes")?;
+    zrip::DecompressContext::new().decompress_into_with_limit(b, &mut out, most).map_err(|e| match e {
         zrip::DecompressError::OutputTooSmall => bad(format!("zstd: a chunk decompressing to more than {most} bytes")),
         e => bad(format!("zstd: {e}")),
-    })
+    })?;
+    Ok(out)
 }
 
 /// Decompresses a Blosc (version 1 format) buffer of at most `most` bytes: a header declaring more

@@ -16,6 +16,14 @@ pub(crate) use pure::frames;
 #[cfg_attr(not(feature = "pointcloud"), allow(unused_imports))]
 pub(crate) use pure::{compress, decompress};
 
+/// The output limit of a `zrip` streaming decoder read for its first `max` bytes at most: one
+/// block more, since the block holding the last byte read is decoded whole. The decoder reserves
+/// no history past its limit, so a frame header declaring a larger content size or window
+/// reserves no more.
+pub(crate) fn read_limit(max: usize) -> usize {
+    max.saturating_add(zrip::frame::MAX_BLOCK_SIZE)
+}
+
 /// The error of a stream decompressing to more than `limit` bytes.
 fn too_long(limit: usize) -> Error {
     Error::new(ErrorKind::InvalidData, format!("Zstandard: decompresses to more than {limit} bytes"))
@@ -80,7 +88,7 @@ pub(crate) mod pure {
         match zrip::decompress_with_limit(data, max) {
             Err(DecompressError::OutputTooSmall) => {
                 let mut out = Vec::new();
-                zrip::FrameDecoder::new(data).take(max as u64).read_to_end(&mut out)?;
+                zrip::FrameDecoder::with_limit(data, read_limit(max)).take(max as u64).read_to_end(&mut out)?;
                 Ok(out)
             }
             r => r.map_err(invalid),

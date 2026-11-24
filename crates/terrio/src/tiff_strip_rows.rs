@@ -375,7 +375,11 @@ impl Stream {
         Ok(match codec {
             Codec::Deflate => Stream::Deflate(Box::new(Inflate::new(strip)?)),
             Codec::Lzw => Stream::Lzw(Box::new(weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8)), spare()?),
-            Codec::Zstd => Stream::Zstd(Box::new(Zstd(zrip::push::PushDecoder::new().max_window(ZSTD_WINDOW))), spare()?),
+            Codec::Zstd => {
+                // Rows past the strip's are not read: its frame reserves no more history.
+                let limit = crate::zstandard::read_limit(usize::try_from(strip).unwrap_or(usize::MAX));
+                Stream::Zstd(Box::new(Zstd(zrip::push::PushDecoder::with_limit(limit).max_window(ZSTD_WINDOW))), spare()?)
+            }
             Codec::PackBits => Stream::PackBits(PackBits::Count),
             Codec::Stored => unreachable!("uncompressed rows are read at their offsets"),
         })

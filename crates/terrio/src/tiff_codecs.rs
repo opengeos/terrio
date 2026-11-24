@@ -914,7 +914,10 @@ impl ChunkCodec {
         let blob = match self.lerc_wrapper {
             0 => raw,
             1 => inflate(&mut flate2::read::ZlibDecoder::new(&raw[..]))?,
-            2 => inflate(&mut zrip::FrameDecoder::new(&raw[..]))?,
+            2 => {
+                let limit = crate::zstandard::read_limit(cap.min(self.limit).saturating_add(1));
+                inflate(&mut zrip::FrameDecoder::with_limit(&raw[..], limit))?
+            }
             other => return Err(invalid(format!("unknown LERC compression wrapper {other}"))),
         };
         self.lerc_headers(&blob, w, h)?;

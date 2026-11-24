@@ -11,7 +11,7 @@ LICENSE-THIRD-PARTY.md`, from `about.toml`.
 ## Overview
 
 - Apache License 2.0 (266)
-- MIT License (77)
+- MIT License (76)
 - ISC License (20)
 - BSD 3-Clause "New" or "Revised" License (15)
 - BSD 2-Clause "Simplified" License (9)
@@ -9440,8 +9440,7 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- [zrip 0.8.24](https://github.com/paddor/zrip)
-- [zrip 0.8.24](https://github.com/paddor/zrip)
+- [zrip 0.8.25](https://github.com/paddor/zrip)
 
 ```text
 MIT License
@@ -9521,9 +9520,9 @@ Used by:
 - [gdal 0.19.0](https://github.com/georust/gdal)
 - [i_key_sort 0.10.3](https://github.com/iShape-Rust/iKeySort)
 - [libm 0.2.16](https://github.com/rust-lang/compiler-builtins)
-- [zrip-core 0.14.0](https://github.com/paddor/zrip)
-- [zrip-decode 0.8.18](https://github.com/paddor/zrip)
-- [zrip-encode 0.10.1](https://github.com/paddor/zrip)
+- [zrip-core 0.14.1](https://github.com/paddor/zrip)
+- [zrip-decode 0.8.19](https://github.com/paddor/zrip)
+- [zrip-encode 0.10.2](https://github.com/paddor/zrip)
 
 ```text
 MIT License

@@ -65,7 +65,7 @@ fdeflate = "0.3"
 weezl = "0.2"
 png = "0.18"
 lz4_flex = { version = "0.14", default-features = false, features = ["alloc", "safe-decode", "checked-decode"] }
-zrip = { version = "0.8.24", default-features = false, features = ["std", "simd"] }
+zrip = { version = "0.8.25", default-features = false, features = ["std", "simd"] }
 # 0.10 reads HDF5 files written in the earliest format with version 1/2 compound datatypes
 # (every HEC-RAS geometry and plan file, among others) and old fill value messages
 # (roteiro-gis/netcdf-rust#95). Keep netcdf-reader and the direct hdf5-reader on compatible

@@ -862,8 +862,8 @@ mod tests {
         });
     }
 
-    /// A background job that panics (as `ruzstd` does when an allocation fails) stops alone: the
-    /// process goes on, and the pool runs later jobs.
+    /// A background job that panics stops alone: the process goes on, and the pool runs later
+    /// jobs.
     #[test]
     fn a_background_job_that_panics_does_not_abort_the_process() {
         let (tx, rx) = std::sync::mpsc::channel::<()>();

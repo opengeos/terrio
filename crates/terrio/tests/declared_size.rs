@@ -227,19 +227,34 @@ fn declaring_tiff_with(
     extra: &[(u16, u16, Vec<f64>)],
 ) -> Vec<u8> {
     let (bw, bh) = block.unwrap_or((width, height));
+    let chunk = bw as usize * bh as usize * usize::from(bits) / 8 * if block.is_some() { usize::from(bands) } else { 1 };
+    tiff_holding(width, height, bands, bits, sample_format, block, extra, (8, &deflate_zeros(chunk)))
+}
+
+/// [`declaring_tiff_with`], every strip or tile holding `data` under `compression`.
+#[allow(clippy::too_many_arguments)]
+fn tiff_holding(
+    width: u32,
+    height: u32,
+    bands: u16,
+    bits: u16,
+    sample_format: u16,
+    block: Option<(u32, u32)>,
+    extra: &[(u16, u16, Vec<f64>)],
+    (compression, data): (u16, &[u8]),
+) -> Vec<u8> {
+    let (bw, bh) = block.unwrap_or((width, height));
     let per_band = match block {
         None => 1,
         Some(_) => width.div_ceil(bw) as usize * height.div_ceil(bh) as usize,
     };
     let count = per_band * usize::from(if block.is_some() { 1 } else { bands });
-    let chunk = bw as usize * bh as usize * usize::from(bits) / 8 * if block.is_some() { usize::from(bands) } else { 1 };
-    let data = deflate_zeros(chunk);
     // (tag, type, values): 3 SHORT, 4 LONG, 12 DOUBLE.
     let mut tags: Vec<(u16, u16, Vec<f64>)> = vec![
         (256, 4, vec![f64::from(width)]),
         (257, 4, vec![f64::from(height)]),
         (258, 3, vec![f64::from(bits); usize::from(bands)]),
-        (259, 3, vec![8.0]),
+        (259, 3, vec![f64::from(compression)]),
         (262, 3, vec![1.0]),
         (277, 3, vec![f64::from(bands)]),
         (284, 3, vec![if bands > 1 && block.is_none() { 2.0 } else { 1.0 }]),
@@ -297,7 +312,7 @@ fn declaring_tiff_with(
     ifd.extend(0u32.to_le_bytes());
     let mut file = b"II*\0".to_vec();
     file.extend((ifd_at as u32).to_le_bytes());
-    file.extend(&data);
+    file.extend(data);
     if data.len() & 1 == 1 {
         file.push(0);
     }
@@ -436,6 +451,42 @@ fn whole_reads_the_process_cannot_hold_are_refused_before_their_buffer() {
     let band = r.read_window(terrio::Window::full(w, h), &terrio::WindowOptions { bands: vec![bands], overview: None }).unwrap();
     assert_eq!(band.raster.data.len(), w * h);
     assert!(band.raster.data.to_f64_vec().iter().all(|v| *v == 0.0));
+}
+
+/// A Zstandard strip of 4 KiB whose frame header declares 128 MiB in a window of 128 MiB, the
+/// strip's bytes in a block that does not end the frame: read whole and by rows, and as a LERC
+/// blob wrapped in Zstandard, its decoder reserves the strip's bytes and a block (128 KiB) at
+/// most, not what the header declares. The strip reads to its bytes; the blob, not a LERC one, is
+/// refused.
+#[test]
+fn a_zstandard_header_declaring_more_than_its_strip_reserves_no_more() {
+    let _serial = serial();
+    let (w, h) = (64usize, 64usize);
+    let values: Vec<u8> = (0..w * h).map(|i| (i * 7 % 251) as u8).collect();
+    let mut frame = vec![0x28, 0xb5, 0x2f, 0xfd, 0xc0, 0x88];
+    frame.extend((128u64 << 20).to_le_bytes());
+    frame.extend(&((values.len() as u32) << 3).to_le_bytes()[..3]);
+    frame.extend(&values);
+    let strip = tiff_holding(w as u32, h as u32, 1, 8, 1, None, &[], (50000, &frame));
+    let lerc = tiff_holding(w as u32, h as u32, 1, 8, 1, None, &[(50674, 4, vec![4.0, 2.0])], (34887, &frame));
+    // Read by rows: a quarter of the strip, under a chunk limit of that size.
+    let quarter = (terrio::TiffReadLimits { chunk_bytes: w * h / 4 }, terrio::Window::new(0, 0, w, h / 4));
+    let whole = (terrio::TiffReadLimits::unlimited(), terrio::Window::full(w, h));
+    for (how, file, (limits, window)) in [("whole", &strip, whole), ("by rows", &strip, quarter), ("LERC", &lerc, whole)] {
+        // Opened first: a first open allocates more, once.
+        let mut r = terrio::LazyRaster::from_tiff_bytes_with_limits(file.clone(), limits).unwrap().unwrap();
+        let options = terrio::WindowOptions { bands: vec![1], overview: None };
+        let (result, largest) = largest_during(|| r.read_window(window, &options).map(|ds| ds.raster.data.to_f64_vec()));
+        assert!(largest < 256 << 10, "{how}: {largest} bytes asked for at once");
+        match how {
+            "LERC" => assert!(result.is_err(), "{how}"),
+            _ => assert_eq!(
+                result.unwrap(),
+                values[..window.width * window.height].iter().map(|v| f64::from(*v)).collect::<Vec<_>>(),
+                "{how}"
+            ),
+        }
+    }
 }
 
 // ─── Every driver ───────────────────────────────────────────────────────────────────────────────
