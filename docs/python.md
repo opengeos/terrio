@@ -715,7 +715,8 @@ Their keyword options follow the CLI, including compression, partial refresh,
 clipping geometry and overview updates. Local writable little-endian GeoTIFFs
 are required for in-place changes; external overview updates can fail after the
 base update commits. External overviews (`external=True`) write only the `.ovr`
-sidecar, so the GeoTIFF may be read-only, as with `gdaladdo -ro`. They read that
+sidecar (and, for a `.msk` sidecar mask, the mask's overviews in its `.msk.ovr`, as
+GDAL does), so the GeoTIFF may be read-only, as with `gdaladdo -ro`. They read that
 `.ovr` under `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` too; the `.msk`, `.aux.xml`
 and `.ovr.msk` beside the GeoTIFF still follow the option. Overviews are
 managed for GeoTIFFs only.
@@ -725,7 +726,8 @@ overviews are computed, with a fraction from 0 to 1 that never decreases (1 once
 every overview is computed, before they are written). A falsy return value other
 than `None` cancels, as with GDAL's Python callbacks, raising
 `terrio.errors.CancelledError`; an exception the callback raises cancels too and
-propagates. A cancellation changes no file: an existing `.ovr` stays as it was.
+propagates. A cancellation changes no file: an existing `.ovr` (and `.msk.ovr`)
+stays as it was.
 
 ```python
 def report(fraction):
