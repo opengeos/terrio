@@ -2292,7 +2292,10 @@ impl RasterWriteOptions {
             return None;
         }
         let predictor = co("PREDICTOR").unwrap_or("1").trim().to_ascii_uppercase();
-        (matches!(compression.as_str(), "" | "NONE" | "PACKBITS") || matches!(predictor.as_str(), "1" | "NO" | "NONE")).then_some(first)
+        // A COG also reads FALSE and OFF as no predictor, as GDAL's COG driver does.
+        let no_predictor = matches!(predictor.as_str(), "1" | "NO" | "NONE")
+            || (driver == RasterDriver::Cog && matches!(predictor.as_str(), "FALSE" | "OFF"));
+        (matches!(compression.as_str(), "" | "NONE" | "PACKBITS") || no_predictor).then_some(first)
     }
 
     /// Metadata inheritance shared by whole-image and row-streamed TIFF writers.

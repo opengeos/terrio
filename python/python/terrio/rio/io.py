@@ -2949,8 +2949,29 @@ class DatasetWriter(DatasetReader):
             ns = {"INTERLEAVE": s.interleave}
             if s.compression:
                 ns["COMPRESSION"] = s.compression
-                if o.get("PREDICTOR", "1") not in ("1", "NO", "NONE"):
-                    ns["PREDICTOR"] = {"YES": "2"}.get(o["PREDICTOR"].upper(), o["PREDICTOR"])
+                cog = self._out_driver.upper() == "COG"
+                predictor = o.get("PREDICTOR", "1").upper()
+                # As the writer: only LZW, DEFLATE and ZSTD take a predictor, and complex
+                # samples none, so the others are written (and reported) without one.
+                takes_predictor = (
+                    s.compression in ("LZW", "DEFLATE", "ZSTD")
+                    and np.dtype(self._dtype).kind != "c"
+                )
+                if (
+                    takes_predictor
+                    and predictor not in ("1", "NO", "NONE")
+                    and not (cog and predictor in ("FALSE", "OFF"))
+                ):
+                    if cog and predictor in ("YES", "ON", "TRUE"):
+                        # GDAL's COG driver: 3 for floating-point data, 2 otherwise.
+                        predictor = "3" if np.dtype(self._dtype).kind == "f" else "2"
+                    elif cog:
+                        predictor = {"STANDARD": "2", "FLOATING_POINT": "3"}.get(
+                            predictor, predictor
+                        )
+                    else:
+                        predictor = {"YES": "2"}.get(predictor, predictor)
+                    ns["PREDICTOR"] = predictor
             s.namespaces["IMAGE_STRUCTURE"] = ns
             s.tags = {"AREA_OR_POINT": "Area"}
         return s
