@@ -486,7 +486,8 @@ fn open_source(path: &str, allow_ehdr: bool) -> Result<LazyRaster> {
     if r.is_lazy() && (r.driver() == RasterDriver::GTiff || (allow_ehdr && r.driver() == RasterDriver::EHdr)) {
         return Ok(r);
     }
-    Err(Error::Unsupported(format!("overview management for '{path}' requires a GeoTIFF or external overview creation on EHdr")))
+    let required = if allow_ehdr { "a GeoTIFF or external overview creation on EHdr" } else { "a GeoTIFF" };
+    Err(Error::Unsupported(format!("overview management for '{path}' requires {required}")))
 }
 
 /// TIFF tags for new overview images of an EHdr raster.

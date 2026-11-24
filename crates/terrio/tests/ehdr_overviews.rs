@@ -28,7 +28,7 @@ fn grid(dir: &Path, name: &str, data_type: DataType, nodata: Option<f64>) -> Pat
     for y in 0..SIZE.1 {
         for x in 0..SIZE.0 {
             // An all-nodata first cell and mixed-validity neighbors at factor 2.
-            let valid = !(x < 2 && y < 2 || x == 3 && y == 0);
+            let valid = !((x < 2 && y < 2) || (x == 3 && y == 0));
             let value = (y * SIZE.0 + x) as f64;
             let value = if valid { value } else { nodata.unwrap_or(value) };
             match data_type {
@@ -45,6 +45,25 @@ fn grid(dir: &Path, name: &str, data_type: DataType, nodata: Option<f64>) -> Pat
 
 fn options() -> OverviewOptions {
     OverviewOptions { levels: vec![2, 4], external: true, resampling: Resampling::Average, ..Default::default() }
+}
+
+/// GDAL 3.12.1 lists the overview's PAM sidecar with either base driver.
+#[test]
+fn overview_pam_is_listed_for_tiff_and_ehdr() {
+    let dir = tempfile::tempdir().unwrap();
+    let ehdr = grid(dir.path(), "grid", DataType::F32, None);
+    let source =
+        LazyRaster::open(ehdr.to_str().unwrap()).unwrap().read_window(Window::full(SIZE.0, SIZE.1), &WindowOptions::default()).unwrap();
+    let tiff = dir.path().join("grid.tif");
+    terrio::write_raster_dataset(&source, tiff.to_str().unwrap(), &Default::default()).unwrap();
+    for path in [&ehdr, &tiff] {
+        let name = path.to_str().unwrap();
+        add_overviews(name, &options()).unwrap();
+        let pam = format!("{name}.ovr.aux.xml");
+        std::fs::write(&pam, "<PAMDataset><SRS>EPSG:4326</SRS></PAMDataset>").unwrap();
+        let raster = LazyRaster::open(name).unwrap();
+        assert!(raster.file_list().unwrap().contains(&pam));
+    }
 }
 
 #[test]
