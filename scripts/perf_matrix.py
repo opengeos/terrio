@@ -30,6 +30,8 @@ docs/benchmarks.md describes the method.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import errno
 import itertools
 import json
 import math
@@ -39,6 +41,7 @@ import statistics
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -83,17 +86,43 @@ def checksum(a) -> tuple[float, int]:
     return float(a.sum(dtype="float64")), int(a.size)
 
 
-def publish(path: Path, write) -> None:
-    """Write a fixture under a temporary name and rename it when complete: an interrupted run
-    leaves no partial fixture for the next run to reuse."""
-    import shutil
+@contextlib.contextmanager
+def staged_fixture(path: Path):
+    """Stage one fixture independently and preserve an already completed publisher.
 
-    tmp = path.with_name(path.stem + ".part" + path.suffix)
-    if tmp.is_dir():
-        shutil.rmtree(tmp)
-    tmp.unlink(missing_ok=True)
-    write(tmp)
-    tmp.rename(path)
+    Args:
+        path: Final fixture path.
+
+    Yields:
+        Path: Unique staging path with the final format suffix.
+    """
+    with tempfile.TemporaryDirectory(prefix=f".{path.stem}-", dir=path.parent) as directory:
+        staged = Path(directory) / path.name
+        yield staged
+        if staged.is_dir():
+            try:
+                staged.rename(path)
+            except OSError as exc:
+                if exc.errno not in (errno.EEXIST, errno.ENOTEMPTY) or not path.is_dir():
+                    raise
+        else:
+            try:
+                os.link(staged, path)
+            except FileExistsError:
+                pass
+
+
+def publish(path: Path, write) -> None:
+    """Publish a completed fixture without sharing another writer's staging files.
+
+    Args:
+        path: Final fixture path.
+        write: Callable writing a fixture to its staging path.
+    """
+    if path.exists():
+        return
+    with staged_fixture(path) as staged:
+        write(staged)
 
 
 # =============================================================================================
@@ -143,7 +172,7 @@ class GeoTiff:
         gdal.UseExceptions()
         warm = gdal.GetDriverByName("MEM").Create("", 256, 256, 1)
         warm.SetGeoTransform((0, 1, 0, 0, 0, -1))
-        gdal.Translate(str(out / "_warmup.tif"), warm, format="GTiff", creationOptions=["COMPRESS=DEFLATE", "TILED=YES"])
+        publish(out / "_warmup.tif", lambda tmp: gdal.Translate(str(tmp), warm, format="GTiff", creationOptions=["COMPRESS=DEFLATE", "TILED=YES"]))
         types = {"uint8": "Byte", "uint16": "UInt16", "int16": "Int16", "float32": "Float32", "float64": "Float64"}
         for name, (dtype, bands, size, compress, pred, layout, interleave, block) in GeoTiff.FIXTURES.items():
             path = out / f"{name}.tif"
@@ -299,8 +328,16 @@ class Zarr:
         import numpy as np
         import zarr
 
-        w = zarr.create_array(str(out / "_warmup.zarr"), shape=(256, 256), chunks=(256, 256), dtype="uint8", zarr_format=3, overwrite=True)
-        w[:] = 1
+        def warmup(path):
+            """Write the tiny initialization fixture.
+
+            Args:
+                path: Isolated staging directory.
+            """
+            w = zarr.create_array(str(path), shape=(256, 256), chunks=(256, 256), dtype="uint8", zarr_format=3, overwrite=True)
+            w[:] = 1
+
+        publish(out / "_warmup.zarr", warmup)
         for name, (fmt, dtype, bands, size, chunk, shard, comp) in Zarr.FIXTURES.items():
             path = out / f"{name}.zarr"
             if path.exists():
@@ -456,44 +493,45 @@ class GeoParquet:
             sources[geom] = src
             if src.exists():
                 continue
-            staged = src.with_name(src.stem + ".part" + src.suffix)
-            staged.unlink(missing_ok=True)
-            rng = np.random.default_rng(2)
-            # Clustered, like fields or buildings: centres drawn around 200 towns.
-            towns = rng.uniform((x0, y0), (x1, y1), (200, 2))
-            c = towns[rng.integers(0, 200, n)] + rng.normal(0, 2500, (n, 2))
-            c = np.clip(c, (x0, y0), (x1, y1))
-            ds = ogr.GetDriverByName("FlatGeobuf").CreateDataSource(str(staged))
-            kind = {"polygon": ogr.wkbPolygon, "point": ogr.wkbPoint, "line": ogr.wkbLineString}[geom]
-            lyr = ds.CreateLayer("data", srs, kind, ["SPATIAL_INDEX=NO"])
-            for fname, ftype in (("id", ogr.OFTInteger64), ("value", ogr.OFTReal), ("class", ogr.OFTString), ("year", ogr.OFTInteger)):
-                lyr.CreateField(ogr.FieldDefn(fname, ftype))
-            defn = lyr.GetLayerDefn()
-            classes = ["cropland", "grassland", "forest", "urban", "water", "wetland", "bare"]
-            values, years, cls = rng.gamma(2, 50, n), rng.integers(2000, 2026, n), rng.integers(0, 7, n)
-            nv = rng.integers(5, 24, n)
-            radius = rng.uniform(10, 80, n)
-            lyr.StartTransaction()
-            for i in range(n):
-                f = ogr.Feature(defn)
-                f["id"], f["value"], f["class"], f["year"] = i, float(values[i]), classes[cls[i]], int(years[i])
-                cx, cy = c[i]
-                if geom == "point":
-                    g = ogr.CreateGeometryFromWkt(f"POINT ({cx:.2f} {cy:.2f})")
-                else:
-                    a = np.sort(rng.uniform(0, 2 * np.pi, nv[i]))
-                    r = radius[i] * rng.uniform(0.6, 1.0, nv[i])
-                    xs, ys = cx + r * np.cos(a), cy + r * np.sin(a)
-                    pts = ", ".join(f"{x:.2f} {y:.2f}" for x, y in zip(xs, ys, strict=True))
-                    if geom == "polygon":
-                        g = ogr.CreateGeometryFromWkt(f"POLYGON (({pts}, {xs[0]:.2f} {ys[0]:.2f}))")
-                    else:
-                        g = ogr.CreateGeometryFromWkt(f"LINESTRING ({pts})")
-                f.SetGeometry(g)
-                lyr.CreateFeature(f)
-            lyr.CommitTransaction()
-            ds = None
-            staged.rename(src)
+            with staged_fixture(src) as staged:
+                rng = np.random.default_rng(2)
+                # Clustered, like fields or buildings: centres drawn around 200 towns.
+                towns = rng.uniform((x0, y0), (x1, y1), (200, 2))
+                c = towns[rng.integers(0, 200, n)] + rng.normal(0, 2500, (n, 2))
+                c = np.clip(c, (x0, y0), (x1, y1))
+                ds = ogr.GetDriverByName("FlatGeobuf").CreateDataSource(str(staged))
+                try:
+                    kind = {"polygon": ogr.wkbPolygon, "point": ogr.wkbPoint, "line": ogr.wkbLineString}[geom]
+                    lyr = ds.CreateLayer("data", srs, kind, ["SPATIAL_INDEX=NO"])
+                    for fname, ftype in (("id", ogr.OFTInteger64), ("value", ogr.OFTReal), ("class", ogr.OFTString), ("year", ogr.OFTInteger)):
+                        lyr.CreateField(ogr.FieldDefn(fname, ftype))
+                    defn = lyr.GetLayerDefn()
+                    classes = ["cropland", "grassland", "forest", "urban", "water", "wetland", "bare"]
+                    values, years, cls = rng.gamma(2, 50, n), rng.integers(2000, 2026, n), rng.integers(0, 7, n)
+                    nv = rng.integers(5, 24, n)
+                    radius = rng.uniform(10, 80, n)
+                    lyr.StartTransaction()
+                    for i in range(n):
+                        f = ogr.Feature(defn)
+                        f["id"], f["value"], f["class"], f["year"] = i, float(values[i]), classes[cls[i]], int(years[i])
+                        cx, cy = c[i]
+                        if geom == "point":
+                            g = ogr.CreateGeometryFromWkt(f"POINT ({cx:.2f} {cy:.2f})")
+                        else:
+                            a = np.sort(rng.uniform(0, 2 * np.pi, nv[i]))
+                            r = radius[i] * rng.uniform(0.6, 1.0, nv[i])
+                            xs, ys = cx + r * np.cos(a), cy + r * np.sin(a)
+                            pts = ", ".join(f"{x:.2f} {y:.2f}" for x, y in zip(xs, ys, strict=True))
+                            if geom == "polygon":
+                                g = ogr.CreateGeometryFromWkt(f"POLYGON (({pts}, {xs[0]:.2f} {ys[0]:.2f}))")
+                            else:
+                                g = ogr.CreateGeometryFromWkt(f"LINESTRING ({pts})")
+                        f.SetGeometry(g)
+                        lyr.CreateFeature(f)
+                    lyr.CommitTransaction()
+                finally:
+                    lyr = None
+                    ds = None
         for name, (geom, rows, rg, comp, enc, cover, sort) in GeoParquet.FIXTURES.items():
             path = out / f"{name}.parquet"
             if path.exists():
@@ -501,7 +539,7 @@ class GeoParquet:
             lco = [f"ROW_GROUP_SIZE={rg}", f"COMPRESSION={comp}", f"GEOMETRY_ENCODING={enc}", f"WRITE_COVERING_BBOX={'YES' if cover else 'NO'}", f"SORT_BY_BBOX={'YES' if sort else 'NO'}"]
             publish(path, lambda tmp: gdal.VectorTranslate(str(tmp), str(sources[geom]), format="Parquet", layerCreationOptions=lco, limit=rows))
             print(f"{path.name}: {path.stat().st_size >> 20} MB", flush=True)
-        gdal.VectorTranslate(str(out / "_warmup.parquet"), str(sources["point"]), format="Parquet", limit=100)
+        publish(out / "_warmup.parquet", lambda tmp: gdal.VectorTranslate(str(tmp), str(sources["point"]), format="Parquet", limit=100))
 
     @staticmethod
     def bboxes(n: int) -> list[tuple[float, float, float, float]]:
@@ -711,10 +749,10 @@ def worker(spec: dict) -> dict:
     local = src.startswith("/")
     # `base` is another terrio build, found first on PYTHONPATH
     tool = "terrio" if spec["tool"] == "base" else spec["tool"]
+    ti = time.perf_counter()
     open_, items, check, (warm_open, warm_read) = fmt.reader(tool, access, spec["meta"])
     # A process's first open and read pays one-time costs (library initialization, thread pools):
     # measured on a tiny file apart from the case, as `init`.
-    ti = time.perf_counter()
     warm_read(warm_open(src.rsplit("/", 1)[0] + "/_warmup" + fmt.EXT))
     r0 = _rchar(local)
     t0 = time.perf_counter()
@@ -789,100 +827,106 @@ def machine() -> dict:
 
 
 def run(args: argparse.Namespace) -> None:
-    fmt = FORMATS[args.format]
-    data = args.dir
-    _Handler.latency = args.latency_ms / 1000
-    server = ThreadingHTTPServer(("127.0.0.1", 0), lambda *a, **k: _Handler(*a, directory=str(data), **k))
-    server.daemon_threads = True
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    base = f"http://127.0.0.1:{server.server_address[1]}/"
+    with contextlib.ExitStack() as cleanup:
+        fmt = FORMATS[args.format]
+        data = args.dir
+        _Handler.latency = args.latency_ms / 1000
+        server = ThreadingHTTPServer(("127.0.0.1", 0), lambda *a, **k: _Handler(*a, directory=str(data), **k))
+        server.daemon_threads = True
+        cleanup.callback(server.server_close)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        cleanup.callback(server.shutdown)
+        base = f"http://127.0.0.1:{server.server_address[1]}/"
 
-    env = dict(os.environ)
-    env.update(
-        RAYON_NUM_THREADS=str(args.threads),
-        GDAL_NUM_THREADS=str(args.threads),
-        GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
-        GDAL_HTTP_MERGE_CONSECUTIVE_RANGES="YES",
-        GDAL_CACHEMAX="512",
-    )
-    names = [f for f in fmt.FIXTURES if not args.only or any(o in f for o in args.only)]
-    samples = 1 if args.quick else args.samples
-    results = args.out or data / f"results-{time.strftime('%Y%m%d-%H%M%S')}.jsonl"
-    sources = args.source or ["local", "http"]
-    if "local" in sources and not PROC_IO.exists():
-        sys.exit(f"local byte counts need {PROC_IO} (Linux): use --source http")
-    head = machine()
-    tools = ["terrio", "gdal"]
-    envs = {"terrio": env, "gdal": env}
-    if args.base:
-        base_dir = args.base.expanduser().resolve()
-        envs["base"] = {**env, "PYTHONPATH": os.pathsep.join(filter(None, [str(base_dir), env.get("PYTHONPATH")]))}
-        tools.append("base")
-        version = subprocess.run([sys.executable, "-c", "import json, terrio; print(json.dumps([terrio.__file__, terrio.__version__]))"], env=envs["base"], capture_output=True, text=True, check=True)
-        module_file, module_version = json.loads(version.stdout)
-        if not Path(module_file).resolve().is_relative_to(base_dir):
-            sys.exit(f"--base {base_dir}: terrio is imported from {version.stdout.strip()}, not from it")
-        head["machine"]["base"] = f"{module_file} {module_version}"
-    if head["machine"]["on_ac"] is False and not args.allow_battery:
-        sys.exit("on battery, timings are slower and vary: plug in, or pass --allow-battery")
-    try:
-        out_file = open(results, "x")  # one run per file: report sums every row of a file
-    except FileExistsError:
-        sys.exit(f"{results} exists: choose another --out")
-    out_file.write(json.dumps(head) + "\n")
-    rows = []
-    for name, access, source in itertools.product(names, args.access or fmt.ACCESS, sources):
-        path = data / f"{name}{fmt.EXT}"
-        label = "where/sql-vs-filter" if args.format == "geoparquet" and access == "where" else access
+        env = dict(os.environ)
+        env.update(
+            RAYON_NUM_THREADS=str(args.threads),
+            GDAL_NUM_THREADS=str(args.threads),
+            GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
+            GDAL_HTTP_MERGE_CONSECUTIVE_RANGES="YES",
+            GDAL_CACHEMAX="512",
+        )
+        names = [f for f in fmt.FIXTURES if not args.only or any(o in f for o in args.only)]
+        if not names:
+            sys.exit("no fixtures match --only")
+        samples = 1 if args.quick else args.samples
+        results = args.out or data / f"results-{time.strftime('%Y%m%d-%H%M%S')}.jsonl"
+        sources = args.source or ["local", "http"]
+        if "local" in sources and not PROC_IO.exists():
+            sys.exit(f"local byte counts need {PROC_IO} (Linux): use --source http")
+        head = machine()
+        tools = ["terrio", "gdal"]
+        envs = {"terrio": env, "gdal": env}
+        if args.base:
+            base_dir = args.base.expanduser().resolve()
+            envs["base"] = {**env, "PYTHONPATH": os.pathsep.join(filter(None, [str(base_dir), env.get("PYTHONPATH")]))}
+            tools.append("base")
+            version = subprocess.run([sys.executable, "-c", "import json, terrio; print(json.dumps([terrio.__file__, terrio.__version__]))"], env=envs["base"], capture_output=True, text=True, check=True)
+            module_file, module_version = json.loads(version.stdout)
+            if not Path(module_file).resolve().is_relative_to(base_dir):
+                sys.exit(f"--base {base_dir}: terrio is imported from {version.stdout.strip()}, not from it")
+            head["machine"]["base"] = f"{module_file} {module_version}"
+        if head["machine"]["on_ac"] is False and not args.allow_battery:
+            sys.exit("on battery, timings are slower and vary: plug in, or pass --allow-battery")
         try:
-            meta = fmt.meta(path, access)
-        except Exception as exc:
-            row = {"format": args.format, "fixture": name, "access": label, "source": source,
-                   "meta_error": f"{type(exc).__name__}: {exc}", **fmt.axes(name)}
-            rows.append(row)
-            print(fmt_row(row), flush=True)
-            out_file.write(json.dumps(row) + "\n")
-            out_file.flush()
-            continue
-        if meta is None:
-            continue
-        src = str(path) if source == "local" else base + path.name
-        row = {"format": args.format, "fixture": name, "access": label, "source": source, "need_bytes": meta["need_bytes"], **fmt.axes(name)}
-        for k in range(samples):
-            for tool in tools[k % len(tools) :] + tools[: k % len(tools)]:  # each tool first in turn
-                if f"{tool}_error" in row:  # failed or timed out once: not again
-                    continue
-                try:
-                    _settled_log()  # a killed worker's requests end before the log is cleared
-                    with _lock:
-                        _log.clear()
-                    spec = {"format": args.format, "tool": tool, "src": src, "access": access, "meta": meta}
-                    cmd = [sys.executable, __file__, "_worker", json.dumps(spec)]
-                    p = subprocess.run(cmd, env=envs[tool], capture_output=True, text=True, timeout=args.timeout)
-                    if p.returncode:
-                        err = p.stderr.strip().splitlines()
-                        row[f"{tool}_error"] = err[-1][:300] if err else f"exit {p.returncode}"
+            out_file = open(results, "x")  # one run per file: report sums every row of a file
+        except FileExistsError:
+            sys.exit(f"{results} exists: choose another --out")
+        cleanup.callback(out_file.close)
+        out_file.write(json.dumps(head) + "\n")
+        rows = []
+        for case_index, (name, access, source) in enumerate(itertools.product(names, args.access or fmt.ACCESS, sources)):
+            path = data / f"{name}{fmt.EXT}"
+            label = "where/sql-vs-filter" if args.format == "geoparquet" and access == "where" else access
+            try:
+                meta = fmt.meta(path, access)
+            except Exception as exc:
+                row = {"format": args.format, "fixture": name, "access": label, "source": source,
+                       "meta_error": f"{type(exc).__name__}: {exc}", **fmt.axes(name)}
+                rows.append(row)
+                print(fmt_row(row), flush=True)
+                out_file.write(json.dumps(row) + "\n")
+                out_file.flush()
+                continue
+            if meta is None:
+                continue
+            src = str(path) if source == "local" else base + path.name
+            row = {"format": args.format, "fixture": name, "access": label, "source": source, "need_bytes": meta["need_bytes"], **fmt.axes(name)}
+            for k in range(samples):
+                start = (case_index + k) % len(tools)
+                for tool in tools[start:] + tools[:start]:  # rotate even in one-sample runs
+                    if f"{tool}_error" in row:  # failed or timed out once: not again
                         continue
-                    r = json.loads(p.stdout.strip().splitlines()[-1])
-                    # this case's requests, not the warm-up's
-                    log = [x for x in _settled_log() if x[3].split("?")[0].startswith("/" + path.name)]
-                    if source == "http":
-                        r["requests"], r["rounds"] = len(log), rounds(log)
-                        r["read_bytes"], r["open_bytes"] = sum(x[2] for x in log), 0  # transferred, open included
-                except subprocess.TimeoutExpired:
-                    row[f"{tool}_error"] = f"timeout: over {args.timeout:.0f} s"
-                    continue
-                except (TimeoutError, ValueError, IndexError) as exc:
-                    row[f"{tool}_error"] = f"{type(exc).__name__}: {exc}"
-                    continue
-                row.setdefault(tool, []).append(r)
-        rows.append(summarize(row))
-        print(fmt_row(rows[-1]), flush=True)
-        out_file.write(json.dumps(rows[-1]) + "\n")
-        out_file.flush()
-    out_file.close()
-    print(f"\n{results}")
-    print(report([head, *rows]))
+                    try:
+                        _settled_log()  # a killed worker's requests end before the log is cleared
+                        with _lock:
+                            _log.clear()
+                        spec = {"format": args.format, "tool": tool, "src": src, "access": access, "meta": meta}
+                        cmd = [sys.executable, __file__, "_worker", json.dumps(spec)]
+                        p = subprocess.run(cmd, env=envs[tool], capture_output=True, text=True, timeout=args.timeout)
+                        if p.returncode:
+                            err = p.stderr.strip().splitlines()
+                            row[f"{tool}_error"] = err[-1][:300] if err else f"exit {p.returncode}"
+                            continue
+                        r = json.loads(p.stdout.strip().splitlines()[-1])
+                        # this case's requests, not the warm-up's
+                        log = [x for x in _settled_log() if x[3].split("?")[0].startswith("/" + path.name)]
+                        if source == "http":
+                            r["requests"], r["rounds"] = len(log), rounds(log)
+                            r["read_bytes"], r["open_bytes"] = sum(x[2] for x in log), 0  # transferred, open included
+                    except subprocess.TimeoutExpired:
+                        row[f"{tool}_error"] = f"timeout: over {args.timeout:.0f} s"
+                        continue
+                    except (TimeoutError, ValueError, IndexError) as exc:
+                        row[f"{tool}_error"] = f"{type(exc).__name__}: {exc}"
+                        continue
+                    row.setdefault(tool, []).append(r)
+            rows.append(summarize(row))
+            print(fmt_row(rows[-1]), flush=True)
+            out_file.write(json.dumps(rows[-1]) + "\n")
+            out_file.flush()
+        print(f"\n{results}")
+        print(report([head, *rows]))
 
 
 def summarize(row: dict) -> dict:
@@ -900,6 +944,12 @@ def summarize(row: dict) -> dict:
         out[tool]["total_s"] = statistics.median(r["open_s"] + r["read_s"] for r in rs)
         out[f"{tool}_sum"], out[f"{tool}_n"] = rs[0]["sum"], rs[0]["n"]
     base_ok = "base" in out and "base_error" not in row
+    if base_ok and "gdal" in out and "gdal_error" not in row:
+        ref = row["gdal"][0]
+        out["base_values_match"] = all(
+            r["n"] == ref["n"] and math.isclose(r["sum"], ref["sum"], rel_tol=1e-6)
+            for tool in ("base", "gdal") for r in row[tool]
+        )
     if "terrio" in out and "gdal" in out and not [e for e in _errors(row) if not e.startswith("base ")]:
         out["time_ratio"] = out["terrio"]["total_s"] / out["gdal"]["total_s"]
         ref = row["gdal"][0]
@@ -960,7 +1010,7 @@ def report(rows: list[dict]) -> str:
             lines += ["  " + fmt_row(r) for r in rs[:20]]
     if any("base_error" in r or "base" in r for r in rows):
         fixed = [r for r in ok if "base_error" in r]
-        broken = [r for r in rows if "terrio_error" in r and "base" in r and "base_error" not in r]
+        broken = [r for r in rows if "terrio_error" in r and r.get("base_values_match") is True]
         lines.append(f"the base failed, this build succeeds: {len(fixed)}")
         lines += [f"  {fmt_row(r)} | base {r['base_error']}" for r in fixed]
         lines.append(f"this build fails, the base succeeded: {len(broken)}")

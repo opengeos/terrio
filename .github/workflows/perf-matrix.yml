@@ -9,10 +9,9 @@ name: perf matrix
 #   /perf-matrix geoparquet --only geoarrow        one format; options of `perf_matrix.py run`
 #   /perf-matrix zarr --access window band --quick
 #
-# or from the Actions tab (pull request number and the same arguments). The `run` job builds and
-# runs the pull request's code with a read-only token and saves no cache; the base branch's
-# harness takes the measurements, and its fixtures and build are cached before the pull request's
-# code runs. The `comment` job posts the report as text and runs no checked-out code.
+# or from the Actions tab (pull request number and the same arguments). The trusted `prepare` job caches the base branch's
+# fixtures and build. The `run` job executes pull request code with read-only repository and
+# cache tokens; the base branch's harness takes the measurements. The `comment` job posts the report as text and runs no checked-out code.
 # A pull request's build scripts run with the job, and could change what it measures: run it on
 # pull requests whose code you would build yourself.
 
@@ -33,7 +32,7 @@ on:
 permissions: {}
 
 jobs:
-  run:
+  prepare:
     if: >
       github.event_name == 'workflow_dispatch' ||
       (github.event.issue.pull_request != null &&
@@ -43,8 +42,16 @@ jobs:
          github.event.comment.author_association == 'COLLABORATOR'))
     # Only an authorized benchmark request may cancel an earlier benchmark.
     concurrency:
-      group: perf-matrix-${{ github.event.issue.number || inputs.pr }}
+      group: perf-matrix-prepare-${{ github.event.issue.number || inputs.pr }}
       cancel-in-progress: true
+    cache-mode: write
+    outputs:
+      formats: ${{ steps.req.outputs.formats }}
+      args: ${{ steps.req.outputs.args }}
+      head: ${{ steps.req.outputs.head }}
+      base: ${{ steps.req.outputs.base }}
+      fixture_key: ${{ steps.fixtures.outputs.cache-primary-key }}
+      base_key: ${{ steps.basebuild.outputs.cache-primary-key }}
     runs-on: ubuntu-latest
     timeout-minutes: 340
     permissions:
@@ -86,11 +93,6 @@ jobs:
           ref: ${{ steps.req.outputs.base }}
           path: base
           persist-credentials: false
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ steps.req.outputs.head }}
-          path: pr
-          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: mamba-org/setup-micromamba@v3
         with:
@@ -105,7 +107,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ runner.temp }}/matrix
-          key: perf-matrix-fixtures-${{ hashFiles('base/scripts/perf_matrix.py') }}-${{ steps.req.outputs.formats }}
+          key: perf-matrix-v2-fixtures-${{ hashFiles('base/scripts/perf_matrix.py') }}-${{ steps.req.outputs.formats }}
       - name: Make the fixtures (base branch's harness)
         if: steps.fixtures.outputs.cache-hit != 'true'
         shell: micromamba-shell {0}
@@ -122,7 +124,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ runner.temp }}/terrio-base
-          key: perf-matrix-terrio-${{ steps.req.outputs.base }}
+          key: perf-matrix-v2-terrio-${{ steps.req.outputs.base }}
       - name: Build the base branch's terrio
         if: steps.basebuild.outputs.cache-hit != 'true'
         shell: micromamba-shell {0}
@@ -136,7 +138,57 @@ jobs:
         with:
           path: ${{ runner.temp }}/terrio-base
           key: ${{ steps.basebuild.outputs.cache-primary-key }}
-      # From here on, the pull request's code runs: nothing is saved after this point.
+
+  run:
+    needs: prepare
+    concurrency:
+      group: perf-matrix-run-${{ github.event.issue.number || inputs.pr }}
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    cache-mode: read
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      PR: ${{ github.event.issue.number || inputs.pr }}
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+    steps:
+      - name: Reclaim runner disk
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.base }}
+          path: base
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.head }}
+          path: pr
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-name: perf
+          # The GDAL of the matrix's published runs; pyogrio and PyArrow for GeoParquet, zarr-python
+          # for the Zarr fixtures.
+          create-args: python=3.12 gdal=3.13.3 libgdal-core=3.13.3 libgdal-arrow-parquet pyogrio pyarrow zarr>=3 numpy pip maturin
+          # Not cached: a cache saved after the pull request's code ran could carry its changes.
+          cache-environment: false
+      - name: Restore the prepared fixtures
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/matrix
+          key: ${{ needs.prepare.outputs.fixture_key }}
+          fail-on-cache-miss: true
+      - name: Restore the prepared base build
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/terrio-base
+          key: ${{ needs.prepare.outputs.base_key }}
+          fail-on-cache-miss: true
+      # The job's cache token cannot save caches, including from pull request code.
       - name: Build the pull request's terrio
         shell: micromamba-shell {0}
         env:
@@ -147,8 +199,8 @@ jobs:
       - name: Run the matrix
         shell: micromamba-shell {0}
         env:
-          FORMATS: ${{ steps.req.outputs.formats }}
-          ARGS: ${{ steps.req.outputs.args }}
+          FORMATS: ${{ needs.prepare.outputs.formats }}
+          ARGS: ${{ needs.prepare.outputs.args }}
         run: |
           mkdir -p out
           read -ra args <<< "$ARGS"
@@ -160,10 +212,10 @@ jobs:
         if: always()
         shell: micromamba-shell {0}
         env:
-          HEAD_SHA: ${{ steps.req.outputs.head }}
-          BASE_SHA: ${{ steps.req.outputs.base }}
-          FORMATS: ${{ steps.req.outputs.formats }}
-          ARGS: ${{ steps.req.outputs.args }}
+          HEAD_SHA: ${{ needs.prepare.outputs.head }}
+          BASE_SHA: ${{ needs.prepare.outputs.base }}
+          FORMATS: ${{ needs.prepare.outputs.formats }}
+          ARGS: ${{ needs.prepare.outputs.args }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           mkdir -p out
@@ -174,7 +226,9 @@ jobs:
             echo "\`$FORMATS ${ARGS}\` on a GitHub runner, GDAL 3.13.3 ([run]($RUN_URL)). base: this build's time / the base branch's (<1 faster); x: its time / GDAL's."
             echo
             echo '```text'
-            if ls out/*.jsonl > /dev/null 2>&1; then python base/scripts/perf_matrix.py report out/*.jsonl; else echo "The run failed before any result: see the run's log."; fi
+            files=()
+            for f in $FORMATS; do [ ! -f "out/$f.jsonl" ] || files+=("out/$f.jsonl"); done
+            if [ ${#files[@]} -gt 0 ]; then python base/scripts/perf_matrix.py report "${files[@]}"; else echo "The run failed before any result: see the run's log."; fi
             echo '```'
           } > out/perf.md
           cat out/perf.md >> "$GITHUB_STEP_SUMMARY"
@@ -185,8 +239,9 @@ jobs:
           path: out
 
   comment:
-    needs: run
-    if: always() && needs.run.result != 'skipped'
+    cache-mode: none
+    needs: [prepare, run]
+    if: always() && needs.prepare.result != 'skipped' && needs.prepare.result != 'cancelled' && needs.run.result != 'cancelled'
     runs-on: ubuntu-latest
     permissions:
       actions: read

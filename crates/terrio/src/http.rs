@@ -5520,16 +5520,18 @@ mod tests {
         let _serial = stats_test_guard();
         let data = test_data();
         let (base, seen) = serve_recording(data.clone(), None);
+        // Counters outlive test servers, and the OS may reuse a previous server's port.
+        let host = host_of(&base).to_string();
+        let before = fetch_stats_by_host().into_iter().find(|(h, _)| *h == host).map(|(_, s)| s).unwrap_or_default();
         let opts = HttpOptions { ingested_bytes_at_open: Some(10_000), ..options() };
         let mut r = RangeReader::open_with(&Remote::Url(format!("{base}/data")), opts).unwrap();
         // 10,000 bytes rounded up to whole 4096-byte blocks, in one request.
         assert_eq!(header_values(&seen, "range"), vec!["bytes=0-12287".to_string()]);
         assert_eq!(read_range(&mut r, 12_000, 200), data[12_000..12_200], "the ingested blocks are cached");
         assert_eq!(seen.lock().unwrap().len(), 1);
-        let host = host_of(&base).to_string();
         let stats = fetch_stats_by_host().into_iter().find(|(h, _)| *h == host).map(|(_, s)| s).unwrap();
-        assert_eq!(stats.requests, 1);
-        assert_eq!(stats.bytes, 12_288);
+        assert_eq!(stats.requests - before.requests, 1);
+        assert_eq!(stats.bytes - before.bytes, 12_288);
     }
 
     /// A panic elsewhere while the statistics were locked poisons their locks: counting per host

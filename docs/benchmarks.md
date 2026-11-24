@@ -332,9 +332,8 @@ simulated round-trip time, `--samples` the samples per tool, and `--quick` takes
 takes longer than `--timeout` seconds (120) is reported as a timeout and not repeated. `run`
 refuses to start on battery power (`--allow-battery` to override) and writes each run to a new
 file whose first line describes the machine: CPU, CPUs and CPU quota, memory, OS, power, load
-and library versions. The time ratios hold on any machine, but absolute times are only that
-machine's: compare two terrio builds in the same session, and `report` warns when a file's runs
-come from different machines.
+and library versions. Both ratios and absolute times depend on the machine: compare builds in
+the same session. `report` warns when combined result files record different machines.
 
 `--base DIR` times a second terrio build in the same run, each case alternating this build, the
 base and GDAL: the report then lists the cases 10% or more slower or faster than the base. Install
