@@ -71,9 +71,25 @@ def terrain(np, size: int, bands: int, dtype: str):
     return out
 
 
-def checksum(np, a) -> tuple[float, int]:
-    a = np.asarray(a, dtype="float64")
-    return float(a.sum()), int(a.size)
+def checksum(a) -> tuple[float, int]:
+    """(sum, count) of a read's values, summed in float64 without a float64 copy of the array."""
+    import numpy as np
+
+    a = np.asarray(a)
+    return float(a.sum(dtype="float64")), int(a.size)
+
+
+def publish(path: Path, write) -> None:
+    """Write a fixture under a temporary name and rename it when complete: an interrupted run
+    leaves no partial fixture for the next run to reuse."""
+    import shutil
+
+    tmp = path.with_name(path.name + ".part")
+    if tmp.is_dir():
+        shutil.rmtree(tmp)
+    tmp.unlink(missing_ok=True)
+    write(tmp)
+    tmp.rename(path)
 
 
 # =============================================================================================
@@ -137,9 +153,8 @@ class GeoTiff:
             opts = [f"COMPRESS={compress}", f"INTERLEAVE={interleave}"] + ([f"PREDICTOR={pred}"] if pred > 1 else [])
             if layout == "cog":
                 opts += [f"BLOCKSIZE={block}", "OVERVIEW_RESAMPLING=AVERAGE"]
-                gdal.Translate(str(path), mem, format="COG", creationOptions=opts)
-            else:
-                gdal.Translate(str(path), mem, format="GTiff", creationOptions=opts)
+            driver = "COG" if layout == "cog" else "GTiff"
+            publish(path, lambda tmp: gdal.Translate(str(tmp), mem, format=driver, creationOptions=opts))
             print(f"{path.name}: {path.stat().st_size >> 20} MB", flush=True)
 
     @staticmethod
@@ -173,9 +188,8 @@ class GeoTiff:
 
     @staticmethod
     def reader(tool: str, access: str, meta: dict):
-        """(open(path), items): each item reads one part of an open dataset."""
-        import numpy as np
-
+        """(open(path), items, check, warm): each item reads one part of an open dataset; check
+        turns an item's result into (sum, count) after the timed read."""
         size = meta["size"]
         if tool == "terrio":
             import terrio.rio as rio
@@ -211,11 +225,11 @@ class GeoTiff:
 
         n = {"window": 1, "windows16": 16, "threads4": 16}.get(access)
         if n:
-            items = [lambda ds, w=w: checksum(np, win(ds, w)) for w in windows(size, n)]
+            items = [lambda ds, w=w: win(ds, w) for w in windows(size, n)]
         else:
-            items = [lambda ds: checksum(np, (whole if access == "full" else decimated)(ds))]
+            items = [whole if access == "full" else decimated]
         warm = (open_, lambda ds: win(ds, (0, 0, 64, 64)))
-        return open_, items, warm
+        return open_, items, checksum, warm
 
 
 # =============================================================================================
@@ -292,12 +306,16 @@ class Zarr:
                 data = data[0]
             chunks = (chunk, chunk) if isinstance(chunk, int) else chunk
             shards = (shard, shard) if shard else None
-            z = zarr.create_array(
-                str(path), shape=data.shape, chunks=chunks, shards=shards, dtype=dtype, zarr_format=fmt,
-                compressors=Zarr._codecs(fmt, comp), fill_value=0,
-                dimension_names=None if fmt == 2 else (["band", "y", "x"] if bands > 1 else ["y", "x"]),
-            )
-            z[:] = data
+
+            def write(tmp, data=data, chunks=chunks, shards=shards, fmt=fmt, dtype=dtype, comp=comp, bands=bands):
+                z = zarr.create_array(
+                    str(tmp), shape=data.shape, chunks=chunks, shards=shards, dtype=dtype, zarr_format=fmt,
+                    compressors=Zarr._codecs(fmt, comp), fill_value=0,
+                    dimension_names=None if fmt == 2 else (["band", "y", "x"] if bands > 1 else ["y", "x"]),
+                )
+                z[:] = data
+
+            publish(path, write)
             mb = sum(f.stat().st_size for f in path.rglob("*") if f.is_file()) >> 20
             print(f"{path.name}: {mb} MB", flush=True)
 
@@ -343,8 +361,6 @@ class Zarr:
 
     @staticmethod
     def reader(tool: str, access: str, meta: dict):
-        import numpy as np
-
         size = meta["size"]
         if tool == "terrio":
             import terrio
@@ -379,11 +395,11 @@ class Zarr:
 
         n = {"window": 1, "windows16": 16, "threads4": 16}.get(access)
         if n:
-            items = [lambda ds, w=w: checksum(np, win(ds, w)) for w in windows(size, n)]
+            items = [lambda ds, w=w: win(ds, w) for w in windows(size, n)]
         else:
-            items = [lambda ds: checksum(np, (whole if access == "full" else band)(ds))]
+            items = [whole if access == "full" else band]
         warm = (open_, lambda ds: win(ds, (0, 0, 64, 64)))
-        return open_, items, warm
+        return open_, items, checksum, warm
 
 
 # =============================================================================================
@@ -476,7 +492,7 @@ class GeoParquet:
             if path.exists():
                 continue
             lco = [f"ROW_GROUP_SIZE={rg}", f"COMPRESSION={comp}", f"GEOMETRY_ENCODING={enc}", f"WRITE_COVERING_BBOX={'YES' if cover else 'NO'}", f"SORT_BY_BBOX={'YES' if sort else 'NO'}"]
-            gdal.VectorTranslate(str(path), str(sources[geom]), format="Parquet", layerCreationOptions=lco, limit=rows)
+            publish(path, lambda tmp: gdal.VectorTranslate(str(tmp), str(sources[geom]), format="Parquet", layerCreationOptions=lco, limit=rows))
             print(f"{path.name}: {path.stat().st_size >> 20} MB", flush=True)
         gdal.VectorTranslate(str(out / "_warmup.parquet"), str(sources["point"]), format="Parquet", limit=100)
 
@@ -500,14 +516,15 @@ class GeoParquet:
         geo = json.loads(md.metadata[b"geo"])
         gcol = geo["primary_column"]
         names = [md.schema.column(i).path for i in range(md.num_columns)]
-        cover = "bbox" in pf.schema_arrow.names
+        # The covering bbox columns, as the file's metadata names them (GDAL: `<geometry>_bbox`).
+        cover = geo["columns"][gcol].get("covering", {}).get("bbox")
         boxes = GeoParquet.bboxes({"bbox": 1, "bbox16": 16, "threads4": 16}.get(access, 0))
         need = md.serialized_size + 8  # the footer
         for g in range(md.num_row_groups):
             rg = md.row_group(g)
             cols = {names[i]: rg.column(i) for i in range(md.num_columns)}
             if boxes and cover:
-                s = {k: (cols[f"bbox.{k}"].statistics.min, cols[f"bbox.{k}"].statistics.max) for k in ("xmin", "ymin", "xmax", "ymax")}
+                s = {k: (cols[".".join(cover[k])].statistics.min, cols[".".join(cover[k])].statistics.max) for k in ("xmin", "ymin", "xmax", "ymax")}
                 hits = sum(1 for bx0, by0, bx1, by1 in boxes if s["xmin"][0] <= bx1 and s["xmax"][1] >= bx0 and s["ymin"][0] <= by1 and s["ymax"][1] >= by0)
                 if not hits:
                     continue
@@ -533,12 +550,13 @@ class GeoParquet:
                 return p if p.startswith("/") else "/vsicurl/" + p
 
         def summary(res) -> tuple[float, int]:
+            """(sum of `id`, or of `value` when `id` is not read, row count)."""
             table = res[1] if isinstance(res, tuple) else res
-            ids = table.column("id").to_numpy() if "id" in table.column_names else None
-            return (float(ids.sum()) if ids is not None else 0.0, table.num_rows)
+            col = "id" if "id" in table.column_names else "value"
+            return float(table.column(col).to_numpy().sum(dtype="float64")), table.num_rows
 
         def read(p, **kw):
-            return summary(po.read_arrow(p, **kw))
+            return po.read_arrow(p, **kw)
 
         boxes = GeoParquet.bboxes({"bbox": 1, "bbox16": 16, "threads4": 16}.get(access, 0))
         if boxes:
@@ -551,7 +569,7 @@ class GeoParquet:
 
             def where(p):
                 layer = p.rsplit("/", 1)[-1].removesuffix(".parquet")
-                return summary(pa.table(terrio.sql(p, f"SELECT * FROM {layer} WHERE {GeoParquet.WHERE}")))
+                return pa.table(terrio.sql(p, f"SELECT * FROM {layer} WHERE {GeoParquet.WHERE}"))
 
             items = [where]
         elif access == "where":
@@ -559,7 +577,7 @@ class GeoParquet:
         else:
             items = [lambda p: read(p)]
         warm = (open_, lambda p: read(p))
-        return open_, items, warm
+        return open_, items, summary, warm
 
 
 FORMATS = {"geotiff": GeoTiff, "zarr": Zarr, "geoparquet": GeoParquet}
@@ -568,8 +586,16 @@ FORMATS = {"geotiff": GeoTiff, "zarr": Zarr, "geoparquet": GeoParquet}
 # =============================================================================================
 # HTTP server with a simulated round-trip time, logging every request.
 
-_lock = threading.Lock()
+_lock = threading.Condition()
 _log: list[tuple[float, float, int, str]] = []  # (start, end, bytes, path)
+_busy = 0  # requests being served: the runner reads the log once none is
+
+
+def _settled_log() -> list[tuple[float, float, int, str]]:
+    """The request log once every request received has been recorded."""
+    with _lock:
+        _lock.wait_for(lambda: _busy == 0, timeout=10)
+        return list(_log)
 
 
 class _Handler(SimpleHTTPRequestHandler):
@@ -586,8 +612,11 @@ class _Handler(SimpleHTTPRequestHandler):
         self._serve(False)
 
     def _serve(self, head: bool) -> None:
+        global _busy
         t0 = time.perf_counter()
         sent = 0
+        with _lock:
+            _busy += 1
         try:
             time.sleep(self.latency)
             path = self.translate_path(self.path)
@@ -615,6 +644,8 @@ class _Handler(SimpleHTTPRequestHandler):
         finally:
             with _lock:
                 _log.append((t0, time.perf_counter(), sent, self.path))
+                _busy -= 1
+                _lock.notify_all()
 
 
 def rounds(log: list[tuple[float, float, int, str]]) -> int:
@@ -634,55 +665,97 @@ def rounds(log: list[tuple[float, float, int, str]]) -> int:
 # Worker: one fresh process per sample, so caches, pools and counters start empty.
 
 
-def _rchar() -> int:
-    d = dict(line.split(": ") for line in Path("/proc/self/io").read_text().splitlines())
+PROC_IO = Path("/proc/self/io")  # Linux: bytes a process read, for local sources
+
+
+def _rchar(local: bool) -> int:
+    if not local:  # over HTTP the runner counts the bytes the server sent
+        return 0
+    d = dict(line.split(": ") for line in PROC_IO.read_text().splitlines())
     return int(d["rchar"])
 
 
 def worker(spec: dict) -> dict:
+    from concurrent.futures import ThreadPoolExecutor
+
     fmt = FORMATS[spec["format"]]
     src, access = spec["src"], spec["access"]
-    open_, items, (warm_open, warm_read) = fmt.reader(spec["tool"], access, spec["meta"])
+    local = src.startswith("/")
+    open_, items, check, (warm_open, warm_read) = fmt.reader(spec["tool"], access, spec["meta"])
     # A process's first open and read pays one-time costs (library initialization, thread pools):
     # measured on a tiny file apart from the case, as `init`.
     ti = time.perf_counter()
     warm_read(warm_open(src.rsplit("/", 1)[0] + "/_warmup" + fmt.EXT))
-    r0 = _rchar()
+    r0 = _rchar(local)
     t0 = time.perf_counter()
-    ds = open_(src)
-    t1 = time.perf_counter()
-    r1 = _rchar()
-    if access == "threads4":
-        out: list = [None] * len(items)
+    if access == "threads4":  # four handles, opened in the threads and timed as the read
 
         def job(k):
             d = open_(src)  # a handle per thread: GDAL datasets are not thread-safe
-            for i in range(k, len(items), 4):
-                out[i] = items[i](d)
+            return [(i, items[i](d)) for i in range(k, len(items), 4)]
 
-        ts = [threading.Thread(target=job, args=(k,)) for k in range(4)]
-        for t in ts:
-            t.start()
-        for t in ts:
-            t.join()
+        t1, r1 = t0, r0
+        with ThreadPoolExecutor(4) as pool:  # a job's exception is raised here
+            out = [res for _, res in sorted((x for part in pool.map(job, range(4)) for x in part), key=lambda x: x[0])]
     else:
+        ds = open_(src)
+        t1, r1 = time.perf_counter(), _rchar(local)
         out = [item(ds) for item in items]
     t2 = time.perf_counter()
-    r2 = _rchar()
+    r2 = _rchar(local)
+    rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+    sums = [check(x) for x in out]  # after the timed read and its peak memory
     return {
         "init_s": t0 - ti,
         "open_s": t1 - t0,
         "read_s": t2 - t1,
         "open_bytes": r1 - r0,
         "read_bytes": r2 - r1,
-        "rss_mb": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024,
-        "sum": sum(s for s, _ in out),
-        "n": sum(n for _, n in out),
+        "rss_mb": rss,
+        "sum": sum(s for s, _ in sums),
+        "n": sum(n for _, n in sums),
     }
 
 
 # =============================================================================================
 # Runner
+
+
+def _read(path: str) -> str:
+    try:
+        return Path(path).read_text().strip()
+    except OSError:
+        return ""
+
+
+def machine() -> dict:
+    """What the timings depend on: compare ratios across runs only on the same machine."""
+    import platform
+
+    cpu = next((line.split(":", 1)[1].strip() for line in _read("/proc/cpuinfo").splitlines() if line.startswith("model name")), platform.processor())
+    cgroup = _read("/proc/self/cgroup").rpartition(":")[2]
+    ac = [_read(f"{d}/online") for d in Path("/sys/class/power_supply").glob("*") if _read(f"{d}/type") == "Mains"]
+    versions = {}
+    for mod in ("terrio", "osgeo.gdal", "pyogrio", "zarr"):
+        try:
+            m = __import__(mod, fromlist=["_"])
+            versions[mod] = getattr(m, "__version__", None) or m.VersionInfo("RELEASE_NAME")
+        except Exception:  # noqa: BLE001 - absent for this format
+            pass
+    return {
+        "machine": {
+            "cpu": cpu,
+            "cpus": len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
+            "cpu_quota": _read(f"/sys/fs/cgroup{cgroup}/cpu.max") or None,  # "max" or "<quota> <period>"
+            "mem_gb": round(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2**30, 1),
+            "os": platform.platform(),
+            "on_ac": None if not ac else "1" in ac,
+            "load": os.getloadavg()[0],
+            "github_runner": os.environ.get("RUNNER_NAME"),
+            "versions": versions,
+            "time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        }
+    }
 
 
 def run(args: argparse.Namespace) -> None:
@@ -705,8 +778,19 @@ def run(args: argparse.Namespace) -> None:
     names = [f for f in fmt.FIXTURES if not args.only or any(o in f for o in args.only)]
     samples = 1 if args.quick else args.samples
     results = args.out or data / f"results-{time.strftime('%Y%m%d-%H%M%S')}.jsonl"
+    sources = args.source or ["local", "http"]
+    if "local" in sources and not PROC_IO.exists():
+        sys.exit(f"local byte counts need {PROC_IO} (Linux): use --source http")
+    head = machine()
+    if head["machine"]["on_ac"] is False and not args.allow_battery:
+        sys.exit("on battery, timings are slower and vary: plug in, or pass --allow-battery")
+    try:
+        out_file = open(results, "x")  # one run per file: report sums every row of a file
+    except FileExistsError:
+        sys.exit(f"{results} exists: choose another --out")
+    out_file.write(json.dumps(head) + "\n")
     rows = []
-    for name, access, source in itertools.product(names, args.access or fmt.ACCESS, args.source or ["local", "http"]):
+    for name, access, source in itertools.product(names, args.access or fmt.ACCESS, sources):
         path = data / f"{name}{fmt.EXT}"
         meta = fmt.meta(path, access)
         if meta is None:
@@ -717,6 +801,7 @@ def run(args: argparse.Namespace) -> None:
             for tool in ["terrio", "gdal"] if k % 2 == 0 else ["gdal", "terrio"]:
                 if f"{tool}_error" in row:  # failed or timed out once: not again
                     continue
+                _settled_log()  # a killed worker's requests end before the log is cleared
                 with _lock:
                     _log.clear()
                 spec = {"format": args.format, "tool": tool, "src": src, "access": access, "meta": meta}
@@ -731,21 +816,25 @@ def run(args: argparse.Namespace) -> None:
                     row[f"{tool}_error"] = err[-1][:300] if err else f"exit {p.returncode}"
                     continue
                 r = json.loads(p.stdout.strip().splitlines()[-1])
-                with _lock:  # this case's requests, not the warm-up's
-                    log = [x for x in _log if x[3].split("?")[0].startswith("/" + path.name)]
+                # this case's requests, not the warm-up's
+                log = [x for x in _settled_log() if x[3].split("?")[0].startswith("/" + path.name)]
                 if source == "http":
                     r["requests"], r["rounds"] = len(log), rounds(log)
                     r["read_bytes"], r["open_bytes"] = sum(x[2] for x in log), 0  # transferred, open included
                 row.setdefault(tool, []).append(r)
         rows.append(summarize(row))
         print(fmt_row(rows[-1]), flush=True)
-        with open(results, "a") as f:
-            f.write(json.dumps(rows[-1]) + "\n")
+        out_file.write(json.dumps(rows[-1]) + "\n")
+        out_file.flush()
+    out_file.close()
     print(f"\n{results}")
-    print(report(rows))
+    print(report([head, *rows]))
 
 
 def summarize(row: dict) -> dict:
+    """Medians per tool. A time ratio only when every sample of both tools succeeded (a tool stops
+    at its first failure); `values` is `same` only when every sample's sum and count equal GDAL's
+    first, else the first that differs."""
     out = {k: v for k, v in row.items() if not isinstance(v, list)}
     for tool in ("terrio", "gdal"):
         rs = row.get(tool)
@@ -754,11 +843,16 @@ def summarize(row: dict) -> dict:
         out[tool] = {k: statistics.median(r[k] for r in rs) for k in rs[0] if k not in ("sum", "n")}
         out[tool]["total_s"] = statistics.median(r["open_s"] + r["read_s"] for r in rs)
         out[f"{tool}_sum"], out[f"{tool}_n"] = rs[0]["sum"], rs[0]["n"]
-    if "terrio" in out and "gdal" in out:
+    if "terrio" in out and "gdal" in out and not _errors(row):
         out["time_ratio"] = out["terrio"]["total_s"] / out["gdal"]["total_s"]
-        same = out["terrio_n"] == out["gdal_n"] and math.isclose(out["terrio_sum"], out["gdal_sum"], rel_tol=1e-6)
-        out["values"] = "same" if same else "DIFFER"
+        ref = row["gdal"][0]
+        differ = next(((t, r) for t in ("terrio", "gdal") for r in row[t] if r["n"] != ref["n"] or not math.isclose(r["sum"], ref["sum"], rel_tol=1e-6)), None)
+        out["values"] = "same" if differ is None else f"DIFFER: {differ[0]} n {differ[1]['n']} sum {differ[1]['sum']:.6g} vs gdal n {ref['n']} sum {ref['sum']:.6g}"
     return out
+
+
+def _errors(r: dict) -> list[str]:
+    return [f"{k.removesuffix('_error')} {v}" for k, v in r.items() if k.endswith("_error")]
 
 
 def _bytes(t: dict) -> int:
@@ -768,22 +862,29 @@ def _bytes(t: dict) -> int:
 def fmt_row(r: dict) -> str:
     t, g = r.get("terrio"), r.get("gdal")
     s = f"{r['fixture']:34} {r['access']:9} {r['source']:5}"
-    if not t or not g:
-        return s + f"  error: terrio {r.get('terrio_error', 'ok')} | gdal {r.get('gdal_error', 'ok')}"
+    if "time_ratio" not in r:
+        return s + "  error: " + (" | ".join(_errors(r)) or "no sample")
     s += f" {t['total_s'] * 1000:8.1f} ms vs {g['total_s'] * 1000:8.1f} x{r['time_ratio']:5.2f}"
     s += f" | KiB {_bytes(t) >> 10:7} vs {_bytes(g) >> 10:7} need {r['need_bytes'] >> 10:7}"
     if "requests" in t:
         s += f" | req {t['requests']:4.0f}/{g['requests']:4.0f} rounds {t['rounds']:3.0f}/{g['rounds']:3.0f}"
-    s += f" | init {t['init_s'] * 1000:3.0f}/{g['init_s'] * 1000:3.0f} ms rss {t['rss_mb']:4.0f}/{g['rss_mb']:4.0f} MB {r['values']}"
+    s += f" | init {t['init_s'] * 1000:3.0f}/{g['init_s'] * 1000:3.0f} ms rss {t['rss_mb']:4.0f}/{g['rss_mb']:4.0f} MB {r['values'][:6]}"
     return s
 
 
 def report(rows: list[dict]) -> str:
-    for r in rows:  # results written before the axes were stored
-        for k, v in FORMATS[r.get("format", "geotiff")].axes(r["fixture"]).items():
-            r.setdefault(k, v)
-    ok = [r for r in rows if "time_ratio" in r]
-    lines = ["\n## Worst cases (terrio time / GDAL time)\n"]
+    """Ranks only cases whose values equal GDAL's; mismatches and failures are listed apart."""
+    heads = [r["machine"] for r in rows if "machine" in r]
+    rows = [r for r in rows if "machine" not in r]
+    lines = []
+    for h in heads:
+        lines.append(f"machine: {h['cpu']}, {h['cpus']} CPUs (quota {h['cpu_quota']}), {h['mem_gb']} GB, {h['os']}, AC {h['on_ac']}, load {h['load']:.1f}, {h['versions']}")
+    if len({(h["cpu"], h["cpus"], h["cpu_quota"], h["mem_gb"]) for h in heads}) > 1:
+        lines.append("WARNING: these results come from different machines: compare ratios within one machine only")
+    computed = [r for r in rows if "time_ratio" in r]
+    ok = [r for r in computed if r["values"] == "same"]
+    differ = [r for r in computed if r["values"] != "same"]
+    lines.append("\n## Worst cases (terrio time / GDAL time)\n")
     lines += [fmt_row(r) for r in sorted(ok, key=lambda r: -r["time_ratio"])[:20]]
     lines.append("\n## Geometric mean of the time ratios by axis (>1: terrio slower; cases in brackets)\n")
     for axis in ("access", "source", "codec", "dtype", "layout"):
@@ -803,8 +904,7 @@ def report(rows: list[dict]) -> str:
     lines.append(f"more than 1.5x the bytes needed (+ 256 KiB): {len(over_need)}/{len(ok)}")
     lines += ["  " + fmt_row(r) for r in over_need]
     errors = [r for r in rows if "time_ratio" not in r]
-    differ = [r for r in ok if r["values"] != "same"]
-    lines.append(f"\nvalues differ from GDAL: {len(differ)}" + "".join(f"\n  {r['fixture']}/{r['access']}/{r['source']}: n {r['terrio_n']} vs {r['gdal_n']}, sum {r['terrio_sum']:.6g} vs {r['gdal_sum']:.6g}" for r in differ))
+    lines.append(f"\nvalues differ from GDAL (not ranked): {len(differ)}" + "".join(f"\n  {r['fixture']}/{r['access']}/{r['source']} x{r['time_ratio']:.2f}: {r['values']}" for r in differ))
     lines.append(f"errors: {len(errors)}" + "".join("\n  " + fmt_row(r) for r in errors))
     return "\n".join(lines)
 
@@ -828,14 +928,17 @@ def main() -> None:
     r.add_argument("--samples", type=int, default=3, help="samples per tool, in alternating order; the median")
     r.add_argument("--quick", action="store_true", help="one sample per tool")
     r.add_argument("--timeout", type=float, default=120, help="seconds a read may take before it is reported as a timeout")
-    r.add_argument("--out", type=Path, help="results JSONL (default: DIR/FORMAT/results-<time>.jsonl)")
+    r.add_argument("--out", type=Path, help="results JSONL, a new file (default: DIR/FORMAT/results-<time>.jsonl)")
+    r.add_argument("--allow-battery", action="store_true", help="run on battery power (timings slower and noisier)")
     rep = sub.add_parser("report")
     rep.add_argument("results", type=Path)
     a = p.parse_args()
     if a.cmd == "report":
         print(report([json.loads(line) for line in a.results.read_text().splitlines() if line.strip()]))
         return
-    a.dir = a.dir.expanduser() / a.format
+    if a.cmd == "run" and a.access and (bad := set(a.access) - set(FORMATS[a.format].ACCESS)):
+        p.error(f"--access {' '.join(sorted(bad))}: {a.format} reads are {' '.join(FORMATS[a.format].ACCESS)}")
+    a.dir = a.dir.expanduser().resolve() / a.format  # absolute: the readers take a relative path as a URL
     a.dir.mkdir(parents=True, exist_ok=True)
     if a.cmd == "fixtures":
         FORMATS[a.format].make(a.dir)

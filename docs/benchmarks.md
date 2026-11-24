@@ -278,7 +278,14 @@ Every case records:
   from the file's own chunk tables;
 - HTTP requests and sequential rounds of requests: a request that starts after every request in
   flight has ended waited for them, so it opens a new round;
-- peak memory, and whether terrio's values (sum and count) equal GDAL's.
+- peak memory, and whether terrio's values equal GDAL's: the sum and count of the pixels, or of
+  the rows' `id` (`value` when `id` is not read), in every sample of both tools. Time and peak
+  memory are taken before this check.
+
+Only cases where every sample of both tools succeeded and returned GDAL's values are ranked;
+the report lists failures, timeouts and value mismatches apart. Local byte counts need Linux's
+`/proc/self/io`. Local reads after the first come from the OS page cache, so the matrix measures
+decoding and I/O logic, not the disk.
 
 The report ranks the worst cases, gives the geometric mean of the time ratios for each value of
 each axis (by codec, layout, access pattern and source), and lists every case that makes more
@@ -287,17 +294,22 @@ one area of code (decoding, copying into the output, fetching, threading or open
 request can fix all the cases of that area, with the matrix's numbers before and after.
 
 ```sh
-# The same environment as above, with terrio's Python module built in release mode, pyogrio
-# (GeoParquet) and zarr-python 3 (Zarr fixtures).
+# The same environment as above, with terrio's Python module built in release mode, pyogrio and
+# PyArrow (GeoParquet) and zarr-python 3 (Zarr fixtures).
 (cd python && maturin develop --release)
 python scripts/perf_matrix.py fixtures --format geotiff      # 0.9 GB in ~/.cache/terrio-bench/matrix
 python scripts/perf_matrix.py run --format geotiff           # every case; 30 to 60 minutes per format
+python scripts/perf_matrix.py fixtures --format zarr
 python scripts/perf_matrix.py run --format zarr --only shard --access window --quick
-python scripts/perf_matrix.py report ~/.cache/terrio-bench/matrix/geotiff/results-<time>.jsonl
+# `run` prints its results file last; report summarizes one again:
+python scripts/perf_matrix.py report "$HOME/.cache/terrio-bench/matrix/geotiff/results-20261124-120000.jsonl"
 ```
 
 `--threads` sets `RAYON_NUM_THREADS` and `GDAL_NUM_THREADS` (4 by default), `--latency-ms` the
 simulated round-trip time, `--samples` the samples per tool, and `--quick` takes one. A read that
-takes longer than `--timeout` seconds (120) is reported as a timeout and not repeated. The
-numbers are this machine's: compare two terrio builds in the same session, not with an earlier
-run.
+takes longer than `--timeout` seconds (120) is reported as a timeout and not repeated. `run`
+refuses to start on battery power (`--allow-battery` to override) and writes each run to a new
+file whose first line describes the machine: CPU, CPUs and CPU quota, memory, OS, power, load
+and library versions. The time ratios hold on any machine, but absolute times are only that
+machine's: compare two terrio builds in the same session, and `report` warns when a file's runs
+come from different machines.
