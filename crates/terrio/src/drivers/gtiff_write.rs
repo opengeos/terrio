@@ -449,6 +449,11 @@ pub(crate) struct TiffOptions {
     pub overviews: Vec<usize>,
     /// How the overviews of `overviews` are computed.
     pub overview_resampling: OverviewResampling,
+    /// Overviews supplied by the caller, from the largest, written as they are
+    /// ([`crate::RasterWriteOptions::overview_data`]).
+    pub supplied_overviews: Vec<std::sync::Arc<Raster>>,
+    /// Dataset metadata items set over the raster's own ([`crate::RasterWriteOptions::metadata`]).
+    pub metadata: Vec<(String, String)>,
     /// The TIFF predictor: 1 (none), 2 (horizontal differencing) or 3 (floating point).
     pub predictor: u16,
     /// Write the pixel scale and tie point (`GEOREFERENCED=NO` leaves the file without a
@@ -566,6 +571,8 @@ impl Default for TiffOptions {
             color_table: Vec::new(),
             overviews: Vec::new(),
             overview_resampling: OverviewResampling::Gdal(Method::Nearest),
+            supplied_overviews: Vec::new(),
+            metadata: Vec::new(),
             georeferenced: true,
             predictor: 1,
             geo_transform: None,
@@ -702,8 +709,27 @@ impl TiffOptions {
                 let n: i64 = n.trim().parse().map_err(|_| Error::InvalidArgument(format!("invalid OVERVIEW_COUNT '{n}'")))?;
                 o.overview_count = usize::try_from(n).ok();
             }
-            if co("OVERVIEWS").is_some_and(|v| v.eq_ignore_ascii_case("NONE")) {
-                o.overview_count = Some(0);
+            // GDAL 3.13.3's COG driver (`GDALCOGCreator::Create`): AUTO writes the existing
+            // overviews, else generates them; FORCE_USE_EXISTING and NONE never generate any;
+            // IGNORE_EXISTING always does. Supplied overviews are the existing ones, so the two
+            // that would discard them are contradictions.
+            let supplied = !options.overview_data.is_empty();
+            match co("OVERVIEWS").map(|v| v.trim().to_ascii_uppercase()).as_deref() {
+                Some(v @ ("NONE" | "IGNORE_EXISTING")) if supplied => {
+                    return Err(Error::InvalidArgument(format!(
+                        "OVERVIEWS={v} contradicts the overviews supplied, which are written as they are"
+                    )));
+                }
+                Some("NONE") => o.overview_count = Some(0),
+                Some("FORCE_USE_EXISTING") if !supplied && o.source_overviews.is_none() => {
+                    crate::warnings::warn(
+                        "OVERVIEWS=FORCE_USE_EXISTING without existing overviews (supplied, or a source's copied): the COG has none, \
+                         as GDAL's COG driver writes none"
+                            .into(),
+                    );
+                    o.overview_count = Some(0);
+                }
+                _ => {}
             }
             o.source_block = options.source_block_size;
         } else {
@@ -718,6 +744,19 @@ impl TiffOptions {
             if let Some(r) = &options.overview_resampling {
                 o.overview_resampling = OverviewResampling::parse(r)?;
             }
+        }
+        o.metadata = options.metadata.clone();
+        if !options.overview_data.is_empty() {
+            if !options.overviews.is_empty() {
+                return Err(Error::InvalidArgument("overviews are either supplied or given as factors, not both".into()));
+            }
+            if o.source_overviews.is_some() {
+                return Err(Error::InvalidArgument("overviews are either supplied or copied from a source, not both".into()));
+            }
+            if options.overview_resampling.is_some() || (cog && co("OVERVIEW_RESAMPLING").is_some()) {
+                return Err(Error::InvalidArgument("supplied overviews are written as they are: no overview resampling applies".into()));
+            }
+            o.supplied_overviews = options.overview_data.clone();
         }
         if let Some(i) = co("INTERLEAVE") {
             o.planar = match i.to_ascii_uppercase().as_str() {
@@ -1041,8 +1080,9 @@ fn plan(raster: &Raster, opts: &TiffOptions) -> Result<Plan> {
     };
     // GDAL's COG driver records the resampling of the overviews it makes (`@OVERVIEW_RESAMPLING`,
     // an IMAGE_STRUCTURE item): the option as given, else `GetResampling`'s; for overviews it
-    // copies, the source's `RESAMPLING` item.
+    // copies, the source's `RESAMPLING` item; none for overviews supplied as they are.
     let image_structure: Vec<(String, String)> = match (tile, &opts.source_overviews) {
+        _ if !opts.supplied_overviews.is_empty() => Vec::new(),
         (Some(_), Some(path)) if opts.cog => crate::LazyRaster::open_tiff(path)
             .ok()
             .flatten()
@@ -1075,7 +1115,7 @@ fn plan(raster: &Raster, opts: &TiffOptions) -> Result<Plan> {
             geo.push((34264, Value::Doubles(m)));
         }
     }
-    if pixel_is_point(raster) {
+    if pixel_is_point(raster, opts) {
         // Public geotransforms refer to corners. GeoTIFF point tags refer to centres.
         for (tag, value) in &mut geo {
             if let Value::Doubles(v) = value {
@@ -1137,6 +1177,7 @@ fn prepare(raster: &Raster, opts: &TiffOptions) -> Result<Prepared> {
     // from (see [`mask_levels`]).
     let mut raw_masks: Vec<Vec<u8>> = Vec::new();
     let (sizes, method) = match (opts.cog, tile) {
+        _ if !opts.supplied_overviews.is_empty() => (Vec::new(), None),
         (true, Some(_)) if opts.source_overviews.is_some() => (Vec::new(), None),
         (true, Some((t, _))) => {
             (gdal_overview::cog_sizes(raster.cols, raster.rows, t as usize, opts.overview_count), Some(cog_method(opts)))
@@ -1161,7 +1202,9 @@ fn prepare(raster: &Raster, opts: &TiffOptions) -> Result<Prepared> {
             }
         }
     };
-    if let (true, Some(_), Some(path)) = (opts.cog, tile, &opts.source_overviews) {
+    if !opts.supplied_overviews.is_empty() {
+        supplied_overviews(raster, opts, &mut levels, &mut masks)?;
+    } else if let (true, Some(_), Some(path)) = (opts.cog, tile, &opts.source_overviews) {
         copy_source_overviews(path, raster, opts, &mut levels, &mut masks)?;
     }
     if let Some(method) = method {
@@ -1312,6 +1355,58 @@ fn copy_source_overviews(path: &str, raster: &Raster, opts: &TiffOptions, levels
             masks.push(m.into_iter().map(|v| if v != 0 { 255 } else { 0 }).collect());
         }
         levels.push(Level { cols: w, rows: h, bands: raster.bands, data: std::borrow::Cow::Owned(level.raster.data) });
+    }
+    Ok(())
+}
+
+/// The overviews the caller supplied ([`TiffOptions::supplied_overviews`]), written as they are,
+/// as [`copy_source_overviews`] writes a source's: each with the raster's bands and data type, and
+/// smaller than the level before it (no larger in either dimension). GDAL's COG driver takes a
+/// source's overviews at whatever sizes they have, so `gdaladdo`'s `ceil(n / factor)` sizes and
+/// the COG driver's halved, floored ones both qualify. A COG's per-dataset mask gets overviews
+/// generated from its full-resolution values, as GDAL 3.13.3 generates those of a mask given
+/// only to the destination; a GeoTIFF with supplied overviews and a mask is refused.
+fn supplied_overviews<'a>(raster: &Raster, opts: &'a TiffOptions, levels: &mut Vec<Level<'a>>, masks: &mut Vec<Vec<u8>>) -> Result<()> {
+    if !masks.is_empty() && !opts.cog {
+        return Err(Error::Unsupported("a GeoTIFF mask with supplied overviews is not written: write a COG, or an alpha band".into()));
+    }
+    let block = gdal_overview::ovr_block(opts.source_block);
+    let (mut cols, mut rows) = (raster.cols, raster.rows);
+    for (i, ov) in opts.supplied_overviews.iter().enumerate() {
+        if ov.bands != raster.bands || ov.data_type != raster.data_type {
+            return Err(Error::InvalidArgument(format!(
+                "overview {i} has {} {:?} bands, the raster {} {:?} bands",
+                ov.bands, ov.data_type, raster.bands, raster.data_type
+            )));
+        }
+        if ov.cols == 0 || ov.rows == 0 || ov.cols > cols || ov.rows > rows || (ov.cols, ov.rows) == (cols, rows) {
+            return Err(Error::InvalidArgument(format!(
+                "overview {i} is {} x {} pixels: each overview is smaller than the level before it ({cols} x {rows})",
+                ov.cols, ov.rows
+            )));
+        }
+        if ov.data.len() != ov.cols * ov.rows * ov.bands {
+            return Err(Error::InvalidArgument(format!("overview {i} has {} values for {} x {} pixels", ov.data.len(), ov.cols, ov.rows)));
+        }
+        if let Some(bits) = opts.nbits {
+            let max = (1u64 << bits) - 1;
+            let fits = match &ov.data {
+                RasterData::U8(v) => v.iter().all(|&v| u64::from(v) <= max),
+                RasterData::U16(v) => v.iter().all(|&v| u64::from(v) <= max),
+                RasterData::U32(v) => v.iter().all(|&v| u64::from(v) <= max),
+                _ => true,
+            };
+            if !fits {
+                return Err(Error::InvalidArgument(format!("overview {i} has values that exceed NBITS={bits}")));
+            }
+        }
+        if !masks.is_empty() {
+            let mi = if levels.last().is_some_and(|l| l.cols > ov.cols) { levels.len() - 1 } else { 0 };
+            let m = gdal_overview::mask_level(cog_method(opts), &masks[mi], (levels[mi].cols, levels[mi].rows), (ov.cols, ov.rows), block);
+            masks.push(m.into_iter().map(|v| if v != 0 { 255 } else { 0 }).collect());
+        }
+        levels.push(Level::from_raster(ov));
+        (cols, rows) = (ov.cols, ov.rows);
     }
     Ok(())
 }
@@ -1737,9 +1832,25 @@ pub(crate) fn encode_sample_le(t: DataType, v: f64, out: &mut Vec<u8>) {
     }
 }
 
-/// Whether the raster declares point samples.
-fn pixel_is_point(r: &Raster) -> bool {
-    r.metadata.iter().any(|(k, v)| k == "AREA_OR_POINT" && v.eq_ignore_ascii_case("Point"))
+/// Whether the raster declares point samples (in its metadata items as written).
+fn pixel_is_point(r: &Raster, opts: &TiffOptions) -> bool {
+    dataset_items(r, opts).iter().any(|(k, v)| k == "AREA_OR_POINT" && v.eq_ignore_ascii_case("Point"))
+}
+
+/// The dataset's default-domain metadata items as written: the raster's own, with those of
+/// `opts.metadata` set over them in their place, or after them when new.
+fn dataset_items<'a>(r: &'a Raster, opts: &TiffOptions) -> std::borrow::Cow<'a, [(String, String)]> {
+    if opts.metadata.is_empty() {
+        return std::borrow::Cow::Borrowed(&r.metadata);
+    }
+    let mut items = r.metadata.clone();
+    for (k, v) in &opts.metadata {
+        match items.iter_mut().find(|(key, _)| key == k) {
+            Some(item) => item.1.clone_from(v),
+            None => items.push((k.clone(), v.clone())),
+        }
+    }
+    std::borrow::Cow::Owned(items)
 }
 
 /// The georeferencing tags: pixel scale and tie point, GeoKeys, nodata and metadata.
@@ -1770,8 +1881,9 @@ fn geo_tags(r: &Raster, opts: &TiffOptions, image_structure: &[(String, String)]
     ];
     let crs = super::common::spatial_ref(&r.crs);
     let mut v = crate::crs::geokeys::GeoKeyValues::default();
-    v.shorts.push((1025, if pixel_is_point(r) { 2 } else { 1 }));
-    if crs.is_unknown() && pixel_is_point(r) {
+    let point = pixel_is_point(r, opts);
+    v.shorts.push((1025, if point { 2 } else { 1 }));
+    if crs.is_unknown() && point {
         return Err(Error::Unsupported(
             "PixelIsPoint GeoTIFF writing requires a CRS; a lone raster-type GeoKey would imply a local CRS".into(),
         ));
@@ -1806,7 +1918,7 @@ fn geo_tags(r: &Raster, opts: &TiffOptions, image_structure: &[(String, String)]
             b
         })
         .collect();
-    if let Some(xml) = gdal_metadata_xml(&r.metadata, &bands, &opts.domains, opts.drop_default_items, image_structure) {
+    if let Some(xml) = gdal_metadata_xml(&dataset_items(r, opts), &bands, &opts.domains, opts.drop_default_items, image_structure) {
         tags.push((42112, Value::Ascii(xml)));
     }
     if let Some(nd) = opts.nodata {
@@ -2125,6 +2237,9 @@ fn cog_rows(path: &str, header: &crate::RasterDataset, options: &crate::RasterWr
     if !options.overviews.is_empty() {
         return Err(Error::Unsupported("COGs with explicit overview factors need the whole raster".into()));
     }
+    if !options.overview_data.is_empty() {
+        return Err(Error::Unsupported("COGs with supplied overviews are written whole, not in rows".into()));
+    }
     let mut opts = TiffOptions::from_write_options(options, true, header.nodata())?.ok_or_else(|| {
         let name = options.compression.as_deref().unwrap_or_default();
         Error::Unsupported(format!("{name} compression needs the whole raster"))
@@ -2158,7 +2273,7 @@ impl TiffRows {
         if matches!(options.driver, Some(d) if d != crate::formats::RasterDriver::GTiff) {
             return Err(Error::Unsupported("rasters are written in rows as GeoTIFFs only".into()));
         }
-        if !options.overviews.is_empty() {
+        if !options.overviews.is_empty() || !options.overview_data.is_empty() {
             return Err(Error::Unsupported("overviews need the whole raster: build them after writing".into()));
         }
         let mut options = options.inherited_from(header, Some(crate::formats::RasterDriver::GTiff));
@@ -4807,6 +4922,197 @@ mod tests {
             };
             assert!(same, "{co:?}");
         }
+    }
+
+    /// A raster of `cols` x `rows` Float32 pixels whose values mark the level they belong to, so
+    /// that no resampling of another level gives them.
+    fn level_raster(cols: usize, rows: usize, level: usize) -> std::sync::Arc<Raster> {
+        let cfg = wbraster::RasterConfig { cols, rows, bands: 1, data_type: DataType::F32, ..Default::default() };
+        let data = (0..cols * rows).map(|i| level as f32 * 1000.0 + (i % 97) as f32 * 0.5).collect();
+        std::sync::Arc::new(Raster::from_data_native(cfg, RasterData::F32(data)).unwrap())
+    }
+
+    /// Every level of a TIFF file: its size and Float32 samples, the full resolution first.
+    fn tiff_levels(path: &std::path::Path) -> Vec<(usize, usize, Vec<f32>)> {
+        let mut src = crate::LazyRaster::open_tiff(path.to_str().unwrap()).unwrap().unwrap();
+        let mut sizes = vec![(src.width(), src.height())];
+        sizes.extend(src.overviews());
+        sizes
+            .into_iter()
+            .enumerate()
+            .map(|(i, (w, h))| {
+                let o = crate::WindowOptions { bands: Vec::new(), overview: i.checked_sub(1) };
+                let RasterData::F32(v) = src.read_window(crate::Window::full(w, h), &o).unwrap().raster.data else { unreachable!() };
+                (w, h, v)
+            })
+            .collect()
+    }
+
+    /// Supplied overviews are written as they are, as GDAL's COG driver writes a source's existing
+    /// overviews (`OVERVIEWS=AUTO` or `FORCE_USE_EXISTING`) and its GTiff driver with
+    /// `COPY_SRC_OVERVIEWS=YES`: `gdaladdo`'s ceil sizes and the COG driver's floored ones alike,
+    /// with no `OVERVIEW_RESAMPLING` recorded for them.
+    #[test]
+    fn supplied_overviews_are_written_verbatim() {
+        let r = layouts_raster(1, DataType::F32);
+        let ceil = [(35, 25), (18, 13), (9, 7), (5, 4)];
+        let floor = [(35, 25), (17, 12), (8, 6)];
+        for (driver, co, sizes) in [
+            (crate::formats::RasterDriver::Cog, vec![("BLOCKSIZE", "16")], &ceil[..]),
+            (crate::formats::RasterDriver::Cog, vec![("BLOCKSIZE", "16"), ("OVERVIEWS", "FORCE_USE_EXISTING")], &floor[..]),
+            (crate::formats::RasterDriver::GTiff, vec![("TILED", "YES"), ("BLOCKXSIZE", "16"), ("BLOCKYSIZE", "16")], &ceil[..]),
+        ] {
+            let supplied: Vec<_> = sizes.iter().enumerate().map(|(i, (w, h))| level_raster(*w, *h, i + 1)).collect();
+            let mut creation_options: Vec<(String, String)> = co.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            creation_options.push(("COMPRESS".into(), "DEFLATE".into()));
+            let options =
+                crate::RasterWriteOptions { driver: Some(driver), creation_options, overview_data: supplied.clone(), ..Default::default() };
+            let dir = tempfile::tempdir().unwrap();
+            let p = dir.path().join("s.tif");
+            crate::write_raster(&r, p.to_str().unwrap(), &options).unwrap();
+            let levels = tiff_levels(&p);
+            assert_eq!(levels.len(), sizes.len() + 1, "{driver:?} {co:?}");
+            let RasterData::F32(base) = &r.data else { unreachable!() };
+            assert_eq!(&levels[0].2, base);
+            for ((w, h, v), ov) in levels[1..].iter().zip(&supplied) {
+                let RasterData::F32(expected) = &ov.data else { unreachable!() };
+                assert_eq!((*w, *h), (ov.cols, ov.rows), "{driver:?} {co:?}");
+                assert_eq!(v, expected, "{driver:?} {co:?} {w} x {h}");
+            }
+            let gdal_metadata = {
+                let mut d = tiff::decoder::Decoder::new(std::fs::File::open(&p).unwrap()).unwrap();
+                d.get_tag_ascii_string(tiff::tags::Tag::Unknown(42112)).unwrap_or_default()
+            };
+            assert!(!gdal_metadata.contains("OVERVIEW_RESAMPLING"), "{gdal_metadata}");
+        }
+        // A COG's per-dataset mask gets overviews of its own, made from its full resolution; a
+        // GeoTIFF's is refused.
+        let mask: Vec<u8> = (0..70 * 50).map(|i| u8::from(i % 70 >= 20)).collect();
+        let supplied: Vec<_> = ceil.iter().enumerate().map(|(i, (w, h))| level_raster(*w, *h, i + 1)).collect();
+        let options = |driver| crate::RasterWriteOptions {
+            driver: Some(driver),
+            creation_options: vec![("BLOCKSIZE".into(), "16".into())],
+            overview_data: supplied.clone(),
+            mask: Some(mask.clone()),
+            ..Default::default()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("m.tif");
+        crate::write_raster(&r, p.to_str().unwrap(), &options(crate::formats::RasterDriver::Cog)).unwrap();
+        let mut src = crate::LazyRaster::open_tiff(p.to_str().unwrap()).unwrap().unwrap();
+        for (i, (w, h)) in ceil.iter().enumerate() {
+            let m = src.read_level_mask(crate::Window::full(*w, *h), Some(i)).unwrap().expect("an overview mask");
+            assert_eq!(m.len(), w * h);
+            // The left 20 of 70 columns are masked: the first pixel of each level until the
+            // (cubic) kernel of a level reaches valid columns, the last pixel never.
+            assert_eq!(m[0] == 0, i < 3, "level {i}");
+            assert_ne!(m[w - 1], 0);
+        }
+        let gtiff = crate::write_raster(&r, dir.path().join("g.tif").to_str().unwrap(), &options(crate::formats::RasterDriver::GTiff));
+        assert!(gtiff.is_err());
+    }
+
+    /// Supplied overviews are refused where they cannot be written as given: another band count,
+    /// type or a level no smaller than the one before, with factors or a resampling, with
+    /// `OVERVIEWS=NONE` or `IGNORE_EXISTING` (which would discard them), in rows, and in formats
+    /// other than GeoTIFF and COG.
+    #[test]
+    fn supplied_overviews_refuse_contradictions() {
+        let r = layouts_raster(1, DataType::F32);
+        let write = |driver: crate::formats::RasterDriver,
+                     co: &[(&str, &str)],
+                     overview_data: Vec<std::sync::Arc<Raster>>,
+                     f: fn(&mut crate::RasterWriteOptions)| {
+            let mut options = crate::RasterWriteOptions {
+                driver: Some(driver),
+                creation_options: co.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+                overview_data,
+                ..Default::default()
+            };
+            f(&mut options);
+            let dir = tempfile::tempdir().unwrap();
+            crate::write_raster(&r, dir.path().join("s.tif").to_str().unwrap(), &options).map_err(|e| e.to_string())
+        };
+        use crate::formats::RasterDriver::{AAIGrid, Cog, GTiff};
+        let good = || vec![level_raster(35, 25, 1)];
+        assert!(write(Cog, &[], good(), |_| {}).is_ok());
+        let i16 = {
+            let cfg = wbraster::RasterConfig { cols: 35, rows: 25, bands: 1, data_type: DataType::I16, ..Default::default() };
+            std::sync::Arc::new(Raster::from_data_native(cfg, RasterData::I16(vec![0; 35 * 25])).unwrap())
+        };
+        for (what, result) in [
+            ("type", write(Cog, &[], vec![i16], |_| {})),
+            ("same size", write(Cog, &[], vec![level_raster(70, 50, 1)], |_| {})),
+            ("larger", write(Cog, &[], vec![level_raster(35, 25, 1), level_raster(36, 12, 2)], |_| {})),
+            ("factors", write(GTiff, &[], good(), |o| o.overviews = vec![2])),
+            ("resampling", write(Cog, &[], good(), |o| o.overview_resampling = Some("average".into()))),
+            ("OVERVIEW_RESAMPLING", write(Cog, &[("OVERVIEW_RESAMPLING", "NEAREST")], good(), |_| {})),
+            ("NONE", write(Cog, &[("OVERVIEWS", "NONE")], good(), |_| {})),
+            ("IGNORE_EXISTING", write(Cog, &[("OVERVIEWS", "ignore_existing")], good(), |_| {})),
+            ("AAIGrid", write(AAIGrid, &[], good(), |_| {})),
+        ] {
+            assert!(result.is_err(), "{what}");
+        }
+        let header = crate::RasterDataset::new(r.clone(), true);
+        let dir = tempfile::tempdir().unwrap();
+        let options = crate::RasterWriteOptions { driver: Some(Cog), overview_data: good(), ..Default::default() };
+        assert!(GeoTiffWriter::create(dir.path().join("rows.tif").to_str().unwrap(), &header, &options).is_err());
+    }
+
+    /// As GDAL 3.13.3's COG driver, `OVERVIEWS=FORCE_USE_EXISTING` generates no overviews: without
+    /// existing ones (supplied or a source's), the COG has none, with a warning; AUTO generates
+    /// them.
+    #[test]
+    fn overviews_force_use_existing_without_existing_writes_none() {
+        let r = layouts_raster(1, DataType::F32);
+        let count = |overviews: &str| {
+            let options = crate::RasterWriteOptions {
+                driver: Some(crate::formats::RasterDriver::Cog),
+                creation_options: vec![("BLOCKSIZE".into(), "16".into()), ("OVERVIEWS".into(), overviews.into())],
+                ..Default::default()
+            };
+            let dir = tempfile::tempdir().unwrap();
+            let p = dir.path().join("c.tif");
+            let _ = crate::warnings::take();
+            crate::write_raster(&r, p.to_str().unwrap(), &options).unwrap();
+            (tiff_levels(&p).len() - 1, crate::warnings::take())
+        };
+        let (n, warnings) = count("FORCE_USE_EXISTING");
+        assert_eq!(n, 0);
+        assert!(warnings.iter().any(|w| w.contains("FORCE_USE_EXISTING")), "{warnings:?}");
+        assert_eq!(count("AUTO").0, 3);
+        assert_eq!(count("NONE").0, 0);
+    }
+
+    /// `metadata` items are set over the raster's own (in their place) or added after them, as
+    /// `gdal_translate -mo` sets them, in whole and row-written files alike.
+    #[test]
+    fn metadata_items_are_set_over_the_raster_own() {
+        let mut r = layouts_raster(1, DataType::F32);
+        r.metadata = vec![("A".into(), "1".into()), ("B".into(), "2".into())];
+        let options = crate::RasterWriteOptions {
+            driver: Some(crate::formats::RasterDriver::GTiff),
+            metadata: vec![("B".into(), "3".into()), ("C".into(), "4".into())],
+            ..Default::default()
+        };
+        let expected: Vec<(String, String)> =
+            [("A", "1"), ("B", "3"), ("C", "4")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let dir = tempfile::tempdir().unwrap();
+        let whole = dir.path().join("whole.tif");
+        crate::write_raster(&r, whole.to_str().unwrap(), &options).unwrap();
+        let items = |p: &std::path::Path| {
+            let m = crate::geotiff::read_geotiff(p).unwrap().raster.metadata;
+            m.into_iter().filter(|(k, _)| k != "AREA_OR_POINT").collect::<Vec<_>>()
+        };
+        assert_eq!(items(&whole), expected);
+        let rows = dir.path().join("rows.tif");
+        let header = crate::RasterDataset::new(r.clone(), true);
+        let mut w = GeoTiffWriter::create(rows.to_str().unwrap(), &header, &options).unwrap();
+        w.write_rows(&r.data, r.rows, None).unwrap();
+        w.finish().unwrap();
+        assert_eq!(items(&rows), expected);
+        let o = crate::RasterWriteOptions { driver: Some(crate::formats::RasterDriver::AAIGrid), ..options };
+        assert!(crate::write_raster(&r, dir.path().join("m.asc").to_str().unwrap(), &o).is_err());
     }
 
     /// `ZLEVEL` (1 to 9) sets the Deflate level of DEFLATE and LERC_DEFLATE chunks, in GeoTIFFs and

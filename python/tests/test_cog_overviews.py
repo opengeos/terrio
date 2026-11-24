@@ -468,6 +468,74 @@ def test_ingestion_call_copies_source_overviews(tmp_path, kind):
     _assert_same_masked(gdal, ours, kind)
 
 
+@pytest.mark.parametrize("as_rasters", [False, True], ids=["arrays", "rasters"])
+def test_supplied_overviews_round_trip(tmp_path, as_rasters):
+    """Overviews supplied to `Raster.write` are written as GDAL's COG driver writes a source's
+    existing ones (OVERVIEWS=FORCE_USE_EXISTING): gdaladdo's ceil sizes and every pixel, with
+    no intermediate file; `metadata=` items are set over the raster's own."""
+    src = _source(tmp_path / "src.tif", 1001, 999, 2, "int16", -9999, tiled=True)
+    with rasterio.open(src, "r+") as ds:
+        ds.build_overviews([2, 4], RR.average)
+        ds.update_tags(SOURCE="gdaladdo")
+    gdal = _gdal_cog(src, tmp_path / "gdal.tif", overviews="FORCE_USE_EXISTING")
+    levels = _levels(src)
+    with rasterio.open(src) as ds:
+        transform, crs, nodata = ds.transform.to_gdal(), ds.crs.to_string(), ds.nodata
+    base = terrio.Raster.from_array(levels[0], transform, crs, nodata, metadata={"SOURCE": "x"})
+    supplied = levels[1:]
+    if as_rasters:
+        supplied = [terrio.Raster.from_array(a, transform, crs, nodata) for a in supplied]
+    ours = str(tmp_path / "terrio.tif")
+    base.write(
+        ours,
+        driver="COG",
+        compress="DEFLATE",
+        options={"OVERVIEWS": "FORCE_USE_EXISTING"},
+        overviews=supplied,
+        metadata={"SOURCE": "gdaladdo"},
+    )
+    assert [x.shape for x in _levels(ours)[1:]] == [(2, 500, 501), (2, 250, 251)]
+    with rasterio.open(gdal) as g, rasterio.open(ours) as t:
+        assert t.tags()["SOURCE"] == g.tags()["SOURCE"] == "gdaladdo"
+        assert t.nodata == g.nodata
+        assert t.tags(ns="IMAGE_STRUCTURE")["LAYOUT"] == "COG"
+    _assert_same(gdal, ours, "supplied overviews")
+
+
+def test_supplied_overviews_follow_gdal_overviews_option(tmp_path):
+    """OVERVIEWS as GDAL's COG driver reads it: FORCE_USE_EXISTING never generates overviews (none
+    without existing ones, with a warning); NONE and IGNORE_EXISTING would discard supplied ones,
+    and factors or a resampling with them contradict them, so those are refused."""
+    a = np.arange(48 * 64, dtype="float32").reshape(48, 64)
+    r = terrio.Raster.from_array(a, [0, 1, 0, 48, 0, -1], "EPSG:32615")
+    ov = a[::2, ::2].copy()
+    with pytest.warns(UserWarning, match="FORCE_USE_EXISTING"):
+        r.write(
+            str(tmp_path / "none.tif"),
+            driver="COG",
+            tile_size=16,
+            options={"OVERVIEWS": "FORCE_USE_EXISTING"},
+        )
+    with rasterio.open(tmp_path / "none.tif") as ds:
+        assert ds.overviews(1) == []
+    r.write(str(tmp_path / "auto.tif"), driver="COG", tile_size=16)
+    with rasterio.open(tmp_path / "auto.tif") as ds:
+        assert ds.overviews(1) == [2, 4]
+    for kwargs in (
+        {"options": {"OVERVIEWS": "NONE"}},
+        {"options": {"OVERVIEWS": "IGNORE_EXISTING"}},
+        {"overview_resampling": "average"},
+    ):
+        with pytest.raises(terrio.TerrioError):
+            r.write(str(tmp_path / "x.tif"), driver="COG", overviews=[ov], **kwargs)
+    with pytest.raises(terrio.TerrioError):
+        r.write(str(tmp_path / "x.tif"), driver="COG", overviews=[ov, 4])
+    with pytest.raises(terrio.TerrioError):
+        r.write(str(tmp_path / "x.tif"), driver="COG", overviews=[a])
+    with pytest.raises(terrio.TerrioError):
+        r.write(str(tmp_path / "x.asc"), metadata={"A": "1"})
+
+
 def test_cog_writes_stream(tmp_path, monkeypatch):
     """terrio.rio writes COGs without copying the whole raster into Rust (`Raster.from_array`),
     level rows computed as they come: a memory property no file shows (the files are GDAL's)."""

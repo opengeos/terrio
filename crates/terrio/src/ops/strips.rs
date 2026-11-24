@@ -298,7 +298,11 @@ impl Tiff {
     fn create(header: &RasterDataset, path: &str, options: &RasterWriteOptions, source_mask: bool) -> Result<Option<Self>> {
         let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
         let cog = driver == Some(RasterDriver::Cog);
-        if !(cog || driver == Some(RasterDriver::GTiff)) || (options.mask.is_some() && !source_mask) || !options.overviews.is_empty() {
+        if !(cog || driver == Some(RasterDriver::GTiff))
+            || (options.mask.is_some() && !source_mask)
+            || !options.overviews.is_empty()
+            || !options.overview_data.is_empty()
+        {
             return Ok(None);
         }
         // Compressions only wbraster encodes are written whole.

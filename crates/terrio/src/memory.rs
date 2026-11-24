@@ -1003,6 +1003,9 @@ pub(crate) mod codec {
     pub(crate) fn write_raster(ds: &RasterDataset, driver: RasterDriver, options: &RasterWriteOptions, table: &str) -> Result<Vec<u8>> {
         use crate::drivers::gtiff_write::{TiffOptions, encode};
         driver.ensure_built()?;
+        if !matches!(driver, RasterDriver::GTiff | RasterDriver::Cog) {
+            options.check_written_by_tiff_writer(driver)?;
+        }
         match driver {
             RasterDriver::GTiff | RasterDriver::Cog => {
                 let inherited = options.inherited_from(ds, Some(driver));

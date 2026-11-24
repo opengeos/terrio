@@ -331,6 +331,18 @@ affected chunks to retain their meridian side. These are coverage and I/O checks
 not a numerical GDAL parity claim; regional and multi-turn placement rules remain
 separate.
 
+## Supplied COG overviews
+
+`python scripts/conformance.py DATA --only supplied-overviews --strict` runs
+`scripts/compare_supplied_overviews_with_gdal.py` (osgeo, GDAL 3.13.3). Each of its four
+cases writes a GeoTIFF whose overview bands GDAL created at `gdaladdo`'s ceil sizes and the
+script then filled by hand. GDAL copies it to a COG with `OVERVIEWS=FORCE_USE_EXISTING`, and
+terrio writes the same levels supplied as arrays (`Raster.write(overviews=[...])`). Level
+sizes, nodata and a metadata item must be GDAL's. Samples must be exact for DEFLATE, ZSTD and
+LZW. LERC levels must lie within `MAX_Z_ERROR` plus one Float32 spacing of the supplied
+values (the decoded sample's rounding; GDAL's own levels need the same allowance), with nodata
+pixels exact; the two LERC encoders' bytes are not compared.
+
 ## TIFF block metadata
 
 `python scripts/conformance.py DATA --only tiff-block-tags --strict` requires

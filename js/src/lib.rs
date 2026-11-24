@@ -231,6 +231,48 @@ fn kmz_resources(options: &JsValue) -> Result<Vec<(String, Vec<u8>)>, JsError> {
         .collect()
 }
 
+/// The levels of an `overviewData` option, `[{ width, height, data }]` from the largest, `data` a
+/// typed array of the raster's type holding every band, band after band, row after row.
+fn overview_data(options: &JsValue) -> Result<Vec<std::sync::Arc<terrio::Raster>>, JsError> {
+    use wasm_bindgen::JsCast;
+    if !options.is_object() {
+        return Ok(Vec::new());
+    }
+    let levels = js_sys::Reflect::get(options, &JsValue::from_str("overviewData")).map_err(|_| JsError::new("invalid options"))?;
+    if levels.is_undefined() || levels.is_null() {
+        return Ok(Vec::new());
+    }
+    let levels = levels.dyn_into::<js_sys::Array>().map_err(|_| JsError::new("overviewData: an array of { width, height, data }"))?;
+    levels
+        .iter()
+        .enumerate()
+        .map(|(i, level)| {
+            let field = |name: &str| js_sys::Reflect::get(&level, &JsValue::from_str(name)).ok().filter(|v| !v.is_undefined());
+            let size = |name: &str| {
+                field(name)
+                    .and_then(|v| v.as_f64())
+                    .filter(|v| v.fract() == 0.0 && *v >= 1.0)
+                    .map(|v| v as usize)
+                    .ok_or_else(|| JsError::new(&format!("overviewData[{i}].{name}: a positive integer")))
+            };
+            let (width, height) = (size("width")?, size("height")?);
+            let data = raster_data(&field("data").unwrap_or(JsValue::UNDEFINED))
+                .map_err(|_| JsError::new(&format!("overviewData[{i}].data: a typed array of the raster's type")))?;
+            if data.len() % (width * height) != 0 {
+                return Err(JsError::new(&format!("overviewData[{i}]: the array length is not a multiple of width * height")));
+            }
+            let cfg = terrio::RasterConfig {
+                cols: width,
+                rows: height,
+                bands: data.len() / (width * height),
+                data_type: data.data_type(),
+                ..Default::default()
+            };
+            Ok(std::sync::Arc::new(terrio::raster_from_data(cfg, data).map_err(js_err)?))
+        })
+        .collect()
+}
+
 /// Pixels as a typed array of their own type.
 fn typed_array(data: RasterData) -> JsValue {
     match data {
@@ -312,6 +354,8 @@ struct WriteOptions {
     overviews: Vec<usize>,
     /// Overview resampling: nearest, average, min, max or mode.
     overview_resampling: Option<String>,
+    /// GeoTIFF/COG: dataset metadata items set over the raster's own.
+    metadata: Option<std::collections::BTreeMap<String, String>>,
     /// PMTiles, MBTiles: the lowest zoom level written.
     minzoom: Option<u8>,
     /// PMTiles, MBTiles: the highest zoom level written.
@@ -905,7 +949,11 @@ impl Dataset {
     /// (GeoTIFF/COG: `NONE`, `LZW`, `DEFLATE`, `PACKBITS`, `ZSTD`, `LERC`, `LERC_DEFLATE`,
     /// `LERC_ZSTD`, `JXL`, `JPEG`), `tileSize` and `creationOptions` (GDAL's: `MAX_Z_ERROR`,
     /// `JPEG_QUALITY`, `PREDICTOR`, `FORMAT=NC4` for netCDF, `FORMAT=ZARR_V3` for Zarr...),
-    /// `overviews` (GeoTIFF factors such as `[2,4,8]`) and `overviewResampling`. Zarr
+    /// `overviews` (GeoTIFF factors such as `[2,4,8]`) and `overviewResampling`, or
+    /// `overviewData` (GeoTIFF/COG overviews written as they are, from the largest:
+    /// `[{ width, height, data }]`, `data` a typed array of the raster's type with every band,
+    /// each level smaller than the one before; as GDAL's COG driver writes a source's existing
+    /// overviews), and `metadata` (GeoTIFF/COG dataset items set over the raster's own). Zarr
     /// stores come back as a zip archive of their files. Shapefile output requires
     /// `roads.shp.zip` (MIME `application/zip`); `.shp` alone is refused. The ZIP holds
     /// `.shp`, `.shx`, `.dbf`, `.cpg` and, when a CRS is present, `.prj`.
@@ -919,8 +967,9 @@ impl Dataset {
     #[wasm_bindgen(js_name = toBytes)]
     pub fn to_bytes(&self, filename: &str, options: JsValue) -> Result<Vec<u8>, JsError> {
         let resources = kmz_resources(&options)?;
-        // Without the resource bytes, which JSON would write one entry per byte.
-        let o: WriteOptions = parse_options(&without_key(&options, "kmzResources")?)?;
+        let supplied = overview_data(&options)?;
+        // Without the resource bytes and overview pixels, which JSON would write one entry per value.
+        let o: WriteOptions = parse_options(&without_key(&without_key(&options, "kmzResources")?, "overviewData")?)?;
         let transform_options = TransformOptions {
             allow_ballpark: o.allow_ballpark,
             only_best: o.only_best,
@@ -989,6 +1038,8 @@ impl Dataset {
                     creation_options,
                     overviews: o.overviews,
                     overview_resampling: o.overview_resampling,
+                    overview_data: supplied,
+                    metadata: o.metadata.unwrap_or_default().into_iter().collect(),
                     ..Default::default()
                 };
                 terrio::memory::write_raster_bytes(&ds, filename, &options).map_err(js_err)
@@ -1005,8 +1056,12 @@ impl Dataset {
                     || o.compress.is_some()
                     || o.tile_size.is_some()
                     || o.creation_options.is_some()
+                    || !supplied.is_empty()
+                    || o.metadata.is_some()
                 {
-                    return Err(JsError::new("srcwin, overview, bands, compress, tileSize and creationOptions apply to rasters"));
+                    return Err(JsError::new(
+                        "srcwin, overview, bands, compress, tileSize, creationOptions, overviewData and metadata apply to rasters",
+                    ));
                 }
                 let chosen: Vec<Layer> = match &o.layers {
                     Some(names) => layers.iter().filter(|l| names.contains(&l.name)).cloned().collect(),

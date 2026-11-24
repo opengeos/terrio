@@ -2314,6 +2314,8 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
             || !options.band_metadata.is_empty()
             || !options.color_table.is_empty()
             || !options.overviews.is_empty()
+            || !options.overview_data.is_empty()
+            || !options.metadata.is_empty()
             || options.overview_resampling.is_some()
             || options.geo_transform.is_some()
             || !options.gcps.is_empty()

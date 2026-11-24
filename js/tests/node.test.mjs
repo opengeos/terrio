@@ -197,6 +197,24 @@ test("raster from array, to GeoTIFF bytes and back", () => {
   assert.match(asc, /ncols\s+2/);
 });
 
+test("supplied COG overviews are written as they are, with metadata items", () => {
+  // 70 x 50 pixels; overviews at gdaladdo's ceil sizes, values no resampling gives.
+  const base = terrio.rasterFromArray(Float32Array.from({ length: 70 * 50 }, (_, i) => i % 97), 70, 50,
+    [500000, 10, 0, 4100000, 0, -10], "EPSG:32610");
+  const sizes = [[35, 25], [18, 13], [9, 7]];
+  const overviewData = sizes.map(([width, height], level) =>
+    ({ width, height, data: Float32Array.from({ length: width * height }, (_, i) => (level + 1) * 1000 + (i % 13)) }));
+  const bytes = base.toBytes("s.tif", { format: "COG", compress: "DEFLATE", tileSize: 16, overviewData, metadata: { SOURCE: "supplied" } });
+  const back = terrio.open(bytes, "s.tif");
+  assert.deepEqual(back.overviews(), sizes);
+  for (const [i, level] of overviewData.entries()) assert.deepEqual([...back.readBand(1, undefined, i)], [...level.data]);
+  assert.equal(Object.fromEntries(back.info().metadata).SOURCE, "supplied");
+  // Each level smaller than the one before it, of the raster's type; not with factors.
+  assert.throws(() => base.toBytes("s.tif", { format: "COG", overviewData: [{ width: 70, height: 50, data: new Float32Array(3500) }] }), /smaller/);
+  assert.throws(() => base.toBytes("s.tif", { format: "COG", overviewData: [{ width: 35, height: 25, data: new Uint8Array(875) }] }), /bands/);
+  assert.throws(() => base.toBytes("s.tif", { overviews: [2], overviewData }), /factors/);
+});
+
 test("Zstandard GeoTIFFs with predictors, decoded without the C library", () => {
   // Tiled and in strips, interleaved bands, the horizontal and floating-point predictors.
   const ints = new Int16Array(3 * 70 * 50).map((_, i) => ((i * 37) % 2001) - 1000);

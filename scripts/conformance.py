@@ -24,6 +24,8 @@ Suites:
     vrt               serialized warped/derived/kernel VRTs, masks and lazy windows
     jp2-colors        JPEG 2000 component roles and masks on real Landsat data
     overviews         source overview selection and HTTP COG bytes vs gdalwarp -ovr
+    supplied-overviews  COG overviews supplied as arrays vs GDAL's OVERVIEWS=FORCE_USE_EXISTING copy
+                      (compare_supplied_overviews_with_gdal.py)
     warp-grid         aligned warp tiles and windows on real terrain
     sum-overviews     extensive sum estimates and exact NONE controls vs GDAL
     translate-overviews  resized reads from overviews and HTTP COG bytes vs gdal_translate
@@ -607,6 +609,31 @@ def suite_deflate(ctx):
         suite.cases.append(Case("Deflate", row["name"], IDENTICAL if row["status"] == "identical" else DIFFERS, row["detail"]))
     if len(rows) < 5 or code and not any(case.status == DIFFERS for case in suite.cases):
         suite.error = tail(err or out) or "incomplete Deflate comparisons"
+    return suite
+
+
+def suite_supplied_overviews(ctx):
+    """COG overviews supplied as arrays against GDAL's FORCE_USE_EXISTING copy of the same levels."""
+    suite = Suite("supplied-overviews", "Supplied COG overviews", "GDAL COG driver, OVERVIEWS=FORCE_USE_EXISTING",
+                  "Hand-written GeoTIFF overview bands at gdaladdo's ceil sizes, copied by GDAL and supplied as arrays to "
+                  "terrio: level sizes exact; samples exact for DEFLATE, ZSTD and LZW; LERC levels within MAX_Z_ERROR plus "
+                  "one Float32 spacing of the supplied values, as GDAL's are, with nodata exact (LERC encoders' bytes are "
+                  "not compared); nodata and metadata items.")
+    missing = missing_modules("terrio", "numpy", "osgeo")
+    if missing:
+        suite.skipped = "needs " + ", ".join(missing)
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_supplied_overviews_with_gdal.py"), "--json"])
+    try:
+        rows = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    statuses = {"identical": IDENTICAL, "within tolerance": TOLERANCE}
+    for row in rows:
+        suite.cases.append(Case("Supplied overviews", row["name"], statuses.get(row["status"], DIFFERS), row["detail"]))
+    if len(rows) < 4 or code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or out) or "incomplete supplied-overview comparisons"
     return suite
 
 
@@ -4377,6 +4404,7 @@ SUITES = OrderedDict(
         ("jp2-writer", suite_jp2_writer),
         ("webp-writer", suite_webp_writer),
         ("deflate", suite_deflate),
+        ("supplied-overviews", suite_supplied_overviews),
         ("windows", suite_windows),
         ("ops", suite_ops),
         ("raster-masks", suite_raster_masks),
