@@ -61,6 +61,8 @@ impl AreaMatched {
 /// The band metadata item holding, for each overview level, the valid area it keeps over the
 /// band's valid full-resolution area (its kept cells times the area of a cell in full-resolution
 /// pixels, over the valid pixels), comma-separated: `1` when a level keeps the area exactly.
+/// Cell area is the uniform overview-grid area (`base pixels / overview cells`), not the
+/// number of source pixel centres assigned to an individual footprint on an odd-sized grid.
 pub(crate) const AREA_RATIOS_ITEM: &str = "OVERVIEW_AREA_RATIOS";
 /// The band metadata item holding the band's valid full-resolution pixels, which the ratios of
 /// [`AREA_RATIOS_ITEM`] are relative to.
@@ -254,6 +256,9 @@ fn select<T>(cells: &Cells<T>, target: u64, factor: u64) -> Result<Vec<bool>> {
 /// larger than the one before), with their nominal decimation `factors` (which salt the tie
 /// breaking). `nodata` is the band's nodata value, `replacement` the value a mean equal to it
 /// takes instead, and `integral` whether the type is an integer type.
+/// Means use f64 accumulation, following the ported NumPy algorithm, so Int64/UInt64 means
+/// can lose low bits above f64 precision (even when the source samples are all equal).
+/// Mode selection and nodata comparisons retain native integer values.
 ///
 /// # Errors
 /// `InvalidData` when a size is larger than the level before it; `Unsupported` when the

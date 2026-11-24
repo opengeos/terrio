@@ -319,18 +319,23 @@ along the margin. terrio's `OVERVIEW_RESAMPLING=AREA_MATCHED` (`overview_resampl
   without guaranteeing a connected margin, and two writes give the same file. A level is refused
   if too few footprints contain valid pixels to meet the rounded target without inventing values.
 - A kept cell holds the mean of its valid pixels (rounded half to even for integer types), and
-  others hold nodata. `AREA_MATCHED_MODE` holds the most frequent class instead (of the cells of
-  the level below, the lowest on ties), for categorical rasters.
+  others hold nodata. Means accumulate in `f64`, following the ported NumPy algorithm; Int64
+  and UInt64 means can lose low bits, for example a constant `2^60 + 1` becomes `2^60`.
+  `AREA_MATCHED_MODE` holds the most frequent class instead (of the cells of the level below,
+  the lowest on ties), retaining native integer class values for categorical rasters.
 - The raster needs one shared nodata value across all bands (NaN is never valid). Distinct
   per-band declarations, per-dataset masks, alpha bands and complex bands are refused. A COG
   with these overviews is written whole, not a strip at a time.
 - Each overview declares nodata, including Int64 and UInt64 levels, so readers mask cells
   excluded from the reported valid area.
 - Each band's metadata records what its levels keep, as default-domain items that GDAL's COG and
-  GTiff drivers copy with the band: `OVERVIEW_AREA_RATIOS`, the area each level keeps over the
-  valid full-resolution area (comma-separated, `1` when it is kept exactly), and
+  GTiff drivers copy with the band: `OVERVIEW_AREA_RATIOS`, the nominal area each level keeps
+  over the valid full-resolution area (comma-separated, `1` when it is kept exactly), and
   `OVERVIEW_BASE_VALID_PIXELS`. A COG records the method as GDAL's COG driver records one,
   `IMAGE_STRUCTURE`'s `OVERVIEW_RESAMPLING=AREA_MATCHED`.
+  Nominal area is the kept-cell count times the uniform overview-grid cell area (base pixel
+  count divided by overview cell count), rather than the sum of selected source-footprint
+  weights, which can differ on odd-sized grids.
 
 ```sh
 terrio convert depth.tif depth_cog.tif -f COG --co COMPRESS=DEFLATE --co OVERVIEW_RESAMPLING=AREA_MATCHED
