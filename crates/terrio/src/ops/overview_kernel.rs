@@ -2,6 +2,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2007-2010, Even Rouault <even dot rouault at spatialys.com>
 // SPDX-FileCopyrightText: Copyright (c) 1999, Frank Warmerdam
 // SPDX-FileCopyrightText: Copyright (c) 2007-2013, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2009, Phil Vachon <philippe at cowpig.ca>
+// SPDX-FileCopyrightText: Copyright (c) 2025, Even Rouault <even dot rouault at spatialys.com>
 // SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
 //
@@ -9,12 +11,16 @@
 //   GDAL v3.12.0:
 //     gcore/overview.cpp
 //     gcore/gdal_misc.cpp
+//   GDAL v3.13.2:
+//     gcore/overview.cpp (GDALResampleChunkC32R)
+//     gcore/gdal_priv_templates.hpp (sGDALCopyWord from float to signed integers)
 
-//! GDAL's overview resampling arithmetic (`gcore/overview.cpp`, GDAL 3.12): the source windows of
+//! Real-band overview arithmetic follows `gcore/overview.cpp` in GDAL 3.12.0: the source windows of
 //! each overview pixel, nearest neighbour at `0.5 + i * ratio`, the coverage-weighted average in
 //! GDAL's work data type (with its factor-of-two paths, the order of their additions included, and
 //! its replacement of averages equal to the nodata value), and the most frequent value. Terrio's
-//! minimum and maximum (which GDAL's `gdaladdo` does not offer) use the same windows.
+//! minimum and maximum (which GDAL's `gdaladdo` does not offer) use the same windows. Complex bands
+//! average as GDAL 3.13.2's `GDALResampleChunkC32R`: an unweighted window, in `CFloat32`.
 //!
 //! The windows are clamped to the source chunk GDAL reads them from, so the per-band chunking of
 //! `GDALRegenerateOverviewsEx` (full-width chunks of source rows) is reproduced by computing each
@@ -41,8 +47,12 @@ fn work_type(dt: DataType) -> Work {
     }
 }
 
-/// The size in bytes of the values GDAL reads a chunk in, for its chunk sizes.
-pub(crate) fn work_size(method: Method, dt: DataType) -> usize {
+/// The size in bytes of the values GDAL reads a chunk in, for its chunk sizes: of a complex value
+/// (both parts) when `complex`, which GDAL averages in `CFloat32`.
+pub(crate) fn work_size(method: Method, dt: DataType, complex: bool) -> usize {
+    if complex {
+        return 2 * if method == Method::Average { 4 } else { dt.size_bytes() };
+    }
     match method {
         Method::Average => match work_type(dt) {
             Work::U8 => 1,
@@ -57,20 +67,35 @@ pub(crate) fn work_size(method: Method, dt: DataType) -> usize {
 /// The source rows of each chunk `GDALRegenerateOverviewsEx` reads a band of `width` x `height`
 /// pixels in blocks of `block_rows` rows by, for overviews up to `max_factor` times smaller:
 /// `None` when it hands the band to `GDALRegenerateOverviewsMultiBand` instead (chunks over 10 MB
-/// of a tiled band), whose windows are not clamped.
-pub(crate) fn ex_chunk_rows(width: usize, height: usize, block: (usize, usize), max_factor: usize, value_size: usize) -> Option<usize> {
-    const MAX: usize = 10 * 1024 * 1024;
+/// of a tiled band that is not `complex`), whose windows are not clamped.
+pub(crate) fn ex_chunk_rows(
+    width: usize,
+    height: usize,
+    block: (usize, usize),
+    max_factor: usize,
+    value_size: usize,
+    complex: bool,
+) -> Option<usize> {
     let rows = block.1.max(2 * max_factor).max(1);
-    let size = |rows: usize| value_size * rows * width;
-    if size(rows) > MAX {
-        // GDAL hands tiled bands to GDALRegenerateOverviewsMultiBand.
-        return if block.0 < width { None } else { Some(rows) };
+    if ex_chunk_oversized(width, block, max_factor, value_size) {
+        // GDAL hands tiled bands to GDALRegenerateOverviewsMultiBand, except complex ones.
+        return if block.0 < width && !complex { None } else { Some(rows) };
     }
+    let size = |rows: usize| value_size * rows * width;
     let mut rows = rows;
-    while size(rows) < MAX / 2 {
+    while size(rows) < EX_CHUNK_MAX / 2 {
         rows *= 2;
     }
     Some(rows.min(height.max(1)).max(1))
+}
+
+/// GDAL's `GDAL_OVR_CHUNK_MAX_SIZE` default: the bytes of a chunk `GDALRegenerateOverviewsEx` reads.
+const EX_CHUNK_MAX: usize = 10 * 1024 * 1024;
+
+/// Whether the smallest chunk `GDALRegenerateOverviewsEx` would read (of [`ex_chunk_rows`]) is over
+/// its maximum size, when it computes the overviews some other way.
+pub(crate) fn ex_chunk_oversized(width: usize, block: (usize, usize), max_factor: usize, value_size: usize) -> bool {
+    value_size * block.1.max(2 * max_factor).max(1) * width > EX_CHUNK_MAX
 }
 
 /// The rows of each chunk of [`ex_chunk_rows`] rows: `(source rows, overview rows)` for an
@@ -113,6 +138,9 @@ pub(crate) struct Target {
     /// The band's nodata value.
     pub(crate) nodata: Option<f64>,
     pub(crate) method: Method,
+    /// Whether the band is a part (real or imaginary) of a complex band, which GDAL averages with
+    /// `GDALResampleChunkC32R`: unweighted, in `CFloat32`, without nodata or mask.
+    pub(crate) complex: bool,
 }
 
 /// Computes overview rows `out_rows` (all columns) of `band`, its windows clamped to the source
@@ -137,6 +165,9 @@ pub(crate) fn resample(
             mode_rows(band, t, out_rows.start, chunk, &mut out);
         }
         return out;
+    }
+    if t.complex && t.method == Method::Average {
+        return complex_average(band, t, out_rows, chunk);
     }
     let rx = band.width as f64 / t.width as f64;
     let ry = band.height as f64 / t.height as f64;
@@ -189,6 +220,75 @@ pub(crate) fn resample(
         }
     }
     out
+}
+
+/// The source window `[start, end)` of overview line or column `i` of `out` lines at `ratio`, in a
+/// source of `size` lines whose lines from `lo` are read, as `GDALResampleChunkC32R` takes it: it
+/// may be empty.
+fn complex_window(i: usize, out: usize, ratio: f64, size: usize, lo: usize) -> (usize, usize) {
+    let mut a = ((0.5 + i as f64 * ratio) as usize).max(lo);
+    let mut b = (0.5 + (i + 1) as f64 * ratio) as usize;
+    if b == a {
+        b += 1;
+    }
+    if b > size || i + 1 == out {
+        if a == size && size > lo {
+            a = size - 1;
+        }
+        b = size;
+    }
+    (a, b)
+}
+
+/// The average of a part of a complex band, as GDAL's `GDALResampleChunkC32R` (GDAL 3.13): the
+/// values in `CFloat32` summed in `f64` over unweighted windows, always clamped to the source
+/// chunk's last line, the mean back in `CFloat32`, then stored in the band's type. GDAL
+/// ignores nodata and masks there.
+fn complex_average(band: &Band, t: &Target, out_rows: std::ops::Range<usize>, chunk: std::ops::Range<usize>) -> Vec<f64> {
+    let rx = band.width as f64 / t.width as f64;
+    let ry = band.height as f64 / t.height as f64;
+    let (cy0, cy1) = (chunk.start.max(band.rows.start), chunk.end.min(band.rows.end));
+    let xs: Vec<(usize, usize)> = (0..t.width).map(|i| complex_window(i, t.width, rx, band.width, 0)).collect();
+    let mut out = Vec::with_capacity(out_rows.len() * t.width);
+    for i in out_rows {
+        let (y0, y1) = complex_window(i, t.height, ry, band.height, cy0);
+        let y1 = y1.min(cy1);
+        for &(x0, x1) in &xs {
+            let (mut total, mut count) = (0.0f64, 0usize);
+            for y in y0..y1 {
+                let row = &band.values[(y - band.rows.start) * band.width..];
+                for &v in &row[x0..x1] {
+                    total += v as f32 as f64;
+                    count += 1;
+                }
+            }
+            // An empty overlap explicitly produces zero rather than dividing by zero.
+            // This also defines the result for a window clipped outside the source chunk.
+            let mean = if count == 0 { 0.0f32 } else { (total / count as f64) as f32 };
+            out.push(store_cfloat32(mean, t.data_type));
+        }
+    }
+    out
+}
+
+/// A part of a `CFloat32` value written to a complex band of `dt` parts (GDAL's `sGDALCopyWord`
+/// from `float`): integers rounded half away from zero in `float` and clamped, NaN as 0.
+/// The `float` addition itself rounds at large magnitudes, as in GDAL 3.13.2: for example,
+/// 8388609.0 plus 0.5 becomes 8388610.0 before conversion to CInt32.
+fn store_cfloat32(v: f32, dt: DataType) -> f64 {
+    if !matches!(dt, DataType::I16 | DataType::I32) {
+        return v as f64;
+    }
+    if v.is_nan() {
+        return 0.0;
+    }
+    let rounded = if v >= 0.0 { v + 0.5 } else { v - 0.5 };
+    match dt {
+        DataType::I16 => rounded.clamp(i16::MIN as f32, i16::MAX as f32).trunc() as f64,
+        _ if v >= i32::MAX as f32 => i32::MAX as f64,
+        _ if v <= i32::MIN as f32 => i32::MIN as f64,
+        _ => rounded.trunc() as f64,
+    }
 }
 
 /// Fill consecutive Mode rows without allocating a second output buffer.
@@ -545,7 +645,7 @@ mod tests {
     use super::*;
 
     fn target(width: usize, height: usize, data_type: DataType, nodata: Option<f64>, method: Method) -> Target {
-        Target { width, height, data_type, nodata, method }
+        Target { width, height, data_type, nodata, method, complex: false }
     }
 
     #[test]
@@ -614,5 +714,40 @@ mod tests {
         for w in chunks.windows(2) {
             assert_eq!(w[0].1.end, w[1].1.start);
         }
+    }
+
+    fn complex_target(width: usize, height: usize, data_type: DataType) -> Target {
+        Target { complex: true, ..target(width, height, data_type, None, Method::Average) }
+    }
+
+    #[test]
+    fn complex_averages_take_unweighted_windows_in_cfloat32() {
+        // 5 columns to 2 (ratio 2.5): GDALResampleChunkC32R takes columns [0, 3) and [3, 5) whole,
+        // where the real average weights the shared column.
+        let values = vec![1.0, 2.0, 4.0, 8.0, 16.0];
+        let band = Band { values: &values, valid: None, width: 5, height: 1, rows: 0..1 };
+        assert_eq!(resample(&band, &complex_target(2, 1, DataType::F32), 0..1, 0..1, 0), vec![(7.0f64 / 3.0) as f32 as f64, 12.0]);
+        // Float64 parts are read and averaged in CFloat32.
+        let values = vec![0.1, 0.2];
+        let band = Band { values: &values, valid: None, width: 2, height: 1, rows: 0..1 };
+        let mean = ((0.1f32 as f64 + 0.2f32 as f64) / 2.0) as f32 as f64;
+        assert_eq!(resample(&band, &complex_target(1, 1, DataType::F64), 0..1, 0..1, 0), vec![mean]);
+        // Nodata and masks do not count.
+        let values = vec![0.0, 4.0];
+        let band = Band { values: &values, valid: Some(&[false, true]), width: 2, height: 1, rows: 0..1 };
+        let t = Target { nodata: Some(0.0), ..complex_target(1, 1, DataType::F32) };
+        assert_eq!(resample(&band, &t, 0..1, 0..1, 0), vec![2.0]);
+    }
+
+    #[test]
+    fn complex_integer_averages_round_half_away_from_zero() {
+        let values = vec![1.0, 0.0, -1.0, 0.0, -3.0, 0.0, 40000.0, 40000.0];
+        let band = Band { values: &values, valid: None, width: 8, height: 1, rows: 0..1 };
+        assert_eq!(resample(&band, &complex_target(4, 1, DataType::I16), 0..1, 0..1, 0), vec![1.0, -1.0, -2.0, 32767.0]);
+        assert_eq!(store_cfloat32(f32::NAN, DataType::I32), 0.0);
+        assert_eq!(store_cfloat32(3e9, DataType::I32), i32::MAX as f64);
+        assert_eq!(store_cfloat32(-2.5, DataType::I32), -3.0);
+        assert_eq!(store_cfloat32(8_388_609.0, DataType::I32), 8_388_610.0);
+        assert_eq!(store_cfloat32(-8_388_609.0, DataType::I32), -8_388_610.0);
     }
 }
