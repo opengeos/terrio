@@ -222,12 +222,19 @@ fn douglas_peucker(s: &mut Scratch, tolerance: f64) {
         let (mut max_distance, mut max_index) = (-1.0, i);
         for (k, &p) in s.pts.iter().enumerate().take(j).skip(i + 1) {
             let distance = seg.to(p);
+            if distance.is_nan() {
+                max_distance = f64::NAN;
+                break;
+            }
             if distance > max_distance {
                 max_distance = distance;
                 max_index = k;
             }
         }
-        if max_distance <= tolerance {
+        if max_distance.is_nan() {
+            // Finite coordinates can overflow the distance arithmetic. Keep this section.
+            continue;
+        } else if max_distance <= tolerance {
             s.use_pt[i + 1..j].fill(false);
         } else {
             s.sections.push((max_index, j));
@@ -419,14 +426,22 @@ impl Run<'_> {
     }
 
     /// Copies a geometry to `out`, simplified.
-    fn geometry(&mut self, r: &mut Reader, out: &mut Vec<u8>, depth: usize) -> Result<Outcome> {
+    fn geometry(&mut self, r: &mut Reader, out: &mut Vec<u8>, depth: usize, expected: Option<u32>) -> Result<Outcome> {
         let h = r.header()?;
+        if expected.is_some_and(|kind| h.kind != kind) {
+            return Err(wkb_error(h.start, "member type does not match its multi geometry"));
+        }
         out.extend_from_slice(&r.b[h.start..h.end]);
         let stride = 8 * h.dims;
         match h.kind {
             1 => {
                 let c = r.take(stride)?;
                 out.extend_from_slice(c);
+                let (x, y) = (f64_at(c, h.le), f64_at(&c[8..], h.le));
+                if x.is_nan() && y.is_nan() {
+                    return Ok(Outcome::Empty);
+                }
+                self.non_finite |= !(x.is_finite() && y.is_finite());
                 self.stats.vertices_in += 1;
                 self.stats.vertices_out += 1;
                 Ok(Outcome::Kept)
@@ -485,7 +500,11 @@ impl Run<'_> {
                 let mut written = 0u32;
                 for _ in 0..parts {
                     let at = out.len();
-                    if self.geometry(r, out, depth + 1)? == Outcome::Empty && self.collapse == RingCollapse::Drop {
+                    let expected = match h.kind {
+                        4..=6 => Some(h.kind - 3),
+                        _ => None,
+                    };
+                    if self.geometry(r, out, depth + 1, expected)? == Outcome::Empty && self.collapse == RingCollapse::Drop {
                         out.truncate(at);
                     } else {
                         written += 1;
@@ -502,7 +521,7 @@ fn simplify_one(wkb: &[u8], options: &SimplifyOptions, s: &mut Scratch) -> Resul
     let mut run = Run { tolerance: options.tolerance, collapse: options.collapse, s, stats: SimplifyStats::default(), non_finite: false };
     let mut r = Reader { b: wkb, pos: 0 };
     let mut out = Vec::with_capacity(wkb.len());
-    let outcome = run.geometry(&mut r, &mut out, 0)?;
+    let outcome = run.geometry(&mut r, &mut out, 0, None)?;
     if r.pos != wkb.len() {
         return Err(wkb_error(r.pos, "trailing bytes after the geometry"));
     }
@@ -562,17 +581,215 @@ pub fn simplify_wkb_many<B: AsRef<[u8]> + Sync>(
     Ok((out, stats))
 }
 
-/// Douglas-Peucker simplification of a geometry (see the module documentation), through WKB.
-/// Z is kept; M is dropped, as terrio geometries hold no M.
+/// Simplifies native coordinates by retained indices, preserving missing Z and dropping M.
+fn native_line(run: &mut Run<'_>, coordinates: &[wbvector::Coord], ring: bool) -> Option<Vec<wbvector::Coord>> {
+    run.s.pts.clear();
+    run.s.pts.extend(coordinates.iter().map(|c| (c.x, c.y)));
+    if ring {
+        if !run.ring(coordinates.len()) {
+            return None;
+        }
+    } else {
+        douglas_peucker(run.s, run.tolerance);
+    }
+    Some(run.s.keep.iter().map(|&i| native_coord(&coordinates[i])).collect())
+}
+
+fn native_coord(c: &wbvector::Coord) -> wbvector::Coord {
+    wbvector::Coord { x: c.x, y: c.y, z: c.z, m: None }
+}
+
+fn native_polygon(
+    run: &mut Run<'_>,
+    exterior: &wbvector::Ring,
+    interiors: &[wbvector::Ring],
+) -> Option<(wbvector::Ring, Vec<wbvector::Ring>)> {
+    use super::simplify::{closed_ring, open_ring};
+    let exterior = open_ring(native_line(run, &closed_ring(&exterior.0), true)?);
+    let interiors = interiors.iter().filter_map(|ring| native_line(run, &closed_ring(&ring.0), true).map(open_ring)).collect();
+    Some((exterior, interiors))
+}
+
+/// Rebuilds a depth-checked native geometry directly, without line-wide dimensional coercion.
+fn native_geometry(run: &mut Run<'_>, g: &Geometry) -> Geometry {
+    let drop = run.collapse == RingCollapse::Drop;
+    let empty_point = |c: &wbvector::Coord| c.x.is_nan() && c.y.is_nan();
+    match g {
+        Geometry::Point(c) => Geometry::Point(native_coord(c)),
+        Geometry::MultiPoint(cs) => Geometry::MultiPoint(cs.iter().filter(|c| !drop || !empty_point(c)).map(native_coord).collect()),
+        Geometry::LineString(cs) => Geometry::LineString(native_line(run, cs, false).unwrap()),
+        Geometry::MultiLineString(lines) => Geometry::MultiLineString(
+            lines.iter().map(|cs| native_line(run, cs, false).unwrap()).filter(|cs| !drop || !cs.is_empty()).collect(),
+        ),
+        Geometry::Polygon { exterior, interiors } => {
+            let (exterior, interiors) =
+                native_polygon(run, exterior, interiors).unwrap_or_else(|| (wbvector::Ring(Vec::new()), Vec::new()));
+            Geometry::Polygon { exterior, interiors }
+        }
+        Geometry::MultiPolygon(polygons) => {
+            Geometry::MultiPolygon(polygons.iter().filter_map(|(exterior, interiors)| native_polygon(run, exterior, interiors)).collect())
+        }
+        Geometry::GeometryCollection(children) => Geometry::GeometryCollection(
+            children
+                .iter()
+                .map(|child| native_geometry(run, child))
+                .filter(|child| {
+                    !drop
+                        || !match child {
+                            Geometry::Point(c) => empty_point(c),
+                            _ => child.is_empty(),
+                        }
+                })
+                .collect(),
+        ),
+    }
+}
+
+/// Douglas-Peucker simplification of a geometry (see the module documentation).
+/// Retained vertices keep their individual Z presence and value; M is dropped.
 pub fn simplify_douglas_peucker(g: &Geometry, tolerance: f64, collapse: RingCollapse) -> Result<Geometry> {
     let options = SimplifyOptions { tolerance, collapse };
-    let (wkb, _) = simplify_wkb(&g.to_wkb(), &options)?;
-    Geometry::from_wkb(&wkb).map_err(|e| Error::InvalidData(format!("WKB: {e}")))
+    options.validate()?;
+    // Validate before any recursive traversal or clone, including serialization by dependencies.
+    let mut pending = vec![(g, 0)];
+    let (mut non_finite, mut has_vertices) = (false, false);
+    while let Some((geometry, depth)) = pending.pop() {
+        if depth == 64
+            && matches!(
+                geometry,
+                Geometry::MultiPoint(_) | Geometry::MultiLineString(_) | Geometry::MultiPolygon(_) | Geometry::GeometryCollection(_)
+            )
+        {
+            return Err(Error::InvalidData("collection nesting exceeds 64 levels".into()));
+        }
+        if let Geometry::GeometryCollection(children) = geometry {
+            pending.extend(children.iter().map(|child| (child, depth + 1)));
+        } else {
+            let points = matches!(geometry, Geometry::Point(_) | Geometry::MultiPoint(_));
+            for c in geometry.all_coords() {
+                if points && c.x.is_nan() && c.y.is_nan() {
+                    continue;
+                }
+                has_vertices = true;
+                non_finite |= !(c.x.is_finite() && c.y.is_finite());
+            }
+        }
+    }
+    if non_finite || !has_vertices {
+        let mut out = g.clone();
+        crate::vector::map_coords(&mut out, &mut |c| {
+            c.m = None;
+            Ok(())
+        })?;
+        return Ok(out);
+    }
+    let mut scratch = Scratch::default();
+    let mut run = Run { tolerance, collapse, s: &mut scratch, stats: SimplifyStats::default(), non_finite: false };
+    Ok(native_geometry(&mut run, g))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn point_xy(x: f64, y: f64) -> Vec<u8> {
+        let mut bytes = vec![1, 1, 0, 0, 0];
+        bytes.extend(x.to_le_bytes());
+        bytes.extend(y.to_le_bytes());
+        bytes
+    }
+
+    fn collection(kind: u32, parts: &[Vec<u8>]) -> Vec<u8> {
+        let mut bytes = vec![1];
+        bytes.extend(kind.to_le_bytes());
+        bytes.extend((parts.len() as u32).to_le_bytes());
+        for part in parts {
+            bytes.extend(part);
+        }
+        bytes
+    }
+
+    #[test]
+    fn indeterminate_distances_keep_the_section() {
+        let bytes = le_line(2, &[(0.0, 0.0), (5e154, 2.0), (1e155, 0.0)]);
+        assert_eq!(run(&bytes, 1.0, RingCollapse::Keep).0, bytes);
+    }
+
+    #[test]
+    fn point_empties_and_non_finite_points_follow_the_feature_policy() {
+        let line = le_line(2, &[(0.0, 0.0), (5.0, 0.1), (10.0, 0.0)]);
+        for x in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+            let input = collection(7, &[point_xy(x, 0.0), line.clone()]);
+            let (out, stats) = run(&input, 1.0, RingCollapse::Drop);
+            assert_eq!(out, input);
+            assert_eq!((stats.non_finite, stats.vertices_in, stats.vertices_out), (1, 4, 4));
+        }
+        let finite = point_xy(1.0, 2.0);
+        let input = collection(7, &[finite.clone(), line]);
+        let (out, stats) = run(&input, 1.0, RingCollapse::Drop);
+        assert!(out.len() < input.len());
+        assert_eq!((stats.non_finite, stats.vertices_out), (0, 3));
+        let empty = point_xy(f64::NAN, f64::NAN);
+        let input = collection(4, &[empty.clone(), finite.clone()]);
+        let (out, stats) = run(&input, 1.0, RingCollapse::Drop);
+        assert_eq!(out, collection(4, &[finite]));
+        assert_eq!((stats.vertices_in, stats.vertices_out, stats.non_finite), (1, 1, 0));
+        for policy in [RingCollapse::Keep, RingCollapse::Drop] {
+            let (out, stats) = run(&empty, 1.0, policy);
+            assert_eq!(out, empty);
+            assert_eq!((stats.vertices_in, stats.vertices_out, stats.non_finite), (0, 0, 0));
+        }
+    }
+
+    #[test]
+    fn multi_geometries_refuse_mismatched_members_before_dropping_them() {
+        for (kind, member) in [(4, le_line(2, &[])), (5, point_xy(1.0, 2.0)), (6, point_xy(1.0, 2.0)), (5, polygon(&[], true))] {
+            for collapse in [RingCollapse::Keep, RingCollapse::Drop] {
+                let error = simplify_wkb(&collection(kind, std::slice::from_ref(&member)), &SimplifyOptions { tolerance: 1.0, collapse })
+                    .unwrap_err();
+                assert!(error.to_string().contains("member type"), "{error}");
+            }
+        }
+    }
+
+    #[test]
+    fn native_vertices_preserve_missing_z_and_drop_m() {
+        use wbvector::Coord;
+        for mut points in [
+            vec![Coord::xy(0.0, 0.0), Coord::xyz(1.0, 0.0, 10.0)],
+            vec![Coord::xy(0.0, 0.0), Coord::xy(0.5, 0.01), Coord::xy(1.0, 0.0)],
+            vec![Coord::xyz(0.0, 0.0, 1.0), Coord::xyz(0.5, 0.01, 2.0), Coord::xyz(1.0, 0.0, 10.0)],
+        ] {
+            points[0].m = Some(7.0);
+            let expected = Geometry::LineString(vec![native_coord(&points[0]), native_coord(points.last().unwrap())]);
+            assert_eq!(simplify_douglas_peucker(&Geometry::LineString(points), 0.1, RingCollapse::Keep).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn native_geometry_depth_is_checked_before_any_recursive_traversal() {
+        let scenario = || {
+            for depth in [32, 50_000] {
+                let mut geometry = Geometry::Point(wbvector::Coord::xy(0.0, 0.0));
+                for _ in 0..depth {
+                    geometry = Geometry::GeometryCollection(vec![geometry]);
+                }
+                let result = simplify_douglas_peucker(&geometry, 1.0, RingCollapse::Keep);
+                if depth == 32 {
+                    assert!(result.is_ok());
+                } else {
+                    assert!(result.unwrap_err().to_string().contains("nesting exceeds 64"));
+                }
+                // Dropping an arbitrarily nested caller-owned value is a separate dependency operation.
+                std::mem::forget(geometry);
+            }
+            true
+        };
+        #[cfg(unix)]
+        crate::par::alone(20, scenario);
+        #[cfg(not(unix))]
+        assert!(scenario());
+    }
 
     fn le_line(kind: u32, pts: &[(f64, f64)]) -> Vec<u8> {
         let mut b = vec![1];

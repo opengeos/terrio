@@ -162,7 +162,8 @@ where
 ///
 /// Returns:
 ///     The simplified geometries, as the input came: a `pyarrow.Array` of the input's type and
-///     field metadata for Arrow input (a `terrio.ArrowArray` when pyarrow is not installed), a
+///     field metadata for Arrow input (a `terrio.ArrowArray` when pyarrow is not installed or
+///     cannot retain that field metadata), a
 ///     list of `bytes` or `None` otherwise; with `stats=True`, a `(geometries, dict)` tuple.
 ///
 /// Raises:
@@ -189,9 +190,17 @@ fn simplify_wkb<'py>(
             DataType::BinaryView => simplify_binary::<BinaryViewArray>(py, &array, &options, |v| Arc::new(BinaryViewArray::from_iter(v)))?,
             other => return Err(invalid(format!("geometries must be WKB (binary, large_binary or binary_view), not {other}"))),
         };
+        let metadata = field.metadata().clone();
         let exported = Bound::new(py, PyArrowArray { field: field.with_nullable(true), array: out })?.into_any();
         let result = match py.import("pyarrow") {
-            Ok(pa) => pa.call_method1("array", (exported,))?,
+            Ok(pa) => {
+                let converted = pa.call_method1("array", (&exported,))?;
+                if metadata.is_empty() || read_array(&converted)?.is_some_and(|(field, _)| field.metadata() == &metadata) {
+                    converted
+                } else {
+                    exported
+                }
+            }
             Err(_) => exported,
         };
         (result, s, seconds)

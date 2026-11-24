@@ -264,7 +264,7 @@ class Runner:
         compared = len(actual) - repaired
         self.record(
             name,
-            IDENTICAL if same == compared else DIFFERS,
+            "not compared" if actual and compared == 0 else IDENTICAL if same == compared else DIFFERS,
             features=len(actual),
             identical=same,
             left_out_invalid=repaired,

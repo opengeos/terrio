@@ -182,6 +182,35 @@ def test_arrow_arrays_keep_their_type():
         terrio.simplify_wkb(pa.array([1, 2]), 0.1)
 
 
+def test_unregistered_geoarrow_field_metadata_survives_simplification():
+    """Preserve an exporter's WKB field metadata when PyArrow imports only storage."""
+    pa = pytest.importorskip("pyarrow")
+    metadata = {
+        b"ARROW:extension:name": b"geoarrow.wkb",
+        b"ARROW:extension:metadata": b'{"crs":"EPSG:4326"}',
+    }
+    field = pa.field("geometry", pa.binary(), metadata=metadata)
+    values = pa.array([shapely.to_wkb(shapely.LineString([(0, 0), (1, 0.01), (2, 0)]))])
+
+    class Exporter:
+        def __arrow_c_array__(self, requested_schema=None):
+            """Export the array with its metadata-bearing field.
+
+            Args:
+                requested_schema: Optional consumer schema, unused by this exporter.
+
+            Returns:
+                A pair of Arrow schema and array capsules.
+            """
+            return field.__arrow_c_schema__(), values.__arrow_c_array__()[1]
+
+    out = terrio.simplify_wkb(Exporter(), 0.1)
+    schema, _ = out.__arrow_c_array__()
+    imported = pa.Field._import_from_c_capsule(schema)
+    assert imported.metadata == metadata
+    assert _coords(shapely.from_wkb(pa.array(out)[0].as_py())) == [[0, 0], [2, 0]]
+
+
 def test_layer_simplify_douglas_peucker():
     fc = {
         "type": "FeatureCollection",
@@ -197,6 +226,43 @@ def test_layer_simplify_douglas_peucker():
     assert out["features"][0]["geometry"]["coordinates"] == [[0, 0], [10, 0]]
     with pytest.raises(ValueError):
         terrio.simplify(fc, 1.0, method="nope")
+
+
+@pytest.mark.parametrize("collapse", ["keep", "drop"])
+def test_native_components_agree_with_the_wkb_path(collapse):
+    """Check native reconstruction of lines, rings, holes, multis and collections.
+
+    Args:
+        collapse: Policy for collapsed rings and empty parts.
+    """
+    from shapely.geometry import shape
+
+    line = shapely.LineString([(0, 0), (5, 0.1), (10, 0)])
+    polygon = shapely.Polygon(
+        [(0, 0), (100, 0), (100, 100), (0, 100)],
+        [[(10, 10), (20, 10.1), (30, 10), (20, 9.9)]],
+    )
+    thin = shapely.Polygon([(5, 0.3), (0, 0), (10, 0)])
+    geometries = [
+        line,
+        polygon,
+        thin,
+        shapely.MultiPoint([(1, 2), (3, 4)]),
+        shapely.MultiLineString([line, shapely.LineString([(20, 20), (30, 30)])]),
+        shapely.MultiPolygon([polygon, thin]),
+        shapely.GeometryCollection([shapely.Point(1, 2), line, polygon]),
+    ]
+    source = {
+        "type": "FeatureCollection",
+        "features": [
+            {"type": "Feature", "properties": {}, "geometry": g.__geo_interface__}
+            for g in geometries
+        ],
+    }
+    native = terrio.simplify(source, 1.0, method="douglas-peucker", collapse=collapse).to_geojson()
+    expected = _dp(geometries, 1.0, collapse=collapse)
+    for feature, reference in zip(native["features"], expected, strict=True):
+        assert _same_vertices(shape(feature["geometry"]), reference)
 
 
 @pytest.mark.parametrize(

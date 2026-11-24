@@ -1298,8 +1298,8 @@ struct SimplifyWkbArgs {
 /// Douglas-Peucker `collapse`, `"keep"` (default: rings left with fewer than four points keep
 /// their vertices) or `"drop"` (as JTS). Z is kept, M dropped.
 #[wasm_bindgen]
-pub fn simplify(src: JsValue, tolerance: f64, options: JsValue) -> Result<Dataset, JsError> {
-    let a: SimplifyArgs = parse_options(&options)?;
+pub fn simplify(src: JsValue, tolerance: f64, options: Option<JsValue>) -> Result<Dataset, JsError> {
+    let a: SimplifyArgs = parse_options(&options.unwrap_or(JsValue::UNDEFINED))?;
     let op = terrio::ops::vector_geom::GeometryOp::simplify(
         tolerance,
         a.method.as_deref().unwrap_or("preserve-topology"),
