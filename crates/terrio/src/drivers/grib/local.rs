@@ -365,8 +365,8 @@ mod tests {
     }
 
     /// The GRIB2 message `message` with the bodies of its local use, bitmap and data sections (past
-    /// their first 5 octets, 6 for a bitmap section) grown by `pad` zero bytes, which their lengths
-    /// and the message's count; and where those bodies are.
+    /// their first 5 octets, 6 for a bitmap section) grown by `pad` zero bytes, with their section
+    /// lengths and the message length updated; and the ranges of those bodies.
     fn padded_bodies(message: &[u8], pad: usize) -> (Vec<u8>, Vec<std::ops::Range<usize>>) {
         let be = |b: &[u8]| b.iter().fold(0usize, |v, &x| (v << 8) | x as usize);
         let (mut out, mut bodies, mut at) = (message[..16].to_vec(), Vec::new(), 16);
@@ -413,6 +413,19 @@ mod tests {
         };
         let (bands, _) = head.bands(len, len, true).unwrap();
         assert_eq!(describe(&bands), describe(&super::super::message_bands(&message, len, len, true).unwrap()));
+    }
+
+    /// A raw u32 section length cannot wrap the header walk on a 32-bit target or revisit bytes.
+    #[test]
+    fn an_oversized_grib2_section_is_rejected_without_more_reads() {
+        let mut first = vec![0; 32];
+        first[..4].copy_from_slice(b"GRIB");
+        first[7] = 2;
+        first[8..16].copy_from_slice(&1024_u64.to_be_bytes());
+        first[16..20].copy_from_slice(&u32::MAX.to_be_bytes());
+        first[20] = 7;
+        let head = super::super::read_head(first, 1024, 0, |_, _| panic!("invalid section must not request more bytes")).unwrap();
+        assert!(head.bands(1024, 1024, true).is_err());
     }
 
     /// Catches the header of a GRIB1 message read with its bitmap's body, which it does not need, or

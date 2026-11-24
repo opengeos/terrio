@@ -856,7 +856,11 @@ fn message_fields_in<'a>(runs: &[(usize, &'a [u8])], full_len: usize, normalize:
         let sect = match here.get(..len) {
             Some(s) if len >= 5 => s,
             // The start of a bitmap or data section of which no more was read.
-            None if !whole && pos + len <= full_len && matches!(here[4], 2 | 6 | 7) && here.len() >= if here[4] == 6 { 6 } else { 5 } => {
+            None if !whole
+                && pos.checked_add(len).is_some_and(|end| end <= full_len)
+                && matches!(here[4], 2 | 6 | 7)
+                && here.len() >= if here[4] == 6 { 6 } else { 5 } =>
+            {
                 here
             }
             _ => return Err(bad()),
@@ -936,7 +940,7 @@ impl Head {
         };
         let mut fields = Vec::new();
         let end = message_fields_in(&runs, len, normalize, &mut fields)?;
-        let marker = (at_hand(&runs, end).len() < 4 && end + 4 == len).then_some(end);
+        let marker = (at_hand(&runs, end).len() < 4 && end.checked_add(4) == Some(len)).then_some(end);
         Ok((fields.into_iter().map(Band::Grib2).collect(), marker))
     }
 }
@@ -989,7 +993,7 @@ fn grib2_next_part(runs: &[(usize, &[u8])], len: usize) -> Option<(usize, usize)
         return Some((first, 16 - first));
     }
     let mut pos = 16;
-    while pos + 4 < len {
+    while pos < len.saturating_sub(4) {
         let here = at_hand(runs, pos);
         if here.len() < 5 {
             return Some((pos + here.len(), 5 - here.len()));
@@ -1007,7 +1011,7 @@ fn grib2_next_part(runs: &[(usize, &[u8])], len: usize) -> Option<(usize, usize)
         if n < 5 {
             return None;
         }
-        pos += n;
+        pos = len.min(pos.saturating_add(n));
     }
     None
 }
