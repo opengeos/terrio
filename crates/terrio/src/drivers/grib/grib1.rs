@@ -136,23 +136,6 @@ impl<'a> Message<'a> {
         Ok(Message { file_len, pds, gds, bms, bds, normalize: true })
     }
 
-    /// How much of the start of a message its header needs (up to the data section's first 11
-    /// octets), given the `head` at hand: at least the returned count of bytes.
-    pub(crate) fn header_needs(head: &[u8]) -> Option<usize> {
-        let mut cur = 8 + u(head, 9, 3) as usize;
-        if head.len() < cur + 6 {
-            return Some(cur + 6);
-        }
-        cur += u(head, cur + 1, 3) as usize;
-        if head[15] & 0x40 != 0 {
-            if head.len() < cur + 6 {
-                return Some(cur + 6);
-            }
-            cur += u(head, cur + 1, 3) as usize;
-        }
-        Some(cur + 11)
-    }
-
     fn center(&self) -> u8 {
         self.pds[4]
     }
