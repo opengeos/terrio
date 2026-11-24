@@ -603,6 +603,10 @@ impl Def {
                 Some(w) => Some(Self::from_wkt(w)?),
                 None => None,
             };
+            // Why its transformation is not applied, whatever replaces the code's (#1012 item 12).
+            if let Some(bound) = &bound {
+                d.unapplied = bound.unapplied.clone();
+            }
             if let Some(bound) = bound
                 && bound.datum.is_none()
             {

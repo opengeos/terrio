@@ -1,9 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
 //! A WKT 2 `BOUNDCRS` whose transformation terrio does not apply warns through each transformer
-//! using it (its warning handler, by default `take_warnings`'s; #1012 item 12). The points are then placed by the ballpark. Where
-//! PROJ 9.9.0 does not apply the transformation either (a target bound itself), terrio places
-//! them where PROJ does, with the network off and no grids: (10°, 50°) stays (10°, 50°).
+//! using it (its warning handler, by default `take_warnings`'s; #1012 item 12). The points are
+//! then placed without it: by the source CRS's own transformations when it has a code, else by
+//! the ballpark. Where PROJ 9.9.0 does not apply the transformation either (a target bound
+//! itself), terrio places them where PROJ does, with the network off and no grids: from an
+//! unknown Bessel datum, (10°, 50°) stays (10°, 50°).
 
 use terrio_crs::{SpatialRef, Transformer, take_warnings};
 
@@ -112,4 +114,23 @@ fn a_destination_warns_too_through_the_handler() {
     drop(Transformer::new(&wgs84, &src).unwrap().with_warning_handler(record));
     assert!(!warned(&take_warnings()));
     assert!(RECORDED.with(|r| warned(&r.borrow())));
+}
+
+/// A source CRS with an EPSG code (ED50, EPSG:4230) is read from the registry, with the bound
+/// CRS's reason kept: it warns as a source without a code does. Its points go by the code's own
+/// transformations, as PROJ 9.9.0 places them: (9.998871°, 49.999200°) into WGS 84 by "ED50 to
+/// WGS 84 (17)".
+#[test]
+fn a_source_with_a_code_warns_too() {
+    offline();
+    let nested = format!("BOUNDCRS[SOURCECRS[{ED50}],TARGETCRS[{WGS84}],{}]", translations("ED50 shift", -87.0, -98.0, -121.0));
+    let src = bound(ED50, &nested, &translations("shift", 100.0, 50.0, -20.0));
+    let ((x, y), warnings) = at(&src, 4326);
+    assert!((x - 9.998871090641538).abs() < 1e-9 && (y - 49.999200164761284).abs() < 1e-9, "{x} {y}");
+    assert_eq!(
+        warnings,
+        [
+            "the BOUNDCRS transformation \"shift\" is not applied: its target CRS \"ED50\" is bound to another CRS itself, which PROJ does not chain through either"
+        ]
+    );
 }

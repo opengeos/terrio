@@ -58,7 +58,8 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
   through a WKT 1 target with its own `TOWGS84`; PROJ links such CRSs by its ballpark. When a
   `BOUNDCRS`'s transformation is not applied (that case, a WKT 1 target, which terrio does not
   read where PROJ does, or a grid's transformation), each transformer using the CRS warns
-  (`take_warnings`), and its points are placed by the ballpark. Their PROJ
+  (`take_warnings`), and its points are placed without it (by the source CRS's own
+  transformations when terrio identifies it, else by the ballpark). Their PROJ
   string leaves out a shift to a CRS other than WGS 84, as PROJ's does. Their scale difference is a
   ratio in unity (`1.0000067`, as PROJ writes it) or in the unit given (parts per million, where
   PROJ 9.9.0 misreads 6.7 ppm as the ratio 6.7, which terrio does not follow); without a unit, a
