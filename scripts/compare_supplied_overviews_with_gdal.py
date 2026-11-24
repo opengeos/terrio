@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT
 """Supplied COG overviews against GDAL's COG driver with OVERVIEWS=FORCE_USE_EXISTING (reference
 GDAL 3.13.3).
 
