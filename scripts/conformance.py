@@ -3105,7 +3105,7 @@ PROJ_CASES = {
             "(GDA94 and ONGD14 by other transformations, PZ-90.11 from WGS 84 (3D), LUREF (3) for (4))",
         ),
         "heights_beside_wgs_84_2d_are_kept_through_the_shift": (
-            "Heights beside WGS 84 (2D) kept through the datum shift (PZ-90, WGS 72BE, PZ-90.11)", IDENTICAL,
+            "Heights beside a CRS without heights kept through the datum shift (PZ-90, WGS 72BE, PZ-90.11, chains from OSGB36)", IDENTICAL,
             "PROJ 9.9.0 (no grids): within 1 mm",
         ),
     },

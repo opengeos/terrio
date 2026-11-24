@@ -98,4 +98,14 @@ fn heights_beside_wgs_84_2d_are_kept_through_the_shift() {
         (x - 6378233.102763138).abs() < 1e-3 && (y - 1.9560018670853931).abs() < 1e-3 && (z + 1.1685336073792076).abs() < 1e-3,
         "{x} {y} {z}"
     );
+    // Through two transformations, kept across both: OSGB36 to WGS 84 (6), then PZ-90 to WGS 84
+    // (1) or WGS 72BE to WGS 84 (1), from OSGB36 (2D) and British National Grid.
+    for (src, dst, p, want) in [
+        (4277, 4922, (-2.0, 53.0, 100.0), (3844365.9128612163, -134346.96452041809, 5070642.678425124)),
+        (4277, 4986, (-2.0, 53.0, 100.0), (3844365.0897396584, -134360.70740497022, 5070641.8107247595)),
+        (27700, 4922, (400000.0, 300000.0, 100.0), (3880023.130958016, -135591.99087613926, 5043559.944930366)),
+    ] {
+        let (x, y, z) = transformer(src, dst).transform_3d(p.0, p.1, p.2).unwrap();
+        assert!((x - want.0).abs() < 1e-3 && (y - want.1).abs() < 1e-3 && (z - want.2).abs() < 1e-3, "{src} -> {dst}: {x} {y} {z}");
+    }
 }
