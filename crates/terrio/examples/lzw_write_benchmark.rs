@@ -5,6 +5,7 @@ use terrio::raster::RasterData;
 use terrio::{DataType, Raster, RasterConfig, RasterDataset, RasterWriteOptions};
 fn main() {
     let args: Vec<_> = std::env::args().collect();
+    let output = args.get(1).expect("usage: lzw_write_benchmark <out.tif> [dense]");
     let dense = args.get(2).is_some_and(|s| s == "dense");
     let cols = 16384;
     let rows = 2048;
@@ -24,5 +25,5 @@ fn main() {
         creation_options: vec![("BLOCKYSIZE".into(), "1".into())],
         ..Default::default()
     };
-    terrio::write_raster_dataset(&ds, &args[1], &o).unwrap();
+    terrio::write_raster_dataset(&ds, output, &o).unwrap();
 }

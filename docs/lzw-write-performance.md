@@ -10,8 +10,9 @@ The implementation and byte-compatibility rules are described in
 [lzw-encoder.md](lzw-encoder.md). Adaptive long-match selection and its limitations
 are described in [tiff-lzw-long-match.md](tiff-lzw-long-match.md). Retained encoder
 heap storage is 84 KiB on 64-bit targets and 68 KiB on 32-bit targets after a chunk uses
-witnesses, and is included in the writer's memory estimate. Before witnesses are
-needed, the encoder uses 36 KiB of heap storage.
+witnesses. Before witnesses are needed, the encoder uses 36 KiB of heap storage.
+The writer's memory estimate includes that storage plus a conservative 512 KiB
+allowance for the byte-compatible weezl fallback on collision-heavy chunks.
 
 ## Reproduce the synthetic writer workload
 
@@ -48,6 +49,6 @@ writer acceptance evidence. See the [example guide](../crates/terrio/examples/lz
 Contributor measurements and their limitations are recorded in
 [the original contribution, #1285](https://github.com/opengeos/terrio/pull/1285).
 The retained tests check weezl byte identity and complete TIFF/COG fixtures across
-thread counts and concurrent writes. The fixed dictionary hash is not collision
-resistant; the measured adversarial-throughput limitation remains explicitly
-documented in [lzw-encoder.md](lzw-encoder.md).
+thread counts and concurrent writes. A chunk-wide collision budget bounds work
+in the fixed dictionary hash and restarts excessive-probe chunks with weezl;
+see [lzw-encoder.md](lzw-encoder.md).

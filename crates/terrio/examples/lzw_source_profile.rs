@@ -5,7 +5,8 @@
 use std::time::Instant;
 use terrio::{LazyRaster, Window, WindowOptions};
 fn main() {
-    let list = std::fs::read_to_string(std::env::args().nth(1).unwrap()).unwrap();
+    let paths = std::env::args().nth(1).expect("usage: lzw_source_profile <newline-delimited-file-list>");
+    let list = std::fs::read_to_string(paths).unwrap();
     let mut io = 0u128;
     let mut decode = 0u128;
     let mut bytes = 0;

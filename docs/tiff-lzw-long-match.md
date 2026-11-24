@@ -40,47 +40,17 @@ asserts bytes against weezl. Full-file writer fixtures check assembly separately
 The deterministic writer example accepts an optional `dense` argument to remove
 NoData from its synthetic Float32 raster for performance qualification.
 
-The measurements below were supplied with the
+Contributor measurements were supplied with the
 [original contribution, #1285](https://github.com/opengeos/terrio/pull/1285).
 The standalone real-strip/adversarial harness and raw measurement packet are not
 included in this repository. The public synthetic writer workload is documented
 in [lzw-write-performance.md](lzw-write-performance.md).
 
-## Local qualification and tradeoff
+## Performance qualification
 
-Windows MSVC Rust 1.99.1, i7-11700K, three writer workers, one warm-up and
-seven randomized interleaved blocks per arm. Retained Terrio 0.8.0 and
-17773d2 binaries were re-run as controls. Builds/tests drained before timing;
-unrelated host work remained uncontrolled. Wall includes process startup;
-CPU is process user plus kernel. These are local results, not fleet qualification.
-
-| Workload | Hash wall s | Skip wall s | Hash CPU s | Skip CPU s | CPU change |
-|---|---:|---:|---:|---:|---:|
-| synthetic | 2.109 | 1.555 | 0.797 | 0.594 | -25.5% |
-| dense | 4.452 | 4.385 | 2.125 | 2.391 | +12.5% |
-| frozen | 41.552 | 24.686 | 29.188 | 9.406 | -67.8% |
-
-The dense CPU no-regression target was not met. This must be weighed before
-adopting the change. Wall-time conditions changed substantially within the batch;
-the contributor's raw ranges, paired differences and peak process working sets
-are not included here. Dense uses 33,554,432 deterministic valid Float32 samples and no
-NoData; its artificial grid is explicitly declared in the measurement setup.
-
-Encoder-only, all 28,624 frozen strips (6,232,131,776 raw bytes),
-one warm-up and seven alternating rounds: hash 21.515 s, skip
-2.794 s (7.70x). Every encoded strip matched the stored bytes.
-Noise and shared-prefix/different-tail adversaries covered 65,536 through
-4,194,304 bytes; the worst observed median skip/hash ratio was
-1.597. This is finite supporting evidence, not a universal timing bound.
-
-Validation passed: package tests including doctests, workspace Clippy with
-warnings denied, formatting, pre-commit, and the geotiff-only wasm32 compile.
-All 48 baseline TIFF/COG combinations, concurrent writers and one/three-worker
-fixtures passed. Explicit one- and three-thread frozen files matched SHA-256
-`c50acda66d143167e568dc2efb6ea324297cbcb4da81896028b2816d472080b7`.
-A separate flows2fim scratch source copy passed raster/core tests and seven NOAA
-parity tests (18 stored reference rasters, 400 Rust-only controls; live Go unset).
-Initial overlapping Cargo invocations hit a Windows executable file lock;
-the subsequent full serial run passed. Dependency freshness was reviewed;
-no dependencies or locks changed. COG performance, WASM runtime performance
-and a giant input above 4 GiB remain unmeasured.
+Contributor measurements are recorded in the [pull request](https://github.com/opengeos/terrio/pull/1288).
+They predate collision-budget fallback and do not establish its performance.
+Use the public synthetic workload in [lzw-write-performance.md](lzw-write-performance.md)
+to compare current checkouts. Dense workloads, COGs, WASM runtime performance and
+inputs above 4 GiB require their own measurements; byte identity does not imply
+a universal speed-up.

@@ -28,7 +28,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
-Under library unit tests (`cfg(test)`) every specialized encode call asserts exact compressed bytes
+Under library unit tests (`cfg(test)`) every completed specialized encode call asserts exact compressed bytes
 against weezl, including existing writer tests. Independent differential tests cover
 all prefix lengths 0 through 4095, selected larger strip boundaries, 64 randomized
 streams, dictionary clears, sparse-node promotion, constant and periodic inputs,
@@ -81,19 +81,27 @@ First skip use adds
 48 KiB (64-bit) or 32 KiB (32-bit). Rayon `map_init` initializes per split
 leaf, not strictly once per thread, so savings apply to each unused leaf.
 
-## Deterministic hash worst case
+## Bounded hash work
 
-The fixed multiplicative hash and linear probing are not collision-resistant.
-At most 3838 occupied entries exist before a dictionary clear; a lookup can
-inspect up to 3839 slots including its terminating empty slot. Thus lookup work
-is bounded O(n) with a large constant, not an expected-time guarantee for
-untrusted input. The [original contribution's review](https://github.com/opengeos/terrio/pull/1285)
-used a repeating 4386-byte hash-cluster epoch and measured
-roughly 1620 probes per byte and 60 to 80 times slower encoding than weezl.
-This change documents that exposure without adding a hot-loop probe counter,
-salted layout, or fallback. No adversarial-throughput mitigation is claimed.
-CLI and MCP callers can supply raster values to this writer, including untrusted
-values. Services must account for this documented worst case when budgeting work.
+CLI and MCP callers can supply untrusted raster values. The fixed multiplicative
+hash is not collision-resistant: the [original contribution's review](https://github.com/opengeos/terrio/pull/1285)
+reported a hash-cluster input 60 to 80 times slower than weezl before mitigation.
+Both specialized loops now allow at most `8 * input_bytes + 256` additional
+linear-probe collisions per chunk, using saturating arithmetic. Dictionary clears
+do not reset this budget. Direct hits and empty slots do not consume it.
+The retained `hash-collision-input.bin` regression exhausts the normal budget
+in both specialized paths; `lzw_collision_input` reproduces its raw bytes.
+
+Exhausting the budget drops the partial output and re-encodes the entire chunk
+with weezl 0.2.1's MSB eight-bit TIFF encoder. Restarting preserves exact bytes,
+including width changes and sparse-node promotion behavior. The bound limits
+specialized hash work; it does not promise a universal elapsed-time ratio.
+
+The writer reserves a further 512 KiB per work piece for fallback allocations,
+in addition to retained specialized scratch. This conservatively covers pinned
+weezl 0.2.1's dictionary vector capacities, their largest reallocation overlap,
+and boxed state. Its 4 KiB output growth fits the existing compressed-buffer
+estimate. No partial specialized output remains live during fallback.
 
 `lzw_reused_streams_match_fresh_tiff_size_switch` compares reused specialized
 scratch with a fresh weezl encoder. Both specialized paths also assert their

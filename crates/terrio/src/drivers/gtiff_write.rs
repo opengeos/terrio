@@ -165,13 +165,13 @@ impl Compression {
             return self.compress(data, c, p);
         }
         let encoder = scratch.get_or_insert_with(super::tiff_lzw::Encoder::new);
-        Ok(encoder.encode(&data))
+        encoder.encode(&data)
     }
 
     fn compress(self, data: Vec<u8>, c: &ChunkInfo, p: &CodecParams) -> Result<Vec<u8>> {
         Ok(match self {
             Self::None => data,
-            Self::Lzw => super::tiff_lzw::Encoder::new().encode(&data),
+            Self::Lzw => super::tiff_lzw::Encoder::new().encode(&data)?,
             // The chunk's `h` rows, each of the same length: each search also examines the position
             // one row back.
             Self::Deflate => {
@@ -4145,11 +4145,12 @@ mod tests {
     fn lzw_scratch_estimate_covers_retained_witness_allocations() {
         let mut encoder = super::super::tiff_lzw::Encoder::new();
         for raw in [64, 256, 4096, 16_384] {
-            encoder.encode(&vec![0; raw]);
+            encoder.encode(&vec![0; raw]).unwrap();
             assert!(encoder.allocated_scratch_bytes() > 64 << 10);
-            assert!(super::super::tiff_lzw::Encoder::SCRATCH_BYTES >= encoder.allocated_scratch_bytes());
+            let peak = encoder.allocated_scratch_bytes() + super::super::tiff_lzw::Encoder::FALLBACK_SCRATCH_BYTES;
+            assert!(super::super::tiff_lzw::Encoder::SCRATCH_BYTES >= peak);
             let (_, scratch) = encoder_bytes(Compression::Lzw, raw);
-            assert!(scratch >= encoder.allocated_scratch_bytes(), "{raw}: {scratch} < {}", encoder.allocated_scratch_bytes());
+            assert!(scratch >= peak, "{raw}: {scratch} < {peak}");
         }
     }
 
@@ -4173,7 +4174,7 @@ mod tests {
                         // Encoder sees bytes only; both sample byte orders are
                         // exercised. The writer's predictor itself is LE-only.
                         apply_predictor(&mut data, predictor, 37, 1, size);
-                        let actual = enc.encode(&data);
+                        let actual = enc.encode(&data).unwrap();
                         let expected = weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8).encode(&data).unwrap();
                         assert_eq!(actual, expected);
                         assert_eq!(weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8).decode(&actual).unwrap(), data);

@@ -14,7 +14,13 @@ pub(super) struct Encoder {
 }
 
 impl Encoder {
-    pub(super) const SCRATCH_BYTES: usize = 8192 * size_of::<u32>() + 4096 * (size_of::<u8>() + size_of::<usize>() + 2 * size_of::<u16>());
+    const RETAINED_SCRATCH_BYTES: usize = 8192 * size_of::<u32>() + 4096 * (size_of::<u8>() + size_of::<usize>() + 2 * size_of::<u16>());
+    // Pinned weezl 0.2.1: capacity <= 4096 Simple nodes (50 bytes), 256 Full
+    // nodes (512 bytes), and 8192 two-byte keys. Include their largest old
+    // allocation during growth (102400 bytes), boxed state and rounding.
+    // These allocations coexist with our retained dictionary and witnesses.
+    pub(super) const FALLBACK_SCRATCH_BYTES: usize = 512 << 10;
+    pub(super) const SCRATCH_BYTES: usize = Self::RETAINED_SCRATCH_BYTES + Self::FALLBACK_SCRATCH_BYTES;
 
     #[cfg(test)]
     pub(super) fn allocated_scratch_bytes(&self) -> usize {
@@ -30,11 +36,23 @@ impl Encoder {
     }
 
     /// Starts an independent strip/tile. No dictionary state crosses chunks.
-    pub(super) fn encode(&mut self, data: &[u8]) -> Vec<u8> {
-        if profitable_chunk(data) { self.encode_chunk(data) } else { self.hash.encode(data) }
+    pub(super) fn encode(&mut self, data: &[u8]) -> crate::Result<Vec<u8>> {
+        self.encode_with_budget(data, data.len().saturating_mul(8).saturating_add(256))
     }
 
-    fn encode_chunk(&mut self, data: &[u8]) -> Vec<u8> {
+    fn encode_with_budget(&mut self, data: &[u8], budget: usize) -> crate::Result<Vec<u8>> {
+        let encoded = if profitable_chunk(data) { self.encode_chunk(data, budget) } else { self.hash.encode(data, budget) };
+        match encoded {
+            Some(bytes) => Ok(bytes),
+            // Returning None drops the partial output before weezl allocates.
+            // Restart the whole chunk so all dictionary and width quirks match.
+            None => weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8)
+                .encode(data)
+                .map_err(|error| crate::Error::InvalidData(format!("LZW: {error}"))),
+        }
+    }
+
+    fn encode_chunk(&mut self, data: &[u8], mut budget: usize) -> Option<Vec<u8>> {
         // Retain witnesses after first use; plain chunks never allocate them.
         self.starts.resize(4096, 0);
         self.lengths.resize(4096, 0);
@@ -133,6 +151,7 @@ impl Encoder {
                         cursor += 1;
                         break;
                     }
+                    budget = budget.checked_sub(1)?;
                     slot = (slot + 1) & 8191;
                 }
             }
@@ -152,7 +171,7 @@ impl Encoder {
             weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8).encode(data).unwrap(),
             "writer LZW oracle"
         );
-        out.bytes
+        Some(out.bytes)
     }
 }
 
@@ -173,7 +192,7 @@ impl HashEncoder {
     // Width growth, clearing and EOI mirror Encoder::encode_chunk, with both paths
     // checked against weezl in tests. Keep LLVM from combining the two hot loops.
     #[inline(never)]
-    fn encode(&mut self, data: &[u8]) -> Vec<u8> {
+    fn encode(&mut self, data: &[u8], mut budget: usize) -> Option<Vec<u8>> {
         self.table.fill(0);
         self.successors.fill(0);
         let mut out = Bits { bytes: Vec::with_capacity(data.len().min(4096)), pending: 0, count: 0 };
@@ -217,6 +236,7 @@ impl HashEncoder {
                         prefix = (entry & 4095) as u16;
                         break;
                     }
+                    budget = budget.checked_sub(1)?;
                     slot = (slot + 1) & 8191;
                 }
             }
@@ -236,7 +256,7 @@ impl HashEncoder {
             weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8).encode(data).unwrap(),
             "writer LZW oracle"
         );
-        out.bytes
+        Some(out.bytes)
     }
 }
 
@@ -305,6 +325,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn collision_heavy_chunk_exhausts_normal_budget_and_matches_weezl() {
+        let input = include_bytes!("../../tests/fixtures/lzw/hash-collision-input.bin");
+        let budget = input.len() * 8 + 256;
+        let mut encoder = Encoder::new();
+        assert!(encoder.hash.encode(input, budget).is_none());
+        assert!(encoder.encode_chunk(input, budget).is_none());
+        let expected = weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8).encode(input).unwrap();
+        assert_eq!(encoder.encode(input).unwrap(), expected);
+    }
+
+    #[test]
+    fn collision_budget_restarts_both_paths_and_preserves_reuse() {
+        let mut state = 37u32;
+        let plain: Vec<_> = (0..65536)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state as u8
+            })
+            .collect();
+        let mut adaptive = plain.clone();
+        adaptive[4352..4384].fill(0);
+        adaptive[8448..8480].fill(0);
+        assert!(!profitable_chunk(&plain));
+        assert!(profitable_chunk(&adaptive));
+        let mut encoder = Encoder::new();
+        assert!(encoder.hash.encode(&plain, 0).is_none());
+        assert!(encoder.encode_chunk(&adaptive, 0).is_none());
+        for input in [&plain, &adaptive] {
+            let expected = weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8).encode(input).unwrap();
+            let fallback = encoder.encode_with_budget(input, 0).unwrap();
+            assert_eq!(fallback, expected);
+            assert_eq!(weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8).decode(&fallback).unwrap(), *input);
+            assert_eq!(encoder.encode(input).unwrap(), expected);
+        }
+        assert!(Encoder::SCRATCH_BYTES >= encoder.allocated_scratch_bytes() + Encoder::FALLBACK_SCRATCH_BYTES);
+    }
+
+    #[test]
     fn adaptive_on_backoff_and_reprobe_match_oracle() {
         let mut encoder = Encoder::new();
         let mut state = 37u32;
@@ -318,23 +378,23 @@ mod tests {
             .collect();
         assert!(!profitable_chunk(&noise)); // on -> backed off -> failed probes
         assert!(encoder.starts.is_empty());
-        encoder.encode(&noise);
+        encoder.encode(&noise).unwrap();
         assert!(encoder.starts.is_empty());
         let mut later = noise.clone();
         later[4352..4384].fill(0); // backed off -> successful re-probe
         assert!(!profitable_chunk(&later)); // one isolated run is insufficient
         later[8448..8480].fill(0);
         assert!(profitable_chunk(&later));
-        encoder.encode(&later);
+        encoder.encode(&later).unwrap();
         let run = vec![0; 65536];
         assert!(profitable_chunk(&run)); // on -> immediate success
-        encoder.encode(&run);
+        encoder.encode(&run).unwrap();
         assert_eq!(encoder.starts.len(), 4096);
         for input in [&noise, &later, &run] {
-            assert_eq!(encoder.encode_chunk(input), encoder.hash.encode(input));
+            assert_eq!(encoder.encode_chunk(input, usize::MAX), encoder.hash.encode(input, usize::MAX));
         }
         for size in 0..300 {
-            encoder.encode(&noise[..size]);
+            encoder.encode(&noise[..size]).unwrap();
         }
     }
 
@@ -350,7 +410,7 @@ mod tests {
         }
         assert!(!profitable_chunk(&data));
         let mut encoder = Encoder::new();
-        encoder.encode(&data); // cfg(test) checks against weezl.
+        encoder.encode(&data).unwrap(); // cfg(test) checks against weezl.
         assert!(encoder.starts.is_empty());
     }
 
@@ -387,7 +447,7 @@ mod tests {
                     _ => {}
                 }
             }
-            let encoded = encoder.encode(&data); // Every call asserts the weezl oracle.
+            let encoded = encoder.encode(&data).unwrap(); // Every completed specialized call asserts the weezl oracle.
             assert_eq!(
                 weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8).decode(&encoded).unwrap(),
                 data,
@@ -404,7 +464,7 @@ mod tests {
                     data.extend_from_within(phase..phase + 4096);
                     data.push(tail);
                 }
-                encoder.encode(&data);
+                encoder.encode(&data).unwrap();
             }
         }
     }
@@ -412,7 +472,7 @@ mod tests {
     #[test]
     fn sparse_strips_do_not_retain_raw_sized_output_buffers() {
         let raw = vec![0; 217724];
-        let out = Encoder::new().encode(&raw);
+        let out = Encoder::new().encode(&raw).unwrap();
         assert!(out.capacity() < raw.len() / 8);
     }
 
@@ -435,7 +495,7 @@ mod tests {
                 rng ^= rng << 5;
                 data.push(rng as u8);
             }
-            let actual = enc.encode(&data);
+            let actual = enc.encode(&data).unwrap();
             let expected = weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8).encode(&data).unwrap();
             assert!(actual == expected, "seed {seed}");
             assert_eq!(weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8).decode(&actual).unwrap(), data);
@@ -461,7 +521,7 @@ mod tests {
             for n in (0..4096).chain([8191, 8192, 8193, 65535, 65536, 65537, 217723, 217724, 217725, 1_000_000]) {
                 let input = &data[..n];
                 let expected = weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8).encode(input).unwrap();
-                let actual = encoder.encode(input);
+                let actual = encoder.encode(input).unwrap();
                 assert!(actual == expected, "length {n}, first difference {:?}", actual.iter().zip(&expected).position(|(a, b)| a != b));
                 assert_eq!(weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8).decode(&actual).unwrap(), input);
             }
