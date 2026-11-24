@@ -334,6 +334,27 @@ fn epsg_reference(s: &str) -> Option<u32> {
     code
 }
 
+/// The EPSG code a CRS reference names, read from its text alone, without the CRS registry or
+/// the projection engine: `EPSG:<code>` (or `EPSG::<code>`), a bare code, the OGC URN and URL
+/// forms (`urn:ogc:def:crs:EPSG::<code>`, `http://www.opengis.net/def/crs/EPSG/0/<code>`), and
+/// 4326 for WGS 84's longitude/latitude aliases (`OGC:CRS84`, `CRS84`, `WGS84`, their URN and
+/// URL forms). `None` for anything else (WKT, PROJ strings, compound or other authorities'
+/// references) and for code 0. The code is not checked against the EPSG registry.
+pub fn epsg_reference_code(s: &str) -> Option<u32> {
+    // The text up to its first NUL, as `SpatialRef::parse` reads a definition.
+    let s = until_nul(s);
+    if is_wgs84_alias(&s.trim().to_ascii_uppercase()) {
+        return Some(4326);
+    }
+    canonical_epsg_reference(s).filter(|&code| code != 0)
+}
+
+/// Whether an upper-cased definition names WGS 84's longitude/latitude CRS (EPSG:4326) by an
+/// alias: `WGS84`, `OGC:CRS84`, `CRS84`, or their URN and URL forms.
+fn is_wgs84_alias(upper: &str) -> bool {
+    matches!(upper, "WGS84" | "WGS 84" | "OGC:CRS84" | "CRS84" | "URN:OGC:DEF:CRS:OGC:1.3:CRS84") || upper.ends_with("/OGC/1.3/CRS84")
+}
+
 /// Canonical authority forms are independent of the optional projection engine.
 fn canonical_epsg_reference(s: &str) -> Option<u32> {
     let digits = |s: &str| {
@@ -695,9 +716,7 @@ impl SpatialRef {
             return Err(Error::Crs("empty definition".into()));
         }
         let upper = s.to_ascii_uppercase();
-        if matches!(upper.as_str(), "WGS84" | "WGS 84" | "OGC:CRS84" | "CRS84" | "URN:OGC:DEF:CRS:OGC:1.3:CRS84")
-            || upper.ends_with("/OGC/1.3/CRS84")
-        {
+        if is_wgs84_alias(&upper) {
             return Self::from_epsg(4326);
         }
         if s.starts_with('+') {
@@ -2248,6 +2267,8 @@ pub struct Transformer {
     dst_geoid_grids: std::sync::OnceLock<Vec<std::sync::Arc<datum::Op>>>,
     emitted_diagnostics: std::sync::atomic::AtomicU8,
     diagnostics: std::sync::atomic::AtomicU8,
+    /// Why a `BOUNDCRS`'s transformation is not applied, of the source or target CRS: a warning.
+    unapplied: Vec<String>,
     warning_handler: fn(String),
     /// The time of time-dependent transformations, as GDAL sets it from the coordinate epochs.
     time: Option<f64>,
@@ -2532,6 +2553,8 @@ impl Transformer {
     pub fn with_options(src: &SpatialRef, dst: &SpatialRef, opts: &TransformOptions) -> Result<Self> {
         let (mut s, mut d) = (Def::new(src)?, Def::new(dst)?);
         s.compatible_body(&d)?;
+        // Why a `BOUNDCRS`'s transformation is not applied, for the warning (#1012 item 12).
+        let unapplied: Vec<String> = [s.unapplied(), d.unapplied()].into_iter().flatten().map(str::to_string).collect();
         if opts.promote_to_3d {
             s.promote_to_3d();
             d.promote_to_3d();
@@ -2611,7 +2634,8 @@ impl Transformer {
             src_geoid_grids: std::sync::OnceLock::new(),
             dst_geoid_grids: std::sync::OnceLock::new(),
             emitted_diagnostics: std::sync::atomic::AtomicU8::new(0),
-            diagnostics: std::sync::atomic::AtomicU8::new(0),
+            diagnostics: std::sync::atomic::AtomicU8::new(if unapplied.is_empty() { 0 } else { 16 }),
+            unapplied,
             warning_handler: warnings::warn,
         })
     }
@@ -2789,6 +2813,11 @@ impl Transformer {
                 (self.warning_handler)(message.into());
             }
         }
+        if flags & 16 != 0 {
+            for message in &self.unapplied {
+                (self.warning_handler)(message.clone());
+            }
+        }
     }
 
     /// Return any strict coordinate-operation failure observed by this transformer, including
@@ -2858,7 +2887,7 @@ impl Transformer {
             self.note_missing_grid(x, y, p);
             if self.policy.allow_ballpark == Some(false) { self.route.selected(&self.src, x, y, p).0 } else { None }
         };
-        if self.policy.allow_ballpark == Some(false) && selected.is_none_or(|op| op.ballpark) {
+        if self.policy.allow_ballpark == Some(false) && selected.is_none_or(|op| op.has_ballpark()) {
             return Err(Error::NoOperation("ALLOW_BALLPARK=NO: no non-ballpark coordinate operation for this point".into()));
         }
         Ok(selected)
@@ -2941,7 +2970,7 @@ impl Transformer {
             self.best_route().apply_selected(&self.src, x, y, p, false, selected)
         } else {
             self.route.apply_reporting(&self.src, x, y, p, false, &|op, outside| {
-                if self.policy.allow_ballpark == Some(false) && op.is_none_or(|op| op.ballpark) {
+                if self.policy.allow_ballpark == Some(false) && op.is_none_or(|op| op.has_ballpark()) {
                     refused_ballpark.set(true);
                 } else {
                     self.record_operation(op, outside);
@@ -3408,7 +3437,7 @@ impl Transformer {
             let route = self.best_route();
             let (selected, _) = route.selected(&self.src, x, y, p);
             if selected.is_some_and(|op| !op.available())
-                || (self.policy.allow_ballpark == Some(false) && selected.is_none_or(|op| op.ballpark))
+                || (self.policy.allow_ballpark == Some(false) && selected.is_none_or(|op| op.has_ballpark()))
             {
                 return None;
             }
@@ -3416,7 +3445,7 @@ impl Transformer {
         } else {
             let refused_ballpark = std::cell::Cell::new(false);
             let q = self.route.apply_reporting(&self.src, x, y, p, false, &|op, _| {
-                if self.policy.allow_ballpark == Some(false) && op.is_none_or(|op| op.ballpark) {
+                if self.policy.allow_ballpark == Some(false) && op.is_none_or(|op| op.has_ballpark()) {
                     refused_ballpark.set(true);
                 }
             })?;
@@ -3853,6 +3882,7 @@ mod tests {
         ];
         for (input, canonical, legacy) in cases {
             assert_eq!(canonical_epsg_reference(input), canonical, "canonical: {input}");
+            assert_eq!(epsg_reference_code(input), canonical.filter(|&c| c != 0), "without the engine: {input}");
             #[cfg(feature = "wbprojection-fallback")]
             {
                 assert_eq!(wbp::epsg_from_srs_reference(input), legacy, "upstream: {input}");

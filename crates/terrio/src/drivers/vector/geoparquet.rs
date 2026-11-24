@@ -256,6 +256,19 @@ pub(crate) fn read_sparse(
     ParquetStream::open(|| Ok(file.clone()), name, row_groups, bbox, 65536, Some(&prefetch), columns)?.read_all()
 }
 
+/// As [`read_sparse`], with the CRS reduced to the EPSG code the file's `crs` names, without the
+/// CRS engine.
+pub(crate) fn read_sparse_epsg_only(
+    file: &crate::sparse::SparseFile,
+    name: &str,
+    row_groups: Option<&[usize]>,
+    bbox: Option<(f64, f64, f64, f64)>,
+    columns: Option<&[String]>,
+) -> Result<Layer> {
+    let prefetch = |ranges: &[(u64, u64)]| -> Result<()> { Ok(file.prefetch(ranges)?) };
+    ParquetStream::open_with::<false, _>(|| Ok(file.clone()), name, row_groups, bbox, 65536, Some(&prefetch), columns)?.read_all()
+}
+
 /// Announces the byte ranges about to be read, to readers whose bytes the caller fetches.
 type Prefetch<'a> = Option<crate::sparse::Prefetch<'a>>;
 
@@ -339,6 +352,22 @@ impl ParquetStream {
     /// the fields `columns` names (all by default; see [`Self::select_columns`]). `prefetch`,
     /// when given, is told the byte ranges about to be read.
     pub(crate) fn open<R: parquet::file::reader::ChunkReader + 'static>(
+        open: impl Fn() -> Result<R>,
+        name: &str,
+        row_groups: Option<&[usize]>,
+        bbox: Option<(f64, f64, f64, f64)>,
+        batch_size: usize,
+        prefetch: Prefetch<'_>,
+        columns: Option<&[String]>,
+    ) -> Result<Self> {
+        Self::open_with::<true, R>(open, name, row_groups, bbox, batch_size, prefetch, columns)
+    }
+
+    /// As [`Self::open`], with the layer's CRS resolved by the CRS engine (`ENGINE`), or reduced
+    /// to the EPSG code the file's `crs` names (see [`epsg_only_crs`]). The choice is made at
+    /// compile time, so a build that only opens files without the engine leaves it out.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn open_with<const ENGINE: bool, R: parquet::file::reader::ChunkReader + 'static>(
         open: impl Fn() -> Result<R>,
         name: &str,
         row_groups: Option<&[usize]>,
@@ -465,7 +494,8 @@ impl ParquetStream {
         match col.get("crs") {
             _ if geo.is_null() => {}
             None => layer.set_crs_epsg(Some(4326)),
-            Some(crs) => apply_crs(&mut layer, crs),
+            Some(crs) if ENGINE => apply_crs(&mut layer, crs),
+            Some(crs) => layer.set_crs_epsg(epsg_only_crs(crs)),
         }
         if let Some(types) = col["geometry_types"].as_array() {
             let types: Vec<&str> =
@@ -659,12 +689,11 @@ fn select_rows<T: parquet::file::reader::ChunkReader + 'static>(
     let mut keep: Vec<bool> = Vec::new();
     for batch in reader {
         let batch = batch.map_err(|e| err(&e))?;
-        let f64s = |a: &ArrayRef| -> Vec<f64> { (0..a.len()).map(|i| json_value(a.as_ref(), i).as_f64().unwrap_or(f64::NAN)).collect() };
         if leaves.is_some() {
             let s = batch.column(0).as_struct();
             let cov = covering.unwrap_or_default();
             let DataType::Struct(members) = schema.field(cov[0].0).data_type() else { continue };
-            let col = |m: usize| s.column_by_name(members[m].name()).map(f64s).unwrap_or_default();
+            let col = |m: usize| s.column_by_name(members[m].name()).map(|a| f64_values(a.as_ref())).unwrap_or_default();
             let (x0, y0, x1, y1) = (col(cov[0].1), col(cov[1].1), col(cov[2].1), col(cov[3].1));
             for i in 0..batch.num_rows() {
                 let null = s.is_null(i);
@@ -865,12 +894,12 @@ fn list_json(a: &dyn Array) -> Value {
 }
 
 pub(super) fn geometry(a: &dyn Array, row: usize, encoding: &str) -> Option<Geometry> {
-    if a.is_null(row) {
+    if row >= a.len() || a.is_null(row) {
         return None;
     }
     match encoding {
         "wkb" => super::wkb::from_wkb(blob(a, row)?),
-        "point" => coords(a).into_iter().nth(row).map(Geometry::Point),
+        "point" => coords(a.slice(row, 1).as_ref()).into_iter().next().map(Geometry::Point),
         "linestring" => Some(Geometry::LineString(coords(list_item(a, row)?.as_ref()))),
         "multipoint" => Some(Geometry::MultiPoint(coords(list_item(a, row)?.as_ref()))),
         "polygon" => {
@@ -910,9 +939,21 @@ fn polygon(rings: &dyn Array) -> Option<(Ring, Vec<Ring>)> {
     Some((exterior, rs.collect()))
 }
 
+/// The values of a number array as `f64`, nulls as NaN. GeoArrow coordinates are Float64 and
+/// covering bbox columns Float32 or Float64: read directly; other types through their JSON value.
+pub(super) fn f64_values(a: &dyn Array) -> Vec<f64> {
+    if let Some(p) = a.as_primitive_opt::<Float64Type>() {
+        return if p.null_count() == 0 { p.values().to_vec() } else { p.iter().map(|v| v.unwrap_or(f64::NAN)).collect() };
+    }
+    if let Some(p) = a.as_primitive_opt::<Float32Type>() {
+        return p.iter().map(|v| v.map_or(f64::NAN, f64::from)).collect();
+    }
+    (0..a.len()).map(|i| json_value(a, i).as_f64().unwrap_or(f64::NAN)).collect()
+}
+
 /// GeoArrow coordinates: a struct of `x`, `y` (and `z`) arrays, or interleaved fixed-size lists.
 fn coords(a: &dyn Array) -> Vec<Coord> {
-    let f64s = |a: &ArrayRef| -> Vec<f64> { (0..a.len()).map(|i| json_value(a.as_ref(), i).as_f64().unwrap_or(f64::NAN)).collect() };
+    let f64s = |a: &ArrayRef| f64_values(a.as_ref());
     match a.data_type() {
         DataType::Struct(fields) => {
             let s = a.as_struct();
@@ -928,6 +969,19 @@ fn coords(a: &dyn Array) -> Vec<Coord> {
             (0..l.len()).map(|i| Coord { x: v[i * n], y: v[i * n + 1], z: (n > 2).then(|| v[i * n + 2]), m: None }).collect()
         }
         _ => Vec::new(),
+    }
+}
+
+/// The EPSG code a GeoParquet `crs` names, without the CRS engine: a PROJJSON definition's
+/// (see [`projjson_epsg`]), or an EPSG reference string's (see
+/// [`terrio_crs::epsg_reference_code`]). `None` for `null`, a definition without a code (but an
+/// unidentified WGS 84 geographic CRS, 4326), any other string (WKT, PROJ strings, compound
+/// references), or code 0.
+pub(crate) fn epsg_only_crs(crs: &Value) -> Option<u32> {
+    match crs {
+        Value::Null => None,
+        Value::String(s) => terrio_crs::epsg_reference_code(s),
+        crs => projjson_epsg(crs).filter(|&code| code != 0),
     }
 }
 
@@ -1343,6 +1397,58 @@ impl Kind {
 mod tests {
     use super::*;
 
+    /// Each row of a GeoArrow point column decodes to its own point, from that row alone: decoding
+    /// row after row of 20000 takes milliseconds (it took minutes when each row decoded the column).
+    /// A sliced column and null coordinates keep their positions.
+    #[test]
+    fn geoarrow_points_decode_row_by_row() {
+        let n = 20_000;
+        let xs: Vec<Option<f64>> = (0..n).map(|i| (i != 7).then_some(i as f64)).collect();
+        let ys: Vec<f64> = (0..n).map(|i| -(i as f64) / 2.0).collect();
+        let points = StructArray::from(vec![
+            (Arc::new(Field::new("x", DataType::Float64, true)), Arc::new(Float64Array::from(xs)) as ArrayRef),
+            (Arc::new(Field::new("y", DataType::Float64, false)), Arc::new(Float64Array::from(ys)) as ArrayRef),
+        ]);
+        // The values below are the same when each row decodes the whole column: the time is what
+        // this test guards. 10 s is far above the milliseconds it takes, even in a debug build.
+        let start = std::time::Instant::now();
+        for i in 0..n {
+            let Some(Geometry::Point(c)) = geometry(&points, i, "point") else { panic!("row {i}") };
+            assert_eq!(c.y, -(i as f64) / 2.0);
+            assert!(if i == 7 { c.x.is_nan() } else { c.x == i as f64 }, "row {i}: {}", c.x);
+        }
+        assert!(start.elapsed() < std::time::Duration::from_secs(10), "{:?}", start.elapsed());
+        let tail = points.slice(100, 5);
+        let Some(Geometry::Point(c)) = geometry(&tail, 2, "point") else { panic!() };
+        assert_eq!((c.x, c.y), (102.0, -51.0));
+        assert!(geometry(&tail, tail.len(), "point").is_none());
+        assert!(geometry(&tail, usize::MAX, "point").is_none());
+        let interleaved = arrow_array::FixedSizeListArray::new(
+            Arc::new(Field::new("xy", DataType::Float64, false)),
+            2,
+            Arc::new(Float64Array::from(vec![0., 1., 2., 3., 4., 5., 6., 7.])),
+            None,
+        );
+        let tail = interleaved.slice(1, 3);
+        let Some(Geometry::Point(c)) = geometry(&tail, 1, "point") else { panic!() };
+        assert_eq!((c.x, c.y), (4., 5.));
+    }
+
+    /// Float32 covering columns and other number types read as `f64`, nulls as NaN, infinities as infinite.
+    #[test]
+    fn number_arrays_read_as_f64() {
+        use arrow_array::Float32Array;
+        let f32s = Float32Array::from(vec![Some(1.5), None, Some(-2.25)]);
+        let got = f64_values(&f32s);
+        assert_eq!((got[0], got[2]), (1.5, -2.25));
+        assert!(got[1].is_nan());
+        assert_eq!(f64_values(&Int32Array::from(vec![3, -4])), vec![3.0, -4.0]);
+        // Infinities stay infinite (the JSON path made them NaN): a covering bbox reaching
+        // +inf contains every query box.
+        assert_eq!(f64_values(&Float32Array::from(vec![f32::INFINITY, f32::NEG_INFINITY])), vec![f64::INFINITY, f64::NEG_INFINITY]);
+        assert_eq!(f64_values(&Float64Array::from(vec![1.0, 2.0]).slice(1, 1)), vec![2.0]);
+    }
+
     /// A GeoParquet `crs` given as PROJJSON with a NUL (`\u0000`) in its name (EPSG:32631's PROJ
     /// 9.8.1 PROJJSON without its code) is read as without it: the WKT built from it has the name cut at the NUL.
     #[test]
@@ -1721,6 +1827,32 @@ mod tests {
         let group = meta.row_group(0).clone().into_builder().set_column_metadata(columns).build().unwrap();
         let meta = meta.into_builder().set_row_groups(vec![group]).build();
         assert_eq!(group_bboxes(&meta, Some(leaves)), vec![Some([12.0, 44.0, 13.0, 45.0])]);
+    }
+
+    #[test]
+    fn epsg_only_crs_reads_codes_without_the_engine() {
+        for (crs, code) in [
+            (json!(null), None),
+            (json!("EPSG:32631"), Some(32631)),
+            (json!(" epsg:2154 "), Some(2154)),
+            (json!("urn:ogc:def:crs:EPSG::32631"), Some(32631)),
+            (json!("http://www.opengis.net/def/crs/EPSG/0/32631"), Some(32631)),
+            (json!("32631"), Some(32631)),
+            (json!("OGC:CRS84"), Some(4326)),
+            (json!("urn:ogc:def:crs:OGC:1.3:CRS84"), Some(4326)),
+            (json!("EPSG:4326+5773"), None),
+            (json!("EPSG:0"), None),
+            (json!("EPSG:4326\0junk"), Some(4326)),
+            (json!("EPSG:x"), None),
+            (json!("+proj=longlat +datum=WGS84"), None),
+            (json!({"type": "ProjectedCRS", "id": {"authority": "EPSG", "code": 32610}}), Some(32610)),
+            (json!({"type": "ProjectedCRS", "name": "x"}), None),
+            (json!({"type": "GeographicCRS", "id": {"authority": "EPSG", "code": 0}}), None),
+            // 2^32 + 4326: out of range, not wrapped to 4326.
+            (json!({"type": "GeographicCRS", "id": {"authority": "EPSG", "code": 4_294_971_622_u64}}), None),
+        ] {
+            assert_eq!(epsg_only_crs(&crs), code, "{crs}");
+        }
     }
 
     #[test]

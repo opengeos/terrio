@@ -99,6 +99,27 @@ per-dataset masks weighting the samples as in GDAL, and the masks given overview
 Row-streamed COG output computes the same pixels, whatever the input row chunk size, without
 retaining the whole source image.
 
+`area_matched`, and `area_matched_mode` for classes, are terrio's own (GDAL 3.13 has no
+equivalent): overviews of a raster with nodata whose valid cells cover the valid area of the
+full-resolution image, where `average` grows it at every level (see
+[Formats](formats.md#overviews-that-keep-the-valid-area)). They are written whole, never in rows,
+and each band's metadata records what its levels keep:
+
+```rust,no_run
+let ds = terrio::open_raster("depth.tif")?;
+let options = terrio::RasterWriteOptions {
+    driver: Some(terrio::formats::RasterDriver::Cog),
+    compression: Some("DEFLATE".into()),
+    overview_resampling: Some("area_matched".into()),
+    ..Default::default()
+};
+terrio::write_raster_dataset(&ds, "depth_cog.tif", &options)?;
+let written = terrio::open_raster("depth_cog.tif")?;
+let items = &written.band_metadata[0].items; // OVERVIEW_AREA_RATIOS, OVERVIEW_BASE_VALID_PIXELS
+# let _ = items;
+# Ok::<(), terrio::Error>(())
+```
+
 Native WebP TIFF output supports pixel-interleaved Byte RGB and RGBA.
 `WEBP_LOSSLESS=YES` preserves all samples, including transparent colors;
 `WEBP_LEVEL=0..100` controls lossy quality (default 75). Lossy RGBA retains alpha
@@ -111,6 +132,40 @@ The same codecs and creation options are available in WebAssembly.
 `write_vector(&layers, path, &VectorWriteOptions)` writes layers; GeoPackage holds several.
 `ops::vector_filter::write_vector_with_mode` appends to or overwrites the layers of an existing
 output; GeoPackages are updated keeping their other tables.
+
+Set `VectorWriteOptions::preserve_fid` to copy `Feature::fid` into a GeoPackage's
+`INTEGER PRIMARY KEY` column, as `ogr2ogr -preserve_fid` does for explicit IDs.
+
+```rust,no_run
+let points = terrio::open_vector("points.geojson", &Default::default())?;
+let options = terrio::VectorWriteOptions { preserve_fid: true, ..Default::default() };
+terrio::write_vector(&points.layers, "points.gpkg", &options)?;
+# Ok::<(), terrio::Error>(())
+```
+
+IDs must be unique within each layer. Appends also reject IDs already in the
+destination layer and use its existing primary-key column name. `signed_fid`
+interprets the ID bits as a signed 64-bit SQLite integer, including zero, `-1`
+and both limits. GDAL reserves `-1` as its unset-ID sentinel, while Terrio can
+copy a stored GeoPackage row ID of `-1`.
+
+The feature ID supplies the key. A case-insensitive attribute with the same name
+as the key (`properties.fid` in a typical GeoJSON export) must be a single integer
+field. A matching value is represented by the key column. An absent or null value
+leaves the feature ID in effect. A different value, incompatible type or ambiguous
+field name is an error. Without the option, a newly written layer still uses an
+eligible integer `fid` attribute or assigns keys from one in feature order, and
+an append continues the existing sequence.
+
+The write option uses the IDs present on the `Feature` values. `Feature::fid`
+always holds a number, so the writer cannot distinguish reader-generated IDs from
+explicit source IDs. The GeoJSON reader substitutes zero-based positions for missing, negative or
+non-integer IDs; if any feature has a string ID, every feature uses its position. This can differ
+from `ogr2ogr -preserve_fid`, lose explicit numeric IDs in a mixed collection, or produce a
+collision with another explicit ID. The writer does not recover those original IDs. To preserve
+original IDs, use a reader that exposes them numerically, or supply `Feature::fid` explicitly.
+Preservation buffers stream
+inputs so arbitrary ID order can be sorted and validated before writing.
 
 ## Streams
 
@@ -466,9 +521,11 @@ The commands are also available through the CLI and MCP. Python has `buffer`, `d
 to layers read and written as streams through `VectorTranslateOptions::geometry_op` (which is
 also `ogr2ogr`'s `-simplify`/`-segmentize`). `vector_geom::combine` (`CombineOptions`) and
 `vector_geom::sort` (`SortMethod`) take whole layers; `vector_geom::force_to` is OGR's `forceTo`.
-The single-geometry algorithms are `ops::simplify::{simplify_preserve_topology, segmentize}`
-and `ops::hull::{convex_hull, concave_hull, concave_hull_of_polygons}`. They are pure Rust and
-included in WebAssembly builds.
+The single-geometry algorithms are `ops::simplify::{simplify_preserve_topology, segmentize}`,
+`ops::simplify_dp::simplify_douglas_peucker` (`GeometryOp::SimplifyDouglasPeucker`) and
+`ops::hull::{convex_hull, concave_hull, concave_hull_of_polygons}`;
+`ops::simplify_dp::{simplify_wkb, simplify_wkb_many}` run Douglas-Peucker on WKB, the latter in
+parallel over features. They are pure Rust and included in WebAssembly builds.
 
 ```rust,no_run
 use terrio::ops::vector_geom::{self, CombineOptions, ConcaveHullOptions, GeometryOp, SortMethod};
@@ -742,7 +799,7 @@ operations and the streams. The other drivers are features:
 | `gdal` | off | The optional GDAL backend: formats terrio has no driver for, through GDAL (needs GDAL installed). See [the GDAL backend](gdal.md#the-optional-gdal-backend). |
 | `ndarray` | off | Raster pixels as `ndarray` arrays, without copying them: views, owned transfers and the masks of lazy reads, with the crate re-exported as `terrio::ndarray`; floating-point windows as owned arrays, bands first or last. See [ndarray](#ndarray). |
 | `cad` | on | DWG and DXF, read and written, through acadrust. See [CAD drawings](formats.md#cad-drawings-dwg-and-dxf). |
-| `libzstd` | off | Zstandard through the zstd C library, natively: faster decoding and better compression than the default `ruzstd`. |
+| `libzstd` | off | Zstandard through the zstd C library, natively: levels above 4, which the default `zrip` writes at level 4. |
 | `ring-fallback` | off | HTTPS with `ring` (needs a C compiler) on x86-64 and AArch64 CPUs without the features `rustls-graviola` needs; without it, HTTPS on such a CPU fails naming them. See [the architecture notes](architecture.md). Implies `remote`. |
 
 The drivers stay in the API whatever the features (`formats::RasterDriver`,

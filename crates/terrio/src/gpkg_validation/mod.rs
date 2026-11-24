@@ -33,6 +33,11 @@ use schema::Schema;
 use std::collections::BTreeMap;
 
 use crate::gpkg_validate::{GpkgRequirement as Requirement, GpkgValidationOptions, GpkgViolation as Violation};
+
+pub(crate) fn rowid_alias(sql: &str) -> Result<Option<usize>> {
+    Ok(Schema::parse(sql)?.rowid_alias)
+}
+
 #[derive(Debug, Default)]
 pub(super) struct CoreReport {
     pub(super) version: Option<u32>,

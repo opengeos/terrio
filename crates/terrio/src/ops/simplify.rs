@@ -54,7 +54,7 @@ pub(crate) fn dist(a: P, b: P) -> f64 {
 }
 
 /// JTS Distance.pointToSegment, with endpoint clamping.
-fn distance_to_segment(p: P, a: P, b: P) -> f64 {
+pub(crate) fn distance_to_segment(p: P, a: P, b: P) -> f64 {
     if a == b {
         return dist(p, a);
     }

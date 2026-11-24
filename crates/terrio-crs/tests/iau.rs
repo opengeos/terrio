@@ -84,8 +84,7 @@ fn registry_wkt_reopening_preserves_planetary_coordinates() {
 #[test]
 fn every_registry_definition_matches_frozen_gdal_coordinates() {
     use std::io::Read;
-    let mut bytes = &include_bytes!("../data/iau.tsv.zst")[..];
-    let mut decoder = ruzstd::decoding::StreamingDecoder::new(&mut bytes).unwrap();
+    let mut decoder = zrip::FrameDecoder::new(&include_bytes!("../data/iau.tsv.zst")[..]);
     let mut text = String::new();
     decoder.read_to_string(&mut text).unwrap();
     let rows: std::collections::HashMap<u32, Vec<&str>> = text

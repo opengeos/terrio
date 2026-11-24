@@ -249,8 +249,9 @@ def _copy_dataset(
         if [c.name for c in src.colorinterp[:3]] == ["red", "green", "blue"]:
             profile["photometric"] = "rgb"
         # A source with overviews of its own: GDAL's COG driver copies them (OVERVIEWS=AUTO).
+        overviews_option = str(profile.get("overviews", "AUTO")).upper()
         if (
-            str(profile.get("overviews", "AUTO")).upper() in ("AUTO", "FORCE_USE_EXISTING")
+            overviews_option in ("AUTO", "FORCE_USE_EXISTING")
             and src.driver in ("GTiff", "COG")
             and src.overviews(1)
         ):
@@ -267,6 +268,15 @@ def _copy_dataset(
                     profile["nbits"] = width
                 else:
                     profile.pop("nbits")
+        elif overviews_option == "FORCE_USE_EXISTING" and src.overviews(1):
+            # Overviews only GeoTIFF sources have copied: those of another source (a VRT's, say)
+            # are read level by level and written as they are, as GDAL 3.13.3's COG driver writes
+            # them, rather than none. (OVERVIEWS=AUTO still generates its own for such a source.)
+            dtype = _getnpdtype(profile["dtype"])
+            profile["_overview_data"] = [
+                np.asarray(src.read(out_shape=(src.count, h, w)), dtype=dtype)
+                for w, h in src._overview_sizes
+            ]
     gcps, gcp_crs = src.gcps
     per_dataset_mask = all(
         "per_dataset" in [f.name for f in flags] for flags in src.mask_flag_enums

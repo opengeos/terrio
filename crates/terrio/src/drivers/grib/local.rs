@@ -1,23 +1,21 @@
 //! Local GRIB files read by position, so that an open dataset holds where its bands are rather than
-//! the file: at open, the first octets of each message, to find the next one, and its header (its
-//! sections up to the first octets of its data, [`super::next_part`]); a band's message is read
-//! when the band is read. The bytes between messages are read only where a message does not start
-//! where the previous one ends, to look for the next one. A GRIB1 message whose nodata depends on
-//! its data is read whole at open, when its nodata is worked out once the headers are read, and
-//! dropped then: the open holds one such message at a time. Each message's header is dropped once
-//! what the dataset's header needs of its bands is taken from it, before the next one is read: the
-//! header of a GRIB2 message of several fields holds the data of the fields before the last, whose
-//! sections come after it. The last 4 bytes of each message, its end marker, which the walk of a
-//! GRIB2 message's sections checks, are read at open too. The reads of the headers go in file order
-//! through one buffer that a seek inside it keeps ([`crate::vfs::NearSeek`]): a message's end
+//! the file: at open, the first octets of each message, to find the next one, and its header (the
+//! first octets of each of its sections and its definitions, [`super::read_head`]); a band's message
+//! is read when the band is read. The bodies of a message's bitmap and data sections are skipped,
+//! those of each field of a GRIB2 message of several fields too. The bytes between messages are
+//! read only where a message does not start where the previous one ends, to look for the next one.
+//! A GRIB1 message whose nodata depends on its data is read whole at open, when its nodata is worked
+//! out once the headers are read, and dropped then: the open holds one such message at a time. Each
+//! message's header is dropped once what the dataset's header needs of its bands is taken from it,
+//! before the next one is read. The last 4 bytes of each message, its end marker, which the walk of
+//! a GRIB2 message's sections checks, are read at open too. The reads of the headers go in file
+//! order through one buffer that a seek inside it keeps ([`crate::vfs::NearSeek`]): a message's end
 //! marker and the next message's first octets and header come from one read of the file, as a rule.
 //!
 //! The messages are found, and their headers read, as in the bytes of a whole file in memory
 //! ([`super::open_lazy_bytes`]): a file gives the same bands, metadata and errors read either way.
 
-use super::{
-    Band, BandAt, Source, Store, bad_section, complete_head, find_messages, grib1, header_with, message_bands, message_fields, try_filled,
-};
+use super::{Band, BandAt, Head, Source, Store, bad_section, find_messages, grib1, header_with, read_head, try_filled};
 use crate::{Error, Result};
 use std::io::{Read, Seek, SeekFrom};
 
@@ -113,12 +111,11 @@ impl Scan {
         Ok(None)
     }
 
-    /// The start of the message at `start` of `len` bytes that its header needs, a GRIB1 bitmap's
-    /// body left as zeros ([`complete_head`]).
-    fn head(&mut self, start: usize, len: usize) -> Result<Vec<u8>> {
-        let mut head = self.read(start, HEAD_MIN.min(len))?;
-        complete_head(&mut head, len, |at, n| self.read(start + at, n))?;
-        Ok(head)
+    /// The header of the message at `start` of `len` bytes ([`read_head`]): what describing its
+    /// bands needs, each part read through the buffer.
+    fn head(&mut self, start: usize, len: usize) -> Result<Head> {
+        let first = self.read(start, HEAD_MIN.min(len))?;
+        read_head(first, len, 0, |at, n| self.read(start + at, n))
     }
 }
 
@@ -149,16 +146,11 @@ fn grib1_nodata(msg: &[u8], file_len: usize, normalize: bool) -> Result<Option<f
 /// last 4 bytes `end_marker`, as the whole message gives them: a GRIB2 message whose sections the
 /// header holds until its end marker's place has that marker checked, as the whole message's
 /// sections are.
-fn bands_of<'a>(head: &'a [u8], end_marker: &[u8], len: usize, file_len: usize, normalize: bool) -> Result<Vec<Band<'a>>> {
-    if head.get(7) == Some(&1) {
-        return message_bands(head, len, file_len, normalize);
+fn bands_of<'a>(head: &'a Head, end_marker: &[u8], len: usize, file_len: usize, normalize: bool) -> Result<Vec<Band<'a>>> {
+    match head.bands(len, file_len, normalize)? {
+        (_, Some(end)) if end_marker != b"7777" => Err(bad_section(end)),
+        (bands, _) => Ok(bands),
     }
-    let mut fields = Vec::new();
-    let end = message_fields(head, len, normalize, &mut fields)?;
-    if end + 4 > head.len() && end + 4 == len && end_marker != b"7777" {
-        return Err(bad_section(end));
-    }
-    Ok(fields.into_iter().map(Band::Grib2).collect())
 }
 
 /// Opens a local GRIB file, or an archive member's extracted copy, to be read band by band. A path
@@ -196,7 +188,7 @@ fn source(local: crate::vfs::LocalPath) -> Result<(crate::RasterDataset, Source)
     let (mut first_grid, mut index, mut band_metadata, mut band_nodata) = (None, Vec::new(), Vec::new(), Vec::new());
     for &(start, n) in &spans {
         let head = scan.head(start, n)?;
-        let read_whole = head.get(7) == Some(&1) && head.len() < n && grib1_nodata_needs_data(&head, len, normalize);
+        let read_whole = matches!(&head, Head::Grib1(head, _) if head.len() < n && grib1_nodata_needs_data(head, len, normalize));
         // Messages are at least 16 bytes long (`find_messages`).
         let end_marker = scan.read(start + n - 4, 4)?;
         let bands = bands_of(&head, &end_marker, n, len, normalize)?;
@@ -221,7 +213,9 @@ fn source(local: crate::vfs::LocalPath) -> Result<(crate::RasterDataset, Source)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::block_cache::tests::{cache_test_guard, take_lookups};
+    use crate::block_cache::tests::cache_test_guard;
+    #[cfg(unix)]
+    use crate::block_cache::tests::take_lookups;
     use crate::{Window, WindowOptions};
 
     /// The bytes local GRIB files read so far on this thread.
@@ -328,6 +322,110 @@ mod tests {
         let before = bytes_read();
         assert_eq!(window(&mut second, 2, rows), expected);
         assert_eq!((bytes_read() - before, take_lookups()), (0, (1, 0)), "another reader of the file shares band 2");
+    }
+
+    /// The GRIB2 messages `bytes` (of one field each) made one message of their fields: sections 4
+    /// to 7 of each after the first's sections 1 to 3.
+    fn one_message(bytes: &[u8]) -> Vec<u8> {
+        let be = |b: &[u8]| b.iter().fold(0usize, |v, &x| (v << 8) | x as usize);
+        let mut body = Vec::new();
+        for (k, (start, len)) in super::super::message_spans(bytes).unwrap().into_iter().enumerate() {
+            let mut at = start + 16;
+            while &bytes[at..at + 4] != b"7777" {
+                let n = be(&bytes[at..at + 4]);
+                if (k == 0 && bytes[at + 4] <= 3) || bytes[at + 4] >= 4 {
+                    body.extend_from_slice(&bytes[at..at + n]);
+                }
+                at += n;
+            }
+            assert_eq!(at + 4, start + len);
+        }
+        [&bytes[..8], &((16 + body.len() + 4) as u64).to_be_bytes()[..], &body, b"7777"].concat()
+    }
+
+    /// Catches the data of a message's fields read at open (#1215): a field's sections come after
+    /// the data section of the field before it, which its length skips. A message of four fields of
+    /// 512 x 256 Float32 values (512 KiB each) is opened reading a page for each field after the
+    /// first, and two more; its bands are those of the message read whole.
+    #[test]
+    fn a_message_of_several_fields_is_opened_without_their_data() {
+        let _serial = cache_test_guard(64 << 20);
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = one_message(&grib_file(dir.path(), 512, 256, 4).1);
+        let path = dir.path().join("fields.grib2");
+        std::fs::write(&path, &bytes).unwrap();
+        let before = bytes_read();
+        let mut r = crate::LazyRaster::open(path.to_str().unwrap()).unwrap();
+        let read = bytes_read() - before;
+        assert!(read <= (3 + 2) * SCAN_BUFFER as u64, "{read} bytes read at open, of {}", bytes.len());
+        let whole = super::super::read_bytes(&bytes).unwrap().raster.data.to_f64_vec();
+        let all = r.read_window(Window::full(512, 256), &WindowOptions { bands: vec![1, 2, 3, 4], overview: None }).unwrap();
+        let values = all.raster.data.to_f64_vec();
+        assert!(values.len() == whole.len() && values.iter().zip(&whole).all(|(a, b)| a.to_bits() == b.to_bits()));
+    }
+
+    /// The GRIB2 message `message` with the bodies of its local use, bitmap and data sections (past
+    /// their first 5 octets, 6 for a bitmap section) grown by `pad` zero bytes, with their section
+    /// lengths and the message length updated; and the ranges of those bodies.
+    fn padded_bodies(message: &[u8], pad: usize) -> (Vec<u8>, Vec<std::ops::Range<usize>>) {
+        let be = |b: &[u8]| b.iter().fold(0usize, |v, &x| (v << 8) | x as usize);
+        let (mut out, mut bodies, mut at) = (message[..16].to_vec(), Vec::new(), 16);
+        while &message[at..at + 4] != b"7777" {
+            let n = be(&message[at..at + 4]);
+            let mut s = message[at..at + n].to_vec();
+            if let k @ (2 | 6 | 7) = s[4] {
+                s.resize(n + pad, 0);
+                s[..4].copy_from_slice(&((n + pad) as u32).to_be_bytes());
+                let first = out.len() + if k == 6 { 6 } else { 5 };
+                bodies.push(first..out.len() + s.len());
+            }
+            out.extend_from_slice(&s);
+            at += n;
+        }
+        out.extend_from_slice(b"7777");
+        let len = out.len() as u64;
+        out[8..16].copy_from_slice(&len.to_be_bytes());
+        (out, bodies)
+    }
+
+    /// Catches the header of a GRIB2 message read with the bodies of its local use, bitmap or data
+    /// sections, which it does not need (#1215): the message of the two fields of
+    /// `two_bands_with_bitmap.grib2`, each of those bodies grown by 10,000 bytes, has its header
+    /// read past every one of them, in under 2,000 bytes, and its bands are described as the whole
+    /// message's.
+    #[test]
+    fn a_grib2_header_skips_the_bodies_of_its_sections() {
+        let fixture = include_bytes!("../../../tests/data/grib/two_bands_with_bitmap.grib2");
+        let (message, bodies) = padded_bodies(&one_message(fixture), 10_000);
+        let len = message.len();
+        let mut reads = Vec::new();
+        let head = super::super::read_head(message[..512].to_vec(), len, 0, |at, n| {
+            reads.push((at, n));
+            Ok(message[at..at + n].to_vec())
+        })
+        .unwrap();
+        assert_eq!(bodies.len(), 5, "a local use section, and two fields' bitmap and data sections");
+        assert!(reads.iter().all(|&(at, n)| bodies.iter().all(|b| at + n <= b.start || b.end <= at)), "{reads:?} in {bodies:?}");
+        let read = 512 + reads.iter().map(|&(_, n)| n).sum::<usize>();
+        assert!(read < 2_000, "{read} bytes read of {len}");
+        let describe = |bands: &[Band]| -> Vec<_> {
+            bands.iter().map(|b| (b.grid().map(|g| (g.nx, g.ny)).unwrap(), b.nodata().unwrap(), b.metadata().unwrap())).collect()
+        };
+        let (bands, _) = head.bands(len, len, true).unwrap();
+        assert_eq!(describe(&bands), describe(&super::super::message_bands(&message, len, len, true).unwrap()));
+    }
+
+    /// A raw u32 section length cannot wrap the header walk on a 32-bit target or revisit bytes.
+    #[test]
+    fn an_oversized_grib2_section_is_rejected_without_more_reads() {
+        let mut first = vec![0; 32];
+        first[..4].copy_from_slice(b"GRIB");
+        first[7] = 2;
+        first[8..16].copy_from_slice(&1024_u64.to_be_bytes());
+        first[16..20].copy_from_slice(&u32::MAX.to_be_bytes());
+        first[20] = 7;
+        let head = super::super::read_head(first, 1024, 0, |_, _| panic!("invalid section must not request more bytes")).unwrap();
+        assert!(head.bands(1024, 1024, true).is_err());
     }
 
     /// Catches the header of a GRIB1 message read with its bitmap's body, which it does not need, or

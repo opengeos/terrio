@@ -91,6 +91,9 @@ pub struct Args {
     /// an existing file is taken whole, even with an `=`. Repeat it for several files.
     #[arg(long = "kmz-resource", value_name = "PATH[=FILE]")]
     kmz_resources: Vec<String>,
+    /// For GeoPackage vectors, use parsed feature IDs (including reader-generated IDs) as the primary key.
+    #[arg(long)]
+    preserve_fid: bool,
     /// CityJSON output version (default: 2.0).
     #[arg(long, value_parser = ["1.1", "2.0"])]
     cityjson_version: Option<String>,
@@ -140,7 +143,12 @@ fn stream_options(a: &Args) -> terrio::Result<Option<terrio::stream::ConvertOpti
         },
         None => None,
     };
-    if a.srcwin.is_some() || a.overview.is_some() || a.vector.write_mode() != WriteMode::Create || terrio::tiles::is_archive(&a.input) {
+    if a.preserve_fid
+        || a.srcwin.is_some()
+        || a.overview.is_some()
+        || a.vector.write_mode() != WriteMode::Create
+        || terrio::tiles::is_archive(&a.input)
+    {
         return Ok(None);
     }
     let t_srs = a.t_srs.as_deref().map(SpatialRef::parse).transpose()?;
@@ -195,6 +203,7 @@ fn streamed_raster(a: &Args) -> terrio::Result<Option<(terrio::LazyRaster, Raste
     let plain = a.srcwin.is_none()
         && a.overview.is_none()
         && a.t_srs.is_none()
+        && !a.preserve_fid
         && !a.vector.is_set()
         && (tiles_out || (a.minzoom.is_none() && a.maxzoom.is_none()))
         && a.layers.is_empty()
@@ -232,6 +241,11 @@ fn streamed_raster(a: &Args) -> terrio::Result<Option<(terrio::LazyRaster, Raste
 }
 
 pub fn run(mut a: Args) -> terrio::Result<()> {
+    if a.preserve_fid
+        && a.format.as_deref().map_or_else(|| VectorDriver::for_extension(&a.output), VectorDriver::from_name) != Some(VectorDriver::GPKG)
+    {
+        return Err(terrio::Error::InvalidArgument("--preserve-fid applies to GPKG output".into()));
+    }
     if (a.citygml_version.is_some() || a.citygml_lod0_surface.is_some())
         && a.format.as_deref().map_or_else(|| VectorDriver::for_extension(&a.output), VectorDriver::from_name)
             != Some(VectorDriver::CityGML)
@@ -247,6 +261,9 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
     let coordinate_options = a.vector.coordinate_options()?;
     a.input = super::with_driver(&a.input, a.driver.as_deref())?;
     if terrio::pointcloud::is_point_cloud_path(&a.input) {
+        if a.preserve_fid {
+            return Err(terrio::Error::InvalidArgument("--preserve-fid applies to vector inputs only".into()));
+        }
         let t_srs = a.t_srs.as_deref().map(SpatialRef::parse).transpose()?;
         if t_srs.is_some() && a.vector.has_transform_options() {
             return Err(terrio::Error::InvalidArgument("--ct-opt is not supported for point-cloud reprojection".into()));
@@ -321,6 +338,7 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
         Dataset::Raster(mut r) => {
             let append = a.vector.append_only();
             if (a.vector.is_set() && !append)
+                || a.preserve_fid
                 || a.cityjson_version.is_some()
                 || a.citygml_version.is_some()
                 || a.citygml_lod0_surface.is_some()
@@ -452,6 +470,7 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
                 .transpose()?;
             let mut options = VectorWriteOptions {
                 driver,
+                preserve_fid: a.preserve_fid,
                 cityjson_version: a.cityjson_version.as_deref().map(str::parse).transpose()?,
                 citygml_version: a.citygml_version.as_deref().map(str::parse).transpose()?,
                 citygml_lod0_surface: a.citygml_lod0_surface.as_deref().map(str::parse).transpose()?,

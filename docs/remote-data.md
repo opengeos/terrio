@@ -127,9 +127,11 @@ terrio convert $B04 small.tif --overview 3
 ```
 
 GRIB files (`.grib2`, `.grb2`, `.grib`, `.grb`) are read in place too, message by message as GDAL
-reads them: opening reads one 16 KiB block per message for its section headers, finding each
-message after the previous one by its length, and reading a band fetches its message alone. No
-`.idx` or `.index` sidecar is requested, and a server that ignores range requests is refused.
+reads them: opening reads one 16 KiB block per message for its section headers (and a few
+hundred bytes for each further field of a message of several fields, past the data of the field
+before it), finding each message after the previous one by its length, and reading a band
+fetches its message alone. No `.idx` or `.index` sidecar is requested, and a server that ignores
+range requests is refused.
 A remote GRIB file whose name has no GRIB extension (NOAA's `gfs.t00z.pgrb2.0p25.f000`) is
 recognized by its first bytes and read by range in the same way.
 

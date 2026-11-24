@@ -196,8 +196,8 @@
 //! [`formats::VectorDriver`], listed as neither read nor written: opening or writing their files
 //! fails with [`Error::Unsupported`] ("built without the `zarr` feature").
 //!
-//! - `libzstd` (off by default): Zstandard through the zstd C library natively, for faster decoding
-//!   and higher compression levels than the default pure-Rust `ruzstd`.
+//! - `libzstd` (off by default): Zstandard through the zstd C library natively, for compression
+//!   levels above 4, which the default pure-Rust `zrip` writes at level 4.
 //! - `ring-fallback` (off by default): HTTPS with `ring`, which needs a C compiler, on x86-64 and
 //!   AArch64 CPUs without the features `rustls-graviola` needs (AVX2, ADX and BMI2 among them on
 //!   x86-64). Without it, HTTPS on such a CPU fails with an error naming the missing features.

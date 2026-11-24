@@ -53,7 +53,13 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
   when terrio identifies it, the shift alone; into one on the source CRS's own datum, no shift,
   whatever the target; to a CRS without transformations, the source CRS's own, else PROJ's
   ballpark); such a shift wins over the EPSG code of a source CRS terrio identifies, and over the
-  `TOWGS84` of a WKT 1 source CRS (GDAL's `GEOGCS` or `PROJCS` in `SOURCECRS`). Their PROJ
+  `TOWGS84` of a WKT 1 source CRS (GDAL's `GEOGCS` or `PROJCS` in `SOURCECRS`). A target that is
+  bound itself (a `BOUNDCRS`) is not chained through, as PROJ does not chain through it, nor
+  through a WKT 1 target with its own `TOWGS84`; PROJ links such CRSs by its ballpark. When a
+  `BOUNDCRS`'s transformation is not applied (that case, a WKT 1 target, which terrio does not
+  read where PROJ does, or a grid's transformation), each transformer using the CRS warns
+  (`take_warnings`), and its points are placed without it (by the source CRS's own
+  transformations when terrio identifies it, else by the ballpark). Their PROJ
   string leaves out a shift to a CRS other than WGS 84, as PROJ's does. Their scale difference is a
   ratio in unity (`1.0000067`, as PROJ writes it) or in the unit given (parts per million, where
   PROJ 9.9.0 misreads 6.7 ppm as the ratio 6.7, which terrio does not follow); without a unit, a
@@ -255,7 +261,7 @@ Each queue retains its own order, but the combined order is not chronological
 across queues. A custom transformer warning handler is also available.
 
 The standalone default omits `wbprojection`; Terrio enables the fallback to retain
-its existing coverage. Bundled tables use portable `ruzstd` decompression on all
+its existing coverage. Bundled tables use portable `zrip` decompression on all
 targets. The standalone default has no C dependency: Zstandard TIFF grids are read only with the
 `libzstd` feature, which uses the zstd C library and which Terrio does not enable. The PROJ CDN's
 grids are Deflate-compressed (all 11 sampled, among them those this page and the tests name), so this
@@ -687,11 +693,19 @@ finds come from `crates/terrio-crs/data/crs_names.tsv.zst` (`scripts/gen_crs_nam
 
 PROJ's datum pivot, which tries the datum's CRSs in order of code, the geocentric ones too, is
 followed: ESRI's ONGD14 (EPSG:7373) without its code gets "ONGD14 to WGS 84 (1)", registered between
-the geocentric CRSs, as in PROJ, while EPSG:7373 by its code keeps "(2)". One of PROJ's steps is not
-followed yet: the ballpark PROJ goes through, of unknown accuracy, when the datum's name is not its
-ID's (`DATUM["Local datum",...,ID["EPSG",6806]]`). When either CRS has such a datum, terrio does not
-search at all, for either side, and that CRS keeps its code's area. The transformation is then the
-one between the codes.
+the geocentric CRSs, as in PROJ, while EPSG:7373 by its code keeps "(2)". PROJ pivots from an
+unresolved CRS, and into one only when it cannot find it by its name (ONGD14 renamed); into one it
+finds, it goes by the code's own transformations. Under the code's name, it takes the first of the
+datum's CRSs of that name with transformations, alone. When the datum's name is not its ID's
+(`DATUM["Local datum",...,ID["EPSG",6806]]`), PROJ goes into the datum's CRSs by its ballpark, of
+unknown accuracy, and so are the chains and the transformations through geocentric CRSs it makes;
+the CRS's own registered transformations keep their accuracy. A renamed Monte Mario (Rome) then
+goes through Monte Mario, 72 m from EPSG:4806's own transformation, and a renamed Georgia Geodetic
+Datum (EPSG:10831) through Pulkovo 1942, 7 m away. A prime meridian in grads (Carthage (Paris),
+EPSG:4816) is not PROJ's registered one to the last digit, so PROJ rotates the longitudes instead,
+without the ballpark, and the accuracies are kept. One step is not followed yet: from a WKT with an
+ID of an authority PROJ does not know (`AUTHORITY["LOCAL","1"]`), PROJ's pivot takes only the first
+of the datum's CRSs with transformations; terrio places it by the code.
 terrio also does not follow PROJ for an ESRI ATF (Paris) (EPSG:4901) WKT without a code. PROJ takes
 IGNF's ATIG geocentric chain, which applies the Paris prime meridian twice and lands 178 km from
 PROJ's own placement of EPSG:4901. terrio, which has no IGNF transformations, identifies the WKT as

@@ -150,6 +150,67 @@ def test_default_resampling_is_gdals_cubic(tmp_path, path):
     _assert_same(gdal, ours, path)
 
 
+@pytest.mark.parametrize("word", ["YES", "TRUE", "STANDARD", "FLOATING_POINT", "2", "FALSE", "NO"])
+@pytest.mark.parametrize("dtype", ["float32", "int16", "uint8"])
+def test_cog_predictor_words_are_gdals(tmp_path, dtype, word):
+    """GDAL's COG driver resolves PREDICTOR=YES by data type (3 for floats, 2 otherwise) and
+    takes STANDARD and FLOATING_POINT: terrio writes the predictor GDAL writes, reports it while
+    writing as GDAL reports it afterwards, and the same pixels at every level."""
+    src = _source(tmp_path / "src.tif", 1001, 999, 1, dtype, None)
+    if word == "FLOATING_POINT" and dtype != "float32":
+        # GDAL refuses the floating-point predictor for integers, and so does terrio.
+        with pytest.raises(Exception, match="PREDICTOR=3"):
+            _gdal_cog(src, tmp_path / "gdal.tif", predictor=word)
+        with pytest.raises(terrio.TerrioError, match="PREDICTOR=3"):
+            terrio.convert(
+                src,
+                str(tmp_path / "x.tif"),
+                format="COG",
+                compress="DEFLATE",
+                options={"PREDICTOR": word},
+            )
+        return
+    gdal = _gdal_cog(src, tmp_path / "gdal.tif", predictor=word)
+    with rasterio.open(gdal) as ds:
+        expected = ds.tags(ns="IMAGE_STRUCTURE").get("PREDICTOR")
+    ours = str(tmp_path / "terrio.tif")
+    terrio.convert(src, ours, format="COG", compress="DEFLATE", options={"PREDICTOR": word})
+    with rasterio.open(ours) as ds:
+        assert ds.tags(ns="IMAGE_STRUCTURE").get("PREDICTOR") == expected
+    _assert_same(gdal, ours, f"PREDICTOR={word}")
+    with trio.open(src) as ds:
+        profile, data = ds.profile.copy(), ds.read()
+    profile.update(driver="COG", compress="deflate", predictor=word)
+    written = str(tmp_path / "written.tif")
+    with trio.open(written, "w", **profile) as dst:
+        assert dst.tags(ns="IMAGE_STRUCTURE").get("PREDICTOR") == expected
+        dst.write(data)
+    with rasterio.open(written) as ds:
+        assert ds.tags(ns="IMAGE_STRUCTURE").get("PREDICTOR") == expected
+
+
+@pytest.mark.parametrize("driver", ["COG", "GTiff"])
+@pytest.mark.parametrize(
+    "dtype, compress",
+    [("float32", "packbits"), ("complex64", "deflate")],
+    ids=["packbits", "complex"],
+)
+def test_predictor_reported_only_where_written(tmp_path, driver, dtype, compress):
+    """A compression without a predictor (PACKBITS) or complex samples write no predictor tag:
+    the dataset being written reports none either, as the written file does."""
+    data = (np.arange(2 * 40 * 30).reshape(2, 40, 30) * 0.25).astype(dtype)
+    path = str(tmp_path / "written.tif")
+    profile = dict(driver=driver, dtype=dtype, width=30, height=40, count=2, compress=compress)
+    if driver == "GTiff":
+        profile.update(tiled=True, blockxsize=16, blockysize=16)
+    with trio.open(path, "w", predictor="YES", **profile) as dst:
+        assert dst.tags(ns="IMAGE_STRUCTURE").get("PREDICTOR") is None
+        dst.write(data)
+    with rasterio.open(path) as ds:
+        assert ds.tags(ns="IMAGE_STRUCTURE").get("PREDICTOR") is None
+        np.testing.assert_array_equal(ds.read(), data)
+
+
 @pytest.mark.parametrize("key", ["overview_resampling", "resampling"])
 def test_resampling_keywords_on_rio_paths(tmp_path, key):
     """rasterio's `overview_resampling` and GDAL's `RESAMPLING` creation option."""
@@ -466,6 +527,158 @@ def test_ingestion_call_copies_source_overviews(tmp_path, kind):
         assert t.overviews(1) == g.overviews(1) == [2, 4, 8]
         assert t.tags(ns="IMAGE_STRUCTURE") == g.tags(ns="IMAGE_STRUCTURE")
     _assert_same_masked(gdal, ours, kind)
+
+
+def test_force_use_existing_writes_a_vrt_source_overviews(tmp_path):
+    """OVERVIEWS=FORCE_USE_EXISTING from a source terrio does not copy overviews from (a VRT):
+    its overviews are read and written as they are, as GDAL's COG driver writes them, not
+    dropped."""
+    tif = _source(tmp_path / "src.tif", 1001, 999, 1, "uint16", 0, tiled=True)
+    with rasterio.open(tif, "r+") as ds:
+        ds.build_overviews([2, 4], RR.average)
+    vrt = str(tmp_path / "src.vrt")
+    rasterio.shutil.copy(tif, vrt, driver="VRT")
+    for name, mod in (("gdal", rasterio), ("terrio", trio)):
+        mod.shutil.copy(
+            vrt,
+            str(tmp_path / f"{name}.tif"),
+            driver="COG",
+            compress="deflate",
+            overviews="FORCE_USE_EXISTING",
+        )
+    gdal, ours = str(tmp_path / "gdal.tif"), str(tmp_path / "terrio.tif")
+    with rasterio.open(gdal) as g, rasterio.open(ours) as t:
+        assert t.overviews(1) == g.overviews(1) == [2, 4]
+    for ours_level, gdal_level in zip(_levels(ours), _levels(gdal), strict=True):
+        np.testing.assert_array_equal(ours_level, gdal_level)
+
+
+@pytest.mark.parametrize("as_rasters", [False, True], ids=["arrays", "rasters"])
+def test_supplied_overviews_round_trip(tmp_path, as_rasters):
+    """Overviews supplied to `Raster.write` are written as GDAL's COG driver writes a source's
+    existing ones (OVERVIEWS=FORCE_USE_EXISTING): gdaladdo's ceil sizes and every pixel, with
+    no intermediate file; `metadata=` items are set over the raster's own."""
+    src = _source(tmp_path / "src.tif", 1001, 999, 2, "int16", -9999, tiled=True)
+    with rasterio.open(src, "r+") as ds:
+        ds.build_overviews([2, 4], RR.average)
+        ds.update_tags(SOURCE="gdaladdo")
+    gdal = _gdal_cog(src, tmp_path / "gdal.tif", overviews="FORCE_USE_EXISTING")
+    levels = _levels(src)
+    with rasterio.open(src) as ds:
+        transform, crs, nodata = ds.transform.to_gdal(), ds.crs.to_string(), ds.nodata
+    base = terrio.Raster.from_array(levels[0], transform, crs, nodata, metadata={"SOURCE": "x"})
+    supplied = levels[1:]
+    if as_rasters:
+        supplied = [terrio.Raster.from_array(a, transform, crs, nodata) for a in supplied]
+    ours = str(tmp_path / "terrio.tif")
+    base.write(
+        ours,
+        driver="COG",
+        compress="DEFLATE",
+        options={"OVERVIEWS": "FORCE_USE_EXISTING"},
+        overviews=supplied,
+        metadata={"SOURCE": "gdaladdo"},
+    )
+    assert [x.shape for x in _levels(ours)[1:]] == [(2, 500, 501), (2, 250, 251)]
+    with rasterio.open(gdal) as g, rasterio.open(ours) as t:
+        assert t.tags()["SOURCE"] == g.tags()["SOURCE"] == "gdaladdo"
+        assert t.nodata == g.nodata
+        assert t.tags(ns="IMAGE_STRUCTURE")["LAYOUT"] == "COG"
+    _assert_same(gdal, ours, "supplied overviews")
+
+
+def test_supplied_overviews_follow_gdal_overviews_option(tmp_path):
+    """OVERVIEWS as GDAL's COG driver reads it: FORCE_USE_EXISTING never generates overviews (none
+    without existing ones, with a warning); NONE and IGNORE_EXISTING would discard supplied ones,
+    and factors or a resampling with them contradict them, so those are refused."""
+    a = np.arange(48 * 64, dtype="float32").reshape(48, 64)
+    r = terrio.Raster.from_array(a, [0, 1, 0, 48, 0, -1], "EPSG:32615")
+    ov = a[::2, ::2].copy()
+    with pytest.warns(UserWarning, match="FORCE_USE_EXISTING"):
+        r.write(
+            str(tmp_path / "none.tif"),
+            driver="COG",
+            tile_size=16,
+            options={"OVERVIEWS": "FORCE_USE_EXISTING"},
+        )
+    with rasterio.open(tmp_path / "none.tif") as ds:
+        assert ds.overviews(1) == []
+    r.write(str(tmp_path / "auto.tif"), driver="COG", tile_size=16)
+    with rasterio.open(tmp_path / "auto.tif") as ds:
+        assert ds.overviews(1) == [2, 4]
+    for kwargs in (
+        {"options": {"OVERVIEWS": "NONE"}},
+        {"options": {"OVERVIEWS": "IGNORE_EXISTING"}},
+        {"overview_resampling": "average"},
+        {"options": {"OVERVIEW_RESAMPLING": "AVERAGE"}},
+        # GDAL's COG driver falls back to RESAMPLING, and ignores both with existing overviews.
+        {"options": {"RESAMPLING": "AVERAGE"}},
+        {"options": {"OVERVIEWS": "FORCE_USE_EXISTING", "RESAMPLING": "AVERAGE"}},
+        # Area-matched overviews are computed as well: they are not combined with supplied ones.
+        {"options": {"OVERVIEW_RESAMPLING": "AREA_MATCHED"}},
+        {"overview_resampling": "area_matched"},
+    ):
+        with pytest.raises(terrio.TerrioError):
+            r.write(str(tmp_path / "x.tif"), driver="COG", overviews=[ov], **kwargs)
+    # The raster being written is already borrowed: an error, not a PanicException.
+    with pytest.raises(terrio.TerrioError, match="its own overview"):
+        r.write(str(tmp_path / "x.tif"), driver="COG", overviews=[r])
+    with pytest.raises(terrio.TerrioError):
+        r.write(str(tmp_path / "x.tif"), driver="COG", overviews=[ov, 4])
+    with pytest.raises(terrio.TerrioError):
+        r.write(str(tmp_path / "x.tif"), driver="COG", overviews=[a])
+    with pytest.raises(terrio.TerrioError):
+        r.write(str(tmp_path / "x.asc"), metadata={"A": "1"})
+
+
+def test_supplied_overviews_keep_complex_identity(tmp_path):
+    """A complex band is two Float32 component bands, so a one-band complex64 level matches a
+    two-band float32 raster's band count and type: refused either way round, as an array or a
+    Raster, while a complex level of a complex raster is written."""
+    t = [0, 1, 0, 48, 0, -1]
+    real = np.arange(2 * 48 * 64, dtype="float32").reshape(2, 48, 64)
+    cplx = (real[0] + 1j * real[1]).astype("complex64")[None]
+    real_r = terrio.Raster.from_array(real, t, "EPSG:32615")
+    cplx_r = terrio.Raster.from_array(cplx, t, "EPSG:32615")
+    real_ov, cplx_ov = real[:, ::2, ::2].copy(), cplx[:, ::2, ::2].copy()
+    for raster, level in (
+        (real_r, cplx_ov),
+        (real_r, terrio.Raster.from_array(cplx_ov, t, "EPSG:32615")),
+        (cplx_r, real_ov),
+        (cplx_r, terrio.Raster.from_array(real_ov, t, "EPSG:32615")),
+    ):
+        with pytest.raises(terrio.TerrioError, match="complex"):
+            raster.write(
+                str(tmp_path / "x.tif"), driver="COG", compress="DEFLATE", overviews=[level]
+            )
+    out = tmp_path / "complex.tif"
+    cplx_r.write(str(out), driver="COG", compress="DEFLATE", tile_size=16, overviews=[cplx_ov])
+    with rasterio.open(out) as ds:
+        assert ds.dtypes[0] == "complex64"
+        assert ds.overviews(1) == [2]
+        np.testing.assert_array_equal(ds.read(1, out_shape=(24, 32)), cplx_ov[0])
+    real_r.write(str(tmp_path / "real.tif"), driver="COG", compress="DEFLATE", overviews=[real_ov])
+
+
+@pytest.mark.parametrize("complex_dtype", ["CInt16", "CInt32"])
+def test_supplied_complex_arrays_keep_integer_components(tmp_path, complex_dtype):
+    """Convert supplied complex arrays to the base's integer component type.
+
+    Args:
+        tmp_path: Isolated output directory.
+        complex_dtype: Physical complex sample type of the base raster.
+    """
+    real = np.arange(48 * 64, dtype="float64").reshape(48, 64)
+    if complex_dtype == "CInt32":
+        real += 2**24 + 1
+    values = real + 1j * (-real - 3)
+    raster = terrio.Raster.from_array(values, [0, 1, 0, 48, 0, -1], complex_dtype=complex_dtype)
+    level = values[::2, ::2].copy()
+    path = tmp_path / "integer-complex.tif"
+    raster.write(str(path), driver="COG", compress="DEFLATE", tile_size=16, overviews=[level])
+    back = terrio.open_raster(str(path), lazy=True)
+    assert back.data_type == complex_dtype
+    np.testing.assert_array_equal(back.read(1, overview=0, out_dtype="complex128"), level)
 
 
 def test_cog_writes_stream(tmp_path, monkeypatch):

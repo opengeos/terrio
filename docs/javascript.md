@@ -184,6 +184,48 @@ snapshot:
 |---|---|---|---|
 | `terrio-js/cog` | 1.00 MB | 0.38 MB | 0.30 MB |
 
+## GeoParquet alone: `terrio-js/geoparquet`
+
+`terrio-js/geoparquet` is a fifth module, of its own API, that reads GeoParquet files over HTTP
+and nothing else: terrio's GeoParquet reader (row groups skipped by their statistics, only the
+column chunks of the fields asked for; Snappy, gzip, Brotli, LZ4 and ZSTD), the range requests of
+`openUrl` (opened from the file's end, 12 in flight, blocks kept between reads), features out as
+GeoJSON, and no CRS engine. It suits pages that only read GeoParquet, such as parcels or
+buildings within a map view.
+
+```js
+import init, { openGeoParquet } from "terrio-js/geoparquet";
+
+await init();
+const f = await openGeoParquet("https://example.com/parcels.parquet");
+f.rowGroups;                                      // [{ rows, first_row, bbox, bytes }, ...]
+f.epsg;                                           // 4326
+const fc = await f.read({ bbox: [2.2, 48.8, 2.5, 48.9], columns: ["id"] }); // GeoJSON
+const last = await f.read({ rowGroups: [f.rowGroups.length - 1] });
+f.stats();                                        // { requests, bytes }
+```
+
+Its options are those of `openUrl` for GeoParquet: `blockSize`, `cacheSize`, `fetch` and
+`headers` to open (not `format`: the file is always read as GeoParquet), `rowGroups`, `bbox` and
+`columns` to read. A read returns the features `openUrl(url).read(options)` then `toGeoJSON()`
+give; for a URL whose file name ends in `.parquet`, with the same requests (`openUrl` opens other
+names from their start). The open reads the file's GeoParquet metadata, which `openUrl` reads at
+its first read, so a file whose metadata terrio refuses fails to open.
+
+Without the CRS engine, `epsg` is the EPSG code the file's `crs` names, read from its text: a
+PROJJSON identifier (or a bound CRS's source; 4326 for OGC:CRS84 or an unidentified WGS 84
+geographic CRS), or a reference such as `EPSG:32631`, its URN or URL forms or `OGC:CRS84`; 4326
+when the file has no `crs`. It is `undefined` for `null` and for definitions it cannot tie to a
+code (WKT, PROJ strings, compound references such as `EPSG:4326+5773`), and codes are not checked
+against the EPSG registry. Coordinates are in the file's CRS, not reprojected, and `bbox` is in that CRS too.
+
+Measured from a local `wasm-release` build (wasm-opt `-Oz`; gzip 9, Brotli 11), not a recorded CI
+snapshot:
+
+| Module | `.wasm` | gzip | Brotli |
+|---|---|---|---|
+| `terrio-js/geoparquet` | 3.27 MB | 1.17 MB | 0.91 MB |
+
 ## Threads: `terrio-js/load` and `terrio-js/threads`
 
 A separate module, `terrio-js/threads`, has every format and a thread pool of Web Workers (or
@@ -499,6 +541,11 @@ writing files. `exportSchema` describes the layers read (GeoPackage column decla
 read only from files, by the command line, Python and Rust). See
 [Vector datasets](cli.md#vector-datasets) for the options and GDAL's rules.
 
+`dataset.toBytes("points.gpkg", { preserveFid: true })` writes feature IDs as
+GeoPackage primary keys, including IDs substituted by a reader. See the
+[GeoPackage write options](rust.md#writing) for GeoJSON limitations, signed IDs,
+and matching or conflicting key attributes.
+
 ### Layer selection
 
 An empty `layers` request keeps all layers. Duplicate requests do not duplicate
@@ -572,12 +619,14 @@ Raw GeoJSON inputs use the layer name `layer`; use `Layer.from_geojson(..., name
 
 ### Vector geometry operations
 
-`simplify(src, tolerance)`, `segmentize(src, maxLength)`, `convexHull(src)`,
+`simplify(src, tolerance, { method, collapse })`, `segmentize(src, maxLength)`, `convexHull(src)`,
 `concaveHull(src, ratio, { allowHoles, tight })`, `swapXy(src)`, `setGeomType(src, {
 geometryType, multi, single, linear, dim, layerOnly, featureOnly, skip })`, `combine(src, {
 groupBy, keepNested, addExtraFields })` and `sort(src, { method })` run the
 [vector geometry commands](cli.md#vector-geometry-commands) on every layer of a `Dataset`,
-file bytes or GeoJSON, and return a `Dataset`.
+file bytes or GeoJSON, and return a `Dataset`. `simplifyWkb(geometries, tolerance, {
+collapse })` runs Douglas-Peucker on an array of WKB `Uint8Array`s (or `null`) directly and returns
+an array of the same length.
 
 ```js
 const hulls = concaveHull(combine(places, { groupBy: ["adm0_a3"] }), 0.3, { allowHoles: true });

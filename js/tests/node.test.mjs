@@ -197,6 +197,57 @@ test("raster from array, to GeoTIFF bytes and back", () => {
   assert.match(asc, /ncols\s+2/);
 });
 
+test("supplied COG overviews are written as they are, with metadata items", () => {
+  // 70 x 50 pixels; overviews at gdaladdo's ceil sizes, values no resampling gives.
+  const base = terrio.rasterFromArray(Float32Array.from({ length: 70 * 50 }, (_, i) => i % 97), 70, 50,
+    [500000, 10, 0, 4100000, 0, -10], "EPSG:32610");
+  const sizes = [[35, 25], [18, 13], [9, 7]];
+  const overviewData = sizes.map(([width, height], level) =>
+    ({ width, height, data: Float32Array.from({ length: width * height }, (_, i) => (level + 1) * 1000 + (i % 13)) }));
+  const bytes = base.toBytes("s.tif", { format: "COG", compress: "DEFLATE", tileSize: 16, overviewData, metadata: { SOURCE: "supplied" } });
+  const back = terrio.open(bytes, "s.tif");
+  assert.deepEqual(back.overviews, sizes);
+  for (const [i, level] of overviewData.entries()) assert.deepEqual([...back.readBand(1, undefined, i)], [...level.data]);
+  assert.equal(Object.fromEntries(back.info().metadata).SOURCE, "supplied");
+  // Each level smaller than the one before it, of the raster's type; not with factors.
+  assert.throws(() => base.toBytes("s.tif", { format: "COG", overviewData: [{ width: 70, height: 50, data: new Float32Array(3500) }] }), /smaller/);
+  assert.throws(() => base.toBytes("s.tif", { format: "COG", overviewData: [{ width: 35, height: 25, data: new Uint8Array(875) }] }), /bands and data type/);
+  assert.throws(() => base.toBytes("s.tif", { overviews: [2], overviewData }), /factors/);
+  // Dimensions whose product overflows (65536 * 65536 on wasm32), past the exact integers or
+  // with no pixels are refused with an ordinary Error, and the module still works afterwards.
+  for (const [width, height, data] of [
+    [65536, 65536, new Float32Array(1)],
+    [2 ** 53, 1, new Float32Array(1)],
+    [1e300, 1, new Float32Array(1)],
+    [Infinity, 1, new Float32Array(1)],
+    [35, 25, new Float32Array(0)],
+  ]) {
+    assert.throws(() => base.toBytes("s.tif", { format: "COG", overviewData: [{ width, height, data }] }),
+      (e) => e instanceof Error && /overviewData\[0\]/.test(e.message), `${width} x ${height}`);
+  }
+  const again = terrio.open(base.toBytes("s.tif", { format: "COG", compress: "DEFLATE", tileSize: 16, overviewData }), "s.tif");
+  assert.deepEqual(again.overviews, sizes);
+});
+
+test("whole-raster toBytes keeps source items before explicit overrides and domain filtering", () => {
+  const base = terrio.rasterFromArray(new Float32Array(70 * 50), 70, 50, [0, 1, 0, 50, 0, -1], "EPSG:4326");
+  const source = terrio.open(base.toBytes("seed.tif", { metadata: { A: "1", B: "old" } }), "seed.tif");
+  for (const creationOptions of [{ COPY_SRC_MDD: "YES" }, { SRC_MDD: "_DEFAULT_" }]) {
+    const bytes = source.toBytes("whole.tif", { format: "COG", creationOptions, metadata: { B: "2" } });
+    const items = Object.fromEntries(terrio.open(bytes, "whole.tif").info().metadata);
+    assert.equal(items.A, "1");
+    assert.equal(items.B, "2");
+  }
+  const filtered = source.toBytes("filtered.tif", { format: "COG", creationOptions: { COPY_SRC_MDD: "NO" }, metadata: { B: "2" } });
+  const items = Object.fromEntries(terrio.open(filtered, "filtered.tif").info().metadata);
+  assert.equal(items.A, undefined);
+  assert.equal(items.B, "2");
+  const cropped = source.toBytes("crop.tif", { srcwin: [0, 0, 10, 10], metadata: { B: "2" } });
+  const cropItems = Object.fromEntries(terrio.open(cropped, "crop.tif").info().metadata);
+  assert.equal(cropItems.A, undefined);
+  assert.equal(cropItems.B, "2");
+});
+
 test("Zstandard GeoTIFFs with predictors, decoded without the C library", () => {
   // Tiled and in strips, interleaved bands, the horizontal and floating-point predictors.
   const ints = new Int16Array(3 * 70 * 50).map((_, i) => ((i * 37) % 2001) - 1000);
@@ -3495,6 +3546,23 @@ test("vector geometry operations: simplify, segmentize, hulls, swap-xy, set-geom
   const simple = terrio.simplify(line, 1).toGeoJSON();
   assert.deepEqual(simple.features[0].geometry.coordinates, [[0, 0], [10, 0]]);
   assert.equal(simple.features[2].geometry, null);
+  const dp = terrio.simplify(line, 1, { method: "douglas-peucker", collapse: "drop" }).toGeoJSON();
+  assert.deepEqual(dp.features[0].geometry.coordinates, [[0, 0], [10, 0]]);
+  assert.throws(() => terrio.simplify(line, 1, { method: "visvalingam" }), /method/);
+  assert.throws(() => terrio.simplify(line, 1, { method: "douglas-peucker", collapse: "maybe" }), /collapse/);
+  // LINESTRING (0 0, 5 0.05, 10 0) as WKB, simplified directly; null stays null.
+  const wkb = new Uint8Array(9 + 48);
+  const view = new DataView(wkb.buffer);
+  view.setUint8(0, 1);
+  view.setUint32(1, 2, true);
+  view.setUint32(5, 3, true);
+  [0, 0, 5, 0.05, 10, 0].forEach((v, i) => view.setFloat64(9 + 8 * i, v, true));
+  const [out, none] = terrio.simplifyWkb([wkb, null], 0.1);
+  assert.equal(out.length, 9 + 32);
+  assert.deepEqual(Array.from(out.slice(9 + 16)), Array.from(wkb.slice(9 + 32)));
+  assert.equal(none, null);
+  assert.throws(() => terrio.simplifyWkb([wkb.slice(0, 20)], 0.1), /WKB/);
+  assert.throws(() => terrio.simplifyWkb([wkb], 0.1, { method: "preserve-topology" }), /method/);
   const dense = terrio.segmentize(line, 3).toGeoJSON();
   assert.equal(dense.features[0].geometry.coordinates.length, 5);
   assert.equal(terrio.convexHull(line).toGeoJSON().features[1].geometry.type, "Point");
@@ -4498,6 +4566,30 @@ test("GPKG toBytes can retain declared geometry types", () => {
   const bytes = source.toBytes("unknown.gpkg", {preserveDeclaredGeometryType:true});
   assert.deepEqual(terrio.open(bytes,"unknown.gpkg").toGeoJSON().features[0].geometry, {type:"Point",coordinates:[1,2]});
   assert.throws(() => source.toBytes("out.geojson", {preserveDeclaredGeometryType:true}), /GPKG/);
+});
+
+test("GPKG toBytes can preserve source feature IDs", { skip: needs("sqlite") }, () => {
+  const features = [91, 205].map((id, i) => ({
+    type: "Feature", id, properties: {}, geometry: { type: "Point", coordinates: [i, i] },
+  }));
+  const source = terrio.fromGeoJSON({ type: "FeatureCollection", features }, "points");
+  for (const preserveFid of [false, true]) {
+    const result = terrio.open(source.toBytes("points.gpkg", { preserveFid }), "points.gpkg");
+    try {
+      const id = preserveFid ? 91 : 1;
+      const bytes = result.toBytes("selected.geojson", { where: `FID = ${id}` });
+      const [feature] = JSON.parse(new TextDecoder().decode(bytes)).features;
+      assert.deepEqual(feature.geometry.coordinates, [0, 0]);
+    } finally {
+      result.free();
+    }
+  }
+  features[0].properties.fid = 701;
+  const conflicting = terrio.fromGeoJSON({ type: "FeatureCollection", features }, "points");
+  assert.throws(() => conflicting.toBytes("points.gpkg", { preserveFid: true }), /conflicts with feature ID 91/);
+  assert.throws(() => source.toBytes("points.geojson", { preserveFid: true }), /GPKG/);
+  conflicting.free();
+  source.free();
 });
 
 test("GPKG toBytes uses valid optional M declarations for mixed layouts", () => {

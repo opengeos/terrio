@@ -595,6 +595,7 @@ COG conversion that streams strips uses [temporary tile spools](#mosaic) beside 
 | `--simplify TOL`, `--segmentize MAX_LEN` | vectors | Simplify geometries or bound segment lengths before reprojection |
 | `--s-srs`, `--a-srs` | vectors | Override or assign the CRS |
 | `--append`, `--overwrite` | vectors, rasters (`--append`) | Add to or replace layers of an existing GeoPackage or vector tile archive; add a raster to a PMTiles or MBTiles archive of image tiles |
+| `--preserve-fid` | GeoPackage vectors | Use parsed feature IDs, including reader-generated IDs, as primary keys |
 | `--oo KEY=VALUE` | vectors | Open options (`X_POSSIBLE_NAMES=...` for CSV/XLSX; `HEADERS`, `FIELD_TYPES`, `HEADER_ROWS`, `FIRST_ROW`, `RANGE` for XLSX; `ZOOM_LEVEL`, `CLIP` for tiles; `WFS_*`; `DATETIME`, `CRS`, `PAGE_SIZE`, `IGNORE_SCHEMA` and `OAPIF_*` limits for OAPIF...) |
 | `--lco KEY=VALUE` | vectors | Layer creation options (`RFC7946=YES` for GeoJSON; `GEOMETRY=AS_WKT\|AS_XY` for CSV; `GEOMETRY=AS_XY\|AS_WKT\|NONE`, `HEADER_STYLE=BOLD`, `FREEZE_HEADER=YES`, `AUTOFILTER=YES`, `COLUMN_WIDTH=AUTO\|<n>`, `DATE_FORMAT`, `DATETIME_FORMAT`, `CREATION_TIME` for XLSX...) |
 | `--co KEY=VALUE` | rasters | Creation options (GeoTIFF and COG: `ZLEVEL`, `ZSTD_LEVEL`...; PNG: `ZLEVEL`; Zarr; netCDF: `FORMAT=NC4`, `COMPRESS=DEFLATE`, `ZLEVEL`, `CHUNKING`; PMTiles and MBTiles: `TILE_FORMAT=WEBP`...) |
@@ -602,6 +603,15 @@ COG conversion that streams strips uses [temporary tile spools](#mosaic) beside 
 | `--kmz-resource PATH[=FILE]` | vectors | Pack an icon or companion file into a KMZ archive |
 | `--cityjson-version 1.1\|2.0` | vectors | CityJSON output version (default `2.0`) |
 | `--citygml-version 2.0\|3.0`, `--citygml-lod0-surface footprint\|roof-edge` | vectors | CityGML output version (default `3.0`) and 2.0 LoD 0 building surface |
+
+`terrio convert points.geojson points.gpkg --preserve-fid` uses the IDs read into
+the features, including reader-generated IDs. GeoJSON features with missing, negative or non-integer IDs
+receive zero-based positions; if any ID is a string, the reader uses positions for the entire
+collection. These cases can differ from `ogr2ogr -preserve_fid` and can collide with explicit
+numeric IDs. Original string and negative GeoJSON IDs are not recovered by the writer.
+IDs must be unique. A conflicting `fid` attribute or an ID already
+present during `--append` causes an error. See the [GeoPackage write options](rust.md#writing)
+for the key rules and how readers handle absent source IDs.
 
 CityJSON output defaults to 2.0. Select 1.1 with `--cityjson-version 1.1`; use
 `.city.json`/`.cityjson` or `--format CityJSON`. See [CityJSON](formats.md#cityjson)
@@ -641,14 +651,15 @@ layer of points, with `--bounds`, `--z-range`, `--class`, `--returns`, `--max-le
 Vector layers convert as streams, a chunk of features at a time, when the input is a local
 GeoPackage, FlatGeobuf, GeoParquet, Shapefile, GeoJSON, GeoJSONSeq, CSV or OpenStreetMap PBF
 file, the output a GeoPackage, FlatGeobuf, GeoParquet, Shapefile, GeoJSON, GeoJSONSeq or CSV
-file other than the input, neither `--sql`, `--append` nor `--overwrite` is given, and `--lco`
+file other than the input, none of `--sql`, `--append`, `--overwrite` or `--preserve-fid` is given, and `--lco`
 gives only CSV and GeoJSON options: memory stays bounded whatever the size of the layer (a
 15-million-polygon, 3.8 GB GeoPackage converts to GeoParquet in 192 MB, as `ogr2ogr` does in
 169 MB). Several layers go to a GeoPackage one after another; the other formats hold one layer,
 chosen with `-l`. OpenStreetMap PBF files stream when sorted by type then id, as osmium,
 Geofabrik and the planet files are: only the nodes (about 6 bytes each) and the ways relations
 use are kept (Colorado's 385 MB extract converts to a GeoPackage in 19 s and 1.5 GB, where
-`ogr2ogr` takes 44 s and 0.45 GB). The other conversions read the layers whole. See
+`ogr2ogr` takes 44 s and 0.45 GB). The other conversions read the layers whole.
+`--preserve-fid` buffers features for layer-wide ID validation and sorting. See
 [Formats](formats.md#vectors).
 
 The `--where` language supports comparisons, `AND`/`OR`/`NOT`, parentheses, `IN`, `LIKE`/`ILIKE`,
@@ -1329,12 +1340,16 @@ Terrio's chunk-dependent source windows of kernels other than `sum` also reach a
 source's CRS inside or beside their chunk, which the points sampled along the chunk's edges do not
 bound, so that a grid holding a pole is written up to it. Values in such a chunk can therefore
 differ from those of a window bounded by those points alone.
-With the 3.12 kernel scales, a chunk of a periodic source covering one longitude turn whose
-sampled points cross the 180° meridian takes its scale from the arc of longitudes those points
-span across the meridian, when it is shorter than half a turn, rather than from their least and
-greatest longitudes, which lie the long way round: chunks mirrored across the meridian get
-mirrored kernels. With `--periodic-longitude false`, the stored edges are a regional source's,
-and such a chunk keeps the scale of the stored columns between those longitudes.
+With the 3.12 kernel scales, a chunk whose sampled points cross the 180° meridian, of a periodic
+source covering one longitude turn or of a regional source narrower than a turn, takes its scale
+from the arc of longitudes those points span across the meridian, when it is shorter than half a
+turn, rather than from their least and greatest longitudes, which lie the long way round: chunks
+mirrored across the meridian get mirrored kernels. A regional source places that arc in its
+stored columns, a whole turn away where needed, as it places the longitudes of a chunk that does
+not cross the meridian; an arc reaching both of its stored edges keeps the scale of the stored
+columns between them. With `--periodic-longitude false`, the stored edges of a source covering
+one turn are a regional source's, and such a chunk keeps the scale of the stored columns between
+those longitudes.
 Both kernel-version selectors apply Terrio's periodic global-source boundaries and the
 pole-window extension described above; these policies can differ from GDAL's finite-edge
 or edge-only window planning even with chunk-dependent sampling selected.
@@ -1566,7 +1581,9 @@ geotransform gives its GCPs, or no georeferencing, instead of a unit-pixel grid.
 
 In-place operations require writable little-endian GeoTIFFs. `overviews --external` writes only
 the `.ovr` sidecar, so the GeoTIFF may be read-only, as with `gdaladdo -ro`; its directory must be
-writable. A new sidecar is a BigTIFF when its images take more than about 4 GiB, and an
+writable. A GeoTIFF with a `.msk` sidecar mask also gets the mask's overviews in the `.msk.ovr`,
+as GDAL builds them, which the `.ovr` levels take as their masks; a failure or cancellation leaves
+both sidecars as they were. A new sidecar is a BigTIFF when its images take more than about 4 GiB, and an
 existing classic TIFF sidecar that would grow past 4 GiB is refused. Updating a COG
 requires `--ignore-cog-layout-break` and can invalidate its optimized layout.
 Edits use a temporary file and rename; a failure before replacement preserves
@@ -3271,6 +3288,24 @@ simplify` on the conformance data. Z is kept and M dropped, as GDAL's GEOS conve
 `convert --simplify TOLERANCE` (`ogr2ogr -simplify`) applies the same operation before
 reprojection and keeps a geometry whose simplification fails.
 
+`simplify --method douglas-peucker` ports JTS 1.20.0's `DouglasPeuckerSimplifier` without its
+repair step (OGR's `OGRGeometry::Simplify` and shapely's `simplify(..., preserve_topology=False)`
+call GEOS's port of it): each line and ring on its own, a section flattened when no vertex is
+farther than the tolerance from the new segment (a distance equal to the tolerance flattens it)
+and otherwise split at its farthest vertex. Line endpoints stay; a ring may also lose its start
+point. It is faster than `preserve-topology`, but a ring may cross itself or a hole cross its
+shell at large tolerances, and invalid results are not rebuilt (JTS and GEOS rebuild them with a
+zero-width buffer). A ring left with fewer than four points keeps its vertices with
+`--collapse keep` (the default), so that no polygon or hole disappears; `--collapse drop` removes
+it as JTS does, and a polygon whose shell collapses becomes empty. A multi geometry keeps its type
+when one part is left (JTS and GEOS return the part). With `--collapse drop`, the vertices are
+those of OGR's `Simplify` (GDAL 3.13.3, GEOS 3.14.1) for every feature whose result is valid in
+both: all 95 Tennessee counties at 0.001 to 0.05 degrees and at 500 m and 5 km in EPSG:5070,
+3,201 of 3,221 US counties at 0.01 degrees, 173 to 175 of 176 or 177 countries at 0.01 to 1
+degree (the others are invalid), and all 78 Las Vegas roads.
+Python's `terrio.simplify_wkb` and JavaScript's `simplifyWkb` run it on WKB directly, in parallel
+over features, keeping each geometry's byte order, type code (ISO or EWKB, with SRID), Z and M.
+
 `segmentize --max-length` is OGR's `segmentize`: a segment of length L gets
 `floor(L / max - 0.01)` evenly spaced points (none when L is within a relative 1e-5 of the
 maximum). Lines are processed from the end with the larger X (then Y), so a line and its
@@ -4253,7 +4288,7 @@ for one command and its descendants. Required dataset arguments may be omitted;
 metadata requests open no datasets or output files. The Python package supports
 identical requests with `python -m terrio`.
 
-The payload has `schema_version: "0.1.12"`, `unstable: true`, the program/version,
+The payload has `schema_version: "0.1.14"`, `unstable: true`, the program/version,
 and a recursive `command` object. Each command records its canonical name/path,
 aliases, description, arguments and subcommands. Arguments include flags and
 aliases, positional index, type, raw default tokens, choices, required status,

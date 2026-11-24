@@ -7,6 +7,7 @@ use std::path::Path;
 use wbraster::Raster;
 
 pub(crate) mod aaigrid;
+pub(crate) mod area_matched;
 #[cfg(any(feature = "netcdf-hdf5", feature = "zarr"))]
 mod cf;
 pub(crate) mod common;
@@ -265,7 +266,14 @@ pub(crate) fn open_raw(path: &str) -> Option<Result<common::RawRaster>> {
 /// reads the file so.
 pub(crate) fn open_lazy(path: &str) -> Option<Result<crate::LazyRaster>> {
     if let Some(result) = open_raw(path) {
-        return Some(result.map(common::RawRaster::into_lazy));
+        return Some(result.and_then(|mut raw| {
+            if raw.header.driver == RasterDriver::EHdr
+                && let crate::vfs::Location::Local(p) = crate::vfs::Location::parse(path)
+            {
+                raw.attach_ovr(&p)?;
+            }
+            Ok(raw.into_lazy())
+        }));
     }
     #[cfg(feature = "zarr")]
     if let Some(result) = zarr::open_lazy(path) {

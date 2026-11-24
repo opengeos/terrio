@@ -245,6 +245,27 @@ with the `libzstd` feature: without it, as in the default build and in WebAssemb
 chunks are compressed at the one level their encoder has. A level out of range is refused,
 whatever the compression.
 
+`SPARSE_OK=YES` leaves out of a GeoTIFF the blocks of its full-resolution image whose samples are
+all nodata, or 0 without nodata, in every band the block holds: every band of the file, or, with
+`INTERLEAVE=BAND`, only the block's own band, so that each band's blocks are left out on their own.
+Their offset and byte count are 0. The samples must equal, bit for bit, the nodata that readers read
+from the file's tag. A NaN nodata is written `nan`, so a block of a NaN with another sign or payload
+is kept. The overviews and the mask are written whole. Every block is written when nodata is not a
+value of the samples (a fraction or a value out of range for integers). Every block is also written,
+with a warning:
+
+- with a lossy compression (JPEG, WebP unless lossless, LERC with a `MAX_Z_ERROR` above 0),
+  which stores a block of nodata only approximately;
+- when a band's nodata in the file's `.aux.xml` sidecar differs from the file's nodata: bands of
+  different nodata, or a sidecar of an earlier file that the writer keeps.
+
+A COG writes every tile, and warns that it does.
+
+terrio reads the pixels of a block left out of a GeoTIFF as nodata, or 0, whichever writer left it
+out: read whole or by window, from an overview, or over HTTP. That nodata is the file's (exactly,
+for 64-bit integer samples) or, in local reads, a band's own from the `.aux.xml` sidecar, as the
+double terrio holds it.
+
 `NBITS` writes unsigned samples packed into 1–8 bits for Byte, 9–16 bits for
 UInt16 and 17–32 bits for UInt32. Rows begin on byte boundaries; bits are stored
 most significant first. GTiff supports strips or tiles and COG is tiled. Both support pixel/band
@@ -303,6 +324,49 @@ Within a `DEFLATE` chunk, at every level, the encoder also looks for a match one
 it where it is longer than the matches its hash chains (and, at levels 6–9, its run-boundary
 candidates) find, so rows that repeat the row above, as in rasters of uniform blocks such as land
 cover maps, classifications and masks, are coded as copies of whole rows.
+
+### Overviews that keep the valid area
+
+GDAL's `average` makes an overview pixel valid when any of its source pixels is, so the valid
+area of a thin or ragged raster (a flood-depth grid, a river or burn mask) grows at every level,
+and more at each coarser one. `nearest` keeps it on average, but drops or adds isolated pixels
+along the margin. terrio's `OVERVIEW_RESAMPLING=AREA_MATCHED` (`overview_resampling`
+`area_matched`), for GeoTIFF overviews at factors and COG overviews, keeps the area instead:
+
+- Each level has GDAL's size, and each of its cells covers the source pixels whose centres fall in
+  its footprint. A level keeps as many valid cells as cover the valid full-resolution area,
+  rounded to the nearest cell: those covering the most valid pixels, ties going to the cells with
+  the most kept neighbours, then to a deterministic hash of the cell. This favours connectivity
+  without guaranteeing a connected margin, and two writes give the same file. A level is refused
+  if too few footprints contain valid pixels to meet the rounded target without inventing values.
+- A kept cell holds the mean of its valid pixels (rounded half to even for integer types), and
+  others hold nodata. Means accumulate in `f64`, following the ported NumPy algorithm; Int64
+  and UInt64 means can lose low bits, for example a constant `2^60 + 1` becomes `2^60`.
+  `AREA_MATCHED_MODE` holds the most frequent class instead (of the cells of the level below,
+  the lowest on ties), retaining native integer class values for categorical rasters.
+  A kept cell with an undefined mean, such as opposite infinities, is refused rather than
+  stored as NaN while counted as valid.
+- The raster needs one shared nodata value across all bands (NaN is never valid). Distinct
+  per-band declarations, per-dataset masks, alpha bands and complex bands are refused. A COG
+  with these overviews is written whole, not a strip at a time.
+- Each overview declares nodata, including Int64 and UInt64 levels, so readers mask cells
+  excluded from the reported valid area.
+- Each band's metadata records what its levels keep, as default-domain items that GDAL's COG and
+  GTiff drivers copy with the band: `OVERVIEW_AREA_RATIOS`, the nominal area each level keeps
+  over the valid full-resolution area (comma-separated, `1` when it is kept exactly), and
+  `OVERVIEW_BASE_VALID_PIXELS`. A COG records the method as GDAL's COG driver records one,
+  `IMAGE_STRUCTURE`'s `OVERVIEW_RESAMPLING=AREA_MATCHED`.
+  Nominal area is the kept-cell count times the uniform overview-grid cell area (base pixel
+  count divided by overview cell count), rather than the sum of selected source-footprint
+  weights, which can differ on odd-sized grids.
+
+```sh
+terrio convert depth.tif depth_cog.tif -f COG --co COMPRESS=DEFLATE --co OVERVIEW_RESAMPLING=AREA_MATCHED
+terrio info depth_cog.tif
+```
+
+The overview pixels differ from those of every GDAL method by design; the full-resolution image is
+written as with any other method.
 
 JPEG 2000 is decoded and encoded with the Rust port of OpenJPEG, the codec of GDAL's JP2OpenJPEG
 driver, so pixels are GDAL's (Sentinel-2 L1C and L2A bands included). Georeferencing comes from
@@ -389,12 +453,18 @@ spectral and run-length packings, GRIB1 complex packing; NDFD's and MOS's own pr
 Opened lazily (`terrio.rio.open`, `open_raster(..., lazy=True)`), only the bands read are decoded,
 as GDAL decodes them. Remote files are read by range, message by message as GDAL reads them, with
 no `.idx` or `.index` sidecar: at open one 16 KiB block per message for its section headers, then a
-band's message when the band is read; a server that ignores range requests is refused.
+band's message when the band is read; a server that ignores range requests is refused. In a
+message of several fields, each field after the first costs one more request of a few hundred
+bytes: its sections come after the data of the field before it, which the open skips. Reading the
+bands of such a message one at a time fetches the message for each; a read of several bands
+fetches it once for the bands it decodes at once. A GRIB1 message whose nodata depends on its
+values is read whole at open, and dropped once its nodata is known: reading its band fetches it
+again.
 Regular, nonempty local files are read by position in the same way, without holding the file in memory: at open the
 section headers of each message (the whole message for a GRIB1 field whose nodata depends on its
-values, one such message at a time; in a GRIB2 message of several fields, a field's headers come
-after the data of the fields before it, which the open reads too), then a band's message when the
-band is read. The open holds one message's header at a time, and nothing it read is kept once the
+values, one such message at a time; not the data of the fields of a GRIB2 message, which comes
+before the next field's headers), then a band's message when the band is read. The open holds
+one message's header at a time, and nothing it read is kept once the
 file is open. Non-regular paths, such as FIFOs, and paths reporting zero size fall back to reading
 the whole input into memory. The dataset keeps the file open until it is closed, as a lazy GeoTIFF reader does. A
 read of several bands holds the messages of the bands it decodes at once: as many bands as hold in

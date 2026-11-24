@@ -1,5 +1,5 @@
 //! Zstandard: with the zstd C library with the `libzstd` feature, in native builds; otherwise
-//! with the pure-Rust `ruzstd`. Both read every frame of a stream (skippable frames skipped), and
+//! with the pure-Rust `zrip`. Both read every frame of a stream (skippable frames skipped), and
 //! each reads what the other writes.
 
 use std::io::{Error, ErrorKind, Read, Result};
@@ -15,6 +15,14 @@ pub(crate) use pure::frames;
 #[cfg(not(all(feature = "libzstd", not(target_family = "wasm"))))]
 #[cfg_attr(not(feature = "pointcloud"), allow(unused_imports))]
 pub(crate) use pure::{compress, decompress};
+
+/// The output limit of a `zrip` streaming decoder read for its first `max` bytes at most: one
+/// block more, since the block holding the last byte read is decoded whole. The decoder reserves
+/// no history past its limit, so a frame header declaring a larger content size or window
+/// reserves no more.
+pub(crate) fn read_limit(max: usize) -> usize {
+    max.saturating_add(zrip::frame::MAX_BLOCK_SIZE)
+}
 
 /// The error of a stream decompressing to more than `limit` bytes.
 fn too_long(limit: usize) -> Error {
@@ -51,47 +59,44 @@ mod libzstd {
     }
 }
 
-/// `ruzstd`, used without `libzstd`, and in WebAssembly.
+/// `zrip`, used without `libzstd`, and in WebAssembly.
 #[cfg_attr(all(feature = "libzstd", not(target_family = "wasm")), allow(dead_code))]
 pub(crate) mod pure {
     use super::*;
-    use ruzstd::decoding::errors::{FrameDecoderError, ReadFrameHeaderError};
+    use zrip::DecompressError;
 
-    /// Compresses `data` at `ruzstd`'s fastest level, about zstd's level 1, whatever `level`:
-    /// the only level it implements besides no compression, so the output is larger than the zstd
-    /// C library's at higher levels.
-    pub(crate) fn compress(data: &[u8], _level: i32) -> Result<Vec<u8>> {
-        Ok(ruzstd::encoding::compress_to_vec(data, ruzstd::encoding::CompressionLevel::Fastest))
+    /// Compresses `data` at `level`: 0 is zstd's default, 3, and `zrip` writes levels -7 to 4, so a
+    /// higher level writes level 4.
+    pub(crate) fn compress(data: &[u8], level: i32) -> Result<Vec<u8>> {
+        let level = if level == 0 { 3 } else { level.clamp(zrip::MIN_LEVEL, zrip::MAX_LEVEL) };
+        zrip::compress(data, level).map_err(|e| Error::new(ErrorKind::InvalidInput, format!("Zstandard: {e}")))
     }
 
     /// Decompresses every frame of `data`, to at most `limit` bytes (more is an error).
     #[cfg_attr(not(feature = "pointcloud"), allow(dead_code))]
     pub(crate) fn decompress(data: &[u8], limit: usize) -> Result<Vec<u8>> {
-        let out = frames(data, limit.saturating_add(1))?;
-        if out.len() > limit {
-            return Err(too_long(limit));
-        }
-        Ok(out)
+        zrip::decompress_with_limit(data, limit).map_err(|e| match e {
+            DecompressError::OutputTooSmall => too_long(limit),
+            e => invalid(e),
+        })
     }
 
-    /// The first `max` bytes `data` decompresses to, frame after frame (`ruzstd`'s decoder reads
-    /// one), skippable frames skipped.
-    pub(crate) fn frames(mut data: &[u8], max: usize) -> Result<Vec<u8>> {
-        let mut out = Vec::new();
-        while !data.is_empty() && out.len() < max {
-            match ruzstd::decoding::StreamingDecoder::new(&mut data) {
-                Ok(frame) => {
-                    frame.take((max - out.len()) as u64).read_to_end(&mut out)?;
-                }
-                Err(FrameDecoderError::ReadFrameHeaderError(ReadFrameHeaderError::SkipFrame { length, .. })) => {
-                    data = data
-                        .get(length as usize..)
-                        .ok_or_else(|| Error::new(ErrorKind::UnexpectedEof, "Zstandard: truncated skippable frame"))?;
-                }
-                Err(e) => return Err(Error::new(ErrorKind::InvalidData, format!("Zstandard: {e}"))),
+    /// The first `max` bytes `data` decompresses to, frame after frame, skippable frames skipped:
+    /// a stream decoding to more is decoded again as a stream, up to `max` bytes, the rest not
+    /// decoded.
+    pub(crate) fn frames(data: &[u8], max: usize) -> Result<Vec<u8>> {
+        match zrip::decompress_with_limit(data, max) {
+            Err(DecompressError::OutputTooSmall) => {
+                let mut out = Vec::new();
+                zrip::FrameDecoder::with_limit(data, read_limit(max)).take(max as u64).read_to_end(&mut out)?;
+                Ok(out)
             }
+            r => r.map_err(invalid),
         }
-        Ok(out)
+    }
+
+    fn invalid(e: DecompressError) -> Error {
+        Error::new(ErrorKind::InvalidData, format!("Zstandard: {e}"))
     }
 }
 
@@ -146,14 +151,14 @@ mod tests {
 
     /// The bound of ZSTD GeoTIFF chunks (`frames`, given the chunk's size): a stream expanding far
     /// past it is decoded to that many bytes and no further, by the implementation in use and by
-    /// `ruzstd`. The values decoded are the same either way: only the length shows the bound.
+    /// `zrip`. The values decoded are the same either way: only the length shows the bound.
     #[test]
     fn frames_decode_no_further_than_their_bound() {
         // 64 MiB of zeros, then a second frame, in a few kilobytes.
         let bomb = [pure::compress(&vec![0; 64 << 20], 3).unwrap(), pure::compress(&[1; 100], 3).unwrap()].concat();
         assert!(bomb.len() < 1 << 20);
         for max in [0, 1, 4096, 1 << 20] {
-            for (decoder, out) in [("in use", frames(&bomb, max).unwrap()), ("ruzstd", pure::frames(&bomb, max).unwrap())] {
+            for (decoder, out) in [("in use", frames(&bomb, max).unwrap()), ("zrip", pure::frames(&bomb, max).unwrap())] {
                 assert_eq!(out.len(), max, "{decoder}");
                 assert!(out.iter().all(|&b| b == 0), "{decoder}");
             }
@@ -164,7 +169,7 @@ mod tests {
     /// Each implementation reads what the other writes, frames concatenated across them too.
     #[cfg(all(feature = "libzstd", not(target_family = "wasm")))]
     #[test]
-    fn ruzstd_and_libzstd_read_each_other() {
+    fn zrip_and_libzstd_read_each_other() {
         let (a, b) = (data(200_000, 13), data(50_000, 7));
         for level in [1, 3, 9, 19] {
             let c = libzstd::compress(&a, level).unwrap();
