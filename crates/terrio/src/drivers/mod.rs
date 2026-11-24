@@ -722,3 +722,5 @@ mod content_allow_list_tests {
         assert_eq!(open(&format!("GeoJSON,{csf}")), Ok(csf));
     }
 }
+
+mod tiff_lzw;

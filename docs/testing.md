@@ -4423,3 +4423,29 @@ Python preserves the
 configured band axis in `(bands, height, width)` output arrays. The Rust regression
 `empty_regions_return_typed_empty_outputs_even_with_nonempty_source_windows`
 checks the public API directly. These are API invariants, not GDAL comparisons.
+
+## TIFF LZW adaptive long matches
+
+The private writer encoder chooses its lookup loop from chunk bytes alone. It
+checks 32-byte period-four windows every four bytes within the first 256 bytes,
+then backs off to one window every 4096 bytes, starting at byte 256. Two hits
+separated by at least min(chunk length / 4, 4096) bytes (minimum 32) enable the
+verified long-match loop for that chunk; otherwise the
+original iterator-based hash loop runs without witness writes or candidate
+checks. Its two-vector dictionary retains the original hash encoder layout;
+`inline(never)` keeps LLVM from merging that hot loop with the larger skip path.
+This hint favors long Float32 NoData runs; missing a run affects speed
+only. Metadata is rebuilt per chunk and dictionary clear, never shared between
+workers. It is not an entropy test or a universal performance guarantee: a
+pair of separated repetitive islands can enable skips for an otherwise noisy chunk.
+
+Both loops use identical stored dictionary edges, including the omitted
+seventeenth successor and the unstored saturation code. A skip verifies input
+bytes against a stored phrase witness and reaches exactly the code reached by
+ordinary successful lookups. It inserts nothing and emits nothing while
+jumping. Code assignment, width changes, clears, packing and EOI therefore
+remain independent of the hint. Never use timing or worker state to select it.
+
+`cargo test -p terrio` covers immediate enabling, complete backoff, successful
+late re-probing, short chunks and forced loop equivalence against weezl 0.2.1,
+alongside the existing differential/property and writer golden suites.

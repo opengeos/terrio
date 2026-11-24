@@ -152,12 +152,26 @@ impl Compression {
         matches!(self, Self::Lzw | Self::Deflate | Self::Zstd)
     }
 
+    /// Each chunk remains an independent TIFF stream, with fresh owned output.
+    /// Scratch retains dictionary capacity only, never codes from a previous chunk.
+    fn compress_reusing(
+        self,
+        data: Vec<u8>,
+        c: &ChunkInfo,
+        p: &CodecParams,
+        scratch: &mut Option<super::tiff_lzw::Encoder>,
+    ) -> Result<Vec<u8>> {
+        if !matches!(self, Self::Lzw) {
+            return self.compress(data, c, p);
+        }
+        let encoder = scratch.get_or_insert_with(super::tiff_lzw::Encoder::new);
+        Ok(encoder.encode(&data))
+    }
+
     fn compress(self, data: Vec<u8>, c: &ChunkInfo, p: &CodecParams) -> Result<Vec<u8>> {
         Ok(match self {
             Self::None => data,
-            Self::Lzw => weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8)
-                .encode(&data)
-                .map_err(|e| Error::InvalidData(format!("LZW: {e}")))?,
+            Self::Lzw => super::tiff_lzw::Encoder::new().encode(&data),
             // The chunk's `h` rows, each of the same length: each search also examines the position
             // one row back.
             Self::Deflate => {
@@ -1721,39 +1735,43 @@ impl<'a> Level<'a> {
         let clipped = std::sync::atomic::AtomicBool::new(false);
         let packed_bits = layout.nbits.filter(|&bits| bits != (size * 8) as u16);
         let empty = empty.filter(|&v| representable(t, v));
-        let chunks = crate::par::map_range_coarse(planes * per_plane, |i| {
-            let (plane, j) = (i / per_plane, i % per_plane);
-            let (x0, y0) = ((j % across) * chunk_w, (j / across) * chunk_h);
-            // Strips stop at the last row; tiles are padded to full size.
-            let h = if tiled { chunk_h } else { chunk_h.min(self.rows - y0) };
-            if let Some(v) = empty {
-                let (first, samples) = if layout.planar { (plane * parts * band_len, parts) } else { (0, spp * parts) };
-                let data = self.data.as_ref();
-                if with_data!(data, d => all_samples_equal(&d[first..][..samples * band_len], self.cols, self.rows, x0, y0, chunk_w, h, v))
-                {
-                    return Ok(Vec::new());
+        let chunks = crate::par::map_range_init_coarse(
+            planes * per_plane,
+            || None,
+            |scratch, i| {
+                let (plane, j) = (i / per_plane, i % per_plane);
+                let (x0, y0) = ((j % across) * chunk_w, (j / across) * chunk_h);
+                // Strips stop at the last row; tiles are padded to full size.
+                let h = if tiled { chunk_h } else { chunk_h.min(self.rows - y0) };
+                if let Some(v) = empty {
+                    let (first, samples) = if layout.planar { (plane * parts * band_len, parts) } else { (0, spp * parts) };
+                    let data = self.data.as_ref();
+                    if with_data!(data, d => all_samples_equal(&d[first..][..samples * band_len], self.cols, self.rows, x0, y0, chunk_w, h, v))
+                    {
+                        return Ok(Vec::new());
+                    }
                 }
-            }
-            // A complex sample's parts are interleaved like the bands of a pixel.
-            let mut buf = if layout.planar {
-                let plane_len = parts * band_len;
-                with_data!(self.data.as_ref(), v => chunk_bytes(&v[plane * plane_len..(plane + 1) * plane_len], self.cols, self.rows, parts, x0, y0, chunk_w, h))
-            } else {
-                with_data!(self.data.as_ref(), v => chunk_bytes(v, self.cols, self.rows, spp * parts, x0, y0, chunk_w, h))
-            };
-            if let Some(bits) = packed_bits {
-                let (packed, did_clip) = pack_unsigned_rows(&buf, chunk_w * chunk_spp, size, bits);
-                buf = packed;
-                // GDAL 3.13.3 silently clamps bilevel samples; wider packed domains warn.
-                if did_clip && bits > 1 {
-                    clipped.store(true, std::sync::atomic::Ordering::Relaxed);
+                // A complex sample's parts are interleaved like the bands of a pixel.
+                let mut buf = if layout.planar {
+                    let plane_len = parts * band_len;
+                    with_data!(self.data.as_ref(), v => chunk_bytes(&v[plane * plane_len..(plane + 1) * plane_len], self.cols, self.rows, parts, x0, y0, chunk_w, h))
+                } else {
+                    with_data!(self.data.as_ref(), v => chunk_bytes(v, self.cols, self.rows, spp * parts, x0, y0, chunk_w, h))
+                };
+                if let Some(bits) = packed_bits {
+                    let (packed, did_clip) = pack_unsigned_rows(&buf, chunk_w * chunk_spp, size, bits);
+                    buf = packed;
+                    // GDAL 3.13.3 silently clamps bilevel samples; wider packed domains warn.
+                    if did_clip && bits > 1 {
+                        clipped.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                } else {
+                    apply_predictor(&mut buf, layout.predictor, chunk_w * chunk_spp, chunk_spp, size);
                 }
-            } else {
-                apply_predictor(&mut buf, layout.predictor, chunk_w * chunk_spp, chunk_spp, size);
-            }
-            let valid = (chunk_w.min(self.cols - x0), h.min(self.rows - y0));
-            compression.compress(buf, &ChunkInfo { w: chunk_w, h, spp: chunk_spp, t, valid }, codec)
-        });
+                let valid = (chunk_w.min(self.cols - x0), h.min(self.rows - y0));
+                compression.compress_reusing(buf, &ChunkInfo { w: chunk_w, h, spp: chunk_spp, t, valid }, codec, scratch)
+            },
+        );
         let chunks = chunks.into_iter().collect::<Result<Vec<_>>>()?;
         let clipped_bits = packed_bits.filter(|_| clipped.load(std::sync::atomic::Ordering::Relaxed));
         let (bits, format) = sample_format(t);
@@ -3989,6 +4007,75 @@ fn directories(mut images: Vec<Directory>, big: bool, cog: bool) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn lzw_matches_for_predicted_samples_and_byte_orders() {
+        let mut enc = super::super::tiff_lzw::Encoder::new();
+        for size in [1, 2, 4] {
+            for big in [false, true] {
+                for predictor in [1, 2, 3] {
+                    if predictor == 3 && size != 4 {
+                        continue;
+                    }
+                    for rows in [1, 2, 15, 16, 17, 255, 256, 257] {
+                        let mut data: Vec<u8> = (0..37 * rows)
+                            .flat_map(|i| {
+                                let bits = [0x7fc01234u32, 0x7fa00001, 0x80000000, 0x7f800000, i as u32][i % 5];
+                                let b = if big { bits.to_be_bytes() } else { bits.to_le_bytes() };
+                                b[..size].to_vec()
+                            })
+                            .collect();
+                        // Encoder sees bytes only; both sample byte orders are
+                        // exercised. The writer's predictor itself is LE-only.
+                        apply_predictor(&mut data, predictor, 37, 1, size);
+                        let actual = enc.encode(&data);
+                        let expected = weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8).encode(&data).unwrap();
+                        assert_eq!(actual, expected);
+                        assert_eq!(weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8).decode(&actual).unwrap(), data);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn lzw_reused_streams_match_fresh_tiff_size_switch() {
+        let mut scratch = None;
+        let c = ChunkInfo { w: 1, h: 1, spp: 1, t: DataType::U8, valid: (1, 1) };
+        let p = CodecParams::default();
+        let mut rng = 0x12345678u32;
+        let random: Vec<u8> = (0..262144)
+            .map(|_| {
+                rng ^= rng << 13;
+                rng ^= rng >> 17;
+                rng ^= rng << 5;
+                rng as u8
+            })
+            .collect();
+        let float_bytes: Vec<u8> =
+            [0x7fc01234u32, 0x7fa00001, 0x80000000, 0, 0x7f800000, 0xff800000].into_iter().flat_map(u32::to_le_bytes).collect();
+        let cases = [vec![], vec![0], vec![255; 217724], random.clone(), float_bytes, (0..65536).map(|i| (i % 251) as u8).collect()];
+        // Alternate lengths, dictionary saturation/clears, empty and repeated data.
+        for _ in 0..3 {
+            for data in &cases {
+                let expected = Compression::Lzw.compress(data.clone(), &c, &p).unwrap();
+                let actual = Compression::Lzw.compress_reusing(data.clone(), &c, &p, &mut scratch).unwrap();
+                assert_eq!(actual, expected);
+                assert_eq!(weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8).decode(&actual).unwrap(), *data);
+            }
+        }
+        let early = Compression::Lzw.compress(random.clone(), &c, &p).unwrap();
+        let late = weezl::encode::Encoder::new(weezl::BitOrder::Msb, 8).encode(&random).unwrap();
+        assert_ne!(early, late, "fixture must exercise TIFF's early code-width switch");
+        for compression in [Compression::None, Compression::Deflate, Compression::PackBits, Compression::Zstd] {
+            let mut unused = None;
+            assert_eq!(
+                compression.compress(random.clone(), &c, &p).unwrap(),
+                compression.compress_reusing(random.clone(), &c, &p, &mut unused).unwrap()
+            );
+            assert!(unused.is_none());
+        }
+    }
+
     use super::*;
 
     #[test]
