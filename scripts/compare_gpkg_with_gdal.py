@@ -36,6 +36,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import closing
 from pathlib import Path
 
 from osgeo import gdal, ogr
@@ -261,7 +262,7 @@ def preserved_fid_cases(data: Path, terrio: str, work: Path) -> list[tuple[str, 
     def check(expected):
         diffs = compare(a, b)
         for path in (a, b):
-            with sqlite3.connect(path) as conn:
+            with closing(sqlite3.connect(path)) as conn:
                 key = conn.execute(
                     "SELECT type, pk FROM pragma_table_info('points') WHERE name = 'fid'"
                 ).fetchall()
