@@ -6373,6 +6373,34 @@ mod tests {
     /// fits in a tile, `OVERVIEWS=NONE`) means no report; and what the method cannot honour is
     /// refused rather than written otherwise.
     #[test]
+    fn area_matched_dataset_writes_require_shared_band_nodata() {
+        let dir = tempfile::tempdir().unwrap();
+        for driver in [crate::formats::RasterDriver::GTiff, crate::formats::RasterDriver::Cog] {
+            for method in ["area_matched", "area_matched_mode"] {
+                let path = dir.path().join(format!("{driver:?}-{method}.tif"));
+                let options = crate::RasterWriteOptions {
+                    driver: Some(driver),
+                    tile_size: Some(32),
+                    overviews: vec![2],
+                    overview_resampling: Some(method.into()),
+                    ..Default::default()
+                };
+                for declarations in [vec![Some(-9999.0), Some(-9998.0)], vec![Some(-9999.0), None], vec![None, Some(-9998.0)]] {
+                    let mut dataset = crate::RasterDataset::new(meander(2), true);
+                    dataset.band_nodata = declarations;
+                    let error = crate::write_raster_dataset(&dataset, path.to_str().unwrap(), &options).unwrap_err();
+                    assert!(error.to_string().contains("one shared nodata value"), "{error}");
+                }
+                for nodata in [-9999.0, f64::NAN] {
+                    let mut dataset = crate::RasterDataset::new(meander(2), true);
+                    dataset.band_nodata = vec![Some(nodata); 2];
+                    crate::write_raster_dataset(&dataset, path.to_str().unwrap(), &options).unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
     fn cog_area_matched_report_and_refusals() {
         let raster = meander(1);
         let stale = crate::BandMetadata {

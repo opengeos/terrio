@@ -321,8 +321,9 @@ along the margin. terrio's `OVERVIEW_RESAMPLING=AREA_MATCHED` (`overview_resampl
 - A kept cell holds the mean of its valid pixels (rounded half to even for integer types), and
   others hold nodata. `AREA_MATCHED_MODE` holds the most frequent class instead (of the cells of
   the level below, the lowest on ties), for categorical rasters.
-- The raster needs a nodata value (NaN is never valid). Per-dataset masks, alpha bands and complex
-  bands are refused, and a COG with these overviews is written whole, not a strip at a time.
+- The raster needs one shared nodata value across all bands (NaN is never valid). Distinct
+  per-band declarations, per-dataset masks, alpha bands and complex bands are refused. A COG
+  with these overviews is written whole, not a strip at a time.
 - Each band's metadata records what its levels keep, as default-domain items that GDAL's COG and
   GTiff drivers copy with the band: `OVERVIEW_AREA_RATIOS`, the area each level keeps over the
   valid full-resolution area (comma-separated, `1` when it is kept exactly), and
