@@ -10,7 +10,7 @@ name: perf matrix
 #   /perf-matrix zarr --access window band --quick
 #
 # or from the Actions tab (pull request number and the same arguments). The trusted `prepare` job caches the base branch's
-# fixtures and build. The `run` job executes pull request code with read-only repository and
+# fixtures and build. The `run` jobs, one per format in parallel, execute pull request code with read-only repository and
 # cache tokens; the base branch's harness takes the measurements. The `comment` job posts the report as text and runs no checked-out code.
 # A pull request's build scripts run with the job, and could change what it measures: run it on
 # pull requests whose code you would build yourself.
@@ -47,6 +47,7 @@ jobs:
     cache-mode: write
     outputs:
       formats: ${{ steps.req.outputs.formats }}
+      formats_json: ${{ steps.req.outputs.formats_json }}
       args: ${{ steps.req.outputs.args }}
       head: ${{ steps.req.outputs.head }}
       base: ${{ steps.req.outputs.base }}
@@ -84,7 +85,8 @@ jobs:
           done
           read -r head base_ref < <(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" -q '[.head.sha, .base.ref] | join(" ")')
           base=$(gh api "repos/$GITHUB_REPOSITORY/commits/$base_ref" -q .sha)
-          { echo "formats=$formats"; echo "args=${rest[*]}"; echo "head=$head"; echo "base=$base"; } >> "$GITHUB_OUTPUT"
+          json=$(printf '"%s",' $formats)
+          { echo "formats=$formats"; echo "formats_json=[${json%,}]"; echo "args=${rest[*]}"; echo "head=$head"; echo "base=$base"; } >> "$GITHUB_OUTPUT"
           echo "pull request #$PR at $head against $base_ref at $base: $formats ${rest[*]}"
       - name: Reclaim runner disk
         run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
@@ -139,10 +141,15 @@ jobs:
           path: ${{ runner.temp }}/terrio-base
           key: ${{ steps.basebuild.outputs.cache-primary-key }}
 
+  # One job per format, in parallel: each stays well within the job time limit.
   run:
     needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        format: ${{ fromJSON(needs.prepare.outputs.formats_json) }}
     concurrency:
-      group: perf-matrix-run-${{ github.event.issue.number || inputs.pr }}
+      group: perf-matrix-run-${{ github.event.issue.number || inputs.pr }}-${{ matrix.format }}
       cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 340
@@ -199,43 +206,32 @@ jobs:
       - name: Run the matrix
         shell: micromamba-shell {0}
         env:
-          FORMATS: ${{ needs.prepare.outputs.formats }}
+          FORMAT: ${{ matrix.format }}
           ARGS: ${{ needs.prepare.outputs.args }}
         run: |
           mkdir -p out
           read -ra args <<< "$ARGS"
-          for f in $FORMATS; do
-            python base/scripts/perf_matrix.py run --format "$f" "${args[@]}" --dir "$RUNNER_TEMP/matrix" \
-              --base "$RUNNER_TEMP/terrio-base" --out "out/$f.jsonl" > "out/$f.log" 2>&1 || { tail -n 20 "out/$f.log"; exit 1; }
-          done
+          python base/scripts/perf_matrix.py run --format "$FORMAT" "${args[@]}" --dir "$RUNNER_TEMP/matrix" \
+            --base "$RUNNER_TEMP/terrio-base" --out "out/$FORMAT.jsonl" > "out/$FORMAT.log" 2>&1 || { tail -n 20 "out/$FORMAT.log"; exit 1; }
       - name: Write the report
         if: always()
         shell: micromamba-shell {0}
         env:
-          HEAD_SHA: ${{ needs.prepare.outputs.head }}
-          BASE_SHA: ${{ needs.prepare.outputs.base }}
-          FORMATS: ${{ needs.prepare.outputs.formats }}
-          ARGS: ${{ needs.prepare.outputs.args }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          FORMAT: ${{ matrix.format }}
         run: |
           mkdir -p out
-          echo "$PR" > out/pr-number.txt
           {
-            echo "### Performance matrix: ${HEAD_SHA:0:8} against base ${BASE_SHA:0:8}"
-            echo
-            echo "\`$FORMATS ${ARGS}\` on a GitHub runner, GDAL 3.13.3 ([run]($RUN_URL)). base: this build's time / the base branch's (<1 faster); x: its time / GDAL's."
+            echo "#### $FORMAT"
             echo
             echo '```text'
-            files=()
-            for f in $FORMATS; do [ ! -f "out/$f.jsonl" ] || files+=("out/$f.jsonl"); done
-            if [ ${#files[@]} -gt 0 ]; then python base/scripts/perf_matrix.py report "${files[@]}"; else echo "The run failed before any result: see the run's log."; fi
+            if [ -f "out/$FORMAT.jsonl" ]; then python base/scripts/perf_matrix.py report "out/$FORMAT.jsonl"; else echo "The run failed before any result: see the run's log."; fi
             echo '```'
-          } > out/perf.md
-          cat out/perf.md >> "$GITHUB_STEP_SUMMARY"
+          } > "out/$FORMAT.md"
+          cat "out/$FORMAT.md" >> "$GITHUB_STEP_SUMMARY"
       - if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: perf-matrix
+          name: perf-matrix-${{ matrix.format }}
           path: out
 
   comment:
@@ -251,19 +247,30 @@ jobs:
       - uses: actions/download-artifact@v8
         continue-on-error: true
         with:
-          name: perf-matrix
+          pattern: perf-matrix-*
+          merge-multiple: true
           path: out
       - env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           PR: ${{ github.event.issue.number || inputs.pr }}
+          HEAD_SHA: ${{ needs.prepare.outputs.head }}
+          BASE_SHA: ${{ needs.prepare.outputs.base }}
+          FORMATS: ${{ needs.prepare.outputs.formats }}
+          ARGS: ${{ needs.prepare.outputs.args }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           [[ "$PR" =~ ^[0-9]+$ ]] || exit 1
-          if [ -f out/perf.md ]; then
-            # A comment holds at most 65536 characters; invalid UTF-8 from the cut is dropped.
-            head -c 60000 out/perf.md | iconv -c -f UTF-8 -t UTF-8 > body.md
-          else
-            echo "The performance matrix failed before writing a report: $RUN_URL" > body.md
-          fi
+          [[ "$HEAD_SHA$BASE_SHA" =~ ^[0-9a-f]*$ ]] || exit 1
+          {
+            echo "### Performance matrix: ${HEAD_SHA:0:8} against base ${BASE_SHA:0:8}"
+            echo
+            echo "\`$FORMATS ${ARGS}\` on GitHub runners, one per format, GDAL 3.13.3 ([run]($RUN_URL)). base: this build's time / the base branch's (<1 faster); x: its time / GDAL's."
+            for f in $FORMATS; do
+              echo
+              if [ -f "out/$f.md" ]; then cat "out/$f.md"; else echo "#### $f"; echo; echo "Failed before writing a report: see the run."; fi
+            done
+          } > perf.md
+          # A comment holds at most 65536 characters; invalid UTF-8 from the cut is dropped.
+          head -c 60000 perf.md | iconv -c -f UTF-8 -t UTF-8 > body.md
           gh pr comment "$PR" --body-file body.md

@@ -508,3 +508,22 @@ def test_a_fixture_filter_matching_nothing_is_an_error(tmp_path, monkeypatch):
     args = SimpleNamespace(format="fake", dir=tmp_path, latency_ms=0, threads=1, only=["typo"])
     with pytest.raises(SystemExit, match="no fixtures match"):
         perf_matrix.run(args)
+
+
+def test_every_path_pattern_names_files_of_the_repository():
+    """Keep the path map in step with the sources: a renamed file must not silence a format."""
+    import fnmatch
+    import subprocess
+
+    root = Path(__file__).resolve().parents[2]
+    files = subprocess.run(["git", "ls-files"], cwd=root, capture_output=True, text=True, check=True).stdout.split()
+    for pattern in [p for ps in perf_matrix.PATHS.values() for p in ps] + perf_matrix._SHARED:
+        assert any(fnmatch.fnmatch(f, pattern) for f in files), pattern
+
+
+def test_changed_files_choose_the_formats_to_measure():
+    """A format's own file picks it; a shared one picks every format; others pick none."""
+    assert perf_matrix.touched(["crates/terrio/src/drivers/vector/geoparquet_arrow.rs"]) == ["geoparquet"]
+    assert perf_matrix.touched(["crates/terrio/src/drivers/zarr/cube.rs", "README.md"]) == ["zarr"]
+    assert perf_matrix.touched(["Cargo.lock"]) == ["geotiff", "zarr", "geoparquet"]
+    assert perf_matrix.touched(["crates/terrio/src/drivers/vector/flatgeobuf.rs", "docs/benchmarks.md"]) == []

@@ -345,4 +345,8 @@ On a pull request, a maintainer's comment `/perf-matrix` runs the matrix on a Gi
 format with one sample per tool; `/perf-matrix geoparquet --only geoarrow` runs one format with
 the options of `run`. Runner timings vary more than a quiet desktop's, but each comparison is
 made within one run on one runner. The Actions tab runs the same workflow for a pull request
-number.
+number. Each format runs in its own job, in parallel.
+
+`perf_matrix.py touched` reads changed file paths on standard input and prints the formats whose
+reads go through them (`PATHS` in the script; shared I/O files and `Cargo.lock` count for every
+format).
