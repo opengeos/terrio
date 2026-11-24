@@ -2967,6 +2967,22 @@ pytest python/tests/test_raster_manage.py
 cargo test -p terrio-cli --test raster_manage
 ```
 
+### External EHdr overviews (#1221)
+
+`cargo test -p terrio --test ehdr_overviews` checks native creation beside read-only
+`.flt` and `.hdr` files, explicit overview windows, and monotonic progress with
+byte-for-byte sidecar preservation on cancellation. The overview window also
+succeeds with the full-resolution data file temporarily moved aside.
+
+Run `cargo test -p terrio --test ehdr_overviews -- --ignored` with `gdaladdo`,
+`gdalinfo` and `gdal_translate` to cross-read both builders' sidecars. The
+`raster-manage` conformance suite includes this comparison. Odd-sized Float32 and
+Int16 grids exercise nearest and average, uncompressed and DEFLATE sidecars, and
+mixed-validity and all-nodata cells. Dimensions, type, nodata, validity and
+integer samples must agree exactly. Float32 averages from independent builds
+have a 4e-6 absolute tolerance. Reading the same sidecar through both readers
+requires exact samples. The reference is GDAL 3.13.2.
+
 ## Raster blending (#289)
 
 The `blend` conformance suite requires GDAL 3.13 or newer (older references are

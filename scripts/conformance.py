@@ -730,7 +730,7 @@ def suite_indexes(ctx):
 
 
 def suite_raster_manage(ctx):
-    """Real DEM raster management, cross-read and compared by GDAL."""
+    """Raster management, cross-read and compared by GDAL."""
     suite = Suite("raster-manage", "Raster management", "GDAL 3.13.3",
                   "Creation types/bands, metadata escaping, nodata, internal overview add/delete and external "
                   "overview add/delete beside read-only GeoTIFFs (left unchanged), "
@@ -742,7 +742,8 @@ def suite_raster_manage(ctx):
                   "internal mask overviews added, refreshed (whole and over an extent) and added again over "
                   "gdaladdo's, and real DEM subset updates: masks, mask blocks, type, nodata, CRS and "
                   "geotransform exact; "
-                  "pixel values exact or within 2e-7 relative and 1e-6 absolute tolerance.")
+                  "pixel values exact or within 2e-7 relative and 1e-6 absolute tolerance. "
+                  "EHdr external overview round trips with exact nodata and a 4e-6 Float32 value tolerance.")
     missing = missing_modules("osgeo", "numpy")
     if missing:
         suite.skipped = "needs the Python modules " + ", ".join(missing)
@@ -763,6 +764,14 @@ def suite_raster_manage(ctx):
         suite.cases.append(Case("raster management", result["name"], status, result["detail"]))
     if not results or (code and not any(case.status == DIFFERS for case in suite.cases)):
         suite.error = tail(err or out) or f"comparison exited {code} without complete results"
+    if all(shutil.which(t) for t in ("cargo", "gdaladdo", "gdalinfo", "gdal_translate")):
+        code, out, err = run(["cargo", "test", "--release", "-p", "terrio", "--test", "ehdr_overviews", "--", "--ignored"])
+        suite.cases.append(Case("raster management", "EHdr external overview round trips", TOLERANCE if code == 0 else DIFFERS,
+                                "Exact dimensions, data types, nodata, validity and integer samples; Float32 absolute tolerance 4e-6"
+                                if code == 0 else tail(out or err)))
+    else:
+        suite.cases.append(Case("raster management", "EHdr external overview round trips", NOT_COMPARED,
+                                "Needs cargo, gdaladdo, gdalinfo and gdal_translate"))
     return suite
 
 
