@@ -262,7 +262,8 @@ fn select<T>(cells: &Cells<T>, target: u64, factor: u64) -> Result<Vec<bool>> {
 ///
 /// # Errors
 /// `InvalidData` when a size is larger than the level before it; `Unsupported` when the
-/// rounded valid-area target exceeds the number of footprints containing valid pixels.
+/// rounded valid-area target exceeds the number of footprints containing valid pixels, or
+/// a kept footprint has an undefined mean (for example, opposite infinities).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn band<T: Pixel + PartialOrd>(
     data: &[T],
@@ -309,6 +310,11 @@ pub(crate) fn band<T: Pixel + PartialOrd>(
         let target = round_ratio(base * n_cells, pixels) as u64;
         let factor = factors.get(k).copied().unwrap_or(1 << (k + 1));
         let keep = select(&cells, target, factor)?;
+        if method == AreaMatched::Mean && cells.acc.iter().zip(&keep).any(|(&(sum, _), &kept)| kept && sum.is_nan()) {
+            return Err(crate::Error::Unsupported(format!(
+                "area-matched overview {w}x{h} has an undefined mean in a kept cell (for example, opposite infinities)"
+            )));
+        }
         let kept = keep.iter().filter(|v| **v).count() as u128;
         report.area_ratios.push(match base {
             0 => 1.0,
@@ -501,6 +507,26 @@ mod tests {
         let data = [2.0f32, 1.0, f32::NAN, 3.0];
         let (levels, _) = band(&data, (2, 2), &[(1, 1)], &[2], AreaMatched::Mean, -9999.0, 0.0, false).unwrap();
         assert_eq!(levels[0], vec![2.0]);
+    }
+
+    /// An undefined mean cannot silently turn a counted valid cell into NaN; mode retains
+    /// native infinity classes, and a defined infinite mean remains valid.
+    #[test]
+    fn undefined_kept_means_are_refused() {
+        let data = [f64::INFINITY, f64::NEG_INFINITY, 1.0, 2.0];
+        let error = band(&data, (2, 2), &[(1, 1)], &[2], AreaMatched::Mean, 0.0, 1.0, false).unwrap_err();
+        assert!(error.to_string().contains("undefined mean"), "{error}");
+        let (levels, report) = band(&data, (2, 2), &[(1, 1)], &[2], AreaMatched::Mode, 0.0, 1.0, false).unwrap();
+        assert_eq!(levels, vec![vec![f64::NEG_INFINITY]]);
+        assert_eq!(report.area_ratios, vec![1.0]);
+        let data = [f64::INFINITY; 4];
+        let (levels, report) = band(&data, (2, 2), &[(1, 1)], &[2], AreaMatched::Mean, 0.0, 1.0, false).unwrap();
+        assert_eq!(levels, vec![vec![f64::INFINITY]]);
+        assert_eq!(report.area_ratios, vec![1.0]);
+        // Each first-level mean is defined; only their coarser footprint is undefined.
+        let data = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+        let error = band(&data, (4, 1), &[(2, 1), (1, 1)], &[2, 4], AreaMatched::Mean, 0.0, 1.0, false).unwrap_err();
+        assert!(error.to_string().contains("undefined mean"), "{error}");
     }
 
     #[test]

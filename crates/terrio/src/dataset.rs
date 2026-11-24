@@ -1772,9 +1772,10 @@ pub struct RasterWriteOptions {
     /// 3.12 and 3.13 do not have, builds GeoTIFF and COG overviews of GDAL's sizes whose valid
     /// cells cover the valid area of the full-resolution image (to the nearest cell) rather than
     /// growing it at every level as `average` does: the cells covering the most valid pixels
-    /// are kept and hold their mean (or mode). It needs a nodata value and is refused with a
-    /// per-dataset mask or an alpha band. Each band's metadata then records what its levels keep:
-    /// `OVERVIEW_AREA_RATIOS` (per level, the area kept over the valid full-resolution area,
+    /// are kept and hold their mean (or mode). It needs one shared nodata value across all bands;
+    /// per-dataset masks, alpha and complex bands, distinct per-band nodata, copied source
+    /// overviews and row-streamed COG writes are refused. Each band's metadata records:
+    /// `OVERVIEW_AREA_RATIOS` (per level, nominal area kept over the valid full-resolution area,
     /// comma-separated) and `OVERVIEW_BASE_VALID_PIXELS` (the valid full-resolution pixels),
     /// default-domain items that GDAL's COG and GTiff drivers copy along with the band.
     pub overview_resampling: Option<String>,

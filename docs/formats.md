@@ -323,6 +323,8 @@ along the margin. terrio's `OVERVIEW_RESAMPLING=AREA_MATCHED` (`overview_resampl
   and UInt64 means can lose low bits, for example a constant `2^60 + 1` becomes `2^60`.
   `AREA_MATCHED_MODE` holds the most frequent class instead (of the cells of the level below,
   the lowest on ties), retaining native integer class values for categorical rasters.
+  A kept cell with an undefined mean, such as opposite infinities, is refused rather than
+  stored as NaN while counted as valid.
 - The raster needs one shared nodata value across all bands (NaN is never valid). Distinct
   per-band declarations, per-dataset masks, alpha bands and complex bands are refused. A COG
   with these overviews is written whole, not a strip at a time.
