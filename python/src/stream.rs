@@ -47,12 +47,13 @@ impl PyFeatureStream {
 
     /// Opens the reader of a deferred stream, once.
     fn open_deferred(&mut self, py: Python<'_>) -> PyResult<()> {
-        if !std::mem::take(&mut self.deferred) {
+        if !self.deferred {
             return Ok(());
         }
         let (path, options, name, columns, batch_size) = (&self.path, &self.options, &self.layer.name, &self.columns, self.batch_size);
         let reader = crate::with_warnings(py, || open_reader(path, options, Some(name), columns.as_deref(), batch_size))?;
         *self.reader.lock().map_err(|_| invalid("the stream is in use"))? = Some(reader);
+        self.deferred = false;
         Ok(())
     }
 }
@@ -92,6 +93,8 @@ fn pick(readers: Vec<FeatureReader>, layer: Option<&str>) -> terrio::Result<Feat
 /// (`.geojsonl`) and CSV files are read a chunk at a time, in bounded memory (GeoJSON and CSV
 /// files are read twice: first to infer the fields, as GDAL does); other formats are read whole
 /// and handed out in chunks.
+/// A GeoParquet bbox filter is opened when features are first read, so read errors can surface
+/// from iteration or `read_all()` instead of this call. A failed open can be retried.
 ///
 /// Args:
 ///     path: The dataset's path or URL.
@@ -109,6 +112,8 @@ fn pick(readers: Vec<FeatureReader>, layer: Option<&str>) -> terrio::Result<Feat
 ///
 /// Raises:
 ///     InvalidArgumentError: If the dataset has no such layer.
+///     TerrioIOError: If opening the dataset fails. Deferred GeoParquet reads can raise this
+///         when iteration or `read_all()` first opens the filtered reader.
 #[pyfunction]
 #[pyo3(signature = (path, layer=None, *, batch_size=65536, bbox=None, columns=None))]
 fn open_stream(

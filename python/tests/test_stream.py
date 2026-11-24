@@ -152,12 +152,21 @@ def test_streams_select_columns_and_rows(tmp_path):
 
 def test_a_geoparquet_stream_with_a_bbox_chooses_its_rows_when_read(tmp_path):
     """Opening reads the footer, not the covering column: the Arrow export, which reads the file
-    itself, would otherwise read the rows' bounding boxes twice."""
+    itself, would otherwise read the rows' bounding boxes twice.
+
+    Args:
+        tmp_path: Isolated vector fixture directory.
+    """
     io = pytest.importorskip("pathlib").Path("/proc/self/io")
     if not io.exists():
         pytest.skip("bytes read are counted from Linux's /proc/self/io")
 
     def rchar():
+        """Return the process's cumulative bytes read.
+
+        Returns:
+            int: Characters returned by read-like system calls.
+        """
         return int(dict(line.split(": ") for line in io.read_text().splitlines())["rchar"])
 
     p = str(tmp_path / "s.parquet")
@@ -172,6 +181,29 @@ def test_a_geoparquet_stream_with_a_bbox_chooses_its_rows_when_read(tmp_path):
     assert filtered < plain + 16384, (filtered, plain)
     # The rows are still chosen: by iteration, as by `open_vector`.
     assert len(stream.read_all()) == len(terrio.open_vector(p, bbox=box)[0]) > 0
+
+
+@pytest.mark.parametrize("method", ["next", "read_all"])
+def test_a_deferred_geoparquet_open_can_retry_after_io_failure(tmp_path, method):
+    """Preserve a pending filtered read after opening its source fails.
+
+    Args:
+        tmp_path: Isolated source and temporary backup directory.
+        method: Feature reading entry point to retry.
+    """
+    path = tmp_path / "retry.parquet"
+    squares(1000).write(str(path))
+    box = (-100.0, -80.0, -90.0, -70.0)
+    expected = len(terrio.open_vector(str(path), bbox=box)[0])
+    stream = terrio.open_stream(str(path), bbox=box, batch_size=2000)
+    backup = tmp_path / "backup.parquet"
+    path.rename(backup)
+    read = (lambda: next(stream)) if method == "next" else stream.read_all
+    for _ in range(2):
+        with pytest.raises(terrio.TerrioIOError):
+            read()
+    backup.rename(path)
+    assert len(read()) == expected > 0
 
 
 def test_geoparquet_streams_read_files_in_archives(tmp_path):
