@@ -125,6 +125,27 @@ def test_optional_parser_unavailable_retains_metadata(tmp_path, monkeypatch):
     assert metadata["crs"] == INVALID[0]
 
 
+def test_known_stored_crs_is_validated_without_pyproj(tmp_path):
+    """Validate a stored PROJJSON that terrio identifies as an EPSG code without importing pyproj.
+
+    Importing pyproj was most of a process's first GeoParquet read.
+
+    Args:
+        tmp_path: Temporary file directory.
+    """
+    path = tmp_path / "points.parquet"
+    write_points(path, pyproj.CRS(32631).to_json_dict())
+    code = (
+        "import sys, terrio.pyogrio as p; "
+        f"meta, table = p.read_arrow({str(path)!r}); "
+        "print(meta['crs'], table.num_rows, 'pyproj' in sys.modules)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], text=True, capture_output=True, timeout=30, check=True
+    )
+    assert result.stdout.split() == ["EPSG:32631", "4", "False"]
+
+
 def test_registered_type_keeps_validated_crs_decisions(tmp_path):
     """Isolate an opaque registered type and retain valid, null and rejected CRSs.
 
