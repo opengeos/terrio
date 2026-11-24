@@ -193,6 +193,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn sql_on_a_path_reports_predicate_read_errors() {
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+        use parquet::file::metadata::ParquetMetaDataWriter;
+        let mut layer = Layer::new("t");
+        layer.add_field(FieldDef::new("id", FieldType::Integer));
+        for i in 0..20 {
+            layer.push(Feature { fid: i, geometry: None, attributes: vec![FieldValue::Integer(i as i64)] });
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.parquet");
+        let path = path.to_str().unwrap();
+        super::super::write(&layer, path).unwrap();
+        let mut bytes = std::fs::read(path).unwrap();
+        let meta = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(bytes.clone())).unwrap().metadata().as_ref().clone();
+        let group = meta.row_group(0).clone().into_builder().set_num_rows(21).build().unwrap();
+        let meta = meta.into_builder().set_row_groups(vec![group]).build();
+        // Keep the data pages intact but make their row count disagree with the footer.
+        ParquetMetaDataWriter::new(&mut bytes, &meta).finish().unwrap();
+        std::fs::write(path, bytes).unwrap();
+        let error = crate::ops::sql::query_path(path, "SELECT * FROM t WHERE id < 7", &Default::default()).unwrap_err();
+        assert!(error.to_string().contains("predicate row count mismatch"), "{error}");
+    }
+
     /// `IN` keeps a row group when one of its values may be in the group's range.
     #[test]
     fn in_lists_prune_by_ranges() {

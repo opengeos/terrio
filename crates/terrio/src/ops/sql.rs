@@ -59,6 +59,15 @@ pub fn query(layers: &[Layer], statement: &str) -> Result<Layer> {
 /// statistics exclude it and decodes the other columns of matching rows only; feature IDs stay
 /// the file's. Other queries, remote files and other formats read their layers whole, as
 /// [`crate::open_vector`] does.
+///
+/// ```no_run
+/// let result = terrio::ops::sql::query_path(
+///     "countries.parquet",
+///     "SELECT ADMIN FROM countries WHERE POP_EST > 1e7",
+///     &Default::default(),
+/// )?;
+/// # Ok::<(), terrio::Error>(())
+/// ```
 pub fn query_path(path: &str, statement: &str, options: &crate::VectorOpenOptions) -> Result<Layer> {
     #[cfg(feature = "parquet")]
     if let Some(layer) = filtered_parquet_layer(path, statement, options)? {
