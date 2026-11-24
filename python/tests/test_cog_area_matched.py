@@ -8,6 +8,9 @@ which GDAL's COG driver copies when it converts the file again. Skipped without 
 Tolerance: none on counts, sizes and items; the recomputed ratios equal the stored ones to 1e-12.
 """
 
+import importlib.util
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -43,16 +46,31 @@ def _levels(path):
     """The full-resolution band and every overview of a file, as GDAL reads them."""
     with rasterio.open(path) as src:
         base = src.read(1)
-        sizes = [
-            (int(np.ceil(src.width / f)), int(np.ceil(src.height / f))) for f in src.overviews(1)
-        ]
+        n_levels = len(src.overviews(1))
         tags = src.tags(1)
         structure = src.tags(ns="IMAGE_STRUCTURE")
     levels = []
-    for i in range(len(sizes)):
+    for i in range(n_levels):
         with rasterio.open(path, overview_level=i) as ovr:
             levels.append(ovr.read(1))
     return base, levels, tags, structure
+
+
+@pytest.mark.parametrize("nodata", [ND, np.nan])
+def test_comparison_ratios_of_empty_bands(nodata):
+    """Use the writer's unit ratio when the reference band has no valid pixels.
+
+    Args:
+        nodata: Finite or NaN nodata declaration for the empty band.
+    """
+    pytest.importorskip("osgeo.gdal")
+    path = Path(__file__).resolve().parents[2] / "scripts" / "compare_cog_area_matched_with_gdal.py"
+    spec = importlib.util.spec_from_file_location("compare_cog_area_matched", path)
+    comparison = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(comparison)
+    base = np.full((8, 8), nodata, dtype="float32")
+    levels = [np.full((n, n), nodata, dtype="float32") for n in [4, 2]]
+    assert comparison.ratios(base, nodata, levels) == (0, [1.0, 1.0])
 
 
 def test_area_matched_levels_keep_the_valid_area(tmp_path):

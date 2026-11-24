@@ -67,6 +67,8 @@ def read(path):
 def ratios(base, nodata, levels):
     """The valid area each level keeps over the full-resolution valid area."""
     valid = int((~invalid(base, nodata)).sum())
+    if valid == 0:
+        return valid, [1.0] * len(levels)
     return valid, [int((~invalid(lv, nodata)).sum()) * base.size / lv.size / valid for lv in levels]
 
 
