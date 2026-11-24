@@ -299,8 +299,9 @@ workflows, including their different execution paths. Unsupported HTTP SQL input
 errors and are excluded from rankings.
 
 The report ranks the worst cases, gives the geometric mean of the time ratios for each value of
-each axis (by codec, layout, access pattern and source), and lists every case that makes more
-request rounds or reads more bytes than GDAL, or more than it needs. A slow axis value points to
+each axis (by codec, layout, access pattern and source), and lists matching-checksum cases with
+more request rounds than GDAL, bytes above 1.25 times GDAL plus 64 KiB, or bytes above 1.5 times
+the estimated need plus 256 KiB. A slow axis value points to
 one area of code (decoding, copying into the output, fetching, threading or opening), so one pull
 request can fix all the cases of that area, with the matrix's numbers before and after.
 
@@ -314,7 +315,12 @@ python scripts/perf_matrix.py fixtures --format zarr
 python scripts/perf_matrix.py run --format zarr --only shard --access window --quick
 # `run` prints its results file path; report summarizes one again:
 python scripts/perf_matrix.py report "$HOME/.cache/terrio-bench/matrix/geotiff/results-20261124-120000.jsonl"
+# Run the matrix's regression tests:
+python -m pytest -q scripts/tests/test_perf_matrix.py
 ```
+
+Fixture names identify fixed specifications. Use an empty fixture directory after changing a
+specification or fixture generation code, since existing files are reused by name.
 
 `--threads` sets `RAYON_NUM_THREADS` and `GDAL_NUM_THREADS` (4 by default), `--latency-ms` the
 simulated round-trip time, `--samples` the samples per tool, and `--quick` takes one. A read that

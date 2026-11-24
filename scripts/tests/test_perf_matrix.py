@@ -1,5 +1,6 @@
 """The performance matrix counts rounds, windows and needed bytes, and ranks only valid cases."""
 
+import json
 import struct
 import sys
 from pathlib import Path
@@ -80,6 +81,62 @@ def test_checksum_sums_without_overflow():
 
     a = np.full((3, 1000), 60000, dtype="uint16")
     assert perf_matrix.checksum(a) == (180_000_000.0, 3000)
+
+
+def test_geoparquet_without_statistics_counts_all_row_groups(tmp_path):
+    """Count required columns conservatively when statistics are absent.
+
+    Args:
+        tmp_path: Isolated fixture directory.
+    """
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    table = pa.table({"id": [5000, 5001], "geometry": [b"x", b"y"],
+                      "bounds": [{"xmin": 0., "ymin": 0., "xmax": 1., "ymax": 1.}] * 2})
+    geo = {"primary_column": "geometry", "columns": {"geometry": {"covering": {"bbox": {
+        key: ["bounds", key] for key in ("xmin", "ymin", "xmax", "ymax")}}}}}
+    table = table.replace_schema_metadata({b"geo": json.dumps(geo).encode()})
+    path = tmp_path / "no-stats.parquet"
+    pq.write_table(table, path, write_statistics=False, row_group_size=1)
+    md = pq.ParquetFile(path).metadata
+    expected = md.serialized_size + 8 + sum(md.row_group(g).column(c).total_compressed_size
+                                          for g in range(md.num_row_groups) for c in range(md.num_columns))
+    assert perf_matrix.GeoParquet.meta(path, "where")["need_bytes"] == expected
+    assert perf_matrix.GeoParquet.meta(path, "bbox")["need_bytes"] == expected
+
+
+def test_metadata_errors_are_recorded_for_each_case(tmp_path, monkeypatch):
+    """Keep a metadata failure from aborting the remaining benchmark cases.
+
+    Args:
+        tmp_path: Isolated results directory.
+        monkeypatch: Scoped dependency replacements.
+    """
+    def broken_meta(_path, _access):
+        """Raise a fixture error.
+
+        Args:
+            _path: Fixture path.
+            _access: Access pattern.
+
+        Raises:
+            ValueError: For the malformed fixture.
+        """
+        raise ValueError("missing geo metadata")
+
+    fake = SimpleNamespace(FIXTURES={"a": None, "b": None}, ACCESS=["full"], EXT=".parquet",
+                           meta=broken_meta, axes=lambda _: {"codec": "none", "dtype": "point", "layout": "arrow"})
+    monkeypatch.setitem(perf_matrix.FORMATS, "fake", fake)
+    monkeypatch.setattr(perf_matrix, "machine", lambda: {"machine": {"on_ac": True}})
+    monkeypatch.setattr(perf_matrix, "report", lambda _: "recorded")
+    out = tmp_path / "results.jsonl"
+    args = SimpleNamespace(format="fake", dir=tmp_path, latency_ms=0, threads=1, only=None,
+                           quick=True, samples=1, out=out, source=["http"], allow_battery=False, access=None)
+    perf_matrix.run(args)
+    rows = [json.loads(line) for line in out.read_text().splitlines()][1:]
+    assert [row["fixture"] for row in rows] == ["a", "b"]
+    assert all(row["meta_error"] == "ValueError: missing geo metadata" for row in rows)
+    assert all("time_ratio" not in row for row in rows)
 
 
 @pytest.mark.parametrize("platform", ["linux", "darwin"])

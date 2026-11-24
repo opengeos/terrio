@@ -62,7 +62,7 @@ def terrain(np, size: int, bands: int, dtype: str):
         z = np.sin(6 * x + b) * np.cos(5 * y) + 0.3 * np.sin(40 * x * y + b)
         z += (0.15 if dtype == "uint8" else 0.02) * rng.standard_normal(z.shape, dtype="float32")
         if dtype == "uint8":
-            z = (z + 1.5) * 80
+            z = np.clip((z + 1.5) * 80, 0, 255)
         elif dtype in ("uint16", "int16"):
             z = (z + 1.5) * 8000 - (12000 if dtype == "int16" else 0)
         else:
@@ -527,13 +527,15 @@ class GeoParquet:
             rg = md.row_group(g)
             cols = {names[i]: rg.column(i) for i in range(md.num_columns)}
             if boxes and cover:
-                s = {k: (cols[".".join(cover[k])].statistics.min, cols[".".join(cover[k])].statistics.max) for k in ("xmin", "ymin", "xmax", "ymax")}
-                hits = sum(1 for bx0, by0, bx1, by1 in boxes if s["xmin"][0] <= bx1 and s["xmax"][1] >= bx0 and s["ymin"][0] <= by1 and s["ymax"][1] >= by0)
-                if not hits:
-                    continue
+                stats = {k: cols[".".join(cover[k])].statistics for k in ("xmin", "ymin", "xmax", "ymax")}
+                if all(st is not None and st.has_min_max for st in stats.values()):
+                    s = {k: (st.min, st.max) for k, st in stats.items()}
+                    hits = sum(1 for bx0, by0, bx1, by1 in boxes if s["xmin"][0] <= bx1 and s["xmax"][1] >= bx0 and s["ymin"][0] <= by1 and s["ymax"][1] >= by0)
+                    if not hits:
+                        continue
             if access == "where":
                 st = cols["id"].statistics
-                if st.min >= 4000:
+                if st is not None and st.has_min_max and st.min >= 4000:
                     continue
             keep = [n for n in names if n.split(".")[0] in (gcol, *GeoParquet.COLUMNS)] if access == "columns" else names
             need += sum(cols[n].total_compressed_size for n in keep)
@@ -638,8 +640,19 @@ class _Handler(SimpleHTTPRequestHandler):
             start, end, status = 0, size - 1, 200
             rng = self.headers.get("Range", "")
             if rng.startswith("bytes="):
-                a, _, b = rng[6:].partition("-")
-                start, end = (max(0, size - int(b)), size - 1) if a == "" else (int(a), min(size - 1, int(b)) if b else size - 1)
+                try:
+                    a, sep, b = rng[6:].partition("-")
+                    if not sep or (not a and not b) or (a and not a.isdigit()) or (b and not b.isdigit()):
+                        raise ValueError("unsupported range")
+                    start, end = (max(0, size - int(b)), size - 1) if a == "" else (int(a), min(size - 1, int(b)) if b else size - 1)
+                    if start > end or start >= size:
+                        raise ValueError("unsatisfiable range")
+                except ValueError:
+                    self.send_response(416)
+                    self.send_header("Content-Range", f"bytes */{size}")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 status = 206
             self.send_response(status)
             self.send_header("Content-Length", str(end - start + 1))
@@ -803,11 +816,20 @@ def run(args: argparse.Namespace) -> None:
     rows = []
     for name, access, source in itertools.product(names, args.access or fmt.ACCESS, sources):
         path = data / f"{name}{fmt.EXT}"
-        meta = fmt.meta(path, access)
+        label = "where/sql-vs-filter" if args.format == "geoparquet" and access == "where" else access
+        try:
+            meta = fmt.meta(path, access)
+        except Exception as exc:
+            row = {"format": args.format, "fixture": name, "access": label, "source": source,
+                   "meta_error": f"{type(exc).__name__}: {exc}", **fmt.axes(name)}
+            rows.append(row)
+            print(fmt_row(row), flush=True)
+            out_file.write(json.dumps(row) + "\n")
+            out_file.flush()
+            continue
         if meta is None:
             continue
         src = str(path) if source == "local" else base + path.name
-        label = "where/sql-vs-filter" if args.format == "geoparquet" and access == "where" else access
         row = {"format": args.format, "fixture": name, "access": label, "source": source, "need_bytes": meta["need_bytes"], **fmt.axes(name)}
         for k in range(samples):
             for tool in ["terrio", "gdal"] if k % 2 == 0 else ["gdal", "terrio"]:
