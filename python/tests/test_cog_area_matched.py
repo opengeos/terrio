@@ -125,3 +125,39 @@ def test_area_matched_needs_nodata_and_the_whole_raster(tmp_path):
             nodata=ND,
             overview_resampling="area_matched",
         )
+
+
+@pytest.mark.parametrize("option", ["OVERVIEW_RESAMPLING", "RESAMPLING"])
+@pytest.mark.parametrize("method", ["AREA_MATCHED", "AREA_MATCHED_MODE"])
+def test_rio_area_matched_cog_is_written_whole(tmp_path, option, method):
+    """Write a COG through the rasterio adapter and verify its overview with GDAL.
+
+    Args:
+        tmp_path: Directory for the output raster.
+        option: Creation option selecting overview resampling.
+        method: Area-matched method to exercise.
+    """
+    from terrio import rio
+
+    data = np.full((64, 64), 3, dtype="uint8")
+    path = tmp_path / "rio.tif"
+    with rio.open(
+        path,
+        "w",
+        driver="COG",
+        width=64,
+        height=64,
+        count=1,
+        dtype="uint8",
+        nodata=0,
+        BLOCKSIZE=32,
+        **{option: method},
+    ) as dst:
+        dst.write(data, 1)
+        assert not dst._streams_on_flush()
+    base, levels, tags, structure = _levels(path)
+    np.testing.assert_array_equal(base, data)
+    assert len(levels) == 1
+    np.testing.assert_array_equal(levels[0], np.full((32, 32), 3, dtype="uint8"))
+    assert structure["OVERVIEW_RESAMPLING"] == method
+    assert tags["OVERVIEW_BASE_VALID_PIXELS"] == "4096"

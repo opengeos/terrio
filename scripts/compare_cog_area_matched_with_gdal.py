@@ -24,6 +24,7 @@ gives the valid area each level keeps for terrio, `average` and `nearest`.
 
 import argparse
 import json
+import math
 import subprocess
 import sys
 import tempfile
@@ -101,6 +102,9 @@ def case(data, terrio, root, name, method, reference):
     base, nodata, levels, items, structure = read(out)
     g_base, g_nodata, g_levels, _, _ = refs[reference]
     problems = []
+    same_nodata = nodata == g_nodata or (nodata is not None and g_nodata is not None and math.isnan(nodata) and math.isnan(g_nodata))
+    if not same_nodata:
+        problems.append(f"nodata declaration {nodata} vs GDAL's {g_nodata}")
     sizes = [lv.shape for lv in levels]
     if sizes != [lv.shape for lv in g_levels]:
         problems.append(f"overview sizes {sizes} vs GDAL's {[lv.shape for lv in g_levels]}")
@@ -108,13 +112,13 @@ def case(data, terrio, root, name, method, reference):
             and np.array_equal(base[~invalid(base, nodata)], g_base[~invalid(g_base, g_nodata)])):
         problems.append("the full-resolution band differs from GDAL's")
     valid, kept = ratios(base, nodata, levels)
-    for lv, r in zip(levels, kept):
+    for lv, r in zip(levels, kept, strict=True):
         want = round_half_even(valid * lv.size, base.size)
         got = int((~invalid(lv, nodata)).sum())
         if got != want:
             problems.append(f"{lv.shape[1]}x{lv.shape[0]}: {got} valid cells, not {want}")
     stored = [float(v) for v in items.get("OVERVIEW_AREA_RATIOS", "").split(",") if v]
-    if len(stored) != len(kept) or any(abs(a - b) > 1e-12 for a, b in zip(stored, kept)):
+    if len(stored) != len(kept) or any(not math.isfinite(a) or abs(a - b) > 1e-12 for a, b in zip(stored, kept, strict=True)):
         problems.append(f"OVERVIEW_AREA_RATIOS {stored} vs recomputed {kept}")
     if items.get("OVERVIEW_BASE_VALID_PIXELS") != str(valid):
         problems.append(f"OVERVIEW_BASE_VALID_PIXELS {items.get('OVERVIEW_BASE_VALID_PIXELS')} vs {valid}")
@@ -134,7 +138,8 @@ def case(data, terrio, root, name, method, reference):
               f"GDAL nearest {fmt(ratios(*refs['NEAREST'][:3])[1])}")
     if errors is None:
         detail += "; COG validator not installed"
-    return {"name": f"{method.lower()} {name}", "status": "differs" if problems else "agrees",
+    status = "differs" if problems else "not compared" if errors is None else "agrees"
+    return {"name": f"{method.lower()} {name}", "status": status,
             "detail": "; ".join(problems) if problems else detail}
 
 
@@ -156,7 +161,7 @@ def main():
     else:
         for r in results:
             print(f"{r['status']:10} {r['name']}: {r['detail']}")
-    return 1 if any(r["status"] != "agrees" for r in results) else 0
+    return 1 if any(r["status"] == "differs" for r in results) else 0
 
 
 if __name__ == "__main__":

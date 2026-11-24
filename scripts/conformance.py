@@ -1662,7 +1662,8 @@ def suite_cog_area_matched(ctx):
         suite.error = tail(err or out)
         return suite
     for result in results:
-        suite.cases.append(Case("Area-matched overviews", result["name"], TOLERANCE if result["status"] == "agrees" else DIFFERS, result["detail"]))
+        status = {"agrees": TOLERANCE, "not compared": NOT_COMPARED}.get(result["status"], DIFFERS)
+        suite.cases.append(Case("Area-matched overviews", result["name"], status, result["detail"]))
     if code and not any(case.status == DIFFERS for case in suite.cases):
         suite.error = tail(err or out)
     return suite

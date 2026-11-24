@@ -680,7 +680,7 @@ WebAssembly (the `terrio-js` npm package):
       overviews at factors, with the area each level keeps in the band metadata. Read, validated
       and copied by GDAL 3.13.3 on real rasters (the `cog-area-matched` conformance suite) and
       by GDAL 3.12.2 through rasterio (`python/tests/test_cog_area_matched.py`).
-      Streamed and bounded-memory writing of these overviews is not done.
+- [ ] Streamed and bounded-memory writing of area-matched overviews.
 - [x] CRS: datum shift grids (NTv2, GeoTIFF grids), vertical datums, time-dependent transformations
       between dynamic datums (coordinate epochs). Done: PROJ's GeoTIFF grids (PROJ-data), NTv2 and GTX
       read in pure Rust and interpolated as PROJ does (`hgridshift`, `vgridshift`, NADCON5's

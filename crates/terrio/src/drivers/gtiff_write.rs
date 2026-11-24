@@ -712,7 +712,7 @@ impl TiffOptions {
                 .transpose()?;
             if o.cog_area_matched.is_some() && o.source_overviews.is_some() {
                 return Err(Error::InvalidArgument(
-                    "area-matched overviews are computed, not copied from the source: set OVERVIEWS=IGNORE_EXISTING".into(),
+                    "area-matched overviews are computed, not copied from the source: remove @COPY_SRC_OVERVIEWS".into(),
                 ));
             }
             o.mask_without_dataset = co("@MASK_WITHOUT_DATASET").is_some_and(yes);
@@ -1201,6 +1201,11 @@ fn prepare(raster: &Raster, opts: &TiffOptions) -> Result<Prepared> {
         // The full-resolution tags again, with each band's report in its metadata (replacing
         // the items of an earlier report the source carried).
         let mut with_reports = opts.clone();
+        if with_reports.drop_default_items.1 {
+            // Filter inherited items before adding reports produced by this write.
+            with_reports.band_metadata.iter_mut().for_each(|b| b.items.clear());
+            with_reports.drop_default_items.1 = false;
+        }
         with_reports.band_metadata.resize(raster.bands.max(with_reports.band_metadata.len()), crate::BandMetadata::default());
         for (b, report) in with_reports.band_metadata.iter_mut().zip(&reports) {
             let items = report.items();
@@ -1308,14 +1313,16 @@ fn area_matched_levels(
     factors: &[u64],
     levels: &mut Vec<Level<'_>>,
 ) -> Result<Vec<area_matched::BandReport>> {
-    if sizes.is_empty() {
-        return Ok(Vec::new());
-    }
     let Some(nodata) = opts.nodata else {
         return Err(Error::InvalidArgument("area-matched overviews need a nodata value".into()));
     };
-    if opts.mask.is_some() || opts.complex || alpha_weights(opts, raster.bands, raster.data_type).0.is_some() {
+    let has_alpha = opts.alpha
+        || opts.band_metadata.iter().take(raster.bands).any(|b| b.color_interp.as_deref().is_some_and(|c| c.eq_ignore_ascii_case("alpha")));
+    if opts.mask.is_some() || opts.complex || has_alpha {
         return Err(Error::Unsupported("area-matched overviews are written for nodata rasters without a mask or alpha band".into()));
+    }
+    if sizes.is_empty() {
+        return Ok(Vec::new());
     }
     let integral = !matches!(raster.data_type, DataType::F32 | DataType::F64);
     let replacement = gdal_overview::replacement_value(raster.data_type, nodata);
@@ -6327,6 +6334,21 @@ mod tests {
         assert!(band_item(&lazy, 0, area_matched::AREA_RATIOS_ITEM).is_some());
     }
 
+    /// Native categorical values above f64 precision survive writing and reading an overview.
+    #[test]
+    fn geotiff_area_matched_mode_preserves_u64_classes() {
+        let class = (1_u64 << 53) + 1;
+        let cfg = wbraster::RasterConfig { cols: 2, rows: 2, bands: 1, nodata: 0.0, data_type: DataType::U64, ..Default::default() };
+        let raster = Raster::from_data_native(cfg, RasterData::U64(vec![class; 4])).unwrap();
+        let options =
+            crate::RasterWriteOptions { overviews: vec![2], overview_resampling: Some("area_matched_mode".into()), ..Default::default() };
+        let opts = TiffOptions::from_write_options(&options, false, Some(0.0)).unwrap().unwrap();
+        let mut lazy = crate::LazyRaster::from_tiff_bytes(encode(&raster, &opts).unwrap()).unwrap().unwrap();
+        let read = lazy.read_window(crate::Window::full(1, 1), &crate::WindowOptions { bands: vec![], overview: Some(0) }).unwrap();
+        let RasterData::U64(values) = read.raster.data else { panic!("the overview must retain its native type") };
+        assert_eq!(values, vec![class]);
+    }
+
     /// GeoTIFF overviews at factors take the method too, with `ceil(size / factor)` sizes.
     #[test]
     fn geotiff_area_matched_overviews_at_factors() {
@@ -6375,10 +6397,26 @@ mod tests {
         assert_eq!(items.iter().filter(|(k, _)| k == area_matched::AREA_RATIOS_ITEM).count(), 1);
         assert_ne!(band_item(&lazy, 0, area_matched::AREA_RATIOS_ITEM).as_deref(), Some("9"));
         assert_eq!(band_item(&lazy, 0, "KEEP").as_deref(), Some("me"));
+        let (filtered, _) = stored_levels(write(&options(vec![("COPY_SRC_MDD", "YES")]), Some(-9999.0)).unwrap());
+        assert!(band_item(&filtered, 0, "KEEP").is_none());
+        assert_eq!(band_item(&filtered, 0, area_matched::AREA_RATIOS_ITEM), band_item(&lazy, 0, area_matched::AREA_RATIOS_ITEM));
+        assert_eq!(
+            band_item(&filtered, 0, area_matched::BASE_VALID_PIXELS_ITEM),
+            band_item(&lazy, 0, area_matched::BASE_VALID_PIXELS_ITEM)
+        );
         for extra in [vec![("OVERVIEWS", "NONE")], vec![("BLOCKSIZE", "512")]] {
-            let (lazy, levels) = stored_levels(write(&options(extra), Some(-9999.0)).unwrap());
+            let without_levels = options(extra);
+            let (lazy, levels) = stored_levels(write(&without_levels, Some(-9999.0)).unwrap());
             assert!(levels.is_empty());
             assert_eq!(band_item(&lazy, 0, area_matched::AREA_RATIOS_ITEM).as_deref(), Some("9"), "left as given");
+            assert!(write(&without_levels, None).unwrap_err().to_string().contains("nodata"));
+            let masked = crate::RasterWriteOptions { mask: Some(vec![1; 301 * 213]), ..without_levels.clone() };
+            assert!(write(&masked, Some(-9999.0)).unwrap_err().to_string().contains("without a mask or alpha band"));
+            let alpha = crate::RasterWriteOptions {
+                band_metadata: vec![crate::BandMetadata { color_interp: Some("Alpha".into()), ..Default::default() }],
+                ..without_levels
+            };
+            assert!(write(&alpha, Some(-9999.0)).unwrap_err().to_string().contains("without a mask or alpha band"));
         }
         // No nodata; a mask; an alpha band; a source's overviews to copy.
         assert!(write(&options(vec![]), None).is_err());
@@ -6389,6 +6427,14 @@ mod tests {
             ..options(vec![])
         };
         assert!(write(&alpha, Some(-9999.0)).is_err());
+        for (bands, index) in [(2, 0), (3, 1)] {
+            let mut alpha = options(vec![]);
+            alpha.band_metadata = vec![crate::BandMetadata::default(); bands];
+            alpha.band_metadata[index].color_interp = Some("Alpha".into());
+            let opts = TiffOptions::from_write_options(&alpha, true, Some(-9999.0)).unwrap().unwrap();
+            let error = encode(&meander(bands), &opts).unwrap_err();
+            assert!(error.to_string().contains("without a mask or alpha band"), "{error}");
+        }
         assert!(write(&options(vec![("@COPY_SRC_OVERVIEWS", "src.tif")]), Some(-9999.0)).is_err());
         // The row-streaming COG writer needs the whole raster for them.
         let dir = tempfile::tempdir().unwrap();

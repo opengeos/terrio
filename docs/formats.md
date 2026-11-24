@@ -315,8 +315,9 @@ along the margin. terrio's `OVERVIEW_RESAMPLING=AREA_MATCHED` (`overview_resampl
 - Each level has GDAL's size, and each of its cells covers the source pixels whose centres fall in
   its footprint. A level keeps as many valid cells as cover the valid full-resolution area,
   rounded to the nearest cell: those covering the most valid pixels, ties going to the cells with
-  the most kept neighbours, then to a deterministic hash of the cell, so that the margin stays
-  connected and two writes give the same file.
+  the most kept neighbours, then to a deterministic hash of the cell. This favours connectivity
+  without guaranteeing a connected margin, and two writes give the same file. A level is refused
+  if too few footprints contain valid pixels to meet the rounded target without inventing values.
 - A kept cell holds the mean of its valid pixels (rounded half to even for integer types), and
   others hold nodata. `AREA_MATCHED_MODE` holds the most frequent class instead (of the cells of
   the level below, the lowest on ties), for categorical rasters.
