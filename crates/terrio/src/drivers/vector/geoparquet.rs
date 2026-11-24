@@ -212,7 +212,7 @@ pub(super) fn covering_leaves(meta: &parquet::file::metadata::ParquetMetaData, g
 
 /// The bounding box `[min_x, min_y, max_x, max_y]` of each row group, from the statistics of the
 /// covering column's `leaves`, native geospatial statistics on the primary geometry column, or
-/// the statistics of a GeoArrow geometry's `x` and `y` coordinate columns (as GDAL reads them).
+/// the statistics of a GeoArrow geometry's `x` and `y` coordinate columns (as GDAL 3.13.3 reads them).
 /// Missing, non-finite and wrapped bounds cannot justify pruning and return `None`.
 pub(super) fn group_bboxes(meta: &parquet::file::metadata::ParquetMetaData, leaves: Option<[usize; 4]>) -> Vec<Option<[f64; 4]>> {
     use parquet::file::statistics::Statistics as S;
@@ -1517,9 +1517,27 @@ mod tests {
         assert_eq!(bounds("point", Arc::new(points.clone())), vec![Some([0.0, 4.0, 1.0, 5.0]), Some([100.0, 200.0, 103.0, 201.0])]);
         // Coordinates in lists (a linestring a row): the leaves' statistics cover them all.
         let field = Arc::new(Field::new("xy", points.data_type().clone(), false));
-        let offsets = arrow_buffer::OffsetBuffer::new(vec![0, 1, 2, 3, 4].into());
+        let offsets = arrow_buffer::OffsetBuffer::new(vec![0, 2, 3, 4].into());
         let lines = arrow_array::ListArray::new(field, offsets, Arc::new(points.clone()), None);
-        assert_eq!(bounds("linestring", Arc::new(lines)), vec![Some([0.0, 4.0, 1.0, 5.0]), Some([100.0, 200.0, 103.0, 201.0])]);
+        assert_eq!(bounds("linestring", Arc::new(lines)), vec![Some([0.0, 4.0, 100.0, 200.0]), Some([103.0, 201.0, 103.0, 201.0])]);
+        // Polygons nest their closed rings inside a second list level.
+        let vertices = xy(
+            vec![0.0, 2.0, 0.0, 0.0, 10.0, 12.0, 10.0, 10.0, 100.0, 102.0, 100.0, 100.0],
+            vec![0.0, 0.0, 2.0, 0.0, 10.0, 10.0, 12.0, 10.0, 100.0, 100.0, 102.0, 100.0],
+        );
+        let rings = arrow_array::ListArray::new(
+            Arc::new(Field::new("xy", vertices.data_type().clone(), false)),
+            arrow_buffer::OffsetBuffer::new(vec![0, 4, 8, 12].into()),
+            Arc::new(vertices),
+            None,
+        );
+        let polygons = arrow_array::ListArray::new(
+            Arc::new(Field::new("ring", rings.data_type().clone(), false)),
+            arrow_buffer::OffsetBuffer::new(vec![0, 1, 2, 3].into()),
+            Arc::new(rings),
+            None,
+        );
+        assert_eq!(bounds("polygon", Arc::new(polygons)), vec![Some([0.0, 0.0, 12.0, 12.0]), Some([100.0, 100.0, 102.0, 102.0])]);
         // A WKB file's struct column named like coordinates is not a GeoArrow geometry.
         assert_eq!(bounds("WKB", Arc::new(points)), vec![None, None]);
     }
