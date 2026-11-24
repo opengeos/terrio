@@ -48,7 +48,7 @@ fn compound_crss_are_placed_as_proj_places_them() {
         let num = |s: &str| (!s.is_empty()).then(|| s.parse::<f64>().unwrap());
         let (src, dst) = (f[0], f[1]);
         let (x, y, z) = (num(f[2]).unwrap(), num(f[3]).unwrap(), num(f[4]));
-        let (ex, ey, ez) = (num(f[5]).unwrap(), num(f[6]).unwrap(), num(f[7]));
+        let (ex, ey, ez) = (num(f[5]).unwrap(), num(f[6]).unwrap(), f.get(7).and_then(|s| num(s)));
         let t = transformer(src, dst, &TransformOptions::default()).unwrap();
         let geographic = SpatialRef::parse(dst).unwrap().is_geographic();
         let (got, height) = match z {
@@ -56,8 +56,10 @@ fn compound_crss_are_placed_as_proj_places_them() {
             None => t.transform(x, y).map(|p| (p, None)),
         }
         .unwrap_or_else(|e| panic!("{src} -> {dst} ({x}, {y}): {e}"));
+        assert_eq!(height.is_some(), ez.is_some(), "{src} -> {dst} returned a different height dimension");
         let d = metres(got, (ex, ey), geographic);
         let dz = height.zip(ez).map_or(0.0, |(a, b)| (a - b).abs());
+        assert!(d.is_finite() && dz.is_finite(), "{src} -> {dst} returned non-finite coordinates: {got:?}, {height:?}");
         let off = d > 1e-3 || dz > 1e-3;
         if PENDING.contains(&(src, dst)) {
             assert!(off, "{src} -> {dst} is now placed as PROJ places it: remove it from PENDING");
@@ -100,5 +102,35 @@ fn heights_through_the_ballpark_are_refused_with_it() {
         let best = TransformOptions { only_best: true, ..Default::default() };
         let t = transformer("EPSG:4979", dst, &best).unwrap();
         assert!(t.transform_3d(lon, lat, 100.0).is_err(), "{dst}");
+    }
+}
+
+#[test]
+fn registered_no_step_geoid_models_report_their_accuracy() {
+    offline();
+    // EPSG operation 4679, Saba to Saba height (1), is a registered no-step model with 0.2 m
+    // accuracy, not a fallback for missing grids (PROJ 9.9.0).
+    for options in [TransformOptions::default(), TransformOptions { allow_ballpark: Some(false), ..Default::default() }] {
+        let t = transformer("EPSG:10635", "EPSG:10643", &options).unwrap();
+        let op = t.operation_at(-63.235, 17.635, 100.0).unwrap().unwrap();
+        assert!(!op.ballpark, "{op:?}");
+        assert_eq!(op.accuracy, Some(0.2), "{op:?}");
+    }
+}
+
+#[test]
+fn only_best_keeps_ballpark_height_operation_order() {
+    offline();
+    // Independently checked with PROJ 9.7.1, without grids: both settings use OSGB36 to WGS 84
+    // (3), framed by the ballpark vertical transformation for Fao height, not (6).
+    let src = SpatialRef::from_epsg(4979).unwrap();
+    let dst = SpatialRef::compound(27700, 3886).unwrap();
+    for only_best in [false, true] {
+        let options = TransformOptions { only_best, ..Default::default() };
+        let t = Transformer::with_options(&src, &dst, &options).unwrap();
+        let (x, y, z) = t.transform_3d(-2.0, 54.0, 100.0).unwrap();
+        assert!((x - 400097.94481535204).abs() < 1e-3 && (y - 455991.2596765667).abs() < 1e-3 && z == 100.0, "{only_best}: {x} {y} {z}");
+        let op = t.operation_at(-2.0, 54.0, 100.0).unwrap().unwrap();
+        assert!(op.ballpark && op.accuracy.is_none(), "{only_best}: {op:?}");
     }
 }

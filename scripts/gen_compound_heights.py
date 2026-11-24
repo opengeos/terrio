@@ -48,7 +48,14 @@ HEIGHT = 100.0
 
 
 def centre(area):
-    """The centre of an area of use, across the antimeridian too."""
+    """Return the centre of an area of use, across the antimeridian too.
+
+    Args:
+        area: CRS area of use with west, east, south and north bounds.
+
+    Returns:
+        tuple: Centre longitude and latitude in degrees.
+    """
     west, east = area.west, area.east
     lon = (
         (west + east) / 2
@@ -59,7 +66,16 @@ def centre(area):
 
 
 def place(src, dst, point):
-    """Where PROJ places a point (2D without a height), or None when it does not."""
+    """Return where PROJ places a point, or None when it cannot.
+
+    Args:
+        src: Source CRS definition.
+        dst: Target CRS definition.
+        point: Input coordinates, with an optional height.
+
+    Returns:
+        tuple or None: Finite transformed coordinates, or None on failure.
+    """
     try:
         values = Transformer.from_crs(src, dst, always_xy=True).transform(*point)
     except pyproj.exceptions.ProjError:
@@ -70,7 +86,16 @@ def place(src, dst, point):
 
 
 def row(src, dst, point):
-    """A case's line, or None when PROJ does not place the point."""
+    """Format a reference case as one tab-separated line.
+
+    Args:
+        src: Source CRS definition.
+        dst: Target CRS definition.
+        point: Input coordinates, with an optional height.
+
+    Returns:
+        str or None: Reference case, or None if PROJ cannot place the point.
+    """
     out = place(src, dst, point)
     if out is None:
         return None
@@ -80,10 +105,12 @@ def row(src, dst, point):
     fields += [repr(float(v)) for v in out]
     if len(out) == 2:
         fields.append("")
-    return "\t".join(fields)
+    # A 2D result has no final height field; avoid trailing tabs in the frozen fixture.
+    return "\t".join(fields).rstrip("\t")
 
 
 def main():
+    """Write the offline PROJ 9.9.0 compound-height reference corpus."""
     assert pyproj.__proj_version__ == "9.9.0", pyproj.__proj_version__
     assert not pyproj.network.is_network_enabled(), "set PROJ_NETWORK=OFF"
     # No grids, so the values don't depend on what is installed: no file PROJ's database names
@@ -123,7 +150,9 @@ def main():
         (first, placed), others = same[0], same[1:]
         for other, _ in others:
             lines.append(row(first, other, placed))
-            lines.append(row(other, first, place(first, other, placed) or placed))
+            back = place(first, other, placed)
+            if back is not None:
+                lines.append(row(other, first, back))
     lines = [line for line in lines if line is not None]
     OUT.write_text("\n".join(lines) + "\n")
     print(f"{len(lines)} cases -> {OUT}")

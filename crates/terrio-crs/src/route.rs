@@ -64,8 +64,8 @@ pub(crate) enum OpKind {
     Vertical,
 }
 
-/// Records that an operation was used, run in reverse or not: `None` (or an unnamed one without
-/// steps) for PROJ's ballpark.
+/// Records an operation, including registered no-step datum transformations and geoid models.
+/// `None` or an unregistered no-step fallback records PROJ's ballpark.
 pub(crate) fn note(op: Option<&Op>, reverse: bool, kind: OpKind) {
     USED.with(|u| {
         let mut u = u.borrow_mut();
@@ -75,7 +75,15 @@ pub(crate) fn note(op: Option<&Op>, reverse: bool, kind: OpKind) {
             // WGS 84 (1), ETRS89 to WGS 84 (1)), or a concatenation of them (Inverse of ETRS89 to
             // ETRF89 + ETRS89 to WGS 84 (1)), which PROJ 9.8.1 names: not a ballpark. So is a
             // WKT 2 `BOUNDCRS`'s zero Helmert transformation, which PROJ names too.
-            Some(op) if !op.ballpark && (!op.steps.is_empty() || (!op.name.is_empty() && matches!(kind, OpKind::Datum))) => {
+            // Registered no-step geoid models have a declared accuracy; the missing-grid
+            // placeholder does not. Use the same distinction as the model runner.
+            Some(op)
+                if !op.ballpark
+                    && match kind {
+                        OpKind::Datum => !op.steps.is_empty() || !op.name.is_empty(),
+                        OpKind::Vertical => crate::is_geoid_model(op),
+                    } =>
+            {
                 let names = step_names(op, reverse);
                 let name = if names.is_empty() {
                     let unnamed = match kind {
@@ -357,6 +365,14 @@ impl Route {
     pub fn all(src: &Def, dst: &Def) -> Self {
         let (src, dst) = (src.with_all_operations(), dst.with_all_operations());
         Self::build(&OperationContext::new(&src, &dst, true))
+    }
+
+    /// Every candidate, including missing grids, with the same ballpark-height framing as
+    /// [`Self::with_ballpark_heights`]. Strict selection must retain that ordering.
+    pub fn all_with_ballpark_heights(src: &Def, dst: &Def) -> Self {
+        let (src, dst) = (src.with_all_operations(), dst.with_all_operations());
+        let ctx = OperationContext { framed: true, ballpark_heights: true, ..OperationContext::new(&src, &dst, true) };
+        Self::build(&ctx)
     }
 
     fn build(ctx: &OperationContext) -> Self {

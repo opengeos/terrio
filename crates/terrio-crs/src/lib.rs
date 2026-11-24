@@ -2811,7 +2811,11 @@ impl Transformer {
 
     fn best_route(&self) -> &route::Route {
         self.best_route.get_or_init(|| {
-            let mut route = route::Route::all(&self.src, &self.dst);
+            let mut route = if self.ballpark_heights {
+                route::Route::all_with_ballpark_heights(&self.src, &self.dst)
+            } else {
+                route::Route::all(&self.src, &self.dst)
+            };
             if self.policy.allow_ballpark == Some(false) {
                 // The primary route was already validated by with_options; retain the
                 // same restriction when considering unavailable operations.

@@ -3036,6 +3036,14 @@ PROJ_CASES = {
             "EPSG:7405 and EPSG:5707 from WGS 84 (3D) with ALLOW_BALLPARK=NO and ONLY_BEST=YES", IDENTICAL,
             "PROJ 9.9.0 (pyproj, no grids): no operation, and no point",
         ),
+        "registered_no_step_geoid_models_report_their_accuracy": (
+            "Saba's registered no-step geoid model reports its declared accuracy with and without ALLOW_BALLPARK=NO", IDENTICAL,
+            "EPSG operation 4679: 0.2 m accuracy, not ballpark; independently checked with PROJ 9.7.1",
+        ),
+        "only_best_keeps_ballpark_height_operation_order": (
+            "WGS 84 (3D) to British National Grid + Fao height retains the ballpark-height ordering with ONLY_BEST=YES", IDENTICAL,
+            "PROJ 9.7.1, no grids: OSGB36 to WGS 84 (3), within 1 mm, with or without ONLY_BEST=YES",
+        ),
     },
     "null_transformations": {
         "null_transformations_are_named_not_ballparks": (
