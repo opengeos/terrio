@@ -131,7 +131,7 @@ def test_metadata_errors_are_recorded_for_each_case(tmp_path, monkeypatch):
     monkeypatch.setattr(perf_matrix, "report", lambda _: "recorded")
     out = tmp_path / "results.jsonl"
     args = SimpleNamespace(format="fake", dir=tmp_path, latency_ms=0, threads=1, only=None,
-                           quick=True, samples=1, out=out, source=["http"], allow_battery=False, access=None)
+                           quick=True, samples=1, base=None, out=out, source=["http"], allow_battery=False, access=None)
     perf_matrix.run(args)
     rows = [json.loads(line) for line in out.read_text().splitlines()][1:]
     assert [row["fixture"] for row in rows] == ["a", "b"]
@@ -173,7 +173,7 @@ def test_bad_worker_samples_do_not_abort_remaining_cases(tmp_path, monkeypatch, 
     monkeypatch.setattr(perf_matrix, "_settled_log", settled)
     out = tmp_path / "results.jsonl"
     args = SimpleNamespace(format="fake", dir=tmp_path, latency_ms=0, threads=1, only=None,
-                           quick=True, samples=1, out=out, source=["http"], allow_battery=False,
+                           quick=True, samples=1, base=None, out=out, source=["http"], allow_battery=False,
                            access=None, timeout=1)
     perf_matrix.run(args)
     rows = [json.loads(line) for line in out.read_text().splitlines()][1:]
@@ -227,14 +227,28 @@ def test_worker_records_time_and_platform_rss_before_validation(monkeypatch, pla
         clock[0] += 100
         return 1.0, 1
 
-    fake = SimpleNamespace(EXT=".tif", reader=lambda *_: (open_, [read], check, (open_, read)))
+    def reader(_tool, _access, _meta):
+        """Include backend construction in initialization time.
+
+        Args:
+            _tool: Reader backend.
+            _access: Read pattern.
+            _meta: Fixture metadata.
+
+        Returns:
+            Reader operations and validation.
+        """
+        clock[0] += 4
+        return open_, [read], check, (open_, read)
+
+    fake = SimpleNamespace(EXT=".tif", reader=reader)
     monkeypatch.setitem(perf_matrix.FORMATS, "fake", fake)
     monkeypatch.setattr(perf_matrix.time, "perf_counter", lambda: clock[0])
     monkeypatch.setattr(perf_matrix, "_rchar", lambda local: pytest.fail("HTTP must not use local counters") if local else 0)
     monkeypatch.setattr(perf_matrix.resource, "getrusage", lambda _: SimpleNamespace(ru_maxrss=clock[0] * (1024**2 if platform == "darwin" else 1024)))
     monkeypatch.setattr(perf_matrix.sys, "platform", platform)
     result = perf_matrix.worker({"format": "fake", "tool": "terrio", "src": "http://localhost/file.tif", "access": "full", "meta": {}})
-    assert (result["open_s"], result["read_s"], result["rss_mb"]) == (1, 2, 6)
+    assert (result["init_s"], result["open_s"], result["read_s"], result["rss_mb"]) == (7, 1, 2, 10)
     assert (result["open_bytes"], result["read_bytes"]) == (0, 0)
 
 
@@ -308,3 +322,285 @@ def test_interrupted_geoparquet_source_is_not_published_or_reused(tmp_path, monk
     for kind in ("polygon", "point", "line"):
         source = ogr.Open(str(tmp_path / f"_src_{kind}.fgb"))
         assert source.GetLayer(0).GetFeatureCount() == 2
+
+
+def test_a_base_build_gets_its_own_ratio_and_values_check():
+    """Validate base timings only when all samples have matching checksums."""
+    row = summarize(_row(terrio=[_sample(2)], gdal=[_sample(1)], base=[_sample(4)]))
+    assert (row["time_ratio"], row["base_ratio"], row["values"]) == (2, 0.5, "checksum_match")
+    assert "faster by 10% or more: 1" in report([row])
+    # The base's values are checked too.
+    assert summarize(_row(terrio=[_sample(2)], gdal=[_sample(1)], base=[_sample(4, n=5)]))["values"].startswith("DIFFER: base")
+
+
+def test_a_case_the_base_failed_is_reported_as_fixed_and_the_reverse_as_broken():
+    """Report successful comparisons separately from fixed and broken cases."""
+    fixed = summarize(_row(terrio=[_sample(2)], gdal=[_sample(1)], base=[], base_error="timeout: over 120 s"))
+    assert fixed["time_ratio"] == 2 and "base_ratio" not in fixed and fixed["values"] == "checksum_match"
+    broken = summarize({**_row(terrio=[], gdal=[_sample(1)], base=[_sample(3)], terrio_error="exit 1"), "fixture": "f32_none"})
+    assert "time_ratio" not in broken
+    text = report([fixed, broken])
+    assert "the base failed, this build succeeds: 1\n  u8_none" in text and "timeout: over 120 s" in text
+    assert "this build fails, the base succeeded: 1\n  f32_none" in text
+
+
+def test_run_rejects_abbreviated_workflow_reserved_options(tmp_path, monkeypatch):
+    """Prevent abbreviated options from overriding the workflow's format.
+
+    Args:
+        tmp_path: Isolated fixture directory.
+        monkeypatch: Scoped argument replacements.
+    """
+    monkeypatch.setattr(sys, "argv", ["perf_matrix.py", "run", "--dir", str(tmp_path),
+                                      "--format", "geotiff", "--for", "zarr"])
+    with pytest.raises(SystemExit) as exc:
+        perf_matrix.main()
+    assert exc.value.code == 2
+    assert not (tmp_path / "zarr").exists()
+
+
+def test_base_import_must_be_inside_the_requested_directory(tmp_path, monkeypatch):
+    """Reject an installed package whose directory merely shares the base prefix.
+
+    Args:
+        tmp_path: Isolated build directory.
+        monkeypatch: Scoped dependency replacements.
+    """
+    fake = SimpleNamespace(FIXTURES={"fixture": None}, ACCESS=[])
+    monkeypatch.setitem(perf_matrix.FORMATS, "fake", fake)
+    monkeypatch.setattr(perf_matrix, "machine", lambda: {"machine": {"on_ac": True}})
+    wrong_file = tmp_path / "build-other" / "terrio" / "__init__.py"
+    monkeypatch.setattr(perf_matrix.subprocess, "run", lambda *_a, **_k: SimpleNamespace(
+        stdout=json.dumps([str(wrong_file), "0.9.0"])))
+    monkeypatch.setattr(perf_matrix, "report", lambda _: "empty")
+    args = SimpleNamespace(format="fake", dir=tmp_path, latency_ms=0, threads=1, only=None,
+                           quick=True, samples=1, base=tmp_path / "build", out=tmp_path / "results.jsonl",
+                           source=["http"], allow_battery=False, access=None)
+    with pytest.raises(SystemExit, match="terrio is imported from"):
+        perf_matrix.run(args)
+
+
+@pytest.mark.parametrize("directory", [False, True])
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_fixture_publishers_preserve_a_concurrent_completed_winner(tmp_path, directory, interrupted):
+    """Keep one writer's staging and completed fixture independent of another.
+
+    Args:
+        tmp_path: Isolated cache directory.
+        directory: Whether the fixture is a populated directory.
+        interrupted: Whether the first writer fails after the other publishes.
+    """
+    path = tmp_path / ("fixture.zarr" if directory else "fixture.tif")
+
+    def write(staged, value):
+        """Write a tiny file or directory fixture.
+
+        Args:
+            staged: Writer-specific staging path.
+            value: Fixture contents.
+        """
+        assert staged.suffix == path.suffix
+        if directory:
+            staged.mkdir()
+            staged = staged / "data"
+        staged.write_text(value)
+
+    def first(staged):
+        """Overlap a completed publisher with this writer's staging.
+
+        Args:
+            staged: First writer's staging path.
+
+        Raises:
+            RuntimeError: When interruption is requested.
+        """
+        write(staged, "first")
+        perf_matrix.publish(path, lambda other: write(other, "winner"))
+        own = staged / "data" if directory else staged
+        assert own.read_text() == "first"
+        if interrupted:
+            raise RuntimeError("interrupted publisher")
+
+    if interrupted:
+        with pytest.raises(RuntimeError, match="interrupted publisher"):
+            perf_matrix.publish(path, first)
+    else:
+        perf_matrix.publish(path, first)
+    assert (path / "data" if directory else path).read_text() == "winner"
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_a_mismatched_or_unvalidated_base_is_not_reported_as_successful():
+    """Require independent GDAL agreement before calling a base build successful."""
+    for gdal, extra in [([_sample(1)], {}), ([], {"gdal_error": "failed"})]:
+        row = summarize(_row(terrio=[], gdal=gdal, base=[_sample(3, n=5)],
+                             terrio_error="failed", **extra))
+        assert row.get("base_values_match") is not True
+        assert "this build fails, the base succeeded: 0" in report([row])
+
+
+def test_quick_runs_rotate_tools_between_cases_and_close_the_server(tmp_path, monkeypatch):
+    """Avoid fixed first-tool bias and release the HTTP listener on return.
+
+    Args:
+        tmp_path: Isolated results and base directory.
+        monkeypatch: Scoped dependency replacements.
+    """
+    fake = SimpleNamespace(FIXTURES={"a": None, "b": None}, ACCESS=["full"], EXT=".tif",
+                           meta=lambda *_: {"need_bytes": 1},
+                           axes=lambda _: {"codec": "none", "dtype": "uint8", "layout": "cog"})
+    monkeypatch.setitem(perf_matrix.FORMATS, "fake", fake)
+    monkeypatch.setattr(perf_matrix, "machine", lambda: {"machine": {"on_ac": True}})
+    monkeypatch.setattr(perf_matrix, "report", lambda _: "recorded")
+    monkeypatch.setattr(perf_matrix, "_settled_log", lambda: [])
+    calls, servers = [], []
+    server_type = perf_matrix.ThreadingHTTPServer
+
+    def server(*args, **kwargs):
+        """Record the actual HTTP listener created for the run.
+
+        Args:
+            *args: Server arguments.
+            **kwargs: Server options.
+
+        Returns:
+            The real server instance.
+        """
+        instance = server_type(*args, **kwargs)
+        servers.append(instance)
+        return instance
+
+    def worker(cmd, **_kwargs):
+        """Return deterministic validation and worker samples.
+
+        Args:
+            cmd: Base validation or worker command.
+            **_kwargs: Process options.
+
+        Returns:
+            Successful process output.
+        """
+        if cmd[1] == "-c":
+            data = [str(tmp_path / "base" / "terrio" / "__init__.py"), "0.9.0"]
+        else:
+            calls.append(json.loads(cmd[-1])["tool"])
+            data = _sample(1)
+        return SimpleNamespace(returncode=0, stdout=json.dumps(data), stderr="")
+
+    monkeypatch.setattr(perf_matrix, "ThreadingHTTPServer", server)
+    monkeypatch.setattr(perf_matrix.subprocess, "run", worker)
+    args = SimpleNamespace(format="fake", dir=tmp_path, latency_ms=0, threads=1, only=None,
+                           quick=True, samples=1, base=tmp_path / "base", out=tmp_path / "results.jsonl",
+                           source=["http"], allow_battery=False, access=None, timeout=1)
+    perf_matrix.run(args)
+    assert calls == ["terrio", "gdal", "base", "gdal", "base", "terrio"]
+    assert servers[0].socket.fileno() == -1
+
+
+def test_a_fixture_filter_matching_nothing_is_an_error(tmp_path, monkeypatch):
+    """Reject a typo instead of publishing a successful empty benchmark.
+
+    Args:
+        tmp_path: Isolated fixture directory.
+        monkeypatch: Scoped format replacement.
+    """
+    monkeypatch.setitem(perf_matrix.FORMATS, "fake", SimpleNamespace(FIXTURES={"actual": None}))
+    args = SimpleNamespace(format="fake", dir=tmp_path, latency_ms=0, threads=1, only=["typo"])
+    with pytest.raises(SystemExit, match="no fixtures match"):
+        perf_matrix.run(args)
+
+
+def test_every_path_pattern_names_files_of_the_repository():
+    """Keep the path map in step with the sources: a renamed file must not silence a format."""
+    import fnmatch
+    import subprocess
+
+    root = Path(__file__).resolve().parents[2]
+    files = subprocess.run(["git", "ls-files"], cwd=root, capture_output=True, text=True, check=True).stdout.split()
+    for pattern in [p for ps in perf_matrix.PATHS.values() for p in ps] + perf_matrix._SHARED:
+        assert any(fnmatch.fnmatch(f, pattern) for f in files), pattern
+
+
+def test_changed_files_choose_the_formats_to_measure():
+    """A format's own file picks it; a shared one picks every format; others pick none."""
+    assert perf_matrix.touched(["crates/terrio/src/drivers/vector/geoparquet_arrow.rs"]) == ["geoparquet"]
+    assert perf_matrix.touched(["crates/terrio/src/drivers/zarr/cube.rs", "README.md"]) == ["zarr"]
+    assert perf_matrix.touched(["Cargo.lock"]) == ["geotiff", "zarr", "geoparquet"]
+    assert perf_matrix.touched(["python/src/raster.rs"]) == ["geotiff", "zarr"]
+    assert perf_matrix.touched(["crates/terrio/src/drivers/vector/flatgeobuf.rs", "docs/benchmarks.md"]) == []
+
+
+@pytest.mark.parametrize("option,value", [("samples", "0"), ("threads", "-1"),
+                                         ("timeout", "0"), ("timeout", "nan"), ("timeout", "inf")])
+def test_run_rejects_invalid_measurement_limits(tmp_path, monkeypatch, option, value):
+    """Reject invalid limits before creating fixtures or launching workers.
+
+    Args:
+        tmp_path: Isolated fixture directory.
+        monkeypatch: Scoped argument replacement.
+        option: Measurement limit to validate.
+        value: Invalid command line value.
+    """
+    monkeypatch.setattr(sys, "argv", ["perf_matrix.py", "run", "--dir", str(tmp_path),
+                                      f"--{option}", value])
+    with pytest.raises(SystemExit) as exc:
+        perf_matrix.main()
+    assert exc.value.code == 2
+    assert not (tmp_path / "geotiff").exists()
+
+
+def test_posted_artifact_markdown_cannot_close_its_text_fence(tmp_path):
+    """Execute the posting step with a PR artifact containing Markdown delimiters.
+
+    Args:
+        tmp_path: Isolated workflow workspace with a local GitHub CLI stub.
+    """
+    import os
+    import subprocess
+    import textwrap
+
+    root = Path(__file__).resolve().parents[2]
+    workflow = (root / ".github/workflows/perf-matrix.yml").read_text()
+    script = textwrap.dedent(workflow.rsplit("        run: |\n", 1)[1])
+    (tmp_path / "out").mkdir()
+    artifact = "```\n[untrusted](https://example.com)\n````````\n"
+    (tmp_path / "out/geotiff.md").write_text(artifact)
+    cli = tmp_path / "gh"
+    cli.write_text("#!/bin/sh\ncp body.md posted.md\n")
+    cli.chmod(0o755)
+    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "PR": "1",
+           "HEAD_SHA": "a" * 40, "BASE_SHA": "b" * 40, "FORMATS": "geotiff",
+           "ARGS": "--quick", "RUN_URL": "https://example.com/run"}
+    subprocess.run(["bash", "-e", "-c", script], cwd=tmp_path, env=env, check=True)
+    posted = (tmp_path / "posted.md").read_text()
+    fence = "`" * 9
+    assert f"{fence}text\n{artifact}\n{fence}\n" in posted
+
+
+def test_benchmark_request_rejects_a_read_only_collaborator(tmp_path):
+    """Check repository permission before preparing any expensive benchmark work.
+
+    Args:
+        tmp_path: Isolated request workspace with a GitHub permission response.
+    """
+    import os
+    import subprocess
+    import textwrap
+
+    root = Path(__file__).resolve().parents[2]
+    workflow = (root / ".github/workflows/perf-matrix.yml").read_text()
+    gate, prepare = workflow.split("\n  prepare:", 1)
+    assert "concurrency:" not in gate
+    assert "    needs: authorize\n" in prepare
+    script = textwrap.dedent(gate.split("        run: |\n", 1)[1])
+    cli = tmp_path / "gh"
+    cli.write_text('#!/bin/sh\ncase "$*" in *collaborators*) echo read ;; *) exit 99 ;; esac\n')
+    cli.chmod(0o755)
+    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "PR": "1",
+           "BODY": "/perf-matrix", "REQUESTER": "reader", "GITHUB_REPOSITORY": "test/repo",
+           "GITHUB_OUTPUT": str(tmp_path / "outputs")}
+    result = subprocess.run(["bash", "-e", "-c", script], cwd=tmp_path, env=env,
+                            text=True, capture_output=True)
+    assert result.returncode == 1
+    assert "Repository write permission is required" in result.stdout
+    assert not (tmp_path / "outputs").exists()
