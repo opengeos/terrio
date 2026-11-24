@@ -3246,12 +3246,12 @@ impl Transformer {
         // Through PROJ's ballpark vertical transformation: the horizontal transformation PROJ
         // picks among those of unknown accuracy, and the height kept.
         if self.ballpark_heights {
-            for (def, grids) in [(&self.src, &self.src_geoid_grids), (&self.dst, &self.dst_geoid_grids)] {
+            for def in [&self.src, &self.dst] {
                 if let Some(v) = def.vertical() {
                     self.check_vertical_policy(!v.models.is_empty())?;
-                    self.note_missing_geoid(grids, Some(v), p0);
                 }
             }
+            self.note_missing_geoid(&self.src_geoid_grids, self.src.vertical(), p0);
             route::note(None, false, route::OpKind::Vertical);
             // The height runs through the horizontal transformation, which keeps it unless PROJ
             // runs it between geographic 3D CRSs, in the vertical CRS's unit, where PROJ's
@@ -3262,6 +3262,9 @@ impl Transformer {
                 _ => z,
             };
             let (tx, ty, h) = self.transform_2d(x, y, h, t)?;
+            if let Some((lon, lat)) = self.dst.unproject(tx, ty) {
+                self.note_missing_geoid(&self.dst_geoid_grids, self.dst.vertical(), datum::Point { lon, lat, h, t });
+            }
             return Ok((tx, ty, if self.dst.vertical().is_some() { h } else { self.src.vertical().map_or(h, |v| v.to_metres(h)) }));
         }
         // To ellipsoidal heights, on the source CRS or a geoid model's CRS.
@@ -3511,6 +3514,28 @@ impl Transformer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Missing destination geoid warnings use the destination datum's coordinates.
+    /// GDAL 3.13.3 uses the same horizontal datum shift for this compound CRS.
+    #[test]
+    fn ballpark_height_warning_uses_destination_coordinates() {
+        let src = SpatialRef::from_epsg(4979).unwrap();
+        let dst = SpatialRef::from_epsg(7405).unwrap();
+        for covers_destination in [true, false] {
+            let t = Transformer::new(&src, &dst).unwrap();
+            assert!(t.ballpark_heights);
+            let (x, y, _) = t.transform_2d(-2.0, 54.0, 100.0, None).unwrap();
+            let (lon, lat) = t.dst.unproject(x, y).unwrap();
+            let destination = (lon.to_degrees(), lat.to_degrees());
+            assert!((destination.0 + 2.0).abs() > 1e-5);
+            let center = if covers_destination { destination } else { (-2.0, 54.0) };
+            let mut model = datum::Op::world(Vec::new());
+            model.bounds = [center.0 - 1e-7, center.1 - 1e-7, center.0 + 1e-7, center.1 + 1e-7];
+            assert!(t.dst_geoid_grids.set(vec![std::sync::Arc::new(model)]).is_ok());
+            t.transform_3d(-2.0, 54.0, 100.0).unwrap();
+            assert_eq!(t.diagnostics.load(std::sync::atomic::Ordering::Relaxed) & 8 != 0, covers_destination);
+        }
+    }
 
     /// Polar bounds from GDAL 3.12.1 include an interior pole and every longitude.
     #[test]
