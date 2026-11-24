@@ -1852,7 +1852,7 @@ pub fn read_gcps(path: &str) -> Result<Vec<Gcp>> {
 
 /// Writes a raster, declaring its nodata value.
 pub fn write_raster(raster: &Raster, path: &str, options: &RasterWriteOptions) -> Result<()> {
-    write_raster_with_nodata(raster, Some(raster.nodata), &[], false, path, options)
+    write_raster_with_nodata(raster, Some(raster.nodata), &[], false, path, options, None)
 }
 
 /// Writes a raster dataset, declaring a nodata value only when the dataset has one.
@@ -1892,12 +1892,12 @@ pub fn write_raster_dataset(ds: &RasterDataset, path: &str, options: &RasterWrit
     let options = options.inherited_from(ds, driver);
     let pam = needs_nodata_pam(ds) && matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog));
     let tag = if matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog)) { tiff_nodata(ds) } else { ds.nodata() };
-    write_raster_with_nodata(&ds.raster, tag, &ds.band_nodata, ds.complex, path, &options)?;
+    let values = if ds.band_nodata.is_empty() { vec![ds.nodata(); ds.raster.bands] } else { ds.band_nodata.clone() };
+    write_raster_with_nodata(&ds.raster, tag, &ds.band_nodata, ds.complex, path, &options, Some(&values))?;
     if matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog)) {
         let mut aux = std::ffi::OsString::from(path);
         aux.push(".aux.xml");
         if pam || crate::memfs::exists(Path::new(&aux)) {
-            let values = if ds.band_nodata.is_empty() { vec![ds.nodata(); ds.raster.bands] } else { ds.band_nodata.clone() };
             crate::drivers::common::write_band_nodata_pam(Path::new(path), &values)?;
         }
     }
@@ -1962,6 +1962,9 @@ pub(crate) fn color_options(ds: &RasterDataset, path: &str, options: &RasterWrit
     })
 }
 
+/// Writes `raster`, declaring `nodata`. `sidecar`: the band nodata the caller then writes to a
+/// GeoTIFF's `.aux.xml`; `None` when the sidecar already there is kept (see
+/// `TiffOptions::sparse_unless_sidecar_differs`).
 fn write_raster_with_nodata(
     raster: &Raster,
     nodata: Option<f64>,
@@ -1969,6 +1972,7 @@ fn write_raster_with_nodata(
     complex: bool,
     path: &str,
     options: &RasterWriteOptions,
+    sidecar: Option<&[Option<f64>]>,
 ) -> Result<()> {
     ensure_writable_location(path)?;
     let driver = match options.driver.or_else(|| RasterDriver::for_extension(path)) {
@@ -2018,7 +2022,21 @@ fn write_raster_with_nodata(
             }
             // Complex bands as complex samples, as GDAL writes CInt16... CFloat64 GeoTIFFs.
             opts.complex = complex;
+            opts.sparse_unless_sidecar_differs(path, sidecar, raster.bands / if complex { 2 } else { 1 }, raster.data_type);
             return crate::drivers::gtiff_write::write(raster, path, &opts);
+        }
+        if options
+            .creation_options
+            .iter()
+            .rev()
+            .find(|(key, _)| key.eq_ignore_ascii_case("SPARSE_OK"))
+            .is_some_and(|(_, value)| crate::drivers::gtiff_write::yes(value))
+        {
+            if driver == RasterDriver::Cog {
+                crate::warnings::warn(crate::drivers::gtiff_write::SPARSE_COG_WARNING.into());
+            } else {
+                return Err(Error::Unsupported("SPARSE_OK needs a compression handled by the native GeoTIFF writer".into()));
+            }
         }
     }
     // Complex samples: GeoTIFFs written above, and GDAL's HFA driver below.
@@ -2541,6 +2559,53 @@ pub(crate) mod fallible {
 
 #[cfg(test)]
 mod tests {
+    /// A compression outside the native writer must not silently store every block when sparse
+    /// output was requested, even when COMPRESS is given only through creation options.
+    #[test]
+    fn sparse_writes_do_not_fall_back_to_a_dense_legacy_writer() {
+        let raster = wbraster::Raster::from_data_native(
+            wbraster::RasterConfig { cols: 2, rows: 2, bands: 1, data_type: wbraster::DataType::U8, ..Default::default() },
+            wbraster::raster::RasterData::U8(vec![0; 4]),
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.tif");
+        let options = super::RasterWriteOptions {
+            driver: Some(crate::formats::RasterDriver::GTiff),
+            creation_options: vec![("COMPRESS".into(), "UNKNOWN".into()), ("SPARSE_OK".into(), "YES".into())],
+            ..Default::default()
+        };
+        let error = super::write_raster(&raster, path.to_str().unwrap(), &options).unwrap_err();
+        assert!(matches!(error, crate::Error::Unsupported(_)), "{error}");
+        assert!(error.to_string().contains("SPARSE_OK"), "{error}");
+        assert!(!path.exists(), "no dense file is published");
+    }
+
+    /// COG fallback keeps the same warn-and-write contract as the native COG writer, including
+    /// when the native compression parser declines an option supplied through creation options.
+    #[test]
+    fn sparse_cog_fallback_warns_and_writes_every_tile() {
+        let raster = wbraster::Raster::from_data_native(
+            wbraster::RasterConfig { cols: 2, rows: 2, bands: 1, data_type: wbraster::DataType::U8, nodata: 0., ..Default::default() },
+            wbraster::raster::RasterData::U8(vec![0; 4]),
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.tif");
+        let options = super::RasterWriteOptions {
+            driver: Some(crate::formats::RasterDriver::Cog),
+            creation_options: vec![("COMPRESS".into(), "UNKNOWN".into()), ("SPARSE_OK".into(), "YES".into())],
+            ..Default::default()
+        };
+        let _ = crate::warnings::take();
+        super::write_raster(&raster, path.to_str().unwrap(), &options).unwrap();
+        assert_eq!(crate::warnings::take(), ["SPARSE_OK is not supported for COGs: every tile is written"]);
+        let mut decoder = tiff::decoder::Decoder::new(std::io::Cursor::new(std::fs::read(&path).unwrap())).unwrap();
+        let tables = crate::geotiff::ChunkTables::read(&mut decoder).unwrap();
+        assert!(!tables.counts.is_empty());
+        assert!(tables.counts.iter().all(|&count| count > 0), "every tile is stored");
+    }
+
     /// A file no driver reads names its path once, with the fallback hint after the reason.
     #[test]
     fn unrecognized_format_names_its_path_once() {

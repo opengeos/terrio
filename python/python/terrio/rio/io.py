@@ -3820,7 +3820,8 @@ class DatasetWriter(DatasetReader):
             self._nodata,
             tags,
             compress=compress,
-            options=opts,
+            # The `.aux.xml` the file is read with is beside its path, not beside `target`.
+            options={**opts, "@FINAL_PATH": self._path},
             band_metadata=band_md if any(band_md) else None,
             colormap=colormap,
             gcps=extra.get("gcps"),

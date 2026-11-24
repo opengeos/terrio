@@ -3094,7 +3094,7 @@ impl TiffRaster {
         drop(ranges);
 
         // Missing (sparse) chunks read as nodata, or 0, as in GDAL.
-        let mut out = nodata_filled(&self.tags, self.data_type, bands, w.width * w.height, len)?;
+        let mut out = nodata_filled(&self.tags, self.data_type, bands, parts, w.width * w.height, len)?;
         let spp = if planar { parts } else { self.samples * parts };
         // Chunks with data, and where they go.
         let mut wanted: Vec<u32> = Vec::new();
@@ -3389,7 +3389,8 @@ impl TiffRaster {
             return Err(limit_err(tiff::TiffError::LimitsExceeded));
         }
         let len = crate::dataset::fallible::len(&[bands.len(), rows.len(), cols.len()], what)?;
-        let mut out = nodata_filled(&self.tags, self.data_type, bands, rows.len() * cols.len(), len)?;
+        // Complex samples are not read by rows (above): a sample is a band.
+        let mut out = nodata_filled(&self.tags, self.data_type, bands, 1, rows.len() * cols.len(), len)?;
         crate::dataset::fallible::check_usable(how.working_bytes(1, row_bytes), || "a TIFF strip row".into())
             .map_err(Error::ResourceLimit)?;
         let mut samples = crate::tiff_strip_rows::sample_buffer(self.data_type, cw * spp)?;
@@ -3432,8 +3433,17 @@ impl TiffRaster {
 const STRIP_ROWS_BYTES: usize = 8 << 20;
 
 /// `len` samples of `data_type` in `bands.len()` bands of `plane` samples each, every band filled
-/// with its nodata (0 without one): the pixels of a chunk that a sparse file leaves out.
-fn nodata_filled(tags: &GeoTags, data_type: DataType, bands: &[usize], plane: usize, len: usize) -> Result<RasterData> {
+/// with its nodata (0 without one): the pixels of a chunk that a sparse file leaves out. `bands`
+/// are samples (numbered from 1), `parts` to a band: both parts of a complex band's samples take
+/// that band's nodata from the `.aux.xml`.
+pub(crate) fn nodata_filled(
+    tags: &GeoTags,
+    data_type: DataType,
+    bands: &[usize],
+    parts: usize,
+    plane: usize,
+    len: usize,
+) -> Result<RasterData> {
     let mut out = try_new_filled(data_type, len, tags.nodata.unwrap_or(0.0))?;
     if let Some(nodata) = tags.integer_nodata {
         match &mut out {
@@ -3443,7 +3453,7 @@ fn nodata_filled(tags: &GeoTags, data_type: DataType, bands: &[usize], plane: us
         }
     }
     for (output_band, band) in bands.iter().enumerate() {
-        if let Some((_, nodata)) = tags.band_nodata.iter().find(|(b, _)| b == band) {
+        if let Some((_, nodata)) = tags.band_nodata.iter().find(|(b, _)| *b == (band - 1) / parts + 1) {
             crate::pixel::with_data!(&mut out, values => values[output_band * plane..(output_band + 1) * plane].fill(*nodata as _));
         }
     }
