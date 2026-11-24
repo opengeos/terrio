@@ -284,6 +284,33 @@ pub fn read_geoparquet_sparse(
     Ok(crate::dataset::fix_layer(layer, name, crate::formats::VectorDriver::Parquet))
 }
 
+#[cfg(feature = "parquet")]
+#[cfg_attr(docsrs, doc(cfg(feature = "parquet")))]
+/// As [`read_geoparquet_sparse`], without the CRS engine: the layer's CRS is only the EPSG code
+/// the file's `crs` names, read from its text (a PROJJSON identifier, or a reference that
+/// [`terrio_crs::epsg_reference_code`] reads), EPSG:4326 when it has none, and unknown for `null`
+/// or a definition without a code. Codes are not checked against the EPSG registry, and stored
+/// WKT is not re-identified as an EPSG code.
+///
+/// # Errors
+///
+/// As [`read_geoparquet_sparse`]: the Parquet driver is not allowed, a row group does not exist,
+/// or the file is not GeoParquet that terrio reads; or bytes not yet fetched (see
+/// [`crate::sparse`]).
+pub fn read_geoparquet_sparse_epsg_only(
+    file: &crate::sparse::SparseFile,
+    name: &str,
+    row_groups: Option<&[usize]>,
+    bbox: Option<(f64, f64, f64, f64)>,
+    columns: Option<&[String]>,
+) -> crate::Result<Layer> {
+    crate::formats::check_driver_allowed("Parquet", name, crate::formats::Kind::Vector)?;
+    let stem = std::path::Path::new(name).file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
+    // Without `fix_layer`, which re-identifies stored WKT with the CRS engine: this read stores no
+    // WKT, and the layer is named after `stem` already.
+    crate::drivers::vector::geoparquet::read_sparse_epsg_only(file, stem, row_groups, bbox, columns)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

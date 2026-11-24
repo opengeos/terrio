@@ -1329,12 +1329,16 @@ Terrio's chunk-dependent source windows of kernels other than `sum` also reach a
 source's CRS inside or beside their chunk, which the points sampled along the chunk's edges do not
 bound, so that a grid holding a pole is written up to it. Values in such a chunk can therefore
 differ from those of a window bounded by those points alone.
-With the 3.12 kernel scales, a chunk of a periodic source covering one longitude turn whose
-sampled points cross the 180° meridian takes its scale from the arc of longitudes those points
-span across the meridian, when it is shorter than half a turn, rather than from their least and
-greatest longitudes, which lie the long way round: chunks mirrored across the meridian get
-mirrored kernels. With `--periodic-longitude false`, the stored edges are a regional source's,
-and such a chunk keeps the scale of the stored columns between those longitudes.
+With the 3.12 kernel scales, a chunk whose sampled points cross the 180° meridian, of a periodic
+source covering one longitude turn or of a regional source narrower than a turn, takes its scale
+from the arc of longitudes those points span across the meridian, when it is shorter than half a
+turn, rather than from their least and greatest longitudes, which lie the long way round: chunks
+mirrored across the meridian get mirrored kernels. A regional source places that arc in its
+stored columns, a whole turn away where needed, as it places the longitudes of a chunk that does
+not cross the meridian; an arc reaching both of its stored edges keeps the scale of the stored
+columns between them. With `--periodic-longitude false`, the stored edges of a source covering
+one turn are a regional source's, and such a chunk keeps the scale of the stored columns between
+those longitudes.
 Both kernel-version selectors apply Terrio's periodic global-source boundaries and the
 pole-window extension described above; these policies can differ from GDAL's finite-edge
 or edge-only window planning even with chunk-dependent sampling selected.
@@ -1566,7 +1570,9 @@ geotransform gives its GCPs, or no georeferencing, instead of a unit-pixel grid.
 
 In-place operations require writable little-endian GeoTIFFs. `overviews --external` writes only
 the `.ovr` sidecar, so the GeoTIFF may be read-only, as with `gdaladdo -ro`; its directory must be
-writable. A new sidecar is a BigTIFF when its images take more than about 4 GiB, and an
+writable. A GeoTIFF with a `.msk` sidecar mask also gets the mask's overviews in the `.msk.ovr`,
+as GDAL builds them, which the `.ovr` levels take as their masks; a failure or cancellation leaves
+both sidecars as they were. A new sidecar is a BigTIFF when its images take more than about 4 GiB, and an
 existing classic TIFF sidecar that would grow past 4 GiB is refused. Updating a COG
 requires `--ignore-cog-layout-break` and can invalidate its optimized layout.
 Edits use a temporary file and rename; a failure before replacement preserves

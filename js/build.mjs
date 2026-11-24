@@ -2,7 +2,8 @@
 // lighter `terrio-js/core` module (without GeoParquet and Arrow, netCDF/HDF5, point clouds,
 // JPEG 2000, Zarr, AVIF and OSM) in `core/`, the Zarr-only `terrio-js/zarr` module (its own
 // crate, js/zarr) in `zarr/`, the GeoTIFF-only `terrio-js/cog` module (js/cog) in `cog/`, the
-// threaded `terrio-js/threads` module (every format, with `initThreadPool`) in `threads/`, the
+// GeoParquet-only `terrio-js/geoparquet` module (js/geoparquet) in `geoparquet/`, the threaded
+// `terrio-js/threads` module (every format, with `initThreadPool`) in `threads/`, the
 // `terrio-js/memory64` module (every format, with 64-bit memory, for datasets larger than 4 GB) in
 // `memory64/`, and `terrio-js/load`, which picks the module a page or process can run. All are
 // optimized for size (the `wasm-release` profile, and wasm-opt -Oz but for memory64, whose 64-bit
@@ -67,6 +68,8 @@ if (!selective) wasmPack(join(out, "core"), ["--no-pack"], ["--no-default-featur
 if (!selective) wasmPack(join(out, "zarr"), ["--no-pack"], [], undefined, join(crate, "zarr"));
 // `terrio-js/cog`: GeoTIFF and COG reads alone, from its own crate (js/cog).
 if (!selective) wasmPack(join(out, "cog"), ["--no-pack"], [], undefined, join(crate, "cog"));
+// `terrio-js/geoparquet`: GeoParquet reads alone, out as GeoJSON (js/geoparquet).
+if (!selective) wasmPack(join(out, "geoparquet"), ["--no-pack"], [], undefined, join(crate, "geoparquet"));
 if (threads) {
   // Shared memory (up to 4 GB, as without threads), and the thread-local storage symbols
   // wasm-bindgen sets up each thread with; the target's own flags (.cargo/config.toml) are
@@ -82,7 +85,7 @@ if (threads) {
 }
 if (memory64) buildMemory64(join(out, "memory64"));
 // wasm-pack ignores everything in its output directories; npm must still pack them.
-for (const sub of (selective ? [] : ["core", "zarr", "cog", "threads"])) rmSync(join(out, sub, ".gitignore"), { force: true });
+for (const sub of (selective ? [] : ["core", "zarr", "cog", "geoparquet", "threads"])) rmSync(join(out, sub, ".gitignore"), { force: true });
 // The loader, which picks a module.
 for (const f of (selective ? [] : ["load.js", "load.d.ts"])) copyFileSync(join(crate, f), join(out, f));
 
@@ -91,7 +94,7 @@ const pkg = JSON.parse(readFileSync(path, "utf8"));
 // A module's files, and the JavaScript its glue imports (wasm-bindgen snippets), when it has some.
 const module = (dir) => [`${dir}terrio_bg.wasm`, `${dir}terrio_bg.wasm.d.ts`, `${dir}terrio.js`, `${dir}terrio.d.ts`, ...(existsSync(join(out, dir, "snippets")) ? [`${dir}snippets/`] : [])];
 // The threaded module's worker script is a wasm-bindgen snippet, in `threads/snippets/`.
-const files = [...module(""), ...(selective ? [] : [...module("core/"), ...module("zarr/"), ...module("cog/")]), ...(threads ? ["threads/"] : []), ...(memory64 ? module("memory64/") : []), ...(selective ? [] : ["load.js", "load.d.ts"])];
+const files = [...module(""), ...(selective ? [] : [...module("core/"), ...module("zarr/"), ...module("cog/"), ...module("geoparquet/")]), ...(threads ? ["threads/"] : []), ...(memory64 ? module("memory64/") : []), ...(selective ? [] : ["load.js", "load.d.ts"])];
 // Carry project attribution alongside generated glue, declarations and WASM.
 const notices = ["LICENSE", "NOTICE", "LICENSE-THIRD-PARTY.md"];
 for (const name of notices) copyFileSync(join(crate, "..", name), join(out, name));
@@ -103,7 +106,7 @@ const entry = (dir, name = "terrio") => ({ types: `./${dir}${name}.d.ts`, defaul
 // The files stay importable by their paths (`terrio-js/terrio_bg.wasm`), as without `exports`.
 pkg.exports = {
   ".": entry(""),
-  ...(!selective ? { "./core": entry("core/"), "./zarr": entry("zarr/"), "./cog": entry("cog/") } : {}),
+  ...(!selective ? { "./core": entry("core/"), "./zarr": entry("zarr/"), "./cog": entry("cog/"), "./geoparquet": entry("geoparquet/") } : {}),
   ...(threads ? { "./threads": entry("threads/") } : {}),
   ...(memory64 ? { "./memory64": entry("memory64/") } : {}),
   ...(!selective ? { "./load": entry("", "load") } : {}),
@@ -112,7 +115,7 @@ pkg.exports = {
 };
 writeFileSync(path, JSON.stringify(pkg, null, 2) + "\n");
 
-for (const f of ["terrio_bg.wasm", "core/terrio_bg.wasm", "zarr/terrio_bg.wasm", "cog/terrio_bg.wasm", "threads/terrio_bg.wasm", "memory64/terrio_bg.wasm"].filter((f) => existsSync(join(out, f)))) {
+for (const f of ["terrio_bg.wasm", "core/terrio_bg.wasm", "zarr/terrio_bg.wasm", "cog/terrio_bg.wasm", "geoparquet/terrio_bg.wasm", "threads/terrio_bg.wasm", "memory64/terrio_bg.wasm"].filter((f) => existsSync(join(out, f)))) {
   console.log(`${values["out-dir"]}/${f}: ${(statSync(join(out, f)).size / 1e6).toFixed(2)} MB`);
 }
 

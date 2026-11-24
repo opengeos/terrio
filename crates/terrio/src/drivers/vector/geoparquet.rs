@@ -256,6 +256,19 @@ pub(crate) fn read_sparse(
     ParquetStream::open(|| Ok(file.clone()), name, row_groups, bbox, 65536, Some(&prefetch), columns)?.read_all()
 }
 
+/// As [`read_sparse`], with the CRS reduced to the EPSG code the file's `crs` names, without the
+/// CRS engine.
+pub(crate) fn read_sparse_epsg_only(
+    file: &crate::sparse::SparseFile,
+    name: &str,
+    row_groups: Option<&[usize]>,
+    bbox: Option<(f64, f64, f64, f64)>,
+    columns: Option<&[String]>,
+) -> Result<Layer> {
+    let prefetch = |ranges: &[(u64, u64)]| -> Result<()> { Ok(file.prefetch(ranges)?) };
+    ParquetStream::open_with::<false, _>(|| Ok(file.clone()), name, row_groups, bbox, 65536, Some(&prefetch), columns)?.read_all()
+}
+
 /// Announces the byte ranges about to be read, to readers whose bytes the caller fetches.
 type Prefetch<'a> = Option<crate::sparse::Prefetch<'a>>;
 
@@ -339,6 +352,22 @@ impl ParquetStream {
     /// the fields `columns` names (all by default; see [`Self::select_columns`]). `prefetch`,
     /// when given, is told the byte ranges about to be read.
     pub(crate) fn open<R: parquet::file::reader::ChunkReader + 'static>(
+        open: impl Fn() -> Result<R>,
+        name: &str,
+        row_groups: Option<&[usize]>,
+        bbox: Option<(f64, f64, f64, f64)>,
+        batch_size: usize,
+        prefetch: Prefetch<'_>,
+        columns: Option<&[String]>,
+    ) -> Result<Self> {
+        Self::open_with::<true, R>(open, name, row_groups, bbox, batch_size, prefetch, columns)
+    }
+
+    /// As [`Self::open`], with the layer's CRS resolved by the CRS engine (`ENGINE`), or reduced
+    /// to the EPSG code the file's `crs` names (see [`epsg_only_crs`]). The choice is made at
+    /// compile time, so a build that only opens files without the engine leaves it out.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn open_with<const ENGINE: bool, R: parquet::file::reader::ChunkReader + 'static>(
         open: impl Fn() -> Result<R>,
         name: &str,
         row_groups: Option<&[usize]>,
@@ -465,7 +494,8 @@ impl ParquetStream {
         match col.get("crs") {
             _ if geo.is_null() => {}
             None => layer.set_crs_epsg(Some(4326)),
-            Some(crs) => apply_crs(&mut layer, crs),
+            Some(crs) if ENGINE => apply_crs(&mut layer, crs),
+            Some(crs) => layer.set_crs_epsg(epsg_only_crs(crs)),
         }
         if let Some(types) = col["geometry_types"].as_array() {
             let types: Vec<&str> =
@@ -928,6 +958,19 @@ fn coords(a: &dyn Array) -> Vec<Coord> {
             (0..l.len()).map(|i| Coord { x: v[i * n], y: v[i * n + 1], z: (n > 2).then(|| v[i * n + 2]), m: None }).collect()
         }
         _ => Vec::new(),
+    }
+}
+
+/// The EPSG code a GeoParquet `crs` names, without the CRS engine: a PROJJSON definition's
+/// (see [`projjson_epsg`]), or an EPSG reference string's (see
+/// [`terrio_crs::epsg_reference_code`]). `None` for `null`, a definition without a code (but an
+/// unidentified WGS 84 geographic CRS, 4326), any other string (WKT, PROJ strings, compound
+/// references), or code 0.
+pub(crate) fn epsg_only_crs(crs: &Value) -> Option<u32> {
+    match crs {
+        Value::Null => None,
+        Value::String(s) => terrio_crs::epsg_reference_code(s),
+        crs => projjson_epsg(crs).filter(|&code| code != 0),
     }
 }
 
@@ -1721,6 +1764,32 @@ mod tests {
         let group = meta.row_group(0).clone().into_builder().set_column_metadata(columns).build().unwrap();
         let meta = meta.into_builder().set_row_groups(vec![group]).build();
         assert_eq!(group_bboxes(&meta, Some(leaves)), vec![Some([12.0, 44.0, 13.0, 45.0])]);
+    }
+
+    #[test]
+    fn epsg_only_crs_reads_codes_without_the_engine() {
+        for (crs, code) in [
+            (json!(null), None),
+            (json!("EPSG:32631"), Some(32631)),
+            (json!(" epsg:2154 "), Some(2154)),
+            (json!("urn:ogc:def:crs:EPSG::32631"), Some(32631)),
+            (json!("http://www.opengis.net/def/crs/EPSG/0/32631"), Some(32631)),
+            (json!("32631"), Some(32631)),
+            (json!("OGC:CRS84"), Some(4326)),
+            (json!("urn:ogc:def:crs:OGC:1.3:CRS84"), Some(4326)),
+            (json!("EPSG:4326+5773"), None),
+            (json!("EPSG:0"), None),
+            (json!("EPSG:4326\0junk"), Some(4326)),
+            (json!("EPSG:x"), None),
+            (json!("+proj=longlat +datum=WGS84"), None),
+            (json!({"type": "ProjectedCRS", "id": {"authority": "EPSG", "code": 32610}}), Some(32610)),
+            (json!({"type": "ProjectedCRS", "name": "x"}), None),
+            (json!({"type": "GeographicCRS", "id": {"authority": "EPSG", "code": 0}}), None),
+            // 2^32 + 4326: out of range, not wrapped to 4326.
+            (json!({"type": "GeographicCRS", "id": {"authority": "EPSG", "code": 4_294_971_622_u64}}), None),
+        ] {
+            assert_eq!(epsg_only_crs(&crs), code, "{crs}");
+        }
     }
 
     #[test]

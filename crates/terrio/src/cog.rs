@@ -616,10 +616,17 @@ impl LazyRaster {
             Inner::Memory(_) => Vec::new(),
             Inner::Source(..) => return self.input_paths(),
         };
-        // As GDAL lists them: the file, its `.ovr`, its `.msk`, then its `.aux.xml`.
+        // As GDAL lists them: the file, its `.ovr`, its `.msk`, then its `.aux.xml`. The `.msk`'s
+        // own `.msk.ovr` follows the `.ovr`, as the mask of the `.ovr`'s images (GDAL 3.13.2).
         if let Some(mask) = &self.sidecar_mask {
+            let mut own = mask.file_list()?;
+            if let Some(ovr) = files.iter().position(|f| f.ends_with(".ovr"))
+                && let Some(i) = own.iter().position(|f| f.ends_with(".msk.ovr"))
+            {
+                files.insert(ovr + 1, own.remove(i));
+            }
             let at = files.iter().position(|f| f.ends_with(".aux.xml")).unwrap_or(files.len());
-            files.splice(at..at, mask.file_list()?);
+            files.splice(at..at, own);
         }
         Ok(files)
     }
@@ -651,8 +658,22 @@ impl LazyRaster {
 
     /// Attaches the `.msk` sidecar of a local file (`dem.tif.msk`, as GDAL writes it when
     /// `GDAL_TIFF_INTERNAL_MASK=NO` or for formats without internal masks) when the raster has
-    /// no internal mask and the sidecar is a per-dataset mask of its size.
+    /// no internal mask and the sidecar is a per-dataset mask of its size. Then, only without
+    /// that sidecar, the `.ovr.msk` of an `.ovr` whose mask was left to look for: GDAL never looks
+    /// for it when the base has a `.msk` (GDAL 3.13.2, `GDALDefaultOverviews::HaveMaskFile`).
     pub(crate) fn find_sidecar_mask(&mut self, path: &str) -> Result<()> {
+        self.find_base_sidecar_mask(path)?;
+        if self.sidecar_mask.is_none()
+            && let Inner::Tiff(t) = &mut self.inner
+            && t.ovr_mask_pending
+        {
+            t.attach_ovr_mask()?;
+        }
+        Ok(())
+    }
+
+    /// The base raster's own `.msk`, as [`LazyRaster::find_sidecar_mask`] attaches it.
+    fn find_base_sidecar_mask(&mut self, path: &str) -> Result<()> {
         // Not under `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`, where GDAL sees an empty directory
         // and reads no `.msk` (GDAL 3.12.1: the mask is then all valid), nor when the allow-list
         // refuses the sidecar, which GDAL cannot read with its GTiff driver de-registered.
@@ -690,7 +711,9 @@ impl LazyRaster {
     /// (`ops::overview`).
     pub(crate) fn attach_managed_ovr(&mut self, path: &str) -> Result<()> {
         if let (Inner::Tiff(t), Location::Local(p)) = (&mut self.inner, Location::parse(path)) {
-            t.attach_ovr(&ovr_path(&p))?;
+            let mut ovr = p.into_os_string();
+            ovr.push(".ovr");
+            t.attach_ovr(std::path::Path::new(&ovr), true)?;
         }
         Ok(())
     }
@@ -712,8 +735,9 @@ impl LazyRaster {
         if let Some(t) = crate::tiles::raster::open_lazy(path)? {
             return Ok(Self::from_tiles(t));
         }
-        // `LazyRaster::open` checks what it declares before looking for a sidecar mask.
-        match Self::open_tiff_unchecked(path)? {
+        // `LazyRaster::open` checks what it declares before looking for a sidecar mask, and looks
+        // for the `.ovr`'s own mask once it knows whether the base has a `.msk`.
+        match Self::open_tiff_using(path, TiffReadLimits::from_config, true)? {
             Some(r) => Ok(r),
             // A local VRT whatever its name, as GDAL's VRT driver identifies it by its content,
             // read as a `.vrt` is. An allow-list without VRT has refused it.
@@ -739,17 +763,19 @@ impl LazyRaster {
 
     /// [`LazyRaster::open_tiff`] with other decoding limits than the defaults.
     pub fn open_tiff_with_limits(path: &str, limits: TiffReadLimits) -> Result<Option<Self>> {
-        declared_allowed(Self::open_tiff_using(path, || Ok(limits)))
+        declared_allowed(Self::open_tiff_using(path, || Ok(limits), false))
     }
 
     /// [`LazyRaster::open_tiff`] whatever the GeoTIFF declares: for [`LazyRaster::open`], which
     /// checks it before looking for a sidecar mask, and for terrio's own files, the copy of a GeoTIFF
     /// an update wrote, read back to refresh its overviews (`ops::update`).
     pub(crate) fn open_tiff_unchecked(path: &str) -> Result<Option<Self>> {
-        Self::open_tiff_using(path, TiffReadLimits::from_config)
+        Self::open_tiff_using(path, TiffReadLimits::from_config, false)
     }
 
-    fn open_tiff_using(path: &str, limits: impl FnOnce() -> Result<TiffReadLimits>) -> Result<Option<Self>> {
+    /// Opens a GeoTIFF with its `.ovr`, and the `.ovr`'s `.ovr.msk` unless `defer_ovr_mask` (for
+    /// [`LazyRaster::open`], which looks for it after the base's `.msk`).
+    fn open_tiff_using(path: &str, limits: impl FnOnce() -> Result<TiffReadLimits>, defer_ovr_mask: bool) -> Result<Option<Self>> {
         let loc = Location::parse(path);
         let resolve_file = || {
             let local = vfs::resolve(path)?;
@@ -804,7 +830,9 @@ impl LazyRaster {
         if let Location::Local(p) = &loc
             && !crate::config::sidecars_disabled()
         {
-            t.attach_ovr(&ovr_path(p))?;
+            let mut ovr = p.as_os_str().to_owned();
+            ovr.push(".ovr");
+            t.attach_ovr(std::path::Path::new(&ovr), !defer_ovr_mask)?;
         }
         Ok(Some(Self { inner: Inner::Tiff(Box::new(t)), sidecar_mask: None, asset_policy: crate::stac::AssetReadPolicy::current() }))
     }
@@ -1598,6 +1626,18 @@ impl LazyRaster {
 
     pub(crate) fn prefetch_own_level_mask_windows(&mut self, windows: &[Window], overview: usize) -> Result<()> {
         let _scope = self.enter_asset_read()?;
+        if let Inner::Tiff(t) = &self.inner
+            && t.levels.get(overview + 1).is_some_and(|l| l.external.is_some())
+            && !ovr_has_internal_mask(t, overview + 1)
+            && let Some(m) = self.sidecar_mask.as_mut()
+        {
+            // The sidecar's overview of the level's size, when it has one.
+            let size = (t.levels[overview + 1].width, t.levels[overview + 1].height);
+            return match m.overviews().iter().position(|s| *s == size) {
+                Some(i) => m.prefetch_windows(windows, &WindowOptions { bands: vec![1], overview: Some(i) }),
+                None => Ok(()),
+            };
+        }
         if let Inner::Tiff(t) = &mut self.inner {
             t.prefetch_own_mask_windows(overview + 1, windows)?;
         }
@@ -1892,6 +1932,11 @@ impl LazyRaster {
             }
     }
 
+    /// Whether the per-dataset mask is a `.msk` sidecar (GDAL's external mask).
+    pub(crate) fn has_sidecar_mask(&self) -> bool {
+        self.sidecar_mask.is_some()
+    }
+
     /// Tile archive writers cannot retain a dataset mask or an explicit one.
     fn refuse_masked_tile_archive(&self, driver: Option<RasterDriver>, options: &crate::RasterWriteOptions) -> Result<()> {
         if matches!(driver, Some(RasterDriver::PMTiles | RasterDriver::MBTiles)) && (self.has_mask() || options.mask.is_some()) {
@@ -1933,7 +1978,11 @@ impl LazyRaster {
         if let Inner::Tiff(t) = &mut self.inner
             && t.levels[overview.map_or(0, |i| i + 1)].external.is_some()
         {
-            return read_tiff_mask(t, window, overview.map_or(0, |i| i + 1));
+            let level = overview.map_or(0, |i| i + 1);
+            if let Some(m) = self.sidecar_mask.as_mut() {
+                return read_ovr_level_mask_of_msk(t, m, window, level);
+            }
+            return read_tiff_mask(t, window, level);
         }
         if let Inner::Source(_, source) = &mut self.inner
             && let Some(i) = overview
@@ -1974,6 +2023,9 @@ impl LazyRaster {
         if let Inner::Tiff(t) = &mut self.inner
             && t.levels[i + 1].external.is_some()
         {
+            if let Some(m) = self.sidecar_mask.as_mut() {
+                return read_ovr_level_mask_of_msk(t, m, window, i + 1);
+            }
             return read_tiff_own_mask(t, window, i + 1);
         }
         if let Inner::Source(_, source) = &mut self.inner
@@ -2004,6 +2056,9 @@ impl LazyRaster {
         if let Inner::Tiff(t) = &self.inner
             && let Some(i) = t.levels[overview + 1].external
         {
+            if let Some(m) = &self.sidecar_mask {
+                return ovr_has_internal_mask(t, overview + 1) || m.overviews().contains(&size);
+            }
             return match (&t.ovr_mask, &t.ovr) {
                 (Some(m), _) => (m.width(), m.height()) == size || m.overviews().contains(&size),
                 (None, Some(ovr)) => mask_for_image(&ovr.masks, &ovr.levels[i]).is_some(),
@@ -2193,6 +2248,34 @@ fn mask_for_image<'a>(masks: &'a [crate::tiff_mask::MaskImage], image: &Level) -
     })
 }
 
+/// Whether level `level` of `t`, an image of its `.ovr`, has an internal mask of its own. When it
+/// has none and the base raster has a `.msk` sidecar, GDAL's band of that level takes the
+/// sidecar's overview of its size as its mask (from the `.msk`'s own overviews or its
+/// `.msk.ovr`), or no mask (all valid) when the sidecar has no overview of that size: the
+/// overview dataset's mask file is then never looked for (`.ovr.msk`; GDAL 3.13.2,
+/// `GDALDefaultOverviews::HaveMaskFile` for an overview of a base with a mask file).
+fn ovr_has_internal_mask(t: &TiffRaster, level: usize) -> bool {
+    match (t.levels.get(level).and_then(|l| l.external), &t.ovr) {
+        (Some(i), Some(ovr)) => mask_for_image(&ovr.masks, &ovr.levels[i]).is_some(),
+        _ => false,
+    }
+}
+
+/// The mask of level `level` of `t`, an image of its `.ovr`, when the base raster has the `.msk`
+/// sidecar `m`, as GDAL's band of that level has it: the image's internal mask, else the
+/// sidecar's overview of the level's size (never its full-resolution mask, which a level of the
+/// base's size does not take), else none (all valid).
+fn read_ovr_level_mask_of_msk(t: &mut TiffRaster, m: &mut LazyRaster, window: Window, level: usize) -> Result<Option<Vec<u8>>> {
+    if ovr_has_internal_mask(t, level)
+        && let (Some(i), Some(ovr)) = (t.levels[level].external, t.ovr.as_mut())
+    {
+        return read_tiff_own_mask(ovr, window, i);
+    }
+    let size = (t.levels[level].width, t.levels[level].height);
+    let Some(i) = m.overviews().iter().position(|s| *s == size) else { return Ok(None) };
+    m.read_window(window, &WindowOptions { bands: vec![1], overview: Some(i) }).map(|ds| Some(sidecar_mask_values(ds)))
+}
+
 /// A TIFF level's own mask, then its full-resolution mask as a nearest fallback.
 fn read_tiff_mask(t: &mut TiffRaster, window: Window, level: usize) -> Result<Option<Vec<u8>>> {
     if let Some(i) = t.levels[level].external
@@ -2307,6 +2390,15 @@ fn mask_prefetch_ranges(mask: &crate::tiff_mask::MaskImage, windows: &[Window]) 
     windows.iter().flat_map(|w| mask.chunk_ranges((w.x, w.y, w.width, w.height))).collect()
 }
 
+/// A window read of a `.msk` sidecar's band as mask values: 255 valid, 0 not. A Byte band (as GDAL
+/// writes masks); another type read through doubles.
+fn sidecar_mask_values(ds: RasterDataset) -> Vec<u8> {
+    match ds.raster.data {
+        RasterData::U8(v) => v.into_iter().map(|b| if b != 0 { 255 } else { 0 }).collect(),
+        other => other.to_f64_vec().into_iter().map(|v| if v != 0.0 { 255 } else { 0 }).collect(),
+    }
+}
+
 /// Reads a window of a `.msk` sidecar's mask at a level of size `(lw, lh)`: the sidecar's own
 /// overview of that size, else its full-resolution mask sampled by nearest neighbour, as GDAL
 /// does. 255 for valid pixels, 0 for invalid ones.
@@ -2315,13 +2407,7 @@ fn read_sidecar_mask(m: &mut LazyRaster, window: Window, (lw, lh): (usize, usize
         return Ok(Vec::new());
     }
     let opts = |overview| WindowOptions { bands: vec![1], overview };
-    // A Byte band (as GDAL writes masks); another type read through doubles.
-    let to_mask = |ds: RasterDataset| -> Vec<u8> {
-        match ds.raster.data {
-            RasterData::U8(v) => v.into_iter().map(|b| if b != 0 { 255 } else { 0 }).collect(),
-            other => other.to_f64_vec().into_iter().map(|v| if v != 0.0 { 255 } else { 0 }).collect(),
-        }
-    };
+    let to_mask = sidecar_mask_values;
     let (fw, fh) = (m.width(), m.height());
     if (lw, lh) == (fw, fh) {
         return m.read_window(window, &opts(None)).map(to_mask);
@@ -2577,6 +2663,8 @@ struct TiffRaster {
     ovr: Option<Box<TiffRaster>>,
     /// The external overview dataset's per-dataset `.ovr.msk`, if present.
     ovr_mask: Option<Box<LazyRaster>>,
+    /// Whether the `.ovr.msk` is still to be looked for ([`TiffRaster::attach_ovr_mask`]).
+    ovr_mask_pending: bool,
     /// The identity of this open reader in [`crate::block_cache`]: its chunks are keyed by it, not
     /// by the file's path, so that a file replaced under another reader is never read from the
     /// first one's chunks.
@@ -2773,6 +2861,7 @@ impl TiffRaster {
             files: Vec::new(),
             ovr: None,
             ovr_mask: None,
+            ovr_mask_pending: false,
             cache_handle: crate::block_cache::new_handle(),
             workers: Default::default(),
         })
@@ -2780,13 +2869,13 @@ impl TiffRaster {
 
     /// Takes the images of a GDAL `.ovr` file as overviews, as GDAL does when the TIFF has none
     /// of its own, when they have the TIFF's bands and type.
-    fn attach_ovr(&mut self, path: &std::path::Path) -> Result<()> {
-        if self.levels.len() > 1 {
+    /// Attaches an `.ovr` sidecar's images as the overviews, and looks for its `.ovr.msk` with
+    /// `probe_mask` (else [`TiffRaster::attach_ovr_mask`] does).
+    fn attach_ovr(&mut self, path: &std::path::Path, probe_mask: bool) -> Result<()> {
+        if self.levels.len() > 1 || !path.is_file() {
             return Ok(());
         }
-        let Some(mut view) = open_ovr(path, (self.bands, self.data_type, self.complex), || Ok(self.limits))? else { return Ok(()) };
-        // Probe `.ovr.msk` only when the pyramid was opened.
-        view.find_sidecar_mask(&path.to_string_lossy())?;
+        let Some(view) = open_ovr(path, (self.bands, self.data_type, self.complex), || Ok(self.limits))? else { return Ok(()) };
         let files = view.file_list().unwrap_or_else(|_| vec![path.to_string_lossy().into_owned()]);
         let Inner::Tiff(ovr) = view.inner else { unreachable!() };
         for (i, l) in ovr.levels.iter().enumerate() {
@@ -2811,8 +2900,32 @@ impl TiffRaster {
         // Listed after the TIFF, as GDAL lists it.
         let at = self.files.len().min(1);
         self.files.splice(at..at, files);
-        self.ovr_mask = view.sidecar_mask;
         self.ovr = Some(ovr);
+        self.ovr_mask_pending = true;
+        if probe_mask {
+            self.attach_ovr_mask()?;
+        }
+        Ok(())
+    }
+
+    /// Looks for the `.ovr.msk` of the attached `.ovr`, with the same sidecar-mask policy as a
+    /// local base TIFF: only when an external overview was actually opened.
+    fn attach_ovr_mask(&mut self) -> Result<()> {
+        self.ovr_mask_pending = false;
+        let Some(ovr) = self.ovr.take() else { return Ok(()) };
+        let name = ovr.files.first().cloned().unwrap_or_default();
+        let mut view = LazyRaster { inner: Inner::Tiff(ovr), sidecar_mask: None, asset_policy: crate::stac::AssetReadPolicy::current() };
+        let found = view.find_sidecar_mask(&name);
+        let mask = view.sidecar_mask.take();
+        let Inner::Tiff(ovr) = view.inner else { unreachable!() };
+        self.ovr = Some(ovr);
+        found?;
+        if let Some(mask) = mask {
+            // Listed after the `.ovr`.
+            let at = self.files.iter().position(|f| *f == name).map_or(self.files.len(), |i| i + 1);
+            self.files.splice(at..at, mask.file_list()?);
+            self.ovr_mask = Some(mask);
+        }
         Ok(())
     }
 

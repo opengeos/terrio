@@ -19,7 +19,8 @@ use terrio::ops::overview::{
 ///
 /// The file is updated through a copy renamed over it: an error leaves it as it was. Only local,
 /// writable little-endian GeoTIFFs are updated; with `--external`, only the `.ovr` sidecar is
-/// written, so the GeoTIFF may be read-only (gdaladdo's `-ro`).
+/// written (and, for a `.msk` sidecar mask, the mask's overviews in its `.msk.ovr`), so the
+/// GeoTIFF may be read-only (gdaladdo's `-ro`).
 #[derive(clap::Args)]
 pub struct Args {
     /// The GeoTIFF.

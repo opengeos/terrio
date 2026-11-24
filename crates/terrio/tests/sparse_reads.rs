@@ -273,6 +273,42 @@ fn geoparquet_by_row_group() {
     assert!(!layer.features.is_empty());
 }
 
+/// Read without the CRS engine (terrio-js/geoparquet), a GeoParquet file gives the features of
+/// a full read, and the EPSG code its `crs` names: EPSG:4326 when it has none.
+#[test]
+fn geoparquet_epsg_without_crs_engine() {
+    for (epsg, name) in [(4326, "s.parquet"), (32610, "utm.parquet")] {
+        let mut layers = countries();
+        layers[0].set_crs_epsg(Some(epsg));
+        let bytes = terrio::memory::write_vector_bytes(&layers, name, &Default::default()).unwrap();
+        let read = |lean: bool, row_groups: Option<&[usize]>, rect| {
+            let file = SparseFile::with_block_size(bytes.len() as u64, 1024);
+            sparse(&bytes, &file, || match lean {
+                true => terrio::vector::read_geoparquet_sparse_epsg_only(&file, name, row_groups, rect, None),
+                false => terrio::vector::read_geoparquet_sparse(&file, name, row_groups, rect, None),
+            })
+        };
+        let rect = (10.0, 10.0, 22.0, 18.0);
+        let ((lean, lean_bytes), (full, full_bytes)) = (read(true, None, Some(rect)), read(false, None, Some(rect)));
+        assert_eq!((lean.crs_epsg(), full.crs_epsg()), (Some(epsg), Some(epsg)), "{name}");
+        let rows = |l: &terrio::Layer| l.features.iter().map(|f| (f.fid, f.geometry.clone(), f.attributes.clone())).collect::<Vec<_>>();
+        assert_eq!((&lean.name, rows(&lean), lean_bytes), (&full.name, rows(&full), full_bytes), "{name}");
+        // The rectangle filter of terrio-js/geoparquet keeps what terrio's `translate` spatial filter
+        // (`spat`, above) keeps.
+        let filter = terrio::ops::vector_filter::SpatialFilter::rect(rect);
+        let kept: Vec<u64> =
+            lean.features.iter().filter(|f| f.geometry.as_ref().is_some_and(|g| filter.intersects(g))).map(|f| f.fid).collect();
+        assert_eq!(kept, spat(std::slice::from_ref(&full), rect), "{name}");
+        // An inverted rectangle reads the rows of its corners' extent, as `SpatialFilter` takes it.
+        let inverted = Some((rect.2, rect.3, rect.0, rect.1));
+        assert_eq!(rows(&read(true, None, inverted).0), rows(&lean), "{name}");
+        assert_eq!(rows(&read(false, None, inverted).0), rows(&full), "{name}");
+        // No row group: the footer's CRS, without features.
+        let (empty, _) = read(true, Some(&[]), None);
+        assert_eq!((empty.crs_epsg(), empty.features.len()), (Some(epsg), 0), "{name}");
+    }
+}
+
 /// A read of some fields fetches the column chunks of those and of the geometry only.
 #[test]
 fn geoparquet_columns_fetch_only_their_chunks() {

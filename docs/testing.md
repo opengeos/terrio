@@ -358,14 +358,20 @@ chunks, reversed source columns, and a 400-grad longitude period. Regional and
 multi-turn source placement rules remain separate.
 
 `cargo test -p terrio --lib chunk_dependent_windows_` warps a world source
-symmetric about the 180° meridian, stored from 180° W and from 0°, into UPS North
-windows on either side of it, with chunk-dependent bilinear and cubic at the 3.12
-kernel scales and exact transformations. Windows touching the meridian, whose
-samples on it resolve to 180° E, and windows reaching 1 km across it give mirrored
-values within 1e-9. An impulse beside the meridian reaches the same three columns
-of the window across it as of the window 1 m short of it. With `periodic_longitude`
-off, the windows touching and crossing the meridian keep the stored span, and the
-impulse reaches more of their columns.
+symmetric about the 180° meridian, stored from 180° W and from 0°, and a regional
+source from 120° E to 120° W, into UPS North windows on either side of it, with
+chunk-dependent bilinear and cubic at the 3.12 kernel scales and exact
+transformations. Windows touching the meridian, whose samples on it resolve to
+180° E, and windows reaching 1 km across it give mirrored values within 1e-9. An
+impulse beside the meridian, in the world or the regional source, reaches the same
+three columns of the window across it as of the window 1 m short of it. With
+`periodic_longitude` off, the windows touching and crossing the meridian keep the
+stored span of the world source, and the impulse reaches more of their columns.
+`cargo test -p terrio --lib a_regional_chunk_across_the_180th_meridian` checks the
+source columns behind the scale of the window touching or crossing the meridian
+from regional sources: its samples' arc a turn away, cut at the source's east edge
+as the window 1 m short of the meridian has its columns cut, and the stored width
+once the arc reaches both stored edges across a gap at the meridian.
 `python -m pytest python/tests/test_warp_meridian_mirror_kernels.py` checks the
 mirror windows of a 0.25° source through `reproject` and the block reads of a
 `WarpedVRT`.
@@ -876,6 +882,13 @@ arrays agree exactly with GDAL 3.12.1 on Linux x86_64. Only the live GDAL compar
 retains its platform limits; Terrio's frozen-reference check has no tolerance.
 The fixture README records inputs and regeneration instructions. These are
 decoder references, not assertions of encoder byte stability.
+
+LERC tiles are checked with `python scripts/conformance.py DATA --only lerc-writer --strict`,
+using current Python bindings, pytest and rasterio (no test data). `test_gtiff_padding.py` writes
+synthetic rasters whose right and bottom tiles are partial with GDAL and with Terrio, as GTiff and
+COG, and reads each stored edge tile: the valid-pixel mask of every LERC blob, padding included,
+and the padding bytes of uncompressed tiles must be GDAL's, at every level, and the pixels read
+back must be GDAL's exactly (reference: GDAL 3.12.2, rasterio 1.5.2).
 
 Standalone WebP creation options are checked with
 `python scripts/conformance.py DATA --only webp-writer --strict`, using the
@@ -2583,9 +2596,28 @@ reads the `.ovr` it refreshes, and no other sidecar (in `raster_manage`:
 `external_overviews_are_refreshed_over_an_extent_under_empty_dir` and
 `external_overviews_refreshed_under_empty_dir_read_no_other_sidecar`).
 
+A GeoTIFF with a `.msk` sidecar mask takes the mask's overviews from its
+`.msk.ovr` (GDAL 3.13.2): an `.ovr` level without an internal mask of its own
+takes the `.msk.ovr` image of its size as its mask, else none (all valid), and
+never reads an `.ovr.msk`. External overviews of such a GeoTIFF write that
+`.msk.ovr` as GDAL builds it (`gdaladdo -ro`): after the data's levels, with the
+same method, the mask band being its own mask; uncompressed levels cascade, each
+from the previous one, and adding a level recomputes the levels the `.msk.ovr`
+had. `tests/data/msk_overviews` holds a GDAL-built pyramid of two levels and
+what GDAL reads of it (`scripts/make_msk_overviews_fixtures.py`); the tests read
+it, build the same levels from its GeoTIFF and `.msk` and compare masks and data
+exactly, and check that a cancelled rebuild keeps both sidecars. The
+`raster-manage` suite compares `gdaladdo -ro` and `terrio overviews --external`
+on a `.msk` raster, masks exactly. Known differences, outside the mask: GDAL
+tags small sidecars `LAYOUT=COG`; with a `.msk`, compressed levels of several
+factors (computed block by block, from the previous level) and requested
+levels an `.ovr` already had can take other data values in terrio; and GDAL
+appends a new level after the sidecar's, where terrio orders them largest first.
+
 ```sh
 cargo test -p terrio --test external_overviews --test geotiff_nodata
 python scripts/conformance.py ../terrio-data --only lazy-geotiff --strict
+python scripts/make_msk_overviews_fixtures.py   # GDAL's Python bindings
 ```
 
 ### Reduced first-image masks
