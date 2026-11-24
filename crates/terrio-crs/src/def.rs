@@ -113,7 +113,8 @@ pub(crate) struct Unresolved {
     /// Whether PROJ finds a CRS by the WKT's name (into one it does not, PROJ pivots through the
     /// CRSs of its datum).
     pub named: bool,
-    /// Whether the WKT has its code's name, which PROJ's datum pivot tries first.
+    /// Whether the WKT's geographic CRS has its code's geographic CRS name, which PROJ's datum
+    /// pivot tries first (the base geographic CRS for a projected WKT).
     pub same_name: bool,
 }
 

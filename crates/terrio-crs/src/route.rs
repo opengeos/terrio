@@ -1011,6 +1011,9 @@ fn unresolved_search(list: Vec<Leg>, a: u32, b: u32, ctx: &OperationContext) -> 
         }
         let flat = concatenated && (op.chain_accuracy != op.accuracy || op.chain_bounds != op.bounds);
         let op = if flat { op.as_concatenated() } else { (**op).clone() };
+        // A pivot uses another CRS's operation, so even a registered geographic 2D operation
+        // has a framing step from the unresolved CRS. The code's own registered operations
+        // above have no such step and keep their accuracy.
         list.push(Leg { op: Arc::new(ctx.framed(op)), reverse });
         pivoted = true;
     }

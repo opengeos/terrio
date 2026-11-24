@@ -221,7 +221,9 @@ fn source(local: crate::vfs::LocalPath) -> Result<(crate::RasterDataset, Source)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::block_cache::tests::{cache_test_guard, take_lookups};
+    use crate::block_cache::tests::cache_test_guard;
+    #[cfg(unix)]
+    use crate::block_cache::tests::take_lookups;
     use crate::{Window, WindowOptions};
 
     /// The bytes local GRIB files read so far on this thread.
