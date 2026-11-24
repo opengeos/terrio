@@ -229,6 +229,25 @@ test("supplied COG overviews are written as they are, with metadata items", () =
   assert.deepEqual(again.overviews, sizes);
 });
 
+test("whole-raster toBytes keeps source items before explicit overrides and domain filtering", () => {
+  const base = terrio.rasterFromArray(new Float32Array(70 * 50), 70, 50, [0, 1, 0, 50, 0, -1], "EPSG:4326");
+  const source = terrio.open(base.toBytes("seed.tif", { metadata: { A: "1", B: "old" } }), "seed.tif");
+  for (const creationOptions of [{ COPY_SRC_MDD: "YES" }, { SRC_MDD: "_DEFAULT_" }]) {
+    const bytes = source.toBytes("whole.tif", { format: "COG", creationOptions, metadata: { B: "2" } });
+    const items = Object.fromEntries(terrio.open(bytes, "whole.tif").info().metadata);
+    assert.equal(items.A, "1");
+    assert.equal(items.B, "2");
+  }
+  const filtered = source.toBytes("filtered.tif", { format: "COG", creationOptions: { COPY_SRC_MDD: "NO" }, metadata: { B: "2" } });
+  const items = Object.fromEntries(terrio.open(filtered, "filtered.tif").info().metadata);
+  assert.equal(items.A, undefined);
+  assert.equal(items.B, "2");
+  const cropped = source.toBytes("crop.tif", { srcwin: [0, 0, 10, 10], metadata: { B: "2" } });
+  const cropItems = Object.fromEntries(terrio.open(cropped, "crop.tif").info().metadata);
+  assert.equal(cropItems.A, undefined);
+  assert.equal(cropItems.B, "2");
+});
+
 test("Zstandard GeoTIFFs with predictors, decoded without the C library", () => {
   // Tiled and in strips, interleaved bands, the horizontal and floating-point predictors.
   const ints = new Int16Array(3 * 70 * 50).map((_, i) => ((i * 37) % 2001) - 1000);

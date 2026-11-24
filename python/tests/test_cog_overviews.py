@@ -633,6 +633,27 @@ def test_supplied_overviews_keep_complex_identity(tmp_path):
     real_r.write(str(tmp_path / "real.tif"), driver="COG", compress="DEFLATE", overviews=[real_ov])
 
 
+@pytest.mark.parametrize("complex_dtype", ["CInt16", "CInt32"])
+def test_supplied_complex_arrays_keep_integer_components(tmp_path, complex_dtype):
+    """Convert supplied complex arrays to the base's integer component type.
+
+    Args:
+        tmp_path: Isolated output directory.
+        complex_dtype: Physical complex sample type of the base raster.
+    """
+    real = np.arange(48 * 64, dtype="float64").reshape(48, 64)
+    if complex_dtype == "CInt32":
+        real += 2**24 + 1
+    values = real + 1j * (-real - 3)
+    raster = terrio.Raster.from_array(values, [0, 1, 0, 48, 0, -1], complex_dtype=complex_dtype)
+    level = values[::2, ::2].copy()
+    path = tmp_path / "integer-complex.tif"
+    raster.write(str(path), driver="COG", compress="DEFLATE", tile_size=16, overviews=[level])
+    back = terrio.open_raster(str(path), lazy=True)
+    assert back.data_type == complex_dtype
+    np.testing.assert_array_equal(back.read(1, overview=0, out_dtype="complex128"), level)
+
+
 def test_cog_writes_stream(tmp_path, monkeypatch):
     """terrio.rio writes COGs without copying the whole raster into Rust (`Raster.from_array`),
     level rows computed as they come: a memory property no file shows (the files are GDAL's)."""

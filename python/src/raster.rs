@@ -1198,7 +1198,8 @@ impl PyRaster {
             options_.overviews = factors.into_iter().flatten().collect();
         } else if factors.iter().all(Option::is_none) {
             let complex = self.is_complex();
-            options_.overview_data = overviews.iter().map(|o| overview_raster(o, complex)).collect::<PyResult<_>>()?;
+            let component = self.inner.data_type();
+            options_.overview_data = overviews.iter().map(|o| overview_raster(o, complex, component)).collect::<PyResult<_>>()?;
         } else {
             return Err(invalid("overviews are all factors (ints) or all levels (Rasters or arrays)"));
         }
@@ -1279,7 +1280,7 @@ impl PyRaster {
 /// needs no georeferencing. A level's bands are complex exactly when the raster's are (`complex`):
 /// each complex band is two component bands, so a level of the other kind can match their count
 /// and type and would otherwise be written as the wrong samples.
-fn overview_raster(obj: &Bound<'_, PyAny>, complex: bool) -> PyResult<std::sync::Arc<terrio::Raster>> {
+fn overview_raster(obj: &Bound<'_, PyAny>, complex: bool, component: DataType) -> PyResult<std::sync::Arc<terrio::Raster>> {
     let kind = |c: bool| if c { "complex" } else { "real" };
     let check = |level: bool| {
         if level == complex {
@@ -1301,7 +1302,7 @@ fn overview_raster(obj: &Bound<'_, PyAny>, complex: bool) -> PyResult<std::sync:
         [b, r, c] => (b, r, c),
         _ => return Err(invalid("an overview array is 2-D (rows, cols) or 3-D (bands, rows, cols)")),
     };
-    let (data, level) = raster_array_data(array, None)?;
+    let (data, level) = raster_array_data(array, complex.then_some(component))?;
     check(level)?;
     let cfg =
         terrio::RasterConfig { cols, rows, bands: bands * if level { 2 } else { 1 }, data_type: data.data_type(), ..Default::default() };

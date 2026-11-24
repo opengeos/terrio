@@ -1014,6 +1014,9 @@ impl Dataset {
                 r.prepare_output_mask(filename, &mut mask_options, window, o.overview).map_err(js_err)?;
                 let mask = mask_options.mask;
                 let mut ds = r.read_window(window, &opts).map_err(js_err)?;
+                if t_srs.is_none() && opts.overview.is_none() && opts.bands.is_empty() && window == Window::full(r.width(), r.height()) {
+                    ds.raster.metadata = r.metadata();
+                }
                 if let Some(dst) = t_srs {
                     let o = terrio::ops::warp::WarpOptions {
                         dst_srs: Some(dst),

@@ -1773,7 +1773,8 @@ pub struct RasterWriteOptions {
     pub overview_data: Vec<std::sync::Arc<Raster>>,
     /// Dataset metadata items (GDAL's default domain) set over the raster's own, as
     /// `gdal_translate -mo` sets them: GeoTIFF and COG store them in the `GDAL_METADATA` tag (an
-    /// `AREA_OR_POINT` item sets the raster type). Other formats refuse them.
+    /// `AREA_OR_POINT` item sets the raster type). For duplicate keys, the last explicit value
+    /// wins. Other formats refuse them.
     pub metadata: Vec<(String, String)>,
     /// The overview resampling, as GDAL names it: `nearest`, `average`, `rms`, `bilinear`,
     /// `cubic`, `cubicspline`, `lanczos` or `mode` (and terrio's `min` and `max` for GeoTIFF

@@ -1534,6 +1534,8 @@ fn supplied_overviews<'a>(raster: &Raster, opts: &'a TiffOptions, levels: &mut V
             }
         }
         if !masks.is_empty() {
+            // GDAL 3.13.3's GDALRegenerateOverviewsMultiBand cascades only when the previous
+            // width is larger. A height-only reduction regenerates the mask from the base.
             let mi = if levels.last().is_some_and(|l| l.cols > ov.cols) { levels.len() - 1 } else { 0 };
             let m = gdal_overview::mask_level(cog_method(opts), &masks[mi], (levels[mi].cols, levels[mi].rows), (ov.cols, ov.rows), block);
             masks.push(m.into_iter().map(|v| if v != 0 { 255 } else { 0 }).collect());
@@ -2052,7 +2054,20 @@ fn geo_tags(r: &Raster, opts: &TiffOptions, image_structure: &[(String, String)]
         })
         .collect();
     // COPY_SRC_MDD filters source items, not metadata explicitly supplied by the caller.
-    let items = if opts.drop_default_items.0 { std::borrow::Cow::Borrowed(opts.metadata.as_slice()) } else { dataset_items(r, opts) };
+    let items = if opts.drop_default_items.0 {
+        // Explicit overrides have the same last-value-wins policy as dataset_items.
+        let mut items: Vec<(String, String)> = Vec::new();
+        for (key, value) in &opts.metadata {
+            if let Some(item) = items.iter_mut().find(|(name, _)| name == key) {
+                item.1.clone_from(value);
+            } else {
+                items.push((key.clone(), value.clone()));
+            }
+        }
+        std::borrow::Cow::Owned(items)
+    } else {
+        dataset_items(r, opts)
+    };
     if let Some(xml) = gdal_metadata_xml(&items, &bands, &opts.domains, (false, opts.drop_default_items.1), image_structure) {
         tags.push((42112, Value::Ascii(xml)));
     }
@@ -5238,7 +5253,7 @@ mod tests {
         r.metadata = vec![("A".into(), "1".into()), ("B".into(), "2".into())];
         let options = crate::RasterWriteOptions {
             driver: Some(crate::formats::RasterDriver::GTiff),
-            metadata: vec![("B".into(), "3".into()), ("C".into(), "4".into())],
+            metadata: vec![("B".into(), "2".into()), ("B".into(), "3".into()), ("C".into(), "4".into())],
             ..Default::default()
         };
         let expected: Vec<(String, String)> =
@@ -5262,12 +5277,12 @@ mod tests {
                 crate::RasterWriteOptions { driver: Some(crate::formats::RasterDriver::Cog), creation_options, ..options.clone() };
             let path = dir.path().join("filtered.tif");
             crate::write_raster(&r, path.to_str().unwrap(), &filtered).unwrap();
-            assert_eq!(items(&path), filtered.metadata);
+            assert_eq!(items(&path), expected[1..].to_vec());
             let path = dir.path().join("filtered-rows.tif");
             let mut w = GeoTiffWriter::create(path.to_str().unwrap(), &header, &filtered).unwrap();
             w.write_rows(&r.data, r.rows, None).unwrap();
             w.finish().unwrap();
-            assert_eq!(items(&path), filtered.metadata);
+            assert_eq!(items(&path), expected[1..].to_vec());
         }
         let o = crate::RasterWriteOptions { driver: Some(crate::formats::RasterDriver::AAIGrid), ..options };
         assert!(crate::write_raster(&r, dir.path().join("m.asc").to_str().unwrap(), &o).is_err());

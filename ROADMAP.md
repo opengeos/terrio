@@ -166,7 +166,7 @@ Command-group progress:
 - [ ] Expose explicit GeoTIFF/COG dataset metadata overrides in CLI/MCP
       (`gdal_translate -mo` equivalent). Rust, Python and JavaScript expose
       these overrides with supplied overviews in
-      [#1257](https://github.com/opengeos/terrio/pull/1257).
+      [#1268](https://github.com/opengeos/terrio/pull/1268).
 
 - [x] Palette conversion: RGB median cut, supplied palettes, RGB/RGBA expansion and
       attachment across Rust, CLI/MCP, Python and JavaScript; real Landsat/OPERA
