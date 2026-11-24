@@ -26,7 +26,7 @@
 //! meridian twice to it, 178 km from its own placement of EPSG:4901, and terrio does not follow
 //! that (`grads_and_prime_meridians.rs` checks it is placed as EPSG:4901).
 use serde_json::Value;
-use terrio_crs::{SpatialRef, Transformer};
+use terrio_crs::{SpatialRef, TransformOptions, Transformer};
 
 fn offline() {
     terrio_crs::set_grid_search_paths(Some(vec![]));
@@ -115,4 +115,30 @@ fn a_crs_with_an_unknown_authority_is_placed_by_the_code() {
         assert!(*by_code < 1e-3, "{name}: {by_code:.3} m from the code's placement");
         assert!(*proj > 0.1, "{name}: placed as PROJ does, {proj:.3} m");
     }
+}
+
+/// With the ballpark refused (`ALLOW_BALLPARK=NO`), PROJ also refuses the transformations it
+/// frames with its ballpark from a renamed datum, and keeps the CRS's own registered ones. PROJ
+/// 9.9.0 places the renamed Monte Mario (Rome) and Tokyo 1892 by their codes' own transformations
+/// then, and has none for the renamed Georgia Geodetic Datum.
+#[test]
+fn transformations_framed_by_the_ballpark_are_refused_with_it() {
+    offline();
+    let data = data();
+    let strict = TransformOptions { allow_ballpark: Some(false), ..Default::default() };
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    let wkt = |key: &str| SpatialRef::from_wkt(data["wkts"][key].as_str().unwrap());
+    for (key, point, want) in [
+        ("4806 wkt2 datum id, renamed", (0.007666666666664175, 40.93), (12.45982281152141, 40.93062597830525)),
+        ("5132 wkt2 datum id, renamed", (138.44, 32.955), (138.43988601577175, 32.95840880187001)),
+    ] {
+        let t = Transformer::with_options(&wkt(key), &wgs84, &strict).unwrap();
+        let got = t.transform(point.0, point.1).unwrap();
+        assert!(metres(got, want, true) < 1e-3, "{key}: {got:?}");
+        let op = Transformer::new(&wkt(key), &wgs84).unwrap().operation_at(point.0, point.1, 0.0).unwrap().unwrap();
+        assert!(op.ballpark && op.accuracy.is_none(), "{key}: {op:?}");
+    }
+    let georgia = wkt("10831 wkt2 datum id, renamed");
+    assert!(Transformer::with_options(&georgia, &wgs84, &strict).and_then(|t| t.transform(42.845, 42.315)).is_err());
+    assert!(!Transformer::new(&georgia, &wgs84).unwrap().has_non_ballpark_operation());
 }

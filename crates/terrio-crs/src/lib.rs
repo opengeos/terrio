@@ -2868,7 +2868,7 @@ impl Transformer {
             self.note_missing_grid(x, y, p);
             if self.policy.allow_ballpark == Some(false) { self.route.selected(&self.src, x, y, p).0 } else { None }
         };
-        if self.policy.allow_ballpark == Some(false) && selected.is_none_or(|op| op.ballpark) {
+        if self.policy.allow_ballpark == Some(false) && selected.is_none_or(|op| op.has_ballpark()) {
             return Err(Error::NoOperation("ALLOW_BALLPARK=NO: no non-ballpark coordinate operation for this point".into()));
         }
         Ok(selected)
@@ -2951,7 +2951,7 @@ impl Transformer {
             self.best_route().apply_selected(&self.src, x, y, p, false, selected)
         } else {
             self.route.apply_reporting(&self.src, x, y, p, false, &|op, outside| {
-                if self.policy.allow_ballpark == Some(false) && op.is_none_or(|op| op.ballpark) {
+                if self.policy.allow_ballpark == Some(false) && op.is_none_or(|op| op.has_ballpark()) {
                     refused_ballpark.set(true);
                 } else {
                     self.record_operation(op, outside);
@@ -3418,7 +3418,7 @@ impl Transformer {
             let route = self.best_route();
             let (selected, _) = route.selected(&self.src, x, y, p);
             if selected.is_some_and(|op| !op.available())
-                || (self.policy.allow_ballpark == Some(false) && selected.is_none_or(|op| op.ballpark))
+                || (self.policy.allow_ballpark == Some(false) && selected.is_none_or(|op| op.has_ballpark()))
             {
                 return None;
             }
@@ -3426,7 +3426,7 @@ impl Transformer {
         } else {
             let refused_ballpark = std::cell::Cell::new(false);
             let q = self.route.apply_reporting(&self.src, x, y, p, false, &|op, _| {
-                if self.policy.allow_ballpark == Some(false) && op.is_none_or(|op| op.ballpark) {
+                if self.policy.allow_ballpark == Some(false) && op.is_none_or(|op| op.has_ballpark()) {
                     refused_ballpark.set(true);
                 }
             })?;
