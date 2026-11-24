@@ -1459,7 +1459,7 @@ fn group_assets(items: &[(Value, String)], f: &Filters) -> Groups {
             .flatten()
             .any(|e| e.as_str().is_some_and(|s| s == "proj" || s.starts_with("https://stac-extensions.github.io/projection/")));
         let props = &item["properties"];
-        if !has_proj || !props.is_object() || !item["assets"].is_object() {
+        if !props.is_object() || !item["assets"].is_object() {
             continue;
         }
         let collection = match &item["collection"] {
@@ -1502,6 +1502,10 @@ fn group_assets(items: &[(Value, String)], f: &Filters) -> Groups {
                 continue;
             };
             if crs_filter.as_ref().is_some_and(|c| *c != sanitize_crs(&crs)) {
+                continue;
+            }
+            if !has_proj {
+                unplaced.push((name, item["id"].as_str().unwrap_or_default()));
                 continue;
             }
             let nums = |k: &str| -> Option<Vec<f64>> { get(k).as_array().map(|a| a.iter().filter_map(Value::as_f64).collect()) };
@@ -1556,8 +1560,8 @@ fn group_assets(items: &[(Value, String)], f: &Filters) -> Groups {
     if let Some((name, id)) = unplaced.first() {
         let n = unplaced.len();
         crate::warnings::warn(format!(
-            "STAC: {n} asset{} without usable proj metadata to place {} (a CRS, and two of proj:shape, a north-up \
-             proj:transform and proj:bbox, which agree), such as '{name}' of item '{id}': left out of the mosaic",
+            "STAC: {n} asset{} without usable proj metadata to place {} (a declared projection extension, a CRS, and two of \
+             proj:shape, a north-up proj:transform and proj:bbox, which agree), such as '{name}' of item '{id}': left out of the mosaic",
             if n == 1 { "" } else { "s" },
             if n == 1 { "it" } else { "them" },
         ));
@@ -1954,13 +1958,17 @@ impl WindowSource for Mosaic {
 /// scale and offset are not the band's: readers applying them would differ from GDAL.
 fn mosaic_band(bands: &Value, raster_bands: &Value, i: usize, count: usize, item_interp: &str) -> crate::BandMetadata {
     let text = |v: &Value| v.as_str().map_or_else(|| v.to_string(), str::to_string);
-    let nth = |v: &Value| v.as_array().filter(|a| a.len() == count).and_then(|a| a[i].as_object().cloned());
+    let nth = |v: &Value| {
+        let mut band = v.as_array().filter(|a| a.len() == count).and_then(|a| a[i].as_object().cloned())?;
+        band.retain(|_, value| !value.is_null());
+        Some(band)
+    };
     let mut b = crate::BandMetadata { color_interp: (item_interp != "Undefined").then(|| item_interp.to_string()), ..Default::default() };
     let mut set = |k: String, v: &Value| match b.items.iter_mut().find(|(n, _)| *n == k) {
         Some(item) => item.1 = text(v),
         None => b.items.push((k, text(v))),
     };
-    for (k, v) in nth(raster_bands).into_iter().flatten().filter(|(_, v)| !v.is_null()) {
+    for (k, v) in nth(raster_bands).into_iter().flatten() {
         let raster = matches!(k.as_str(), "scale" | "offset" | "bits_per_sample" | "spatial_resolution" | "sampling" | "histogram");
         set(if raster { format!("raster:{k}") } else { k }, &v);
     }
@@ -2584,33 +2592,49 @@ mod tests {
             (item, "/data/items.json".to_string())
         };
         let placed = json!({"proj:epsg": 32613, "proj:shape": [4, 8], "proj:transform": [10.0, 0.0, 0.0, 0.0, -10.0, 40.0]});
-        let items = [
+        let mut items = vec![
             item("placed", placed.clone()),
             item("no-crs", json!({"proj:shape": [4, 8], "proj:transform": [10.0, 0.0, 0.0, 0.0, -10.0, 40.0]})),
             item("no-transform", json!({"proj:epsg": 32613, "proj:shape": [4, 8]})),
             item("empty", json!({"proj:epsg": 32613, "proj:shape": [0, 8], "proj:transform": [10.0, 0.0, 0.0, 0.0, -10.0, 40.0]})),
             // Present but rejected: a south-up transform.
             item("south-up", json!({"proj:epsg": 32613, "proj:shape": [4, 8], "proj:transform": [10.0, 0.0, 0.0, 0.0, 10.0, 0.0]})),
+            item("rotated", json!({"proj:epsg": 32613, "proj:shape": [4, 8], "proj:transform": [10.0, 1.0, 0.0, 0.0, -10.0, 40.0]})),
             // Left out by the crs= filter, not for its metadata.
             item("other-crs", json!({"proj:epsg": 4326, "proj:shape": [4, 8]})),
         ];
+        for (id, props) in [("no-extension", json!({})), ("other-crs-no-extension", json!({"proj:epsg": 4326}))] {
+            let mut entry = item(id, props);
+            entry.0.as_object_mut().unwrap().remove("stac_extensions");
+            items.push(entry);
+        }
         let _ = crate::warnings::take();
         let groups = group_assets(&items, &Filters { crs: Some("EPSG:32613".into()), ..Filters::default() });
         assert_eq!(groups[""]["data"].by_crs["EPSG:32613"].len(), 1);
         let warnings = crate::warnings::take();
         assert_eq!(warnings.len(), 1, "{warnings:?}");
-        assert!(warnings[0].starts_with("STAC: 4 assets without usable proj metadata"), "{}", warnings[0]);
+        assert!(warnings[0].starts_with("STAC: 6 assets without usable proj metadata"), "{}", warnings[0]);
         assert!(warnings[0].contains("'data' of item 'no-crs'"), "{}", warnings[0]);
         // All placed: no warning.
         group_assets(&items[..1], &Filters::default());
         assert!(crate::warnings::take().is_empty());
+        for filters in [
+            Filters { collection: Some("other".into()), ..Filters::default() },
+            Filters { asset: Some("other".into()), ..Filters::default() },
+        ] {
+            assert!(group_assets(&items, &filters).is_empty());
+            assert!(crate::warnings::take().is_empty());
+        }
     }
 
     /// A band's metadata from the asset's bands, as GDAL's STACIT gives it, and its raster:bands.
     #[test]
     fn mosaic_bands_read_bands_and_raster_bands() {
         let bands = json!([{"name": "B04", "common_name": "red", "center_wavelength": 0.665}, {"name": "B08", "eo:common_name": "nir08"}]);
-        let raster = json!([{"scale": 0.0001, "offset": -0.1, "unit": "m", "nodata": 0}, {"data_type": "uint16", "nodata": null}]);
+        let raster = json!([
+            {"scale": 0.0001, "offset": -0.1, "unit": "m", "nodata": 0, "statistics": {"mean": 10}, "missing": null},
+            {"data_type": "uint16", "nodata": null, "unit": null, "statistics": null}
+        ]);
         let b = mosaic_band(&bands, &raster, 0, 2, "Undefined");
         assert_eq!(b.description.as_deref(), Some("B04"));
         assert_eq!(b.color_interp.as_deref(), Some("Red"));
@@ -2619,12 +2643,20 @@ mod tests {
         let items: Vec<(&str, &str)> = b.items.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         assert_eq!(
             items,
-            [("raster:scale", "0.0001"), ("raster:offset", "-0.1"), ("unit", "m"), ("nodata", "0"), ("center_wavelength", "0.665")]
+            [
+                ("raster:scale", "0.0001"),
+                ("raster:offset", "-0.1"),
+                ("unit", "m"),
+                ("nodata", "0"),
+                ("statistics", r#"{"mean":10}"#),
+                ("center_wavelength", "0.665")
+            ]
         );
         let b = mosaic_band(&bands, &raster, 1, 2, "Gray");
         assert_eq!((b.description.as_deref(), b.color_interp.as_deref()), (Some("B08"), Some("NIR")));
         // A null member is not an item.
-        assert_eq!(b.items, [("data_type".to_string(), "uint16".to_string())]);
+        assert!(b.unit.is_none());
+        assert_eq!(b.items, [("data_type".into(), "uint16".into())]);
         // Bands that do not number the item's: only the item's colour interpretation.
         let b = mosaic_band(&bands, &raster, 0, 3, "Gray");
         assert_eq!(b, crate::BandMetadata { color_interp: Some("Gray".into()), ..Default::default() });

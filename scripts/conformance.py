@@ -21,6 +21,7 @@ Suites:
     parquet-zstd      Zstandard GeoParquet pages read without the zstd C library vs GDAL
     catalogs          indexed real DEM mosaics and HTTP window I/O vs GDAL GTI
                       (compare_catalogs_with_gdal.py)
+    stac-metadata     local STAC mosaic band fields vs GDAL and declared raster metadata
     vrt               serialized warped/derived/kernel VRTs, masks and lazy windows
     jp2-colors        JPEG 2000 component roles and masks on real Landsat data
     overviews         source overview selection and HTTP COG bytes vs gdalwarp -ovr
@@ -4258,6 +4259,59 @@ def suite_coverage_clean(ctx):
     return suite
 
 
+def suite_stac_metadata(ctx):
+    """Compare local STAC band metadata with GDAL and declared STAC values.
+
+    Args:
+        ctx: Conformance context with the Terrio executable path.
+
+    Returns:
+        Suite: Shared-field comparisons and explicitly additional STAC metadata checks.
+    """
+    suite = Suite(
+        "stac-metadata",
+        "STAC mosaic band metadata",
+        "GDAL STACIT and STAC 1.1",
+        "Local two-band fixtures in STAC 1.0 and 1.1 form. Descriptions, colour interpretations, "
+        "shared metadata values, pixels, types, nodata and georeferencing agree "
+        "with GDAL. Additional raster metadata and warnings are checked against declared STAC "
+        "values; raster scale and offset remain metadata rather than applied pixel transforms. "
+        "Unset TIFF scale/offset and GDAL's explicit identity values 1/0 are normalized.",
+    )
+    if missing_modules("osgeo", "numpy"):
+        suite.skipped = "needs GDAL Python bindings and NumPy"
+        return suite
+    from osgeo import gdal
+
+    if gdal.GetDriverByName("STACIT") is None:
+        suite.skipped = "needs GDAL with the STACIT driver"
+        return suite
+    suite.reference = (
+        "GDAL " + gdal.VersionInfo("RELEASE_NAME") + " STACIT; STAC 1.1 raster metadata"
+    )
+    code, out, err = run(
+        [sys.executable, str(SCRIPTS / "compare_stac_geozarr.py"), "stac-metadata"],
+        {"TERRIO_BIN": ctx.terrio},
+    )
+    for line in out.splitlines():
+        if line.startswith(("ok   ", "FAIL ")):
+            suite.cases.append(
+                Case(
+                    "STACIT",
+                    line[5:],
+                    IDENTICAL if line.startswith("ok   ") else DIFFERS,
+                )
+            )
+    if len(suite.cases) != 14:
+        suite.error = (
+            f"expected 14 metadata comparisons, got {len(suite.cases)}: "
+            + tail(err or out)
+        )
+    elif code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or "STAC metadata comparison failed")
+    return suite
+
+
 def suite_wfs(ctx):
     """Local GML authority exports, axis controls and public WFS reads versus GDAL."""
     suite = Suite("wfs", "WFS services and extensionless responses", "GDAL WFS/GML/GeoJSON",
@@ -4482,6 +4536,7 @@ SUITES = OrderedDict(
         ("benchmark-metadata", suite_benchmark_metadata),
         ("benchmark-compat", suite_benchmark_compat),
         ("catalogs", suite_catalogs),
+        ("stac-metadata", suite_stac_metadata),
         ("vrt", suite_vrt),
         ("jp2-colors", suite_jp2_colors),
         ("overviews", suite_overviews),
