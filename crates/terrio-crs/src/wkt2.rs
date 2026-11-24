@@ -160,7 +160,7 @@ pub(crate) fn convert_root(input: &Wkt2Root, root: &Node) -> Result<Converted> {
                 )),
                 Some((input, node)) => match convert_root(input, node) {
                     Ok(target) => {
-                        c.bound = Some(Box::new(BoundTo { target, shift: t, name: name.clone() }));
+                        c.bound = Some(Box::new(BoundTo { target, shift: t, name: name.clone(), target_name: target_name.to_string() }));
                         c.helmert = helmert;
                     }
                     Err(_) => not_applied(format!("its target CRS \"{target_name}\" is not read")),
@@ -170,8 +170,12 @@ pub(crate) fn convert_root(input: &Wkt2Root, root: &Node) -> Result<Converted> {
         }
         None => not_applied(format!("terrio applies Helmert transformations only, not \"{}\"", b.transformation.method)),
     }
-    if unapplied.is_some() {
-        c.unapplied = unapplied;
+    // Kept with a source `BOUNDCRS`'s own, when its transformation is left out too.
+    if let Some(why) = unapplied {
+        c.unapplied = Some(match c.unapplied.take() {
+            Some(inner) => format!("{inner}; {why}"),
+            None => why,
+        });
     }
     Ok(c)
 }

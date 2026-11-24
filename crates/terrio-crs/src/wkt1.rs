@@ -464,8 +464,9 @@ pub(crate) struct BoundTo {
     pub target: Converted,
     /// The 3 or 7 parameters of the Helmert transformation to it, as `+towgs84`'s.
     pub shift: Vec<f64>,
-    /// The transformation's name, for a warning when it is not applied.
+    /// The transformation's name and its target CRS's, for a warning when it is not applied.
     pub name: String,
+    pub target_name: String,
 }
 
 /// What a WKT 1 `GEOGCS`, `GEOCCS` or `PROJCS` gives its PROJ string, read from its model

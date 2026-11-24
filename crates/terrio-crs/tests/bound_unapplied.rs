@@ -134,3 +134,21 @@ fn a_source_with_a_code_warns_too() {
         ]
     );
 }
+
+/// A source CRS bound itself whose transformation is left out, under a transformation left out
+/// too: the warning gives both reasons, the source's first.
+#[test]
+fn a_bound_source_keeps_its_own_reason() {
+    offline();
+    let grid = r#"ABRIDGEDTRANSFORMATION["grid",METHOD["NTv2",ID["EPSG",9615]],PARAMETERFILE["Latitude and longitude difference file","BETA2007.gsb"]]"#;
+    let inner = format!("BOUNDCRS[SOURCECRS[{SOURCE}],TARGETCRS[{WGS84}],{grid}]");
+    let src = bound(&inner, ED50_WKT1, &translations("shift", 100.0, 50.0, -20.0));
+    let (_, warnings) = at(&src, 4326);
+    assert_eq!(
+        warnings,
+        [concat!(
+            "the BOUNDCRS transformation \"grid\" is not applied: terrio applies Helmert transformations only, not \"NTv2\"; ",
+            "the BOUNDCRS transformation \"shift\" is not applied: its target CRS \"ED50\" is not read"
+        )]
+    );
+}
