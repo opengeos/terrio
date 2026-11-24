@@ -26,7 +26,9 @@
 //! gets mask overviews. The full-resolution image is read once, by strips of rows, rather than
 //! whole, for whole levels (partial refreshes read the rows over their region). The file is
 //! changed through a copy renamed over it, so a failure leaves it as it was. External overviews
-//! leave the GeoTIFF itself untouched, so it may be read-only, as with `gdaladdo -ro`.
+//! leave the GeoTIFF itself untouched, so it may be read-only, as with `gdaladdo -ro`; for a
+//! GeoTIFF with a `.msk` sidecar mask, the mask's overviews go to its `.msk.ovr`, as GDAL builds
+//! them (the `.ovr` levels take them as their masks).
 //! [`add_overviews_with_progress`] reports progress and can be cancelled.
 //!
 //! Overviews are managed for GeoTIFFs only: terrio reads an `.ovr` sidecar as the overviews of a
@@ -133,7 +135,8 @@ pub struct OverviewOptions {
     /// The resampling: nearest (the default), average, min, max or mode.
     pub resampling: Resampling,
     /// Write the overviews to the `.ovr` sidecar instead of into the file, which may then be
-    /// read-only (`gdaladdo -ro`). A new sidecar is a BigTIFF when its images take more than
+    /// read-only (`gdaladdo -ro`), and, for a `.msk` sidecar mask, the mask's overviews to its
+    /// `.msk.ovr`. A new sidecar is a BigTIFF when its images take more than
     /// about 4 GiB; an existing classic TIFF sidecar that would grow past 4 GiB is refused.
     pub external: bool,
     /// The overviews' compression (GDAL's `COMPRESS_OVERVIEW`): by default the full-resolution
@@ -289,35 +292,51 @@ fn add_overviews_reporting(path: &str, options: &OverviewOptions, report: &mut R
             // The sidecar is replaced through a copy, which keeps a read-only mode: refuse it here.
             gtiff_update::writable_local_file(&ovr.to_string_lossy())?;
         }
+        // A `.msk` sidecar's overviews go to its own `.msk.ovr`, as GDAL builds them.
+        let mut mask = if src.has_sidecar_mask() { Some(MaskSidecar::open(path)?) } else { None };
         let compression = options.compression.as_deref().unwrap_or("NONE");
         let main_dir = &main.dirs[images(&main).main.unwrap_or(0)];
         let mut all_sizes = sizes.clone();
+        // The share of the work the data takes, the mask's overviews taking the rest.
+        let share = match &mask {
+            Some(_) => src.band_count() as f64 / (src.band_count() + 1) as f64,
+            None => 1.0,
+        };
         // Open the same publication temporary before computing the pyramid: an unwritable
-        // directory must fail before expensive work, without a separate preflight file.
+        // directory must fail before expensive work, without a separate preflight file. The
+        // mask's overviews are computed after the data's, as GDAL computes them. Both sidecars
+        // are staged, then renamed into place together (the `.msk.ovr` first, put back should
+        // the `.ovr` fail): a failure or a cancellation leaves both as they were.
         let build = |previous: Option<&[Directory]>| {
-            let levels = build_new_levels(&mut src, main_dir, &sizes, method, compression, options.compression.is_some(), previous, report);
+            let levels =
+                build_new_levels(&mut src, main_dir, &sizes, method, compression, options.compression.is_some(), previous, &mut |f| {
+                    report(f * share)
+                });
             drop(src);
-            levels
+            let levels = levels?;
+            let masks = match mask.as_mut() {
+                Some(m) => {
+                    Some(m.build(&sizes, method, compression, options.compression.is_some(), &mut |f| report(share + f * (1.0 - share)))?)
+                }
+                None => None,
+            };
+            Ok::<_, Error>((levels, mask.map(|m| (m, masks.unwrap_or_default()))))
         };
         if let Some(existing) = existing {
             all_sizes.extend(existing.dirs.iter().filter(|d| d.is_overview() && !d.is_mask()).map(Directory::size));
-            gtiff_update::update_file(&ovr, |f| {
-                let levels = build(Some(&existing.dirs))?;
-                let mut a = Appender::new(f, existing.big)?;
-                let mut dirs = existing.dirs;
-                for img in levels {
-                    let mut dir = a.image(img)?;
-                    shared_tags(main_dir, &mut dir);
-                    match dirs.iter().position(|old| !old.is_mask() && old.size() == dir.size()) {
-                        Some(i) => dirs[i] = dir,
-                        None => dirs.push(dir),
-                    }
-                }
-                dirs.sort_by_key(|d| std::cmp::Reverse(d.size()));
-                a.finish(&dirs)
+            let (mask, staged) = gtiff_update::stage_update(&ovr, |f, _| {
+                let (levels, mask) = build(Some(&existing.dirs))?;
+                append_ovr(f, existing, levels, main_dir)?;
+                mask.map(|(m, images)| m.stage(images)).transpose()
             })?;
+            publish_sidecars(staged, mask)?;
         } else {
-            gtiff_update::replace_file(&ovr, |f| write_ovr(f, build(None)?, main_dir))?;
+            let (mask, staged) = gtiff_update::stage_replace(&ovr, |f| {
+                let (levels, mask) = build(None)?;
+                write_ovr(f, levels, main_dir)?;
+                mask.map(|(m, images)| m.stage(images)).transpose()
+            })?;
+            publish_sidecars(staged, mask)?;
         }
         return Ok(sorted_sizes(all_sizes));
     }
@@ -1503,6 +1522,198 @@ fn write_ovr(f: &mut std::fs::File, images: Vec<gw::Image>, main: &Directory) ->
         dirs.push(dir);
     }
     a.finish(&dirs)
+}
+
+/// Adds overview images to a copy of an existing `.ovr` sidecar (`existing`, parsed from it):
+/// each replaces the image of its size, or joins the others, largest first.
+fn append_ovr(f: &mut std::fs::File, existing: Tiff, images: Vec<gw::Image>, main: &Directory) -> Result<()> {
+    let mut a = Appender::new(f, existing.big)?;
+    let mut dirs = existing.dirs;
+    for img in images {
+        let mut dir = a.image(img)?;
+        shared_tags(main, &mut dir);
+        match dirs.iter().position(|old| !old.is_mask() && old.size() == dir.size()) {
+            Some(i) => dirs[i] = dir,
+            None => dirs.push(dir),
+        }
+    }
+    dirs.sort_by_key(|d| std::cmp::Reverse(d.size()));
+    a.finish(&dirs)
+}
+
+/// The `.msk` sidecar of a raster whose external overviews are built, and its `.msk.ovr`, which
+/// takes the mask's overviews. GDAL builds them as the overviews of the mask dataset, once the
+/// data's are built (GDAL 3.13.2, `GDALDefaultOverviews::BuildOverviews`), with the same method:
+/// the mask band is its own mask (`IsMaskBand`), so only its valid pixels count, as an alpha
+/// band's do. GDAL's band of an `.ovr` level then takes the `.msk.ovr` image of its size as its
+/// mask ([`crate::LazyRaster::read_level_mask`]).
+struct MaskSidecar {
+    /// The `.msk`, opened as a GeoTIFF of its own.
+    src: LazyRaster,
+    /// Its full-resolution image.
+    dir: Directory,
+    /// The `.msk.ovr`, and its images when it exists.
+    ovr: std::path::PathBuf,
+    existing: Option<Tiff>,
+}
+
+impl MaskSidecar {
+    /// Opens the `.msk` sidecar of `path`, refusing before any work what GDAL cannot build: a
+    /// `.msk` with internal overviews, or a `.msk.ovr` that cannot be replaced.
+    fn open(path: &str) -> Result<Self> {
+        let msk = format!("{path}.msk");
+        let src = LazyRaster::open_tiff_unchecked(&msk)?.ok_or_else(|| Error::InvalidData(format!("'{msk}' is not a TIFF file")))?;
+        let tiff = parse_file(std::path::Path::new(&msk))?;
+        if tiff.dirs.iter().any(Directory::is_overview) {
+            return Err(Error::InvalidArgument(format!(
+                "'{msk}' has internal overviews: external overviews of its mask cannot be added (as in GDAL)"
+            )));
+        }
+        let dir = tiff.dirs[images(&tiff).main.unwrap_or(0)].clone();
+        let ovr = ovr_path(std::path::Path::new(&msk));
+        let existing = if ovr.is_file() {
+            gtiff_update::writable_local_file(&ovr.to_string_lossy())?;
+            Some(parse_file(&ovr)?)
+        } else {
+            None
+        };
+        Ok(Self { src, dir, ovr, existing })
+    }
+
+    /// Computes the mask's overviews of `sizes` as GDAL computes them, as images like the
+    /// `.msk`'s (or like the `.msk.ovr`'s existing image of a size): the images to write. JPEG
+    /// compression is DEFLATE for masks, as in GDAL.
+    ///
+    /// GDAL first computes the new levels (`GTIFFBuildOverviews`): together, block by block,
+    /// when they are compressed; else band by band, which recomputes every level of the
+    /// `.msk.ovr` with them, the ones it had too. It then refreshes the requested levels the
+    /// `.msk.ovr` had, band by band. Band by band, a mask's levels cascade, each from the
+    /// previous one (`GDALRegenerateOverviewsEx`'s mask band is the band itself).
+    fn build(
+        &mut self,
+        sizes: &[(usize, usize)],
+        method: OverviewResampling,
+        compression: &str,
+        override_compression: bool,
+        report: &mut Report<'_>,
+    ) -> Result<Vec<gw::Image>> {
+        let compression = if compression.eq_ignore_ascii_case("JPEG") { "DEFLATE" } else { compression };
+        let had: Vec<(usize, usize)> =
+            self.existing.as_ref().map_or_else(Vec::new, |t| t.dirs.iter().filter(|d| !d.is_mask()).map(Directory::size).collect());
+        let (_, new_compression, ..) = layout_like(&self.dir, Some(compression), true, DataType::U8)?;
+        let multiband = gdal_multiband(true, true, new_compression != Compression::None, false);
+        let new: Vec<(usize, usize)> = sizes.iter().filter(|s| !had.contains(s)).copied().collect();
+        let refreshed: Vec<(usize, usize)> = sizes.iter().filter(|s| had.contains(s)).copied().collect();
+        let first = if multiband || new.is_empty() { new } else { sorted_sizes([had.clone(), new].concat()) };
+        let pixels = |set: &[(usize, usize)]| set.iter().map(|s| s.0 as f64 * s.1 as f64).sum::<f64>();
+        let total = (pixels(&first) + pixels(&refreshed)).max(1.0);
+        let mut images: Vec<((usize, usize), gw::Image)> = Vec::new();
+        let mut done = 0.0;
+        for (set, multiband) in [(first, multiband), (refreshed, false)] {
+            if set.is_empty() {
+                continue;
+            }
+            let share = pixels(&set) / total;
+            let at = done;
+            let computed =
+                self.compute(&set, multiband, method, compression, sizes, override_compression, &mut |f| report(at + f * share))?;
+            done += share;
+            for (size, img) in computed {
+                match images.iter().position(|(s, _)| *s == size) {
+                    Some(i) => images[i].1 = img,
+                    None => images.push((size, img)),
+                }
+            }
+        }
+        Ok(images.into_iter().map(|(_, img)| img).collect())
+    }
+
+    /// Computes the mask's levels of `set` in one GDAL pass: block by block (`multiband`), or
+    /// band by band, cascading. A level keeps the compression of the `.msk.ovr`'s image of its
+    /// size unless it is `requested` with `override_compression`.
+    #[allow(clippy::too_many_arguments)]
+    fn compute(
+        &mut self,
+        set: &[(usize, usize)],
+        multiband: bool,
+        method: OverviewResampling,
+        compression: &str,
+        requested: &[(usize, usize)],
+        override_compression: bool,
+        report: &mut Report<'_>,
+    ) -> Result<Vec<((usize, usize), gw::Image)>> {
+        let Self { src, dir: like, existing, .. } = self;
+        let existing = existing.as_ref().map(|t| t.dirs.as_slice());
+        let old = |size: (usize, usize)| existing.and_then(|dirs| dirs.iter().find(|d| !d.is_mask() && d.size() == size));
+        let sizes = sorted_sizes(set.to_vec());
+        let (layout, ..) = layout_like(like, Some(compression), true, DataType::U8)?;
+        let blocks: Vec<(usize, usize)> = sizes
+            .iter()
+            .map(|&size| match old(size) {
+                Some(dir) => layout_like(dir, None, false, DataType::U8).map(|(l, ..)| chunk_size(&l, size.0)),
+                None => Ok(chunk_size(&layout, size.0)),
+            })
+            .collect::<Result<_>>()?;
+        // Scheduled as a band without a mask of its own, which cascades.
+        let (data, _) =
+            schedules((src.width(), src.height()), base_block(src), &sizes, &blocks, method, DataType::U8, false, multiband, false);
+        let levels: Vec<WholeLevel> = sizes.iter().zip(data).map(|(&size, data)| WholeLevel { size, method, data, mask: None }).collect();
+        let metadata = mask_metadata(like, method);
+        // The band's nonzero pixels are its valid ones, as an alpha band's.
+        let mut srcs = Sources { src, base: None, alpha: Some(0), read_bytes: READ_BYTES, strip_values: STRIP_VALUES };
+        let mut out = Vec::new();
+        whole_levels(&mut srcs, &levels, report, |_, _, c| {
+            let old = old(c.size);
+            let compression = match old {
+                Some(_) if !(override_compression && requested.contains(&c.size)) => None,
+                _ => Some(compression),
+            };
+            let (mut img, _) = new_level_image(c, old.unwrap_or(like), compression, method, DataType::U8, 1, Some(false))?;
+            for (tag, value) in &mut img.tags {
+                if *tag == 42112 {
+                    *value = Value::Ascii(metadata.clone());
+                }
+            }
+            out.push((c.size, img));
+            Ok(())
+        })?;
+        Ok(out)
+    }
+
+    /// Writes the mask's overview images to a staged `.msk.ovr`: a new file, or a copy of the
+    /// existing one, to rename over it.
+    fn stage(self, images: Vec<gw::Image>) -> Result<gtiff_update::Staged> {
+        let like = &self.dir;
+        let ((), staged) = match self.existing {
+            Some(existing) => gtiff_update::stage_update(&self.ovr, |f, _| append_ovr(f, existing, images, like))?,
+            None => gtiff_update::stage_replace(&self.ovr, |f| write_ovr(f, images, like))?,
+        };
+        Ok(staged)
+    }
+}
+
+/// Renames the staged `.ovr` into place, with the staged `.msk.ovr` when there is one: both or
+/// neither.
+fn publish_sidecars(ovr: gtiff_update::Staged, mask: Option<gtiff_update::Staged>) -> Result<()> {
+    match mask {
+        Some(mask) => gtiff_update::persist_both(mask, ovr),
+        None => ovr.persist(),
+    }
+}
+
+/// The `GDAL_METADATA` of a mask's overview: the method, and the mask flags of the `.msk` it is
+/// an overview of (`INTERNAL_MASK_FLAGS_n`), as GDAL writes them.
+fn mask_metadata(msk: &Directory, method: OverviewResampling) -> String {
+    let mut xml = format!("<GDALMetadata><Item name=\"RESAMPLING\" sample=\"0\">{}</Item>", method.gdal_name());
+    let own = msk.get(42112).and_then(Entry::ascii).unwrap_or_default();
+    for item in gw::gdal_metadata_items(&own) {
+        if let Some(name) = item.attr("name").filter(|n| n.starts_with("INTERNAL_MASK_FLAGS_")) {
+            let (name, value) = (crate::drivers::common::xml_escape(name), crate::drivers::common::xml_escape(item.text.trim()));
+            xml.push_str(&format!("<Item name=\"{name}\">{value}</Item>"));
+        }
+    }
+    xml.push_str("</GDALMetadata>");
+    xml
 }
 
 /// Adds overviews of these factors to a TIFF (the file, or a copy of it), reporting the progress

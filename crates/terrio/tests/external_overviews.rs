@@ -295,3 +295,284 @@ fn an_unreadable_first_image_subfile_type_keeps_ordinary_decoding() {
     let read = raster.read_window(Window::full(8, 6), &WindowOptions::default()).unwrap();
     assert_eq!(read.raster.data.to_f64_vec(), vec![7.0; 48]);
 }
+
+/// A level of the GDAL-built fixture of `scripts/make_msk_overviews_fixtures.py`: its size, the
+/// mask GDAL reads of it (255 valid) and its data.
+struct MskLevel {
+    size: (usize, usize),
+    mask: Vec<u8>,
+    data: Vec<f64>,
+}
+
+fn msk_fixture_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/msk_overviews")
+}
+
+/// The levels GDAL 3.13.2 builds for `masked.tif` (`gdaladdo -ro -r average masked.tif 2 3`),
+/// largest first, and the files it lists for the dataset.
+fn msk_expected() -> (Vec<MskLevel>, Vec<String>) {
+    let text = std::fs::read_to_string(msk_fixture_dir().join("expected.json")).unwrap();
+    let expected: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let levels = expected["levels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| {
+            let size = l["size"].as_array().unwrap();
+            MskLevel {
+                size: (size[0].as_u64().unwrap() as usize, size[1].as_u64().unwrap() as usize),
+                mask: l["mask"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .flat_map(|row| row.as_str().unwrap().bytes().map(|b| (b - b'0') * 255))
+                    .collect(),
+                data: l["data"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect(),
+            }
+        })
+        .collect();
+    let files = expected["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap().to_string()).collect();
+    (levels, files)
+}
+
+/// Copies the fixture's GeoTIFF and `.msk` into `dir`, with GDAL's `.ovr` and `.msk.ovr` when
+/// `sidecars`; returns the GeoTIFF's path.
+fn copy_msk_fixture(dir: &std::path::Path, sidecars: bool) -> String {
+    let names: &[&str] = if sidecars { &["", ".msk", ".ovr", ".msk.ovr"] } else { &["", ".msk"] };
+    for suffix in names {
+        std::fs::copy(msk_fixture_dir().join(format!("masked.tif{suffix}")), dir.join(format!("masked.tif{suffix}"))).unwrap();
+    }
+    dir.join("masked.tif").to_string_lossy().into_owned()
+}
+
+/// Asserts that every overview of `path` has GDAL's mask and data, the mask its own.
+fn assert_msk_levels(path: &str, expected: &[MskLevel]) {
+    let mut r = terrio::LazyRaster::open(path).unwrap();
+    assert_eq!(r.overviews(), expected.iter().map(|l| l.size).collect::<Vec<_>>());
+    for (i, level) in expected.iter().enumerate() {
+        let window = Window::full(level.size.0, level.size.1);
+        assert!(r.level_has_own_mask(i), "level {i}");
+        assert_eq!(r.read_level_mask(window, Some(i)).unwrap().as_deref(), Some(&level.mask[..]), "level {i}");
+        assert_eq!(r.read_mask(window, Some(i)).unwrap().as_deref(), Some(&level.mask[..]), "level {i}");
+        let data = r.read_window(window, &WindowOptions { bands: vec![1], overview: Some(i) }).unwrap();
+        assert_eq!(data.raster.data.to_f64_vec(), level.data, "level {i}");
+    }
+}
+
+/// The file names `path`'s dataset lists.
+fn file_names(path: &str) -> Vec<String> {
+    let r = terrio::LazyRaster::open(path).unwrap();
+    r.file_list().unwrap().iter().map(|f| std::path::Path::new(f).file_name().unwrap().to_string_lossy().into_owned()).collect()
+}
+
+/// GDAL 3.13.2: the levels of an `.ovr` beside a GeoTIFF with a `.msk` sidecar take the `.msk`'s
+/// overviews (its `.msk.ovr`) of their sizes as their masks, at every level.
+#[test]
+fn ovr_levels_take_the_msk_ovr_images_as_masks() {
+    let (expected, files) = msk_expected();
+    let path = msk_fixture_dir().join("masked.tif").to_string_lossy().into_owned();
+    assert_msk_levels(&path, &expected);
+    // As GDAL lists them: the `.msk.ovr` follows the `.ovr`.
+    assert_eq!(file_names(&path), files);
+}
+
+/// GDAL 3.13.2: with a `.msk` on the base, an `.ovr` level without an internal mask takes the
+/// `.msk`'s overview of its size, else none (all valid): it never reads an `.ovr.msk`.
+#[test]
+fn msk_overviews_win_over_an_ovr_msk() {
+    let (expected, _) = msk_expected();
+    let dir = tempfile::tempdir().unwrap();
+    let path = copy_msk_fixture(dir.path(), true);
+    let (w, h) = expected[0].size;
+    let cfg = RasterConfig {
+        cols: w,
+        rows: h,
+        bands: 1,
+        data_type: DataType::U8,
+        metadata: vec![("INTERNAL_MASK_FLAGS_1".into(), "2".into())],
+        ..Default::default()
+    };
+    let raster = terrio::Raster::from_data_native(cfg, RasterData::U8(vec![0; w * h])).unwrap();
+    let mask = dir.path().join("mask.tif");
+    terrio::write_raster_dataset(&RasterDataset::new(raster, false), mask.to_str().unwrap(), &RasterWriteOptions::default()).unwrap();
+    std::fs::rename(mask, format!("{path}.ovr.msk")).unwrap();
+    assert_msk_levels(&path, &expected);
+    std::fs::remove_file(format!("{path}.msk.ovr")).unwrap();
+    let mut r = terrio::LazyRaster::open(&path).unwrap();
+    for (i, level) in expected.iter().enumerate() {
+        let window = Window::full(level.size.0, level.size.1);
+        assert!(!r.level_has_own_mask(i), "level {i}");
+        assert_eq!(r.read_level_mask(window, Some(i)).unwrap(), None, "level {i}");
+        assert_eq!(r.read_mask(window, Some(i)).unwrap(), None, "level {i}");
+    }
+}
+
+/// External overviews of a read-only GeoTIFF with a `.msk` sidecar write the mask's overviews to
+/// its `.msk.ovr`, as GDAL 3.13.2 does (`gdaladdo -ro`): the levels' masks and data are GDAL's,
+/// and the GeoTIFF and its `.msk` are left as they were.
+#[test]
+fn external_overviews_of_a_msk_sidecar_write_its_msk_ovr() {
+    use terrio::ops::Resampling;
+    use terrio::ops::overview::{OverviewOptions, add_overviews};
+    let (expected, files) = msk_expected();
+    let dir = tempfile::tempdir().unwrap();
+    let path = copy_msk_fixture(dir.path(), false);
+    let originals: Vec<Vec<u8>> = ["", ".msk"].iter().map(|s| std::fs::read(format!("{path}{s}")).unwrap()).collect();
+    let read_only = |yes: bool| {
+        for s in ["", ".msk"] {
+            let file = format!("{path}{s}");
+            let mut permissions = std::fs::metadata(&file).unwrap().permissions();
+            permissions.set_readonly(yes);
+            std::fs::set_permissions(&file, permissions).unwrap();
+        }
+    };
+    read_only(true);
+    let o = OverviewOptions { external: true, levels: vec![2, 3], resampling: Resampling::Average, ..Default::default() };
+    let built = add_overviews(&path, &o);
+    read_only(false);
+    assert_eq!(built.unwrap(), expected.iter().map(|l| l.size).collect::<Vec<_>>());
+    assert!(std::path::Path::new(&format!("{path}.msk.ovr")).is_file());
+    assert_eq!(["", ".msk"].iter().map(|s| std::fs::read(format!("{path}{s}")).unwrap()).collect::<Vec<_>>(), originals);
+    assert_msk_levels(&path, &expected);
+    assert_eq!(file_names(&path), files);
+    // Built again, the sidecars are rebuilt in place, with the same levels.
+    add_overviews(&path, &o).unwrap();
+    assert_msk_levels(&path, &expected);
+}
+
+/// A cancelled rebuild, while the data's levels or the mask's are computed, or at the last
+/// callback, leaves both the `.ovr` and the `.msk.ovr` as they were.
+#[test]
+fn a_cancelled_msk_rebuild_keeps_both_sidecars() {
+    use terrio::ops::Resampling;
+    use terrio::ops::overview::{OverviewOptions, add_overviews, add_overviews_with_progress};
+    let dir = tempfile::tempdir().unwrap();
+    let path = copy_msk_fixture(dir.path(), false);
+    let o = OverviewOptions { external: true, levels: vec![2], resampling: Resampling::Average, ..Default::default() };
+    add_overviews(&path, &o).unwrap();
+    let sidecars = || ["ovr", "msk.ovr"].map(|s| std::fs::read(format!("{path}.{s}")).unwrap());
+    let before = sidecars();
+    let more = OverviewOptions { levels: vec![2, 3], ..o.clone() };
+    // The data takes the first half of the work (one band), the mask the second.
+    for stop in [0.25, 0.75, 1.0] {
+        let mut calls = Vec::new();
+        let err = add_overviews_with_progress(&path, &more, &mut |f| {
+            calls.push(f);
+            f < stop
+        })
+        .unwrap_err();
+        assert!(matches!(err, terrio::Error::Cancelled), "{err}");
+        assert!(calls.last().is_some_and(|f| *f >= stop), "{calls:?}");
+        assert_eq!(sidecars(), before, "stopped at {stop}");
+    }
+    let mut calls = Vec::new();
+    add_overviews_with_progress(&path, &more, &mut |f| {
+        calls.push(f);
+        true
+    })
+    .unwrap();
+    assert!(calls.windows(2).all(|p| p[0] <= p[1]) && calls.last() == Some(&1.0), "{calls:?}");
+    assert!(calls.iter().any(|f| *f > 0.5 && *f < 1.0), "{calls:?}");
+    assert_eq!(terrio::LazyRaster::open(&path).unwrap().overviews().len(), 2);
+}
+
+/// A `.msk` with internal overviews of its own cannot take external ones, as in GDAL: refused
+/// before anything is written.
+#[test]
+fn a_msk_with_internal_overviews_is_refused() {
+    use terrio::ops::overview::{OverviewOptions, add_overviews};
+    let dir = tempfile::tempdir().unwrap();
+    let tif = dir.path().join("img.tif");
+    write(&tif, 40, 30, |i| (i % 9) as u8, Vec::new());
+    let cfg = RasterConfig {
+        cols: 40,
+        rows: 30,
+        bands: 1,
+        data_type: DataType::U8,
+        metadata: vec![("INTERNAL_MASK_FLAGS_1".into(), "2".into())],
+        ..Default::default()
+    };
+    let raster =
+        terrio::Raster::from_data_native(cfg, RasterData::U8((0..1200).map(|i| if i % 3 == 0 { 0 } else { 255 }).collect())).unwrap();
+    let options = RasterWriteOptions { overviews: vec![2], ..Default::default() };
+    let mask = dir.path().join("mask.tif");
+    terrio::write_raster_dataset(&RasterDataset::new(raster, false), mask.to_str().unwrap(), &options).unwrap();
+    std::fs::rename(mask, dir.path().join("img.tif.msk")).unwrap();
+    let path = tif.to_string_lossy().into_owned();
+    assert!(terrio::LazyRaster::open(&path).unwrap().has_mask());
+    let err = add_overviews(&path, &OverviewOptions { external: true, levels: vec![2], ..Default::default() }).unwrap_err();
+    assert!(matches!(&err, terrio::Error::InvalidArgument(m) if m.contains("internal overviews")), "{err}");
+    assert!(!std::path::Path::new(&format!("{path}.ovr")).exists());
+    assert!(!std::path::Path::new(&format!("{path}.msk.ovr")).exists());
+}
+
+/// Writes a Byte GeoTIFF of `value` at `path` (a name the writer knows, renamed after), with an
+/// internal per-dataset mask when `mask` is given.
+fn write_renamed(dir: &std::path::Path, path: &str, (w, h): (usize, usize), mask: Option<Vec<u8>>) {
+    let cfg = RasterConfig { cols: w, rows: h, bands: 1, data_type: DataType::U8, ..Default::default() };
+    let raster = terrio::Raster::from_data_native(cfg, RasterData::U8(vec![9; w * h])).unwrap();
+    let tmp = dir.join("written.tif");
+    terrio::write_raster_dataset(
+        &RasterDataset::new(raster, false),
+        tmp.to_str().unwrap(),
+        &RasterWriteOptions { mask, ..Default::default() },
+    )
+    .unwrap();
+    std::fs::rename(tmp, path).unwrap();
+}
+
+/// GDAL 3.13.2: an `.ovr` image's internal mask wins over the base `.msk`'s overview of its size.
+#[test]
+fn an_ovr_image_mask_wins_over_the_msk_ovr() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = copy_msk_fixture(dir.path(), false);
+    std::fs::copy(msk_fixture_dir().join("masked.tif.msk.ovr"), format!("{path}.msk.ovr")).unwrap();
+    let mask: Vec<u8> = (0..34 * 23).map(|i| if i % 34 == 0 { 0 } else { 255 }).collect();
+    write_renamed(dir.path(), &format!("{path}.ovr"), (34, 23), Some(mask.clone()));
+    let mut r = terrio::LazyRaster::open(&path).unwrap();
+    assert!(r.level_has_own_mask(0));
+    assert_eq!(r.read_level_mask(Window::full(34, 23), Some(0)).unwrap(), Some(mask.clone()));
+    assert_eq!(r.read_mask(Window::full(34, 23), Some(0)).unwrap(), Some(mask));
+}
+
+/// GDAL 3.13.2: an `.ovr` image of the base's size takes no mask from a `.msk` without an
+/// overview of that size (its full-resolution mask is not one): it is all valid.
+#[test]
+fn an_ovr_image_of_the_base_size_takes_no_msk_mask() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = copy_msk_fixture(dir.path(), false);
+    write_renamed(dir.path(), &format!("{path}.ovr"), (67, 45), None);
+    let mut r = terrio::LazyRaster::open(&path).unwrap();
+    assert_eq!(r.overviews(), [(67, 45)]);
+    assert!(!r.level_has_own_mask(0));
+    assert_eq!(r.read_level_mask(Window::full(67, 45), Some(0)).unwrap(), None);
+    assert_eq!(r.read_mask(Window::full(67, 45), Some(0)).unwrap(), None);
+}
+
+/// GDAL 3.13.2: with a `.msk` on the base, the `.ovr`'s own `.ovr.msk` is not looked for, so it
+/// is neither read nor listed; without the `.msk`, it is.
+#[test]
+fn an_ovr_msk_beside_a_base_msk_is_not_read_or_listed() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = copy_msk_fixture(dir.path(), true);
+    let (w, h) = (34, 23);
+    let cfg = RasterConfig {
+        cols: w,
+        rows: h,
+        bands: 1,
+        data_type: DataType::U8,
+        metadata: vec![("INTERNAL_MASK_FLAGS_1".into(), "2".into())],
+        ..Default::default()
+    };
+    let raster = terrio::Raster::from_data_native(cfg, RasterData::U8(vec![0; w * h])).unwrap();
+    let tmp = dir.path().join("written.tif");
+    terrio::write_raster_dataset(&RasterDataset::new(raster, false), tmp.to_str().unwrap(), &RasterWriteOptions::default()).unwrap();
+    std::fs::rename(tmp, format!("{path}.ovr.msk")).unwrap();
+    let (_, files) = msk_expected();
+    assert_eq!(file_names(&path), files);
+    // Without the base's `.msk`, the `.ovr.msk` is the level's mask, and listed.
+    std::fs::remove_file(format!("{path}.msk")).unwrap();
+    let mut r = terrio::LazyRaster::open(&path).unwrap();
+    assert_eq!(r.read_level_mask(Window::full(w, h), Some(0)).unwrap(), Some(vec![0; w * h]));
+    assert_eq!(file_names(&path), ["masked.tif", "masked.tif.ovr", "masked.tif.ovr.msk"]);
+}

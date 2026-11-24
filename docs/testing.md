@@ -2596,9 +2596,28 @@ reads the `.ovr` it refreshes, and no other sidecar (in `raster_manage`:
 `external_overviews_are_refreshed_over_an_extent_under_empty_dir` and
 `external_overviews_refreshed_under_empty_dir_read_no_other_sidecar`).
 
+A GeoTIFF with a `.msk` sidecar mask takes the mask's overviews from its
+`.msk.ovr` (GDAL 3.13.2): an `.ovr` level without an internal mask of its own
+takes the `.msk.ovr` image of its size as its mask, else none (all valid), and
+never reads an `.ovr.msk`. External overviews of such a GeoTIFF write that
+`.msk.ovr` as GDAL builds it (`gdaladdo -ro`): after the data's levels, with the
+same method, the mask band being its own mask; uncompressed levels cascade, each
+from the previous one, and adding a level recomputes the levels the `.msk.ovr`
+had. `tests/data/msk_overviews` holds a GDAL-built pyramid of two levels and
+what GDAL reads of it (`scripts/make_msk_overviews_fixtures.py`); the tests read
+it, build the same levels from its GeoTIFF and `.msk` and compare masks and data
+exactly, and check that a cancelled rebuild keeps both sidecars. The
+`raster-manage` suite compares `gdaladdo -ro` and `terrio overviews --external`
+on a `.msk` raster, masks exactly. Known differences, outside the mask: GDAL
+tags small sidecars `LAYOUT=COG`; with a `.msk`, compressed levels of several
+factors (computed block by block, from the previous level) and requested
+levels an `.ovr` already had can take other data values in terrio; and GDAL
+appends a new level after the sidecar's, where terrio orders them largest first.
+
 ```sh
 cargo test -p terrio --test external_overviews --test geotiff_nodata
 python scripts/conformance.py ../terrio-data --only lazy-geotiff --strict
+python scripts/make_msk_overviews_fixtures.py   # GDAL's Python bindings
 ```
 
 ### Reduced first-image masks

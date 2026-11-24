@@ -1570,7 +1570,9 @@ geotransform gives its GCPs, or no georeferencing, instead of a unit-pixel grid.
 
 In-place operations require writable little-endian GeoTIFFs. `overviews --external` writes only
 the `.ovr` sidecar, so the GeoTIFF may be read-only, as with `gdaladdo -ro`; its directory must be
-writable. A new sidecar is a BigTIFF when its images take more than about 4 GiB, and an
+writable. A GeoTIFF with a `.msk` sidecar mask also gets the mask's overviews in the `.msk.ovr`,
+as GDAL builds them, which the `.ovr` levels take as their masks; a failure or cancellation leaves
+both sidecars as they were. A new sidecar is a BigTIFF when its images take more than about 4 GiB, and an
 existing classic TIFF sidecar that would grow past 4 GiB is refused. Updating a COG
 requires `--ignore-cog-layout-break` and can invalidate its optimized layout.
 Edits use a temporary file and rename; a failure before replacement preserves
