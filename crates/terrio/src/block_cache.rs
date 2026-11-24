@@ -11,8 +11,10 @@
 //! decompression on each read. With it, a chunk decoded by one window read is placed from memory by
 //! the next one that needs it. What is cached is the decoded samples of the chunks of lazy
 //! GeoTIFF reads, whether the TIFF is a local file, bytes in memory, a member of a zip archive or a
-//! remote object (HTTP, S3), and of the images of external `.ovr` overviews. Rasters read whole
-//! (formats other than GeoTIFF, [`crate::open_raster`]) and the other lazy drivers are not cached.
+//! remote object (HTTP, S3), and of the images of external `.ovr` overviews, and the bands of lazy
+//! GRIB reads, whole or, larger than a read's share of the cache, the rows the read needed and
+//! those nearest them; a read that needed no row of a band keeps none. Rasters read whole (other
+//! formats, [`crate::open_raster`]) and the other lazy drivers are not cached.
 //!
 //! The cache holds at most [`max_bytes`] bytes of decoded samples (and a small fixed overhead per
 //! chunk), dropping the least recently used chunks first. A chunk larger than the cache is not
@@ -34,6 +36,20 @@
 //! drops its chunks when it is closed, and a file that is replaced (written anew and renamed over
 //! the original) while a reader holds it keeps being read as it was, as GDAL does, while a reader
 //! opened after the replacement never sees a chunk of the old file.
+//!
+//! The bands of a local GRIB file are keyed by the version of the file their readers read, so that
+//! the readers open at once of one version (a dataset and the readers Python opens to read it from
+//! several threads, or the same file opened twice) read the rows of a band that one of them decoded
+//! from the cache, rather than decode the band again (readers that miss it at the same time each
+//! decode it): on Unix, the version is the file's device, inode, size and modification and change
+//! times, and how its values are decoded (`GRIB_NORMALIZE_UNITS`); elsewhere each reader keeps its
+//! own. A reader opened less than 2 seconds after the file's last change keeps its own too: a
+//! second change within the same tick of the file's timestamps would leave its version as it was. A
+//! version's bands are dropped when its last reader is closed. A file replaced since is another
+//! version, whose readers never see them, and so is a file changed in place after its readers were
+//! opened, whose times then show the change (unless they come from a network file system's server
+//! whose clock is more than those 2 seconds behind the reader's): close the readers of a file
+//! before changing it in place, as they read it as it is when they read.
 //!
 //! ```no_run
 //! use terrio::{Window, WindowOptions};
@@ -145,13 +161,27 @@ pub fn clear() {
 }
 
 /// A decoded chunk: its samples as decoded (a half-float chunk is converted when it is placed)
-/// and the size `(width, height)` of the image data it holds.
+/// and the size `(width, height)` of the image data it holds. The part of a GRIB band a read
+/// keeps is a chunk of the band's rows from `first_row` on, with the whole band's size.
 pub(crate) struct CachedChunk {
     pub samples: DecodingResult,
     pub dims: (usize, usize),
+    /// The first of a GRIB band's rows the chunk holds: 0 for a band kept whole.
+    #[cfg(feature = "grib")]
+    pub first_row: usize,
 }
 
 impl CachedChunk {
+    /// A chunk of image data of size `dims`.
+    fn new(samples: DecodingResult, dims: (usize, usize)) -> Self {
+        Self {
+            samples,
+            dims,
+            #[cfg(feature = "grib")]
+            first_row: 0,
+        }
+    }
+
     /// The bytes the chunk takes in the cache.
     fn cost(&self) -> u64 {
         use std::mem::size_of;
@@ -191,12 +221,24 @@ struct Cache {
     tick: u64,
     /// The most bytes held; `None` until it is read from the environment.
     max: Option<u64>,
+    /// The handles the open readers of a file version share (see [`Handle::of_file`]), and how
+    /// many readers hold each.
+    #[cfg(feature = "grib")]
+    shared: BTreeMap<FileVersion, (u64, usize)>,
 }
 
 impl Cache {
     /// An empty cache whose size is not read yet.
     const fn new() -> Self {
-        Self { handles: BTreeMap::new(), order: BTreeMap::new(), bytes: 0, tick: 0, max: None }
+        Self {
+            handles: BTreeMap::new(),
+            order: BTreeMap::new(),
+            bytes: 0,
+            tick: 0,
+            max: None,
+            #[cfg(feature = "grib")]
+            shared: BTreeMap::new(),
+        }
     }
 
     /// Sets the size, evicts down to it and gives back the spare memory of the tables that survive.
@@ -280,6 +322,26 @@ impl Cache {
         self.order.clear();
         self.bytes = 0;
     }
+
+    /// The handle of a file version's readers, which one more reader holds now.
+    #[cfg(feature = "grib")]
+    fn share(&mut self, version: FileVersion) -> u64 {
+        let (handle, readers) = self.shared.entry(version).or_insert_with(|| (new_handle(), 0));
+        *readers += 1;
+        *handle
+    }
+
+    /// Gives back a reader's hold on a file version's handle: the last one drops its chunks.
+    #[cfg(feature = "grib")]
+    fn unshare(&mut self, version: &FileVersion) {
+        let Some((handle, readers)) = self.shared.get_mut(version) else { return };
+        *readers -= 1;
+        if *readers == 0 {
+            let handle = *handle;
+            self.shared.remove(version);
+            self.remove_handle(handle);
+        }
+    }
 }
 
 static CACHE: Mutex<Cache> = Mutex::new(Cache::new());
@@ -325,12 +387,138 @@ pub(crate) fn insert(handle: u64, ifd: usize, chunk: u32, samples: DecodingResul
     if max_bytes() == 0 {
         return;
     }
-    cache().insert(handle, ifd, chunk, CachedChunk { samples, dims });
+    cache().insert(handle, ifd, chunk, CachedChunk::new(samples, dims));
+}
+
+/// Caches the rows from `first_row` on of a decoded image of size `dims`, as [`insert`] caches a
+/// chunk.
+#[cfg(feature = "grib")]
+pub(crate) fn insert_part(handle: u64, ifd: usize, chunk: u32, samples: DecodingResult, dims: (usize, usize), first_row: usize) {
+    if max_bytes() == 0 {
+        return;
+    }
+    cache().insert(handle, ifd, chunk, CachedChunk { first_row, ..CachedChunk::new(samples, dims) });
 }
 
 /// Drops the chunks of a reader that is closed.
 pub(crate) fn remove_handle(handle: u64) {
     cache().remove_handle(handle);
+}
+
+/// The bytes a chunk of `bytes` bytes of samples counts for in the cache, its entry included.
+#[cfg(feature = "grib")]
+pub(crate) fn entry_cost(bytes: u64) -> u64 {
+    bytes.saturating_add(ENTRY_OVERHEAD)
+}
+
+/// How long a local file must have gone unchanged for its readers to share its chunks
+/// ([`Handle::of_file`]): two changes in place within one tick of a file system's timestamps (a
+/// clock tick, one or two seconds on some file systems, such as FAT's 2 s) leave the file's size and
+/// times, and so its version, as they were.
+#[cfg(feature = "grib")]
+const SETTLE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// A version of a local file, and how a reader decodes it (`variant`): what the readers that share
+/// a [`Handle`] have in common.
+#[cfg(feature = "grib")]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(not(unix), allow(dead_code))]
+struct FileVersion {
+    device: u64,
+    inode: u64,
+    len: u64,
+    modified: (i64, i64),
+    changed: (i64, i64),
+    variant: u64,
+}
+
+#[cfg(feature = "grib")]
+impl FileVersion {
+    /// The version of the file whose metadata is `m` (of the file a reader opened), on Unix.
+    #[cfg(unix)]
+    fn of(m: &std::fs::Metadata, variant: u64) -> Option<Self> {
+        use std::os::unix::fs::MetadataExt;
+        Some(Self {
+            device: m.dev(),
+            inode: m.ino(),
+            len: m.size(),
+            modified: (m.mtime(), m.mtime_nsec()),
+            changed: (m.ctime(), m.ctime_nsec()),
+            variant,
+        })
+    }
+
+    /// Unknown elsewhere: the identity of a file is not in its metadata.
+    #[cfg(not(unix))]
+    fn of(_m: &std::fs::Metadata, _variant: u64) -> Option<Self> {
+        None
+    }
+
+    /// Whether the file's modification and change times are [`SETTLE`] or more before `now`, so
+    /// that any change to it from `now` on shows in its times: a later change in place keeps its
+    /// version only within one tick of the change that gave it.
+    fn settled(&self, now: std::time::SystemTime) -> bool {
+        let ns = |(s, n): (i64, i64)| i128::from(s) * 1_000_000_000 + i128::from(n);
+        let now = match now.duration_since(std::time::UNIX_EPOCH) {
+            Ok(after) => after.as_nanos() as i128,
+            Err(before) => -(before.duration().as_nanos() as i128),
+        };
+        now - ns(self.modified).max(ns(self.changed)) >= SETTLE.as_nanos() as i128
+    }
+}
+
+/// The identity of an open reader's chunks in the cache, given back when the reader drops it: its
+/// chunks are dropped then, unless other open readers share them ([`Handle::of_file`]).
+#[cfg(feature = "grib")]
+pub(crate) struct Handle {
+    id: u64,
+    shared: Option<FileVersion>,
+}
+
+#[cfg(feature = "grib")]
+impl Handle {
+    /// A handle of the reader's own.
+    pub(crate) fn new() -> Self {
+        Self { id: new_handle(), shared: None }
+    }
+
+    /// The handle the open readers of a version of a local file share, given the metadata of the
+    /// file a reader opened (so that the version is that of the file it reads) and how it decodes
+    /// it (`variant`): a version is the file's device, inode, size, and modification and change
+    /// times. A file replaced since is another version, and so is a file changed in place whose
+    /// size or times show the change (see the module's documentation). A handle of the reader's
+    /// own where the identity of a file is not known (other systems than Unix), and for a file
+    /// changed less than [`SETTLE`] before the reader is opened: a second change within the same
+    /// tick of its timestamps would keep its version, and a reader opened after it would be given
+    /// the bands its readers decoded before it. `opened` is captured before reading metadata,
+    /// so time spent indexing cannot make a recently changed file eligible for sharing.
+    pub(crate) fn of_file(metadata: &std::fs::Metadata, variant: u64, opened: std::time::SystemTime) -> Self {
+        Self::of_version(FileVersion::of(metadata, variant).filter(|v| v.settled(opened)))
+    }
+
+    /// The handle the open readers of `version` share, or one of the reader's own without one.
+    fn of_version(version: Option<FileVersion>) -> Self {
+        match version {
+            Some(version) => Self { id: cache().share(version), shared: Some(version) },
+            None => Self::new(),
+        }
+    }
+
+    /// The handle's chunks are keyed by this.
+    pub(crate) fn id(&self) -> u64 {
+        self.id
+    }
+}
+
+#[cfg(feature = "grib")]
+impl Drop for Handle {
+    fn drop(&mut self) {
+        let mut cache = cache();
+        match &self.shared {
+            Some(version) => cache.unshare(version),
+            None => cache.remove_handle(self.id),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -403,7 +591,7 @@ pub(crate) mod tests {
 
     /// Stores a chunk of `n` bytes, each `fill`, in a private cache.
     fn put(c: &mut Cache, handle: u64, ifd: usize, index: u32, n: usize, fill: u8, dims: (usize, usize)) {
-        c.insert(handle, ifd, index, CachedChunk { samples: chunk(n, fill), dims });
+        c.insert(handle, ifd, index, CachedChunk::new(chunk(n, fill), dims));
     }
 
     #[test]
@@ -507,6 +695,69 @@ pub(crate) mod tests {
         put(&mut c, h, 0, 0, 50, 2, (1, 1));
         assert_eq!(c.bytes, cost(50));
         assert_eq!(first_byte(&c.get(h, 0, 0).unwrap()), 2);
+    }
+
+    /// Catches the chunks of a file's readers kept apart, dropped while another reader of the file
+    /// is open, or kept once none is: the open readers of one version of a file share a handle
+    /// until the last is dropped; the file decoded otherwise, or changed to another size, is
+    /// another version. A reader's own handle takes its chunks with it when it is dropped. (The
+    /// versions are shared here as they would be once settled; see the next test.)
+    #[cfg(all(unix, feature = "grib"))]
+    #[test]
+    fn the_readers_of_a_file_version_share_its_chunks_until_the_last_is_dropped() {
+        let _serial = cache_test_guard(10_000);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f");
+        std::fs::write(&path, b"one").unwrap();
+        let version = |variant| FileVersion::of(&std::fs::File::open(&path).unwrap().metadata().unwrap(), variant);
+        let (a, b) = (Handle::of_version(version(0)), Handle::of_version(version(0)));
+        assert_eq!(a.id(), b.id());
+        assert_ne!(Handle::of_version(version(1)).id(), a.id());
+        insert(a.id(), 0, 0, chunk(100, 1), (1, 1));
+        drop(a);
+        assert!(contains(b.id(), 0, 0), "a reader is left");
+        let id = b.id();
+        drop(b);
+        assert!(!contains(id, 0, 0), "no reader is left");
+        let c = Handle::of_version(version(0));
+        std::fs::write(&path, b"other").unwrap();
+        assert_ne!(Handle::of_version(version(0)).id(), c.id());
+        let own = Handle::new();
+        insert(own.id(), 0, 0, chunk(100, 1), (1, 1));
+        let id = own.id();
+        drop(own);
+        assert!(!contains(id, 0, 0), "a reader's own handle");
+    }
+
+    /// Catches a file changed in place within one tick of its timestamps giving a reader opened
+    /// after the change the bands decoded before it: the readers of a file changed less than
+    /// `SETTLE` (2 s) before they are opened keep their own handles, and a version is settled
+    /// only once both its modification and change times are that far back, so a file whose
+    /// modification time is set an hour back, which changes it now, is not.
+    #[cfg(all(unix, feature = "grib"))]
+    #[test]
+    fn a_file_changed_less_than_two_seconds_ago_keeps_its_readers_apart() {
+        use std::os::unix::fs::MetadataExt;
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+        let _serial = cache_test_guard(10_000);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f");
+        std::fs::write(&path, b"one").unwrap();
+        let metadata = || std::fs::metadata(&path).unwrap();
+        let m = metadata();
+        let now = UNIX_EPOCH + Duration::new(m.ctime() as u64, m.ctime_nsec() as u32);
+        let (a, b) = (Handle::of_file(&m, 0, now), Handle::of_file(&m, 0, now));
+        assert_ne!(a.id(), b.id(), "written just now");
+        let file = std::fs::File::options().write(true).open(&path).unwrap();
+        file.set_modified(SystemTime::now() - Duration::from_secs(3600)).unwrap();
+        let m = metadata();
+        let changed = UNIX_EPOCH + Duration::new(m.ctime() as u64, m.ctime_nsec() as u32);
+        let version = FileVersion::of(&m, 0).unwrap();
+        assert!(!version.settled(changed + SETTLE - Duration::from_nanos(1)), "modified an hour back, changed now");
+        assert!(version.settled(changed + SETTLE));
+        let (a, b) = (Handle::of_file(&m, 0, changed + SETTLE), Handle::of_file(&m, 0, changed + SETTLE));
+        assert_eq!(a.id(), b.id(), "settled exactly at the boundary");
+        assert_ne!(Handle::of_file(&m, 0, changed + SETTLE - Duration::from_nanos(1)).id(), a.id());
     }
 
     #[test]

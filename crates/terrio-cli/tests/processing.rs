@@ -343,6 +343,9 @@ fn vector_geometry_commands_stream_and_write_whole_layers() {
         assert_eq!(coords(out, 0), [(0.0, 0.0), (10.0, 0.0)]);
         assert!(first(&d.join(out)).features[2].geometry.is_none(), "null geometries stay null");
     }
+    ok(&["simplify", "lines.geojson", "dp.geojson", "--tolerance", "1", "--method", "douglas-peucker"], d);
+    assert_eq!(coords("dp.geojson", 0), [(0.0, 0.0), (10.0, 0.0)]);
+    assert!(first(&d.join("dp.geojson")).features[2].geometry.is_none());
     ok(&["segmentize", "lines.geojson", "dense.geojson", "--max-length", "3"], d);
     assert_eq!(coords("dense.geojson", 1).len(), 5);
     ok(&["swap-xy", "lines.geojson", "swapped.geojson"], d);
@@ -368,6 +371,9 @@ fn vector_geometry_commands_stream_and_write_whole_layers() {
     assert_eq!(first(&d.join("simple.gpkg")).len(), 6);
     for bad in [
         &["simplify", "lines.geojson", "x.geojson", "--tolerance", "-1"][..],
+        &["simplify", "lines.geojson", "x.geojson", "--tolerance", "1", "--method", "visvalingam"],
+        &["simplify", "lines.geojson", "x.geojson", "--tolerance", "1", "--method", "douglas-peucker", "--collapse", "maybe"],
+        &["simplify", "lines.geojson", "x.geojson", "--tolerance", "-1", "--method", "douglas-peucker"],
         &["concave-hull", "lines.geojson", "x.geojson", "--ratio", "2"],
         &["set-geom-type", "lines.geojson", "x.geojson", "--curve"],
         &["set-geom-type", "lines.geojson", "x.geojson", "--geometry-type", "POINT", "--multi"],

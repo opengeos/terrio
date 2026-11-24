@@ -55,10 +55,19 @@ pub struct SimplifyArgs {
     /// Distance tolerance in CRS units (degrees in a geographic CRS), at least 0.
     #[arg(long, allow_negative_numbers = true)]
     tolerance: f64,
+    /// `preserve-topology` (JTS's TopologyPreservingSimplifier, as `gdal vector simplify`) or
+    /// `douglas-peucker` (JTS's DouglasPeuckerSimplifier without its repair step: faster, but
+    /// rings may self-intersect at large tolerances).
+    #[arg(long, default_value = "preserve-topology")]
+    method: String,
+    /// With `douglas-peucker`, rings left with fewer than four points: `keep` their vertices, or
+    /// `drop` them as JTS does (a collapsed shell empties its polygon).
+    #[arg(long, default_value = "keep")]
+    collapse: String,
 }
 
 pub fn simplify(a: SimplifyArgs) -> Result<()> {
-    run_op(&a.input, &a.output, GeometryOp::Simplify { tolerance: a.tolerance })
+    run_op(&a.input, &a.output, GeometryOp::simplify(a.tolerance, &a.method, &a.collapse)?)
 }
 
 #[derive(clap::Args)]

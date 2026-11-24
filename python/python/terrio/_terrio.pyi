@@ -33,6 +33,7 @@ __all__ = [
     "GeoTiffWriter",
     "Layer",
     "VectorDataset",
+    "ArrowArray",
     "ArrowTable",
     "from_arrow",
     "open",
@@ -144,6 +145,7 @@ __all__ = [
     "check_coverage",
     "clean_coverage",
     "simplify",
+    "simplify_wkb",
     "simplify_coverage",
     "segmentize",
     "convex_hull",
@@ -575,6 +577,16 @@ class ArrowTable:
 def from_arrow(
     data: _ArrowData | _SupportsGeoInterface, name: str | None = None, crs: str | None = None
 ) -> Layer: ...
+@final
+class ArrowArray:
+    """An Arrow array, exported through the Arrow PyCapsule interface."""
+
+    def __len__(self) -> int: ...
+    def __arrow_c_array__(
+        self, requested_schema: object | None = None
+    ) -> tuple[object, object]: ...
+    def __arrow_c_schema__(self) -> object: ...
+
 @final
 class PointCloud:
     """A point cloud in memory: columns of values, one per dimension."""
@@ -1972,10 +1984,33 @@ def sql(src: Any, query: str, *, layers: list[str] | None = None) -> Layer:
     """
     ...
 
-def simplify(src: Any, tolerance: float, *, layer: str | None = None) -> Layer:
-    """Topology-preserving simplification (GEOS TopologyPreservingSimplifier); Z kept, M dropped."""
+def simplify(
+    src: Any,
+    tolerance: float,
+    *,
+    layer: str | None = None,
+    method: str = "preserve-topology",
+    collapse: str = "keep",
+) -> Layer:
+    """Topology-preserving (JTS) or Douglas-Peucker simplification; Z kept, M dropped."""
     ...
 
+@overload
+def simplify_wkb(
+    geometries: Any,
+    tolerance: float,
+    *,
+    collapse: str = "keep",
+    stats: Literal[False] = False,
+) -> Any: ...
+@overload
+def simplify_wkb(
+    geometries: Any,
+    tolerance: float,
+    *,
+    collapse: str = "keep",
+    stats: Literal[True],
+) -> tuple[Any, dict[str, int | float]]: ...
 def segmentize(src: Any, max_length: float, *, layer: str | None = None) -> Layer:
     """Add vertices so that no segment is longer than ``max_length`` (OGR segmentize)."""
     ...

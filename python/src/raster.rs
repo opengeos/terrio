@@ -35,7 +35,8 @@ pub struct PyRaster {
 /// that overlaps one in progress (which holds the raster's own reader) takes one of them, or
 /// opens one, and leaves it for the next. Opening again reads the headers from the process-wide
 /// caches. Each reader has its own file handle; their decoded chunks share the process-wide block
-/// cache, under its one byte cap, without being shared between readers.
+/// cache, under its one byte cap, without being shared between readers, except the bands of a
+/// local GRIB file, which the readers of one version of the file share on Unix.
 #[pyclass(frozen)]
 pub(crate) struct Readers {
     path: String,
@@ -1133,6 +1134,10 @@ impl PyRaster {
     ///         `"min"` and `"max"` for GeoTIFF overviews). GeoTIFF overviews default to
     ///         `"nearest"`; COGs to GDAL's COG driver's `"cubic"` (`"nearest"` when paletted).
     ///         The `OVERVIEW_RESAMPLING` and `RESAMPLING` creation options come first.
+    ///         terrio's `"area_matched"` (`"area_matched_mode"` for classes) builds GeoTIFF and
+    ///         COG overviews that keep the valid area of a raster with nodata, and records the
+    ///         area each level keeps in the band metadata items `OVERVIEW_AREA_RATIOS` and
+    ///         `OVERVIEW_BASE_VALID_PIXELS`.
     ///     gcps: GeoTIFF ground control points, in the raster's CRS: `(pixel, line, x, y, z)`
     ///         tuples, written as tie points instead of the geotransform.
     ///     mask: A per-dataset validity mask, a 2-D uint8 array (0 for invalid pixels), written

@@ -329,6 +329,14 @@ pub(crate) trait WindowSource: Send + Sync {
     fn mask_band_overviews(&self) -> Vec<(usize, usize)> {
         if self.has_mask() { self.overviews() } else { Vec::new() }
     }
+    /// The overview indices of a mask overview whose band has its own overviews.
+    fn mask_band_nested_overviews(&self, _overview: usize) -> Vec<usize> {
+        Vec::new()
+    }
+    /// Reads an independent mask-band overview by its own index, when the source has one.
+    fn read_mask_band_overview(&mut self, _window: Window, _overview: usize) -> Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
     /// The bits of a sample of the per-dataset mask band as stored (see
     /// [`LazyRaster::mask_band_bits`]): by default, unknown.
     fn mask_band_bits(&self) -> Option<u16> {
@@ -451,6 +459,12 @@ impl WindowSource for SharedRaster {
     }
     fn mask_band_overviews(&self) -> Vec<(usize, usize)> {
         self.lock().map(|reader| reader.mask_band_overviews()).unwrap_or_default()
+    }
+    fn mask_band_nested_overviews(&self, overview: usize) -> Vec<usize> {
+        self.lock().map(|reader| reader.mask_band_nested_overviews(overview)).unwrap_or_default()
+    }
+    fn read_mask_band_overview(&mut self, window: Window, overview: usize) -> Result<Option<Vec<u8>>> {
+        self.lock()?.read_mask_band(window, Some(overview), crate::WindowSampling::Integer).map(Some)
     }
     fn mask_band_bits(&self) -> Option<u16> {
         self.mask_bits
@@ -1582,6 +1596,14 @@ impl LazyRaster {
         Ok(())
     }
 
+    pub(crate) fn prefetch_own_level_mask_windows(&mut self, windows: &[Window], overview: usize) -> Result<()> {
+        let _scope = self.enter_asset_read()?;
+        if let Inner::Tiff(t) = &mut self.inner {
+            t.prefetch_own_mask_windows(overview + 1, windows)?;
+        }
+        Ok(())
+    }
+
     /// Reads a window of some bands, at full resolution or from an overview, as a raster
     /// georeferenced to the window.
     ///
@@ -2002,6 +2024,17 @@ impl LazyRaster {
         }
     }
 
+    /// The first external overview of a `.msk` can itself have overviews, as for raster bands.
+    pub(crate) fn mask_band_nested_overviews(&self, overview: usize) -> Vec<usize> {
+        if let Some(m) = &self.sidecar_mask {
+            return m.level_overviews(Some(overview));
+        }
+        match &self.inner {
+            Inner::Source(_, source) => source.mask_band_nested_overviews(overview),
+            _ => Vec::new(),
+        }
+    }
+
     /// The bits of a sample of the per-dataset mask band as stored (GDAL's `NBITS`): 1 for a
     /// GeoTIFF's internal mask, the sidecar's bits; `None` for other sources.
     pub(crate) fn mask_band_bits(&self) -> Option<u16> {
@@ -2016,9 +2049,15 @@ impl LazyRaster {
     /// Reads a window of GDAL's per-dataset mask band at full resolution or of its overview
     /// `overview` (numbered in [`LazyRaster::mask_band_overviews`]): 255 for valid pixels, 0 for
     /// invalid ones.
-    pub(crate) fn read_mask_band(&mut self, window: Window, overview: Option<usize>) -> Result<Vec<u8>> {
+    pub(crate) fn read_mask_band(&mut self, window: Window, overview: Option<usize>, sampling: crate::WindowSampling) -> Result<Vec<u8>> {
         let all_valid = || vec![255; window.width * window.height];
         let Some(j) = overview else { return Ok(self.read_mask(window, None)?.unwrap_or_else(all_valid)) };
+        if sampling == crate::WindowSampling::Integer
+            && let Inner::Source(_, source) = &mut self.inner
+            && let Some(mask) = source.read_mask_band_overview(window, j)?
+        {
+            return Ok(mask);
+        }
         let size = *self.mask_band_overviews().get(j).ok_or_else(|| Error::InvalidArgument(format!("no mask overview {j}")))?;
         if let Some(m) = self.sidecar_mask.as_mut() {
             return read_sidecar_own_mask(m, window, size)?.ok_or_else(|| Error::InvalidData("missing sidecar mask overview".into()));
