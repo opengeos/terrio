@@ -206,7 +206,7 @@ test("supplied COG overviews are written as they are, with metadata items", () =
     ({ width, height, data: Float32Array.from({ length: width * height }, (_, i) => (level + 1) * 1000 + (i % 13)) }));
   const bytes = base.toBytes("s.tif", { format: "COG", compress: "DEFLATE", tileSize: 16, overviewData, metadata: { SOURCE: "supplied" } });
   const back = terrio.open(bytes, "s.tif");
-  assert.deepEqual(back.overviews(), sizes);
+  assert.deepEqual(back.overviews, sizes);
   for (const [i, level] of overviewData.entries()) assert.deepEqual([...back.readBand(1, undefined, i)], [...level.data]);
   assert.equal(Object.fromEntries(back.info().metadata).SOURCE, "supplied");
   // Each level smaller than the one before it, of the raster's type; not with factors.
