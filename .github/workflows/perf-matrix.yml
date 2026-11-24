@@ -32,7 +32,7 @@ on:
 permissions: {}
 
 jobs:
-  prepare:
+  authorize:
     if: >
       github.event_name == 'workflow_dispatch' ||
       (github.event.issue.pull_request != null &&
@@ -40,6 +40,21 @@ jobs:
         (github.event.comment.author_association == 'OWNER' ||
          github.event.comment.author_association == 'MEMBER' ||
          github.event.comment.author_association == 'COLLABORATOR'))
+    runs-on: ubuntu-latest
+    cache-mode: none
+    permissions:
+      contents: read
+    steps:
+      - name: Require repository write permission
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTER: ${{ github.event.comment.user.login || github.actor }}
+        run: |
+          permission=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$REQUESTER/permission" -q .permission)
+          case "$permission" in admin|maintain|write) ;; *) echo "Repository write permission is required"; exit 1 ;; esac
+
+  prepare:
+    needs: authorize
     # Only an authorized benchmark request may cancel an earlier benchmark.
     concurrency:
       group: perf-matrix-prepare-${{ github.event.issue.number || inputs.pr }}
@@ -68,11 +83,8 @@ jobs:
         env:
           BODY: ${{ github.event.comment.body || format('/perf-matrix {0}', inputs.args) }}
           GH_TOKEN: ${{ github.token }}
-          REQUESTER: ${{ github.event.comment.user.login || github.actor }}
         run: |
           [[ "$PR" =~ ^[0-9]+$ ]] || { echo "Invalid pull request number"; exit 1; }
-          permission=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$REQUESTER/permission" -q .permission)
-          case "$permission" in admin|maintain|write) ;; *) echo "Repository write permission is required"; exit 1 ;; esac
           args=$(head -n 1 <<< "$BODY" | sed 's|^/perf-matrix||; s|^ *||; s| *$||')
           # Only names, numbers and options: the arguments reach a command line.
           [[ "$args" =~ ^[A-Za-z0-9_.\ -]*$ ]] || { echo "Arguments may hold letters, digits, _ . - and spaces"; exit 1; }

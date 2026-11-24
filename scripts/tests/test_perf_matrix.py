@@ -589,7 +589,10 @@ def test_benchmark_request_rejects_a_read_only_collaborator(tmp_path):
 
     root = Path(__file__).resolve().parents[2]
     workflow = (root / ".github/workflows/perf-matrix.yml").read_text()
-    script = textwrap.dedent(workflow.split("        run: |\n", 1)[1].split("      - name:", 1)[0])
+    gate, prepare = workflow.split("\n  prepare:", 1)
+    assert "concurrency:" not in gate
+    assert "    needs: authorize\n" in prepare
+    script = textwrap.dedent(gate.split("        run: |\n", 1)[1])
     cli = tmp_path / "gh"
     cli.write_text('#!/bin/sh\ncase "$*" in *collaborators*) echo read ;; *) exit 99 ;; esac\n')
     cli.chmod(0o755)
