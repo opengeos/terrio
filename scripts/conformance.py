@@ -3011,12 +3011,16 @@ PROJ_CASES = {
     },
     "wkt_unresolved": {
         "wkts_proj_does_not_resolve_are_placed_as_proj_does": (
-            "WKTs PROJ does not resolve to their EPSG CRS: ESRI, renamed, WKT 2 without IDs (1,100 cases)", IDENTICAL,
+            "WKTs PROJ does not resolve to their EPSG CRS: ESRI, renamed, on a renamed datum, WKT 2 without IDs (1,120 cases)", IDENTICAL,
             "PROJ 9.8.1 (pyproj 3.8.0, no grids): within 1 mm",
         ),
-        "renamed_datums_and_the_datum_pivot_into_them_are_placed_by_the_code": (
-            "WKTs PROJ places through a renamed datum, or by its datum pivot into a CRS it cannot find by name", NOT_COMPARED,
-            "known difference, placed by the code until terrio follows those steps (opengeos/terrio#1012, item 7 step 2)",
+        "a_crs_with_an_unknown_authority_is_placed_by_the_code": (
+            "ONGD14 renamed with an ID of an authority PROJ does not know (AUTHORITY[\"LOCAL\",\"1\"])", NOT_COMPARED,
+            "known difference, placed by the code until terrio follows PROJ's datum pivot for it (opengeos/terrio#1012, item 7)",
+        ),
+        "transformations_framed_by_the_ballpark_are_refused_with_it": (
+            "renamed Monte Mario (Rome), Tokyo 1892 and Georgia Geodetic Datum with ALLOW_BALLPARK=NO", IDENTICAL,
+            "PROJ 9.9.0 (pyproj, no grids, allow_ballpark=False): within 1 mm, and no operation for the Georgia datum",
         ),
     },
     "null_transformations": {

@@ -104,9 +104,18 @@ pub(crate) struct Def {
 /// through other datums, as [`route`] follows it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Unresolved {
-    /// Whether the datum has an ID its name is not a name of (`DATUM["Local datum",...,
-    /// ID["EPSG",6806]]`), which PROJ then reaches by its ballpark, of unknown accuracy.
-    pub datum_renamed: bool,
+    /// Whether PROJ reaches the CRSs of its datum by its ballpark, of unknown accuracy: the datum
+    /// has an ID its name is not a name of (`DATUM["Local datum",..., ID["EPSG",6806]]`), and
+    /// the prime meridian is the registered one in radians (else PROJ rotates the longitudes, of
+    /// an accuracy of 0: its WKT reader keeps a grad factor of 0.0157079632679489, where its
+    /// database has 0.01570796326794895).
+    pub ballpark: bool,
+    /// Whether PROJ finds a CRS by the WKT's name (into one it does not, PROJ pivots through the
+    /// CRSs of its datum).
+    pub named: bool,
+    /// Whether the WKT's geographic CRS has its code's geographic CRS name, which PROJ's datum
+    /// pivot tries first (the base geographic CRS for a projected WKT).
+    pub same_name: bool,
 }
 
 /// A WKT 2 `BOUNDCRS` with a Helmert transformation, or a coded CRS with a `TOWGS84` of its own.
@@ -1945,10 +1954,8 @@ impl Def {
         if let Some(r) = r
             && !r.resolved
         {
-            self.unresolved = Some(Unresolved { datum_renamed: r.datum_renamed });
-            if !r.datum_renamed {
-                self.area = r.area;
-            }
+            self.unresolved = Some(Unresolved { ballpark: r.ballpark, named: r.named, same_name: r.same_name });
+            self.area = r.area;
         }
     }
 }
@@ -2022,8 +2029,9 @@ fn proj_resolution(root: &wkt1::Node, code: Option<u32>, own_geog: Option<u32>, 
     // the CRS up by its name instead), but then searches only among the CRSs of that authority
     // (`findsOpsInRegistryWithIntermediate`), so finds no chain through another datum: the CRS's
     // own transformations, as for a resolved CRS.
+    // `named` and `same_name` are read for an unresolved CRS only.
     if has_id(root) {
-        return Some(Resolution { resolved: true, area: area(code), datum_renamed });
+        return Some(Resolution { resolved: true, area: area(code), datum_renamed, ballpark: false, named: false, same_name: false });
     }
     // ESRI's WKT reader maps a `PROJCS` name after a `GCS_` geographic CRS or a `D_` datum.
     let esri =
@@ -2056,7 +2064,43 @@ fn proj_resolution(root: &wkt1::Node, code: Option<u32>, own_geog: Option<u32>, 
                     f == Some(g) && axes(base, !is_wkt1, g)
                 })
         };
-    Some(Resolution { resolved, area: area(found), datum_renamed })
+    // PROJ goes from the WKT into a CRS of its datum by a longitude rotation, not its ballpark,
+    // when their prime meridians differ in radians: it compares them exactly (`getSIValue`).
+    // The registered meridian, as PROJ's database gives it: Paris in grads of
+    // 0.01570796326794895 rad (the only registered prime meridian not in degrees), the others in
+    // degrees (`proj_prime_meridian` gives a meridian of its table the table's value).
+    let registered_pm = geog.and_then(epsg::get).map_or(0.0, |e| {
+        let p = Params::parse(&e.proj);
+        proj_prime_meridian(p.str("pm").and_then(|v| v.parse::<f64>().ok().or_else(|| prime_meridian(v))).unwrap_or(0.0))
+    });
+    let registered_si =
+        if (registered_pm - 2.33722917).abs() < 1e-6 { 2.5969213 * 0.01570796326794895 } else { registered_pm.to_radians() };
+    let pm_rotated = base.child("PRIMEM").is_some_and(|pm| {
+        let unit = pm.child("ANGLEUNIT").or_else(|| base.child("UNIT")).and_then(|u| u.num(1)).unwrap_or(1f64.to_radians());
+        let value = pm.num(1).unwrap_or(0.0);
+        if (unit - 1f64.to_radians()).abs() <= 1e-10 * unit {
+            // PROJ's WKT reader takes a unit within 1e-10 of the degree for the degree, and a
+            // meridian of its table for the table's (Rome's 12.4523333333333°): compared as
+            // `proj_prime_meridian` matches them, within 1e-10 rad.
+            (proj_prime_meridian(value) - registered_pm).to_radians().abs() > 1e-10
+        } else {
+            // Another unit keeps its factor, so the meridian's radians are compared exactly, as
+            // PROJ compares them: 0 rad is Greenwich, Paris's 2.5969213 grads of
+            // 0.0157079632679489 rad are not the database's (PROJ 9.9.0).
+            value * unit != registered_si
+        }
+    });
+    // The name of the geographic CRS, for a projected one, which PROJ pivots through.
+    let geog_name = if projected { base.name() } else { root.name() };
+    let same_name = geog.and_then(epsg::get).is_some_and(|e| geog_name == Some(e.name.as_str()));
+    Some(Resolution {
+        resolved,
+        area: area(found),
+        datum_renamed,
+        ballpark: datum_renamed && !pm_rotated,
+        named: found.is_some(),
+        same_name,
+    })
 }
 
 /// What [`proj_resolution`] tells of a WKT.
@@ -2066,8 +2110,14 @@ struct Resolution {
     resolved: bool,
     /// The area PROJ uses for it: that of the CRS it finds by the WKT's name, if any.
     area: Option<[f64; 4]>,
-    /// Whether the datum is renamed (see [`Unresolved`]).
+    /// Whether the datum has an ID its name is not a name of.
     datum_renamed: bool,
+    /// Whether PROJ reaches the CRSs of the datum by its ballpark (see [`Unresolved::ballpark`]).
+    ballpark: bool,
+    /// See [`Unresolved::named`].
+    named: bool,
+    /// See [`Unresolved::same_name`].
+    same_name: bool,
 }
 
 /// PROJ's rule for an ellipsoid of the Earth: a semi-major axis within 0.7% of its mean radius
@@ -2491,6 +2541,50 @@ mod resolution_tests {
         // On its datum's own name, it is the code.
         let own = renamed.replacen(r#"DATUM["Local datum""#, r#"DATUM["Monte Mario (Rome)""#, 1);
         assert_eq!(resolution(&own, Some(4806)).map(|r| (r.0, r.2)), Some((true, false)));
+    }
+
+    /// Whether PROJ reaches the CRSs of a WKT's datum by its ballpark, whether it finds a CRS by
+    /// the WKT's name, and whether the WKT has its code's name.
+    fn framing(w: &str, code: u32) -> (bool, bool, bool) {
+        let r = proj_resolution(&wkt1::parse(w).unwrap(), Some(code), None, &|_| false).unwrap();
+        (r.ballpark, r.named, r.same_name)
+    }
+
+    #[test]
+    fn a_renamed_datum_is_reached_by_the_ballpark_unless_the_prime_meridian_differs() {
+        // PROJ 9.9.0 goes from a renamed Monte Mario (Rome), its prime meridian in degrees, into
+        // EPSG:4806 by "Ballpark geographic offset from Local to Monte Mario (Rome)".
+        let rome = r#"GEOGCRS["Local",DATUM["Local datum",ELLIPSOID["International 1924",6378388,297,LENGTHUNIT["metre",1]],ID["EPSG",6806]],PRIMEM["Rome",12.4523333333333,ANGLEUNIT["degree",0.0174532925199433]],CS[ellipsoidal,2],AXIS["geodetic latitude (Lat)",north,ORDER[1],ANGLEUNIT["degree",0.0174532925199433]],AXIS["geodetic longitude (Lon)",east,ORDER[2],ANGLEUNIT["degree",0.0174532925199433]]]"#;
+        assert_eq!(framing(rome, 4806), (true, false, false));
+        assert_eq!(framing(&rome.replacen(r#"GEOGCRS["Local""#, r#"GEOGCRS["Monte Mario (Rome)""#, 1), 4806), (true, true, true));
+        // From a renamed Carthage (Paris), its prime meridian in grads of 0.0157079632679489 rad
+        // (PROJ's database has 0.01570796326794895), by "Transformation from Local to Carthage
+        // (Paris)", a longitude rotation of an accuracy of 0.
+        let paris = r#"GEOGCRS["Local",DATUM["Local datum",ELLIPSOID["Clarke 1880 (IGN)",6378249.2,293.466021293627,LENGTHUNIT["metre",1]],ID["EPSG",6816]],PRIMEM["Paris",2.5969213,ANGLEUNIT["grad",0.0157079632679489]],CS[ellipsoidal,2],AXIS["geodetic latitude (Lat)",north,ORDER[1],ANGLEUNIT["grad",0.0157079632679489]],AXIS["geodetic longitude (Lon)",east,ORDER[2],ANGLEUNIT["grad",0.0157079632679489]]]"#;
+        assert_eq!(framing(paris, 4816), (false, false, false));
+        // On another prime meridian than the registered one (Greenwich for Monte Mario (Rome)),
+        // a longitude rotation too.
+        let greenwich = rome.replacen(r#"PRIMEM["Rome",12.4523333333333"#, r#"PRIMEM["Greenwich",0"#, 1);
+        assert_eq!(framing(&greenwich, 4806), (false, false, false));
+        // In radians, compared exactly with PROJ's database's 12.452333333333332° (PROJ 9.9.0): by
+        // the ballpark at 0.2173342162225072 rad, by a longitude rotation at 12.4523333333333°'s
+        // 0.21733421622250665 rad.
+        let radian_rome = |radians: &str| {
+            rome.replace(
+                r#"PRIMEM["Rome",12.4523333333333,ANGLEUNIT["degree",0.0174532925199433]]"#,
+                &format!(r#"PRIMEM["Rome",{radians},ANGLEUNIT["radian",1]]"#),
+            )
+        };
+        assert_eq!(framing(&radian_rome("0.2173342162225072"), 4806), (true, false, false));
+        assert_eq!(framing(&radian_rome("0.21733421622250665"), 4806), (false, false, false));
+        let tokyo: serde_json::Value = serde_json::from_str(include_str!("../tests/data/wkt_unresolved.json")).unwrap();
+        let tokyo = tokyo["wkts"]["5132 wkt2 datum id, renamed"].as_str().unwrap();
+        let radian_greenwich = tokyo
+            .replace(r#"PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.0174532925199433]]"#, r#"PRIMEM["Greenwich",0,ANGLEUNIT["radian",1]]"#);
+        assert_ne!(radian_greenwich, tokyo);
+        assert_eq!(framing(&radian_greenwich, 5132), (true, false, false));
+        // On its datum's own name, no ballpark.
+        assert!(!framing(&rome.replacen(r#"DATUM["Local datum""#, r#"DATUM["Monte Mario (Rome)""#, 1), 4806).0);
     }
 
     #[test]
