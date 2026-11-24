@@ -131,7 +131,7 @@ impl ParquetStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wbvector::{FieldDef, FieldType, Layer};
+    use wbvector::{FieldDef, FieldType, Geometry, Layer};
 
     #[test]
     fn late_attribute_filters_leave_unread_fids_unchanged() {
@@ -148,6 +148,100 @@ mod tests {
         assert!(stream.filter_attributes(&Expression::parse("v > 10").unwrap()).unwrap_err().to_string().contains("first batch"));
         let remaining = stream.read_all().unwrap();
         assert_eq!(remaining.features.iter().map(|f| f.fid).collect::<Vec<_>>(), (4..20).collect::<Vec<_>>());
+    }
+
+    /// A query on a GeoParquet path filters its rows in the reader and gives what the same
+    /// query gives on the layer read whole, also when the reader cannot evaluate the clause.
+    #[test]
+    fn sql_on_a_path_matches_the_query_on_the_whole_layer() {
+        let mut layer = Layer::new("t");
+        layer.crs = Some(wbvector::Crs::new().with_epsg(4326));
+        layer.add_field(FieldDef::new("id", FieldType::Integer));
+        layer.add_field(FieldDef::new("name", FieldType::Text));
+        for i in 0..50 {
+            layer.push(Feature {
+                fid: i,
+                geometry: Some(Geometry::point(i as f64, 0.0)),
+                attributes: vec![FieldValue::Integer(i as i64), FieldValue::Text(format!("n{i}"))],
+            });
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.parquet");
+        let path = path.to_str().unwrap();
+        super::super::write(&layer, path).unwrap();
+        let whole = crate::open_vector(path, &Default::default()).unwrap().into_resolved_layers();
+        assert!(whole[0].features.iter().all(|feature| feature.geometry.is_some()));
+        assert!(whole[0].crs.is_some());
+        for statement in [
+            "SELECT * FROM t WHERE id < 7",
+            "SELECT name FROM t WHERE id IN (3, 40, 99) ORDER BY id DESC",
+            "SELECT * FROM t WHERE id BETWEEN 10 AND 12 OR name = 'n45' LIMIT 2",
+            "SELECT * FROM t WHERE FID >= 47",
+            "SELECT COUNT(*) FROM t WHERE id > 20",
+            "SELECT * FROM t WHERE missing > 1 OR id = 1",
+            "SELECT * FROM t",
+        ] {
+            let expected = crate::ops::sql::query(&whole, statement);
+            let got = crate::ops::sql::query_path(path, statement, &Default::default());
+            match (got, expected) {
+                (Ok(got), Ok(expected)) => {
+                    let rows = |l: &Layer| {
+                        l.features
+                            .iter()
+                            .map(|f| (f.fid, f.geometry.as_ref().map(Geometry::to_wkb), f.attributes.clone()))
+                            .collect::<Vec<_>>()
+                    };
+                    assert_eq!(rows(&got), rows(&expected), "{statement}");
+                    let crs = |layer: &Layer| layer.crs.as_ref().map(|crs| (crs.epsg, crs.wkt.clone()));
+                    assert_eq!(crs(&got), crs(&expected), "{statement}");
+                    assert_eq!(got.geom_type, expected.geom_type, "{statement}");
+                }
+                (Err(got), Err(expected)) => assert_eq!(got.to_string(), expected.to_string(), "{statement}"),
+                (got, expected) => {
+                    panic!("{statement}: got {:?}, expected {:?}", got.map(|l| l.features.len()), expected.map(|l| l.features.len()))
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sql_on_a_path_reports_predicate_read_errors() {
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+        use parquet::file::metadata::ParquetMetaDataWriter;
+        let mut layer = Layer::new("t");
+        layer.add_field(FieldDef::new("id", FieldType::Integer));
+        for i in 0..20 {
+            layer.push(Feature { fid: i, geometry: None, attributes: vec![FieldValue::Integer(i as i64)] });
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.parquet");
+        let path = path.to_str().unwrap();
+        super::super::write(&layer, path).unwrap();
+        let mut bytes = std::fs::read(path).unwrap();
+        let meta = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(bytes.clone())).unwrap().metadata().as_ref().clone();
+        let group = meta.row_group(0).clone().into_builder().set_num_rows(21).build().unwrap();
+        let meta = meta.into_builder().set_row_groups(vec![group]).build();
+        // Keep the data pages intact but make their row count disagree with the footer.
+        ParquetMetaDataWriter::new(&mut bytes, &meta).finish().unwrap();
+        std::fs::write(path, bytes).unwrap();
+        let error = crate::ops::sql::query_path(path, "SELECT * FROM t WHERE id < 7", &Default::default()).unwrap_err();
+        assert!(error.to_string().contains("predicate row count mismatch"), "{error}");
+    }
+
+    /// `IN` keeps a row group when one of its values may be in the group's range.
+    #[test]
+    fn in_lists_prune_by_ranges() {
+        let mut layer = Layer::new("t");
+        layer.add_field(FieldDef::new("v", FieldType::Integer));
+        let may = |text: &str| {
+            let e = Expression::parse(text).unwrap().bind(&layer.schema).unwrap();
+            e.may_match_ranges(|_| Some((FieldValue::Integer(10), FieldValue::Integer(20))))
+        };
+        assert!(!may("v IN (1, 25)"));
+        assert!(may("v IN (1, 15)"));
+        assert!(may("v NOT IN (1, 25)"));
+        assert!(may("v IN (1, v)"));
+        assert!(!may("v IN (1, 2) AND v > 0"));
     }
 
     #[test]

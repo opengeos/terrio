@@ -330,6 +330,12 @@ impl FeatureReader {
         Ok(Some(chunk))
     }
 
+    /// Pushes an attribute predicate into the source before the first batch: a GeoParquet file
+    /// reads only the rows it may match. Other sources ignore it.
+    pub(crate) fn filter_attributes(&mut self, expression: &crate::ops::sql::Expression) -> Result<()> {
+        self.source.filter_attributes(expression)
+    }
+
     /// Reads the remaining features into a layer.
     pub fn read_all(mut self) -> Result<Layer> {
         let mut layer = schema_of(&self.layer);

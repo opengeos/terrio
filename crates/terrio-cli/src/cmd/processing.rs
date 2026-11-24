@@ -615,7 +615,13 @@ pub struct SqlArgs {
 }
 
 pub fn sql(a: SqlArgs) -> Result<()> {
-    let result = terrio::ops::sql::query(&a.input.open()?, &a.query)?;
+    let options = terrio::VectorOpenOptions { layers: a.input.layers.clone(), ..Default::default() };
+    // A dataset on disk or at a URL passes the query's WHERE clause to its reader.
+    let result = if terrio::memory::is_geometry_text(&a.input.input) {
+        terrio::ops::sql::query(&a.input.open()?, &a.query)?
+    } else {
+        super::quiet(|| terrio::ops::sql::query_path(&a.input.input, &a.query, &options))?
+    };
     a.output.write(vec![result])
 }
 
