@@ -12790,7 +12790,7 @@
     40.93
    ],
    "geographic": true,
-   "pending": true
+   "pending": false
   },
   {
    "name": "4806 wkt2 datum id, datum renamed <- 4326",
@@ -12810,7 +12810,7 @@
     40.93
    ],
    "geographic": true,
-   "pending": true
+   "pending": false
   },
   {
    "name": "4806 wkt2 datum id, renamed -> 4326",
@@ -12830,7 +12830,7 @@
     40.93
    ],
    "geographic": true,
-   "pending": true
+   "pending": false
   },
   {
    "name": "4806 wkt2 datum id, renamed <- 4326",
@@ -12850,7 +12850,7 @@
     40.93
    ],
    "geographic": true,
-   "pending": true
+   "pending": false
   },
   {
    "name": "4806 wkt1 datum authority -> 4326",
@@ -13690,7 +13690,7 @@
     33.814999992531156
    ],
    "geographic": true,
-   "pending": true
+   "pending": false
   },
   {
    "name": "4816 wkt2 datum id, renamed <- 4326",
@@ -13710,7 +13710,7 @@
     37.57042820277408
    ],
    "geographic": true,
-   "pending": true
+   "pending": false
   },
   {
    "name": "4816 wkt1 datum authority -> 4326",
@@ -14250,7 +14250,7 @@
     32.955
    ],
    "geographic": true,
-   "pending": true
+   "pending": false
   },
   {
    "name": "5132 wkt2 datum id, datum renamed <- 4326",
@@ -14270,7 +14270,7 @@
     32.955
    ],
    "geographic": true,
-   "pending": true
+   "pending": false
   },
   {
    "name": "5132 wkt2 datum id, renamed -> 4326",
@@ -14290,7 +14290,7 @@
     32.955
    ],
    "geographic": true,
-   "pending": true
+   "pending": false
   },
   {
    "name": "5132 wkt2 datum id, renamed <- 4326",
@@ -14310,7 +14310,7 @@
     32.955
    ],
    "geographic": true,
-   "pending": true
+   "pending": false
   },
   {
    "name": "5132 wkt1 datum authority -> 4326",
@@ -15790,7 +15790,7 @@
     20.535
    ],
    "geographic": true,
-   "pending": true
+   "pending": false
   },
   {
    "name": "7373 esri gcs renamed -> 4258",
@@ -15990,7 +15990,7 @@
     20.535
    ],
    "geographic": true,
-   "pending": true
+   "pending": false
   },
   {
    "name": "7373 esri gcs renamed, local id -> 4326",
@@ -16070,7 +16070,7 @@
     20.535
    ],
    "geographic": true,
-   "pending": true
+   "pending": false
   },
   {
    "name": "7373 wkt2 datum id -> 4326",
@@ -16130,7 +16130,7 @@
     20.535
    ],
    "geographic": true,
-   "pending": true
+   "pending": false
   },
   {
    "name": "7373 wkt2 datum id, datum renamed <- 4326",
@@ -18390,7 +18390,7 @@
     -34.51
    ],
    "geographic": true,
-   "pending": true
+   "pending": false
   },
   {
    "name": "9309 wkt2 datum id, datum renamed <- 4326",
@@ -18410,7 +18410,7 @@
     -34.51
    ],
    "geographic": true,
-   "pending": true
+   "pending": false
   },
   {
    "name": "9309 wkt2 datum id, renamed -> 4326",
@@ -18430,7 +18430,7 @@
     -34.51
    ],
    "geographic": true,
-   "pending": true
+   "pending": false
   },
   {
    "name": "9309 wkt2 datum id, renamed <- 4326",
@@ -18450,7 +18450,7 @@
     -34.51
    ],
    "geographic": true,
-   "pending": true
+   "pending": false
   },
   {
    "name": "9309 wkt1 datum authority -> 4326",
@@ -20270,7 +20270,7 @@
     42.31499999999767
    ],
    "geographic": true,
-   "pending": true
+   "pending": false
   },
   {
    "name": "10831 wkt2 datum id, renamed <- 4326",
@@ -20290,7 +20290,7 @@
     42.31500202541569
    ],
    "geographic": true,
-   "pending": true
+   "pending": false
   },
   {
    "name": "10831 wkt1 datum authority -> 4326",

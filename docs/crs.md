@@ -693,11 +693,19 @@ finds come from `crates/terrio-crs/data/crs_names.tsv.zst` (`scripts/gen_crs_nam
 
 PROJ's datum pivot, which tries the datum's CRSs in order of code, the geocentric ones too, is
 followed: ESRI's ONGD14 (EPSG:7373) without its code gets "ONGD14 to WGS 84 (1)", registered between
-the geocentric CRSs, as in PROJ, while EPSG:7373 by its code keeps "(2)". One of PROJ's steps is not
-followed yet: the ballpark PROJ goes through, of unknown accuracy, when the datum's name is not its
-ID's (`DATUM["Local datum",...,ID["EPSG",6806]]`). When either CRS has such a datum, terrio does not
-search at all, for either side, and that CRS keeps its code's area. The transformation is then the
-one between the codes.
+the geocentric CRSs, as in PROJ, while EPSG:7373 by its code keeps "(2)". PROJ pivots from an
+unresolved CRS, and into one only when it cannot find it by its name (ONGD14 renamed); into one it
+finds, it goes by the code's own transformations. Under the code's name, it takes the first of the
+datum's CRSs of that name with transformations, alone. When the datum's name is not its ID's
+(`DATUM["Local datum",...,ID["EPSG",6806]]`), PROJ goes into the datum's CRSs by its ballpark, of
+unknown accuracy, and so are the chains and the transformations through geocentric CRSs it makes;
+the CRS's own registered transformations keep their accuracy. A renamed Monte Mario (Rome) then
+goes through Monte Mario, 72 m from EPSG:4806's own transformation, and a renamed Georgia Geodetic
+Datum (EPSG:10831) through Pulkovo 1942, 7 m away. A prime meridian in grads (Carthage (Paris),
+EPSG:4816) is not PROJ's registered one to the last digit, so PROJ rotates the longitudes instead,
+without the ballpark, and the accuracies are kept. One step is not followed yet: from a WKT with an
+ID of an authority PROJ does not know (`AUTHORITY["LOCAL","1"]`), PROJ's pivot takes only the first
+of the datum's CRSs with transformations; terrio places it by the code.
 terrio also does not follow PROJ for an ESRI ATF (Paris) (EPSG:4901) WKT without a code. PROJ takes
 IGNF's ATIG geocentric chain, which applies the Paris prime meridian twice and lands 178 km from
 PROJ's own placement of EPSG:4901. terrio, which has no IGNF transformations, identifies the WKT as
