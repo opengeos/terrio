@@ -54,7 +54,6 @@ fn lzw_one_and_many_threads() {
             std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "lzw_baseline_files"])
                 .env("RAYON_NUM_THREADS", n)
-                .env_remove("TERRIO_BLESS_LZW")
                 .status()
                 .unwrap()
                 .success()
@@ -63,7 +62,7 @@ fn lzw_one_and_many_threads() {
 }
 
 #[test]
-fn independent_writers_do_not_share_scratch() {
+fn concurrent_writes_remain_byte_identical() {
     std::thread::scope(|scope| {
         for _ in 0..4 {
             scope.spawn(lzw_baseline_files);

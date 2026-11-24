@@ -228,7 +228,7 @@ impl HashEncoder {
     }
 }
 
-// Require two period-four probes separated by up to 4096 bytes. A lone
+// Require two period-four probes at least clamp(len / 4, 32, 4096) bytes apart. A lone
 // small NoData margin must not select witnesses for a dense chunk. The
 // decision depends only on bytes, never timing, dictionary or thread state.
 fn profitable_chunk(data: &[u8]) -> bool {
