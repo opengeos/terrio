@@ -760,6 +760,15 @@ one, optional reference wheels retain their bundled databases. Networking and us
 caches are isolated in both cases, including for CLI subprocesses, before either reference
 library is imported. Grid-specific tests explicitly select their own directories instead.
 
+Rasterio's GDAL and pyproj also keep the objects their PROJ builds from its database per thread,
+so an earlier test can change how a later one builds a CRS from a code (#1218). A thread that has
+looked datum EPSG:6326 up as a single datum builds EPSG:4326, 3857 and the other WGS 84 codes on
+that datum, without the datum ensemble. Such a lookup comes with opening, through rasterio, a
+GeoTIFF on the WGS 84 ellipsoid without a datum code, and with writing as WKT 1 a CRS on WGS 84
+without an identifier, which `terrio.pyogrio` does through pyproj when it reads such a `.prj`. A
+test that compares the PROJJSON of CRSs built from codes builds both values with the
+`in_a_new_thread` fixture, in a thread of their own.
+
 Transformations in the real-data Rust test binaries must go through the `data()` helper first,
 which turns grid search and the network off. A test that transforms without calling `data()`
 can see the machine's grids, depending on test order. No current test does this.
@@ -2691,6 +2700,7 @@ cargo test -p terrio --test merged resampled_reads::
 cargo test -p terrio-cli --test translate_overviews
 python scripts/make_resampled_reads_fixtures.py                  # GDAL's Python bindings
 python scripts/make_resampled_reads_fixtures.py --check-rasterio # rasterio
+python scripts/make_resampled_reads_fixtures.py --integer-windows # GDAL 3.13.2
 python scripts/conformance.py ../terrio-data --only translate-overviews
 ```
 
@@ -2699,14 +2709,20 @@ file, bands, a window, an output size, a resampling, an overview selection), the
 bands GDAL 3.13.2 reads, frozen in `tests/data/resampled_reads/expected.json.gz`. Pixels of several
 bands are read through `GDALDatasetRasterIOEx`, a band alone through `GDALRasterIOEx`, and masks
 through the bands' `GetMaskBand()`, called through `ctypes` with the floating-point window always
-given, as rasterio calls them: GDAL's Python bindings give it only for windows that are not whole,
-and GDAL then samples an overview from the integer window rounded to it. Selections other than
-`AUTO` are read as `gdal_translate -ovr` writes them. The rasters are Byte RGB with an internal
+given, as rasterio calls them. GDAL's Python bindings omit the floating-point window for
+whole-pixel windows, so nearest neighbour samples from the integer window rounded to the overview.
+Selections other than `AUTO` are read as `gdal_translate -ovr` writes them. The rasters are Byte RGB with an internal
 mask and mask overviews, and the same with overviews built before the mask; UInt16 of odd size,
 Int16 and Float32 with nodata values (NaN included); Float32 with a `.ovr`; RGBA, and a UInt16
 alpha band; a paletted band; a `.msk` sidecar; and two bands all valid. Every method is read at
 whole and fractional windows, into smaller and larger outputs and outputs reduced on one axis,
 and at the selection thresholds; 36 cases are also read from the rasters read into memory.
+
+The separate integer-window nearest-neighbour cases use GDAL 3.13.2 band `RasterIO`
+without a floating-point window. They compare exact pixels and masks, including off-origin
+windows on odd-sized rasters with internal and external overviews, single-row and single-column
+outputs, and explicitly selected levels. The issue #1219 cases also pin the default fractional
+results using GDAL with its floating-point window set.
 
 The fixtures pin GDAL's behaviour where it is not obvious:
 
@@ -2876,7 +2892,15 @@ average and mode internal/external overview add/delete; metadata XML escaping;
 nearest/bilinear/average updates of real DEM subsets; internal/external destination
 masks; genuine fractional-cell average overlaps; and integer bounds/nodata
 collisions. Values, masks, types, nodata, CRS, transforms and overview levels match
-exactly in the final run. The script retains explicit numeric tolerances for future
+exactly in the final run. Complex overviews (#1222) add 28 cases that must match
+exactly: 20 average and nearest cases, internal and external (`.ovr` interleaving and
+compression compared), for `CInt16`, `CInt32`, `CFloat32` and `CFloat64` on two
+pixel-interleaved bands of the DEM tiled to an odd 1531 by 1201 (levels 2, 4, 8 and
+16, so non-integer ratios, cascaded averages and windows straddling GDAL's 512-row
+chunks), and for the issue's 64 by 64 `CFloat32` fixture; plus eight real and complex
+height-only cases that distinguish per-band and multiband cascade schedules. GDAL reports `LAYOUT=COG`
+for small `.ovr` sidecars whose levels fit in a tile, of any band type, which terrio
+does not write; the complex cases leave that item out. The script retains explicit numeric tolerances for future
 non-exact fixtures and reports failures as differences.
 
 A tiled 65,536 by 64 Float32 destination updated from a 128 by 16 source reports
@@ -2979,6 +3003,21 @@ before completion; counters include the existing VSI metadata/index probes.
 Local, in-memory and decompressed ZIP member regressions check exact-limit
 success, oversized rejection and transport-error preservation. Malformed
 text/XML channels outside 0–255 are rejected rather than wrapped.
+
+## Area-matched COG overviews
+
+GDAL has no area-matched overview method, so the registered `cog-area-matched` suite
+(`scripts/compare_cog_area_matched_with_gdal.py`) uses GDAL as the reader and structural
+reference. Each real raster with nodata (Float32 with NaN and with -inf, Float64, a paletted Byte
+class raster) is written by `terrio convert -f COG --co OVERVIEW_RESAMPLING=AREA_MATCHED` (or
+`AREA_MATCHED_MODE`) and by GDAL's COG driver with `average` (`mode`) and `nearest`. As GDAL reads
+them, the overview sizes must equal GDAL's, the full-resolution band GDAL's, each level must keep
+exactly `round(valid * w * h / (cols * rows))` valid cells, the band items `OVERVIEW_AREA_RATIOS`
+and `OVERVIEW_BASE_VALID_PIXELS` must equal the values recomputed from the levels (ratios to
+1e-12), GDAL's COG validator must report no error, and GDAL's COG driver must keep the items when
+it converts the file again. Cases are reported within tolerance: the overview pixels differ from
+those of every GDAL method by design. `python/tests/test_cog_area_matched.py` makes the same checks
+through rasterio on a synthetic raster in the Python jobs.
 
 ## COG validation
 

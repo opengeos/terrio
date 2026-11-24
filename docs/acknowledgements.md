@@ -105,8 +105,8 @@ coordinates and point clouds with theirs.
 ## GEOS, JTS and GeoRust
 
 [JTS Topology Suite](https://github.com/locationtech/jts) 1.20.0 (Martin Davis and
-other contributors) supplies the source algorithms for topology-preserving simplification,
-convex and concave hulls, their triangulations, integer tile validity, spatial packing and
+other contributors) supplies the source algorithms for topology-preserving and Douglas-Peucker
+simplification, convex and concave hulls, their triangulations, integer tile validity, spatial packing and
 robust clipping envelopes. These ports use JTS's Eclipse Distribution License 1.0;
 the exact revisions, copyrights and adaptations are recorded in
 [`NOTICE`](https://github.com/opengeos/terrio/blob/main/NOTICE) and
@@ -165,6 +165,13 @@ number of periodic-run boundaries to improve repeating categorical rasters. Comp
 therefore differ from libdeflate's; decoded raster values and metadata are checked independently
 with GDAL 3.13.3. At every level, the searches over a GeoTIFF or COG chunk's rows also examine the
 position one row back.
+
+## ras2cng
+
+terrio's area-matched overviews (`OVERVIEW_RESAMPLING=AREA_MATCHED`,
+`crates/terrio/src/drivers/area_matched.rs`) are translated from
+[ras2cng](https://github.com/gpt-cmdr/ras2cng)'s `build_area_matched_overviews`
+(copyright 2024 William M. Katzenmeyer, P.E., C.F.M. / CLB Engineering, MIT).
 
 ## fdlibm
 

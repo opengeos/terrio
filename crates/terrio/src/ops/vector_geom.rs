@@ -33,6 +33,7 @@
 
 use super::hull;
 use super::simplify;
+use super::simplify_dp::{self, RingCollapse};
 use crate::{Error, Feature, FieldValue, Geometry, GeometryType, Layer, Result};
 use wbvector::{Coord, Ring};
 
@@ -230,6 +231,16 @@ pub enum GeometryOp {
         /// The distance tolerance, in CRS units (non-negative).
         tolerance: f64,
     },
+    /// Douglas-Peucker simplification of each linear component (JTS's
+    /// `DouglasPeuckerSimplifier` without its repair step, see [`crate::ops::simplify_dp`]):
+    /// faster than [`GeometryOp::Simplify`], but rings may self-intersect at large tolerances.
+    /// Z is kept, M dropped.
+    SimplifyDouglasPeucker {
+        /// The distance tolerance, in CRS units (non-negative).
+        tolerance: f64,
+        /// Rings left with fewer than four points.
+        collapse: RingCollapse,
+    },
     /// `gdal vector segmentize`: vertices added so that no segment is longer than `max_length`
     /// (OGR's `segmentize`, see [`crate::ops::simplify::segmentize`]).
     Segmentize {
@@ -250,6 +261,27 @@ pub enum GeometryOp {
 }
 
 impl GeometryOp {
+    /// The simplification `method` names: `preserve-topology` ([`GeometryOp::Simplify`], JTS's
+    /// `TopologyPreservingSimplifier`, as `gdal vector simplify`) or `douglas-peucker`
+    /// ([`GeometryOp::SimplifyDouglasPeucker`], with `collapse` `keep` or `drop`, see
+    /// [`RingCollapse`]). Case is ignored and `_` is read as `-`.
+    ///
+    /// ```
+    /// use terrio::ops::vector_geom::GeometryOp;
+    ///
+    /// assert!(matches!(GeometryOp::simplify(1.0, "douglas-peucker", "keep")?, GeometryOp::SimplifyDouglasPeucker { .. }));
+    /// assert!(GeometryOp::simplify(1.0, "visvalingam", "keep").is_err());
+    /// # Ok::<(), terrio::Error>(())
+    /// ```
+    pub fn simplify(tolerance: f64, method: &str, collapse: &str) -> Result<Self> {
+        let collapse = collapse.parse::<RingCollapse>()?;
+        match method.to_ascii_lowercase().replace('_', "-").as_str() {
+            "preserve-topology" => Ok(Self::Simplify { tolerance }),
+            "douglas-peucker" => Ok(Self::SimplifyDouglasPeucker { tolerance, collapse }),
+            _ => Err(Error::InvalidArgument(format!("unknown simplification method '{method}' (preserve-topology, douglas-peucker)"))),
+        }
+    }
+
     /// ogr2ogr option precedence: positive simplify first, then positive segmentize.
     pub fn from_ogr2ogr(simplify: Option<f64>, segmentize: Option<f64>) -> Option<Self> {
         match (simplify, segmentize) {
@@ -262,7 +294,9 @@ impl GeometryOp {
     /// Checks the operation's parameters.
     pub fn validate(&self) -> Result<()> {
         match self {
-            Self::Simplify { tolerance } if !(*tolerance >= 0.0 && tolerance.is_finite()) => {
+            Self::Simplify { tolerance } | Self::SimplifyDouglasPeucker { tolerance, .. }
+                if !(*tolerance >= 0.0 && tolerance.is_finite()) =>
+            {
                 Err(Error::InvalidArgument("the simplification tolerance must be a non-negative number".into()))
             }
             Self::Segmentize { max_length } if !(*max_length > 0.0 && max_length.is_finite()) => {
@@ -291,6 +325,7 @@ impl GeometryOp {
     pub fn apply_geometry(&self, g: Geometry, layer_type: Option<GeometryType>) -> Result<Option<Geometry>> {
         Ok(Some(match self {
             Self::Simplify { tolerance } => simplify::simplify_preserve_topology(&g, *tolerance)?,
+            Self::SimplifyDouglasPeucker { tolerance, collapse } => simplify_dp::simplify_douglas_peucker(&g, *tolerance, *collapse)?,
             Self::Segmentize { max_length } => simplify::segmentize(&g, *max_length)?,
             Self::ConvexHull => hull::convex_hull(&g)?,
             Self::ConcaveHull(o) => {

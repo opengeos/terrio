@@ -99,6 +99,27 @@ per-dataset masks weighting the samples as in GDAL, and the masks given overview
 Row-streamed COG output computes the same pixels, whatever the input row chunk size, without
 retaining the whole source image.
 
+`area_matched`, and `area_matched_mode` for classes, are terrio's own (GDAL 3.13 has no
+equivalent): overviews of a raster with nodata whose valid cells cover the valid area of the
+full-resolution image, where `average` grows it at every level (see
+[Formats](formats.md#overviews-that-keep-the-valid-area)). They are written whole, never in rows,
+and each band's metadata records what its levels keep:
+
+```rust,no_run
+let ds = terrio::open_raster("depth.tif")?;
+let options = terrio::RasterWriteOptions {
+    driver: Some(terrio::formats::RasterDriver::Cog),
+    compression: Some("DEFLATE".into()),
+    overview_resampling: Some("area_matched".into()),
+    ..Default::default()
+};
+terrio::write_raster_dataset(&ds, "depth_cog.tif", &options)?;
+let written = terrio::open_raster("depth_cog.tif")?;
+let items = &written.band_metadata[0].items; // OVERVIEW_AREA_RATIOS, OVERVIEW_BASE_VALID_PIXELS
+# let _ = items;
+# Ok::<(), terrio::Error>(())
+```
+
 Native WebP TIFF output supports pixel-interleaved Byte RGB and RGBA.
 `WEBP_LOSSLESS=YES` preserves all samples, including transparent colors;
 `WEBP_LEVEL=0..100` controls lossy quality (default 75). Lossy RGBA retains alpha
@@ -308,6 +329,28 @@ let small = cog.read_resampled(&options)?; // the 512 x 512 overview's tiles, ge
 # Ok::<(), terrio::Error>(())
 ```
 
+Use `WindowSampling::Integer` to match GDAL's nearest-neighbour `RasterIO` with an integer
+window. It requires whole-pixel offsets and sizes within the raster and rounds the window
+at each overview, including an explicitly selected level. The output georeferencing uses
+the requested full-resolution window. `WindowSampling::Fractional` is the default, even
+when all four window coordinates are whole numbers.
+
+```rust,no_run
+use terrio::{ResampledReadOptions, WindowSampling};
+
+let mut raster = terrio::open_raster_lazy("terrain.tif")?;
+let options = ResampledReadOptions {
+    window: Some((3.0, 5.0, 61.0, 47.0)),
+    size: (17, 23),
+    ..Default::default()
+};
+let pixels = raster.read_resampled_with_sampling(&options, WindowSampling::Integer)?;
+# Ok::<(), terrio::Error>(())
+```
+
+The mask methods also accept the mode through `read_resampled_masks_with_sampling` and
+`read_resampled_with_masks_and_sampling`.
+
 - `OverviewSelection::Auto` (the default) chooses as `GDALBandGetBestOverviewLevel2`: when the
   output is smaller than the window, the least reduced axis sets the desired reduction, and full
   resolution then each overview is a candidate below that times 1.2 for nearest neighbour or 1.0
@@ -444,9 +487,11 @@ The commands are also available through the CLI and MCP. Python has `buffer`, `d
 to layers read and written as streams through `VectorTranslateOptions::geometry_op` (which is
 also `ogr2ogr`'s `-simplify`/`-segmentize`). `vector_geom::combine` (`CombineOptions`) and
 `vector_geom::sort` (`SortMethod`) take whole layers; `vector_geom::force_to` is OGR's `forceTo`.
-The single-geometry algorithms are `ops::simplify::{simplify_preserve_topology, segmentize}`
-and `ops::hull::{convex_hull, concave_hull, concave_hull_of_polygons}`. They are pure Rust and
-included in WebAssembly builds.
+The single-geometry algorithms are `ops::simplify::{simplify_preserve_topology, segmentize}`,
+`ops::simplify_dp::simplify_douglas_peucker` (`GeometryOp::SimplifyDouglasPeucker`) and
+`ops::hull::{convex_hull, concave_hull, concave_hull_of_polygons}`;
+`ops::simplify_dp::{simplify_wkb, simplify_wkb_many}` run Douglas-Peucker on WKB, the latter in
+parallel over features. They are pure Rust and included in WebAssembly builds.
 
 ```rust,no_run
 use terrio::ops::vector_geom::{self, CombineOptions, ConcaveHullOptions, GeometryOp, SortMethod};
@@ -721,6 +766,7 @@ operations and the streams. The other drivers are features:
 | `ndarray` | off | Raster pixels as `ndarray` arrays, without copying them: views, owned transfers and the masks of lazy reads, with the crate re-exported as `terrio::ndarray`; floating-point windows as owned arrays, bands first or last. See [ndarray](#ndarray). |
 | `cad` | on | DWG and DXF, read and written, through acadrust. See [CAD drawings](formats.md#cad-drawings-dwg-and-dxf). |
 | `libzstd` | off | Zstandard through the zstd C library, natively: levels above 4, which the default `zrip` writes at level 4. |
+| `ring-fallback` | off | HTTPS with `ring` (needs a C compiler) on x86-64 and AArch64 CPUs without the features `rustls-graviola` needs; without it, HTTPS on such a CPU fails naming them. See [the architecture notes](architecture.md). Implies `remote`. |
 
 The drivers stay in the API whatever the features (`formats::RasterDriver`,
 `formats::VectorDriver`): those a build leaves out are listed as neither read nor written, and
