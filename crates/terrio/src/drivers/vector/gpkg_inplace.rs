@@ -65,7 +65,7 @@ fn eq(a: &str, b: &str) -> bool {
 
 /// Updates a GeoPackage file in place: see [`gu::update`]. `Ok(false)` when the file cannot be
 /// changed in place; it is then untouched.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(super) fn update_in_place(path: &Path, layers: &[Layer], mode: UpdateMode) -> Result<bool> {
     update_in_place_with_options(path, layers, mode, &Default::default())
 }
