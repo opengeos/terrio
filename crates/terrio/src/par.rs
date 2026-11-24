@@ -1077,22 +1077,10 @@ mod tests {
         let p = Pool(native::pool());
         let (a, b) = (first_started.clone(), release_first.clone());
         let h = std::thread::spawn(move || {
-            let e = p.enter();
-            a.store(true, Ordering::SeqCst);
-            match e {
-                Enter::Serial(_) => {
-                    while !b.load(Ordering::SeqCst) {
-                        std::thread::yield_now();
-                    }
-                }
-                Enter::Pool(_) => {
-                    p.install(|| {
-                        while !b.load(Ordering::SeqCst) {
-                            std::thread::yield_now();
-                        }
-                    });
-                }
-            }
+            p.run(|_| {
+                a.store(true, Ordering::SeqCst);
+                assert!(wait_for(&b, 10), "the observer did not release the first call");
+            });
         });
         assert!(wait_for(&first_started, 10), "the first outside call did not start");
         let p = Pool(native::pool());
@@ -1103,9 +1091,7 @@ mod tests {
             assert!(matches!(e, Enter::Serial(_)), "the second outside call queued on the pool");
             match e {
                 Enter::Serial(_) => {
-                    while !c.load(Ordering::SeqCst) {
-                        std::thread::yield_now();
-                    }
+                    assert!(wait_for(&c, 10), "the observer did not release the serial call");
                 }
                 Enter::Pool(_) => unreachable!(),
             }
