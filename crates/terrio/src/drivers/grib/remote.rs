@@ -174,7 +174,9 @@ pub(crate) fn open(remote: &Remote) -> Result<crate::LazyRaster> {
                 m.normalize = normalize;
                 if m.nodata_needs_data()? {
                     let rest = fetch.get(start + prefix, len - prefix)?;
-                    let message = [&bytes[..*prefix], &rest].concat();
+                    let mut message = try_vec(*len)?;
+                    message.extend_from_slice(&bytes[..*prefix]);
+                    message.extend_from_slice(&rest);
                     drop(rest);
                     let mut m = grib1::Message::parse(&message, file_len)?;
                     m.normalize = normalize;

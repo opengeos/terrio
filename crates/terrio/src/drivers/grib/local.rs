@@ -213,7 +213,9 @@ fn source(local: crate::vfs::LocalPath) -> Result<(crate::RasterDataset, Source)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::block_cache::tests::{cache_test_guard, take_lookups};
+    use crate::block_cache::tests::cache_test_guard;
+    #[cfg(unix)]
+    use crate::block_cache::tests::take_lookups;
     use crate::{Window, WindowOptions};
 
     /// The bytes local GRIB files read so far on this thread.
@@ -407,7 +409,7 @@ mod tests {
         let read = 512 + reads.iter().map(|&(_, n)| n).sum::<usize>();
         assert!(read < 2_000, "{read} bytes read of {len}");
         let describe = |bands: &[Band]| -> Vec<_> {
-            bands.iter().map(|b| (b.grid().map(|g| (g.nx, g.ny)).ok(), b.nodata().ok(), b.metadata().ok())).collect()
+            bands.iter().map(|b| (b.grid().map(|g| (g.nx, g.ny)).unwrap(), b.nodata().unwrap(), b.metadata().unwrap())).collect()
         };
         let (bands, _) = head.bands(len, len, true).unwrap();
         assert_eq!(describe(&bands), describe(&super::super::message_bands(&message, len, len, true).unwrap()));
