@@ -282,6 +282,11 @@ Every case records:
   the rows' `id` (`value` when `id` is not read), in every sample of both tools. Time and peak
   memory are taken before this check.
 
+These sums and counts are benchmark checks, not exhaustive pixel, categorical-attribute or
+geometry conformance checks. Counts match exactly; numeric sums use relative tolerance `1e-6`.
+Process peak RSS includes initialization, warm-up and retained read results, but excludes
+subsequent validation allocations. RSS units are normalized for Linux and macOS.
+
 Only cases where every sample of both tools succeeded and returned GDAL's values are ranked;
 the report lists failures, timeouts and value mismatches apart. Local byte counts need Linux's
 `/proc/self/io`. Local reads after the first come from the OS page cache, so the matrix measures
@@ -301,7 +306,7 @@ python scripts/perf_matrix.py fixtures --format geotiff      # 0.9 GB in ~/.cach
 python scripts/perf_matrix.py run --format geotiff           # every case; 30 to 60 minutes per format
 python scripts/perf_matrix.py fixtures --format zarr
 python scripts/perf_matrix.py run --format zarr --only shard --access window --quick
-# `run` prints its results file last; report summarizes one again:
+# `run` prints its results file path; report summarizes one again:
 python scripts/perf_matrix.py report "$HOME/.cache/terrio-bench/matrix/geotiff/results-20261124-120000.jsonl"
 ```
 

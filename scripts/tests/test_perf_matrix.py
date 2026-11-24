@@ -3,6 +3,9 @@
 import struct
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import perf_matrix
@@ -77,3 +80,72 @@ def test_checksum_sums_without_overflow():
 
     a = np.full((3, 1000), 60000, dtype="uint16")
     assert perf_matrix.checksum(a) == (180_000_000.0, 3000)
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_worker_records_time_and_platform_rss_before_validation(monkeypatch, platform):
+    """Keep validation outside measurements and normalize both supported RSS units.
+
+    Args:
+        monkeypatch: Scoped dependency replacements.
+        platform: Platform whose RSS units are returned.
+    """
+    clock = [0]
+
+    def open_(path):
+        """Advance the simulated open time.
+
+        Args:
+            path: Dataset path.
+
+        Returns:
+            The opened path.
+        """
+        clock[0] += 1
+        return path
+
+    def read(_dataset):
+        """Advance the simulated read time.
+
+        Args:
+            _dataset: Open dataset.
+
+        Returns:
+            A result for subsequent validation.
+        """
+        clock[0] += 2
+        return 1
+
+    def check(_result):
+        """Simulate expensive validation.
+
+        Args:
+            _result: Read result.
+
+        Returns:
+            Its sum and count.
+        """
+        clock[0] += 100
+        return 1.0, 1
+
+    fake = SimpleNamespace(EXT=".tif", reader=lambda *_: (open_, [read], check, (open_, read)))
+    monkeypatch.setitem(perf_matrix.FORMATS, "fake", fake)
+    monkeypatch.setattr(perf_matrix.time, "perf_counter", lambda: clock[0])
+    monkeypatch.setattr(perf_matrix, "_rchar", lambda local: pytest.fail("HTTP must not use local counters") if local else 0)
+    monkeypatch.setattr(perf_matrix.resource, "getrusage", lambda _: SimpleNamespace(ru_maxrss=clock[0] * (1024**2 if platform == "darwin" else 1024)))
+    monkeypatch.setattr(perf_matrix.sys, "platform", platform)
+    result = perf_matrix.worker({"format": "fake", "tool": "terrio", "src": "http://localhost/file.tif", "access": "full", "meta": {}})
+    assert (result["open_s"], result["read_s"], result["rss_mb"]) == (1, 2, 6)
+    assert (result["open_bytes"], result["read_bytes"]) == (0, 0)
+
+
+def test_unsettled_http_accounting_fails_instead_of_returning_a_partial_log(monkeypatch):
+    """Refuse a sample whose request accounting has not settled before timeout.
+
+    Args:
+        monkeypatch: Scoped dependency replacements.
+    """
+    monkeypatch.setattr(perf_matrix, "_busy", 1)
+    monkeypatch.setattr(perf_matrix._lock, "wait_for", lambda *_args, **_kwargs: False)
+    with pytest.raises(TimeoutError, match="HTTP handlers did not finish accounting"):
+        perf_matrix._settled_log()

@@ -592,9 +592,17 @@ _busy = 0  # requests being served: the runner reads the log once none is
 
 
 def _settled_log() -> list[tuple[float, float, int, str]]:
-    """The request log once every request received has been recorded."""
+    """Wait until every received request has been recorded.
+
+    Returns:
+        The completed request log.
+
+    Raises:
+        TimeoutError: If handlers remain active after the accounting timeout.
+    """
     with _lock:
-        _lock.wait_for(lambda: _busy == 0, timeout=10)
+        if not _lock.wait_for(lambda: _busy == 0, timeout=10):
+            raise TimeoutError("HTTP handlers did not finish accounting")
         return list(_log)
 
 
@@ -703,7 +711,7 @@ def worker(spec: dict) -> dict:
         out = [item(ds) for item in items]
     t2 = time.perf_counter()
     r2 = _rchar(local)
-    rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+    rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024**2 if sys.platform == "darwin" else 1024)
     sums = [check(x) for x in out]  # after the timed read and its peak memory
     return {
         "init_s": t0 - ti,
