@@ -882,9 +882,10 @@ def run(args: argparse.Namespace) -> None:
 
 
 def summarize(row: dict) -> dict:
-    """Medians per tool. A time ratio only when every sample of both tools succeeded (a tool stops
-    at its first failure); `values` is `same` only when every sample's sum and count equal GDAL's
-    first, else the first that differs."""
+    """Medians per tool. A time ratio only when every sample of terrio and GDAL succeeded (a tool
+    stops at its first failure), and a ratio to the base only when the base's did too: a base that
+    failed where this build succeeds is listed as such. `values` is `checksum_match` only when every
+    sample's sum and count equal GDAL's first, else the first that differs."""
     out = {k: v for k, v in row.items() if not isinstance(v, list)}
     tools = [t for t in ("terrio", "gdal", "base") if t in row]
     for tool in tools:
@@ -894,11 +895,14 @@ def summarize(row: dict) -> dict:
         out[tool] = {k: statistics.median(r[k] for r in rs) for k in rs[0] if k not in ("sum", "n")}
         out[tool]["total_s"] = statistics.median(r["open_s"] + r["read_s"] for r in rs)
         out[f"{tool}_sum"], out[f"{tool}_n"] = rs[0]["sum"], rs[0]["n"]
-    if "terrio" in out and "gdal" in out and not _errors(row):
+    base_ok = "base" in out and "base_error" not in row
+    if "terrio" in out and "gdal" in out and not [e for e in _errors(row) if not e.startswith("base ")]:
         out["time_ratio"] = out["terrio"]["total_s"] / out["gdal"]["total_s"]
         ref = row["gdal"][0]
-        if "base" in out:
+        if base_ok:
             out["base_ratio"] = out["terrio"]["total_s"] / out["base"]["total_s"]
+        else:
+            tools = [t for t in tools if t != "base"]
         differ = next(((t, r) for t in tools for r in row[t] if r["n"] != ref["n"] or not math.isclose(r["sum"], ref["sum"], rel_tol=1e-6)), None)
         out["values"] = "checksum_match" if differ is None else f"DIFFER: {differ[0]} n {differ[1]['n']} sum {differ[1]['sum']:.6g} vs gdal n {ref['n']} sum {ref['sum']:.6g}"
     return out
@@ -950,6 +954,13 @@ def report(rows: list[dict]) -> str:
         ):
             lines.append(f"{title}: {len(rs)}")
             lines += ["  " + fmt_row(r) for r in rs[:20]]
+    if any("base_error" in r or "base" in r for r in rows):
+        fixed = [r for r in ok if "base_error" in r]
+        broken = [r for r in rows if "terrio_error" in r and "base" in r and "base_error" not in r]
+        lines.append(f"the base failed, this build succeeds: {len(fixed)}")
+        lines += [f"  {fmt_row(r)} | base {r['base_error']}" for r in fixed]
+        lines.append(f"this build fails, the base succeeded: {len(broken)}")
+        lines += ["  " + fmt_row(r) for r in broken]
     lines.append("\n## Worst cases (terrio time / GDAL time)\n")
     lines += [fmt_row(r) for r in sorted(ok, key=lambda r: -r["time_ratio"])[:20]]
     lines.append("\n## Geometric mean of the time ratios by axis (>1: terrio slower; cases in brackets)\n")

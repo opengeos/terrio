@@ -274,3 +274,13 @@ def test_a_base_build_gets_its_own_ratio_and_values_check():
     assert "faster by 10% or more: 1" in report([row])
     # The base's values are checked too.
     assert summarize(_row(terrio=[_sample(2)], gdal=[_sample(1)], base=[_sample(4, n=5)]))["values"].startswith("DIFFER: base")
+
+
+def test_a_case_the_base_failed_is_reported_as_fixed_and_the_reverse_as_broken():
+    fixed = summarize(_row(terrio=[_sample(2)], gdal=[_sample(1)], base=[], base_error="timeout: over 120 s"))
+    assert fixed["time_ratio"] == 2 and "base_ratio" not in fixed and fixed["values"] == "checksum_match"
+    broken = summarize({**_row(terrio=[], gdal=[_sample(1)], base=[_sample(3)], terrio_error="exit 1"), "fixture": "f32_none"})
+    assert "time_ratio" not in broken
+    text = report([fixed, broken])
+    assert "the base failed, this build succeeds: 1\n  u8_none" in text and "timeout: over 120 s" in text
+    assert "this build fails, the base succeeded: 1\n  f32_none" in text
