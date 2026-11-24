@@ -358,14 +358,20 @@ chunks, reversed source columns, and a 400-grad longitude period. Regional and
 multi-turn source placement rules remain separate.
 
 `cargo test -p terrio --lib chunk_dependent_windows_` warps a world source
-symmetric about the 180° meridian, stored from 180° W and from 0°, into UPS North
-windows on either side of it, with chunk-dependent bilinear and cubic at the 3.12
-kernel scales and exact transformations. Windows touching the meridian, whose
-samples on it resolve to 180° E, and windows reaching 1 km across it give mirrored
-values within 1e-9. An impulse beside the meridian reaches the same three columns
-of the window across it as of the window 1 m short of it. With `periodic_longitude`
-off, the windows touching and crossing the meridian keep the stored span, and the
-impulse reaches more of their columns.
+symmetric about the 180° meridian, stored from 180° W and from 0°, and a regional
+source from 120° E to 120° W, into UPS North windows on either side of it, with
+chunk-dependent bilinear and cubic at the 3.12 kernel scales and exact
+transformations. Windows touching the meridian, whose samples on it resolve to
+180° E, and windows reaching 1 km across it give mirrored values within 1e-9. An
+impulse beside the meridian, in the world or the regional source, reaches the same
+three columns of the window across it as of the window 1 m short of it. With
+`periodic_longitude` off, the windows touching and crossing the meridian keep the
+stored span of the world source, and the impulse reaches more of their columns.
+`cargo test -p terrio --lib a_regional_chunk_across_the_180th_meridian` checks the
+source columns behind the scale of the window touching or crossing the meridian
+from regional sources: its samples' arc a turn away, cut at the source's east edge
+as the window 1 m short of the meridian has its columns cut, and the stored width
+once the arc reaches both stored edges across a gap at the meridian.
 `python -m pytest python/tests/test_warp_meridian_mirror_kernels.py` checks the
 mirror windows of a 0.25° source through `reproject` and the block reads of a
 `WarpedVRT`.
