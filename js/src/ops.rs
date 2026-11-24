@@ -1314,8 +1314,8 @@ pub fn simplify(src: JsValue, tolerance: f64, options: Option<JsValue>) -> Resul
 /// geometry's byte order, type code, Z and M. Options: `collapse`, as [`simplify`]'s. Returns an
 /// array of the same length.
 #[wasm_bindgen(js_name = simplifyWkb)]
-pub fn simplify_wkb(geometries: js_sys::Array, tolerance: f64, options: JsValue) -> Result<js_sys::Array, JsError> {
-    let a: SimplifyWkbArgs = parse_options(&options)?;
+pub fn simplify_wkb(geometries: js_sys::Array, tolerance: f64, options: Option<JsValue>) -> Result<js_sys::Array, JsError> {
+    let a: SimplifyWkbArgs = parse_options(&options.unwrap_or(JsValue::UNDEFINED))?;
     let o =
         terrio::ops::simplify_dp::SimplifyOptions { tolerance, collapse: a.collapse.as_deref().unwrap_or("keep").parse().map_err(js_err)? };
     let items = geometries
