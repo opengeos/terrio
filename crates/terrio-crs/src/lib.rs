@@ -2295,6 +2295,9 @@ pub struct Transformer {
     src_horizontal: Def,
     /// Whether the vertical CRSs share their datum (heights only change unit).
     same_vertical_datum: bool,
+    /// Whether heights go through PROJ's ballpark vertical transformation, which makes the
+    /// horizontal transformations of unknown accuracy ([`route::Route::with_ballpark_heights`]).
+    ballpark_heights: bool,
 }
 
 impl Drop for Transformer {
@@ -2468,6 +2471,14 @@ impl Heights {
     }
 }
 
+/// Whether a geoid model's operation transforms heights: one with steps, or a registered one
+/// without (Saba to Saba height (1), of accuracy 0.2 m, whose heights are Saba's ellipsoidal
+/// heights), not the operation without steps or accuracy the table lists when the models' grids
+/// are missing, which stands for PROJ's ballpark vertical transformation.
+fn is_geoid_model(op: &datum::Op) -> bool {
+    !op.steps.is_empty() || op.accuracy >= 0.0
+}
+
 /// Picks and runs a geoid model for a point (degrees for the areas), `reverse` from heights to
 /// ellipsoidal heights. With the point, whether the operation that ran was a geoid model, rather
 /// than the operation without steps used when the model's grid is missing (which keeps heights
@@ -2480,7 +2491,7 @@ fn run_model(ops: &[std::sync::Arc<datum::Op>], p: datum::Point, reverse: bool) 
         |op, _| op.contains(lon, lat),
         |i| {
             datum::run_op(&ops[i], p, reverse, true).inspect(|_| {
-                applied.set(!ops[i].steps.is_empty());
+                applied.set(is_geoid_model(&ops[i]));
                 route::note(Some(&ops[i]), reverse, route::OpKind::Vertical);
             })
         },
@@ -2573,7 +2584,34 @@ impl Transformer {
             (true, true, Some(e), Some(_)) => Some(e),
             _ => None,
         };
-        let mut route = route::Route::new(&s, &d);
+        let codes = (s.vertical().and_then(|v| v.code), d.vertical().and_then(|v| v.code));
+        let (vertical_ops, same_vertical_datum, vertical_codes) = match codes {
+            (Some(a), Some(b)) if a != b => {
+                let datum = |c: u32| epsg::vertical(c).map(|v| v.datum).filter(|d| *d != 0);
+                let same = datum(a).is_some() && datum(a) == datum(b);
+                let ops = if same { Vec::new() } else { epsg::vertical_transformations(a, b) };
+                (with_vertical_routes(ops, &s.horizontal(), false), same, (!same).then_some((a, b)))
+            }
+            _ => (Vec::new(), false, None),
+        };
+        // Heights through PROJ's ballpark vertical transformation, which makes every horizontal
+        // transformation chained with it of unknown accuracy (#1012 item 47): between heights of
+        // different references, with a vertical CRS on either side and none with a geoid model it
+        // can use (one side's model would run first), and no transformation between the vertical
+        // CRSs that can be used.
+        let has_heights = (s.has_height() && d.has_height()) || cartesian_src.is_some() || cartesian_dst.is_some();
+        let modelled = |def: &Def| {
+            def.vertical()
+                .is_some_and(|v| !v.ballpark || v.models.iter().any(|(_, ops)| ops.iter().any(|o| o.available() && is_geoid_model(o))))
+        };
+        let ballpark_heights = has_heights
+            && !same_vertical_datum
+            && codes.0.is_none_or(|a| codes.1 != Some(a))
+            && (s.vertical().is_some() || d.vertical().is_some())
+            && !modelled(&s)
+            && !modelled(&d)
+            && !vertical_ops.iter().any(|(o, _)| o.available());
+        let mut route = if ballpark_heights { route::Route::with_ballpark_heights(&s, &d) } else { route::Route::new(&s, &d) };
         if opts.allow_ballpark == Some(false) && !route.disallow_ballpark() {
             return Err(Error::NoOperation("cannot find coordinate operations with ALLOW_BALLPARK=NO".into()));
         }
@@ -2586,23 +2624,13 @@ impl Transformer {
             }
             _ => None,
         };
-        let heights = ((s.has_height() && d.has_height()) || cartesian_src.is_some() || cartesian_dst.is_some()).then(|| {
+        let heights = has_heights.then(|| {
             Box::new(Heights {
                 src: Side::new(&s, true),
                 dst: Side::new(&d, false),
                 middle: std::sync::Mutex::new(std::collections::HashMap::new()),
             })
         });
-        let codes = (s.vertical().and_then(|v| v.code), d.vertical().and_then(|v| v.code));
-        let (vertical_ops, same_vertical_datum, vertical_codes) = match codes {
-            (Some(a), Some(b)) if a != b => {
-                let datum = |c: u32| epsg::vertical(c).map(|v| v.datum).filter(|d| *d != 0);
-                let same = datum(a).is_some() && datum(a) == datum(b);
-                let ops = if same { Vec::new() } else { epsg::vertical_transformations(a, b) };
-                (with_vertical_routes(ops, &s.horizontal(), false), same, (!same).then_some((a, b)))
-            }
-            _ => (Vec::new(), false, None),
-        };
         let src_horizontal = s.horizontal();
         let identity = src.same_as(dst) && motion.is_none();
         let wgs84_to_web_mercator = web_mercator_to_wgs84(dst, src);
@@ -2621,6 +2649,7 @@ impl Transformer {
             motion,
             vertical_ops,
             same_vertical_datum,
+            ballpark_heights,
             vertical_codes,
             all_vertical_ops: std::sync::OnceLock::new(),
             src_horizontal,
@@ -3210,6 +3239,27 @@ impl Transformer {
         let (lon, lat) = self.src.unproject(x, y).ok_or_else(fail)?;
         let _ = self.check_point_policy(x, y, datum::Point { lon, lat, h: z, t })?;
         let p0 = datum::Point { lon, lat, h: self.src.vertical().map_or(z, |v| v.to_metres(z)), t };
+        // Through PROJ's ballpark vertical transformation: the horizontal transformation PROJ
+        // picks among those of unknown accuracy, and the height kept.
+        if self.ballpark_heights {
+            for (def, grids) in [(&self.src, &self.src_geoid_grids), (&self.dst, &self.dst_geoid_grids)] {
+                if let Some(v) = def.vertical() {
+                    self.check_vertical_policy(!v.models.is_empty())?;
+                    self.note_missing_geoid(grids, Some(v), p0);
+                }
+            }
+            route::note(None, false, route::OpKind::Vertical);
+            // The height runs through the horizontal transformation, which keeps it unless PROJ
+            // runs it between geographic 3D CRSs, in the vertical CRS's unit, where PROJ's
+            // pipeline converts it: to and from NAD27 / Texas North + NGVD29 height (ftUS)
+            // (EPSG:7407), its Helmert runs at the height in US survey feet (5 mm apart at 100 m).
+            let h = match (self.src.vertical(), self.dst.vertical()) {
+                (_, Some(v)) => v.height_of(p0.h),
+                _ => z,
+            };
+            let (tx, ty, h) = self.transform_2d(x, y, h, t)?;
+            return Ok((tx, ty, if self.dst.vertical().is_some() { h } else { self.src.vertical().map_or(h, |v| v.to_metres(h)) }));
+        }
         // To ellipsoidal heights, on the source CRS or a geoid model's CRS.
         let (mut start, mut geoid) = (None, false);
         for (i, ops) in &h.src.models {

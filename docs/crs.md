@@ -856,8 +856,16 @@ before OSGM15 for British National Grid with ODN heights), and 3D datum transfor
 ellipsoidal heights. Vertical units (US survey feet) and depths are converted. A vertical CRS
 without geoid models of its own uses those of the vertical CRSs of its datum, as PROJ does:
 NAVD88 height (ftUS) (`EPSG:6360`), NAVD88 height (ft) (`EPSG:8228`) and NAVD88 depth go
-through NAVD88 height's GEOID18. When no geoid model applies, heights are kept, as PROJ's
-ballpark vertical transformation does. Between 2D CRSs, heights are kept as GDAL keeps them (or
+through NAVD88 height's GEOID18. A geoid model without grid that EPSG registers (Saba to Saba
+height (1), whose heights are Saba's ellipsoidal heights) is applied as one. When no geoid model
+applies, heights are kept, as PROJ's ballpark vertical transformation does. When the vertical
+CRS has no geoid model or transformation that can be used (their grids missing), PROJ chains that
+ballpark with each horizontal transformation, which makes every one of unknown accuracy, and uses
+for a point the one of the smallest area that holds it. So does terrio: from WGS 84 (3D) into
+`EPSG:7405` without OSGM15's grid, (-2°, 54°) goes through OSGB36 to WGS 84 (3), not (6), 5.2 m
+apart (from WGS 84 (2D), which has no heights, through (6)). The height runs through the
+horizontal transformation in the vertical CRS's unit, where PROJ's pipeline converts it, and
+`ALLOW_BALLPARK=NO` refuses such an operation. Between 2D CRSs, heights are kept as GDAL keeps them (or
 transformed, for the pipelines PROJ runs on heights).
 With `TransformOptions { promote_to_3d: true, .. }` (Rust), the heights of 2D CRSs are ellipsoidal
 heights that datum transformations change, as GDAL gives them after `PromoteTo3D`: EPSG:28992

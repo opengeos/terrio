@@ -3023,6 +3023,20 @@ PROJ_CASES = {
             "PROJ 9.9.0 (pyproj, no grids, allow_ballpark=False): within 1 mm, and no operation for the Georgia datum",
         ),
     },
+    "compound_heights": {
+        "compound_crss_are_placed_as_proj_places_them": (
+            "EPSG compound CRSs to and from WGS 84 (3D, geocentric, 2D) and between compound CRSs of one horizontal CRS, without grids (1,766 cases)",
+            IDENTICAL, "PROJ 9.9.0 (pyproj, no grids): within 1 mm, heights too; 2 cases pending: Belfast height to Malin Head height (1) outside its area, which PROJ runs as the only operation (opengeos/terrio#1012)",
+        ),
+        "heights_through_the_ballpark_make_every_transformation_of_unknown_accuracy": (
+            "EPSG:7405 from WGS 84 (3D) and (2D): the point, in 2D too, and the operation's accuracy and ballpark flag", IDENTICAL,
+            "PROJ 9.9.0 (pyproj, no grids): within 1 mm",
+        ),
+        "heights_through_the_ballpark_are_refused_with_it": (
+            "EPSG:7405 and EPSG:5707 from WGS 84 (3D) with ALLOW_BALLPARK=NO and ONLY_BEST=YES", IDENTICAL,
+            "PROJ 9.9.0 (pyproj, no grids): no operation, and no point",
+        ),
+    },
     "null_transformations": {
         "null_transformations_are_named_not_ballparks": (
             "EPSG null transformations (SWEREF99, ETRS89, NZGD2000, REGVEN to WGS 84) and their concatenations: name, accuracy, ballpark flag",

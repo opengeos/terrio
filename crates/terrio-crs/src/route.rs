@@ -303,12 +303,15 @@ struct OperationContext<'a> {
     /// Whether PROJ reaches the CRSs of a datum by its ballpark, of unknown accuracy, from either
     /// CRS: one on a renamed datum (see [`Def::unresolved`]).
     framed: bool,
+    /// Whether every transformation is chained with PROJ's ballpark vertical transformation,
+    /// which makes it of unknown accuracy (see [`Route::with_ballpark_heights`]).
+    ballpark_heights: bool,
 }
 
 impl<'a> OperationContext<'a> {
     fn new(src: &'a Def, dst: &'a Def, all: bool) -> Self {
         let framed = [src, dst].iter().any(|d| d.unresolved().is_some_and(|u| u.ballpark));
-        Self { src, dst, aoi: area_of_interest(src, dst), all, framed }
+        Self { src, dst, aoi: area_of_interest(src, dst), all, framed, ballpark_heights: false }
     }
 
     /// A transformation as PROJ frames it between the CRSs: of unknown accuracy, when framed by a
@@ -337,6 +340,17 @@ impl Route {
     /// The route from `src` to `dst`.
     pub fn new(src: &Def, dst: &Def) -> Self {
         Self::build(&OperationContext::new(src, dst, false))
+    }
+
+    /// The route from `src` to `dst` when heights go through PROJ's ballpark vertical
+    /// transformation (no geoid model or transformation between the vertical CRSs can be used):
+    /// PROJ chains it with each horizontal transformation, which makes every one of unknown
+    /// accuracy, so that the one of the smallest area holding a point is used for it. From
+    /// WGS 84 (3D) into OSGB36 / British National Grid + ODN height (EPSG:7405) without OSGM15's
+    /// grid, PROJ 9.9.0 places (-2°, 54°) by OSGB36 to WGS 84 (3), not (6) (#1012 item 47).
+    pub fn with_ballpark_heights(src: &Def, dst: &Def) -> Self {
+        let ctx = OperationContext { framed: true, ballpark_heights: true, ..OperationContext::new(src, dst, false) };
+        Self::build(&ctx)
     }
 
     /// The route assuming all grids are available.
@@ -381,7 +395,7 @@ impl Route {
             (Kind::List(l), Some(a), Some(b)) if searching => unresolved_search(l, a, b, ctx),
             (kind, ..) => kind,
         };
-        let kind = if src.on_bound_source(dst) || dst.on_bound_source(src) {
+        let mut kind = if src.on_bound_source(dst) || dst.on_bound_source(src) {
             // A WKT 2 `BOUNDCRS` into a CRS on its source CRS's datum: PROJ's null
             // transformation.
             Kind::Same
@@ -418,6 +432,14 @@ impl Route {
                 _ => shifted(ctx).unwrap_or(Kind::Hub),
             }
         };
+        if ctx.ballpark_heights
+            && let Kind::List(list) = &mut kind
+        {
+            for leg in list.iter_mut() {
+                leg.op = Arc::new(ctx.framed((*leg.op).clone()));
+            }
+            sort_legs(&mut kind, aoi);
+        }
         Self {
             kind,
             boxes: OnceLock::new(),
