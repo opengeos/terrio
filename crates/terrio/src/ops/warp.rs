@@ -2779,6 +2779,8 @@ thread_local! {
     static GUESS_SHRINK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// Chunks warped again from their exact window on this thread, in tests.
     static GUESS_RETRIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Source windows computed (not served from [`RegionWarp`]'s cache) on this thread, in tests.
+    static WINDOW_COMPUTATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Longitude facts of a warp's source, constant over the warp (see [`WarpContext::source_wrap`]).
@@ -3404,8 +3406,9 @@ impl WarpContext<'_> {
     /// Bounds the actual point kernels or area footprints. Geometry buffers are one row wide;
     /// no source pixels are read while planning. `sum` retains its exact polygon planner.
     /// Scales are recomputed after the source read rather than retaining a chunk-sized matrix.
-    #[allow(clippy::type_complexity)]
-    fn source_window(&self, dx: usize, dy: usize, dw: usize, dh: usize) -> Option<(usize, usize, usize, usize, f64, f64, f64)> {
+    fn source_window(&self, dx: usize, dy: usize, dw: usize, dh: usize) -> Option<SourceWindow> {
+        #[cfg(test)]
+        WINDOW_COMPUTATIONS.with(|n| n.set(n.get() + 1));
         if (dw == 0 || dh == 0) && self.grid_invariant && self.resampling != Resampling::Sum {
             return None;
         }
@@ -6286,18 +6289,40 @@ pub struct RegionWarp {
     grid_invariant: bool,
     periodic_longitude: bool,
     sum_scale: f64,
+    /// The last source window [`RegionWarp::source_window`] computed, with the region and
+    /// destination grid it was computed for, so that [`RegionWarp::warp`] reuses it instead of
+    /// transforming the region's pixels again: one region at a time, the last one asked for.
+    window_cache: std::sync::Mutex<Option<WindowCache>>,
+}
+
+/// A source window `(x, y, width, height, fill, raw_w, raw_h)`, as the context computes it.
+type SourceWindow = (usize, usize, usize, usize, f64, f64, f64);
+
+/// A cached [`RegionWarp::source_window`] result: the region, the destination geotransform, and
+/// the full window `(x, y, width, height, _, raw_w, raw_h)` the context computes.
+struct WindowCache {
+    region: (usize, usize, usize, usize),
+    dst_gt: [f64; 6],
+    full: SourceWindow,
 }
 
 impl RegionWarp {
+    /// Drops the cached source window, for the builders that change how windows are computed.
+    fn clear_window_cache(&self) {
+        *self.window_cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
     /// Reproduces the resampling of another GDAL release than the configured one (see
     /// [`KernelVersion::configured`], read when the warp is created).
     pub fn with_kernel_version(mut self, kernel_version: KernelVersion) -> Self {
+        self.clear_window_cache();
         self.kernel_version = kernel_version;
         self
     }
 
     /// Selects grid-invariant sampling, or GDAL's chunk-dependent reference sampling.
     pub fn with_grid_invariance(mut self, enabled: bool) -> Self {
+        self.clear_window_cache();
         self.grid_invariant = enabled;
         self
     }
@@ -6305,6 +6330,7 @@ impl RegionWarp {
     /// Selects periodic columns for a source covering one turn of longitude (the default), or
     /// finite edges (see [`WarpOptions::periodic_longitude`]).
     pub fn with_periodic_longitude(mut self, enabled: bool) -> Self {
+        self.clear_window_cache();
         self.periodic_longitude = enabled;
         self
     }
@@ -6314,6 +6340,7 @@ impl RegionWarp {
     /// of a `W` x `H` raster. 1 by default. Must be positive and finite; [`Self::warp`]
     /// rejects invalid scales before allocating the output.
     pub fn with_sum_scale(mut self, scale: f64) -> Self {
+        self.clear_window_cache();
         self.sum_scale = scale;
         self
     }
@@ -6327,6 +6354,7 @@ impl RegionWarp {
     pub fn with_src_scale(mut self, scale: (f64, f64)) -> Self {
         // The sums' cached corners were transformed at the previous scale.
         self.t.sum_batches.get_mut().unwrap_or_else(|e| e.into_inner()).clear();
+        self.clear_window_cache();
         self.t.src_scale = scale;
         self
     }
@@ -6339,6 +6367,7 @@ impl RegionWarp {
     pub fn set_dst_gt(&mut self, gt: [f64; 6]) {
         self.t.set_dst_gt(gt);
         self.translation = self.t.src_gcp.is_none() && self.t.ct.is_none() && is_pixel_translation(&self.t.src_gt, &gt);
+        self.clear_window_cache();
     }
 
     /// A warp of the bands of a source of `src_size` pixels, georeferenced by `src_gt` in
@@ -6377,6 +6406,7 @@ impl RegionWarp {
             grid_invariant: grid_invariant_configured(),
             periodic_longitude: true,
             sum_scale: 1.0,
+            window_cache: std::sync::Mutex::new(None),
         })
     }
 
@@ -6414,6 +6444,7 @@ impl RegionWarp {
             grid_invariant: grid_invariant_configured(),
             periodic_longitude: true,
             sum_scale: 1.0,
+            window_cache: std::sync::Mutex::new(None),
         })
     }
 
@@ -6458,6 +6489,7 @@ impl RegionWarp {
             grid_invariant: grid_invariant_configured(),
             periodic_longitude: true,
             sum_scale: 1.0,
+            window_cache: std::sync::Mutex::new(None),
         })
     }
 
@@ -6504,11 +6536,33 @@ impl RegionWarp {
         if !self.t.src_scale_valid() {
             return None;
         }
+        let full = self.source_window_full(&self.context(), region);
+        full.map(|(sx, sy, sw, sh, ..)| (sx, sy, sw, sh))
+    }
+
+    /// The full source window `(x, y, width, height, _, raw_w, raw_h)` of `region`, from the
+    /// cache of the last [`RegionWarp::source_window`] call when it was for this region under the
+    /// current destination grid, else computed now (and cached).
+    fn source_window_full(&self, ctx: &WarpContext<'_>, region: (usize, usize, usize, usize)) -> Option<SourceWindow> {
         let (dx, dy, dw, dh) = region;
         if dw == 0 || dh == 0 {
-            return Some((0, 0, 0, 0));
+            // Public source_window accepts empty regions; warp returns before using their raw sizes.
+            return Some((0, 0, 0, 0, 0.0, 0.0, 0.0));
         }
-        self.context().source_window(dx, dy, dw, dh).map(|(sx, sy, sw, sh, ..)| (sx, sy, sw, sh))
+        {
+            let cache = self.window_cache.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(c) = &*cache
+                && c.region == region
+                && c.dst_gt == self.t.dst_gt
+            {
+                return Some(c.full);
+            }
+        }
+        let full = ctx.source_window(dx, dy, dw, dh);
+        if let Some(full) = &full {
+            *self.window_cache.lock().unwrap_or_else(|e| e.into_inner()) = Some(WindowCache { region, dst_gt: self.t.dst_gt, full: *full });
+        }
+        full
     }
 
     /// Warps a region of the grid. `data` holds the bands of the source window
@@ -6555,7 +6609,7 @@ impl RegionWarp {
         let n = dw * dh;
         let mut ctx = self.context();
         let mut staged: Vec<Vec<f64>> = vec![vec![f64::from_bits(UNWRITTEN); n]; bands];
-        if let Some((sx, sy, sw, sh, _, raw_w, raw_h)) = ctx.source_window(dx, dy, dw, dh)
+        if let Some((sx, sy, sw, sh, _, raw_w, raw_h)) = self.source_window_full(&ctx, region)
             && sw > 0
             && sh > 0
         {
@@ -10404,6 +10458,71 @@ mod tests {
         assert!(is_pixel_translation(&src, &[103.0, 1.0, 0.0, 198.0, 0.0, -1.0]));
         assert!(!is_pixel_translation(&src, &[103.0, 1.0, 0.25, 198.0, 0.0, -1.0]));
         assert!(!is_pixel_translation(&src, &[103.0, 1.0, 0.0, 198.0, 0.25, -1.0]));
+    }
+
+    /// `source_window` records what it computed and `warp` reuses it for the same region under the
+    /// same destination grid instead of transforming the region's pixels again, while still
+    /// rejecting a window that does not match — also when another region's window was cached last
+    /// (the cache holds one region, so the earlier region's warp recomputes and validates).
+    #[test]
+    fn region_warp_reuses_and_still_validates_the_cached_source_window() {
+        let srs = SpatialRef::from_epsg(4326).unwrap();
+        let gt = [-10.0, 0.01, 0.0, 50.0, 0.0, -0.01];
+        let mk =
+            || RegionWarp::new((40, 30), gt, &srs, &srs, gt, Resampling::Bilinear, 0.125, DataType::F64, vec![None], Some(0.0)).unwrap();
+        let rw = mk();
+        let r1 = (0, 0, 10, 10);
+        WINDOW_COMPUTATIONS.with(|n| n.set(0));
+        let w1 = rw.source_window(r1).unwrap();
+        assert_eq!(WINDOW_COMPUTATIONS.with(std::cell::Cell::get), 1, "the first call computes the window");
+        // A cache hit (same region asked again) does not recompute it.
+        let w1_again = rw.source_window(r1).unwrap();
+        assert_eq!(w1_again, w1);
+        assert_eq!(WINDOW_COMPUTATIONS.with(std::cell::Cell::get), 1, "the cached window was not recomputed");
+        // Another region cached last: the first region's warp recomputes and still validates.
+        let r2 = (5, 5, 10, 10);
+        let _w2 = rw.source_window(r2).unwrap();
+        assert_eq!(WINDOW_COMPUTATIONS.with(std::cell::Cell::get), 2);
+        let value = |c: usize, r: usize| (c * 3 + r * 17) as f64 + 0.5;
+        let data = |w: (usize, usize, usize, usize)| {
+            RasterData::F64((0..w.3).flat_map(|r| (0..w.2).map(move |c| value(w.0 + c, w.1 + r))).collect())
+        };
+        let (a, va) = rw.warp(r1, w1, &data(w1), None, 0.0, false).unwrap();
+        // The cache held the other region, so this warp recomputed (and re-cached) r1's window.
+        assert_eq!(WINDOW_COMPUTATIONS.with(std::cell::Cell::get), 3);
+        // A cache hit (same region asked again) gives the same warp as a fresh one.
+        let (c, vc) = rw.warp(r1, w1_again, &data(w1_again), None, 0.0, false).unwrap();
+        assert_eq!(WINDOW_COMPUTATIONS.with(std::cell::Cell::get), 3, "warp reuses the cached window");
+        let fresh = mk();
+        let (b, vb) = fresh.warp(r1, w1, &data(w1), None, 0.0, false).unwrap();
+        assert_eq!(a.to_f64_vec(), b.to_f64_vec());
+        assert_eq!(va, vb);
+        assert_eq!(c.to_f64_vec(), b.to_f64_vec());
+        assert_eq!(vc, vb);
+        // A window that does not match the region's is still rejected.
+        let wrong = (w1.0, w1.1, w1.2 + 1, w1.3);
+        assert!(rw.warp(r1, wrong, &data(wrong), None, 0.0, false).is_err());
+        // Every window-affecting builder and set_dst_gt drop the cache, so the next call recomputes.
+        let builders: Vec<Box<dyn Fn(RegionWarp) -> RegionWarp>> = vec![
+            Box::new(|rw: RegionWarp| rw.with_kernel_version(KernelVersion::Gdal313)),
+            Box::new(|rw: RegionWarp| rw.with_grid_invariance(false)),
+            Box::new(|rw: RegionWarp| rw.with_periodic_longitude(false)),
+            Box::new(|rw: RegionWarp| rw.with_sum_scale(2.0)),
+            Box::new(|rw: RegionWarp| rw.with_src_scale((2.0, 2.0))),
+            Box::new(|mut rw: RegionWarp| {
+                // A different grid: set_dst_gt drops the cache, so the next call recomputes.
+                rw.set_dst_gt([gt[0] + gt[1], gt[1], 0.0, gt[3] + gt[5], 0.0, gt[5]]);
+                rw
+            }),
+        ];
+        for b in builders {
+            let rw = mk();
+            let _ = rw.source_window(r1).unwrap();
+            let before = WINDOW_COMPUTATIONS.with(std::cell::Cell::get);
+            let rw = b(rw);
+            let _ = rw.source_window(r1).unwrap();
+            assert_eq!(WINDOW_COMPUTATIONS.with(std::cell::Cell::get), before + 1, "the builder must drop the cached window");
+        }
     }
 
     /// The same warps' values, pinned: checksums of terrio's results in one chunk and in many
