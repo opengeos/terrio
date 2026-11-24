@@ -3,6 +3,7 @@ drivers, and with rioxarray.
 
 Usage:
     python scripts/compare_stac_geozarr.py stac
+    python scripts/compare_stac_geozarr.py stac-metadata
     python scripts/compare_stac_geozarr.py stacta DATA_DIR
     python scripts/compare_stac_geozarr.py geozarr DATA_DIR
 
@@ -43,7 +44,7 @@ import threading
 import urllib.request
 
 import numpy as np
-from osgeo import gdal, ogr
+from osgeo import gdal, ogr, osr
 
 gdal.UseExceptions()
 gdal.PushErrorHandler("CPLQuietErrorHandler")
@@ -91,6 +92,179 @@ def subdatasets(summary):
         list: The names.
     """
     return [s["name"] for s in summary.get("subdatasets", [])]
+
+
+def metadata_values(items):
+    """Normalize JSON-valued metadata while preserving plain strings.
+
+    Args:
+        items: Mapping of metadata names to their string values.
+
+    Returns:
+        dict: Metadata with JSON numbers and objects decoded.
+    """
+    result = {}
+    for key, value in items.items():
+        try:
+            result[key] = json.loads(value)
+        except (ValueError, TypeError):
+            result[key] = value
+    return result
+
+
+def compare_stac_metadata():
+    """Compare local STAC band fields with GDAL and check documented extensions."""
+    with tempfile.TemporaryDirectory() as tmp:
+        image = os.path.join(tmp, "image.tif")
+        dataset = gdal.GetDriverByName("GTiff").Create(image, 4, 4, 2, gdal.GDT_UInt16)
+        dataset.SetGeoTransform((400000, 10, 0, 5100000, 0, -10))
+        srs = osr.SpatialReference()
+        srs.ImportFromEPSG(32631)
+        dataset.SetProjection(srs.ExportToWkt())
+        for index in (1, 2):
+            dataset.GetRasterBand(index).Fill(index)
+            dataset.GetRasterBand(index).SetNoDataValue(0)
+        dataset = None
+        for legacy in (True, False):
+            label = "STAC 1.0" if legacy else "STAC 1.1"
+            asset = {"href": image, "type": "image/tiff", "roles": ["data"]}
+            bands = [
+                {"name": "B04", "common_name": "red", "note": "synthetic"},
+                {"name": "B08", "common_name": "nir08"},
+            ]
+            if legacy:
+                asset["eo:bands"] = bands
+                asset["raster:bands"] = [
+                    {
+                        "scale": 0.0001,
+                        "offset": -0.1,
+                        "unit": "m",
+                        "nodata": 0,
+                        "statistics": {"mean": 1},
+                    },
+                    {"data_type": "uint16"},
+                ]
+            else:
+                asset["bands"] = [
+                    {
+                        "name": "B04",
+                        "eo:common_name": "red",
+                        "note": "synthetic",
+                        "raster:scale": 0.0001,
+                        "raster:offset": -0.1,
+                        "unit": "m",
+                        "nodata": 0,
+                        "statistics": {"mean": 1},
+                    },
+                    {"name": "B08", "eo:common_name": "nir08", "data_type": "uint16"},
+                ]
+            placed = {
+                "type": "Feature",
+                "stac_version": "1.0.0" if legacy else "1.1.0",
+                "id": "placed",
+                "geometry": None,
+                "collection": "synthetic",
+                "links": [],
+                "stac_extensions": [
+                    "https://stac-extensions.github.io/projection/v1.1.0/schema.json"
+                ],
+                "properties": {
+                    "datetime": "2023-07-01T00:00:00Z",
+                    "proj:epsg": 32631,
+                    "proj:shape": [4, 4],
+                    "proj:transform": [10, 0, 400000, 0, -10, 5100000],
+                },
+                "assets": {"data": asset},
+            }
+            unplaced = {
+                "type": "Feature",
+                "stac_version": placed["stac_version"],
+                "id": "unplaced",
+                "geometry": None,
+                "collection": "synthetic",
+                "properties": {"datetime": "2023-07-01T00:00:00Z"},
+                "links": [],
+                "assets": {
+                    "data": {
+                        "href": os.path.join(tmp, "must-not-open.tif"),
+                        "type": "image/tiff",
+                        "roles": ["data"],
+                    }
+                },
+            }
+            catalog = os.path.join(tmp, "items.json")
+            with open(catalog, "w", encoding="utf-8") as stream:
+                json.dump(
+                    {"type": "FeatureCollection", "features": [placed, unplaced]},
+                    stream,
+                )
+            name = f'STACIT:"{catalog}"'
+            reference = gdal.Open(name)
+            probe = subprocess.run(
+                [TERRIO, "info", "--json", name],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            summary = json.loads(probe.stdout)
+            check(
+                probe.stderr.count("without usable proj metadata") == 1,
+                f"{label}: one warning for the omitted asset",
+            )
+            check(
+                [band.get("description") for band in summary["bands"]]
+                == [reference.GetRasterBand(i).GetDescription() for i in (1, 2)],
+                f"{label}: descriptions as GDAL's",
+            )
+            shared = True
+            for index, band in enumerate(summary["bands"], 1):
+                actual = metadata_values(dict(band.get("metadata", [])))
+                expected = metadata_values(reference.GetRasterBand(index).GetMetadata())
+                shared = shared and all(
+                    actual.get(key) == value for key, value in expected.items()
+                )
+            check(shared, f"{label}: every shared GDAL band metadata item agrees")
+            metadata = metadata_values(dict(summary["bands"][0].get("metadata", [])))
+            check(
+                metadata.get("raster:scale") == 0.0001
+                and metadata.get("raster:offset") == -0.1
+                and metadata.get("statistics") == {"mean": 1}
+                and metadata.get("unit") == "m",
+                f"{label}: additional raster metadata uses the declared STAC names",
+            )
+            output = os.path.join(tmp, "translated.tif")
+            terrio("translate", name, output)
+            actual = gdal.Open(output)
+            check(
+                all(
+                    actual.GetRasterBand(i).GetColorInterpretation()
+                    == reference.GetRasterBand(i).GetColorInterpretation()
+                    and actual.GetRasterBand(i).GetDescription()
+                    == reference.GetRasterBand(i).GetDescription()
+                    for i in (1, 2)
+                ),
+                f"{label}: translated descriptions and colours as GDAL's",
+            )
+            check(
+                np.array_equal(actual.ReadAsArray(), reference.ReadAsArray())
+                and actual.GetGeoTransform() == reference.GetGeoTransform()
+                and actual.GetSpatialRef().IsSame(reference.GetSpatialRef())
+                and all(
+                    actual.GetRasterBand(i).DataType
+                    == reference.GetRasterBand(i).DataType
+                    and actual.GetRasterBand(i).GetNoDataValue()
+                    == reference.GetRasterBand(i).GetNoDataValue()
+                    for i in (1, 2)
+                ),
+                f"{label}: pixels, types, nodata and georeferencing as GDAL's",
+            )
+            check(
+                all(dataset.GetRasterBand(i).GetScale() in (None, 1.0)
+                    and dataset.GetRasterBand(i).GetOffset() in (None, 0.0)
+                    for dataset in (actual, reference) for i in (1, 2)),
+                f"{label}: scale and offset stay identity (unset and 1/0 defaults)",
+            )
+            actual = reference = None
 
 
 def compare_stac():
@@ -404,10 +578,12 @@ def compare_geozarr(data_dir):
 
 def main():
     """Run the comparison named on the command line."""
-    if len(sys.argv) < 2 or sys.argv[1] not in ("stac", "stacta", "geozarr"):
+    if len(sys.argv) < 2 or sys.argv[1] not in ("stac", "stac-metadata", "stacta", "geozarr"):
         sys.exit(__doc__)
     if sys.argv[1] == "stac":
         compare_stac()
+    elif sys.argv[1] == "stac-metadata":
+        compare_stac_metadata()
     elif sys.argv[1] == "stacta":
         compare_stacta(sys.argv[2])
     else:

@@ -856,14 +856,24 @@ before OSGM15 for British National Grid with ODN heights), and 3D datum transfor
 ellipsoidal heights. Vertical units (US survey feet) and depths are converted. A vertical CRS
 without geoid models of its own uses those of the vertical CRSs of its datum, as PROJ does:
 NAVD88 height (ftUS) (`EPSG:6360`), NAVD88 height (ft) (`EPSG:8228`) and NAVD88 depth go
-through NAVD88 height's GEOID18. When no geoid model applies, heights are kept, as PROJ's
-ballpark vertical transformation does. Between 2D CRSs, heights are kept as GDAL keeps them (or
-transformed, for the pipelines PROJ runs on heights). Between a 2D CRS and a geographic 3D or
-geocentric CRS, the height is kept through the datum shift too, as PROJ keeps it (`push v_3` and
-`pop v_3`), and converted to or from geocentric coordinates on the geocentric CRS's own
-ellipsoid: WGS 84 (2D) at (0°, 0°, 0 m) is X = 6378136 m in PZ-90 (geocentric) (`EPSG:4922`),
-on PZ-90's ellipsoid, and 6378137 m from WGS 84 (3D). Transformations PROJ runs between
-geocentric CRSs (PZ-90 to PZ-90.11 (1)) still move it.
+through NAVD88 height's GEOID18. A geoid model without grid that EPSG registers (Saba to Saba
+height (1), whose heights are Saba's ellipsoidal heights) is applied as one. When no geoid model
+applies, heights are kept, as PROJ's ballpark vertical transformation does. When the vertical
+CRS has no geoid model or transformation that can be used (their grids missing), PROJ chains that
+ballpark with each horizontal transformation, which makes every one of unknown accuracy, and uses
+for a point the one of the smallest area that holds it. So does terrio: from WGS 84 (3D) into
+`EPSG:7405` without OSGM15's grid, (-2°, 54°) goes through OSGB36 to WGS 84 (3), not (6), 5.2 m
+apart (from WGS 84 (2D), which has no heights, through (6)). The height runs through the
+horizontal transformation in the vertical CRS's unit, where PROJ's pipeline converts it, and
+`ALLOW_BALLPARK=NO` refuses such an operation. Between 2D CRSs, heights are kept as GDAL keeps them (or
+transformed, for the pipelines PROJ runs on heights).
+
+Between a 2D CRS and a geographic 3D or geocentric CRS, the height is kept through the datum
+shift too, as PROJ keeps it (`push v_3` and `pop v_3`), and converted to or from geocentric
+coordinates on the geocentric CRS's own ellipsoid: WGS 84 (2D) at (0°, 0°, 0 m) is
+X = 6378136 m in PZ-90 (geocentric) (`EPSG:4922`), on PZ-90's ellipsoid, and 6378137 m from
+WGS 84 (3D). Transformations PROJ runs between geocentric CRSs (PZ-90 to PZ-90.11 (1)) still
+move it.
 With `TransformOptions { promote_to_3d: true, .. }` (Rust), the heights of 2D CRSs are ellipsoidal
 heights that datum transformations change, as GDAL gives them after `PromoteTo3D`: EPSG:28992
 (85000, 447000, 0) is 43.576 m above the WGS 84 ellipsoid in EPSG:4979, where it stays 0 by default. Vector layer

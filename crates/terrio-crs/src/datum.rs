@@ -157,9 +157,10 @@ pub(crate) struct Op {
     pub unknown_area: bool,
     /// Whether this is PROJ's "ballpark" transformation (no datum shift, as a last resort).
     pub ballpark: bool,
-    /// Whether PROJ frames it with its ballpark, from or into a CRS on a renamed datum (see
-    /// `route::OperationContext::framed`): a concatenation with a ballpark step, which PROJ
-    /// refuses with the ballpark.
+    /// Whether PROJ frames it with a ballpark (see `route::OperationContext::framed`): from or into
+    /// a CRS on a renamed datum, or chained with its ballpark vertical transformation when no
+    /// geoid model can be used. A concatenation with a ballpark step, which PROJ refuses with the
+    /// ballpark.
     pub framed: bool,
     /// Whether it chains several transformations through intermediate datums.
     pub concatenated: bool,

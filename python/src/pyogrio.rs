@@ -94,7 +94,8 @@ fn pyogrio_read<'py>(
     } else {
         out.set_item("wkb", py.None())?;
     }
-    out.set_item("fids", layer.features.iter().map(|f| f.fid).collect::<Vec<u64>>())?;
+    // OGR FIDs are signed: a GeoPackage rowid of -1 is -1, not u64::MAX.
+    out.set_item("fids", layer.features.iter().map(terrio::signed_fid).collect::<Vec<i64>>())?;
     Ok(out)
 }
 
