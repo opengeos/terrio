@@ -131,12 +131,54 @@ def test_metadata_errors_are_recorded_for_each_case(tmp_path, monkeypatch):
     monkeypatch.setattr(perf_matrix, "report", lambda _: "recorded")
     out = tmp_path / "results.jsonl"
     args = SimpleNamespace(format="fake", dir=tmp_path, latency_ms=0, threads=1, only=None,
-                           quick=True, samples=1, out=out, source=["http"], allow_battery=False, access=None, base=None)
+                           quick=True, samples=1, base=None, out=out, source=["http"], allow_battery=False, access=None)
     perf_matrix.run(args)
     rows = [json.loads(line) for line in out.read_text().splitlines()][1:]
     assert [row["fixture"] for row in rows] == ["a", "b"]
     assert all(row["meta_error"] == "ValueError: missing geo metadata" for row in rows)
     assert all("time_ratio" not in row for row in rows)
+
+
+@pytest.mark.parametrize("failure", ["empty", "json", "accounting"])
+def test_bad_worker_samples_do_not_abort_remaining_cases(tmp_path, monkeypatch, failure):
+    """Record malformed output and unsettled accounting as unranked case errors.
+
+    Args:
+        tmp_path: Isolated results directory.
+        monkeypatch: Scoped dependency replacements.
+        failure: Worker failure to simulate.
+    """
+    fake = SimpleNamespace(FIXTURES={"a": None, "b": None}, ACCESS=["full"], EXT=".parquet",
+                           meta=lambda *_: {"need_bytes": 1},
+                           axes=lambda _: {"codec": "none", "dtype": "point", "layout": "arrow"})
+    monkeypatch.setitem(perf_matrix.FORMATS, "fake", fake)
+    monkeypatch.setattr(perf_matrix, "machine", lambda: {"machine": {"on_ac": True}})
+    monkeypatch.setattr(perf_matrix, "report", lambda _: "recorded")
+    monkeypatch.setattr(perf_matrix.subprocess, "run", lambda *_a, **_k: SimpleNamespace(
+        returncode=0, stdout="" if failure == "empty" else "not JSON", stderr=""))
+
+    def settled():
+        """Return completed accounting or simulate a timeout.
+
+        Returns:
+            Empty request accounting.
+
+        Raises:
+            TimeoutError: When handlers have not settled.
+        """
+        if failure == "accounting":
+            raise TimeoutError("unsettled")
+        return []
+
+    monkeypatch.setattr(perf_matrix, "_settled_log", settled)
+    out = tmp_path / "results.jsonl"
+    args = SimpleNamespace(format="fake", dir=tmp_path, latency_ms=0, threads=1, only=None,
+                           quick=True, samples=1, base=None, out=out, source=["http"], allow_battery=False,
+                           access=None, timeout=1)
+    perf_matrix.run(args)
+    rows = [json.loads(line) for line in out.read_text().splitlines()][1:]
+    assert [row["fixture"] for row in rows] == ["a", "b"]
+    assert all("terrio_error" in row and "gdal_error" in row and "time_ratio" not in row for row in rows)
 
 
 @pytest.mark.parametrize("platform", ["linux", "darwin"])
@@ -269,6 +311,7 @@ def test_interrupted_geoparquet_source_is_not_published_or_reused(tmp_path, monk
 
 
 def test_a_base_build_gets_its_own_ratio_and_values_check():
+    """Validate base timings only when all samples have matching checksums."""
     row = summarize(_row(terrio=[_sample(2)], gdal=[_sample(1)], base=[_sample(4)]))
     assert (row["time_ratio"], row["base_ratio"], row["values"]) == (2, 0.5, "checksum_match")
     assert "faster by 10% or more: 1" in report([row])
@@ -277,6 +320,7 @@ def test_a_base_build_gets_its_own_ratio_and_values_check():
 
 
 def test_a_case_the_base_failed_is_reported_as_fixed_and_the_reverse_as_broken():
+    """Report successful comparisons separately from fixed and broken cases."""
     fixed = summarize(_row(terrio=[_sample(2)], gdal=[_sample(1)], base=[], base_error="timeout: over 120 s"))
     assert fixed["time_ratio"] == 2 and "base_ratio" not in fixed and fixed["values"] == "checksum_match"
     broken = summarize({**_row(terrio=[], gdal=[_sample(1)], base=[_sample(3)], terrio_error="exit 1"), "fixture": "f32_none"})
@@ -284,3 +328,39 @@ def test_a_case_the_base_failed_is_reported_as_fixed_and_the_reverse_as_broken()
     text = report([fixed, broken])
     assert "the base failed, this build succeeds: 1\n  u8_none" in text and "timeout: over 120 s" in text
     assert "this build fails, the base succeeded: 1\n  f32_none" in text
+
+
+def test_run_rejects_abbreviated_workflow_reserved_options(tmp_path, monkeypatch):
+    """Prevent abbreviated options from overriding the workflow's format.
+
+    Args:
+        tmp_path: Isolated fixture directory.
+        monkeypatch: Scoped argument replacements.
+    """
+    monkeypatch.setattr(sys, "argv", ["perf_matrix.py", "run", "--dir", str(tmp_path),
+                                      "--format", "geotiff", "--for", "zarr"])
+    with pytest.raises(SystemExit) as exc:
+        perf_matrix.main()
+    assert exc.value.code == 2
+    assert not (tmp_path / "zarr").exists()
+
+
+def test_base_import_must_be_inside_the_requested_directory(tmp_path, monkeypatch):
+    """Reject an installed package whose directory merely shares the base prefix.
+
+    Args:
+        tmp_path: Isolated build directory.
+        monkeypatch: Scoped dependency replacements.
+    """
+    fake = SimpleNamespace(FIXTURES={}, ACCESS=[])
+    monkeypatch.setitem(perf_matrix.FORMATS, "fake", fake)
+    monkeypatch.setattr(perf_matrix, "machine", lambda: {"machine": {"on_ac": True}})
+    wrong_file = tmp_path / "build-other" / "terrio" / "__init__.py"
+    monkeypatch.setattr(perf_matrix.subprocess, "run", lambda *_a, **_k: SimpleNamespace(
+        stdout=json.dumps([str(wrong_file), "0.9.0"])))
+    monkeypatch.setattr(perf_matrix, "report", lambda _: "empty")
+    args = SimpleNamespace(format="fake", dir=tmp_path, latency_ms=0, threads=1, only=None,
+                           quick=True, samples=1, base=tmp_path / "build", out=tmp_path / "results.jsonl",
+                           source=["http"], allow_battery=False, access=None)
+    with pytest.raises(SystemExit, match="terrio is imported from"):
+        perf_matrix.run(args)
