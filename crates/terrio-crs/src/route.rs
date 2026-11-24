@@ -64,8 +64,8 @@ pub(crate) enum OpKind {
     Vertical,
 }
 
-/// Records that an operation was used, run in reverse or not: `None` (or an unnamed one without
-/// steps) for PROJ's ballpark.
+/// Records an operation, including registered no-step datum transformations and geoid models.
+/// `None` or an unregistered no-step fallback records PROJ's ballpark.
 pub(crate) fn note(op: Option<&Op>, reverse: bool, kind: OpKind) {
     USED.with(|u| {
         let mut u = u.borrow_mut();
@@ -75,7 +75,15 @@ pub(crate) fn note(op: Option<&Op>, reverse: bool, kind: OpKind) {
             // WGS 84 (1), ETRS89 to WGS 84 (1)), or a concatenation of them (Inverse of ETRS89 to
             // ETRF89 + ETRS89 to WGS 84 (1)), which PROJ 9.8.1 names: not a ballpark. So is a
             // WKT 2 `BOUNDCRS`'s zero Helmert transformation, which PROJ names too.
-            Some(op) if !op.ballpark && (!op.steps.is_empty() || (!op.name.is_empty() && matches!(kind, OpKind::Datum))) => {
+            // Registered no-step geoid models have a declared accuracy; the missing-grid
+            // placeholder does not. Use the same distinction as the model runner.
+            Some(op)
+                if !op.ballpark
+                    && match kind {
+                        OpKind::Datum => !op.steps.is_empty() || !op.name.is_empty(),
+                        OpKind::Vertical => crate::is_geoid_model(op),
+                    } =>
+            {
                 let names = step_names(op, reverse);
                 let name = if names.is_empty() {
                     let unnamed = match kind {
@@ -300,15 +308,20 @@ struct OperationContext<'a> {
     dst: &'a Def,
     aoi: Option<[f64; 4]>,
     all: bool,
-    /// Whether PROJ reaches the CRSs of a datum by its ballpark, of unknown accuracy, from either
-    /// CRS: one on a renamed datum (see [`Def::unresolved`]).
+    /// Whether the transformations PROJ makes between the CRSs are framed by a ballpark, of
+    /// unknown accuracy: into the CRSs of a renamed datum, from either CRS (see
+    /// [`Def::unresolved`]), or chained with PROJ's ballpark vertical transformation
+    /// (`ballpark_heights`).
     framed: bool,
+    /// Whether every transformation is chained with PROJ's ballpark vertical transformation,
+    /// which makes it of unknown accuracy (see [`Route::with_ballpark_heights`]).
+    ballpark_heights: bool,
 }
 
 impl<'a> OperationContext<'a> {
     fn new(src: &'a Def, dst: &'a Def, all: bool) -> Self {
         let framed = [src, dst].iter().any(|d| d.unresolved().is_some_and(|u| u.ballpark));
-        Self { src, dst, aoi: area_of_interest(src, dst), all, framed }
+        Self { src, dst, aoi: area_of_interest(src, dst), all, framed, ballpark_heights: false }
     }
 
     /// A transformation as PROJ frames it between the CRSs: of unknown accuracy, when framed by a
@@ -339,10 +352,29 @@ impl Route {
         Self::build(&OperationContext::new(src, dst, false))
     }
 
+    /// The route from `src` to `dst` when heights go through PROJ's ballpark vertical
+    /// transformation (no geoid model or transformation between the vertical CRSs can be used):
+    /// PROJ chains it with each horizontal transformation, which makes every one of unknown
+    /// accuracy, so that the one of the smallest area holding a point is used for it. From
+    /// WGS 84 (3D) into OSGB36 / British National Grid + ODN height (EPSG:7405) without OSGM15's
+    /// grid, PROJ 9.9.0 places (-2°, 54°) by OSGB36 to WGS 84 (3), not (6) (#1012 item 47).
+    pub fn with_ballpark_heights(src: &Def, dst: &Def) -> Self {
+        let ctx = OperationContext { framed: true, ballpark_heights: true, ..OperationContext::new(src, dst, false) };
+        Self::build(&ctx)
+    }
+
     /// The route assuming all grids are available.
     pub fn all(src: &Def, dst: &Def) -> Self {
         let (src, dst) = (src.with_all_operations(), dst.with_all_operations());
         Self::build(&OperationContext::new(&src, &dst, true))
+    }
+
+    /// Every candidate, including missing grids, with the same ballpark-height framing as
+    /// [`Self::with_ballpark_heights`]. Strict selection must retain that ordering.
+    pub fn all_with_ballpark_heights(src: &Def, dst: &Def) -> Self {
+        let (src, dst) = (src.with_all_operations(), dst.with_all_operations());
+        let ctx = OperationContext { framed: true, ballpark_heights: true, ..OperationContext::new(&src, &dst, true) };
+        Self::build(&ctx)
     }
 
     fn build(ctx: &OperationContext) -> Self {
@@ -381,7 +413,7 @@ impl Route {
             (Kind::List(l), Some(a), Some(b)) if searching => unresolved_search(l, a, b, ctx),
             (kind, ..) => kind,
         };
-        let kind = if src.on_bound_source(dst) || dst.on_bound_source(src) {
+        let mut kind = if src.on_bound_source(dst) || dst.on_bound_source(src) {
             // A WKT 2 `BOUNDCRS` into a CRS on its source CRS's datum: PROJ's null
             // transformation.
             Kind::Same
@@ -418,6 +450,14 @@ impl Route {
                 _ => shifted(ctx).unwrap_or(Kind::Hub),
             }
         };
+        if ctx.ballpark_heights
+            && let Kind::List(list) = &mut kind
+        {
+            for leg in list.iter_mut() {
+                leg.op = Arc::new(ctx.framed((*leg.op).clone()));
+            }
+            sort_legs(&mut kind, aoi);
+        }
         Self {
             kind,
             boxes: OnceLock::new(),
