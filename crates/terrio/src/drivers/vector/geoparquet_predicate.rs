@@ -185,7 +185,10 @@ mod tests {
                     let rows = |l: &Layer| l.features.iter().map(|f| (f.fid, f.attributes.clone())).collect::<Vec<_>>();
                     assert_eq!(rows(&got), rows(&expected), "{statement}");
                 }
-                (got, expected) => assert_eq!(got.map(|_| ()).unwrap_err().to_string(), expected.map(|_| ()).unwrap_err().to_string()),
+                (Err(got), Err(expected)) => assert_eq!(got.to_string(), expected.to_string(), "{statement}"),
+                (got, expected) => {
+                    panic!("{statement}: got {:?}, expected {:?}", got.map(|l| l.features.len()), expected.map(|l| l.features.len()))
+                }
             }
         }
     }
