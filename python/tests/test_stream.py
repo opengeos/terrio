@@ -150,6 +150,30 @@ def test_streams_select_columns_and_rows(tmp_path):
         assert [f["properties"]["i"] for f in features] == whole_i, ext
 
 
+def test_a_geoparquet_stream_with_a_bbox_chooses_its_rows_when_read(tmp_path):
+    """Opening reads the footer, not the covering column: the Arrow export, which reads the file
+    itself, would otherwise read the rows' bounding boxes twice."""
+    io = pytest.importorskip("pathlib").Path("/proc/self/io")
+    if not io.exists():
+        pytest.skip("bytes read are counted from Linux's /proc/self/io")
+
+    def rchar():
+        return int(dict(line.split(": ") for line in io.read_text().splitlines())["rchar"])
+
+    p = str(tmp_path / "s.parquet")
+    squares(30000).write(p)
+    box = (-100.0, -80.0, -90.0, -70.0)
+    before = rchar()
+    terrio.open_stream(p)
+    plain = rchar() - before
+    before = rchar()
+    stream = terrio.open_stream(p, bbox=box)
+    filtered = rchar() - before
+    assert filtered < plain + 16384, (filtered, plain)
+    # The rows are still chosen: by iteration, as by `open_vector`.
+    assert len(stream.read_all()) == len(terrio.open_vector(p, bbox=box)[0]) > 0
+
+
 def test_geoparquet_streams_read_files_in_archives(tmp_path):
     pa = pytest.importorskip("pyarrow")
     import zipfile
