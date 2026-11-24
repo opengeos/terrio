@@ -252,3 +252,52 @@ vector feature differences, and a deliberately corrupted GDAL statistics summary
 ```sh
 python -m unittest discover -s scripts/tests -v
 ```
+
+## Performance matrix
+
+`scripts/perf_matrix.py` looks for slow cases across a whole format in one run, rather than
+one file at a time. Each format lists the ways its files vary and the ways they are read:
+
+| Format | Files vary by | Reads |
+|---|---|---|
+| GeoTIFF | codec and predictor, data type, tiled or stripped, band or pixel interleave, 1–12 bands | one window, 16 windows, whole file, 8x decimated (overview), 4 threads × 4 windows |
+| Zarr | v2 or v3, codec (zlib, gzip, zstd, Blosc LZ4/Zstd with shuffle or bitshuffle, none), data type, chunk size, sharding, cube chunking | one window, 16 windows, whole array, one band of a cube, 4 threads × 4 windows |
+| GeoParquet | geometry type, WKB or GeoArrow, compression, row group size, covering bbox column, spatial sort | all columns, two columns, a bbox of 1% of the extent, 16 bboxes, 4 threads × 4 bboxes, an attribute filter |
+
+GDAL or zarr-python writes one fixture per file combination. terrio and GDAL each read every
+fixture in every way, from a local path and over HTTP from a local server that adds a 20 ms
+round-trip time. Every read runs in a fresh process, in alternating order, three times; the
+median is reported. A process's first open and read pay one-time costs (library loading, thread
+pools); they are measured on a tiny file before the case and reported apart as `init`.
+
+Every case records:
+
+- time (open plus read), against GDAL's;
+- bytes read (local: `rchar` of `/proc/self/io`) or transferred (HTTP), against GDAL's and against
+  the bytes the read needs: the compressed chunks, tiles or row groups' columns it touches, read
+  from the file's own chunk tables;
+- HTTP requests and sequential rounds of requests: a request that starts after every request in
+  flight has ended waited for them, so it opens a new round;
+- peak memory, and whether terrio's values (sum and count) equal GDAL's.
+
+The report ranks the worst cases, gives the geometric mean of the time ratios for each value of
+each axis (by codec, layout, access pattern and source), and lists every case that makes more
+request rounds or reads more bytes than GDAL, or more than it needs. A slow axis value points to
+one area of code (decoding, copying into the output, fetching, threading or opening), so one pull
+request can fix all the cases of that area, with the matrix's numbers before and after.
+
+```sh
+# The same environment as above, with terrio's Python module built in release mode, pyogrio
+# (GeoParquet) and zarr-python 3 (Zarr fixtures).
+(cd python && maturin develop --release)
+python scripts/perf_matrix.py fixtures --format geotiff      # 0.9 GB in ~/.cache/terrio-bench/matrix
+python scripts/perf_matrix.py run --format geotiff           # every case; 30 to 60 minutes per format
+python scripts/perf_matrix.py run --format zarr --only shard --access window --quick
+python scripts/perf_matrix.py report ~/.cache/terrio-bench/matrix/geotiff/results-<time>.jsonl
+```
+
+`--threads` sets `RAYON_NUM_THREADS` and `GDAL_NUM_THREADS` (4 by default), `--latency-ms` the
+simulated round-trip time, `--samples` the samples per tool, and `--quick` takes one. A read that
+takes longer than `--timeout` seconds (120) is reported as a timeout and not repeated. The
+numbers are this machine's: compare two terrio builds in the same session, not with an earlier
+run.
