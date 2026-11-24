@@ -35,7 +35,8 @@ pub struct PyRaster {
 /// that overlaps one in progress (which holds the raster's own reader) takes one of them, or
 /// opens one, and leaves it for the next. Opening again reads the headers from the process-wide
 /// caches. Each reader has its own file handle; their decoded chunks share the process-wide block
-/// cache, under its one byte cap, without being shared between readers.
+/// cache, under its one byte cap, without being shared between readers, except the bands of a
+/// local GRIB file, which the readers of one version of the file share on Unix.
 #[pyclass(frozen)]
 pub(crate) struct Readers {
     path: String,

@@ -390,12 +390,31 @@ Opened lazily (`terrio.rio.open`, `open_raster(..., lazy=True)`), only the bands
 as GDAL decodes them. Remote files are read by range, message by message as GDAL reads them, with
 no `.idx` or `.index` sidecar: at open one 16 KiB block per message for its section headers, then a
 band's message when the band is read; a server that ignores range requests is refused.
+Regular, nonempty local files are read by position in the same way, without holding the file in memory: at open the
+section headers of each message (the whole message for a GRIB1 field whose nodata depends on its
+values, one such message at a time; in a GRIB2 message of several fields, a field's headers come
+after the data of the fields before it, which the open reads too), then a band's message when the
+band is read. The open holds one message's header at a time, and nothing it read is kept once the
+file is open. Non-regular paths, such as FIFOs, and paths reporting zero size fall back to reading
+the whole input into memory. The dataset keeps the file open until it is closed, as a lazy GeoTIFF reader does. A
+read of several bands holds the messages of the bands it decodes at once: as many bands as hold in
+256 MiB, counting their decoded Float64 values and those messages (at least one). The bands read are
+kept in the process-wide [decoded block cache](remote-data.md#decoded-block-cache)
+(`TERRIO_CACHEMAX`), with the decoded chunks of other files: a band is decoded anew when a read
+needs rows of it that the cache no longer holds, because the bands one read asks for are larger than
+the cache, or because other reads have since taken their place. A local file changed in place after
+it is opened is not snapshotted (see the [decoded block cache](remote-data.md#decoded-block-cache)):
+a read may combine bands decoded before the change with bands decoded from the new bytes, or fail,
+so close its readers before changing it in place and open them again afterwards.
 
 Terrio's GRIB driver limits each field to 16,777,216 points by default, including constant and
 compressed fields. This is 128 MiB of decoded Float64 values; decoder buffers and multi-band reads
 use additional memory. To allow larger fields, set the environment variable `TERRIO_GRIB_MAX_POINTS`
-to a larger positive integer. The limit is checked on the raster's grid (the first field's) when
-a file is opened, and on each field before it is decoded, for local, remote and in-memory files.
+to a larger positive integer. The limit bounds what a decode allocates: it is checked on the
+raster's grid (the first field's) when a file is opened, and on each field before it is decoded, for
+local, remote and in-memory files. The variable is read from the process environment each time, and
+a band in the block cache is checked again before a read takes it from there: a band decoded before
+the limit was lowered, by any reader of the file, is refused as its decode would be.
 A resource-limit or allocation refusal is not retried with GDAL, including when `open` detects a file by its content.
 
 GRIB2 is written as GDAL's GRIB driver writes it (`terrio.rio.open(path, "w", driver="GRIB")`,
