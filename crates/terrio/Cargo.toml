@@ -431,3 +431,8 @@ path = "tests/zarr_input_limits.rs"
 [[test]]
 name = "zonal_scoped_options"
 path = "tests/zonal_scoped_options.rs"
+
+[[test]]
+name = "lzw_write_reuse"
+path = "tests/lzw_write_reuse.rs"
+required-features = ["geotiff"]

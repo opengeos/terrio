@@ -770,6 +770,28 @@ pub(crate) fn map_waiting<R: Send>(n: usize, at_once: usize, f: impl Fn(usize) -
     (0..n).map(f).collect()
 }
 
+/// Maps a coarse range in order with scratch owned by each Rayon work piece.
+/// The serial fallback reuses one scratch value; no state outlives this call.
+pub(crate) fn map_range_init_coarse<S, R: Send>(
+    n: usize,
+    init: impl Fn() -> S + Sync + Send,
+    f: impl Fn(&mut S, usize) -> R + Sync + Send,
+) -> Vec<R> {
+    #[cfg(threads)]
+    if let Some(p) = pool_for(true, n, 2) {
+        return p.run(|parallel| {
+            if parallel {
+                (0..n).into_par_iter().map_init(init, f).collect()
+            } else {
+                let mut scratch = init();
+                (0..n).map(|i| f(&mut scratch, i)).collect()
+            }
+        });
+    }
+    let mut scratch = init();
+    (0..n).map(|i| f(&mut scratch, i)).collect()
+}
+
 /// Calls `f` on each item of an owned list with its index, in parallel (fine-grained work).
 pub(crate) fn for_each_owned<T: Send>(items: Vec<T>, f: impl Fn(usize, T) + Sync + Send) {
     for_each_owned_on::<false, T>(items, f)
@@ -900,6 +922,28 @@ pub(crate) fn alone(secs: u64, scenario: impl FnOnce() -> bool) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn initialized_range_keeps_order_and_serial_scratch() {
+        let init_count = std::sync::atomic::AtomicUsize::new(0);
+        let init = || {
+            init_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            std::rc::Rc::new(std::cell::Cell::new(0usize))
+        };
+        let empty: Vec<usize> = map_range_init_coarse(0, init, |_, i| i);
+        assert!(empty.is_empty());
+        let one = map_range_init_coarse(1, init, |s, i| {
+            s.set(s.get() + 1);
+            (i, s.get())
+        });
+        assert_eq!(one, [(0, 1)]);
+        assert_eq!(init_count.load(std::sync::atomic::Ordering::Relaxed), 2, "one initialization per serial call");
+        let results = map_range_init_coarse(1000, init, |s, i| {
+            s.set(s.get() + 1);
+            if i % 7 == 0 { Err(i) } else { Ok(i) }
+        });
+        assert_eq!(results, (0..1000).map(|i| if i % 7 == 0 { Err(i) } else { Ok(i) }).collect::<Vec<_>>());
+    }
+
     use super::*;
 
     // Linux only: on macOS the forked child of a multi-threaded test process dies of SIGTRAP.
