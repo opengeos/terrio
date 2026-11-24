@@ -213,6 +213,20 @@ test("supplied COG overviews are written as they are, with metadata items", () =
   assert.throws(() => base.toBytes("s.tif", { format: "COG", overviewData: [{ width: 70, height: 50, data: new Float32Array(3500) }] }), /smaller/);
   assert.throws(() => base.toBytes("s.tif", { format: "COG", overviewData: [{ width: 35, height: 25, data: new Uint8Array(875) }] }), /bands/);
   assert.throws(() => base.toBytes("s.tif", { overviews: [2], overviewData }), /factors/);
+  // Dimensions whose product overflows (65536 * 65536 on wasm32), past the exact integers or
+  // with no pixels are refused with an ordinary Error, and the module still works afterwards.
+  for (const [width, height, data] of [
+    [65536, 65536, new Float32Array(1)],
+    [2 ** 53, 1, new Float32Array(1)],
+    [1e300, 1, new Float32Array(1)],
+    [Infinity, 1, new Float32Array(1)],
+    [35, 25, new Float32Array(0)],
+  ]) {
+    assert.throws(() => base.toBytes("s.tif", { format: "COG", overviewData: [{ width, height, data }] }),
+      (e) => e instanceof Error && /overviewData\[0\]/.test(e.message), `${width} x ${height}`);
+  }
+  const again = terrio.open(base.toBytes("s.tif", { format: "COG", compress: "DEFLATE", tileSize: 16, overviewData }), "s.tif");
+  assert.deepEqual(again.overviews, sizes);
 });
 
 test("Zstandard GeoTIFFs with predictors, decoded without the C library", () => {

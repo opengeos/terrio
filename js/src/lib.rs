@@ -248,26 +248,25 @@ fn overview_data(options: &JsValue) -> Result<Vec<std::sync::Arc<terrio::Raster>
         .enumerate()
         .map(|(i, level)| {
             let field = |name: &str| js_sys::Reflect::get(&level, &JsValue::from_str(name)).ok().filter(|v| !v.is_undefined());
+            // A whole number from 1 to the largest exact JavaScript integer, which `usize` holds
+            // (on wasm32, up to 2^32 - 1), rather than saturated by `as usize`.
             let size = |name: &str| {
                 field(name)
                     .and_then(|v| v.as_f64())
-                    .filter(|v| v.fract() == 0.0 && *v >= 1.0)
-                    .map(|v| v as usize)
+                    .filter(|v| v.is_finite() && v.fract() == 0.0 && (1.0..=9_007_199_254_740_991.0).contains(v))
+                    .and_then(|v| usize::try_from(v as u64).ok())
                     .ok_or_else(|| JsError::new(&format!("overviewData[{i}].{name}: a positive integer")))
             };
             let (width, height) = (size("width")?, size("height")?);
+            let pixels =
+                width.checked_mul(height).ok_or_else(|| JsError::new(&format!("overviewData[{i}]: width * height is too large")))?;
             let data = raster_data(&field("data").unwrap_or(JsValue::UNDEFINED))
                 .map_err(|_| JsError::new(&format!("overviewData[{i}].data: a typed array of the raster's type")))?;
-            if data.len() % (width * height) != 0 {
-                return Err(JsError::new(&format!("overviewData[{i}]: the array length is not a multiple of width * height")));
+            let bands = data.len() / pixels;
+            if bands == 0 || data.len() % pixels != 0 {
+                return Err(JsError::new(&format!("overviewData[{i}]: the array length is not a positive multiple of width * height")));
             }
-            let cfg = terrio::RasterConfig {
-                cols: width,
-                rows: height,
-                bands: data.len() / (width * height),
-                data_type: data.data_type(),
-                ..Default::default()
-            };
+            let cfg = terrio::RasterConfig { cols: width, rows: height, bands, data_type: data.data_type(), ..Default::default() };
             Ok(std::sync::Arc::new(terrio::raster_from_data(cfg, data).map_err(js_err)?))
         })
         .collect()
