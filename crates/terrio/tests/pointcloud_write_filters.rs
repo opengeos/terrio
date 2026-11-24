@@ -443,7 +443,7 @@ fn check_hierarchy(dir: &std::path::Path) -> std::collections::BTreeMap<String, 
             _ => {
                 let mut out = Vec::new();
                 let zst = std::fs::read(tile("zst")).unwrap();
-                std::io::Read::read_to_end(&mut ruzstd::decoding::StreamingDecoder::new(&zst[..]).unwrap(), &mut out).unwrap();
+                std::io::Read::read_to_end(&mut zrip::FrameDecoder::new(&zst[..]), &mut out).unwrap();
                 out.len() as u64 / rl
             }
         };
@@ -538,10 +538,9 @@ fn ept_zstandard_tiles_of_several_frames_take_points_appended() {
     for entry in std::fs::read_dir(path.with_file_name("ept-data")).unwrap() {
         let tile = entry.unwrap().path();
         let mut records = Vec::new();
-        std::io::Read::read_to_end(&mut ruzstd::decoding::StreamingDecoder::new(&std::fs::read(&tile).unwrap()[..]).unwrap(), &mut records)
-            .unwrap();
+        std::io::Read::read_to_end(&mut zrip::FrameDecoder::new(&std::fs::read(&tile).unwrap()[..]), &mut records).unwrap();
         let half = records.len() / 2;
-        let compress = |b: &[u8]| ruzstd::encoding::compress_to_vec(b, ruzstd::encoding::CompressionLevel::Fastest);
+        let compress = |b: &[u8]| zrip::compress(b, 1).unwrap();
         let skippable = [0x184D_2A50u32.to_le_bytes(), 4u32.to_le_bytes(), *b"skip"].concat();
         std::fs::write(&tile, [compress(&records[..half]), skippable, compress(&records[half..])].concat()).unwrap();
         split += 1;

@@ -261,7 +261,7 @@ Each queue retains its own order, but the combined order is not chronological
 across queues. A custom transformer warning handler is also available.
 
 The standalone default omits `wbprojection`; Terrio enables the fallback to retain
-its existing coverage. Bundled tables use portable `ruzstd` decompression on all
+its existing coverage. Bundled tables use portable `zrip` decompression on all
 targets. The standalone default has no C dependency: Zstandard TIFF grids are read only with the
 `libzstd` feature, which uses the zstd C library and which Terrio does not enable. The PROJ CDN's
 grids are Deflate-compressed (all 11 sampled, among them those this page and the tests name), so this

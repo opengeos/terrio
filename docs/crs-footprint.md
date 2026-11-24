@@ -113,7 +113,7 @@ the bundled tables; no caller-supplied table bytes enter this decoder.
 
 ## Codec audit and portability
 
-Bundled EPSG/ESRI/datum tables use `ruzstd` on native and WASM targets. Removing
+Bundled EPSG/ESRI/datum tables use `zrip` on native and WASM targets. Removing
 the separate native table decoder removes the standalone crate's direct
 `zstd` 0.14 dependency. Zstandard TIFF grids use the Zstd 0.13 backend through the optional
 `libzstd` feature, off by default; without it the crate has no C dependency.

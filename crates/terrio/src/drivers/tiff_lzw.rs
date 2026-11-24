@@ -14,6 +14,17 @@ pub(super) struct Encoder {
 }
 
 impl Encoder {
+    pub(super) const SCRATCH_BYTES: usize = 8192 * size_of::<u32>() + 4096 * (size_of::<u8>() + size_of::<usize>() + 2 * size_of::<u16>());
+
+    #[cfg(test)]
+    pub(super) fn allocated_scratch_bytes(&self) -> usize {
+        self.hash.table.capacity() * size_of::<u32>()
+            + self.hash.successors.capacity() * size_of::<u8>()
+            + self.starts.capacity() * size_of::<usize>()
+            + self.lengths.capacity() * size_of::<u16>()
+            + self.parents.capacity() * size_of::<u16>()
+    }
+
     pub(super) fn new() -> Self {
         Self { hash: HashEncoder::new(), starts: Vec::new(), lengths: Vec::new(), parents: Vec::new() }
     }

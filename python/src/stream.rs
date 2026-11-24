@@ -34,11 +34,42 @@ pub struct PyFeatureStream {
     columns: Option<Vec<String>>,
     batch_size: usize,
     started: bool,
+    /// A GeoParquet file with a bbox: its reader, which chooses the rows when it opens, is opened
+    /// when features are read, not for the Arrow export, which reads the file itself.
+    deferred: bool,
 }
 
 impl PyFeatureStream {
-    fn take(&self) -> PyResult<FeatureReader> {
+    fn take(&mut self, py: Python<'_>) -> PyResult<FeatureReader> {
+        self.open_deferred(py)?;
         self.reader.lock().map_err(|_| invalid("the stream is in use"))?.take().ok_or_else(|| invalid("the stream has been consumed"))
+    }
+
+    /// Opens the reader of a deferred stream, once.
+    fn open_deferred(&mut self, py: Python<'_>) -> PyResult<()> {
+        if !self.deferred {
+            return Ok(());
+        }
+        let (path, options, name, columns, batch_size) = (&self.path, &self.options, &self.layer.name, &self.columns, self.batch_size);
+        let reader = crate::with_warnings(py, || open_reader(path, options, Some(name), columns.as_deref(), batch_size))?;
+        *self.reader.lock().map_err(|_| invalid("the stream is in use"))? = Some(reader);
+        self.deferred = false;
+        Ok(())
+    }
+}
+
+/// Opens a layer with its fields `columns` (all by default).
+fn open_reader(
+    path: &str,
+    options: &VectorOpenOptions,
+    layer: Option<&str>,
+    columns: Option<&[String]>,
+    batch_size: usize,
+) -> terrio::Result<FeatureReader> {
+    let reader = pick(terrio::stream::open_layers(path, options, batch_size)?, layer)?;
+    match columns {
+        Some(columns) => reader.select_fields(columns, batch_size),
+        None => Ok(reader),
     }
 }
 
@@ -62,6 +93,8 @@ fn pick(readers: Vec<FeatureReader>, layer: Option<&str>) -> terrio::Result<Feat
 /// (`.geojsonl`) and CSV files are read a chunk at a time, in bounded memory (GeoJSON and CSV
 /// files are read twice: first to infer the fields, as GDAL does); other formats are read whole
 /// and handed out in chunks.
+/// A GeoParquet bbox filter is opened when features are first read, so read errors can surface
+/// from iteration or `read_all()` instead of this call. A failed open can be retried.
 ///
 /// Args:
 ///     path: The dataset's path or URL.
@@ -79,6 +112,8 @@ fn pick(readers: Vec<FeatureReader>, layer: Option<&str>) -> terrio::Result<Feat
 ///
 /// Raises:
 ///     InvalidArgumentError: If the dataset has no such layer.
+///     TerrioIOError: If opening the dataset fails. Deferred GeoParquet reads can raise this
+///         when iteration or `read_all()` first opens the filtered reader.
 #[pyfunction]
 #[pyo3(signature = (path, layer=None, *, batch_size=65536, bbox=None, columns=None))]
 fn open_stream(
@@ -93,15 +128,18 @@ fn open_stream(
         return Err(invalid("batch_size must be positive"));
     }
     let options = VectorOpenOptions { spatial_filter: bbox, ..Default::default() };
-    let reader = crate::with_warnings(py, || {
-        let reader = pick(terrio::stream::open_layers(path, &options, batch_size)?, layer)?;
-        match &columns {
-            Some(columns) => reader.select_fields(columns, batch_size),
-            None => Ok(reader),
-        }
-    })?;
+    // A GeoParquet file's bbox filter reads its geometries when the reader opens: here only the
+    // layer is needed, from a reader without the filter.
+    let location = terrio::vfs::Location::parse(path);
+    let native = (location.is_local() && std::path::Path::new(path).is_file())
+        || matches!(location, terrio::vfs::Location::Url(_) | terrio::vfs::Location::S3 { .. });
+    // Whole-read fallbacks, including archives, must retain their filtered features.
+    let deferred = bbox.is_some() && is_geoparquet(path) && native;
+    let probe = if deferred { VectorOpenOptions::default() } else { options.clone() };
+    let reader = crate::with_warnings(py, || open_reader(path, &probe, layer, columns.as_deref(), batch_size))?;
     let layer = reader.layer().clone();
-    Ok(PyFeatureStream { reader: Mutex::new(Some(reader)), layer, path: path.to_string(), options, columns, batch_size, started: false })
+    let reader = Mutex::new((!deferred).then_some(reader));
+    Ok(PyFeatureStream { reader, layer, path: path.to_string(), options, columns, batch_size, started: false, deferred })
 }
 
 /// Whether a stream's path names a GeoParquet file, which its Arrow export reads natively.
@@ -151,6 +189,7 @@ impl PyFeatureStream {
     }
 
     fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<PyLayer>> {
+        self.open_deferred(py)?;
         let mut guard = self.reader.lock().map_err(|_| invalid("the stream is in use"))?;
         let Some(reader) = guard.as_mut() else { return Ok(None) };
         self.started = true;
@@ -164,7 +203,7 @@ impl PyFeatureStream {
     /// Returns:
     ///     Layer: The features not yet read.
     fn read_all(&mut self, py: Python<'_>) -> PyResult<PyLayer> {
-        let reader = self.take()?;
+        let reader = self.take(py)?;
         self.started = true;
         Ok(PyLayer::from(py.detach_result(|| reader.read_all()).py()?))
     }
@@ -197,10 +236,13 @@ impl PyFeatureStream {
         if self.started {
             return Err(invalid("features have been read from the stream: open it again to export it"));
         }
-        let reader = self.take()?;
-        self.started = true;
         if is_geoparquet(&self.path) {
-            drop(reader);
+            // The file is read again below: a reader opened for the stream is only consumed, and
+            // a deferred one is never opened.
+            if !std::mem::take(&mut self.deferred) {
+                drop(self.take(py)?);
+            }
+            self.started = true;
             let options = terrio::arrow::GeoParquetReadOptions {
                 columns: self.columns.clone(),
                 bbox: self.options.spatial_filter,
@@ -217,6 +259,8 @@ impl PyFeatureStream {
             let ffi = FFI_ArrowArrayStream::new(Box::new(reader));
             return PyCapsule::new_with_value(py, ffi, c"arrow_array_stream");
         }
+        let reader = self.take(py)?;
+        self.started = true;
         let arrow = terrio::arrow::ArrowWriteOptions { batch_size: self.batch_size, ..Default::default() };
         let (path, options, name, columns) = (self.path.clone(), self.options.clone(), self.layer.name.clone(), self.columns.clone());
         let stream = py

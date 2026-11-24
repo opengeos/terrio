@@ -7,10 +7,11 @@ writes a deterministic 16384 by 2048 Float32 TIFF with one-row strips.
 Most rows are NoData; the remainder contain deterministic pseudo-random values.
 No engineering units or coordinate system are assigned to this synthetic fixture.
 
-`lzw_codec_profile` separately measures fresh construction/encode and retained
-reset/encode over 4096 identical 54431-sample Float32 strips. Use `--alloc` for
+`lzw_codec_profile` is a Weezl-only reuse diagnostic. It separately measures fresh
+construction/encode and retained reset/encode over 4096 identical 54431-sample
+Float32 strips; it does not measure the replacement `tiff_lzw::Encoder`. Use `--alloc` for
 requested allocation counts/bytes, separately from acceptance timing. These are
 synthetic microbenchmarks, not NOAA or end-to-end qualification. Input generation,
 file writing, allocator instrumentation and phase clocks may affect results.
-Compare baseline/candidate release executables on the same idle machine, warm up
+Compare baseline/candidate `lzw_write_benchmark` release executables on the same idle machine, warm up
 both, then interleave at least seven pairs and verify full-file bytes each time.

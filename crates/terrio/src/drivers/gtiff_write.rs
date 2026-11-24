@@ -61,8 +61,8 @@ pub(crate) struct CodecParams {
     pub webp_lossless: bool,
     /// Deflate and LERC_DEFLATE: the level (`ZLEVEL`, 1 to 9, default 6).
     pub deflate_level: crate::deflate_compress::Level,
-    /// ZSTD and LERC_ZSTD: the level (`ZSTD_LEVEL`, 1 to 22, default 9), which only the
-    /// `libzstd` feature's encoder honours.
+    /// ZSTD and LERC_ZSTD: the level (`ZSTD_LEVEL`, 1 to 22, default 9). Without the `libzstd`
+    /// feature, `zrip` writes levels above 4 at level 4.
     pub zstd_level: i32,
 }
 
@@ -359,7 +359,7 @@ fn jpeg_encode(data: &[u8], c: &ChunkInfo, quality: u8, ycbcr: bool) -> Result<V
     Ok(out)
 }
 
-/// A Zstandard chunk at `level` (with the `libzstd` feature; without it, `ruzstd`'s fastest level).
+/// A Zstandard chunk at `level` (with the `libzstd` feature; without it, `zrip`, at most level 4).
 fn zstd_compress(data: &[u8], level: i32) -> Result<Vec<u8>> {
     Ok(crate::zstandard::compress(data, level)?)
 }
@@ -410,16 +410,16 @@ fn encoder_bytes(compression: Compression, raw: usize) -> (usize, usize) {
         // `packbits` allocates the most it can write.
         Compression::PackBits => (raw.saturating_add(raw / 128 + 1), 0),
         // LZW writes up to half again as many bytes, 4 KiB at a time, into a vector that doubles
-        // from 4 KiB; its code table is under 64 KiB.
+        // from 4 KiB; include the code table and retained long-match witnesses.
         Compression::Lzw => {
             let written = raw.saturating_add(raw / 2 + raw / 1024 + (4 << 10));
             let buffer = written.div_ceil(4 << 10).checked_next_power_of_two().map_or(usize::MAX, |n| n.saturating_mul(4 << 10));
-            (buffer, buffer / 2 + (64 << 10))
+            (buffer, buffer / 2 + super::tiff_lzw::Encoder::SCRATCH_BYTES)
         }
         // Deflate's match finder and sequences are each thread's ([`crate::deflate_compress::SCRATCH_BYTES`]).
         Compression::Deflate => (doubled, most),
-        // As measured: Zstandard's encoder holds up to 3.5 MiB besides its output (`ruzstd`'s, at its
-        // only level; with the `libzstd` feature, the C library's context grows with `ZSTD_LEVEL` and
+        // As measured: Zstandard's encoder holds up to 2.3 MiB besides its output (`zrip`'s, at its
+        // level 4; with the `libzstd` feature, the C library's context grows with `ZSTD_LEVEL` and
         // the tile, and is not counted).
         Compression::Zstd => (doubled, most.saturating_add(raw).saturating_add(2 << 20)),
         // As measured on chunks of samples none compresses: JPEG writes up to 1.6 times its samples
@@ -4142,6 +4142,17 @@ fn directories(mut images: Vec<Directory>, big: bool, cog: bool) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn lzw_scratch_estimate_covers_retained_witness_allocations() {
+        let mut encoder = super::super::tiff_lzw::Encoder::new();
+        for raw in [64, 256, 4096, 16_384] {
+            encoder.encode(&vec![0; raw]);
+            assert!(encoder.allocated_scratch_bytes() > 64 << 10);
+            let (_, scratch) = encoder_bytes(Compression::Lzw, raw);
+            assert!(scratch >= encoder.allocated_scratch_bytes(), "{raw}: {scratch} < {}", encoder.allocated_scratch_bytes());
+        }
+    }
+
+    #[test]
     fn lzw_matches_for_predicted_samples_and_byte_orders() {
         let mut enc = super::super::tiff_lzw::Encoder::new();
         for size in [1, 2, 4] {
@@ -5761,8 +5772,9 @@ mod tests {
 
     /// `ZLEVEL` (1 to 9) sets the Deflate level of DEFLATE and LERC_DEFLATE chunks, in GeoTIFFs and
     /// COGs, written whole or streamed, 6 when it is not given, and `ZSTD_LEVEL` (1 to 22) the
-    /// level of ZSTD and LERC_ZSTD chunks, which only the `libzstd` feature's encoder honours (9
-    /// when it is not given). Every level reads back to the raster. Both are checked whatever the
+    /// level of ZSTD and LERC_ZSTD chunks (9 when omitted). The pure encoder honors levels
+    /// through 4 and clamps higher values to 4; `libzstd` honors the full range.
+    /// Every level reads back to the raster. Both are checked whatever the
     /// compression, as the qualities are: a level out of range is refused.
     #[test]
     fn compression_levels_change_the_chunks_and_are_checked() {
@@ -5843,12 +5855,37 @@ mod tests {
         let libzstd = cfg!(all(feature = "libzstd", not(target_family = "wasm")));
         let zstd = |level: &str| encode_with("ZSTD", &[("ZSTD_LEVEL", level)]).unwrap();
         assert_eq!(zstd("9"), encode_with("ZSTD", &[]).unwrap());
+        // `zrip` finds the same matches in this noisy gradient at every level (it writes levels
+        // up to 4); the C library at level 22 finds more. LERC_ZSTD's blob below shows the level.
         assert_eq!(zstd("1") != zstd("22"), libzstd);
         assert_eq!(read_back(&zstd("22")), r.data.to_f64_vec());
+        // Natural-language repetitions distinguish zrip's level-1 and level-4 match searches.
+        // Keep the MIT license text inline so this fixture does not depend on repository files.
+        let text = br#"MIT License
+
+Copyright (c) <year> <copyright holders>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
+associated documentation files (the "Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the
+following conditions:
+"#;
+        let cfg = wbraster::RasterConfig { cols: text.len(), rows: 1, bands: 1, data_type: DataType::U8, ..Default::default() };
+        let text_raster = Raster::from_data_native(cfg, RasterData::U8(text.to_vec())).unwrap();
+        let encoded = |level: &str| encode_raster(&text_raster, "ZSTD", false, &[("ZSTD_LEVEL", level)]).unwrap();
+        let (one, four) = (encoded("1"), encoded("4"));
+        if !libzstd {
+            assert_ne!(one, four, "ZSTD_LEVEL must reach the pure encoder");
+            assert_eq!(four, encoded("22"), "the pure encoder clamps higher levels to 4");
+        }
+        for bytes in [&one, &four] {
+            assert_eq!(read_back(bytes), text_raster.data.to_f64_vec());
+        }
         if cfg!(feature = "lerc") {
             let lerc_zstd = |level: &str| lerc("LERC_ZSTD", &[("ZSTD_LEVEL", level)]);
             assert_eq!(lerc_zstd("9"), lerc("LERC_ZSTD", &[]));
-            assert_eq!(lerc_zstd("1") != lerc_zstd("22"), libzstd);
+            assert_ne!(lerc_zstd("1"), lerc_zstd("22"));
             assert_eq!(read_back(&lerc_zstd("22")), lerc_raster.data.to_f64_vec(), "LERC_ZSTD");
         }
         for (compression, key, value) in [
