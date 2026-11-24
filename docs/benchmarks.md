@@ -278,7 +278,7 @@ Every case records:
   from the file's own chunk tables;
 - HTTP requests and sequential rounds of requests: a request that starts after every request in
   flight has ended waited for them, so it opens a new round;
-- peak memory, and whether terrio's values equal GDAL's: the sum and count of the pixels, or of
+- peak memory, and whether terrio's checksums match GDAL's: the sum and count of the pixels, or of
   the rows' `id` (`value` when `id` is not read), in every sample of both tools. Time and peak
   memory are taken before this check.
 
@@ -287,10 +287,16 @@ geometry conformance checks. Counts match exactly; numeric sums use relative tol
 Process peak RSS includes initialization, warm-up and retained read results, but excludes
 subsequent validation allocations. RSS units are normalized for Linux and macOS.
 
-Only cases where every sample of both tools succeeded and returned GDAL's values are ranked;
+The result label is `checksum_match`, rather than a claim of exact value equality. Only cases
+where every sample of both tools succeeded and matched GDAL's checksums are ranked;
 the report lists failures, timeouts and value mismatches apart. Local byte counts need Linux's
 `/proc/self/io`. Local reads after the first come from the OS page cache, so the matrix measures
 decoding and I/O logic, not the disk.
+
+The GeoParquet `where` request is reported separately as `where/sql-vs-filter`: Terrio uses
+`terrio.sql`, while GDAL uses `pyogrio.read_arrow(where=...)`. This compares complete filtering
+workflows, including their different execution paths. Unsupported HTTP SQL inputs appear as
+errors and are excluded from rankings.
 
 The report ranks the worst cases, gives the geometric mean of the time ratios for each value of
 each axis (by codec, layout, access pattern and source), and lists every case that makes more

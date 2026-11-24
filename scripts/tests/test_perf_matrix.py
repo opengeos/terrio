@@ -42,7 +42,7 @@ def _row(**tools):
 
 def test_summarize_ranks_only_complete_matching_samples():
     same = summarize(_row(terrio=[_sample(2), _sample(2)], gdal=[_sample(1), _sample(1)]))
-    assert same["time_ratio"] == 2 and same["values"] == "same"
+    assert same["time_ratio"] == 2 and same["values"] == "checksum_match"
     # A later sample that differs is caught, not only the first.
     later = summarize(_row(terrio=[_sample(2), _sample(2, s=11)], gdal=[_sample(1), _sample(1)]))
     assert later["values"].startswith("DIFFER: terrio n 4 sum 11")
@@ -149,3 +149,63 @@ def test_unsettled_http_accounting_fails_instead_of_returning_a_partial_log(monk
     monkeypatch.setattr(perf_matrix._lock, "wait_for", lambda *_args, **_kwargs: False)
     with pytest.raises(TimeoutError, match="HTTP handlers did not finish accounting"):
         perf_matrix._settled_log()
+
+
+def test_interrupted_geoparquet_source_is_not_published_or_reused(tmp_path, monkeypatch):
+    """Publish a FlatGeobuf source only after all its features are written.
+
+    Args:
+        tmp_path: Isolated fixture directory.
+        monkeypatch: Scoped dependency replacements.
+    """
+    ogr = pytest.importorskip("osgeo.ogr")
+    gdal = pytest.importorskip("osgeo.gdal")
+    if ogr.GetDriverByName("FlatGeobuf") is None:
+        pytest.skip("FlatGeobuf driver is required")
+    fixtures = {name: (kind, 2, 2, "ZSTD", "WKB", False, False) for name, kind in
+                [("poly", "polygon"), ("point", "point"), ("line", "line")]}
+    monkeypatch.setattr(perf_matrix.GeoParquet, "FIXTURES", fixtures)
+    original = ogr.Feature
+    count = [0]
+
+    def interrupted(definition):
+        """Interrupt source generation after its first feature.
+
+        Args:
+            definition: Layer feature definition.
+
+        Returns:
+            A real feature before the simulated interruption.
+
+        Raises:
+            RuntimeError: On the second feature.
+        """
+        count[0] += 1
+        if count[0] == 2:
+            raise RuntimeError("interrupted source")
+        return original(definition)
+
+    monkeypatch.setattr(ogr, "Feature", interrupted)
+    with pytest.raises(RuntimeError, match="interrupted source"):
+        perf_matrix.GeoParquet.make(tmp_path)
+    assert not (tmp_path / "_src_polygon.fgb").exists()
+    monkeypatch.setattr(ogr, "Feature", original)
+
+    def stop_after_sources(*_args, **_kwargs):
+        """Stop before Parquet fixture creation to keep the regression focused.
+
+        Args:
+            *_args: Translation arguments.
+            **_kwargs: Translation options.
+
+        Raises:
+            RuntimeError: After source generation has completed.
+        """
+        raise RuntimeError("sources complete")
+
+    monkeypatch.setattr(gdal, "VectorTranslate", stop_after_sources)
+    with pytest.raises(RuntimeError, match="sources complete"):
+        perf_matrix.GeoParquet.make(tmp_path)
+    for kind in ("polygon", "point", "line"):
+        source = ogr.Open(str(tmp_path / f"_src_{kind}.fgb"))
+        assert source.GetLayer(0).GetFeatureCount() == 2

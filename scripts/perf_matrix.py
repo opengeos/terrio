@@ -84,7 +84,7 @@ def publish(path: Path, write) -> None:
     leaves no partial fixture for the next run to reuse."""
     import shutil
 
-    tmp = path.with_name(path.name + ".part")
+    tmp = path.with_name(path.stem + ".part" + path.suffix)
     if tmp.is_dir():
         shutil.rmtree(tmp)
     tmp.unlink(missing_ok=True)
@@ -452,12 +452,14 @@ class GeoParquet:
             sources[geom] = src
             if src.exists():
                 continue
+            staged = src.with_name(src.stem + ".part" + src.suffix)
+            staged.unlink(missing_ok=True)
             rng = np.random.default_rng(2)
             # Clustered, like fields or buildings: centres drawn around 200 towns.
             towns = rng.uniform((x0, y0), (x1, y1), (200, 2))
             c = towns[rng.integers(0, 200, n)] + rng.normal(0, 2500, (n, 2))
             c = np.clip(c, (x0, y0), (x1, y1))
-            ds = ogr.GetDriverByName("FlatGeobuf").CreateDataSource(str(src))
+            ds = ogr.GetDriverByName("FlatGeobuf").CreateDataSource(str(staged))
             kind = {"polygon": ogr.wkbPolygon, "point": ogr.wkbPoint, "line": ogr.wkbLineString}[geom]
             lyr = ds.CreateLayer("data", srs, kind, ["SPATIAL_INDEX=NO"])
             for fname, ftype in (("id", ogr.OFTInteger64), ("value", ogr.OFTReal), ("class", ogr.OFTString), ("year", ogr.OFTInteger)):
@@ -487,6 +489,7 @@ class GeoParquet:
                 lyr.CreateFeature(f)
             lyr.CommitTransaction()
             ds = None
+            staged.rename(src)
         for name, (geom, rows, rg, comp, enc, cover, sort) in GeoParquet.FIXTURES.items():
             path = out / f"{name}.parquet"
             if path.exists():
@@ -804,7 +807,8 @@ def run(args: argparse.Namespace) -> None:
         if meta is None:
             continue
         src = str(path) if source == "local" else base + path.name
-        row = {"format": args.format, "fixture": name, "access": access, "source": source, "need_bytes": meta["need_bytes"], **fmt.axes(name)}
+        label = "where/sql-vs-filter" if args.format == "geoparquet" and access == "where" else access
+        row = {"format": args.format, "fixture": name, "access": label, "source": source, "need_bytes": meta["need_bytes"], **fmt.axes(name)}
         for k in range(samples):
             for tool in ["terrio", "gdal"] if k % 2 == 0 else ["gdal", "terrio"]:
                 if f"{tool}_error" in row:  # failed or timed out once: not again
@@ -855,7 +859,7 @@ def summarize(row: dict) -> dict:
         out["time_ratio"] = out["terrio"]["total_s"] / out["gdal"]["total_s"]
         ref = row["gdal"][0]
         differ = next(((t, r) for t in ("terrio", "gdal") for r in row[t] if r["n"] != ref["n"] or not math.isclose(r["sum"], ref["sum"], rel_tol=1e-6)), None)
-        out["values"] = "same" if differ is None else f"DIFFER: {differ[0]} n {differ[1]['n']} sum {differ[1]['sum']:.6g} vs gdal n {ref['n']} sum {ref['sum']:.6g}"
+        out["values"] = "checksum_match" if differ is None else f"DIFFER: {differ[0]} n {differ[1]['n']} sum {differ[1]['sum']:.6g} vs gdal n {ref['n']} sum {ref['sum']:.6g}"
     return out
 
 
@@ -876,7 +880,8 @@ def fmt_row(r: dict) -> str:
     s += f" | KiB {_bytes(t) >> 10:7} vs {_bytes(g) >> 10:7} need {r['need_bytes'] >> 10:7}"
     if "requests" in t:
         s += f" | req {t['requests']:4.0f}/{g['requests']:4.0f} rounds {t['rounds']:3.0f}/{g['rounds']:3.0f}"
-    s += f" | init {t['init_s'] * 1000:3.0f}/{g['init_s'] * 1000:3.0f} ms rss {t['rss_mb']:4.0f}/{g['rss_mb']:4.0f} MB {r['values'][:6]}"
+    label = "checksum_match" if r["values"] in ("same", "checksum_match") else "DIFFER"
+    s += f" | init {t['init_s'] * 1000:3.0f}/{g['init_s'] * 1000:3.0f} ms rss {t['rss_mb']:4.0f}/{g['rss_mb']:4.0f} MB {label}"
     return s
 
 
@@ -890,8 +895,8 @@ def report(rows: list[dict]) -> str:
     if len({(h["cpu"], h["cpus"], h["cpu_quota"], h["mem_gb"]) for h in heads}) > 1:
         lines.append("WARNING: these results come from different machines: compare ratios within one machine only")
     computed = [r for r in rows if "time_ratio" in r]
-    ok = [r for r in computed if r["values"] == "same"]
-    differ = [r for r in computed if r["values"] != "same"]
+    ok = [r for r in computed if r["values"] in ("same", "checksum_match")]
+    differ = [r for r in computed if r["values"] not in ("same", "checksum_match")]
     lines.append("\n## Worst cases (terrio time / GDAL time)\n")
     lines += [fmt_row(r) for r in sorted(ok, key=lambda r: -r["time_ratio"])[:20]]
     lines.append("\n## Geometric mean of the time ratios by axis (>1: terrio slower; cases in brackets)\n")
