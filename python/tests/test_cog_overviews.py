@@ -189,6 +189,28 @@ def test_cog_predictor_words_are_gdals(tmp_path, dtype, word):
         assert ds.tags(ns="IMAGE_STRUCTURE").get("PREDICTOR") == expected
 
 
+@pytest.mark.parametrize("driver", ["COG", "GTiff"])
+@pytest.mark.parametrize(
+    "dtype, compress",
+    [("float32", "packbits"), ("complex64", "deflate")],
+    ids=["packbits", "complex"],
+)
+def test_predictor_reported_only_where_written(tmp_path, driver, dtype, compress):
+    """A compression without a predictor (PACKBITS) or complex samples write no predictor tag:
+    the dataset being written reports none either, as the written file does."""
+    data = (np.arange(2 * 40 * 30).reshape(2, 40, 30) * 0.25).astype(dtype)
+    path = str(tmp_path / "written.tif")
+    profile = dict(driver=driver, dtype=dtype, width=30, height=40, count=2, compress=compress)
+    if driver == "GTiff":
+        profile.update(tiled=True, blockxsize=16, blockysize=16)
+    with trio.open(path, "w", predictor="YES", **profile) as dst:
+        assert dst.tags(ns="IMAGE_STRUCTURE").get("PREDICTOR") is None
+        dst.write(data)
+    with rasterio.open(path) as ds:
+        assert ds.tags(ns="IMAGE_STRUCTURE").get("PREDICTOR") is None
+        np.testing.assert_array_equal(ds.read(), data)
+
+
 @pytest.mark.parametrize("key", ["overview_resampling", "resampling"])
 def test_resampling_keywords_on_rio_paths(tmp_path, key):
     """rasterio's `overview_resampling` and GDAL's `RESAMPLING` creation option."""

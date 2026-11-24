@@ -2951,8 +2951,16 @@ class DatasetWriter(DatasetReader):
                 ns["COMPRESSION"] = s.compression
                 cog = self._out_driver.upper() == "COG"
                 predictor = o.get("PREDICTOR", "1").upper()
-                if predictor not in ("1", "NO", "NONE") and not (
-                    cog and predictor in ("FALSE", "OFF")
+                # As the writer: only LZW, DEFLATE and ZSTD take a predictor, and complex
+                # samples none, so the others are written (and reported) without one.
+                takes_predictor = (
+                    s.compression in ("LZW", "DEFLATE", "ZSTD")
+                    and np.dtype(self._dtype).kind != "c"
+                )
+                if (
+                    takes_predictor
+                    and predictor not in ("1", "NO", "NONE")
+                    and not (cog and predictor in ("FALSE", "OFF"))
                 ):
                     if cog and predictor in ("YES", "ON", "TRUE"):
                         # GDAL's COG driver: 3 for floating-point data, 2 otherwise.
