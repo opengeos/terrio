@@ -129,3 +129,33 @@ def test_out_of_range_geojson_ids_leave_the_destination_intact(tmp_path):
     with pytest.raises(ValueError, match="unrecognized number"):
         terrio.convert(str(source), str(output), preserve_fid=True)
     assert output.read_bytes() == before
+
+
+def test_negative_rowids_read_back_signed_through_pyogrio(tmp_path):
+    """A GeoPackage rowid of -1 is the FID -1, as pyogrio gives it (issue #624).
+
+    Args:
+        tmp_path: The test's temporary directory.
+    """
+    path = str(tmp_path / "signed.gpkg")
+    with closing(sqlite3.connect(path)) as db:
+        db.executescript(
+            """
+            CREATE TABLE gpkg_contents (table_name TEXT, data_type TEXT, description TEXT);
+            CREATE TABLE gpkg_geometry_columns
+              (table_name TEXT, column_name TEXT, geometry_type_name TEXT,
+               srs_id INTEGER, z INTEGER, m INTEGER);
+            CREATE TABLE gpkg_spatial_ref_sys
+              (srs_id INTEGER, organization TEXT,
+               organization_coordsys_id INTEGER, definition TEXT);
+            CREATE TABLE features (fid INTEGER PRIMARY KEY, name TEXT);
+            INSERT INTO gpkg_contents VALUES ('features', 'attributes', '');
+            INSERT INTO features VALUES (-1, 'negative'), (7, 'positive');
+            """
+        )
+    pytest.importorskip("geopandas")
+    from terrio import pyogrio
+
+    frame = pyogrio.read_dataframe(path, read_geometry=False, fid_as_index=True)
+    assert frame.index.dtype.name == "int64"
+    assert frame.index.tolist() == [-1, 7]
