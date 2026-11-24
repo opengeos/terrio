@@ -152,3 +152,23 @@ fn a_bound_source_keeps_its_own_reason() {
         )]
     );
 }
+
+/// Names from the WKT are shown escaped and bounded, as grid names are: an escape sequence in a
+/// transformation's name does not reach the terminal.
+#[test]
+fn names_in_the_warning_are_escaped() {
+    offline();
+    let grid = r#"ABRIDGEDTRANSFORMATION["a\u{1b}[31mb",METHOD["NTv2",ID["EPSG",9615]],PARAMETERFILE["Latitude and longitude difference file","BETA2007.gsb"]]"#
+        .replace("\\u{1b}", "\u{1b}");
+    let (_, warnings) = at(&bound(SOURCE, WGS84, &grid), 4326);
+    assert_eq!(
+        warnings,
+        ["the BOUNDCRS transformation \"a\\u{1b}[31mb\" is not applied: terrio applies Helmert transformations only, not \"NTv2\""]
+    );
+    let long = translations(&"x".repeat(300), 100.0, 50.0, -20.0);
+    let (_, warnings) = at(&bound(SOURCE, ED50_WKT1, &long), 4326);
+    assert_eq!(
+        warnings,
+        [format!("the BOUNDCRS transformation \"{}\" is not applied: its target CRS \"ED50\" is not read", "x".repeat(120))]
+    );
+}
