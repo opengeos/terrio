@@ -804,11 +804,13 @@ PATHS = {
         "crates/terrio/src/drivers/gdal_overview.rs",
         "python/python/terrio/rio/*",
         "python/src/pixel.rs",
+        "python/src/raster.rs",
     ],
     "zarr": [
         "crates/terrio/src/drivers/zarr*",
         "crates/terrio/src/multidim/*",
         "python/src/multidim.rs",
+        "python/src/raster.rs",
     ],
     "geoparquet": [
         "crates/terrio/src/drivers/vector/geoparquet*",
