@@ -1224,6 +1224,9 @@ fn a_lazy_grib_open_allocates_nothing_the_size_of_its_file() {
     let path = write(dir.path(), "f.grib2", &raster(1024, 1024, 1, DataType::F32, 4326, (0.0, 60.0, 0.01)), Some(RasterDriver::GRIB));
     let bytes = std::fs::read(&path).unwrap();
     let len = bytes.len();
+    // Exclude the one-time bundled GRIB name-table decompression from this file-size bound,
+    // as in the multi-message test below. The table's decoder scratch space is fixed-size.
+    drop(terrio::LazyRaster::open(&path).unwrap());
     let (opened, largest) = largest_during(|| terrio::LazyRaster::open(&path));
     assert_eq!(opened.unwrap().width(), 1024);
     assert!(largest < len / 16, "a local file: an allocation of {largest} bytes, for {len}");
