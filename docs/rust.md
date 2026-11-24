@@ -743,6 +743,7 @@ operations and the streams. The other drivers are features:
 | `ndarray` | off | Raster pixels as `ndarray` arrays, without copying them: views, owned transfers and the masks of lazy reads, with the crate re-exported as `terrio::ndarray`; floating-point windows as owned arrays, bands first or last. See [ndarray](#ndarray). |
 | `cad` | on | DWG and DXF, read and written, through acadrust. See [CAD drawings](formats.md#cad-drawings-dwg-and-dxf). |
 | `libzstd` | off | Zstandard through the zstd C library, natively: faster decoding and better compression than the default `ruzstd`. |
+| `ring-fallback` | off | HTTPS with `ring` (needs a C compiler) on x86-64 and AArch64 CPUs without the features `rustls-graviola` needs; without it, HTTPS on such a CPU fails naming them. See [the architecture notes](architecture.md). Implies `remote`. |
 
 The drivers stay in the API whatever the features (`formats::RasterDriver`,
 `formats::VectorDriver`): those a build leaves out are listed as neither read nor written, and

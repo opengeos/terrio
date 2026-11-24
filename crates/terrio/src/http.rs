@@ -1252,20 +1252,20 @@ fn agent(options: &HttpOptions) -> ureq::Agent {
     })
 }
 
-/// HTTPS without a C compiler (`ureq` uses `ring` on the other architectures).
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-fn tls_config() -> ureq::tls::TlsConfigBuilder {
-    ureq::tls::TlsConfig::builder().provider(ureq::tls::TlsProvider::Rustls).unversioned_rustls_crypto_provider(tls::crypto_provider())
-}
-
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-fn tls_config() -> ureq::tls::TlsConfigBuilder {
-    ureq::tls::TlsConfig::builder()
-}
-
 fn new_agent(options: &HttpOptions) -> ureq::Agent {
+    new_agent_with(options, tls::crypto_provider())
+}
+
+/// [`new_agent`] with its TLS cryptography given: `rustls-graviola` without a C compiler where
+/// the CPU supports it, otherwise `ring` (see [`tls::crypto_provider`]). Without one, HTTPS
+/// requests fail with the reason before connecting, and plain HTTP works.
+fn new_agent_with(options: &HttpOptions, provider: tls::Provider) -> ureq::Agent {
+    let mut tls_config = ureq::tls::TlsConfig::builder().provider(ureq::tls::TlsProvider::Rustls);
+    if let Ok(provider) = &provider {
+        tls_config = tls_config.unversioned_rustls_crypto_provider(provider.clone());
+    }
     let config = ureq::Agent::config_builder()
-        .tls_config(tls_config().build())
+        .tls_config(tls_config.build())
         .http_status_as_error(false)
         .max_redirects(0)
         .accept_encoding("identity")
@@ -1278,9 +1278,9 @@ fn new_agent(options: &HttpOptions) -> ureq::Agent {
         .max_idle_connections_per_host(64)
         .build();
     if let Some(path) = &options.ca_bundle {
-        return tls::with_bundle(config, path);
+        return tls::with_bundle(config, path, provider);
     }
-    let connector = DefaultConnector::new().chain(Http10CloseConnector);
+    let connector = tls::TlsUnavailable(provider.err()).chain(DefaultConnector::new()).chain(Http10CloseConnector);
     ureq::Agent::with_parts(config, connector, DefaultResolver::default())
 }
 
@@ -4535,6 +4535,30 @@ mod tests {
                 assert_eq!(response.body_mut().read_to_vec().unwrap(), b"ok");
             }
             assert_eq!(connections.load(Ordering::SeqCst), expected, "{head:?}");
+        }
+    }
+
+    /// Without TLS cryptography (a CPU `rustls-graviola` cannot run on, in a build without
+    /// `ring-fallback`), an HTTPS request fails with the reason before connecting, with or without
+    /// an additional CA bundle, and is not retried; plain HTTP is unaffected.
+    #[test]
+    fn https_without_tls_cryptography_fails_with_the_reason_before_connecting() {
+        let reason = "HTTPS is unavailable on this CPU: test";
+        for ca_bundle in [None, Some(std::env::temp_dir().join("terrio-no-such-bundle.pem"))] {
+            let (url, connections) = serve_open_connections(vec!["HTTP/1.1 200 OK"], false);
+            let options = HttpOptions { ca_bundle: ca_bundle.clone(), ..options() };
+            let agent = new_agent_with(&options, Err(reason.into()));
+            let mut response = agent.get(&url).call().unwrap();
+            assert_eq!(response.body_mut().read_to_vec().unwrap(), b"ok");
+            let https = url.replacen("http://", "https://", 1);
+            let error = agent.get(&https).call().unwrap_err();
+            assert!(error.to_string().contains(reason), "{ca_bundle:?}: {error}");
+            assert!(!transient(&error), "{ca_bundle:?}: {error}");
+            assert_eq!(connections.load(Ordering::SeqCst), 1, "{ca_bundle:?}: the HTTPS request connected");
+            let mut client = Client::with_agent(&Remote::Url(https), options, agent);
+            let error = client.fetch(Some((0, 15))).err().unwrap();
+            assert!(matches!(&error, Error::Http(message) if message.contains(reason)), "{ca_bundle:?}: {error}");
+            assert_eq!(connections.load(Ordering::SeqCst), 1, "{ca_bundle:?}: the read connected");
         }
     }
 
