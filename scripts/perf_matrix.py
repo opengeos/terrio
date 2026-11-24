@@ -422,7 +422,7 @@ class GeoParquet:
     }
     # Every column; the geometry and two attributes; a bbox of 1% of the extent; 16 such bboxes
     # through one handle (a reader of tiles); 4 threads reading 4 of the 16 each; an attribute
-    # filter that keeps 1% of the rows.
+    # filter `id < 4000`: 1% of polygons and lines, 0.2% of points.
     ACCESS = ["full", "columns", "bbox", "bbox16", "threads4", "where"]
     EXT = ".parquet"
     EXTENT = (0.0, 0.0, 100_000.0, 100_000.0)
@@ -835,26 +835,29 @@ def run(args: argparse.Namespace) -> None:
             for tool in ["terrio", "gdal"] if k % 2 == 0 else ["gdal", "terrio"]:
                 if f"{tool}_error" in row:  # failed or timed out once: not again
                     continue
-                _settled_log()  # a killed worker's requests end before the log is cleared
-                with _lock:
-                    _log.clear()
-                spec = {"format": args.format, "tool": tool, "src": src, "access": access, "meta": meta}
-                cmd = [sys.executable, __file__, "_worker", json.dumps(spec)]
                 try:
+                    _settled_log()  # a killed worker's requests end before the log is cleared
+                    with _lock:
+                        _log.clear()
+                    spec = {"format": args.format, "tool": tool, "src": src, "access": access, "meta": meta}
+                    cmd = [sys.executable, __file__, "_worker", json.dumps(spec)]
                     p = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=args.timeout)
+                    if p.returncode:
+                        err = p.stderr.strip().splitlines()
+                        row[f"{tool}_error"] = err[-1][:300] if err else f"exit {p.returncode}"
+                        continue
+                    r = json.loads(p.stdout.strip().splitlines()[-1])
+                    # this case's requests, not the warm-up's
+                    log = [x for x in _settled_log() if x[3].split("?")[0].startswith("/" + path.name)]
+                    if source == "http":
+                        r["requests"], r["rounds"] = len(log), rounds(log)
+                        r["read_bytes"], r["open_bytes"] = sum(x[2] for x in log), 0  # transferred, open included
                 except subprocess.TimeoutExpired:
                     row[f"{tool}_error"] = f"timeout: over {args.timeout:.0f} s"
                     continue
-                if p.returncode:
-                    err = p.stderr.strip().splitlines()
-                    row[f"{tool}_error"] = err[-1][:300] if err else f"exit {p.returncode}"
+                except (TimeoutError, ValueError, IndexError) as exc:
+                    row[f"{tool}_error"] = f"{type(exc).__name__}: {exc}"
                     continue
-                r = json.loads(p.stdout.strip().splitlines()[-1])
-                # this case's requests, not the warm-up's
-                log = [x for x in _settled_log() if x[3].split("?")[0].startswith("/" + path.name)]
-                if source == "http":
-                    r["requests"], r["rounds"] = len(log), rounds(log)
-                    r["read_bytes"], r["open_bytes"] = sum(x[2] for x in log), 0  # transferred, open included
                 row.setdefault(tool, []).append(r)
         rows.append(summarize(row))
         print(fmt_row(rows[-1]), flush=True)

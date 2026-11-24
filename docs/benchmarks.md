@@ -298,6 +298,11 @@ The GeoParquet `where` request is reported separately as `where/sql-vs-filter`: 
 workflows, including their different execution paths. Unsupported HTTP SQL inputs appear as
 errors and are excluded from rankings.
 
+The worker environment sets `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` to avoid directory scans,
+`GDAL_HTTP_MERGE_CONSECUTIVE_RANGES=YES` to enable GDAL range merging, and `GDAL_CACHEMAX=512`
+for its raster cache. These GDAL settings apply to GDAL; Terrio uses its own I/O and cache
+policies. HTTP request and round counts therefore compare these configured workflows.
+
 The report ranks the worst cases, gives the geometric mean of the time ratios for each value of
 each axis (by codec, layout, access pattern and source), and lists matching-checksum cases with
 more request rounds than GDAL, bytes above 1.25 times GDAL plus 64 KiB, or bytes above 1.5 times

@@ -139,6 +139,48 @@ def test_metadata_errors_are_recorded_for_each_case(tmp_path, monkeypatch):
     assert all("time_ratio" not in row for row in rows)
 
 
+@pytest.mark.parametrize("failure", ["empty", "json", "accounting"])
+def test_bad_worker_samples_do_not_abort_remaining_cases(tmp_path, monkeypatch, failure):
+    """Record malformed output and unsettled accounting as unranked case errors.
+
+    Args:
+        tmp_path: Isolated results directory.
+        monkeypatch: Scoped dependency replacements.
+        failure: Worker failure to simulate.
+    """
+    fake = SimpleNamespace(FIXTURES={"a": None, "b": None}, ACCESS=["full"], EXT=".parquet",
+                           meta=lambda *_: {"need_bytes": 1},
+                           axes=lambda _: {"codec": "none", "dtype": "point", "layout": "arrow"})
+    monkeypatch.setitem(perf_matrix.FORMATS, "fake", fake)
+    monkeypatch.setattr(perf_matrix, "machine", lambda: {"machine": {"on_ac": True}})
+    monkeypatch.setattr(perf_matrix, "report", lambda _: "recorded")
+    monkeypatch.setattr(perf_matrix.subprocess, "run", lambda *_a, **_k: SimpleNamespace(
+        returncode=0, stdout="" if failure == "empty" else "not JSON", stderr=""))
+
+    def settled():
+        """Return completed accounting or simulate a timeout.
+
+        Returns:
+            Empty request accounting.
+
+        Raises:
+            TimeoutError: When handlers have not settled.
+        """
+        if failure == "accounting":
+            raise TimeoutError("unsettled")
+        return []
+
+    monkeypatch.setattr(perf_matrix, "_settled_log", settled)
+    out = tmp_path / "results.jsonl"
+    args = SimpleNamespace(format="fake", dir=tmp_path, latency_ms=0, threads=1, only=None,
+                           quick=True, samples=1, out=out, source=["http"], allow_battery=False,
+                           access=None, timeout=1)
+    perf_matrix.run(args)
+    rows = [json.loads(line) for line in out.read_text().splitlines()][1:]
+    assert [row["fixture"] for row in rows] == ["a", "b"]
+    assert all("terrio_error" in row and "gdal_error" in row and "time_ratio" not in row for row in rows)
+
+
 @pytest.mark.parametrize("platform", ["linux", "darwin"])
 def test_worker_records_time_and_platform_rss_before_validation(monkeypatch, platform):
     """Keep validation outside measurements and normalize both supported RSS units.
