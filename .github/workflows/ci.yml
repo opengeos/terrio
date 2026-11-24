@@ -487,7 +487,8 @@ jobs:
         working-directory: python
         run: |
           python -c "import os, rasterio, rio_cogeo.cogeo; print('Reference GDAL:', rasterio.__gdal_version__); assert rasterio.__gdal_version__ == os.environ['GDAL_REFERENCE_VERSION'], rasterio.__gdal_version__"
-          python -m pytest -v tests/test_cog_validate.py::test_external_overviews_agree_with_rio_cogeo
+          python -m pytest -v tests/test_cog_validate.py::test_external_overviews_agree_with_rio_cogeo \
+            tests/test_cog_validate.py::test_agrees_with_rio_cogeo tests/test_cog_validate.py::test_non_square_blocks_agree_with_rio_cogeo
 
   # The Rust and Python tests on real data. The comparison scripts (point clouds, conformance) are
   # in ci-extended.yml, with the same GDAL environment and data; this job saves the data cache.
