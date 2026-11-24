@@ -1709,9 +1709,11 @@ pub(crate) fn replace_chunks<F: Write + Seek>(
     }
     let mut out = dir.clone();
     let big = a.is_big();
-    match predictor {
-        Some(value) => out.set(Entry::new(317, &value, big)),
-        None => out.remove(317),
+    if mask_of.is_none() {
+        match predictor {
+            Some(value) => out.set(Entry::new(317, &value, big)),
+            None => out.remove(317),
+        }
     }
     let (o, cn) = if dir.tiled() { (324, 325) } else { (273, 279) };
     out.set(Entry::new(o, &Value::Offsets(offsets), big));

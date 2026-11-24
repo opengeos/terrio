@@ -2876,12 +2876,13 @@ average and mode internal/external overview add/delete; metadata XML escaping;
 nearest/bilinear/average updates of real DEM subsets; internal/external destination
 masks; genuine fractional-cell average overlaps; and integer bounds/nodata
 collisions. Values, masks, types, nodata, CRS, transforms and overview levels match
-exactly in the final run. Complex overviews (#1222) add 20 cases that must match
-exactly: average and nearest, internal and external (`.ovr` interleaving and
+exactly in the final run. Complex overviews (#1222) add 28 cases that must match
+exactly: 20 average and nearest cases, internal and external (`.ovr` interleaving and
 compression compared), for `CInt16`, `CInt32`, `CFloat32` and `CFloat64` on two
 pixel-interleaved bands of the DEM tiled to an odd 1531 by 1201 (levels 2, 4, 8 and
 16, so non-integer ratios, cascaded averages and windows straddling GDAL's 512-row
-chunks), and for the issue's 64 by 64 `CFloat32` fixture. GDAL reports `LAYOUT=COG`
+chunks), and for the issue's 64 by 64 `CFloat32` fixture; plus eight real and complex
+height-only cases that distinguish per-band and multiband cascade schedules. GDAL reports `LAYOUT=COG`
 for small `.ovr` sidecars whose levels fit in a tile, of any band type, which terrio
 does not write; the complex cases leave that item out. The script retains explicit numeric tolerances for future
 non-exact fixtures and reports failures as differences.

@@ -241,8 +241,8 @@ fn complex_window(i: usize, out: usize, ratio: f64, size: usize, lo: usize) -> (
 }
 
 /// The average of a part of a complex band, as GDAL's `GDALResampleChunkC32R` (GDAL 3.13): the
-/// values in `CFloat32` summed in `f64` over unweighted windows (unclamped to the chunk's last
-/// line only at its end), the mean back in `CFloat32`, then stored in the band's type. GDAL
+/// values in `CFloat32` summed in `f64` over unweighted windows, always clamped to the source
+/// chunk's last line, the mean back in `CFloat32`, then stored in the band's type. GDAL
 /// ignores nodata and masks there.
 fn complex_average(band: &Band, t: &Target, out_rows: std::ops::Range<usize>, chunk: std::ops::Range<usize>) -> Vec<f64> {
     let rx = band.width as f64 / t.width as f64;
@@ -273,6 +273,8 @@ fn complex_average(band: &Band, t: &Target, out_rows: std::ops::Range<usize>, ch
 
 /// A part of a `CFloat32` value written to a complex band of `dt` parts (GDAL's `sGDALCopyWord`
 /// from `float`): integers rounded half away from zero in `float` and clamped, NaN as 0.
+/// The `float` addition itself rounds at large magnitudes, as in GDAL 3.13.2: for example,
+/// 8388609.0 plus 0.5 becomes 8388610.0 before conversion to CInt32.
 fn store_cfloat32(v: f32, dt: DataType) -> f64 {
     if !matches!(dt, DataType::I16 | DataType::I32) {
         return v as f64;
@@ -745,5 +747,7 @@ mod tests {
         assert_eq!(store_cfloat32(f32::NAN, DataType::I32), 0.0);
         assert_eq!(store_cfloat32(3e9, DataType::I32), i32::MAX as f64);
         assert_eq!(store_cfloat32(-2.5, DataType::I32), -3.0);
+        assert_eq!(store_cfloat32(8_388_609.0, DataType::I32), 8_388_610.0);
+        assert_eq!(store_cfloat32(-8_388_609.0, DataType::I32), -8_388_610.0);
     }
 }
